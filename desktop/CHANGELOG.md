@@ -1,5 +1,33 @@
 # exo-desktop
 
+## 0.7.3
+
+### Patch Changes
+
+- ec28052: Run recorder file operations and recovery encoding away from the macOS main thread, and stop native Whisper work when its deadline expires.
+
+## 0.7.3-beta.4
+
+No changes in this release.
+
+## 0.7.3-beta.3
+
+No changes in this release.
+
+## 0.7.3-beta.2
+
+No changes in this release.
+
+## 0.7.3-beta.1
+
+No changes in this release.
+
+## 0.7.3-beta.0
+
+### Patch Changes
+
+- ec28052: Run recorder file operations and recovery encoding away from the macOS main thread, and stop native Whisper work when its deadline expires.
+
 ## 0.7.2
 
 ### Patch Changes

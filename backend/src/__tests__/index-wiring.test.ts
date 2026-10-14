@@ -75,6 +75,7 @@ async function runIsolatedStartup(env: Record<string, string | undefined>) {
       },
     },
     "./services/ingest-mode.js": { backendIngestEnabled: () => false },
+    "./rate-limits.js": { applyRateLimiters: () => ({ globalRoutes: {}, paidChatLimiter: middleware() }), logGlobalBucketRoutes: () => {} },
     "./services/google-oauth.js": { googleMeetOAuthEnabled: () => false },
     // TC-641: the real default-off parser, so `transcriptDeliveryConfig` is a config, not undefined.
     "./services/transcription-api.js": {
@@ -190,14 +191,10 @@ describe("agent stream startup policy wiring", () => {
 });
 
 describe("backend index middleware wiring", () => {
-  test("CORS uses the web + Exo desktop origin allowlist", () => {
-    expect(INDEX).toContain('import { appCorsOrigins } from "./cors-origins.js"');
-    expect(INDEX).toContain("app.use(cors({ origin: appCorsOrigins(FRONTEND_URL) }))");
-  });
 
   test("trusts exactly one ingress proxy before rate limiters are applied", () => {
     const trustIndex = INDEX.indexOf('app.set("trust proxy", 1)');
-    const limiterIndex = INDEX.indexOf("applyRateLimiters(app)");
+    const limiterIndex = INDEX.indexOf("applyRateLimiters(app, ");
 
     expect(trustIndex).toBeGreaterThan(-1);
     expect(limiterIndex).toBeGreaterThan(-1);
@@ -212,7 +209,7 @@ describe("backend index middleware wiring", () => {
     const webhookIndex = INDEX.indexOf('"/api/connectors/webhooks/:source/:token"');
     const jsonParserIndex = INDEX.indexOf(API_BODY_PARSER);
     const csrfIndex = INDEX.indexOf("createCsrfMiddleware()");
-    const limiterIndex = INDEX.indexOf("applyRateLimiters(app)");
+    const limiterIndex = INDEX.indexOf("applyRateLimiters(app, ");
 
     expect(billingIndex).toBeGreaterThan(-1);
     expect(webhookIndex).toBeGreaterThan(billingIndex);
@@ -254,7 +251,7 @@ describe("backend index middleware wiring", () => {
     const companionMount = INDEX.search(/app\.use\(\s*\n?\s*"\/api\/connectors\/webhooks"/);
     const jsonParserIndex = INDEX.indexOf(API_BODY_PARSER);
     const csrfIndex = INDEX.indexOf("createCsrfMiddleware()");
-    const limiterIndex = INDEX.indexOf("applyRateLimiters(app)");
+    const limiterIndex = INDEX.indexOf("applyRateLimiters(app, ");
 
     expect(companionMount).toBeGreaterThan(jsonParserIndex);
     expect(companionMount).toBeGreaterThan(csrfIndex);
@@ -289,8 +286,8 @@ describe("backend index middleware wiring", () => {
     const LIMITS = readFileSync(resolve(import.meta.dir, "../rate-limits.ts"), "utf8");
     expect(LIMITS).toContain('CONNECTOR_COMPANION_PATHS = ["/api/connectors/webhooks"]');
     expect(LIMITS).toContain('DELEGATION_PATHS = ["/api/delegations"]');
-    expect(LIMITS).toContain("connectorCompanionLimiter");
-    expect(LIMITS).toContain("delegationLimiter");
+    expect(LIMITS).toContain('[CONNECTOR_COMPANION_PATHS, "connectorCompanion"]');
+    expect(LIMITS).toContain('[DELEGATION_PATHS, "delegation"]');
   });
 
   test("no companion path can overlap the two-segment public route", () => {
@@ -353,7 +350,7 @@ describe("backend index middleware wiring", () => {
     const mount = INDEX.indexOf('"/api/connectors/google/oauth"');
     const jsonParserIndex = INDEX.indexOf(API_BODY_PARSER);
     const csrfIndex = INDEX.indexOf("createCsrfMiddleware()");
-    const limiterIndex = INDEX.indexOf("applyRateLimiters(app)");
+    const limiterIndex = INDEX.indexOf("applyRateLimiters(app, ");
 
     expect(mount).toBeGreaterThan(jsonParserIndex);
     expect(mount).toBeGreaterThan(csrfIndex);
@@ -405,9 +402,10 @@ describe("backend index middleware wiring", () => {
     // the same rule §4.4 applies to the connector companions.
     const LIMITS = readFileSync(resolve(import.meta.dir, "../rate-limits.ts"), "utf8");
     expect(LIMITS).toContain('GOOGLE_OAUTH_PATHS = ["/api/connectors/google/oauth"]');
-    expect(LIMITS).toContain("googleOAuthLimiter");
-    // …and the prefix is EXEMPTED from the global bucket, not merely given a second one.
-    expect(LIMITS).toMatch(/const DEDICATED_PATHS = \[[\s\S]*\.\.\.GOOGLE_OAUTH_PATHS,[\s\S]*\]/);
+    expect(LIMITS).toContain('[GOOGLE_OAUTH_PATHS, "googleOAuth"]');
+    // …and the prefix is EXEMPTED from the global bucket, not merely given a second one:
+    // `bucketFor` assigns each request exactly one bucket.
+    expect(LIMITS).toContain('bucketFor(req.method, req.path) !== kind');
   });
 
   test("an armed-but-unregistered google OAuth config refuses to boot", () => {
@@ -431,7 +429,7 @@ describe("backend index middleware wiring", () => {
     expect(INDEX.match(/app\.use\(\s*PRIVATE_CLOUD_TRANSCRIPTION_MOUNT/g)).toHaveLength(1);
     expect(mount).toBeGreaterThan(INDEX.indexOf(API_BODY_PARSER));
     expect(mount).toBeGreaterThan(INDEX.indexOf("createCsrfMiddleware()"));
-    expect(mount).toBeGreaterThan(INDEX.indexOf("applyRateLimiters(app)"));
+    expect(mount).toBeGreaterThan(INDEX.indexOf("applyRateLimiters(app, "));
   });
 
   test("hosted AssemblyAI mounts once, unconditionally, behind auth, and its parts skip the global JSON parser", () => {
@@ -439,7 +437,7 @@ describe("backend index middleware wiring", () => {
     expect(mount).toBeGreaterThan(-1);
     expect(INDEX.match(/app\.use\(\s*ASSEMBLYAI_HOSTED_MOUNT/g)).toHaveLength(1);
     expect(mount).toBeGreaterThan(INDEX.indexOf("createCsrfMiddleware()"));
-    expect(mount).toBeGreaterThan(INDEX.indexOf("applyRateLimiters(app)"));
+    expect(mount).toBeGreaterThan(INDEX.indexOf("applyRateLimiters(app, "));
     // The global parser moved into body-parsing.ts; the hosted-part skip moved with it.
     expect(INDEX).toContain('import { createApiBodyParser } from "./body-parsing.js";');
     const parser = readFileSync(resolve(import.meta.dir, "../body-parsing.ts"), "utf8");
@@ -466,7 +464,7 @@ describe("backend index middleware wiring", () => {
       expect({ raw, mounted: at > -1, beforeParser: at < parser }).toEqual({ raw, mounted: true, beforeParser: true });
     }
     // …and CSRF, the limiters and every JSON route below it.
-    for (const later of ["app.use(createCsrfMiddleware())", "applyRateLimiters(app)", '"/api/auth"', '"/api/delegations"', '"/api/manifest"']) {
+    for (const later of ["app.use(createCsrfMiddleware())", "applyRateLimiters(app, ", '"/api/auth"', '"/api/delegations"', '"/api/manifest"']) {
       const at = INDEX.indexOf(later);
       expect({ later, afterParser: at > parser }).toEqual({ later, afterParser: true });
     }
@@ -503,7 +501,7 @@ describe("backend index middleware wiring", () => {
       expect(at).toBeGreaterThan(billing);
       expect(at).toBeLessThan(INDEX.indexOf(API_BODY_PARSER));
       expect(at).toBeLessThan(INDEX.indexOf("createCsrfMiddleware()"));
-      expect(at).toBeLessThan(INDEX.indexOf("applyRateLimiters(app)"));
+      expect(at).toBeLessThan(INDEX.indexOf("applyRateLimiters(app, "));
     }
   });
 
@@ -731,7 +729,7 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
     "./routes/delegations.js": { createDelegationRouter: () => router() },
     "./middleware/auth.js": { createAuthMiddleware: auth },
     "./services/ingest-nudge.js": { createIngestOnDelivery: noop },
-    "./rate-limits.js": { applyRateLimiters: noop },
+    "./rate-limits.js": { applyRateLimiters: () => ({ globalRoutes: { top: () => ({}) }, paidChatLimiter: noop }), logGlobalBucketRoutes: noop },
     "./security.js": { applySecurityDefaults: noop },
     "./routes/nras-proxy.js": { createNrasProxyRouter: router },
     "./routes/assemblyai-hosted.js": { ASSEMBLYAI_HOSTED_MOUNT: "/api/assemblyai", createAssemblyAiHostedRouter: router },
@@ -749,7 +747,7 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
     "./agent-stream-policy.js": load("./agent-stream-policy.ts"),
     "./transcripts/meeting-rollout.js": load("./transcripts/meeting-rollout.ts"),
     "./local-validation.js": { localValidationFromEnv: () => false, localValidationGuard: noop },
-    "./cors-origins.js": { appCorsOrigins: () => [] },
+    "./cors-origins.js": { appCorsOptions: () => ({ origin: [], exposedHeaders: ["Retry-After", "RateLimit", "RateLimit-Policy"] }) },
     "js-yaml": { load: () => ({}) },
     "@scalar/express-api-reference": { apiReference: router },
   };

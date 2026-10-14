@@ -1,3 +1,5 @@
+import { privateCloudCodeMessage } from "../privateCloud";
+
 export interface VoiceNoteTranscriptionFailure {
   code: string;
   message: string;
@@ -53,7 +55,7 @@ export function voiceNoteTranscriptionFailureForCode(code: string | null | undef
   const normalized = typeof code === "string" && code.trim() ? code.trim() : "transcription_error";
   return {
     code: normalized,
-    message: transcriptionErrorCopy(normalized) ?? "Transcription failed. Try again.",
+    message: transcriptionErrorCopy(normalized) ?? privateCloudCodeMessage(normalized) ?? "Transcription failed. Try again.",
     retryable: !NON_RETRYABLE_CODES.has(normalized),
     reference: null,
   };

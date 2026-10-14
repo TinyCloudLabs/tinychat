@@ -1,4 +1,4 @@
-import { logPipeline, logPipelineError } from "@/lib/debugLog";
+import { logPipeline, logPipelineCount, logPipelineError } from "@/lib/debugLog";
 import { readableError } from "@/lib/readableError";
 // Private transcription for Exo voice notes. The backend creates and tracks
 // jobs; this device uploads a local file directly to PTX when it has one.
@@ -18,14 +18,18 @@ import type { FirefliesSentence } from "../connectors/firefliesClient";
 import { MAX_TURN_SECONDS } from "../localTranscriptTurns";
 import {
   buildPtxUploadOrigin,
+  cloudStatusIntervalMs,
+  jitteredCloudIntervalMs,
   createPrivateCloudApi,
   createPrivateCloudJob,
   interpretUploadResponse,
+  jitteredRateLimitWaitMs,
   ptxUploadUrl,
   isTransientCloudError,
   PrivateCloudError,
   privateCloudMessage,
   VOICE_NOTE_CHANNEL_LABELS,
+  type CloudPolling,
   type PrivateCloudApi,
   type PrivateCloudCapabilities,
   type PrivateCloudCreateBody,
@@ -428,17 +432,13 @@ export function voiceNoteSentences(transcript: Pick<PrivateCloudTranscript, "seg
 export const MIN_INCOMPLETE_TRANSCRIPT_DURATION_SECONDS = 600;
 export const MIN_INCOMPLETE_TRANSCRIPT_COVERAGE_RATIO = 0.35;
 export const VAD_DROP_REJECT_PCT = 10;
-export const VAD_DROP_REJECTION_ENABLED = false;
 
-/**
- * TODO(TC-1045): enable only after ptx #93 deploys and Miller confirms the field semantics.
- * PTX defines this as the percent of non-silent audio (frames >= -50 dBFS) not sent;
- * silence does not dilute it, and completed post-deploy jobs should be <= 10.
- * `voiced_seconds` sums across channels and can exceed duration on separate stereo.
- */
-export function shouldRejectForVadDrop(stats: PrivateCloudTranscriptionStats | null | undefined): boolean {
+/** Older PTX or backend versions may not return the VAD-drop metric. */
+function shouldRejectIncompleteTranscript(stats: PrivateCloudTranscriptionStats | null | undefined,
+  metadata: VoiceNoteTranscriptionStatsMetadata): boolean {
   const dropped = stats?.dropped_above_floor_pct;
-  return typeof dropped === "number" && Number.isFinite(dropped) && dropped > VAD_DROP_REJECT_PCT;
+  const exceedsDropThreshold = typeof dropped === "number" && Number.isFinite(dropped) && dropped > VAD_DROP_REJECT_PCT;
+  return exceedsDropThreshold || rejectsForIncompleteCoverage(metadata);
 }
 
 function transcriptStatsMetadata(transcript: PrivateCloudTranscript): VoiceNoteTranscriptionStatsMetadata {
@@ -522,19 +522,16 @@ export type VoiceNoteTranscriptionStatus =
   | { kind: "processing"; completed: number | null; total: number | null }
   | { kind: "saving" };
 
-export interface CloudPollingOptions {
-  intervalMs: number;
-  slowIntervalMs: number;
-  slowAfterMs: number;
-  giveUpAfterMs: number;
-}
+export type CloudPollingOptions = CloudPolling;
 
-/** The desktop's polling (plan §4.7): 5 s ± 20 %, 30 s after a minute of transient failures, give up after 10. */
+/** The desktop's polling: 5 s for 30 s, then duration-scaled 30–60 s, with jitter. */
 const DEFAULT_POLLING: CloudPollingOptions = {
   intervalMs: 5_000,
   slowIntervalMs: 30_000,
   slowAfterMs: 60_000,
   giveUpAfterMs: 10 * 60_000,
+  fastPhaseMs: 30_000,
+  maxIntervalMs: 60_000,
 };
 
 export interface CloudClock {
@@ -729,25 +726,35 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
     if (transcriptionId !== null) await cancelQuietly(transcriptionId);
   };
 
-  /** Rides out transient failures for a bounded period, then reports "connection lost". */
-  const transientTolerance = () => {
+  /** Rides out transient failures; shared throttled time pauses each active operation budget. */
+  const transientTolerance = (wait: (ms: number) => Promise<void>, throttledTime: () => number = () => 0) => {
     let failingSince: number | null = null;
+    let throttledAtFailure = 0;
     return {
-      reset: () => {
-        failingSince = null;
+      reset: () => { failingSince = null; throttledAtFailure = throttledTime(); },
+      pause: async (ms: number, waitFor?: (delay: number) => Promise<void>) => {
+        const before = clock.now();
+        try {
+          await (waitFor ?? wait)(ms);
+        } finally {
+          if (failingSince !== null) failingSince += Math.max(0, clock.now() - before);
+        }
       },
       rideOut: async (err: unknown) => {
         if (!isTransientCloudError(err)) throw err;
         const now = clock.now();
-        failingSince ??= now;
-        const failingFor = now - failingSince;
+        if (failingSince === null) {
+          failingSince = now;
+          throttledAtFailure = throttledTime();
+        }
+        const failingFor = Math.max(0, now - failingSince - (throttledTime() - throttledAtFailure));
         if (failingFor >= polling.giveUpAfterMs) {
           throw new PrivateCloudError(
             "connection_lost",
             "Lost contact with private cloud transcription. The job may still be running.",
           );
         }
-        await sleep(failingFor >= polling.slowAfterMs ? polling.slowIntervalMs : polling.intervalMs);
+        await wait(failingFor >= polling.slowAfterMs ? polling.slowIntervalMs : polling.intervalMs);
       },
     };
   };
@@ -756,49 +763,84 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
   type Guard = () => void;
 
   const readJob = async (id: string, guard: Guard): Promise<PrivateCloudJob> => {
-    const tolerance = transientTolerance();
+    const tolerance = transientTolerance((ms) => sleep(ms));
     for (;;) {
       guard();
       try {
         const job = await deps.api.get(id);
         guard();
+        tolerance.reset();
         return job;
       } catch (err) {
         guard();
+        if (err instanceof PrivateCloudError && err.statusCode === 429) {
+          const delay = jitteredRateLimitWaitMs(err.retryAfterSeconds, polling.slowIntervalMs, clock.random);
+          await tolerance.pause(delay, (ms) => clock.sleep(ms));
+          continue;
+        }
         await tolerance.rideOut(err);
       }
     }
   };
 
-  const poll = async (id: string, report: (s: VoiceNoteTranscriptionStatus) => void, guard: Guard): Promise<PrivateCloudTranscript> => {
-    const tolerance = transientTolerance();
+  const poll = async (
+    id: string,
+    report: (s: VoiceNoteTranscriptionStatus) => void,
+    guard: Guard,
+    expectedDurationSeconds: number | null | undefined,
+  ): Promise<PrivateCloudTranscript> => {
+    const startedAt = clock.now();
+    let durationSeconds = expectedDurationSeconds ?? null;
+    let throttledMs = 0;
+    const throttledTime = () => throttledMs;
+    const waitThrottled = async (ms: number): Promise<void> => {
+      const before = clock.now();
+      try {
+        await clock.sleep(ms);
+      } finally {
+        throttledMs += Math.max(0, clock.now() - before);
+      }
+    };
+    const statusTolerance = transientTolerance((ms) => sleep(ms), throttledTime);
+    const resultTolerance = transientTolerance((ms) => sleep(ms), throttledTime);
     report({ kind: "queued", position: null });
     for (;;) {
       let job: PrivateCloudJob;
       guard();
       try {
         job = await deps.api.get(id);
+        guard();
+        statusTolerance.reset();
       } catch (err) {
         guard();
-        await tolerance.rideOut(err);
+        if (err instanceof PrivateCloudError && err.statusCode === 429) {
+          await waitThrottled(jitteredRateLimitWaitMs(err.retryAfterSeconds, polling.slowIntervalMs, clock.random));
+          continue;
+        }
+        await statusTolerance.rideOut(err);
         continue;
       }
-      guard();
+      if (typeof job.duration_seconds === "number" && Number.isFinite(job.duration_seconds) && job.duration_seconds > 0) {
+        durationSeconds = job.duration_seconds;
+      }
       if (job.status === "completed") {
         let result: Awaited<ReturnType<PrivateCloudApi["result"]>>;
         try {
           result = await deps.api.result(id);
+          guard();
+          resultTolerance.reset();
         } catch (err) {
           guard();
-          await tolerance.rideOut(err);
+          if (err instanceof PrivateCloudError && err.statusCode === 429) {
+            await waitThrottled(jitteredRateLimitWaitMs(err.retryAfterSeconds, polling.slowIntervalMs, clock.random));
+            continue;
+          }
+          await resultTolerance.rideOut(err);
           continue;
         }
-        guard();
-        tolerance.reset();
         if (result.status === "completed") return result.transcript;
         if (result.status !== "pending") throw result.error;
       } else {
-        tolerance.reset();
         if (job.status === "failed" || job.status === "cancelled") throw jobFailure(job);
         if (job.status === "awaiting_upload") {
           throw new PrivateCloudError("upload_interrupted", "PTX has not received the recording", { transcriptionId: id });
@@ -809,7 +851,9 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
             : { kind: "processing", completed: job.progress?.regions_completed ?? null, total: job.progress?.regions_total ?? null },
         );
       }
-      await sleep(polling.intervalMs);
+      const elapsed = clock.now() - startedAt;
+      const interval = cloudStatusIntervalMs(durationSeconds, elapsed, polling);
+      await clock.sleep(elapsed < polling.fastPhaseMs ? interval : jitteredCloudIntervalMs(interval, clock.random));
       guard();
     }
   };
@@ -857,7 +901,7 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
       }
       if (current !== null) {
         if (current.status === "failed" || current.status === "cancelled") throw jobFailure(current);
-        if (current.status !== "awaiting_upload") return { transcriptionId: current.id, transcript: await poll(current.id, report, guard) };
+        if (current.status !== "awaiting_upload") return { transcriptionId: current.id, transcript: await poll(current.id, report, guard, durationSeconds) };
       }
     }
 
@@ -950,7 +994,7 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
         // Accepted despite the error: carry on as if the 201 had arrived.
       }
     }
-    return { transcriptionId: created.id, transcript: await poll(created.id, report, guard) };
+    return { transcriptionId: created.id, transcript: await poll(created.id, report, guard, durationSeconds) };
   };
 
   return {
@@ -1235,19 +1279,20 @@ export async function transcribeVoiceNote(args: {
       throw err;
     }
     // Silence is an outcome, not a failure: recorded so the note is not offered again.
+    const prepared = noSpeechTranscript(transcribedAt(), rev, { transcription_stats_missing: true });
     try {
-      await save(noSpeechTranscript(transcribedAt(), rev));
+      await save(prepared);
     } catch (saveError) {
       await persistFailure(saveError);
       throw saveError;
     }
     await finish(err instanceof PrivateCloudError ? err.transcriptionId : null);
+    logPipelineCount("transcription_stats_missing", "committed");
     logPipeline("transcription", sourceId, "done", { engine: "private-cloud" });
     return "no_speech";
   }
   const statsMetadata = transcriptStatsMetadata(transcript);
-  if (rejectsForIncompleteCoverage(statsMetadata)
-    || (VAD_DROP_REJECTION_ENABLED && shouldRejectForVadDrop(transcript.stats))) {
+  if (shouldRejectIncompleteTranscript(transcript.stats, statsMetadata)) {
     const incomplete = new PrivateCloudError(
       "transcript_incomplete",
       "Private Transcription returned a transcript that may be incomplete. Try again later.",
@@ -1257,7 +1302,12 @@ export async function transcribeVoiceNote(args: {
     await finish(transcriptionId);
     throw incomplete;
   }
-  const prepared = prepareVoiceNoteTranscript(transcript, transcribedAt(), rev, statsMetadata);
+  const statsMissing = statsMetadata.transcription_duration_seconds === undefined;
+  const commitStatsMetadata: VoiceNoteTranscriptionStatsMetadata = {
+    ...statsMetadata,
+    transcription_stats_missing: statsMissing ? true : null,
+  };
+  const prepared = prepareVoiceNoteTranscript(transcript, transcribedAt(), rev, commitStatsMetadata);
   try {
     await save(prepared);
   } catch (err) {
@@ -1267,6 +1317,8 @@ export async function transcribeVoiceNote(args: {
     throw err;
   }
   await finish(transcriptionId);
+  if (statsMissing) logPipelineCount("transcription_stats_missing", "committed");
+  if (transcript.stats?.vad_fallback === true) logPipelineCount("transcription_vad_fallback", "committed");
   logPipeline("transcription", sourceId, "done", { engine: "private-cloud" });
   return prepared.sentences.length > 0 ? "transcribed" : "no_speech";
 }

@@ -1,5 +1,72 @@
 # @tinychat/backend
 
+## 0.5.4
+
+### Patch Changes
+
+- 82fc4b7: Give each signed-in user their own rate-limit buckets. Every bucket is now keyed by the verified session address, not the client IP: in production the IP is the Phala gateway's for every client. Signed-in users get the pre-incident per-user ceilings (for example global 120 and paid chat 120 per 15 minutes). Requests without a valid session share one anonymous bucket at the 0.5.4 whole-service ceilings.
+
+  The 0.5.4 ceilings stay in force as aggregates over all users for paid chat (600), private cloud job changes (300) and hosted uploads, so fresh wallets can't multiply them. Sign-in (`/api/auth`) has one bucket of 1,200 per 15 minutes whatever bearer a request carries, which bounds session minting. `X-Forwarded-For` no longer affects any rate-limit key.
+
+- eb81c50: Stop the shared rate-limit key from taking every user down. In production every client reaches the backend from the Phala gateway's single address, so each rate-limit bucket is shared by all users. Interim, until per-client keying ships:
+  - Polling and read buckets scale by 50: global 6,000 per 15 minutes.
+  - Paid chat (`POST /api/chat`, `POST /api/agent/chat`) gets its own bucket of 600.
+  - Google OAuth: 150. Private cloud job mutations: 300. Calendar autojoin: reads 3,000, setup 150. Delegations: 600.
+  - Private cloud job-status polls leave the transcriber bucket for their own.
+  - `/health` and `/health/` are exempt.
+  - Paths are matched case-insensitively, so every request lands in exactly one bucket.
+  - The routes charged to the global bucket are counted, logged every 5 minutes and shown on `/health`.
+
+- d15a4ec: Stop publishing the backend's port 3001 on Phala; all traffic goes through the TLS ingress (TC-1012).
+- 60e745c: Reduce PTX and hosted transcription status polling after the initial fast phase, honor rate-limit retry deadlines, expose limiter headers to browser clients, and keep throttling separate from failure budgets.
+- 8021de8: Serve tenant-isolated last-known Calendar autojoin status on storage read failures, with bounded caching, mutation invalidation, retry guidance and metadata-only request timing.
+- 96d83d8: Bound Calendar autojoin status to connection and worker-maintained outcome summary reads, preserving last-known fallback and immediate user policy changes, with the existing full history listing for legacy tenants until their first summary publication. Repair unreadable summaries and ensure optional projection failures cannot skip disconnect revocation.
+
+## 0.5.4-beta.5
+
+### Patch Changes
+
+- 96d83d8: Bound Calendar autojoin status to connection and worker-maintained outcome summary reads, preserving last-known fallback and immediate user policy changes, with the existing full history listing for legacy tenants until their first summary publication. Repair unreadable summaries and ensure optional projection failures cannot skip disconnect revocation.
+
+## 0.5.4-beta.4
+
+### Patch Changes
+
+- 60e745c: Reduce PTX and hosted transcription status polling after the initial fast phase, honor rate-limit retry deadlines, expose limiter headers to browser clients, and keep throttling separate from failure budgets.
+
+## 0.5.4-beta.3
+
+### Patch Changes
+
+- 8021de8: Serve tenant-isolated last-known Calendar autojoin status on storage read failures, with bounded caching, mutation invalidation, retry guidance and metadata-only request timing.
+
+## 0.5.4-beta.2
+
+### Patch Changes
+
+- 82fc4b7: Give each signed-in user their own rate-limit buckets. Every bucket is now keyed by the verified session address, not the client IP: in production the IP is the Phala gateway's for every client. Signed-in users get the pre-incident per-user ceilings (for example global 120 and paid chat 120 per 15 minutes). Requests without a valid session share one anonymous bucket at the 0.5.4 whole-service ceilings.
+
+  The 0.5.4 ceilings stay in force as aggregates over all users for paid chat (600), private cloud job changes (300) and hosted uploads, so fresh wallets can't multiply them. Sign-in (`/api/auth`) has one bucket of 1,200 per 15 minutes whatever bearer a request carries, which bounds session minting. `X-Forwarded-For` no longer affects any rate-limit key.
+
+## 0.5.4-beta.1
+
+### Patch Changes
+
+- d15a4ec: Stop publishing the backend's port 3001 on Phala; all traffic goes through the TLS ingress (TC-1012).
+
+## 0.5.4-beta.0
+
+### Patch Changes
+
+- eb81c50: Stop the shared rate-limit key from taking every user down. In production every client reaches the backend from the Phala gateway's single address, so each rate-limit bucket is shared by all users. Interim, until per-client keying ships:
+  - Polling and read buckets scale by 50: global 6,000 per 15 minutes.
+  - Paid chat (`POST /api/chat`, `POST /api/agent/chat`) gets its own bucket of 600.
+  - Google OAuth: 150. Private cloud job mutations: 300. Calendar autojoin: reads 3,000, setup 150. Delegations: 600.
+  - Private cloud job-status polls leave the transcriber bucket for their own.
+  - `/health` and `/health/` are exempt.
+  - Paths are matched case-insensitively, so every request lands in exactly one bucket.
+  - The routes charged to the global bucket are counted, logged every 5 minutes and shown on `/health`.
+
 ## 0.5.3
 
 ### Patch Changes

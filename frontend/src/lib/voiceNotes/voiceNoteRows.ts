@@ -275,6 +275,7 @@ export interface VoiceNoteTranscriptionStatsMetadata {
   transcription_duration_seconds?: number;
   transcription_vad_dropped_above_floor_pct?: number;
   transcription_vad_fallback?: boolean;
+  transcription_stats_missing?: true | null;
 }
 
 /** Persist retryable transcription failures without replacing a terminal result. */

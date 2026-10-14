@@ -47,6 +47,8 @@ export interface AgentRoutesConfig {
   /** Shared service credential for the Layer-1 gate. NEVER logged or echoed. */
   elizaServiceSecret: string;
   authMiddleware: RequestHandler;
+  /** The paid-chat rate limiter (`applyRateLimiters`), run before the chat handler. */
+  paidLimiter?: RequestHandler;
   /** Frozen tinychat character/agent id used to derive the entityId. */
   agentId?: string;
   /** Injectable fetch (tests stub eliza-service). Defaults to global fetch. */
@@ -87,7 +89,7 @@ export function createAgentRouter(config: AgentRoutesConfig) {
     for (const callback of entry.callbacks) callback();
   };
   if (config.chat) {
-    router.post("/chat", createAgentChatHandler(config.chat, {
+    router.post("/chat", config.paidLimiter ?? ((_req, _res, next) => next()), createAgentChatHandler(config.chat, {
       capture(entityId) {
         const entry = turns.get(entityId) ?? { current: true, callbacks: new Set<() => void>() };
         turns.set(entityId, entry);

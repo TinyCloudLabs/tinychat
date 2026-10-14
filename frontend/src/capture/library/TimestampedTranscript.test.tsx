@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { NotePlaybackContext, type NotePlayback } from "@/lib/audio/notePlayback";
 import { installDom } from "@/test/dom";
 import { TimestampedTranscript } from "./TimestampedTranscript";
-import { hasSegmentTimes, transcriptMarkdown, transcriptWithTimestamps } from "./transcriptSegments";
+import { hasSegmentTimes, sentenceTime, transcriptMarkdown, transcriptWithTimestamps } from "./transcriptSegments";
 
 const sentences = [
   { index: 0, speaker_name: "Me", text: "Hello.", start_time: 0, end_time: 2 },
@@ -18,6 +18,68 @@ test("timed copy and Markdown retain speaker, minute and hour clocks", () => {
   expect(transcriptMarkdown("Interview", null, long)).toContain("## Transcript\n\n[00:00] Me: Hello.");
 });
 
+
+test("PTX turns up to 60 seconds render, copy, follow, and seek as timed rows", async () => {
+  const ptx = [
+    { index: 0, speaker_name: "You", text: "First turn.", start_time: 0, end_time: 22.6 },
+    { index: 1, speaker_name: "Them", text: "Second turn.", start_time: 22.6, end_time: 62 },
+    { index: 2, speaker_name: "You", text: "Third turn.", start_time: 62, end_time: 121.9 },
+    { index: 3, speaker_name: "Them", text: "Fourth turn.", start_time: 121.9, end_time: 181.9 },
+  ];
+  expect(ptx.map((sentence) => sentenceTime(sentence, true))).toEqual([0, 22.6, 62, 121.9]);
+  expect(hasSegmentTimes(ptx, true)).toBe(true);
+  expect(transcriptWithTimestamps(ptx, true)).toContain("[01:02] You: Third turn.");
+  const markup = renderToStaticMarkup(<TimestampedTranscript sentences={ptx} hasAudio isPrivateCloud />);
+  expect(markup.match(/data-testid="transcript-segment"/g)).toHaveLength(4);
+  expect(markup).toContain('aria-label="Play from 2:01"');
+
+  cleanup = installDom();
+  const host = document.createElement("div");
+  document.body.append(host);
+  root = createRoot(host);
+  let playedFrom = -1;
+  const render = (elapsed: number) => act(async () => root!.render(
+    <NotePlaybackContext.Provider value={{ seek: null, elapsed, playing: true, playFrom: (seconds) => { playedFrom = seconds; }, onClock: () => {} }}>
+      <TimestampedTranscript sentences={ptx} hasAudio isPrivateCloud />
+    </NotePlaybackContext.Provider>,
+  ));
+  await render(70);
+  expect(Array.from(host.querySelectorAll('[data-active="true"]'), (row) => row.textContent)).toEqual([expect.stringContaining("Third turn.")]);
+  await act(async () => { (host.querySelector('[aria-label="Play from 1:02"]') as HTMLButtonElement).click(); });
+  expect(playedFrom).toBe(62);
+  await render(130);
+  expect(Array.from(host.querySelectorAll('[data-active="true"]'), (row) => row.textContent)).toEqual([expect.stringContaining("Fourth turn.")]);
+});
+
+test("60-second spans require private-cloud provenance; missing provenance keeps the original 30-second rule", () => {
+  const body = [
+    { index: 0, speaker_name: "You", text: "First turn.", start_time: 0, end_time: 45 },
+    { index: 1, speaker_name: "You", text: "Second turn.", start_time: 45, end_time: 105 },
+  ];
+
+  expect(sentenceTime(body[0]!)).toBeNull();
+  expect(sentenceTime(body[0]!, true)).toBe(0);
+  expect(hasSegmentTimes(body, true)).toBe(true);
+  expect(hasSegmentTimes(body)).toBe(false);
+  expect(transcriptWithTimestamps(body, true)).toContain("[00:45] You: Second turn.");
+  expect(transcriptWithTimestamps(body)).toBe("You: First turn.\nYou: Second turn.");
+  expect(transcriptMarkdown("Private", null, body, true)).toContain("[00:45] You: Second turn.");
+});
+test("60-second boundary is inclusive, longer spans stay invalid, and majority still gates timing", () => {
+  const atLimit = { index: 0, speaker_name: null, text: "At limit.", start_time: 0, end_time: 60 };
+  const overLimit = { ...atLimit, end_time: 60.01 };
+  expect(sentenceTime(atLimit, true)).toBe(0);
+  expect(sentenceTime(overLimit, true)).toBeNull();
+
+  const mostlyTimed = [atLimit, { ...atLimit, index: 1 }, { ...atLimit, index: 2 }, overLimit, { ...overLimit, index: 4 }];
+  expect(hasSegmentTimes(mostlyTimed, true)).toBe(true);
+  expect(hasSegmentTimes([atLimit, overLimit, { ...overLimit, index: 2 }], true)).toBe(false);
+
+  const wholeNote = [{ ...atLimit, end_time: 639 }];
+  expect(hasSegmentTimes(wholeNote)).toBe(false);
+  expect(renderToStaticMarkup(<TimestampedTranscript sentences={wholeNote} hasAudio={false} />)).not.toContain("Play from");
+  expect(transcriptWithTimestamps(wholeNote)).toBe("At limit.");
+});
 test("missing and coarse timings stay plain; no synthetic clock for a whole-note span", () => {
   const untimed = [{ index: 0, speaker_name: "You", text: "Old mono note.", start_time: 0, end_time: 0 }];
   expect(hasSegmentTimes(untimed)).toBe(false);

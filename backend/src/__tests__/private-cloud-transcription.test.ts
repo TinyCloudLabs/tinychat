@@ -13,7 +13,7 @@ import { load as loadYaml } from "js-yaml";
 import { createCsrfMiddleware, issueSessionToken } from "@tinyboilerplate/server";
 
 import { createAuthMiddleware } from "../middleware/auth.js";
-import { applyRateLimiters, TRANSCRIBER_LIMIT, TRANSCRIBER_PATHS } from "../rate-limits.js";
+import { applyRateLimiters, SESSION_LIMITS, TRANSCRIBER_PATHS } from "../rate-limits.js";
 import { createPrivateCloudTranscriptionRouter } from "../routes/private-cloud-transcription.js";
 import {
   PRIVATE_CLOUD_TRANSCRIPTION_MOUNT,
@@ -358,7 +358,7 @@ async function startBackend(config: PrivateCloudTranscriptionConfig, clientOptio
   const app = express();
   app.use(express.json({ limit: "1mb" }));
   app.use(createCsrfMiddleware());
-  applyRateLimiters(app);
+  applyRateLimiters(app, { sessionKey: SESSION_KEY });
   {
     app.use(
       PRIVATE_CLOUD_TRANSCRIPTION_MOUNT,
@@ -529,11 +529,11 @@ describe("access", () => {
     expect((await call(backend.url, "GET", "/transcriptions")).status).toBe(200);
   });
 
-  test("the mount sits in the /api/transcriber bucket, not the global one", async () => {
+  test("the mount sits under /api/transcriber, in its own per-session bucket, not the global one", async () => {
     expect(PRIVATE_CLOUD_TRANSCRIPTION_MOUNT.startsWith(`${TRANSCRIBER_PATHS[0]}/`)).toBe(true);
     const { backend } = await setup();
     const r = await call(backend.url, "GET", "/capabilities");
-    expect(r.headers.get("ratelimit-policy")).toContain(`${TRANSCRIBER_LIMIT};w=900`);
+    expect(r.headers.get("ratelimit-policy")).toContain(`${SESSION_LIMITS.privateCloudTranscription};w=900`);
   });
 });
 

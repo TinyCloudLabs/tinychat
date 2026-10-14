@@ -1,5 +1,45 @@
 # @tinychat/frontend
 
+## 0.7.3
+
+### Patch Changes
+
+- ec28052: Run recorder file operations and recovery encoding away from the macOS main thread, and stop native Whisper work when its deadline expires.
+- 5b5ca03: Use PTX VAD-drop stats for incomplete-transcript retries and track missing stats.
+- b5a4d09: Use specific private-cloud failure copy for persisted voice-note transcription failures.
+- 438d85b: Accept transcript sentence spans up to the shared 60-second turn limit for timestamped playback and copying.
+- 60e745c: Reduce PTX and hosted transcription status polling after the initial fast phase, honor rate-limit retry deadlines, expose limiter headers to browser clients, and keep throttling separate from failure budgets.
+
+## 0.7.3-beta.4
+
+### Patch Changes
+
+- 438d85b: Accept transcript sentence spans up to the shared 60-second turn limit for timestamped playback and copying.
+
+## 0.7.3-beta.3
+
+### Patch Changes
+
+- 60e745c: Reduce PTX and hosted transcription status polling after the initial fast phase, honor rate-limit retry deadlines, expose limiter headers to browser clients, and keep throttling separate from failure budgets.
+
+## 0.7.3-beta.2
+
+### Patch Changes
+
+- 5b5ca03: Use PTX VAD-drop stats for incomplete-transcript retries and track missing stats.
+
+## 0.7.3-beta.1
+
+### Patch Changes
+
+- b5a4d09: Use specific private-cloud failure copy for persisted voice-note transcription failures.
+
+## 0.7.3-beta.0
+
+### Patch Changes
+
+- ec28052: Run recorder file operations and recovery encoding away from the macOS main thread, and stop native Whisper work when its deadline expires.
+
 ## 0.7.2
 
 ### Patch Changes

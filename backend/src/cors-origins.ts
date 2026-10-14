@@ -31,3 +31,11 @@ export function appCorsOrigins(frontendOrigin: string): Array<string | RegExp> {
     ...LOCAL_WEB_ORIGINS,
   ];
 }
+
+/** Shared CORS options for application requests, including readable draft-7 limiter headers. */
+export function appCorsOptions(frontendOrigin: string) {
+  return {
+    origin: appCorsOrigins(frontendOrigin),
+    exposedHeaders: ["Retry-After", "RateLimit", "RateLimit-Policy"],
+  };
+}

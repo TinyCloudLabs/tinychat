@@ -46,7 +46,7 @@ import { loadNote } from "@/lib/voiceNotes/recordingNotes";
 import { wasDiscarded, type PendingNote } from "@/lib/voiceNotes/recorderSaves";
 import { VoiceNotes } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { loadVoiceNoteAudioBlob, VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
-import { readTranscriptPreviews, voiceNoteTranscriptLocator } from "@/lib/voiceNotes/voiceNoteCommits";
+import { readTranscriptPreviews, voiceNoteTranscriptLocator, type TranscriptProvenance } from "@/lib/voiceNotes/voiceNoteCommits";
 import { captureEvents } from "../captureEvents";
 import type { LibraryFilter } from "./libraryKinds";
 import type { LibraryStatus } from "./LibraryListView";
@@ -54,9 +54,14 @@ import type { LibraryItem } from "./LibraryRow";
 import type { NoteAudio } from "./NoteDetailView";
 import { noteSnippet, recordingIdOfOnPhoneId, withOnPhone } from "./onPhone";
 
+export interface SelectedTranscript {
+  transcript: TranscriptRead;
+  /** Null means this selected body was read without a transcript commit. */
+  provenance: TranscriptProvenance | null;
+}
 export interface NoteReads {
   metadata?: MeetingMetadataRead;
-  transcript?: TranscriptRead;
+  transcript?: SelectedTranscript;
 }
 
 export interface Library {
@@ -336,12 +341,12 @@ export function useLibrary(
       const stale = invalidated.current.delete(note.id);
       const staleFields = staleReads.current.get(note.id);
       staleReads.current.delete(note.id);
-      if (!stale && !staleFields?.size && settled(cached.metadata) && settled(cached.transcript)) return;
+      if (!stale && !staleFields?.size && settled(cached.metadata) && settled(cached.transcript?.transcript)) return;
       // A saved note retains its reads during revalidation; only prior failures show loading.
       if (!stale) {
         reads.current.set(note.id, {
           metadata: settled(cached.metadata) ? cached.metadata : undefined,
-          transcript: settled(cached.transcript) ? cached.transcript : undefined,
+          transcript: settled(cached.transcript?.transcript) ? cached.transcript : undefined,
         });
       }
       reading.current.add(note.id);
@@ -354,6 +359,10 @@ export function useLibrary(
             let metadata = await readMeetingMetadata(space, note.id);
             if (locator && metadata.status === "ok") metadata = { status: "ok", metadata: {
               ...metadata.metadata,
+              ...(locator.committed ? {
+                transcription_engine: locator.provenance?.engine ?? null,
+                transcript_provider: locator.provenance?.provider ?? null,
+              } : {}),
               transcription_outcome: locator.outcome === "none"
                 ? metadata.metadata.transcription_outcome ?? "none" : locator.outcome,
               // The preview is bounded; only the body read may supply full transcript text.
@@ -373,21 +382,24 @@ export function useLibrary(
               if (mounted.current) bump();
             }
           }
-          if (version === (readVersions.current.get(note.id) ?? 0) && (stale || staleFields?.has("transcript") || !settled(reads.current.get(note.id)?.transcript))) {
+          if (version === (readVersions.current.get(note.id) ?? 0) && (stale || staleFields?.has("transcript") || !settled(reads.current.get(note.id)?.transcript?.transcript))) {
             const transcript = locator
               ? locator.bodyKey ? await readTranscript(space, note.source, note.sourceId, locator.bodyKey, locator.expectedText)
                 : { status: "absent" as const }
               : await readTranscript(space, note.source, note.sourceId);
-            if (version === (readVersions.current.get(note.id) ?? 0) && transcript.status === "failed" && cached.transcript?.status === "ok") {
+            if (version === (readVersions.current.get(note.id) ?? 0) && transcript.status === "failed" && cached.transcript?.transcript.status === "ok") {
               const fields = staleReads.current.get(note.id) ?? new Set<keyof NoteReads>();
               fields.add("transcript");
               staleReads.current.set(note.id, fields);
             }
             if (version === (readVersions.current.get(note.id) ?? 0)) {
+              const keepCachedTranscript = transcript.status === "failed" && cached.transcript?.transcript.status === "ok";
               reads.current.set(note.id, {
                 ...reads.current.get(note.id),
-                transcript: transcript.status === "failed" && cached.transcript?.status === "ok"
-                  ? cached.transcript : transcript,
+                transcript: keepCachedTranscript ? cached.transcript : {
+                  transcript,
+                  provenance: locator?.committed ? locator.provenance ?? { engine: null, provider: null } : null,
+                },
               });
               if (mounted.current) bump();
             }
@@ -408,7 +420,7 @@ export function useLibrary(
   }, [item, readNote, invalidationRevision]);
 
   const noteReads: NoteReads = item?.onPhone
-    ? { metadata: { status: "ok", metadata: {} }, transcript: { status: "absent" } }
+    ? { metadata: { status: "ok", metadata: {} }, transcript: { transcript: { status: "absent" }, provenance: null } }
     : item ? (reads.current.get(item.id) ?? {}) : {};
   const meta = noteReads.metadata?.status === "ok" ? noteReads.metadata.metadata : null;
   const audio = item ? meetingAudioFrom(meta) : null;

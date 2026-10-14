@@ -31,9 +31,9 @@ class ActiveRowStore {
   }
 }
 
-function timedIndex(sentences: readonly FirefliesSentence[]) {
+function timedIndex(sentences: readonly FirefliesSentence[], isPrivateCloud: boolean) {
   const entries = sentences.flatMap((sentence, index) => {
-    const start = sentenceTime(sentence);
+    const start = sentenceTime(sentence, isPrivateCloud);
     return start === null ? [] : [{ index, start, end: sentence.end_time }];
   }).sort((a, b) => a.start - b.start || a.index - b.index);
   let maxEnd = 0;
@@ -84,7 +84,8 @@ const TranscriptRow = memo(function TranscriptRow({ sentence, index, speaker, st
   </div>;
 });
 
-export function TimestampedTranscript({ sentences, hasAudio, onRowRender }: { sentences: readonly FirefliesSentence[]; hasAudio: boolean;
+export function TimestampedTranscript({ sentences, hasAudio, isPrivateCloud = false, onRowRender }: { sentences: readonly FirefliesSentence[]; hasAudio: boolean;
+  isPrivateCloud?: boolean;
   /** Render-count probe used by the long-transcript regression test. */
   onRowRender?: (index: number) => void;
 }) {
@@ -93,7 +94,7 @@ export function TimestampedTranscript({ sentences, hasAudio, onRowRender }: { se
   playFrom.current = playback?.playFrom;
   const [following, setFollowing] = useState(true);
   const rows = useRef<(HTMLDivElement | null)[]>([]);
-  const index = useMemo(() => timedIndex(sentences), [sentences]);
+  const index = useMemo(() => timedIndex(sentences, isPrivateCloud), [sentences, isPrivateCloud]);
   const store = useMemo(() => new ActiveRowStore(), [sentences]);
   const { active, followRow } = playback?.playing ? activeRowsAt(index, playback.elapsed) : { active: new Set<number>(), followRow: -1 };
   const onSeek = useCallback((seconds: number) => { setFollowing(true); playFrom.current?.(seconds); }, []);
@@ -103,9 +104,9 @@ export function TimestampedTranscript({ sentences, hasAudio, onRowRender }: { se
     return sentences.map((sentence, rowIndex) => {
       const speaker = speakers.size > 1 && sentence.speaker_name !== sentences[rowIndex - 1]?.speaker_name ? sentence.speaker_name : null;
       return <TranscriptRow key={`${sentence.index}-${rowIndex}`} sentence={sentence} index={rowIndex} speaker={speaker}
-        start={sentenceTime(sentence)} hasAudio={hasAudio} store={store} onSeek={onSeek} registerRow={registerRow} onRowRender={onRowRender} />;
+        start={sentenceTime(sentence, isPrivateCloud)} hasAudio={hasAudio} store={store} onSeek={onSeek} registerRow={registerRow} onRowRender={onRowRender} />;
     });
-  }, [sentences, hasAudio, store, onSeek, registerRow, onRowRender]);
+  }, [sentences, hasAudio, isPrivateCloud, store, onSeek, registerRow, onRowRender]);
 
   useEffect(() => { store.setActive(active); }, [store, active]);
 

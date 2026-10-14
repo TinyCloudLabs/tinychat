@@ -10,8 +10,13 @@ import { CONNECTORS_SQL_DB_NAME, ensureSchema, transcriptKvKey } from "../connec
 import { readVoiceNoteTranscriptState } from "./voiceNoteStore";
 import { SQL_MEETING_METADATA_QUERY } from "../meetingChat/corpus";
 import { legacyTranscriptWinner, readTranscriptCommit, voiceNoteTranscriptLocator } from "./voiceNoteCommits";
+import { whisperLocalTranscript } from "./desktop/whisperTranscript";
 import { commitVoiceNoteTranscript, createVoiceNoteRow, ensureVoiceNoteIdentity, patchVoiceNoteAudio,
   patchVoiceNoteTranscriptionFailure, reconcileDuplicates, resolveVoiceNoteRow, sweepArchived, transcriptHash, transcriptRevKvKey } from "./voiceNoteRows";
+import { renderToStaticMarkup } from "react-dom/server";
+import { MemoryRouter } from "react-router-dom";
+import { NoteDetailView } from "@/capture/library/NoteDetailView";
+import { hasPrivateCloudTimingProvenance, transcriptMarkdown, transcriptWithTimestamps } from "@/capture/library/transcriptSegments";
 import { createFakeVoiceNotes } from "./fakeVoiceNotes";
 import { __setVoiceNotesForTests, VoiceNotes } from "./nativeVoiceNotes";
 import { syncOnDeviceTranscript } from "./onDeviceTranscriber";
@@ -433,6 +438,90 @@ test("a full space leaves the note local with a specific identity state", async 
     const silent = await commitVoiceNoteTranscript(tcw, "rec", { rev: 3, outcome: "no_speech", text: null, sentences: [] });
     expect(silent.preview).toBeNull();
     expect((await voiceNoteTranscriptLocator(tcw, "rec")).outcome).toBe("no_speech");
+  });
+  test("commit provenance binds timing to the durable body when the row mirror fails", async () => {
+    const { tcw, sqlite, values } = space();
+    await ensureSchema(tcw);
+    insert(sqlite, "vn-rec", "rec");
+    await ensureVoiceNoteIdentity(tcw);
+    const sentences = [
+      { index: 0, speaker_name: "You", text: "First synthetic sentence.", start_time: 0, end_time: 45 },
+      { index: 1, speaker_name: "You", text: "Second synthetic sentence.", start_time: 60, end_time: 105 },
+    ];
+    await commitVoiceNoteTranscript(tcw, "rec", { rev: 3, outcome: "transcribed", text: "PTX rev 3",
+      sentences, engine: "private-cloud", provider: "tinycloud-private-transcription" });
+    const originalDb = tcw.sql.db.bind(tcw.sql);
+    tcw.sql.db = ((name: string) => ({ ...originalDb(name), execute: async (statement: string, params: unknown[] = []) =>
+      statement.includes("UPDATE connector_meeting SET metadata = json_patch")
+        ? { ok: false, error: { code: "SQL_ERROR", message: "mirror update refused" } }
+        : originalDb(name).execute(statement, params as never[]),
+    })) as typeof tcw.sql.db;
+    await expect(commitVoiceNoteTranscript(tcw, "rec", { rev: 4, outcome: "transcribed", text: "Local rev 4",
+      sentences, engine: "whispercpp", provider: "whispercpp" })).rejects.toThrow("mirror update refused");
+
+    const locator = await voiceNoteTranscriptLocator(tcw, "rec");
+    expect(locator).toMatchObject({ committed: true, provenance: { engine: "whispercpp", provider: "whispercpp" } });
+    expect(row(sqlite, "vn-rec").metadata).toMatchObject({
+      transcription_engine: "private-cloud", transcript_provider: "tinycloud-private-transcription",
+    });
+    const savedSentences = JSON.parse(values.get(locator.bodyKey!)!) as typeof sentences;
+    const privateCloud = hasPrivateCloudTimingProvenance(null, locator.provenance);
+    const html = renderToStaticMarkup(createElement(MemoryRouter, null, createElement(NoteDetailView, {
+      item: { id: "vn-rec", source: "exo-voice-note", sourceId: "rec", title: "Synthetic", startedAt: "2026-01-01T00:00:00Z", durationSecs: 120 },
+      listStatus: "ready",
+      metadata: { status: "ok", metadata: row(sqlite, "vn-rec").metadata },
+      transcript: { status: "ok", sentences: savedSentences },
+      transcriptProvenance: locator.provenance,
+      audio: { load: async () => null },
+      copyState: "idle",
+      onCopy: () => {},
+      onCopyWithTimestamps: () => {},
+      onRetry: () => {},
+      pushed: true,
+      onBack: () => {},
+    })));
+    expect(html).not.toContain('aria-label="Play from 1:00"');
+    expect(html).not.toContain("Copy with timestamps");
+    expect(transcriptWithTimestamps(savedSentences, privateCloud)).not.toContain("[01:00]");
+    expect(transcriptMarkdown("Synthetic", "2026-01-01T00:00:00Z", savedSentences, privateCloud)).not.toContain("[01:00]");
+  });
+
+  test("a PTX commit remains timed when its row mirror has lost provenance", async () => {
+    const { tcw, sqlite, values } = space();
+    await ensureSchema(tcw);
+    insert(sqlite, "vn-rec", "rec");
+    await ensureVoiceNoteIdentity(tcw);
+    const sentences = [
+      { index: 0, speaker_name: "You", text: "First synthetic sentence.", start_time: 0, end_time: 45 },
+      { index: 1, speaker_name: "You", text: "Second synthetic sentence.", start_time: 60, end_time: 105 },
+    ];
+    await commitVoiceNoteTranscript(tcw, "rec", { rev: 3, outcome: "transcribed", text: "PTX",
+      sentences, engine: "private-cloud", provider: "tinycloud-private-transcription" });
+    sqlite.prepare("UPDATE connector_meeting SET metadata = ? WHERE id = 'vn-rec'").run(JSON.stringify({
+      transcription_outcome: "transcribed", transcript_text: "PTX",
+    }));
+    const locator = await voiceNoteTranscriptLocator(tcw, "rec");
+    expect(locator.provenance).toEqual({ engine: "private-cloud", provider: "tinycloud-private-transcription" });
+    const savedSentences = JSON.parse(values.get(locator.bodyKey!)!) as typeof sentences;
+    const privateCloud = hasPrivateCloudTimingProvenance(null, locator.provenance);
+    const html = renderToStaticMarkup(createElement(MemoryRouter, null, createElement(NoteDetailView, {
+      item: { id: "vn-rec", source: "exo-voice-note", sourceId: "rec", title: "Synthetic", startedAt: "2026-01-01T00:00:00Z", durationSecs: 120 },
+      listStatus: "ready",
+      metadata: { status: "ok", metadata: row(sqlite, "vn-rec").metadata },
+      transcript: { status: "ok", sentences: savedSentences },
+      transcriptProvenance: locator.provenance,
+      audio: { load: async () => null },
+      copyState: "idle",
+      onCopy: () => {},
+      onCopyWithTimestamps: () => {},
+      onRetry: () => {},
+      pushed: true,
+      onBack: () => {},
+    })));
+    expect(html).toContain('aria-label="Play from 1:00"');
+    expect(html).toContain("Copy with timestamps");
+    expect(transcriptWithTimestamps(savedSentences, privateCloud)).toContain("[01:00]");
+    expect(transcriptMarkdown("Synthetic", "2026-01-01T00:00:00Z", savedSentences, privateCloud)).toContain("[01:00]");
   });
   test("a delayed old body PUT and a later audio patch cannot change a newer transcript", async () => {
     const { tcw, sqlite, values } = space();
@@ -896,6 +985,7 @@ test("the mounted pending saver runs the real pipeline on sign-in and forced-swa
     } });
     await syncOnDeviceTranscript(tcw, { id: initial.id, ledger: { audio: { state: "saved" } } });
     expect(await readTranscriptCommit(tcw, initial.id)).toMatchObject({ rev: 1 });
+    expect((await resolveVoiceNoteRow(tcw, initial.id))?.metadata).not.toHaveProperty("transcription_stats_missing");
     expect(events).toEqual([{ source: VOICE_NOTE_SOURCE, sourceId: initial.id },
       { source: VOICE_NOTE_SOURCE, sourceId: initial.id },
       { source: VOICE_NOTE_SOURCE, sourceId: initial.id }]);
@@ -933,6 +1023,48 @@ test("the mounted pending saver runs the real pipeline on sign-in and forced-swa
     Reflect.set(globalThis, "window", previousWindow);
     Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", previousAct);
   }
+});
+test("Mac Whisper transcript sync never sets PTX missing-stats metadata", async () => {
+  const original = VoiceNotes;
+  const { tcw } = space();
+  const id = "desktop-whisper";
+  await ensureSchema(tcw);
+  await createVoiceNoteRow(tcw, { id, startedAt: 0, durationMs: 1_000, mimeType: "audio/mpeg",
+    sizeBytes: 4, silencedMs: 0, silencedEvents: 0, noSignalMs: 0 }, "Whisper note");
+  const transcript = whisperLocalTranscript({ id, durationMs: 1_000 }, "base" as never, {
+    results: { channels: [{ alternatives: [{ transcript: "Saved by desktop Whisper", words: [] }] }] },
+  } as never);
+  __setVoiceNotesForTests({
+    listPending: async () => ({ recordings: [{ id, owner: tcw.did, rev: 1, ledger: { audio: { state: "saved" } } }] }),
+    getTranscript: async () => ({ transcript }),
+    updateLedger: async () => ({}),
+  } as unknown as typeof VoiceNotes, { available: true });
+  try {
+    await syncOnDeviceTranscript(tcw, { id, owner: tcw.did, ledger: { audio: { state: "saved" } } });
+    expect((await resolveVoiceNoteRow(tcw, id))?.metadata).not.toHaveProperty("transcription_stats_missing");
+  } finally { __setVoiceNotesForTests(original, { available: null }); }
+});
+test("on-device no_speech transcript sync never sets PTX missing-stats metadata", async () => {
+  const original = VoiceNotes;
+  const { tcw } = space();
+  const id = "on-device-no-speech";
+  await ensureSchema(tcw);
+  await createVoiceNoteRow(tcw, { id, startedAt: 0, durationMs: 1_000, mimeType: "audio/mp4",
+    sizeBytes: 4, silencedMs: 0, silencedEvents: 0, noSignalMs: 0 }, "Silent note");
+  const transcript = {
+    version: 1, noteId: id, transcriber: "on-device", rev: 1, engine: "apple-speech", model: null, language: "en",
+    outcome: "no_speech", diarized: false, segments: [], createdAt: "2026-10-03T10:00:00.000Z",
+  };
+  __setVoiceNotesForTests({
+    listPending: async () => ({ recordings: [{ id, owner: tcw.did, rev: 1, ledger: { audio: { state: "saved" } } }] }),
+    getTranscript: async () => ({ transcript }),
+    updateLedger: async () => ({}),
+  } as unknown as typeof VoiceNotes, { available: true });
+  try {
+    await syncOnDeviceTranscript(tcw, { id, owner: tcw.did, ledger: { audio: { state: "saved" } } });
+    expect(await readTranscriptCommit(tcw, id)).toMatchObject({ outcome: "no_speech" });
+    expect((await resolveVoiceNoteRow(tcw, id))?.metadata).not.toHaveProperty("transcription_stats_missing");
+  } finally { __setVoiceNotesForTests(original, { available: null }); }
 });
 
 test("another account's retained notes do not delay a fresh Stop with a space preflight", async () => {

@@ -2890,7 +2890,7 @@ dependencies = [
 
 [[package]]
 name = "exo-desktop"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "audio-actual",
  "cpal",
@@ -2931,6 +2931,7 @@ dependencies = [
  "rustix 1.1.4",
  "serde",
  "serde_json",
+ "uuid",
 ]
 
 [[package]]

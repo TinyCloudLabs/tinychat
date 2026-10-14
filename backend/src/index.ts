@@ -16,7 +16,7 @@ import {
 } from "@tinyboilerplate/server";
 import { APP_ID } from "@tinyboilerplate/core";
 import { applySecurityDefaults } from "./security.js";
-import { applyRateLimiters } from "./rate-limits.js";
+import { applyRateLimiters, logGlobalBucketRoutes } from "./rate-limits.js";
 import { createAuthMiddleware } from "./middleware/auth.js";
 import { createAuthRouter } from "./routes/auth.js";
 import { createDelegationRouter } from "./routes/delegations.js";
@@ -121,7 +121,7 @@ import {
 } from "./services/connector-drain.js";
 import { assertStrongSecret, WebhookTokenService } from "./services/webhook-tokens.js";
 import { createTinychatBackendIdentity } from "./startup.js";
-import { appCorsOrigins } from "./cors-origins.js";
+import { appCorsOptions } from "./cors-origins.js";
 import { agentStreamPolicyFromEnv, type AgentStreamPolicy } from "./agent-stream-policy.js";
 import { localValidationFromEnv, localValidationGuard } from "./local-validation.js";
 import { createApiBodyParser } from "./body-parsing.js";
@@ -464,7 +464,7 @@ async function main() {
   if (localValidation) app.use(localValidationGuard);
   app.set("trust proxy", 1);
   applySecurityDefaults(app);
-  app.use(cors({ origin: appCorsOrigins(FRONTEND_URL) }));
+  app.use(cors(appCorsOptions(FRONTEND_URL)));
 
   // Stripe webhook MUST be mounted before the JSON body parser and CSRF
   // middleware: it needs the raw request bytes for signature verification, and
@@ -633,10 +633,14 @@ async function main() {
   app.use(createCsrfMiddleware());
   // ST5 — global 120/15min limiter plus a separate, larger bucket for the
   // verification proxies so badge traffic can't 429 /api/chat (see rate-limits.ts).
-  applyRateLimiters(app);
+  const { globalRoutes, paidChatLimiter } = applyRateLimiters(app, { sessionKey: backendPrivateKey });
+  // What the global bucket is charged for, per route, until the log shipper (TC-959) lands.
+  logGlobalBucketRoutes(globalRoutes);
 
   app.get("/health", (_req, res) => {
-    res.json({ ok: true, app: APP_ID });
+    // TEMPORARY: aggregate route templates and counts only, our one view of the global bucket
+    // until the tinychat log shipper (TC-959) is live. Remove this field then.
+    res.json({ ok: true, app: APP_ID, globalBucketRoutes: globalRoutes.top(10) });
   });
   app.use("/api/manifest", createManifestRouter());
   app.use("/api/server-info", createServerInfoRouter(did, readBackendBuildInfo()));
@@ -914,6 +918,7 @@ async function main() {
         elizaServiceUrl,
         elizaServiceSecret: ELIZA_SERVICE_SECRET,
         authMiddleware,
+        paidLimiter: paidChatLimiter,
         // Mount POST /api/agent/chat (tool-calling orchestration) only when RedPill
         // is configured; reuse the canonical offered-model allowlist so the agent
         // tool path accepts only the curated picker models (same gate as the relay).
@@ -954,7 +959,7 @@ async function main() {
   app.use(
     "/api/chat",
     authMiddleware,
-    createChatRouter({ flusher: ledgerFlusher, rehydrator: ledgerRehydrator }),
+    createChatRouter({ flusher: ledgerFlusher, rehydrator: ledgerRehydrator, paidLimiter: paidChatLimiter }),
   );
   app.use("/api/signature", authMiddleware, createSignatureRouter());
   app.use("/api/nras-proxy", authMiddleware, express.json({ limit: "4mb" }), createNrasProxyRouter());

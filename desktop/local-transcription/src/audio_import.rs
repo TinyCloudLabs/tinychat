@@ -38,14 +38,21 @@ fn normalize_mp3(source: &Path, output: &Path, system_audio: bool) -> Result<(),
     if output.exists() {
         return Ok(());
     }
-    let decoded = output.with_extension("decoded.wav");
-    anlg_mp3::decode_to_wav(source, &decoded).map_err(|e| format!("decode_failed: {e}"))?;
-    let result = encode_mono_wav(&decoded, output, system_audio);
+    let attempt = uuid::Uuid::new_v4();
+    let decoded = output.with_extension(format!("decoded-{attempt}.wav"));
+    let result = anlg_mp3::decode_to_wav(source, &decoded)
+        .map_err(|e| format!("decode_failed: {e}"))
+        .and_then(|_| encode_mono_wav(&decoded, output, system_audio, attempt));
     let _ = fs::remove_file(decoded);
     result
 }
 
-fn encode_mono_wav(wav: &Path, output: &Path, system_audio: bool) -> Result<(), String> {
+fn encode_mono_wav(
+    wav: &Path,
+    output: &Path,
+    system_audio: bool,
+    attempt: uuid::Uuid,
+) -> Result<(), String> {
     let mut reader = hound::WavReader::open(wav).map_err(|e| e.to_string())?;
     let spec = reader.spec();
     if !matches!(spec.channels, 1 | 2)
@@ -56,50 +63,56 @@ fn encode_mono_wav(wav: &Path, output: &Path, system_audio: bool) -> Result<(), 
     }
     let mut encoder =
         anlg_mp3::MonoStreamEncoder::new(spec.sample_rate).map_err(|e| e.to_string())?;
-    let temp = output.with_extension("mp3.tmp");
-    let mut target = File::create(&temp).map_err(|e| e.to_string())?;
-    let mut samples = reader.samples::<f32>();
-    let mut mono = Vec::with_capacity(4096);
-    let mut encoded = Vec::new();
-    loop {
-        mono.clear();
-        for _ in 0..4096 {
-            let Some(left) = samples.next() else {
-                break;
-            };
-            let left = left.map_err(|e| e.to_string())?;
-            let value = if spec.channels == 2 {
-                let right = samples
-                    .next()
-                    .ok_or("incomplete_stereo_frame")?
-                    .map_err(|e| e.to_string())?;
-                if system_audio {
-                    ((left + right) * 0.5).clamp(-1.0, 1.0)
+    let temp = output.with_extension(format!("mp3-{attempt}.tmp"));
+    let result = (|| {
+        let mut target = File::create(&temp).map_err(|e| e.to_string())?;
+        let mut samples = reader.samples::<f32>();
+        let mut mono = Vec::with_capacity(4096);
+        let mut encoded = Vec::new();
+        loop {
+            mono.clear();
+            for _ in 0..4096 {
+                let Some(left) = samples.next() else {
+                    break;
+                };
+                let left = left.map_err(|e| e.to_string())?;
+                let value = if spec.channels == 2 {
+                    let right = samples
+                        .next()
+                        .ok_or("incomplete_stereo_frame")?
+                        .map_err(|e| e.to_string())?;
+                    if system_audio {
+                        ((left + right) * 0.5).clamp(-1.0, 1.0)
+                    } else {
+                        left
+                    }
                 } else {
                     left
-                }
-            } else {
-                left
-            };
-            mono.push(value);
-        }
-        if mono.is_empty() {
-            break;
+                };
+                mono.push(value);
+            }
+            if mono.is_empty() {
+                break;
+            }
+            encoded.clear();
+            encoder
+                .encode_f32(&mono, &mut encoded)
+                .map_err(|e| e.to_string())?;
+            target.write_all(&encoded).map_err(|e| e.to_string())?;
         }
         encoded.clear();
-        encoder
-            .encode_f32(&mono, &mut encoded)
-            .map_err(|e| e.to_string())?;
+        encoder.flush(&mut encoded).map_err(|e| e.to_string())?;
         target.write_all(&encoded).map_err(|e| e.to_string())?;
+        target.sync_all().map_err(|e| e.to_string())?;
+        fs::rename(&temp, output).map_err(|e| e.to_string())?;
+        File::open(output.parent().ok_or("missing_capture_session")?)
+            .and_then(|dir| dir.sync_all())
+            .map_err(|e| e.to_string())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(temp);
     }
-    encoded.clear();
-    encoder.flush(&mut encoded).map_err(|e| e.to_string())?;
-    target.write_all(&encoded).map_err(|e| e.to_string())?;
-    target.sync_all().map_err(|e| e.to_string())?;
-    fs::rename(temp, output).map_err(|e| e.to_string())?;
-    File::open(output.parent().ok_or("missing_capture_session")?)
-        .and_then(|dir| dir.sync_all())
-        .map_err(|e| e.to_string())
+    result
 }
 
 pub fn remove_source_session(sessions: &Path, segment_id: &str) -> Result<(), String> {
@@ -215,6 +228,54 @@ pub fn audio_path(root: &Path, id: &str) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn concurrent_normalization_uses_separate_attempt_files() {
+        let base = std::env::temp_dir().join(format!("exo-normalize-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&base).unwrap();
+        let wav = base.join("source.wav");
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 16_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(&wav, spec).unwrap();
+        for _ in 0..3_200 {
+            writer.write_sample(0_i16).unwrap();
+        }
+        writer.finalize().unwrap();
+        let source = base.join("source.mp3");
+        anlg_mp3::encode_wav(&wav, &source).unwrap();
+        let output = base.join("audio.mono.mp3");
+        let start = std::sync::Arc::new(std::sync::Barrier::new(3));
+        let workers: Vec<_> = (0..2)
+            .map(|_| {
+                let (source, output, start) = (source.clone(), output.clone(), start.clone());
+                std::thread::spawn(move || {
+                    start.wait();
+                    normalize_mp3(&source, &output, false)
+                })
+            })
+            .collect();
+        start.wait();
+        for worker in workers {
+            worker.join().unwrap().unwrap();
+        }
+        assert!(fs::metadata(&output).unwrap().len() > 0);
+        let decoded = base.join("verified.wav");
+        anlg_mp3::decode_to_wav(&output, &decoded).unwrap();
+        assert!(hound::WavReader::open(&decoded).unwrap().duration() > 0);
+        for entry in fs::read_dir(&base).unwrap() {
+            let name = entry.unwrap().file_name();
+            let name = name.to_string_lossy();
+            assert!(
+                !name.contains("decoded-") && !name.contains("mp3-"),
+                "leftover attempt: {name}"
+            );
+        }
+        fs::remove_dir_all(base).unwrap();
+    }
 
     #[test]
     fn interrupted_segment_import_retries_without_duplicate_bytes() {

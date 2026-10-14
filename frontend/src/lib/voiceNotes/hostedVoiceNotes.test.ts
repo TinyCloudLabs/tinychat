@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import type { StoreResult, UpsertMeetingOutcome } from "../connectors/connectorStore";
 import { createHostedAssemblyAiClient } from "../assemblyai";
 import { bytesToBase64 } from "./voiceNoteAudio";
 import { createHostedVoiceNoteTrack } from "./hostedVoiceNotes";
@@ -14,7 +15,8 @@ afterEach(() => {
   else Reflect.deleteProperty(globalThis, "localStorage");
 });
 
-function harness(failAt?: "part" | "submit" | "result" | "space" | "delete", noSpeech = false, spaceOnly = false, mimeType = "audio/mp4") {
+function harness(failAt?: "part" | "submit" | "result" | "space" | "delete", noSpeech = false, spaceOnly = false, mimeType = "audio/mp4",
+  durationMs = 1000, transcriptResponses: Record<string, unknown>[] = []) {
   const data = new Map<string, string>();
   Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
     getItem: (key: string) => data.get(key) ?? null,
@@ -22,13 +24,17 @@ function harness(failAt?: "part" | "submit" | "result" | "space" | "delete", noS
     removeItem: (key: string) => { data.delete(key); },
   } });
   const calls: string[] = [];
+  let transcriptReads = 0;
+  let now = 0;
+  const sleeps: number[] = [];
   const audio = new Uint8Array([1, 2, 3, 4]);
   let failed = false;
   let local: LocalTranscript | null = null;
+  let savedMetadata: Record<string, unknown> | null = null;
   let commit: TranscriptCommit | null = null;
   let submitted = false;
   const recording = { id: "note-1", owner: "did:test:one", source: "in_app", startedAt: 1,
-    durationMs: 1000, mimeType, sizeBytes: audio.length,
+    durationMs, mimeType, sizeBytes: audio.length,
     options: { transcriber: "assemblyai", identifySpeakers: true } } as VoiceNoteRecording;
   const native = {
     listPending: async () => ({ recordings: spaceOnly ? [] : [recording] }),
@@ -65,7 +71,9 @@ function harness(failAt?: "part" | "submit" | "result" | "space" | "delete", noS
       return json({ status: "submitted", id: "handle-1" });
     }
     if (path === "/hosted/transcripts/handle-1" && method === "GET") {
-      if (failAt === "result" && !failed) { failed = true; throw new Error("offline"); }
+      const response = transcriptResponses[transcriptReads++];
+      if (response !== undefined) return json(response);
+      if (failAt === "result" && !failed) { failed = true; return json({ error: "read_failed" }, 400); }
       return json({ id: "handle-1", status: "completed", utterances: noSpeech ? [] : [{ start: 0, end: 1000, text: "Hello", speaker: "A" }] });
     }
     if (path === "/hosted/transcripts/handle-1/sentences" && method === "GET") return json({ sentences: [] });
@@ -81,16 +89,18 @@ function harness(failAt?: "part" | "submit" | "result" | "space" | "delete", noS
   const account = { did: "did:test:one" } as TinyCloudWeb;
   const track = () => createHostedVoiceNoteTrack(() => account, "https://exo.test", {} as SessionStore, account.did, {
     client, native, readCommit: async () => commit, createRow: async () => ({ inserted: true }) as Awaited<ReturnType<typeof import("./voiceNoteRows").createVoiceNoteRow>>,
+    clock: { now: () => now, sleep: async (ms) => { sleeps.push(ms); now += ms; }, random: () => 0.5 },
     readNote: async () => ({ ok: true, data: { captureTranscriber: "assemblyai", durationSeconds: 1 } }) as Awaited<ReturnType<typeof import("./voiceNoteStore").readVoiceNoteForTranscription>>,
     loadAudio: async () => ({ ok: true, data: { mimeType: "audio/mp4", base64: bytesToBase64(audio) } }) as Awaited<ReturnType<typeof import("./voiceNoteStore").loadVoiceNoteAudio>>,
     save: async (_account, _id, transcript) => {
       calls.push("space:save");
-      if (failAt === "space" && !failed) { failed = true; return { ok: false, error: new Error("offline") } as Awaited<ReturnType<typeof import("./voiceNoteStore").saveVoiceNoteTranscript>>; }
+      savedMetadata = transcript.metadata;
+      if (failAt === "space" && !failed) { failed = true; return { ok: false, error: new Error("offline") } as StoreResult<UpsertMeetingOutcome>; }
       commit = { rev: transcript.rev, outcome: noSpeech ? "no_speech" : "transcribed" } as TranscriptCommit;
-      return { ok: true } as Awaited<ReturnType<typeof import("./voiceNoteStore").saveVoiceNoteTranscript>>;
-    }, sleep: async () => {},
+      return { ok: true } as StoreResult<UpsertMeetingOutcome>;
+    },
   });
-  return { calls, recording, track, getLocal: () => local };
+  return { calls, recording, track, getLocal: () => local, getSavedMetadata: () => savedMetadata, sleeps };
 }
 
 test("a space-only note uses its space audio and can resume without a native recording", async () => {
@@ -105,12 +115,13 @@ test("a space-only note uses its space audio and can resume without a native rec
   expect(calls.indexOf("space:save")).toBeLessThan(calls.indexOf("DELETE /hosted/transcripts/handle-1"));
 });
 
-test("Powerful keeps a no-speech result before deleting the server copy", async () => {
-  const { calls, recording, track, getLocal } = harness(undefined, true);
+test("hosted AssemblyAI no_speech never sets PTX missing-stats metadata", async () => {
+  const { calls, recording, track, getLocal, getSavedMetadata } = harness(undefined, true);
   const lane = track(); lane.consent();
   await lane.run(recording);
   expect(lane.jobs.get(recording.id)).toEqual({ kind: "done", outcome: "no_speech" });
   expect(getLocal()?.outcome).toBe("no_speech");
+  expect(getSavedMetadata()).not.toHaveProperty("transcription_stats_missing");
   expect(calls.indexOf("space:save")).toBeLessThan(calls.indexOf("DELETE /hosted/transcripts/handle-1"));
 });
 test("Powerful keeps a saved outcome when remote transcript deletion fails", async () => {
@@ -127,6 +138,12 @@ test("Powerful accepts webm with codec parameters and sends the base MIME type",
   const lane = track(); lane.consent();
   await lane.run(recording);
   expect(lane.jobs.get(recording.id)).toEqual({ kind: "done", outcome: "transcribed" });
+});
+test("hosted AssemblyAI commits never set PTX-only missing-stats metadata", async () => {
+  const { recording, track, getSavedMetadata } = harness();
+  const lane = track(); lane.consent();
+  await lane.run(recording);
+  expect(getSavedMetadata()).not.toHaveProperty("transcription_stats_missing");
 });
 
 test("Powerful waits for the account's Upload audio submission before creating an upload", async () => {
@@ -160,3 +177,12 @@ for (const interruption of [undefined, "part", "submit", "result", "space"] as c
     expect(track().jobs.size).toBe(0);
   });
 }
+test("hosted voice-note polling scales its slow cadence from the saved recording duration", async () => {
+  const processing = Array.from({ length: 7 }, () => ({ id: "handle-1", status: "processing" }));
+  const completed = { id: "handle-1", status: "completed", utterances: [{ start: 0, end: 1000, text: "Hello", speaker: "A" }] };
+  const { recording, track, sleeps } = harness(undefined, false, false, "audio/mp4", 72 * 60_000, [...processing, completed]);
+  const lane = track();
+  lane.consent();
+  await lane.run(recording);
+  expect(sleeps[6]).toBeGreaterThanOrEqual(60_000);
+});
