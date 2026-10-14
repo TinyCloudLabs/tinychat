@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
 import express from "express";
 import type { AddressInfo } from "node:net";
@@ -62,6 +62,28 @@ function attempt(): CalendarOccurrence {
 }
 
 describe("Calendar OAuth custody lifecycle", () => {
+  for (const operation of ["exchange", "enable", "disable", "disconnect", "browserReconnect"] as const) {
+    test(`TC-1086: user ${operation} invalidates even if the policy fields stay the same`, async () => {
+      const f = fixture(); await f.enable();
+      let setupId = "";
+      if (operation === "enable") { setupId = (await f.exchange()).setupId; await f.connection.getStatus(TENANT); }
+      const before = await f.store.getConnection(TENANT);
+      expect(f.connection.getLastGoodStatus(TENANT)).toBeDefined();
+      // Simulate a settings write with unchanged connection policy, to test the explicit user boundary.
+      const put = spyOn(f.store, "putConnection").mockResolvedValue(undefined);
+      f.options.statusBudgetMs = 0;
+      try {
+        if (operation === "exchange") await f.exchange();
+        else if (operation === "enable") await expect(f.connection.enable(TENANT, setupId)).rejects.toThrow();
+        else if (operation === "disable") await expect(f.connection.disable(TENANT)).rejects.toThrow();
+        else if (operation === "disconnect") await f.connection.disconnect(TENANT);
+        else await f.connection.browserReconnect(TENANT);
+        expect(await f.store.getConnection(TENANT)).toEqual(before);
+        expect(f.connection.getLastGoodStatus(TENANT)).toBeUndefined();
+      } finally { put.mockRestore(); }
+    });
+  }
+
   for (const operation of ["exchange", "enable", "disable", "disconnect", "browserReconnect", "needsReconnect", "cleanupEnabling", "authorizationLost"] as const) {
     test(`TC-1086: ${operation} invalidates the previous status, including post-write read failure`, async () => {
       const f = fixture();

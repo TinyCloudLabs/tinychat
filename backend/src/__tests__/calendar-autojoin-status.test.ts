@@ -7,8 +7,12 @@ import { BackendStorageLane, BackendStorageLaneTimeout } from "../services/backe
 import { CalendarAutojoinConnection, CalendarAutojoinError, type CalendarAutojoinConnectionOptions } from "../services/calendar-autojoin-connection.js";
 import { MemoryCalendarAutojoinStore, TenantCoordinator, kvCalendarAutojoinStores, type CalendarConnection, type CalendarOccurrence } from "../services/calendar-autojoin-store.js";
 import { CalendarAutojoinStatusCache, STATUS_CACHE_MAX_AGE_MS, STATUS_CACHE_MAX_TENANTS, type CalendarAutojoinStatus } from "../services/calendar-autojoin-status-cache.js";
+import { CalendarAutojoinWorker } from "../services/calendar-autojoin-worker.js";
 import type { CredentialStore } from "../services/credential-store.js";
+import type { GoogleCalendarPort } from "../services/google-calendar.js";
 import { GoogleOAuthError, type GoogleOAuthPort } from "../services/google-oauth.js";
+import type { TranscriptionApiClient } from "../services/transcription-api.js";
+import { MemoryTranscriberIndexStore } from "../services/transcriber-index.js";
 
 const TENANT = "tenant-a";
 const OTHER = "tenant-b";
@@ -24,10 +28,11 @@ function fixture() {
   let now = AT;
   const cache = new CalendarAutojoinStatusCache(() => now);
   const store = new MemoryCalendarAutojoinStore(cache);
-  const options: CalendarAutojoinConnectionOptions = { store, credentials: {} as CredentialStore, oauth: {} as GoogleOAuthPort,
+  const credentials = { async getCredential() { return null; }, async status() { return null; }, async delete() {} } as unknown as CredentialStore;
+  const options: CalendarAutojoinConnectionOptions = { store, credentials, oauth: {} as GoogleOAuthPort,
     calendar: { async probePrimary() {} }, coordinator: new TenantCoordinator() };
   const connection = new CalendarAutojoinConnection(options);
-  return { store, cache, connection, options, advance(ms: number) { now += ms; } };
+  return { store, cache, connection, options, now: () => now, advance(ms: number) { now += ms; } };
 }
 
 async function withRoute(f: ReturnType<typeof fixture>, run: (request: (tenant?: string, query?: string) => Promise<Response>, lines: string[]) => Promise<void>) {
@@ -229,6 +234,27 @@ describe("TC-1086 status fallback and metadata", () => {
 });
 
 describe("TC-1086 bounded last-good cache", () => {
+  test("in-flight reader sets and tenant entries drain after concurrent success and failure", async () => {
+    const cache = new CalendarAutojoinStatusCache(() => AT);
+    // Inspect counts only: retaining empty tenant entries would grow without the LRU bound.
+    const reading = (cache as unknown as { reading: Map<string, Set<unknown>> }).reading;
+    let finish!: (body: CalendarAutojoinStatus) => void;
+    let fail!: (error: Error) => void;
+    const success = cache.refresh(TENANT, () => new Promise(done => { finish = done; }));
+    const failure = cache.refresh(TENANT.toUpperCase(), () => new Promise((_done, reject) => { fail = reject; }));
+    const rejected = failure.then(() => false, () => true);
+    expect(reading.size).toBe(1);
+    expect(reading.get(TENANT)!.size).toBe(2);
+    await cache.refresh(OTHER, async () => on);
+    expect(reading.size).toBe(1);
+    finish(on); await success;
+    expect(reading.get(TENANT)!.size).toBe(1);
+    fail(new Error("synthetic read failure")); expect(await rejected).toBe(true);
+    expect(reading.size).toBe(0);
+    await expect(cache.refresh(OTHER, async () => { throw new Error("synthetic failure"); })).rejects.toThrow();
+    expect(reading.size).toBe(0);
+  });
+
   test("the default 1,000-tenant LRU bounds tenants, honors reads, and expires by read time", async () => {
     let now = AT;
     const cache = new CalendarAutojoinStatusCache(() => now);
@@ -291,10 +317,11 @@ describe("TC-1086 bounded last-good cache", () => {
 });
 
 describe("TC-1086 store mutation coverage", () => {
-  test("every status-changing write in every store invalidates the shared tenant cache", async () => {
+  test("only connection policy changes invalidate, through both writers in all three stores", async () => {
     const values = new Map<string, unknown>();
     const node = { kv: {
-      async get(key: string) { return { ok: true, data: { data: values.get(key) ?? null } }; },
+      async get(key: string) { return values.has(key) ? { ok: true, data: { data: values.get(key) } }
+        : { ok: false, error: { code: "KV_NOT_FOUND", service: "kv", message: `Key not found: ${key}` } }; },
       async put(key: string, value: unknown) { values.set(key, value); return { ok: true, data: {} }; },
       async delete(key: string) { values.delete(key); return { ok: true, data: {} }; },
       async list({ prefix }: { prefix: string }) { return { ok: true, data: { keys: [...values.keys()].filter(key => key.startsWith(prefix)) } }; },
@@ -304,22 +331,120 @@ describe("TC-1086 store mutation coverage", () => {
     expect(stores.worker.statusCache).toBe(cache);
     expect(stores.dispatch.statusCache).toBe(cache);
     for (const store of Object.values(stores)) {
-      await store.putConnection(connectionRow());
-      await store.putOccurrence(occurrenceRow());
-      const mutations = [
-        () => store.putConnection(connectionRow(TENANT.toUpperCase())),
-        () => store.updateConnection(TENANT, row => row && { ...row, state: "disabled" }),
+      for (const patch of [{ state: "disabled" as const }, { generation: 2 }, { subject: "replacement" }, { errorCode: "scan_incomplete" }]) {
+        for (const writer of ["put", "update"]) {
+          await store.putConnection(connectionRow());
+          await cache.refresh(TENANT, async () => on);
+          await cache.refresh(OTHER, async () => on);
+          if (writer === "put") await store.putConnection({ ...connectionRow(TENANT.toUpperCase()), ...patch });
+          else await store.updateConnection(TENANT, row => row && { ...row, ...patch });
+          expect(cache.get(TENANT)).toBeUndefined();
+          expect(cache.get(OTHER)).toBeDefined();
+        }
+      }
+      await store.putConnection({ ...connectionRow(), errorCode: "scan_incomplete" });
+      await cache.refresh(TENANT, async () => on);
+      await store.updateConnection(TENANT, row => row && { ...row, errorCode: undefined });
+      expect(cache.get(TENANT)).toBeUndefined();
+
+      const bookkeeping = { ...connectionRow(), lastScanAt: AT + 1, nextScanAt: AT + 60_000, scanComplete: false,
+        lastDispatchLag: { sentAt: AT, seconds: 1, discovered: AT }, consentAt: AT, scopes: ["synthetic-scope"],
+        credentialRef: "synthetic-reference", setupId: "synthetic-setup", setupExpiresAt: AT + 1, verifiedEmail: "synthetic@example.test" };
+      const retainedWrites = [
+        () => store.putConnection(bookkeeping),
+        () => store.updateConnection(TENANT, row => row && { ...bookkeeping, lastScanAt: AT + 2 }),
+        () => store.updateConnection(TENANT, () => null),
         () => store.putOccurrence(occurrenceRow()),
         () => store.updateOccurrence(TENANT, "occurrence", row => row && { ...row, errorCode: "failed" }),
         () => store.deleteOccurrence(TENANT, "occurrence"),
       ];
-      for (const mutate of mutations) {
+      for (const write of retainedWrites) {
         await cache.refresh(TENANT, async () => on);
         await cache.refresh(OTHER, async () => on);
-        await mutate();
-        expect(cache.get(TENANT)).toBeUndefined();
+        await write();
+        expect(cache.get(TENANT)!.body).toEqual(on);
         expect(cache.get(OTHER)).toBeDefined();
       }
     }
   });
+
+  test("creating a connection invalidates an off response; bookkeeping preserves in-flight readers", async () => {
+    const f = fixture();
+    await f.connection.getStatus(TENANT);
+    await f.store.putConnection(connectionRow());
+    expect(f.cache.get(TENANT)).toBeUndefined();
+    let finish!: (body: CalendarAutojoinStatus) => void;
+    const read = f.cache.refresh(TENANT, () => new Promise(done => { finish = done; }));
+    await f.store.updateConnection(TENANT, row => row && { ...row, lastScanAt: AT + 1 });
+    await f.store.putOccurrence(occurrenceRow());
+    finish(on); await read;
+    expect(f.cache.get(TENANT)!.body).toEqual(on);
+    await f.store.updateConnection(TENANT, row => { if (row) row.errorCode = "scan_incomplete"; return row; });
+    expect(f.cache.get(TENANT)).toBeUndefined();
+  });
+});
+
+describe("TC-1086 fallback with a running worker", () => {
+  const jitters = [0, 0.5, 0.999];
+  for (const jitter of jitters) {
+    for (const disconnect of [false, true]) {
+      test(`30 minutes of 30s ticks and 60s polls, jitter=${jitter}, disconnect=${disconnect}`, async () => {
+        const f = fixture();
+        const calendar: GoogleCalendarPort = { async listEvents() { return []; }, async getEvent() { return null; }, async probePrimary() {} };
+        const worker = new CalendarAutojoinWorker({ store: f.store, coordinator: f.options.coordinator, calendar,
+          index: new MemoryTranscriberIndexStore(), api: {} as TranscriptionApiClient, now: f.now, random: () => jitter,
+          connection: { async accessToken() { return "synthetic-token"; }, async cleanupEnabling() {},
+            needsReconnect: (tenant, generation) => f.connection.needsReconnect(tenant, generation) },
+        });
+        f.options.onDisabled = tenant => worker.cancelTenant(tenant);
+        await f.store.putConnection(connectionRow());
+        // Seeded pseudo-random disconnect time keeps each jitter scenario reproducible.
+        const seed = (Math.imul(1_664_525, 10_860 + jitters.indexOf(jitter)) + 1_013_904_223) >>> 0;
+        const disconnectSecond = 60 + Math.floor(seed / 2 ** 32 * 1_680);
+        let polls = 0, stale = 0, unavailable = 0, ticks = 0, scans = 0;
+        const list = spyOn(calendar, "listEvents").mockImplementation(async () => { scans++; return []; });
+        try {
+          await withRoute(f, async (request, lines) => {
+            let lastGood: CalendarAutojoinStatus | undefined;
+            for (let second = 0; second < 30 * 60; second++) {
+              if (disconnect && second === disconnectSecond) {
+                await f.connection.disconnect(TENANT);
+                expect(f.connection.getLastGoodStatus(TENANT)).toBeUndefined();
+              }
+              if (second % 30 === 0) { await worker.tick(); ticks++; }
+              if (second % 60 === 15) {
+                if (polls > 0) f.options.statusBudgetMs = 0; // Inject a real lane deadline rejection, only on status reads.
+                const response = await request(TENANT);
+                const body = await response.json();
+                if (polls === 0) {
+                  expect(response.status).toBe(200);
+                  expect(body.enabled).toBe(true);
+                  lastGood = body;
+                } else if (disconnect && second > disconnectSecond) {
+                  unavailable++;
+                  expect(response.status).toBe(503);
+                  expect(body).toEqual({ error: "calendar_autojoin_unavailable" });
+                  expect(response.headers.get("retry-after")).toBe("5");
+                  expect(f.connection.getLastGoodStatus(TENANT)).toBeUndefined();
+                } else {
+                  stale++;
+                  expect(response.status).toBe(200);
+                  expect(body).toEqual({ ...lastGood, stale: true, asOf: new Date(AT + 15_000).toISOString() });
+                }
+                polls++;
+              }
+              f.advance(1_000);
+            }
+            expect(ticks).toBe(60);
+            expect(polls).toBe(30);
+            expect(scans).toBeGreaterThan(0);
+            expect(stale + unavailable).toBe(29);
+            expect(lines.filter(line => line.startsWith("[calendar-autojoin] code=status_read"))).toHaveLength(30);
+            if (disconnect) expect(unavailable).toBeGreaterThan(0);
+            else { expect(stale).toBe(29); expect(unavailable).toBe(0); }
+          });
+        } finally { list.mockRestore(); await worker.stop(); }
+      });
+    }
+  }
 });

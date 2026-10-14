@@ -45,6 +45,11 @@ export class CalendarAutojoinConnection {
     this.now = options.now ?? Date.now;
   }
 
+  /** User settings writes invalidate even when the persisted policy fields happen to match. */
+  private writeSettings<T>(tenant: string, write: () => Promise<T>): Promise<T> {
+    return this.options.store.statusCache.mutate(tenant, () => this.options.coordinator.run(tenant, write));
+  }
+
   getLastGoodStatus(tenant: string) { return this.options.store.statusCache.get(tenant); }
 
   getStatus(tenant: string, metrics?: CalendarAutojoinReadMetrics): Promise<CalendarAutojoinStatus> {
@@ -117,7 +122,7 @@ export class CalendarAutojoinConnection {
     }
     if (!tokens.refresh_token) throw new CalendarAutojoinError("refresh_token_required", 400);
     const setupId = randomBytes(32).toString("base64url");
-    await this.options.coordinator.run(tenant, async () => {
+    await this.writeSettings(tenant, async () => {
       const current = await this.options.store.getConnection(tenant);
       if (transaction.expiresAt <= this.now()) throw new CalendarAutojoinError("invalid_oauth_transaction", 400);
       if ((current?.generation ?? 0) !== transaction.generation) throw new CalendarAutojoinError("connection_changed");
@@ -150,7 +155,7 @@ export class CalendarAutojoinConnection {
       if (isPermanentAuthorizationFailure(error)) await this.needsReconnect(tenant, connection!.generation);
       throw error;
     }
-    await this.options.coordinator.run(tenant, async () => {
+    await this.writeSettings(tenant, async () => {
       const latest = await this.options.store.getConnection(tenant);
       this.assertSetup(latest, setupId);
       if (latest!.generation !== connection!.generation) throw new CalendarAutojoinError("connection_changed");
@@ -161,19 +166,19 @@ export class CalendarAutojoinConnection {
   }
 
   async disable(tenant: string) {
-    await this.options.coordinator.run(tenant, () => this.disableLocked(tenant));
+    await this.writeSettings(tenant, () => this.disableLocked(tenant));
     return this.getStatus(tenant);
   }
 
   /** Browser-only reconnect must never silently leave unattended access following another account. */
   async browserReconnect(tenant: string): Promise<void> {
-    await this.options.coordinator.run(tenant, () => this.disableLocked(tenant));
+    await this.writeSettings(tenant, () => this.disableLocked(tenant));
   }
 
   async disconnect(tenant: string, browserToken?: string) {
     let serverToken: string | undefined;
     let unreadable = false;
-    await this.options.coordinator.run(tenant, async () => {
+    await this.writeSettings(tenant, async () => {
       // Read for revocation before ending custody, but never let a decrypt failure prevent deletion.
       try {
         const secret = await this.options.credentials.getCredential(GOOGLE_AUTOJOIN_CREDENTIAL_SOURCE, tenant, "teardown");

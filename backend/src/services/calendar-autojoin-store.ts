@@ -28,6 +28,31 @@ export interface CalendarConnection {
   verifiedEmail?: string;
 }
 
+// Classify every field so adding a connection field requires an explicit cache-policy decision.
+// Bookkeeping may lag in an explicitly stale response; policy/identity transitions must not.
+const CONNECTION_CACHE_FIELDS = {
+  tenant: "scope",
+  subject: "policy",
+  state: "policy",
+  generation: "policy",
+  errorCode: "policy",
+  consentAt: "bookkeeping",
+  scopes: "bookkeeping",
+  credentialRef: "bookkeeping",
+  nextScanAt: "bookkeeping",
+  lastScanAt: "bookkeeping",
+  lastDispatchLag: "bookkeeping",
+  scanComplete: "bookkeeping",
+  setupId: "bookkeeping",
+  setupExpiresAt: "bookkeeping",
+  verifiedEmail: "bookkeeping",
+} satisfies Record<keyof CalendarConnection, "scope" | "policy" | "bookkeeping">;
+
+function connectionPolicyChanged(previous: CalendarConnection | null, next: CalendarConnection): boolean {
+  return (Object.keys(CONNECTION_CACHE_FIELDS) as (keyof CalendarConnection)[])
+    .some(field => CONNECTION_CACHE_FIELDS[field] === "policy" && previous?.[field] !== next[field]);
+}
+
 /** One tenant's intent to capture a Meet URL during a window (TC-581). Never holds a meeting id. */
 export interface CaptureClaim { tenant: string; occurrenceId: string; start: number; end: number; updatedAt: number }
 
@@ -142,14 +167,27 @@ class JsonCalendarAutojoinStore implements CalendarAutojoinStore {
     readonly statusCache = new CalendarAutojoinStatusCache(),
   ) {}
   getConnection(tenant: string, deadline?: number, metrics?: CalendarAutojoinReadMetrics) { return this.read(() => this.json.get<CalendarConnection>(connectionKey(tenant)), deadline, metrics); }
-  putConnection(row: CalendarConnection) { return this.statusCache.mutate(row.tenant, () => this.run(() => this.json.put(connectionKey(row.tenant), row))); }
-  updateConnection(tenant: string, fn: Update<CalendarConnection>) { return this.statusCache.mutate(tenant, () => this.update(connectionKey(tenant), fn)); }
+  putConnection(row: CalendarConnection) { return this.updateConnection(row.tenant, () => row).then(() => undefined); }
+  updateConnection(tenant: string, fn: Update<CalendarConnection>) {
+    // Compare and persist in the same serialized lane job, against the actual previous row.
+    return this.run(async () => {
+      const key = connectionKey(tenant);
+      const previous = await this.json.get<CalendarConnection>(key);
+      const next = fn(previous === null ? null : structuredClone(previous));
+      if (next !== null) {
+        const write = () => this.json.put(key, next);
+        if (connectionPolicyChanged(previous, next)) await this.statusCache.mutate(tenant, write);
+        else await write();
+      }
+      return next;
+    });
+  }
   listConnections() { return this.list<CalendarConnection>(`${PREFIX}connections/`); }
   getOccurrence(tenant: string, id: string) { return this.run(() => this.json.get<CalendarOccurrence>(occurrencePrefix(tenant) + id)); }
-  putOccurrence(row: CalendarOccurrence) { return this.statusCache.mutate(row.tenant, () => this.run(() => this.json.put(occurrencePrefix(row.tenant) + row.id, row))); }
-  updateOccurrence(tenant: string, id: string, fn: Update<CalendarOccurrence>) { return this.statusCache.mutate(tenant, () => this.update(occurrencePrefix(tenant) + id, fn)); }
+  putOccurrence(row: CalendarOccurrence) { return this.run(() => this.json.put(occurrencePrefix(row.tenant) + row.id, row)); }
+  updateOccurrence(tenant: string, id: string, fn: Update<CalendarOccurrence>) { return this.update(occurrencePrefix(tenant) + id, fn); }
   listOccurrences(tenant: string, deadline?: number, metrics?: CalendarAutojoinReadMetrics) { return this.list<CalendarOccurrence>(occurrencePrefix(tenant), deadline, metrics); }
-  deleteOccurrence(tenant: string, id: string) { return this.statusCache.mutate(tenant, () => this.run(() => this.json.remove(occurrencePrefix(tenant) + id))); }
+  deleteOccurrence(tenant: string, id: string) { return this.run(() => this.json.remove(occurrencePrefix(tenant) + id)); }
   getMarker(tenant: string, id: string) { return this.run(() => this.json.get<CalendarSentMarker>(markerKey(tenant, id))); }
   putMarker(row: CalendarSentMarker) { return this.run(() => this.json.put(markerKey(row.tenant, row.id), row)); }
   async getCaptureClaims(meetingUrl: string) {
