@@ -2,17 +2,27 @@ import { describe, expect, it } from "bun:test";
 import express from "express";
 import {
   applyRateLimiters,
-  GLOBAL_LIMIT,
-  GOOGLE_OAUTH_LIMIT,
-  GOOGLE_OAUTH_PATHS,
+  ASSEMBLYAI_HOSTED_UPLOAD_LIMIT,
+  bucketFor,
   CALENDAR_AUTOJOIN_LIMIT,
+  CALENDAR_AUTOJOIN_MUTATION_LIMIT,
   CALENDAR_AUTOJOIN_PATHS,
+  CONNECTOR_COMPANION_LIMIT,
   CONNECTOR_MEETINGS_LIMIT,
   CONNECTOR_MEETINGS_PATHS,
+  DELEGATION_LIMIT,
+  GLOBAL_LIMIT,
+  GlobalBucketRouteCounter,
+  GOOGLE_OAUTH_LIMIT,
+  GOOGLE_OAUTH_PATHS,
+  PAID_CHAT_LIMIT,
+  PAID_CHAT_PATHS,
   PRIVATE_CLOUD_TRANSCRIPTION_LIMIT,
+  PRIVATE_CLOUD_TRANSCRIPTION_MUTATION_LIMIT,
   PRIVATE_CLOUD_TRANSCRIPTION_PATHS,
   SHARED_KEY_HEADROOM,
   TRANSCRIBER_LIMIT,
+  VERIFICATION_LIMIT,
 } from "../rate-limits.js";
 
 const realFetch = globalThis.fetch;
@@ -23,6 +33,7 @@ function buildApp() {
   app.get("/api/signature/:id", (_req, res) => res.json({ ok: true }));
   app.get("/api/attestation/self", (_req, res) => res.json({ ok: true }));
   app.post("/api/chat", (_req, res) => res.json({ ok: true }));
+  app.get("/api/manifest", (_req, res) => res.json({ ok: true }));
   return app;
 }
 
@@ -43,6 +54,16 @@ async function withServer<T>(
   }
 }
 
+/** `RateLimit: limit=…, remaining=…, reset=…` (draft-7), or null when no limiter ran. */
+function rateLimitHeader(r: Response): { limit: number; remaining: number } | null {
+  const header = r.headers.get("ratelimit");
+  if (!header) return null;
+  const limit = /limit=(\d+)/.exec(header);
+  const remaining = /remaining=(\d+)/.exec(header);
+  if (!limit || !remaining) throw new Error(`unparseable RateLimit header: ${header}`);
+  return { limit: Number(limit[1]), remaining: Number(remaining[1]) };
+}
+
 describe("rate limiters (ST5)", () => {
   it("configures one-hop proxy trust before registering IP-based limiters", () => {
     const app = express();
@@ -60,21 +81,26 @@ describe("rate limiters (ST5)", () => {
         const r = await realFetch(`http://localhost:${port}${path}`);
         expect(r.status).toBe(200);
       }
-      // A subsequent /api/chat must NOT be 429'd by the verification traffic.
+      // Every hit counted in the verification bucket only…
+      const verification = await realFetch(`http://localhost:${port}/api/attestation/self`);
+      expect(rateLimitHeader(verification)).toEqual({ limit: VERIFICATION_LIMIT, remaining: VERIFICATION_LIMIT - 131 });
+      // …and none in the chat or global buckets.
       const chat = await realFetch(`http://localhost:${port}/api/chat`, { method: "POST" });
-      expect(chat.status).not.toBe(429);
       expect(chat.status).toBe(200);
+      expect(rateLimitHeader(chat)).toEqual({ limit: PAID_CHAT_LIMIT, remaining: PAID_CHAT_LIMIT - 1 });
+      const manifest = await realFetch(`http://localhost:${port}/api/manifest`);
+      expect(rateLimitHeader(manifest)).toEqual({ limit: GLOBAL_LIMIT, remaining: GLOBAL_LIMIT - 1 });
     });
   });
 
-  it("the global /api/chat limiter still 429s after its own limit", async () => {
+  it("the global limiter still 429s after its own limit", async () => {
     const app = buildApp();
     await withServer(app, async (port) => {
       for (let i = 0; i < GLOBAL_LIMIT; i++) {
-        const r = await realFetch(`http://localhost:${port}/api/chat`, { method: "POST" });
+        const r = await realFetch(`http://localhost:${port}/api/manifest`);
         expect(r.status).toBe(200);
       }
-      const over = await realFetch(`http://localhost:${port}/api/chat`, { method: "POST" });
+      const over = await realFetch(`http://localhost:${port}/api/manifest`);
       expect(over.status).toBe(429);
     });
   });
@@ -182,21 +208,12 @@ describe("Calendar autojoin rate limit bucket", () => {
   });
 });
 
-/** `RateLimit: limit=…, remaining=…, reset=…` (draft-7), or null when no limiter ran. */
-function rateLimitHeader(r: Response): { limit: number; remaining: number } | null {
-  const header = r.headers.get("ratelimit");
-  if (!header) return null;
-  const limit = /limit=(\d+)/.exec(header);
-  const remaining = /remaining=(\d+)/.exec(header);
-  if (!limit || !remaining) throw new Error(`unparseable RateLimit header: ${header}`);
-  return { limit: Number(limit[1]), remaining: Number(remaining[1]) };
-}
-
 /**
  * 2026-10-14 incident: every client reaches the backend from the gateway's one address, so each
  * bucket is shared by all users. One browser with a running Private job made ~150-200 requests a
- * window and 429'd everyone. Until per-client keying lands, ceilings carry headroom for 20-30
- * concurrent users and liveness probes sit outside every bucket.
+ * window and 429'd everyone. Until per-client keying lands, polling ceilings carry headroom for
+ * 20-30 concurrent users, paid and consent routes keep small fixed ceilings, and liveness probes
+ * sit outside every bucket.
  */
 describe("shared-key interim headroom", () => {
   // Clarissa's measurement: peak requests per 15-min window from ONE ordinary browser with one
@@ -208,43 +225,152 @@ describe("shared-key interim headroom", () => {
     expect(GLOBAL_LIMIT).toBeGreaterThanOrEqual(30 * PEAK_PER_BROWSER);
     const app = buildApp();
     await withServer(app, async (port) => {
-      const r = await realFetch(`http://localhost:${port}/api/chat`, { method: "POST" });
+      const r = await realFetch(`http://localhost:${port}/api/manifest`);
       expect(rateLimitHeader(r)).toEqual({ limit: GLOBAL_LIMIT, remaining: GLOBAL_LIMIT - 1 });
     });
   });
 
-  it("scales every per-client budget by the same headroom", () => {
+  it("pins every bucket constant: polling budgets scaled, paid and consent routes fixed", () => {
     expect(SHARED_KEY_HEADROOM).toBe(50);
+    // Scaled polling and read budgets.
     expect(GLOBAL_LIMIT).toBe(120 * SHARED_KEY_HEADROOM);
-    expect(TRANSCRIBER_LIMIT).toBe(600 * SHARED_KEY_HEADROOM);
+    expect(VERIFICATION_LIMIT).toBe(600 * SHARED_KEY_HEADROOM);
+    expect(CONNECTOR_COMPANION_LIMIT).toBe(600 * SHARED_KEY_HEADROOM);
     expect(CONNECTOR_MEETINGS_LIMIT).toBe(600 * SHARED_KEY_HEADROOM);
-    expect(GOOGLE_OAUTH_LIMIT).toBe(30 * SHARED_KEY_HEADROOM);
+    expect(TRANSCRIBER_LIMIT).toBe(600 * SHARED_KEY_HEADROOM);
+    expect(PRIVATE_CLOUD_TRANSCRIPTION_LIMIT).toBe(600 * SHARED_KEY_HEADROOM);
+    expect(ASSEMBLYAI_HOSTED_UPLOAD_LIMIT).toBe(480 * SHARED_KEY_HEADROOM);
+    // Fixed: spend, consent and mutations.
+    expect(PAID_CHAT_LIMIT).toBe(600);
+    expect(GOOGLE_OAUTH_LIMIT).toBe(150);
+    expect(PRIVATE_CLOUD_TRANSCRIPTION_MUTATION_LIMIT).toBe(300);
+    expect(CALENDAR_AUTOJOIN_LIMIT).toBe(3000);
+    expect(CALENDAR_AUTOJOIN_MUTATION_LIMIT).toBe(150);
+    expect(DELEGATION_LIMIT).toBe(600);
   });
 
-  it("/health is in no bucket and still answers once the global bucket is drained", async () => {
-    const app = express();
-    applyRateLimiters(app);
-    app.get("/health", (_req, res) => res.json({ ok: true }));
-    app.post("/api/chat", (_req, res) => res.json({ ok: true }));
+  it("classifies a path matrix into exactly one bucket, case-insensitively", () => {
+    const cases: [string, string, ReturnType<typeof bucketFor>][] = [
+      // health: exact, optional trailing slash, any case; never a prefix
+      ["GET", "/health", "none"],
+      ["GET", "/health/", "none"],
+      ["HEAD", "/HEALTH", "none"],
+      ["GET", "/Health/", "none"],
+      ["GET", "/health/anything", "global"],
+      ["GET", "/health/../api/chat", "global"],
+      ["POST", "/health/../api/chat", "global"],
+      ["GET", "/healthz", "global"],
+      ["GET", "/health//", "global"],
+      // paid chat: POST to the two send routes only
+      ["POST", "/api/chat", "paidChat"],
+      ["POST", "/api/chat/", "paidChat"],
+      ["POST", "/API/CHAT", "paidChat"],
+      ["POST", "/api/agent/chat", "paidChat"],
+      ["POST", "/Api/Agent/Chat/", "paidChat"],
+      ["GET", "/api/chat/models", "global"],
+      ["POST", "/api/chat/models", "global"],
+      ["GET", "/api/agent/session", "global"],
+      ["POST", "/api/chatty", "global"],
+      ["POST", "/api/./chat", "global"],
+      // private cloud: nested in the transcriber prefix, reads vs mutations, slash boundaries
+      ["GET", "/api/transcriber/private-cloud/transcriptions/j1", "privateCloudTranscription"],
+      ["GET", "/API/TRANSCRIBER/PRIVATE-CLOUD/transcriptions/j1", "privateCloudTranscription"],
+      ["GET", "/api/Transcriber/Private-Cloud", "privateCloudTranscription"],
+      ["POST", "/api/transcriber/private-cloud/transcriptions", "privateCloudTranscriptionMutation"],
+      ["POST", "/API/transcriber/PRIVATE-cloud/transcriptions/j1/cancel", "privateCloudTranscriptionMutation"],
+      ["DELETE", "/api/transcriber/private-cloud/transcriptions/j1", "privateCloudTranscriptionMutation"],
+      ["GET", "/api/transcriber/private-cloudish", "transcriber"],
+      ["GET", "/api/transcriber/PRIVATE-CLOUDISH/x", "transcriber"],
+      ["GET", "/api/transcriber/meetings", "transcriber"],
+      ["GET", "/API/TRANSCRIBER/MEETINGS", "transcriber"],
+      ["PUT", "/api/transcriber/assemblyai/hosted/uploads/u1/parts/1", "hostedUpload"],
+      ["PUT", "/API/Transcriber/AssemblyAI/Hosted/Uploads/u1", "hostedUpload"],
+      ["GET", "/api/transcriber/assemblyai/hosted/transcripts/t1", "transcriber"],
+      ["GET", "/api/transcriberx", "global"],
+      // calendar: reads vs setup
+      ["GET", "/api/connectors/google/autojoin/status", "calendarAutojoin"],
+      ["POST", "/API/CONNECTORS/GOOGLE/AUTOJOIN/setup", "calendarAutojoinMutation"],
+      ["DELETE", "/api/connectors/google/autojoin", "calendarAutojoinMutation"],
+      // the rest
+      ["GET", "/api/connectors/google/oauth/start", "googleOAuth"],
+      ["GET", "/API/Connectors/Google/OAuth/callback", "googleOAuth"],
+      ["GET", "/api/connectors/google/oauth-anything", "global"],
+      ["GET", "/api/connectors/meetings", "connectorMeetings"],
+      ["GET", "/api/connectors/webhooks/pending", "connectorCompanion"],
+      ["GET", "/API/DELEGATIONS/status", "delegation"],
+      ["GET", "/API/SIGNATURE/x", "verification"],
+      ["GET", "/api/signature-anything", "global"],
+    ];
+    for (const [method, path, bucket] of cases) {
+      expect([method, path, bucketFor(method, path)]).toEqual([method, path, bucket]);
+    }
+  });
+
+  it("an upper-case path counts against one bucket only", async () => {
+    const app = buildApp();
+    app.get("/api/transcriber/private-cloud/transcriptions/:id", (_req, res) => res.json({ ok: true }));
+    app.get("/api/transcriber/meetings", (_req, res) => res.json({ ok: true }));
     await withServer(app, async (port) => {
       const base = `http://localhost:${port}`;
-      for (let i = 0; i < GLOBAL_LIMIT; i++) {
-        expect((await realFetch(`${base}/api/chat`, { method: "POST" })).status).toBe(200);
+      let last: Response | undefined;
+      for (let i = 0; i < 3; i++) {
+        last = await realFetch(`${base}/API/TRANSCRIBER/PRIVATE-CLOUD/transcriptions/j1`);
+        expect(last.status).toBe(200);
       }
-      expect((await realFetch(`${base}/api/chat`, { method: "POST" })).status).toBe(429);
-      const health = await realFetch(`${base}/health`);
-      expect(health.status).toBe(200);
-      expect(rateLimitHeader(health)).toBeNull();
+      // One decrement per request in the private-cloud bucket, none anywhere else.
+      expect(rateLimitHeader(last!)).toEqual({ limit: PRIVATE_CLOUD_TRANSCRIPTION_LIMIT, remaining: PRIVATE_CLOUD_TRANSCRIPTION_LIMIT - 3 });
+      const bot = await realFetch(`${base}/api/transcriber/meetings`);
+      expect(rateLimitHeader(bot)).toEqual({ limit: TRANSCRIBER_LIMIT, remaining: TRANSCRIBER_LIMIT - 1 });
+      const manifest = await realFetch(`${base}/api/manifest`);
+      expect(rateLimitHeader(manifest)).toEqual({ limit: GLOBAL_LIMIT, remaining: GLOBAL_LIMIT - 1 });
     });
   });
 
-  it("does not exempt /health lookalikes from the global limiter", async () => {
+  it("paid chat has its own 600 bucket and denies at 601 before the upstream call", async () => {
+    expect(PAID_CHAT_PATHS).toEqual(["/api/chat", "/api/agent/chat"]);
     const app = express();
     applyRateLimiters(app);
-    app.get("/healthz", (_req, res) => res.json({ ok: true }));
+    let upstreamCalls = 0;
+    const upstream = (_req: express.Request, res: express.Response) => {
+      upstreamCalls++;
+      res.json({ ok: true });
+    };
+    app.post("/api/chat", upstream);
+    app.post("/api/agent/chat", upstream);
+    app.get("/api/manifest", (_req, res) => res.json({ ok: true }));
     await withServer(app, async (port) => {
-      const r = await realFetch(`http://localhost:${port}/healthz`);
-      expect(rateLimitHeader(r)?.limit).toBe(GLOBAL_LIMIT);
+      const base = `http://localhost:${port}`;
+      for (let i = 0; i < PAID_CHAT_LIMIT; i++) {
+        const path = i % 2 === 0 ? "/api/chat" : "/api/agent/chat";
+        expect((await realFetch(`${base}${path}`, { method: "POST" })).status).toBe(200);
+      }
+      expect(upstreamCalls).toBe(PAID_CHAT_LIMIT);
+      expect((await realFetch(`${base}/api/chat`, { method: "POST" })).status).toBe(429);
+      expect((await realFetch(`${base}/API/Agent/Chat`, { method: "POST" })).status).toBe(429);
+      expect(upstreamCalls).toBe(PAID_CHAT_LIMIT);
+      // The global bucket never counted a send.
+      const manifest = await realFetch(`${base}/api/manifest`);
+      expect(rateLimitHeader(manifest)).toEqual({ limit: GLOBAL_LIMIT, remaining: GLOBAL_LIMIT - 1 });
+    });
+  });
+
+  it("/health and /health/ are in no bucket and still answer once the global bucket is drained", async () => {
+    const app = buildApp();
+    app.get("/health", (_req, res) => res.json({ ok: true }));
+    app.get("/health/anything", (_req, res) => res.json({ ok: true }));
+    await withServer(app, async (port) => {
+      const base = `http://localhost:${port}`;
+      for (let i = 0; i < GLOBAL_LIMIT; i++) {
+        expect((await realFetch(`${base}/api/manifest`)).status).toBe(200);
+      }
+      expect((await realFetch(`${base}/api/manifest`)).status).toBe(429);
+      for (const path of ["/health", "/health/", "/health?probe=1", "/HEALTH"]) {
+        const health = await realFetch(`${base}${path}`);
+        expect(health.status).toBe(200);
+        expect(rateLimitHeader(health)).toBeNull();
+      }
+      // A descendant is not exempt: it shares the drained global bucket.
+      expect((await realFetch(`${base}/health/anything`)).status).toBe(429);
     });
   });
 
@@ -269,8 +395,48 @@ describe("shared-key interim headroom", () => {
       // Neither the transcriber bucket nor the global one counted any of them.
       const bot = await realFetch(`${base}/api/transcriber/meetings`);
       expect(rateLimitHeader(bot)).toEqual({ limit: TRANSCRIBER_LIMIT, remaining: TRANSCRIBER_LIMIT - 1 });
-      const chat = await realFetch(`${base}/api/chat`, { method: "POST" });
-      expect(rateLimitHeader(chat)).toEqual({ limit: GLOBAL_LIMIT, remaining: GLOBAL_LIMIT - 1 });
+      const manifest = await realFetch(`${base}/api/manifest`);
+      expect(rateLimitHeader(manifest)).toEqual({ limit: GLOBAL_LIMIT, remaining: GLOBAL_LIMIT - 1 });
+    });
+  });
+
+  it("private cloud mutations 429 at their own limit + 1 without touching the polling budget", async () => {
+    const app = express();
+    applyRateLimiters(app);
+    app.post("/api/transcriber/private-cloud/transcriptions", (_req, res) => res.status(201).json({ ok: true }));
+    app.delete("/api/transcriber/private-cloud/transcriptions/:id", (_req, res) => res.json({ ok: true }));
+    app.get("/api/transcriber/private-cloud/transcriptions/:id", (_req, res) => res.json({ ok: true }));
+    await withServer(app, async (port) => {
+      const base = `http://localhost:${port}/api/transcriber/private-cloud/transcriptions`;
+      for (let i = 0; i < PRIVATE_CLOUD_TRANSCRIPTION_MUTATION_LIMIT; i++) {
+        const r = i % 2 === 0
+          ? await realFetch(base, { method: "POST" })
+          : await realFetch(`${base}/j${i}`, { method: "DELETE" });
+        expect(r.status).toBeLessThan(300);
+      }
+      expect((await realFetch(base, { method: "POST" })).status).toBe(429);
+      const poll = await realFetch(`${base}/j1`);
+      expect(poll.status).toBe(200);
+      expect(rateLimitHeader(poll)).toEqual({
+        limit: PRIVATE_CLOUD_TRANSCRIPTION_LIMIT,
+        remaining: PRIVATE_CLOUD_TRANSCRIPTION_LIMIT - 1,
+      });
+    });
+  });
+
+  it("calendar autojoin setup has its own small bucket apart from status reads", async () => {
+    const app = express();
+    applyRateLimiters(app);
+    app.get("/api/connectors/google/autojoin/status", (_req, res) => res.json({ ok: true }));
+    app.post("/api/connectors/google/autojoin/setup", (_req, res) => res.json({ ok: true }));
+    await withServer(app, async (port) => {
+      const base = `http://localhost:${port}/api/connectors/google/autojoin`;
+      for (let i = 0; i < CALENDAR_AUTOJOIN_MUTATION_LIMIT; i++) {
+        expect((await realFetch(`${base}/setup`, { method: "POST" })).status).toBe(200);
+      }
+      expect((await realFetch(`${base}/setup`, { method: "POST" })).status).toBe(429);
+      const status = await realFetch(`${base}/status`);
+      expect(rateLimitHeader(status)).toEqual({ limit: CALENDAR_AUTOJOIN_LIMIT, remaining: CALENDAR_AUTOJOIN_LIMIT - 1 });
     });
   });
 
@@ -289,8 +455,52 @@ describe("shared-key interim headroom", () => {
         limit: CONNECTOR_MEETINGS_LIMIT,
         remaining: CONNECTOR_MEETINGS_LIMIT - 200,
       });
-      const chat = await realFetch(`${base}/api/chat`, { method: "POST" });
-      expect(rateLimitHeader(chat)).toEqual({ limit: GLOBAL_LIMIT, remaining: GLOBAL_LIMIT - 1 });
+      const manifest = await realFetch(`${base}/api/manifest`);
+      expect(rateLimitHeader(manifest)).toEqual({ limit: GLOBAL_LIMIT, remaining: GLOBAL_LIMIT - 1 });
     });
+  });
+});
+
+describe("global bucket route counter", () => {
+  it("counts only global-bucket requests, by route template, without paths' identifying parts", async () => {
+    const app = express();
+    const { globalRoutes } = applyRateLimiters(app);
+    app.use((_req, res) => res.json({ ok: true }));
+    await withServer(app, async (port) => {
+      const base = `http://localhost:${port}`;
+      await realFetch(`${base}/api/agent/session?token=secret`);
+      await realFetch(`${base}/API/Agent/Session`);
+      await realFetch(`${base}/api/billing/status`);
+      await realFetch(`${base}/api/billing/0xabc/whatever`);
+      await realFetch(`${base}/api/chat/models`);
+      await realFetch(`${base}/wp-admin/0xdeadbeef`);
+      await realFetch(`${base}/zz-${"x".repeat(40)}`);
+      // Not the global bucket: none of these are counted.
+      await realFetch(`${base}/health`);
+      await realFetch(`${base}/api/chat`, { method: "POST" });
+      await realFetch(`${base}/api/transcriber/meetings`);
+    });
+    const { total, top } = globalRoutes.top(10);
+    expect(total).toBe(7);
+    expect(top).toEqual([
+      { route: "GET /api/agent/session", count: 2 },
+      { route: "GET other", count: 2 },
+      { route: "GET /api/billing/*", count: 1 },
+      { route: "GET /api/billing/status", count: 1 },
+      { route: "GET /api/chat/models", count: 1 },
+    ]);
+    expect(JSON.stringify(top)).not.toContain("secret");
+    expect(JSON.stringify(top)).not.toContain("0xabc");
+  });
+
+  it("emits a top-10 interval line and resets the interval, keeping the since-start totals", () => {
+    const counter = new GlobalBucketRouteCounter();
+    for (let i = 0; i < 12; i++) counter.record("GET", "/api/manifest");
+    counter.record("POST", "/api/auth/verify");
+    expect(counter.takeInterval()).toBe(
+      '[rate-limit] op=global-bucket-routes window=5m total=13 top="GET /api/manifest=12 POST /api/auth/verify=1"',
+    );
+    expect(counter.takeInterval()).toBe('[rate-limit] op=global-bucket-routes window=5m total=0 top=""');
+    expect(counter.top(1)).toMatchObject({ total: 13, top: [{ route: "GET /api/manifest", count: 12 }] });
   });
 });

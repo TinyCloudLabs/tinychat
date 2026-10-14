@@ -16,7 +16,7 @@ import {
 } from "@tinyboilerplate/server";
 import { APP_ID } from "@tinyboilerplate/core";
 import { applySecurityDefaults } from "./security.js";
-import { applyRateLimiters } from "./rate-limits.js";
+import { applyRateLimiters, logGlobalBucketRoutes } from "./rate-limits.js";
 import { createAuthMiddleware } from "./middleware/auth.js";
 import { createAuthRouter } from "./routes/auth.js";
 import { createDelegationRouter } from "./routes/delegations.js";
@@ -633,10 +633,12 @@ async function main() {
   app.use(createCsrfMiddleware());
   // ST5 — global 120/15min limiter plus a separate, larger bucket for the
   // verification proxies so badge traffic can't 429 /api/chat (see rate-limits.ts).
-  applyRateLimiters(app);
+  const { globalRoutes } = applyRateLimiters(app);
+  // What the global bucket is charged for, per route, until the log shipper (TC-959) lands.
+  logGlobalBucketRoutes(globalRoutes);
 
   app.get("/health", (_req, res) => {
-    res.json({ ok: true, app: APP_ID });
+    res.json({ ok: true, app: APP_ID, globalBucketRoutes: globalRoutes.top(10) });
   });
   app.use("/api/manifest", createManifestRouter());
   app.use("/api/server-info", createServerInfoRouter(did, readBackendBuildInfo()));
