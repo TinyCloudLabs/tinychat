@@ -9,7 +9,7 @@ Integration branch: `dev/0.8.0`
 4. #348 ✓ (P8 - must land before #350)
 5. #351 ✓ (must land before #350, privacy invariant verified)
 6. #368 ✓ (TimestampedTranscript + T1 fixes)
-7. #364 (iOS test fix)
+7. #364 ✓ (iOS test fix)
 7. #367 (HOLD - awaiting fixes)
 8. #372 (HOLD - depends on #367)
 9. #364 (HOLD - awaiting fixes)
@@ -25,5 +25,6 @@ Integration branch: `dev/0.8.0`
 | #369 | b2316c0a | fc7b183a | Yes | recorder/mod.rs: added finishing quit lock+fn. lib.rs: kept main's modules. recorder/files.rs: took stopped journal handling. recorder/engine.rs: added stopped source fns, recorder_stopped_list cmd, stopped journal handling, recover_stopped_segment fn, quarantined_journal field. desktopVoiceNotes.test.ts: added background finishing tests |
 | #348 | a579c5fa | a7324efb | No | Clean merge - TC-947 P8: separate Mac mic and system levels |
 | #351 | 760a64fa | 92ff5241 | Yes | **PRIVACY INVARIANT**: voiceNoteStore.ts local-only early return (line ~424) precedes ALL audio upload code. When uploadAudio=false: (1) empty transcript key, (2) patchVoiceNoteLocalOnly, (3) note sync, (4) return - NO putVoiceNoteAudio reached. Conflicts in 5 files resolved. |
-| #368 | 52d8380a | e5d3d6a9 | Yes | TimestampedTranscript + T1 fixes. #363 deduped. Kept HEAD's isPrivateCloud/MAX_TURN_SECONDS timing throughout. Phone baselines will change (TimestampedTranscript). |
+| #368 | 52d8380a | e5937afe | Yes | TimestampedTranscript + T1 fixes. #363 deduped. Kept HEAD's isPrivateCloud/MAX_TURN_SECONDS timing throughout. Phone baselines will change (TimestampedTranscript). |
+| #364 | dbf87049 | b8a3daf2 | No | Clean merge - iOS test fix (CaptureEngineTests.swift async stop event) |
 

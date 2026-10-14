@@ -19,6 +19,7 @@ import xyz.tinycloud.exo.stt.core.CapturePauseGate
 import xyz.tinycloud.exo.stt.core.CaptureYieldingLoop
 import xyz.tinycloud.exo.stt.core.Admission
 import xyz.tinycloud.exo.stt.core.ResumableWork
+import xyz.tinycloud.exo.stt.core.ProgressThrottle
 import xyz.tinycloud.exo.stt.core.SherpaVadSource
 import xyz.tinycloud.exo.stt.core.TimedWord
 import xyz.tinycloud.exo.stt.core.TokenWordAlignment
@@ -250,6 +251,12 @@ class TranscriptionQueue(private val context: Context, private val store: ModelS
         var decodedAny = false
         var segmentsDone = 0
         var windowsDone = 0
+        val throttle = ProgressThrottle()
+        fun checkpoint() {
+            try { capture.library.mutate(id, "stt.write") {
+                it.getJSONObject("stt").put("windowsDone", windowsDone).put("segmentsDone", segmentsDone)
+            } } catch (e: Exception) { Log.w("ExoStt", "progress checkpoint failed for $id", e) }
+        }
         engine.transcribe(
             file = file,
             checkCapturing = {
@@ -258,9 +265,10 @@ class TranscriptionQueue(private val context: Context, private val store: ModelS
             },
             onWindow = {
                 windowsDone += 1
-                try { capture.library.mutate(id, "stt.write") { it.getJSONObject("stt").put("windowsDone", windowsDone) } } catch (_: Exception) {}
+                val now = System.nanoTime()
+                if (throttle.checkpoint(now)) checkpoint()
                 val percent = totalWindows?.let { total -> minOf(99, (windowsDone.toDouble() / total * 100).toInt()) } ?: 0
-                onProgress?.invoke(id, percent)
+                if (throttle.event(percent, now)) onProgress?.invoke(id, percent)
             },
             onSegment = { chunk, words ->
                 if (words.isNotEmpty()) {
@@ -273,9 +281,9 @@ class TranscriptionQueue(private val context: Context, private val store: ModelS
                         .put("timing", "engine"))
                 }
                 segmentsDone += 1
-                try { capture.library.mutate(id, "stt.write") { it.getJSONObject("stt").put("segmentsDone", segmentsDone) } } catch (_: Exception) {}
             },
         )
+        checkpoint()
         val outcome = if (decodedAny) "transcribed" else "no_speech"
         val isoNow = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US)
             .apply { timeZone = TimeZone.getTimeZone("UTC") }.format(Date())
@@ -286,6 +294,8 @@ class TranscriptionQueue(private val context: Context, private val store: ModelS
             .put("segments", segments).put("createdAt", isoNow)
         capture.library.putTranscript(id, transcript)
         try { capture.library.mutate(id, "stt.write") { it.getJSONObject("stt").put("state", "done").put("error", JSONObject.NULL) } } catch (_: Exception) {}
+        val completionDelay = throttle.completionDelayMillis(System.nanoTime())
+        if (completionDelay > 0) Thread.sleep(completionDelay)
         onProgress?.invoke(id, 100)
         onTranscribed?.invoke(id, outcome)
         onQueueChanged?.invoke()
