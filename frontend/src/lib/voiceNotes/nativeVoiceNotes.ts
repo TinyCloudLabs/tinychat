@@ -173,7 +173,6 @@ export interface RecoveryCompletedEvent {
 
 export interface VoiceNoteRecording {
   id: string;
-  /** Mac: the note's fixed channel layout. Older recordings default to one channel. */
   /** Mac capture's declared channel layout; older notes are mono. */
   channels?: 1 | 2;
   startedAt: number;

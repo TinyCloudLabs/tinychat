@@ -13,8 +13,8 @@ test("stereo Whisper words become time ordered Me and Them turns", () => {
   ] } };
   const transcript = whisperLocalTranscript({ id: "note", durationMs: 2000, channels: 2 }, "QuantizedTinyEn", response as never);
   expect(transcript.segments).toEqual([
-    { start: 0, end: 1000, text: "Ask again", speaker: "Me" },
-    { start: 600, end: 1100, text: "Yes", speaker: "Them" },
+    { start: 0, end: 1000, text: "Ask again", speaker: "Me", channel: 0, timing: "coarse" },
+    { start: 600, end: 1100, text: "Yes", speaker: "Them", channel: 1, timing: "coarse" },
   ]);
   expect(transcript.diarized).toBe(true);
 });

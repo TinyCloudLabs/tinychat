@@ -307,6 +307,11 @@ fn failed_journal_at(
             .and_then(|v| v.get("systemAudio"))
             .and_then(|v| v.as_bool())
             .unwrap_or_default(),
+        layout: partial
+            .as_ref()
+            .and_then(|v| v.get("layout"))
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default(),
         spans: Vec::new(),
     });
     let name = source
@@ -731,6 +736,7 @@ mod tests {
             paused_ms: 10,
             max_duration_ms: 1000,
             system_audio: true,
+            layout: Layout::Mono,
             spans: vec![],
         };
         fs::write(
@@ -795,6 +801,7 @@ mod tests {
             paused_ms: 0,
             max_duration_ms: 1000,
             system_audio: false,
+            layout: Layout::Mono,
             spans: vec![],
         };
         save_stopped_at(&stopped.join("note.json"), &original).unwrap();
@@ -857,6 +864,7 @@ mod tests {
             paused_ms: 10,
             max_duration_ms: 1000,
             system_audio: true,
+            layout: Layout::Mono,
             spans: vec![],
         };
         let name = format!("note.{}.json", uuid::Uuid::new_v4());
@@ -913,6 +921,7 @@ mod tests {
             paused_ms: 0,
             max_duration_ms: 1000,
             system_audio: false,
+            layout: Layout::Mono,
             spans: vec![],
         };
         fs::write(
@@ -969,6 +978,7 @@ mod tests {
             paused_ms: 0,
             max_duration_ms: 180_000,
             system_audio: false,
+            layout: Layout::Mono,
             spans: vec![],
         };
         let (locked_tx, locked_rx) = std::sync::mpsc::sync_channel(0);

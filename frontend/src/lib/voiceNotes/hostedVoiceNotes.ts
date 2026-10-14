@@ -146,9 +146,10 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
         jobs.set(id, { kind: "done", outcome: prior.outcome }); notify(); return;
       }
       if (!prior) await createRow(account, recording as VoiceNoteRecording, voiceNoteTitle(recording.startedAt));
-      const committed = await readNote(account, id);
-      const rowChannels = committed.ok && committed.data && (committed.data.channels === 1 || committed.data.channels === 2)
-        ? committed.data.channels : undefined;
+      // The committed row's layout wins for space-only audio; a local recording knows its own.
+      const noteRow = await readNote(account, id);
+      const rowChannels = noteRow.ok && noteRow.data && (noteRow.data.channels === 1 || noteRow.data.channels === 2)
+        ? noteRow.data.channels : undefined;
       const channels = recording.sizeBytes > 0 ? recording.channels ?? rowChannels ?? 1 : rowChannels ?? recording.channels ?? 1;
       if (!stored.recording) persist(id, { recording: recording as VoiceNoteRecording });
       let source = nativeRecordingSource(recording, native);

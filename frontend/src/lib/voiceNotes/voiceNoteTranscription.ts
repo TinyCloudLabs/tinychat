@@ -393,9 +393,6 @@ export function localStorageVoiceNoteHoldStore(
 
 // ── Transcript → note ──────────────────────────────────────────────────
 
-/** A voice note has one speaker: whoever held the phone. Same label as Exo Local's mic channel. */
-export const VOICE_NOTE_SPEAKER = "You";
-
 /** Keep PTX's speech regions and speaker/channel identity in the saved body. */
 export function voiceNoteSentences(transcript: Pick<PrivateCloudTranscript, "segments" | "diarized" | "speakers" | "channels">): FirefliesSentence[] {
   const speakerNames = new Map(transcript.speakers?.map((speaker) => [speaker.id, speaker.name]));
