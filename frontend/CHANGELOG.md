@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.7.3-beta.4
+
+### Patch Changes
+
+- 438d85b: Accept transcript sentence spans up to the shared 60-second turn limit for timestamped playback and copying.
+
 ## 0.7.3-beta.3
 
 ### Patch Changes
