@@ -1,10 +1,11 @@
 import type { FirefliesSentence } from "@/lib/connectors/firefliesClient";
 import { formatClockDuration } from "./formatters";
+import { MAX_TURN_SECONDS } from "@/lib/localTranscriptTurns";
 
 export function sentenceTime(sentence: FirefliesSentence): number | null {
   if ("timing" in sentence && sentence.timing !== "engine") return null;
   const { start_time: start, end_time: end } = sentence;
-  return Number.isFinite(start) && Number.isFinite(end) && start >= 0 && end > start && end - start <= 30 ? start : null;
+  return Number.isFinite(start) && Number.isFinite(end) && start >= 0 && end > start && end - start <= MAX_TURN_SECONDS ? start : null;
 }
 
 /** Legacy 0/0 bodies and coarse whole-note spans have no useful seek point. */
