@@ -15,7 +15,7 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { captureEvents } from "@/capture/captureEvents";
 import { advanceAccountGeneration } from "./accountContext";
 
-import { _resetConnectorSchemaMemoForTests } from "../connectors/connectorStore";
+import { _resetConnectorSchemaMemoForTests, CONNECTORS_SQL_DB_NAME, transcriptKvKey } from "../connectors/connectorStore";
 import { APP_ID } from "@tinyboilerplate/core";
 import { bytesToBase64 } from "./voiceNoteAudio";
 import { MAX_AUDIO_PART_SIZE, parseAudioManifest } from "../audio/audioStore";
@@ -147,7 +147,7 @@ const recording: VoiceNoteRecording = {
   silencedMs: 1_500,
   silencedEvents: 1,
   noSignalMs: 0,
-  options: { transcriber: "on-device", identifySpeakers: false, uploadAudio: true },
+  options: { transcriber: "private-cloud", identifySpeakers: false, uploadAudio: true },
 };
 
 function audioBytes(size: number): Uint8Array {
@@ -269,18 +269,54 @@ describe("note sync state", () => {
 });
 
 describe("saveVoiceNote", () => {
-  test("recordings without explicit space-audio approval never create a row or write audio", async () => {
+  test("recordings without explicit space-audio approval never write audio", async () => {
     for (const uploadAudio of [undefined, false]) {
       const space = fakeSpace();
       const note = { ...recording, id: `no-audio-${String(uploadAudio)}-${++fakeSpaceNumber}`,
         options: { transcriber: "on-device" as const, identifySpeakers: false, ...(uploadAudio === undefined ? {} : { uploadAudio }) } };
       const result = await saveVoiceNote(space.tcw, note, voiceNoteAudioSourceFromBase64({ mimeType: "audio/mp4", base64: "AAAA" }), "android");
-      expect(result).toMatchObject({ ok: false, error: { code: "AUDIO_UPLOAD_DISABLED" } });
-      expect(space.calls.filter((call) => call.kind === "kv.put")).toEqual([]);
-      expect(space.calls.filter((call) => call.kind === "sql.execute" && String(call.params[0]).includes("INSERT INTO connector_meeting"))).toEqual([]);
+      expect(result.ok).toBe(true);
+      expect(space.calls.filter((call) => call.kind === "kv.put" && call.target.includes(`/audio/${note.id}/`)
+        && !call.target.endsWith("note.md"))).toEqual([]);
+      expect(space.calls.filter((call) => call.kind === "sql.execute" && String(call.params[0]).includes("INSERT INTO connector_meeting"))).toHaveLength(1);
     }
   });
 
+  test("new local-only note writes its row and note text with zero audio puts, then explicit approval adds audio", async () => {
+    const space = fakeSpace();
+    const note = { ...recording, id: `rec-local-${++fakeSpaceNumber}`, version: 2 as const,
+      options: { transcriber: "private-cloud" as const, identifySpeakers: false, uploadAudio: false } };
+    await saveNote(note.id, "# Stays in the space");
+    const source = voiceNoteAudioSourceFromBase64({ mimeType: "audio/mp4", base64: "AAAA" });
+    const local = await saveVoiceNote(space.tcw, note, source, "ios");
+    expect(local.ok).toBe(true);
+    expect(space.calls.filter((call) => call.kind === "kv.put" && call.target.includes(`/audio/${note.id}/`)
+      && !call.target.endsWith("note.md"))).toHaveLength(0);
+    expect(space.kv.get(voiceNoteMarkdownKvKey(note.id))).toContain("# Stays in the space");
+    const row = await space.tcw.sql.db(CONNECTORS_SQL_DB_NAME).query("SELECT metadata FROM connector_meeting WHERE source_id = ?", [note.id]);
+    expect(row.ok).toBe(true);
+    if (!row.ok) return;
+    expect(JSON.parse(String(row.data.rows[0]?.[0])).audio).toEqual({ stored: false, reason: "local_only", device: { platform: "ios" } });
+
+    // The separate upload flag cannot bypass the recording's explicit consent.
+    const denied = await saveVoiceNote(space.tcw, note, source, "ios", {}, true);
+    expect(denied.ok).toBe(true);
+    expect(space.calls.filter((call) => call.kind === "kv.put" && call.target.includes(`/audio/${note.id}/`)
+      && !call.target.endsWith("note.md"))).toHaveLength(0);
+
+    // Explicit approval is represented on the recording before audio is written.
+    const approved = { ...note, options: { ...note.options, uploadAudio: true } };
+    const transcriptKey = transcriptKvKey(VOICE_NOTE_SOURCE, note.id);
+    space.kv.set(transcriptKey, '[{"text":"Already transcribed"}]');
+    const uploaded = await saveVoiceNote(space.tcw, approved, source, "ios", {}, true);
+    expect(uploaded.ok).toBe(true);
+    expect(space.kv.has(voiceNoteAudioManifestKey(note.id))).toBe(true);
+    expect(space.kv.get(transcriptKey)).toBe('[{"text":"Already transcribed"}]');
+    const uploadedRow = await space.tcw.sql.db(CONNECTORS_SQL_DB_NAME).query("SELECT metadata FROM connector_meeting WHERE source_id = ?", [note.id]);
+    expect(uploadedRow.ok).toBe(true);
+    if (uploadedRow.ok) expect(JSON.parse(String(uploadedRow.data.rows[0]?.[0])).audio).toEqual({ stored: true,
+      base: voiceNoteAudioKvKey(note.id) });
+  });
   test("a Markdown sync failure leaves the audio save successful and retries separately", async () => {
     const space = fakeSpace();
     const withNote = { ...recording, id: `rec-note-sync-${++fakeSpaceNumber}` };
@@ -332,7 +368,7 @@ describe("saveVoiceNote", () => {
       await saveNote(withNote.id, "# Edit E1");
       const e1 = syncRecordingNote(space.tcw, withNote.id);
       await started;
-      await expect(e1).rejects.toThrow("saving it is taking too long");
+      await expect(e1).rejects.toThrow("Saving to your TinyCloud space is slow");
       await saveNote(withNote.id, "# Edit E2");
       const e2 = syncRecordingNote(space.tcw, withNote.id);
       await new Promise((resolve) => setTimeout(resolve, 5));
@@ -342,7 +378,7 @@ describe("saveVoiceNote", () => {
       expect(e2Puts).toBe(1);
       expect(space.kv.get(noteKey)).toContain("# Edit E2");
       expect((await readRecordingNoteFromSpace(space.tcw, withNote.id))?.md).toBe("# Edit E2");
-    } finally { setVoiceNoteSaveDeadlineForTests(null); }
+    } finally { resolveE1?.(); setVoiceNoteSaveDeadlineForTests(null); }
   });
 
   test("sync carries the saved-edit time to the space and a recorder write after it does not clear it", async () => {
@@ -459,7 +495,7 @@ describe("saveVoiceNote", () => {
       audio_mime_type: "audio/mp4",
       audio_bytes: 3,
       audio_parts: 1,
-      audio: { stored: true, base: AUDIO_BASE },
+      audio: { stored: true, base: AUDIO_BASE, reason: null, device: null },
     }));
     expect(metadata.capture).toEqual({
       platform: "android",

@@ -187,7 +187,7 @@ describe("recorderReducer", () => {
     });
     expect(stopped).toMatchObject({
       phase: "idle",
-      error: "Kept on this phone. Exo will finish it automatically.",
+      error: "Kept on this browser. Exo will finish it automatically.",
     });
     expect(stopped.error).not.toContain("captured no audio");
   });
@@ -274,7 +274,7 @@ describe("recorderReducer", () => {
   });
 
   describe("finalizationPendingId", () => {
-    const PENDING = "Kept on this phone. Exo will finish it automatically.";
+    const PENDING = "Kept on this browser. Exo will finish it automatically.";
     const stopTimedOut = () => recorderReducer(recorderReducer(recording(), { type: "STOP_REQUESTED", at: 0 }),
       { type: "STOP_FAILED", status: "idle", error: PENDING, id: "rec-1" });
 

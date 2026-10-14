@@ -4,6 +4,7 @@
 // `nativeVoiceNotesAvailable()` is the one gate every caller checks first.
 
 import { Capacitor, registerPlugin, type PluginListenerHandle } from "@capacitor/core";
+import { deviceName } from "@/lib/platform";
 
 import { base64ToBytes } from "./voiceNoteAudio";
 import { voiceNoteCallDeadlineMs, withVoiceNoteSaveDeadline } from "./saveDeadline";
@@ -59,6 +60,8 @@ export type ClaimOptions =
   | { id: string; did: string; evidence: "space_row"; rowId: string };
 export interface NoteLedger {
   spaceId?: string | null;
+  /** Local source is durable before the playable file has finished importing. Absent on legacy ready notes. */
+  localAudio?: { state: "preparing" | "ready" | "failed"; error: string | null };
   audio: { state: "pending" | "saved"; rowId: string | null; at: number | null };
   transcript: { state: "pending" | "running" | "retrying" | "blocked" | "needs_attention" | "cancelled" | "failed" | "done";
     outcome: "transcribed" | "no_speech" | null; reason: string | null; attempts: number; nextAttemptAt: number | null };
@@ -77,11 +80,12 @@ export interface NoteSttState {
   rerunBaseRev?: number | null; rerunBaseHash?: string | null;
 }
 export interface LocalTranscript {
-  version: 1; noteId: string; transcriber: TranscriberId; rev: number;
+  version: 1 | 2; noteId: string; transcriber: TranscriberId; rev: number;
   engine: "parakeet-tdt-0.6b-v3" | "parakeet-tdt-110m-en" | "apple-speech" | "whispercpp" | "assemblyai" | "tinycloud-private-transcription";
   model: string | null; language: string | null; outcome: "transcribed" | "no_speech"; diarized: boolean;
   /** start/end are milliseconds: the native sidecar's canonical-JSON writer only accepts integers. */
   segments: { start: number; end: number; text: string; speaker: string | null;
+    channel?: 0 | 1; speakerId?: string | null; timing?: "engine" | "coarse" | "unknown";
     /** Eval-only lineage. Not included in production transcripts. Times are seconds. */
     words?: { text: string; start: number; end: number; channel: number | undefined;
       timing: "token" | "fallback" | "none" }[] }[]; createdAt: string;
@@ -136,6 +140,13 @@ export interface MicStateEvent {
   openSpan?: MissingAudioSpan | null;
 }
 
+export interface LevelEvent {
+  level: number;
+  peak?: number;
+  /** Mac capture reports each source; phones and older engines omit this. */
+  sources?: { mic: { level: number; peak: number }; system: { level: number; peak: number } | null };
+}
+
 /** iOS emits this retained alert after a successful media-services restart. */
 export interface CaptureAlertEvent {
   id: string;
@@ -165,6 +176,8 @@ export interface RecoveryCompletedEvent {
 
 export interface VoiceNoteRecording {
   id: string;
+  /** Mac capture's declared channel layout; older notes are mono. */
+  channels?: 1 | 2;
   startedAt: number;
   durationMs: number;
   mimeType: string;
@@ -228,6 +241,8 @@ export interface VoiceNotesPlugin {
   /** `maxDurationMs`: stop by itself after this much recorded time (clamped to [1 s, 3 h]). */
   start(options?: { maxDurationMs?: number } & Partial<CaptureOptions>): Promise<{ id: string; startedAt: number; maxDurationMs?: number }>;
   stop(): Promise<VoiceNoteRecording>;
+  /** Desktop finishing gate; absent on platforms whose stop already produces ready audio. */
+  awaitAudioReady?(id: string): Promise<void>;
   /**
    * `maxDurationMs`: the current recording's limit (the default when idle).
    * `androidSdkInt`: Android only, the OS API level (Build.VERSION.SDK_INT).
@@ -279,7 +294,7 @@ export interface VoiceNotesPlugin {
   addListener(event: "writeFailure", listener: (event: WriteFailureEvent) => void): Promise<PluginListenerHandle>;
   addListener(event: "recovered" | "committed", listener: (event: RecoveryCompletedEvent) => void): Promise<PluginListenerHandle>;
   openSettings(): Promise<void>;
-  addListener(event: "level", listener: (event: { level: number; peak?: number }) => void): Promise<PluginListenerHandle>;
+  addListener(event: "level", listener: (event: LevelEvent) => void): Promise<PluginListenerHandle>;
   addListener(event: "autoStopped", listener: (event: VoiceNoteAutoStopEvent) => void): Promise<PluginListenerHandle>;
   addListener(event: "presentRecorder", listener: (event: { id: string | null; reason?: "permission_denied" | "permission_granted" | string }) => void): Promise<PluginListenerHandle>;
   addListener(event: "inputs", listener: (event: { inputs: AudioInput[]; selectedId: string | null; activeId: string | null }) => void): Promise<PluginListenerHandle>;
@@ -334,7 +349,7 @@ export function nativeRecordingSource(
       const bytes = base64ToBytes(chunk.base64);
       if (bytes.byteLength !== length || chunk.size !== recording.sizeBytes) {
         throw Object.assign(new Error(
-          `The recording on this phone changed while it was being saved (read ${bytes.byteLength} of ${length} bytes at ${offset}; file ${chunk.size} bytes, expected ${recording.sizeBytes}).`,
+          `The recording on ${deviceName()} changed while it was being saved (read ${bytes.byteLength} of ${length} bytes at ${offset}; file ${chunk.size} bytes, expected ${recording.sizeBytes}).`,
         ), { code: "recording_changed" });
       }
       return bytes;

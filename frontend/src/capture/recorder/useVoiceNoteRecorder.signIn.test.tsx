@@ -26,6 +26,7 @@ let root: Root | null = null;
 afterEach(async () => {
   if (root) await act(async () => root!.unmount());
   root = null;
+  __setVoiceNotesForTests(createFakeVoiceNotes().plugin, { available: null });
 });
 
 test("a fresh sign-in replaces the null-client recorder before Save now", async () => {

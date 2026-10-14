@@ -129,8 +129,12 @@ services:
       # Hosted AssemblyAI (TinyCloud's key). Both set = on; either empty = off. Never leaves this process.
       ASSEMBLYAI_API_KEY: ${ASSEMBLYAI_API_KEY:-}
       ASSEMBLYAI_HOSTED_HANDLE_KEY: ${ASSEMBLYAI_HOSTED_HANDLE_KEY:-}
+      ASSEMBLYAI_HOSTED_SPOOL_DIR: /var/lib/tinychat/assemblyai
+      ASSEMBLYAI_HOSTED_FRESH_INSTALL: ${ASSEMBLYAI_HOSTED_FRESH_INSTALL:-}
+      ASSEMBLYAI_HOSTED_ADMIN_KEY: ${ASSEMBLYAI_HOSTED_ADMIN_KEY:-}
     volumes:
       - /var/run/dstack.sock:/var/run/dstack.sock:ro
+      - assemblyai-data:/var/lib/tinychat/assemblyai
     restart: unless-stopped
 
   dstack-ingress:
@@ -154,3 +158,4 @@ services:
 
 volumes:
   cert-data:
+  assemblyai-data:

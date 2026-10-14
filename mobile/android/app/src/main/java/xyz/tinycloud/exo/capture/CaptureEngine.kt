@@ -400,6 +400,7 @@ class CaptureEngine private constructor(private val context: Context) {
             .put("transitionGen", account.optLong("transitionGen"))
             .put("transcriber", if (signedIn) options.optString("transcriber", "on-device") else "on-device")
             .put("identifySpeakers", options.optBoolean("identifySpeakers"))
+            .put("uploadAudio", options.optBoolean("uploadAudio", false))
     }
     @Synchronized fun setAccountState(value: JSONObject) {
         val old = accountState.read()
@@ -427,7 +428,8 @@ class CaptureEngine private constructor(private val context: Context) {
         accountState.write(JSONObject().put("status", status)
             .put("accountDid", storedDid).put("transitionGen", next)
             .put("options", JSONObject().put("transcriber", transcriber)
-                .put("identifySpeakers", value.optBoolean("identifySpeakers"))))
+                .put("identifySpeakers", value.optBoolean("identifySpeakers"))
+                .put("uploadAudio", value.optBoolean("uploadAudio", false))))
         val claimed = JSONArray()
         if (status == "signed_in" && did != null) {
             if (id != null && owner == null) { owner = did; journalLiveTransition(id!!, "owner", JSONObject().put("did", did)); claimed.put(id) }
@@ -444,6 +446,7 @@ class CaptureEngine private constructor(private val context: Context) {
         val transcriber = if (owner == null) "on-device" else value.optString("transcriber", options.optString("transcriber"))
         options = JSONObject().put("transcriber", transcriber)
             .put("identifySpeakers", value.optBoolean("identifySpeakers", options.optBoolean("identifySpeakers")))
+            .put("uploadAudio", options.optBoolean("uploadAudio", false))
         journalLiveTransition(current, "options", options.copy())
         publishState()
     }
@@ -462,6 +465,7 @@ class CaptureEngine private constructor(private val context: Context) {
         transitionGen = defaults.optLong("transitionGen")
         options = JSONObject().put("transcriber", if (owner == null) "on-device" else requestedOptions?.optString("transcriber", defaults.optString("transcriber")) ?: defaults.optString("transcriber"))
             .put("identifySpeakers", requestedOptions?.optBoolean("identifySpeakers", defaults.optBoolean("identifySpeakers")) ?: defaults.optBoolean("identifySpeakers"))
+            .put("uploadAudio", requestedOptions?.optBoolean("uploadAudio", defaults.optBoolean("uploadAudio", false)) ?: defaults.optBoolean("uploadAudio", false))
         maxMs = requestedMs?.takeIf { it > 0 }?.coerceIn(1000, MAX_DURATION_MS) ?: MAX_DURATION_MS
         val newId = UUID.randomUUID().toString()
         startedAt = System.currentTimeMillis()

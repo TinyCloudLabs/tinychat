@@ -6,7 +6,10 @@ export const LEGACY_TRANSCRIPT_KEYS = [
   "transcription_engine", "transcript_provider", "inference_provider", "model", "language",
   "transcription_audio_seconds", "transcription_duration_seconds",
   "transcription_voiced_seconds",
-  "transcription_vad_dropped_above_floor_pct", "transcription_vad_fallback", "transcription_stats_missing",
+  "transcription_vad_dropped_above_floor_pct", "transcription_vad_fallback",
+  "transcription_vad_mode", "transcription_noise_floor_dbfs", "transcription_median_dbfs",
+  "transcription_p99_dbfs", "transcription_speech_peak_s", "transcription_vad_dropped_above_noise_pct",
+  "transcription_stats_missing",
 ] as const;
 
 export interface LegacyTranscriptRow { id: string; metadata: unknown }

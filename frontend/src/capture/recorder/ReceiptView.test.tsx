@@ -36,7 +36,7 @@ describe("ReceiptView", () => {
   test("a recording that ended shows the phone receipt, with no recording controls", () => {
     const html = render({ phase: "idle", outcome: "local", startedAt: null,
       lastSaved: { id: "rec-1", durationMs: 42_000, at: Date.now() } });
-    expect(html).toContain("Saved on this phone");
+    expect(html).toContain("Saved on this iPhone");
     expect(html).toContain(">0:42</span>");
     // The old saving line is gone: the pipeline stepper takes its place once the note has been read.
     expect(html).not.toContain("Saving to your TinyCloud space…");
@@ -51,7 +51,14 @@ describe("ReceiptView", () => {
     expect(html).toContain('data-testid="voice-note-status-label"');
     expect(html).toContain("Saved on this Mac");
     expect(html).toContain('aria-label="Saved on this Mac"');
-    expect(html).not.toContain("Saved on this phone");
+    expect(html).not.toContain("Saved on this iPhone");
+  });
+
+  test("a legacy Mac note without localAudio is ready rather than preparing", () => {
+    const html = render({ phase: "idle", outcome: "local", startedAt: null,
+      lastSaved: { id: "rec-1", durationMs: 42_000, at: Date.now() } }, "tauri");
+    expect(html).not.toContain("Preparing audio");
+    expect(html).toContain("Getting this Mac&#x27;s audio");
   });
 
   test("denied shortcut shows the full-page recovery action without a receipt", () => {
@@ -70,7 +77,9 @@ describe("ReceiptView", () => {
       lastSaved: { id: "rec-1", durationMs: 42_000, at: Date.now() },
       transcription: { availability: "available", consented: true, maxSeconds: 600, jobs, onTranscribe: noop, onConsent: noop, onTurnOff: noop, onRecheck: noop } });
     const active = route(new Map([["rec-1", { kind: "active", status: { kind: "waiting" } }]]));
-    expect(active).toContain("Transcribing in private cloud…");
+    // Before the native ledger resolves, the receipt cannot claim a route from a job alone.
+    expect(active).toContain("Getting this iPhone&#x27;s audio…");
+    expect(active).not.toContain("Transcribing in private cloud…");
     const held = route(new Map([["rec-1", { kind: "held", message: "Held: not sent for transcription" }]]));
     expect(held).not.toContain("Transcribing in private cloud…");
     expect(held).toContain('data-testid="voice-note-held"');

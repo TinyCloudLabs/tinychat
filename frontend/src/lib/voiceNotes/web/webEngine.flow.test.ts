@@ -171,13 +171,34 @@ describe("registration", () => {
 });
 
 describe("a recorded web note reaches private-cloud transcription", () => {
+  test("audio upload defaults off while the row and Private transcript still reach the space", async () => {
+    rig = await createRig();
+    await bootWeb(rig);
+    await signIn(A, 1);
+    const { tcw, values } = space(A);
+    await VoiceNotes.start();
+    await rig.chunk([1, 2, 3, 4]);
+    const note = await VoiceNotes.stop();
+    expect(note.options?.uploadAudio).toBe(false);
+    await createVoiceNotePipeline(tcw).reconcileAll(ctxOf(tcw));
+    expect([...values.keys()].filter((key) => key.includes(`/audio/${note.id}/`) && !key.endsWith("note.md"))).toEqual([]);
+    const row = await tcw.sql.db(CONNECTORS_SQL_DB_NAME).query("SELECT metadata FROM connector_meeting WHERE source_id = ?", [note.id]);
+    expect(row.ok).toBe(true);
+    if (row.ok) expect(JSON.parse(String(row.data.rows[0]?.[0])).audio).toEqual({ stored: false, reason: "local_only", device: { platform: "web" } });
+    const ptx = fakePtx();
+    const { cloud } = cloudWith(ptx);
+    expect(await transcribeVoiceNote({ tcw, cloud, capabilities: CAPS, sourceId: note.id, report: () => {} })).toBe("transcribed");
+    expect(ptx.puts).toHaveLength(1);
+    expect([...values.keys()].filter((key) => key.includes(`/audio/${note.id}/`) && !key.endsWith("note.md"))).toEqual([]);
+  });
+
   test("install web → record → stop → pending → T18 save → fetch PUT to the fake PTX → transcript saved", async () => {
     rig = await createRig();
     await bootWeb(rig);
     await signIn(A, 1);
     const { tcw, values } = space(A);
 
-    await VoiceNotes.start();
+    await VoiceNotes.start({ uploadAudio: true });
     await rig.chunk([1, 2, 3, 4]);
     const note = await VoiceNotes.stop();
     expect(note).toMatchObject({ owner: A, mimeType: "audio/webm;codecs=opus", sizeBytes: 4 });

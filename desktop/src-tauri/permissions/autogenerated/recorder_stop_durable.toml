@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-recorder-stop-durable"
+description = "Enables the recorder_stop_durable command without any pre-configured scope."
+commands.allow = ["recorder_stop_durable"]
+
+[[permission]]
+identifier = "deny-recorder-stop-durable"
+description = "Denies the recorder_stop_durable command without any pre-configured scope."
+commands.deny = ["recorder_stop_durable"]

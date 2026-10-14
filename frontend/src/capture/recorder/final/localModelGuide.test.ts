@@ -44,7 +44,7 @@ describe("localModelGuide", () => {
 
   test("a failed model says why and offers the download again", () => {
     const guide = localModelGuide(status({}, { state: "failed", error: "disk full" }), download().download);
-    expect(guide.reason).toBe("Couldn't download the on-device model: disk full");
+    expect(guide.reason).toBe("Couldn't download the on-device model");
     expect(guide.action?.label).toBe("Try again");
   });
 
@@ -56,7 +56,7 @@ describe("localModelGuide", () => {
 
   test("a download that could not start shows that reason, with Try again", () => {
     const guide = localModelGuide(status(), download("Could not start the download: no network plugin").download);
-    expect(guide.reason).toBe("Could not start the download: no network plugin");
+    expect(guide.reason).toBe("Couldn't download the on-device model: Could not start the download: no network plugin");
     expect(guide.action?.label).toBe("Try again");
   });
 
@@ -79,21 +79,21 @@ describe("the waiting-for-model copy", () => {
   test("a model not yet downloaded is one sentence with its size, and the control reads Get model", () => {
     const model = status();
     const guide = localModelGuide(model, download().download);
-    expect(waitingForModelSentence(model, guide)).toBe("Transcribe on this phone — needs a 602 MB download");
+    expect(waitingForModelSentence(model, guide)).toBe("Transcribe on this browser — needs a 602 MB download");
     expect(modelActionLabel(guide.action!)).toBe("Get model");
   });
 
   test("with no size known it still names what is needed", () => {
     const model = status({}, { totalBytes: 0 });
     model.models[1]!.totalBytes = 0;
-    expect(waitingForModelSentence(model, localModelGuide(model, download().download))).toBe("Transcribe on this phone — needs the on-device model");
+    expect(waitingForModelSentence(model, localModelGuide(model, download().download))).toBe("Transcribe on this browser — needs the on-device model");
   });
 
   test("a download underway, a failure or a pause is the guide's own line, and a retry keeps its label", () => {
     const running = status({ download: { policy: "wifi", state: "running" } }, { state: "downloading", bytes: 301 * MB });
     expect(waitingForModelSentence(running, localModelGuide(running, download().download))).toBe("Downloading on-device model · 50%");
     const failed = localModelGuide(status(), download("No space left").download);
-    expect(waitingForModelSentence(status(), failed)).toBe("No space left");
+    expect(waitingForModelSentence(status(), failed)).toBe("Couldn't download the on-device model: No space left");
     expect(modelActionLabel(failed.action!)).toBe("Try again");
     const checking = status({}, { state: "checking" });
     expect(waitingForModelSentence(checking, localModelGuide(checking, download().download))).toBe("Checking the on-device model…");
@@ -107,7 +107,7 @@ describe("localModelGuide on iOS's built-in speech", () => {
   test("missing speech assets offer Get speech from iOS with no size, and it starts the install", () => {
     const { calls, download: d } = download();
     const guide = localModelGuide(apple("asset_missing"), d);
-    expect(guide.reason).toBe("Speech from iOS isn't on this phone yet");
+    expect(guide.reason).toBe("Speech from iOS isn't on this iPhone yet");
     expect(guide.reason).not.toContain("MB");
     expect(guide.action?.label).toBe("Get speech from iOS");
     guide.action!.run();

@@ -1,4 +1,5 @@
 import { readableError } from "@/lib/readableError";
+import { deviceName } from "@/lib/platform";
 // The Library's data (TC-761, plan §4.11), called once in CaptureSurface: the
 // list for Recent, the Library and the list pane, and the open note's reads.
 //
@@ -93,7 +94,7 @@ function localAudio(recordingId: string): NoteAudio {
         const { url } = await VoiceNotes.localAudioUrl({ id: recordingId });
         return Capacitor.convertFileSrc(url);
       } catch (caught) {
-        throw new Error(`Could not open this phone's audio: ${readableError(caught)}`, { cause: caught });
+        throw new Error(`Could not open audio on ${deviceName()}: ${readableError(caught)}`, { cause: caught });
       }
     },
   };
@@ -145,6 +146,7 @@ export function useLibrary(
     previews: new Map(),
   });
   const [listing, setListing] = useState(false);
+  const [localAudioIds, setLocalAudioIds] = useState<ReadonlySet<string>>(new Set());
   const [filter, setFilter] = useState<LibraryFilter>("all");
   const reads = useRef(new Map<string, NoteReads>());
   const reading = useRef(new Set<string>());
@@ -284,9 +286,10 @@ export function useLibrary(
     return merged.map((entry) => {
       if (entry.source !== VOICE_NOTE_SOURCE) return entry;
       const snippet = moments.get(entry.sourceId) ?? noteSnippet(list.previews.get(entry.sourceId));
-      return snippet === null ? entry : { ...entry, snippet };
+      return { ...entry, ...(snippet === null ? {} : { snippet }),
+        ...(localAudioIds.has(entry.sourceId) ? { hasLocalAudio: true as const } : {}) };
     });
-  }, [list.items, list.previews, moments, onPhoneNotes, currentHandoff.lingering]);
+  }, [list.items, list.previews, moments, onPhoneNotes, currentHandoff.lingering, localAudioIds]);
 
   // The open note by its id; a stand-in's sheet stays open when its row replaces it.
   const item = useMemo(() => {
@@ -300,6 +303,14 @@ export function useLibrary(
 
   // The open voice note, by recording: a stand-in and its row are one note.
   const openRecordingId = item?.source === VOICE_NOTE_SOURCE ? item.sourceId : null;
+  useEffect(() => {
+    if (!options.visible) return;
+    let live = true;
+    void VoiceNotes.listPending().then(({ recordings }) => {
+      if (live) setLocalAudioIds(new Set(recordings.filter((note) => note.owner === tcw.did).map((note) => note.id)));
+    }, () => { if (live) setLocalAudioIds(new Set()); });
+    return () => { live = false; };
+  }, [options.visible, tcw.did, invalidationRevision, onPhoneNotes]);
   const lastOpened = useRef<string | null>(null);
   useEffect(() => {
     // A note just closed may have had its moments edited: read them again.
@@ -427,14 +438,16 @@ export function useLibrary(
   const audioBase = audio?.status === "stored" ? audio.base : null;
   const voiceSourceId = item?.source === VOICE_NOTE_SOURCE ? item.sourceId : null;
   const pendingAudioRow = voiceSourceId !== null && meta !== null && Object.keys(meta).length === 0;
+  const metadataLoaded = meta !== null;
   // The row is made before the audio is uploaded: while the phone still lists the note, its own copy is the audio.
-  const onThisPhone = voiceSourceId !== null && (item?.onPhone === true || item?.saving === true);
+  const onThisPhone = voiceSourceId !== null && (item?.onPhone === true || localAudioIds.has(voiceSourceId));
+  const localOnlyAudio = (meta?.audio as { stored?: unknown } | undefined)?.stored === false;
   // The stored file is read only when the player asks, one part per queued
   // call; the player's signal stops it when the note closes.
   const noteAudio = useMemo<NoteAudio | null>(() => {
     // The phone's own copy, until the space has the audio.
     if (voiceSourceId !== null && onThisPhone) return localAudio(voiceSourceId);
-    if (voiceSourceId !== null && !pendingAudioRow) {
+    if (voiceSourceId !== null && metadataLoaded && !pendingAudioRow && !localOnlyAudio) {
       return {
         load: async (signal, onProgress) => {
           const res = await loadVoiceNoteAudioBlob(space, voiceSourceId, { signal, onProgress });
@@ -443,9 +456,9 @@ export function useLibrary(
         },
       };
     }
-    if (audioBase !== null) return { load: (signal, onProgress) => getAudio(space.kv, audioBase, { signal, onProgress }) };
+    if (audioBase !== null && !localOnlyAudio) return { load: (signal, onProgress) => getAudio(space.kv, audioBase, { signal, onProgress }) };
     return null;
-  }, [audioBase, onThisPhone, pendingAudioRow, space, voiceSourceId]);
+  }, [audioBase, onThisPhone, localOnlyAudio, metadataLoaded, pendingAudioRow, space, voiceSourceId]);
 
   const retry = useCallback(() => {
     if (list.status === "failed") refresh();

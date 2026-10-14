@@ -19,7 +19,7 @@ import { captureCapabilities, captureEngineAvailable } from "@/lib/voiceNotes/ca
 import { OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
 import { syncOnDeviceTranscript } from "@/lib/voiceNotes/onDeviceTranscriber";
 import { getDesktopWhisperQueue } from "@/lib/voiceNotes/desktop/desktopWhisper";
-import { isTinyCloudNetworkFailure, logVoiceNoteError, messageOf, pendingStore, whenVoiceNoteSavesIdle } from "@/lib/voiceNotes/recorderSaves";
+import { isTinyCloudNetworkFailure, logVoiceNoteError, pendingSaveMessage, pendingStore, whenVoiceNoteSavesIdle } from "@/lib/voiceNotes/recorderSaves";
 import { advanceAccountGeneration, captureAccountContext, currentAccountGeneration, isAccountContextCurrent, mountVoiceNoteAccount } from "@/lib/voiceNotes/accountContext";
 import { saveDeferredForAccountTransition, type VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
 import { transcribeSavedNote, voiceNoteTranscriberFor } from "@/lib/voiceNotes/voiceNoteTranscription";
@@ -144,10 +144,10 @@ export function PendingVoiceNotesSaver({
           await account.refresh(null);
         } catch (error) {
           if (saveDeferredForAccountTransition(error)) return;
-          const message = messageOf(error);
+          const message = pendingSaveMessage(error);
           // Network errors are already logged by messageOf through the redacting formatter.
-          if (!isTinyCloudNetworkFailure(error)) logVoiceNoteError("Saving notes left on this phone failed", error);
-          account.reportError(`Could not save notes on this phone: ${message}`);
+          if (!isTinyCloudNetworkFailure(error)) logVoiceNoteError("Saving pending notes failed", error);
+          account.reportError(message);
         }
       };
       runInFlight = (async () => {

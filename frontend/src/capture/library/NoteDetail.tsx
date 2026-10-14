@@ -1,7 +1,7 @@
 // The open note (TC-761): NoteDetailView over the Library's reads, with the
 // transcript's Copy. Remounted per note (keyed by its id), so a copy's tick
 // never carries over to the next note.
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import type { VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
 import { copyText } from "@/lib/copyText";
@@ -11,6 +11,8 @@ import { getDesktopWhisperQueue } from "@/lib/voiceNotes/desktop/desktopWhisper"
 import { VoiceNotes, type LocalTranscript } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
 import { appPlatform } from "@/lib/platform";
+import type { AppPlatform } from "@/lib/platform";
+import type { NotePipelineView } from "@/lib/voiceNotes/useNotePipeline";
 import { VoiceNoteSaveTimeout, withVoiceNoteSaveDeadline } from "@/lib/voiceNotes/saveDeadline";
 import { localTranscriptToSave, VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
 import { NoteDetailView, type NoteDetailViewProps } from "./NoteDetailView";
@@ -36,7 +38,10 @@ export function NoteDetail(props: {
   pushed: boolean;
   onBack: () => void;
   transcription: VoiceNoteTranscriptionProps | undefined;
+  activityView?: NotePipelineView;
+  platform?: AppPlatform;
   savedNote?: NoteDetailViewProps["savedNote"];
+  activityControl?: ReactNode;
 }) {
   const { library } = props;
   const { item, reads, audio } = library.note;
@@ -115,6 +120,8 @@ export function NoteDetail(props: {
       audio={audio}
       // A note only on this phone is not in the space to transcribe from.
       transcription={item?.source === VOICE_NOTE_SOURCE && !item.onPhone ? props.transcription : undefined}
+      activityView={props.activityView}
+      platform={props.platform}
       copyState={copyState}
       onCopy={() => void onCopy()}
       onCopyWithTimestamps={() => void onCopy(true)}
@@ -122,6 +129,7 @@ export function NoteDetail(props: {
       pushed={props.pushed}
       onBack={props.onBack}
       savedNote={props.savedNote}
+      activityControl={props.activityControl}
     />
   );
 }

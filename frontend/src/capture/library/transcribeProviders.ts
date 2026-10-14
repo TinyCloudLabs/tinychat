@@ -1,6 +1,7 @@
 // Existing transcription engines for notes without a transcript, plus explicit reruns from detail.
 import { VoiceNotes } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { privateRefusalCopy, switchToPrivate } from "@/capture/recorder/privateInstead";
+import { deviceName } from "@/lib/platform";
 import type { VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
 import { captureCapabilities } from "@/lib/voiceNotes/captureEngine";
 import type { TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
@@ -16,7 +17,7 @@ export interface PhoneRecording {
   hasLocalState: boolean;
 }
 
-export const LOCAL_START_FAILED = "Couldn’t start transcribing on this phone. Try again in a moment.";
+export const LOCAL_START_FAILED = `Couldn’t start transcribing on ${deviceName()}. Try again in a moment.`;
 
 /** Whether private cloud's advertised length limit takes a note of this length. */
 export function privateCloudFits(transcription: VoiceNoteTranscriptionProps, durationSecs: number | null): boolean {

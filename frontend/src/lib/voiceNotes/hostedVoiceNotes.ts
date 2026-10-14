@@ -26,7 +26,35 @@ import type { CloudClock } from "../privateCloud";
 
 const CONSENT = "exo.voiceNotes.powerfulConsent";
 const PENDING = "exo.voiceNotes.powerfulJobs";
+const CLAIM_TAKEOVER_MS = 5 * 60_000;
 type Stored = { uploadId?: string; handle?: string; saved?: boolean; explicitRerun?: boolean; cleanupOnly?: boolean; recording?: VoiceNoteRecording };
+type Claim = { version: 1; status: "active" | "failed" | "submitted"; token: string; claimedAt?: number; uploadId?: string; handle?: string };
+const claimKey = (id: string) => `exo/voiceNotes/hostedJobs/${encodeURIComponent(id)}`;
+const precondition = (error: { code?: string; message?: string }) => /PRECONDITION|412/i.test(`${error.code} ${error.message}`);
+
+async function readClaim(account: TinyCloudWeb, id: string): Promise<{ claim: Claim; etag: string } | null> {
+  const result = await account.kv.get(claimKey(id));
+  if (!result.ok) {
+    if (result.error.code === "KV_NOT_FOUND") return null;
+    throw new Error(`Could not read the Powerful job claim: ${result.error.message}`);
+  }
+  const response = result.data as { data?: unknown; headers?: { etag?: string } };
+  const raw = response?.data;
+  const claim = typeof raw === "string" ? JSON.parse(raw) as Claim : raw as Claim;
+  if (claim?.version !== 1 || !["active", "failed", "submitted"].includes(claim.status)
+    || typeof claim.token !== "string" || typeof response?.headers?.etag !== "string")
+    throw new Error("The Powerful job claim could not be verified.");
+  if (claim.status === "submitted" && !claim.handle) throw new Error("The Powerful job claim has no transcript handle.");
+  return { claim, etag: response.headers.etag };
+}
+
+async function writeClaim(account: TinyCloudWeb, id: string, claim: Claim, etag?: string): Promise<boolean> {
+  const result = await account.kv.put(claimKey(id), JSON.stringify(claim),
+    etag ? { ifMatch: etag, contentType: "application/json" } : { ifNoneMatch: "*", contentType: "application/json" });
+  if (result.ok) return true;
+  if (precondition(result.error)) return false;
+  throw new Error(`Could not save the Powerful job claim: ${result.error.message}`);
+}
 
 function storage(): Storage | undefined {
   try { return globalThis.localStorage; } catch { return undefined; }
@@ -41,13 +69,12 @@ function readJobs(did: string): Record<string, Stored> {
 function writeJobs(did: string, jobs: Record<string, Stored>): void {
   storage()?.setItem(`${PENDING}:${did}`, JSON.stringify(jobs));
 }
-
 /** One account's resumable Powerful lane. Audio parts always come from the local recording when it exists. */
 export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: string, sessionStore: SessionStore, did: string,
   services: { client?: ReturnType<typeof createHostedAssemblyAiClient>; native?: VoiceNotesPlugin; clock?: CloudClock;
     readCommit?: typeof readTranscriptCommit; createRow?: typeof createVoiceNoteRow;
     save?: typeof saveVoiceNoteTranscript; readNote?: typeof readVoiceNoteForTranscription;
-    loadAudio?: typeof loadVoiceNoteAudio; preserveHistory?: typeof preserveVoiceNoteTranscriptHistory } = {}) {
+    loadAudio?: typeof loadVoiceNoteAudio; preserveHistory?: typeof preserveVoiceNoteTranscriptHistory; reconciliationDelayMs?: number } = {}) {
   const client = services.client ?? createHostedAssemblyAiClient({ backendUrl, sessionStore });
   const native = services.native ?? VoiceNotes;
   const readCommit = services.readCommit ?? readTranscriptCommit;
@@ -59,7 +86,27 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
   const jobs = new Map<string, NoteTranscriptionState>();
   const listeners = new Set<() => void>();
   const active = new Set<string>();
+  const reconciliationChecks = new Map<string, ReturnType<typeof setTimeout>>();
   const notify = () => { for (const listener of listeners) listener(); };
+  const watchReconciliation = (id: string, generation: number) => {
+    if (reconciliationChecks.has(id)) return;
+    const check = async () => {
+      reconciliationChecks.delete(id);
+      if (currentAccountGeneration() !== generation || tcw().did !== did) return;
+      try {
+        const job = await client.lookupJob(id);
+        if (job.status === "submitted" && job.id) {
+          jobs.set(id, { kind: "failed", message: "Exo reconciled the earlier attempt. Try again.", retryable: true, reference: null, code: "reconciled" });
+          notify();
+          return;
+        }
+      } catch { /* A read failure does not authorize another paid submission. */ }
+      watchReconciliation(id, generation);
+    };
+    const timer = setTimeout(() => { void check(); }, services.reconciliationDelayMs ?? 30_000);
+    (timer as ReturnType<typeof setTimeout> & { unref?: () => void }).unref?.();
+    reconciliationChecks.set(id, timer);
+  };
   const consented = () => storage()?.getItem(`${CONSENT}:${did}`) === "1";
   const state = (id: string, status: VoiceNoteTranscriptionStatus) => {
     logPipeline(status.kind === "uploading" ? "transcription_audio_upload" : "transcription",
@@ -81,11 +128,14 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
     const caps = await client.capabilities();
     return caps.hosted;
   };
-  const run = async (recording: Pick<VoiceNoteRecording, "id" | "owner" | "source" | "options" | "startedAt" | "sizeBytes" | "mimeType" | "durationMs">
+  const run = async (recording: Pick<VoiceNoteRecording, "id" | "owner" | "source" | "options" | "startedAt" | "sizeBytes" | "mimeType" | "durationMs" | "channels">
     & { ledger?: VoiceNoteRecording["ledger"] }, explicitRerun = false) => {
     const id = recording.id;
-    if (active.has(id) || !consented() || (recording.owner && recording.owner !== did) || recording.source !== "in_app"
+    if (active.has(id) || (!explicitRerun && jobs.get(id)?.kind === "done") || !consented()
+      || (recording.owner && recording.owner !== did) || recording.source !== "in_app"
       || (!explicitRerun && recording.options?.transcriber !== "assemblyai")) return;
+    const pendingCheck = reconciliationChecks.get(id);
+    if (pendingCheck) { clearTimeout(pendingCheck); reconciliationChecks.delete(id); }
     active.add(id);
     logPipeline("transcription", id, "start", { engine: "assemblyai" });
     const generation = currentAccountGeneration();
@@ -99,6 +149,8 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
     try {
       guard();
       const account = tcw();
+      // The durable commit is checked before any provider upload, including a fresh trigger.
+      // Explicit reruns require the committed base they were admitted against.
       const currentCommit = await readCommit(account, id);
       const prior = explicitRerun ? requireVoiceNoteTranscriptCommit(currentCommit) : currentCommit;
       const previous = readJobs(did)[id] ?? {};
@@ -126,63 +178,154 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
         source = { mimeType: space.data.mimeType, size: bytes.length, readPart: async (offset, length) => bytes.slice(offset, offset + length) };
       }
       const handle = await withHostedUploadQueue(did, async () => {
-        let handle = stored.handle;
-        if (!handle) {
-          const caps = await client.capabilities();
-          if (!caps.hosted) throw new AssemblyAiError("failed", "Powerful isn't available right now. Try again later.");
-          if (source.size > caps.max_bytes) throw new AssemblyAiError("rejected", "This recording is too large for Powerful (120 MB maximum).");
-          const contentType = source.mimeType.split(";")[0].trim().toLowerCase();
-          if (!caps.content_types.includes(contentType)) throw new AssemblyAiError("rejected", "Powerful cannot read this recording's format.");
-          let uploadId = stored.uploadId;
-          let submitting = false;
-          if (uploadId) {
-            try {
-              const remote = await client.uploadState(uploadId);
-              if (remote.status === "submitted" && remote.id) handle = remote.id;
-              else if (remote.status === "submitting") submitting = true;
-              else if (remote.status === "failed") { uploadId = undefined; persist(id, null); }
-            } catch (error) {
-              if (!(error instanceof AssemblyAiError && (error.kind === "not-found" || error.uploadEnded))) throw error;
-              uploadId = undefined;
-              persist(id, null);
-            }
-          }
-          if (!handle) {
-            if (!uploadId) {
-              guard();
-              const opId = crypto.randomUUID();
-              await native.beginRemoteOp({ id, did, opId, provider: "assemblyai", mode: "hosted", kind: "hosted_create",
-                fingerprint: `${source.size}:${source.mimeType}`, startedAt: Date.now() });
-              const created = await client.createUpload(source.size, contentType);
-              uploadId = created.uploadId;
-              persist(id, { uploadId });
-              await native.recordRemoteResult({ id, did, opId, result: { outcome: "created", uploadId } });
-            }
-            if (!submitting) {
-              state(id, { kind: "uploading", progress: 0 });
-              const partSize = Math.min(caps.part_size, 1024 * 1024);
-              for (let offset = 0, index = 0; offset < source.size; offset += partSize, index++) {
-                guard();
-                const bytes = await source.readPart(offset, Math.min(partSize, source.size - offset));
-                await client.putPart(uploadId, index, bytes);
-                state(id, { kind: "uploading", progress: Math.min(1, (offset + bytes.length) / source.size) });
-              }
-              logPipeline("transcription_audio_upload", id, "done", { engine: "assemblyai", bodyBytes: source.size });
-            }
-            guard();
-            const opId = crypto.randomUUID();
-            await native.beginRemoteOp({ id, did, opId, provider: "assemblyai", mode: "hosted", kind: "hosted_submit",
-              fingerprint: `${source.size}:${source.mimeType}`, startedAt: Date.now() });
-            const submitted = await client.createTranscript(uploadId, { speakerLabels: recording.options?.identifySpeakers !== false,
-              multichannel: (recording as VoiceNoteRecording & { layout?: string }).layout === "stereo" });
-            handle = submitted.id;
-            persist(id, { handle });
-            await native.recordRemoteResult({ id, did, opId, result: { outcome: "created", jobId: handle } });
-          }
+        guard();
+        // Both the local resume entry and the space commit may have changed while
+        // this invocation waited for the account's upload lane.
+        const latest = readJobs(did)[id] ?? {};
+        const committed = await readCommit(account, id);
+        if (explicitRerun) {
+          if (!committed || !prior || committed.rev !== prior.rev || committed.hash !== prior.hash)
+            throw new Error("The committed transcript changed before this rerun could start. Retry the rerun.");
+        } else if (committed) {
+          transcriptSaved = true;
+          jobs.set(id, { kind: "done", outcome: committed.outcome }); notify();
+          return null;
         }
-        return handle;
+        let existing = await readClaim(account, id);
+        const token = crypto.randomUUID();
+        let reconciled: Awaited<ReturnType<typeof client.lookupJob>> | null = null;
+        const reconcile = async () => {
+          const job = await client.lookupJob(id);
+          if (job.status === "needs_reconciliation" || job.status === "unresolved")
+            throw new AssemblyAiError("needs-reconciliation", "Powerful couldn't confirm an earlier attempt. Exo is checking with AssemblyAI.");
+          if (job.status === "deleted")
+            throw new AssemblyAiError("rejected", "This note's earlier transcript was deleted. Contact support before retrying.");
+          reconciled = job;
+          return job;
+        };
+        if (!existing) {
+          if (!await writeClaim(account, id, { version: 1, status: "active", token, claimedAt: Date.now(),
+            uploadId: latest.uploadId, handle: latest.handle })) existing = await readClaim(account, id);
+        } else if (existing.claim.status === "failed" || (existing.claim.status === "active"
+          && Date.now() - (existing.claim.claimedAt ?? 0) >= CLAIM_TAKEOVER_MS)) {
+          const job = await reconcile();
+          const next: Claim = { ...existing.claim, status: job.status === "submitted" ? "submitted" : "active",
+            token, claimedAt: Date.now(), uploadId: job.upload_id ?? existing.claim.uploadId,
+            handle: job.id ?? existing.claim.handle };
+          if (await writeClaim(account, id, next, existing.etag))
+            existing = { claim: next, etag: existing.etag };
+          else existing = await readClaim(account, id);
+        }
+        // A live owner retains the claim until submission. A submitted handle is
+        // safe to poll from any instance; no caller may submit it a second time.
+        if (existing?.claim.status === "active" && existing.claim.token !== token) return null;
+        if (existing?.claim.status === "failed") return null;
+        let claim: Claim = existing?.claim ?? { version: 1, status: "active", token, claimedAt: Date.now(),
+          uploadId: latest.uploadId, handle: latest.handle };
+        let handle = claim.handle ?? latest.handle;
+        if (existing?.claim.status === "submitted") return handle ?? null;
+        const advance = async (patch: Partial<Claim>) => {
+          const current = await readClaim(account, id);
+          if (!current || current.claim.token !== token || !await writeClaim(account, id, { ...current.claim, ...patch }, current.etag))
+            throw new Error("The Powerful job claim changed. Retry after the other job finishes.");
+          claim = { ...current.claim, ...patch };
+        };
+        const heartbeat = setInterval(() => {
+          if (claim.status !== "active") return;
+          void (async () => {
+            const current = await readClaim(account, id);
+            if (current?.claim.token === token) await writeClaim(account, id, { ...current.claim, claimedAt: Date.now() }, current.etag);
+          })().catch((error) => console.warn("[HostedVoiceNotes] Could not renew job claim", error));
+        }, 60_000);
+        try {
+          if (handle && claim.status !== "submitted") await advance({ handle, status: "submitted" });
+          if (!handle) {
+            const caps = await client.capabilities();
+            if (!caps.hosted) throw new AssemblyAiError("failed", "Powerful isn't available right now. Try again later.");
+            if (source.size > caps.max_bytes) throw new AssemblyAiError("rejected", "This recording is too large for Powerful (120 MB maximum).");
+            const contentType = source.mimeType.split(";")[0].trim().toLowerCase();
+            if (!caps.content_types.includes(contentType)) throw new AssemblyAiError("rejected", "Powerful cannot read this recording's format.");
+            const remoteJob = reconciled ?? await reconcile();
+            let uploadId = remoteJob.upload_id ?? claim.uploadId ?? latest.uploadId;
+            let submitting = false;
+            if (remoteJob.status === "submitted" && remoteJob.id) {
+              handle = remoteJob.id;
+              await advance({ handle, uploadId, status: "submitted" });
+            } else if (remoteJob.status === "submitting") submitting = true;
+            if (uploadId && !handle) {
+              try {
+                const remote = await client.uploadState(uploadId);
+                if (remote.status === "submitted" && remote.id) {
+                  handle = remote.id;
+                  await advance({ handle, status: "submitted" });
+                }
+                else if (remote.status === "submitting") submitting = true;
+                else if (remote.status === "failed") { uploadId = undefined; persist(id, null); await advance({ uploadId: undefined }); }
+              } catch (error) {
+                if (!(error instanceof AssemblyAiError && (error.kind === "not-found" || error.uploadEnded))) throw error;
+                uploadId = undefined;
+                persist(id, null);
+                await advance({ uploadId: undefined });
+              }
+            }
+            if (!handle) {
+              if (!uploadId) {
+                guard();
+                const opId = crypto.randomUUID();
+                await native.beginRemoteOp({ id, did, opId, provider: "assemblyai", mode: "hosted", kind: "hosted_create",
+                  fingerprint: `${source.size}:${source.mimeType}`, startedAt: Date.now() });
+                const created = await client.createUpload(source.size, contentType, id);
+                uploadId = created.uploadId;
+                persist(id, { uploadId });
+                await advance({ uploadId });
+                await native.recordRemoteResult({ id, did, opId, result: { outcome: "created", uploadId } });
+                if (created.status === "submitted" && created.id) {
+                  handle = created.id;
+                  await advance({ handle, status: "submitted" });
+                } else if (created.status === "submitting") submitting = true;
+              }
+              if (!submitting && !handle) {
+                state(id, { kind: "uploading", progress: 0 });
+                const partSize = Math.min(caps.part_size, 1024 * 1024);
+                for (let offset = 0, index = 0; offset < source.size; offset += partSize, index++) {
+                  guard();
+                  const bytes = await source.readPart(offset, Math.min(partSize, source.size - offset));
+                  await client.putPart(uploadId, index, bytes);
+                  state(id, { kind: "uploading", progress: Math.min(1, (offset + bytes.length) / source.size) });
+                }
+                logPipeline("transcription_audio_upload", id, "done", { engine: "assemblyai", bodyBytes: source.size });
+              }
+              if (!handle) {
+                guard();
+                const opId = crypto.randomUUID();
+                await native.beginRemoteOp({ id, did, opId, provider: "assemblyai", mode: "hosted", kind: "hosted_submit",
+                  fingerprint: `${source.size}:${source.mimeType}`, startedAt: Date.now() });
+                const submitted = await client.createTranscript(uploadId, { speakerLabels: recording.channels === 2 || recording.options?.identifySpeakers !== false,
+                  multichannel: recording.channels === 2, sourceId: id });
+                handle = submitted.id;
+                persist(id, { handle });
+                await advance({ handle, status: "submitted" });
+                await native.recordRemoteResult({ id, did, opId, result: { outcome: "created", jobId: handle } });
+              }
+            }
+          }
+          return handle;
+        } catch (error) {
+          // Keep a submitted handle immutable. A failed upload can be claimed
+          // again with a conditional write and resumed from its upload ID.
+          if (claim.status === "active") {
+            for (let attempt = 0; attempt < 3; attempt++) {
+              try { await advance({ status: "failed" }); break; }
+              catch (claimError) { if (attempt === 2) console.warn("[HostedVoiceNotes] Could not release failed job claim", claimError); }
+            }
+          }
+          throw error;
+        } finally { clearInterval(heartbeat); }
       });
-      if (!handle) throw new Error("Powerful did not return a transcript. Try again.");
+      if (!handle) {
+        if (explicitRerun) throw new Error("Powerful couldn't confirm this rerun. Try again.");
+        return;
+      }
       remoteHandle = handle;
       persist(id, { handle });
       const transcript = await pollAssemblyAiTranscript(client, handle, {
@@ -195,20 +338,23 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
         },
       });
       guard();
-      const stereo = (recording as VoiceNoteRecording & { layout?: string }).layout === "stereo";
-      const sentences = assemblyAiSentences(transcript, transcript.utterances?.length ? null : await client.getSentences(handle))
-        .map((sentence) => stereo ? { ...sentence, speaker_name: sentence.speaker_name === "Speaker 1" ? "Me"
-          : sentence.speaker_name === "Speaker 2" ? "Them" : sentence.speaker_name } : sentence);
+      const stereo = recording.channels === 2;
+      const sentences = assemblyAiSentences(transcript, await client.getSentences(handle), { stereo })
+        .map((sentence) => stereo && sentence.channel !== undefined ? { ...sentence,
+          speaker_name: sentence.channel === 0 ? "Me" : "Them" } : sentence);
       const local = recording.sizeBytes > 0 ? await native.getTranscript({ id }) : { transcript: null };
-      const rev = Math.max(local.transcript?.rev ?? 0, prior?.rev ?? 0,
-        explicitRerun ? recording.ledger?.transcriptSync.rev ?? 0 : 0) + 1;
+      const rev = explicitRerun ? prior!.rev + 1 : Math.max(local.transcript?.rev ?? 0, prior?.rev ?? 0) + 1;
       const at = new Date().toISOString();
       const outcome = sentences.length ? "transcribed" : "no_speech";
-      const prepared: LocalTranscript = { version: 1, noteId: id, transcriber: "assemblyai", rev,
+      const prepared: LocalTranscript = { version: 2, noteId: id, transcriber: "assemblyai", rev,
+        ...(explicitRerun && prior ? { rerunBase: { rev: prior.rev, hash: prior.hash } } : {}),
         engine: "assemblyai", model: transcript.speech_model_used ?? null, language: transcript.language_code ?? null,
-        outcome, diarized: recording.options?.identifySpeakers !== false, createdAt: at,
+        outcome, diarized: stereo || recording.options?.identifySpeakers !== false, createdAt: at,
         segments: sentences.map((s) => ({ start: Math.round(s.start_time * 1000), end: Math.round(s.end_time * 1000),
-          text: s.text, speaker: s.speaker_name ?? null })) };
+          text: s.text, speaker: s.speaker_name ?? null,
+          ...(s.speaker_id === undefined ? {} : { speakerId: s.speaker_id }),
+          ...(s.channel === undefined ? {} : { channel: s.channel }),
+          ...(s.timing === undefined ? {} : { timing: s.timing }) })) };
       state(id, { kind: "saving" });
       guard();
       if (explicitRerun && prior) await preserveHistory(account, prior);
@@ -219,7 +365,7 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
         speakers: [...new Set(sentences.map((s) => s.speaker_name).filter((s): s is string => !!s))],
         metadata: { transcription_engine: "assemblyai", transcript_provider: "assemblyai", inference_provider: "assemblyai",
           assemblyai_account: "tinycloud", transcription_outcome: outcome, transcript_text: sentences.map((s) => s.text).join("\n") || null,
-          speaker_labels: recording.options?.identifySpeakers !== false ? "diarized" : "single-speaker", transcribed_at: at,
+          speaker_labels: stereo ? "channels" : recording.options?.identifySpeakers !== false ? "diarized" : "single-speaker", transcribed_at: at,
           model: transcript.speech_model_used ?? null, language: transcript.language_code ?? null } }, { generation, did });
       if (!saved.ok) throw new Error("The transcript is ready, but could not be saved to your space. Try again.");
       if (explicitRerun) {
@@ -265,9 +411,10 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
         : error instanceof Error && (error.message.startsWith("The transcript is ready")
           || error.message === "A different transcript revision won this rerun. Try again.") ? error.message
         : "Powerful couldn't finish this transcript. Try again.";
-      jobs.set(id, { kind: "failed", message, retryable: true, reference: null,
+      jobs.set(id, { kind: "failed", message, retryable: !(error instanceof AssemblyAiError && error.kind === "needs-reconciliation"), reference: null,
         code: error instanceof AssemblyAiError ? error.kind : "transcription_error" });
       notify();
+      if (error instanceof AssemblyAiError && error.kind === "needs-reconciliation") watchReconciliation(id, generation);
     } finally { active.delete(id); }
   };
   return {

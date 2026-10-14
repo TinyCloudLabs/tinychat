@@ -24,10 +24,14 @@
     "allow-recorder-pause",
     "allow-recorder-resume",
     "allow-recorder-stop",
+    "allow-recorder-stop-durable",
+    "allow-recorder-finish",
+    "allow-recorder-quit-anyway",
     "allow-recorder-status",
     "allow-recorder-list-inputs",
     "allow-recorder-select-input",
     "allow-recorder-recover",
+    "allow-recorder-stopped-list",
     "allow-recorder-acknowledge",
     "allow-recorder-failed-list",
     "allow-recorder-failed-retry",
@@ -41,8 +45,6 @@
     "allow-recorder-system-audio-set",
     "allow-recorder-system-audio-consent-get",
     "allow-recorder-system-audio-consent-set",
-    "allow-recorder-auto-save-to-space-get",
-    "allow-recorder-auto-save-to-space-set",
     "core:event:deny-emit",
     "core:event:deny-emit-to"
   ]

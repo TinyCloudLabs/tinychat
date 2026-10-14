@@ -78,7 +78,7 @@ const choose = (host: HTMLElement, value: string) =>
 const button = (host: HTMLElement) => host.querySelector<HTMLButtonElement>('[data-testid="transcribe-button"]')!;
 
 describe("the providers on offer", () => {
-  test("Local when the recording is on this phone, Private when private cloud is available; Local first", () => {
+  test("Local when the recording is on this browser, Private when private cloud is available; Local first", () => {
     expect(transcribeProviders(NOTE, transcription(), phone(), 60)).toEqual(["on-device", "private-cloud"]);
   });
 
@@ -89,7 +89,7 @@ describe("the providers on offer", () => {
     expect(transcribeProviders(NOTE, transcription({ maxSeconds: 7200 }), phone(), null)).toEqual(["on-device", "private-cloud"]);
   });
 
-  test("Local needs the recording on this phone", () => {
+  test("Local needs the recording on this browser", () => {
     expect(transcribeProviders(NOTE, transcription(), null, 60)).toEqual(["private-cloud"]);
   });
 
@@ -139,7 +139,7 @@ describe("the Transcribe action", () => {
   test("a native status failure offers Check again before Private consent", async () => {
     const host = await mount({ read: nowhere, transcription: transcription({ availability: "failed", consented: false,
       checkErrorCode: "native_status_failed" }) });
-    expect(host.textContent).toContain("Couldn't check this phone's file upload");
+    expect(host.textContent).toContain("Couldn't check this browser's file upload");
     expect(host.textContent).toContain("Check again");
   });
 

@@ -15,7 +15,7 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { TRANSCRIBER_NAME } from "@/capture/recorder/final/finalCopy";
 import { createHostedVoiceNoteTrack } from "./hostedVoiceNotes";
 import type { FirefliesSentence } from "../connectors/firefliesClient";
-import { MAX_TURN_SECONDS } from "../localTranscriptTurns";
+import { splitLongTimedSegment } from "./timedSegments";
 import {
   buildPtxUploadOrigin,
   cloudStatusIntervalMs,
@@ -48,6 +48,7 @@ import { readTranscriptCommit, requireVoiceNoteTranscriptCommit, type Transcript
 import { preserveVoiceNoteTranscriptHistory } from "./voiceNoteTranscriptHistory";
 import { whenVoiceNoteSavesIdle } from "./recorderSaves";
 import { transcriptionErrorCopy, voiceNoteTranscriptionFailureForCode } from "./transcriptionErrors";
+import { privatePartsDone } from "./notePipelineCopy";
 import type { VoiceNoteTranscriptionFailure } from "./transcriptionErrors";
 export type { VoiceNoteTranscriptionFailure } from "./transcriptionErrors";
 
@@ -410,41 +411,29 @@ export function localStorageVoiceNoteHoldStore(
 
 // ── Transcript → note ──────────────────────────────────────────────────
 
-/** A voice note has one speaker: whoever held the phone. Same label as Exo Local's mic channel. */
-export const VOICE_NOTE_SPEAKER = "You";
-
-/**
- * PTX segments (one speech region each, ≤ 30 s) as readable sentences: in
- * time order, consecutive regions merged into turns of at most
- * MAX_TURN_SECONDS (the readable-transcripts rule Exo Local uses, which keeps
- * each sentence under meeting chat's excerpt span).
- */
-export function voiceNoteSentences(transcript: Pick<PrivateCloudTranscript, "segments" | "diarized" | "speakers">): FirefliesSentence[] {
+/** Keep PTX's speech regions and speaker/channel identity in the saved body. */
+export function voiceNoteSentences(transcript: Pick<PrivateCloudTranscript, "segments" | "diarized" | "speakers" | "channels">): FirefliesSentence[] {
   const speakerNames = new Map(transcript.speakers?.map((speaker) => [speaker.id, speaker.name]));
   const segments = transcript.segments
     .map((seg) => ({ start: seg.start, end: seg.end, text: typeof seg.text === "string" ? seg.text.trim() : "",
+      channel: seg.channel === 0 || seg.channel === 1 ? seg.channel as 0 | 1 : undefined,
+      speakerId: transcript.diarized ? seg.speaker_id ?? null : null,
       speaker: transcript.diarized && seg.speaker_id
         ? speakerNames.get(seg.speaker_id) ?? (seg.speaker_id.match(/^speaker_(\d+)$/)
           ? `Speaker ${Number(seg.speaker_id.slice(8)) + 1}` : seg.speaker_id)
-        : VOICE_NOTE_SPEAKER }))
+        : transcript.channels === 2 ? seg.channel === 0 ? "Me" : "Them" : null }))
     .filter((seg) => seg.text.length > 0 && Number.isFinite(seg.start) && Number.isFinite(seg.end))
-    .sort((a, b) => a.start - b.start);
-  const turns: { start: number; end: number; texts: string[]; speaker: string }[] = [];
-  for (const seg of segments) {
-    const last = turns[turns.length - 1];
-    if (last !== undefined && last.speaker === seg.speaker && Math.max(last.end, seg.end) - last.start <= MAX_TURN_SECONDS) {
-      last.texts.push(seg.text);
-      last.end = Math.max(last.end, seg.end);
-      continue;
-    }
-    turns.push({ start: seg.start, end: seg.end, texts: [seg.text], speaker: seg.speaker });
-  }
-  return turns.map((turn, index) => ({
+    .flatMap((seg) => splitLongTimedSegment({ ...seg, timing: "engine" as const }, 30))
+    .sort((a, b) => a.start - b.start || (a.channel ?? -1) - (b.channel ?? -1) || a.end - b.end);
+  return segments.map((turn, index) => ({
     index,
     speaker_name: turn.speaker,
-    text: turn.texts.join(" "),
+    text: turn.text,
     start_time: turn.start,
     end_time: turn.end,
+    ...(turn.channel === undefined ? {} : { channel: turn.channel }),
+    ...(turn.speakerId === null ? {} : { speaker_id: turn.speakerId }),
+    timing: turn.timing,
   }));
 }
 
@@ -477,6 +466,24 @@ function transcriptStatsMetadata(transcript: PrivateCloudTranscript): VoiceNoteT
     metadata.transcription_vad_dropped_above_floor_pct = dropped;
   if (typeof transcript.stats?.vad_fallback === "boolean")
     metadata.transcription_vad_fallback = transcript.stats.vad_fallback;
+  const mode = transcript.stats?.vad_mode;
+  if (mode === "primary" || mode === "fallback" || mode === "quiet")
+    metadata.transcription_vad_mode = mode;
+  const noiseFloor = transcript.stats?.noise_floor_dbfs;
+  if (typeof noiseFloor === "number" && Number.isFinite(noiseFloor))
+    metadata.transcription_noise_floor_dbfs = noiseFloor;
+  const median = transcript.stats?.median_dbfs;
+  if (typeof median === "number" && Number.isFinite(median))
+    metadata.transcription_median_dbfs = median;
+  const p99 = transcript.stats?.p99_dbfs;
+  if (typeof p99 === "number" && Number.isFinite(p99))
+    metadata.transcription_p99_dbfs = p99;
+  const speechPeak = transcript.stats?.speech_peak_s;
+  if (typeof speechPeak === "number" && Number.isFinite(speechPeak) && speechPeak >= 0)
+    metadata.transcription_speech_peak_s = speechPeak;
+  const droppedAboveNoise = transcript.stats?.dropped_above_noise_pct;
+  if (typeof droppedAboveNoise === "number" && Number.isFinite(droppedAboveNoise) && droppedAboveNoise >= 0 && droppedAboveNoise <= 100)
+    metadata.transcription_vad_dropped_above_noise_pct = droppedAboveNoise;
   return metadata;
 }
 
@@ -511,7 +518,7 @@ export function prepareVoiceNoteTranscript(transcript: PrivateCloudTranscript, t
       language: transcript.language ?? null,
       transcript_text: sentences.map((s) => s.text).join("\n"),
       transcription_outcome: "transcribed",
-      speaker_labels: transcript.diarized ? "diarized" : "single-speaker",
+      speaker_labels: transcript.channels === 2 ? "channels" : transcript.diarized ? "diarized" : "single-speaker",
       ...statsMetadata,
     },
   };
@@ -1981,10 +1988,10 @@ export function transcriptionStatusText(status: VoiceNoteTranscriptionStatus): s
       return status.progress === undefined ? "Sending audio to Private transcription…" : `Sending audio to Private transcription · ${Math.round(Math.min(1, Math.max(0, status.progress)) * 100)}%`;
     case "queued":
       return status.position !== null && status.position > 0 ? `Queued (position ${status.position})…` : "Queued…";
-    case "processing":
-      return status.total !== null && status.total > 0
-        ? `Transcribing in private cloud… ${status.completed ?? 0}/${status.total}`
-        : "Transcribing in private cloud…";
+    case "processing": {
+      const partsDone = privatePartsDone(status.completed, status.total);
+      return partsDone === null ? "Transcribing in private cloud…" : `Transcribing in private cloud… ${partsDone}`;
+    }
     case "saving":
       return "Saving the transcript…";
   }

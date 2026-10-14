@@ -1873,6 +1873,10 @@ paths:
                 content_type:
                   type: string
                   enum: [audio/mpeg, audio/wav, audio/ogg, audio/mp4, audio/webm, audio/flac]
+                source_id:
+                  type: string
+                  maxLength: 256
+                  description: Exo note ID. With the authenticated account, this is the durable idempotency key.
       responses:
         "201":
           description: Created
@@ -1890,6 +1894,8 @@ paths:
                   expires_at:
                     type: string
                     format: date-time
+        "200":
+          description: Existing job for this account and source_id; includes upload_id, status, and id when submitted.
         "400":
           $ref: "#/components/responses/AssemblyAiHostedFailure"
         "401":
@@ -1901,6 +1907,39 @@ paths:
         "429":
           $ref: "#/components/responses/AssemblyAiHostedFailure"
         "503":
+          $ref: "#/components/responses/AssemblyAiHostedFailure"
+  /api/transcriber/assemblyai/hosted/jobs/{source_id}:
+    parameters:
+      - name: source_id
+        in: path
+        required: true
+        schema:
+          type: string
+          maxLength: 256
+    get:
+      operationId: lookupAssemblyAiHostedNoteJob
+      summary: Reconcile an Exo note's hosted job by account and source ID
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Job state, including missing, needs_reconciliation and deleted states.
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "503":
+          $ref: "#/components/responses/AssemblyAiHostedFailure"
+
+  /api/transcriber/assemblyai/hosted/admin/reconcile:
+    post:
+      operationId: reconcileAssemblyAiHostedJobs
+      summary: Retry AssemblyAI lookup for blocked paid outcomes
+      description: Requires a session and X-AssemblyAI-Admin-Key matching ASSEMBLYAI_HOSTED_ADMIN_KEY. Unknown outcomes remain blocked.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Counts of checked and recovered note jobs.
+        "404":
           $ref: "#/components/responses/AssemblyAiHostedFailure"
 
   /api/transcriber/assemblyai/hosted/uploads/{upload_id}:
@@ -2039,6 +2078,10 @@ paths:
               properties:
                 upload_id:
                   type: string
+                source_id:
+                  type: string
+                  maxLength: 256
+                  description: Exo note ID, required for note-keyed submissions.
                 speaker_labels:
                   type: boolean
                 multichannel:
@@ -2688,6 +2731,8 @@ components:
             - assemblyai_rate_limited
             - assemblyai_unavailable
             - assemblyai_hosted_unavailable
+            - assemblyai_job_uncertain
+            - assemblyai_needs_reconciliation
         message:
           type: string
         retry_after_seconds:
@@ -2892,6 +2937,32 @@ components:
               nullable: true
             vad_fallback:
               type: boolean
+              nullable: true
+            vad_mode:
+              type: string
+              enum: [primary, fallback, quiet]
+              nullable: true
+              description: VAD path selected for the job; malformed or unknown PTX values are omitted by the relay.
+            noise_floor_dbfs:
+              type: number
+              nullable: true
+              description: Per-job noise-floor estimate in dBFS; may be negative.
+            median_dbfs:
+              type: number
+              nullable: true
+              description: Per-job median level in dBFS; may be negative.
+            p99_dbfs:
+              type: number
+              nullable: true
+              description: Per-job 99th-percentile level in dBFS; may be negative.
+            speech_peak_s:
+              type: number
+              minimum: 0
+              nullable: true
+            dropped_above_noise_pct:
+              type: number
+              minimum: 0
+              maximum: 100
               nullable: true
     PrivateCloudOutcome:
       type: object

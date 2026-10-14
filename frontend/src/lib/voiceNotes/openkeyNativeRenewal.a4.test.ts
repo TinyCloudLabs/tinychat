@@ -1,8 +1,11 @@
-import { afterAll, expect, mock, test } from "bun:test";
+import { afterAll, afterEach, expect, mock, test } from "bun:test";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import type { NativeSession, OpenKeyNative } from "@openkey/sdk-capacitor";
 import { putAudio } from "../audio/audioStore";
-import { __setVoiceNotesForTests, type VoiceNoteRecording, type VoiceNotesPlugin } from "./nativeVoiceNotes";
+import { __setVoiceNotesForTests, VoiceNotes, type VoiceNoteRecording, type VoiceNotesPlugin } from "./nativeVoiceNotes";
+
+const originalVoiceNotes = VoiceNotes;
+afterEach(() => __setVoiceNotesForTests(originalVoiceNotes, { available: null }));
 
 const manifestAndParts = new Map<string, unknown>();
 const records = new Map<string, unknown>();

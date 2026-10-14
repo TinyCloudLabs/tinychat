@@ -8,8 +8,10 @@ import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from "b
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { fakeVoiceNoteStore } from "@/harness/fakeVoiceNoteStore";
-import { __setVoiceNotesForTests, type VoiceNoteRecording, type VoiceNotesPlugin } from "./nativeVoiceNotes";
+import { __setVoiceNotesForTests, VoiceNotes, type VoiceNoteRecording, type VoiceNotesPlugin } from "./nativeVoiceNotes";
 import { currentAccountGeneration } from "./accountContext";
+
+const originalVoiceNotes = VoiceNotes;
 
 const realStore = { ...(await import("./voiceNoteStore")) };
 mock.module("./voiceNoteStore", () => ({
@@ -31,7 +33,7 @@ describe("voice-note network error copy", () => {
     console.warn = (...args: unknown[]) => { logged.push(args); };
     try {
       expect(saves.messageOf(new TypeError(raw))).toBe(
-        "Couldn't reach your TinyCloud space. This note is still on your phone — try again.",
+        "Couldn't reach your TinyCloud space. This note is safe on this browser — try again.",
       );
       const output = logged.map((args) => args.join(" ")).join(" ");
       expect(output).toContain("TinyCloud network failure");
@@ -157,7 +159,7 @@ const tcw = { did: "did:example:alice" } as TinyCloudWeb;
 
 function recording(id: string, startedAt: number): VoiceNoteRecording {
   return { id, startedAt, durationMs: 1000, mimeType: "audio/mp4", sizeBytes: 4, silencedMs: 0, silencedEvents: 0, noSignalMs: 0,
-    version: 2, owner: tcw.did, rev: 1, options: { transcriber: "on-device", identifySpeakers: false, uploadAudio: true } };
+    version: 2, owner: tcw.did, rev: 1, options: { transcriber: "private-cloud", identifySpeakers: false, uploadAudio: true } };
 }
 
 /** The phone: what is listed as pending, and how deleteAudio and listPending behave. */
@@ -216,6 +218,7 @@ beforeEach(() => {
   fakeVoiceNoteStore.save = ok;
 });
 afterEach(() => {
+  __setVoiceNotesForTests(originalVoiceNotes, { available: null });
   fakeVoiceNoteStore.save = null;
   delete (globalThis as { localStorage?: unknown }).localStorage;
 });
@@ -226,8 +229,8 @@ describe("savePendingRecordings", () => {
     await saves.pendingStore.refresh(null);
     saves.pendingStore.reportNoteFailure("retrying", "Load failed");
     expect(saves.pendingStore.snapshot()).toMatchObject({
-      lastError: "Couldn't reach your TinyCloud space. This note is still on your phone — try again.",
-      notes: [{ id: "retrying", failed: { kind: "offline", message: "Couldn't reach your TinyCloud space. This note is still on your phone — try again." } }],
+      lastError: "Couldn't reach your TinyCloud space. This note is safe on this browser — try again.",
+      notes: [{ id: "retrying", failed: { kind: "offline", message: "Couldn't reach your TinyCloud space. This note is safe on this browser — try again." } }],
     });
     const finish = saves.pendingStore.beginManualSave();
     try {
@@ -275,11 +278,11 @@ describe("savePendingRecordings", () => {
     const run = await saves.savePendingRecordings(tcw);
     expect(run.saved).toEqual([]);
     expect(run.left.map((r) => r.id)).toEqual(["a", "b"]);
-    expect(run.lastError).toBe("Couldn't reach your TinyCloud space. This note is still on your phone — try again.");
+    expect(run.lastError).toBe("Couldn't reach your TinyCloud space. This note is safe on this browser — try again.");
     expect(saves.pendingStore.snapshot()).toMatchObject({
       listing: { state: "ok", count: 2 },
       running: false,
-      lastError: "Couldn't reach your TinyCloud space. This note is still on your phone — try again.",
+      lastError: "Couldn't reach your TinyCloud space. This note is safe on this browser — try again.",
     });
   });
 
@@ -318,7 +321,7 @@ describe("saveRecording", () => {
     await Promise.resolve();
     expect(idle).toBe(false);
     finish();
-    expect(await saving).toMatchObject({ kind: "failed", failure: "Couldn't reach your TinyCloud space. This note is still on your phone — try again.",
+    expect(await saving).toMatchObject({ kind: "failed", failure: "Couldn't reach your TinyCloud space. This note is safe on this browser — try again.",
       failureKind: "offline", failureCause: { code: "NETWORK", message: "The network connection was lost." } });
     await waiting;
     expect(idle).toBe(true);
@@ -468,9 +471,9 @@ describe("after a reload", () => {
     expect(cold.pendingStore.snapshot().listing).toEqual({ state: "unknown" });
     __setVoiceNotesForTests({ ...plugin, listPending: async () => Promise.reject(new Error("no bridge")) } as VoiceNotesPlugin, { available: true });
     const run = await cold.savePendingRecordings(tcw);
-    expect(run).toEqual({ total: 0, left: [], saved: [], lastError: "Could not check this phone for unsaved notes: no bridge" });
+    expect(run).toEqual({ total: 0, left: [], saved: [], lastError: "Could not check this browser for unsaved notes: no bridge" });
     expect(cold.pendingStore.snapshot()).toEqual({
-      listing: { state: "error", message: "Could not check this phone for unsaved notes: no bridge" },
+      listing: { state: "error", message: "Could not check this browser for unsaved notes: no bridge" },
       accountDid: null,
       running: false,
       lastError: null,
@@ -597,7 +600,7 @@ describe("pendingStore", () => {
     expect(saves.pendingStore.snapshot()).toBe(snapshot);
     __setVoiceNotesForTests({ ...plugin, listPending: async () => Promise.reject(new Error("no bridge")) } as VoiceNotesPlugin, { available: true });
     await saves.pendingStore.refresh(null);
-    expect(saves.pendingStore.snapshot().listing).toEqual({ state: "error", message: "Could not check this phone for unsaved notes: no bridge" });
+    expect(saves.pendingStore.snapshot().listing).toEqual({ state: "error", message: "Could not check this browser for unsaved notes: no bridge" });
   });
 });
 
@@ -668,7 +671,7 @@ describe("discard guard", () => {
     saves.markDiscarded("discard-busy");
     const first = await saves.savePendingRecordings(tcw);
     expect(first.saved).toEqual([]);
-    expect(first.lastError).toBe("Discarded, but this phone kept its copy: the file is busy");
+    expect(first.lastError).toBe("Discarded, but this browser kept its copy: the file is busy");
     expect(saves.isDiscarded("discard-busy")).toBe(true);
     expect(storage.get(saves.VOICE_NOTE_DISCARDED_KEY)).toBe('["discard-busy"]');
     // Still on the phone, and counted.

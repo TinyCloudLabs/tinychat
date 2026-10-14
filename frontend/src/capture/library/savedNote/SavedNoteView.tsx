@@ -36,8 +36,10 @@ export interface SavedNoteViewProps {
   meta: string;
   /** Where the note is on its way to the space, under the meta line; null once it is all done. */
   stepper: ReactNode;
+  activityControl?: ReactNode;
   /** Reads the recording's audio; null when it has none stored. */
   audio: NoteAudio | null;
+  audioStorage?: ReactNode;
   /** How long the recording is, known before its audio loads; null when it was not recorded. */
   durationSecs: number | null;
   /** The transcript section (the Library's own). */
@@ -271,6 +273,7 @@ export function SavedNoteBody(
           <MeetingAudioPlayer key={recordingId} {...noteAudioPlayerProps(audio)} durationSecs={props.durationSecs} seek={screen.seek} />
         </div>
       )}
+      {props.audioStorage}
       {layout === "page" ? (
         <>
           {notes}
@@ -348,14 +351,14 @@ export function SavedNotePage(props: SavedNoteViewProps) {
       data-note-id={props.id}
     >
       <div className="sn-col" inert={props.screen.draft.confirming !== null}>
-        <button
+        <div className="flex flex-wrap items-center justify-between gap-2"><button
           type="button"
           className="sn-back"
           aria-label={COPY.backLabel}
           onClick={props.onBack}
         >
           <span aria-hidden="true">←</span> {COPY.back}
-        </button>
+        </button>{props.activityControl}</div>
         <h1 className="soft-title sn-title" data-testid="note-detail">
           {props.title}
         </h1>
@@ -416,6 +419,7 @@ export function SavedNoteSheet(props: SavedNoteViewProps) {
                 <Dialog.Close className="sn-x" aria-label={COPY.close}>
                   <span aria-hidden="true">✕</span>
                 </Dialog.Close>
+                {props.activityControl}
               </div>
               <Dialog.Description className="sn-meta">
                 {props.meta}

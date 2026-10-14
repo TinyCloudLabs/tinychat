@@ -11,6 +11,8 @@
 
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import * as fsPromises from "node:fs/promises";
 import type { Server } from "node:http";
 import { tmpdir } from "node:os";
@@ -24,18 +26,21 @@ import { createUploadRunner, type PendingUpload, type UploadDeps } from "../../.
 
 import { localValidationFromEnv } from "../local-validation.js";
 import { createAuthMiddleware } from "../middleware/auth.js";
-import { SESSION_LIMITS, applyRateLimiters } from "../rate-limits.js";
-import { ASSEMBLYAI_HOSTED_ERRORS, ASSEMBLYAI_HOSTED_MOUNT, createAssemblyAiHostedRouter, isHostedPartPath } from "../routes/assemblyai-hosted.js";
+import { ASSEMBLYAI_HOSTED_UPLOAD_LIMIT, TRANSCRIBER_LIMIT, applyRateLimiters } from "../rate-limits.js";
+import { ASSEMBLYAI_HOSTED_ERRORS, ASSEMBLYAI_HOSTED_MOUNT, createAssemblyAiHostedRouter, isHostedPartPath, reconcileHostedJobs } from "../routes/assemblyai-hosted.js";
 import {
   DEFAULT_DAILY_BYTES,
   HOSTED_PART_SIZE,
   HostedUploadStore,
+  HOSTED_IDENTITY_KEY,
   MAX_HOSTED_BYTES,
   SETTLED_TTL_MS,
   SUBMIT_DEADLINE_MS,
   UPLOAD_TTL_MS,
   assemblyAiHostedConfigFromEnv,
   issueHandle,
+  rebuildTranscript,
+  rebuildSentences,
   type AssemblyAiHostedConfig,
 } from "../services/assemblyai-hosted.js";
 
@@ -48,7 +53,41 @@ const ADDRESS_C = "0xcccccccccccccccccccccccccccccccccccccccc";
 const TRANSCRIPT_ID = "6ca36708-a9e5-4195-b97c-2dbd098babbf";
 const UPLOAD_URL = "https://cdn.assemblyai.com/upload/synthetic-upload-ref";
 const UPSTREAM_DETAIL = "UPSTREAM-DETAIL account and audio info";
+
+test("provider string channels normalize to zero-based Exo channels", () => {
+  expect(rebuildTranscript({ status: "completed", utterances: [
+    { start: 0, end: 1, text: "Me", speaker: null, channel: "1", confidence: 0.9, words: [] },
+    { start: 0, end: 1, text: "Them", speaker: null, channel: "2", confidence: 0.9, words: [] },
+  ] }, "handle")?.utterances?.map((u) => u.channel)).toEqual([0, 1]);
+  expect(rebuildSentences({ sentences: [
+    { start: 0, end: 40_000, text: "One. Two.", speaker: "A", channel: "1", confidence: 0.9,
+      words: [{ start: 0, end: 10_000, text: "One." }, { start: 31_000, end: 40_000, text: "Two." }] },
+    { start: 10_000, end: 11_000, text: "Yes.", speaker: "B", channel: "2", confidence: 0.9, words: [] },
+  ] })).toEqual({ sentences: [
+    { start: 0, end: 40_000, text: "One. Two.", speaker: "A", channel: 0,
+      words: [{ start: 0, end: 10_000, text: "One." }, { start: 31_000, end: 40_000, text: "Two." }] },
+    { start: 10_000, end: 11_000, text: "Yes.", speaker: "B", channel: 1 },
+  ] });
+});
 const T0 = Date.parse("2026-10-04T12:00:00Z");
+const identities = new Map<string, Map<string, unknown>>();
+function identityFor(dir: string) {
+  let values = identities.get(dir);
+  if (!values) { values = new Map(); identities.set(dir, values); }
+  return {
+    get: async <T>(key: string): Promise<T | null> => (values!.get(key) as T | undefined) ?? null,
+    putIfAbsent: async (key: string, value: unknown): Promise<boolean> => {
+      if (values!.has(key)) return false;
+      values!.set(key, value);
+      return true;
+    },
+  };
+}
+function makeStore(dir: string, bytes: number, max: number, removeSpool?: typeof fsPromises.rm,
+  tombstoneLimits?: { global: number; account: number }, outcomeLimits?: { global: number; account: number }, freshId = "test-install-id") {
+  return new HostedUploadStore(dir, bytes, max, removeSpool, tombstoneLimits, outcomeLimits, identityFor(dir), freshId);
+}
+
 
 test("removed personal-key transcript delete returns 410 instead of an already-deleted 404", async () => {
   const h = await setup({ config: null });
@@ -109,8 +148,9 @@ async function setup(options: { answer?: Answer; config?: AssemblyAiHostedConfig
   const spoolDir = mkdtempSync(join(tmpdir(), "tinychat-assemblyai-test-"));
   closers.push(() => rmSync(spoolDir, { recursive: true, force: true }));
   const config = options.config === null ? ({ hosted: false, reason: "both_unset" } as const) : (options.config ?? hostedConfig(spoolDir, { dailyBytes: options.dailyBytes }));
-  const store = config.hosted ? new HostedUploadStore(config.spoolDir, config.dailyBytes, options.maxConcurrent ?? 4, options.removeSpool, undefined, options.outcomeLimits) : null;
+  const store = config.hosted ? makeStore(config.spoolDir, config.dailyBytes, options.maxConcurrent ?? 4, options.removeSpool, undefined, options.outcomeLimits) : null;
   await store?.init();
+  if (store) closers.push(() => store.close());
   const clock = { now: T0 };
   const calls: Upstream[] = [];
   const logs: { line: string; alert: boolean }[] = [];
@@ -149,8 +189,8 @@ async function setup(options: { answer?: Answer; config?: AssemblyAiHostedConfig
     return tokens.get(address)!;
   };
 
-  async function req(method: string, path: string, opts: { as?: string; body?: unknown; raw?: Uint8Array; contentType?: string } = {}) {
-    const headers: Record<string, string> = { Authorization: `Bearer ${await tokenFor(opts.as ?? ADDRESS_A)}`, "X-Requested-With": "XMLHttpRequest" };
+  async function req(method: string, path: string, opts: { as?: string; body?: unknown; raw?: Uint8Array; contentType?: string; headers?: Record<string, string> } = {}) {
+    const headers: Record<string, string> = { Authorization: `Bearer ${await tokenFor(opts.as ?? ADDRESS_A)}`, "X-Requested-With": "XMLHttpRequest", ...opts.headers };
     let body: BodyInit | undefined;
     if (opts.raw) {
       headers["Content-Type"] = opts.contentType ?? "application/octet-stream";
@@ -188,7 +228,8 @@ async function setup(options: { answer?: Answer; config?: AssemblyAiHostedConfig
     return (await req("GET", `/hosted/uploads/${id}`, { as })).json;
   }
 
-  return { base, tokenFor, req, createUpload, upload, submit, calls, logs, clock, store, spoolDir, spoolFiles: () => readdirSync(spoolDir) };
+  return { base, tokenFor, req, createUpload, upload, submit, calls, logs, clock, store, spoolDir,
+    spoolFiles: () => readdirSync(spoolDir).filter((name) => name !== ".hosted-writer.lock" && name !== ".hosted-boot-id" && name !== "spool.json") };
 }
 
 function audio(bytes: number): Uint8Array {
@@ -197,14 +238,321 @@ function audio(bytes: number): Uint8Array {
   return out;
 }
 
+describe("Exo note idempotency", () => {
+  test("a stale receiving job resumes its upload ID and resends parts once", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tinychat-assemblyai-resume-"));
+    closers.push(() => rmSync(dir, { recursive: true, force: true }));
+    const first = makeStore(dir, DEFAULT_DAILY_BYTES, 4);
+    await first.init();
+    const created = await first.create(ADDRESS_A, 3, "audio/mp4", T0, "resume-note");
+    if (!created.ok || !("upload" in created)) throw new Error("upload not created");
+    await first.writePart(created.upload, 0, audio(3));
+    await first.close();
+    const restarted = makeStore(dir, DEFAULT_DAILY_BYTES, 4);
+    await restarted.init();
+    expect(restarted.noteJob(ADDRESS_A, "resume-note")).toMatchObject({ status: "receiving", upload_id: created.upload.id });
+    const resumed = await restarted.create(ADDRESS_A, 3, "audio/mp4", Date.now(), "resume-note");
+    if (!resumed.ok || !("upload" in resumed)) throw new Error("upload not resumed");
+    expect(resumed.upload.id).toBe(created.upload.id);
+    expect(resumed.upload.received).toEqual([]);
+    let paidCalls = 0;
+    expect(await restarted.submitIfComplete(resumed.upload, Date.now, async () => {
+      paidCalls++;
+      return { status: "submitted", handle: issueHandle(HANDLE_KEY, TRANSCRIPT_ID, ADDRESS_A, Date.now()) };
+    })).toBe(false);
+    await restarted.writePart(resumed.upload, 0, audio(3));
+    expect(await restarted.submitIfComplete(resumed.upload, Date.now, async () => {
+      paidCalls++;
+      return { status: "submitted", handle: issueHandle(HANDLE_KEY, TRANSCRIPT_ID, ADDRESS_A, Date.now()) };
+    })).toBe(true);
+    await restarted.idle();
+    expect(paidCalls).toBe(1);
+    await restarted.close();
+  });
+
+  test("partial records are quarantined and cannot authorize another paid submission after reboot", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tinychat-assemblyai-partial-"));
+    closers.push(() => rmSync(dir, { recursive: true, force: true }));
+    const sourceId = "partial-note";
+    const key = createHash("sha256").update(JSON.stringify([ADDRESS_A, sourceId])).digest("hex");
+    writeFileSync(join(dir, "spool.json"), JSON.stringify({ installId: "test-install", createdAt: new Date().toISOString() }));
+    writeFileSync(join(dir, `note-${key}.json`), '{"address":');
+    const first = makeStore(dir, DEFAULT_DAILY_BYTES, 4);
+    await first.init();
+    expect(readdirSync(dir).some((name) => name.startsWith(`note-${key}.json.`) && name.endsWith(".quarantine"))).toBe(true);
+    expect(first.noteJob(ADDRESS_A, sourceId)).toEqual({ status: "unresolved" });
+    expect(first.reconciliationJobs()).toEqual([{ key, job: null }]);
+    expect(await reconcileHostedJobs(hostedConfig(dir), first, (async () => { throw new Error("provider must not be queried without a reference"); }) as typeof fetch))
+      .toEqual({ checked: 1, recovered: 0 });
+    expect(await first.create(ADDRESS_A, 3, "audio/mp4", T0, sourceId)).toMatchObject({ ok: false, code: "assemblyai_needs_reconciliation" });
+    await first.close();
+    const restarted = makeStore(dir, DEFAULT_DAILY_BYTES, 4);
+    await restarted.init();
+    expect(restarted.noteJob(ADDRESS_A, sourceId)).toEqual({ status: "unresolved" });
+    expect(restarted.reconciliationJobs()).toEqual([{ key, job: null }]);
+    expect(await restarted.create(ADDRESS_A, 3, "audio/mp4", T0, sourceId)).toMatchObject({ ok: false, code: "assemblyai_needs_reconciliation" });
+    await restarted.close();
+    const routed = await setup({ config: hostedConfig(dir) });
+    expect((await routed.req("GET", `/hosted/jobs/${sourceId}`)).json).toEqual({ status: "unresolved" });
+    expect((await routed.req("POST", "/hosted/uploads", { body: { byte_size: 3, content_type: "audio/mp4", source_id: sourceId } })).json)
+      .toMatchObject({ error: "assemblyai_needs_reconciliation" });
+  });
+
+  test("a corrupt legacy sidecar is quarantined once even though recovery uses an original names snapshot", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tinychat-assemblyai-sidecar-"));
+    closers.push(() => rmSync(dir, { recursive: true, force: true }));
+    const sourceId = "sidecar-note";
+    const key = createHash("sha256").update(JSON.stringify([ADDRESS_A, sourceId])).digest("hex");
+    const uploadId = `aau_${"a".repeat(32)}`;
+    writeFileSync(join(dir, "spool.json"), JSON.stringify({ installId: "test-install", createdAt: new Date().toISOString() }));
+    writeFileSync(join(dir, `note-${key}.json`), JSON.stringify({ address: ADDRESS_A, sourceId, uploadId, bootId: "old", state: "submitting" }));
+    writeFileSync(join(dir, `note-${key}-${uploadId}.json`), "{broken");
+    const store = makeStore(dir, DEFAULT_DAILY_BYTES, 4);
+    await store.init();
+    expect(readdirSync(dir).filter((name) => name.startsWith(`note-${key}-${uploadId}.json.`) && name.endsWith(".quarantine"))).toHaveLength(1);
+    expect(await store.create(ADDRESS_A, 3, "audio/mp4", T0, sourceId)).toMatchObject({ ok: false, code: "assemblyai_needs_reconciliation" });
+    await store.close();
+  });
+
+  test("spool identity is durable and a markerless directory with prior state refuses startup", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tinychat-assemblyai-identity-"));
+    closers.push(() => rmSync(dir, { recursive: true, force: true }));
+    const first = makeStore(dir, DEFAULT_DAILY_BYTES, 4);
+    await first.init();
+    const identity = readFileSync(join(dir, "spool.json"), "utf8");
+    expect(JSON.parse(identity).installId).toEqual(expect.any(String));
+    await first.close();
+    const second = makeStore(dir, DEFAULT_DAILY_BYTES, 4);
+    await second.init();
+    expect(readFileSync(join(dir, "spool.json"), "utf8")).toBe(identity);
+    await second.close();
+    rmSync(join(dir, "spool.json"));
+    await expect(makeStore(dir, DEFAULT_DAILY_BYTES, 4).init()).rejects.toThrow("hosted spool missing but off-volume identity exists");
+  });
+
+  test("two fresh volumes sharing KV both read absent; only one starts and reaches a paid call", async () => {
+    const dirs = [mkdtempSync(join(tmpdir(), "tinychat-assemblyai-race-a-")), mkdtempSync(join(tmpdir(), "tinychat-assemblyai-race-b-"))];
+    for (const dir of dirs) closers.push(() => rmSync(dir, { recursive: true, force: true }));
+    const values = new Map<string, unknown>();
+    let reads = 0;
+    let releaseReads!: () => void;
+    const bothRead = new Promise<void>((resolve) => { releaseReads = resolve; });
+    const identityStore = {
+      get: async <T>(key: string): Promise<T | null> => {
+        const value = (values.get(key) as T | undefined) ?? null;
+        if (++reads === 2) releaseReads();
+        await bothRead;
+        return value;
+      },
+      putIfAbsent: async (key: string, value: unknown): Promise<boolean> => {
+        if (values.has(key)) return false;
+        values.set(key, value);
+        return true;
+      },
+    };
+    const stores = dirs.map(dir => new HostedUploadStore(dir, DEFAULT_DAILY_BYTES, 4, undefined, undefined, undefined, identityStore, "same-install-id"));
+    const results = await Promise.allSettled(stores.map(store => store.init()));
+    expect(results.filter(result => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter(result => result.status === "rejected")).toHaveLength(1);
+    expect(String((results.find(result => result.status === "rejected") as PromiseRejectedResult).reason))
+      .toContain("enrolled by another writer");
+    const winner = stores[results.findIndex(result => result.status === "fulfilled")]!;
+    closers.push(() => winner.close());
+    let paidCalls = 0;
+    const created = await winner.create(ADDRESS_A, 3, "audio/mp4", Date.now(), "race-note");
+    if (!created.ok || !("upload" in created)) throw new Error("upload not created");
+    await winner.writePart(created.upload, 0, audio(3));
+    expect(await winner.submitIfComplete(created.upload, Date.now, async () => {
+      paidCalls++;
+      return { status: "submitted", handle: issueHandle(HANDLE_KEY, TRANSCRIPT_ID, ADDRESS_A, Date.now()) };
+    })).toBe(true);
+    await winner.idle();
+    expect(paidCalls).toBe(1);
+  });
+
+  test("a paid note survives complete spool-volume loss without a second paid call", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tinychat-assemblyai-volume-loss-"));
+    closers.push(() => rmSync(dir, { recursive: true, force: true }));
+    const first = makeStore(dir, DEFAULT_DAILY_BYTES, 4);
+    await first.init();
+    const created = await first.create(ADDRESS_A, 3, "audio/mp4", Date.now(), "paid-note");
+    if (!created.ok || !("upload" in created)) throw new Error("upload not created");
+    await first.writePart(created.upload, 0, audio(3));
+    let paidCalls = 0;
+    expect(await first.submitIfComplete(created.upload, Date.now, async () => {
+      paidCalls++;
+      return { status: "submitted", handle: issueHandle(HANDLE_KEY, TRANSCRIPT_ID, ADDRESS_A, Date.now()) };
+    })).toBe(true);
+    await first.idle();
+    await first.close();
+    rmSync(dir, { recursive: true, force: true });
+    await expect(makeStore(dir, DEFAULT_DAILY_BYTES, 4).init()).rejects.toThrow("hosted spool missing but off-volume identity exists");
+    expect(paidCalls).toBe(1);
+    await expect(identityFor(dir).get(HOSTED_IDENTITY_KEY)).resolves.toMatchObject({ installId: "test-install-id" });
+  });
+
+  test("a fresh-install id is required once and cannot authorize a replacement spool", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tinychat-assemblyai-fresh-"));
+    closers.push(() => rmSync(dir, { recursive: true, force: true }));
+    await expect(makeStore(dir, DEFAULT_DAILY_BYTES, 4, undefined, undefined, undefined, "").init())
+      .rejects.toThrow("ASSEMBLYAI_HOSTED_FRESH_INSTALL");
+    const first = makeStore(dir, DEFAULT_DAILY_BYTES, 4, undefined, undefined, undefined, "new-install-123");
+    await first.init();
+    expect(JSON.parse(readFileSync(join(dir, "spool.json"), "utf8")).installId).toBe("new-install-123");
+    await first.close();
+    const restarted = makeStore(dir, DEFAULT_DAILY_BYTES, 4, undefined, undefined, undefined, "");
+    await restarted.init();
+    await restarted.close();
+    rmSync(dir, { recursive: true, force: true });
+    await expect(makeStore(dir, DEFAULT_DAILY_BYTES, 4, undefined, undefined, undefined, "new-install-123").init())
+      .rejects.toThrow("hosted spool missing but off-volume identity exists");
+  });
+
+  test("a replaced spool identity cannot impersonate the expected installation", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tinychat-assemblyai-replaced-"));
+    closers.push(() => rmSync(dir, { recursive: true, force: true }));
+    const first = makeStore(dir, DEFAULT_DAILY_BYTES, 4);
+    await first.init();
+    await first.close();
+    writeFileSync(join(dir, "spool.json"), JSON.stringify({ installId: "another-install", createdAt: new Date().toISOString() }));
+    await expect(makeStore(dir, DEFAULT_DAILY_BYTES, 4).init()).rejects.toThrow("identity differs from off-volume identity");
+  });
+
+  test("startup reconciliation recovers a provider match and keeps unknown paid outcomes blocked", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tinychat-assemblyai-reconcile-"));
+    closers.push(() => rmSync(dir, { recursive: true, force: true }));
+    const first = makeStore(dir, DEFAULT_DAILY_BYTES, 4);
+    await first.init();
+    for (const sourceId of ["found", "unknown"]) {
+      const address = sourceId === "found" ? ADDRESS_A : ADDRESS_B;
+      const result = await first.create(address, 3, "audio/mp4", T0, sourceId);
+      if (!result.ok || !("upload" in result)) throw new Error("create failed");
+      await first.markNoteSubmitting(result.upload);
+      await first.noteProviderReference(result.upload, { uploadUrl: sourceId === "found" ? UPLOAD_URL : "https://cdn.assemblyai.com/upload/other" });
+    }
+    await first.close();
+    const restarted = makeStore(dir, DEFAULT_DAILY_BYTES, 4);
+    await restarted.init();
+    const calls: string[] = [];
+    const fetchImpl = (async (url: string) => {
+      calls.push(url);
+      return json(200, { transcripts: [{ id: TRANSCRIPT_ID, audio_url: UPLOAD_URL }], page_details: {} });
+    }) as typeof fetch;
+    expect(await reconcileHostedJobs(hostedConfig(dir), restarted, fetchImpl)).toEqual({ checked: 2, recovered: 1 });
+    expect(restarted.noteJob(ADDRESS_A, "found")).toMatchObject({ status: "submitted", id: expect.any(String) });
+    expect(restarted.noteJob(ADDRESS_B, "unknown")?.status).toBe("needs_reconciliation");
+    expect(await restarted.create(ADDRESS_B, 3, "audio/mp4", T0, "unknown")).toMatchObject({ ok: false, code: "assemblyai_needs_reconciliation" });
+    expect(calls).toHaveLength(2);
+    await restarted.close();
+  });
+
+  test("a second writer is denied until the first releases the spool lock", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tinychat-assemblyai-race-"));
+    closers.push(() => rmSync(dir, { recursive: true, force: true }));
+    const first = makeStore(dir, DEFAULT_DAILY_BYTES, 4);
+    const second = makeStore(dir, DEFAULT_DAILY_BYTES, 4);
+    await first.init();
+    await expect(second.init()).rejects.toThrow("hosted spool writer lock is held");
+    const child = Bun.spawn([process.execPath, "-e", `import { HostedUploadStore } from ${JSON.stringify(new URL("../services/assemblyai-hosted.ts", import.meta.url).href)}; await new HostedUploadStore(${JSON.stringify(dir)}, 1000, 4).init()`], { stdout: "pipe", stderr: "pipe" });
+    expect(await child.exited).not.toBe(0);
+    expect(await new Response(child.stderr).text()).toContain("hosted spool writer lock is held");
+    await first.close();
+    await second.init();
+    await second.close();
+  });
+
+  test("concurrent creates share one account-and-source upload; another account is separate", async () => {
+    const h = await setup();
+    const body = { byte_size: 3, content_type: "audio/mp4", source_id: "note-1" };
+    const [first, second] = await Promise.all([
+      h.req("POST", "/hosted/uploads", { body }), h.req("POST", "/hosted/uploads", { body }),
+    ]);
+    expect(first.json.upload_id).toBe(second.json.upload_id);
+    expect(h.store!.activeCount).toBe(1);
+    const other = await h.req("POST", "/hosted/uploads", { as: ADDRESS_B, body });
+    expect(other.json.upload_id).not.toBe(first.json.upload_id);
+    expect((await h.req("GET", "/hosted/jobs/note-1")).json).toMatchObject({ status: "receiving", upload_id: first.json.upload_id });
+    expect((await h.req("GET", "/hosted/jobs/note-1", { as: ADDRESS_C })).json).toEqual({ status: "missing" });
+  });
+
+  test("a repeated keyed submission returns the same handle and survives a store restart", async () => {
+    const h = await setup();
+    const created = await h.req("POST", "/hosted/uploads", { body: { byte_size: 3, content_type: "audio/mp4", source_id: "note-1" } });
+    const id = created.json.upload_id as string;
+    expect((await h.req("PUT", `/hosted/uploads/${id}/parts/0`, { raw: audio(3) })).status).toBe(204);
+    const body = { upload_id: id, source_id: "note-1", speaker_labels: true };
+    await Promise.all([h.req("POST", "/hosted/transcripts", { body }), h.req("POST", "/hosted/transcripts", { body })]);
+    await h.store!.idle();
+    const handle = (await h.req("GET", "/hosted/jobs/note-1")).json.id;
+    expect(typeof handle).toBe("string");
+    expect((await h.req("POST", "/hosted/transcripts", { body })).json.id).toBe(handle);
+    expect(h.calls.filter((call) => call.url.endsWith("/v2/transcript") && call.method === "POST")).toHaveLength(1);
+    await h.store!.close();
+    const restarted = makeStore(h.spoolDir, DEFAULT_DAILY_BYTES, 4);
+    await restarted.init();
+    expect(restarted.noteJob(ADDRESS_A, "note-1")).toMatchObject({ status: "submitted", upload_id: id, id: handle });
+    await restarted.close();
+  });
+
+  test("a restart with a paid submission in flight retains an uncertain key", async () => {
+    const h = await setup();
+    const result = await h.store!.create(ADDRESS_A, 3, "audio/mp4", T0, "note-1");
+    if (!result.ok) throw new Error("create failed");
+    await h.store!.markNoteSubmitting(result.upload);
+    await h.store!.close();
+    const restarted = makeStore(h.spoolDir, DEFAULT_DAILY_BYTES, 4);
+    await restarted.init();
+    expect(restarted.noteJob(ADDRESS_A, "note-1")?.status).toBe("needs_reconciliation");
+    expect((await restarted.create(ADDRESS_A, 3, "audio/mp4", T0, "note-1")).ok).toBe(false);
+    await restarted.close();
+  });
+
+  test("a blocked note returns a typed 409 on create and a terminal lookup", async () => {
+    const h = await setup();
+    const result = await h.store!.create(ADDRESS_A, 3, "audio/mp4", T0, "blocked-note");
+    if (!result.ok || !("upload" in result)) throw new Error("create failed");
+    await h.store!.markNoteSubmitting(result.upload);
+    await h.store!.settleNote(result.upload, { status: "failed", code: "assemblyai_unavailable" });
+    const lookup = await h.req("GET", "/hosted/jobs/blocked-note");
+    expect(lookup.json.status).toBe("needs_reconciliation");
+    const created = await h.req("POST", "/hosted/uploads", { body: { byte_size: 3, content_type: "audio/mp4", source_id: "blocked-note" } });
+    expect(created.status).toBe(409);
+    expect(created.json.error).toBe("assemblyai_needs_reconciliation");
+    expect(created.headers.get("retry-after")).toBeNull();
+  });
+
+  test("operator reconciliation endpoint requires its separate secret and checks provider evidence", async () => {
+    const previous = process.env.ASSEMBLYAI_HOSTED_ADMIN_KEY;
+    process.env.ASSEMBLYAI_HOSTED_ADMIN_KEY = "test-only-operator-secret";
+    try {
+      const h = await setup({ answer: (call) => call.method === "GET" && call.url.includes("/v2/transcript?limit=")
+        ? json(200, { transcripts: [{ id: TRANSCRIPT_ID, audio_url: UPLOAD_URL }], page_details: {} }) : assemblyAi(call) });
+      const result = await h.store!.create(ADDRESS_A, 3, "audio/mp4", T0, "operator-note");
+      if (!result.ok || !("upload" in result)) throw new Error("create failed");
+      await h.store!.markNoteSubmitting(result.upload);
+      await h.store!.noteProviderReference(result.upload, { uploadUrl: UPLOAD_URL });
+      await h.store!.settleNote(result.upload, { status: "failed", code: "assemblyai_unavailable" });
+      expect((await h.req("POST", "/hosted/admin/reconcile", { headers: { "X-AssemblyAI-Admin-Key": "wrong" } })).status).toBe(404);
+      expect(h.calls).toHaveLength(0);
+      const reconciled = await h.req("POST", "/hosted/admin/reconcile", { headers: { "X-AssemblyAI-Admin-Key": "test-only-operator-secret" } });
+      expect(reconciled.json).toEqual({ checked: 1, recovered: 1 });
+      expect((await h.req("GET", "/hosted/jobs/operator-note")).json.status).toBe("submitted");
+    } finally {
+      if (previous === undefined) delete process.env.ASSEMBLYAI_HOSTED_ADMIN_KEY;
+      else process.env.ASSEMBLYAI_HOSTED_ADMIN_KEY = previous;
+    }
+  });
+});
+
 // ── Config ──────────────────────────────────────────────────────────
 
 describe("config", () => {
-  const good = { ASSEMBLYAI_API_KEY: API_KEY, ASSEMBLYAI_HOSTED_HANDLE_KEY: HANDLE_KEY };
+  const good = { ASSEMBLYAI_API_KEY: API_KEY, ASSEMBLYAI_HOSTED_HANDLE_KEY: HANDLE_KEY, ASSEMBLYAI_HOSTED_SPOOL_DIR: "/persistent/assemblyai" };
 
-  test("both keys set is hosted with the documented defaults; either unset is off", () => {
+  test("both keys and an explicit spool are required for hosted mode; either key unset is off", () => {
     const on = assemblyAiHostedConfigFromEnv(good);
-    expect(on).toMatchObject({ hosted: true, dailyBytes: 362_880_000, spoolDir: join(tmpdir(), "tinychat-assemblyai") });
+    expect(on).toMatchObject({ hosted: true, dailyBytes: 362_880_000, spoolDir: "/persistent/assemblyai" });
+    expect(() => assemblyAiHostedConfigFromEnv({ ...good, ASSEMBLYAI_HOSTED_SPOOL_DIR: "" })).toThrow("ASSEMBLYAI_HOSTED_SPOOL_DIR");
     expect(assemblyAiHostedConfigFromEnv({})).toEqual({ hosted: false, reason: "both_unset" });
     expect(assemblyAiHostedConfigFromEnv({ ASSEMBLYAI_API_KEY: API_KEY })).toEqual({ hosted: false, reason: "handle_key_unset" });
     expect(assemblyAiHostedConfigFromEnv({ ASSEMBLYAI_HOSTED_HANDLE_KEY: HANDLE_KEY })).toEqual({ hosted: false, reason: "api_key_unset" });
@@ -498,7 +846,10 @@ describe("uploads and parts", () => {
     const h = await setup();
     await h.createUpload(100);
     expect(h.spoolFiles()).toHaveLength(1);
-    await new HostedUploadStore(h.spoolDir, DEFAULT_DAILY_BYTES, 4).init();
+    await h.store!.close();
+    const restarted = makeStore(h.spoolDir, DEFAULT_DAILY_BYTES, 4);
+    await restarted.init();
+    await restarted.close();
     expect(h.spoolFiles()).toEqual([]);
   });
 });
@@ -727,7 +1078,7 @@ describe("Phala deploy environment", () => {
   const KEYS = ["ASSEMBLYAI_API_KEY", "ASSEMBLYAI_HOSTED_HANDLE_KEY"] as const;
   const repoRoot = resolve(import.meta.dir, "../../..");
 
-  test("the deploy workflow writes both secrets, compose passes them through, .env.example documents all four vars", () => {
+  test("the deploy workflow and compose pass hosted secrets and fresh-install authorization", () => {
     const workflow = loadYaml(readFileSync(resolve(repoRoot, ".github/workflows/deploy-backend-phala.yml"), "utf8")) as {
       jobs?: { deploy?: { steps?: { env?: Record<string, unknown>; run?: string }[] } };
     };
@@ -742,7 +1093,12 @@ describe("Phala deploy environment", () => {
       expect(writer?.run).toContain(`"${key}=$${key}"`);
       expect(env[key]).toBe(`\${${key}:-}`);
     }
-    for (const key of [...KEYS, "ASSEMBLYAI_HOSTED_DAILY_BYTES", "ASSEMBLYAI_HOSTED_SPOOL_DIR"]) expect(example).toMatch(new RegExp(`^${key}=$`, "m"));
+    const fresh = "ASSEMBLYAI_HOSTED_FRESH_INSTALL";
+    expect(String(writer?.env?.[fresh])).toBe(`\${{ vars.${fresh} }}`);
+    expect(writer?.run).toContain(`"${fresh}=$${fresh}"`);
+    expect(env[fresh]).toBe(`\${${fresh}:-}`);
+    for (const key of [...KEYS, "ASSEMBLYAI_HOSTED_DAILY_BYTES", "ASSEMBLYAI_HOSTED_SPOOL_DIR", fresh])
+      expect(example).toMatch(new RegExp(`^${key}=$`, "m"));
   });
 });
 
@@ -1092,7 +1448,7 @@ describe("TC-592 expiry safety", () => {
   test("tombstones evict oldest by account and globally and failed outcomes expire without deleting", async () => {
     const dir = mkdtempSync(join(tmpdir(), "tinychat-tombstones-test-"));
     closers.push(() => rmSync(dir, { recursive: true, force: true }));
-    const store = new HostedUploadStore(dir, DEFAULT_DAILY_BYTES, 4, undefined, { global: 3, account: 2 });
+    const store = makeStore(dir, DEFAULT_DAILY_BYTES, 4, undefined, { global: 3, account: 2 });
     await store.init();
     async function tombstone(owner: string) {
       const created = await store.create(owner, 1, "audio/wav", T0);
