@@ -228,7 +228,7 @@ function ReferenceDetails({ reference }: { reference: string }) {
 export function transcriptStepLine(pipeline: NotePipeline): string | null {
   const step = pipeline.steps.find((candidate) => candidate.key === "transcript");
   if (step === undefined || step.state === "done" || step.state === "skipped") return null;
-  if (step.state === "waiting" && step.caption?.startsWith("Queued for ")) return step.caption;
+  if (step.state === "waiting" && (step.caption?.startsWith("Queued for ") || step.caption?.startsWith("In the queue"))) return step.caption;
   if (pipeline.current === "transcript") return SAVED_NOTE_COPY.transcriptHere;
   return step.blocker?.cause ?? step.caption ?? SAVED_NOTE_COPY.transcriptAfterSpace;
 }

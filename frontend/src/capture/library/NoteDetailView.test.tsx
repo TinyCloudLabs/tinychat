@@ -536,9 +536,9 @@ describe("the transcript placeholder while the note's pipeline is not done", () 
   test("PTX queued copy agrees in the detail and the home track summary", () => {
     const pipeline = pipelineOf({ space: { saved: true, pending: null, lane: { busy: false, depth: 0 } },
       transcript: { inSpace: null, onDevice: null, cloud: { kind: "active", status: { kind: "queued", position: 3 } } } });
-    expect(transcriptStepLine(pipeline)).toBe("Queued for Private transcription");
-    expect(pipelineTrackLabel(pipeline)).toContain("Transcript: Queued for Private transcription");
-    expect(renderToStaticMarkup(<PipelineTrackSummary pipeline={pipeline} />)).toContain("Transcript: Queued for Private transcription");
+    expect(transcriptStepLine(pipeline)).toBe("In the queue · #3");
+    expect(pipelineTrackLabel(pipeline)).toContain("Transcript: In the queue · #3");
+    expect(renderToStaticMarkup(<PipelineTrackSummary pipeline={pipeline} />)).toContain("Transcript: In the queue · #3");
   });
 
   describe("a saved note whose transcript the phone is adding to the note", () => {
