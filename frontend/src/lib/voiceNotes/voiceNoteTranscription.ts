@@ -613,6 +613,8 @@ const NOTE_INTRINSIC_FAILURE_CODES: ReadonlySet<string> = new Set([
   "invalid_audio",
 ]);
 
+class DeviceLocalVoiceNoteAudioError extends VoiceNoteAudioError {}
+
 export function voiceNoteErrorCode(err: unknown): string {
   return err instanceof PrivateCloudError || err instanceof VoiceNoteAudioError ? err.code : "transcription_error";
 }
@@ -947,7 +949,8 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
         try {
           const meta = await VoiceNotes.audioMetadata({ id: source.nativeFileId });
           if (meta.size > capabilities.max_bytes) throw new VoiceNoteAudioError("recording_too_large", "The recording is larger than the private cloud limit.");
-          if (!acceptedContentTypes(capabilities).includes(meta.mimeType)) throw new VoiceNoteAudioError("unsupported_recording", "Private cloud transcription does not accept this recording's format.");
+          if (!acceptedContentTypes(capabilities).includes(meta.mimeType))
+            throw new DeviceLocalVoiceNoteAudioError("unsupported_recording", "Private cloud transcription does not accept this recording's format.");
           audio = { contentType: meta.mimeType, base64: "", byteSize: meta.size, sha256: meta.sha256, durationSeconds: null, nativeFileId: source.nativeFileId };
         } catch (cause) {
           if (!localAudioUnavailable(cause)) throw cause;
@@ -1162,7 +1165,7 @@ export async function transcribeVoiceNote(args: {
   };
   const persistFailure = async (error: unknown, statsMetadata: VoiceNoteTranscriptionStatsMetadata = {}) => {
     const code = voiceNoteErrorCode(error);
-    if (!NOTE_INTRINSIC_FAILURE_CODES.has(code) || !stillCurrent()) return;
+    if (error instanceof DeviceLocalVoiceNoteAudioError || !NOTE_INTRINSIC_FAILURE_CODES.has(code) || !stillCurrent()) return;
     try { await patchVoiceNoteTranscriptionFailure(tcw, sourceId, code, accountCheckpoint, statsMetadata); }
     catch (persistError) { logPipelineError("[VoiceNotes] Could not persist the transcription failure", persistError); }
   };
@@ -1193,16 +1196,18 @@ export async function transcribeVoiceNote(args: {
   const localRev = local?.rev ?? 0;
   if (![commit?.rev ?? 0, ledgerRev, localRev].every((value) => Number.isSafeInteger(value) && value >= 0))
     throw new PrivateCloudError("transcript_save_failed", "The voice note has an invalid transcript revision");
-  if ((note.data.transcript.status === "transcribed" || note.data.transcript.status === "no_speech")
-    && commit !== null && commit.rev >= Math.max(ledgerRev, localRev)) {
-    await finish();
-    return note.data.transcript.status;
+  const hasPendingJob = cloud.pendingSourceIds().includes(sourceId);
+  if (note.data.transcript.status === "transcribed" || note.data.transcript.status === "no_speech") {
+    if (!hasPendingJob) return note.data.transcript.status;
+    if (commit !== null && commit.rev >= Math.max(ledgerRev, localRev)) {
+      await finish();
+      return note.data.transcript.status;
+    }
   }
   const modeOff = !args.overrideCommitted && (
     note.data.captureVersion === 2 && note.data.captureTranscriber !== "private-cloud"
     || nativeNote?.options !== undefined && nativeNote.options.transcriber !== "private-cloud"
   );
-  const hasPendingJob = cloud.pendingSourceIds().includes(sourceId);
   if (modeOff && !hasPendingJob)
     throw new PrivateCloudError("transcription_off", "This note was not recorded for private-cloud transcription");
   const rev = Math.max(commit?.rev ?? 0, ledgerRev, localRev) + 1;
