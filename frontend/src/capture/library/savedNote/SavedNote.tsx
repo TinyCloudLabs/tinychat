@@ -64,7 +64,7 @@ function SavedNoteContent({
   const screen = useSavedNoteScreen(item.sourceId, space);
   const rowMetadata = metadata?.status === "ok" ? metadata.metadata : null;
   const localOnly = (rowMetadata?.audio as { stored?: unknown } | undefined)?.stored === false;
-  const hasLocalAudio = audio !== null && "localUrl" in audio;
+  const hasLocalAudio = audio !== null && ("localUrl" in audio || audio.onPhone === true);
   const capturePlatform = (rowMetadata?.capture as { platform?: string } | undefined)?.platform;
   const onDevice = capturePlatform === "ios" ? "iPhone" : capturePlatform === "tauri" ? "Mac"
     : capturePlatform === "android" ? "phone" : "browser";

@@ -1,5 +1,3 @@
-import { readableError } from "@/lib/readableError";
-import { deviceName } from "@/lib/platform";
 // The Library's data (TC-761, plan §4.11), called once in CaptureSurface: the
 // list for Recent, the Library and the list pane, and the open note's reads.
 //
@@ -32,6 +30,7 @@ import { deviceName } from "@/lib/platform";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
+import { PHONE_AUDIO_UNAVAILABLE } from "@/chat/audioPlayback";
 import { getAudio, getAudioManifest, manifestReceipt, type StoredAudioManifest } from "@/lib/audio/audioStore";
 import {
   listMeetingsRead,
@@ -95,30 +94,37 @@ export interface Library {
 export const RELIST_AFTER_MS = 2 * 60 * 1000;
 
 /**
- * The note's audio from the phone's own file, resolved when the user taps Play and handed to the
- * audio element as a URL. It is never fetched: the WKWebView scheme handler answers a fetch of it
- * with status 0 although the audio element loads it.
+ * The note's audio while it is on this phone, read through the player's `load` when the user taps Play.
+ * The fresh ledger decides first: a verified space copy is what plays, so the phone's file (possibly
+ * replaced since the note was opened) is not read. Otherwise the phone's file plays, handed to the audio
+ * element as a URL and never fetched (the WKWebView scheme handler answers a fetch of it with status 0).
+ * An unverified phone copy is the only audio, and when the phone's file is gone a space copy is read
+ * through `spaceLoad` with the player's signal. The player owns the object URL a Blob becomes.
  *
- * When the phone's copy is gone at Play time, the space's copy is read through `spaceLoad`, unless this
- * phone still holds an unverified copy of the note (then that copy is the only audio and nothing is read).
+ * Any failure shows the calm phone copy; the detail goes to the console.
  */
-function localAudio(recordingId: string, channels: 1 | 2 | undefined, owner: string, spaceLoad: AudioLoad | null): NoteAudio {
+function phoneFirstAudio(recordingId: string, channels: 1 | 2 | undefined, owner: string, spaceLoad: AudioLoad | null): NoteAudio {
+  const fromSpace = async (signal: AbortSignal, onProgress: (loaded: number, total: number) => void): Promise<Blob | string> => {
+    const audio = spaceLoad ? await spaceLoad(signal, onProgress) : null;
+    if (audio === null) throw new Error("Audio is no longer on this device");
+    return audio;
+  };
   return {
     channels,
-    localUrl: async () => {
+    onPhone: true,
+    load: async (signal, onProgress) => {
       try {
-        const url = await localPlaybackUrl(recordingId);
-        if (url) return url;
-        if (!spaceLoad) throw new Error("Audio is no longer on this device");
         const local = await Promise.resolve().then(() => VoiceNotes.listPending())
           .then(({ recordings }) => recordings.find((note) => note.id === recordingId))
           .catch(() => undefined);
-        if (local?.owner === owner && !hasVerifiedSpaceCopy(local)) throw new Error("Audio is no longer on this device");
-        const audio = await spaceLoad(new AbortController().signal, () => {});
-        if (audio === null) throw new Error("Audio is no longer on this device");
-        return typeof audio === "string" ? audio : URL.createObjectURL(audio);
+        if (local?.owner === owner && hasVerifiedSpaceCopy(local)) return await fromSpace(signal, onProgress);
+        const url = await localPlaybackUrl(recordingId);
+        if (url) return url;
+        if (local?.owner === owner) throw new Error("Audio is no longer on this device");
+        return await fromSpace(signal, onProgress);
       } catch (caught) {
-        throw new Error(`Could not open audio on ${deviceName()}: ${readableError(caught)}`, { cause: caught });
+        console.error("[Audio] Could not open local audio", caught);
+        throw new Error(PHONE_AUDIO_UNAVAILABLE, { cause: caught });
       }
     },
   };
@@ -544,7 +550,7 @@ export function useLibrary(
         });
     };
     // The phone's own copy, until the space has the audio; once the phone's copy is gone, the space's copy.
-    if (voiceSourceId !== null && phoneFirst) return localAudio(voiceSourceId,
+    if (voiceSourceId !== null && phoneFirst) return phoneFirstAudio(voiceSourceId,
       onPhoneNotes?.find((note) => note.id === voiceSourceId)?.channels, space.did,
       localOnlyAudio ? null : spaceLoad(voiceSourceId));
     if (voiceSourceId !== null && metadataLoaded && !pendingAudioRow && !localOnlyAudio) return { load: spaceLoad(voiceSourceId) };

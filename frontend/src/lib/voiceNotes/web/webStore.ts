@@ -165,7 +165,8 @@ type CaptureRow = KvRow & { key: "capture"; defaults: CaptureDefaults; status: A
 type TombstoneRow = { id: string; at: number; audioPending: boolean };
 type ReceiptResult = { destination: "ledger" | "outbox"; handle: string | null; handleExpiresAt: number | null;
   outcome: "created" | "failed" | "unknown" };
-type ReceiptRow = { key: string; receipt: RemoteOpReceipt; result: ReceiptResult | null };
+/** Set when an own_create that created its job retires this own_upload; deletion then skips it. */
+type ReceiptRow = { key: string; receipt: RemoteOpReceipt; result: ReceiptResult | null; retired?: true };
 type QuarantineRow = { id: string; reason: string; error: string; sizeBytes: number; session: SessionRecord };
 
 type PluginProtocol = Pick<VoiceNotesPlugin,
@@ -361,6 +362,16 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
   const retireOwnUploadOutbox = async (tx: IDBTransaction, id: string): Promise<void> => {
     for (const entry of await all<OutboxEntry>(tx, STORES.outbox)) {
       if (entry.receiptKind === "own_upload" && entry.entryId.startsWith(`${id}:`)) await del(tx, STORES.outbox, entry.entryId);
+    }
+  };
+
+  // Retires the note's own_upload receipts that exist now, so deletion never re-enqueues their lookups.
+  // A receipt begun after this own_create is not retired and keeps its lookup.
+  const retireOwnUploadReceipts = async (tx: IDBTransaction, id: string): Promise<void> => {
+    for (const row of await all<ReceiptRow>(tx, STORES.receipts)) {
+      if (row.receipt.id === id && row.receipt.kind === "own_upload" && !row.retired) {
+        await put(tx, STORES.receipts, { ...row, retired: true } satisfies ReceiptRow);
+      }
     }
   };
 
@@ -660,13 +671,12 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
           await del(tx, STORES.notes, id);
           await del(tx, STORES.transcripts, id);
           const outboxNow = [...outbox];
-          // An own_create that created its job retired the note's own_upload (see recordRemoteResult); its retained
-          // own_upload receipts must not re-enqueue a lookup for an upload nothing will read again.
-          const ownCreated = receipts.some((row) => row.receipt.id === id && row.receipt.kind === "own_create" && row.result?.outcome === "created");
+          // An own_create that created its job retired the own_upload receipts that existed then (see
+          // recordRemoteResult). A retired receipt must not re-enqueue a lookup for an upload nothing will read again.
           for (const row of receipts) {
             const { receipt, result } = row;
             if (receipt.id !== id) continue;
-            if (receipt.kind === "own_upload" && ownCreated) continue;
+            if (row.retired) continue;
             if (outboxNow.some((entry) => entry.entryId === `${id}:${receipt.opId}`)) continue;
             if (result?.outcome === "failed") continue;
             if (result?.handle && outboxNow.some((entry) => entry.did === receipt.did && entry.handle === result.handle)) continue;
@@ -822,9 +832,13 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
         const note = await get<VoiceNoteRecording>(tx, STORES.notes, id);
         if (!note || tombstoned || note.owner !== did) {
           const old = await get<OutboxEntry>(tx, STORES.outbox, key);
-          const entry = outboxEntryFor(receipt, result, old);
+          // A retired own_upload's late result must not enqueue a lookup for an upload nothing will read again.
+          const entry = row.retired ? null : outboxEntryFor(receipt, result, old);
           if (entry) await enqueueOutbox(tx, entry); else await del(tx, STORES.outbox, key);
-          if (receipt.kind === "own_create" && result.outcome === "created") await retireOwnUploadOutbox(tx, id);
+          if (receipt.kind === "own_create" && result.outcome === "created") {
+            await retireOwnUploadOutbox(tx, id);
+            await retireOwnUploadReceipts(tx, id);
+          }
           await put(tx, STORES.receipts, { ...row, result: { destination: "outbox", handle: handle ?? previous?.handle ?? null,
             handleExpiresAt: result.handleExpiresAt ?? null, outcome: result.outcome } } satisfies ReceiptRow);
           return { destination: "outbox" as const };
@@ -846,6 +860,7 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
         if (receipt.kind === "own_create" && result.outcome === "created") {
           note.ledger.remote = note.ledger.remote.filter((remote) => remote.kind !== "own_upload");
           await retireOwnUploadOutbox(tx, id);
+          await retireOwnUploadReceipts(tx, id);
         }
         note.rev = (note.rev ?? 0) + 1;
         await put(tx, STORES.notes, note);

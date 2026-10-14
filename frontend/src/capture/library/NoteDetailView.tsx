@@ -49,8 +49,8 @@ import type { SavedNoteStore } from "./savedNote/savedNoteStore";
 
 export type AudioLoad = (signal: AbortSignal, onProgress: (loadedBytes: number, totalBytes: number) => void) => Promise<Blob | string | null>;
 
-/** A note's audio: fetched from the space as a blob, or a file still on this phone, played from its URL. */
-export type NoteAudio = { load: AudioLoad; channels?: 1 | 2 } | { localUrl: () => Promise<string>; channels?: 1 | 2 };
+/** A note's audio: loaded through the player (a Blob from the space, or the phone's file URL; `onPhone` marks a note still on this phone), or a native URL resolved on demand. */
+export type NoteAudio = { load: AudioLoad; channels?: 1 | 2; onPhone?: true } | { localUrl: () => Promise<string>; channels?: 1 | 2 };
 
 export function noteAudioPlayerProps(audio: NoteAudio): { load: AudioLoad; channels?: 1 | 2 } | { resolveUrl: () => Promise<string>; channels?: 1 | 2 } {
   return "load" in audio ? { load: audio.load, channels: audio.channels } : { resolveUrl: audio.localUrl, channels: audio.channels };

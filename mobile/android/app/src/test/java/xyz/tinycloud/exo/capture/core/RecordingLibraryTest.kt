@@ -314,6 +314,33 @@ class RecordingLibraryTest {
         assertEquals(listOf("job-1"), outbox.filter { it.getString("kind") == "transcript" }.map { it.getString("handle") })
         assertEquals(2, outbox.size)
     }
+    @Test fun legacyOutboxRowsWithoutReceiptKindAreReadAndRetiredOnlyWhenUnambiguous() {
+        val lib = library(); val note = id()
+        fun receipt(op: String, kind: String) = JSONObject().put("id", note).put("did", "did:a").put("opId", op)
+            .put("provider", "assemblyai").put("mode", "own").put("kind", kind).put("fingerprint", "sha256").put("startedAt", 1000)
+        fun outbox() = lib.listOutbox("did:a").let { a -> (0 until a.length()).map { a.getJSONObject(it) } }
+        // Write the row as 94d22c56 did: the outbox entry has no receiptKind field on disk.
+        lib.beginRemoteOp(receipt("u-1", "own_upload"))
+        lib.recordRemoteResult(note, "did:a", "u-1", JSONObject().put("outcome", "created").put("uploadUrl", "https://u/upload"))
+        val file = lib.outbox.listFiles()!!.single()
+        file.writeText(JSONObject(file.readText()).apply { remove("receiptKind") }.toString())
+        // The outbox kind own_upload_lookup is ambiguous, so the result must record without throwing and keep receiptKind null.
+        assertEquals("outbox", lib.recordRemoteResult(note, "did:a", "u-1",
+            JSONObject().put("outcome", "created").put("uploadUrl", "https://u/upload")))
+        assertTrue(outbox().single().isNull("receiptKind"))
+        // An own_create must not retire a row whose receipt kind is unknown.
+        lib.beginRemoteOp(receipt("c-job", "own_create"))
+        lib.recordRemoteResult(note, "did:a", "c-job", JSONObject().put("outcome", "created").put("jobId", "job-1"))
+        assertEquals(listOf("https://u/upload"),
+            outbox().filter { it.getString("kind") == "own_upload_lookup" }.map { it.getString("handle") })
+        // A repeated receipt names the row's kind and backfills receiptKind, so a later own_create retires it.
+        lib.beginRemoteOp(receipt("u-1", "own_upload"))
+        assertEquals("own_upload", outbox().single { it.getString("handle") == "https://u/upload" }.getString("receiptKind"))
+        lib.beginRemoteOp(receipt("c-job-2", "own_create"))
+        lib.recordRemoteResult(note, "did:a", "c-job-2", JSONObject().put("outcome", "created").put("jobId", "job-2"))
+        assertTrue(outbox().none { it.getString("handle") == "https://u/upload" })
+        assertEquals(2, outbox().size)
+    }
     @Test fun receiptFailpointsAndInterruptedOutboxTransferKeepAnAuthority() {
         val ops = FileOps(); val dir = temp.newFolder(); val lib = RecordingLibrary(dir, ops)
         val note = id(); begin(lib, note); commit(lib, note)

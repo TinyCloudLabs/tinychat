@@ -1054,6 +1054,39 @@ describe("ledger, receipts, outbox and transcripts (native parity)", () => {
     expect(entries.map((entry) => [entry.kind, entry.handle])).toEqual([["transcript", "job-1"]]);
   });
 
+  test("deleteAudio keeps the lookup of an own_upload begun after an own_create retired its predecessor", async () => {
+    const { open } = harness();
+    const store = await open();
+    await signedIn(store);
+    await noteWith(store, "n", [bytesOf(4)], "did:A");
+    const own = { provider: "assemblyai", mode: "own" as const };
+    await store.beginRemoteOp(receipt("n", { ...own, opId: "up1", kind: "own_upload" }));
+    await store.recordRemoteResult({ id: "n", did: "did:A", opId: "up1", result: { outcome: "created", uploadUrl: "https://example.test/audio1" } });
+    await store.beginRemoteOp(receipt("n", { ...own, opId: "create1", kind: "own_create" }));
+    await store.recordRemoteResult({ id: "n", did: "did:A", opId: "create1", result: { outcome: "created", jobId: "job-1" } });
+    await store.beginRemoteOp(receipt("n", { ...own, opId: "up2", kind: "own_upload" }));
+    await store.recordRemoteResult({ id: "n", did: "did:A", opId: "up2", result: { outcome: "created", uploadUrl: "https://example.test/audio2" } });
+    await store.deleteAudio({ id: "n" });
+    const reopened = await open();
+    const entries = (await reopened.listOutbox({ did: "did:A" })).entries;
+    expect(entries.map((entry) => [entry.kind, entry.handle]).sort()).toEqual([["own_upload_lookup", "https://example.test/audio2"], ["transcript", "job-1"]]);
+  });
+
+  test("a retired own_upload's late result after deletion does not enqueue a lookup", async () => {
+    const { open } = harness();
+    const store = await open();
+    await signedIn(store);
+    await noteWith(store, "n", [bytesOf(4)], "did:A");
+    const own = { provider: "assemblyai", mode: "own" as const };
+    await store.beginRemoteOp(receipt("n", { ...own, opId: "up1", kind: "own_upload" }));
+    await store.beginRemoteOp(receipt("n", { ...own, opId: "create1", kind: "own_create" }));
+    await store.recordRemoteResult({ id: "n", did: "did:A", opId: "create1", result: { outcome: "created", jobId: "job-1" } });
+    await store.deleteAudio({ id: "n" });
+    await store.recordRemoteResult({ id: "n", did: "did:A", opId: "up1", result: { outcome: "created", uploadUrl: "https://example.test/audio1" } });
+    const entries = (await store.listOutbox({ did: "did:A" })).entries;
+    expect(entries.map((entry) => [entry.kind, entry.handle])).toEqual([["transcript", "job-1"]]);
+  });
+
   test("deleteAudio queues durable cleanup for hosted handles, then outbox entries complete, retry and disappear", async () => {
     const { open } = harness();
     const store = await open();

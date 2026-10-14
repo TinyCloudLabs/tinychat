@@ -439,6 +439,14 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
             .put("state", state).put("createdAt", receipt.optLong("startedAt", System.currentTimeMillis()))
             .put("attempts", 0).put("receiptKind", kind)
     }
+    /** Outbox rows written before receiptKind existed. Returns the receipt kind only when the outbox kind names exactly
+     *  one: own_upload_lookup also comes from own_create with a URL, and transcript from hosted_submit or own_create. */
+    private fun legacyReceiptKind(previous: JSONObject): String? = when (previous.optString("kind")) {
+        "hosted_upload" -> "hosted_create"
+        "hosted_submit" -> "hosted_submit"
+        "ptx_job" -> "ptx_create"
+        else -> null
+    }
     private fun saveOutbox(entry: JSONObject, point: String) {
         val file = File(outbox, "${entry.getString("entryId")}.json")
         val tmp = File(outbox, "${entry.getString("entryId")}.json.tmp")
@@ -478,6 +486,8 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
                 if (prior.optString("did") != receipt.optString("did") ||
                     prior.optString("provider") != receipt.optString("provider"))
                     throw IllegalStateException("receipt_conflict")
+                // Rows written before receiptKind existed take the kind of the first repeated receipt that names them.
+                if (prior.optString("receiptKind").isEmpty()) saveOutbox(prior.put("receiptKind", receipt.getString("kind")), "receipt.begin")
             } else saveOutbox(outboxReceipt(id, receipt.getString("did"), receipt), "receipt.begin")
         }
     }
@@ -524,10 +534,16 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
                 ops.unlink(file, "receipt.result"); ops.syncDir(outbox)
                 return@withLock "outbox"
             }
-            // Every outbox row carries its original receipt kind (written by outboxReceipt), so no kind-derived fallback.
-            val originalKind = previous.getString("receiptKind")
+            // Rows written before receiptKind existed carry only the outbox kind. That kind names one receipt kind only
+            // sometimes, so the other cases keep receiptKind null: such a row is never retired as an own_upload.
+            val receiptKind = previous.optString("receiptKind").ifEmpty { legacyReceiptKind(previous) }
+            val rebuildKind = receiptKind ?: when (previous.optString("kind")) {
+                "own_upload_lookup" -> "own_upload"
+                "transcript" -> "hosted_submit"
+                else -> "ptx_create"
+            }
             val receipt = JSONObject().put("opId", opId).put("provider", previous.getString("provider"))
-                .put("mode", previous.opt("mode") ?: JSONObject.NULL).put("kind", originalKind)
+                .put("mode", previous.opt("mode") ?: JSONObject.NULL).put("kind", rebuildKind)
                 .put("startedAt", previous.optLong("createdAt"))
                 .put("handleExpiresAt", previous.opt("handleExpiresAt") ?: JSONObject.NULL)
             val oldHandle = stringValue(previous, "handle")
@@ -538,9 +554,10 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
             }, oldHandle)
             val next = outboxReceipt(id, did, receipt, result)
             next.put("attempts", previous.optInt("attempts"))
+            next.put("receiptKind", receiptKind ?: JSONObject.NULL)
             if (previous.optString("handle") == next.optString("handle") &&
                 previous.optString("state") == "authority_expired") next.put("state", "authority_expired")
-            if (originalKind == "own_create" && outcome == "created") retireOwnUploadOutbox(id)
+            if (receiptKind == "own_create" && outcome == "created") retireOwnUploadOutbox(id)
             if (previous.toString() != next.toString()) saveOutbox(next, "receipt.result")
             "outbox"
         }

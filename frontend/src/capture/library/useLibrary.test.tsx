@@ -21,6 +21,7 @@ import { syncTranscriberLibrary } from "@/chat/useTranscriberLibrarySync";
 import type { TranscriberClient } from "@/lib/transcriberApi";
 import { captureEvents } from "../captureEvents";
 import { RELIST_AFTER_MS, useLibrary, type Library } from "./useLibrary";
+import { PHONE_AUDIO_UNAVAILABLE } from "@/chat/audioPlayback";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 import { NoteDetail } from "./NoteDetail";
@@ -614,7 +615,7 @@ describe("useLibrary, notes still on this browser", () => {
       metadata: { status: "ok", metadata: {} },
       transcript: { transcript: { status: "absent" }, provenance: null },
     });
-    expect(library.note.audio).toHaveProperty("localUrl");
+    expect(library.note.audio).toMatchObject({ onPhone: true });
     expect(space.kinds).toEqual(["list"]);
   });
 
@@ -817,10 +818,13 @@ describe("useLibrary, which audio a note on the phone plays", () => {
       URL.revokeObjectURL(localUrl);
     }
   }
-  const localUrlOf = (library: Library) => {
+  // The player's view of a phone note: the phone file's URL, or the space's bytes as the object URL the player would own.
+  const localUrlOf = async (library: Library) => {
     const audio = library.note.audio;
-    if (!audio || !("localUrl" in audio)) throw new Error("expected the phone's own audio");
-    return audio.localUrl();
+    if (!audio || !("load" in audio) || audio.onPhone !== true) throw new Error("expected the phone's own audio");
+    const got = await audio.load(new AbortController().signal, () => {});
+    if (got === null) throw new Error("expected audio bytes");
+    return typeof got === "string" ? got : URL.createObjectURL(got);
   };
   const playFromSpace = (library: Library) => {
     const audio = library.note.audio;
@@ -871,7 +875,9 @@ describe("useLibrary, which audio a note on the phone plays", () => {
       await space.answer("metadata", { ok: true, data: { rows: [["{\"title\":\"x\"}"]] } });
       counts.evictFile();
       const before = { remote: counts.remote(), fetched: counts.fetches() };
-      await expect(localUrlOf(seen.at(-1)!)).rejects.toThrow("Could not open audio on this browser: Audio is no longer on this device");
+      const error = await localUrlOf(seen.at(-1)!).catch((caught: unknown) => caught);
+      expect((error as Error).message).toBe(PHONE_AUDIO_UNAVAILABLE);
+      expect(((error as Error).cause as Error).message).toBe("Audio is no longer on this device");
       expect({ remote: counts.remote() - before.remote, fetched: counts.fetches() - before.fetched }).toEqual({ remote: 0, fetched: 0 });
     });
   });
@@ -894,7 +900,9 @@ describe("useLibrary, which audio a note on the phone plays", () => {
     try {
       const seen: Library[] = [];
       await render({ tcw: space.tcw, visible: true, now: () => 0, seen, onPhone: [phoneNote], noteId: "on-phone:rec-play" });
-      await expect(localUrlOf(seen.at(-1)!)).rejects.toThrow("Could not open audio on this browser: no such recording");
+      const error = await localUrlOf(seen.at(-1)!).catch((caught: unknown) => caught);
+      expect((error as Error).message).toBe(PHONE_AUDIO_UNAVAILABLE);
+      expect(((error as Error).cause as Error).message).toBe("no such recording");
       expect(space.kinds).not.toContain("audio");
     } finally {
       __setVoiceNotesForTests(original, { available: null });
@@ -946,6 +954,20 @@ describe("useLibrary, which audio a note on the phone plays", () => {
       expect(await blob?.text()).toBe("newer bytes");
       expect(counts.local()).toBe(0);
     }, true);
+  });
+
+  test("a receipt that lands while the phone's file is still there plays the space's copy at Play", async () => {
+    await withLocalAudio(async (counts, space) => {
+      const seen: Library[] = [];
+      await render({ tcw: space.tcw, visible: true, now: () => 0, seen, noteId: "play", onPhone: [phoneNote] });
+      await space.answer("list", listedVoice("play"));
+      await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
+      counts.land();
+      counts.replace();
+      const localBefore = counts.local();
+      expect(await (await playFromSpace(seen.at(-1)!))?.text()).toBe("newer bytes");
+      expect(counts.local() - localBefore).toBe(0);
+    });
   });
 
   test("a receipt that lands after the list was read stops playing the phone's copy", async () => {

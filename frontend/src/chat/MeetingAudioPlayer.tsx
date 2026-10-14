@@ -40,6 +40,9 @@ export type PlayerState =
   | { phase: "missing" }
   | { phase: "failed"; reason?: string };
 
+/** The messages a failed load shows as its reason; any other failure reads as "Couldn't load the audio just now.". */
+const SHOWN_LOAD_FAILURES = ["This audio changed; reconnect to play the latest version", PHONE_AUDIO_UNAVAILABLE];
+
 /** Ready with the resolved URL, or failed with calm copy; the real reason it could not be resolved goes to the console. */
 export async function stateForResolvedUrl(resolveUrl: () => Promise<string>): Promise<PlayerState> {
   try {
@@ -225,8 +228,7 @@ export function MeetingAudioPlayer({ load, url, resolveUrl, durationSecs, channe
       setState({ phase: "ready", url: objectUrl });
     } catch (error) {
       if (!controller.signal.aborted) setState({ phase: "failed",
-        reason: error instanceof Error && error.message === "This audio changed; reconnect to play the latest version"
-          ? error.message : undefined });
+        reason: error instanceof Error && SHOWN_LOAD_FAILURES.includes(error.message) ? error.message : undefined });
     }
   };
 

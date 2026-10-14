@@ -214,6 +214,39 @@ describe("the player in a DOM", () => {
     }
   });
 
+  test("a blob the player loaded is released when its note closes", async () => {
+    const created = spyOn(URL, "createObjectURL").mockReturnValue("blob:note");
+    const revoked = spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+    try {
+      const player = await mount({ durationSecs: 42, load: async () => new Blob(["x"]) });
+      await act(async () => player.q("[data-testid=note-audio-play]").click());
+      expect(created).toHaveBeenCalledTimes(1);
+      await act(async () => root!.unmount());
+      root = null;
+      expect(revoked).toHaveBeenCalledWith("blob:note");
+    } finally {
+      created.mockRestore();
+      revoked.mockRestore();
+    }
+  });
+
+  test("closing a note while its audio downloads aborts the download", async () => {
+    let signal!: AbortSignal;
+    const player = await mount({ durationSecs: 42, load: (loadSignal) => { signal = loadSignal; return new Promise<Blob | null>(() => {}); } });
+    await act(async () => player.q("[data-testid=note-audio-play]").click());
+    expect(signal.aborted).toBe(false);
+    await act(async () => root!.unmount());
+    root = null;
+    expect(signal.aborted).toBe(true);
+  });
+
+  test("a phone note whose audio cannot be opened shows the phone's copy", async () => {
+    logged = spyOn(console, "error").mockImplementation(() => {});
+    const player = await mount({ durationSecs: 42, load: async () => { throw new Error(PHONE_AUDIO_UNAVAILABLE); } });
+    await act(async () => player.q("[data-testid=note-audio-play]").click());
+    expect(player.host.textContent).toContain("Couldn\u2019t open this note\u2019s audio on this browser.");
+  });
+
   test("a note on this browser plays on the first tap with its source already set", async () => {
     const player = await mount({ url: "blob:note", durationSecs: 42 });
     expect(player.audio.getAttribute("src")).toBe("blob:note");
