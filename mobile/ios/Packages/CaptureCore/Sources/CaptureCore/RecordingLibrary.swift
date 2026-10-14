@@ -499,9 +499,9 @@ public final class RecordingLibrary {
                                 (remote[index]["kind"] as? String) == "own_upload" ? "uploadUrl" : "jobId"
                             remote[index][key] = handle
                         }
-                    }
-                    if remote[index]["kind"] as? String == "own_create", result["outcome"] as? String == "created" {
-                        remote.removeAll { $0["kind"] as? String == "own_upload" }
+                        if remote[index]["kind"] as? String == "own_create", result["outcome"] as? String == "created" {
+                            remote.removeAll { $0["kind"] as? String == "own_upload" }
+                        }
                     }
                     ledger["remote"] = remote; item["ledger"] = ledger
                     item["rev"] = (item["rev"] as? Int ?? 0) + 1
@@ -697,7 +697,8 @@ public final class RecordingLibrary {
         let localAudio = ledger["localAudio"] as? [String: Any]
         let localAudioUnready = localAudio != nil && localAudio?["state"] as? String != "ready"
         let sttState = (note["stt"] as? [String: Any])?["state"] as? String ?? ""
-        let sttPinned = transcriber == "on-device" && ["waiting_for_model", "queued", "running", "failed"].contains(sttState)
+        let sttRequested = (note["stt"] as? [String: Any])?["requested"] as? Bool == true
+        let sttPinned = (transcriber == "on-device" || sttRequested) && ["waiting_for_model", "queued", "running", "failed", "cancelled"].contains(sttState)
         let remotes = ledger["remote"] as? [[String: Any]] ?? []
         let remoteOpen = remotes.contains(where: { op in
             let stage = op["stage"] as? String

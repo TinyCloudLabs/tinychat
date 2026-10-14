@@ -1,6 +1,11 @@
 import { describe, expect, test as bunTest } from "bun:test";
 import { createHash } from "node:crypto";
-import type { RemoteOpReceipt } from "../nativeVoiceNotes";
+import type { TranscriberId } from "../nativeVoiceNotes";
+import { hasLocalWorkInProgress } from "../localWork";
+import type { DesktopBridge } from "../desktop/desktopVoiceNotes";
+import { createDesktopWhisperQueue, type DesktopWhisperBridge } from "../desktop/desktopWhisper";
+import { whisperLocalTranscript } from "../desktop/whisperTranscript";
+import type { BatchResponse } from "@/lib/anarlog/transcription.gen";
 import { base64ToBytes } from "../voiceNoteAudio";
 import { createIdbAudioBlobStore } from "./audioBlobStore";
 import { openWebDb } from "./idb";
@@ -1034,6 +1039,21 @@ describe("ledger, receipts, outbox and transcripts (native parity)", () => {
     expect(kinds).toEqual([["transcript", "job-1"], ["transcript", "job-2"]]);
   });
 
+  test("deleteAudio does not resurrect an own_upload that an earlier own_create already retired", async () => {
+    const { open } = harness();
+    const store = await open();
+    await signedIn(store);
+    await noteWith(store, "n", [bytesOf(4)], "did:A");
+    const own = { provider: "assemblyai", mode: "own" as const };
+    await store.beginRemoteOp(receipt("n", { ...own, opId: "up", kind: "own_upload" }));
+    await store.recordRemoteResult({ id: "n", did: "did:A", opId: "up", result: { outcome: "created", uploadUrl: "https://example.test/audio" } });
+    await store.beginRemoteOp(receipt("n", { ...own, opId: "create", kind: "own_create" }));
+    await store.recordRemoteResult({ id: "n", did: "did:A", opId: "create", result: { outcome: "created", jobId: "job-1" } });
+    await store.deleteAudio({ id: "n" });
+    const entries = (await store.listOutbox({ did: "did:A" })).entries;
+    expect(entries.map((entry) => [entry.kind, entry.handle])).toEqual([["transcript", "job-1"]]);
+  });
+
   test("deleteAudio queues durable cleanup for hosted handles, then outbox entries complete, retry and disappear", async () => {
     const { open } = harness();
     const store = await open();
@@ -1141,5 +1161,114 @@ describe("ledger, receipts, outbox and transcripts (native parity)", () => {
     const second = await h.open();
     expect(await second.getCaptureDefaults()).toMatchObject({ accountDid: "did:A", status: "signed_in" });
     expect((await second.listPending()).recordings.map((r) => r.id)).toEqual(["n"]);
+  });
+});
+
+describe("pin lifecycle through the real producers", () => {
+  const sessionOf = (id: string, transcriber: TranscriberId) => ({ ...init(id, "did:a"), options: { transcriber, identifySpeakers: false } });
+  const saveWith = async (store: WebStore, id: string, transcriber: TranscriberId, bytes: Uint8Array) => {
+    await store.beginSession(sessionOf(id, transcriber));
+    await store.appendChunk(id, bytes, { audioMs: 1000, firstAudioAt: 1500 });
+    return (await commit(store, id))!;
+  };
+  const current = async (store: WebStore, id: string) => (await store.listPending()).recordings.find((note) => note.id === id)!;
+  const saveReceipt = (store: WebStore, id: string, rev: number, bytes: Uint8Array) => store.updateLedger({ id, did: "did:a", rev, patch: {
+    audio: { state: "saved", rowId: "row", at: 10, verifiedInSpace: { sha256: createHash("sha256").update(bytes).digest("hex"), size: bytes.length } } } });
+
+  test("a note saved without a transcriber keeps the default waiting_for_model sidecar; its verified audio is evictable", async () => {
+    const store = await harness().open();
+    const bytes = bytesOf(12);
+    const saved = await saveWith(store, "uploaded", "off", bytes);
+    expect((await current(store, "uploaded")).stt?.state).toBe("waiting_for_model");
+    await saveReceipt(store, "uploaded", saved.rev!, bytes);
+    await store.evictCachedAudio({ id: "uploaded" });
+    await expect(store.readNoteAudio("uploaded")).rejects.toEqual(code("not_found"));
+  });
+
+  test("on-device speech finished by the real desktop Whisper completion path is evictable afterwards", async () => {
+    const store = await harness().open();
+    const bytes = bytesOf(12);
+    const saved = await saveWith(store, "speech", "on-device", bytes);
+    await saveReceipt(store, "speech", saved.rev!, bytes);
+    await store.putTranscript({ id: "speech", transcript: whisperLocalTranscript({ id: "speech", durationMs: 1000 }, "QuantizedTiny",
+      { results: { channels: [{ alternatives: [{ transcript: "hello there", words: [] }] }] } } as unknown as BatchResponse) });
+    expect((await current(store, "speech")).stt?.state).toBe("waiting_for_model");
+    let finish!: (id: string) => void;
+    const completed = new Promise<string>((resolve) => { finish = resolve; });
+    const queue = createDesktopWhisperQueue({ store, files: {} as DesktopBridge, whisper: {} as DesktopWhisperBridge, captureLive: () => false });
+    const stopListening = queue.onDone(finish);
+    try {
+      await queue.noteCommitted(await current(store, "speech"));
+      expect(await completed).toBe("speech");
+    } finally { stopListening(); queue.dispose(); }
+    const note = await current(store, "speech");
+    expect(note.stt?.state).toBe("done");
+    expect(hasLocalWorkInProgress(note)).toBe(false);
+    await store.evictCachedAudio({ id: "speech" });
+    await expect(store.readNoteAudio("speech")).rejects.toEqual(code("not_found"));
+  });
+
+  test("on-device speech still queued behind live capture stays pinned even with a verified space copy", async () => {
+    const store = await harness().open();
+    const bytes = bytesOf(12);
+    const saved = await saveWith(store, "queued", "on-device", bytes);
+    await saveReceipt(store, "queued", saved.rev!, bytes);
+    const queue = createDesktopWhisperQueue({ store, files: {} as DesktopBridge, whisper: {} as DesktopWhisperBridge, captureLive: () => true });
+    try {
+      await queue.noteCommitted(await current(store, "queued"));
+      const note = await current(store, "queued");
+      expect(note.stt?.state).toBe("queued");
+      expect(hasLocalWorkInProgress(note)).toBe(true);
+      await expect(store.evictCachedAudio({ id: "queued" })).rejects.toEqual(code("audio_in_use"));
+      expect((await store.readNoteAudio("queued")).bytes.length).toBe(12);
+    } finally { queue.dispose(); }
+  });
+
+  test("an explicit Local request on a cloud note is pinned while queued and evictable once its transcript is done", async () => {
+    const store = await harness().open();
+    const bytes = bytesOf(12);
+    const saved = await saveWith(store, "asked", "off", bytes);
+    await saveReceipt(store, "asked", saved.rev!, bytes);
+    // The native enqueue writes this marker (ResumableWork.requested); the web store cannot run that enqueue.
+    await store.updateStt("asked", { state: "queued", pack: null, engine: "whisper", segmentsDone: 0, windowsDone: 0, error: null, requested: true });
+    expect(hasLocalWorkInProgress(await current(store, "asked"))).toBe(true);
+    await expect(store.evictCachedAudio({ id: "asked" })).rejects.toEqual(code("audio_in_use"));
+    await store.updateStt("asked", { state: "done", pack: null, engine: "whisper", segmentsDone: 1, windowsDone: 1, error: null, requested: true });
+    expect(hasLocalWorkInProgress(await current(store, "asked"))).toBe(false);
+    await store.evictCachedAudio({ id: "asked" });
+    await expect(store.readNoteAudio("asked")).rejects.toEqual(code("not_found"));
+  });
+
+  test("an on-device job cancelled on desktop is evictable once a verified space copy exists", async () => {
+    const store = await harness().open();
+    const bytes = bytesOf(12);
+    const saved = await saveWith(store, "cancelled", "on-device", bytes);
+    await saveReceipt(store, "cancelled", saved.rev!, bytes);
+    await store.updateStt("cancelled", { state: "cancelled", pack: null, engine: "whisper", segmentsDone: 0, windowsDone: 0, error: null });
+    // Desktop drain skips cancelled and retry rejects it, so no pin is left to hold the bytes.
+    expect(hasLocalWorkInProgress(await current(store, "cancelled"))).toBe(false);
+    await store.evictCachedAudio({ id: "cancelled" });
+    await expect(store.readNoteAudio("cancelled")).rejects.toEqual(code("not_found"));
+  });
+
+  test("a hosted note keeps its audio until its remote ops are done, and is evictable once they are", async () => {
+    const store = await harness().open();
+    const bytes = bytesOf(12);
+    await saveWith(store, "hosted", "assemblyai", bytes);
+    await store.setCaptureDefaults({ accountDid: "did:a", transitionGen: 1, transcriber: "assemblyai", identifySpeakers: false });
+    const op = (opId: string, kind: "hosted_create" | "hosted_submit") => ({ id: "hosted", did: "did:a", opId, provider: "assemblyai" as const,
+      mode: "hosted" as const, kind, fingerprint: "12:audio/webm", startedAt: 1 });
+    await store.beginRemoteOp(op("create", "hosted_create"));
+    await store.recordRemoteResult({ id: "hosted", did: "did:a", opId: "create", result: { outcome: "created", handle: "handle-1" } });
+    await store.beginRemoteOp(op("submit", "hosted_submit"));
+    await store.recordRemoteResult({ id: "hosted", did: "did:a", opId: "submit", result: { outcome: "created", jobId: "job-1" } });
+    await saveReceipt(store, "hosted", (await current(store, "hosted")).rev!, bytes);
+    await expect(store.evictCachedAudio({ id: "hosted" })).rejects.toEqual(code("audio_in_use"));
+    const submitted = await current(store, "hosted");
+    await store.updateLedger({ id: "hosted", did: "did:a", rev: submitted.rev!, patch: {
+      remote: (submitted.ledger?.remote ?? []).map((entry) => ({ ...entry, stage: "done" as const })) } });
+    expect(hasLocalWorkInProgress(await current(store, "hosted"))).toBe(false);
+    await store.evictCachedAudio({ id: "hosted" });
+    await expect(store.readNoteAudio("hosted")).rejects.toEqual(code("not_found"));
   });
 });

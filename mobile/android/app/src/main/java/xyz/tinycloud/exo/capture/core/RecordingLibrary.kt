@@ -437,7 +437,7 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
             .put("kind", outKind).put("handle", handle ?: JSONObject.NULL)
             .put("handleExpiresAt", result?.opt("handleExpiresAt") ?: receipt.opt("handleExpiresAt") ?: JSONObject.NULL)
             .put("state", state).put("createdAt", receipt.optLong("startedAt", System.currentTimeMillis()))
-            .put("attempts", 0)
+            .put("attempts", 0).put("receiptKind", kind)
     }
     private fun saveOutbox(entry: JSONObject, point: String) {
         val file = File(outbox, "${entry.getString("entryId")}.json")
@@ -524,16 +524,8 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
                 ops.unlink(file, "receipt.result"); ops.syncDir(outbox)
                 return@withLock "outbox"
             }
-            val originalKind = when (previous.optString("kind")) {
-                "hosted_upload" -> "hosted_create"
-                "hosted_submit" -> "hosted_submit"
-                // The table's begin row gives own_upload_lookup for own_upload,
-                // while an own_create with no job starts as unknown.
-                "own_upload_lookup" -> "own_upload"
-                "ptx_job" -> "ptx_create"
-                "unknown" -> if (previous.optString("mode") == "hosted") "hosted_submit" else "own_create"
-                else -> "own_create"
-            }
+            // Every outbox row carries its original receipt kind (written by outboxReceipt), so no kind-derived fallback.
+            val originalKind = previous.getString("receiptKind")
             val receipt = JSONObject().put("opId", opId).put("provider", previous.getString("provider"))
                 .put("mode", previous.opt("mode") ?: JSONObject.NULL).put("kind", originalKind)
                 .put("startedAt", previous.optLong("createdAt"))
@@ -565,10 +557,12 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
     }
 
     /** Once own_create has created its job, a sibling own_upload for the same note has no upload left to look up.
-     *  Its outbox lookup must not keep pinning the note's audio. Receipt entries are named `<id>:<opId>.json`. */
+     *  Retire only entries whose original receipt kind is own_upload: an own_create with a known upload URL also stores
+     *  an own_upload_lookup and keeps its own lookup. Its outbox lookup must not keep pinning the note's audio.
+     *  Receipt entries are named `<id>:<opId>.json`. */
     private fun retireOwnUploadOutbox(id: String) {
         outbox.listFiles().orEmpty().filter { it.isFile && it.name.startsWith("$id:") }.forEach { file ->
-            if (JSONObject(file.readText()).optString("kind") == "own_upload_lookup") ops.unlink(file, "receipt.result")
+            if (JSONObject(file.readText()).optString("receiptKind") == "own_upload") ops.unlink(file, "receipt.result")
         }
         ops.syncDir(outbox)
     }
@@ -578,8 +572,11 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
         val transcriber = note.optJSONObject("options")?.optString("transcriber")
         val localAudio = ledger.optJSONObject("localAudio")
         val localAudioUnready = localAudio != null && localAudio.optString("state") != "ready"
-        val sttState = note.optJSONObject("stt")?.optString("state").orEmpty()
-        val sttPinned = transcriber == "on-device" && sttState in setOf("waiting_for_model", "queued", "running", "failed")
+        val stt = note.optJSONObject("stt")
+        val sttState = stt?.optString("state").orEmpty()
+        val sttRequested = stt?.optBoolean("requested") == true
+        // Mobile: a cancelled job's retry rewrites it to queued and re-reads staged bytes. Desktop releases cancelled.
+        val sttPinned = (transcriber == "on-device" || sttRequested) && sttState in setOf("waiting_for_model", "queued", "running", "failed", "cancelled")
         val remotes = ledger.optJSONArray("remote")
         val remoteOpen = remotes != null && (0 until remotes.length()).any { index ->
             val op = remotes.getJSONObject(index)

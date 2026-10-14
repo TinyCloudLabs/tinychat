@@ -83,8 +83,12 @@ class RecordingLibraryTest {
         catch (e: IllegalStateException) { assertEquals("audio_in_use", e.message) }
         assertTrue(lib.audio(id).isFile)
     }
+    // A finished on-device pipeline: STT and transcript are both done, so the note no longer pins its audio.
     private fun transcriptDone(lib: RecordingLibrary, id: String) {
-        lib.mutate(id, "test.transcriptDone") { it.getJSONObject("ledger").put("transcript", JSONObject().put("state", "done")) }
+        lib.mutate(id, "test.transcriptDone") {
+            it.put("stt", defaultStt().put("state", "done"))
+            it.getJSONObject("ledger").put("transcript", JSONObject().put("state", "done"))
+        }
     }
     @get:Rule val temp = TemporaryFolder()
     private fun id() = UUID.randomUUID().toString()
@@ -249,7 +253,7 @@ class RecordingLibraryTest {
             assertEquals(if (kind == "own_upload") "lookup" else "pending", entry.getString("state"))
             assertEquals("handle-1", entry.getString("handle"))
             assertEquals(setOf("entryId", "did", "provider", "mode", "kind", "handle", "handleExpiresAt",
-                "state", "createdAt", "attempts"), entry.keys().asSequence().toSet())
+            "state", "createdAt", "attempts", "receiptKind"), entry.keys().asSequence().toSet())
         }
     }
     @Test fun failedRemoteRequestRemovesItsOpenReceipt() {
@@ -290,6 +294,25 @@ class RecordingLibraryTest {
             assertEquals(kind, expectedState, entry.getString("state"))
             assertEquals("remote-handle", entry.getString("handle"))
         }
+    }
+    @Test fun ownCreateRetirementRemovesOnlyOwnUploadReceipts() {
+        val lib = library(); val note = id()
+        fun receipt(op: String, kind: String) = JSONObject().put("id", note).put("did", "did:a").put("opId", op)
+            .put("provider", "assemblyai").put("mode", "own").put("kind", kind).put("fingerprint", "sha256").put("startedAt", 1000)
+        // An own_create whose upload URL is known keeps its own lookup, which must survive a sibling own_create's job.
+        lib.beginRemoteOp(receipt("c-lookup", "own_create"))
+        lib.recordRemoteResult(note, "did:a", "c-lookup", JSONObject().put("outcome", "created").put("uploadUrl", "https://u/create"))
+        lib.beginRemoteOp(receipt("u-1", "own_upload"))
+        lib.recordRemoteResult(note, "did:a", "u-1", JSONObject().put("outcome", "created").put("uploadUrl", "https://u/upload"))
+        val entries = { lib.listOutbox("did:a").let { a -> (0 until a.length()).map { a.getJSONObject(it) } } }
+        assertEquals(setOf("https://u/create", "https://u/upload"),
+            entries().filter { it.getString("kind") == "own_upload_lookup" }.map { it.getString("handle") }.toSet())
+        lib.beginRemoteOp(receipt("c-job", "own_create"))
+        lib.recordRemoteResult(note, "did:a", "c-job", JSONObject().put("outcome", "created").put("jobId", "job-1"))
+        val outbox = entries()
+        assertEquals(listOf("https://u/create"), outbox.filter { it.getString("kind") == "own_upload_lookup" }.map { it.getString("handle") })
+        assertEquals(listOf("job-1"), outbox.filter { it.getString("kind") == "transcript" }.map { it.getString("handle") })
+        assertEquals(2, outbox.size)
     }
     @Test fun receiptFailpointsAndInterruptedOutboxTransferKeepAnAuthority() {
         val ops = FileOps(); val dir = temp.newFolder(); val lib = RecordingLibrary(dir, ops)

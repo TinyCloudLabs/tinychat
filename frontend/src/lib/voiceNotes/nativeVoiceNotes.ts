@@ -78,6 +78,8 @@ export interface NoteSttState {
   state: "waiting_for_model" | "queued" | "running" | "done" | "failed" | "cancelled";
   pack: "full" | "small" | null; engine: "parakeet" | "apple-speech" | "whisper" | null;
   segmentsDone: number; windowsDone: number; error: string | null;
+  /** Set by the native enqueue (`ResumableWork.requested`, TranscriptionCore.swift:44, ResumableWork.kt:20-21) when the user chose Local for this note. */
+  requested?: boolean;
 }
 export interface LocalTranscript {
   version: 1 | 2; noteId: string; transcriber: TranscriberId; rev: number;

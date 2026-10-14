@@ -91,7 +91,7 @@ async function savedRecordings(): Promise<VoiceNoteRecording[]> {
   const owner = mountedVoiceNoteDid();
   if (!owner) return [];
   const notes = (await VoiceNotes.listPending()).recordings.filter((note) =>
-    note.owner === owner && hasVerifiedSpaceCopy(note) && !hasLocalWorkInProgress(note));
+    note.owner === owner && hasVerifiedSpaceCopy(note) && !hasLocalWorkInProgress(note, { cancelledRetryable: Capacitor.isNativePlatform() }));
   const sizes = await Promise.all(notes.map((note) => VoiceNotes.localAudioSize({ id: note.id })));
   return notes.flatMap((note, index) => sizes[index]!.size === note.ledger!.audio.verifiedInSpace!.size
     ? [{ ...note, sizeBytes: sizes[index]!.size }] : []);

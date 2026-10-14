@@ -660,9 +660,13 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
           await del(tx, STORES.notes, id);
           await del(tx, STORES.transcripts, id);
           const outboxNow = [...outbox];
+          // An own_create that created its job retired the note's own_upload (see recordRemoteResult); its retained
+          // own_upload receipts must not re-enqueue a lookup for an upload nothing will read again.
+          const ownCreated = receipts.some((row) => row.receipt.id === id && row.receipt.kind === "own_create" && row.result?.outcome === "created");
           for (const row of receipts) {
             const { receipt, result } = row;
             if (receipt.id !== id) continue;
+            if (receipt.kind === "own_upload" && ownCreated) continue;
             if (outboxNow.some((entry) => entry.entryId === `${id}:${receipt.opId}`)) continue;
             if (result?.outcome === "failed") continue;
             if (result?.handle && outboxNow.some((entry) => entry.did === receipt.did && entry.handle === result.handle)) continue;

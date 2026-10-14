@@ -47,8 +47,22 @@ test("releases an on-device note whose transcript completed", () => {
   expect(hasLocalWorkInProgress(note({}, { ...onDevice, stt: { state: "done" } }))).toBe(false);
 });
 
-test("releases a cancelled on-device job, which drain never queues and retry rejects", () => {
+test("releases a cancelled on-device job on desktop, where drain skips it and retry rejects it", () => {
   expect(hasLocalWorkInProgress(note({}, { ...onDevice, stt: { state: "cancelled" } }))).toBe(false);
+});
+
+test("pins a cancelled on-device job on mobile, where retry rewrites it to queued", () => {
+  expect(hasLocalWorkInProgress(note({}, { ...onDevice, stt: { state: "cancelled" } }), { cancelledRetryable: true })).toBe(true);
+});
+
+test("pins a cancelled Local request on mobile even when the transcriber is off", () => {
+  const cancelledLocal = note({}, { options: { transcriber: "off" }, stt: { state: "cancelled", requested: true } });
+  expect(hasLocalWorkInProgress(cancelledLocal, { cancelledRetryable: true })).toBe(true);
+  expect(hasLocalWorkInProgress(cancelledLocal)).toBe(false);
+});
+
+test("releases a cancelled job that was never a Local request, even on mobile", () => {
+  expect(hasLocalWorkInProgress(note({}, { options: { transcriber: "off" }, stt: { state: "cancelled" } }), { cancelledRetryable: true })).toBe(false);
 });
 
 test("releases a saved note whose work is finished", () => {

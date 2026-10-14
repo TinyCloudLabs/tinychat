@@ -3,6 +3,7 @@ import { cachedAudioSize, clearCachedAudio } from "@/lib/voiceNotes/audioPlaybac
 import { reconcileAudioCache, subscribeAudioCacheAccount } from "@/lib/voiceNotes/audioReceiptUpgrade";
 import { installCaptureEngine } from "@/lib/voiceNotes/captureEngine";
 import { readableError } from "@/lib/readableError";
+import { Button } from "@/components/ui/button";
 
 const sizeText = (bytes: number) => bytes >= 1024 * 1024 * 1024
   ? `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`
@@ -38,9 +39,9 @@ export function AudioCacheSettings() {
       {size ? `${sizeText(size.bytes)} of ${sizeText(size.limit)} used` : "Checking cache size…"}
     </p>
     <p className="text-sm text-muted-foreground">Recordings stored in your space stay on this device for faster playback.</p>
-    <button type="button" className="text-sm underline disabled:opacity-50" disabled={busy || !size || size.bytes === 0} onClick={() => void clear()}>
+    <Button type="button" variant="link" size="sm" className="h-11 px-0 text-sm underline fine:h-8" disabled={busy || !size || size.bytes === 0} onClick={() => void clear()}>
       {busy ? "Clearing…" : "Clear cached audio"}
-    </button>
+    </Button>
     {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
   </section>;
 }
