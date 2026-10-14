@@ -14,7 +14,7 @@ import { appPlatform } from "@/lib/platform";
 import { VoiceNoteSaveTimeout, withVoiceNoteSaveDeadline } from "@/lib/voiceNotes/saveDeadline";
 import { localTranscriptToSave, VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
 import { NoteDetailView, type NoteDetailViewProps } from "./NoteDetailView";
-import { hasSegmentTimes, transcriptWithTimestamps } from "./transcriptSegments";
+import { hasPrivateCloudTimingProvenance, hasSegmentTimes, transcriptWithTimestamps } from "./transcriptSegments";
 import type { Library } from "./useLibrary";
 
 /** Matches markdown-text's copy button: the tick reverts on its own. */
@@ -71,18 +71,25 @@ export function NoteDetail(props: {
     };
   }, []);
 
+  const selectedTranscript = reads.transcript;
+  const remoteTranscript = selectedTranscript?.transcript;
   const sentences = useMemo(
     () => {
-      if (reads.transcript?.status === "ok" && reads.transcript.sentences.length > 0) return reads.transcript.sentences;
+      if (remoteTranscript?.status === "ok" && remoteTranscript.sentences.length > 0) return remoteTranscript.sentences;
       if (reads.metadata?.status === "ok" && reads.metadata.metadata.transcription_outcome === "no_speech") return null;
       const saved = local?.id === localId && local.transcript?.outcome === "transcribed" ? localTranscriptToSave(local.transcript) : null;
       return saved && saved.sentences.length > 0 ? saved.sentences : null;
     },
-    [reads.transcript, reads.metadata, local, localId],
+    [remoteTranscript, reads.metadata, local, localId],
   );
+  const isPrivateCloud = remoteTranscript?.status === "ok" && remoteTranscript.sentences.length > 0
+    && hasPrivateCloudTimingProvenance(
+      reads.metadata?.status === "ok" ? reads.metadata.metadata : null,
+      selectedTranscript?.provenance,
+    );
   const onCopy = useCallback(async (withTimestamps = false) => {
-    const text = sentences && (withTimestamps && hasSegmentTimes(sentences)
-      ? transcriptWithTimestamps(sentences) : transcriptCopyText(sentences));
+    const text = sentences && (withTimestamps && hasSegmentTimes(sentences, isPrivateCloud)
+      ? transcriptWithTimestamps(sentences, isPrivateCloud) : transcriptCopyText(sentences));
     if (!text) return;
     const ok = await copyText(text);
     if (!mounted.current) return;
@@ -92,7 +99,7 @@ export function NoteDetail(props: {
       timer.current = null;
       setCopyState("idle");
     }, COPIED_DURATION);
-  }, [sentences]);
+  }, [sentences, isPrivateCloud]);
 
   return (
     <NoteDetailView
@@ -100,7 +107,8 @@ export function NoteDetail(props: {
       // Not listed yet while a list read is out (a note saved a moment ago): it waits for that read.
       listStatus={item === null && library.listing ? "loading" : library.status}
       metadata={reads.metadata}
-      transcript={reads.transcript}
+      transcriptProvenance={selectedTranscript?.provenance}
+      transcript={remoteTranscript}
       localTranscript={local?.id === localId ? local.transcript : undefined}
       localTranscriptRead={local?.id === localId ? local.readError : null}
       onLocalTranscriptRetry={() => { setLocal(null); setLocalAttempt((attempt) => attempt + 1); }}
