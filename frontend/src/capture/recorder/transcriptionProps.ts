@@ -3,7 +3,6 @@
 import {
   privateCloudLimits,
   privateCloudRefusal,
-  type PrivateCloudLimits,
   type PrivateCloudRefusal,
   type NoteTranscriptionState,
   type TranscriptionAvailability,
@@ -36,7 +35,7 @@ export interface VoiceNoteTranscriptionProps {
   jobs: ReadonlyMap<string, NoteTranscriptionState>;
   onTranscribe: (sourceId: string) => void;
   /** Private cloud for a note committed to another mode (Local); see `VoiceNoteTranscriber.transcribePrivately`. */
-  onTranscribePrivately: (sourceId: string, durationSecs: number | null) => PrivateStartRefusal | null | void;
+  onTranscribePrivately: (sourceId: string, durationSecs: number | null, sizeBytes?: number | null) => PrivateStartRefusal | null | void;
   onConsent: () => void;
   onTurnOff: () => void;
   /** Asks again; resolves once the check has answered. */
@@ -71,7 +70,7 @@ export function transcriptionProps(
     diarization: snapshot.capabilities?.diarization === true,
     jobs: snapshot.jobs,
     onTranscribe: (sourceId) => transcriber.transcribe(sourceId),
-    onTranscribePrivately: (sourceId, durationSecs) => transcriber.transcribePrivately(sourceId, durationSecs),
+    onTranscribePrivately: (sourceId, durationSecs, sizeBytes) => transcriber.transcribePrivately(sourceId, durationSecs, sizeBytes),
     onConsent: () => transcriber.consent(),
     onTurnOff: () => void transcriber.turnOff(),
     onRecheck: () => transcriber.check(),
@@ -81,6 +80,7 @@ export function transcriptionProps(
 export interface PrivateAudioSource {
   capturePlatform: string | null;
   mimeType: string | null;
+  sizeBytes?: number | null;
 }
 
 export interface BrowserWavSizeRefusal {
@@ -97,6 +97,7 @@ export function privateAudioSourceFromMetadata(metadata: Record<string, unknown>
   return {
     capturePlatform: typeof platform === "string" ? platform : null,
     mimeType: typeof mimeType === "string" ? mimeType : null,
+    sizeBytes: typeof metadata?.audio_bytes === "number" && Number.isSafeInteger(metadata.audio_bytes) ? metadata.audio_bytes : null,
   };
 }
 
@@ -108,10 +109,11 @@ export function privateRefusal(
   sizeBytes: number | null = null,
   source?: PrivateAudioSource,
 ): PrivateEligibilityRefusal | null {
-  const limits: PrivateCloudLimits | null = transcription.maxSeconds === null
-    ? null
-    : { maxSeconds: transcription.maxSeconds, maxBytes: transcription.maxBytes ?? null };
-  const refusal = privateCloudRefusal(durationSecs, sizeBytes, limits);
+  const limits = typeof transcription.maxSeconds === "number" && Number.isFinite(transcription.maxSeconds) && transcription.maxSeconds > 0
+    && typeof transcription.maxBytes === "number" && Number.isSafeInteger(transcription.maxBytes) && transcription.maxBytes > 0
+    ? { maxSeconds: transcription.maxSeconds, maxBytes: transcription.maxBytes }
+    : null;
+  const refusal = privateCloudRefusal(durationSecs, sizeBytes ?? source?.sizeBytes ?? null, limits);
   if (refusal !== null) return refusal;
   if (source?.capturePlatform === "web"
     && bareMimeType(source.mimeType ?? "") === "audio/webm"

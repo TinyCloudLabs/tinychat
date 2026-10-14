@@ -5,7 +5,7 @@ import { deviceName } from "@/lib/platform";
 // phone's own record of the note says that job has ended, so the two never both transcribe it.
 import { VoiceNotes } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { cancelOnDeviceNote } from "@/lib/voiceNotes/onDeviceSttStore";
-import { privateRefusal, type BrowserWavSizeRefusal, type PrivateAudioSource, type VoiceNoteTranscriptionProps } from "./transcriptionProps";
+import { privateRefusal, type PrivateAudioSource, type PrivateEligibilityRefusal, type VoiceNoteTranscriptionProps } from "./transcriptionProps";
 import { formatExactDuration } from "@/capture/library/formatters";
 import { PRIVATE_DURATION_MARGIN_SECONDS, type PrivateStartRefusal, type TranscriptionAdmissionRefusal } from "@/lib/voiceNotes/voiceNoteTranscription";
 
@@ -13,17 +13,20 @@ const PRIVATE_REFUSAL_COPY: Record<TranscriptionAdmissionRefusal, string> = {
   checking: "Private transcription is still checking. Try again in a moment.",
   unavailable: "Private transcription is unavailable right now. Try again later.",
   "limits-unknown": "Private's limits aren't available right now. Try again later.",
+  "limits-exceeded": "This recording is larger than the advertised Private upload limit.",
   "check-failed": "Couldn’t check Private transcription. Try again in a moment.",
   "no-consent": "Enable Private transcription before trying again.",
   "account-changed": "Your account changed. Try again after signing in.",
 };
 
-/** The copy for a Private start refused by service state, duration, or the browser's WAV payload ceiling. */
-export function privateRefusalCopy(refusal: PrivateStartRefusal | BrowserWavSizeRefusal): string {
+/** The copy for a Private start refused by service state, duration, bytes, or the browser's WAV payload ceiling. */
+export function privateRefusalCopy(refusal: PrivateStartRefusal | PrivateEligibilityRefusal): string {
   if (typeof refusal === "string") return PRIVATE_REFUSAL_COPY[refusal];
   if (refusal.kind === "browser-wav-too-large") {
     return "This recording is too long for Private transcription in the browser. Use the desktop or phone app to transcribe it privately.";
   }
+  if (refusal.kind === "bytes") return PRIVATE_REFUSAL_COPY["limits-exceeded"];
+  if (refusal.kind === "unknown") return PRIVATE_REFUSAL_COPY["limits-unknown"];
   return `Private Transcription accepts notes up to ${formatExactDuration(refusal.limitSeconds - PRIVATE_DURATION_MARGIN_SECONDS, "floor")}. This note is ${formatExactDuration(refusal.durationSeconds, "ceil")}.`;
 }
 
@@ -94,10 +97,11 @@ export async function switchToPrivate(
   durationSecs: number | null,
   wait: StopWait = DEFAULT_WAIT,
   source?: PrivateAudioSource,
+  sizeBytes?: number | null,
 ): Promise<string | null> {
   // Refused before the on-device job is stopped, so a note Private cannot take stays on Local.
-  const limit = privateRefusal(transcription, durationSecs, null, source);
-  if (limit?.kind === "duration" || limit?.kind === "browser-wav-too-large") return privateRefusalCopy(limit);
+  const limit = privateRefusal(transcription, durationSecs, sizeBytes, source);
+  if (limit?.kind === "duration" || limit?.kind === "bytes" || limit?.kind === "browser-wav-too-large") return privateRefusalCopy(limit);
   const before = await readOnDeviceState(noteId);
   if ("failure" in before) return before.failure;
   if (before.state === "done") return FINISHED;
@@ -105,6 +109,6 @@ export async function switchToPrivate(
   if (failure !== null) return failure;
   const unconfirmed = await waitForOnDeviceToEnd(noteId, wait);
   if (unconfirmed !== null) return unconfirmed;
-  const refusal = transcription.onTranscribePrivately(noteId, durationSecs);
+  const refusal = transcription.onTranscribePrivately(noteId, durationSecs, sizeBytes ?? source?.sizeBytes);
   return refusal ? privateRefusalCopy(refusal) : null;
 }

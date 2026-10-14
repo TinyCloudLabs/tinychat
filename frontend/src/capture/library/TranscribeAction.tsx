@@ -7,7 +7,8 @@ import { ChevronDownIcon, Loader2Icon } from "lucide-react";
 import { HowItWorksLink } from "@/components/ui/how-it-works-link";
 import { PlatformContext, deviceName } from "@/lib/platform";
 import { CHECK_AGAIN, PRIVATE_CONSENT_ACTION, PRIVATE_CONSENT_TITLE, privateConsentBody, privateConsentDevice, privateNotOffered, TRANSCRIBER_NAME } from "@/capture/recorder/final/finalCopy";
-import type { PrivateAudioSource, VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
+import { privateRefusalCopy } from "@/capture/recorder/privateInstead";
+import { privateRefusal, type PrivateAudioSource, type VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
 import { captureCapabilities } from "@/lib/voiceNotes/captureEngine";
 import { VoiceNotes } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { cn } from "@/lib/utils";
@@ -41,7 +42,7 @@ function usePhoneRecording(noteId: string): PhoneRead {
       ({ recordings }) => {
         if (!live) return;
         const recording = recordings.find((candidate) => candidate.id === noteId);
-        setRead({ state: "read", phone: recording ? { committed: recording.options?.transcriber ?? null, hasLocalState: recording.stt != null } : null });
+        setRead({ state: "read", phone: recording ? { committed: recording.options?.transcriber ?? null, hasLocalState: recording.stt != null, sizeBytes: recording.sizeBytes } : null });
       },
       (caught: unknown) => {
         console.error("[Library] Could not read this phone's recordings for", noteId, caught);
@@ -77,6 +78,7 @@ export function TranscribeActionFor(props: TranscribeActionProps & { read: Phone
   const { noteId, transcription, durationSecs, privateAudioSource, read } = props;
   const phone = read.state === "read" ? read.phone : null;
   const providers = transcribeProviders(noteId, transcription, phone, durationSecs, privateAudioSource);
+  const offerRefusal = transcription === undefined ? null : privateRefusal(transcription, durationSecs, privateAudioSource?.sizeBytes ?? phone?.sizeBytes ?? null, privateAudioSource);
   const [chosen, setChosen] = useState<TranscribeProvider | null>(null);
   const [busy, setBusy] = useState(false);
   // Set at the tap, ahead of any render: the start is still on its way until this note's job or queue entry replaces the action.
@@ -94,7 +96,8 @@ export function TranscribeActionFor(props: TranscribeActionProps & { read: Phone
   }, [jobKind]);
   const provider = chosen !== null && providers.includes(chosen) ? chosen : providers[0];
   const recheck = transcription?.availability === "failed" && (transcription.consented || transcription.checkErrorCode === "native_status_failed")
-    ? privateNotOffered("failed", transcription.checkErrorCode) : null;
+    ? privateNotOffered("failed", transcription.checkErrorCode)
+    : offerRefusal?.kind === "unknown" ? { reason: "Private's limits aren't available right now." } : null;
 
   const run = (which: TranscribeProvider) => {
     if (starting.current) return;
@@ -153,7 +156,7 @@ export function TranscribeActionFor(props: TranscribeActionProps & { read: Phone
     );
   }
 
-  if (provider === undefined && read.state !== "failed" && recheck === null && problem === null) return null;
+  if (provider === undefined && read.state !== "failed" && recheck === null && problem === null && offerRefusal?.kind !== "browser-wav-too-large") return null;
 
   return (
     <div className={cn("flex min-w-0 flex-col gap-2", props.className)} data-testid="transcribe-action">
@@ -196,6 +199,11 @@ export function TranscribeActionFor(props: TranscribeActionProps & { read: Phone
             </span>
           )}
         </div>
+      )}
+      {offerRefusal?.kind === "browser-wav-too-large" && (
+        <p className="text-callout text-muted-foreground" data-testid="voice-note-browser-wav-too-large">
+          {privateRefusalCopy(offerRefusal)}
+        </p>
       )}
       {read.state === "failed" && (
         <p role="alert" className="text-callout text-destructive" data-testid="transcribe-phone-read-failed">

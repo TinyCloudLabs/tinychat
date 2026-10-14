@@ -73,11 +73,13 @@ export const AUDIO_CORRUPT = "STORE_CORRUPT_AUDIO";
  */
 export class AudioStoreError extends Error {
   readonly code: string;
+  readonly sizeBytes?: number;
 
-  constructor(code: string, message: string, options?: ErrorOptions) {
+  constructor(code: string, message: string, options?: ErrorOptions, sizeBytes?: number) {
     super(message, options);
     this.name = "AudioStoreError";
     this.code = code;
+    this.sizeBytes = sizeBytes;
   }
 }
 
@@ -409,7 +411,7 @@ export async function getAudio(
   const manifest = await getAudioManifest(kv, base, opts);
   if (!manifest) return null;
   if (maxBytes !== undefined && manifest.size > maxBytes) {
-    throw new AudioStoreError(AUDIO_TOO_LARGE, `audioStore: the audio is ${manifest.size} bytes, over ${maxBytes}`);
+    throw new AudioStoreError(AUDIO_TOO_LARGE, `audioStore: the audio is ${manifest.size} bytes, over ${maxBytes}`, undefined, manifest.size);
   }
   const chunks: Blob[] = [];
   let loaded = 0;

@@ -14,6 +14,7 @@ export type TranscribeProvider = "on-device" | "private-cloud";
 export interface PhoneRecording {
   committed: TranscriberId | null;
   hasLocalState: boolean;
+  sizeBytes?: number;
 }
 
 export const LOCAL_START_FAILED = `Couldn’t start transcribing on ${deviceName()}. Try again in a moment.`;
@@ -24,7 +25,7 @@ export function privateCloudFits(
   durationSecs: number | null,
   source?: PrivateAudioSource,
 ): boolean {
-  return privateRefusal(transcription, durationSecs, null, source) === null;
+  return privateRefusal(transcription, durationSecs, source?.sizeBytes, source) === null;
 }
 
 /** Local first: it is the default. Private only for a note within the length private cloud advertises. */
@@ -58,15 +59,15 @@ export async function transcribeWith(
 ): Promise<string | null> {
   if (provider === "on-device") return (await retryOnDeviceNote(noteId)) === null ? null : LOCAL_START_FAILED;
   if (!transcription) return "Private transcription isn’t available here.";
-  const offerRefusal = privateRefusal(transcription, durationSecs, null, source);
-  if (offerRefusal?.kind === "browser-wav-too-large") return privateRefusalCopy(offerRefusal);
+  const offerRefusal = privateRefusal(transcription, durationSecs, source?.sizeBytes ?? phone?.sizeBytes ?? null, source);
+  if (offerRefusal !== null) return privateRefusalCopy(offerRefusal);
   // A Local job on the phone (committed, or chosen here earlier) stops first, so the two never both transcribe it.
   if (phone?.committed != null && phone.committed !== "private-cloud") {
     const local = (phone.committed === "on-device" && phone.hasLocalState) || onDeviceQueuePlace(onDeviceSttStore.snapshot(), noteId)?.position != null;
-    if (local) return switchToPrivate(transcription, noteId, durationSecs, undefined, source);
+    if (local) return switchToPrivate(transcription, noteId, durationSecs, undefined, source, phone?.sizeBytes);
   }
   // A user's Private tap is explicit even on web, where there is no phone recording to inspect.
   // Refusals reach the action's alert in both the direct and Local-to-Private paths.
-  const refusal = transcription.onTranscribePrivately(noteId, durationSecs);
+  const refusal = transcription.onTranscribePrivately(noteId, durationSecs, source?.sizeBytes ?? phone?.sizeBytes);
   return refusal ? privateRefusalCopy(refusal) : null;
 }

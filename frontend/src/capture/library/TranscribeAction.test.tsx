@@ -29,7 +29,7 @@ const onPhone = (patch: Partial<PhoneRecording> = {}): PhoneRead => ({ state: "r
 const nowhere: PhoneRead = { state: "read", phone: null };
 
 function transcription(patch: Partial<VoiceNoteTranscriptionProps> = {}): VoiceNoteTranscriptionProps {
-  return { availability: "available", consented: true, maxSeconds: 600, jobs: new Map(), onTranscribe: noop, onTranscribePrivately: noop, onConsent: noop, onTurnOff: noop, onRecheck: noop, ...patch };
+  return { availability: "available", consented: true, maxSeconds: 600, maxBytes: 186_496_800, jobs: new Map(), onTranscribe: noop, onTranscribePrivately: noop, onConsent: noop, onTurnOff: noop, onRecheck: noop, ...patch };
 }
 
 const originals = { voiceNotes: VoiceNotes, onDeviceStt: OnDeviceStt };
@@ -492,6 +492,7 @@ describe("starting a transcription", () => {
     const limitSeconds = 4_321.5;
     const durationSeconds = 4_321.251;
     const result = await transcribeWith("private-cloud", NOTE, transcription({
+      maxSeconds: limitSeconds,
       onTranscribePrivately: () => ({ kind: "duration", limitSeconds, durationSeconds }),
     }), phone({ committed: "private-cloud" }), durationSeconds);
     expect(result).toBe("Private Transcription accepts notes up to 1 h 12 min 1 s. This note is 1 h 12 min 2 s.");

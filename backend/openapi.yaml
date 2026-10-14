@@ -2768,7 +2768,7 @@ components:
       properties:
         max_bytes:
           type: integer
-          maximum: 120960000
+          description: Advertised by PTX and enforced for uploads.
         max_duration_seconds:
           type: integer
         duration_grace_seconds:
@@ -3001,7 +3001,7 @@ components:
         byte_size:
           type: integer
           minimum: 1
-          maximum: 120960000
+          description: Must not exceed the `max_bytes` advertised by PTX.
         sha256:
           type: string
           pattern: "^[0-9a-f]{64}$"

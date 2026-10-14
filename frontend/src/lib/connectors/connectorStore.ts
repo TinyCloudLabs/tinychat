@@ -320,6 +320,8 @@ export interface StoreError {
   message: string;
   /** Raw underlying error object; it may contain credential-bearing URLs. Never log this directly. */
   cause?: unknown;
+  /** Known size of the stored audio when an upload cap rejected its manifest. */
+  sizeBytes?: number;
 }
 
 export type StoreResult<T> =

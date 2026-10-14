@@ -17,7 +17,7 @@ import { createVoiceNotePipeline } from "./voiceNotePipeline";
 import { pendingStore, whenVoiceNoteSavesIdle } from "./recorderSaves";
 import { VoiceNoteSaveTimeout } from "./saveDeadline";
 import { createVoiceNoteRecorderController } from "@/capture/recorder/voiceNoteRecorderController";
-import { createVoiceNoteCloud, createVoiceNoteTranscriber, transcribeSavedNote, type VoiceNoteCloud } from "./voiceNoteTranscription";
+import { createVoiceNoteCloud, createVoiceNoteTranscriber, transcribeSavedNote, type VoiceNoteCloud, type VoiceNoteTranscriber } from "./voiceNoteTranscription";
 
 const CAPS: PrivateCloudCapabilities = { max_bytes: 120_960_000, max_duration_seconds: 7_200, content_types: ["audio/wav"] };
 const original = VoiceNotes;
@@ -463,7 +463,7 @@ describe("a recorder save that finishes after the account changed never starts a
       for (let i = 0; i < 8; i++) await tick();
       await whenVoiceNoteSavesIdle();
     };
-    const attach = (transcriber: ReturnType<typeof createVoiceNoteTranscriber>) => {
+    const attach = (transcriber: VoiceNoteTranscriber) => {
       const recorder = createVoiceNoteRecorderController({ tcw: s.tcw, available: true, transcriber,
         pipeline: variant === "no-pipeline" ? undefined : s.pipeline, onDeviceReady: () => true });
       return { recorder, detach: recorder.attach() };

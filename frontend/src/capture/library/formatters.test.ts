@@ -23,11 +23,12 @@ describe("formatters", () => {
   });
 
   test("exact durations: a limit floors, a note's length ceils, so a rejected note never reads as its limit", () => {
-    expect(formatExactDuration(7_200, "floor")).toBe("2 h");
-    expect(formatExactDuration(7_217.5, "floor")).toBe("2 h 0 min 17 s");
-    expect(formatExactDuration(7_217.532, "ceil")).toBe("2 h 0 min 18 s");
-    expect(formatExactDuration(7_200.1, "ceil")).toBe("2 h 0 min 1 s");
-    expect(formatExactDuration(7_560, "ceil")).toBe("2 h 6 min");
+    const advertisedLimit = 11_101;
+    expect(formatExactDuration(advertisedLimit, "floor")).toBe("3 h 5 min 1 s");
+    expect(formatExactDuration(advertisedLimit + 17.5, "floor")).toBe("3 h 5 min 18 s");
+    expect(formatExactDuration(advertisedLimit + 17.532, "ceil")).toBe("3 h 5 min 19 s");
+    expect(formatExactDuration(advertisedLimit + 0.1, "ceil")).toBe("3 h 5 min 2 s");
+    expect(formatExactDuration(advertisedLimit + 459, "ceil")).toBe("3 h 12 min 40 s");
     expect(formatExactDuration(45, "ceil")).toBe("45 s");
   });
 

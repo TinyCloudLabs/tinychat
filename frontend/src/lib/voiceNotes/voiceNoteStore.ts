@@ -253,7 +253,7 @@ export const VOICE_NOTE_STORAGE_FULL = AUDIO_STORAGE_FULL;
 export const VOICE_NOTE_AUDIO_TOO_LARGE = "VOICE_NOTE_AUDIO_TOO_LARGE";
 export const VOICE_NOTE_AUDIO_CORRUPT = AUDIO_CORRUPT;
 
-type StoreFailure = { ok: false; error: { code: string; message: string; cause?: unknown } };
+type StoreFailure = { ok: false; error: { code: string; message: string; cause?: unknown; sizeBytes?: number } };
 
 /** A shared audio store rejection as this module's Result, in the codes the UI shows. */
 function audioFailure(op: string, err: unknown): StoreFailure {
@@ -266,7 +266,7 @@ function audioFailure(op: string, err: unknown): StoreFailure {
     case AUDIO_SOURCE_READ_FAILED:
       return { ok: false, error: { code: "VOICE_NOTE_SOURCE_READ_FAILED", message: `${op}: ${err.message}`, cause: err } };
     case AUDIO_TOO_LARGE:
-      return { ok: false, error: { code: VOICE_NOTE_AUDIO_TOO_LARGE, message: `${op}: ${err.message}`, cause: err } };
+      return { ok: false, error: { code: VOICE_NOTE_AUDIO_TOO_LARGE, message: `${op}: ${err.message}`, cause: err, sizeBytes: err.sizeBytes } };
     default:
       return { ok: false, error: { code: err.code, message: `${op}: ${err.message}`, cause: err } };
   }
@@ -724,7 +724,7 @@ async function readLegacyAudio(tcw: TinyCloudWeb, sourceId: string): Promise<Sto
 
 function tooLarge(size: number, maxBytes: number | undefined): StoreFailure | null {
   return maxBytes !== undefined && size > maxBytes
-    ? { ok: false, error: { code: VOICE_NOTE_AUDIO_TOO_LARGE, message: `loadVoiceNoteAudio: the note's audio is ${size} bytes, over ${maxBytes}` } }
+    ? { ok: false, error: { code: VOICE_NOTE_AUDIO_TOO_LARGE, message: `loadVoiceNoteAudio: the note's audio is ${size} bytes, over ${maxBytes}`, sizeBytes: size } }
     : null;
 }
 

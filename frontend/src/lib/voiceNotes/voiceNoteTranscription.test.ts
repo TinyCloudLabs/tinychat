@@ -46,7 +46,6 @@ import { syncOnDeviceTranscript } from "./onDeviceTranscriber";
 import { readTranscriptCommit } from "./voiceNoteCommits";
 import { resolveVoiceNoteRow } from "./voiceNoteRows";
 import { pendingStore } from "./recorderSaves";
-import { advanceAccountGeneration } from "./accountContext";
 import { preciseDurationSeconds } from "./noteDuration";
 import { privateRefusalCopy } from "@/capture/recorder/privateInstead";
 import {
@@ -85,6 +84,7 @@ import {
   type VoiceNoteCloud,
   type VoiceNoteHoldStore,
   type VoiceNoteTranscriptionStatus,
+  type VoiceNoteTranscriber,
   PRIVATE_DURATION_MARGIN_SECONDS,
   PrivateCloudRefusedError,
 } from "./voiceNoteTranscription";
@@ -229,8 +229,8 @@ function harness(script: {
   removeFails?: boolean;
   uploadSupported?: () => Promise<boolean>;
   decode?: AudioDecoder;
-  capabilities?: () => PrivateCloudCapabilities;
   nativeTransport?: boolean;
+  beforeCreateAttempt?: (attempt: number) => void | Promise<void>;
 }) {
   const calls: string[] = [];
   const creates: { attemptId: string; body: PrivateCloudCreateBody }[] = [];
@@ -298,6 +298,7 @@ function harness(script: {
       random: () => 0.5,
     },
     async create(request) {
+      await script.beforeCreateAttempt?.(creates.length);
       calls.push(`create:${request.attemptId}`);
       creates.push({ attemptId: request.attemptId, body: request.body });
       const next = createAnswers.shift();
@@ -534,6 +535,49 @@ describe("createVoiceNoteCloud.transcribe", () => {
     expect(h.creates).toHaveLength(0);
     expect(h.puts).toHaveLength(0);
   });
+  test("a byte cap lowered during CREATE refuses the 4-byte payload, releases the unsent job, and skips PUT", async () => {
+    let enterCreate!: () => void;
+    let releaseCreate!: () => void;
+    const entered = new Promise<void>((resolve) => { enterCreate = resolve; });
+    const gate = new Promise<void>((resolve) => { releaseCreate = resolve; });
+    let latest: PrivateCloudCapabilities = { ...CAPS, max_duration_seconds: 10, max_bytes: 4, content_types: [...CAPS.content_types, "audio/mp4"] };
+    const h = harness({
+      capabilities: () => latest,
+      beforeCreateAttempt: async () => { enterCreate(); await gate; },
+    });
+    const attempt = h.cloud.transcribe({
+      sourceId: "rec-1", capabilities: latest, currentCapabilities: () => latest,
+      loadAudio: async () => AUDIO, durationSeconds: 1,
+    }, () => {}).catch((caught: unknown) => caught);
+    await entered;
+    latest = { ...latest, max_bytes: 3 };
+    releaseCreate();
+    const refusal = await attempt;
+    expect(refusal).toBeInstanceOf(PrivateCloudRefusedError);
+    expect(refusal).toMatchObject({ refusal: { kind: "bytes", limitBytes: 3, sizeBytes: 4 } });
+    expect(h.creates).toHaveLength(1);
+    expect(h.puts).toHaveLength(0);
+    expect(h.cancelled).toEqual([ID]);
+    expect(h.pending.read("rec-1")).toBeNull();
+  });
+
+  test("a cap lowered after a failed CREATE prevents the idempotency retry", async () => {
+    let latest: PrivateCloudCapabilities = { ...CAPS, max_duration_seconds: 10, max_bytes: 4, content_types: [...CAPS.content_types, "audio/mp4"] };
+    const h = harness({
+      capabilities: () => latest,
+      creates: [new PrivateCloudError("idempotency_conflict", "conflict"), { id: ID, status: "awaiting_upload", upload: { path: `/uploads/${ID}`, capability: CAP } }],
+      beforeCreateAttempt: (attempt) => { if (attempt === 0) latest = { ...latest, max_bytes: 3 }; },
+    });
+    const refusal = await h.cloud.transcribe({
+      sourceId: "rec-1", capabilities: latest, currentCapabilities: () => latest,
+      loadAudio: async () => AUDIO, durationSeconds: 1,
+    }, () => {}).catch((caught: unknown) => caught);
+    expect(refusal).toBeInstanceOf(PrivateCloudRefusedError);
+    expect(refusal).toMatchObject({ refusal: { kind: "bytes", limitBytes: 3, sizeBytes: 4 } });
+    expect(h.creates).toHaveLength(1);
+    expect(h.puts).toHaveLength(0);
+  });
+
   test("latest duration admission takes the greater of note metadata and the decoded WAV", async () => {
     let latest = { ...CAPS, max_duration_seconds: 10, content_types: ["audio/wav"] };
     const h = harness({
@@ -2159,7 +2203,8 @@ describe("transcribeVoiceNote reads the note's stored audio (TC-517)", () => {
     };
     const err = await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: { ...CAPS, max_bytes: 1_000 }, explicit: true, sourceId: "rec-1", report: () => {} })
       .catch((e: unknown) => e);
-    expect((err as { code: string }).code).toBe("recording_too_large");
+    expect(err).toBeInstanceOf(PrivateCloudRefusedError);
+    expect((err as PrivateCloudRefusedError).refusal).toEqual({ kind: "bytes", limitBytes: 1_000, sizeBytes: big.byteLength });
     expect(gets.filter((k) => k.includes("/p/"))).toEqual([]);
     expect(h.creates).toHaveLength(0);
   });
@@ -2627,7 +2672,7 @@ describe("an explicit move to private cloud survives a restart", () => {
     });
     return space;
   }
-  const settle = async (t: ReturnType<typeof createVoiceNoteTranscriber>) => {
+  const settle = async (t: VoiceNoteTranscriber) => {
     for (let i = 0; i < 30 && t.snapshot().jobs.get("rec-1")?.kind === "active"; i++) await new Promise((resolve) => setTimeout(resolve, 0));
   };
 
@@ -2711,7 +2756,7 @@ describe("an explicit move to private cloud survives a restart", () => {
       holds: localStorageVoiceNoteHoldStore(DID, storage),
       tcw: () => space.tcw,
     });
-    const settle = async (t: ReturnType<typeof createVoiceNoteTranscriber>) => {
+    const settle = async (t: VoiceNoteTranscriber) => {
       for (let i = 0; i < 30 && t.snapshot().jobs.get("rec-1")?.kind === "active"; i++)
         await new Promise((resolve) => setTimeout(resolve, 0));
     };
@@ -2821,7 +2866,7 @@ test("a failed audio-read attempt clears Private intent and never restarts on th
     choices: localStorageVoiceNotePrivateChoiceStore(DID, storage),
     holds: localStorageVoiceNoteHoldStore(DID, storage), tcw: () => space.tcw,
   });
-  const settle = async (t: ReturnType<typeof createVoiceNoteTranscriber>) => {
+  const settle = async (t: VoiceNoteTranscriber) => {
     for (let i = 0; i < 200 && t.snapshot().jobs.get("rec-1")?.kind === "active"; i++)
       await new Promise(resolve => setTimeout(resolve, 50));
   };
@@ -2897,11 +2942,11 @@ describe("admission at a nonstandard advertised ceiling (real cloud, transcriber
     return promise;
   };
   // Until no note is active (waiting, preparing, uploading or processing).
-  const settle = async (t: ReturnType<typeof createVoiceNoteTranscriber>) => {
+  const settle = async (t: VoiceNoteTranscriber) => {
     while ([...t.snapshot().jobs.values()].some((job) => job.kind === "active")) await nextChange(t);
   };
   // Until the note has finished: transcribed, or failed.
-  const untilFinished = async (t: ReturnType<typeof createVoiceNoteTranscriber>, id: string) => {
+  const untilFinished = async (t: VoiceNoteTranscriber, id: string) => {
     while (!["done", "failed"].includes(t.snapshot().jobs.get(id)?.kind ?? "")) await nextChange(t);
   };
   const untouched = (h: { creates: unknown[]; puts: unknown[] }) => {
@@ -2966,7 +3011,7 @@ describe("admission at a nonstandard advertised ceiling (real cloud, transcriber
       .toEqual({ kind: "duration", limitSeconds: ACCEPTED, durationSeconds: OVER_MS / 1000 });
     await settle(t);
     untouched(h);
-    expect(t.snapshot().jobs.has("rec-1")).toBe(false);
+    expect(t.snapshot().jobs.get("rec-1")).toEqual({ kind: "blocked", reason: "limits-exceeded" });
     expect(choices.ids()).toEqual(["rec-1"]);
   });
 
@@ -2980,10 +3025,61 @@ describe("admission at a nonstandard advertised ceiling (real cloud, transcriber
     await untilFinished(t, "rec-2");
     expect(h.creates).toHaveLength(1);
     expect(h.puts).toHaveLength(1);
-    expect(t.snapshot().jobs.has("rec-1")).toBe(false);
+    expect(t.snapshot().jobs.get("rec-1")).toEqual({ kind: "blocked", reason: "limits-exceeded" });
     expect(t.snapshot().jobs.get("rec-2")).toEqual({ kind: "done", outcome: "transcribed" });
     expect(choices.ids()).toEqual(["rec-1"]);
   });
+  test("an explicit byte refusal is returned and retained, then the saved space-only note resumes when max_bytes rises", async () => {
+    const audioBytes = base64ToBytes(AUDIO.base64).byteLength;
+    let limits: PrivateCloudCapabilities = { ...ADVERTISED, max_bytes: audioBytes - 1 };
+    const { h, launch, choices } = await build([["rec-1", EDGE_MS]], { capabilities: () => limits });
+    const transcriber = launch();
+    await transcriber.check();
+    expect(transcriber.transcribePrivately("rec-1", EDGE_MS / 1000, audioBytes))
+      .toEqual({ kind: "bytes", limitBytes: audioBytes - 1, sizeBytes: audioBytes });
+    expect(transcriber.snapshot().jobs.get("rec-1")).toEqual({ kind: "blocked", reason: "limits-exceeded" });
+    expect(choices.ids()).toEqual(["rec-1"]);
+    untouched(h);
+
+    limits = { ...limits, max_bytes: audioBytes };
+    await transcriber.check();
+    await untilFinished(transcriber, "rec-1");
+    expect(h.creates).toHaveLength(1);
+    expect(h.puts).toHaveLength(1);
+    expect(transcriber.snapshot().jobs.get("rec-1")).toEqual({ kind: "done", outcome: "transcribed" });
+    expect(choices.ids()).toEqual([]);
+  });
+  test("a limits-change check during an active recovery scan is latched and re-admits the saved SQLite intent", async () => {
+    let caps: PrivateCloudCapabilities = { ...ADVERTISED, accepted_max_duration_seconds: 60 };
+    const { h, launch } = await build([["rec-1", 80_000]], { capabilities: () => caps });
+    const listingStarted = Promise.withResolvers<void>();
+    const releaseListing = Promise.withResolvers<void>();
+    let listings = 0;
+    VoiceNotes.listPending = async () => {
+      listings++;
+      if (listings === 1) {
+        listingStarted.resolve();
+        await releaseListing.promise;
+      }
+      return { recordings: [] };
+    };
+    const transcriber = launch();
+    // Before capabilities settle, the saved intent is kept as limits-unknown.
+    transcriber.noteSaved({ id: "rec-1", durationMs: 80_000, source: "in_app", options: { transcriber: "private-cloud" } });
+    await transcriber.check();
+    await listingStarted.promise;
+
+    caps = { ...ADVERTISED, accepted_max_duration_seconds: 100 };
+    await transcriber.check();
+    releaseListing.resolve();
+    await untilFinished(transcriber, "rec-1");
+    expect(listings).toBeGreaterThanOrEqual(2);
+    expect(h.creates).toHaveLength(1);
+    expect(h.puts).toHaveLength(1);
+    expect(transcriber.snapshot().jobs.get("rec-1")).toEqual({ kind: "done", outcome: "transcribed" });
+  });
+
+
 
   test("a fresh transcriber rechecks the refused choice and actually admits the eligible choice after relaunch", async () => {
     const { h, launch, choices } = await build([["rec-1", OVER_MS], ["rec-2", EDGE_MS]], { capabilities: () => ADVERTISED });
@@ -3022,7 +3118,7 @@ describe("admission at a nonstandard advertised ceiling (real cloud, transcriber
     released.resolve();
     await settle(t);
     untouched(h);
-    expect(t.snapshot().jobs.has("rec-1")).toBe(false);
+    expect(t.snapshot().jobs.get("rec-1")).toEqual({ kind: "blocked", reason: "limits-exceeded" });
     expect(choices.ids()).toEqual(["rec-1"]);
   });
 

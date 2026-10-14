@@ -178,7 +178,7 @@ async function mountOne(source: NotePipelineSource, value: Partial<RecorderValue
 }
 
 const checkFailing = (message: string): VoiceNoteTranscriptionProps => ({
-  availability: "failed", checkError: "offline", consented: true, maxSeconds: 600,
+  availability: "failed", checkError: "offline", consented: true, maxSeconds: 600, maxBytes: 186_496_800,
 jobs: new Map([[ID, { kind: "blocked", reason: "check-failed" }], [OTHER, { kind: "blocked", reason: "check-failed" }]]),
   onTranscribe: () => {}, onConsent: () => {}, onTurnOff: () => {}, onTurnOn: () => {},
   onRecheck: async () => { throw new Error(message); },

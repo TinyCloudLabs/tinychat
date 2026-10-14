@@ -128,8 +128,8 @@ const MemoSavedNoteContent = memo(SavedNoteContent);
 export default function SavedNote(props: SavedNoteProps) {
   const pipelineMetadata = props.metadata?.status === "ok" ? props.metadata.metadata : undefined;
   const pipelineSource = useMemo<NotePipelineSource>(
-    () => ({ tcw: props.tcw, rowExists: props.item.onPhone !== true, audioSaved: props.item.onPhone !== true && rowHasCommittedAudio(pipelineMetadata), metadata: pipelineMetadata }),
-    [props.tcw, props.item.onPhone, pipelineMetadata],
+    () => ({ tcw: props.tcw, rowExists: props.item.onPhone !== true, audioSaved: props.item.onPhone !== true && rowHasCommittedAudio(pipelineMetadata), metadata: pipelineMetadata, durationSecs: props.item.durationSecs }),
+    [props.tcw, props.item.onPhone, props.item.durationSecs, pipelineMetadata],
   );
   const live = useNotePipeline(props.item.sourceId, pipelineSource);
   const [visible, setVisible] = useState<NotePipelineView | null>(live);

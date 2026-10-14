@@ -36,7 +36,6 @@ import { DesktopWhisperStatus } from "./DesktopWhisperStatus";
 import { OnDeviceNoteStatus } from "./OnDeviceNoteStatus";
 import { privateRefusalCopy } from "@/capture/recorder/privateInstead";
 import { TranscribeAction } from "./TranscribeAction";
-import { privateCloudFits } from "./transcribeProviders";
 import { HowThisGotHere } from "./HowThisGotHere";
 import { librarySourceLabel } from "./libraryKinds";
 import { TimestampedTranscript, type TranscriptGap } from "./TimestampedTranscript";
@@ -179,7 +178,6 @@ export function VoiceNoteTranscriptionStatus(props: {
           {transcriptionErrorCopy(job.code) ?? job.message}
         </p>
         {job.reference && <ReferenceDetails reference={job.reference} />}
-        {refusal?.kind === "browser-wav-too-large" && <p className="text-callout text-muted-foreground">{privateRefusalCopy(refusal)}</p>}
         {job.retryable && failure.retryable && <TranscribeAction noteId={item.sourceId} transcription={transcription} durationSecs={item.durationSecs} privateAudioSource={privateAudioSource} label="Try again" />}
       </div>
     );
@@ -188,12 +186,10 @@ export function VoiceNoteTranscriptionStatus(props: {
     const failure = voiceNoteTranscriptionFailureForCode(props.errorCode);
     const canChoosePrivate = transcription?.availability === "available"
       || (transcription?.availability === "failed" && transcription.consented);
-    const privateFits = item.durationSecs === null || transcription === undefined || privateCloudFits(transcription, item.durationSecs, privateAudioSource);
     return (
       <div className="flex flex-col gap-2" data-testid="voice-note-transcription-failed">
         <p role="alert" className="min-w-0 text-callout text-destructive">{failure.message}</p>
-        {refusal?.kind === "browser-wav-too-large" && <p className="text-callout text-muted-foreground">{privateRefusalCopy(refusal)}</p>}
-        {failure.retryable && (captureCapabilities().localTranscription || (canChoosePrivate && privateFits))
+        {failure.retryable && (captureCapabilities().localTranscription || canChoosePrivate || transcription !== undefined)
           && <TranscribeAction noteId={item.sourceId} transcription={transcription} durationSecs={item.durationSecs} privateAudioSource={privateAudioSource} label="Try again" />}
       </div>
     );
@@ -221,7 +217,6 @@ export function VoiceNoteTranscriptionStatus(props: {
   if (refusal?.kind === "browser-wav-too-large") {
     return (
       <div className="flex flex-col gap-2">
-        <p className="text-callout text-muted-foreground" data-testid="voice-note-browser-wav-too-large">{privateRefusalCopy(refusal)}</p>
         <TranscribeAction noteId={item.sourceId} transcription={transcription} durationSecs={item.durationSecs} privateAudioSource={privateAudioSource} />
       </div>
     );
@@ -304,7 +299,7 @@ function NoTranscript(props: { item: LibraryItem; metadata: MeetingMetadataRead;
       <>
         {shownLine !== null && <p className="text-callout text-muted-foreground" data-testid="note-transcript-pipeline">{shownLine}</p>}
         {status}
-        <OnDeviceNoteStatus noteId={props.item.sourceId} fallback={null} transcription={props.transcription} durationSecs={props.item.durationSecs} stepperShown />
+        <OnDeviceNoteStatus noteId={props.item.sourceId} fallback={null} transcription={props.transcription} durationSecs={props.item.durationSecs} privateAudioSource={privateAudioSource} stepperShown />
       </>
     );
   }
@@ -315,7 +310,7 @@ function NoTranscript(props: { item: LibraryItem; metadata: MeetingMetadataRead;
     </p>
   );
   if (outcome === "no_speech") return status;
-  return <OnDeviceNoteStatus noteId={props.item.sourceId} fallback={status} transcription={props.transcription} durationSecs={props.item.durationSecs} />;
+  return <OnDeviceNoteStatus noteId={props.item.sourceId} fallback={status} transcription={props.transcription} durationSecs={props.item.durationSecs} privateAudioSource={privateAudioSource} />;
 }
 
 /** The transcript text a voice note's row carries (`transcript_text`), for when its body can't be read. */

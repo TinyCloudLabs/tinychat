@@ -76,7 +76,7 @@ export interface PipelineOnDevice {
 }
 
 /** `TranscriptionBlockedReason` (P2). */
-export type PipelineBlockedReason = "checking" | "unavailable" | "check-failed" | "no-consent" | "limits-unknown";
+export type PipelineBlockedReason = "checking" | "unavailable" | "check-failed" | "no-consent" | "limits-unknown" | "limits-exceeded";
 
 /** `VoiceNoteTranscriptionStatus` (`waiting.position` is P2). */
 export type PipelineCloudStatus =
@@ -327,6 +327,7 @@ function cloudBlockedStep(reason: PipelineBlockedReason, provider: NotePipelineI
     case "limits-unknown": return blocked(provider === "private" ? PRIVATE_COPY.limitsUnknown : `${name} isn't available right now`, "check-again");
     case "check-failed": return blocked(provider === "private" ? PRIVATE_COPY.checkFailed : `Couldn't check whether ${name} is available`, "check-again");
     case "no-consent": return blocked(provider === "private" ? PRIVATE_COPY.noConsent : `Waiting for your OK to use ${name}`, "review-consent");
+    case "limits-exceeded": return blocked(provider === "private" ? "Private transcription couldn't accept this recording's length or size." : `${name} couldn't accept this recording's length or size.`, "check-again");
   }
 }
 

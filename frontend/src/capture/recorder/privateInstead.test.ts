@@ -14,11 +14,12 @@ afterAll(() => {
   __setOnDeviceSttForTests(OnDeviceStt);
   __setVoiceNotesForTests(originalVoiceNotes, { available: null });
 });
+const PRIVATE_CAP = 11_101;
 
 function props(patch: Partial<VoiceNoteTranscriptionProps> = {}): VoiceNoteTranscriptionProps & { privately: string[] } {
   const privately: string[] = [];
   return {
-    availability: "available", consented: true, maxSeconds: 7_200, jobs: new Map(),
+    availability: "available", consented: true, maxSeconds: PRIVATE_CAP, maxBytes: 186_496_800, jobs: new Map(),
     onTranscribe: () => {}, onTranscribePrivately: (id) => void privately.push(id),
     onConsent: () => {}, onTurnOff: () => {}, onRecheck: () => {},
     ...patch, privately,

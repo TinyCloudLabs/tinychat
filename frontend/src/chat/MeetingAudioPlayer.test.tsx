@@ -313,6 +313,16 @@ describe("the player in a DOM", () => {
     expect(player.time()).toBe("0:00 / 0:41");
     expect(player.range().max).toBe("41.6");
   });
+  test("precise fractional media time floors the position and total consistently at the end", async () => {
+    const player = await mount({ url: "blob:note", durationSecs: 42.999 });
+    await act(async () => player.q("[data-testid=note-audio-play]").click());
+    await player.metadata(42.999);
+    player.fake.currentTime = 42.999;
+    await player.fire("timeupdate");
+    expect(player.time()).toBe("0:42 / 0:42");
+    expect(player.range().getAttribute("aria-valuetext")).toBe("0:42 of 0:42");
+  });
+
 
   test("a stream that never reports a length keeps the saved one and the elapsed time moves", async () => {
     const player = await mount({ url: "blob:note", durationSecs: 42 });
