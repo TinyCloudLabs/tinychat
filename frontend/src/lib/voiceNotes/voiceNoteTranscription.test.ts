@@ -1002,6 +1002,7 @@ const RECORDING = {
   silencedMs: 0,
   silencedEvents: 0,
   noSignalMs: 0,
+  options: { transcriber: "private-cloud", identifySpeakers: false, uploadAudio: true },
 };
 
 describe("transcribeVoiceNote (one note end to end)", () => {
