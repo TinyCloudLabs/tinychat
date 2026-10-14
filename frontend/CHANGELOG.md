@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.7.4-beta.0
+
+### Patch Changes
+
+- 7a024fb: Persist optional PTX quiet-mode VAD diagnostics with voice-note transcription outcomes.
+
 ## 0.7.3
 
 ### Patch Changes

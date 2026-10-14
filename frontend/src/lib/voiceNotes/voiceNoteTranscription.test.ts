@@ -1247,6 +1247,47 @@ describe("transcribeVoiceNote (one note end to end)", () => {
     expect(h.removed).toEqual([ID]);
     expect(h.pending.read("rec-1")).toBeNull();
   });
+  test("PTX quiet VAD diagnostics commit to the row and clear on a later stats-less commit", async () => {
+    const space = sqliteSpace();
+    expect((await saveVoiceNote(space.tcw, RECORDING, AUDIO, "web")).ok).toBe(true);
+    const diagnostics = {
+      vad_mode: "quiet", noise_floor_dbfs: -61.5, median_dbfs: -58, p99_dbfs: -29,
+      speech_peak_s: 2.4, dropped_above_noise_pct: 3.5,
+    };
+    const first = harness({ result: { ...TRANSCRIPT, stats: diagnostics } as unknown as PrivateCloudTranscript });
+    expect(await transcribeVoiceNote({ tcw: space.tcw, cloud: first.cloud, capabilities: CAPS, explicit: true,
+      sourceId: "rec-1", report: () => {} })).toBe("transcribed");
+    expect((await resolveVoiceNoteRow(space.tcw, "rec-1"))?.metadata).toMatchObject({
+      transcription_vad_mode: "quiet", transcription_noise_floor_dbfs: -61.5,
+      transcription_median_dbfs: -58, transcription_p99_dbfs: -29,
+      transcription_speech_peak_s: 2.4, transcription_vad_dropped_above_noise_pct: 3.5,
+    });
+
+    const later = { ...TRANSCRIPT, text: "follow-up", segments: TRANSCRIPT.segments.map((segment, index) =>
+      index === 0 ? { ...segment, text: "follow-up" } : segment), stats: undefined };
+    const prepared = prepareVoiceNoteTranscript(later, "2026-10-04T10:00:00.000Z", 2);
+    expect((await saveVoiceNoteTranscript(space.tcw, "rec-1", prepared)).ok).toBe(true);
+    const metadata = (await resolveVoiceNoteRow(space.tcw, "rec-1"))?.metadata;
+    expect(metadata?.transcript_text).toBe("Remember to book follow-up");
+    for (const key of ["transcription_vad_mode", "transcription_noise_floor_dbfs", "transcription_median_dbfs",
+      "transcription_p99_dbfs", "transcription_speech_peak_s", "transcription_vad_dropped_above_noise_pct"])
+      expect(metadata?.[key]).toBeUndefined();
+  });
+  test("invalid optional quiet VAD diagnostics do not block transcript commits", async () => {
+    const space = sqliteSpace();
+    expect((await saveVoiceNote(space.tcw, RECORDING, AUDIO, "web")).ok).toBe(true);
+    const h = harness({ result: { ...TRANSCRIPT, stats: {
+      vad_mode: "noisy", noise_floor_dbfs: Number.NaN, median_dbfs: Number.POSITIVE_INFINITY,
+      p99_dbfs: -Infinity,
+    } } as unknown as PrivateCloudTranscript });
+    expect(await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, explicit: true,
+      sourceId: "rec-1", report: () => {} })).toBe("transcribed");
+    expect(await readTranscriptCommit(space.tcw, "rec-1")).toMatchObject({ outcome: "transcribed" });
+    const metadata = (await resolveVoiceNoteRow(space.tcw, "rec-1"))?.metadata;
+    for (const key of ["transcription_vad_mode", "transcription_noise_floor_dbfs", "transcription_median_dbfs",
+      "transcription_p99_dbfs"])
+      expect(metadata?.[key]).toBeUndefined();
+  });
   test("a 4,337-second low-coverage completion is saved as retryable failure and its job is deleted", async () => {
     const space = sqliteSpace();
     const recording = { ...RECORDING, durationMs: 4_337_000 };
@@ -1254,7 +1295,8 @@ describe("transcribeVoiceNote (one note end to end)", () => {
     const h = harness({ result: {
       ...TRANSCRIPT, duration_seconds: 4_337,
       stats: { tinfoil_calls: 1, tinfoil_audio_seconds: 1_248, voiced_seconds: 1_200,
-        dropped_above_floor_pct: 72, vad_fallback: false },
+        dropped_above_floor_pct: 72, vad_fallback: false, vad_mode: "quiet", noise_floor_dbfs: -61.5,
+        median_dbfs: -58, p99_dbfs: -29, speech_peak_s: 2.4, dropped_above_noise_pct: 3.5 },
     } as unknown as PrivateCloudTranscript });
     const error = await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, explicit: true,
       sourceId: "rec-1", report: () => {} }).catch((caught: unknown) => caught);
@@ -1268,6 +1310,12 @@ describe("transcribeVoiceNote (one note end to end)", () => {
       transcription_vad_dropped_above_floor_pct: 72,
       transcription_vad_fallback: false,
       transcription_voiced_seconds: 1_200,
+      transcription_vad_mode: "quiet",
+      transcription_noise_floor_dbfs: -61.5,
+      transcription_median_dbfs: -58,
+      transcription_p99_dbfs: -29,
+      transcription_speech_peak_s: 2.4,
+      transcription_vad_dropped_above_noise_pct: 3.5,
     });
     expect(h.removed).toEqual([ID]);
   });

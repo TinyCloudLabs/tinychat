@@ -1,5 +1,11 @@
 # @tinychat/backend
 
+## 0.5.5-beta.0
+
+### Patch Changes
+
+- 7a024fb: Relay validated optional PTX quiet-mode VAD diagnostics in transcription results.
+
 ## 0.5.4
 
 ### Patch Changes
