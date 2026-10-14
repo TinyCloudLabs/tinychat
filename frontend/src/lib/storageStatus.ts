@@ -8,8 +8,17 @@ export const STORAGE_TOO_LARGE_SAVE_MESSAGE =
   "This change is larger than the TinyCloud storage you have left, so it was not saved. Reading still works.";
 export const STORAGE_FULL_RECORDING_LINE =
   "Your TinyCloud storage is full. Your recordings are safe on this device and will upload when space is available.";
+/** Only for a transcript that is positively held on this device (native on-device STT with a local transcript). */
 export const STORAGE_FULL_TRANSCRIPT_LINE =
   "Your TinyCloud storage is full. Your transcript is kept on this device and will save when space is available.";
+/** Private (cloud) transcript refused by full storage. Composed from shared sentences so the variants cannot drift apart. */
+const TRANSCRIPT_NOT_SAVED_SENTENCE = "Your TinyCloud storage is full, so this transcript wasn't saved.";
+const TRANSCRIBE_AGAIN_SENTENCE = "Transcribe it again when space is available.";
+/** No positive evidence of a local copy: the copy makes no claim about the recording. */
+export const STORAGE_FULL_TRANSCRIPT_NOT_SAVED_LINE = `${TRANSCRIPT_NOT_SAVED_SENTENCE} ${TRANSCRIBE_AGAIN_SENTENCE}`;
+/** Positive evidence the recording is on this device (its ledger local audio is ready). */
+export const STORAGE_FULL_TRANSCRIPT_NOT_SAVED_LOCAL_AUDIO_LINE =
+  `${TRANSCRIPT_NOT_SAVED_SENTENCE} Your recording is safe on this device. ${TRANSCRIBE_AGAIN_SENTENCE}`;
 const STORAGE_DELETION_NOTE =
   "Some deletions may lower your storage usage, but Exo can't yet remove saved voice-note audio, saved uploads or your copies of Transcriber meetings from TinyCloud.";
 const STORAGE_NO_LARGER_PLAN = "There's no larger plan to buy.";

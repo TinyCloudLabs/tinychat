@@ -1,5 +1,5 @@
 import { privateCloudCodeMessage } from "../privateCloud";
-import { STORAGE_FULL_TRANSCRIPT_LINE } from "../storageStatus";
+import { STORAGE_FULL_TRANSCRIPT_NOT_SAVED_LINE } from "../storageStatus";
 
 export const TRANSCRIPT_STORAGE_FULL_CODE = "storage_full";
 
@@ -49,7 +49,7 @@ const TRANSCRIPTION_ERROR_COPY: Readonly<Record<string, string>> = {
   invalid_argument: "This note cannot be transcribed with the supplied audio.",
   transcription_off: "Transcription was turned off.",
   transcript_incomplete: "Private Transcription returned a transcript that may be incomplete. Try again later.",
-  [TRANSCRIPT_STORAGE_FULL_CODE]: STORAGE_FULL_TRANSCRIPT_LINE,
+  [TRANSCRIPT_STORAGE_FULL_CODE]: STORAGE_FULL_TRANSCRIPT_NOT_SAVED_LINE,
 };
 
 export function transcriptionErrorCopy(code: string): string | undefined {

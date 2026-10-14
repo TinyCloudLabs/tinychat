@@ -67,6 +67,8 @@ interface Row {
   caption?: string;
   cause?: string | RegExp;
   action?: PipelineActionKind;
+  /** The second action's label, when the row has one (a Private storage-full refusal: Transcribe again). */
+  secondary?: string;
   notice?: string;
 }
 
@@ -169,7 +171,8 @@ const ROWS: Row[] = [
   { name: "private: held note shows its message (no action)", patch: cloud({ kind: "held", message: "This note began outside Exo. Transcribe it when you want." }), states: { transcript: "blocked" }, current: "transcript", cause: "This note began outside Exo. Transcribe it when you want." },
   { name: "private: retryable failure uses calm copy", patch: cloud({ kind: "failed", code: "server_error", message: "Transcription hit a snag.", retryable: true, reference: "ref-1" }), states: { transcript: "failed" }, current: "transcript", cause: "Private transcription didn't finish.", action: "retry" },
   { name: "private: non-retryable length failure has useful copy without a raw reference", patch: cloud({ kind: "failed", code: "recording_too_long", message: "This recording is too long to transcribe.", retryable: false, reference: "ref-9" }), states: { transcript: "failed" }, current: "transcript", cause: "This recording is too long to transcribe." },
-  { name: "private: storage full holds the transcript with Manage storage", patch: cloud({ kind: "failed", code: "storage_full", message: "Storage full.", retryable: false, reference: null }), states: { transcript: "blocked" }, current: "transcript", cause: "Your TinyCloud storage is full. Your transcript is kept on this device and will save when space is available.", action: "manage-storage" },
+  { name: "private: storage full without local audio says it wasn't saved, with Manage storage then Transcribe again", patch: cloud({ kind: "failed", code: "storage_full", message: "Storage full.", retryable: false, reference: null }), states: { transcript: "blocked" }, current: "transcript", cause: "Your TinyCloud storage is full, so this transcript wasn't saved. Transcribe it again when space is available.", action: "manage-storage", secondary: "Transcribe again" },
+  { name: "private: storage full with the recording's local audio ready says it is safe on this device", patch: { route: "private-cloud", space: SAVED, transcript: { cloud: { kind: "failed", code: "storage_full", message: "Storage full.", retryable: false, reference: null }, localAudioReady: true } }, states: { transcript: "blocked" }, current: "transcript", cause: "Your TinyCloud storage is full, so this transcript wasn't saved. Your recording is safe on this device. Transcribe it again when space is available.", action: "manage-storage", secondary: "Transcribe again" },
   { name: "private: no speech found is done", patch: cloud({ kind: "done", outcome: "no_speech" }), states: { transcript: "done" }, current: null },
   { name: "private: saved but no job yet", patch: { route: "private-cloud", space: SAVED }, states: { transcript: "waiting" }, current: "transcript", caption: "Waiting for private transcription" },
   { name: "private: a transcript in the space is not done before the note is saved", patch: { route: "private-cloud", transcript: { inSpace: "transcribed" } }, states: { space: "waiting", transcript: "waiting" }, current: "space" },
@@ -212,6 +215,7 @@ describe("notePipeline: every row of the stages table", () => {
       else if (typeof row.cause === "string") expect(pipeline.blocker?.cause).toBe(row.cause);
       else expect(pipeline.blocker?.cause).toMatch(row.cause);
       if (row.cause !== undefined) expect(pipeline.blocker?.action?.kind).toBe(row.action);
+      if (row.secondary !== undefined) expect(pipeline.blocker?.secondaryAction).toEqual({ kind: "retry", label: row.secondary });
       expect(pipeline.notice).toBe(row.notice);
     });
   }

@@ -3,6 +3,13 @@
 "exo-desktop": minor
 ---
 
-Handle a full TinyCloud storage across voice notes: pause audio uploads while full (audio stays on device, marked waiting for space), show "Manage storage" in place of "Save now" with a button that opens the storage management page in the external browser, and mark the Settings entry, the upload setting and the transcriber setting as paused while storage is full. Transcripts that storage refuses are held on the device (Private, on-device and hosted paths) and saved once storage accepts writes again. Held audio and transcripts resume automatically after a successful space write.
+Handle a full TinyCloud storage across voice notes. While storage is full, audio uploads pause: the audio stays on this device and shows as waiting for space. The storage message is the same everywhere it appears. Plan detail appears only on the Settings banner and dialog, and Upgrade shows only when the plan is positively Free and the paywall is on. "Manage storage" opens the storage page in the external browser. Settings shows the storage state, and the upload and transcriber switches show "Paused: storage full".
 
-A transcript save that times out is kept on the device and retried with its own "took too long" message, instead of being reported as a failed save.
+A transcript that storage refuses is handled by where it was transcribed:
+
+- On this device, the transcript is held on the device and marked as kept until space is available. A foreground check retries each held transcript once, and a transcript that is still refused stays held.
+- Private, a storage-full save fails the transcript with a non-retryable `storage_full` failure. It says the transcript wasn't saved and offers Manage storage, then Transcribe again. It says the recording is safe on this device only when the local audio is confirmed ready. Nothing retries it automatically.
+
+Private and hosted transcript retention (keeping a refused transcript for a later save) is not part of this change.
+
+A transcript save on this device that times out fails with its own "took too long" message and can be retried, instead of being reported as a generic save failure.

@@ -61,11 +61,20 @@ export function PipelineStepper(props: {
           {blocker.action !== undefined && (blocker.chooseProvider === true && props.transcribeAction !== undefined ? (
             props.transcribeAction
           ) : (
-            <span className="soft-pill-hit" data-hit-area="">
-              <button type="button" className="soft-pill" aria-describedby={causeId} onClick={() => onAction(blocker.action!.kind)}>
-                {blocker.action.label}
-              </button>
-            </span>
+            <>
+              <span className="soft-pill-hit" data-hit-area="">
+                <button type="button" className="soft-pill" aria-describedby={causeId} onClick={() => onAction(blocker.action!.kind)}>
+                  {blocker.action.label}
+                </button>
+              </span>
+              {blocker.secondaryAction !== undefined && (
+                <span className="soft-pill-hit" data-hit-area="">
+                  <button type="button" className="soft-pill" aria-describedby={causeId} onClick={() => onAction(blocker.secondaryAction!.kind)}>
+                    {blocker.secondaryAction.label}
+                  </button>
+                </span>
+              )}
+            </>
           ))}
           {props.actionError != null && props.actionError !== "" && (
             <p className="pipeline-stepper-action-error" role="alert" data-pipeline-action-error="">

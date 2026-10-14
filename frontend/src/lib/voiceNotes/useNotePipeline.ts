@@ -337,6 +337,8 @@ export function buildNotePipelineInput(facts: NotePipelineFacts): NotePipelineIn
       cloud: route === "private-cloud" ? facts.cloudJob : null,
       // Jobs are written the moment a saved note is handed over, after the check: no job and no check pending is no hand-over.
       ...(route === "private-cloud" && facts.cloudJob === null && facts.saved && facts.cloudChecking !== true && facts.spaceReading !== true ? { cloudIdle: true as const } : {}),
+      // Positive evidence only: the ledger's local audio is ready. Anything else (absent, unknown, not ready) makes no local-copy claim.
+      ...(facts.native?.recording?.ledger?.localAudio?.state === "ready" ? { localAudioReady: true as const } : {}),
       readError: facts.readError ?? null,
       ...(facts.spaceReading === true ? { spaceReading: true, ...(facts.spaceAfterUploads === true ? { afterUploads: true } : {}) } : {}),
     },

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { PrivateCloudError, privateCloudCodeMessage, privateCloudMessage } from "../privateCloud";
 import { transcriptionErrorCopy, voiceNoteTranscriptionFailureForCode } from "./transcriptionErrors";
-import { STORAGE_FULL_TRANSCRIPT_LINE } from "../storageStatus";
+import { STORAGE_FULL_TRANSCRIPT_NOT_SAVED_LINE } from "../storageStatus";
 
 const PTX_CODES = [
   "recording_too_long_for_cloud", "recording_too_long", "recording_too_large", "no_speech", "invalid_audio",
@@ -52,9 +52,9 @@ describe("durable voice-note transcription failure copy", () => {
     expect(failure.message).toBe("Private transcription is not configured for this account.");
     expect(failure.retryable).toBe(false);
   });
-  test("a transcript held by full storage is not retryable and saves automatically when storage is available", () => {
+  test("a transcript refused by full storage is not retried automatically and says it was not saved", () => {
     const failure = voiceNoteTranscriptionFailureForCode("storage_full");
     expect(failure.retryable).toBe(false);
-    expect(failure.message).toBe(STORAGE_FULL_TRANSCRIPT_LINE);
+    expect(failure.message).toBe(STORAGE_FULL_TRANSCRIPT_NOT_SAVED_LINE);
   });
 });
