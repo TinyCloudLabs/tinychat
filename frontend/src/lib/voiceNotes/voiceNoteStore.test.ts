@@ -325,6 +325,20 @@ describe("saveVoiceNote", () => {
     expect(space.kv.get(noteKey)).toContain("# Local draft");
   });
 
+  test("a storage-full Markdown put on a direct note sync marks the shared storage state and keeps the cause", async () => {
+    const space = fakeSpace();
+    const withNote = { ...recording, id: `rec-note-full-${++fakeSpaceNumber}` };
+    await saveNote(withNote.id, "# Local draft");
+    const noteKey = voiceNoteMarkdownKvKey(withNote.id);
+    expect((await saveVoiceNote(space.tcw, withNote,
+      voiceNoteAudioSourceFromBase64({ mimeType: "audio/mp4", base64: "AAAA" }), "android")).ok).toBe(true);
+    await saveNote(withNote.id, "# Edited while the space is full");
+    space.failPut((key) => key === noteKey ? { code: "STORAGE_LIMIT_REACHED", message: "Write exceeds remaining storage" } : null);
+    await expect(syncRecordingNote(space.tcw, withNote.id)).rejects.toMatchObject({ cause: { code: "STORAGE_LIMIT_REACHED" } });
+    expect(isStorageReadOnly()).toBe(true);
+    reportStorageWriteSucceeded();
+  });
+
   test("a timed-out E1 Markdown put settles before E2 can write", async () => {
     const space = fakeSpace();
     const withNote = { ...recording, id: `rec-note-late-edit-${++fakeSpaceNumber}` };

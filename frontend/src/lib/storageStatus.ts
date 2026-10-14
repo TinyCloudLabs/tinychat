@@ -103,10 +103,18 @@ export function reportStorageError(error: unknown): void {
   );
 }
 
+let writableEdges = 0;
+
 export function reportStorageWriteSucceeded(): void {
   if (!readOnly) return;
   readOnly = false;
+  writableEdges++;
   for (const listener of listeners) listener();
+}
+
+/** Count of full→writable edges. An attempt that began before an edge can compare to see whether storage recovered mid-flight. */
+export function storageWritableEdgeCount(): number {
+  return writableEdges;
 }
 
 export function isStorageReadOnly(): boolean {
@@ -116,6 +124,20 @@ export function isStorageReadOnly(): boolean {
 export function subscribeStorageReadOnly(listener: () => void): () => void {
   listeners.add(listener);
   return () => listeners.delete(listener);
+}
+
+const storageRecoveryWork = new Set<() => Promise<void>>();
+
+/** Held work a foreground recovery pass retries once. Returns the unregister. */
+export function registerStorageRecoveryWork(work: () => Promise<void>): () => void {
+  storageRecoveryWork.add(work);
+  return () => { storageRecoveryWork.delete(work); };
+}
+
+/** One foreground pass: each registered item probes once. A failing item stays held and logs. */
+export async function runStorageRecoveryWork(): Promise<void> {
+  await Promise.all([...storageRecoveryWork].map((work) =>
+    work().catch((error: unknown) => console.warn("[Storage] Could not retry held work", error))));
 }
 
 /** Records the signed-in plan from billing status. `null` (unknown) is never treated as Free. */

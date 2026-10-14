@@ -16,8 +16,7 @@ import { loadVoiceNoteAudio, patchVoiceNoteTranscriptionFailure, readVoiceNoteFo
 import type { VoiceNoteTranscriptionStatus, NoteTranscriptionState } from "./voiceNoteTranscription";
 import { withHostedUploadQueue } from "../hostedUploadQueue";
 import type { CloudClock } from "../privateCloud";
-import { isStorageFullError, isStorageReadOnly, subscribeStorageReadOnly } from "@/lib/storageStatus";
-import { TRANSCRIPT_STORAGE_FULL_CODE, voiceNoteTranscriptionFailureForCode } from "./transcriptionErrors";
+import { reportStorageError } from "../storageStatus";
 
 const CONSENT = "exo.voiceNotes.powerfulConsent";
 const PENDING = "exo.voiceNotes.powerfulJobs";
@@ -48,6 +47,7 @@ async function writeClaim(account: TinyCloudWeb, id: string, claim: Claim, etag?
     etag ? { ifMatch: etag, contentType: "application/json" } : { ifNoneMatch: "*", contentType: "application/json" });
   if (result.ok) return true;
   if (precondition(result.error)) return false;
+  reportStorageError(result.error);
   throw new Error(`Could not save the Powerful job claim: ${result.error.message}`);
 }
 
@@ -118,20 +118,6 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
   const check = async () => {
     const caps = await client.capabilities();
     return caps.hosted;
-  };
-  // A storage-full save keeps the job's stored entry (handle and recording), so resume re-runs it once writes succeed again.
-  const storageHeldIds = new Set<string>();
-  let storageRecoveryWired = false;
-  const resume = async () => {
-    for (const [id, stored] of Object.entries(readJobs(did))) {
-      const recording = (await native.listPending()).recordings.find((r) => r.id === id);
-      if (recording ?? stored.recording) void run(recording ?? stored.recording!);
-    }
-  };
-  const retryStorageHeld = () => {
-    if (isStorageReadOnly() || storageHeldIds.size === 0) return;
-    storageHeldIds.clear();
-    void resume();
   };
   const run = async (recording: Pick<VoiceNoteRecording, "id" | "owner" | "source" | "options" | "startedAt" | "sizeBytes" | "mimeType" | "durationMs" | "channels">) => {
     const id = recording.id;
@@ -355,7 +341,7 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
           assemblyai_account: "tinycloud", transcription_outcome: outcome, transcript_text: sentences.map((s) => s.text).join("\n") || null,
           speaker_labels: stereo ? "channels" : recording.options?.identifySpeakers !== false ? "diarized" : "single-speaker", transcribed_at: at,
           model: transcript.speech_model_used ?? null, language: transcript.language_code ?? null } }, { generation, did });
-      if (!saved.ok) throw new Error("The transcript is ready, but could not be saved to your space. Try again.", { cause: saved.error });
+      if (!saved.ok) throw new Error("The transcript is ready, but could not be saved to your space. Try again.");
       transcriptSaved = true;
       persist(id, { saved: true });
       try { await client.deleteTranscript(handle); persist(id, null); }
@@ -365,10 +351,9 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
       notify();
     } catch (error) {
       logPipelineError("transcription", error, id);
-      const heldForStorage = isStorageFullError(error);
       const current = currentAccountGeneration() === generation && tcw().did === did && isAccountWorkAllowed(tcw());
       const clientForFailure = current ? tcw() : null;
-      if (!transcriptSaved && !heldForStorage && clientForFailure && typeof clientForFailure.sql?.db === "function") {
+      if (!transcriptSaved && clientForFailure && typeof clientForFailure.sql?.db === "function") {
         const code = error instanceof AssemblyAiError ? error.kind : "transcription_error";
         try { await patchVoiceNoteTranscriptionFailure(clientForFailure, id, code, guard); }
         catch (persistError) { console.warn("[HostedVoiceNotes] Could not persist transcription failure", persistError); }
@@ -376,14 +361,6 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
       if (transcriptSaved) {
         const commit = await readCommit(tcw(), id);
         if (commit) { jobs.set(id, { kind: "done", outcome: commit.outcome }); notify(); return; }
-      }
-      if (heldForStorage) {
-        storageHeldIds.add(id);
-        if (!storageRecoveryWired) { storageRecoveryWired = true; subscribeStorageReadOnly(retryStorageHeld); }
-        jobs.set(id, { kind: "failed", message: voiceNoteTranscriptionFailureForCode(TRANSCRIPT_STORAGE_FULL_CODE).message,
-          retryable: false, reference: null, code: TRANSCRIPT_STORAGE_FULL_CODE });
-        notify();
-        return;
       }
       const message = error instanceof AssemblyAiError ? error.message
         : error instanceof Error && error.message.startsWith("The transcript is ready") ? error.message
@@ -398,7 +375,12 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
     check, run, jobs, consented,
     consent() { storage()?.setItem(`${CONSENT}:${did}`, "1"); notify(); },
     subscribe(listener: () => void) { listeners.add(listener); return () => { listeners.delete(listener); }; },
-    resume,
+    async resume() {
+      for (const [id, stored] of Object.entries(readJobs(did))) {
+        const recording = (await native.listPending()).recordings.find((r) => r.id === id);
+        if (recording ?? stored.recording) void run(recording ?? stored.recording!);
+      }
+    },
     async runSpaceOnly(id: string) {
       const note = await readNote(tcw(), id);
       if (!note.ok || !note.data || note.data.captureTranscriber !== "assemblyai") return false;

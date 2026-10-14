@@ -13,7 +13,7 @@ import { VoiceNotes, type LocalTranscript, type NoteSttState, type VoiceNoteReco
 import { readTranscriptCommit } from "./voiceNoteCommits";
 import { withVoiceNoteSaveDeadline } from "./saveDeadline";
 import { LOCAL_COPY } from "./notePipelineCopy";
-import { isStorageFullError, isStorageReadOnly, STORAGE_FULL_TRANSCRIPT_LINE, subscribeStorageReadOnly } from "@/lib/storageStatus";
+import { isStorageFullError, registerStorageRecoveryWork, storageWritableEdgeCount, STORAGE_FULL_TRANSCRIPT_LINE } from "@/lib/storageStatus";
 import { assertAccountContext, captureAccountContext, isAccountContextCurrent, isAccountWorkAllowed, StaleAccountContext, type AccountContext } from "./accountContext";
 
 /** One note's local transcript -> space write: running, written, or why it did not land (the local transcript stays valid). */
@@ -79,35 +79,58 @@ export function syncOnDeviceTranscript(
   return runSync(tcw, recording.id, recording.stt?.state === "done", recording.stt?.state === "failed", requestedAccount);
 }
 
-// A storage-full refusal is not a failure: nothing is recorded as failed, and the note retries once a space write succeeds again.
+// A storage-full refusal is not a failure: nothing is recorded as failed. Held notes re-sync on the next foreground pass.
 const storageHeld = new Map<string, { tcw: TinyCloudWeb; id: string; ctx: AccountContext }>();
-let storageRecoveryWired = false;
 
 function runSync(tcw: TinyCloudWeb, id: string, expected: boolean, failed: boolean, ctx: AccountContext): Promise<boolean> {
   const key = syncKey(tcw, id);
   return enqueue(key, async () => {
-    const abandoned = await syncOnce(tcw, key, id, expected, failed, ctx);
+    const abandoned = await syncSettled(tcw, key, id, expected, failed, ctx);
     if (abandoned) abandonSync(key, id, tcw);
     return abandoned;
   });
 }
 
+/**
+ * One attempt, plus one probe if storage became writable while it was in flight: a full refusal that raced a recovery is
+ * stale, so the note is probed now rather than held until the next foreground pass. Bounded to that single probe.
+ */
+async function syncSettled(tcw: TinyCloudWeb, key: string, id: string, expected: boolean, failed: boolean, ctx: AccountContext): Promise<boolean> {
+  const edges = storageWritableEdgeCount();
+  storageHeld.delete(key);
+  const abandoned = await syncOnce(tcw, key, id, expected, failed, ctx);
+  if (abandoned || !storageHeld.has(key) || storageWritableEdgeCount() === edges) return abandoned;
+  storageHeld.delete(key);
+  return syncOnce(tcw, key, id, true, false, ctx);
+}
+
 function holdForStorage(tcw: TinyCloudWeb, key: string, id: string, ctx: AccountContext): void {
   publish(key, { state: "held", message: STORAGE_FULL_TRANSCRIPT_LINE });
   storageHeld.set(key, { tcw, id, ctx });
-  if (storageRecoveryWired) return;
-  storageRecoveryWired = true;
-  subscribeStorageReadOnly(retryStorageHeld);
 }
 
-function retryStorageHeld(): void {
-  if (isStorageReadOnly()) return;
-  for (const [key, held] of storageHeld) {
-    storageHeld.delete(key);
-    runSync(held.tcw, held.id, true, false, held.ctx).catch((err) =>
-      console.warn("[OnDeviceStt] Could not retry the transcript after storage recovered", err));
-  }
+/**
+ * A held note is re-offered under the current generation only when it is the same account and the same client may still
+ * work (a cancelled sign-out resumes the client). Otherwise the held state is dropped, as an abandoned attempt would be.
+ */
+function reofferContext(tcw: TinyCloudWeb, held: AccountContext): AccountContext | null {
+  const current = captureAccountContext(tcw);
+  if (current.did !== held.did || current.spaceId !== held.spaceId || !isAccountWorkAllowed(tcw)) return null;
+  return current;
 }
+
+/** One foreground pass: each held note probes once. A probe that is still full holds it again. */
+async function retryStorageHeld(): Promise<void> {
+  const held = [...storageHeld.values()];
+  storageHeld.clear();
+  await Promise.all(held.map((item) => {
+    const ctx = reofferContext(item.tcw, item.ctx);
+    if (!ctx) { abandonSync(syncKey(item.tcw, item.id), item.id, item.tcw); return undefined; }
+    return runSync(item.tcw, item.id, true, false, ctx);
+  }));
+}
+
+registerStorageRecoveryWork(retryStorageHeld);
 
 function enqueue<T>(key: string, attempt: () => Promise<T>): Promise<T> {
   const run = (chains.get(key) ?? Promise.resolve()).then(attempt);
@@ -272,7 +295,7 @@ async function syncOnce(tcw: TinyCloudWeb, key: string, id: string, expected: bo
     if (isStorageFullError(result.error)) { holdForStorage(tcw, key, id, ctx); return false; }
     console.warn("[OnDeviceStt] Could not save the on-device transcript to the space", result.error);
     publish(key, { state: "failed", message: LOCAL_COPY.transcriptSyncFailed });
-    await persistOnDeviceFailure(tcw, id, "transcript_save_failed", ctx);
+    await persistOnDeviceFailure(tcw, id, result.error.code === "VOICE_NOTE_OPERATION_TIMEOUT" ? "transcript_save_timed_out" : "transcript_save_failed", ctx);
     return false;
   } catch (err) {
     if (!isCurrent(tcw, ctx) || err instanceof StaleAccountContext) return true;

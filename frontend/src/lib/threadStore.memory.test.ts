@@ -14,7 +14,6 @@ import {
   STORAGE_FULL_SAVE_MESSAGE,
   subscribeStorageReadOnly,
   isStorageReadOnly,
-  isStorageFullError,
   storageSaveMessage,
 } from "./storageStatus";
 
@@ -283,7 +282,7 @@ describe("full TinyCloud storage", () => {
       await expect(setMemory(tcw, "cannot save")).rejects.toThrow(STORAGE_FULL_SAVE_MESSAGE);
       expect(db.writes).toBe(1);
       expect(isStorageReadOnly()).toBe(true);
-      expect(isStorageFullError({ code: "NETWORK_ERROR", message: "SQL batch failed: 402 - Storage quota exceeded" })).toBe(true);
+      // A raw 402 is not asserted separately: the SDK already maps every 402 to STORAGE_QUOTA_EXCEEDED (TC-1142).
       expect(storageSaveMessage({ code: "STORAGE_LIMIT_REACHED", message: "limited" })).toContain("This change is larger");
       db.rejectWrites = false;
       await setMemory(tcw, "saved after space was freed");

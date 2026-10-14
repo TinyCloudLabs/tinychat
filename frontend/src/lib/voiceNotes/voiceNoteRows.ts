@@ -290,8 +290,9 @@ export interface VoiceNoteTranscriptionStatsMetadata {
 /** Persist retryable transcription failures without replacing a terminal result. */
 export async function patchVoiceNoteTranscriptionFailure(tcw: TinyCloudWeb, sourceId: string, errorCode: string,
   checkpoint: () => void = () => undefined, statsMetadata: VoiceNoteTranscriptionStatsMetadata = {}): Promise<void> {
+  // A timed-out save is transient: the local transcript and job stay, so it is never a durable failure.
   if (["audio_upload_pending", "transcription_off", "upload_outcome_unknown", "account_changed",
-    "active_transcription_exists"].includes(errorCode)) return;
+    "active_transcription_exists", "transcript_save_timed_out"].includes(errorCode)) return;
   checkpoint();
   const identity = await ensureVoiceNoteIdentity(tcw, checkpoint);
   if (identity.status !== "established") {

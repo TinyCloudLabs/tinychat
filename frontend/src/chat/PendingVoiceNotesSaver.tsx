@@ -23,7 +23,7 @@ import { isTinyCloudNetworkFailure, logVoiceNoteError, pendingSaveMessage, pendi
 import { advanceAccountGeneration, captureAccountContext, currentAccountGeneration, isAccountContextCurrent, mountVoiceNoteAccount } from "@/lib/voiceNotes/accountContext";
 import { saveDeferredForAccountTransition, type VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
 import { recheckVoiceNoteAvailabilityAutomatically, transcribeSavedNote, voiceNoteTranscriberFor } from "@/lib/voiceNotes/voiceNoteTranscription";
-import { isStorageReadOnly, subscribeStorageReadOnly } from "@/lib/storageStatus";
+import { runStorageRecoveryWork } from "@/lib/storageStatus";
 
 let recovery: (() => Promise<void>) | null = null;
 /** Keep the mounted saver available to renewal without remounting the view. */
@@ -158,6 +158,7 @@ export function PendingVoiceNotesSaver({
         do {
           dirty = false;
           await runOnce();
+          await runStorageRecoveryWork();
         } while (dirty && !disposed);
       })().finally(() => { runInFlight = null; });
       return runInFlight;
@@ -165,16 +166,6 @@ export function PendingVoiceNotesSaver({
     const unregister = registerPendingVoiceNotesRecovery(run);
     if (transcriber) void recheckVoiceNoteAvailabilityAutomatically(transcriber, isAccountCurrent);
     void run();
-    // Freed storage resumes the queued audio now, not on the next focus or poll.
-    let storageWasFull = isStorageReadOnly();
-    const unsubscribeStorage = subscribeStorageReadOnly(() => {
-      const full = isStorageReadOnly();
-      if (storageWasFull && !full) {
-        void run();
-        if (transcriber) transcriber.storageRecovered();
-      }
-      storageWasFull = full;
-    });
     const onOnline = () => {
       pendingStore.setOnline(true);
       if (transcriber) void recheckVoiceNoteAvailabilityAutomatically(transcriber, isAccountCurrent);
@@ -191,6 +182,8 @@ export function PendingVoiceNotesSaver({
       void run();
     };
     documentTarget?.addEventListener("visibilitychange", onVisible);
+    const onFocus = () => void run();
+    windowTarget?.addEventListener("focus", onFocus);
     if (Capacitor.isNativePlatform()) {
       void import("@capacitor/app").then(({ App }) => App.addListener("appStateChange", ({ isActive }) => {
         if (isActive) {
@@ -207,8 +200,8 @@ export function PendingVoiceNotesSaver({
       windowTarget?.removeEventListener("online", onOnline);
       windowTarget?.removeEventListener("offline", onOffline);
       documentTarget?.removeEventListener("visibilitychange", onVisible);
+      windowTarget?.removeEventListener("focus", onFocus);
       if (appStateHandle) void appStateHandle.remove();
-      unsubscribeStorage();
       unregister(); unmountAccount(); pipeline.cancelAll(); pendingStore.setAccount(null);
     };
   }, [backendUrl, pipeline, sessionStore, tcw]);

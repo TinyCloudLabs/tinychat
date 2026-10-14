@@ -34,8 +34,6 @@ function setup(opts: {
       return (opts.capabilities ?? (async () => CAPS))();
     },
     pendingSourceIds: () => opts.pending ?? [],
-    holdTranscript: () => {},
-    heldTranscript: () => null,
     releaseUnsent: async () => {},
   } as unknown as VoiceNoteCloud;
   const transcriber = createVoiceNoteTranscriber({
@@ -105,7 +103,7 @@ describe("account guard", () => {
     const started: string[] = [];
     // The first note starts as the check settles; the account leaves before the second one's turn.
     const transcriber = createVoiceNoteTranscriber({
-      cloud: { capabilities: async () => CAPS, pendingSourceIds: () => ["one", "two"], releaseUnsent: async () => {}, holdTranscript: () => {}, heldTranscript: () => null } as unknown as VoiceNoteCloud,
+      cloud: { capabilities: async () => CAPS, pendingSourceIds: () => ["one", "two"], releaseUnsent: async () => {} } as unknown as VoiceNoteCloud,
       consent: consent(true),
       tcw: () => ({}) as TinyCloudWeb,
       runNote: async (args) => {
@@ -240,7 +238,7 @@ describe("work an account's departure paused", () => {
     let started = 0;
     let requests = 0;
     const transcriber = createVoiceNoteTranscriber({
-      cloud: { capabilities: async () => { requests++; return CAPS; }, pendingSourceIds: () => pendingIds, releaseUnsent: async () => {}, holdTranscript: () => {}, heldTranscript: () => null } as unknown as VoiceNoteCloud,
+      cloud: { capabilities: async () => { requests++; return CAPS; }, pendingSourceIds: () => pendingIds, releaseUnsent: async () => {} } as unknown as VoiceNoteCloud,
       consent: consent(true),
       tcw: () => ({}) as TinyCloudWeb,
       runNote: async (args) => {

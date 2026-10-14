@@ -116,7 +116,7 @@ test("a completed account-A check does not resume A's work after the hook switch
     let finish: (caps: unknown) => void = () => {};
     const real = createVoiceNoteTranscriber({
       tcw: () => a,
-      cloud: { capabilities: () => new Promise((resolve) => { finish = resolve; }), pendingSourceIds: () => ["a-note"], holdTranscript: () => {}, heldTranscript: () => null } as unknown as VoiceNoteCloud,
+      cloud: { capabilities: () => new Promise((resolve) => { finish = resolve; }), pendingSourceIds: () => ["a-note"] } as unknown as VoiceNoteCloud,
       consent: { get: () => true, set() {} },
       runNote: async (args) => {
         resumed.push(args.sourceId);
@@ -142,7 +142,7 @@ test("rapid foreground returns reuse a fresh settled availability result", async
   let requests = 0;
   const real = createVoiceNoteTranscriber({
     tcw: () => account,
-    cloud: { capabilities: async () => { requests += 1; throw new Error("offline"); }, pendingSourceIds: () => [], holdTranscript: () => {}, heldTranscript: () => null } as unknown as VoiceNoteCloud,
+    cloud: { capabilities: async () => { requests += 1; throw new Error("offline"); }, pendingSourceIds: () => [] } as unknown as VoiceNoteCloud,
     consent: { get: () => false, set() {} },
   });
   voiceNoteTranscriberFor(account, backendUrl, sessionStore)!.check = real.check;

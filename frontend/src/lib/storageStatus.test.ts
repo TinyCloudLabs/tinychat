@@ -2,7 +2,12 @@ import { afterEach, describe, expect, test } from "bun:test";
 import {
   isFreeStoragePlan,
   isStorageFullError,
+  isStorageReadOnly,
+  registerStorageRecoveryWork,
+  reportStorageError,
   reportStoragePlanTier,
+  reportStorageWriteSucceeded,
+  runStorageRecoveryWork,
   STORAGE_FULL_DETAIL,
   STORAGE_FULL_RECORDING_LINE,
   STORAGE_FULL_TRANSCRIPT_LINE,
@@ -104,5 +109,43 @@ describe("storage-full error variants", () => {
     expect(isStorageFullError(error)).toBe(false);
     expect(storageSaveMessage(error)).toBeNull();
     expect(storageSaveMessage({ code: "NETWORK_ERROR" })).toBeNull();
+  });
+});
+
+describe("held work on foreground recovery", () => {
+  test("each registered item runs once per pass, and one failing item does not stop the others", async () => {
+    const calls: string[] = [];
+    const unregisterA = registerStorageRecoveryWork(async () => { calls.push("a"); });
+    const unregisterB = registerStorageRecoveryWork(async () => { throw new Error("still full"); });
+    const unregisterC = registerStorageRecoveryWork(async () => { calls.push("c"); });
+    try {
+      await runStorageRecoveryWork();
+      expect(calls.sort()).toEqual(["a", "c"]);
+    } finally {
+      unregisterA();
+      unregisterB();
+      unregisterC();
+    }
+  });
+
+  test("an unregistered item is not run by a later pass", async () => {
+    const calls: string[] = [];
+    const unregister = registerStorageRecoveryWork(async () => { calls.push("held"); });
+    unregister();
+    await runStorageRecoveryWork();
+    expect(calls).toEqual([]);
+  });
+
+  test("a write that clears the storage-full flag does not run held work by itself", async () => {
+    const calls: string[] = [];
+    const unregister = registerStorageRecoveryWork(async () => { calls.push("held"); });
+    try {
+      reportStorageError({ code: "STORAGE_QUOTA_EXCEEDED", message: "full" });
+      reportStorageWriteSucceeded();
+      expect(isStorageReadOnly()).toBe(false);
+      expect(calls).toEqual([]);
+    } finally {
+      unregister();
+    }
   });
 });

@@ -483,7 +483,7 @@ describe("voice-note identity and transcript authority", () => {
 
   test("deferral codes do not persist failed outcomes", async () => {
     for (const code of ["audio_upload_pending", "transcription_off", "upload_outcome_unknown", "account_changed",
-      "active_transcription_exists"]) {
+      "active_transcription_exists", "transcript_save_timed_out"]) {
       const { tcw } = space();
       await ensureSchema(tcw);
       await createVoiceNoteRow(tcw, { id: code, startedAt: 0, durationMs: 1000,

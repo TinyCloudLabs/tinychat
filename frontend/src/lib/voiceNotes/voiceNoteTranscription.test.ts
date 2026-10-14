@@ -44,7 +44,6 @@ import { __resetCaptureEngineForTests, __setInstalledEngineForTests, captureCapa
 import { __setVoiceNotesForTests, VoiceNotes, type LocalTranscript, type VoiceNoteRecording } from "./nativeVoiceNotes";
 import { syncOnDeviceTranscript } from "./onDeviceTranscriber";
 import { readTranscriptCommit } from "./voiceNoteCommits";
-import { TRANSCRIPT_STORAGE_FULL_CODE } from "./transcriptionErrors";
 import { resolveVoiceNoteRow } from "./voiceNoteRows";
 import { pendingStore } from "./recorderSaves";
 import { advanceAccountGeneration } from "./accountContext";
@@ -61,7 +60,6 @@ import {
 } from "./voiceNoteStore";
 import {
   accountStorageKey,
-  resumeStorageHeldTranscripts,
   capacitorPtxPut,
   createVoiceNoteTranscriber,
   createVoiceNoteCloud,
@@ -85,7 +83,6 @@ import {
   type VoiceNoteHoldStore,
   type VoiceNoteTranscriptionStatus,
 } from "./voiceNoteTranscription";
-import { isStorageReadOnly, reportStorageWriteSucceeded } from "@/lib/storageStatus";
 
 const ID = "trn_01J8Z3K4M5N6P7Q8R9S0T1V2W3";
 const ID2 = "trn_01J8Z3K4M5N6P7Q8R9S0T1V2W4";
@@ -1832,115 +1829,6 @@ describe("transcribeVoiceNote (one note end to end)", () => {
   });
 });
 
-describe("a transcript commit that full TinyCloud storage holds back", () => {
-  beforeEach(() => _resetConnectorSchemaMemoForTests());
-  afterEach(() => reportStorageWriteSucceeded());
-
-  test("is held as storage_full with its job kept, shares the storage-full state, and commits on the next run after recovery", async () => {
-    const space = sqliteSpace();
-    await saveVoiceNote(space.tcw, RECORDING, AUDIO, "android");
-    const h = harness({});
-    const baseDb = space.tcw.sql.db.bind(space.tcw.sql);
-    let full = true;
-    space.tcw.sql.db = ((name: string) => {
-      const db = baseDb(name);
-      return { ...db, execute: async (sql: string, params?: unknown[], options?: unknown) =>
-        full && sql.includes("INSERT INTO voice_note_transcript")
-          ? { ok: false, error: { code: "STORAGE_QUOTA_EXCEEDED", message: "Your TinyCloud storage is full" } }
-          : db.execute(sql, params as never, options as never) };
-    }) as typeof space.tcw.sql.db;
-
-    const err = await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, explicit: true,
-      sourceId: "rec-1", allowed: () => true, report: () => {} }).catch((e: unknown) => e);
-    expect(voiceNoteTranscriptionFailure(err)).toMatchObject({ code: "storage_full", retryable: false });
-    expect(isStorageReadOnly()).toBe(true);
-    expect(h.removed).toEqual([]);
-    expect(h.pending.read("rec-1")?.transcriptionId).toBe(ID);
-
-    full = false;
-    reportStorageWriteSucceeded();
-    expect(await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, explicit: true,
-      sourceId: "rec-1", allowed: () => true, report: () => {} })).toBe("transcribed");
-    expect(h.removed).toEqual([ID]);
-  });
-
-  test("resume re-offers only the notes whose transcript storage held back", () => {
-    const offered: string[] = [];
-    const jobs = new Map<string, unknown>([
-      ["held", { kind: "failed", code: "storage_full" }],
-      ["broken", { kind: "failed", code: "transcript_save_failed" }],
-      ["busy", { kind: "active" }],
-    ]);
-    resumeStorageHeldTranscripts({
-      snapshot: () => ({ jobs }),
-      transcribe: (sourceId: string) => { offered.push(sourceId); },
-    } as never);
-    expect(offered).toEqual(["held"]);
-  });
-});
-
-describe("a transcript save that full storage refuses is held, not failed", () => {
-  beforeEach(() => _resetConnectorSchemaMemoForTests());
-  afterEach(() => reportStorageWriteSucceeded());
-
-  const quota = { ok: false, error: { code: "STORAGE_QUOTA_EXCEEDED", message: "Your TinyCloud storage is full" } };
-
-  test("refused at the transcript row: the row is not failed, and a relaunch saves the held copy without transcribing again", async () => {
-    const space = sqliteSpace();
-    await saveVoiceNote(space.tcw, RECORDING, AUDIO, "android");
-    const h1 = harness({});
-    const baseDb = space.tcw.sql.db.bind(space.tcw.sql);
-    let full = true;
-    space.tcw.sql.db = ((name: string) => {
-      const db = baseDb(name);
-      return { ...db, execute: async (sql: string, params?: unknown[], options?: unknown) =>
-        full && sql.includes("INSERT INTO voice_note_transcript") ? quota : db.execute(sql, params as never, options as never) };
-    }) as typeof space.tcw.sql.db;
-
-    const err = await transcribeVoiceNote({ tcw: space.tcw, cloud: h1.cloud, capabilities: CAPS, explicit: true,
-      sourceId: "rec-1", allowed: () => true, report: () => {} }).catch((e: unknown) => e);
-    expect(voiceNoteTranscriptionFailure(err)).toMatchObject({ code: "storage_full" });
-    const row = await readVoiceNoteForTranscription(space.tcw, "rec-1");
-    expect(row.ok && row.data?.transcript.status).toBe("pending");
-    expect(h1.pending.read("rec-1")?.held).toBeDefined();
-
-    full = false;
-    reportStorageWriteSucceeded();
-    const h2 = harness({ pending: h1.pending });
-    expect(await transcribeVoiceNote({ tcw: space.tcw, cloud: h2.cloud, capabilities: CAPS, explicit: true,
-      sourceId: "rec-1", allowed: () => true, report: () => {} })).toBe("transcribed");
-    expect(h2.calls).toEqual([`remove:${ID}`]);
-    expect(h2.creates).toEqual([]);
-    expect(h2.removed).toEqual([ID]);
-    expect(await readTranscriptCommit(space.tcw, "rec-1")).toMatchObject({ outcome: "transcribed" });
-    expect(h2.pending.read("rec-1")).toBeNull();
-  });
-
-  test("refused at the body write: the held copy is saved on relaunch without transcribing again", async () => {
-    const space = sqliteSpace();
-    await saveVoiceNote(space.tcw, RECORDING, AUDIO, "android");
-    const h1 = harness({});
-    const kv = space.tcw.kv;
-    const realPut = kv.put;
-    kv.put = async () => quota;
-    const err = await transcribeVoiceNote({ tcw: space.tcw, cloud: h1.cloud, capabilities: CAPS, explicit: true,
-      sourceId: "rec-1", allowed: () => true, report: () => {} }).catch((e: unknown) => e);
-    expect(voiceNoteTranscriptionFailure(err)).toMatchObject({ code: "storage_full" });
-    const row = await readVoiceNoteForTranscription(space.tcw, "rec-1");
-    expect(row.ok && row.data?.transcript.status).toBe("pending");
-    expect(h1.pending.read("rec-1")?.held).toBeDefined();
-
-    kv.put = realPut;
-    reportStorageWriteSucceeded();
-    const h2 = harness({ pending: h1.pending });
-    expect(await transcribeVoiceNote({ tcw: space.tcw, cloud: h2.cloud, capabilities: CAPS, explicit: true,
-      sourceId: "rec-1", allowed: () => true, report: () => {} })).toBe("transcribed");
-    expect(h2.calls).toEqual([`remove:${ID}`]);
-    expect(h2.removed).toEqual([ID]);
-    expect(await readTranscriptCommit(space.tcw, "rec-1")).toMatchObject({ outcome: "transcribed" });
-  });
-});
-
 describe("transcribeVoiceNote reads the note's stored audio (TC-517)", () => {
   beforeEach(() => {
     _resetConnectorSchemaMemoForTests();
@@ -2260,69 +2148,6 @@ describe("every path that creates or resumes an off-phone job consults the hold 
     await settle();
     expect(starts).toBe(1);
     expect(transcriber.snapshot().jobs.get("rec-1")).toEqual({ kind: "done", outcome: "transcribed" });
-  });
-
-  test("a storage recovery that lands during a held attempt retries that attempt once, and the retry succeeds", async () => {
-    const { space, h, storage, choices } = await setup("in_app", { pending: false });
-    const started = Promise.withResolvers<void>();
-    const release = Promise.withResolvers<void>();
-    const finalized = Promise.withResolvers<void>();
-    let attempts = 0;
-    const transcriber = createVoiceNoteTranscriber({
-      cloud: h.cloud, consent: localStorageVoiceNoteConsentStore(DID, storage), tcw: () => space.tcw,
-      holds: memoryHoldStore(), choices, checkRetryMs: [],
-      runNote: async () => {
-        attempts++;
-        if (attempts > 1) return "transcribed";
-        started.resolve();
-        await release.promise;
-        throw new PrivateCloudError(TRANSCRIPT_STORAGE_FULL_CODE, "Your TinyCloud storage is full");
-      },
-    });
-    transcriber.subscribe(() => {
-      const kind = transcriber.snapshot().jobs.get("rec-1")?.kind;
-      if (kind === "done" || kind === "failed") finalized.resolve();
-    });
-    await transcriber.check();
-    transcriber.transcribe("rec-1");
-    await started.promise;
-    transcriber.storageRecovered();
-    release.resolve();
-    await finalized.promise;
-    expect(attempts).toBe(2);
-    expect(transcriber.snapshot().jobs.get("rec-1")).toEqual({ kind: "done", outcome: "transcribed" });
-  });
-
-  test("a storage recovery during a held attempt retries once only: a second hold is recorded as failed", async () => {
-    const { space, h, storage, choices } = await setup("in_app", { pending: false });
-    const started = Promise.withResolvers<void>();
-    const release = Promise.withResolvers<void>();
-    const finalized = Promise.withResolvers<void>();
-    let attempts = 0;
-    const transcriber = createVoiceNoteTranscriber({
-      cloud: h.cloud, consent: localStorageVoiceNoteConsentStore(DID, storage), tcw: () => space.tcw,
-      holds: memoryHoldStore(), choices, checkRetryMs: [],
-      runNote: async () => {
-        attempts++;
-        if (attempts === 1) {
-          started.resolve();
-          await release.promise;
-        }
-        throw new PrivateCloudError(TRANSCRIPT_STORAGE_FULL_CODE, "Your TinyCloud storage is full");
-      },
-    });
-    transcriber.subscribe(() => {
-      const kind = transcriber.snapshot().jobs.get("rec-1")?.kind;
-      if (kind === "done" || kind === "failed") finalized.resolve();
-    });
-    await transcriber.check();
-    transcriber.transcribe("rec-1");
-    await started.promise;
-    transcriber.storageRecovered();
-    release.resolve();
-    await finalized.promise;
-    expect(attempts).toBe(2);
-    expect(transcriber.snapshot().jobs.get("rec-1")).toMatchObject({ kind: "failed", code: TRANSCRIPT_STORAGE_FULL_CODE });
   });
 
   test("a later outage does not strand a Private note after an earlier success", async () => {

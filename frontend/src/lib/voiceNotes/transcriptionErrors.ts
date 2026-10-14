@@ -39,6 +39,7 @@ const TRANSCRIPTION_ERROR_COPY: Readonly<Record<string, string>> = {
   service_misconfigured: "Private transcription is not configured for this account.",
   voice_note_not_found: "This voice note no longer exists.",
   transcript_save_failed: "The transcript could not be saved to your space. Retry saves it again.",
+  transcript_save_timed_out: "Saving the transcript to your space took too long. Retry saves it again.",
   note_unreadable: "Could not read this note from your space just now. Retry tries again.",
   audio_read_failed: "Could not read this note's audio from this device or your space. Retry tries again.",
   audio_not_ready: "This recording is still being saved on this device. Try again when it finishes.",

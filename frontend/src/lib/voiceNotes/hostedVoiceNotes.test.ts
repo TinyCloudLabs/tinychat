@@ -8,8 +8,6 @@ import { createHostedVoiceNoteTrack } from "./hostedVoiceNotes";
 import { withHostedUploadQueue } from "../hostedUploadQueue";
 import type { VoiceNoteRecording, VoiceNotesPlugin, LocalTranscript } from "./nativeVoiceNotes";
 import type { TranscriptCommit } from "./voiceNoteCommits";
-import { reportStorageError, reportStorageWriteSucceeded } from "../storageStatus";
-import { TRANSCRIPT_STORAGE_FULL_CODE } from "./transcriptionErrors";
 
 const previousStorage = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
 afterEach(() => {
@@ -17,7 +15,7 @@ afterEach(() => {
   else Reflect.deleteProperty(globalThis, "localStorage");
 });
 
-function harness(failAt?: "part" | "submit" | "result" | "space" | "delete" | "storage", noSpeech = false, spaceOnly = false, mimeType = "audio/mp4",
+function harness(failAt?: "part" | "submit" | "result" | "space" | "delete", noSpeech = false, spaceOnly = false, mimeType = "audio/mp4",
   durationMs = 1000, transcriptResponses: Record<string, unknown>[] = [], readGate?: Promise<void>,
   createFailure?: "existing" | "missing", reconciliationDelayMs?: number, committedChannels: 1 | 2 = 1) {
   const data = new Map<string, string>();
@@ -133,7 +131,6 @@ function harness(failAt?: "part" | "submit" | "result" | "space" | "delete" | "s
       calls.push("space:save");
       savedMetadata = transcript.metadata;
       if (failAt === "space" && !failed) { failed = true; return { ok: false, error: new Error("offline") } as StoreResult<UpsertMeetingOutcome>; }
-      if (failAt === "storage" && !failed) { failed = true; return { ok: false, error: Object.assign(new Error("Your TinyCloud storage is full"), { code: "STORAGE_QUOTA_EXCEEDED" }) } as StoreResult<UpsertMeetingOutcome>; }
       commit = { rev: transcript.rev, outcome: noSpeech ? "no_speech" : "transcribed" } as TranscriptCommit;
       return { ok: true } as Awaited<ReturnType<typeof import("./voiceNoteStore").saveVoiceNoteTranscript>>;
     }, sleep: async () => {}, reconciliationDelayMs,
@@ -172,20 +169,6 @@ test("a space-only note uses its space audio and can resume without a native rec
   expect(calls).toContain("space:save");
   expect(calls).not.toContain("local:put");
   expect(calls.indexOf("space:save")).toBeLessThan(calls.indexOf("DELETE /hosted/transcripts/handle-1"));
-});
-
-test("a storage-full transcript save holds the job, with no failure recorded, and resumes once storage writes succeed", async () => {
-  const h = harness("storage");
-  const lane = h.track(); lane.consent();
-  await lane.run(h.recording);
-  expect(lane.jobs.get("note-1")).toMatchObject({ kind: "failed", retryable: false, code: TRANSCRIPT_STORAGE_FULL_CODE });
-  const done = Promise.withResolvers<void>();
-  const unsubscribe = lane.subscribe(() => { if (lane.jobs.get("note-1")?.kind === "done") done.resolve(); });
-  reportStorageError({ code: "STORAGE_QUOTA_EXCEEDED", message: "full" });
-  reportStorageWriteSucceeded();
-  await done.promise;
-  unsubscribe();
-  expect(h.calls.filter((call) => call === "space:save")).toHaveLength(2);
 });
 
 test("a paid outcome needing reconciliation blocks the note without another upload or automatic retry", async () => {

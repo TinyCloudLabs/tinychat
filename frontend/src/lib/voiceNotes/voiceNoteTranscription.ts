@@ -45,8 +45,8 @@ import { currentAccountGeneration, isAccountContextCurrent, isAccountWorkAllowed
 import { nativeRecordingSource, VoiceNotes, type VoiceNoteRecording } from "./nativeVoiceNotes";
 import { readTranscriptCommit } from "./voiceNoteCommits";
 import { pendingStore } from "./recorderSaves";
-import { isStorageFullError, reportStorageError, STORAGE_FULL_SAVE_MESSAGE } from "../storageStatus";
 import { voiceNoteCallDeadlineMs, withVoiceNoteSaveDeadline } from "./saveDeadline";
+import { isStorageFullError, reportStorageError, STORAGE_FULL_SAVE_MESSAGE } from "../storageStatus";
 import { TRANSCRIPT_STORAGE_FULL_CODE, transcriptionErrorCopy, voiceNoteTranscriptionFailureForCode } from "./transcriptionErrors";
 import { privatePartsDone } from "./notePipelineCopy";
 import type { VoiceNoteTranscriptionFailure } from "./transcriptionErrors";
@@ -230,11 +230,6 @@ export interface PendingVoiceNoteJob {
   /** The create call's Idempotency-Key: the same key re-joins the same job. */
   attemptId: string;
   transcriptionId: string | null;
-  /**
-   * The prepared transcript until its commit is saved. A save that fails (storage full included) keeps it here, so
-   * a relaunch saves this copy instead of re-transcribing; PTX may expire its own copy first.
-   */
-  held?: VoiceNoteTranscriptSave;
 }
 
 export interface VoiceNotePendingStore {
@@ -242,13 +237,6 @@ export interface VoiceNotePendingStore {
   write(sourceId: string, job: PendingVoiceNoteJob): void;
   clear(sourceId: string): void;
   sourceIds(): string[];
-}
-
-function isHeldTranscript(value: unknown): value is VoiceNoteTranscriptSave {
-  if (!value || typeof value !== "object") return false;
-  const held = value as Partial<VoiceNoteTranscriptSave>;
-  return typeof held.rev === "number" && Array.isArray(held.sentences) && Array.isArray(held.speakers)
-    && !!held.metadata && typeof held.metadata === "object";
 }
 
 /** Best-effort: without it a relaunch uploads a note again instead of re-joining its job. */
@@ -266,12 +254,7 @@ export function localStorageVoiceNotePendingStore(
       for (const [sourceId, value] of Object.entries(parsed as Record<string, unknown>)) {
         const v = value as Partial<PendingVoiceNoteJob> | null;
         if (!v || typeof v.attemptId !== "string") continue;
-        const held: unknown = v.held;
-        out[sourceId] = {
-          attemptId: v.attemptId,
-          transcriptionId: typeof v.transcriptionId === "string" ? v.transcriptionId : null,
-          ...(isHeldTranscript(held) ? { held } : {}),
-        };
+        out[sourceId] = { attemptId: v.attemptId, transcriptionId: typeof v.transcriptionId === "string" ? v.transcriptionId : null };
       }
       return out;
     } catch {
@@ -287,10 +270,7 @@ export function localStorageVoiceNotePendingStore(
   };
   return {
     read: (sourceId) => readAll()[sourceId] ?? null,
-    write: (sourceId, job) => {
-      const all = readAll();
-      writeAll({ ...all, [sourceId]: { ...job, held: job.held ?? all[sourceId]?.held } });
-    },
+    write: (sourceId, job) => writeAll({ ...readAll(), [sourceId]: job }),
     clear: (sourceId) => {
       const all = readAll();
       if (!(sourceId in all)) return;
@@ -718,10 +698,6 @@ export interface VoiceNoteCloud {
    * run upload the note again; PTX deletes it on its own 24 h schedule.
    */
   finish(sourceId: string, transcriptionId?: string | null): Promise<void>;
-  /** Keep a prepared transcript until its commit saves: a failed save keeps the job and this copy. */
-  holdTranscript(sourceId: string, transcript: VoiceNoteTranscriptSave): void;
-  /** The prepared transcript whose save is still owed, if any. */
-  heldTranscript(sourceId: string): VoiceNoteTranscriptSave | null;
   /** Transcription was turned off: cancel and forget every job still waiting for its upload. */
   releaseUnsent(): Promise<void>;
 }
@@ -1040,13 +1016,6 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
 
     pendingSourceIds: () => pending.sourceIds(),
 
-    holdTranscript(sourceId, transcript) {
-      const job = pending.read(sourceId);
-      if (job !== null) pending.write(sourceId, { ...job, held: transcript });
-    },
-
-    heldTranscript: (sourceId) => pending.read(sourceId)?.held ?? null,
-
     async transcribe(input, report) {
       const guard = () => {
         if (!(input.allowed?.("account") ?? true)) throw accountChangedError();
@@ -1071,8 +1040,6 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
 
     async releaseUnsent() {
       for (const sourceId of pending.sourceIds()) {
-        // Already transcribed: only the save remains, and PTX's expiry of its copy must not drop the held transcript.
-        if (pending.read(sourceId)?.held) continue;
         const transcriptionId = pending.read(sourceId)?.transcriptionId ?? null;
         if (transcriptionId === null) {
           pending.clear(sourceId);
@@ -1183,9 +1150,8 @@ export async function transcribeVoiceNote(args: {
   const persistFailure = async (error: unknown, statsMetadata: VoiceNoteTranscriptionStatsMetadata = {}) => {
     const code = voiceNoteErrorCode(error);
     const current = stillCurrent();
-    // Storage full keeps the transcript held in its job: publishing "failed" would make a resume finish the note.
     if (["audio_upload_pending", "transcription_off", "upload_outcome_unknown", "account_changed",
-      "active_transcription_exists", TRANSCRIPT_STORAGE_FULL_CODE].includes(code)
+      "active_transcription_exists"].includes(code)
       || !current) return;
     try { await patchVoiceNoteTranscriptionFailure(tcw, sourceId, code, accountCheckpoint, statsMetadata); }
     catch (persistError) { logPipelineError("[VoiceNotes] Could not persist the transcription failure", persistError); }
@@ -1321,29 +1287,14 @@ export async function transcribeVoiceNote(args: {
     if (!stillCurrent()) throw accountChangedError();
     const saved = await saveVoiceNoteTranscript(tcw, sourceId, prepared, account, accountCheckpoint);
     if (!saved.ok) {
-      if (saved.error.code === "VOICE_NOTE_NOT_FOUND") throw new PrivateCloudError("voice_note_not_found", saved.error.message);
       if (isStorageFullError(saved.error)) {
         reportStorageError(saved.error);
         throw new PrivateCloudError(TRANSCRIPT_STORAGE_FULL_CODE, STORAGE_FULL_SAVE_MESSAGE);
       }
+      if (saved.error.code === "VOICE_NOTE_NOT_FOUND") throw new PrivateCloudError("voice_note_not_found", saved.error.message);
       throw new PrivateCloudError("transcript_save_failed", saved.error.message);
     }
   };
-
-  // A transcript from an earlier run whose save did not finish: save that copy again. Nothing is re-transcribed
-  // or re-uploaded, so PTX expiring its own copy of the job cannot lose it.
-  const held = cloud.heldTranscript(sourceId);
-  if (held !== null) {
-    try { await save(held); }
-    catch (err) {
-      if (err instanceof PrivateCloudError && err.code === "voice_note_not_found") await finish();
-      await persistFailure(err);
-      throw err;
-    }
-    await finish();
-    logPipeline("transcription", sourceId, "done", { engine: "private-cloud" });
-    return held.sentences.length > 0 ? "transcribed" : "no_speech";
-  }
 
   let transcriptionId: string;
   let transcript: PrivateCloudTranscript;
@@ -1363,7 +1314,6 @@ export async function transcribeVoiceNote(args: {
     // Silence is an outcome, not a failure: recorded so the note is not offered again.
     const prepared = noSpeechTranscript(transcribedAt(), rev, { transcription_stats_missing: true });
     try {
-      cloud.holdTranscript(sourceId, prepared);
       await save(prepared);
     } catch (saveError) {
       await persistFailure(saveError);
@@ -1392,12 +1342,11 @@ export async function transcribeVoiceNote(args: {
   };
   const prepared = prepareVoiceNoteTranscript(transcript, transcribedAt(), rev, commitStatsMetadata);
   try {
-    cloud.holdTranscript(sourceId, prepared);
     await save(prepared);
   } catch (err) {
     if (err instanceof PrivateCloudError && err.code === "voice_note_not_found") await finish(transcriptionId);
     await persistFailure(err, statsMetadata);
-    // The job keeps the prepared transcript (held), so Retry saves it again without transcribing.
+    // Otherwise the job keeps its transcript: Retry re-joins it and saves again.
     throw err;
   }
   await finish(transcriptionId);
@@ -1468,8 +1417,6 @@ export interface VoiceNoteTranscriber {
   turnOff(): Promise<void>;
   /** Transcribe / Retry for one note. Only while available and consented. */
   transcribe(sourceId: string, audio?: VoiceNoteAudio): void;
-  /** Storage writes work again: retries held transcripts, and once more any attempt that began before this and then held. */
-  storageRecovered(): void;
   /**
    * The user's "Use Private instead" for a note committed to another mode (its on-device job is
    * cancelled by the caller first). Runs like `transcribe`, and its Retry keeps the choice.
@@ -1553,8 +1500,6 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
   let snapshot: VoiceNoteTranscriberSnapshot = { ...state, jobs: new Map(jobs) };
   let chain: Promise<void> = Promise.resolve();
   let recoveryNeeded = false;
-  /** Bumped by each storage recovery; a held attempt that began before a bump is retried once. */
-  let storageEpoch = 0;
   let checking: Promise<void> | null = null;
   /** The newest caller's "this account is still signed in"; none until a hook-managed check names one. */
   let accountCurrent: (() => boolean) | null = null;
@@ -1678,7 +1623,6 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
         return;
       }
       const authorised = explicit || holdStates.get(sourceId) === "released";
-      const epoch = storageEpoch;
       try {
         const outcome = await runNote({
           tcw: deps.tcw(),
@@ -1718,15 +1662,9 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
         } else {
           logPipelineError("transcription", err, sourceId);
           const failure = voiceNoteTranscriptionFailure(err);
-          if (failure.code === TRANSCRIPT_STORAGE_FULL_CODE && storageEpoch !== epoch) {
-            // Storage recovered while this attempt ran: retry it once rather than hold a note the recovery already passed.
-            jobs.delete(sourceId);
-            enqueue(sourceId, audio, explicit);
-          } else {
-            jobs.set(sourceId, { kind: "failed", ...failure });
-            // Incomplete coverage is retryable only by explicit tap; do not restart it on relaunch.
-            settleChoice(sourceId, true);
-          }
+          jobs.set(sourceId, { kind: "failed", ...failure });
+          // Incomplete coverage is retryable only by explicit tap; do not restart it on relaunch.
+          settleChoice(sourceId, true);
         }
         emit();
       }
@@ -1737,8 +1675,6 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
   /** Re-read opted-in recovery candidates before re-offering them, including their transcript commit. */
   const stillPendingInSpace = async (sourceId: string, requirePrivateCommit = false): Promise<boolean | null> => {
     if (!identityCurrent()) return false;
-    // A held transcript is still owed its save, whatever the row says: resume saves it rather than finishing the note.
-    if (cloud?.heldTranscript(sourceId) != null) return true;
     try {
       const tcw = deps.tcw();
       const result = await readVoiceNoteForTranscription(tcw, sourceId);
@@ -1861,10 +1797,6 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
       };
     },
 
-    storageRecovered() {
-      storageEpoch++;
-      resumeStorageHeldTranscripts(transcriber);
-    },
     check(options = {}) {
       if (cloud === null) return Promise.resolve();
       if (options.current) accountCurrent = options.current;
@@ -2032,16 +1964,6 @@ export function transcribeSavedNote(
     () => { if (isCurrent()) transcriber.noteSaved(recording, audio); },
     (caught: unknown) => logPipelineError("[VoiceNotes] The private transcription check threw; this note was not handed to transcription", caught),
   );
-}
-
-/**
- * Re-offers the notes whose transcript commit full storage held back. Each transcript is still in
- * its job, so `transcribe` commits it now; other failures are left alone.
- */
-export function resumeStorageHeldTranscripts(transcriber: Pick<VoiceNoteTranscriber, "snapshot" | "transcribe">): void {
-  for (const [sourceId, job] of transcriber.snapshot().jobs) {
-    if (job.kind === "failed" && job.code === TRANSCRIPT_STORAGE_FULL_CODE) transcriber.transcribe(sourceId);
-  }
 }
 
 /** One transcriber per signed-in account, kept across mounts (StrictMode, tab switches). */

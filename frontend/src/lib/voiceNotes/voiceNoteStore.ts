@@ -175,7 +175,10 @@ export function syncRecordingNote(tcw: TinyCloudWeb, id: string,
       const body = noteMarkdown({ ...note, savedEditAt: adopted });
       const put = await runOnSpaceLane((signal) => { checkpoint(); return tcw.kv.put(key, body, { contentType: "text/markdown", signal }); },
         { operation: `KV put ${key}`, payloadBytes: new TextEncoder().encode(body).byteLength });
-      if (!put.ok) throw new Error(`Could not sync recording note: ${put.error.message}`);
+      if (!put.ok) {
+        reportStorageError(put.error);
+        throw new Error(`Could not sync recording note: ${put.error.message}`, { cause: put.error });
+      }
       checkpoint();
       await patchVoiceNoteMarkdown(tcw, id, key, note.editedAt, checkpoint, row);
       const latest = await loadNote(id);
