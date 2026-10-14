@@ -2,7 +2,7 @@
 // own engine and needs the recording on this phone; Private needs private cloud on offer (the recorder's availability).
 import { privateRefusalCopy, switchToPrivate } from "@/capture/recorder/privateInstead";
 import { deviceName } from "@/lib/platform";
-import { privateRefusal, type VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
+import { privateRefusal, type PrivateAudioSource, type VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
 import { captureCapabilities } from "@/lib/voiceNotes/captureEngine";
 import type { TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { onDeviceQueuePlace } from "@/lib/voiceNotes/onDeviceQueue";
@@ -18,9 +18,13 @@ export interface PhoneRecording {
 
 export const LOCAL_START_FAILED = `Couldn’t start transcribing on ${deviceName()}. Try again in a moment.`;
 
-/** Whether private cloud's advertised length limit takes a note of this length. */
-export function privateCloudFits(transcription: VoiceNoteTranscriptionProps, durationSecs: number | null): boolean {
-  return privateRefusal(transcription, durationSecs) === null;
+/** Whether private cloud's advertised limits take a note with this recorded format. */
+export function privateCloudFits(
+  transcription: VoiceNoteTranscriptionProps,
+  durationSecs: number | null,
+  source?: PrivateAudioSource,
+): boolean {
+  return privateRefusal(transcription, durationSecs, null, source) === null;
 }
 
 /** Local first: it is the default. Private only for a note within the length private cloud advertises. */
@@ -29,11 +33,12 @@ export function transcribeProviders(
   transcription: VoiceNoteTranscriptionProps | undefined,
   phone: PhoneRecording | null,
   durationSecs: number | null,
+  source?: PrivateAudioSource,
 ): TranscribeProvider[] {
   const job = transcription?.jobs.get(noteId);
   const providers: TranscribeProvider[] = [];
   if (phone !== null && captureCapabilities().localTranscription) providers.push("on-device");
-  if (transcription?.availability === "available" && privateCloudFits(transcription, durationSecs) && job?.kind !== "active" && job?.kind !== "done") providers.push("private-cloud");
+  if (transcription?.availability === "available" && privateCloudFits(transcription, durationSecs, source) && job?.kind !== "active" && job?.kind !== "done") providers.push("private-cloud");
   return providers;
 }
 
@@ -49,13 +54,16 @@ export async function transcribeWith(
   transcription: VoiceNoteTranscriptionProps | undefined,
   phone: PhoneRecording | null,
   durationSecs: number | null,
+  source?: PrivateAudioSource,
 ): Promise<string | null> {
   if (provider === "on-device") return (await retryOnDeviceNote(noteId)) === null ? null : LOCAL_START_FAILED;
   if (!transcription) return "Private transcription isn’t available here.";
+  const offerRefusal = privateRefusal(transcription, durationSecs, null, source);
+  if (offerRefusal?.kind === "browser-wav-too-large") return privateRefusalCopy(offerRefusal);
   // A Local job on the phone (committed, or chosen here earlier) stops first, so the two never both transcribe it.
   if (phone?.committed != null && phone.committed !== "private-cloud") {
     const local = (phone.committed === "on-device" && phone.hasLocalState) || onDeviceQueuePlace(onDeviceSttStore.snapshot(), noteId)?.position != null;
-    if (local) return switchToPrivate(transcription, noteId, durationSecs);
+    if (local) return switchToPrivate(transcription, noteId, durationSecs, undefined, source);
   }
   // A user's Private tap is explicit even on web, where there is no phone recording to inspect.
   // Refusals reach the action's alert in both the direct and Local-to-Private paths.

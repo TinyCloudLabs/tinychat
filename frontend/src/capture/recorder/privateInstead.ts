@@ -5,7 +5,7 @@ import { deviceName } from "@/lib/platform";
 // phone's own record of the note says that job has ended, so the two never both transcribe it.
 import { VoiceNotes } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { cancelOnDeviceNote } from "@/lib/voiceNotes/onDeviceSttStore";
-import { privateRefusal, type VoiceNoteTranscriptionProps } from "./transcriptionProps";
+import { privateRefusal, type BrowserWavSizeRefusal, type PrivateAudioSource, type VoiceNoteTranscriptionProps } from "./transcriptionProps";
 import { formatExactDuration } from "@/capture/library/formatters";
 import { PRIVATE_DURATION_MARGIN_SECONDS, type PrivateStartRefusal, type TranscriptionAdmissionRefusal } from "@/lib/voiceNotes/voiceNoteTranscription";
 
@@ -18,18 +18,27 @@ const PRIVATE_REFUSAL_COPY: Record<TranscriptionAdmissionRefusal, string> = {
   "account-changed": "Your account changed. Try again after signing in.",
 };
 
-/** The copy for a Private start that was refused: a state, or the duration limit this note breaks, with both lengths. */
-export function privateRefusalCopy(refusal: PrivateStartRefusal): string {
+/** The copy for a Private start refused by service state, duration, or the browser's WAV payload ceiling. */
+export function privateRefusalCopy(refusal: PrivateStartRefusal | BrowserWavSizeRefusal): string {
   if (typeof refusal === "string") return PRIVATE_REFUSAL_COPY[refusal];
+  if (refusal.kind === "browser-wav-too-large") {
+    return "This recording is too long for Private transcription in the browser. Use the desktop or phone app to transcribe it privately.";
+  }
   return `Private Transcription accepts notes up to ${formatExactDuration(refusal.limitSeconds - PRIVATE_DURATION_MARGIN_SECONDS, "floor")}. This note is ${formatExactDuration(refusal.durationSeconds, "ceil")}.`;
 }
 
-export function privateInsteadOffered(transcription: VoiceNoteTranscriptionProps | undefined, noteId: string, durationSecs: number | null): boolean {
+export function privateInsteadOffered(
+  transcription: VoiceNoteTranscriptionProps | undefined,
+  noteId: string,
+  durationSecs: number | null,
+  source?: PrivateAudioSource,
+): boolean {
   if (!transcription || transcription.availability !== "available" || !transcription.consented) return false;
-  if (privateRefusal(transcription, durationSecs) !== null) return false;
+  if (privateRefusal(transcription, durationSecs, null, source) !== null) return false;
   const job = transcription.jobs.get(noteId);
   return job?.kind !== "active" && job?.kind !== "done";
 }
+
 
 export interface StopWait {
   intervalMs: number;
@@ -79,16 +88,16 @@ async function waitForOnDeviceToEnd(noteId: string, wait: StopWait): Promise<str
   }
 }
 
-/** The reason it could not switch, or null once private cloud has the note. */
 export async function switchToPrivate(
   transcription: VoiceNoteTranscriptionProps,
   noteId: string,
   durationSecs: number | null,
   wait: StopWait = DEFAULT_WAIT,
+  source?: PrivateAudioSource,
 ): Promise<string | null> {
   // Refused before the on-device job is stopped, so a note Private cannot take stays on Local.
-  const limit = privateRefusal(transcription, durationSecs);
-  if (limit?.kind === "duration") return privateRefusalCopy(limit);
+  const limit = privateRefusal(transcription, durationSecs, null, source);
+  if (limit?.kind === "duration" || limit?.kind === "browser-wav-too-large") return privateRefusalCopy(limit);
   const before = await readOnDeviceState(noteId);
   if ("failure" in before) return before.failure;
   if (before.state === "done") return FINISHED;

@@ -265,6 +265,47 @@ describe("the Transcribe action", () => {
       console.error = originalError;
     }
   });
+  test("a WebM whose expected browser WAV exceeds PTX bytes hides Private, shows its copy, and keeps Local offered", async () => {
+    const maxBytes = 64_000;
+    const durationSecs = 2;
+    const privateAudioSource = { capturePlatform: "web", mimeType: "audio/webm;codecs=opus" };
+    expect(transcribeProviders(NOTE, transcription({ maxSeconds: 30, maxBytes }), phone(), durationSecs, privateAudioSource))
+      .toEqual(["on-device"]);
+    __setVoiceNotesForTests({
+      listPending: async () => ({ recordings: [{ id: NOTE, options: { transcriber: "on-device" }, stt: {} }] }),
+    } as unknown as VoiceNotesPlugin, { available: true });
+    cleanupDom = installDom();
+    const host = document.createElement("div");
+    document.body.append(host);
+    root = createRoot(host);
+    await act(async () => root!.render(createElement(MemoryRouter, null,
+      createElement(PlatformContext.Provider, { value: "web" },
+        createElement(NoteDetailView, {
+          item: { id: "row-1", source: "exo-voice-note", sourceId: NOTE, title: "Voice note", startedAt: null, durationSecs },
+          listStatus: "ready",
+          metadata: {
+            status: "ok",
+            metadata: {
+              transcription_outcome: "skipped",
+              audio_mime_type: "audio/webm;codecs=opus",
+              capture: { platform: "web", version: 2, options: { transcriber: "off" } },
+              audio: { stored: true },
+            },
+          },
+          transcript: { status: "absent" },
+          audio: { load: async () => null },
+          transcription: transcription({ maxSeconds: 30, maxBytes }),
+          copyState: "idle", onCopy: noop, onRetry: noop, pushed: true, onBack: noop,
+        }),
+      ),
+    )));
+    await act(async () => { await Promise.resolve(); });
+    expect(host.querySelector('[data-testid="voice-note-browser-wav-too-large"]')?.textContent)
+      .toBe("This recording is too long for Private transcription in the browser. Use the desktop or phone app to transcribe it privately.");
+    expect(host.querySelector('[data-testid="transcribe-button"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="transcribe-provider"] option[value="private-cloud"]')).toBeNull();
+  });
+
   test("a Private tap after the account changes alerts and unlocks without starting", async () => {
     let current = true;
     let starts = 0;

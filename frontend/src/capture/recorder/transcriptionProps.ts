@@ -11,6 +11,8 @@ import {
   type VoiceNoteTranscriber,
   type VoiceNoteTranscriberSnapshot,
 } from "@/lib/voiceNotes/voiceNoteTranscription";
+import { bareMimeType, expectedTranscriptionWavBytes } from "@/lib/voiceNotes/voiceNoteAudio";
+
 
 /**
  * Private cloud transcription as the card sees it. A failed check is retryable.
@@ -76,14 +78,47 @@ export function transcriptionProps(
   };
 }
 
+export interface PrivateAudioSource {
+  capturePlatform: string | null;
+  mimeType: string | null;
+}
+
+export interface BrowserWavSizeRefusal {
+  kind: "browser-wav-too-large";
+}
+
+export type PrivateEligibilityRefusal = PrivateCloudRefusal | BrowserWavSizeRefusal;
+
+export function privateAudioSourceFromMetadata(metadata: Record<string, unknown> | null): PrivateAudioSource {
+  const capture = metadata?.capture;
+  const platform = capture !== null && typeof capture === "object" && !Array.isArray(capture) && "platform" in capture
+    ? capture.platform : null;
+  const mimeType = metadata?.audio_mime_type;
+  return {
+    capturePlatform: typeof platform === "string" ? platform : null,
+    mimeType: typeof mimeType === "string" ? mimeType : null,
+  };
+}
+
+
 /** Whether private cloud takes this note by the rule `run` enforces: PTX's limits (unknown when null), then the byte cap when known. */
 export function privateRefusal(
   transcription: Pick<VoiceNoteTranscriptionProps, "maxSeconds" | "maxBytes">,
   durationSecs: number | null,
   sizeBytes: number | null = null,
-): PrivateCloudRefusal | null {
+  source?: PrivateAudioSource,
+): PrivateEligibilityRefusal | null {
   const limits: PrivateCloudLimits | null = transcription.maxSeconds === null
     ? null
     : { maxSeconds: transcription.maxSeconds, maxBytes: transcription.maxBytes ?? null };
-  return privateCloudRefusal(durationSecs, sizeBytes, limits);
+  const refusal = privateCloudRefusal(durationSecs, sizeBytes, limits);
+  if (refusal !== null) return refusal;
+  if (source?.capturePlatform === "web"
+    && bareMimeType(source.mimeType ?? "") === "audio/webm"
+    && durationSecs !== null
+    && typeof transcription.maxBytes === "number"
+    && expectedTranscriptionWavBytes(durationSecs) > transcription.maxBytes) {
+    return { kind: "browser-wav-too-large" };
+  }
+  return null;
 }

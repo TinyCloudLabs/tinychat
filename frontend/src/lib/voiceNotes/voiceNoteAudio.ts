@@ -17,6 +17,11 @@ export const WAV_CONTENT_TYPE = "audio/wav";
 /** 16-bit mono at TRANSCRIPTION_SAMPLE_RATE. */
 export const WAV_BYTES_PER_SECOND = TRANSCRIPTION_SAMPLE_RATE * 2;
 const WAV_HEADER_BYTES = 44;
+/** Upper bound for the 16 kHz mono WAV payload produced from a recording of this duration. */
+export function expectedTranscriptionWavBytes(durationSeconds: number): number {
+  return WAV_HEADER_BYTES + Math.ceil(durationSeconds * WAV_BYTES_PER_SECOND);
+}
+
 
 /**
  * Compressed bytes per second allowed before decoding, used with the current

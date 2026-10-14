@@ -7,7 +7,7 @@ import { ChevronDownIcon, Loader2Icon } from "lucide-react";
 import { HowItWorksLink } from "@/components/ui/how-it-works-link";
 import { PlatformContext, deviceName } from "@/lib/platform";
 import { CHECK_AGAIN, PRIVATE_CONSENT_ACTION, PRIVATE_CONSENT_TITLE, privateConsentBody, privateConsentDevice, privateNotOffered, TRANSCRIBER_NAME } from "@/capture/recorder/final/finalCopy";
-import type { VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
+import type { PrivateAudioSource, VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
 import { captureCapabilities } from "@/lib/voiceNotes/captureEngine";
 import { VoiceNotes } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { cn } from "@/lib/utils";
@@ -61,6 +61,7 @@ export interface TranscribeActionProps {
   transcription: VoiceNoteTranscriptionProps | undefined;
   /** The note's length: Private is offered only up to the length private cloud advertises. */
   durationSecs: number | null;
+  privateAudioSource?: PrivateAudioSource;
   /** "Transcribe" by default; "Try again" after a failure. */
   label?: string;
   className?: string;
@@ -73,9 +74,9 @@ export function TranscribeAction(props: TranscribeActionProps) {
 /** The action given what the phone said about the note. */
 export function TranscribeActionFor(props: TranscribeActionProps & { read: PhoneRead }) {
   const platform = useContext(PlatformContext);
-  const { noteId, transcription, durationSecs, read } = props;
+  const { noteId, transcription, durationSecs, privateAudioSource, read } = props;
   const phone = read.state === "read" ? read.phone : null;
-  const providers = transcribeProviders(noteId, transcription, phone, durationSecs);
+  const providers = transcribeProviders(noteId, transcription, phone, durationSecs, privateAudioSource);
   const [chosen, setChosen] = useState<TranscribeProvider | null>(null);
   const [busy, setBusy] = useState(false);
   // Set at the tap, ahead of any render: the start is still on its way until this note's job or queue entry replaces the action.
@@ -105,7 +106,7 @@ export function TranscribeActionFor(props: TranscribeActionProps & { read: Phone
       setProblem(reason);
       setBusy(false);
     };
-    void transcribeWith(which, noteId, transcription, phone, durationSecs).then(
+    void transcribeWith(which, noteId, transcription, phone, durationSecs, privateAudioSource).then(
       (failure) => {
         if (failure !== null) failed(failure);
       },
