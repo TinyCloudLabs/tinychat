@@ -1,4 +1,6 @@
 import { readableError } from "@/lib/readableError";
+import { captureEvents } from "../captureEvents";
+import { pruneDeletedFailureNotification } from "../activity/failureNotifications";
 // The voice-note recorder's controller, without React: the old Voice notes
 // card's controller moved onto recorderReducer, without the notes list and
 // playback (the Library and a note's detail, capture/library) or the
@@ -1065,6 +1067,8 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       }
       send({ type: "DISCARDED", id: shown });
       if (id) {
+        if (tcw?.did) pruneDeletedFailureNotification(tcw.did, id);
+        captureEvents.emit("note-deleted", { source: "exo-voice-note", sourceId: id });
         send({ type: "CAPTURE_RESOLVED", id });
         const key = scope();
         if (key !== null) clearPartialAudioIssue(key, id);
