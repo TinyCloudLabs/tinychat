@@ -409,7 +409,7 @@ describe("backend index middleware wiring", () => {
     expect(LIMITS).toContain('[GOOGLE_OAUTH_PATHS, "googleOAuth"]');
     // …and the prefix is EXEMPTED from the global bucket, not merely given a second one:
     // `bucketFor` assigns each request exactly one bucket.
-    expect(LIMITS).toContain('(req) => bucketFor(req.method, req.path) !== kind');
+    expect(LIMITS).toContain('bucketFor(req.method, req.path) !== kind');
   });
 
   test("an armed-but-unregistered google OAuth config refuses to boot", () => {

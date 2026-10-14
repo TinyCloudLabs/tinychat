@@ -4,6 +4,7 @@ import { issueSessionToken } from "@tinyboilerplate/server";
 import {
   applyRateLimiters,
   ASSEMBLYAI_HOSTED_UPLOAD_LIMIT,
+  AUTH_LIMIT,
   bucketFor,
   CALENDAR_AUTOJOIN_LIMIT,
   CALENDAR_AUTOJOIN_MUTATION_LIMIT,
@@ -21,6 +22,7 @@ import {
   PRIVATE_CLOUD_TRANSCRIPTION_LIMIT,
   PRIVATE_CLOUD_TRANSCRIPTION_MUTATION_LIMIT,
   PRIVATE_CLOUD_TRANSCRIPTION_PATHS,
+  AGGREGATE_LIMITS,
   SESSION_LIMITS,
   SHARED_KEY_HEADROOM,
   TRANSCRIBER_LIMIT,
@@ -251,6 +253,8 @@ describe("shared-key interim headroom", () => {
     expect(CALENDAR_AUTOJOIN_LIMIT).toBe(3000);
     expect(CALENDAR_AUTOJOIN_MUTATION_LIMIT).toBe(150);
     expect(DELEGATION_LIMIT).toBe(600);
+    // Session minting: one bucket whatever the bearer (auth-mint-rate-limit.test.ts).
+    expect(AUTH_LIMIT).toBe(1200);
   });
 
   it("classifies a path matrix into exactly one bucket, case-insensitively", () => {
@@ -310,6 +314,9 @@ describe("shared-key interim headroom", () => {
       ["GET", "/API/DELEGATIONS/status", "delegation"],
       ["GET", "/API/SIGNATURE/x", "verification"],
       ["GET", "/api/signature-anything", "global"],
+      ["GET", "/api/auth/nonce", "auth"],
+      ["POST", "/API/Auth/Verify", "auth"],
+      ["GET", "/api/authx", "global"],
     ];
     for (const [method, path, bucket] of cases) {
       expect([method, path, bucketFor(method, path)]).toEqual([method, path, bucket]);
@@ -631,4 +638,53 @@ describe("per-session keying", () => {
       expect(rateLimitHeader(r)).toBeNull();
     });
   });
+});
+
+describe("aggregate ceilings over per-session buckets", () => {
+  const session = async (i: number) =>
+    `Bearer ${(await issueSessionToken(`0x${(i + 1).toString(16).padStart(40, "0")}`, SESSION_KEY)).token}`;
+
+  it("keeps the 0.5.4 whole-service ceilings for paid chat, private cloud mutations and hosted uploads", () => {
+    expect(AGGREGATE_LIMITS).toEqual({
+      paidChat: PAID_CHAT_LIMIT,
+      privateCloudTranscriptionMutation: PRIVATE_CLOUD_TRANSCRIPTION_MUTATION_LIMIT,
+      hostedUpload: ASSEMBLYAI_HOSTED_UPLOAD_LIMIT,
+    });
+  });
+
+  it("private cloud mutations stop at 300 across fresh sessions", async () => {
+    const app = express();
+    applyRateLimiters(app, { sessionKey: SESSION_KEY });
+    app.post("/api/transcriber/private-cloud/transcriptions", (_req, res) => res.status(201).json({ ok: true }));
+    await withServer(app, async (port) => {
+      const url = `http://localhost:${port}/api/transcriber/private-cloud/transcriptions`;
+      let sent = 0;
+      for (let i = 0; sent < PRIVATE_CLOUD_TRANSCRIPTION_MUTATION_LIMIT; i++) {
+        const authorization = await session(i);
+        for (let j = 0; j < SESSION_LIMITS.privateCloudTranscriptionMutation && sent < PRIVATE_CLOUD_TRANSCRIPTION_MUTATION_LIMIT; j++, sent++) {
+          expect((await realFetch(url, { method: "POST", headers: { authorization } })).status).toBe(201);
+        }
+      }
+      expect((await realFetch(url, { method: "POST", headers: { authorization: await session(999) } })).status).toBe(429);
+      expect((await realFetch(url, { method: "POST" })).status).toBe(429);
+    });
+  });
+
+  it("hosted uploads stop at the aggregate across fresh sessions", async () => {
+    const app = express();
+    applyRateLimiters(app, { sessionKey: SESSION_KEY });
+    app.put("/api/transcriber/assemblyai/hosted/uploads/:id/parts/:n", (_req, res) => res.json({ ok: true }));
+    await withServer(app, async (port) => {
+      const url = `http://localhost:${port}/api/transcriber/assemblyai/hosted/uploads/u/parts/1`;
+      let sent = 0;
+      for (let i = 0; sent < ASSEMBLYAI_HOSTED_UPLOAD_LIMIT; i++) {
+        const authorization = await session(i);
+        for (let j = 0; j < SESSION_LIMITS.hostedUpload && sent < ASSEMBLYAI_HOSTED_UPLOAD_LIMIT; j++, sent++) {
+          const r = await realFetch(url, { method: "PUT", headers: { authorization } });
+          if (r.status !== 200) throw new Error(`upload ${sent} got ${r.status}`);
+        }
+      }
+      expect((await realFetch(url, { method: "PUT", headers: { authorization: await session(999) } })).status).toBe(429);
+    });
+  }, 60_000);
 });

@@ -186,4 +186,30 @@ describe("paid chat bucket at the production mounts", () => {
       expect(rateLimitHeader(anonymous)).toEqual({ limit: PAID_CHAT_LIMIT, remaining: PAID_CHAT_LIMIT - 1 });
     });
   });
+
+  test("many sessions together stop at the 600 aggregate, before upstream; a session over its own limit spends none of it", async () => {
+    const session = async (i: number) =>
+      `Bearer ${(await issueSessionToken(`0x${(i + 1).toString(16).padStart(40, "0")}`, SESSION_KEY)).token}`;
+    await withServer(productionApp(), async (base) => {
+      // One session sends its 120, then 10 more that its own bucket denies.
+      const first = await session(0);
+      for (let i = 0; i < SESSION_LIMITS.paidChat + 10; i++) await post(base, "/api/chat", first);
+      expect(upstreamCalls).toBe(SESSION_LIMITS.paidChat);
+      // Fresh wallets fill the rest of the aggregate, each under its own limit.
+      let sent = SESSION_LIMITS.paidChat;
+      for (let i = 1; sent < PAID_CHAT_LIMIT; i++) {
+        const bearer = await session(i);
+        for (let j = 0; j < 100 && sent < PAID_CHAT_LIMIT; j++, sent++) {
+          expect((await post(base, PAID_ALIASES[j % PAID_ALIASES.length]!, bearer)).status).toBe(200);
+        }
+      }
+      expect(upstreamCalls).toBe(PAID_CHAT_LIMIT);
+      // A brand-new session, on any alias, is now denied before upstream.
+      const fresh = await session(999);
+      for (const path of ["/api/chat", "/api/chat//", "/api/agent//chat", "/api/chat-alias"]) {
+        expect([path, (await post(base, path, fresh)).status]).toEqual([path, 429]);
+      }
+      expect(upstreamCalls).toBe(PAID_CHAT_LIMIT);
+    });
+  });
 });

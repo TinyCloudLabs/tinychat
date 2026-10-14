@@ -30,7 +30,8 @@ const WINDOW_MS = 15 * 60 * 1000;
  * ONE anonymous bucket per bucket kind, at the `*_LIMIT` constants below: whole-service ceilings
  * sized for 20-30 concurrent clients (one ordinary browser peaked at 148 requests per window;
  * 30 x 148 = 4,440 < 6,000). Nothing a client sends can mint a new key without a valid session,
- * and sessions are minted through `/api/auth`, which is itself charged to the anonymous bucket.
+ * and sessions are minted only through `/api/auth`, whose bucket ignores the bearer
+ * (`AUTH_LIMIT`), so new keys per window are bounded whatever the caller holds.
  */
 /** How many concurrent clients a polling or read bucket's anonymous ceiling is sized for. */
 export const SHARED_KEY_HEADROOM = 50;
@@ -147,6 +148,16 @@ export const PRIVATE_CLOUD_TRANSCRIPTION_PATHS = ["/api/transcriber/private-clou
 export const PAID_CHAT_LIMIT = 600;
 export const PAID_CHAT_PATHS = ["/api/chat", "/api/agent/chat"] as const;
 
+/**
+ * Session minting (`/api/auth`: `GET /nonce`, `POST /verify`; the only routes that issue a
+ * session). ALWAYS one shared bucket, whatever bearer the request carries: a signed-in caller
+ * signing in a different wallet would otherwise mint sessions out of its own per-session bucket,
+ * so every new key would cost nothing shared. A sign-in is a nonce plus a verify, so this bounds
+ * new sessions to 600 per window across the service, far above 20-30 concurrent sign-ins.
+ */
+export const AUTH_LIMIT = 1200;
+export const AUTH_PATHS = ["/api/auth"] as const;
+
 /** Liveness probes, matched exactly (`/health` or `/health/`). Exempt from every bucket: the
  *  handler only serializes in-memory state, and a drained bucket must never make monitors report
  *  the backend down. */
@@ -165,6 +176,7 @@ export type Bucket =
   | "privateCloudTranscriptionMutation"
   | "hostedUpload"
   | "paidChat"
+  | "auth"
   | "global"
   | "none";
 
@@ -179,6 +191,7 @@ const PREFIX_BUCKETS: ReadonlyArray<readonly [readonly string[], Bucket]> = [
   [DELEGATION_PATHS, "delegation"],
   [GOOGLE_OAUTH_PATHS, "googleOAuth"],
   [CALENDAR_AUTOJOIN_PATHS, "calendarAutojoin"],
+  [AUTH_PATHS, "auth"],
 ];
 
 function matchesMountPath(path: string, mount: string): boolean {
@@ -326,7 +339,7 @@ export function logGlobalBucketRoutes(counter: GlobalBucketRouteCounter, everyMs
  * anonymous ceiling divided by `SHARED_KEY_HEADROOM`; spend, consent and mutation buckets are
  * set on their own.
  */
-export const SESSION_LIMITS: Record<Exclude<Bucket, "none">, number> = {
+export const SESSION_LIMITS: Record<Exclude<Bucket, "none" | "auth">, number> = {
   global: GLOBAL_LIMIT / SHARED_KEY_HEADROOM,
   verification: VERIFICATION_LIMIT / SHARED_KEY_HEADROOM,
   connectorCompanion: CONNECTOR_COMPANION_LIMIT / SHARED_KEY_HEADROOM,
@@ -343,7 +356,21 @@ export const SESSION_LIMITS: Record<Exclude<Bucket, "none">, number> = {
   delegation: 240,
 };
 
+/**
+ * Buckets that cost money or third-party capacity per request keep a whole-service ceiling ON
+ * TOP of the per-session one. Any fresh wallet can sign in (SIWE, no allowlist) and the paywall
+ * defaults off, so per-session buckets alone would scale with the number of addresses. Each
+ * request is charged to its own key first and then to this one constant key, so a session
+ * already over its own limit is denied without spending the aggregate.
+ */
+export const AGGREGATE_LIMITS: Partial<Record<Exclude<Bucket, "none" | "auth">, number>> = {
+  paidChat: PAID_CHAT_LIMIT,
+  privateCloudTranscriptionMutation: PRIVATE_CLOUD_TRANSCRIPTION_MUTATION_LIMIT,
+  hostedUpload: ASSEMBLYAI_HOSTED_UPLOAD_LIMIT,
+};
+
 const ANONYMOUS_KEY = "anonymous";
+const AGGREGATE_KEY = "aggregate";
 
 /** The session address a request proves, or null. Memoized per request: each limiter asks for
  *  its key and its limit. Same header parsing as `createAuthMiddleware`. */
@@ -379,12 +406,24 @@ export function applyRateLimiters(app: Express, { sessionKey }: RateLimitOptions
   const bucket = (kind: Exclude<Bucket, "none">, anonymous: number, skip?: (req: Request) => boolean) =>
     rateLimit({
       windowMs: WINDOW_MS,
-      limit: async (req) => ((await sessionAddress(req, sessionKey)) ? SESSION_LIMITS[kind] : anonymous),
+      // `auth` never looks at the bearer: see `AUTH_LIMIT`.
+      limit: async (req) =>
+        kind !== "auth" && (await sessionAddress(req, sessionKey)) ? SESSION_LIMITS[kind] : anonymous,
       keyGenerator: async (req) => {
-        const address = await sessionAddress(req, sessionKey);
+        const address = kind === "auth" ? null : await sessionAddress(req, sessionKey);
         return address ? `session:${address}` : ANONYMOUS_KEY;
       },
       standardHeaders: "draft-7",
+      legacyHeaders: false,
+      ...(skip ? { skip } : {}),
+    });
+  // The aggregate ceiling sends no RateLimit headers: they describe the caller's own bucket.
+  const aggregate = (kind: keyof typeof AGGREGATE_LIMITS, skip?: (req: Request) => boolean) =>
+    rateLimit({
+      windowMs: WINDOW_MS,
+      limit: AGGREGATE_LIMITS[kind]!,
+      keyGenerator: () => AGGREGATE_KEY,
+      standardHeaders: false,
       legacyHeaders: false,
       ...(skip ? { skip } : {}),
     });
@@ -405,21 +444,25 @@ export function applyRateLimiters(app: Express, { sessionKey }: RateLimitOptions
     privateCloudTranscription: PRIVATE_CLOUD_TRANSCRIPTION_LIMIT,
     privateCloudTranscriptionMutation: PRIVATE_CLOUD_TRANSCRIPTION_MUTATION_LIMIT,
     hostedUpload: ASSEMBLYAI_HOSTED_UPLOAD_LIMIT,
+    auth: AUTH_LIMIT,
     global: GLOBAL_LIMIT,
   };
   for (const [kind, anonymous] of Object.entries(limits) as [keyof typeof limits, number][]) {
     // Mounted at the app root, so req.path is the full path.
-    app.use(bucket(kind, anonymous, (req) => bucketFor(req.method, req.path) !== kind));
+    const skip = (req: Request) => bucketFor(req.method, req.path) !== kind;
+    app.use(bucket(kind, anonymous, skip));
+    if (kind !== "auth" && kind in AGGREGATE_LIMITS) app.use(aggregate(kind, skip));
   }
   // Paid chat is charged ONCE per request: at the root when the classifier recognises the path
   // (so the global bucket skips it), otherwise at the handler. A spelling the classifier misses
   // is charged to global AND paid chat, never to neither.
   const paidChat = bucket("paidChat", PAID_CHAT_LIMIT);
+  const paidChatAggregate = aggregate("paidChat");
   const paidChatCharged = new WeakSet<Request>();
   const paidChatLimiter: RequestHandler = (req, res, next) => {
     if (paidChatCharged.has(req)) return next();
     paidChatCharged.add(req);
-    return paidChat(req, res, next);
+    return paidChat(req, res, (error?: unknown) => (error ? next(error) : paidChatAggregate(req, res, next)));
   };
   app.use((req, res, next) => (bucketFor(req.method, req.path) === "paidChat" ? paidChatLimiter(req, res, next) : next()));
   return { globalRoutes, paidChatLimiter };
