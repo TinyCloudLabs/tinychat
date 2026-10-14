@@ -34,6 +34,7 @@ Integration branch: `dev/0.8.0`
 | `origin/main` | b9c538ee | e4389b77 | No | Refreshed the floor through #391, #398, and #397. #397 reverts #394 on main. |
 | #394 re-land | f4a21845 | 167d4786 | No | Reverted #397's revert as required for 0.8.0, restoring TC-760 transcript gaps and recovery provenance without weakening newer main behavior. |
 | #400 | a988c05d | 4c7a34f7 | No | Clean merge of TC-1135 stranded Private-note recovery after the CI repairs; preserves the existing privacy gate and #394 recovery provenance. |
+| #350 | 7f5fb1cd | 7b36ac1a | No | Clean merge of TC-947 Me vs Them after the approved P1 fixes; the PR already contained dev through `e775e736`, so the only branch-only delta was the later integration documentation. |
 
 ## Test Fixes (2026-10-14)
 
@@ -75,8 +76,8 @@ After merging origin/main (TC-1128, #387, #392, 45d16e58) and PR #386 (TC-1108 p
 
 ## Current Status
 
-- **Verified code head**: `b4783626`
-- **Frontend unit suite**: 4871 pass, 4 skip, 0 fail (4875 tests, 338 files)
+- **Verified code head**: `7b36ac1a` (#350 merged)
+- **Frontend unit suite**: 4881 pass, 4 skip, 0 fail (4885 tests, 339 files)
 - **`origin/main` `b9c538ee` baseline**: 4735 pass, 4 skip, 0 fail (4739 tests, 326 files)
 - **TypeScript**: pinned TypeScript 5.9.3, `tsc --noEmit -p frontend/tsconfig.json`, 0 errors
 - **CI frontend lint**: `bunx eslint frontend test`, 0 errors
