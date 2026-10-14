@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.7.3-beta.1
+
+### Patch Changes
+
+- b5a4d09: Use specific private-cloud failure copy for persisted voice-note transcription failures.
+
 ## 0.7.3-beta.0
 
 ### Patch Changes
