@@ -111,9 +111,9 @@ export function SettingsPage({
       <PageHeader title="Settings" back={compact ? onBack : undefined} className="mx-auto w-full max-w-2xl px-4 sm:px-6" />
       <div className="mx-auto w-full max-w-2xl px-4 pb-[max(1.5rem,env(safe-area-inset-bottom))] pt-2 sm:px-6">
         {storageFull && (
-          <div role="region" aria-label="Storage full: read-only" className="mb-4 rounded-xl border border-border bg-muted p-4 text-sm">
+          <div role="region" aria-label="Storage full" className="mb-4 rounded-xl border border-border bg-muted p-4 text-sm">
             <p>
-              <strong>Storage full: read-only.</strong> <StorageFullMessage detail />
+              <strong>Storage full</strong> <StorageFullMessage detail />
             </p>
             <Button type="button" variant="outline" size="sm" className="mt-3" onClick={() => void openManageStorage()}>
               Manage storage

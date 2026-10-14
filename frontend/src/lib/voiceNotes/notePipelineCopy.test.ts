@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { STORAGE_FULL_RECORDING_LINE } from "../storageStatus";
+import { STORAGE_FULL_TRANSCRIPT_LINE } from "../storageStatus";
 import { LOCAL_COPY, PRIVATE_COPY } from "./notePipelineCopy";
 
 describe("private transcription part progress copy", () => {
@@ -25,12 +25,12 @@ describe("private transcription part progress copy", () => {
 });
 
 describe("held transcript copy", () => {
-  test("names the device holding the transcript and keeps the storage-full main line", () => {
+  test("names the device holding the transcript and uses the transcript main line", () => {
     expect(LOCAL_COPY.transcriptStorageFull("mac")).toContain("this Mac");
     expect(LOCAL_COPY.transcriptStorageFull("iphone")).toContain("this iPhone");
     expect(LOCAL_COPY.transcriptStorageFull("browser")).toContain("this browser");
     for (const device of ["mac", "iphone", "browser"] as const) {
-      expect(LOCAL_COPY.transcriptStorageFull(device)).toContain(STORAGE_FULL_RECORDING_LINE);
+      expect(LOCAL_COPY.transcriptStorageFull(device)).toContain(STORAGE_FULL_TRANSCRIPT_LINE);
     }
   });
 });

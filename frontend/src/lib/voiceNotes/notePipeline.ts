@@ -15,7 +15,7 @@ import {
   percentText,
 } from "./notePipelineCopy";
 import { TRANSCRIPT_STORAGE_FULL_CODE } from "./transcriptionErrors";
-import { STORAGE_FULL_RECORDING_LINE } from "@/lib/storageStatus";
+import { STORAGE_FULL_TRANSCRIPT_LINE } from "@/lib/storageStatus";
 
 export type PipelineDevice = "phone" | "mac" | "iphone" | "android" | "browser";
 export type PipelineRoute = "off" | "on-device" | "private-cloud";
@@ -340,7 +340,7 @@ function cloudStep(cloud: PipelineCloud | null, spaceSaved: boolean, checkingCap
     case "done": return { state: "done", sublabel: cloud.outcome === "no_speech" ? TRANSCRIPT_COPY.noSpeechInSpace : TRANSCRIPT_COPY.savedInSpace };
     case "held": return blocked(cloud.message.trim() || PRIVATE_COPY.notStarted);
     case "failed":
-      if (cloud.code === TRANSCRIPT_STORAGE_FULL_CODE) return blocked(STORAGE_FULL_RECORDING_LINE, "manage-storage");
+      if (cloud.code === TRANSCRIPT_STORAGE_FULL_CODE) return blocked(STORAGE_FULL_TRANSCRIPT_LINE, "manage-storage");
       return failed(PRIVATE_COPY.failed(cloud.code, provider), cloud.retryable ? "retry" : undefined, cloud.retryable);
     case "blocked": return cloudBlockedStep(cloud.reason, provider);
     case "active": {

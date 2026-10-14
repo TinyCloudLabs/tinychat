@@ -8,6 +8,8 @@ export const STORAGE_TOO_LARGE_SAVE_MESSAGE =
   "This change is larger than the TinyCloud storage you have left, so it was not saved. Reading still works.";
 export const STORAGE_FULL_RECORDING_LINE =
   "Your TinyCloud storage is full. Your recordings are safe on this device and will upload when space is available.";
+export const STORAGE_FULL_TRANSCRIPT_LINE =
+  "Your TinyCloud storage is full. Your transcript is kept on this device and will save when space is available.";
 const STORAGE_DELETION_NOTE =
   "Some deletions may lower your storage usage, but Exo can't yet remove saved voice-note audio, saved uploads or your copies of Transcriber meetings from TinyCloud.";
 const STORAGE_NO_LARGER_PLAN = "There's no larger plan to buy.";

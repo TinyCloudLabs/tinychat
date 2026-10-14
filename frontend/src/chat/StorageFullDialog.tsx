@@ -26,7 +26,7 @@ export function StorageFullDialog({ open, onOpenChange, paywallEnabled }: { open
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-lg gap-5 rounded-xl">
         <DialogHeader>
-          <DialogTitle>Storage full: read-only.</DialogTitle>
+          <DialogTitle>Storage full</DialogTitle>
           <DialogDescription><StorageFullMessage detail /></DialogDescription>
         </DialogHeader>
         <StorageFullActions paywallEnabled={paywallEnabled} />

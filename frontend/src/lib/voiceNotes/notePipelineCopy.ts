@@ -2,7 +2,7 @@
 // no em dashes. Every blocker line says what is wrong and, where it is true, that the note is safe.
 import type { PipelineActionKind, PipelineDevice, StepKey } from "./notePipeline";
 import { deviceName as platformDeviceName } from "@/lib/platform";
-import { STORAGE_FULL_RECORDING_LINE } from "@/lib/storageStatus";
+import { STORAGE_FULL_RECORDING_LINE, STORAGE_FULL_TRANSCRIPT_LINE } from "@/lib/storageStatus";
 
 export const deviceName = (device: PipelineDevice): string => platformDeviceName(device === "mac" ? "tauri" : device === "iphone" ? "ios" : device === "android" ? "android" : device === "browser" ? "web" : undefined);
 
@@ -103,7 +103,7 @@ export const LOCAL_COPY = {
   transcriptReadFailed: `Couldn't read the transcript on ${deviceName("phone")}.`,
   transcriptCheckFailed: `Couldn't check this note on ${deviceName("phone")}.`,
   transcriptSyncFailed: "Couldn't add the transcript to this note.",
-  transcriptStorageFull: (device: PipelineDevice) => `Saved on ${deviceName(device)}. ${STORAGE_FULL_RECORDING_LINE} The transcript is added to your space when storage is available.`,
+  transcriptStorageFull: (device: PipelineDevice) => `Saved on ${deviceName(device)}. ${STORAGE_FULL_TRANSCRIPT_LINE}`,
   unrecorded: (device: PipelineDevice) => `The transcript is in your space, but ${deviceName(device)} couldn't record it.`,
   checkingSpace: "Checking your space…",
   checkingSpaceAfterUploads: "Checking your space · after uploads",

@@ -5,6 +5,7 @@ import {
   reportStoragePlanTier,
   STORAGE_FULL_DETAIL,
   STORAGE_FULL_RECORDING_LINE,
+  STORAGE_FULL_TRANSCRIPT_LINE,
   STORAGE_FULL_SAVE_MESSAGE,
   STORAGE_TOO_LARGE_SAVE_MESSAGE,
   storageSaveMessage,
@@ -17,16 +18,18 @@ const STORAGE_COPY = [
   STORAGE_FULL_SAVE_MESSAGE,
   STORAGE_TOO_LARGE_SAVE_MESSAGE,
   STORAGE_FULL_RECORDING_LINE,
+  STORAGE_FULL_TRANSCRIPT_LINE,
   STORAGE_FULL_DETAIL.free,
   STORAGE_FULL_DETAIL.paid,
 ];
 
 describe("storage-full copy", () => {
-  test("never tells a user to free up space or make room, never says deleting does or does not lower usage", () => {
+  test("never tells a user to free up space or make room, never calls Exo read-only, never says deleting does or does not lower usage", () => {
     const banned = [
       /free up/i,
       /make room/i,
       /upgrade your plan/i,
+      /read-only/i,
       /delet\w* (doesn't|does not|won't|will not|can't|cannot|never) (lower|reduce|free)/i,
       /delet\w* (always|will) (lower|reduce|free)/i,
     ];
