@@ -1,0 +1,18 @@
+{
+  "versions": {
+    "exo-desktop": "0.7.2",
+    "@tinychat/frontend": "0.7.2",
+    "@tinychat/backend": "0.5.3"
+  },
+  "changesets": [
+    ".changeset/pre/exo-t1-timestamps.md",
+    ".changeset/pre/soft-google-loopback.md",
+    ".changeset/pre/tc-1016-notetaker-idempotency.md",
+    ".changeset/pre/tc-1036-audio-only-transcribe.md",
+    ".changeset/pre/tc-1047-autojoin-due-timer.md",
+    ".changeset/pre/tc-1055-ios-plugin-methods.md",
+    ".changeset/pre/tc-976-mime-library-ux.md",
+    ".changeset/pre/tc-979-fireflies-staleness.md",
+    ".changeset/pre/tc-983-heartbeat-margin.md"
+  ]
+}
