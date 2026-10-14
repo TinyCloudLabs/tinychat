@@ -566,6 +566,7 @@ import XCTest
             XCTAssertEqual(engine.status()["state"] as? String, "paused")
             XCTAssertEqual(engine.status()["elapsedMs"] as? Int64, 1_400)
             XCTAssertEqual(engine.status()["pausedMs"] as? Int64, 2_100)
+            let inputStopped = expectation(description: "recorded time limit stops input")
             let stopped = expectation(description: "recorded time limit")
             var completed: [String: Any]?
             var stoppedAt: Int64?
@@ -573,6 +574,7 @@ import XCTest
                 if name == "micState", data["state"] as? String == "idle",
                    data["reason"] as? String == "max_duration" {
                     stoppedAt = clock.nowMilliseconds()
+                    inputStopped.fulfill()
                 }
                 if name == "autoStopped", data["reason"] as? String == "max_duration" {
                     completed = data
@@ -587,10 +589,10 @@ import XCTest
             XCTAssertEqual(engine.status()["elapsedMs"] as? Int64, 2_999)
             clock.advance(by: 1)
             engine.debugWatchdogTick()
+            wait(for: [inputStopped, stopped], timeout: 10)
             XCTAssertEqual(stoppedAt, 1_700_000_005_100)
             XCTAssertEqual(engine.status()["state"] as? String, "idle")
             XCTAssertEqual(engine.status()["reason"] as? String, "max_duration")
-            wait(for: [stopped], timeout: 10)
             XCTAssertEqual(completed?["maxDurationMs"] as? Int64, 3_000)
             XCTAssertEqual(completed?["at"] as? Int64, clock.nowMilliseconds())
             XCTAssertTrue(completed?["recording"] is NSNull,
