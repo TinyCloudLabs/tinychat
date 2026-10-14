@@ -2893,6 +2893,32 @@ components:
             vad_fallback:
               type: boolean
               nullable: true
+            vad_mode:
+              type: string
+              enum: [primary, fallback, quiet]
+              nullable: true
+              description: VAD path selected for the job; malformed or unknown PTX values are omitted by the relay.
+            noise_floor_dbfs:
+              type: number
+              nullable: true
+              description: Per-job noise-floor estimate in dBFS; may be negative.
+            median_dbfs:
+              type: number
+              nullable: true
+              description: Per-job median level in dBFS; may be negative.
+            p99_dbfs:
+              type: number
+              nullable: true
+              description: Per-job 99th-percentile level in dBFS; may be negative.
+            speech_peak_s:
+              type: number
+              minimum: 0
+              nullable: true
+            dropped_above_noise_pct:
+              type: number
+              minimum: 0
+              maximum: 100
+              nullable: true
     PrivateCloudOutcome:
       type: object
       required: [id, status, error]

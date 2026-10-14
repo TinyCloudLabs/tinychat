@@ -25,7 +25,7 @@ import {
   tenantRefFor,
   type PrivateCloudTranscriptionConfig,
 } from "../services/private-cloud-transcription.js";
-import { JOB_ERRORS } from "../services/private-cloud-transcription-dto.js";
+import { JOB_ERRORS, parseResult } from "../services/private-cloud-transcription-dto.js";
 import { runPrivateCloudE2E } from "../../scripts/e2e-private-cloud-transcription.js";
 
 const SESSION_KEY = "synthetic-session-signing-key";
@@ -77,7 +77,9 @@ const AUDIO_CONTENT_TYPES = [...MAIN_CONTENT_TYPES, "audio/mp4", "audio/webm", "
 function completedResult(id: string, options: {
   language?: string | null;
   diarized?: boolean;
-  stats?: { voiced_seconds?: number; dropped_above_floor_pct?: number | null; vad_fallback?: boolean | null };
+  stats?: { voiced_seconds?: number; dropped_above_floor_pct?: number | null; vad_fallback?: boolean | null;
+    vad_mode?: string | null; noise_floor_dbfs?: number | null; median_dbfs?: number | null; p99_dbfs?: number | null;
+    speech_peak_s?: number | null; dropped_above_noise_pct?: number | null };
 } = {}) {
   const speakers = options.diarized
     ? [
@@ -1235,31 +1237,43 @@ describe("response DTOs", () => {
     ptx.state.override = () => ({ status: 200, body: completedResult(ID, { language: null }) });
     expect((await call(backend.url, "GET", `/transcriptions/${ID}/result`)).json.language).toBeNull();
   });
-  test("completed result relays optional VAD stats without requiring them", async () => {
+  test("completed result relays optional VAD stats and drops malformed diagnostics", async () => {
     const { ptx, backend } = await setup();
     const done = completedResult(ID, { stats: {
       voiced_seconds: 4.2, dropped_above_floor_pct: 70, vad_fallback: true,
+      vad_mode: "quiet", noise_floor_dbfs: -61.5, median_dbfs: -58, p99_dbfs: -29,
+      speech_peak_s: 2.4, dropped_above_noise_pct: 3.5,
     } });
     ptx.state.override = () => ({ status: 200, body: done });
     const present = await call(backend.url, "GET", `/transcriptions/${ID}/result`);
     expect(present.json.stats).toEqual({
-      tinfoil_calls: 2,
-      tinfoil_audio_seconds: 5.5,
-      voiced_seconds: 4.2,
-      dropped_above_floor_pct: 70,
-      vad_fallback: true,
+      tinfoil_calls: 2, tinfoil_audio_seconds: 5.5, voiced_seconds: 4.2,
+      dropped_above_floor_pct: 70, vad_fallback: true,
+      vad_mode: "quiet", noise_floor_dbfs: -61.5, median_dbfs: -58, p99_dbfs: -29,
+      speech_peak_s: 2.4, dropped_above_noise_pct: 3.5,
     });
 
-    const without = completedResult(ID);
-    ptx.state.override = () => ({ status: 200, body: without });
+    ptx.state.override = () => ({ status: 200, body: completedResult(ID) });
     expect((await call(backend.url, "GET", `/transcriptions/${ID}/result`)).json.stats).toEqual({
       tinfoil_calls: 2, tinfoil_audio_seconds: 5.5,
     });
-    const nulls = completedResult(ID, { stats: { dropped_above_floor_pct: null, vad_fallback: null } });
-    ptx.state.override = () => ({ status: 200, body: nulls });
+    ptx.state.override = () => ({ status: 200, body: completedResult(ID, { stats: {
+      dropped_above_floor_pct: null, vad_fallback: null, vad_mode: null, noise_floor_dbfs: null,
+      median_dbfs: null, p99_dbfs: null, speech_peak_s: null, dropped_above_noise_pct: null,
+    } }) });
     expect((await call(backend.url, "GET", `/transcriptions/${ID}/result`)).json.stats).toEqual({
       tinfoil_calls: 2, tinfoil_audio_seconds: 5.5,
     });
+
+    const invalidMode = parseResult(completedResult(ID, { stats: { vad_mode: "noisy" } }), ID);
+    expect(invalidMode?.stats).not.toHaveProperty("vad_mode");
+    const invalidNumbers = parseResult(completedResult(ID, { stats: {
+      noise_floor_dbfs: Number.NaN, median_dbfs: Number.POSITIVE_INFINITY, p99_dbfs: -Infinity,
+      speech_peak_s: -0.1, dropped_above_noise_pct: 100.1,
+    } }), ID);
+    expect(invalidNumbers?.status).toBe("completed");
+    for (const key of ["noise_floor_dbfs", "median_dbfs", "p99_dbfs", "speech_peak_s", "dropped_above_noise_pct"])
+      expect(invalidNumbers?.stats).not.toHaveProperty(key);
   });
 
   test("a larger PTX-advertised max_bytes is accepted and relayed", async () => {
