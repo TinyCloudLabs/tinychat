@@ -678,6 +678,63 @@ test("a full space leaves the note local with a specific identity state", async 
     expect(transcriptWithTimestamps(savedSentences, privateCloud)).toContain("[01:00]");
     expect(transcriptMarkdown("Synthetic", "2026-01-01T00:00:00Z", savedSentences, privateCloud)).toContain("[01:00]");
   });
+  test("upgrade, downgrade, upgrade restores richer same-revision transcript", async () => {
+    const { tcw, sqlite, values } = space();
+    await ensureSchema(tcw); insert(sqlite, "vn-rec", "rec");
+    const rich = [{ index: 0, speaker_name: null, text: "hello", start_time: 0, end_time: 65,
+      channel: 0 as const, speaker_id: "speaker_0", timing: "coarse" as const }];
+    const poor = [{ index: 0, speaker_name: "You", text: "hello", start_time: 0, end_time: 65 }];
+    const upgraded = await commitVoiceNoteTranscript(tcw, "rec", { rev: 1, outcome: "transcribed", text: "hello", sentences: rich });
+    const oldHash = await transcriptHash(poor);
+    const oldKey = transcriptRevKvKey("exo-voice-note", "rec", oldHash);
+    values.set(oldKey, JSON.stringify(poor));
+    // 0.7.1 can still overwrite the SQL pointer with its hash-only same-revision CAS.
+    sqlite.prepare("UPDATE voice_note_transcript SET hash = ?, body_key = ? WHERE source_id = 'rec'").run(oldHash, oldKey);
+    expect((await readTranscriptCommit(tcw, "rec"))?.hash).toBe(oldHash);
+    await commitVoiceNoteTranscript(tcw, "rec", { rev: 1, outcome: "transcribed", text: "hello", sentences: rich });
+    expect((await readTranscriptCommit(tcw, "rec"))?.hash).toBe(upgraded.hash);
+    await commitVoiceNoteTranscript(tcw, "rec", { rev: 1, outcome: "transcribed", text: "hello", sentences: poor });
+    expect((await readTranscriptCommit(tcw, "rec"))?.hash).toBe(upgraded.hash);
+    expect(values.get((await voiceNoteTranscriptLocator(tcw, "rec")).bodyKey)).toContain('"speaker_id":"speaker_0"');
+  });
+  test("same-revision comparison accepts an already-parsed KV sentence array", async () => {
+    const { tcw, sqlite } = space();
+    await ensureSchema(tcw); insert(sqlite, "vn-rec", "rec");
+    await commitVoiceNoteTranscript(tcw, "rec", { rev: 1, outcome: "transcribed", text: "hello", sentences: sentence("hello") });
+    const get = tcw.kv.get.bind(tcw.kv);
+    tcw.kv.get = (async (key: string, options?: unknown) => {
+      const result = await get(key, options as never);
+      return result.ok && key.includes("/transcript-rev/")
+        ? { ok: true, data: { data: JSON.parse(result.data.data as string) } } : result;
+    }) as typeof tcw.kv.get;
+    const rich = [{ ...sentence("hello")[0]!, channel: 0 as const, timing: "engine" as const }];
+    const committed = await commitVoiceNoteTranscript(tcw, "rec", { rev: 1, outcome: "transcribed", text: "hello", sentences: rich });
+    expect(committed.hash).toBe(await transcriptHash(rich));
+  });
+  test("a poorer same-revision writer between comparison and INSERT is repaired", async () => {
+    const { tcw, sqlite, values } = space();
+    await ensureSchema(tcw); insert(sqlite, "vn-rec", "rec");
+    const initial = sentence("initial");
+    await commitVoiceNoteTranscript(tcw, "rec", { rev: 1, outcome: "transcribed", text: "initial", sentences: initial });
+    const poor = sentence("hello");
+    const rich = [{ ...poor[0]!, channel: 0 as const, speaker_id: "speaker_0", timing: "engine" as const }];
+    const poorHash = await transcriptHash(poor);
+    const poorKey = transcriptRevKvKey("exo-voice-note", "rec", poorHash);
+    values.set(poorKey, JSON.stringify(poor));
+    const originalDb = tcw.sql.db.bind(tcw.sql);
+    let intervened = false;
+    tcw.sql.db = ((name: string) => ({ ...originalDb(name), execute: async (statement: string, params: unknown[] = []) => {
+      if (!intervened && statement.startsWith("INSERT INTO voice_note_transcript")) {
+        intervened = true;
+        sqlite.prepare("UPDATE voice_note_transcript SET hash = ?, body_key = ? WHERE source_id = 'rec'").run(poorHash, poorKey);
+      }
+      return originalDb(name).execute(statement, params as never[]);
+    } })) as typeof tcw.sql.db;
+    const result = await commitVoiceNoteTranscript(tcw, "rec", { rev: 1, outcome: "transcribed", text: "hello", sentences: rich });
+    expect(intervened).toBe(true);
+    expect(result.hash).toBe(await transcriptHash(rich));
+    expect((await readTranscriptCommit(tcw, "rec"))?.hash).toBe(result.hash);
+  });
   test("a delayed old body PUT and a later audio patch cannot change a newer transcript", async () => {
     const { tcw, sqlite, values } = space();
     await ensureSchema(tcw); insert(sqlite, "vn-rec", "rec");

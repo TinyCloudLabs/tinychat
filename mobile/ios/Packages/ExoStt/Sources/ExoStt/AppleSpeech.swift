@@ -324,7 +324,7 @@ final class AppleSpeechSession: TranscriptionSession {
         }
         let segments = SpeechTranscript.segments(try outcome.wait())
         return [
-            "version": 1, "noteId": id, "transcriber": "on-device", "rev": 1,
+            "version": 2, "noteId": id, "transcriber": "on-device", "rev": 1,
             "engine": "apple-speech", "model": target.kind.modelName, "language": target.locale.identifier(.bcp47),
             "outcome": segments.isEmpty ? "no_speech" : "transcribed", "diarized": false,
             "segments": segments, "createdAt": ISO8601DateFormatter().string(from: Date()),

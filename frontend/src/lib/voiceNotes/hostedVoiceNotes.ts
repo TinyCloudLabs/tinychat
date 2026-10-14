@@ -119,7 +119,7 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
     const caps = await client.capabilities();
     return caps.hosted;
   };
-  const run = async (recording: Pick<VoiceNoteRecording, "id" | "owner" | "source" | "options" | "startedAt" | "sizeBytes" | "mimeType" | "durationMs">) => {
+  const run = async (recording: Pick<VoiceNoteRecording, "id" | "owner" | "source" | "options" | "startedAt" | "sizeBytes" | "mimeType" | "durationMs" | "channels">) => {
     const id = recording.id;
     if (active.has(id) || jobs.get(id)?.kind === "done" || !consented() || (recording.owner && recording.owner !== did) || recording.source !== "in_app" || recording.options?.transcriber !== "assemblyai") return;
     const pendingCheck = reconciliationChecks.get(id);
@@ -157,6 +157,66 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
         source = { mimeType: space.data.mimeType, size: bytes.length, readPart: async (offset, length) => bytes.slice(offset, offset + length) };
       }
       const handle = await withHostedUploadQueue(did, async () => {
+        let handle = stored.handle;
+        if (!handle) {
+          const caps = await client.capabilities();
+          if (!caps.hosted) throw new AssemblyAiError("failed", "Powerful isn't available right now. Try again later.");
+          if (source.size > caps.max_bytes) throw new AssemblyAiError("rejected", "This recording is too large for Powerful (120 MB maximum).");
+          const contentType = source.mimeType.split(";")[0].trim().toLowerCase();
+          if (!caps.content_types.includes(contentType)) throw new AssemblyAiError("rejected", "Powerful cannot read this recording's format.");
+          let uploadId = stored.uploadId;
+          let submitting = false;
+          if (uploadId) {
+            try {
+              const remote = await client.uploadState(uploadId);
+              if (remote.status === "submitted" && remote.id) handle = remote.id;
+              else if (remote.status === "submitting") submitting = true;
+              else if (remote.status === "failed") { uploadId = undefined; persist(id, null); }
+            } catch (error) {
+              if (!(error instanceof AssemblyAiError && (error.kind === "not-found" || error.uploadEnded))) throw error;
+              uploadId = undefined;
+              persist(id, null);
+            }
+          }
+          if (!handle) {
+            if (!uploadId) {
+              guard();
+              const opId = crypto.randomUUID();
+              await native.beginRemoteOp({ id, did, opId, provider: "assemblyai", mode: "hosted", kind: "hosted_create",
+                fingerprint: `${source.size}:${source.mimeType}`, startedAt: Date.now() });
+              const created = await client.createUpload(source.size, contentType);
+              uploadId = created.uploadId;
+              persist(id, { uploadId });
+              await native.recordRemoteResult({ id, did, opId, result: { outcome: "created", uploadId } });
+            }
+            if (!submitting) {
+              state(id, { kind: "uploading", progress: 0 });
+              const partSize = Math.min(caps.part_size, 1024 * 1024);
+              for (let offset = 0, index = 0; offset < source.size; offset += partSize, index++) {
+                guard();
+                const bytes = await source.readPart(offset, Math.min(partSize, source.size - offset));
+                await client.putPart(uploadId, index, bytes);
+                state(id, { kind: "uploading", progress: Math.min(1, (offset + bytes.length) / source.size) });
+              }
+              logPipeline("transcription_audio_upload", id, "done", { engine: "assemblyai", bodyBytes: source.size });
+            }
+            guard();
+            const opId = crypto.randomUUID();
+            await native.beginRemoteOp({ id, did, opId, provider: "assemblyai", mode: "hosted", kind: "hosted_submit",
+              fingerprint: `${source.size}:${source.mimeType}`, startedAt: Date.now() });
+            const submitted = await client.createTranscript(uploadId, { speakerLabels: recording.channels === 2 || recording.options?.identifySpeakers !== false,
+              multichannel: recording.channels === 2 });
+            handle = submitted.id;
+            persist(id, { handle });
+            await native.recordRemoteResult({ id, did, opId, result: { outcome: "created", jobId: handle } });
+          }
+        }
+        return handle;
+      });
+      if (!handle) throw new Error("Powerful did not return a transcript. Try again.");
+      persist(id, { handle });
+      let transcript: AssemblyAiTranscript;
+      for (;;) {
         guard();
         // Both the local resume entry and the space commit may have changed while
         // this invocation waited for the account's upload lane.
@@ -310,20 +370,23 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
         },
       });
       guard();
-      const stereo = (recording as VoiceNoteRecording & { layout?: string }).layout === "stereo";
-      const sentences = assemblyAiSentences(transcript, transcript.utterances?.length ? null : await client.getSentences(handle))
-        .map((sentence) => stereo ? { ...sentence, speaker_name: sentence.speaker_name === "Speaker 1" ? "Me"
-          : sentence.speaker_name === "Speaker 2" ? "Them" : sentence.speaker_name } : sentence);
+      const stereo = recording.channels === 2;
+      const sentences = assemblyAiSentences(transcript, await client.getSentences(handle), { stereo })
+        .map((sentence) => stereo && sentence.channel !== undefined ? { ...sentence,
+          speaker_name: sentence.channel === 0 ? "Me" : "Them" } : sentence);
       const local = recording.sizeBytes > 0 ? await native.getTranscript({ id }) : { transcript: null };
       const commit = await readCommit(account, id);
       const rev = Math.max(local.transcript?.rev ?? 0, commit?.rev ?? 0) + 1;
       const at = new Date().toISOString();
       const outcome = sentences.length ? "transcribed" : "no_speech";
-      const prepared: LocalTranscript = { version: 1, noteId: id, transcriber: "assemblyai", rev,
+      const prepared: LocalTranscript = { version: 2, noteId: id, transcriber: "assemblyai", rev,
         engine: "assemblyai", model: transcript.speech_model_used ?? null, language: transcript.language_code ?? null,
-        outcome, diarized: recording.options?.identifySpeakers !== false, createdAt: at,
+        outcome, diarized: stereo || recording.options?.identifySpeakers !== false, createdAt: at,
         segments: sentences.map((s) => ({ start: Math.round(s.start_time * 1000), end: Math.round(s.end_time * 1000),
-          text: s.text, speaker: s.speaker_name ?? null })) };
+          text: s.text, speaker: s.speaker_name ?? null,
+          ...(s.speaker_id === undefined ? {} : { speakerId: s.speaker_id }),
+          ...(s.channel === undefined ? {} : { channel: s.channel }),
+          ...(s.timing === undefined ? {} : { timing: s.timing }) })) };
       state(id, { kind: "saving" });
       if (recording.sizeBytes > 0 && (!local.transcript || local.transcript.rev < rev)) await native.putTranscript({ id, transcript: prepared });
       guard();
@@ -331,7 +394,7 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
         speakers: [...new Set(sentences.map((s) => s.speaker_name).filter((s): s is string => !!s))],
         metadata: { transcription_engine: "assemblyai", transcript_provider: "assemblyai", inference_provider: "assemblyai",
           assemblyai_account: "tinycloud", transcription_outcome: outcome, transcript_text: sentences.map((s) => s.text).join("\n") || null,
-          speaker_labels: recording.options?.identifySpeakers !== false ? "diarized" : "single-speaker", transcribed_at: at,
+          speaker_labels: stereo ? "channels" : recording.options?.identifySpeakers !== false ? "diarized" : "single-speaker", transcribed_at: at,
           model: transcript.speech_model_used ?? null, language: transcript.language_code ?? null } }, { generation, did });
       if (!saved.ok) throw new Error("The transcript is ready, but could not be saved to your space. Try again.");
       transcriptSaved = true;

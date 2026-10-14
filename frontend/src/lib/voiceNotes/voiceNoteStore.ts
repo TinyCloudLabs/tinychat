@@ -659,10 +659,14 @@ export function localTranscriptToSave(local: LocalTranscript): VoiceNoteTranscri
   // local.segments' start/end are milliseconds (the native sidecar's canonical-JSON writer only
   // accepts integers); start_time/end_time follow every other transcript source's seconds.
   const sentences: FirefliesSentence[] = local.segments.map((segment, index) => ({
-    index, text: segment.text, start_time: segment.start / 1000, end_time: segment.end / 1000, speaker_name: segment.speaker ?? "You",
+    index, text: segment.text, start_time: segment.start / 1000, end_time: segment.end / 1000,
+    speaker_name: segment.speaker ?? (local.version === 1 ? "You" : null),
+    ...(segment.channel === undefined ? {} : { channel: segment.channel }),
+    ...(segment.speakerId === undefined ? {} : { speaker_id: segment.speakerId }),
+    ...(segment.timing === undefined ? {} : { timing: segment.timing }),
     ...(segment.words ? { words: segment.words } : {}),
   }));
-  return { rev: local.rev, sentences, speakers: [...new Set(local.segments.map((s) => s.speaker ?? "You"))],
+  return { rev: local.rev, sentences, speakers: [...new Set(sentences.map((s) => s.speaker_name).filter((s): s is string => !!s))],
     metadata: { transcription_outcome: local.outcome, transcript_text: local.outcome === "transcribed"
       ? local.segments.map((s) => s.text).join("\n") : null, transcription_engine: local.engine,
       transcript_provider: local.engine, model: local.model, language: local.language,

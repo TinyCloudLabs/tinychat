@@ -269,7 +269,8 @@ class TranscriptionQueue(private val context: Context, private val store: ModelS
                     // (TC-836 — the only type every other timestamp in this schema already uses).
                     segments.put(JSONObject().put("start", chunk.start.toLong() * 1000 / 16_000)
                         .put("end", chunk.end.toLong() * 1000 / 16_000)
-                        .put("text", words.joinToString(" ") { it.text }).put("speaker", JSONObject.NULL))
+                        .put("text", words.joinToString(" ") { it.text }).put("speaker", JSONObject.NULL)
+                        .put("timing", "engine"))
                 }
                 segmentsDone += 1
                 try { capture.library.mutate(id, "stt.write") { it.getJSONObject("stt").put("segmentsDone", segmentsDone) } } catch (_: Exception) {}
@@ -279,7 +280,7 @@ class TranscriptionQueue(private val context: Context, private val store: ModelS
         val isoNow = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US)
             .apply { timeZone = TimeZone.getTimeZone("UTC") }.format(Date())
         val transcript = JSONObject()
-            .put("version", 1).put("noteId", id).put("transcriber", "on-device").put("rev", 1)
+            .put("version", 2).put("noteId", id).put("transcriber", "on-device").put("rev", 1)
             .put("engine", if (modelId == ModelManifest.PARAKEET_FULL) "parakeet-tdt-0.6b-v3" else "parakeet-tdt-110m-en")
             .put("model", modelId).put("language", "en").put("outcome", outcome).put("diarized", false)
             .put("segments", segments).put("createdAt", isoNow)
