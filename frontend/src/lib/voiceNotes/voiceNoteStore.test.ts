@@ -9,7 +9,7 @@
 //   5. stored audio round-trips (parts in order, or a pre-TC-517 single value), and malformed or
 //      mismatched audio fails closed.
 
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { captureEvents } from "@/capture/captureEvents";
@@ -46,6 +46,7 @@ import {
 import { loadNote, noteMarkdown, saveNote } from "./recordingNotes";
 import type { VoiceNoteRecording } from "./nativeVoiceNotes";
 import { setVoiceNoteSaveDeadlineForTests } from "./saveDeadline";
+import { isStorageReadOnly, reportStorageWriteSucceeded } from "@/lib/storageStatus";
 
 type KvValue = string | Uint8Array;
 type KvFailure = { code: string; message: string; meta?: { status: number } };
@@ -818,5 +819,70 @@ describe("loading a note's audio", () => {
     expect((await loadVoiceNoteAudio(legacy.tcw, "rec-1")).ok).toBe(false);
     const manifest = fakeSpace({ kv: new Map([[`${AUDIO_BASE}/manifest`, JSON.stringify({ v: 1, mimeType: "audio/mp4", size: 5, parts: [{ size: 4, etag: null }] })]]) });
     expect(await loadVoiceNoteAudioBlob(manifest.tcw, "rec-1")).toEqual({ ok: false, error: expect.objectContaining({ code: "STORE_CORRUPT_AUDIO" }) });
+  });
+});
+
+describe("saveVoiceNote while TinyCloud storage is full", () => {
+  afterEach(() => reportStorageWriteSucceeded());
+
+  // The note's Markdown lives under the note's audio prefix, so audio puts exclude it.
+  const isAudioPut = (call: Call, id: string) => call.kind === "kv.put"
+    && call.target.startsWith(voiceNoteAudioKvKey(id)) && !call.target.endsWith("note.md");
+
+  test("a quota error on the audio put pauses uploads: shared state set, no audio retried, text still saved, no manifest", async () => {
+    const space = fakeSpace();
+    const note = { ...recording, id: `rec-full-${++fakeSpaceNumber}` };
+    await saveNote(note.id, "# Keeps its text");
+    const source = voiceNoteAudioSourceFromBase64({ mimeType: "audio/mp4", base64: "AAAA" });
+    space.failPut((key) => key.startsWith(voiceNoteAudioKvKey(note.id)) && !key.endsWith("note.md")
+      ? { code: "STORAGE_QUOTA_EXCEEDED", message: "Your TinyCloud storage is full" } : null);
+
+    const first = await saveVoiceNote(space.tcw, note, source, "android", {}, true);
+    expect(first.ok).toBe(false);
+    if (first.ok) return;
+    expect(first.error.code).toBe(VOICE_NOTE_STORAGE_FULL);
+    expect(isStorageReadOnly()).toBe(true);
+    expect(space.kv.has(voiceNoteAudioManifestKey(note.id))).toBe(false);
+    expect(space.kv.get(voiceNoteMarkdownKvKey(note.id))).toContain("# Keeps its text");
+  });
+
+  test("while full, a save with upload makes no audio put, still saves text, and reports storage full", async () => {
+    const space = fakeSpace();
+    const note = { ...recording, id: `rec-paused-${++fakeSpaceNumber}` };
+    await saveNote(note.id, "# First draft");
+    const source = voiceNoteAudioSourceFromBase64({ mimeType: "audio/mp4", base64: "AAAA" });
+    space.failPut((key) => key.startsWith(voiceNoteAudioKvKey(note.id)) && !key.endsWith("note.md")
+      ? { code: "STORAGE_QUOTA_EXCEEDED", message: "Your TinyCloud storage is full" } : null);
+    await saveVoiceNote(space.tcw, note, source, "android", {}, true);
+    expect(isStorageReadOnly()).toBe(true);
+
+    const audioPutsBefore = space.calls.filter((call) => isAudioPut(call, note.id)).length;
+    await saveNote(note.id, "# Still typed while full");
+    const again = await saveVoiceNote(space.tcw, note, source, "android", {}, true);
+    const audioPutsAfter = space.calls.filter((call) => isAudioPut(call, note.id)).length;
+
+    expect(again.ok).toBe(false);
+    if (again.ok) return;
+    expect(again.error.code).toBe(VOICE_NOTE_STORAGE_FULL);
+    expect(audioPutsAfter).toBe(audioPutsBefore);
+    expect(space.kv.get(voiceNoteMarkdownKvKey(note.id))).toContain("# Still typed while full");
+  });
+
+  test("after a successful write clears the state, the next upload stores the audio", async () => {
+    const space = fakeSpace();
+    const note = { ...recording, id: `rec-resume-${++fakeSpaceNumber}` };
+    await saveNote(note.id, "# Resumes");
+    const source = voiceNoteAudioSourceFromBase64({ mimeType: "audio/mp4", base64: "AAAA" });
+    space.failPut((key) => key.startsWith(voiceNoteAudioKvKey(note.id)) && !key.endsWith("note.md")
+      ? { code: "STORAGE_QUOTA_EXCEEDED", message: "Your TinyCloud storage is full" } : null);
+    await saveVoiceNote(space.tcw, note, source, "android", {}, true);
+    expect(isStorageReadOnly()).toBe(true);
+
+    space.failPut(null);
+    reportStorageWriteSucceeded();
+    expect(isStorageReadOnly()).toBe(false);
+    const resumed = await saveVoiceNote(space.tcw, note, source, "android", {}, true);
+    expect(resumed.ok).toBe(true);
+    expect(space.kv.has(voiceNoteAudioManifestKey(note.id))).toBe(true);
   });
 });

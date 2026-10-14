@@ -15,6 +15,10 @@ import {
   UserIcon,
 } from "lucide-react";
 import { Link } from "react-router-dom";
+import { STORAGE_READ_ONLY_NOTICE } from "@/lib/storageStatus";
+import { openManageStorage } from "@/lib/openManageStorage";
+import { useStorageReadOnly } from "@/lib/useStorageReadOnly";
+import { useStorageFreePlan } from "@/lib/useStorageFreePlan";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { Button } from "@/components/ui/button";
@@ -94,6 +98,8 @@ export function SettingsPage({
     ? Math.min(100, Math.round((usage.used / usage.limit) * 100))
     : 0;
   const near = pct >= 90;
+  const storageFull = useStorageReadOnly();
+  const storageFreePlan = useStorageFreePlan();
   const resetsLabel = usage?.resetsAt ? formatResetsAt(usage.resetsAt) : null;
   return (
     // `relative`: the containing block for sr-only/absolute descendants, so they
@@ -104,6 +110,21 @@ export function SettingsPage({
           navigation on wider screens, so no Back there. */}
       <PageHeader title="Settings" back={compact ? onBack : undefined} className="mx-auto w-full max-w-2xl px-4 sm:px-6" />
       <div className="mx-auto w-full max-w-2xl px-4 pb-[max(1.5rem,env(safe-area-inset-bottom))] pt-2 sm:px-6">
+        {storageFull && (
+          <div role="region" aria-label="Storage full: read-only" className="mb-4 rounded-xl border border-border bg-muted p-4 text-sm">
+            <p>
+              <strong>Storage full: read-only.</strong> {STORAGE_READ_ONLY_NOTICE}
+            </p>
+            <Button type="button" variant="outline" size="sm" className="mt-3" onClick={() => void openManageStorage()}>
+              Manage storage
+            </Button>
+            {storageFreePlan && (
+              <Button type="button" variant="outline" size="sm" className="ml-2 mt-3" onClick={() => void openManageStorage()}>
+                Upgrade
+              </Button>
+            )}
+          </div>
+        )}
         <div className="flex flex-col gap-4">
           <SectionCard icon={UserIcon} title="Account">
             <div className="flex items-center gap-2 text-xs">

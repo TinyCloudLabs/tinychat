@@ -1,5 +1,7 @@
 import { privateCloudCodeMessage } from "../privateCloud";
 
+export const TRANSCRIPT_STORAGE_FULL_CODE = "storage_full";
+
 export interface VoiceNoteTranscriptionFailure {
   code: string;
   message: string;
@@ -18,6 +20,7 @@ const NON_RETRYABLE_CODES: ReadonlySet<string> = new Set([
   "invalid_argument",
   "voice_note_not_found",
   "transcription_off",
+  TRANSCRIPT_STORAGE_FULL_CODE,
 ]);
 
 const TRANSCRIPTION_ERROR_COPY: Readonly<Record<string, string>> = {
@@ -44,6 +47,7 @@ const TRANSCRIPTION_ERROR_COPY: Readonly<Record<string, string>> = {
   invalid_argument: "This note cannot be transcribed with the supplied audio.",
   transcription_off: "Transcription was turned off.",
   transcript_incomplete: "Private Transcription returned a transcript that may be incomplete. Try again later.",
+  [TRANSCRIPT_STORAGE_FULL_CODE]: "Your TinyCloud storage is full, so this transcript isn't saved yet. It saves automatically when storage is available.",
 };
 
 export function transcriptionErrorCopy(code: string): string | undefined {

@@ -60,6 +60,7 @@ import {
 } from "./voiceNoteStore";
 import {
   accountStorageKey,
+  resumeStorageHeldTranscripts,
   capacitorPtxPut,
   createVoiceNoteTranscriber,
   createVoiceNoteCloud,
@@ -83,6 +84,7 @@ import {
   type VoiceNoteHoldStore,
   type VoiceNoteTranscriptionStatus,
 } from "./voiceNoteTranscription";
+import { isStorageReadOnly, reportStorageWriteSucceeded } from "@/lib/storageStatus";
 
 const ID = "trn_01J8Z3K4M5N6P7Q8R9S0T1V2W3";
 const ID2 = "trn_01J8Z3K4M5N6P7Q8R9S0T1V2W4";
@@ -1804,6 +1806,53 @@ describe("transcribeVoiceNote (one note end to end)", () => {
       sourceId: "rec-1", allowed: () => true, report: () => {} })).toBe("transcribed");
     expect(h.puts).toHaveLength(1);
     expect(h.removed).toEqual([ID]);
+  });
+});
+
+describe("a transcript commit that full TinyCloud storage holds back", () => {
+  beforeEach(() => _resetConnectorSchemaMemoForTests());
+  afterEach(() => reportStorageWriteSucceeded());
+
+  test("is held as storage_full with its job kept, shares the storage-full state, and commits on the next run after recovery", async () => {
+    const space = sqliteSpace();
+    await saveVoiceNote(space.tcw, RECORDING, AUDIO, "android");
+    const h = harness({});
+    const baseDb = space.tcw.sql.db.bind(space.tcw.sql);
+    let full = true;
+    space.tcw.sql.db = ((name: string) => {
+      const db = baseDb(name);
+      return { ...db, execute: async (sql: string, params?: unknown[], options?: unknown) =>
+        full && sql.includes("INSERT INTO voice_note_transcript")
+          ? { ok: false, error: { code: "STORAGE_QUOTA_EXCEEDED", message: "Your TinyCloud storage is full" } }
+          : db.execute(sql, params as never, options as never) };
+    }) as typeof space.tcw.sql.db;
+
+    const err = await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, explicit: true,
+      sourceId: "rec-1", allowed: () => true, report: () => {} }).catch((e: unknown) => e);
+    expect(voiceNoteTranscriptionFailure(err)).toMatchObject({ code: "storage_full", retryable: false });
+    expect(isStorageReadOnly()).toBe(true);
+    expect(h.removed).toEqual([]);
+    expect(h.pending.read("rec-1")?.transcriptionId).toBe(ID);
+
+    full = false;
+    reportStorageWriteSucceeded();
+    expect(await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, explicit: true,
+      sourceId: "rec-1", allowed: () => true, report: () => {} })).toBe("transcribed");
+    expect(h.removed).toEqual([ID]);
+  });
+
+  test("resume re-offers only the notes whose transcript storage held back", () => {
+    const offered: string[] = [];
+    const jobs = new Map<string, unknown>([
+      ["held", { kind: "failed", code: "storage_full" }],
+      ["broken", { kind: "failed", code: "transcript_save_failed" }],
+      ["busy", { kind: "active" }],
+    ]);
+    resumeStorageHeldTranscripts({
+      snapshot: () => ({ jobs }),
+      transcribe: (sourceId: string) => { offered.push(sourceId); },
+    } as never);
+    expect(offered).toEqual(["held"]);
   });
 });
 

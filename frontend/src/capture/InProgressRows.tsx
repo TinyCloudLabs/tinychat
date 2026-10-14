@@ -31,6 +31,8 @@ export interface VoiceInProgress {
   /** The last recording stopped itself at the limit. */
   limitNotice: string | null;
   onSaveNow: () => void;
+  /** Storage is full: the button adds storage instead of retrying the save. */
+  storageFull?: boolean;
 }
 
 export interface InProgressRowsViewProps {
@@ -134,7 +136,7 @@ export function InProgressRowsView(props: InProgressRowsViewProps) {
                 spinning={voice.saving}
               />
             </span>
-            <Pill label="Save now" onClick={voice.onSaveNow} disabled={voice.saving} testId="voice-note-retry" />
+            <Pill label={voice.storageFull ? HOME_COPY.manageStorage : "Save now"} onClick={voice.onSaveNow} disabled={voice.saving} testId="voice-note-retry" />
           </li>
         )}
         {voice && voiceListFailed && (

@@ -51,6 +51,7 @@ import { loadNote } from "./recordingNotes";
 import { captureAccountContext, isAccountWorkAllowed, subscribeAccountWork } from "./accountContext";
 import { VOICE_NOTE_READ_TIMEOUT_MESSAGE, VoiceNoteSaveTimeout, withVoiceNoteReadDeadline } from "./saveDeadline";
 import { pendingStore, type PendingNote } from "./recorderSaves";
+import { openManageStorage } from "@/lib/openManageStorage";
 import {
   recordingNoteSyncError,
   recordingNoteSyncSkip,
@@ -407,6 +408,9 @@ export async function runPipelineAction(kind: PipelineActionKind, env: PipelineA
         const after = env.latestTranscription();
         return after?.availability === "failed" ? "Couldn't check private transcription right now. Try again." : null;
       }
+      case "manage-storage":
+        await openManageStorage();
+        return null;
       case "reread":
         env.reread();
         return null;

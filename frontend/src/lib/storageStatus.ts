@@ -1,12 +1,13 @@
 import { emitStoragePaywallError } from "./chatApi";
+import type { TierId } from "./billingApi";
 
 export const MANAGE_STORAGE_URL = "https://account.tinycloud.xyz/billing";
 export const STORAGE_FULL_SAVE_MESSAGE =
-  "Your TinyCloud storage is full, so this change was not saved. Reading still works. Free up space or upgrade your plan to save again.";
+  "Your TinyCloud storage is full, so this change was not saved. Reading still works.";
 export const STORAGE_TOO_LARGE_SAVE_MESSAGE =
-  "This change is larger than the TinyCloud storage you have left, so it was not saved. Reading still works. Free up space or upgrade your plan to save it.";
+  "This change is larger than the TinyCloud storage you have left, so it was not saved. Reading still works.";
 export const STORAGE_READ_ONLY_NOTICE =
-  "Your TinyCloud storage, shared by all your TinyCloud apps, is full. You can still view and copy your data. Saving changes is paused until you free up space or upgrade your plan.";
+  "Your TinyCloud storage, shared by all your TinyCloud apps, is full. You can still view and copy your data. Saving changes is paused until more storage is available.";
 
 const STORAGE_CODES: Record<string, true> = {
   STORAGE_QUOTA_EXCEEDED: true,
@@ -15,6 +16,8 @@ const STORAGE_CODES: Record<string, true> = {
 const STORAGE_TEXT = /storage quota exceeded|write exceeds remaining storage|storage is full/i;
 const TOO_LARGE_TEXT = /write exceeds remaining storage/i;
 let readOnly = false;
+const planListeners = new Set<() => void>();
+let freePlan = false;
 const listeners = new Set<() => void>();
 
 function parts(error: unknown): { code?: unknown; message?: unknown } {
@@ -95,4 +98,21 @@ export function isStorageReadOnly(): boolean {
 export function subscribeStorageReadOnly(listener: () => void): () => void {
   listeners.add(listener);
   return () => listeners.delete(listener);
+}
+
+/** Records the signed-in plan from billing status. `null` (unknown) is never treated as Free. */
+export function reportStoragePlanTier(tier: TierId | null): void {
+  const next = tier === "free";
+  if (next === freePlan) return;
+  freePlan = next;
+  for (const listener of planListeners) listener();
+}
+
+export function isFreeStoragePlan(): boolean {
+  return freePlan;
+}
+
+export function subscribeStoragePlan(listener: () => void): () => void {
+  planListeners.add(listener);
+  return () => planListeners.delete(listener);
 }

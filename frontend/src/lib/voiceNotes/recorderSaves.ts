@@ -58,9 +58,15 @@ export function logVoiceNoteError(operation: string, error: unknown): void {
   console.warn(`[VoiceNotes] ${operation}${code ? ` (code=${code})` : ""}`);
 }
 
+/** The one line for a note whose text is safe but whose audio waits for TinyCloud space. */
+export function storageFullNoteMessage(): string {
+  return `Saved on ${deviceName()}. Your TinyCloud storage is full. Your recording is safe on this device and uploads when space is available.`;
+}
+
 /** Map WebKit's unhelpful network messages to specific recovery copy. */
 export function messageOf(error: unknown): string {
   const message = rawErrorMessage(error);
+  if (classifyNoteFailure(error) === "quota") return storageFullNoteMessage();
   if (isTinyCloudUploadRejected(error)) {
     logVoiceNoteError("TinyCloud upload rejected", error);
     return TINYCLOUD_UPLOAD_REJECTED_MESSAGE;
@@ -76,6 +82,7 @@ export function messageOf(error: unknown): string {
 
 /** A pending-save failure is one useful line, without stacking two recovery sentences. */
 export function pendingSaveMessage(error: unknown): string {
+  if (classifyNoteFailure(error) === "quota") return storageFullNoteMessage();
   const message = messageOf(error);
   if (error instanceof VoiceNoteSaveTimeout || /(?:timed out|timeout)/i.test(message)) return saveSlowMessage();
   if (/^(?:This note|Saving to|Couldn't reach|The TinyCloud node)/.test(message)) return message;

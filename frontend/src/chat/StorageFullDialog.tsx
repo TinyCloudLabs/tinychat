@@ -6,7 +6,9 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { MANAGE_STORAGE_URL, STORAGE_READ_ONLY_NOTICE } from "@/lib/storageStatus";
+import { STORAGE_READ_ONLY_NOTICE } from "@/lib/storageStatus";
+import { openManageStorage } from "@/lib/openManageStorage";
+import { useStorageFreePlan } from "@/lib/useStorageFreePlan";
 
 export function StorageFullDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
   return (
@@ -16,10 +18,21 @@ export function StorageFullDialog({ open, onOpenChange }: { open: boolean; onOpe
           <DialogTitle>Storage full: read-only.</DialogTitle>
           <DialogDescription>{STORAGE_READ_ONLY_NOTICE}</DialogDescription>
         </DialogHeader>
-        <Button asChild>
-          <a href={MANAGE_STORAGE_URL} target="_blank" rel="noreferrer">Manage storage</a>
-        </Button>
+        <StorageFullActions />
       </DialogContent>
     </Dialog>
+  );
+}
+
+/** Manage storage always; Upgrade only for a positively Free plan. Both open through the external opener. */
+export function StorageFullActions() {
+  const storageFreePlan = useStorageFreePlan();
+  return (
+    <div className="flex flex-wrap gap-2">
+      <Button type="button" onClick={() => void openManageStorage()}>Manage storage</Button>
+      {storageFreePlan && (
+        <Button type="button" variant="outline" onClick={() => void openManageStorage()}>Upgrade</Button>
+      )}
+    </div>
   );
 }

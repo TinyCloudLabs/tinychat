@@ -44,8 +44,9 @@ import { currentAccountGeneration, isAccountContextCurrent, isAccountWorkAllowed
 import { nativeRecordingSource, VoiceNotes, type VoiceNoteRecording } from "./nativeVoiceNotes";
 import { readTranscriptCommit } from "./voiceNoteCommits";
 import { pendingStore } from "./recorderSaves";
+import { isStorageFullError, reportStorageError, STORAGE_FULL_SAVE_MESSAGE } from "../storageStatus";
 import { voiceNoteCallDeadlineMs, withVoiceNoteSaveDeadline } from "./saveDeadline";
-import { transcriptionErrorCopy, voiceNoteTranscriptionFailureForCode } from "./transcriptionErrors";
+import { TRANSCRIPT_STORAGE_FULL_CODE, transcriptionErrorCopy, voiceNoteTranscriptionFailureForCode } from "./transcriptionErrors";
 import { privatePartsDone } from "./notePipelineCopy";
 import type { VoiceNoteTranscriptionFailure } from "./transcriptionErrors";
 export type { VoiceNoteTranscriptionFailure } from "./transcriptionErrors";
@@ -1286,6 +1287,10 @@ export async function transcribeVoiceNote(args: {
     const saved = await saveVoiceNoteTranscript(tcw, sourceId, prepared, account, accountCheckpoint);
     if (!saved.ok) {
       if (saved.error.code === "VOICE_NOTE_NOT_FOUND") throw new PrivateCloudError("voice_note_not_found", saved.error.message);
+      if (isStorageFullError(saved.error)) {
+        reportStorageError(saved.error);
+        throw new PrivateCloudError(TRANSCRIPT_STORAGE_FULL_CODE, STORAGE_FULL_SAVE_MESSAGE);
+      }
       throw new PrivateCloudError("transcript_save_failed", saved.error.message);
     }
   };
@@ -1958,6 +1963,16 @@ export function transcribeSavedNote(
     () => { if (isCurrent()) transcriber.noteSaved(recording, audio); },
     (caught: unknown) => logPipelineError("[VoiceNotes] The private transcription check threw; this note was not handed to transcription", caught),
   );
+}
+
+/**
+ * Re-offers the notes whose transcript commit full storage held back. Each transcript is still in
+ * its job, so `transcribe` commits it now; other failures are left alone.
+ */
+export function resumeStorageHeldTranscripts(transcriber: Pick<VoiceNoteTranscriber, "snapshot" | "transcribe">): void {
+  for (const [sourceId, job] of transcriber.snapshot().jobs) {
+    if (job.kind === "failed" && job.code === TRANSCRIPT_STORAGE_FULL_CODE) transcriber.transcribe(sourceId);
+  }
 }
 
 /** One transcriber per signed-in account, kept across mounts (StrictMode, tab switches). */

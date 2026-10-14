@@ -51,4 +51,9 @@ describe("durable voice-note transcription failure copy", () => {
     expect(failure.message).toBe("Private transcription is not configured for this account.");
     expect(failure.retryable).toBe(false);
   });
+  test("a transcript held by full storage is not retryable and saves automatically when storage is available", () => {
+    const failure = voiceNoteTranscriptionFailureForCode("storage_full");
+    expect(failure.retryable).toBe(false);
+    expect(failure.message).toBe("Your TinyCloud storage is full, so this transcript isn't saved yet. It saves automatically when storage is available.");
+  });
 });

@@ -40,10 +40,12 @@ import { PricingDialog } from "./chat/PricingDialog";
 import { StorageFullDialog } from "./chat/StorageFullDialog";
 import {
   isStorageReadOnly,
-  MANAGE_STORAGE_URL,
   STORAGE_READ_ONLY_NOTICE,
   subscribeStorageReadOnly,
+  reportStoragePlanTier,
 } from "./lib/storageStatus";
+import { openManageStorage } from "./lib/openManageStorage";
+import { useStorageFreePlan } from "./lib/useStorageFreePlan";
 import { RatesDialog } from "./chat/RatesDialog";
 import {
   readMemoryCache,
@@ -265,6 +267,7 @@ export function App() {
     setSpaceId(null);
     setModels(OFFERED_CHAT_MODELS.map(({ id, contextTokens }) => ({ id, contextLength: contextTokens })));
     setBillingStatus(null);
+    reportStoragePlanTier(null);
     setPricingOpen(false);
     setError(warning);
     setState(terminal ? "unauthenticated" : warning ? "recoverableError" : "unauthenticated");
@@ -323,6 +326,7 @@ export function App() {
   const [pricingOpen, setPricingOpen] = useState(false);
   const [storageDialogOpen, setStorageDialogOpen] = useState(false);
   const storageReadOnly = useSyncExternalStore(subscribeStorageReadOnly, isStorageReadOnly, () => false);
+  const storageFreePlan = useStorageFreePlan();
   const [ratesOpen, setRatesOpen] = useState(false);
   const [billingNotice, setBillingNotice] = useState<string | null>(null);
   const [shareToken, setShareToken] = useState<string | null>(initialShareToken);
@@ -338,6 +342,7 @@ export function App() {
     try {
       const status = await billingRef.current.getStatus();
       setBillingStatus(status);
+      reportStoragePlanTier(status.tier);
     } catch {
       // status is optional UI; a failure just leaves the indicator unpopulated.
     }
@@ -1271,9 +1276,14 @@ export function App() {
         <div role="region" aria-label="Storage full: read-only" aria-live="polite" className="border-t border-border bg-muted px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] text-sm">
           <strong>Storage full: read-only.</strong>{" "}
           {STORAGE_READ_ONLY_NOTICE}{" "}
-          <a className="font-medium underline underline-offset-2" href={MANAGE_STORAGE_URL} target="_blank" rel="noreferrer">
+          <button type="button" className="font-medium underline underline-offset-2" onClick={() => void openManageStorage()}>
             Manage storage
-          </a>
+          </button>
+          {storageFreePlan && (
+            <button type="button" className="ml-3 font-medium underline underline-offset-2" onClick={() => void openManageStorage()}>
+              Upgrade
+            </button>
+          )}
         </div>
       )}
 

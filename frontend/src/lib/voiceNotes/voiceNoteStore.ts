@@ -30,6 +30,7 @@ import { readableError } from "@/lib/readableError";
 
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { captureEvents } from "@/capture/captureEvents";
+import { isStorageFullError, isStorageReadOnly, reportStorageError } from "@/lib/storageStatus";
 
 import {
   AUDIO_CORRUPT,
@@ -256,6 +257,7 @@ type StoreFailure = { ok: false; error: { code: string; message: string; cause?:
 
 /** A shared audio store rejection as this module's Result, in the codes the UI shows. */
 function audioFailure(op: string, err: unknown): StoreFailure {
+  if (isStorageFullError(err)) reportStorageError(err);
   if (!(err instanceof AudioStoreError)) {
     return { ok: false, error: { code: "STORE_ERROR", message: `${op}: ${readableError(err)}`, cause: err } };
   }
@@ -432,6 +434,20 @@ export async function saveVoiceNote(
         logPipelineError("[VoiceNotes] Local-only note's Markdown did not sync", caught);
       }
       return { ok: true, data: { id: row.id, inserted: row.inserted, createdAt: row.createdAt, noteSyncError } };
+    }
+    // While TinyCloud storage is full the audio put is not attempted: no retries, no Save-now loop.
+    // The note text still saves; the device audio stays on the phone.
+    if (isStorageReadOnly()) {
+      let noteSyncError: NoteSyncErrorCode | undefined;
+      try {
+        await syncRecordingNote(tcw, recording.id, opts.checkpoint, row);
+        logPipeline("space_write", recording.id, "done", { destination: "note_markdown" });
+      } catch (caught) {
+        opts.checkpoint?.();
+        noteSyncError = "sync_failed";
+        logPipelineError("markdown_space_write", caught, recording.id);
+      }
+      return { ok: false, error: { code: VOICE_NOTE_STORAGE_FULL, message: "saveVoiceNote(audio): your TinyCloud storage is full", cause: noteSyncError } };
     }
     // With uploadAudio=true, run text writes (note sync) in parallel with audio upload.
     const text = (async () => {

@@ -16,6 +16,7 @@ export const ACTION_LABEL: Record<PipelineActionKind, string> = {
   "sign-in": "Sign in",
   retry: "Try again",
   "get-model": "Get model",
+  "manage-storage": "Manage storage",
   "check-again": "Check again",
   "review-consent": "Review consent",
   reread: "Try again",
@@ -64,7 +65,7 @@ export const SPACE_COPY = {
   sessionExpired: (device: PipelineDevice) => `Your session ended. This note is safe on ${deviceName(device)}.`,
   otherAccount: "Recorded on another account",
   accountUnknown: (device: PipelineDevice) => `Exo can't tell which account this note belongs to. It stays on ${deviceName(device)}.`,
-  quota: "Your space is full",
+  quota: (device: PipelineDevice) => `Saved on ${deviceName(device)}. Your TinyCloud storage is full. Your recording is safe on this device and uploads when space is available.`,
   timeout: (device: PipelineDevice) => `Saving timed out. This note is safe on ${deviceName(device)}.`,
   server: (_detail: string | null | undefined, device: PipelineDevice) =>
     `Your space couldn't take this note. It is safe on ${deviceName(device)}. Try again.`,

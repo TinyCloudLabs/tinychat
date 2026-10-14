@@ -20,7 +20,7 @@ export type PipelineRoute = "off" | "on-device" | "private-cloud";
 export type StepKey = "phone" | "space" | "transcript" | "notes";
 export type StepState = "done" | "active" | "waiting" | "blocked" | "failed" | "upcoming" | "skipped";
 /** `reread`: read again what failed to read (it belongs to no one step). */
-export type PipelineActionKind = "sign-in" | "retry" | "get-model" | "check-again" | "reread" | "review-consent";
+export type PipelineActionKind = "sign-in" | "retry" | "get-model" | "check-again" | "reread" | "review-consent" | "manage-storage";
 
 // --- Input: mirrors of the signals --------------------------------------------------------------------------
 
@@ -189,6 +189,7 @@ export function pipelineActionPriority(kind: PipelineActionKind | undefined): nu
     case "sign-in": return 4;
     case "get-model": return 3;
     case "retry": return 2;
+    case "manage-storage": return 2;
     case "check-again": return 1;
     case "review-consent": return 1;
     case "reread": return 0;
@@ -240,7 +241,7 @@ function spaceStep(input: NotePipelineInput): Result {
   if (failure !== undefined) {
     switch (failure.kind) {
       case "auth": return blocked(SPACE_COPY.sessionExpired(device), "sign-in");
-      case "quota": return blocked(SPACE_COPY.quota);
+      case "quota": return blocked(SPACE_COPY.quota(device), "manage-storage");
       case "offline":
         return failed(SPACE_COPY.unreachable(device), "retry");
       case "timeout": return failed(SPACE_COPY.timeout(device), "retry");
