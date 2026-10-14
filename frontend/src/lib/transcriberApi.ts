@@ -79,7 +79,6 @@ export interface TranscriberUnavailableMeeting {
 export type TranscriberListRow = TranscriberMeeting | TranscriberUnavailableMeeting;
 
 export interface TranscriberSegment {
-  source?: "recording" | "fallback";
   id: string;
   speaker_id: string;
   speaker_name: string | null;
@@ -90,8 +89,6 @@ export interface TranscriberSegment {
 }
 
 export interface TranscriberTranscript {
-  partial?: boolean;
-  gaps?: { start: number; end: number; speaker_name: string | null }[];
   version?: number;
   meeting_id: string;
   status: TranscriberMeetingStatus;

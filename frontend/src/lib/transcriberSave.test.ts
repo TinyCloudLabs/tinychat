@@ -1200,38 +1200,3 @@ test("C4: a lost compare-and-set leaves a mismatched upstream version for the ne
     expect(changes).toHaveLength(eventsBeforeRepair + 1);
   } finally { release.resolve(); unsubscribe(); f.sql.close(); }
 });
-
-const gapPublication: TranscriberTranscript = {
-  ...transcript, version: 2, partial: true,
-  gaps: [{ start: 41, end: 52, speaker_name: "Kenny Tucker" }],
-  segments: transcript.segments!.map((segment, i) => ({ ...segment,
-    source: i === 0 ? "recording" : "fallback", attribution: i === 0 ? "identified" : "overlap" })),
-};
-
-test("normalization preserves partial publications, gaps and segment provenance", async () => {
-  const normalized = await normalizeTranscriberTranscript(meeting, gapPublication);
-  expect(normalized.meeting.metadata).toMatchObject({ partial: true, gaps: gapPublication.gaps });
-  expect(JSON.parse(normalized.body)).toEqual(normalized.sentences);
-  expect(normalized.sentences.map(({ source, attribution }) => ({ source, attribution }))).toEqual([
-    { source: "recording", attribution: "identified" }, { source: "fallback", attribution: "overlap" },
-  ]);
-  const legacy = await normalizeTranscriberTranscript(meeting, transcript);
-  expect(legacy.meeting.metadata).not.toHaveProperty("partial");
-  expect(legacy.meeting.metadata).not.toHaveProperty("gaps");
-  expect(JSON.parse(legacy.body)).toEqual(transcript.segments!.map((segment, index) => ({
-    index, speaker_name: segment.speaker_name, text: segment.text, start_time: segment.start, end_time: segment.end,
-  })));
-});
-
-test("refresh writes gaps, partial and sentence provenance into an already saved meeting", async () => {
-  const f = libraryFixture(); f.allowWrites();
-  try {
-    expect((await saveTranscriberMeeting(f.tcw, meeting, transcript)).ok).toBe(true);
-    expect((await refreshTranscriberMeeting(f.tcw, meeting, gapPublication)).ok).toBe(true);
-    const row = f.sql.query("SELECT metadata FROM connector_meeting").get() as { metadata: string };
-    expect(JSON.parse(row.metadata)).toMatchObject({ partial: true, gaps: gapPublication.gaps, ptx_transcript_version: 2 });
-    const body = JSON.parse(f.bodies.get(transcriptKvKey(TRANSCRIBER_MEETING_SOURCE, meeting.id))!);
-    expect(body[0]).toMatchObject({ source: "recording", attribution: "identified" });
-    expect(body[1]).toMatchObject({ source: "fallback", attribution: "overlap" });
-  } finally { f.sql.close(); }
-});

@@ -119,8 +119,6 @@ export interface FirefliesAttendee {
 }
 
 export interface FirefliesSentence {
-  source?: "recording" | "fallback";
-  attribution?: "identified" | "unknown" | "overlap";
   index: number;
   speaker_name: string | null;
   text: string;
