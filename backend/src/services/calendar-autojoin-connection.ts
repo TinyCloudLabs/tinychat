@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { CredentialStore, OAuthCredentialSecret } from "./credential-store.js";
-import type { CalendarAutojoinStore, CalendarConnection, TenantCoordinator } from "./calendar-autojoin-store.js";
+import type { CalendarAutojoinStore, CalendarAutojoinReadMetrics, CalendarConnection, TenantCoordinator } from "./calendar-autojoin-store.js";
+import type { CalendarAutojoinStatus } from "./calendar-autojoin-status-cache.js";
 import { REQUEST_LANE_WAIT_MS } from "./backend-storage-lane.js";
 import { GOOGLE_CALENDAR_SCOPE, GoogleOAuthError, type GoogleOAuthPort, type GoogleTokenPayload } from "./google-oauth.js";
 
@@ -44,16 +45,22 @@ export class CalendarAutojoinConnection {
     this.now = options.now ?? Date.now;
   }
 
-  async getStatus(tenant: string) {
+  getLastGoodStatus(tenant: string) { return this.options.store.statusCache.get(tenant); }
+
+  getStatus(tenant: string, metrics?: CalendarAutojoinReadMetrics): Promise<CalendarAutojoinStatus> {
+    return this.options.store.statusCache.refresh(tenant, () => this.readStatus(tenant, metrics));
+  }
+
+  private async readStatus(tenant: string, metrics?: CalendarAutojoinReadMetrics): Promise<CalendarAutojoinStatus> {
     // One wall-clock deadline for every lane read below (lane timers run on real time).
     const deadline = Date.now() + (this.options.statusBudgetMs ?? REQUEST_LANE_WAIT_MS);
-    const connection = await this.options.store.getConnection(tenant, deadline);
+    const connection = await this.options.store.getConnection(tenant, deadline, metrics);
     // Occurrences are only scheduled for a tenant with a connection row, and connection rows are
     // never deleted (disable/disconnect rewrite them as "disabled"). A never-connected tenant has
     // no outcomes, so skip the prefix listing: on the shared serialized storage lane it pushed this
     // read past the client's 20s abort, showing a never-connected account an error.
     if (!connection) return { state: "off" as const, enabled: false, lastScanAt: null, lastDispatchLag: null, errorCode: null, outcomes: [] };
-    const outcomes = (await this.options.store.listOccurrences(tenant, deadline))
+    const outcomes = (await this.options.store.listOccurrences(tenant, deadline, metrics))
       .filter(row => !!row.errorCode || ["missed", "missed_window", "not_accepted", "failed", "event_ineligible", "event_changed", "already_recorded", "unverified_capture", "capacity_exhausted"].includes(row.disposition ?? ""))
       // RSVP hints fill only spare slots; future unanswered invites must not hide real failures.
       .sort((a, b) => Number((a.errorCode ?? a.disposition) === "not_accepted")
