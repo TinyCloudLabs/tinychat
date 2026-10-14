@@ -219,7 +219,7 @@ describe("notePipeline: shape", () => {
   test("a pending deadline retry is waiting with a time, not failed", () => {
     const pipeline = notePipeline(input({ space: { pending: { retryAt: Date.now() + 30_000 } } }));
     expect(pipeline.steps.find((step) => step.key === "space")).toMatchObject({
-      state: "waiting", caption: expect.stringMatching(/Trying again in \d+s/),
+      state: "waiting", caption: expect.stringMatching(/trying again in \d+ s/),
     });
   });
   test("steps are always the four, in order, with the device in the first label", () => {

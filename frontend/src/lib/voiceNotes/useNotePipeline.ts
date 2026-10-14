@@ -899,7 +899,7 @@ function usePipelineStates(entries: readonly { id: string; source: NotePipelineS
         desktopJob: device === "mac" && hasOnDevice ? getDesktopWhisperQueue()?.snapshot().get(id) ?? null : null,
         transcriptSync: tcw === null ? null : onDeviceTranscriptSyncState(tcw, id),
         spaceReading,
-        spaceAfterUploads: spaceReading && laneDepth > 0,
+        spaceAfterUploads: spaceReading && pending.notes?.some((note) => note.upload !== undefined) === true,
         cloudJob: recorder.transcription?.jobs.get(id) ?? null,
         cloudChecking: recorder.transcription?.availability === "checking",
       };
