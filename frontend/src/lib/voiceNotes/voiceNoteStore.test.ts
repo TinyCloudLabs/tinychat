@@ -147,6 +147,7 @@ const recording: VoiceNoteRecording = {
   silencedMs: 1_500,
   silencedEvents: 1,
   noSignalMs: 0,
+  options: { transcriber: "private-cloud", identifySpeakers: false, uploadAudio: true },
 };
 
 function audioBytes(size: number): Uint8Array {

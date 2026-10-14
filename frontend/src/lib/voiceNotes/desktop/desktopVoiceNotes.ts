@@ -348,7 +348,8 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
       if (!await store.getSession(item.id)) {
         const defaults = await store.getCaptureDefaults();
         await store.beginSession({ id: item.id, startedAt: item.journal.startedAt, source: "in_app", owner: null,
-          transitionGen: defaults.transitionGen, options: { transcriber: capabilities.desktopWhisper ? "on-device" : "off", identifySpeakers: false },
+          transitionGen: defaults.transitionGen, options: { transcriber: capabilities.desktopWhisper ? "on-device" : "off", identifySpeakers: false,
+            uploadAudio: false },
           mimeType: "audio/mpeg", input: null, maxDurationMs: item.journal.maxDurationMs });
       }
       await store.quarantineInterrupted(item.id, item.reason, item.error);
@@ -391,7 +392,8 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
       // journal still knows its identity. Give it a conservative, unowned session.
       const defaults = await store.getCaptureDefaults();
       await store.beginSession({ id: pointer.id, startedAt: pointer.startedAt, source: "in_app", owner: null,
-        transitionGen: defaults.transitionGen, options: { transcriber: capabilities.desktopWhisper ? "on-device" : "off", identifySpeakers: false },
+        transitionGen: defaults.transitionGen, options: { transcriber: capabilities.desktopWhisper ? "on-device" : "off", identifySpeakers: false,
+          uploadAudio: false },
         mimeType: "audio/mpeg", input: null, maxDurationMs: pointer.maxDurationMs });
     }
     for (const pointer of imported) {

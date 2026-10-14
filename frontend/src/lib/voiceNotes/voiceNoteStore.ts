@@ -391,7 +391,7 @@ export async function saveVoiceNote(
   source: VoiceNoteAudioSource,
   platform: string,
   opts: StoreAudioOptions = {},
-  uploadAudio = recording.options?.uploadAudio !== false,
+  uploadAudio = recording.options?.uploadAudio === true,
 ): Promise<StoreResult<UpsertMeetingOutcome & { noteSyncError?: NoteSyncErrorCode }>> {
   logPipeline("save", recording.id, "start");
   try {
