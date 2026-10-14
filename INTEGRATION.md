@@ -33,6 +33,7 @@ Integration branch: `dev/0.8.0`
 | #396 | c40651fc | b98f50ce | No | CI-only: added the reviewed `Test ExoStt` step to the iOS job and an empty changeset. The step covers 11 ExoStt tests. |
 | `origin/main` | b9c538ee | e4389b77 | No | Refreshed the floor through #391, #398, and #397. #397 reverts #394 on main. |
 | #394 re-land | f4a21845 | 167d4786 | No | Reverted #397's revert as required for 0.8.0, restoring TC-760 transcript gaps and recovery provenance without weakening newer main behavior. |
+| #400 | a988c05d | 4c7a34f7 | No | Clean merge of TC-1135 stranded Private-note recovery after the CI repairs; preserves the existing privacy gate and #394 recovery provenance. |
 
 ## Test Fixes (2026-10-14)
 
@@ -72,10 +73,12 @@ After merging origin/main (TC-1128, #387, #392, 45d16e58) and PR #386 (TC-1108 p
 
 ## Current Status
 
-- **HEAD**: `167d4786` (#394 re-landed after the `origin/main` refresh)
-- **Frontend unit suite**: 4860 pass, 4 skip, 0 fail (4864 tests, 338 files)
+- **Verified code head**: `4c7a34f7` (#400 merged after CI repairs)
+- **Frontend unit suite**: 4871 pass, 4 skip, 0 fail (4875 tests, 338 files)
 - **`origin/main` `b9c538ee` baseline**: 4735 pass, 4 skip, 0 fail (4739 tests, 326 files)
 - **TypeScript**: pinned TypeScript 5.9.3, `tsc --noEmit -p frontend/tsconfig.json`, 0 errors
 - **CI frontend lint**: `bunx eslint frontend test`, 0 errors
+- **Chromium Exo UI matrix**: phone, phone-land, desktop, and text200-phone pass; no reference image was re-baselined
+- **Native checks**: workspace dependency closure passes with `--locked`; desktop debug `cargo check --no-default-features --locked` passes
 - **Privacy invariant**: unchanged; audio reaches TinyCloud KV only when `recording.options?.uploadAudio === true`.
 
