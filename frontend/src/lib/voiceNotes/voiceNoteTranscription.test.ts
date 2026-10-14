@@ -14,8 +14,8 @@
 //   8. turning transcription off stops anything not yet sent, and consent and jobs are per account;
 //   9. a note whose outcome is saved is never transcribed again, even if its PTX delete failed.
 
-import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import { captureEvents } from "@/capture/captureEvents";
 import { advanceAccountGeneration, currentAccountGeneration, mountVoiceNoteAccount } from "./accountContext";
 
@@ -70,7 +70,6 @@ import {
   privateCloudAccepts,
   acceptedContentTypes,
   prepareVoiceNoteTranscript,
-  shouldRejectForVadDrop,
   transcribeVoiceNote,
   transcriptionStatusText,
   voiceNoteSentences,
@@ -1083,6 +1082,8 @@ describe("transcribeVoiceNote (one note end to end)", () => {
       title: expect.stringContaining("Voice note"),
       transcript: { status: "transcribed", preview: "Remember to book the venue." },
     }));
+    expect(space.kv.has(`${voiceNoteAudioKvKey("rec-1")}/manifest`)).toBe(true);
+    expect([...space.kv.keys()].some((key) => key.startsWith(`${voiceNoteAudioKvKey("rec-1")}/p/`))).toBe(true);
     expect(h.removed).toEqual([ID]);
     expect(h.pending.read("rec-1")).toBeNull();
   });
@@ -1093,7 +1094,7 @@ describe("transcribeVoiceNote (one note end to end)", () => {
     const h = harness({ result: {
       ...TRANSCRIPT, duration_seconds: 4_337,
       stats: { tinfoil_calls: 1, tinfoil_audio_seconds: 1_248, voiced_seconds: 1_200,
-        dropped_above_floor_pct: 72, vad_fallback: true },
+        dropped_above_floor_pct: 72, vad_fallback: false },
     } as unknown as PrivateCloudTranscript });
     const error = await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, explicit: true,
       sourceId: "rec-1", report: () => {} }).catch((caught: unknown) => caught);
@@ -1105,19 +1106,125 @@ describe("transcribeVoiceNote (one note end to end)", () => {
       transcription_audio_seconds: 1_248,
       transcription_duration_seconds: 4_337,
       transcription_vad_dropped_above_floor_pct: 72,
-      transcription_vad_fallback: true,
+      transcription_vad_fallback: false,
       transcription_voiced_seconds: 1_200,
     });
     expect(h.removed).toEqual([ID]);
   });
+  test("mostly silent PTX notes below 0.35 coverage stay retryable even when reported VAD drops are within threshold", async () => {
+    const space = sqliteSpace();
+    expect((await saveVoiceNote(space.tcw, { ...RECORDING, durationMs: 639_600 }, AUDIO, "web")).ok).toBe(true);
+    const h = harness({ result: {
+      ...TRANSCRIPT,
+      duration_seconds: 639.6,
+      stats: { tinfoil_calls: 1, tinfoil_audio_seconds: 66.5, dropped_above_floor_pct: 3.8 },
+    } as unknown as PrivateCloudTranscript });
 
-  test("adequate coverage and absent stats preserve the existing commit path", async () => {
+    const error = await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, explicit: true,
+      sourceId: "rec-1", report: () => {} }).catch((caught: unknown) => caught);
+    expect(error).toMatchObject({ code: "transcript_incomplete" });
+    expect(await readTranscriptCommit(space.tcw, "rec-1")).toBeNull();
+    expect((await resolveVoiceNoteRow(space.tcw, "rec-1"))?.metadata).toMatchObject({
+      transcription_outcome: "failed", transcription_error_code: "transcript_incomplete",
+    });
+    expect(h.removed).toEqual([ID]);
+  });
+  test("quiet PTX recordings with low coverage are rejected even when VAD reports no drops", async () => {
+    const space = sqliteSpace();
+    expect((await saveVoiceNote(space.tcw, { ...RECORDING, durationMs: 639_600 }, AUDIO, "web")).ok).toBe(true);
+    const h = harness({ result: {
+      ...TRANSCRIPT, duration_seconds: 639.6,
+      stats: { tinfoil_audio_seconds: 639.6 * 0.2, dropped_above_floor_pct: 0, vad_fallback: false },
+    } as unknown as PrivateCloudTranscript });
+
+    const error = await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, explicit: true,
+      sourceId: "rec-1", report: () => {} }).catch((caught: unknown) => caught);
+    expect(error).toMatchObject({ code: "transcript_incomplete" });
+    expect(await readTranscriptCommit(space.tcw, "rec-1")).toBeNull();
+    expect(h.removed).toEqual([ID]);
+  });
+  test("dropped percentage rejects only above 10 even when coverage is adequate", async () => {
+    for (const [dropped, expected] of [[10, "commit"], [10.1, "reject"]] as const) {
+      _resetConnectorSchemaMemoForTests();
+      const space = sqliteSpace();
+      expect((await saveVoiceNote(space.tcw, { ...RECORDING, durationMs: 639_600 }, AUDIO, "web")).ok).toBe(true);
+      const h = harness({ result: {
+        ...TRANSCRIPT, duration_seconds: 639.6,
+        stats: { tinfoil_audio_seconds: 639.6 * 0.9, dropped_above_floor_pct: dropped, vad_fallback: false },
+      } as unknown as PrivateCloudTranscript });
+      const result = await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, explicit: true,
+        sourceId: "rec-1", report: () => {} }).then(() => "commit", (error: unknown) => error);
+      if (expected === "reject") {
+        expect(result).toMatchObject({ code: "transcript_incomplete" });
+        expect(await readTranscriptCommit(space.tcw, "rec-1")).toBeNull();
+        expect(h.removed).toEqual([ID]);
+      } else {
+        expect(result).toBe("commit");
+        expect(await readTranscriptCommit(space.tcw, "rec-1")).toMatchObject({ outcome: "transcribed" });
+      }
+    }
+  });
+  test("missing dropped percentage retains the long-note coverage fallback", async () => {
+    for (const [coverage, expected] of [[0.29, "reject"], [0.36, "commit"]] as const) {
+      _resetConnectorSchemaMemoForTests();
+      const space = sqliteSpace();
+      expect((await saveVoiceNote(space.tcw, { ...RECORDING, durationMs: 639_600 }, AUDIO, "web")).ok).toBe(true);
+      const h = harness({ result: {
+        ...TRANSCRIPT, duration_seconds: 639.6, stats: { tinfoil_audio_seconds: 639.6 * coverage },
+      } as unknown as PrivateCloudTranscript });
+      const result = await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, explicit: true,
+        sourceId: "rec-1", report: () => {} }).then(() => "commit", (error: unknown) => error);
+      if (expected === "reject") expect(result).toMatchObject({ code: "transcript_incomplete" });
+      else expect(result).toBe("commit");
+    }
+  });
+  test("AMI-like fallback result commits and emits an id-free count event", async () => {
+    const space = sqliteSpace();
+    expect((await saveVoiceNote(space.tcw, { ...RECORDING, durationMs: 722_500 }, AUDIO, "web")).ok).toBe(true);
+    const lines: string[] = [];
+    const info = console.info;
+    console.info = ((line?: unknown) => { lines.push(String(line)); }) as typeof console.info;
+    const h = harness({ result: {
+      ...TRANSCRIPT, duration_seconds: 722.5,
+      stats: { tinfoil_audio_seconds: 511.8, dropped_above_floor_pct: 0, vad_fallback: true },
+    } as unknown as PrivateCloudTranscript });
+    try {
+      expect(await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, explicit: true,
+        sourceId: "rec-1", report: () => {} })).toBe("transcribed");
+    } finally { console.info = info; }
+    const event = lines.map((line) => JSON.parse(line) as Record<string, unknown>)
+      .find((entry) => entry.operation === "transcription_vad_fallback");
+    expect(event).toMatchObject({ count: 1, source_id: null, phase: "committed" });
+    expect(JSON.stringify(event)).not.toContain("rec-1");
+  });
+  test("PTX with no usable stats commits, marks the row, logs a count without identifiers, then clears on a stats-free later commit", async () => {
+    const space = sqliteSpace();
+    expect((await saveVoiceNote(space.tcw, RECORDING, AUDIO, "web")).ok).toBe(true);
+    const lines: string[] = [];
+    const info = console.info;
+    console.info = ((line?: unknown) => { lines.push(String(line)); }) as typeof console.info;
+    const h = harness({ result: { ...TRANSCRIPT, duration_seconds: undefined, stats: undefined } as unknown as PrivateCloudTranscript });
+    try {
+      expect(await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, explicit: true,
+        sourceId: "rec-1", report: () => {} })).toBe("transcribed");
+    } finally { console.info = info; }
+    expect((await resolveVoiceNoteRow(space.tcw, "rec-1"))?.metadata.transcription_stats_missing).toBe(true);
+    const missingEvent = lines.map((line) => JSON.parse(line) as Record<string, unknown>)
+      .find((event) => event.operation === "transcription_stats_missing");
+    expect(missingEvent).toMatchObject({ count: 1, source_id: null, phase: "committed" });
+    expect(JSON.stringify(missingEvent)).not.toContain("rec-1");
+    const prepared = prepareVoiceNoteTranscript(TRANSCRIPT, "2026-10-03T10:00:00.000Z", 2);
+    expect((await saveVoiceNoteTranscript(space.tcw, "rec-1", prepared)).ok).toBe(true);
+    expect((await resolveVoiceNoteRow(space.tcw, "rec-1"))?.metadata.transcription_stats_missing).toBeUndefined();
+  });
+
+  test("adequate coverage at the drop threshold and absent stats preserve the commit path", async () => {
     for (const [stats, expectedMetadata] of [
       [{ tinfoil_calls: 1, tinfoil_audio_seconds: 4_200, voiced_seconds: 4_100,
-        dropped_above_floor_pct: 99, vad_fallback: true }, {
+        dropped_above_floor_pct: 10, vad_fallback: true }, {
         transcription_audio_seconds: 4_200, transcription_duration_seconds: 4_337,
         transcription_voiced_seconds: 4_100,
-        transcription_vad_dropped_above_floor_pct: 99, transcription_vad_fallback: true,
+        transcription_vad_dropped_above_floor_pct: 10, transcription_vad_fallback: true,
       }],
       [undefined, {}],
     ] as const) {
@@ -1133,13 +1240,20 @@ describe("transcribeVoiceNote (one note end to end)", () => {
       expect(await readTranscriptCommit(space.tcw, "rec-1")).toMatchObject({ outcome: "transcribed" });
       const metadata = (await resolveVoiceNoteRow(space.tcw, "rec-1"))?.metadata;
       expect(metadata).toMatchObject(expectedMetadata);
+      if (stats === undefined) expect(metadata?.transcription_stats_missing).toBe(true);
       expect(h.removed).toEqual([ID]);
     }
   });
-  test("VAD rejection threshold is direct, but the production flag stays disabled", () => {
-    expect(shouldRejectForVadDrop({ dropped_above_floor_pct: 10.1 })).toBe(true);
-    expect(shouldRejectForVadDrop({ dropped_above_floor_pct: 10 })).toBe(false);
-    expect(shouldRejectForVadDrop({ dropped_above_floor_pct: null })).toBe(false);
+  test("non-finite dropped percentage uses the legacy coverage guard", async () => {
+    const space = sqliteSpace();
+    expect((await saveVoiceNote(space.tcw, { ...RECORDING, durationMs: 639_600 }, AUDIO, "web")).ok).toBe(true);
+    const h = harness({ result: {
+      ...TRANSCRIPT, duration_seconds: 639.6,
+      stats: { tinfoil_audio_seconds: 185.5, dropped_above_floor_pct: Number.NaN },
+    } as unknown as PrivateCloudTranscript });
+    await expect(transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, explicit: true,
+      sourceId: "rec-1", report: () => {} })).rejects.toMatchObject({ code: "transcript_incomplete" });
+    expect(await readTranscriptCommit(space.tcw, "rec-1")).toBeNull();
   });
 
   test("a private-cloud job started under A cannot notify B after the account switches before its save", async () => {
@@ -1235,16 +1349,65 @@ describe("transcribeVoiceNote (one note end to end)", () => {
     });
   }
 
-  test("no speech is saved as an outcome (the note is not offered again) and the job is deleted", async () => {
+  test("PTX no_speech failure saves its terminal outcome, marks missing stats, and logs a count", async () => {
     const space = sqliteSpace();
     await saveVoiceNote(space.tcw, RECORDING, AUDIO, "ios");
+    const lines: string[] = [];
+    const info = console.info;
+    console.info = ((line?: unknown) => { lines.push(String(line)); }) as typeof console.info;
     const h = harness({ jobs: [job("failed", { error: { code: "no_speech", message: "No speech was found in the recording." } })] });
-    const outcome = await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, explicit: true, sourceId: "rec-1", report: () => {} });
-    expect(outcome).toBe("no_speech");
+    try {
+      const outcome = await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, explicit: true,
+        sourceId: "rec-1", report: () => {} });
+      expect(outcome).toBe("no_speech");
+    } finally { console.info = info; }
     expect(space.kv.get(transcriptKvKey(VOICE_NOTE_SOURCE, "rec-1"))).toBe("[]");
+    expect(h.calls).not.toContain(`result:${ID}`);
     const listed = await listVoiceNotes(space.tcw);
     expect(listed.ok && listed.data[0]!.transcript).toEqual({ status: "no_speech", preview: null });
+    expect((await resolveVoiceNoteRow(space.tcw, "rec-1"))?.metadata.transcription_stats_missing).toBe(true);
+    const event = lines.map((line) => JSON.parse(line) as Record<string, unknown>)
+      .find((entry) => entry.operation === "transcription_stats_missing");
+    expect(event).toMatchObject({ count: 1, source_id: null, phase: "committed" });
+    expect(JSON.stringify(event)).not.toContain("rec-1");
     expect(h.removed).toEqual([ID]);
+  });
+
+  test("completed empty PTX transcript commits no_speech through the result path without missing stats", async () => {
+    const space = sqliteSpace();
+    await saveVoiceNote(space.tcw, RECORDING, AUDIO, "ios");
+    const lines: string[] = [];
+    const info = console.info;
+    console.info = ((line?: unknown) => { lines.push(String(line)); }) as typeof console.info;
+    const h = harness({ result: { ...TRANSCRIPT, segments: [], text: "", stats: { tinfoil_audio_seconds: 9 } } });
+    try {
+      const outcome = await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, explicit: true,
+        sourceId: "rec-1", report: () => {} });
+      expect(outcome).toBe("no_speech");
+    } finally { console.info = info; }
+    expect(await readTranscriptCommit(space.tcw, "rec-1")).toMatchObject({ outcome: "no_speech" });
+    expect(h.calls).toContain(`result:${ID}`);
+    const metadata = (await resolveVoiceNoteRow(space.tcw, "rec-1"))?.metadata;
+    expect(metadata).not.toHaveProperty("transcription_stats_missing");
+    expect(lines.map((line) => JSON.parse(line) as Record<string, unknown>)
+      .some((entry) => entry.operation === "transcription_stats_missing")).toBe(false);
+    expect(h.removed).toEqual([ID]);
+  });
+
+  test("PTX partial stats mark the coverage pair missing", async () => {
+    for (const transcript of [
+      { ...TRANSCRIPT, duration_seconds: 9, stats: undefined },
+      { ...TRANSCRIPT, duration_seconds: undefined, stats: { tinfoil_audio_seconds: 9 } },
+      { ...TRANSCRIPT, duration_seconds: undefined, stats: null },
+    ] as unknown as PrivateCloudTranscript[]) {
+      _resetConnectorSchemaMemoForTests();
+      const space = sqliteSpace();
+      await saveVoiceNote(space.tcw, RECORDING, AUDIO, "ios");
+      const h = harness({ result: transcript });
+      expect(await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, explicit: true,
+        sourceId: "rec-1", report: () => {} })).toBe("transcribed");
+      expect((await resolveVoiceNoteRow(space.tcw, "rec-1"))?.metadata.transcription_stats_missing).toBe(true);
+    }
   });
 
   test("an active account job deferral leaves the note pending", async () => {
