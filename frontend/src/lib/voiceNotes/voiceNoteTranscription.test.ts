@@ -46,7 +46,6 @@ import { syncOnDeviceTranscript } from "./onDeviceTranscriber";
 import { readTranscriptCommit } from "./voiceNoteCommits";
 import { resolveVoiceNoteRow } from "./voiceNoteRows";
 import { pendingStore } from "./recorderSaves";
-import { setVoiceNoteSaveDeadlineForTests } from "./saveDeadline";
 import { advanceAccountGeneration } from "./accountContext";
 import {
   readVoiceNoteForTranscription,
@@ -2188,42 +2187,32 @@ describe("every path that creates or resumes an off-phone job consults the hold 
     expect(starts).toBe(1);
   });
   test("a stalled pre-create save-idle wait fails visibly and releases the next queued note", async () => {
-    vi.useFakeTimers();
-    setVoiceNoteSaveDeadlineForTests(5);
-    let finishSave = pendingStore.beginAutomaticSave();
-    try {
-      const { space, storage, choices, h } = await setup("in_app", { pending: false });
-      const starts: string[] = [];
-      const transcriber = createVoiceNoteTranscriber({
-        cloud: h.cloud,
-        consent: localStorageVoiceNoteConsentStore(DID, storage),
-        tcw: () => space.tcw,
-        holds: memoryHoldStore(),
-        choices,
-        checkRetryMs: [],
-        runNote: async (args) => {
-          if (args.sourceId === "rec-1") return transcribeVoiceNote(args);
-          starts.push(args.sourceId);
-          return "transcribed";
-        },
-      });
-      await transcriber.check();
-      transcriber.transcribe("rec-1");
-      transcriber.transcribe("rec-2");
-      for (let i = 0; i < 30; i++) await Promise.resolve();
-      vi.advanceTimersByTime(5);
-      for (let i = 0; i < 30; i++) await Promise.resolve();
-      expect(transcriber.snapshot().jobs.get("rec-1")).toMatchObject({ kind: "failed", code: "audio_read_failed", retryable: true });
-      setVoiceNoteSaveDeadlineForTests(null);
-      finishSave();
-      finishSave = () => {};
-      for (let i = 0; i < 100; i++) await Promise.resolve();
-      expect(starts).toEqual(["rec-2"]);
-    } finally {
-      finishSave();
-      setVoiceNoteSaveDeadlineForTests(null);
-      vi.useRealTimers();
-    }
+    const { space, storage, choices, h } = await setup("in_app", { pending: false });
+    const starts: string[] = [];
+    const transcriber = createVoiceNoteTranscriber({
+      cloud: h.cloud,
+      consent: localStorageVoiceNoteConsentStore(DID, storage),
+      tcw: () => space.tcw,
+      holds: memoryHoldStore(),
+      choices,
+      checkRetryMs: [],
+      runNote: async (args) => {
+        if (args.sourceId === "rec-1") return transcribeVoiceNote({
+          ...args,
+          waitForAudioSavesIdle: () => new Promise<void>(() => {}),
+          audioSaveWaitTimeoutMs: 10,
+        });
+        starts.push(args.sourceId);
+        return "transcribed";
+      },
+    });
+    await transcriber.check();
+    transcriber.transcribe("rec-1");
+    transcriber.transcribe("rec-2");
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    await settle();
+    expect(transcriber.snapshot().jobs.get("rec-1")).toMatchObject({ kind: "failed", code: "audio_read_failed", retryable: true });
+    expect(starts).toEqual(["rec-2"]);
   });
 
 

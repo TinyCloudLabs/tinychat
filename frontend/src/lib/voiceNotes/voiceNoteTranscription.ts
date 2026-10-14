@@ -1124,6 +1124,9 @@ export async function transcribeVoiceNote(args: {
   report: (status: VoiceNoteTranscriptionStatus) => void;
   now?: () => Date;
   account?: VoiceNoteTranscriptAccount;
+  /** Test overrides for the otherwise shared save-idle wait and its deadline. */
+  waitForAudioSavesIdle?: (signal?: AbortSignal) => Promise<void>;
+  audioSaveWaitTimeoutMs?: number;
 }): Promise<"transcribed" | "no_speech"> {
   const { tcw, cloud, sourceId } = args;
   logPipeline("transcription", sourceId, "start", { engine: "private-cloud" });
@@ -1208,7 +1211,8 @@ export async function transcribeVoiceNote(args: {
     // when one exists before reading the space copy.
     if (!localAudioRecording || (localAudioRecording.ledger?.audio && localAudioRecording.ledger.audio.state !== "saved")) {
       try {
-        await withVoiceNoteSaveDeadline(`waiting for voice-note saves before reading ${sourceId}`, whenVoiceNoteSavesIdle);
+        await withVoiceNoteSaveDeadline(`waiting for voice-note saves before reading ${sourceId}`,
+          args.waitForAudioSavesIdle ?? whenVoiceNoteSavesIdle, args.audioSaveWaitTimeoutMs);
       } catch (cause) {
         logPipelineError("[VoiceNotes] Could not confirm the audio save before transcription", cause);
         throw new VoiceNoteAudioError("audio_read_failed", "Could not confirm this note's audio save");
