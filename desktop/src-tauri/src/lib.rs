@@ -1,5 +1,3 @@
-#[cfg(debug_assertions)]
-mod dev_log;
 #[cfg(all(
     feature = "transcription",
     any(debug_assertions, feature = "ipc-selftest")

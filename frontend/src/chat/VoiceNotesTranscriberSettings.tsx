@@ -97,11 +97,13 @@ export function VoiceNotesTranscriberSettings() {
   const uploadSetting = (
     <>
       <div className="flex items-start gap-3">
-        <input id="upload-audio-to-tinycloud" type="checkbox" checked={uploadAudio}
-          onChange={(event) => {
-            setUploadError(null);
-            void setUploadAudioPreference(event.target.checked).catch((caught: unknown) => setUploadError(readableError(caught)));
-          }} />
+        <label htmlFor="upload-audio-to-tinycloud" className="flex size-11 shrink-0 cursor-pointer items-center justify-center">
+          <input id="upload-audio-to-tinycloud" type="checkbox" checked={uploadAudio}
+            onChange={(event) => {
+              setUploadError(null);
+              void setUploadAudioPreference(event.target.checked).catch((caught: unknown) => setUploadError(readableError(caught)));
+            }} />
+        </label>
         <div className="flex flex-col gap-1 text-sm">
           <label htmlFor="upload-audio-to-tinycloud">Upload audio to TinyCloud</label>
           <p className="text-xs text-muted-foreground">Audio stays on this {platform === "tauri" ? "Mac" : platform === "web" ? "browser" : "phone"}. Transcripts and notes still sync to your TinyCloud space. Private transcription still sends audio to be transcribed, then deletes it.</p>

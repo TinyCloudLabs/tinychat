@@ -356,7 +356,7 @@ export function DesktopRecorder({
             <span>more private</span>
             <span>more capable</span>
           </div>
-          <div className="pr-capline">{choice.caption ?? stop.captions[shell]}</div>
+          <div className={stop.id === "skip" ? "pr-capline pr-capline-wrap" : "pr-capline"}>{choice.caption ?? stop.captions[shell]}</div>
           {!idleDenied && !audio.unsupported && (
             <ViaMenu
               inputs={audio.inputs}

@@ -60,6 +60,6 @@ test("signed-in web Settings shows the audio upload switch and browser storage w
   page.innerHTML = markup;
   expect(page.textContent).toContain("Voice notes");
   expect(page.querySelector('input[type="checkbox"]#upload-audio-to-tinycloud')).not.toBeNull();
-  expect(page.querySelector('label[for="upload-audio-to-tinycloud"]')?.textContent).toBe("Upload audio to TinyCloud");
+  expect([...page.querySelectorAll('label[for="upload-audio-to-tinycloud"]')].some((label) => label.textContent === "Upload audio to TinyCloud")).toBe(true);
   expect(page.textContent).toContain("Browsers can delete it. Turn on Upload audio to keep a copy in TinyCloud.");
 });

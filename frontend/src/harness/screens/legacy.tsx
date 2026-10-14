@@ -9,6 +9,7 @@ import { ThemeToggle } from "@/components/theme-toggle";
 import { ConnectorsPage } from "@/chat/ConnectorsPage";
 import { SettingsPage } from "@/chat/SettingsPage";
 import { AgentAccessProvider } from "@/chat/useAgentEnablement";
+import { StaticRecorderProvider } from "@/capture/recorder/RecorderProvider";
 import { HARNESS_ADDRESS, HARNESS_DID, harnessSessionStore, harnessTcw } from "../stubs";
 import type { HarnessScreen } from "../screen";
 
@@ -63,27 +64,29 @@ export const legacyScreens: HarnessScreen[] = [
     scrollTo: "section:has(> div > svg.lucide-sun)",
     render: () => (
       <LegacyShell>
-        <SettingsPage
-          address={HARNESS_ADDRESS}
-          did={HARNESS_DID}
-          spaceId="harness-space"
-          state="ready"
-          error={null}
-          onSignOut={() => {}}
-          signingOut={false}
-          paywallEnabled={false}
-          onBack={() => {}}
-          tcw={harnessTcw}
-          memoryRef={{ current: null }}
-          onMemoryUpdated={() => {}}
-          onImported={() => {}}
-          billingStatus={null}
-          billingTierName={null}
-          onManagePlan={() => {}}
-          onOpenRates={() => {}}
-          backendUrl={window.location.origin}
-          sessionStore={harnessSessionStore}
-        />
+        <StaticRecorderProvider>
+          <SettingsPage
+            address={HARNESS_ADDRESS}
+            did={HARNESS_DID}
+            spaceId="harness-space"
+            state="ready"
+            error={null}
+            onSignOut={() => {}}
+            signingOut={false}
+            paywallEnabled={false}
+            onBack={() => {}}
+            tcw={harnessTcw}
+            memoryRef={{ current: null }}
+            onMemoryUpdated={() => {}}
+            onImported={() => {}}
+            billingStatus={null}
+            billingTierName={null}
+            onManagePlan={() => {}}
+            onOpenRates={() => {}}
+            backendUrl={window.location.origin}
+            sessionStore={harnessSessionStore}
+          />
+        </StaticRecorderProvider>
       </LegacyShell>
     ),
   },
