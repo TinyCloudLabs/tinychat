@@ -74,6 +74,7 @@ export interface NoteSttState {
   state: "waiting_for_model" | "queued" | "running" | "done" | "failed" | "cancelled";
   pack: "full" | "small" | null; engine: "parakeet" | "apple-speech" | "whisper" | null;
   segmentsDone: number; windowsDone: number; error: string | null; rerunRev?: number | null;
+  rerunBaseRev?: number | null; rerunBaseHash?: string | null;
 }
 export interface LocalTranscript {
   version: 1; noteId: string; transcriber: TranscriberId; rev: number;
@@ -84,6 +85,8 @@ export interface LocalTranscript {
     /** Eval-only lineage. Not included in production transcripts. Times are seconds. */
     words?: { text: string; start: number; end: number; channel: number | undefined;
       timing: "token" | "fallback" | "none" }[] }[]; createdAt: string;
+  /** Prior committed version for an explicit rerun; sync records history before the replacement commit. */
+  rerunBase?: { rev: number; hash: string };
   provider?: Record<string, unknown>;
 }
 

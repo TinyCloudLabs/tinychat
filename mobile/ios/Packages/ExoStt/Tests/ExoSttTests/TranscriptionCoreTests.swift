@@ -179,6 +179,25 @@ final class TranscriptionCoreTests: XCTestCase {
 
     // MARK: a Local choice on a note committed to another mode survives a restart
 
+    func testInterruptedRerunIsCancelledAndItsMarkerClearedAtLaunchRecovery() {
+        for state in ["queued", "running"] {
+            let id = "rerun-\(state)"
+            library.seed(id, state: state)
+            try? library.updateStt(id, patch: ["rerunRev": 2, "rerunBaseRev": 1, "rerunBaseHash": "old-hash"])
+        }
+        core.recoverInterruptedReruns()
+        settle()
+        for state in ["queued", "running"] {
+            let sidecar = library.sidecar("rerun-\(state)")
+            XCTAssertEqual(sidecar["state"] as? String, "cancelled")
+            XCTAssertTrue(sidecar["rerunRev"] is NSNull)
+            XCTAssertTrue(sidecar["rerunBaseRev"] is NSNull)
+            XCTAssertTrue(sidecar["rerunBaseHash"] is NSNull)
+        }
+        XCTAssertTrue(session.startedIds.isEmpty)
+    }
+
+
     private func relaunch() {
         core = TranscriptionCore(library: library, backend: backend, label: "xyz.tinycloud.exo.stt.test.\(UUID().uuidString)")
         core.onTranscribed = { [events] id, outcome in events!.add("transcribed:\(id):\(outcome)") }
@@ -634,10 +653,14 @@ final class TranscriptionCoreTests: XCTestCase {
     func testExplicitRerunCommitsRequestedRevisionAndIsNotResumable() {
         library.seed("a", state: "done")
         library.seedTranscript("a", object: ["rev": 4, "body": "old"])
-        core.enqueueAgain(id: "a", rev: 5)
+        core.enqueueAgain(id: "a", rev: 5, baseRev: 4, baseHash: "base-hash")
         waitUntil("rerun decoded") { session.startedIds == ["a"] && library.transcriptObject("a")?["rev"] as? Int == 5 }
         settle()
         XCTAssertEqual(library.transcriptObject("a")?["rev"] as? Int, 5)
+        let rerunBase = library.transcriptObject("a")?["rerunBase"] as? [String: Any]
+        XCTAssertEqual(rerunBase?["rev"] as? Int, 4)
+        XCTAssertEqual(rerunBase?["hash"] as? String, "base-hash")
+        XCTAssertEqual(library.sidecar("a")["state"] as? String, "done")
         XCTAssertFalse(ResumableWork.owed(["id": "a", "options": ["transcriber": "on-device"],
             "stt": ["state": "queued", "rerunRev": 5]]))
     }
@@ -646,7 +669,7 @@ final class TranscriptionCoreTests: XCTestCase {
         library.seed("a", state: "done")
         library.seedTranscript("a", object: ["rev": 4, "body": "old"])
         session.decode = { _, _ in throw TranscriptionQueueError.decodeFailed }
-        core.enqueueAgain(id: "a", rev: 5)
+        core.enqueueAgain(id: "a", rev: 5, baseRev: 4, baseHash: "base-hash")
         waitUntil("rerun failed") { events.all.contains("failed:a:decode_failed") }
         settle()
         XCTAssertEqual(library.transcriptObject("a")?["rev"] as? Int, 4)

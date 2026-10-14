@@ -19,7 +19,7 @@ import { Database } from "bun:sqlite";
 import { captureEvents } from "@/capture/captureEvents";
 import { advanceAccountGeneration, currentAccountGeneration, mountVoiceNoteAccount } from "./accountContext";
 
-import { _resetConnectorSchemaMemoForTests, transcriptKvKey } from "../connectors/connectorStore";
+import { CONNECTORS_KV_PREFIX, _resetConnectorSchemaMemoForTests, transcriptKvKey } from "../connectors/connectorStore";
 import { memoryHoldStore } from "@/harness/memoryHoldStore";
 import {
   buildPtxUploadOrigin,
@@ -1716,7 +1716,7 @@ describe("transcribeVoiceNote (one note end to end)", () => {
     await saveVoiceNoteTranscript(space.tcw, "rec-1", prepareVoiceNoteTranscript(TRANSCRIPT, "2026-10-03T10:00:00.000Z", 1));
     const prior = await readTranscriptCommit(space.tcw, "rec-1");
     expect(prior).toMatchObject({ rev: 1 });
-    const historyKey = transcriptHistoryKvKey("rec-1", prior!.rev);
+    const historyKey = transcriptHistoryKvKey("rec-1", prior!.rev, prior!.hash);
     const expectedHistory = {
       v: 1, rev: prior!.rev, hash: prior!.hash, body_key: prior!.bodyKey, outcome: prior!.outcome,
       engine: prior!.engine, provider: prior!.provider, committed_at: prior!.committedAt,
@@ -1743,7 +1743,7 @@ describe("transcribeVoiceNote (one note end to end)", () => {
     await saveVoiceNoteTranscript(space.tcw, "rec-1", prepareVoiceNoteTranscript(TRANSCRIPT, "2026-10-03T10:00:00.000Z", 1));
     const prior = await readTranscriptCommit(space.tcw, "rec-1");
     expect(prior).not.toBeNull();
-    const historyKey = transcriptHistoryKvKey("rec-1", prior!.rev);
+    const historyKey = transcriptHistoryKvKey("rec-1", prior!.rev, prior!.hash);
     const h = harness({ result: { ...TRANSCRIPT, text: "Revised synthetic transcript.",
       segments: [{ ...TRANSCRIPT.segments[0]!, text: "Revised synthetic transcript." }] } });
     const kv = space.tcw as { kv: { put: (key: string, value: string | Uint8Array, options?: { ifNoneMatch?: string }) => Promise<unknown> } };
@@ -1772,7 +1772,7 @@ describe("transcribeVoiceNote (one note end to end)", () => {
     await saveVoiceNoteTranscript(space.tcw, "rec-1", prepareVoiceNoteTranscript(TRANSCRIPT, "2026-10-03T10:00:00.000Z", 1));
     const prior = await readTranscriptCommit(space.tcw, "rec-1");
     expect(prior).not.toBeNull();
-    const historyKey = transcriptHistoryKvKey("rec-1", prior!.rev);
+    const historyKey = transcriptHistoryKvKey("rec-1", prior!.rev, prior!.hash);
     const conflicting = {
       v: 1, rev: prior!.rev, hash: "conflicting-hash", body_key: prior!.bodyKey, outcome: prior!.outcome,
       engine: prior!.engine, provider: prior!.provider, committed_at: prior!.committedAt,
@@ -1801,7 +1801,7 @@ describe("transcribeVoiceNote (one note end to end)", () => {
     expect(await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, explicit: true, explicitRerun: true,
       audio: AUDIO, sourceId: "rec-1", report: () => {} } as Parameters<typeof transcribeVoiceNote>[0])).toBe("transcribed");
     expect(await readTranscriptCommit(space.tcw, "rec-1")).toMatchObject({ rev: 2, outcome: "transcribed" });
-    const history = JSON.parse(String(space.kv.get(transcriptHistoryKvKey("rec-1", 1)))) as Record<string, unknown>;
+    const history = JSON.parse(String(space.kv.get(transcriptHistoryKvKey("rec-1", 1, prior!.hash)))) as Record<string, unknown>;
     expect(history).toMatchObject({ rev: 1, outcome: "no_speech", body_key: prior!.bodyKey });
     expect(space.kv.get(String(history.body_key))).toContain("[]");
   });
@@ -1841,7 +1841,7 @@ describe("transcribeVoiceNote (one note end to end)", () => {
     await saveVoiceNote(space.tcw, RECORDING, AUDIO, "android");
     await saveVoiceNoteTranscript(space.tcw, "rec-1", prepareVoiceNoteTranscript(TRANSCRIPT, "2026-10-03T10:00:00.000Z", 1));
     const prior = await readTranscriptCommit(space.tcw, "rec-1");
-    const key = transcriptHistoryKvKey("rec-1", prior!.rev);
+    const key = transcriptHistoryKvKey("rec-1", prior!.rev, prior!.hash);
     space.sqlite.query("CREATE TRIGGER fail_transcript_commit BEFORE INSERT ON voice_note_transcript BEGIN SELECT RAISE(ABORT, 'synthetic'); END").run();
     const first = harness({ result: { ...TRANSCRIPT, text: "Retry synthetic transcript.",
       segments: [{ ...TRANSCRIPT.segments[0]!, text: "Retry synthetic transcript." }] } });
@@ -1858,6 +1858,48 @@ describe("transcribeVoiceNote (one note end to end)", () => {
     expect(await readTranscriptCommit(space.tcw, "rec-1")).toMatchObject({ rev: 2 });
     expect(String(space.kv.get(key))).toBe(record);
   });
+  test("a rerun that loses the writer race is surfaced as failed, not success", async () => {
+    const space = sqliteSpace();
+    await saveVoiceNote(space.tcw, RECORDING, AUDIO, "android");
+    await saveVoiceNoteTranscript(space.tcw, "rec-1", prepareVoiceNoteTranscript(TRANSCRIPT, "2026-10-03T10:00:00.000Z", 1));
+    const prior = await readTranscriptCommit(space.tcw, "rec-1");
+    space.sqlite.query(`CREATE TRIGGER synthetic_rerun_winner AFTER UPDATE ON voice_note_transcript
+      WHEN NEW.rev = 2 BEGIN UPDATE voice_note_transcript SET rev = 3, hash = 'ffffffffffffffffffffffffffffffff'
+      WHERE source_id = NEW.source_id; END`).run();
+    const h = harness({ result: { ...TRANSCRIPT, text: "Losing synthetic transcript.",
+      segments: [{ ...TRANSCRIPT.segments[0]!, text: "Losing synthetic transcript." }] } });
+    const error = await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, explicit: true, explicitRerun: true,
+      audio: AUDIO, sourceId: "rec-1", report: () => {} } as Parameters<typeof transcribeVoiceNote>[0]).catch((caught: unknown) => caught);
+    expect(error).toMatchObject({ code: "transcript_save_failed" });
+    expect(await readTranscriptCommit(space.tcw, "rec-1")).toMatchObject({ rev: 3 });
+    expect(space.kv.has(transcriptHistoryKvKey("rec-1", prior!.rev, prior!.hash))).toBe(true);
+  });
+  test("on-device rerun writes prior history only when its local revision is synced", async () => {
+    const space = sqliteSpace();
+    await saveVoiceNote(space.tcw, RECORDING, AUDIO, "ios");
+    await saveVoiceNoteTranscript(space.tcw, "rec-1", prepareVoiceNoteTranscript(TRANSCRIPT, "2026-10-03T10:00:00.000Z", 1));
+    const prior = await readTranscriptCommit(space.tcw, "rec-1");
+    const local = {
+      version: 1, noteId: "rec-1", transcriber: "on-device", rev: 2, engine: "apple-speech",
+      model: null, language: "en", outcome: "transcribed", diarized: false, createdAt: "2026-10-03T11:00:00.000Z",
+      segments: [{ start: 0, end: 1000, text: "Re-run synthetic transcript.", speaker: null }],
+      rerunBase: { rev: prior!.rev, hash: prior!.hash },
+    } as LocalTranscript;
+    VoiceNotes.listPending = async () => ({ recordings: [{ ...RECORDING, rev: 1, owner: space.tcw.did,
+      ledger: { audio: { state: "saved", rowId: "row-1" }, transcriptSync: { state: "pending", rev: 1, at: null } } } as never] });
+    VoiceNotes.getTranscript = async () => ({ transcript: local });
+    VoiceNotes.updateLedger = async () => ({});
+    const unmount = mountVoiceNoteAccount(space.tcw.did);
+    try {
+      expect(await syncOnDeviceTranscript(space.tcw, { id: "rec-1", owner: space.tcw.did,
+        ledger: { audio: { state: "saved", rowId: "row-1" } } })).toBe(false);
+    } finally { unmount(); }
+    const current = await readTranscriptCommit(space.tcw, "rec-1");
+    expect(current).toMatchObject({ rev: 2 });
+    const history = JSON.parse(String(space.kv.get(transcriptHistoryKvKey("rec-1", prior!.rev, prior!.hash)))) as Record<string, unknown>;
+    expect(history).toMatchObject({ rev: prior!.rev, hash: prior!.hash, body_key: prior!.bodyKey });
+    expect(space.kv.get(String(history.body_key))).toContain(TRANSCRIPT.segments[0]!.text.trim());
+  });
   test("ordinary transcript commits do not create history records", async () => {
     const space = sqliteSpace();
     await saveVoiceNote(space.tcw, RECORDING, AUDIO, "android");
@@ -1867,7 +1909,30 @@ describe("transcribeVoiceNote (one note end to end)", () => {
     expect(await readTranscriptCommit(space.tcw, "rec-1")).toMatchObject({ rev: 1 });
     expect([...space.kv.keys()].filter((key) => key.includes("/transcript-history/"))).toEqual([]);
   });
+  test("transcript history keys distinguish same-revision hashes", () => {
+    expect(transcriptHistoryKvKey("rec-1", 2, "hash-a")).toBe(
+      `${CONNECTORS_KV_PREFIX}/exo-voice-note/transcript-history/rec-1/2/hash-a`,
+    );
+    expect(transcriptHistoryKvKey("rec-1", 2, "hash-b")).not.toBe(transcriptHistoryKvKey("rec-1", 2, "hash-a"));
+  });
 
+  test("legacy transcripts without a commit row cannot be rerun or overwritten", async () => {
+    const space = sqliteSpace();
+    await saveVoiceNote(space.tcw, RECORDING, AUDIO, "android");
+    const legacyKey = transcriptKvKey(VOICE_NOTE_SOURCE, "rec-1");
+    const legacyBody = JSON.stringify([{ index: 0, speaker_name: "You", text: "Legacy synthetic transcript.", start_time: 0, end_time: 1 }]);
+    space.kv.set(legacyKey, legacyBody);
+    space.sqlite.query("UPDATE connector_meeting SET metadata=json_set(metadata, '$.transcription_outcome', 'transcribed', '$.transcript_text', 'Legacy synthetic transcript.') WHERE source_id='rec-1'").run();
+    space.sqlite.query("DELETE FROM voice_note_transcript WHERE source_id='rec-1'").run();
+    const h = harness({ result: { ...TRANSCRIPT, text: "Replacement synthetic transcript.",
+      segments: [{ ...TRANSCRIPT.segments[0]!, text: "Replacement synthetic transcript." }] } });
+    const error = await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, explicit: true, explicitRerun: true,
+      audio: AUDIO, sourceId: "rec-1", report: () => {} } as Parameters<typeof transcribeVoiceNote>[0]).catch((caught: unknown) => caught);
+    expect(error).toMatchObject({ code: "transcript_commit_required" });
+    expect(space.kv.get(legacyKey)).toBe(legacyBody);
+    expect(h.creates).toHaveLength(0);
+    expect([...space.kv.keys()].filter((key) => key.includes("/transcript-history/"))).toEqual([]);
+  });
 
 
   test("a note whose row already records an outcome is not transcribed again; a leftover job is deleted", async () => {

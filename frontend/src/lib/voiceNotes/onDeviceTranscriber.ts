@@ -12,6 +12,9 @@ import { VoiceNotes, type LocalTranscript, type NoteSttState } from "./nativeVoi
 import { withVoiceNoteSaveDeadline } from "./saveDeadline";
 import { LOCAL_COPY } from "./notePipelineCopy";
 import { assertAccountContext, captureAccountContext, isAccountContextCurrent, isAccountWorkAllowed, StaleAccountContext, type AccountContext } from "./accountContext";
+import { readTranscriptCommit } from "./voiceNoteCommits";
+import { preserveVoiceNoteTranscriptHistory } from "./voiceNoteTranscriptHistory";
+import { transcriptHash } from "./voiceNoteRows";
 
 /** One note's local transcript -> space write: running, written, or why it did not land (the local transcript stays valid). */
 export type OnDeviceTranscriptSyncState =
@@ -206,11 +209,24 @@ async function syncOnce(tcw: TinyCloudWeb, key: string, id: string, expected: bo
   if (!isCurrent(tcw, ctx)) return true;
   publish(key, { state: "syncing" });
   try {
-    checkpoint(tcw, ctx)();
-    const result = await saveVoiceNoteTranscript(tcw, id, localTranscriptToSave(transcript),
+    const prepared = localTranscriptToSave(transcript);
+    if (transcript.rerunBase) {
+      const current = await readTranscriptCommit(tcw, id);
+      const expectedHash = await transcriptHash(prepared.sentences);
+      if (current?.rev === transcript.rev && current.hash === expectedHash)
+        return await recordAndPublish(tcw, key, id, transcript, ctx);
+      if (!current || current.rev !== transcript.rerunBase.rev || current.hash !== transcript.rerunBase.hash)
+        throw new Error("The committed transcript changed before this rerun could sync. Try again.");
+      await preserveVoiceNoteTranscriptHistory(tcw, current);
+    }
+    const result = await saveVoiceNoteTranscript(tcw, id, prepared,
       { generation: ctx.generation, did: ctx.did }, checkpoint(tcw, ctx));
-    if (!isCurrent(tcw, ctx)) return true;
     if (result.ok) {
+      if (transcript.rerunBase) {
+        const current = await readTranscriptCommit(tcw, id);
+        if (current?.rev !== transcript.rev || current.hash !== await transcriptHash(prepared.sentences))
+          throw new Error("A different transcript revision won this rerun. Try again.");
+      }
       return await recordAndPublish(tcw, key, id, transcript, ctx);
     }
     console.warn("[OnDeviceStt] Could not save the on-device transcript to the space", result.error);

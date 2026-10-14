@@ -296,8 +296,30 @@ describe("a voice note's transcription", () => {
     expect(html).toContain('data-testid="transcribe-button"');
   });
 
+  test("committed transcript reruns are offered only when commit provenance was read", () => {
+    const committed = render({
+      metadata: { status: "ok", metadata: { transcription_outcome: "no_speech" } },
+      transcriptProvenance: { engine: "private-cloud", provider: "ptx" },
+      transcription: transcription(),
+    });
+    expect(committed).toContain("No speech was found in this note.");
+    expect(committed).toContain('data-testid="voice-note-transcription-rerun"');
+    expect(committed).toContain('data-testid="transcribe-button"');
+    const legacy = render({
+      metadata: { status: "ok", metadata: { transcription_outcome: "transcribed" } },
+      transcript: { status: "ok", sentences: [] },
+      transcriptProvenance: null,
+      transcription: transcription(),
+    });
+    expect(legacy).not.toContain('data-testid="voice-note-transcription-rerun"');
+    expect(legacy).not.toContain("Transcribe again");
+  });
   test("no speech, progress, just saved, and a failure with Retry only when it can help", () => {
-    const silent = render({ metadata: { status: "ok", metadata: { transcription_outcome: "no_speech" } }, transcription: transcription() });
+    const silent = render({
+      metadata: { status: "ok", metadata: { transcription_outcome: "no_speech" } },
+      transcriptProvenance: { engine: "private-cloud", provider: "ptx" },
+      transcription: transcription(),
+    });
     expect(silent).toContain("No speech was found in this note.");
     expect(silent).toContain('data-testid="transcribe-button"');
     expect(silent).toContain('data-testid="voice-note-transcription-rerun"');
@@ -348,7 +370,7 @@ describe("a voice note's transcription", () => {
       transcription: transcription(),
     });
     expect(marked).toContain("Book the venue.");
-    expect(marked).toContain('data-testid="transcribe-button"');
+    expect(marked).not.toContain('data-testid="transcribe-button"');
   });
 
   test("a transcribed note shows its transcript whatever the engine's state", () => {

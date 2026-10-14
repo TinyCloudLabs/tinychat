@@ -35,7 +35,9 @@ export function transcribeProviders(
   const job = transcription?.jobs.get(noteId);
   const providers: TranscribeProvider[] = [];
   const canRerun = !rerun || transcription?.onTranscribeAgain !== undefined;
-  if (phone !== null && captureCapabilities().localTranscription && canRerun) providers.push("on-device");
+  const capabilities = captureCapabilities();
+  if (phone !== null && (capabilities.localTranscription || capabilities.desktopWhisper) && canRerun)
+    providers.push("on-device");
   if (transcription?.availability === "available" && privateCloudFits(transcription, durationSecs)
     && (rerun || (job?.kind !== "active" && job?.kind !== "done"))) providers.push("private-cloud");
   if (rerun && transcription?.powerfulAvailable && canRerun) providers.push("assemblyai");

@@ -81,10 +81,31 @@ class TranscriptionQueue(private val context: Context, private val store: ModelS
         }
     }
 
-    /** Scans every committed note for unfinished on-device work (native work inventory, plan
-     * §2.5) and adds it to the queue. Called (deferred until the UI is up; see `SttBootstrap`) at
-     * process start, on every `committed`/`recovered` event, and when a model finishes
-     * downloading. */
+
+    /** Clears interrupted explicit reruns before the launch reconciliation scan runs. */
+    fun recoverInterruptedReruns() {
+        executor.execute {
+            val notes = try { capture.library.list() } catch (e: Exception) {
+                Log.e("ExoStt", "rerun recovery list failed", e)
+                return@execute
+            }
+            for (note in notes) {
+                val stt = note.optJSONObject("stt") ?: continue
+                if (stt.isNull("rerunRev") || !stt.has("rerunRev") ||
+                    stt.optString("state") != "queued" && stt.optString("state") != "running") continue
+                val id = note.optString("id", "")
+                if (id.isEmpty()) continue
+                try {
+                    capture.library.mutate(id, "stt.write") { current ->
+                        ResumableWork.cancelInterruptedRerun(current.getJSONObject("stt"))
+                        Unit
+                    }
+                } catch (e: Exception) { Log.e("ExoStt", "rerun recovery failed for $id", e) }
+            }
+        }
+    }
+    /** Scans committed notes for unfinished resumable work. Called after launch recovery and
+     * on every `committed`/`recovered` event or model download. */
     fun reconcile() {
         executor.execute {
             val notes = try { capture.library.list() } catch (e: Exception) { Log.e("ExoStt", "reconcile list failed", e); emptyList() }
@@ -117,15 +138,15 @@ class TranscriptionQueue(private val context: Context, private val store: ModelS
         )
     }
     /** A user-confirmed rerun of a committed transcript; `rerunRev` prevents launch-time resumption. */
-    fun enqueueAgain(id: String, rev: Int, accepted: (Boolean) -> Unit, failed: (Exception) -> Unit) {
-        if (rev <= 0) {
-            failed(IllegalArgumentException("rev must be positive"))
+    fun enqueueAgain(id: String, rev: Int, baseRev: Int, baseHash: String, accepted: (Boolean) -> Unit, failed: (Exception) -> Unit) {
+        if (rev <= 0 || baseRev <= 0 || baseHash.isBlank()) {
+            failed(IllegalArgumentException("positive rev/baseRev and baseHash are required"))
             return
         }
         admission.enqueue(
             id,
             finished = { false },
-            persist = { capture.library.mutate(id, "stt.write") { note -> ResumableWork.rerun(note.getJSONObject("stt"), rev) } },
+            persist = { capture.library.mutate(id, "stt.write") { note -> ResumableWork.rerun(note.getJSONObject("stt"), rev, baseRev, baseHash) } },
             accepted = accepted,
             failed = { e -> Log.w("ExoStt", "rerun enqueue failed for $id", e); failed(e) },
             changed = { onQueueChanged?.invoke() },
@@ -296,12 +317,16 @@ class TranscriptionQueue(private val context: Context, private val store: ModelS
         val isoNow = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US)
             .apply { timeZone = TimeZone.getTimeZone("UTC") }.format(Date())
         val stt = capture.library.read(id)?.optJSONObject("stt")
-        val revision = if (stt != null && !stt.isNull("rerunRev")) stt.optInt("rerunRev", 1) else 1
+        val rerunRev = stt?.takeIf { !it.isNull("rerunRev") }?.optInt("rerunRev", 1)
+        val revision = rerunRev ?: 1
         val transcript = JSONObject()
             .put("version", 1).put("noteId", id).put("transcriber", "on-device").put("rev", revision)
             .put("engine", if (modelId == ModelManifest.PARAKEET_FULL) "parakeet-tdt-0.6b-v3" else "parakeet-tdt-110m-en")
             .put("model", modelId).put("language", "en").put("outcome", outcome).put("diarized", false)
             .put("segments", segments).put("createdAt", isoNow)
+        if (rerunRev != null && stt != null && !stt.isNull("rerunBaseRev") && !stt.isNull("rerunBaseHash")) {
+            transcript.put("rerunBase", JSONObject().put("rev", stt.optInt("rerunBaseRev")).put("hash", stt.optString("rerunBaseHash")))
+        }
         capture.library.putTranscript(id, transcript)
         try { capture.library.mutate(id, "stt.write") { it.getJSONObject("stt").put("state", "done").put("error", JSONObject.NULL) } } catch (_: Exception) {}
         onProgress?.invoke(id, 100)

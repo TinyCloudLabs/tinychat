@@ -43,7 +43,8 @@ import { captureCapabilities, captureEngineKind, NativeFileUploadStatusError, re
 import { currentAccountGeneration, isAccountContextCurrent, isAccountWorkAllowed, StaleAccountContext, subscribeAccountGeneration } from "./accountContext";
 import { nativeRecordingSource, VoiceNotes, type VoiceNoteRecording } from "./nativeVoiceNotes";
 import { OnDeviceStt } from "./onDeviceStt";
-import { readTranscriptCommit } from "./voiceNoteCommits";
+import { getDesktopWhisperQueue } from "./desktop/desktopWhisper";
+import { readTranscriptCommit, requireVoiceNoteTranscriptCommit, type TranscriptCommit } from "./voiceNoteCommits";
 import { preserveVoiceNoteTranscriptHistory } from "./voiceNoteTranscriptHistory";
 import { whenVoiceNoteSavesIdle } from "./recorderSaves";
 import { transcriptionErrorCopy, voiceNoteTranscriptionFailureForCode } from "./transcriptionErrors";
@@ -68,7 +69,7 @@ import {
   type VoiceNoteTranscriptSave,
   type VoiceNoteTranscriptAccount,
 } from "./voiceNoteStore";
-import type { VoiceNoteTranscriptionStatsMetadata } from "./voiceNoteRows";
+import { transcriptHash, type VoiceNoteTranscriptionStatsMetadata } from "./voiceNoteRows";
 
 // ── Upload ─────────────────────────────────────────────────────────────
 
@@ -174,10 +175,13 @@ const FETCH_PUT_TIMEOUT_MS = 240_000;
  * (not followed), any failure to get an HTTP answer is `upload_outcome_unknown`, and a body that is
  * not JSON is null, exactly as on the phone.
  */
-export function createFetchPtxPut(fetchImpl: typeof fetch = (input, init) => fetch(input, init)): PtxPut {
+export function createFetchPtxPut(
+  fetchImpl: typeof fetch = (input, init) => fetch(input, init),
+  timeoutMs = FETCH_PUT_TIMEOUT_MS,
+): PtxPut {
   return async (request) => {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), FETCH_PUT_TIMEOUT_MS);
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     let response: Response;
     try {
       response = await fetchImpl(request.url, {
@@ -185,6 +189,7 @@ export function createFetchPtxPut(fetchImpl: typeof fetch = (input, init) => fet
         headers: { Authorization: `Bearer ${request.capability}`, "Content-Type": request.contentType },
         body: base64ToBytes(request.base64) as Uint8Array<ArrayBuffer>,
         redirect: "manual",
+        signal: controller.signal,
       });
     } catch {
       throw new PrivateCloudError("upload_outcome_unknown", "The upload connection failed", { correlationId: request.correlationId });
@@ -1194,7 +1199,8 @@ export async function transcribeVoiceNote(args: {
   if (nativeNote?.owner && nativeNote.owner !== tcw.did)
     throw new PrivateCloudError("transcript_save_failed", "This voice note is not owned by the current account");
   const local = nativeNote ? (await VoiceNotes.getTranscript({ id: sourceId })).transcript : null;
-  const commit = await readTranscriptCommit(tcw, sourceId);
+  const currentCommit = await readTranscriptCommit(tcw, sourceId);
+  const commit = args.explicitRerun ? requireVoiceNoteTranscriptCommit(currentCommit) : currentCommit;
   const ledgerRev = nativeNote?.ledger?.transcriptSync.rev ?? 0;
   const localRev = local?.rev ?? 0;
   if (![commit?.rev ?? 0, ledgerRev, localRev].every((value) => Number.isSafeInteger(value) && value >= 0))
@@ -1281,6 +1287,11 @@ export async function transcribeVoiceNote(args: {
     if (!saved.ok) {
       if (saved.error.code === "VOICE_NOTE_NOT_FOUND") throw new PrivateCloudError("voice_note_not_found", saved.error.message);
       throw new PrivateCloudError("transcript_save_failed", saved.error.message);
+    }
+    if (args.explicitRerun) {
+      const current = await readTranscriptCommit(tcw, sourceId);
+      if (current?.rev !== prepared.rev || current.hash !== await transcriptHash(prepared.sentences))
+        throw new PrivateCloudError("transcript_save_failed", "A different transcript revision won this rerun. Try again.");
     }
   };
 
@@ -1899,27 +1910,37 @@ export function voiceNoteTranscriberFor(
         const current = ref.current;
         return generation === currentAccountGeneration() && current.did === did && isAccountWorkAllowed(current);
       };
-      if (!captureCapabilities().localTranscription || account.did !== did || !stillAllowed()) return "unavailable";
+      const capabilities = captureCapabilities();
+      if ((!capabilities.localTranscription && !capabilities.desktopWhisper) || account.did !== did || !stillAllowed()) return "unavailable";
       const { recordings } = await VoiceNotes.listPending();
       if (!stillAllowed()) return "account-changed";
       const recording = recordings.find((item) => item.id === sourceId);
       if (!recording) return "unavailable";
       if (recording.owner && recording.owner !== did) return "account-changed";
-      const [commit, local] = await Promise.all([
+      const [currentCommit, local] = await Promise.all([
         readTranscriptCommit(account, sourceId),
         VoiceNotes.getTranscript({ id: sourceId }),
       ]);
       if (!stillAllowed()) return "account-changed";
+      let commit: TranscriptCommit;
+      try { commit = requireVoiceNoteTranscriptCommit(currentCommit); }
+      catch (error) { return readableError(error); }
       const ledgerRev = recording.ledger?.transcriptSync.rev ?? 0;
       const localRev = local.transcript?.rev ?? 0;
-      if (![commit?.rev ?? 0, ledgerRev, localRev].every((value) => Number.isSafeInteger(value) && value >= 0))
+      if (![commit.rev, ledgerRev, localRev].every((value) => Number.isSafeInteger(value) && value >= 0))
         return "unavailable";
-      const rev = Math.max(commit?.rev ?? 0, ledgerRev, localRev) + 1;
+      const rev = Math.max(commit.rev, ledgerRev, localRev) + 1;
       if (!Number.isSafeInteger(rev)) return "unavailable";
-      if (commit) await preserveVoiceNoteTranscriptHistory(account, commit);
       if (!stillAllowed()) return "account-changed";
-      try { await OnDeviceStt.enqueueAgain({ id: sourceId, rev }); }
-      catch (error) { return `Could not start the on-device transcription: ${readableError(error)}`; }
+      if (capabilities.localTranscription) {
+        try { await OnDeviceStt.enqueueAgain({ id: sourceId, rev, baseRev: commit.rev, baseHash: commit.hash }); }
+        catch (error) { return `Could not start the on-device transcription: ${readableError(error)}`; }
+        return null;
+      }
+      const desktopQueue = getDesktopWhisperQueue();
+      if (!desktopQueue) return "unavailable";
+      try { await desktopQueue.rerun({ id: sourceId, rev, baseRev: commit.rev, baseHash: commit.hash }); }
+      catch (error) { return `Could not start Whisper transcription: ${readableError(error)}`; }
       return null;
     },
     noteSaved(recording, audio) {

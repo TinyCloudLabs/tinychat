@@ -219,6 +219,17 @@ describe("createFetchPtxPut", () => {
     expect(Array.from(ptx.puts[0]!.body)).toEqual([82, 73, 70, 70]);
   });
 
+  test("passes AbortSignal to the PUT and aborts the request at the timeout", async () => {
+    let signal: AbortSignal | undefined;
+    const fetcher = ((_: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      signal = init?.signal ?? undefined;
+      signal?.addEventListener("abort", () => reject(new DOMException("The upload timed out", "AbortError")), { once: true });
+    })) as typeof fetch;
+    const error = await createFetchPtxPut(fetcher, 1)(request).catch((caught: unknown) => caught);
+    expect(signal).toBeInstanceOf(AbortSignal);
+    expect(signal?.aborted).toBe(true);
+    expect(error).toMatchObject({ code: "upload_outcome_unknown", correlationId: "cid-1" });
+  });
   test("a non-JSON or empty body is null, the status still comes through", async () => {
     expect(await createFetchPtxPut(fakePtx(() => new Response("<html>", { status: 502 })).fetchImpl)(request)).toEqual({ status: 502, body: null });
     expect(await createFetchPtxPut(fakePtx(() => new Response(null, { status: 201 })).fetchImpl)(request)).toEqual({ status: 201, body: null });

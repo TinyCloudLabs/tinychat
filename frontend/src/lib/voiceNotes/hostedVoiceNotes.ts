@@ -10,8 +10,8 @@ import {
 import { base64ToBytes } from "./voiceNoteAudio";
 import { currentAccountGeneration, isAccountWorkAllowed } from "./accountContext";
 import { nativeRecordingSource, VoiceNotes, type LocalTranscript, type VoiceNoteRecording, type VoiceNotesPlugin } from "./nativeVoiceNotes";
-import { readTranscriptCommit } from "./voiceNoteCommits";
-import { createVoiceNoteRow } from "./voiceNoteRows";
+import { readTranscriptCommit, requireVoiceNoteTranscriptCommit } from "./voiceNoteCommits";
+import { createVoiceNoteRow, transcriptHash } from "./voiceNoteRows";
 import { preserveVoiceNoteTranscriptHistory } from "./voiceNoteTranscriptHistory";
 import {
   loadVoiceNoteAudio,
@@ -26,7 +26,7 @@ import type { CloudClock } from "../privateCloud";
 
 const CONSENT = "exo.voiceNotes.powerfulConsent";
 const PENDING = "exo.voiceNotes.powerfulJobs";
-type Stored = { uploadId?: string; handle?: string; saved?: boolean; explicitRerun?: boolean; recording?: VoiceNoteRecording };
+type Stored = { uploadId?: string; handle?: string; saved?: boolean; explicitRerun?: boolean; cleanupOnly?: boolean; recording?: VoiceNoteRecording };
 
 function storage(): Storage | undefined {
   try { return globalThis.localStorage; } catch { return undefined; }
@@ -47,10 +47,11 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
   services: { client?: ReturnType<typeof createHostedAssemblyAiClient>; native?: VoiceNotesPlugin; clock?: CloudClock;
     readCommit?: typeof readTranscriptCommit; createRow?: typeof createVoiceNoteRow;
     save?: typeof saveVoiceNoteTranscript; readNote?: typeof readVoiceNoteForTranscription;
-    loadAudio?: typeof loadVoiceNoteAudio } = {}) {
+    loadAudio?: typeof loadVoiceNoteAudio; preserveHistory?: typeof preserveVoiceNoteTranscriptHistory } = {}) {
   const client = services.client ?? createHostedAssemblyAiClient({ backendUrl, sessionStore });
   const native = services.native ?? VoiceNotes;
   const readCommit = services.readCommit ?? readTranscriptCommit;
+  const preserveHistory = services.preserveHistory ?? preserveVoiceNoteTranscriptHistory;
   const createRow = services.createRow ?? createVoiceNoteRow;
   const save = services.save ?? saveVoiceNoteTranscript;
   const readNote = services.readNote ?? readVoiceNoteForTranscription;
@@ -70,7 +71,10 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
   const persist = (id: string, patch: Stored | null) => {
     const all = readJobs(did);
     if (patch === null) delete all[id];
-    else all[id] = { ...all[id], ...patch };
+    else {
+      all[id] = { ...all[id], ...patch };
+      if (patch.cleanupOnly) delete all[id]!.explicitRerun;
+    }
     writeJobs(did, all);
   };
   const check = async () => {
@@ -82,6 +86,7 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
     const id = recording.id;
     if (active.has(id) || !consented() || (recording.owner && recording.owner !== did) || recording.source !== "in_app"
       || (!explicitRerun && recording.options?.transcriber !== "assemblyai")) return;
+    active.add(id);
     logPipeline("transcription", id, "start", { engine: "assemblyai" });
     const generation = currentAccountGeneration();
     const guard = () => {
@@ -90,10 +95,12 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
         throw new Error("The recording account changed. Retry after signing in.");
     };
     let transcriptSaved = false;
+    let remoteHandle: string | undefined;
     try {
       guard();
       const account = tcw();
-      const prior = await readCommit(account, id);
+      const currentCommit = await readCommit(account, id);
+      const prior = explicitRerun ? requireVoiceNoteTranscriptCommit(currentCommit) : currentCommit;
       const stored = explicitRerun ? {} : readJobs(did)[id] ?? {};
       if (prior && !explicitRerun) {
         transcriptSaved = true;
@@ -171,6 +178,7 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
         return handle;
       });
       if (!handle) throw new Error("Powerful did not return a transcript. Try again.");
+      remoteHandle = handle;
       persist(id, { handle });
       const transcript = await pollAssemblyAiTranscript(client, handle, {
         clock: services.clock,
@@ -198,7 +206,7 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
           text: s.text, speaker: s.speaker_name ?? null })) };
       state(id, { kind: "saving" });
       guard();
-      if (explicitRerun && prior) await preserveVoiceNoteTranscriptHistory(account, prior);
+      if (explicitRerun && prior) await preserveHistory(account, prior);
       if (!explicitRerun && recording.sizeBytes > 0 && (!local.transcript || local.transcript.rev < rev))
         await native.putTranscript({ id, transcript: prepared });
       guard();
@@ -209,6 +217,11 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
           speaker_labels: recording.options?.identifySpeakers !== false ? "diarized" : "single-speaker", transcribed_at: at,
           model: transcript.speech_model_used ?? null, language: transcript.language_code ?? null } }, { generation, did });
       if (!saved.ok) throw new Error("The transcript is ready, but could not be saved to your space. Try again.");
+      if (explicitRerun) {
+        const committed = await readCommit(account, id);
+        if (committed?.rev !== rev || committed.hash !== await transcriptHash(sentences))
+          throw new Error("A different transcript revision won this rerun. Try again.");
+      }
       transcriptSaved = true;
       if (explicitRerun && recording.sizeBytes > 0 && (!local.transcript || local.transcript.rev < rev)) {
         try { await native.putTranscript({ id, transcript: prepared }); }
@@ -222,7 +235,16 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
       notify();
     } catch (error) {
       logPipelineError("transcription", error, id);
-      if (explicitRerun) persist(id, null);
+      if (explicitRerun) {
+        const cleanupHandle = remoteHandle ?? readJobs(did)[id]?.handle;
+        if (cleanupHandle) {
+          try { await client.deleteTranscript(cleanupHandle); persist(id, null); }
+          catch (cleanupError) {
+            console.warn("[HostedVoiceNotes] Could not delete the failed rerun's remote transcript", cleanupError);
+            persist(id, { handle: cleanupHandle, cleanupOnly: true, recording: recording as VoiceNoteRecording });
+          }
+        } else persist(id, null);
+      }
       const current = currentAccountGeneration() === generation && tcw().did === did && isAccountWorkAllowed(tcw());
       const clientForFailure = current ? tcw() : null;
       if (!transcriptSaved && clientForFailure && typeof clientForFailure.sql?.db === "function") {
@@ -248,7 +270,23 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
     subscribe(listener: () => void) { listeners.add(listener); return () => { listeners.delete(listener); }; },
     async resume() {
       for (const [id, stored] of Object.entries(readJobs(did))) {
-        if (stored.explicitRerun) { persist(id, null); continue; }
+        if (stored.explicitRerun) {
+          if (stored.handle) {
+            try { await client.deleteTranscript(stored.handle); persist(id, null); }
+            catch (error) {
+              console.warn("[HostedVoiceNotes] Could not delete an interrupted rerun's remote transcript", error);
+              persist(id, { handle: stored.handle, cleanupOnly: true });
+            }
+          } else persist(id, null);
+          continue;
+        }
+        if (stored.cleanupOnly) {
+          if (stored.handle) {
+            try { await client.deleteTranscript(stored.handle); persist(id, null); }
+            catch (error) { console.warn("[HostedVoiceNotes] Could not delete a failed rerun's remote transcript", error); }
+          } else persist(id, null);
+          continue;
+        }
         const recording = (await native.listPending()).recordings.find((r) => r.id === id);
         if (recording ?? stored.recording) void run(recording ?? stored.recording!);
       }

@@ -1,6 +1,6 @@
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { CONNECTORS_KV_PREFIX } from "../connectors/connectorStore";
-import type { TranscriptCommit } from "./voiceNoteCommits";
+import { readTranscriptCommit, type TranscriptCommit } from "./voiceNoteCommits";
 
 export interface VoiceNoteTranscriptHistoryRecord {
   v: 1;
@@ -13,8 +13,8 @@ export interface VoiceNoteTranscriptHistoryRecord {
   committed_at: string | null;
 }
 
-export function transcriptHistoryKvKey(sourceId: string, rev: number): string {
-  return `${CONNECTORS_KV_PREFIX}/exo-voice-note/transcript-history/${sourceId}/${rev}`;
+export function transcriptHistoryKvKey(sourceId: string, rev: number, hash: string): string {
+  return `${CONNECTORS_KV_PREFIX}/exo-voice-note/transcript-history/${sourceId}/${rev}/${hash}`;
 }
 
 function isSameRecord(value: unknown, expected: VoiceNoteTranscriptHistoryRecord): boolean {
@@ -31,19 +31,22 @@ function existingRecordText(value: unknown): string | null {
   return null;
 }
 
-/** Call only for an explicit UI rerun, after reading the current commit and before its replacement commits. */
-export async function preserveVoiceNoteTranscriptHistory(tcw: TinyCloudWeb, commit: TranscriptCommit): Promise<void> {
+/** Call only for an explicit rerun, immediately before replacement; refuses a changed expected commit. */
+export async function preserveVoiceNoteTranscriptHistory(tcw: TinyCloudWeb, expected: TranscriptCommit): Promise<void> {
+  const current = await readTranscriptCommit(tcw, expected.sourceId);
+  if (current?.rev !== expected.rev || current.hash !== expected.hash)
+    throw new Error("The committed transcript changed before history could be preserved. Retry the rerun.");
   const record: VoiceNoteTranscriptHistoryRecord = {
     v: 1,
-    rev: commit.rev,
-    hash: commit.hash,
-    body_key: commit.bodyKey,
-    outcome: commit.outcome,
-    engine: commit.engine,
-    provider: commit.provider,
-    committed_at: commit.committedAt,
+    rev: expected.rev,
+    hash: expected.hash,
+    body_key: expected.bodyKey,
+    outcome: expected.outcome,
+    engine: expected.engine,
+    provider: expected.provider,
+    committed_at: expected.committedAt,
   };
-  const key = transcriptHistoryKvKey(commit.sourceId, commit.rev);
+  const key = transcriptHistoryKvKey(expected.sourceId, expected.rev, expected.hash);
   const result = await tcw.kv.put(key, JSON.stringify(record), { ifNoneMatch: "*", contentType: "application/json" });
   if (result.ok) return;
   if (!/PRECONDITION|412/i.test(`${result.error.code} ${result.error.message}`))

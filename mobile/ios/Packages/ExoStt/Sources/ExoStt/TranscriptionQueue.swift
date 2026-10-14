@@ -61,6 +61,8 @@ public final class TranscriptionQueue {
     /// and adds it to the queue. Called at launch (after recovery), on every `committed` event, and
     /// when the speech assets finish installing.
     public func reconcile() { core.reconcile() }
+    /// Clears interrupted explicit reruns during app launch; reruns are never resumed.
+    public func recoverInterruptedReruns() { core.recoverInterruptedReruns() }
 
     /// Explicit enqueue: the UI's Retry for a `failed` note, or a fresh on-device recording. Resets
     /// the attempt count, since this is a deliberate retry, not an automatic one; a note that is
@@ -70,9 +72,10 @@ public final class TranscriptionQueue {
     public func enqueue(id: String, accepted: ((Bool) -> Void)? = nil, failed: ((Error) -> Void)? = nil) {
         core.enqueue(id: id, accepted: accepted, failed: failed)
     }
-    /// User-confirmed rerun with a caller-computed revision. It is intentionally not resumable after relaunch.
-    public func enqueueAgain(id: String, rev: Int, accepted: ((Bool) -> Void)? = nil, failed: ((Error) -> Void)? = nil) {
-        core.enqueueAgain(id: id, rev: rev, accepted: accepted, failed: failed)
+    /// User-confirmed rerun with a caller-computed revision and committed base. It is not resumable after relaunch.
+    public func enqueueAgain(id: String, rev: Int, baseRev: Int, baseHash: String,
+                             accepted: ((Bool) -> Void)? = nil, failed: ((Error) -> Void)? = nil) {
+        core.enqueueAgain(id: id, rev: rev, baseRev: baseRev, baseHash: baseHash, accepted: accepted, failed: failed)
     }
 
     /// Drops a queued note, or stops the note decoding right now at its next checkpoint; the worker

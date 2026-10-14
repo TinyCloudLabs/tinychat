@@ -5,7 +5,7 @@ import type { LocalTranscript } from "../nativeVoiceNotes";
 /** Convert the desktop Whisper response without changing the persisted mono transcript. */
 export function whisperLocalTranscript(
   note: { id: string; durationMs: number }, model: WhisperModel, response: BatchResponse,
-  { detail = false }: { detail?: boolean } = {},
+  { detail = false, rev = 1, rerunBase }: { detail?: boolean; rev?: number; rerunBase?: { rev: number; hash: string } } = {},
 ): LocalTranscript {
   const alternative = response.results.channels[0]?.alternatives[0];
   const words = alternative?.words ?? [];
@@ -21,6 +21,7 @@ export function whisperLocalTranscript(
       text: part, start: 0, end: note.durationMs / 1000, channel: 0, timing: "none" as const,
     }));
   }
-  return { version: 1, noteId: note.id, transcriber: "on-device", rev: 1, engine: "whispercpp", model, language: "en",
-    outcome: segments.length ? "transcribed" : "no_speech", diarized: false, segments, createdAt: new Date().toISOString() };
+  return { version: 1, noteId: note.id, transcriber: "on-device", rev, engine: "whispercpp", model, language: "en",
+    outcome: segments.length ? "transcribed" : "no_speech", diarized: false, segments, createdAt: new Date().toISOString(),
+    ...(rerunBase ? { rerunBase } : {}) };
 }

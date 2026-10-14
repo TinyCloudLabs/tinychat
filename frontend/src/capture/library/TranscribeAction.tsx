@@ -14,6 +14,8 @@ import type { VoiceNoteTranscriptionProps } from "@/capture/recorder/transcripti
 import { captureCapabilities } from "@/lib/voiceNotes/captureEngine";
 import { VoiceNotes } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { cn } from "@/lib/utils";
+import { OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
+import { getDesktopWhisperQueue } from "@/lib/voiceNotes/desktop/desktopWhisper";
 import {
   needsConsent,
   transcribeProviders,
@@ -35,9 +37,11 @@ export type PhoneRead = { state: "reading" } | { state: "read"; phone: PhoneReco
 
 /** Whether this phone holds the note's recording (Local needs it), and the mode it was committed to. */
 function usePhoneRecording(noteId: string): PhoneRead {
-  const [read, setRead] = useState<PhoneRead>(() => (captureCapabilities().localTranscription ? { state: "reading" } : { state: "read", phone: null }));
+  const capabilities = captureCapabilities();
+  const needsLocalAudio = capabilities.localTranscription || capabilities.desktopWhisper;
+  const [read, setRead] = useState<PhoneRead>(() => (needsLocalAudio ? { state: "reading" } : { state: "read", phone: null }));
   useEffect(() => {
-    if (!captureCapabilities().localTranscription) return;
+    if (!needsLocalAudio) return;
     let live = true;
     setRead({ state: "reading" });
     VoiceNotes.listPending().then(
@@ -54,7 +58,7 @@ function usePhoneRecording(noteId: string): PhoneRead {
     return () => {
       live = false;
     };
-  }, [noteId]);
+  }, [noteId, needsLocalAudio]);
   return read;
 }
 
@@ -79,12 +83,14 @@ export function TranscribeAction(props: TranscribeActionProps) {
 export function TranscribeActionFor(props: TranscribeActionProps & { read: PhoneRead }) {
   const platform = useContext(PlatformContext);
   const { noteId, transcription, durationSecs, read } = props;
+  const selectId = useId();
   const phone = read.state === "read" ? read.phone : null;
   const providers = transcribeProviders(noteId, transcription, phone, durationSecs, props.rerun);
   const [chosen, setChosen] = useState<TranscribeProvider | null>(null);
   const [busy, setBusy] = useState(false);
   // Set at the tap, ahead of any render: the start is still on its way until this note's job or queue entry replaces the action.
   const starting = useRef(false);
+  const nativeRerun = useRef(false);
   const [asking, setAsking] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const rerunButtonRef = useRef<HTMLButtonElement>(null);
@@ -100,15 +106,43 @@ export function TranscribeActionFor(props: TranscribeActionProps & { read: Phone
     }
   }, [confirming]);
   const [problem, setProblem] = useState<string | null>(null);
-  const selectId = useId();
-  // The lock holds while the start is on its way. A job that settles into something other than active (blocked, held,
-  // failed, done) is the start's answer: the action stays on screen and the user may try again.
-  const jobKind = transcription?.jobs.get(noteId)?.kind;
+  // A native rerun's enqueue promise only acknowledges admission. Its completion is reported by the
+  // plugin lifecycle, so keep the action locked until this note's terminal event arrives.
   useEffect(() => {
-    if (jobKind === undefined || jobKind === "active") return;
-    starting.current = false;
-    setBusy(false);
-  }, [jobKind]);
+    if (!props.rerun) return;
+    let alive = true;
+    const handles: Array<{ remove: () => Promise<void> }> = [];
+    const finish = (id: string) => {
+      if (!alive || id !== noteId || !nativeRerun.current) return;
+      nativeRerun.current = false;
+      starting.current = false;
+      setBusy(false);
+    };
+    const capabilities = captureCapabilities();
+    if (capabilities.localTranscription) {
+      for (const event of ["transcribed", "failed"] as const) {
+        void OnDeviceStt.addListener(event, (result) => finish(result.id)).then((handle) => {
+          if (!alive) void handle.remove();
+          else handles.push(handle);
+        });
+      }
+    }
+    if (capabilities.desktopWhisper) {
+      const queue = getDesktopWhisperQueue();
+      if (queue) {
+        const unsubscribeDone = queue.onDone(finish);
+        const unsubscribeFailed = queue.onFailed(finish);
+        handles.push(
+          { remove: async () => unsubscribeDone() },
+          { remove: async () => unsubscribeFailed() },
+        );
+      }
+    }
+    return () => {
+      alive = false;
+      for (const handle of handles) void handle.remove();
+    };
+  }, [noteId, props.rerun]);
   const provider = chosen !== null && providers.includes(chosen) ? chosen : providers[0];
   const recheck = transcription?.availability === "failed" && (transcription.consented || transcription.checkErrorCode === "native_status_failed")
     ? privateNotOffered("failed", transcription.checkErrorCode) : null;
@@ -116,9 +150,11 @@ export function TranscribeActionFor(props: TranscribeActionProps & { read: Phone
   const run = (which: TranscribeProvider) => {
     if (starting.current) return;
     starting.current = true;
+    nativeRerun.current = props.rerun === true && which === "on-device";
     setProblem(null);
     setBusy(true);
     const failed = (reason: string) => {
+      nativeRerun.current = false;
       starting.current = false;
       setProblem(reason);
       setBusy(false);

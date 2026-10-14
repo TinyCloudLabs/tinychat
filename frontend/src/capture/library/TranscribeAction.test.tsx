@@ -9,7 +9,7 @@ import type { VoiceNoteTranscriptionProps } from "@/capture/recorder/transcripti
 import { PlatformContext } from "@/lib/platform";
 import { createFakeOnDeviceStt } from "@/lib/voiceNotes/fakeOnDeviceStt";
 import { __setVoiceNotesForTests, VoiceNotes, type VoiceNotesPlugin } from "@/lib/voiceNotes/nativeVoiceNotes";
-import { __resetCaptureEngineForTests } from "@/lib/voiceNotes/captureEngine";
+import { __resetCaptureEngineForTests, __setInstalledEngineForTests, captureCapabilities } from "@/lib/voiceNotes/captureEngine";
 import { __resetOnDeviceSttStoreForTests, onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
 import { __setOnDeviceSttForTests, OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
 import { installDom } from "@/test/dom";
@@ -20,6 +20,7 @@ import { memoryHoldStore } from "@/harness/memoryHoldStore";
 import { TranscribeActionFor } from "./TranscribeAction";
 import type { PhoneRead } from "./TranscribeAction";
 import { LOCAL_START_FAILED, needsConsent, transcribeProviders, transcribeWith, type PhoneRecording } from "./transcribeProviders";
+import { registerDesktopWhisperQueue, type DesktopWhisperQueue } from "@/lib/voiceNotes/desktop/desktopWhisper";
 
 const NOTE = "rec-1";
 const noop = () => {};
@@ -37,6 +38,7 @@ let cleanupDom: (() => void) | undefined;
 let root: Root | null = null;
 
 beforeEach(() => {
+  registerDesktopWhisperQueue(null);
   enqueued = [];
   __resetCaptureEngineForTests();
   __resetOnDeviceSttStoreForTests();
@@ -54,6 +56,7 @@ afterEach(async () => {
   __resetOnDeviceSttStoreForTests();
   __setVoiceNotesForTests(originals.voiceNotes, { available: null });
   __setOnDeviceSttForTests(originals.onDeviceStt);
+  registerDesktopWhisperQueue(null);
   __resetCaptureEngineForTests();
 });
 
@@ -98,6 +101,11 @@ describe("the providers on offer", () => {
     for (const job of [{ kind: "active", status: { kind: "processing", completed: 1, total: 3 } }, { kind: "done", outcome: "transcribed" }] as const) {
       expect(transcribeProviders(NOTE, transcription({ jobs: new Map([[NOTE, job]]) }), phone(), 60)).toEqual(["on-device"]);
     }
+  });
+  test("desktop Whisper offers Local again for a confirmed rerun when the recording is on this Mac", () => {
+    __setInstalledEngineForTests("tauri", { ...captureCapabilities(), localTranscription: false, desktopWhisper: true });
+    const rerunTranscription = transcription({ onTranscribeAgain: async () => null });
+    expect(transcribeProviders(NOTE, rerunTranscription, phone(), 60, true)).toEqual(["on-device", "private-cloud"]);
   });
 
   test("Private asks for consent once", () => {
@@ -404,6 +412,60 @@ describe("the Transcribe action", () => {
     await click(button(host));
     await click(host.querySelector('[data-testid="transcribe-again-confirm"]')!);
     expect(calls).toEqual([`${NOTE}:on-device`]);
+  });
+  test("a native rerun stays locked until its success or failure event, then allows another engine", async () => {
+    const listeners = new Map<string, (event: { id: string }) => void>();
+    OnDeviceStt.addListener = ((event: string, listener: (event: { id: string }) => void) => {
+      listeners.set(event, listener);
+      return Promise.resolve({ remove: async () => { listeners.delete(event); } });
+    }) as typeof OnDeviceStt.addListener;
+    const reruns: string[] = [];
+    const host = await mount({ read: onPhone(), transcription: transcription({
+      onTranscribeAgain: (id, engine) => { reruns.push(`${id}:${engine}`); return null; },
+    }), rerun: true });
+    await click(button(host));
+    await click(host.querySelector('[data-testid="transcribe-again-confirm"]')!);
+    expect(button(host).disabled).toBe(true);
+    await act(async () => listeners.get("transcribed")!({ id: NOTE }));
+    expect(button(host).disabled).toBe(false);
+    await choose(host, "private-cloud");
+    expect(host.querySelector<HTMLSelectElement>('[data-testid="transcribe-provider"]')!.disabled).toBe(false);
+    await click(button(host));
+    await click(host.querySelector('[data-testid="transcribe-again-confirm"]')!);
+    expect(reruns).toEqual([`${NOTE}:on-device`, `${NOTE}:private-cloud`]);
+  });
+
+  test("a native rerun failure event unlocks the same action", async () => {
+    const listeners = new Map<string, (event: { id: string }) => void>();
+    OnDeviceStt.addListener = ((event: string, listener: (event: { id: string }) => void) => {
+      listeners.set(event, listener);
+      return Promise.resolve({ remove: async () => { listeners.delete(event); } });
+    }) as typeof OnDeviceStt.addListener;
+    const host = await mount({ read: onPhone(), transcription: transcription({ onTranscribeAgain: () => null }), rerun: true });
+    await click(button(host));
+    await click(host.querySelector('[data-testid="transcribe-again-confirm"]')!);
+    expect(button(host).disabled).toBe(true);
+    await act(async () => listeners.get("failed")!({ id: NOTE }));
+    expect(button(host).disabled).toBe(false);
+  });
+  test("a desktop Whisper rerun stays locked until its terminal event, then permits retry", async () => {
+    const listeners = { done: (_id: string) => {}, failed: (_id: string) => {} };
+    registerDesktopWhisperQueue({
+      onDone: (listener: (id: string) => void) => { listeners.done = listener; return () => {}; },
+      onFailed: (listener: (id: string) => void) => { listeners.failed = listener; return () => {}; },
+    } as unknown as DesktopWhisperQueue);
+    __setInstalledEngineForTests("tauri", { ...captureCapabilities(), localTranscription: false, desktopWhisper: true });
+    const host = await mount({ read: onPhone(), transcription: transcription({ onTranscribeAgain: async () => null }), rerun: true, platform: "tauri" });
+    await click(button(host));
+    await click(host.querySelector('[data-testid="transcribe-again-confirm"]')!);
+    expect(button(host).disabled).toBe(true);
+    await act(async () => listeners.failed(NOTE));
+    expect(button(host).disabled).toBe(false);
+    await click(button(host));
+    await click(host.querySelector('[data-testid="transcribe-again-confirm"]')!);
+    expect(button(host).disabled).toBe(true);
+    await act(async () => listeners.done(NOTE));
+    expect(button(host).disabled).toBe(false);
   });
 
   test("private cloud unreachable after consent offers Check again, not a dead Transcribe", async () => {

@@ -330,6 +330,6 @@ function OnDeviceNoteStatusReading(props: { noteId: string; fallback: ReactNode;
 /** Only a phone with on-device speech has a state to read; elsewhere the fallback stands. A note private cloud has taken is the fallback's to show. */
 export function OnDeviceNoteStatus(props: { noteId: string; fallback: ReactNode; transcription?: VoiceNoteTranscriptionProps; durationSecs?: number | null; stepperShown?: boolean; rerunOnly?: boolean }) {
   if (!captureCapabilities().localTranscription) return <>{props.fallback}</>;
-  if (props.transcription?.jobs.has(props.noteId)) return <>{props.fallback}</>;
+  if (props.transcription?.jobs.has(props.noteId) && !props.rerunOnly) return <>{props.fallback}</>;
   return <OnDeviceNoteStatusReading {...props} />;
 }

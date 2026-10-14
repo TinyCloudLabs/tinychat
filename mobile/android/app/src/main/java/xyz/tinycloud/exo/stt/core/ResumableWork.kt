@@ -16,11 +16,21 @@ internal object ResumableWork {
         return note.optJSONObject("options")?.optString("transcriber") == "on-device" || stt.optBoolean("requested")
     }
 
-    /** What an ordinary explicit enqueue writes: a fresh attempt, and the user's resumable Local choice. */
     fun requested(stt: JSONObject): JSONObject =
-        stt.put("state", "queued").put("error", JSONObject.NULL).put("attempts", 0).put("requested", true).put("rerunRev", JSONObject.NULL)
+        stt.put("state", "queued").put("error", JSONObject.NULL).put("attempts", 0).put("requested", true)
+            .put("rerunRev", JSONObject.NULL).put("rerunBaseRev", JSONObject.NULL).put("rerunBaseHash", JSONObject.NULL)
 
     /** An explicit rerun is intentionally not resumed after relaunch. */
-    fun rerun(stt: JSONObject, rev: Int): JSONObject =
-        stt.put("state", "queued").put("error", JSONObject.NULL).put("attempts", 0).put("requested", false).put("rerunRev", rev)
+    fun rerun(stt: JSONObject, rev: Int, baseRev: Int, baseHash: String): JSONObject =
+        stt.put("state", "queued").put("error", JSONObject.NULL).put("attempts", 0).put("requested", false)
+            .put("rerunRev", rev).put("rerunBaseRev", baseRev).put("rerunBaseHash", baseHash)
+
+    /** Clears an interrupted explicit rerun; callers invoke this only during process startup. */
+    fun cancelInterruptedRerun(stt: JSONObject): Boolean {
+        val state = stt.optString("state")
+        if (stt.isNull("rerunRev") || !stt.has("rerunRev") || state != "queued" && state != "running") return false
+        stt.put("state", "cancelled").put("rerunRev", JSONObject.NULL)
+            .put("rerunBaseRev", JSONObject.NULL).put("rerunBaseHash", JSONObject.NULL)
+        return true
+    }
 }

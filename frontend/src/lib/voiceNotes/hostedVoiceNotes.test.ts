@@ -8,6 +8,7 @@ import { createHostedVoiceNoteTrack } from "./hostedVoiceNotes";
 import { withHostedUploadQueue } from "../hostedUploadQueue";
 import type { VoiceNoteRecording, VoiceNotesPlugin, LocalTranscript } from "./nativeVoiceNotes";
 import type { TranscriptCommit } from "./voiceNoteCommits";
+import { transcriptHash } from "./voiceNoteRows";
 
 const previousStorage = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
 afterEach(() => {
@@ -16,7 +17,7 @@ afterEach(() => {
 });
 
 function harness(failAt?: "part" | "submit" | "result" | "space" | "delete", noSpeech = false, spaceOnly = false, mimeType = "audio/mp4",
-  durationMs = 1000, transcriptResponses: Record<string, unknown>[] = []) {
+  durationMs = 1000, transcriptResponses: Record<string, unknown>[] = [], deleteFails = false) {
   const data = new Map<string, string>();
   Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
     getItem: (key: string) => data.get(key) ?? null,
@@ -27,6 +28,7 @@ function harness(failAt?: "part" | "submit" | "result" | "space" | "delete", noS
   let transcriptReads = 0;
   let now = 0;
   const sleeps: number[] = [];
+  const clock = { now: () => now, sleep: async (ms: number) => { sleeps.push(ms); now += ms; }, random: () => 0.5 };
   const audio = new Uint8Array([1, 2, 3, 4]);
   let failed = false;
   let local: LocalTranscript | null = null;
@@ -78,7 +80,7 @@ function harness(failAt?: "part" | "submit" | "result" | "space" | "delete", noS
     }
     if (path === "/hosted/transcripts/handle-1/sentences" && method === "GET") return json({ sentences: [] });
     if (path === "/hosted/transcripts/handle-1" && method === "DELETE") {
-      if (failAt === "delete") throw new Error("offline");
+      if (failAt === "delete" || deleteFails) throw new Error("offline");
       return json({ ok: true });
     }
     throw new Error(`Unexpected request: ${method} ${path}`);
@@ -88,19 +90,21 @@ function harness(failAt?: "part" | "submit" | "result" | "space" | "delete", noS
     sleep: async () => {} });
   const account = { did: "did:test:one" } as TinyCloudWeb;
   const track = () => createHostedVoiceNoteTrack(() => account, "https://exo.test", {} as SessionStore, account.did, {
-    client, native, readCommit: async () => commit, createRow: async () => ({ inserted: true }) as Awaited<ReturnType<typeof import("./voiceNoteRows").createVoiceNoteRow>>,
-    clock: { now: () => now, sleep: async (ms) => { sleeps.push(ms); now += ms; }, random: () => 0.5 },
+    client, native, clock, readCommit: async () => commit, createRow: async () => ({ inserted: true }) as Awaited<ReturnType<typeof import("./voiceNoteRows").createVoiceNoteRow>>,
+    preserveHistory: async () => {},
     readNote: async () => ({ ok: true, data: { captureTranscriber: "assemblyai", durationSeconds: 1 } }) as Awaited<ReturnType<typeof import("./voiceNoteStore").readVoiceNoteForTranscription>>,
     loadAudio: async () => ({ ok: true, data: { mimeType: "audio/mp4", base64: bytesToBase64(audio) } }) as Awaited<ReturnType<typeof import("./voiceNoteStore").loadVoiceNoteAudio>>,
     save: async (_account, _id, transcript) => {
       calls.push("space:save");
       savedMetadata = transcript.metadata;
       if (failAt === "space" && !failed) { failed = true; return { ok: false, error: new Error("offline") } as StoreResult<UpsertMeetingOutcome>; }
-      commit = { rev: transcript.rev, outcome: noSpeech ? "no_speech" : "transcribed" } as TranscriptCommit;
+      commit = { rev: transcript.rev, hash: await transcriptHash(transcript.sentences),
+        outcome: noSpeech ? "no_speech" : "transcribed" } as TranscriptCommit;
       return { ok: true } as StoreResult<UpsertMeetingOutcome>;
     },
   });
-  return { calls, recording, track, getLocal: () => local, getSavedMetadata: () => savedMetadata, sleeps };
+  return { calls, recording, track, setCommit: (value: TranscriptCommit | null) => { commit = value; },
+    getLocal: () => local, getSavedMetadata: () => savedMetadata, sleeps };
 }
 
 test("a space-only note uses its space audio and can resume without a native recording", async () => {
@@ -115,13 +119,31 @@ test("a space-only note uses its space audio and can resume without a native rec
   expect(calls.indexOf("space:save")).toBeLessThan(calls.indexOf("DELETE /hosted/transcripts/handle-1"));
 });
 
-test("an explicit Powerful rerun is never restarted by the relaunch resume path", async () => {
+test("an explicit Powerful rerun is never restarted by resume and its stale marker is removed", async () => {
   const { calls, recording, track } = harness();
-  localStorage.setItem("exo.voiceNotes.powerfulJobs:did:test:one", JSON.stringify({
+  const key = "exo.voiceNotes.powerfulJobs:did:test:one";
+  localStorage.setItem(key, JSON.stringify({
     "note-1": { explicitRerun: true, recording },
   }));
   await track().resume();
   expect(calls).toEqual([]);
+  expect(JSON.parse(localStorage.getItem(key) ?? "{}")).toEqual({});
+});
+
+test("failed Powerful rerun retains its remote handle until resume cleanup succeeds", async () => {
+  const { calls, recording, track, setCommit } = harness("result", false, false, "audio/mp4", 1000, [], true);
+  setCommit({ sourceId: "note-1", rev: 1, hash: "prior-hash", outcome: "transcribed" } as TranscriptCommit);
+  const lane = track();
+  lane.consent();
+  await lane.run(recording, true);
+  const key = "exo.voiceNotes.powerfulJobs:did:test:one";
+  const pending = JSON.parse(localStorage.getItem(key) ?? "{}") as Record<string, { handle?: string; explicitRerun?: boolean }>;
+  expect(pending["note-1"]?.handle).toBe("handle-1");
+  expect(pending["note-1"]?.explicitRerun).toBeUndefined();
+  const submits = calls.filter((call) => call === "POST /hosted/transcripts").length;
+  await track().resume();
+  expect(calls.filter((call) => call === "POST /hosted/transcripts")).toHaveLength(submits);
+  expect(calls.filter((call) => call === "DELETE /hosted/transcripts/handle-1").length).toBeGreaterThan(1);
 });
 test("hosted AssemblyAI no_speech never sets PTX missing-stats metadata", async () => {
   const { calls, recording, track, getLocal, getSavedMetadata } = harness(undefined, true);
@@ -154,6 +176,25 @@ test("hosted AssemblyAI commits never set PTX-only missing-stats metadata", asyn
   expect(getSavedMetadata()).not.toHaveProperty("transcription_stats_missing");
 });
 
+
+test("concurrent explicit reruns admit one hosted job while ordinary admission remains available", async () => {
+  const rerunHarness = harness();
+  rerunHarness.setCommit({ sourceId: "note-1", rev: 1, hash: "prior-hash", outcome: "transcribed" } as TranscriptCommit);
+  const reruns = rerunHarness.track();
+  reruns.consent();
+  await Promise.all([reruns.run(rerunHarness.recording, true), reruns.run(rerunHarness.recording, true)]);
+  expect(rerunHarness.calls.filter((call) => call === "POST /hosted/uploads")).toHaveLength(1);
+  expect(rerunHarness.calls.filter((call) => call === "POST /hosted/transcripts")).toHaveLength(1);
+  expect(rerunHarness.calls.filter((call) => call === "space:save")).toHaveLength(1);
+
+  const ordinaryHarness = harness();
+  const ordinary = ordinaryHarness.track();
+  ordinary.consent();
+  await ordinary.run(ordinaryHarness.recording);
+  expect(ordinaryHarness.calls.filter((call) => call === "POST /hosted/uploads")).toHaveLength(1);
+  expect(ordinaryHarness.calls.filter((call) => call === "POST /hosted/transcripts")).toHaveLength(1);
+  expect(ordinaryHarness.calls.filter((call) => call === "space:save")).toHaveLength(1);
+});
 test("Powerful waits for the account's Upload audio submission before creating an upload", async () => {
   const { calls, recording, track } = harness();
   let release!: () => void;

@@ -318,6 +318,22 @@ describe("an older queue snapshot against newer events", () => {
     await act(async () => { await onDeviceSttStore.refresh(); });
     expect(latest().note).toEqual({ kind: "queued" });
   });
+  test("an active native rerun is shown instead of the settled cloud-job fallback", () => {
+    const html = renderToStaticMarkup(
+      <OnDeviceNoteStatusView noteId="n1" view={{ note: { kind: "running", percent: 42 }, error: null, reload: () => {} }} fallback={<p>No transcript.</p>} rerunOnly />,
+    );
+    expect(html).toContain("Transcribing on this phone");
+    expect(html).toContain("42%");
+    expect(html).not.toContain("No transcript.");
+  });
+
+  test("a failed native rerun is shown instead of the settled cloud-job fallback", () => {
+    const html = renderToStaticMarkup(
+      <OnDeviceNoteStatusView noteId="n1" view={{ note: { kind: "failed", reason: "native failure" }, error: null, reload: () => {} }} fallback={<p>No transcript.</p>} rerunOnly />,
+    );
+    expect(html).toContain('data-testid="voice-note-on-device-rerun-failed"');
+    expect(html).not.toContain("No transcript.");
+  });
 
   describe("a failure against a queue that still holds the running note (the merged native shape)", () => {
     const running = { id: "n1", state: "running", percent: 40, error: null } as OnDeviceSttStatus["queue"][number];

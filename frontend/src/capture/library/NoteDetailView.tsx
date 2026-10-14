@@ -293,7 +293,8 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
       if (!(error instanceof DOMException && error.name === "AbortError")) setExportError(true);
     }
   };
-  const committedOutcome = voiceNote && metadata?.status === "ok"
+  const committedOutcome = voiceNote && props.transcriptProvenance !== null && props.transcriptProvenance !== undefined
+    && metadata?.status === "ok"
     && (metadata.metadata.transcription_outcome === "transcribed" || metadata.metadata.transcription_outcome === "no_speech");
   const rerunJob = props.transcription?.jobs.get(item.sourceId);
   return (
@@ -407,6 +408,7 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
           )}
           <OnDeviceNoteStatus noteId={item.sourceId} fallback={null} transcription={props.transcription}
             durationSecs={item.durationSecs} rerunOnly />
+          <DesktopWhisperStatus noteId={item.sourceId} fallback={null} enabled={props.desktopWhisper} rerunOnly />
           {rerunJob?.kind !== "active" && (
             <TranscribeAction noteId={item.sourceId} transcription={props.transcription} durationSecs={item.durationSecs}
               rerun label={rerunJob?.kind === "failed" ? "Try again" : "Transcribe again…"} />

@@ -17,6 +17,14 @@ export interface TranscriptCommit {
   transcribedAt: string | null; committedAt: string | null;
 }
 
+/** A committed legacy mirror is not enough to safely allocate and preserve a replacement revision. */
+export function requireVoiceNoteTranscriptCommit(commit: TranscriptCommit | null): TranscriptCommit {
+  if (!commit) throw Object.assign(new Error("This transcript has no committed revision and cannot be rerun safely."), {
+    code: "transcript_commit_required",
+  });
+  return commit;
+}
+
 function metadata(value: unknown): Record<string, unknown> {
   if (typeof value === "string") {
     try { value = JSON.parse(value) as unknown; } catch { return {}; }

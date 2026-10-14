@@ -307,6 +307,28 @@ describe("desktop recorder adapter", () => {
     expect(engine.whisper!.snapshot().get(id)).toMatchObject({ state: "failed" });
     engine.dispose();
   });
+  slow("explicit desktop Whisper rerun replaces an existing local transcript at the requested revision", async () => {
+    const bridge = new FakeBridge();
+    bridge.selectedModel = "QuantizedTinyEn";
+    bridge.downloadedModels.add("QuantizedTinyEn");
+    const whisper = new FakeWhisper();
+    const engine = await openDesktopVoiceNotes({ bridge, whisper,
+      storeOptions: { env: newIdbEnv(), dbName: crypto.randomUUID(), locks: memoryLocks(), decodeCheck: null } });
+    const id = (await engine.plugin.start()).id;
+    bridge.files.set(id, Uint8Array.of(1, 2, 3));
+    await engine.plugin.stop();
+    await waitFor(() => engine.whisper?.snapshot().get(id)?.state === "done");
+    const original = (await engine.plugin.getTranscript({ id })).transcript;
+    expect(original?.rev).toBe(1);
+    await engine.whisper!.rerun({ id, rev: 2, baseRev: 1, baseHash: "a".repeat(32) });
+    await waitFor(() => engine.whisper?.snapshot().get(id)?.state === "done" && whisper.calls.length === 2);
+    const replacement = (await engine.plugin.getTranscript({ id })).transcript;
+    expect(replacement).toMatchObject({ rev: 2, rerunBase: { rev: 1, hash: "a".repeat(32) } });
+    expect(whisper.calls).toHaveLength(2);
+    await engine.whisper!.resume();
+    expect(whisper.calls).toHaveLength(2);
+    engine.dispose();
+  });
 
   slow("Whisper progress is visible on the queued note", async () => {
     const bridge = new FakeBridge();
