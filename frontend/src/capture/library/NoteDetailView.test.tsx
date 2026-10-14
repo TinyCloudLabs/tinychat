@@ -55,6 +55,19 @@ function render(patch: Partial<NoteDetailViewProps> = {}) {
 }
 
 describe("NoteDetailView", () => {
+  test("pasted transcript shows exact line breaks and no audio player", () => {
+    const pasted = { ...VOICE, title: "Interview", durationSecs: null, metadata: { capture: "pasted" } };
+    const html = render({ item: pasted, audio: null, metadata: { status: "ok", metadata: {
+      capture: "pasted", transcription_outcome: "transcribed", transcript_text: "[01:02] Alice: Hello\n\nBob: Hi",
+    } }, transcript: { status: "ok", sentences: [
+      { index: 0, speaker_name: "Alice", text: "Hello", start_time: 62, end_time: 62 },
+      { index: 1, speaker_name: "Bob", text: "Hi", start_time: 0, end_time: 0 },
+    ] } });
+    expect(html).toContain("[01:02] Alice: Hello\n\nBob: Hi");
+    expect(html).toContain("Pasted transcript saved to your TinyCloud space.");
+    expect(html).not.toContain("Play audio");
+    expect(html).not.toContain("Saving from your phone");
+  });
   test("a note only on this phone opens from its own audio, titled by its time, with nothing to transcribe or explain", () => {
     const onPhone: LibraryItem = { ...VOICE, id: "on-phone:rec-1", title: null, onPhone: true };
     const html = render({ item: onPhone, metadata: { status: "ok", metadata: {} }, transcript: { status: "absent" }, transcription: undefined });

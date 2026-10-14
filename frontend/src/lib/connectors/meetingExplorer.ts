@@ -184,7 +184,8 @@ export async function listMeetingsRead(
                   'note_kv_key',           json_extract(metadata, '$.note_kv_key'),
                   'note_edited_at',        json_extract(metadata, '$.note_edited_at'),
                   'audio_kv_key',          json_extract(metadata, '$.audio_kv_key'),
-                  'audio_stored',          json_extract(metadata, '$.audio.stored'))
+                  'audio_stored',          json_extract(metadata, '$.audio.stored'),
+                  'capture',               json_extract(metadata, '$.capture'))
                 ELSE 'invalid' END
               END AS pipeline_metadata
        FROM connector_meeting

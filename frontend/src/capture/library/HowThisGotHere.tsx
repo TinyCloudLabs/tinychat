@@ -56,6 +56,10 @@ const SPACE: RouteNode = { label: "Your space", kind: "destination" };
 
 /** The route for one row, from its source and (once read) its metadata. */
 export function captureRoute(source: string, metadata: Record<string, unknown> | null): CaptureRoute {
+  if (source === VOICE_NOTE_SOURCE && metadata?.capture === "pasted") return {
+    nodes: [{ label: "Pasted transcript", kind: "source" }, SPACE],
+    sentence: "Pasted transcript saved to your TinyCloud space.", privateCloud: false,
+  };
   if (source === "fireflies" || source === GMEET_MEETING_SOURCE) {
     const name = source === "fireflies" ? "Fireflies" : "Google Meet";
     return { nodes: [{ label: name, kind: "source" }, SPACE], sentence: `Synced from ${name} into your TinyCloud space.`, privateCloud: false };

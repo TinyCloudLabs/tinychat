@@ -44,7 +44,7 @@ export function NoteDetail(props: {
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [local, setLocal] = useState<{ id: string; transcript: LocalTranscript | null; readError: "timeout" | "failed" | null } | null>(null);
   const [localAttempt, setLocalAttempt] = useState(0);
-  const localId = item?.source === VOICE_NOTE_SOURCE ? item.sourceId : null;
+  const localId = item?.source === VOICE_NOTE_SOURCE && item.metadata?.capture !== "pasted" ? item.sourceId : null;
   useEffect(() => {
     if (!localId || !captureEngineAvailable()) return;
     let active = true;
@@ -88,7 +88,9 @@ export function NoteDetail(props: {
       selectedTranscript?.provenance,
     );
   const onCopy = useCallback(async (withTimestamps = false) => {
-    const text = sentences && (withTimestamps && hasSegmentTimes(sentences, isPrivateCloud)
+    const pasted = item?.metadata?.capture === "pasted" && reads.metadata?.status === "ok"
+      ? reads.metadata.metadata.transcript_text : null;
+    const text = typeof pasted === "string" ? pasted : sentences && (withTimestamps && hasSegmentTimes(sentences, isPrivateCloud)
       ? transcriptWithTimestamps(sentences, isPrivateCloud) : transcriptCopyText(sentences));
     if (!text) return;
     const ok = await copyText(text);
@@ -99,7 +101,7 @@ export function NoteDetail(props: {
       timer.current = null;
       setCopyState("idle");
     }, COPIED_DURATION);
-  }, [sentences, isPrivateCloud]);
+  }, [sentences, isPrivateCloud, item, reads.metadata]);
 
   return (
     <NoteDetailView
@@ -114,7 +116,7 @@ export function NoteDetail(props: {
       onLocalTranscriptRetry={() => { setLocal(null); setLocalAttempt((attempt) => attempt + 1); }}
       audio={audio}
       // A note only on this phone is not in the space to transcribe from.
-      transcription={item?.source === VOICE_NOTE_SOURCE && !item.onPhone ? props.transcription : undefined}
+      transcription={item?.source === VOICE_NOTE_SOURCE && item.metadata?.capture !== "pasted" && !item.onPhone ? props.transcription : undefined}
       copyState={copyState}
       onCopy={() => void onCopy()}
       onCopyWithTimestamps={() => void onCopy(true)}
