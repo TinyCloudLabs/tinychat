@@ -225,6 +225,7 @@ describe("TC-1086 status cost", () => {
       f.failNextSummaryWrite();
       try {
         if (operation === "needsReconnect") await f.connection.needsReconnect(TENANT, 1);
+        else if (operation === "browserReconnect") await f.connection.browserReconnect(TENANT, "different-subject");
         else await f.connection[operation](TENANT);
         expect((await f.stores.request.getConnection(TENANT))?.state).toBe(operation === "needsReconnect" ? "needs_reconnect" : "disabled");
         expect(await f.credentials.status(GOOGLE_AUTOJOIN_CREDENTIAL_SOURCE, TENANT)).toBeNull();
@@ -307,7 +308,7 @@ describe("TC-1086 status cost", () => {
           const outcomes = Array.from({ length: Math.min(n, 30) }, (_, i) => ({
             id: `row-${n - 1 - i}`, title: "Synthetic metadata", start: AT + n - 1 - i, reason: "missed_window",
           }));
-          expect(await cold.json()).toEqual({ state: "on", enabled: true, lastScanAt: null,
+          expect(await cold.json()).toEqual({ state: "on", enabled: true, offReason: null, lastScanAt: null,
             lastDispatchLag: null, errorCode: null, outcomes });
           expect(run.mock.calls).toHaveLength(n + 2);
           expect(listing).toHaveBeenCalledTimes(1);
@@ -318,7 +319,7 @@ describe("TC-1086 status cost", () => {
           await f.worker.tick(); run.mockClear(); listing.mockClear(); log.mockClear();
           const warmed = await request();
           expect(warmed.status).toBe(200);
-          expect(await warmed.json()).toEqual({ state: "on", enabled: true, lastScanAt: AT,
+          expect(await warmed.json()).toEqual({ state: "on", enabled: true, offReason: null, lastScanAt: AT,
             lastDispatchLag: null, errorCode: null, outcomes });
           expect(run.mock.calls).toHaveLength(2);
           expect(warmed.headers.get("server-timing")).toMatch(/^status;dur=\d+;desc="reads=2"$/);
@@ -514,6 +515,7 @@ describe("TC-1086 status cost", () => {
       for (const key of f.values.keys()) if (key.startsWith("calendar-autojoin/v1/status/")) f.values.delete(key);
       try {
         if (operation === "needsReconnect") await f.connection.needsReconnect(TENANT, 1);
+        else if (operation === "browserReconnect") await f.connection.browserReconnect(TENANT, "different-subject");
         else await f.connection[operation](TENANT);
         const status = await f.connection.getStatus(TENANT);
         expect(status.enabled).toBe(false);

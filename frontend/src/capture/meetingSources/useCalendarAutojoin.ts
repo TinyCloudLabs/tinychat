@@ -8,6 +8,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createCalendarAutojoinActions } from "@/chat/CalendarAutojoinSection";
 import {
   calendarOutcomeLabel,
+  calendarAutojoinOffLabel,
   createCalendarAutojoinClient,
   type CalendarAutojoinStatus,
 } from "@/lib/connectors/calendarAutojoinApi";
@@ -59,20 +60,13 @@ export function useCalendarAutojoin(input: {
 export function autojoinDetail(
   status: CalendarAutojoinStatus | null,
   error: string | null,
-): { scan: string; warning: string | null } {
+): { scan: string; warning: string | null; detail: string | null } {
   const scan = status?.lastScanAt
     ? new Date(status.lastScanAt).toLocaleString()
     : status
       ? "none yet"
       : "checking…";
-  const warning =
-    error ??
-    (status?.state === "needs_reconnect"
-      ? "Reconnect Google with renewed consent to resume unattended joining."
-      : status?.state === "error"
-        ? status.errorCode
-          ? calendarOutcomeLabel(status.errorCode)
-          : "Calendar scanning is paused. It will retry automatically."
-        : null);
-  return { scan, warning };
+  const warning = error ?? (status?.state === "error" ? status.errorCode
+      ? calendarOutcomeLabel(status.errorCode) : "Calendar scanning is paused. It will retry automatically." : null);
+  return { scan, warning, detail: calendarAutojoinOffLabel(status) };
 }

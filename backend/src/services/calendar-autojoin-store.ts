@@ -6,7 +6,7 @@ import {
 } from "./backend-storage-lane.js";
 import { normalizeGoogleMeetUrl } from "./google-calendar.js";
 import type { CreateMeetingInput } from "./transcription-api.js";
-import { CalendarAutojoinStatusCache, STATUS_CACHE_MAX_TENANTS } from "./calendar-autojoin-status-cache.js";
+import { CalendarAutojoinStatusCache, STATUS_CACHE_MAX_TENANTS, type CalendarAutojoinOffReason } from "./calendar-autojoin-status-cache.js";
 import { calendarAutojoinOutcomes, type CalendarAutojoinStatusSummary } from "./calendar-autojoin-status-summary.js";
 
 export interface CalendarConnection {
@@ -14,6 +14,7 @@ export interface CalendarConnection {
   subject: string | null;
   state: "disabled" | "enabling" | "enabled" | "needs_reconnect";
   generation: number;
+  offReason?: CalendarAutojoinOffReason;
   consentAt?: number;
   scopes: string[];
   credentialRef?: string;
@@ -37,6 +38,7 @@ const CONNECTION_CACHE_FIELDS = {
   state: "policy",
   generation: "policy",
   errorCode: "policy",
+  offReason: "policy",
   consentAt: "bookkeeping",
   scopes: "bookkeeping",
   credentialRef: "bookkeeping",

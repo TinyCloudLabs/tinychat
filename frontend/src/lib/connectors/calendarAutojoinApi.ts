@@ -4,13 +4,35 @@ export const CALENDAR_AUTOJOIN_PATH = "/api/connectors/google/autojoin";
 export interface CalendarAutojoinOutcome {
   id: string; title?: string; start: number; reason: string; meetingId?: string;
 }
+export type CalendarAutojoinOffReason = "user_disabled" | "google_account_changed" | "disconnected"
+  | "needs_reconnect" | "invalid_grant" | "setup_expired" | "setup_pending" | "never_enabled" | "unknown";
 export interface CalendarAutojoinStatus {
   state: "off" | "on" | "needs_reconnect" | "error";
   enabled: boolean;
+  /** Optional for compatibility with a backend deployed before TC-1100. */
+  offReason?: CalendarAutojoinOffReason | null;
   lastScanAt: number | null;
   lastDispatchLag?: { sentAt: number; seconds: number; discovered: number } | null;
   errorCode: string | null;
   outcomes: CalendarAutojoinOutcome[];
+}
+
+/** Shared by connector settings and Meeting sources; never display internal reason codes. */
+export function calendarAutojoinOffLabel(status: CalendarAutojoinStatus | null): string | null {
+  if (!status || status.enabled) return null;
+  const reason = status.offReason ?? (status.state === "needs_reconnect"
+    ? status.errorCode === "invalid_grant" ? "invalid_grant" : "needs_reconnect" : "unknown");
+  switch (reason) {
+    case "user_disabled": return "You turned calendar autojoin off.";
+    case "google_account_changed": return "Google account changed. Turn on calendar autojoin for this account.";
+    case "disconnected": return "Google was disconnected. Reconnect to turn calendar autojoin on.";
+    case "needs_reconnect": return "Google access needs to be renewed. Reconnect to resume calendar autojoin.";
+    case "invalid_grant": return "Google access was revoked elsewhere or expired. Reconnect Google to resume calendar autojoin.";
+    case "setup_expired": return "Google setup expired. Turn on calendar autojoin to try again.";
+    case "setup_pending": return "Finish Google setup to turn calendar autojoin on.";
+    case "never_enabled": return "Calendar autojoin has not been turned on yet.";
+    default: return "The reason calendar autojoin was turned off is unavailable. Turn it on to resume.";
+  }
 }
 export function createCalendarAutojoinClient(backendUrl: string, sessionStore: SessionStore) {
   async function request<T>(path: string, body?: unknown): Promise<T> {
