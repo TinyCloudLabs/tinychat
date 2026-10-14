@@ -1,5 +1,5 @@
 import { privateCloudCodeMessage } from "../privateCloud";
-import { STORAGE_FULL_TRANSCRIPT_NOT_SAVED_LINE } from "../storageStatus";
+import { STORAGE_FULL_TRANSCRIPT_NOT_SAVED_LINE, STORAGE_FULL_TRANSCRIPT_NOT_SAVED_LOCAL_AUDIO_LINE } from "../storageStatus";
 
 export const TRANSCRIPT_STORAGE_FULL_CODE = "storage_full";
 
@@ -54,6 +54,11 @@ const TRANSCRIPTION_ERROR_COPY: Readonly<Record<string, string>> = {
 
 export function transcriptionErrorCopy(code: string): string | undefined {
   return TRANSCRIPTION_ERROR_COPY[code];
+}
+
+/** A Private transcript that storage refused: the local-audio sentence only with positive evidence the recording is on this device. */
+export function storageFullTranscriptCopy(localAudioReady: boolean): string {
+  return localAudioReady ? STORAGE_FULL_TRANSCRIPT_NOT_SAVED_LOCAL_AUDIO_LINE : STORAGE_FULL_TRANSCRIPT_NOT_SAVED_LINE;
 }
 
 /** Durable failures have only a code; unmapped and unknown codes remain retryable with generic copy. */

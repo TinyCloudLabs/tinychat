@@ -23,7 +23,7 @@ import { isTinyCloudNetworkFailure, logVoiceNoteError, pendingSaveMessage, pendi
 import { advanceAccountGeneration, captureAccountContext, currentAccountGeneration, isAccountContextCurrent, mountVoiceNoteAccount } from "@/lib/voiceNotes/accountContext";
 import { saveDeferredForAccountTransition, type VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
 import { recheckVoiceNoteAvailabilityAutomatically, transcribeSavedNote, voiceNoteTranscriberFor } from "@/lib/voiceNotes/voiceNoteTranscription";
-import { runStorageRecoveryWork } from "@/lib/storageStatus";
+import { runOwnStorageWrites, runStorageRecoveryWork, subscribeStorageWritableEdge } from "@/lib/storageStatus";
 
 let recovery: (() => Promise<void>) | null = null;
 /** Keep the mounted saver available to renewal without remounting the view. */
@@ -143,9 +143,9 @@ export function PendingVoiceNotesSaver({
         const generation = currentAccountGeneration();
         const account = pendingStore.forAccount(did);
         try {
-          await pipeline.reconcileAll({ did, spaceId, generation }, "reconcile", (note) => {
+          await runOwnStorageWrites(() => pipeline.reconcileAll({ did, spaceId, generation }, "reconcile", (note) => {
             if (transcriber) transcribeSavedNote(transcriber, note, () => generation === currentAccountGeneration());
-          });
+          }));
           await account.refresh(null);
         } catch (error) {
           if (saveDeferredForAccountTransition(error)) return;
@@ -174,6 +174,8 @@ export function PendingVoiceNotesSaver({
       return run();
     };
     const unregister = registerPendingVoiceNotesRecovery(foreground);
+    // A successful write from outside a recovery pass means storage has room again: resume held work once.
+    const unsubscribeWritable = subscribeStorageWritableEdge(() => void foreground());
     if (transcriber) void recheckVoiceNoteAvailabilityAutomatically(transcriber, isAccountCurrent);
     void foreground();
     const onOnline = () => {
@@ -212,6 +214,7 @@ export function PendingVoiceNotesSaver({
       documentTarget?.removeEventListener("visibilitychange", onVisible);
       windowTarget?.removeEventListener("focus", onFocus);
       if (appStateHandle) void appStateHandle.remove();
+      unsubscribeWritable();
       unregister(); unmountAccount(); pipeline.cancelAll(); pendingStore.setAccount(null);
     };
   }, [backendUrl, pipeline, sessionStore, tcw]);

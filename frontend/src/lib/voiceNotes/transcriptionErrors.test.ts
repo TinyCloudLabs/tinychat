@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { PrivateCloudError, privateCloudCodeMessage, privateCloudMessage } from "../privateCloud";
-import { transcriptionErrorCopy, voiceNoteTranscriptionFailureForCode } from "./transcriptionErrors";
-import { STORAGE_FULL_TRANSCRIPT_NOT_SAVED_LINE } from "../storageStatus";
+import { storageFullTranscriptCopy, transcriptionErrorCopy, voiceNoteTranscriptionFailureForCode } from "./transcriptionErrors";
 
 const PTX_CODES = [
   "recording_too_long_for_cloud", "recording_too_long", "recording_too_large", "no_speech", "invalid_audio",
@@ -52,9 +51,10 @@ describe("durable voice-note transcription failure copy", () => {
     expect(failure.message).toBe("Private transcription is not configured for this account.");
     expect(failure.retryable).toBe(false);
   });
-  test("a transcript refused by full storage is not retried automatically and says it was not saved", () => {
-    const failure = voiceNoteTranscriptionFailureForCode("storage_full");
-    expect(failure.retryable).toBe(false);
-    expect(failure.message).toBe(STORAGE_FULL_TRANSCRIPT_NOT_SAVED_LINE);
+  test("a transcript refused by full storage is not retried automatically, and says local audio only with evidence", () => {
+    expect(voiceNoteTranscriptionFailureForCode("storage_full").retryable).toBe(false);
+    expect(voiceNoteTranscriptionFailureForCode("storage_full").message).toMatch(/wasn.t saved/);
+    expect(storageFullTranscriptCopy(false)).not.toContain("safe on this device");
+    expect(storageFullTranscriptCopy(true)).toContain("Your recording is safe on this device.");
   });
 });

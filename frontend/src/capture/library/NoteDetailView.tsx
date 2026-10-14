@@ -13,6 +13,7 @@ import { MeetingAudioPlayer } from "@/chat/MeetingAudioPlayer";
 import { NotePlaybackContext } from "@/lib/audio/notePlayback";
 import { appPlatform } from "@/lib/platform";
 import { Button } from "@/components/ui/button";
+import { openManageStorage } from "@/lib/openManageStorage";
 import { Empty } from "@/components/ui/empty";
 import { Skeleton } from "@/components/ui/skeleton";
 import { NotePipelineContext } from "@/capture/pipeline/NotePipelineContext";
@@ -27,7 +28,7 @@ import type { AppPlatform } from "@/lib/platform";
 import { activityForNote, deviceName, noteStatus } from "../activity/activitySelector";
 import type { LocalTranscript } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { transcriptionStatusText } from "@/lib/voiceNotes/voiceNoteTranscription";
-import { transcriptionErrorCopy, voiceNoteTranscriptionFailureForCode } from "@/lib/voiceNotes/transcriptionErrors";
+import { storageFullTranscriptCopy, TRANSCRIPT_STORAGE_FULL_CODE, transcriptionErrorCopy, voiceNoteTranscriptionFailureForCode } from "@/lib/voiceNotes/transcriptionErrors";
 import { localTranscriptToSave, voiceNoteTitle, voiceNoteTranscriptState, VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
 import { PAGE_COLUMN, PageHeader } from "@/shell/PageHeader";
 import { detailWhen, formatSpokenDuration } from "./formatters";
@@ -35,6 +36,7 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { DesktopWhisperStatus } from "./DesktopWhisperStatus";
 import { OnDeviceNoteStatus } from "./OnDeviceNoteStatus";
 import { TranscribeAction } from "./TranscribeAction";
+import type { TranscribeActionProps } from "./TranscribeAction";
 import { privateCloudFits } from "./transcribeProviders";
 import { HowThisGotHere } from "./HowThisGotHere";
 import { librarySourceLabel } from "./libraryKinds";
@@ -124,6 +126,16 @@ function Frame(props: { title: string; pushed: boolean; onBack: () => void; acti
   );
 }
 
+/** Private storage-full: Manage storage first. Transcribe again is the retry; storage-full is never retried by itself. */
+function StorageFullActions(props: Pick<TranscribeActionProps, "noteId" | "transcription" | "durationSecs">) {
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <Button type="button" onClick={() => void openManageStorage()}>Manage storage</Button>
+      <TranscribeAction noteId={props.noteId} transcription={props.transcription} durationSecs={props.durationSecs} label="Transcribe again" />
+    </div>
+  );
+}
+
 /** Where a voice note's transcription stands, when it has no transcript; null when there is nothing to say or offer. */
 export function VoiceNoteTranscriptionStatus(props: {
   item: LibraryItem;
@@ -170,26 +182,32 @@ export function VoiceNoteTranscriptionStatus(props: {
   }
   if (job?.kind === "failed") {
     const failure = voiceNoteTranscriptionFailureForCode(job.code);
+    const storageFull = job.code === TRANSCRIPT_STORAGE_FULL_CODE;
     return (
       <div className="flex flex-col gap-2" data-testid="voice-note-transcription-failed">
         <p role="alert" className="min-w-0 text-callout text-destructive">
-          {transcriptionErrorCopy(job.code) ?? job.message}
+          {storageFull ? storageFullTranscriptCopy(item.hasLocalAudio === true) : (transcriptionErrorCopy(job.code) ?? job.message)}
         </p>
         {job.reference && <ReferenceDetails reference={job.reference} />}
-        {job.retryable && failure.retryable && <TranscribeAction noteId={item.sourceId} transcription={transcription} durationSecs={item.durationSecs} label="Try again" />}
+        {storageFull
+          ? <StorageFullActions noteId={item.sourceId} transcription={transcription} durationSecs={item.durationSecs} />
+          : job.retryable && failure.retryable && <TranscribeAction noteId={item.sourceId} transcription={transcription} durationSecs={item.durationSecs} label="Try again" />}
       </div>
     );
   }
   if (props.outcome === "failed") {
     const failure = voiceNoteTranscriptionFailureForCode(props.errorCode);
+    const storageFull = failure.code === TRANSCRIPT_STORAGE_FULL_CODE;
     const canChoosePrivate = transcription?.availability === "available"
       || (transcription?.availability === "failed" && transcription.consented);
     const privateFits = item.durationSecs === null || transcription === undefined || privateCloudFits(transcription, item.durationSecs);
     return (
       <div className="flex flex-col gap-2" data-testid="voice-note-transcription-failed">
-        <p role="alert" className="min-w-0 text-callout text-destructive">{failure.message}</p>
-        {failure.retryable && (captureCapabilities().localTranscription || (canChoosePrivate && privateFits))
-          && <TranscribeAction noteId={item.sourceId} transcription={transcription} durationSecs={item.durationSecs} label="Try again" />}
+        <p role="alert" className="min-w-0 text-callout text-destructive">{storageFull ? storageFullTranscriptCopy(item.hasLocalAudio === true) : failure.message}</p>
+        {storageFull
+          ? <StorageFullActions noteId={item.sourceId} transcription={transcription} durationSecs={item.durationSecs} />
+          : failure.retryable && (captureCapabilities().localTranscription || (canChoosePrivate && privateFits))
+            && <TranscribeAction noteId={item.sourceId} transcription={transcription} durationSecs={item.durationSecs} label="Try again" />}
       </div>
     );
   }

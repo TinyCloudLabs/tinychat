@@ -9,8 +9,7 @@ import { withVoiceNoteSaveDeadline } from "./saveDeadline";
 import { syncRecordingNote, VOICE_NOTE_SOURCE } from "./voiceNoteStore";
 import { syncOnDeviceTranscript } from "./onDeviceTranscriber";
 import { appPlatform } from "@/lib/platform";
-import { isStorageFullError } from "@/lib/storageStatus";
-import type { StoreAudioOptions } from "./voiceNoteStore";
+import type { AudioPutGate, StoreAudioOptions } from "./voiceNoteStore";
 import { logPipeline } from "@/lib/debugLog";
 
 export interface VoiceNotePipeline {
@@ -86,7 +85,7 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
   };
   const processOne = async (ctx: AccountContext, id: string, epoch: number, trackPending = false,
     uploadTicket?: PendingUploadTicket, onRowCreated?: () => void,
-    onSaved?: (note: VoiceNoteRecording) => void): Promise<VoiceNoteRecording | null> => {
+    onSaved?: (note: VoiceNoteRecording) => void, audioGate?: AudioPutGate): Promise<VoiceNoteRecording | null> => {
     if (uploadTicket && !uploadTicket.owns) return null;
     try {
     const check = checkFor(ctx, epoch);
@@ -120,6 +119,7 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
         ...testOptions,
         uploadTicket,
         onRowCreated,
+        audioGate,
       });
       const attempt = retryAttempts.get(id) ?? 0;
       if (result.kind === "failed" && result.failureKind === "timeout" && attempt < retryDelays.length) {
@@ -194,7 +194,8 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
           throw error;
         }
         let discardError: unknown;
-        let storageFull: { error: unknown } | null = null;
+        // At most one audio PUT per pass: the first storage-full error sets this gate for the rest.
+        const audioGate: AudioPutGate = { full: null };
         const saveQueue = notes.filter((note) => note.owner === ctx.did && !note.ownerUnknown &&
           note.ledger?.audio.state !== "saved" && !isDiscarded(note.id)).sort((a, b) => a.startedAt - b.startedAt);
         const uploadTickets = new Map(saveQueue.map((note) => [note.id, pendingStore.enqueueUpload(note)]));
@@ -202,10 +203,8 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
         for (const note of [...notes].sort((a, b) => a.startedAt - b.startedAt)) {
           check();
           if (note.owner === ctx.did && !note.ownerUnknown) {
-            // Storage is full: each queued note would run its row INSERT, which clears the full
-            // state, then fail its audio put, which sets it again. One probe per trigger: the rest
-            // stay queued with their audio on the device until the next trigger.
-            if (storageFull) { pendingStore.reportNoteFailure(note.id, storageFull.error); continue; }
+            // Storage full: later notes in this pass still save their row, Markdown and
+            // local-only work. Only their audio PUT is skipped, so each trigger probes once.
             if (trigger === "manual") {
               pendingStore.setRetrying(note.id, null);
               retryAttempts.delete(note.id);
@@ -215,7 +214,7 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
             }
             let saved: VoiceNoteRecording | null = null;
             try {
-              saved = await processOne(ctx, note.id, epoch, true, uploadTickets.get(note.id), undefined, onSaved);
+              saved = await processOne(ctx, note.id, epoch, true, uploadTickets.get(note.id), undefined, onSaved, audioGate);
               syncDesktopAfterUpload(ctx, saved);
               check();
               if (saved) captureEvents.emit("library-changed", { source: VOICE_NOTE_SOURCE, sourceId: note.id });
@@ -225,7 +224,6 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
               if (isDiscarded(note.id)) discardError ??= error;
               else {
                 pendingStore.reportNoteFailure(note.id, error);
-                if (isStorageFullError(error)) storageFull = { error };
               }
             } finally {
               // The native ledger is authoritative for the In progress count. Publish

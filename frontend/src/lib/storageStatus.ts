@@ -113,12 +113,28 @@ export function reportStorageError(error: unknown): void {
 }
 
 let writableEdges = 0;
+/** Depth of recovery passes. Their own successful writes restore storage without counting as an external edge. */
+let recoveryPassDepth = 0;
+const writableEdgeListeners = new Set<() => void>();
 
 export function reportStorageWriteSucceeded(): void {
   if (!readOnly) return;
   readOnly = false;
   writableEdges++;
   for (const listener of listeners) listener();
+  if (recoveryPassDepth === 0) for (const listener of writableEdgeListeners) listener();
+}
+
+/** Runs work whose own successful writes must not count as an external writable edge, so it cannot re-trigger itself. */
+export async function runOwnStorageWrites<T>(pass: () => Promise<T>): Promise<T> {
+  recoveryPassDepth++;
+  try { return await pass(); } finally { recoveryPassDepth--; }
+}
+
+/** Fires on a full→writable edge caused by a write outside a recovery pass (for example a recording save). Returns the unsubscribe. */
+export function subscribeStorageWritableEdge(listener: () => void): () => void {
+  writableEdgeListeners.add(listener);
+  return () => { writableEdgeListeners.delete(listener); };
 }
 
 /** Count of full→writable edges. An attempt that began before an edge can compare to see whether storage recovered mid-flight. */
@@ -145,8 +161,8 @@ export function registerStorageRecoveryWork(work: () => Promise<void>): () => vo
 
 /** One foreground pass: each registered item probes once. A failing item stays held and logs. */
 export async function runStorageRecoveryWork(): Promise<void> {
-  await Promise.all([...storageRecoveryWork].map((work) =>
-    work().catch((error: unknown) => console.warn("[Storage] Could not retry held work", error))));
+  await runOwnStorageWrites(() => Promise.all([...storageRecoveryWork].map((work) =>
+    work().catch((error: unknown) => console.warn("[Storage] Could not retry held work", error)))));
 }
 
 /** Records the signed-in plan from billing status. `null` (unknown) is never treated as Free. */

@@ -249,7 +249,12 @@ export interface StoreAudioOptions {
     payloadBytes?: number) => Promise<T>;
   checkpoint?: () => void;
   onRowCreated?: (rowId: string) => Promise<void>;
+  /** One audio PUT per reconcile pass: after one hits storage full, later notes in the pass skip theirs. */
+  audioGate?: AudioPutGate;
 }
+
+/** Shared across one reconcile pass. `full` holds the first storage-full audio error seen in that pass. */
+export interface AudioPutGate { full: StoreFailure["error"] | null }
 
 /** Storage error codes the voice notes UI tells apart. */
 export const VOICE_NOTE_STORAGE_FULL = AUDIO_STORAGE_FULL;
@@ -455,6 +460,10 @@ export async function saveVoiceNote(
       }
       return noteSyncError;
     })().then((noteSyncError) => ({ noteSyncError }), (error: unknown) => ({ error }));
+    // A storage-full audio PUT earlier in this pass: skip this one and report the same error.
+    // Row, Markdown and local-only work already ran above.
+    const gated = opts.audioGate?.full;
+    if (gated) { await text; return { ok: false, error: gated }; }
     logPipeline("audio_upload", recording.id, "start");
     const audio = await putVoiceNoteAudio(tcw, recording.id, source, { ...opts, schedule: (job, operation, timeoutMs, payloadBytes) =>
       (opts.schedule ?? ((call, label, limit, size) => runOnSpaceLane(call, {
@@ -468,6 +477,7 @@ export async function saveVoiceNote(
       await text;
       logPipelineError("audio_upload", audio.error, recording.id);
       reportStorageError(audio.error);
+      if (opts.audioGate && isStorageFullError(audio.error)) opts.audioGate.full = audio.error;
       return audio;
     }
     logPipeline("audio_upload", recording.id, "done", { bodyBytes: audio.data.size });
