@@ -240,9 +240,14 @@ export function parseCapabilities(body: unknown) {
     check(Array.isArray(o.content_types) && o.content_types.length > 0);
     const contentTypes = (o.content_types as unknown[]).map((v) => oneOf(v, CONTENT_TYPES));
     check(new Set(contentTypes).size === contentTypes.length);
+    // PTX's optional limits: relayed only when valid (finite, in range); absent or malformed means not advertised.
+    const accepted = diagnosticNum(o.accepted_max_duration_seconds, Number.MIN_VALUE);
+    const grace = diagnosticNum(o.duration_grace_seconds, 0);
     return {
       max_bytes: int(o.max_bytes, 1),
       max_duration_seconds: int(o.max_duration_seconds, 1),
+      ...(accepted === undefined ? {} : { accepted_max_duration_seconds: accepted }),
+      ...(grace === undefined ? {} : { duration_grace_seconds: grace }),
       max_channels: int(o.max_channels, 1, 2),
       content_types: contentTypes,
       transcript_ttl_seconds: int(o.transcript_ttl_seconds, 1),

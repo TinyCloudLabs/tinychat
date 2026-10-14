@@ -1289,6 +1289,19 @@ describe("response DTOs", () => {
     expect(JSON.parse(ptx.requests.find((request) => request.method === "POST")!.body).byte_size).toBe(NEXT_PTX_MAX_BYTES);
   });
 
+  test("PTX's optional duration limits are relayed when valid; absent or malformed ones are dropped", async () => {
+    const { ptx, backend } = await setup();
+    const main = { max_bytes: 1000, max_duration_seconds: 7200, max_channels: 2, content_types: ["audio/mpeg"], transcript_ttl_seconds: 86400, admission: "open" };
+    ptx.state.override = () => ({ status: 200, body: { ...main, accepted_max_duration_seconds: 7200.03, duration_grace_seconds: 300 } });
+    expect((await call(backend.url, "GET", "/capabilities")).json).toMatchObject({ max_duration_seconds: 7200, accepted_max_duration_seconds: 7200.03, duration_grace_seconds: 300 });
+    ptx.state.override = () => ({ status: 200, body: main });
+    expect((await call(backend.url, "GET", "/capabilities")).json).toEqual({ ...main, diarization: false });
+    ptx.state.override = () => ({ status: 200, body: { ...main, accepted_max_duration_seconds: "7200", duration_grace_seconds: -5 } });
+    const malformed = await call(backend.url, "GET", "/capabilities");
+    expect(malformed.status).toBe(200);
+    expect(malformed.json).toEqual({ ...main, diarization: false });
+  });
+
   test("an off-contract value anywhere in a success body is upstream_bad_response", async () => {
     const { ptx, backend } = await setup();
     const done = completedResult(ID);

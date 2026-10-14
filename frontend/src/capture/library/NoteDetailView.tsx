@@ -16,7 +16,7 @@ import { Button } from "@/components/ui/button";
 import { Empty } from "@/components/ui/empty";
 import { Skeleton } from "@/components/ui/skeleton";
 import { NotePipelineContext } from "@/capture/pipeline/NotePipelineContext";
-import type { VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
+import { privateRefusal, type VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
 import type { FirefliesSentence } from "@/lib/connectors/firefliesClient";
 import type { MeetingMetadataRead, TranscriptRead } from "@/lib/connectors/meetingExplorer";
 import { UPLOAD_MEETING_SOURCE } from "@/lib/audioUpload";
@@ -30,7 +30,7 @@ import { transcriptionStatusText } from "@/lib/voiceNotes/voiceNoteTranscription
 import { transcriptionErrorCopy, voiceNoteTranscriptionFailureForCode } from "@/lib/voiceNotes/transcriptionErrors";
 import { localTranscriptToSave, voiceNoteTitle, voiceNoteTranscriptState, VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
 import { PAGE_COLUMN, PageHeader } from "@/shell/PageHeader";
-import { detailWhen, formatSpokenDuration } from "./formatters";
+import { detailWhen, formatExactDuration, formatSpokenDuration } from "./formatters";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { DesktopWhisperStatus } from "./DesktopWhisperStatus";
 import { OnDeviceNoteStatus } from "./OnDeviceNoteStatus";
@@ -213,12 +213,23 @@ export function VoiceNoteTranscriptionStatus(props: {
     );
   }
   if (!localCapable && !choosable) return null;
-  if (!localCapable && transcription && item.durationSecs !== null && !privateCloudFits(transcription, item.durationSecs)) {
-    return (
-      <p className="text-callout text-muted-foreground" data-testid="voice-note-transcription-over-limit">
-        Private Transcription accepts notes up to {formatSpokenDuration(transcription.maxSeconds)}. This note is {formatSpokenDuration(item.durationSecs)}.
-      </p>
-    );
+  if (!localCapable && transcription) {
+    // Library items carry no byte size, so only the duration limit can refuse a note here.
+    const refusal = privateRefusal(transcription, item.durationSecs);
+    if (refusal?.kind === "unknown") {
+      return (
+        <p className="text-callout text-muted-foreground" data-testid="voice-note-transcription-limits-unknown">
+          Private&apos;s limits aren’t available right now. Try again later.
+        </p>
+      );
+    }
+    if (refusal?.kind === "duration") {
+      return (
+        <p className="text-callout text-muted-foreground" data-testid="voice-note-transcription-over-limit">
+          Private Transcription accepts notes up to {formatExactDuration(refusal.limitSeconds, "floor")}. This note is {formatExactDuration(refusal.durationSeconds, "ceil")}.
+        </p>
+      );
+    }
   }
   return (
     <div className="flex flex-col gap-2">

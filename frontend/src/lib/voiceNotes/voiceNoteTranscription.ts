@@ -631,21 +631,63 @@ export function acceptedContentTypes(capabilities: PrivateCloudCapabilities): st
     : ["audio/mpeg", "audio/wav", "audio/ogg"];
 }
 
-/** The duration capability reported by PTX for this account. */
-export function maxTranscriptionSeconds(capabilities: PrivateCloudCapabilities | null): number {
-  const ptx = capabilities?.max_duration_seconds;
-  return typeof ptx === "number" && ptx > 0 ? ptx : Number.POSITIVE_INFINITY;
+/** The limit fields PTX's /capabilities may carry; each is optional on the wire. */
+export type PrivateCloudLimitFields = Partial<Pick<PrivateCloudCapabilities, "max_duration_seconds" | "accepted_max_duration_seconds" | "max_bytes" | "duration_grace_seconds">>;
+
+/** PTX's limits from /capabilities. Null when it advertises no maximum duration: no Private limit is ever assumed. */
+export interface PrivateCloudLimits {
+  /** The advertised maximum note length in seconds. */
+  maxSeconds: number;
+  /** Seconds accepted past `maxSeconds` (0 when absent). */
+  graceSeconds: number;
+  /** PTX's byte cap (`max_bytes`), or null when absent. */
+  maxBytes: number | null;
 }
 
-/** Whether a recording fits the duration limit advertised by PTX. Shared by route controls and note actions. */
+export type PrivateCloudRefusal =
+  | { kind: "unknown" }
+  | { kind: "duration"; limitSeconds: number; durationSeconds: number }
+  | { kind: "bytes"; limitBytes: number; sizeBytes: number };
+
+export function privateCloudLimits(capabilities: PrivateCloudLimitFields | null): PrivateCloudLimits | null {
+  // The accepted raw ceiling, when PTX advertises one, is the limit; otherwise `max_duration_seconds`. Neither → unknown.
+  const accepted = capabilities?.accepted_max_duration_seconds;
+  const advertised = capabilities?.max_duration_seconds;
+  const seconds = typeof accepted === "number" && Number.isFinite(accepted) && accepted > 0 ? accepted
+    : typeof advertised === "number" && Number.isFinite(advertised) && advertised > 0 ? advertised : null;
+  if (seconds === null) return null;
+  const bytes = capabilities?.max_bytes;
+  const grace = capabilities?.duration_grace_seconds;
+  return {
+    maxSeconds: seconds,
+    graceSeconds: typeof grace === "number" && Number.isFinite(grace) && grace > 0 ? grace : 0,
+    maxBytes: typeof bytes === "number" && bytes > 0 ? bytes : null,
+  };
+}
+
+/**
+ * The first limit a note breaks, or null. Unknown limits refuse every note. The server checks the raw duration, so
+ * seconds are compared unrounded. A null duration or size is not checked. Shared by route controls, note actions and `run`.
+ */
+export function privateCloudRefusal(durationSecs: number | null, sizeBytes: number | null, limits: PrivateCloudLimits | null): PrivateCloudRefusal | null {
+  if (limits === null) return { kind: "unknown" };
+  const limitSeconds = limits.maxSeconds + limits.graceSeconds;
+  if (durationSecs !== null && (!Number.isFinite(durationSecs) || durationSecs < 0 || durationSecs > limitSeconds)) {
+    return { kind: "duration", limitSeconds, durationSeconds: durationSecs };
+  }
+  if (sizeBytes !== null && limits.maxBytes !== null && sizeBytes > limits.maxBytes) {
+    return { kind: "bytes", limitBytes: limits.maxBytes, sizeBytes };
+  }
+  return null;
+}
+
+/** Whether a recording fits the limits PTX advertises. Unknown limits accept nothing. Shared by route controls and note actions. */
 export function privateCloudAccepts(
   durationSecs: number | null,
-  capabilities: Pick<PrivateCloudCapabilities, "max_duration_seconds"> | null,
+  capabilities: PrivateCloudLimitFields | null,
+  sizeBytes: number | null = null,
 ): boolean {
-  if (capabilities === null || typeof capabilities.max_duration_seconds !== "number") return false;
-  if (durationSecs === null) return true;
-  return typeof capabilities.max_duration_seconds === "number"
-    && Number.isFinite(durationSecs) && durationSecs >= 0 && durationSecs <= capabilities.max_duration_seconds;
+  return privateCloudRefusal(durationSecs, sizeBytes, privateCloudLimits(capabilities)) === null;
 }
 
 export interface VoiceNoteCloudDeps {
@@ -916,9 +958,12 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
     }
 
     // Everything up to the upload happens with no job waiting on it, or releases the one that is.
-    const maxSeconds = maxTranscriptionSeconds(capabilities);
+    const limits = privateCloudLimits(capabilities);
     let audio: Awaited<ReturnType<typeof prepareTranscriptionAudio>> & { nativeFileId?: string; loadSpaceCopy?: () => Promise<VoiceNoteAudio> };
     try {
+      // Private is never offered without PTX's advertised limit (see `enqueue`); no limit is assumed here.
+      if (limits === null) throw new PrivateCloudError("service_misconfigured", "PTX advertised no maximum duration");
+      const maxSeconds = limits.maxSeconds + limits.graceSeconds;
       if (typeof durationSeconds === "number" && durationSeconds > maxSeconds) {
         throw new VoiceNoteAudioError("recording_too_long", "This recording exceeds the private cloud duration limit.");
       }
@@ -1368,7 +1413,7 @@ export type NoteTranscriptionState =
   | { kind: "blocked"; reason: TranscriptionBlockedReason };
 
 /** Why private cloud was not on when a note was offered to it. */
-export type TranscriptionBlockedReason = "checking" | "unavailable" | "check-failed" | "no-consent";
+export type TranscriptionBlockedReason = "checking" | "unavailable" | "check-failed" | "no-consent" | "limits-unknown";
 export type TranscriptionAdmissionRefusal = TranscriptionBlockedReason | "account-changed";
 
 export type TranscriptionAvailability = "checking" | "available" | "failed";
@@ -1520,7 +1565,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
     for (const listener of listeners) listener(event);
   };
   const identityCurrent = () => accountCurrent === null || accountCurrent();
-  const on = () => identityCurrent() && state.availability === "available" && state.consented && state.capabilities !== null;
+  const on = () => identityCurrent() && state.availability === "available" && state.consented && privateCloudLimits(state.capabilities) !== null;
   const blockedReason = (): TranscriptionBlockedReason => {
     if (cloud === null) return "check-failed";
     switch (state.availability) {
@@ -1529,7 +1574,8 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
       case "failed":
         return "check-failed";
       case "available":
-        return state.consented ? "unavailable" : "no-consent";
+        if (!state.consented) return "no-consent";
+        return privateCloudLimits(state.capabilities) === null ? "limits-unknown" : "unavailable";
     }
   };
   /** A blocked note shows why private cloud is off now; once it is on, the note either started (resume) or is not ours to start. */

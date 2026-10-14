@@ -43,6 +43,12 @@ describe("privateInsteadOffered", () => {
     expect(privateInsteadOffered(props({ maxSeconds: 100 }), "n1", 100)).toBe(true);
   });
 
+  test("the grace PTX advertises past its maximum is part of the limit; an unrounded length past it is not offered", () => {
+    expect(privateInsteadOffered(props({ maxSeconds: 7_200, graceSeconds: 300 }), "n1", 7_217.5)).toBe(true);
+    expect(privateInsteadOffered(props({ maxSeconds: 7_200 }), "n1", 7_217.5)).toBe(false);
+    expect(privateInsteadOffered(props({ maxSeconds: 7_200, graceSeconds: 300 }), "n1", 7_500.1)).toBe(false);
+  });
+
   test("not offered once private cloud is working on the note or has finished it; a failed job can be tried again", () => {
     const jobs = (kind: "active" | "done" | "failed") => new Map([["n1", { kind }]]) as unknown as VoiceNoteTranscriptionProps["jobs"];
     expect(privateInsteadOffered(props({ jobs: jobs("active") }), "n1", 60)).toBe(false);

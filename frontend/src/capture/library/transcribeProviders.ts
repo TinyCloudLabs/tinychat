@@ -2,10 +2,9 @@
 // own engine and needs the recording on this phone; Private needs private cloud on offer (the recorder's availability).
 import { privateRefusalCopy, switchToPrivate } from "@/capture/recorder/privateInstead";
 import { deviceName } from "@/lib/platform";
-import type { VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
+import { privateRefusal, type VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
 import { captureCapabilities } from "@/lib/voiceNotes/captureEngine";
 import type { TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
-import { privateCloudAccepts } from "@/lib/voiceNotes/voiceNoteTranscription";
 import { onDeviceQueuePlace } from "@/lib/voiceNotes/onDeviceQueue";
 import { onDeviceSttStore, retryOnDeviceNote } from "@/lib/voiceNotes/onDeviceSttStore";
 
@@ -21,7 +20,7 @@ export const LOCAL_START_FAILED = `Couldn’t start transcribing on ${deviceName
 
 /** Whether private cloud's advertised length limit takes a note of this length. */
 export function privateCloudFits(transcription: VoiceNoteTranscriptionProps, durationSecs: number | null): boolean {
-  return privateCloudAccepts(durationSecs, { max_duration_seconds: transcription.maxSeconds });
+  return privateRefusal(transcription, durationSecs) === null;
 }
 
 /** Local first: it is the default. Private only for a note within the length private cloud advertises. */

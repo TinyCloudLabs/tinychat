@@ -5,12 +5,13 @@ import { deviceName } from "@/lib/platform";
 // phone's own record of the note says that job has ended, so the two never both transcribe it.
 import { VoiceNotes } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { cancelOnDeviceNote } from "@/lib/voiceNotes/onDeviceSttStore";
-import type { VoiceNoteTranscriptionProps } from "./transcriptionProps";
+import { privateRefusal, type VoiceNoteTranscriptionProps } from "./transcriptionProps";
 import type { TranscriptionAdmissionRefusal } from "@/lib/voiceNotes/voiceNoteTranscription";
 
 const PRIVATE_REFUSAL_COPY: Record<TranscriptionAdmissionRefusal, string> = {
   checking: "Private transcription is still checking. Try again in a moment.",
   unavailable: "Private transcription is unavailable right now. Try again later.",
+  "limits-unknown": "Private's limits aren't available right now. Try again later.",
   "check-failed": "Couldn’t check Private transcription. Try again in a moment.",
   "no-consent": "Enable Private transcription before trying again.",
   "account-changed": "Your account changed. Try again after signing in.",
@@ -22,7 +23,7 @@ export function privateRefusalCopy(refusal: TranscriptionAdmissionRefusal): stri
 
 export function privateInsteadOffered(transcription: VoiceNoteTranscriptionProps | undefined, noteId: string, durationSecs: number | null): boolean {
   if (!transcription || transcription.availability !== "available" || !transcription.consented) return false;
-  if (durationSecs !== null && durationSecs > transcription.maxSeconds) return false;
+  if (privateRefusal(transcription, durationSecs) !== null) return false;
   const job = transcription.jobs.get(noteId);
   return job?.kind !== "active" && job?.kind !== "done";
 }

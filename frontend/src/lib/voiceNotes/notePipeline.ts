@@ -76,7 +76,7 @@ export interface PipelineOnDevice {
 }
 
 /** `TranscriptionBlockedReason` (P2). */
-export type PipelineBlockedReason = "checking" | "unavailable" | "check-failed" | "no-consent";
+export type PipelineBlockedReason = "checking" | "unavailable" | "check-failed" | "no-consent" | "limits-unknown";
 
 /** `VoiceNoteTranscriptionStatus` (`waiting.position` is P2). */
 export type PipelineCloudStatus =
@@ -324,6 +324,7 @@ function cloudBlockedStep(reason: PipelineBlockedReason, provider: NotePipelineI
   switch (reason) {
     case "checking": return { state: "waiting", caption: provider === "private" ? PRIVATE_COPY.checking : `Checking ${name}…` };
     case "unavailable": return blocked(provider === "private" ? PRIVATE_COPY.unavailable : `${name} isn't available right now`, "check-again");
+    case "limits-unknown": return blocked(provider === "private" ? PRIVATE_COPY.limitsUnknown : `${name} isn't available right now`, "check-again");
     case "check-failed": return blocked(provider === "private" ? PRIVATE_COPY.checkFailed : `Couldn't check whether ${name} is available`, "check-again");
     case "no-consent": return blocked(provider === "private" ? PRIVATE_COPY.noConsent : `Waiting for your OK to use ${name}`, "review-consent");
   }

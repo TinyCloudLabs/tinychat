@@ -84,6 +84,12 @@ describe("NoteDetailView", () => {
     expect(html).toContain("Private Transcription accepts notes up to 2 h. This note is 3 h.");
     expect(html).not.toContain('data-testid="voice-note-transcribe"');
   });
+  test("a note whose PTX limit is unknown says Private's limits aren't available, with no duration and no Transcribe", () => {
+    const html = render({ item: { ...VOICE, durationSecs: 10_800 }, transcription: transcription({ maxSeconds: null }) });
+    expect(html).toContain('data-testid="voice-note-transcription-limits-unknown"');
+    expect(html).not.toContain('data-testid="voice-note-transcription-over-limit"');
+    expect(html).not.toContain('data-testid="voice-note-transcribe"');
+  });
   test("a committed transcript with a missing body does not show its preview as full text", () => {
     const html = render({ item: VOICE, metadata: { status: "ok", metadata: {
       transcription_outcome: "transcribed", transcript_text: null,

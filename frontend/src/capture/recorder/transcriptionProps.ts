@@ -1,7 +1,10 @@
 // Private cloud transcription as the voice-note views see it: the recorder's
 // route control and the Voice notes card. Moved from the card (TC-761, PR4).
 import {
-  maxTranscriptionSeconds,
+  privateCloudLimits,
+  privateCloudRefusal,
+  type PrivateCloudLimits,
+  type PrivateCloudRefusal,
   type NoteTranscriptionState,
   type TranscriptionAvailability,
   type TranscriptionAdmissionRefusal,
@@ -21,8 +24,12 @@ export interface VoiceNoteTranscriptionProps {
   powerfulAvailable?: boolean;
   powerfulConsented?: boolean;
   onPowerfulConsent?: () => void;
-  /** The longest note offered, in seconds. */
-  maxSeconds: number;
+  /** The longest note offered, in seconds; null when PTX advertised no maximum, so Private is not offered. */
+  maxSeconds: number | null;
+  /** Seconds PTX accepts past `maxSeconds` (0 when it advertises none). */
+  graceSeconds?: number;
+  /** PTX's byte cap, when it advertises one. */
+  maxBytes?: number;
   /** Whether this deployment can identify speaker turns in Private notes. */
   diarization?: boolean;
   /** Notes being transcribed, waiting their turn, or whose last attempt failed. */
@@ -50,6 +57,7 @@ export function transcriptionProps(
   snapshot: VoiceNoteTranscriberSnapshot,
 ): VoiceNoteTranscriptionProps | undefined {
   if (transcriber === null) return undefined;
+  const limits = privateCloudLimits(snapshot.capabilities);
   return {
     availability: snapshot.availability,
     ...(snapshot.checkError === undefined ? {} : { checkError: snapshot.checkError }),
@@ -58,7 +66,9 @@ export function transcriptionProps(
     powerfulAvailable: snapshot.powerfulAvailable,
     powerfulConsented: snapshot.powerfulConsented,
     onPowerfulConsent: () => transcriber.consentPowerful?.(),
-    maxSeconds: maxTranscriptionSeconds(snapshot.capabilities),
+    maxSeconds: limits?.maxSeconds ?? null,
+    graceSeconds: limits?.graceSeconds ?? 0,
+    ...(limits === null || limits.maxBytes === null ? {} : { maxBytes: limits.maxBytes }),
     diarization: snapshot.capabilities?.diarization === true,
     jobs: snapshot.jobs,
     onTranscribe: (sourceId) => transcriber.transcribe(sourceId),
@@ -67,4 +77,16 @@ export function transcriptionProps(
     onTurnOff: () => void transcriber.turnOff(),
     onRecheck: () => transcriber.check(),
   };
+}
+
+/** Whether private cloud takes this note by the rule `run` enforces: PTX's limits (unknown when null), then the byte cap when known. */
+export function privateRefusal(
+  transcription: Pick<VoiceNoteTranscriptionProps, "maxSeconds" | "graceSeconds" | "maxBytes">,
+  durationSecs: number | null,
+  sizeBytes: number | null = null,
+): PrivateCloudRefusal | null {
+  const limits: PrivateCloudLimits | null = transcription.maxSeconds === null
+    ? null
+    : { maxSeconds: transcription.maxSeconds, graceSeconds: transcription.graceSeconds ?? 0, maxBytes: transcription.maxBytes ?? null };
+  return privateCloudRefusal(durationSecs, sizeBytes, limits);
 }
