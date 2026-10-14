@@ -256,7 +256,7 @@ test("a finished hosted run marks its remote ops done so the local audio can be 
   expect(lane.jobs.get(recording.id)).toEqual({ kind: "done", outcome: "transcribed" });
   expect(getRemoteOps().length).toBeGreaterThan(0);
   expect(getRemoteOps().every((op) => op.stage === "done")).toBe(true);
-  const note = { ...recording, ledger: { remote: getRemoteOps(), transcript: { state: "done" } } } as VoiceNoteRecording;
+  const note = { ...recording, ledger: { remote: getRemoteOps() } } as VoiceNoteRecording;
   expect(hasLocalWorkInProgress(note)).toBe(false);
 });
 test("a hosted run that fails before its transcript is saved keeps its local audio pinned", async () => {

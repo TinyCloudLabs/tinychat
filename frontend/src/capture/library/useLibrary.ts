@@ -470,11 +470,14 @@ export function useLibrary(
   // note never uploads), the phone's own copy is the audio. A verified saved copy is read from the space.
   const onThisPhone = voiceSourceId !== null && (item?.onPhone === true || phoneOnlyAudioIds.has(voiceSourceId));
   const localOnlyAudio = (meta?.audio as { stored?: unknown } | undefined)?.stored === false;
+  // A note with no stored space audio plays the phone's copy while it has one. A stored space audio plays
+  // from the space at Play time, unless this device's copy is not yet verified (checked in the load below).
+  const phoneFirst = item?.onPhone === true || (onThisPhone && audioBase === null);
   // The stored file is read only when the player asks, one part per queued
   // call; the player's signal stops it when the note closes.
   const noteAudio = useMemo<NoteAudio | null>(() => {
     // The phone's own copy, until the space has the audio.
-    if (voiceSourceId !== null && onThisPhone) return localAudio(voiceSourceId,
+    if (voiceSourceId !== null && phoneFirst) return localAudio(voiceSourceId,
       onPhoneNotes?.find((note) => note.id === voiceSourceId)?.channels);
     if (voiceSourceId !== null && metadataLoaded && !pendingAudioRow && !localOnlyAudio) {
       return {
@@ -482,6 +485,11 @@ export function useLibrary(
           const localNote = await Promise.resolve().then(() => VoiceNotes.listPending())
             .then(({ recordings }) => recordings.find((note) => note.id === voiceSourceId))
             .catch(() => undefined);
+          // A receipt that landed since the list was read stops the phone's copy: the ledger is read now.
+          if (localNote?.owner === space.did && !hasVerifiedSpaceCopy(localNote)) {
+            const local = await localPlaybackUrl(voiceSourceId).catch(() => null);
+            if (local) return local;
+          }
           if (item?.saving && localNote?.ledger?.audio.state !== "saved") {
             const local = await localPlaybackUrl(voiceSourceId);
             if (local) return local;
@@ -534,7 +542,7 @@ export function useLibrary(
     }
     if (audioBase !== null && !localOnlyAudio) return { load: (signal, onProgress) => getAudio(space.kv, audioBase, { signal, onProgress }) };
     return null;
-  }, [audioBase, item?.saving, onThisPhone, onPhoneNotes, localOnlyAudio, metadataLoaded, pendingAudioRow, space, voiceSourceId]);
+  }, [audioBase, item?.saving, phoneFirst, onPhoneNotes, localOnlyAudio, metadataLoaded, pendingAudioRow, space, voiceSourceId]);
 
   const retry = useCallback(() => {
     if (list.status === "failed") refresh();

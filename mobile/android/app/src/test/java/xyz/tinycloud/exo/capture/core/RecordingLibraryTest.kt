@@ -56,13 +56,30 @@ class RecordingLibraryTest {
         val lib = library(); val id = id(); begin(lib, id); commit(lib, id)
         val hash = MessageDigest.getInstance("SHA-256").digest(byteArrayOf(1, 2, 3)).joinToString("") { "%02x".format(it) }
         lib.mutate(id, "test.queuedStt") {
-            it.getJSONObject("options").put("uploadAudio", false).put("transcriber", "assemblyai")
+            it.getJSONObject("options").put("uploadAudio", false).put("transcriber", "on-device")
             it.put("stt", JSONObject().put("state", "queued"))
             it.getJSONObject("ledger").put("transcript", JSONObject().put("state", "done"))
                 .put("audio", JSONObject().put("state", "saved")
                     .put("verifiedInSpace", JSONObject().put("sha256", hash).put("size", 3)))
         }
         try { lib.evictCachedAudio(id); fail("audio with queued local work was evicted") }
+        catch (e: IllegalStateException) { assertEquals("audio_in_use", e.message) }
+        assertTrue(lib.audio(id).isFile)
+    }
+    @Test fun evictionWaitsForOutboxReceipt() {
+        val lib = library(); val id = id(); begin(lib, id); commit(lib, id)
+        val hash = MessageDigest.getInstance("SHA-256").digest(byteArrayOf(1, 2, 3)).joinToString("") { "%02x".format(it) }
+        lib.mutate(id, "test.spaceBacked") {
+            it.getJSONObject("options").put("uploadAudio", false).put("transcriber", "assemblyai")
+            it.getJSONObject("ledger").put("transcript", JSONObject().put("state", "done"))
+                .put("audio", JSONObject().put("state", "saved")
+                    .put("verifiedInSpace", JSONObject().put("sha256", hash).put("size", 3)))
+        }
+        // Receipt for another account parks in outbox/<id>:<opId>.json instead of the sidecar.
+        lib.beginRemoteOp(JSONObject().put("id", id).put("did", "did:other").put("opId", "op-1")
+            .put("provider", "assemblyai").put("mode", "hosted").put("kind", "hosted_create")
+            .put("fingerprint", "sha256").put("startedAt", 1000))
+        try { lib.evictCachedAudio(id); fail("audio with a pending outbox receipt was evicted") }
         catch (e: IllegalStateException) { assertEquals("audio_in_use", e.message) }
         assertTrue(lib.audio(id).isFile)
     }

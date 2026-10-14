@@ -500,9 +500,16 @@ public final class RecordingLibrary {
                             remote[index][key] = handle
                         }
                     }
+                    if remote[index]["kind"] as? String == "own_create", result["outcome"] as? String == "created" {
+                        remote.removeAll { $0["kind"] as? String == "own_upload" }
+                    }
                     ledger["remote"] = remote; item["ledger"] = ledger
                     item["rev"] = (item["rev"] as? Int ?? 0) + 1
                     try publishSidecarUnlocked(id, item, failpointName: "receipt.result")
+                    if result["outcome"] as? String == "created",
+                       remote.contains(where: { $0["opId"] as? String == opId && $0["kind"] as? String == "own_create" }) {
+                        try retireOwnUploadOutboxUnlocked(id)
+                    }
                     return "ledger"
                 }
             }
@@ -549,12 +556,28 @@ public final class RecordingLibrary {
                         (receipt["mode"] as? String) == "hosted" ? "hosted_submit" : "own_create"
                 }
             }
+            if open["kind"] as? String == "own_create", result["outcome"] as? String == "created" {
+                try retireOwnUploadOutboxUnlocked(id)
+            }
             try writeReceiptOutboxUnlocked(id: id, opId: opId, receipt: open, result: result)
             return "outbox"
         }
     }
 
     private func receiptOutboxURL(id: String, opId: String) -> URL { url("outbox/\(id):\(opId).json") }
+
+    /// Once own_create has created its job, a sibling own_upload for the same note has no upload left to look up.
+    /// Its outbox receipt must not keep pinning the note's audio.
+    private func retireOwnUploadOutboxUnlocked(_ id: String) throws {
+        for path in try FileManager.default.contentsOfDirectory(at: url("outbox"), includingPropertiesForKeys: nil)
+        where path.lastPathComponent.hasPrefix("\(id):") {
+            guard let data = try? Data(contentsOf: path),
+                  let receipt = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  receipt["receiptKind"] as? String == "own_upload" else { continue }
+            try FileManager.default.removeItem(at: path)
+        }
+        try sync(url("outbox"))
+    }
 
     private static func receiptStage(_ kind: String, outcome: String) -> String {
         guard outcome == "created" else { return kind == "hosted_submit" ? "submit_unknown" : "create_unknown" }
@@ -670,19 +693,23 @@ public final class RecordingLibrary {
     /// Mirrors `hasLocalWorkInProgress` in frontend/src/lib/voiceNotes/localWork.ts. Keep the two in sync.
     private static func hasLocalWorkInProgress(_ note: [String: Any]) -> Bool {
         guard let ledger = note["ledger"] as? [String: Any] else { return true }
-        let transcriberOff = (note["options"] as? [String: Any])?["transcriber"] as? String == "off"
-        let transcript = ledger["transcript"] as? [String: Any]
-        let transcriptUnfinished = !transcriberOff && transcript?["state"] as? String != "done"
+        let transcriber = (note["options"] as? [String: Any])?["transcriber"] as? String
         let localAudio = ledger["localAudio"] as? [String: Any]
         let localAudioUnready = localAudio != nil && localAudio?["state"] as? String != "ready"
-        let stt = note["stt"] as? [String: Any]
-        let sttUnfinished = stt != nil && stt?["state"] as? String != "done"
+        let sttState = (note["stt"] as? [String: Any])?["state"] as? String ?? ""
+        let sttPinned = transcriber == "on-device" && ["waiting_for_model", "queued", "running", "failed"].contains(sttState)
         let remotes = ledger["remote"] as? [[String: Any]] ?? []
         let remoteOpen = remotes.contains(where: { op in
             let stage = op["stage"] as? String
             return stage != "done" && (op["mode"] as? String != "own" || stage != "submitted")
         })
-        return localAudioUnready || sttUnfinished || transcriptUnfinished || remoteOpen
+        return localAudioUnready || sttPinned || remoteOpen
+    }
+
+    /// Outbox receipts are stored as `outbox/<id>:<opId>.json`. Any such file pins the note's audio.
+    private func hasOutboxEntryUnlocked(_ id: String) throws -> Bool {
+        try FileManager.default.contentsOfDirectory(at: url("outbox"), includingPropertiesForKeys: nil)
+            .contains { $0.lastPathComponent.hasPrefix("\(id):") }
     }
 
     /// A space-backed recording may shed its audio while retaining its note, transcript and ledger.
@@ -690,7 +717,8 @@ public final class RecordingLibrary {
         guard Self.validID(id) else { throw CaptureError.invalidArgument }
         try queue.sync {
             let note = try readSidecarUnlocked(id)
-            guard !Self.hasLocalWorkInProgress(note) else { throw CaptureError.io("audio_in_use") }
+            let pinnedByOutbox = try hasOutboxEntryUnlocked(id)
+            guard !Self.hasLocalWorkInProgress(note), !pinnedByOutbox else { throw CaptureError.audioInUse }
             let ledger = note["ledger"] as? [String: Any]
             let audio = ledger?["audio"] as? [String: Any]
             let receipt = audio?["verifiedInSpace"] as? [String: Any]

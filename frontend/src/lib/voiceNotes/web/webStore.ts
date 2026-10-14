@@ -35,6 +35,8 @@ export const UNDECODABLE_REASON = "undecodable_audio";
 export const DECODER_UNAVAILABLE_REASON = "decoder_unavailable";
 export const RECORDING_LOCK = "exo-voice-note-recording";
 export const sessionLock = (id: string) => `exo-voice-note-session:${id}`;
+/** Per-note mutex for file-backed audio: evict's check and delete, and writers that add local work. */
+export const noteWorkLock = (id: string) => `exo-voice-note-work:${id}`;
 
 /** A named persistence step; `hooks.beforeOp` lets tests kill the "tab" at that exact boundary. */
 export type StoreOp =
@@ -79,6 +81,8 @@ export type SessionInit = Omit<SessionRecord, "audioMs" | "bytes" | "pausedMs" |
 export interface SessionLocks {
   /** Resolves a release function, or null when another holder already has `name`. */
   hold(name: string): Promise<(() => void) | null>;
+  /** Waits until `name` is free, then holds it. Only for short sections that never await another holder of `name`. */
+  wait(name: string): Promise<() => void>;
 }
 
 export function webLocks(): SessionLocks {
@@ -91,19 +95,51 @@ export function webLocks(): SessionLocks {
         await new Promise<void>((release) => resolve(() => release()));
       }).catch(reject);
     }),
+    wait: (name) => new Promise((resolve, reject) => {
+      locks.request(name, () => new Promise<void>((release) => resolve(() => release()))).catch(reject);
+    }),
   };
 }
 
-/** In-memory locks for tests; `releaseAll` models every holder (a tab) dying. */
+/** In-memory locks for tests; `releaseAll` models every holder (a tab) dying. Waiters are served in arrival order. */
 export function memoryLocks(): SessionLocks & { releaseAll(): void } {
   const held = new Set<string>();
+  const waiting = new Map<string, ((release: () => void) => void)[]>();
+  const releaserFor = (name: string): (() => void) => {
+    let done = false;
+    return () => {
+      if (done) return;
+      done = true;
+      const next = waiting.get(name)?.shift();
+      if (next) next(releaserFor(name));
+      else held.delete(name);
+    };
+  };
   return {
     async hold(name) {
       if (held.has(name)) return null;
       held.add(name);
-      return () => void held.delete(name);
+      return releaserFor(name);
     },
-    releaseAll: () => held.clear(),
+    wait(name) {
+      if (!held.has(name)) {
+        held.add(name);
+        return Promise.resolve(releaserFor(name));
+      }
+      let resolve!: (release: () => void) => void;
+      const promise = new Promise<() => void>((done) => { resolve = done; });
+      const line = waiting.get(name) ?? [];
+      line.push(resolve);
+      waiting.set(name, line);
+      return promise;
+    },
+    releaseAll() {
+      held.clear();
+      for (const [name, line] of waiting) {
+        const next = line.shift();
+        if (next) { held.add(name); next(releaserFor(name)); }
+      }
+    },
   };
 }
 
@@ -299,12 +335,12 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
   const db = await openWebDb(env, options.dbName ?? "exo-voice-notes");
   const audio = options.audio ? options.audio(db, env) : createIdbAudioBlobStore(db, env);
   const locks = options.locks ?? webLocks();
-  // File-backed audio is deleted under sessionLock(id). Writers that can add local work take that lock too,
-  // so evict's "no work" check cannot interleave with a new job's first read. IDB audio is covered by its transaction.
+  // File-backed audio is deleted under noteWorkLock(id). Writers that add local work hold it for their metadata write,
+  // so evict's "no work" check and its delete cannot interleave with a new job's first read. It is a separate mutex
+  // from sessionLock: the commit path holds sessionLock while it awaits updateStt. IDB audio is covered by its transaction.
   const withNoteWork = async <T>(id: string, run: () => Promise<T>): Promise<T> => {
     if (audio.transactional) return run();
-    const release = await locks.hold(sessionLock(id));
-    if (!release) throw failure("audio_busy");
+    const release = await locks.wait(noteWorkLock(id));
     try { return await run(); } finally { release(); }
   };
   const decodeCheck = options.decodeCheck === undefined ? browserDecodeCheck() : options.decodeCheck;
@@ -315,6 +351,18 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
   const del = (tx: IDBTransaction, store: string, key: IDBValidKey) => request(tx.objectStore(store).delete(key));
   const all = async <T>(tx: IDBTransaction, store: string): Promise<T[]> =>
     (await request(tx.objectStore(store).getAll())) as T[];
+
+  // An outbox entry pins its note's audio until its remote op completes. entryId is `${noteId}:${opId}`.
+  const hasOutboxEntry = async (tx: IDBTransaction, id: string): Promise<boolean> =>
+    (await all<OutboxEntry>(tx, STORES.outbox)).some((entry) => entry.entryId.startsWith(`${id}:`));
+
+  // Once own_create has created its job, a sibling own_upload for the same note has no upload left to look up.
+  // Its outbox entry must not keep pinning the note's audio.
+  const retireOwnUploadOutbox = async (tx: IDBTransaction, id: string): Promise<void> => {
+    for (const entry of await all<OutboxEntry>(tx, STORES.outbox)) {
+      if (entry.receiptKind === "own_upload" && entry.entryId.startsWith(`${id}:`)) await del(tx, STORES.outbox, entry.entryId);
+    }
+  };
 
   const capture = async (tx: IDBTransaction): Promise<CaptureRow> =>
     (await get<CaptureRow>(tx, STORES.kv, "capture")) ?? { key: "capture", ...clone(INITIAL_CAPTURE) };
@@ -630,10 +678,10 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
 
     async evictCachedAudio({ id }) {
       if (audio.transactional) {
-        await transact(db, [STORES.notes, STORES.tombstones, ...audio.transactional.stores], "readwrite", async (tx) => {
+        await transact(db, [STORES.notes, STORES.tombstones, STORES.outbox, ...audio.transactional.stores], "readwrite", async (tx) => {
           const note = await checkedNote(tx, id);
           const receipt = note.ledger?.audio.verifiedInSpace;
-          if (hasLocalWorkInProgress(note)) throw failure("audio_in_use");
+          if (hasLocalWorkInProgress(note) || await hasOutboxEntry(tx, id)) throw failure("audio_in_use");
           const size = (await request(tx.objectStore(STORES.audioMeta).get(id)) as { size?: number } | undefined)?.size;
           const content = await audio.transactional!.hashIn(tx, id);
           if (note.ledger?.audio.state !== "saved" || !receipt || !/^[0-9a-f]{64}$/.test(receipt.sha256)
@@ -643,13 +691,14 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
           audio.transactional!.deleteIn(tx, id);
         });
       } else {
-        // Desktop audio is file-backed. Serialize this metadata check with its file delete.
-        const release = await locks.hold(sessionLock(id));
-        if (!release) throw failure("audio_busy");
+        // Desktop audio is file-backed. Hold the note's work lock across this check, hash, and delete; writers wait for it.
+        const release = await locks.wait(noteWorkLock(id));
         try {
-          const note = await transact(db, [STORES.notes, STORES.tombstones], "readonly", (tx) => checkedNote(tx, id));
+          const { note, outboxPinned } = await transact(db, [STORES.notes, STORES.tombstones, STORES.outbox], "readonly", async (tx) => ({
+            note: await checkedNote(tx, id), outboxPinned: await hasOutboxEntry(tx, id),
+          }));
           const receipt = note.ledger?.audio.verifiedInSpace;
-          if (hasLocalWorkInProgress(note)) throw failure("audio_in_use");
+          if (hasLocalWorkInProgress(note) || outboxPinned) throw failure("audio_in_use");
           if (note.ledger?.audio.state !== "saved" || !receipt || !/^[0-9a-f]{64}$/.test(receipt.sha256)
             || (note.ledger.localAudio !== undefined && note.ledger.localAudio.state !== "ready"))
             throw failure("audio_not_space_backed");
@@ -662,6 +711,7 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
           }
           if (receipt.size !== size || receipt.sha256 !== bytesToHex(hash.digest()))
             throw failure("audio_not_space_backed");
+          await before("audio:delete", id);
           await audio.delete(id);
         } finally { release(); }
       }
@@ -770,6 +820,7 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
           const old = await get<OutboxEntry>(tx, STORES.outbox, key);
           const entry = outboxEntryFor(receipt, result, old);
           if (entry) await enqueueOutbox(tx, entry); else await del(tx, STORES.outbox, key);
+          if (receipt.kind === "own_create" && result.outcome === "created") await retireOwnUploadOutbox(tx, id);
           await put(tx, STORES.receipts, { ...row, result: { destination: "outbox", handle: handle ?? previous?.handle ?? null,
             handleExpiresAt: result.handleExpiresAt ?? null, outcome: result.outcome } } satisfies ReceiptRow);
           return { destination: "outbox" as const };
@@ -787,6 +838,10 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
             entry.jobId = result.jobId ?? (["hosted_submit", "own_create", "ptx_create"].includes(receipt.kind) ? result.handle : undefined) ?? entry.jobId;
             entry.handleExpiresAt = result.handleExpiresAt ?? entry.handleExpiresAt ?? null;
           }
+        }
+        if (receipt.kind === "own_create" && result.outcome === "created") {
+          note.ledger.remote = note.ledger.remote.filter((remote) => remote.kind !== "own_upload");
+          await retireOwnUploadOutbox(tx, id);
         }
         note.rev = (note.rev ?? 0) + 1;
         await put(tx, STORES.notes, note);

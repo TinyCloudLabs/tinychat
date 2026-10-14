@@ -1,23 +1,26 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { IDBFactory } from "fake-indexeddb";
 import { VoiceNotes, __setVoiceNotesForTests, type VoiceNoteRecording, type VoiceNotesPlugin } from "./nativeVoiceNotes";
+import { mountVoiceNoteAccount } from "./accountContext";
 import { cachedAudioSize, cachedSpaceAudio, cachedSpaceAudioOffline, clearCachedAudio,
   latestSpaceAudioIdentity, localPlaybackUrl, observeSpaceAudioIdentity, trimCachedAudio } from "./audioPlaybackCache";
 
 const original = VoiceNotes;
 const originalIdb = globalThis.indexedDB;
 const saved = (id: string, state: "saved" | "pending"): VoiceNoteRecording => ({
-  id, startedAt: 1, durationMs: 1000, mimeType: "audio/mp4", sizeBytes: 40,
+  id, owner: "did:test", startedAt: 1, durationMs: 1000, mimeType: "audio/mp4", sizeBytes: 40,
   silencedMs: 0, silencedEvents: 0, noSignalMs: 0,
   ledger: { audio: { state, rowId: state === "saved" ? "row" : null, at: 1,
     ...(state === "saved" ? { verifiedInSpace: { sha256: "a".repeat(64), size: 40 } } : {}) },
-    transcript: { state: "done" } } as VoiceNoteRecording["ledger"],
+  } as VoiceNoteRecording["ledger"],
 });
 
 let notes: VoiceNoteRecording[];
 let sizes: Map<string, number>;
 let evicted: string[];
+let unmountAccount: () => void;
 beforeEach(() => {
+  unmountAccount = mountVoiceNoteAccount("did:test");
   globalThis.indexedDB = new IDBFactory() as unknown as IDBFactory;
   notes = [];
   sizes = new Map();
@@ -33,6 +36,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   globalThis.indexedDB = originalIdb;
+  unmountAccount();
   __setVoiceNotesForTests(original, { available: null });
 });
 
@@ -73,14 +77,14 @@ test("eviction and Clear cached audio touch only confirmed space copies", async 
   expect(sizes.get("pending")).toBe(40);
 });
 
-test("trim keeps notes whose local audio, running transcript, or hosted job still reads this device's bytes", async () => {
+test("trim keeps notes whose local audio, queued on-device STT, or hosted job still reads this device's bytes", async () => {
   const withLedger = (id: string, patch: Record<string, unknown>): VoiceNoteRecording => {
     const note = saved(id, "saved");
     return { ...note, ledger: { ...note.ledger!, ...patch } } as VoiceNoteRecording;
   };
   notes = [
     withLedger("importing", { localAudio: { state: "preparing", error: null } }),
-    withLedger("transcribing", { transcript: { state: "running" } }),
+    { ...withLedger("transcribing", {}), stt: { state: "queued" }, options: { uploadAudio: false, transcriber: "on-device" } } as VoiceNoteRecording,
     withLedger("hosted", { remote: [{ opId: "op", provider: "assemblyai", mode: "hosted", stage: "submitted", cleanup: "none" }] }),
     withLedger("finished", { remote: [{ opId: "op", provider: "assemblyai", mode: "hosted", stage: "done", cleanup: "done" }] }),
     saved("uploaded", "saved"),
@@ -158,4 +162,36 @@ test("a note still on the device keeps its identity through a trim", async () =>
   await cachedSpaceAudio("space", "did", "exo-voice-note", "other", "rev-1", async () => new Blob(["remote"]));
   await trimCachedAudio(0);
   expect((await latestSpaceAudioIdentity("space", "did", "exo-voice-note", "local"))?.identity).toBe("rev-1");
+});
+
+test("only the signed-in account's verified copies are cache candidates", async () => {
+  notes = [saved("mine", "saved"), { ...saved("theirs", "saved"), owner: "did:test:other" }];
+  sizes.set("mine", 40); sizes.set("theirs", 40);
+  await trimCachedAudio(0);
+  expect(evicted).toEqual(["mine"]);
+});
+
+test("with nobody signed in no saved note is a cache candidate", async () => {
+  unmountAccount();
+  notes = [saved("mine", "saved")];
+  sizes.set("mine", 40);
+  expect((await cachedAudioSize()).bytes).toBe(0);
+  await trimCachedAudio(0);
+  expect(evicted).toEqual([]);
+});
+
+test("a candidate native refuses as in use is skipped and the rest of the cache is still trimmed", async () => {
+  notes = [saved("busy", "saved"), saved("free", "saved")];
+  sizes.set("busy", 40); sizes.set("free", 40);
+  __setVoiceNotesForTests({
+    listPending: async () => ({ recordings: notes }),
+    localAudioSize: async ({ id }: { id: string }) => ({ size: sizes.get(id) ?? 0 }),
+    evictCachedAudio: async ({ id }: { id: string }) => {
+      if (id === "busy") throw Object.assign(new Error("audio_in_use"), { code: "audio_in_use" });
+      sizes.set(id, 0); evicted.push(id);
+    },
+  } as VoiceNotesPlugin, { available: true });
+  await trimCachedAudio(0);
+  expect(evicted).toEqual(["free"]);
+  expect(sizes.get("busy")).toBe(40);
 });

@@ -2,6 +2,7 @@ import { logPipeline, logPipelineError } from "@/lib/debugLog";
 import { Capacitor } from "@capacitor/core";
 import { VoiceNotes, type VoiceNoteRecording } from "./nativeVoiceNotes";
 import { hasLocalWorkInProgress } from "./localWork";
+import { mountedVoiceNoteDid } from "./accountContext";
 
 type CacheRow = { key: string; blob?: Blob; size: number; playedAt: number; identity?: string;
   receipt?: { sha256: string; size: number } | null };
@@ -85,7 +86,12 @@ export function hasVerifiedSpaceCopy(note: VoiceNoteRecording): boolean {
 }
 
 async function savedRecordings(): Promise<VoiceNoteRecording[]> {
-  const notes = (await VoiceNotes.listPending()).recordings.filter((note) => hasVerifiedSpaceCopy(note) && !hasLocalWorkInProgress(note));
+  // Only the signed-in account's notes are cache candidates. Another account's verified copy is not ours to trim,
+  // and with nobody signed in there is no owner to check against, so nothing is a candidate.
+  const owner = mountedVoiceNoteDid();
+  if (!owner) return [];
+  const notes = (await VoiceNotes.listPending()).recordings.filter((note) =>
+    note.owner === owner && hasVerifiedSpaceCopy(note) && !hasLocalWorkInProgress(note));
   const sizes = await Promise.all(notes.map((note) => VoiceNotes.localAudioSize({ id: note.id })));
   return notes.flatMap((note, index) => sizes[index]!.size === note.ledger!.audio.verifiedInSpace!.size
     ? [{ ...note, sizeBytes: sizes[index]!.size }] : []);
@@ -204,7 +210,7 @@ async function evict(entry: { key: string; size: number; id?: string }): Promise
     } catch (error) {
       // A concurrent write made this note pin its bytes; eviction is optional, so skip it.
       const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
-      if (code === "audio_busy" || code === "audio_in_use") return false;
+      if (code === "audio_in_use") return false;
       throw error;
     }
   }

@@ -44,15 +44,36 @@ final class RecordingLibraryTests: XCTestCase {
         let id = UUID().uuidString.lowercased()
         let hash = SHA256.hash(data: Data("work".utf8)).map { String(format: "%02x", $0) }.joined()
         _ = try library.commit(id, sidecar: ["id": id, "version": 2, "owner": "did:test", "rev": 0,
-            "options": ["uploadAudio": false, "transcriber": "assemblyai"],
+            "options": ["uploadAudio": false, "transcriber": "on-device"],
             "stt": ["state": "queued"],
             "ledger": ["audio": ["state": "saved", "verifiedInSpace": ["sha256": hash, "size": 4]],
                        "transcript": ["state": "done"]]]) { try Data("work".utf8).write(to: $0) }
         do {
             try library.evictCachedAudio(id)
             XCTFail("audio with queued local work was evicted")
-        } catch CaptureError.io(let code) {
-            XCTAssertEqual(code, "audio_in_use")
+        } catch CaptureError.audioInUse {
+            XCTAssertEqual(CaptureError.audioInUse.code, "audio_in_use")
+        }
+        XCTAssertNotNil(try library.openAudio(id))
+    }
+
+    func testCacheEvictionWaitsForOutboxReceipt() throws {
+        let (library, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID().uuidString.lowercased()
+        let bytes = Data("kept".utf8)
+        let hash = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+        _ = try library.commit(id, sidecar: ["id": id, "version": 2, "owner": "did:test", "rev": 0,
+            "options": ["uploadAudio": false, "transcriber": "assemblyai"],
+            "ledger": ["audio": ["state": "saved", "verifiedInSpace": ["sha256": hash, "size": bytes.count]],
+                       "transcript": ["state": "done"]]]) { try bytes.write(to: $0) }
+        // No signed-in account: the receipt parks in outbox/<id>:<opId>.json instead of the sidecar.
+        try library.beginRemoteOp(["id": id, "did": "did:other", "opId": "op-1", "provider": "assemblyai",
+            "mode": "hosted", "kind": "hosted_create", "fingerprint": "fp", "startedAt": NSNumber(value: 1)])
+        do {
+            try library.evictCachedAudio(id)
+            XCTFail("audio with a pending outbox receipt was evicted")
+        } catch CaptureError.audioInUse {
+            XCTAssertEqual(CaptureError.audioInUse.code, "audio_in_use")
         }
         XCTAssertNotNil(try library.openAudio(id))
     }

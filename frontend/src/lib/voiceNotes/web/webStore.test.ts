@@ -117,6 +117,47 @@ describe("IDB audio blob store", () => {
   });
 });
 
+describe("per-note work lock", () => {
+  const stt = (state: "done" | "queued") => ({ state, pack: null, engine: null, segmentsDone: 0, windowsDone: 0, error: null });
+  // The desktop commit path holds sessionLock while it awaits updateStt. Writers must not wait on sessionLock.
+  test("updateStt completes while the commit path holds the session lock", async () => {
+    const { open, locks } = harness({ audio: () => memoryAudioBlobs().create() });
+    const store = await open();
+    await noteWith(store, "n", [bytesOf(10)], "did:a");
+    const releaseSession = await locks.hold(sessionLock("n"));
+    expect(releaseSession).not.toBeNull();
+    await store.updateStt("n", stt("queued"));
+    releaseSession!();
+    expect((await store.listPending()).recordings.find((note) => note.id === "n")!.stt?.state).toBe("queued");
+  });
+  test("updateStt waits for an evict holding the work lock, then evict refuses once the new state pins", async () => {
+    const gate = Promise.withResolvers<void>();
+    const reached = Promise.withResolvers<void>();
+    const { open } = harness({ audio: () => memoryAudioBlobs().create(), hooks: { beforeOp: async (op) => {
+      if (op !== "audio:delete") return;
+      reached.resolve();
+      await gate.promise;
+    } } });
+    const store = await open();
+    const bytes = bytesOf(12);
+    await noteWith(store, "n", [bytes], "did:a");
+    await store.updateStt("n", stt("done"));
+    const saved = (await store.listPending()).recordings.find((note) => note.id === "n")!;
+    await store.updateLedger({ id: "n", did: "did:a", rev: saved.rev!, patch: { audio: { state: "saved", rowId: "row", at: 10,
+      verifiedInSpace: { sha256: createHash("sha256").update(bytes).digest("hex"), size: bytes.length } } } });
+    const evicting = store.evictCachedAudio({ id: "n" });
+    await reached.promise;
+    let wrote = false;
+    const writing = store.updateStt("n", stt("queued")).then(() => { wrote = true; });
+    expect(wrote).toBe(false);
+    gate.resolve();
+    await evicting;
+    await writing;
+    expect(wrote).toBe(true);
+    await expect(store.evictCachedAudio({ id: "n" })).rejects.toEqual(code("audio_in_use"));
+  });
+});
+
 describe("readAudioChunk", () => {
   test("cache eviction keeps the saved note and rejects pending audio", async () => {
     const { open } = harness();
@@ -183,6 +224,18 @@ describe("readAudioChunk", () => {
         await store.beginRemoteOp({ id: "stale", did: "did:a", opId: "op", provider: "assemblyai", mode: "hosted", kind: "hosted_create", fingerprint: "12:audio/webm", startedAt: 1 });
         await expect(store.evictCachedAudio({ id: "stale" })).rejects.toEqual(code("audio_in_use"));
         expect((await store.readNoteAudio("stale")).bytes.length).toBe(12);
+      });
+      test(`${backing} eviction keeps the bytes of a note with a pending outbox entry until it completes`, async () => {
+        const store = await openStore();
+        await spaceBacked(store, "queued", bytesOf(12));
+        // The account moved on while the op was in flight, so beginRemoteOp parks it in the outbox (webStore.ts:779-783).
+        await store.setCaptureDefaults({ accountDid: "did:b", transitionGen: 2, transcriber: "assemblyai", identifySpeakers: false });
+        await store.beginRemoteOp({ id: "queued", did: "did:a", opId: "op", provider: "assemblyai", mode: "hosted", kind: "hosted_create", fingerprint: "12:audio/webm", startedAt: 1 });
+        await expect(store.evictCachedAudio({ id: "queued" })).rejects.toEqual(code("audio_in_use"));
+        const [entry] = (await store.listOutbox({ did: "did:a" })).entries;
+        await store.completeOutbox({ entryId: entry!.entryId, result: "done" });
+        await store.evictCachedAudio({ id: "queued" });
+        await expect(store.readNoteAudio("queued")).rejects.toEqual(code("not_found"));
       });
     }
   });
@@ -958,6 +1011,27 @@ describe("ledger, receipts, outbox and transcripts (native parity)", () => {
     await store.deleteAudio({ id: "n" });
     expect(await store.recordRemoteResult({ id: "n", did: "did:A", opId: "op2", result: { outcome: "created", jobId: "job-9" } })).toEqual({ destination: "outbox" });
     expect((await store.listOutbox({ did: "did:A" })).entries).toMatchObject([{ kind: "transcript", handle: "job-9", state: "pending" }]);
+  });
+
+  test("an own_create that creates its job retires the note's own_upload, live and from the outbox", async () => {
+    const { open } = harness();
+    const store = await open();
+    await signedIn(store);
+    await noteWith(store, "n", [bytesOf(4)], "did:A");
+    const own = { provider: "assemblyai", mode: "own" as const };
+    await store.beginRemoteOp(receipt("n", { ...own, opId: "up", kind: "own_upload" }));
+    await store.recordRemoteResult({ id: "n", did: "did:A", opId: "up", result: { outcome: "created", uploadUrl: "https://example.test/audio" } });
+    await store.beginRemoteOp(receipt("n", { ...own, opId: "create", kind: "own_create" }));
+    await store.recordRemoteResult({ id: "n", did: "did:A", opId: "create", result: { outcome: "created", jobId: "job-1" } });
+    expect((await store.listPending()).recordings[0]!.ledger?.remote).toMatchObject([{ opId: "create", stage: "submitted", jobId: "job-1" }]);
+
+    await store.beginRemoteOp(receipt("n", { ...own, opId: "up2", kind: "own_upload" }));
+    await store.deleteAudio({ id: "n" });
+    await store.recordRemoteResult({ id: "n", did: "did:A", opId: "up2", result: { outcome: "created", uploadUrl: "https://example.test/audio2" } });
+    await store.beginRemoteOp(receipt("n", { ...own, opId: "create2", kind: "own_create" }));
+    await store.recordRemoteResult({ id: "n", did: "did:A", opId: "create2", result: { outcome: "created", jobId: "job-2" } });
+    const kinds = (await store.listOutbox({ did: "did:A" })).entries.map((entry) => [entry.kind, entry.handle]).sort();
+    expect(kinds).toEqual([["transcript", "job-1"], ["transcript", "job-2"]]);
   });
 
   test("deleteAudio queues durable cleanup for hosted handles, then outbox entries complete, retry and disappear", async () => {

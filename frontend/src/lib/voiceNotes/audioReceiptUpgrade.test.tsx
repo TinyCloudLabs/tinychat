@@ -7,6 +7,7 @@ import { installDom } from "@/test/dom";
 import { AudioCacheSettings } from "@/capture/AudioCacheSettings";
 import { audioBaseKey, blobPartSource, putAudio, type TinyCloudKv } from "@/lib/audio/audioStore";
 import { cachedAudioSize, trimCachedAudio } from "./audioPlaybackCache";
+import { mountVoiceNoteAccount } from "./accountContext";
 import { bytesToBase64 } from "./voiceNoteAudio";
 import { VoiceNotes, __setVoiceNotesForTests, type VoiceNoteRecording, type VoiceNotesPlugin } from "./nativeVoiceNotes";
 import { reconcileAudioCache, useAudioCacheBoot } from "./audioReceiptUpgrade";
@@ -14,10 +15,12 @@ import { reconcileAudioCache, useAudioCacheBoot } from "./audioReceiptUpgrade";
 const original = VoiceNotes;
 const originalIdb = globalThis.indexedDB;
 let root: Root | null = null;
+let unmountAccount: (() => void) | null = null;
 let restoreDom: (() => void) | null = null;
 afterEach(async () => {
   if (root) await act(async () => root!.unmount());
   root = null;
+  unmountAccount?.(); unmountAccount = null;
   restoreDom?.(); restoreDom = null;
   globalThis.indexedDB = originalIdb;
   __setVoiceNotesForTests(original, { available: null });
@@ -55,6 +58,8 @@ async function fixture(mismatch = false, uploadAudio?: boolean) {
   restoreDom = installDom();
   globalThis.indexedDB = new IDBFactory() as unknown as IDBFactory;
   const did = "did:test:receipt-upgrade";
+  // The authenticated saver mount is what makes this account's notes cache candidates.
+  unmountAccount?.(); unmountAccount = mountVoiceNoteAccount(did);
   const id = mismatch ? "unverifiable" : "pre-receipt";
   const local = new Uint8Array(1024 * 1024).fill(mismatch ? 2 : 1);
   const remote = new Uint8Array(1024 * 1024).fill(1);
@@ -69,7 +74,7 @@ async function fixture(mismatch = false, uploadAudio?: boolean) {
   const note: VoiceNoteRecording = { id, owner: did, rev: 1, startedAt: 1,
     durationMs: 1000, mimeType: "audio/mp4", sizeBytes: local.length,
     silencedMs: 0, silencedEvents: 0, noSignalMs: 0,
-    ledger: { audio: { state: "saved", rowId: "row", at: 1 }, transcript: { state: "done" } },
+    ledger: { audio: { state: "saved", rowId: "row", at: 1 } },
     ...(uploadAudio === undefined ? {} : { options: { uploadAudio } as VoiceNoteRecording["options"] }),
   };
   __setVoiceNotesForTests({

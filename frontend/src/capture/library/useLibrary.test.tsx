@@ -794,7 +794,11 @@ describe("useLibrary, which audio a note on the phone plays", () => {
     let localAvailable = true;
     const original = VoiceNotes;
     __setVoiceNotesForTests({
-      localAudioUrl: async () => { localReads++; return { url: localUrl }; },
+      localAudioUrl: async () => {
+        if (!localAvailable) throw Object.assign(new Error("not_found"), { code: "not_found" });
+        localReads++;
+        return { url: localUrl };
+      },
       listPending: async () => ({ recordings: localAvailable ? [{ id: "rec-play", owner: space.tcw.did,
         ledger: { audio: stored
           ? { state: "saved", verifiedInSpace: { sha256: originalHash, size: 11 } }
@@ -925,12 +929,42 @@ describe("useLibrary, which audio a note on the phone plays", () => {
       await render({ ...base, onPhone: [] });
       await space.answer("list", listedVoice("play"));
       expect(await localUrlOf(seen.at(-1)!)).toMatch(/^blob:/);
-      // The upgrade writes the receipt and the space's audio is replaced; no row changes.
+      // The upgrade writes the receipt, the space's audio is replaced, and the row now records it as stored.
       counts.land();
       counts.replace();
       await act(async () => captureEvents.emit("library-changed", { source: "exo-voice-note", sourceId: "rec-play" }));
       await space.answer("list", listedVoice("play"));
-      await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
+      await space.answer("metadata", { ok: true, data: { rows: [["{\"audio\":{\"stored\":true,\"base\":\"audio/play\"}}"]] } });
+      const localBefore = counts.local();
+      expect(await (await playFromSpace(seen.at(-1)!))?.text()).toBe("newer bytes");
+      expect(counts.local() - localBefore).toBe(0);
+    });
+  });
+
+  test("a receipt that lands while the list is held stops the phone's copy at Play", async () => {
+    await withLocalAudio(async (counts, space) => {
+      const seen: Library[] = [];
+      await render({ tcw: space.tcw, visible: true, now: () => 0, seen, noteId: "play", onPhone: [phoneNote] });
+      await space.answer("list", listedVoice("play"));
+      await space.answer("metadata", { ok: true, data: { rows: [["{\"audio\":{\"stored\":true,\"base\":\"audio/play\"}}"]] } });
+      // The list is not read again: the upgrade lands and the space's audio is replaced underneath it.
+      counts.land();
+      counts.replace();
+      const localBefore = counts.local();
+      expect(await (await playFromSpace(seen.at(-1)!))?.text()).toBe("newer bytes");
+      expect(counts.local() - localBefore).toBe(0);
+    });
+  });
+
+  test("once the phone's copy is evicted, a held list plays the space's copy", async () => {
+    await withLocalAudio(async (counts, space) => {
+      const seen: Library[] = [];
+      await render({ tcw: space.tcw, visible: true, now: () => 0, seen, noteId: "play", onPhone: [phoneNote] });
+      await space.answer("list", listedVoice("play"));
+      await space.answer("metadata", { ok: true, data: { rows: [["{\"audio\":{\"stored\":true,\"base\":\"audio/play\"}}"]] } });
+      counts.land();
+      counts.replace();
+      counts.setAvailable(false);
       const localBefore = counts.local();
       expect(await (await playFromSpace(seen.at(-1)!))?.text()).toBe("newer bytes");
       expect(counts.local() - localBefore).toBe(0);

@@ -508,7 +508,12 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
                         item.put(key, handle)
                     }
                 }
+                if (outcome == "created" && entries.getJSONObject(index).optString("kind") == "own_create") {
+                    for (i in entries.length() - 1 downTo 0)
+                        if (entries.getJSONObject(i).optString("kind") == "own_upload") entries.remove(i)
+                }
             }
+            if (outcome == "created" && remote!!.getJSONObject(index).optString("kind") == "own_create") retireOwnUploadOutbox(id)
             "ledger"
         } else {
             val file = receiptFile(id, opId)
@@ -543,6 +548,7 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
             next.put("attempts", previous.optInt("attempts"))
             if (previous.optString("handle") == next.optString("handle") &&
                 previous.optString("state") == "authority_expired") next.put("state", "authority_expired")
+            if (originalKind == "own_create" && outcome == "created") retireOwnUploadOutbox(id)
             if (previous.toString() != next.toString()) saveOutbox(next, "receipt.result")
             "outbox"
         }
@@ -557,27 +563,37 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
         gcArtifacts(id)
         retire(id)
     }
+
+    /** Once own_create has created its job, a sibling own_upload for the same note has no upload left to look up.
+     *  Its outbox lookup must not keep pinning the note's audio. Receipt entries are named `<id>:<opId>.json`. */
+    private fun retireOwnUploadOutbox(id: String) {
+        outbox.listFiles().orEmpty().filter { it.isFile && it.name.startsWith("$id:") }.forEach { file ->
+            if (JSONObject(file.readText()).optString("kind") == "own_upload_lookup") ops.unlink(file, "receipt.result")
+        }
+        ops.syncDir(outbox)
+    }
     /** Mirrors `hasLocalWorkInProgress` in frontend/src/lib/voiceNotes/localWork.ts. Keep the two in sync. */
     private fun hasLocalWorkInProgress(note: JSONObject): Boolean {
         val ledger = note.optJSONObject("ledger") ?: return true
-        val transcriberOff = note.optJSONObject("options")?.optString("transcriber") == "off"
-        val transcriptUnfinished = !transcriberOff && ledger.optJSONObject("transcript")?.optString("state") != "done"
+        val transcriber = note.optJSONObject("options")?.optString("transcriber")
         val localAudio = ledger.optJSONObject("localAudio")
         val localAudioUnready = localAudio != null && localAudio.optString("state") != "ready"
-        val stt = note.optJSONObject("stt")
-        val sttUnfinished = stt != null && stt.optString("state") != "done"
+        val sttState = note.optJSONObject("stt")?.optString("state").orEmpty()
+        val sttPinned = transcriber == "on-device" && sttState in setOf("waiting_for_model", "queued", "running", "failed")
         val remotes = ledger.optJSONArray("remote")
         val remoteOpen = remotes != null && (0 until remotes.length()).any { index ->
             val op = remotes.getJSONObject(index)
             val stage = op.optString("stage")
             stage != "done" && (op.optString("mode") != "own" || stage != "submitted")
         }
-        return localAudioUnready || sttUnfinished || transcriptUnfinished || remoteOpen
+        return localAudioUnready || sttPinned || remoteOpen
     }
     fun evictCachedAudio(id: String) = lock.withLock {
         requireId(id)
         val note = read(id) ?: throw IllegalStateException("not_found")
-        if (hasLocalWorkInProgress(note)) throw IllegalStateException("audio_in_use")
+        // Receipt entries are named `<id>:<opId>.json`; handle entries come only from tombstoned notes, which read() refuses.
+        val pinnedByOutbox = outbox.listFiles().orEmpty().any { it.name.startsWith("$id:") }
+        if (hasLocalWorkInProgress(note) || pinnedByOutbox) throw IllegalStateException("audio_in_use")
         val ledgerAudio = note.optJSONObject("ledger")?.optJSONObject("audio")
         val receipt = ledgerAudio?.optJSONObject("verifiedInSpace")
         val expectedHash = receipt?.optString("sha256")
