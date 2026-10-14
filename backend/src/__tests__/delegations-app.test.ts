@@ -24,6 +24,8 @@ async function withServer<T>(app: express.Express, run: (base: string) => Promis
   }
 }
 
+const SESSION_KEY = "synthetic-session-signing-key";
+
 function appWithEligibility(eligibility: (address: string) => boolean) {
   const app = express();
   const bodiesBeforeCsrf: unknown[] = [];
@@ -39,7 +41,7 @@ function appWithEligibility(eligibility: (address: string) => boolean) {
     next();
   });
   app.use(createCsrfMiddleware());
-  applyRateLimiters(app);
+  applyRateLimiters(app, { sessionKey: SESSION_KEY });
   app.use("/api/delegations", createDelegationRouter({
     backendDid: `did:pkh:eip155:1:${ADDRESS}`,
     configuredHost: "https://node.tinycloud.xyz",

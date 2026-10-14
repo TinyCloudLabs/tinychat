@@ -24,7 +24,7 @@ import { createUploadRunner, type PendingUpload, type UploadDeps } from "../../.
 
 import { localValidationFromEnv } from "../local-validation.js";
 import { createAuthMiddleware } from "../middleware/auth.js";
-import { ASSEMBLYAI_HOSTED_UPLOAD_LIMIT, TRANSCRIBER_LIMIT, applyRateLimiters } from "../rate-limits.js";
+import { SESSION_LIMITS, applyRateLimiters } from "../rate-limits.js";
 import { ASSEMBLYAI_HOSTED_ERRORS, ASSEMBLYAI_HOSTED_MOUNT, createAssemblyAiHostedRouter, isHostedPartPath } from "../routes/assemblyai-hosted.js";
 import {
   DEFAULT_DAILY_BYTES,
@@ -125,7 +125,7 @@ async function setup(options: { answer?: Answer; config?: AssemblyAiHostedConfig
   const jsonParser = express.json({ limit: "1mb" });
   app.use((req, res, next) => (isHostedPartPath(req.path) ? next() : jsonParser(req, res, next)));
   app.use(createCsrfMiddleware());
-  applyRateLimiters(app);
+  applyRateLimiters(app, { sessionKey: SESSION_KEY });
   app.use(
     ASSEMBLYAI_HOSTED_MOUNT,
     createAuthMiddleware(SESSION_KEY),
@@ -713,13 +713,13 @@ describe("rate limits", () => {
   test("one full-size upload fits the parts bucket, which is not the polling bucket", async () => {
     const parts = Math.ceil(MAX_HOSTED_BYTES / HOSTED_PART_SIZE);
     expect(parts).toBe(116);
-    // Create + every part, for more than one upload per window.
-    expect(ASSEMBLYAI_HOSTED_UPLOAD_LIMIT).toBeGreaterThanOrEqual(3 * (parts + 1));
+    // Create + every part, for more than one upload per window, per session.
+    expect(SESSION_LIMITS.hostedUpload).toBeGreaterThanOrEqual(3 * (parts + 1));
     const h = await setup();
     const id = (await h.createUpload(10)).json.upload_id;
     const part = await h.req("PUT", `/hosted/uploads/${id}/parts/0`, { raw: audio(10) });
-    expect(part.headers.get("ratelimit-policy")).toContain(`${ASSEMBLYAI_HOSTED_UPLOAD_LIMIT};w=900`);
-    expect((await h.req("GET", "/capabilities")).headers.get("ratelimit-policy")).toContain(`${TRANSCRIBER_LIMIT};w=900`);
+    expect(part.headers.get("ratelimit-policy")).toContain(`${SESSION_LIMITS.hostedUpload};w=900`);
+    expect((await h.req("GET", "/capabilities")).headers.get("ratelimit-policy")).toContain(`${SESSION_LIMITS.transcriber};w=900`);
   });
 });
 

@@ -13,24 +13,26 @@
  */
 import rateLimit from "express-rate-limit";
 import type { Express, Request, RequestHandler } from "express";
+import { verifySessionToken } from "@tinyboilerplate/server";
 
 const WINDOW_MS = 15 * 60 * 1000;
 
 /**
- * INTERIM (2026-10-14 incident): every bucket below is keyed by `req.ip`, but in production
- * `req.ip` is the same address for EVERY client. The Phala gateway relays TCP to the ingress
- * without the PROXY protocol, so nginx's `$remote_addr` (the only XFF entry `trust proxy 1`
- * believes) is the gateway's. Each "per-IP" ceiling is therefore a whole-service ceiling: the
- * 120 global bucket drained and 429'd every user, and anyone sending 120 requests could do the
- * same on purpose. The drain source is not known yet (`GlobalBucketRouteCounter` below exists to
- * find it); one ordinary browser peaked at 148 requests per window across all buckets.
+ * Who a bucket counts (2026-10-14 incident). Not the IP: in production every client reaches the
+ * backend from the Phala gateway's one address (the gateway relays TCP to the ingress without
+ * the PROXY protocol, so `$remote_addr`, the only XFF entry `trust proxy 1` believes, is the
+ * gateway's), and anything a client can reach without the ingress lets it write
+ * `X-Forwarded-For` itself. IP keys were one bucket for everyone, and an XFF-derived key is
+ * attacker-chosen.
  *
- * Until per-client keying lands, the polling and read ceilings are their per-client budget
- * times this many concurrent clients, so 20-30 active users behind the one shared key stay
- * under them (30 x 148 = 4,440 < 6,000). Requests that cost money, touch third-party consent or
- * mutate are NOT scaled: paid chat, Google OAuth and the private cloud / calendar mutations
- * carry fixed ceilings below. Revert to 1 with the per-client keying fix.
+ * So a request carrying a session JWT this backend signed counts against its own address's
+ * bucket at `SESSION_LIMITS`. Everything else (no token, a forged, foreign or expired one) shares
+ * ONE anonymous bucket per bucket kind, at the `*_LIMIT` constants below: whole-service ceilings
+ * sized for 20-30 concurrent clients (one ordinary browser peaked at 148 requests per window;
+ * 30 x 148 = 4,440 < 6,000). Nothing a client sends can mint a new key without a valid session,
+ * and sessions are minted through `/api/auth`, which is itself charged to the anonymous bucket.
  */
+/** How many concurrent clients a polling or read bucket's anonymous ceiling is sized for. */
 export const SHARED_KEY_HEADROOM = 50;
 
 export const GLOBAL_LIMIT = 120 * SHARED_KEY_HEADROOM;
@@ -59,8 +61,7 @@ export const CONNECTOR_COMPANION_PATHS = ["/api/connectors/webhooks"] as const;
  * meeting opened, and sharing `globalLimiter`'s 120/15min would let scrolling an archive 429 the
  * next chat send. Kept separate from the companions' bucket rather than folded into it — the two
  * surfaces have different callers (the drain card vs. the meetings view) and a busy archive must
- * not be able to exhaust the drain path either. Keyed by IP, like every other bucket here:
- * `applyRateLimiters` runs before `authMiddleware`.
+ * not be able to exhaust the drain path either.
  */
 export const CONNECTOR_MEETINGS_LIMIT = 600 * SHARED_KEY_HEADROOM;
 export const CONNECTOR_MEETINGS_PATHS = ["/api/connectors/meetings"] as const;
@@ -69,11 +70,10 @@ export const CONNECTOR_MEETINGS_PATHS = ["/api/connectors/meetings"] as const;
  * `/api/delegations` gets its OWN bucket, not a share of the companions' (§4.4 names the route;
  * S2e bounds one *request*, a bucket bounds a caller). Smaller than the companions': the visit
  * path costs one `GET /status` and, rarely, one mint, and a mint is the most expensive
- * authenticated request in the backend (sequential node round trips per resource). Keyed by IP,
- * because at `applyRateLimiters`' mount position `authMiddleware` has not run yet.
+ * authenticated request in the backend (sequential node round trips per resource). Anonymous
+ * ceiling not scaled: status reads are on focus/visibility only, and the mint keeps its own
+ * 6-per-address-per-hour cap.
  */
-/** Not scaled: status reads are on focus/visibility only, and the mint keeps its own
- *  6-per-address-per-hour cap, so 600 is ample behind the shared key. */
 export const DELEGATION_LIMIT = 600;
 export const DELEGATION_PATHS = ["/api/delegations"] as const;
 
@@ -86,15 +86,14 @@ export const DELEGATION_PATHS = ["/api/delegations"] as const;
  * SMALL on purpose, and the only bucket here that is. The others exist because a legitimate visit
  * is chatty; this one is the opposite. A whole consent dance costs three requests (`/start`,
  * `/callback`, `/exchange`) and a sync costs at most one `/refresh`, so 30/15min is roughly six
- * reconnects or twenty-odd token mints an hour from one IP — generous for a human, tight for the
+ * reconnects or twenty-odd token mints an hour per account — generous for a human, tight for the
  * two abuses that matter on an UNAUTHENTICATED pair of GETs: `/start` is an open 302 into Google's
  * consent screen, and `/callback` renders a page for anyone who asks. Neither may be free.
  *
- * Keyed by IP like every bucket in this file — `applyRateLimiters` runs ahead of `authMiddleware`,
- * so no session is known here even for the three authenticated POSTs.
+ * `/start` and `/callback` are top-level navigations with no session header, so every client's
+ * share the anonymous ceiling: 150, about thirty concurrent reconnects, not scaled by the headroom.
+ * The authenticated POSTs count per session (30).
  */
-/** Not scaled by `SHARED_KEY_HEADROOM`: a low-volume consent/token flow, so 150 is about thirty
- *  concurrent reconnects behind the shared key while keeping the open 302 bounded. */
 export const GOOGLE_OAUTH_LIMIT = 150;
 export const GOOGLE_OAUTH_PATHS = ["/api/connectors/google/oauth"] as const;
 
@@ -116,7 +115,7 @@ export const TRANSCRIBER_PATHS = ["/api/transcriber"] as const;
  * Hosted AssemblyAI uploads (routes/assemblyai-hosted.ts) arrive in 1 MiB parts, because the
  * ingress refuses larger bodies: one 120,960,000-byte recording is 116 part PUTs plus its create.
  * They get their own bucket (and leave the transcriber one) so an upload can never starve the
- * polling that follows it, and one IP fits four full-size uploads per window: more than the
+ * polling that follows it, and one account fits four full-size uploads per window: more than the
  * per-account daily allowance (three) and the one-active-upload-per-account rule allow anyway.
  */
 export const ASSEMBLYAI_HOSTED_UPLOAD_LIMIT = 480 * SHARED_KEY_HEADROOM;
@@ -139,11 +138,11 @@ export const PRIVATE_CLOUD_TRANSCRIPTION_PATHS = ["/api/transcriber/private-clou
  * The limiter is attached to those two route handlers themselves (`paidChatLimiter`, returned by
  * `applyRateLimiters`), so ANY path Express routes to them is charged here, whatever its slashes
  * or case. The paths below only let the root classifier keep the usual spellings out of the
- * global bucket. With the
- * paywall off (the compose default) nothing else bounds their spend: usage is recorded only after
- * a completion and requests carry no `max_tokens`. So they get their own bucket, NOT the global
- * one scaled by the headroom: 600 sends per window across everyone while the key is shared
- * (~20-30 sends per active user), independent of the polling budgets.
+ * global bucket. With the paywall off (the compose default) nothing else bounds their spend:
+ * usage is recorded only after a completion and requests carry no `max_tokens`. So they get their
+ * own bucket, independent of the polling budgets: 120 sends per window per session, and 600
+ * shared by everything unauthenticated (which `authMiddleware` then rejects before any upstream
+ * call). A request budget, not a dollar guarantee.
  */
 export const PAID_CHAT_LIMIT = 600;
 export const PAID_CHAT_PATHS = ["/api/chat", "/api/agent/chat"] as const;
@@ -322,12 +321,73 @@ export function logGlobalBucketRoutes(counter: GlobalBucketRouteCounter, everyMs
 
 /** Mount one app-level limiter per bucket; each counts only the requests `bucketFor` assigns it,
  *  so every request lands in exactly one bucket (or none, for `/health`). */
-export function applyRateLimiters(app: Express): {
+/**
+ * Per-session ceilings: the pre-incident per-client budgets. Polling and read buckets are the
+ * anonymous ceiling divided by `SHARED_KEY_HEADROOM`; spend, consent and mutation buckets are
+ * set on their own.
+ */
+export const SESSION_LIMITS: Record<Exclude<Bucket, "none">, number> = {
+  global: GLOBAL_LIMIT / SHARED_KEY_HEADROOM,
+  verification: VERIFICATION_LIMIT / SHARED_KEY_HEADROOM,
+  connectorCompanion: CONNECTOR_COMPANION_LIMIT / SHARED_KEY_HEADROOM,
+  connectorMeetings: CONNECTOR_MEETINGS_LIMIT / SHARED_KEY_HEADROOM,
+  transcriber: TRANSCRIBER_LIMIT / SHARED_KEY_HEADROOM,
+  privateCloudTranscription: PRIVATE_CLOUD_TRANSCRIPTION_LIMIT / SHARED_KEY_HEADROOM,
+  hostedUpload: ASSEMBLYAI_HOSTED_UPLOAD_LIMIT / SHARED_KEY_HEADROOM,
+  // One user's sends: the old per-client global budget, which chat used to share.
+  paidChat: 120,
+  privateCloudTranscriptionMutation: 60,
+  calendarAutojoin: 240,
+  calendarAutojoinMutation: 30,
+  googleOAuth: 30,
+  delegation: 240,
+};
+
+const ANONYMOUS_KEY = "anonymous";
+
+/** The session address a request proves, or null. Memoized per request: each limiter asks for
+ *  its key and its limit. Same header parsing as `createAuthMiddleware`. */
+const sessionAddresses = new WeakMap<Request, Promise<string | null>>();
+function sessionAddress(req: Request, sessionKey: string): Promise<string | null> {
+  let address = sessionAddresses.get(req);
+  if (!address) {
+    const header = req.headers.authorization;
+    const token = header?.startsWith("Bearer ") ? header.slice(7) : header;
+    address = token
+      ? verifySessionToken(token, sessionKey).then(
+          (session) => session.address.toLowerCase(),
+          () => null,
+        )
+      : Promise.resolve(null);
+    sessionAddresses.set(req, address);
+  }
+  return address;
+}
+
+export interface RateLimitOptions {
+  /** The key the backend signs session JWTs with (`BACKEND_PRIVATE_KEY`). */
+  sessionKey: string;
+}
+
+export function applyRateLimiters(app: Express, { sessionKey }: RateLimitOptions): {
   globalRoutes: GlobalBucketRouteCounter;
   /** Attach to the paid chat route handlers (see `PAID_CHAT_LIMIT`). */
   paidChatLimiter: RequestHandler;
 } {
+  // No limiter reads req.ip any more; other code (the connector webhook pre-limiter) still does.
   app.set("trust proxy", 1);
+  const bucket = (kind: Exclude<Bucket, "none">, anonymous: number, skip?: (req: Request) => boolean) =>
+    rateLimit({
+      windowMs: WINDOW_MS,
+      limit: async (req) => ((await sessionAddress(req, sessionKey)) ? SESSION_LIMITS[kind] : anonymous),
+      keyGenerator: async (req) => {
+        const address = await sessionAddress(req, sessionKey);
+        return address ? `session:${address}` : ANONYMOUS_KEY;
+      },
+      standardHeaders: "draft-7",
+      legacyHeaders: false,
+      ...(skip ? { skip } : {}),
+    });
   const globalRoutes = new GlobalBucketRouteCounter();
   app.use((req, _res, next) => {
     if (bucketFor(req.method, req.path) === "global") globalRoutes.record(req.method, req.path);
@@ -347,27 +407,14 @@ export function applyRateLimiters(app: Express): {
     hostedUpload: ASSEMBLYAI_HOSTED_UPLOAD_LIMIT,
     global: GLOBAL_LIMIT,
   };
-  for (const [bucket, limit] of Object.entries(limits)) {
-    app.use(
-      rateLimit({
-        windowMs: WINDOW_MS,
-        limit,
-        standardHeaders: "draft-7",
-        legacyHeaders: false,
-        // Mounted at the app root, so req.path is the full path.
-        skip: (req) => bucketFor(req.method, req.path) !== bucket,
-      }),
-    );
+  for (const [kind, anonymous] of Object.entries(limits) as [keyof typeof limits, number][]) {
+    // Mounted at the app root, so req.path is the full path.
+    app.use(bucket(kind, anonymous, (req) => bucketFor(req.method, req.path) !== kind));
   }
   // Paid chat is charged ONCE per request: at the root when the classifier recognises the path
   // (so the global bucket skips it), otherwise at the handler. A spelling the classifier misses
   // is charged to global AND paid chat, never to neither.
-  const paidChat = rateLimit({
-    windowMs: WINDOW_MS,
-    limit: PAID_CHAT_LIMIT,
-    standardHeaders: "draft-7",
-    legacyHeaders: false,
-  });
+  const paidChat = bucket("paidChat", PAID_CHAT_LIMIT);
   const paidChatCharged = new WeakSet<Request>();
   const paidChatLimiter: RequestHandler = (req, res, next) => {
     if (paidChatCharged.has(req)) return next();

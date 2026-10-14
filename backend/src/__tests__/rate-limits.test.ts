@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import express from "express";
+import { issueSessionToken } from "@tinyboilerplate/server";
 import {
   applyRateLimiters,
   ASSEMBLYAI_HOSTED_UPLOAD_LIMIT,
@@ -20,16 +21,19 @@ import {
   PRIVATE_CLOUD_TRANSCRIPTION_LIMIT,
   PRIVATE_CLOUD_TRANSCRIPTION_MUTATION_LIMIT,
   PRIVATE_CLOUD_TRANSCRIPTION_PATHS,
+  SESSION_LIMITS,
   SHARED_KEY_HEADROOM,
   TRANSCRIBER_LIMIT,
   VERIFICATION_LIMIT,
 } from "../rate-limits.js";
 
+const SESSION_KEY = "synthetic-session-signing-key";
+
 const realFetch = globalThis.fetch;
 
 function buildApp() {
   const app = express();
-  applyRateLimiters(app);
+  applyRateLimiters(app, { sessionKey: SESSION_KEY });
   app.get("/api/signature/:id", (_req, res) => res.json({ ok: true }));
   app.get("/api/attestation/self", (_req, res) => res.json({ ok: true }));
   app.post("/api/chat", (_req, res) => res.json({ ok: true }));
@@ -67,7 +71,7 @@ function rateLimitHeader(r: Response): { limit: number; remaining: number } | nu
 describe("rate limiters (ST5)", () => {
   it("configures one-hop proxy trust before registering IP-based limiters", () => {
     const app = express();
-    applyRateLimiters(app);
+    applyRateLimiters(app, { sessionKey: SESSION_KEY });
     expect(app.get("trust proxy")).toBe(1);
   });
 
@@ -107,7 +111,7 @@ describe("rate limiters (ST5)", () => {
 
   it("does not exempt verification-prefix lookalike paths from the global limiter", async () => {
     const app = express();
-    applyRateLimiters(app);
+    applyRateLimiters(app, { sessionKey: SESSION_KEY });
     app.get("/api/signature-anything", (_req, res) => res.json({ ok: true }));
 
     await withServer(app, async (port) => {
@@ -130,7 +134,7 @@ describe("rate limiters (ST5)", () => {
 describe("google oauth rate limit bucket (WP-A)", () => {
   function buildGoogleApp() {
     const app = express();
-    applyRateLimiters(app);
+    applyRateLimiters(app, { sessionKey: SESSION_KEY });
     app.get("/api/connectors/google/oauth/start", (_req, res) => res.json({ ok: true }));
     app.post("/api/connectors/google/oauth/exchange", (_req, res) => res.json({ ok: true }));
     app.post("/api/chat", (_req, res) => res.json({ ok: true }));
@@ -172,7 +176,7 @@ describe("google oauth rate limit bucket (WP-A)", () => {
     // `…/oauth-anything` is not the mount and not a child of it, so it must fall back to the
     // global bucket rather than borrow the OAuth exemption on a string-prefix technicality.
     const app = express();
-    applyRateLimiters(app);
+    applyRateLimiters(app, { sessionKey: SESSION_KEY });
     app.get("/api/connectors/google/oauth-anything", (_req, res) => res.json({ ok: true }));
 
     await withServer(app, async (port) => {
@@ -191,7 +195,7 @@ describe("google oauth rate limit bucket (WP-A)", () => {
 describe("Calendar autojoin rate limit bucket", () => {
   it("isolates authenticated status polling from chat and popup OAuth limits", async () => {
     const app = express();
-    applyRateLimiters(app);
+    applyRateLimiters(app, { sessionKey: SESSION_KEY });
     expect(CALENDAR_AUTOJOIN_PATHS).toEqual(["/api/connectors/google/autojoin"]);
     app.get("/api/connectors/google/autojoin/status", (_req, res) => res.json({ ok: true }));
     app.get("/api/connectors/google/oauth/start", (_req, res) => res.json({ ok: true }));
@@ -335,7 +339,7 @@ describe("shared-key interim headroom", () => {
   it("paid chat has its own 600 bucket and denies at 601 before the upstream call", async () => {
     expect(PAID_CHAT_PATHS).toEqual(["/api/chat", "/api/agent/chat"]);
     const app = express();
-    applyRateLimiters(app);
+    applyRateLimiters(app, { sessionKey: SESSION_KEY });
     let upstreamCalls = 0;
     const upstream = (_req: express.Request, res: express.Response) => {
       upstreamCalls++;
@@ -408,7 +412,7 @@ describe("shared-key interim headroom", () => {
 
   it("private cloud mutations 429 at their own limit + 1 without touching the polling budget", async () => {
     const app = express();
-    applyRateLimiters(app);
+    applyRateLimiters(app, { sessionKey: SESSION_KEY });
     app.post("/api/transcriber/private-cloud/transcriptions", (_req, res) => res.status(201).json({ ok: true }));
     app.delete("/api/transcriber/private-cloud/transcriptions/:id", (_req, res) => res.json({ ok: true }));
     app.get("/api/transcriber/private-cloud/transcriptions/:id", (_req, res) => res.json({ ok: true }));
@@ -432,7 +436,7 @@ describe("shared-key interim headroom", () => {
 
   it("calendar autojoin setup has its own small bucket apart from status reads", async () => {
     const app = express();
-    applyRateLimiters(app);
+    applyRateLimiters(app, { sessionKey: SESSION_KEY });
     app.get("/api/connectors/google/autojoin/status", (_req, res) => res.json({ ok: true }));
     app.post("/api/connectors/google/autojoin/setup", (_req, res) => res.json({ ok: true }));
     await withServer(app, async (port) => {
@@ -470,7 +474,7 @@ describe("shared-key interim headroom", () => {
 describe("global bucket route counter", () => {
   it("counts only global-bucket requests, by route template, without paths' identifying parts", async () => {
     const app = express();
-    const { globalRoutes } = applyRateLimiters(app);
+    const { globalRoutes } = applyRateLimiters(app, { sessionKey: SESSION_KEY });
     app.use((_req, res) => res.json({ ok: true }));
     await withServer(app, async (port) => {
       const base = `http://localhost:${port}`;
@@ -519,5 +523,112 @@ describe("global bucket route counter", () => {
     );
     expect(counter.takeInterval()).toBe('[rate-limit] op=global-bucket-routes window=5m total=0 top=""');
     expect(counter.top(1)).toMatchObject({ total: 13, top: [{ route: "GET /api/manifest", count: 12 }] });
+  });
+});
+
+/**
+ * 0.5.5: buckets are per verified session. Everything else (no token, a forged, foreign or
+ * garbage one) shares one anonymous bucket at the whole-service ceilings, and nothing else a
+ * client sends, `X-Forwarded-For` included, can choose or mint a key.
+ */
+describe("per-session keying", () => {
+  const ALICE = "0x00000000000000000000000000000000000a11ce";
+  const BOB = "0x0000000000000000000000000000000000000b0b";
+  const auth = async (address: string, key = SESSION_KEY) =>
+    `Bearer ${(await issueSessionToken(address, key)).token}`;
+
+  it("pins the per-session ceilings", () => {
+    expect(SESSION_LIMITS).toEqual({
+      global: 120,
+      verification: 600,
+      connectorCompanion: 600,
+      connectorMeetings: 600,
+      transcriber: 600,
+      privateCloudTranscription: 600,
+      hostedUpload: 480,
+      paidChat: 120,
+      privateCloudTranscriptionMutation: 60,
+      calendarAutojoin: 240,
+      calendarAutojoinMutation: 30,
+      googleOAuth: 30,
+      delegation: 240,
+    });
+  });
+
+  it("two signed-in clients get separate buckets", async () => {
+    const [alice, bob] = [await auth(ALICE), await auth(BOB)];
+    await withServer(buildApp(), async (port) => {
+      const url = `http://localhost:${port}/api/manifest`;
+      for (let i = 0; i < SESSION_LIMITS.global; i++) {
+        expect((await realFetch(url, { headers: { authorization: alice } })).status).toBe(200);
+      }
+      expect((await realFetch(url, { headers: { authorization: alice } })).status).toBe(429);
+      const second = await realFetch(url, { headers: { authorization: bob } });
+      expect(second.status).toBe(200);
+      expect(rateLimitHeader(second)).toEqual({ limit: SESSION_LIMITS.global, remaining: SESSION_LIMITS.global - 1 });
+      // Neither session touched the anonymous bucket.
+      const anonymous = await realFetch(url);
+      expect(rateLimitHeader(anonymous)).toEqual({ limit: GLOBAL_LIMIT, remaining: GLOBAL_LIMIT - 1 });
+    });
+  });
+
+  it("a rotating X-Forwarded-For cannot mint buckets: unauthenticated requests share one", async () => {
+    await withServer(buildApp(), async (port) => {
+      const url = `http://localhost:${port}/api/manifest`;
+      let last: Response | undefined;
+      for (let i = 0; i < 50; i++) {
+        last = await realFetch(url, { headers: { "x-forwarded-for": `198.51.100.${i}, 203.0.113.${i}` } });
+      }
+      expect(rateLimitHeader(last!)).toEqual({ limit: GLOBAL_LIMIT, remaining: GLOBAL_LIMIT - 50 });
+    });
+  });
+
+  it("X-Forwarded-For cannot move a session into another bucket", async () => {
+    const [alice, bob] = [await auth(ALICE), await auth(BOB)];
+    await withServer(buildApp(), async (port) => {
+      const url = `http://localhost:${port}/api/manifest`;
+      let last: Response | undefined;
+      for (let i = 0; i < 5; i++) {
+        last = await realFetch(url, { headers: { authorization: alice, "x-forwarded-for": `192.0.2.${i}` } });
+      }
+      expect(rateLimitHeader(last!)).toEqual({ limit: SESSION_LIMITS.global, remaining: SESSION_LIMITS.global - 5 });
+      const second = await realFetch(url, { headers: { authorization: bob } });
+      expect(rateLimitHeader(second)).toEqual({ limit: SESSION_LIMITS.global, remaining: SESSION_LIMITS.global - 1 });
+    });
+  });
+
+  it("a forged, foreign or garbage token is anonymous, never its claimed owner's bucket", async () => {
+    const bob = await auth(BOB);
+    const forged = await auth(BOB, "another-backend-key");
+    await withServer(buildApp(), async (port) => {
+      const url = `http://localhost:${port}/api/manifest`;
+      for (const authorization of [forged, "Bearer not-a-jwt", forged.slice(7)]) {
+        const r = await realFetch(url, { headers: { authorization } });
+        expect(rateLimitHeader(r)?.limit).toBe(GLOBAL_LIMIT);
+      }
+      const anonymous = await realFetch(url);
+      expect(rateLimitHeader(anonymous)).toEqual({ limit: GLOBAL_LIMIT, remaining: GLOBAL_LIMIT - 4 });
+      const owner = await realFetch(url, { headers: { authorization: bob } });
+      expect(rateLimitHeader(owner)).toEqual({ limit: SESSION_LIMITS.global, remaining: SESSION_LIMITS.global - 1 });
+    });
+  });
+
+  it("accepts a raw token without the Bearer prefix, like createAuthMiddleware", async () => {
+    const token = (await auth(ALICE)).slice(7);
+    await withServer(buildApp(), async (port) => {
+      const r = await realFetch(`http://localhost:${port}/api/manifest`, { headers: { authorization: token } });
+      expect(rateLimitHeader(r)?.limit).toBe(SESSION_LIMITS.global);
+    });
+  });
+
+  it("/health stays in no bucket for a signed-in client too", async () => {
+    const app = buildApp();
+    app.get("/health", (_req, res) => res.json({ ok: true }));
+    const alice = await auth(ALICE);
+    await withServer(app, async (port) => {
+      const r = await realFetch(`http://localhost:${port}/health`, { headers: { authorization: alice } });
+      expect(r.status).toBe(200);
+      expect(rateLimitHeader(r)).toBeNull();
+    });
   });
 });
