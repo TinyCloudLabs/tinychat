@@ -41,4 +41,9 @@ class ResumableWorkTest {
         assertTrue(stt.getBoolean("requested"))
         assertTrue(ResumableWork.owed(JSONObject().put("options", JSONObject().put("transcriber", "off")).put("stt", stt)))
     }
+    @Test fun anExplicitRerunIsNotResumedAfterRelaunch() {
+        val stt = ResumableWork.rerun(JSONObject().put("state", "done"), 7)
+        assertEquals(7, stt.getInt("rerunRev"))
+        assertFalse(ResumableWork.owed(JSONObject().put("options", JSONObject().put("transcriber", "on-device")).put("stt", stt)))
+    }
 }

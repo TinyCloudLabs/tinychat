@@ -33,6 +33,14 @@ final class TranscriptionCoreTests: XCTestCase {
             return stt[id] ?? [:]
         }
 
+        func seedTranscript(_ id: String, object: [String: Any]) {
+            lock.lock(); defer { lock.unlock() }
+            transcripts[id] = object
+        }
+        func transcriptObject(_ id: String) -> [String: Any]? {
+            lock.lock(); defer { lock.unlock() }
+            return transcripts[id]
+        }
         func hasTranscript(_ id: String) -> Bool {
             lock.lock(); defer { lock.unlock() }
             return transcripts[id] != nil
@@ -623,6 +631,28 @@ final class TranscriptionCoreTests: XCTestCase {
         XCTAssertEqual(library.sidecar("a")["attempts"] as? Int, 1)
         XCTAssertEqual(library.sidecar("a")["state"] as? String, "done")
     }
+    func testExplicitRerunCommitsRequestedRevisionAndIsNotResumable() {
+        library.seed("a", state: "done")
+        library.seedTranscript("a", object: ["rev": 4, "body": "old"])
+        core.enqueueAgain(id: "a", rev: 5)
+        waitUntil("rerun decoded") { session.startedIds == ["a"] && library.transcriptObject("a")?["rev"] as? Int == 5 }
+        settle()
+        XCTAssertEqual(library.transcriptObject("a")?["rev"] as? Int, 5)
+        XCTAssertFalse(ResumableWork.owed(["id": "a", "options": ["transcriber": "on-device"],
+            "stt": ["state": "queued", "rerunRev": 5]]))
+    }
+
+    func testFailedExplicitRerunLeavesTheCommittedTranscriptUntouched() {
+        library.seed("a", state: "done")
+        library.seedTranscript("a", object: ["rev": 4, "body": "old"])
+        session.decode = { _, _ in throw TranscriptionQueueError.decodeFailed }
+        core.enqueueAgain(id: "a", rev: 5)
+        waitUntil("rerun failed") { events.all.contains("failed:a:decode_failed") }
+        settle()
+        XCTAssertEqual(library.transcriptObject("a")?["rev"] as? Int, 4)
+        XCTAssertEqual(library.transcriptObject("a")?["body"] as? String, "old")
+    }
+
 
     func testEnqueueOfANoteThatAlreadyHasATranscriptLeavesItDone() {
         library.seed("a", state: "queued")

@@ -116,6 +116,23 @@ class TranscriptionQueue(private val context: Context, private val store: ModelS
             wake = { executor.execute { pump() } },
         )
     }
+    /** A user-confirmed rerun of a committed transcript; `rerunRev` prevents launch-time resumption. */
+    fun enqueueAgain(id: String, rev: Int, accepted: (Boolean) -> Unit, failed: (Exception) -> Unit) {
+        if (rev <= 0) {
+            failed(IllegalArgumentException("rev must be positive"))
+            return
+        }
+        admission.enqueue(
+            id,
+            finished = { false },
+            persist = { capture.library.mutate(id, "stt.write") { note -> ResumableWork.rerun(note.getJSONObject("stt"), rev) } },
+            accepted = accepted,
+            failed = { e -> Log.w("ExoStt", "rerun enqueue failed for $id", e); failed(e) },
+            changed = { onQueueChanged?.invoke() },
+            wake = { executor.execute { pump() } },
+        )
+    }
+
 
     /** A waiting note is taken out of line and marked cancelled at once; the note being decoded is
      * stopped at the decode's next window. */
@@ -278,8 +295,10 @@ class TranscriptionQueue(private val context: Context, private val store: ModelS
         val outcome = if (decodedAny) "transcribed" else "no_speech"
         val isoNow = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US)
             .apply { timeZone = TimeZone.getTimeZone("UTC") }.format(Date())
+        val stt = capture.library.read(id)?.optJSONObject("stt")
+        val revision = if (stt != null && !stt.isNull("rerunRev")) stt.optInt("rerunRev", 1) else 1
         val transcript = JSONObject()
-            .put("version", 1).put("noteId", id).put("transcriber", "on-device").put("rev", 1)
+            .put("version", 1).put("noteId", id).put("transcriber", "on-device").put("rev", revision)
             .put("engine", if (modelId == ModelManifest.PARAKEET_FULL) "parakeet-tdt-0.6b-v3" else "parakeet-tdt-110m-en")
             .put("model", modelId).put("language", "en").put("outcome", outcome).put("diarized", false)
             .put("segments", segments).put("createdAt", isoNow)

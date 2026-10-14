@@ -20,6 +20,8 @@ export interface OnDeviceSttPlugin {
   cancelDownload(): Promise<void>;
   deleteModels(): Promise<void>;
   enqueue(options: { id: string }): Promise<void>;
+  /** Explicit confirmed rerun; `rev` is committed as the native transcript revision. */
+  enqueueAgain(options: { id: string; rev: number }): Promise<void>;
   cancel(options: { id: string }): Promise<void>;
   addListener(event: "status", listener: (status: OnDeviceSttStatus) => void): Promise<PluginListenerHandle>;
   addListener(event: "progress", listener: (event: { id: string; percent: number }) => void): Promise<PluginListenerHandle>;

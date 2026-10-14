@@ -299,7 +299,8 @@ describe("a voice note's transcription", () => {
   test("no speech, progress, just saved, and a failure with Retry only when it can help", () => {
     const silent = render({ metadata: { status: "ok", metadata: { transcription_outcome: "no_speech" } }, transcription: transcription() });
     expect(silent).toContain("No speech was found in this note.");
-    expect(silent).not.toContain('data-testid="transcribe-button"');
+    expect(silent).toContain('data-testid="transcribe-button"');
+    expect(silent).toContain('data-testid="voice-note-transcription-rerun"');
     const job = (state: NoteTranscriptionState) => transcription({ jobs: new Map([["rec-1", state]]) });
     expect(render({ transcription: job({ kind: "active", status: { kind: "processing", completed: 1, total: 3 } }) })).toContain(
       "Transcribing in private cloud… 1/3",
@@ -347,7 +348,7 @@ describe("a voice note's transcription", () => {
       transcription: transcription(),
     });
     expect(marked).toContain("Book the venue.");
-    expect(marked).not.toContain('data-testid="transcribe-button"');
+    expect(marked).toContain('data-testid="transcribe-button"');
   });
 
   test("a transcribed note shows its transcript whatever the engine's state", () => {

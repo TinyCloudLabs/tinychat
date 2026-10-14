@@ -57,12 +57,12 @@ afterEach(async () => {
   __resetCaptureEngineForTests();
 });
 
-async function mount(props: { read: PhoneRead; transcription?: VoiceNoteTranscriptionProps; label?: string; durationSecs?: number | null; platform?: "ios" | "tauri" }) {
+async function mount(props: { read: PhoneRead; transcription?: VoiceNoteTranscriptionProps; label?: string; rerun?: boolean; durationSecs?: number | null; platform?: "ios" | "tauri" }) {
   cleanupDom = installDom();
   const host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
-  await act(async () => root!.render(createElement(MemoryRouter, null, createElement(PlatformContext.Provider, { value: props.platform ?? "ios" }, createElement(TranscribeActionFor, { noteId: NOTE, transcription: props.transcription, durationSecs: props.durationSecs === undefined ? 60 : props.durationSecs, read: props.read, label: props.label })) )));
+  await act(async () => root!.render(createElement(MemoryRouter, null, createElement(PlatformContext.Provider, { value: props.platform ?? "ios" }, createElement(TranscribeActionFor, { noteId: NOTE, transcription: props.transcription, durationSecs: props.durationSecs === undefined ? 60 : props.durationSecs, read: props.read, label: props.label, rerun: props.rerun })) )));
   return host;
 }
 const click = (element: Element) => act(async () => { element.dispatchEvent(new window.MouseEvent("click", { bubbles: true })); });
@@ -391,6 +391,20 @@ describe("the Transcribe action", () => {
     expect(sent).toEqual([NOTE]);
     expect(enqueued).toEqual([]);
   });
+  test("a committed transcript requires confirmation before dispatch; cancel does nothing", async () => {
+    const calls: string[] = [];
+    const host = await mount({ read: onPhone(), transcription: transcription({
+      onTranscribeAgain: (id, engine) => { calls.push(`${id}:${engine}`); return null; },
+    }), rerun: true });
+    await click(button(host));
+    expect(calls).toEqual([]);
+    expect(host.textContent).toContain("The current transcript stays until the new one succeeds.");
+    await click(host.querySelector('[data-testid="transcribe-again-cancel"]')!);
+    expect(calls).toEqual([]);
+    await click(button(host));
+    await click(host.querySelector('[data-testid="transcribe-again-confirm"]')!);
+    expect(calls).toEqual([`${NOTE}:on-device`]);
+  });
 
   test("private cloud unreachable after consent offers Check again, not a dead Transcribe", async () => {
     let rechecked = 0;
@@ -434,6 +448,17 @@ describe("starting a transcription", () => {
     expect(await transcribeWith("private-cloud", NOTE, props, phone({ hasLocalState: true }))).toBeNull();
     expect(cancelled).toEqual([NOTE]);
     expect(sent).toEqual([NOTE]);
+  });
+
+  test("a remote rerun waits while the phone is still transcribing locally", async () => {
+    let starts = 0;
+    __setVoiceNotesForTests({
+      listPending: async () => ({ recordings: [{ id: NOTE, stt: { state: "running" } }] }),
+    } as unknown as VoiceNotesPlugin, { available: true });
+    const props = transcription({ onTranscribeAgain: () => { starts++; return null; } });
+    const failure = await transcribeWith("private-cloud", NOTE, props, phone(), true);
+    expect(failure).toContain("Wait for this phone’s transcription to stop");
+    expect(starts).toBe(0);
   });
 
   test("a Private note's explicit retry uses the override route", async () => {

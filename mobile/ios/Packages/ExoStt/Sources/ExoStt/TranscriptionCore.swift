@@ -35,14 +35,18 @@ enum ResumableWork {
     static let unfinished = ["waiting_for_model", "queued", "running"]
 
     static func owed(_ note: [String: Any]) -> Bool {
-        guard let stt = note["stt"] as? [String: Any], let state = stt["state"] as? String, unfinished.contains(state) else { return false }
+        guard let stt = note["stt"] as? [String: Any], (stt["rerunRev"] as? Int) == nil,
+              let state = stt["state"] as? String, unfinished.contains(state) else { return false }
         let committed = (note["options"] as? [String: Any])?["transcriber"] as? String
         return committed == "on-device" || stt["requested"] as? Bool == true
     }
 
-    /// What an explicit enqueue writes: a fresh attempt, and the user's Local choice.
-    static let requested: [String: Any] = ["state": "queued", "error": NSNull(), "attempts": 0, "requested": true]
-}
+    /// What an ordinary explicit enqueue writes: a fresh attempt and a resumable Local choice.
+    static let requested: [String: Any] = ["state": "queued", "error": NSNull(), "attempts": 0, "requested": true, "rerunRev": NSNull()]
+
+    static func rerun(rev: Int) -> [String: Any] {
+        ["state": "queued", "error": NSNull(), "attempts": 0, "requested": false, "rerunRev": rev]
+    }
 
 enum TranscriptionQueueError: Error {
     case captureStarted
@@ -99,17 +103,24 @@ final class TranscriptionCore {
     }
 
     func enqueue(id: String, accepted: ((Bool) -> Void)? = nil, failed: ((Error) -> Void)? = nil) {
+        enqueue(id: id, rerunRev: nil, accepted: accepted, failed: failed)
+    }
+
+    func enqueueAgain(id: String, rev: Int, accepted: ((Bool) -> Void)? = nil, failed: ((Error) -> Void)? = nil) {
+        guard rev > 0 else { failed?(TranscriptionQueueError.decodeFailed); return }
+        enqueue(id: id, rerunRev: rev, accepted: accepted, failed: failed)
+    }
+
+    private func enqueue(id: String, rerunRev: Int?, accepted: ((Bool) -> Void)?, failed: ((Error) -> Void)?) {
         controlQueue.async { [self] in
-            // Reserve first: a note that is already pending or decoding keeps its own sidecar. The
-            // transcript is read after the reservation, so a note finishing meanwhile is seen.
             guard state.reserve(id) else { accepted?(true); return }
-            guard (try? library.transcript(id)) == nil else { // already has one
+            if rerunRev == nil, (try? library.transcript(id)) != nil {
                 state.releaseReserved(id)
                 accepted?(false)
                 return
             }
             do {
-                try library.updateStt(id, patch: ResumableWork.requested)
+                try library.updateStt(id, patch: rerunRev.map { ResumableWork.rerun(rev: $0) } ?? ResumableWork.requested)
             } catch {
                 state.releaseReserved(id)
                 failed?(error)
@@ -267,7 +278,7 @@ final class TranscriptionCore {
     }
 
     private func process(id: String, session: TranscriptionSession) throws {
-        let transcript = try session.transcribe(
+        var transcript = try session.transcribe(
             id: id,
             checkCapturing: { [self] in
                 if state.isCancelRequested(id) { throw TranscriptionQueueError.cancelled }
@@ -281,11 +292,13 @@ final class TranscriptionCore {
             onSegment: { [self] segmentsDone in
                 try? library.updateStt(id, patch: ["segmentsDone": segmentsDone])
             })
+        // An explicit rerun's revision is stored in the non-resumable queue marker before work starts.
+        let rerunRev = (try? library.readSidecar(id))?["stt"] as? [String: Any]
+        transcript["rev"] = (rerunRev?["rerunRev"] as? Int) ?? 1
         // The decode's last stretch (final recognition, VAD flush) has no checkpoint: a cancel
         // accepted during it is honoured here, and a cancel after this point is too late.
         guard state.beginCommit() else { throw TranscriptionQueueError.cancelled }
         try library.putTranscript(id, object: transcript)
-        try library.updateStt(id, patch: ["state": "done", "error": NSNull()])
         onProgress?(id, 100)
         onTranscribed?(id, transcript["outcome"] as? String ?? "")
         onQueueChanged?()

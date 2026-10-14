@@ -115,6 +115,14 @@ test("a space-only note uses its space audio and can resume without a native rec
   expect(calls.indexOf("space:save")).toBeLessThan(calls.indexOf("DELETE /hosted/transcripts/handle-1"));
 });
 
+test("an explicit Powerful rerun is never restarted by the relaunch resume path", async () => {
+  const { calls, recording, track } = harness();
+  localStorage.setItem("exo.voiceNotes.powerfulJobs:did:test:one", JSON.stringify({
+    "note-1": { explicitRerun: true, recording },
+  }));
+  await track().resume();
+  expect(calls).toEqual([]);
+});
 test("hosted AssemblyAI no_speech never sets PTX missing-stats metadata", async () => {
   const { calls, recording, track, getLocal, getSavedMetadata } = harness(undefined, true);
   const lane = track(); lane.consent();

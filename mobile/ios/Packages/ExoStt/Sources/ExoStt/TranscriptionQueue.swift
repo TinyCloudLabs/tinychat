@@ -70,6 +70,10 @@ public final class TranscriptionQueue {
     public func enqueue(id: String, accepted: ((Bool) -> Void)? = nil, failed: ((Error) -> Void)? = nil) {
         core.enqueue(id: id, accepted: accepted, failed: failed)
     }
+    /// User-confirmed rerun with a caller-computed revision. It is intentionally not resumable after relaunch.
+    public func enqueueAgain(id: String, rev: Int, accepted: ((Bool) -> Void)? = nil, failed: ((Error) -> Void)? = nil) {
+        core.enqueueAgain(id: id, rev: rev, accepted: accepted, failed: failed)
+    }
 
     /// Drops a queued note, or stops the note decoding right now at its next checkpoint; the worker
     /// then records the `cancelled` state itself, so a finishing decode and a cancel never race on the sidecar.

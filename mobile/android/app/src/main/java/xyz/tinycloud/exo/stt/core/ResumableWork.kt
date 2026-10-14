@@ -12,11 +12,15 @@ internal object ResumableWork {
 
     fun owed(note: JSONObject): Boolean {
         val stt = note.optJSONObject("stt") ?: return false
-        if (stt.optString("state") !in UNFINISHED) return false
+        if (stt.optString("state") !in UNFINISHED || !stt.isNull("rerunRev") && stt.has("rerunRev")) return false
         return note.optJSONObject("options")?.optString("transcriber") == "on-device" || stt.optBoolean("requested")
     }
 
-    /** What an explicit enqueue writes: a fresh attempt, and the user's Local choice. */
+    /** What an ordinary explicit enqueue writes: a fresh attempt, and the user's resumable Local choice. */
     fun requested(stt: JSONObject): JSONObject =
-        stt.put("state", "queued").put("error", JSONObject.NULL).put("attempts", 0).put("requested", true)
+        stt.put("state", "queued").put("error", JSONObject.NULL).put("attempts", 0).put("requested", true).put("rerunRev", JSONObject.NULL)
+
+    /** An explicit rerun is intentionally not resumed after relaunch. */
+    fun rerun(stt: JSONObject, rev: Int): JSONObject =
+        stt.put("state", "queued").put("error", JSONObject.NULL).put("attempts", 0).put("requested", false).put("rerunRev", rev)
 }

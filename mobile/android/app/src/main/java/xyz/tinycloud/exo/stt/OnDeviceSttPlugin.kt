@@ -117,6 +117,18 @@ class OnDeviceSttPlugin : Plugin() {
             failed = { error -> call.reject("Could not queue this note", "enqueue_failed", error) },
         )
     }
+    @PluginMethod
+    fun enqueueAgain(call: PluginCall) {
+        val id = call.getString("id") ?: run { call.reject("id is required", "invalid_argument"); return }
+        val rev = call.getInt("rev") ?: run { call.reject("rev is required", "invalid_argument"); return }
+        if (rev <= 0) { call.reject("rev must be positive", "invalid_argument"); return }
+        queue.enqueueAgain(
+            id, rev,
+            accepted = { accepted -> if (accepted) call.resolve() else call.reject("Could not queue this note", "enqueue_failed") },
+            failed = { error -> call.reject("Could not queue this note", "enqueue_failed", error) },
+        )
+    }
+
 
     @PluginMethod
     fun cancel(call: PluginCall) {

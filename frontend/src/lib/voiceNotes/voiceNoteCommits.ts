@@ -14,7 +14,7 @@ export interface TranscriptCommit {
   sourceId: string; rev: number; hash: string; bodyKey: string; outcome: "transcribed" | "no_speech";
   preview: string | null; engine: string | null; provider: string | null; model: string | null;
   language: string | null; speakerLabels: boolean | null; participants: string | null;
-  transcribedAt: string | null;
+  transcribedAt: string | null; committedAt: string | null;
 }
 
 function metadata(value: unknown): Record<string, unknown> {
@@ -65,7 +65,7 @@ export async function readTranscriptCommit(tcw: Pick<TinyCloudWeb, "sql">, sourc
   checkpoint();
   const result = await tcw.sql.db(CONNECTORS_SQL_DB_NAME).query(
     `SELECT source_id, rev, hash, body_key, outcome, preview, engine, provider, model, language,
-            speaker_labels, participants, transcribed_at FROM voice_note_transcript WHERE source_id = ?`, [sourceId],
+            speaker_labels, participants, transcribed_at, committed_at FROM voice_note_transcript WHERE source_id = ?`, [sourceId],
     { signal },
   );
   if (!result.ok) throw new Error(`Read transcript commit: ${result.error.message}`);
@@ -75,7 +75,7 @@ export async function readTranscriptCommit(tcw: Pick<TinyCloudWeb, "sql">, sourc
     outcome: r[4] as TranscriptCommit["outcome"], preview: r[5] as string | null,
     engine: r[6] as string | null, provider: r[7] as string | null, model: r[8] as string | null,
     language: r[9] as string | null, speakerLabels: r[10] === null ? null : Boolean(r[10]),
-    participants: r[11] as string | null, transcribedAt: r[12] as string | null,
+    participants: r[11] as string | null, transcribedAt: r[12] as string | null, committedAt: r[13] as string | null,
   } : null;
 }
 
@@ -87,7 +87,7 @@ export async function readTranscriptCommits(tcw: Pick<TinyCloudWeb, "sql">, sour
     const chunk = sourceIds.slice(from, from + SQL_CHUNK);
     const result = await tcw.sql.db(CONNECTORS_SQL_DB_NAME).query(
       `SELECT source_id, rev, hash, body_key, outcome, preview, engine, provider, model, language,
-              speaker_labels, participants, transcribed_at FROM voice_note_transcript WHERE source_id IN (${chunk.map(() => "?").join(",")})`, chunk,
+              speaker_labels, participants, transcribed_at, committed_at FROM voice_note_transcript WHERE source_id IN (${chunk.map(() => "?").join(",")})`, chunk,
     );
     if (!result.ok) throw new Error(`Read transcript commits: ${result.error.message}`);
     for (const r of result.data.rows as unknown[][]) {
@@ -96,7 +96,7 @@ export async function readTranscriptCommits(tcw: Pick<TinyCloudWeb, "sql">, sour
         outcome: r[4] as TranscriptCommit["outcome"], preview: r[5] as string | null,
         engine: r[6] as string | null, provider: r[7] as string | null, model: r[8] as string | null,
         language: r[9] as string | null, speakerLabels: r[10] === null ? null : Boolean(r[10]),
-        participants: r[11] as string | null, transcribedAt: r[12] as string | null,
+        participants: r[11] as string | null, transcribedAt: r[12] as string | null, committedAt: r[13] as string | null,
       });
     }
   }

@@ -12,6 +12,7 @@ import {
 /**
  * Private cloud transcription as the card sees it. A failed check is retryable.
  */
+export type VoiceNoteRerunEngine = "on-device" | "private-cloud" | "assemblyai";
 export interface VoiceNoteTranscriptionProps {
   availability: TranscriptionAvailability;
   /** Why the availability check failed (`availability` "failed"). */
@@ -30,6 +31,8 @@ export interface VoiceNoteTranscriptionProps {
   onTranscribe: (sourceId: string) => void;
   /** Private cloud for a note committed to another mode (Local); see `VoiceNoteTranscriber.transcribePrivately`. */
   onTranscribePrivately: (sourceId: string) => TranscriptionAdmissionRefusal | null | void;
+  /** Starts one user-confirmed rerun. */
+  onTranscribeAgain?: (sourceId: string, engine: VoiceNoteRerunEngine) => Promise<string | null> | string | null;
   onConsent: () => void;
   onTurnOff: () => void;
   /** Asks again; resolves once the check has answered. */
@@ -63,6 +66,7 @@ export function transcriptionProps(
     jobs: snapshot.jobs,
     onTranscribe: (sourceId) => transcriber.transcribe(sourceId),
     onTranscribePrivately: (sourceId) => transcriber.transcribePrivately(sourceId),
+    onTranscribeAgain: (sourceId, engine) => transcriber.transcribeAgain?.(sourceId, engine) ?? "Transcription isn’t available here.",
     onConsent: () => transcriber.consent(),
     onTurnOff: () => void transcriber.turnOff(),
     onRecheck: () => transcriber.check(),

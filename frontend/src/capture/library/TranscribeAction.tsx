@@ -6,7 +6,10 @@ import { ChevronDownIcon, Loader2Icon } from "lucide-react";
 
 import { HowItWorksLink } from "@/components/ui/how-it-works-link";
 import { PlatformContext } from "@/lib/platform";
-import { CHECK_AGAIN, PRIVATE_CONSENT_ACTION, PRIVATE_CONSENT_TITLE, privateConsentBody, privateConsentDevice, privateNotOffered, TRANSCRIBER_NAME } from "@/capture/recorder/final/finalCopy";
+import {
+  CHECK_AGAIN, POWERFUL_CONSENT_ACTION, POWERFUL_CONSENT_BODY, POWERFUL_CONSENT_TITLE,
+  PRIVATE_CONSENT_ACTION, PRIVATE_CONSENT_TITLE, privateConsentBody, privateConsentDevice, privateNotOffered, TRANSCRIBER_NAME,
+} from "@/capture/recorder/final/finalCopy";
 import type { VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
 import { captureCapabilities } from "@/lib/voiceNotes/captureEngine";
 import { VoiceNotes } from "@/lib/voiceNotes/nativeVoiceNotes";
@@ -61,6 +64,8 @@ export interface TranscribeActionProps {
   transcription: VoiceNoteTranscriptionProps | undefined;
   /** The note's length: Private is offered only up to the length private cloud advertises. */
   durationSecs: number | null;
+  /** "Transcribe again" is always confirmed before an engine is invoked. */
+  rerun?: boolean;
   /** "Transcribe" by default; "Try again" after a failure. */
   label?: string;
   className?: string;
@@ -75,12 +80,25 @@ export function TranscribeActionFor(props: TranscribeActionProps & { read: Phone
   const platform = useContext(PlatformContext);
   const { noteId, transcription, durationSecs, read } = props;
   const phone = read.state === "read" ? read.phone : null;
-  const providers = transcribeProviders(noteId, transcription, phone, durationSecs);
+  const providers = transcribeProviders(noteId, transcription, phone, durationSecs, props.rerun);
   const [chosen, setChosen] = useState<TranscribeProvider | null>(null);
   const [busy, setBusy] = useState(false);
   // Set at the tap, ahead of any render: the start is still on its way until this note's job or queue entry replaces the action.
   const starting = useRef(false);
   const [asking, setAsking] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const rerunButtonRef = useRef<HTMLButtonElement>(null);
+  const cancelButtonRef = useRef<HTMLButtonElement>(null);
+  const hadConfirmation = useRef(false);
+  useEffect(() => {
+    if (confirming) {
+      hadConfirmation.current = true;
+      cancelButtonRef.current?.focus();
+    } else if (hadConfirmation.current) {
+      hadConfirmation.current = false;
+      rerunButtonRef.current?.focus();
+    }
+  }, [confirming]);
   const [problem, setProblem] = useState<string | null>(null);
   const selectId = useId();
   // The lock holds while the start is on its way. A job that settles into something other than active (blocked, held,
@@ -105,7 +123,7 @@ export function TranscribeActionFor(props: TranscribeActionProps & { read: Phone
       setProblem(reason);
       setBusy(false);
     };
-    void transcribeWith(which, noteId, transcription, phone).then(
+    void transcribeWith(which, noteId, transcription, phone, props.rerun).then(
       (failure) => {
         if (failure !== null) failed(failure);
       },
@@ -115,6 +133,11 @@ export function TranscribeActionFor(props: TranscribeActionProps & { read: Phone
       },
     );
   };
+  const proceed = (which: TranscribeProvider) => {
+    if (props.rerun) setConfirming(false);
+    if (needsConsent(which, transcription)) setAsking(true);
+    else run(which);
+  };
 
   // Local needs the phone's answer first, or the default would change under the user.
   if (read.state === "reading") return null;
@@ -123,7 +146,8 @@ export function TranscribeActionFor(props: TranscribeActionProps & { read: Phone
     return (
       <div className={cn("flex min-w-0 flex-col gap-3", props.className)} data-testid="transcribe-consent">
         <p className="text-callout text-muted-foreground">
-          <strong>{PRIVATE_CONSENT_TITLE}</strong> {privateConsentBody(privateConsentDevice(platform))}
+          <strong>{provider === "assemblyai" ? POWERFUL_CONSENT_TITLE : PRIVATE_CONSENT_TITLE}</strong>{" "}
+          {provider === "assemblyai" ? POWERFUL_CONSENT_BODY : privateConsentBody(privateConsentDevice(platform))}
         </p>
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
           <button
@@ -131,12 +155,13 @@ export function TranscribeActionFor(props: TranscribeActionProps & { read: Phone
             className={cn(CONTROL, "bg-[color:var(--ink,hsl(var(--primary)))] px-4 text-[color:var(--bgc,hsl(var(--primary-foreground)))]")}
             data-testid="transcribe-consent-enable"
             onClick={() => {
-              transcription!.onConsent();
+              if (provider === "assemblyai") transcription!.onPowerfulConsent?.();
+              else transcription!.onConsent();
               setAsking(false);
               run(provider);
             }}
           >
-            {PRIVATE_CONSENT_ACTION}
+            {provider === "assemblyai" ? POWERFUL_CONSENT_ACTION : PRIVATE_CONSENT_ACTION}
           </button>
           <button
             type="button"
@@ -159,14 +184,15 @@ export function TranscribeActionFor(props: TranscribeActionProps & { read: Phone
       {provider !== undefined && (
         <div className="flex flex-wrap items-center gap-2">
           <button
+            ref={rerunButtonRef}
             type="button"
             disabled={busy}
             className={cn(CONTROL, "inline-flex items-center gap-2 bg-[color:var(--ink,hsl(var(--primary)))] px-4 text-[color:var(--bgc,hsl(var(--primary-foreground)))] disabled:opacity-60")}
             data-testid="transcribe-button"
-            onClick={() => (needsConsent(provider, transcription) ? setAsking(true) : run(provider))}
+            onClick={() => props.rerun ? setConfirming(true) : proceed(provider)}
           >
             {busy && <Loader2Icon className="size-4 shrink-0 motion-safe:animate-spin" aria-hidden />}
-            {props.label ?? "Transcribe"}
+            {props.label ?? (props.rerun ? "Transcribe again…" : "Transcribe")}
           </button>
           {providers.length > 1 ? (
             <label className={cn(CHIP, EDGE, "focus-within:ring-2 focus-within:ring-ring")}>
@@ -213,6 +239,29 @@ export function TranscribeActionFor(props: TranscribeActionProps & { read: Phone
         <p role="alert" className="text-callout text-destructive" data-testid="transcribe-problem">
           {problem}
         </p>
+      )}
+      {confirming && (
+        <div
+          className="fixed inset-0 z-50 grid place-items-center bg-black/50 p-4"
+          onKeyDown={(event) => { if (event.key === "Escape") setConfirming(false); }}
+          onMouseDown={(event) => { if (event.target === event.currentTarget) setConfirming(false); }}
+        >
+          <section role="alertdialog" aria-modal="true" aria-labelledby={`${selectId}-rerun-title`}
+            aria-describedby={`${selectId}-rerun-description`}
+            className="grid w-full max-w-md gap-4 rounded-lg bg-popover p-6 text-popover-foreground shadow-float"
+            data-testid="transcribe-again-confirmation">
+            <h2 id={`${selectId}-rerun-title`} className="text-headline">Transcribe this note again?</h2>
+            <p id={`${selectId}-rerun-description`} className="text-callout text-muted-foreground">
+              The current transcript stays until the new one succeeds.
+            </p>
+            <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+              <button ref={cancelButtonRef} type="button" className={cn(CONTROL, EDGE, "px-4")} data-testid="transcribe-again-cancel"
+                onClick={() => setConfirming(false)}>Cancel</button>
+              <button type="button" className={cn(CONTROL, "bg-[color:var(--ink,hsl(var(--primary)))] px-4 text-[color:var(--bgc,hsl(var(--primary-foreground)))]")}
+                data-testid="transcribe-again-confirm" onClick={() => provider && proceed(provider)}>Transcribe again</button>
+            </div>
+          </section>
+        </div>
       )}
     </div>
   );

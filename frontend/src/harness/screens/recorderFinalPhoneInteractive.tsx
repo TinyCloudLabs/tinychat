@@ -349,6 +349,7 @@ function screen(name: string, setup: Setup): HarnessScreen {
         deleteModels: async () => {},
         installSpeechAssets: async () => {},
         enqueue: async () => {},
+        enqueueAgain: async () => {},
         cancel: async () => {},
         addListener: async (event, listener) => {
           if (event === "status")
@@ -431,6 +432,7 @@ const routeControlScreen: HarnessScreen = {
       deleteModels: async () => {},
       installSpeechAssets: async () => {},
       enqueue: async () => {},
+      enqueueAgain: async () => {},
       cancel: async () => {},
       addListener: async () => ({ remove: async () => {} }),
     } satisfies OnDeviceSttPlugin);
@@ -493,6 +495,7 @@ const notesScreen: HarnessScreen = {
       deleteModels: async () => {},
       installSpeechAssets: async () => {},
       enqueue: async () => {},
+      enqueueAgain: async () => {},
       cancel: async () => {},
       addListener: async () => ({ remove: async () => {} }),
     } satisfies OnDeviceSttPlugin);
@@ -517,6 +520,7 @@ const nativeScreen: HarnessScreen = {
       deleteModels: async () => {},
       installSpeechAssets: async () => {},
       enqueue: async () => {},
+      enqueueAgain: async () => {},
       cancel: async () => {},
       addListener: async () => ({ remove: async () => {} }),
     } satisfies OnDeviceSttPlugin);
