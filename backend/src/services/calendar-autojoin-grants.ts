@@ -1,4 +1,4 @@
-import type { CalendarConnection } from "./calendar-autojoin-store.js";
+import type { CalendarConnection, CalendarGoogleBrowserBinding } from "./calendar-autojoin-store.js";
 
 interface Reference {
   subjectHash: string;
@@ -43,12 +43,26 @@ export class CalendarAutojoinGrantIndex {
 
   invalidate(): void { this.trusted = false; this.uncertainty++; }
 
-  bindBrowser(tenant: string, subject: string, tokens: string[]): void {
+  browserBinding(subject: string, tokens: string[]): CalendarGoogleBrowserBinding {
+    return { version: 1, subjectHash: this.hashSubject(subject), tokenHashes: [...new Set(tokens.map(token => this.hashToken(token)))] };
+  }
+
+  restoreBrowser(tenant: string, binding: CalendarGoogleBrowserBinding): void {
+    const digest = (value: unknown) => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+    if (binding.version !== 1 || !digest(binding.subjectHash) || !Array.isArray(binding.tokenHashes)
+      || binding.tokenHashes.length > 2 || !binding.tokenHashes.every(digest)) throw new Error("google_browser_binding_invalid");
     const key = tenant.toLowerCase();
-    const subjectHash = this.hashSubject(subject);
-    if (this.tenants.get(key)?.subjectHash !== subjectHash) this.detach(key);
-    this.tenants.set(key, { subjectHash, revision: ++this.revision });
-    this.browserTokens.set(key, { subjectHash, tokenHashes: new Set(tokens.map(token => this.hashToken(token))) });
+    this.browserTokens.set(key, { subjectHash: binding.subjectHash, tokenHashes: new Set(binding.tokenHashes) });
+    if (!this.tenants.has(key)) this.tenants.set(key, { subjectHash: binding.subjectHash, revision: ++this.revision });
+  }
+
+  bindBrowser(tenant: string, subject: string, tokens: string[]): CalendarGoogleBrowserBinding {
+    const key = tenant.toLowerCase();
+    const binding = this.browserBinding(subject, tokens);
+    if (this.tenants.get(key)?.subjectHash !== binding.subjectHash) this.detach(key);
+    this.tenants.set(key, { subjectHash: binding.subjectHash, revision: ++this.revision });
+    this.restoreBrowser(key, binding);
+    return binding;
   }
 
   /** Called only with a matching, usable server OAuth credential under tenant coordination. */

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { createHash } from "node:crypto";
+import { createHash, createHmac, hkdfSync } from "node:crypto";
 import type { AddressInfo } from "node:net";
 import express from "express";
 import type { TinyCloudNode } from "@tinycloud/node-sdk";
@@ -103,6 +103,20 @@ function fixture() {
       const setup = await connection.exchange(tenant, { state, code: "synthetic-code", verifier: VERIFIER });
       await connection.enable(tenant, setup.setupId);
     },
+    restart() {
+      const restartedLane = new BackendStorageLane();
+      const restartedStores = kvCalendarAutojoinStores(node, restartedLane);
+      const restartedCredentials = new CredentialStore(new KvCredentialRowStore(node, restartedLane), credentialOptions);
+      const restartedBackfill = new CredentialStore(new KvCredentialRowStore(node, restartedLane, { priority: "background" }), credentialOptions);
+      const restartedCoordinator = new TenantCoordinator();
+      const restartedConnection = new CalendarAutojoinConnection({ ...options, store: restartedStores.request,
+        credentials: restartedCredentials, backfillCredentials: restartedBackfill, coordinator: restartedCoordinator });
+      const restartedWorker = new CalendarAutojoinWorker({ store: restartedStores.worker, dispatchStore: restartedStores.dispatch,
+        coordinator: restartedCoordinator, connection: restartedConnection, calendar, api: {} as TranscriptionApiClient,
+        index: new MemoryTranscriberIndexStore(), now: () => now, random: () => 0 });
+      return { lane: restartedLane, stores: restartedStores, credentials: restartedCredentials,
+        connection: restartedConnection, worker: restartedWorker };
+    },
   };
 }
 
@@ -202,7 +216,7 @@ describe("TC-1101 shared Google grant custody", () => {
     } finally { run.mockRestore(); }
   });
 
-  test("the real worker backfills existing custody after its normal reconciliation", async () => {
+  test("the real worker backfills existing custody before its normal reconciliation", async () => {
     const f = fixture(); const a = await f.seed(); await f.seed(B);
     expect(f.connection.grantIndex.needsBackfill).toBe(true);
     try {
@@ -445,5 +459,407 @@ describe("TC-1101 shared Google grant custody", () => {
         expect(!!await f.credentials.status(SOURCE, A)).toBe(point === "precommit" || point === "credential_delete");
       });
     }
+  }
+});
+
+describe("TC-1101 failed custody and lifecycle reads", () => {
+  test("a throwing refresh credential read preserves the error and forces the next disconnect to revoke", async () => {
+    const f = fixture(); const a = await f.seed(); await f.seed(B); await f.backfill();
+    const get = f.credentials.getCredential.bind(f.credentials);
+    const error = new Error("Synthetic unreadable custody");
+    const read = spyOn(f.credentials, "getCredential").mockImplementation(async (...args) => {
+      if (args[1] === B) throw error;
+      return get(...args);
+    });
+    try {
+      await expect(f.connection.accessToken(B, true)).rejects.toBe(error);
+      expect(f.connection.grantIndex.needsBackfill).toBe(true);
+      await f.connection.disconnect(A, a.refreshToken);
+      expect(f.calls).toHaveLength(1);
+    } finally { read.mockRestore(); }
+  });
+
+  for (const failure of ["corrupt_ciphertext", "throwing_read", "deleted", "wrong_key", "revoked", "non_oauth"] as const) {
+    test(`real worker removes trust in formerly usable ${failure} custody before disconnect`, async () => {
+      const f = fixture(); const a = await f.seed(); const b = await f.seed(B); await f.backfill();
+      const key = `credentials/${SOURCE}/${B}`;
+      const restores: (() => void)[] = [];
+      if (failure === "corrupt_ciphertext") {
+        const row = f.values.get(key) as { ciphertext: string };
+        const bytes = Buffer.from(row.ciphertext, "base64"); bytes[bytes.length - 1]! ^= 1;
+        f.values.set(key, { ...row, ciphertext: bytes.toString("base64") });
+      } else if (failure === "throwing_read") {
+        const get = f.credentials.getCredential.bind(f.credentials);
+        const read = spyOn(f.credentials, "getCredential").mockImplementation(async (...args) => {
+          if (args[1] === B) throw new Error("Synthetic failed custody read");
+          return get(...args);
+        });
+        restores.push(() => read.mockRestore());
+      } else if (failure === "deleted") await f.credentials.delete(SOURCE, B);
+      else if (failure === "wrong_key") {
+        const wrong = new CredentialStore(new KvCredentialRowStore(f.node, f.lane), {
+          master: () => Buffer.alloc(32, 9).toString("base64"), previousMaster: () => null,
+        });
+        await wrong.store({ source: SOURCE, address: B, secret: b });
+      } else if (failure === "revoked") {
+        f.values.set(key, { ...f.values.get(key)!, revokedAt: new Date(NOW).toISOString() });
+      } else await f.credentials.store({ source: SOURCE, address: B, secret: { kind: "api_key", apiKey: "synthetic-key" } });
+      try {
+        await f.worker.tick();
+        if (failure === "corrupt_ciphertext" || failure === "wrong_key") {
+          expect(lines.some(line => line.includes("result=unreadable"))).toBe(true);
+          expect(f.connection.grantIndex.needsBackfill).toBe(true);
+          // Preserve scan-error behavior; decryption failure is not a fabricated OAuth rejection.
+          expect((await f.stores.request.getConnection(B))?.errorCode).toBe("calendar_scan_failed");
+        }
+        if (failure === "throwing_read") expect(f.connection.grantIndex.needsBackfill).toBe(true);
+        await f.connection.disconnect(A, a.refreshToken);
+        expect(f.calls).toHaveLength(1);
+      } finally { for (const restore of restores) restore(); await f.worker.stop(); }
+    });
+  }
+
+  test("a failed enable credential read invalidates an indexed pending holder without changing the error", async () => {
+    const f = fixture(); const a = await f.seed(); await f.seed(B, SUBJECT, {
+      state: "enabling", setupId: "synthetic-setup", setupExpiresAt: NOW + 60_000,
+    }); await f.backfill();
+    const get = f.credentials.getCredential.bind(f.credentials);
+    const error = new Error("Synthetic failed enable custody read");
+    const read = spyOn(f.credentials, "getCredential").mockImplementation(async (...args) => {
+      if (args[1] === B) throw error;
+      return get(...args);
+    });
+    try {
+      await expect(f.connection.enable(B, "synthetic-setup")).rejects.toBe(error);
+      expect(f.connection.grantIndex.needsBackfill).toBe(true);
+      await f.connection.disconnect(A, a.refreshToken);
+      expect(f.calls).toHaveLength(1);
+    } finally { read.mockRestore(); }
+  });
+
+  for (const unusable of ["deleted", "non_oauth", "missing_refresh"] as const) {
+    test(`enable observes ${unusable} custody and immediately stops counting the pending holder`, async () => {
+      const f = fixture(); const a = await f.seed(); const b = await f.seed(B, SUBJECT, {
+        state: "enabling", setupId: "synthetic-setup", setupExpiresAt: NOW + 60_000,
+      }); await f.backfill();
+      if (unusable === "deleted") await f.credentials.delete(SOURCE, B);
+      else await f.credentials.store({ source: SOURCE, address: B, secret: unusable === "non_oauth"
+        ? { kind: "api_key", apiKey: "synthetic-key" } : { ...b, refreshToken: undefined } });
+      await expect(f.connection.enable(B, "synthetic-setup")).rejects.toMatchObject({ code: "refresh_token_required" });
+      await f.connection.disconnect(A, a.refreshToken);
+      expect(f.calls).toHaveLength(1);
+    });
+  }
+
+  test("invalid_grant followed by a failed latest-row read cannot preserve trusted live custody", async () => {
+    const f = fixture(); const a = await f.seed(); await f.seed(B); await f.backfill();
+    const refresh = spyOn(f.oauth, "refresh").mockRejectedValue(new GoogleOAuthError({ status: 400, error: "invalid_grant", operation: "refresh" }));
+    const get = f.stores.request.getConnection.bind(f.stores.request);
+    const error = new Error("Synthetic unavailable latest row");
+    let reads = 0;
+    const read = spyOn(f.stores.request, "getConnection").mockImplementation(async (...args) => {
+      if (args[0] === B && ++reads === 2) throw error;
+      return get(...args);
+    });
+    try {
+      await expect(f.connection.accessToken(B, true)).rejects.toBe(error);
+      expect(f.connection.grantIndex.needsBackfill).toBe(true);
+      await f.connection.disconnect(A, a.refreshToken);
+      expect(f.calls).toHaveLength(1);
+    } finally { read.mockRestore(); refresh.mockRestore(); }
+  });
+
+  test("a later successful custody read cannot restore trust without complete backfill", async () => {
+    const f = fixture(); const a = await f.seed(); await f.seed(B); await f.backfill();
+    const read = spyOn(f.credentials, "getCredential").mockRejectedValueOnce(new Error("Synthetic temporary read failure"));
+    try { await expect(f.connection.accessToken(B, true)).rejects.toThrow("Synthetic temporary read failure"); }
+    finally { read.mockRestore(); }
+    await f.connection.accessToken(B, true);
+    expect(f.connection.grantIndex.needsBackfill).toBe(true);
+    await f.backfill();
+    expect(f.connection.grantIndex.needsBackfill).toBe(false);
+    await f.connection.disconnect(A, a.refreshToken);
+    expect(f.calls).toHaveLength(0);
+  });
+});
+
+describe("TC-1101 identity and reference hashing boundaries", () => {
+  test("HKDF/HMAC pins server-master dependence and separation from token and encryption keys", () => {
+    const f = fixture();
+    const hash = f.credentials.referenceHasher("calendar-autojoin-google-subject-v1");
+    expect(hash(SUBJECT)).toBe("1076a66859ce0fd7a0a692e1204a2847e9828bc00833d7df28930f59ea4f7647");
+    expect(hash(SUBJECT) === hash(SUBJECT.toUpperCase())).toBe(false);
+    expect(hash(SUBJECT) === f.credentials.referenceHasher("calendar-autojoin-google-token-v1")(SUBJECT)).toBe(false);
+    const alternate = new CredentialStore(new KvCredentialRowStore(f.node, f.lane), {
+      master: () => Buffer.alloc(32, 9).toString("base64"), previousMaster: () => null,
+    });
+    expect(hash(SUBJECT) === alternate.referenceHasher("calendar-autojoin-google-subject-v1")(SUBJECT)).toBe(false);
+    const encryptionKey = hkdfSync("sha256", MASTER, "tinychat-credential-v1", "calendar-autojoin-google-subject-v1", 32);
+    expect(hash(SUBJECT) === createHmac("sha256", Buffer.from(encryptionKey)).update(SUBJECT).digest("hex")).toBe(false);
+  });
+
+  test("the production index uses distinct token and subject HMAC namespaces", async () => {
+    const f = fixture(); const a = await f.seed(); await f.backfill();
+    const index = f.connection.grantIndex as unknown as {
+      tenants: Map<string, { subjectHash: string }>;
+      serverTokens: Map<string, { subjectHash: string; tokenHashes: Set<string> }>;
+    };
+    const tokenHash = f.credentials.referenceHasher("calendar-autojoin-google-token-v1");
+    const subjectHash = f.credentials.referenceHasher("calendar-autojoin-google-subject-v1");
+    expect(index.tenants.get(A)?.subjectHash).toBe(subjectHash(SUBJECT));
+    expect([...index.serverTokens.get(A)!.tokenHashes]).toEqual([tokenHash(a.accessToken), tokenHash(a.refreshToken)]);
+    expect(index.serverTokens.get(A)!.tokenHashes.has(subjectHash(a.refreshToken))).toBe(false);
+  });
+
+  test("a token bound to another tenant cannot borrow that tenant's skip decision", async () => {
+    const f = fixture(); const a = await f.seed(); await f.seed(B); await f.backfill();
+    await f.connection.disconnect(C, a.refreshToken);
+    expect(f.calls).toHaveLength(1);
+  });
+
+  test("an arbitrary browser token cannot borrow its tenant's known server subject", async () => {
+    const f = fixture(); const a = await f.seed(); await f.seed(B); await f.backfill();
+    await f.connection.disconnect(A, "synthetic-unbound-browser-token");
+    expect(f.calls).toHaveLength(1);
+    expect(f.calls.includes(a.refreshToken)).toBe(false);
+  });
+
+  test("detached binding replay skips only while another live holder remains", async () => {
+    const f = fixture(); const a = await f.seed(); await f.seed(B); await f.backfill();
+    await f.connection.disconnect(A, a.refreshToken);
+    await f.connection.disconnect(A, a.accessToken);
+    expect(f.calls).toHaveLength(0);
+    await f.connection.disable(B);
+    await f.connection.disconnect(A, a.refreshToken);
+    expect(f.calls).toHaveLength(1);
+  });
+
+  test("case-distinct Google subjects never protect each other's grant", async () => {
+    const f = fixture(); const a = await f.seed(); await f.seed(B, SUBJECT.toUpperCase()); await f.backfill();
+    await f.connection.disconnect(A, a.refreshToken);
+    expect(f.calls).toHaveLength(1);
+  });
+
+  test("a mid-check hashing failure discards an earlier skip and revokes both tokens without logging identity", async () => {
+    const f = fixture(); const a = await f.seed(); await f.seed(B); await f.backfill();
+    const index = f.connection.grantIndex as unknown as { hashToken: (token: string) => string };
+    const original = index.hashToken;
+    index.hashToken = token => { if (token === a.accessToken) throw new Error("Synthetic partial hash failure"); return original(token); };
+    try { await f.connection.disconnect(A, a.accessToken); }
+    finally { index.hashToken = original; }
+    expect(f.calls).toHaveLength(2);
+    expect(f.connection.grantIndex.needsBackfill).toBe(true);
+    expect(lines.some(line => line.includes(SUBJECT) || line.includes(a.accessToken))).toBe(false);
+  });
+
+  test("an invalid-grant refresh detaches the holder before a later disconnect", async () => {
+    const f = fixture(); const a = await f.seed(); await f.seed(B); await f.backfill();
+    const refresh = spyOn(f.oauth, "refresh").mockRejectedValue(new GoogleOAuthError({ status: 400, error: "invalid_grant", operation: "refresh" }));
+    try { await expect(f.connection.accessToken(B, true)).rejects.toMatchObject({ error: "invalid_grant" }); }
+    finally { refresh.mockRestore(); }
+    await f.connection.disconnect(A, a.refreshToken);
+    expect(f.calls).toHaveLength(1);
+  });
+
+  test("an enabling holder expires at the exact boundary", async () => {
+    const f = fixture(); const a = await f.seed(); await f.seed(B, SUBJECT, { state: "enabling", setupExpiresAt: NOW + 1 }); await f.backfill();
+    f.advance(1);
+    await f.connection.disconnect(A, a.refreshToken);
+    expect(f.calls).toHaveLength(1);
+  });
+
+  test("a subject without a matching Google credential reference cannot count", async () => {
+    const f = fixture(); const a = await f.seed(); await f.seed(B, SUBJECT, { credentialRef: undefined }); await f.backfill();
+    await f.connection.disconnect(A, a.refreshToken);
+    expect(f.calls).toHaveLength(1);
+  });
+});
+
+describe("TC-1101 restart persistence and reconciliation", () => {
+  test("ordinary reconnect survives restart and both SPA disconnect calls preserve the shared grant", async () => {
+    const f = fixture(); await f.connect(A, SUBJECT); await f.connect(B, SUBJECT); await f.backfill();
+    const cached = await f.connection.getStatus(A);
+    const lastGood = f.connection.getLastGoodStatus(A);
+    const browser = f.mint(A, SUBJECT);
+    await f.connection.browserReconnect(A, SUBJECT, [browser.accessToken, browser.refreshToken]);
+    expect(f.connection.getLastGoodStatus(A)).toEqual(lastGood); // Bookkeeping must not invalidate fix 1.
+    expect(cached).not.toHaveProperty("googleBrowserBinding");
+    const binding = (await f.stores.request.getConnection(A))!.googleBrowserBinding!;
+    const serialized = JSON.stringify(binding);
+    for (const raw of [SUBJECT, browser.accessToken, browser.refreshToken]) expect(serialized.includes(raw)).toBe(false);
+    expect(binding.tokenHashes).toHaveLength(2);
+    await f.worker.stop();
+    const restarted = f.restart();
+    try {
+      await restarted.worker.tick();
+      expect(restarted.connection.grantIndex.needsBackfill).toBe(false);
+      f.resetReads(); await restarted.connection.disconnect(A);
+      expect(f.reads).toBe(4);
+      f.resetReads(); await restarted.connection.disconnect(A, browser.refreshToken);
+      expect(f.reads).toBe(4);
+      expect(f.calls).toHaveLength(0);
+      expect(await restarted.credentials.status(SOURCE, A)).toBeNull();
+      // Force B's real refresh path after the two-call disconnect.
+      f.advance(3_600_001); await restarted.worker.tick();
+      expect((await restarted.stores.request.getConnection(B))?.state).toBe("enabled");
+      expect(f.calls).toHaveLength(0);
+    } finally { await restarted.worker.stop(); }
+  });
+
+  test("a different-account browser binding survives disabled custody and backend restart", async () => {
+    const f = fixture(); await f.connect(A, SUBJECT); await f.connect(B, OTHER_SUBJECT); await f.backfill();
+    const browser = f.mint(A, OTHER_SUBJECT);
+    await f.connection.browserReconnect(A, OTHER_SUBJECT, [browser.accessToken, browser.refreshToken]);
+    expect(f.calls).toHaveLength(0);
+    expect((await f.stores.request.getConnection(A))?.offReason).toBe("google_account_changed");
+    await f.worker.stop();
+    const restarted = f.restart();
+    try {
+      await restarted.worker.tick();
+      f.resetReads(); await restarted.connection.disconnect(A);
+      expect(f.reads).toBe(4);
+      f.resetReads(); await restarted.connection.disconnect(A, browser.refreshToken);
+      expect(f.reads).toBe(4);
+      expect(f.calls).toHaveLength(0);
+      expect((await restarted.stores.request.getConnection(B))?.state).toBe("enabled");
+    } finally { await restarted.worker.stop(); }
+  });
+
+  test("optional browser binding publication failure preserves the exchange while invalidating index trust", async () => {
+    const f = fixture(); await f.connect(A, SUBJECT); await f.backfill();
+    const browser = f.mint(A, SUBJECT);
+    const put = spyOn(f.stores.request, "updateConnection").mockRejectedValue(new Error("Synthetic binding publication failure"));
+    try { await f.connection.browserReconnect(A, SUBJECT, [browser.accessToken, browser.refreshToken]); }
+    finally { put.mockRestore(); }
+    expect(f.connection.grantIndex.needsBackfill).toBe(true);
+    expect((await f.stores.request.getConnection(A))?.state).toBe("enabled");
+    expect(lines.some(line => line === "[calendar-autojoin] code=grant_index_update reason=browser_binding_unavailable")).toBe(true);
+  });
+
+  test("browser binding publication preserves worker bookkeeping updated after the initial read", async () => {
+    const f = fixture(); await f.connect(A, SUBJECT); await f.backfill();
+    const browser = f.mint(A, SUBJECT);
+    const original = f.connection.grantIndex.bindBrowser.bind(f.connection.grantIndex);
+    let bookkeeping: Promise<CalendarConnection | null> | undefined;
+    const bind = spyOn(f.connection.grantIndex, "bindBrowser").mockImplementation((...args) => {
+      bookkeeping = f.stores.worker.updateConnection(A, row => row && { ...row, lastScanAt: NOW + 1, nextScanAt: NOW + 60_000 });
+      return original(...args);
+    });
+    try { await f.connection.browserReconnect(A, SUBJECT, [browser.accessToken, browser.refreshToken]); await bookkeeping; }
+    finally { bind.mockRestore(); }
+    const row = await f.stores.request.getConnection(A);
+    expect(row?.lastScanAt).toBe(NOW + 1);
+    expect(row?.nextScanAt).toBe(NOW + 60_000);
+    expect(row?.googleBrowserBinding?.tokenHashes).toHaveLength(2);
+  });
+
+  test("an invalidation during backfill prevents trust until another complete successful pass", async () => {
+    const f = fixture(); await f.seed(); await f.seed(B);
+    const original = f.backfillCredentials.getCredential.bind(f.backfillCredentials);
+    let invalidated = false;
+    const read = spyOn(f.backfillCredentials, "getCredential").mockImplementation(async (...args) => {
+      const secret = await original(...args);
+      if (!invalidated) { invalidated = true; f.connection.grantIndex.invalidate(); }
+      return secret;
+    });
+    try { await f.backfill(); } finally { read.mockRestore(); }
+    expect(f.connection.grantIndex.needsBackfill).toBe(true);
+    await f.backfill();
+    expect(f.connection.grantIndex.needsBackfill).toBe(false);
+  });
+
+  test("an ambiguous exchange credential write invalidates the projection", async () => {
+    const f = fixture(); const a = await f.seed(); await f.seed(B); await f.backfill();
+    const original = f.credentials.store.bind(f.credentials);
+    const error = new Error("Synthetic committed credential uncertainty");
+    const store = spyOn(f.credentials, "store").mockImplementation(async input => {
+      await original(input);
+      if (input.address === C) throw error;
+    });
+    try { await expect(f.connect(C, SUBJECT)).rejects.toBe(error); }
+    finally { store.mockRestore(); }
+    expect(f.connection.grantIndex.needsBackfill).toBe(true);
+    expect(await f.credentials.status(SOURCE, C)).not.toBeNull();
+    await f.connection.disconnect(A, a.refreshToken);
+    expect(f.calls).toHaveLength(1);
+  });
+
+  test("rotation re-holds the newly rotated token so a shared-holder disconnect still skips", async () => {
+    const f = fixture(); await f.connect(A, SUBJECT); await f.connect(B, SUBJECT); await f.backfill();
+    const rotated = f.mint(B, SUBJECT);
+    const refresh = spyOn(f.oauth, "refresh").mockResolvedValue({ access_token: rotated.accessToken,
+      refresh_token: rotated.refreshToken, scope: GOOGLE_AUTOJOIN_SCOPES, expires_in: 3_600 });
+    try { await f.connection.accessToken(B, true); } finally { refresh.mockRestore(); }
+    const held = await f.credentials.getCredential(SOURCE, B, "fetch-worker");
+    expect(held?.kind === "oauth" && held.refreshToken === rotated.refreshToken).toBe(true);
+    await f.connection.disconnect(B);
+    expect(f.calls).toHaveLength(0);
+    f.advance(3_600_001);
+    try {
+      await f.worker.tick();
+      expect((await f.stores.request.getConnection(A))?.state).toBe("enabled");
+    } finally { await f.worker.stop(); }
+  });
+
+  test("a missing revoke decision defaults to revoking every distinct token", async () => {
+    const f = fixture(); const a = await f.seed(); await f.seed(B); await f.backfill();
+    const check = spyOn(f.connection.grantIndex, "release").mockReturnValue([]);
+    try { await f.connection.disconnect(A, a.accessToken); } finally { check.mockRestore(); }
+    expect(f.calls).toHaveLength(2);
+    expect(lines.filter(line => line.includes("code=grant_revoke"))).toEqual(Array(2).fill(
+      "[calendar-autojoin] code=grant_revoke outcome=revoke reason=reference_check_failed"));
+  });
+
+  for (const readFailure of ["enumeration", "worker_policy"] as const) {
+    test(`a failed ${readFailure} read invalidates other-holder trust`, async () => {
+      const f = fixture(); const a = await f.seed(); await f.seed(B); await f.backfill();
+      const original = f.stores.worker.getConnection.bind(f.stores.worker);
+      const read = readFailure === "enumeration"
+        ? spyOn(f.stores.worker, "listConnections").mockRejectedValue(new Error("Synthetic enumeration failure"))
+        : spyOn(f.stores.worker, "getConnection").mockImplementation(async tenant => {
+          if (tenant === B) throw new Error("Synthetic worker policy failure");
+          return original(tenant);
+        });
+      try {
+        await f.worker.tick();
+        expect(f.connection.grantIndex.needsBackfill).toBe(true);
+        await f.connection.disconnect(A, a.refreshToken);
+        expect(f.calls).toHaveLength(1);
+      } finally { read.mockRestore(); await f.worker.stop(); }
+    });
+  }
+
+  for (const [tenants, rows, before, after] of [[10, 0, 131, 31], [10, 30, 731, 31], [50, 10, 1651, 151]] as const) {
+    test(`cold-window lane jobs T=${tenants} N=${rows}: ${before} before, ${after} after`, async () => {
+      for (const placement of ["before", "after"] as const) {
+        const f = fixture();
+        for (let i = 0; i < tenants; i++) {
+          const tenant = `0x${(i + 4).toString(16).padStart(40, "0")}`;
+          await f.connect(tenant, SUBJECT);
+          for (let j = 0; j < rows; j++) await f.stores.worker.putOccurrence({ tenant, subject: SUBJECT,
+            id: `synthetic-row-${j}`, eventId: `synthetic-event-${j}`, start: NOW - 86_400_000, end: NOW - 86_000_000,
+            meetingUrl: "https://meet.google.com/abc-defg-hij", title: "Synthetic metadata", phase: "terminal",
+            disposition: "missed_window", nextAttemptAt: 0, attemptCount: 0, stopRequested: false, updatedAt: NOW });
+        }
+        await f.worker.stop();
+        const restarted = f.restart();
+        const run = spyOn(restarted.lane, "run");
+        let trustedAt = -1;
+        const complete = restarted.connection.grantIndex.completeBackfill.bind(restarted.connection.grantIndex);
+        const trust = spyOn(restarted.connection.grantIndex, "completeBackfill").mockImplementation((...args) => {
+          complete(...args);
+          if (!restarted.connection.grantIndex.needsBackfill && trustedAt < 0) trustedAt = run.mock.calls.length;
+        });
+        const backfill = restarted.connection.backfillGrantReferences.bind(restarted.connection);
+        let deferred: Parameters<typeof backfill> | undefined;
+        // Reproduce the previous after-reconciliation placement with the same real components.
+        const late = placement === "before" ? spyOn(restarted.connection, "backfillGrantReferences").mockImplementation(async (...args) => { deferred = args; }) : undefined;
+        try {
+          await restarted.worker.tick();
+          if (deferred) await backfill(...deferred);
+          expect(trustedAt).toBe(placement === "before" ? before : after);
+        } finally { late?.mockRestore(); trust.mockRestore(); run.mockRestore(); await restarted.worker.stop(); }
+      }
+    });
   }
 });

@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import type { CredentialStore, OAuthCredentialSecret } from "./credential-store.js";
+import type { CredentialStore, CredentialAccessPurpose, CredentialSecret, OAuthCredentialSecret } from "./credential-store.js";
 import { TenantCoordinator, type CalendarAutojoinStore, type CalendarAutojoinReadMetrics, type CalendarConnection } from "./calendar-autojoin-store.js";
 import { CalendarAutojoinGrantIndex, liveGoogleConnection, type GoogleGrantRevokeDecision, type GrantBackfillSnapshot } from "./calendar-autojoin-grants.js";
 import type { CalendarAutojoinStatus, CalendarAutojoinOffReason } from "./calendar-autojoin-status-cache.js";
@@ -67,6 +67,34 @@ export class CalendarAutojoinConnection {
     return this.options.store.statusCache.mutate(tenant, () => this.options.coordinator.run(tenant, write));
   }
 
+  /** A failed lifecycle read cannot confirm the holder's current policy/generation. */
+  private async readConnection(tenant: string, store = this.options.store): Promise<CalendarConnection | null> {
+    try {
+      const row = await store.getConnection(tenant);
+      if (!row) this.grantIndex.forget(tenant);
+      else if (!liveGoogleConnection(row, this.now())) this.grantIndex.detach(tenant);
+      return row;
+    }
+    catch (error) { this.grantIndex.invalidate(); throw error; }
+  }
+
+  /** Failed reads make the projection uncertain; only a complete backfill can restore trust. */
+  private async readCustody(tenant: string, purpose: CredentialAccessPurpose,
+    reader = this.options.credentials): Promise<CredentialSecret | null> {
+    try {
+      const secret = await reader.getCredential(GOOGLE_AUTOJOIN_CREDENTIAL_SOURCE, tenant, purpose);
+      // A known absence/unusable credential cannot count. Retain hashed browser bindings for
+      // the SPA's second revoke call after the first call has already deleted server custody.
+      if (secret?.kind !== "oauth" || !secret.refreshToken) this.grantIndex.detach(tenant);
+      return secret;
+    } catch (error) {
+      // A teardown cannot read A's token, but that does not make other holders uncertain.
+      if (purpose === "teardown") this.grantIndex.detach(tenant);
+      else this.grantIndex.invalidate();
+      throw error;
+    }
+  }
+
   getLastGoodStatus(tenant: string) { return this.options.store.statusCache.get(tenant); }
 
   getStatus(tenant: string, metrics?: CalendarAutojoinReadMetrics): Promise<CalendarAutojoinStatus> {
@@ -113,7 +141,7 @@ export class CalendarAutojoinConnection {
     if (this.transactions.has(input.state) || this.transactions.size >= 5_000) {
       throw new CalendarAutojoinError("oauth_transaction_unavailable", 429);
     }
-    const connection = await this.options.store.getConnection(tenant);
+    const connection = await this.readConnection(tenant);
     const transaction: Transaction = {
       tenant, purpose: "autojoin", challenge: input.challenge,
       nonce: randomBytes(32).toString("base64url"), consentAt: this.now(),
@@ -141,7 +169,7 @@ export class CalendarAutojoinConnection {
     if (!tokens.refresh_token) throw new CalendarAutojoinError("refresh_token_required", 400);
     const setupId = randomBytes(32).toString("base64url");
     await this.writeSettings(tenant, async () => {
-      const current = await this.options.store.getConnection(tenant);
+      const current = await this.readConnection(tenant);
       if (transaction.expiresAt <= this.now()) throw new CalendarAutojoinError("invalid_oauth_transaction", 400);
       if ((current?.generation ?? 0) !== transaction.generation) throw new CalendarAutojoinError("connection_changed");
       // Persist disabled scheduling and stop intent in the old subject namespace first.
@@ -167,9 +195,9 @@ export class CalendarAutojoinConnection {
 
   /** Called only after the browser confirms it persisted the matching importer secret. */
   async enable(tenant: string, setupId: string) {
-    const connection = await this.options.store.getConnection(tenant);
+    const connection = await this.readConnection(tenant);
     this.assertSetup(connection, setupId);
-    const secret = await this.options.credentials.getCredential(GOOGLE_AUTOJOIN_CREDENTIAL_SOURCE, tenant, "fetch-worker");
+    const secret = await this.readCustody(tenant, "fetch-worker");
     if (secret?.kind !== "oauth" || !secret.refreshToken) throw new CalendarAutojoinError("refresh_token_required", 400);
     try {
       await this.options.calendar.probePrimary(secret.accessToken);
@@ -178,11 +206,12 @@ export class CalendarAutojoinConnection {
       throw error;
     }
     await this.writeSettings(tenant, async () => {
-      const latest = await this.options.store.getConnection(tenant);
+      const latest = await this.readConnection(tenant);
       this.assertSetup(latest, setupId);
       if (latest!.generation !== connection!.generation) throw new CalendarAutojoinError("connection_changed");
       const enabled: CalendarConnection = { ...latest!, state: "enabled", setupId: undefined,
-        setupExpiresAt: undefined, nextScanAt: this.now(), errorCode: undefined, offReason: undefined, scanComplete: false };
+        setupExpiresAt: undefined, nextScanAt: this.now(), errorCode: undefined, offReason: undefined, scanComplete: false,
+        googleBrowserBinding: this.grantIndex.browserBinding(latest!.subject!, distinctTokens(secret.accessToken, secret.refreshToken)) };
       await this.grantWriter.run("grants", async () => {
         try { await this.options.store.putConnection(enabled); }
         catch (error) { this.grantIndex.invalidate(); throw error; }
@@ -208,15 +237,23 @@ export class CalendarAutojoinConnection {
     // Older in-flight connector grants may lack OIDC identity; they cannot prove an account change.
     if (!subject) return;
     await this.options.coordinator.run(tenant, async () => {
-      const current = await this.options.store.getConnection(tenant);
+      const current = await this.readConnection(tenant);
       if (!current?.subject) return; // Connector-only accounts remain outside the reference count.
       if (current.subject !== subject) {
         await this.options.store.statusCache.mutate(tenant, () => this.disableLocked(tenant, "google_account_changed"));
       }
       // The ordinary exchange installs only browser custody. Remember its verified binding for
       // a later browser-token Disconnect, without adding a live server-credential reference.
-      try { this.grantIndex.bindBrowser(tenant, subject, tokens); }
-      catch { this.grantIndex.forget(tenant); this.grantIndex.invalidate(); }
+      if (!tokens.length) return;
+      try {
+        const googleBrowserBinding = this.grantIndex.bindBrowser(tenant, subject, tokens);
+        const written = await this.options.store.updateConnection(tenant, latest => latest && { ...latest, googleBrowserBinding });
+        if (!written) throw new Error("google_browser_binding_unavailable");
+      } catch {
+        this.grantIndex.forget(tenant); this.grantIndex.invalidate();
+        // Optional identity bookkeeping cannot fail an already-successful ordinary exchange.
+        console.warn("[calendar-autojoin] code=grant_index_update reason=browser_binding_unavailable");
+      }
     });
   }
 
@@ -229,7 +266,7 @@ export class CalendarAutojoinConnection {
       await this.writeSettings(tenant, async () => {
         // Capture before deleting custody; retain it through every post-commit failure.
         try {
-          const secret = await this.options.credentials.getCredential(GOOGLE_AUTOJOIN_CREDENTIAL_SOURCE, tenant, "teardown");
+          const secret = await this.readCustody(tenant, "teardown");
           if (secret?.kind === "oauth") serverToken = secret.refreshToken ?? secret.accessToken;
         } catch { failed = true; }
         const tokens = distinctTokens(serverToken, browserToken);
@@ -262,6 +299,7 @@ export class CalendarAutojoinConnection {
 
   /** Uses the worker's existing connection enumeration, after dispatch. Request paths never backfill. */
   beginGrantBackfill(): GrantBackfillSnapshot { return this.grantIndex.beginBackfill(); }
+  invalidateGrantReferences(): void { this.grantIndex.invalidate(); }
 
   async backfillGrantReferences(rows: CalendarConnection[], store = this.options.store, stopping = () => false,
     start = this.grantIndex.beginBackfill()): Promise<void> {
@@ -272,13 +310,13 @@ export class CalendarAutojoinConnection {
       if (stopping()) return;
       try {
         await this.options.coordinator.run(listed.tenant, async () => {
-          const row = await store.getConnection(listed.tenant);
+          const row = await this.readConnection(listed.tenant, store);
           if (!row) { this.grantIndex.forget(listed.tenant); return; }
+          if (row.googleBrowserBinding) this.grantIndex.restoreBrowser(listed.tenant, row.googleBrowserBinding);
           if (!liveGoogleConnection(row, this.now())) { this.grantIndex.detach(listed.tenant); return; }
-          const secret = await (this.options.backfillCredentials ?? this.options.credentials)
-            .getCredential(GOOGLE_AUTOJOIN_CREDENTIAL_SOURCE, listed.tenant, "fetch-worker");
+          const secret = await this.readCustody(listed.tenant, "fetch-worker", this.options.backfillCredentials);
           if (secret?.kind !== "oauth" || !secret.refreshToken) { this.grantIndex.forget(listed.tenant); return; }
-          this.holdGrant(row, secret, row.state === "enabled");
+          this.holdGrant(row, secret, row.state === "enabled" && !row.googleBrowserBinding);
         });
       } catch { failed = true; this.grantIndex.invalidate(); }
     }
@@ -296,14 +334,17 @@ export class CalendarAutojoinConnection {
 
   async cleanupEnabling(tenant: string): Promise<void> {
     await this.options.coordinator.run(tenant, async () => {
-      const row = await this.options.store.getConnection(tenant);
+      const row = await this.readConnection(tenant);
       if (!row) this.grantIndex.forget(tenant);
       else if (!liveGoogleConnection(row, this.now())) this.grantIndex.detach(tenant);
       if (row?.state === "enabling" && (row.setupExpiresAt ?? 0) <= this.now()) {
         await this.disableLocked(tenant, "setup_expired");
       } else if (row && (row.state === "disabled" || row.state === "needs_reconnect")) {
         // Recover a crash after persisted disable but before local credential deletion.
-        if (await this.options.credentials.status(GOOGLE_AUTOJOIN_CREDENTIAL_SOURCE, tenant)) {
+        let credentialPresent: boolean;
+        try { credentialPresent = !!await this.options.credentials.status(GOOGLE_AUTOJOIN_CREDENTIAL_SOURCE, tenant); }
+        catch (error) { this.grantIndex.invalidate(); throw error; }
+        if (credentialPresent) {
           await this.options.credentials.delete(GOOGLE_AUTOJOIN_CREDENTIAL_SOURCE, tenant);
         }
       }
@@ -311,7 +352,7 @@ export class CalendarAutojoinConnection {
   }
 
   async accessToken(tenant: string, forceRefresh = false): Promise<string> {
-    const connection = await this.options.store.getConnection(tenant);
+    const connection = await this.readConnection(tenant);
     if (connection?.state !== "enabled") throw new CalendarAutojoinError("autojoin_disabled");
     const key = `${tenant}:${connection.generation}`;
     const existing = this.refreshing.get(key);
@@ -322,7 +363,7 @@ export class CalendarAutojoinConnection {
   }
 
   private async readOrRefresh(tenant: string, generation: number, forceRefresh: boolean): Promise<string> {
-    const old = await this.options.credentials.getCredential(GOOGLE_AUTOJOIN_CREDENTIAL_SOURCE, tenant, "token-refresh");
+    const old = await this.readCustody(tenant, "token-refresh");
     if (old?.kind !== "oauth" || !old.refreshToken) {
       await this.needsReconnect(tenant, generation);
       throw new CalendarAutojoinError("needs_reconnect", 401);
@@ -339,7 +380,7 @@ export class CalendarAutojoinConnection {
       throw new CalendarAutojoinError("insufficient_scope", 403);
     }
     return this.options.coordinator.run(tenant, async () => {
-      const latest = await this.options.store.getConnection(tenant);
+      const latest = await this.readConnection(tenant);
       if (latest?.state !== "enabled" || latest.generation !== generation) throw new CalendarAutojoinError("connection_changed");
       await this.grantWriter.run("grants", async () => {
         const secret = this.secret(tokens, old);
@@ -353,7 +394,7 @@ export class CalendarAutojoinConnection {
 
   async needsReconnect(tenant: string, generation: number, reason: "needs_reconnect" | "invalid_grant" = "needs_reconnect"): Promise<void> {
     await this.options.coordinator.run(tenant, async () => {
-      const row = await this.options.store.getConnection(tenant);
+      const row = await this.readConnection(tenant);
       if (row?.generation !== generation) return;
       this.grantIndex.detach(tenant);
       const disabled = await this.disableLocked(tenant, reason);
@@ -375,7 +416,7 @@ export class CalendarAutojoinConnection {
 
   /** Caller holds tenant coordination. Generation persists before credential/occurrence mutation. */
   private async disableLocked(tenant: string, offReason: CalendarAutojoinOffReason): Promise<CalendarConnection> {
-    const current = await this.options.store.getConnection(tenant);
+    const current = await this.readConnection(tenant);
     const disabled: CalendarConnection = { ...(current ?? { tenant, subject: null, scopes: [] }),
       state: "disabled", generation: (current?.generation ?? 0) + 1, nextScanAt: 0,
       credentialRef: undefined, setupId: undefined, setupExpiresAt: undefined, errorCode: undefined, offReason, scanComplete: false };

@@ -55,6 +55,7 @@ export interface CalendarAutojoinWorkerOptions {
     cleanupEnabling(tenant: string): Promise<void>;
     needsReconnect(tenant: string, generation: number): Promise<void>;
     beginGrantBackfill?(): import("./calendar-autojoin-grants.js").GrantBackfillSnapshot;
+    invalidateGrantReferences?(): void;
     backfillGrantReferences?(rows: CalendarConnection[], store: CalendarAutojoinStore, stopping: () => boolean,
       start?: import("./calendar-autojoin-grants.js").GrantBackfillSnapshot): Promise<void>;
   };
@@ -145,7 +146,11 @@ export class CalendarAutojoinWorker {
     if (this.tickStartedAt !== undefined) this.tickPeriodMs = Math.max(TICK_MS, startedAt - this.tickStartedAt);
     this.tickStartedAt = startedAt;
     const grantSnapshot = this.options.connection.beginGrantBackfill?.();
-    const tenants = await this.options.store.listConnections();
+    let tenants: CalendarConnection[];
+    try { tenants = await this.options.store.listConnections(); }
+    catch (error) { this.options.connection.invalidateGrantReferences?.(); throw error; }
+    // A cold/invalidated index must not wait behind every tenant's occurrence reconciliation.
+    await this.options.connection.backfillGrantReferences?.(tenants, this.options.store, () => this.stopping, grantSnapshot);
     const counts = { rows: 0, scans: 0 };
     let cursor = 0;
     await Promise.all(Array.from({ length: Math.min(4, tenants.length) }, async () => {
@@ -155,14 +160,17 @@ export class CalendarAutojoinWorker {
         catch { console.warn("[calendar-autojoin] code=tenant_reconcile_failed"); }
       }
     }));
-    await this.options.connection.backfillGrantReferences?.(tenants, this.options.store, () => this.stopping, grantSnapshot);
     // Counts only: never ids, titles or addresses.
     console.log(`[calendar-autojoin] code=tick_done ms=${this.now() - startedAt} tenants=${tenants.length} rows=${counts.rows} scans=${counts.scans} timers=${this.dueTimers.size}`);
+  }
+  private async readConnection(tenant: string, store = this.options.store): Promise<CalendarConnection | null> {
+    try { return await store.getConnection(tenant); }
+    catch (error) { this.options.connection.invalidateGrantReferences?.(); throw error; }
   }
   private async reconcileTenant(tenant: string, counts: { rows: number; scans: number }): Promise<void> {
     const { store, connection: credentials } = this.options;
     await credentials.cleanupEnabling(tenant);
-    let connection = await store.getConnection(tenant);
+    let connection = await this.readConnection(tenant);
     if (!connection) return;
     this.trackTenant(connection);
     if (connection.state === "enabled" && connection.subject && connection.nextScanAt <= this.now()) {
@@ -177,7 +185,7 @@ export class CalendarAutojoinWorker {
         } : current);
       }
     }
-    connection = await store.getConnection(tenant);
+    connection = await this.readConnection(tenant);
     if (!connection) return;
     this.trackTenant(connection);
     const key = tenant.toLowerCase();
@@ -305,7 +313,7 @@ export class CalendarAutojoinWorker {
     // Discovery precedes the storage lane: its latency belongs to dispatch lag, not discovery lag.
     const firstSeenAt = this.now();
     await coordinator.run(connection.tenant, async () => {
-      const current = await store.getConnection(connection.tenant);
+      const current = await this.readConnection(connection.tenant, store);
       if (!current || current.state !== "enabled" || current.generation !== connection.generation || current.subject !== connection.subject) return;
       const known = await store.listOccurrences(connection.tenant);
       for (const event of events) {
@@ -382,7 +390,7 @@ export class CalendarAutojoinWorker {
       // nothing can appear: end it instead of polling forever.
       if (row.capacityExhausted && this.now() >= dispatchCutoff(row) + CAPACITY_RECOVERY_MARGIN_MS) { await this.finish(row, "capacity_exhausted"); return; }
     }
-    const connection = await this.dispatchStore.getConnection(row.tenant);
+    const connection = await this.readConnection(row.tenant, this.dispatchStore);
     if (!this.canDispatch(connection, row)) {
       if (row.idempotencyKey) {
         if (!row.stopRequested) await this.requestStop(row, this.now() >= dispatchCutoff(row) ? "missed_window" : "autojoin_disabled");
@@ -435,7 +443,7 @@ export class CalendarAutojoinWorker {
         let posted: Promise<TranscriptionMeeting> | undefined;
         await this.options.coordinator.run(row.tenant, async () => {
           const latest = await this.dispatchStore.getOccurrence(row.tenant, row.id);
-          const current = await this.dispatchStore.getConnection(row.tenant);
+          const current = await this.readConnection(row.tenant, this.dispatchStore);
           if (!latest || !this.canDispatch(current, { ...row, stopRequested: latest.stopRequested, meetingId: latest.meetingId })) return;
           // TC-1047: a snapshot that another caller has since superseded (a scan ended the row, or
           // another attempt froze an intent) never sends. A row is reconciled by one caller at a
@@ -521,7 +529,7 @@ export class CalendarAutojoinWorker {
       await this.dispatchStore.putMarker({ tenant: row.tenant, id: row.id, meetingId: row.meetingId, disposition: "sent" });
       row = (await this.dispatchStore.updateOccurrence(row.tenant, row.id, current => current && { ...current, phase: current.stopRequested ? "stop_pending" : "sent", createBody: undefined, updatedAt: this.now() }))!;
     }
-    const connection = await store.getConnection(row.tenant);
+    const connection = await this.readConnection(row.tenant, store);
     if (connection?.state !== "enabled" || connection.subject !== row.subject || connection.generation !== row.generation) row = (await this.requestStop(row, "autojoin_disabled"))!;
     if (!row.stopRequested && connection?.state === "enabled" && connection.subject === row.subject) {
       try {
@@ -530,7 +538,7 @@ export class CalendarAutojoinWorker {
         if (!eligible || eligible.start !== row.start || eligible.end !== row.end || eligible.meetingUrl !== row.meetingUrl) row = (await this.requestStop(row, "event_changed"))!;
       } catch {
         // Google being unavailable cannot block ownership or a previously requested stop.
-        const current = await store.getConnection(row.tenant);
+        const current = await this.readConnection(row.tenant, store);
         if (current?.state === "needs_reconnect") row = (await this.requestStop(row, "google_needs_reconnect"))!;
       }
     }
@@ -548,7 +556,7 @@ export class CalendarAutojoinWorker {
     }
     // Reread stop intent: disable can have run during either upstream GET.
     row = (await store.getOccurrence(row.tenant, row.id))!;
-    const latest = await store.getConnection(row.tenant);
+    const latest = await this.readConnection(row.tenant, store);
     if (latest?.state !== "enabled" || latest.generation !== row.generation) row = (await this.requestStop(row, "autojoin_disabled"))!;
     if (row.stopRequested) {
       const stopped = await this.limiter.run(() => this.options.api.stopMeeting(row.meetingId!));
@@ -607,7 +615,7 @@ export class CalendarAutojoinWorker {
   private async reconcileShared(row: CalendarOccurrence): Promise<void> {
     const { store } = this.options;
     const shared = row.sharedCapture!;
-    const connection = await store.getConnection(row.tenant);
+    const connection = await this.readConnection(row.tenant, store);
     if (connection?.state !== "enabled" || connection.subject !== row.subject || connection.generation !== row.generation) {
       // B never sent a bot: become a plain pending row (no marker), so re-enabling rediscovers it, as before TC-581.
       await this.detach(row); await this.reconcileOccurrence(row); return;

@@ -9,6 +9,9 @@ import type { CreateMeetingInput } from "./transcription-api.js";
 import { CalendarAutojoinStatusCache, STATUS_CACHE_MAX_TENANTS, type CalendarAutojoinOffReason } from "./calendar-autojoin-status-cache.js";
 import { calendarAutojoinOutcomes, type CalendarAutojoinStatusSummary } from "./calendar-autojoin-status-summary.js";
 
+/** Internal digest-only binding; never included in the status or OAuth response. */
+export interface CalendarGoogleBrowserBinding { version: 1; subjectHash: string; tokenHashes: string[] }
+
 export interface CalendarConnection {
   tenant: string;
   subject: string | null;
@@ -28,6 +31,8 @@ export interface CalendarConnection {
   setupExpiresAt?: number;
   /** Lowercased Google email, only when the ID token verified it (TC-581). Never sent to the browser. */
   verifiedEmail?: string;
+  /** Survives backend replacement and server-credential deletion between SPA revoke calls. */
+  googleBrowserBinding?: CalendarGoogleBrowserBinding;
 }
 
 // Classify every field so adding a connection field requires an explicit cache-policy decision.
@@ -49,6 +54,7 @@ const CONNECTION_CACHE_FIELDS = {
   setupId: "bookkeeping",
   setupExpiresAt: "bookkeeping",
   verifiedEmail: "bookkeeping",
+  googleBrowserBinding: "bookkeeping",
 } satisfies Record<keyof CalendarConnection, "scope" | "policy" | "bookkeeping">;
 
 function connectionPolicyChanged(previous: CalendarConnection | null, next: CalendarConnection): boolean {
