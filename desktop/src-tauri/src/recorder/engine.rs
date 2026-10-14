@@ -638,12 +638,8 @@ fn retain_stopped_source(session: &std::path::Path) -> Result<bool, String> {
 
 async fn durable_source(app: &tauri::AppHandle, segment_id: &str) -> Result<(), DurableError> {
     if source_never_stops_failpoint() {
-        // Keep the normal stopped-WAV recovery path exercised in smoke builds,
-        // but report the source as unconfirmed regardless of this best-effort snapshot.
-        let session = files::sessions_root(app)
-            .map_err(|error| DurableError::Failed(error.to_string()))?
-            .join(segment_id);
-        let _ = run_source_step(move || retain_stopped_source(&session)).await;
+        // The smoke failpoint leaves the listener source running so CoreAudio's
+        // system mic indicator stays truthful. Do not snapshot its live writer.
         return Err(DurableError::Stall(Stall::SourceStillRunning));
     }
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -1110,7 +1106,9 @@ pub async fn recorder_stop_durable(app: tauri::AppHandle) -> Result<CaptureStatu
             state.recorder.recorded_ms(),
         )
     };
-    app.listener().stop_capture().await;
+    if !source_never_stops_failpoint() {
+        app.listener().stop_capture().await;
+    }
     let (empty, source_unconfirmed) = match durable_source(&app, &segment_id).await {
         Ok(()) => (false, false),
         Err(DurableError::Empty) => (true, false),
