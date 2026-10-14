@@ -1,12 +1,12 @@
 import { emitStoragePaywallError } from "./chatApi";
 
-export const MANAGE_STORAGE_URL = "https://account.tinycloud.xyz/billing";
+export const MANAGE_STORAGE_URL = "https://account.tinycloud.xyz/billing?reason=storage-full";
 export const STORAGE_FULL_SAVE_MESSAGE =
-  "Your TinyCloud storage is full, so this change was not saved. Reading still works. Free up space or upgrade your plan to save again.";
+  "Your TinyCloud storage is full, so this change was not saved. Reading still works.";
 export const STORAGE_TOO_LARGE_SAVE_MESSAGE =
-  "This change is larger than the TinyCloud storage you have left, so it was not saved. Reading still works. Free up space or upgrade your plan to save it.";
+  "This change is larger than the TinyCloud storage you have left, so it was not saved. Reading still works.";
 export const STORAGE_READ_ONLY_NOTICE =
-  "Your TinyCloud storage, shared by all your TinyCloud apps, is full. You can still view and copy your data. Saving changes is paused until you free up space or upgrade your plan.";
+  "Your TinyCloud storage, shared by all your TinyCloud apps, is full. You can still view and copy your data. New changes can't be saved while your storage is full.";
 
 const STORAGE_CODES: Record<string, true> = {
   STORAGE_QUOTA_EXCEEDED: true,
