@@ -10,11 +10,12 @@ import { createVoiceNoteRow } from "./voiceNoteRows";
 import { loadVoiceNoteAudio, patchVoiceNoteTranscriptionFailure, readVoiceNoteForTranscription, saveVoiceNoteTranscript, voiceNoteTitle } from "./voiceNoteStore";
 import type { VoiceNoteTranscriptionStatus, NoteTranscriptionState } from "./voiceNoteTranscription";
 import { withHostedUploadQueue } from "../hostedUploadQueue";
+import { cloudJobLockManager, cloudStatusIntervalMs, DEFAULT_CLOUD_POLLING, MAX_RATE_LIMIT_WAIT_MS, withCloudJobLock } from "../privateCloud";
 
 const CONSENT = "exo.voiceNotes.powerfulConsent";
 const PENDING = "exo.voiceNotes.powerfulJobs";
-const POLL_MS = 5000;
 type Stored = { uploadId?: string; handle?: string; saved?: boolean; recording?: VoiceNoteRecording };
+const activeHostedPolls = new Map<string, Promise<AssemblyAiTranscript>>();
 
 function storage(): Storage | undefined {
   try { return globalThis.localStorage; } catch { return undefined; }
@@ -159,15 +160,35 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
       });
       if (!handle) throw new Error("Powerful did not return a transcript. Try again.");
       persist(id, { handle });
-      let transcript: AssemblyAiTranscript;
-      for (;;) {
-        guard();
-        transcript = await client.getTranscript(handle);
-        if (transcript.status === "completed") break;
-        if (transcript.status === "error") throw new AssemblyAiError("failed", "AssemblyAI couldn't finish this transcript. Try again.");
-        state(id, { kind: transcript.status === "queued" ? "queued" : "processing", ...(transcript.status === "queued" ? { position: null } : { completed: null, total: null }) } as VoiceNoteTranscriptionStatus);
-        await sleep(POLL_MS);
+      const pollKey = `${did}:${handle}`;
+      let statusPoll = activeHostedPolls.get(pollKey);
+      if (!statusPoll) {
+        const pollStartedAt = Date.now();
+        statusPoll = withCloudJobLock(handle, cloudJobLockManager(), () => sleep(DEFAULT_CLOUD_POLLING.intervalMs), async () => {
+          for (;;) {
+            guard();
+            let current: AssemblyAiTranscript;
+            try {
+              current = await client.getTranscript(handle);
+            } catch (error) {
+              if (!(error instanceof AssemblyAiError && error.kind === "rate-limited")) throw error;
+              await sleep(Math.min(MAX_RATE_LIMIT_WAIT_MS, error.retryAfterMs ?? DEFAULT_CLOUD_POLLING.slowIntervalMs));
+              continue;
+            }
+            if (current.status === "completed") return current;
+            if (current.status === "error") throw new AssemblyAiError("failed", "AssemblyAI couldn't finish this transcript. Try again.");
+            state(id, { kind: current.status === "queued" ? "queued" : "processing", ...(current.status === "queued" ? { position: null } : { completed: null, total: null }) } as VoiceNoteTranscriptionStatus);
+            const intervalMs = cloudStatusIntervalMs(recording.durationMs / 1000, Date.now() - pollStartedAt, DEFAULT_CLOUD_POLLING);
+            await sleep(Math.round(intervalMs * (0.8 + 0.4 * Math.random())));
+          }
+        });
+        activeHostedPolls.set(pollKey, statusPoll);
+        void statusPoll.then(
+          () => { if (activeHostedPolls.get(pollKey) === statusPoll) activeHostedPolls.delete(pollKey); },
+          () => { if (activeHostedPolls.get(pollKey) === statusPoll) activeHostedPolls.delete(pollKey); },
+        );
       }
+      const transcript = await statusPoll;
       guard();
       const stereo = (recording as VoiceNoteRecording & { layout?: string }).layout === "stereo";
       const sentences = assemblyAiSentences(transcript, transcript.utterances?.length ? null : await client.getSentences(handle))

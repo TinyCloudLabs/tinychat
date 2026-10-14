@@ -28,7 +28,7 @@ import {
   type UploadState,
 } from "./audioUpload";
 import { NO_SPEECH_MESSAGE, type PreparedLocalTranscript } from "./localTranscriber";
-import { PrivateCloudError, privateCloudJobClient, type PrivateCloudApi, type PrivateCloudCreateBody, type PrivateCloudTranscript } from "./privateCloud";
+import { createCloudJobPoller, PrivateCloudError, privateCloudJobClient, type PrivateCloudApi, type PrivateCloudCreateBody, type PrivateCloudJob, type PrivateCloudTranscript } from "./privateCloud";
 
 const DID = "did:pkh:eip155:1:0x0000000000000000000000000000000000000001";
 const ID = "trn_01J8Z3K4M5N6P7Q8R9S0T1V2W3";
@@ -1100,4 +1100,32 @@ describe("TC-592 expiry regressions", () => {
       expect(resumed.snapshot()?.error?.message).toContain("AssemblyAI's retention settings");
     });
   }
+});
+
+test("separate PTX poller instances in one app share one job poll stream", async () => {
+  let statusReads = 0;
+  let completeStatus!: (job: PrivateCloudJob) => void;
+  let resultReads = 0;
+  const api = {
+    get: () => {
+      statusReads++;
+      return new Promise<PrivateCloudJob>((resolve) => { completeStatus = resolve; });
+    },
+    result: async () => {
+      resultReads++;
+      return { status: "completed", transcript: { text: "synthetic", segments: [] } } as const;
+    },
+  } as Pick<PrivateCloudApi, "get" | "result">;
+  const lost = () => new PrivateCloudError("offline", "offline");
+  const first = createCloudJobPoller(api, { connectionLost: lost });
+  const second = createCloudJobPoller(api, { connectionLost: lost });
+  const firstResult = first.pollTranscript(ID, () => {});
+  const secondResult = second.pollTranscript(ID, () => {});
+  await Promise.resolve();
+  expect(statusReads).toBe(1);
+  completeStatus({ id: ID, status: "completed" });
+  const [a, b] = await Promise.all([firstResult, secondResult]);
+  expect(resultReads).toBe(1);
+  expect(a.text).toBe("synthetic");
+  expect(b.text).toBe("synthetic");
 });

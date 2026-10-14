@@ -1,13 +1,13 @@
 // Hosted AssemblyAI: authenticated Exo server proxy; the server keeps the key.
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { FirefliesSentence } from "./connectors/firefliesClient";
-import { REAL_CLOCK, type CloudClock } from "./privateCloud";
+import { rateLimitWaitMs, REAL_CLOCK, type CloudClock } from "./privateCloud";
 
 export type AssemblyAiErrorKind = "invalid-key" | "network" | "rate-limited" | "rejected" | "failed" | "not-found";
 
 export class AssemblyAiError extends Error {
   readonly kind: AssemblyAiErrorKind;
-  constructor(kind: AssemblyAiErrorKind, message: string, readonly uploadEnded = false) {
+  constructor(kind: AssemblyAiErrorKind, message: string, readonly uploadEnded = false, readonly retryAfterMs: number | null = null) {
     super(message);
     this.name = "AssemblyAiError";
     this.kind = kind;
@@ -93,15 +93,16 @@ async function hostedErrorCode(response: Response): Promise<string | null> {
 /** A non-2xx answer from the hosted routes as the kinds the runner already handles. */
 async function hostedError(response: Response): Promise<AssemblyAiError> {
   const code = await hostedErrorCode(response);
+  const retryAfterMs = rateLimitWaitMs(response.headers, Date.now(), 30_000);
   if (response.status === 401) return new AssemblyAiError("rejected", "Your session expired. Sign in again, then retry.");
   if (response.status === 404) return new AssemblyAiError("not-found", "AssemblyAI no longer has this transcript.");
   if (code === "assemblyai_quota_exceeded") {
     const reset = response.headers.get("Retry-After");
     const hours = reset && Number.isFinite(Number(reset)) ? Math.max(1, Math.ceil(Number(reset) / 3600)) : null;
-    return new AssemblyAiError("rate-limited", `Today's Powerful allowance is used. Try again ${hours ? `in about ${hours} hours` : "tomorrow"}.`);
+    return new AssemblyAiError("rate-limited", `Today's Powerful allowance is used. Try again ${hours ? `in about ${hours} hours` : "tomorrow"}.`, false, retryAfterMs);
   }
   if (code === "assemblyai_busy" || response.status === 429) {
-    return new AssemblyAiError("rate-limited", "Powerful is busy right now. Try again in a few minutes.");
+    return new AssemblyAiError("rate-limited", "Powerful is busy right now. Try again in a few minutes.", false, retryAfterMs);
   }
   if (response.status === 413 || code === "recording_too_large") {
     return new AssemblyAiError("rejected", "This recording is too large for Powerful (120 MB maximum).");

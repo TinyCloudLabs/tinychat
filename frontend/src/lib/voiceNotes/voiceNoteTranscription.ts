@@ -18,14 +18,19 @@ import type { FirefliesSentence } from "../connectors/firefliesClient";
 import { MAX_TURN_SECONDS } from "../localTranscriptTurns";
 import {
   buildPtxUploadOrigin,
+  cloudJobLockManager,
+  cloudStatusIntervalMs,
   createPrivateCloudApi,
   createPrivateCloudJob,
   interpretUploadResponse,
   ptxUploadUrl,
   isTransientCloudError,
+  MAX_RATE_LIMIT_WAIT_MS,
   PrivateCloudError,
   privateCloudMessage,
+  withCloudJobLock,
   VOICE_NOTE_CHANNEL_LABELS,
+  type CloudPolling as SharedCloudPolling,
   type PrivateCloudApi,
   type PrivateCloudCapabilities,
   type PrivateCloudCreateBody,
@@ -522,19 +527,16 @@ export type VoiceNoteTranscriptionStatus =
   | { kind: "processing"; completed: number | null; total: number | null }
   | { kind: "saving" };
 
-export interface CloudPollingOptions {
-  intervalMs: number;
-  slowIntervalMs: number;
-  slowAfterMs: number;
-  giveUpAfterMs: number;
-}
+export type CloudPollingOptions = SharedCloudPolling;
 
-/** The desktop's polling (plan §4.7): 5 s ± 20 %, 30 s after a minute of transient failures, give up after 10. */
+/** Fast status checks are brief; failures retain their independent tolerance cadence. */
 const DEFAULT_POLLING: CloudPollingOptions = {
   intervalMs: 5_000,
   slowIntervalMs: 30_000,
   slowAfterMs: 60_000,
   giveUpAfterMs: 10 * 60_000,
+  fastPhaseMs: 30_000,
+  maxIntervalMs: 60_000,
 };
 
 export interface CloudClock {
@@ -701,6 +703,7 @@ function jobFailure(job: PrivateCloudJob, extra: { correlationId?: string | null
   });
 }
 
+const activePrivateCloudPolls = new Map<string, Promise<PrivateCloudTranscript>>();
 export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
   const clock = deps.clock ?? REAL_CLOCK;
   const polling: CloudPollingOptions = { ...DEFAULT_POLLING, ...deps.polling };
@@ -708,6 +711,9 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
   const newId = deps.newId ?? (() => crypto.randomUUID());
   const language = deps.language ?? "en";
   const sleep = (baseMs: number) => clock.sleep(Math.round(baseMs * (0.8 + 0.4 * clock.random())));
+  const waitForRateLimit = (err: PrivateCloudError) =>
+    clock.sleep(Math.min(MAX_RATE_LIMIT_WAIT_MS, err.retryAfterSeconds === null
+      ? polling.slowIntervalMs : Math.max(0, err.retryAfterSeconds * 1000)));
 
   /** Best-effort: a job that cannot be cancelled now expires at its upload deadline. */
   const cancelQuietly = async (transcriptionId: string) => {
@@ -765,14 +771,29 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
         return job;
       } catch (err) {
         guard();
+        if (err instanceof PrivateCloudError && err.statusCode === 429) {
+          tolerance.reset();
+          await waitForRateLimit(err);
+          continue;
+        }
         await tolerance.rideOut(err);
       }
     }
   };
 
-  const poll = async (id: string, report: (s: VoiceNoteTranscriptionStatus) => void, guard: Guard): Promise<PrivateCloudTranscript> => {
-    const tolerance = transientTolerance();
-    report({ kind: "queued", position: null });
+  const poll = (
+    id: string,
+    report: (s: VoiceNoteTranscriptionStatus) => void,
+    guard: Guard,
+    durationSeconds: number | null | undefined,
+  ): Promise<PrivateCloudTranscript> => {
+    const key = `${deps.api.backendUrl}:${id}`;
+    const active = activePrivateCloudPolls.get(key);
+    if (active) return active;
+    const runPoll = async (): Promise<PrivateCloudTranscript> => {
+      const tolerance = transientTolerance();
+      const startedAt = clock.now();
+      report({ kind: "queued", position: null });
     for (;;) {
       let job: PrivateCloudJob;
       guard();
@@ -780,6 +801,11 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
         job = await deps.api.get(id);
       } catch (err) {
         guard();
+        if (err instanceof PrivateCloudError && err.statusCode === 429) {
+          tolerance.reset();
+          await waitForRateLimit(err);
+          continue;
+        }
         await tolerance.rideOut(err);
         continue;
       }
@@ -790,6 +816,11 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
           result = await deps.api.result(id);
         } catch (err) {
           guard();
+          if (err instanceof PrivateCloudError && err.statusCode === 429) {
+            tolerance.reset();
+            await waitForRateLimit(err);
+            continue;
+          }
           await tolerance.rideOut(err);
           continue;
         }
@@ -809,9 +840,17 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
             : { kind: "processing", completed: job.progress?.regions_completed ?? null, total: job.progress?.regions_total ?? null },
         );
       }
-      await sleep(polling.intervalMs);
+      await sleep(cloudStatusIntervalMs(durationSeconds, clock.now() - startedAt, polling));
       guard();
     }
+    };
+    const task = withCloudJobLock(id, cloudJobLockManager(), () => clock.sleep(polling.intervalMs), runPoll);
+    activePrivateCloudPolls.set(key, task);
+    void task.then(
+      () => { if (activePrivateCloudPolls.get(key) === task) activePrivateCloudPolls.delete(key); },
+      () => { if (activePrivateCloudPolls.get(key) === task) activePrivateCloudPolls.delete(key); },
+    );
+    return task;
   };
 
   const createJob = async (sourceId: string, job: PendingVoiceNoteJob, body: PrivateCloudCreateBody, guard: Guard) => {
@@ -857,7 +896,7 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
       }
       if (current !== null) {
         if (current.status === "failed" || current.status === "cancelled") throw jobFailure(current);
-        if (current.status !== "awaiting_upload") return { transcriptionId: current.id, transcript: await poll(current.id, report, guard) };
+        if (current.status !== "awaiting_upload") return { transcriptionId: current.id, transcript: await poll(current.id, report, guard, durationSeconds) };
       }
     }
 
@@ -950,7 +989,7 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
         // Accepted despite the error: carry on as if the 201 had arrived.
       }
     }
-    return { transcriptionId: created.id, transcript: await poll(created.id, report, guard) };
+    return { transcriptionId: created.id, transcript: await poll(created.id, report, guard, durationSeconds) };
   };
 
   return {

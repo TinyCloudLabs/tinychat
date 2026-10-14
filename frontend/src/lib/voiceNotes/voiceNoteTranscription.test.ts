@@ -26,8 +26,12 @@ import {
   interpretUploadResponse,
   parsePtxUploadOrigin,
   PrivateCloudError,
+  createPrivateCloudApi,
   privateCloudJobClient,
   ptxUploadUrl,
+  rateLimitWaitMs,
+  withCloudJobLock,
+  type CloudJobLockManager,
   type PrivateCloudApi,
   type PrivateCloudCapabilities,
   type PrivateCloudCreateBody,
@@ -80,6 +84,7 @@ import {
   type PtxPutRequest,
   type VoiceNoteHoldStore,
   type VoiceNoteTranscriptionStatus,
+  type CloudPollingOptions,
 } from "./voiceNoteTranscription";
 
 const ID = "trn_01J8Z3K4M5N6P7Q8R9S0T1V2W3";
@@ -218,6 +223,10 @@ function harness(script: {
   uploadSupported?: () => Promise<boolean>;
   decode?: AudioDecoder;
   nativeTransport?: boolean;
+  completeAfterMs?: number;
+  rateLimitUntilMs?: number;
+  rateLimitRetryAfterSeconds?: number | null;
+  polling?: Partial<CloudPollingOptions>;
 }) {
   const calls: string[] = [];
   const creates: { attemptId: string; body: PrivateCloudCreateBody }[] = [];
@@ -228,6 +237,8 @@ function harness(script: {
   const removed: string[] = [];
   const cancelled: string[] = [];
   let n = 0;
+  let clockNow = 0;
+  const pollTimes: number[] = [];
   const api: PrivateCloudApi = {
     backendUrl: "https://api.example",
     bearer: () => "tok",
@@ -241,6 +252,13 @@ function harness(script: {
     },
     async get(id) {
       calls.push(`get:${id}`);
+      pollTimes.push(clockNow);
+      if (script.rateLimitUntilMs !== undefined && clockNow < script.rateLimitUntilMs) {
+        throw new PrivateCloudError("service_busy", "limited", {
+          statusCode: 429, retryAfterSeconds: script.rateLimitRetryAfterSeconds ?? null,
+        });
+      }
+      if (script.completeAfterMs !== undefined) return { ...job(clockNow >= script.completeAfterMs ? "completed" : "processing"), id };
       const next = jobs.length > 1 ? jobs.shift()! : jobs[0]!;
       if (next instanceof PrivateCloudError) throw next;
       return { ...next, id };
@@ -261,13 +279,13 @@ function harness(script: {
   };
   const pending = script.pending ?? localStorageVoiceNotePendingStore(DID, memoryStorage());
   const sleeps: number[] = [];
-  let clockNow = 0;
   const cloud = createVoiceNoteCloud({
     api,
     origin: ORIGIN,
     pending,
     uploadSupported: script.uploadSupported,
     decode: script.decode ?? silentDecoder(),
+    polling: script.polling,
     newId: () => `00000000-0000-4000-8000-${String(++n).padStart(12, "0")}`,
     clock: {
       now: script.now ?? (() => clockNow),
@@ -295,11 +313,12 @@ function harness(script: {
       return next;
     },
   });
-  return { cloud, calls, creates, puts, removed, cancelled, pending, sleeps };
+  return { cloud, calls, creates, puts, removed, cancelled, pending, sleeps, pollTimes, get now() { return clockNow; } };
 }
 
-const run = (h: ReturnType<typeof harness>, report: (s: VoiceNoteTranscriptionStatus) => void = () => {}) =>
-  h.cloud.transcribe({ sourceId: "rec-1", capabilities: CAPS, loadAudio: async () => AUDIO }, report);
+const run = (h: ReturnType<typeof harness>, report: (s: VoiceNoteTranscriptionStatus) => void = () => {}, durationSeconds?: number) =>
+  h.cloud.transcribe({ sourceId: "rec-1", capabilities: CAPS, loadAudio: async () => AUDIO, durationSeconds }, report);
+
 
 test("Private asks PTX to identify speakers only when enabled, mono, and supported", async () => {
   for (const [identifySpeakers, channelCount, diarization] of [[true, 1, true], [false, 1, true], [true, 2, true], [true, 1, false]] as const) {
@@ -2060,3 +2079,132 @@ test("Library Transcribe uses local audio while the space upload is pending", as
     client.kv.get = originalGet;
   }
 }, 15000);
+test("72-minute PTX status poll budget stays under 80 polls per rolling 900 seconds", async () => {
+  const pending = localStorageVoiceNotePendingStore(DID, memoryStorage());
+  pending.write("rec-1", { attemptId: "attempt-1", transcriptionId: ID });
+  const h = harness({ pending, completeAfterMs: 25 * 60_000 });
+  await run(h, () => {}, 72 * 60);
+
+  const maximum = h.pollTimes.reduce((max, start) => Math.max(max,
+    h.pollTimes.filter((at) => at >= start && at < start + 900_000).length), 0);
+  expect(maximum, "poll requests in any rolling 900-second window, reserving 40 of 120 requests").toBeLessThanOrEqual(80);
+});
+test("rate-limit delay uses Retry-After or reset, falls back safely, and clamps at one window", () => {
+  expect(rateLimitWaitMs(new Headers({ "Retry-After": "7" }), 0, 30_000)).toBe(7_000);
+  expect(rateLimitWaitMs(new Headers({ ratelimit: "limit=120, remaining=0, reset=19" }), 0, 30_000)).toBe(19_000);
+  expect(rateLimitWaitMs(new Headers({ ratelimit: '"default"; r=0; t=23' }), 0, 30_000)).toBe(23_000);
+  expect(rateLimitWaitMs(new Headers({ "Retry-After": "garbage" }), 0, 30_000)).toBe(30_000);
+  expect(rateLimitWaitMs(new Headers(), 0, 30_000)).toBe(30_000);
+  expect(rateLimitWaitMs(new Headers({ "Retry-After": "3600" }), 0, 30_000)).toBe(900_000);
+});
+
+test("PTX 429 with Retry-After waits before resuming and the job completes", async () => {
+  const pending = localStorageVoiceNotePendingStore(DID, memoryStorage());
+  pending.write("rec-1", { attemptId: "attempt-1", transcriptionId: ID });
+  const h = harness({ pending, rateLimitUntilMs: 12_000, rateLimitRetryAfterSeconds: 7 });
+  const result = await run(h);
+  expect(result.transcript).toEqual(TRANSCRIPT);
+  expect(h.sleeps[0]).toBeGreaterThanOrEqual(7_000);
+  expect(h.calls).toContain(`result:${ID}`);
+});
+
+test("PTX stays alive through more than ten minutes of continuous 429s", async () => {
+  const pending = localStorageVoiceNotePendingStore(DID, memoryStorage());
+  pending.write("rec-1", { attemptId: "attempt-1", transcriptionId: ID });
+  const h = harness({ pending, rateLimitUntilMs: 11 * 60_000 });
+  const result = await run(h);
+  expect(result.transcript).toEqual(TRANSCRIPT);
+  expect(h.now).toBeGreaterThanOrEqual(11 * 60_000);
+});
+
+test("a 30-second PTX job completes during the fast-poll phase", async () => {
+  const pending = localStorageVoiceNotePendingStore(DID, memoryStorage());
+  pending.write("rec-1", { attemptId: "attempt-1", transcriptionId: ID });
+  const h = harness({ pending, completeAfterMs: 30_000 });
+  await run(h, () => {}, 30);
+  expect(h.pollTimes.at(-1)).toBeLessThanOrEqual(30_000);
+});
+test("40-minute PTX job stays under the conservative 80-poll sliding-window budget", async () => {
+  const pending = localStorageVoiceNotePendingStore(DID, memoryStorage());
+  pending.write("rec-1", { attemptId: "attempt-1", transcriptionId: ID });
+  const h = harness({ pending, completeAfterMs: 40 * 60_000 });
+  await run(h, () => {}, 40 * 60);
+  const maximum = h.pollTimes.reduce((max, start) => Math.max(max,
+    h.pollTimes.filter((at) => at >= start && at < start + 900_000).length), 0);
+  expect(maximum, "poll requests in any rolling 900-second window after the 40-minute job started").toBeLessThanOrEqual(80);
+});
+
+test("concurrent resumes of one PTX job share a single status-poll stream", async () => {
+  const pending = localStorageVoiceNotePendingStore(DID, memoryStorage());
+  pending.write("rec-1", { attemptId: "attempt-1", transcriptionId: ID });
+  const h = harness({ pending, completeAfterMs: 15_000 });
+  const results = await Promise.all([run(h), run(h)]);
+  expect(results.map((result) => result.transcript)).toEqual([TRANSCRIPT, TRANSCRIPT]);
+  expect(h.pollTimes).toEqual([0, 0, 0, 5_000, 10_000, 15_000]);
+});
+
+test("Web Lock holder closure hands a resumed PTX job to the waiting tab", async () => {
+  let held = false;
+  let ownerDone!: () => void;
+  const ownerFinished = new Promise<void>((resolve) => { ownerDone = resolve; });
+  const lockManager: CloudJobLockManager = {
+    async request(_name, _options, callback) {
+      if (held) return callback(null);
+      held = true;
+      try { return await callback({} as Lock); }
+      finally { held = false; ownerDone(); }
+    },
+  };
+  let releaseOwner!: () => void;
+  const release = new Promise<void>((resolve) => { releaseOwner = resolve; });
+  const owner = withCloudJobLock("job", lockManager, async () => {}, async () => {
+    await release;
+    return "owner";
+  });
+  let followerWaits = 0;
+  const follower = withCloudJobLock("job", lockManager, async () => {
+    followerWaits++;
+    await ownerFinished;
+  }, async () => "follower");
+  releaseOwner();
+  expect(await owner).toBe("owner");
+  expect(await follower).toBe("follower");
+  expect(followerWaits).toBe(1);
+});
+test("CORS-hidden 429 network errors retain the existing ten-minute transient tolerance", async () => {
+  const pending = localStorageVoiceNotePendingStore(DID, memoryStorage());
+  pending.write("rec-1", { attemptId: "attempt-1", transcriptionId: ID });
+  const offline = new PrivateCloudError("offline", "fetch failed");
+  const h = harness({ pending, jobs: [offline] });
+  const error = await run(h).catch((value: unknown) => value) as PrivateCloudError;
+  expect(error.code).toBe("connection_lost");
+  expect(h.now).toBeGreaterThanOrEqual(10 * 60_000);
+});
+test("PTX API reads draft-7 RateLimit reset when Retry-After is absent", async () => {
+  const api = createPrivateCloudApi("https://api.example", {
+    sessionStore: { getToken: () => "token", isExpired: () => false },
+    fetchImpl: async () => new Response(JSON.stringify({ error: "busy" }), {
+      status: 429, headers: { ratelimit: "limit=600, remaining=0, reset=72" },
+    }),
+  });
+  const error = await api.get(ID).catch((value: unknown) => value) as PrivateCloudError;
+  expect(error.statusCode).toBe(429);
+  expect(error.retryAfterSeconds).toBe(72);
+});
+
+test("PTX 429 with missing or unreadable headers waits the slow interval", async () => {
+  const pending = localStorageVoiceNotePendingStore(DID, memoryStorage());
+  pending.write("rec-1", { attemptId: "attempt-1", transcriptionId: ID });
+  const h = harness({ pending, rateLimitUntilMs: 1_000, rateLimitRetryAfterSeconds: null });
+  await run(h);
+  expect(h.sleeps[0]).toBe(30_000);
+});
+
+test("a CORS-hidden rate limit reaches private-cloud polling as an offline transient", async () => {
+  const api = createPrivateCloudApi("https://api.example", {
+    sessionStore: { getToken: () => "token", isExpired: () => false },
+    fetchImpl: async () => { throw new TypeError("Failed to fetch"); },
+  });
+  const error = await api.get(ID).catch((value: unknown) => value) as PrivateCloudError;
+  expect(error.code).toBe("offline");
+});

@@ -4,6 +4,7 @@ import express from "express";
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
 import {
+  appCorsOptions,
   appCorsOrigins,
   EXO_ANDROID_ORIGIN,
   EXO_DESKTOP_ORIGIN,
@@ -19,7 +20,7 @@ let baseUrl: string;
 
 beforeAll(async () => {
   const app = express();
-  app.use(cors({ origin: appCorsOrigins(WEB_ORIGIN) }));
+  app.use(cors(appCorsOptions(WEB_ORIGIN)));
   app.get("/health", (_req, res) => res.json({ ok: true }));
 
   server = app.listen(0, "127.0.0.1");

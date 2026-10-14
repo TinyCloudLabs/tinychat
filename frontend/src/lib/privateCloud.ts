@@ -108,10 +108,11 @@ export class PrivateCloudError extends Error {
   readonly correlationId: string | null;
   readonly retryAfterSeconds: number | null;
   readonly transcriptionId: string | null;
+  readonly statusCode: number | null;
   constructor(
     code: string,
     message: string,
-    extra: { correlationId?: string | null; retryAfterSeconds?: number | null; transcriptionId?: string | null } = {},
+    extra: { correlationId?: string | null; retryAfterSeconds?: number | null; transcriptionId?: string | null; statusCode?: number | null } = {},
   ) {
     super(message);
     this.name = "PrivateCloudError";
@@ -119,7 +120,33 @@ export class PrivateCloudError extends Error {
     this.correlationId = extra.correlationId ?? null;
     this.retryAfterSeconds = extra.retryAfterSeconds ?? null;
     this.transcriptionId = extra.transcriptionId ?? null;
+    this.statusCode = extra.statusCode ?? null;
   }
+}
+
+export const MAX_RATE_LIMIT_WAIT_MS = 15 * 60_000;
+
+/** Retry-After accepts delta-seconds or an HTTP date; RateLimit reset is a delta in seconds. */
+export function rateLimitWaitMs(headers: Headers, nowMs: number, fallbackMs: number): number {
+  const retryAfter = headers.get("Retry-After");
+  let delay: number | null = null;
+  if (retryAfter !== null) {
+    const seconds = Number(retryAfter);
+    if (Number.isFinite(seconds)) {
+      if (seconds >= 0) delay = seconds * 1000;
+    } else {
+      const dateMs = Date.parse(retryAfter);
+      if (Number.isFinite(dateMs)) delay = dateMs - nowMs;
+    }
+  }
+  if (delay === null) {
+    const reset = headers.get("RateLimit-Reset") ?? headers.get("ratelimit-reset");
+    if (reset !== null && Number.isFinite(Number(reset)) && Number(reset) >= 0) delay = Number(reset) * 1000;
+    const combined = headers.get("RateLimit") ?? headers.get("ratelimit");
+    const resetField = combined?.match(/(?:^|[,;]\s*)(?:reset|t)=(\d+(?:\.\d+)?)/i)?.[1];
+    if (delay === null && resetField !== undefined) delay = Number(resetField) * 1000;
+  }
+  return Math.min(MAX_RATE_LIMIT_WAIT_MS, Math.max(0, delay ?? fallbackMs));
 }
 
 /** Failures polling rides out (a backend redeploy, a network blip). */
@@ -248,16 +275,15 @@ async function readError(response: Response): Promise<PrivateCloudError> {
         : response.status === 429
           ? "service_busy"
           : `http_${response.status}`;
-  const headerRetry = Number(response.headers.get("Retry-After"));
+  const headerRetry = rateLimitWaitMs(response.headers, Date.now(), 0) / 1000;
   return new PrivateCloudError(code, typeof e.message === "string" ? e.message : `HTTP ${response.status}`, {
     correlationId: typeof e.correlation_id === "string" ? e.correlation_id : response.headers.get("X-Correlation-Id"),
     retryAfterSeconds:
       typeof e.retry_after_seconds === "number"
-        ? e.retry_after_seconds
-        : Number.isFinite(headerRetry) && headerRetry > 0
-          ? headerRetry
-          : null,
+        ? Math.min(MAX_RATE_LIMIT_WAIT_MS / 1000, Math.max(0, e.retry_after_seconds))
+        : headerRetry > 0 ? headerRetry : null,
     transcriptionId: typeof e.id === "string" ? e.id : null,
+    statusCode: response.status,
   });
 }
 
@@ -690,13 +716,15 @@ export function putFileToPtx(input: PtxFileUpload): Promise<void> {
 
 // ── Polling ────────────────────────────────────────────────────────────
 
-/** Private cloud polling: 5 s ± 20 %, 30 s after a minute of transient
- *  failures, then "connection lost" (not failed). */
+/** PTX status checks: 5 s through the fast phase, then duration-scaled up to 60 s.
+ *  Non-429 transient failures retain their bounded 10-minute tolerance. */
 export interface CloudPolling {
   intervalMs: number;
   slowIntervalMs: number;
   slowAfterMs: number;
   giveUpAfterMs: number;
+  fastPhaseMs: number;
+  maxIntervalMs: number;
 }
 
 export const DEFAULT_CLOUD_POLLING: CloudPolling = {
@@ -704,7 +732,17 @@ export const DEFAULT_CLOUD_POLLING: CloudPolling = {
   slowIntervalMs: 30_000,
   slowAfterMs: 60_000,
   giveUpAfterMs: 10 * 60_000,
+  fastPhaseMs: 30_000,
+  maxIntervalMs: 60_000,
 };
+
+/** Schedule status checks at ≤ 60 s after the initial fast phase. */
+export function cloudStatusIntervalMs(durationSeconds: number | null | undefined, elapsedMs: number, polling: CloudPolling): number {
+  if (elapsedMs < polling.fastPhaseMs) return polling.intervalMs;
+  const durationInterval = typeof durationSeconds === "number" && Number.isFinite(durationSeconds) && durationSeconds > 0
+    ? durationSeconds * 1000 / 80 : polling.slowIntervalMs;
+  return Math.min(polling.maxIntervalMs, Math.max(polling.slowIntervalMs, durationInterval));
+}
 
 export interface CloudClock {
   now(): number;
@@ -718,6 +756,36 @@ export const REAL_CLOCK: CloudClock = {
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   random: () => Math.random(),
 };
+
+export interface CloudJobLockManager {
+  request<T>(name: string, options: { ifAvailable: true }, callback: (lock: Lock | null) => Promise<T>): Promise<T>;
+}
+
+/** Web Locks are optional in embedded webviews; unsupported clients poll locally without leases. */
+export function cloudJobLockManager(): CloudJobLockManager | null {
+  return typeof navigator !== "undefined" && typeof navigator.locks?.request === "function" ? navigator.locks : null;
+}
+
+/** Poll owners hold a per-job lock; waiters retry so a closed owner hands the job to another tab. */
+export async function withCloudJobLock<T>(
+  id: string,
+  locks: CloudJobLockManager | null,
+  wait: () => Promise<void>,
+  poll: () => Promise<T>,
+): Promise<T> {
+  if (locks === null) return poll();
+  for (;;) {
+    let acquired = false;
+    let result: T | undefined;
+    await locks.request(`tinychat-private-transcription:${id}`, { ifAvailable: true }, async (lock) => {
+      if (lock === null) return;
+      acquired = true;
+      result = await poll();
+    });
+    if (acquired) return result as T;
+    await wait();
+  }
+}
 
 /** A job that is not finished yet: waiting in PTX's queue or being transcribed. */
 export interface CloudJobProgress {
@@ -736,13 +804,18 @@ export interface CloudJobPoller {
   pollTranscript(id: string, onProgress: (p: CloudJobProgress) => void, signal?: AbortSignal): Promise<PrivateCloudTranscript>;
 }
 
+const activeCloudPolls = new Map<string, Promise<PrivateCloudTranscript>>();
+
 export function createCloudJobPoller(
   api: Pick<PrivateCloudApi, "get" | "result">,
-  options: { clock?: CloudClock; polling?: Partial<CloudPolling>; connectionLost: () => Error },
+  options: { clock?: CloudClock; polling?: Partial<CloudPolling>; connectionLost: () => Error; durationSeconds?: number | null },
 ): CloudJobPoller {
   const clock = options.clock ?? REAL_CLOCK;
   const polling: CloudPolling = { ...DEFAULT_CLOUD_POLLING, ...options.polling };
   const sleep = (baseMs: number) => clock.sleep(Math.round(baseMs * (0.8 + 0.4 * clock.random())));
+  const waitForRateLimit = (err: PrivateCloudError) =>
+    clock.sleep(Math.min(MAX_RATE_LIMIT_WAIT_MS, err.retryAfterSeconds === null
+      ? polling.slowIntervalMs : Math.max(0, err.retryAfterSeconds * 1000)));
 
   /** Rides out transient failures: waits and returns while they last under
  *  a bounded interval, backing off after one; then "connection lost". */
@@ -770,21 +843,35 @@ export function createCloudJobPoller(
         try {
           return await api.get(id);
         } catch (err) {
+          if (err instanceof PrivateCloudError && err.statusCode === 429) {
+            tolerance.reset();
+            await waitForRateLimit(err);
+            continue;
+          }
           await tolerance.rideOut(err);
         }
       }
     },
 
-    async pollTranscript(id, onProgress, signal) {
-      const tolerance = transientTolerance();
-      const rideOut = tolerance.rideOut;
-      const cancelled = () => new PrivateCloudError("cancelled", "Stopped polling the transcription", { transcriptionId: id });
+    pollTranscript(id, onProgress, signal) {
+      const active = activeCloudPolls.get(id);
+      if (active) return active;
+      const runPoll = async () => {
+        const tolerance = transientTolerance();
+        const rideOut = tolerance.rideOut;
+        const startedAt = clock.now();
+        const cancelled = () => new PrivateCloudError("cancelled", "Stopped polling the transcription", { transcriptionId: id });
       for (;;) {
         if (signal?.aborted) throw cancelled();
         let job: PrivateCloudJob;
         try {
           job = await api.get(id);
         } catch (err) {
+          if (err instanceof PrivateCloudError && err.statusCode === 429) {
+            tolerance.reset();
+            await waitForRateLimit(err);
+            continue;
+          }
           await rideOut(err);
           continue;
         }
@@ -794,6 +881,11 @@ export function createCloudJobPoller(
           try {
             result = await api.result(id);
           } catch (err) {
+            if (err instanceof PrivateCloudError && err.statusCode === 429) {
+              tolerance.reset();
+              await waitForRateLimit(err);
+              continue;
+            }
             await rideOut(err);
             continue;
           }
@@ -818,8 +910,16 @@ export function createCloudJobPoller(
             regionsTotal: job.progress?.regions_total ?? null,
           });
         }
-        await sleep(polling.intervalMs);
+        await sleep(cloudStatusIntervalMs(options.durationSeconds, clock.now() - startedAt, polling));
       }
+      };
+      const task = withCloudJobLock(id, cloudJobLockManager(), () => clock.sleep(polling.intervalMs), runPoll);
+      activeCloudPolls.set(id, task);
+      void task.then(
+        () => { if (activeCloudPolls.get(id) === task) activeCloudPolls.delete(id); },
+        () => { if (activeCloudPolls.get(id) === task) activeCloudPolls.delete(id); },
+      );
+      return task;
     },
   };
 }

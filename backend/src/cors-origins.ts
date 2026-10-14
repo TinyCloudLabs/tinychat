@@ -1,3 +1,5 @@
+import type { CorsOptions } from "cors";
+
 /** The fixed origin Tauri assigns to Exo's bundled frontend on macOS. */
 export const EXO_DESKTOP_ORIGIN = "tauri://localhost";
 
@@ -30,4 +32,12 @@ export function appCorsOrigins(frontendOrigin: string): Array<string | RegExp> {
     TINYCHAT_PAGES_ORIGIN,
     ...LOCAL_WEB_ORIGINS,
   ];
+}
+
+/** Rate-limit headers consumed by the cross-origin frontend on 429 responses. */
+export const APP_CORS_EXPOSED_HEADERS = ["Retry-After", "RateLimit", "RateLimit-Policy"] as const;
+
+/** CORS policy shared by the application and its integration tests. */
+export function appCorsOptions(frontendOrigin: string): CorsOptions {
+  return { origin: appCorsOrigins(frontendOrigin), exposedHeaders: [...APP_CORS_EXPOSED_HEADERS] };
 }

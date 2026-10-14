@@ -14,7 +14,7 @@ afterEach(() => {
   else Reflect.deleteProperty(globalThis, "localStorage");
 });
 
-function harness(failAt?: "part" | "submit" | "result" | "space" | "delete", noSpeech = false, spaceOnly = false, mimeType = "audio/mp4") {
+function harness(failAt?: "part" | "submit" | "result" | "space" | "delete" | "poll-429", noSpeech = false, spaceOnly = false, mimeType = "audio/mp4") {
   const data = new Map<string, string>();
   Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
     getItem: (key: string) => data.get(key) ?? null,
@@ -22,6 +22,7 @@ function harness(failAt?: "part" | "submit" | "result" | "space" | "delete", noS
     removeItem: (key: string) => { data.delete(key); },
   } });
   const calls: string[] = [];
+  const sleeps: number[] = [];
   const audio = new Uint8Array([1, 2, 3, 4]);
   let failed = false;
   let local: LocalTranscript | null = null;
@@ -39,8 +40,8 @@ function harness(failAt?: "part" | "submit" | "result" | "space" | "delete", noS
     getTranscript: async () => ({ transcript: local }),
     putTranscript: async ({ transcript }: { transcript: LocalTranscript }) => { calls.push("local:put"); local = transcript; },
   } as unknown as VoiceNotesPlugin;
-  const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), {
-    status, headers: { "content-type": "application/json" },
+  const json = (body: unknown, status = 200, extraHeaders: Record<string, string> = {}) => new Response(JSON.stringify(body), {
+    status, headers: { "content-type": "application/json", ...extraHeaders },
   });
   const fetchImpl = async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input));
@@ -66,6 +67,7 @@ function harness(failAt?: "part" | "submit" | "result" | "space" | "delete", noS
     }
     if (path === "/hosted/transcripts/handle-1" && method === "GET") {
       if (failAt === "result" && !failed) { failed = true; throw new Error("offline"); }
+      if (failAt === "poll-429" && !failed) { failed = true; return json({ error: "assemblyai_busy" }, 429, { "retry-after": "9" }); }
       return json({ id: "handle-1", status: "completed", utterances: noSpeech ? [] : [{ start: 0, end: 1000, text: "Hello", speaker: "A" }] });
     }
     if (path === "/hosted/transcripts/handle-1/sentences" && method === "GET") return json({ sentences: [] });
@@ -88,9 +90,9 @@ function harness(failAt?: "part" | "submit" | "result" | "space" | "delete", noS
       if (failAt === "space" && !failed) { failed = true; return { ok: false, error: new Error("offline") } as Awaited<ReturnType<typeof import("./voiceNoteStore").saveVoiceNoteTranscript>>; }
       commit = { rev: transcript.rev, outcome: noSpeech ? "no_speech" : "transcribed" } as TranscriptCommit;
       return { ok: true } as Awaited<ReturnType<typeof import("./voiceNoteStore").saveVoiceNoteTranscript>>;
-    }, sleep: async () => {},
+    }, sleep: async (ms) => { sleeps.push(ms); },
   });
-  return { calls, recording, track, getLocal: () => local };
+  return { calls, recording, track, sleeps, data, getLocal: () => local };
 }
 
 test("a space-only note uses its space audio and can resume without a native recording", async () => {
@@ -160,3 +162,22 @@ for (const interruption of [undefined, "part", "submit", "result", "space"] as c
     expect(track().jobs.size).toBe(0);
   });
 }
+test("Powerful status polling waits through a 429 Retry-After and completes", async () => {
+  const { recording, track, sleeps, calls } = harness("poll-429");
+  const lane = track(); lane.consent();
+  await lane.run(recording);
+  expect(sleeps[0]).toBeGreaterThanOrEqual(9_000);
+  expect(calls).toContain("space:save");
+  expect(lane.jobs.get(recording.id)).toEqual({ kind: "done", outcome: "transcribed" });
+});
+
+test("concurrent Powerful resumes share one hosted status stream", async () => {
+  const h = harness();
+  h.data.set("exo.voiceNotes.powerfulJobs:did:test:one", JSON.stringify({
+    "note-1": { handle: "handle-1", recording: h.recording },
+  }));
+  const first = h.track(); first.consent();
+  const second = h.track(); second.consent();
+  await Promise.all([first.run(h.recording), second.run(h.recording)]);
+  expect(h.calls.filter((call) => call === "GET /hosted/transcripts/handle-1")).toHaveLength(1);
+});

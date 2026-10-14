@@ -1,13 +1,16 @@
 import { describe, expect, it } from "bun:test";
+import cors from "cors";
 import express from "express";
 import {
   applyRateLimiters,
   GLOBAL_LIMIT,
   GOOGLE_OAUTH_LIMIT,
   GOOGLE_OAUTH_PATHS,
-  CALENDAR_AUTOJOIN_LIMIT,
   CALENDAR_AUTOJOIN_PATHS,
+  CALENDAR_AUTOJOIN_LIMIT,
+  TRANSCRIBER_LIMIT,
 } from "../rate-limits.js";
+import { appCorsOptions } from "../cors-origins.js";
 
 const realFetch = globalThis.fetch;
 
@@ -85,6 +88,27 @@ describe("rate limiters (ST5)", () => {
       }
       const over = await realFetch(`http://localhost:${port}/api/signature-anything`);
       expect(over.status).toBe(429);
+    });
+  });
+
+  it("exposes PTX status limiter headers to cross-origin callers receiving a 429", async () => {
+    const origin = "https://tinycloud.chat";
+    const app = express();
+    app.use(cors(appCorsOptions(origin)));
+    applyRateLimiters(app);
+    app.get("/api/transcriber/private-cloud/transcriptions/:id", (_req, res) => res.json({ ok: true }));
+
+    await withServer(app, async (port) => {
+      for (let i = 0; i < TRANSCRIBER_LIMIT; i++) {
+        await realFetch(`http://localhost:${port}/api/transcriber/private-cloud/transcriptions/job`, { headers: { Origin: origin } });
+      }
+      const over = await realFetch(`http://localhost:${port}/api/transcriber/private-cloud/transcriptions/job`, { headers: { Origin: origin } });
+      expect(over.status).toBe(429);
+      expect(over.headers.get("access-control-allow-origin")).toBe(origin);
+      const exposed = over.headers.get("access-control-expose-headers")?.toLowerCase() ?? "";
+      expect(exposed).toContain("retry-after");
+      expect(exposed).toContain("ratelimit");
+      expect(exposed).toContain("ratelimit-policy");
     });
   });
 });
