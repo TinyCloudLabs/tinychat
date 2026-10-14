@@ -12,7 +12,7 @@
  * full server.
  */
 import rateLimit from "express-rate-limit";
-import type { Express } from "express";
+import type { Express, Request, RequestHandler } from "express";
 
 const WINDOW_MS = 15 * 60 * 1000;
 
@@ -135,7 +135,11 @@ export const PRIVATE_CLOUD_TRANSCRIPTION_MUTATION_LIMIT = 300;
 export const PRIVATE_CLOUD_TRANSCRIPTION_PATHS = ["/api/transcriber/private-cloud"] as const;
 
 /**
- * Paid chat: `POST /api/chat` and `POST /api/agent/chat` start an upstream model call. With the
+ * Paid chat: `POST /api/chat` and `POST /api/agent/chat` start an upstream model call.
+ * The limiter is attached to those two route handlers themselves (`paidChatLimiter`, returned by
+ * `applyRateLimiters`), so ANY path Express routes to them is charged here, whatever its slashes
+ * or case. The paths below only let the root classifier keep the usual spellings out of the
+ * global bucket. With the
  * paywall off (the compose default) nothing else bounds their spend: usage is recorded only after
  * a completion and requests carry no `max_tokens`. So they get their own bucket, NOT the global
  * one scaled by the headroom: 600 sends per window across everyone while the key is shared
@@ -145,8 +149,8 @@ export const PAID_CHAT_LIMIT = 600;
 export const PAID_CHAT_PATHS = ["/api/chat", "/api/agent/chat"] as const;
 
 /** Liveness probes, matched exactly (`/health` or `/health/`). Exempt from every bucket: the
- *  handler is a constant JSON body, and a drained bucket must never make monitors report the
- *  backend down. */
+ *  handler only serializes in-memory state, and a drained bucket must never make monitors report
+ *  the backend down. */
 export const UNLIMITED_PATHS = ["/health"] as const;
 
 export type Bucket =
@@ -182,6 +186,12 @@ function matchesMountPath(path: string, mount: string): boolean {
   return path === mount || path.startsWith(`${mount}/`);
 }
 
+/** Runs of slashes collapsed: Express mounts route `/api/agent//chat` like `/api/agent/chat`.
+ *  Not applied to the `/health` exemption, which stays exact. */
+function collapseSlashes(path: string): string {
+  return path.replace(/\/{2,}/g, "/");
+}
+
 /** `/api/chat/` → `/api/chat`; keeps `/`. */
 function withoutTrailingSlash(path: string): string {
   return path.length > 1 && path.endsWith("/") ? path.slice(0, -1) : path;
@@ -207,8 +217,8 @@ const MUTATION_BUCKETS: Partial<Record<Bucket, Bucket>> = {
  * the route it reaches, not in several (or in the global one by mismatch).
  */
 export function bucketFor(method: string, rawPath: string): Bucket {
-  const path = rawPath.toLowerCase();
-  if (isUnlimitedPath(path)) return "none";
+  if (isUnlimitedPath(rawPath.toLowerCase())) return "none";
+  const path = collapseSlashes(rawPath.toLowerCase());
   if (method === "POST" && PAID_CHAT_PATHS.some((p) => withoutTrailingSlash(path) === p)) return "paidChat";
   for (const [mounts, bucket] of PREFIX_BUCKETS) {
     if (mounts.some((m) => matchesMountPath(path, m))) {
@@ -250,8 +260,11 @@ const GLOBAL_ROUTE_TEMPLATES = [
   "/health",
 ] as const;
 
-function globalRouteLabel(method: string, rawPath: string): string {
-  const path = rawPath.toLowerCase();
+const COUNTED_METHODS = new Set(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]);
+
+function globalRouteLabel(rawMethod: string, rawPath: string): string {
+  const method = COUNTED_METHODS.has(rawMethod) ? rawMethod : "OTHER";
+  const path = collapseSlashes(rawPath.toLowerCase());
   const template = GLOBAL_ROUTE_TEMPLATES.find((t) => matchesMountPath(path, t));
   const route = !template ? "other" : path === template ? template : `${template}/*`;
   return `${method} ${route}`;
@@ -267,17 +280,20 @@ export interface RouteCount {
 export class GlobalBucketRouteCounter {
   private readonly total = new Map<string, number>();
   private interval = new Map<string, number>();
+  private cachedTop: { n: number; summary: { total: number; top: RouteCount[] } } | null = null;
   readonly since = new Date().toISOString();
 
   record(method: string, path: string): void {
     const label = globalRouteLabel(method, path);
     this.total.set(label, (this.total.get(label) ?? 0) + 1);
     this.interval.set(label, (this.interval.get(label) ?? 0) + 1);
+    this.cachedTop = null;
   }
 
-  /** Top `n` routes since start, plus the total. */
+  /** Top `n` routes since start, plus the total. Sorted once per change, not once per probe. */
   top(n = 10): { since: string; total: number; top: RouteCount[] } {
-    return { since: this.since, ...summarize(this.total, n) };
+    if (this.cachedTop?.n !== n) this.cachedTop = { n, summary: summarize(this.total, n) };
+    return { since: this.since, ...this.cachedTop.summary };
   }
 
   /** One stdout line for the routes charged since the previous call, then resets them. */
@@ -306,14 +322,18 @@ export function logGlobalBucketRoutes(counter: GlobalBucketRouteCounter, everyMs
 
 /** Mount one app-level limiter per bucket; each counts only the requests `bucketFor` assigns it,
  *  so every request lands in exactly one bucket (or none, for `/health`). */
-export function applyRateLimiters(app: Express): { globalRoutes: GlobalBucketRouteCounter } {
+export function applyRateLimiters(app: Express): {
+  globalRoutes: GlobalBucketRouteCounter;
+  /** Attach to the paid chat route handlers (see `PAID_CHAT_LIMIT`). */
+  paidChatLimiter: RequestHandler;
+} {
   app.set("trust proxy", 1);
   const globalRoutes = new GlobalBucketRouteCounter();
   app.use((req, _res, next) => {
     if (bucketFor(req.method, req.path) === "global") globalRoutes.record(req.method, req.path);
     next();
   });
-  const limits: Record<Exclude<Bucket, "none">, number> = {
+  const limits: Record<Exclude<Bucket, "none" | "paidChat">, number> = {
     verification: VERIFICATION_LIMIT,
     connectorCompanion: CONNECTOR_COMPANION_LIMIT,
     connectorMeetings: CONNECTOR_MEETINGS_LIMIT,
@@ -325,7 +345,6 @@ export function applyRateLimiters(app: Express): { globalRoutes: GlobalBucketRou
     privateCloudTranscription: PRIVATE_CLOUD_TRANSCRIPTION_LIMIT,
     privateCloudTranscriptionMutation: PRIVATE_CLOUD_TRANSCRIPTION_MUTATION_LIMIT,
     hostedUpload: ASSEMBLYAI_HOSTED_UPLOAD_LIMIT,
-    paidChat: PAID_CHAT_LIMIT,
     global: GLOBAL_LIMIT,
   };
   for (const [bucket, limit] of Object.entries(limits)) {
@@ -340,5 +359,21 @@ export function applyRateLimiters(app: Express): { globalRoutes: GlobalBucketRou
       }),
     );
   }
-  return { globalRoutes };
+  // Paid chat is charged ONCE per request: at the root when the classifier recognises the path
+  // (so the global bucket skips it), otherwise at the handler. A spelling the classifier misses
+  // is charged to global AND paid chat, never to neither.
+  const paidChat = rateLimit({
+    windowMs: WINDOW_MS,
+    limit: PAID_CHAT_LIMIT,
+    standardHeaders: "draft-7",
+    legacyHeaders: false,
+  });
+  const paidChatCharged = new WeakSet<Request>();
+  const paidChatLimiter: RequestHandler = (req, res, next) => {
+    if (paidChatCharged.has(req)) return next();
+    paidChatCharged.add(req);
+    return paidChat(req, res, next);
+  };
+  app.use((req, res, next) => (bucketFor(req.method, req.path) === "paidChat" ? paidChatLimiter(req, res, next) : next()));
+  return { globalRoutes, paidChatLimiter };
 }

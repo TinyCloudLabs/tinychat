@@ -75,7 +75,7 @@ async function runIsolatedStartup(env: Record<string, string | undefined>) {
       },
     },
     "./services/ingest-mode.js": { backendIngestEnabled: () => false },
-    "./rate-limits.js": { applyRateLimiters: () => ({ globalRoutes: {} }), logGlobalBucketRoutes: () => {} },
+    "./rate-limits.js": { applyRateLimiters: () => ({ globalRoutes: {}, paidChatLimiter: middleware() }), logGlobalBucketRoutes: () => {} },
     "./services/google-oauth.js": { googleMeetOAuthEnabled: () => false },
     // TC-641: the real default-off parser, so `transcriptDeliveryConfig` is a config, not undefined.
     "./services/transcription-api.js": {
@@ -733,7 +733,7 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
     "./routes/delegations.js": { createDelegationRouter: () => router() },
     "./middleware/auth.js": { createAuthMiddleware: auth },
     "./services/ingest-nudge.js": { createIngestOnDelivery: noop },
-    "./rate-limits.js": { applyRateLimiters: () => ({ globalRoutes: { top: () => ({}) } }), logGlobalBucketRoutes: noop },
+    "./rate-limits.js": { applyRateLimiters: () => ({ globalRoutes: { top: () => ({}) }, paidChatLimiter: noop }), logGlobalBucketRoutes: noop },
     "./security.js": { applySecurityDefaults: noop },
     "./routes/nras-proxy.js": { createNrasProxyRouter: router },
     "./routes/assemblyai-hosted.js": { ASSEMBLYAI_HOSTED_MOUNT: "/api/assemblyai", createAssemblyAiHostedRouter: router },

@@ -267,6 +267,12 @@ describe("shared-key interim headroom", () => {
       ["POST", "/API/CHAT", "paidChat"],
       ["POST", "/api/agent/chat", "paidChat"],
       ["POST", "/Api/Agent/Chat/", "paidChat"],
+      ["POST", "/api/chat//", "paidChat"],
+      ["POST", "/api/agent//chat", "paidChat"],
+      ["POST", "//api//chat//", "paidChat"],
+      ["GET", "/api/chat//", "global"],
+      ["POST", "/api/agent//session", "global"],
+      ["GET", "/api//transcriber//private-cloud/x", "privateCloudTranscription"],
       ["GET", "/api/chat/models", "global"],
       ["POST", "/api/chat/models", "global"],
       ["GET", "/api/agent/session", "global"],
@@ -491,6 +497,17 @@ describe("global bucket route counter", () => {
     ]);
     expect(JSON.stringify(top)).not.toContain("secret");
     expect(JSON.stringify(top)).not.toContain("0xabc");
+  });
+
+  it("labels only allow-listed methods, so the label set is bounded", () => {
+    const counter = new GlobalBucketRouteCounter();
+    counter.record("PROPFIND", "/api/manifest");
+    counter.record("M-SEARCH", "/api/manifest");
+    counter.record("GET", "/api//manifest");
+    expect(counter.top(10).top).toEqual([
+      { route: "OTHER /api/manifest", count: 2 },
+      { route: "GET /api/manifest", count: 1 },
+    ]);
   });
 
   it("emits a top-10 interval line and resets the interval, keeping the since-start totals", () => {

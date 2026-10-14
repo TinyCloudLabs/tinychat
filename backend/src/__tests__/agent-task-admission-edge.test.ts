@@ -83,10 +83,10 @@ async function setup(options: { rateLimit?: boolean; holdTask?: boolean; capabil
   };
   const app = express();
   app.use(express.json({ limit: "1mb" })); app.use(createCsrfMiddleware());
-  if (options.rateLimit) applyRateLimiters(app);
+  const limits = options.rateLimit ? applyRateLimiters(app) : undefined;
   // Shares the paid-chat bucket with /api/agent/chat, so it can drain it without provider work.
   app.post("/api/chat", (_req, res) => res.json({ ok: true }));
-  app.use("/api/agent", createAgentRouter({ agentDid: "did:key:local-fixture", elizaServiceUrl: cfg.elizaServiceUrl, elizaServiceSecret: cfg.elizaServiceSecret, authMiddleware: createAuthMiddleware(key), chat: cfg }));
+  app.use("/api/agent", createAgentRouter({ agentDid: "did:key:local-fixture", elizaServiceUrl: cfg.elizaServiceUrl, elizaServiceSecret: cfg.elizaServiceSecret, authMiddleware: createAuthMiddleware(key), paidLimiter: limits?.paidChatLimiter, chat: cfg }));
   const server = app.listen(0, "127.0.0.1");
   await new Promise<void>(resolve => server.once("listening", resolve));
   const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
@@ -108,6 +108,11 @@ describe("task-enabled backend admission edges", () => {
       }
       const response = await run.send();
       expect(response.status).toBe(429); await response.text();
+      // Aliases the real agent router also serves are denied by the same bucket.
+      for (const path of ["/api/agent//chat", "/API/Agent/Chat/"]) {
+        const alias = await realFetch(`${run.base}${path}`, { method: "POST", headers: run.headers, body: run.body });
+        expect([path, alias.status]).toEqual([path, 429]); await alias.text();
+      }
       expect(run.calls).toEqual([]);
     } finally { await run.close(); }
   });

@@ -633,11 +633,13 @@ async function main() {
   app.use(createCsrfMiddleware());
   // ST5 — global 120/15min limiter plus a separate, larger bucket for the
   // verification proxies so badge traffic can't 429 /api/chat (see rate-limits.ts).
-  const { globalRoutes } = applyRateLimiters(app);
+  const { globalRoutes, paidChatLimiter } = applyRateLimiters(app);
   // What the global bucket is charged for, per route, until the log shipper (TC-959) lands.
   logGlobalBucketRoutes(globalRoutes);
 
   app.get("/health", (_req, res) => {
+    // TEMPORARY: aggregate route templates and counts only, our one view of the global bucket
+    // until the tinychat log shipper (TC-959) is live. Remove this field then.
     res.json({ ok: true, app: APP_ID, globalBucketRoutes: globalRoutes.top(10) });
   });
   app.use("/api/manifest", createManifestRouter());
@@ -916,6 +918,7 @@ async function main() {
         elizaServiceUrl,
         elizaServiceSecret: ELIZA_SERVICE_SECRET,
         authMiddleware,
+        paidLimiter: paidChatLimiter,
         // Mount POST /api/agent/chat (tool-calling orchestration) only when RedPill
         // is configured; reuse the canonical offered-model allowlist so the agent
         // tool path accepts only the curated picker models (same gate as the relay).
@@ -956,7 +959,7 @@ async function main() {
   app.use(
     "/api/chat",
     authMiddleware,
-    createChatRouter({ flusher: ledgerFlusher, rehydrator: ledgerRehydrator }),
+    createChatRouter({ flusher: ledgerFlusher, rehydrator: ledgerRehydrator, paidLimiter: paidChatLimiter }),
   );
   app.use("/api/signature", authMiddleware, createSignatureRouter());
   app.use("/api/nras-proxy", authMiddleware, express.json({ limit: "4mb" }), createNrasProxyRouter());
