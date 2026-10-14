@@ -243,6 +243,21 @@ describe("voice-note recorder controller", () => {
     detach();
   });
 
+  test("Mac source levels keep system audio out of the mic subscriber", async () => {
+    const { recorder, detach } = await attached();
+    const mic: number[] = [];
+    const sources: unknown[] = [];
+    const stopMic = recorder.subscribeLevel((level) => mic.push(level));
+    const stopSources = recorder.subscribeLevels((levels) => sources.push(levels.sources));
+    const event = { level: 1, peak: 1, sources: { mic: { level: 0, peak: 0 }, system: { level: 1, peak: 1 } } };
+    fake.emit("level", event);
+    expect(mic).toEqual([0]);
+    expect(sources).toEqual([event.sources]);
+    stopMic();
+    stopSources();
+    detach();
+  });
+
   test("a signed-out recording keeps its Markdown local without starting a space sync", async () => {
     const recorder = controller({ tcw: null });
     const detach = recorder.attach();
