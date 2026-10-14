@@ -6,7 +6,7 @@ import { createCsrfMiddleware, issueSessionToken } from "@tinyboilerplate/server
 import { createAuthMiddleware } from "../middleware/auth.js";
 import { createAgentRouter } from "../routes/agent.js";
 import type { AgentChatConfig } from "../routes/agent-chat.js";
-import { applyRateLimiters, PAID_CHAT_LIMIT } from "../rate-limits.js";
+import { applyRateLimiters, SESSION_LIMITS } from "../rate-limits.js";
 import { addressToEntityId, TINYCHAT_AGENT_ID } from "../entity-id.js";
 import { _resetCache, _setStripeClient } from "../billing/stripe.js";
 import { _resetUsage, recordUsage } from "../billing/usage.js";
@@ -83,7 +83,7 @@ async function setup(options: { rateLimit?: boolean; holdTask?: boolean; capabil
   };
   const app = express();
   app.use(express.json({ limit: "1mb" })); app.use(createCsrfMiddleware());
-  const limits = options.rateLimit ? applyRateLimiters(app) : undefined;
+  const limits = options.rateLimit ? applyRateLimiters(app, { sessionKey: key }) : undefined;
   // Shares the paid-chat bucket with /api/agent/chat, so it can drain it without provider work.
   app.post("/api/chat", (_req, res) => res.json({ ok: true }));
   app.use("/api/agent", createAgentRouter({ agentDid: "did:key:local-fixture", elizaServiceUrl: cfg.elizaServiceUrl, elizaServiceSecret: cfg.elizaServiceSecret, authMiddleware: createAuthMiddleware(key), paidLimiter: limits?.paidChatLimiter, chat: cfg }));
@@ -102,7 +102,7 @@ describe("task-enabled backend admission edges", () => {
   test("rate denial at the actual agent route starts zero capability/task/provider work", async () => {
     const run = await setup({ rateLimit: true });
     try {
-      for (let i = 0; i < PAID_CHAT_LIMIT; i++) {
+      for (let i = 0; i < SESSION_LIMITS.paidChat; i++) {
         const response = await realFetch(`${run.base}/api/chat`, { method: "POST", headers: run.headers });
         expect(response.status).toBe(200); await response.text();
       }

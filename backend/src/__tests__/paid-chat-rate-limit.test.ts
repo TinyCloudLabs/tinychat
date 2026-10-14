@@ -12,8 +12,12 @@ import { _resetCreditsWarnings } from "../billing/credits.js";
 import { _resetCache } from "../billing/stripe.js";
 import { _resetUsage } from "../billing/usage.js";
 import { createApiBodyParser } from "../body-parsing.js";
-import { applyRateLimiters, GLOBAL_LIMIT, PAID_CHAT_LIMIT } from "../rate-limits.js";
+import { issueSessionToken } from "@tinyboilerplate/server";
+import { applyRateLimiters, GLOBAL_LIMIT, PAID_CHAT_LIMIT, SESSION_LIMITS } from "../rate-limits.js";
+import { createAuthMiddleware } from "../middleware/auth.js";
 import { createChatRouter } from "../routes/chat.js";
+
+const SESSION_KEY = "synthetic-session-signing-key";
 
 const ORIGINAL_ENV = { ...process.env };
 const realFetch = globalThis.fetch;
@@ -70,7 +74,7 @@ afterEach(() => {
 function productionApp() {
   const app = express();
   app.use(createApiBodyParser());
-  const { paidChatLimiter } = applyRateLimiters(app);
+  const { paidChatLimiter } = applyRateLimiters(app, { sessionKey: SESSION_KEY });
   app.get("/api/manifest", (_req, res) => res.json({ ok: true }));
   app.use("/api/chat", authStub, createChatRouter({ paidLimiter: paidChatLimiter }));
   // The agent router's shape: router-level auth, then `POST /chat` behind the paid limiter.
@@ -89,6 +93,23 @@ function productionApp() {
   return app;
 }
 
+/** `productionApp` with index.ts's real `authMiddleware`, so tokenless sends are 401s. */
+function productionAppWithAuth() {
+  const app = express();
+  app.use(createApiBodyParser());
+  const { paidChatLimiter } = applyRateLimiters(app, { sessionKey: SESSION_KEY });
+  const auth = createAuthMiddleware(SESSION_KEY);
+  app.use("/api/chat", auth, createChatRouter({ paidLimiter: paidChatLimiter }));
+  const agent = Router();
+  agent.use(auth);
+  agent.post("/chat", paidChatLimiter, (_req, res) => {
+    upstreamCalls++;
+    res.json({ ok: true });
+  });
+  app.use("/api/agent", agent);
+  return app;
+}
+
 async function withServer<T>(app: express.Express, fn: (base: string) => Promise<T>): Promise<T> {
   const server = await new Promise<import("http").Server>((resolve) => {
     const instance = app.listen(0, () => resolve(instance));
@@ -102,8 +123,10 @@ async function withServer<T>(app: express.Express, fn: (base: string) => Promise
   }
 }
 
-const post = async (base: string, path: string) => {
-  const r = await realFetch(`${base}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: BODY });
+const post = async (base: string, path: string, authorization?: string) => {
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  if (authorization) headers.authorization = authorization;
+  const r = await realFetch(`${base}${path}`, { method: "POST", headers, body: BODY });
   await r.text();
   return r;
 };
@@ -159,6 +182,67 @@ describe("paid chat bucket at the production mounts", () => {
       expect(r.status).toBe(200);
       const chat = await post(base, "/api/chat");
       expect(rateLimitHeader(chat)).toEqual({ limit: PAID_CHAT_LIMIT, remaining: PAID_CHAT_LIMIT - 2 });
+    });
+  });
+
+  test("a signed-in session has its own paid bucket, denied at its limit + 1 on every alias before upstream", async () => {
+    const alice = `Bearer ${(await issueSessionToken("0x00000000000000000000000000000000000a11ce", SESSION_KEY)).token}`;
+    const bob = `Bearer ${(await issueSessionToken("0x0000000000000000000000000000000000000b0b", SESSION_KEY)).token}`;
+    await withServer(productionApp(), async (base) => {
+      for (let i = 0; i < SESSION_LIMITS.paidChat; i++) {
+        expect((await post(base, PAID_ALIASES[i % PAID_ALIASES.length]!, alice)).status).toBe(200);
+      }
+      expect(upstreamCalls).toBe(SESSION_LIMITS.paidChat);
+      for (const path of [...PAID_ALIASES, "/api/chat-alias"]) {
+        expect([path, (await post(base, path, alice)).status]).toEqual([path, 429]);
+      }
+      expect(upstreamCalls).toBe(SESSION_LIMITS.paidChat);
+      // Another session and the anonymous bucket are untouched.
+      const other = await post(base, "/api/chat//", bob);
+      expect(rateLimitHeader(other)).toEqual({ limit: SESSION_LIMITS.paidChat, remaining: SESSION_LIMITS.paidChat - 1 });
+      const anonymous = await post(base, "/api/chat");
+      expect(rateLimitHeader(anonymous)).toEqual({ limit: PAID_CHAT_LIMIT, remaining: PAID_CHAT_LIMIT - 1 });
+    });
+  });
+
+  test("many sessions together stop at the 600 aggregate, before upstream; a session over its own limit spends none of it", async () => {
+    const session = async (i: number) =>
+      `Bearer ${(await issueSessionToken(`0x${(i + 1).toString(16).padStart(40, "0")}`, SESSION_KEY)).token}`;
+    await withServer(productionApp(), async (base) => {
+      // One session sends its 120, then 10 more that its own bucket denies.
+      const first = await session(0);
+      for (let i = 0; i < SESSION_LIMITS.paidChat + 10; i++) await post(base, "/api/chat", first);
+      expect(upstreamCalls).toBe(SESSION_LIMITS.paidChat);
+      // Fresh wallets fill the rest of the aggregate, each under its own limit.
+      let sent = SESSION_LIMITS.paidChat;
+      for (let i = 1; sent < PAID_CHAT_LIMIT; i++) {
+        const bearer = await session(i);
+        for (let j = 0; j < 100 && sent < PAID_CHAT_LIMIT; j++, sent++) {
+          expect((await post(base, PAID_ALIASES[j % PAID_ALIASES.length]!, bearer)).status).toBe(200);
+        }
+      }
+      expect(upstreamCalls).toBe(PAID_CHAT_LIMIT);
+      // A brand-new session, on any alias, is now denied before upstream.
+      const fresh = await session(999);
+      for (const path of ["/api/chat", "/api/chat//", "/api/agent//chat", "/api/chat-alias"]) {
+        expect([path, (await post(base, path, fresh)).status]).toEqual([path, 429]);
+      }
+      expect(upstreamCalls).toBe(PAID_CHAT_LIMIT);
+    });
+  });
+
+  test("tokenless sends never reach upstream and do not spend the aggregate", async () => {
+    await withServer(productionAppWithAuth(), async (base) => {
+      for (let i = 0; i < PAID_CHAT_LIMIT; i++) {
+        expect((await post(base, i % 2 === 0 ? "/api/chat" : "/api/agent//chat")).status).toBe(401);
+      }
+      expect(upstreamCalls).toBe(0);
+      // The anonymous bucket is spent; the aggregate every signed-in user shares is not.
+      expect((await post(base, "/api/chat")).status).toBe(429);
+      const fresh = `Bearer ${(await issueSessionToken("0x00000000000000000000000000000000000f2e50", SESSION_KEY)).token}`;
+      const r = await post(base, "/api/chat", fresh);
+      expect(r.status).toBe(200);
+      expect(upstreamCalls).toBe(1);
     });
   });
 });

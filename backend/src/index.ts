@@ -633,7 +633,7 @@ async function main() {
   app.use(createCsrfMiddleware());
   // ST5 — global 120/15min limiter plus a separate, larger bucket for the
   // verification proxies so badge traffic can't 429 /api/chat (see rate-limits.ts).
-  const { globalRoutes, paidChatLimiter } = applyRateLimiters(app);
+  const { globalRoutes, paidChatLimiter } = applyRateLimiters(app, { sessionKey: backendPrivateKey });
   // What the global bucket is charged for, per route, until the log shipper (TC-959) lands.
   logGlobalBucketRoutes(globalRoutes);
 

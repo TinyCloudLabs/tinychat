@@ -198,7 +198,7 @@ describe("backend index middleware wiring", () => {
 
   test("trusts exactly one ingress proxy before rate limiters are applied", () => {
     const trustIndex = INDEX.indexOf('app.set("trust proxy", 1)');
-    const limiterIndex = INDEX.indexOf("applyRateLimiters(app)");
+    const limiterIndex = INDEX.indexOf("applyRateLimiters(app, ");
 
     expect(trustIndex).toBeGreaterThan(-1);
     expect(limiterIndex).toBeGreaterThan(-1);
@@ -213,7 +213,7 @@ describe("backend index middleware wiring", () => {
     const webhookIndex = INDEX.indexOf('"/api/connectors/webhooks/:source/:token"');
     const jsonParserIndex = INDEX.indexOf(API_BODY_PARSER);
     const csrfIndex = INDEX.indexOf("createCsrfMiddleware()");
-    const limiterIndex = INDEX.indexOf("applyRateLimiters(app)");
+    const limiterIndex = INDEX.indexOf("applyRateLimiters(app, ");
 
     expect(billingIndex).toBeGreaterThan(-1);
     expect(webhookIndex).toBeGreaterThan(billingIndex);
@@ -255,7 +255,7 @@ describe("backend index middleware wiring", () => {
     const companionMount = INDEX.search(/app\.use\(\s*\n?\s*"\/api\/connectors\/webhooks"/);
     const jsonParserIndex = INDEX.indexOf(API_BODY_PARSER);
     const csrfIndex = INDEX.indexOf("createCsrfMiddleware()");
-    const limiterIndex = INDEX.indexOf("applyRateLimiters(app)");
+    const limiterIndex = INDEX.indexOf("applyRateLimiters(app, ");
 
     expect(companionMount).toBeGreaterThan(jsonParserIndex);
     expect(companionMount).toBeGreaterThan(csrfIndex);
@@ -354,7 +354,7 @@ describe("backend index middleware wiring", () => {
     const mount = INDEX.indexOf('"/api/connectors/google/oauth"');
     const jsonParserIndex = INDEX.indexOf(API_BODY_PARSER);
     const csrfIndex = INDEX.indexOf("createCsrfMiddleware()");
-    const limiterIndex = INDEX.indexOf("applyRateLimiters(app)");
+    const limiterIndex = INDEX.indexOf("applyRateLimiters(app, ");
 
     expect(mount).toBeGreaterThan(jsonParserIndex);
     expect(mount).toBeGreaterThan(csrfIndex);
@@ -409,7 +409,7 @@ describe("backend index middleware wiring", () => {
     expect(LIMITS).toContain('[GOOGLE_OAUTH_PATHS, "googleOAuth"]');
     // …and the prefix is EXEMPTED from the global bucket, not merely given a second one:
     // `bucketFor` assigns each request exactly one bucket.
-    expect(LIMITS).toContain('skip: (req) => bucketFor(req.method, req.path) !== bucket');
+    expect(LIMITS).toContain('bucketFor(req.method, req.path) !== kind');
   });
 
   test("an armed-but-unregistered google OAuth config refuses to boot", () => {
@@ -433,7 +433,7 @@ describe("backend index middleware wiring", () => {
     expect(INDEX.match(/app\.use\(\s*PRIVATE_CLOUD_TRANSCRIPTION_MOUNT/g)).toHaveLength(1);
     expect(mount).toBeGreaterThan(INDEX.indexOf(API_BODY_PARSER));
     expect(mount).toBeGreaterThan(INDEX.indexOf("createCsrfMiddleware()"));
-    expect(mount).toBeGreaterThan(INDEX.indexOf("applyRateLimiters(app)"));
+    expect(mount).toBeGreaterThan(INDEX.indexOf("applyRateLimiters(app, "));
   });
 
   test("hosted AssemblyAI mounts once, unconditionally, behind auth, and its parts skip the global JSON parser", () => {
@@ -441,7 +441,7 @@ describe("backend index middleware wiring", () => {
     expect(mount).toBeGreaterThan(-1);
     expect(INDEX.match(/app\.use\(\s*ASSEMBLYAI_HOSTED_MOUNT/g)).toHaveLength(1);
     expect(mount).toBeGreaterThan(INDEX.indexOf("createCsrfMiddleware()"));
-    expect(mount).toBeGreaterThan(INDEX.indexOf("applyRateLimiters(app)"));
+    expect(mount).toBeGreaterThan(INDEX.indexOf("applyRateLimiters(app, "));
     // The global parser moved into body-parsing.ts; the hosted-part skip moved with it.
     expect(INDEX).toContain('import { createApiBodyParser } from "./body-parsing.js";');
     const parser = readFileSync(resolve(import.meta.dir, "../body-parsing.ts"), "utf8");
@@ -468,7 +468,7 @@ describe("backend index middleware wiring", () => {
       expect({ raw, mounted: at > -1, beforeParser: at < parser }).toEqual({ raw, mounted: true, beforeParser: true });
     }
     // …and CSRF, the limiters and every JSON route below it.
-    for (const later of ["app.use(createCsrfMiddleware())", "applyRateLimiters(app)", '"/api/auth"', '"/api/delegations"', '"/api/manifest"']) {
+    for (const later of ["app.use(createCsrfMiddleware())", "applyRateLimiters(app, ", '"/api/auth"', '"/api/delegations"', '"/api/manifest"']) {
       const at = INDEX.indexOf(later);
       expect({ later, afterParser: at > parser }).toEqual({ later, afterParser: true });
     }
@@ -505,7 +505,7 @@ describe("backend index middleware wiring", () => {
       expect(at).toBeGreaterThan(billing);
       expect(at).toBeLessThan(INDEX.indexOf(API_BODY_PARSER));
       expect(at).toBeLessThan(INDEX.indexOf("createCsrfMiddleware()"));
-      expect(at).toBeLessThan(INDEX.indexOf("applyRateLimiters(app)"));
+      expect(at).toBeLessThan(INDEX.indexOf("applyRateLimiters(app, "));
     }
   });
 
