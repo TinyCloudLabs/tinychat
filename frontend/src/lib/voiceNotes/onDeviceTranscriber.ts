@@ -215,7 +215,7 @@ async function syncOnce(tcw: TinyCloudWeb, key: string, id: string, expected: bo
   // durable ledger. Verify its space commit so a missing copy can be repaired.
   try {
     checkpoint(tcw, ctx)();
-    if (current.ledger?.transcriptSync.state === "saved"
+    if (current.ledger?.transcriptSync?.state === "saved"
       && current.ledger.transcriptSync.rev >= transcript.rev
       && current.ledger.transcript.outcome === transcript.outcome) {
       const commit = await withVoiceNoteSaveDeadline(`space transcript commit id=${id}`,

@@ -1269,7 +1269,7 @@ describe("transcribeVoiceNote (one note end to end)", () => {
     const prepared = prepareVoiceNoteTranscript(later, "2026-10-04T10:00:00.000Z", 2);
     expect((await saveVoiceNoteTranscript(space.tcw, "rec-1", prepared)).ok).toBe(true);
     const metadata = (await resolveVoiceNoteRow(space.tcw, "rec-1"))?.metadata;
-    expect(metadata?.transcript_text).toBe("Remember to book follow-up");
+    expect(metadata?.transcript_text).toBe("Remember to book\nfollow-up");
     for (const key of ["transcription_vad_mode", "transcription_noise_floor_dbfs", "transcription_median_dbfs",
       "transcription_p99_dbfs", "transcription_speech_peak_s", "transcription_vad_dropped_above_noise_pct"])
       expect(metadata?.[key]).toBeUndefined();

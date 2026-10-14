@@ -210,7 +210,7 @@ test("Identify speakers defaults on, survives unsupported modes, and is committe
     expect(readTranscriberPreference().identifySpeakers).toBe(false);
     values.set("exo.voiceNotes.transcriber", "assemblyai");
     values.set(key, "1");
-    expect(readTranscriberPreference()).toEqual({ transcriber: "assemblyai", identifySpeakers: true });
+    expect(readTranscriberPreference()).toEqual({ transcriber: "assemblyai", identifySpeakers: true, uploadAudio: false });
   } finally {
     if (previous) Object.defineProperty(globalThis, "localStorage", previous);
     else Reflect.deleteProperty(globalThis, "localStorage");

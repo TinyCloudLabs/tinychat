@@ -106,17 +106,17 @@ describe("transcription modes availability", () => {
     const expected = {
       skip: {
         phone: [
-          "Just the recording, kept on this browser.",
+          "Just the recording. Audio follows your Upload audio to TinyCloud setting.",
           "no transcript",
           "Only the audio is saved. Transcribe it later if you like.",
         ],
         desktop: [
-          "Just the recording, saved to your space.",
+          "Just the recording. Audio follows your Upload audio to TinyCloud setting.",
           "no transcript",
           "Only the audio is saved. Transcribe it later if you like.",
         ],
         web: [
-          "Just the recording, saved to your space.",
+          "Just the recording. Audio follows your Upload audio to TinyCloud setting.",
           "no transcript",
           "Only the audio is saved. Transcribe it later if you like.",
         ],

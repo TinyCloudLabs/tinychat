@@ -30,6 +30,7 @@ Integration branch: `dev/0.8.0`
 | Integration fix | 41159ec4 | - | N/A | **P1 PRIVACY FIX** (reviewer 29b814e5): crash-recovered sessions uploaded audio even when preference was off. Changed uploadAudio !== false to uploadAudio === true (fail closed), added uploadAudio: false to recovery sites. |
 | #367 | 348f68fd | 0d938ed8 | Yes (12) | Transcript failure reason + activity panel. Combined logic from HEAD + #367 for NoteDetailView, SavedNote, LibraryRow, notePipeline. **Merge bug**: spaceAfterUploads referenced undefined laneDepth. |
 | #372 | f1bff349 | 4bd423b8 | Yes | Fix sync failure notification re-arming during transcript sync. |
+| #396 | c40651fc | b98f50ce | No | CI-only: added the reviewed `Test ExoStt` step to the iOS job and an empty changeset. The step covers 11 ExoStt tests. |
 
 ## Test Fixes (2026-10-14)
 
@@ -47,19 +48,25 @@ After merging origin/main (TC-1128, #387, #392, 45d16e58) and PR #386 (TC-1108 p
 | NoteDetailView.test.tsx | ed1e7a20 | PTX queued copy test expected old "Queued for Private transcription" | Updated to expect "In the queue · #3" |
 | NoteDetailView.test.tsx | ed1e7a20 | Progress copy assertions included provider-specific prefix | Changed to partial matches (e.g., "1 of 3 parts done") |
 
+## 0.8.0 Integration Repair Causes (2026-10-14)
+
+| Test / CI group | Introducing merge | Cause | Fix | Approved source |
+|-----------------|-------------------|-------|-----|-----------------|
+| On-device `no_speech` transcript sync | #374 (`d8822e56`) | The merge omitted optional chaining for a legal ledger without `transcriptSync`; the retry was silently lost. | Read `current.ledger?.transcriptSync?.state`. | #374 `f475230b` |
+| Real Tauri `useNotePipeline` hook | #369 (`fc7b183a`) | #369's finishing-quit guard began using the Tauri window/event API, but the integration fixture still installed empty Tauri internals. | Give the fixture current-window, callback, invoke, and event-unregister functions. | #369 `b2316c0a` |
+| Recorder/capture/web option defaults; transcription and row-upload fixtures | #351 (`92ff5241`) | Audio became opt-in, but fixtures that intentionally exercise uploads omitted the new option and therefore exercised the local-only path or timed out. | Set `uploadAudio: true` only on fixtures intended to upload; assert `false` defaults where no upload is intended. | #351 `760a64fa`; fail-closed privacy fix `41159ec4` |
+| Android capture contract bytes | #351 (`92ff5241`) | Native capture options now serialize the intended `uploadAudio: false` default, but the Android journal and sidecar goldens predated the field. | Add the default field to both Android golden files. | #351 `760a64fa` |
+| Library-row completed state | #367 (`0d938ed8`) | Conflict resolution added a stale `Saving…` badge absent from main and the approved #367 head. | Restore the approved `null` completed state while retaining #351's local-device labels. | #367 `348f68fd` |
+| Space read queued behind uploads | #367 (`0d938ed8`) | The merge lost #374/#367's text-lane snapshot and a later repair substituted note-state heuristics, which cannot identify actual text-lane work. | Restore `spaceLaneSnapshot("text")` busy/depth tracking and use text depth for `spaceAfterUploads`. | #374 `f475230b`; #367 `348f68fd` |
+| Transcript completion copy | #367 (`0d938ed8`) | Conflict resolution replaced #386's completed copy with the in-progress `Saving transcript…` wording. | Restore `Transcript saved.` for the completed state. | #386 `d337c7d4` |
+| Timestamped voice-note and VAD text assertions | #368 (`e5937afe`) | Tests retained pre-segment single-sentence/space-joined expectations after #368 began preserving engine timing, channels, and sentence boundaries. | Assert two timed channel segments and newline-joined transcript text; use selector wording that does not treat `you` as a participant after single-channel speakers became anonymous. | #368 `52d8380a` |
+| Recording-only mode captions | #351 (`92ff5241`) | Stale captions omitted that recording-only audio follows the TinyCloud upload setting. | Restore the setting-aware `finalCopy.ts` text. | #351 `760a64fa` |
+| Meeting-chat upload fixture | #351 (`92ff5241`) | The fixture expected a cloud transcript but saved its note through the new local-only default. | Mark that upload fixture `uploadAudio: true`. | #351 `760a64fa` |
+
 ## Current Status
 
-- **HEAD**: ed1e7a20
-- **Test counts**: 4771 pass, 4 skip, 89 fail
-- **main baseline**: 4735 pass, 0 fail
-
-### Remaining Failures (89)
-
-Most failures are in:
-1. `transcribeVoiceNote (one note end to end)` - 26 failures: tests expect to read audio from space but mocking incomplete for new audio read path
-2. `transcribeVoiceNote reads the note's stored audio (TC-517)` - 6 failures: same cause
-3. `every path that creates or resumes an off-phone job consults the hold` - 5 failures: semantic conflict between #351 (audio upload opt-in) and #367's hold logic
-4. `an explicit move to private cloud survives a restart` - 4 failures
-
-Root cause: semantic conflicts between PRs when combined - each PR's tests passed individually, but the merged behavior differs from what each PR's tests expected.
+- **Integration head before repair commit**: `b98f50ce` (#396 merged)
+- **Frontend unit suite after repair**: 4855 pass, 4 skip, 0 fail (4859 tests, 338 files)
+- **`origin/main` baseline before refresh**: 4740 pass, 4 skip, 0 fail (4744 tests, 326 files)
+- **Privacy invariant**: unchanged; audio reaches TinyCloud KV only when `recording.options?.uploadAudio === true`.
 

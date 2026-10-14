@@ -93,7 +93,8 @@ async function setup(transcriberOption: "off" | "on-device" | "private-cloud") {
   const ctx = () => ({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() });
   let transitionGen = 0;
   const signInAs = (accountDid: string, transcriber = transcriberOption) =>
-    fake.plugin.setCaptureDefaults({ accountDid, transitionGen: ++transitionGen, transcriber, identifySpeakers: false });
+    fake.plugin.setCaptureDefaults({ accountDid, transitionGen: ++transitionGen, transcriber, identifySpeakers: false,
+      uploadAudio: true });
   const recordFor = async (accountDid: string) => {
     await signInAs(accountDid);
     await fake.plugin.start();

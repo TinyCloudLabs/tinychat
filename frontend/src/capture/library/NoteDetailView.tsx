@@ -146,7 +146,7 @@ export function VoiceNoteTranscriptionStatus(props: {
   if (job?.kind === "done") {
     return (
       <p data-testid="voice-note-transcription-done" className="text-callout text-muted-foreground">
-        {job.outcome === "no_speech" ? "No speech found" : "Saving the transcript to your TinyCloud space…"}
+        {job.outcome === "no_speech" ? "No speech found" : "Transcript saved."}
       </p>
     );
   }

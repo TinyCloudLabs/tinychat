@@ -783,15 +783,17 @@ function usePipelineStates(entries: readonly { id: string; source: NotePipelineS
   const platform = useContext(PlatformContext);
   const ids = useMemo(() => entries.map((entry) => entry.id), [entries]);
   const pending = useSyncExternalStore(pendingStore.subscribe, pendingStore.snapshot, pendingStore.snapshot);
-  const laneBusy = useRef(spaceLaneSnapshot().busy);
+  const allLanesBusy = useRef(spaceLaneSnapshot().busy);
   const timedOutRows = useRef(false);
   const [laneIdleVersion, setLaneIdleVersion] = useState(0);
   useEffect(() => subscribeSpaceLane(() => {
     const busy = spaceLaneSnapshot().busy;
-    const becameIdle = laneBusy.current && !busy;
-    laneBusy.current = busy;
+    const becameIdle = allLanesBusy.current && !busy;
+    allLanesBusy.current = busy;
     if (becameIdle && timedOutRows.current) setLaneIdleVersion((version) => version + 1);
   }), []);
+  const textLaneBusy = useSyncExternalStore(subscribeSpaceLane, () => spaceLaneSnapshot("text").busy, () => false);
+  const textLaneDepth = useSyncExternalStore(subscribeSpaceLane, () => spaceLaneSnapshot("text").depth, () => 0);
   const onDeviceStatus = useSyncExternalStore(onDeviceSttStore.subscribe, onDeviceSttStore.snapshot, onDeviceSttStore.snapshot);
   const syncVersion = useStoreVersion(subscribeRecordingNoteSync);
   const transcriptSyncVersion = useStoreVersion(subscribeOnDeviceTranscriptSync);
@@ -843,7 +845,7 @@ function usePipelineStates(entries: readonly { id: string; source: NotePipelineS
       if (entry === undefined || entry.identity !== identity) continue;
       const retryKey = `${identity}\t${id}`;
       if (!("error" in entry.read)) { autoRetried.current.delete(retryKey); continue; }
-      if (laneBusy.current || entry.read.timeout !== true || autoRetried.current.has(retryKey)) continue;
+      if (allLanesBusy.current || entry.read.timeout !== true || autoRetried.current.has(retryKey)) continue;
       autoRetried.current.add(retryKey);
       due.push(id);
     }
@@ -894,12 +896,12 @@ function usePipelineStates(entries: readonly { id: string; source: NotePipelineS
         readError: nativeRead.error ?? rowError,
         capture: { finalizing: recorder.finalizationPendingId === id && issue === null, issue, readError: captureReadError },
         pending: pending.notes?.find((note) => note.id === id) ?? null,
-        lane: { busy: false, depth: 0 },
+        lane: { busy: textLaneBusy, depth: textLaneDepth },
         onDeviceStatus: device !== "mac" && hasOnDevice ? onDeviceStatus : null,
         desktopJob: device === "mac" && hasOnDevice ? getDesktopWhisperQueue()?.snapshot().get(id) ?? null : null,
         transcriptSync: tcw === null ? null : onDeviceTranscriptSyncState(tcw, id),
         spaceReading,
-        spaceAfterUploads: spaceReading && pending.notes?.some((note) => note.upload !== undefined) === true,
+        spaceAfterUploads: spaceReading && textLaneDepth > 0,
         cloudJob: recorder.transcription?.jobs.get(id) ?? null,
         cloudChecking: recorder.transcription?.availability === "checking",
       };
@@ -929,7 +931,7 @@ function usePipelineStates(entries: readonly { id: string; source: NotePipelineS
     }
     return { states: out, autoSyncs: wantsSync, autoTranscriptSyncs: wantsTranscriptSync };
     // The store versions say the per-key getters read above have new answers.
-  }, [entries, locals, rows, natives, nativeRead.ready, nativeRead.error, captureReadError, pending, onDeviceStatus, issues, recorder.finalizationPendingId, recorder.transcription, device, hasOnDevice, syncVersion, transcriptSyncVersion, whisperVersion, autoSyncVersion]);
+  }, [entries, locals, rows, natives, nativeRead.ready, nativeRead.error, captureReadError, pending, textLaneBusy, textLaneDepth, onDeviceStatus, issues, recorder.finalizationPendingId, recorder.transcription, device, hasOnDevice, syncVersion, transcriptSyncVersion, whisperVersion, autoSyncVersion]);
   useAutoNoteSync(autoSyncs);
   useAutoTranscriptSync(autoTranscriptSyncs);
   return { states, natives, nativeReady: nativeRead.ready, reread };
