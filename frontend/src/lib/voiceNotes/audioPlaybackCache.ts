@@ -53,13 +53,24 @@ export async function observeSpaceAudioIdentity(
   receipt?: { sha256: string; size: number } | null,
 ): Promise<void> {
   const key = identityKey(spaceId, did, source, id);
-  const previous = await read(key);
-  await write({ key, identity, receipt: receipt === undefined && previous?.identity === identity ? previous.receipt : receipt ?? null,
-    size: 0, playedAt: Date.now() });
+  try {
+    const previous = await read(key);
+    await write({ key, identity, receipt: receipt === undefined && previous?.identity === identity ? previous.receipt : receipt ?? null,
+      size: 0, playedAt: Date.now() });
+  } catch (error) {
+    // A full or unavailable device cache must not prevent playback.
+    logPipelineError("audio cache identity write", error, id);
+  }
 }
 
+/** Undefined means unknown: never observed, or the device cache could not be read. */
 export async function latestSpaceAudioIdentity(spaceId: string, did: string, source: string, id: string) {
-  return read(identityKey(spaceId, did, source, id));
+  try {
+    return await read(identityKey(spaceId, did, source, id));
+  } catch (error) {
+    logPipelineError("audio cache identity read", error, id);
+    return undefined;
+  }
 }
 
 async function savedRecordings(): Promise<VoiceNoteRecording[]> {
@@ -146,7 +157,11 @@ export async function cachedSpaceAudioOffline(
   spaceId: string, did: string, source: string, id: string,
 ): Promise<Blob | null> {
   const latestIdentity = await latestSpaceAudioIdentity(spaceId, did, source, id);
-  const matching = (await rows()).filter((row) => row.blob && row.key.startsWith(remoteStem(spaceId, did, source, id))
+  const all = await rows().catch((error: unknown) => {
+    logPipelineError("audio cache read", error, id);
+    return [] as CacheRow[];
+  });
+  const matching = all.filter((row) => row.blob && row.key.startsWith(remoteStem(spaceId, did, source, id))
     && (!latestIdentity?.identity || row.key === remoteKey(spaceId, did, source, id, latestIdentity.identity)))
     .sort((a, b) => b.playedAt - a.playedAt);
   const latest = matching[0];
@@ -182,14 +197,35 @@ async function evict(entry: { key: string; size: number; id?: string }): Promise
   logPipeline("audio playback", entry.id ?? "", "evicted", { destination: "device", bodyBytes: entry.size });
 }
 
+/**
+ * An identity guards cached bytes against replaying a superseded revision. Once a note has no bytes left
+ * on this device it guards nothing, and keeping it would report "audio changed" for a plain cache miss.
+ */
+async function pruneOrphanIdentities(): Promise<void> {
+  const [all, { recordings }] = await Promise.all([rows(), VoiceNotes.listPending()]);
+  const sizes = await Promise.all(recordings.map((note) => VoiceNotes.localAudioSize({ id: note.id })));
+  const local = new Set(recordings.filter((_, index) => sizes[index]!.size > 0).map((note) => note.id));
+  const backed = new Set(all.filter((row) => row.blob && row.key.startsWith('["space",'))
+    .map((row) => JSON.stringify((JSON.parse(row.key) as string[]).slice(1, 5))));
+  for (const row of all) {
+    if (!row.key.startsWith('["identity",')) continue;
+    const scope = (JSON.parse(row.key) as string[]).slice(1, 5);
+    if (local.has(scope[3]!) || backed.has(JSON.stringify(scope))) continue;
+    await remove(row.key);
+  }
+}
+
 async function trimCachedAudioUnlocked(limit = AUDIO_CACHE_LIMIT): Promise<void> {
   const all = await candidates();
   let bytes = all.reduce((sum, row) => sum + row.size, 0);
+  let evicted = false;
   for (const row of all) {
     if (bytes <= limit) break;
     await evict(row);
     bytes -= row.size;
+    evicted = true;
   }
+  if (evicted) await pruneOrphanIdentities();
 }
 
 export function trimCachedAudio(limit = AUDIO_CACHE_LIMIT): Promise<void> {
@@ -199,5 +235,6 @@ export function trimCachedAudio(limit = AUDIO_CACHE_LIMIT): Promise<void> {
 export async function clearCachedAudio(): Promise<void> {
   await exclusive(async () => {
     for (const row of await candidates()) await evict(row);
+    await pruneOrphanIdentities();
   });
 }

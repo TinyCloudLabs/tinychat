@@ -51,7 +51,7 @@ function Boot({ tcw }: { tcw: TinyCloudWeb }) {
   return <AudioCacheSettings />;
 }
 
-async function fixture(mismatch = false) {
+async function fixture(mismatch = false, uploadAudio?: boolean) {
   restoreDom = installDom();
   globalThis.indexedDB = new IDBFactory() as unknown as IDBFactory;
   const did = "did:test:receipt-upgrade";
@@ -70,6 +70,7 @@ async function fixture(mismatch = false) {
     durationMs: 1000, mimeType: "audio/mp4", sizeBytes: local.length,
     silencedMs: 0, silencedEvents: 0, noSignalMs: 0,
     ledger: { audio: { state: "saved", rowId: "row", at: 1 } },
+    ...(uploadAudio === undefined ? {} : { options: { uploadAudio } as VoiceNoteRecording["options"] }),
   };
   __setVoiceNotesForTests({
     listPending: async () => ({ recordings: [note] }),
@@ -115,6 +116,15 @@ test("completed reconciliation is cooled down until Settings explicitly requests
 
 test("real authenticated boot keeps unverifiable pre-receipt audio protected", async () => {
   const { note, size, evictions } = await fixture(true);
+  expect(note.ledger?.audio.verifiedInSpace).toBeUndefined();
+  await trimCachedAudio(0);
+  expect(evictions()).toBe(0);
+  expect(size()).toBe(1024 * 1024);
+});
+
+test("a note saved without audio upload is never probed against the space", async () => {
+  const { note, kv, evictions, size } = await fixture(false, false);
+  expect(kv.gets).toEqual([]);
   expect(note.ledger?.audio.verifiedInSpace).toBeUndefined();
   await trimCachedAudio(0);
   expect(evictions()).toBe(0);

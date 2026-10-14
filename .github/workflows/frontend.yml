@@ -58,6 +58,9 @@ jobs:
       - name: Frontend tests
         run: bun run --cwd frontend test
 
+      - name: Audio hash worker tests (Node DOM)
+        run: bun run --cwd frontend test:audio-hash-dom
+
       - name: Lint (frontend and test)
         run: bunx eslint frontend test
 

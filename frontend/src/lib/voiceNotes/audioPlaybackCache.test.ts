@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { IDBFactory } from "fake-indexeddb";
 import { VoiceNotes, __setVoiceNotesForTests, type VoiceNoteRecording, type VoiceNotesPlugin } from "./nativeVoiceNotes";
 import { cachedAudioSize, cachedSpaceAudio, cachedSpaceAudioOffline, clearCachedAudio,
-  latestSpaceAudioIdentity, trimCachedAudio } from "./audioPlaybackCache";
+  latestSpaceAudioIdentity, observeSpaceAudioIdentity, trimCachedAudio } from "./audioPlaybackCache";
 
 const original = VoiceNotes;
 const originalIdb = globalThis.indexedDB;
@@ -102,4 +102,33 @@ test("an explicitly uploaded note joins the bounded cache after verification", a
   expect((await cachedAudioSize()).bytes).toBe(40);
   await trimCachedAudio(0);
   expect(evicted).toEqual(["explicit"]);
+});
+
+test("a failing device cache never blocks space playback or an offline lookup", async () => {
+  globalThis.indexedDB = { open: () => { throw new DOMException("disk full", "QuotaExceededError"); } } as unknown as IDBFactory;
+  const blob = await cachedSpaceAudio("space", "did", "exo-voice-note", "a", "rev-1", async () => new Blob(["fresh"]));
+  expect(await blob!.text()).toBe("fresh");
+  expect(await latestSpaceAudioIdentity("space", "did", "exo-voice-note", "a")).toBeUndefined();
+  expect(await cachedSpaceAudioOffline("space", "did", "exo-voice-note", "a")).toBeNull();
+});
+
+test("trim and Clear drop identities whose bytes left the device, so offline is a plain miss", async () => {
+  const scope = ["space", "did", "exo-voice-note", "played"] as const;
+  await cachedSpaceAudio(...scope, "rev-1", async () => new Blob(["bytes"]));
+  await trimCachedAudio(0);
+  expect(await latestSpaceAudioIdentity(...scope)).toBeUndefined();
+  expect(await cachedSpaceAudioOffline(...scope)).toBeNull();
+  await cachedSpaceAudio(...scope, "rev-2", async () => new Blob(["again"]));
+  await clearCachedAudio();
+  expect(await latestSpaceAudioIdentity(...scope)).toBeUndefined();
+  expect(await cachedSpaceAudioOffline(...scope)).toBeNull();
+});
+
+test("a note still on the device keeps its identity through a trim", async () => {
+  notes = [saved("local", "pending")];
+  sizes.set("local", 40);
+  await observeSpaceAudioIdentity("space", "did", "exo-voice-note", "local", "rev-1");
+  await cachedSpaceAudio("space", "did", "exo-voice-note", "other", "rev-1", async () => new Blob(["remote"]));
+  await trimCachedAudio(0);
+  expect((await latestSpaceAudioIdentity("space", "did", "exo-voice-note", "local"))?.identity).toBe("rev-1");
 });

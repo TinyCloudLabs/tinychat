@@ -55,6 +55,9 @@ const hasReceipt = (note: VoiceNoteRecording) => {
 
 /** Reads the manifest and every part before giving a pre-upgrade file eviction authority. */
 export async function upgradeSavedAudioReceipt(tcw: TinyCloudWeb, note: VoiceNoteRecording): Promise<void> {
+  // A local-only note has no space copy to verify; probing it would cost a manifest read every pass.
+  // Notes from before the upload setting carry no option and did upload, so only an explicit false skips.
+  if (note.options?.uploadAudio === false) return;
   if (note.owner !== tcw.did || note.ledger?.audio.state !== "saved" || hasReceipt(note)) return;
   const context = captureAccountContext(tcw);
   try {
