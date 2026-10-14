@@ -78,6 +78,7 @@ class FakeBridge implements DesktopBridge {
         if (this.current) this.stopped.push({ id: this.current, startedAt: this.now,
           recordedMs: this.emptyFinal ? this.priorAudioMs : this.elapsed, pausedMs: this.paused,
           maxDurationMs: 3 * 60 * 60_000 });
+        // falls through
       case "recorder_stop": if (this.stopError) throw this.stopError;
         result = { ...this.status(), state: "idle", intent: "stopped" };
         if (command === "recorder_stop_durable" && this.emptyFinal) {

@@ -20,7 +20,7 @@ import type { CloudClock } from "../privateCloud";
 
 const CONSENT = "exo.voiceNotes.powerfulConsent";
 const PENDING = "exo.voiceNotes.powerfulJobs";
-const POLL_MS = 5000;
+const _POLL_MS = 5000;
 const CLAIM_TAKEOVER_MS = 5 * 60_000;
 type Stored = { uploadId?: string; handle?: string; saved?: boolean; recording?: VoiceNoteRecording };
 type Claim = { version: 1; status: "active" | "failed" | "submitted"; token: string; claimedAt?: number; uploadId?: string; handle?: string };
@@ -216,7 +216,6 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
       });
       if (!handle) throw new Error("Powerful did not return a transcript. Try again.");
       persist(id, { handle });
-      let transcript: AssemblyAiTranscript;
       for (;;) {
         guard();
         // Both the local resume entry and the space commit may have changed while
@@ -361,7 +360,7 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
       }
       if (!handle) return;
       persist(id, { handle });
-      transcript = await pollAssemblyAiTranscript(client, handle, {
+      const transcript: AssemblyAiTranscript = await pollAssemblyAiTranscript(client, handle, {
         clock: services.clock,
         durationSeconds: recording.durationMs / 1000,
         guard,
