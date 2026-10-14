@@ -7,6 +7,23 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Layout {
+    #[default]
+    Mono,
+    Stereo,
+}
+
+impl Layout {
+    pub fn channels(self) -> u8 {
+        match self {
+            Self::Mono => 1,
+            Self::Stereo => 2,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MissingAudioSpan {
@@ -31,6 +48,8 @@ pub struct Journal {
     pub max_duration_ms: u64,
     #[serde(default)]
     pub system_audio: bool,
+    #[serde(default)]
+    pub layout: Layout,
     #[serde(default)]
     pub spans: Vec<MissingAudioSpan>,
 }
@@ -287,6 +306,11 @@ fn failed_journal_at(
             .as_ref()
             .and_then(|v| v.get("systemAudio"))
             .and_then(|v| v.as_bool())
+            .unwrap_or_default(),
+        layout: partial
+            .as_ref()
+            .and_then(|v| v.get("layout"))
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
             .unwrap_or_default(),
         spans: Vec::new(),
     });
@@ -712,6 +736,7 @@ mod tests {
             paused_ms: 10,
             max_duration_ms: 1000,
             system_audio: true,
+            layout: Layout::Mono,
             spans: vec![],
         };
         fs::write(
@@ -776,6 +801,7 @@ mod tests {
             paused_ms: 0,
             max_duration_ms: 1000,
             system_audio: false,
+            layout: Layout::Mono,
             spans: vec![],
         };
         save_stopped_at(&stopped.join("note.json"), &original).unwrap();
@@ -838,6 +864,7 @@ mod tests {
             paused_ms: 10,
             max_duration_ms: 1000,
             system_audio: true,
+            layout: Layout::Mono,
             spans: vec![],
         };
         let name = format!("note.{}.json", uuid::Uuid::new_v4());
@@ -894,6 +921,7 @@ mod tests {
             paused_ms: 0,
             max_duration_ms: 1000,
             system_audio: false,
+            layout: Layout::Mono,
             spans: vec![],
         };
         fs::write(
@@ -950,6 +978,7 @@ mod tests {
             paused_ms: 0,
             max_duration_ms: 180_000,
             system_audio: false,
+            layout: Layout::Mono,
             spans: vec![],
         };
         let (locked_tx, locked_rx) = std::sync::mpsc::sync_channel(0);
@@ -1002,6 +1031,7 @@ mod tests {
             paused_ms: 300,
             max_duration_ms: 1_000,
             system_audio: false,
+            layout: Layout::Mono,
             spans: Vec::new(),
         };
         let value = serde_json::to_value(&journal).unwrap();
@@ -1015,10 +1045,10 @@ mod tests {
         );
         let mut old_journal = value;
         old_journal.as_object_mut().unwrap().remove("spans");
-        assert!(serde_json::from_value::<Journal>(old_journal)
-            .unwrap()
-            .spans
-            .is_empty());
+        old_journal.as_object_mut().unwrap().remove("layout");
+        let recovered = serde_json::from_value::<Journal>(old_journal).unwrap();
+        assert!(recovered.spans.is_empty());
+        assert_eq!(recovered.layout, Layout::Mono);
     }
 
     #[test]
@@ -1042,6 +1072,7 @@ mod tests {
             paused_ms: 0,
             max_duration_ms: 10_000,
             system_audio: true,
+            layout: Layout::Stereo,
             spans: Vec::new(),
         };
         let failed = FailedSegment {
@@ -1058,6 +1089,7 @@ mod tests {
         assert_eq!(listed[0].segment_id, "rec-broken");
         assert_eq!(listed[0].journal.recorded_ms, 500);
         assert!(listed[0].journal.system_audio);
+        assert_eq!(listed[0].journal.layout, Layout::Stereo);
         delete_failed_for_note_at(&root, &sessions, "note").unwrap();
         assert!(list_failed_at(&root).unwrap().is_empty());
         assert!(!root.join("sources/rec-broken").exists());
