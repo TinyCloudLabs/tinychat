@@ -1,0 +1,351 @@
+$ bun test src/lib/voiceNotes/hostedVoiceNotes.test.ts
+bun test v1.4.3 (c6da4a4d3)
+
+src/lib/voiceNotes/hostedVoiceNotes.test.ts:
+142 |   const first = track(); first.consent();
+143 |   expect(await first.runSpaceOnly("note-1")).toBe(true);
+144 |   expect(first.jobs.get("note-1")?.kind).toBe("failed");
+145 |   await track().resume();
+146 |   for (let turn = 0; turn < 5 && !calls.includes("DELETE /hosted/transcripts/handle-1"); turn++) await new Promise((resolve) => setTimeout(resolve, 0));
+147 |   expect(calls).toContain("space:save");
+                      ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "space:save"
+Received: [ "space:audio", "GET /capabilities", "POST /hosted/uploads", "space:audio", "GET /capabilities",
+  "POST /hosted/uploads"
+]
+
+      at <anonymous> (/home/tinycloud/scratch/tc080-fix2/frontend/src/lib/voiceNotes/hostedVoiceNotes.test.ts:147:17)
+(fail) a space-only note uses its space audio and can resume without a native recording [21.11ms]
+152 | test("a paid outcome needing reconciliation blocks the note without another upload or automatic retry", async () => {
+153 |   const h = harness();
+154 |   h.setServerJob({ status: "needs_reconciliation", upload_id: "upload-1" });
+155 |   const lane = h.track(); lane.consent();
+156 |   await lane.run(h.recording);
+157 |   expect(lane.jobs.get("note-1")).toMatchObject({ kind: "failed", retryable: false,
+                                        ^
+error: expect(received).toMatchObject(expected)
+
+  {
++   "code": "network",
+    "kind": "failed",
+-   "message": "Powerful couldn't confirm an earlier attempt. Exo is checking with AssemblyAI.",
+-   "retryable": false,
++   "message": "Could not reach Exo's server.",
++   "reference": null,
++   "retryable": true,
+  }
+
+- Expected  - 2
++ Received  + 4
+
+      at <anonymous> (/home/tinycloud/scratch/tc080-fix2/frontend/src/lib/voiceNotes/hostedVoiceNotes.test.ts:157:35)
+(fail) a paid outcome needing reconciliation blocks the note without another upload or automatic retry [0.57ms]
+162 | test("a quarantined or missing lookup never enables Retry; provider-confirmed submission does", async () => {
+163 |   const h = harness(undefined, false, false, "audio/mp4", undefined, undefined, undefined, undefined, 5);
+164 |   h.setServerJob({ status: "unresolved" });
+165 |   const lane = h.track(); lane.consent();
+166 |   await lane.run(h.recording);
+167 |   expect(lane.jobs.get("note-1")).toMatchObject({ kind: "failed", retryable: false });
+                                        ^
+error: expect(received).toMatchObject(expected)
+
+  {
++   "code": "network",
+    "kind": "failed",
+-   "retryable": false,
++   "message": "Could not reach Exo's server.",
++   "reference": null,
++   "retryable": true,
+  }
+
+- Expected  - 1
++ Received  + 4
+
+      at <anonymous> (/home/tinycloud/scratch/tc080-fix2/frontend/src/lib/voiceNotes/hostedVoiceNotes.test.ts:167:35)
+(fail) a quarantined or missing lookup never enables Retry; provider-confirmed submission does [0.45ms]
+176 | 
+177 | test("hosted AssemblyAI no_speech never sets PTX missing-stats metadata", async () => {
+178 |   const { calls, recording, track, getLocal, getSavedMetadata } = harness(undefined, true);
+179 |   const lane = track(); lane.consent();
+180 |   await lane.run(recording);
+181 |   expect(lane.jobs.get(recording.id)).toEqual({ kind: "done", outcome: "no_speech" });
+                                            ^
+error: expect(received).toEqual(expected)
+
+  {
+-   "kind": "done",
+-   "outcome": "no_speech",
++   "code": "network",
++   "kind": "failed",
++   "message": "Could not reach Exo's server.",
++   "reference": null,
++   "retryable": true,
+  }
+
+- Expected  - 2
++ Received  + 5
+
+      at <anonymous> (/home/tinycloud/scratch/tc080-fix2/frontend/src/lib/voiceNotes/hostedVoiceNotes.test.ts:181:39)
+(fail) hosted AssemblyAI no_speech never sets PTX missing-stats metadata [0.36ms]
+185 | });
+186 | test("Powerful keeps a saved outcome when remote transcript deletion fails", async () => {
+187 |   const { calls, recording, track, getLocal } = harness("delete");
+188 |   const lane = track(); lane.consent();
+189 |   await lane.run(recording);
+190 |   expect(calls).toContain("space:save");
+                      ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "space:save"
+Received: [ "GET /capabilities", "POST /hosted/uploads" ]
+
+      at <anonymous> (/home/tinycloud/scratch/tc080-fix2/frontend/src/lib/voiceNotes/hostedVoiceNotes.test.ts:190:17)
+(fail) Powerful keeps a saved outcome when remote transcript deletion fails [0.44ms]
+195 | test("Powerful transcribes local-only audio and deletes the server copy", async () => {
+196 |   const { calls, recording, track } = harness();
+197 |   recording.options!.uploadAudio = false;
+198 |   const lane = track(); lane.consent();
+199 |   await lane.run(recording);
+200 |   expect(lane.jobs.get(recording.id)).toEqual({ kind: "done", outcome: "transcribed" });
+                                            ^
+error: expect(received).toEqual(expected)
+
+  {
+-   "kind": "done",
+-   "outcome": "transcribed",
++   "code": "network",
++   "kind": "failed",
++   "message": "Could not reach Exo's server.",
++   "reference": null,
++   "retryable": true,
+  }
+
+- Expected  - 2
++ Received  + 5
+
+      at <anonymous> (/home/tinycloud/scratch/tc080-fix2/frontend/src/lib/voiceNotes/hostedVoiceNotes.test.ts:200:39)
+(fail) Powerful transcribes local-only audio and deletes the server copy [0.37ms]
+205 | 
+206 | test("Powerful accepts webm with codec parameters and sends the base MIME type", async () => {
+207 |   const { recording, track } = harness(undefined, false, false, " Audio/WebM;codecs=opus ");
+208 |   const lane = track(); lane.consent();
+209 |   await lane.run(recording);
+210 |   expect(lane.jobs.get(recording.id)).toEqual({ kind: "done", outcome: "transcribed" });
+                                            ^
+error: expect(received).toEqual(expected)
+
+  {
+-   "kind": "done",
+-   "outcome": "transcribed",
++   "code": "network",
++   "kind": "failed",
++   "message": "Could not reach Exo's server.",
++   "reference": null,
++   "retryable": true,
+  }
+
+- Expected  - 2
++ Received  + 5
+
+      at <anonymous> (/home/tinycloud/scratch/tc080-fix2/frontend/src/lib/voiceNotes/hostedVoiceNotes.test.ts:210:39)
+(fail) Powerful accepts webm with codec parameters and sends the base MIME type [0.39ms]
+222 |   const { calls, recording, track } = harness(undefined, false, false, "audio/mp4", gate);
+223 |   const lane = track(); lane.consent();
+224 |   const running = lane.run(recording);
+225 |   try {
+226 |     await Bun.sleep(10);
+227 |     expect(calls).not.toContain("POST /hosted/uploads");
+                            ^
+error: expect(received).not.toContain(expected)
+
+Expected to not contain: "POST /hosted/uploads"
+Received: [ "GET /capabilities", "POST /hosted/uploads" ]
+
+      at <anonymous> (/home/tinycloud/scratch/tc080-fix2/frontend/src/lib/voiceNotes/hostedVoiceNotes.test.ts:227:23)
+(fail) Powerful checks the space commit before sending audio to the provider [10.43ms]
+236 |   const { calls, recording, track } = harness();
+237 |   const lane = track(); lane.consent();
+238 |   await lane.run(recording);
+239 |   // The text/audio save finishes later and calls the same hand-off again.
+240 |   await lane.run(recording);
+241 |   expect(calls.filter((call) => call === "POST /hosted/uploads")).toHaveLength(1);
+                                                                        ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 2
+
+      at <anonymous> (/home/tinycloud/scratch/tc080-fix2/frontend/src/lib/voiceNotes/hostedVoiceNotes.test.ts:241:67)
+(fail) noteSaved after Powerful completes does not create a second paid upload [1.00ms]
+249 |   const first = track(); const second = track(); first.consent();
+250 |   const runs = Promise.all([first.run(recording), second.run(recording)]);
+251 |   await Bun.sleep(10);
+252 |   release();
+253 |   await runs;
+254 |   expect(calls.filter((call) => call === "POST /hosted/uploads")).toHaveLength(1);
+                                                                        ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 2
+
+      at <anonymous> (/home/tinycloud/scratch/tc080-fix2/frontend/src/lib/voiceNotes/hostedVoiceNotes.test.ts:254:67)
+(fail) two instances racing on one note create one upload and one transcript [10.37ms]
+259 |   const { calls, recording, track, setClaim, setServerJob } = harness();
+260 |   setClaim({ version: 1, status: "active", token: "dead", claimedAt: Date.now() - 6 * 60_000, uploadId: "upload-1" });
+261 |   setServerJob({ status: "receiving", upload_id: "upload-1" });
+262 |   const lane = track(); lane.consent();
+263 |   await lane.run(recording);
+264 |   expect(lane.jobs.get(recording.id)?.kind).toBe("done");
+                                                  ^
+error: expect(received).toBe(expected)
+
+Expected: "done"
+Received: "failed"
+
+      at <anonymous> (/home/tinycloud/scratch/tc080-fix2/frontend/src/lib/voiceNotes/hostedVoiceNotes.test.ts:264:45)
+(fail) a crashed owner with an upload ID is taken over and resumed [0.58ms]
+271 |     const { calls, recording, track } = harness(undefined, false, false, "audio/mp4", undefined, result);
+272 |     const first = track(); first.consent();
+273 |     await first.run(recording);
+274 |     expect(first.jobs.get(recording.id)?.kind).toBe("failed");
+275 |     await track().run(recording);
+276 |     expect(calls.filter((call) => call === "POST /hosted/uploads")).toHaveLength(result === "existing" ? 1 : 2);
+                                                                          ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 2
+
+      at <anonymous> (/home/tinycloud/scratch/tc080-fix2/frontend/src/lib/voiceNotes/hostedVoiceNotes.test.ts:276:69)
+(fail) an ambiguous create reconciles existing server state [0.63ms]
+272 |     const first = track(); first.consent();
+273 |     await first.run(recording);
+274 |     expect(first.jobs.get(recording.id)?.kind).toBe("failed");
+275 |     await track().run(recording);
+276 |     expect(calls.filter((call) => call === "POST /hosted/uploads")).toHaveLength(result === "existing" ? 1 : 2);
+277 |     expect(calls.filter((call) => call === "POST /hosted/transcripts")).toHaveLength(1);
+                                                                              ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 0
+
+      at <anonymous> (/home/tinycloud/scratch/tc080-fix2/frontend/src/lib/voiceNotes/hostedVoiceNotes.test.ts:277:73)
+(fail) an ambiguous create reconciles missing server state [0.56ms]
+283 |   failReleases(1);
+284 |   const first = track(); first.consent();
+285 |   await first.run(recording);
+286 |   expect(first.jobs.get(recording.id)?.kind).toBe("failed");
+287 |   await track().run(recording);
+288 |   expect(calls.filter((call) => call === "POST /hosted/uploads")).toHaveLength(1);
+                                                                        ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 1
+Received length: 2
+
+      at <anonymous> (/home/tinycloud/scratch/tc080-fix2/frontend/src/lib/voiceNotes/hostedVoiceNotes.test.ts:288:67)
+(fail) a failed claim release is retried before the next run [0.50ms]
+298 |   for (let turn = 0; turn < 3; turn++) await Promise.resolve();
+299 |   expect(calls).not.toContain("POST /hosted/uploads");
+300 |   release();
+301 |   await Promise.all([otherUpload, note]);
+302 |   expect(calls).toContain("POST /hosted/uploads");
+303 |   expect(lane.jobs.get(recording.id)?.kind).toBe("done");
+                                                  ^
+error: expect(received).toBe(expected)
+
+Expected: "done"
+Received: "failed"
+
+      at <anonymous> (/home/tinycloud/scratch/tc080-fix2/frontend/src/lib/voiceNotes/hostedVoiceNotes.test.ts:303:45)
+(fail) Powerful waits for the account's Upload audio submission before creating an upload [0.45ms]
+310 |     await first.run(recording);
+311 |     if (interruption) {
+312 |       expect(first.jobs.get(recording.id)?.kind).toBe("failed");
+313 |       await track().run(recording);
+314 |     }
+315 |     expect(getLocal()?.engine).toBe("assemblyai");
+                                     ^
+error: expect(received).toBe(expected)
+
+Expected: "assemblyai"
+Received: undefined
+
+      at <anonymous> (/home/tinycloud/scratch/tc080-fix2/frontend/src/lib/voiceNotes/hostedVoiceNotes.test.ts:315:32)
+(fail) Powerful re-joins after no interruption and deletes after both saves [0.40ms]
+310 |     await first.run(recording);
+311 |     if (interruption) {
+312 |       expect(first.jobs.get(recording.id)?.kind).toBe("failed");
+313 |       await track().run(recording);
+314 |     }
+315 |     expect(getLocal()?.engine).toBe("assemblyai");
+                                     ^
+error: expect(received).toBe(expected)
+
+Expected: "assemblyai"
+Received: undefined
+
+      at <anonymous> (/home/tinycloud/scratch/tc080-fix2/frontend/src/lib/voiceNotes/hostedVoiceNotes.test.ts:315:32)
+(fail) Powerful re-joins after part and deletes after both saves [0.48ms]
+310 |     await first.run(recording);
+311 |     if (interruption) {
+312 |       expect(first.jobs.get(recording.id)?.kind).toBe("failed");
+313 |       await track().run(recording);
+314 |     }
+315 |     expect(getLocal()?.engine).toBe("assemblyai");
+                                     ^
+error: expect(received).toBe(expected)
+
+Expected: "assemblyai"
+Received: undefined
+
+      at <anonymous> (/home/tinycloud/scratch/tc080-fix2/frontend/src/lib/voiceNotes/hostedVoiceNotes.test.ts:315:32)
+(fail) Powerful re-joins after submit and deletes after both saves [0.49ms]
+310 |     await first.run(recording);
+311 |     if (interruption) {
+312 |       expect(first.jobs.get(recording.id)?.kind).toBe("failed");
+313 |       await track().run(recording);
+314 |     }
+315 |     expect(getLocal()?.engine).toBe("assemblyai");
+                                     ^
+error: expect(received).toBe(expected)
+
+Expected: "assemblyai"
+Received: undefined
+
+      at <anonymous> (/home/tinycloud/scratch/tc080-fix2/frontend/src/lib/voiceNotes/hostedVoiceNotes.test.ts:315:32)
+(fail) Powerful re-joins after result and deletes after both saves [0.46ms]
+310 |     await first.run(recording);
+311 |     if (interruption) {
+312 |       expect(first.jobs.get(recording.id)?.kind).toBe("failed");
+313 |       await track().run(recording);
+314 |     }
+315 |     expect(getLocal()?.engine).toBe("assemblyai");
+                                     ^
+error: expect(received).toBe(expected)
+
+Expected: "assemblyai"
+Received: undefined
+
+      at <anonymous> (/home/tinycloud/scratch/tc080-fix2/frontend/src/lib/voiceNotes/hostedVoiceNotes.test.ts:315:32)
+(fail) Powerful re-joins after space and deletes after both saves [0.38ms]
+325 |   const completed = { id: "handle-1", status: "completed", utterances: [{ start: 0, end: 1000, text: "Hello", speaker: "A" }] };
+326 |   const { recording, track, sleeps } = harness(undefined, false, false, "audio/mp4", 72 * 60_000, [...processing, completed]);
+327 |   const lane = track();
+328 |   lane.consent();
+329 |   await lane.run(recording);
+330 |   expect(sleeps[6]).toBeGreaterThanOrEqual(60_000);
+                          ^
+error: Expected and actual values must be numbers or bigints
+      at <anonymous> (/home/tinycloud/scratch/tc080-fix2/frontend/src/lib/voiceNotes/hostedVoiceNotes.test.ts:330:21)
+(fail) hosted voice-note polling scales its slow cadence from the saved recording duration [0.49ms]
+
+ 1 pass
+ 21 fail
+ 162 expect() calls
+Ran 22 tests across 1 file. [72.00ms]
+error: script "test" exited with code 1

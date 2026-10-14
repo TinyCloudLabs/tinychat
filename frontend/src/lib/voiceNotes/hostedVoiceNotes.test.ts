@@ -40,7 +40,7 @@ function harness(failAt?: "part" | "submit" | "result" | "space" | "delete", noS
   let serverJob: { status: string; upload_id?: string; id?: string } = { status: "missing" };
   const recording = { id: "note-1", owner: "did:test:one", source: "in_app", startedAt: 1,
     durationMs, mimeType, sizeBytes: audio.length,
-    options: { transcriber: "assemblyai", identifySpeakers: true } } as VoiceNoteRecording;
+    options: { transcriber: "assemblyai", identifySpeakers: true, uploadAudio: true } } as VoiceNoteRecording;
   const native = {
     listPending: async () => ({ recordings: spaceOnly ? [] : [recording] }),
     readAudioChunk: async ({ offset, length }: { offset: number; length: number }) => ({

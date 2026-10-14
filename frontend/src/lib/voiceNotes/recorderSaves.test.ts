@@ -159,7 +159,7 @@ const tcw = { did: "did:example:alice" } as TinyCloudWeb;
 
 function recording(id: string, startedAt: number): VoiceNoteRecording {
   return { id, startedAt, durationMs: 1000, mimeType: "audio/mp4", sizeBytes: 4, silencedMs: 0, silencedEvents: 0, noSignalMs: 0,
-    version: 2, owner: tcw.did, rev: 1 };
+    version: 2, owner: tcw.did, rev: 1, options: { transcriber: "private-cloud", uploadAudio: true } };
 }
 
 /** The phone: what is listed as pending, and how deleteAudio and listPending behave. */
