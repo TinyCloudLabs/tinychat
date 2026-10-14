@@ -1,6 +1,6 @@
 import { describe, expect, spyOn, test } from "bun:test";
 import type { TinyCloudNode } from "@tinycloud/node-sdk";
-import { BackendStorageLane } from "../services/backend-storage-lane.js";
+import { BackendStorageLane, BackendStorageLaneTimeout } from "../services/backend-storage-lane.js";
 import { CalendarAutojoinConnection, GOOGLE_AUTOJOIN_CREDENTIAL_SOURCE } from "../services/calendar-autojoin-connection.js";
 import { TenantCoordinator, kvCalendarAutojoinStores, type CalendarOccurrence } from "../services/calendar-autojoin-store.js";
 import { CalendarAutojoinWorker } from "../services/calendar-autojoin-worker.js";
@@ -42,11 +42,12 @@ function fixture(values = new Map<string, unknown>()) {
     master: () => Buffer.alloc(32, 1).toString("base64"), previousMaster: () => null, now: () => now,
   });
   const calendar: GoogleCalendarPort = { async listEvents() { return []; }, async getEvent() { return null; }, async probePrimary() {} };
-  const connection = new CalendarAutojoinConnection({ store: stores.request, credentials, calendar, coordinator,
-    oauth: { async revoke() {} } as GoogleOAuthPort, now: () => now });
+  const options = { store: stores.request, credentials, calendar, coordinator,
+    oauth: { async revoke() {} } as GoogleOAuthPort, now: () => now, statusBudgetMs: 12_000 };
+  const connection = new CalendarAutojoinConnection(options);
   const worker = new CalendarAutojoinWorker({ store: stores.worker, dispatchStore: stores.dispatch, connection,
     coordinator, calendar, index: new MemoryTranscriberIndexStore(), api: {} as TranscriptionApiClient, now: () => now, random: () => 0 });
-  return { values, lane, stores, connection, worker, calendar, credentials, advance(ms: number) { now += ms; },
+  return { values, node, options, lane, stores, connection, worker, calendar, credentials, advance(ms: number) { now += ms; },
     failNextSummaryWrite() { summaryFailures++; },
     async seed(n: number) {
       await stores.request.putConnection({ tenant: TENANT, subject: "synthetic-subject", state: "enabled", generation: 1,
@@ -100,7 +101,7 @@ describe("TC-1086 status cost", () => {
   test("cold process reads a persisted summary in two jobs without any occurrence listing", async () => {
     const f = fixture(); await f.seed(500); await f.worker.tick();
     const restarted = fixture(f.values);
-    const listing = spyOn(restarted.stores.request, "listOccurrences").mockRejectedValue(new Error("foreground listing forbidden"));
+    const listing = spyOn(restarted.node.kv, "list").mockRejectedValue(new Error("foreground listing forbidden"));
     const run = spyOn(restarted.lane, "run");
     try {
       const status = await restarted.connection.getStatus(TENANT);
@@ -111,26 +112,120 @@ describe("TC-1086 status cost", () => {
     } finally { listing.mockRestore(); run.mockRestore(); await f.worker.stop(); await restarted.worker.stop(); }
   });
 
-  test("a cold legacy tenant waits for one tick, never foreground-scans or fabricates empty history", async () => {
-    const f = fixture(); await f.seed(500);
+  for (const n of [0, 30, 500]) {
+    test(`a cold legacy tenant uses N+2 listing jobs until the next tick N=${n}`, async () => {
+      const f = fixture(); await f.seed(n);
+      for (const key of f.values.keys()) if (key.startsWith("calendar-autojoin/v1/status/")) f.values.delete(key);
+      const run = spyOn(f.lane, "run");
+      const listing = spyOn(f.node.kv, "list");
+      const log = spyOn(console, "log").mockImplementation(() => {});
+      try {
+        await withStatus(f, async request => {
+          const cold = await request();
+          expect(cold.status).toBe(200);
+          const outcomes = Array.from({ length: Math.min(n, 30) }, (_, i) => ({
+            id: `row-${n - 1 - i}`, title: "Synthetic metadata", start: AT + n - 1 - i, reason: "missed_window",
+          }));
+          expect(await cold.json()).toEqual({ state: "on", enabled: true, lastScanAt: null,
+            lastDispatchLag: null, errorCode: null, outcomes });
+          expect(run.mock.calls).toHaveLength(n + 2);
+          expect(listing).toHaveBeenCalledTimes(1);
+          expect(cold.headers.get("server-timing")).toMatch(new RegExp(`^status;dur=\\d+;desc="reads=${n + 2}"$`));
+          expect(log.mock.calls).toHaveLength(1);
+          expect(log.mock.calls[0]).toHaveLength(1);
+          expect(log.mock.calls[0][0]).toMatch(new RegExp(`^\\[calendar-autojoin\\] code=status_read outcome=ok ms=\\d+ reads=${n + 2}$`));
+          await f.worker.tick(); run.mockClear(); listing.mockClear(); log.mockClear();
+          const warmed = await request();
+          expect(warmed.status).toBe(200);
+          expect(await warmed.json()).toEqual({ state: "on", enabled: true, lastScanAt: AT,
+            lastDispatchLag: null, errorCode: null, outcomes });
+          expect(run.mock.calls).toHaveLength(2);
+          expect(warmed.headers.get("server-timing")).toMatch(/^status;dur=\d+;desc="reads=2"$/);
+          expect(listing).not.toHaveBeenCalled();
+        });
+      } finally { run.mockRestore(); listing.mockRestore(); log.mockRestore(); await f.worker.stop(); }
+    });
+  }
+
+  test("a legacy listing timeout uses fix 1's last-good body", async () => {
+    const f = fixture(); await f.seed(30);
     for (const key of f.values.keys()) if (key.startsWith("calendar-autojoin/v1/status/")) f.values.delete(key);
-    const run = spyOn(f.lane, "run");
-    const listing = spyOn(f.stores.request, "listOccurrences").mockRejectedValue(new Error("foreground listing forbidden"));
+    const get = f.node.kv.get.bind(f.node.kv);
+    const read = spyOn(f.node.kv, "get");
     try {
       await withStatus(f, async request => {
-        const cold = await request();
-        expect(cold.status).toBe(503);
-        expect(await cold.json()).toEqual({ error: "calendar_autojoin_unavailable" });
-        expect(cold.headers.get("retry-after")).toBe("5");
-        expect(run.mock.calls).toHaveLength(2);
-        await f.worker.tick(); run.mockClear();
-        const warmed = await request();
-        expect(warmed.status).toBe(200);
-        expect((await warmed.json()).outcomes).toHaveLength(30);
-        expect(run.mock.calls).toHaveLength(2);
-        expect(listing).not.toHaveBeenCalled();
+        const good = await request();
+        const body = await good.json();
+        expect(good.status).toBe(200);
+        read.mockImplementation(async key => {
+          if (key.startsWith("calendar-autojoin/v1/occurrences/")) throw new BackendStorageLaneTimeout("Synthetic timeout");
+          return get(key);
+        });
+        const stale = await request();
+        expect(stale.status).toBe(200);
+        expect(await stale.json()).toEqual({ ...body, stale: true, asOf: expect.any(String) });
+        expect(stale.headers.get("server-timing")).toMatch(/^status;dur=\d+;desc="reads=3"$/);
       });
-    } finally { run.mockRestore(); listing.mockRestore(); await f.worker.stop(); }
+    } finally { read.mockRestore(); await f.worker.stop(); }
+  });
+
+  test("the summary probe cannot start a legacy listing after the shared deadline", async () => {
+    const f = fixture(); await f.seed(30); f.options.statusBudgetMs = 10;
+    for (const key of f.values.keys()) if (key.startsWith("calendar-autojoin/v1/status/")) f.values.delete(key);
+    let wallClock = Date.now();
+    const clock = spyOn(Date, "now").mockImplementation(() => wallClock);
+    const get = f.node.kv.get.bind(f.node.kv);
+    const read = spyOn(f.node.kv, "get").mockImplementation(async key => {
+      if (key.startsWith("calendar-autojoin/v1/status/")) wallClock += 11;
+      return get(key);
+    });
+    const listing = spyOn(f.node.kv, "list");
+    try {
+      await withStatus(f, async request => {
+        const response = await request();
+        expect(response.status).toBe(503);
+        expect(response.headers.get("retry-after")).toBe("5");
+        expect(listing).not.toHaveBeenCalled();
+        expect(response.headers.get("server-timing")).toMatch(/^status;dur=\d+;desc="reads=2"$/);
+      });
+    } finally { clock.mockRestore(); read.mockRestore(); listing.mockRestore(); await f.worker.stop(); }
+  });
+
+  test("legacy occurrence reads retain the same deadline instead of restarting the budget", async () => {
+    const f = fixture(); await f.seed(30); f.options.statusBudgetMs = 10;
+    for (const key of f.values.keys()) if (key.startsWith("calendar-autojoin/v1/status/")) f.values.delete(key);
+    let wallClock = Date.now();
+    const clock = spyOn(Date, "now").mockImplementation(() => wallClock);
+    const get = f.node.kv.get.bind(f.node.kv);
+    const read = spyOn(f.node.kv, "get").mockImplementation(async key => {
+      if (key.startsWith("calendar-autojoin/v1/occurrences/")) wallClock += 11;
+      return get(key);
+    });
+    try {
+      await withStatus(f, async request => {
+        const response = await request();
+        expect(response.status).toBe(503);
+        expect(response.headers.get("retry-after")).toBe("5");
+        expect(read.mock.calls).toHaveLength(3); // Connection, summary probe, first occurrence.
+        expect(response.headers.get("server-timing")).toMatch(/^status;dur=\d+;desc="reads=4"$/);
+      });
+    } finally { clock.mockRestore(); read.mockRestore(); await f.worker.stop(); }
+  });
+
+  test("a disconnect invalidates a last-good connected body populated by the legacy listing", async () => {
+    const f = fixture(); await f.seed(30);
+    for (const key of f.values.keys()) if (key.startsWith("calendar-autojoin/v1/status/")) f.values.delete(key);
+    try {
+      await withStatus(f, async request => {
+        expect((await (await request()).json()).enabled).toBe(true);
+        await f.connection.disconnect(TENANT);
+        f.options.statusBudgetMs = 0;
+        const response = await request();
+        expect(response.status).toBe(503);
+        expect(await response.json()).toEqual({ error: "calendar_autojoin_unavailable" });
+        expect(f.connection.getLastGoodStatus(TENANT)).toBeUndefined();
+      });
+    } finally { await f.worker.stop(); }
   });
 
   test("a new connection is immediately readable before its first tick", async () => {

@@ -58,7 +58,7 @@ export class CalendarAutojoinConnection {
   }
 
   private async readStatus(tenant: string, metrics?: CalendarAutojoinReadMetrics): Promise<CalendarAutojoinStatus> {
-    // One wall-clock deadline for the two bounded lane reads (lane timers run on real time).
+    // One wall-clock deadline for both the two-job summary and legacy N+2-job listing paths.
     const deadline = Date.now() + (this.options.statusBudgetMs ?? REQUEST_LANE_WAIT_MS);
     const connection = await this.options.store.getConnection(tenant, deadline, metrics);
     // Occurrences are only scheduled for a tenant with a connection row, and connection rows are
@@ -66,9 +66,8 @@ export class CalendarAutojoinConnection {
     // no outcomes, so skip the prefix listing: on the shared serialized storage lane it pushed this
     // read past the client's 20s abort, showing a never-connected account an error.
     if (!connection) return { state: "off" as const, enabled: false, lastScanAt: null, lastDispatchLag: null, errorCode: null, outcomes: [] };
-    const summary = await this.options.store.getStatusSummary(tenant, deadline, metrics);
-    // Legacy rows are populated by the next tick, never by an N-row foreground fallback.
-    if (!summary) throw new Error("calendar_status_summary_missing");
+    // Until the first summary publication, preserve the existing history and timeout fallback.
+    const summary = await this.options.store.getStatusSummaryOrLegacy(tenant, deadline, metrics);
     const outcomes = summary.outcomes;
     return {
       state: connection?.state === "needs_reconnect" ? "needs_reconnect" as const
@@ -161,7 +160,7 @@ export class CalendarAutojoinConnection {
         setupExpiresAt: undefined, nextScanAt: this.now(), errorCode: undefined, scanComplete: false });
     });
     // A setup persisted by the previous backend can survive an upgrade without a summary.
-    // Backfill only on this user action, outside tenant coordination; /status never scans rows.
+    // Backfill on this user action, outside tenant coordination, so subsequent reads are bounded.
     if (!await this.options.store.getStatusSummary(tenant)) {
       const occurrences = await this.options.store.listOccurrences(tenant);
       await this.options.store.putStatusSummary(tenant, { version: 1, outcomes: calendarAutojoinOutcomes(occurrences) });

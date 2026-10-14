@@ -377,7 +377,7 @@ describe("Calendar OAuth custody lifecycle", () => {
     await expect(f.connection.getStatus(TENANT)).rejects.toThrow("kv_unavailable");
     f.store.getConnection = getConnection;
     await f.enable();
-    f.store.getStatusSummary = async () => { throw new Error("kv_summary_unavailable"); };
+    f.store.getStatusSummaryOrLegacy = async () => { throw new Error("kv_summary_unavailable"); };
     await expect(f.connection.getStatus(TENANT)).rejects.toThrow("kv_summary_unavailable");
   });
 

@@ -7,7 +7,7 @@ import {
 import { normalizeGoogleMeetUrl } from "./google-calendar.js";
 import type { CreateMeetingInput } from "./transcription-api.js";
 import { CalendarAutojoinStatusCache, STATUS_CACHE_MAX_TENANTS } from "./calendar-autojoin-status-cache.js";
-import type { CalendarAutojoinStatusSummary } from "./calendar-autojoin-status-summary.js";
+import { calendarAutojoinOutcomes, type CalendarAutojoinStatusSummary } from "./calendar-autojoin-status-summary.js";
 
 export interface CalendarConnection {
   tenant: string;
@@ -120,6 +120,7 @@ export interface CalendarAutojoinStore {
   updateConnection(tenant: string, update: Update<CalendarConnection>): Promise<CalendarConnection | null>;
   listConnections(): Promise<CalendarConnection[]>;
   getStatusSummary(tenant: string, deadline?: number, metrics?: CalendarAutojoinReadMetrics): Promise<CalendarAutojoinStatusSummary | null>;
+  getStatusSummaryOrLegacy(tenant: string, deadline?: number, metrics?: CalendarAutojoinReadMetrics): Promise<CalendarAutojoinStatusSummary>;
   putStatusSummary(tenant: string, summary: CalendarAutojoinStatusSummary): Promise<void>;
   getOccurrence(tenant: string, id: string): Promise<CalendarOccurrence | null>;
   putOccurrence(row: CalendarOccurrence): Promise<void>;
@@ -198,8 +199,26 @@ class JsonCalendarAutojoinStore implements CalendarAutojoinStore {
     });
   }
   listConnections() { return this.list<CalendarConnection>(`${PREFIX}connections/`); }
-  async getStatusSummary(tenant: string, deadline?: number, metrics?: CalendarAutojoinReadMetrics) {
-    const summary = await this.read(() => this.json.get<CalendarAutojoinStatusSummary>(statusKey(tenant)), deadline, metrics);
+  getStatusSummary(tenant: string, deadline?: number, metrics?: CalendarAutojoinReadMetrics) {
+    return this.read(() => this.readSummary(tenant), deadline, metrics);
+  }
+  async getStatusSummaryOrLegacy(tenant: string, deadline?: number, metrics?: CalendarAutojoinReadMetrics) {
+    const summaryOrKeys = await this.read(async () => {
+      const summary = await this.readSummary(tenant);
+      if (summary) return summary;
+      // Share the summary probe's lane job with the legacy prefix lookup: the complete status
+      // path remains N+2 jobs, with each occurrence read yielding as before. The probe adds one
+      // KV call on this migration path; don't start the lookup after the request's deadline.
+      if (deadline !== undefined && Date.now() >= deadline) throw new BackendStorageLaneTimeout("request deadline passed before the legacy listing");
+      return this.json.keys(occurrencePrefix(tenant));
+    }, deadline, metrics);
+    if (!Array.isArray(summaryOrKeys)) return summaryOrKeys;
+    const rows = await this.listKeys<CalendarOccurrence>(summaryOrKeys, deadline, metrics);
+    return { version: 1 as const, outcomes: calendarAutojoinOutcomes(rows) };
+  }
+  /** Only called inside a lane job. A corrupt summary never enters the legacy fallback. */
+  private async readSummary(tenant: string) {
+    const summary = await this.json.get<CalendarAutojoinStatusSummary>(statusKey(tenant));
     if (!summary) this.summaryDigests.delete(tenant.toLowerCase());
     if (summary && (summary.version !== 1 || !Array.isArray(summary.outcomes) || summary.outcomes.length > 30
       || !summary.outcomes.every(row => row && typeof row.id === "string" && typeof row.reason === "string"
@@ -275,6 +294,9 @@ class JsonCalendarAutojoinStore implements CalendarAutojoinStore {
    * many rows. */
   private async list<T>(prefix: string, deadline?: number, metrics?: CalendarAutojoinReadMetrics): Promise<T[]> {
     const keys = await this.read(() => this.json.keys(prefix), deadline, metrics);
+    return this.listKeys<T>(keys, deadline, metrics);
+  }
+  private async listKeys<T>(keys: string[], deadline?: number, metrics?: CalendarAutojoinReadMetrics): Promise<T[]> {
     const rows: T[] = [];
     for (const key of keys) {
       const row = await this.read(() => this.json.get<T>(key), deadline, metrics);
