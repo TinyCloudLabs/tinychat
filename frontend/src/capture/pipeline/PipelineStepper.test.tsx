@@ -20,7 +20,7 @@ describe("PipelineStepper", () => {
     const html = render(uploading(42));
     expect(html).toContain('<ul aria-label="Where this note is" class="pipeline-stepper-list"');
     expect(nodeStates(html)).toEqual([["phone", "done"], ["space", "active"], ["transcript", "waiting"]]);
-    expect(html).toContain('class="pipeline-stepper-label">Audio on this phone</span>');
+    expect(html).toContain('class="pipeline-stepper-label">Audio on this browser</span>');
     expect(html).toContain('class="pipeline-stepper-label">Audio in your space</span>');
     expect(html).toContain('class="pipeline-stepper-label">Transcript</span>');
     expect(html).toContain("Uploading audio to your TinyCloud space · 42%");
@@ -55,7 +55,7 @@ describe("PipelineStepper", () => {
 
   test("a blocker is the cause and one button, and a blocker has no caption", () => {
     const html = render(signedOut());
-    expect(html).toContain("You&#x27;re signed out. This note is safe on this phone.");
+    expect(html).toContain("You&#x27;re signed out. This note is safe on this browser.");
     expect(html).toMatch(/<button type="button" class="soft-pill" aria-describedby="[^"]+">Sign in<\/button>/);
     expect([...html.matchAll(/<button/g)]).toHaveLength(1);
     expect(html).not.toContain("data-pipeline-caption");
@@ -63,7 +63,7 @@ describe("PipelineStepper", () => {
 
   test("a polite status region carries the blocker's cause, and is empty without one", () => {
     expect(render(signedOut())).toContain(
-      'role="status" aria-live="polite" aria-atomic="true" data-pipeline-announce="">You&#x27;re signed out. This note is safe on this phone.</p>',
+      'role="status" aria-live="polite" aria-atomic="true" data-pipeline-announce="">You&#x27;re signed out. This note is safe on this browser.</p>',
     );
     expect(render(uploading(40))).toContain('data-pipeline-announce=""></p>');
   });
@@ -79,7 +79,7 @@ describe("PipelineStepper", () => {
     expect(region?.textContent).toBe("");
     await act(async () => { root.render(createElement(PipelineStepper, { pipeline: signedOut(), onAction: noop })); });
     expect(announce()).toBe(region);
-    expect(region?.textContent).toBe("You're signed out. This note is safe on this phone.");
+    expect(region?.textContent).toBe("You're signed out. This note is safe on this browser.");
     await act(async () => { root.unmount(); });
   });
 
@@ -96,7 +96,7 @@ describe("PipelineStepper", () => {
       space: { saved: false, pending: { upload: { state: "uploading", bytes: 20, total: 100 } } },
     }));
     expect(html).toContain('data-step="transcript" data-state="done"');
-    expect(html).toContain('<span class="pipeline-stepper-status">Ready on this phone</span>');
+    expect(html).toContain('<span class="pipeline-stepper-status">Ready on this browser</span>');
     expect(html).toContain('<span class="pipeline-stepper-status">Uploading audio to your TinyCloud space · 20%</span>');
   });
 
@@ -104,7 +104,7 @@ describe("PipelineStepper", () => {
     const syncing = render(pipelineOf({ route: "off", hasNotesOrMoments: true, notes: { state: "syncing" } }));
     expect(syncing).toContain("Syncing notes…");
     const unreadable = render(pipelineOf({ route: "off", hasNotesOrMoments: true, notes: { state: "unreadable", cause: "disk unavailable" } }));
-    expect(unreadable).toContain("Couldn&#x27;t read this note&#x27;s text on this phone");
+    expect(unreadable).toContain("Couldn&#x27;t read this note&#x27;s text on this browser");
     expect(unreadable).toContain("Try again");
   });
 
@@ -155,7 +155,7 @@ describe("PipelineStepper", () => {
     const cases: [NotePipeline, PipelineActionKind, string][] = [
       [pipelineOf({ space: { saved: false, pending: { failed: { kind: "timeout", message: "x" } } } }), "retry", "Try again"],
       [pipelineOf({ space: { saved: true, pending: null }, transcript: { inSpace: null, onDevice: null, cloud: { kind: "blocked", reason: "unavailable" } } }), "check-again", "Check again"],
-      [pipelineOf({ route: "on-device", space: { saved: true, pending: null }, transcript: { inSpace: null, cloud: null, onDevice: { stt: { state: "waiting_for_model", error: null }, queue: null, model: { state: "absent", bytes: 0, totalBytes: 640, error: null }, download: "idle", sync: null } } }), "get-model", "Get the model"],
+      [pipelineOf({ route: "on-device", space: { saved: true, pending: null }, transcript: { inSpace: null, cloud: null, onDevice: { stt: { state: "waiting_for_model", error: null }, queue: null, model: { state: "absent", bytes: 0, totalBytes: 640, error: null }, download: "idle", sync: null } } }), "get-model", "Get model"],
     ];
     for (const [pipeline, kind, label] of cases) {
       const host = document.createElement("div");

@@ -13,6 +13,7 @@ import { createElement, act } from "react";
 import { createRoot } from "react-dom/client";
 
 import { captureEvents } from "@/capture/captureEvents";
+import { failureNotificationStorageKey, readFailureNotificationKeys, writeFailureNotificationKeys } from "@/capture/activity/failureNotifications";
 import { registerPlayback } from "@/lib/audio/playback";
 import { installDom } from "@/test/dom";
 import { RecorderProvider, useRecorder, type RecorderValue } from "./RecorderProvider";
@@ -435,11 +436,14 @@ describe("voice-note recorder controller", () => {
     const { recorder, detach } = await attached();
     await recorder.record();
     const id = currentId!;
+    const notificationKey = failureNotificationStorageKey(tcw.did);
+    writeFailureNotificationKeys(notificationKey, [JSON.stringify([id, "finish", "storage"])]);
     await tick();
     await recorder.setNoteText("To discard");
     await recorder.discard();
     expect(await loadNote(id)).toBeNull();
     expect(recorder.getNote()).toBeNull();
+    expect(readFailureNotificationKeys(notificationKey)).toEqual([]);
     detach();
   });
 
@@ -723,7 +727,7 @@ describe("voice-note recorder controller", () => {
       await recorder.record();
       await recorder.stop();
       await tick();
-      const friendly = "Couldn't reach your TinyCloud space. This note is still on your phone — try again.";
+      const friendly = "Waiting for a connection · syncs by itself";
       expect(recorder.getState().error).toBe(friendly);
       expect(warnings.filter(([message]) => String(message).includes("TinyCloud network failure"))).toHaveLength(1);
     } finally {
@@ -1246,7 +1250,7 @@ describe("voice-note recorder controller", () => {
     await Promise.all([first, doubleTap]);
     expect(reconcileRuns).toBe(1);
     expect(pendingStore.snapshot()).toMatchObject({ running: false, listing: { state: "ok", count: 1 } });
-    expect(pendingStore.snapshot().lastError).toContain("saving it is taking too long");
+    expect(pendingStore.snapshot().lastError).toContain("Saving to your TinyCloud space is slow");
     setVoiceNoteSaveDeadlineForTests(null);
     pendingStore.setAccount(null);
     detach();
@@ -1365,7 +1369,7 @@ describe("voice-note recorder controller", () => {
     outcomes.shift()!.reject(new Error("space timed out"));
     await saving;
     expect(pendingStore.snapshot()).toMatchObject({ accountDid: tcw.did,
-      lastError: "Could not save notes on this phone: space timed out" });
+      lastError: "Saving to your TinyCloud space is slow. The note is safe on this browser. Try again." });
     pendingStore.setAccount(null);
     detach();
   });
@@ -1696,7 +1700,7 @@ const hostWindow = () => ({ HTMLIFrameElement: class {}, document: hostDocument,
     await recorder.record();
     await recorder.stop();
     expect(recorder.getState()).toMatchObject({
-      phase: "idle", error: "Kept on this phone. Exo will finish it automatically.",
+      phase: "idle", error: "Kept on this browser. Exo will finish it automatically.",
     });
     expect(recorder.getState().captureIssues[currentId ?? onPhone[0].id]).toEqual({ kind: "finalization_timed_out" });
     expect(onPhone).toHaveLength(1);
@@ -1886,7 +1890,7 @@ const hostWindow = () => ({ HTMLIFrameElement: class {}, document: hostDocument,
       recording: null, error: "finalization_timed_out",
     });
     expect(recorder.getState()).toMatchObject({
-      phase: "idle", error: "Kept on this phone. Exo will finish it automatically.",
+      phase: "idle", error: "Kept on this browser. Exo will finish it automatically.",
     });
     expect(saves).toEqual([]);
   });
@@ -1968,7 +1972,7 @@ const hostWindow = () => ({ HTMLIFrameElement: class {}, document: hostDocument,
     await recorder.record();
     await stopNatively();
     await recorder.discard();
-    expect(recorder.getState()).toMatchObject({ phase: "idle", outcome: null, error: "Discarded, but this phone kept its copy: the file is busy" });
+    expect(recorder.getState()).toMatchObject({ phase: "idle", outcome: null, error: "Discarded, but this browser kept its copy: the file is busy" });
     const kept = onPhone[0]!;
     expect(isDiscarded(kept.id)).toBe(true);
 
@@ -2320,7 +2324,7 @@ const hostWindow = () => ({ HTMLIFrameElement: class {}, document: hostDocument,
       await tick();
       expect(await recorder.setTranscriber("private-cloud", { scope: "default" })).toBe("ok");
 
-      // The engine takes On this phone, then holds the reply while the sign-in default write arrives.
+      // The engine takes On this browser, then holds the reply while the sign-in default write arrives.
       let release!: () => void;
       const held = new Promise<void>((resolve) => { release = resolve; });
       __setVoiceNotesForTests({ ...plugin, async setCaptureDefaults(defaults) {

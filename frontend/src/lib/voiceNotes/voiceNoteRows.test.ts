@@ -876,7 +876,7 @@ test("an unanswered space setup ends as a visible timeout", async () => {
     })) as typeof tcw.sql.db;
     const pipeline = createVoiceNotePipeline(tcw);
     await expect(pipeline.reconcileAll({ did: tcw.did, spaceId: tcw.spaceId,
-      generation: currentAccountGeneration() })).rejects.toThrow("taking too long");
+      generation: currentAccountGeneration() })).rejects.toThrow("Saving to your TinyCloud space is slow");
     expect(pendingStore.snapshot().notes?.find((note) => note.id === recording.id)?.failed)
       .toMatchObject({ kind: "timeout" });
   } finally {
@@ -1481,7 +1481,7 @@ test("a wrapped CORS-hidden upload refusal shows node rejection copy without lea
     await pipeline.reconcileAll({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() });
 
     expect(pendingStore.snapshot().lastError).toBe(
-      "The TinyCloud node rejected this upload. This note is still on your phone — try again after the node is fixed.",
+      "The TinyCloud node rejected this upload. This note is safe on this browser — try again after the node is fixed.",
     );
     expect(pendingStore.snapshot().lastError).not.toContain(rawUrl);
     expect(pendingStore.snapshot().notes?.find((note) => note.id === id)?.failed?.kind).toBe("rejected");
@@ -1727,7 +1727,7 @@ test("a never-settling audio KV put reports a visible timeout and clears Saving 
     expect(pendingStore.snapshot().running).toBe(true);
     await reconcile;
     expect(pendingStore.snapshot().running).toBe(false);
-    expect(pendingStore.snapshot().lastError).toContain("saving it is taking too long");
+    expect(pendingStore.snapshot().lastError).toContain("Saving to your TinyCloud space is slow");
     expect(pendingStore.snapshot().notes?.find((note) => note.id === recording.id)?.failed?.kind).toBe("timeout");
     // The disabled={saving} condition is now false, so Save now is enabled again.
   } finally {
@@ -1833,7 +1833,7 @@ test("a late part put settles before retry writes and retry commits one complete
     const pipeline = createVoiceNotePipeline(tcw, { saveRetryDelaysMs: [] });
     const ctx = { did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() };
     await pipeline.reconcileAll(ctx);
-    expect(pendingStore.snapshot().lastError).toContain("taking too long");
+    expect(pendingStore.snapshot().lastError).toContain("Saving to your TinyCloud space is slow");
     expect(partWrites).toBe(1);
     const retry = pipeline.reconcileAll(ctx);
     await new Promise((resolve) => setTimeout(resolve, 5));

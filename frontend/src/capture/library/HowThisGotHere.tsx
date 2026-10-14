@@ -33,7 +33,7 @@ function str(value: unknown): string | null {
 
 /** Where a voice note started; one with no recorded platform predates the desktop and web recorders, so it came from a phone. */
 function voiceNoteSource(platform: string | null): string {
-  return routeSourceName(platform === "tauri" || platform === "web" ? platform : "ios");
+  return routeSourceName(platform === "tauri" || platform === "web" || platform === "android" ? platform : "ios");
 }
 
 /**

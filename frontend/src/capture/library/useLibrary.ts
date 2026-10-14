@@ -1,4 +1,5 @@
 import { readableError } from "@/lib/readableError";
+import { deviceName } from "@/lib/platform";
 // The Library's data (TC-761, plan §4.11), called once in CaptureSurface: the
 // list for Recent, the Library and the list pane, and the open note's reads.
 //
@@ -94,7 +95,7 @@ function localAudio(recordingId: string, channels?: 1 | 2): NoteAudio {
         const { url } = await VoiceNotes.localAudioUrl({ id: recordingId });
         return Capacitor.convertFileSrc(url);
       } catch (caught) {
-        throw new Error(`Could not open this phone's audio: ${readableError(caught)}`, { cause: caught });
+        throw new Error(`Could not open audio on ${deviceName()}: ${readableError(caught)}`, { cause: caught });
       }
     },
   };

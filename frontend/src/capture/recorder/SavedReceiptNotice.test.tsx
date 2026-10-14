@@ -37,7 +37,7 @@ describe("SavedReceipt notice", () => {
     expect(html).toContain("Saved — part of this recording couldn&#x27;t be written");
     expect(html).not.toContain('role="alert"');
     expect(html).not.toContain("destructive");
-    expect(html).toContain("Saved on this phone");
+    expect(html).toContain("Saved on this browser");
   });
 
   test("no notice for a whole recording", () => {

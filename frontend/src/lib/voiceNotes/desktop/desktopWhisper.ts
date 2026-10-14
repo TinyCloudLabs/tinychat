@@ -44,7 +44,7 @@ export async function loadDesktopWhisperBridge(): Promise<DesktopWhisperBridge> 
 }
 
 export type DesktopWhisperJob = { id: string; state: "queued" | "transcribing" | "done" | "failed";
-  error: string | null; progress: number | null };
+  error: string | null; progress: number | null; position?: number | null; inLine?: number };
 
 /** D7b can subscribe to per-note status and call retry(id) after a failure. */
 export interface DesktopWhisperQueue {
@@ -106,6 +106,7 @@ export function createDesktopWhisperQueue(args: {
 }): DesktopWhisperQueue {
   const { store, files, whisper, captureLive } = args;
   const jobs = new Map<string, DesktopWhisperJob>();
+  let derivedSnapshot: ReadonlyMap<string, DesktopWhisperJob> | null = null;
   const listeners = new Set<() => void>();
   const doneListeners = new Set<(id: string) => void>();
   const failedListeners = new Set<(id: string) => void>();
@@ -124,6 +125,7 @@ export function createDesktopWhisperQueue(args: {
   const publish = (id: string, state: DesktopWhisperJob["state"], error: string | null = null,
     progress: number | null = null) => {
     jobs.set(id, { id, state, error, progress });
+    derivedSnapshot = null;
     for (const listener of listeners) {
       try { listener(); } catch (caught) { console.error("[desktopWhisper] Status listener failed", caught); }
     }
@@ -269,7 +271,13 @@ export function createDesktopWhisperQueue(args: {
     });
   };
   return {
-    snapshot: () => new Map(jobs),
+    snapshot: () => {
+      if (derivedSnapshot !== null) return derivedSnapshot;
+      const line = [...jobs.values()].filter((job) => job.state === "queued" || job.state === "transcribing");
+      const positions = new Map(line.map((job, index) => [job.id, index + 1]));
+      derivedSnapshot = new Map([...jobs].map(([id, job]) => [id, { ...job, position: positions.get(id) ?? null, inLine: line.length }]));
+      return derivedSnapshot;
+    },
     subscribe(listener) { listeners.add(listener); return () => { listeners.delete(listener); }; },
     onDone(listener) {
       doneListeners.add(listener);

@@ -5,16 +5,17 @@
 // Retry) comes from the native STT queue directly, not from the space's
 // transcript, which may still be unsaved or unsynced here.
 import { FINAL_COPY, TRANSCRIBER_NAME } from "@/capture/recorder/final/finalCopy";
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useContext, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { PlatformContext, deviceName } from "@/lib/platform";
 import { Capacitor } from "@capacitor/core";
 import { Loader2Icon, RefreshCwIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { MeetingAudioPlayer } from "@/chat/MeetingAudioPlayer";
-import { PHONE_AUDIO_UNAVAILABLE } from "@/chat/audioPlayback";
+import { audioUnavailableMessage } from "@/chat/audioPlayback";
 import { cn } from "@/lib/utils";
-import { useResolvedTheme } from "@/lib/theme";
-import { PipelineStepper } from "@/capture/pipeline/PipelineStepper";
+import { activityForNote, noteStatus } from "@/capture/activity/activitySelector";
+import type { PipelineHeldReason } from "@/lib/voiceNotes/notePipeline";
 import { type NotePipelineView } from "@/lib/voiceNotes/useNotePipeline";
 import "./final/soft.css";
 import { VoiceNotes, type LocalTranscript, type NoteSttState, type TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
@@ -30,6 +31,8 @@ export interface SavedReceiptProps {
   device?: "phone" | "mac";
   outcome: "local" | "saved" | "failed";
   localUpload?: "uploading" | "held" | "in-flight" | null;
+  /** The actual hold on this recording, when localUpload is held. */
+  holdReason?: PipelineHeldReason | null;
   /** The saved note (absent after a failure). */
   saved?: { id: string; durationMs: number; at: number; channels?: 1 | 2 } | null;
   route: readonly RouteNode[];
@@ -163,7 +166,7 @@ export function onDeviceOffer(args: {
 
 /** The source reads "This phone" until a transcript made there exists. */
 export function honestSourceRoute(route: readonly RouteNode[], transcribedHere: boolean): RouteNode[] {
-  return route.map((node) => (node.kind === "source" && node.label === "This phone (transcribed here)" && !transcribedHere ? { ...node, label: "This phone" } : node));
+  return route.map((node) => (node.kind === "source" && node.label.endsWith(" (transcribed here)") && !transcribedHere ? { ...node, label: node.label.replace(/ \(transcribed here\)$/, "") } : node));
 }
 
 /** A Local note whose model is not on the phone: what it needs and what can be done, with no spinner (nothing is running). */
@@ -177,7 +180,7 @@ export function NeedsOnDeviceModel(props: { guide: ReturnType<typeof localModelG
         <Button type="button" variant="outline" disabled={props.switching} onClick={props.onUsePrivate} data-testid="voice-note-use-private">
           {props.switching ? `Switching to ${TRANSCRIBER_NAME["private-cloud"]}…` : `Use ${TRANSCRIBER_NAME["private-cloud"]} instead`}
         </Button>
-        {props.error && <p role="alert" className="text-callout text-destructive">{props.error}</p>}
+        {props.error && <p role="alert" className="text-callout text-destructive">Couldn't switch to Private. Try again.</p>}
       </div>
     );
   }
@@ -198,23 +201,28 @@ export function NeedsOnDeviceModel(props: { guide: ReturnType<typeof localModelG
           )}
         </div>
       )}
-      {props.error && <p role="alert" className="text-callout text-destructive">{props.error}</p>}
+      {props.error && <p role="alert" className="text-callout text-destructive">Couldn't switch to Private. Try again.</p>}
     </div>
   );
 }
 
 /** The stepper on the Soft skin's tokens, which the receipt's own page does not carry. */
 function ReceiptStepper(props: { view: NotePipelineView }) {
-  const theme = useResolvedTheme() === "dark" ? "night" : "day";
+  const jobs = activityForNote(props.view, props.view.input?.device === "mac" ? "tauri" : props.view.input?.device === "browser" ? "web" : props.view.input?.device === "android" ? "android" : "ios");
+  const status = noteStatus(jobs, props.view.pipeline);
+  const actions = jobs.flatMap((job) => job.action ? [job.action] : job.retry ? [{ label: "Try again", run: job.retry }] : []);
   return (
-    <div className={`soft-skin soft-${theme}`} data-layout="phone" style={{ background: "transparent" }} data-testid="voice-note-receipt-pipeline">
-      <PipelineStepper pipeline={props.view.pipeline} onAction={props.view.onAction} actionError={props.view.actionError} />
+    <div className="flex flex-wrap items-center gap-3 text-callout" data-testid="voice-note-receipt-pipeline">
+      {status && <p role="status" className="text-muted-foreground">{status}</p>}
+      {actions.map((action, index) => <button key={`${action.label}:${index}`} type="button" className="min-h-11 text-primary" onClick={action.run}>{action.label}</button>)}
+      {props.view.actionError && <p role="alert" className="text-destructive">{props.view.actionError}</p>}
     </div>
   );
 }
 
 export function SavedReceipt(props: SavedReceiptProps) {
-  const deviceName = props.device === "mac" ? "Mac" : "phone";
+  const platform = useContext(PlatformContext);
+  const localDevice = deviceName(props.device === "mac" ? "tauri" : platform);
   const saved = props.outcome === "saved";
   const pipelineView = props.outcome === "failed" ? null : props.pipeline ?? null;
   const stepperShown = pipelineView !== null && !pipelineView.pipeline.done;
@@ -237,10 +245,10 @@ export function SavedReceipt(props: SavedReceiptProps) {
     }
     void VoiceNotes.localAudioUrl({ id: props.saved.id }).then(
       ({ url }) => { if (active) { setLocalUrl(Capacitor.convertFileSrc(url)); onReadyRef.current?.(); } },
-      (caught: unknown) => { if (active) { console.error("[Receipt] Could not open local audio", caught); setLocalError(props.device === "mac" ? "Couldn’t open this note’s audio on this Mac." : PHONE_AUDIO_UNAVAILABLE); onReadyRef.current?.(); } },
+      (caught: unknown) => { if (active) { console.error("[Receipt] Could not open local audio", caught); setLocalError(audioUnavailableMessage(platform)); onReadyRef.current?.(); } },
     );
     return () => { active = false; };
-  }, [props.saved?.id, props.localAudioState]);
+  }, [props.saved?.id, props.localAudioState, platform]);
   const onDevice = useOnDeviceReceipt(props.saved?.id, props.transcriber === "on-device", props.sttHint);
   const sttStatus = useSyncExternalStore(onDeviceSttStore.subscribe, onDeviceSttStore.snapshot, onDeviceSttStore.snapshot);
   const downloadError = useSyncExternalStore(onDeviceSttStore.subscribe, onDeviceSttStore.downloadError, onDeviceSttStore.downloadError);
@@ -266,7 +274,7 @@ export function SavedReceipt(props: SavedReceiptProps) {
       ? { ...node, label: node.label.replaceAll("phone", "Mac") } : node);
   return (
     <section
-      aria-label={`Saved on this ${deviceName}`}
+      aria-label={`Saved on ${localDevice}`}
       data-testid="voice-note-receipt"
       data-outcome={props.outcome}
       className={cn("flex flex-col gap-3 rounded-xl border border-border p-4 motion-safe:animate-rise-in", props.className)}
@@ -292,27 +300,28 @@ export function SavedReceipt(props: SavedReceiptProps) {
         <span>Recording saved. Couldn&apos;t prepare audio.</span>
         {props.onRetryPreparation && <Button type="button" variant="outline" onClick={props.onRetryPreparation}>Retry preparation</Button>}
       </div>}
-      {!localUrl && !localError && props.saved && props.localAudioState !== "preparing" && props.localAudioState !== "failed" && <p role="status" className="text-meta text-muted-foreground">Getting this {deviceName}&apos;s audio…</p>}
+      {!localUrl && !localError && props.saved && props.localAudioState !== "preparing" && props.localAudioState !== "failed" && <p role="status" className="text-meta text-muted-foreground">Getting {localDevice}&apos;s audio…</p>}
       {stepperShown ? <ReceiptStepper view={pipelineView} /> : pipelineWaiting ? null : (
         <>
-          <RouteLine nodes={route} landed={saved} />
-          {props.outcome === "local" && <p className="text-meta text-muted-foreground">{
-            props.localUpload === "held" ? `Kept on this ${deviceName}. This note needs an ownership check before upload.`
-              : props.localUpload === "in-flight" ? "Another save is finishing in your TinyCloud space…"
-              : "Saving to your TinyCloud space…"
-          }</p>}
-          {saved && <p className="text-meta text-muted-foreground">Saved to your TinyCloud space</p>}
+          {!pipelineView && <RouteLine nodes={route} landed={saved} />}
+          {props.outcome === "local" && !pipelineView && !pipelineWaiting && <p className="text-meta text-muted-foreground">{props.localUpload === "held"
+            ? props.holdReason === "other-account" ? "Recorded on another account"
+              : props.holdReason === "signed-out" ? "Sign in to sync to your TinyCloud space"
+                : props.holdReason === "legacy" || props.holdReason === "unowned" ? `Exo can't tell which account this note belongs to. It stays on ${localDevice}.`
+                  : "Waiting to sync to your TinyCloud space"
+            : "Waiting to sync to your TinyCloud space"}</p>}
+          {saved && <p className="text-meta text-muted-foreground">In your TinyCloud space</p>}
         </>
       )}
-      {saved && !stepperShown && props.transcribing && <p className="text-meta text-muted-foreground">{props.transcriber === "assemblyai" ? "Transcribing with Powerful…" : "Transcribing in private cloud…"}</p>}
-      {saved && props.held && <p role="status" className="text-meta text-muted-foreground" data-testid="voice-note-held">{props.held}</p>}
-      {saved && props.privateOutcome && (
+      {saved && !pipelineView && !pipelineWaiting && props.transcribing && <p className="text-meta text-muted-foreground">{props.transcriber === "assemblyai" ? "Transcribing with Powerful…" : "Transcribing in private cloud…"}</p>}
+      {saved && !pipelineView && props.held && <p role="status" className="text-meta text-muted-foreground" data-testid="voice-note-held">{props.held}</p>}
+      {saved && !pipelineView && !pipelineWaiting && props.privateOutcome && (
         <p className="text-meta text-muted-foreground" data-testid="voice-note-private-done">
-          {props.privateOutcome === "no_speech" ? "No speech was found in this note." : props.transcriber === "assemblyai" ? "Transcribed with Powerful" : "Transcribed in private cloud"}
+          {props.privateOutcome === "no_speech" ? "No speech found" : props.transcriber === "assemblyai" ? "Transcribed with Powerful" : "Transcribed in private cloud"}
         </p>
       )}
-      {props.privateFailure && !stepperShown && (
-        <p role="alert" className="text-callout text-destructive" data-testid="voice-note-private-failed">{props.transcriber === "assemblyai" ? "Powerful couldn't finish: " : "Couldn't transcribe in private cloud: "}{props.privateFailure}</p>
+      {props.privateFailure && !pipelineView && !pipelineWaiting && (
+        <p role="alert" className="text-callout text-destructive" data-testid="voice-note-private-failed">{props.transcriber === "assemblyai" ? "Powerful transcription didn't finish." : "Private transcription didn't finish."}</p>
       )}
       {needsModel && (
         <NeedsOnDeviceModel
@@ -324,7 +333,8 @@ export function SavedReceipt(props: SavedReceiptProps) {
             setModelError(null);
             setSwitching(true);
             void usePrivate().then((failure) => {
-              setModelError(failure);
+              if (failure) console.error("[Receipt] Could not switch transcription to Private", failure);
+              setModelError(failure ? "Couldn't switch to Private. Try again." : null);
               setSwitching(false);
             });
           })}
@@ -333,15 +343,15 @@ export function SavedReceipt(props: SavedReceiptProps) {
       {!movedToPrivate && !stepperShown && onDevice.kind === "pending" && !needsModel && (
         <p role="status" className="flex items-center gap-2 text-meta text-muted-foreground" data-testid="voice-note-on-device-pending">
           <Loader2Icon className="size-3.5 shrink-0 motion-safe:animate-spin" aria-hidden />
-          Transcribing on this {deviceName}…
+          Transcribing on {localDevice}…
         </p>
       )}
       {onDevice.kind === "transcribed" && (
         onDevice.transcript.outcome === "no_speech" ? (
-          <p className="text-meta text-muted-foreground" data-testid="voice-note-on-device-no-speech">No speech was found in this note.</p>
+          <p className="text-meta text-muted-foreground" data-testid="voice-note-on-device-no-speech">No speech found</p>
         ) : (
           <div className="flex flex-col gap-1" data-testid="voice-note-on-device-transcript">
-            <p className="text-meta text-muted-foreground">Transcribed on this {deviceName}</p>
+            <p className="text-meta text-muted-foreground">Transcribed on {localDevice}</p>
             <p className="max-w-[60ch] whitespace-pre-wrap break-words text-callout">
               {onDevice.transcript.segments.map((segment) => segment.text).join(" ")}
             </p>
@@ -350,7 +360,7 @@ export function SavedReceipt(props: SavedReceiptProps) {
       )}
       {!movedToPrivate && !stepperShown && onDevice.kind === "failed" && (
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2" data-testid="voice-note-on-device-failed">
-          <p role="alert" className="min-w-0 flex-1 text-callout text-destructive">Couldn&apos;t transcribe on this {deviceName}.</p>
+          <p role="alert" className="min-w-0 flex-1 text-callout text-destructive">Couldn&apos;t transcribe on {localDevice}.</p>
           {props.saved && (
             <Button type="button" variant="outline" onClick={onDevice.retry} data-testid="voice-note-on-device-retry">
               <RefreshCwIcon aria-hidden /> Retry

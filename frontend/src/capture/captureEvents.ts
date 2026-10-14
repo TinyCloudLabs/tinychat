@@ -3,7 +3,7 @@
 // transcript copied in. The Library listens and re-lists while it is open.
 // Emitting never reads storage; listeners decide whether to.
 
-export type CaptureEvent = "library-changed";
+export type CaptureEvent = "library-changed" | "note-deleted";
 /** Identity in connector_meeting; omitted for a list-only refresh. */
 export interface LibraryChangedDetail { source: string; sourceId: string }
 

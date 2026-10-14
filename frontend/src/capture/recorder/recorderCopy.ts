@@ -3,6 +3,7 @@
 // notes card has always used (`micStatusText`), moved here with it.
 
 import type { MicState, MicStateReason } from "@/lib/voiceNotes/nativeVoiceNotes";
+import { deviceName } from "@/lib/platform";
 import type { RecorderPhase } from "./recorderReducer";
 
 export function formatDuration(ms: number): string {
@@ -71,7 +72,7 @@ export function micStatusText(
   maxDurationMs?: number,
 ): string {
   if (phase === "starting") return "Starting the microphone…";
-  if (phase === "stopping" || phase === "saving") return "Saving on this phone…";
+  if (phase === "stopping" || phase === "saving") return `Saving on ${deviceName()}…`;
   if (phase !== "recording") return "Not recording. The microphone is off.";
   if (mic.state === "paused") return `Paused at ${formatDuration(elapsedMs)}. The microphone is off.`;
   if (mic.state === "interrupted") return interruptionText(mic.reason);
@@ -102,7 +103,7 @@ export function recorderStatusText(
   _savePercent: number | null,
 ): string {
   if (phase === "starting") return "Starting the microphone…";
-  if (phase === "stopping" || phase === "saving") return "Saving on this phone…";
+  if (phase === "stopping" || phase === "saving") return `Saving on ${deviceName()}…`;
   if (phase === "discarding") return "Discarding…";
   if (phase !== "recording") return "Not recording";
   if (mic.state === "paused") return "Paused · mic off";
@@ -140,11 +141,11 @@ export function clockTime(at: number): string {
   return new Date(at).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 }
 
-export const RECEIPT_KEPT = "Kept on this phone";
+export const RECEIPT_KEPT = `Kept on ${deviceName()}`;
 export const FINALIZATION_PENDING =
-  "Kept on this phone. Exo will finish it automatically.";
-export const ISLAND_SAVED = "Saved on this phone";
-export const ISLAND_KEPT = "Kept on this phone";
+  `Kept on ${deviceName()}. Exo will finish it automatically.`;
+export const ISLAND_SAVED = `Saved on ${deviceName()}`;
+export const ISLAND_KEPT = `Kept on ${deviceName()}`;
 export const DISCARD_PROMPT = "Discard?";
 /** The question as a screen reader hears it. */
 export const DISCARD_PROMPT_SPOKEN = "Discard this recording?";

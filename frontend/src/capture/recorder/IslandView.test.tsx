@@ -68,17 +68,17 @@ describe("IslandView", () => {
     expect(html).not.toContain("island-stop");
   });
 
-  test("landed: Saved on this phone, with Open when a note can be opened", () => {
+  test("landed: Saved on this browser, with Open when a note can be opened", () => {
     const landed = value({ phase: "idle", outcome: "saved", lastSaved: { id: "rec-1", durationMs: 1, at: 1 } });
     const html = renderToStaticMarkup(<IslandView recorder={landed} onOpenNote={noop} />);
-    expect(html).toContain("Saved on this phone");
+    expect(html).toContain("Saved on this browser");
     expect(html).toContain('data-testid="island-open"');
     expect(renderToStaticMarkup(<IslandView recorder={landed} />)).not.toContain("island-open");
   });
 
-  test("failed: Kept on this phone, with Save now", () => {
+  test("failed: Kept on this browser, with Save now", () => {
     const html = renderToStaticMarkup(<IslandView recorder={value({ phase: "idle", outcome: "failed" })} />);
-    expect(html).toContain("Kept on this phone");
+    expect(html).toContain("Kept on this browser");
     expect(html).toContain('data-testid="island-save-now"');
   });
 

@@ -356,7 +356,7 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
         const defaults = await store.getCaptureDefaults();
         await store.beginSession({ id: item.id, startedAt: item.journal.startedAt, source: "in_app", owner: null,
           transitionGen: defaults.transitionGen, options: { transcriber: capabilities.desktopWhisper ? "on-device" : "off", identifySpeakers: false,
-            uploadAudio: false },
+            uploadAudio: defaults.uploadAudio ?? false },
           mimeType: "audio/mpeg", input: null, maxDurationMs: item.journal.maxDurationMs, channels });
       } else {
         await store.updateSession(item.id, { channels });
@@ -402,7 +402,7 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
       const defaults = await store.getCaptureDefaults();
       await store.beginSession({ id: pointer.id, startedAt: pointer.startedAt, source: "in_app", owner: null,
         transitionGen: defaults.transitionGen, options: { transcriber: capabilities.desktopWhisper ? "on-device" : "off", identifySpeakers: false,
-          uploadAudio: false },
+          uploadAudio: defaults.uploadAudio ?? false },
         mimeType: "audio/mpeg", input: null, maxDurationMs: pointer.maxDurationMs,
         channels: pointer.layout === "stereo" ? 2 : 1 });
     }

@@ -22,9 +22,12 @@ import type { MeetingMetadataRead, TranscriptRead } from "@/lib/connectors/meeti
 import { UPLOAD_MEETING_SOURCE } from "@/lib/audioUpload";
 import { captureCapabilities } from "@/lib/voiceNotes/captureEngine";
 import type { NotePipeline } from "@/lib/voiceNotes/notePipeline";
+import type { NotePipelineView } from "@/lib/voiceNotes/useNotePipeline";
+import type { AppPlatform } from "@/lib/platform";
+import { activityForNote, deviceName, noteStatus } from "../activity/activitySelector";
 import type { LocalTranscript } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { transcriptionStatusText } from "@/lib/voiceNotes/voiceNoteTranscription";
-import { voiceNoteTranscriptionFailureForCode } from "@/lib/voiceNotes/transcriptionErrors";
+import { transcriptionErrorCopy, voiceNoteTranscriptionFailureForCode } from "@/lib/voiceNotes/transcriptionErrors";
 import { localTranscriptToSave, voiceNoteTitle, voiceNoteTranscriptState, VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
 import { PAGE_COLUMN, PageHeader } from "@/shell/PageHeader";
 import { detailWhen, formatSpokenDuration } from "./formatters";
@@ -70,6 +73,8 @@ export interface NoteDetailViewProps {
   audio: NoteAudio | null;
   /** Private cloud transcription (voice notes in the phone app); absent elsewhere. */
   transcription?: VoiceNoteTranscriptionProps;
+  activityView?: NotePipelineView;
+  platform?: AppPlatform;
   /** Whether the Mac's after-stop Whisper job shows here; defaults to the final recorder in the Tauri shell. */
   desktopWhisper?: boolean;
   copyState: "idle" | "copied" | "failed";
@@ -82,6 +87,7 @@ export interface NoteDetailViewProps {
   onBack: () => void;
   /** A voice note opens as its editable note (a page, or a sheet on a phone) instead of this view. */
   savedNote?: { tcw: TinyCloudWeb; layout: "page" | "sheet"; store?: SavedNoteStore };
+  activityControl?: ReactNode;
 }
 
 /** Consecutive sentences of one speaker as one block. */
@@ -106,11 +112,12 @@ export function noteMeta(item: LibraryItem): string {
     .join(" · ");
 }
 
-function Frame(props: { title: string; pushed: boolean; onBack: () => void; children: ReactNode }) {
+function Frame(props: { title: string; pushed: boolean; onBack: () => void; activityControl?: ReactNode; children: ReactNode }) {
   return (
     <>
-      {props.pushed && <PageHeader title={props.title} back={props.onBack} className={PAGE_COLUMN} />}
+      {props.pushed && <PageHeader title={props.title} back={props.onBack} className={PAGE_COLUMN} trailing={props.activityControl} />}
       <div className={props.pushed ? `${PAGE_COLUMN} flex flex-col gap-6 pb-[max(1.5rem,env(safe-area-inset-bottom))] pt-1` : "flex flex-col gap-6 px-6 pb-8 pt-6 expanded:px-8"}>
+        {!props.pushed && props.activityControl && <div className="flex justify-end">{props.activityControl}</div>}
         {props.children}
       </div>
     </>
@@ -123,12 +130,14 @@ export function VoiceNoteTranscriptionStatus(props: {
   outcome: "none" | "pending" | "failed" | "skipped" | "transcribed" | "no_speech";
   errorCode?: string | null;
   transcription: VoiceNoteTranscriptionProps | undefined;
+  provider?: "private" | "powerful" | "unknown";
 }) {
   const { item, transcription } = props;
+  const provider = props.provider ?? "private";
   if (props.outcome === "no_speech") {
     return (
       <p data-testid="voice-note-no-speech" className="text-callout text-muted-foreground">
-        No speech was found in this note.
+        No speech found
       </p>
     );
   }
@@ -137,14 +146,17 @@ export function VoiceNoteTranscriptionStatus(props: {
   if (job?.kind === "done") {
     return (
       <p data-testid="voice-note-transcription-done" className="text-callout text-muted-foreground">
-        {job.outcome === "no_speech" ? "No speech was found in this note." : "Transcript saved."}
+        {job.outcome === "no_speech" ? "No speech found" : "Saving the transcript to your TinyCloud space…"}
       </p>
     );
   }
   if (job?.kind === "active") {
+    const status = transcriptionStatusText(job.status);
+    const providerStatus = provider === "powerful" ? status.replaceAll("Private transcription", "Powerful (AssemblyAI)").replaceAll("private cloud", "Powerful")
+      : provider === "unknown" ? status.replaceAll("Private transcription", "transcription").replaceAll("private cloud", "the transcription service") : status;
     return (
       <p role="status" data-testid="voice-note-transcription-status" className="flex items-center gap-2 text-callout text-muted-foreground">
-        <Loader2Icon className="size-4 shrink-0 motion-safe:animate-spin" aria-hidden /> {transcriptionStatusText(job.status)}
+        <Loader2Icon className="size-4 shrink-0 motion-safe:animate-spin" aria-hidden /> {providerStatus}
       </p>
     );
   }
@@ -157,13 +169,14 @@ export function VoiceNoteTranscriptionStatus(props: {
     );
   }
   if (job?.kind === "failed") {
+    const failure = voiceNoteTranscriptionFailureForCode(job.code);
     return (
       <div className="flex flex-col gap-2" data-testid="voice-note-transcription-failed">
         <p role="alert" className="min-w-0 text-callout text-destructive">
-          {job.message}
-          {job.reference && <span className="text-muted-foreground"> Reference: {job.reference}</span>}
+          {transcriptionErrorCopy(job.code) ?? job.message}
         </p>
-        {job.retryable && <TranscribeAction noteId={item.sourceId} transcription={transcription} durationSecs={item.durationSecs} label="Try again" />}
+        {job.reference && <ReferenceDetails reference={job.reference} />}
+        {job.retryable && failure.retryable && <TranscribeAction noteId={item.sourceId} transcription={transcription} durationSecs={item.durationSecs} label="Try again" />}
       </div>
     );
   }
@@ -202,6 +215,11 @@ export function VoiceNoteTranscriptionStatus(props: {
   );
 }
 
+function ReferenceDetails({ reference }: { reference: string }) {
+  const [result, setResult] = useState<"copied" | "failed" | null>(null);
+  return <div className="flex flex-wrap items-center gap-2 text-callout text-muted-foreground"><span>Reference: {reference}</span><button type="button" className="min-h-11 text-primary" onClick={() => { if (!navigator.clipboard) { setResult("failed"); return; } void navigator.clipboard.writeText(reference).then(() => setResult("copied"), () => setResult("failed")); }}>Copy details</button>{result && <span role={result === "failed" ? "alert" : "status"}>{result === "copied" ? "Details copied." : "Couldn't copy details."}</span>}</div>;
+}
+
 /**
  * What the Transcript section says while the note's pipeline (the stepper above it) is not done: the transcript step's
  * own words, or where it will appear. The current step's caption and cause are already in the stepper, so then it
@@ -210,6 +228,7 @@ export function VoiceNoteTranscriptionStatus(props: {
 export function transcriptStepLine(pipeline: NotePipeline): string | null {
   const step = pipeline.steps.find((candidate) => candidate.key === "transcript");
   if (step === undefined || step.state === "done" || step.state === "skipped") return null;
+  if (step.state === "waiting" && step.caption?.startsWith("Queued for ")) return step.caption;
   if (pipeline.current === "transcript") return SAVED_NOTE_COPY.transcriptHere;
   return step.blocker?.cause ?? step.caption ?? SAVED_NOTE_COPY.transcriptAfterSpace;
 }
@@ -221,6 +240,9 @@ function NoTranscript(props: { item: LibraryItem; metadata: MeetingMetadataRead;
     ? props.metadata.metadata.transcription_error_code
     : null;
   const view = useContext(NotePipelineContext);
+  const capture = props.metadata.status === "ok" ? props.metadata.metadata.capture : null;
+  const options = capture && typeof capture === "object" ? (capture as { options?: { transcriber?: string } }).options : null;
+  const provider = view?.provider === "powerful" || options?.transcriber === "assemblyai" ? "powerful" : view?.provider === "private" || options?.transcriber === "private-cloud" ? "private" : "unknown";
   const stepperShown = view !== null && !view.pipeline.done;
   const line = !stepperShown || outcome === "no_speech" ? null : transcriptStepLine(view.pipeline);
   // The phone is making this note's transcript and the stepper says where that stands. The private route's "Not transcribed"
@@ -233,7 +255,7 @@ function NoTranscript(props: { item: LibraryItem; metadata: MeetingMetadataRead;
     // stepper skips the transcript step nothing will start one, and the Transcribe action below stands.
     const privateComing = stepperShown && line !== null && view.route === "private-cloud" && job === undefined;
     const stepperCovers = onPhoneRoute || privateComing || job?.kind === "active" || job?.kind === "failed";
-    const status = stepperCovers ? null : VoiceNoteTranscriptionStatus({ item: props.item, outcome, errorCode, transcription: props.transcription });
+    const status = stepperCovers ? null : VoiceNoteTranscriptionStatus({ item: props.item, outcome, errorCode, transcription: props.transcription, provider });
     // "Will appear here" would sit beside a Transcribe action that says it won't unless asked.
     const shownLine = status !== null && line === SAVED_NOTE_COPY.transcriptHere ? null : line;
     return (
@@ -245,7 +267,7 @@ function NoTranscript(props: { item: LibraryItem; metadata: MeetingMetadataRead;
     );
   }
   // A plain function of its props (no hooks), so its "nothing to say" is known here.
-  const status = VoiceNoteTranscriptionStatus({ item: props.item, outcome, errorCode, transcription: props.transcription }) ?? (
+  const status = VoiceNoteTranscriptionStatus({ item: props.item, outcome, errorCode, transcription: props.transcription, provider }) ?? (
     <p className="text-callout text-muted-foreground" data-testid={props.item.onPhone ? "note-transcript-on-phone" : undefined}>
       {props.item.onPhone ? "No transcript yet. It shows here once this note is saved to your space." : "No transcript."}
     </p>
@@ -266,12 +288,13 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
   const voiceNote = item.source === VOICE_NOTE_SOURCE;
   const spaceNoSpeech = metadata?.status === "ok" && metadata.metadata.transcription_outcome === "no_speech";
   const local = voiceNote && !spaceNoSpeech && props.localTranscript?.noteId === item.sourceId ? props.localTranscript : null;
+  const localSyncPending = props.activityView?.input?.transcript.onDevice?.sync?.state === "syncing" && local?.outcome === "transcribed";
   const remoteSentences = transcript?.status === "ok" ? transcript.sentences : [];
   const spaceReadFailed = remoteSentences.length === 0 && local !== null &&
     (transcript?.status === "failed" || metadata?.status === "failed");
   const isPrivateCloud = remoteSentences.length > 0
     && hasPrivateCloudTimingProvenance(metadata?.status === "ok" ? metadata.metadata : null, props.transcriptProvenance);
-  const sentences = remoteSentences.length > 0 ? remoteSentences
+  const sentences = localSyncPending && local ? localTranscriptToSave(local).sentences : remoteSentences.length > 0 ? remoteSentences
     : local?.outcome === "transcribed" ? localTranscriptToSave(local).sentences : [];
   const timed = hasSegmentTimes(sentences, isPrivateCloud);
   const exportMarkdown = async () => {
@@ -327,6 +350,7 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
       </span>
       {sentences.length > 0 ? (
         <div className="flex max-w-[68ch] flex-col gap-4 [-webkit-touch-callout:default] select-text">
+          {localSyncPending && <p className="text-callout text-muted-foreground">Saved on {deviceName(props.platform ?? "web")} · syncing to your TinyCloud space</p>}
           {spaceReadFailed && <div className="flex flex-wrap items-center gap-2" data-testid="note-transcript-local-space-error">
             <p className="text-callout text-muted-foreground">On this device · Couldn’t check your space.</p>
             <Button type="button" variant="outline" onClick={props.onRetry}>Try again</Button>
@@ -344,7 +368,7 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
             <p className="text-callout text-muted-foreground">On this device · Couldn’t check your space.</p>
             <Button type="button" variant="outline" onClick={props.onRetry}>Try again</Button>
           </div>}
-          <p data-testid="voice-note-no-speech" className="text-callout text-muted-foreground">No speech was found in this note.</p>
+          <p data-testid="voice-note-no-speech" className="text-callout text-muted-foreground">No speech found</p>
         </div>
       ) : transcript === undefined ? (
         <div role="status">
@@ -416,6 +440,10 @@ function NotePlaybackProvider({ children }: { children: ReactNode }) {
 
 function NoteDetailViewContent(props: NoteDetailViewProps) {
   const { item, metadata } = props;
+  const activityJobs = props.activityView && props.platform ? activityForNote(props.activityView, props.platform) : [];
+  // The Transcript fallback owns the durable failure's explanation and retry action.
+  const activityStatus = noteStatus(activityJobs, props.activityView?.pipeline, false);
+  const activityRetry = activityJobs.find((job) => job.retry)?.retry;
   if (item === null) {
     return (
       <Frame title="Note" pushed={props.pushed} onBack={props.onBack}>
@@ -456,6 +484,7 @@ function NoteDetailViewContent(props: NoteDetailViewProps) {
         layout={props.savedNote.layout}
         onBack={props.onBack}
         transcript={<Transcript {...props} item={item} />}
+        activityControl={props.activityControl}
         footer={item.onPhone ? undefined : <HowThisGotHere source={item.source} read={metadata} onRetry={props.onRetry} />}
       />
     );
@@ -465,17 +494,18 @@ function NoteDetailViewContent(props: NoteDetailViewProps) {
   const meta = metadata?.status === "ok" ? metadata.metadata : null;
   const audioKept = (meta?.audio as { stored?: unknown } | undefined)?.stored === true;
   return (
-    <Frame title={title} pushed={props.pushed} onBack={props.onBack}>
+    <Frame title={title} pushed={props.pushed} onBack={props.onBack} activityControl={props.activityControl}>
       <header className="flex flex-col gap-1" data-testid="note-detail" data-note-id={item.id}>
         {!props.pushed && <h2 className="font-display text-title-1 [overflow-wrap:anywhere]">{title}</h2>}
         <p className="tnum text-meta text-muted-foreground">{noteMeta(item)}</p>
+        {activityStatus && <div className="flex flex-wrap items-center gap-3" data-testid="note-detail-status"><p className={activityStatus.startsWith("Needs attention") ? "text-callout text-amber-700 dark:text-amber-300" : "text-callout text-muted-foreground"}>{activityStatus}</p>{activityJobs.flatMap((job) => job.action ? [job.action] : []).map((action, index) => <button key={`${action.label}:${index}`} type="button" className="min-h-11 text-callout text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={action.run}>{action.label}</button>)}{!activityJobs.some((job) => job.action) && activityRetry && <button type="button" className="min-h-11 text-callout text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={activityRetry}>Try again</button>}</div>}
       </header>
       {props.audio ? (
         <MeetingAudioPlayer key={`${item.source}:${item.sourceId}`} {...noteAudioPlayerProps(props.audio)} durationSecs={item.durationSecs}
           channels={(meta?.capture as { channels?: number } | undefined)?.channels === 2 || props.audio.channels === 2 ? 2 : 1} />
       ) : item.source === VOICE_NOTE_SOURCE && meta && Object.keys(meta).length === 0 ? (
         <p role="status" className="text-callout text-muted-foreground" data-testid="voice-note-saving-from-phone">
-          Saving from your phone…
+          Saving from {deviceName(props.platform)}…
         </p>
       ) : item.source === VOICE_NOTE_SOURCE && (meta?.audio as { stored?: unknown } | undefined)?.stored === false ? (
         <p role="status" className="text-callout text-muted-foreground" data-testid="voice-note-audio-on-device">
