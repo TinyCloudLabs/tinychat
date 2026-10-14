@@ -433,11 +433,11 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     };
     const completeSaved = (saved: VoiceNoteRecording) => {
       if (!accountCurrent()) return;
-      send({ type: "SAVED", id: saved.id, durationMs: saved.durationMs, at: Date.now() });
+      send({ type: "SAVED", id: saved.id, durationMs: saved.durationMs, channels: saved.channels, at: Date.now() });
       if (privateStarted) onSaved?.(saved);
       else landed(generation, saved);
     };
-    send({ type: "LOCAL_COMMITTED", id: recording.id, durationMs: recording.durationMs, at: Date.now() });
+    send({ type: "LOCAL_COMMITTED", id: recording.id, durationMs: recording.durationMs, channels: recording.channels, at: Date.now() });
     void pendingStore.refresh();
     // The Mac receipt is backed by durable stopped sources. Readers and all
     // downstream work wait for the imported playable file before proceeding.
@@ -499,7 +499,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     switch (outcome.kind) {
       case "saved":
         reportSavedNoteSyncError(recording.id, outcome.noteSyncError);
-        send({ type: "SAVED", id: recording.id, durationMs: recording.durationMs, at: Date.now() });
+        send({ type: "SAVED", id: recording.id, durationMs: recording.durationMs, channels: recording.channels, at: Date.now() });
         if (privateStarted) onSaved?.(recording);
         else landed(generation, recording, outcome.audio ?? undefined);
         void pendingStore.refresh(outcome.cleanupError);
@@ -515,7 +515,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         void pendingStore.refresh();
         return;
       case "already-saved":
-        send({ type: "SAVED", id: recording.id, durationMs: recording.durationMs, at: Date.now() });
+        send({ type: "SAVED", id: recording.id, durationMs: recording.durationMs, channels: recording.channels, at: Date.now() });
         void pendingStore.refresh(outcome.cleanupError);
         return;
       case "discarded":
@@ -1116,8 +1116,10 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         for (const recording of savedRun.saved) landed(generation, recording);
         // The note behind a "Kept on this phone" receipt is in the space now: the receipt says so.
         const failed = state.failedRecording;
-        if (failed && state.outcome === "failed" && savedRun.saved.some((recording) => recording.id === failed.id)) {
-          send({ type: "SAVED", id: failed.id, durationMs: failed.durationMs, at: Date.now() });
+        const saved = failed && state.outcome === "failed"
+          ? savedRun.saved.find((recording) => recording.id === failed.id) : undefined;
+        if (saved) {
+          send({ type: "SAVED", id: saved.id, durationMs: saved.durationMs, channels: saved.channels, at: Date.now() });
         }
       };
       const inFlight = run().finally(() => { if (retryPendingInFlight === inFlight) retryPendingInFlight = null; });

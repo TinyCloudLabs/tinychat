@@ -216,6 +216,22 @@ describe("voice-note recorder controller", () => {
     detach();
   });
 
+  test("a stereo Stop carries its channels through the final saved receipt state", async () => {
+    const base = plugin;
+    __setVoiceNotesForTests({
+      ...base,
+      async stop() {
+        return { ...(await base.stop()), channels: 2 };
+      },
+    }, { available: true });
+    const { recorder, detach } = await attached();
+    await recorder.record();
+    await recorder.stop();
+    await settled(() => recorder.getState().outcome === "saved", "the stereo Stop to save");
+    expect(recorder.getState().lastSaved).toMatchObject({ channels: 2 });
+    detach();
+  });
+
   test("starting and resuming silence a playing note before native capture", async () => {
     const cleanupDom = installDom();
     const { recorder, detach } = await attached();
@@ -1051,7 +1067,16 @@ describe("voice-note recorder controller", () => {
     expect(recorder.getState().lastSaved?.id).toBe(old.id);
   });
 
-  test("a failed save keeps the note; Save now lands it and the receipt says so", async () => {
+  test("a failed stereo save keeps the note; Save now lands it with channels in the receipt", async () => {
+    const base = plugin;
+    __setVoiceNotesForTests({
+      ...base,
+      async stop() {
+        const recording = { ...(await base.stop()), channels: 2 as const };
+        onPhone = onPhone.map((pending) => pending.id === recording.id ? recording : pending);
+        return recording;
+      },
+    }, { available: true });
     fakeVoiceNoteStore.save = fails;
     const { recorder } = await attached();
     await recorder.record();
@@ -1067,7 +1092,7 @@ describe("voice-note recorder controller", () => {
     fakeVoiceNoteStore.save = ok;
     await recorder.retryPending();
     expect(recorder.getState()).toMatchObject({ outcome: "saved", error: null, failedRecording: null });
-    expect(recorder.getState().lastSaved?.id).toBe(failed.failedRecording!.id);
+    expect(recorder.getState().lastSaved).toMatchObject({ id: failed.failedRecording!.id, channels: 2 });
     expect(noted).toEqual([failed.failedRecording!.id]);
     expect(onPhone.map((recording) => recording.id)).toEqual([failed.failedRecording!.id]);
   });

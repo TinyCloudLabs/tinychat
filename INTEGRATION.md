@@ -35,6 +35,7 @@ Integration branch: `dev/0.8.0`
 | #394 re-land | f4a21845 | 167d4786 | No | Reverted #397's revert as required for 0.8.0, restoring TC-760 transcript gaps and recovery provenance without weakening newer main behavior. |
 | #400 | a988c05d | 4c7a34f7 | No | Clean merge of TC-1135 stranded Private-note recovery after the CI repairs; preserves the existing privacy gate and #394 recovery provenance. |
 | #350 | 7f5fb1cd | 7b36ac1a | No | Clean merge of TC-947 Me vs Them after the approved P1 fixes; the PR already contained dev through `e775e736`, so the only branch-only delta was the later integration documentation. |
+| #403 | b00ebd38 | cedb3883 | No | Clean merge of the reviewed #350 follow-up: authoritative native channel metadata survives renderer adoption and durable Stop, and every receipt save path preserves channels for Me/Them playback. |
 
 ## Test Fixes (2026-10-14)
 
@@ -73,11 +74,12 @@ After merging origin/main (TC-1128, #387, #392, 45d16e58) and PR #386 (TC-1108 p
 | Exo UI settings and recording-only captions | #351 merge (`92ff5241`) plus a latent main harness omission | The new settings control ran outside recorder context; its checkbox had a 13px target, and the longer recording-only caption retained single-line clipping. | Use the existing screenshot-only `StaticRecorderProvider`, give the checkbox a real 44px label target, and wrap only recording-only captions. No reference image was re-baselined. | #351 `760a64fa`; existing main screenshot-provider contract |
 | Clean-order Library unit suite | #400 merge (`4c7a34f7`) | #400's local-audio probe called the mutable native plugin unconditionally; web tests intentionally reset that binding to null, so a clean CI file order failed 32 later Library tests. | Run the probe only when the existing `nativeVoiceNotesAvailable()` contract says the plugin is installed; web keeps an empty local-audio set. | #400 `a988c05d`; existing native availability contract |
 | Capture-settings Chromium follow-up | #351 merge (`92ff5241`) | #351 replaced the old automatic-space-save switch with privacy-default-off `Upload audio to TinyCloud`, but the browser interaction still waited for the removed label. | Exercise the upload-audio switch's false-to-true transition while retaining the system-audio rejection check. | #351 `760a64fa` (`bfd8aae6`) |
+| Me/Them metadata after reload and receipt save settlement | #350 merge (`7b36ac1a`) | Existing-session adoption and durable Stop could omit authoritative native channels, while no-pipeline `SAVED` events overwrote the local receipt's channels after save settlement. | Restore native channels during adoption/Stop and carry the matching recording's channels through every `LOCAL_COMMITTED`/`SAVED` receipt transition, including Save now. | #403 `b00ebd38`; #350 `7f5fb1cd` |
 
 ## Current Status
 
-- **Verified code head**: `7b36ac1a` (#350 merged)
-- **Frontend unit suite**: 4881 pass, 4 skip, 0 fail (4885 tests, 339 files)
+- **Verified code head**: `cedb3883` (#403 merged)
+- **Frontend unit suite**: 4882 pass, 4 skip, 0 fail (4886 tests, 339 files)
 - **`origin/main` `b9c538ee` baseline**: 4735 pass, 4 skip, 0 fail (4739 tests, 326 files)
 - **TypeScript**: pinned TypeScript 5.9.3, `tsc --noEmit -p frontend/tsconfig.json`, 0 errors
 - **CI frontend lint**: `bunx eslint frontend test`, 0 errors

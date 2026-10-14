@@ -156,10 +156,10 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
           options: { transcriber: capabilities.desktopWhisper ? "on-device" : "off", identifySpeakers: false,
             uploadAudio: defaults.uploadAudio ?? false }, mimeType: "audio/mpeg",
           input: null, maxDurationMs: native.maxDurationMs });
-        if (native.channels) {
-          await store.updateSession(session.id, { channels: native.channels });
-          session.channels = native.channels;
-        }
+      }
+      if (native.channels && session.channels !== native.channels) {
+        await store.updateSession(session.id, { channels: native.channels });
+        session.channels = native.channels;
       }
       const spans = mergeSpans(session.spans, native.spans);
       if (spans.length !== session.spans.length) {
@@ -231,7 +231,7 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
     const firstAudioAt = bytes > 0 ? current.session.firstAudioAt ?? native.startedAt ?? now() : null;
     const patch: Partial<SessionRecord> = {
       bytes, audioMs: native.audioMs, pausedMs: native.pausedMs, firstAudioAt,
-      channels: current.session.channels ?? native.channels,
+      channels: native.channels ?? current.session.channels,
       lastHeartbeatAt: now(), spans: mergeSpans(current.session.spans, native.spans),
     };
     await store.updateSession(current.session.id, patch);
@@ -574,6 +574,7 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
         }
         const current = live;
         await store.updateSession(id, { bytes: await store.audio.size(id), audioMs: native.audioMs, pausedMs: native.pausedMs,
+          channels: native.channels ?? current.session.channels,
           spans: mergeSpans(current.session.spans, native.spans), lastHeartbeatAt: now() });
         const recording = await store.commitPreparingSession(id, (session) => recordingFromSession(session, 0, {
           endedAt: now(), durationMs: native.audioMs, recovered: false, endedUnexpectedly: false, exitReason: null,

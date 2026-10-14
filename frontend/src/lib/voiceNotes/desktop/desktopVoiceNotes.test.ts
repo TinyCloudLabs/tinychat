@@ -1087,12 +1087,16 @@ describe("desktop recorder adapter", () => {
     expect((await third.plugin.getTranscript({ id })).transcript?.noteId).toBe(id);
     third.dispose();
   });
-  test("reopens a live native capture after WebView reload and can stop it", async () => {
+  test("reopens a live native stereo capture after WebView reload and commits its native channels", async () => {
     const bridge = new FakeBridge();
+    bridge.channels = 2;
     const env = newIdbEnv();
     const dbName = crypto.randomUUID();
     const first = await rig(bridge, dbName, env);
-    await first.plugin.start();
+    const started = await first.plugin.start();
+    const interruptedPersist = await openWebStore({ env, dbName, locks: memoryLocks(), decodeCheck: null });
+    await interruptedPersist.updateSession(started.id, { channels: undefined });
+    interruptedPersist.close();
     bridge.elapsed = 1_500;
     bridge.files.set("note-1", Uint8Array.of(1, 2, 3));
     first.dispose();
@@ -1102,8 +1106,7 @@ describe("desktop recorder adapter", () => {
     expect(bridge.calls).not.toContain("recorder_recover");
     expect((await reopened.plugin.status()).elapsedMs).toBe(1_500);
     const note = await reopened.plugin.stop();
-    expect(note.id).toBe("note-1");
-    expect(note.durationMs).toBe(1_500);
+    expect(note).toMatchObject({ id: "note-1", durationMs: 1_500, channels: 2 });
     reopened.dispose();
   });
 
