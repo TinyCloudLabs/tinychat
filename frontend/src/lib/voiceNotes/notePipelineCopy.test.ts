@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
-import { PRIVATE_COPY } from "./notePipelineCopy";
+import { STORAGE_FULL_RECORDING_LINE } from "../storageStatus";
+import { LOCAL_COPY, PRIVATE_COPY } from "./notePipelineCopy";
 
 describe("private transcription part progress copy", () => {
   test("unknown or zero totals stay indeterminate", () => {
@@ -20,5 +21,16 @@ describe("private transcription part progress copy", () => {
     const completed = copy.map((text) => Number(text.match(/Transcribing · (\d+) of/)?.[1]));
     expect(completed).toEqual([2, 4]);
     expect(completed[1]).toBeGreaterThanOrEqual(completed[0]!);
+  });
+});
+
+describe("held transcript copy", () => {
+  test("names the device holding the transcript and keeps the storage-full main line", () => {
+    expect(LOCAL_COPY.transcriptStorageFull("mac")).toContain("this Mac");
+    expect(LOCAL_COPY.transcriptStorageFull("iphone")).toContain("this iPhone");
+    expect(LOCAL_COPY.transcriptStorageFull("browser")).toContain("this browser");
+    for (const device of ["mac", "iphone", "browser"] as const) {
+      expect(LOCAL_COPY.transcriptStorageFull(device)).toContain(STORAGE_FULL_RECORDING_LINE);
+    }
   });
 });

@@ -13,7 +13,7 @@ import { VoiceNotes, type LocalTranscript, type NoteSttState, type VoiceNoteReco
 import { readTranscriptCommit } from "./voiceNoteCommits";
 import { withVoiceNoteSaveDeadline } from "./saveDeadline";
 import { LOCAL_COPY } from "./notePipelineCopy";
-import { isStorageFullError, isStorageReadOnly, subscribeStorageReadOnly } from "@/lib/storageStatus";
+import { isStorageFullError, isStorageReadOnly, STORAGE_FULL_RECORDING_LINE, subscribeStorageReadOnly } from "@/lib/storageStatus";
 import { assertAccountContext, captureAccountContext, isAccountContextCurrent, isAccountWorkAllowed, StaleAccountContext, type AccountContext } from "./accountContext";
 
 /** One note's local transcript -> space write: running, written, or why it did not land (the local transcript stays valid). */
@@ -93,7 +93,7 @@ function runSync(tcw: TinyCloudWeb, id: string, expected: boolean, failed: boole
 }
 
 function holdForStorage(tcw: TinyCloudWeb, key: string, id: string, ctx: AccountContext): void {
-  publish(key, { state: "held", message: LOCAL_COPY.transcriptStorageFull });
+  publish(key, { state: "held", message: STORAGE_FULL_RECORDING_LINE });
   storageHeld.set(key, { tcw, id, ctx });
   if (storageRecoveryWired) return;
   storageRecoveryWired = true;

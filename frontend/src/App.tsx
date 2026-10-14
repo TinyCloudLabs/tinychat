@@ -37,10 +37,9 @@ import { ModelPicker, type ModelOption } from "./chat/ModelPicker";
 import { UsageIndicator } from "./chat/UsageIndicator";
 import { AgentAccessProvider } from "./chat/useAgentEnablement";
 import { PricingDialog } from "./chat/PricingDialog";
-import { StorageFullDialog } from "./chat/StorageFullDialog";
+import { StorageFullDialog, StorageFullMessage } from "./chat/StorageFullDialog";
 import {
   isStorageReadOnly,
-  STORAGE_READ_ONLY_NOTICE,
   subscribeStorageReadOnly,
   reportStoragePlanTier,
 } from "./lib/storageStatus";
@@ -330,7 +329,7 @@ export function App() {
   const [billingNotice, setBillingNotice] = useState<string | null>(null);
   const [shareToken, setShareToken] = useState<string | null>(initialShareToken);
   const paywallEnabled = billingConfig?.paywallEnabled === true;
-  const storageFreePlan = useStorageFreePlan(paywallEnabled);
+  const canUpgrade = useStorageFreePlan() && paywallEnabled;
   const billingTierName = billingConfig?.tiers.find(
     (tier) => tier.id === billingStatus?.tier,
   )?.name ?? (billingStatus
@@ -1275,11 +1274,11 @@ export function App() {
       {storageReadOnly && (
         <div role="region" aria-label="Storage full: read-only" aria-live="polite" className="border-t border-border bg-muted px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] text-sm">
           <strong>Storage full: read-only.</strong>{" "}
-          {STORAGE_READ_ONLY_NOTICE}{" "}
+          <StorageFullMessage detail={false} />{" "}
           <button type="button" className="font-medium underline underline-offset-2" onClick={() => void openManageStorage()}>
             Manage storage
           </button>
-          {storageFreePlan && (
+          {canUpgrade && (
             <button type="button" className="ml-3 font-medium underline underline-offset-2" onClick={() => void openManageStorage()}>
               Upgrade
             </button>

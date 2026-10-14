@@ -1,30 +1,37 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { act } from "react";
+import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { installDom } from "@/test/dom";
-import { reportStoragePlanTier } from "@/lib/storageStatus";
-import { StorageFullActions } from "./StorageFullDialog";
+import { reportStoragePlanTier, STORAGE_FULL_DETAIL, STORAGE_FULL_RECORDING_LINE } from "@/lib/storageStatus";
+import { StorageFullActions, StorageFullMessage } from "./StorageFullDialog";
 
 afterEach(() => reportStoragePlanTier(null));
 
-async function renderActions(paywallEnabled: boolean): Promise<{
+type Rendered = {
   text: () => string;
-  setPaywall: (on: boolean) => Promise<void>;
+  rerender: (node: ReactNode) => Promise<void>;
   close: () => Promise<void>;
   restore: () => void;
-}> {
+};
+
+async function renderNode(node: ReactNode): Promise<Rendered> {
   const restoreDom = installDom();
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
-  const render = (on: boolean) => act(async () => root.render(<StorageFullActions paywallEnabled={on} />));
-  await render(paywallEnabled);
+  const rerender = (next: ReactNode) => act(async () => root.render(next));
+  await rerender(node);
   return {
     text: () => container.textContent ?? "",
-    setPaywall: render,
+    rerender,
     close: () => act(async () => root.unmount()),
     restore: restoreDom,
   };
+}
+
+async function renderActions(paywallEnabled: boolean): Promise<Rendered & { setPaywall: (on: boolean) => Promise<void> }> {
+  const rendered = await renderNode(<StorageFullActions paywallEnabled={paywallEnabled} />);
+  return { ...rendered, setPaywall: (on) => rendered.rerender(<StorageFullActions paywallEnabled={on} />) };
 }
 
 describe("StorageFullActions", () => {
@@ -83,6 +90,44 @@ describe("StorageFullActions", () => {
     } finally {
       await unknown.close();
       unknown.restore();
+    }
+  });
+});
+
+describe("StorageFullMessage", () => {
+  test("the App banner shows the main line without any plan detail", async () => {
+    reportStoragePlanTier("free");
+    const message = await renderNode(<StorageFullMessage detail={false} />);
+    try {
+      expect(message.text()).toContain(STORAGE_FULL_RECORDING_LINE);
+      expect(message.text()).not.toContain(STORAGE_FULL_DETAIL.free);
+      expect(message.text()).not.toContain(STORAGE_FULL_DETAIL.paid);
+    } finally {
+      await message.close();
+      message.restore();
+    }
+  });
+
+  test("the Settings banner and dialog add the Free detail only for a positively Free plan", async () => {
+    reportStoragePlanTier("free");
+    const message = await renderNode(<StorageFullMessage detail />);
+    try {
+      expect(message.text()).toContain(STORAGE_FULL_RECORDING_LINE);
+      expect(message.text()).toContain(STORAGE_FULL_DETAIL.free);
+      expect(message.text()).not.toContain(STORAGE_FULL_DETAIL.paid);
+    } finally {
+      await message.close();
+      message.restore();
+    }
+  });
+
+  test("an unknown plan gets the paid detail", async () => {
+    const message = await renderNode(<StorageFullMessage detail />);
+    try {
+      expect(message.text()).toContain(STORAGE_FULL_DETAIL.paid);
+    } finally {
+      await message.close();
+      message.restore();
     }
   });
 });

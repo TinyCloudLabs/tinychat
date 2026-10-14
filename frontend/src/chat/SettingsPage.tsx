@@ -15,7 +15,7 @@ import {
   UserIcon,
 } from "lucide-react";
 import { Link } from "react-router-dom";
-import { STORAGE_FULL_DETAIL, STORAGE_READ_ONLY_NOTICE } from "@/lib/storageStatus";
+import { StorageFullMessage } from "./StorageFullDialog";
 import { openManageStorage } from "@/lib/openManageStorage";
 import { useStorageReadOnly } from "@/lib/useStorageReadOnly";
 import { useStorageFreePlan } from "@/lib/useStorageFreePlan";
@@ -99,7 +99,7 @@ export function SettingsPage({
     : 0;
   const near = pct >= 90;
   const storageFull = useStorageReadOnly();
-  const storageFreePlan = useStorageFreePlan(paywallEnabled);
+  const canUpgrade = useStorageFreePlan() && paywallEnabled;
   const resetsLabel = usage?.resetsAt ? formatResetsAt(usage.resetsAt) : null;
   return (
     // `relative`: the containing block for sr-only/absolute descendants, so they
@@ -113,12 +113,12 @@ export function SettingsPage({
         {storageFull && (
           <div role="region" aria-label="Storage full: read-only" className="mb-4 rounded-xl border border-border bg-muted p-4 text-sm">
             <p>
-              <strong>Storage full: read-only.</strong> {STORAGE_READ_ONLY_NOTICE} {STORAGE_FULL_DETAIL[storageFreePlan ? "free" : "paid"]}
+              <strong>Storage full: read-only.</strong> <StorageFullMessage detail />
             </p>
             <Button type="button" variant="outline" size="sm" className="mt-3" onClick={() => void openManageStorage()}>
               Manage storage
             </Button>
-            {storageFreePlan && (
+            {canUpgrade && (
               <Button type="button" variant="outline" size="sm" className="ml-2 mt-3" onClick={() => void openManageStorage()}>
                 Upgrade
               </Button>

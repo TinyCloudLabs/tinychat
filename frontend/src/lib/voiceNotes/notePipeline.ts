@@ -298,7 +298,7 @@ function modelStep(od: PipelineOnDevice, device: PipelineDevice): Result | null 
 function onDeviceStep(input: NotePipelineInput, od: PipelineOnDevice): Result {
   const saved = input.space.saved;
   const { sync, stt, queue } = od;
-  if (sync?.state === "held") return blocked(LOCAL_COPY.transcriptStorageFull, "manage-storage");
+  if (sync?.state === "held") return blocked(LOCAL_COPY.transcriptStorageFull(input.device), "manage-storage");
   if (sync?.state === "failed") return failed(LOCAL_COPY.syncFailed(), "retry");
   if (sync?.state === "syncing") return { state: "active", caption: LOCAL_COPY.adding };
   if (sync?.state === "synced" || sync?.state === "unrecorded") return { state: "done" };
