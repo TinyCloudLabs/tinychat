@@ -1,5 +1,11 @@
 # @tinychat/backend
 
+## 0.5.4-beta.3
+
+### Patch Changes
+
+- 8021de8: Serve tenant-isolated last-known Calendar autojoin status on storage read failures, with bounded caching, mutation invalidation, retry guidance and metadata-only request timing.
+
 ## 0.5.4-beta.2
 
 ### Patch Changes
