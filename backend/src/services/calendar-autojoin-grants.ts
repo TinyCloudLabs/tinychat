@@ -6,8 +6,10 @@ interface Reference {
   expiresAt?: number;
 }
 
-export type GoogleGrantRevokeReason = "last_holder" | "shared_holder" | "index_unavailable" | "tenant_unindexed" | "reference_check_failed";
+export type GoogleGrantRevokeReason = "last_holder" | "shared_holder" | "index_unavailable" | "token_unindexed" | "reference_check_failed";
 export interface GoogleGrantRevokeDecision { revoke: boolean; reason: GoogleGrantRevokeReason }
+export interface GrantBackfillSnapshot { revision: number; uncertainty: number }
+interface TokenBinding { subjectHash: string; tokenHashes: Set<string> }
 
 /**
  * Process-local projection under calendar autojoin's existing single-backend-writer contract.
@@ -16,17 +18,20 @@ export interface GoogleGrantRevokeDecision { revoke: boolean; reason: GoogleGran
  */
 export class CalendarAutojoinGrantIndex {
   private readonly subjects = new Map<string, Map<string, Reference>>();
-  // Keep a detached binding for the SPA's second (browser-token) disconnect call. This is NOT
-  // a live reference. Ordinary account replacement moves only this detached binding.
   private readonly tenants = new Map<string, { subjectHash: string; revision: number }>();
+  // Two digests per binding, never tokens. Keep detached bindings for the SPA's second call.
+  // Server and browser can belong to different Google grants after interrupted replacement.
+  private readonly serverTokens = new Map<string, TokenBinding>();
+  private readonly browserTokens = new Map<string, TokenBinding>();
   private revision = 0;
   private uncertainty = 0;
   private trusted = false;
 
-  constructor(private readonly hashSubject: (subject: string) => string, private readonly now: () => number = Date.now) {}
+  constructor(private readonly hashSubject: (subject: string) => string,
+    private readonly hashToken: (token: string) => string, private readonly now: () => number = Date.now) {}
 
   get needsBackfill(): boolean { return !this.trusted; }
-  beginBackfill() { return { revision: this.revision, uncertainty: this.uncertainty }; }
+  beginBackfill(): GrantBackfillSnapshot { return { revision: this.revision, uncertainty: this.uncertainty }; }
 
   completeBackfill(start: ReturnType<CalendarAutojoinGrantIndex["beginBackfill"]>, seen: Set<string>): void {
     for (const [tenant, ref] of this.tenants) {
@@ -38,13 +43,16 @@ export class CalendarAutojoinGrantIndex {
 
   invalidate(): void { this.trusted = false; this.uncertainty++; }
 
-  bindDetached(tenant: string, subject: string): void {
-    this.detach(tenant);
-    this.tenants.set(tenant.toLowerCase(), { subjectHash: this.hashSubject(subject), revision: ++this.revision });
+  bindBrowser(tenant: string, subject: string, tokens: string[]): void {
+    const key = tenant.toLowerCase();
+    const subjectHash = this.hashSubject(subject);
+    if (this.tenants.get(key)?.subjectHash !== subjectHash) this.detach(key);
+    this.tenants.set(key, { subjectHash, revision: ++this.revision });
+    this.browserTokens.set(key, { subjectHash, tokenHashes: new Set(tokens.map(token => this.hashToken(token))) });
   }
 
   /** Called only with a matching, usable server OAuth credential under tenant coordination. */
-  hold(row: CalendarConnection): void {
+  hold(row: CalendarConnection, tokens: string[], browserConfirmed = false): void {
     const tenant = row.tenant.toLowerCase();
     this.detach(tenant);
     if (!row.subject || !liveGoogleConnection(row, this.now())) return;
@@ -54,6 +62,9 @@ export class CalendarAutojoinGrantIndex {
     holders.set(tenant, reference);
     this.subjects.set(subjectHash, holders);
     this.tenants.set(tenant, { subjectHash, revision: ++this.revision });
+    const binding = { subjectHash, tokenHashes: new Set(tokens.map(token => this.hashToken(token))) };
+    this.serverTokens.set(tenant, binding);
+    if (browserConfirmed) this.browserTokens.set(tenant, binding);
   }
 
   /** Local Disable/needs_reconnect stops counting but remembers this process's known binding. */
@@ -67,16 +78,26 @@ export class CalendarAutojoinGrantIndex {
     binding.revision = ++this.revision;
   }
 
-  forget(tenant: string): void { this.detach(tenant); this.tenants.delete(tenant.toLowerCase()); }
+  forget(tenant: string): void {
+    const key = tenant.toLowerCase();
+    this.detach(key); this.tenants.delete(key); this.serverTokens.delete(key); this.browserTokens.delete(key);
+  }
 
   /** Synchronous decrement-and-check: the last concurrent disconnect always chooses revoke. */
-  release(tenant: string): GoogleGrantRevokeDecision {
+  release(tenant: string, tokens: string[]): GoogleGrantRevokeDecision[] {
     const key = tenant.toLowerCase();
-    const binding = this.tenants.get(key);
     this.detach(key);
-    if (!this.trusted) return { revoke: true, reason: "index_unavailable" };
-    if (!binding) return { revoke: true, reason: "tenant_unindexed" };
-    const holders = this.subjects.get(binding.subjectHash);
+    if (!this.trusted) return tokens.map(() => ({ revoke: true, reason: "index_unavailable" }));
+    const bindings = [this.serverTokens.get(key), this.browserTokens.get(key)];
+    return tokens.map(token => {
+      const digest = this.hashToken(token);
+      const binding = bindings.find(candidate => candidate?.tokenHashes.has(digest));
+      return binding ? this.decide(binding.subjectHash) : { revoke: true, reason: "token_unindexed" };
+    });
+  }
+
+  private decide(subjectHash: string): GoogleGrantRevokeDecision {
+    const holders = this.subjects.get(subjectHash);
     if (holders) {
       for (const ref of holders.values()) {
         if (ref.expiresAt === undefined || ref.expiresAt > this.now()) return { revoke: false, reason: "shared_holder" };

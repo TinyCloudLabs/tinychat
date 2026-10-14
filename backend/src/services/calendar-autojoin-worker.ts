@@ -54,6 +54,9 @@ export interface CalendarAutojoinWorkerOptions {
     accessToken(tenant: string, forceRefresh?: boolean): Promise<string>;
     cleanupEnabling(tenant: string): Promise<void>;
     needsReconnect(tenant: string, generation: number): Promise<void>;
+    beginGrantBackfill?(): import("./calendar-autojoin-grants.js").GrantBackfillSnapshot;
+    backfillGrantReferences?(rows: CalendarConnection[], store: CalendarAutojoinStore, stopping: () => boolean,
+      start?: import("./calendar-autojoin-grants.js").GrantBackfillSnapshot): Promise<void>;
   };
   api: TranscriptionApiClient;
   index: TranscriberIndexStore;
@@ -141,6 +144,7 @@ export class CalendarAutojoinWorker {
     const startedAt = this.now();
     if (this.tickStartedAt !== undefined) this.tickPeriodMs = Math.max(TICK_MS, startedAt - this.tickStartedAt);
     this.tickStartedAt = startedAt;
+    const grantSnapshot = this.options.connection.beginGrantBackfill?.();
     const tenants = await this.options.store.listConnections();
     const counts = { rows: 0, scans: 0 };
     let cursor = 0;
@@ -151,7 +155,7 @@ export class CalendarAutojoinWorker {
         catch { console.warn("[calendar-autojoin] code=tenant_reconcile_failed"); }
       }
     }));
-    await this.options.connection.backfillGrantReferences(tenants, this.options.store, () => this.stopping);
+    await this.options.connection.backfillGrantReferences?.(tenants, this.options.store, () => this.stopping, grantSnapshot);
     // Counts only: never ids, titles or addresses.
     console.log(`[calendar-autojoin] code=tick_done ms=${this.now() - startedAt} tenants=${tenants.length} rows=${counts.rows} scans=${counts.scans} timers=${this.dueTimers.size}`);
   }
