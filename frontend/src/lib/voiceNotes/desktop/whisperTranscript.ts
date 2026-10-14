@@ -25,8 +25,8 @@ export function whisperLocalTranscript(
   const stereoFallback: LocalTranscript["segments"] = note.channels === 2 ? localTranscriptSentences(response)
     .flatMap((sentence) => splitLongTimedSegment({ start: Math.round(sentence.start_time * 1000),
       end: Math.round(sentence.end_time * 1000), text: sentence.text,
-      speaker: sentence.speaker_name === "Them" ? "Them" : "Me",
-      channel: sentence.speaker_name === "Them" ? 1 as const : 0 as const,
+      speaker: sentence.speaker_name === "Others" ? "Them" : "Me",
+      channel: sentence.speaker_name === "Others" ? 1 as const : 0 as const,
       timing: "coarse" as const }, 30_000)) : [];
   const segments: LocalTranscript["segments"] = timedChunks.length
     ? timedChunks.flatMap((chunk) => splitLongTimedSegment(chunk, 30_000))

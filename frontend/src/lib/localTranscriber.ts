@@ -111,7 +111,7 @@ export function normalizeLocalTranscript(
         transcript_text: transcriptText || null,
         // Deliberately no audio_path: the recording stays on this Mac and the
         // space must not learn a local filesystem path.
-        speaker_labels: "channels",
+        speaker_labels: "channel-you-others",
       },
     },
     sentences,

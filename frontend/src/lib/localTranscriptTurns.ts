@@ -99,12 +99,12 @@ export interface LocalWord {
   channel: number | undefined;
 }
 
-/** "Me" for the mic, "Them" for system audio, numbered for any other
+/** "You" for the mic, "Others" for system audio, numbered for any other
  *  channel, and no speaker when the word carries no channel. */
 export function localChannelLabel(channel: number | undefined): string | null {
   if (channel === undefined) return null;
-  if (channel === MIC_CHANNEL) return "Me";
-  if (channel === SYSTEM_CHANNEL) return "Them";
+  if (channel === MIC_CHANNEL) return "You";
+  if (channel === SYSTEM_CHANNEL) return "Others";
   return `Speaker ${channel + 1}`;
 }
 

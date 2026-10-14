@@ -33,7 +33,7 @@ function resultWith(words: Parameters<typeof batchResponse>[0]): LocalTranscript
 }
 
 describe("normalizeLocalTranscript", () => {
-  test("groups words into Me (mic) / Them (system audio) turns, merging a speaker's consecutive segments", () => {
+  test("groups words into You (mic) / Others (system audio) turns, merging a speaker's consecutive segments", () => {
     const { meeting, sentences } = normalizeLocalTranscript(
       resultWith([
         { word: "hello", punctuated_word: "Hello", start: 0.0, end: 0.4, channel: 0 },
@@ -56,25 +56,25 @@ describe("normalizeLocalTranscript", () => {
     expect(meeting.metadata.model).toBe("QuantizedTinyEn");
     expect(Object.keys(meeting.metadata).join(",")).not.toContain("audio_path");
 
-    expect(meeting.metadata.speaker_labels).toBe("channels");
+    expect(meeting.metadata.speaker_labels).toBe("channel-you-others");
 
     expect(sentences).toHaveLength(2);
     expect(sentences[0]).toMatchObject({
       index: 0,
-      speaker_name: "Me",
+      speaker_name: "You",
       text: "Hello there. again",
       start_time: 0,
       end_time: 3.9,
     });
     expect(sentences[1]).toMatchObject({
       index: 1,
-      speaker_name: "Them",
+      speaker_name: "Others",
       text: "Hi back.",
       start_time: 4.0,
       end_time: 4.6,
     });
     // participants carry the distinct speaker labels
-    expect(meeting.participants.map((p) => p.name)).toEqual(["Me", "Them"]);
+    expect(meeting.participants.map((p) => p.name)).toEqual(["You", "Others"]);
   });
 
   test("drops mic echo of system audio from a two-channel whisper response", () => {
@@ -107,11 +107,11 @@ describe("normalizeLocalTranscript", () => {
     });
 
     expect(sentences.map((s) => `${s.speaker_name}: ${s.text}`)).toEqual([
-      "Me: Can everyone hear me?",
-      `Them: ${remote.join(" ")}`,
+      "You: Can everyone hear me?",
+      `Others: ${remote.join(" ")}`,
     ]);
     expect(meeting.metadata.transcript_text).toBe(`Can everyone hear me?\n${remote.join(" ")}`);
-    expect(meeting.participants.map((p) => p.name)).toEqual(["Me", "Them"]);
+    expect(meeting.participants.map((p) => p.name)).toEqual(["You", "Others"]);
   });
 
   test("duration is the latest turn end, not the last turn's end", () => {
@@ -124,7 +124,7 @@ describe("normalizeLocalTranscript", () => {
         { word: "hi", start: 5, end: 6, channel: 1 },
       ]),
     );
-    expect(sentences.map((s) => s.speaker_name)).toEqual(["Me", "Them"]);
+    expect(sentences.map((s) => s.speaker_name)).toEqual(["You", "Others"]);
     expect(meeting.durationSecs).toBe(30);
   });
 
@@ -144,7 +144,7 @@ describe("normalizeLocalTranscript", () => {
       } as never,
     });
     expect(sentences).toHaveLength(1);
-    expect(sentences[0]).toMatchObject({ speaker_name: "Me", text: "full sentence without words." });
+    expect(sentences[0]).toMatchObject({ speaker_name: "You", text: "full sentence without words." });
   });
 
   test("empty response yields an empty sentence list and no duration", () => {
