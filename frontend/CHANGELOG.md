@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.7.3-beta.2
+
+### Patch Changes
+
+- 5b5ca03: Use PTX VAD-drop stats for incomplete-transcript retries and track missing stats.
+
 ## 0.7.3-beta.1
 
 ### Patch Changes
