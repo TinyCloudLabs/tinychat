@@ -3,6 +3,7 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  createCloudJobPoller,
   createPrivateCloudApi,
   createPrivateCloudJob,
   isTransientCloudError,
@@ -236,6 +237,30 @@ describe("privateCloudJobClient", () => {
     ] as const) {
       expect(privateCloudJobClient(job as never)).toBe("unknown");
     }
+  });
+});
+
+describe("private-cloud result polling failure budget", () => {
+  test("successful status reads do not reset repeated result failures", async () => {
+    let now = 0;
+    let resultCalls = 0;
+    const poller = createCloudJobPoller({
+      get: async () => ({ id: ID, status: "completed" }) as never,
+      result: async () => {
+        resultCalls++;
+        if (resultCalls > 45) throw new Error("result failure budget was reset");
+        throw new PrivateCloudError("service_unavailable", "temporarily unavailable", { statusCode: 503 });
+      },
+    }, {
+      clock: { now: () => now, sleep: async (ms) => { now += ms; }, random: () => 0 },
+      polling: { intervalMs: 5, slowAfterMs: 5, slowIntervalMs: 30, giveUpAfterMs: 600 },
+      connectionLost: () => new Error("connection_lost"),
+    });
+
+    const error = await poller.pollTranscript(ID, () => {}).catch((err: unknown) => err);
+    expect((error as Error).message).toBe("connection_lost");
+    expect(resultCalls).toBeLessThan(45);
+    expect(now).toBeLessThanOrEqual(630);
   });
 });
 

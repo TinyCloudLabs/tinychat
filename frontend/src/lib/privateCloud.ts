@@ -247,8 +247,8 @@ export interface PrivateCloudApi {
   capabilities(): Promise<PrivateCloudCapabilities>;
   /** This account's jobs (tenant-scoped by the backend). */
   list(): Promise<PrivateCloudJob[]>;
-  get(id: string): Promise<PrivateCloudJob>;
-  result(id: string): Promise<PrivateCloudResult>;
+  get(id: string, signal?: AbortSignal): Promise<PrivateCloudJob>;
+  result(id: string, signal?: AbortSignal): Promise<PrivateCloudResult>;
   cancel(id: string): Promise<void>;
   remove(id: string): Promise<void>;
 }
@@ -300,10 +300,13 @@ export function createPrivateCloudApi(
     return token;
   };
 
-  async function request(path: string, method: "GET" | "POST" | "DELETE"): Promise<Response> {
+  async function request(path: string, method: "GET" | "POST" | "DELETE", ownerSignal?: AbortSignal): Promise<Response> {
     const token = bearer();
     if (token === null) throw new PrivateCloudError("unauthenticated", "Not signed in");
-    const signal = AbortSignal.timeout(20_000);
+    const timeout = AbortSignal.timeout(20_000);
+    const signal = ownerSignal === undefined
+      ? timeout
+      : typeof AbortSignal.any === "function" ? AbortSignal.any([ownerSignal, timeout]) : ownerSignal;
     let response: Response;
     try {
       response = await fetchImpl(`${backendUrl}${PRIVATE_CLOUD_BASE_PATH}${path}`, {
@@ -312,8 +315,10 @@ export function createPrivateCloudApi(
         signal,
       });
     } catch {
+      if (ownerSignal?.aborted) throw new PrivateCloudError("cancelled", "Cloud job subscription was cancelled");
       throw new PrivateCloudError(signal.aborted ? "request_timeout" : "offline", "Could not reach the backend");
     }
+    if (ownerSignal?.aborted) throw new PrivateCloudError("cancelled", "Cloud job subscription was cancelled");
     if (response.status === 401) throw new PrivateCloudError("unauthenticated", "Session expired");
     return response;
   }
@@ -346,15 +351,15 @@ export function createPrivateCloudApi(
       return body.transcriptions as PrivateCloudJob[];
     },
 
-    async get(id) {
-      const response = await request(`/transcriptions/${encodeURIComponent(id)}`, "GET");
+    async get(id, signal) {
+      const response = await request(`/transcriptions/${encodeURIComponent(id)}`, "GET", signal);
       if (response.status === 404) throw new PrivateCloudError("transcription_not_found", "No such transcription");
       if (!response.ok) throw await readError(response);
       return json<PrivateCloudJob>(response);
     },
 
-    async result(id) {
-      const response = await request(`/transcriptions/${encodeURIComponent(id)}/result`, "GET");
+    async result(id, signal) {
+      const response = await request(`/transcriptions/${encodeURIComponent(id)}/result`, "GET", signal);
       if (response.status === 404) throw new PrivateCloudError("transcription_not_found", "No such transcription");
       if (response.status === 202) {
         const body = await json<{ status: PrivateCloudJobStatus }>(response);
@@ -841,20 +846,25 @@ export async function withCloudJobLock<T>(
 
 const NO_CLOUD_POLL_SUBSCRIBERS = Symbol("no-cloud-poll-subscribers");
 
-export interface CloudPollSubscriber<P> {
+export interface CloudPollSubscriber<T, P> {
   signal?: AbortSignal;
   guard?: () => void;
   onProgress?: (progress: P) => void;
+  reconcile?: () => Promise<T | null>;
+  readJob?: (id: string, signal: AbortSignal) => Promise<PrivateCloudJob>;
+  readResult?: (id: string, signal: AbortSignal) => Promise<PrivateCloudResult>;
+  readRemote?: (signal: AbortSignal) => Promise<unknown>;
 }
 
-export interface CloudPollContext<P> {
+export interface CloudPollContext<T, P> {
   signal: AbortSignal;
   checkpoint(): void;
   report(progress: P): void;
   sleep(ms: number): Promise<void>;
+  runWithSubscriber<R>(operation: (subscriber: CloudPollSubscriber<T, P>) => Promise<R>): Promise<R>;
 }
 
-interface LiveCloudPollSubscriber<T, P> extends CloudPollSubscriber<P> {
+interface LiveCloudPollSubscriber<T, P> extends CloudPollSubscriber<T, P> {
   abortHandler?: () => void;
   resolve(value: T): void;
   reject(error: unknown): void;
@@ -872,13 +882,12 @@ export class CloudJobPollSession<T, P> {
     private readonly id: string,
     private readonly locks: CloudJobLockManager | null,
     private readonly wait: (ms: number) => Promise<void>,
-    private readonly poll: (context: CloudPollContext<P>) => Promise<T>,
-    private readonly reconcile: (() => Promise<T | null>) | undefined,
+    private readonly poll: (context: CloudPollContext<T, P>) => Promise<T>,
     private readonly onEmpty: () => void,
     private readonly onSettled: () => void,
   ) {}
 
-  subscribe(subscriber: CloudPollSubscriber<P>): Promise<T> {
+  subscribe(subscriber: CloudPollSubscriber<T, P>): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       const live: LiveCloudPollSubscriber<T, P> = {
         ...subscriber,
@@ -936,6 +945,57 @@ export class CloudJobPollSession<T, P> {
     if (this.subscribers.size === 0 || this.controller.signal.aborted) throw NO_CLOUD_POLL_SUBSCRIBERS;
   }
 
+  private async runWithSubscriber<R>(
+    operation: (subscriber: CloudPollSubscriber<T, P>) => Promise<R>,
+    include: (subscriber: CloudPollSubscriber<T, P>) => boolean = () => true,
+  ): Promise<R> {
+    this.checkpoint();
+    for (const subscriber of [...this.subscribers]) {
+      if (!this.subscribers.has(subscriber) || !include(subscriber)) continue;
+      try {
+        subscriber.guard?.();
+      } catch (error) {
+        subscriber.detach();
+        subscriber.reject(error);
+        continue;
+      }
+      try {
+        const value = await operation(subscriber);
+        if (!this.subscribers.has(subscriber)) continue;
+        try {
+          subscriber.guard?.();
+        } catch (error) {
+          subscriber.detach();
+          subscriber.reject(error);
+          continue;
+        }
+        this.checkpoint();
+        return value;
+      } catch (error) {
+        try {
+          subscriber.guard?.();
+        } catch (guardError) {
+          subscriber.detach();
+          subscriber.reject(guardError);
+          continue;
+        }
+        if (!this.subscribers.has(subscriber)) continue;
+        throw error;
+      }
+    }
+    this.checkpoint();
+    throw NO_CLOUD_POLL_SUBSCRIBERS;
+  }
+
+  private async reconcile(): Promise<T | null> {
+    const subscriber = [...this.subscribers].find((candidate) => candidate.reconcile !== undefined);
+    if (subscriber === undefined) return null;
+    return this.runWithSubscriber(
+      (current) => current.reconcile!(),
+      (current) => current.reconcile !== undefined,
+    );
+  }
+
   private async sleep(ms: number): Promise<void> {
     let remaining = Math.max(0, ms);
     while (remaining > 0) {
@@ -961,7 +1021,7 @@ export class CloudJobPollSession<T, P> {
   }
 
   private async run(): Promise<void> {
-    const context: CloudPollContext<P> = {
+    const context: CloudPollContext<T, P> = {
       signal: this.controller.signal,
       checkpoint: () => this.checkpoint(),
       report: (progress) => {
@@ -977,6 +1037,7 @@ export class CloudJobPollSession<T, P> {
         this.checkpoint();
       },
       sleep: (ms) => this.sleep(ms),
+      runWithSubscriber: (operation) => this.runWithSubscriber(operation),
     };
     try {
       const result = await withCloudJobLock(
@@ -987,7 +1048,7 @@ export class CloudJobPollSession<T, P> {
         {
           signal: this.controller.signal,
           guard: context.checkpoint,
-          reconcile: this.reconcile,
+          reconcile: () => this.reconcile(),
         },
       );
       this.checkpoint();
@@ -1040,6 +1101,8 @@ export function createCloudJobPoller(
   const waitForRateLimit = (err: PrivateCloudError) =>
     Math.min(MAX_RATE_LIMIT_WAIT_MS, err.retryAfterSeconds === null
       ? polling.slowIntervalMs : Math.max(0, err.retryAfterSeconds * 1000));
+  const jitterRateLimitWait = (err: PrivateCloudError) =>
+    Math.min(MAX_RATE_LIMIT_WAIT_MS, Math.round(waitForRateLimit(err) * (1 + 0.2 * clock.random())));
 
   const transientTolerance = () => {
     let failingSince: number | null = null;
@@ -1087,41 +1150,42 @@ export function createCloudJobPoller(
       let session = activeCloudPolls.get(id);
       if (session === undefined) {
         const startedAt = clock.now();
-        const sessionRef = new CloudJobPollSession(
+        const sessionRef = new CloudJobPollSession<PrivateCloudTranscript, CloudJobProgress>(
           id,
           cloudJobLockManager(),
           (ms) => clock.sleep(ms),
           async (context) => {
-            const tolerance = transientTolerance();
+            const statusTolerance = transientTolerance();
+            const resultTolerance = transientTolerance();
             for (;;) {
               context.checkpoint();
               let job: PrivateCloudJob;
               try {
-                job = await api.get(id);
+                job = await api.get(id, context.signal);
                 context.checkpoint();
-                tolerance.reset();
+                statusTolerance.reset();
               } catch (err) {
                 if (err instanceof PrivateCloudError && err.statusCode === 429) {
-                  const waitMs = waitForRateLimit(err);
-                  await tolerance.pause(waitMs, () => context.sleep(waitMs));
+                  const waitMs = jitterRateLimitWait(err);
+                  await statusTolerance.pause(waitMs, () => context.sleep(waitMs));
                   continue;
                 }
-                await tolerance.rideOut(err);
+                await statusTolerance.rideOut(err);
                 continue;
               }
               if (job.status === "completed") {
                 let result: PrivateCloudResult;
                 try {
-                  result = await api.result(id);
+                  result = await api.result(id, context.signal);
                   context.checkpoint();
-                  tolerance.reset();
+                  resultTolerance.reset();
                 } catch (err) {
                   if (err instanceof PrivateCloudError && err.statusCode === 429) {
-                    const waitMs = waitForRateLimit(err);
-                    await tolerance.pause(waitMs, () => context.sleep(waitMs));
+                    const waitMs = jitterRateLimitWait(err);
+                    await resultTolerance.pause(waitMs, () => context.sleep(waitMs));
                     continue;
                   }
-                  await tolerance.rideOut(err);
+                  await resultTolerance.rideOut(err);
                   continue;
                 }
                 if (result.status === "completed") return result.transcript;
@@ -1145,7 +1209,6 @@ export function createCloudJobPoller(
               await context.sleep(Math.round(cloudStatusIntervalMs(options.durationSeconds, clock.now() - startedAt, polling) * (0.8 + 0.4 * clock.random())));
             }
           },
-          undefined,
           () => {
             if (activeCloudPolls.get(id) === sessionRef) activeCloudPolls.delete(id);
           },

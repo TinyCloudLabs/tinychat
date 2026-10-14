@@ -395,11 +395,14 @@ export function pollAssemblyAiTranscript(
       id,
       typeof navigator !== "undefined" && typeof navigator.locks?.request === "function" ? navigator.locks : null,
       (ms) => clock.sleep(ms),
-      async (context: CloudPollContext<AssemblyAiTranscript["status"]>) => {
+      async (context: CloudPollContext<AssemblyAiTranscript, AssemblyAiTranscript["status"]>) => {
         for (;;) {
           context.checkpoint();
           try {
-            const transcript = await client.getTranscript(id);
+            const transcript = await context.runWithSubscriber(async (subscriber) =>
+              (subscriber.readRemote === undefined
+                ? client.getTranscript(id)
+                : await subscriber.readRemote(context.signal)) as AssemblyAiTranscript);
             context.checkpoint();
             failingSince = null;
             if (transcript.status === "completed") return transcript;
@@ -434,7 +437,6 @@ export function pollAssemblyAiTranscript(
           await context.sleep(Math.round(delay * (0.8 + 0.4 * clock.random())));
         }
       },
-      options.reconcile,
       () => {
         if (activeAssemblyAiPolls.get(key) === sessionRef) activeAssemblyAiPolls.delete(key);
       },
@@ -445,7 +447,13 @@ export function pollAssemblyAiTranscript(
     session = sessionRef;
     activeAssemblyAiPolls.set(id, sessionRef);
   }
-  return session.subscribe({ signal: options.signal, guard: options.guard, onProgress: options.onStatus });
+  return session.subscribe({
+    signal: options.signal,
+    guard: options.guard,
+    onProgress: options.onStatus,
+    reconcile: options.reconcile,
+    readRemote: () => client.getTranscript(id),
+  });
 }
 
 /** "A" → "Speaker A" (C7). */

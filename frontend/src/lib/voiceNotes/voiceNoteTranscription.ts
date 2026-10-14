@@ -725,6 +725,8 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
   const waitForRateLimit = (err: PrivateCloudError) =>
     Math.min(MAX_RATE_LIMIT_WAIT_MS, err.retryAfterSeconds === null
       ? polling.slowIntervalMs : Math.max(0, err.retryAfterSeconds * 1000));
+  const jitterRateLimitWait = (err: PrivateCloudError) =>
+    Math.min(MAX_RATE_LIMIT_WAIT_MS, Math.round(waitForRateLimit(err) * (1 + 0.2 * clock.random())));
 
   /** Best-effort: a job that cannot be cancelled now expires at its upload deadline. */
   const cancelQuietly = async (transcriptionId: string) => {
@@ -751,10 +753,10 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
     let failingSince: number | null = null;
     return {
       reset: () => { failingSince = null; },
-      pause: async (ms: number) => {
+      pause: async (ms: number, waitFor?: (delay: number) => Promise<void>) => {
         const before = clock.now();
         try {
-          await wait(ms);
+          await (waitFor ?? wait)(ms);
         } finally {
           if (failingSince !== null) failingSince += Math.max(0, clock.now() - before);
         }
@@ -777,11 +779,16 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
 
   type Guard = () => void;
 
-  const readJob = async (id: string, guard: Guard, reconcile?: () => Promise<void>): Promise<PrivateCloudJob> => {
+  const readJob = async (
+    id: string,
+    guard: Guard,
+    reconcile?: () => Promise<void>,
+    signal?: AbortSignal,
+  ): Promise<PrivateCloudJob> => {
     const key = `${deps.api.backendUrl}:${id}`;
     let session = activePrivateCloudReads.get(key);
     if (session === undefined) {
-      const sessionRef = new CloudJobPollSession(
+      const sessionRef = new CloudJobPollSession<PrivateCloudJob, never>(
         id,
         deps.locks ?? cloudJobLockManager(),
         (ms) => clock.sleep(ms),
@@ -790,20 +797,20 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
           for (;;) {
             context.checkpoint();
             try {
-              const job = await deps.api.get(id);
+              const job = await context.runWithSubscriber((subscriber) =>
+                subscriber.readJob?.(id, context.signal) ?? deps.api.get(id, context.signal));
               context.checkpoint();
               tolerance.reset();
               return job;
             } catch (error) {
               if (error instanceof PrivateCloudError && error.statusCode === 429) {
-                await tolerance.pause(waitForRateLimit(error));
+                await tolerance.pause(jitterRateLimitWait(error), (ms) => context.sleep(ms));
                 continue;
               }
               await tolerance.rideOut(error);
             }
           }
         },
-        reconcile === undefined ? undefined : async () => { await reconcile(); return null; },
         () => {
           if (activePrivateCloudReads.get(key) === sessionRef) activePrivateCloudReads.delete(key);
         },
@@ -814,7 +821,12 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
       session = sessionRef;
       activePrivateCloudReads.set(key, sessionRef);
     }
-    return session.subscribe({ guard });
+    return session.subscribe({
+      guard,
+      signal,
+      reconcile: reconcile === undefined ? undefined : async () => { await reconcile(); return null; },
+      readJob: (jobId, ownerSignal) => deps.api.get(jobId, ownerSignal),
+    });
   };
 
   const poll = (
@@ -829,40 +841,43 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
     let session = activePrivateCloudPolls.get(key);
     if (session === undefined) {
       const startedAt = clock.now();
-      const sessionRef = new CloudJobPollSession(
+      const sessionRef = new CloudJobPollSession<PrivateCloudTranscript, VoiceNoteTranscriptionStatus>(
         id,
         deps.locks ?? cloudJobLockManager(),
         (ms) => clock.sleep(ms),
-        async (context: CloudPollContext<VoiceNoteTranscriptionStatus>) => {
-          const tolerance = transientTolerance((ms) => context.sleep(Math.round(ms * (0.8 + 0.4 * clock.random()))));
+        async (context: CloudPollContext<PrivateCloudTranscript, VoiceNoteTranscriptionStatus>) => {
+          const statusTolerance = transientTolerance((ms) => context.sleep(Math.round(ms * (0.8 + 0.4 * clock.random()))));
+          const resultTolerance = transientTolerance((ms) => context.sleep(Math.round(ms * (0.8 + 0.4 * clock.random()))));
           context.report({ kind: "queued", position: null });
           for (;;) {
             context.checkpoint();
             let job: PrivateCloudJob;
             try {
-              job = await deps.api.get(id);
+              job = await context.runWithSubscriber((subscriber) =>
+                subscriber.readJob?.(id, context.signal) ?? deps.api.get(id, context.signal));
               context.checkpoint();
-              tolerance.reset();
+              statusTolerance.reset();
             } catch (error) {
               if (error instanceof PrivateCloudError && error.statusCode === 429) {
-                await tolerance.pause(waitForRateLimit(error));
+                await statusTolerance.pause(jitterRateLimitWait(error), (ms) => context.sleep(ms));
                 continue;
               }
-              await tolerance.rideOut(error);
+              await statusTolerance.rideOut(error);
               continue;
             }
             if (job.status === "completed") {
               let result: Awaited<ReturnType<PrivateCloudApi["result"]>>;
               try {
-                result = await deps.api.result(id);
+                result = await context.runWithSubscriber((subscriber) =>
+                  subscriber.readResult?.(id, context.signal) ?? deps.api.result(id, context.signal));
                 context.checkpoint();
-                tolerance.reset();
+                resultTolerance.reset();
               } catch (error) {
                 if (error instanceof PrivateCloudError && error.statusCode === 429) {
-                  await tolerance.pause(waitForRateLimit(error));
+                  await resultTolerance.pause(jitterRateLimitWait(error), (ms) => context.sleep(ms));
                   continue;
                 }
-                await tolerance.rideOut(error);
+                await resultTolerance.rideOut(error);
                 continue;
               }
               if (result.status === "completed") return result.transcript;
@@ -881,7 +896,6 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
             await context.sleep(Math.round(cloudStatusIntervalMs(durationSeconds, clock.now() - startedAt, polling) * (0.8 + 0.4 * clock.random())));
           }
         },
-        reconcile === undefined ? undefined : async () => { await reconcile(); return null; },
         () => {
           if (activePrivateCloudPolls.get(key) === sessionRef) activePrivateCloudPolls.delete(key);
         },
@@ -892,7 +906,14 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
       session = sessionRef;
       activePrivateCloudPolls.set(key, sessionRef);
     }
-    return session.subscribe({ guard, signal, onProgress: report });
+    return session.subscribe({
+      guard,
+      signal,
+      onProgress: report,
+      reconcile: reconcile === undefined ? undefined : async () => { await reconcile(); return null; },
+      readJob: (jobId, ownerSignal) => deps.api.get(jobId, ownerSignal),
+      readResult: (jobId, ownerSignal) => deps.api.result(jobId, ownerSignal),
+    });
   };
 
   const createJob = async (sourceId: string, job: PendingVoiceNoteJob, body: PrivateCloudCreateBody, guard: Guard) => {
@@ -930,7 +951,7 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
     if (job?.transcriptionId) {
       let current: PrivateCloudJob | null = null;
       try {
-        current = await readJob(job.transcriptionId, guard, reconcile);
+        current = await readJob(job.transcriptionId, guard, reconcile, signal);
       } catch (err) {
         if (!(err instanceof PrivateCloudError && err.code === "transcription_not_found")) throw err;
         job = null;
@@ -1023,7 +1044,7 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
         if (!(err instanceof PrivateCloudError)) throw err;
         guard();
         // Only the job's status says whether the bytes landed.
-        const current = await readJob(created.id, guard);
+        const current = await readJob(created.id, guard, undefined, signal);
         if (current.status === "awaiting_upload") throw err; // Retry re-uploads (same job, fresh capability)
         if (current.status === "failed" || current.status === "cancelled") {
           throw jobFailure(current, { correlationId: err.correlationId });

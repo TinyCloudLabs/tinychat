@@ -229,6 +229,9 @@ function harness(script: {
   rateLimitReads?: number;
   polling?: Partial<CloudPollingOptions>;
   sleep?: (ms: number) => Promise<void>;
+  random?: number;
+  resultFailureReads?: number;
+  resultFailStopAfter?: number;
   locks?: CloudJobLockManager | null;
 }) {
   const calls: string[] = [];
@@ -243,6 +246,7 @@ function harness(script: {
   let clockNow = 0;
   const pollTimes: number[] = [];
   let statusReads = 0;
+  const requestSignals: (AbortSignal | undefined)[] = [];
   const api: PrivateCloudApi = {
     backendUrl: "https://api.example",
     bearer: () => "tok",
@@ -254,7 +258,8 @@ function harness(script: {
     list: async () => {
       throw new Error("voice notes never list the account's jobs");
     },
-    async get(id) {
+    async get(id, signal) {
+      requestSignals.push(signal);
       calls.push(`get:${id}`);
       pollTimes.push(clockNow);
       statusReads++;
@@ -270,7 +275,14 @@ function harness(script: {
       return { ...next, id };
     },
     async result(id) {
+      const reads = calls.filter((call) => call === `result:${id}`).length + 1;
       calls.push(`result:${id}`);
+      if (script.resultFailStopAfter !== undefined && reads > script.resultFailStopAfter) {
+        throw new Error("result failure guard reached before connection_lost");
+      }
+      if (reads <= (script.resultFailureReads ?? 0)) {
+        throw new PrivateCloudError("service_unavailable", "result unavailable", { statusCode: 503 });
+      }
       return { status: "completed", transcript: script.result ?? TRANSCRIPT };
     },
     async cancel(id) {
@@ -301,7 +313,7 @@ function harness(script: {
         if (script.sleep) await script.sleep(ms);
         else clockNow += ms;
       },
-      random: () => 0.5,
+      random: () => script.random ?? 0.5,
       
     },
     async create(request) {
@@ -322,13 +334,13 @@ function harness(script: {
       return next;
     },
   });
-  return { cloud, calls, creates, puts, removed, cancelled, pending, sleeps, pollTimes, get now() { return clockNow; } };
+  return { cloud, calls, creates, puts, removed, cancelled, pending, sleeps, pollTimes, requestSignals, get now() { return clockNow; } };
 }
 
 const run = (h: ReturnType<typeof harness>, report: (s: VoiceNoteTranscriptionStatus) => void = () => {}, durationSeconds?: number,
-  allowed?: () => boolean) =>
+  allowed?: () => boolean, signal?: AbortSignal, reconcile?: () => Promise<void>) =>
   h.cloud.transcribe({ sourceId: "rec-1", capabilities: CAPS, loadAudio: async () => AUDIO, durationSeconds,
-    ...(allowed ? { allowed: () => allowed() } : {}) }, report);
+    ...(allowed ? { allowed: () => allowed() } : {}), ...(signal ? { signal } : {}), ...(reconcile ? { reconcile } : {}) }, report);
 
 
 test("Private asks PTX to identify speakers only when enabled, mono, and supported", async () => {
@@ -2215,6 +2227,92 @@ test("a valid resume subscribes after the original account generation goes stale
   expect((oldResult as PrivateCloudError).code).toBe("account_changed");
   expect(newResult).toEqual(TRANSCRIPT);
 });
+test("aborting a resumed 429 status wait settles promptly and prevents another status read", async () => {
+  const pending = localStorageVoiceNotePendingStore(DID, memoryStorage());
+  pending.write("rec-1", { attemptId: "attempt-1", transcriptionId: ID });
+  let enterSleep!: () => void;
+  const sleeping = new Promise<void>((resolve) => { enterSleep = resolve; });
+  let releaseSleep!: () => void;
+  const sleepGate = new Promise<void>((resolve) => { releaseSleep = resolve; });
+  const h = harness({ pending, rateLimitReads: 1, rateLimitRetryAfterSeconds: 60, locks: null,
+    sleep: async () => { enterSleep(); await sleepGate; } });
+  const controller = new AbortController();
+  const result = run(h, () => {}, undefined, undefined, controller.signal)
+    .then(() => "resolved" as const, (error: unknown) => error);
+  await sleeping;
+  let settled = false;
+  void result.then(() => { settled = true; });
+  controller.abort();
+  for (let turn = 0; turn < 8 && !settled; turn++) await Promise.resolve();
+  const settledBeforeSleepRelease = settled;
+  releaseSleep();
+  const outcome = await result;
+  expect(settledBeforeSleepRelease).toBe(true);
+  expect((outcome as PrivateCloudError).code).toBe("cancelled");
+  expect(h.requestSignals[0]?.aborted).toBe(true);
+  expect(h.calls.filter((call) => call === `get:${ID}`)).toHaveLength(1);
+});
+
+test("a current resume supplies reconciliation after the original account goes stale", async () => {
+  const pending = localStorageVoiceNotePendingStore(DID, memoryStorage());
+  pending.write("rec-1", { attemptId: "attempt-1", transcriptionId: ID });
+  let locked = true;
+  const locks: CloudJobLockManager = {
+    async request(_name, _options, callback) {
+      return callback(locked ? null : {} as Lock);
+    },
+  };
+  let enterSleep!: () => void;
+  const sleeping = new Promise<void>((resolve) => { enterSleep = resolve; });
+  let releaseSleep!: () => void;
+  const sleepGate = new Promise<void>((resolve) => { releaseSleep = resolve; });
+  const h = harness({ pending, jobs: [job("completed")], locks,
+    sleep: async () => { enterSleep(); await sleepGate; } });
+  let oldAllowed = true;
+  let oldReconciles = 0;
+  let currentReconciles = 0;
+  const old = run(h, () => {}, undefined, () => oldAllowed, undefined, async () => {
+    oldReconciles++;
+    if (!oldAllowed) throw new PrivateCloudError("account_changed", "stale account");
+  });
+  await sleeping;
+  const current = run(h, () => {}, undefined, () => true, undefined, async () => {
+    currentReconciles++;
+  });
+  for (let i = 0; i < 5; i++) await Promise.resolve();
+  oldAllowed = false;
+  locked = false;
+  releaseSleep();
+  const [oldResult, currentResult] = await Promise.all([
+    old.catch((error: unknown) => error as PrivateCloudError),
+    current.then((value) => value.transcript),
+  ]);
+  expect((oldResult as PrivateCloudError).code).toBe("account_changed");
+  expect(currentResult).toEqual(TRANSCRIPT);
+  expect(oldReconciles).toBe(0);
+  expect(currentReconciles).toBeGreaterThan(0);
+});
+
+test("a PTX Retry-After delay is never shortened by jitter", async () => {
+  const pending = localStorageVoiceNotePendingStore(DID, memoryStorage());
+  pending.write("rec-1", { attemptId: "attempt-1", transcriptionId: ID });
+  const h = harness({ pending, rateLimitReads: 1, rateLimitRetryAfterSeconds: 900, random: 0 });
+  const result = await run(h);
+  expect(result.transcript).toEqual(TRANSCRIPT);
+  expect(h.sleeps.reduce((total, ms) => total + ms, 0)).toBeGreaterThanOrEqual(900_000);
+});
+
+test("repeated successful status reads do not reset the result-fetch failure budget", async () => {
+  const pending = localStorageVoiceNotePendingStore(DID, memoryStorage());
+  pending.write("rec-1", { attemptId: "attempt-1", transcriptionId: ID });
+  const h = harness({ pending, jobs: [job("completed")], resultFailureReads: 100,
+    resultFailStopAfter: 40 });
+  const error = await run(h).catch((value: unknown) => value as PrivateCloudError);
+  expect((error as PrivateCloudError).code).toBe("connection_lost");
+  expect(h.calls.filter((call) => call === `result:${ID}`).length).toBeLessThanOrEqual(40);
+  expect(h.now).toBeLessThanOrEqual(10 * 60_000);
+});
+
 test("Web Lock holder closure hands a resumed PTX job to the waiting tab", async () => {
   let held = false;
   let ownerDone!: () => void;
@@ -2340,7 +2438,7 @@ test("PTX 429 with missing or unreadable headers waits the slow interval", async
   pending.write("rec-1", { attemptId: "attempt-1", transcriptionId: ID });
   const h = harness({ pending, rateLimitUntilMs: 1_000, rateLimitRetryAfterSeconds: null });
   await run(h);
-  expect(h.sleeps[0]).toBe(30_000);
+  expect(h.sleeps[0]).toBe(33_000);
 });
 
 test("a CORS-hidden rate limit reaches private-cloud polling as an offline transient", async () => {
