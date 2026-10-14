@@ -595,7 +595,8 @@ jobs:
             -c docker-compose.phala.yml \
             -e "$ENV_FILE" \
             --wait \
-            --no-public-logs
+            --no-public-logs \
+            --no-public-sysinfo
 
       # `phala deploy` updates the encrypted env but NOT the CVM's registered
       # allowed_envs whitelist (frozen at CVM creation), so env vars added after
