@@ -177,8 +177,8 @@ export function useLibrary(
   });
   const [listing, setListing] = useState(false);
   const [localAudioIds, setLocalAudioIds] = useState<ReadonlySet<string>>(new Set());
-  // The subset whose space copy is not verified: the phone's copy is the only audio to play.
-  const [phoneOnlyAudioIds, setPhoneOnlyAudioIds] = useState<ReadonlySet<string>>(new Set());
+  // The subset whose space copy is not verified: the phone's copy is the only audio to play. Each entry keeps the note's channel count.
+  const [phoneOnlyAudio, setPhoneOnlyAudio] = useState<ReadonlyMap<string, 1 | 2 | undefined>>(new Map());
   const [filter, setFilter] = useState<LibraryFilter>("all");
   const reads = useRef(new Map<string, NoteReads>());
   const reading = useRef(new Set<string>());
@@ -342,7 +342,7 @@ export function useLibrary(
     if (!options.visible) return;
     if (!nativeVoiceNotesAvailable()) {
       setLocalAudioIds(new Set());
-      setPhoneOnlyAudioIds(new Set());
+      setPhoneOnlyAudio(new Map());
       return;
     }
     let live = true;
@@ -350,10 +350,10 @@ export function useLibrary(
       if (!live) return;
       const own = recordings.filter((note) => note.owner === tcw.did);
       setLocalAudioIds(new Set(own.map((note) => note.id)));
-      setPhoneOnlyAudioIds(new Set(own.filter((note) => !hasVerifiedSpaceCopy(note)).map((note) => note.id)));
-    }, () => { if (live) { setLocalAudioIds(new Set()); setPhoneOnlyAudioIds(new Set()); } });
+      setPhoneOnlyAudio(new Map(own.filter((note) => !hasVerifiedSpaceCopy(note)).map((note) => [note.id, note.channels] as const)));
+    }, () => { if (live) { setLocalAudioIds(new Set()); setPhoneOnlyAudio(new Map()); } });
     return () => { live = false; };
- }, [options.visible, tcw.did, listingRevision, onPhoneNotes]);
+  }, [options.visible, tcw.did, listingRevision, onPhoneNotes]);
   const lastOpened = useRef<string | null>(null);
   useEffect(() => {
     // A note just closed may have had its moments edited: read them again.
@@ -484,7 +484,10 @@ export function useLibrary(
   const metadataLoaded = meta !== null;
   // While the space does not verifiably hold the audio (the row is made before upload, and a local-only
   // note never uploads), the phone's own copy is the audio. A verified saved copy is read from the space.
-  const onThisPhone = voiceSourceId !== null && (item?.onPhone === true || phoneOnlyAudioIds.has(voiceSourceId));
+  const onThisPhone = voiceSourceId !== null && (item?.onPhone === true || phoneOnlyAudio.has(voiceSourceId));
+  // The phone's channel count: the on-phone row, else the local entry that made the note phone-only. Unknown stays undefined.
+  const phoneChannels = voiceSourceId === null ? undefined
+    : (onPhoneNotes?.find((note) => note.id === voiceSourceId)?.channels ?? phoneOnlyAudio.get(voiceSourceId));
   const localOnlyAudio = (meta?.audio as { stored?: unknown } | undefined)?.stored === false;
   // A note with no stored space audio plays the phone's copy while it has one. A stored space audio plays
   // from the space at Play time, unless this device's copy is not yet verified (checked in the load below).
@@ -551,12 +554,12 @@ export function useLibrary(
     };
     // The phone's own copy, until the space has the audio; once the phone's copy is gone, the space's copy.
     if (voiceSourceId !== null && phoneFirst) return phoneFirstAudio(voiceSourceId,
-      onPhoneNotes?.find((note) => note.id === voiceSourceId)?.channels, space.did,
+      phoneChannels, space.did,
       localOnlyAudio ? null : spaceLoad(voiceSourceId));
     if (voiceSourceId !== null && metadataLoaded && !pendingAudioRow && !localOnlyAudio) return { load: spaceLoad(voiceSourceId) };
     if (audioBase !== null && !localOnlyAudio) return { load: (signal, onProgress) => getAudio(space.kv, audioBase, { signal, onProgress }) };
     return null;
-  }, [audioBase, item?.saving, phoneFirst, onPhoneNotes, localOnlyAudio, metadataLoaded, pendingAudioRow, space, voiceSourceId]);
+  }, [audioBase, item?.saving, phoneFirst, phoneChannels, localOnlyAudio, metadataLoaded, pendingAudioRow, space, voiceSourceId]);
 
   const retry = useCallback(() => {
     if (list.status === "failed") refresh();

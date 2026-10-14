@@ -1042,6 +1042,23 @@ describe("useLibrary, which audio a note on the phone plays", () => {
     });
   });
 
+  test("a local-only stereo note keeps its channel count when the on-phone list has no row for it", async () => {
+    const space = fakeSpace();
+    const seen: Library[] = [];
+    const original = VoiceNotes;
+    __setVoiceNotesForTests({
+      listPending: async () => ({ recordings: [{ id: "rec-play", owner: space.tcw.did, channels: 2, ledger: { audio: { state: "pending" } } }] }),
+    } as VoiceNotesPlugin, { available: true });
+    try {
+      await render({ tcw: space.tcw, visible: true, now: () => 0, seen, noteId: "play", onPhone: [] });
+      await space.answer("list", listedVoice("play"));
+      await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
+      expect(seen.at(-1)!.note.audio).toMatchObject({ onPhone: true, channels: 2 });
+    } finally {
+      __setVoiceNotesForTests(original, { available: null });
+    }
+  });
+
   test("offline saved note plays its last verified local copy", async () => {
     await withLocalAudio(async (counts, space) => {
       const seen: Library[] = [];
