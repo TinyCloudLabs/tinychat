@@ -83,7 +83,7 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
     handleExpiresAt: number | null; outcome: "created" | "failed" | "unknown" }>();
   const quarantine = new Map<string, { id: string; reason: string; sizeBytes: number }>();
   const inputs: AudioInput[] = [{ id: "built-in", name: "Built-in microphone", kind: "built_in" }];
-  let defaults: CaptureDefaults = { accountDid: null, transitionGen: 0, transcriber: "on-device", identifySpeakers: false, uploadAudio: true };
+  let defaults: CaptureDefaults = { accountDid: null, transitionGen: 0, transcriber: "on-device", identifySpeakers: false };
   let accountStatus: AccountStatus = "signed_out";
   let accountStateFailure = false;
   let remoteBeginFailure = false;
