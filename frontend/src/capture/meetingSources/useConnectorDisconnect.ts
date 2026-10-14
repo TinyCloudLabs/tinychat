@@ -119,6 +119,10 @@ export function useConnectorDisconnect(input: {
       store: {
         listKnownSourceIds: () => connectorStore.listKnownSourceIds(tcw, descriptor.source),
         purgeConnector: () => connectorStore.purgeConnector(tcw, descriptor.source),
+        clearFirefliesAttempt: () =>
+          descriptor.id === "fireflies"
+            ? connectorStore.clearFirefliesAttempt(tcw)
+            : Promise.resolve({ ok: true, data: undefined }),
         getConnection: () => connectorStore.getConnection(tcw, descriptor.id),
         countMeetings: () => connectorStore.countMeetings(tcw, descriptor.source),
         updateSyncState: (update) => connectorStore.updateSyncState(tcw, update),

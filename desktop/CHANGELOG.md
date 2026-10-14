@@ -1,5 +1,53 @@
 # exo-desktop
 
+## 0.7.3-beta.0
+
+### Patch Changes
+
+- ec28052: Run recorder file operations and recovery encoding away from the macOS main thread, and stop native Whisper work when its deadline expires.
+
+## 0.7.2
+
+### Patch Changes
+
+- b1b58a1: Open Google consent in the system browser on Exo Mac, receive the authorization code through a validated one-shot loopback listener, and exchange it using a Google Desktop OAuth client. Offer a same-tab return when a web popup is blocked.
+
+## 0.7.2-beta.6
+
+No changes in this release.
+
+## 0.7.2-beta.5
+
+### Patch Changes
+
+- b1b58a1: Open Google consent in the system browser on Exo Mac, receive the authorization code through a validated one-shot loopback listener, and exchange it using a Google Desktop OAuth client. Offer a same-tab return when a web popup is blocked.
+
+## 0.7.2-beta.4
+
+No changes in this release.
+
+## 0.7.2-beta.3
+
+No changes in this release.
+
+## 0.7.2-beta.2
+
+No changes in this release.
+
+## 0.7.2-beta.1
+
+No changes in this release.
+
+## 0.7.2-beta.0
+
+No changes in this release.
+
+## 0.7.1
+
+### Patch Changes
+
+- 1d60115: Update the TinyCloud SDK family to 3.2.1 for the sign-in wait and repeat-login re-bootstrap fixes (TC-998, TC-999).
+
 ## 0.7.1-beta.2
 
 No changes in this release.

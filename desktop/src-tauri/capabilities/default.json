@@ -12,6 +12,10 @@
     "core:image:default",
     "core:resources:default",
     "core:window:allow-set-title",
+    "allow-google-oauth-listen",
+    "allow-google-oauth-wait",
+    "allow-google-oauth-cancel",
+    "allow-google-oauth-open-browser",
     "core:image:deny-from-path",
     "core:event:deny-emit",
     "core:event:deny-emit-to"

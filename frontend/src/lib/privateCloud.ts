@@ -37,6 +37,14 @@ export type PrivateCloudJobStatus =
   | "failed"
   | "cancelled";
 
+export interface PrivateCloudTranscriptionStats {
+  tinfoil_calls?: number;
+  tinfoil_audio_seconds?: number;
+  voiced_seconds?: number;
+  dropped_above_floor_pct?: number | null;
+  vad_fallback?: boolean | null;
+}
+
 export interface PrivateCloudJob {
   id: string;
   status: PrivateCloudJobStatus;
@@ -44,6 +52,7 @@ export interface PrivateCloudJob {
   channel_mode?: "separate" | "mixed" | null;
   channel_labels?: string[] | null;
   duration_seconds?: number | null;
+  stats?: PrivateCloudTranscriptionStats | null;
   created_at?: string;
   updated_at?: string;
   progress?: {
@@ -74,6 +83,7 @@ export interface PrivateCloudSpeaker {
 export interface PrivateCloudTranscript {
   language?: string | null;
   duration_seconds?: number | null;
+  stats?: PrivateCloudTranscriptionStats | null;
   provider?: string;
   model?: string;
   channels?: number;

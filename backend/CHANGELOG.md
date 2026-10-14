@@ -1,5 +1,47 @@
 # @tinychat/backend
 
+## 0.5.3
+
+### Patch Changes
+
+- b1b58a1: Open Google consent in the system browser on Exo Mac, receive the authorization code through a validated one-shot loopback listener, and exchange it using a Google Desktop OAuth client. Offer a same-tab return when a web popup is blocked.
+- 1834edf: TC-1016: reuse notetaker send idempotency keys across retries and coalesce active or concurrent sends for the same meeting URL.
+- c34ce99: (TC-1047, TC-988) Calendar auto-join sends a meeting at its due time from a per-occurrence timer, instead of whenever the next worker tick (about 2 minutes on prod) reaches it; ticks remain the backstop. One occurrence's dispatch path (its reads, capture claims, the intent write and the post-send writes) runs at request lane priority. Each tick logs `code=tick_done` with its duration and tenant, row, scan and timer counts.
+
+## 0.5.3-beta.2
+
+### Patch Changes
+
+- b1b58a1: Open Google consent in the system browser on Exo Mac, receive the authorization code through a validated one-shot loopback listener, and exchange it using a Google Desktop OAuth client. Offer a same-tab return when a web popup is blocked.
+
+## 0.5.3-beta.1
+
+### Patch Changes
+
+- c34ce99: (TC-1047, TC-988) Calendar auto-join sends a meeting at its due time from a per-occurrence timer, instead of whenever the next worker tick (about 2 minutes on prod) reaches it; ticks remain the backstop. One occurrence's dispatch path (its reads, capture claims, the intent write and the post-send writes) runs at request lane priority. Each tick logs `code=tick_done` with its duration and tenant, row, scan and timer counts.
+
+## 0.5.3-beta.0
+
+### Patch Changes
+
+- 1834edf: TC-1016: reuse notetaker send idempotency keys across retries and coalesce active or concurrent sends for the same meeting URL.
+
+## 0.5.2
+
+### Patch Changes
+
+- 09d3bd1: TC-1006: meetings, Send notetaker and calendar auto-join actions no longer hang behind the auto-join worker on the shared backend storage lane. Request work now starts before queued worker work, and the worker still gets one slot after every 4 request jobs that overtake it. The worker's listings take one lane slot per row instead of holding the lane for the whole listing. Cached meetings-index reads skip the lane entirely. A request lane job that can't start within 12 s returns a retryable 503 instead of outwaiting the client. Lane waits of 1 s or more are now logged.
+
+  Known limitation: the Connectors auto-join status read is bounded by one 12 s deadline for the whole read. For an account with more than about 6 auto-join rows (for example, many unaccepted invites in the last 30 days), it now answers 503 after about 12 s on every call instead of hanging. The same applies to the status returned after a successful enable or disable, whose change still lands. A capped or cached outcome listing is the follow-up.
+
+## 0.5.2-beta.0
+
+### Patch Changes
+
+- 09d3bd1: TC-1006: meetings, Send notetaker and calendar auto-join actions no longer hang behind the auto-join worker on the shared backend storage lane. Request work now starts before queued worker work, and the worker still gets one slot after every 4 request jobs that overtake it. The worker's listings take one lane slot per row instead of holding the lane for the whole listing. Cached meetings-index reads skip the lane entirely. A request lane job that can't start within 12 s returns a retryable 503 instead of outwaiting the client. Lane waits of 1 s or more are now logged.
+
+  Known limitation: the Connectors auto-join status read is bounded by one 12 s deadline for the whole read. For an account with more than about 6 auto-join rows (for example, many unaccepted invites in the last 30 days), it now answers 503 after about 12 s on every call instead of hanging. The same applies to the status returned after a successful enable or disable, whose change still lands. A capped or cached outcome listing is the follow-up.
+
 ## 0.5.1
 
 ### Patch Changes

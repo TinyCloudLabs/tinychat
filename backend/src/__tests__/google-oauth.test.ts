@@ -16,6 +16,7 @@ import {
   GoogleOAuthError,
   googleMeetOAuthEnabled,
   googleOAuthConfigFromEnv,
+  validDesktopRedirectUri,
   type GoogleOAuthConfig,
   type GoogleOAuthPort,
   type GoogleTokenPayload,
@@ -489,6 +490,83 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await new Promise<void>((resolve) => server.close(() => resolve()));
+});
+
+describe("desktop loopback OAuth", () => {
+  test("Desktop token exchange sends PKCE and the exact loopback URI without a web client secret", async () => {
+    let posted: URLSearchParams | null = null;
+    const client = new GoogleOAuthClient({ ...TEST_CONFIG, clientId: "desktop-client.apps.googleusercontent.com",
+      clientSecret: "", redirectUri: "http://127.0.0.1:49152/oauth/google" }, {
+      fetchImpl: (async (_url, init) => {
+        posted = new URLSearchParams(init?.body as string);
+        return new Response(JSON.stringify({ access_token: "fake-access-token", refresh_token: "fake-refresh-token" }),
+          { status: 200, headers: { "Content-Type": "application/json" } });
+      }) as typeof fetch,
+    });
+    await client.exchangeCode({ code: "fake-code", verifier: VERIFIER });
+    expect(posted?.get("code_verifier")).toBe(VERIFIER);
+    expect(posted?.get("redirect_uri")).toBe("http://127.0.0.1:49152/oauth/google");
+    expect(posted?.has("client_secret")).toBe(false);
+  });
+
+  test("accepts only exact ephemeral 127.0.0.1 callback URLs", () => {
+    expect(validDesktopRedirectUri("http://127.0.0.1:49152/oauth/google")).toBe(true);
+    for (const uri of ["http://localhost:49152/oauth/google", "http://127.0.0.2:49152/oauth/google",
+      "http://127.0.0.1:49152/other", "http://127.0.0.1:49152/oauth/google?x=1",
+      "https://127.0.0.1:49152/oauth/google", "http://127.0.0.1/oauth/google"]) {
+      expect(validDesktopRedirectUri(uri)).toBe(false);
+    }
+  });
+
+  test("uses the Desktop client and exact redirect URI for start and exchange", async () => {
+    const desktop = new FakeOAuthPort();
+    const uris: string[] = [];
+    const app = express(); app.use(express.json());
+    app.use("/oauth", createGoogleOAuthRouter({ oauth: port, config: TEST_CONFIG, appOrigin: APP_ORIGIN,
+      desktopClientId: "desktop-client.apps.googleusercontent.com",
+      desktopOAuth: (uri) => { uris.push(uri); return desktop; },
+    }));
+    const listener = app.listen(0);
+    await new Promise<void>((resolve) => listener.once("listening", resolve));
+    const local = `http://127.0.0.1:${(listener.address() as AddressInfo).port}/oauth`;
+    const redirectUri = "http://127.0.0.1:49152/oauth/google";
+    try {
+      const started = await fetch(`${local}/desktop/start?${new URLSearchParams({ state: STATE, challenge: CHALLENGE, redirectUri })}`);
+      expect(started.status).toBe(200);
+      expect(desktop.authorizeCalls).toEqual([{ state: STATE, challenge: CHALLENGE }]);
+      const bad = await fetch(`${local}/desktop/start?${new URLSearchParams({ state: STATE, challenge: CHALLENGE, redirectUri: "http://evil.test/oauth/google" })}`);
+      expect(bad.status).toBe(400);
+      const exchanged = await fetch(`${local}/exchange`, { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: "fake-code", verifier: VERIFIER, desktopRedirectUri: redirectUri }) });
+      expect(exchanged.status).toBe(200);
+      expect(desktop.exchangeCalls).toEqual([{ code: "fake-code", verifier: VERIFIER }]);
+      expect(uris).toEqual([redirectUri, redirectUri]);
+      expect(port.exchangeCalls).toEqual([]);
+      const badVerifier = await fetch(`${local}/exchange`, { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: "fake-code", verifier: "short", desktopRedirectUri: redirectUri }) });
+      expect(badVerifier.status).toBe(400);
+      const refreshed = await fetch(`${local}/refresh`, { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ refreshToken: "desktop-refresh", client: "desktop" }) });
+      expect(refreshed.status).toBe(200);
+      expect(desktop.refreshCalls).toEqual(["desktop-refresh"]);
+      expect(port.refreshCalls).toEqual([]);
+    } finally { await new Promise<void>((resolve) => listener.close(() => resolve())); }
+  });
+});
+
+describe("same-tab browser return", () => {
+  test("redirects only to the pinned app origin and path", async () => {
+    const state = `tab.${Buffer.from("/connectors").toString("base64url")}.abcdefghijklmnopqrstuvwx`;
+    const started = await fetch(`${base}/start?${new URLSearchParams({ state, challenge: CHALLENGE })}`, { redirect: "manual" });
+    expect(started.status).toBe(302);
+    const returned = await fetch(`${base}/callback?${new URLSearchParams({ state, code: "fake-code" })}`, { redirect: "manual" });
+    expect(returned.status).toBe(302);
+    const target = new URL(returned.headers.get("location")!);
+    expect(target.origin).toBe(APP_ORIGIN);
+    expect(target.pathname).toBe("/connectors");
+    expect(target.searchParams.get("google_oauth_code")).toBe("fake-code");
+    expect(target.searchParams.get("state")).toBe(state);
+  });
 });
 
 describe("GET /start", () => {

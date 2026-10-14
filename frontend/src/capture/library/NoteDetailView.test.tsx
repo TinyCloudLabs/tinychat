@@ -114,13 +114,23 @@ describe("NoteDetailView", () => {
       },
     });
     expect(html).toContain('data-testid="note-copy"');
-    expect(html).toContain("We ship the beta. On Friday.");
+    expect(html).toContain("We ship the beta.");
+    expect(html).toContain("On Friday.");
+    expect(html).toContain('aria-label="Play from 0:01"');
     expect(html).toContain(">Ben</p>");
     expect(render({ copyState: "copied", transcript: { status: "ok", sentences: [{ index: 0, speaker_name: null, text: "Hi", start_time: 0, end_time: 1 }] } })).toContain("Copied");
     const failed = render({ transcript: { status: "failed" } });
     expect(failed).toContain("Couldn’t load the transcript.");
     expect(failed).toContain("Try again");
     expect(render({ transcript: undefined })).toContain("Loading the transcript…");
+  });
+
+  test("timed copy is absent when the caller has no handler", () => {
+    const html = render({ transcript: { status: "ok", sentences: [
+      { index: 0, speaker_name: null, text: "Ready.", start_time: 1, end_time: 2 },
+    ] } });
+    expect(html).not.toContain("Copy with timestamps");
+    expect(html).toContain("Export as Markdown");
   });
 
   test("an upload whose audio was not stored says so", () => {
@@ -173,6 +183,37 @@ describe("a voice note's transcription", () => {
       transcription: transcription(),
     });
     expect(html).toContain("Not transcribed");
+    expect(html).toContain('data-testid="transcribe-button"');
+  });
+
+  test("persisted size and duration failures use retry copy that fits both states", () => {
+    for (const code of ["recording_too_large", "recording_too_long"]) {
+      const html = render({
+        item: { ...VOICE, durationSecs: 4_320 },
+        metadata: { status: "ok", metadata: {
+          transcription_outcome: "failed",
+          transcription_error_code: code,
+        } },
+        transcript: { status: "absent" },
+        transcription: transcription({ maxSeconds: 7_200 }),
+      });
+      expect(html).toContain('data-testid="voice-note-transcription-failed"');
+      expect(html).toContain("Private cloud couldn&#x27;t accept this recording&#x27;s length or size. Try again.");
+      expect(html).toContain("Try again");
+      expect(html).toContain('data-testid="transcribe-button"');
+    }
+  });
+  test("persisted incomplete transcript is retryable with explicit may-be-incomplete copy", () => {
+    const html = render({
+      metadata: { status: "ok", metadata: {
+        transcription_outcome: "failed",
+        transcription_error_code: "transcript_incomplete",
+      } },
+      transcript: { status: "absent" },
+      transcription: transcription({ maxSeconds: 7_200 }),
+    });
+    expect(html).toContain("Private Transcription returned a transcript that may be incomplete. Try again later.");
+    expect(html).toContain("Try again");
     expect(html).toContain('data-testid="transcribe-button"');
   });
 

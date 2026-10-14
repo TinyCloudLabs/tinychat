@@ -459,6 +459,7 @@ jobs:
           # never arrive. Armed, the three client vars are MANDATORY: startup refuses to boot
           # the mount without them rather than serving a half-configured OAuth proxy.
           GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.GOOGLE_OAUTH_CLIENT_ID }}
+          GOOGLE_OAUTH_DESKTOP_CLIENT_ID: ${{ secrets.GOOGLE_OAUTH_DESKTOP_CLIENT_ID }}
           GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}
           GOOGLE_OAUTH_REDIRECT_URI: ${{ secrets.GOOGLE_OAUTH_REDIRECT_URI }}
           GOOGLE_MEET_OAUTH_ENABLED: ${{ secrets.GOOGLE_MEET_OAUTH_ENABLED }}
@@ -558,6 +559,7 @@ jobs:
             printf '%s\n' "FIREFLIES_OAUTH_CLIENT_SECRET=$FIREFLIES_OAUTH_CLIENT_SECRET"
             printf '%s\n' "FIREFLIES_OAUTH_REDIRECT_URI=$FIREFLIES_OAUTH_REDIRECT_URI"
             printf '%s\n' "GOOGLE_OAUTH_CLIENT_ID=$GOOGLE_OAUTH_CLIENT_ID"
+            printf '%s\n' "GOOGLE_OAUTH_DESKTOP_CLIENT_ID=$GOOGLE_OAUTH_DESKTOP_CLIENT_ID"
             printf '%s\n' "GOOGLE_OAUTH_CLIENT_SECRET=$GOOGLE_OAUTH_CLIENT_SECRET"
             printf '%s\n' "GOOGLE_OAUTH_REDIRECT_URI=$GOOGLE_OAUTH_REDIRECT_URI"
             printf '%s\n' "GOOGLE_MEET_OAUTH_ENABLED=${GOOGLE_MEET_OAUTH_ENABLED:-false}"
