@@ -35,7 +35,7 @@ const row = (id: string): Row => [id, SOURCE, `rec-${id}`, `Recording ${id}`, "2
 
 let spaces = 0;
 /** A space whose reads wait for the test; `kinds` is the order they went out in. */
-function fakeSpace(options: { voiceCommit?: boolean; previews?: [string, string][] } = {}) {
+function fakeSpace(options: { voiceCommit?: boolean; previews?: [string, string][]; commitProvenance?: [string | null, string | null] } = {}) {
   const previews = options.previews ?? [];
   const out: Array<{ kind: string; answer: (value: unknown) => void }> = [];
   const kinds: string[] = [];
@@ -64,7 +64,7 @@ function fakeSpace(options: { voiceCommit?: boolean; previews?: [string, string]
       if (sql.includes("WHERE source IN")) return call("list");
       if (sql.includes("SELECT source_id, preview FROM voice_note_transcript")) return Promise.resolve({ ok: true, data: { rows: previews } });
       if (sql.includes("FROM voice_note_transcript")) return Promise.resolve({ ok: true, data: { rows: [
-        ["rec-a", 1, "hash", "committed/transcript", "transcribed", "Preview", null, null, null, null, null, null, null],
+        ["rec-a", 1, "hash", "committed/transcript", "transcribed", "Preview", ...(options.commitProvenance ?? [null, null]), null, null, null, null, null],
       ] } });
       if (sql.includes("FROM connector_meeting g")) return Promise.resolve({ ok: true, data: { rows: [] } });
       return call("metadata");
@@ -304,6 +304,24 @@ describe("useLibrary, mounted", () => {
     expect(space.transcriptKeys).toEqual(["committed/transcript", "committed/transcript"]);
     expect(seen.at(-1)!.note.reads.transcript).toMatchObject({ status: "ok", sentences: [{ text: "Committed" }] });
   });
+  test("a committed transcript's provenance overrides stale row markers", async () => {
+    const space = fakeSpace({ voiceCommit: true, commitProvenance: ["whispercpp", "whispercpp"] });
+    const seen: Library[] = [];
+    await render({ tcw: space.tcw, visible: true, noteId: "a", now: () => 0, seen });
+    await space.answer("list", listedVoice("a"));
+    await space.answer("metadata", { ok: true, data: { rows: [[JSON.stringify({
+      transcription_engine: "private-cloud", transcript_provider: "tinycloud-private-transcription",
+    })]] } });
+    await space.answer("transcript", { ok: true, data: { data: JSON.stringify([{ text: "Committed local body" }]) } });
+    expect(seen.at(-1)!.note.reads.transcriptProvenance).toEqual({
+      engine: "whispercpp", provider: "whispercpp",
+    });
+    expect(seen.at(-1)!.note.reads.metadata).toMatchObject({
+      status: "ok",
+      metadata: { transcription_engine: "whispercpp", transcript_provider: "whispercpp" },
+    });
+  });
+
 
   test("an unrelated or list-only save keeps open audio and transcript mounted", async () => {
     const space = fakeSpace();

@@ -37,6 +37,7 @@ import { HowThisGotHere } from "./HowThisGotHere";
 import { librarySourceLabel } from "./libraryKinds";
 import { TimestampedTranscript } from "./TimestampedTranscript";
 import { hasPrivateCloudTimingProvenance, hasSegmentTimes, transcriptMarkdown } from "./transcriptSegments";
+import type { TranscriptProvenance } from "@/lib/voiceNotes/voiceNoteCommits";
 import type { LibraryItem } from "./LibraryRow";
 import type { LibraryStatus } from "./LibraryListView";
 import { LazySavedNote } from "./savedNote/LazySavedNote";
@@ -59,6 +60,8 @@ export interface NoteDetailViewProps {
   /** Undefined while it is read. */
   metadata: MeetingMetadataRead | undefined;
   transcript: TranscriptRead | undefined;
+  /** Provenance from the commit paired with the selected transcript body; null falls back to row metadata. */
+  transcriptProvenance?: TranscriptProvenance | null;
   /** The device copy, keyed by source_id, while the space copy has not arrived. */
   localTranscript?: LocalTranscript | null;
   localTranscriptRead?: "timeout" | "failed" | null;
@@ -266,8 +269,8 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
   const remoteSentences = transcript?.status === "ok" ? transcript.sentences : [];
   const spaceReadFailed = remoteSentences.length === 0 && local !== null &&
     (transcript?.status === "failed" || metadata?.status === "failed");
-  const isPrivateCloud = remoteSentences.length > 0 && metadata?.status === "ok"
-    && hasPrivateCloudTimingProvenance(metadata.metadata);
+  const isPrivateCloud = remoteSentences.length > 0
+    && hasPrivateCloudTimingProvenance(metadata?.status === "ok" ? metadata.metadata : null, props.transcriptProvenance);
   const sentences = remoteSentences.length > 0 ? remoteSentences
     : local?.outcome === "transcribed" ? localTranscriptToSave(local).sentences : [];
   const timed = hasSegmentTimes(sentences, isPrivateCloud);

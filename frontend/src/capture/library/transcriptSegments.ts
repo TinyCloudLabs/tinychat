@@ -1,14 +1,18 @@
+import type { TranscriptProvenance } from "@/lib/voiceNotes/voiceNoteCommits";
 import type { FirefliesSentence } from "@/lib/connectors/firefliesClient";
 import { formatClockDuration } from "./formatters";
 import { MAX_TURN_SECONDS } from "@/lib/localTranscriptTurns";
 
-export function hasPrivateCloudTimingProvenance(metadata: unknown): boolean {
+export function hasPrivateCloudTimingProvenance(metadata: unknown, committed?: TranscriptProvenance | null): boolean {
+  if (committed !== undefined && committed !== null) {
+    return committed.engine === "private-cloud"
+      || committed.provider === "tinycloud-private-transcription";
+  }
   if (metadata === null || typeof metadata !== "object" || Array.isArray(metadata)) return false;
   const fields = metadata as Record<string, unknown>;
   return fields.transcription_engine === "private-cloud"
     || fields.transcript_provider === "tinycloud-private-transcription";
 }
-
 export function sentenceTime(sentence: FirefliesSentence, isPrivateCloud = false): number | null {
   if ("timing" in sentence && sentence.timing !== "engine") return null;
   const { start_time: start, end_time: end } = sentence;

@@ -81,7 +81,10 @@ export function NoteDetail(props: {
     [reads.transcript, reads.metadata, local, localId],
   );
   const isPrivateCloud = reads.transcript?.status === "ok" && reads.transcript.sentences.length > 0
-    && reads.metadata?.status === "ok" && hasPrivateCloudTimingProvenance(reads.metadata.metadata);
+    && hasPrivateCloudTimingProvenance(
+      reads.metadata?.status === "ok" ? reads.metadata.metadata : null,
+      reads.transcriptProvenance,
+    );
   const onCopy = useCallback(async (withTimestamps = false) => {
     const text = sentences && (withTimestamps && hasSegmentTimes(sentences, isPrivateCloud)
       ? transcriptWithTimestamps(sentences, isPrivateCloud) : transcriptCopyText(sentences));
@@ -102,6 +105,7 @@ export function NoteDetail(props: {
       // Not listed yet while a list read is out (a note saved a moment ago): it waits for that read.
       listStatus={item === null && library.listing ? "loading" : library.status}
       metadata={reads.metadata}
+      transcriptProvenance={reads.transcriptProvenance}
       transcript={reads.transcript}
       localTranscript={local?.id === localId ? local.transcript : undefined}
       localTranscriptRead={local?.id === localId ? local.readError : null}

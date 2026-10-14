@@ -46,7 +46,7 @@ import { loadNote } from "@/lib/voiceNotes/recordingNotes";
 import { wasDiscarded, type PendingNote } from "@/lib/voiceNotes/recorderSaves";
 import { VoiceNotes } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { loadVoiceNoteAudioBlob, VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
-import { readTranscriptPreviews, voiceNoteTranscriptLocator } from "@/lib/voiceNotes/voiceNoteCommits";
+import { readTranscriptPreviews, voiceNoteTranscriptLocator, type TranscriptProvenance } from "@/lib/voiceNotes/voiceNoteCommits";
 import { captureEvents } from "../captureEvents";
 import type { LibraryFilter } from "./libraryKinds";
 import type { LibraryStatus } from "./LibraryListView";
@@ -57,6 +57,8 @@ import { noteSnippet, recordingIdOfOnPhoneId, withOnPhone } from "./onPhone";
 export interface NoteReads {
   metadata?: MeetingMetadataRead;
   transcript?: TranscriptRead;
+  /** Commit provenance paired with the transcript body selected by the same locator read. */
+  transcriptProvenance?: TranscriptProvenance | null;
 }
 
 export interface Library {
@@ -354,6 +356,10 @@ export function useLibrary(
             let metadata = await readMeetingMetadata(space, note.id);
             if (locator && metadata.status === "ok") metadata = { status: "ok", metadata: {
               ...metadata.metadata,
+              ...(locator.committed ? {
+                transcription_engine: locator.provenance?.engine ?? null,
+                transcript_provider: locator.provenance?.provider ?? null,
+              } : {}),
               transcription_outcome: locator.outcome === "none"
                 ? metadata.metadata.transcription_outcome ?? "none" : locator.outcome,
               // The preview is bounded; only the body read may supply full transcript text.
@@ -384,10 +390,13 @@ export function useLibrary(
               staleReads.current.set(note.id, fields);
             }
             if (version === (readVersions.current.get(note.id) ?? 0)) {
+              const keepCachedTranscript = transcript.status === "failed" && cached.transcript?.status === "ok";
               reads.current.set(note.id, {
                 ...reads.current.get(note.id),
-                transcript: transcript.status === "failed" && cached.transcript?.status === "ok"
-                  ? cached.transcript : transcript,
+                transcript: keepCachedTranscript ? cached.transcript : transcript,
+                transcriptProvenance: keepCachedTranscript
+                  ? reads.current.get(note.id)?.transcriptProvenance ?? null
+                  : locator?.committed ? locator.provenance : null,
               });
               if (mounted.current) bump();
             }

@@ -154,6 +154,19 @@ describe("NoteDetailView", () => {
       transcript: { status: "ok", sentences: body },
     });
     expect(providerOnly).toContain('aria-label="Play from 0:45"');
+    const committedPtx = render({
+      metadata: { status: "ok", metadata: {} },
+      transcriptProvenance: { engine: "private-cloud", provider: null },
+      transcript: { status: "ok", sentences: body },
+    });
+    expect(committedPtx).toContain('aria-label="Play from 0:45"');
+    const unknownCommit = render({
+      metadata: { status: "ok", metadata: { transcription_engine: "private-cloud" } },
+      transcriptProvenance: { engine: null, provider: null },
+      transcript: { status: "ok", sentences: body },
+    });
+    expect(unknownCommit).not.toContain("Play from 0:45");
+    expect(unknownCommit).not.toContain("Copy with timestamps");
   });
 
   test("real Local turn builder keeps its interpolated 60-second split untimed", () => {
