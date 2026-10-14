@@ -35,6 +35,7 @@ import { VoiceNotesTranscriberSettings } from "./VoiceNotesTranscriberSettings";
 import { DebugLogRow } from "./DebugLogRow";
 import { AudioCacheSettings } from "@/capture/AudioCacheSettings";
 import { nativeVoiceNotesAvailable } from "../lib/voiceNotes/nativeVoiceNotes";
+import { appPlatform } from "../lib/platform";
 import { useSizeClass } from "../lib/sizeClass";
 import { PageHeader } from "../shell/PageHeader";
 import { PATHS } from "../shell/routes";
@@ -163,7 +164,7 @@ export function SettingsPage({
             />
           </SectionCard>
           <TranscriptionSettings tcw={tcw} />
-          {nativeVoiceNotesAvailable() && (
+          {(nativeVoiceNotesAvailable() || appPlatform() === "web") && (
             <SectionCard icon={MicIcon} title="Voice notes">
               <VoiceNotesTranscriberSettings />
             </SectionCard>

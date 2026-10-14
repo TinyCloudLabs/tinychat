@@ -7,7 +7,7 @@ import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { captureEvents } from "@/capture/captureEvents";
 
-import type { VoiceNoteRecording } from "@/lib/voiceNotes/nativeVoiceNotes";
+import type { LevelEvent, VoiceNoteRecording } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { captureEngineAvailable } from "@/lib/voiceNotes/captureEngine";
 import { pendingStore, type PendingSnapshot } from "@/lib/voiceNotes/recorderSaves";
 import { VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
@@ -59,6 +59,7 @@ export interface VoiceNoteRecorder {
   setOnPresent(onPresent: (() => void) | undefined): void;
   /** Input levels (0..1), fanned out without React state. */
   subscribeLevel(listener: (level: number) => void): () => void;
+  subscribeLevels(listener: (levels: LevelEvent) => void): () => void;
 }
 
 /** Default for every mounted recorder, including the app and browser harness. */
@@ -139,6 +140,7 @@ export function useVoiceNoteRecorder({ tcw, enabled = true, backendUrl, sessionS
       dismissCaptureIssue: controller.dismissCaptureIssue,
       setOnPresent: controller.setOnPresent,
       subscribeLevel: controller.subscribeLevel,
+      subscribeLevels: controller.subscribeLevels,
     }),
     [available, controller, note, noteStatus, noteSyncError, pending, snapshot, state, transcriber, transcriberChoice],
   );

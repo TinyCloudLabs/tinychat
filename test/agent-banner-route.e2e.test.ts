@@ -45,9 +45,12 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await browser?.close();
+  await Promise.race([
+    browser?.close(),
+    new Promise((resolve) => setTimeout(resolve, 10_000)),
+  ]);
   server?.stop(true);
-});
+}, 15_000);
 
 async function openAt(path: string): Promise<Page> {
   probes = 0;

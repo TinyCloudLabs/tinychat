@@ -1,4 +1,5 @@
 import { readableError } from "@/lib/readableError";
+import { deviceName } from "@/lib/platform";
 // The Library's data (TC-761, plan §4.11), called once in CaptureSurface: the
 // list for Recent, the Library and the list pane, and the open note's reads.
 //
@@ -43,11 +44,11 @@ import {
 import { scheduledSpace } from "@/lib/spaceQueue";
 import { loadNote } from "@/lib/voiceNotes/recordingNotes";
 import { wasDiscarded, type PendingNote } from "@/lib/voiceNotes/recorderSaves";
+import { nativeVoiceNotesAvailable, VoiceNotes } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { loadVoiceNoteAudioBlob, voiceNoteAudioKvKey, VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
 import { cachedSpaceAudio, cachedSpaceAudioOffline, latestSpaceAudioIdentity, localPlaybackUrl,
   observeSpaceAudioIdentity } from "@/lib/voiceNotes/audioPlaybackCache";
-import { VoiceNotes } from "@/lib/voiceNotes/nativeVoiceNotes";
-import { readTranscriptPreviews, voiceNoteTranscriptLocator } from "@/lib/voiceNotes/voiceNoteCommits";
+import { readTranscriptPreviews, voiceNoteTranscriptLocator, type TranscriptProvenance } from "@/lib/voiceNotes/voiceNoteCommits";
 import { captureEvents } from "../captureEvents";
 import type { LibraryFilter } from "./libraryKinds";
 import type { LibraryStatus } from "./LibraryListView";
@@ -55,9 +56,14 @@ import type { LibraryItem } from "./LibraryRow";
 import type { NoteAudio } from "./NoteDetailView";
 import { noteSnippet, recordingIdOfOnPhoneId, withOnPhone } from "./onPhone";
 
+export interface SelectedTranscript {
+  transcript: TranscriptRead;
+  /** Null means this selected body was read without a transcript commit. */
+  provenance: TranscriptProvenance | null;
+}
 export interface NoteReads {
   metadata?: MeetingMetadataRead;
-  transcript?: TranscriptRead;
+  transcript?: SelectedTranscript;
 }
 
 const manifestIdentity = (manifest: StoredAudioManifest) => JSON.stringify([
@@ -101,7 +107,7 @@ function localAudio(recordingId: string): NoteAudio {
         if (!url) throw new Error("Audio is no longer on this device");
         return url;
       } catch (caught) {
-        throw new Error(`Could not open this phone's audio: ${readableError(caught)}`, { cause: caught });
+        throw new Error(`Could not open audio on ${deviceName()}: ${readableError(caught)}`, { cause: caught });
       }
     },
   };
@@ -153,6 +159,7 @@ export function useLibrary(
     previews: new Map(),
   });
   const [listing, setListing] = useState(false);
+  const [localAudioIds, setLocalAudioIds] = useState<ReadonlySet<string>>(new Set());
   const [filter, setFilter] = useState<LibraryFilter>("all");
   const reads = useRef(new Map<string, NoteReads>());
   const reading = useRef(new Set<string>());
@@ -292,9 +299,10 @@ export function useLibrary(
     return merged.map((entry) => {
       if (entry.source !== VOICE_NOTE_SOURCE) return entry;
       const snippet = moments.get(entry.sourceId) ?? noteSnippet(list.previews.get(entry.sourceId));
-      return snippet === null ? entry : { ...entry, snippet };
+      return { ...entry, ...(snippet === null ? {} : { snippet }),
+        ...(localAudioIds.has(entry.sourceId) ? { hasLocalAudio: true as const } : {}) };
     });
-  }, [list.items, list.previews, moments, onPhoneNotes, currentHandoff.lingering]);
+  }, [list.items, list.previews, moments, onPhoneNotes, currentHandoff.lingering, localAudioIds]);
 
   // The open note by its id; a stand-in's sheet stays open when its row replaces it.
   const item = useMemo(() => {
@@ -308,6 +316,18 @@ export function useLibrary(
 
   // The open voice note, by recording: a stand-in and its row are one note.
   const openRecordingId = item?.source === VOICE_NOTE_SOURCE ? item.sourceId : null;
+  useEffect(() => {
+    if (!options.visible) return;
+    if (!nativeVoiceNotesAvailable()) {
+      setLocalAudioIds(new Set());
+      return;
+    }
+    let live = true;
+    void VoiceNotes.listPending().then(({ recordings }) => {
+      if (live) setLocalAudioIds(new Set(recordings.filter((note) => note.owner === tcw.did).map((note) => note.id)));
+    }, () => { if (live) setLocalAudioIds(new Set()); });
+    return () => { live = false; };
+  }, [options.visible, tcw.did, invalidationRevision, onPhoneNotes]);
   const lastOpened = useRef<string | null>(null);
   useEffect(() => {
     // A note just closed may have had its moments edited: read them again.
@@ -349,12 +369,12 @@ export function useLibrary(
       const stale = invalidated.current.delete(note.id);
       const staleFields = staleReads.current.get(note.id);
       staleReads.current.delete(note.id);
-      if (!stale && !staleFields?.size && settled(cached.metadata) && settled(cached.transcript)) return;
+      if (!stale && !staleFields?.size && settled(cached.metadata) && settled(cached.transcript?.transcript)) return;
       // A saved note retains its reads during revalidation; only prior failures show loading.
       if (!stale) {
         reads.current.set(note.id, {
           metadata: settled(cached.metadata) ? cached.metadata : undefined,
-          transcript: settled(cached.transcript) ? cached.transcript : undefined,
+          transcript: settled(cached.transcript?.transcript) ? cached.transcript : undefined,
         });
       }
       reading.current.add(note.id);
@@ -367,6 +387,10 @@ export function useLibrary(
             let metadata = await readMeetingMetadata(space, note.id);
             if (locator && metadata.status === "ok") metadata = { status: "ok", metadata: {
               ...metadata.metadata,
+              ...(locator.committed ? {
+                transcription_engine: locator.provenance?.engine ?? null,
+                transcript_provider: locator.provenance?.provider ?? null,
+              } : {}),
               transcription_outcome: locator.outcome === "none"
                 ? metadata.metadata.transcription_outcome ?? "none" : locator.outcome,
               // The preview is bounded; only the body read may supply full transcript text.
@@ -386,21 +410,24 @@ export function useLibrary(
               if (mounted.current) bump();
             }
           }
-          if (version === (readVersions.current.get(note.id) ?? 0) && (stale || staleFields?.has("transcript") || !settled(reads.current.get(note.id)?.transcript))) {
+          if (version === (readVersions.current.get(note.id) ?? 0) && (stale || staleFields?.has("transcript") || !settled(reads.current.get(note.id)?.transcript?.transcript))) {
             const transcript = locator
               ? locator.bodyKey ? await readTranscript(space, note.source, note.sourceId, locator.bodyKey, locator.expectedText)
                 : { status: "absent" as const }
               : await readTranscript(space, note.source, note.sourceId);
-            if (version === (readVersions.current.get(note.id) ?? 0) && transcript.status === "failed" && cached.transcript?.status === "ok") {
+            if (version === (readVersions.current.get(note.id) ?? 0) && transcript.status === "failed" && cached.transcript?.transcript.status === "ok") {
               const fields = staleReads.current.get(note.id) ?? new Set<keyof NoteReads>();
               fields.add("transcript");
               staleReads.current.set(note.id, fields);
             }
             if (version === (readVersions.current.get(note.id) ?? 0)) {
+              const keepCachedTranscript = transcript.status === "failed" && cached.transcript?.transcript.status === "ok";
               reads.current.set(note.id, {
                 ...reads.current.get(note.id),
-                transcript: transcript.status === "failed" && cached.transcript?.status === "ok"
-                  ? cached.transcript : transcript,
+                transcript: keepCachedTranscript ? cached.transcript : {
+                  transcript,
+                  provenance: locator?.committed ? locator.provenance ?? { engine: null, provider: null } : null,
+                },
               });
               if (mounted.current) bump();
             }
@@ -421,20 +448,23 @@ export function useLibrary(
   }, [item, readNote, invalidationRevision]);
 
   const noteReads: NoteReads = item?.onPhone
-    ? { metadata: { status: "ok", metadata: {} }, transcript: { status: "absent" } }
+    ? { metadata: { status: "ok", metadata: {} }, transcript: { transcript: { status: "absent" }, provenance: null } }
     : item ? (reads.current.get(item.id) ?? {}) : {};
   const meta = noteReads.metadata?.status === "ok" ? noteReads.metadata.metadata : null;
   const audio = item ? meetingAudioFrom(meta) : null;
   const audioBase = audio?.status === "stored" ? audio.base : null;
   const voiceSourceId = item?.source === VOICE_NOTE_SOURCE ? item.sourceId : null;
   const pendingAudioRow = voiceSourceId !== null && meta !== null && Object.keys(meta).length === 0;
+  const metadataLoaded = meta !== null;
   // The row is made before the audio is uploaded: while the phone still lists the note, its own copy is the audio.
+  const onThisPhone = voiceSourceId !== null && (item?.onPhone === true || localAudioIds.has(voiceSourceId));
+  const localOnlyAudio = (meta?.audio as { stored?: unknown } | undefined)?.stored === false;
   // The stored file is read only when the player asks, one part per queued
   // call; the player's signal stops it when the note closes.
   const noteAudio = useMemo<NoteAudio | null>(() => {
-    // An on-device-only note has no space copy yet. Resolve its URL at Play time.
-    if (voiceSourceId !== null && item?.onPhone) return localAudio(voiceSourceId);
-    if (voiceSourceId !== null) {
+    // The phone's own copy, until the space has the audio.
+    if (voiceSourceId !== null && onThisPhone) return localAudio(voiceSourceId);
+    if (voiceSourceId !== null && metadataLoaded && !pendingAudioRow && !localOnlyAudio) {
       return {
         load: async (signal, onProgress) => {
           const localNote = await Promise.resolve().then(() => VoiceNotes.listPending())
@@ -490,9 +520,9 @@ export function useLibrary(
         },
       };
     }
-    if (audioBase !== null) return { load: (signal, onProgress) => getAudio(space.kv, audioBase, { signal, onProgress }) };
+    if (audioBase !== null && !localOnlyAudio) return { load: (signal, onProgress) => getAudio(space.kv, audioBase, { signal, onProgress }) };
     return null;
-  }, [audioBase, item?.onPhone, item?.saving, pendingAudioRow, space, voiceSourceId]);
+  }, [audioBase, item?.saving, onThisPhone, localOnlyAudio, metadataLoaded, pendingAudioRow, space, voiceSourceId]);
 
   const retry = useCallback(() => {
     if (list.status === "failed") refresh();

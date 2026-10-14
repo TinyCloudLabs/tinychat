@@ -1,5 +1,93 @@
 # @tinychat/frontend
 
+## 0.7.4-beta.1
+
+### Patch Changes
+
+- f4a2184: TC-760: Preserve partial transcript gaps and provenance, and show missing and recovered speech in Library notes.
+
+## 0.7.4-beta.0
+
+### Patch Changes
+
+- 7a024fb: Persist optional PTX quiet-mode VAD diagnostics with voice-note transcription outcomes.
+
+## 0.7.3
+
+### Patch Changes
+
+- ec28052: Run recorder file operations and recovery encoding away from the macOS main thread, and stop native Whisper work when its deadline expires.
+- 5b5ca03: Use PTX VAD-drop stats for incomplete-transcript retries and track missing stats.
+- b5a4d09: Use specific private-cloud failure copy for persisted voice-note transcription failures.
+- 438d85b: Accept transcript sentence spans up to the shared 60-second turn limit for timestamped playback and copying.
+- 60e745c: Reduce PTX and hosted transcription status polling after the initial fast phase, honor rate-limit retry deadlines, expose limiter headers to browser clients, and keep throttling separate from failure budgets.
+
+## 0.7.3-beta.4
+
+### Patch Changes
+
+- 438d85b: Accept transcript sentence spans up to the shared 60-second turn limit for timestamped playback and copying.
+
+## 0.7.3-beta.3
+
+### Patch Changes
+
+- 60e745c: Reduce PTX and hosted transcription status polling after the initial fast phase, honor rate-limit retry deadlines, expose limiter headers to browser clients, and keep throttling separate from failure budgets.
+
+## 0.7.3-beta.2
+
+### Patch Changes
+
+- 5b5ca03: Use PTX VAD-drop stats for incomplete-transcript retries and track missing stats.
+
+## 0.7.3-beta.1
+
+### Patch Changes
+
+- b5a4d09: Use specific private-cloud failure copy for persisted voice-note transcription failures.
+
+## 0.7.3-beta.0
+
+### Patch Changes
+
+- ec28052: Run recorder file operations and recovery encoding away from the macOS main thread, and stop native Whisper work when its deadline expires.
+
+## 0.7.2
+
+### Patch Changes
+
+- 6f5605d: Show stored transcript timings in note detail with seek, playback follow, timestamped copy, and Markdown export.
+- b1b58a1: Open Google consent in the system browser on Exo Mac, receive the authorization code through a validated one-shot loopback listener, and exchange it using a Google Desktop OAuth client. Offer a same-tab return when a web popup is blocked.
+- 1834edf: TC-1016: reuse notetaker send idempotency keys across retries and coalesce active or concurrent sends for the same meeting URL.
+- f7a1fa8: Route explicit Private transcription requests through the committed-mode override.
+- e844f56: Normalize PTX MIME types and surface durable transcription outcomes in the Library.
+- c88319e: Preserve Fireflies' last successful sync time on failed runs, surface 24-hour staleness, and run a bounded browser catch-up when a stale connector is available on mount or unlock.
+- 5eb65ed: (TC-983) Keep the transcriber heartbeat at 50 minutes; with successful passes of ≤ 60 seconds and timely 30-second timer execution, `checked_at` lag is ≤ H + 2D + I = 50 min + 2×60 s + 30 s = 52 min 30 s < 1h30s.
+
+## 0.7.2-beta.6
+
+### Patch Changes
+
+- 6f5605d: Show stored transcript timings in note detail with seek, playback follow, timestamped copy, and Markdown export.
+
+## 0.7.2-beta.5
+
+### Patch Changes
+
+- b1b58a1: Open Google consent in the system browser on Exo Mac, receive the authorization code through a validated one-shot loopback listener, and exchange it using a Google Desktop OAuth client. Offer a same-tab return when a web popup is blocked.
+
+## 0.7.2-beta.4
+
+### Patch Changes
+
+- c88319e: Preserve Fireflies' last successful sync time on failed runs, surface 24-hour staleness, and run a bounded browser catch-up when a stale connector is available on mount or unlock.
+
+## 0.7.2-beta.3
+
+### Patch Changes
+
+- e844f56: Normalize PTX MIME types and surface durable transcription outcomes in the Library.
+
 ## 0.7.2-beta.2
 
 ### Patch Changes

@@ -6,8 +6,8 @@ name: Release
 #      when the "Release stable" PR (.changeset/pre.json -> "exit") was merged, stable versions instead,
 #      then beta pre mode is re-entered;
 #   2. each unit's version is tagged <name>@<version> on the commit that set it;
-#   3. new exo-desktop tags start a desktop release build (desktop-release.yml: a pre-release for a beta, the
-#      published release for stable); stable tags also start the production deploy (deploy-production.yml: backend,
+#   3. new stable exo-desktop tags start a desktop release build (desktop-release.yml); beta desktop builds
+#      are manual (gh workflow run desktop-release.yml --ref main -f tag=exo-desktop@X.Y.Z-beta.N); stable tags also start the production deploy (deploy-production.yml: backend,
 #      then web). Betas never deploy web or backend;
 #   4. the "Release stable" PR is rebuilt to show what stable would ship.
 # Web and desktop share one version (fixed group); the backend stays 0.x (minor/patch only).
@@ -62,6 +62,10 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version-file: package.json
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.bun/install/cache
+          key: bun-release-${{ runner.os }}-${{ hashFiles('bun.lock') }}
 
       - name: Install JS deps
         run: bun install --frozen-lockfile
@@ -95,7 +99,7 @@ jobs:
           scripts/release/deploy-key-push.sh --atomic HEAD:refs/heads/main "${refs[@]}"
 
       # Downstream work is dispatched explicitly, from main, with the new tag as an input (the tag commits carry
-      # [skip ci]). Desktop builds for beta and stable exo-desktop tags; production deploys (backend, then web) only
+      # [skip ci]). Desktop builds for stable exo-desktop tags only (betas are manual); production deploys (backend, then web) only
       # for a stable run. The 0.1.0 baseline tags of the first run dispatch nothing.
       - name: Dispatch desktop releases and production deploys
         if: steps.tag.outputs.tags != ''

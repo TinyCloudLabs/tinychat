@@ -1,4 +1,6 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { createFakeVoiceNotes } from "@/lib/voiceNotes/fakeVoiceNotes";
+import { __setVoiceNotesForTests } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { isOnDeviceReady, type OnDeviceSttStatus } from "@/lib/voiceNotes/onDeviceStt";
 import {
   availableStops,
@@ -10,6 +12,9 @@ import {
   scaleStops,
   type ModeShell,
 } from "./transcriptionModes";
+
+beforeEach(() => __setVoiceNotesForTests(createFakeVoiceNotes().plugin, { available: false }));
+afterEach(() => __setVoiceNotesForTests(createFakeVoiceNotes().plugin, { available: null }));
 
 function model(
   state: OnDeviceSttStatus["models"][number]["state"],
@@ -101,17 +106,17 @@ describe("transcription modes availability", () => {
     const expected = {
       skip: {
         phone: [
-          "Just the recording, kept on this phone.",
+          "Just the recording. Audio follows your Upload audio to TinyCloud setting.",
           "no transcript",
           "Only the audio is saved. Transcribe it later if you like.",
         ],
         desktop: [
-          "Just the recording, saved to your space.",
+          "Just the recording. Audio follows your Upload audio to TinyCloud setting.",
           "no transcript",
           "Only the audio is saved. Transcribe it later if you like.",
         ],
         web: [
-          "Just the recording, saved to your space.",
+          "Just the recording. Audio follows your Upload audio to TinyCloud setting.",
           "no transcript",
           "Only the audio is saved. Transcribe it later if you like.",
         ],
@@ -119,8 +124,8 @@ describe("transcription modes availability", () => {
       local: {
         phone: [
           "Nothing leaves it; a little slower.",
-          "on this phone",
-          "Your phone transcribes it after you stop. Nothing leaves your phone.",
+          "on this browser",
+          "This browser transcribes it after you stop. Nothing leaves it.",
         ],
         desktop: [
           "Whisper on this Mac, after you stop.",
@@ -285,7 +290,7 @@ describe("transcription modes availability", () => {
       ).toBe(false);
     });
 
-    test("the model must be the one this phone's pack uses", () => {
+    test("the model must be the one this browser's pack uses", () => {
       expect(
         local(
           withModels(

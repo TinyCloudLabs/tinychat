@@ -24,17 +24,17 @@ describe("assemblyAiSentences", () => {
       ],
     };
     expect(assemblyAiSentences(t, null)).toEqual([
-      { index: 0, speaker_name: "Speaker A", text: "Hello there.", start_time: 0.25, end_time: 1.5 },
-      { index: 1, speaker_name: "Speaker B", text: "Hi.", start_time: 1.6, end_time: 2.1 },
+      { index: 0, speaker_name: "Speaker A", speaker_id: "A", text: "Hello there.", start_time: 0.25, end_time: 1.5, timing: "engine" },
+      { index: 1, speaker_name: "Speaker B", speaker_id: "B", text: "Hi.", start_time: 1.6, end_time: 2.1, timing: "engine" },
     ]);
   });
 
   test("without speaker labels, sentences carry no speaker; bare text is kept as one sentence", () => {
     const t: AssemblyAiTranscript = { id: "t1", status: "completed", utterances: null, text: "One. Two.", audio_duration: 4 };
     expect(assemblyAiSentences(t, [{ text: "One.", start: 0, end: 900 }])).toEqual([
-      { index: 0, speaker_name: null, text: "One.", start_time: 0, end_time: 0.9 },
+      { index: 0, speaker_name: null, text: "One.", start_time: 0, end_time: 0.9, timing: "engine" },
     ]);
-    expect(assemblyAiSentences(t, [])).toEqual([{ index: 0, speaker_name: null, text: "One. Two.", start_time: 0, end_time: 4 }]);
+    expect(assemblyAiSentences(t, [])).toEqual([{ index: 0, speaker_name: null, text: "One. Two.", start_time: 0, end_time: 4, timing: "coarse" }]);
   });
 });
 
@@ -67,7 +67,7 @@ describe("pollAssemblyAiTranscript", () => {
       { clock: k },
     );
     expect(done.status).toBe("completed");
-    expect(c.sleeps).toEqual([3_000, 4_500, 6_750]);
+    expect(c.sleeps).toEqual([5_000, 5_000, 5_000]);
   });
 
   test("a failed transcript ends polling with AssemblyAI's reason", async () => {
@@ -266,4 +266,120 @@ test("Discard rechecks a transient upload 404 and deletes the submitted transcri
   await client.deleteUpload!("upload");
   expect(reads).toBe(2);
   expect(deletes).toEqual(["https://backend.test/api/transcriber/assemblyai/hosted/transcripts/handle"]);
+});
+
+test("hosted transcript polling honours Retry-After and draft-7 RateLimit reset", async () => {
+  for (const [headers, expectedWaitMs] of [
+    [{ "Retry-After": "900" }, 900_000],
+    [{ RateLimit: "limit=600, remaining=0, reset=90" }, 90_000],
+    [{ RateLimit: "limit=600, remaining=0, t=120" }, 120_000],
+  ] as const) {
+    let now = 0;
+    const sleeps: number[] = [];
+    let reads = 0;
+    const client = createHostedAssemblyAiClient({
+      backendUrl: "https://api.example",
+      sessionStore: { getToken: () => "tok", isExpired: () => false },
+      fetchImpl: (async () => ++reads === 1
+        ? new Response(JSON.stringify({ error: "assemblyai_busy" }), { status: 429, headers })
+        : json(200, { id: "h1", status: "completed" })) as typeof fetch,
+    });
+    const transcript = await pollAssemblyAiTranscript(client, "h1", {
+      clock: {
+        now: () => now,
+        sleep: async (ms) => { sleeps.push(ms); now += ms; },
+        random: () => 0,
+      },
+    });
+    expect(transcript.status).toBe("completed");
+    expect(sleeps[0]).toBeGreaterThanOrEqual(expectedWaitMs);
+  }
+});
+
+test("hosted 429 without a readable rate-limit header falls back to the slow interval", async () => {
+  let reads = 0;
+  const sleeps: number[] = [];
+  const client = createHostedAssemblyAiClient({
+    backendUrl: "https://api.example",
+    sessionStore: { getToken: () => "tok", isExpired: () => false },
+    fetchImpl: (async () => ++reads === 1
+      ? json(429, { error: "assemblyai_busy" })
+      : json(200, { id: "h1", status: "completed" })) as typeof fetch,
+  });
+  await pollAssemblyAiTranscript(client, "h1", {
+    clock: { now: () => sleeps.reduce((total, ms) => total + ms, 0), sleep: async (ms) => { sleeps.push(ms); }, random: () => 0 },
+  });
+  expect(sleeps[0]).toBeGreaterThanOrEqual(30_000);
+});
+test("malformed hosted throttle headers keep each transcript retry on the slow floor", async () => {
+  const cases = [
+    { headers: { "Retry-After": "" }, minGapMs: 30_000 },
+    { headers: { "Retry-After": "-1" }, minGapMs: 30_000 },
+    { headers: { "Retry-After": "12garbage" }, minGapMs: 30_000 },
+    { headers: { "Retry-After": new Date(0).toUTCString() }, minGapMs: 30_000 },
+    { headers: { RateLimit: "limit=600, remaining=0, reset=12garbage" }, minGapMs: 30_000 },
+    { headers: { RateLimit: 'limit=600, remaining=0, reset="0' }, minGapMs: 30_000 },
+    { headers: { RateLimit: 'limit=600, remaining=0, reset=0"' }, minGapMs: 30_000 },
+    { headers: { RateLimit: 'limit=600, remaining=0, reset="90"' }, minGapMs: 90_000 },
+  ];
+  for (const { headers, minGapMs } of cases) {
+    let now = 0;
+    let reads = 0;
+    const requestTimes: number[] = [];
+    const client = createHostedAssemblyAiClient({
+      backendUrl: "https://api.example",
+      sessionStore: { getToken: () => "tok", isExpired: () => false },
+      fetchImpl: (async () => {
+        requestTimes.push(now);
+        return ++reads <= 100
+          ? new Response(JSON.stringify({ error: "assemblyai_busy" }), { status: 429, headers })
+          : json(200, { id: "h1", status: "completed" });
+      }) as typeof fetch,
+    });
+    await pollAssemblyAiTranscript(client, "h1", {
+      clock: { now: () => now, sleep: async (ms) => { now += ms; }, random: () => 0 },
+    });
+    expect(requestTimes).toHaveLength(101);
+    expect(requestTimes.slice(1).every((at, index) => at - requestTimes[index]! >= minGapMs)).toBe(true);
+  }
+});
+
+test("more than ten minutes of hosted 429s do not become a connection failure", async () => {
+  let now = 0;
+  let reads = 0;
+  const client = createHostedAssemblyAiClient({
+    backendUrl: "https://api.example",
+    sessionStore: { getToken: () => "tok", isExpired: () => false },
+    fetchImpl: (async () => {
+      reads++;
+      return now < 11 * 60_000
+        ? new Response(JSON.stringify({ error: "assemblyai_busy" }), { status: 429, headers: { "Retry-After": "60" } })
+        : json(200, { id: "h1", status: "completed" });
+    }) as typeof fetch,
+  });
+  await expect(pollAssemblyAiTranscript(client, "h1", {
+    clock: { now: () => now, sleep: async (ms) => { now += ms; }, random: () => 0 },
+  })).resolves.toMatchObject({ status: "completed" });
+  expect(now).toBeGreaterThanOrEqual(11 * 60_000);
+  expect(reads).toBeGreaterThan(10);
+});
+
+test("hosted transcript polling forwards its abort signal to the request", async () => {
+  const controller = new AbortController();
+  let requestSignal: AbortSignal | null = null;
+  const client = createHostedAssemblyAiClient({
+    backendUrl: "https://api.example",
+    sessionStore: { getToken: () => "tok", isExpired: () => false },
+    fetchImpl: (async (_url, init) => {
+      requestSignal = init?.signal ?? null;
+      return json(200, { id: "h1", status: "processing" });
+    }) as typeof fetch,
+  });
+  await expect(pollAssemblyAiTranscript(client, "h1", {
+    signal: controller.signal,
+    onStatus: () => controller.abort(),
+    clock: { now: () => 0, sleep: async () => {}, random: () => 0 },
+  })).rejects.toBeInstanceOf(AssemblyAiError);
+  expect(requestSignal).not.toBeNull();
+  expect(requestSignal?.aborted).toBe(true);
 });

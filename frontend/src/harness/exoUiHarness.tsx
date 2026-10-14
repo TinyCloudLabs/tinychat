@@ -23,6 +23,7 @@ import { createFakeVoiceNotes as createCaptureFakeVoiceNotes } from "@/lib/voice
 import type { HarnessScreen } from "./screen";
 import { captureScreens, captureSoftScreens } from "./screens/capture";
 import { capturePipelineScreens } from "./screens/capturePipeline";
+import { activityScreens } from "./screens/activity";
 import { captureHomeDesktopScreens } from "./screens/captureHomeDesktop";
 import { captureSettingsScreens } from "./screens/captureSettings";
 import { legacyScreens } from "./screens/legacy";
@@ -70,6 +71,7 @@ const SCREENS: HarnessScreen[] = [
   ...captureScreens,
   ...captureSoftScreens,
   ...capturePipelineScreens,
+  ...activityScreens,
   ...captureHomeDesktopScreens,
   ...captureSettingsScreens,
   ...libraryScreens,

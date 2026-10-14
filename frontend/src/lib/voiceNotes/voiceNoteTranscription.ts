@@ -1,4 +1,4 @@
-import { logPipeline, logPipelineError } from "@/lib/debugLog";
+import { logPipeline, logPipelineCount, logPipelineError } from "@/lib/debugLog";
 import { readableError } from "@/lib/readableError";
 // Private transcription for Exo voice notes. The backend creates and tracks
 // jobs; this device uploads a local file directly to PTX when it has one.
@@ -15,31 +15,43 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { TRANSCRIBER_NAME } from "@/capture/recorder/final/finalCopy";
 import { createHostedVoiceNoteTrack } from "./hostedVoiceNotes";
 import type { FirefliesSentence } from "../connectors/firefliesClient";
-import { MAX_TURN_SECONDS } from "../localTranscriptTurns";
+import { splitLongTimedSegment } from "./timedSegments";
 import {
   buildPtxUploadOrigin,
+  cloudStatusIntervalMs,
+  jitteredCloudIntervalMs,
   createPrivateCloudApi,
   createPrivateCloudJob,
   interpretUploadResponse,
+  jitteredRateLimitWaitMs,
   ptxUploadUrl,
   isTransientCloudError,
   PrivateCloudError,
   privateCloudMessage,
   VOICE_NOTE_CHANNEL_LABELS,
+  type CloudPolling,
   type PrivateCloudApi,
   type PrivateCloudCapabilities,
   type PrivateCloudCreateBody,
   type PrivateCloudCreated,
   type PrivateCloudJob,
   type PrivateCloudTranscript,
+  type PrivateCloudTranscriptionStats,
   type PtxPutResponse,
 } from "../privateCloud";
 import { captureCapabilities, captureEngineKind, NativeFileUploadStatusError, resolveNativeFileUploadCapability } from "./captureEngine";
 import { currentAccountGeneration, isAccountContextCurrent, isAccountWorkAllowed, StaleAccountContext, subscribeAccountGeneration } from "./accountContext";
 import { nativeRecordingSource, VoiceNotes, type VoiceNoteRecording } from "./nativeVoiceNotes";
 import { readTranscriptCommit } from "./voiceNoteCommits";
-import { whenVoiceNoteSavesIdle } from "./recorderSaves";
+import { pendingStore } from "./recorderSaves";
+import { voiceNoteCallDeadlineMs, withVoiceNoteSaveDeadline } from "./saveDeadline";
+import { transcriptionErrorCopy, voiceNoteTranscriptionFailureForCode } from "./transcriptionErrors";
+import { privatePartsDone } from "./notePipelineCopy";
+import type { VoiceNoteTranscriptionFailure } from "./transcriptionErrors";
+export type { VoiceNoteTranscriptionFailure } from "./transcriptionErrors";
+
 import {
+  bareMimeType,
   base64ToBytes,
   bytesToBase64,
   prepareTranscriptionAudio,
@@ -56,6 +68,7 @@ import {
   type VoiceNoteTranscriptSave,
   type VoiceNoteTranscriptAccount,
 } from "./voiceNoteStore";
+import type { VoiceNoteTranscriptionStatsMetadata } from "./voiceNoteRows";
 
 // ── Upload ─────────────────────────────────────────────────────────────
 
@@ -380,44 +393,88 @@ export function localStorageVoiceNoteHoldStore(
 
 // ── Transcript → note ──────────────────────────────────────────────────
 
-/** A voice note has one speaker: whoever held the phone. Same label as Exo Local's mic channel. */
-export const VOICE_NOTE_SPEAKER = "You";
-
-/**
- * PTX segments (one speech region each, ≤ 30 s) as readable sentences: in
- * time order, consecutive regions merged into turns of at most
- * MAX_TURN_SECONDS (the readable-transcripts rule Exo Local uses, which keeps
- * each sentence under meeting chat's excerpt span).
- */
-export function voiceNoteSentences(transcript: Pick<PrivateCloudTranscript, "segments" | "diarized" | "speakers">): FirefliesSentence[] {
+/** Keep PTX's speech regions and speaker/channel identity in the saved body. */
+export function voiceNoteSentences(transcript: Pick<PrivateCloudTranscript, "segments" | "diarized" | "speakers" | "channels">): FirefliesSentence[] {
   const speakerNames = new Map(transcript.speakers?.map((speaker) => [speaker.id, speaker.name]));
   const segments = transcript.segments
     .map((seg) => ({ start: seg.start, end: seg.end, text: typeof seg.text === "string" ? seg.text.trim() : "",
+      channel: seg.channel === 0 || seg.channel === 1 ? seg.channel as 0 | 1 : undefined,
+      speakerId: transcript.diarized ? seg.speaker_id ?? null : null,
       speaker: transcript.diarized && seg.speaker_id
         ? speakerNames.get(seg.speaker_id) ?? (seg.speaker_id.match(/^speaker_(\d+)$/)
           ? `Speaker ${Number(seg.speaker_id.slice(8)) + 1}` : seg.speaker_id)
-        : VOICE_NOTE_SPEAKER }))
+        : transcript.channels === 2 ? seg.channel === 0 ? "Me" : "Them" : null }))
     .filter((seg) => seg.text.length > 0 && Number.isFinite(seg.start) && Number.isFinite(seg.end))
-    .sort((a, b) => a.start - b.start);
-  const turns: { start: number; end: number; texts: string[]; speaker: string }[] = [];
-  for (const seg of segments) {
-    const last = turns[turns.length - 1];
-    if (last !== undefined && last.speaker === seg.speaker && Math.max(last.end, seg.end) - last.start <= MAX_TURN_SECONDS) {
-      last.texts.push(seg.text);
-      last.end = Math.max(last.end, seg.end);
-      continue;
-    }
-    turns.push({ start: seg.start, end: seg.end, texts: [seg.text], speaker: seg.speaker });
-  }
-  return turns.map((turn, index) => ({
+    .flatMap((seg) => splitLongTimedSegment({ ...seg, timing: "engine" as const }, 30))
+    .sort((a, b) => a.start - b.start || (a.channel ?? -1) - (b.channel ?? -1) || a.end - b.end);
+  return segments.map((turn, index) => ({
     index,
     speaker_name: turn.speaker,
-    text: turn.texts.join(" "),
+    text: turn.text,
     start_time: turn.start,
     end_time: turn.end,
+    ...(turn.channel === undefined ? {} : { channel: turn.channel }),
+    ...(turn.speakerId === null ? {} : { speaker_id: turn.speakerId }),
+    timing: turn.timing,
   }));
 }
 
+export const MIN_INCOMPLETE_TRANSCRIPT_DURATION_SECONDS = 600;
+export const MIN_INCOMPLETE_TRANSCRIPT_COVERAGE_RATIO = 0.35;
+export const VAD_DROP_REJECT_PCT = 10;
+
+/** Older PTX or backend versions may not return the VAD-drop metric. */
+function shouldRejectIncompleteTranscript(stats: PrivateCloudTranscriptionStats | null | undefined,
+  metadata: VoiceNoteTranscriptionStatsMetadata): boolean {
+  const dropped = stats?.dropped_above_floor_pct;
+  const exceedsDropThreshold = typeof dropped === "number" && Number.isFinite(dropped) && dropped > VAD_DROP_REJECT_PCT;
+  return exceedsDropThreshold || rejectsForIncompleteCoverage(metadata);
+}
+
+function transcriptStatsMetadata(transcript: PrivateCloudTranscript): VoiceNoteTranscriptionStatsMetadata {
+  const metadata: VoiceNoteTranscriptionStatsMetadata = {};
+  const duration = transcript.duration_seconds;
+  const audio = transcript.stats?.tinfoil_audio_seconds;
+  if (typeof duration === "number" && Number.isFinite(duration) && duration >= 0
+    && typeof audio === "number" && Number.isFinite(audio) && audio >= 0) {
+    metadata.transcription_duration_seconds = duration;
+    metadata.transcription_audio_seconds = audio;
+  }
+  const voiced = transcript.stats?.voiced_seconds;
+  if (typeof voiced === "number" && Number.isFinite(voiced) && voiced >= 0)
+    metadata.transcription_voiced_seconds = voiced;
+  const dropped = transcript.stats?.dropped_above_floor_pct;
+  if (typeof dropped === "number" && Number.isFinite(dropped) && dropped >= 0 && dropped <= 100)
+    metadata.transcription_vad_dropped_above_floor_pct = dropped;
+  if (typeof transcript.stats?.vad_fallback === "boolean")
+    metadata.transcription_vad_fallback = transcript.stats.vad_fallback;
+  const mode = transcript.stats?.vad_mode;
+  if (mode === "primary" || mode === "fallback" || mode === "quiet")
+    metadata.transcription_vad_mode = mode;
+  const noiseFloor = transcript.stats?.noise_floor_dbfs;
+  if (typeof noiseFloor === "number" && Number.isFinite(noiseFloor))
+    metadata.transcription_noise_floor_dbfs = noiseFloor;
+  const median = transcript.stats?.median_dbfs;
+  if (typeof median === "number" && Number.isFinite(median))
+    metadata.transcription_median_dbfs = median;
+  const p99 = transcript.stats?.p99_dbfs;
+  if (typeof p99 === "number" && Number.isFinite(p99))
+    metadata.transcription_p99_dbfs = p99;
+  const speechPeak = transcript.stats?.speech_peak_s;
+  if (typeof speechPeak === "number" && Number.isFinite(speechPeak) && speechPeak >= 0)
+    metadata.transcription_speech_peak_s = speechPeak;
+  const droppedAboveNoise = transcript.stats?.dropped_above_noise_pct;
+  if (typeof droppedAboveNoise === "number" && Number.isFinite(droppedAboveNoise) && droppedAboveNoise >= 0 && droppedAboveNoise <= 100)
+    metadata.transcription_vad_dropped_above_noise_pct = droppedAboveNoise;
+  return metadata;
+}
+
+function rejectsForIncompleteCoverage(metadata: VoiceNoteTranscriptionStatsMetadata): boolean {
+  const duration = metadata.transcription_duration_seconds;
+  const audio = metadata.transcription_audio_seconds;
+  return duration !== undefined && duration >= MIN_INCOMPLETE_TRANSCRIPT_DURATION_SECONDS
+    && audio !== undefined && audio / duration < MIN_INCOMPLETE_TRANSCRIPT_COVERAGE_RATIO;
+}
 /** Engine metadata, as the desktop's private cloud transcripts record it. */
 function engineMetadata(transcribedAt: string) {
   return {
@@ -428,9 +485,10 @@ function engineMetadata(transcribedAt: string) {
 }
 
 /** The transcript as it is saved onto the note. No sentences = the no-speech outcome. */
-export function prepareVoiceNoteTranscript(transcript: PrivateCloudTranscript, transcribedAt: string, rev: number): VoiceNoteTranscriptSave {
+export function prepareVoiceNoteTranscript(transcript: PrivateCloudTranscript, transcribedAt: string, rev: number,
+  statsMetadata: VoiceNoteTranscriptionStatsMetadata = transcriptStatsMetadata(transcript)): VoiceNoteTranscriptSave {
   const sentences = voiceNoteSentences(transcript);
-  if (sentences.length === 0) return noSpeechTranscript(transcribedAt, rev);
+  if (sentences.length === 0) return noSpeechTranscript(transcribedAt, rev, statsMetadata);
   return {
     rev,
     sentences,
@@ -442,19 +500,21 @@ export function prepareVoiceNoteTranscript(transcript: PrivateCloudTranscript, t
       language: transcript.language ?? null,
       transcript_text: sentences.map((s) => s.text).join("\n"),
       transcription_outcome: "transcribed",
-      speaker_labels: transcript.diarized ? "diarized" : "single-speaker",
+      speaker_labels: transcript.channels === 2 ? "channels" : transcript.diarized ? "diarized" : "single-speaker",
+      ...statsMetadata,
     },
   };
 }
 
 /** PTX found no speech: recorded on the note so it is not offered again. */
-export function noSpeechTranscript(transcribedAt: string, rev: number): VoiceNoteTranscriptSave {
+export function noSpeechTranscript(transcribedAt: string, rev: number,
+  statsMetadata: VoiceNoteTranscriptionStatsMetadata = {}): VoiceNoteTranscriptSave {
   return {
     rev,
     sentences: [],
     speakers: [],
     metadata: { ...engineMetadata(transcribedAt), transcript_text: null, transcription_outcome: "no_speech",
-      speaker_labels: "none" },
+      speaker_labels: "none", ...statsMetadata },
   };
 }
 
@@ -470,19 +530,16 @@ export type VoiceNoteTranscriptionStatus =
   | { kind: "processing"; completed: number | null; total: number | null }
   | { kind: "saving" };
 
-export interface CloudPollingOptions {
-  intervalMs: number;
-  slowIntervalMs: number;
-  slowAfterMs: number;
-  giveUpAfterMs: number;
-}
+export type CloudPollingOptions = CloudPolling;
 
-/** The desktop's polling (plan §4.7): 5 s ± 20 %, 30 s after a minute of transient failures, give up after 10. */
+/** The desktop's polling: 5 s for 30 s, then duration-scaled 30–60 s, with jitter. */
 const DEFAULT_POLLING: CloudPollingOptions = {
   intervalMs: 5_000,
   slowIntervalMs: 30_000,
   slowAfterMs: 60_000,
   giveUpAfterMs: 10 * 60_000,
+  fastPhaseMs: 30_000,
+  maxIntervalMs: 60_000,
 };
 
 export interface CloudClock {
@@ -538,25 +595,6 @@ const RELEASE_CODES: ReadonlySet<string> = new Set([
   "transcription_off",
 ]);
 
-/** Failures Retry cannot fix for this note. */
-const NOT_RETRYABLE_CODES: ReadonlySet<string> = new Set([
-  "recording_too_large",
-  "recording_too_long",
-  "recording_too_long_for_phone",
-  "unsupported_recording",
-  "invalid_audio",
-  "no_speech",
-  "decode_failed",
-  "decode_unavailable",
-  "feature_unavailable",
-  "service_misconfigured",
-  "audio_size_mismatch",
-  "VOICE_NOTE_AUDIO_CORRUPT",
-  "invalid_argument",
-  "voice_note_not_found",
-  "transcription_off",
-]);
-
 export function voiceNoteErrorCode(err: unknown): string {
   return err instanceof PrivateCloudError || err instanceof VoiceNoteAudioError ? err.code : "transcription_error";
 }
@@ -587,7 +625,7 @@ export function accountChangedError(): PrivateCloudError {
 export function acceptedContentTypes(capabilities: PrivateCloudCapabilities): string[] {
   const listed = capabilities.content_types;
   return Array.isArray(listed) && listed.every((t) => typeof t === "string")
-    ? (listed as string[])
+    ? (listed as string[]).map(bareMimeType)
     : ["audio/mpeg", "audio/wav", "audio/ogg"];
 }
 
@@ -696,25 +734,35 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
     if (transcriptionId !== null) await cancelQuietly(transcriptionId);
   };
 
-  /** Rides out transient failures for a bounded period, then reports "connection lost". */
-  const transientTolerance = () => {
+  /** Rides out transient failures; shared throttled time pauses each active operation budget. */
+  const transientTolerance = (wait: (ms: number) => Promise<void>, throttledTime: () => number = () => 0) => {
     let failingSince: number | null = null;
+    let throttledAtFailure = 0;
     return {
-      reset: () => {
-        failingSince = null;
+      reset: () => { failingSince = null; throttledAtFailure = throttledTime(); },
+      pause: async (ms: number, waitFor?: (delay: number) => Promise<void>) => {
+        const before = clock.now();
+        try {
+          await (waitFor ?? wait)(ms);
+        } finally {
+          if (failingSince !== null) failingSince += Math.max(0, clock.now() - before);
+        }
       },
       rideOut: async (err: unknown) => {
         if (!isTransientCloudError(err)) throw err;
         const now = clock.now();
-        failingSince ??= now;
-        const failingFor = now - failingSince;
+        if (failingSince === null) {
+          failingSince = now;
+          throttledAtFailure = throttledTime();
+        }
+        const failingFor = Math.max(0, now - failingSince - (throttledTime() - throttledAtFailure));
         if (failingFor >= polling.giveUpAfterMs) {
           throw new PrivateCloudError(
             "connection_lost",
             "Lost contact with private cloud transcription. The job may still be running.",
           );
         }
-        await sleep(failingFor >= polling.slowAfterMs ? polling.slowIntervalMs : polling.intervalMs);
+        await wait(failingFor >= polling.slowAfterMs ? polling.slowIntervalMs : polling.intervalMs);
       },
     };
   };
@@ -723,49 +771,84 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
   type Guard = () => void;
 
   const readJob = async (id: string, guard: Guard): Promise<PrivateCloudJob> => {
-    const tolerance = transientTolerance();
+    const tolerance = transientTolerance((ms) => sleep(ms));
     for (;;) {
       guard();
       try {
         const job = await deps.api.get(id);
         guard();
+        tolerance.reset();
         return job;
       } catch (err) {
         guard();
+        if (err instanceof PrivateCloudError && err.statusCode === 429) {
+          const delay = jitteredRateLimitWaitMs(err.retryAfterSeconds, polling.slowIntervalMs, clock.random);
+          await tolerance.pause(delay, (ms) => clock.sleep(ms));
+          continue;
+        }
         await tolerance.rideOut(err);
       }
     }
   };
 
-  const poll = async (id: string, report: (s: VoiceNoteTranscriptionStatus) => void, guard: Guard): Promise<PrivateCloudTranscript> => {
-    const tolerance = transientTolerance();
+  const poll = async (
+    id: string,
+    report: (s: VoiceNoteTranscriptionStatus) => void,
+    guard: Guard,
+    expectedDurationSeconds: number | null | undefined,
+  ): Promise<PrivateCloudTranscript> => {
+    const startedAt = clock.now();
+    let durationSeconds = expectedDurationSeconds ?? null;
+    let throttledMs = 0;
+    const throttledTime = () => throttledMs;
+    const waitThrottled = async (ms: number): Promise<void> => {
+      const before = clock.now();
+      try {
+        await clock.sleep(ms);
+      } finally {
+        throttledMs += Math.max(0, clock.now() - before);
+      }
+    };
+    const statusTolerance = transientTolerance((ms) => sleep(ms), throttledTime);
+    const resultTolerance = transientTolerance((ms) => sleep(ms), throttledTime);
     report({ kind: "queued", position: null });
     for (;;) {
       let job: PrivateCloudJob;
       guard();
       try {
         job = await deps.api.get(id);
+        guard();
+        statusTolerance.reset();
       } catch (err) {
         guard();
-        await tolerance.rideOut(err);
+        if (err instanceof PrivateCloudError && err.statusCode === 429) {
+          await waitThrottled(jitteredRateLimitWaitMs(err.retryAfterSeconds, polling.slowIntervalMs, clock.random));
+          continue;
+        }
+        await statusTolerance.rideOut(err);
         continue;
       }
-      guard();
+      if (typeof job.duration_seconds === "number" && Number.isFinite(job.duration_seconds) && job.duration_seconds > 0) {
+        durationSeconds = job.duration_seconds;
+      }
       if (job.status === "completed") {
         let result: Awaited<ReturnType<PrivateCloudApi["result"]>>;
         try {
           result = await deps.api.result(id);
+          guard();
+          resultTolerance.reset();
         } catch (err) {
           guard();
-          await tolerance.rideOut(err);
+          if (err instanceof PrivateCloudError && err.statusCode === 429) {
+            await waitThrottled(jitteredRateLimitWaitMs(err.retryAfterSeconds, polling.slowIntervalMs, clock.random));
+            continue;
+          }
+          await resultTolerance.rideOut(err);
           continue;
         }
-        guard();
-        tolerance.reset();
         if (result.status === "completed") return result.transcript;
         if (result.status !== "pending") throw result.error;
       } else {
-        tolerance.reset();
         if (job.status === "failed" || job.status === "cancelled") throw jobFailure(job);
         if (job.status === "awaiting_upload") {
           throw new PrivateCloudError("upload_interrupted", "PTX has not received the recording", { transcriptionId: id });
@@ -776,7 +859,9 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
             : { kind: "processing", completed: job.progress?.regions_completed ?? null, total: job.progress?.regions_total ?? null },
         );
       }
-      await sleep(polling.intervalMs);
+      const elapsed = clock.now() - startedAt;
+      const interval = cloudStatusIntervalMs(durationSeconds, elapsed, polling);
+      await clock.sleep(elapsed < polling.fastPhaseMs ? interval : jitteredCloudIntervalMs(interval, clock.random));
       guard();
     }
   };
@@ -824,7 +909,7 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
       }
       if (current !== null) {
         if (current.status === "failed" || current.status === "cancelled") throw jobFailure(current);
-        if (current.status !== "awaiting_upload") return { transcriptionId: current.id, transcript: await poll(current.id, report, guard) };
+        if (current.status !== "awaiting_upload") return { transcriptionId: current.id, transcript: await poll(current.id, report, guard, durationSeconds) };
       }
     }
 
@@ -917,7 +1002,7 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
         // Accepted despite the error: carry on as if the 201 had arrived.
       }
     }
-    return { transcriptionId: created.id, transcript: await poll(created.id, report, guard) };
+    return { transcriptionId: created.id, transcript: await poll(created.id, report, guard, durationSeconds) };
   };
 
   return {
@@ -1005,76 +1090,15 @@ export function createVoiceNoteCloudForBuild(
 
 // ── One note, end to end ───────────────────────────────────────────────
 
-/** A failure as the card shows it. */
-export interface VoiceNoteTranscriptionFailure {
-  code: string;
-  message: string;
-  retryable: boolean;
-  /** Correlation id, shown as a reference. */
-  reference: string | null;
-}
-
 export function voiceNoteTranscriptionFailure(err: unknown): VoiceNoteTranscriptionFailure {
   const code = voiceNoteErrorCode(err);
-  const reference = err instanceof PrivateCloudError ? err.correlationId : null;
-  let message: string;
-  switch (code) {
-    case "recording_too_long_for_phone":
-    case "recording_too_long":
-    case "recording_too_large":
-      message = "Private cloud can't transcribe a recording this long or large.";
-      break;
-    case "decode_failed":
-    case "decode_unavailable":
-      message = "This phone could not read the recording to transcribe it.";
-      break;
-    case "no_speech":
-      message = "No speech was found in this note.";
-      break;
-    case "active_transcription_exists":
-      message =
-        "Another private cloud transcription for your account hasn't finished (an unfinished upload expires within 2 hours). Try again later.";
-      break;
-    case "connection_lost":
-      message = "Lost contact with private cloud transcription. The job may still be running; Retry checks on it.";
-      break;
-    case "feature_unavailable":
-      message = "Private transcription is unavailable on this device. Try again.";
-      break;
-    case "voice_note_not_found":
-      message = "This voice note no longer exists.";
-      break;
-    case "transcript_save_failed":
-      message = "The transcript could not be saved to your space. Retry saves it again.";
-      break;
-    case "note_unreadable":
-      message = "Could not read this note from your space just now. Retry tries again.";
-      break;
-    case "audio_read_failed":
-      message = "Could not read this note's audio from this device or your space. Retry tries again.";
-      break;
-    case "audio_not_ready":
-      message = "This recording is still being saved on this device. Try again when it finishes.";
-      break;
-    case "audio_size_mismatch":
-      message = "The recording changed on disk after it stopped, so it was not uploaded.";
-      break;
-    case "audio_upload_pending":
-      message = "This note's audio is still being saved to your space. Try again when the upload finishes.";
-      break;
-    case "VOICE_NOTE_AUDIO_CORRUPT":
-      message = "This note's audio is damaged and can't be transcribed.";
-      break;
-    case "transcription_off":
-      message = "Transcription was turned off.";
-      break;
-    default:
-      message =
-        err instanceof PrivateCloudError
-          ? privateCloudMessage(err)
-          : "Transcription failed. Try again.";
-  }
-  return { code, message, retryable: !NOT_RETRYABLE_CODES.has(code), reference };
+  const failure = voiceNoteTranscriptionFailureForCode(code);
+  return {
+    ...failure,
+    message: transcriptionErrorCopy(code)
+      ?? (err instanceof PrivateCloudError ? privateCloudMessage(err) : failure.message),
+    reference: err instanceof PrivateCloudError ? err.correlationId : null,
+  };
 }
 
 /**
@@ -1100,6 +1124,9 @@ export async function transcribeVoiceNote(args: {
   report: (status: VoiceNoteTranscriptionStatus) => void;
   now?: () => Date;
   account?: VoiceNoteTranscriptAccount;
+  /** Per-note audio readiness bounds; production uses a 90-second stall window. */
+  audioReadyStallMs?: number;
+  audioReadyPollMs?: number;
 }): Promise<"transcribed" | "no_speech"> {
   const { tcw, cloud, sourceId } = args;
   logPipeline("transcription", sourceId, "start", { engine: "private-cloud" });
@@ -1118,13 +1145,13 @@ export async function transcribeVoiceNote(args: {
   const accountCheckpoint = () => {
     if (!stillCurrent()) throw new StaleAccountContext();
   };
-  const persistFailure = async (error: unknown) => {
+  const persistFailure = async (error: unknown, statsMetadata: VoiceNoteTranscriptionStatsMetadata = {}) => {
     const code = voiceNoteErrorCode(error);
     const current = stillCurrent();
     if (["audio_upload_pending", "transcription_off", "upload_outcome_unknown", "account_changed",
       "active_transcription_exists"].includes(code)
       || !current) return;
-    try { await patchVoiceNoteTranscriptionFailure(tcw, sourceId, code, accountCheckpoint); }
+    try { await patchVoiceNoteTranscriptionFailure(tcw, sourceId, code, accountCheckpoint, statsMetadata); }
     catch (persistError) { logPipelineError("[VoiceNotes] Could not persist the transcription failure", persistError); }
   };
   /** The job is done with: forget it, then delete it at PTX (best-effort: PTX deletes it within 24 h). */
@@ -1178,20 +1205,36 @@ export async function transcribeVoiceNote(args: {
   if (!args.explicit && note.data.captureSource !== "in_app")
     throw new PrivateCloudError("note_held", "This note did not begin in the app, so it waits for the user to transcribe it");
 
-  let localAudioRecording: VoiceNoteRecording | undefined;
+  let localAudioRecording: VoiceNoteRecording | undefined = nativeNote;
   const loadSpaceAudio = async (): Promise<VoiceNoteAudio> => {
-    // A row can exist before its audio. Wait for queued save work and require a committed ledger
-    // when one exists before reading the space copy.
-    if (!localAudioRecording || (localAudioRecording.ledger?.audio && localAudioRecording.ledger.audio.state !== "saved")) {
-      await whenVoiceNoteSavesIdle();
+    // Wait only for this note's ledger. Other notes may continue saving independently.
+    if (localAudioRecording?.ledger?.audio?.state === "pending") {
+      const stallMs = args.audioReadyStallMs ?? voiceNoteCallDeadlineMs();
+      const pollMs = args.audioReadyPollMs ?? 250;
+      let lastProgressAt = Date.now();
+      let lastProgress = "";
       try {
-        localAudioRecording = (await VoiceNotes.listPending()).recordings.find((recording) => recording.id === sourceId);
+        while (true) {
+          const progress = pendingStore.snapshot().notes?.find((note) => note.id === sourceId)?.upload;
+          const progressKey = progress ? `${progress.state}:${progress.bytes}:${progress.total}` : "";
+          if (progressKey !== lastProgress) {
+            lastProgress = progressKey;
+            lastProgressAt = Date.now();
+          }
+          const remaining = stallMs - (Date.now() - lastProgressAt);
+          if (remaining <= 0) throw new Error("This note's audio save stalled");
+          const recordings = await withVoiceNoteSaveDeadline(
+            `checking whether ${sourceId} audio is saved`,
+            () => VoiceNotes.listPending().then((result) => result.recordings),
+            remaining,
+          );
+          localAudioRecording = recordings.find((recording) => recording.id === sourceId);
+          if (!localAudioRecording || localAudioRecording.ledger?.audio?.state === "saved") break;
+          await new Promise((resolve) => setTimeout(resolve, Math.min(pollMs, remaining)));
+        }
       } catch (cause) {
         logPipelineError("[VoiceNotes] Could not confirm the audio save before transcription", cause);
         throw new VoiceNoteAudioError("audio_read_failed", "Could not confirm this note's audio save");
-      }
-      if (localAudioRecording?.ledger?.audio && localAudioRecording.ledger.audio.state !== "saved") {
-        throw new VoiceNoteAudioError("audio_upload_pending", "This note's audio is still being saved to your space");
       }
     }
     const res = await loadVoiceNoteAudio(tcw, sourceId, { maxBytes: args.capabilities.max_bytes });
@@ -1263,26 +1306,46 @@ export async function transcribeVoiceNote(args: {
       throw err;
     }
     // Silence is an outcome, not a failure: recorded so the note is not offered again.
+    const prepared = noSpeechTranscript(transcribedAt(), rev, { transcription_stats_missing: true });
     try {
-      await save(noSpeechTranscript(transcribedAt(), rev));
+      await save(prepared);
     } catch (saveError) {
       await persistFailure(saveError);
       throw saveError;
     }
     await finish(err instanceof PrivateCloudError ? err.transcriptionId : null);
+    logPipelineCount("transcription_stats_missing", "committed");
     logPipeline("transcription", sourceId, "done", { engine: "private-cloud" });
     return "no_speech";
   }
-  const prepared = prepareVoiceNoteTranscript(transcript, transcribedAt(), rev);
+  const statsMetadata = transcriptStatsMetadata(transcript);
+  if (shouldRejectIncompleteTranscript(transcript.stats, statsMetadata)) {
+    const incomplete = new PrivateCloudError(
+      "transcript_incomplete",
+      "Private Transcription returned a transcript that may be incomplete. Try again later.",
+      { transcriptionId },
+    );
+    await persistFailure(incomplete, statsMetadata);
+    await finish(transcriptionId);
+    throw incomplete;
+  }
+  const statsMissing = statsMetadata.transcription_duration_seconds === undefined;
+  const commitStatsMetadata: VoiceNoteTranscriptionStatsMetadata = {
+    ...statsMetadata,
+    transcription_stats_missing: statsMissing ? true : null,
+  };
+  const prepared = prepareVoiceNoteTranscript(transcript, transcribedAt(), rev, commitStatsMetadata);
   try {
     await save(prepared);
   } catch (err) {
     if (err instanceof PrivateCloudError && err.code === "voice_note_not_found") await finish(transcriptionId);
-    await persistFailure(err);
+    await persistFailure(err, statsMetadata);
     // Otherwise the job keeps its transcript: Retry re-joins it and saves again.
     throw err;
   }
   await finish(transcriptionId);
+  if (statsMissing) logPipelineCount("transcription_stats_missing", "committed");
+  if (transcript.stats?.vad_fallback === true) logPipelineCount("transcription_vad_fallback", "committed");
   logPipeline("transcription", sourceId, "done", { engine: "private-cloud" });
   return prepared.sentences.length > 0 ? "transcribed" : "no_speech";
 }
@@ -1360,6 +1423,13 @@ export interface VoiceNoteTranscriber {
    */
   noteSaved(recording: Pick<VoiceNoteRecording, "id" | "durationMs" | "options" | "source">, audio?: VoiceNoteAudio): void;
 }
+export function recheckVoiceNoteAvailabilityAutomatically(
+  transcriber: Pick<VoiceNoteTranscriber, "check">,
+  current?: () => boolean,
+): Promise<void> {
+  return transcriber.check({ automatic: true, ...(current ? { current } : {}) });
+}
+
 
 export interface VoiceNoteTranscriberDeps {
   /** Null when this build lacks its required PTX origin. */
@@ -1380,6 +1450,8 @@ export interface VoiceNoteTranscriberDeps {
   freshMs?: number;
   /** Waits before an automatic check may try again after the 1st, 2nd, ... failed check; the last repeats. */
   failedBackoffMs?: readonly number[];
+  /** Delay before another recovery scan after transient local re-read failure. */
+  recoveryBackoffMs?: readonly number[];
   now?: () => number;
 }
 
@@ -1421,12 +1493,17 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
   };
   let snapshot: VoiceNoteTranscriberSnapshot = { ...state, jobs: new Map(jobs) };
   let chain: Promise<void> = Promise.resolve();
-  let resumed = false;
+  let recoveryNeeded = false;
   let checking: Promise<void> | null = null;
   /** The newest caller's "this account is still signed in"; none until a hook-managed check names one. */
   let accountCurrent: (() => boolean) | null = null;
   let settledAt: number | null = null;
   let failedChecks = 0;
+  let recoveryFailures = 0;
+  let nextRecoveryAt = 0;
+  let recoveryTimer: ReturnType<typeof setTimeout> | undefined;
+  let strandedRecovery: Promise<void> | null = null;
+  let triggerAutomaticRecheck: () => void = () => undefined;
 
   const emit = (event: VoiceNoteTranscriberEvent = { kind: "changed" }) => {
     refreshBlocked();
@@ -1480,12 +1557,12 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
     }
     snapshot = { ...state, jobs: new Map(jobs) };
   }
-  /** This session's choices, so a Retry after a released failure keeps the choice. */
+  /** Keep the in-memory choice for same-session retry; settleChoice clears the persisted resume choice. */
   const chosenPrivate = new Set<string>();
   const isChosen = (sourceId: string) => chosenPrivate.has(sourceId) || choices.has(sourceId);
-  /** The persisted choice goes once the note is done or its job can no longer be retried; a pending job keeps it. */
-  const settleChoice = (sourceId: string) => {
-    if (cloud !== null && !cloud.pendingSourceIds().includes(sourceId)) choices.remove(sourceId);
+  /** Failed outcomes force-clear intent even when a cloud job remains pending. */
+  const settleChoice = (sourceId: string, force = false) => {
+    if (force || cloud !== null && !cloud.pendingSourceIds().includes(sourceId)) choices.remove(sourceId);
   };
 
   /** A note that did not begin in the app: kept from every automatic job until the user's own Transcribe on it. */
@@ -1532,7 +1609,8 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
       if (!on() || state.capabilities === null) {
         jobs.delete(sourceId);
         if (!identityCurrent()) {
-          resumed = false;
+          recoveryNeeded = true;
+          nextRecoveryAt = now();
           console.warn("[Transcription] Not starting a private cloud job: its account is no longer the signed-in one", sourceId);
         }
         emit();
@@ -1563,11 +1641,13 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
         if (voiceNoteErrorCode(err) === "note_held") {
           console.warn("[VoiceNotes] Held a note back from private-cloud transcription: it did not begin in the app", { id: sourceId });
           hold(sourceId);
+          settleChoice(sourceId, true);
           return;
         }
         // Whatever stopped a note after the user turned transcription off is not a failure to show.
         if (!identityCurrent()) {
-          resumed = false;
+          recoveryNeeded = true;
+          nextRecoveryAt = now();
           jobs.delete(sourceId);
           console.warn("[Transcription] Stopped a private cloud job: its account is no longer the signed-in one", sourceId);
         } else if (!state.consented || voiceNoteErrorCode(err) === "transcription_off") {
@@ -1577,8 +1657,8 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
           logPipelineError("transcription", err, sourceId);
           const failure = voiceNoteTranscriptionFailure(err);
           jobs.set(sourceId, { kind: "failed", ...failure });
-          // A failure Retry can fix keeps the choice, so a relaunch does not turn it back into Local.
-          if (!failure.retryable) settleChoice(sourceId);
+          // Incomplete coverage is retryable only by explicit tap; do not restart it on relaunch.
+          settleChoice(sourceId, true);
         }
         emit();
       }
@@ -1586,14 +1666,123 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
     return null;
   };
 
-  /** Notes a previous run left in flight, first (one active job per account). Once per transcriber. */
-  const resume = () => {
-    if (resumed || !on() || cloud === null) return;
-    resumed = true;
-    for (const sourceId of new Set([...cloud.pendingSourceIds(), ...choices.ids()])) enqueue(sourceId, undefined, false);
+  /** Re-read opted-in recovery candidates before re-offering them, including their transcript commit. */
+  const stillPendingInSpace = async (sourceId: string, requirePrivateCommit = false): Promise<boolean | null> => {
+    if (!identityCurrent()) return false;
+    try {
+      const tcw = deps.tcw();
+      const result = await readVoiceNoteForTranscription(tcw, sourceId);
+      if (!identityCurrent()) return false;
+      if (!result.ok) return null;
+      if (result.data === null) return false;
+      const note = result.data;
+      if (note.transcript.status !== "pending") {
+        choices.remove(sourceId);
+        return false;
+      }
+      const commit = await readTranscriptCommit(tcw, sourceId);
+      if (!identityCurrent()) return false;
+      if (commit !== null) {
+        choices.remove(sourceId);
+        return false;
+      }
+      if (note.captureSource !== "in_app" && holdStates.get(sourceId) !== "released") {
+        hold(sourceId);
+        return false;
+      }
+      if (!privateCloudAccepts(note.durationSeconds, state.capabilities)) {
+        choices.remove(sourceId);
+        return false;
+      }
+      return !requirePrivateCommit || (note.captureSource === "in_app" && note.captureTranscriber === "private-cloud");
+    } catch (err) {
+      logPipelineError("[VoiceNotes] Could not re-check a saved Private note before recovery", err, sourceId);
+      return null;
+    }
   };
 
-  return {
+  /** Reconsider durable intents and this device's eligible stranded saves on each recovery opportunity. */
+  const resume = (force = false) => {
+    if (!on() || cloud === null || strandedRecovery !== null) return;
+    if (!force && (!recoveryNeeded || now() < nextRecoveryAt)) return;
+    recoveryNeeded = false;
+    let retry = false;
+    strandedRecovery = (async () => {
+      let cloudPending: Set<string>;
+      try {
+        cloudPending = new Set(cloud.pendingSourceIds());
+      } catch (err) {
+        logPipelineError("[VoiceNotes] Could not list pending Private jobs for recovery", err);
+        retry = true;
+        return;
+      }
+      const ids = new Set([...cloudPending, ...choices.ids()]);
+      for (const sourceId of ids) {
+        if (!identityCurrent() || !on()) {
+          retry = true;
+          return;
+        }
+        const current = jobs.get(sourceId);
+        if (current?.kind === "active" || current?.kind === "done" || current?.kind === "failed" || isHeld(sourceId)) continue;
+        const pendingInSpace = await stillPendingInSpace(sourceId);
+        if (pendingInSpace === false) {
+          if (cloudPending.has(sourceId) && identityCurrent()) {
+            try { await cloud.finish(sourceId); }
+            catch (err) { logPipelineError("Cleaning up a stale private cloud job failed", err, sourceId); }
+          }
+          continue;
+        }
+        if (pendingInSpace === null) {
+          retry = true;
+          if (!cloudPending.has(sourceId)) continue;
+        }
+        enqueue(sourceId, undefined, false);
+      }
+
+      let recordings: VoiceNoteRecording[];
+      try {
+        recordings = (await VoiceNotes.listPending()).recordings;
+      } catch (err) {
+        logPipelineError("[VoiceNotes] Could not scan this device's saved Private notes for recovery", err);
+        retry = true;
+        return;
+      }
+      for (const recording of recordings) {
+        if (!identityCurrent() || !on()) {
+          retry = true;
+          return;
+        }
+        if (recording.source !== "in_app" || recording.options?.transcriber !== "private-cloud"
+          || recording.ledger?.audio.state !== "saved"
+          || recording.ledger.transcript.state !== "pending" || recording.ledger.transcript.attempts !== 0
+          || !privateCloudAccepts(recording.durationMs / 1000, state.capabilities)) continue;
+        const current = jobs.get(recording.id);
+        if (isHeld(recording.id) || current?.kind === "active" || current?.kind === "done" || current?.kind === "failed"
+          || cloudPending.has(recording.id) || choices.has(recording.id)) continue;
+        const stillPending = await stillPendingInSpace(recording.id, true);
+        if (stillPending === null) {
+          retry = true;
+          continue;
+        }
+        if (stillPending) enqueue(recording.id, undefined, false);
+      }
+    })().finally(() => {
+      strandedRecovery = null;
+      if (retry) {
+        recoveryNeeded = true;
+        const delays = deps.recoveryBackoffMs ?? failedBackoffMs;
+        const delay = delays[Math.min(recoveryFailures, delays.length - 1)] ?? 0;
+        recoveryFailures++;
+        nextRecoveryAt = now() + delay;
+      } else {
+        recoveryNeeded = false;
+        recoveryFailures = 0;
+        nextRecoveryAt = Number.POSITIVE_INFINITY;
+      }
+    });
+  };
+
+  const transcriber: VoiceNoteTranscriber = {
     snapshot: () => snapshot,
     subscribe(listener) {
       listeners.add(listener);
@@ -1609,8 +1798,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
       if (options.automatic && settledAt !== null && state.availability !== "checking") {
         const wait = state.availability === "failed" ? failedBackoffMs[Math.min(failedChecks, failedBackoffMs.length) - 1] ?? 0 : freshMs;
         if (now() - settledAt < wait) {
-          // Reusing the answer still reactivates this account's work an earlier departure paused.
-          resume();
+          if (recoveryNeeded && now() >= nextRecoveryAt) resume();
           return Promise.resolve();
         }
       }
@@ -1631,7 +1819,8 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
         }
       };
       const stale = () => {
-        resumed = false;
+        recoveryNeeded = true;
+        nextRecoveryAt = now();
         console.warn("[Transcription] Dropped a private cloud check: its account is no longer the signed-in one");
       };
       checking = (async () => {
@@ -1642,6 +1831,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
           result = await attempt();
         }
         if (result.availability === "stale" || !identityCurrent()) return stale();
+        const availabilityChanged = state.availability !== result.availability;
         failedChecks = result.availability === "failed" ? failedChecks + 1 : 0;
         settledAt = now();
         state = {
@@ -1651,8 +1841,24 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
           checkError: result.availability === "failed" ? result.error : undefined,
           checkErrorCode: result.availability === "failed" ? result.code : undefined,
         };
+        if (result.availability === "failed") {
+          recoveryNeeded = true;
+          nextRecoveryAt = now();
+        }
         emit();
-        resume();
+        if (result.availability === "available"
+          && (availabilityChanged || recoveryNeeded && now() >= nextRecoveryAt)) resume(availabilityChanged);
+        if (result.availability === "failed" && failedBackoffMs.length > 0) {
+          clearTimeout(recoveryTimer);
+          const delay = failedBackoffMs[Math.min(failedChecks - 1, failedBackoffMs.length - 1)] ?? 0;
+          recoveryTimer = setTimeout(() => {
+            recoveryTimer = undefined;
+            triggerAutomaticRecheck();
+          }, delay);
+        } else {
+          clearTimeout(recoveryTimer);
+          recoveryTimer = undefined;
+        }
       })().finally(() => {
         checking = null;
       });
@@ -1662,8 +1868,10 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
     consent() {
       deps.consent.set(true);
       state = { ...state, consented: true };
+      recoveryNeeded = true;
+      nextRecoveryAt = now();
       emit();
-      resume();
+      resume(true);
     },
 
     async turnOff() {
@@ -1673,7 +1881,8 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
       waiting.clear();
       // A failure shown with Retry is no longer actionable once off.
       for (const [sourceId, job] of jobs) if (job.kind === "failed") jobs.delete(sourceId);
-      resumed = false;
+      recoveryNeeded = false;
+      nextRecoveryAt = Number.POSITIVE_INFINITY;
       // Turning private cloud off revokes the choices too.
       chosenPrivate.clear();
       for (const sourceId of choices.ids()) choices.remove(sourceId);
@@ -1712,8 +1921,13 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
         hold(recording.id);
         return;
       }
+      const current = jobs.get(recording.id);
+      if (current?.kind === "active" || current?.kind === "done" || current?.kind === "failed") return;
+      if (state.availability === "available" && !privateCloudAccepts(recording.durationMs / 1000, state.capabilities)) return;
+      choices.add(recording.id);
       if (!on()) {
-        if (!state.consented) choices.add(recording.id);
+        recoveryNeeded = true;
+        if (nextRecoveryAt === Number.POSITIVE_INFINITY) nextRecoveryAt = now();
         block(recording.id);
         return;
       }
@@ -1721,6 +1935,10 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
       enqueue(recording.id, audio, false);
     },
   };
+  triggerAutomaticRecheck = () => {
+    void recheckVoiceNoteAvailabilityAutomatically(transcriber, accountCurrent ?? undefined);
+  };
+  return transcriber;
 }
 
 /**
@@ -1828,10 +2046,10 @@ export function transcriptionStatusText(status: VoiceNoteTranscriptionStatus): s
       return status.progress === undefined ? "Sending audio to Private transcription…" : `Sending audio to Private transcription · ${Math.round(Math.min(1, Math.max(0, status.progress)) * 100)}%`;
     case "queued":
       return status.position !== null && status.position > 0 ? `Queued (position ${status.position})…` : "Queued…";
-    case "processing":
-      return status.total !== null && status.total > 0
-        ? `Transcribing in private cloud… ${status.completed ?? 0}/${status.total}`
-        : "Transcribing in private cloud…";
+    case "processing": {
+      const partsDone = privatePartsDone(status.completed, status.total);
+      return partsDone === null ? "Transcribing in private cloud…" : `Transcribing in private cloud… ${partsDone}`;
+    }
     case "saving":
       return "Saving the transcript…";
   }

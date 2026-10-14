@@ -1,8 +1,7 @@
 const TERMINAL_OUTCOMES = new Set(['transcribed', 'no_speech', 'skipped']);
 const LEGACY_WINNER_OUTCOMES = new Set(['transcribed', 'no_speech']);
 const NON_RETRYABLE_CODES = new Set([
-  'recording_too_large', 'recording_too_long', 'recording_too_long_for_phone', 'unsupported_recording',
-  'invalid_audio', 'no_speech', 'decode_failed', 'decode_unavailable', 'feature_unavailable',
+  'invalid_audio', 'no_speech', 'feature_unavailable',
   'service_misconfigured', 'audio_size_mismatch', 'VOICE_NOTE_AUDIO_CORRUPT', 'invalid_argument',
   'voice_note_not_found', 'transcription_off',
 ]);
@@ -89,11 +88,15 @@ export function planVoiceNoteBackfill(rows, audioIndex, { maxSeconds = 7200, max
   });
 }
 
+function bareMimeType(mimeType) {
+  return mimeType.split(';', 1)[0].trim().toLowerCase();
+}
+
 function estimatedPtxBytes(audio, duration) {
   const mimeType = typeof audio.mimeType === 'string' ? audio.mimeType : null;
   if (mimeType === null) return null;
-  // Match prepareTranscriptionAudio's current exact MIME comparison. Parameter stripping there is a follow-up.
-  if (PTX_RAW_MIME_TYPES.has(mimeType)) return typeof audio.size === 'number' ? audio.size : null;
+  // PTX validates bare content types; prepareTranscriptionAudio strips MIME parameters before sending.
+  if (PTX_RAW_MIME_TYPES.has(bareMimeType(mimeType))) return typeof audio.size === 'number' ? audio.size : null;
   return duration === null ? null : WAV_HEADER_BYTES + WAV_BYTES_PER_SECOND * duration;
 }
 

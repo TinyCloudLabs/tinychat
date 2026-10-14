@@ -85,6 +85,10 @@ function num(value: unknown, min = 0): number {
   check(typeof value === "number" && Number.isFinite(value) && value >= min);
   return value as number;
 }
+/** New VAD diagnostics are advisory: invalid values are omitted without rejecting a transcript. */
+function diagnosticNum(value: unknown, min = -Infinity, max = Infinity): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= min && value <= max ? value : undefined;
+}
 
 function str(value: unknown, re: RegExp): string {
   check(typeof value === "string" && re.test(value));
@@ -104,6 +108,12 @@ function iso(value: unknown): string {
 function bool(value: unknown): boolean {
   check(typeof value === "boolean");
   return value as boolean;
+}
+
+function percentage(value: unknown): number {
+  const result = num(value);
+  check(result <= 100);
+  return result;
 }
 
 function oneOf<T extends string>(value: unknown, allowed: readonly T[]): T {
@@ -347,6 +357,12 @@ export function parseResult(body: unknown, expectedId: string) {
       };
     });
     const stats = obj(o.stats);
+    const vadMode = stats.vad_mode;
+    const noiseFloor = diagnosticNum(stats.noise_floor_dbfs);
+    const median = diagnosticNum(stats.median_dbfs);
+    const p99 = diagnosticNum(stats.p99_dbfs);
+    const speechPeak = diagnosticNum(stats.speech_peak_s, 0);
+    const droppedAboveNoise = diagnosticNum(stats.dropped_above_noise_pct, 0, 100);
     return {
       id: expectedId,
       status: "completed" as const,
@@ -360,7 +376,19 @@ export function parseResult(body: unknown, expectedId: string) {
       speakers,
       segments,
       text: text(o.text, 4_000_000),
-      stats: { tinfoil_calls: int(stats.tinfoil_calls, 0), tinfoil_audio_seconds: num(stats.tinfoil_audio_seconds) },
+      stats: {
+        tinfoil_calls: int(stats.tinfoil_calls, 0),
+        tinfoil_audio_seconds: num(stats.tinfoil_audio_seconds),
+        ...(stats.voiced_seconds == null ? {} : { voiced_seconds: num(stats.voiced_seconds) }),
+        ...(stats.dropped_above_floor_pct == null ? {} : { dropped_above_floor_pct: percentage(stats.dropped_above_floor_pct) }),
+        ...(stats.vad_fallback == null ? {} : { vad_fallback: bool(stats.vad_fallback) }),
+        ...(vadMode === "primary" || vadMode === "fallback" || vadMode === "quiet" ? { vad_mode: vadMode } : {}),
+        ...(noiseFloor === undefined ? {} : { noise_floor_dbfs: noiseFloor }),
+        ...(median === undefined ? {} : { median_dbfs: median }),
+        ...(p99 === undefined ? {} : { p99_dbfs: p99 }),
+        ...(speechPeak === undefined ? {} : { speech_peak_s: speechPeak }),
+        ...(droppedAboveNoise === undefined ? {} : { dropped_above_noise_pct: droppedAboveNoise }),
+      },
     };
   });
 }

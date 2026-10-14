@@ -9,6 +9,8 @@
 // Cost: the WAV is 32 KB per second (1.9 MB per minute), about 4× the AAC,
 // and the decode holds the whole note in memory. Keep accepted formats as-is.
 
+import { deviceName } from "@/lib/platform";
+
 /** The rate PTX decodes every upload to. */
 export const TRANSCRIPTION_SAMPLE_RATE = 16_000;
 export const WAV_CONTENT_TYPE = "audio/wav";
@@ -57,7 +59,7 @@ export const webAudioDecoder: AudioDecoder = async (bytes, sampleRate) => {
   try {
     buffer = await new Ctor(1, 1, sampleRate).decodeAudioData(bytes);
   } catch {
-    throw new VoiceNoteAudioError("decode_failed", "This phone could not read the recording to transcribe it.");
+    throw new VoiceNoteAudioError("decode_failed", `Exo could not read the recording on ${deviceName()} to transcribe it.`);
   }
   const channels: Float32Array[] = [];
   for (let i = 0; i < buffer.numberOfChannels; i++) channels.push(buffer.getChannelData(i));
@@ -126,6 +128,10 @@ export async function sha256Hex(bytes: Uint8Array): Promise<string> {
   return Array.from(digest, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+export function bareMimeType(value: string): string {
+  return value.split(";", 1)[0].trim().toLowerCase();
+}
+
 /** What is uploaded to PTX for one note. */
 export interface PreparedTranscriptionAudio {
   contentType: string;
@@ -154,10 +160,11 @@ export async function prepareTranscriptionAudio(
   const maxSeconds = options.maxSeconds ?? Number.POSITIVE_INFINITY;
   const tooLarge = () => new VoiceNoteAudioError("recording_too_large", "The recording is larger than the private cloud limit.");
   const recorded = base64ToBytes(audio.base64);
-  if (options.acceptedContentTypes.includes(audio.mimeType)) {
+  const contentType = bareMimeType(audio.mimeType);
+  if (options.acceptedContentTypes.some((type) => bareMimeType(type) === contentType)) {
     if (recorded.byteLength > options.maxBytes) throw tooLarge();
     return {
-      contentType: audio.mimeType,
+      contentType,
       base64: audio.base64,
       byteSize: recorded.byteLength,
       sha256: await sha256Hex(recorded),

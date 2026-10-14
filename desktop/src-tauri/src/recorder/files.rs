@@ -148,57 +148,73 @@ fn read(root: &Path, id: &str, offset: u64, len: u32) -> Result<Vec<u8>, String>
 }
 
 #[tauri::command]
-pub fn append_audio_chunk(
+pub async fn append_audio_chunk(
     app: tauri::AppHandle,
     id: String,
     bytes: Vec<u8>,
 ) -> Result<u64, String> {
-    super::ensure(&app);
-    append(&root(&app)?, &id, &bytes)
+    tauri::async_runtime::spawn_blocking(move || {
+        super::ensure(&app);
+        append(&root(&app)?, &id, &bytes)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-pub fn audio_file_size(app: tauri::AppHandle, id: String) -> Result<u64, String> {
-    super::ensure(&app);
-    let root = root(&app)?;
-    let path = audio_path(&root, &id)?;
-    match rustix::fs::open(
-        &path,
-        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK,
-        Mode::empty(),
-    ) {
-        Ok(fd) => {
-            let meta = File::from(fd).metadata().map_err(|e| e.to_string())?;
-            if !meta.is_file() {
-                return Err("audio_not_regular_file".into());
+pub async fn audio_file_size(app: tauri::AppHandle, id: String) -> Result<u64, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        super::ensure(&app);
+        let root = root(&app)?;
+        let path = audio_path(&root, &id)?;
+        match rustix::fs::open(
+            &path,
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+            Mode::empty(),
+        ) {
+            Ok(fd) => {
+                let meta = File::from(fd).metadata().map_err(|e| e.to_string())?;
+                if !meta.is_file() {
+                    return Err("audio_not_regular_file".into());
+                }
+                Ok(meta.len())
             }
-            Ok(meta.len())
+            Err(rustix::io::Errno::NOENT) => Ok(0),
+            Err(e) => Err(e.to_string()),
         }
-        Err(rustix::io::Errno::NOENT) => Ok(0),
-        Err(e) => Err(e.to_string()),
-    }
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-pub fn read_audio_chunk(
+pub async fn read_audio_chunk(
     app: tauri::AppHandle,
     id: String,
     offset: u64,
     len: u32,
 ) -> Result<tauri::ipc::Response, String> {
-    super::ensure(&app);
-    Ok(tauri::ipc::Response::new(read(
-        &root(&app)?,
-        &id,
-        offset,
-        len,
-    )?))
+    tauri::async_runtime::spawn_blocking(move || {
+        super::ensure(&app);
+        Ok(tauri::ipc::Response::new(read(
+            &root(&app)?,
+            &id,
+            offset,
+            len,
+        )?))
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-pub fn finalize_audio_file(app: tauri::AppHandle, id: String) -> Result<u64, String> {
-    super::ensure(&app);
-    finalize_at(&root(&app)?, &id)
+pub async fn finalize_audio_file(app: tauri::AppHandle, id: String) -> Result<u64, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        super::ensure(&app);
+        finalize_at(&root(&app)?, &id)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 fn finalize_at(root: &Path, id: &str) -> Result<u64, String> {
@@ -472,9 +488,13 @@ fn stage_whisper_at(dir: &Path, sessions: &Path, id: &str, stage_id: &str) -> Re
 }
 
 #[tauri::command]
-pub fn recorder_whisper_cleanup_stages(app: tauri::AppHandle) -> Result<u64, String> {
-    super::ensure(&app);
-    cleanup_whisper_stages_at(&root(&app)?, &sessions_root(&app)?)
+pub async fn recorder_whisper_cleanup_stages(app: tauri::AppHandle) -> Result<u64, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        super::ensure(&app);
+        cleanup_whisper_stages_at(&root(&app)?, &sessions_root(&app)?)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[cfg(test)]
@@ -602,23 +622,38 @@ fn cleanup_whisper_stages_at(dir: &Path, sessions: &Path) -> Result<u64, String>
 }
 
 #[tauri::command]
-pub fn delete_audio_file(app: tauri::AppHandle, id: String) -> Result<(), String> {
-    super::ensure(&app);
-    let root = root(&app)?;
-    let sessions = sessions_root(&app)?;
-    let note_cleanup = delete_note_at(&root, &sessions, &id);
-    let segment_cleanup = (|| {
-        if let Some(pending) = super::journal::load(&app)? {
-            if pending.id == id {
-                if let Some(segment_id) = pending.segment_id {
-                    remove_source_session(&sessions, &segment_id)?;
-                    super::journal::remove_failed_source(&app, &segment_id)?;
+pub async fn delete_audio_file(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        super::ensure(&app);
+        super::with_import_lock(|| {
+            let root = root(&app)?;
+            let sessions = sessions_root(&app)?;
+            let note_cleanup = delete_note_at(&root, &sessions, &id);
+            let segment_cleanup = (|| {
+                if let Some(stopped) = super::journal::load_stopped(&app, &id)? {
+                    if let Some(segment_id) = stopped.segment_id {
+                        remove_source_session(&sessions, &segment_id)?;
+                        super::journal::remove_failed_source(&app, &segment_id)?;
+                    }
+                    super::journal::clear_stopped(&app, &id)?;
+                    super::refresh_finishing_quit(&app)?;
                 }
-            }
-        }
-        super::journal::delete_failed_for_note(&app, &id)
-    })();
-    note_cleanup.and(segment_cleanup)
+                if let Some(pending) = super::journal::load(&app)? {
+                    if pending.id == id {
+                        if let Some(segment_id) = pending.segment_id {
+                            remove_source_session(&sessions, &segment_id)?;
+                            super::journal::remove_failed_source(&app, &segment_id)?;
+                        }
+                        super::journal::clear(&app)?;
+                    }
+                }
+                super::journal::delete_failed_for_note(&app, &id)
+            })();
+            note_cleanup.and(segment_cleanup)
+        })
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 fn delete_note_at(root: &Path, sessions: &Path, id: &str) -> Result<(), String> {
@@ -689,6 +724,101 @@ fn delete_at(root: &Path, sessions: &Path, id: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn retry_fixture(root: &Path, source: &Path, failed: &Path) {
+        if failed.exists() {
+            import_at(root, "note", "rec-segment", source).unwrap();
+            fs::remove_file(failed).unwrap();
+        }
+    }
+
+    fn fixture_step(root: &Path, sessions: &Path, failed: &Path, retry: bool) {
+        if retry {
+            retry_fixture(root, &sessions.join("rec-segment/audio.mp3"), failed);
+        } else {
+            delete_note_at(root, sessions, "note").unwrap();
+            remove_source_session(sessions, "rec-segment").unwrap();
+            if failed.exists() {
+                fs::remove_file(failed).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn parallel_retries_import_one_segment_once() {
+        let base = tempfile::tempdir().unwrap();
+        let root = base.path().join("audio");
+        fs::create_dir(&root).unwrap();
+        let source = base.path().join("segment.mp3");
+        let failed = base.path().join("failed.json");
+        fs::write(&source, b"second").unwrap();
+        fs::write(root.join("note.mp3"), b"first").unwrap();
+        fs::write(&failed, b"pending").unwrap();
+        let start = std::sync::Arc::new(std::sync::Barrier::new(3));
+        let workers: Vec<_> = (0..2)
+            .map(|_| {
+                let (root, source, failed, start) =
+                    (root.clone(), source.clone(), failed.clone(), start.clone());
+                std::thread::spawn(move || {
+                    start.wait();
+                    super::super::with_import_lock(|| retry_fixture(&root, &source, &failed));
+                })
+            })
+            .collect();
+        start.wait();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        assert_eq!(fs::read(root.join("note.mp3")).unwrap(), b"firstsecond");
+        assert!(root.join("note.rec-segment.imported").exists());
+        assert!(!failed.exists());
+    }
+
+    #[test]
+    fn retry_and_delete_cannot_resurrect_audio() {
+        for retry_first in [true, false] {
+            let base = tempfile::tempdir().unwrap();
+            let root = base.path().join("audio");
+            let sessions = base.path().join("sessions");
+            fs::create_dir(&root).unwrap();
+            fs::create_dir(&sessions).unwrap();
+            let source = sessions.join("rec-segment");
+            fs::create_dir(&source).unwrap();
+            fs::write(source.join("audio.mp3"), b"segment").unwrap();
+            let failed = base.path().join("failed.json");
+            fs::write(&failed, b"pending").unwrap();
+            let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            let (started_tx, started_rx) = std::sync::mpsc::channel();
+            let first_paths = (root.clone(), sessions.clone(), failed.clone());
+            let first = std::thread::spawn(move || {
+                super::super::with_import_lock(|| {
+                    ready_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                    fixture_step(&first_paths.0, &first_paths.1, &first_paths.2, retry_first);
+                });
+            });
+            ready_rx.recv().unwrap();
+            let second_paths = (root.clone(), sessions.clone(), failed.clone());
+            let second = std::thread::spawn(move || {
+                started_tx.send(()).unwrap();
+                super::super::with_import_lock(|| {
+                    fixture_step(
+                        &second_paths.0,
+                        &second_paths.1,
+                        &second_paths.2,
+                        !retry_first,
+                    );
+                });
+            });
+            started_rx.recv().unwrap();
+            release_tx.send(()).unwrap();
+            first.join().unwrap();
+            second.join().unwrap();
+            assert!(!root.join("note.mp3").exists());
+            assert!(!failed.exists());
+        }
+    }
 
     #[test]
     fn whisper_stage_copies_into_vault_and_delete_removes_only_its_session() {
@@ -937,11 +1067,13 @@ mod tests {
         assert!(delete_note_at(&root, &sessions, "../outside").is_err());
         assert_eq!(fs::read(&outside).unwrap(), b"sentinel");
         fs::remove_file(root.join("note.mp3")).unwrap();
-        assert!(std::process::Command::new("mkfifo")
-            .arg(root.join("note.mp3"))
-            .status()
-            .unwrap()
-            .success());
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(root.join("note.mp3"))
+                .status()
+                .unwrap()
+                .success()
+        );
         assert!(read(&root, "note", 0, 8).is_err());
         assert!(append(&root, "note", b"tamper").is_err());
         fs::remove_dir_all(base).unwrap();

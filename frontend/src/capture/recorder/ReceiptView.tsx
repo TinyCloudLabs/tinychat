@@ -2,9 +2,9 @@ import { useContext, useMemo } from "react";
 import { CheckIcon, ChevronDownIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { PlatformContext } from "@/lib/platform";
+import { PlatformContext, deviceName } from "@/lib/platform";
 import { useNotePipelineWithLedger } from "@/lib/voiceNotes/useNotePipeline";
-import type { TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
+import { VoiceNotes, type TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { MicrophoneAccessOff } from "./MicrophoneAccessOff";
 import { honestRecorderError, receiptPartialNotice } from "./final/honestRecorderError";
 import type { RecorderValue } from "./RecorderProvider";
@@ -46,8 +46,9 @@ export function receiptRouting(args: {
 
 /** The full-page receipt once a recording has ended: saved, kept on this phone, or failed (Save now). */
 export function ReceiptView({ recorder, onOpenNote }: ReceiptViewProps) {
-  const device = useContext(PlatformContext) === "tauri" ? "mac" : "phone";
-  const savedOnDevice = `Saved on this ${device === "mac" ? "Mac" : "phone"}`;
+  const platform = useContext(PlatformContext);
+  const device = platform === "tauri" ? "mac" : "phone";
+  const savedOnDevice = `Saved on ${deviceName(platform)}`;
   const { phase, outcome, lastSaved } = recorder;
   // The pipeline hook's one live read of the phone's ledger (never a second `listPending`, which on Android runs a
   // recovery scan: two of them on every Stop outran the receipt's display window, TC-781) gives the note's own
@@ -85,7 +86,9 @@ export function ReceiptView({ recorder, onOpenNote }: ReceiptViewProps) {
         </div>
 
         <div className="flex min-h-0 flex-col justify-start land:col-start-2 land:row-start-1 land:justify-end">
-          <SavedReceipt device={device} outcome={outcome} localUpload={recorder.localUpload} saved={lastSaved} route={voiceNoteRoute(savedRoute)} pipeline={pipeline} pipelineReading={lastSaved !== null && pipeline === null} transcriber={savedTranscriber} sttHint={savedStt} transcribing={transcribing} held={privateJob?.kind === "held" ? privateJob.message : null} movedToPrivate={movedToPrivate} privateFailure={savedTranscriber !== "off" && privateJob?.kind === "failed" ? privateJob.message : null} privateOutcome={privateOutcome} error={honestRecorderError(recorder)} notice={receiptPartialNotice(recorder, lastSaved?.id)} retrying={recorder.pending.running}
+          <SavedReceipt device={device} outcome={outcome} localUpload={recorder.localUpload} holdReason={recorder.pending.notes?.find((note) => note.id === lastSaved?.id)?.held} saved={lastSaved} route={voiceNoteRoute(savedRoute, platform)} pipeline={pipeline} pipelineReading={lastSaved !== null && pipeline === null} transcriber={savedTranscriber} sttHint={savedStt} transcribing={transcribing} held={privateJob?.kind === "held" ? privateJob.message : null} movedToPrivate={movedToPrivate} privateFailure={savedTranscriber !== "off" && privateJob?.kind === "failed" ? privateJob.message : null} privateOutcome={privateOutcome} error={honestRecorderError(recorder)} notice={receiptPartialNotice(recorder, lastSaved?.id)} retrying={recorder.pending.running}
+            localAudioState={device === "mac" ? ledger?.recording?.ledger?.localAudio?.state ?? "ready" : undefined}
+            onRetryPreparation={lastSaved ? () => { void VoiceNotes.retryRecovery({ id: lastSaved.id }); } : undefined}
             onOpen={onOpenNote && lastSaved ? () => { recorder.dismissOutcome(); onOpenNote(lastSaved.id); } : undefined}
             onDone={recorder.dismissOutcome} onSaveNow={recorder.retryPending} onPlayingChange={recorder.setReceiptPlaying} onReady={recorder.setReceiptReady} onUsePrivate={usePrivate} onActionableChange={recorder.setReceiptActionable} />
         </div>

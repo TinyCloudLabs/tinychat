@@ -13,7 +13,7 @@ import { load as loadYaml } from "js-yaml";
 import { createCsrfMiddleware, issueSessionToken } from "@tinyboilerplate/server";
 
 import { createAuthMiddleware } from "../middleware/auth.js";
-import { applyRateLimiters, TRANSCRIBER_LIMIT, TRANSCRIBER_PATHS } from "../rate-limits.js";
+import { applyRateLimiters, SESSION_LIMITS, TRANSCRIBER_PATHS } from "../rate-limits.js";
 import { createPrivateCloudTranscriptionRouter } from "../routes/private-cloud-transcription.js";
 import {
   PRIVATE_CLOUD_TRANSCRIPTION_MOUNT,
@@ -25,7 +25,7 @@ import {
   tenantRefFor,
   type PrivateCloudTranscriptionConfig,
 } from "../services/private-cloud-transcription.js";
-import { JOB_ERRORS } from "../services/private-cloud-transcription-dto.js";
+import { JOB_ERRORS, parseResult } from "../services/private-cloud-transcription-dto.js";
 import { runPrivateCloudE2E } from "../../scripts/e2e-private-cloud-transcription.js";
 
 const SESSION_KEY = "synthetic-session-signing-key";
@@ -74,7 +74,13 @@ const MAIN_CONTENT_TYPES = ["audio/mpeg", "audio/wav", "audio/ogg"];
 const AUDIO_CONTENT_TYPES = [...MAIN_CONTENT_TYPES, "audio/mp4", "audio/webm", "audio/flac"];
 
 /** PTX's stored result (src/uploads/worker.ts `assemble`) as `GET …/result` answers it. */
-function completedResult(id: string, options: { language?: string | null; diarized?: boolean } = {}) {
+function completedResult(id: string, options: {
+  language?: string | null;
+  diarized?: boolean;
+  stats?: { voiced_seconds?: number; dropped_above_floor_pct?: number | null; vad_fallback?: boolean | null;
+    vad_mode?: string | null; noise_floor_dbfs?: number | null; median_dbfs?: number | null; p99_dbfs?: number | null;
+    speech_peak_s?: number | null; dropped_above_noise_pct?: number | null };
+} = {}) {
   const speakers = options.diarized
     ? [
         { id: "speaker_0", name: "Speaker 1", channel: 0 },
@@ -101,7 +107,7 @@ function completedResult(id: string, options: { language?: string | null; diariz
     speakers,
     segments,
     text: segments.map((s) => `${speakers.find((p) => p.id === s.speaker_id)!.name}: ${s.text}`).join("\n"),
-    stats: { tinfoil_calls: 2, tinfoil_audio_seconds: 5.5 },
+    stats: { tinfoil_calls: 2, tinfoil_audio_seconds: 5.5, ...options.stats },
   };
 }
 
@@ -354,7 +360,7 @@ async function startBackend(config: PrivateCloudTranscriptionConfig, clientOptio
   const app = express();
   app.use(express.json({ limit: "1mb" }));
   app.use(createCsrfMiddleware());
-  applyRateLimiters(app);
+  applyRateLimiters(app, { sessionKey: SESSION_KEY });
   {
     app.use(
       PRIVATE_CLOUD_TRANSCRIPTION_MOUNT,
@@ -525,11 +531,11 @@ describe("access", () => {
     expect((await call(backend.url, "GET", "/transcriptions")).status).toBe(200);
   });
 
-  test("the mount sits in the /api/transcriber bucket, not the global one", async () => {
+  test("the mount sits under /api/transcriber, in its own per-session bucket, not the global one", async () => {
     expect(PRIVATE_CLOUD_TRANSCRIPTION_MOUNT.startsWith(`${TRANSCRIBER_PATHS[0]}/`)).toBe(true);
     const { backend } = await setup();
     const r = await call(backend.url, "GET", "/capabilities");
-    expect(r.headers.get("ratelimit-policy")).toContain(`${TRANSCRIBER_LIMIT};w=900`);
+    expect(r.headers.get("ratelimit-policy")).toContain(`${SESSION_LIMITS.privateCloudTranscription};w=900`);
   });
 });
 
@@ -1231,6 +1237,44 @@ describe("response DTOs", () => {
     ptx.state.override = () => ({ status: 200, body: completedResult(ID, { language: null }) });
     expect((await call(backend.url, "GET", `/transcriptions/${ID}/result`)).json.language).toBeNull();
   });
+  test("completed result relays optional VAD stats and drops malformed diagnostics", async () => {
+    const { ptx, backend } = await setup();
+    const done = completedResult(ID, { stats: {
+      voiced_seconds: 4.2, dropped_above_floor_pct: 70, vad_fallback: true,
+      vad_mode: "quiet", noise_floor_dbfs: -61.5, median_dbfs: -58, p99_dbfs: -29,
+      speech_peak_s: 2.4, dropped_above_noise_pct: 3.5,
+    } });
+    ptx.state.override = () => ({ status: 200, body: done });
+    const present = await call(backend.url, "GET", `/transcriptions/${ID}/result`);
+    expect(present.json.stats).toEqual({
+      tinfoil_calls: 2, tinfoil_audio_seconds: 5.5, voiced_seconds: 4.2,
+      dropped_above_floor_pct: 70, vad_fallback: true,
+      vad_mode: "quiet", noise_floor_dbfs: -61.5, median_dbfs: -58, p99_dbfs: -29,
+      speech_peak_s: 2.4, dropped_above_noise_pct: 3.5,
+    });
+
+    ptx.state.override = () => ({ status: 200, body: completedResult(ID) });
+    expect((await call(backend.url, "GET", `/transcriptions/${ID}/result`)).json.stats).toEqual({
+      tinfoil_calls: 2, tinfoil_audio_seconds: 5.5,
+    });
+    ptx.state.override = () => ({ status: 200, body: completedResult(ID, { stats: {
+      dropped_above_floor_pct: null, vad_fallback: null, vad_mode: null, noise_floor_dbfs: null,
+      median_dbfs: null, p99_dbfs: null, speech_peak_s: null, dropped_above_noise_pct: null,
+    } }) });
+    expect((await call(backend.url, "GET", `/transcriptions/${ID}/result`)).json.stats).toEqual({
+      tinfoil_calls: 2, tinfoil_audio_seconds: 5.5,
+    });
+
+    const invalidMode = parseResult(completedResult(ID, { stats: { vad_mode: "noisy" } }), ID);
+    expect(invalidMode?.stats).not.toHaveProperty("vad_mode");
+    const invalidNumbers = parseResult(completedResult(ID, { stats: {
+      noise_floor_dbfs: Number.NaN, median_dbfs: Number.POSITIVE_INFINITY, p99_dbfs: -Infinity,
+      speech_peak_s: -0.1, dropped_above_noise_pct: 100.1,
+    } }), ID);
+    expect(invalidNumbers?.status).toBe("completed");
+    for (const key of ["noise_floor_dbfs", "median_dbfs", "p99_dbfs", "speech_peak_s", "dropped_above_noise_pct"])
+      expect(invalidNumbers?.stats).not.toHaveProperty(key);
+  });
 
   test("a larger PTX-advertised max_bytes is accepted and relayed", async () => {
     const { ptx, backend } = await setup();
@@ -1294,6 +1338,10 @@ describe("response DTOs", () => {
       [`/transcriptions/${ID}/result`, 200, { ...done, language: "english" }],
       [`/transcriptions/${ID}/result`, 200, { ...done, text: undefined }],
       [`/transcriptions/${ID}/result`, 200, { ...done, stats: undefined }],
+      [`/transcriptions/${ID}/result`, 200, { ...done, stats: { ...done.stats, dropped_above_floor_pct: "70" } }],
+      [`/transcriptions/${ID}/result`, 200, { ...done, stats: { ...done.stats, vad_fallback: "true" } }],
+      [`/transcriptions/${ID}/result`, 200, { ...done, stats: { ...done.stats, voiced_seconds: "50" } }],
+      [`/transcriptions/${ID}/result`, 200, { ...done, stats: { ...done.stats, dropped_above_floor_pct: 101 } }],
       [`/transcriptions/${ID}/result`, 200, { ...done, channels: 1 }],
       [`/transcriptions/${ID}/result`, 200, { ...done, speakers: [{ id: "channel_1", name: "Speaker 1", channel: 0 }] }],
       [`/transcriptions/${ID}/result`, 200, { ...done, segments: [{ ...done.segments[0], speaker_id: "channel_9" }] }],

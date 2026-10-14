@@ -362,6 +362,7 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
           const opts: CaptureOptions = {
             transcriber: signedIn ? (startOptions?.transcriber ?? defaults.transcriber) : "on-device",
             identifySpeakers: startOptions?.identifySpeakers ?? defaults.identifySpeakers,
+            uploadAudio: startOptions?.uploadAudio ?? false,
           };
           const maxDurationMs = Math.min(WEB_MAX_DURATION_MS, Math.max(WEB_MIN_DURATION_LIMIT_MS, startOptions?.maxDurationMs ?? WEB_MAX_DURATION_MS));
           const begun = await store.beginSession({ id, startedAt: now(), source: "in_app", owner: signedIn ? defaults.accountDid : null,

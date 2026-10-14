@@ -1,4 +1,4 @@
-import type { AppPlatform } from "@/lib/platform";
+import { deviceName, type AppPlatform } from "@/lib/platform";
 
 const WRITE_FAILED = "Couldn't save all of this recording";
 
@@ -44,23 +44,23 @@ export const DESKTOP_HOME_COPY = {
 } as const;
 
 /** Where an unsaved recording is kept: the desktop app's Mac, a browser, or a phone or tablet app. */
-export type HomePlace = "mac" | "browser" | "device";
+export type HomePlace = "mac" | "browser" | "ios" | "android";
 
 export function homePlace(platform: AppPlatform): HomePlace {
-  return platform === "tauri" ? "mac" : platform === "web" ? "browser" : "device";
+  return platform === "tauri" ? "mac" : platform === "web" ? "browser" : platform;
 }
 
 /** "on this Mac", "in this browser" or "on this device". */
 export function placeWhere(place: HomePlace): string {
-  return place === "browser" ? "in this browser" : `on this ${place === "mac" ? "Mac" : "device"}`;
+  return place === "browser" ? "in this browser" : `on ${deviceName(place === "mac" ? "tauri" : place)}`;
 }
 
 /** The failed-recording sheet's shared copy, which says "this phone", for the place it is kept. */
 export function forPlace(place: HomePlace): (text: string) => string {
-  const noun = place === "mac" ? "Mac" : place === "browser" ? "browser" : "device";
-  return (text) =>
-    text
-      .replaceAll("on this phone", place === "browser" ? "in this browser" : `on this ${noun}`)
-      .replaceAll("this phone", `this ${noun}`)
-      .replaceAll("This phone", `This ${noun}`);
+  const name = deviceName(place === "mac" ? "tauri" : place === "browser" ? "web" : place);
+  const where = placeWhere(place);
+  return (text) => text
+    .replaceAll(/(?:on|in) this (?:Android phone|iPhone|Mac|browser|phone|device)/g, where)
+    .replaceAll(/this (?:Android phone|iPhone|Mac|browser|phone|device)/g, name)
+    .replaceAll(/This (?:Android phone|iPhone|Mac|browser|phone|device)/g, name.replace(/^t/, "T"));
 }

@@ -17,6 +17,7 @@ export type DebugEvent = {
   durationMs?: number;
   code?: string;
   operation?: string;
+  count?: number;
   chain?: { name?: string; code?: string; status?: number; message?: string }[];
 };
 
@@ -100,6 +101,11 @@ function append(event: Omit<DebugEvent, "at">): void {
 export function logPipeline(operation: string, sourceId: string, phase: string,
   details: Pick<DebugEvent, "engine" | "destination" | "bodyBytes" | "totalBytes" | "progressPct" | "status"> = {}): void {
   append({ kind: "pipeline", source_id: sourceId, operation, phase, ...details });
+}
+export function logPipelineCount(operation: string, phase: string, count = 1): void {
+  const event = { kind: "pipeline" as const, source_id: null, operation, phase, count };
+  if (enabled) append(event);
+  else console.info(JSON.stringify({ ...event, at: new Date().toISOString() }));
 }
 
 export function logSession(operation: string, phase: string, error?: unknown): void {

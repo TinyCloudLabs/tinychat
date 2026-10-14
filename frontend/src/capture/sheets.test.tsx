@@ -183,8 +183,8 @@ describe("Upload sheet", () => {
   });
 
   test("the route's first step is this device by name: phone, Mac or browser", () => {
-    expect(uploadRoute("private-cloud", "own", "ios")[0].label).toBe("This phone");
-    expect(uploadRoute("private-cloud", "own", "android")[0].label).toBe("This phone");
+    expect(uploadRoute("private-cloud", "own", "ios")[0].label).toBe("This iPhone");
+    expect(uploadRoute("private-cloud", "own", "android")[0].label).toBe("This Android phone");
     expect(uploadRoute("private-cloud", "own", "tauri")[0].label).toBe("This Mac");
     expect(uploadRoute("private-cloud", "own", "web")[0].label).toBe("This browser");
   });

@@ -254,11 +254,12 @@ describe("Google Meet OAuth connect variant", () => {
       connectHalf.indexOf("const handleCancelAuthorize"),
     );
     expect(handler).toContain("useCallback(() => {");
-    expect(handler.indexOf("window.open(")).toBeLessThan(handler.indexOf("await"));
+    const webPopup = handler.slice(handler.indexOf("const popup = window.open("));
+    expect(webPopup.indexOf("window.open(")).toBeLessThan(webPopup.indexOf("await"));
     expect(handler).toContain("popup.location.href");
     // A blocked popup gets its own actionable state, not a silent no-op.
     expect(handler).toContain('kind: "popup-blocked"');
-    expect(dialog).toContain("Allow popups for this site");
+    expect(dialog).toContain("Allow popups and try again, or open Google in this tab.");
   });
 
   test("the native app takes the system browser before any popup is opened (TC-521)", () => {
@@ -321,12 +322,12 @@ describe("Google Meet OAuth connect variant", () => {
     expect(connectHalf).toContain("googleAuthorizeSurface()");
     // No consent copy, no custody checkbox: the explanation alone…
     expect(render).toContain('{phase === "authorize" && authorizeSurface === "unavailable-in-app" && <NativeUnavailablePanel />}');
-    expect(render).toContain('{phase === "authorize" && authorizeSurface !== "unavailable-in-app" && (');
+    expect(render).toContain('{phase === "authorize" && authorizeSurface !== "unavailable-in-app" && !desktopAutojoinUnavailable && (');
     const panel = connectHalf.slice(connectHalf.indexOf("const NativeUnavailablePanel"), connectHalf.indexOf("const WaitCallbackPanel"));
     expect(panel).toContain('formatOAuthError({ kind: "native-unavailable", message: "" })');
     expect(dialog).toContain("Connecting Google isn’t available in the Exo app yet.");
     // …and a footer with Close only.
-    expect(render).toContain('canAuthorize={authorizeSurface !== "unavailable-in-app"}');
+    expect(render).toContain('canAuthorize={authorizeSurface !== "unavailable-in-app" && !desktopAutojoinUnavailable}');
     const footer = connectHalf.slice(connectHalf.indexOf("const OAuthConnectFooter"), connectHalf.indexOf("const Emphasized"));
     const closeOnly = footer.slice(footer.indexOf('{phase === "authorize" && !canAuthorize && ('), footer.indexOf('{phase === "authorize" && canAuthorize && ('));
     expect(closeOnly).toContain("Close");
@@ -351,7 +352,8 @@ describe("Google Meet OAuth connect variant", () => {
   test("closing or cancelling the dialog also ends a native attempt", () => {
     const reset = connectHalf.slice(connectHalf.indexOf("const reset"), connectHalf.indexOf("const busy"));
     expect(reset).toContain("cancelNativeAttempt();");
-    expect(reset).toContain("useEffect(() => cancelNativeAttempt, [cancelNativeAttempt]);");
+    expect(reset).toContain("useEffect(() => () => {");
+    expect(reset).toContain("cancelNativeAttempt();");
     const cancel = connectHalf.slice(connectHalf.indexOf("const handleCancelAuthorize"));
     expect(cancel.slice(0, cancel.indexOf("}, ["))).toContain("cancelNativeAttempt();");
   });
@@ -370,14 +372,15 @@ describe("Google Meet OAuth connect variant", () => {
     // read from the exchange response alone.
     expect(dialog).not.toMatch(/\.postMessage\(/);
     expect(connectHalf).toContain("GOOGLE_OAUTH_EXCHANGE_PATH");
-    expect(connectHalf).toContain("JSON.stringify({ code, verifier, ...(autojoin ? { state: transactionState } : {}) })");
+    expect(connectHalf).toContain("JSON.stringify({ code, verifier, ...(autojoin ? { state: transactionState } : {}),");
+    expect(connectHalf).toContain("desktopRedirectUri: desktopRedirectUriRef.current");
     // The verifier is dropped before the response is even read.
     expect(connectHalf).toContain("verifierRef.current = null;");
   });
 
   test("persists the refresh token through the registry row, never a literal", () => {
     expect(connectHalf).toContain(
-      "saveConnectorKey<SecretsErr>(tcw, descriptor, refreshToken)",
+      "saveConnectorKey<SecretsErr>(tcw, descriptor, storedRefreshToken)",
     );
     // The names live in registry.ts; spelling either one here would make the
     // flip commit a two-file change and this file a place they could drift.

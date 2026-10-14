@@ -24,6 +24,7 @@ export interface ViaMenuProps {
   recording: boolean;
   theme: "night" | "day";
   subscribeLevel: (listener: (level: number) => void) => () => void;
+  systemAudioCaptured?: boolean;
   /** A retry would fail without a good input: outline it. */
   emphasis: boolean;
   disabled: boolean;
@@ -40,6 +41,7 @@ export function ViaMenu({
   recording,
   theme,
   subscribeLevel,
+  systemAudioCaptured = false,
   emphasis,
   disabled,
   onSelect,
@@ -139,7 +141,7 @@ export function ViaMenu({
         className="pr-srcbtn"
         aria-haspopup="menu"
         aria-expanded={open}
-        aria-label={`Record from ${displayName}`}
+        aria-label={`Record from ${displayName}${systemAudioCaptured ? " and this Mac's audio" : ""}`}
         data-emphasis={emphasis}
         disabled={disabled}
         onClick={() => { if (!open) onOpen?.(); setOpen((o) => !o); }}
@@ -155,6 +157,7 @@ export function ViaMenu({
             />
           </span>
           <span className="name">{displayName}</span>
+          {systemAudioCaptured && <span className="dr-via-system" data-testid="desktop-system-audio-label">· + this Mac&apos;s audio</span>}
           <ChevronDownIcon size={12} />
         </span>
       </button>

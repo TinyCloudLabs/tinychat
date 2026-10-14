@@ -41,7 +41,7 @@ describe("calendar state durability", () => {
     const values = new Map<string, unknown>();
     let failWrite = false;
     const node = { kv: {
-      async get(key: string) { return values.has(key) ? { ok: true, data: { data: values.get(key) } } : { ok: false, error: { code: "KV_NOT_FOUND", message: "Key not found" } }; },
+      async get(key: string) { return values.has(key) ? { ok: true, data: { data: values.get(key) } } : { ok: false, error: { code: "KV_NOT_FOUND", service: "kv", message: `Key not found: ${key}` } }; },
       async put(key: string, value: unknown) { if (failWrite) return { ok: false, error: { code: "FAILED", message: "write failed" } }; values.set(key, structuredClone(value)); return { ok: true, data: {} }; },
       async list({ prefix }: { prefix: string }) { return { ok: true, data: { keys: [...values.keys()].filter(key => key.startsWith(prefix)) } }; },
       async delete(key: string) { values.delete(key); return { ok: true, data: {} }; },

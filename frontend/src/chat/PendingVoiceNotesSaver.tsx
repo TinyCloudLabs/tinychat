@@ -19,10 +19,10 @@ import { captureCapabilities, captureEngineAvailable } from "@/lib/voiceNotes/ca
 import { OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
 import { syncOnDeviceTranscript } from "@/lib/voiceNotes/onDeviceTranscriber";
 import { getDesktopWhisperQueue } from "@/lib/voiceNotes/desktop/desktopWhisper";
-import { isTinyCloudNetworkFailure, logVoiceNoteError, messageOf, pendingStore, whenVoiceNoteSavesIdle } from "@/lib/voiceNotes/recorderSaves";
+import { isTinyCloudNetworkFailure, logVoiceNoteError, pendingSaveMessage, pendingStore, whenVoiceNoteSavesIdle } from "@/lib/voiceNotes/recorderSaves";
 import { advanceAccountGeneration, captureAccountContext, currentAccountGeneration, isAccountContextCurrent, mountVoiceNoteAccount } from "@/lib/voiceNotes/accountContext";
 import { saveDeferredForAccountTransition, type VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
-import { transcribeSavedNote, voiceNoteTranscriberFor } from "@/lib/voiceNotes/voiceNoteTranscription";
+import { recheckVoiceNoteAvailabilityAutomatically, transcribeSavedNote, voiceNoteTranscriberFor } from "@/lib/voiceNotes/voiceNoteTranscription";
 
 let recovery: (() => Promise<void>) | null = null;
 /** Keep the mounted saver available to renewal without remounting the view. */
@@ -124,11 +124,14 @@ export function PendingVoiceNotesSaver({
     pendingStore.setAccount(did);
     pendingStore.setOnline(typeof navigator === "undefined" ? true : navigator.onLine !== false);
     const unmountAccount = mountVoiceNoteAccount(did);
+    const accountGeneration = currentAccountGeneration();
+    const isAccountCurrent = () => accountGeneration === currentAccountGeneration();
     pipeline.resume();
     const transcriber = voiceNoteTranscriberFor(tcw, backendUrl, sessionStore);
     let runInFlight: Promise<void> | null = null;
     let dirty = false;
     let disposed = false;
+    let appStateHandle: { remove(): Promise<void> } | undefined;
     const run = (): Promise<void> => {
       if (runInFlight) {
         dirty = true;
@@ -144,10 +147,10 @@ export function PendingVoiceNotesSaver({
           await account.refresh(null);
         } catch (error) {
           if (saveDeferredForAccountTransition(error)) return;
-          const message = messageOf(error);
+          const message = pendingSaveMessage(error);
           // Network errors are already logged by messageOf through the redacting formatter.
-          if (!isTinyCloudNetworkFailure(error)) logVoiceNoteError("Saving notes left on this phone failed", error);
-          account.reportError(`Could not save notes on this phone: ${message}`);
+          if (!isTinyCloudNetworkFailure(error)) logVoiceNoteError("Saving pending notes failed", error);
+          account.reportError(message);
         }
       };
       runInFlight = (async () => {
@@ -159,15 +162,30 @@ export function PendingVoiceNotesSaver({
       return runInFlight;
     };
     const unregister = registerPendingVoiceNotesRecovery(run);
+    if (transcriber) void recheckVoiceNoteAvailabilityAutomatically(transcriber, isAccountCurrent);
     void run();
-    const onOnline = () => { pendingStore.setOnline(true); void run(); };
+    const onOnline = () => {
+      pendingStore.setOnline(true);
+      if (transcriber) void recheckVoiceNoteAvailabilityAutomatically(transcriber, isAccountCurrent);
+      void run();
+    };
     const onOffline = () => pendingStore.setOnline(false);
-    window.addEventListener("online", onOnline);
-    window.addEventListener("offline", onOffline);
-    let appStateHandle: { remove(): Promise<void> } | null = null;
+    const windowTarget = typeof window !== "undefined" && typeof window.addEventListener === "function" ? window : undefined;
+    const documentTarget = typeof document !== "undefined" && typeof document.addEventListener === "function" ? document : undefined;
+    windowTarget?.addEventListener("online", onOnline);
+    windowTarget?.addEventListener("offline", onOffline);
+    const onVisible = () => {
+      if (documentTarget?.visibilityState !== "visible") return;
+      if (transcriber) void recheckVoiceNoteAvailabilityAutomatically(transcriber, isAccountCurrent);
+      void run();
+    };
+    documentTarget?.addEventListener("visibilitychange", onVisible);
     if (Capacitor.isNativePlatform()) {
       void import("@capacitor/app").then(({ App }) => App.addListener("appStateChange", ({ isActive }) => {
-        if (isActive) void run();
+        if (isActive) {
+          if (transcriber) void recheckVoiceNoteAvailabilityAutomatically(transcriber, isAccountCurrent);
+          void run();
+        }
       })).then((handle) => {
         if (disposed) void handle.remove();
         else appStateHandle = handle;
@@ -175,8 +193,9 @@ export function PendingVoiceNotesSaver({
     }
     return () => {
       disposed = true;
-      window.removeEventListener("online", onOnline);
-      window.removeEventListener("offline", onOffline);
+      windowTarget?.removeEventListener("online", onOnline);
+      windowTarget?.removeEventListener("offline", onOffline);
+      documentTarget?.removeEventListener("visibilitychange", onVisible);
       if (appStateHandle) void appStateHandle.remove();
       unregister(); unmountAccount(); pipeline.cancelAll(); pendingStore.setAccount(null);
     };

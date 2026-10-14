@@ -7,6 +7,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 import { installDom } from "@/test/dom";
 import { setCapturePlaybackBlocked, stopAllPlayback } from "@/lib/audio/playback";
+import { NotePlaybackContext, type NotePlayback } from "@/lib/audio/notePlayback";
 import { PHONE_AUDIO_UNAVAILABLE, playbackDuration, scrubTarget } from "./audioPlayback";
 import { MeetingAudioPlayer, MeetingAudioPlayerView, stateForResolvedUrl, type PlayerState } from "./MeetingAudioPlayer";
 
@@ -22,7 +23,7 @@ describe("MeetingAudioPlayerView", () => {
     expect(player).not.toContain("src=");
   });
 
-  test("a note on this phone has its source set from the start, so the first tap can play it", () => {
+  test("a note on this browser has its source set from the start, so the first tap can play it", () => {
     const player = renderToStaticMarkup(<MeetingAudioPlayer url="capacitor://localhost/_capacitor_file_/a.m4a" durationSecs={42} />);
     expect(player).toContain('src="capacitor://localhost/_capacitor_file_/a.m4a"');
     expect(player).toContain("Play audio");
@@ -49,7 +50,7 @@ describe("MeetingAudioPlayerView", () => {
 
   test("a local URL that could not be resolved shows calm copy, with Try again, and no internal text", () => {
     const html = render({ phase: "failed", reason: PHONE_AUDIO_UNAVAILABLE });
-    expect(html).toContain("Couldn\u2019t open this note\u2019s audio on this phone.");
+    expect(html).toContain("Couldn\u2019t open this note\u2019s audio on this browser.");
     expect(html).toContain("Try again");
   });
 
@@ -60,9 +61,9 @@ describe("MeetingAudioPlayerView", () => {
     });
     const logged = spyOn(console, "error").mockImplementation(() => {});
     try {
-      const cause = new Error("Could not open this phone's audio: loadVoiceNoteAudio: Key not found: xyz/abc");
+      const cause = new Error("Could not open this browser's audio: loadVoiceNoteAudio: Key not found: xyz/abc");
       expect(await stateForResolvedUrl(async () => { throw cause; })).toEqual({ phase: "failed", reason: PHONE_AUDIO_UNAVAILABLE });
-      expect(logged).toHaveBeenCalledWith("[Audio] Could not resolve this phone's audio", cause);
+      expect(logged).toHaveBeenCalledWith("[Audio] Could not resolve local audio", cause);
     } finally {
       logged.mockRestore();
     }
@@ -135,12 +136,14 @@ describe("the player in a DOM", () => {
     playResult: () => Promise<void>;
   }
 
-  const mount = async (props: Partial<React.ComponentProps<typeof MeetingAudioPlayer>>) => {
+  const mount = async (props: Partial<React.ComponentProps<typeof MeetingAudioPlayer>>, playback: NotePlayback | null = null) => {
     cleanupDom = installDom();
     const host = document.createElement("div");
     document.body.appendChild(host);
     root = createRoot(host);
-    const render = (next: typeof props) => act(async () => root!.render(<MeetingAudioPlayer {...next} />));
+    const render = (next: typeof props, nextPlayback = playback) => act(async () => root!.render(
+      <NotePlaybackContext.Provider value={nextPlayback}><MeetingAudioPlayer {...next} /></NotePlaybackContext.Provider>,
+    ));
     await render(props);
     const audio = host.querySelector("audio") as HTMLAudioElement;
     const fake: FakeMedia = { duration: NaN, currentTime: 0, paused: true, readyState: 0, error: null, seekable: [], plays: [], pauses: 0, loads: 0, setTimes: [], playResult: () => Promise.resolve() };
@@ -211,7 +214,7 @@ describe("the player in a DOM", () => {
     }
   });
 
-  test("a note on this phone plays on the first tap with its source already set", async () => {
+  test("a note on this browser plays on the first tap with its source already set", async () => {
     const player = await mount({ url: "blob:note", durationSecs: 42 });
     expect(player.audio.getAttribute("src")).toBe("blob:note");
     let playsInClick: FakeMedia["plays"] = [];
@@ -385,6 +388,19 @@ describe("the player in a DOM", () => {
     await player.render({ url: "blob:note", durationSecs: 42, seek: { seconds: 5, nonce: 2 } });
     expect(player.fake.setTimes).toEqual([20, 5]);
     expect(player.fake.plays.length).toBe(2);
+  });
+
+  test("transcript timestamps and saved-note moments can each seek the same player", async () => {
+    const playback: NotePlayback = { seek: null, elapsed: 0, playing: false, playFrom: () => {}, onClock: () => {} };
+    const props = { url: "blob:note", durationSecs: 100, seek: { seconds: 12, nonce: 1 } };
+    const player = await mount({ url: "blob:note", durationSecs: 100 }, playback);
+    await player.render(props, playback);
+    await player.metadata(100);
+    expect(player.fake.setTimes).toEqual([12]);
+    await player.render(props, { ...playback, seek: { seconds: 42, nonce: 1 } });
+    expect(player.fake.setTimes).toEqual([12, 42]);
+    await player.render({ ...props, seek: { seconds: 7, nonce: 2 } }, { ...playback, seek: { seconds: 42, nonce: 1 } });
+    expect(player.fake.setTimes).toEqual([12, 42, 7]);
   });
 
   test("a playing note pauses when its kept pane is hidden or its view closes", async () => {

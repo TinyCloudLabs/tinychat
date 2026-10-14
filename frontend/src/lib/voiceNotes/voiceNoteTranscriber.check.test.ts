@@ -2,7 +2,7 @@
 // longer the signed-in one, a check retries, resumes and sends nothing for it. A freshness
 // gate for automatic checks (mount, foreground): a settled answer is reused for a while and a
 // failure backs off; the user's "Check again" (no `automatic`) always asks.
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test, vi } from "bun:test";
 import { Capacitor } from "@capacitor/core";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
@@ -10,7 +10,7 @@ import { transcriptionProps } from "@/capture/recorder/transcriptionProps";
 import { PrivateCloudError, type PrivateCloudCapabilities } from "../privateCloud";
 import { __resetCaptureEngineForTests } from "./captureEngine";
 import { VoiceNotes, __setVoiceNotesForTests } from "./nativeVoiceNotes";
-import { createVoiceNoteTranscriber, devicePtxUploadSupported, type VoiceNoteCloud, type VoiceNoteConsentStore } from "./voiceNoteTranscription";
+import { createVoiceNoteTranscriber, devicePtxUploadSupported, recheckVoiceNoteAvailabilityAutomatically, type VoiceNoteCloud, type VoiceNoteConsentStore } from "./voiceNoteTranscription";
 
 const CAPS: PrivateCloudCapabilities = { max_bytes: 120_960_000, max_duration_seconds: 7_200, content_types: ["audio/wav"] };
 const FRESH = 5 * 60_000;
@@ -137,7 +137,7 @@ describe("freshness and backoff for automatic checks", () => {
       } });
       await s.transcriber.check();
       expect(s.transcriber.snapshot()).toMatchObject({ availability: "failed", checkErrorCode: "native_status_failed",
-        checkError: "Could not check this phone's file upload. Try again." });
+        checkError: "Could not check this browser's file upload. Try again." });
       await transcriptionProps(s.transcriber, s.transcriber.snapshot())!.onRecheck();
       expect(s.transcriber.snapshot().availability).toBe("available");
       expect(reads).toBe(2);
@@ -186,6 +186,21 @@ describe("freshness and backoff for automatic checks", () => {
     await s.transcriber.check({ automatic: true });
     expect(s.requests).toHaveLength(3);
     expect(s.transcriber.snapshot().availability).toBe("available");
+  });
+  test("frequent automatic events stay within capability backoff for 15 minutes", async () => {
+    vi.useFakeTimers();
+    const s = setup({ capabilities: offline });
+    try {
+      await recheckVoiceNoteAvailabilityAutomatically(s.transcriber);
+      for (let i = 0; i < 90; i++) {
+        s.clock.at += 10_000;
+        await recheckVoiceNoteAvailabilityAutomatically(s.transcriber, () => true);
+      }
+      expect(s.requests).toHaveLength(5);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
   });
 
   test("Check again bypasses both the fresh answer and the backoff", async () => {

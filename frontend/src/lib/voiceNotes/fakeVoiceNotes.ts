@@ -289,7 +289,8 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
       if (tombstones.has(id)) throw failure("tombstoned");
       const signedIn = accountStatus === "signed_in" && !!defaults.accountDid;
       const opts: CaptureOptions = { transcriber: signedIn ? (options?.transcriber ?? defaults.transcriber) : "on-device",
-        identifySpeakers: options?.identifySpeakers ?? defaults.identifySpeakers };
+        identifySpeakers: options?.identifySpeakers ?? defaults.identifySpeakers,
+        uploadAudio: options?.uploadAudio ?? defaults.uploadAudio ?? false };
       session = { id, startedAt: now(), audioMs: 0, pausedMs: 0, pauseStarted: null, intent: "recording", availability: "available",
         reason: null, gen: ++generation, source: "in_app", owner: signedIn ? defaults.accountDid : null, transitionGen: defaults.transitionGen,
         options: opts, spans: [], openSpan: null, maxDurationMs: Math.min(10_800_000, Math.max(1000, options?.maxDurationMs ?? 10_800_000)),

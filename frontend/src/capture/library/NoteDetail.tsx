@@ -1,7 +1,7 @@
 // The open note (TC-761): NoteDetailView over the Library's reads, with the
 // transcript's Copy. Remounted per note (keyed by its id), so a copy's tick
 // never carries over to the next note.
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import type { VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
 import { copyText } from "@/lib/copyText";
@@ -11,9 +11,12 @@ import { getDesktopWhisperQueue } from "@/lib/voiceNotes/desktop/desktopWhisper"
 import { VoiceNotes, type LocalTranscript } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
 import { appPlatform } from "@/lib/platform";
+import type { AppPlatform } from "@/lib/platform";
+import type { NotePipelineView } from "@/lib/voiceNotes/useNotePipeline";
 import { VoiceNoteSaveTimeout, withVoiceNoteSaveDeadline } from "@/lib/voiceNotes/saveDeadline";
 import { localTranscriptToSave, VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
 import { NoteDetailView, type NoteDetailViewProps } from "./NoteDetailView";
+import { hasPrivateCloudTimingProvenance, hasSegmentTimes, transcriptWithTimestamps } from "./transcriptSegments";
 import type { Library } from "./useLibrary";
 
 /** Matches markdown-text's copy button: the tick reverts on its own. */
@@ -35,7 +38,10 @@ export function NoteDetail(props: {
   pushed: boolean;
   onBack: () => void;
   transcription: VoiceNoteTranscriptionProps | undefined;
+  activityView?: NotePipelineView;
+  platform?: AppPlatform;
   savedNote?: NoteDetailViewProps["savedNote"];
+  activityControl?: ReactNode;
 }) {
   const { library } = props;
   const { item, reads, audio } = library.note;
@@ -70,16 +76,25 @@ export function NoteDetail(props: {
     };
   }, []);
 
-  const text = useMemo(
+  const selectedTranscript = reads.transcript;
+  const remoteTranscript = selectedTranscript?.transcript;
+  const sentences = useMemo(
     () => {
-      if (reads.transcript?.status === "ok" && reads.transcript.sentences.length > 0) return transcriptCopyText(reads.transcript.sentences);
+      if (remoteTranscript?.status === "ok" && remoteTranscript.sentences.length > 0) return remoteTranscript.sentences;
       if (reads.metadata?.status === "ok" && reads.metadata.metadata.transcription_outcome === "no_speech") return null;
       const saved = local?.id === localId && local.transcript?.outcome === "transcribed" ? localTranscriptToSave(local.transcript) : null;
-      return saved && saved.sentences.length > 0 ? transcriptCopyText(saved.sentences) : null;
+      return saved && saved.sentences.length > 0 ? saved.sentences : null;
     },
-    [reads.transcript, reads.metadata, local, localId],
+    [remoteTranscript, reads.metadata, local, localId],
   );
-  const onCopy = useCallback(async () => {
+  const isPrivateCloud = remoteTranscript?.status === "ok" && remoteTranscript.sentences.length > 0
+    && hasPrivateCloudTimingProvenance(
+      reads.metadata?.status === "ok" ? reads.metadata.metadata : null,
+      selectedTranscript?.provenance,
+    );
+  const onCopy = useCallback(async (withTimestamps = false) => {
+    const text = sentences && (withTimestamps && hasSegmentTimes(sentences, isPrivateCloud)
+      ? transcriptWithTimestamps(sentences, isPrivateCloud) : transcriptCopyText(sentences));
     if (!text) return;
     const ok = await copyText(text);
     if (!mounted.current) return;
@@ -89,7 +104,7 @@ export function NoteDetail(props: {
       timer.current = null;
       setCopyState("idle");
     }, COPIED_DURATION);
-  }, [text]);
+  }, [sentences, isPrivateCloud]);
 
   return (
     <NoteDetailView
@@ -97,19 +112,24 @@ export function NoteDetail(props: {
       // Not listed yet while a list read is out (a note saved a moment ago): it waits for that read.
       listStatus={item === null && library.listing ? "loading" : library.status}
       metadata={reads.metadata}
-      transcript={reads.transcript}
+      transcriptProvenance={selectedTranscript?.provenance}
+      transcript={remoteTranscript}
       localTranscript={local?.id === localId ? local.transcript : undefined}
       localTranscriptRead={local?.id === localId ? local.readError : null}
       onLocalTranscriptRetry={() => { setLocal(null); setLocalAttempt((attempt) => attempt + 1); }}
       audio={audio}
       // A note only on this phone is not in the space to transcribe from.
       transcription={item?.source === VOICE_NOTE_SOURCE && !item.onPhone ? props.transcription : undefined}
+      activityView={props.activityView}
+      platform={props.platform}
       copyState={copyState}
       onCopy={() => void onCopy()}
+      onCopyWithTimestamps={() => void onCopy(true)}
       onRetry={library.retry}
       pushed={props.pushed}
       onBack={props.onBack}
       savedNote={props.savedNote}
+      activityControl={props.activityControl}
     />
   );
 }

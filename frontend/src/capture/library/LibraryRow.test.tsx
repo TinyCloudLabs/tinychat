@@ -1,6 +1,6 @@
 // The Library's row (P1-8): a voice note is titled by its own words, "Voice note" without any, and its line is
 // "7:16 PM · 0:14" inside a day (with "Today" outside one), so notes minutes apart tell apart; a note not yet in the
-// space says "On this phone" or "Saving…". The same on the phone's Soft rows and the plain list.
+// space says "On this browser" or "Saving…". The same on the phone's Soft rows and the plain list.
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
@@ -69,11 +69,11 @@ describe("a voice note's row", () => {
 });
 
 describe("a note not yet settled in the space", () => {
-  test("says where it is: On this phone, or Saving…, as a badge in the row's name too", () => {
-    expect(libraryRowBadge(voice({ onPhone: true }))).toBe("On this phone");
+  test("says where a local note is without a stale Saving badge", () => {
+    expect(libraryRowBadge(voice({ onPhone: true }))).toBe("On this browser");
     expect(libraryRowBadge(voice({ onPhone: true }), "on this Mac")).toBe("On this Mac");
     expect(libraryRowBadge(voice({ onPhone: true }), "in this browser")).toBe("In this browser");
-    expect(libraryRowBadge(voice({ saving: true }))).toBe("Saving…");
+    expect(libraryRowBadge(voice({ saving: true }))).toBeNull();
     expect(libraryRowBadge(voice())).toBeNull();
     expect(libraryRowBadge(meeting)).toBeNull();
   });
@@ -81,7 +81,7 @@ describe("a note not yet settled in the space", () => {
   test("shows track statuses on Soft rows and keeps the old badge in the plain list", () => {
     const onPhone = voice({ id: "on-phone:rec-1", onPhone: true, title: null });
     const active: NotePipeline = { steps: [
-      { key: "phone", label: "On this phone", state: "done" },
+      { key: "phone", label: "On this browser", state: "done" },
       { key: "space", label: "In your space", state: "waiting", caption: "Waiting to upload" },
       { key: "transcript", label: "Transcript", state: "upcoming" },
       { key: "notes", label: "Notes", state: "skipped" },
@@ -93,7 +93,7 @@ describe("a note not yet settled in the space", () => {
     expect(html).toContain("Audio: Waiting to upload");
     expect(html).not.toContain("row-badge");
     const done: NotePipeline = { steps: [
-      { key: "phone", label: "On this phone", state: "done" },
+      { key: "phone", label: "On this browser", state: "done" },
       { key: "space", label: "In your space", state: "done" },
       { key: "transcript", label: "Transcript", state: "skipped" },
       { key: "notes", label: "Notes", state: "skipped" },
@@ -102,5 +102,28 @@ describe("a note not yet settled in the space", () => {
     expect(render(onPhone, { soft: false })).toContain('data-testid="row-badge"');
     expect(render(voice({ saving: true }))).not.toContain("Saving…");
     expect(render(voice())).not.toContain("row-badge");
+  });
+  test("Recent and Library distinguish durable pending, failed and skipped transcript states", () => {
+    const pipeline = (state: "pending" | "failed" | "skipped"): NotePipeline => ({
+      steps: [
+        { key: "phone", label: "On this phone", state: "done" },
+        { key: "space", label: "In your space", state: "done" },
+        { key: "transcript", label: "Transcript", state: "skipped" },
+        { key: "notes", label: "Notes", state: "skipped" },
+      ],
+      current: null,
+      done: true,
+      transcriptionState: state,
+      ...(state === "failed" ? { transcriptionErrorCode: "recording_too_large" } : {}),
+    });
+    for (const [state, label] of [
+      ["pending", "Pending"],
+      ["failed", "Failed"],
+      ["skipped", "Not transcribed"],
+    ] as const) {
+      expect(render(voice(), { pipeline: pipeline(state) })).toContain(`Transcript ${label}`);
+      expect(render(voice(), { pipeline: pipeline(state), soft: false })).toContain(`Transcript ${label}`);
+    }
+    expect(render(voice(), { pipeline: pipeline("failed") })).toContain("Private cloud couldn&#x27;t accept this recording&#x27;s length or size. Try again.");
   });
 });

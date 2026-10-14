@@ -5,6 +5,7 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { StaticRecorderProvider } from "@/capture/recorder/RecorderProvider";
 import { PipelineStepper } from "@/capture/pipeline/PipelineStepper";
+import { activityForNote } from "@/capture/activity/activitySelector";
 import { PlatformContext, appPlatform } from "@/lib/platform";
 import { installDom } from "@/test/dom";
 import { getDesktopWhisperQueue, registerDesktopWhisperQueue, type DesktopWhisperJob, type DesktopWhisperQueue } from "./desktop/desktopWhisper";
@@ -33,7 +34,14 @@ let retryCalls: string[] = [];
 
 beforeEach(() => {
   cleanDom = installDom();
-  Object.defineProperty(window, "__TAURI_INTERNALS__", { configurable: true, value: {} });
+  Object.defineProperty(window, "__TAURI_INTERNALS__", { configurable: true, value: {
+    metadata: { currentWindow: { label: "main" } },
+    transformCallback: () => 1,
+    invoke: async () => 1,
+  } });
+  Object.defineProperty(window, "__TAURI_EVENT_PLUGIN_INTERNALS__", { configurable: true, value: {
+    unregisterListener: () => undefined,
+  } });
   host = document.createElement("div");
   document.body.append(host);
   job = { id: ID, state: "transcribing", progress: 37, error: null };
@@ -92,6 +100,14 @@ test("real Tauri hook shows Whisper and upload progress without a native ledger"
   expect(getDesktopWhisperQueue()?.snapshot().get(ID)?.progress).toBe(37);
   expect(host.textContent).toContain("Transcribing on this Mac · 37%");
   expect(host.textContent).toContain("Uploading audio to your TinyCloud space · 42%");
+});
+
+test("real Tauri hook reports the Whisper queue's actual position", async () => {
+  job = { id: ID, state: "queued", progress: null, error: null, position: 3, inLine: 3 };
+  const mounted = await mount(saved);
+  const transcribe = activityForNote(mounted.view!, "tauri").find((entry) => entry.kind === "transcribe");
+  expect(transcribe?.state).toBe("waiting");
+  expect(transcribe?.detail).toBe("Waiting to transcribe · 2 notes ahead");
 });
 
 test("real Tauri hook exposes Whisper Retry without a native ledger", async () => {

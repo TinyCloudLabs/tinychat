@@ -5,7 +5,7 @@ import { useContext, useEffect, useId, useRef, useState } from "react";
 import { ChevronDownIcon, Loader2Icon } from "lucide-react";
 
 import { HowItWorksLink } from "@/components/ui/how-it-works-link";
-import { PlatformContext } from "@/lib/platform";
+import { PlatformContext, deviceName } from "@/lib/platform";
 import { CHECK_AGAIN, PRIVATE_CONSENT_ACTION, PRIVATE_CONSENT_TITLE, privateConsentBody, privateConsentDevice, privateNotOffered, TRANSCRIBER_NAME } from "@/capture/recorder/final/finalCopy";
 import type { VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
 import { captureCapabilities } from "@/lib/voiceNotes/captureEngine";
@@ -19,7 +19,7 @@ import {
   type TranscribeProvider,
 } from "./transcribeProviders";
 
-export const PHONE_READ_FAILED = "Couldn’t check whether this note is on this phone.";
+export const PHONE_READ_FAILED = `Couldn’t check whether this note is on ${deviceName()}.`;
 
 // The soft skin's own tokens, with the app's as fallback outside it (the saved-note sheet sits on --solid, where the
 // outline variant's border vanishes).

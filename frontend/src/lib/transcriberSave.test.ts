@@ -586,7 +586,7 @@ test("a queued completeness read skips after sign-out so a new-session save can 
   let enteredLane!: () => void;
   const laneGate = new Promise<void>((resolve) => { releaseLane = resolve; });
   const laneEntered = new Promise<void>((resolve) => { enteredLane = resolve; });
-  const occupying = runOnSpaceLane(async () => { enteredLane(); await laneGate; });
+  const occupying = runOnSpaceLane(async () => { enteredLane(); await laneGate; }, undefined, "background");
   await laneEntered;
 
   let current = true;
@@ -651,7 +651,7 @@ test("transcriber space reads and writes use the lane, while transcript HTTP sta
   let enteredLane!: () => void;
   const laneGate = new Promise<void>((resolve) => { releaseLane = resolve; });
   const laneEntered = new Promise<void>((resolve) => { enteredLane = resolve; });
-  const occupying = runOnSpaceLane(async () => { enteredLane(); await laneGate; });
+  const occupying = runOnSpaceLane(async () => { enteredLane(); await laneGate; }, undefined, "background");
   await laneEntered;
   let listCalled = false;
   let listSavedCalled = false;
@@ -689,7 +689,7 @@ test("transcriber space reads and writes use the lane, while transcript HTTP sta
     let enteredWriteLane!: () => void;
     const writeGate = new Promise<void>((resolve) => { releaseWriteLane = resolve; });
     const writeLaneEntered = new Promise<void>((resolve) => { enteredWriteLane = resolve; });
-    const otherWrite = runOnSpaceLane(async () => { enteredWriteLane(); await writeGate; });
+    const otherWrite = runOnSpaceLane(async () => { enteredWriteLane(); await writeGate; }, undefined, "background");
     await writeLaneEntered;
     releaseTranscript({ status: "ok", value: { status: "ready", transcript } });
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -732,7 +732,7 @@ test("an account switch while a fetched transcript waits for the lane prevents i
   let enteredRead!: () => void;
   const readGate = new Promise<void>((resolve) => { releaseRead = resolve; });
   const readEntered = new Promise<void>((resolve) => { enteredRead = resolve; });
-  const blockingRead = runOnSpaceLane(async () => { enteredRead(); await readGate; });
+  const blockingRead = runOnSpaceLane(async () => { enteredRead(); await readGate; }, undefined, "background");
   await readEntered;
 
   let current = true;
@@ -765,7 +765,7 @@ test("an account switch while a fetched transcript waits for the lane prevents i
     let enterOtherWrite!: () => void;
     const otherWriteStarted = new Promise<void>((resolve) => { enterOtherWrite = resolve; });
     const otherWriteGate = new Promise<void>((resolve) => { releaseOtherWrite = resolve; });
-    const otherWrite = runOnSpaceLane(async () => { enterOtherWrite(); await otherWriteGate; });
+    const otherWrite = runOnSpaceLane(async () => { enterOtherWrite(); await otherWriteGate; }, undefined, "background");
     await otherWriteStarted;
     releaseTranscript({ status: "ok", value: { status: "ready", transcript } });
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -1199,4 +1199,39 @@ test("C4: a lost compare-and-set leaves a mismatched upstream version for the ne
     expect(f.bodies.get(key)).toBe((await normalizeTranscriberTranscript(meeting, publication4)).body);
     expect(changes).toHaveLength(eventsBeforeRepair + 1);
   } finally { release.resolve(); unsubscribe(); f.sql.close(); }
+});
+
+const gapPublication: TranscriberTranscript = {
+  ...transcript, version: 2, partial: true,
+  gaps: [{ start: 41, end: 52, speaker_name: "Kenny Tucker" }],
+  segments: transcript.segments!.map((segment, i) => ({ ...segment,
+    source: i === 0 ? "recording" : "fallback", attribution: i === 0 ? "identified" : "overlap" })),
+};
+
+test("normalization preserves partial publications, gaps and segment provenance", async () => {
+  const normalized = await normalizeTranscriberTranscript(meeting, gapPublication);
+  expect(normalized.meeting.metadata).toMatchObject({ partial: true, gaps: gapPublication.gaps });
+  expect(JSON.parse(normalized.body)).toEqual(normalized.sentences);
+  expect(normalized.sentences.map(({ source, attribution }) => ({ source, attribution }))).toEqual([
+    { source: "recording", attribution: "identified" }, { source: "fallback", attribution: "overlap" },
+  ]);
+  const legacy = await normalizeTranscriberTranscript(meeting, transcript);
+  expect(legacy.meeting.metadata).not.toHaveProperty("partial");
+  expect(legacy.meeting.metadata).not.toHaveProperty("gaps");
+  expect(JSON.parse(legacy.body)).toEqual(transcript.segments!.map((segment, index) => ({
+    index, speaker_name: segment.speaker_name, text: segment.text, start_time: segment.start, end_time: segment.end,
+  })));
+});
+
+test("refresh writes gaps, partial and sentence provenance into an already saved meeting", async () => {
+  const f = libraryFixture(); f.allowWrites();
+  try {
+    expect((await saveTranscriberMeeting(f.tcw, meeting, transcript)).ok).toBe(true);
+    expect((await refreshTranscriberMeeting(f.tcw, meeting, gapPublication)).ok).toBe(true);
+    const row = f.sql.query("SELECT metadata FROM connector_meeting").get() as { metadata: string };
+    expect(JSON.parse(row.metadata)).toMatchObject({ partial: true, gaps: gapPublication.gaps, ptx_transcript_version: 2 });
+    const body = JSON.parse(f.bodies.get(transcriptKvKey(TRANSCRIBER_MEETING_SOURCE, meeting.id))!);
+    expect(body[0]).toMatchObject({ source: "recording", attribution: "identified" });
+    expect(body[1]).toMatchObject({ source: "fallback", attribution: "overlap" });
+  } finally { f.sql.close(); }
 });

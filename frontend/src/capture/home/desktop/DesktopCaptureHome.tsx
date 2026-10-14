@@ -14,7 +14,7 @@ import {
   VideoIcon,
   type LucideIcon,
 } from "lucide-react";
-import { useContext, useId, useState } from "react";
+import { useContext, useId, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 
 import { Skeleton } from "@/components/ui/skeleton";
@@ -39,6 +39,9 @@ import {
   libraryRowMeta,
   libraryRowTitle,
 } from "../../library/LibraryRow";
+import type { NotePipeline } from "@/lib/voiceNotes/notePipeline";
+import { pipelineTranscriptStatus } from "@/capture/pipeline/PipelineTrackSummary";
+
 import { RowBadge } from "../../library/RowBadge";
 import { KIND_ICON, libraryKind } from "../../library/libraryKinds";
 import { CaptureSettings } from "../../recorder/final/desktop/CaptureSettings";
@@ -94,11 +97,13 @@ export interface DesktopCaptureHomeProps {
   layout: Exclude<RecorderLayout, "phone">;
   inProgress: InProgressRowsViewProps;
   recent: { status: LibraryStatus; items: readonly LibraryItem[] };
+  pipelines?: ReadonlyMap<string, NotePipeline>;
   onRetryRecent: () => void;
   onUpload: () => void;
   /** Absent while the notetaker is not available. */
   onMeeting?: () => void;
   now: Date;
+  activityControl?: ReactNode;
 }
 
 function IdleHero(props: { theme: "night" | "day" }) {
@@ -366,6 +371,7 @@ export function RecentRow(props: {
   entry: DesktopEntry;
   now: Date;
   grouped: boolean;
+  pipeline?: NotePipeline;
   /** The recorder's `dismissCaptureIssue`: whether the notice is dismissed (false: it could not be saved, and still shows). */
   onDismiss: (id: string) => boolean;
   /** A tap on a row whose failure has a sheet: the recording's id, and the row to return focus to. */
@@ -420,6 +426,10 @@ export function RecentRow(props: {
       meta = whisperJobMeta(whisperJob)!;
       attention = whisperJob.state === "failed";
       if (whisperJob.state === "failed") retryId = item.sourceId;
+    }
+    if (entry.partialId === undefined && !entry.issue && props.pipeline) {
+      const transcriptStatus = pipelineTranscriptStatus(props.pipeline);
+      if (transcriptStatus !== null) meta = `${meta} · ${transcriptStatus}`;
     }
   } else if (entry.type === "partial") {
     meta = COPY.partialAudio;
@@ -561,6 +571,7 @@ export function RecentView(props: {
   items: readonly LibraryItem[];
   issues: CaptureIssues;
   filter: RecentFilter;
+  pipelines?: ReadonlyMap<string, NotePipeline>;
   onFilter: (value: RecentFilter) => void;
   onRetry: () => void;
   onDismiss: (id: string) => boolean;
@@ -622,6 +633,7 @@ export function RecentView(props: {
                   entry={entry}
                   now={props.now}
                   grouped={false}
+                  pipeline={entry.type === "item" ? props.pipelines?.get(entry.item.sourceId) : undefined}
                   onDismiss={props.onDismiss}
                   onOpenIssue={props.onOpenIssue}
                 />
@@ -636,6 +648,7 @@ export function RecentView(props: {
                   <RecentRow
                     key={entry.item.id}
                     entry={entry}
+                    pipeline={props.pipelines?.get(entry.item.sourceId)}
                     now={props.now}
                     grouped
                     onDismiss={props.onDismiss}
@@ -678,6 +691,7 @@ export function DesktopCaptureHome(props: DesktopCaptureHomeProps) {
           className={PAGE_COLUMN}
           trailing={(
             <div className="dch-head-actions">
+              {props.activityControl}
               <Link
                 to={PATHS.library}
                 className="soft-header-link"
@@ -742,6 +756,7 @@ export function DesktopCaptureHome(props: DesktopCaptureHomeProps) {
           )}
           <RecentView
             status={props.recent.status}
+            pipelines={props.pipelines}
             items={props.recent.items}
             issues={issues.issues}
             filter={filter}

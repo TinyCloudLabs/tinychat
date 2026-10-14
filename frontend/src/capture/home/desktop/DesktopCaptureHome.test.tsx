@@ -9,6 +9,7 @@ import { PlatformContext, type AppPlatform } from "@/lib/platform";
 import type { InProgressRowsViewProps } from "../../InProgressRows";
 import type { RecorderCaptureIssue } from "../../recorder/recorderReducer";
 import type { LibraryItem } from "../../library/LibraryRow";
+import type { NotePipeline } from "@/lib/voiceNotes/notePipeline";
 import {
   StaticRecorderProvider,
   type RecorderValue,
@@ -202,7 +203,7 @@ describe("the unsaved-voice-notes card", () => {
         layout: "rail",
         props: { inProgress: voice(3) },
       });
-      expect(html).toContain("3 voice notes on this device");
+      expect(html).toContain(`${platform === "ios" ? "3 voice notes on this iPhone" : "3 voice notes on this Android phone"}`);
       expect(html).toContain('data-testid="voice-note-retry"');
       expect(html).not.toContain("this Mac");
       expect(html).not.toContain("on this phone");
@@ -217,7 +218,7 @@ describe("the unsaved-voice-notes card", () => {
         captureIssues: { saving: { kind: "finalization_timed_out" } },
       },
     });
-    expect(html).toContain("Saving… · kept on this device");
+    expect(html).toContain("Saving… · kept on this Android phone");
     expect(html).not.toContain("this Mac");
   });
 
@@ -225,7 +226,7 @@ describe("the unsaved-voice-notes card", () => {
     for (const [platform, where] of [
       ["tauri", "this Mac"],
       ["web", "this browser"],
-      ["android", "this device"],
+      ["android", "this Android phone"],
     ] as const) {
       const failed: InProgressRowsViewProps = {
         ...idle,
@@ -517,6 +518,33 @@ describe("a row", () => {
       </MemoryRouter>,
     );
     expect(html).toContain('data-source-id="rec-3"');
+  });
+  test("a persisted transcript outcome appears in desktop Recent", () => {
+    const html = renderToStaticMarkup(
+      <MemoryRouter>
+        <ul>
+          <RecentRow
+            entry={{ type: "item", item: note(4), startedAt: note(4).startedAt }}
+            now={NOW}
+            grouped
+            pipeline={{
+              steps: [
+                { key: "phone", label: "Audio on this phone", state: "done" },
+                { key: "space", label: "Audio in your space", state: "done" },
+                { key: "transcript", label: "Transcript", state: "skipped" },
+                { key: "notes", label: "Notes", state: "skipped" },
+              ],
+              current: null,
+              done: true,
+              transcriptionState: "failed",
+            } satisfies NotePipeline}
+            onDismiss={() => true}
+            onOpenIssue={noop}
+          />
+        </ul>
+      </MemoryRouter>,
+    );
+    expect(html).toContain("Transcript Failed");
   });
 });
 
