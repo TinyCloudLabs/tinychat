@@ -1,5 +1,11 @@
 # @tinychat/backend
 
+## 0.5.4-beta.5
+
+### Patch Changes
+
+- 96d83d8: Bound Calendar autojoin status to connection and worker-maintained outcome summary reads, preserving last-known fallback and immediate user policy changes, with the existing full history listing for legacy tenants until their first summary publication. Repair unreadable summaries and ensure optional projection failures cannot skip disconnect revocation.
+
 ## 0.5.4-beta.4
 
 ### Patch Changes
