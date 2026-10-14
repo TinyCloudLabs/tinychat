@@ -137,9 +137,9 @@ export function isTransientCloudError(err: unknown): boolean {
   return err instanceof PrivateCloudError && TRANSIENT_CODES.has(err.code);
 }
 
-/** User-facing sentence for a code; the backend's own message is fixed text too. */
-export function privateCloudMessage(err: PrivateCloudError): string {
-  switch (err.code) {
+/** User-facing sentence for a known private-cloud code, without the generic fallback. */
+export function privateCloudCodeMessage(code: string): string | undefined {
+  switch (code) {
     case "recording_too_long_for_cloud":
     case "recording_too_long":
     case "recording_too_large":
@@ -195,8 +195,13 @@ export function privateCloudMessage(err: PrivateCloudError): string {
     case "cancelled":
       return "The upload was cancelled.";
     default:
-      return "Private cloud transcription couldn't complete. Try again.";
+      return undefined;
   }
+}
+
+/** User-facing sentence for a code; the backend's own message is fixed text too. */
+export function privateCloudMessage(err: PrivateCloudError): string {
+  return privateCloudCodeMessage(err.code) ?? "Private cloud transcription couldn't complete. Try again.";
 }
 
 // ── Backend client ─────────────────────────────────────────────────────

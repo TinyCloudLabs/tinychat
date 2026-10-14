@@ -203,6 +203,18 @@ describe("a voice note's transcription", () => {
       expect(html).toContain('data-testid="transcribe-button"');
     }
   });
+  test("a persisted provider failure keeps its private-cloud re-upload sentence", () => {
+    const html = render({
+      metadata: { status: "ok", metadata: {
+        transcription_outcome: "failed",
+        transcription_error_code: "provider_unavailable",
+      } },
+      transcript: { status: "absent" },
+      transcription: transcription({ maxSeconds: 7_200 }),
+    });
+    expect(html).toContain("Private cloud transcription failed while transcribing. Retrying uploads the recording again.");
+    expect(html).toContain("Try again");
+  });
   test("persisted incomplete transcript is retryable with explicit may-be-incomplete copy", () => {
     const html = render({
       metadata: { status: "ok", metadata: {
