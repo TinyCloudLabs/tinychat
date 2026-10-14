@@ -70,6 +70,8 @@ export const FINAL_COPY = {
   writerStalled: (action: string) => `The recording stopped responding. Try again, or use ${action} to save what was captured.`,
   sourceStillRunning: (action: string) => `The microphone may still be running. Try again, or use ${action} to save what was captured.`,
   sourceUnusable: (action: string) => `The microphone could not be stopped. Try again, or use ${action} to save what was captured.`,
+  snapshotUnavailable: (action: string) => `The recording isn't saved yet. Try again, or use ${action} to finish saving it.`,
+  snapshotEmpty: (action: string) => `Nothing was recorded. Try again to check, or use ${action} to stop.`,
   statusUnknown: "Could not read the microphone state.",
   inputChanged: "The microphone input changed. Waiting for capture to recover.",
   audioServicesReset:

@@ -36,7 +36,7 @@ export interface RecorderView {
     openSettings: boolean;
   };
   micDenied: boolean;
-  tapRingAction: "pause" | "resume" | null;
+  tapRingAction: "pause" | "resume" | "stop" | null;
   emphasis: "input" | "stop" | null;
 }
 
@@ -49,6 +49,7 @@ interface MicPresentation {
   openSettings?: boolean;
   stopEnabled?: boolean;
   emphasis?: RecorderView["emphasis"];
+  tapRingAction?: RecorderView["tapRingAction"];
 }
 
 const WARNING_WINDOW_MS = 10 * 60 * 1000;
@@ -178,6 +179,8 @@ function interruptedPresentation(
     case "unsafe_sessions_folder":
     case "source_still_running":
     case "source_unusable":
+    case "snapshot_unavailable":
+    case "snapshot_empty":
     case "status_unknown":
     case "session_exists":
       return unexpectedCombination("interrupted", reason, isDevelopmentOrTest);
@@ -279,6 +282,22 @@ function needsUserPresentation(
         stopEnabled: true,
         emphasis: "stop",
       };
+    case "snapshot_unavailable":
+      return {
+        ...retryPresentation(FINAL_COPY.snapshotUnavailable(device === "mac" ? "Done" : "Stop")),
+        ring: "still",
+        stopEnabled: true,
+        tapRingAction: "stop",
+        emphasis: "stop",
+      };
+    case "snapshot_empty":
+      return {
+        ...retryPresentation(FINAL_COPY.snapshotEmpty(device === "mac" ? "Done" : "Stop")),
+        ring: "still",
+        stopEnabled: true,
+        tapRingAction: "stop",
+        emphasis: "stop",
+      };
     case "status_unknown":
       return {
         ...retryPresentation(FINAL_COPY.statusUnknown),
@@ -374,6 +393,8 @@ function idlePresentation(
     case "unsafe_sessions_folder":
     case "source_still_running":
     case "source_unusable":
+    case "snapshot_unavailable":
+    case "snapshot_empty":
     case "status_unknown":
     case "session_exists":
       return unexpectedCombination("idle", reason, isDevelopmentOrTest);
@@ -423,6 +444,8 @@ function micPresentation(
         case "unsafe_sessions_folder":
         case "source_still_running":
         case "source_unusable":
+        case "snapshot_unavailable":
+        case "snapshot_empty":
         case "status_unknown":
         case "session_exists":
           return unexpectedCombination(
@@ -466,6 +489,8 @@ function micPresentation(
         case "unsafe_sessions_folder":
         case "source_still_running":
         case "source_unusable":
+        case "snapshot_unavailable":
+        case "snapshot_empty":
         case "status_unknown":
         case "session_exists":
           return unexpectedCombination("silenced", reason, isDevelopmentOrTest);
@@ -595,7 +620,7 @@ export function selectRecorderView(
     },
     controls,
     micDenied: permissionDenied,
-    tapRingAction: controls.resume ? "resume" : controls.pause ? "pause" : null,
+    tapRingAction: presentation.tapRingAction ?? (controls.resume ? "resume" : controls.pause ? "pause" : null),
     emphasis: presentation.emphasis ?? null,
   };
 }

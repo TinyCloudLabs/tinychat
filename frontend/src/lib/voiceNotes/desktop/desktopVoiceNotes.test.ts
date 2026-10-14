@@ -5,11 +5,11 @@ import { memoryLocks, openWebStore, type WebStoreOptions } from "../web/webStore
 import type { IdbEnv } from "../web/idb";
 import { createFileAudioBlobStore } from "./fileAudioBlobStore";
 import { openDesktopVoiceNotes, refreshDesktopWhisperCapability, type DesktopBridge } from "./desktopVoiceNotes";
-import { __setVoiceNotesForTests, VoiceNotes } from "../nativeVoiceNotes";
+import { selectRecorderView } from "@/capture/recorder/final/recorderView";
 import { createVoiceNoteRecorderController } from "@/capture/recorder/voiceNoteRecorderController";
 import type { TranscriptionEvent } from "@/lib/anarlog/transcription.gen";
 import { subscribeCaptureCapabilities } from "../captureEngine";
-import type { MissingAudioSpan } from "../nativeVoiceNotes";
+import { __setVoiceNotesForTests, VoiceNotes, type MissingAudioSpan } from "../nativeVoiceNotes";
 import { leaseWhisperServer } from "@/lib/whisperServerLease";
 const originalVoiceNotes = VoiceNotes;
 
@@ -31,9 +31,11 @@ class FakeBridge implements DesktopBridge {
   current: string | null = null;
   channels: 1 | 2 = 1;
   state: "idle" | "recording" | "paused" | "needs_user" = "idle";
-  reason: "writer_stalled" | "source_still_running" | "source_unusable" | null = null;
+  reason: "writer_stalled" | "source_still_running" | "source_unusable" | "snapshot_unavailable" | "snapshot_empty" | null = null;
   captureSourceUnconfirmed = false;
   unconfirmedStop = false;
+  snapshotFailureCount = 0;
+  emptySnapshotCount = 0;
   selectedId: string | null = null;
   selectedModel: string | null = null;
   downloadedModels = new Set<string>();
@@ -89,6 +91,22 @@ class FakeBridge implements DesktopBridge {
         this.state = "recording"; this.reason = null; result = this.status(); this.emit("exo://recorder-mic-state", result); break;
       case "recorder_stop_durable":
         if (this.stopDurableGate) await this.stopDurableGate;
+        if (this.snapshotFailureCount > 0) {
+          this.snapshotFailureCount--;
+          this.captureSourceUnconfirmed = true;
+          this.state = "needs_user";
+          this.reason = "snapshot_unavailable";
+          this.emit("exo://recorder-mic-state", this.status());
+          throw Object.assign(new Error("capture_snapshot_unavailable"), { code: "capture_snapshot_unavailable" });
+        }
+        if (this.emptySnapshotCount > 0) {
+          this.emptySnapshotCount--;
+          this.captureSourceUnconfirmed = true;
+          this.state = "needs_user";
+          this.reason = "snapshot_empty";
+          this.emit("exo://recorder-mic-state", this.status());
+          throw Object.assign(new Error("no_audio_captured"), { code: "no_audio_captured" });
+        }
         if (this.unconfirmedStop) this.captureSourceUnconfirmed = true;
         if (this.current) this.stopped.push({ id: this.current, startedAt: this.now,
           recordedMs: this.emptyFinal ? this.priorAudioMs : this.elapsed, pausedMs: this.paused,
@@ -191,6 +209,11 @@ async function waitFor(check: () => boolean): Promise<void> {
   while (Date.now() < deadline) { if (check()) return; await Bun.sleep(10); }
   throw new Error("Timed out waiting for fixture Whisper");
 }
+async function waitForAsync(check: () => Promise<boolean>): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) { if (await check()) return; await Bun.sleep(10); }
+  throw new Error("Timed out waiting for asynchronous fixture state");
+}
 
 const slow = (name: string, run: () => Promise<void>) => test(name, run, 30_000);
 
@@ -271,6 +294,91 @@ describe("desktop recorder adapter", () => {
       expect(recorder.getState()).toMatchObject({
         controlPending: null,
         mic: { state: "recording" },
+      });
+    } finally {
+      detach();
+      engine.dispose();
+      __setVoiceNotesForTests(originalVoiceNotes, { available: null });
+    }
+  });
+
+  test("snapshot failure stays unsaved and Try again retries native snapshot through the real controller and adapter", async () => {
+    const bridge = new FakeBridge();
+    bridge.unconfirmedStop = true;
+    bridge.snapshotFailureCount = 1;
+    const engine = await rig(bridge);
+    __setVoiceNotesForTests(engine.plugin, { available: true });
+    const recorder = createVoiceNoteRecorderController({
+      tcw: null,
+      available: true,
+      transcriber: { check: async () => {}, noteSaved: () => {} },
+      onDeviceReady: () => true,
+    });
+    const detach = recorder.attach();
+    try {
+      await waitUntilRecorderReady(recorder);
+      await recorder.record();
+      const id = (await engine.plugin.status()).id!;
+      const captured = Uint8Array.of(11, 22, 33, 44);
+      bridge.files.set(id, captured);
+      bridge.elapsed = 10_000;
+
+      await recorder.stop();
+      expect((await engine.plugin.listPending()).recordings).toHaveLength(0);
+      expect(recorder.getState().captureSourceUnconfirmed).toBe(true);
+      const failedView = selectRecorderView(recorder.getState(), {
+        nowMs: bridge.now, elapsedMs: recorder.getState().elapsedMs, inputName: null,
+        silencedSinceMs: null, device: "mac", isDevelopmentOrTest: true,
+      });
+      expect(failedView).toMatchObject({
+        statusLine: "The recording isn't saved yet. Try again, or use Done to finish saving it.",
+        tapRingAction: "stop",
+        controls: { stop: true, resume: false },
+      });
+      expect(bridge.calls).not.toContain("recorder_finish");
+
+      await recorder.stop();
+      await waitForAsync(async () => (await engine.plugin.listPending()).recordings[0]?.ledger?.localAudio?.state === "ready");
+      const note = (await engine.plugin.listPending()).recordings.find(({ id: noteId }) => noteId === id);
+      expect(note).toMatchObject({ id, sizeBytes: captured.length, ledger: { localAudio: { state: "ready" } } });
+      expect(bridge.calls.filter((command) => command === "recorder_stop_durable")).toHaveLength(2);
+      expect(bridge.calls.filter((command) => command === "recorder_finish")).toHaveLength(1);
+      expect(base64ToBytes((await engine.plugin.readAudioChunk({
+        id, offset: 0, length: captured.length,
+      })).base64)).toEqual(captured);
+    } finally {
+      detach();
+      engine.dispose();
+      __setVoiceNotesForTests(originalVoiceNotes, { available: null });
+    }
+  });
+
+  test("zero-frame unconfirmed capture reports Nothing was recorded and creates no note", async () => {
+    const bridge = new FakeBridge();
+    bridge.emptySnapshotCount = 1;
+    const engine = await rig(bridge);
+    __setVoiceNotesForTests(engine.plugin, { available: true });
+    const recorder = createVoiceNoteRecorderController({
+      tcw: null,
+      available: true,
+      transcriber: { check: async () => {}, noteSaved: () => {} },
+      onDeviceReady: () => true,
+    });
+    const detach = recorder.attach();
+    try {
+      await waitUntilRecorderReady(recorder);
+      await recorder.record();
+      bridge.elapsed = 10_000;
+      await recorder.stop();
+      expect((await engine.plugin.listPending()).recordings).toHaveLength(0);
+      expect(bridge.calls).not.toContain("recorder_finish");
+      expect(selectRecorderView(recorder.getState(), {
+        nowMs: bridge.now, elapsedMs: recorder.getState().elapsedMs, inputName: null,
+        silencedSinceMs: null, device: "mac", isDevelopmentOrTest: true,
+      })).toMatchObject({
+        statusLine: "Nothing was recorded. Try again to check, or use Done to stop.",
+        tapRingAction: "stop",
+        controls: { stop: true, resume: false },
       });
     } finally {
       detach();

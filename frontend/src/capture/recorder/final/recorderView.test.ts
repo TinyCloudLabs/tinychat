@@ -237,6 +237,19 @@ describe("selectRecorderView: needs_user reason decisions", () => {
       controls: { resume: true },
     });
   });
+  test.each([
+    ["snapshot_unavailable", FINAL_COPY.snapshotUnavailable("Done")],
+    ["snapshot_empty", FINAL_COPY.snapshotEmpty("Done")],
+  ] as const)("needs_user/%s offers snapshot retry and Stop without Resume", (reason, statusLine) => {
+    expect(recordingView("needs_user", reason, { device: "mac" })).toMatchObject({
+      ring: "still",
+      statusLine,
+      tapRingAction: "stop",
+      emphasis: "stop",
+      controls: { stop: true, resume: false },
+    });
+  });
+
 });
 
 describe("selectRecorderView: idle reason decisions", () => {

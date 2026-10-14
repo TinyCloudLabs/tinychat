@@ -25,7 +25,7 @@ export type MicStateReason = "os_silenced" | "no_signal" | "input_muted" | "call
   | "route_change" | "media_services_reset" | "read_error" | "stalled" | "app_suspended" | "writer_stalled"
   | "resume_blocked" | "resume_not_allowed" | "mic_unavailable" | "pause_timeout"
   | "max_duration" | "disk_full" | "write_failed" | "permission_revoked" | "source_still_running" | "source_unusable"
-  | "status_unknown" | "unsafe_sessions_folder" | "session_exists" | null;
+  | "snapshot_unavailable" | "snapshot_empty" | "status_unknown" | "unsafe_sessions_folder" | "session_exists" | null;
 
 export type TranscriberId = "off" | "on-device" | "private-cloud" | "assemblyai";
 export type CaptureSource = "in_app" | "quick_action" | "app_shortcut" | "intent" | "control" | "tile" | "widget" | "notification";

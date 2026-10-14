@@ -256,6 +256,19 @@ mod tests {
     }
 
     #[test]
+    fn zero_written_frames_produce_no_snapshot() {
+        let files = Fixture::new();
+        let spec = WavSpec { channels: 1, sample_rate: 16_000, bits_per_sample: 32, sample_format: SampleFormat::Float };
+        let mut writer = WavWriter::create(files.path(0), spec).unwrap();
+        writer.flush().unwrap();
+        let mut input = File::open(files.path(0)).unwrap();
+        let mut output = File::create(files.path(1)).unwrap();
+        assert_eq!(snapshot(&mut input, &mut output).unwrap(), None);
+        assert_eq!(std::fs::metadata(files.path(1)).unwrap().len(), 0);
+        writer.finalize().unwrap();
+    }
+
+    #[test]
     fn ignores_trailing_partial_frame() {
         let files = Fixture::new();
         let spec = WavSpec { channels: 2, sample_rate: 16_000, bits_per_sample: 32, sample_format: SampleFormat::Float };

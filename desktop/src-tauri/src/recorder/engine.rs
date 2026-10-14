@@ -40,6 +40,7 @@ pub struct EngineState {
     capture_source_unconfirmed: bool,
     active_input_devices: Option<Vec<u32>>,
     unconfirmed_input_devices: Option<Vec<u32>>,
+    snapshot_issue: Option<&'static str>,
 }
 
 #[derive(Serialize, Clone, Copy)]
@@ -312,7 +313,11 @@ mod core_audio_inputs {
         if status != 0 {
             return None;
         }
-        resolve_named_device_ids(name, &devices, device_name)
+        let resolved = devices
+            .into_iter()
+            .map(|device_id| (device_id, device_name(device_id)))
+            .collect::<Vec<_>>();
+        recorder_state::resolve_named_devices(name, &resolved)
     }
 
     pub fn running_somewhere(device_id: u32) -> Option<bool> {
@@ -333,23 +338,6 @@ mod core_audio_inputs {
     }
 }
 
-fn resolve_named_device_ids(
-    selected_name: &str,
-    device_ids: &[u32],
-    mut resolve_name: impl FnMut(u32) -> Option<String>,
-) -> Option<Vec<u32>> {
-    let mut selected = None;
-    for device_id in device_ids {
-        let name = resolve_name(*device_id)?;
-        if name == selected_name {
-            if selected.is_some() {
-                return None;
-            }
-            selected = Some(*device_id);
-        }
-    }
-    selected.map(|device_id| vec![device_id])
-}
 
 #[cfg(target_os = "macos")]
 fn capture_input_device_ids(name: &str) -> Option<Vec<u32>> {
@@ -459,7 +447,7 @@ impl EngineState {
         let status = self.recorder.status(mono_ms());
         CaptureStatus {
             state: status.state.as_str(),
-            reason: status.reason.or(self.last_stop_reason),
+            reason: self.snapshot_issue.or(status.reason).or(self.last_stop_reason),
             id: self.id.clone(),
             channels: self.layout.channels(),
             started_at: self.started_at,
@@ -655,7 +643,7 @@ pub async fn recorder_start(
             .unwrap_or(MAX_DURATION_MS)
             .clamp(MIN_DURATION_MS, MAX_DURATION_MS);
         state.auto_stop_requested = false;
-        state.last_stop_reason = None;
+        state.snapshot_issue = None;
         cleanup?;
         state.status()
     };
@@ -762,12 +750,23 @@ fn retain_stopped_source(session: &std::path::Path) -> Result<bool, String> {
 fn snapshot_live_source(session: &std::path::Path) -> Result<bool, String> {
     let retained = session.join("audio.exo-source.wav");
     if retained.exists() {
-        return Ok(hound::WavReader::open(&retained)
-            .is_ok_and(|reader| reader.duration() > 0));
+        if hound::WavReader::open(&retained).is_ok_and(|reader| reader.duration() > 0) {
+            std::fs::File::open(&retained)
+                .and_then(|file| file.sync_all())
+                .map_err(|error| error.to_string())?;
+            std::fs::File::open(session)
+                .and_then(|directory| directory.sync_all())
+                .map_err(|error| error.to_string())?;
+            return Ok(true);
+        }
+        std::fs::remove_file(&retained).map_err(|error| error.to_string())?;
     }
     let source = session.join("audio.wav");
     let mut input = std::fs::File::open(&source).map_err(|error| error.to_string())?;
     let temp = session.join("audio.exo-source.wav.tmp");
+    if temp.exists() {
+        std::fs::remove_file(&temp).map_err(|error| error.to_string())?;
+    }
     let result = (|| {
         let mut output = std::fs::OpenOptions::new()
             .write(true)
@@ -1288,10 +1287,12 @@ pub async fn recorder_stop_durable(app: tauri::AppHandle) -> Result<CaptureStatu
         };
         match source_result {
             Ok(()) => {
+                app.state::<Engine>().0.lock().snapshot_issue = None;
                 result = Some((false, false));
                 break;
             }
             Err(DurableError::Empty) => {
+                app.state::<Engine>().0.lock().snapshot_issue = None;
                 result = Some((true, false));
                 break;
             }
@@ -1325,7 +1326,10 @@ pub async fn recorder_stop_durable(app: tauri::AppHandle) -> Result<CaptureStatu
                                     }
                                 }
                             }
-                            _ => state.unconfirmed_input_devices = None,
+                            None if !state.capture_source_unconfirmed => {
+                                state.unconfirmed_input_devices = None;
+                            }
+                            None => {}
                         }
                         state.capture_source_unconfirmed = true;
                         debug_assert!(state.recorder.can_finish_unconfirmed());
@@ -1344,25 +1348,43 @@ pub async fn recorder_stop_durable(app: tauri::AppHandle) -> Result<CaptureStatu
                     "Listener session finalization was not confirmed"
                 );
                 if final_attempt {
-                    if let Ok(root) = files::sessions_root(&app) {
-                        let session = root.join(&segment_id);
-                        match run_source_step(move || snapshot_live_source(&session)).await {
-                            Ok(true) => {}
-                            Ok(false) => tracing::warn!(
+                    let snapshot_result = match files::sessions_root(&app) {
+                        Ok(root) => {
+                            let session = root.join(&segment_id);
+                            run_source_step(move || snapshot_live_source(&session)).await
+                        }
+                        Err(error) => Err(error),
+                    };
+                    match snapshot_result {
+                        Ok(true) => {
+                            app.state::<Engine>().0.lock().snapshot_issue = None;
+                            result = Some((false, true));
+                            break;
+                        }
+                        Ok(false) => {
+                            tracing::warn!(
                                 target: "exo_dev::recorder",
                                 source_id = %id,
-                                "No flushed audio was available for the unconfirmed Stop snapshot"
-                            ),
-                            Err(error) => tracing::warn!(
+                                "No complete audio frames were available for the unconfirmed Stop snapshot"
+                            );
+                            app.state::<Engine>().0.lock().snapshot_issue = Some("snapshot_empty");
+                            clear_busy(&app);
+                            emit_status(&app);
+                            return Err("no_audio_captured".into());
+                        }
+                        Err(error) => {
+                            tracing::warn!(
                                 target: "exo_dev::recorder",
                                 source_id = %id,
                                 %error,
                                 "Could not seal the unconfirmed Stop snapshot"
-                            ),
+                            );
+                            app.state::<Engine>().0.lock().snapshot_issue = Some("snapshot_unavailable");
+                            clear_busy(&app);
+                            emit_status(&app);
+                            return Err("capture_snapshot_unavailable".into());
                         }
                     }
-                    result = Some((false, true));
-                    break;
                 }
             }
         }
@@ -1510,7 +1532,7 @@ pub async fn recorder_finish(app: tauri::AppHandle, id: String) -> Result<u64, S
 mod durable_stop_tests {
     use super::{
         capture_source_release_observed, combine_device_running_states, empty_segment_span,
-        recorded_after_segment, resolve_named_device_ids, retain_stopped_source, source_mp3,
+        recorded_after_segment, retain_stopped_source, source_mp3,
     };
     use std::io::Write;
     use std::time::{Duration, Instant};
@@ -1531,30 +1553,6 @@ mod durable_stop_tests {
         ));
     }
 
-    #[test]
-    fn selected_input_mapping_is_unknown_if_any_device_name_lookup_fails() {
-        assert_eq!(
-            resolve_named_device_ids("USB Mic", &[1, 2], |device_id| match device_id {
-                1 => Some("USB Mic".to_owned()),
-                _ => None,
-            }),
-            None,
-        );
-    }
-
-    #[test]
-    fn selected_input_mapping_is_unknown_when_device_names_are_ambiguous() {
-        assert_eq!(
-            resolve_named_device_ids("USB Mic", &[1, 2], |_| Some("USB Mic".to_owned())),
-            None,
-        );
-        assert_eq!(
-            resolve_named_device_ids("USB Mic", &[1, 2], |device_id| {
-                Some(if device_id == 1 { "USB Mic" } else { "Internal Mic" }.to_owned())
-            }),
-            Some(vec![1]),
-        );
-    }
     fn sparse_wav(path: &std::path::Path, minutes: u64, finalized: bool) {
         let data_bytes = minutes * 60 * 48_000 * 8;
         let mut file = std::fs::File::create(path).unwrap();

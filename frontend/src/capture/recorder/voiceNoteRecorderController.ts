@@ -371,7 +371,8 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         void pendingStore.refresh();
       } else if (status.id === state.recordingId) {
         acceptNativeOptions(status);
-        send({ type: "STOP_FAILED", status: "active", error, id,
+        const statusError = status.reason === "snapshot_unavailable" || status.reason === "snapshot_empty" ? null : error;
+        send({ type: "STOP_FAILED", status: "active", error: statusError, id,
           mic: micFromStatus(status), audioMs: status.audioMs, elapsedMs: status.elapsedMs, elapsedAt: Date.now() });
       } else {
         send({ type: "STOP_FAILED", status: "idle", error: error ?? `Another recording is active on this ${recorderDevice()}.`, id });
@@ -1017,7 +1018,8 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         if (code === "finalization_timed_out") {
           send({ type: "CAPTURE_ISSUE", id: state.recordingId, issue: { kind: "finalization_timed_out" } });
         }
-        await reconcileFailedStop(code === "not_recording" ? null
+        const handledByNativeStatus = code === "not_recording" || code === "capture_snapshot_unavailable" || code === "no_audio_captured";
+        await reconcileFailedStop(handledByNativeStatus ? null
           : code === "finalization_timed_out" ? FINALIZATION_PENDING
           : `Could not stop: ${messageOf(caught)}`, code === "finalization_timed_out" ? state.recordingId : null);
         return;

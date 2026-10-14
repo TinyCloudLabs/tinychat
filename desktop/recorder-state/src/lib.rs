@@ -14,6 +14,22 @@
 
 /// Maximum number of durable Stop attempts while listener-session finalization remains unconfirmed.
 pub const DURABLE_STOP_ATTEMPT_BUDGET: u8 = 3;
+/// Resolve the selected input name to one stable device id.
+///
+/// Missing name lookups and ambiguous matches stay unknown; returning no match
+/// is also unknown because the selected device may not have been enumerated.
+pub fn resolve_named_devices(selected_name: &str, devices: &[(u32, Option<String>)]) -> Option<Vec<u32>> {
+    let mut selected = None;
+    for (device_id, name) in devices {
+        let name = name.as_deref()?;
+        if name == selected_name {
+            if selected.replace(*device_id).is_some() {
+                return None;
+            }
+        }
+    }
+    selected.map(|device_id| vec![device_id])
+}
 
 /// Why the listener session did not appear finalized before the deadline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -361,6 +377,30 @@ impl Recorder {
 mod tests {
     use super::*;
 
+
+    #[test]
+    fn selected_device_mapping_fails_closed_on_partial_name_resolution() {
+        assert_eq!(
+            resolve_named_devices("USB Mic", &[(1, Some("USB Mic".into())), (2, None)]),
+            None,
+        );
+    }
+
+    #[test]
+    fn selected_device_mapping_fails_closed_on_duplicate_names() {
+        assert_eq!(
+            resolve_named_devices("USB Mic", &[(1, Some("USB Mic".into())), (2, Some("USB Mic".into()))]),
+            None,
+        );
+    }
+
+    #[test]
+    fn selected_device_mapping_returns_the_unique_matching_id() {
+        assert_eq!(
+            resolve_named_devices("USB Mic", &[(1, Some("Internal Mic".into())), (2, Some("USB Mic".into()))]),
+            Some(vec![2]),
+        );
+    }
     fn recording_at(now_ms: u64) -> Recorder {
         let mut recorder = Recorder::new();
         recorder.start_outcome(now_ms, Start::Opened).unwrap();

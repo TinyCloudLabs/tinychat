@@ -291,7 +291,7 @@ export function DesktopRecorder({
             glyph={
               ringKind === "pause"
                 ? "pause"
-                : ringKind === "resume"
+                : ringKind === "resume" || ringKind === "stop"
                   ? "play"
                   : null
             }

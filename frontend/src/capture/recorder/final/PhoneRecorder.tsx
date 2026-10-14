@@ -600,7 +600,7 @@ export function PhoneRecorder({
     ringKind === null
       ? null
       : {
-          label: ringKind === "pause" ? "Pause recording" : "Resume recording",
+          label: ringKind === "pause" ? "Pause recording" : ringKind === "stop" ? "Try again" : "Resume recording",
           disabled: view.tapRingAction === null,
           onPress: () => {
             hapticLight();
@@ -776,7 +776,7 @@ export function PhoneRecorder({
             glyph={
               ringKind === "pause"
                 ? "pause"
-                : ringKind === "resume"
+                : ringKind === "resume" || ringKind === "stop"
                   ? "play"
                   : null
             }
