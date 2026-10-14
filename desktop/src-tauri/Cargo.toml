@@ -189,6 +189,7 @@ transcription = [
     "dep:parking_lot",
 ]
 ipc-selftest = ["transcription"]
+recorder-failpoints = []
 
 [dev-dependencies]
 ractor = "0.15"

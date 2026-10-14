@@ -208,15 +208,24 @@ describe("selectRecorderView: needs_user reason decisions", () => {
   });
 
   test.each([
-    ["writer_stalled", FINAL_COPY.writerStalled],
-    ["source_still_running", FINAL_COPY.sourceStillRunning],
-    ["source_unusable", FINAL_COPY.sourceUnusable],
-  ] as const)("needs_user/%s offers Stop again", (reason, statusLine) => {
+    ["writer_stalled", FINAL_COPY.writerStalled("Stop")],
+    ["source_still_running", FINAL_COPY.sourceStillRunning("Stop")],
+    ["source_unusable", FINAL_COPY.sourceUnusable("Stop")],
+  ] as const)("needs_user/%s offers retry and Stop", (reason, statusLine) => {
     expect(recordingView("needs_user", reason)).toMatchObject({
-      ring: "still",
+      ring: "still-resumable",
       statusLine,
-      tapRingAction: null,
-      controls: { stop: true, resume: false },
+      tapRingAction: "resume",
+      emphasis: "stop",
+      controls: { stop: true, resume: true },
+    });
+  });
+
+  test("desktop stalled recovery names the Done action", () => {
+    expect(recordingView("needs_user", "writer_stalled", { device: "mac" })).toMatchObject({
+      statusLine: FINAL_COPY.writerStalled("Done"),
+      emphasis: "stop",
+      controls: { stop: true, resume: true },
     });
   });
 

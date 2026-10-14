@@ -28,7 +28,10 @@ class FakeBridge implements DesktopBridge {
   paused = 0;
   current: string | null = null;
   channels: 1 | 2 = 1;
-  state: "idle" | "recording" | "paused" = "idle";
+  state: "idle" | "recording" | "paused" | "needs_user" = "idle";
+  reason: "writer_stalled" | "source_still_running" | "source_unusable" | null = null;
+  captureSourceUnconfirmed = false;
+  unconfirmedStop = false;
   selectedId: string | null = null;
   selectedModel: string | null = null;
   downloadedModels = new Set<string>();
@@ -44,10 +47,11 @@ class FakeBridge implements DesktopBridge {
     for (const callback of this.listeners.get(event) ?? []) callback(payload as never);
   }
   status() {
-    return { state: this.state, reason: this.state === "paused" ? "user" : null, id: this.current,
+    return { state: this.state, reason: this.reason ?? (this.state === "paused" ? "user" : null), id: this.current,
       startedAt: this.current ? this.now : null, elapsedMs: this.elapsed, audioMs: this.elapsed, channels: this.channels,
       pausedMs: this.paused, maxDurationMs: 10_000, intent: this.state === "idle" ? "stopped" : this.state,
-      availability: "available", at: this.now, elapsedAt: this.now, spans: this.spans };
+      availability: "available", at: this.now, elapsedAt: this.now, spans: this.spans,
+      captureSourceUnconfirmed: this.captureSourceUnconfirmed };
   }
   async listen<T>(event: string, callback: (payload: T) => void): Promise<() => void> {
     const set = this.listeners.get(event) ?? new Set<Callback>();
@@ -71,21 +75,30 @@ class FakeBridge implements DesktopBridge {
       case "recorder_failed_retry": this.failed = this.failed.filter((item) => item.id !== id); result = []; break;
       case "recorder_failed_delete": this.failed = this.failed.filter((item) => item.id !== id); result = null; break;
       case "recorder_start": if (this.recover) throw new Error("recovery_pending");
-        this.current = id; this.state = "recording"; result = this.status(); this.emit("exo://recorder-mic-state", result); break;
-      case "recorder_pause": this.state = "paused"; result = this.status(); this.emit("exo://recorder-mic-state", result); break;
-      case "recorder_resume": this.state = "recording"; result = this.status(); this.emit("exo://recorder-mic-state", result); break;
+        this.current = id; this.state = "recording"; this.reason = null; result = this.status(); this.emit("exo://recorder-mic-state", result); break;
+      case "recorder_pause":
+        if (this.failPause) {
+          this.state = "needs_user";
+          this.reason = "writer_stalled";
+          throw Object.assign(new Error("capture stop timed out"), { code: "capture_stop_timeout" });
+        }
+        this.state = "paused"; this.reason = null; result = this.status(); this.emit("exo://recorder-mic-state", result); break;
+      case "recorder_resume": this.state = "recording"; this.reason = null; result = this.status(); this.emit("exo://recorder-mic-state", result); break;
       case "recorder_stop_durable":
         if (this.stopDurableGate) await this.stopDurableGate;
+        if (this.unconfirmedStop) this.captureSourceUnconfirmed = true;
         if (this.current) this.stopped.push({ id: this.current, startedAt: this.now,
           recordedMs: this.emptyFinal ? this.priorAudioMs : this.elapsed, pausedMs: this.paused,
           maxDurationMs: 3 * 60 * 60_000 });
         // falls through
       case "recorder_stop": if (this.stopError) throw this.stopError;
-        result = { ...this.status(), state: "idle", intent: "stopped" };
+        result = { ...this.status(), state: "idle",
+          intent: this.unconfirmedStop ? "recording" : "stopped",
+          reason: null };
         if (command === "recorder_stop_durable" && this.emptyFinal) {
           result = { ...(result as object), audioMs: this.priorAudioMs, elapsedMs: this.priorAudioMs };
         }
-        this.state = "idle"; this.current = null; this.elapsed = 0; this.paused = 0; this.channels = 1;
+        this.state = "idle"; this.reason = null; this.current = null; this.elapsed = 0; this.paused = 0; this.channels = 1;
         this.emit("exo://recorder-mic-state", this.status()); break;
       case "recorder_finish": if (this.finishGate) await this.finishGate;
         if (this.finishError) throw this.finishError;
@@ -393,6 +406,32 @@ describe("desktop recorder adapter", () => {
     await engine.plugin.uploadAudio!({ id: note.id, uploadId: "fixture", url: "https://example.test",
       capability: "fixture", contentType: "audio/mpeg", contentLength: 4, correlationId: "fixture" });
     expect(bridge.calls).toContain("ptx_upload_audio");
+    engine.dispose();
+  });
+
+  test("desktop adapter retries Resume after a stalled Pause and durable Stop saves after a second stall", async () => {
+    const bridge = new FakeBridge();
+    const engine = await rig(bridge);
+    const started = await engine.plugin.start();
+    bridge.files.set(started.id, Uint8Array.of(1, 2, 3));
+    bridge.failPause = true;
+    await expect(engine.plugin.pause()).rejects.toMatchObject({ code: "capture_stop_timeout" });
+    expect((await engine.plugin.status()).reason).toBe("writer_stalled");
+
+    await engine.plugin.resume();
+    expect(bridge.calls.filter((command) => command === "recorder_resume")).toHaveLength(1);
+    expect((await engine.plugin.status()).state).toBe("recording");
+
+    bridge.failPause = true;
+    await expect(engine.plugin.pause()).rejects.toMatchObject({ code: "capture_stop_timeout" });
+    bridge.unconfirmedStop = true;
+    bridge.finishGate = new Promise<void>(() => {});
+    const recording = await engine.plugin.stop();
+    expect(bridge.calls).toContain("recorder_stop_durable");
+    expect(recording.id).toBe(started.id);
+    expect(recording.ledger?.localAudio?.state).toBe("preparing");
+    expect((await engine.plugin.listPending()).recordings.map(({ id }) => id)).toContain(started.id);
+    expect((await engine.plugin.status()).captureSourceUnconfirmed).toBe(true);
     engine.dispose();
   });
 

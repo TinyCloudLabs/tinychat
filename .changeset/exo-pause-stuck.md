@@ -3,4 +3,4 @@
 "exo-desktop": patch
 ---
 
-Exo desktop: Pause only reports paused once capture has stopped, and a stalled pause or stop recovers instead of sticking.
+Exo desktop: stalled capture controls recover, and durable Stop records the outcome while warning when microphone release is unconfirmed.

@@ -3,21 +3,26 @@
 //! Pure: no I/O and no clock. Callers pass a monotonic `now_ms` and report the
 //! outcome of each native call; the engine performs the native calls.
 //!
-//! Invariant: `Paused` is reported only after the native source is confirmed
-//! closed. An unconfirmed stop leaves the segment stalled: it reports
-//! `needs_user`, keeps counting elapsed time (the source may still capture), and
-//! the next Pause, Resume, or Stop retries the native stop.
+//! Invariant: `Paused` is reported only after the listener session is no longer
+//! active or finalizing. That is session-finalization evidence, not confirmation
+//! that macOS released the input device. An unfinalized stop leaves the segment
+//! stalled and retryable; durable Stop can commit after its bounded budget with
+//! an explicit `capture_source_unconfirmed` outcome.
+
 
 #![forbid(unsafe_code)]
 
-/// Why a native stop could not be confirmed.
+/// Maximum number of durable Stop attempts while listener-session finalization remains unconfirmed.
+pub const DURABLE_STOP_ATTEMPT_BUDGET: u8 = 3;
+
+/// Why the listener session did not appear finalized before the deadline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stall {
-    /// The writer did not finish finalizing before the deadline.
+    /// Listener finalization did not complete before the deadline.
     WriterStalled,
-    /// The capture session still reports active after stop was requested.
+    /// The capture session still reports active after stop was requested; this does not prove device release.
     SourceStillRunning,
-    /// The source closed, but its audio could not be kept. Pause, Resume, or Stop retries it.
+    /// No usable audio snapshot was available. Pause, Resume, or Stop retries it.
     SourceUnusable,
 }
 
@@ -51,14 +56,17 @@ pub enum Step {
     Done,
 }
 
+/// Stop result the engine should use after exhausting the durable Stop budget.
+pub const UNCONFIRMED_STOP_REASON: &str = "capture_source_unconfirmed";
+
 /// Outcome of a native stop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stop {
-    /// The native stop finished and the source is confirmed closed.
-    Confirmed,
-    /// The native stop finished, but the segment held no usable audio. Closed; no audio time counted.
+    /// The listener session is no longer active or finalizing.
+    SessionFinalized,
+    /// The session finalized without usable audio; no audio time is counted.
     Empty,
-    /// The source could not be confirmed closed.
+    /// The listener session could not be observed as finalized.
     Stalled(Stall),
 }
 
@@ -129,21 +137,23 @@ pub struct Status {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Segment {
-    /// No native source. The user paused at `paused_since_ms`.
+    /// No listener session is open; this does not prove the input device was released.
     Closed { paused_since_ms: u64 },
-    /// The native source has been capturing since `since_ms`.
+    /// A listener session has been open since `since_ms`.
     Open { since_ms: u64 },
-    /// The native source is not confirmed closed. Time since `since_ms` still counts.
+    /// Listener-session finalization is unconfirmed. Time since `since_ms` still counts.
     Stalled { since_ms: u64, stall: Stall },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Session {
     segment: Segment,
-    /// Audio time from segments whose stop was confirmed.
+    /// Audio time from completed segments, including a budgeted unconfirmed stop.
     recorded_ms: u64,
     paused_ms: u64,
+    unfinalized_stop_attempts: u8,
 }
+
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Recorder {
@@ -174,9 +184,8 @@ impl Recorder {
         }
     }
 
-    /// Records the outcome of a native stop. `now_ms` is when the stop was requested, so
-    /// time spent waiting for finalization is not counted as audio. A confirmed or empty
-    /// stop closes the segment; an unconfirmed one leaves it stalled and returns the stall.
+    /// Records a native stop outcome. Time waiting for session finalization is
+    /// not counted as audio; an unfinalized session stays stalled and retryable.
     pub fn stop_outcome(&mut self, now_ms: u64, outcome: Stop) -> Result<(), Error> {
         let Some(session) = self.session.as_mut() else {
             return Err(Error::NotRecording);
@@ -186,19 +195,58 @@ impl Recorder {
             Segment::Closed { .. } => return Err(Error::AlreadyPaused),
         };
         match outcome {
-            Stop::Confirmed | Stop::Empty => {
-                if outcome == Stop::Confirmed {
+            Stop::SessionFinalized | Stop::Empty => {
+                if outcome == Stop::SessionFinalized {
                     session.recorded_ms += now_ms.saturating_sub(since_ms);
                 }
                 session.segment = Segment::Closed { paused_since_ms: now_ms };
+                session.unfinalized_stop_attempts = 0;
                 self.blocker = None;
                 Ok(())
             }
             Stop::Stalled(stall) => {
+                session.unfinalized_stop_attempts = session.unfinalized_stop_attempts.saturating_add(1);
                 session.segment = Segment::Stalled { since_ms, stall };
                 Err(Error::Stalled(stall))
             }
         }
+    }
+
+    /// Number of consecutive native stop attempts without observed session finalization.
+    pub fn unfinalized_stop_attempts(&self) -> u8 {
+        self.session.map_or(0, |session| session.unfinalized_stop_attempts)
+    }
+
+    /// Whether durable Stop may commit the captured source without release confirmation.
+    pub fn can_finish_unconfirmed(&self) -> bool {
+        matches!(
+            self.session,
+            Some(Session {
+                segment: Segment::Stalled { .. },
+                unfinalized_stop_attempts,
+                ..
+            }) if unfinalized_stop_attempts >= DURABLE_STOP_ATTEMPT_BUDGET
+        )
+    }
+
+
+    /// Finish after listener-session finalization remains unconfirmed through
+    /// the durable Stop budget. Elapsed time is retained with an uncertainty reason.
+    pub fn finish_unconfirmed(&mut self, now_ms: u64) -> Result<u64, Error> {
+        if !self.can_finish_unconfirmed() {
+            return Err(Error::StillOpen);
+        }
+        let Some(session) = self.session.as_mut() else {
+            return Err(Error::NotRecording);
+        };
+        let since_ms = match session.segment {
+            Segment::Stalled { since_ms, .. } => since_ms,
+            _ => return Err(Error::StillOpen),
+        };
+        session.recorded_ms += now_ms.saturating_sub(since_ms);
+        session.segment = Segment::Closed { paused_since_ms: now_ms };
+        self.blocker = Some(UNCONFIRMED_STOP_REASON);
+        Ok(session.recorded_ms)
     }
 
     /// Records the outcome of a native start: a new recording when none exists, or
@@ -212,8 +260,10 @@ impl Recorder {
                         segment: Segment::Open { since_ms: now_ms },
                         recorded_ms: 0,
                         paused_ms: 0,
+                        unfinalized_stop_attempts: 0,
                     });
                     self.blocker = None;
+
                     Ok(())
                 }
                 Start::Failed(reason) => {
@@ -237,8 +287,8 @@ impl Recorder {
         }
     }
 
-    /// Ends the recording once its source is confirmed closed. Returns the total
-    /// audio time in ms.
+    /// Ends the recording after the listener session is finalized. Returns total
+    /// recorded time; this does not assert that macOS released the input device.
     pub fn finish(&mut self) -> Result<u64, Error> {
         match self.session {
             None => Err(Error::NotRecording),
@@ -318,10 +368,10 @@ mod tests {
     }
 
     #[test]
-    fn paused_only_after_confirmed_stop_and_paused_time_is_excluded_from_elapsed() {
+    fn paused_only_after_session_finalization_and_paused_time_is_excluded_from_elapsed() {
         let mut recorder = recording_at(0);
         assert_eq!(recorder.request(Request::Pause), Ok(Step::StopSource));
-        recorder.stop_outcome(1_000, Stop::Confirmed).unwrap();
+        recorder.stop_outcome(1_000, Stop::SessionFinalized).unwrap();
 
         let paused = recorder.status(1_000);
         assert_eq!((paused.state, paused.elapsed_ms, paused.paused_ms), (State::Paused, 1_000, 0));
@@ -345,20 +395,38 @@ mod tests {
     }
 
     #[test]
-    fn never_confirmed_source_stays_retryable_and_stop_still_finishes_once_confirmed() {
+    fn never_stopping_source_finishes_unconfirmed_after_final_stop_budget_attempt() {
         let mut recorder = recording_at(0);
-        for attempt in 1..=3u64 {
-            assert_eq!(recorder.request(Request::Pause), Ok(Step::StopSource));
-            let outcome = recorder.stop_outcome(attempt * 1_000, Stop::Stalled(Stall::SourceStillRunning));
-            assert_eq!(outcome, Err(Error::Stalled(Stall::SourceStillRunning)));
-            assert_ne!(recorder.status(attempt * 1_000).state, State::Paused);
-        }
-        assert_eq!(recorder.request(Request::Stop), Ok(Step::StopSource));
-        assert_eq!(recorder.finish(), Err(Error::StillOpen));
 
-        recorder.stop_outcome(4_000, Stop::Confirmed).unwrap();
-        assert_eq!(recorder.finish(), Ok(4_000));
-        assert_eq!(recorder.status(4_000).state, State::Idle);
+        for attempt in 1..=DURABLE_STOP_ATTEMPT_BUDGET as u64 {
+            assert_eq!(recorder.request(Request::Stop), Ok(Step::StopSource));
+            assert_eq!(
+                recorder.stop_outcome(
+                    attempt * 1_000,
+                    Stop::Stalled(Stall::SourceStillRunning)
+                ),
+                Err(Error::Stalled(Stall::SourceStillRunning))
+            );
+            if attempt < DURABLE_STOP_ATTEMPT_BUDGET as u64 {
+                assert!(!recorder.can_finish_unconfirmed());
+                assert_ne!(recorder.status(attempt * 1_000).state, State::Paused);
+            }
+        }
+        assert_eq!(
+            recorder.unfinalized_stop_attempts(),
+            DURABLE_STOP_ATTEMPT_BUDGET
+        );
+        assert!(recorder.can_finish_unconfirmed());
+        assert_eq!(
+            recorder.status(3_000).reason,
+            Some("source_still_running")
+        );
+        assert_eq!(recorder.finish_unconfirmed(3_000), Ok(3_000));
+        assert_eq!(
+            recorder.status(3_000).reason,
+            Some(UNCONFIRMED_STOP_REASON)
+        );
+        assert_eq!(recorder.finish(), Ok(3_000));
     }
 
     #[test]
@@ -370,7 +438,7 @@ mod tests {
 
         assert_eq!(recorder.request(Request::Resume), Ok(Step::StopSource));
         assert_eq!(recorder.request(Request::Stop), Ok(Step::StopSource));
-        recorder.stop_outcome(2_000, Stop::Confirmed).unwrap();
+        recorder.stop_outcome(2_000, Stop::SessionFinalized).unwrap();
         assert_eq!(recorder.finish(), Ok(2_000));
     }
 
@@ -380,7 +448,7 @@ mod tests {
         let _ = recorder.stop_outcome(1_000, Stop::Stalled(Stall::WriterStalled));
 
         assert_eq!(recorder.request(Request::Resume), Ok(Step::StopSource));
-        recorder.stop_outcome(1_500, Stop::Confirmed).unwrap();
+        recorder.stop_outcome(1_500, Stop::SessionFinalized).unwrap();
         assert_eq!(recorder.request(Request::Resume), Ok(Step::StartSource));
         recorder.start_outcome(2_000, Start::Opened).unwrap();
 
@@ -395,7 +463,7 @@ mod tests {
         let resume = recorder.request(Request::Resume);
         assert_eq!(resume.map_err(Error::code), Err("already_recording"));
 
-        recorder.stop_outcome(1_000, Stop::Confirmed).unwrap();
+        recorder.stop_outcome(1_000, Stop::SessionFinalized).unwrap();
         let pause_again = recorder.request(Request::Pause);
         assert_eq!(pause_again.map_err(Error::code), Err("already_paused"));
 
@@ -407,7 +475,7 @@ mod tests {
     #[test]
     fn failed_resume_stays_paused_with_reason_and_next_resume_retries_start() {
         let mut recorder = recording_at(0);
-        recorder.stop_outcome(1_000, Stop::Confirmed).unwrap();
+        recorder.stop_outcome(1_000, Stop::SessionFinalized).unwrap();
 
         assert_eq!(
             recorder.start_outcome(2_000, Start::Failed("mic_unavailable")),
@@ -440,7 +508,7 @@ mod tests {
     #[test]
     fn stop_from_paused_needs_no_native_call_and_returns_total_audio() {
         let mut recorder = recording_at(0);
-        recorder.stop_outcome(1_000, Stop::Confirmed).unwrap();
+        recorder.stop_outcome(1_000, Stop::SessionFinalized).unwrap();
 
         assert_eq!(recorder.request(Request::Stop), Ok(Step::Done));
         assert_eq!(recorder.finish(), Ok(1_000));
@@ -466,7 +534,7 @@ mod tests {
         assert_eq!(recorder.segment_ms(1_500), 1_500);
 
         assert_eq!(recorder.request(Request::Stop), Ok(Step::StopSource));
-        recorder.stop_outcome(2_000, Stop::Confirmed).unwrap();
+        recorder.stop_outcome(2_000, Stop::SessionFinalized).unwrap();
         assert_eq!(recorder.finish(), Ok(2_000));
     }
 }

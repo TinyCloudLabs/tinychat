@@ -67,9 +67,9 @@ export const FINAL_COPY = {
   micUnavailable:
     "The microphone is unavailable. Choose another input or reconnect it.",
   stalledNeedsUser: "The microphone stopped sending sound.",
-  writerStalled: "The recording stopped responding. Stop to save what was captured.",
-  sourceStillRunning: "The microphone is still running and did not close. Stop again to save what was captured.",
-  sourceUnusable: "The microphone failed while stopping. Stop again to save what was captured.",
+  writerStalled: (action: string) => `The recording stopped responding. Try again, or use ${action} to save what was captured.`,
+  sourceStillRunning: (action: string) => `The microphone may still be running. Try again, or use ${action} to save what was captured.`,
+  sourceUnusable: (action: string) => `The microphone could not be stopped. Try again, or use ${action} to save what was captured.`,
   statusUnknown: "Could not read the microphone state.",
   inputChanged: "The microphone input changed. Waiting for capture to recover.",
   audioServicesReset:

@@ -93,16 +93,6 @@ function writeFailedPresentation(): MicPresentation {
   };
 }
 
-function stopAgainPresentation(statusLine: string): MicPresentation {
-  return {
-    ring: "still",
-    flat: false,
-    pill: { label: FINAL_COPY.interrupted, dot: "hollow" },
-    statusLine,
-    stopEnabled: true,
-    emphasis: "stop",
-  };
-}
 
 function silenceLine(input: RecorderViewInput): string | null {
   if (
@@ -226,6 +216,7 @@ function livePresentation(
 function needsUserPresentation(
   reason: MicStateReason,
   isDevelopmentOrTest: boolean,
+  device: RecorderViewInput["device"],
 ): MicPresentation {
   switch (reason) {
     case "resume_blocked":
@@ -271,13 +262,29 @@ function needsUserPresentation(
             : FINAL_COPY.sessionExists,
       };
     case "writer_stalled":
-      return stopAgainPresentation(FINAL_COPY.writerStalled);
+      return {
+        ...retryPresentation(FINAL_COPY.writerStalled(device === "mac" ? "Done" : "Stop")),
+        stopEnabled: true,
+        emphasis: "stop",
+      };
     case "source_still_running":
-      return stopAgainPresentation(FINAL_COPY.sourceStillRunning);
+      return {
+        ...retryPresentation(FINAL_COPY.sourceStillRunning(device === "mac" ? "Done" : "Stop")),
+        stopEnabled: true,
+        emphasis: "stop",
+      };
     case "source_unusable":
-      return stopAgainPresentation(FINAL_COPY.sourceUnusable);
+      return {
+        ...retryPresentation(FINAL_COPY.sourceUnusable(device === "mac" ? "Done" : "Stop")),
+        stopEnabled: true,
+        emphasis: "stop",
+      };
     case "status_unknown":
-      return retryPresentation(FINAL_COPY.statusUnknown);
+      return {
+        ...retryPresentation(FINAL_COPY.statusUnknown),
+        stopEnabled: true,
+        emphasis: "stop",
+      };
     case null:
     case "os_silenced":
     case "no_signal":
@@ -484,7 +491,7 @@ function micPresentation(
     case "interrupted":
       return interruptedPresentation(reason, isDevelopmentOrTest);
     case "needs_user":
-      return needsUserPresentation(reason, isDevelopmentOrTest);
+      return needsUserPresentation(reason, isDevelopmentOrTest, input.device);
     default:
       return unreachable(micState);
   }

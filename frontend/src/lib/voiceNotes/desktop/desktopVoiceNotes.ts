@@ -208,11 +208,11 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
       ...native,
       spans: session?.spans ?? [],
       openSpan: session?.spans.find((span) => span.endedAt === null) ?? null,
-      source: session?.source,
+      input: session?.input ?? null,
       options: session?.options,
       owner: session?.owner,
-      input: session?.input ?? null,
       transitionGen: session?.transitionGen ?? defaults!.transitionGen,
+      captureSourceUnconfirmed: native.captureSourceUnconfirmed ?? false,
     };
   };
   const emitMic = (native: NativeStatus) => {
@@ -222,6 +222,7 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
       audioMs: native.audioMs, elapsedMs: native.elapsedMs, pausedMs: native.pausedMs,
       options: session?.options, input: session?.input ?? null,
       openSpan: session?.spans.find((span) => span.endedAt === null) ?? null,
+      captureSourceUnconfirmed: native.captureSourceUnconfirmed ?? false,
     } satisfies MicStateEvent);
   };
   const syncDurable = async (native: NativeStatus): Promise<void> => {
@@ -599,7 +600,10 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
     async pause() {
       return run(async () => {
         if (!live) throw failure("not_recording");
-        if (live.session.intent === "paused") return;
+        if (live.session.intent === "paused") {
+          const native = await bridge.invoke<NativeStatus>("recorder_status");
+          if (native.state !== "needs_user" || !["writer_stalled", "source_still_running", "source_unusable"].includes(native.reason ?? "")) return;
+        }
         const native = await bridge.invoke<NativeStatus>("recorder_pause");
         const failed = await nativeFailures(live.session.id);
         if (failed.length) {
@@ -621,7 +625,10 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
     async resume() {
       return run(async () => {
         if (!live) throw failure("not_recording");
-        if (live.session.intent === "recording") return;
+        if (live.session.intent === "recording") {
+          const native = await bridge.invoke<NativeStatus>("recorder_status");
+          if (native.state !== "needs_user" || !["writer_stalled", "source_still_running", "source_unusable"].includes(native.reason ?? "")) return;
+        }
         const native = await bridge.invoke<NativeStatus>("recorder_resume");
         live.session.intent = "recording";
         live.session.pausedMs = native.pausedMs;

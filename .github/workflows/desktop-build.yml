@@ -58,6 +58,10 @@ on:
         description: Developer ID sign, notarize and verify (release builds from main only)
         type: boolean
         default: false
+      smoke:
+        description: Build an isolated recorder-failpoints smoke artifact (CI only)
+        type: boolean
+        default: false
       ipc-selftest:
         description: Include and execute the release-profile IPC capability self-test (CI only)
         type: boolean
@@ -79,7 +83,7 @@ permissions:
 env:
   # The build job's artifact: the published one for unsigned builds; for signed builds the sign job's input, while
   # the signed files take the artifact name.
-  BUILD_ARTIFACT: ${{ inputs.sign && format('{0}-unsigned', inputs.artifact-name) || inputs.artifact-name }}
+  BUILD_ARTIFACT: ${{ inputs.sign && format('{0}-unsigned', inputs.artifact-name) || inputs.smoke && format('{0}-smoke', inputs.artifact-name) || inputs.artifact-name }}
 
 jobs:
   preflight:
@@ -235,7 +239,7 @@ jobs:
       # commit's script reads the version from the built tree (--root).
       - name: Bundle versions
         id: bundle
-        run: node .release-tooling/scripts/release/desktop-bundle-config.mjs --root "$GITHUB_WORKSPACE" --out "$RUNNER_TEMP/exo-bundle" --ad-hoc-sign
+        run: node .release-tooling/scripts/release/desktop-bundle-config.mjs --root "$GITHUB_WORKSPACE" --out "$RUNNER_TEMP/exo-bundle" --ad-hoc-sign ${{ inputs.smoke && '--smoke' || '' }}
 
       - name: Test Rust confinement and desktop library
         working-directory: desktop/src-tauri
@@ -253,10 +257,13 @@ jobs:
           VITE_EXO_BUILD_NUMBER: ${{ steps.bundle.outputs.bundle-version }}
           VITE_EXO_CHANNEL: ${{ steps.bundle.outputs.prerelease == 'true' && 'beta' || 'stable' }}
           IPC_SELFTEST: ${{ inputs.ipc-selftest }}
+          SMOKE: ${{ inputs.smoke }}
         run: |
           features=()
-          if [ "$IPC_SELFTEST" = true ]; then features=(--features ipc-selftest); fi
-          bun run --cwd desktop tauri build --no-bundle --config "$TAURI_BUNDLE_CONFIG" "${features[@]}"
+          if [ "$IPC_SELFTEST" = true ]; then features+=(ipc-selftest); fi
+          if [ "$SMOKE" = true ]; then features+=(recorder-failpoints); fi
+          if [ "${#features[@]}" -gt 0 ]; then feature_args=(--features "$(IFS=,; echo "${features[*]}")"); fi
+          bun run --cwd desktop tauri build --no-bundle --config "$TAURI_BUNDLE_CONFIG" "${feature_args[@]}"
 
       - name: Exercise release webview permissions
         if: inputs.ipc-selftest
@@ -299,8 +306,10 @@ jobs:
         env:
           SHORT_VERSION: ${{ steps.bundle.outputs.short-version }}
           BUNDLE_VERSION: ${{ steps.bundle.outputs.bundle-version }}
+          PRODUCT_NAME: ${{ steps.bundle.outputs.product-name }}
+          BUNDLE_IDENTIFIER: ${{ steps.bundle.outputs.bundle-identifier }}
         run: |
-          plist=desktop/src-tauri/target/release/bundle/macos/Exo.app/Contents/Info.plist
+          plist="desktop/src-tauri/target/release/bundle/macos/$PRODUCT_NAME.app/Contents/Info.plist"
           check() {
             actual=$(plutil -extract "$1" raw "$plist")
             if [ "$actual" != "$2" ]; then
@@ -311,7 +320,7 @@ jobs:
           }
           check CFBundleShortVersionString "$SHORT_VERSION"
           check CFBundleVersion "$BUNDLE_VERSION"
-          check CFBundleIdentifier xyz.tinycloud.exo
+          check CFBundleIdentifier "$BUNDLE_IDENTIFIER"
           check LSMinimumSystemVersion 14.2
           # The overlay must add to src-tauri/Info.plist, not replace it.
           plutil -extract NSMicrophoneUsageDescription raw "$plist" >/dev/null
@@ -325,7 +334,7 @@ jobs:
           mnt="$RUNNER_TEMP/exo-dmg"
           hdiutil attach -nobrowse -readonly -mountpoint "$mnt" "$dmg"
           trap 'hdiutil detach "$mnt"' EXIT
-          for bundle in desktop/src-tauri/target/release/bundle/macos/Exo.app "$mnt/Exo.app"; do
+          for bundle in "desktop/src-tauri/target/release/bundle/macos/${{ steps.bundle.outputs.product-name }}.app" "$mnt/${{ steps.bundle.outputs.product-name }}.app"; do
             codesign --verify --deep --strict --verbose=2 "$bundle"
             codesign -dv --verbose=2 "$bundle"
           done
@@ -336,8 +345,9 @@ jobs:
         id: package
         run: |
           cd desktop/src-tauri/target/release/bundle/macos
-          ditto -c -k --sequesterRsrc --keepParent Exo.app Exo-macos-arm64.app.zip
-          echo "sha256=$(shasum -a 256 Exo-macos-arm64.app.zip | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          app_name="${{ steps.bundle.outputs.product-name }}"
+          ditto -c -k --sequesterRsrc --keepParent "$app_name.app" "$app_name-macos-arm64.app.zip"
+          echo "sha256=$(shasum -a 256 "$app_name-macos-arm64.app.zip" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
       # Ad-hoc sealed, built by this public repository's code, so nothing in it is secret.
       - name: Upload dmg + app
@@ -347,7 +357,7 @@ jobs:
           if-no-files-found: error
           path: |
             desktop/src-tauri/target/release/bundle/dmg/*.dmg
-            desktop/src-tauri/target/release/bundle/macos/Exo-macos-arm64.app.zip
+            desktop/src-tauri/target/release/bundle/macos/*.app.zip
 
       - name: Save SwiftPM repository cache
         if: env.SAVE_CACHE == 'true' && steps.swiftpm.outputs.cache-hit != 'true'

@@ -52,7 +52,11 @@ pub struct Journal {
     pub layout: Layout,
     #[serde(default)]
     pub spans: Vec<MissingAudioSpan>,
+
+    #[serde(default)]
+    pub capture_source_unconfirmed: bool,
 }
+
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -312,7 +316,11 @@ fn failed_journal_at(
             .and_then(|v| v.get("layout"))
             .and_then(|v| serde_json::from_value(v.clone()).ok())
             .unwrap_or_default(),
-        spans: Vec::new(),
+        capture_source_unconfirmed: partial
+            .as_ref()
+            .and_then(|v| v.get("captureSourceUnconfirmed"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
     });
     let name = source
         .file_name()
@@ -738,6 +746,7 @@ mod tests {
             system_audio: true,
             layout: Layout::Mono,
             spans: vec![],
+            capture_source_unconfirmed: false,
         };
         fs::write(
             stopped.join("note.json"),
@@ -803,6 +812,7 @@ mod tests {
             system_audio: false,
             layout: Layout::Mono,
             spans: vec![],
+            capture_source_unconfirmed: false,
         };
         save_stopped_at(&stopped.join("note.json"), &original).unwrap();
         list_stopped_at_with_read(&stopped, &failed, |_| {
@@ -866,6 +876,7 @@ mod tests {
             system_audio: true,
             layout: Layout::Mono,
             spans: vec![],
+            capture_source_unconfirmed: false,
         };
         let name = format!("note.{}.json", uuid::Uuid::new_v4());
         fs::write(
@@ -923,6 +934,7 @@ mod tests {
             system_audio: false,
             layout: Layout::Mono,
             spans: vec![],
+            capture_source_unconfirmed: false,
         };
         fs::write(
             failed.join("journals").join(&legacy_key),
@@ -980,6 +992,7 @@ mod tests {
             system_audio: false,
             layout: Layout::Mono,
             spans: vec![],
+            capture_source_unconfirmed: false,
         };
         let (locked_tx, locked_rx) = std::sync::mpsc::sync_channel(0);
         let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
@@ -1033,10 +1046,18 @@ mod tests {
             system_audio: false,
             layout: Layout::Mono,
             spans: Vec::new(),
+            capture_source_unconfirmed: true,
         };
         let value = serde_json::to_value(&journal).unwrap();
         assert_eq!(value["segmentId"], "segment");
         assert_eq!(value["spans"], serde_json::json!([]));
+        assert_eq!(value["captureSourceUnconfirmed"], true);
+        assert_eq!(
+            serde_json::from_value::<Journal>(value.clone())
+                .unwrap()
+                .capture_source_unconfirmed,
+            true
+        );
         assert_eq!(
             serde_json::from_value::<Journal>(value.clone())
                 .unwrap()
@@ -1046,9 +1067,15 @@ mod tests {
         let mut old_journal = value;
         old_journal.as_object_mut().unwrap().remove("spans");
         old_journal.as_object_mut().unwrap().remove("layout");
+        old_journal
+            .as_object_mut()
+            .unwrap()
+            .remove("captureSourceUnconfirmed");
         let recovered = serde_json::from_value::<Journal>(old_journal).unwrap();
         assert!(recovered.spans.is_empty());
         assert_eq!(recovered.layout, Layout::Mono);
+        assert!(!recovered.capture_source_unconfirmed);
+
     }
 
     #[test]
@@ -1074,6 +1101,7 @@ mod tests {
             system_audio: true,
             layout: Layout::Stereo,
             spans: Vec::new(),
+            capture_source_unconfirmed: false,
         };
         let failed = FailedSegment {
             id: "note".into(),

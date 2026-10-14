@@ -135,6 +135,7 @@ export interface MicStateEvent {
   elapsedMs?: number;
   pausedMs?: number;
   openSpan?: MissingAudioSpan | null;
+  captureSourceUnconfirmed?: boolean;
 }
 
 export interface LevelEvent {
@@ -203,6 +204,8 @@ export interface CaptureStatus {
   source?: CaptureSource; options?: CaptureOptions; input?: AudioInput | null; owner?: string | null;
   activeId?: string | null;
   transitionGen: number; androidSdkInt?: number;
+  /** True after bounded Stop lacks release evidence; CoreAudio clears it only when no input is running somewhere. */
+  captureSourceUnconfirmed?: boolean;
   /** Android shortcut recovery, queried without consuming a retained event. */
   micDeniedPresentation?: boolean;
   shortcutRecordPending?: boolean;

@@ -18,6 +18,7 @@ import { registerPlayback } from "@/lib/audio/playback";
 import { installDom } from "@/test/dom";
 import { RecorderProvider, useRecorder, type RecorderValue } from "./RecorderProvider";
 import type { VoiceNoteRecorder } from "./useVoiceNoteRecorder";
+import { selectRecorderView } from "./final/recorderView";
 import { createFakeVoiceNotes, type FakeVoiceNotes } from "@/harness/fakeVoiceNotes";
 import { fakeVoiceNoteStore } from "@/harness/fakeVoiceNoteStore";
 import { memoryHoldStore } from "@/harness/memoryHoldStore";
@@ -108,6 +109,18 @@ function controller(options: { tcw?: TinyCloudWeb | null; pipeline?: VoiceNotePi
     noteLoader: options.noteLoader,
     noteRetryScheduler: options.noteRetryScheduler,
     subscribeAppActive: options.subscribeAppActive,
+  });
+}
+
+function selectedView(recorder: VoiceNoteRecorder) {
+  const state = recorder.getState();
+  return selectRecorderView(state, {
+    nowMs: Date.now(),
+    elapsedMs: state.elapsedMs,
+    inputName: null,
+    silencedSinceMs: null,
+    device: "mac",
+    isDevelopmentOrTest: true,
   });
 }
 
@@ -1961,22 +1974,235 @@ const hostWindow = () => ({ HTMLIFrameElement: class {}, document: hostDocument,
     expect(recorder.getState()).toMatchObject({ mic: { state: "needs_user" }, error: "Could not resume: microphone busy" });
   });
 
-  test("a Pause whose status read fails reports needs_user, never a synthesized paused", async () => {
+  test("a no-op Pause with unreadable status stays uncertain and Stop still saves", async () => {
     const base = plugin;
+    let rejectStatus = false;
     __setVoiceNotesForTests({ ...base,
-      async pause() { paused = true; },
+      async pause() {},
       async status() {
-        if (paused) throw new Error("status unavailable");
+        if (rejectStatus) throw new Error("status unavailable");
         return base.status();
       },
     }, { available: true });
     const { recorder } = await attached();
     await recorder.record();
+    rejectStatus = true;
     await recorder.pause();
     expect(recorder.getState()).toMatchObject({
-      error: expect.stringContaining("Paused, but the microphone state could not be read"),
+      controlPending: null,
+      error: "Could not confirm that recording paused. Recording may still be running. Try again or stop.",
       mic: { state: "needs_user", reason: "status_unknown" },
     });
+    expect(selectedView(recorder)).toMatchObject({
+      statusLine: "Could not read the microphone state.",
+      tapRingAction: "resume",
+      controls: { resume: true, stop: true },
+    });
+    expect(recorder.getState().error).not.toContain("Paused");
+    rejectStatus = false;
+    await recorder.stop();
+    expect(recorder.getState().phase).toBe("idle");
+    expect(onPhone).toHaveLength(1);
+    expect(saves).toEqual([onPhone[0]!.id]);
+  });
+
+  test("writer_stalled after failed Resume offers Try again and Done; retry recovers then Stop saves", async () => {
+    const base = plugin;
+    let stalled = false;
+    let resumeCalls = 0;
+    __setVoiceNotesForTests({ ...base,
+      async pause() { paused = true; },
+      async resume() {
+        resumeCalls++;
+        if (resumeCalls === 1) {
+          stalled = true;
+          throw Object.assign(new Error("capture stop timed out"), { code: "capture_stop_timeout" });
+        }
+        stalled = false;
+        paused = false;
+      },
+      async status() {
+        const status = await base.status();
+        return stalled ? { ...status, state: "needs_user" as const, reason: "writer_stalled" as const } : status;
+      },
+    }, { available: true });
+    const { recorder } = await attached();
+    await recorder.record();
+    await recorder.pause();
+    await recorder.resume();
+    expect(recorder.getState()).toMatchObject({
+      error: "Could not resume: capture stop timed out",
+      mic: { state: "needs_user", reason: "writer_stalled" },
+      controlPending: null,
+    });
+    expect(selectedView(recorder)).toMatchObject({
+      statusLine: "The recording stopped responding. Try again, or use Done to save what was captured.",
+      tapRingAction: "resume",
+      emphasis: "stop",
+      controls: { resume: true, stop: true },
+    });
+    await recorder.resume();
+    expect(resumeCalls).toBe(2);
+    expect(recorder.getState().mic).toMatchObject({ state: "recording" });
+    await recorder.stop();
+    expect(recorder.getState().phase).toBe("idle");
+    expect(onPhone).toHaveLength(1);
+    expect(saves).toHaveLength(1);
+  });
+
+  test.each(["pause", "resume"] as const)("a rejected %s status read clears pending and exposes recovery", async (control) => {
+    const base = plugin;
+    let rejectStatus = false;
+    __setVoiceNotesForTests({ ...base,
+      async pause() { paused = true; },
+      async resume() { paused = false; },
+      async status() {
+        if (rejectStatus) throw new Error("status unavailable");
+        return base.status();
+      },
+    }, { available: true });
+    const { recorder } = await attached();
+    await recorder.record();
+    if (control === "resume") await recorder.pause();
+    rejectStatus = true;
+    await (control === "pause" ? recorder.pause() : recorder.resume());
+    expect(recorder.getState()).toMatchObject({
+      controlPending: null,
+      error: control === "pause"
+        ? "Could not confirm that recording paused. Recording may still be running. Try again or stop."
+        : "Could not confirm that recording resumed. Try again or stop.",
+      mic: { state: "needs_user", reason: "status_unknown" },
+    });
+    expect(selectedView(recorder)).toMatchObject({
+      statusLine: "Could not read the microphone state.",
+      tapRingAction: "resume",
+      controls: { resume: true, stop: true },
+    });
+  });
+
+  test.each(["pause", "resume"] as const)("a hung %s status read clears pending at the deadline", async (control) => {
+    const base = plugin;
+    let hangStatus = false;
+    let statusCalls = 0;
+    __setVoiceNotesForTests({ ...base,
+      async pause() { paused = true; },
+      async resume() { paused = false; },
+      async status() {
+        statusCalls++;
+        if (hangStatus) return new Promise<never>(() => {});
+        return base.status();
+      },
+    }, { available: true });
+    const { recorder } = await attached();
+    await recorder.record();
+    if (control === "resume") await recorder.pause();
+    statusCalls = 0;
+    hangStatus = true;
+    const originalSetTimeout = globalThis.setTimeout;
+    let deadline: (() => void) | undefined;
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    globalThis.setTimeout = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
+      if (timeout === 45_000 && typeof handler === "function") {
+        timeoutHandle = originalSetTimeout(() => {}, 60_000);
+        deadline = () => handler(...args);
+        return timeoutHandle;
+      }
+      return originalSetTimeout(handler, timeout, ...args);
+    }) as typeof setTimeout;
+    const action = control === "pause" ? recorder.pause() : recorder.resume();
+    try {
+      for (let attempt = 0; attempt < 20 && statusCalls === 0; attempt++) await Promise.resolve();
+      expect(statusCalls).toBe(1);
+      expect(deadline).toBeDefined();
+      deadline!();
+      await action;
+    } finally {
+      globalThis.setTimeout = originalSetTimeout;
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+    }
+    expect(recorder.getState()).toMatchObject({
+      controlPending: null,
+      error: control === "pause"
+        ? "Could not confirm that recording paused. Recording may still be running. Try again or stop."
+        : "Could not confirm that recording resumed. Try again or stop.",
+      mic: { state: "needs_user", reason: "status_unknown" },
+    });
+    expect(selectedView(recorder)).toMatchObject({
+      statusLine: "Could not read the microphone state.",
+      tapRingAction: "resume",
+      controls: { resume: true, stop: true },
+    });
+  });
+
+  test("a status result arriving after the deadline cannot overwrite uncertain state", async () => {
+    const base = plugin;
+    let releaseStatus!: (status: Awaited<ReturnType<typeof base.status>>) => void;
+    let hangStatus = false;
+    __setVoiceNotesForTests({ ...base,
+      async pause() { paused = true; },
+      async status() {
+        if (hangStatus) return new Promise<Awaited<ReturnType<typeof base.status>>>((resolve) => { releaseStatus = resolve; });
+        return base.status();
+      },
+    }, { available: true });
+    const { recorder } = await attached();
+    await recorder.record();
+    hangStatus = true;
+    const originalSetTimeout = globalThis.setTimeout;
+    let deadline: (() => void) | undefined;
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    globalThis.setTimeout = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
+      if (timeout === 45_000 && typeof handler === "function") {
+        timeoutHandle = originalSetTimeout(() => {}, 60_000);
+        deadline = () => handler(...args);
+        return timeoutHandle;
+      }
+      return originalSetTimeout(handler, timeout, ...args);
+    }) as typeof setTimeout;
+    const action = recorder.pause();
+    try {
+      for (let attempt = 0; attempt < 20 && !releaseStatus; attempt++) await Promise.resolve();
+      expect(deadline).toBeDefined();
+      deadline!();
+      await action;
+      releaseStatus(await base.status());
+      for (let attempt = 0; attempt < 10; attempt++) await Promise.resolve();
+    } finally {
+      globalThis.setTimeout = originalSetTimeout;
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+    }
+    expect(recorder.getState()).toMatchObject({
+      controlPending: null,
+      mic: { state: "needs_user", reason: "status_unknown" },
+      error: "Could not confirm that recording paused. Recording may still be running. Try again or stop.",
+    });
+  });
+
+  test("a failed Stop after writer_stalled retries and commits captured audio", async () => {
+    const base = plugin;
+    let failedPause = true;
+    __setVoiceNotesForTests({ ...base,
+      async pause() {
+        if (failedPause) throw Object.assign(new Error("capture stop timed out"), { code: "capture_stop_timeout" });
+        paused = true;
+      },
+      async stop() {
+        failedPause = false;
+        return stopNatively();
+      },
+      async status() {
+        const status = await base.status();
+        return failedPause ? { ...status, state: "needs_user" as const, reason: "writer_stalled" as const } : status;
+      },
+    }, { available: true });
+    const { recorder } = await attached();
+    await recorder.record();
+    await recorder.pause();
+    expect(recorder.getState().mic).toMatchObject({ state: "needs_user", reason: "writer_stalled" });
+    await recorder.stop();
+    expect(recorder.getState().phase).toBe("idle");
+    expect(onPhone).toHaveLength(1);
+    expect(saves).toHaveLength(1);
   });
 
   test("a Pause that throws after the native capture paused reconciles to paused", async () => {

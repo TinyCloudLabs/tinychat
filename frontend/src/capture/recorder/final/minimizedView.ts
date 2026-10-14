@@ -18,6 +18,7 @@ function recorderState(recorder: RecorderValue): RecorderState {
     elapsedMs: recorder.elapsedMs,
     elapsedAt: recorder.elapsedAt,
     maxDurationMs: recorder.maxDurationMs,
+    captureSourceUnconfirmed: recorder.captureSourceUnconfirmed,
     mic: recorder.mic,
     controlPending: recorder.controlPending,
     limitNotice: recorder.limitNotice,
