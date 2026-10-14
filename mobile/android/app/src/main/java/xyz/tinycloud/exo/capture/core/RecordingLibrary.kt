@@ -242,6 +242,7 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
             val optionEvent = history.lastOrNull { it.optString("e") == "options" } ?: first.optJSONObject("options") ?: defaultOptions()
             val finalOptions = JSONObject().put("transcriber", optionEvent.optString("transcriber", "on-device"))
                 .put("identifySpeakers", optionEvent.optBoolean("identifySpeakers"))
+            if (optionEvent.has("uploadAudio")) finalOptions.put("uploadAudio", optionEvent.optBoolean("uploadAudio"))
             val inputEvent = history.lastOrNull { it.optString("e") == "input" }
             val inputValue = inputEvent?.let { JSONObject().put("id", it.getString("id"))
                 .put("name", it.getString("name")).put("kind", it.getString("kind")) } ?: JSONObject.NULL

@@ -11,6 +11,8 @@ const config: CapacitorConfig = {
   appId: "xyz.tinycloud.exo",
   appName: "Exo",
   webDir: "../frontend/dist",
+  // Capacitor logs raw bridge arguments/results, including OpenKey session
+  // material. debugLog.ts records redacted method/outcome events instead.
   loggingBehavior: "none",
   experimental: {
     ios: {

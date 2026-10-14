@@ -11,6 +11,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import OpenKey from "@openkey/sdk";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import type { NativeSession, OpenKeyNative } from "@openkey/sdk-capacitor";
+import { logSession } from "./lib/debugLog";
 import {
   SessionStore,
   clearPersistedSession,
@@ -137,6 +138,7 @@ import {
 } from "./lib/openkeyNative";
 import { NativeRenewal, guardNativeTinyCloudCalls, NATIVE_SESSION_ENDED_MESSAGE, NATIVE_STORAGE_MESSAGE } from "./lib/openkeyNativeRenewal";
 import { isAuthSettledSignedOut } from "./lib/authRouting";
+import { clearSendIntentsForOwner } from "./chat/TranscriberSection";
 import { browserIsOffline, restorePersistedSession } from "./lib/sessionRestore";
 import { clearTranscriptDelegationSchedule, ensureTranscriptWriterDelegation } from "./lib/transcriptDelegation";
 import { onAgentPaywallError, onAgentModelSelectionError } from "./lib/agentChatApi";
@@ -243,6 +245,7 @@ export function App() {
     resetNavigationMemory();
     const storedAddress = sessionStoreRef.current.getAddress() ?? address;
     if (storedAddress) clearPersistedSession(storedAddress);
+    if (storedAddress) clearSendIntentsForOwner(storedAddress);
     clearTranscriptDelegationSchedule(storedAddress);
     sessionStoreRef.current.clear();
     voiceNotePipeline?.cancelAll();
@@ -425,6 +428,7 @@ export function App() {
   // signal used to sign the user out here.
   const restoreSession = useCallback(async () => {
     if (restoreInFlightRef.current) return;
+    logSession("restore", "start");
     restoreInFlightRef.current = true;
     setError(null);
     setState("booting");
@@ -436,6 +440,7 @@ export function App() {
         const boot = await restoreNativeAtBoot(nativeConfig,
           sessionStoreRef.current.hasSession() && !sessionStoreRef.current.isExpired());
         if (boot.kind === "restored") {
+          logSession("restore", "done");
           restoreRetryAfterRef.current = 0;
           if (boot.verified) sessionStoreRef.current.setSession(boot.verified.token, boot.verified.expiresIn, boot.verified.address);
           setNativeSessionActive(true);
@@ -449,23 +454,27 @@ export function App() {
           return;
         }
         if (boot.kind === "storage") {
+          logSession("restore", "failed");
           setError(NATIVE_STORAGE_MESSAGE);
           setState("recoverableError");
           return;
         }
         if (boot.kind === "unavailable") {
+          logSession("restore", "unavailable");
           restoreRetryAfterRef.current = Date.now() + 15_000;
           setError("Exo can't connect right now. Your recordings stay on this phone.");
           setState("offline");
           return;
         }
         if (boot.kind === "failed") {
+          logSession("restore", "failed");
           restoreRetryAfterRef.current = Date.now() + 15_000;
           setError("Couldn't restore your session. Sign in again to continue syncing.");
           setState("recoverableError");
           return;
         }
         if (boot.kind === "configuration") {
+          logSession("restore", "failed");
           setError("Native sign-in is not configured in this build.");
           setState("recoverableError");
           return;
@@ -524,6 +533,7 @@ export function App() {
       });
       switch (restored.kind) {
         case "restored":
+          logSession("restore", "done");
           setTcw(LOCAL_VALIDATION ? useLocalCanvasStorage(useLocalThreadStorage(restored.tcw)) : restored.tcw);
           setAddress(restored.address);
           setDid(restored.tcw.did ?? `did:pkh:eip155:1:${restored.address}`);
@@ -534,17 +544,21 @@ export function App() {
         case "unavailable":
           setError(restored.message);
           setState("offline");
+          logSession("restore", "unavailable");
           return;
         case "signedOut":
           if (!await captureHandoff()) { setState("recoverableError"); return; }
           setState("unauthenticated");
+          logSession("restore", "signed_out");
           return;
         case "failed":
           setError(restored.message);
           setState("recoverableError");
+          logSession("restore", "failed");
           return;
       }
     } catch (caught) {
+      logSession("restore", "failed", caught);
       setError(describeAuthFailure(caught));
       setState("recoverableError");
     } finally {

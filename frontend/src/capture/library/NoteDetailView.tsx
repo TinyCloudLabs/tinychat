@@ -6,10 +6,12 @@
 //
 // Pushed (a phone): the page header with Back. Beside the list (wide): the
 // title as the pane's heading.
-import { useContext, type ReactNode } from "react";
+import { useContext, useState, type ReactNode } from "react";
 import { CheckIcon, CopyIcon, Loader2Icon, RefreshCwIcon } from "lucide-react";
 
 import { MeetingAudioPlayer } from "@/chat/MeetingAudioPlayer";
+import { NotePlaybackContext } from "@/lib/audio/notePlayback";
+import { appPlatform } from "@/lib/platform";
 import { Button } from "@/components/ui/button";
 import { Empty } from "@/components/ui/empty";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -20,8 +22,10 @@ import type { MeetingMetadataRead, TranscriptRead } from "@/lib/connectors/meeti
 import { UPLOAD_MEETING_SOURCE } from "@/lib/audioUpload";
 import { captureCapabilities } from "@/lib/voiceNotes/captureEngine";
 import type { NotePipeline } from "@/lib/voiceNotes/notePipeline";
+import type { LocalTranscript } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { transcriptionStatusText } from "@/lib/voiceNotes/voiceNoteTranscription";
-import { voiceNoteTitle, voiceNoteTranscriptState, VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
+import { voiceNoteTranscriptionFailureForCode } from "@/lib/voiceNotes/transcriptionErrors";
+import { localTranscriptToSave, voiceNoteTitle, voiceNoteTranscriptState, VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
 import { PAGE_COLUMN, PageHeader } from "@/shell/PageHeader";
 import { detailWhen, formatSpokenDuration } from "./formatters";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
@@ -31,6 +35,9 @@ import { TranscribeAction } from "./TranscribeAction";
 import { privateCloudFits } from "./transcribeProviders";
 import { HowThisGotHere } from "./HowThisGotHere";
 import { librarySourceLabel } from "./libraryKinds";
+import { TimestampedTranscript } from "./TimestampedTranscript";
+import { hasPrivateCloudTimingProvenance, hasSegmentTimes, transcriptMarkdown } from "./transcriptSegments";
+import type { TranscriptProvenance } from "@/lib/voiceNotes/voiceNoteCommits";
 import type { LibraryItem } from "./LibraryRow";
 import type { LibraryStatus } from "./LibraryListView";
 import { LazySavedNote } from "./savedNote/LazySavedNote";
@@ -53,6 +60,12 @@ export interface NoteDetailViewProps {
   /** Undefined while it is read. */
   metadata: MeetingMetadataRead | undefined;
   transcript: TranscriptRead | undefined;
+  /** Provenance from the commit paired with the selected transcript body; null falls back to row metadata. */
+  transcriptProvenance?: TranscriptProvenance | null;
+  /** The device copy, keyed by source_id, while the space copy has not arrived. */
+  localTranscript?: LocalTranscript | null;
+  localTranscriptRead?: "timeout" | "failed" | null;
+  onLocalTranscriptRetry?: () => void;
   /** Where the note's audio comes from; null when it has none stored. */
   audio: NoteAudio | null;
   /** Private cloud transcription (voice notes in the phone app); absent elsewhere. */
@@ -61,6 +74,7 @@ export interface NoteDetailViewProps {
   desktopWhisper?: boolean;
   copyState: "idle" | "copied" | "failed";
   onCopy: () => void;
+  onCopyWithTimestamps?: () => void;
   /** Reads again what did not load (the list, or this note). */
   onRetry: () => void;
   /** A screen of its own (compact), with Back; otherwise a pane beside the list. */
@@ -106,7 +120,8 @@ function Frame(props: { title: string; pushed: boolean; onBack: () => void; chil
 /** Where a voice note's transcription stands, when it has no transcript; null when there is nothing to say or offer. */
 export function VoiceNoteTranscriptionStatus(props: {
   item: LibraryItem;
-  outcome: "none" | "transcribed" | "no_speech";
+  outcome: "none" | "pending" | "failed" | "skipped" | "transcribed" | "no_speech";
+  errorCode?: string | null;
   transcription: VoiceNoteTranscriptionProps | undefined;
 }) {
   const { item, transcription } = props;
@@ -152,6 +167,20 @@ export function VoiceNoteTranscriptionStatus(props: {
       </div>
     );
   }
+  if (props.outcome === "failed") {
+    const failure = voiceNoteTranscriptionFailureForCode(props.errorCode);
+    const canChoosePrivate = transcription?.availability === "available"
+      || (transcription?.availability === "failed" && transcription.consented);
+    const privateFits = item.durationSecs === null || transcription === undefined || privateCloudFits(transcription, item.durationSecs);
+    return (
+      <div className="flex flex-col gap-2" data-testid="voice-note-transcription-failed">
+        <p role="alert" className="min-w-0 text-callout text-destructive">{failure.message}</p>
+        {failure.retryable && (captureCapabilities().localTranscription || (canChoosePrivate && privateFits))
+          && <TranscribeAction noteId={item.sourceId} transcription={transcription} durationSecs={item.durationSecs} label="Try again" />}
+      </div>
+    );
+  }
+
   // Nothing to choose from: Local needs the phone's engine, Private needs private cloud on offer (or unreachable, with its own Check again).
   const localCapable = captureCapabilities().localTranscription;
   const choosable = transcription?.availability === "available" || (transcription?.availability === "failed" && transcription.consented);
@@ -165,7 +194,9 @@ export function VoiceNoteTranscriptionStatus(props: {
   }
   return (
     <div className="flex flex-col gap-2">
-      <p className="text-callout text-muted-foreground">Not transcribed</p>
+      <p className="text-callout text-muted-foreground">
+        {props.outcome === "skipped" ? "Transcription skipped" : "Not transcribed"}
+      </p>
       <TranscribeAction noteId={item.sourceId} transcription={transcription} durationSecs={item.durationSecs} />
     </div>
   );
@@ -186,6 +217,9 @@ export function transcriptStepLine(pipeline: NotePipeline): string | null {
 /** A voice note with no transcript yet: where its pipeline stands, else what the phone says about its on-device transcription, else where private cloud stands, else "No transcript.". */
 function NoTranscript(props: { item: LibraryItem; metadata: MeetingMetadataRead; transcription: VoiceNoteTranscriptionProps | undefined }) {
   const outcome = voiceNoteTranscriptState(props.metadata.status === "ok" ? props.metadata.metadata : null).status;
+  const errorCode = props.metadata.status === "ok" && typeof props.metadata.metadata.transcription_error_code === "string"
+    ? props.metadata.metadata.transcription_error_code
+    : null;
   const view = useContext(NotePipelineContext);
   const stepperShown = view !== null && !view.pipeline.done;
   const line = !stepperShown || outcome === "no_speech" ? null : transcriptStepLine(view.pipeline);
@@ -199,7 +233,7 @@ function NoTranscript(props: { item: LibraryItem; metadata: MeetingMetadataRead;
     // stepper skips the transcript step nothing will start one, and the Transcribe action below stands.
     const privateComing = stepperShown && line !== null && view.route === "private-cloud" && job === undefined;
     const stepperCovers = onPhoneRoute || privateComing || job?.kind === "active" || job?.kind === "failed";
-    const status = stepperCovers ? null : VoiceNoteTranscriptionStatus({ item: props.item, outcome, transcription: props.transcription });
+    const status = stepperCovers ? null : VoiceNoteTranscriptionStatus({ item: props.item, outcome, errorCode, transcription: props.transcription });
     // "Will appear here" would sit beside a Transcribe action that says it won't unless asked.
     const shownLine = status !== null && line === SAVED_NOTE_COPY.transcriptHere ? null : line;
     return (
@@ -211,7 +245,7 @@ function NoTranscript(props: { item: LibraryItem; metadata: MeetingMetadataRead;
     );
   }
   // A plain function of its props (no hooks), so its "nothing to say" is known here.
-  const status = VoiceNoteTranscriptionStatus({ item: props.item, outcome, transcription: props.transcription }) ?? (
+  const status = VoiceNoteTranscriptionStatus({ item: props.item, outcome, errorCode, transcription: props.transcription }) ?? (
     <p className="text-callout text-muted-foreground" data-testid={props.item.onPhone ? "note-transcript-on-phone" : undefined}>
       {props.item.onPhone ? "No transcript yet. It shows here once this note is saved to your space." : "No transcript."}
     </p>
@@ -227,9 +261,38 @@ function savedText(metadata: MeetingMetadataRead): string | null {
 }
 
 export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
+  const [exportError, setExportError] = useState(false);
   const { item, transcript, metadata } = props;
-  const sentences = transcript?.status === "ok" ? transcript.sentences : [];
   const voiceNote = item.source === VOICE_NOTE_SOURCE;
+  const spaceNoSpeech = metadata?.status === "ok" && metadata.metadata.transcription_outcome === "no_speech";
+  const local = voiceNote && !spaceNoSpeech && props.localTranscript?.noteId === item.sourceId ? props.localTranscript : null;
+  const remoteSentences = transcript?.status === "ok" ? transcript.sentences : [];
+  const spaceReadFailed = remoteSentences.length === 0 && local !== null &&
+    (transcript?.status === "failed" || metadata?.status === "failed");
+  const isPrivateCloud = remoteSentences.length > 0
+    && hasPrivateCloudTimingProvenance(metadata?.status === "ok" ? metadata.metadata : null, props.transcriptProvenance);
+  const sentences = remoteSentences.length > 0 ? remoteSentences
+    : local?.outcome === "transcribed" ? localTranscriptToSave(local).sentences : [];
+  const timed = hasSegmentTimes(sentences, isPrivateCloud);
+  const exportMarkdown = async () => {
+    const markdown = transcriptMarkdown(item.title ?? "Voice note", item.startedAt, sentences, isPrivateCloud);
+    const filename = `${(item.title ?? "Voice note").replaceAll(/[^\w -]/g, "").trim() || "voice-note"}.md`;
+    setExportError(false);
+    try {
+      if ((appPlatform() === "ios" || appPlatform() === "android") && navigator.share) {
+        await navigator.share({ files: [new File([markdown], filename, { type: "text/markdown" })], title: item.title ?? "Voice note" });
+        return;
+      }
+      const url = URL.createObjectURL(new Blob([markdown], { type: "text/markdown;charset=utf-8" }));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      link.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 0);
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === "AbortError")) setExportError(true);
+    }
+  };
   return (
     <section aria-labelledby="note-transcript" data-testid="note-transcript" className="flex flex-col gap-3">
       <div className="flex min-h-11 flex-wrap items-center gap-x-3">
@@ -237,10 +300,20 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
           Transcript
         </h2>
         {sentences.length > 0 && (
-          <Button type="button" variant="ghost" onClick={props.onCopy} className="-mr-2" data-testid="note-copy">
-            {props.copyState === "copied" ? <CheckIcon aria-hidden /> : <CopyIcon aria-hidden />}
-            {props.copyState === "copied" ? "Copied" : "Copy"}
-          </Button>
+          <div className="flex items-center gap-1">
+            <Button type="button" variant="ghost" onClick={props.onCopy} data-testid="note-copy">
+              {props.copyState === "copied" ? <CheckIcon aria-hidden /> : <CopyIcon aria-hidden />}
+              {props.copyState === "copied" ? "Copied" : "Copy"}
+            </Button>
+            {timed && <details className="relative">
+              <summary className="flex min-h-11 cursor-pointer items-center rounded-md px-2 text-meta hover:bg-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring" aria-label="Transcript copy and export options">▾</summary>
+              <div className="absolute right-0 z-10 min-w-48 rounded-md border bg-popover p-1 shadow-sm">
+                <button type="button" className="block min-h-11 w-full rounded-sm px-3 py-2 text-left text-meta hover:bg-accent" onClick={props.onCopy}>Copy text</button>
+                {props.onCopyWithTimestamps && <button type="button" className="block min-h-11 w-full rounded-sm px-3 py-2 text-left text-meta hover:bg-accent" onClick={props.onCopyWithTimestamps}>Copy with timestamps</button>}
+                <button type="button" className="block min-h-11 w-full rounded-sm px-3 py-2 text-left text-meta hover:bg-accent" onClick={() => void exportMarkdown()}>Export as Markdown</button>
+              </div>
+            </details>}
+          </div>
         )}
       </div>
       {props.copyState === "failed" && (
@@ -248,10 +321,32 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
           Couldn’t copy. Select the text and copy it instead.
         </p>
       )}
+      {exportError && <p role="alert" className="text-meta text-destructive">Couldn’t export the transcript. Try again.</p>}
       <span className="sr-only" aria-live="polite" aria-atomic="true">
         {props.copyState === "copied" ? "Transcript copied to clipboard" : ""}
       </span>
-      {transcript === undefined ? (
+      {sentences.length > 0 ? (
+        <div className="flex max-w-[68ch] flex-col gap-4 [-webkit-touch-callout:default] select-text">
+          {spaceReadFailed && <div className="flex flex-wrap items-center gap-2" data-testid="note-transcript-local-space-error">
+            <p className="text-callout text-muted-foreground">On this device · Couldn’t check your space.</p>
+            <Button type="button" variant="outline" onClick={props.onRetry}>Try again</Button>
+          </div>}
+          {timed ? <TimestampedTranscript sentences={sentences} hasAudio={props.audio !== null} isPrivateCloud={isPrivateCloud} /> : transcriptBlocks(sentences).map((block, index) => (
+            <div key={index}>
+              {block.speaker && <p className="text-meta font-semibold text-muted-foreground">{block.speaker}</p>}
+              <p className="whitespace-pre-wrap break-words text-body">{block.text}</p>
+            </div>
+          ))}
+        </div>
+      ) : spaceNoSpeech || local?.outcome === "no_speech" ? (
+        <div className="flex flex-col gap-2">
+          {spaceReadFailed && <div className="flex flex-wrap items-center gap-2" data-testid="note-transcript-local-space-error">
+            <p className="text-callout text-muted-foreground">On this device · Couldn’t check your space.</p>
+            <Button type="button" variant="outline" onClick={props.onRetry}>Try again</Button>
+          </div>}
+          <p data-testid="voice-note-no-speech" className="text-callout text-muted-foreground">No speech was found in this note.</p>
+        </div>
+      ) : transcript === undefined ? (
         <div role="status">
           <span className="sr-only">Loading the transcript…</span>
           <Skeleton lines={4} />
@@ -262,15 +357,6 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
           <Button type="button" variant="outline" onClick={props.onRetry}>
             <RefreshCwIcon aria-hidden /> Try again
           </Button>
-        </div>
-      ) : sentences.length > 0 ? (
-        <div className="flex max-w-[68ch] flex-col gap-4 [-webkit-touch-callout:default] select-text">
-          {transcriptBlocks(sentences).map((block, index) => (
-            <div key={index}>
-              {block.speaker && <p className="text-meta font-semibold text-muted-foreground">{block.speaker}</p>}
-              <p className="whitespace-pre-wrap break-words text-body">{block.text}</p>
-            </div>
-          ))}
         </div>
       ) : voiceNote ? (
         metadata === undefined ? (
@@ -290,10 +376,18 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
             <p className="text-callout text-muted-foreground">Couldn’t load this note’s full transcript.</p>
             <Button type="button" variant="outline" onClick={props.onRetry}>Try again</Button>
           </div>
+        ) : metadata.status === "ok" && (metadata.metadata.audio as { stored?: unknown } | undefined)?.stored === false && !props.audio ? (
+          <p className="text-callout text-muted-foreground" data-testid="voice-note-transcribe-on-device">
+            Transcribe on your {((metadata.metadata.capture as { platform?: string } | undefined)?.platform === "ios") ? "iPhone"
+              : ((metadata.metadata.capture as { platform?: string } | undefined)?.platform === "tauri") ? "Mac"
+              : ((metadata.metadata.capture as { platform?: string } | undefined)?.platform === "android") ? "phone" : "browser"}
+          </p>
         ) : (
           <DesktopWhisperStatus
             noteId={item.sourceId}
             enabled={props.desktopWhisper}
+            localRead={props.localTranscript === undefined ? "loading" : props.localTranscriptRead ?? "missing"}
+            onReadRetry={props.onLocalTranscriptRetry}
             fallback={<NoTranscript item={item} metadata={metadata} transcription={props.transcription} />}
           />
         )
@@ -307,6 +401,20 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
 }
 
 export function NoteDetailView(props: NoteDetailViewProps) {
+  return <NotePlaybackProvider><NoteDetailViewContent {...props} /></NotePlaybackProvider>;
+}
+
+function NotePlaybackProvider({ children }: { children: ReactNode }) {
+  const [seek, setSeek] = useState<{ seconds: number; nonce: number } | null>(null);
+  const [clock, setClock] = useState({ elapsed: 0, playing: false });
+  return <NotePlaybackContext.Provider value={{ seek, playFrom: (seconds) => setSeek((current) => ({ seconds, nonce: (current?.nonce ?? 0) + 1 })),
+    elapsed: clock.elapsed, playing: clock.playing, onClock: (elapsed, playing) => setClock((current) =>
+      current.elapsed === elapsed && current.playing === playing ? current : { elapsed, playing }) }}>
+    {children}
+  </NotePlaybackContext.Provider>;
+}
+
+function NoteDetailViewContent(props: NoteDetailViewProps) {
   const { item, metadata } = props;
   if (item === null) {
     return (
@@ -368,6 +476,12 @@ export function NoteDetailView(props: NoteDetailViewProps) {
       ) : item.source === VOICE_NOTE_SOURCE && meta && Object.keys(meta).length === 0 ? (
         <p role="status" className="text-callout text-muted-foreground" data-testid="voice-note-saving-from-phone">
           Saving from your phone…
+        </p>
+      ) : item.source === VOICE_NOTE_SOURCE && (meta?.audio as { stored?: unknown } | undefined)?.stored === false ? (
+        <p role="status" className="text-callout text-muted-foreground" data-testid="voice-note-audio-on-device">
+          Audio is on your {((meta?.capture as { platform?: string } | undefined)?.platform === "ios") ? "iPhone"
+            : ((meta?.capture as { platform?: string } | undefined)?.platform === "tauri") ? "Mac"
+            : ((meta?.capture as { platform?: string } | undefined)?.platform === "android") ? "phone" : "browser"}
         </p>
       ) : item.source === UPLOAD_MEETING_SOURCE && metadata?.status === "ok" && !audioKept ? (
         <p className="text-callout text-muted-foreground" data-testid="note-audio-missing">

@@ -33,6 +33,12 @@ fn main() {
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(
         tauri_build::AppManifest::new().commands(&[
             "exo_desktop_smoke",
+            "append_dev_log",
+            "debug_logging_enabled",
+            "google_oauth_listen",
+            "google_oauth_wait",
+            "google_oauth_cancel",
+            "google_oauth_open_browser",
             "append_audio_chunk",
             "ptx_audio_metadata",
             "ptx_upload_audio",
@@ -49,10 +55,14 @@ fn main() {
             "recorder_pause",
             "recorder_resume",
             "recorder_stop",
+            "recorder_stop_durable",
+            "recorder_finish",
+            "recorder_quit_anyway",
             "recorder_status",
             "recorder_list_inputs",
             "recorder_select_input",
             "recorder_recover",
+            "recorder_stopped_list",
             "recorder_acknowledge",
             "recorder_failed_list",
             "recorder_failed_retry",
@@ -66,8 +76,6 @@ fn main() {
             "recorder_system_audio_set",
             "recorder_system_audio_consent_get",
             "recorder_system_audio_consent_set",
-            "recorder_auto_save_to_space_get",
-            "recorder_auto_save_to_space_set",
         ]),
     ))
     .expect("failed to run tauri-build");

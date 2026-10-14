@@ -23,6 +23,7 @@ import {
   type VoiceNoteRecording,
   type CaptureStatus,
   type MicStateEvent,
+  type LevelEvent,
   type CaptureOptions,
   type TranscriberId,
 } from "@/lib/voiceNotes/nativeVoiceNotes";
@@ -32,7 +33,7 @@ import { isOnDeviceReady } from "@/lib/voiceNotes/onDeviceStt";
 import { isLegacyNote } from "@/lib/voiceNotes/legacyMigration";
 import { setQuarantineAccount } from "@/lib/voiceNotes/quarantine";
 import { ensureAppleSpeechAssets, ensureOnDeviceModel, onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
-import { effectiveCaptureOptions, readTranscriberPreference,
+import { effectiveCaptureOptions, readTranscriberPreference, readUploadAudioPreference,
   setDefaultIdentifySpeakers, setDefaultTranscriber, settleDefaults, subscribeTranscriberPreference, writeAccountDefaults,
   } from "@/lib/voiceNotes/transcriberPreference";
 import {
@@ -78,10 +79,12 @@ function partialFromSidecar(recording: VoiceNoteRecording): Extract<RecorderCapt
 const micFromStatus = (status: CaptureStatus | MicStateEvent): RecorderMic =>
   ({ state: status.state, reason: status.reason, input: status.input ?? null });
 
+const recorderDevice = () => captureEngineKind() === "tauri" ? "Mac" : "phone";
+
 function saveFailureCopy(message: string): string {
   return message === TINYCLOUD_NETWORK_FAILURE_MESSAGE
     ? message
-    : `Saved on this phone, but uploading to your space failed: ${message}`;
+    : `Saved on this ${recorderDevice()}, but uploading to your space failed: ${message}`;
 }
 
 export interface VoiceNoteRecorderControllerOptions {
@@ -148,6 +151,8 @@ export interface VoiceNoteRecorderController {
   dismissCaptureIssue(id: string): boolean;
   /** Input levels (0..1), fanned out without React state. */
   subscribeLevel(listener: (level: number) => void): () => void;
+  /** Source-aware levels for the Mac's separate Them trace. */
+  subscribeLevels(listener: (levels: LevelEvent) => void): () => void;
 }
 
 export function createVoiceNoteRecorderController({ tcw, available, transcriber, pipeline, onDeviceReady,
@@ -156,6 +161,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     return () => clearTimeout(timer);
   } }: VoiceNoteRecorderControllerOptions): VoiceNoteRecorderController {
   let state = initialRecorderState;
+  let nativeStopPending = false;
   let preference = readTranscriberPreference();
   let nativeOptions: CaptureOptions | null = null;
   const signedIn = tcw?.did != null;
@@ -204,6 +210,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
   };
   const listeners = new Set<() => void>();
   const levelListeners = new Set<(level: number) => void>();
+  const levelsListeners = new Set<(levels: LevelEvent) => void>();
   // Resolve only after mount. An invalid SDK identity is logged, while the
   // recorder remains usable and never writes notices into another account.
   let issueScope: string | null | undefined;
@@ -369,12 +376,12 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         send({ type: "STOP_FAILED", status: "active", error, id,
           mic: micFromStatus(status), audioMs: status.audioMs, elapsedMs: status.elapsedMs, elapsedAt: Date.now() });
       } else {
-        send({ type: "STOP_FAILED", status: "idle", error: error ?? "Another recording is active on this phone.", id });
+        send({ type: "STOP_FAILED", status: "idle", error: error ?? `Another recording is active on this ${recorderDevice()}.`, id });
         acceptNativeOptions(status);
         send(activePickup(status));
       }
     } catch (caught) {
-      send({ type: "STOP_FAILED", status: "unknown", error: `Could not check whether this phone stopped recording: ${messageOf(caught)}`, id });
+      send({ type: "STOP_FAILED", status: "unknown", error: `Could not check whether this ${recorderDevice()} stopped recording: ${messageOf(caught)}`, id });
     }
   };
 
@@ -384,7 +391,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       if (state.phase !== "discarding") return;
       if (status.state === "idle") {
         send({ type: "DISCARD_FAILED", id: shown, committed: true,
-          error: `${error} The recording ended; its audio remains on this phone.` });
+          error: `${error} The recording ended; its audio remains on this ${recorderDevice()}.` });
         void pendingStore.refresh();
       } else if (status.id === shown) {
         acceptNativeOptions(status);
@@ -412,8 +419,39 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
   /** A native commit is enough for the receipt; cloud work follows independently. */
   const saveStopped = async (recording: VoiceNoteRecording) => {
     const generation = currentAccountGeneration();
+    const accountCurrent = () => generation === currentAccountGeneration();
+    // Admission can run as soon as the local file is committed. The row
+    // callback below supplies the cloud identity before the PTX job starts.
+    const privateCheck = recording.options?.transcriber === "private-cloud" && transcriber && tcw
+      ? Promise.resolve().then(() => transcriber.check({ automatic: true, current: accountCurrent }))
+        .then(() => true, (error: unknown) => {
+          console.warn("[VoiceNotes] Private transcription admission failed", error);
+          return false;
+        }) : null;
+    let privateStarted = false;
+    const startPrivate = () => {
+      if (privateStarted || recording.options?.transcriber !== "private-cloud" || !transcriber) return;
+      privateStarted = true;
+      void privateCheck?.then((ready) => { if (ready && accountCurrent()) transcriber.noteSaved(recording); });
+    };
+    const completeSaved = (saved: VoiceNoteRecording) => {
+      if (!accountCurrent()) return;
+      send({ type: "SAVED", id: saved.id, durationMs: saved.durationMs, at: Date.now() });
+      if (privateStarted) onSaved?.(saved);
+      else landed(generation, saved);
+    };
     send({ type: "LOCAL_COMMITTED", id: recording.id, durationMs: recording.durationMs, at: Date.now() });
     void pendingStore.refresh();
+    // The Mac receipt is backed by durable stopped sources. Readers and all
+    // downstream work wait for the imported playable file before proceeding.
+    if (recording.ledger?.localAudio?.state === "preparing") {
+      try { await VoiceNotes.awaitAudioReady?.(recording.id); }
+      catch (error) {
+        send({ type: "SAVE_FAILED", error: `Recording saved. Couldn't prepare audio: ${messageOf(error)}`,
+          recording: { id: recording.id, durationMs: recording.durationMs } });
+        return;
+      }
+    }
     if (recording.options?.transcriber === "assemblyai" && transcriber && generation === currentAccountGeneration()) {
       transcriber.noteSaved(recording);
     }
@@ -432,14 +470,13 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       try {
         const finish = pendingStore.beginAutomaticSave();
         try {
-          const result = await pipeline.process({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() }, recording.id);
-          if (result === "owned-by-another-run") {
+          const result = await pipeline.process({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() }, recording.id, "stop", startPrivate, completeSaved);
+          if (result === "owned-by-another-run" || result === "retry-scheduled") {
             send({ type: "LOCAL_UPLOAD_IN_FLIGHT", id: recording.id });
             void pendingStore.refresh();
             return;
           }
-          send({ type: "SAVED", id: recording.id, durationMs: recording.durationMs, at: Date.now() });
-          landed(generation, recording);
+          completeSaved(recording);
         } finally { finish(); }
       } catch (caught) {
         if (!pipeline.isAccepting() || saveDeferredForAccountTransition(caught)) {
@@ -461,12 +498,13 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     send({ type: "SAVE_PROGRESS", percent: null });
     const outcome = await saveRecording(tcw, recording, (stored, total) => {
       if (total > 0) send({ type: "SAVE_PROGRESS", percent: Math.floor((stored / total) * 100) });
-    });
+    }, startPrivate);
     switch (outcome.kind) {
       case "saved":
         reportSavedNoteSyncError(recording.id, outcome.noteSyncError);
         send({ type: "SAVED", id: recording.id, durationMs: recording.durationMs, at: Date.now() });
-        landed(generation, recording, outcome.audio ?? undefined);
+        if (privateStarted) onSaved?.(recording);
+        else landed(generation, recording, outcome.audio ?? undefined);
         void pendingStore.refresh(outcome.cleanupError);
         return;
       case "failed":
@@ -511,8 +549,9 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       if (recording.owner === tcw.did && tcw.did && tcw.spaceId) {
         const finish = pendingStore.beginAutomaticSave();
         try {
-          const result = await pipeline.process({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() }, recording.id, "background");
-          if (result === "owned-by-another-run") {
+          const result = await pipeline.process({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() }, recording.id, "background", undefined,
+            (saved) => landed(generation, saved));
+          if (result === "owned-by-another-run" || result === "retry-scheduled") {
             send({ type: "LOCAL_UPLOAD_IN_FLIGHT", id: recording.id });
             return;
           }
@@ -716,7 +755,8 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         VoiceNotes.addListener("level", (event) => {
           // Every capture engine emits linear RMS. Convert once at the boundary to the
           // perceptual 0..1 level shared by the halo, bars, trace, and activity gate.
-          for (const listener of levelListeners) listener(levelFromAmplitude(event.level));
+          for (const listener of levelListeners) listener(levelFromAmplitude(event.sources?.mic.level ?? event.level));
+          for (const listener of levelsListeners) listener(event);
         }),
         // Retained by the shell until heard, so a reload mid-recording still saves the note.
         VoiceNotes.addListener("autoStopped", onAutoStopped),
@@ -844,7 +884,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     },
     async record() {
       // Never before the recorder is reconciled, over a recording, or over a receipt still being shown.
-      if (!available || !state.ready || state.phase !== "idle" || state.outcome !== null) return;
+      if (!available || !state.ready || nativeStopPending || state.phase !== "idle" || state.outcome !== null) return;
       stopAllPlayback();
       send({ type: "START_REQUESTED" });
       if (choice.id === "on-device") ensureLocalModel(true);
@@ -852,7 +892,10 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       try {
         // The recording starts from the engine's default: wait for any default write in flight, and refuse to start on one that could not be put right.
         await settleDefaults();
+        if (captureEngineKind() === "web" && typeof navigator !== "undefined")
+          void navigator.storage?.persist?.().catch(() => undefined);
         const started = await VoiceNotes.start({ maxDurationMs: requested,
+          uploadAudio: readUploadAudioPreference(),
           ...(!privateDiarization() ? { identifySpeakers: false } : {}) });
         const elapsedAt = Date.now();
         nativeOptions = null;
@@ -895,6 +938,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         return;
       }
       if (state.phase !== "recording") return;
+      nativeStopPending = true;
       send({ type: "STOP_REQUESTED", at: Date.now() });
       let recording: VoiceNoteRecording;
       try {
@@ -909,6 +953,8 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
           : code === "finalization_timed_out" ? FINALIZATION_PENDING
           : `Could not stop: ${messageOf(caught)}`, code === "finalization_timed_out" ? state.recordingId : null);
         return;
+      } finally {
+        nativeStopPending = false;
       }
       captureCommitted(recording.id, recording);
       void saveStopped(recording).catch((caught: unknown) =>
@@ -983,7 +1029,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         const code = errorCode(caught);
         if (code === "already_committed") {
           if (shown) unmarkDiscarded(shown);
-          await reconcileDiscardFailure(shown, "Already saved on this phone. The note is still available.");
+          await reconcileDiscardFailure(shown, `Already saved on this ${recorderDevice()}. The note is still available.`);
           return;
         }
         if (code !== "not_recording" && code !== "no_audio_captured") {
@@ -1041,7 +1087,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
               native.status === "signed_in" && native.accountDid === tcw.did
                 ? { accountDid: native.accountDid, transitionGen: native.transitionGen } : null));
             if (!claimed) {
-              account.reportError("This phone's recording account is not ready. Try again shortly.");
+              account.reportError(`This ${recorderDevice()}'s recording account is not ready. Try again shortly.`);
               return;
             }
             if (generation !== currentAccountGeneration()) {
@@ -1055,7 +1101,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
             });
             await account.refresh(null);
           } catch (caught) {
-            account.reportError(`Could not save notes on this phone: ${messageOf(caught)}`);
+            account.reportError(`Could not save notes on this ${recorderDevice()}: ${messageOf(caught)}`);
           } finally { finishSaving(); }
           return;
         }
@@ -1065,7 +1111,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         try {
           savedRun = await savePendingRecordings(tcw);
         } catch (caught) {
-          account.reportError(`Could not save notes on this phone: ${messageOf(caught)}`);
+          account.reportError(`Could not save notes on this ${recorderDevice()}: ${messageOf(caught)}`);
           return;
         }
         for (const recording of savedRun.saved) landed(generation, recording);
@@ -1094,6 +1140,10 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       return () => {
         levelListeners.delete(listener);
       };
+    },
+    subscribeLevels(listener) {
+      levelsListeners.add(listener);
+      return () => { levelsListeners.delete(listener); };
     },
   };
 }

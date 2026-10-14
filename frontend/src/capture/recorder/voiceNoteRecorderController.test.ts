@@ -189,6 +189,27 @@ async function attached() {
 }
 
 describe("voice-note recorder controller", () => {
+  test("Record stays disabled until a native Stop drain completes", async () => {
+    const base = plugin;
+    let starts = 0;
+    let release!: () => void;
+    const drain = new Promise<void>((resolve) => { release = resolve; });
+    __setVoiceNotesForTests({ ...base,
+      async start(options) { starts++; return base.start(options); },
+      async stop() { await drain; return base.stop(); },
+    }, { available: true });
+    const { recorder, detach } = await attached();
+    await recorder.record();
+    const stopping = recorder.stop();
+    expect(recorder.getState().phase).toBe("stopping");
+    await recorder.record();
+    expect(starts).toBe(1);
+    expect(recorder.getState().error).toBeNull();
+    release();
+    await stopping;
+    detach();
+  });
+
   test("starting and resuming silence a playing note before native capture", async () => {
     const cleanupDom = installDom();
     const { recorder, detach } = await attached();
@@ -240,6 +261,21 @@ describe("voice-note recorder controller", () => {
     fake.emit("level", { level: 0, peak: 0 });
     expect(received.at(-1)).toBe(0);
     unsubscribe();
+    detach();
+  });
+
+  test("Mac source levels keep system audio out of the mic subscriber", async () => {
+    const { recorder, detach } = await attached();
+    const mic: number[] = [];
+    const sources: unknown[] = [];
+    const stopMic = recorder.subscribeLevel((level) => mic.push(level));
+    const stopSources = recorder.subscribeLevels((levels) => sources.push(levels.sources));
+    const event = { level: 1, peak: 1, sources: { mic: { level: 0, peak: 0 }, system: { level: 1, peak: 1 } } };
+    fake.emit("level", event);
+    expect(mic).toEqual([0]);
+    expect(sources).toEqual([event.sources]);
+    stopMic();
+    stopSources();
     detach();
   });
 
@@ -1098,6 +1134,34 @@ describe("voice-note recorder controller", () => {
     expect(recorder.getState()).toMatchObject({ outcome: "saved", error: null });
     expect(pendingStore.snapshot().running).toBe(false);
     detach();
+  });
+
+  test("Private starts at the row boundary while audio remains stalled", async () => {
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1,
+      transcriber: "private-cloud", identifySpeakers: false });
+    let release!: () => void;
+    const audioWaiting = new Promise<void>((resolve) => { release = resolve; });
+    const pipeline: VoiceNotePipeline = {
+      process: async (_ctx, _id, _trigger, onRowCreated) => {
+        onRowCreated?.();
+        await audioWaiting;
+      },
+      reconcileAll: async () => {}, cancelAll: () => {}, resume: () => {},
+      isAccepting: () => true, quiescent: async () => true,
+    };
+    const recorder = controller({ pipeline });
+    const detach = recorder.attach();
+    try {
+      await tick();
+      await recorder.record();
+      await recorder.stop();
+      await tick();
+      expect(noted).toEqual([onPhone[0]!.id]);
+      expect(recorder.getState()).toMatchObject({ outcome: "local", localUpload: "uploading" });
+      release();
+      await tick();
+      expect(noted).toEqual([onPhone[0]!.id]);
+    } finally { release(); detach(); }
   });
 
   test("Save now reports an unavailable fresh sign-in client instead of silently refreshing", async () => {

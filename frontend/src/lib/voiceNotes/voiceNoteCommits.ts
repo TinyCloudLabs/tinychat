@@ -4,6 +4,9 @@ import { CONNECTORS_SQL_DB_NAME, transcriptKvKey } from "../connectors/connector
 export const LEGACY_TRANSCRIPT_KEYS = [
   "transcription_outcome", "transcript_text", "speaker_labels", "transcribed_at",
   "transcription_engine", "transcript_provider", "inference_provider", "model", "language",
+  "transcription_audio_seconds", "transcription_duration_seconds",
+  "transcription_voiced_seconds",
+  "transcription_vad_dropped_above_floor_pct", "transcription_vad_fallback", "transcription_stats_missing",
 ] as const;
 
 export interface LegacyTranscriptRow { id: string; metadata: unknown }
@@ -23,7 +26,11 @@ function metadata(value: unknown): Record<string, unknown> {
 
 /** The same order as LEGACY_WINNER_SQL_ORDER: latest ISO time, then smallest id. */
 export function legacyTranscriptWinner<T extends LegacyTranscriptRow>(rows: readonly T[]): T | null {
-  return rows.filter((row) => metadata(row.metadata).transcription_outcome != null).sort((a, b) => {
+  return rows.filter((row) => {
+    const m = metadata(row.metadata);
+    return m.transcription_outcome === "transcribed" || m.transcription_outcome === "no_speech"
+      || (m.transcription_outcome == null && typeof m.transcript_text === "string" && m.transcript_text.trim().length > 0);
+  }).sort((a, b) => {
     const at = String(metadata(a.metadata).transcribed_at ?? "");
     const bt = String(metadata(b.metadata).transcribed_at ?? "");
     return (at === bt ? 0 : at > bt ? -1 : 1) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
@@ -114,7 +121,11 @@ export async function readLegacyTranscriptWinner(tcw: Pick<TinyCloudWeb, "sql">,
   const result = await tcw.sql.db(CONNECTORS_SQL_DB_NAME).query(
     `SELECT g.id, g.metadata FROM connector_meeting g
      WHERE g.source_id = ? AND g.source IN ('exo-voice-note', 'exo-voice-note-dup')
-       AND json_valid(g.metadata) AND json_extract(g.metadata, '$.transcription_outcome') IS NOT NULL
+       AND json_valid(g.metadata)
+       AND (json_extract(g.metadata, '$.transcription_outcome') IN ('transcribed','no_speech')
+         OR (json_extract(g.metadata, '$.transcription_outcome') IS NULL
+           AND typeof(json_extract(g.metadata, '$.transcript_text')) = 'text'
+           AND length(trim(json_extract(g.metadata, '$.transcript_text'))) > 0))
      ${LEGACY_WINNER_SQL_ORDER}`, [sourceId],
   );
   if (!result.ok) throw new Error(`Read legacy transcript: ${result.error.message}`);
@@ -126,25 +137,29 @@ export function legacyTranscriptMetadata(row: LegacyTranscriptRow | null): Recor
   return row ? metadata(row.metadata) : {};
 }
 
+export interface TranscriptProvenance { engine: string | null; provider: string | null }
 export interface VoiceNoteTranscriptLocator {
   bodyKey: string | null;
   outcome: "transcribed" | "no_speech" | "none";
   expectedText: string | null;
   preview: string | null;
   committed: boolean;
+  /** Non-null only when provenance is bound to the selected committed body. */
+  provenance: TranscriptProvenance | null;
 }
 export async function voiceNoteTranscriptLocator(tcw: Pick<TinyCloudWeb, "sql">,
   sourceId: string): Promise<VoiceNoteTranscriptLocator> {
   const commit = await readTranscriptCommit(tcw, sourceId);
   if (commit) return { bodyKey: commit.outcome === "transcribed" ? commit.bodyKey : null,
-    outcome: commit.outcome, expectedText: null, preview: commit.preview, committed: true };
+    outcome: commit.outcome, expectedText: null, preview: commit.preview, committed: true,
+    provenance: { engine: commit.engine, provider: commit.provider } };
   const winner = legacyTranscriptMetadata(await readLegacyTranscriptWinner(tcw, sourceId));
   const outcome = winner.transcription_outcome === "transcribed" ? "transcribed"
     : winner.transcription_outcome === "no_speech" ? "no_speech" : "none";
   return { bodyKey: outcome === "transcribed" ? transcriptKvKey("exo-voice-note", sourceId) : null,
     outcome, expectedText: typeof winner.transcript_text === "string" ? winner.transcript_text : null,
     preview: typeof winner.transcript_text === "string" ? winner.transcript_text.slice(0, 280) : null,
-    committed: false };
+    committed: false, provenance: null };
 }
 
 export function normalizeTranscriptText(text: string): string { return text.replace(/\s+/g, " ").trim(); }

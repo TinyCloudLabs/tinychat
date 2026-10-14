@@ -5,8 +5,9 @@ services:
     # Autojoin requires stop-and-drain replacement: never run two backend writers.
     # The HTTP server and scheduler drain together before process exit.
     stop_grace_period: 130s
-    ports:
-      - "3001:3001"
+    # TC-1012: no host `ports:`. Publishing 3001 let the Phala gateway serve the
+    # backend at <app_id>-3001.<gateway>, bypassing dstack-ingress. The ingress
+    # reaches it over the compose network (TARGET_ENDPOINT below).
     environment:
       NODE_ENV: production
       PORT: "3001"
@@ -94,10 +95,11 @@ services:
       # Google Meet OAuth proxy (WP-A) — dark by default: unset flag = the five
       # /api/connectors/google/oauth/* routes are never mounted (404). Armed, the three client
       # vars below are mandatory and the backend refuses to build the router without them.
-      # Ordinary Google connection stays browser-only. Autojoin consent additionally stores
+      # Browser and Mac Google clients are separate. Autojoin consent additionally stores
       # encrypted Google credentials when transcription + CONNECTOR_CREDENTIAL_MASTER are set.
       GOOGLE_MEET_OAUTH_ENABLED: ${GOOGLE_MEET_OAUTH_ENABLED:-false}
       GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
+      GOOGLE_OAUTH_DESKTOP_CLIENT_ID: ${GOOGLE_OAUTH_DESKTOP_CLIENT_ID:-}
       GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:-}
       GOOGLE_OAUTH_REDIRECT_URI: ${GOOGLE_OAUTH_REDIRECT_URI:-}
       # TC-581: share a colliding calendar capture with accepted invitees. Off unless exactly "true".
@@ -127,8 +129,12 @@ services:
       # Hosted AssemblyAI (TinyCloud's key). Both set = on; either empty = off. Never leaves this process.
       ASSEMBLYAI_API_KEY: ${ASSEMBLYAI_API_KEY:-}
       ASSEMBLYAI_HOSTED_HANDLE_KEY: ${ASSEMBLYAI_HOSTED_HANDLE_KEY:-}
+      ASSEMBLYAI_HOSTED_SPOOL_DIR: /var/lib/tinychat/assemblyai
+      ASSEMBLYAI_HOSTED_FRESH_INSTALL: ${ASSEMBLYAI_HOSTED_FRESH_INSTALL:-}
+      ASSEMBLYAI_HOSTED_ADMIN_KEY: ${ASSEMBLYAI_HOSTED_ADMIN_KEY:-}
     volumes:
       - /var/run/dstack.sock:/var/run/dstack.sock:ro
+      - assemblyai-data:/var/lib/tinychat/assemblyai
     restart: unless-stopped
 
   dstack-ingress:
@@ -152,3 +158,4 @@ services:
 
 volumes:
   cert-data:
+  assemblyai-data:

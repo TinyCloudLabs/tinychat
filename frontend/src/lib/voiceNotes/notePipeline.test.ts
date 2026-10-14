@@ -82,11 +82,12 @@ const ROWS: Row[] = [
 
   // 2. In your space
   { name: "space: waiting to upload", patch: {}, states: { phone: "done", space: "waiting" }, current: "space", caption: "Waiting to upload" },
-  { name: "space: next in line when the lane is busy and nothing is ahead", patch: { space: { pending: { upload: { state: "waiting", bytes: 0, total: 100 }, waitingBehind: 0 }, lane: { busy: true, depth: 3 } } }, current: "space", caption: "Waiting to upload · next in line" },
+  { name: "space: another operation is using the lane", patch: { space: { pending: { upload: { state: "waiting", bytes: 0, total: 100 }, waitingBehind: 0 }, lane: { busy: true, depth: 3 } } }, current: "space", caption: "Waiting for your space to finish another operation" },
+  { name: "space: setup before upload", patch: { space: { pending: { upload: { state: "preparing", bytes: 0, total: 100 } } } }, states: { space: "active" }, current: "space", caption: "Preparing your space for audio upload…" },
   { name: "space: nothing ahead and an idle lane is just waiting", patch: { space: { pending: { waitingBehind: 0 }, lane: { busy: false, depth: 0 } } }, current: "space", caption: "Waiting to upload" },
   { name: "space: 2nd in line is one note ahead", patch: { space: { pending: { waitingBehind: 1 }, lane: { busy: true, depth: 2 } } }, current: "space", caption: "Waiting to upload · 2nd in line" },
   { name: "space: 12th in line is eleven notes ahead", patch: { space: { pending: { waitingBehind: 11 }, lane: { busy: true, depth: 12 } } }, current: "space", caption: "Waiting to upload · 12th in line" },
-  { name: "space: a busy lane with no per-note position never invents one", patch: { space: { pending: {}, lane: { busy: true, depth: 5 } } }, current: "space", caption: "Waiting to upload" },
+  { name: "space: a busy lane with no per-note position never invents one", patch: { space: { pending: {}, lane: { busy: true, depth: 5 } } }, current: "space", caption: "Waiting for your space to finish another operation" },
   { name: "space: uploading 42%", patch: { space: { pending: { upload: { state: "uploading", bytes: 42, total: 100 } } } }, states: { space: "active" }, current: "space", caption: "Uploading audio to your TinyCloud space · 42%" },
   { name: "space: retrying", patch: { space: { pending: { upload: { state: "retrying", bytes: 42, total: 100 } } } }, states: { space: "active" }, current: "space", caption: "Retrying…" },
   { name: "space: signed out", patch: { space: { pending: { held: "signed-out" } } }, states: { space: "blocked" }, current: "space", cause: "You're signed out. This note is safe on this phone.", action: "sign-in" },
@@ -215,6 +216,12 @@ describe("notePipeline: every row of the stages table", () => {
 });
 
 describe("notePipeline: shape", () => {
+  test("a pending deadline retry is waiting with a time, not failed", () => {
+    const pipeline = notePipeline(input({ space: { pending: { retryAt: Date.now() + 30_000 } } }));
+    expect(pipeline.steps.find((step) => step.key === "space")).toMatchObject({
+      state: "waiting", caption: expect.stringMatching(/Trying again in \d+s/),
+    });
+  });
   test("steps are always the four, in order, with the device in the first label", () => {
     expect(notePipeline(input()).steps.map((s) => [s.key, s.label])).toEqual([
       ["phone", "Audio on this phone"], ["space", "Audio in your space"], ["transcript", "Transcript"], ["notes", "Notes"],
@@ -244,6 +251,14 @@ describe("notePipeline: shape", () => {
     const privateResult = notePipeline(input({ ...cloud({ kind: "done", outcome: "no_speech" }), space: SAVED }));
     expect(privateResult.steps.find((s) => s.key === "transcript")).toMatchObject({ state: "done", sublabel: "No speech found in your space" });
   });
+  test("durable pending, failed and skipped row states survive an otherwise idle route", () => {
+    for (const state of ["pending", "failed", "skipped"] as const) {
+      const pipeline = notePipeline(input({ space: SAVED, transcript: { persistedState: state } }));
+      expect(pipeline.transcriptionState).toBe(state);
+      expect(pipeline.steps.find((step) => step.key === "transcript")?.state).toBe("skipped");
+    }
+  });
+
 
   test("progress is carried as 0..1 for uploads, model downloads, local and private transcription", () => {
     const progress = (patch: Patch) => notePipeline(input(patch)).steps.find((s) => s.state === "active")?.progress;
@@ -455,4 +470,9 @@ describe("which retries let the user choose the provider", () => {
     expect(transcriptBlocker(final)?.action).toBeUndefined();
     expect(transcriptBlocker(final)?.chooseProvider).toBeUndefined();
   });
+});
+
+test("a browser's local-only space step names the browser", () => {
+  const pipeline = notePipeline(input({ device: "browser", space: { saved: true, localOnly: true, pending: null } }));
+  expect(pipeline.steps.find((step) => step.key === "space")?.caption).toBe("Audio stays in this browser");
 });

@@ -1,4 +1,4 @@
-import { logPipelineError } from "@/lib/debugLog";
+import { logPipeline, logPipelineError } from "@/lib/debugLog";
 import { readableError } from "@/lib/readableError";
 // Voice notes in the owner's TinyCloud space: one indexed live
 // `connector_meeting` row, a `voice_note_transcript` commit record, and bodies
@@ -56,8 +56,9 @@ import {
 import type { VoiceNoteRecording } from "./nativeVoiceNotes";
 import type { LocalTranscript } from "./nativeVoiceNotes";
 import { readLegacyTranscriptWinner, readTranscriptCommit, legacyTranscriptMetadata, type TranscriptCommit } from "./voiceNoteCommits";
-import { commitVoiceNoteTranscript, createVoiceNoteRow, ensureVoiceNoteIdentity, patchVoiceNoteAudio,
-  patchVoiceNoteMarkdown, resolveVoiceNoteRow } from "./voiceNoteRows";
+import { commitVoiceNoteTranscript, createVoiceNoteRow, ensureVoiceNoteIdentity, patchVoiceNoteAudio, patchVoiceNoteLocalOnly,
+  patchVoiceNoteMarkdown, patchVoiceNoteTranscriptionFailure as patchTranscriptionFailureRow, resolveVoiceNoteRow } from "./voiceNoteRows";
+import type { VoiceNoteRow, VoiceNoteTranscriptionStatsMetadata } from "./voiceNoteRows";
 import { runOnSpaceLane } from "../spaceWriteLane";
 import { withVoiceNoteReadDeadline, withVoiceNoteSaveDeadline } from "./saveDeadline";
 import { currentAccountGeneration, isVoiceNoteAccountMounted, StaleAccountContext } from "./accountContext";
@@ -69,6 +70,12 @@ export const VOICE_NOTE_SOURCE = "exo-voice-note";
 
 /** Human label for the Library chip. */
 export const VOICE_NOTE_SOURCE_LABEL = "Voice note";
+export async function patchVoiceNoteTranscriptionFailure(tcw: TinyCloudWeb, sourceId: string, errorCode: string,
+  checkpoint: () => void = () => undefined, statsMetadata: VoiceNoteTranscriptionStatsMetadata = {}): Promise<void> {
+  await patchTranscriptionFailureRow(tcw, sourceId, errorCode, checkpoint, statsMetadata);
+  captureEvents.emit("library-changed", { source: VOICE_NOTE_SOURCE, sourceId });
+}
+
 
 /**
  * The note's audio base key: its parts are under `${base}/p/`, its manifest at
@@ -142,7 +149,7 @@ function setNoteSyncSkip(key: string, reason: NoteSyncSkipReason | null): void {
 
 /** The T18 row and its audio prefix own note sync; there is no separate upload queue. */
 export function syncRecordingNote(tcw: TinyCloudWeb, id: string,
-  checkpoint: () => void = () => undefined): Promise<boolean> {
+  checkpoint: () => void = () => undefined, knownRow?: VoiceNoteRow): Promise<boolean> {
   const syncKey = noteSyncKey(tcw, id);
   const inFlight = noteSyncs.get(syncKey);
   if (inFlight) return inFlight;
@@ -153,7 +160,7 @@ export function syncRecordingNote(tcw: TinyCloudWeb, id: string,
     for (;;) {
       const note = await loadNote(id);
       if (!note) { skip = "no-note"; return false; }
-      const row = await resolveVoiceNoteRow(tcw, id, checkpoint);
+      const row = knownRow ?? await resolveVoiceNoteRow(tcw, id, checkpoint);
       if (!row) { skip = "no-row"; return false; }
       const key = voiceNoteMarkdownKvKey(id);
       if (row.metadata.note_kv_key === key && row.metadata.note_edited_at === note.editedAt) { setNoteSynced(syncKey, note.editedAt); return true; }
@@ -169,7 +176,7 @@ export function syncRecordingNote(tcw: TinyCloudWeb, id: string,
         { operation: `KV put ${key}`, payloadBytes: new TextEncoder().encode(body).byteLength });
       if (!put.ok) throw new Error(`Could not sync recording note: ${put.error.message}`);
       checkpoint();
-      await patchVoiceNoteMarkdown(tcw, id, key, note.editedAt, checkpoint);
+      await patchVoiceNoteMarkdown(tcw, id, key, note.editedAt, checkpoint, row);
       const latest = await loadNote(id);
       if (!latest || latest.revision === note.revision) { setNoteSynced(syncKey, note.editedAt); return true; }
     }
@@ -314,9 +321,9 @@ export interface VoiceNoteAudio {
   nativeFileId?: string;
 }
 
-/** Where a note's transcript stands, from its row's metadata. */
+/** Where a note's transcription stands, from its row's metadata. */
 export interface VoiceNoteTranscriptState {
-  status: "none" | "transcribed" | "no_speech";
+  status: "none" | "pending" | "failed" | "skipped" | "transcribed" | "no_speech";
   /** The start of the transcript text, for the card; the full text is in Library. */
   preview: string | null;
 }
@@ -343,7 +350,7 @@ export function voiceNoteTranscriptState(metadata: unknown, commit?: TranscriptC
       parsed = null;
     }
   }
-  if (!parsed || typeof parsed !== "object") return { status: "none", preview: null };
+  if (!parsed || typeof parsed !== "object") return { status: "pending", preview: null };
   const m = parsed as Record<string, unknown>;
   if (m.transcription_outcome === "no_speech") return { status: "no_speech", preview: null };
   if (m.transcription_outcome === "transcribed") {
@@ -352,6 +359,7 @@ export function voiceNoteTranscriptState(metadata: unknown, commit?: TranscriptC
       ? text.length > TRANSCRIPT_PREVIEW_CHARS ? `${text.slice(0, TRANSCRIPT_PREVIEW_CHARS).trimEnd()}…` : text
       : null };
   }
+  if (m.transcription_outcome === "failed") return { status: "failed", preview: null };
   if (typeof m.transcript_text === "string" && m.transcript_text.trim().length > 0) {
     const text = m.transcript_text.trim();
     return {
@@ -359,14 +367,17 @@ export function voiceNoteTranscriptState(metadata: unknown, commit?: TranscriptC
       preview: text.length > TRANSCRIPT_PREVIEW_CHARS ? `${text.slice(0, TRANSCRIPT_PREVIEW_CHARS).trimEnd()}…` : text,
     };
   }
-  return { status: "none", preview: null };
+  if (m.transcription_outcome === "skipped") return { status: "skipped", preview: null };
+  return { status: "pending", preview: null };
 }
 
 export async function readVoiceNoteTranscriptState(tcw: TinyCloudWeb, sourceId: string): Promise<VoiceNoteTranscriptState> {
   const commit = await readTranscriptCommit(tcw, sourceId);
   if (commit) return voiceNoteTranscriptState(null, commit);
   const legacy = await readLegacyTranscriptWinner(tcw, sourceId);
-  return voiceNoteTranscriptState(legacyTranscriptMetadata(legacy));
+  if (legacy) return voiceNoteTranscriptState(legacyTranscriptMetadata(legacy));
+  const row = await resolveVoiceNoteRow(tcw, sourceId);
+  return voiceNoteTranscriptState(row?.metadata);
 }
 
 /**
@@ -380,13 +391,19 @@ export async function saveVoiceNote(
   source: VoiceNoteAudioSource,
   platform: string,
   opts: StoreAudioOptions = {},
+  uploadAudio = recording.options?.uploadAudio === true,
 ): Promise<StoreResult<UpsertMeetingOutcome & { noteSyncError?: NoteSyncErrorCode }>> {
+  logPipeline("save", recording.id, "start");
   try {
     opts.checkpoint?.();
     const before = await withVoiceNoteSaveDeadline("voice-note space setup", () => ensureVoiceNoteIdentity(tcw, opts.checkpoint));
-    if (before.status !== "established") return { ok: false, error: { code: before.status, message: before.reason ?? before.status, cause: before.cause } };
+    if (before.status !== "established") {
+      logPipelineError("space_setup", before.cause ?? before.reason ?? before.status, recording.id);
+      return { ok: false, error: { code: before.status, message: before.reason ?? before.status, cause: before.cause } };
+    }
     opts.checkpoint?.();
-    const row = await createVoiceNoteRow(tcw, recording, voiceNoteTitle(recording.startedAt), opts.checkpoint);
+    const row = await createVoiceNoteRow(tcw, recording, voiceNoteTitle(recording.startedAt), opts.checkpoint, platform);
+    logPipeline("space_write", recording.id, "done", { destination: "connector_meeting" });
     opts.checkpoint?.();
     await opts.onRowCreated?.(row.id);
     opts.checkpoint?.();
@@ -394,32 +411,68 @@ export async function saveVoiceNote(
     // deterministic id with ON CONFLICT DO NOTHING; parts use deterministic
     // per-note keys and the manifest is written last. A retry therefore adopts
     // complete existing parts and cannot publish a partial file as complete.
+    // PRIVACY INVARIANT: local-only early return MUST precede any audio upload.
+    // When uploadAudio is false, no audio parts or manifest reach TinyCloud KV.
     const emptyKey = transcriptKvKey(VOICE_NOTE_SOURCE, recording.id);
     const empty = await runOnSpaceLane((signal) => { opts.checkpoint?.(); return tcw.kv.put(emptyKey, "[]",
       { ifNoneMatch: "*", contentType: "application/json", signal }); }, { operation: `KV put ${emptyKey}` });
     if (!empty.ok && !/PRECONDITION|412/i.test(`${empty.error.code} ${empty.error.message}`))
       return { ok: false, error: { code: empty.error.code ?? "STORE_ERROR", message: empty.error.message, cause: empty.error } };
+    logPipeline("space_write", recording.id, "done", { destination: "legacy_transcript_key", bodyBytes: 2 });
     opts.checkpoint?.();
+    if (!uploadAudio) {
+      await patchVoiceNoteLocalOnly(tcw, recording, platform, opts.checkpoint);
+      let noteSyncError: NoteSyncErrorCode | undefined;
+      try {
+        await syncRecordingNote(tcw, recording.id, opts.checkpoint, row);
+        logPipeline("space_write", recording.id, "done", { destination: "note_markdown" });
+      } catch (caught) {
+        opts.checkpoint?.();
+        noteSyncError = "sync_failed";
+        logPipelineError("[VoiceNotes] Local-only note's Markdown did not sync", caught);
+      }
+      return { ok: true, data: { id: row.id, inserted: row.inserted, createdAt: row.createdAt, noteSyncError } };
+    }
+    // With uploadAudio=true, run text writes (note sync) in parallel with audio upload.
+    const text = (async () => {
+      let noteSyncError: NoteSyncErrorCode | undefined;
+      try {
+        await syncRecordingNote(tcw, recording.id, opts.checkpoint, row);
+        logPipeline("space_write", recording.id, "done", { destination: "note_markdown" });
+      } catch (caught) {
+        opts.checkpoint?.();
+        noteSyncError = "sync_failed";
+        logPipelineError("markdown_space_write", caught, recording.id);
+      }
+      return noteSyncError;
+    })().then((noteSyncError) => ({ noteSyncError }), (error: unknown) => ({ error }));
+    logPipeline("audio_upload", recording.id, "start");
     const audio = await putVoiceNoteAudio(tcw, recording.id, source, { ...opts, schedule: (job, operation, timeoutMs, payloadBytes) =>
       (opts.schedule ?? ((call, label, limit, size) => runOnSpaceLane(call, {
-        operation: label ?? "voice-note audio KV call", timeoutMs: limit, payloadBytes: size,
-      })))((signal) => { opts.checkpoint?.(); return job(signal); }, operation, timeoutMs, payloadBytes) });
-    if (!audio.ok) return audio;
+        operation: label ?? "voice-note audio KV call", track: "audio", timeoutMs: limit, payloadBytes: size,
+      })))((signal) => { opts.checkpoint?.(); return job(signal); }, operation, timeoutMs, payloadBytes),
+      onProgress: (stored, total) => {
+        logPipeline("audio_upload", recording.id, "progress", { bodyBytes: stored, totalBytes: total });
+        opts.onProgress?.(stored, total);
+      } });
+    if (!audio.ok) {
+      await text;
+      logPipelineError("audio_upload", audio.error, recording.id);
+      return audio;
+    }
+    logPipeline("audio_upload", recording.id, "done", { bodyBytes: audio.data.size });
     const base = voiceNoteAudioKvKey(recording.id);
     opts.checkpoint?.();
     await patchVoiceNoteAudio(tcw, recording, platform, { base, mimeType: audio.data.mimeType,
-      size: audio.data.size, parts: audio.data.parts.length }, opts.checkpoint);
-    // Audio has landed. A Markdown failure is separate; the row's absent/stale
-    // note_edited_at keeps it eligible for the next reconciliation or edit.
-    let noteSyncError: NoteSyncErrorCode | undefined;
-    try { await syncRecordingNote(tcw, recording.id, opts.checkpoint); }
-    catch (caught) {
-      opts.checkpoint?.(); // Cancellation and discard still stop this save.
-      noteSyncError = "sync_failed";
-      logPipelineError("[VoiceNotes] Audio saved, but its Markdown did not sync", caught);
-    }
+      size: audio.data.size, parts: audio.data.parts.length }, opts.checkpoint, row);
+    logPipeline("space_write", recording.id, "done", { destination: "connector_meeting_audio" });
+    const textResult = await text;
+    if ("error" in textResult) throw textResult.error;
+    const noteSyncError = textResult.noteSyncError;
+    logPipeline("save", recording.id, "done");
     return { ok: true, data: { id: row.id, inserted: row.inserted, createdAt: row.createdAt, noteSyncError } };
   } catch (caught) {
+    logPipelineError("save", caught, recording.id);
     return { ok: false, error: { code: (caught as { code?: string }).code ?? "STORE_ERROR",
       message: readableError(caught), cause: caught } };
   }
@@ -484,6 +537,7 @@ export async function readVoiceNoteForTranscription(
   }
   const row = res.data.rows[0];
   if (!row) return { ok: true, data: null };
+  // Raw PTX uploads are not decoded just to measure duration; capture metadata is the fallback, and with neither value PTX decides.
   let durationSeconds: number | null = typeof row[0] === "number" ? row[0] : null;
   let captureVersion: number | null = null;
   let captureTranscriber: string | null = null;
@@ -537,6 +591,7 @@ export async function saveVoiceNoteTranscript(
   account?: VoiceNoteTranscriptAccount,
   checkpoint: () => void = () => undefined,
 ): Promise<StoreResult<UpsertMeetingOutcome>> {
+  logPipeline("transcript_persist", sourceId, "start", { destination: "voice_note_transcript SQL + immutable KV" });
   const accountGeneration = account?.generation ?? currentAccountGeneration();
   checkpoint();
   if (!Number.isSafeInteger(transcript.rev) || transcript.rev < 1)
@@ -558,6 +613,7 @@ export async function saveVoiceNoteTranscript(
     checkpoint();
   } catch (caught) {
     if (caught instanceof StaleAccountContext) throw caught;
+    logPipelineError("transcript_persist", caught, sourceId);
     return { ok: false, error: { code: (caught as { code?: string }).code ?? "STORE_ERROR",
       message: readableError(caught) } };
   }
@@ -583,6 +639,10 @@ export async function saveVoiceNoteTranscript(
       participants: transcript.speakers,
       transcribedAt: typeof m.transcribed_at === "string" ? m.transcribed_at : null, metadata: m,
     }, checkpoint);
+    logPipeline("transcript_persist", sourceId, "done", {
+      destination: "voice_note_transcript SQL + immutable KV",
+      bodyBytes: new TextEncoder().encode(JSON.stringify(transcript.sentences)).byteLength,
+    });
     checkpoint();
     if (accountGeneration === currentAccountGeneration() && (!account?.did || isVoiceNoteAccountMounted(account.did))) {
       captureEvents.emit("library-changed", { source: VOICE_NOTE_SOURCE, sourceId });
@@ -591,6 +651,7 @@ export async function saveVoiceNoteTranscript(
       createdAt: new Date().toISOString() } };
   } catch (caught) {
     if (caught instanceof StaleAccountContext) throw caught;
+    logPipelineError("transcript_persist", caught, sourceId);
     return { ok: false, error: { code: (caught as { code?: string }).code ?? "STORE_ERROR",
       message: readableError(caught) } };
   }
@@ -601,10 +662,14 @@ export function localTranscriptToSave(local: LocalTranscript): VoiceNoteTranscri
   // local.segments' start/end are milliseconds (the native sidecar's canonical-JSON writer only
   // accepts integers); start_time/end_time follow every other transcript source's seconds.
   const sentences: FirefliesSentence[] = local.segments.map((segment, index) => ({
-    index, text: segment.text, start_time: segment.start / 1000, end_time: segment.end / 1000, speaker_name: segment.speaker ?? "You",
+    index, text: segment.text, start_time: segment.start / 1000, end_time: segment.end / 1000,
+    speaker_name: segment.speaker ?? (local.version === 1 ? "You" : null),
+    ...(segment.channel === undefined ? {} : { channel: segment.channel }),
+    ...(segment.speakerId === undefined ? {} : { speaker_id: segment.speakerId }),
+    ...(segment.timing === undefined ? {} : { timing: segment.timing }),
     ...(segment.words ? { words: segment.words } : {}),
   }));
-  return { rev: local.rev, sentences, speakers: [...new Set(local.segments.map((s) => s.speaker ?? "You"))],
+  return { rev: local.rev, sentences, speakers: [...new Set(sentences.map((s) => s.speaker_name).filter((s): s is string => !!s))],
     metadata: { transcription_outcome: local.outcome, transcript_text: local.outcome === "transcribed"
       ? local.segments.map((s) => s.text).join("\n") : null, transcription_engine: local.engine,
       transcript_provider: local.engine, model: local.model, language: local.language,

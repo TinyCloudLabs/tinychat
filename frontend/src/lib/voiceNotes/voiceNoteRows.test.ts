@@ -7,10 +7,16 @@ import { PendingVoiceNotesSaver, schedulePendingVoiceNotesRecovery } from "@/cha
 import { OnDeviceStt, __setOnDeviceSttForTests, type OnDeviceSttPlugin } from "./onDeviceStt";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { CONNECTORS_SQL_DB_NAME, ensureSchema, transcriptKvKey } from "../connectors/connectorStore";
+import { readVoiceNoteTranscriptState, saveVoiceNote } from "./voiceNoteStore";
 import { SQL_MEETING_METADATA_QUERY } from "../meetingChat/corpus";
 import { legacyTranscriptWinner, readTranscriptCommit, voiceNoteTranscriptLocator } from "./voiceNoteCommits";
+import { whisperLocalTranscript } from "./desktop/whisperTranscript";
 import { commitVoiceNoteTranscript, createVoiceNoteRow, ensureVoiceNoteIdentity, patchVoiceNoteAudio,
-  reconcileDuplicates, sweepArchived, transcriptHash, transcriptRevKvKey } from "./voiceNoteRows";
+  patchVoiceNoteTranscriptionFailure, reconcileDuplicates, resolveVoiceNoteRow, sweepArchived, transcriptHash, transcriptRevKvKey } from "./voiceNoteRows";
+import { renderToStaticMarkup } from "react-dom/server";
+import { MemoryRouter } from "react-router-dom";
+import { NoteDetailView } from "@/capture/library/NoteDetailView";
+import { hasPrivateCloudTimingProvenance, transcriptMarkdown, transcriptWithTimestamps } from "@/capture/library/transcriptSegments";
 import { createFakeVoiceNotes } from "./fakeVoiceNotes";
 import { __setVoiceNotesForTests, VoiceNotes } from "./nativeVoiceNotes";
 import { syncOnDeviceTranscript } from "./onDeviceTranscriber";
@@ -19,6 +25,7 @@ import { handoffBeforeCredentialClear } from "./accountHandoff";
 import { advanceAccountGeneration, currentAccountGeneration } from "./accountContext";
 import { runOnSpaceLane, spaceLaneSnapshot, subscribeSpaceLane } from "../spaceWriteLane";
 import { setVoiceNoteSaveDeadlineForTests } from "./saveDeadline";
+import { putPendingSaveState, readPendingSaveStates } from "./pendingSaveState";
 
 test("a healthy long drain does not consume the next save's call deadline", async () => {
   let releaseDrain!: () => void;
@@ -39,6 +46,19 @@ test("a healthy long drain does not consume the next save's call deadline", asyn
     await expect(save).resolves.toBe("saved");
     expect(saveStarted).toBe(true);
   } finally { releaseDrain(); }
+});
+
+test("a stalled background drain cannot delay a voice-note row request", async () => {
+  let release!: () => void;
+  let entered!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const started = new Promise<void>((resolve) => { entered = resolve; });
+  const drain = runOnSpaceLane(async () => { entered(); await gate; }, undefined, "background");
+  await started;
+  try {
+    await expect(runOnSpaceLane(async () => "row saved", { operation: "voice-note row", timeoutMs: 20 }))
+      .resolves.toBe("row saved");
+  } finally { release(); await drain; }
 });
 
 test("a lane job that rejects without a reason rejects its caller", async () => {
@@ -62,6 +82,147 @@ test("space lane snapshot reports busy state and queued depth", async () => {
   expect(spaceLaneSnapshot()).toEqual({ busy: false, depth: 0 });
   expect(notifications).toBeGreaterThan(0);
   unsubscribe();
+});
+
+test("one save publishes note text while an audio part is stalled", async () => {
+  const { tcw, values } = space();
+  await ensureVoiceNoteIdentity(tcw);
+  const id = `short-sync-${++count}`;
+  await saveNote(id, "Text must arrive before audio");
+  let calls = 0;
+  const db = tcw.sql.db.bind(tcw.sql);
+  tcw.sql.db = ((name: string) => {
+    const handle = db(name);
+    return { ...handle,
+      query: async (...args: Parameters<typeof handle.query>) => { calls++; return handle.query(...args); },
+      execute: async (...args: Parameters<typeof handle.execute>) => { calls++; return handle.execute(...args); },
+    };
+  }) as typeof tcw.sql.db;
+  const put = tcw.kv.put.bind(tcw.kv);
+  const get = tcw.kv.get.bind(tcw.kv);
+  const list = tcw.kv.list.bind(tcw.kv);
+  let releaseAudio!: () => void;
+  let audioStarted!: () => void;
+  const audioGate = new Promise<void>((resolve) => { releaseAudio = resolve; });
+  const started = new Promise<void>((resolve) => { audioStarted = resolve; });
+  tcw.kv.put = (async (...args: Parameters<typeof put>) => {
+    calls++;
+    if (args[0].includes("/p/")) { audioStarted(); await audioGate; }
+    return put(...args);
+  }) as typeof tcw.kv.put;
+  tcw.kv.get = (async (...args: Parameters<typeof get>) => { calls++; return get(...args); }) as typeof tcw.kv.get;
+  tcw.kv.list = (async (...args: Parameters<typeof list>) => { calls++; return list(...args); }) as typeof tcw.kv.list;
+  const recording = { id, startedAt: Date.now(), durationMs: 52_000, mimeType: "audio/mp4", sizeBytes: 4,
+    silencedMs: 0, silencedEvents: 0, noSignalMs: 0, version: 2 as const,
+    source: "in_app" as const, options: { transcriber: "private-cloud" as const, identifySpeakers: false } };
+  const saving = saveVoiceNote(tcw, recording, { mimeType: "audio/mp4", size: 4,
+    readPart: async () => new Uint8Array([1, 2, 3, 4]) }, "tauri");
+  try {
+    await started;
+    for (let i = 0; i < 100 && !values.has(voiceNoteMarkdownKvKey(id)); i++) await Bun.sleep(1);
+    expect(values.get(voiceNoteMarkdownKvKey(id))).toContain("Text must arrive before audio");
+    expect(values.has(`${voiceNoteAudioKvKey(id)}/manifest`)).toBe(false);
+    expect((await resolveVoiceNoteRow(tcw, id))?.metadata).toMatchObject({
+      capture: { platform: "tauri", options: { transcriber: "private-cloud" } },
+      note_kv_key: voiceNoteMarkdownKvKey(id),
+    });
+  } finally { releaseAudio(); }
+  expect((await saving).ok).toBe(true);
+  // Ten save requests plus the assertion's row read above. The old path
+  // performed 12+ sequential requests in Sam's log.
+  expect(calls).toBe(11);
+});
+
+test("one save overlaps short text and audio requests at fixed fixture latency", async () => {
+  const { tcw } = space();
+  await ensureVoiceNoteIdentity(tcw);
+  const id = `timed-sync-${++count}`;
+  await saveNote(id, "Timed fixture");
+  let serialLatency = 0;
+  const delay = async () => {
+    const start = performance.now();
+    await Bun.sleep(20);
+    serialLatency += performance.now() - start;
+  };
+  let calls = 0;
+  const db = tcw.sql.db.bind(tcw.sql);
+  tcw.sql.db = ((name: string) => {
+    const handle = db(name);
+    return { ...handle,
+      query: async (...args: Parameters<typeof handle.query>) => { calls++; await delay(); return handle.query(...args); },
+      execute: async (...args: Parameters<typeof handle.execute>) => { calls++; await delay(); return handle.execute(...args); },
+    };
+  }) as typeof tcw.sql.db;
+  const put = tcw.kv.put.bind(tcw.kv);
+  const get = tcw.kv.get.bind(tcw.kv);
+  const list = tcw.kv.list.bind(tcw.kv);
+  tcw.kv.put = (async (...args: Parameters<typeof put>) => { calls++; await delay(); return put(...args); }) as typeof tcw.kv.put;
+  tcw.kv.get = (async (...args: Parameters<typeof get>) => { calls++; await delay(); return get(...args); }) as typeof tcw.kv.get;
+  tcw.kv.list = (async (...args: Parameters<typeof list>) => { calls++; await delay(); return list(...args); }) as typeof tcw.kv.list;
+  const recording = { id, startedAt: Date.now(), durationMs: 52_000, mimeType: "audio/mp4", sizeBytes: 4,
+    silencedMs: 0, silencedEvents: 0, noSignalMs: 0 };
+  const start = performance.now();
+  const saved = await saveVoiceNote(tcw, recording, { mimeType: "audio/mp4", size: 4,
+    readPart: async () => new Uint8Array([1, 2, 3, 4]) }, "tauri");
+  const elapsed = performance.now() - start;
+  expect(saved.ok).toBe(true);
+  expect(calls).toBe(10);
+  // Compare against the observed sum of request delays, so concurrent test
+  // load cannot turn a fixed wall-clock threshold into a false failure.
+  expect(elapsed).toBeLessThan(serialLatency - 10);
+});
+
+test("a pending save failure is restored after volatile status is cleared", async () => {
+  const original = VoiceNotes;
+  const { tcw } = space();
+  const fake = createFakeVoiceNotes();
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  try {
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1,
+      transcriber: "off", identifySpeakers: false });
+    const started = await fake.plugin.start();
+    await fake.plugin.stop();
+    pendingStore.setAccount(tcw.did);
+    await pendingStore.refresh();
+    pendingStore.reportNoteFailure(started.id, Object.assign(new Error("Timed out"), { code: "VOICE_NOTE_OPERATION_TIMEOUT" }));
+    pendingStore.setHeld(started.id, "unowned");
+    await readPendingSaveStates(tcw.did, [started.id]);
+    pendingStore.setAccount("did:other");
+    pendingStore.setAccount(tcw.did);
+    await pendingStore.refresh();
+    for (let turn = 0; turn < 20 && !pendingStore.snapshot().notes?.find((note) => note.id === started.id)?.failed; turn++)
+      await Bun.sleep(1);
+    expect(pendingStore.snapshot().notes?.find((note) => note.id === started.id)).toMatchObject({
+      failed: { kind: "timeout" }, held: "unowned",
+    });
+  } finally { __setVoiceNotesForTests(original, { available: null }); }
+});
+
+test("reconcile honors a persisted retry due time", async () => {
+  const original = VoiceNotes;
+  const { tcw, sqlite } = space();
+  const fake = createFakeVoiceNotes();
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  try {
+    await ensureVoiceNoteIdentity(tcw);
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1,
+      transcriber: "off", identifySpeakers: false });
+    const started = await fake.plugin.start();
+    await fake.plugin.stop();
+    await putPendingSaveState(tcw.did, { id: started.id, retryAt: Date.now() + 80 });
+    pendingStore.setAccount(tcw.did);
+    await pendingStore.refresh();
+    const running = createVoiceNotePipeline(tcw).reconcileAll({
+      did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration(),
+    });
+    await Bun.sleep(10);
+    expect(sqlite.query("SELECT id FROM connector_meeting WHERE source_id = ?").all(started.id)).toEqual([]);
+    await running;
+    expect(sqlite.query("SELECT id FROM connector_meeting WHERE source_id = ?").all(started.id)).toEqual([]);
+    for (let turn = 0; turn < 150 && sqlite.query("SELECT id FROM connector_meeting WHERE source_id = ?").all(started.id).length === 0; turn++)
+      await Bun.sleep(1);
+    expect(sqlite.query("SELECT id FROM connector_meeting WHERE source_id = ?").all(started.id)).toEqual([{ id: `vn-${started.id}` }]);
+  } finally { __setVoiceNotesForTests(original, { available: null }); }
 });
 import { pendingStore, saveNoteForAccount } from "./recorderSaves";
 import { associateLegacyNotes, markLegacyOwnerUnknown, migrateLegacyDiscardLedger } from "./legacyMigration";
@@ -187,6 +348,17 @@ describe("voice-note identity and transcript authority", () => {
     expect((await ensureVoiceNoteIdentity(tcw)).status).toBe("established");
     expect(tableCreates).toBe(2);
   });
+  test("public transcript state prefers a terminal duplicate over a canonical pending hint", async () => {
+    const { tcw, sqlite } = space();
+    await ensureSchema(tcw);
+    expect((await ensureVoiceNoteIdentity(tcw)).status).toBe("established");
+    insert(sqlite, "canonical", "rec", { transcription_outcome: "pending" });
+    insert(sqlite, "duplicate", "rec", {
+      transcription_outcome: "transcribed", transcript_text: "Legacy transcript", transcribed_at: "2026-01-02T00:00:00.000Z",
+    }, "exo-voice-note-dup");
+    expect(await readVoiceNoteTranscriptState(tcw, "rec")).toMatchObject({ status: "transcribed" });
+  });
+
   test("an old random-id insert before deterministic create resolves to the old live row", async () => {
     const { tcw, sqlite } = space();
     await ensureSchema(tcw);
@@ -196,6 +368,129 @@ describe("voice-note identity and transcript authority", () => {
       mimeType: "audio/mp4", sizeBytes: 1, silencedMs: 0, silencedEvents: 0, noSignalMs: 0 }, "Voice note");
     expect(row.id).toBe("old-random-id");
     expect(sqlite.query("SELECT id FROM connector_meeting WHERE source_id = 'rec'").all()).toHaveLength(1);
+  });
+  test("fresh rows skip the legacy outcome backfill and re-resolve", async () => {
+    const { tcw } = space();
+    await ensureSchema(tcw);
+    await ensureVoiceNoteIdentity(tcw);
+    const baseDb = tcw.sql.db.bind(tcw.sql);
+    let backfills = 0;
+    let resolves = 0;
+    tcw.sql.db = ((name: string) => {
+      const db = baseDb(name);
+      return {
+        ...db,
+        query: async (sql: string, params?: unknown[], options?: unknown) => {
+          if (sql.includes("SELECT id, source_id, metadata, created_at FROM connector_meeting WHERE source = 'exo-voice-note'"))
+            resolves++;
+          return db.query(sql, params as never, options as never);
+        },
+        execute: async (sql: string, params?: unknown[], options?: unknown) => {
+          if (sql.includes("$.transcription_outcome")) backfills++;
+          return db.execute(sql, params as never, options as never);
+        },
+      };
+    }) as typeof tcw.sql.db;
+    await createVoiceNoteRow(tcw, { id: "fresh", startedAt: 0, durationMs: 1000,
+      mimeType: "audio/mp4", sizeBytes: 1, silencedMs: 0, silencedEvents: 0, noSignalMs: 0 }, "Fresh");
+    expect({ backfills, resolves }).toEqual({ backfills: 0, resolves: 1 });
+  });
+  test("new rows start pending and an off capture is recorded as skipped", async () => {
+    const { tcw, sqlite } = space();
+    await ensureSchema(tcw);
+    const pending = await createVoiceNoteRow(tcw, { id: "pending", startedAt: 0, durationMs: 1000,
+      mimeType: "audio/mp4", sizeBytes: 1, silencedMs: 0, silencedEvents: 0, noSignalMs: 0 }, "Pending note");
+    const skipped = await createVoiceNoteRow(tcw, { id: "skipped", startedAt: 0, durationMs: 1000,
+      mimeType: "audio/mp4", sizeBytes: 1, silencedMs: 0, silencedEvents: 0, noSignalMs: 0,
+      options: { transcriber: "off", identifySpeakers: false } }, "Skipped note");
+    expect(pending.metadata.transcription_outcome).toBe("pending");
+    expect(skipped.metadata.transcription_outcome).toBe("skipped");
+    expect(sqlite.query("SELECT COUNT(*) AS count FROM connector_meeting WHERE source='exo-voice-note'").get())
+      .toEqual({ count: 2 });
+  });
+
+  test("legacy text without an outcome stays transcribed when an off-mode save reuses the row", async () => {
+    const { tcw, sqlite } = space();
+    await ensureSchema(tcw);
+    insert(sqlite, "legacy-text", "legacy-text", { transcript_text: "Earlier words" });
+    await ensureVoiceNoteIdentity(tcw);
+    const saved = await createVoiceNoteRow(tcw, { id: "legacy-text", startedAt: 0, durationMs: 1000,
+      mimeType: "audio/mp4", sizeBytes: 1, silencedMs: 0, silencedEvents: 0, noSignalMs: 0,
+      options: { transcriber: "off", identifySpeakers: false } }, "Existing note");
+    expect(saved.metadata.transcription_outcome).toBeUndefined();
+    expect(await readVoiceNoteTranscriptState(tcw, "legacy-text")).toEqual({
+      status: "transcribed", preview: "Earlier words",
+    });
+  });
+
+  test("re-save outcome backfill updates the row timestamp", async () => {
+    const { tcw, sqlite } = space();
+    await ensureSchema(tcw);
+    insert(sqlite, "legacy-pending", "legacy-pending");
+    await ensureVoiceNoteIdentity(tcw);
+    await createVoiceNoteRow(tcw, { id: "legacy-pending", startedAt: 0, durationMs: 1000,
+      mimeType: "audio/mp4", sizeBytes: 1, silencedMs: 0, silencedEvents: 0, noSignalMs: 0,
+      options: { transcriber: "off", identifySpeakers: false } }, "Existing note");
+    expect(row(sqlite, "legacy-pending").updatedAt).not.toBe("2026-01-01T00:00:00.000Z");
+  });
+  test("failed transcription is stored with its error code", async () => {
+    const { tcw } = space();
+    await ensureSchema(tcw);
+    await createVoiceNoteRow(tcw, { id: "failed", startedAt: 0, durationMs: 1000,
+      mimeType: "audio/mp4", sizeBytes: 1, silencedMs: 0, silencedEvents: 0, noSignalMs: 0 }, "Failed note");
+    await patchVoiceNoteTranscriptionFailure(tcw, "failed", "recording_too_large");
+    expect((await resolveVoiceNoteRow(tcw, "failed"))?.metadata).toMatchObject({
+      transcription_outcome: "failed",
+      transcription_error_code: "recording_too_large",
+    });
+  });
+
+  test("late failure preserves legacy transcript evidence", async () => {
+    const { tcw, sqlite } = space();
+    await ensureSchema(tcw);
+    insert(sqlite, "legacy-failure", "legacy-failure", { transcript_text: "Earlier words" });
+    await ensureVoiceNoteIdentity(tcw);
+    await patchVoiceNoteTranscriptionFailure(tcw, "legacy-failure", "service_busy");
+    expect((await resolveVoiceNoteRow(tcw, "legacy-failure"))?.metadata.transcription_outcome).toBeUndefined();
+    expect(await readVoiceNoteTranscriptState(tcw, "legacy-failure")).toEqual({
+      status: "transcribed", preview: "Earlier words",
+    });
+  });
+
+  test("a failed attempt after an authoritative rev-2 commit cannot write a failed mirror", async () => {
+    const { tcw, sqlite } = space();
+    await ensureSchema(tcw);
+    await createVoiceNoteRow(tcw, { id: "late-failure", startedAt: 0, durationMs: 1000,
+      mimeType: "audio/mp4", sizeBytes: 1, silencedMs: 0, silencedEvents: 0, noSignalMs: 0 }, "Late failure");
+    await commitVoiceNoteTranscript(tcw, "late-failure", { rev: 2, outcome: "transcribed",
+      text: "Newer committed words", sentences: sentence("Newer committed words") });
+    sqlite.prepare(`UPDATE connector_meeting SET metadata = json_set(metadata,
+      '$.transcription_outcome', 'pending', '$.transcription_error_code', NULL) WHERE source_id = ?`).run("late-failure");
+    await patchVoiceNoteTranscriptionFailure(tcw, "late-failure", "service_busy");
+    expect((await resolveVoiceNoteRow(tcw, "late-failure"))?.metadata.transcription_outcome).toBe("pending");
+  });
+
+  test("a successful commit removes an earlier failure code from its mirror", async () => {
+    const { tcw } = space();
+    await ensureSchema(tcw);
+    await createVoiceNoteRow(tcw, { id: "recover", startedAt: 0, durationMs: 1000,
+      mimeType: "audio/mp4", sizeBytes: 1, silencedMs: 0, silencedEvents: 0, noSignalMs: 0 }, "Recovered");
+    await patchVoiceNoteTranscriptionFailure(tcw, "recover", "service_busy");
+    await commitVoiceNoteTranscript(tcw, "recover", { rev: 1, outcome: "transcribed",
+      text: "Recovered words", sentences: sentence("Recovered words") });
+    expect((await resolveVoiceNoteRow(tcw, "recover"))?.metadata).not.toHaveProperty("transcription_error_code");
+  });
+
+  test("deferral codes do not persist failed outcomes", async () => {
+    for (const code of ["audio_upload_pending", "transcription_off", "upload_outcome_unknown", "account_changed",
+      "active_transcription_exists"]) {
+      const { tcw } = space();
+      await ensureSchema(tcw);
+      await createVoiceNoteRow(tcw, { id: code, startedAt: 0, durationMs: 1000,
+        mimeType: "audio/mp4", sizeBytes: 1, silencedMs: 0, silencedEvents: 0, noSignalMs: 0 }, "Deferred");
+      await patchVoiceNoteTranscriptionFailure(tcw, code, code);
+      expect((await resolveVoiceNoteRow(tcw, code))?.metadata.transcription_outcome, code).toBe("pending");
+    }
   });
 
   test("authorization is sign-in-again, while persistent constraints block after three rounds", async () => {
@@ -299,6 +594,147 @@ test("a full space leaves the note local with a specific identity state", async 
     expect(silent.preview).toBeNull();
     expect((await voiceNoteTranscriptLocator(tcw, "rec")).outcome).toBe("no_speech");
   });
+  test("commit provenance binds timing to the durable body when the row mirror fails", async () => {
+    const { tcw, sqlite, values } = space();
+    await ensureSchema(tcw);
+    insert(sqlite, "vn-rec", "rec");
+    await ensureVoiceNoteIdentity(tcw);
+    const sentences = [
+      { index: 0, speaker_name: "You", text: "First synthetic sentence.", start_time: 0, end_time: 45 },
+      { index: 1, speaker_name: "You", text: "Second synthetic sentence.", start_time: 60, end_time: 105 },
+    ];
+    await commitVoiceNoteTranscript(tcw, "rec", { rev: 3, outcome: "transcribed", text: "PTX rev 3",
+      sentences, engine: "private-cloud", provider: "tinycloud-private-transcription" });
+    const originalDb = tcw.sql.db.bind(tcw.sql);
+    tcw.sql.db = ((name: string) => ({ ...originalDb(name), execute: async (statement: string, params: unknown[] = []) =>
+      statement.includes("UPDATE connector_meeting SET metadata = json_patch")
+        ? { ok: false, error: { code: "SQL_ERROR", message: "mirror update refused" } }
+        : originalDb(name).execute(statement, params as never[]),
+    })) as typeof tcw.sql.db;
+    await expect(commitVoiceNoteTranscript(tcw, "rec", { rev: 4, outcome: "transcribed", text: "Local rev 4",
+      sentences, engine: "whispercpp", provider: "whispercpp" })).rejects.toThrow("mirror update refused");
+
+    const locator = await voiceNoteTranscriptLocator(tcw, "rec");
+    expect(locator).toMatchObject({ committed: true, provenance: { engine: "whispercpp", provider: "whispercpp" } });
+    expect(row(sqlite, "vn-rec").metadata).toMatchObject({
+      transcription_engine: "private-cloud", transcript_provider: "tinycloud-private-transcription",
+    });
+    const savedSentences = JSON.parse(values.get(locator.bodyKey!)!) as typeof sentences;
+    const privateCloud = hasPrivateCloudTimingProvenance(null, locator.provenance);
+    const html = renderToStaticMarkup(createElement(MemoryRouter, null, createElement(NoteDetailView, {
+      item: { id: "vn-rec", source: "exo-voice-note", sourceId: "rec", title: "Synthetic", startedAt: "2026-01-01T00:00:00Z", durationSecs: 120 },
+      listStatus: "ready",
+      metadata: { status: "ok", metadata: row(sqlite, "vn-rec").metadata },
+      transcript: { status: "ok", sentences: savedSentences },
+      transcriptProvenance: locator.provenance,
+      audio: { load: async () => null },
+      copyState: "idle",
+      onCopy: () => {},
+      onCopyWithTimestamps: () => {},
+      onRetry: () => {},
+      pushed: true,
+      onBack: () => {},
+    })));
+    expect(html).not.toContain('aria-label="Play from 1:00"');
+    expect(html).not.toContain("Copy with timestamps");
+    expect(transcriptWithTimestamps(savedSentences, privateCloud)).not.toContain("[01:00]");
+    expect(transcriptMarkdown("Synthetic", "2026-01-01T00:00:00Z", savedSentences, privateCloud)).not.toContain("[01:00]");
+  });
+
+  test("a PTX commit remains timed when its row mirror has lost provenance", async () => {
+    const { tcw, sqlite, values } = space();
+    await ensureSchema(tcw);
+    insert(sqlite, "vn-rec", "rec");
+    await ensureVoiceNoteIdentity(tcw);
+    const sentences = [
+      { index: 0, speaker_name: "You", text: "First synthetic sentence.", start_time: 0, end_time: 45 },
+      { index: 1, speaker_name: "You", text: "Second synthetic sentence.", start_time: 60, end_time: 105 },
+    ];
+    await commitVoiceNoteTranscript(tcw, "rec", { rev: 3, outcome: "transcribed", text: "PTX",
+      sentences, engine: "private-cloud", provider: "tinycloud-private-transcription" });
+    sqlite.prepare("UPDATE connector_meeting SET metadata = ? WHERE id = 'vn-rec'").run(JSON.stringify({
+      transcription_outcome: "transcribed", transcript_text: "PTX",
+    }));
+    const locator = await voiceNoteTranscriptLocator(tcw, "rec");
+    expect(locator.provenance).toEqual({ engine: "private-cloud", provider: "tinycloud-private-transcription" });
+    const savedSentences = JSON.parse(values.get(locator.bodyKey!)!) as typeof sentences;
+    const privateCloud = hasPrivateCloudTimingProvenance(null, locator.provenance);
+    const html = renderToStaticMarkup(createElement(MemoryRouter, null, createElement(NoteDetailView, {
+      item: { id: "vn-rec", source: "exo-voice-note", sourceId: "rec", title: "Synthetic", startedAt: "2026-01-01T00:00:00Z", durationSecs: 120 },
+      listStatus: "ready",
+      metadata: { status: "ok", metadata: row(sqlite, "vn-rec").metadata },
+      transcript: { status: "ok", sentences: savedSentences },
+      transcriptProvenance: locator.provenance,
+      audio: { load: async () => null },
+      copyState: "idle",
+      onCopy: () => {},
+      onCopyWithTimestamps: () => {},
+      onRetry: () => {},
+      pushed: true,
+      onBack: () => {},
+    })));
+    expect(html).toContain('aria-label="Play from 1:00"');
+    expect(html).toContain("Copy with timestamps");
+    expect(transcriptWithTimestamps(savedSentences, privateCloud)).toContain("[01:00]");
+    expect(transcriptMarkdown("Synthetic", "2026-01-01T00:00:00Z", savedSentences, privateCloud)).toContain("[01:00]");
+  });
+  test("upgrade, downgrade, upgrade restores richer same-revision transcript", async () => {
+    const { tcw, sqlite, values } = space();
+    await ensureSchema(tcw); insert(sqlite, "vn-rec", "rec");
+    const rich = [{ index: 0, speaker_name: null, text: "hello", start_time: 0, end_time: 65,
+      channel: 0 as const, speaker_id: "speaker_0", timing: "coarse" as const }];
+    const poor = [{ index: 0, speaker_name: "You", text: "hello", start_time: 0, end_time: 65 }];
+    const upgraded = await commitVoiceNoteTranscript(tcw, "rec", { rev: 1, outcome: "transcribed", text: "hello", sentences: rich });
+    const oldHash = await transcriptHash(poor);
+    const oldKey = transcriptRevKvKey("exo-voice-note", "rec", oldHash);
+    values.set(oldKey, JSON.stringify(poor));
+    // 0.7.1 can still overwrite the SQL pointer with its hash-only same-revision CAS.
+    sqlite.prepare("UPDATE voice_note_transcript SET hash = ?, body_key = ? WHERE source_id = 'rec'").run(oldHash, oldKey);
+    expect((await readTranscriptCommit(tcw, "rec"))?.hash).toBe(oldHash);
+    await commitVoiceNoteTranscript(tcw, "rec", { rev: 1, outcome: "transcribed", text: "hello", sentences: rich });
+    expect((await readTranscriptCommit(tcw, "rec"))?.hash).toBe(upgraded.hash);
+    await commitVoiceNoteTranscript(tcw, "rec", { rev: 1, outcome: "transcribed", text: "hello", sentences: poor });
+    expect((await readTranscriptCommit(tcw, "rec"))?.hash).toBe(upgraded.hash);
+    expect(values.get((await voiceNoteTranscriptLocator(tcw, "rec")).bodyKey)).toContain('"speaker_id":"speaker_0"');
+  });
+  test("same-revision comparison accepts an already-parsed KV sentence array", async () => {
+    const { tcw, sqlite } = space();
+    await ensureSchema(tcw); insert(sqlite, "vn-rec", "rec");
+    await commitVoiceNoteTranscript(tcw, "rec", { rev: 1, outcome: "transcribed", text: "hello", sentences: sentence("hello") });
+    const get = tcw.kv.get.bind(tcw.kv);
+    tcw.kv.get = (async (key: string, options?: unknown) => {
+      const result = await get(key, options as never);
+      return result.ok && key.includes("/transcript-rev/")
+        ? { ok: true, data: { data: JSON.parse(result.data.data as string) } } : result;
+    }) as typeof tcw.kv.get;
+    const rich = [{ ...sentence("hello")[0]!, channel: 0 as const, timing: "engine" as const }];
+    const committed = await commitVoiceNoteTranscript(tcw, "rec", { rev: 1, outcome: "transcribed", text: "hello", sentences: rich });
+    expect(committed.hash).toBe(await transcriptHash(rich));
+  });
+  test("a poorer same-revision writer between comparison and INSERT is repaired", async () => {
+    const { tcw, sqlite, values } = space();
+    await ensureSchema(tcw); insert(sqlite, "vn-rec", "rec");
+    const initial = sentence("initial");
+    await commitVoiceNoteTranscript(tcw, "rec", { rev: 1, outcome: "transcribed", text: "initial", sentences: initial });
+    const poor = sentence("hello");
+    const rich = [{ ...poor[0]!, channel: 0 as const, speaker_id: "speaker_0", timing: "engine" as const }];
+    const poorHash = await transcriptHash(poor);
+    const poorKey = transcriptRevKvKey("exo-voice-note", "rec", poorHash);
+    values.set(poorKey, JSON.stringify(poor));
+    const originalDb = tcw.sql.db.bind(tcw.sql);
+    let intervened = false;
+    tcw.sql.db = ((name: string) => ({ ...originalDb(name), execute: async (statement: string, params: unknown[] = []) => {
+      if (!intervened && statement.startsWith("INSERT INTO voice_note_transcript")) {
+        intervened = true;
+        sqlite.prepare("UPDATE voice_note_transcript SET hash = ?, body_key = ? WHERE source_id = 'rec'").run(poorHash, poorKey);
+      }
+      return originalDb(name).execute(statement, params as never[]);
+    } })) as typeof tcw.sql.db;
+    const result = await commitVoiceNoteTranscript(tcw, "rec", { rev: 1, outcome: "transcribed", text: "hello", sentences: rich });
+    expect(intervened).toBe(true);
+    expect(result.hash).toBe(await transcriptHash(rich));
+    expect((await readTranscriptCommit(tcw, "rec"))?.hash).toBe(result.hash);
+  });
   test("a delayed old body PUT and a later audio patch cannot change a newer transcript", async () => {
     const { tcw, sqlite, values } = space();
     await ensureSchema(tcw); insert(sqlite, "vn-rec", "rec");
@@ -379,7 +815,8 @@ test("a full space leaves the note local with a specific identity state", async 
     const fixture = ["a", "b", "c"].map((id) => ({ id, metadata: row(sqlite, id).metadata }));
     const ts = legacyTranscriptWinner(fixture)?.id;
     const sqlWinner = sqlite.query(`SELECT g.id FROM connector_meeting g WHERE g.source_id = 'rec'
-      AND g.source IN ('exo-voice-note', 'exo-voice-note-dup') AND json_extract(g.metadata, '$.transcription_outcome') IS NOT NULL
+      AND g.source IN ('exo-voice-note', 'exo-voice-note-dup')
+      AND json_extract(g.metadata, '$.transcription_outcome') IN ('transcribed', 'no_speech')
       ORDER BY COALESCE(json_extract(g.metadata, '$.transcribed_at'), '') DESC, g.id ASC LIMIT 1`).get() as { id: string };
     expect(ts).toBe(sqlWinner.id);
     expect((sqlite.query(SQL_MEETING_METADATA_QUERY).all() as { source_id: string }[]).some((r) => r.source_id === "rec")).toBe(true);
@@ -600,6 +1037,60 @@ test("failed recovery emits nothing, and a later successful retry emits once", a
   } finally { off(); __setVoiceNotesForTests(original, { available: null }); }
 });
 
+test("a local transcript finished before audio upload commits to the space afterward", async () => {
+  const original = VoiceNotes;
+  const originalWindow = globalThis.window;
+  globalThis.window = { ...originalWindow, __TAURI_INTERNALS__: {} } as Window & typeof globalThis;
+  const { tcw } = space();
+  const fake = createFakeVoiceNotes();
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  try {
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1,
+      transcriber: "on-device", identifySpeakers: false });
+    await fake.plugin.start();
+    const note = await fake.plugin.stop();
+    await fake.plugin.putTranscript({ id: note.id, transcript: {
+      version: 1, noteId: note.id, transcriber: "on-device", rev: 1, engine: "whispercpp",
+      model: "QuantizedTinyEn", language: "en", outcome: "transcribed", diarized: false,
+      segments: [{ start: 0, end: 1000, text: "Local words", speaker: null }], createdAt: "2026-10-13T10:00:00.000Z",
+    } });
+    const originalRead = fake.plugin.getTranscript.bind(fake.plugin);
+    const readGate = Promise.withResolvers<void>();
+    const readStarted = Promise.withResolvers<void>();
+    fake.plugin.getTranscript = async (args) => { readStarted.resolve(); await readGate.promise; return originalRead(args); };
+    const pipeline = createVoiceNotePipeline(tcw);
+    const saving = pipeline.process({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() }, note.id);
+    try {
+      expect(await Promise.race([saving.then(() => "uploaded"), Bun.sleep(500).then(() => "blocked")])).toBe("uploaded");
+      await readStarted.promise;
+    } finally { readGate.resolve(); }
+    let commit = await readTranscriptCommit(tcw, note.id);
+    for (let i = 0; i < 30 && !commit; i++) { await Bun.sleep(1); commit = await readTranscriptCommit(tcw, note.id); }
+    expect(commit).toMatchObject({ sourceId: note.id, rev: 1, outcome: "transcribed" });
+    expect((await tcw.kv.get(commit!.bodyKey)).ok).toBe(true);
+    expect((await tcw.kv.get(transcriptKvKey(VOICE_NOTE_SOURCE, note.id))).ok).toBe(true);
+  } finally { globalThis.window = originalWindow; __setVoiceNotesForTests(original, { available: null }); }
+});
+
+test("phone upload leaves transcript sync to recordRowId and the transcribed listener", async () => {
+  const original = VoiceNotes;
+  const { tcw } = space();
+  const fake = createFakeVoiceNotes();
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  try {
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1,
+      transcriber: "on-device", identifySpeakers: false });
+    await fake.plugin.start();
+    const note = await fake.plugin.stop();
+    let transcriptReads = 0;
+    const originalRead = fake.plugin.getTranscript.bind(fake.plugin);
+    fake.plugin.getTranscript = async (args) => { transcriptReads++; return originalRead(args); };
+    const pipeline = createVoiceNotePipeline(tcw);
+    await pipeline.process({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() }, note.id);
+    expect(transcriptReads).toBe(0);
+  } finally { __setVoiceNotesForTests(original, { available: null }); }
+});
+
 for (const transition of ["late account change", "cancellation"] as const) {
 test(`recovery interrupted by ${transition} cannot emit into the next pass`, async () => {
   const original = VoiceNotes;
@@ -644,8 +1135,19 @@ test("the mounted pending saver runs the real pipeline on sign-in and forced-swa
   const previousAct = Reflect.get(globalThis, "IS_REACT_ACT_ENVIRONMENT");
   const fake = createFakeVoiceNotes();
   const { tcw } = space();
+  let failedEventId: string | null = null;
+  const nativeListPending = fake.plugin.listPending.bind(fake.plugin);
+  fake.plugin.listPending = async () => {
+    const listed = await nativeListPending();
+    return failedEventId ? { ...listed, recordings: listed.recordings.map((recording) => recording.id === failedEventId
+      ? { ...recording, stt: { state: "failed" as const } } : recording) } : listed;
+  };
   __setVoiceNotesForTests(fake.plugin, { available: true });
-  __setOnDeviceSttForTests({ addListener: async () => ({ remove: async () => {} }) } as OnDeviceSttPlugin);
+  const sttListeners = new Map<string, (event: { id: string }) => void>();
+  __setOnDeviceSttForTests({ addListener: async (event: string, listener: (event: { id: string }) => void) => {
+    sttListeners.set(event, listener);
+    return { remove: async () => { sttListeners.delete(event); } };
+  } } as unknown as OnDeviceSttPlugin);
   const documentStub = { nodeType: 9, activeElement: null, addEventListener() {}, removeEventListener() {},
     createElement: () => hostNode(), createTextNode: () => hostNode() };
   function hostNode(): unknown {
@@ -677,6 +1179,16 @@ test("the mounted pending saver runs the real pipeline on sign-in and forced-swa
     await act(async () => landed.promise);
     expect(events).toEqual([{ source: VOICE_NOTE_SOURCE, sourceId: initial.id }]);
 
+    fake.plugin.getTranscript = async () => ({ transcript: null });
+    failedEventId = initial.id;
+    landed = Promise.withResolvers<void>();
+    sttListeners.get("failed")?.({ id: initial.id });
+    await landed.promise;
+    expect((await resolveVoiceNoteRow(tcw, initial.id))?.metadata.transcription_outcome).toBe("failed");
+    failedEventId = null;
+    expect(events).toEqual([{ source: VOICE_NOTE_SOURCE, sourceId: initial.id },
+      { source: VOICE_NOTE_SOURCE, sourceId: initial.id }]);
+
     fake.plugin.getTranscript = async () => ({ transcript: {
       version: 1, noteId: initial.id, transcriber: "on-device", rev: 1,
       engine: "apple-speech", model: null, language: "en", outcome: "transcribed",
@@ -685,7 +1197,9 @@ test("the mounted pending saver runs the real pipeline on sign-in and forced-swa
     } });
     await syncOnDeviceTranscript(tcw, { id: initial.id, ledger: { audio: { state: "saved" } } });
     expect(await readTranscriptCommit(tcw, initial.id)).toMatchObject({ rev: 1 });
+    expect((await resolveVoiceNoteRow(tcw, initial.id))?.metadata).not.toHaveProperty("transcription_stats_missing");
     expect(events).toEqual([{ source: VOICE_NOTE_SOURCE, sourceId: initial.id },
+      { source: VOICE_NOTE_SOURCE, sourceId: initial.id },
       { source: VOICE_NOTE_SOURCE, sourceId: initial.id }]);
     fake.plugin.getTranscript = async () => ({ transcript: null });
 
@@ -696,6 +1210,7 @@ test("the mounted pending saver runs the real pipeline on sign-in and forced-swa
     schedulePendingVoiceNotesRecovery();
     await act(async () => landed.promise);
     expect(events).toEqual([{ source: VOICE_NOTE_SOURCE, sourceId: initial.id },
+      { source: VOICE_NOTE_SOURCE, sourceId: initial.id },
       { source: VOICE_NOTE_SOURCE, sourceId: initial.id },
       { source: VOICE_NOTE_SOURCE, sourceId: swapped.id }]);
     expect((await fake.plugin.listPending()).recordings.filter((note) => note.ledger?.audio.state === "saved"))
@@ -711,7 +1226,7 @@ test("the mounted pending saver runs the real pipeline on sign-in and forced-swa
     // The saver's unmount paused the account's work: the late sync is abandoned (the next launch's catch-up saves it) and silent.
     await syncOnDeviceTranscript(tcw, { id: initial.id, ledger: { audio: { state: "saved" } } });
     expect(await readTranscriptCommit(tcw, initial.id)).toMatchObject({ rev: 1 });
-    expect(events).toHaveLength(3);
+    expect(events).toHaveLength(4);
   } finally {
     if (mounted) await act(async () => root.unmount());
     off();
@@ -720,6 +1235,48 @@ test("the mounted pending saver runs the real pipeline on sign-in and forced-swa
     Reflect.set(globalThis, "window", previousWindow);
     Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", previousAct);
   }
+});
+test("Mac Whisper transcript sync never sets PTX missing-stats metadata", async () => {
+  const original = VoiceNotes;
+  const { tcw } = space();
+  const id = "desktop-whisper";
+  await ensureSchema(tcw);
+  await createVoiceNoteRow(tcw, { id, startedAt: 0, durationMs: 1_000, mimeType: "audio/mpeg",
+    sizeBytes: 4, silencedMs: 0, silencedEvents: 0, noSignalMs: 0 }, "Whisper note");
+  const transcript = whisperLocalTranscript({ id, durationMs: 1_000 }, "base" as never, {
+    results: { channels: [{ alternatives: [{ transcript: "Saved by desktop Whisper", words: [] }] }] },
+  } as never);
+  __setVoiceNotesForTests({
+    listPending: async () => ({ recordings: [{ id, owner: tcw.did, rev: 1, ledger: { audio: { state: "saved" } } }] }),
+    getTranscript: async () => ({ transcript }),
+    updateLedger: async () => ({}),
+  } as unknown as typeof VoiceNotes, { available: true });
+  try {
+    await syncOnDeviceTranscript(tcw, { id, owner: tcw.did, ledger: { audio: { state: "saved" } } });
+    expect((await resolveVoiceNoteRow(tcw, id))?.metadata).not.toHaveProperty("transcription_stats_missing");
+  } finally { __setVoiceNotesForTests(original, { available: null }); }
+});
+test("on-device no_speech transcript sync never sets PTX missing-stats metadata", async () => {
+  const original = VoiceNotes;
+  const { tcw } = space();
+  const id = "on-device-no-speech";
+  await ensureSchema(tcw);
+  await createVoiceNoteRow(tcw, { id, startedAt: 0, durationMs: 1_000, mimeType: "audio/mp4",
+    sizeBytes: 4, silencedMs: 0, silencedEvents: 0, noSignalMs: 0 }, "Silent note");
+  const transcript = {
+    version: 1, noteId: id, transcriber: "on-device", rev: 1, engine: "apple-speech", model: null, language: "en",
+    outcome: "no_speech", diarized: false, segments: [], createdAt: "2026-10-03T10:00:00.000Z",
+  };
+  __setVoiceNotesForTests({
+    listPending: async () => ({ recordings: [{ id, owner: tcw.did, rev: 1, ledger: { audio: { state: "saved" } } }] }),
+    getTranscript: async () => ({ transcript }),
+    updateLedger: async () => ({}),
+  } as unknown as typeof VoiceNotes, { available: true });
+  try {
+    await syncOnDeviceTranscript(tcw, { id, owner: tcw.did, ledger: { audio: { state: "saved" } } });
+    expect(await readTranscriptCommit(tcw, id)).toMatchObject({ outcome: "no_speech" });
+    expect((await resolveVoiceNoteRow(tcw, id))?.metadata).not.toHaveProperty("transcription_stats_missing");
+  } finally { __setVoiceNotesForTests(original, { available: null }); }
 });
 
 test("another account's retained notes do not delay a fresh Stop with a space preflight", async () => {
@@ -1164,7 +1721,7 @@ test("a never-settling audio KV put reports a visible timeout and clears Saving 
       putStarted();
       return new Promise((_resolve, reject) => options?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
     }) as typeof tcw.kv.put;
-    const pipeline = createVoiceNotePipeline(tcw);
+    const pipeline = createVoiceNotePipeline(tcw, { saveRetryDelaysMs: [] });
     const reconcile = pipeline.reconcileAll(account);
     await started;
     expect(pendingStore.snapshot().running).toBe(true);
@@ -1173,6 +1730,45 @@ test("a never-settling audio KV put reports a visible timeout and clears Saving 
     expect(pendingStore.snapshot().lastError).toContain("saving it is taking too long");
     expect(pendingStore.snapshot().notes?.find((note) => note.id === recording.id)?.failed?.kind).toBe("timeout");
     // The disabled={saving} condition is now false, so Save now is enabled again.
+  } finally {
+    setVoiceNoteSaveDeadlineForTests(null);
+    __setVoiceNotesForTests(original, { available: null });
+  }
+});
+
+test("a lane timeout is retrying before its final failed attempt", async () => {
+  const original = VoiceNotes;
+  const { tcw } = space();
+  const fake = createFakeVoiceNotes();
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  try {
+    await ensureVoiceNoteIdentity(tcw);
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1, transcriber: "off", identifySpeakers: false });
+    const started = await fake.plugin.start();
+    await fake.plugin.stop();
+    const next = await fake.plugin.start();
+    await fake.plugin.stop();
+    pendingStore.setAccount(tcw.did);
+    await pendingStore.refresh();
+    const put = tcw.kv.put.bind(tcw.kv);
+    tcw.kv.put = ((key, value, options) => key.includes(started.id) && key.includes("/p/")
+      ? new Promise((_resolve, reject) => options?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true }))
+      : put(key, value, options)) as typeof tcw.kv.put;
+    setVoiceNoteSaveDeadlineForTests(10);
+    const running = createVoiceNotePipeline(tcw, { retryDelaysMs: [], saveRetryDelaysMs: [80] })
+      .reconcileAll({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() });
+    for (let turn = 0; turn < 100 && !pendingStore.snapshot().notes?.find((note) => note.id === started.id)?.retryAt; turn++)
+      await Bun.sleep(1);
+    const waiting = pendingStore.snapshot().notes?.find((note) => note.id === started.id);
+    expect(waiting?.retryAt).toBeGreaterThan(Date.now());
+    expect(waiting?.failed).toBeUndefined();
+    await running;
+    expect((await fake.plugin.listPending()).recordings.find((note) => note.id === next.id)?.ledger?.audio.state).toBe("saved");
+    expect(pendingStore.snapshot().notes?.find((note) => note.id === started.id)?.failed).toBeUndefined();
+    expect(pendingStore.snapshot().notes?.find((note) => note.id === started.id)?.retryAt).toBeGreaterThan(Date.now());
+    for (let turn = 0; turn < 150 && pendingStore.snapshot().notes?.find((note) => note.id === started.id)?.failed?.kind !== "timeout"; turn++)
+      await Bun.sleep(1);
+    expect(pendingStore.snapshot().notes?.find((note) => note.id === started.id)?.failed?.kind).toBe("timeout");
   } finally {
     setVoiceNoteSaveDeadlineForTests(null);
     __setVoiceNotesForTests(original, { available: null });
@@ -1234,7 +1830,7 @@ test("a late part put settles before retry writes and retry commits one complete
       }
       return put(key, value as never, options);
     }) as typeof tcw.kv.put;
-    const pipeline = createVoiceNotePipeline(tcw);
+    const pipeline = createVoiceNotePipeline(tcw, { saveRetryDelaysMs: [] });
     const ctx = { did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() };
     await pipeline.reconcileAll(ctx);
     expect(pendingStore.snapshot().lastError).toContain("taking too long");

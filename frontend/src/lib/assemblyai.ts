@@ -1,13 +1,27 @@
 // Hosted AssemblyAI: authenticated Exo server proxy; the server keeps the key.
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { FirefliesSentence } from "./connectors/firefliesClient";
-import { REAL_CLOCK, type CloudClock } from "./privateCloud";
+import {
+  cloudStatusIntervalMs,
+  jitteredCloudIntervalMs,
+  DEFAULT_CLOUD_POLLING,
+  jitteredRateLimitWaitMs,
+  parseRateLimitWaitSeconds,
+  REAL_CLOCK,
+  type CloudClock,
+} from "./privateCloud";
+import { splitLongTimedSegment } from "./voiceNotes/timedSegments";
 
-export type AssemblyAiErrorKind = "invalid-key" | "network" | "rate-limited" | "rejected" | "failed" | "not-found";
+export type AssemblyAiErrorKind = "invalid-key" | "network" | "rate-limited" | "rejected" | "failed" | "not-found" | "needs-reconciliation";
 
 export class AssemblyAiError extends Error {
   readonly kind: AssemblyAiErrorKind;
-  constructor(kind: AssemblyAiErrorKind, message: string, readonly uploadEnded = false) {
+  constructor(
+    kind: AssemblyAiErrorKind,
+    message: string,
+    readonly uploadEnded = false,
+    readonly retryAfterMs: number | null = null,
+  ) {
     super(message);
     this.name = "AssemblyAiError";
     this.kind = kind;
@@ -19,6 +33,7 @@ export interface AssemblyAiUtterance {
   /** Milliseconds. */
   start: number;
   end: number;
+  channel?: 0 | 1 | null;
 }
 
 export interface AssemblyAiSentence {
@@ -26,6 +41,8 @@ export interface AssemblyAiSentence {
   start: number;
   end: number;
   speaker?: string | null;
+  channel?: 0 | 1 | null;
+  words?: { start: number; end: number; text: string }[];
 }
 
 export interface AssemblyAiTranscript {
@@ -33,6 +50,7 @@ export interface AssemblyAiTranscript {
   status: "queued" | "processing" | "completed" | "error";
   text?: string | null;
   utterances?: AssemblyAiUtterance[] | null;
+  audio_channels?: number | null;
   /** Seconds. */
   audio_duration?: number | null;
   language_code?: string | null;
@@ -54,7 +72,7 @@ export interface AssemblyAiClient {
    * reference after a reload: TinyCloud's account re-joins its submission instead of starting another.
    */
   createTranscript(uploadRef: string, options: { speakerLabels: boolean; multichannel?: boolean; signal?: AbortSignal }): Promise<AssemblyAiTranscript>;
-  getTranscript(id: string): Promise<AssemblyAiTranscript>;
+  getTranscript(id: string, signal?: AbortSignal): Promise<AssemblyAiTranscript>;
   getSentences(id: string): Promise<AssemblyAiSentence[]>;
   /** Deletes the transcript and its uploaded audio. A transcript already gone counts as deleted. */
   deleteTranscript(id: string): Promise<void>;
@@ -93,15 +111,22 @@ async function hostedErrorCode(response: Response): Promise<string | null> {
 /** A non-2xx answer from the hosted routes as the kinds the runner already handles. */
 async function hostedError(response: Response): Promise<AssemblyAiError> {
   const code = await hostedErrorCode(response);
+  const retryAfterSeconds = parseRateLimitWaitSeconds(response.headers);
+  const retryAfterMs = retryAfterSeconds === null ? null : retryAfterSeconds * 1000;
   if (response.status === 401) return new AssemblyAiError("rejected", "Your session expired. Sign in again, then retry.");
   if (response.status === 404) return new AssemblyAiError("not-found", "AssemblyAI no longer has this transcript.");
+  if (code === "assemblyai_needs_reconciliation") return new AssemblyAiError("needs-reconciliation", "Powerful couldn't confirm an earlier attempt. Exo is checking with AssemblyAI.");
   if (code === "assemblyai_quota_exceeded") {
-    const reset = response.headers.get("Retry-After");
-    const hours = reset && Number.isFinite(Number(reset)) ? Math.max(1, Math.ceil(Number(reset) / 3600)) : null;
-    return new AssemblyAiError("rate-limited", `Today's Powerful allowance is used. Try again ${hours ? `in about ${hours} hours` : "tomorrow"}.`);
+    const hours = retryAfterSeconds === null ? null : Math.max(1, Math.ceil(retryAfterSeconds / 3600));
+    return new AssemblyAiError(
+      "rate-limited",
+      `Today's Powerful allowance is used. Try again ${hours ? `in about ${hours} hours` : "tomorrow"}.`,
+      false,
+      retryAfterMs,
+    );
   }
   if (code === "assemblyai_busy" || response.status === 429) {
-    return new AssemblyAiError("rate-limited", "Powerful is busy right now. Try again in a few minutes.");
+    return new AssemblyAiError("rate-limited", "Powerful is busy right now. Try again in a few minutes.", false, retryAfterMs);
   }
   if (response.status === 413 || code === "recording_too_large") {
     return new AssemblyAiError("rejected", "This recording is too large for Powerful (120 MB maximum).");
@@ -118,8 +143,9 @@ async function hostedError(response: Response): Promise<AssemblyAiError> {
 }
 
 interface HostedSubmission {
-  status: "receiving" | "submitting" | "submitted" | "failed";
+  status: "missing" | "receiving" | "submitting" | "submitted" | "failed" | "needs_reconciliation" | "unresolved" | "deleted";
   id?: string;
+  upload_id?: string;
   error?: { code?: string } | null;
 }
 
@@ -147,9 +173,11 @@ export function createHostedAssemblyAiClient(config: {
   sessionStore: Pick<SessionStore, "getToken" | "isExpired">;
   fetchImpl?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
-}): AssemblyAiClient & {
+}): Omit<AssemblyAiClient, "createTranscript"> & {
+  createTranscript(uploadId: string, options: { speakerLabels: boolean; multichannel?: boolean; signal?: AbortSignal; sourceId?: string }): Promise<AssemblyAiTranscript>;
   capabilities(): Promise<HostedAssemblyAiCapabilities>;
-  createUpload(size: number, contentType: string): Promise<{ uploadId: string; partSize: number }>;
+  createUpload(size: number, contentType: string, sourceId?: string): Promise<{ uploadId: string; partSize: number; status?: HostedSubmission["status"]; id?: string }>;
+  lookupJob(sourceId: string): Promise<HostedSubmission>;
   putPart(uploadId: string, index: number, bytes: Uint8Array): Promise<void>;
   uploadState(uploadId: string): Promise<HostedSubmission>;
 } {
@@ -206,11 +234,17 @@ export function createHostedAssemblyAiClient(config: {
       return (await request("/capabilities").then((r) => r.json())) as HostedAssemblyAiCapabilities;
     },
 
-    async createUpload(size, contentType) {
-      const created = (await request("/hosted/uploads", { method: "POST", json: { byte_size: size, content_type: contentType } }).then((r) => r.json())) as { upload_id?: unknown; part_size?: unknown };
+    async createUpload(size, contentType, sourceId) {
+      const created = (await request("/hosted/uploads", { method: "POST", json: { byte_size: size, content_type: contentType, ...(sourceId ? { source_id: sourceId } : {}) } }).then((r) => r.json())) as { upload_id?: unknown; part_size?: unknown; status?: HostedSubmission["status"]; id?: string };
       if (typeof created.upload_id !== "string" || typeof created.part_size !== "number" || created.part_size <= 0)
         throw new AssemblyAiError("failed", "Exo's server returned an unexpected upload.");
-      return { uploadId: created.upload_id, partSize: created.part_size };
+      if (created.status === "needs_reconciliation")
+        throw new AssemblyAiError("needs-reconciliation", "Powerful couldn't confirm an earlier attempt. Exo is checking with AssemblyAI.");
+      return { uploadId: created.upload_id, partSize: created.part_size, status: created.status, id: created.id };
+    },
+
+    async lookupJob(sourceId) {
+      return submission(await request(`/hosted/jobs/${encodeURIComponent(sourceId)}`));
     },
 
     async putPart(uploadId, index, bytes) {
@@ -268,14 +302,14 @@ export function createHostedAssemblyAiClient(config: {
       return uploadId;
     },
 
-    async createTranscript(uploadId, { speakerLabels, multichannel = false, signal }) {
+    async createTranscript(uploadId, { speakerLabels, multichannel = false, signal, sourceId }: { speakerLabels: boolean; multichannel?: boolean; signal?: AbortSignal; sourceId?: string }) {
       // The backend sends the file on to AssemblyAI in the background: 202 with the submission's state,
       // then its state by upload id until it has the transcript's handle. A replay re-joins it.
       const path = `/hosted/uploads/${encodeURIComponent(uploadId)}`;
       let state: HostedSubmission;
       try {
         state = await submission(
-          await request("/hosted/transcripts", { method: "POST", json: { upload_id: uploadId, speaker_labels: speakerLabels, multichannel }, signal }),
+          await request("/hosted/transcripts", { method: "POST", json: { upload_id: uploadId, speaker_labels: speakerLabels, multichannel, ...(sourceId ? { source_id: sourceId } : {}) }, signal }),
         );
       } catch (err) {
         if (!(err instanceof AssemblyAiError) || (err.kind !== "not-found" && err.kind !== "failed")) throw err;
@@ -337,8 +371,8 @@ export function createHostedAssemblyAiClient(config: {
       }
     },
 
-    async getTranscript(id) {
-      return transcript(await request(`/hosted/transcripts/${encodeURIComponent(id)}`));
+    async getTranscript(id, signal) {
+      return transcript(await request(`/hosted/transcripts/${encodeURIComponent(id)}`, { signal }));
     },
 
     async getSentences(id) {
@@ -361,39 +395,103 @@ export function createHostedAssemblyAiClient(config: {
 }
 
 /**
- * Polls a transcript to `completed`: 3 s, growing by half up to 15 s.
- * Network failures, rate limits and 5xx are ridden out for a bounded period;
- * an `error` transcript or a rejected key ends it, and so does an aborted `signal`.
+ * Poll a hosted transcript with the same cadence and bounded failure policy as PTX.
+ * A caller's signal cancels only this ordinary request/wait loop.
  */
 export async function pollAssemblyAiTranscript(
   client: Pick<AssemblyAiClient, "getTranscript">,
   id: string,
-  options: { clock?: CloudClock; onStatus?: (status: AssemblyAiTranscript["status"]) => void; signal?: AbortSignal } = {},
+  options: {
+    clock?: CloudClock;
+    onStatus?: (status: AssemblyAiTranscript["status"]) => void;
+    signal?: AbortSignal;
+    guard?: () => void;
+    durationSeconds?: number | null;
+  } = {},
 ): Promise<AssemblyAiTranscript> {
   const clock = options.clock ?? REAL_CLOCK;
-  let delayMs = 3_000;
+  const polling = DEFAULT_CLOUD_POLLING;
+  const startedAt = clock.now();
+  let durationSeconds = options.durationSeconds ?? null;
   let failingSince: number | null = null;
-  for (;;) {
-    if (options.signal?.aborted) throw new AssemblyAiError("failed", "Stopped waiting for AssemblyAI.");
+  let throttledMs = 0;
+  let throttledAtFailure = 0;
+  const cancelled = () => new AssemblyAiError("failed", "Stopped waiting for AssemblyAI.");
+  const sleepWithSignal = async (ms: number): Promise<void> => {
+    const signal = options.signal;
+    if (signal === undefined) {
+      await clock.sleep(ms);
+      return;
+    }
+    if (signal.aborted) throw cancelled();
+    let removeAbort = (): void => {};
     try {
-      const t = await client.getTranscript(id);
-      if (options.signal?.aborted) throw new AssemblyAiError("failed", "Stopped waiting for AssemblyAI.");
+      await Promise.race([
+        clock.sleep(ms),
+        new Promise<never>((_, reject) => {
+          const onAbort = (): void => reject(cancelled());
+          signal.addEventListener("abort", onAbort, { once: true });
+          removeAbort = () => signal.removeEventListener("abort", onAbort);
+          if (signal.aborted) onAbort();
+        }),
+      ]);
+    } finally {
+      removeAbort();
+    }
+  };
+  const waitThrottled = async (ms: number): Promise<void> => {
+    const before = clock.now();
+    try {
+      await sleepWithSignal(ms);
+    } finally {
+      throttledMs += Math.max(0, clock.now() - before);
+    }
+  };
+
+  for (;;) {
+    if (options.signal?.aborted) throw cancelled();
+    options.guard?.();
+    try {
+      const t = await client.getTranscript(id, options.signal);
+      if (options.signal?.aborted) throw cancelled();
+      options.guard?.();
       failingSince = null;
+      throttledAtFailure = throttledMs;
+      if (typeof t.audio_duration === "number" && Number.isFinite(t.audio_duration) && t.audio_duration > 0) {
+        durationSeconds = t.audio_duration;
+      }
       if (t.status === "completed") return t;
       if (t.status === "error") {
         throw new AssemblyAiError("failed", t.error ? `AssemblyAI could not transcribe this file: ${t.error}` : "AssemblyAI could not transcribe this file.");
       }
       options.onStatus?.(t.status);
     } catch (err) {
-      const transient = err instanceof AssemblyAiError && (err.kind === "network" || err.kind === "rate-limited");
-      if (!transient) throw err;
-      failingSince ??= clock.now();
-      if (clock.now() - failingSince >= 10 * 60_000) {
+      if (options.signal?.aborted) throw cancelled();
+      if (err instanceof AssemblyAiError && err.kind === "rate-limited") {
+        await waitThrottled(jitteredRateLimitWaitMs(
+          err.retryAfterMs === null ? null : err.retryAfterMs / 1000,
+          polling.slowIntervalMs,
+          clock.random,
+        ));
+        continue;
+      }
+      if (!(err instanceof AssemblyAiError) || err.kind !== "network") throw err;
+      const now = clock.now();
+      if (failingSince === null) {
+        failingSince = now;
+        throttledAtFailure = throttledMs;
+      }
+      const failingFor = Math.max(0, now - failingSince - (throttledMs - throttledAtFailure));
+      if (failingFor >= polling.giveUpAfterMs) {
         throw new AssemblyAiError("network", "Lost contact with AssemblyAI. The transcript may still be running; Retry keeps waiting.");
       }
+      const retryInterval = failingFor >= polling.slowAfterMs ? polling.slowIntervalMs : polling.intervalMs;
+      await sleepWithSignal(Math.round(retryInterval * (0.8 + 0.4 * clock.random())));
+      continue;
     }
-    await clock.sleep(delayMs);
-    delayMs = Math.min(15_000, Math.round(delayMs * 1.5));
+    const elapsed = clock.now() - startedAt;
+    const interval = cloudStatusIntervalMs(durationSeconds, elapsed, polling);
+    await sleepWithSignal(elapsed < polling.fastPhaseMs ? interval : jitteredCloudIntervalMs(interval, clock.random));
   }
 }
 
@@ -402,24 +500,77 @@ export function assemblyAiSpeakerName(label: string): string {
   return `Speaker ${label}`;
 }
 
-/**
- * A finished transcript as the stored sentence shape: diarized utterances
- * become "Speaker A"/"Speaker B" turns; without speaker labels, AssemblyAI's
- * own sentence split (no speaker). Times are seconds.
- */
-export function assemblyAiSentences(t: AssemblyAiTranscript, sentences: AssemblyAiSentence[] | null): FirefliesSentence[] {
-  const rows =
-    t.utterances && t.utterances.length > 0
-      ? t.utterances.map((u) => ({ text: u.text, start: u.start, end: u.end, speaker: u.speaker ? assemblyAiSpeakerName(u.speaker) : null }))
-      : (sentences ?? []).map((s) => ({ text: s.text, start: s.start, end: s.end, speaker: null }));
+/** Prefer AssemblyAI sentence and word ranges while retaining speaker and channel identity. */
+export function assemblyAiSentences(t: AssemblyAiTranscript, sentences: AssemblyAiSentence[] | null,
+  options: { stereo?: boolean } = {}): FirefliesSentence[] {
+  const stereo = options.stereo ?? t.audio_channels === 2;
+  const utterances = t.utterances ?? [];
+  const bySpeaker = new Map<string, { rows: typeof utterances; maxEnd: number[] }>();
+  if (stereo && sentences?.length) {
+    for (const utterance of utterances) {
+      for (const key of ["*", ...(utterance.speaker == null ? [] : [utterance.speaker])]) {
+        const index = bySpeaker.get(key) ?? { rows: [], maxEnd: [] };
+        index.rows.push(utterance);
+        bySpeaker.set(key, index);
+      }
+    }
+    for (const index of bySpeaker.values()) {
+      index.rows.sort((a, b) => a.start - b.start);
+      for (const row of index.rows) index.maxEnd.push(Math.max(row.end, index.maxEnd.at(-1) ?? -Infinity));
+    }
+  }
+  const containingUtterance = (sentence: AssemblyAiSentence) => {
+    const index = bySpeaker.get(sentence.speaker == null ? "*" : sentence.speaker);
+    if (!index) return undefined;
+    let lo = 0; let hi = index.rows.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (index.maxEnd[mid]! >= sentence.end) hi = mid;
+      else lo = mid + 1;
+    }
+    const row = index.rows[lo];
+    return row && row.start <= sentence.start ? row : undefined;
+  };
+  const channelOf = (label: string | null | undefined): 0 | 1 | undefined => {
+    if (!stereo || !label) return undefined;
+    const match = /^([12])(?:[A-Z])?$/.exec(label);
+    return match ? (Number(match[1]) - 1) as 0 | 1 : undefined;
+  };
+  const rows: AssemblyAiSentence[] = sentences?.length ? sentences.map((s) => ({ ...s,
+    speaker: s.speaker ?? null,
+    channel: s.channel ?? (stereo ? containingUtterance(s)?.channel : undefined) ?? channelOf(s.speaker) }))
+    : utterances.map((u) => ({ text: u.text, start: u.start, end: u.end,
+      speaker: u.speaker, channel: u.channel ?? channelOf(u.speaker) }));
   const out: FirefliesSentence[] = rows
     .map((r) => ({ ...r, text: r.text.trim() }))
     .filter((r) => r.text.length > 0 && Number.isFinite(r.start) && Number.isFinite(r.end))
-    .map((r, index) => ({ index, speaker_name: r.speaker, text: r.text, start_time: r.start / 1000, end_time: r.end / 1000 }));
+    .flatMap((r) => {
+      const base = { start: r.start, end: r.end, text: r.text, speaker: r.speaker ?? null,
+        channel: r.channel, timing: "engine" as const };
+      const words = r.words;
+      if (words?.length && words[0]!.start <= r.start + 1_000 && words.at(-1)!.end >= r.end - 1_000
+        && r.end - r.start > 30_000) {
+        const pieces: typeof base[] = [];
+        for (const word of words) {
+          const last = pieces.at(-1);
+          if (last && word.end - last.start <= 30_000) { last.end = word.end; last.text += ` ${word.text}`; }
+          else pieces.push({ ...base, start: word.start, end: word.end, text: word.text });
+        }
+        return pieces.flatMap((piece) => splitLongTimedSegment(piece, 30_000));
+      }
+      return splitLongTimedSegment(base, 30_000);
+    })
+    .sort((a, b) => a.start - b.start || a.end - b.end)
+    .map((r, index) => ({ index, speaker_name: r.speaker ? assemblyAiSpeakerName(r.speaker) : null,
+      ...(r.speaker ? { speaker_id: r.speaker } : {}), text: r.text, start_time: r.start / 1000,
+      end_time: r.end / 1000, timing: r.timing,
+      ...(r.channel === 0 || r.channel === 1 ? { channel: r.channel } : {}) }));
   // Neither utterances nor sentences, but text: one sentence rather than silently dropping speech.
   const text = t.text?.trim() ?? "";
   if (out.length === 0 && text.length > 0) {
-    out.push({ index: 0, speaker_name: null, text, start_time: 0, end_time: t.audio_duration ?? 0 });
+    out.push(...splitLongTimedSegment({ start: 0, end: t.audio_duration ?? 0, text, timing: "coarse" as const }, 30)
+      .map((r, index) => ({ index, speaker_name: null, text: r.text, start_time: r.start,
+        end_time: r.end, timing: r.timing })));
   }
   return out;
 }

@@ -1,3 +1,6 @@
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { PipelineTrackSummary } from "@/capture/pipeline/PipelineTrackSummary";
 // The pipeline's input from composed fake stores: each case builds the stores' answers as plain facts
 // (`buildNotePipelineInput`), runs the real selector, and asserts what it says. The actions run against the real
 // store functions with the native plugin faked.
@@ -20,6 +23,7 @@ import {
   type PipelineActionEnv,
 } from "./useNotePipeline";
 import { pendingStore } from "./recorderSaves";
+import { registerDesktopWhisperQueue, type DesktopWhisperQueue } from "./desktop/desktopWhisper";
 import { voiceNoteMarkdownKvKey } from "./voiceNoteStore";
 
 const ID = "note-1";
@@ -50,6 +54,15 @@ const run = (patch: Partial<NotePipelineFacts>): NotePipeline => notePipeline(bu
 const stateOf = (pipeline: NotePipeline, key: "phone" | "space" | "transcript" | "notes") => pipeline.steps.find((step) => step.key === key)?.state;
 
 describe("the pipeline from composed stores", () => {
+  test("desktop Whisper and audio upload report independent progress", () => {
+    const pipeline = run({ device: "mac", saved: false,
+      native: { transcriber: "on-device", stt: { state: "running", error: null } },
+      desktopJob: { id: ID, state: "transcribing", progress: 63, error: null },
+      pending: { id: ID, startedAt: 0, durationMs: 1000, upload: { state: "uploading", bytes: 42, total: 100 } },
+    });
+    expect(pipeline.steps.find((step) => step.key === "space")).toMatchObject({ state: "active", caption: "Uploading audio to your TinyCloud space · 42%" });
+    expect(pipeline.steps.find((step) => step.key === "transcript")).toMatchObject({ state: "active", caption: "Transcribing on this Mac · 63%" });
+  });
   test("a private-cloud note still uploading: the space step is active and the note is not done", () => {
     const pipeline = run({
       saved: false,
@@ -105,6 +118,40 @@ describe("the pipeline from composed stores", () => {
     expect(stateOf(pipeline, "transcript")).toBe("failed");
     expect(pipeline.blocker?.action?.kind).toBe("retry");
   });
+  test("live waiting Private work suppresses the persisted failed fallback in Recent", () => {
+    const pipeline = run({
+      device: "web",
+      native: { transcriber: "private-cloud", stt: null },
+      cloudJob: { kind: "active", status: { kind: "waiting", position: 2 } } as never,
+      rowMetadata: { transcription_outcome: "failed", transcription_error_code: "recording_too_large" },
+    });
+    const html = renderToStaticMarkup(createElement(PipelineTrackSummary, { pipeline }));
+    expect(html).toContain("Transcript: Waiting · 2nd");
+    expect(html).not.toContain("Transcript Failed");
+  });
+  test("queued Mac Whisper work suppresses a stale native and persisted failure in Recent", () => {
+    const pipeline = run({
+      device: "mac",
+      native: { transcriber: "on-device", stt: { state: "failed", error: "decoder" } },
+      desktopJob: { id: ID, state: "queued", error: null, progress: null },
+      rowMetadata: { transcription_outcome: "failed", transcription_error_code: "recording_too_large" },
+    });
+    const html = renderToStaticMarkup(createElement(PipelineTrackSummary, { pipeline }));
+    expect(html).toContain("Transcript: Queued · next");
+    expect(html).not.toContain("Transcript Failed");
+  });
+  test("persisted row outcomes reach Recent when the live route is idle", () => {
+    for (const outcome of ["pending", "failed", "skipped"] as const) {
+      const pipeline = run({ saved: true, rowMetadata: {
+        transcription_outcome: outcome,
+        ...(outcome === "failed" ? { transcription_error_code: "recording_too_large" } : {}),
+      } });
+      expect(pipeline.transcriptionState).toBe(outcome);
+      expect(stateOf(pipeline, "transcript")).toBe("skipped");
+      if (outcome === "failed") expect(pipeline.transcriptionErrorCode).toBe("recording_too_large");
+    }
+  });
+
 
   test("a note with written notes that never synced offers to sync them (idle), then synced on the row's own evidence", () => {
     const local = { editedAt: EDITED, hasContent: true };
@@ -442,6 +489,18 @@ describe("actions", () => {
     refuse = true;
     expect(await runPipelineAction("get-model", waiting)).toBe("Couldn't download the on-device model: no network");
     __resetOnDeviceSttStoreForTests();
+  });
+
+  test("a failed Mac transcription retries through Whisper", async () => {
+    const calls: string[] = [];
+    registerDesktopWhisperQueue({ retry: async (id) => { calls.push(id); } } as DesktopWhisperQueue);
+    try {
+      const env = envFor({ device: "mac", saved: true, native: { transcriber: "on-device", stt: { state: "failed", error: "decoder" } },
+        desktopJob: { id: ID, state: "failed", error: "decoder", progress: null } });
+      expect(env.pipeline.current).toBe("transcript");
+      expect(await runPipelineAction("retry", env)).toBeNull();
+      expect(calls).toEqual([ID]);
+    } finally { registerDesktopWhisperQueue(null); }
   });
 
   test("retry on the notes step with no account says so instead of doing nothing", async () => {

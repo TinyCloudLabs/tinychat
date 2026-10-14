@@ -4,7 +4,7 @@ import { CheckIcon, ChevronDownIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { PlatformContext } from "@/lib/platform";
 import { useNotePipelineWithLedger } from "@/lib/voiceNotes/useNotePipeline";
-import type { TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
+import { VoiceNotes, type TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { MicrophoneAccessOff } from "./MicrophoneAccessOff";
 import { honestRecorderError, receiptPartialNotice } from "./final/honestRecorderError";
 import type { RecorderValue } from "./RecorderProvider";
@@ -86,6 +86,8 @@ export function ReceiptView({ recorder, onOpenNote }: ReceiptViewProps) {
 
         <div className="flex min-h-0 flex-col justify-start land:col-start-2 land:row-start-1 land:justify-end">
           <SavedReceipt device={device} outcome={outcome} localUpload={recorder.localUpload} saved={lastSaved} route={voiceNoteRoute(savedRoute)} pipeline={pipeline} pipelineReading={lastSaved !== null && pipeline === null} transcriber={savedTranscriber} sttHint={savedStt} transcribing={transcribing} held={privateJob?.kind === "held" ? privateJob.message : null} movedToPrivate={movedToPrivate} privateFailure={savedTranscriber !== "off" && privateJob?.kind === "failed" ? privateJob.message : null} privateOutcome={privateOutcome} error={honestRecorderError(recorder)} notice={receiptPartialNotice(recorder, lastSaved?.id)} retrying={recorder.pending.running}
+            localAudioState={device === "mac" ? ledger?.recording?.ledger?.localAudio?.state ?? "ready" : undefined}
+            onRetryPreparation={lastSaved ? () => { void VoiceNotes.retryRecovery({ id: lastSaved.id }); } : undefined}
             onOpen={onOpenNote && lastSaved ? () => { recorder.dismissOutcome(); onOpenNote(lastSaved.id); } : undefined}
             onDone={recorder.dismissOutcome} onSaveNow={recorder.retryPending} onPlayingChange={recorder.setReceiptPlaying} onReady={recorder.setReceiptReady} onUsePrivate={usePrivate} onActionableChange={recorder.setReceiptActionable} />
         </div>

@@ -7,6 +7,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
+import { localTranscriptTurns, MIC_CHANNEL, type LocalWord } from "@/lib/localTranscriptTurns";
 
 import type { VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
 import {
@@ -54,6 +55,14 @@ function render(patch: Partial<NoteDetailViewProps> = {}) {
 }
 
 describe("NoteDetailView", () => {
+  test("another device names the holding device and offers no broken player or Transcribe button", () => {
+    const html = render({ audio: null, transcript: { status: "absent" }, transcription: transcription(),
+      metadata: { status: "ok", metadata: { capture: { platform: "ios" }, audio: { stored: false, reason: "local_only", device: { platform: "ios" } } } } });
+    expect(html).toContain("Audio is on your iPhone");
+    expect(html).toContain("Transcribe on your iPhone");
+    expect(html).not.toContain('data-testid="transcribe-button"');
+    expect(html).not.toContain("meeting-audio-player");
+  });
   test("a note only on this phone opens from its own audio, titled by its time, with nothing to transcribe or explain", () => {
     const onPhone: LibraryItem = { ...VOICE, id: "on-phone:rec-1", title: null, onPhone: true };
     const html = render({ item: onPhone, metadata: { status: "ok", metadata: {} }, transcript: { status: "absent" }, transcription: undefined });
@@ -114,13 +123,97 @@ describe("NoteDetailView", () => {
       },
     });
     expect(html).toContain('data-testid="note-copy"');
-    expect(html).toContain("We ship the beta. On Friday.");
+    expect(html).toContain("We ship the beta.");
+    expect(html).toContain("On Friday.");
+    expect(html).toContain('aria-label="Play from 0:01"');
     expect(html).toContain(">Ben</p>");
     expect(render({ copyState: "copied", transcript: { status: "ok", sentences: [{ index: 0, speaker_name: null, text: "Hi", start_time: 0, end_time: 1 }] } })).toContain("Copied");
     const failed = render({ transcript: { status: "failed" } });
     expect(failed).toContain("Couldn’t load the transcript.");
     expect(failed).toContain("Try again");
     expect(render({ transcript: undefined })).toContain("Loading the transcript…");
+  });
+  test("60-second transcript spans are timed only for PTX provenance", () => {
+    const body = [
+      { index: 0, speaker_name: "You", text: "Synthetic first.", start_time: 0, end_time: 45 },
+      { index: 1, speaker_name: "You", text: "Synthetic second.", start_time: 45, end_time: 105 },
+    ];
+    const ptx = render({
+      metadata: { status: "ok", metadata: { transcription_engine: "private-cloud" } },
+      transcript: { status: "ok", sentences: body },
+      onCopyWithTimestamps: noop,
+    });
+    expect(ptx).toContain('aria-label="Play from 0:45"');
+    expect(ptx).toContain("Copy with timestamps");
+
+    for (const metadata of [
+      { status: "ok" as const, metadata: { transcription_engine: "whispercpp", transcript_provider: "whispercpp" } },
+      { status: "ok" as const, metadata: { transcription_engine: "future-engine" } },
+      { status: "absent" as const },
+    ]) {
+      const plain = render({ metadata, transcript: { status: "ok", sentences: body } });
+      expect(plain).not.toContain("Play from 0:45");
+      expect(plain).not.toContain("Copy with timestamps");
+      expect(plain).toContain("Synthetic second.");
+    }
+
+    const providerOnly = render({
+      metadata: { status: "ok", metadata: { transcript_provider: "tinycloud-private-transcription" } },
+      transcript: { status: "ok", sentences: body },
+    });
+    expect(providerOnly).toContain('aria-label="Play from 0:45"');
+    const committedPtx = render({
+      metadata: { status: "ok", metadata: {} },
+      transcriptProvenance: { engine: "private-cloud", provider: null },
+      transcript: { status: "ok", sentences: body },
+    });
+    expect(committedPtx).toContain('aria-label="Play from 0:45"');
+    const unknownCommit = render({
+      metadata: { status: "ok", metadata: { transcription_engine: "private-cloud" } },
+      transcriptProvenance: { engine: null, provider: null },
+      transcript: { status: "ok", sentences: body },
+    });
+    expect(unknownCommit).not.toContain("Play from 0:45");
+    expect(unknownCommit).not.toContain("Copy with timestamps");
+  });
+
+  test("real Local turn builder keeps its interpolated 60-second split untimed", () => {
+    const words = Array.from({ length: 100 }, (_, index) => {
+      const segment = Math.floor(index / 25);
+      const word = index % 25;
+      const start = segment * 25;
+      const wordStart = start + word;
+      return {
+        text: `synthetic${index}`,
+        start: wordStart,
+        end: word === 24 ? Math.max(start + 24.9, wordStart + 0.05) : wordStart + 1,
+        channel: MIC_CHANNEL,
+      };
+    }) satisfies LocalWord[];
+    const turns = localTranscriptTurns(words);
+
+    expect(turns.map(({ start_time, end_time }) => [start_time, end_time])).toEqual([[0, 60], [60, 99.9]]);
+    const html = render({ metadata: { status: "absent" }, transcript: { status: "ok", sentences: turns } });
+    expect(html).not.toContain('aria-label="Play from 1:00"');
+    expect(html).not.toContain("Copy with timestamps");
+    expect(html).toContain("synthetic60");
+  });
+
+
+  test("timed copy is absent when the caller has no handler", () => {
+    const html = render({ transcript: { status: "ok", sentences: [
+      { index: 0, speaker_name: null, text: "Ready.", start_time: 1, end_time: 2 },
+    ] } });
+    expect(html).not.toContain("Copy with timestamps");
+    expect(html).toContain("Export as Markdown");
+  });
+
+  test("timed copy is absent when the caller has no handler", () => {
+    const html = render({ transcript: { status: "ok", sentences: [
+      { index: 0, speaker_name: null, text: "Ready.", start_time: 1, end_time: 2 },
+    ] } });
+    expect(html).not.toContain("Copy with timestamps");
+    expect(html).toContain("Export as Markdown");
   });
 
   test("an upload whose audio was not stored says so", () => {
@@ -164,6 +257,59 @@ describe("a voice note's transcription", () => {
     const long = render({ item: { ...VOICE, durationSecs: 900 }, transcription: transcription({ maxSeconds: 7_200 }) });
     expect(long).toContain('data-testid="transcribe-button"');
     expect(long).not.toContain("minutes can be transcribed");
+  });
+
+  test("a legacy empty body without an outcome remains a transcribe candidate", () => {
+    const html = render({
+      metadata: { status: "ok", metadata: { audio: { stored: true } } },
+      transcript: { status: "ok", sentences: [] },
+      transcription: transcription(),
+    });
+    expect(html).toContain("Not transcribed");
+    expect(html).toContain('data-testid="transcribe-button"');
+  });
+
+  test("persisted size and duration failures use retry copy that fits both states", () => {
+    for (const code of ["recording_too_large", "recording_too_long"]) {
+      const html = render({
+        item: { ...VOICE, durationSecs: 4_320 },
+        metadata: { status: "ok", metadata: {
+          transcription_outcome: "failed",
+          transcription_error_code: code,
+        } },
+        transcript: { status: "absent" },
+        transcription: transcription({ maxSeconds: 7_200 }),
+      });
+      expect(html).toContain('data-testid="voice-note-transcription-failed"');
+      expect(html).toContain("Private cloud couldn&#x27;t accept this recording&#x27;s length or size. Try again.");
+      expect(html).toContain("Try again");
+      expect(html).toContain('data-testid="transcribe-button"');
+    }
+  });
+  test("a persisted provider failure keeps its private-cloud re-upload sentence", () => {
+    const html = render({
+      metadata: { status: "ok", metadata: {
+        transcription_outcome: "failed",
+        transcription_error_code: "provider_unavailable",
+      } },
+      transcript: { status: "absent" },
+      transcription: transcription({ maxSeconds: 7_200 }),
+    });
+    expect(html).toContain("Private cloud transcription failed while transcribing. Retrying uploads the recording again.");
+    expect(html).toContain("Try again");
+  });
+  test("persisted incomplete transcript is retryable with explicit may-be-incomplete copy", () => {
+    const html = render({
+      metadata: { status: "ok", metadata: {
+        transcription_outcome: "failed",
+        transcription_error_code: "transcript_incomplete",
+      } },
+      transcript: { status: "absent" },
+      transcription: transcription({ maxSeconds: 7_200 }),
+    });
+    expect(html).toContain("Private Transcription returned a transcript that may be incomplete. Try again later.");
+    expect(html).toContain("Try again");
+    expect(html).toContain('data-testid="transcribe-button"');
   });
 
   test("no speech, progress, just saved, and a failure with Retry only when it can help", () => {
@@ -237,6 +383,52 @@ describe("a voice note with an after-stop Whisper job on the Mac", () => {
     registerDesktopWhisperQueue({ snapshot: () => jobs, subscribe: () => noop } as unknown as DesktopWhisperQueue);
     return render({ desktopWhisper: true, ...patch });
   };
+
+  const localTranscript = { version: 1 as const, noteId: "rec-1", transcriber: "on-device" as const,
+    rev: 1, engine: "whispercpp" as const, model: "QuantizedTinyEn", language: "en",
+    outcome: "transcribed" as const, diarized: false,
+    segments: [{ start: 0, end: 1000, text: "Saved on this Mac", speaker: null }], createdAt: "2026-10-13T10:00:00Z" };
+
+  test("shows the durable device text before upload, then the space body by source id", () => {
+    const local = withJob({ state: "done" }, { transcript: { status: "absent" }, localTranscript });
+    expect(local).toContain("Saved on this Mac");
+    expect(local).toContain('data-testid="note-copy"');
+    expect(local).not.toContain("Transcript saved.");
+    const remote = withJob({ state: "done" }, { localTranscript,
+      transcript: { status: "ok", sentences: [{ index: 0, speaker_name: null, text: "Saved in the space", start_time: 0, end_time: 1 }] } });
+    expect(remote).toContain("Saved in the space");
+    expect(remote).not.toContain("Saved on this Mac");
+    expect(withJob({ state: "done" }, { localTranscript: { ...localTranscript, noteId: "another-note" } })).not.toContain("Saved on this Mac");
+  });
+
+  test("an empty durable local result says no speech", () => {
+    const html = withJob({ state: "done" }, { localTranscript: { ...localTranscript, outcome: "no_speech", segments: [] } });
+    expect(html).toContain("No speech was found in this note.");
+    expect(html).not.toContain("Transcript saved.");
+  });
+
+  test("the space's no-speech outcome wins without a local read error", () => {
+    const html = withJob({ state: "done" }, { metadata: { status: "ok", metadata: { transcription_outcome: "no_speech" } }, localTranscript: null });
+    expect(html).toContain("No speech was found in this note.");
+    expect(html).not.toContain("Couldn’t read the transcript saved on this Mac.");
+  });
+
+  test("an older device copy names a failed space read and offers retry", () => {
+    const html = withJob({ state: "done" }, { localTranscript, transcript: { status: "failed", message: "offline" } });
+    expect(html).toContain("Saved on this Mac");
+    expect(html).toContain("On this device · Couldn’t check your space.");
+    expect(html).toContain("Try again");
+    const silent = withJob({ state: "done" }, { localTranscript: { ...localTranscript, outcome: "no_speech", segments: [] },
+      transcript: { status: "failed", message: "offline" } });
+    expect(silent).toContain("No speech was found in this note.");
+    expect(silent).toContain("On this device · Couldn’t check your space.");
+  });
+
+  test("a timed-out local read has a typed message and retry", () => {
+    const html = withJob({ state: "done" }, { localTranscript: null, localTranscriptRead: "timeout", onLocalTranscriptRetry: noop });
+    expect(html).toContain("Checking the transcript on this Mac took too long.");
+    expect(html).toContain("Try again");
+  });
 
   test("signed out (no private-cloud props): queued, progress and failure with Retry show on the page", () => {
     const before = __desktopWhisperQueueReadsForTests();

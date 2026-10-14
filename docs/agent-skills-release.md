@@ -1,6 +1,6 @@
 # Releasing TinyChat's retrieval skill
 
-The current setup pins CLI 0.10.0, retrieval 0.1.1-onboarding.19 and skills installer 1.7.0. Automatic first-install activation is scoped to stock OpenCode 1.18.31, a local macOS direct TUI, Node >=22.20, one active conversation and no background agents. Public URLs are not considered available until anonymously verified after deployment.
+The current setup pins CLI 0.10.0, retrieval 0.1.1-onboarding.21 and skills installer 1.7.0. Automatic first-install activation is scoped to stock OpenCode 1.18.31, a local macOS direct TUI, Node >=22.20, one active conversation and no background agents. Public URLs are not considered available until anonymously verified after deployment.
 
 ## Build and check
 
@@ -31,4 +31,4 @@ Run the documented `skills@1.7.0 add` commands in a disposable home to prove com
 
 The development workspace tracks per-client acceptance separately in `docs/tinycloud-cli-skills-retrieval-acceptance.md` and its JSON ledger. Local helper tests, packaged synthetic login, preview availability and public same-account tests are different gates. Each of OpenCode, Codex and Claude Code requires a fresh first-use and return session, using the same published versions and exact public prompt. The human completes existing-identity consent. Never seed the tested agent with developer paths, schema hints or copied grants.
 
-The first pack discovers SQL-indexed legacy meetings. KV-only and backend-only catalogs are excluded and disclosed in every coverage envelope. Legacy body hashes do not certify an atomic SQL/KV snapshot. Node SQL scope confinement remains separately unverified for the hosted runtime; do not describe fixed queries or client tool permissions as server enforcement. Keep any security reproduction details private.
+The pack discovers SQL-indexed legacy meetings; user-space KV-only records remain excluded and disclosed in `coverage.excludedCatalogs`. `coverage.backendPending` separately reports counts and freshness for metadata-only backend-ingest and transcriber snapshots. Missing, future, corrupt or unsupported snapshots are unknown rather than zero. Legacy body hashes do not certify an atomic SQL/KV snapshot. Node SQL scope confinement remains separately unverified for the hosted runtime; do not describe fixed queries or client tool permissions as server enforcement. Keep any security reproduction details private.

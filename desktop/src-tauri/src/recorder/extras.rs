@@ -42,8 +42,6 @@ struct Preferences {
     system_audio: bool,
     #[serde(default)]
     system_audio_consent: bool,
-    #[serde(default)]
-    auto_save_to_space: bool,
 }
 
 fn default_system_audio() -> bool {
@@ -57,7 +55,6 @@ impl Default for Preferences {
             microphone: None,
             system_audio: true,
             system_audio_consent: false,
-            auto_save_to_space: false,
         }
     }
 }
@@ -391,7 +388,7 @@ pub async fn recorder_models_select(app: tauri::AppHandle, id: String) -> Result
 }
 
 #[tauri::command]
-pub fn recorder_models_progress(app: tauri::AppHandle) -> Vec<Progress> {
+pub async fn recorder_models_progress(app: tauri::AppHandle) -> Vec<Progress> {
     super::ensure(&app);
     app.state::<ExtrasState>()
         .progress
@@ -593,22 +590,6 @@ pub async fn recorder_system_audio_consent_set(
     Ok(())
 }
 
-#[tauri::command]
-pub async fn recorder_auto_save_to_space_get(app: tauri::AppHandle) -> Result<bool, String> {
-    super::ensure(&app);
-    Ok(preferences(&app).await?.auto_save_to_space)
-}
-
-#[tauri::command]
-pub async fn recorder_auto_save_to_space_set(
-    app: tauri::AppHandle,
-    enabled: bool,
-) -> Result<(), String> {
-    super::ensure(&app);
-    save_preferences(&app, |prefs| prefs.auto_save_to_space = enabled).await?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -641,7 +622,6 @@ mod tests {
         assert!(!beta.system_audio_consent);
         assert!(!effective_system_audio(&beta));
         assert_eq!(beta.selected_model.as_deref(), Some("QuantizedTinyEn"));
-        assert!(beta.auto_save_to_space);
 
         let mut chosen = beta;
         chosen.system_audio = false;

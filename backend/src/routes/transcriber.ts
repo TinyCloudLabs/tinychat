@@ -3,12 +3,14 @@ import { Router } from "express";
 import type { Request, Response } from "express";
 
 import {
+  TERMINAL_MEETING_STATUSES,
   TranscriptionApiError,
   computeCreateRequestHash,
   type TranscriptionApiClient,
   type TranscriptionMeeting,
 } from "../services/transcription-api.js";
 import {
+  DuplicateCreateIntentError,
   resolvePendingCreates,
   TooManyPendingCreatesError,
   type ShareProvenance,
@@ -48,9 +50,11 @@ export interface TranscriberRouterOptions {
 }
 
 export const MEETING_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+export const IDEMPOTENCY_KEY_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const MAX_URL_LENGTH = 2048;
 const MAX_BOT_NAME_LENGTH = 64;
 const LIST_CONCURRENCY = 8;
+const CREATE_DEDUP_CANDIDATES = 32;
 
 export function isValidMeetingUrl(raw: unknown): raw is string {
   if (typeof raw !== "string" || raw.length === 0 || raw.length > MAX_URL_LENGTH) return false;
@@ -62,6 +66,17 @@ export function isValidMeetingUrl(raw: unknown): raw is string {
   }
   return url.protocol === "https:" || url.protocol === "http:";
 }
+
+/** Canonical comparison/storage identity. The original URL still goes to ptx. */
+export function normalizeMeetingUrl(raw: string): string {
+  const url = new URL(raw.trim());
+  url.hash = "";
+  if (url.pathname !== "/") url.pathname = url.pathname.replace(/\/+$/, "") || "/";
+  url.searchParams.sort();
+  return url.toString();
+}
+
+class InvalidCreateResponseError extends Error {}
 
 /** The only fields of someone else's meeting this address sees. Metadata comes from its OWN calendar. */
 export function sharedMeetingView(meeting: TranscriptionMeeting, provenance: ShareProvenance): TranscriptionMeeting {
@@ -91,6 +106,11 @@ export function createTranscriberRouter(options: TranscriberRouterOptions): Rout
   const { api, index } = options;
   const defaultBotName = options.defaultBotName ?? "TinyCloud Private Notetaker";
   const router = Router();
+  // Process-local protection complements ptx's durable Idempotency-Key guarantee. Concurrent
+  // sends share the existing create path and add no lane read.
+  const inFlightByOwnerUrl = new Map<string, Promise<{ meeting: TranscriptionMeeting; created: boolean }>>();
+
+  const ownerUrlKey = (address: string, meetingUrl: string) => `${address}\n${meetingUrl}`;
 
   function addressOf(req: Request, res: Response): string | null {
     const address = req.user?.address;
@@ -108,6 +128,13 @@ export function createTranscriberRouter(options: TranscriberRouterOptions): Rout
     if (error instanceof TranscriptionApiError) {
       if (error.status === 404) {
         res.status(404).json({ error: "not_found" });
+        return;
+      }
+      if (error.status === 409 && error.code === "idempotency_conflict") {
+        res.status(409).json({
+          error: "idempotency_conflict",
+          message: "This send key belongs to a different request. Please send again.",
+        });
         return;
       }
       if (error.status === 400 || error.status === 422) {
@@ -233,6 +260,12 @@ export function createTranscriberRouter(options: TranscriberRouterOptions): Rout
       res.status(400).json({ error: "invalid_meeting_url" });
       return;
     }
+    const meetingUrl = normalizeMeetingUrl(body.meeting_url);
+    const suppliedKey = req.get("Idempotency-Key");
+    if (suppliedKey !== undefined && !IDEMPOTENCY_KEY_RE.test(suppliedKey)) {
+      res.status(400).json({ error: "invalid_idempotency_key" });
+      return;
+    }
     const botName =
       typeof body.bot_name === "string" && body.bot_name.trim().length > 0
         ? body.bot_name.trim().slice(0, MAX_BOT_NAME_LENGTH)
@@ -242,74 +275,106 @@ export function createTranscriberRouter(options: TranscriberRouterOptions): Rout
         ? body.language
         : undefined;
     const createBody = {
-      meeting_url: body.meeting_url,
+      // Fragments and the exact query remain intact: Signal and signed meeting links may carry
+      // capabilities there. Canonicalization is only an identity used by TinyChat dedupe.
+      meeting_url: body.meeting_url.trim(),
       bot_name: botName,
       ...(language ? { language } : {}),
       ...(options.webhookUrl ? { webhook_url: options.webhookUrl } : {}),
       metadata: { tinychat_address: address },
     };
 
-    const key = `manual-v1-${randomUUID()}`;
-    const intent = { key, hash: computeCreateRequestHash(createBody), createdAt: Date.now() };
+    const ownerMeetingKey = ownerUrlKey(address, meetingUrl);
+    let create = inFlightByOwnerUrl.get(ownerMeetingKey);
+    const joinedExistingCreate = create !== undefined;
+    if (!create) {
+      const key = suppliedKey ?? `manual-v1-${randomUUID()}`;
+      create = (async () => {
+        const intent = { key, hash: computeCreateRequestHash(createBody), createdAt: Date.now() };
+        const entries = await index.beginCreate(address, intent);
+        const candidates = entries.ids
+          .filter(id => !Object.hasOwn(entries.shared, id))
+          .slice(0, CREATE_DEDUP_CANDIDATES);
+        let cursor = 0;
+        let existing: TranscriptionMeeting | null = null;
+        async function scan(): Promise<void> {
+          while (existing === null && cursor < candidates.length) {
+            const id = candidates[cursor++]!;
+            try {
+              const current = await api.getMeeting(id);
+              const owner = current.metadata?.tinychat_address;
+              if (typeof owner === "string" && owner.toLowerCase() === address
+                && !TERMINAL_MEETING_STATUSES.has(current.status)
+                && normalizeMeetingUrl(current.meeting_url) === meetingUrl) existing = current;
+            } catch {
+              // Historical rows may be gone or temporarily unreadable. Neither should block a
+              // fresh send; the stable key and in-flight map remain the primary duplicate guards.
+            }
+          }
+        }
+        await Promise.all(Array.from({ length: Math.min(LIST_CONCURRENCY, candidates.length) }, scan));
+        if (existing !== null) {
+          await index.abandonCreate(address, key);
+          return { meeting: existing, created: false };
+        }
+        let meeting: TranscriptionMeeting;
+        let attempts = 0;
+        try {
+          meeting = await api.createMeeting(createBody, { idempotencyKey: key, onAttempt: () => { attempts++; } });
+        } catch (error) {
+          // TC-907: a lone definitive refusal clears the intent. After a transport retry, an
+          // earlier attempt can still commit, so lookup-only recovery retains ownership of it.
+          const refused = error instanceof TranscriptionApiError && error.status >= 400 && error.status < 500
+            && (error.status !== 429 || error.code === "capacity_exhausted");
+          if (refused && attempts <= 1) {
+            try { await index.abandonCreate(address, key); }
+            catch { /* Recovery will later see the missing key and clear the intent. */ }
+          }
+          throw error;
+        }
+        if (typeof meeting?.id !== "string" || !MEETING_ID_RE.test(meeting.id)) {
+          throw new InvalidCreateResponseError("create returned an unusable id");
+        }
+        try {
+          await index.completeCreate(address, key, meeting.id);
+        } catch (error) {
+          console.warn(`[transcriber] index write failed err=${redactedErrorMessage(error)}`);
+          try {
+            await api.deleteMeeting(meeting.id);
+            try { await index.abandonCreate(address, key); }
+            catch { /* A later lookup sees 404 and abandons after the grace period. */ }
+          } catch { /* Retain the durable intent when deletion fails. */ }
+          throw error;
+        }
+        return { meeting, created: true };
+      })();
+      inFlightByOwnerUrl.set(ownerMeetingKey, create);
+      void create.finally(() => {
+        if (inFlightByOwnerUrl.get(ownerMeetingKey) === create) inFlightByOwnerUrl.delete(ownerMeetingKey);
+      }).catch(() => {});
+    }
     try {
-      await index.beginCreate(address, intent);
+      const result = await create;
+      res.status(joinedExistingCreate || !result.created ? 200 : 201).json(result.meeting);
     } catch (error) {
       if (error instanceof TooManyPendingCreatesError) {
         res.status(429).json({ error: "too_many_pending_creates" });
         return;
       }
-      console.warn(`[transcriber] index begin failed err=${redactedErrorMessage(error)}`);
-      res.status(503).json({ error: "transcriber_unavailable" });
-      return;
-    }
-
-    let meeting: TranscriptionMeeting;
-    let attempts = 0;
-    try {
-      meeting = await api.createMeeting(createBody, { idempotencyKey: key, onAttempt: () => { attempts++; } });
-    } catch (error) {
-      // A definitive refusal of this send's only attempt created nothing, so its intent is cleared
-      // now: a non-429 4xx, or (TC-907) a capacity 429, since ptx checks the key before capacity.
-      // After a transport retry an earlier attempt may still commit late (a timeout, then a 409
-      // while its replay is in flight), so the intent stays for lookup-only recovery: it owns a late
-      // meeting, or abandons after the grace period. Recovery never creates.
-      const refused = error instanceof TranscriptionApiError && error.status >= 400 && error.status < 500
-        && (error.status !== 429 || error.code === "capacity_exhausted");
-      if (refused && attempts <= 1) {
-        try {
-          await index.abandonCreate(address, key);
-        } catch {
-          // Recovery will later see the missing idempotency key and clear the intent.
-        }
+      if (error instanceof DuplicateCreateIntentError) {
+        res.status(409).json({
+          error: "idempotency_conflict",
+          message: "This send key belongs to a different request. Please send again.",
+        });
+        return;
+      }
+      if (error instanceof InvalidCreateResponseError) {
+        console.warn("[transcriber] create returned an unusable id");
+        res.status(502).json({ error: "transcriber_bad_response" });
+        return;
       }
       upstreamFailure(res, error, "create");
-      return;
     }
-
-    if (typeof meeting?.id !== "string" || !MEETING_ID_RE.test(meeting.id)) {
-      // The durable intent stays available for a verified idempotency lookup during recovery.
-      console.warn("[transcriber] create returned an unusable id");
-      res.status(502).json({ error: "transcriber_bad_response" });
-      return;
-    }
-    try {
-      await index.completeCreate(address, key, meeting.id);
-    } catch (error) {
-      console.warn(`[transcriber] index write failed err=${redactedErrorMessage(error)}`);
-      try {
-        await api.deleteMeeting(meeting.id);
-        try {
-          await index.abandonCreate(address, key);
-        } catch {
-          // A subsequent lookup sees 404 and abandons after the grace period.
-        }
-      } catch {
-        // Deletion failed: retain the durable intent so the bot remains discoverable.
-      }
-      res.status(503).json({ error: "transcriber_unavailable" });
-      return;
-    }
-    res.status(201).json(meeting);
   });
 
   router.get("/:id", async (req, res) => {

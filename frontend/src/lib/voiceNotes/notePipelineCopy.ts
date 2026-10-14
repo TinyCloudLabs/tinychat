@@ -2,10 +2,10 @@
 // no em dashes. Every blocker line says what is wrong and, where it is true, that the note is safe.
 import type { PipelineActionKind, PipelineDevice, StepKey } from "./notePipeline";
 
-export const deviceName = (device: PipelineDevice): string => (device === "mac" ? "this Mac" : "this phone");
+export const deviceName = (device: PipelineDevice): string => (device === "mac" ? "this Mac" : device === "browser" ? "this browser" : "this phone");
 
 export const STEP_LABEL = {
-  phone: (device: PipelineDevice) => (device === "mac" ? "Audio on this Mac" : "Audio on this phone"),
+  phone: (device: PipelineDevice) => (device === "mac" ? "Audio on this Mac" : device === "browser" ? "Audio in this browser" : "Audio on this phone"),
   space: "Audio in your space",
   transcript: "Transcript",
   notes: "Notes",
@@ -52,9 +52,12 @@ export const PHONE_COPY = {
 export const SPACE_COPY = {
   afterRecording: "After recording",
   waiting: "Waiting to upload",
+  preparing: "Preparing your space for audio upload…",
+  waitingForSpace: "Waiting for your space to finish another operation",
   waitingInLine: (position: number) => `Waiting to upload · ${place(position)} in line`,
   uploading: (fraction: number | null) => (fraction === null ? "Uploading audio to your TinyCloud space…" : `Uploading audio to your TinyCloud space · ${percentText(fraction)}`),
   retrying: "Retrying…",
+  retryIn: (ms: number) => `Couldn't sync · Trying again in ${ms < 60_000 ? `${Math.ceil(ms / 1_000)}s` : `${Math.ceil(ms / 60_000)}m`}`,
   offline: "Waiting for a connection",
   offlineCaption: "Offline · Resumes automatically",
   signedOut: (device: PipelineDevice) => `You're signed out. This note is safe on ${deviceName(device)}.`,
@@ -90,6 +93,7 @@ export const LOCAL_COPY = {
   modelFailed: (detail: string | null | undefined) => withDetail("The on-device model couldn't download", detail),
   queued: (position: number | null) => (position === null ? "Queued" : `Queued · ${place(position)}`),
   transcribing: (fraction: number | null) => (fraction === null ? "Transcribing…" : `Transcribing · ${percentText(fraction)}`),
+  transcribingOnMac: (fraction: number | null) => (fraction === null ? "Transcribing on this Mac…" : `Transcribing on this Mac · ${percentText(fraction)}`),
   adding: "Adding to this note…",
   failed: (detail: string | null | undefined, device: PipelineDevice) => withDetail(`Couldn't transcribe on ${deviceName(device)}`, detail),
   cancelled: (device: PipelineDevice) => `Transcribing on ${deviceName(device)} was cancelled`,

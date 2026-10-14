@@ -92,3 +92,46 @@ test("ready Apple Speech wakes a signed-out note waiting in the native queue", a
     restoreDom();
   }
 });
+
+test("a signed-out device note copies timed text from the menu to the clipboard", async () => {
+  const restoreDom = installDom();
+  const fakeNotes = createFakeVoiceNotes();
+  const note: VoiceNoteRecording = {
+    id: "copied-note", startedAt: Date.now(), durationMs: 45_000, mimeType: "audio/mp4", sizeBytes: 4,
+    silencedMs: 0, silencedEvents: 0, noSignalMs: 0,
+    options: { transcriber: "on-device", identifySpeakers: true },
+  };
+  fakeNotes.controls.commitLegacy(note);
+  await fakeNotes.plugin.putTranscript({ id: note.id, transcript: {
+    version: 1, noteId: note.id, transcriber: "on-device", rev: 1, engine: "apple-speech",
+    model: null, language: "en", outcome: "transcribed", diarized: true,
+    segments: [{ start: 42_000, end: 44_000, text: "Let's begin.", speaker: "Speaker 1" }],
+    createdAt: new Date().toISOString(),
+  } });
+  __setVoiceNotesForTests(fakeNotes.plugin, { available: true });
+  const copied: string[] = [];
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async (text: string) => { copied.push(text); } } });
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  try {
+    await act(async () => {
+      root.render(<MemoryRouter initialEntries={["/chat/capture/library/on-phone:copied-note"]}>
+        <StaticRecorderProvider value={{ signedIn: false, available: true }}>
+          <DeviceCaptureSurface did={null} offline={false} error={null} onSignIn={() => {}} onRetry={() => {}}
+            screen={screenFor("/chat/capture/library/on-phone:copied-note")} />
+        </StaticRecorderProvider>
+      </MemoryRouter>);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    const button = Array.from(host.querySelectorAll("button")).find((candidate) => candidate.textContent === "Copy with timestamps");
+    expect(button).toBeDefined();
+    await act(async () => { button!.click(); });
+    expect(copied).toEqual(["[00:42] Speaker 1: Let's begin."]);
+  } finally {
+    await act(async () => root.unmount());
+    __setVoiceNotesForTests(null, { available: null });
+    restoreDom();
+  }
+});

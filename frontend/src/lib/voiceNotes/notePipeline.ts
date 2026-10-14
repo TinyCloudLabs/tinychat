@@ -14,7 +14,7 @@ import {
   percentText,
 } from "./notePipelineCopy";
 
-export type PipelineDevice = "phone" | "mac";
+export type PipelineDevice = "phone" | "mac" | "browser";
 export type PipelineRoute = "off" | "on-device" | "private-cloud";
 export type StepKey = "phone" | "space" | "transcript" | "notes";
 export type StepState = "done" | "active" | "waiting" | "blocked" | "failed" | "upcoming" | "skipped";
@@ -36,16 +36,17 @@ export type PipelineHeldReason = "signed-out" | "other-account" | "legacy" | "un
 
 /** The part of `PendingNote` (P1) the pipeline reads. A note with no pending entry and no space row yet has `pending: null`. */
 export interface PipelinePending {
-  upload?: { state: "waiting" | "uploading" | "retrying"; bytes: number; total: number };
+  upload?: { state: "waiting" | "preparing" | "uploading" | "retrying"; bytes: number; total: number };
   failed?: { kind: PipelineFailureKind; message: string };
   held?: PipelineHeldReason;
+  retryAt?: number;
   /** Per note: how many notes are ahead of this one in the save queue (0 = next). This is the only queue position. */
   waitingBehind?: number;
 }
 
 /**
- * `spaceLaneSnapshot()` (P1): the global write lane. `busy`: a job is running or queued. `depth`: every queued job,
- * including this note and the ones behind it, so it is NOT a position and is never shown. Only `busy` is read.
+ * The text lane snapshot controls space-read copy. `busy` means a text request
+ * is running or queued; `depth` counts queued text requests, not a note position.
  */
 export interface PipelineSpaceLane { busy: boolean; depth: number }
 
@@ -102,6 +103,8 @@ export type PipelineNotesSync =
   /** The note's local text could not be read, so nothing is known about its sync. `cause` is the read's own error. */
   | { state: "unreadable"; cause: string };
 
+export type PersistedTranscriptState = "pending" | "failed" | "skipped";
+
 export interface NotePipelineInput {
   device: PipelineDevice;
   route: PipelineRoute;
@@ -110,10 +113,14 @@ export interface NotePipelineInput {
   online: boolean;
   /** `readError`: the list of recordings that failed to save could not be read (the read's own error); a quarantined session could be missing. */
   capture: { finalizing: boolean; issue: PipelineCaptureIssue | null; readError?: string | null };
-  space: { saved: boolean; pending: PipelinePending | null; lane: PipelineSpaceLane };
+  space: { saved: boolean; localOnly?: boolean; pending: PipelinePending | null; lane: PipelineSpaceLane };
   transcript: {
     /** The space row already has a transcript outcome. */
     inSpace: "transcribed" | "no_speech" | null;
+    /** A durable non-terminal transcript state from the Library row. */
+    persistedState?: PersistedTranscriptState;
+    /** The row's persisted failure code, when one is present. */
+    errorCode?: string | null;
     onDevice: PipelineOnDevice | null;
     cloud: PipelineCloud | null;
     /**
@@ -162,6 +169,9 @@ export interface NotePipeline {
   /** The step to show a caption and blocker for; null when everything is done. */
   current: StepKey | null;
   done: boolean;
+  /** Durable row state to show when the live transcript step is otherwise skipped. */
+  transcriptionState?: PersistedTranscriptState;
+  transcriptionErrorCode?: string | null;
   /** The one blocker to show: the blocker of `current`, chosen by action priority across all stuck steps. */
   blocker?: PipelineBlocker;
   /** Information that is not a problem and not a step ("part of this recording couldn't be written"). */
@@ -209,7 +219,7 @@ function phoneStep(input: NotePipelineInput): Result {
 }
 
 function spaceStep(input: NotePipelineInput): Result {
-  if (input.space.saved) return { state: "done" };
+  if (input.space.saved) return input.space.localOnly ? { state: "done", caption: input.device === "browser" ? "Audio stays in this browser" : `Audio stays on this ${input.device === "mac" ? "Mac" : input.device}` } : { state: "done" };
   const { device, online } = input;
   const pending = input.space.pending;
   if (pending?.held !== undefined) {
@@ -220,6 +230,8 @@ function spaceStep(input: NotePipelineInput): Result {
       case "unowned": return blocked(SPACE_COPY.accountUnknown(device));
     }
   }
+  if (pending?.retryAt && pending.retryAt > Date.now())
+    return { state: "waiting", caption: SPACE_COPY.retryIn(pending.retryAt - Date.now()) };
   const failure = pending?.failed;
   if (failure !== undefined) {
     switch (failure.kind) {
@@ -237,12 +249,14 @@ function spaceStep(input: NotePipelineInput): Result {
   }
   if (!online) return { state: "waiting", caption: SPACE_COPY.offlineCaption };
   const upload = pending?.upload;
+  if (upload?.state === "preparing") return { state: "active", caption: SPACE_COPY.preparing };
   if (upload?.state === "uploading") {
     return withProgress("active", SPACE_COPY.uploading(fraction(upload.bytes, upload.total)), fraction(upload.bytes, upload.total));
   }
   if (upload?.state === "retrying") return withProgress("active", SPACE_COPY.retrying, fraction(upload.bytes, upload.total));
   const ahead = pending?.waitingBehind;
-  if (ahead !== undefined && (ahead > 0 || input.space.lane.busy)) return { state: "waiting", caption: SPACE_COPY.waitingInLine(ahead + 1) };
+  if (ahead !== undefined && ahead > 0) return { state: "waiting", caption: SPACE_COPY.waitingInLine(ahead + 1) };
+  if (input.space.lane.busy) return { state: "waiting", caption: SPACE_COPY.waitingForSpace };
   return { state: "waiting", caption: SPACE_COPY.waiting };
 }
 
@@ -295,7 +309,7 @@ function onDeviceStep(input: NotePipelineInput, od: PipelineOnDevice): Result {
     case "cancelled": return blocked(LOCAL_COPY.cancelled(input.device), "retry", true);
     case "running": {
       const progress = queue?.percent == null ? null : Math.min(1, Math.max(0, queue.percent / 100));
-      return withProgress("active", LOCAL_COPY.transcribing(progress), progress);
+      return withProgress("active", input.device === "mac" ? LOCAL_COPY.transcribingOnMac(progress) : LOCAL_COPY.transcribing(progress), progress);
     }
     case "queued": return { state: "waiting", caption: LOCAL_COPY.queued(queue?.position ?? null) };
     case "waiting_for_model": return modelStep(od, input.device) ?? { state: "waiting", caption: LOCAL_COPY.queued(queue?.position ?? null) };
@@ -387,7 +401,7 @@ export function notePipeline(input: NotePipelineInput): NotePipeline {
 
   const results: [StepKey, string, Result][] = [
     ["phone", STEP_LABEL.phone(input.device), phone],
-    ["space", STEP_LABEL.space, space],
+    ["space", input.space.localOnly ? "Record in your TinyCloud space" : STEP_LABEL.space, space],
     ["transcript", STEP_LABEL.transcript, transcript],
     ["notes", STEP_LABEL.notes, notes],
   ];
@@ -438,7 +452,13 @@ export function notePipeline(input: NotePipelineInput): NotePipeline {
   if (unread && blocker === undefined) blocker = block(failedReads.join(" "), "reread");
   else if (unread) notices.push(...failedReads);
 
-  const pipeline: NotePipeline = { steps, current, done: done && !unread && unrecorded === null };
+  const pipeline: NotePipeline = {
+    steps, current, done: done && !unread && unrecorded === null,
+    ...(input.transcript.persistedState === undefined ? {} : {
+      transcriptionState: input.transcript.persistedState,
+      ...(input.transcript.errorCode === undefined ? {} : { transcriptionErrorCode: input.transcript.errorCode }),
+    }),
+  };
   if (blocker !== undefined) pipeline.blocker = blocker;
   if (notices.length > 0) pipeline.notice = notices.join(" ");
   return pipeline;

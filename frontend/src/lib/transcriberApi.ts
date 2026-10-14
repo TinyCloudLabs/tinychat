@@ -127,7 +127,7 @@ export interface TranscriberClient {
     meeting_url: string;
     bot_name?: string;
     language?: string;
-  }): Promise<TranscriberResult<TranscriberMeeting>>;
+  }, options?: { idempotencyKey?: string }): Promise<TranscriberResult<TranscriberMeeting>>;
   get(id: string): Promise<TranscriberResult<TranscriberMeeting>>;
   stop(id: string): Promise<TranscriberResult<{ id: string; status: TranscriberMeetingStatus }>>;
   transcript(id: string): Promise<TranscriberResult<TranscriptResult>>;
@@ -146,6 +146,7 @@ export function createTranscriberClient(
     init: {
       method: "GET" | "POST" | "DELETE";
       body?: unknown;
+      headers?: Record<string, string>;
       missing: "feature-dark" | "not-found";
       /** Map a 2xx response to the value. Default: parse JSON. */
       read?: (response: Response) => Promise<T>;
@@ -169,6 +170,7 @@ export function createTranscriberClient(
           Authorization: `Bearer ${token}`,
           [REQUEST_HEADER_NAME]: REQUEST_HEADER_VALUE,
           ...(init.body === undefined ? {} : { "content-type": "application/json" }),
+          ...init.headers,
         },
         ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
         ...(signal ? { signal } : {}),
@@ -217,7 +219,12 @@ export function createTranscriberClient(
 
   return {
     list: () => request("", { method: "GET", missing: "feature-dark" }),
-    create: (input) => request("", { method: "POST", body: input, missing: "feature-dark" }),
+    create: (input, options) => request("", {
+      method: "POST",
+      body: input,
+      headers: options?.idempotencyKey ? { "Idempotency-Key": options.idempotencyKey } : undefined,
+      missing: "feature-dark",
+    }),
     get: (value) => request(`/${id(value)}`, { method: "GET", missing: "not-found" }),
     stop: (value) => request(`/${id(value)}/stop`, { method: "POST", missing: "not-found" }),
     transcript: (value) =>

@@ -1079,6 +1079,12 @@ paths:
                 $ref: "#/components/schemas/GoogleOAuthError"
         "401":
           $ref: "#/components/responses/Unauthenticated"
+        "409":
+          description: The Idempotency-Key was already used for a different create request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TranscriberError"
         "429":
           $ref: "#/components/responses/GoogleOAuthRateLimited"
         "500":
@@ -1646,6 +1652,16 @@ paths:
       summary: Send a notetaker bot to a meeting link
       security:
         - bearerAuth: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          description: Stable client send-intent key. Reuse it when retrying the same normalized meeting URL.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 128
+            pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
       requestBody:
         required: true
         content:
@@ -1664,6 +1680,12 @@ paths:
                   type: string
                   description: BCP-47-ish, e.g. `en` or `en-US`.
       responses:
+        "200":
+          description: An existing active meeting for this address and normalized URL
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TranscriberMeeting"
         "201":
           description: "The meeting, with status queued"
           content:
@@ -1672,7 +1694,7 @@ paths:
                 $ref: "#/components/schemas/TranscriberMeeting"
         "400":
           description: >-
-            `invalid_meeting_url` (refused before upstream is called), or the
+            `invalid_meeting_url` or `invalid_idempotency_key` (refused before upstream is called), or the
             upstream taxonomy code (e.g. `unsupported_platform`) with a message.
           content:
             application/json:
@@ -1680,6 +1702,12 @@ paths:
                 $ref: "#/components/schemas/TranscriberError"
         "401":
           $ref: "#/components/responses/Unauthenticated"
+        "429":
+          description: Too many unresolved create intents, upstream rate limiting, or no bot capacity.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TranscriberError"
         "503":
           $ref: "#/components/responses/TranscriberUnavailable"
 
@@ -1845,6 +1873,10 @@ paths:
                 content_type:
                   type: string
                   enum: [audio/mpeg, audio/wav, audio/ogg, audio/mp4, audio/webm, audio/flac]
+                source_id:
+                  type: string
+                  maxLength: 256
+                  description: Exo note ID. With the authenticated account, this is the durable idempotency key.
       responses:
         "201":
           description: Created
@@ -1862,6 +1894,8 @@ paths:
                   expires_at:
                     type: string
                     format: date-time
+        "200":
+          description: Existing job for this account and source_id; includes upload_id, status, and id when submitted.
         "400":
           $ref: "#/components/responses/AssemblyAiHostedFailure"
         "401":
@@ -1873,6 +1907,39 @@ paths:
         "429":
           $ref: "#/components/responses/AssemblyAiHostedFailure"
         "503":
+          $ref: "#/components/responses/AssemblyAiHostedFailure"
+  /api/transcriber/assemblyai/hosted/jobs/{source_id}:
+    parameters:
+      - name: source_id
+        in: path
+        required: true
+        schema:
+          type: string
+          maxLength: 256
+    get:
+      operationId: lookupAssemblyAiHostedNoteJob
+      summary: Reconcile an Exo note's hosted job by account and source ID
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Job state, including missing, needs_reconciliation and deleted states.
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "503":
+          $ref: "#/components/responses/AssemblyAiHostedFailure"
+
+  /api/transcriber/assemblyai/hosted/admin/reconcile:
+    post:
+      operationId: reconcileAssemblyAiHostedJobs
+      summary: Retry AssemblyAI lookup for blocked paid outcomes
+      description: Requires a session and X-AssemblyAI-Admin-Key matching ASSEMBLYAI_HOSTED_ADMIN_KEY. Unknown outcomes remain blocked.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Counts of checked and recovered note jobs.
+        "404":
           $ref: "#/components/responses/AssemblyAiHostedFailure"
 
   /api/transcriber/assemblyai/hosted/uploads/{upload_id}:
@@ -2011,6 +2078,10 @@ paths:
               properties:
                 upload_id:
                   type: string
+                source_id:
+                  type: string
+                  maxLength: 256
+                  description: Exo note ID, required for note-keyed submissions.
                 speaker_labels:
                   type: boolean
                 multichannel:
@@ -2660,6 +2731,8 @@ components:
             - assemblyai_rate_limited
             - assemblyai_unavailable
             - assemblyai_hosted_unavailable
+            - assemblyai_job_uncertain
+            - assemblyai_needs_reconciliation
         message:
           type: string
         retry_after_seconds:
@@ -2855,6 +2928,16 @@ components:
               type: integer
             tinfoil_audio_seconds:
               type: number
+            voiced_seconds:
+              type: number
+            dropped_above_floor_pct:
+              type: number
+              minimum: 0
+              maximum: 100
+              nullable: true
+            vad_fallback:
+              type: boolean
+              nullable: true
     PrivateCloudOutcome:
       type: object
       required: [id, status, error]

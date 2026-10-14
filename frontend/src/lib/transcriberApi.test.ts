@@ -87,6 +87,32 @@ describe("transcriber read deadlines", () => {
     expect(requests.map((request) => request.method)).toEqual(["POST", "POST", "DELETE"]);
     expect(requests.every((request) => request.signal === undefined)).toBe(true);
   });
+
+  test("create sends the stable client idempotency key", async () => {
+    let headers = new Headers();
+    const client = createTranscriberClient("https://backend.example", {
+      sessionStore,
+      fetchImpl: (async (_url, init) => {
+        headers = new Headers(init?.headers);
+        return Response.json({ id: "test-recording", status: "queued" });
+      }) as typeof fetch,
+    });
+    await client.create({ meeting_url: "https://meet.google.com/aaa-bbbb-ccc" }, {
+      idempotencyKey: "manual-v1-11111111-1111-4111-8111-111111111111",
+    });
+    expect(headers.get("idempotency-key")).toBe("manual-v1-11111111-1111-4111-8111-111111111111");
+  });
+
+  test("create exposes an idempotency conflict as a non-retryable rejection", async () => {
+    const client = createTranscriberClient("https://backend.example", {
+      sessionStore,
+      fetchImpl: (async () => Response.json({ error: "idempotency_conflict",
+        message: "This send key belongs to a different request. Please send again." }, { status: 409 })) as typeof fetch,
+    });
+    expect(await client.create({ meeting_url: "https://meet.jit.si/conflict" }))
+      .toEqual({ status: "rejected", httpStatus: 409, code: "idempotency_conflict",
+        message: "This send key belongs to a different request. Please send again." });
+  });
 });
 
 describe("TC-907 capacity refusal", () => {

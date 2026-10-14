@@ -1,5 +1,118 @@
 # exo-desktop
 
+## 0.7.3
+
+### Patch Changes
+
+- ec28052: Run recorder file operations and recovery encoding away from the macOS main thread, and stop native Whisper work when its deadline expires.
+
+## 0.7.3-beta.4
+
+No changes in this release.
+
+## 0.7.3-beta.3
+
+No changes in this release.
+
+## 0.7.3-beta.2
+
+No changes in this release.
+
+## 0.7.3-beta.1
+
+No changes in this release.
+
+## 0.7.3-beta.0
+
+### Patch Changes
+
+- ec28052: Run recorder file operations and recovery encoding away from the macOS main thread, and stop native Whisper work when its deadline expires.
+
+## 0.7.2
+
+### Patch Changes
+
+- b1b58a1: Open Google consent in the system browser on Exo Mac, receive the authorization code through a validated one-shot loopback listener, and exchange it using a Google Desktop OAuth client. Offer a same-tab return when a web popup is blocked.
+
+## 0.7.2-beta.6
+
+No changes in this release.
+
+## 0.7.2-beta.5
+
+### Patch Changes
+
+- b1b58a1: Open Google consent in the system browser on Exo Mac, receive the authorization code through a validated one-shot loopback listener, and exchange it using a Google Desktop OAuth client. Offer a same-tab return when a web popup is blocked.
+
+## 0.7.2-beta.4
+
+No changes in this release.
+
+## 0.7.2-beta.3
+
+No changes in this release.
+
+## 0.7.2-beta.2
+
+No changes in this release.
+
+## 0.7.2-beta.1
+
+No changes in this release.
+
+## 0.7.2-beta.0
+
+No changes in this release.
+
+## 0.7.1
+
+### Patch Changes
+
+- 1d60115: Update the TinyCloud SDK family to 3.2.1 for the sign-in wait and repeat-login re-bootstrap fixes (TC-998, TC-999).
+
+## 0.7.1-beta.2
+
+No changes in this release.
+
+## 0.7.1-beta.1
+
+### Patch Changes
+
+- 1d60115: Update the TinyCloud SDK family to 3.2.1 for the sign-in wait and repeat-login re-bootstrap fixes (TC-998, TC-999).
+
+## 0.7.1-beta.0
+
+No changes in this release.
+
+## 0.7.0
+
+### Patch Changes
+
+- ddbadf9: fix(exo desktop): allow the system-audio consent commands so Mac recording can start
+- 5918a34: feat(exo): agent-readable logging in dev builds (desktop log file, iOS container log and os_log, Android logcat ExoDev), with secret redaction; release builds stay quiet
+- b32bc87: fix(exo): show local transcripts before upload, mark them saved only after a verified write, and show transcription and upload progress side by side on the Mac
+- 244d7a6: Update TinyCloud web, node, core, and services SDKs to 3.2.0 and OpenKey SDK and Capacitor plugin to their stable releases, retaining the session-key patch for the TinyCloud node SDK.
+
+## 0.7.0-beta.9
+
+No changes in this release.
+
+## 0.7.0-beta.8
+
+### Patch Changes
+
+- 5918a34: feat(exo): agent-readable logging in dev builds (desktop log file, iOS container log and os_log, Android logcat ExoDev), with secret redaction; release builds stay quiet
+
+## 0.7.0-beta.7
+
+### Patch Changes
+
+- b32bc87: fix(exo): show local transcripts before upload, mark them saved only after a verified write, and show transcription and upload progress side by side on the Mac
+
+## 0.7.0-beta.6
+
+No changes in this release.
+
 ## 0.7.0-beta.5
 
 No changes in this release.

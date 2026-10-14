@@ -148,8 +148,10 @@ export interface ReconcileBackendMeetingsOptions {
   maxMeetings?: number;
   pageSize?: number;
   signal?: AbortSignal;
-  /** Injectable clock — the copy stamp in the user-space record. */
   now?: () => string;
+  /** Timestamp captured immediately before each discovery-list request. */
+  observedAt?: () => string;
+  onPendingSnapshot?: (rows: readonly ConnectorMeetingMeta[], observedAt: string) => Promise<void>;
 }
 
 const defaultSecrets: BackendReconcileSecrets = { isUnlocked: isSecretsUnlocked };
@@ -251,15 +253,21 @@ export async function reconcileBackendMeetings(
     return { ok: true, data: { ...outcome, blocked: "vault-locked" } };
   }
 
-  let cursor: string | undefined;
+  const listedRows: ConnectorMeetingMeta[] = [];
+  let sourceObservedAt: string | undefined;
 
   // ── Page the discovery filter, sequentially ────────────────────────
+  let cursor: string | undefined;
   for (;;) {
     if (opts.signal?.aborted) {
       outcome.truncated = true;
       break;
     }
 
+    const listObservedAt = opts.observedAt?.() ?? new Date().toISOString();
+    if (sourceObservedAt === undefined || Date.parse(listObservedAt) < Date.parse(sourceObservedAt)) {
+      sourceObservedAt = listObservedAt;
+    }
     const list = await meetings.list({
       source,
       limit: pageSize,
@@ -285,6 +293,7 @@ export async function reconcileBackendMeetings(
     }
 
     for (const meta of list.value.meetings) {
+      listedRows.push(meta);
       if (opts.signal?.aborted) {
         outcome.truncated = true;
         break;
@@ -307,6 +316,18 @@ export async function reconcileBackendMeetings(
     cursor = next;
   }
 
+  if (!outcome.truncated && opts.signal?.aborted !== true && outcome.blocked === null) {
+    const stillPending = new Set([
+      ...outcome.failures.map(({ sourceId }) => sourceId),
+      ...outcome.unacknowledged,
+    ]);
+    const pending = listedRows.filter((meta) => stillPending.has(meta.sourceId));
+    try {
+      if (sourceObservedAt !== undefined) await opts.onPendingSnapshot?.(pending, sourceObservedAt);
+    } catch {
+      // Snapshot persistence is ancillary; the next existing pass retries.
+    }
+  }
   return { ok: true, data: outcome };
 }
 

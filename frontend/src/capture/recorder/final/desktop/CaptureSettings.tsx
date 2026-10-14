@@ -1,4 +1,6 @@
 import { readableError } from "@/lib/readableError";
+import { readUploadAudioPreference, setUploadAudioPreference } from "@/lib/voiceNotes/transcriberPreference";
+import { InfoTip } from "@/components/ui/info-tip";
 import {
   useCallback,
   useEffect,
@@ -36,13 +38,13 @@ import "./captureSettings.css";
 
 export type CaptureSettingsVariant = "app" | "microphone-only";
 
-type SwitchKey = "systemAudio" | "autoSave";
+type SwitchKey = "systemAudio" | "uploadAudio";
 
 interface Loaded {
   models: WhisperModelInfo[];
   selected: WhisperModelId | null;
   systemAudio: boolean;
-  autoSave: boolean;
+  uploadAudio: boolean;
 }
 
 type Load =
@@ -370,7 +372,7 @@ export function SettingsPanel({
     return (
       <>
         <p className="cs-lede">
-          Local transcription, meeting audio and auto-save need the Exo app.
+          Local transcription and meeting audio need the Exo app.
         </p>
         <MicrophoneSection microphone={microphone} />
       </>
@@ -425,14 +427,15 @@ export function SettingsPanel({
             onToggle={(on) => onToggle("systemAudio", on)}
           />
           <Switch
-            label="Save to your space automatically"
-            description="Recordings and notes sync to TinyCloud when you stop."
-            checked={load.data.autoSave}
-            pending={switches.autoSave.pending}
-            error={switches.autoSave.error}
-            testId="switch-auto-save"
-            onToggle={(on) => onToggle("autoSave", on)}
+            label="Upload audio to TinyCloud"
+            description="Audio stays on this Mac. Transcripts and notes still sync to your TinyCloud space. Private transcription still sends audio to be transcribed, then deletes it."
+            checked={load.data.uploadAudio}
+            pending={switches.uploadAudio.pending}
+            error={switches.uploadAudio.error}
+            testId="switch-upload-audio"
+            onToggle={(on) => onToggle("uploadAudio", on)}
           />
+          <InfoTip label="About audio storage">Other devices cannot play or transcribe local-only audio. This Mac holds the only copy. Local transcription, chat and quota still work. You can upload an individual note later.</InfoTip>
         </section>
       )}
     </>
@@ -471,7 +474,7 @@ export function CaptureSettings({
   const [modelError, setModelError] = useState<string | null>(null);
   const [switches, setSwitches] = useState<
     Record<SwitchKey, { pending: boolean; error: string | null }>
-  >({ systemAudio: NO_SWITCH, autoSave: NO_SWITCH });
+  >({ systemAudio: NO_SWITCH, uploadAudio: NO_SWITCH });
   const root = useRef<HTMLDivElement>(null);
   const button = useRef<HTMLButtonElement>(null);
   const panel = useRef<HTMLDivElement>(null);
@@ -513,11 +516,10 @@ export function CaptureSettings({
       const mine = ++request.current;
       if (showLoading) setLoad({ status: "loading" });
       try {
-        const [models, selected, systemAudio, autoSave] = await Promise.all([
+        const [models, selected, systemAudio] = await Promise.all([
           extras.models.list(),
           extras.models.get(),
           extras.systemAudio.get(),
-          extras.autoSaveToSpace.get(),
         ]);
         if (mine === request.current) {
           focusTarget.current =
@@ -531,7 +533,7 @@ export function CaptureSettings({
           dispatch({ type: "sync", models });
           setLoad({
             status: "ready",
-            data: { models, selected, systemAudio, autoSave },
+            data: { models, selected, systemAudio, uploadAudio: readUploadAudioPreference() },
           });
         }
       } catch (caught) {
@@ -682,9 +684,20 @@ export function CaptureSettings({
   };
 
   const onToggle = (switchKey: SwitchKey, on: boolean) => {
+    if (switchKey === "uploadAudio") {
+      setSwitches((s) => ({ ...s, uploadAudio: { pending: true, error: null } }));
+      void setUploadAudioPreference(on).then(() => {
+        setSwitches((s) => ({ ...s, uploadAudio: NO_SWITCH }));
+        setLoad((current) => current.status === "ready"
+          ? { status: "ready", data: { ...current.data, uploadAudio: on } } : current);
+      }, (caught: unknown) => {
+        setSwitches((s) => ({ ...s, uploadAudio: { pending: false,
+          error: `Could not change this setting: ${messageOf(caught)}` } }));
+      });
+      return;
+    }
     if (!extras) return;
-    const target =
-      switchKey === "systemAudio" ? extras.systemAudio : extras.autoSaveToSpace;
+    const target = extras.systemAudio;
     setSwitches((s) => ({ ...s, [switchKey]: { pending: true, error: null } }));
     target.set(on).then(
       () => {

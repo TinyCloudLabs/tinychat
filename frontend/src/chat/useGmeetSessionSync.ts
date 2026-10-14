@@ -61,6 +61,7 @@ import {
   type SecretsResult,
 } from "@/lib/connectors/connectorSecrets";
 import { GmeetClient } from "@/lib/connectors/gmeetClient";
+import { googleRefreshGrant } from "@/lib/connectors/googleOAuthDesktop";
 import {
   syncGoogleMeet,
   type GmeetSyncClient,
@@ -223,7 +224,7 @@ export async function mintGmeetAccessToken(opts: {
         Authorization: `Bearer ${bearer}`,
         [REQUEST_HEADER_NAME]: REQUEST_HEADER_VALUE,
       },
-      body: JSON.stringify({ refreshToken }),
+      body: JSON.stringify(googleRefreshGrant(refreshToken)),
       signal,
     });
   } catch {

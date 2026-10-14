@@ -1,4 +1,5 @@
 import { onInvite, shareDecision, windowsOverlap, type ShareDecision } from "./calendar-autojoin-share.js";
+import { calendarAutojoinOutcomes } from "./calendar-autojoin-status-summary.js";
 import {
   type CalendarAutojoinStore, type CalendarConnection, type CalendarOccurrence, type SharedCapture, TenantCoordinator,
 } from "./calendar-autojoin-store.js";
@@ -27,9 +28,22 @@ const SHARE_CHECK_DEADLINE_MS = 86_400_000;
 /** TC-907: past the cutoff, how long a capacity-refused row keeps lookup-only recovery, so a slow
  *  earlier POST that commits late is still found and owned. */
 const CAPACITY_RECOVERY_MARGIN_MS = 600_000;
+const TICK_MS = 30_000;
+/** TC-1047: the timer horizon never drops below this, so the first ticks after a deploy (period not
+ *  yet measured) and a sudden jump in the period still arm rows that the next tick would reach late. */
+const MIN_HORIZON_MS = 5 * 60_000;
+/** TC-1047: at most this many due-time timers; rows past the cap wait for the tick, as before. */
+const MAX_DUE_TIMERS = 1_000;
+const dueKey = (tenant: string, id: string) => `${tenant.toLowerCase()}\n${id}`;
+/** TC-1047: a row whose next step is a dispatch attempt (a first POST, or a retry of one). */
+function awaitingDispatch(row: CalendarOccurrence): boolean {
+  return (row.phase === "pending" || row.phase === "outcome_unknown") && !row.stopRequested && !row.meetingId && !row.sharedCapture;
+}
 
 export interface CalendarAutojoinWorkerOptions {
   store: CalendarAutojoinStore;
+  /** TC-1047: the same rows at request lane priority, for one occurrence's dispatch path only. Default `store`. */
+  dispatchStore?: CalendarAutojoinStore;
   coordinator: TenantCoordinator;
   /** TC-581: serializes the cross-tenant capture claim per normalized Meet URL. Lock order: tenant, then URL. */
   meetingCoordinator?: TenantCoordinator;
@@ -52,17 +66,39 @@ export interface CalendarAutojoinWorkerOptions {
   sleep?: (ms: number) => Promise<void>;
 }
 
-/** Durable intents are authoritative. This worker requires a single backend writer. */
+/**
+ * Durable intents are authoritative. This worker requires a single backend writer.
+ *
+ * TC-1047: a row awaiting dispatch also gets a due-time timer, so it is reconciled at its
+ * `nextAttemptAt` instead of whenever the tick's row loop next reaches it. Every occurrence write
+ * the worker makes re-arms or cancels the row's timer; the tick re-arms rows it lists (and after a
+ * restart) and remains the backstop. A row is reconciled by one caller at a time, timer or tick.
+ */
 export class CalendarAutojoinWorker {
   private running: Promise<void> | null = null;
   private timer?: ReturnType<typeof setInterval>;
   private stopping = false;
+  private readonly options: CalendarAutojoinWorkerOptions;
+  private readonly dispatchStore: CalendarAutojoinStore;
   private readonly now: () => number;
   private readonly random: () => number;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly limiter: ExternalOperationLimiter;
   private readonly meetingCoordinator: TenantCoordinator;
-  constructor(private readonly options: CalendarAutojoinWorkerOptions) {
+  private readonly dueTimers = new Map<string, { row: CalendarOccurrence; timer: ReturnType<typeof setTimeout> }>();
+  /** Rows being reconciled now, and the timer fires that found them busy. */
+  private readonly inFlight = new Set<string>();
+  private readonly refire = new Map<string, CalendarOccurrence>();
+  private readonly timerRuns = new Set<Promise<void>>();
+  /** Changes during a tick's existing listing/reconciliation, including concurrent timer dispatch. */
+  private readonly summaryChanges = new Map<string, Map<string, CalendarOccurrence | null>>();
+  /** Tenants whose connection the tick last read as enabled; only their rows get timers. */
+  private readonly armable = new Set<string>();
+  private tickStartedAt?: number;
+  private tickPeriodMs = TICK_MS;
+  constructor(options: CalendarAutojoinWorkerOptions) {
+    this.options = { ...options, store: this.tracked(options.store) };
+    this.dispatchStore = this.tracked(options.dispatchStore ?? options.store);
     this.meetingCoordinator = options.meetingCoordinator ?? new TenantCoordinator();
     this.now = options.now ?? Date.now;
     this.random = options.random ?? Math.random;
@@ -73,14 +109,25 @@ export class CalendarAutojoinWorker {
     if (this.timer) return;
     this.stopping = false;
     void this.tick();
-    this.timer = setInterval(() => void this.tick(), 30_000);
+    this.timer = setInterval(() => void this.tick(), TICK_MS);
     this.timer.unref?.();
   }
   async stop(): Promise<void> {
     this.stopping = true;
     clearInterval(this.timer);
     this.timer = undefined;
-    await this.running;
+    for (const { timer } of this.dueTimers.values()) clearTimeout(timer);
+    this.dueTimers.clear();
+    this.armable.clear();
+    await Promise.all([this.running, ...this.timerRuns]);
+  }
+  /** TC-1047: the tenant was disabled, disconnected or needs a reconnect. The tick handles its rows. */
+  cancelTenant(tenant: string): void {
+    const key = tenant.toLowerCase();
+    this.armable.delete(key);
+    for (const [rowKey, { row, timer }] of this.dueTimers) {
+      if (row.tenant.toLowerCase() === key) { clearTimeout(timer); this.dueTimers.delete(rowKey); }
+    }
   }
   tick(): Promise<void> {
     if (this.stopping) return Promise.resolve();
@@ -91,22 +138,30 @@ export class CalendarAutojoinWorker {
     return run;
   }
   private async reconcile(): Promise<void> {
+    const startedAt = this.now();
+    if (this.tickStartedAt !== undefined) this.tickPeriodMs = Math.max(TICK_MS, startedAt - this.tickStartedAt);
+    this.tickStartedAt = startedAt;
     const tenants = await this.options.store.listConnections();
+    const counts = { rows: 0, scans: 0 };
     let cursor = 0;
     await Promise.all(Array.from({ length: Math.min(4, tenants.length) }, async () => {
       while (cursor < tenants.length && !this.stopping) {
         const connection = tenants[cursor++]!;
-        try { await this.reconcileTenant(connection.tenant); }
+        try { await this.reconcileTenant(connection.tenant, counts); }
         catch { console.warn("[calendar-autojoin] code=tenant_reconcile_failed"); }
       }
     }));
+    // Counts only: never ids, titles or addresses.
+    console.log(`[calendar-autojoin] code=tick_done ms=${this.now() - startedAt} tenants=${tenants.length} rows=${counts.rows} scans=${counts.scans} timers=${this.dueTimers.size}`);
   }
-  private async reconcileTenant(tenant: string): Promise<void> {
+  private async reconcileTenant(tenant: string, counts: { rows: number; scans: number }): Promise<void> {
     const { store, connection: credentials } = this.options;
     await credentials.cleanupEnabling(tenant);
     let connection = await store.getConnection(tenant);
     if (!connection) return;
+    this.trackTenant(connection);
     if (connection.state === "enabled" && connection.subject && connection.nextScanAt <= this.now()) {
+      counts.scans++;
       try {
         const events = await this.google(connection, token => this.options.calendar.listEvents(token, this.now()));
         await this.remember(connection, events);
@@ -119,19 +174,111 @@ export class CalendarAutojoinWorker {
     }
     connection = await store.getConnection(tenant);
     if (!connection) return;
-    const occurrences = await store.listOccurrences(tenant);
-    occurrences.sort((a, b) => a.nextAttemptAt - b.nextAttemptAt);
-    for (const row of occurrences) {
-      if (this.stopping) return;
-      if (row.phase === "terminal") {
-        // Unsent outcomes are visible for a month; sent dedupe markers have no expiry.
-        if (row.updatedAt < this.now() - 30 * 86_400_000) await store.deleteOccurrence(tenant, row.id);
-        continue;
+    this.trackTenant(connection);
+    const key = tenant.toLowerCase();
+    const changes = new Map<string, CalendarOccurrence | null>();
+    this.summaryChanges.set(key, changes);
+    try {
+      const occurrences = await store.listOccurrences(tenant);
+      // Preserve listing order for equal-start outcomes before the dispatch-order sort below.
+      const snapshot = new Map(occurrences.map(row => [row.id, row]));
+      counts.rows += occurrences.length;
+      try {
+        occurrences.sort((a, b) => a.nextAttemptAt - b.nextAttemptAt);
+        for (const row of occurrences) {
+          if (this.stopping) return;
+          if (row.phase === "terminal") {
+            // Unsent outcomes are visible for a month; sent dedupe markers have no expiry.
+            if (row.updatedAt < this.now() - 30 * 86_400_000) await store.deleteOccurrence(tenant, row.id);
+            continue;
+          }
+          if (row.nextAttemptAt > this.now()) { this.arm(row); continue; }
+          await this.runRow(row);
+        }
+      } finally {
+        for (const [id, row] of changes) {
+          if (row) snapshot.set(id, row); else snapshot.delete(id);
+        }
+        await this.publishStatusSummary(tenant, [...snapshot.values()]);
       }
-      if (row.nextAttemptAt > this.now()) continue;
-      try { await this.reconcileOccurrence(row); }
-      catch (error) { await this.defer(row, error); }
+    } finally { this.summaryChanges.delete(key); }
+  }
+  private async publishStatusSummary(tenant: string, occurrences: CalendarOccurrence[]): Promise<void> {
+    if (this.stopping) return;
+    const outcomes = calendarAutojoinOutcomes(occurrences);
+    // At most one background write after reconciliation, deduplicated across all store writers.
+    await this.options.store.putStatusSummary(tenant, { version: 1, outcomes });
+  }
+  private recordSummaryChange(tenant: string, id: string, row: CalendarOccurrence | null): void {
+    const changes = this.summaryChanges.get(tenant.toLowerCase());
+    if (changes) changes.set(id, row ? structuredClone(row) : null);
+  }
+  /** Only an enabled tenant's rows get timers; the row loop's arm() cancels the rest. */
+  private trackTenant(connection: CalendarConnection): void {
+    if (connection.state === "enabled") this.armable.add(connection.tenant.toLowerCase());
+    else this.armable.delete(connection.tenant.toLowerCase());
+  }
+  /** TC-1047: the one entry for reconciling a row, from the tick or its timer. A busy row is skipped. */
+  private async runRow(row: CalendarOccurrence): Promise<void> {
+    const key = dueKey(row.tenant, row.id);
+    if (this.inFlight.has(key)) return;
+    this.inFlight.add(key);
+    try { await this.reconcileOccurrence(row); }
+    catch (error) { await this.defer(row, error); }
+    finally {
+      this.inFlight.delete(key);
+      // A timer that fired mid-run, with no write since: check the row once more.
+      const again = this.refire.get(key);
+      this.refire.delete(key);
+      if (again && !this.dueTimers.has(key)) this.arm(again);
     }
+  }
+  /**
+   * TC-1047: arm, move or cancel the row's due-time timer. Only after start(), only for an enabled
+   * tenant's row awaiting dispatch, and no further out than two tick periods: the tick re-arms.
+   */
+  private arm(row: CalendarOccurrence): void {
+    const key = dueKey(row.tenant, row.id);
+    this.refire.delete(key);
+    const existing = this.dueTimers.get(key);
+    // stop() clears `timer` and every armed timer, so nothing is armed or fires once stopping.
+    const wanted = !!this.timer && this.armable.has(row.tenant.toLowerCase()) && awaitingDispatch(row);
+    if (wanted && existing?.row.nextAttemptAt === row.nextAttemptAt) { existing.row = row; return; }
+    if (existing) { clearTimeout(existing.timer); this.dueTimers.delete(key); }
+    const delay = row.nextAttemptAt - this.now();
+    if (!wanted || delay > this.horizon() || this.dueTimers.size >= MAX_DUE_TIMERS) return;
+    const timer = setTimeout(() => this.fire(key), Math.max(0, delay));
+    timer.unref?.();
+    this.dueTimers.set(key, { row, timer });
+  }
+  private fire(key: string): void {
+    const entry = this.dueTimers.get(key);
+    if (!entry) return;
+    this.dueTimers.delete(key);
+    if (this.inFlight.has(key)) { this.refire.set(key, entry.row); return; }
+    const run = this.runRow(entry.row).catch(() => { console.warn("[calendar-autojoin] code=due_timer_failed"); });
+    this.timerRuns.add(run);
+    void run.finally(() => this.timerRuns.delete(run));
+  }
+  /** Twice the observed tick period (a tick still running counts in whole 30 s fires), at least MIN_HORIZON_MS. */
+  private horizon(): number {
+    const running = this.tickStartedAt === undefined || !this.running ? 0 : this.now() - this.tickStartedAt;
+    return Math.max(MIN_HORIZON_MS, 2 * Math.max(this.tickPeriodMs, Math.ceil(running / TICK_MS) * TICK_MS));
+  }
+  /**
+   * TC-1047: every occurrence write the worker makes re-arms or cancels that row's due-time timer.
+   * The worker deletes only terminal rows, whose timers their terminal write already cancelled.
+   */
+  private tracked(store: CalendarAutojoinStore): CalendarAutojoinStore {
+    return Object.assign(Object.create(store) as CalendarAutojoinStore, {
+      putOccurrence: async (row: CalendarOccurrence) => { await store.putOccurrence(row); this.recordSummaryChange(row.tenant, row.id, row); this.arm(row); },
+      updateOccurrence: async (tenant: string, id: string, update: Parameters<CalendarAutojoinStore["updateOccurrence"]>[2]) => {
+        const row = await store.updateOccurrence(tenant, id, update);
+        if (row) { this.recordSummaryChange(tenant, id, row); this.arm(row); }
+        return row;
+      },
+      deleteOccurrence: async (tenant: string, id: string) => { await store.deleteOccurrence(tenant, id); this.recordSummaryChange(tenant, id, null); },
+    });
   }
   private async google<T>(connection: CalendarConnection, fn: (token: string) => Promise<T>): Promise<T> {
     let refreshed = false;
@@ -195,12 +342,16 @@ export class CalendarAutojoinWorker {
         else if (this.now() >= dispatchCutoff(next)) { next.phase = "terminal"; next.disposition = "missed_window"; }
         await store.putOccurrence(next);
       }
-      await store.putConnection({ ...current, scanComplete: true, errorCode: undefined, lastScanAt: this.now(), nextScanAt: this.now() + 55_000 + Math.floor(this.random() * 10_000) });
+      // TC-1047: a timer's dispatch records lastDispatchLag outside this lock; keep the latest one.
+      await store.updateConnection(connection.tenant, latest => ({ ...current, lastDispatchLag: latest?.lastDispatchLag,
+        scanComplete: true, errorCode: undefined, lastScanAt: this.now(), nextScanAt: this.now() + 55_000 + Math.floor(this.random() * 10_000) }));
     });
   }
   private async reconcileOccurrence(original: CalendarOccurrence): Promise<void> {
-    let row = await this.options.store.getOccurrence(original.tenant, original.id);
-    if (!row) return;
+    // TC-1047: the dispatch path reads and writes at request priority; recording and shared rows do not.
+    let row = await (awaitingDispatch(original) ? this.dispatchStore : this.options.store).getOccurrence(original.tenant, original.id);
+    // A tick's snapshot can be older than a timer run that has since ended the row.
+    if (!row || row.phase === "terminal") return;
     // For legacy rows, record the first observation by this version; never invent old discovery timing.
     if (row.firstSeenAt === undefined) {
       row = await this.options.store.updateOccurrence(row.tenant, row.id,
@@ -226,7 +377,7 @@ export class CalendarAutojoinWorker {
       // nothing can appear: end it instead of polling forever.
       if (row.capacityExhausted && this.now() >= dispatchCutoff(row) + CAPACITY_RECOVERY_MARGIN_MS) { await this.finish(row, "capacity_exhausted"); return; }
     }
-    const connection = await this.options.store.getConnection(row.tenant);
+    const connection = await this.dispatchStore.getConnection(row.tenant);
     if (!this.canDispatch(connection, row)) {
       if (row.idempotencyKey) {
         if (!row.stopRequested) await this.requestStop(row, this.now() >= dispatchCutoff(row) ? "missed_window" : "autojoin_disabled");
@@ -278,9 +429,13 @@ export class CalendarAutojoinWorker {
       const response = await this.limiter.run(async () => {
         let posted: Promise<TranscriptionMeeting> | undefined;
         await this.options.coordinator.run(row.tenant, async () => {
-          const latest = await this.options.store.getOccurrence(row.tenant, row.id);
-          const current = await this.options.store.getConnection(row.tenant);
+          const latest = await this.dispatchStore.getOccurrence(row.tenant, row.id);
+          const current = await this.dispatchStore.getConnection(row.tenant);
           if (!latest || !this.canDispatch(current, { ...row, stopRequested: latest.stopRequested, meetingId: latest.meetingId })) return;
+          // TC-1047: a snapshot that another caller has since superseded (a scan ended the row, or
+          // another attempt froze an intent) never sends. A row is reconciled by one caller at a
+          // time, so this is the backstop to that guard.
+          if (latest.phase === "terminal" || (latest.idempotencyKey && !row.idempotencyKey)) return;
           if (!row.idempotencyKey) {
             // TC-581: another tenant's live capture of this Meet in an overlapping window means no POST.
             if (await this.claimOrAttach(row, current!, event!, observed)) return;
@@ -293,7 +448,7 @@ export class CalendarAutojoinWorker {
           }
           // The one attemptCount increment for this attempt (TC-907): defer() does not count it again.
           row = { ...row, phase: "outcome_unknown", attemptCount: row.attemptCount + 1, capacityExhausted: undefined, updatedAt: this.now(), nextAttemptAt: this.now() + 60_000 };
-          await this.options.store.putOccurrence(row); // Failure here MUST imply zero POSTs.
+          await this.dispatchStore.putOccurrence(row); // Failure here MUST imply zero POSTs.
           // Durable storage can take us past the deadline. Do not send a now-ineligible
           // request; keep its frozen intent so a restart can conservatively recover it.
           if (this.stopping || !inDispatchWindow(row, this.now())) {
@@ -314,7 +469,7 @@ export class CalendarAutojoinWorker {
       if (dispatchLag) {
         const lag = dispatchLag;
         try {
-          await this.options.store.updateConnection(row.tenant, current => current?.subject === row.subject
+          await this.dispatchStore.updateConnection(row.tenant, current => current?.subject === row.subject
             && current.generation === connection.generation && (current.lastDispatchLag?.sentAt ?? -Infinity) <= lag.sentAt
             ? { ...current, lastDispatchLag: lag } : current);
         } catch { console.warn("[calendar-autojoin] code=dispatch_lag_status_failed"); }
@@ -346,7 +501,7 @@ export class CalendarAutojoinWorker {
   }
   private async acceptRecording(row: CalendarOccurrence, meeting: TranscriptionMeeting): Promise<void> {
     if (!meeting.id || !this.matchesMetadata(row, meeting)) { await this.requestStop(row, "lookup_identity_mismatch"); return; }
-    const saved = await this.options.store.updateOccurrence(row.tenant, row.id, current => current && {
+    const saved = await this.dispatchStore.updateOccurrence(row.tenant, row.id, current => current && {
       ...current, meetingId: meeting.id, phase: "ownership_pending", nextAttemptAt: this.now(), updatedAt: this.now(),
       errorCode: current.stopRequested ? current.errorCode : undefined,
     });
@@ -355,10 +510,11 @@ export class CalendarAutojoinWorker {
   private async reconcileRecording(row: CalendarOccurrence): Promise<void> {
     const { store, index } = this.options;
     // Idempotently repair ownership BEFORE compaction, stops, or marking resolution.
+    // TC-1047: these are the post-send writes, at the dispatch path's priority.
     if (row.phase === "ownership_pending") {
       await index.add(row.tenant, row.meetingId!);
-      await store.putMarker({ tenant: row.tenant, id: row.id, meetingId: row.meetingId, disposition: "sent" });
-      row = (await store.updateOccurrence(row.tenant, row.id, current => current && { ...current, phase: current.stopRequested ? "stop_pending" : "sent", createBody: undefined, updatedAt: this.now() }))!;
+      await this.dispatchStore.putMarker({ tenant: row.tenant, id: row.id, meetingId: row.meetingId, disposition: "sent" });
+      row = (await this.dispatchStore.updateOccurrence(row.tenant, row.id, current => current && { ...current, phase: current.stopRequested ? "stop_pending" : "sent", createBody: undefined, updatedAt: this.now() }))!;
     }
     const connection = await store.getConnection(row.tenant);
     if (connection?.state !== "enabled" || connection.subject !== row.subject || connection.generation !== row.generation) row = (await this.requestStop(row, "autojoin_disabled"))!;
@@ -416,7 +572,7 @@ export class CalendarAutojoinWorker {
    */
   private claimOrAttach(row: CalendarOccurrence, connection: CalendarConnection, event: GoogleCalendarEvent,
     observed: Map<string, TranscriptionMeeting | null>): Promise<boolean> {
-    const { store } = this.options;
+    const store = this.dispatchStore;
     return this.meetingCoordinator.run(row.meetingUrl, async () => {
       const now = this.now();
       const tenant = row.tenant.toLowerCase();
@@ -531,7 +687,7 @@ export class CalendarAutojoinWorker {
   }
   /** The ptx meetings of other tenants' live, overlapping claims on this Meet, read outside any lock. */
   private async observeOwners(row: CalendarOccurrence): Promise<Map<string, TranscriptionMeeting | null>> {
-    const { store } = this.options;
+    const store = this.dispatchStore;
     const observed = new Map<string, TranscriptionMeeting | null>();
     const tenant = row.tenant.toLowerCase();
     for (const claim of await store.getCaptureClaims(row.meetingUrl)) {
@@ -562,7 +718,7 @@ export class CalendarAutojoinWorker {
   }
   /** `afterCreate`: the error is a create's, whose attempt was counted when it was sent (TC-907). */
   private async defer(row: CalendarOccurrence, error: unknown, afterCreate = false): Promise<void> {
-    await this.options.store.updateOccurrence(row.tenant, row.id, current => {
+    await (afterCreate ? this.dispatchStore : this.options.store).updateOccurrence(row.tenant, row.id, current => {
       if (!current || current.phase === "terminal") return current;
       const count = afterCreate ? current.attemptCount : current.attemptCount + 1;
       const capacity = afterCreate && error instanceof TranscriptionApiError && error.status === 429 && error.code === "capacity_exhausted";

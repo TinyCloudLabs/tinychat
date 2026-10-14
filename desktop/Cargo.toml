@@ -16,6 +16,7 @@ exclude = [
     "vendor/anarlog-model-downloader",
     "vendor/anarlog-local-model",
     "vendor/anarlog-file",
+    "vendor/anarlog-listener-core",
 ]
 
 [patch."https://github.com/fastrepl/anarlog"]
@@ -27,6 +28,7 @@ model-downloader = { path = "vendor/anarlog-model-downloader" }
 local-model = { path = "vendor/anarlog-local-model" }
 file = { path = "vendor/anarlog-file" }
 audio-chunking = { path = "vendor/anarlog-audio-chunking" }
+listener-core = { path = "vendor/anarlog-listener-core" }
 
 [patch."https://github.com/yujonglee/swift-rs"]
 swift-rs = { path = "vendor/swift-rs" }

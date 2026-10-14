@@ -1,5 +1,167 @@
 # @tinychat/frontend
 
+## 0.7.3
+
+### Patch Changes
+
+- ec28052: Run recorder file operations and recovery encoding away from the macOS main thread, and stop native Whisper work when its deadline expires.
+- 5b5ca03: Use PTX VAD-drop stats for incomplete-transcript retries and track missing stats.
+- b5a4d09: Use specific private-cloud failure copy for persisted voice-note transcription failures.
+- 438d85b: Accept transcript sentence spans up to the shared 60-second turn limit for timestamped playback and copying.
+- 60e745c: Reduce PTX and hosted transcription status polling after the initial fast phase, honor rate-limit retry deadlines, expose limiter headers to browser clients, and keep throttling separate from failure budgets.
+
+## 0.7.3-beta.4
+
+### Patch Changes
+
+- 438d85b: Accept transcript sentence spans up to the shared 60-second turn limit for timestamped playback and copying.
+
+## 0.7.3-beta.3
+
+### Patch Changes
+
+- 60e745c: Reduce PTX and hosted transcription status polling after the initial fast phase, honor rate-limit retry deadlines, expose limiter headers to browser clients, and keep throttling separate from failure budgets.
+
+## 0.7.3-beta.2
+
+### Patch Changes
+
+- 5b5ca03: Use PTX VAD-drop stats for incomplete-transcript retries and track missing stats.
+
+## 0.7.3-beta.1
+
+### Patch Changes
+
+- b5a4d09: Use specific private-cloud failure copy for persisted voice-note transcription failures.
+
+## 0.7.3-beta.0
+
+### Patch Changes
+
+- ec28052: Run recorder file operations and recovery encoding away from the macOS main thread, and stop native Whisper work when its deadline expires.
+
+## 0.7.2
+
+### Patch Changes
+
+- 6f5605d: Show stored transcript timings in note detail with seek, playback follow, timestamped copy, and Markdown export.
+- b1b58a1: Open Google consent in the system browser on Exo Mac, receive the authorization code through a validated one-shot loopback listener, and exchange it using a Google Desktop OAuth client. Offer a same-tab return when a web popup is blocked.
+- 1834edf: TC-1016: reuse notetaker send idempotency keys across retries and coalesce active or concurrent sends for the same meeting URL.
+- f7a1fa8: Route explicit Private transcription requests through the committed-mode override.
+- e844f56: Normalize PTX MIME types and surface durable transcription outcomes in the Library.
+- c88319e: Preserve Fireflies' last successful sync time on failed runs, surface 24-hour staleness, and run a bounded browser catch-up when a stale connector is available on mount or unlock.
+- 5eb65ed: (TC-983) Keep the transcriber heartbeat at 50 minutes; with successful passes of ≤ 60 seconds and timely 30-second timer execution, `checked_at` lag is ≤ H + 2D + I = 50 min + 2×60 s + 30 s = 52 min 30 s < 1h30s.
+
+## 0.7.2-beta.6
+
+### Patch Changes
+
+- 6f5605d: Show stored transcript timings in note detail with seek, playback follow, timestamped copy, and Markdown export.
+
+## 0.7.2-beta.5
+
+### Patch Changes
+
+- b1b58a1: Open Google consent in the system browser on Exo Mac, receive the authorization code through a validated one-shot loopback listener, and exchange it using a Google Desktop OAuth client. Offer a same-tab return when a web popup is blocked.
+
+## 0.7.2-beta.4
+
+### Patch Changes
+
+- c88319e: Preserve Fireflies' last successful sync time on failed runs, surface 24-hour staleness, and run a bounded browser catch-up when a stale connector is available on mount or unlock.
+
+## 0.7.2-beta.3
+
+### Patch Changes
+
+- e844f56: Normalize PTX MIME types and surface durable transcription outcomes in the Library.
+
+## 0.7.2-beta.2
+
+### Patch Changes
+
+- f7a1fa8: Route explicit Private transcription requests through the committed-mode override.
+
+## 0.7.2-beta.1
+
+### Patch Changes
+
+- 5eb65ed: (TC-983) Keep the transcriber heartbeat at 50 minutes; with successful passes of ≤ 60 seconds and timely 30-second timer execution, `checked_at` lag is ≤ H + 2D + I = 50 min + 2×60 s + 30 s = 52 min 30 s < 1h30s.
+
+## 0.7.2-beta.0
+
+### Patch Changes
+
+- 1834edf: TC-1016: reuse notetaker send idempotency keys across retries and coalesce active or concurrent sends for the same meeting URL.
+
+## 0.7.1
+
+### Patch Changes
+
+- 79a072f: Voice notes now persist transcription outcomes and keep unsent or failed notes retryable in the Library.
+- 1c5e68b: Publish TinyChat retrieval pack 0.1.1-onboarding.21 with metadata-only backend-pending coverage.
+- 1d60115: Update the TinyCloud SDK family to 3.2.1 for the sign-in wait and repeat-login re-bootstrap fixes (TC-998, TC-999).
+
+## 0.7.1-beta.2
+
+### Patch Changes
+
+- 1c5e68b: Publish TinyChat retrieval pack 0.1.1-onboarding.21 with metadata-only backend-pending coverage.
+
+## 0.7.1-beta.1
+
+### Patch Changes
+
+- 1d60115: Update the TinyCloud SDK family to 3.2.1 for the sign-in wait and repeat-login re-bootstrap fixes (TC-998, TC-999).
+
+## 0.7.1-beta.0
+
+### Patch Changes
+
+- 79a072f: Voice notes now persist transcription outcomes and keep unsent or failed notes retryable in the Library.
+
+## 0.7.0
+
+### Minor Changes
+
+- 8ec1482: Existing browser sync passes persist a metadata-only snapshot of backend-ingested and completed transcriber meetings that are still unreconciled or unsaved. `changed_at` records projection changes; `checked_at` is the observation time of the last persisted source check. Backend-ingest updates on existing mount/unlock passes only. Transcriber unchanged projections refresh at most hourly on its existing 30-second active/unlocked pass, so its consumer freshness threshold must exceed 1 hour plus 30 seconds. The snapshot uses the retrieval pack's existing connector read grant. Pack consumption is intentionally deferred until TC-977 merges.
+- 20faa03: Refresh saved transcriber transcripts when ptx publishes a newer version, keeping previous copies in an immutable archive and preserving edited meeting titles and start times (TC-989).
+
+### Patch Changes
+
+- ddbadf9: fix(exo desktop): allow the system-audio consent commands so Mac recording can start
+- 5918a34: feat(exo): agent-readable logging in dev builds (desktop log file, iOS container log and os_log, Android logcat ExoDev), with secret redaction; release builds stay quiet
+- b32bc87: fix(exo): show local transcripts before upload, mark them saved only after a verified write, and show transcription and upload progress side by side on the Mac
+- 244d7a6: Update TinyCloud web, node, core, and services SDKs to 3.2.0 and OpenKey SDK and Capacitor plugin to their stable releases, retaining the session-key patch for the TinyCloud node SDK.
+- 3b92372: Handle Exo transcript omissions and channel speakers, honor voice-note commit and legacy-winner semantics from TC-978, and publish retrieval pack 0.1.1-onboarding.19.
+- 8946533: Keep retrieval latest queries compatible with sqlparser-rs using nested LTRIM/RTRIM.
+- 37ef2fa: Treat the private transcriber's literal 'Unknown' speaker as unattributed (null) and keep it out of participants (TC-981).
+- 2ac09a6: Widen Calendar autojoin's late-join window, preserve truthful RSVP outcomes without hiding dispatch failures, skip unchanged RSVP writes, and record discovery and dispatch lag (TC-988).
+
+## 0.7.0-beta.9
+
+### Patch Changes
+
+- 8946533: Keep retrieval latest queries compatible with sqlparser-rs using nested LTRIM/RTRIM.
+
+## 0.7.0-beta.8
+
+### Patch Changes
+
+- 5918a34: feat(exo): agent-readable logging in dev builds (desktop log file, iOS container log and os_log, Android logcat ExoDev), with secret redaction; release builds stay quiet
+
+## 0.7.0-beta.7
+
+### Patch Changes
+
+- b32bc87: fix(exo): show local transcripts before upload, mark them saved only after a verified write, and show transcription and upload progress side by side on the Mac
+
+## 0.7.0-beta.6
+
+### Minor Changes
+
+- 8ec1482: Existing browser sync passes persist a metadata-only snapshot of backend-ingested and completed transcriber meetings that are still unreconciled or unsaved. `changed_at` records projection changes; `checked_at` is the observation time of the last persisted source check. Backend-ingest updates on existing mount/unlock passes only. Transcriber unchanged projections refresh at most hourly on its existing 30-second active/unlocked pass, so its consumer freshness threshold must exceed 1 hour plus 30 seconds. The snapshot uses the retrieval pack's existing connector read grant. Pack consumption is intentionally deferred until TC-977 merges.
+
 ## 0.7.0-beta.5
 
 ### Patch Changes

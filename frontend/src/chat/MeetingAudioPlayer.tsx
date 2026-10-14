@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState } from "react";
+import { useContext, useEffect, useRef, useState } from "react";
 import { Loader2Icon, PauseIcon, PlayIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { formatClockDuration } from "@/capture/library/formatters";
 import { playbackBlocked, playbackVisible, registerPlayback } from "@/lib/audio/playback";
+import { NotePlaybackContext } from "@/lib/audio/notePlayback";
 import { PHONE_AUDIO_UNAVAILABLE, isSeekable, playbackDuration, scrubTarget } from "./audioPlayback";
 
 interface MeetingAudioPlayerProps {
@@ -74,6 +75,9 @@ const NO_MEDIA: PlayerMedia = { playing: false, loading: true, elapsed: 0, media
  * again once the source is set.
  */
 export function MeetingAudioPlayer({ load, url, resolveUrl, durationSecs, channels, onPlayingChange, seek }: MeetingAudioPlayerProps) {
+  const notePlayback = useContext(NotePlaybackContext);
+  const notePlaybackRef = useRef(notePlayback);
+  notePlaybackRef.current = notePlayback;
   const [state, setState] = useState<PlayerState>({ phase: "idle" });
   const [media, setMedia] = useState<PlayerMedia>(NO_MEDIA);
   const [pendingSeek, setPendingSeek] = useState<number | null>(null);
@@ -118,12 +122,16 @@ export function MeetingAudioPlayer({ load, url, resolveUrl, durationSecs, channe
   const setPlaying = (playing: boolean) => {
     patchMedia({ playing });
     onPlayingChange?.(playing);
+    notePlaybackRef.current?.onClock(audioRef.current?.currentTime ?? 0, playing);
   };
   const fail = (reason?: string) => {
     setPlaying(false);
     setState({ phase: "failed", reason });
   };
-  const readClock = (audio: HTMLAudioElement) => patchMedia({ elapsed: audio.currentTime, mediaSecs: audio.duration });
+  const readClock = (audio: HTMLAudioElement) => {
+    patchMedia({ elapsed: audio.currentTime, mediaSecs: audio.duration });
+    notePlaybackRef.current?.onClock(audio.currentTime, !audio.paused);
+  };
 
   /** A play() that was superseded by a pause() or a new source (AbortError) is not a failure; anything else is shown. */
   const playNow = (audio: HTMLAudioElement) => {
@@ -222,15 +230,20 @@ export function MeetingAudioPlayer({ load, url, resolveUrl, durationSecs, channe
     if (audioRef.current) playNow(audioRef.current);
   }, [stateKey]);
 
-  const seekNonce = seek?.nonce;
-  useEffect(() => {
+  const applyRequestedSeek = (requested: { seconds: number; nonce: number } | null | undefined) => {
     const audio = audioRef.current;
-    if (!seek || !audio) return;
-    seekTo(audio, seek.seconds);
+    if (!requested || !audio) return;
+    seekTo(audio, requested.seconds);
     if (state.phase === "ready") playNow(audio);
     else if (state.phase === "idle" || state.phase === "failed") begin();
+  };
+  useEffect(() => {
+    applyRequestedSeek(seek);
     // A request is one nonce; the state it waits on is read when it arrives.
-  }, [seekNonce]);
+  }, [seek?.nonce]);
+  useEffect(() => {
+    applyRequestedSeek(notePlayback?.seek);
+  }, [notePlayback?.seek?.nonce]);
 
   const onLoadedMetadata = (audio: HTMLAudioElement) => {
     patchMedia({ loading: false, elapsed: audio.currentTime, mediaSecs: audio.duration });
@@ -251,7 +264,7 @@ export function MeetingAudioPlayer({ load, url, resolveUrl, durationSecs, channe
         data-testid="note-audio-player"
         onLoadedMetadata={(event) => onLoadedMetadata(event.currentTarget)}
         onDurationChange={(event) => patchMedia({ mediaSecs: event.currentTarget.duration })}
-        onTimeUpdate={(event) => patchMedia({ elapsed: event.currentTarget.currentTime })}
+        onTimeUpdate={(event) => readClock(event.currentTarget)}
         onSeeked={(event) => {
           setPendingSeek(null);
           readClock(event.currentTarget);

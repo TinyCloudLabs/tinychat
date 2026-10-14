@@ -20,7 +20,8 @@ function fixture(options = {}) {
   db.exec('CREATE TABLE connector_meeting(id TEXT PRIMARY KEY, source TEXT, source_id TEXT, title TEXT, started_at TEXT, organizer_email TEXT, participants TEXT, summary_overview TEXT, summary_action_items TEXT, metadata TEXT, updated_at TEXT)');
   db.exec('CREATE TABLE voice_note_transcript(source_id TEXT PRIMARY KEY, body_key TEXT, outcome TEXT)');
   const bodies = new Map(); const calls = [];
-  const state = { owner, authenticated: true, fail: null, kvFail: null, transferredBytes: 0, cliVersion: "0.10.0" };
+  const snapshots = new Map();
+  const state = { owner, authenticated: true, fail: null, kvFail: null, transferredBytes: 0, cliVersion: "0.10.0", snapshots };
   const add = (id, { title = id, date = '2026-09-18T12:00:00Z', source = 'fireflies', sourceId = id, metadata = {}, body = [{ text: 'Hello', speaker_name: 'A', start_time: 1 }], voiceNoteCommit = true, voiceNoteOutcome = 'transcribed', voiceNoteBodyKey } = {}) => {
     db.query('INSERT INTO connector_meeting VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(id, source, sourceId, title, date, 'a@example.test', '[{"name":"A"}]', 'Stored summary', null, JSON.stringify(metadata), '2026-09-18T13:00:00Z');
     const rawBody = JSON.stringify(body);
@@ -45,6 +46,12 @@ function fixture(options = {}) {
     if (args.includes('get')) {
       if (state.kvFail) throw state.kvFail;
       const key = args[args.indexOf('get') + 1];
+      if (key.startsWith('xyz.tinycloud.tinychat/connectors/pending-reconcile-snapshot/')) {
+        const snapshot = state.snapshots.get(key);
+        if (snapshot === undefined) throw Object.assign(new Error('PRIVATE'), { code: 4, stderr: '{"error":{"code":"NOT_FOUND"}}' });
+        await writeFile(args[args.indexOf('--output') + 1], typeof snapshot === 'string' ? snapshot : JSON.stringify(snapshot));
+        return JSON.stringify({ key, written: args[args.indexOf('--output') + 1] });
+      }
       const raw = bodies.get(key);
       if (raw === undefined) throw Object.assign(new Error('PRIVATE'), { code: 4, stderr: '{"error":{"code":"NOT_FOUND","message":"PRIVATE"}}' });
       await writeFile(args[args.indexOf('--output') + 1], raw);
@@ -56,6 +63,7 @@ function fixture(options = {}) {
   return { add, db, bodies, calls, state, runTc, reader: lib.createRetrieval({ ...context, runTc, ...options }) };
 }
 const invoke = (f, command, options = {}) => f.reader.invoke(command, options);
+const bodyGets = f => f.calls.filter(args => args.includes('get') && !args[args.indexOf('get') + 1].includes('/pending-reconcile-snapshot/'));
 async function ref(f, id) { return (await invoke(f, 'find', { term: id })).records.find(r => r.id === id).ref; }
 
 describe('bounded discovery and context', () => {
@@ -68,7 +76,7 @@ describe('bounded discovery and context', () => {
     expect(next.records.map(r => r.id)).toEqual(['c']);
     const second = await invoke(f, 'read', { ref: first.records[1].ref });
     expect(second.record.id).toBe('a');
-    expect(first.coverage.excludedCatalogs).toEqual(['user-kv-only', 'backend-only']);
+    expect(first.coverage.excludedCatalogs).toEqual(['user-kv-only']);
     expect(f.calls.filter(a => !a.includes('--version')).every(a => a.includes('--profile') && a.includes('--host'))).toBe(true);
   });
   test('binds literal filters before paging, including a match beyond row501', async () => {
@@ -234,7 +242,7 @@ test('search counts searched transcript bodies separately from excluded and fail
   f.add('c'); f.bodies.delete(plainTranscriptKey('fireflies', 'c'));
   const r = await invoke(f, 'search', { term: 'needle' });
   expect(r.coverage).toMatchObject({ catalogRecordsExamined: 3, bodiesExamined: 1, failedBodies: 1, excludedBodies: 1, unexaminedBodies: 1, completeWithinScope: false });
-  expect(f.calls.filter(args => args.includes('get'))).toHaveLength(2);
+  expect(bodyGets(f)).toHaveLength(2);
   expect(r.omissions.map(o => o.code)).toEqual(['GENERATED_NOTES_EXCLUDED', 'MISSING_BODY']);
 });
 
@@ -328,7 +336,7 @@ describe('bounded latest intent', () => {
     f.add('undated', { date: null }); const undated = await invoke(f, 'latest'); expect(undated.selection.status).toBe('no-dated-meeting'); expect(undated.records).toEqual([]);
     f.add('newest'); f.bodies.delete(plainTranscriptKey('fireflies', 'newest')); const latest = await invoke(f, 'latest'); expect(latest.records[0].id).toBe('newest');
     const read = await invoke(f, 'read', { ref: latest.records[0].ref }); expect(read.error.code).toBe('MISSING_BODY');
-    expect(f.calls.filter(args => args.includes('get'))).toHaveLength(1);
+    expect(bodyGets(f)).toHaveLength(1);
   });
 });
 
@@ -347,7 +355,7 @@ describe('operation-local verified acquisition', () => {
       transferred += r.transfers.remoteBodyBytes; text += r.spans.map(span => span.text).join(''); cursor = r.continuation; pages++;
     } while (cursor);
     expect(pages).toBeGreaterThan(2); expect(text).toBe(original);
-    expect(f.calls.filter(args => args.includes('get'))).toHaveLength(2);
+    expect(bodyGets(f)).toHaveLength(2);
     expect(f.state.transferredBytes).toBe(2 * Buffer.byteLength(f.bodies.get(plainTranscriptKey('fireflies', 'a')))); expect(transferred).toBe(Buffer.byteLength(f.bodies.get(plainTranscriptKey('fireflies', 'a'))));
     expect((await stat(options.acquisitionDir)).mode & 511).toBe(0o700);
     for (const name of await readdir(options.acquisitionDir)) expect((await stat(join(options.acquisitionDir, name))).mode & 511).toBe(0o600);
@@ -396,7 +404,7 @@ describe('operation-local verified acquisition', () => {
       const selected = await ref(f, 'a'); const r = await invoke(f, 'read', { ref: selected }); expect(r.error.code).toBe(scenario === 'interrupt' ? 'CANCELLED' : 'OUTPUT_LIMIT');
       expect(JSON.parse(await readFile(join(options.acquisitionDir, 'failure.json'), 'utf8')).error.code).toBe(r.error.code);
       const again = await invoke(f, 'read', { ref: selected }); expect(again.error.code).toBe('ACQUISITION_EXISTS');
-      expect(f.calls.filter(args => args.includes('get'))).toHaveLength(1);
+      expect(bodyGets(f)).toHaveLength(1);
     }
   });
 });
@@ -406,7 +414,7 @@ test('diagnostics probes supported-source body access independently of unsupport
   const f = fixture(); f.add('supported', { date: '2026-09-18T00:00:00Z' }); f.add('unsupported', { source: 'future-source', date: '2026-09-20T00:00:00Z' });
   const result = await invoke(f, 'diagnostics'); expect(result.ok).toBe(true); expect(result.access.bodyRead).toBe(true);
   expect(result.coverage.supportedSources).toEqual(['fireflies', 'google-meet', 'tinycloud-transcriber', 'exo-local', 'exo-voice-note', 'exo-upload']);
-  expect(f.calls.filter(args => args.includes('get'))[0].find(arg => arg.endsWith('/supported'))).toBeTruthy();
+  expect(bodyGets(f)[0].find(arg => arg.endsWith('/supported'))).toBeTruthy();
 });
 
 test('fresh acquisition KV denial retains SQL success without claiming verified body authority', async () => {
@@ -422,7 +430,7 @@ test('legacy per-page reads measure full transfer on every output page plus diag
   const f = fixture({ envelopeBytes: 6000 }); f.add('a', { body: 'legacy '.repeat(4000) });
   await invoke(f, 'diagnostics'); let page = await invoke(f, 'read', { ref: await ref(f, 'a') }); let pages = 0;
   do { expect(page.ok).toBe(true); expect(page.transfers.remoteBodyAcquisitions).toBe(1); pages++; if (!page.continuation) break; page = await invoke(f, 'read', { cursor: page.continuation }); } while (true);
-  expect(pages).toBeGreaterThan(1); expect(f.calls.filter(args => args.includes('get'))).toHaveLength(pages + 1);
+  expect(pages).toBeGreaterThan(1); expect(bodyGets(f)).toHaveLength(pages + 1);
   expect(f.state.transferredBytes).toBe((pages + 1) * Buffer.byteLength(f.bodies.get(plainTranscriptKey('fireflies', 'a'))));
 });
 
@@ -472,7 +480,7 @@ test('voice-note body resolution fetches the committed pointer, not the stale mi
   expect(voice.ok).toBe(true);
   expect(voice.spans.map(span => span.text)).toEqual(['Committed transcript']);
   const pointerKey = f.db.query('SELECT body_key FROM voice_note_transcript WHERE source_id = ?').get('recording-voice').body_key;
-  expect(f.calls.filter(args => args.includes('get')).map(args => args[args.indexOf('get') + 1])).toEqual([pointerKey]);
+  expect(bodyGets(f).map(args => args[args.indexOf('get') + 1])).toEqual([pointerKey]);
   expect(voice.provenance.sourceLocation.kvKey).toBe(pointerKey);
   const local = await invoke(f, 'read', { ref: await ref(f, 'local') });
   expect(local.ok).toBe(true);
@@ -593,7 +601,7 @@ test('transcribed legacy winners without usable transcript_text fail closed', as
     expect(latestResult.records.map(row => row.id)).toEqual(['older-fireflies']);
     expect((await invoke(latestFixture, 'read', { ref: latestResult.records[0].ref })).ok).toBe(true);
   }
-  expect(f.calls.filter(args => args.includes('get'))).toHaveLength(0);
+  expect(bodyGets(f)).toHaveLength(0);
 });
 
 test('latest SQL trim character set matches String.prototype.trim', async () => {
@@ -607,8 +615,12 @@ test('latest SQL trim character set matches String.prototype.trim', async () => 
   await invoke(f, 'latest');
   const queryArgs = f.calls.find(args => args.includes('query') && args[args.indexOf('query') + 1].includes('trim(json_extract'));
   const query = queryArgs?.[queryArgs.indexOf('query') + 1];
-  const sqlCharacters = query?.match(/trim\(json_extract\(g\.metadata, '\$\.transcript_text'\), char\(([^)]*)\)\)/)?.[1];
-  expect(sqlCharacters).toBeTruthy();
+  // The hosted node uses sqlparser-rs, which rejects SQLite's two-argument trim form.
+  const nestedTrim = query?.match(/rtrim\(ltrim\(json_extract\(g\.metadata, '\$\.transcript_text'\), char\(([^)]*)\)\), char\(([^)]*)\)\)/);
+  expect(nestedTrim).toBeTruthy();
+  expect(nestedTrim[2]).toBe(nestedTrim[1]);
+  expect(query).not.toContain('AND trim(json_extract');
+  const sqlCharacters = nestedTrim[1];
   const sqlCodePoints = sqlCharacters.split(',').map(Number);
   const ecmaTrimCodePoints = [];
   for (let codePoint = 0; codePoint <= 0x10ffff; codePoint++) {
@@ -650,7 +662,7 @@ test('voice-note committed no_speech is an omission without fetching its body', 
   expect(result.ok).toBe(false);
   expect(result.error.code).toBe('TRANSCRIPT_OMITTED');
   expect(result.coverage.omissions).toEqual([{ id: 'silent', source: 'exo-voice-note', started_at: '2026-09-18T12:00:00Z', reason: 'no_speech' }]);
-  expect(f.calls.filter(args => args.includes('get'))).toHaveLength(0);
+  expect(bodyGets(f)).toHaveLength(0);
 });
 
 test('voice-note no-commit statuses and legacy empty bodies are omissions, not transcript errors', async () => {
@@ -668,7 +680,7 @@ test('voice-note no-commit statuses and legacy empty bodies are omissions, not t
   expect(searched.ok).toBe(true);
   expect(searched.coverage).toMatchObject({ failedBodies: 0, excludedBodies: 5 });
   expect(searched.coverage.omissions.map(item => item.reason).sort()).toEqual(['failed', 'no_speech', 'not_transcribed', 'pending', 'skipped']);
-  expect(f.calls.filter(args => args.includes('get'))).toHaveLength(0);
+  expect(bodyGets(f)).toHaveLength(0);
 });
 
 test('a committed null body_key fails closed instead of falling back to the mirror', async () => {
@@ -677,7 +689,7 @@ test('a committed null body_key fails closed instead of falling back to the mirr
   f.db.query('UPDATE voice_note_transcript SET body_key = NULL WHERE source_id = ?').run('null-pointer');
   const result = await invoke(f, 'read', { ref: await ref(f, 'voice') });
   expect(result.error.code).toBe('INVALID_METADATA');
-  expect(f.calls.filter(args => args.includes('get'))).toHaveLength(0);
+  expect(bodyGets(f)).toHaveLength(0);
 });
 test('rejects foreign or malformed committed body_key pointers before KV access', async () => {
   const prefix = 'xyz.tinycloud.tinychat/connectors/exo-voice-note/transcript-rev';
@@ -700,7 +712,7 @@ test('rejects foreign or malformed committed body_key pointers before KV access'
     const result = await invoke(f, 'read', { ref: await ref(f, id) });
     expect(result.error.code).toBe('INVALID_METADATA');
   }
-  expect(f.calls.filter(args => args.includes('get'))).toHaveLength(0);
+  expect(bodyGets(f)).toHaveLength(0);
 });
 
 test('pack, explorer and Eliza executor source registries agree with explicit follow-up exclusions', async () => {
@@ -732,4 +744,110 @@ test('pack, explorer and Eliza executor source registries agree with explicit fo
   const backendExcludedForTc995 = ['exo-voice-note', 'exo-upload'];
   expect(packList).toEqual(explorerList);
   expect(backendList).toEqual(explorerList.filter(source => !backendExcludedForTc995.includes(source)));
+});
+const pendingSnapshotKey = source => `xyz.tinycloud.tinychat/connectors/pending-reconcile-snapshot/${source}`;
+function pendingSnapshot(source, checkedAt, meetings, version = 1) {
+  return { version, changed_at: checkedAt, checked_at: checkedAt, count: meetings.length, meetings };
+}
+async function withFrozenDate(now, run) {
+  const originalNow = Date.now;
+  Date.now = () => now;
+  try { return await run(); } finally { Date.now = originalNow; }
+}
+function pendingRows(source) {
+  const rowSource = source === 'transcriber' ? 'transcriber' : 'fireflies';
+  return [
+    { id: 'pending-a', source: rowSource, status: source === 'transcriber' ? 'completed' : 'unreconciled', reconciled: false },
+    { id: 'pending-b', source: rowSource, status: 'unknown', reconciled: false },
+  ];
+}
+
+describe('backend-only pending coverage', () => {
+  for (const [source, staleAfterMs] of [
+    ['backend-ingest', 24 * 60 * 60 * 1000],
+    ['transcriber', 60 * 60 * 1000 + 30 * 1000],
+  ]) {
+    test(`${source} reports fresh counts without exposing snapshot rows`, async () => {
+      const f = fixture();
+      const checkedAt = new Date(Date.now() - 1000).toISOString();
+      f.state.snapshots.set(pendingSnapshotKey(source), pendingSnapshot(source, checkedAt, pendingRows(source)));
+      const result = await invoke(f, 'find', { term: 'absent' });
+      expect(result.coverage.excludedCatalogs).toEqual(['user-kv-only']);
+      expect(result.coverage.backendPending[source]).toEqual({ count: 2, unknown: 1, checked_at: checkedAt, freshness: 'fresh' });
+      expect(JSON.stringify(result.coverage.backendPending)).not.toMatch(/pending-a|pending-b|title|url|participant|transcript|content|SECRET/iu);
+    });
+    test(`${source} reports zero only for a valid empty snapshot`, async () => {
+      const f = fixture();
+      const checkedAt = new Date(Date.now() - 1000).toISOString();
+      f.state.snapshots.set(pendingSnapshotKey(source), pendingSnapshot(source, checkedAt, []));
+      const result = await invoke(f, 'find', { term: 'absent' });
+      expect(result.coverage.backendPending[source]).toEqual({ count: 0, unknown: 0, checked_at: checkedAt, freshness: 'fresh' });
+    });
+
+
+    test(`${source} reports unknown counts for a stale empty snapshot`, async () => {
+      const f = fixture();
+      const now = Date.parse('2026-05-01T12:00:00.000Z');
+      await withFrozenDate(now, async () => {
+        const checkedAt = new Date(now - staleAfterMs - 1).toISOString();
+        f.state.snapshots.set(pendingSnapshotKey(source), pendingSnapshot(source, checkedAt, []));
+        const result = await invoke(f, 'find', { term: 'absent' });
+        expect(result.coverage.backendPending[source]).toEqual({ count: null, unknown: null, checked_at: checkedAt, freshness: 'stale' });
+      });
+    });
+
+    for (const ageOffset of [-1, 0, 1]) {
+      test(`${source} freshness at threshold ${ageOffset >= 0 ? '+' : ''}${ageOffset} ms`, async () => {
+        const f = fixture();
+        const now = Date.parse('2026-05-01T12:00:00.000Z');
+        await withFrozenDate(now, async () => {
+          const checkedAt = new Date(now - staleAfterMs - ageOffset).toISOString();
+          f.state.snapshots.set(pendingSnapshotKey(source), pendingSnapshot(source, checkedAt, pendingRows(source)));
+          const result = await invoke(f, 'find', { term: 'absent' });
+          const stale = ageOffset > 0;
+          expect(result.coverage.backendPending[source]).toEqual({
+            count: stale ? null : 2,
+            unknown: stale ? null : 1,
+            checked_at: checkedAt,
+            freshness: stale ? 'stale' : 'fresh',
+          });
+        });
+      });
+    }
+
+    for (const kind of ['missing', 'future', 'corrupt', 'unsupported-version']) {
+      test(`${source} treats ${kind} snapshots as unknown, not zero`, async () => {
+        const f = fixture();
+        const now = Date.now();
+        let expectedCheckedAt = null;
+        if (kind === 'future') {
+          expectedCheckedAt = new Date(now + 60_000).toISOString();
+          f.state.snapshots.set(pendingSnapshotKey(source), pendingSnapshot(source, expectedCheckedAt, pendingRows(source)));
+        } else if (kind === 'corrupt') {
+          f.state.snapshots.set(pendingSnapshotKey(source), '{"version":1');
+        } else if (kind === 'unsupported-version') {
+          const checkedAt = new Date(now - 1000).toISOString();
+          f.state.snapshots.set(pendingSnapshotKey(source), pendingSnapshot(source, checkedAt, pendingRows(source), 2));
+        }
+        const result = await invoke(f, 'find', { term: 'absent' });
+        expect(result.coverage.backendPending[source]).toEqual({
+          count: null,
+          unknown: null,
+          checked_at: expectedCheckedAt,
+          freshness: 'unknown',
+        });
+      });
+    }
+  }
+
+  test('corrupt content fields never appear in the serialized coverage block', async () => {
+    const f = fixture();
+    const checkedAt = new Date(Date.now() - 1000).toISOString();
+    const rows = [{ ...pendingRows('backend-ingest')[0], title: 'PRIVATE_TITLE', meeting_url: 'PRIVATE_URL' }];
+    f.state.snapshots.set(pendingSnapshotKey('backend-ingest'), pendingSnapshot('backend-ingest', checkedAt, rows));
+    const result = await invoke(f, 'find', { term: 'absent' });
+    const serialized = JSON.stringify(result.coverage.backendPending);
+    expect(result.coverage.backendPending['backend-ingest']).toMatchObject({ count: null, unknown: null, freshness: 'unknown' });
+    expect(serialized).not.toMatch(/PRIVATE_TITLE|PRIVATE_URL|title|meeting_url/iu);
+  });
 });
