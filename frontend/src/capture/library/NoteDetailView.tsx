@@ -194,9 +194,24 @@ export function VoiceNoteTranscriptionStatus(props: {
     );
   }
 
-  // Nothing to choose from: Local needs the phone's engine, Private needs private cloud on offer (or unreachable, with its own Check again).
+  // Local needs the phone's engine; Private needs an available (or checkable) cloud service.
   const localCapable = captureCapabilities().localTranscription;
   const choosable = transcription?.availability === "available" || (transcription?.availability === "failed" && transcription.consented);
+  const pendingWithoutLiveJob = props.outcome === "pending" && (job === undefined || job.kind === "blocked");
+  if (pendingWithoutLiveJob && props.provider === "private" && !item.onPhone
+    && !localCapable && transcription?.availability !== "available") {
+    return (
+      <div className="flex flex-col gap-2" data-testid="voice-note-private-unavailable">
+        <p className="text-callout text-muted-foreground">
+          {transcription?.availability === "failed"
+            ? "Private cloud isn’t reachable — we’ll retry."
+            : "Private cloud availability is being checked — we’ll retry."}
+        </p>
+        {transcription?.consented
+          && <TranscribeAction noteId={item.sourceId} transcription={transcription} durationSecs={item.durationSecs} />}
+      </div>
+    );
+  }
   if (!localCapable && !choosable) return null;
   if (!localCapable && transcription && item.durationSecs !== null && !privateCloudFits(transcription, item.durationSecs)) {
     return (

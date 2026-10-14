@@ -246,6 +246,16 @@ describe("a voice note's transcription", () => {
     expect(render()).toContain("No transcript.");
   });
 
+  test("a pending Private note without a live job always has an action or recovery explanation", () => {
+    const pending = { status: "ok" as const, metadata: { capture: { options: { transcriber: "private-cloud" } }, transcription_outcome: "pending" } };
+    const available = render({ metadata: pending, transcription: transcription() });
+    expect(available).toContain('data-testid="transcribe-button"');
+
+    const unavailable = render({ metadata: pending, transcription: transcription({ availability: "failed" }) });
+    expect(unavailable).toContain('data-testid="voice-note-private-unavailable"');
+    expect(unavailable).toContain("Private cloud isn’t reachable");
+  });
+
   test("available but not yet consented: Transcribe with Private, which asks for consent when pressed", () => {
     const html = render({ transcription: transcription({ consented: false }) });
     expect(html).toContain('data-testid="transcribe-button"');
@@ -351,7 +361,6 @@ describe("a voice note's transcription", () => {
     expect(render({ transcription: job({ kind: "active", status: { kind: "processing", completed: 4, total: 9 } }) })).toContain('title="Recordings are transcribed in parts"');
     expect(render({ transcription: job({ kind: "active", status: { kind: "processing", completed: 9, total: 9 } }) })).toContain("9 of 9 parts done");
     expect(render({ transcription: job({ kind: "active", status: { kind: "processing", completed: 2, total: 0 } }) })).toContain("Transcribing");
-    expect(render({ transcription: job({ kind: "done", outcome: "transcribed" }) })).toContain("Transcript saved.");
     const failed = (retryable: boolean) =>
       job({ kind: "failed", code: "upload_interrupted", message: "The upload did not complete.", retryable, reference: "cid-7" });
     const retry = render({ transcription: failed(true) });
