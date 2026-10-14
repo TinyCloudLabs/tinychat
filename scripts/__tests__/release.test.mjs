@@ -397,7 +397,8 @@ test('release cycle: betas with one web/desktop version, the Release stable PR, 
   assert.equal(tagCommit(root, '@tinychat/backend@0.1.1-beta.0'), betaCommit);
   const betaDispatch = step('dispatch.mjs', ['--channel', 'beta', '--tags', 'exo-desktop@0.2.0-beta.0 @tinychat/frontend@0.2.0-beta.0 @tinychat/backend@0.1.1-beta.0', '--dry-run']);
   assert.doesNotMatch(betaDispatch, /deploy-production/);
-  assert.match(betaDispatch, /^gh workflow run desktop-release\.yml --repo \S+ --ref main -f tag=exo-desktop@0\.2\.0-beta\.0$/m);
+  assert.doesNotMatch(betaDispatch, /gh workflow run/); // beta desktop releases are manual
+  assert.match(betaDispatch, /^Nothing to dispatch for channel beta/);
 
   write(root, '.changeset/web-fix.md', changesetFile({ '@tinychat/frontend': 'patch' }, 'Web fix'));
   commitAll(root, 'fix: web (#2)');
@@ -665,9 +666,10 @@ test('deploy-target.mjs refuses unreleased commits unless allow_unreleased and t
 });
 
 // Desktop releases: one build per new exo-desktop tag, numeric Apple bundle versions, release plan and notes.
-test('planDispatches builds a desktop release from main for each new beta or stable exo-desktop tag, never for baselines', () => {
+test('planDispatches builds a desktop release from main for each new stable exo-desktop tag, never for betas or baselines', () => {
   const desktop = (channel, tags) => planDispatches({ channel, tags }).filter(({ workflow }) => workflow === 'desktop-release.yml').map(({ ref, inputs }) => `${ref} ${inputs.tag}`);
-  assert.deepEqual(desktop('beta', ['exo-desktop@0.2.0-beta.3', '@tinychat/frontend@0.2.0-beta.3']), ['main exo-desktop@0.2.0-beta.3']);
+  // Beta desktop releases are manual (gh workflow run desktop-release.yml --ref main -f tag=...).
+  assert.deepEqual(planDispatches({ channel: 'beta', tags: ['exo-desktop@0.2.0-beta.3', '@tinychat/frontend@0.2.0-beta.3'] }), []);
   assert.deepEqual(desktop('stable', ['exo-desktop@0.2.0', '@tinychat/frontend@0.2.0', '@tinychat/backend@0.1.1']), ['main exo-desktop@0.2.0']);
   assert.deepEqual(desktop('beta', ['@tinychat/backend@0.1.2-beta.0']), []);
   assert.deepEqual(desktop('none', ['exo-desktop@0.1.0', '@tinychat/frontend@0.1.0', '@tinychat/backend@0.1.0']), []);
