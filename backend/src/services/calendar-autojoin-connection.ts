@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { CredentialStore, OAuthCredentialSecret } from "./credential-store.js";
-import type { CalendarAutojoinStore, CalendarConnection, TenantCoordinator } from "./calendar-autojoin-store.js";
+import type { CalendarAutojoinStore, CalendarAutojoinReadMetrics, CalendarConnection, TenantCoordinator } from "./calendar-autojoin-store.js";
+import type { CalendarAutojoinStatus } from "./calendar-autojoin-status-cache.js";
 import { REQUEST_LANE_WAIT_MS } from "./backend-storage-lane.js";
 import { GOOGLE_CALENDAR_SCOPE, GoogleOAuthError, type GoogleOAuthPort, type GoogleTokenPayload } from "./google-oauth.js";
 
@@ -44,16 +45,27 @@ export class CalendarAutojoinConnection {
     this.now = options.now ?? Date.now;
   }
 
-  async getStatus(tenant: string) {
+  /** User settings writes invalidate even when the persisted policy fields happen to match. */
+  private writeSettings<T>(tenant: string, write: () => Promise<T>): Promise<T> {
+    return this.options.store.statusCache.mutate(tenant, () => this.options.coordinator.run(tenant, write));
+  }
+
+  getLastGoodStatus(tenant: string) { return this.options.store.statusCache.get(tenant); }
+
+  getStatus(tenant: string, metrics?: CalendarAutojoinReadMetrics): Promise<CalendarAutojoinStatus> {
+    return this.options.store.statusCache.refresh(tenant, () => this.readStatus(tenant, metrics));
+  }
+
+  private async readStatus(tenant: string, metrics?: CalendarAutojoinReadMetrics): Promise<CalendarAutojoinStatus> {
     // One wall-clock deadline for every lane read below (lane timers run on real time).
     const deadline = Date.now() + (this.options.statusBudgetMs ?? REQUEST_LANE_WAIT_MS);
-    const connection = await this.options.store.getConnection(tenant, deadline);
+    const connection = await this.options.store.getConnection(tenant, deadline, metrics);
     // Occurrences are only scheduled for a tenant with a connection row, and connection rows are
     // never deleted (disable/disconnect rewrite them as "disabled"). A never-connected tenant has
     // no outcomes, so skip the prefix listing: on the shared serialized storage lane it pushed this
     // read past the client's 20s abort, showing a never-connected account an error.
     if (!connection) return { state: "off" as const, enabled: false, lastScanAt: null, lastDispatchLag: null, errorCode: null, outcomes: [] };
-    const outcomes = (await this.options.store.listOccurrences(tenant, deadline))
+    const outcomes = (await this.options.store.listOccurrences(tenant, deadline, metrics))
       .filter(row => !!row.errorCode || ["missed", "missed_window", "not_accepted", "failed", "event_ineligible", "event_changed", "already_recorded", "unverified_capture", "capacity_exhausted"].includes(row.disposition ?? ""))
       // RSVP hints fill only spare slots; future unanswered invites must not hide real failures.
       .sort((a, b) => Number((a.errorCode ?? a.disposition) === "not_accepted")
@@ -110,7 +122,7 @@ export class CalendarAutojoinConnection {
     }
     if (!tokens.refresh_token) throw new CalendarAutojoinError("refresh_token_required", 400);
     const setupId = randomBytes(32).toString("base64url");
-    await this.options.coordinator.run(tenant, async () => {
+    await this.writeSettings(tenant, async () => {
       const current = await this.options.store.getConnection(tenant);
       if (transaction.expiresAt <= this.now()) throw new CalendarAutojoinError("invalid_oauth_transaction", 400);
       if ((current?.generation ?? 0) !== transaction.generation) throw new CalendarAutojoinError("connection_changed");
@@ -143,7 +155,7 @@ export class CalendarAutojoinConnection {
       if (isPermanentAuthorizationFailure(error)) await this.needsReconnect(tenant, connection!.generation);
       throw error;
     }
-    await this.options.coordinator.run(tenant, async () => {
+    await this.writeSettings(tenant, async () => {
       const latest = await this.options.store.getConnection(tenant);
       this.assertSetup(latest, setupId);
       if (latest!.generation !== connection!.generation) throw new CalendarAutojoinError("connection_changed");
@@ -154,19 +166,19 @@ export class CalendarAutojoinConnection {
   }
 
   async disable(tenant: string) {
-    await this.options.coordinator.run(tenant, () => this.disableLocked(tenant));
+    await this.writeSettings(tenant, () => this.disableLocked(tenant));
     return this.getStatus(tenant);
   }
 
   /** Browser-only reconnect must never silently leave unattended access following another account. */
   async browserReconnect(tenant: string): Promise<void> {
-    await this.options.coordinator.run(tenant, () => this.disableLocked(tenant));
+    await this.writeSettings(tenant, () => this.disableLocked(tenant));
   }
 
   async disconnect(tenant: string, browserToken?: string) {
     let serverToken: string | undefined;
     let unreadable = false;
-    await this.options.coordinator.run(tenant, async () => {
+    await this.writeSettings(tenant, async () => {
       // Read for revocation before ending custody, but never let a decrypt failure prevent deletion.
       try {
         const secret = await this.options.credentials.getCredential(GOOGLE_AUTOJOIN_CREDENTIAL_SOURCE, tenant, "teardown");

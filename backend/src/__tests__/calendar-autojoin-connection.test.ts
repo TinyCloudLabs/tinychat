@@ -1,8 +1,8 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
 import express from "express";
 import type { AddressInfo } from "node:net";
-import { CalendarAutojoinConnection, GOOGLE_AUTOJOIN_CREDENTIAL_SOURCE, browserTokenPayload } from "../services/calendar-autojoin-connection.js";
+import { CalendarAutojoinConnection, GOOGLE_AUTOJOIN_CREDENTIAL_SOURCE, browserTokenPayload, type CalendarAutojoinConnectionOptions } from "../services/calendar-autojoin-connection.js";
 import { MemoryCalendarAutojoinStore, TenantCoordinator, type CalendarOccurrence } from "../services/calendar-autojoin-store.js";
 import { CredentialStore, InMemoryCredentialRowStore } from "../services/credential-store.js";
 import { GOOGLE_AUTOJOIN_SCOPES, GoogleOAuthError, type GoogleOAuthPort, type GoogleTokenPayload } from "../services/google-oauth.js";
@@ -34,8 +34,9 @@ function fixture() {
   };
   const probes: string[] = [];
   const calendar = { async probePrimary(token: string) { probes.push(token); } };
-  const connection = new CalendarAutojoinConnection({ store, credentials, oauth, coordinator: new TenantCoordinator(), calendar, now: () => now });
-  return { store, rows, credentials, oauth, probes, revokes, connection, calendar,
+  const options: CalendarAutojoinConnectionOptions = { store, credentials, oauth, coordinator: new TenantCoordinator(), calendar, now: () => now };
+  const connection = new CalendarAutojoinConnection(options);
+  return { store, rows, credentials, oauth, probes, revokes, connection, calendar, options,
     setTokens(tokens: Partial<GoogleTokenPayload>) { tokenResponse = { ...tokenResponse, ...tokens }; },
     get exchangeCount() { return exchangeCount; },
     advance(ms: number) { now += ms; },
@@ -61,6 +62,58 @@ function attempt(): CalendarOccurrence {
 }
 
 describe("Calendar OAuth custody lifecycle", () => {
+  for (const operation of ["exchange", "enable", "disable", "disconnect", "browserReconnect"] as const) {
+    test(`TC-1086: user ${operation} invalidates even if the policy fields stay the same`, async () => {
+      const f = fixture(); await f.enable();
+      let setupId = "";
+      if (operation === "enable") { setupId = (await f.exchange()).setupId; await f.connection.getStatus(TENANT); }
+      const before = await f.store.getConnection(TENANT);
+      expect(f.connection.getLastGoodStatus(TENANT)).toBeDefined();
+      // Simulate a settings write with unchanged connection policy, to test the explicit user boundary.
+      const put = spyOn(f.store, "putConnection").mockResolvedValue(undefined);
+      f.options.statusBudgetMs = 0;
+      try {
+        if (operation === "exchange") await f.exchange();
+        else if (operation === "enable") await expect(f.connection.enable(TENANT, setupId)).rejects.toThrow();
+        else if (operation === "disable") await expect(f.connection.disable(TENANT)).rejects.toThrow();
+        else if (operation === "disconnect") await f.connection.disconnect(TENANT);
+        else await f.connection.browserReconnect(TENANT);
+        expect(await f.store.getConnection(TENANT)).toEqual(before);
+        expect(f.connection.getLastGoodStatus(TENANT)).toBeUndefined();
+      } finally { put.mockRestore(); }
+    });
+  }
+
+  for (const operation of ["exchange", "enable", "disable", "disconnect", "browserReconnect", "needsReconnect", "cleanupEnabling", "authorizationLost"] as const) {
+    test(`TC-1086: ${operation} invalidates the previous status, including post-write read failure`, async () => {
+      const f = fixture();
+      await f.enable();
+      let setupId = "";
+      if (operation === "enable" || operation === "cleanupEnabling") {
+        setupId = (await f.exchange()).setupId;
+        await f.connection.getStatus(TENANT);
+      }
+      expect(f.connection.getLastGoodStatus(TENANT)).toBeDefined();
+      f.options.statusBudgetMs = 0; // Only status fails: the mutation's own reads/writes still succeed.
+      if (operation === "exchange") await f.exchange();
+      else if (operation === "enable") await expect(f.connection.enable(TENANT, setupId)).rejects.toThrow();
+      else if (operation === "disable") await expect(f.connection.disable(TENANT)).rejects.toThrow();
+      else if (operation === "disconnect") await f.connection.disconnect(TENANT);
+      else if (operation === "browserReconnect") await f.connection.browserReconnect(TENANT);
+      else if (operation === "needsReconnect") {
+        await f.connection.needsReconnect(TENANT, (await f.store.getConnection(TENANT))!.generation);
+      } else if (operation === "cleanupEnabling") {
+        f.advance(10 * 60_000 + 1);
+        await f.connection.cleanupEnabling(TENANT);
+      } else {
+        f.oauth.refresh = async () => { throw new GoogleOAuthError({ status: 400, error: "invalid_grant", operation: "refresh" }); };
+        await expect(f.connection.accessToken(TENANT, true)).rejects.toThrow();
+      }
+      expect(f.connection.getLastGoodStatus(TENANT)).toBeUndefined();
+      await expect(f.connection.getStatus(TENANT)).rejects.toThrow();
+    });
+  }
+
   test("browser responses whitelist token fields and never return identity claims", () => {
     const internal = { access_token: "access", refresh_token: "refresh", subject: "google-subject", id_token: "signed-identity", email: "private@example.test" };
     expect(browserTokenPayload(internal)).toEqual({ access_token: "access", refresh_token: "refresh" });
@@ -331,6 +384,24 @@ describe("Calendar OAuth custody lifecycle", () => {
 });
 
 describe("authenticated autojoin routes", () => {
+  test("TC-1086: Google OAuth revoke clears a cached enabled status before status can time out", async () => {
+    const f = fixture(); await f.enable();
+    expect(f.connection.getLastGoodStatus(TENANT)?.body.enabled).toBe(true);
+    const app = express(); app.use(express.json());
+    app.use((req, _res, next) => { req.user = { address: TENANT } as typeof req.user; next(); });
+    app.use("/oauth", createGoogleOAuthRouter({ oauth: f.oauth, autojoin: f.connection, appOrigin: "https://app.example.test" }));
+    const server = app.listen(0); await new Promise<void>(done => server.once("listening", done));
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/oauth`;
+    try {
+      f.options.statusBudgetMs = 0;
+      const result = await fetch(`${base}/revoke`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+      expect(result.status).toBe(200);
+      expect((await result.json()).status).toBe("disconnected");
+      expect(f.connection.getLastGoodStatus(TENANT)).toBeUndefined();
+      await expect(f.connection.getStatus(TENANT)).rejects.toThrow();
+    } finally { await new Promise<void>(done => server.close(() => done())); }
+  });
+
   test("ordinary OAuth reconnect disables a rebind completed while its exchange was in flight", async () => {
     const f = fixture(); await f.enable();
     const original = f.oauth.exchangeCode;
@@ -352,6 +423,7 @@ describe("authenticated autojoin routes", () => {
       expect((await f.connection.getStatus(TENANT)).enabled).toBe(true);
       response.resolve({ access_token: "ordinary-browser-token" });
       expect((await pending).status).toBe(200);
+      expect(f.connection.getLastGoodStatus(TENANT)).toBeUndefined();
       expect((await f.connection.getStatus(TENANT)).enabled).toBe(false);
       expect(await f.credentials.status(source, TENANT)).toBeNull();
     } finally { await new Promise<void>(done => server.close(() => done())); }

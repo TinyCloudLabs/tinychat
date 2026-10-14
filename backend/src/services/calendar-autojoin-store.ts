@@ -6,6 +6,7 @@ import {
 } from "./backend-storage-lane.js";
 import { normalizeGoogleMeetUrl } from "./google-calendar.js";
 import type { CreateMeetingInput } from "./transcription-api.js";
+import { CalendarAutojoinStatusCache } from "./calendar-autojoin-status-cache.js";
 
 export interface CalendarConnection {
   tenant: string;
@@ -25,6 +26,31 @@ export interface CalendarConnection {
   setupExpiresAt?: number;
   /** Lowercased Google email, only when the ID token verified it (TC-581). Never sent to the browser. */
   verifiedEmail?: string;
+}
+
+// Classify every field so adding a connection field requires an explicit cache-policy decision.
+// Bookkeeping may lag in an explicitly stale response; policy/identity transitions must not.
+const CONNECTION_CACHE_FIELDS = {
+  tenant: "scope",
+  subject: "policy",
+  state: "policy",
+  generation: "policy",
+  errorCode: "policy",
+  consentAt: "bookkeeping",
+  scopes: "bookkeeping",
+  credentialRef: "bookkeeping",
+  nextScanAt: "bookkeeping",
+  lastScanAt: "bookkeeping",
+  lastDispatchLag: "bookkeeping",
+  scanComplete: "bookkeeping",
+  setupId: "bookkeeping",
+  setupExpiresAt: "bookkeeping",
+  verifiedEmail: "bookkeeping",
+} satisfies Record<keyof CalendarConnection, "scope" | "policy" | "bookkeeping">;
+
+function connectionPolicyChanged(previous: CalendarConnection | null, next: CalendarConnection): boolean {
+  return (Object.keys(CONNECTION_CACHE_FIELDS) as (keyof CalendarConnection)[])
+    .some(field => CONNECTION_CACHE_FIELDS[field] === "policy" && previous?.[field] !== next[field]);
 }
 
 /** One tenant's intent to capture a Meet URL during a window (TC-581). Never holds a meeting id. */
@@ -83,16 +109,19 @@ export interface CalendarSentMarker {
   disposition: string;
 }
 type Update<T> = (current: T | null) => T | null;
+/** Attempted status reads/listings, including a read that fails or cannot enter the lane. */
+export interface CalendarAutojoinReadMetrics { reads: number }
 /** Reads that take `deadline` (epoch ms) reject once it passes instead of queueing further. */
 export interface CalendarAutojoinStore {
-  getConnection(tenant: string, deadline?: number): Promise<CalendarConnection | null>;
+  readonly statusCache: CalendarAutojoinStatusCache;
+  getConnection(tenant: string, deadline?: number, metrics?: CalendarAutojoinReadMetrics): Promise<CalendarConnection | null>;
   putConnection(row: CalendarConnection): Promise<void>;
   updateConnection(tenant: string, update: Update<CalendarConnection>): Promise<CalendarConnection | null>;
   listConnections(): Promise<CalendarConnection[]>;
   getOccurrence(tenant: string, id: string): Promise<CalendarOccurrence | null>;
   putOccurrence(row: CalendarOccurrence): Promise<void>;
   updateOccurrence(tenant: string, id: string, update: Update<CalendarOccurrence>): Promise<CalendarOccurrence | null>;
-  listOccurrences(tenant: string, deadline?: number): Promise<CalendarOccurrence[]>;
+  listOccurrences(tenant: string, deadline?: number, metrics?: CalendarAutojoinReadMetrics): Promise<CalendarOccurrence[]>;
   deleteOccurrence(tenant: string, id: string): Promise<void>;
   getMarker(tenant: string, id: string): Promise<CalendarSentMarker | null>;
   putMarker(row: CalendarSentMarker): Promise<void>;
@@ -135,15 +164,29 @@ class JsonCalendarAutojoinStore implements CalendarAutojoinStore {
     private readonly json: JsonStore,
     private readonly lane: BackendStorageLane,
     private readonly laneOptions: BackendStorageLaneRunOptions = {},
+    readonly statusCache = new CalendarAutojoinStatusCache(),
   ) {}
-  getConnection(tenant: string, deadline?: number) { return this.run(() => this.json.get<CalendarConnection>(connectionKey(tenant)), deadline); }
-  putConnection(row: CalendarConnection) { return this.run(() => this.json.put(connectionKey(row.tenant), row)); }
-  updateConnection(tenant: string, fn: Update<CalendarConnection>) { return this.update(connectionKey(tenant), fn); }
+  getConnection(tenant: string, deadline?: number, metrics?: CalendarAutojoinReadMetrics) { return this.read(() => this.json.get<CalendarConnection>(connectionKey(tenant)), deadline, metrics); }
+  putConnection(row: CalendarConnection) { return this.updateConnection(row.tenant, () => row).then(() => undefined); }
+  updateConnection(tenant: string, fn: Update<CalendarConnection>) {
+    // Compare and persist in the same serialized lane job, against the actual previous row.
+    return this.run(async () => {
+      const key = connectionKey(tenant);
+      const previous = await this.json.get<CalendarConnection>(key);
+      const next = fn(previous === null ? null : structuredClone(previous));
+      if (next !== null) {
+        const write = () => this.json.put(key, next);
+        if (connectionPolicyChanged(previous, next)) await this.statusCache.mutate(tenant, write);
+        else await write();
+      }
+      return next;
+    });
+  }
   listConnections() { return this.list<CalendarConnection>(`${PREFIX}connections/`); }
   getOccurrence(tenant: string, id: string) { return this.run(() => this.json.get<CalendarOccurrence>(occurrencePrefix(tenant) + id)); }
   putOccurrence(row: CalendarOccurrence) { return this.run(() => this.json.put(occurrencePrefix(row.tenant) + row.id, row)); }
   updateOccurrence(tenant: string, id: string, fn: Update<CalendarOccurrence>) { return this.update(occurrencePrefix(tenant) + id, fn); }
-  listOccurrences(tenant: string, deadline?: number) { return this.list<CalendarOccurrence>(occurrencePrefix(tenant), deadline); }
+  listOccurrences(tenant: string, deadline?: number, metrics?: CalendarAutojoinReadMetrics) { return this.list<CalendarOccurrence>(occurrencePrefix(tenant), deadline, metrics); }
   deleteOccurrence(tenant: string, id: string) { return this.run(() => this.json.remove(occurrencePrefix(tenant) + id)); }
   getMarker(tenant: string, id: string) { return this.run(() => this.json.get<CalendarSentMarker>(markerKey(tenant, id))); }
   putMarker(row: CalendarSentMarker) { return this.run(() => this.json.put(markerKey(row.tenant, row.id), row)); }
@@ -163,6 +206,10 @@ class JsonCalendarAutojoinStore implements CalendarAutojoinStore {
     if (remaining <= 0) return Promise.reject(new BackendStorageLaneTimeout("request deadline passed before the next lane read"));
     return this.lane.run(fn, { ...this.laneOptions, waitTimeoutMs: remaining });
   }
+  private read<T>(fn: () => Promise<T>, deadline?: number, metrics?: CalendarAutojoinReadMetrics): Promise<T> {
+    if (metrics) metrics.reads++;
+    return this.run(fn, deadline);
+  }
   private defaultDeadline(): number | undefined {
     const budget = this.laneOptions.waitTimeoutMs;
     return budget === undefined ? undefined : Date.now() + budget;
@@ -179,11 +226,11 @@ class JsonCalendarAutojoinStore implements CalendarAutojoinStore {
    * (getStatus). Without one, each slot gets the store's wait budget on its own, like any single
    * read: write flows that list inside them (disableLocked) must not fail partway on a tenant with
    * many rows. */
-  private async list<T>(prefix: string, deadline?: number): Promise<T[]> {
-    const keys = await this.run(() => this.json.keys(prefix), deadline);
+  private async list<T>(prefix: string, deadline?: number, metrics?: CalendarAutojoinReadMetrics): Promise<T[]> {
+    const keys = await this.read(() => this.json.keys(prefix), deadline, metrics);
     const rows: T[] = [];
     for (const key of keys) {
-      const row = await this.run(() => this.json.get<T>(key), deadline);
+      const row = await this.read(() => this.json.get<T>(key), deadline, metrics);
       if (row) rows.push(row);
     }
     return rows;
@@ -191,19 +238,19 @@ class JsonCalendarAutojoinStore implements CalendarAutojoinStore {
 }
 
 export class MemoryCalendarAutojoinStore extends JsonCalendarAutojoinStore {
-  constructor() {
+  constructor(statusCache = new CalendarAutojoinStatusCache()) {
     const rows = new Map<string, unknown>();
     super({
       async get<T>(key: string) { return structuredClone(rows.get(key) ?? null) as T | null; },
       async put(key, row) { rows.set(key, structuredClone(row)); },
       async remove(key) { rows.delete(key); },
       async keys(prefix) { return [...rows.keys()].filter(key => key.startsWith(prefix)); },
-    }, new BackendStorageLane());
+    }, new BackendStorageLane(), {}, statusCache);
   }
 }
 
 export class KvCalendarAutojoinStore extends JsonCalendarAutojoinStore {
-  constructor(node: TinyCloudNode, lane: BackendStorageLane, laneOptions: BackendStorageLaneRunOptions = {}) {
+  constructor(node: TinyCloudNode, lane: BackendStorageLane, laneOptions: BackendStorageLaneRunOptions = {}, statusCache = new CalendarAutojoinStatusCache()) {
     super({
       async get<T>(key: string) {
         const result = await withSessionRefresh(node, async () => {
@@ -231,7 +278,7 @@ export class KvCalendarAutojoinStore extends JsonCalendarAutojoinStore {
         }
         return data.keys.map(key => key.startsWith(prefix) ? key : `${prefix}${key}`);
       },
-    }, lane, laneOptions);
+    }, lane, laneOptions, statusCache);
   }
 }
 
@@ -244,9 +291,10 @@ export class KvCalendarAutojoinStore extends JsonCalendarAutojoinStore {
  * more lane work. A storage failure before the intent write still sends nothing and is retried.
  */
 export function kvCalendarAutojoinStores(node: TinyCloudNode, lane: BackendStorageLane) {
+  const statusCache = new CalendarAutojoinStatusCache();
   return {
-    request: new KvCalendarAutojoinStore(node, lane, { waitTimeoutMs: REQUEST_LANE_WAIT_MS }),
-    worker: new KvCalendarAutojoinStore(node, lane, { priority: "background" }),
-    dispatch: new KvCalendarAutojoinStore(node, lane, { priority: "foreground" }),
+    request: new KvCalendarAutojoinStore(node, lane, { waitTimeoutMs: REQUEST_LANE_WAIT_MS }, statusCache),
+    worker: new KvCalendarAutojoinStore(node, lane, { priority: "background" }, statusCache),
+    dispatch: new KvCalendarAutojoinStore(node, lane, { priority: "foreground" }, statusCache),
   };
 }
