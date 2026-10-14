@@ -494,7 +494,7 @@ describe("voice-note recorder controller", () => {
     const started: string[] = [];
     const transcriber = createVoiceNoteTranscriber({
       cloud: {
-        capabilities: async () => ({ max_bytes: 120_960_000, max_duration_seconds: 7_200, content_types: ["audio/mp4"] }),
+        capabilities: async () => ({ max_bytes: 120_960_000, max_duration_seconds: 7_200, content_types: ["audio/mp4"], admission: "open" }),
         pendingSourceIds: () => [],
         transcribe: async () => { throw new Error("runNote is injected"); },
         finish: async () => {},
@@ -1998,7 +1998,7 @@ const hostWindow = () => ({ HTMLIFrameElement: class {}, document: hostDocument,
         const enclaveJobs: string[] = [];
         const transcriber = createVoiceNoteTranscriber({
           cloud: {
-            capabilities: async () => ({ max_bytes: 120_960_000, max_duration_seconds: 7_200, content_types: ["audio/mp4"] }),
+            capabilities: async () => ({ max_bytes: 120_960_000, max_duration_seconds: 7_200, content_types: ["audio/mp4"], admission: "open" }),
             pendingSourceIds: () => [],
             transcribe: async () => { throw new Error("runNote is injected"); },
             finish: async () => {},
@@ -2268,7 +2268,7 @@ const hostWindow = () => ({ HTMLIFrameElement: class {}, document: hostDocument,
           const enclaveJobs: string[] = [];
           const transcriber = createVoiceNoteTranscriber({
             cloud: {
-              capabilities: async () => ({ max_bytes: 120_960_000, max_duration_seconds: 7_200, content_types: ["audio/mp4"] }),
+              capabilities: async () => ({ max_bytes: 120_960_000, max_duration_seconds: 7_200, content_types: ["audio/mp4"], admission: "open" }),
               pendingSourceIds: () => [],
               transcribe: async () => { throw new Error("runNote is injected"); },
               finish: async () => {},
@@ -2420,7 +2420,7 @@ const hostWindow = () => ({ HTMLIFrameElement: class {}, document: hostDocument,
         const jobs: string[] = [];
         const real = createVoiceNoteTranscriber({
           cloud: {
-            capabilities: async () => ({ max_bytes: 120_960_000, max_duration_seconds: 7_200, content_types: ["audio/mp4"] }),
+            capabilities: async () => ({ max_bytes: 120_960_000, max_duration_seconds: 7_200, content_types: ["audio/mp4"], admission: "open" }),
             pendingSourceIds: () => [],
             transcribe: async () => { throw new Error("runNote is injected"); },
             finish: async () => {},
@@ -2536,7 +2536,7 @@ const hostWindow = () => ({ HTMLIFrameElement: class {}, document: hostDocument,
         const jobs: string[] = [];
         const real = createVoiceNoteTranscriber({
           cloud: {
-            capabilities: async () => ({ max_bytes: 120_960_000, max_duration_seconds: 7_200, content_types: ["audio/mp4"] }),
+            capabilities: async () => ({ max_bytes: 120_960_000, max_duration_seconds: 7_200, content_types: ["audio/mp4"], admission: "open" }),
             pendingSourceIds: () => [],
             transcribe: async () => { throw new Error("runNote is injected"); },
             finish: async () => {},

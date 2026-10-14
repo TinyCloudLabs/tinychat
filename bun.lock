@@ -18,7 +18,7 @@
     },
     "backend": {
       "name": "@tinychat/backend",
-      "version": "0.5.4",
+      "version": "0.5.5-beta.0",
       "dependencies": {
         "@scalar/express-api-reference": "^0.4.0",
         "@tinyboilerplate/core": "workspace:*",
@@ -44,7 +44,7 @@
     },
     "desktop": {
       "name": "exo-desktop",
-      "version": "0.7.3",
+      "version": "0.7.4-beta.1",
       "dependencies": {
         "@tauri-apps/api": "^2.9.0",
       },
@@ -54,7 +54,7 @@
     },
     "frontend": {
       "name": "@tinychat/frontend",
-      "version": "0.7.3",
+      "version": "0.7.4-beta.1",
       "dependencies": {
         "@assistant-ui/react": "^0.14.13",
         "@assistant-ui/react-markdown": "0.14.1",

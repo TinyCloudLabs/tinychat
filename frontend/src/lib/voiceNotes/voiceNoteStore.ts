@@ -520,6 +520,7 @@ export interface VoiceNoteForTranscription {
   captureTranscriber: string | null;
   /** Where the note's recording began (v2 notes only); null when the row does not say. */
   captureSource: string | null;
+  transcriptionErrorCode: string | null;
 }
 
 export async function readVoiceNoteForTranscription(
@@ -542,23 +543,28 @@ export async function readVoiceNoteForTranscription(
   let captureVersion: number | null = null;
   let captureTranscriber: string | null = null;
   let captureSource: string | null = null;
+  let transcriptionErrorCode: string | null = null;
   let channels: 1 | 2 = 1;
   try {
     const metadata = typeof row[1] === "string" ? JSON.parse(row[1]) as unknown : row[1];
-    const capture = metadata && typeof metadata === "object" ? (metadata as { capture?: unknown }).capture : null;
-    if (capture && typeof capture === "object") {
-      const saved = capture as { duration_ms?: unknown; channels?: unknown; version?: unknown; source?: unknown; options?: { transcriber?: unknown } };
-      if (saved.channels === 2) channels = 2;
-      if (durationSeconds === null && typeof saved.duration_ms === "number") durationSeconds = saved.duration_ms / 1000;
-      if (typeof saved.version === "number") captureVersion = saved.version;
-      if (typeof saved.options?.transcriber === "string") captureTranscriber = saved.options.transcriber;
-      if (typeof saved.source === "string") captureSource = saved.source;
+    if (metadata && typeof metadata === "object") {
+      const saved = metadata as { capture?: unknown; transcription_error_code?: unknown };
+      if (typeof saved.transcription_error_code === "string") transcriptionErrorCode = saved.transcription_error_code;
+      const capture = saved.capture;
+      if (capture && typeof capture === "object") {
+        const captureData = capture as { duration_ms?: unknown; channels?: unknown; version?: unknown; source?: unknown; options?: { transcriber?: unknown } };
+        if (captureData.channels === 2) channels = 2;
+        if (durationSeconds === null && typeof captureData.duration_ms === "number") durationSeconds = captureData.duration_ms / 1000;
+        if (typeof captureData.version === "number") captureVersion = captureData.version;
+        if (typeof captureData.options?.transcriber === "string") captureTranscriber = captureData.options.transcriber;
+        if (typeof captureData.source === "string") captureSource = captureData.source;
+      }
     }
   } catch {
     // Legacy metadata may be malformed; the audio's size is checked before decoding.
   }
   return { ok: true, data: { transcript: await readVoiceNoteTranscriptState(tcw, sourceId),
-    durationSeconds, channels, captureVersion, captureTranscriber, captureSource } };
+    durationSeconds, channels, captureVersion, captureTranscriber, captureSource, transcriptionErrorCode } };
 }
 
 /** What a transcription adds to a note: the sentences for its transcript key and row metadata. */

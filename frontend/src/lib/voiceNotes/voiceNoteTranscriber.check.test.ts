@@ -12,7 +12,8 @@ import { __resetCaptureEngineForTests } from "./captureEngine";
 import { VoiceNotes, __setVoiceNotesForTests } from "./nativeVoiceNotes";
 import { createVoiceNoteTranscriber, devicePtxUploadSupported, recheckVoiceNoteAvailabilityAutomatically, type VoiceNoteCloud, type VoiceNoteConsentStore } from "./voiceNoteTranscription";
 
-const CAPS: PrivateCloudCapabilities = { max_bytes: 120_960_000, max_duration_seconds: 7_200, content_types: ["audio/wav"] };
+const CAPS: PrivateCloudCapabilities = { max_bytes: 120_960_000, max_duration_seconds: 7_200,
+  content_types: ["audio/wav"], admission: "open" };
 const FRESH = 5 * 60_000;
 const BACKOFF = [15_000, 60_000, 5 * 60_000];
 
