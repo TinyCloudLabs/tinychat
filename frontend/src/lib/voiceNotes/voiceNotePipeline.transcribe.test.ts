@@ -14,7 +14,8 @@ import { advanceAccountGeneration, currentAccountGeneration } from "./accountCon
 import { createFakeVoiceNotes } from "./fakeVoiceNotes";
 import { __setVoiceNotesForTests, VoiceNotes, type VoiceNoteRecording } from "./nativeVoiceNotes";
 import { createVoiceNotePipeline } from "./voiceNotePipeline";
-import { voiceNoteAudioKvKey } from "./voiceNoteStore";
+import { saveNote } from "./recordingNotes";
+import { voiceNoteAudioKvKey, voiceNoteMarkdownKvKey } from "./voiceNoteStore";
 import { pendingStore, whenVoiceNoteSavesIdle } from "./recorderSaves";
 import { VoiceNoteSaveTimeout } from "./saveDeadline";
 import { createVoiceNoteRecorderController } from "@/capture/recorder/voiceNoteRecorderController";
@@ -122,6 +123,24 @@ describe("a note saved by reconcileAll is handed to the transcriber", () => {
     const audioBase = voiceNoteAudioKvKey(note.id);
     expect([...s.values.keys()].some((key) => key === audioBase || key.startsWith(`${audioBase}/p/`) || key === `${audioBase}/manifest`)).toBe(false);
   });
+  test("on-device notes with audio upload off save a metadata row without audio and mark the ledger saved", async () => {
+    const s = await setup("on-device");
+    await s.signInAs(s.tcw.did, "on-device");
+    await s.fake.plugin.start({ uploadAudio: false });
+    const note = await s.fake.plugin.stop();
+    await saveNote(note.id, "# Synthetic local note");
+    await s.pipeline.reconcileAll(s.ctx(), "reconcile", s.handOver());
+
+    const row = await s.tcw.sql.db(CONNECTORS_SQL_DB_NAME).query(
+      "SELECT metadata FROM connector_meeting WHERE source_id = ?", [note.id]);
+    expect(row.ok).toBe(true);
+    if (row.ok) expect(JSON.parse(String(row.data.rows[0]?.[0])).audio.stored).toBe(false);
+    const audioBase = voiceNoteAudioKvKey(note.id);
+    expect(s.values.has(voiceNoteMarkdownKvKey(note.id))).toBe(true);
+    expect([...s.values.keys()].some((key) => key === audioBase || key.startsWith(`${audioBase}/p/`)
+      || key === `${audioBase}/manifest`)).toBe(false);
+    expect((await s.fake.plugin.listPending()).recordings.find((item) => item.id === note.id)?.ledger?.audio.state).toBe("saved");
+  });
   test("a Private note left on the phone and saved after sign-in gets one Private job, and relaunching does not send it again", async () => {
     const s = await setup("private-cloud");
     const note = await s.recordFor(s.tcw.did);
@@ -165,7 +184,7 @@ describe("a note saved by reconcileAll is handed to the transcriber", () => {
     await s.pipeline.reconcileAll(s.ctx(), "reconcile", s.handOver());
     await tick();
     const states = (await s.fake.plugin.listPending()).recordings.map((entry) => [entry.id, entry.ledger?.audio.state]);
-    expect(states).toContainEqual([signedOut.id, "pending"]);
+    expect(states).toContainEqual([signedOut.id, "saved"]);
     expect(states).toContainEqual([onDevice.id, "saved"]);
     expect(s.runs).toEqual([cloud.id]);
   });

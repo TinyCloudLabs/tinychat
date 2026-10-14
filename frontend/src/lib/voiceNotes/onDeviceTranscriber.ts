@@ -239,7 +239,10 @@ async function syncOnce(tcw: TinyCloudWeb, key: string, id: string, expected: bo
   try {
     const prepared = localTranscriptToSave(transcript);
     if (transcript.rerunBase) {
-      const current = await readTranscriptCommit(tcw, id);
+      const check = checkpoint(tcw, ctx);
+      check();
+      const current = await readTranscriptCommit(tcw, id, check);
+      check();
       const expectedHash = await transcriptHash(prepared.sentences);
       if (current?.rev === transcript.rev && current.hash === expectedHash)
         return await recordAndPublish(tcw, key, id, transcript, ctx);

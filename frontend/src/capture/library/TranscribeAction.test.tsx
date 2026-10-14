@@ -107,6 +107,10 @@ describe("the providers on offer", () => {
     const rerunTranscription = transcription({ onTranscribeAgain: async () => null });
     expect(transcribeProviders(NOTE, rerunTranscription, phone(), 60, true)).toEqual(["on-device", "private-cloud"]);
   });
+  test("Powerful is hidden from confirmed rerun choices even when available", () => {
+    const rerunTranscription = transcription({ powerfulAvailable: true, onTranscribeAgain: async () => null });
+    expect(transcribeProviders(NOTE, rerunTranscription, phone(), 60, true)).toEqual(["on-device", "private-cloud"]);
+  });
 
   test("Private asks for consent once", () => {
     expect(needsConsent("private-cloud", transcription({ consented: false }))).toBe(true);

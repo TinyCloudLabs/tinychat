@@ -38,6 +38,8 @@ class FakeBridge implements DesktopBridge {
   finishGate: Promise<void> | null = null;
   finishError: Error | null = null;
   stageError: unknown = null;
+  deleteGate: Promise<void> | null = null;
+  deleteStarted = false;
   now = 1_000_000;
 
   emit(event: string, payload: unknown) {
@@ -129,7 +131,9 @@ class FakeBridge implements DesktopBridge {
         result = removed;
         break;
       }
-      case "delete_audio_file": this.files.delete(id);
+      case "delete_audio_file":
+        if (this.deleteGate) { this.deleteStarted = true; await this.deleteGate; }
+        this.files.delete(id);
         this.failed = this.failed.filter((item) => item.id !== id);
         this.stopped = this.stopped.filter((item) => item.id !== id);
         result = null; break;
@@ -737,27 +741,108 @@ describe("desktop recorder adapter", () => {
     const store = await openWebStore({ env, dbName, locks: memoryLocks(), decodeCheck: null,
       audio: () => createFileAudioBlobStore(bridge) });
     const engine = await openDesktopVoiceNotes({ bridge, whisper, now: () => bridge.now, store });
+    const completions: string[] = [];
+    engine.whisper!.onDone((completedId) => completions.push(completedId));
     const id = (await engine.plugin.start()).id;
     bridge.files.set(id, Uint8Array.of(1, 2, 3));
     bridge.elapsed = 1000;
     await engine.plugin.stop();
     await waitFor(() => engine.whisper?.snapshot().get(id)?.state === "done");
+    const completedBeforeFailure = completions.length;
+    bridge.downloadedModels.clear();
 
     whisper.fail = true;
     await engine.whisper!.rerun({ id, rev: 2, baseRev: 1, baseHash: "a".repeat(32) });
     await waitFor(() => engine.whisper?.snapshot().get(id)?.state === "failed");
     await engine.whisper!.resume();
+    bridge.downloadedModels.add("QuantizedTinyEn");
+    await engine.whisper!.modelAvailable();
+    expect(engine.whisper!.snapshot().get(id)).toMatchObject({ state: "failed", explicitRerun: true });
+    expect(whisper.calls).toHaveLength(1);
+    expect(completions).toHaveLength(completedBeforeFailure);
+    expect((await store.getTranscript({ id })).transcript).toMatchObject({ rev: 1 });
     expect((await store.listPending()).recordings.find((note) => note.id === id)?.stt)
       .toMatchObject({ state: "failed", rerunRev: 2, rerunBaseRev: 1, rerunBaseHash: "a".repeat(32) });
-    expect(whisper.calls).toHaveLength(2);
 
     whisper.fail = false;
     await engine.whisper!.retry(id);
     await waitFor(() => engine.whisper?.snapshot().get(id)?.state === "done");
-    expect(whisper.calls).toHaveLength(3);
+    expect(whisper.calls).toHaveLength(2);
     expect((await store.getTranscript({ id })).transcript).toMatchObject({ rev: 2 });
     engine.dispose();
     store.close();
+  });
+
+  slow("resume restores failed explicit rerun identity for every original provider without restarting it", async () => {
+    for (const transcriber of ["on-device", "private-cloud", "assemblyai"] as const) {
+      const bridge = new FakeBridge();
+      bridge.selectedModel = "QuantizedTinyEn";
+      bridge.downloadedModels.add("QuantizedTinyEn");
+      const whisper = new FakeWhisper();
+      const env = newIdbEnv();
+      const dbName = crypto.randomUUID();
+      let store = await openWebStore({ env, dbName, locks: memoryLocks(), decodeCheck: null,
+        audio: () => createFileAudioBlobStore(bridge) });
+      let engine = await openDesktopVoiceNotes({ bridge, whisper, now: () => bridge.now, store });
+      const id = (await engine.plugin.start({ transcriber })).id;
+      bridge.files.set(id, Uint8Array.of(1, 2, 3));
+      bridge.elapsed = 1000;
+      await engine.plugin.stop();
+      await engine.plugin.putTranscript({ id, transcript: {
+        version: 2, noteId: id, transcriber: "private-cloud", rev: 1, engine: "tinycloud-private-transcription",
+        model: null, language: "en", outcome: "transcribed", diarized: false,
+        segments: [{ start: 0, end: 1000, text: "old transcript", speaker: null, timing: "coarse" }],
+        createdAt: "2025-01-01T00:00:00.000Z",
+      } });
+      await store.updateStt(id, { state: "failed", pack: null, engine: "whisper", segmentsDone: 0, windowsDone: 0,
+        error: "rerun failed", rerunRev: 2, rerunBaseRev: 1, rerunBaseHash: "a".repeat(32) });
+      engine.dispose();
+      store.close();
+
+      store = await openWebStore({ env, dbName, locks: memoryLocks(), decodeCheck: null,
+        audio: () => createFileAudioBlobStore(bridge) });
+      engine = await openDesktopVoiceNotes({ bridge, whisper, now: () => bridge.now, store });
+      await engine.whisper!.resume();
+      expect(engine.whisper!.snapshot().get(id)).toMatchObject({ state: "failed", explicitRerun: true });
+      expect(whisper.calls).toHaveLength(0);
+      expect((await store.getTranscript({ id })).transcript).toMatchObject({ rev: 1 });
+      await engine.whisper!.retry(id);
+      await waitFor(() => engine.whisper?.snapshot().get(id)?.state === "done");
+      expect(whisper.calls).toHaveLength(1);
+      expect((await store.getTranscript({ id })).transcript).toMatchObject({
+        rev: 2, rerunBase: { rev: 1, hash: "a".repeat(32) },
+      });
+
+      engine.dispose();
+      store.close();
+    }
+  });
+
+  slow("completed Whisper is not stopped while its audio cleanup is pending", async () => {
+    const bridge = new FakeBridge();
+    bridge.selectedModel = "QuantizedTinyEn";
+    bridge.downloadedModels.add("QuantizedTinyEn");
+    let release!: () => void;
+    bridge.deleteGate = new Promise<void>((resolve) => { release = resolve; });
+    const whisper = new FakeWhisper();
+    const env = newIdbEnv();
+    const dbName = crypto.randomUUID();
+    const store = await openWebStore({ env, dbName, locks: memoryLocks(), decodeCheck: null,
+      audio: () => createFileAudioBlobStore(bridge) });
+    const engine = await openDesktopVoiceNotes({ bridge, whisper, now: () => bridge.now, store });
+    try {
+      const id = (await engine.plugin.start()).id;
+      bridge.files.set(id, Uint8Array.of(1, 2, 3));
+      bridge.elapsed = 1000;
+      await engine.plugin.stop();
+      await waitFor(() => bridge.deleteStarted && engine.whisper?.snapshot().get(id)?.state === "done");
+      await engine.whisper!.beforeCapture();
+      expect(whisper.stops).toEqual([]);
+    } finally {
+      release();
+      engine.dispose();
+      store.close();
+    }
   });
 
   slow("a server failure during Record requeues the interrupted note", async () => {

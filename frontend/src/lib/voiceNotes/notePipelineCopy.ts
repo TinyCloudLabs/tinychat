@@ -64,7 +64,6 @@ export const SPACE_COPY = {
   sessionExpired: (device: PipelineDevice) => `Your session ended. This note is safe on ${deviceName(device)}.`,
   otherAccount: "Recorded on another account",
   accountUnknown: (device: PipelineDevice) => `Exo can't tell which account this note belongs to. It stays on ${deviceName(device)}.`,
-  audioUploadDisabled: (device: PipelineDevice) => `Audio upload is off. This note stays on ${deviceName(device)}.`,
   quota: "Your space is full",
   timeout: (device: PipelineDevice) => `Saving timed out. This note is safe on ${deviceName(device)}.`,
   server: (_detail: string | null | undefined, device: PipelineDevice) =>

@@ -112,6 +112,7 @@ export function createDesktopWhisperQueue(args: {
   const { store, files, whisper, captureLive } = args;
   const jobs = new Map<string, DesktopWhisperJob>();
   const reruns = new Map<string, DesktopWhisperRerun>();
+  const failedReruns = new Map<string, DesktopWhisperRerun>();
   let derivedSnapshot: ReadonlyMap<string, DesktopWhisperJob> | null = null;
   const listeners = new Set<() => void>();
   const doneListeners = new Set<(id: string) => void>();
@@ -130,7 +131,7 @@ export function createDesktopWhisperQueue(args: {
 
   const publish = (id: string, state: DesktopWhisperJob["state"], error: string | null = null,
     progress: number | null = null) => {
-    jobs.set(id, { id, state, error, progress, explicitRerun: reruns.has(id) });
+    jobs.set(id, { id, state, error, progress, explicitRerun: reruns.has(id) || failedReruns.has(id) });
     derivedSnapshot = null;
     for (const listener of listeners) {
       try { listener(); } catch (error) { console.error("[desktopWhisper] Status listener failed", error); }
@@ -142,7 +143,7 @@ export function createDesktopWhisperQueue(args: {
     }
   };
   const mark = async (id: string, state: NoteSttState["state"], error: string | null = null, progress = 0,
-    rerun: DesktopWhisperRerun | null = reruns.get(id) ?? null) => {
+    rerun: DesktopWhisperRerun | null = reruns.get(id) ?? failedReruns.get(id) ?? null) => {
     await store.updateStt(id, stt(state, error, rerun));
     publish(id, state === "running" ? "transcribing" : state === "waiting_for_model" ? "failed"
       : state === "cancelled" ? "queued" : state, error,
@@ -255,12 +256,13 @@ export function createDesktopWhisperQueue(args: {
       if (stopping || captureLive() || message.includes("capture_has_priority")) {
         yieldedForCapture = rerun !== null;
         await mark(id, "queued");
-      }
-      else {
+      } else {
+        if (rerun) failedReruns.set(id, rerun);
         await mark(id, "failed", message);
         if (rerun || !message.startsWith("unavailable:")) emitFailed(id);
       }
     } finally {
+      transcribing = false;
       serverLease?.release();
       serverLease = null;
       if (stagedId) {
@@ -293,6 +295,7 @@ export function createDesktopWhisperQueue(args: {
     if (!note)
       throw new Error("unavailable: this note's recording is unavailable on this Mac");
     if (active === request.id || reruns.has(request.id)) throw new Error("This note is already being transcribed");
+    failedReruns.delete(request.id);
     reruns.set(request.id, request);
     try {
       await mark(request.id, "queued", null, 0, request);
@@ -344,6 +347,13 @@ export function createDesktopWhisperQueue(args: {
           publish(note.id, "failed", "The interrupted rerun was cancelled. Start it again from this note.");
           continue;
         }
+        if (note.stt?.state === "failed" && note.stt.rerunRev != null
+          && note.stt.rerunBaseRev != null && note.stt.rerunBaseHash) {
+          failedReruns.set(note.id, { id: note.id, rev: note.stt.rerunRev,
+            baseRev: note.stt.rerunBaseRev, baseHash: note.stt.rerunBaseHash });
+          publish(note.id, "failed", note.stt.error ?? "The rerun failed. Try again.");
+          continue;
+        }
         if (note.options?.transcriber !== "on-device") continue;
         if (note.ledger?.localAudio && note.ledger.localAudio.state !== "ready") continue;
         if (note.stt?.state === "running") {
@@ -383,8 +393,10 @@ export function createDesktopWhisperQueue(args: {
       const note = (await store.listPending()).recordings.find((item) => item.id === id);
       if (!note) throw new Error("unavailable: this note's recording is missing");
       if (active === id || note.stt?.state === "running") throw new Error("This note is already being transcribed");
-      if (note.stt?.rerunRev != null && note.stt.rerunBaseRev != null && note.stt.rerunBaseHash)
+      if (note.stt?.rerunRev != null && note.stt.rerunBaseRev != null && note.stt.rerunBaseHash) {
+        failedReruns.delete(id);
         return rerun({ id, rev: note.stt.rerunRev, baseRev: note.stt.rerunBaseRev, baseHash: note.stt.rerunBaseHash });
+      }
       if (note.options?.transcriber !== "on-device") throw new Error("unavailable: this note is not a local transcription");
       if (note.stt?.state !== "failed" && note.stt?.state !== "waiting_for_model")
         throw new Error("Only failed local transcriptions can be retried");
@@ -403,7 +415,7 @@ export function createDesktopWhisperQueue(args: {
     async modelAvailable() {
       const notes = (await store.listPending()).recordings;
       for (const note of notes) {
-        if (note.options?.transcriber === "on-device" && note.stt?.state === "failed"
+        if (note.options?.transcriber === "on-device" && note.stt?.rerunRev == null && note.stt?.state === "failed"
           && note.stt.error?.startsWith("unavailable:") && note.stt.error.includes("model")) await mark(note.id, "queued");
       }
       await drain();

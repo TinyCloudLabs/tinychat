@@ -348,14 +348,14 @@ describe("saveRecording", () => {
     expect(saveCalls).toBe(1);
   });
 
-  test("account reconciliation keeps on-device notes local without audio upload approval", async () => {
+  test("account reconciliation saves on-device metadata without audio upload approval", async () => {
     const note = { ...recording("reconcile-no-audio-consent", 1),
-      options: { transcriber: "on-device", identifySpeakers: false } };
+      options: { transcriber: "on-device", identifySpeakers: false, uploadAudio: false } };
     const account = { ...tcw, spaceId: "space" } as TinyCloudWeb;
     const ctx = { did: tcw.did, spaceId: "space", generation: currentAccountGeneration() };
     const outcome = await saves.saveNoteForAccount(account, ctx, note);
-    expect(outcome).toMatchObject({ kind: "held", reason: "audio-upload-disabled" });
-    expect(saveCalls).toBe(0);
+    expect(outcome.kind).toBe("saved");
+    expect(saveCalls).toBe(1);
   });
 
   test("every v1 note, including one missing ownerUnknown, is held by the sign-in saver", async () => {

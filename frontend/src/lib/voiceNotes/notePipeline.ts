@@ -233,7 +233,6 @@ function spaceStep(input: NotePipelineInput): Result {
       case "other-account": return blocked(SPACE_COPY.otherAccount);
       case "legacy":
       case "unowned": return blocked(SPACE_COPY.accountUnknown(device));
-      case "audio-upload-disabled": return blocked(SPACE_COPY.audioUploadDisabled(device));
     }
   }
   if (pending?.retryAt && pending.retryAt > Date.now()) return { state: "waiting", caption: SPACE_COPY.retryIn(pending.retryAt - Date.now()) };

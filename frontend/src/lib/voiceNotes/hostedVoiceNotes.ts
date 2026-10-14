@@ -128,8 +128,13 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
     const caps = await client.capabilities();
     return caps.hosted;
   };
+  const rejectPowerfulRerun = (explicitRerun: boolean) => {
+    // Powerful reruns stay disabled until TC-1139; reject before touching claims, jobs, or backend state.
+    if (explicitRerun) throw new Error("Transcribe again isn't available with Powerful yet.");
+  };
   const run = async (recording: Pick<VoiceNoteRecording, "id" | "owner" | "source" | "options" | "startedAt" | "sizeBytes" | "mimeType" | "durationMs" | "channels">
     & { ledger?: VoiceNoteRecording["ledger"] }, explicitRerun = false) => {
+    rejectPowerfulRerun(explicitRerun);
     const id = recording.id;
     if (active.has(id) || (!explicitRerun && jobs.get(id)?.kind === "done") || !consented()
       || (recording.owner && recording.owner !== did) || recording.source !== "in_app"
@@ -451,6 +456,7 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
       }
     },
     async runSpaceOnly(id: string, explicitRerun = false) {
+      rejectPowerfulRerun(explicitRerun);
       const note = await readNote(tcw(), id);
       if (!note.ok || !note.data || (!explicitRerun && note.data.captureTranscriber !== "assemblyai")) return false;
       const recording = { id, owner: did, source: "in_app", startedAt: Date.now(), sizeBytes: 0,

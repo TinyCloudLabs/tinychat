@@ -41,7 +41,7 @@ export function transcribeProviders(
     providers.push("on-device");
   if (transcription?.availability === "available" && privateCloudFits(transcription, durationSecs)
     && (rerun || (job?.kind !== "active" && job?.kind !== "done"))) providers.push("private-cloud");
-  if (rerun && transcription?.powerfulAvailable && canRerun) providers.push("assemblyai");
+  // Powerful explicit reruns remain unavailable until TC-1139.
   return providers;
 }
 
