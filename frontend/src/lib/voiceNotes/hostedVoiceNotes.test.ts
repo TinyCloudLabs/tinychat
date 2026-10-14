@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import type { StoreResult, UpsertMeetingOutcome } from "../connectors/connectorStore";
 import { createHostedAssemblyAiClient } from "../assemblyai";
 import { bytesToBase64 } from "./voiceNoteAudio";
 import { createHostedVoiceNoteTrack } from "./hostedVoiceNotes";
@@ -14,8 +15,9 @@ afterEach(() => {
   else Reflect.deleteProperty(globalThis, "localStorage");
 });
 
-function harness(failAt?: "part" | "submit" | "result" | "space" | "delete", noSpeech = false, spaceOnly = false,
-  mimeType = "audio/mp4", readGate?: Promise<void>, createFailure?: "existing" | "missing", reconciliationDelayMs?: number) {
+function harness(failAt?: "part" | "submit" | "result" | "space" | "delete", noSpeech = false, spaceOnly = false, mimeType = "audio/mp4",
+  durationMs = 1000, transcriptResponses: Record<string, unknown>[] = [], readGate?: Promise<void>,
+  createFailure?: "existing" | "missing", reconciliationDelayMs?: number) {
   const data = new Map<string, string>();
   const claims = new Map<string, { value: string; etag: string }>();
   let revision = 0;
@@ -26,15 +28,19 @@ function harness(failAt?: "part" | "submit" | "result" | "space" | "delete", noS
     removeItem: (key: string) => { data.delete(key); },
   } });
   const calls: string[] = [];
+  let transcriptReads = 0;
+  let now = 0;
+  const sleeps: number[] = [];
   const audio = new Uint8Array([1, 2, 3, 4]);
   let failed = false;
   let local: LocalTranscript | null = null;
+  let savedMetadata: Record<string, unknown> | null = null;
   let commit: TranscriptCommit | null = null;
   let submitted = false;
   let serverJob: { status: string; upload_id?: string; id?: string } = { status: "missing" };
   const recording = { id: "note-1", owner: "did:test:one", source: "in_app", startedAt: 1,
-    durationMs: 1000, mimeType, sizeBytes: audio.length,
-    options: { transcriber: "assemblyai", identifySpeakers: true } } as VoiceNoteRecording;
+    durationMs, mimeType, sizeBytes: audio.length,
+    options: { transcriber: "assemblyai", identifySpeakers: true, uploadAudio: true } } as VoiceNoteRecording;
   const native = {
     listPending: async () => ({ recordings: spaceOnly ? [] : [recording] }),
     readAudioChunk: async ({ offset, length }: { offset: number; length: number }) => ({
@@ -60,6 +66,8 @@ function harness(failAt?: "part" | "submit" | "result" | "space" | "delete", noS
       const body = JSON.parse(String(init?.body));
       expect(body.content_type).toBe(mimeType.split(";")[0].trim().toLowerCase());
       expect(body.source_id).toBe("note-1");
+      if (serverJob.status === "needs_reconciliation" || serverJob.status === "unresolved")
+        return json({ upload_id: "upload-1", part_size: 2, status: serverJob.status });
       if (createFailure && !failed) {
         failed = true;
         if (createFailure === "existing") serverJob = { status: "receiving", upload_id: "upload-1" };
@@ -80,7 +88,9 @@ function harness(failAt?: "part" | "submit" | "result" | "space" | "delete", noS
       return json({ status: "submitted", id: "handle-1" });
     }
     if (path === "/hosted/transcripts/handle-1" && method === "GET") {
-      if (failAt === "result" && !failed) { failed = true; throw new Error("offline"); }
+      const response = transcriptResponses[transcriptReads++];
+      if (response !== undefined) return json(response);
+      if (failAt === "result" && !failed) { failed = true; return json({ error: "read_failed" }, 400); }
       return json({ id: "handle-1", status: "completed", utterances: noSpeech ? [] : [{ start: 0, end: 1000, text: "Hello", speaker: "A" }] });
     }
     if (path === "/hosted/transcripts/handle-1/sentences" && method === "GET") return json({ sentences: [] });
@@ -112,16 +122,18 @@ function harness(failAt?: "part" | "submit" | "result" | "space" | "delete", noS
   const track = () => createHostedVoiceNoteTrack(() => account, "https://exo.test", {} as SessionStore, account.did, {
     client, native, readCommit: async () => { await readGate; return commit; },
     createRow: async () => ({ inserted: true }) as Awaited<ReturnType<typeof import("./voiceNoteRows").createVoiceNoteRow>>,
+    clock: { now: () => now, sleep: async (ms) => { sleeps.push(ms); now += ms; }, random: () => 0.5 },
     readNote: async () => ({ ok: true, data: { captureTranscriber: "assemblyai", durationSeconds: 1 } }) as Awaited<ReturnType<typeof import("./voiceNoteStore").readVoiceNoteForTranscription>>,
-    loadAudio: async () => ({ ok: true, data: { mimeType: "audio/mp4", base64: bytesToBase64(audio) } }) as Awaited<ReturnType<typeof import("./voiceNoteStore").loadVoiceNoteAudio>>,
+    loadAudio: async () => { calls.push("space:audio"); return { ok: true, data: { mimeType: "audio/mp4", base64: bytesToBase64(audio) } } as Awaited<ReturnType<typeof import("./voiceNoteStore").loadVoiceNoteAudio>>; },
     save: async (_account, _id, transcript) => {
       calls.push("space:save");
-      if (failAt === "space" && !failed) { failed = true; return { ok: false, error: new Error("offline") } as Awaited<ReturnType<typeof import("./voiceNoteStore").saveVoiceNoteTranscript>>; }
+      savedMetadata = transcript.metadata;
+      if (failAt === "space" && !failed) { failed = true; return { ok: false, error: new Error("offline") } as StoreResult<UpsertMeetingOutcome>; }
       commit = { rev: transcript.rev, outcome: noSpeech ? "no_speech" : "transcribed" } as TranscriptCommit;
       return { ok: true } as Awaited<ReturnType<typeof import("./voiceNoteStore").saveVoiceNoteTranscript>>;
     }, sleep: async () => {}, reconciliationDelayMs,
   });
-  return { calls, recording, track, getLocal: () => local,
+  return { calls, recording, track, getLocal: () => local, getSavedMetadata: () => savedMetadata, sleeps,
     setClaim: (claim: object) => claims.set("exo/voiceNotes/hostedJobs/note-1", { value: JSON.stringify(claim), etag: String(++revision) }),
     failReleases: (count: number) => { releaseFailures = count; },
     setServerJob: (job: typeof serverJob) => { serverJob = job; } };
@@ -150,7 +162,7 @@ test("a paid outcome needing reconciliation blocks the note without another uplo
 });
 
 test("a quarantined or missing lookup never enables Retry; provider-confirmed submission does", async () => {
-  const h = harness(undefined, false, false, "audio/mp4", undefined, undefined, 5);
+  const h = harness(undefined, false, false, "audio/mp4", undefined, undefined, undefined, undefined, 5);
   h.setServerJob({ status: "unresolved" });
   const lane = h.track(); lane.consent();
   await lane.run(h.recording);
@@ -164,12 +176,13 @@ test("a quarantined or missing lookup never enables Retry; provider-confirmed su
   expect(lane.jobs.get("note-1")).toMatchObject({ kind: "failed", retryable: true, code: "reconciled" });
 });
 
-test("Powerful keeps a no-speech result before deleting the server copy", async () => {
-  const { calls, recording, track, getLocal } = harness(undefined, true);
+test("hosted AssemblyAI no_speech never sets PTX missing-stats metadata", async () => {
+  const { calls, recording, track, getLocal, getSavedMetadata } = harness(undefined, true);
   const lane = track(); lane.consent();
   await lane.run(recording);
   expect(lane.jobs.get(recording.id)).toEqual({ kind: "done", outcome: "no_speech" });
   expect(getLocal()?.outcome).toBe("no_speech");
+  expect(getSavedMetadata()).not.toHaveProperty("transcription_stats_missing");
   expect(calls.indexOf("space:save")).toBeLessThan(calls.indexOf("DELETE /hosted/transcripts/handle-1"));
 });
 test("Powerful keeps a saved outcome when remote transcript deletion fails", async () => {
@@ -181,17 +194,34 @@ test("Powerful keeps a saved outcome when remote transcript deletion fails", asy
   expect(lane.jobs.get(recording.id)).toEqual({ kind: "done", outcome: "transcribed" });
 });
 
+test("Powerful transcribes local-only audio and deletes the server copy", async () => {
+  const { calls, recording, track } = harness();
+  recording.options!.uploadAudio = false;
+  const lane = track(); lane.consent();
+  await lane.run(recording);
+  expect(lane.jobs.get(recording.id)).toEqual({ kind: "done", outcome: "transcribed" });
+  expect(calls).not.toContain("space:audio");
+  expect(calls).toContain("space:save");
+  expect(calls).toContain("DELETE /hosted/transcripts/handle-1");
+});
+
 test("Powerful accepts webm with codec parameters and sends the base MIME type", async () => {
   const { recording, track } = harness(undefined, false, false, " Audio/WebM;codecs=opus ");
   const lane = track(); lane.consent();
   await lane.run(recording);
   expect(lane.jobs.get(recording.id)).toEqual({ kind: "done", outcome: "transcribed" });
 });
+test("hosted AssemblyAI commits never set PTX-only missing-stats metadata", async () => {
+  const { recording, track, getSavedMetadata } = harness();
+  const lane = track(); lane.consent();
+  await lane.run(recording);
+  expect(getSavedMetadata()).not.toHaveProperty("transcription_stats_missing");
+});
 
 test("Powerful checks the space commit before sending audio to the provider", async () => {
   let release!: () => void;
   const gate = new Promise<void>((resolve) => { release = resolve; });
-  const { calls, recording, track } = harness(undefined, false, false, "audio/mp4", gate);
+  const { calls, recording, track } = harness(undefined, false, false, "audio/mp4", 1000, [], gate);
   const lane = track(); lane.consent();
   const running = lane.run(recording);
   try {
@@ -240,7 +270,7 @@ test("a crashed owner with an upload ID is taken over and resumed", async () => 
 
 for (const result of ["existing", "missing"] as const) {
   test(`an ambiguous create reconciles ${result} server state`, async () => {
-    const { calls, recording, track } = harness(undefined, false, false, "audio/mp4", undefined, result);
+    const { calls, recording, track } = harness(undefined, false, false, "audio/mp4", 1000, [], undefined, result);
     const first = track(); first.consent();
     await first.run(recording);
     expect(first.jobs.get(recording.id)?.kind).toBe("failed");
