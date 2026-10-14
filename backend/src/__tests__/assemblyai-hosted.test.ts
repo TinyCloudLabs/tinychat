@@ -1450,6 +1450,7 @@ describe("TC-592 expiry safety", () => {
     closers.push(() => rmSync(dir, { recursive: true, force: true }));
     const store = makeStore(dir, DEFAULT_DAILY_BYTES, 4, undefined, { global: 3, account: 2 });
     await store.init();
+    closers.push(() => store.close());
     async function tombstone(owner: string) {
       const created = await store.create(owner, 1, "audio/wav", T0);
       if (!created.ok) throw new Error("create failed");

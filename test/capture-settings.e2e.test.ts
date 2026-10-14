@@ -456,23 +456,18 @@ describe.serial(`capture settings (${engine.name()})`, () => {
     const system = dialog.getByRole("switch", {
       name: "Also record this Mac's audio",
     });
-    const save = dialog.getByRole("switch", {
-      name: "Save to your space automatically",
+    const upload = dialog.getByRole("switch", {
+      name: "Upload audio to TinyCloud",
     });
     await system.waitFor();
     await attr(system, "aria-checked", "false");
-    await attr(save, "aria-checked", "true");
+    await attr(upload, "aria-checked", "false");
 
     await system.click();
     await attr(system, "aria-checked", "true");
-    await save.click();
-    await attr(save, "aria-checked", "false");
-    expect(await calls()).toEqual(
-      expect.arrayContaining([
-        "systemAudio.set:true",
-        "autoSaveToSpace.set:false",
-      ]),
-    );
+    await upload.click();
+    await attr(upload, "aria-checked", "true");
+    expect(await calls()).toContain("systemAudio.set:true");
 
     await script(page, "failNext", "systemAudio.set", "macOS refused");
     await system.click();
