@@ -46,7 +46,7 @@ import { nativeRecordingSource, VoiceNotes, type VoiceNoteRecording } from "./na
 import { readTranscriptCommit } from "./voiceNoteCommits";
 import { pendingStore } from "./recorderSaves";
 import { voiceNoteCallDeadlineMs, withVoiceNoteSaveDeadline } from "./saveDeadline";
-import { isStorageFullError, reportStorageError, STORAGE_FULL_SAVE_MESSAGE } from "../storageStatus";
+import { isStorageFullError, reportStorageError, storageScopeFor, STORAGE_FULL_SAVE_MESSAGE } from "../storageStatus";
 import { TRANSCRIPT_STORAGE_FULL_CODE, transcriptionErrorCopy, voiceNoteTranscriptionFailureForCode } from "./transcriptionErrors";
 import { privatePartsDone } from "./notePipelineCopy";
 import type { VoiceNoteTranscriptionFailure } from "./transcriptionErrors";
@@ -1288,7 +1288,7 @@ export async function transcribeVoiceNote(args: {
     const saved = await saveVoiceNoteTranscript(tcw, sourceId, prepared, account, accountCheckpoint);
     if (!saved.ok) {
       if (isStorageFullError(saved.error)) {
-        reportStorageError(saved.error);
+        reportStorageError(saved.error, storageScopeFor(tcw));
         throw new PrivateCloudError(TRANSCRIPT_STORAGE_FULL_CODE, STORAGE_FULL_SAVE_MESSAGE);
       }
       if (saved.error.code === "VOICE_NOTE_NOT_FOUND") throw new PrivateCloudError("voice_note_not_found", saved.error.message);

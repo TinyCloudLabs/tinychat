@@ -34,9 +34,7 @@ const STORAGE_CODES: Record<string, true> = {
 };
 const STORAGE_TEXT = /STORAGE_QUOTA_EXCEEDED|STORAGE_LIMIT_REACHED|storage quota exceeded|write exceeds remaining storage|storage is full/i;
 const TOO_LARGE_TEXT = /STORAGE_LIMIT_REACHED|write exceeds remaining storage/i;
-let readOnly = false;
 const planListeners = new Set<() => void>();
-let freePlan = false;
 const listeners = new Set<() => void>();
 
 const MAX_CAUSE_DEPTH = 4;
@@ -74,12 +72,98 @@ export function storageSaveMessage(error: unknown): string | null {
   return isTooLargeError(error) ? STORAGE_TOO_LARGE_SAVE_MESSAGE : STORAGE_FULL_SAVE_MESSAGE;
 }
 
+export interface StorageAccountScope {
+  readonly did: string | null;
+  readonly spaceId: string | null;
+  readonly epoch: number;
+  readonly state: StorageStatusState;
+}
 
-const trackedDatabases = new WeakMap<object, object>();
+interface StorageStatusState {
+  readOnly: boolean;
+  freePlan: boolean;
+  writableEdges: number;
+  recoveryPending: boolean;
+  storageFullReports: number;
+  successfulStorageWrites: number;
+  recoveryPassesInFlight: number;
+  recoveryPassesByKey: Map<string, number>;
+  recoveryKeyWaiters: Map<string, Set<() => void>>;
+}
 
-export function trackStorageWrites<T extends object>(database: T): T {
+function newStorageState(): StorageStatusState {
+  return {
+    readOnly: false, freePlan: false, writableEdges: 0, recoveryPending: false,
+    storageFullReports: 0, successfulStorageWrites: 0, recoveryPassesInFlight: 0,
+    recoveryPassesByKey: new Map(), recoveryKeyWaiters: new Map(),
+  };
+}
+
+let storageEpoch = 0;
+let accountSessionManaged = false;
+let activeStorageScope: StorageAccountScope = {
+  did: null, spaceId: null, epoch: storageEpoch, state: newStorageState(),
+};
+const clientStorageScopes = new WeakMap<object, StorageAccountScope>();
+
+function isActiveScope(scope: StorageAccountScope | null): scope is StorageAccountScope {
+  return scope !== null && scope === activeStorageScope;
+}
+
+export function isStorageAccountScopeCurrent(scope: StorageAccountScope | null): scope is StorageAccountScope {
+  return isActiveScope(scope);
+}
+
+function retireStorageScope(scope: StorageAccountScope): void {
+  for (const listener of [...scopeRetiredListeners]) listener(scope);
+  for (const entry of [...recoveryWakeListeners]) if (entry.scope === scope) recoveryWakeListeners.delete(entry);
+  for (const entry of [...storageRecoveryWork]) if (entry.scope === scope) storageRecoveryWork.delete(entry);
+  for (const waiters of scope.state.recoveryKeyWaiters.values()) for (const resolve of waiters) resolve();
+  scope.state.recoveryKeyWaiters.clear();
+}
+
+/** Resolve the storage epoch captured for a TinyCloud client. Unregistered clients are test-only legacy clients. */
+export function storageScopeFor(client: object & { did?: string | null; spaceId?: string | null }): StorageAccountScope | null {
+  const registered = clientStorageScopes.get(client);
+  if (registered) return registered;
+  return accountSessionManaged ? null : activeStorageScope;
+}
+
+/** Associate another SDK wrapper for the same session without opening a new epoch. */
+export function associateStorageAccountClient(client: object, scope: StorageAccountScope): void {
+  clientStorageScopes.set(client, scope);
+}
+
+/** Start a fresh storage epoch for a signed-in TinyCloud client. Old completions retain their retired scope. */
+export function beginStorageAccountSession(
+  client: object, did: string | null, spaceId: string | null,
+): StorageAccountScope {
+  accountSessionManaged = true;
+  retireStorageScope(activeStorageScope);
+  const scope: StorageAccountScope = { did, spaceId, epoch: ++storageEpoch, state: newStorageState() };
+  activeStorageScope = scope;
+  clientStorageScopes.set(client, scope);
+  for (const listener of [...listeners]) listener();
+  for (const listener of [...planListeners]) listener();
+  return scope;
+}
+
+/** Retire the current account only after sign-out/handoff has committed. */
+export function endStorageAccountSession(): void {
+  accountSessionManaged = true;
+  retireStorageScope(activeStorageScope);
+  activeStorageScope = { did: null, spaceId: null, epoch: ++storageEpoch, state: newStorageState() };
+  for (const listener of [...listeners]) listener();
+  for (const listener of [...planListeners]) listener();
+}
+
+const trackedDatabases = new WeakMap<object, { proxy: object; scope: StorageAccountScope | null }>();
+
+export function trackStorageWrites<T extends object>(
+  database: T, scope: StorageAccountScope | null = activeStorageScope,
+): T {
   const cached = trackedDatabases.get(database);
-  if (cached) return cached as T;
+  if (cached && cached.scope === scope) return cached.proxy as T;
   const tracked = new Proxy(database, {
     get(target, property, receiver) {
       const value = Reflect.get(target, property, receiver);
@@ -89,134 +173,129 @@ export function trackStorageWrites<T extends object>(database: T): T {
       return async (...args: unknown[]) => {
         try {
           const result = await Reflect.apply(value, target, args) as { ok?: boolean; error?: unknown };
-          if (result.ok) reportStorageWriteSucceeded();
-          else reportStorageError(result.error);
+          if (result.ok) reportStorageWriteSucceeded(scope);
+          else reportStorageError(result.error, scope);
           return result;
         } catch (error) {
-          reportStorageError(error);
+          reportStorageError(error, scope);
           throw error;
         }
       };
     },
   });
-  trackedDatabases.set(database, tracked);
+  trackedDatabases.set(database, { proxy: tracked, scope });
   return tracked;
 }
-export function reportStorageError(error: unknown): void {
-  if (!isStorageFullError(error)) return;
-  storageFullReports++;
-  recoveryPending = true;
-  if (readOnly) return;
-  readOnly = true;
-  for (const listener of listeners) listener();
+
+export function reportStorageError(error: unknown, scope: StorageAccountScope | null = activeStorageScope): void {
+  if (!isStorageFullError(error) || !isActiveScope(scope)) return;
+  const state = scope.state;
+  state.storageFullReports++;
+  state.recoveryPending = true;
+  if (state.readOnly) return;
+  state.readOnly = true;
+  for (const listener of [...listeners]) listener();
   emitStoragePaywallError(
     storageSaveMessage(error) ?? STORAGE_FULL_SAVE_MESSAGE,
     isTooLargeError(error) ? "STORAGE_LIMIT_REACHED" : "STORAGE_QUOTA_EXCEEDED",
   );
 }
 
-let writableEdges = 0;
-/**
- * Storage-full work waits for a recovery pass. Every storage-full report sets it, independent of the `readOnly`
- * UI latch. A pass clears it only if it performs a successful write without a new storage-full report; an empty
- * unrelated pass cannot clear another writer's pending recovery.
- */
-let recoveryPending = false;
-/** Storage-full reports so far. A pass compares this before and after to see whether storage stayed full. */
-let storageFullReports = 0;
-/** Successful writes so far, used to confirm that a pass actually serviced pending work. */
-let successfulStorageWrites = 0;
-/** Recovery passes in flight (held-work probe or full pass). A successful write while any is running does not wake another. */
-let recoveryPassesInFlight = 0;
-let recoveryGeneration = 0;
-const recoveryWakeListeners = new Set<() => void>();
-const recoveryPassesByKey = new Map<string, number>();
-const recoveryKeyWaiters = new Map<string, Set<() => void>>();
+const recoveryWakeListeners = new Set<{ listener: () => void; scope: StorageAccountScope }>();
+const storageRecoveryWork = new Set<{ work: () => Promise<void>; scope: StorageAccountScope }>();
+const scopeRetiredListeners = new Set<(scope: StorageAccountScope) => void>();
+export function subscribeStorageScopeRetired(listener: (scope: StorageAccountScope) => void): () => void {
+  scopeRetiredListeners.add(listener);
+  return () => { scopeRetiredListeners.delete(listener); };
+}
 
-function recoveryPassFinished(generation: number, key?: string): void {
-  if (generation !== recoveryGeneration) return;
-  recoveryPassesInFlight--;
+function recoveryPassFinished(scope: StorageAccountScope, key?: string): void {
+  const state = scope.state;
+  state.recoveryPassesInFlight--;
   if (key) {
-    const count = (recoveryPassesByKey.get(key) ?? 1) - 1;
+    const count = (state.recoveryPassesByKey.get(key) ?? 1) - 1;
     if (count === 0) {
-      recoveryPassesByKey.delete(key);
-      for (const resolve of recoveryKeyWaiters.get(key) ?? []) resolve();
-      recoveryKeyWaiters.delete(key);
-    } else recoveryPassesByKey.set(key, count);
+      state.recoveryPassesByKey.delete(key);
+      for (const resolve of state.recoveryKeyWaiters.get(key) ?? []) resolve();
+      state.recoveryKeyWaiters.delete(key);
+    } else state.recoveryPassesByKey.set(key, count);
   }
 }
 
-
-/** Reset process-wide storage state between tests after their subscriptions are cleaned up. */
+/** Reset module state between tests; production account transitions use begin/endStorageAccountSession. */
 export function __resetStorageStatusForTests(): void {
-  recoveryGeneration++;
-  recoveryPassesInFlight = 0;
-  for (const waiters of recoveryKeyWaiters.values()) for (const resolve of waiters) resolve();
-  recoveryKeyWaiters.clear();
-  recoveryPassesByKey.clear();
-  readOnly = false;
-  freePlan = false;
-  writableEdges = 0;
-  recoveryPending = false;
-  storageFullReports = 0;
-  successfulStorageWrites = 0;
+  retireStorageScope(activeStorageScope);
+  accountSessionManaged = false;
+  activeStorageScope = {
+    did: null, spaceId: null, epoch: ++storageEpoch, state: newStorageState(),
+  };
+  for (const listener of [...listeners]) listener();
+  for (const listener of [...planListeners]) listener();
 }
 
-/** Wait for the named account's saver pass after a mounted-saver test releases its gates. */
-export async function __waitForStorageRecoveryForTests(key: string): Promise<void> {
-  while ((recoveryPassesByKey.get(key) ?? 0) !== 0) {
+/** Wait for one account's saver pass after a mounted-saver test releases its gates. */
+export async function __waitForStorageRecoveryForTests(key: string, scope: StorageAccountScope = activeStorageScope): Promise<void> {
+  const state = scope.state;
+  while ((state.recoveryPassesByKey.get(key) ?? 0) !== 0) {
     await new Promise<void>((resolve) => {
-      const waiters = recoveryKeyWaiters.get(key) ?? new Set();
+      const waiters = state.recoveryKeyWaiters.get(key) ?? new Set();
       waiters.add(resolve);
-      recoveryKeyWaiters.set(key, waiters);
+      state.recoveryKeyWaiters.set(key, waiters);
     });
   }
 }
 
-export function reportStorageWriteSucceeded(): void {
-  successfulStorageWrites++;
-  if (readOnly) {
-    readOnly = false;
-    writableEdges++;
-    for (const listener of listeners) listener();
+export function reportStorageWriteSucceeded(scope: StorageAccountScope | null = activeStorageScope): void {
+  if (!isActiveScope(scope)) return;
+  const state = scope.state;
+  state.successfulStorageWrites++;
+  if (state.readOnly) {
+    state.readOnly = false;
+    state.writableEdges++;
+    for (const listener of [...listeners]) listener();
   }
-  if (recoveryPending && recoveryPassesInFlight === 0) for (const listener of recoveryWakeListeners) listener();
+  if (state.recoveryPending && state.recoveryPassesInFlight === 0) {
+    for (const entry of [...recoveryWakeListeners]) if (entry.scope === scope) entry.listener();
+  }
 }
 
-/**
- * Full recovery pass: held work, then reconcile. Pending clears only when the pass completes with no storage-full
- * report, so a pass that re-hits quota leaves it set for the next write.
- */
-export async function runStorageRecoveryPass<T>(pass: () => Promise<T>, key?: string): Promise<T> {
-  const generation = recoveryGeneration;
-  const reportsBefore = storageFullReports;
-  const writesBefore = successfulStorageWrites;
-  recoveryPassesInFlight++;
-  if (key) recoveryPassesByKey.set(key, (recoveryPassesByKey.get(key) ?? 0) + 1);
-  let result: T;
+/** Full recovery pass: held work, then reconcile; a stale epoch never clears current-account recovery debt. */
+export async function runStorageRecoveryPass<T>(
+  pass: () => Promise<T>, key?: string, scope: StorageAccountScope | null = activeStorageScope,
+): Promise<T> {
+  if (!scope) return pass();
+  const state = scope.state;
+  const reportsBefore = state.storageFullReports;
+  const writesBefore = state.successfulStorageWrites;
+  state.recoveryPassesInFlight++;
+  if (key) state.recoveryPassesByKey.set(key, (state.recoveryPassesByKey.get(key) ?? 0) + 1);
   try {
-    result = await pass();
+    return await pass();
   } finally {
-    recoveryPassFinished(generation, key);
+    recoveryPassFinished(scope, key);
+    if (isActiveScope(scope) && state.recoveryPassesInFlight === 0 &&
+      state.storageFullReports === reportsBefore && state.successfulStorageWrites > writesBefore) {
+      state.recoveryPending = false;
+    }
   }
-  if (generation === recoveryGeneration && recoveryPassesInFlight === 0 &&
-    storageFullReports === reportsBefore && successfulStorageWrites > writesBefore) recoveryPending = false;
-  return result;
 }
 
-/** Fires on a successful write while storage-full work is pending and no recovery pass is running. Returns the unsubscribe. */
-export function subscribeStorageRecoveryWake(listener: () => void): () => void {
-  recoveryWakeListeners.add(listener);
-  return () => { recoveryWakeListeners.delete(listener); };
+/** Fires on a successful write while this scope has pending work and no pass is running. */
+export function subscribeStorageRecoveryWake(
+  listener: () => void, scope: StorageAccountScope | null = activeStorageScope,
+): () => void {
+  if (!isActiveScope(scope)) return () => {};
+  const entry = { listener, scope };
+  recoveryWakeListeners.add(entry);
+  return () => { recoveryWakeListeners.delete(entry); };
 }
 
-/** Count of full→writable edges. An attempt that began before an edge can compare to see whether storage recovered mid-flight. */
-export function storageWritableEdgeCount(): number {
-  return writableEdges;
+export function storageWritableEdgeCount(scope: StorageAccountScope | null = activeStorageScope): number {
+  return isActiveScope(scope) ? scope.state.writableEdges : 0;
 }
 
 export function isStorageReadOnly(): boolean {
-  return readOnly;
+  return activeStorageScope.state.readOnly;
 }
 
 export function subscribeStorageReadOnly(listener: () => void): () => void {
@@ -224,36 +303,41 @@ export function subscribeStorageReadOnly(listener: () => void): () => void {
   return () => listeners.delete(listener);
 }
 
-const storageRecoveryWork = new Set<() => Promise<void>>();
-
 /** Held work a foreground recovery pass retries once. Returns the unregister. */
-export function registerStorageRecoveryWork(work: () => Promise<void>): () => void {
-  storageRecoveryWork.add(work);
-  return () => { storageRecoveryWork.delete(work); };
+export function registerStorageRecoveryWork(
+  work: () => Promise<void>, scope: StorageAccountScope | null = activeStorageScope,
+): () => void {
+  if (!isActiveScope(scope)) return () => {};
+  const entry = { work, scope };
+  storageRecoveryWork.add(entry);
+  return () => { storageRecoveryWork.delete(entry); };
 }
 
-/** Probes each registered held item once. A failing item stays held and logs. Does not clear pending on its own. */
-export async function runStorageRecoveryWork(): Promise<void> {
-  const generation = recoveryGeneration;
-  recoveryPassesInFlight++;
+/** Probes this account's held items once. Does not clear pending on its own. */
+export async function runStorageRecoveryWork(scope: StorageAccountScope | null = activeStorageScope): Promise<void> {
+  if (!isActiveScope(scope)) return;
+  const state = scope.state;
+  state.recoveryPassesInFlight++;
   try {
-    await Promise.all([...storageRecoveryWork].map((work) =>
+    await Promise.all([...storageRecoveryWork].filter((entry) => entry.scope === scope).map(({ work }) =>
       work().catch((error: unknown) => console.warn("[Storage] Could not retry held work", error))));
   } finally {
-    recoveryPassFinished(generation);
+    recoveryPassFinished(scope);
   }
 }
 
 /** Records the signed-in plan from billing status. `null` (unknown) is never treated as Free. */
-export function reportStoragePlanTier(tier: TierId | null): void {
+export function reportStoragePlanTier(tier: TierId | null, scope: StorageAccountScope | null = activeStorageScope): void {
+  if (!isActiveScope(scope)) return;
   const next = tier === "free";
-  if (next === freePlan) return;
-  freePlan = next;
-  for (const listener of planListeners) listener();
+  const state = scope.state;
+  if (next === state.freePlan) return;
+  state.freePlan = next;
+  for (const listener of [...planListeners]) listener();
 }
 
 export function isFreeStoragePlan(): boolean {
-  return freePlan;
+  return activeStorageScope.state.freePlan;
 }
 
 export function subscribeStoragePlan(listener: () => void): () => void {

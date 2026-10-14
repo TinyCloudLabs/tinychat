@@ -23,7 +23,7 @@ import { isTinyCloudNetworkFailure, logVoiceNoteError, pendingSaveMessage, pendi
 import { advanceAccountGeneration, captureAccountContext, currentAccountGeneration, isAccountContextCurrent, mountVoiceNoteAccount } from "@/lib/voiceNotes/accountContext";
 import { saveDeferredForAccountTransition, type VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
 import { recheckVoiceNoteAvailabilityAutomatically, transcribeSavedNote, voiceNoteTranscriberFor } from "@/lib/voiceNotes/voiceNoteTranscription";
-import { runStorageRecoveryPass, runStorageRecoveryWork, subscribeStorageRecoveryWake } from "@/lib/storageStatus";
+import { runStorageRecoveryPass, runStorageRecoveryWork, storageScopeFor, subscribeStorageRecoveryWake } from "@/lib/storageStatus";
 
 let recovery: (() => Promise<void>) | null = null;
 /** Keep the mounted saver available to renewal without remounting the view. */
@@ -122,6 +122,7 @@ export function PendingVoiceNotesSaver({
     const did = tcw.did;
     const spaceId = tcw.spaceId;
     if (!did || !spaceId) return;
+    const storageScope = storageScopeFor(tcw);
     pendingStore.setAccount(did);
     pendingStore.setOnline(typeof navigator === "undefined" ? true : navigator.onLine !== false);
     const unmountAccount = mountVoiceNoteAccount(did);
@@ -136,7 +137,7 @@ export function PendingVoiceNotesSaver({
     // Held storage work keeps its own single-flight, so a long audio reconcile cannot delay it.
     let heldRecovery: Promise<void> | null = null;
     const recoverHeld = (): Promise<void> => {
-      heldRecovery ??= runStorageRecoveryWork().finally(() => { heldRecovery = null; });
+      heldRecovery ??= runStorageRecoveryWork(storageScope).finally(() => { heldRecovery = null; });
       return heldRecovery;
     };
     // The full pass services held work before reconciling audio and refreshing.
@@ -150,7 +151,7 @@ export function PendingVoiceNotesSaver({
             if (transcriber) transcribeSavedNote(transcriber, note, () => generation === currentAccountGeneration());
           });
           await account.refresh(null);
-        }, did);
+        }, did, storageScope);
       } catch (error) {
         if (saveDeferredForAccountTransition(error)) return;
         const message = pendingSaveMessage(error);
@@ -184,7 +185,7 @@ export function PendingVoiceNotesSaver({
     // Writes during a pass do not mark it dirty or replay audio probes.
     const unsubscribeWake = subscribeStorageRecoveryWake(() => {
       if (!runInFlight) void run();
-    });
+    }, storageScope);
     if (transcriber) void recheckVoiceNoteAvailabilityAutomatically(transcriber, isAccountCurrent);
     void foreground();
     const onOnline = () => {

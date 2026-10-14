@@ -1,6 +1,6 @@
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { readableError } from "@/lib/readableError";
-import { trackStorageWrites } from "@/lib/storageStatus";
+import { storageScopeFor, trackStorageWrites } from "@/lib/storageStatus";
 import { deviceName } from "@/lib/platform";
 import type { FirefliesSentence } from "../connectors/firefliesClient";
 import { CONNECTORS_KV_PREFIX, CONNECTORS_SQL_DB_NAME, ensureSchema, transcriptKvKey } from "../connectors/connectorStore";
@@ -18,7 +18,7 @@ export const VOICE_NOTE_INDEX_DDL = "CREATE UNIQUE INDEX IF NOT EXISTS uq_connec
 export type VoiceNoteIdentity = "established" | "needs_authorization" | "blocked" | "retry" | "storage_full";
 export interface IdentityResult { status: VoiceNoteIdentity; reason?: string; cause?: unknown }
 
-function db(tcw: TinyCloudWeb) { return trackStorageWrites(tcw.sql.db(CONNECTORS_SQL_DB_NAME)); }
+function db(tcw: TinyCloudWeb) { return trackStorageWrites(tcw.sql.db(CONNECTORS_SQL_DB_NAME), storageScopeFor(tcw)); }
 function errorOf(result: { ok: boolean; error?: { code?: string; message?: string; meta?: unknown; requiredAction?: unknown } }): Error {
   const e = result.error;
   return Object.assign(new Error(e?.message ?? "TinyCloud storage failed"), {
