@@ -4,9 +4,6 @@ import { NotePlaybackContext } from "@/lib/audio/notePlayback";
 import { formatClockDuration } from "./formatters";
 import { sentenceTime } from "./transcriptSegments";
 
-export interface TranscriptGap { start: number; end: number; speaker_name: string | null }
-const NO_GAPS: readonly TranscriptGap[] = [];
-
 /** Only the rows crossing the active boundary need a new render on a clock tick. */
 class ActiveRowStore {
   active = new Set<number>();
@@ -82,12 +79,12 @@ const TranscriptRow = memo(function TranscriptRow({ sentence, index, speaker, st
             aria-label={`Play from ${formatClockDuration(Math.floor(start))}`} onClick={() => onSeek(start)}>{formatClockDuration(Math.floor(start))}</button>
         ) : <span title="Audio is not available for this note">{formatClockDuration(Math.floor(start))}</span>)}
       </div>
-      <p className="min-w-0 whitespace-pre-wrap break-words text-body">{sentence.text}{sentence.source && <span className="ml-2 text-meta text-muted-foreground">{sentence.source === "fallback" ? "Fallback transcript" : "Recovered from recording"}</span>}</p>
+      <p className="min-w-0 whitespace-pre-wrap break-words text-body">{sentence.text}</p>
     </div>
   </div>;
 });
 
-export function TimestampedTranscript({ sentences, gaps = NO_GAPS, hasAudio, isPrivateCloud = false, onRowRender }: { sentences: readonly FirefliesSentence[]; gaps?: readonly TranscriptGap[]; hasAudio: boolean;
+export function TimestampedTranscript({ sentences, hasAudio, isPrivateCloud = false, onRowRender }: { sentences: readonly FirefliesSentence[]; hasAudio: boolean;
   isPrivateCloud?: boolean;
   /** Render-count probe used by the long-transcript regression test. */
   onRowRender?: (index: number) => void;
@@ -104,19 +101,12 @@ export function TimestampedTranscript({ sentences, gaps = NO_GAPS, hasAudio, isP
   const registerRow = useCallback((rowIndex: number, element: HTMLDivElement | null) => { rows.current[rowIndex] = element; }, []);
   const rowElements = useMemo(() => {
     const speakers = new Set(sentences.map((sentence) => sentence.speaker_name).filter(Boolean));
-    const sentenceRows = sentences.map((sentence, rowIndex) => {
+    return sentences.map((sentence, rowIndex) => {
       const speaker = speakers.size > 1 && sentence.speaker_name !== sentences[rowIndex - 1]?.speaker_name ? sentence.speaker_name : null;
       return <TranscriptRow key={`${sentence.index}-${rowIndex}`} sentence={sentence} index={rowIndex} speaker={speaker}
         start={sentenceTime(sentence, isPrivateCloud)} hasAudio={hasAudio} store={store} onSeek={onSeek} registerRow={registerRow} onRowRender={onRowRender} />;
     });
-    if (gaps.length === 0) return sentenceRows;
-    return [
-      ...sentenceRows.map((element, rowIndex) => ({ start: sentences[rowIndex]!.start_time, element })),
-      ...gaps.map((gap, gapIndex) => ({ start: gap.start, element: <p key={`gap-${gapIndex}`} data-testid="transcript-gap" className="rounded-md px-2 py-1 text-meta text-muted-foreground">
-        {formatClockDuration(Math.floor(gap.start))}–{formatClockDuration(Math.floor(gap.end))} could not be transcribed{gap.speaker_name ? ` — ${gap.speaker_name}` : ""}
-      </p> })),
-    ].sort((a, b) => a.start - b.start).map(({ element }) => element);
-  }, [sentences, gaps, hasAudio, isPrivateCloud, store, onSeek, registerRow, onRowRender]);
+  }, [sentences, hasAudio, isPrivateCloud, store, onSeek, registerRow, onRowRender]);
 
   useEffect(() => { store.setActive(active); }, [store, active]);
 

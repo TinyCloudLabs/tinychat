@@ -35,7 +35,7 @@ import { TranscribeAction } from "./TranscribeAction";
 import { privateCloudFits } from "./transcribeProviders";
 import { HowThisGotHere } from "./HowThisGotHere";
 import { librarySourceLabel } from "./libraryKinds";
-import { TimestampedTranscript, type TranscriptGap } from "./TimestampedTranscript";
+import { TimestampedTranscript } from "./TimestampedTranscript";
 import { hasPrivateCloudTimingProvenance, hasSegmentTimes, transcriptMarkdown } from "./transcriptSegments";
 import type { TranscriptProvenance } from "@/lib/voiceNotes/voiceNoteCommits";
 import type { LibraryItem } from "./LibraryRow";
@@ -273,11 +273,6 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
     && hasPrivateCloudTimingProvenance(metadata?.status === "ok" ? metadata.metadata : null, props.transcriptProvenance);
   const sentences = remoteSentences.length > 0 ? remoteSentences
     : local?.outcome === "transcribed" ? localTranscriptToSave(local).sentences : [];
-  const savedGaps = metadata?.status === "ok" ? metadata.metadata.gaps : null;
-  const gaps = Array.isArray(savedGaps) ? savedGaps.filter((gap): gap is TranscriptGap =>
-    gap !== null && typeof gap === "object" && Number.isFinite(gap.start) && Number.isFinite(gap.end)
-    && gap.start >= 0 && gap.end > gap.start && (gap.speaker_name === null || typeof gap.speaker_name === "string")) : [];
-  const hasProvenance = sentences.some((sentence) => sentence.source !== undefined);
   const timed = hasSegmentTimes(sentences, isPrivateCloud);
   const exportMarkdown = async () => {
     const markdown = transcriptMarkdown(item.title ?? "Voice note", item.startedAt, sentences, isPrivateCloud);
@@ -330,13 +325,13 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
       <span className="sr-only" aria-live="polite" aria-atomic="true">
         {props.copyState === "copied" ? "Transcript copied to clipboard" : ""}
       </span>
-      {sentences.length > 0 || gaps.length > 0 ? (
+      {sentences.length > 0 ? (
         <div className="flex max-w-[68ch] flex-col gap-4 [-webkit-touch-callout:default] select-text">
           {spaceReadFailed && <div className="flex flex-wrap items-center gap-2" data-testid="note-transcript-local-space-error">
             <p className="text-callout text-muted-foreground">On this device · Couldn’t check your space.</p>
             <Button type="button" variant="outline" onClick={props.onRetry}>Try again</Button>
           </div>}
-          {timed || gaps.length > 0 || hasProvenance ? <TimestampedTranscript gaps={gaps} sentences={sentences} hasAudio={props.audio !== null} isPrivateCloud={isPrivateCloud} /> : transcriptBlocks(sentences).map((block, index) => (
+          {timed ? <TimestampedTranscript sentences={sentences} hasAudio={props.audio !== null} isPrivateCloud={isPrivateCloud} /> : transcriptBlocks(sentences).map((block, index) => (
             <div key={index}>
               {block.speaker && <p className="text-meta font-semibold text-muted-foreground">{block.speaker}</p>}
               <p className="whitespace-pre-wrap break-words text-body">{block.text}</p>
