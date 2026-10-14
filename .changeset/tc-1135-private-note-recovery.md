@@ -2,4 +2,4 @@
 "@tinychat/frontend": patch
 ---
 
-Recover saved in-app Private voice notes after availability returns and keep pending notes actionable while Private cloud is unavailable.
+Recover opted-in saved Private voice notes after availability returns, rate-limit automatic availability checks, bound readiness to each note's save progress, and keep pending notes actionable while Private cloud is unavailable.

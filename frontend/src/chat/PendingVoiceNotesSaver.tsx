@@ -22,7 +22,7 @@ import { getDesktopWhisperQueue } from "@/lib/voiceNotes/desktop/desktopWhisper"
 import { isTinyCloudNetworkFailure, logVoiceNoteError, pendingSaveMessage, pendingStore, whenVoiceNoteSavesIdle } from "@/lib/voiceNotes/recorderSaves";
 import { advanceAccountGeneration, captureAccountContext, currentAccountGeneration, isAccountContextCurrent, mountVoiceNoteAccount } from "@/lib/voiceNotes/accountContext";
 import { saveDeferredForAccountTransition, type VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
-import { transcribeSavedNote, voiceNoteTranscriberFor } from "@/lib/voiceNotes/voiceNoteTranscription";
+import { recheckVoiceNoteAvailabilityAutomatically, transcribeSavedNote, voiceNoteTranscriberFor } from "@/lib/voiceNotes/voiceNoteTranscription";
 
 let recovery: (() => Promise<void>) | null = null;
 /** Keep the mounted saver available to renewal without remounting the view. */
@@ -162,11 +162,11 @@ export function PendingVoiceNotesSaver({
       return runInFlight;
     };
     const unregister = registerPendingVoiceNotesRecovery(run);
-    void transcriber?.check({ current: isAccountCurrent });
+    if (transcriber) void recheckVoiceNoteAvailabilityAutomatically(transcriber, isAccountCurrent);
     void run();
     const onOnline = () => {
       pendingStore.setOnline(true);
-      void transcriber?.check({ current: isAccountCurrent });
+      if (transcriber) void recheckVoiceNoteAvailabilityAutomatically(transcriber, isAccountCurrent);
       void run();
     };
     const onOffline = () => pendingStore.setOnline(false);
@@ -176,14 +176,14 @@ export function PendingVoiceNotesSaver({
     windowTarget?.addEventListener("offline", onOffline);
     const onVisible = () => {
       if (documentTarget?.visibilityState !== "visible") return;
-      void transcriber?.check({ current: isAccountCurrent });
+      if (transcriber) void recheckVoiceNoteAvailabilityAutomatically(transcriber, isAccountCurrent);
       void run();
     };
     documentTarget?.addEventListener("visibilitychange", onVisible);
     if (Capacitor.isNativePlatform()) {
       void import("@capacitor/app").then(({ App }) => App.addListener("appStateChange", ({ isActive }) => {
         if (isActive) {
-          void transcriber?.check({ current: isAccountCurrent });
+          if (transcriber) void recheckVoiceNoteAvailabilityAutomatically(transcriber, isAccountCurrent);
           void run();
         }
       })).then((handle) => {
