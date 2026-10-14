@@ -91,7 +91,7 @@ async function setup(transcriberOption: "off" | "on-device" | "private-cloud") {
   const ctx = () => ({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() });
   let transitionGen = 0;
   const signInAs = (accountDid: string, transcriber = transcriberOption) =>
-    fake.plugin.setCaptureDefaults({ accountDid, transitionGen: ++transitionGen, transcriber, identifySpeakers: false });
+    fake.plugin.setCaptureDefaults({ accountDid, transitionGen: ++transitionGen, transcriber, identifySpeakers: false, uploadAudio: true });
   const recordFor = async (accountDid: string) => {
     await signInAs(accountDid);
     await fake.plugin.start();
@@ -135,7 +135,7 @@ describe("a note saved by reconcileAll is handed to the transcriber", () => {
     expect(s.transcriber.snapshot().jobs.get(note.id)).toBeUndefined();
   });
 
-  test("a Local note, including one claimed from signed out on sign-in, is not sent to the cloud", async () => {
+  test("a Local note stays private without upload approval; a consented Local note is not sent to the cloud", async () => {
     const s = await setup("private-cloud");
     await s.fake.plugin.start();
     const signedOut = await s.fake.plugin.stop();
@@ -148,7 +148,7 @@ describe("a note saved by reconcileAll is handed to the transcriber", () => {
     await s.pipeline.reconcileAll(s.ctx(), "reconcile", s.handOver());
     await tick();
     const states = (await s.fake.plugin.listPending()).recordings.map((entry) => [entry.id, entry.ledger?.audio.state]);
-    expect(states).toContainEqual([signedOut.id, "saved"]);
+    expect(states).toContainEqual([signedOut.id, "pending"]);
     expect(states).toContainEqual([onDevice.id, "saved"]);
     expect(s.runs).toEqual([cloud.id]);
   });

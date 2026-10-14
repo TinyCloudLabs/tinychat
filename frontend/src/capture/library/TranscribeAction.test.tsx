@@ -205,16 +205,43 @@ describe("the Transcribe action", () => {
     }
   });
 
-  test("a private job that settles as blocked is the start's answer: the action unlocks", async () => {
+  test("a private job that settles unlocks the action on the same tree", async () => {
     const sent: string[] = [];
     const host = await mount({ read: nowhere, transcription: transcription({ onTranscribePrivately: (id) => { sent.push(id); } }) });
     await click(button(host));
     expect(sent).toEqual([NOTE]);
     expect(button(host).disabled).toBe(true);
-    await act(async () => root!.render(createElement(MemoryRouter, null, createElement(TranscribeActionFor, {
-      noteId: NOTE, durationSecs: 60, read: nowhere,
-      transcription: transcription({ jobs: new Map([[NOTE, { kind: "blocked", reason: "unavailable" }]]) }),
-    }))));
+    for (const job of [
+      { kind: "held", message: "outside the app" },
+      { kind: "failed", message: "temporary failure", retryable: true },
+      { kind: "blocked", reason: "unavailable" },
+    ] as const) {
+      await act(async () => root!.render(createElement(MemoryRouter, null,
+        createElement(PlatformContext.Provider, { value: "ios" }, createElement(TranscribeActionFor, {
+          noteId: NOTE, durationSecs: 60, read: nowhere,
+          transcription: transcription({ onTranscribePrivately: (id) => { sent.push(id); }, jobs: new Map([[NOTE, job]]) }),
+        })))));
+      expect(button(host).disabled).toBe(false);
+      await click(button(host));
+      expect(button(host).disabled).toBe(true);
+    }
+    expect(sent).toHaveLength(4);
+  });
+
+  test("a completed rerun unlocks the same action instance", async () => {
+    const sent: string[] = [];
+    const onTranscribeAgain = (id: string) => { sent.push(id); return null; };
+    const host = await mount({ read: nowhere, rerun: true,
+      transcription: transcription({ onTranscribeAgain }) });
+    await click(button(host));
+    await click(host.querySelector('[data-testid="transcribe-again-confirm"]')!);
+    expect(sent).toEqual([NOTE]);
+    expect(button(host).disabled).toBe(true);
+    await act(async () => root!.render(createElement(MemoryRouter, null,
+      createElement(PlatformContext.Provider, { value: "ios" }, createElement(TranscribeActionFor, {
+        noteId: NOTE, durationSecs: 60, read: nowhere, rerun: true,
+        transcription: transcription({ onTranscribeAgain, jobs: new Map([[NOTE, { kind: "done", outcome: "transcribed" as const }]]) }),
+      })))));
     expect(button(host).disabled).toBe(false);
   });
 

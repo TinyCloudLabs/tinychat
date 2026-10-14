@@ -143,6 +143,14 @@ export function TranscribeActionFor(props: TranscribeActionProps & { read: Phone
       for (const handle of handles) void handle.remove();
     };
   }, [noteId, props.rerun]);
+  // Private jobs settle after admission; keep the action locked only while this note is still active.
+  useEffect(() => {
+    const kind = transcription?.jobs.get(noteId)?.kind;
+    if (kind !== "held" && kind !== "failed" && kind !== "blocked" && kind !== "done") return;
+    nativeRerun.current = false;
+    starting.current = false;
+    setBusy(false);
+  }, [noteId, transcription?.jobs.get(noteId)?.kind]);
   const provider = chosen !== null && providers.includes(chosen) ? chosen : providers[0];
   const recheck = transcription?.availability === "failed" && (transcription.consented || transcription.checkErrorCode === "native_status_failed")
     ? privateNotOffered("failed", transcription.checkErrorCode) : null;

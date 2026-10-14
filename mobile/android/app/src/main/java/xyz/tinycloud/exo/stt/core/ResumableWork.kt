@@ -28,7 +28,7 @@ internal object ResumableWork {
     /** Clears an interrupted explicit rerun; callers invoke this only during process startup. */
     fun cancelInterruptedRerun(stt: JSONObject): Boolean {
         val state = stt.optString("state")
-        if (stt.isNull("rerunRev") || !stt.has("rerunRev") || state != "queued" && state != "running") return false
+        if (stt.isNull("rerunRev") || !stt.has("rerunRev") || state !in UNFINISHED) return false
         stt.put("state", "cancelled").put("rerunRev", JSONObject.NULL)
             .put("rerunBaseRev", JSONObject.NULL).put("rerunBaseHash", JSONObject.NULL)
         return true

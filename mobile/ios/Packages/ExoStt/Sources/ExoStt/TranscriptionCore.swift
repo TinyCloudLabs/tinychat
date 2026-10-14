@@ -115,7 +115,7 @@ final class TranscriptionCore {
                       let stt = note["stt"] as? [String: Any],
                       stt["rerunRev"] as? Int != nil,
                       let status = stt["state"] as? String,
-                      ["queued", "running"].contains(status) else { continue }
+                      ["queued", "running", "waiting_for_model"].contains(status) else { continue }
                 try? library.updateStt(id, patch: ["state": "cancelled", "rerunRev": NSNull(),
                     "rerunBaseRev": NSNull(), "rerunBaseHash": NSNull()])
             }

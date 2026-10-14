@@ -50,8 +50,8 @@ class ResumableWorkTest {
     }
 
     @Test fun interruptedRerunsAreCancelledAndTheirMarkerCleared() {
-        for (state in listOf("queued", "running")) {
-            val stt = ResumableWork.rerun(JSONObject().put("state", state), 7, 6, "base-hash")
+        for (state in listOf("queued", "running", "waiting_for_model")) {
+            val stt = ResumableWork.rerun(JSONObject().put("state", "done"), 7, 6, "base-hash").put("state", state)
             assertTrue(ResumableWork.cancelInterruptedRerun(stt))
             assertEquals("cancelled", stt.getString("state"))
             assertTrue(stt.isNull("rerunRev"))

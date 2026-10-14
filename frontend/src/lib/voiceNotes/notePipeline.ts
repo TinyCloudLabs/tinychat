@@ -32,7 +32,7 @@ export type PipelineCaptureIssue = "finalization_timed_out" | "recoveryFailed" |
  */
 export type PipelineFailureKind = "offline" | "rejected" | "timeout" | "quota" | "auth" | "server" | "source" | "other";
 /** `PendingNote.held` (P1; `SaveOutcome.held.reason` plus signed-out). */
-export type PipelineHeldReason = "signed-out" | "other-account" | "legacy" | "unowned";
+export type PipelineHeldReason = "signed-out" | "other-account" | "legacy" | "unowned" | "audio-upload-disabled";
 
 /** The part of `PendingNote` (P1) the pipeline reads. A note with no pending entry and no space row yet has `pending: null`. */
 export interface PipelinePending {
@@ -227,6 +227,7 @@ function spaceStep(input: NotePipelineInput): Result {
       case "other-account": return blocked(SPACE_COPY.otherAccount);
       case "legacy":
       case "unowned": return blocked(SPACE_COPY.accountUnknown(device));
+      case "audio-upload-disabled": return blocked(SPACE_COPY.audioUploadDisabled(device));
     }
   }
   const failure = pending?.failed;

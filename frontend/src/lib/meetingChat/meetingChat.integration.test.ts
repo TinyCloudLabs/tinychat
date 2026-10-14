@@ -229,6 +229,7 @@ describe("transcribed voice notes in meeting chat and Library", () => {
       silencedMs: 0,
       silencedEvents: 0,
       noSignalMs: 0,
+      options: { transcriber: "private-cloud" as const, identifySpeakers: false, uploadAudio: true },
     };
     expect((await saveVoiceNote(space as never, recording, voiceNoteAudioSourceFromBase64({ mimeType: "audio/mp4", base64: "AAAA" }), "android")).ok).toBe(true);
     // Saved, not yet transcribed: an empty transcript, and nothing for chat to ground on.
@@ -309,6 +310,7 @@ describe("untranscribed voice notes are not meetings", () => {
     silencedMs: 0,
     silencedEvents: 0,
     noSignalMs: 0,
+    options: { transcriber: "on-device" as const, identifySpeakers: false, uploadAudio: true },
   });
   const localMeeting = async (space: ReturnType<typeof sqliteSpace>) =>
     saveLocalTranscript(space as never, prepareLocalTranscript({

@@ -101,7 +101,12 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
       const account = tcw();
       const currentCommit = await readCommit(account, id);
       const prior = explicitRerun ? requireVoiceNoteTranscriptCommit(currentCommit) : currentCommit;
-      const stored = explicitRerun ? {} : readJobs(did)[id] ?? {};
+      const previous = readJobs(did)[id] ?? {};
+      const stored = explicitRerun ? {} : previous;
+      if (explicitRerun && previous.cleanupOnly && previous.handle) {
+        await client.deleteTranscript(previous.handle);
+        persist(id, null);
+      }
       if (prior && !explicitRerun) {
         transcriptSaved = true;
         if (stored.handle && stored.saved) {
@@ -257,7 +262,8 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
         if (commit) { jobs.set(id, { kind: "done", outcome: commit.outcome }); notify(); return; }
       }
       const message = error instanceof AssemblyAiError ? error.message
-        : error instanceof Error && error.message.startsWith("The transcript is ready") ? error.message
+        : error instanceof Error && (error.message.startsWith("The transcript is ready")
+          || error.message === "A different transcript revision won this rerun. Try again.") ? error.message
         : "Powerful couldn't finish this transcript. Try again.";
       jobs.set(id, { kind: "failed", message, retryable: true, reference: null,
         code: error instanceof AssemblyAiError ? error.kind : "transcription_error" });

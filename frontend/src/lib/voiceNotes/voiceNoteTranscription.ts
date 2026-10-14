@@ -239,6 +239,7 @@ export interface VoiceNotePendingStore {
   read(sourceId: string): PendingVoiceNoteJob | null;
   write(sourceId: string, job: PendingVoiceNoteJob): void;
   clear(sourceId: string): void;
+  clearExplicitReruns?(): void;
   sourceIds(): string[];
 }
 
@@ -280,6 +281,16 @@ export function localStorageVoiceNotePendingStore(
       if (!(sourceId in all)) return;
       delete all[sourceId];
       writeAll(all);
+    },
+    clearExplicitReruns: () => {
+      const all = readAll();
+      let changed = false;
+      for (const [sourceId, job] of Object.entries(all)) {
+        if (!job.explicitRerun) continue;
+        delete all[sourceId];
+        changed = true;
+      }
+      if (changed) writeAll(all);
     },
     sourceIds: () => Object.keys(readAll()),
   };
@@ -686,6 +697,7 @@ export interface VoiceNoteCloud {
   capabilities(): Promise<PrivateCloudCapabilities>;
   /** Notes with a job in flight (to resume after a relaunch). */
   pendingSourceIds(): string[];
+  clearExplicitReruns?(): void;
   /** Upload (or re-join) the note's job and wait for its transcript. */
   transcribe(
     input: VoiceNoteTranscribeInput,
@@ -1021,6 +1033,7 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
     },
 
     pendingSourceIds: () => pending.sourceIds().filter((sourceId) => pending.read(sourceId)?.explicitRerun !== true),
+    clearExplicitReruns: () => pending.clearExplicitReruns?.(),
 
     async transcribe(input, report) {
       const guard = () => {
@@ -1670,6 +1683,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
   const resume = () => {
     if (resumed || !on() || cloud === null) return;
     resumed = true;
+    cloud.clearExplicitReruns?.();
     for (const sourceId of new Set([...cloud.pendingSourceIds(), ...choices.ids()])) enqueue(sourceId, undefined, false);
   };
 

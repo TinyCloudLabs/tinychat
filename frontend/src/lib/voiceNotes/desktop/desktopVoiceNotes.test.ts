@@ -329,6 +329,55 @@ describe("desktop recorder adapter", () => {
     expect(whisper.calls).toHaveLength(2);
     engine.dispose();
   });
+  slow("explicit desktop Whisper reruns decode Private and Powerful notes", async () => {
+    const bridge = new FakeBridge();
+    bridge.selectedModel = "QuantizedTinyEn";
+    bridge.downloadedModels.add("QuantizedTinyEn");
+    const whisper = new FakeWhisper();
+    const env = newIdbEnv();
+    const dbName = crypto.randomUUID();
+    const store = await openWebStore({ env, dbName, locks: memoryLocks(), decodeCheck: null,
+      audio: () => createFileAudioBlobStore(bridge) });
+    const engine = await openDesktopVoiceNotes({ bridge, whisper, now: () => bridge.now, store });
+    await engine.plugin.setAccountState({ status: "signed_in", accountDid: "did:owner", transitionGen: 1 });
+    for (const [index, transcriber] of (["private-cloud", "assemblyai"] as const).entries()) {
+      await engine.plugin.setCaptureDefaults({ accountDid: "did:owner", transitionGen: index + 2,
+        transcriber, identifySpeakers: false });
+      const id = (await engine.plugin.start({ transcriber })).id;
+      bridge.files.set(id, Uint8Array.of(1, 2, 3));
+      bridge.elapsed = 1000;
+      await engine.plugin.stop();
+      await engine.whisper!.rerun({ id, rev: 2, baseRev: 1, baseHash: "a".repeat(32) });
+      await waitFor(() => engine.whisper?.snapshot().get(id)?.state === "done");
+      expect(whisper.calls[index]?.id).toBe(id);
+    }
+    expect(whisper.calls).toHaveLength(2);
+    engine.dispose();
+    store.close();
+  });
+  slow("Whisper subscribers observe queued, transcribing and completed status", async () => {
+    const bridge = new FakeBridge();
+    bridge.selectedModel = "QuantizedTinyEn";
+    bridge.downloadedModels.add("QuantizedTinyEn");
+    const whisper = new FakeWhisper();
+    const engine = await openDesktopVoiceNotes({ bridge, whisper,
+      storeOptions: { env: newIdbEnv(), dbName: crypto.randomUUID(), locks: memoryLocks(), decodeCheck: null } });
+    const states: string[] = [];
+    const unsubscribe = engine.whisper!.subscribe(() => {
+      const job = engine.whisper!.snapshot().values().next().value;
+      if (job) states.push(job.state);
+    });
+    const id = (await engine.plugin.start()).id;
+    bridge.files.set(id, Uint8Array.of(1, 2, 3));
+    bridge.elapsed = 1000;
+    await engine.plugin.stop();
+    await waitFor(() => engine.whisper?.snapshot().get(id)?.state === "done");
+    expect(states).toContain("queued");
+    expect(states).toContain("transcribing");
+    expect(states.at(-1)).toBe("done");
+    unsubscribe();
+    engine.dispose();
+  });
 
   slow("Whisper progress is visible on the queued note", async () => {
     const bridge = new FakeBridge();
@@ -396,6 +445,79 @@ describe("desktop recorder adapter", () => {
     whisper.onStopServer = null;
     await engine.plugin.discard();
     engine.dispose();
+  });
+  slow("capture preemption resumes a desktop rerun instead of completing the old transcript", async () => {
+    const bridge = new FakeBridge();
+    bridge.selectedModel = "QuantizedTinyEn";
+    bridge.downloadedModels.add("QuantizedTinyEn");
+    const whisper = new FakeWhisper();
+    const env = newIdbEnv();
+    const dbName = crypto.randomUUID();
+    const store = await openWebStore({ env, dbName, locks: memoryLocks(), decodeCheck: null,
+      audio: () => createFileAudioBlobStore(bridge) });
+    const engine = await openDesktopVoiceNotes({ bridge, whisper, now: () => bridge.now, store });
+    const id = (await engine.plugin.start()).id;
+    bridge.files.set(id, Uint8Array.of(1, 2, 3));
+    bridge.elapsed = 1000;
+    await engine.plugin.stop();
+    await waitFor(() => engine.whisper?.snapshot().get(id)?.state === "done");
+    const original = (await store.getTranscript({ id })).transcript;
+    expect(original?.rev).toBe(1);
+
+    whisper.pending = true;
+    await engine.whisper!.rerun({ id, rev: 2, baseRev: 1, baseHash: "a".repeat(32) });
+    await waitFor(() => whisper.calls.length === 2);
+    const recording = (await engine.plugin.start()).id;
+    expect(recording).not.toBe(id);
+    await waitFor(() => engine.whisper?.snapshot().get(id)?.state === "queued");
+    expect((await store.listPending()).recordings.find((note) => note.id === id)?.stt)
+      .toMatchObject({ state: "queued", rerunRev: 2, rerunBaseRev: 1, rerunBaseHash: "a".repeat(32) });
+
+    whisper.pending = false;
+    bridge.files.set(recording, Uint8Array.of(4, 5, 6));
+    bridge.elapsed = 1000;
+    await engine.plugin.stop();
+    await waitFor(() => whisper.calls.filter((call) => call.id === id).length === 3
+      && engine.whisper?.snapshot().get(id)?.state === "done");
+    expect(whisper.calls.filter((call) => call.id === id)).toHaveLength(3);
+    expect((await store.getTranscript({ id })).transcript).toMatchObject({
+      rev: 2, rerunBase: { rev: 1, hash: "a".repeat(32) },
+    });
+    engine.dispose();
+    store.close();
+  });
+
+  slow("desktop resume preserves a failed rerun base so it can be retried", async () => {
+    const bridge = new FakeBridge();
+    bridge.selectedModel = "QuantizedTinyEn";
+    bridge.downloadedModels.add("QuantizedTinyEn");
+    const whisper = new FakeWhisper();
+    const env = newIdbEnv();
+    const dbName = crypto.randomUUID();
+    const store = await openWebStore({ env, dbName, locks: memoryLocks(), decodeCheck: null,
+      audio: () => createFileAudioBlobStore(bridge) });
+    const engine = await openDesktopVoiceNotes({ bridge, whisper, now: () => bridge.now, store });
+    const id = (await engine.plugin.start()).id;
+    bridge.files.set(id, Uint8Array.of(1, 2, 3));
+    bridge.elapsed = 1000;
+    await engine.plugin.stop();
+    await waitFor(() => engine.whisper?.snapshot().get(id)?.state === "done");
+
+    whisper.fail = true;
+    await engine.whisper!.rerun({ id, rev: 2, baseRev: 1, baseHash: "a".repeat(32) });
+    await waitFor(() => engine.whisper?.snapshot().get(id)?.state === "failed");
+    await engine.whisper!.resume();
+    expect((await store.listPending()).recordings.find((note) => note.id === id)?.stt)
+      .toMatchObject({ state: "failed", rerunRev: 2, rerunBaseRev: 1, rerunBaseHash: "a".repeat(32) });
+    expect(whisper.calls).toHaveLength(2);
+
+    whisper.fail = false;
+    await engine.whisper!.retry(id);
+    await waitFor(() => engine.whisper?.snapshot().get(id)?.state === "done");
+    expect(whisper.calls).toHaveLength(3);
+    expect((await store.getTranscript({ id })).transcript).toMatchObject({ rev: 2 });
+    engine.dispose();
+    store.close();
   });
 
   slow("a server failure during Record requeues the interrupted note", async () => {

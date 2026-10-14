@@ -180,14 +180,14 @@ final class TranscriptionCoreTests: XCTestCase {
     // MARK: a Local choice on a note committed to another mode survives a restart
 
     func testInterruptedRerunIsCancelledAndItsMarkerClearedAtLaunchRecovery() {
-        for state in ["queued", "running"] {
+        for state in ["queued", "running", "waiting_for_model"] {
             let id = "rerun-\(state)"
             library.seed(id, state: state)
             try? library.updateStt(id, patch: ["rerunRev": 2, "rerunBaseRev": 1, "rerunBaseHash": "old-hash"])
         }
         core.recoverInterruptedReruns()
         settle()
-        for state in ["queued", "running"] {
+        for state in ["queued", "running", "waiting_for_model"] {
             let sidecar = library.sidecar("rerun-\(state)")
             XCTAssertEqual(sidecar["state"] as? String, "cancelled")
             XCTAssertTrue(sidecar["rerunRev"] is NSNull)

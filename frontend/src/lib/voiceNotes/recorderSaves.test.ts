@@ -157,7 +157,7 @@ const tcw = { did: "did:example:alice" } as TinyCloudWeb;
 
 function recording(id: string, startedAt: number): VoiceNoteRecording {
   return { id, startedAt, durationMs: 1000, mimeType: "audio/mp4", sizeBytes: 4, silencedMs: 0, silencedEvents: 0, noSignalMs: 0,
-    version: 2, owner: tcw.did, rev: 1 };
+    version: 2, owner: tcw.did, rev: 1, options: { transcriber: "on-device", identifySpeakers: false, uploadAudio: true } };
 }
 
 /** The phone: what is listed as pending, and how deleteAudio and listPending behave. */
@@ -335,6 +335,26 @@ describe("saveRecording", () => {
     expect(saveCalls).toBe(1);
     expect(phone.deletes).toBe(0);
     expect(phone.pending).toEqual([note]);
+  });
+
+  test("audio without explicit upload approval is never written to the space", async () => {
+    const note = { ...recording("no-audio-consent", 1),
+      options: { transcriber: "on-device", identifySpeakers: false, uploadAudio: false } };
+    const outcome = await saves.saveRecording(tcw, note);
+    expect(outcome).toEqual({ kind: "held", reason: "audio-upload-disabled" });
+    expect(saveCalls).toBe(0);
+    expect(phone.ledgerUpdates).toEqual([]);
+  });
+
+  test("account reconciliation never writes audio without explicit upload approval", async () => {
+    const note = { ...recording("reconcile-no-audio-consent", 1),
+      options: { transcriber: "on-device", identifySpeakers: false } };
+    const account = { ...tcw, spaceId: "space" } as TinyCloudWeb;
+    const ctx = { did: tcw.did, spaceId: "space", generation: currentAccountGeneration() };
+    const outcome = await saves.saveNoteForAccount(account, ctx, note);
+    expect(outcome).toEqual({ kind: "held", reason: "audio-upload-disabled" });
+    expect(saveCalls).toBe(0);
+    expect(phone.ledgerUpdates).toEqual([]);
   });
 
   test("every v1 note, including one missing ownerUnknown, is held by the sign-in saver", async () => {

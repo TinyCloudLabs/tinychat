@@ -142,12 +142,17 @@ For `outcome: "unknown"`, a known definitive job or upload handle still uses the
                       "uploadId": null, "uploadUrl": null, "jobId": null, "handleExpiresAt": null,
                       "cleanup": "none" | "pending" | "done" } ]
   },
-  "stt": { "state": "waiting_for_model" | "queued" | "running" | "done" | "failed" | "cancelled", "pack": null, "engine": null, "segmentsDone": 0, "windowsDone": 0, "error": null }
+  "stt": { "state": "waiting_for_model" | "queued" | "running" | "done" | "failed" | "cancelled", "pack": null, "engine": null, "segmentsDone": 0, "windowsDone": 0, "error": null,
+           "rerunRev": 2 | null, "rerunBaseRev": 1 | null, "rerunBaseHash": "32 lowercase hex" | null }
   // "attempts" (Int, TC-836) is added once a note first enters "running": a crash-loop guard
   // persisted before each decode attempt, absent until then; readers default a missing value to 0.
 }
 ```
 `durationMs` in v2 is `a` at the final durable frame, including any written priming or padding access units; `wallMs` is start→stop (or the last durable event in recovery). `pausedMs` is the sum of user-pause intervals within `wallMs`. V1 sidecars keep their wall-clock `durationMs`. A v2 writer emits the full exact key set of `sidecar-v2-ios.json` or `sidecar-v2-android.json` (with platform-specific values), including explicit `null` for unknown nullable fields and empty arrays for no spans or remote handles. Readers remain tolerant of older v2 files that omit newly added fields.
+
+An explicit rerun stores its target `rerunRev` and committed base `(rerunBaseRev, rerunBaseHash)` in the sidecar `stt` state while it is queued, running, or waiting for a model. The local transcript written for that attempt carries `rerunBase: { rev, hash }`. The worker verifies that base before publishing; launch recovery cancels unfinished reruns and clears their markers, while a failed rerun retains its base for a same-session retry. These markers never cause a rerun to restart automatically.
+
+Space audio writes are admitted only when `recording.options?.uploadAudio === true`; absent and false values stay local. Private-cloud/PTX and hosted-engine uploads are transcription-service requests, not writes to the user's space.
 
 ### 1.4 Transition contract
 
@@ -196,7 +201,7 @@ export type MicStateReason = null | "no_signal" | "os_silenced" | "input_muted" 
   | "resume_blocked" | "max_duration" | "disk_full" | "write_failed" | "permission_revoked";
 export type TranscriberId = "on-device" | "private-cloud" | "assemblyai";
 export type CaptureSource = "in_app" | "quick_action" | "app_shortcut" | "intent" | "control" | "tile" | "widget" | "notification";
-export interface CaptureOptions { transcriber: TranscriberId; identifySpeakers: boolean }
+export interface CaptureOptions { transcriber: TranscriberId; identifySpeakers: boolean; uploadAudio?: boolean }
 export interface CaptureDefaults extends CaptureOptions { accountDid: string | null; transitionGen: number }
 export interface AudioInput { id: string; name: string; kind: "built_in" | "wired" | "bluetooth" | "usb" | "car" | "other" }
 export interface OutboxEntry { entryId: string; did: string; provider: "assemblyai" | "ptx"; mode: "hosted" | "own" | null;

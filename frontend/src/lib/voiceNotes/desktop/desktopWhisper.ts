@@ -130,6 +130,9 @@ export function createDesktopWhisperQueue(args: {
   const publish = (id: string, state: DesktopWhisperJob["state"], error: string | null = null,
     progress: number | null = null) => {
     jobs.set(id, { id, state, error, progress, explicitRerun: reruns.has(id) });
+    for (const listener of listeners) {
+      try { listener(); } catch (error) { console.error("[desktopWhisper] Status listener failed", error); }
+    }
   };
   const emitDone = (id: string) => {
     for (const listener of doneListeners) {
@@ -158,6 +161,7 @@ export function createDesktopWhisperQueue(args: {
     const id = note.id;
     const rerun = reruns.get(id) ?? null;
     let stagedId: string | null = null;
+    let yieldedForCapture = false;
     try {
       const existing = (await store.getTranscript({ id })).transcript;
       if (!rerun && existing?.noteId === id && (existing.outcome === "no_speech" || existing.segments.some((segment) => segment.text.trim()))) {
@@ -242,7 +246,10 @@ export function createDesktopWhisperQueue(args: {
       logPipelineError("transcription", error, id);
       if (disposed) return;
       const message = whisperFailure(error);
-      if (stopping || captureLive() || message.includes("capture_has_priority")) await mark(id, "queued");
+      if (stopping || captureLive() || message.includes("capture_has_priority")) {
+        yieldedForCapture = rerun !== null;
+        await mark(id, "queued");
+      }
       else {
         await mark(id, "failed", message);
         if (rerun || !message.startsWith("unavailable:")) emitFailed(id);
@@ -254,14 +261,14 @@ export function createDesktopWhisperQueue(args: {
         try { await files.invoke("delete_audio_file", { id: stagedId }); }
         catch (error) { console.warn("[desktopWhisper] Could not remove staged audio", error); }
       }
-      if (rerun && reruns.get(id) === rerun) reruns.delete(id);
+      if (rerun && !yieldedForCapture && reruns.get(id) === rerun) reruns.delete(id);
     }
   };
   const drain = async () => {
     if (disposed || activeRun || captureLive() || stopping) return;
     const notes = (await store.listPending()).recordings;
-    const next = notes.find((note) => note.options?.transcriber === "on-device"
-      && (reruns.has(note.id) || !["done", "failed", "cancelled"].includes(note.stt?.state ?? "queued")));
+    const next = notes.find((note) => reruns.has(note.id)
+      || note.options?.transcriber === "on-device" && !["done", "failed", "cancelled"].includes(note.stt?.state ?? "queued"));
     if (!next) { serverLease?.release(); return; }
     active = next.id;
     activeRun = one(next).catch((error: unknown) => {
@@ -315,7 +322,7 @@ export function createDesktopWhisperQueue(args: {
     async resume() {
       const notes = (await store.listPending()).recordings;
       for (const note of notes) {
-        if (note.stt?.rerunRev != null) {
+        if (note.stt?.rerunRev != null && ["queued", "running", "waiting_for_model"].includes(note.stt.state)) {
           if (reruns.has(note.id)) continue;
           if (note.stt.state === "running") {
             try { await whisper.stopTranscription(note.id); } catch { /* No native task survived. */ }

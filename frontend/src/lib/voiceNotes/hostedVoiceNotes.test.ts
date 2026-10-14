@@ -17,7 +17,8 @@ afterEach(() => {
 });
 
 function harness(failAt?: "part" | "submit" | "result" | "space" | "delete", noSpeech = false, spaceOnly = false, mimeType = "audio/mp4",
-  durationMs = 1000, transcriptResponses: Record<string, unknown>[] = [], deleteFails = false) {
+  durationMs = 1000, transcriptResponses: Record<string, unknown>[] = [], deleteFails = false,
+  clientOverride?: ReturnType<typeof createHostedAssemblyAiClient>) {
   const data = new Map<string, string>();
   Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
     getItem: (key: string) => data.get(key) ?? null,
@@ -31,10 +32,11 @@ function harness(failAt?: "part" | "submit" | "result" | "space" | "delete", noS
   const clock = { now: () => now, sleep: async (ms: number) => { sleeps.push(ms); now += ms; }, random: () => 0.5 };
   const audio = new Uint8Array([1, 2, 3, 4]);
   let failed = false;
+  let submitted = false;
   let local: LocalTranscript | null = null;
   let savedMetadata: Record<string, unknown> | null = null;
   let commit: TranscriptCommit | null = null;
-  let submitted = false;
+  let commitAfterSave: TranscriptCommit | undefined;
   const recording = { id: "note-1", owner: "did:test:one", source: "in_app", startedAt: 1,
     durationMs, mimeType, sizeBytes: audio.length,
     options: { transcriber: "assemblyai", identifySpeakers: true } } as VoiceNoteRecording;
@@ -79,13 +81,13 @@ function harness(failAt?: "part" | "submit" | "result" | "space" | "delete", noS
       return json({ id: "handle-1", status: "completed", utterances: noSpeech ? [] : [{ start: 0, end: 1000, text: "Hello", speaker: "A" }] });
     }
     if (path === "/hosted/transcripts/handle-1/sentences" && method === "GET") return json({ sentences: [] });
-    if (path === "/hosted/transcripts/handle-1" && method === "DELETE") {
+    if (path.startsWith("/hosted/transcripts/") && method === "DELETE") {
       if (failAt === "delete" || deleteFails) throw new Error("offline");
       return json({ ok: true });
     }
     throw new Error(`Unexpected request: ${method} ${path}`);
   };
-  const client = createHostedAssemblyAiClient({ backendUrl: "https://exo.test",
+  const client = clientOverride ?? createHostedAssemblyAiClient({ backendUrl: "https://exo.test",
     sessionStore: { getToken: () => "session", isExpired: () => false }, fetchImpl: fetchImpl as typeof fetch,
     sleep: async () => {} });
   const account = { did: "did:test:one" } as TinyCloudWeb;
@@ -98,14 +100,56 @@ function harness(failAt?: "part" | "submit" | "result" | "space" | "delete", noS
       calls.push("space:save");
       savedMetadata = transcript.metadata;
       if (failAt === "space" && !failed) { failed = true; return { ok: false, error: new Error("offline") } as StoreResult<UpsertMeetingOutcome>; }
-      commit = { rev: transcript.rev, hash: await transcriptHash(transcript.sentences),
+      commit = commitAfterSave ?? { rev: transcript.rev, hash: await transcriptHash(transcript.sentences),
         outcome: noSpeech ? "no_speech" : "transcribed" } as TranscriptCommit;
       return { ok: true } as StoreResult<UpsertMeetingOutcome>;
     },
   });
   return { calls, recording, track, setCommit: (value: TranscriptCommit | null) => { commit = value; },
+    setCommitAfterSave: (value: TranscriptCommit) => { commitAfterSave = value; },
     getLocal: () => local, getSavedMetadata: () => savedMetadata, sleeps };
 }
+
+test("a Powerful rerun that loses the transcript CAS reports the Private conflict message", async () => {
+  const client = {
+    capabilities: async () => ({ hosted: true, max_bytes: 1000, part_size: 2,
+      content_types: ["audio/mp4"], daily_bytes_remaining: 1000 }),
+    createUpload: async () => ({ uploadId: "upload-1", partSize: 2 }),
+    putPart: async () => {},
+    createTranscript: async () => ({ id: "handle-1", status: "queued" }),
+    getTranscript: async () => ({ id: "handle-1", status: "completed",
+      utterances: [{ start: 0, end: 1000, text: "Hello", speaker: "A" }] }),
+    getSentences: async () => [],
+    deleteTranscript: async () => {},
+  } as unknown as ReturnType<typeof createHostedAssemblyAiClient>;
+  const { calls, recording, track, setCommit, setCommitAfterSave } = harness(undefined, false, false, "audio/mp4",
+    1000, [], false, client);
+  setCommit({ sourceId: "note-1", rev: 1, hash: "base-hash", outcome: "transcribed" } as TranscriptCommit);
+  setCommitAfterSave({ sourceId: "note-1", rev: 3, hash: "other-device-hash", outcome: "transcribed" } as TranscriptCommit);
+  recording.options!.uploadAudio = false;
+  const lane = track();
+  lane.consent();
+  await lane.run(recording, true);
+  expect(calls.filter((call) => call.startsWith("space:"))).toEqual(["space:save"]);
+  expect(lane.jobs.get("note-1")).toMatchObject({
+    kind: "failed", message: "A different transcript revision won this rerun. Try again.",
+  });
+});
+
+test("a manual Powerful retry deletes a prior cleanup-only transcript before replacing its entry", async () => {
+  const { calls, recording, track, setCommit } = harness();
+  setCommit({ sourceId: "note-1", rev: 1, hash: "base-hash", outcome: "transcribed" } as TranscriptCommit);
+  localStorage.setItem("exo.voiceNotes.powerfulJobs:did:test:one", JSON.stringify({
+    "note-1": { handle: "stale-handle", cleanupOnly: true },
+  }));
+  const lane = track();
+  lane.consent();
+  await lane.run(recording, true);
+  const deleteIndex = calls.indexOf("DELETE /hosted/transcripts/stale-handle");
+  const uploadIndex = calls.indexOf("POST /hosted/uploads");
+  expect(deleteIndex).toBeGreaterThanOrEqual(0);
+  expect(deleteIndex).toBeLessThan(uploadIndex);
+});
 
 test("a space-only note uses its space audio and can resume without a native recording", async () => {
   const { calls, track } = harness("result", false, true);

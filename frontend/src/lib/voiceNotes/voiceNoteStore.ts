@@ -235,6 +235,8 @@ export function voiceNoteAudioSourceFromBase64(audio: VoiceNoteAudio): VoiceNote
 }
 
 export interface StoreAudioOptions {
+  /** Copied only from the recording's explicit space-audio consent. */
+  uploadAudio?: boolean;
   partSize?: number;
   onUploadStart?: (totalBytes: number) => void;
   onProgress?: (storedBytes: number, totalBytes: number) => void;
@@ -246,6 +248,11 @@ export interface StoreAudioOptions {
   checkpoint?: () => void;
   onRowCreated?: (rowId: string) => Promise<void>;
 }
+
+const AUDIO_UPLOAD_DISABLED = {
+  ok: false as const,
+  error: { code: "AUDIO_UPLOAD_DISABLED", message: "Audio upload is not enabled for this recording." },
+};
 
 /** Storage error codes the voice notes UI tells apart. */
 export const VOICE_NOTE_STORAGE_FULL = AUDIO_STORAGE_FULL;
@@ -292,6 +299,7 @@ export async function putVoiceNoteAudio(
   source: VoiceNoteAudioSource,
   opts: StoreAudioOptions = {},
 ): Promise<StoreResult<StoredAudioManifest>> {
+  if (opts.uploadAudio !== true) return AUDIO_UPLOAD_DISABLED;
   try {
     const manifest = await putAudio(tcw.kv, voiceNoteAudioKvKey(id), source, {
       ...opts,
@@ -392,6 +400,7 @@ export async function saveVoiceNote(
   platform: string,
   opts: StoreAudioOptions = {},
 ): Promise<StoreResult<UpsertMeetingOutcome & { noteSyncError?: NoteSyncErrorCode }>> {
+  if (recording.options?.uploadAudio !== true) return AUDIO_UPLOAD_DISABLED;
   logPipeline("save", recording.id, "start");
   try {
     opts.checkpoint?.();
@@ -420,7 +429,8 @@ export async function saveVoiceNote(
     logPipeline("space_write", recording.id, "done", { destination: "legacy_transcript_key", bodyBytes: 2 });
     opts.checkpoint?.();
     logPipeline("audio_upload", recording.id, "start");
-    const audio = await putVoiceNoteAudio(tcw, recording.id, source, { ...opts, schedule: (job, operation, timeoutMs, payloadBytes) =>
+    const audio = await putVoiceNoteAudio(tcw, recording.id, source, { ...opts, uploadAudio: recording.options.uploadAudio,
+      schedule: (job, operation, timeoutMs, payloadBytes) =>
       (opts.schedule ?? ((call, label, limit, size) => runOnSpaceLane(call, {
         operation: label ?? "voice-note audio KV call", timeoutMs: limit, payloadBytes: size,
       })))((signal) => { opts.checkpoint?.(); return job(signal); }, operation, timeoutMs, payloadBytes),

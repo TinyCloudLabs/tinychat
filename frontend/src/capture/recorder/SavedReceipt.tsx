@@ -30,6 +30,7 @@ export interface SavedReceiptProps {
   device?: "phone" | "mac";
   outcome: "local" | "saved" | "failed";
   localUpload?: "uploading" | "held" | "in-flight" | null;
+  localUploadHeldReason?: "signed-out" | "other-account" | "legacy" | "unowned" | "audio-upload-disabled";
   /** The saved note (absent after a failure). */
   saved?: { id: string; durationMs: number; at: number } | null;
   route: readonly RouteNode[];
@@ -283,8 +284,9 @@ export function SavedReceipt(props: SavedReceiptProps) {
         <>
           <RouteLine nodes={route} landed={saved} />
           {props.outcome === "local" && <p className="text-meta text-muted-foreground">{
-            props.localUpload === "held" ? "Kept on this phone. This note needs an ownership check before upload."
-              : props.localUpload === "in-flight" ? "Another save is finishing in your TinyCloud space…"
+            props.localUpload === "held" ? props.localUploadHeldReason === "audio-upload-disabled"
+              ? "Audio upload is off. This note stays on this phone."
+              : "Kept on this phone. This note needs an ownership check before upload."
               : "Saving to your TinyCloud space…"
           }</p>}
           {saved && <p className="text-meta text-muted-foreground">Saved to your TinyCloud space</p>}
