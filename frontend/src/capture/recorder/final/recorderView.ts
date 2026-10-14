@@ -93,6 +93,17 @@ function writeFailedPresentation(): MicPresentation {
   };
 }
 
+function stopAgainPresentation(statusLine: string): MicPresentation {
+  return {
+    ring: "still",
+    flat: false,
+    pill: { label: FINAL_COPY.interrupted, dot: "hollow" },
+    statusLine,
+    stopEnabled: true,
+    emphasis: "stop",
+  };
+}
+
 function silenceLine(input: RecorderViewInput): string | null {
   if (
     input.silencedSinceMs === null ||
@@ -175,6 +186,9 @@ function interruptedPresentation(
     case "write_failed":
     case "permission_revoked":
     case "unsafe_sessions_folder":
+    case "source_still_running":
+    case "source_unusable":
+    case "status_unknown":
     case "session_exists":
       return unexpectedCombination("interrupted", reason, isDevelopmentOrTest);
     default: {
@@ -256,6 +270,14 @@ function needsUserPresentation(
             ? FINAL_COPY.unsafeSessionsFolder
             : FINAL_COPY.sessionExists,
       };
+    case "writer_stalled":
+      return stopAgainPresentation(FINAL_COPY.writerStalled);
+    case "source_still_running":
+      return stopAgainPresentation(FINAL_COPY.sourceStillRunning);
+    case "source_unusable":
+      return stopAgainPresentation(FINAL_COPY.sourceUnusable);
+    case "status_unknown":
+      return retryPresentation(FINAL_COPY.statusUnknown);
     case null:
     case "os_silenced":
     case "no_signal":
@@ -267,7 +289,6 @@ function needsUserPresentation(
     case "media_services_reset":
     case "read_error":
     case "app_suspended":
-    case "writer_stalled":
     case "pause_timeout":
     case "max_duration":
     case "disk_full":
@@ -344,6 +365,9 @@ function idlePresentation(
     case "mic_unavailable":
     case "pause_timeout":
     case "unsafe_sessions_folder":
+    case "source_still_running":
+    case "source_unusable":
+    case "status_unknown":
     case "session_exists":
       return unexpectedCombination("idle", reason, isDevelopmentOrTest);
     default: {
@@ -390,6 +414,9 @@ function micPresentation(
         case "disk_full":
         case "permission_revoked":
         case "unsafe_sessions_folder":
+        case "source_still_running":
+        case "source_unusable":
+        case "status_unknown":
         case "session_exists":
           return unexpectedCombination(
             "recording",
@@ -430,6 +457,9 @@ function micPresentation(
         case "write_failed":
         case "permission_revoked":
         case "unsafe_sessions_folder":
+        case "source_still_running":
+        case "source_unusable":
+        case "status_unknown":
         case "session_exists":
           return unexpectedCombination("silenced", reason, isDevelopmentOrTest);
         default: {

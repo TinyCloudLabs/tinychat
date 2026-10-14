@@ -405,6 +405,44 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     }
   };
 
+  /** Pause/Resume give up after this long: the native stop can take up to 30 s, plus finalization. */
+  const CONTROL_TIMEOUT_MS = 45_000;
+
+  /** A native Pause/Resume still outstanding at the deadline is abandoned; its late result is ignored. */
+  const runNativeControl = async (control: "pause" | "resume"): Promise<{ ok: true } | { ok: false; error: unknown }> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const call = (control === "pause" ? VoiceNotes.pause() : VoiceNotes.resume()).then(
+      () => ({ ok: true as const }),
+      (error: unknown) => ({ ok: false as const, error }),
+    );
+    const deadline = new Promise<{ ok: false; error: unknown }>((resolve) => {
+      timer = setTimeout(() => resolve({ ok: false, error: new Error("the microphone did not respond in time") }), CONTROL_TIMEOUT_MS);
+    });
+    try {
+      return await Promise.race([call, deadline]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  /** Native status, not the optimistic event, decides what the UI shows after a failed or unconfirmed Pause/Resume. */
+  const reconcileControlFailure = async (control: "pause" | "resume", error: string) => {
+    let status: CaptureStatus | undefined;
+    try {
+      status = await VoiceNotes.status();
+    } catch (caught) {
+      console.warn(`[VoiceNotes] Could not read status after a failed ${control}`, caught);
+    }
+    if (state.phase !== "recording") return;
+    send(control === "pause" ? { type: "PAUSE_FAILED", error } : { type: "RESUME_FAILED", error });
+    if (status) {
+      acceptNativeOptions(status);
+      sendMicState(status);
+    } else {
+      send({ type: "MIC_STATE", mic: { state: "needs_user", reason: "status_unknown" } });
+    }
+  };
+
   /** `generation` is the account generation when the save began: a save finishing after an account change never transcribes. */
   const landed = (generation: number, recording: VoiceNoteRecording, audio?: Parameters<VoiceNoteTranscriber["noteSaved"]>[1]) => {
     if (transcriber) {
@@ -961,42 +999,42 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     async pause() {
       if (state.phase !== "recording" || state.controlPending || (state.mic.state !== "recording" && state.mic.state !== "silenced")) return;
       send({ type: "PAUSE_REQUESTED" });
-      try {
-        await VoiceNotes.pause();
-      } catch (caught) {
-        send({ type: "PAUSE_FAILED", error: `Could not pause: ${messageOf(caught)}` });
+      const outcome = await runNativeControl("pause");
+      if (!outcome.ok) {
+        await reconcileControlFailure("pause", `Could not pause: ${messageOf(outcome.error)}`);
         return;
       }
       try {
         const status = await VoiceNotes.status();
         acceptNativeOptions(status);
         sendMicState(status);
+        send({ type: "PAUSE_CONFIRMED" });
       } catch (caught) {
         console.warn("[VoiceNotes] Pause succeeded, but status could not be read", caught);
-        send({ type: "MIC_STATE", mic: { state: "paused", reason: "user" } });
+        send({ type: "PAUSE_FAILED", error: `Paused, but the microphone state could not be read: ${messageOf(caught)}` });
+        send({ type: "MIC_STATE", mic: { state: "needs_user", reason: "status_unknown" } });
       }
-      send({ type: "PAUSE_CONFIRMED" });
     },
     async resume() {
       if (state.phase !== "recording" || state.controlPending || (state.mic.state !== "paused" && state.mic.state !== "interrupted" && state.mic.state !== "needs_user")) return;
       setCapturePlaybackBlocked(true);
       stopAllPlayback();
       send({ type: "RESUME_REQUESTED" });
-      try {
-        await VoiceNotes.resume();
-      } catch (caught) {
-        send({ type: "RESUME_FAILED", error: `Could not resume: ${messageOf(caught)}` });
+      const outcome = await runNativeControl("resume");
+      if (!outcome.ok) {
+        await reconcileControlFailure("resume", `Could not resume: ${messageOf(outcome.error)}`);
         return;
       }
       try {
         const status = await VoiceNotes.status();
         acceptNativeOptions(status);
         sendMicState(status);
+        send({ type: "RESUME_CONFIRMED" });
       } catch (caught) {
         console.warn("[VoiceNotes] Resume succeeded, but status could not be read", caught);
-        send({ type: "MIC_STATE", mic: { state: "recording", reason: null } });
+        send({ type: "RESUME_FAILED", error: `Resumed, but the microphone state could not be read: ${messageOf(caught)}` });
+        send({ type: "MIC_STATE", mic: { state: "needs_user", reason: "status_unknown" } });
       }
-      send({ type: "RESUME_CONFIRMED" });
     },
     async discard() {
       if (state.phase === "discarding" && state.error) {

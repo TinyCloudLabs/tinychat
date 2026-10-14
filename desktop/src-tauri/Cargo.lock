@@ -2902,6 +2902,7 @@ dependencies = [
  "mp3",
  "parking_lot",
  "ractor",
+ "recorder-state",
  "reqwest 0.13.4",
  "rustix 1.1.4",
  "serde",
@@ -7666,6 +7667,10 @@ checksum = "f821338fddb99d089116342c46e9f1fbf3828dba077674613e734e01d6ea8677"
 dependencies = [
  "rustfft",
 ]
+
+[[package]]
+name = "recorder-state"
+version = "0.1.0"
 
 [[package]]
 name = "redox_syscall"

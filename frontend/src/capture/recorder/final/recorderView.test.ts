@@ -198,7 +198,6 @@ describe("selectRecorderView: needs_user reason decisions", () => {
     "media_services_reset",
     "read_error",
     "app_suspended",
-    "writer_stalled",
     "pause_timeout",
     "max_duration",
     "disk_full",
@@ -206,6 +205,28 @@ describe("selectRecorderView: needs_user reason decisions", () => {
     expect(() => recordingView("needs_user", reason)).toThrow(
       `Unexpected recorder mic combination: needs_user/${String(reason)}`,
     );
+  });
+
+  test.each([
+    ["writer_stalled", FINAL_COPY.writerStalled],
+    ["source_still_running", FINAL_COPY.sourceStillRunning],
+    ["source_unusable", FINAL_COPY.sourceUnusable],
+  ] as const)("needs_user/%s offers Stop again", (reason, statusLine) => {
+    expect(recordingView("needs_user", reason)).toMatchObject({
+      ring: "still",
+      statusLine,
+      tapRingAction: null,
+      controls: { stop: true, resume: false },
+    });
+  });
+
+  test("needs_user/status_unknown offers a retry", () => {
+    expect(recordingView("needs_user", "status_unknown")).toMatchObject({
+      ring: "still-resumable",
+      statusLine: FINAL_COPY.statusUnknown,
+      tapRingAction: "resume",
+      controls: { resume: true },
+    });
   });
 });
 

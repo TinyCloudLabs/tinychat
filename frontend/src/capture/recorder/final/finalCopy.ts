@@ -67,6 +67,10 @@ export const FINAL_COPY = {
   micUnavailable:
     "The microphone is unavailable. Choose another input or reconnect it.",
   stalledNeedsUser: "The microphone stopped sending sound.",
+  writerStalled: "The recording stopped responding. Stop to save what was captured.",
+  sourceStillRunning: "The microphone is still running and did not close. Stop again to save what was captured.",
+  sourceUnusable: "The microphone failed while stopping. Stop again to save what was captured.",
+  statusUnknown: "Could not read the microphone state.",
   inputChanged: "The microphone input changed. Waiting for capture to recover.",
   audioServicesReset:
     "Audio services restarted. Waiting for capture to recover.",

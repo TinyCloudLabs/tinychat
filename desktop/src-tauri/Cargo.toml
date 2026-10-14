@@ -19,6 +19,7 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 url = "2"
+recorder-state = { path = "../recorder-state" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"

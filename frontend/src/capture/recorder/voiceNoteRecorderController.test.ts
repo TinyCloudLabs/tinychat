@@ -126,6 +126,7 @@ beforeEach(() => {
   saves = [];
   noted = [];
   currentId = null;
+  paused = false;
   deleteFailures = 0;
   deleteCalls = 0;
   nativeDiscards = 0;
@@ -1958,6 +1959,53 @@ const hostWindow = () => ({ HTMLIFrameElement: class {}, document: hostDocument,
     await recorder.resume();
     fake.emit("micState", { id: currentId, state: "needs_user", reason: "resume_blocked" });
     expect(recorder.getState()).toMatchObject({ mic: { state: "needs_user" }, error: "Could not resume: microphone busy" });
+  });
+
+  test("a Pause whose status read fails reports needs_user, never a synthesized paused", async () => {
+    const base = plugin;
+    __setVoiceNotesForTests({ ...base,
+      async pause() { paused = true; },
+      async status() {
+        if (paused) throw new Error("status unavailable");
+        return base.status();
+      },
+    }, { available: true });
+    const { recorder } = await attached();
+    await recorder.record();
+    await recorder.pause();
+    expect(recorder.getState()).toMatchObject({
+      error: expect.stringContaining("Paused, but the microphone state could not be read"),
+      mic: { state: "needs_user", reason: "status_unknown" },
+    });
+  });
+
+  test("a Pause that throws after the native capture paused reconciles to paused", async () => {
+    const base = plugin;
+    __setVoiceNotesForTests({ ...base,
+      async pause() {
+        paused = true;
+        throw Object.assign(new Error("capture stop timed out"), { code: "capture_stop_timeout" });
+      },
+    }, { available: true });
+    const { recorder } = await attached();
+    await recorder.record();
+    await recorder.pause();
+    expect(recorder.getState()).toMatchObject({ error: "Could not pause: capture stop timed out", mic: { state: "paused" } });
+    expect(recorder.getState().controlPending).toBeFalsy();
+  });
+
+  test("a failed Resume reconciles to the native paused state instead of sticking", async () => {
+    const base = plugin;
+    __setVoiceNotesForTests({ ...base,
+      async pause() { paused = true; },
+      async resume() { throw Object.assign(new Error("audio session busy"), { code: "resume_failed" }); },
+    }, { available: true });
+    const { recorder } = await attached();
+    await recorder.record();
+    await recorder.pause();
+    await recorder.resume();
+    expect(recorder.getState()).toMatchObject({ error: "Could not resume: audio session busy", mic: { state: "paused" } });
+    expect(recorder.getState().controlPending).toBeFalsy();
   });
 
   test("discard racing the limit's auto-stop: discard first deletes it, the limit first saves it", async () => {
