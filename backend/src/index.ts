@@ -836,11 +836,9 @@ async function main() {
       fetchImpl: ((...args: Parameters<typeof fetch>) => limiter.run(() => fetch(...args))) as typeof fetch,
     });
     const calendar = new GoogleCalendarClient({ limiter });
-    const credentials = new CredentialStore(new KvCredentialRowStore(node, transcriberStorageLane), {
-      upstreamRevoker: async secret => {
-        if (secret.kind === "oauth") await google.revoke(secret.refreshToken ?? secret.accessToken);
-      },
-    });
+    // Google revocation is exclusively through the connection service's shared-grant guard.
+    const credentials = new CredentialStore(new KvCredentialRowStore(node, transcriberStorageLane));
+    const backfillCredentials = new CredentialStore(new KvCredentialRowStore(node, transcriberStorageLane, { priority: "background" }));
     // Same lane; see kvCalendarAutojoinStores for the priorities. The worker shares the one
     // connection service (it single-flights token refreshes), so its few calls through it
     // (cleanupEnabling, accessToken) run foreground under the request budget.
@@ -849,7 +847,7 @@ async function main() {
     await stores.worker.listConnections();
     const coordinator = new TenantCoordinator();
     calendarAutojoin = new CalendarAutojoinConnection({
-      store: stores.request, credentials, oauth: google, coordinator, calendar,
+      store: stores.request, credentials, backfillCredentials, oauth: google, coordinator, calendar,
       // TC-1047: disable, disconnect and needs_reconnect cancel the tenant's due-time timers.
       onDisabled: tenant => calendarAutojoinWorker?.cancelTenant(tenant),
     });

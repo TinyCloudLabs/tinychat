@@ -426,14 +426,12 @@ export function createGoogleOAuthRouter(
       return;
     }
     try {
-      if (options.autojoin) {
-        const tenant = req.user?.address;
-        if (!tenant) { res.status(401).json({ error: "unauthorized" }); return; }
-        await options.autojoin.browserReconnect(tenant.toLowerCase());
-      }
+      const tenant = req.user?.address;
+      if (options.autojoin && !tenant) { res.status(401).json({ error: "unauthorized" }); return; }
       const payload = await (desktopRedirectUri ? desktopOAuth(desktopRedirectUri) : oauth).exchangeCode({ code, verifier });
-      // A concurrent autojoin rebind during the network exchange must not outlive this browser account switch.
-      if (options.autojoin) await options.autojoin.browserReconnect(req.user!.address.toLowerCase());
+      // Compare after success against the latest binding, including a rebind during exchange.
+      if (options.autojoin) await options.autojoin.browserReconnect(tenant!.toLowerCase(), payload.subject,
+        [payload.access_token, payload.refresh_token].filter((token): token is string => !!token));
       logGoogleOAuth(
         `op=exchange result=ok refresh_token=${payload.refresh_token === undefined ? "absent" : "present"}`,
       );

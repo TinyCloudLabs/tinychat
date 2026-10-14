@@ -1,5 +1,25 @@
 # @tinychat/backend
 
+## 0.5.5
+
+### Patch Changes
+
+- 7a024fb: Relay validated optional PTX quiet-mode VAD diagnostics in transcription results.
+- ada6d55: Keep calendar autojoin enabled when reconnecting the same Google account and explain why it is off in connector settings and Meeting sources.
+- 42fbd33: Keep a shared Google grant when another live calendar autojoin account still uses it, while removing the disconnecting account's local credentials. Explain that Google access can be revoked from another TinyChat account or Google settings.
+
+## 0.5.5-beta.2
+
+### Patch Changes
+
+- 42fbd33: Keep a shared Google grant when another live calendar autojoin account still uses it, while removing the disconnecting account's local credentials. Explain that Google access can be revoked from another TinyChat account or Google settings.
+
+## 0.5.5-beta.1
+
+### Patch Changes
+
+- ada6d55: Keep calendar autojoin enabled when reconnecting the same Google account and explain why it is off in connector settings and Meeting sources.
+
 ## 0.5.5-beta.0
 
 ### Patch Changes

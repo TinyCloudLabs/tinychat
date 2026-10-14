@@ -238,6 +238,7 @@ export function MeetingSourcesDialog({
                     disabled={autojoin.busy || !autojoin.status}
                     scan={autojoinInfo.scan}
                     warning={autojoinInfo.warning}
+                    detail={autojoinInfo.detail}
                     onToggle={() =>
                       autojoin.status?.enabled
                         ? autojoin.disable()
