@@ -613,8 +613,8 @@ const AUTOMATIC_RETRY_CODES: Record<string, true> = {
   http_5xx: true,
   service_busy: true,
   transcript_save_failed: true,
-  held_result_persistence_failed: true,
   STORAGE_QUOTA_EXCEEDED: true,
+  upload_capability_limit: true,
 };
 
 function isAutomaticRetryableCode(code: string | null): boolean {
@@ -622,10 +622,10 @@ function isAutomaticRetryableCode(code: string | null): boolean {
 }
 
 function isAutomaticRetryableError(error: unknown): boolean {
-  return error instanceof PrivateCloudError
-    && (error.statusCode === 429 || error.statusCode === 503 || isAutomaticRetryableCode(error.code))
-    || isAutomaticRetryableCode(voiceNoteErrorCode(error));
+  return isAutomaticRetryableCode(voiceNoteErrorCode(error));
 }
+
+const MANUAL_ONLY_RETRY_CODES: ReadonlySet<string> = new Set(["quota_exceeded"]);
 
 const RELEASE_CODES: ReadonlySet<string> = new Set([
   "recording_too_large",
@@ -1009,6 +1009,7 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
         current = await readJob(job.transcriptionId, guard);
       } catch (err) {
         if (!(err instanceof PrivateCloudError && err.code === "transcription_not_found")) throw err;
+        if (job.failure) throw err;
         job = null;
         pending.clear(sourceId);
       }
@@ -1154,7 +1155,8 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
         guard();
         const code = voiceNoteErrorCode(err);
         if (RELEASE_CODES.has(code)) await release(input.sourceId, guard);
-        else if (JOB_ENDED_CODES.has(code)) pending.clear(input.sourceId);
+        else if (JOB_ENDED_CODES.has(code) && pending.read(input.sourceId)?.failure === undefined)
+          pending.clear(input.sourceId);
         throw err;
       }
     },
@@ -1749,6 +1751,14 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
     if (force || terminal || cloud !== null && !cloud.pendingSourceIds().includes(sourceId)) choices.remove(sourceId);
   };
 
+  const publishTerminalFailure = (sourceId: string, code: string) => {
+    const current = jobs.get(sourceId);
+    if (current?.kind === "active" || current?.kind === "done"
+      || current?.kind === "failed" && current.code === code) return;
+    jobs.set(sourceId, { kind: "failed", ...voiceNoteTranscriptionFailureForCode(code) });
+    emit();
+  };
+
   /** A note that did not begin in the app: kept from every automatic job until the user's own Transcribe on it. */
   const hold = (sourceId: string) => {
     if (!isHeld(sourceId)) {
@@ -1910,12 +1920,15 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
           jobs.delete(sourceId);
           settleChoice(sourceId);
         } else {
-          logPipelineError("transcription", err, sourceId);
-          const failure = voiceNoteTranscriptionFailure(err);
-          jobs.set(sourceId, { kind: "failed", ...failure });
           const code = voiceNoteErrorCode(err);
-          if (!isAutomaticRetryableError(err)
-            && (JOB_ENDED_CODES.has(code) || NOTE_INTRINSIC_FAILURE_CODES.has(code) || err instanceof DeviceLocalVoiceNoteAudioError)
+          const terminalFailure = cloud?.terminalFailure?.(sourceId);
+          const failure = terminalFailure
+            ? voiceNoteTranscriptionFailureForCode(terminalFailure)
+            : voiceNoteTranscriptionFailure(err);
+          jobs.set(sourceId, { kind: "failed", ...failure });
+          if (!terminalFailure && !isAutomaticRetryableError(err)
+            && (JOB_ENDED_CODES.has(code) || NOTE_INTRINSIC_FAILURE_CODES.has(code)
+              || MANUAL_ONLY_RETRY_CODES.has(code) || err instanceof DeviceLocalVoiceNoteAudioError)
             && !["account_changed", "voice_note_account_mismatch", "voice_note_not_found", "transcription_off"].includes(code))
             cloud?.rememberTerminalFailure?.(sourceId, failure.code);
           if (isAutomaticRetryableError(err)) {
@@ -1992,8 +2005,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
         const hasRemoteJob = cloud.hasRemoteJob?.(sourceId) ?? false;
         const terminalFailure = cloud.terminalFailure?.(sourceId);
         if (terminalFailure && !held && !hasRemoteJob) {
-          if (current?.kind !== "active" && current?.kind !== "done")
-            jobs.set(sourceId, { kind: "failed", ...voiceNoteTranscriptionFailureForCode(terminalFailure) });
+          publishTerminalFailure(sourceId, terminalFailure);
           continue;
         }
         if (held) {
@@ -2041,8 +2053,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
         const terminalFailure = cloud.terminalFailure?.(recording.id);
         if (terminalFailure && (cloud.heldTranscript?.(recording.id) ?? null) === null
           && !(cloud.hasRemoteJob?.(recording.id) ?? false)) {
-          if (current?.kind !== "active" && current?.kind !== "done")
-            jobs.set(recording.id, { kind: "failed", ...voiceNoteTranscriptionFailureForCode(terminalFailure) });
+          publishTerminalFailure(recording.id, terminalFailure);
           continue;
         }
         if (isHeld(recording.id) || current?.kind === "active" || current?.kind === "done"
