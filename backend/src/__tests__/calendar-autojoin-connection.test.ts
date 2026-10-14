@@ -398,9 +398,45 @@ describe("Calendar OAuth custody lifecycle", () => {
     expect(await f.credentials.status(source, TENANT)).toBeNull();
     expect((await f.connection.getStatus(TENANT)).enabled).toBe(false);
   });
+
+  for (const step of ["onDisabled", "listOccurrences", "updateOccurrence", "credentialDelete"] as const) {
+    test(`disconnect revokes its captured token even if post-commit ${step} fails`, async () => {
+      const f = fixture(); await f.enable(); await f.store.putOccurrence(attempt());
+      const fail = async () => { throw new Error("Synthetic post-commit failure"); };
+      if (step === "onDisabled") f.options.onDisabled = () => { throw new Error("Synthetic post-commit failure"); };
+      else if (step === "credentialDelete") f.credentials.delete = fail;
+      else if (step === "listOccurrences") f.store.listOccurrences = fail;
+      else f.store.updateOccurrence = fail;
+      await expect(f.connection.disconnect(TENANT)).rejects.toThrow("Synthetic post-commit failure");
+      expect(f.revokes).toHaveLength(1);
+      expect((await f.store.getConnection(TENANT))?.state).toBe("disabled");
+      expect(f.connection.getLastGoodStatus(TENANT)).toBeUndefined();
+      if (step === "credentialDelete") expect(await f.credentials.status(source, TENANT)).not.toBeNull();
+      else expect(await f.credentials.status(source, TENANT)).toBeNull();
+    });
+  }
 });
 
 describe("authenticated autojoin routes", () => {
+  test("Google OAuth revoke succeeds when optional teardown projection publication fails", async () => {
+    const f = fixture(); await f.enable();
+    const publish = spyOn(f.store, "putStatusSummary").mockRejectedValue(new Error("Synthetic projection failure"));
+    const app = express(); app.use(express.json());
+    app.use((req, _res, next) => { req.user = { address: TENANT } as typeof req.user; next(); });
+    app.use("/oauth", createGoogleOAuthRouter({ oauth: f.oauth, autojoin: f.connection, appOrigin: "https://app.example.test" }));
+    const server = app.listen(0); await new Promise<void>(done => server.once("listening", done));
+    try {
+      const response = await fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}/oauth/revoke`, {
+        method: "POST", headers: { "content-type": "application/json" }, body: "{}",
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ status: "disconnected", upstreamRevoked: "ok" });
+      expect(f.revokes).toHaveLength(1);
+      expect(await f.credentials.status(source, TENANT)).toBeNull();
+      expect((await f.store.getConnection(TENANT))?.state).toBe("disabled");
+    } finally { publish.mockRestore(); await new Promise<void>(done => server.close(() => done())); }
+  });
+
   test("TC-1086: Google OAuth revoke clears a cached enabled status before status can time out", async () => {
     const f = fixture(); await f.enable();
     expect(f.connection.getLastGoodStatus(TENANT)?.body.enabled).toBe(true);

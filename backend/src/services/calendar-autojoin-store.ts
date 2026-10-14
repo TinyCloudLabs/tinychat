@@ -122,6 +122,7 @@ export interface CalendarAutojoinStore {
   getStatusSummary(tenant: string, deadline?: number, metrics?: CalendarAutojoinReadMetrics): Promise<CalendarAutojoinStatusSummary | null>;
   getStatusSummaryOrLegacy(tenant: string, deadline?: number, metrics?: CalendarAutojoinReadMetrics): Promise<CalendarAutojoinStatusSummary>;
   putStatusSummary(tenant: string, summary: CalendarAutojoinStatusSummary): Promise<void>;
+  forgetStatusSummaryDigest(tenant: string): void;
   getOccurrence(tenant: string, id: string): Promise<CalendarOccurrence | null>;
   putOccurrence(row: CalendarOccurrence): Promise<void>;
   updateOccurrence(tenant: string, id: string, update: Update<CalendarOccurrence>): Promise<CalendarOccurrence | null>;
@@ -166,6 +167,10 @@ const CLAIM_RETENTION_MS = 86_400_000;
 // The three stores already share a cache identity. Keep committed summary digests coherent across
 // worker publication and user teardown without extra KV reads, with the same bounded tenant cap.
 const summaryWriteDigests = new WeakMap<CalendarAutojoinStatusCache, Map<string, string>>();
+/** An unreadable projection can be rebuilt; authoritative connection corruption cannot. */
+class CalendarAutojoinSummaryInvalid extends Error {
+  constructor() { super("calendar_status_summary_invalid"); }
+}
 
 class JsonCalendarAutojoinStore implements CalendarAutojoinStore {
   private readonly summaryDigests: Map<string, string>;
@@ -190,7 +195,10 @@ class JsonCalendarAutojoinStore implements CalendarAutojoinStore {
         const write = async () => {
           await this.json.put(key, next);
           // Connection rows are never deleted; a new tenant cannot have occurrence history.
-          if (previous === null) await this.writeSummary(tenant, { version: 1, outcomes: [] });
+          if (previous === null) {
+            try { await this.writeSummary(tenant, { version: 1, outcomes: [] }); }
+            catch { this.forgetStatusSummaryDigest(tenant); }
+          }
         };
         if (connectionPolicyChanged(previous, next)) await this.statusCache.mutate(tenant, write);
         else await write();
@@ -216,19 +224,29 @@ class JsonCalendarAutojoinStore implements CalendarAutojoinStore {
     const rows = await this.listKeys<CalendarOccurrence>(summaryOrKeys, deadline, metrics);
     return { version: 1 as const, outcomes: calendarAutojoinOutcomes(rows) };
   }
-  /** Only called inside a lane job. A corrupt summary never enters the legacy fallback. */
+  /** Only called inside a lane job. Missing/invalid projections use the authoritative listing. */
   private async readSummary(tenant: string) {
-    const summary = await this.json.get<CalendarAutojoinStatusSummary>(statusKey(tenant));
-    if (!summary) this.summaryDigests.delete(tenant.toLowerCase());
-    if (summary && (summary.version !== 1 || !Array.isArray(summary.outcomes) || summary.outcomes.length > 30
-      || !summary.outcomes.every(row => row && typeof row.id === "string" && typeof row.reason === "string"
-        && typeof row.start === "number" && Number.isFinite(row.start)
-        && (row.title === undefined || typeof row.title === "string")
-        && (row.meetingId === undefined || typeof row.meetingId === "string")))) {
-      throw new Error("calendar_state_invalid");
+    try {
+      const summary = await this.json.get<CalendarAutojoinStatusSummary>(statusKey(tenant));
+      if (summary === null) { this.forgetStatusSummaryDigest(tenant); return null; }
+      if (typeof summary !== "object" || summary.version !== 1 || !Array.isArray(summary.outcomes) || summary.outcomes.length > 30
+        || !summary.outcomes.every(row => row && typeof row.id === "string" && typeof row.reason === "string"
+          && typeof row.start === "number" && Number.isFinite(row.start)
+          && (row.title === undefined || typeof row.title === "string")
+          && (row.meetingId === undefined || typeof row.meetingId === "string"))) {
+        throw new CalendarAutojoinSummaryInvalid();
+      }
+      return summary;
+    } catch (error) {
+      // The JSON store also reports malformed projection JSON/envelopes through these errors.
+      // Scope their recovery to this key; connection/listing corruption keeps its old behavior.
+      if (!(error instanceof CalendarAutojoinSummaryInvalid || error instanceof SyntaxError
+        || (error instanceof Error && error.message === "calendar_state_invalid"))) throw error;
+      this.forgetStatusSummaryDigest(tenant);
+      return null;
     }
-    return summary;
   }
+  forgetStatusSummaryDigest(tenant: string): void { this.summaryDigests.delete(tenant.toLowerCase()); }
   putStatusSummary(tenant: string, summary: CalendarAutojoinStatusSummary) {
     const digest = createHash("sha256").update(JSON.stringify(summary)).digest("hex");
     if (this.summaryDigests.get(tenant.toLowerCase()) === digest) {

@@ -180,25 +180,30 @@ export class CalendarAutojoinConnection {
 
   async disconnect(tenant: string, browserToken?: string) {
     let serverToken: string | undefined;
-    let unreadable = false;
-    await this.writeSettings(tenant, async () => {
-      // Read for revocation before ending custody, but never let a decrypt failure prevent deletion.
-      try {
-        const secret = await this.options.credentials.getCredential(GOOGLE_AUTOJOIN_CREDENTIAL_SOURCE, tenant, "teardown");
-        if (secret?.kind === "oauth") serverToken = secret.refreshToken ?? secret.accessToken;
-      } catch { unreadable = true; }
-      await this.disableLocked(tenant);
-    });
-    let failed = unreadable;
-    const tokens = [...new Set([serverToken, browserToken].filter((token): token is string => !!token))];
-    for (const token of tokens) {
-      try { await this.options.oauth.revoke(token); } catch (error) {
-        // Revoking a refresh token also revokes its sibling access tokens in the same grant.
-        if (!(error instanceof GoogleOAuthError && error.error === "invalid_token")) failed = true;
+    let failed = false;
+    let hadToken: boolean;
+    try {
+      await this.writeSettings(tenant, async () => {
+        // Capture before deleting custody; retain it through every post-commit failure.
+        try {
+          const secret = await this.options.credentials.getCredential(GOOGLE_AUTOJOIN_CREDENTIAL_SOURCE, tenant, "teardown");
+          if (secret?.kind === "oauth") serverToken = secret.refreshToken ?? secret.accessToken;
+        } catch { failed = true; }
+        await this.disableLocked(tenant);
+      });
+    } finally {
+      // Revoke outside tenant coordination, including when local teardown fails after commit.
+      const tokens = [...new Set([serverToken, browserToken].filter((token): token is string => !!token))];
+      hadToken = tokens.length > 0;
+      for (const token of tokens) {
+        try { await this.options.oauth.revoke(token); } catch (error) {
+          // Revoking a refresh token also revokes its sibling access tokens in the same grant.
+          if (!(error instanceof GoogleOAuthError && error.error === "invalid_token")) failed = true;
+        }
       }
     }
     return { status: "disconnected" as const,
-      upstreamRevoked: failed ? "failed" as const : tokens.length ? "ok" as const : "not_applicable" as const };
+      upstreamRevoked: failed ? "failed" as const : hadToken ? "ok" as const : "not_applicable" as const };
   }
 
   async cleanupEnabling(tenant: string): Promise<void> {
@@ -280,9 +285,9 @@ export class CalendarAutojoinConnection {
       state: "disabled", generation: (current?.generation ?? 0) + 1, nextScanAt: 0,
       credentialRef: undefined, setupId: undefined, setupExpiresAt: undefined, errorCode: undefined, scanComplete: false };
     await this.options.store.putConnection(disabled);
-    this.options.onDisabled?.(tenant);
-    for (const [key, value] of this.transactions) if (value.tenant === tenant) this.transactions.delete(key);
     try {
+      this.options.onDisabled?.(tenant);
+      for (const [key, value] of this.transactions) if (value.tenant === tenant) this.transactions.delete(key);
       const occurrences = await this.options.store.listOccurrences(tenant);
       for (const row of occurrences) {
         if (row.phase === "terminal" || (!row.createBody && !row.meetingId && !row.idempotencyKey)) continue;
@@ -291,7 +296,12 @@ export class CalendarAutojoinConnection {
       }
       // User writes must be immediately visible, including legacy tenants awaiting their first tick.
       // Teardown already lists these rows; stopRequested does not change the outcome projection.
-      await this.options.store.putStatusSummary(tenant, { version: 1, outcomes: calendarAutojoinOutcomes(occurrences) });
+      try {
+        await this.options.store.putStatusSummary(tenant, { version: 1, outcomes: calendarAutojoinOutcomes(occurrences) });
+      } catch {
+        // Projection availability cannot abort teardown or lose the captured revocation token.
+        this.options.store.forgetStatusSummaryDigest(tenant);
+      }
     } finally {
       await this.options.credentials.delete(GOOGLE_AUTOJOIN_CREDENTIAL_SOURCE, tenant);
     }

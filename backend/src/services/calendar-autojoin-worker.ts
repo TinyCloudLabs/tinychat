@@ -204,6 +204,7 @@ export class CalendarAutojoinWorker {
     } finally { this.summaryChanges.delete(key); }
   }
   private async publishStatusSummary(tenant: string, occurrences: CalendarOccurrence[]): Promise<void> {
+    if (this.stopping) return;
     const outcomes = calendarAutojoinOutcomes(occurrences);
     // At most one background write after reconciliation, deduplicated across all store writers.
     await this.options.store.putStatusSummary(tenant, { version: 1, outcomes });

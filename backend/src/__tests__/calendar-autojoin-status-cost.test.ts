@@ -12,6 +12,7 @@ import type { TranscriptionApiClient } from "../services/transcription-api.js";
 import express from "express";
 import type { AddressInfo } from "node:net";
 import { createCalendarAutojoinRouter } from "../routes/calendar-autojoin.js";
+import { STATUS_CACHE_MAX_TENANTS } from "../services/calendar-autojoin-status-cache.js";
 
 const TENANT = `0x${"1".repeat(40)}`;
 const AT = Date.parse("2026-10-14T12:00:00Z");
@@ -23,6 +24,7 @@ const occurrence = (index: number): CalendarOccurrence => ({ tenant: TENANT, sub
 function fixture(values = new Map<string, unknown>()) {
   let now = AT;
   let summaryFailures = 0;
+  let revokes = 0;
   const node = { kv: {
     async get(key: string) { return values.has(key) ? { ok: true, data: { data: structuredClone(values.get(key)) } }
       : { ok: false, error: { code: "KV_NOT_FOUND", service: "kv", message: `Key not found: ${key}` } }; },
@@ -43,11 +45,12 @@ function fixture(values = new Map<string, unknown>()) {
   });
   const calendar: GoogleCalendarPort = { async listEvents() { return []; }, async getEvent() { return null; }, async probePrimary() {} };
   const options = { store: stores.request, credentials, calendar, coordinator,
-    oauth: { async revoke() {} } as GoogleOAuthPort, now: () => now, statusBudgetMs: 12_000 };
+    oauth: { async revoke() { revokes++; } } as GoogleOAuthPort, now: () => now, statusBudgetMs: 12_000 };
   const connection = new CalendarAutojoinConnection(options);
   const worker = new CalendarAutojoinWorker({ store: stores.worker, dispatchStore: stores.dispatch, connection,
     coordinator, calendar, index: new MemoryTranscriberIndexStore(), api: {} as TranscriptionApiClient, now: () => now, random: () => 0 });
   return { values, node, options, lane, stores, connection, worker, calendar, credentials, advance(ms: number) { now += ms; },
+    get revokeCount() { return revokes; },
     failNextSummaryWrite() { summaryFailures++; },
     async seed(n: number) {
       await stores.request.putConnection({ tenant: TENANT, subject: "synthetic-subject", state: "enabled", generation: 1,
@@ -61,6 +64,10 @@ function fixture(values = new Map<string, unknown>()) {
   };
 }
 
+function summaryDigests(f: ReturnType<typeof fixture>) {
+  return (f.stores.request as unknown as { summaryDigests: Map<string, string> }).summaryDigests;
+}
+
 async function withStatus(f: ReturnType<typeof fixture>, run: (request: () => Promise<Response>) => Promise<void>) {
   const app = express();
   app.use((req, _res, next) => { req.user = { address: TENANT } as typeof req.user; next(); });
@@ -71,6 +78,180 @@ async function withStatus(f: ReturnType<typeof fixture>, run: (request: () => Pr
 }
 
 describe("TC-1086 status cost", () => {
+  for (const [label, invalid] of [
+    ["unknown version", { version: 2, outcomes: [{ id: "row-0", title: "Synthetic metadata", start: AT, reason: "missed_window" }] }],
+    ["invalid outcome shape", { version: 1, outcomes: [{ id: "invalid-row", start: AT, reason: 42 }] }],
+    ["malformed JSON", "{"],
+    ["primitive projection", false],
+  ] as const) {
+    test(`an invalid summary (${label}) uses legacy history and repairs on an unchanged tick`, async () => {
+      const f = fixture(); await f.seed(1); await f.worker.tick();
+      const key = [...f.values.keys()].find(key => key.startsWith("calendar-autojoin/v1/status/"))!;
+      const original = structuredClone(f.values.get(key));
+      const run = spyOn(f.lane, "run");
+      const get = f.node.kv.get.bind(f.node.kv);
+      const read = spyOn(f.node.kv, "get");
+      try {
+        await withStatus(f, async request => {
+          const good = await request(); const body = await good.json();
+          expect(good.status).toBe(200);
+          expect(summaryDigests(f).has(TENANT)).toBe(true);
+          f.values.set(key, invalid); run.mockClear();
+          const legacy = await request();
+          expect(legacy.status).toBe(200);
+          expect(await legacy.json()).toEqual(body);
+          expect(run.mock.calls).toHaveLength(3);
+          expect(legacy.headers.get("server-timing")).toMatch(/^status;dur=\d+;desc="reads=3"$/);
+          expect(summaryDigests(f).has(TENANT)).toBe(false);
+          read.mockImplementation(async key => {
+            if (key.startsWith("calendar-autojoin/v1/occurrences/")) throw new BackendStorageLaneTimeout("Synthetic timeout");
+            return get(key);
+          });
+          const stale = await request();
+          expect(stale.status).toBe(200);
+          expect(await stale.json()).toEqual({ ...body, stale: true, asOf: expect.any(String) });
+          read.mockRestore();
+          await f.worker.tick();
+          expect(f.values.get(key)).toEqual(original); // Same outcomes: the dropped digest forces repair.
+          run.mockClear();
+          const repaired = await request();
+          expect(repaired.status).toBe(200);
+          expect(await repaired.json()).toEqual(body);
+          expect(run.mock.calls).toHaveLength(2);
+        });
+      } finally { read.mockRestore(); run.mockRestore(); await f.worker.stop(); }
+    });
+  }
+
+  test("a missing summary preserves last-good fallback and drops the unchanged write digest", async () => {
+    const f = fixture(); await f.seed(1); await f.worker.tick();
+    const key = [...f.values.keys()].find(key => key.startsWith("calendar-autojoin/v1/status/"))!;
+    const original = structuredClone(f.values.get(key));
+    const get = f.node.kv.get.bind(f.node.kv);
+    const read = spyOn(f.node.kv, "get");
+    try {
+      await withStatus(f, async request => {
+        const body = await (await request()).json();
+        expect(summaryDigests(f).has(TENANT)).toBe(true);
+        f.values.delete(key);
+        read.mockImplementation(async key => {
+          if (key.startsWith("calendar-autojoin/v1/occurrences/")) throw new BackendStorageLaneTimeout("Synthetic timeout");
+          return get(key);
+        });
+        const stale = await request();
+        expect(stale.status).toBe(200);
+        expect(await stale.json()).toEqual({ ...body, stale: true, asOf: expect.any(String) });
+        expect(summaryDigests(f).has(TENANT)).toBe(false);
+        read.mockRestore();
+        await f.worker.tick();
+        expect(f.values.get(key)).toEqual(original);
+        const repaired = await request();
+        expect(repaired.status).toBe(200);
+        expect(repaired.headers.get("server-timing")).toMatch(/^status;dur=\d+;desc="reads=2"$/);
+      });
+    } finally { read.mockRestore(); await f.worker.stop(); }
+  });
+
+  test("changing outcomes every tick never invalidates the last-good status served on lane timeout", async () => {
+    const f = fixture(); await f.seed(1); await f.worker.tick();
+    const publication = spyOn(f.node.kv, "put");
+    try {
+      await withStatus(f, async request => {
+        const body = await (await request()).json();
+        for (let i = 0; i < 10; i++) {
+          await f.stores.dispatch.updateOccurrence(TENANT, "row-0", row => row && { ...row, errorCode: `synthetic_failure_${i}` });
+          publication.mockClear(); f.advance(30_000);
+          await f.worker.tick();
+          expect(publication.mock.calls.filter(([key]) => key.startsWith("calendar-autojoin/v1/status/"))).toHaveLength(1);
+          f.options.statusBudgetMs = 0;
+          const stale = await request();
+          expect(stale.status).toBe(200);
+          expect(await stale.json()).toEqual({ ...body, stale: true, asOf: expect.any(String) });
+        }
+      });
+    } finally { publication.mockRestore(); await f.worker.stop(); }
+  });
+
+  test("the committed summary digest map is bounded and retains its most recent tenants", async () => {
+    const f = fixture();
+    const summary = { version: 1 as const, outcomes: [] };
+    for (let i = 0; i <= STATUS_CACHE_MAX_TENANTS; i++) await f.stores.request.putStatusSummary(`synthetic-tenant-${i}`, summary);
+    const digests = summaryDigests(f);
+    expect(digests.size).toBe(STATUS_CACHE_MAX_TENANTS);
+    expect(digests.has("synthetic-tenant-0")).toBe(false);
+    const put = spyOn(f.node.kv, "put");
+    try {
+      await f.stores.request.putStatusSummary(`synthetic-tenant-${STATUS_CACHE_MAX_TENANTS}`, summary);
+      expect(put).not.toHaveBeenCalled();
+      await f.stores.request.putStatusSummary("synthetic-tenant-0", summary);
+      expect(put).toHaveBeenCalledTimes(1);
+      expect(digests.size).toBe(STATUS_CACHE_MAX_TENANTS);
+      expect(digests.has("synthetic-tenant-0")).toBe(true);
+      expect(digests.has("synthetic-tenant-1")).toBe(false);
+    } finally { put.mockRestore(); await f.worker.stop(); }
+  });
+
+  test("a new connection commit survives a failed initial projection and repairs next tick", async () => {
+    const f = fixture(); f.failNextSummaryWrite();
+    await f.seed(0);
+    expect((await f.stores.request.getConnection(TENANT))?.state).toBe("enabled");
+    expect(await f.stores.request.getStatusSummary(TENANT)).toBeNull();
+    expect(await f.connection.getStatus(TENANT)).toMatchObject({ enabled: true, outcomes: [] });
+    try { await f.worker.tick(); expect(await f.stores.request.getStatusSummary(TENANT)).toEqual({ version: 1, outcomes: [] }); }
+    finally { await f.worker.stop(); }
+  });
+
+  test("disconnect completes and revokes once when teardown summary publication fails", async () => {
+    const f = fixture(); await f.seed(1); await f.worker.tick();
+    expect((await f.connection.getStatus(TENANT)).enabled).toBe(true);
+    await f.stores.dispatch.updateOccurrence(TENANT, "row-0", row => row && { ...row, errorCode: "capacity_exhausted" });
+    f.failNextSummaryWrite();
+    try {
+      expect(await f.connection.disconnect(TENANT)).toEqual({ status: "disconnected", upstreamRevoked: "ok" });
+      expect(f.revokeCount).toBe(1);
+      expect(await f.credentials.status(GOOGLE_AUTOJOIN_CREDENTIAL_SOURCE, TENANT)).toBeNull();
+      expect((await f.stores.request.getConnection(TENANT))?.state).toBe("disabled");
+      expect(summaryDigests(f).has(TENANT)).toBe(false);
+      expect(f.connection.getLastGoodStatus(TENANT)).toBeUndefined();
+      await f.worker.tick();
+      expect(await f.connection.getStatus(TENANT)).toMatchObject({ enabled: false, outcomes: [{ reason: "capacity_exhausted" }] });
+    } finally { await f.worker.stop(); }
+  });
+
+  for (const operation of ["disable", "browserReconnect", "needsReconnect"] as const) {
+    test(`${operation} completes its policy transition despite teardown publication failure`, async () => {
+      const f = fixture(); await f.seed(1); await f.worker.tick();
+      await f.stores.dispatch.updateOccurrence(TENANT, "row-0", row => row && { ...row, errorCode: "capacity_exhausted" });
+      f.failNextSummaryWrite();
+      try {
+        if (operation === "needsReconnect") await f.connection.needsReconnect(TENANT, 1);
+        else await f.connection[operation](TENANT);
+        expect((await f.stores.request.getConnection(TENANT))?.state).toBe(operation === "needsReconnect" ? "needs_reconnect" : "disabled");
+        expect(await f.credentials.status(GOOGLE_AUTOJOIN_CREDENTIAL_SOURCE, TENANT)).toBeNull();
+        expect(summaryDigests(f).has(TENANT)).toBe(false);
+      } finally { await f.worker.stop(); }
+    });
+  }
+
+  test("shutdown skips projection publication when the in-flight occurrence listing drains", async () => {
+    const f = fixture(); await f.seed(1);
+    let release!: () => void; let listed!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const ready = new Promise<void>(resolve => { listed = resolve; });
+    const list = f.stores.worker.listOccurrences.bind(f.stores.worker);
+    const listing = spyOn(f.stores.worker, "listOccurrences").mockImplementation(async (...args) => {
+      const rows = await list(...args); listed(); await gate; return rows;
+    });
+    const publication = spyOn(f.stores.worker, "putStatusSummary");
+    const tick = f.worker.tick();
+    try {
+      await ready;
+      const stop = f.worker.stop(); release();
+      await Promise.all([tick, stop]);
+      expect(publication).not.toHaveBeenCalled();
+    } finally { release(); listing.mockRestore(); publication.mockRestore(); await f.worker.stop(); }
+  });
+
   for (const n of [0, 30, 500]) {
     test(`bounded status and measured tick lane jobs N=${n}`, async () => {
       const f = fixture(); await f.seed(n);
