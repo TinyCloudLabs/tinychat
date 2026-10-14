@@ -105,7 +105,7 @@ export function TranscribeActionFor(props: TranscribeActionProps & { read: Phone
       setProblem(reason);
       setBusy(false);
     };
-    void transcribeWith(which, noteId, transcription, phone).then(
+    void transcribeWith(which, noteId, transcription, phone, durationSecs).then(
       (failure) => {
         if (failure !== null) failed(failure);
       },

@@ -6,7 +6,8 @@ import { deviceName } from "@/lib/platform";
 import { VoiceNotes } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { cancelOnDeviceNote } from "@/lib/voiceNotes/onDeviceSttStore";
 import { privateRefusal, type VoiceNoteTranscriptionProps } from "./transcriptionProps";
-import type { TranscriptionAdmissionRefusal } from "@/lib/voiceNotes/voiceNoteTranscription";
+import { formatExactDuration } from "@/capture/library/formatters";
+import { PRIVATE_DURATION_MARGIN_SECONDS, type PrivateStartRefusal, type TranscriptionAdmissionRefusal } from "@/lib/voiceNotes/voiceNoteTranscription";
 
 const PRIVATE_REFUSAL_COPY: Record<TranscriptionAdmissionRefusal, string> = {
   checking: "Private transcription is still checking. Try again in a moment.",
@@ -17,8 +18,10 @@ const PRIVATE_REFUSAL_COPY: Record<TranscriptionAdmissionRefusal, string> = {
   "account-changed": "Your account changed. Try again after signing in.",
 };
 
-export function privateRefusalCopy(refusal: TranscriptionAdmissionRefusal): string {
-  return PRIVATE_REFUSAL_COPY[refusal];
+/** The copy for a Private start that was refused: a state, or the duration limit this note breaks, with both lengths. */
+export function privateRefusalCopy(refusal: PrivateStartRefusal): string {
+  if (typeof refusal === "string") return PRIVATE_REFUSAL_COPY[refusal];
+  return `Private Transcription accepts notes up to ${formatExactDuration(refusal.limitSeconds - PRIVATE_DURATION_MARGIN_SECONDS, "floor")}. This note is ${formatExactDuration(refusal.durationSeconds, "ceil")}.`;
 }
 
 export function privateInsteadOffered(transcription: VoiceNoteTranscriptionProps | undefined, noteId: string, durationSecs: number | null): boolean {
@@ -80,8 +83,12 @@ async function waitForOnDeviceToEnd(noteId: string, wait: StopWait): Promise<str
 export async function switchToPrivate(
   transcription: VoiceNoteTranscriptionProps,
   noteId: string,
+  durationSecs: number | null,
   wait: StopWait = DEFAULT_WAIT,
 ): Promise<string | null> {
+  // Refused before the on-device job is stopped, so a note Private cannot take stays on Local.
+  const limit = privateRefusal(transcription, durationSecs);
+  if (limit?.kind === "duration") return privateRefusalCopy(limit);
   const before = await readOnDeviceState(noteId);
   if ("failure" in before) return before.failure;
   if (before.state === "done") return FINISHED;
@@ -89,6 +96,6 @@ export async function switchToPrivate(
   if (failure !== null) return failure;
   const unconfirmed = await waitForOnDeviceToEnd(noteId, wait);
   if (unconfirmed !== null) return unconfirmed;
-  const refusal = transcription.onTranscribePrivately(noteId);
-  return typeof refusal === "string" ? privateRefusalCopy(refusal) : null;
+  const refusal = transcription.onTranscribePrivately(noteId, durationSecs);
+  return refusal ? privateRefusalCopy(refusal) : null;
 }

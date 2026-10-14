@@ -408,7 +408,7 @@ describe("the Transcribe action", () => {
 
 describe("starting a transcription", () => {
   test("Local on the phone queues the note", async () => {
-    expect(await transcribeWith("on-device", NOTE, transcription(), phone())).toBeNull();
+    expect(await transcribeWith("on-device", NOTE, transcription(), phone(), null)).toBeNull();
     expect(enqueued).toEqual([NOTE]);
   });
 
@@ -417,7 +417,7 @@ describe("starting a transcription", () => {
     const originalError = console.error;
     console.error = noop;
     try {
-      const failure = await transcribeWith("on-device", NOTE, transcription(), phone());
+      const failure = await transcribeWith("on-device", NOTE, transcription(), phone(), null);
       expect(failure).toBe(LOCAL_START_FAILED);
       expect(failure).not.toContain("tombstoned");
     } finally {
@@ -435,7 +435,7 @@ describe("starting a transcription", () => {
     );
     OnDeviceStt.cancel = async ({ id }) => { cancelled.push(id); };
     const props = transcription({ onTranscribePrivately: (id) => { sent.push(id); } });
-    expect(await transcribeWith("private-cloud", NOTE, props, phone({ hasLocalState: true }))).toBeNull();
+    expect(await transcribeWith("private-cloud", NOTE, props, phone({ hasLocalState: true }), null)).toBeNull();
     expect(cancelled).toEqual([NOTE]);
     expect(sent).toEqual([NOTE]);
   });
@@ -444,12 +444,21 @@ describe("starting a transcription", () => {
     const calls: string[] = [];
     expect(await transcribeWith("private-cloud", NOTE,
       transcription({ onTranscribe: () => { calls.push("ordinary"); }, onTranscribePrivately: (id) => { calls.push(`private:${id}`); } }),
-      phone({ committed: "private-cloud" }))).toBeNull();
+      phone({ committed: "private-cloud" }), null)).toBeNull();
     expect(calls).toEqual([`private:${NOTE}`]);
   });
+  test("a Private duration refusal reaches the caller as a failure result, not success", async () => {
+    const limitSeconds = 4_321.5;
+    const durationSeconds = 4_321.251;
+    const result = await transcribeWith("private-cloud", NOTE, transcription({
+      onTranscribePrivately: () => ({ kind: "duration", limitSeconds, durationSeconds }),
+    }), phone({ committed: "private-cloud" }), durationSeconds);
+    expect(result).toBe("Private Transcription accepts notes up to 1 h 12 min 1 s. This note is 1 h 12 min 2 s.");
+  });
+
 
   test("a Local choice leaves the on-device queue in the store's snapshot", async () => {
-    await transcribeWith("on-device", NOTE, transcription(), phone());
+    await transcribeWith("on-device", NOTE, transcription(), phone(), null);
     await onDeviceSttStore.refresh();
     expect(onDeviceSttStore.snapshot().queue.some((entry) => entry.id === NOTE)).toBe(true);
   });

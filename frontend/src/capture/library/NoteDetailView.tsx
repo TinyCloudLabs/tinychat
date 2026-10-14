@@ -26,14 +26,15 @@ import type { NotePipelineView } from "@/lib/voiceNotes/useNotePipeline";
 import type { AppPlatform } from "@/lib/platform";
 import { activityForNote, deviceName, noteStatus } from "../activity/activitySelector";
 import type { LocalTranscript } from "@/lib/voiceNotes/nativeVoiceNotes";
-import { PRIVATE_DURATION_MARGIN_SECONDS, transcriptionStatusText } from "@/lib/voiceNotes/voiceNoteTranscription";
+import { transcriptionStatusText } from "@/lib/voiceNotes/voiceNoteTranscription";
 import { transcriptionErrorCopy, voiceNoteTranscriptionFailureForCode } from "@/lib/voiceNotes/transcriptionErrors";
 import { localTranscriptToSave, voiceNoteTitle, voiceNoteTranscriptState, VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
 import { PAGE_COLUMN, PageHeader } from "@/shell/PageHeader";
-import { detailWhen, formatExactDuration, formatSpokenDuration } from "./formatters";
+import { detailWhen, formatSpokenDuration } from "./formatters";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { DesktopWhisperStatus } from "./DesktopWhisperStatus";
 import { OnDeviceNoteStatus } from "./OnDeviceNoteStatus";
+import { privateRefusalCopy } from "@/capture/recorder/privateInstead";
 import { TranscribeAction } from "./TranscribeAction";
 import { privateCloudFits } from "./transcribeProviders";
 import { HowThisGotHere } from "./HowThisGotHere";
@@ -230,7 +231,7 @@ export function VoiceNoteTranscriptionStatus(props: {
     if (refusal?.kind === "duration") {
       return (
         <p className="text-callout text-muted-foreground" data-testid="voice-note-transcription-over-limit">
-          Private Transcription accepts notes up to {formatExactDuration(refusal.limitSeconds - PRIVATE_DURATION_MARGIN_SECONDS, "floor")}. This note is {formatExactDuration(refusal.durationSeconds, "ceil")}.
+          {privateRefusalCopy(refusal)}
         </p>
       );
     }

@@ -36,10 +36,12 @@ export type AudioDecoder = (bytes: ArrayBuffer, sampleRate: number) => Promise<D
 /** A failure preparing the audio, with a stable code like every private cloud failure. */
 export class VoiceNoteAudioError extends Error {
   readonly code: string;
-  constructor(code: string, message: string) {
+  readonly durationSeconds?: number;
+  constructor(code: string, message: string, durationSeconds?: number) {
     super(message);
     this.name = "VoiceNoteAudioError";
     this.code = code;
+    this.durationSeconds = durationSeconds;
   }
 }
 
@@ -186,7 +188,7 @@ export async function prepareTranscriptionAudio(
   const durationSeconds = mono.length / TRANSCRIPTION_SAMPLE_RATE;
   if (mono.length === 0) throw new VoiceNoteAudioError("no_speech", "The recording is empty.");
   if (durationSeconds > maxSeconds) {
-    throw new VoiceNoteAudioError("recording_too_long", "This recording exceeds the private cloud duration limit.");
+    throw new VoiceNoteAudioError("recording_too_long", "This recording exceeds the private cloud duration limit.", durationSeconds);
   }
   const wav = encodeWavPcm16(mono, TRANSCRIPTION_SAMPLE_RATE);
   if (wav.byteLength > options.maxBytes) throw tooLarge();

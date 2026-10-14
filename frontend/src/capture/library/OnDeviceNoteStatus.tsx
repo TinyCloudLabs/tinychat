@@ -304,7 +304,7 @@ function OnDeviceNoteStatusReading(props: { noteId: string; fallback: ReactNode;
   const view = useOnDeviceNote(props.noteId);
   const { transcription } = props;
   const onUsePrivate = transcription && privateInsteadOffered(transcription, props.noteId, props.durationSecs ?? null)
-    ? () => switchToPrivate(transcription, props.noteId)
+    ? () => switchToPrivate(transcription, props.noteId, props.durationSecs ?? null)
     : undefined;
   return <OnDeviceNoteStatusView noteId={props.noteId} view={view} fallback={props.fallback} onUsePrivate={onUsePrivate} transcription={transcription} durationSecs={props.durationSecs} stepperShown={props.stepperShown} />;
 }

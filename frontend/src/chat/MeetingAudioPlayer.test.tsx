@@ -310,7 +310,7 @@ describe("the player in a DOM", () => {
 
     player.fake.duration = 41.6;
     await player.fire("durationchange");
-    expect(player.time()).toBe("0:00 / 0:42");
+    expect(player.time()).toBe("0:00 / 0:41");
     expect(player.range().max).toBe("41.6");
   });
 

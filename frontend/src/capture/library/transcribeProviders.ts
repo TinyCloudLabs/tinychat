@@ -48,16 +48,17 @@ export async function transcribeWith(
   noteId: string,
   transcription: VoiceNoteTranscriptionProps | undefined,
   phone: PhoneRecording | null,
+  durationSecs: number | null,
 ): Promise<string | null> {
   if (provider === "on-device") return (await retryOnDeviceNote(noteId)) === null ? null : LOCAL_START_FAILED;
   if (!transcription) return "Private transcription isn’t available here.";
   // A Local job on the phone (committed, or chosen here earlier) stops first, so the two never both transcribe it.
   if (phone?.committed != null && phone.committed !== "private-cloud") {
     const local = (phone.committed === "on-device" && phone.hasLocalState) || onDeviceQueuePlace(onDeviceSttStore.snapshot(), noteId)?.position != null;
-    if (local) return switchToPrivate(transcription, noteId);
+    if (local) return switchToPrivate(transcription, noteId, durationSecs);
   }
   // A user's Private tap is explicit even on web, where there is no phone recording to inspect.
   // Refusals reach the action's alert in both the direct and Local-to-Private paths.
-  const refusal = transcription.onTranscribePrivately(noteId);
-  return typeof refusal === "string" ? privateRefusalCopy(refusal) : null;
+  const refusal = transcription.onTranscribePrivately(noteId, durationSecs);
+  return refusal ? privateRefusalCopy(refusal) : null;
 }

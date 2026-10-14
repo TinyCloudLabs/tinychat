@@ -47,6 +47,8 @@ import { readTranscriptCommit } from "./voiceNoteCommits";
 import { resolveVoiceNoteRow } from "./voiceNoteRows";
 import { pendingStore } from "./recorderSaves";
 import { advanceAccountGeneration } from "./accountContext";
+import { preciseDurationSeconds } from "./noteDuration";
+import { privateRefusalCopy } from "@/capture/recorder/privateInstead";
 import {
   readVoiceNoteForTranscription,
   VOICE_NOTE_SOURCE,
@@ -365,25 +367,27 @@ describe("gating", () => {
     }
   });
 
-  test("the supported duration comes from PTX's /capabilities, never a constant", () => {
+  test("the supported duration and byte cap come from PTX's /capabilities, never a constant", () => {
     const max = privateCloudLimits(CAPS)?.maxSeconds ?? 0;
     expect(max).toBe(CAPS.max_duration_seconds);
     expect(privateCloudLimits(null)).toBeNull();
     expect(privateCloudLimits({ ...CAPS, max_duration_seconds: undefined })).toBeNull();
-    expect(privateCloudLimits({ ...CAPS, max_duration_seconds: 120 })?.maxSeconds).toBe(120);
+    expect(privateCloudLimits({ ...CAPS, max_bytes: undefined })).toBeNull();
+    expect(privateCloudLimits({ ...CAPS, max_duration_seconds: 12_000 })?.maxSeconds).toBe(12_000);
     expect(privateCloudAccepts(max - PRIVATE_DURATION_MARGIN_SECONDS, CAPS)).toBe(true);
     expect(privateCloudAccepts(max, CAPS)).toBe(false);
     expect(privateCloudAccepts(null, CAPS)).toBe(true);
     expect(privateCloudAccepts(1, null)).toBe(false);
   });
 
-  test("with no PTX limit, Private is never eligible and the refusal says the limit is unknown", () => {
+  test("with incomplete PTX limits, Private is never eligible and the refusal says the limit is unknown", () => {
     expect(privateCloudRefusal(1, null, privateCloudLimits(null))).toEqual({ kind: "unknown" });
+    expect(privateCloudRefusal(1, null, privateCloudLimits({ ...CAPS, max_bytes: undefined }))).toEqual({ kind: "unknown" });
+    expect(privateCloudAccepts(1, { ...CAPS, max_bytes: undefined })).toBe(false);
     expect(privateCloudRefusal(1, null, privateCloudLimits({ max_bytes: CAPS.max_bytes }))).toEqual({ kind: "unknown" });
-    expect(privateCloudAccepts(1, { max_bytes: CAPS.max_bytes })).toBe(false);
   });
 
-  test("the length is compared unrounded against the ceiling less the margin; the byte cap applies only when the size is known", () => {
+  test("the length is compared unrounded against the ceiling less the margin; the byte cap applies only when size is known", () => {
     const max = privateCloudLimits(CAPS)?.maxSeconds ?? 0;
     const bytes = { ...CAPS, max_bytes: 1_000_000 };
     expect(privateCloudAccepts(max - PRIVATE_DURATION_MARGIN_SECONDS, CAPS)).toBe(true);
@@ -397,19 +401,26 @@ describe("gating", () => {
     expect(privateCloudAccepts(60, bytes)).toBe(true);
   });
 
-  test("PTX's accepted ceiling, when advertised, is the limit; grace is never added to it", () => {
-    const accepted = 4_321.5;
+  test("the accepted ceiling is inclusive with the media-duration margin; grace does not extend it", () => {
+    const accepted = 11_101;
     const caps = { ...CAPS, accepted_max_duration_seconds: accepted, duration_grace_seconds: 300 };
     expect(privateCloudLimits(caps)?.maxSeconds).toBe(accepted);
-    expect(privateCloudAccepts(accepted - PRIVATE_DURATION_MARGIN_SECONDS, caps)).toBe(true);
-    expect(privateCloudAccepts(accepted - PRIVATE_DURATION_MARGIN_SECONDS + 0.001, caps)).toBe(false);
+    expect(privateCloudAccepts(11_100.75, caps)).toBe(true);
+    expect(privateCloudAccepts(11_100.751, caps)).toBe(false);
     expect(privateCloudAccepts(accepted, caps)).toBe(false);
-    // 300 s of grace would admit this; the accepted ceiling does not.
     expect(privateCloudAccepts(accepted + 17.5, caps)).toBe(false);
-    expect(privateCloudLimits({ ...CAPS, accepted_max_duration_seconds: 60, duration_grace_seconds: 10 })?.maxSeconds).toBe(60);
-    expect(privateCloudAccepts(10, { ...CAPS, accepted_max_duration_seconds: 10 })).toBe(false);
-    expect(privateCloudAccepts(9.75, { ...CAPS, accepted_max_duration_seconds: 10 })).toBe(true);
-    expect(privateCloudAccepts(10.031, { ...CAPS, accepted_max_duration_seconds: 10 })).toBe(false);
+    for (const malformed of ["11101", Number.NaN, 0, -1]) {
+      expect(privateCloudLimits({
+        ...CAPS,
+        max_duration_seconds: 10_800,
+        accepted_max_duration_seconds: malformed as number,
+      })?.maxSeconds).toBe(10_800);
+    }
+
+    expect(privateCloudAccepts(preciseDurationSeconds(11_100.75, null), caps)).toBe(true);
+    expect(privateCloudAccepts(preciseDurationSeconds(11_100.751, null), caps)).toBe(false);
+    expect(privateCloudAccepts(preciseDurationSeconds(11_100, null), caps)).toBe(true);
+    expect(privateCloudAccepts(preciseDurationSeconds(11_101, null), caps)).toBe(false);
   });
 
   test("without an accepted ceiling, max_duration_seconds plus duration_grace_seconds is the limit", () => {
@@ -485,6 +496,68 @@ describe("createVoiceNoteCloud.transcribe", () => {
     expect(refusal).toMatchObject({ refusal: { kind: "duration", limitSeconds: 3_600, durationSeconds: 3_600 } });
     expect(h.creates).toHaveLength(0);
   });
+  test("a WebM whose decoded WAV exceeds its wall-clock duration is refused with exact payload time before upload", async () => {
+    const h = harness({ decode: silentDecoder(5.4) });
+    const refusal = await h.cloud.transcribe({
+      sourceId: "rec-1",
+      capabilities: { ...CAPS, max_duration_seconds: 5.25, content_types: ["audio/wav"] },
+      loadAudio: async () => ({ mimeType: "audio/webm", base64: AUDIO.base64 }),
+      durationSeconds: 4.5,
+    }, () => {}).catch((caught: unknown) => caught);
+    expect(refusal).toBeInstanceOf(PrivateCloudRefusedError);
+    expect(refusal).toMatchObject({ refusal: { kind: "duration", limitSeconds: 5.25, durationSeconds: 5.4 } });
+    expect(privateRefusalCopy((refusal as PrivateCloudRefusedError).refusal as Extract<PrivateCloudRefusedError["refusal"], { kind: "duration" }>))
+      .toBe("Private Transcription accepts notes up to 5 s. This note is 6 s.");
+    expect(h.creates).toHaveLength(0);
+    expect(h.puts).toHaveLength(0);
+  });
+
+  test("latest byte cap checks the prepared WAV's actual payload size before create", async () => {
+    let latest = { ...CAPS, max_duration_seconds: 10, content_types: ["audio/wav"] };
+    const h = harness({
+      capabilities: () => latest,
+      decode: async (bytes, sampleRate) => {
+        const decoded = await silentDecoder(2)(bytes, sampleRate);
+        latest = { ...latest, max_bytes: 1_000 };
+        return decoded;
+      },
+    });
+    const refusal = await h.cloud.transcribe({
+      sourceId: "rec-1",
+      capabilities: latest,
+      currentCapabilities: () => latest,
+      loadAudio: async () => ({ mimeType: "audio/webm", base64: AUDIO.base64 }),
+      durationSeconds: 2,
+    }, () => {}).catch((caught: unknown) => caught);
+    expect(refusal).toBeInstanceOf(PrivateCloudRefusedError);
+    expect(refusal).toMatchObject({ refusal: { kind: "bytes", limitBytes: 1_000, sizeBytes: 64_044 } });
+    expect(h.creates).toHaveLength(0);
+    expect(h.puts).toHaveLength(0);
+  });
+  test("latest duration admission takes the greater of note metadata and the decoded WAV", async () => {
+    let latest = { ...CAPS, max_duration_seconds: 10, content_types: ["audio/wav"] };
+    const h = harness({
+      capabilities: () => latest,
+      decode: async (bytes, sampleRate) => {
+        const decoded = await silentDecoder(2)(bytes, sampleRate);
+        latest = { ...latest, max_duration_seconds: 5.25 };
+        return decoded;
+      },
+    });
+    const refusal = await h.cloud.transcribe({
+      sourceId: "rec-1",
+      capabilities: latest,
+      currentCapabilities: () => latest,
+      loadAudio: async () => ({ mimeType: "audio/webm", base64: AUDIO.base64 }),
+      durationSeconds: 5.1,
+    }, () => {}).catch((caught: unknown) => caught);
+    expect(refusal).toBeInstanceOf(PrivateCloudRefusedError);
+    expect(refusal).toMatchObject({ refusal: { kind: "duration", limitSeconds: 5.25, durationSeconds: 5.1 } });
+    expect(h.creates).toHaveLength(0);
+    expect(h.puts).toHaveLength(0);
+  });
+
+
 
   test("happy path: create (metadata only) → one PUT of the WAV to the build's origin → poll → result", async () => {
     const h = harness({});
@@ -611,15 +684,15 @@ describe("createVoiceNoteCloud.transcribe", () => {
     expect(voiceNoteTranscriptionFailure(err)).toEqual(expect.objectContaining({ retryable: true }));
   });
 
-  test("a note over PTX's advertised duration is refused before any job exists", async () => {
+  test("a decoded WAV over PTX's advertised duration is refused with its measured length before any job exists", async () => {
     const h = harness({});
     const err = await h.cloud
       .transcribe({ sourceId: "rec-1", capabilities: { ...CAPS, max_duration_seconds: 0.5 }, loadAudio: async () => AUDIO }, () => {})
       .catch((e: unknown) => e);
-    expect((err as { code: string }).code).toBe("recording_too_long");
+    expect(err).toBeInstanceOf(PrivateCloudRefusedError);
+    expect(err).toMatchObject({ refusal: { kind: "duration", limitSeconds: 0.5, durationSeconds: 1 } });
     expect(h.creates).toHaveLength(0);
     expect(h.pending.read("rec-1")).toBeNull();
-    expect(voiceNoteTranscriptionFailure(err)).toEqual(expect.objectContaining({ retryable: true }));
   });
 
   test("transient poll failures are ridden out; ten minutes of them is 'connection lost', and the job is kept", async () => {
@@ -2241,7 +2314,7 @@ describe("every path that creates or resumes an off-phone job consults the hold 
     transcriber.noteSaved({ id: "rec-1", durationMs: 9_000, source: "in_app", options: { transcriber: "private-cloud" } });
     expect(transcriber.snapshot().jobs.get("rec-1")).toEqual({ kind: "blocked", reason: "limits-unknown" });
     expect(choices.ids()).toEqual(["rec-1"]);
-    expect(transcriber.transcribePrivately("rec-1")).toBe("limits-unknown");
+    expect(transcriber.transcribePrivately("rec-1", RECORDING.durationMs / 1000)).toBe("limits-unknown");
     expect(transcriber.snapshot().jobs.get("rec-1")).toEqual({ kind: "blocked", reason: "limits-unknown" });
   });
 
@@ -2574,7 +2647,7 @@ describe("an explicit move to private cloud survives a restart", () => {
     const first = harness({ pending, jobs: [new PrivateCloudError("offline", "network gone")] });
     const t = launch(first);
     await t.check();
-    t.transcribePrivately("rec-1");
+    t.transcribePrivately("rec-1", RECORDING.durationMs / 1000);
     await settle(t);
     expect(t.snapshot().jobs.get("rec-1")).toMatchObject({ kind: "failed", retryable: true });
     expect(first.puts).toHaveLength(1);
@@ -2621,7 +2694,7 @@ describe("an explicit move to private cloud survives a restart", () => {
     const h = harness({ jobs: [job("completed")], creates: [new PrivateCloudError("invalid_argument", "no")] });
     const t = createVoiceNoteTranscriber({ cloud: h.cloud, consent: { get: () => true, set: () => {} }, choices, holds: memoryHoldStore(), tcw: () => space.tcw });
     await t.check();
-    t.transcribePrivately("rec-1");
+    t.transcribePrivately("rec-1", RECORDING.durationMs / 1000);
     await settle(t);
     expect(t.snapshot().jobs.get("rec-1")?.kind).toBe("failed");
     expect(choices.ids()).toEqual([]);
@@ -2653,7 +2726,7 @@ describe("an explicit move to private cloud survives a restart", () => {
     });
     const transcriber = launch(first);
     await transcriber.check();
-    transcriber.transcribePrivately("rec-1");
+    transcriber.transcribePrivately("rec-1", RECORDING.durationMs / 1000);
     await settle(transcriber);
     expect(transcriber.snapshot().jobs.get("rec-1")).toMatchObject({ kind: "failed", code: "transcript_incomplete" });
     expect(choices.ids()).toEqual([]);
@@ -2671,7 +2744,7 @@ describe("an explicit move to private cloud survives a restart", () => {
     expect(retry.creates).toHaveLength(0);
     expect(retry.puts).toHaveLength(0);
 
-    restarted.transcribePrivately("rec-1");
+    restarted.transcribePrivately("rec-1", RECORDING.durationMs / 1000);
     await settle(restarted);
     expect(retry.creates).toHaveLength(1);
     expect(retry.puts).toHaveLength(1);
@@ -2703,7 +2776,7 @@ describe("an explicit move to private cloud survives a restart", () => {
       tcw: () => space.tcw,
     });
     await transcriber.check();
-    transcriber.transcribePrivately("rec-1");
+    transcriber.transcribePrivately("rec-1", RECORDING.durationMs / 1000);
     await settle(transcriber);
     expect(h.creates).toHaveLength(1);
     expect(transcriber.snapshot().jobs.get("rec-1")).toMatchObject({ kind: "failed", code: "transcript_incomplete" });
@@ -2755,7 +2828,7 @@ test("a failed audio-read attempt clears Private intent and never restarts on th
   const first = harness({ pending });
   const t = launch(first);
   await t.check();
-  t.transcribePrivately("rec-1");
+  t.transcribePrivately("rec-1", RECORDING.durationMs / 1000);
   await settle(t);
   expect(t.snapshot().jobs.get("rec-1")).toMatchObject({ kind: "failed", retryable: true });
   expect(first.creates).toHaveLength(0);
@@ -2885,23 +2958,25 @@ describe("admission at a nonstandard advertised ceiling (real cloud, transcriber
     expect(t.snapshot().jobs.get("rec-1")).toEqual({ kind: "done", outcome: "transcribed" });
   });
 
-  test("explicit (Use Private): refused at queue start with no PTX job, and the choice is kept", async () => {
+  test("explicit (Use Private): a refusal comes back synchronously with no PTX job, and the choice is kept", async () => {
     const { h, launch, choices } = await build([["rec-1", OVER_MS]], { capabilities: () => ADVERTISED });
     const t = launch();
     await t.check();
-    t.transcribePrivately("rec-1");
+    expect(t.transcribePrivately("rec-1", OVER_MS / 1000))
+      .toEqual({ kind: "duration", limitSeconds: ACCEPTED, durationSeconds: OVER_MS / 1000 });
     await settle(t);
     untouched(h);
     expect(t.snapshot().jobs.has("rec-1")).toBe(false);
     expect(choices.ids()).toEqual(["rec-1"]);
   });
 
-  test("queue: a refused note ahead in line is dropped without blocking the next, which transcribes once", async () => {
+  test("a refused note does not occupy the line: the next note transcribes once", async () => {
     const { h, launch, choices } = await build([["rec-1", OVER_MS], ["rec-2", EDGE_MS]], { capabilities: () => ADVERTISED });
     const t = launch();
     await t.check();
-    t.transcribePrivately("rec-1");
-    t.transcribePrivately("rec-2");
+    expect(t.transcribePrivately("rec-1", OVER_MS / 1000))
+      .toEqual({ kind: "duration", limitSeconds: ACCEPTED, durationSeconds: OVER_MS / 1000 });
+    expect(t.transcribePrivately("rec-2", EDGE_MS / 1000)).toBeNull();
     await untilFinished(t, "rec-2");
     expect(h.creates).toHaveLength(1);
     expect(h.puts).toHaveLength(1);
@@ -2910,17 +2985,20 @@ describe("admission at a nonstandard advertised ceiling (real cloud, transcriber
     expect(choices.ids()).toEqual(["rec-1"]);
   });
 
-  test("a fresh transcriber (relaunch) re-offers a refused choice, refuses it again, and starts no PTX job", async () => {
-    const { h, launch, choices } = await build([["rec-1", OVER_MS]], { capabilities: () => ADVERTISED });
+  test("a fresh transcriber rechecks the refused choice and actually admits the eligible choice after relaunch", async () => {
+    const { h, launch, choices } = await build([["rec-1", OVER_MS], ["rec-2", EDGE_MS]], { capabilities: () => ADVERTISED });
     const first = launch();
     await first.check();
-    first.transcribePrivately("rec-1");
+    first.transcribePrivately("rec-1", OVER_MS / 1000);
     await settle(first);
     expect(choices.ids()).toEqual(["rec-1"]);
+    choices.add("rec-2");
     const relaunched = launch();
     await relaunched.check();
-    await settle(relaunched);
-    untouched(h);
+    await untilFinished(relaunched, "rec-2");
+    expect(h.creates).toHaveLength(1);
+    expect(h.puts).toHaveLength(1);
+    expect(relaunched.snapshot().jobs.get("rec-2")).toEqual({ kind: "done", outcome: "transcribed" });
     expect(relaunched.snapshot().jobs.has("rec-1")).toBe(false);
     expect(choices.ids()).toEqual(["rec-1"]);
   });
@@ -2936,7 +3014,7 @@ describe("admission at a nonstandard advertised ceiling (real cloud, transcriber
     const { h, launch, choices } = await build([["rec-1", 4_000_100]], { capabilities: () => caps, decode });
     const t = launch();
     await t.check();
-    t.transcribePrivately("rec-1");
+    t.transcribePrivately("rec-1", 4_000_100 / 1000);
     // Parked in the decoder until released below.
     expect(h.creates).toHaveLength(0);
     caps = { ...ADVERTISED, accepted_max_duration_seconds: LOWER_ACCEPTED };

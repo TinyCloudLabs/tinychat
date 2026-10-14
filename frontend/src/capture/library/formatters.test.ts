@@ -6,10 +6,12 @@ const NOW = new Date(2026, 9, 6, 9, 41);
 const at = (day: number, hour = 14, year = 2026, month = 9) => new Date(year, month, day, hour, 0).toISOString();
 
 describe("formatters", () => {
-  test("durations as tabular clock times", () => {
+  test("clock durations floor fractional seconds, matching elapsed media time", () => {
     expect(formatClockDuration(42)).toBe("0:42");
     expect(formatClockDuration(31 * 60 + 20)).toBe("31:20");
     expect(formatClockDuration(3725)).toBe("1:02:05");
+    expect(formatClockDuration(42.999)).toBe("0:42");
+    expect(formatClockDuration(43)).toBe("0:43");
     expect(formatClockDuration(-3)).toBe("0:00");
   });
 

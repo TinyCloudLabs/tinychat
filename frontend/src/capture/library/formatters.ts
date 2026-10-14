@@ -3,7 +3,7 @@
 
 /** "0:42", "31:20", "1:02:05". */
 export function formatClockDuration(totalSeconds: number): string {
-  const total = Math.max(0, Math.round(totalSeconds));
+  const total = Math.max(0, Math.floor(totalSeconds));
   const hours = Math.floor(total / 3600);
   const minutes = Math.floor((total % 3600) / 60);
   const seconds = String(total % 60).padStart(2, "0");

@@ -25,7 +25,7 @@ import {
   tenantRefFor,
   type PrivateCloudTranscriptionConfig,
 } from "../services/private-cloud-transcription.js";
-import { JOB_ERRORS, parseResult } from "../services/private-cloud-transcription-dto.js";
+import { JOB_ERRORS, parseCapabilities, parseResult } from "../services/private-cloud-transcription-dto.js";
 import { runPrivateCloudE2E } from "../../scripts/e2e-private-cloud-transcription.js";
 
 const SESSION_KEY = "synthetic-session-signing-key";
@@ -1289,17 +1289,21 @@ describe("response DTOs", () => {
     expect(JSON.parse(ptx.requests.find((request) => request.method === "POST")!.body).byte_size).toBe(NEXT_PTX_MAX_BYTES);
   });
 
-  test("PTX's optional duration limits are relayed when valid; absent or malformed ones are dropped", async () => {
+  test("advertised duration and byte limits relay unchanged; malformed accepted ceilings are dropped", async () => {
     const { ptx, backend } = await setup();
-    const main = { max_bytes: 1000, max_duration_seconds: 7200, max_channels: 2, content_types: ["audio/mpeg"], transcript_ttl_seconds: 86400, admission: "open" };
-    ptx.state.override = () => ({ status: 200, body: { ...main, accepted_max_duration_seconds: 7200.03, duration_grace_seconds: 300 } });
-    expect((await call(backend.url, "GET", "/capabilities")).json).toMatchObject({ max_duration_seconds: 7200, accepted_max_duration_seconds: 7200.03, duration_grace_seconds: 300 });
-    ptx.state.override = () => ({ status: 200, body: main });
-    expect((await call(backend.url, "GET", "/capabilities")).json).toEqual({ ...main, diarization: false });
-    ptx.state.override = () => ({ status: 200, body: { ...main, accepted_max_duration_seconds: "7200", duration_grace_seconds: -5 } });
-    const malformed = await call(backend.url, "GET", "/capabilities");
-    expect(malformed.status).toBe(200);
-    expect(malformed.json).toEqual({ ...main, diarization: false });
+    const main = { max_bytes: 186_496_800, max_duration_seconds: 10_800, max_channels: 2, content_types: ["audio/mpeg"], transcript_ttl_seconds: 86400, admission: "open" };
+    ptx.state.override = () => ({ status: 200, body: { ...main, accepted_max_duration_seconds: 11_101 } });
+    expect((await call(backend.url, "GET", "/capabilities")).json)
+      .toEqual({ ...main, accepted_max_duration_seconds: 11_101, diarization: false });
+
+    for (const accepted of ["11101", 0, -1]) {
+      ptx.state.override = () => ({ status: 200, body: { ...main, accepted_max_duration_seconds: accepted } });
+      const malformed = await call(backend.url, "GET", "/capabilities");
+      expect(malformed.status).toBe(200);
+      expect(malformed.json).toEqual({ ...main, diarization: false });
+    }
+    const parsedNaN = parseCapabilities({ ...main, accepted_max_duration_seconds: Number.NaN });
+    expect(parsedNaN).toEqual({ ...main, diarization: false });
   });
 
   test("an off-contract value anywhere in a success body is upstream_bad_response", async () => {

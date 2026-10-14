@@ -61,7 +61,7 @@ export function ReceiptView({ recorder, onOpenNote }: ReceiptViewProps) {
   const savedStt = ledger?.stt ?? null;
   const { transcribing, movedToPrivate, savedRoute, privateJob, privateOutcome, canUsePrivate } = receiptRouting({ outcome, lastSaved, transcription: recorder.transcription, savedTranscriber });
   const transcription = recorder.transcription;
-  const usePrivate = canUsePrivate && lastSaved && transcription ? () => switchToPrivate(transcription, lastSaved.id) : undefined;
+  const usePrivate = canUsePrivate && lastSaved && transcription ? () => switchToPrivate(transcription, lastSaved.id, lastSaved.durationMs / 1000) : undefined;
 
   if (recorder.permissionDenied) return <MicrophoneAccessOff onMinimise={recorder.minimiseSheet} onOpenSettings={recorder.openSettings} onTryAgain={recorder.record} />;
   if (outcome === null) throw new Error("ReceiptView mounted without an outcome");
