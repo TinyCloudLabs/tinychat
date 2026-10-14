@@ -31,6 +31,8 @@ Integration branch: `dev/0.8.0`
 | #367 | 348f68fd | 0d938ed8 | Yes (12) | Transcript failure reason + activity panel. Combined logic from HEAD + #367 for NoteDetailView, SavedNote, LibraryRow, notePipeline. **Merge bug**: spaceAfterUploads referenced undefined laneDepth. |
 | #372 | f1bff349 | 4bd423b8 | Yes | Fix sync failure notification re-arming during transcript sync. |
 | #396 | c40651fc | b98f50ce | No | CI-only: added the reviewed `Test ExoStt` step to the iOS job and an empty changeset. The step covers 11 ExoStt tests. |
+| `origin/main` | b9c538ee | e4389b77 | No | Refreshed the floor through #391, #398, and #397. #397 reverts #394 on main. |
+| #394 re-land | f4a21845 | 167d4786 | No | Reverted #397's revert as required for 0.8.0, restoring TC-760 transcript gaps and recovery provenance without weakening newer main behavior. |
 
 ## Test Fixes (2026-10-14)
 
@@ -65,8 +67,10 @@ After merging origin/main (TC-1128, #387, #392, 45d16e58) and PR #386 (TC-1108 p
 
 ## Current Status
 
-- **Integration head before repair commit**: `b98f50ce` (#396 merged)
-- **Frontend unit suite after repair**: 4855 pass, 4 skip, 0 fail (4859 tests, 338 files)
-- **`origin/main` baseline before refresh**: 4740 pass, 4 skip, 0 fail (4744 tests, 326 files)
+- **HEAD**: `167d4786` (#394 re-landed after the `origin/main` refresh)
+- **Frontend unit suite**: 4860 pass, 4 skip, 0 fail (4864 tests, 338 files)
+- **`origin/main` `b9c538ee` baseline**: 4735 pass, 4 skip, 0 fail (4739 tests, 326 files)
+- **TypeScript**: pinned TypeScript 5.9.3, `tsc --noEmit -p frontend/tsconfig.json`, 0 errors
+- **CI frontend lint**: `bunx eslint frontend test`, 0 errors
 - **Privacy invariant**: unchanged; audio reaches TinyCloud KV only when `recording.options?.uploadAudio === true`.
 
