@@ -67,17 +67,21 @@ After merging origin/main (TC-1128, #387, #392, 45d16e58) and PR #386 (TC-1108 p
 | Meeting-chat upload fixture | #351 (`92ff5241`) | The fixture expected a cloud transcript but saved its note through the new local-only default. | Mark that upload fixture `uploadAudio: true`. | #351 `760a64fa` |
 | Tracked `logs/` artifacts | Integration repair commits (`c7e0c115`–`197e0e1d`) | Sixteen transient test logs were committed, making later local/CI output look like source changes. | Remove them from Git while preserving the local directory; ignore `logs/`. | Integration-only cleanup |
 | Backend hosted rate-limit test | #375 merge (`3f6bd433`) | The conflict kept #375's limit constants but dropped #380's `SESSION_LIMITS` import; the test threw before assertions. | Restore the combined import. | #375 `a4365377`; #380 `82fc4b71` |
+| Backend hosted cleanup and lifecycle fixtures | #375 merge (`3f6bd433`) | The merged fixture neither closed its tombstone store nor supplied #375's fail-closed spool path, identity-store adapter, and startup reconciler. Bun 1.4 reported the leaked lock handle, and the shutdown test waited forever on a server that had refused to boot. | Register the store's established `close()` cleanup, give the boot fixture an explicit absolute spool path, and mock `KvJsonKv` plus `reconcileHostedJobs`. | #375 `a4365377` (`e70460d0`, `518cb948`); existing hosted-store cleanup pattern |
 | Transcript-eval `native` lock check | #369 merge (`fc7b183a`) | The train added the local `listener-core` patch without Cargo's unused-patch lock entry, so metadata could not run with `--locked`. | Regenerate metadata; the only lock change is `[[patch.unused]] listener-core 0.1.0` before `local-model`. | #369 `b2316c0a` |
 | Desktop debug compile | #369 merge (`fc7b183a`) | Conflict resolution declared `dev_log` twice, producing E0428 and duplicate Tauri command macros in debug builds. | Keep the one declaration in main's module order. | Main; ExoDevLog `5918a341` |
 | Exo UI settings and recording-only captions | #351 merge (`92ff5241`) plus a latent main harness omission | The new settings control ran outside recorder context; its checkbox had a 13px target, and the longer recording-only caption retained single-line clipping. | Use the existing screenshot-only `StaticRecorderProvider`, give the checkbox a real 44px label target, and wrap only recording-only captions. No reference image was re-baselined. | #351 `760a64fa`; existing main screenshot-provider contract |
+| Clean-order Library unit suite | #400 merge (`4c7a34f7`) | #400's local-audio probe called the mutable native plugin unconditionally; web tests intentionally reset that binding to null, so a clean CI file order failed 32 later Library tests. | Run the probe only when the existing `nativeVoiceNotesAvailable()` contract says the plugin is installed; web keeps an empty local-audio set. | #400 `a988c05d`; existing native availability contract |
+| Capture-settings Chromium follow-up | #351 merge (`92ff5241`) | #351 replaced the old automatic-space-save switch with privacy-default-off `Upload audio to TinyCloud`, but the browser interaction still waited for the removed label. | Exercise the upload-audio switch's false-to-true transition while retaining the system-audio rejection check. | #351 `760a64fa` (`bfd8aae6`) |
 
 ## Current Status
 
-- **Verified code head**: `4c7a34f7` (#400 merged after CI repairs)
+- **Verified code head**: `b4783626`
 - **Frontend unit suite**: 4871 pass, 4 skip, 0 fail (4875 tests, 338 files)
 - **`origin/main` `b9c538ee` baseline**: 4735 pass, 4 skip, 0 fail (4739 tests, 326 files)
 - **TypeScript**: pinned TypeScript 5.9.3, `tsc --noEmit -p frontend/tsconfig.json`, 0 errors
 - **CI frontend lint**: `bunx eslint frontend test`, 0 errors
+- **Backend CI suite**: 2477 pass, 7 skip, 0 fail (2484 tests, 111 files)
 - **Chromium Exo UI matrix**: phone, phone-land, desktop, and text200-phone pass; no reference image was re-baselined
 - **Native checks**: workspace dependency closure passes with `--locked`; desktop debug `cargo check --no-default-features --locked` passes
 - **Privacy invariant**: unchanged; audio reaches TinyCloud KV only when `recording.options?.uploadAudio === true`.
