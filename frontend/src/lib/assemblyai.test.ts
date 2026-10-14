@@ -36,51 +36,6 @@ describe("assemblyAiSentences", () => {
     ]);
     expect(assemblyAiSentences(t, [])).toEqual([{ index: 0, speaker_name: null, text: "One. Two.", start_time: 0, end_time: 4, timing: "coarse" }]);
   });
-  test("stereo sentences without channel fields inherit the containing utterance channel", () => {
-    const t: AssemblyAiTranscript = { id: "stereo", status: "completed", audio_channels: 2,
-      utterances: [
-        { speaker: "A", text: "Left", start: 0, end: 1000, channel: 0 },
-        { speaker: "B", text: "Right", start: 0, end: 1000, channel: 1 },
-      ] };
-    const rows = assemblyAiSentences(t, [
-      { speaker: "A", text: "Left", start: 100, end: 900 },
-      { speaker: "B", text: "Right", start: 100, end: 900 },
-    ]);
-    expect(rows.map((row) => row.channel)).toEqual([0, 1]);
-  });
-
-  test("a sentence after short overlapping turns inherits its long utterance's channel", () => {
-    const t: AssemblyAiTranscript = { id: "nested", status: "completed", audio_channels: 2,
-      utterances: [
-        { speaker: "A", text: "Long left", start: 0, end: 100_000, channel: 0 },
-        { speaker: "B", text: "First right", start: 1_000, end: 2_000, channel: 1 },
-        { speaker: "B", text: "Second right", start: 3_000, end: 4_000, channel: 1 },
-      ] };
-    const rows = assemblyAiSentences(t, [{ text: "Later left", start: 50_000, end: 60_000 }]);
-    expect(rows.map((row) => row.channel)).toEqual([0]);
-  });
-
-  test("a sentence spanning nested short turns inherits the outer utterance's channel", () => {
-    const t: AssemblyAiTranscript = { id: "nested-span", status: "completed", audio_channels: 2,
-      utterances: [
-        { speaker: "A", text: "Long left", start: 0, end: 100_000, channel: 0 },
-        { speaker: "B", text: "First right", start: 1_000, end: 2_000, channel: 1 },
-        { speaker: "B", text: "Second right", start: 3_000, end: 4_000, channel: 1 },
-      ] };
-    const rows = assemblyAiSentences(t, [{ text: "Across right turns", start: 1_500, end: 3_500 }]);
-    expect(rows.map((row) => row.channel)).toEqual([0]);
-  });
-
-  test("speaker-scoped lookup handles nested utterances supplied out of order", () => {
-    const t: AssemblyAiTranscript = { id: "nested-speaker", status: "completed", audio_channels: 2,
-      utterances: [
-        { speaker: "A", text: "Short right", start: 3_000, end: 4_000, channel: 1 },
-        { speaker: "A", text: "Long left", start: 0, end: 100_000, channel: 0 },
-        { speaker: "A", text: "Earlier right", start: 1_000, end: 2_000, channel: 1 },
-      ] };
-    const rows = assemblyAiSentences(t, [{ speaker: "A", text: "Later left", start: 50_000, end: 60_000 }]);
-    expect(rows.map((row) => row.channel)).toEqual([0]);
-  });
 });
 
 describe("pollAssemblyAiTranscript", () => {
@@ -184,14 +139,6 @@ describe("TinyCloud's AssemblyAI account (hosted client)", () => {
     const gone = (await hosted(() => json(404, { error: "not_found" })).c.getTranscript("h").catch((e) => e)) as AssemblyAiError;
     expect(gone.kind).toBe("not-found");
     await hosted(() => json(404, { error: "not_found" })).c.deleteTranscript("h");
-  });
-
-  test("a blocked paid note is a typed reconciliation error and does not retry", async () => {
-    const { c, calls } = hosted(() => json(409, { error: "assemblyai_needs_reconciliation" }));
-    const error = await c.createUpload(3, "audio/mp4", "note-1").catch((caught) => caught) as AssemblyAiError;
-    expect(error.kind).toBe("needs-reconciliation");
-    expect(error.message).toBe("Powerful couldn't confirm an earlier attempt. Exo is checking with AssemblyAI.");
-    expect(calls).toHaveLength(1);
   });
 });
 

@@ -17,7 +17,6 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { App } from "@capacitor/app";
 import { setCapturePlaybackBlocked, stopAllPlayback } from "@/lib/audio/playback";
 import { Capacitor } from "@capacitor/core";
-import { captureDeviceName } from "@/lib/voiceNotes/captureEngine";
 
 import {
   VoiceNotes,
@@ -84,12 +83,6 @@ const micFromStatus = (status: CaptureStatus | MicStateEvent): RecorderMic =>
   ({ state: status.state, reason: status.reason, input: status.input ?? null });
 
 const recorderDevice = () => captureEngineKind() === "tauri" ? "Mac" : "phone";
-
-function saveFailureCopy(message: string): string {
-  return message === TINYCLOUD_NETWORK_FAILURE_MESSAGE
-    ? message
-    : `Saved on this ${recorderDevice()}, but uploading to your space failed: ${message}`;
-}
 
 export interface VoiceNoteRecorderControllerOptions {
   tcw: TinyCloudWeb | null;

@@ -1,0 +1,248 @@
+$ bun test src/lib/voiceNotes/voiceNoteTranscription.test.ts
+bun test v1.4.3 (c6da4a4d3)
+
+src/lib/voiceNotes/voiceNoteTranscription.test.ts:
+{"kind":"pipeline","source_id":null,"operation":"transcription_stats_missing","phase":"committed","count":1,"at":"2026-10-14T10:42:41.323Z"}
+{"kind":"pipeline","source_id":null,"operation":"transcription_stats_missing","phase":"committed","count":1,"at":"2026-10-14T10:42:41.326Z"}
+{"kind":"pipeline","source_id":null,"operation":"transcription_stats_missing","phase":"committed","count":1,"at":"2026-10-14T10:42:41.328Z"}
+[VoiceNotes] The local recording is no longer available; reading its space copy {
+  sourceId: "rec-1",
+}
+{"kind":"pipeline","source_id":null,"operation":"transcription_stats_missing","phase":"committed","count":1,"at":"2026-10-14T10:42:41.332Z"}
+{"kind":"pipeline","source_id":null,"operation":"transcription_stats_missing","phase":"committed","count":1,"at":"2026-10-14T10:42:41.345Z"}
+[VoiceNotes] The local recording is no longer available; reading its space copy {
+  sourceId: "rec-1",
+}
+{"kind":"pipeline","source_id":null,"operation":"transcription_stats_missing","phase":"committed","count":1,"at":"2026-10-14T10:42:41.349Z"}
+[VoiceNotes] The local recording is no longer available; reading its space copy {
+  sourceId: "rec-1",
+}
+{"kind":"pipeline","source_id":null,"operation":"transcription_stats_missing","phase":"committed","count":1,"at":"2026-10-14T10:42:41.351Z"}
+{"kind":"pipeline","source_id":null,"operation":"transcription_stats_missing","phase":"committed","count":1,"at":"2026-10-14T10:42:41.356Z"}
+{"kind":"pipeline","source_id":null,"operation":"transcription_stats_missing","phase":"committed","count":1,"at":"2026-10-14T10:42:41.359Z"}
+[VoiceNotes] The local recording is no longer available; reading its space copy {
+  sourceId: "rec-1",
+}
+{"kind":"pipeline","source_id":null,"operation":"transcription_stats_missing","phase":"committed","count":1,"at":"2026-10-14T10:42:41.363Z"}
+[VoiceNotes] The local recording is no longer available; reading its space copy {
+  sourceId: "rec-1",
+}
+{"kind":"pipeline","source_id":null,"operation":"transcription_stats_missing","phase":"committed","count":1,"at":"2026-10-14T10:42:41.370Z"}
+[VoiceNotes] The local recording is no longer available; reading its space copy {
+  sourceId: "rec-1",
+}
+{"kind":"pipeline","source_id":null,"operation":"transcription_stats_missing","phase":"committed","count":1,"at":"2026-10-14T10:42:41.377Z"}
+[VoiceNotes] The local recording is no longer available; reading its space copy {
+  sourceId: "rec-1",
+}
+{"kind":"pipeline","source_id":null,"operation":"transcription_stats_missing","phase":"committed","count":1,"at":"2026-10-14T10:42:41.380Z"}
+1267 |     const later = { ...TRANSCRIPT, text: "follow-up", segments: TRANSCRIPT.segments.map((segment, index) =>
+1268 |       index === 0 ? { ...segment, text: "follow-up" } : segment), stats: undefined };
+1269 |     const prepared = prepareVoiceNoteTranscript(later, "2026-10-04T10:00:00.000Z", 2);
+1270 |     expect((await saveVoiceNoteTranscript(space.tcw, "rec-1", prepared)).ok).toBe(true);
+1271 |     const metadata = (await resolveVoiceNoteRow(space.tcw, "rec-1"))?.metadata;
+1272 |     expect(metadata?.transcript_text).toBe("Remember to book follow-up");
+                                             ^
+error: expect(received).toBe(expected)
+
+- "Remember to book follow-up"
++ "Remember to book
++ follow-up"
+
+- Expected  - 1
++ Received  + 2
+
+      at <anonymous> (/home/tinycloud/scratch/tc080-fix2/frontend/src/lib/voiceNotes/voiceNoteTranscription.test.ts:1272:39)
+(fail) transcribeVoiceNote (one note end to end) > PTX quiet VAD diagnostics commit to the row and clear on a later stats-less commit [4.01ms]
+[VoiceNotes] The local recording is no longer available; reading its space copy {
+  sourceId: "rec-1",
+}
+{"kind":"pipeline","source_id":null,"operation":"transcription_stats_missing","phase":"committed","count":1,"at":"2026-10-14T10:42:41.385Z"}
+[VoiceNotes] The local recording is no longer available; reading its space copy {
+  sourceId: "rec-1",
+}
+[VoiceNotes] The local recording is no longer available; reading its space copy {
+  sourceId: "rec-1",
+}
+[VoiceNotes] The local recording is no longer available; reading its space copy {
+  sourceId: "rec-1",
+}
+[VoiceNotes] The local recording is no longer available; reading its space copy {
+  sourceId: "rec-1",
+}
+[VoiceNotes] The local recording is no longer available; reading its space copy {
+  sourceId: "rec-1",
+}
+[VoiceNotes] The local recording is no longer available; reading its space copy {
+  sourceId: "rec-1",
+}
+[VoiceNotes] The local recording is no longer available; reading its space copy {
+  sourceId: "rec-1",
+}
+[VoiceNotes] The local recording is no longer available; reading its space copy {
+  sourceId: "rec-1",
+}
+[VoiceNotes] The local recording is no longer available; reading its space copy {
+  sourceId: "rec-1",
+}
+[VoiceNotes] The local recording is no longer available; reading its space copy {
+  sourceId: "rec-1",
+}
+{"kind":"pipeline","source_id":null,"operation":"transcription_vad_fallback","phase":"committed","count":1,"at":"2026-10-14T10:42:41.419Z"}
+[VoiceNotes] The local recording is no longer available; reading its space copy {
+  sourceId: "rec-1",
+}
+{"kind":"pipeline","source_id":null,"operation":"transcription_stats_missing","phase":"committed","count":1,"at":"2026-10-14T10:42:41.421Z"}
+[VoiceNotes] The local recording is no longer available; reading its space copy {
+  sourceId: "rec-1",
+}
+[VoiceNotes] The local recording is no longer available; reading its space copy {
+  sourceId: "rec-1",
+}
+[Transcription] Not starting a private cloud job: its account is no longer the signed-in one rec-1
+[OnDeviceStt] Abandoned transcript sync id=rec-1: account changed
+[OnDeviceStt] The transcript is in the space but this phone's ledger was not updated warn: This note has no ledger entry on this browser to record the transcript in
+      at recordTranscriptSaved (/home/tinycloud/scratch/tc080-fix2/frontend/src/lib/voiceNotes/onDeviceTranscriber.ts:278:60)
+      at async recordAndPublish (/home/tinycloud/scratch/tc080-fix2/frontend/src/lib/voiceNotes/onDeviceTranscriber.ts:173:11)
+      at async syncOnce (/home/tinycloud/scratch/tc080-fix2/frontend/src/lib/voiceNotes/onDeviceTranscriber.ts:244:20)
+      at async <anonymous> (/home/tinycloud/scratch/tc080-fix2/frontend/src/lib/voiceNotes/onDeviceTranscriber.ts:80:29)
+
+[VoiceNotes] The local recording is no longer available; reading its space copy {
+  sourceId: "rec-1",
+}
+[VoiceNotes] The local recording is no longer available; reading its space copy {
+  sourceId: "rec-1",
+}
+[VoiceNotes] The local recording is no longer available; reading its space copy {
+  sourceId: "rec-1",
+}
+{"kind":"pipeline","source_id":null,"operation":"transcription_stats_missing","phase":"committed","count":1,"at":"2026-10-14T10:42:41.446Z"}
+[VoiceNotes] The local recording is no longer available; reading its space copy {
+  sourceId: "rec-1",
+}
+{"kind":"pipeline","source_id":null,"operation":"transcription_stats_missing","phase":"committed","count":1,"at":"2026-10-14T10:42:41.450Z"}
+[VoiceNotes] The local recording is no longer available; reading its space copy {
+  sourceId: "rec-1",
+}
+{"kind":"pipeline","source_id":null,"operation":"transcription_stats_missing","phase":"committed","count":1,"at":"2026-10-14T10:42:41.453Z"}
+[VoiceNotes] The local recording is no longer available; reading its space copy {
+  sourceId: "rec-1",
+}
+[VoiceNotes] The local recording is no longer available; reading its space copy {
+  sourceId: "rec-1",
+}
+[VoiceNotes] The local recording is no longer available; reading its space copy {
+  sourceId: "rec-1",
+}
+{"kind":"pipeline","source_id":null,"operation":"transcription_stats_missing","phase":"committed","count":1,"at":"2026-10-14T10:42:41.470Z"}
+[VoiceNotes] The local recording is no longer available; reading its space copy {
+  sourceId: "rec-1",
+}
+{"kind":"pipeline","source_id":null,"operation":"transcription_stats_missing","phase":"committed","count":1,"at":"2026-10-14T10:42:41.481Z"}
+{"kind":"pipeline","source_id":null,"operation":"transcription_stats_missing","phase":"committed","count":1,"at":"2026-10-14T10:42:41.484Z"}
+[VoiceNotes] The local recording is no longer available; reading its space copy {
+  sourceId: "rec-1",
+}
+{"kind":"pipeline","source_id":null,"operation":"transcription_stats_missing","phase":"committed","count":1,"at":"2026-10-14T10:42:41.487Z"}
+[VoiceNotes] The local recording is no longer available; reading its space copy {
+  sourceId: "rec-1",
+}
+{"kind":"pipeline","source_id":null,"operation":"transcription_stats_missing","phase":"committed","count":1,"at":"2026-10-14T10:42:41.490Z"}
+[VoiceNotes] The local recording is no longer available; reading its space copy {
+  sourceId: "rec-1",
+}
+{"kind":"pipeline","source_id":null,"operation":"transcription_stats_missing","phase":"committed","count":1,"at":"2026-10-14T10:42:41.492Z"}
+[VoiceNotes] The local recording is no longer available; reading its space copy {
+  sourceId: "rec-1",
+}
+{"kind":"pipeline","source_id":null,"operation":"transcription_stats_missing","phase":"committed","count":1,"at":"2026-10-14T10:42:41.495Z"}
+{"kind":"pipeline","source_id":null,"operation":"transcription_stats_missing","phase":"committed","count":1,"at":"2026-10-14T10:42:41.500Z"}
+{"kind":"pipeline","source_id":null,"operation":"transcription_stats_missing","phase":"committed","count":1,"at":"2026-10-14T10:42:41.503Z"}
+[VoiceNotes] Held a note back from private-cloud transcription: it did not begin in the app {
+  id: "rec-1",
+  source: "widget",
+}
+[VoiceNotes] Held a note back from private-cloud transcription: it did not begin in the app {
+  id: "rec-1",
+}
+[VoiceNotes] Held a note back from private-cloud transcription: it did not begin in the app {
+  id: "rec-1",
+  source: "quick_action",
+}
+[VoiceNotes] Held a note back from private-cloud transcription: it did not begin in the app {
+  id: "rec-1",
+  source: "quick_action",
+}
+[VoiceNotes] Held a note back from private-cloud transcription: it did not begin in the app {
+  id: "rec-1",
+}
+[VoiceNotes] Held a note back from private-cloud transcription: it did not begin in the app {
+  id: "rec-1",
+}
+[VoiceNotes] Held a note back from private-cloud transcription: it did not begin in the app {
+  id: "rec-1",
+}
+[VoiceNotes] Held a note back from private-cloud transcription: it did not begin in the app {
+  id: "rec-1",
+}
+[VoiceNotes] Held a note back from private-cloud transcription: it did not begin in the app {
+  id: "rec-1",
+}
+[VoiceNotes] Held a note back from private-cloud transcription: it did not begin in the app {
+  id: "rec-1",
+}
+[VoiceNotes] Held a note back from private-cloud transcription: it did not begin in the app {
+  id: "rec-1",
+}
+[VoiceNotes] Held a note back from private-cloud transcription: it did not begin in the app {
+  id: "rec-1",
+}
+[VoiceNotes] Held a note back from private-cloud transcription: it did not begin in the app {
+  id: "rec-1",
+}
+{"kind":"pipeline","source_id":null,"operation":"transcription_stats_missing","phase":"committed","count":1,"at":"2026-10-14T10:42:42.338Z"}
+{"kind":"pipeline","source_id":null,"operation":"transcription_stats_missing","phase":"committed","count":1,"at":"2026-10-14T10:42:42.405Z"}
+{"kind":"pipeline","source_id":null,"operation":"transcription_stats_missing","phase":"committed","count":1,"at":"2026-10-14T10:42:42.471Z"}
+{"kind":"pipeline","source_id":null,"operation":"transcription_stats_missing","phase":"committed","count":1,"at":"2026-10-14T10:42:42.473Z"}
+[VoiceNotes] Held a note back from private-cloud transcription: it did not begin in the app {
+  id: "rec-1",
+}
+{"kind":"pipeline","source_id":null,"operation":"transcription_stats_missing","phase":"committed","count":1,"at":"2026-10-14T10:42:42.540Z"}
+[VoiceNotes] Held a note back from private-cloud transcription: it did not begin in the app {
+  id: "rec-1",
+}
+{"kind":"pipeline","source_id":null,"operation":"transcription_stats_missing","phase":"committed","count":1,"at":"2026-10-14T10:42:42.608Z"}
+{"kind":"pipeline","source_id":null,"operation":"transcription_stats_missing","phase":"committed","count":1,"at":"2026-10-14T10:42:42.642Z"}
+[VoiceNotes] The local recording is no longer available; reading its space copy {
+  sourceId: "rec-1",
+}
+{"kind":"pipeline","source_id":null,"operation":"transcription_stats_missing","phase":"committed","count":1,"at":"2026-10-14T10:42:42.712Z"}
+[VoiceNotes] The local recording is no longer available; reading its space copy {
+  sourceId: "rec-1",
+}
+[VoiceNotes] The local recording is no longer available; reading its space copy {
+  sourceId: "rec-1",
+}
+[VoiceNotes] The local recording is no longer available; reading its space copy {
+  sourceId: "rec-1",
+}
+[VoiceNotes] The local recording is no longer available; reading its space copy {
+  sourceId: "rec-1",
+}
+[VoiceNotes] The local recording is no longer available; reading its space copy {
+  sourceId: "rec-1",
+}
+[VoiceNotes] The local recording is no longer available; reading its space copy {
+  sourceId: "rec-1",
+}
+[VoiceNotes] The local recording is no longer available; reading its space copy {
+  sourceId: "rec-1",
+}
+{"kind":"pipeline","source_id":null,"operation":"transcription_stats_missing","phase":"committed","count":1,"at":"2026-10-14T10:42:49.757Z"}
+{"kind":"pipeline","source_id":null,"operation":"transcription_stats_missing","phase":"committed","count":1,"at":"2026-10-14T10:42:49.814Z"}
+
+ 124 pass
+ 1 fail
+ 617 expect() calls
+Ran 125 tests across 1 file. [8.64s]
+error: script "test" exited with code 1

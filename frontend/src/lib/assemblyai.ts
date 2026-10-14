@@ -1,6 +1,7 @@
 // Hosted AssemblyAI: authenticated Exo server proxy; the server keeps the key.
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { FirefliesSentence } from "./connectors/firefliesClient";
+import { splitLongTimedSegment } from "./voiceNotes/timedSegments";
 import {
   cloudStatusIntervalMs,
   jitteredCloudIntervalMs,
@@ -10,7 +11,6 @@ import {
   REAL_CLOCK,
   type CloudClock,
 } from "./privateCloud";
-import { splitLongTimedSegment } from "./voiceNotes/timedSegments";
 
 export type AssemblyAiErrorKind = "invalid-key" | "network" | "rate-limited" | "rejected" | "failed" | "not-found" | "needs-reconciliation";
 

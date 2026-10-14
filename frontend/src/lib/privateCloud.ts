@@ -43,6 +43,12 @@ export interface PrivateCloudTranscriptionStats {
   voiced_seconds?: number;
   dropped_above_floor_pct?: number | null;
   vad_fallback?: boolean | null;
+  vad_mode?: "primary" | "fallback" | "quiet" | null;
+  noise_floor_dbfs?: number | null;
+  median_dbfs?: number | null;
+  p99_dbfs?: number | null;
+  speech_peak_s?: number | null;
+  dropped_above_noise_pct?: number | null;
 }
 
 export interface PrivateCloudJob {

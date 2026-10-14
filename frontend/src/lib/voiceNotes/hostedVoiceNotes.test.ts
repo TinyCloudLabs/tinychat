@@ -41,7 +41,7 @@ function harness(failAt?: "part" | "submit" | "result" | "space" | "delete", noS
   let serverJob: { status: string; upload_id?: string; id?: string } = { status: "missing" };
   const recording = { id: "note-1", owner: "did:test:one", source: "in_app", startedAt: 1,
     durationMs, mimeType, sizeBytes: audio.length,
-    options: { transcriber: "assemblyai", identifySpeakers: true } } as VoiceNoteRecording;
+    options: { transcriber: "assemblyai", identifySpeakers: true, uploadAudio: true } } as VoiceNoteRecording;
   const native = {
     listPending: async () => ({ recordings: spaceOnly ? [] : [recording] }),
     readAudioChunk: async ({ offset, length }: { offset: number; length: number }) => ({
@@ -67,6 +67,8 @@ function harness(failAt?: "part" | "submit" | "result" | "space" | "delete", noS
       const body = JSON.parse(String(init?.body));
       expect(body.content_type).toBe(mimeType.split(";")[0].trim().toLowerCase());
       expect(body.source_id).toBe("note-1");
+      if (serverJob.status === "needs_reconciliation" || serverJob.status === "unresolved")
+        return json({ upload_id: "upload-1", part_size: 2, status: serverJob.status });
       if (createFailure && !failed) {
         failed = true;
         if (createFailure === "existing") serverJob = { status: "receiving", upload_id: "upload-1" };
@@ -150,7 +152,7 @@ test("Powerful requests multichannel and labels stereo turns Me and Them", async
 });
 
 test("a space-only stereo note uses the committed channels for Powerful", async () => {
-  const h = harness(undefined, false, true, "audio/mp4", 2);
+  const h = harness(undefined, false, true, "audio/mp4", 1000, [], undefined, undefined, undefined, 2);
   const lane = h.track(); lane.consent();
   expect(await lane.runSpaceOnly("note-1")).toBe(true);
   expect(h.submits[0]).toMatchObject({ multichannel: true });
@@ -239,7 +241,7 @@ test("hosted AssemblyAI commits never set PTX-only missing-stats metadata", asyn
 test("Powerful checks the space commit before sending audio to the provider", async () => {
   let release!: () => void;
   const gate = new Promise<void>((resolve) => { release = resolve; });
-  const { calls, recording, track } = harness(undefined, false, false, "audio/mp4", gate);
+  const { calls, recording, track } = harness(undefined, false, false, "audio/mp4", 1000, [], gate);
   const lane = track(); lane.consent();
   const running = lane.run(recording);
   try {
@@ -288,7 +290,7 @@ test("a crashed owner with an upload ID is taken over and resumed", async () => 
 
 for (const result of ["existing", "missing"] as const) {
   test(`an ambiguous create reconciles ${result} server state`, async () => {
-    const { calls, recording, track } = harness(undefined, false, false, "audio/mp4", undefined, result);
+    const { calls, recording, track } = harness(undefined, false, false, "audio/mp4", 1000, [], undefined, result);
     const first = track(); first.consent();
     await first.run(recording);
     expect(first.jobs.get(recording.id)?.kind).toBe("failed");

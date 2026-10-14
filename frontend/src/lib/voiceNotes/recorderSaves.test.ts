@@ -8,8 +8,10 @@ import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from "b
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { fakeVoiceNoteStore } from "@/harness/fakeVoiceNoteStore";
-import { __setVoiceNotesForTests, type VoiceNoteRecording, type VoiceNotesPlugin } from "./nativeVoiceNotes";
+import { __setVoiceNotesForTests, VoiceNotes, type VoiceNoteRecording, type VoiceNotesPlugin } from "./nativeVoiceNotes";
 import { currentAccountGeneration } from "./accountContext";
+
+const originalVoiceNotes = VoiceNotes;
 
 const realStore = { ...(await import("./voiceNoteStore")) };
 mock.module("./voiceNoteStore", () => ({
@@ -157,7 +159,7 @@ const tcw = { did: "did:example:alice" } as TinyCloudWeb;
 
 function recording(id: string, startedAt: number): VoiceNoteRecording {
   return { id, startedAt, durationMs: 1000, mimeType: "audio/mp4", sizeBytes: 4, silencedMs: 0, silencedEvents: 0, noSignalMs: 0,
-    version: 2, owner: tcw.did, rev: 1 };
+    version: 2, owner: tcw.did, rev: 1, options: { transcriber: "private-cloud", uploadAudio: true } };
 }
 
 /** The phone: what is listed as pending, and how deleteAudio and listPending behave. */
@@ -216,6 +218,7 @@ beforeEach(() => {
   fakeVoiceNoteStore.save = ok;
 });
 afterEach(() => {
+  __setVoiceNotesForTests(originalVoiceNotes, { available: null });
   fakeVoiceNoteStore.save = null;
   delete (globalThis as { localStorage?: unknown }).localStorage;
 });

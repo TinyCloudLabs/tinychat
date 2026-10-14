@@ -6,11 +6,10 @@ import {
   assemblyAiSentences,
   createHostedAssemblyAiClient,
   pollAssemblyAiTranscript,
-  type AssemblyAiTranscript,
 } from "../assemblyai";
 import { base64ToBytes } from "./voiceNoteAudio";
 import { currentAccountGeneration, isAccountWorkAllowed } from "./accountContext";
-import { nativePlatform, nativeRecordingSource, VoiceNotes, type LocalTranscript, type VoiceNoteRecording, type VoiceNotesPlugin } from "./nativeVoiceNotes";
+import { nativeRecordingSource, VoiceNotes, type LocalTranscript, type VoiceNoteRecording, type VoiceNotesPlugin } from "./nativeVoiceNotes";
 import { readTranscriptCommit } from "./voiceNoteCommits";
 import { createVoiceNoteRow } from "./voiceNoteRows";
 import { loadVoiceNoteAudio, patchVoiceNoteTranscriptionFailure, readVoiceNoteForTranscription, saveVoiceNoteTranscript, voiceNoteTitle } from "./voiceNoteStore";
@@ -20,7 +19,6 @@ import type { CloudClock } from "../privateCloud";
 
 const CONSENT = "exo.voiceNotes.powerfulConsent";
 const PENDING = "exo.voiceNotes.powerfulJobs";
-const POLL_MS = 5000;
 const CLAIM_TAKEOVER_MS = 5 * 60_000;
 type Stored = { uploadId?: string; handle?: string; saved?: boolean; recording?: VoiceNoteRecording };
 type Claim = { version: 1; status: "active" | "failed" | "submitted"; token: string; claimedAt?: number; uploadId?: string; handle?: string };
@@ -64,13 +62,12 @@ function readJobs(did: string): Record<string, Stored> {
 function writeJobs(did: string, jobs: Record<string, Stored>): void {
   storage()?.setItem(`${PENDING}:${did}`, JSON.stringify(jobs));
 }
-
 /** One account's resumable Powerful lane. Audio parts always come from the local recording when it exists. */
 export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: string, sessionStore: SessionStore, did: string,
   services: { client?: ReturnType<typeof createHostedAssemblyAiClient>; native?: VoiceNotesPlugin; clock?: CloudClock;
     readCommit?: typeof readTranscriptCommit; createRow?: typeof createVoiceNoteRow;
     save?: typeof saveVoiceNoteTranscript; readNote?: typeof readVoiceNoteForTranscription;
-    loadAudio?: typeof loadVoiceNoteAudio; sleep?: (ms: number) => Promise<void>; reconciliationDelayMs?: number } = {}) {
+    loadAudio?: typeof loadVoiceNoteAudio; reconciliationDelayMs?: number } = {}) {
   const client = services.client ?? createHostedAssemblyAiClient({ backendUrl, sessionStore });
   const native = services.native ?? VoiceNotes;
   const readCommit = services.readCommit ?? readTranscriptCommit;
@@ -148,7 +145,7 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
         catch (error) { console.warn("[HostedVoiceNotes] Could not delete the saved remote transcript", error); }
         jobs.set(id, { kind: "done", outcome: prior.outcome }); notify(); return;
       }
-      if (!prior) await createRow(account, recording as VoiceNoteRecording, voiceNoteTitle(recording.startedAt), undefined, nativePlatform());
+      if (!prior) await createRow(account, recording as VoiceNoteRecording, voiceNoteTitle(recording.startedAt));
       const committed = await readNote(account, id);
       const rowChannels = committed.ok && committed.data && (committed.data.channels === 1 || committed.data.channels === 2)
         ? committed.data.channels : undefined;
@@ -162,65 +159,6 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
         source = { mimeType: space.data.mimeType, size: bytes.length, readPart: async (offset, length) => bytes.slice(offset, offset + length) };
       }
       const handle = await withHostedUploadQueue(did, async () => {
-        let handle = stored.handle;
-        if (!handle) {
-          const caps = await client.capabilities();
-          if (!caps.hosted) throw new AssemblyAiError("failed", "Powerful isn't available right now. Try again later.");
-          if (source.size > caps.max_bytes) throw new AssemblyAiError("rejected", "This recording is too large for Powerful (120 MB maximum).");
-          const contentType = source.mimeType.split(";")[0].trim().toLowerCase();
-          if (!caps.content_types.includes(contentType)) throw new AssemblyAiError("rejected", "Powerful cannot read this recording's format.");
-          let uploadId = stored.uploadId;
-          let submitting = false;
-          if (uploadId) {
-            try {
-              const remote = await client.uploadState(uploadId);
-              if (remote.status === "submitted" && remote.id) handle = remote.id;
-              else if (remote.status === "submitting") submitting = true;
-              else if (remote.status === "failed") { uploadId = undefined; persist(id, null); }
-            } catch (error) {
-              if (!(error instanceof AssemblyAiError && (error.kind === "not-found" || error.uploadEnded))) throw error;
-              uploadId = undefined;
-              persist(id, null);
-            }
-          }
-          if (!handle) {
-            if (!uploadId) {
-              guard();
-              const opId = crypto.randomUUID();
-              await native.beginRemoteOp({ id, did, opId, provider: "assemblyai", mode: "hosted", kind: "hosted_create",
-                fingerprint: `${source.size}:${source.mimeType}`, startedAt: Date.now() });
-              const created = await client.createUpload(source.size, contentType);
-              uploadId = created.uploadId;
-              persist(id, { uploadId });
-              await native.recordRemoteResult({ id, did, opId, result: { outcome: "created", uploadId } });
-            }
-            if (!submitting) {
-              state(id, { kind: "uploading", progress: 0 });
-              const partSize = Math.min(caps.part_size, 1024 * 1024);
-              for (let offset = 0, index = 0; offset < source.size; offset += partSize, index++) {
-                guard();
-                const bytes = await source.readPart(offset, Math.min(partSize, source.size - offset));
-                await client.putPart(uploadId, index, bytes);
-                state(id, { kind: "uploading", progress: Math.min(1, (offset + bytes.length) / source.size) });
-              }
-              logPipeline("transcription_audio_upload", id, "done", { engine: "assemblyai", bodyBytes: source.size });
-            }
-            guard();
-            const opId = crypto.randomUUID();
-            await native.beginRemoteOp({ id, did, opId, provider: "assemblyai", mode: "hosted", kind: "hosted_submit",
-              fingerprint: `${source.size}:${source.mimeType}`, startedAt: Date.now() });
-            const submitted = await client.createTranscript(uploadId, { speakerLabels: channels === 2 || recording.options?.identifySpeakers !== false,
-              multichannel: channels === 2 });
-            handle = submitted.id;
-            persist(id, { handle });
-            await native.recordRemoteResult({ id, did, opId, result: { outcome: "created", jobId: handle } });
-          }
-        }
-        return handle;
-      });
-      if (!handle) throw new Error("Powerful did not return a transcript. Try again.");
-      persist(id, { handle });
-      for (;;) {
         guard();
         // Both the local resume entry and the space commit may have changed while
         // this invocation waited for the account's upload lane.
@@ -340,8 +278,8 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
                 const opId = crypto.randomUUID();
                 await native.beginRemoteOp({ id, did, opId, provider: "assemblyai", mode: "hosted", kind: "hosted_submit",
                   fingerprint: `${source.size}:${source.mimeType}`, startedAt: Date.now() });
-                const submitted = await client.createTranscript(uploadId, { speakerLabels: recording.options?.identifySpeakers !== false,
-                  multichannel: (recording as VoiceNoteRecording & { layout?: string }).layout === "stereo", sourceId: id });
+                const submitted = await client.createTranscript(uploadId, { speakerLabels: channels === 2 || recording.options?.identifySpeakers !== false,
+                  multichannel: channels === 2, sourceId: id });
                 handle = submitted.id;
                 persist(id, { handle });
                 await advance({ handle, status: "submitted" });
@@ -349,7 +287,7 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
               }
             }
           }
-          break;
+          return handle;
         } catch (error) {
           // Keep a submitted handle immutable. A failed upload can be claimed
           // again with a conditional write and resumed from its upload ID.
@@ -361,7 +299,7 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
           }
           throw error;
         } finally { clearInterval(heartbeat); }
-      }
+      });
       if (!handle) return;
       persist(id, { handle });
       const transcript = await pollAssemblyAiTranscript(client, handle, {
@@ -392,7 +330,7 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
           ...(s.channel === undefined ? {} : { channel: s.channel }),
           ...(s.timing === undefined ? {} : { timing: s.timing }) })) };
       state(id, { kind: "saving" });
-      if (recording.sizeBytes > 0 && (local.transcript?.rev ?? 0) < rev) await native.putTranscript({ id, transcript: prepared });
+      if (recording.sizeBytes > 0 && (!local.transcript || local.transcript.rev < rev)) await native.putTranscript({ id, transcript: prepared });
       guard();
       const saved = await save(account, id, { rev, sentences,
         speakers: [...new Set(sentences.map((s) => s.speaker_name).filter((s): s is string => !!s))],

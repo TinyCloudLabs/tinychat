@@ -555,6 +555,25 @@ test("a full space leaves the note local with a specific identity state", async 
       .toEqual([{ id: "b" }, { id: "c" }]);
     expect(row(sqlite, "b").metadata.note).toBe("b");
   });
+  test("archived sweep moves the new VAD diagnostic metadata to the keeper", async () => {
+    const { tcw, sqlite } = space();
+    await ensureSchema(tcw);
+    insert(sqlite, "a", "rec", { transcription_outcome: "no_speech", transcription_vad_mode: "primary",
+      transcription_noise_floor_dbfs: -40 });
+    insert(sqlite, "b", "rec", {
+      transcription_outcome: "transcribed", transcript_text: "synthetic transcript",
+      transcribed_at: "2026-01-02T00:00:00.000Z",
+      transcription_vad_mode: "quiet", transcription_noise_floor_dbfs: -61.5, transcription_median_dbfs: -58,
+      transcription_p99_dbfs: -29, transcription_speech_peak_s: 2.4, transcription_vad_dropped_above_noise_pct: 3.5,
+    });
+    await reconcileDuplicates(tcw);
+    await sweepArchived(tcw);
+    expect(row(sqlite, "a").metadata).toMatchObject({
+      transcription_vad_mode: "quiet", transcription_noise_floor_dbfs: -61.5, transcription_median_dbfs: -58,
+      transcription_p99_dbfs: -29, transcription_speech_peak_s: 2.4, transcription_vad_dropped_above_noise_pct: 3.5,
+    });
+    expect(row(sqlite, "b").metadata.merged_at).toBe(row(sqlite, "b").updatedAt);
+  });
   test("a legacy write to the keeper between sweep group reads keeps the newer transcript", async () => {
     const { tcw, sqlite } = space();
     await ensureSchema(tcw);

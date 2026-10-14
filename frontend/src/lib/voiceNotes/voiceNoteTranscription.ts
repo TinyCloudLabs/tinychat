@@ -46,6 +46,7 @@ import { nativeRecordingSource, VoiceNotes, type VoiceNoteRecording } from "./na
 import { readTranscriptCommit } from "./voiceNoteCommits";
 import { whenVoiceNoteSavesIdle } from "./recorderSaves";
 import { transcriptionErrorCopy, voiceNoteTranscriptionFailureForCode } from "./transcriptionErrors";
+import { privatePartsDone } from "./notePipelineCopy";
 import type { VoiceNoteTranscriptionFailure } from "./transcriptionErrors";
 export type { VoiceNoteTranscriptionFailure } from "./transcriptionErrors";
 
@@ -451,6 +452,24 @@ function transcriptStatsMetadata(transcript: PrivateCloudTranscript): VoiceNoteT
     metadata.transcription_vad_dropped_above_floor_pct = dropped;
   if (typeof transcript.stats?.vad_fallback === "boolean")
     metadata.transcription_vad_fallback = transcript.stats.vad_fallback;
+  const mode = transcript.stats?.vad_mode;
+  if (mode === "primary" || mode === "fallback" || mode === "quiet")
+    metadata.transcription_vad_mode = mode;
+  const noiseFloor = transcript.stats?.noise_floor_dbfs;
+  if (typeof noiseFloor === "number" && Number.isFinite(noiseFloor))
+    metadata.transcription_noise_floor_dbfs = noiseFloor;
+  const median = transcript.stats?.median_dbfs;
+  if (typeof median === "number" && Number.isFinite(median))
+    metadata.transcription_median_dbfs = median;
+  const p99 = transcript.stats?.p99_dbfs;
+  if (typeof p99 === "number" && Number.isFinite(p99))
+    metadata.transcription_p99_dbfs = p99;
+  const speechPeak = transcript.stats?.speech_peak_s;
+  if (typeof speechPeak === "number" && Number.isFinite(speechPeak) && speechPeak >= 0)
+    metadata.transcription_speech_peak_s = speechPeak;
+  const droppedAboveNoise = transcript.stats?.dropped_above_noise_pct;
+  if (typeof droppedAboveNoise === "number" && Number.isFinite(droppedAboveNoise) && droppedAboveNoise >= 0 && droppedAboveNoise <= 100)
+    metadata.transcription_vad_dropped_above_noise_pct = droppedAboveNoise;
   return metadata;
 }
 
@@ -1859,10 +1878,10 @@ export function transcriptionStatusText(status: VoiceNoteTranscriptionStatus): s
       return status.progress === undefined ? "Sending audio to Private transcription…" : `Sending audio to Private transcription · ${Math.round(Math.min(1, Math.max(0, status.progress)) * 100)}%`;
     case "queued":
       return status.position !== null && status.position > 0 ? `Queued (position ${status.position})…` : "Queued…";
-    case "processing":
-      return status.total !== null && status.total > 0
-        ? `Transcribing in private cloud… ${status.completed ?? 0}/${status.total}`
-        : "Transcribing in private cloud…";
+    case "processing": {
+      const partsDone = privatePartsDone(status.completed, status.total);
+      return partsDone === null ? "Transcribing in private cloud…" : `Transcribing in private cloud… ${partsDone}`;
+    }
     case "saving":
       return "Saving the transcript…";
   }
