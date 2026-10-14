@@ -39,13 +39,14 @@ export interface PipelinePending {
   upload?: { state: "waiting" | "preparing" | "uploading" | "retrying"; bytes: number; total: number };
   failed?: { kind: PipelineFailureKind; message: string };
   held?: PipelineHeldReason;
+  retryAt?: number;
   /** Per note: how many notes are ahead of this one in the save queue (0 = next). This is the only queue position. */
   waitingBehind?: number;
 }
 
 /**
- * `spaceLaneSnapshot()` (P1): the global write lane. `busy`: a job is running or queued. `depth`: every queued job,
- * including this note and the ones behind it, so it is NOT a position and is never shown. Only `busy` is read.
+ * The text lane snapshot controls space-read copy. `busy` means a text request
+ * is running or queued; `depth` counts queued text requests, not a note position.
  */
 export interface PipelineSpaceLane { busy: boolean; depth: number }
 
@@ -229,6 +230,8 @@ function spaceStep(input: NotePipelineInput): Result {
       case "unowned": return blocked(SPACE_COPY.accountUnknown(device));
     }
   }
+  if (pending?.retryAt && pending.retryAt > Date.now())
+    return { state: "waiting", caption: SPACE_COPY.retryIn(pending.retryAt - Date.now()) };
   const failure = pending?.failed;
   if (failure !== undefined) {
     switch (failure.kind) {

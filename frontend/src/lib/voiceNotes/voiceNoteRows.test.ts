@@ -7,7 +7,7 @@ import { PendingVoiceNotesSaver, schedulePendingVoiceNotesRecovery } from "@/cha
 import { OnDeviceStt, __setOnDeviceSttForTests, type OnDeviceSttPlugin } from "./onDeviceStt";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { CONNECTORS_SQL_DB_NAME, ensureSchema, transcriptKvKey } from "../connectors/connectorStore";
-import { readVoiceNoteTranscriptState } from "./voiceNoteStore";
+import { readVoiceNoteTranscriptState, saveVoiceNote } from "./voiceNoteStore";
 import { SQL_MEETING_METADATA_QUERY } from "../meetingChat/corpus";
 import { legacyTranscriptWinner, readTranscriptCommit, voiceNoteTranscriptLocator } from "./voiceNoteCommits";
 import { whisperLocalTranscript } from "./desktop/whisperTranscript";
@@ -25,6 +25,7 @@ import { handoffBeforeCredentialClear } from "./accountHandoff";
 import { advanceAccountGeneration, currentAccountGeneration } from "./accountContext";
 import { runOnSpaceLane, spaceLaneSnapshot, subscribeSpaceLane } from "../spaceWriteLane";
 import { setVoiceNoteSaveDeadlineForTests } from "./saveDeadline";
+import { putPendingSaveState, readPendingSaveStates } from "./pendingSaveState";
 
 test("a healthy long drain does not consume the next save's call deadline", async () => {
   let releaseDrain!: () => void;
@@ -45,6 +46,19 @@ test("a healthy long drain does not consume the next save's call deadline", asyn
     await expect(save).resolves.toBe("saved");
     expect(saveStarted).toBe(true);
   } finally { releaseDrain(); }
+});
+
+test("a stalled background drain cannot delay a voice-note row request", async () => {
+  let release!: () => void;
+  let entered!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const started = new Promise<void>((resolve) => { entered = resolve; });
+  const drain = runOnSpaceLane(async () => { entered(); await gate; }, undefined, "background");
+  await started;
+  try {
+    await expect(runOnSpaceLane(async () => "row saved", { operation: "voice-note row", timeoutMs: 20 }))
+      .resolves.toBe("row saved");
+  } finally { release(); await drain; }
 });
 
 test("a lane job that rejects without a reason rejects its caller", async () => {
@@ -68,6 +82,147 @@ test("space lane snapshot reports busy state and queued depth", async () => {
   expect(spaceLaneSnapshot()).toEqual({ busy: false, depth: 0 });
   expect(notifications).toBeGreaterThan(0);
   unsubscribe();
+});
+
+test("one save publishes note text while an audio part is stalled", async () => {
+  const { tcw, values } = space();
+  await ensureVoiceNoteIdentity(tcw);
+  const id = `short-sync-${++count}`;
+  await saveNote(id, "Text must arrive before audio");
+  let calls = 0;
+  const db = tcw.sql.db.bind(tcw.sql);
+  tcw.sql.db = ((name: string) => {
+    const handle = db(name);
+    return { ...handle,
+      query: async (...args: Parameters<typeof handle.query>) => { calls++; return handle.query(...args); },
+      execute: async (...args: Parameters<typeof handle.execute>) => { calls++; return handle.execute(...args); },
+    };
+  }) as typeof tcw.sql.db;
+  const put = tcw.kv.put.bind(tcw.kv);
+  const get = tcw.kv.get.bind(tcw.kv);
+  const list = tcw.kv.list.bind(tcw.kv);
+  let releaseAudio!: () => void;
+  let audioStarted!: () => void;
+  const audioGate = new Promise<void>((resolve) => { releaseAudio = resolve; });
+  const started = new Promise<void>((resolve) => { audioStarted = resolve; });
+  tcw.kv.put = (async (...args: Parameters<typeof put>) => {
+    calls++;
+    if (args[0].includes("/p/")) { audioStarted(); await audioGate; }
+    return put(...args);
+  }) as typeof tcw.kv.put;
+  tcw.kv.get = (async (...args: Parameters<typeof get>) => { calls++; return get(...args); }) as typeof tcw.kv.get;
+  tcw.kv.list = (async (...args: Parameters<typeof list>) => { calls++; return list(...args); }) as typeof tcw.kv.list;
+  const recording = { id, startedAt: Date.now(), durationMs: 52_000, mimeType: "audio/mp4", sizeBytes: 4,
+    silencedMs: 0, silencedEvents: 0, noSignalMs: 0, version: 2 as const,
+    source: "in_app" as const, options: { transcriber: "private-cloud" as const, identifySpeakers: false } };
+  const saving = saveVoiceNote(tcw, recording, { mimeType: "audio/mp4", size: 4,
+    readPart: async () => new Uint8Array([1, 2, 3, 4]) }, "tauri");
+  try {
+    await started;
+    for (let i = 0; i < 100 && !values.has(voiceNoteMarkdownKvKey(id)); i++) await Bun.sleep(1);
+    expect(values.get(voiceNoteMarkdownKvKey(id))).toContain("Text must arrive before audio");
+    expect(values.has(`${voiceNoteAudioKvKey(id)}/manifest`)).toBe(false);
+    expect((await resolveVoiceNoteRow(tcw, id))?.metadata).toMatchObject({
+      capture: { platform: "tauri", options: { transcriber: "private-cloud" } },
+      note_kv_key: voiceNoteMarkdownKvKey(id),
+    });
+  } finally { releaseAudio(); }
+  expect((await saving).ok).toBe(true);
+  // Ten save requests plus the assertion's row read above. The old path
+  // performed 12+ sequential requests in Sam's log.
+  expect(calls).toBe(11);
+});
+
+test("one save overlaps short text and audio requests at fixed fixture latency", async () => {
+  const { tcw } = space();
+  await ensureVoiceNoteIdentity(tcw);
+  const id = `timed-sync-${++count}`;
+  await saveNote(id, "Timed fixture");
+  let serialLatency = 0;
+  const delay = async () => {
+    const start = performance.now();
+    await Bun.sleep(20);
+    serialLatency += performance.now() - start;
+  };
+  let calls = 0;
+  const db = tcw.sql.db.bind(tcw.sql);
+  tcw.sql.db = ((name: string) => {
+    const handle = db(name);
+    return { ...handle,
+      query: async (...args: Parameters<typeof handle.query>) => { calls++; await delay(); return handle.query(...args); },
+      execute: async (...args: Parameters<typeof handle.execute>) => { calls++; await delay(); return handle.execute(...args); },
+    };
+  }) as typeof tcw.sql.db;
+  const put = tcw.kv.put.bind(tcw.kv);
+  const get = tcw.kv.get.bind(tcw.kv);
+  const list = tcw.kv.list.bind(tcw.kv);
+  tcw.kv.put = (async (...args: Parameters<typeof put>) => { calls++; await delay(); return put(...args); }) as typeof tcw.kv.put;
+  tcw.kv.get = (async (...args: Parameters<typeof get>) => { calls++; await delay(); return get(...args); }) as typeof tcw.kv.get;
+  tcw.kv.list = (async (...args: Parameters<typeof list>) => { calls++; await delay(); return list(...args); }) as typeof tcw.kv.list;
+  const recording = { id, startedAt: Date.now(), durationMs: 52_000, mimeType: "audio/mp4", sizeBytes: 4,
+    silencedMs: 0, silencedEvents: 0, noSignalMs: 0 };
+  const start = performance.now();
+  const saved = await saveVoiceNote(tcw, recording, { mimeType: "audio/mp4", size: 4,
+    readPart: async () => new Uint8Array([1, 2, 3, 4]) }, "tauri");
+  const elapsed = performance.now() - start;
+  expect(saved.ok).toBe(true);
+  expect(calls).toBe(10);
+  // Compare against the observed sum of request delays, so concurrent test
+  // load cannot turn a fixed wall-clock threshold into a false failure.
+  expect(elapsed).toBeLessThan(serialLatency - 10);
+});
+
+test("a pending save failure is restored after volatile status is cleared", async () => {
+  const original = VoiceNotes;
+  const { tcw } = space();
+  const fake = createFakeVoiceNotes();
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  try {
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1,
+      transcriber: "off", identifySpeakers: false });
+    const started = await fake.plugin.start();
+    await fake.plugin.stop();
+    pendingStore.setAccount(tcw.did);
+    await pendingStore.refresh();
+    pendingStore.reportNoteFailure(started.id, Object.assign(new Error("Timed out"), { code: "VOICE_NOTE_OPERATION_TIMEOUT" }));
+    pendingStore.setHeld(started.id, "unowned");
+    await readPendingSaveStates(tcw.did, [started.id]);
+    pendingStore.setAccount("did:other");
+    pendingStore.setAccount(tcw.did);
+    await pendingStore.refresh();
+    for (let turn = 0; turn < 20 && !pendingStore.snapshot().notes?.find((note) => note.id === started.id)?.failed; turn++)
+      await Bun.sleep(1);
+    expect(pendingStore.snapshot().notes?.find((note) => note.id === started.id)).toMatchObject({
+      failed: { kind: "timeout" }, held: "unowned",
+    });
+  } finally { __setVoiceNotesForTests(original, { available: null }); }
+});
+
+test("reconcile honors a persisted retry due time", async () => {
+  const original = VoiceNotes;
+  const { tcw, sqlite } = space();
+  const fake = createFakeVoiceNotes();
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  try {
+    await ensureVoiceNoteIdentity(tcw);
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1,
+      transcriber: "off", identifySpeakers: false });
+    const started = await fake.plugin.start();
+    await fake.plugin.stop();
+    await putPendingSaveState(tcw.did, { id: started.id, retryAt: Date.now() + 80 });
+    pendingStore.setAccount(tcw.did);
+    await pendingStore.refresh();
+    const running = createVoiceNotePipeline(tcw).reconcileAll({
+      did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration(),
+    });
+    await Bun.sleep(10);
+    expect(sqlite.query("SELECT id FROM connector_meeting WHERE source_id = ?").all(started.id)).toEqual([]);
+    await running;
+    expect(sqlite.query("SELECT id FROM connector_meeting WHERE source_id = ?").all(started.id)).toEqual([]);
+    for (let turn = 0; turn < 150 && sqlite.query("SELECT id FROM connector_meeting WHERE source_id = ?").all(started.id).length === 0; turn++)
+      await Bun.sleep(1);
+    expect(sqlite.query("SELECT id FROM connector_meeting WHERE source_id = ?").all(started.id)).toEqual([{ id: `vn-${started.id}` }]);
+  } finally { __setVoiceNotesForTests(original, { available: null }); }
 });
 import { pendingStore, saveNoteForAccount } from "./recorderSaves";
 import { associateLegacyNotes, markLegacyOwnerUnknown, migrateLegacyDiscardLedger } from "./legacyMigration";
@@ -1509,7 +1664,7 @@ test("a never-settling audio KV put reports a visible timeout and clears Saving 
       putStarted();
       return new Promise((_resolve, reject) => options?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
     }) as typeof tcw.kv.put;
-    const pipeline = createVoiceNotePipeline(tcw);
+    const pipeline = createVoiceNotePipeline(tcw, { saveRetryDelaysMs: [] });
     const reconcile = pipeline.reconcileAll(account);
     await started;
     expect(pendingStore.snapshot().running).toBe(true);
@@ -1518,6 +1673,45 @@ test("a never-settling audio KV put reports a visible timeout and clears Saving 
     expect(pendingStore.snapshot().lastError).toContain("saving it is taking too long");
     expect(pendingStore.snapshot().notes?.find((note) => note.id === recording.id)?.failed?.kind).toBe("timeout");
     // The disabled={saving} condition is now false, so Save now is enabled again.
+  } finally {
+    setVoiceNoteSaveDeadlineForTests(null);
+    __setVoiceNotesForTests(original, { available: null });
+  }
+});
+
+test("a lane timeout is retrying before its final failed attempt", async () => {
+  const original = VoiceNotes;
+  const { tcw } = space();
+  const fake = createFakeVoiceNotes();
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  try {
+    await ensureVoiceNoteIdentity(tcw);
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1, transcriber: "off", identifySpeakers: false });
+    const started = await fake.plugin.start();
+    await fake.plugin.stop();
+    const next = await fake.plugin.start();
+    await fake.plugin.stop();
+    pendingStore.setAccount(tcw.did);
+    await pendingStore.refresh();
+    const put = tcw.kv.put.bind(tcw.kv);
+    tcw.kv.put = ((key, value, options) => key.includes(started.id) && key.includes("/p/")
+      ? new Promise((_resolve, reject) => options?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true }))
+      : put(key, value, options)) as typeof tcw.kv.put;
+    setVoiceNoteSaveDeadlineForTests(10);
+    const running = createVoiceNotePipeline(tcw, { retryDelaysMs: [], saveRetryDelaysMs: [80] })
+      .reconcileAll({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() });
+    for (let turn = 0; turn < 100 && !pendingStore.snapshot().notes?.find((note) => note.id === started.id)?.retryAt; turn++)
+      await Bun.sleep(1);
+    const waiting = pendingStore.snapshot().notes?.find((note) => note.id === started.id);
+    expect(waiting?.retryAt).toBeGreaterThan(Date.now());
+    expect(waiting?.failed).toBeUndefined();
+    await running;
+    expect((await fake.plugin.listPending()).recordings.find((note) => note.id === next.id)?.ledger?.audio.state).toBe("saved");
+    expect(pendingStore.snapshot().notes?.find((note) => note.id === started.id)?.failed).toBeUndefined();
+    expect(pendingStore.snapshot().notes?.find((note) => note.id === started.id)?.retryAt).toBeGreaterThan(Date.now());
+    for (let turn = 0; turn < 150 && pendingStore.snapshot().notes?.find((note) => note.id === started.id)?.failed?.kind !== "timeout"; turn++)
+      await Bun.sleep(1);
+    expect(pendingStore.snapshot().notes?.find((note) => note.id === started.id)?.failed?.kind).toBe("timeout");
   } finally {
     setVoiceNoteSaveDeadlineForTests(null);
     __setVoiceNotesForTests(original, { available: null });
@@ -1579,7 +1773,7 @@ test("a late part put settles before retry writes and retry commits one complete
       }
       return put(key, value as never, options);
     }) as typeof tcw.kv.put;
-    const pipeline = createVoiceNotePipeline(tcw);
+    const pipeline = createVoiceNotePipeline(tcw, { saveRetryDelaysMs: [] });
     const ctx = { did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() };
     await pipeline.reconcileAll(ctx);
     expect(pendingStore.snapshot().lastError).toContain("taking too long");

@@ -9,7 +9,7 @@ import {
 } from "../assemblyai";
 import { base64ToBytes } from "./voiceNoteAudio";
 import { currentAccountGeneration, isAccountWorkAllowed } from "./accountContext";
-import { nativeRecordingSource, VoiceNotes, type LocalTranscript, type VoiceNoteRecording, type VoiceNotesPlugin } from "./nativeVoiceNotes";
+import { nativePlatform, nativeRecordingSource, VoiceNotes, type LocalTranscript, type VoiceNoteRecording, type VoiceNotesPlugin } from "./nativeVoiceNotes";
 import { readTranscriptCommit } from "./voiceNoteCommits";
 import { createVoiceNoteRow } from "./voiceNoteRows";
 import { loadVoiceNoteAudio, patchVoiceNoteTranscriptionFailure, readVoiceNoteForTranscription, saveVoiceNoteTranscript, voiceNoteTitle } from "./voiceNoteStore";
@@ -72,7 +72,7 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
   };
   const run = async (recording: Pick<VoiceNoteRecording, "id" | "owner" | "source" | "options" | "startedAt" | "sizeBytes" | "mimeType" | "durationMs">) => {
     const id = recording.id;
-    if (active.has(id) || !consented() || (recording.owner && recording.owner !== did) || recording.source !== "in_app" || recording.options?.transcriber !== "assemblyai") return;
+    if (active.has(id) || jobs.get(id)?.kind === "done" || !consented() || (recording.owner && recording.owner !== did) || recording.source !== "in_app" || recording.options?.transcriber !== "assemblyai") return;
     active.add(id);
     logPipeline("transcription", id, "start", { engine: "assemblyai" });
     const generation = currentAccountGeneration();
@@ -85,8 +85,10 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
     try {
       guard();
       const account = tcw();
-      const prior = await readCommit(account, id);
       const stored = readJobs(did)[id] ?? {};
+      // The durable commit is checked before any provider upload, including
+      // a fresh trigger after an earlier job cleared its local resume entry.
+      const prior = await readCommit(account, id);
       if (prior) transcriptSaved = true;
       if (prior && !stored.handle) { jobs.set(id, { kind: "done", outcome: prior.outcome }); notify(); return; }
       if (prior && stored.handle && stored.saved) {
@@ -94,7 +96,7 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
         catch (error) { console.warn("[HostedVoiceNotes] Could not delete the saved remote transcript", error); }
         jobs.set(id, { kind: "done", outcome: prior.outcome }); notify(); return;
       }
-      if (!prior) await createRow(account, recording as VoiceNoteRecording, voiceNoteTitle(recording.startedAt));
+      await createRow(account, recording as VoiceNoteRecording, voiceNoteTitle(recording.startedAt), undefined, nativePlatform());
       if (!stored.recording) persist(id, { recording: recording as VoiceNoteRecording });
       let source = nativeRecordingSource(recording, native);
       if (!recording.sizeBytes) {

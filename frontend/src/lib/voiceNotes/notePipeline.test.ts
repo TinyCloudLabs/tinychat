@@ -216,6 +216,12 @@ describe("notePipeline: every row of the stages table", () => {
 });
 
 describe("notePipeline: shape", () => {
+  test("a pending deadline retry is waiting with a time, not failed", () => {
+    const pipeline = notePipeline(input({ space: { pending: { retryAt: Date.now() + 30_000 } } }));
+    expect(pipeline.steps.find((step) => step.key === "space")).toMatchObject({
+      state: "waiting", caption: expect.stringMatching(/Trying again in \d+s/),
+    });
+  });
   test("steps are always the four, in order, with the device in the first label", () => {
     expect(notePipeline(input()).steps.map((s) => [s.key, s.label])).toEqual([
       ["phone", "Audio on this phone"], ["space", "Audio in your space"], ["transcript", "Transcript"], ["notes", "Notes"],

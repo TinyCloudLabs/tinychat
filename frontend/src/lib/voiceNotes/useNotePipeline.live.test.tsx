@@ -778,11 +778,11 @@ describe("the space read is bounded (P6 r1 blocker 1, r2)", () => {
 describe("a read queued behind uploads is not a failed read (P6 r2)", () => {
   let ticket: PendingUploadTicket | null = null;
   let finishUpload: () => void = () => {};
-  const beginUpload = async () => {
-    // Another note is uploading: it holds the write lane, and the phone lists it as an upload in progress.
+  const beginUpload = async (track: "text" | "audio" = "text") => {
+    // Another note is uploading on the independent audio lane.
     const held = new Promise<void>((resolve) => { finishUpload = resolve; });
     ticket = pendingStore.enqueueUpload(OTHER);
-    const upload = runOnSpaceLane(() => held, { operation: "upload", timeoutMs: 60_000 });
+    const upload = runOnSpaceLane(() => held, { operation: "upload", timeoutMs: 60_000, track });
     await act(async () => { await pendingStore.refresh(); });
     return { upload };
   };
@@ -793,19 +793,19 @@ describe("a read queued behind uploads is not a failed read (P6 r2)", () => {
     setVoiceNoteSaveDeadlineForTests(null); setSpaceLaneQueueWaitForTests(null); resetSpaceLaneForTests();
   });
 
-  test("it says it is checking after the uploads, is no error however long that takes, and completes when they finish", async () => {
+  test("an audio upload does not make a text read wait behind uploads", async () => {
     phone.recordings = [recording(ID, "on-device", stt("done")), recording(OTHER, "on-device", stt("queued"))];
     const space = fakeSpace("did:p6-r2-queued", () => ({ transcription_outcome: "transcribed" }));
     // The read's own deadline is far shorter than this wait: it must not be running while the read is queued.
     setVoiceNoteSaveDeadlineForTests(150);
-    const { upload } = await beginUpload();
+    const { upload } = await beginUpload("audio");
     const { seen } = await mountOne({ tcw: space.tcw, rowExists: true, audioSaved: true });
     expect(spaceLaneSnapshot().busy).toBe(true);
-    expect(seen.history[0]).toBe("waiting:Checking your space · after uploads");
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 600)); });
-    expect(seen.history.every((entry) => entry === "waiting:Checking your space · after uploads")).toBe(true);
+    expect(seen.history[0]).toBe("waiting:Checking your space…");
+    await waitFor(() => stepOf(seen.view!.pipeline, "transcript").state === "done");
+    expect(spaceLaneSnapshot("audio").busy).toBe(true);
     expect(seen.view!.pipeline.blocker).toBeUndefined();
-    expect(space.log.rowQueries).toEqual([]);
+    expect(space.log.rowQueries).toEqual([[ID]]);
     await act(async () => { finishUpload(); await upload; });
     await waitFor(() => stepOf(seen.view!.pipeline, "transcript").state === "done");
     expect(stepOf(seen.view!.pipeline, "transcript").state).toBe("done");

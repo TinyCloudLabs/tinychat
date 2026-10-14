@@ -19,4 +19,5 @@ Integration branch: `dev/0.8.0`
 
 | PR | Head SHA | Merge Commit | Conflicts | Resolution |
 |----|----------|--------------|-----------|------------|
+| #374 | f475230b | adb78772 | Yes | hostedVoiceNotes.test.ts: merged harness() signature (main's durationMs/transcriptResponses + #374's readGate); merged readCommit with readGate await + main's clock. voiceNoteStore.ts: combined imports (VoiceNoteRow + VoiceNoteTranscriptionStatsMetadata) |
 

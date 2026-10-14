@@ -242,7 +242,7 @@ export async function resolveVoiceNoteRows(tcw: TinyCloudWeb, sourceIds: readonl
   return new Map([...found].map(([id, { row, group }]) => [id, { row, legacy: legacyTranscriptWinner(group) }]));
 }
 export async function createVoiceNoteRow(tcw: TinyCloudWeb, recording: VoiceNoteRecording, title: string,
-  checkpoint: () => void = () => undefined): Promise<VoiceNoteRow & { inserted: boolean }> {
+  checkpoint: () => void = () => undefined, platform = "unknown"): Promise<VoiceNoteRow & { inserted: boolean }> {
   const identity = await ensureVoiceNoteIdentity(tcw, checkpoint);
   if (identity.status !== "established") throw Object.assign(new Error(identity.reason ?? identity.status), { code: identity.status, cause: identity.cause });
   const now = new Date().toISOString();
@@ -252,7 +252,8 @@ export async function createVoiceNoteRow(tcw: TinyCloudWeb, recording: VoiceNote
      summary_action_items, keywords, meeting_type, metadata, created_at, updated_at)
     VALUES (?, 'exo-voice-note', ?, ?, ?, ?, NULL, '[]', NULL, NULL, NULL, NULL, ?, ?, ?)
     ON CONFLICT DO NOTHING`, [`vn-${recording.id}`, recording.id, title, new Date(recording.startedAt).toISOString(),
-    Math.round(recording.durationMs / 1000), JSON.stringify({ transcription_outcome: outcome }), now, now], checkpoint);
+    Math.round(recording.durationMs / 1000), JSON.stringify({ transcription_outcome: outcome,
+      capture: captureMetadata(recording, platform) }), now, now], checkpoint);
   const row = await resolveVoiceNoteRow(tcw, recording.id, checkpoint);
   if (!row) throw new Error("The voice-note identity index was established but its row is missing");
   if (changes === 0) {
@@ -301,25 +302,30 @@ export async function patchVoiceNoteTranscriptionFailure(tcw: TinyCloudWeb, sour
     new Date().toISOString(), row.id, sourceId], checkpoint);
 }
 export async function patchVoiceNoteAudio(tcw: TinyCloudWeb, recording: VoiceNoteRecording, platform: string,
-  audio: { base: string; mimeType: string; size: number; parts: number }, checkpoint: () => void = () => undefined): Promise<VoiceNoteRow> {
-  const row = await resolveVoiceNoteRow(tcw, recording.id, checkpoint);
+  audio: { base: string; mimeType: string; size: number; parts: number }, checkpoint: () => void = () => undefined,
+  knownRow?: VoiceNoteRow): Promise<VoiceNoteRow> {
+  const row = knownRow ?? await resolveVoiceNoteRow(tcw, recording.id, checkpoint);
   if (!row) throw new Error("Voice note row is missing");
   checkpoint();
   await execute(tcw, `UPDATE connector_meeting SET metadata = json_patch(COALESCE(metadata,'{}'), ?), updated_at = ?
     WHERE id = ? AND source = 'exo-voice-note'`, [JSON.stringify({ audio_kv_key: audio.base, audio_format: "parts-v1",
     audio_mime_type: audio.mimeType, audio_bytes: audio.size, audio_parts: audio.parts, audio: { stored: true, base: audio.base },
-    capture: { platform, duration_ms: recording.durationMs, silenced_ms: recording.silencedMs,
-      silenced_events: recording.silencedEvents, no_signal_ms: recording.noSignalMs,
-      ...(recording.version === 2 ? { version: 2, wall_ms: recording.wallMs, paused_ms: recording.pausedMs,
-        spans: recording.spans ?? [], source: recording.source, options: recording.options, input: recording.input } : {}) },
+    capture: captureMetadata(recording, platform),
   }), new Date().toISOString(), row.id], checkpoint);
   return row;
 }
 
+function captureMetadata(recording: VoiceNoteRecording, platform: string) {
+  return { platform, duration_ms: recording.durationMs, silenced_ms: recording.silencedMs,
+    silenced_events: recording.silencedEvents, no_signal_ms: recording.noSignalMs,
+    ...(recording.version === 2 ? { version: 2, wall_ms: recording.wallMs, paused_ms: recording.pausedMs,
+      spans: recording.spans ?? [], source: recording.source, options: recording.options, input: recording.input } : {}) };
+}
+
 /** The notes lane changes only its metadata keys, leaving T18 audio and transcript commits intact. */
 export async function patchVoiceNoteMarkdown(tcw: TinyCloudWeb, sourceId: string, key: string, editedAt: string,
-  checkpoint: () => void = () => undefined): Promise<void> {
-  const row = await resolveVoiceNoteRow(tcw, sourceId, checkpoint);
+  checkpoint: () => void = () => undefined, knownRow?: VoiceNoteRow): Promise<void> {
+  const row = knownRow ?? await resolveVoiceNoteRow(tcw, sourceId, checkpoint);
   if (!row) throw new Error("Voice note row is missing");
   checkpoint();
   // Aborting narrows but cannot eliminate the server-side late-write window: the

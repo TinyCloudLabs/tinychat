@@ -307,6 +307,7 @@ export function buildNotePipelineInput(facts: NotePipelineFacts): NotePipelineIn
         ...(facts.pending.upload ? { upload: facts.pending.upload } : {}),
         ...(facts.pending.failed ? { failed: facts.pending.failed } : {}),
         ...(facts.pending.held ? { held: facts.pending.held } : {}),
+        ...(facts.pending.retryAt ? { retryAt: facts.pending.retryAt } : {}),
         ...(facts.pending.waitingBehind !== undefined ? { waitingBehind: facts.pending.waitingBehind } : {}),
       },
       lane: facts.lane,
@@ -759,7 +760,16 @@ function usePipelineStates(entries: readonly { id: string; source: NotePipelineS
   const platform = useContext(PlatformContext);
   const ids = useMemo(() => entries.map((entry) => entry.id), [entries]);
   const pending = useSyncExternalStore(pendingStore.subscribe, pendingStore.snapshot, pendingStore.snapshot);
-  const laneBusy = useSyncExternalStore(subscribeSpaceLane, () => spaceLaneSnapshot().busy, () => false);
+  const laneBusy = useSyncExternalStore(subscribeSpaceLane, () => spaceLaneSnapshot("text").busy, () => false);
+  const laneDepth = useSyncExternalStore(subscribeSpaceLane, () => spaceLaneSnapshot("text").depth, () => 0);
+  const retryAt = pending.notes?.reduce<number | null>((earliest, note) => note.retryAt && note.retryAt > Date.now()
+    ? Math.min(earliest ?? note.retryAt, note.retryAt) : earliest, null) ?? null;
+  const [retryTick, setRetryTick] = useState(0);
+  useEffect(() => {
+    if (retryAt === null) return;
+    const timer = setInterval(() => setRetryTick((tick) => tick + 1), 1_000);
+    return () => clearInterval(timer);
+  }, [retryAt]);
   const onDeviceStatus = useSyncExternalStore(onDeviceSttStore.subscribe, onDeviceSttStore.snapshot, onDeviceSttStore.snapshot);
   const syncVersion = useStoreVersion(subscribeRecordingNoteSync);
   const transcriptSyncVersion = useStoreVersion(subscribeOnDeviceTranscriptSync);
@@ -860,12 +870,12 @@ function usePipelineStates(entries: readonly { id: string; source: NotePipelineS
         readError: nativeRead.error ?? rowError,
         capture: { finalizing: recorder.finalizationPendingId === id && issue === null, issue, readError: captureReadError },
         pending: pending.notes?.find((note) => note.id === id) ?? null,
-        lane: { busy: laneBusy, depth: spaceLaneSnapshot().depth },
+        lane: { busy: laneBusy, depth: laneDepth },
         onDeviceStatus: device !== "mac" && hasOnDevice ? onDeviceStatus : null,
         desktopJob: device === "mac" && hasOnDevice ? getDesktopWhisperQueue()?.snapshot().get(id) ?? null : null,
         transcriptSync: tcw === null ? null : onDeviceTranscriptSyncState(tcw, id),
         spaceReading,
-        spaceAfterUploads: spaceReading && pending.notes?.some((note) => note.upload !== undefined) === true,
+        spaceAfterUploads: spaceReading && laneDepth > 0,
         cloudJob: recorder.transcription?.jobs.get(id) ?? null,
         cloudChecking: recorder.transcription?.availability === "checking",
       };
@@ -895,7 +905,7 @@ function usePipelineStates(entries: readonly { id: string; source: NotePipelineS
     }
     return { states: out, autoSyncs: wantsSync, autoTranscriptSyncs: wantsTranscriptSync };
     // The store versions say the per-key getters read above have new answers.
-  }, [entries, locals, rows, natives, nativeRead.ready, nativeRead.error, captureReadError, pending, laneBusy, onDeviceStatus, issues, recorder.finalizationPendingId, recorder.transcription, device, hasOnDevice, syncVersion, transcriptSyncVersion, whisperVersion, autoSyncVersion]);
+  }, [entries, locals, rows, natives, nativeRead.ready, nativeRead.error, captureReadError, pending, laneBusy, laneDepth, retryTick, onDeviceStatus, issues, recorder.finalizationPendingId, recorder.transcription, device, hasOnDevice, syncVersion, transcriptSyncVersion, whisperVersion, autoSyncVersion]);
   useAutoNoteSync(autoSyncs);
   useAutoTranscriptSync(autoTranscriptSyncs);
   return { states, natives, nativeReady: nativeRead.ready, reread };
