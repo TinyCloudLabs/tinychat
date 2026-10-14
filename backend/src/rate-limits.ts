@@ -15,8 +15,25 @@ import rateLimit from "express-rate-limit";
 import type { Express } from "express";
 
 const WINDOW_MS = 15 * 60 * 1000;
-export const GLOBAL_LIMIT = 120;
-export const VERIFICATION_LIMIT = 600;
+
+/**
+ * INTERIM (2026-10-14 incident): every bucket below is keyed by `req.ip`, but in production
+ * `req.ip` is the same address for EVERY client. The Phala gateway relays TCP to the ingress
+ * without the PROXY protocol, so nginx's `$remote_addr` (the only XFF entry `trust proxy 1`
+ * believes) is the gateway's. Each "per-IP" ceiling is therefore a whole-service ceiling: one
+ * browser with one running Private job (~150-200 requests per window) drained the 120 global
+ * bucket and 429'd everyone, and anyone sending 120 requests could do the same on purpose.
+ *
+ * Until per-client keying lands, every ceiling is its per-client budget times this many
+ * concurrent clients, so 20-30 active users behind the one shared key stay under all of them
+ * (Clarissa measured a peak of 148 requests per window from one ordinary browser; 30 x 148 =
+ * 4,440 < 6,000). A shared-key limit is no protection against a single abuser at any size, so
+ * this weakens nothing real. Revert to 1 with the per-client keying fix.
+ */
+export const SHARED_KEY_HEADROOM = 50;
+
+export const GLOBAL_LIMIT = 120 * SHARED_KEY_HEADROOM;
+export const VERIFICATION_LIMIT = 600 * SHARED_KEY_HEADROOM;
 export const VERIFICATION_PATHS = [
   "/api/signature",
   "/api/nras-proxy",
@@ -32,7 +49,7 @@ export const VERIFICATION_PATHS = [
  * probe below) and §3.3 fires them on EVERY mount, so on a shared-NAT office IP or a tab that
  * reloads often this would eat the chat allowance.
  */
-export const CONNECTOR_COMPANION_LIMIT = 600;
+export const CONNECTOR_COMPANION_LIMIT = 600 * SHARED_KEY_HEADROOM;
 export const CONNECTOR_COMPANION_PATHS = ["/api/connectors/webhooks"] as const;
 
 /**
@@ -44,7 +61,7 @@ export const CONNECTOR_COMPANION_PATHS = ["/api/connectors/webhooks"] as const;
  * not be able to exhaust the drain path either. Keyed by IP, like every other bucket here:
  * `applyRateLimiters` runs before `authMiddleware`.
  */
-export const CONNECTOR_MEETINGS_LIMIT = 600;
+export const CONNECTOR_MEETINGS_LIMIT = 600 * SHARED_KEY_HEADROOM;
 export const CONNECTOR_MEETINGS_PATHS = ["/api/connectors/meetings"] as const;
 
 /**
@@ -54,7 +71,7 @@ export const CONNECTOR_MEETINGS_PATHS = ["/api/connectors/meetings"] as const;
  * authenticated request in the backend (sequential node round trips per resource). Keyed by IP,
  * because at `applyRateLimiters`' mount position `authMiddleware` has not run yet.
  */
-export const DELEGATION_LIMIT = 240;
+export const DELEGATION_LIMIT = 240 * SHARED_KEY_HEADROOM;
 export const DELEGATION_PATHS = ["/api/delegations"] as const;
 
 /**
@@ -73,11 +90,11 @@ export const DELEGATION_PATHS = ["/api/delegations"] as const;
  * Keyed by IP like every bucket in this file — `applyRateLimiters` runs ahead of `authMiddleware`,
  * so no session is known here even for the three authenticated POSTs.
  */
-export const GOOGLE_OAUTH_LIMIT = 30;
+export const GOOGLE_OAUTH_LIMIT = 30 * SHARED_KEY_HEADROOM;
 export const GOOGLE_OAUTH_PATHS = ["/api/connectors/google/oauth"] as const;
 
 /** Authenticated autojoin status polls once a minute; it must not exhaust chat or popup OAuth. */
-export const CALENDAR_AUTOJOIN_LIMIT = 240;
+export const CALENDAR_AUTOJOIN_LIMIT = 240 * SHARED_KEY_HEADROOM;
 export const CALENDAR_AUTOJOIN_PATHS = ["/api/connectors/google/autojoin"] as const;
 
 /**
@@ -85,7 +102,7 @@ export const CALENDAR_AUTOJOIN_PATHS = ["/api/connectors/google/autojoin"] as co
  * the settings card re-reads the list every few seconds, and that alone would exhaust the
  * 120/15min global bucket `/api/chat` shares. Own bucket, same reasoning as the meetings view.
  */
-export const TRANSCRIBER_LIMIT = 600;
+export const TRANSCRIBER_LIMIT = 600 * SHARED_KEY_HEADROOM;
 export const TRANSCRIBER_PATHS = ["/api/transcriber"] as const;
 
 /**
@@ -95,8 +112,21 @@ export const TRANSCRIBER_PATHS = ["/api/transcriber"] as const;
  * polling that follows it, and one IP fits four full-size uploads per window: more than the
  * per-account daily allowance (three) and the one-active-upload-per-account rule allow anyway.
  */
-export const ASSEMBLYAI_HOSTED_UPLOAD_LIMIT = 480;
+export const ASSEMBLYAI_HOSTED_UPLOAD_LIMIT = 480 * SHARED_KEY_HEADROOM;
 export const ASSEMBLYAI_HOSTED_UPLOAD_PATHS = ["/api/transcriber/assemblyai/hosted/uploads"] as const;
+
+/**
+ * Exo private cloud transcription (routes/private-cloud-transcription.ts). The web app polls a
+ * running job's status every few seconds for as long as the job runs, so it gets its own bucket
+ * and leaves the transcriber one: a long job must not starve the meeting bot's polling, or the
+ * other way round.
+ */
+export const PRIVATE_CLOUD_TRANSCRIPTION_LIMIT = 600 * SHARED_KEY_HEADROOM;
+export const PRIVATE_CLOUD_TRANSCRIPTION_PATHS = ["/api/transcriber/private-cloud"] as const;
+
+/** Liveness probes. Exempt from the global bucket and given none of their own: the handler is a
+ *  constant JSON body, and a drained bucket must never make monitors report the backend down. */
+export const UNLIMITED_PATHS = ["/health"] as const;
 
 const DEDICATED_PATHS = [
   ...VERIFICATION_PATHS,
@@ -106,6 +136,7 @@ const DEDICATED_PATHS = [
   ...GOOGLE_OAUTH_PATHS,
   ...CALENDAR_AUTOJOIN_PATHS,
   ...TRANSCRIBER_PATHS,
+  ...UNLIMITED_PATHS,
 ] as const;
 
 function matchesMountPath(path: string, mount: string): boolean {
@@ -114,7 +145,8 @@ function matchesMountPath(path: string, mount: string): boolean {
 
 /** Mount the global limiter (exempting every path that carries its own bucket) plus one
  *  dedicated limiter per group: verification, connector companions, connector meetings,
- *  delegations, google oauth, transcriber, hosted AssemblyAI uploads. */
+ *  delegations, google oauth, transcriber, private cloud transcription, hosted AssemblyAI
+ *  uploads. `/health` is in no bucket at all. */
 export function applyRateLimiters(app: Express): void {
   app.set("trust proxy", 1);
   const verificationLimiter = rateLimit({
@@ -159,7 +191,16 @@ export function applyRateLimiters(app: Express): void {
     standardHeaders: "draft-7",
     legacyHeaders: false,
     // Mounted under /api/transcriber, so the full path is baseUrl + path.
-    skip: (req) => ASSEMBLYAI_HOSTED_UPLOAD_PATHS.some((p) => matchesMountPath(`${req.baseUrl}${req.path}`, p)),
+    skip: (req) =>
+      [...ASSEMBLYAI_HOSTED_UPLOAD_PATHS, ...PRIVATE_CLOUD_TRANSCRIPTION_PATHS].some((p) =>
+        matchesMountPath(`${req.baseUrl}${req.path}`, p),
+      ),
+  });
+  const privateCloudTranscriptionLimiter = rateLimit({
+    windowMs: WINDOW_MS,
+    limit: PRIVATE_CLOUD_TRANSCRIPTION_LIMIT,
+    standardHeaders: "draft-7",
+    legacyHeaders: false,
   });
   const hostedUploadLimiter = rateLimit({
     windowMs: WINDOW_MS,
@@ -183,4 +224,5 @@ export function applyRateLimiters(app: Express): void {
   for (const p of CALENDAR_AUTOJOIN_PATHS) app.use(p, calendarAutojoinLimiter);
   for (const p of TRANSCRIBER_PATHS) app.use(p, transcriberLimiter);
   for (const p of ASSEMBLYAI_HOSTED_UPLOAD_PATHS) app.use(p, hostedUploadLimiter);
+  for (const p of PRIVATE_CLOUD_TRANSCRIPTION_PATHS) app.use(p, privateCloudTranscriptionLimiter);
 }

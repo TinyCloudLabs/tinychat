@@ -7,6 +7,12 @@ import {
   GOOGLE_OAUTH_PATHS,
   CALENDAR_AUTOJOIN_LIMIT,
   CALENDAR_AUTOJOIN_PATHS,
+  CONNECTOR_MEETINGS_LIMIT,
+  CONNECTOR_MEETINGS_PATHS,
+  PRIVATE_CLOUD_TRANSCRIPTION_LIMIT,
+  PRIVATE_CLOUD_TRANSCRIPTION_PATHS,
+  SHARED_KEY_HEADROOM,
+  TRANSCRIBER_LIMIT,
 } from "../rate-limits.js";
 
 const realFetch = globalThis.fetch;
@@ -172,6 +178,119 @@ describe("Calendar autojoin rate limit bucket", () => {
       expect((await realFetch(`${base}/api/connectors/google/autojoin/status`)).status).toBe(429);
       expect((await realFetch(`${base}/api/connectors/google/oauth/start`)).status).toBe(200);
       expect((await realFetch(`${base}/api/chat`, { method: "POST" })).status).toBe(200);
+    });
+  });
+});
+
+/** `RateLimit: limit=…, remaining=…, reset=…` (draft-7), or null when no limiter ran. */
+function rateLimitHeader(r: Response): { limit: number; remaining: number } | null {
+  const header = r.headers.get("ratelimit");
+  if (!header) return null;
+  const limit = /limit=(\d+)/.exec(header);
+  const remaining = /remaining=(\d+)/.exec(header);
+  if (!limit || !remaining) throw new Error(`unparseable RateLimit header: ${header}`);
+  return { limit: Number(limit[1]), remaining: Number(remaining[1]) };
+}
+
+/**
+ * 2026-10-14 incident: every client reaches the backend from the gateway's one address, so each
+ * bucket is shared by all users. One browser with a running Private job made ~150-200 requests a
+ * window and 429'd everyone. Until per-client keying lands, ceilings carry headroom for 20-30
+ * concurrent users and liveness probes sit outside every bucket.
+ */
+describe("shared-key interim headroom", () => {
+  // Clarissa's measurement: peak requests per 15-min window from ONE ordinary browser with one
+  // running Private job.
+  const PEAK_PER_BROWSER = 148;
+
+  it("the global ceiling fits 30 active browsers behind one shared key", async () => {
+    expect(GLOBAL_LIMIT).toBe(6000);
+    expect(GLOBAL_LIMIT).toBeGreaterThanOrEqual(30 * PEAK_PER_BROWSER);
+    const app = buildApp();
+    await withServer(app, async (port) => {
+      const r = await realFetch(`http://localhost:${port}/api/chat`, { method: "POST" });
+      expect(rateLimitHeader(r)).toEqual({ limit: GLOBAL_LIMIT, remaining: GLOBAL_LIMIT - 1 });
+    });
+  });
+
+  it("scales every per-client budget by the same headroom", () => {
+    expect(SHARED_KEY_HEADROOM).toBe(50);
+    expect(GLOBAL_LIMIT).toBe(120 * SHARED_KEY_HEADROOM);
+    expect(TRANSCRIBER_LIMIT).toBe(600 * SHARED_KEY_HEADROOM);
+    expect(CONNECTOR_MEETINGS_LIMIT).toBe(600 * SHARED_KEY_HEADROOM);
+    expect(GOOGLE_OAUTH_LIMIT).toBe(30 * SHARED_KEY_HEADROOM);
+  });
+
+  it("/health is in no bucket and still answers once the global bucket is drained", async () => {
+    const app = express();
+    applyRateLimiters(app);
+    app.get("/health", (_req, res) => res.json({ ok: true }));
+    app.post("/api/chat", (_req, res) => res.json({ ok: true }));
+    await withServer(app, async (port) => {
+      const base = `http://localhost:${port}`;
+      for (let i = 0; i < GLOBAL_LIMIT; i++) {
+        expect((await realFetch(`${base}/api/chat`, { method: "POST" })).status).toBe(200);
+      }
+      expect((await realFetch(`${base}/api/chat`, { method: "POST" })).status).toBe(429);
+      const health = await realFetch(`${base}/health`);
+      expect(health.status).toBe(200);
+      expect(rateLimitHeader(health)).toBeNull();
+    });
+  });
+
+  it("does not exempt /health lookalikes from the global limiter", async () => {
+    const app = express();
+    applyRateLimiters(app);
+    app.get("/healthz", (_req, res) => res.json({ ok: true }));
+    await withServer(app, async (port) => {
+      const r = await realFetch(`http://localhost:${port}/healthz`);
+      expect(rateLimitHeader(r)?.limit).toBe(GLOBAL_LIMIT);
+    });
+  });
+
+  it("private cloud job-status polls have their own bucket, apart from transcriber and chat", async () => {
+    expect(PRIVATE_CLOUD_TRANSCRIPTION_PATHS).toEqual(["/api/transcriber/private-cloud"]);
+    const app = buildApp();
+    app.get("/api/transcriber/private-cloud/transcriptions/:id", (_req, res) => res.json({ ok: true }));
+    app.get("/api/transcriber/meetings", (_req, res) => res.json({ ok: true }));
+    await withServer(app, async (port) => {
+      const base = `http://localhost:${port}`;
+      // One long job polling every 5 s for an hour: 720 status GETs, more than the old shared
+      // 600 transcriber bucket held.
+      let last: Response | undefined;
+      for (let i = 0; i < 720; i++) {
+        last = await realFetch(`${base}/api/transcriber/private-cloud/transcriptions/job-1`);
+        expect(last.status).toBe(200);
+      }
+      expect(rateLimitHeader(last!)).toEqual({
+        limit: PRIVATE_CLOUD_TRANSCRIPTION_LIMIT,
+        remaining: PRIVATE_CLOUD_TRANSCRIPTION_LIMIT - 720,
+      });
+      // Neither the transcriber bucket nor the global one counted any of them.
+      const bot = await realFetch(`${base}/api/transcriber/meetings`);
+      expect(rateLimitHeader(bot)).toEqual({ limit: TRANSCRIBER_LIMIT, remaining: TRANSCRIBER_LIMIT - 1 });
+      const chat = await realFetch(`${base}/api/chat`, { method: "POST" });
+      expect(rateLimitHeader(chat)).toEqual({ limit: GLOBAL_LIMIT, remaining: GLOBAL_LIMIT - 1 });
+    });
+  });
+
+  it("connector meetings list polls stay in their own bucket, off the global one", async () => {
+    expect(CONNECTOR_MEETINGS_PATHS).toEqual(["/api/connectors/meetings"]);
+    const app = buildApp();
+    app.get("/api/connectors/meetings", (_req, res) => res.json({ ok: true }));
+    await withServer(app, async (port) => {
+      const base = `http://localhost:${port}`;
+      let last: Response | undefined;
+      for (let i = 0; i < 200; i++) {
+        last = await realFetch(`${base}/api/connectors/meetings`);
+        expect(last.status).toBe(200);
+      }
+      expect(rateLimitHeader(last!)).toEqual({
+        limit: CONNECTOR_MEETINGS_LIMIT,
+        remaining: CONNECTOR_MEETINGS_LIMIT - 200,
+      });
+      const chat = await realFetch(`${base}/api/chat`, { method: "POST" });
+      expect(rateLimitHeader(chat)).toEqual({ limit: GLOBAL_LIMIT, remaining: GLOBAL_LIMIT - 1 });
     });
   });
 });
