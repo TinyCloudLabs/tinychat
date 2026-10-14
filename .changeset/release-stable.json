@@ -1,0 +1,19 @@
+{
+  "versions": {
+    "exo-desktop": "0.7.4",
+    "@tinychat/frontend": "0.7.4",
+    "@tinychat/backend": "0.5.5"
+  },
+  "changesets": [
+    ".changeset/pre/align-phala-visibility-flags.md",
+    ".changeset/pre/manual-beta-desktop-release.md",
+    ".changeset/pre/quiet-vad-backend.md",
+    ".changeset/pre/quiet-vad-frontend.md",
+    ".changeset/pre/revert-tc-760-main.md",
+    ".changeset/pre/tame-otters-chew.md",
+    ".changeset/pre/tc-1100-reconnect-keeps-autojoin.md",
+    ".changeset/pre/tc-1101-refcounted-google-revoke.md",
+    ".changeset/pre/tc-1128-voice-note-test-isolation.md",
+    ".changeset/pre/tc-1140-main-hotfix.md"
+  ]
+}
