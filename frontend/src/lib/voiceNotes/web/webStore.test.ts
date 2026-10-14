@@ -122,25 +122,69 @@ describe("readAudioChunk", () => {
     const { open } = harness();
     const store = await open();
     const pending = await noteWith(store, "pending", [bytesOf(10)], "did:a");
-    await expect(store.evictCachedAudio({ id: pending.id })).rejects.toEqual(code("audio_not_space_backed"));
+    await expect(store.evictCachedAudio({ id: pending.id })).rejects.toEqual(code("audio_in_use"));
     expect((await store.readNoteAudio(pending.id)).bytes.length).toBe(10);
     const cached = await noteWith(store, "cached", [bytesOf(12)], "did:a");
+    await store.updateStt("cached", { state: "done", pack: null, engine: null, segmentsDone: 0, windowsDone: 0, error: null });
     await store.updateLedger({ id: cached.id, did: "did:a", rev: cached.rev!,
-      patch: { audio: { state: "saved", rowId: "row", at: 10 } } });
+      patch: { transcript: { state: "done" }, audio: { state: "saved", rowId: "row", at: 10 } } });
     await expect(store.evictCachedAudio({ id: cached.id })).rejects.toEqual(code("audio_not_space_backed"));
     const current = (await store.listPending()).recordings.find((note) => note.id === cached.id)!;
     await store.updateLedger({ id: cached.id, did: "did:a", rev: current.rev!,
-      patch: { audio: { state: "saved", rowId: "row", at: 10,
+      patch: { transcript: { state: "done" }, audio: { state: "saved", rowId: "row", at: 10,
         verifiedInSpace: { sha256: "0".repeat(64), size: 12 } } } });
     await expect(store.evictCachedAudio({ id: cached.id })).rejects.toEqual(code("audio_not_space_backed"));
     expect((await store.readNoteAudio(cached.id)).bytes.length).toBe(12);
     const withBadHash = (await store.listPending()).recordings.find((note) => note.id === cached.id)!;
     await store.updateLedger({ id: cached.id, did: "did:a", rev: withBadHash.rev!,
-      patch: { audio: { state: "saved", rowId: "row", at: 10,
+      patch: { transcript: { state: "done" }, audio: { state: "saved", rowId: "row", at: 10,
         verifiedInSpace: { sha256: createHash("sha256").update(bytesOf(12)).digest("hex"), size: 12 } } } });
     await store.evictCachedAudio({ id: cached.id });
     await expect(store.readNoteAudio(cached.id)).rejects.toEqual(code("not_found"));
     expect((await store.listPending()).recordings.some((note) => note.id === cached.id)).toBe(true);
+  });
+  describe("eviction readiness", () => {
+    const spaceBacked = async (store: WebStore, id: string, bytes: Uint8Array, localAudio?: "preparing" | "failed") => {
+      const note = await noteWith(store, id, [bytes], "did:a");
+      await store.updateStt(id, { state: "done", pack: null, engine: null, segmentsDone: 0, windowsDone: 0, error: null });
+      await store.updateLedger({ id, did: "did:a", rev: note.rev!, patch: {
+        transcript: { state: "done" },
+        ...(localAudio ? { localAudio: { state: localAudio } } : {}),
+        audio: { state: "saved", rowId: "row", at: 10, verifiedInSpace: { sha256: createHash("sha256").update(bytes).digest("hex"), size: bytes.length } } } });
+    };
+    // readNoteAudio refuses bytes while the import is not ready; marking it ready makes them readable again.
+    const markReady = async (store: WebStore, id: string) => {
+      const note = (await store.listPending()).recordings.find((n) => n.id === id)!;
+      await store.updateLedger({ id, did: "did:a", rev: note.rev!, patch: { localAudio: { state: "ready" } } });
+    };
+    for (const backing of ["transactional", "file-backed"] as const) {
+      const openStore = () => (backing === "file-backed" ? harness({ audio: () => memoryAudioBlobs().create() }) : harness()).open();
+      test(`${backing} eviction keeps the bytes of an import that is preparing`, async () => {
+        const store = await openStore();
+        await spaceBacked(store, "preparing", bytesOf(12), "preparing");
+        await expect(store.evictCachedAudio({ id: "preparing" })).rejects.toEqual(code("audio_in_use"));
+        await markReady(store, "preparing");
+        expect((await store.readNoteAudio("preparing")).bytes.length).toBe(12);
+      });
+      test(`${backing} eviction keeps the bytes of an import that failed`, async () => {
+        const store = await openStore();
+        await spaceBacked(store, "failed", bytesOf(12), "failed");
+        await expect(store.evictCachedAudio({ id: "failed" })).rejects.toEqual(code("audio_in_use"));
+        await markReady(store, "failed");
+        expect((await store.readNoteAudio("failed")).bytes.length).toBe(12);
+      });
+      test(`${backing} eviction re-checks after a snapshot and keeps bytes when a remote op began`, async () => {
+        const store = await openStore();
+        await spaceBacked(store, "stale", bytesOf(12));
+        // The snapshot is what a trim pass would select; the op recorded after it must win.
+        const snapshot = (await store.listPending()).recordings.find((note) => note.id === "stale")!;
+        expect(snapshot.ledger?.remote ?? []).toEqual([]);
+        await store.setCaptureDefaults({ accountDid: "did:a", transitionGen: 1, transcriber: "assemblyai", identifySpeakers: false });
+        await store.beginRemoteOp({ id: "stale", did: "did:a", opId: "op", provider: "assemblyai", mode: "hosted", kind: "hosted_create", fingerprint: "12:audio/webm", startedAt: 1 });
+        await expect(store.evictCachedAudio({ id: "stale" })).rejects.toEqual(code("audio_in_use"));
+        expect((await store.readNoteAudio("stale")).bytes.length).toBe(12);
+      });
+    }
   });
   test("returns the exact bytes in order, flags eof, and never moves more than 4 MiB per call", async () => {
     const { open } = harness();

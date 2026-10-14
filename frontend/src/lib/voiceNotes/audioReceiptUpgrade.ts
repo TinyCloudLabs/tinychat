@@ -1,9 +1,10 @@
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { useEffect } from "react";
 import { logPipelineError } from "@/lib/debugLog";
+import { captureEvents } from "@/capture/captureEvents";
 import { assertAccountContext, captureAccountContext } from "./accountContext";
 import { nativeRecordingSource, VoiceNotes, type VoiceNoteRecording } from "./nativeVoiceNotes";
-import { reconcileSavedVoiceNoteAudio } from "./voiceNoteStore";
+import { reconcileSavedVoiceNoteAudio, VOICE_NOTE_SOURCE } from "./voiceNoteStore";
 import { isVerifiedSpaceReceipt, trimCachedAudio } from "./audioPlaybackCache";
 
 let account: TinyCloudWeb | null = null;
@@ -71,6 +72,7 @@ export async function upgradeSavedAudioReceipt(tcw: TinyCloudWeb, note: VoiceNot
       try {
         await VoiceNotes.updateLedger({ id: note.id, did: tcw.did, rev: fresh.rev ?? 0,
           patch: { audio: { ...fresh.ledger.audio, verifiedInSpace: receipt } } });
+        captureEvents.emit("library-changed", { source: VOICE_NOTE_SOURCE, sourceId: note.id });
         return;
       } catch (error) {
         if ((error as { code?: string }).code !== "rev_conflict" || attempt === 1) throw error;

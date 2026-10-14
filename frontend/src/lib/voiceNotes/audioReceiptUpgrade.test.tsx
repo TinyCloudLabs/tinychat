@@ -69,7 +69,7 @@ async function fixture(mismatch = false, uploadAudio?: boolean) {
   const note: VoiceNoteRecording = { id, owner: did, rev: 1, startedAt: 1,
     durationMs: 1000, mimeType: "audio/mp4", sizeBytes: local.length,
     silencedMs: 0, silencedEvents: 0, noSignalMs: 0,
-    ledger: { audio: { state: "saved", rowId: "row", at: 1 } },
+    ledger: { audio: { state: "saved", rowId: "row", at: 1 }, transcript: { state: "done" } },
     ...(uploadAudio === undefined ? {} : { options: { uploadAudio } as VoiceNoteRecording["options"] }),
   };
   __setVoiceNotesForTests({

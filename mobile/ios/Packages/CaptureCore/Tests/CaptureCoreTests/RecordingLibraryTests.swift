@@ -22,7 +22,7 @@ final class RecordingLibraryTests: XCTestCase {
         let cached = UUID().uuidString.lowercased()
         _ = try library.commit(cached, sidecar: ["id": cached, "version": 2, "owner": "did:test", "rev": 0,
             "options": ["uploadAudio": false],
-            "ledger": ["audio": ["state": "saved"]]]) { try Data("cached".utf8).write(to: $0) }
+            "ledger": ["audio": ["state": "saved"], "transcript": ["state": "done"]]]) { try Data("cached".utf8).write(to: $0) }
         XCTAssertThrowsError(try library.evictCachedAudio(cached))
         XCTAssertNotNil(try library.openAudio(cached))
         let badHash = String(repeating: "0", count: 64)
@@ -38,6 +38,25 @@ final class RecordingLibraryTests: XCTestCase {
         XCTAssertThrowsError(try library.openAudio(cached))
         XCTAssertEqual((try library.readSidecar(cached))["id"] as? String, cached)
     }
+
+    func testCacheEvictionWaitsForLocalWorkToFinish() throws {
+        let (library, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID().uuidString.lowercased()
+        let hash = SHA256.hash(data: Data("work".utf8)).map { String(format: "%02x", $0) }.joined()
+        _ = try library.commit(id, sidecar: ["id": id, "version": 2, "owner": "did:test", "rev": 0,
+            "options": ["uploadAudio": false, "transcriber": "assemblyai"],
+            "stt": ["state": "queued"],
+            "ledger": ["audio": ["state": "saved", "verifiedInSpace": ["sha256": hash, "size": 4]],
+                       "transcript": ["state": "done"]]]) { try Data("work".utf8).write(to: $0) }
+        do {
+            try library.evictCachedAudio(id)
+            XCTFail("audio with queued local work was evicted")
+        } catch CaptureError.io(let code) {
+            XCTAssertEqual(code, "audio_in_use")
+        }
+        XCTAssertNotNil(try library.openAudio(id))
+    }
+
     private func fixture() throws -> (RecordingLibrary, URL) {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         return (try RecordingLibrary(root: root), root)

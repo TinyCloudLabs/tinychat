@@ -15,12 +15,12 @@ import java.util.concurrent.TimeUnit
 
 class RecordingLibraryTest {
     @Test fun cacheEvictionRequiresSpaceCopyAndKeepsSidecar() {
-        val lib = library(); val pending = id(); begin(lib, pending); commit(lib, pending)
+        val lib = library(); val pending = id(); begin(lib, pending); commit(lib, pending); transcriptDone(lib, pending)
         try { lib.evictCachedAudio(pending); fail("pending audio was evicted") }
         catch (e: IllegalStateException) { assertEquals("audio_not_space_backed", e.message) }
         assertTrue(lib.audio(pending).isFile)
 
-        val localOnly = id(); begin(lib, localOnly); commit(lib, localOnly)
+        val localOnly = id(); begin(lib, localOnly); commit(lib, localOnly); transcriptDone(lib, localOnly)
         lib.mutate(localOnly, "test.saved") {
             it.getJSONObject("ledger").put("audio", JSONObject().put("state", "saved"))
             it.getJSONObject("options").put("uploadAudio", false)
@@ -29,7 +29,7 @@ class RecordingLibraryTest {
         catch (e: IllegalStateException) { assertEquals("audio_not_space_backed", e.message) }
         assertTrue(lib.audio(localOnly).isFile)
 
-        val cached = id(); begin(lib, cached); commit(lib, cached)
+        val cached = id(); begin(lib, cached); commit(lib, cached); transcriptDone(lib, cached)
         lib.mutate(cached, "test.saved") { it.getJSONObject("ledger").put("audio", JSONObject().put("state", "saved")) }
         try { lib.evictCachedAudio(cached); fail("unverified audio was evicted") }
         catch (e: IllegalStateException) { assertEquals("audio_not_space_backed", e.message) }
@@ -50,6 +50,24 @@ class RecordingLibraryTest {
         lib.evictCachedAudio(cached)
         assertFalse(lib.audio(cached).exists())
         assertNotNull(lib.read(cached))
+    }
+
+    @Test fun evictionWaitsForLocalWorkToFinish() {
+        val lib = library(); val id = id(); begin(lib, id); commit(lib, id)
+        val hash = MessageDigest.getInstance("SHA-256").digest(byteArrayOf(1, 2, 3)).joinToString("") { "%02x".format(it) }
+        lib.mutate(id, "test.queuedStt") {
+            it.getJSONObject("options").put("uploadAudio", false).put("transcriber", "assemblyai")
+            it.put("stt", JSONObject().put("state", "queued"))
+            it.getJSONObject("ledger").put("transcript", JSONObject().put("state", "done"))
+                .put("audio", JSONObject().put("state", "saved")
+                    .put("verifiedInSpace", JSONObject().put("sha256", hash).put("size", 3)))
+        }
+        try { lib.evictCachedAudio(id); fail("audio with queued local work was evicted") }
+        catch (e: IllegalStateException) { assertEquals("audio_in_use", e.message) }
+        assertTrue(lib.audio(id).isFile)
+    }
+    private fun transcriptDone(lib: RecordingLibrary, id: String) {
+        lib.mutate(id, "test.transcriptDone") { it.getJSONObject("ledger").put("transcript", JSONObject().put("state", "done")) }
     }
     @get:Rule val temp = TemporaryFolder()
     private fun id() = UUID.randomUUID().toString()

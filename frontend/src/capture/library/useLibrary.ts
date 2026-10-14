@@ -171,6 +171,7 @@ export function useLibrary(
   // failed field must still be fetched on Try again or when reopening.
   const staleReads = useRef(new Map<string, Set<keyof NoteReads>>());
   const [invalidationRevision, setInvalidationRevision] = useState(0);
+  const [listingRevision, setListingRevision] = useState(0);
   const [, setRevision] = useState(0);
   const bump = useCallback(() => setRevision((n) => n + 1), []);
   const chain = useRef<Promise<unknown>>(Promise.resolve());
@@ -272,6 +273,8 @@ export function useLibrary(
   // Only the saved row's reads are stale. A list-only change never interrupts
   // the open note's audio or transcript.
   useEffect(() => captureEvents.on("library-changed", (detail) => {
+    // A receipt for a saved note's audio lands without a row change; the local-audio list must read again.
+    if (detail?.source === VOICE_NOTE_SOURCE) setListingRevision((n) => n + 1);
     const saved = detail && itemsRef.current.find((entry) => entry.source === detail.source && entry.sourceId === detail.sourceId);
     if (saved) {
       invalidated.current.add(saved.id);
@@ -333,7 +336,7 @@ export function useLibrary(
       setPhoneOnlyAudioIds(new Set(own.filter((note) => !hasVerifiedSpaceCopy(note)).map((note) => note.id)));
     }, () => { if (live) { setLocalAudioIds(new Set()); setPhoneOnlyAudioIds(new Set()); } });
     return () => { live = false; };
-  }, [options.visible, tcw.did, invalidationRevision, onPhoneNotes]);
+ }, [options.visible, tcw.did, listingRevision, onPhoneNotes]);
   const lastOpened = useRef<string | null>(null);
   useEffect(() => {
     // A note just closed may have had its moments edited: read them again.

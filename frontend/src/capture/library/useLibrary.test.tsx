@@ -760,7 +760,7 @@ describe("useLibrary, notes still on this browser", () => {
 
 describe("useLibrary, which audio a note on the phone plays", () => {
   const phoneNote: PendingNote = { id: "rec-play", startedAt: Date.parse("2026-10-06T10:00:00.000Z"), durationMs: 14_000 };
-  async function withLocalAudio(run: (counts: { local: () => number; remote: () => number; fetches: () => number; replace: () => void; failDownload: () => void; offline: () => void; setAvailable: (available: boolean) => void }, space: ReturnType<typeof fakeSpace>) => Promise<void>, savedIdentity = false) {
+  async function withLocalAudio(run: (counts: { local: () => number; remote: () => number; fetches: () => number; replace: () => void; failDownload: () => void; offline: () => void; setAvailable: (available: boolean) => void; land: () => void }, space: ReturnType<typeof fakeSpace>) => Promise<void>, savedIdentity = false) {
     const previousIdb = globalThis.indexedDB;
     globalThis.indexedDB = new IDBFactory() as unknown as IDBFactory;
     const space = fakeSpace();
@@ -773,11 +773,12 @@ describe("useLibrary, which audio a note on the phone plays", () => {
     let remoteBytes = new TextEncoder().encode("local bytes");
     let offline = false;
     let failDownload = false;
+    let stored = savedIdentity;
     const originalHash = bytesToHex(sha256(remoteBytes));
     space.tcw.kv.get = (async (key: string) => {
       remoteReads++;
       if (offline) return { ok: false, error: { code: "NETWORK_ERROR", message: "offline" } };
-      if (savedIdentity) {
+      if (stored) {
         if (key.endsWith("/manifest")) return { ok: true, data: { data: {
           v: 1, mimeType: "audio/mp4", fileName: "audio.mp4", size: remoteBytes.length,
           partSize: remoteBytes.length, parts: [{ size: remoteBytes.length, sha256: bytesToHex(sha256(remoteBytes)), etag: null }],
@@ -795,12 +796,12 @@ describe("useLibrary, which audio a note on the phone plays", () => {
     __setVoiceNotesForTests({
       localAudioUrl: async () => { localReads++; return { url: localUrl }; },
       listPending: async () => ({ recordings: localAvailable ? [{ id: "rec-play", owner: space.tcw.did,
-        ledger: { audio: savedIdentity
+        ledger: { audio: stored
           ? { state: "saved", verifiedInSpace: { sha256: originalHash, size: 11 } }
           : { state: "pending" } } }] : [] }),
     } as VoiceNotesPlugin, { available: true });
     try {
-      await run({ local: () => localReads, remote: () => remoteReads, fetches: () => fetches,
+      await run({ local: () => localReads, remote: () => remoteReads, fetches: () => fetches, land: () => { stored = true; },
         replace: () => { remoteBytes = new TextEncoder().encode("newer bytes"); },
         failDownload: () => { failDownload = true; }, offline: () => { offline = true; },
         setAvailable: (available) => { localAvailable = available; } }, space);
@@ -912,6 +913,48 @@ describe("useLibrary, which audio a note on the phone plays", () => {
       expect(await blob?.text()).toBe("newer bytes");
       expect(counts.local()).toBe(0);
     }, true);
+  });
+
+  test("a receipt that lands after the list was read stops playing the phone's copy", async () => {
+    await withLocalAudio(async (counts, space) => {
+      const seen: Library[] = [];
+      const base = { tcw: space.tcw, visible: true, now: () => 0, seen, noteId: "play" };
+      await render({ ...base, onPhone: [phoneNote] });
+      await space.answer("list", listedVoice("play"));
+      await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
+      await render({ ...base, onPhone: [] });
+      await space.answer("list", listedVoice("play"));
+      expect(await localUrlOf(seen.at(-1)!)).toMatch(/^blob:/);
+      // The upgrade writes the receipt and the space's audio is replaced; no row changes.
+      counts.land();
+      counts.replace();
+      await act(async () => captureEvents.emit("library-changed", { source: "exo-voice-note", sourceId: "rec-play" }));
+      await space.answer("list", listedVoice("play"));
+      await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
+      const localBefore = counts.local();
+      expect(await (await playFromSpace(seen.at(-1)!))?.text()).toBe("newer bytes");
+      expect(counts.local() - localBefore).toBe(0);
+    });
+  });
+
+  test("a receipt for a note that is not open reaches that note's next play", async () => {
+    await withLocalAudio(async (counts, space) => {
+      const seen: Library[] = [];
+      const base = { tcw: space.tcw, visible: true, now: () => 0, seen, onPhone: [] };
+      await render({ ...base, noteId: "other" });
+      await space.answer("list", listedVoice("play", "other"));
+      await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
+      // The phone's copy is listed as pending; the receipt then lands for a note nobody has open.
+      counts.land();
+      counts.replace();
+      await act(async () => captureEvents.emit("library-changed", { source: "exo-voice-note", sourceId: "rec-play" }));
+      await space.answer("list", listedVoice("play", "other"));
+      await render({ ...base, noteId: "play" });
+      await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
+      const localBefore = counts.local();
+      expect(await (await playFromSpace(seen.at(-1)!))?.text()).toBe("newer bytes");
+      expect(counts.local() - localBefore).toBe(0);
+    });
   });
 
   test("offline saved note plays its last verified local copy", async () => {

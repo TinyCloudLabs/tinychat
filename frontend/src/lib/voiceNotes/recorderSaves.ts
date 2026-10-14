@@ -29,6 +29,7 @@ import { VoiceNoteSaveTimeout, saveSlowMessage, withVoiceNoteSaveDeadline } from
 import { readableError } from "@/lib/readableError";
 import { logPipeline, logPipelineError } from "@/lib/debugLog";
 import { trimCachedAudio } from "@/lib/voiceNotes/audioPlaybackCache";
+import type { VerifiedAudioReceipt } from "@/lib/audio/audioStore";
 import { putPendingSaveState, readPendingSaveStates } from "./pendingSaveState";
 import { captureEvents } from "@/capture/captureEvents";
 import { appPlatform, deviceName } from "@/lib/platform";
@@ -88,6 +89,26 @@ export function pendingSaveMessage(error: unknown): string {
   return `Could not save notes kept on ${deviceName()}: ${message}`;
 }
 
+/**
+ * Record the space receipt an explicit upload verified. A revision conflict re-reads the note and
+ * retries once. The device bytes stay until this lands: eviction needs the receipt on the ledger.
+ */
+async function recordUploadedReceipt(tcw: TinyCloudWeb, id: string, rowId: string, receipt: VerifiedAudioReceipt): Promise<void> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const fresh = (await VoiceNotes.listPending()).recordings.find((note) => note.id === id);
+    if (!fresh || fresh.owner !== tcw.did) throw new Error("Audio is not on this device");
+    const current = fresh.ledger?.audio.verifiedInSpace;
+    if (current?.sha256 === receipt.sha256 && current.size === receipt.size) return;
+    try {
+      await VoiceNotes.updateLedger({ id, did: tcw.did, rev: fresh.rev ?? 0,
+        patch: { audio: { state: "saved", rowId, at: fresh.ledger?.audio.at ?? Date.now(), verifiedInSpace: receipt } } });
+      return;
+    } catch (error) {
+      if (errorCode(error) !== "rev_conflict" || attempt === 1) throw error;
+    }
+  }
+}
+
 /** Explicitly put an older local-only recording in the space; changing the device default does not call this. */
 export async function uploadLocalVoiceNote(tcw: TinyCloudWeb, id: string, explicitUpload: boolean = false): Promise<void> {
   if (savesInFlight.has(id)) throw new Error("This note is already being saved");
@@ -97,7 +118,10 @@ export async function uploadLocalVoiceNote(tcw: TinyCloudWeb, id: string, explic
   try {
     const result = await saveVoiceNote(tcw, recording, nativeRecordingSource(recording), appPlatform(), {}, explicitUpload);
     if (!result.ok) throw new Error(result.error.message);
+    const receipt = result.data.verifiedInSpace;
+    if (receipt) await recordUploadedReceipt(tcw, id, result.data.id, receipt);
     captureEvents.emit("library-changed", { source: "exo-voice-note", sourceId: id });
+    enforceAudioCacheAfterSave(id);
   } finally {
     savesInFlight.delete(id);
     publishSaveIdle();

@@ -20,6 +20,7 @@ import { createIdbAudioBlobStore, type AudioBlobStore } from "./audioBlobStore";
 import {
   browserDecodeCheck, DECODE_WINDOW_MAX_BYTES, DECODE_WINDOW_MS, DECODE_WINDOW_SOFT_BYTES, DecodeCheckError, type DecodeCheck,
 } from "./decodeCheck";
+import { hasLocalWorkInProgress } from "../localWork";
 import { browserIdbEnv, failure, openWebDb, request, STORES, transact, type IdbEnv } from "./idb";
 
 export { failure, DecodeCheckError };
@@ -296,6 +297,14 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
   const db = await openWebDb(env, options.dbName ?? "exo-voice-notes");
   const audio = options.audio ? options.audio(db, env) : createIdbAudioBlobStore(db, env);
   const locks = options.locks ?? webLocks();
+  // File-backed audio is deleted under sessionLock(id). Writers that can add local work take that lock too,
+  // so evict's "no work" check cannot interleave with a new job's first read. IDB audio is covered by its transaction.
+  const withNoteWork = async <T>(id: string, run: () => Promise<T>): Promise<T> => {
+    if (audio.transactional) return run();
+    const release = await locks.hold(sessionLock(id));
+    if (!release) throw failure("audio_busy");
+    try { return await run(); } finally { release(); }
+  };
   const decodeCheck = options.decodeCheck === undefined ? browserDecodeCheck() : options.decodeCheck;
 
   const get = async <T>(tx: IDBTransaction, store: string, key: IDBValidKey): Promise<T | undefined> =>
@@ -622,6 +631,7 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
         await transact(db, [STORES.notes, STORES.tombstones, ...audio.transactional.stores], "readwrite", async (tx) => {
           const note = await checkedNote(tx, id);
           const receipt = note.ledger?.audio.verifiedInSpace;
+          if (hasLocalWorkInProgress(note)) throw failure("audio_in_use");
           const size = (await request(tx.objectStore(STORES.audioMeta).get(id)) as { size?: number } | undefined)?.size;
           const content = await audio.transactional!.hashIn(tx, id);
           if (note.ledger?.audio.state !== "saved" || !receipt || !/^[0-9a-f]{64}$/.test(receipt.sha256)
@@ -637,6 +647,7 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
         try {
           const note = await transact(db, [STORES.notes, STORES.tombstones], "readonly", (tx) => checkedNote(tx, id));
           const receipt = note.ledger?.audio.verifiedInSpace;
+          if (hasLocalWorkInProgress(note)) throw failure("audio_in_use");
           if (note.ledger?.audio.state !== "saved" || !receipt || !/^[0-9a-f]{64}$/.test(receipt.sha256)
             || (note.ledger.localAudio !== undefined && note.ledger.localAudio.state !== "ready"))
             throw failure("audio_not_space_backed");
@@ -714,7 +725,7 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
     },
 
     async beginRemoteOp(receipt) {
-      await transact(db, [STORES.kv, STORES.notes, STORES.tombstones, STORES.receipts, STORES.outbox], "readwrite", async (tx) => {
+      await withNoteWork(receipt.id, () => transact(db, [STORES.kv, STORES.notes, STORES.tombstones, STORES.receipts, STORES.outbox], "readwrite", async (tx) => {
         const key = `${receipt.id}:${receipt.opId}`;
         const existing = await get<ReceiptRow>(tx, STORES.receipts, key);
         if (existing && !sameReceipt(existing.receipt, receipt)) throw failure("receipt_conflict");
@@ -736,7 +747,7 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
           note.rev = (note.rev ?? 0) + 1;
           await put(tx, STORES.notes, note);
         }
-      });
+      }));
     },
 
     async recordRemoteResult({ id, did, opId, result }) {
@@ -786,7 +797,7 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
     claim: (opts) => transact(db, [STORES.notes, STORES.tombstones], "readwrite", (tx) => claimInTx(tx, opts)),
 
     updateLedger: ({ id, did, rev, patch }) =>
-      transact(db, [STORES.notes, STORES.tombstones], "readwrite", async (tx) => {
+      withNoteWork(id, () => transact(db, [STORES.notes, STORES.tombstones], "readwrite", async (tx) => {
         const note = await checkedNote(tx, id);
         if (note.owner !== did) throw failure("owner_mismatch");
         if (note.rev !== rev) throw failure("rev_conflict");
@@ -794,7 +805,7 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
         note.rev = rev + 1;
         await put(tx, STORES.notes, note);
         return { rev: note.rev };
-      }),
+      })),
 
     putTranscript: ({ id, transcript }) =>
       transact(db, [STORES.notes, STORES.tombstones, STORES.transcripts], "readwrite", async (tx) => {
@@ -811,11 +822,11 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
       }),
 
     updateStt: (id, stt) =>
-      transact(db, [STORES.notes, STORES.tombstones], "readwrite", async (tx) => {
+      withNoteWork(id, () => transact(db, [STORES.notes, STORES.tombstones], "readwrite", async (tx) => {
         const note = await checkedNote(tx, id);
         note.stt = clone(stt);
         await put(tx, STORES.notes, note);
-      }),
+      })),
 
     listQuarantine: () =>
       transact(db, [STORES.quarantine], "readonly", async (tx) => ({

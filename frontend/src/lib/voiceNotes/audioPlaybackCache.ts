@@ -1,6 +1,7 @@
 import { logPipeline, logPipelineError } from "@/lib/debugLog";
 import { Capacitor } from "@capacitor/core";
 import { VoiceNotes, type VoiceNoteRecording } from "./nativeVoiceNotes";
+import { hasLocalWorkInProgress } from "./localWork";
 
 type CacheRow = { key: string; blob?: Blob; size: number; playedAt: number; identity?: string;
   receipt?: { sha256: string; size: number } | null };
@@ -81,18 +82,6 @@ export function isVerifiedSpaceReceipt(receipt: { sha256: string; size: number }
 /** Saved, with a verified receipt: the only copy the space is known to hold. Anything else is the phone's own audio. */
 export function hasVerifiedSpaceCopy(note: VoiceNoteRecording): boolean {
   return note.ledger?.audio.state === "saved" && isVerifiedSpaceReceipt(note.ledger.audio.verifiedInSpace);
-}
-
-/**
- * Eviction removes this device's bytes. Keep them while local work still reads them: audio not yet ready or
- * failed on import, a transcript that is running or retrying, or a hosted job whose remote op is unfinished.
- * Those paths read local bytes with no space fallback.
- */
-function hasLocalWorkInProgress(note: VoiceNoteRecording): boolean {
-  const ledger = note.ledger!;
-  return (ledger.localAudio !== undefined && ledger.localAudio.state !== "ready")
-    || ledger.transcript?.state === "running" || ledger.transcript?.state === "retrying"
-    || (ledger.remote?.some((op) => op.mode === "hosted" && op.stage !== "done") ?? false);
 }
 
 async function savedRecordings(): Promise<VoiceNoteRecording[]> {
@@ -207,13 +196,21 @@ async function candidates(): Promise<{ key: string; size: number; playedAt: numb
   ].sort((a, b) => a.playedAt - b.playedAt);
 }
 
-async function evict(entry: { key: string; size: number; id?: string }): Promise<void> {
+async function evict(entry: { key: string; size: number; id?: string }): Promise<boolean> {
   if (entry.id) {
     // Native and web implementations independently recheck the saved ledger under their storage lock.
-    await VoiceNotes.evictCachedAudio({ id: entry.id });
+    try {
+      await VoiceNotes.evictCachedAudio({ id: entry.id });
+    } catch (error) {
+      // A concurrent write made this note pin its bytes; eviction is optional, so skip it.
+      const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
+      if (code === "audio_busy" || code === "audio_in_use") return false;
+      throw error;
+    }
   }
   await remove(entry.key);
   logPipeline("audio playback", entry.id ?? "", "evicted", { destination: "device", bodyBytes: entry.size });
+  return true;
 }
 
 /**
@@ -240,7 +237,7 @@ async function trimCachedAudioUnlocked(limit = AUDIO_CACHE_LIMIT): Promise<void>
   let evicted = false;
   for (const row of all) {
     if (bytes <= limit) break;
-    await evict(row);
+    if (!(await evict(row))) continue;
     bytes -= row.size;
     evicted = true;
   }

@@ -466,6 +466,35 @@ describe("after a reload", () => {
   });
 });
 
+describe("explicit upload receipt", () => {
+  const SHA = "a".repeat(64);
+  const savedLocally = (id: string) => ({ ...recording(id, 1),
+    ledger: { audio: { state: "saved", rowId: "row-local", at: 1 } } }) as VoiceNoteRecording;
+  const uploadedWith = (receipt: { sha256: string; size: number }) => async () =>
+    ({ ok: true, data: { id: "row-local", inserted: false, createdAt: 1, verifiedInSpace: receipt } }) as never;
+
+  test("an explicit upload writes the verified space receipt to the ledger", async () => {
+    phone.pending = [savedLocally("uploaded")];
+    fakeVoiceNoteStore.save = uploadedWith({ sha256: SHA, size: 4 });
+    await saves.uploadLocalVoiceNote(tcw, "uploaded", true);
+    expect(phone.ledgerUpdates).toEqual([expect.objectContaining({
+      patch: { audio: expect.objectContaining({ state: "saved", verifiedInSpace: { sha256: SHA, size: 4 } }) },
+    })]);
+  });
+
+  test("a revision conflict on the receipt write re-reads the note and retries once", async () => {
+    phone.pending = [savedLocally("raced")];
+    phone.ledgerConflicts = 1;
+    fakeVoiceNoteStore.save = uploadedWith({ sha256: SHA, size: 4 });
+    await saves.uploadLocalVoiceNote(tcw, "raced", true);
+    expect(phone.ledgerUpdates).toHaveLength(2);
+    expect(phone.ledgerUpdates[1]).toEqual(expect.objectContaining({
+      rev: 2,
+      patch: { audio: expect.objectContaining({ verifiedInSpace: { sha256: SHA, size: 4 } }) },
+    }));
+  });
+});
+
 describe("pendingStore", () => {
   test("B sees only B's and unowned notes; A's notes do not enter the signed-in count", async () => {
     phone.pending = [recording("old-account", 1), { ...recording("current", 2), owner: "did:example:bob" },

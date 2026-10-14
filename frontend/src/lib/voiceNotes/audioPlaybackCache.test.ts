@@ -10,7 +10,8 @@ const saved = (id: string, state: "saved" | "pending"): VoiceNoteRecording => ({
   id, startedAt: 1, durationMs: 1000, mimeType: "audio/mp4", sizeBytes: 40,
   silencedMs: 0, silencedEvents: 0, noSignalMs: 0,
   ledger: { audio: { state, rowId: state === "saved" ? "row" : null, at: 1,
-    ...(state === "saved" ? { verifiedInSpace: { sha256: "a".repeat(64), size: 40 } } : {}) } } as VoiceNoteRecording["ledger"],
+    ...(state === "saved" ? { verifiedInSpace: { sha256: "a".repeat(64), size: 40 } } : {}) },
+    transcript: { state: "done" } } as VoiceNoteRecording["ledger"],
 });
 
 let notes: VoiceNoteRecording[];

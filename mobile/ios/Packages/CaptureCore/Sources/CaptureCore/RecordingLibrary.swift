@@ -667,11 +667,30 @@ public final class RecordingLibrary {
         try queue.sync { try deleteUnlocked(id) }
     }
 
+    /// Mirrors `hasLocalWorkInProgress` in frontend/src/lib/voiceNotes/localWork.ts. Keep the two in sync.
+    private static func hasLocalWorkInProgress(_ note: [String: Any]) -> Bool {
+        guard let ledger = note["ledger"] as? [String: Any] else { return true }
+        let transcriberOff = (note["options"] as? [String: Any])?["transcriber"] as? String == "off"
+        let transcript = ledger["transcript"] as? [String: Any]
+        let transcriptUnfinished = !transcriberOff && transcript?["state"] as? String != "done"
+        let localAudio = ledger["localAudio"] as? [String: Any]
+        let localAudioUnready = localAudio != nil && localAudio?["state"] as? String != "ready"
+        let stt = note["stt"] as? [String: Any]
+        let sttUnfinished = stt != nil && stt?["state"] as? String != "done"
+        let remotes = ledger["remote"] as? [[String: Any]] ?? []
+        let remoteOpen = remotes.contains(where: { op in
+            let stage = op["stage"] as? String
+            return stage != "done" && (op["mode"] as? String != "own" || stage != "submitted")
+        })
+        return localAudioUnready || sttUnfinished || transcriptUnfinished || remoteOpen
+    }
+
     /// A space-backed recording may shed its audio while retaining its note, transcript and ledger.
     public func evictCachedAudio(_ id: String) throws {
         guard Self.validID(id) else { throw CaptureError.invalidArgument }
         try queue.sync {
             let note = try readSidecarUnlocked(id)
+            guard !Self.hasLocalWorkInProgress(note) else { throw CaptureError.io("audio_in_use") }
             let ledger = note["ledger"] as? [String: Any]
             let audio = ledger?["audio"] as? [String: Any]
             let receipt = audio?["verifiedInSpace"] as? [String: Any]

@@ -557,9 +557,27 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
         gcArtifacts(id)
         retire(id)
     }
+    /** Mirrors `hasLocalWorkInProgress` in frontend/src/lib/voiceNotes/localWork.ts. Keep the two in sync. */
+    private fun hasLocalWorkInProgress(note: JSONObject): Boolean {
+        val ledger = note.optJSONObject("ledger") ?: return true
+        val transcriberOff = note.optJSONObject("options")?.optString("transcriber") == "off"
+        val transcriptUnfinished = !transcriberOff && ledger.optJSONObject("transcript")?.optString("state") != "done"
+        val localAudio = ledger.optJSONObject("localAudio")
+        val localAudioUnready = localAudio != null && localAudio.optString("state") != "ready"
+        val stt = note.optJSONObject("stt")
+        val sttUnfinished = stt != null && stt.optString("state") != "done"
+        val remotes = ledger.optJSONArray("remote")
+        val remoteOpen = remotes != null && (0 until remotes.length()).any { index ->
+            val op = remotes.getJSONObject(index)
+            val stage = op.optString("stage")
+            stage != "done" && (op.optString("mode") != "own" || stage != "submitted")
+        }
+        return localAudioUnready || sttUnfinished || transcriptUnfinished || remoteOpen
+    }
     fun evictCachedAudio(id: String) = lock.withLock {
         requireId(id)
         val note = read(id) ?: throw IllegalStateException("not_found")
+        if (hasLocalWorkInProgress(note)) throw IllegalStateException("audio_in_use")
         val ledgerAudio = note.optJSONObject("ledger")?.optJSONObject("audio")
         val receipt = ledgerAudio?.optJSONObject("verifiedInSpace")
         val expectedHash = receipt?.optString("sha256")
