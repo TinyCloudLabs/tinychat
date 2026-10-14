@@ -8,6 +8,16 @@ export const STORAGE_TOO_LARGE_SAVE_MESSAGE =
   "This change is larger than the TinyCloud storage you have left, so it was not saved. Reading still works.";
 export const STORAGE_READ_ONLY_NOTICE =
   "Your TinyCloud storage, shared by all your TinyCloud apps, is full. You can still view and copy your data. Saving changes is paused until more storage is available.";
+export const STORAGE_FULL_RECORDING_LINE =
+  "Your TinyCloud storage is full. Your recordings are safe on this device and will upload when space is available.";
+const STORAGE_DELETION_NOTE =
+  "Some deletions may lower your storage usage, but Exo can't yet remove saved voice-note audio, saved uploads or your copies of Transcriber meetings from TinyCloud.";
+const STORAGE_NO_LARGER_PLAN = "There's no larger plan to buy.";
+/** Detail under the main line on the detailed surfaces. Free sees only the first sentence; paid and unknown get both. */
+export const STORAGE_FULL_DETAIL: Record<"free" | "paid", string> = {
+  free: STORAGE_DELETION_NOTE,
+  paid: `${STORAGE_DELETION_NOTE} ${STORAGE_NO_LARGER_PLAN}`,
+};
 
 const STORAGE_CODES: Record<string, true> = {
   STORAGE_QUOTA_EXCEEDED: true,

@@ -30,6 +30,7 @@ import { logPipeline, logPipelineError } from "@/lib/debugLog";
 import { putPendingSaveState, readPendingSaveStates } from "./pendingSaveState";
 import { captureEvents } from "@/capture/captureEvents";
 import { appPlatform, deviceName } from "@/lib/platform";
+import { STORAGE_FULL_RECORDING_LINE } from "@/lib/storageStatus";
 
 export const TINYCLOUD_NETWORK_FAILURE_MESSAGE =
   `Couldn't reach your TinyCloud space. This note is safe on ${deviceName()} — try again.`;
@@ -60,7 +61,7 @@ export function logVoiceNoteError(operation: string, error: unknown): void {
 
 /** The one line for a note whose text is safe but whose audio waits for TinyCloud space. */
 export function storageFullNoteMessage(): string {
-  return `Saved on ${deviceName()}. Your TinyCloud storage is full. Your recording is safe on this device and uploads when space is available.`;
+  return `Saved on ${deviceName()}. ${STORAGE_FULL_RECORDING_LINE}`;
 }
 
 /** Map WebKit's unhelpful network messages to specific recovery copy. */

@@ -6,17 +6,18 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { STORAGE_READ_ONLY_NOTICE } from "@/lib/storageStatus";
+import { STORAGE_FULL_DETAIL, STORAGE_READ_ONLY_NOTICE } from "@/lib/storageStatus";
 import { openManageStorage } from "@/lib/openManageStorage";
 import { useStorageFreePlan } from "@/lib/useStorageFreePlan";
 
 export function StorageFullDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
+  const storageFreePlan = useStorageFreePlan();
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-lg gap-5 rounded-xl">
         <DialogHeader>
           <DialogTitle>Storage full: read-only.</DialogTitle>
-          <DialogDescription>{STORAGE_READ_ONLY_NOTICE}</DialogDescription>
+          <DialogDescription>{STORAGE_READ_ONLY_NOTICE} {STORAGE_FULL_DETAIL[storageFreePlan ? "free" : "paid"]}</DialogDescription>
         </DialogHeader>
         <StorageFullActions />
       </DialogContent>

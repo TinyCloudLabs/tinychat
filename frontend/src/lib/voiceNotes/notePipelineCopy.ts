@@ -2,6 +2,7 @@
 // no em dashes. Every blocker line says what is wrong and, where it is true, that the note is safe.
 import type { PipelineActionKind, PipelineDevice, StepKey } from "./notePipeline";
 import { deviceName as platformDeviceName } from "@/lib/platform";
+import { STORAGE_FULL_RECORDING_LINE } from "@/lib/storageStatus";
 
 export const deviceName = (device: PipelineDevice): string => platformDeviceName(device === "mac" ? "tauri" : device === "iphone" ? "ios" : device === "android" ? "android" : device === "browser" ? "web" : undefined);
 
@@ -65,7 +66,7 @@ export const SPACE_COPY = {
   sessionExpired: (device: PipelineDevice) => `Your session ended. This note is safe on ${deviceName(device)}.`,
   otherAccount: "Recorded on another account",
   accountUnknown: (device: PipelineDevice) => `Exo can't tell which account this note belongs to. It stays on ${deviceName(device)}.`,
-  quota: (device: PipelineDevice) => `Saved on ${deviceName(device)}. Your TinyCloud storage is full. Your recording is safe on this device and uploads when space is available.`,
+  quota: (device: PipelineDevice) => `Saved on ${deviceName(device)}. ${STORAGE_FULL_RECORDING_LINE}`,
   timeout: (device: PipelineDevice) => `Saving timed out. This note is safe on ${deviceName(device)}.`,
   server: (_detail: string | null | undefined, device: PipelineDevice) =>
     `Your space couldn't take this note. It is safe on ${deviceName(device)}. Try again.`,

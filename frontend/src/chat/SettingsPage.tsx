@@ -15,7 +15,7 @@ import {
   UserIcon,
 } from "lucide-react";
 import { Link } from "react-router-dom";
-import { STORAGE_READ_ONLY_NOTICE } from "@/lib/storageStatus";
+import { STORAGE_FULL_DETAIL, STORAGE_READ_ONLY_NOTICE } from "@/lib/storageStatus";
 import { openManageStorage } from "@/lib/openManageStorage";
 import { useStorageReadOnly } from "@/lib/useStorageReadOnly";
 import { useStorageFreePlan } from "@/lib/useStorageFreePlan";
@@ -113,7 +113,7 @@ export function SettingsPage({
         {storageFull && (
           <div role="region" aria-label="Storage full: read-only" className="mb-4 rounded-xl border border-border bg-muted p-4 text-sm">
             <p>
-              <strong>Storage full: read-only.</strong> {STORAGE_READ_ONLY_NOTICE}
+              <strong>Storage full: read-only.</strong> {STORAGE_READ_ONLY_NOTICE} {STORAGE_FULL_DETAIL[storageFreePlan ? "free" : "paid"]}
             </p>
             <Button type="button" variant="outline" size="sm" className="mt-3" onClick={() => void openManageStorage()}>
               Manage storage
