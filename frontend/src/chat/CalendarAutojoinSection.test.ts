@@ -1,15 +1,64 @@
 import { describe, expect, test } from "bun:test";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { CONNECTORS } from "@/lib/connectors/registry";
 import type { CalendarAutojoinStatus } from "@/lib/connectors/calendarAutojoinApi";
-import { createCalendarAutojoinActions } from "./CalendarAutojoinSection";
+import { CalendarAutojoinOffReason, createCalendarAutojoinActions } from "./CalendarAutojoinSection";
 import { revokeGoogleUpstream } from "./ConnectorDialog";
+import { autojoinDetail } from "@/capture/meetingSources/useCalendarAutojoin";
+import { CalendarAutojoinRow } from "@/capture/meetingSources/MeetingSourcesView";
 
 const session = { getToken: () => "tinychat-session", isExpired: () => false } as SessionStore;
 const google = CONNECTORS.find((row) => row.id === "google-meet")!;
 const on: CalendarAutojoinStatus = { state: "on", enabled: true, lastScanAt: 123, errorCode: null, outcomes: [] };
 const off: CalendarAutojoinStatus = { ...on, state: "off", enabled: false };
+
+describe("TC-1100 visible off reasons", () => {
+  for (const [reason, copy] of [
+    ["user_disabled", "You turned calendar autojoin off."],
+    ["google_account_changed", "Google account changed. Turn on calendar autojoin for this account."],
+    ["disconnected", "Google was disconnected. Reconnect to turn calendar autojoin on."],
+    ["needs_reconnect", "Google access needs to be renewed. Reconnect to resume calendar autojoin."],
+    ["invalid_grant", "Google access was revoked elsewhere or expired. Reconnect Google to resume calendar autojoin."],
+    ["setup_expired", "Google setup expired. Turn on calendar autojoin to try again."],
+    ["setup_pending", "Finish Google setup to turn calendar autojoin on."],
+    ["never_enabled", "Calendar autojoin has not been turned on yet."],
+    ["unknown", "The reason calendar autojoin was turned off is unavailable. Turn it on to resume."],
+  ] as const) {
+    test(`${reason} renders the same short copy in connector settings and Meeting sources`, () => {
+      const status: CalendarAutojoinStatus = { ...off, offReason: reason };
+      const section = renderToStaticMarkup(createElement(CalendarAutojoinOffReason, { status }));
+      expect(section).toContain(copy);
+      const detail = autojoinDetail(status, null);
+      expect(detail.warning).toBeNull();
+      const source = renderToStaticMarkup(createElement(CalendarAutojoinRow, {
+        on: status.enabled, disabled: false, ...detail, onToggle() {},
+      }));
+      expect(source).toContain(copy);
+      expect(source).toContain('aria-checked="false"');
+    });
+  }
+
+  test("a read error does not hide an already-known off reason", () => {
+    const detail = autojoinDetail({ ...off, offReason: "user_disabled" }, "Status unavailable");
+    expect(detail.detail).toBe("You turned calendar autojoin off.");
+    expect(detail.warning).toBe("Status unavailable");
+  });
+
+  test("enabled and loading states render no off explanation", () => {
+    for (const status of [on, null]) {
+      expect(renderToStaticMarkup(createElement(CalendarAutojoinOffReason, { status }))).toBe("");
+      expect(autojoinDetail(status, null).detail).toBeNull();
+    }
+  });
+
+  test("older backend bodies still get a visible explanation", () => {
+    expect(renderToStaticMarkup(createElement(CalendarAutojoinOffReason, { status: off }))).toContain("reason calendar autojoin was turned off is unavailable");
+    expect(autojoinDetail({ ...off, state: "needs_reconnect", errorCode: "invalid_grant" }, null).detail).toContain("revoked elsewhere");
+  });
+});
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (error: unknown) => void;

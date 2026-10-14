@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { CredentialStore, OAuthCredentialSecret } from "./credential-store.js";
 import type { CalendarAutojoinStore, CalendarAutojoinReadMetrics, CalendarConnection, TenantCoordinator } from "./calendar-autojoin-store.js";
-import type { CalendarAutojoinStatus } from "./calendar-autojoin-status-cache.js";
+import type { CalendarAutojoinStatus, CalendarAutojoinOffReason } from "./calendar-autojoin-status-cache.js";
 import { calendarAutojoinOutcomes } from "./calendar-autojoin-status-summary.js";
 import { REQUEST_LANE_WAIT_MS } from "./backend-storage-lane.js";
 import { GOOGLE_CALENDAR_SCOPE, GoogleOAuthError, type GoogleOAuthPort, type GoogleTokenPayload } from "./google-oauth.js";
@@ -65,15 +65,20 @@ export class CalendarAutojoinConnection {
     // never deleted (disable/disconnect rewrite them as "disabled"). A never-connected tenant has
     // no outcomes, so skip the prefix listing: on the shared serialized storage lane it pushed this
     // read past the client's 20s abort, showing a never-connected account an error.
-    if (!connection) return { state: "off" as const, enabled: false, lastScanAt: null, lastDispatchLag: null, errorCode: null, outcomes: [] };
+    if (!connection) return { state: "off" as const, enabled: false, offReason: "never_enabled", lastScanAt: null, lastDispatchLag: null, errorCode: null, outcomes: [] };
     // Until the first summary publication, preserve the existing history and timeout fallback.
     const summary = await this.options.store.getStatusSummaryOrLegacy(tenant, deadline, metrics);
     const outcomes = summary.outcomes;
+    const offReason = connection.state === "enabled" ? null
+      : connection.state === "enabling" && (connection.setupExpiresAt ?? 0) <= this.now() ? "setup_expired"
+        : connection.offReason ?? (connection.state === "needs_reconnect" ? "needs_reconnect"
+          : connection.state === "enabling" ? "setup_pending" : "unknown");
     return {
       state: connection?.state === "needs_reconnect" ? "needs_reconnect" as const
         : connection?.errorCode ? "error" as const
         : connection?.state === "enabled" ? "on" as const : "off" as const,
       enabled: connection?.state === "enabled",
+      offReason,
       lastScanAt: connection?.lastScanAt ?? null,
       lastDispatchLag: connection.lastDispatchLag ?? null,
       errorCode: connection?.errorCode ?? null,
@@ -124,7 +129,7 @@ export class CalendarAutojoinConnection {
       if (transaction.expiresAt <= this.now()) throw new CalendarAutojoinError("invalid_oauth_transaction", 400);
       if ((current?.generation ?? 0) !== transaction.generation) throw new CalendarAutojoinError("connection_changed");
       // Persist disabled scheduling and stop intent in the old subject namespace first.
-      const disabled = await this.disableLocked(tenant);
+      const disabled = await this.disableLocked(tenant, "setup_pending");
       const enabling: CalendarConnection = {
         ...disabled, subject: tokens.subject!, state: "enabling", consentAt: transaction.consentAt,
         scopes, credentialRef: GOOGLE_AUTOJOIN_CREDENTIAL_SOURCE, setupId,
@@ -149,7 +154,7 @@ export class CalendarAutojoinConnection {
     try {
       await this.options.calendar.probePrimary(secret.accessToken);
     } catch (error) {
-      if (isPermanentAuthorizationFailure(error)) await this.needsReconnect(tenant, connection!.generation);
+      if (isPermanentAuthorizationFailure(error)) await this.needsReconnect(tenant, connection!.generation, authorizationOffReason(error));
       throw error;
     }
     await this.writeSettings(tenant, async () => {
@@ -157,7 +162,7 @@ export class CalendarAutojoinConnection {
       this.assertSetup(latest, setupId);
       if (latest!.generation !== connection!.generation) throw new CalendarAutojoinError("connection_changed");
       await this.options.store.putConnection({ ...latest!, state: "enabled", setupId: undefined,
-        setupExpiresAt: undefined, nextScanAt: this.now(), errorCode: undefined, scanComplete: false });
+        setupExpiresAt: undefined, nextScanAt: this.now(), errorCode: undefined, offReason: undefined, scanComplete: false });
     });
     // A setup persisted by the previous backend can survive an upgrade without a summary.
     // Backfill on this user action, outside tenant coordination, so subsequent reads are bounded.
@@ -169,13 +174,19 @@ export class CalendarAutojoinConnection {
   }
 
   async disable(tenant: string) {
-    await this.writeSettings(tenant, () => this.disableLocked(tenant));
+    await this.writeSettings(tenant, () => this.disableLocked(tenant, "user_disabled"));
     return this.getStatus(tenant);
   }
 
-  /** Browser-only reconnect must never silently leave unattended access following another account. */
-  async browserReconnect(tenant: string): Promise<void> {
-    await this.writeSettings(tenant, () => this.disableLocked(tenant));
+  /** Compare the verified exchanged account with the latest binding under tenant coordination. */
+  async browserReconnect(tenant: string, subject?: string): Promise<void> {
+    // Older in-flight connector grants may lack OIDC identity; they cannot prove an account change.
+    if (!subject) return;
+    await this.options.coordinator.run(tenant, async () => {
+      const current = await this.options.store.getConnection(tenant);
+      if (!current?.subject || current.subject === subject) return;
+      await this.options.store.statusCache.mutate(tenant, () => this.disableLocked(tenant, "google_account_changed"));
+    });
   }
 
   async disconnect(tenant: string, browserToken?: string) {
@@ -189,7 +200,7 @@ export class CalendarAutojoinConnection {
           const secret = await this.options.credentials.getCredential(GOOGLE_AUTOJOIN_CREDENTIAL_SOURCE, tenant, "teardown");
           if (secret?.kind === "oauth") serverToken = secret.refreshToken ?? secret.accessToken;
         } catch { failed = true; }
-        await this.disableLocked(tenant);
+        await this.disableLocked(tenant, "disconnected");
       });
     } finally {
       // Revoke outside tenant coordination, including when local teardown fails after commit.
@@ -210,7 +221,7 @@ export class CalendarAutojoinConnection {
     await this.options.coordinator.run(tenant, async () => {
       const row = await this.options.store.getConnection(tenant);
       if (row?.state === "enabling" && (row.setupExpiresAt ?? 0) <= this.now()) {
-        await this.disableLocked(tenant);
+        await this.disableLocked(tenant, "setup_expired");
       } else if (row && (row.state === "disabled" || row.state === "needs_reconnect")) {
         // Recover a crash after persisted disable but before local credential deletion.
         if (await this.options.credentials.status(GOOGLE_AUTOJOIN_CREDENTIAL_SOURCE, tenant)) {
@@ -241,7 +252,7 @@ export class CalendarAutojoinConnection {
     let tokens: GoogleTokenPayload;
     try { tokens = await this.options.oauth.refresh(old.refreshToken); }
     catch (error) {
-      if (isPermanentAuthorizationFailure(error)) await this.needsReconnect(tenant, generation);
+      if (isPermanentAuthorizationFailure(error)) await this.needsReconnect(tenant, generation, authorizationOffReason(error));
       throw error;
     }
     if (tokens.scope !== undefined && !tokens.scope.split(/\s+/).includes(GOOGLE_CALENDAR_SCOPE)) {
@@ -257,11 +268,11 @@ export class CalendarAutojoinConnection {
     });
   }
 
-  async needsReconnect(tenant: string, generation: number): Promise<void> {
+  async needsReconnect(tenant: string, generation: number, reason: "needs_reconnect" | "invalid_grant" = "needs_reconnect"): Promise<void> {
     await this.options.coordinator.run(tenant, async () => {
       const row = await this.options.store.getConnection(tenant);
       if (row?.generation !== generation) return;
-      const disabled = await this.disableLocked(tenant);
+      const disabled = await this.disableLocked(tenant, reason);
       await this.options.store.putConnection({ ...disabled, state: "needs_reconnect", errorCode: "needs_reconnect" });
     });
   }
@@ -279,11 +290,11 @@ export class CalendarAutojoinConnection {
   }
 
   /** Caller holds tenant coordination. Generation persists before credential/occurrence mutation. */
-  private async disableLocked(tenant: string): Promise<CalendarConnection> {
+  private async disableLocked(tenant: string, offReason: CalendarAutojoinOffReason): Promise<CalendarConnection> {
     const current = await this.options.store.getConnection(tenant);
     const disabled: CalendarConnection = { ...(current ?? { tenant, subject: null, scopes: [] }),
       state: "disabled", generation: (current?.generation ?? 0) + 1, nextScanAt: 0,
-      credentialRef: undefined, setupId: undefined, setupExpiresAt: undefined, errorCode: undefined, scanComplete: false };
+      credentialRef: undefined, setupId: undefined, setupExpiresAt: undefined, errorCode: undefined, offReason, scanComplete: false };
     await this.options.store.putConnection(disabled);
     try {
       this.options.onDisabled?.(tenant);
@@ -322,4 +333,8 @@ export function browserTokenPayload(tokens: GoogleTokenPayload): GoogleTokenPayl
 function isPermanentAuthorizationFailure(error: unknown): boolean {
   if (error instanceof GoogleOAuthError) return ["invalid_grant", "invalid_scope", "access_denied"].includes(error.error);
   return typeof error === "object" && error !== null && "requiresReconnect" in error && error.requiresReconnect === true;
+}
+
+function authorizationOffReason(error: unknown): "needs_reconnect" | "invalid_grant" {
+  return error instanceof GoogleOAuthError && error.error === "invalid_grant" ? "invalid_grant" : "needs_reconnect";
 }

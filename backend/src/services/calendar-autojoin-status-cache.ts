@@ -1,6 +1,10 @@
+export type CalendarAutojoinOffReason = "user_disabled" | "google_account_changed" | "disconnected"
+  | "needs_reconnect" | "invalid_grant" | "setup_expired" | "setup_pending" | "never_enabled" | "unknown";
+
 export interface CalendarAutojoinStatus {
   state: "off" | "on" | "needs_reconnect" | "error";
   enabled: boolean;
+  offReason: CalendarAutojoinOffReason | null;
   lastScanAt: number | null;
   lastDispatchLag: { sentAt: number; seconds: number; discovered: number } | null;
   errorCode: string | null;

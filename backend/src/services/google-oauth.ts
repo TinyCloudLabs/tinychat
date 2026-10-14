@@ -267,7 +267,8 @@ export class GoogleOAuthClient implements GoogleOAuthPort {
     url.searchParams.set("response_type", "code");
     url.searchParams.set("client_id", this.config.clientId);
     url.searchParams.set("redirect_uri", this.config.redirectUri);
-    url.searchParams.set("scope", input.purpose === "autojoin" ? GOOGLE_AUTOJOIN_SCOPES : this.config.scope);
+    url.searchParams.set("scope", input.purpose === "autojoin" ? GOOGLE_AUTOJOIN_SCOPES
+      : [...new Set(`${this.config.scope} openid`.split(/\s+/).filter(Boolean))].join(" "));
     if (input.purpose === "autojoin") {
       if (!input.nonce) throw new Error("autojoin requires an OIDC nonce");
       url.searchParams.set("nonce", input.nonce);
@@ -305,12 +306,12 @@ export class GoogleOAuthClient implements GoogleOAuthPort {
       this.config.clientSecret,
     ]);
     const tokens = toTokenPayload(payload, "exchange");
-    if (input.nonce !== undefined) {
+    const idToken = (payload as Record<string, unknown>).id_token;
+    if (input.nonce !== undefined || idToken !== undefined) {
       try {
-        const idToken = (payload as Record<string, unknown>).id_token;
         if (typeof idToken !== "string") throw new Error("missing identity");
         const identity = await this.verifyIdToken(idToken, this.config.clientId);
-        if (!identity?.sub || identity.nonce !== input.nonce) throw new Error("invalid identity");
+        if (!identity?.sub || (input.nonce !== undefined && identity.nonce !== input.nonce)) throw new Error("invalid identity");
         tokens.subject = identity.sub;
         if (identity.email_verified === true && typeof identity.email === "string" && identity.email.length > 0) {
           tokens.email = identity.email;
