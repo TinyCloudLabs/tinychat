@@ -45,6 +45,7 @@ import { nativeRecordingSource, VoiceNotes, type VoiceNoteRecording } from "./na
 import { readTranscriptCommit } from "./voiceNoteCommits";
 import { whenVoiceNoteSavesIdle } from "./recorderSaves";
 import { transcriptionErrorCopy, voiceNoteTranscriptionFailureForCode } from "./transcriptionErrors";
+import { privatePartsDone } from "./notePipelineCopy";
 import type { VoiceNoteTranscriptionFailure } from "./transcriptionErrors";
 export type { VoiceNoteTranscriptionFailure } from "./transcriptionErrors";
 
@@ -1873,10 +1874,10 @@ export function transcriptionStatusText(status: VoiceNoteTranscriptionStatus): s
       return status.progress === undefined ? "Sending audio to Private transcription…" : `Sending audio to Private transcription · ${Math.round(Math.min(1, Math.max(0, status.progress)) * 100)}%`;
     case "queued":
       return status.position !== null && status.position > 0 ? `Queued (position ${status.position})…` : "Queued…";
-    case "processing":
-      return status.total !== null && status.total > 0
-        ? `Transcribing in private cloud… ${status.completed ?? 0}/${status.total}`
-        : "Transcribing in private cloud…";
+    case "processing": {
+      const partsDone = privatePartsDone(status.completed, status.total);
+      return partsDone === null ? "Transcribing in private cloud…" : `Transcribing in private cloud… ${partsDone}`;
+    }
     case "saving":
       return "Saving the transcript…";
   }

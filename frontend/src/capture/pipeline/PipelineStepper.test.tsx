@@ -6,6 +6,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { notePipeline, type NotePipeline, type PipelineActionKind } from "@/lib/voiceNotes/notePipeline";
 import { installDom } from "@/test/dom";
 import { PipelineStepper } from "./PipelineStepper";
+import { PipelineTrackSummary } from "./PipelineTrackSummary";
 import { allDone, pipelineOf, privateRunning, signedOut, uploading } from "./pipelineFixtures";
 
 const noop = () => {};
@@ -46,11 +47,18 @@ describe("PipelineStepper", () => {
     }
   });
 
-  test("each track carries its own caption", () => {
-    const html = render(uploading(42));
-    expect(html).toContain("Uploading audio to your TinyCloud space · 42%");
-    expect(html).not.toContain("data-pipeline-blocker");
-    expect(render(privateRunning(4, 9))).toContain("Transcribing · 4 of 9");
+  test("private-cloud progress explains its unit and describes completed parts, not the whole transcript", () => {
+    const html = render(privateRunning(4, 9));
+    expect(html).toContain("Transcribing · 4 of 9 parts done");
+    expect(html).toContain('title="Recordings are transcribed in parts"');
+    expect(render(privateRunning(9, 9))).toContain("Transcribing · 9 of 9 parts done");
+    expect(render(privateRunning(0, 0))).toContain("Transcribing…");
+  });
+
+  test("pipeline track summaries keep the parts unit and its accessible hint", () => {
+    const html = renderToStaticMarkup(<PipelineTrackSummary pipeline={privateRunning(4, 9)} />);
+    expect(html).toContain("Transcript: Transcribing · 4 of 9 parts done");
+    expect(html).toContain('title="Recordings are transcribed in parts"');
   });
 
   test("a blocker is the cause and one button, and a blocker has no caption", () => {

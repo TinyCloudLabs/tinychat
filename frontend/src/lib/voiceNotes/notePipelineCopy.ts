@@ -40,6 +40,9 @@ const place = (position: number): string => (position <= 1 ? "next" : ordinal(po
 
 const withDetail = (lead: string, _detail: string | null | undefined): string => lead;
 
+export const privatePartsDone = (completed: number | null, total: number | null): string | null =>
+  completed === null || total === null || total <= 0 ? null : `${completed} of ${total} parts done`;
+
 export const PHONE_COPY = {
   finishing: "Finishing the recording…",
   timedOut: "Exo will finish it next launch",
@@ -111,8 +114,11 @@ export const PRIVATE_COPY = {
   waiting: (position: number) => `Waiting · ${place(position)}`,
   preparing: "Preparing…",
   sending: "Sending audio to Private transcription",
-  transcribing: (completed: number | null, total: number | null) =>
-    completed === null || total === null ? "Transcribing…" : `Transcribing · ${completed} of ${total}`,
+  inQueue: (position: number | null) => (position === null ? "In the queue" : `In the queue · #${position}`),
+  transcribing: (completed: number | null, total: number | null) => {
+    const partsDone = privatePartsDone(completed, total);
+    return partsDone === null ? "Transcribing…" : `Transcribing · ${partsDone}`;
+  },
   saving: "Saving transcript",
   notStarted: "Waiting for private transcription",
   afterUpload: "After audio uploads",

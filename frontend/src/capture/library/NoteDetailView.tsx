@@ -155,7 +155,7 @@ export function VoiceNoteTranscriptionStatus(props: {
     const providerStatus = provider === "powerful" ? status.replaceAll("Private transcription", "Powerful (AssemblyAI)").replaceAll("private cloud", "Powerful")
       : provider === "unknown" ? status.replaceAll("Private transcription", "transcription").replaceAll("private cloud", "the transcription service") : status;
     return (
-      <p role="status" data-testid="voice-note-transcription-status" className="flex items-center gap-2 text-callout text-muted-foreground">
+      <p role="status" data-testid="voice-note-transcription-status" className="flex items-center gap-2 text-callout text-muted-foreground" title={job.status.kind === "processing" && job.status.completed !== null && job.status.total !== null && job.status.total > 0 ? "Recordings are transcribed in parts" : undefined}>
         <Loader2Icon className="size-4 shrink-0 motion-safe:animate-spin" aria-hidden /> {providerStatus}
       </p>
     );
