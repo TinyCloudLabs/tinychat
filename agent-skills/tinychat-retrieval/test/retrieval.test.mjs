@@ -18,18 +18,18 @@ function fixture(options = {}) {
   expect(typeof lib.createRetrieval).toBe('function');
   const db = new Database(':memory:'); open.push(db);
   db.exec('CREATE TABLE connector_meeting(id TEXT PRIMARY KEY, source TEXT, source_id TEXT, title TEXT, started_at TEXT, organizer_email TEXT, participants TEXT, summary_overview TEXT, summary_action_items TEXT, metadata TEXT, updated_at TEXT)');
-  db.exec('CREATE TABLE voice_note_transcript(source_id TEXT PRIMARY KEY, body_key TEXT, outcome TEXT)');
+  db.exec('CREATE TABLE voice_note_transcript(source_id TEXT PRIMARY KEY, body_key TEXT, outcome TEXT, engine TEXT, provider TEXT, model TEXT)');
   const bodies = new Map(); const calls = [];
   const snapshots = new Map();
   const state = { owner, authenticated: true, fail: null, kvFail: null, transferredBytes: 0, cliVersion: "0.10.0", snapshots };
-  const add = (id, { title = id, date = '2026-09-18T12:00:00Z', source = 'fireflies', sourceId = id, metadata = {}, body = [{ text: 'Hello', speaker_name: 'A', start_time: 1 }], voiceNoteCommit = true, voiceNoteOutcome = 'transcribed', voiceNoteBodyKey } = {}) => {
+  const add = (id, { title = id, date = '2026-09-18T12:00:00Z', source = 'fireflies', sourceId = id, metadata = {}, body = [{ text: 'Hello', speaker_name: 'A', start_time: 1 }], voiceNoteCommit = true, voiceNoteOutcome = 'transcribed', voiceNoteBodyKey, engine = null, provider = null, model = null } = {}) => {
     db.query('INSERT INTO connector_meeting VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(id, source, sourceId, title, date, 'a@example.test', '[{"name":"A"}]', 'Stored summary', null, JSON.stringify(metadata), '2026-09-18T13:00:00Z');
     const rawBody = JSON.stringify(body);
     bodies.set(plainTranscriptKey(source, sourceId), rawBody);
     if (source === 'exo-voice-note' && voiceNoteCommit) {
       const key = voiceNoteBodyKey ?? `xyz.tinycloud.tinychat/connectors/exo-voice-note/transcript-rev/${sourceId}/${'a'.repeat(32)}`;
       if (key !== null) bodies.set(key, rawBody);
-      db.query('INSERT INTO voice_note_transcript VALUES(?,?,?)').run(sourceId, key, voiceNoteOutcome);
+      db.query('INSERT INTO voice_note_transcript VALUES(?,?,?,?,?,?)').run(sourceId, key, voiceNoteOutcome, engine, provider, model);
     }
   };
   const runTc = async args => {
@@ -99,6 +99,39 @@ describe('bounded discovery and context', () => {
     const other = fixture({ host: 'https://other.example.test' }); expect((await invoke(other, 'find', { cursor: page.continuation })).ok).toBe(false);
     for (const opts of [{ from: 'yesterday' }, { to: '2026-02-30T00:00:00Z' }, { source: '../secret' }, { cursor: 'garbage' }, { limit: 0 }]) expect((await invoke(f, 'find', opts)).ok).toBe(false);
   });
+});
+
+test('find, read, and search report voice-note provenance from the body-winning source', async () => {
+  const f = fixture();
+  const selectedKey = `xyz.tinycloud.tinychat/connectors/exo-voice-note/transcript-rev/ptx/${'b'.repeat(32)}`;
+  f.add('ptx', { source: 'exo-voice-note', sourceId: 'ptx', body: [{ text: 'stale body' }], voiceNoteBodyKey: selectedKey, engine: 'private-cloud', provider: 'tinycloud-private-transcription', model: 'private-model' });
+  f.bodies.set(selectedKey, JSON.stringify([{ text: 'selected PTX needle' }]));
+  f.add('assembly', { source: 'exo-voice-note', engine: 'assemblyai', provider: 'assemblyai', model: 'universal-2', body: [{ text: 'Assembly needle' }] });
+  f.add('device', { source: 'exo-voice-note', engine: 'whispercpp', provider: 'on-device', model: 'base.en', body: [{ text: 'Device needle' }] });
+  f.add('legacy', { source: 'exo-voice-note', sourceId: 'legacy', voiceNoteCommit: false, metadata: { transcription_outcome: 'transcribed', transcript_text: 'Legacy needle', transcription_engine: 'legacy-engine', transcript_provider: 'legacy-provider' }, body: [{ text: 'Legacy needle' }] });
+  f.add('unknown', { source: 'exo-voice-note', engine: null, provider: null, model: null, body: [{ text: 'Unknown needle' }] });
+  f.add('ordinary', { source: 'fireflies', body: [{ text: 'Ordinary needle' }] });
+  const expected = {
+    ptx: { engine: 'private-cloud', provider: 'tinycloud-private-transcription', model: 'private-model' },
+    assembly: { engine: 'assemblyai', provider: 'assemblyai', model: 'universal-2' },
+    device: { engine: 'whispercpp', provider: 'on-device', model: 'base.en' },
+    legacy: { engine: 'legacy-engine', provider: 'legacy-provider', model: null },
+    unknown: { engine: null, provider: null, model: null },
+    ordinary: { engine: null, provider: null, model: null },
+  };
+  for (const [id, provenance] of Object.entries(expected)) {
+    const found = await invoke(f, 'find', { term: id });
+    expect(found.records.find(record => record.id === id)).toMatchObject(provenance);
+    const read = await invoke(f, 'read', { ref: await ref(f, id) });
+    expect(read.record).toMatchObject(provenance);
+  }
+  const searched = await invoke(f, 'search', { term: 'needle', limit: 10, scanLimit: 10 });
+  const matches = Object.fromEntries(searched.matches.map(match => [match.record.id, match]));
+  for (const [id, provenance] of Object.entries(expected)) {
+    expect(matches[id]?.record).toMatchObject(provenance);
+  }
+  expect(matches.ptx.span.text).toContain('selected PTX needle');
+  expect(matches.ptx.span.text).not.toContain('stale body');
 });
 
 describe('exact reads and provenance', () => {

@@ -36,6 +36,7 @@ Integration branch: `dev/0.8.0`
 | #400 | a988c05d | 4c7a34f7 | No | Clean merge of TC-1135 stranded Private-note recovery after the CI repairs; preserves the existing privacy gate and #394 recovery provenance. |
 | #350 | 7f5fb1cd | 7b36ac1a | No | Clean merge of TC-947 Me vs Them after the approved P1 fixes; the PR already contained dev through `e775e736`, so the only branch-only delta was the later integration documentation. |
 | #403 | b00ebd38 | cedb3883 | No | Clean merge of the reviewed #350 follow-up: authoritative native channel metadata survives renderer adoption and durable Stop, and every receipt save path preserves channels for Me/Them playback. |
+| #402 | cdda8907 | 28efa0a2 | No | Clean merge of TC-1111 item 4: retrieval results retain voice-note provenance, and the published retrieval pack advances to `0.1.1-onboarding.22`. |
 
 ## Test Fixes (2026-10-14)
 
@@ -78,7 +79,7 @@ After merging origin/main (TC-1128, #387, #392, 45d16e58) and PR #386 (TC-1108 p
 
 ## Current Status
 
-- **Verified code head**: `cedb3883` (#403 merged)
+- **Verified code head**: `28efa0a2` (#402 merged)
 - **Frontend unit suite**: 4882 pass, 4 skip, 0 fail (4886 tests, 339 files)
 - **`origin/main` `b9c538ee` baseline**: 4735 pass, 4 skip, 0 fail (4739 tests, 326 files)
 - **TypeScript**: pinned TypeScript 5.9.3, `tsc --noEmit -p frontend/tsconfig.json`, 0 errors
@@ -87,4 +88,5 @@ After merging origin/main (TC-1128, #387, #392, 45d16e58) and PR #386 (TC-1108 p
 - **Chromium Exo UI matrix**: phone, phone-land, desktop, and text200-phone pass; no reference image was re-baselined
 - **Native checks**: workspace dependency closure passes with `--locked`; desktop debug `cargo check --no-default-features --locked` passes
 - **Privacy invariant**: unchanged; audio reaches TinyCloud KV only when `recording.options?.uploadAudio === true`.
+- **Release blocker**: TC-1140 PR 2 must merge before #390 is cut; it preserves a completed Private result with zero commits after a failed commit write.
 
