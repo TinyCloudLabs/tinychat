@@ -1175,8 +1175,9 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
     async releaseUnsent(onlySourceId) {
       for (const sourceId of pending.sourceIds()) {
         if (onlySourceId !== undefined && sourceId !== onlySourceId) continue;
-        if (pending.read(sourceId)?.held) continue;
-        const transcriptionId = pending.read(sourceId)?.transcriptionId ?? null;
+        const stored = pending.read(sourceId);
+        if (stored?.held || stored?.failure) continue;
+        const transcriptionId = stored?.transcriptionId ?? null;
         if (transcriptionId === null) {
           pending.clear(sourceId);
           continue;

@@ -2520,6 +2520,7 @@ describe("every path that creates or resumes an off-phone job consults the hold 
     expect(first.snapshot().jobs.get("rec-1")).toMatchObject({ kind: "failed", code: "processing_failed" });
     expect((await resolveVoiceNoteRow(space.tcw, "rec-1"))?.metadata.transcription_outcome).toBe("pending");
     choices.add("rec-1");
+    await first.turnOff();
 
     const relaunched = createVoiceNoteTranscriber({
       cloud: h.cloud,
@@ -2530,6 +2531,7 @@ describe("every path that creates or resumes an off-phone job consults the hold 
       runNote: async () => { attempts++; return "transcribed"; },
     });
     await relaunched.check();
+    relaunched.consent();
     await settle();
     expect(attempts).toBe(1);
     expect(relaunched.snapshot().jobs.get("rec-1")).toMatchObject({ kind: "failed", code: "processing_failed" });
