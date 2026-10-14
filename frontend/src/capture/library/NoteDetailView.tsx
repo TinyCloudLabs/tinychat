@@ -186,7 +186,7 @@ export function VoiceNoteTranscriptionStatus(props: {
     return (
       <div className="flex flex-col gap-2" data-testid="voice-note-transcription-failed">
         <p role="alert" className="min-w-0 text-callout text-destructive">
-          {storageFull ? storageFullTranscriptCopy(item.hasLocalAudio === true) : (transcriptionErrorCopy(job.code) ?? job.message)}
+          {storageFull ? storageFullTranscriptCopy(item.localAudioReady === true) : (transcriptionErrorCopy(job.code) ?? job.message)}
         </p>
         {job.reference && <ReferenceDetails reference={job.reference} />}
         {storageFull
@@ -203,7 +203,7 @@ export function VoiceNoteTranscriptionStatus(props: {
     const privateFits = item.durationSecs === null || transcription === undefined || privateCloudFits(transcription, item.durationSecs);
     return (
       <div className="flex flex-col gap-2" data-testid="voice-note-transcription-failed">
-        <p role="alert" className="min-w-0 text-callout text-destructive">{storageFull ? storageFullTranscriptCopy(item.hasLocalAudio === true) : failure.message}</p>
+        <p role="alert" className="min-w-0 text-callout text-destructive">{storageFull ? storageFullTranscriptCopy(item.localAudioReady === true) : failure.message}</p>
         {storageFull
           ? <StorageFullActions noteId={item.sourceId} transcription={transcription} durationSecs={item.durationSecs} />
           : failure.retryable && (captureCapabilities().localTranscription || (canChoosePrivate && privateFits))

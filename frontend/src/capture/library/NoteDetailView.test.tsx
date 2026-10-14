@@ -309,8 +309,9 @@ describe("a voice note's transcription", () => {
     expect(bare).not.toContain("safe on this device");
     expect(bare).toContain("Manage storage");
     expect(bare).toContain("Transcribe again");
-    const withAudio = persisted({ ...VOICE, hasLocalAudio: true });
+    const withAudio = persisted({ ...VOICE, localAudioReady: true });
     expect(withAudio).toContain("Your recording is safe on this device.");
+    expect(persisted({ ...VOICE, hasLocalAudio: true })).not.toContain("Your recording is safe on this device.");
     expect(withAudio).toContain("Manage storage");
     const live = render({ transcription: transcription({ jobs: new Map([["rec-1", { kind: "failed", code: "storage_full", message: "Your TinyCloud storage is full.", retryable: false, reference: null }]]) }) });
     expect(live).toContain("Transcribe it again when space is available.");

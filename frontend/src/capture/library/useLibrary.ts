@@ -148,6 +148,7 @@ export function useLibrary(
   });
   const [listing, setListing] = useState(false);
   const [localAudioIds, setLocalAudioIds] = useState<ReadonlySet<string>>(new Set());
+  const [localAudioReadyIds, setLocalAudioReadyIds] = useState<ReadonlySet<string>>(new Set());
   const [filter, setFilter] = useState<LibraryFilter>("all");
   const reads = useRef(new Map<string, NoteReads>());
   const reading = useRef(new Set<string>());
@@ -288,9 +289,10 @@ export function useLibrary(
       if (entry.source !== VOICE_NOTE_SOURCE) return entry;
       const snippet = moments.get(entry.sourceId) ?? noteSnippet(list.previews.get(entry.sourceId));
       return { ...entry, ...(snippet === null ? {} : { snippet }),
-        ...(localAudioIds.has(entry.sourceId) ? { hasLocalAudio: true as const } : {}) };
+        ...(localAudioIds.has(entry.sourceId) ? { hasLocalAudio: true as const } : {}),
+        ...(localAudioReadyIds.has(entry.sourceId) ? { localAudioReady: true as const } : {}) };
     });
-  }, [list.items, list.previews, moments, onPhoneNotes, currentHandoff.lingering, localAudioIds]);
+  }, [list.items, list.previews, moments, onPhoneNotes, currentHandoff.lingering, localAudioIds, localAudioReadyIds]);
 
   // The open note by its id; a stand-in's sheet stays open when its row replaces it.
   const item = useMemo(() => {
@@ -308,12 +310,21 @@ export function useLibrary(
     if (!options.visible) return;
     if (!nativeVoiceNotesAvailable()) {
       setLocalAudioIds(new Set());
+      setLocalAudioReadyIds(new Set());
       return;
     }
     let live = true;
     void VoiceNotes.listPending().then(({ recordings }) => {
-      if (live) setLocalAudioIds(new Set(recordings.filter((note) => note.owner === tcw.did).map((note) => note.id)));
-    }, () => { if (live) setLocalAudioIds(new Set()); });
+      if (!live) return;
+      const owned = recordings.filter((note) => note.owner === tcw.did);
+      setLocalAudioIds(new Set(owned.map((note) => note.id)));
+      // Ready is the native ledger's word; a sidecar file alone does not prove the audio plays.
+      setLocalAudioReadyIds(new Set(owned.filter((note) => note.ledger?.localAudio?.state === "ready").map((note) => note.id)));
+    }, () => {
+      if (!live) return;
+      setLocalAudioIds(new Set());
+      setLocalAudioReadyIds(new Set());
+    });
     return () => { live = false; };
   }, [options.visible, tcw.did, invalidationRevision, onPhoneNotes]);
   const lastOpened = useRef<string | null>(null);

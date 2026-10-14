@@ -103,7 +103,10 @@ export function trackStorageWrites<T extends object>(database: T): T {
   return tracked;
 }
 export function reportStorageError(error: unknown): void {
-  if (!isStorageFullError(error) || readOnly) return;
+  if (!isStorageFullError(error)) return;
+  storageFullReports++;
+  recoveryPending = true;
+  if (readOnly) return;
   readOnly = true;
   for (const listener of listeners) listener();
   emitStoragePaywallError(
@@ -113,28 +116,48 @@ export function reportStorageError(error: unknown): void {
 }
 
 let writableEdges = 0;
-/** Depth of recovery passes. Their own successful writes restore storage without counting as an external edge. */
-let recoveryPassDepth = 0;
-const writableEdgeListeners = new Set<() => void>();
+/**
+ * Storage-full work waits for a recovery pass. Every storage-full report sets it, independent of the `readOnly`
+ * UI latch, so a success that clears the latch does not drop the work. Only a completed pass with no new
+ * storage-full report clears it.
+ */
+let recoveryPending = false;
+/** Storage-full reports so far. A pass compares this before and after to see whether storage stayed full. */
+let storageFullReports = 0;
+/** Recovery passes in flight (held-work probe or full pass). A successful write while any is running does not wake another. */
+let recoveryPassesInFlight = 0;
+const recoveryWakeListeners = new Set<() => void>();
 
 export function reportStorageWriteSucceeded(): void {
-  if (!readOnly) return;
-  readOnly = false;
-  writableEdges++;
-  for (const listener of listeners) listener();
-  if (recoveryPassDepth === 0) for (const listener of writableEdgeListeners) listener();
+  if (readOnly) {
+    readOnly = false;
+    writableEdges++;
+    for (const listener of listeners) listener();
+  }
+  if (recoveryPending && recoveryPassesInFlight === 0) for (const listener of recoveryWakeListeners) listener();
 }
 
-/** Runs work whose own successful writes must not count as an external writable edge, so it cannot re-trigger itself. */
-export async function runOwnStorageWrites<T>(pass: () => Promise<T>): Promise<T> {
-  recoveryPassDepth++;
-  try { return await pass(); } finally { recoveryPassDepth--; }
+/**
+ * Full recovery pass: held work, then reconcile. Pending clears only when the pass completes with no storage-full
+ * report, so a pass that re-hits quota leaves it set for the next write.
+ */
+export async function runStorageRecoveryPass<T>(pass: () => Promise<T>): Promise<T> {
+  const reportsBefore = storageFullReports;
+  recoveryPassesInFlight++;
+  let result: T;
+  try {
+    result = await pass();
+  } finally {
+    recoveryPassesInFlight--;
+  }
+  if (recoveryPassesInFlight === 0 && storageFullReports === reportsBefore) recoveryPending = false;
+  return result;
 }
 
-/** Fires on a full→writable edge caused by a write outside a recovery pass (for example a recording save). Returns the unsubscribe. */
-export function subscribeStorageWritableEdge(listener: () => void): () => void {
-  writableEdgeListeners.add(listener);
-  return () => { writableEdgeListeners.delete(listener); };
+/** Fires on a successful write while storage-full work is pending and no recovery pass is running. Returns the unsubscribe. */
+export function subscribeStorageRecoveryWake(listener: () => void): () => void {
+  recoveryWakeListeners.add(listener);
+  return () => { recoveryWakeListeners.delete(listener); };
 }
 
 /** Count of full→writable edges. An attempt that began before an edge can compare to see whether storage recovered mid-flight. */
@@ -159,10 +182,15 @@ export function registerStorageRecoveryWork(work: () => Promise<void>): () => vo
   return () => { storageRecoveryWork.delete(work); };
 }
 
-/** One foreground pass: each registered item probes once. A failing item stays held and logs. */
+/** Probes each registered held item once. A failing item stays held and logs. Does not clear pending on its own. */
 export async function runStorageRecoveryWork(): Promise<void> {
-  await runOwnStorageWrites(() => Promise.all([...storageRecoveryWork].map((work) =>
-    work().catch((error: unknown) => console.warn("[Storage] Could not retry held work", error)))));
+  recoveryPassesInFlight++;
+  try {
+    await Promise.all([...storageRecoveryWork].map((work) =>
+      work().catch((error: unknown) => console.warn("[Storage] Could not retry held work", error))));
+  } finally {
+    recoveryPassesInFlight--;
+  }
 }
 
 /** Records the signed-in plan from billing status. `null` (unknown) is never treated as Free. */

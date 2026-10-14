@@ -13,7 +13,7 @@ import { VoiceNotes, type LocalTranscript, type NoteSttState, type VoiceNoteReco
 import { readTranscriptCommit } from "./voiceNoteCommits";
 import { withVoiceNoteSaveDeadline } from "./saveDeadline";
 import { LOCAL_COPY } from "./notePipelineCopy";
-import { isStorageFullError, registerStorageRecoveryWork, storageWritableEdgeCount, STORAGE_FULL_TRANSCRIPT_LINE } from "@/lib/storageStatus";
+import { isStorageFullError, registerStorageRecoveryWork, reportStorageError, storageWritableEdgeCount, STORAGE_FULL_TRANSCRIPT_LINE } from "@/lib/storageStatus";
 import { assertAccountContext, captureAccountContext, isAccountContextCurrent, isAccountWorkAllowed, StaleAccountContext, type AccountContext } from "./accountContext";
 
 /** One note's local transcript -> space write: running, written, or why it did not land (the local transcript stays valid). */
@@ -292,14 +292,14 @@ async function syncOnce(tcw: TinyCloudWeb, key: string, id: string, expected: bo
     if (result.ok) {
       return await recordAndPublish(tcw, key, id, transcript, ctx);
     }
-    if (isStorageFullError(result.error)) { holdForStorage(tcw, key, id, ctx); return false; }
+    if (isStorageFullError(result.error)) { reportStorageError(result.error); holdForStorage(tcw, key, id, ctx); return false; }
     console.warn("[OnDeviceStt] Could not save the on-device transcript to the space", result.error);
     publish(key, { state: "failed", message: LOCAL_COPY.transcriptSyncFailed });
     await persistOnDeviceFailure(tcw, id, result.error.code === "VOICE_NOTE_OPERATION_TIMEOUT" ? "transcript_save_timed_out" : "transcript_save_failed", ctx);
     return false;
   } catch (err) {
     if (!isCurrent(tcw, ctx) || err instanceof StaleAccountContext) return true;
-    if (isStorageFullError(err)) { holdForStorage(tcw, key, id, ctx); return false; }
+    if (isStorageFullError(err)) { reportStorageError(err); holdForStorage(tcw, key, id, ctx); return false; }
     console.warn("[OnDeviceStt] Could not save the on-device transcript to the space", err);
     publish(key, { state: "failed", message: LOCAL_COPY.transcriptSyncFailed });
     await persistOnDeviceFailure(tcw, id, "transcript_save_failed", ctx);

@@ -23,7 +23,7 @@ import { isTinyCloudNetworkFailure, logVoiceNoteError, pendingSaveMessage, pendi
 import { advanceAccountGeneration, captureAccountContext, currentAccountGeneration, isAccountContextCurrent, mountVoiceNoteAccount } from "@/lib/voiceNotes/accountContext";
 import { saveDeferredForAccountTransition, type VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
 import { recheckVoiceNoteAvailabilityAutomatically, transcribeSavedNote, voiceNoteTranscriberFor } from "@/lib/voiceNotes/voiceNoteTranscription";
-import { runOwnStorageWrites, runStorageRecoveryWork, subscribeStorageWritableEdge } from "@/lib/storageStatus";
+import { runStorageRecoveryPass, runStorageRecoveryWork, subscribeStorageRecoveryWake } from "@/lib/storageStatus";
 
 let recovery: (() => Promise<void>) | null = null;
 /** Keep the mounted saver available to renewal without remounting the view. */
@@ -132,50 +132,59 @@ export function PendingVoiceNotesSaver({
     let runInFlight: Promise<void> | null = null;
     let dirty = false;
     let disposed = false;
-    let recovery: Promise<void> | null = null;
     let appStateHandle: { remove(): Promise<void> } | undefined;
+    // Held storage work keeps its own single-flight, so a long audio reconcile cannot delay it.
+    let heldRecovery: Promise<void> | null = null;
+    const recoverHeld = (): Promise<void> => {
+      heldRecovery ??= runStorageRecoveryWork().finally(() => { heldRecovery = null; });
+      return heldRecovery;
+    };
+    // The full pass services held work before reconciling audio and refreshing.
+    const pass = async (): Promise<void> => {
+      const generation = currentAccountGeneration();
+      const account = pendingStore.forAccount(did);
+      try {
+        await runStorageRecoveryPass(async () => {
+          await recoverHeld();
+          await pipeline.reconcileAll({ did, spaceId, generation }, "reconcile", (note) => {
+            if (transcriber) transcribeSavedNote(transcriber, note, () => generation === currentAccountGeneration());
+          });
+          await account.refresh(null);
+        });
+      } catch (error) {
+        if (saveDeferredForAccountTransition(error)) return;
+        const message = pendingSaveMessage(error);
+        // Network errors are already logged by messageOf through the redacting formatter.
+        if (!isTinyCloudNetworkFailure(error)) logVoiceNoteError("Saving pending notes failed", error);
+        account.reportError(message);
+      }
+    };
+    // Single-flight. A foreground entry that lands mid-pass marks one follow-up pass.
     const run = (): Promise<void> => {
       if (runInFlight) {
         dirty = true;
         return runInFlight;
       }
-      const runOnce = async () => {
-        const generation = currentAccountGeneration();
-        const account = pendingStore.forAccount(did);
-        try {
-          await runOwnStorageWrites(() => pipeline.reconcileAll({ did, spaceId, generation }, "reconcile", (note) => {
-            if (transcriber) transcribeSavedNote(transcriber, note, () => generation === currentAccountGeneration());
-          }));
-          await account.refresh(null);
-        } catch (error) {
-          if (saveDeferredForAccountTransition(error)) return;
-          const message = pendingSaveMessage(error);
-          // Network errors are already logged by messageOf through the redacting formatter.
-          if (!isTinyCloudNetworkFailure(error)) logVoiceNoteError("Saving pending notes failed", error);
-          account.reportError(message);
-        }
-      };
       runInFlight = (async () => {
         do {
           dirty = false;
-          await runOnce();
+          await pass();
         } while (dirty && !disposed);
       })().finally(() => { runInFlight = null; });
       return runInFlight;
     };
-    // Held storage work runs on its own single-flight pass, so a long audio reconcile cannot delay it.
-    // Every foreground entry (mount, renewal, online, visible, focus, native app-active) comes through here.
-    const recoverHeld = (): Promise<void> => {
-      recovery ??= runStorageRecoveryWork().finally(() => { recovery = null; });
-      return recovery;
-    };
     const foreground = (): Promise<void> => {
-      void recoverHeld();
+      // A new foreground event during a parked reconcile services held work immediately;
+      // otherwise the full pass itself owns the probe so quota stays inside its accounting.
+      if (runInFlight) void recoverHeld();
       return run();
     };
     const unregister = registerPendingVoiceNotesRecovery(foreground);
-    // A successful write from outside a recovery pass means storage has room again: resume held work once.
-    const unsubscribeWritable = subscribeStorageWritableEdge(() => void foreground());
+    // A successful write outside any pass starts one full recovery pass.
+    // Writes during a pass do not mark it dirty or replay audio probes.
+    const unsubscribeWake = subscribeStorageRecoveryWake(() => {
+      if (!runInFlight) void run();
+    });
     if (transcriber) void recheckVoiceNoteAvailabilityAutomatically(transcriber, isAccountCurrent);
     void foreground();
     const onOnline = () => {
@@ -214,7 +223,7 @@ export function PendingVoiceNotesSaver({
       documentTarget?.removeEventListener("visibilitychange", onVisible);
       windowTarget?.removeEventListener("focus", onFocus);
       if (appStateHandle) void appStateHandle.remove();
-      unsubscribeWritable();
+      unsubscribeWake();
       unregister(); unmountAccount(); pipeline.cancelAll(); pendingStore.setAccount(null);
     };
   }, [backendUrl, pipeline, sessionStore, tcw]);
