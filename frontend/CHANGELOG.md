@@ -1,5 +1,14 @@
 # @tinychat/frontend
 
+## 0.7.4
+
+### Patch Changes
+
+- 7a024fb: Persist optional PTX quiet-mode VAD diagnostics with voice-note transcription outcomes.
+- ada6d55: Keep calendar autojoin enabled when reconnecting the same Google account and explain why it is off in connector settings and Meeting sources.
+- 42fbd33: Keep a shared Google grant when another live calendar autojoin account still uses it, while removing the disconnecting account's local credentials. Explain that Google access can be revoked from another TinyChat account or Google settings.
+- c745b4d: Keep completed Private transcription results until the shared transcript commit is verified; keep device-local save and admission failures out of shared failure metadata.
+
 ## 0.7.4-beta.4
 
 ### Patch Changes
