@@ -6,6 +6,7 @@ import {
   assemblyAiSentences,
   createHostedAssemblyAiClient,
   pollAssemblyAiTranscript,
+  type AssemblyAiTranscript,
 } from "../assemblyai";
 import { base64ToBytes } from "./voiceNoteAudio";
 import { currentAccountGeneration, isAccountWorkAllowed } from "./accountContext";
@@ -69,7 +70,7 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
   services: { client?: ReturnType<typeof createHostedAssemblyAiClient>; native?: VoiceNotesPlugin; clock?: CloudClock;
     readCommit?: typeof readTranscriptCommit; createRow?: typeof createVoiceNoteRow;
     save?: typeof saveVoiceNoteTranscript; readNote?: typeof readVoiceNoteForTranscription;
-    loadAudio?: typeof loadVoiceNoteAudio; sleep?: typeof pause; reconciliationDelayMs?: number } = {}) {
+    loadAudio?: typeof loadVoiceNoteAudio; sleep?: (ms: number) => Promise<void>; reconciliationDelayMs?: number } = {}) {
   const client = services.client ?? createHostedAssemblyAiClient({ backendUrl, sessionStore });
   const native = services.native ?? VoiceNotes;
   const readCommit = services.readCommit ?? readTranscriptCommit;
@@ -219,7 +220,6 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
       });
       if (!handle) throw new Error("Powerful did not return a transcript. Try again.");
       persist(id, { handle });
-      let transcript: AssemblyAiTranscript;
       for (;;) {
         guard();
         // Both the local resume entry and the space commit may have changed while
@@ -349,7 +349,7 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
               }
             }
           }
-          return handle;
+          break;
         } catch (error) {
           // Keep a submitted handle immutable. A failed upload can be claimed
           // again with a conditional write and resumed from its upload ID.
@@ -361,7 +361,7 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
           }
           throw error;
         } finally { clearInterval(heartbeat); }
-      });
+      }
       if (!handle) return;
       persist(id, { handle });
       const transcript = await pollAssemblyAiTranscript(client, handle, {
@@ -392,7 +392,7 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
           ...(s.channel === undefined ? {} : { channel: s.channel }),
           ...(s.timing === undefined ? {} : { timing: s.timing }) })) };
       state(id, { kind: "saving" });
-      if (recording.sizeBytes > 0 && (!local.transcript || local.transcript.rev < rev)) await native.putTranscript({ id, transcript: prepared });
+      if (recording.sizeBytes > 0 && (local.transcript?.rev ?? 0) < rev) await native.putTranscript({ id, transcript: prepared });
       guard();
       const saved = await save(account, id, { rev, sentences,
         speakers: [...new Set(sentences.map((s) => s.speaker_name).filter((s): s is string => !!s))],
