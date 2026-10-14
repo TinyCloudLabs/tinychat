@@ -6,6 +6,7 @@ import { VoiceNotes, __setVoiceNotesForTests, type LocalTranscript, type VoiceNo
 import { setVoiceNoteSaveDeadlineForTests } from "./saveDeadline";
 import { advanceAccountGeneration } from "./accountContext";
 import { resetSpaceLaneForTests, runOnSpaceLane } from "../spaceWriteLane";
+import { reportStorageError, reportStorageWriteSucceeded } from "@/lib/storageStatus";
 const realCommits = { ...(await import("./voiceNoteCommits")) };
 let spaceCommitPresent = true;
 mock.module("./voiceNoteCommits", () => ({ ...realCommits,
@@ -109,6 +110,29 @@ describe("syncOnDeviceTranscript publishes the result", () => {
     save = async () => ({ ok: false, error: { code: "SQL", message: "offline" } });
     await syncOnDeviceTranscript(tcw, { ...SAVED, owner: tcw.did, stt: { state: "done" } });
     expect(failures).toEqual(["on_device_transcript_missing", "transcript_read_failed", "transcript_save_failed"]);
+  });
+  test("a storage-full transcript save is held: no failure is recorded, and it re-syncs once storage writes succeed", async () => {
+    const tcw = account();
+    let saves = 0;
+    save = async () => {
+      saves++;
+      return saves === 1
+        ? { ok: false, error: { code: "STORAGE_QUOTA_EXCEEDED", message: "Your TinyCloud storage is full" } }
+        : { ok: true, data: {} };
+    };
+    await syncOnDeviceTranscript(tcw, { ...SAVED, owner: tcw.did, stt: { state: "done" } });
+    expect(failures).toEqual([]);
+    expect(onDeviceTranscriptSyncState(tcw, "rec-1")?.state).toBe("held");
+    const synced = Promise.withResolvers<void>();
+    const unsubscribe = subscribeOnDeviceTranscriptSync(() => {
+      if (onDeviceTranscriptSyncState(tcw, "rec-1")?.state === "synced") synced.resolve();
+    });
+    reportStorageError({ code: "STORAGE_QUOTA_EXCEEDED", message: "full" });
+    reportStorageWriteSucceeded();
+    await synced.promise;
+    unsubscribe();
+    expect(saves).toBe(2);
+    expect(failures).toEqual([]);
   });
   test("audio-first and transcript-first completion retain both ledger results", async () => {
     for (const audioFirst of [false, true]) {

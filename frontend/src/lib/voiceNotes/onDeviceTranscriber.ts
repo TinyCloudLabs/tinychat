@@ -13,6 +13,7 @@ import { VoiceNotes, type LocalTranscript, type NoteSttState, type VoiceNoteReco
 import { readTranscriptCommit } from "./voiceNoteCommits";
 import { withVoiceNoteSaveDeadline } from "./saveDeadline";
 import { LOCAL_COPY } from "./notePipelineCopy";
+import { isStorageFullError, isStorageReadOnly, subscribeStorageReadOnly } from "@/lib/storageStatus";
 import { assertAccountContext, captureAccountContext, isAccountContextCurrent, isAccountWorkAllowed, StaleAccountContext, type AccountContext } from "./accountContext";
 
 /** One note's local transcript -> space write: running, written, or why it did not land (the local transcript stays valid). */
@@ -21,7 +22,9 @@ export type OnDeviceTranscriptSyncState =
   | { state: "synced" }
   | { state: "failed"; message: string }
   /** The transcript is in the space, but this phone's ledger could not be told (`message` is the cause). */
-  | { state: "unrecorded"; message: string };
+  | { state: "unrecorded"; message: string }
+  /** Storage is full: the transcript is held and re-syncs once storage writes succeed. Not a failure. */
+  | { state: "held"; message: string };
 
 const syncStates = new Map<string, OnDeviceTranscriptSyncState>();
 /** The tail of each note's sync chain: attempts for one note run one after another. */
@@ -73,14 +76,37 @@ export function syncOnDeviceTranscript(
   requestedAccount: AccountContext = captureAccountContext(tcw),
 ): Promise<boolean> {
   if (recording.ledger?.audio.state !== "saved" && !recording.ledger?.audio.rowId) return Promise.resolve(false);
-  const key = syncKey(tcw, recording.id);
-  const expected = recording.stt?.state === "done";
-  const failed = recording.stt?.state === "failed";
+  return runSync(tcw, recording.id, recording.stt?.state === "done", recording.stt?.state === "failed", requestedAccount);
+}
+
+// A storage-full refusal is not a failure: nothing is recorded as failed, and the note retries once a space write succeeds again.
+const storageHeld = new Map<string, { tcw: TinyCloudWeb; id: string; ctx: AccountContext }>();
+let storageRecoveryWired = false;
+
+function runSync(tcw: TinyCloudWeb, id: string, expected: boolean, failed: boolean, ctx: AccountContext): Promise<boolean> {
+  const key = syncKey(tcw, id);
   return enqueue(key, async () => {
-    const abandoned = await syncOnce(tcw, key, recording.id, expected, failed, requestedAccount);
-    if (abandoned) abandonSync(key, recording.id, tcw);
+    const abandoned = await syncOnce(tcw, key, id, expected, failed, ctx);
+    if (abandoned) abandonSync(key, id, tcw);
     return abandoned;
   });
+}
+
+function holdForStorage(tcw: TinyCloudWeb, key: string, id: string, ctx: AccountContext): void {
+  publish(key, { state: "held", message: LOCAL_COPY.transcriptStorageFull });
+  storageHeld.set(key, { tcw, id, ctx });
+  if (storageRecoveryWired) return;
+  storageRecoveryWired = true;
+  subscribeStorageReadOnly(retryStorageHeld);
+}
+
+function retryStorageHeld(): void {
+  if (isStorageReadOnly()) return;
+  for (const [key, held] of storageHeld) {
+    storageHeld.delete(key);
+    runSync(held.tcw, held.id, true, false, held.ctx).catch((err) =>
+      console.warn("[OnDeviceStt] Could not retry the transcript after storage recovered", err));
+  }
 }
 
 function enqueue<T>(key: string, attempt: () => Promise<T>): Promise<T> {
@@ -243,12 +269,14 @@ async function syncOnce(tcw: TinyCloudWeb, key: string, id: string, expected: bo
     if (result.ok) {
       return await recordAndPublish(tcw, key, id, transcript, ctx);
     }
+    if (isStorageFullError(result.error)) { holdForStorage(tcw, key, id, ctx); return false; }
     console.warn("[OnDeviceStt] Could not save the on-device transcript to the space", result.error);
     publish(key, { state: "failed", message: LOCAL_COPY.transcriptSyncFailed });
     await persistOnDeviceFailure(tcw, id, "transcript_save_failed", ctx);
     return false;
   } catch (err) {
     if (!isCurrent(tcw, ctx) || err instanceof StaleAccountContext) return true;
+    if (isStorageFullError(err)) { holdForStorage(tcw, key, id, ctx); return false; }
     console.warn("[OnDeviceStt] Could not save the on-device transcript to the space", err);
     publish(key, { state: "failed", message: LOCAL_COPY.transcriptSyncFailed });
     await persistOnDeviceFailure(tcw, id, "transcript_save_failed", ctx);

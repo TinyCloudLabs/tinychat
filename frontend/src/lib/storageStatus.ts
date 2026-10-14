@@ -23,35 +23,46 @@ const STORAGE_CODES: Record<string, true> = {
   STORAGE_QUOTA_EXCEEDED: true,
   STORAGE_LIMIT_REACHED: true,
 };
-const STORAGE_TEXT = /storage quota exceeded|write exceeds remaining storage|storage is full/i;
-const TOO_LARGE_TEXT = /write exceeds remaining storage/i;
+const STORAGE_TEXT = /STORAGE_QUOTA_EXCEEDED|STORAGE_LIMIT_REACHED|storage quota exceeded|write exceeds remaining storage|storage is full/i;
+const TOO_LARGE_TEXT = /STORAGE_LIMIT_REACHED|write exceeds remaining storage/i;
 let readOnly = false;
 const planListeners = new Set<() => void>();
 let freePlan = false;
 const listeners = new Set<() => void>();
 
-function parts(error: unknown): { code?: unknown; message?: unknown } {
-  if (typeof error === "string") return { message: error };
-  if (!error || typeof error !== "object") return {};
-  const value = error as { code?: unknown; message?: unknown; cause?: unknown };
-  const cause = value.cause && typeof value.cause === "object"
-    ? value.cause as { code?: unknown; message?: unknown }
-    : {};
-  return { code: value.code ?? cause.code, message: value.message ?? cause.message };
+const MAX_CAUSE_DEPTH = 4;
+
+/** The error and its causes, outermost first. A string is its own message. */
+function errorParts(error: unknown): { code?: unknown; message?: unknown }[] {
+  const parts: { code?: unknown; message?: unknown }[] = [];
+  let current: unknown = error;
+  while (current != null && parts.length < MAX_CAUSE_DEPTH) {
+    if (typeof current === "string") {
+      parts.push({ message: current });
+      break;
+    }
+    if (typeof current !== "object") break;
+    const value = current as { code?: unknown; message?: unknown; cause?: unknown };
+    parts.push({ code: value.code, message: value.message });
+    current = value.cause;
+  }
+  return parts;
 }
 
 export function isStorageFullError(error: unknown): boolean {
-  const { code, message } = parts(error);
-  return (typeof code === "string" && STORAGE_CODES[code] === true) ||
-    (typeof message === "string" && STORAGE_TEXT.test(message));
+  return errorParts(error).some((part) =>
+    (typeof part.code === "string" && STORAGE_CODES[part.code] === true) ||
+    (typeof part.message === "string" && STORAGE_TEXT.test(part.message)));
+}
+
+function isTooLargeError(error: unknown): boolean {
+  return errorParts(error).some((part) =>
+    part.code === "STORAGE_LIMIT_REACHED" || (typeof part.message === "string" && TOO_LARGE_TEXT.test(part.message)));
 }
 
 export function storageSaveMessage(error: unknown): string | null {
   if (!isStorageFullError(error)) return null;
-  const { code, message } = parts(error);
-  return code === "STORAGE_LIMIT_REACHED" || (typeof message === "string" && TOO_LARGE_TEXT.test(message))
-    ? STORAGE_TOO_LARGE_SAVE_MESSAGE
-    : STORAGE_FULL_SAVE_MESSAGE;
+  return isTooLargeError(error) ? STORAGE_TOO_LARGE_SAVE_MESSAGE : STORAGE_FULL_SAVE_MESSAGE;
 }
 
 
@@ -86,12 +97,9 @@ export function reportStorageError(error: unknown): void {
   if (!isStorageFullError(error) || readOnly) return;
   readOnly = true;
   for (const listener of listeners) listener();
-  const { code, message } = parts(error);
   emitStoragePaywallError(
     storageSaveMessage(error) ?? STORAGE_FULL_SAVE_MESSAGE,
-    code === "STORAGE_LIMIT_REACHED" || (typeof message === "string" && TOO_LARGE_TEXT.test(message))
-      ? "STORAGE_LIMIT_REACHED"
-      : "STORAGE_QUOTA_EXCEEDED",
+    isTooLargeError(error) ? "STORAGE_LIMIT_REACHED" : "STORAGE_QUOTA_EXCEEDED",
   );
 }
 

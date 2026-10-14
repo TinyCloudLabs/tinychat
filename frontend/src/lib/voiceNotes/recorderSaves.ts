@@ -30,7 +30,7 @@ import { logPipeline, logPipelineError } from "@/lib/debugLog";
 import { putPendingSaveState, readPendingSaveStates } from "./pendingSaveState";
 import { captureEvents } from "@/capture/captureEvents";
 import { appPlatform, deviceName } from "@/lib/platform";
-import { STORAGE_FULL_RECORDING_LINE } from "@/lib/storageStatus";
+import { STORAGE_FULL_RECORDING_LINE, isStorageFullError } from "@/lib/storageStatus";
 
 export const TINYCLOUD_NETWORK_FAILURE_MESSAGE =
   `Couldn't reach your TinyCloud space. This note is safe on ${deviceName()} — try again.`;
@@ -597,7 +597,7 @@ export function classifyNoteFailure(error: unknown): NoteFailure["kind"] {
   const statuses = chain.map(failureStatus);
   if (codes.some((code) => code === "VOICE_NOTE_SOURCE_READ_FAILED" || code === "VOICE_NOTE_AUDIO_TOO_LARGE"
     || code === "STORE_CORRUPT_AUDIO" || code === "VOICE_NOTE_AUDIO_CORRUPT")) return "source";
-  if (codes.some((code) => code === "STORAGE_QUOTA_EXCEEDED" || code === "STORAGE_LIMIT_REACHED" || /quota/i.test(code))) return "quota";
+  if (chain.some(isStorageFullError) || codes.some((code) => code === "STORAGE_QUOTA_EXCEEDED" || code === "STORAGE_LIMIT_REACHED" || /quota/i.test(code))) return "quota";
   if (statuses.some((status) => status === 401 || status === 403)
     || codes.some((code) => /AUTH|UNAUTHENTICATED|UNAUTHORIZED|FORBIDDEN|CAPABILITY/.test(code))) return "auth";
   if (statuses.some((status) => status !== undefined && status >= 500)

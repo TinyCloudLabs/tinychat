@@ -30,7 +30,7 @@ import { readableError } from "@/lib/readableError";
 
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { captureEvents } from "@/capture/captureEvents";
-import { isStorageFullError, isStorageReadOnly, reportStorageError } from "@/lib/storageStatus";
+import { isStorageFullError, reportStorageError } from "@/lib/storageStatus";
 
 import {
   AUDIO_CORRUPT,
@@ -418,8 +418,10 @@ export async function saveVoiceNote(
     const emptyKey = transcriptKvKey(VOICE_NOTE_SOURCE, recording.id);
     const empty = await runOnSpaceLane((signal) => { opts.checkpoint?.(); return tcw.kv.put(emptyKey, "[]",
       { ifNoneMatch: "*", contentType: "application/json", signal }); }, { operation: `KV put ${emptyKey}` });
-    if (!empty.ok && !/PRECONDITION|412/i.test(`${empty.error.code} ${empty.error.message}`))
+    if (!empty.ok && !/PRECONDITION|412/i.test(`${empty.error.code} ${empty.error.message}`)) {
+      reportStorageError(empty.error);
       return { ok: false, error: { code: empty.error.code ?? "STORE_ERROR", message: empty.error.message, cause: empty.error } };
+    }
     logPipeline("space_write", recording.id, "done", { destination: "legacy_transcript_key", bodyBytes: 2 });
     opts.checkpoint?.();
     if (!uploadAudio) {
@@ -432,22 +434,9 @@ export async function saveVoiceNote(
         opts.checkpoint?.();
         noteSyncError = "sync_failed";
         logPipelineError("[VoiceNotes] Local-only note's Markdown did not sync", caught);
+        reportStorageError(caught);
       }
       return { ok: true, data: { id: row.id, inserted: row.inserted, createdAt: row.createdAt, noteSyncError } };
-    }
-    // While TinyCloud storage is full the audio put is not attempted: no retries, no Save-now loop.
-    // The note text still saves; the device audio stays on the phone.
-    if (isStorageReadOnly()) {
-      let noteSyncError: NoteSyncErrorCode | undefined;
-      try {
-        await syncRecordingNote(tcw, recording.id, opts.checkpoint, row);
-        logPipeline("space_write", recording.id, "done", { destination: "note_markdown" });
-      } catch (caught) {
-        opts.checkpoint?.();
-        noteSyncError = "sync_failed";
-        logPipelineError("markdown_space_write", caught, recording.id);
-      }
-      return { ok: false, error: { code: VOICE_NOTE_STORAGE_FULL, message: "saveVoiceNote(audio): your TinyCloud storage is full", cause: noteSyncError } };
     }
     // With uploadAudio=true, run text writes (note sync) in parallel with audio upload.
     const text = (async () => {
@@ -459,6 +448,7 @@ export async function saveVoiceNote(
         opts.checkpoint?.();
         noteSyncError = "sync_failed";
         logPipelineError("markdown_space_write", caught, recording.id);
+        reportStorageError(caught);
       }
       return noteSyncError;
     })().then((noteSyncError) => ({ noteSyncError }), (error: unknown) => ({ error }));
@@ -474,6 +464,7 @@ export async function saveVoiceNote(
     if (!audio.ok) {
       await text;
       logPipelineError("audio_upload", audio.error, recording.id);
+      reportStorageError(audio.error);
       return audio;
     }
     logPipeline("audio_upload", recording.id, "done", { bodyBytes: audio.data.size });
@@ -489,6 +480,7 @@ export async function saveVoiceNote(
     return { ok: true, data: { id: row.id, inserted: row.inserted, createdAt: row.createdAt, noteSyncError } };
   } catch (caught) {
     logPipelineError("save", caught, recording.id);
+    reportStorageError(caught);
     return { ok: false, error: { code: (caught as { code?: string }).code ?? "STORE_ERROR",
       message: readableError(caught), cause: caught } };
   }
@@ -627,10 +619,12 @@ export async function saveVoiceNoteTranscript(
   } catch (caught) {
     if (caught instanceof StaleAccountContext) throw caught;
     logPipelineError("transcript_persist", caught, sourceId);
+    reportStorageError(caught);
     return { ok: false, error: { code: (caught as { code?: string }).code ?? "STORE_ERROR",
       message: readableError(caught) } };
   }
   if (!existing.ok) {
+    reportStorageError(existing.error);
     return { ok: false, error: { code: existing.error.code ?? "STORE_ERROR", message: `saveVoiceNoteTranscript: ${existing.error.message}` } };
   }
   if (existing.data.rows.length === 0) {
@@ -665,6 +659,7 @@ export async function saveVoiceNoteTranscript(
   } catch (caught) {
     if (caught instanceof StaleAccountContext) throw caught;
     logPipelineError("transcript_persist", caught, sourceId);
+    reportStorageError(caught);
     return { ok: false, error: { code: (caught as { code?: string }).code ?? "STORE_ERROR",
       message: readableError(caught) } };
   }

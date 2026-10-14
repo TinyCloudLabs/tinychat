@@ -684,3 +684,14 @@ describe("discard guard", () => {
     expect(saveCalls).toBe(0);
   });
 });
+
+describe("storage-full failure classification", () => {
+  test.each<[string, unknown]>([
+    ["code on the error", { code: "STORAGE_QUOTA_EXCEEDED", message: "full" }],
+    ["message-only error with the code", new Error("STORAGE_QUOTA_EXCEEDED: full")],
+    ["message-only error with the phrase", new Error("storage quota exceeded")],
+    ["wrapped too-large message", new Error("save failed", { cause: new Error("write exceeds remaining storage") })],
+  ])("%s classifies as quota", (_label, error) => {
+    expect(saves.classifyNoteFailure(error)).toBe("quota");
+  });
+});

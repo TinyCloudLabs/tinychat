@@ -14,6 +14,8 @@ import {
   deviceName,
   percentText,
 } from "./notePipelineCopy";
+import { TRANSCRIPT_STORAGE_FULL_CODE } from "./transcriptionErrors";
+import { STORAGE_FULL_RECORDING_LINE } from "@/lib/storageStatus";
 
 export type PipelineDevice = "phone" | "mac" | "iphone" | "android" | "browser";
 export type PipelineRoute = "off" | "on-device" | "private-cloud";
@@ -60,7 +62,7 @@ export type PipelineModelState = "absent" | "queued" | "downloading" | "verifyin
 export type PipelineDownloadState = "idle" | "running" | "waiting_for_network" | "low_data_mode" | "failed";
 
 /** `OnDeviceTranscriptSyncState` (P2): the local transcript's write onto the space row. */
-export type PipelineTranscriptSync = { state: "syncing" } | { state: "synced" } | { state: "failed"; message: string } | { state: "unrecorded"; message: string };
+export type PipelineTranscriptSync = { state: "syncing" } | { state: "synced" } | { state: "failed"; message: string } | { state: "unrecorded"; message: string } | { state: "held"; message: string };
 
 export interface PipelineOnDevice {
   /** This note's native queue job; null when native has no job for it. */
@@ -296,6 +298,7 @@ function modelStep(od: PipelineOnDevice, device: PipelineDevice): Result | null 
 function onDeviceStep(input: NotePipelineInput, od: PipelineOnDevice): Result {
   const saved = input.space.saved;
   const { sync, stt, queue } = od;
+  if (sync?.state === "held") return blocked(LOCAL_COPY.transcriptStorageFull, "manage-storage");
   if (sync?.state === "failed") return failed(LOCAL_COPY.syncFailed(), "retry");
   if (sync?.state === "syncing") return { state: "active", caption: LOCAL_COPY.adding };
   if (sync?.state === "synced" || sync?.state === "unrecorded") return { state: "done" };
@@ -337,6 +340,7 @@ function cloudStep(cloud: PipelineCloud | null, spaceSaved: boolean, checkingCap
     case "done": return { state: "done", sublabel: cloud.outcome === "no_speech" ? TRANSCRIPT_COPY.noSpeechInSpace : TRANSCRIPT_COPY.savedInSpace };
     case "held": return blocked(cloud.message.trim() || PRIVATE_COPY.notStarted);
     case "failed":
+      if (cloud.code === TRANSCRIPT_STORAGE_FULL_CODE) return blocked(STORAGE_FULL_RECORDING_LINE, "manage-storage");
       return failed(PRIVATE_COPY.failed(cloud.code, provider), cloud.retryable ? "retry" : undefined, cloud.retryable);
     case "blocked": return cloudBlockedStep(cloud.reason, provider);
     case "active": {

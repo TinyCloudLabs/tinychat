@@ -1,5 +1,6 @@
 import { readableError } from "@/lib/readableError";
 import { readUploadAudioPreference, setUploadAudioPreference } from "@/lib/voiceNotes/transcriberPreference";
+import { useStorageReadOnly } from "@/lib/useStorageReadOnly";
 import { InfoTip } from "@/components/ui/info-tip";
 import {
   useCallback,
@@ -308,6 +309,8 @@ function ModelSection({
   );
 }
 
+const UPLOAD_PAUSED = "Paused: storage full";
+
 function Switch({
   label,
   description,
@@ -315,6 +318,7 @@ function Switch({
   pending,
   error,
   testId,
+  notice,
   onToggle,
 }: {
   label: string;
@@ -323,6 +327,7 @@ function Switch({
   pending: boolean;
   error: string | null;
   testId: string;
+  notice?: string | null;
   onToggle: (on: boolean) => void;
 }) {
   const id = useId();
@@ -345,6 +350,7 @@ function Switch({
       <div>
         <b id={`${id}-l`}>{label}</b>
         <span id={`${id}-d`}>{description}</span>
+        {notice && <p role="status">{notice}</p>}
         {error && (
           <p className="cs-error" role="alert">
             {error}
@@ -368,6 +374,7 @@ export function SettingsPanel({
   onGetModel,
   onToggle,
 }: SettingsPanelProps) {
+  const storageFull = useStorageReadOnly();
   if (variant === "microphone-only")
     return (
       <>
@@ -433,6 +440,7 @@ export function SettingsPanel({
             pending={switches.uploadAudio.pending}
             error={switches.uploadAudio.error}
             testId="switch-upload-audio"
+            notice={storageFull ? UPLOAD_PAUSED : null}
             onToggle={(on) => onToggle("uploadAudio", on)}
           />
           <InfoTip label="About audio storage">Other devices cannot play or transcribe local-only audio. This Mac holds the only copy. Local transcription, chat and quota still work. You can upload an individual note later.</InfoTip>
@@ -485,6 +493,7 @@ export function CaptureSettings({
   const titleId = useId();
   const panelId = useId();
   const audio = useAudioInputs(inputs);
+  const storageFull = useStorageReadOnly();
   useEffect(() => { if (open) audio.refresh(); }, [open, audio.refresh]);
 
   // The model whose progress element has focus, if one does: read before a row changes shape under it.
@@ -736,6 +745,7 @@ export function CaptureSettings({
       >
         <GearIcon />
       </button>
+      {storageFull && <span role="img" aria-label="Storage full" className="absolute right-0 top-0 size-2.5 rounded-full bg-destructive ring-2 ring-background" />}
       {open && (
         <div
           ref={panel}

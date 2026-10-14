@@ -1,12 +1,14 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
   isFreeStoragePlan,
+  isStorageFullError,
   reportStoragePlanTier,
   STORAGE_FULL_DETAIL,
   STORAGE_FULL_RECORDING_LINE,
   STORAGE_FULL_SAVE_MESSAGE,
   STORAGE_READ_ONLY_NOTICE,
   STORAGE_TOO_LARGE_SAVE_MESSAGE,
+  storageSaveMessage,
   subscribeStoragePlan,
 } from "./storageStatus";
 
@@ -72,5 +74,34 @@ describe("storage plan tier", () => {
     unsubscribe();
     reportStoragePlanTier("free");
     expect(calls).toBe(2);
+  });
+});
+
+describe("storage-full error variants", () => {
+  test.each<[string, unknown]>([
+    ["object with a code", { code: "STORAGE_QUOTA_EXCEEDED", message: "full" }],
+    ["object whose cause carries the code", { message: "write failed", cause: { code: "STORAGE_QUOTA_EXCEEDED" } }],
+    ["string", "STORAGE_QUOTA_EXCEEDED: full"],
+    ["message-only error with the code", new Error("STORAGE_QUOTA_EXCEEDED: full")],
+    ["message-only error with the phrase", new Error("storage quota exceeded")],
+    ["wrapped error", new Error("save failed", { cause: new Error("STORAGE_QUOTA_EXCEEDED") })],
+  ])("%s is storage full and normalizes to the approved full copy", (_label, error) => {
+    expect(isStorageFullError(error)).toBe(true);
+    expect(storageSaveMessage(error)).toBe(STORAGE_FULL_SAVE_MESSAGE);
+  });
+
+  test.each<[string, unknown]>([
+    ["limit-reached code", { code: "STORAGE_LIMIT_REACHED" }],
+    ["wrapped too-large message", new Error("save failed", { cause: new Error("write exceeds remaining storage") })],
+  ])("%s normalizes to the approved too-large copy", (_label, error) => {
+    expect(isStorageFullError(error)).toBe(true);
+    expect(storageSaveMessage(error)).toBe(STORAGE_TOO_LARGE_SAVE_MESSAGE);
+  });
+
+  test("unrelated failures are not storage full and get no storage copy", () => {
+    const error = new Error("Load failed");
+    expect(isStorageFullError(error)).toBe(false);
+    expect(storageSaveMessage(error)).toBeNull();
+    expect(storageSaveMessage({ code: "NETWORK_ERROR" })).toBeNull();
   });
 });

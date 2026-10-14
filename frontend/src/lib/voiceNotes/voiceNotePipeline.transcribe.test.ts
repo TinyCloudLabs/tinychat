@@ -67,6 +67,8 @@ function transcriberWithRuns() {
   const cloud: VoiceNoteCloud = {
     capabilities: async () => CAPS,
     pendingSourceIds: () => [],
+    holdTranscript: () => {},
+    heldTranscript: () => null,
     transcribe: async () => { throw new Error("runNote is faked"); },
     finish: async () => {},
     releaseUnsent: async () => {},
@@ -273,7 +275,7 @@ test("a hand-off's cached check leaves an earlier failed job waiting for Retry a
   let current = true;
   let interrupt: (error: unknown) => void = () => {};
   const runs: string[] = [];
-  const cloud = { capabilities: async () => CAPS, pendingSourceIds: () => ["failed-note", "interrupted-note"] } as unknown as VoiceNoteCloud;
+  const cloud = { capabilities: async () => CAPS, pendingSourceIds: () => ["failed-note", "interrupted-note"], holdTranscript: () => {}, heldTranscript: () => null } as unknown as VoiceNoteCloud;
   const transcriber = createVoiceNoteTranscriber({ cloud, holds: memoryHoldStore(), tcw: () => ({}) as TinyCloudWeb,
     consent: { get: () => true, set() {} },
     runNote: async (args) => {
@@ -304,7 +306,7 @@ describe("the recorder's hand-off and reconcile's while the first availability c
   const delayed = (s: Awaited<ReturnType<typeof setup>>) => {
     let answer: (caps: PrivateCloudCapabilities) => void = () => {};
     const runs: string[] = [];
-    const cloud = { capabilities: () => new Promise<PrivateCloudCapabilities>((resolve) => { answer = resolve; }), pendingSourceIds: () => [] } as unknown as VoiceNoteCloud;
+    const cloud = { capabilities: () => new Promise<PrivateCloudCapabilities>((resolve) => { answer = resolve; }), pendingSourceIds: () => [], holdTranscript: () => {}, heldTranscript: () => null } as unknown as VoiceNoteCloud;
     const transcriber = createVoiceNoteTranscriber({ cloud, holds: memoryHoldStore(), tcw: () => s.tcw,
       consent: { get: () => true, set() {} }, runNote: async (args) => { runs.push(args.sourceId); return "no_speech"; } });
     return { transcriber, runs, answer: (caps = CAPS) => answer(caps) };
@@ -480,7 +482,7 @@ describe("a recorder save that finishes after the account changed never starts a
       const { s, attach, fire, switchAccount } = await lateSave(variant);
       let account = "A";
       const runs: string[] = [];
-      const cloud = { capabilities: async () => CAPS, pendingSourceIds: () => [] } as unknown as VoiceNoteCloud;
+      const cloud = { capabilities: async () => CAPS, pendingSourceIds: () => [], holdTranscript: () => {}, heldTranscript: () => null } as unknown as VoiceNoteCloud;
       const transcriber = createVoiceNoteTranscriber({ cloud, holds: memoryHoldStore(), tcw: () => s.tcw,
         consent: { get: () => true, set() {} },
         runNote: async (args) => { runs.push(`${args.sourceId}:${account}:${args.allowed!("account")}`); return "no_speech"; } });

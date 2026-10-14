@@ -99,7 +99,7 @@ export function SettingsPage({
     : 0;
   const near = pct >= 90;
   const storageFull = useStorageReadOnly();
-  const storageFreePlan = useStorageFreePlan();
+  const storageFreePlan = useStorageFreePlan(paywallEnabled);
   const resetsLabel = usage?.resetsAt ? formatResetsAt(usage.resetsAt) : null;
   return (
     // `relative`: the containing block for sr-only/absolute descendants, so they

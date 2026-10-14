@@ -68,6 +68,7 @@ function fakeSpace(opts: { kv?: Map<string, KvValue>; rows?: unknown[][] } = {})
   let putFailure: ((key: string) => KvFailure | null) | null = null;
   let listFailure: KvFailure | null = null;
   let getFailure: ((key: string) => KvFailure | null) | null = null;
+  let writeFailure: KvFailure | null = null;
   const inserted: string[] = [];
   const tcw = {
     did: `did:pkh:eip155:1:0xabc${++fakeSpaceNumber}`,
@@ -76,6 +77,7 @@ function fakeSpace(opts: { kv?: Map<string, KvValue>; rows?: unknown[][] } = {})
         return {
           async execute(sql: string, params: unknown[] = []) {
             calls.push({ kind: "sql.execute", target: name, params: [sql, ...params] });
+            if (writeFailure) return { ok: false, error: writeFailure };
             if (sql.includes("INSERT INTO connector_meeting")) inserted.push(String(params.find((p) => p === "rec-1" || p === "rec-2")));
             try {
               const changes = sqlite.prepare(sql).run(...params as never[]).changes;
@@ -129,6 +131,9 @@ function fakeSpace(opts: { kv?: Map<string, KvValue>; rows?: unknown[][] } = {})
     inserted,
     failPut(fn: ((key: string) => KvFailure | null) | null) {
       putFailure = fn;
+    },
+    failWrites(failure: KvFailure | null) {
+      writeFailure = failure;
     },
     failGet(fn: ((key: string) => KvFailure | null) | null) {
       getFailure = fn;
@@ -529,7 +534,7 @@ describe("putVoiceNoteAudio (parts + manifest)", () => {
 
   test("a full space is reported as such (402/413), with no manifest", async () => {
     const space = fakeSpace();
-    space.failPut((key) => (key.endsWith("/p/000001") ? { code: "KV_PUT_FAILED", message: "Payment Required", meta: { status: 402 } } : null));
+    space.failPut((key) => (key.endsWith("/p/000001") ? { code: "STORAGE_QUOTA_EXCEEDED", message: "Storage quota exceeded", meta: { status: 402 } } : null));
     const res = await putVoiceNoteAudio(space.tcw, "rec-1", trackedSource(audioBytes(3_000)).source, { partSize: 1_000, ...noWait });
     expect(res).toEqual({ ok: false, error: expect.objectContaining({ code: VOICE_NOTE_STORAGE_FULL }) });
     expect(space.kv.has(`${AUDIO_BASE}/manifest`)).toBe(false);
@@ -846,7 +851,7 @@ describe("saveVoiceNote while TinyCloud storage is full", () => {
     expect(space.kv.get(voiceNoteMarkdownKvKey(note.id))).toContain("# Keeps its text");
   });
 
-  test("while full, a save with upload makes no audio put, still saves text, and reports storage full", async () => {
+  test("while full, a later save makes no audio put and leaves storage full set", async () => {
     const space = fakeSpace();
     const note = { ...recording, id: `rec-paused-${++fakeSpaceNumber}` };
     await saveNote(note.id, "# First draft");
@@ -856,16 +861,15 @@ describe("saveVoiceNote while TinyCloud storage is full", () => {
     await saveVoiceNote(space.tcw, note, source, "android", {}, true);
     expect(isStorageReadOnly()).toBe(true);
 
+    // A full space refuses writes too, so the row write that probes it fails.
+    space.failWrites({ code: "STORAGE_QUOTA_EXCEEDED", message: "Your TinyCloud storage is full" });
     const audioPutsBefore = space.calls.filter((call) => isAudioPut(call, note.id)).length;
-    await saveNote(note.id, "# Still typed while full");
     const again = await saveVoiceNote(space.tcw, note, source, "android", {}, true);
     const audioPutsAfter = space.calls.filter((call) => isAudioPut(call, note.id)).length;
 
     expect(again.ok).toBe(false);
-    if (again.ok) return;
-    expect(again.error.code).toBe(VOICE_NOTE_STORAGE_FULL);
     expect(audioPutsAfter).toBe(audioPutsBefore);
-    expect(space.kv.get(voiceNoteMarkdownKvKey(note.id))).toContain("# Still typed while full");
+    expect(isStorageReadOnly()).toBe(true);
   });
 
   test("after a successful write clears the state, the next upload stores the audio", async () => {
@@ -879,10 +883,10 @@ describe("saveVoiceNote while TinyCloud storage is full", () => {
     expect(isStorageReadOnly()).toBe(true);
 
     space.failPut(null);
-    reportStorageWriteSucceeded();
-    expect(isStorageReadOnly()).toBe(false);
+    expect(isStorageReadOnly()).toBe(true);
     const resumed = await saveVoiceNote(space.tcw, note, source, "android", {}, true);
     expect(resumed.ok).toBe(true);
+    expect(isStorageReadOnly()).toBe(false);
     expect(space.kv.has(voiceNoteAudioManifestKey(note.id))).toBe(true);
   });
 });

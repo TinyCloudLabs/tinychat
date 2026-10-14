@@ -22,7 +22,7 @@ import { getDesktopWhisperQueue } from "@/lib/voiceNotes/desktop/desktopWhisper"
 import { isTinyCloudNetworkFailure, logVoiceNoteError, pendingSaveMessage, pendingStore, whenVoiceNoteSavesIdle } from "@/lib/voiceNotes/recorderSaves";
 import { advanceAccountGeneration, captureAccountContext, currentAccountGeneration, isAccountContextCurrent, mountVoiceNoteAccount } from "@/lib/voiceNotes/accountContext";
 import { saveDeferredForAccountTransition, type VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
-import { recheckVoiceNoteAvailabilityAutomatically, resumeStorageHeldTranscripts, transcribeSavedNote, voiceNoteTranscriberFor } from "@/lib/voiceNotes/voiceNoteTranscription";
+import { recheckVoiceNoteAvailabilityAutomatically, transcribeSavedNote, voiceNoteTranscriberFor } from "@/lib/voiceNotes/voiceNoteTranscription";
 import { isStorageReadOnly, subscribeStorageReadOnly } from "@/lib/storageStatus";
 
 let recovery: (() => Promise<void>) | null = null;
@@ -171,7 +171,7 @@ export function PendingVoiceNotesSaver({
       const full = isStorageReadOnly();
       if (storageWasFull && !full) {
         void run();
-        if (transcriber) resumeStorageHeldTranscripts(transcriber);
+        if (transcriber) transcriber.storageRecovered();
       }
       storageWasFull = full;
     });

@@ -103,6 +103,7 @@ export const LOCAL_COPY = {
   transcriptReadFailed: `Couldn't read the transcript on ${deviceName("phone")}.`,
   transcriptCheckFailed: `Couldn't check this note on ${deviceName("phone")}.`,
   transcriptSyncFailed: "Couldn't add the transcript to this note.",
+  transcriptStorageFull: `Saved on ${deviceName("phone")}. Your TinyCloud storage is full, so the transcript will be added to your space when storage is available.`,
   unrecorded: (device: PipelineDevice) => `The transcript is in your space, but ${deviceName(device)} couldn't record it.`,
   checkingSpace: "Checking your space…",
   checkingSpaceAfterUploads: "Checking your space · after uploads",

@@ -66,6 +66,10 @@ export const AUDIO_STORAGE_FULL = "STORAGE_QUOTA_EXCEEDED";
 export const AUDIO_SOURCE_READ_FAILED = "AUDIO_SOURCE_READ_FAILED";
 export const AUDIO_TOO_LARGE = "AUDIO_TOO_LARGE";
 export const AUDIO_CORRUPT = "STORE_CORRUPT_AUDIO";
+/** `code` of an upload the node refused as over its body limit (a plain HTTP 413, not a full space). */
+export const AUDIO_UPLOAD_TOO_LARGE = "UPLOAD_TOO_LARGE";
+/** `code` of a plain HTTP 402 that is not a storage rejection. */
+export const AUDIO_PAYMENT_REQUIRED = "PAYMENT_REQUIRED";
 
 /**
  * A storage failure. `code` is one of the AUDIO_* codes above or the SDK's KV
@@ -81,7 +85,7 @@ export class AudioStoreError extends Error {
   }
 }
 
-/** Storage quota reached (node 402/413). No manifest was written. */
+/** Storage quota reached: the node's explicit STORAGE_QUOTA_EXCEEDED or STORAGE_LIMIT_REACHED. No manifest was written. */
 export class AudioStoreQuotaError extends AudioStoreError {
   constructor(message: string, options?: ErrorOptions) {
     super(AUDIO_STORAGE_FULL, message, options);
@@ -158,22 +162,26 @@ function isTransient(error: ServiceError): boolean {
   return code !== undefined && (code >= 500 || code === 408 || code === 429);
 }
 
-/**
- * The error for a failed KV call: quota is its own class, anything else keeps the SDK's code.
- * A read refused by `maxResponseBytes` (413 KV_RESPONSE_TOO_LARGE) is a part bigger than its
- * manifest says, not a full space.
- */
+// Quota evidence, @tinycloud/sdk-services 3.2.1 (node_modules/.bun/@tinycloud+sdk-services@3.2.1+*/node_modules/@tinycloud/sdk-services/dist/kv/index.js):
+// - put 402: always STORAGE_QUOTA_EXCEEDED, whatever the body (storageRejectionError L383-386; handleQuotaErrorResponse L903-916; put L1593).
+// - put 413 with a storage body (JSON error storage_quota_exceeded/storage_limit_reached, or "Used: N bytes, Limit: M bytes"):
+//   STORAGE_LIMIT_REACHED (parseStorageRejection L360-382).
+// - put 413 with any other body: no quota; SDK returns KV_WRITE_FAILED with meta.status 413 (L903-908, L1596).
+// - get 413: KV_RESPONSE_TOO_LARGE (L1232, L1493).
+// No status-only quota response was found in the SDK, the repo's backend, or the frontend.
+// So quota is recognised ONLY by the explicit codes. A plain 413 or 402 keeps its status under its own code.
 function kvError(op: string, error: ServiceError): AudioStoreError {
   if (error.code === "KV_RESPONSE_TOO_LARGE") {
     return new AudioStoreError(AUDIO_CORRUPT, `audioStore ${op}: stored part is larger than its manifest`, { cause: error });
   }
-  if (
-    error.code === "STORAGE_QUOTA_EXCEEDED"
-    || error.code === "STORAGE_LIMIT_REACHED"
-    || status(error) === 402
-    || status(error) === 413
-  ) {
+  if (error.code === "STORAGE_QUOTA_EXCEEDED" || error.code === "STORAGE_LIMIT_REACHED") {
     return new AudioStoreQuotaError(`audioStore ${op}: storage quota reached`, { cause: error });
+  }
+  if (status(error) === 413) {
+    return new AudioStoreError(AUDIO_UPLOAD_TOO_LARGE, `audioStore ${op}: the node refused the request as too large`, { cause: error });
+  }
+  if (status(error) === 402) {
+    return new AudioStoreError(AUDIO_PAYMENT_REQUIRED, `audioStore ${op}: the node refused the request for payment`, { cause: error });
   }
   return new AudioStoreError(error.code ?? "STORE_ERROR", `audioStore ${op} failed: ${error.code}: ${error.message}`, { cause: error });
 }

@@ -10,6 +10,7 @@ import { SegmentedControl } from "@/components/ui/segmented-control";
 import { Button } from "@/components/ui/button";
 import { InfoTip } from "@/components/ui/info-tip";
 import { PlatformContext } from "@/lib/platform";
+import { useStorageReadOnly } from "@/lib/useStorageReadOnly";
 import { localModelGuide, modelActionLabel } from "@/capture/recorder/final/localModelGuide";
 import { isAppleSpeech, isOnDeviceReady, isOnDeviceStatusLoaded } from "@/lib/voiceNotes/onDeviceStt";
 import { downloadOnDeviceModel, ensureOnDeviceModel, onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
@@ -18,6 +19,8 @@ import { nativeVoiceNotesAvailable, type TranscriberId } from "@/lib/voiceNotes/
 import { readDefaultTranscriber, readUploadAudioPreference, setDefaultTranscriber, setUploadAudioPreference, subscribeTranscriberPreference } from "@/lib/voiceNotes/transcriberPreference";
 
 type Transcription = ReturnType<typeof useRecorder>["transcription"];
+
+const UPLOAD_PAUSED = "Paused: storage full";
 
 /** The same three routes the recorder names; Private is offered only when the recorder would offer it. */
 export function transcriberOptions(signedIn: boolean, transcription: Transcription) {
@@ -81,6 +84,7 @@ export function useDefaultTranscriber() {
 export function VoiceNotesTranscriberSettings() {
   const platform = useContext(PlatformContext);
   const uploadAudio = useSyncExternalStore(subscribeTranscriberPreference, readUploadAudioPreference, readUploadAudioPreference);
+  const storageFull = useStorageReadOnly();
   const [uploadError, setUploadError] = useState<string | null>(null);
   const { transcription, signedIn } = useRecorder();
   const { value, error, choose } = useDefaultTranscriber();
@@ -107,6 +111,7 @@ export function VoiceNotesTranscriberSettings() {
         <div className="flex flex-col gap-1 text-sm">
           <label htmlFor="upload-audio-to-tinycloud">Upload audio to TinyCloud</label>
           <p className="text-xs text-muted-foreground">Audio stays on this {platform === "tauri" ? "Mac" : platform === "web" ? "browser" : "phone"}. Transcripts and notes still sync to your TinyCloud space. Private transcription still sends audio to be transcribed, then deletes it.</p>
+          {storageFull && <p role="status" className="text-xs text-muted-foreground">{UPLOAD_PAUSED}</p>}
           {platform === "web" && <p className="text-xs text-muted-foreground">Audio stays in this browser. Browsers can delete it. Turn on Upload audio to keep a copy in TinyCloud.</p>}
           <InfoTip label="About audio storage">Other devices cannot play or transcribe local-only audio. This device holds the only copy. Local transcription, chat and quota still work. You can upload an individual note later.</InfoTip>
         </div>

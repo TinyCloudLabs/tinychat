@@ -326,11 +326,11 @@ export function App() {
   const [pricingOpen, setPricingOpen] = useState(false);
   const [storageDialogOpen, setStorageDialogOpen] = useState(false);
   const storageReadOnly = useSyncExternalStore(subscribeStorageReadOnly, isStorageReadOnly, () => false);
-  const storageFreePlan = useStorageFreePlan();
   const [ratesOpen, setRatesOpen] = useState(false);
   const [billingNotice, setBillingNotice] = useState<string | null>(null);
   const [shareToken, setShareToken] = useState<string | null>(initialShareToken);
   const paywallEnabled = billingConfig?.paywallEnabled === true;
+  const storageFreePlan = useStorageFreePlan(paywallEnabled);
   const billingTierName = billingConfig?.tiers.find(
     (tier) => tier.id === billingStatus?.tier,
   )?.name ?? (billingStatus
@@ -1296,7 +1296,7 @@ export function App() {
           onOpenRates={openRates}
         />
       )}
-      <StorageFullDialog open={storageDialogOpen} onOpenChange={setStorageDialogOpen} />
+      <StorageFullDialog open={storageDialogOpen} onOpenChange={setStorageDialogOpen} paywallEnabled={paywallEnabled} />
 
       <RatesDialog
         open={ratesOpen}
