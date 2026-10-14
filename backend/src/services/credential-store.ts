@@ -8,7 +8,7 @@ import {
 } from "node:crypto";
 import type { TinyCloudNode } from "@tinycloud/node-sdk";
 import * as serverPackage from "@tinyboilerplate/server";
-import { BackendStorageLane } from "./backend-storage-lane.js";
+import { BackendStorageLane, type BackendStorageLaneRunOptions } from "./backend-storage-lane.js";
 import {
   assertStrongSecret,
   isValidSource,
@@ -697,6 +697,7 @@ export class KvCredentialRowStore implements CredentialRowStore {
   constructor(
     private readonly node: TinyCloudNode,
     storageLane?: BackendStorageLane,
+    private readonly laneOptions: BackendStorageLaneRunOptions = {},
   ) {
     this.lane = storageLane ?? new BackendStorageLane();
   }
@@ -756,7 +757,7 @@ export class KvCredentialRowStore implements CredentialRowStore {
   }
 
   private run<T>(fn: () => Promise<T>): Promise<T> {
-    return this.lane.run(fn);
+    return this.lane.run(fn, this.laneOptions);
   }
 }
 

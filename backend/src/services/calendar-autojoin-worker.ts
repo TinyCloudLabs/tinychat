@@ -151,6 +151,7 @@ export class CalendarAutojoinWorker {
         catch { console.warn("[calendar-autojoin] code=tenant_reconcile_failed"); }
       }
     }));
+    await this.options.connection.backfillGrantReferences(tenants, this.options.store, () => this.stopping);
     // Counts only: never ids, titles or addresses.
     console.log(`[calendar-autojoin] code=tick_done ms=${this.now() - startedAt} tenants=${tenants.length} rows=${counts.rows} scans=${counts.scans} timers=${this.dueTimers.size}`);
   }

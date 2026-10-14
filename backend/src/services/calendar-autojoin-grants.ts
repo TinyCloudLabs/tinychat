@@ -17,7 +17,7 @@ export interface GoogleGrantRevokeDecision { revoke: boolean; reason: GoogleGran
 export class CalendarAutojoinGrantIndex {
   private readonly subjects = new Map<string, Map<string, Reference>>();
   // Keep a detached binding for the SPA's second (browser-token) disconnect call. This is NOT
-  // a live reference. Ordinary account replacement forgets it: the vault then holds a new grant.
+  // a live reference. Ordinary account replacement moves only this detached binding.
   private readonly tenants = new Map<string, { subjectHash: string; revision: number }>();
   private revision = 0;
   private uncertainty = 0;
@@ -37,6 +37,11 @@ export class CalendarAutojoinGrantIndex {
   }
 
   invalidate(): void { this.trusted = false; this.uncertainty++; }
+
+  bindDetached(tenant: string, subject: string): void {
+    this.detach(tenant);
+    this.tenants.set(tenant.toLowerCase(), { subjectHash: this.hashSubject(subject), revision: ++this.revision });
+  }
 
   /** Called only with a matching, usable server OAuth credential under tenant coordination. */
   hold(row: CalendarConnection): void {
