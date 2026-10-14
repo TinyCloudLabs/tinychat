@@ -3,9 +3,11 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  createCloudJobPoller,
   createPrivateCloudApi,
   createPrivateCloudJob,
   isTransientCloudError,
+  parseRateLimitWaitSeconds,
   parseCreatedJob,
   privateCloudJobClient,
   PrivateCloudError,
@@ -107,6 +109,28 @@ describe("createPrivateCloudApi", () => {
     expect(((await client.get(ID).catch((e) => e)) as PrivateCloudError).code).toBe("unauthenticated");
     expect(calls).toHaveLength(0);
     expect(client.bearer()).toBeNull();
+  });
+
+  test("status and result fetches receive aborts from their poll caller", async () => {
+    for (const request of ["status", "result"] as const) {
+      const controller = new AbortController();
+      let fetchSignal: AbortSignal | undefined;
+      const client = createPrivateCloudApi("https://api.example", {
+        sessionStore: sessionStore(),
+        fetchImpl: (async (_input, init) => {
+          fetchSignal = init?.signal as AbortSignal;
+          return await new Promise<Response>((_resolve, reject) => {
+            fetchSignal!.addEventListener("abort", () => reject(new TypeError("aborted")), { once: true });
+          });
+        }) as typeof fetch,
+      });
+      const pending = (request === "status" ? client.get(ID, controller.signal) : client.result(ID, controller.signal))
+        .catch((error) => error);
+      expect(fetchSignal).toBeDefined();
+      controller.abort();
+      expect(fetchSignal!.aborted).toBe(true);
+      expect((await pending as PrivateCloudError).code).toBe("cancelled");
+    }
   });
 
   test("result: 202 pending, completed transcript, failed with its code", async () => {
@@ -247,4 +271,137 @@ describe("private-cloud messages", () => {
     }
     expect(privateCloudMessage(new PrivateCloudError("recording_too_long_for_cloud", "x"))).toContain("can't transcribe a recording");
   });
+});
+test("three independent PTX poll loops fit one 900-second request budget for long jobs", async () => {
+  const maxRequests = (timestamps: number[]) => {
+    timestamps.sort((a, b) => a - b);
+    let max = 0;
+    let left = 0;
+    for (let right = 0; right < timestamps.length; right++) {
+      while (timestamps[right]! - timestamps[left]! >= 900_000) left++;
+      max = Math.max(max, right - left + 1);
+    }
+    return max;
+  };
+
+  for (const completionMs of [25 * 60_000, 40 * 60_000]) {
+    for (const randomValue of [0, 0.999]) {
+      const requests: number[] = [];
+      await Promise.all([0, 1, 2].map(async () => {
+        let now = 0;
+        const clock = {
+          now: () => now,
+          sleep: async (ms: number) => { now += ms; },
+          random: () => randomValue,
+        };
+        const poller = createCloudJobPoller({
+          async get(id: string) {
+            requests.push(now);
+            return { id, status: now >= completionMs ? "completed" : "processing" };
+          },
+          async result() {
+            requests.push(now);
+            return { status: "completed", transcript: { segments: [], text: "" } };
+          },
+        } as never, {
+          clock,
+          polling: { intervalMs: 5_000, fastPhaseMs: 30_000, slowIntervalMs: 30_000, maxIntervalMs: 60_000 },
+          durationSeconds: 72 * 60,
+          connectionLost: () => new Error("connection lost"),
+        } as never);
+        await poller.pollTranscript(ID, () => {});
+      }));
+      expect(maxRequests(requests)).toBeLessThanOrEqual(80);
+    }
+  }
+});
+
+test("429 parsing reads Retry-After and draft-7 RateLimit reset values", async () => {
+  const retryAfter = await api(() => new Response("", { status: 429, headers: { "Retry-After": "2" } }))
+    .client.get(ID).catch((error) => error) as PrivateCloudError;
+  expect(retryAfter.statusCode).toBe(429);
+  expect(retryAfter.retryAfterSeconds).toBe(2);
+  expect(parseRateLimitWaitSeconds(new Headers({ "Retry-After": new Date(100_000).toUTCString() }), 0)).toBe(100);
+
+  const reset = await api(() => new Response("", { status: 429, headers: { RateLimit: "limit=600, remaining=0, reset=45" } }))
+    .client.get(ID).catch((error) => error) as PrivateCloudError;
+  expect(reset.retryAfterSeconds).toBe(45);
+
+  const timeToReset = await api(() => new Response("", { status: 429, headers: { RateLimit: "limit=600, remaining=0, t=90" } }))
+    .client.get(ID).catch((error) => error) as PrivateCloudError;
+  expect(timeToReset.retryAfterSeconds).toBe(90);
+
+  const max = await api(() => new Response("", { status: 429, headers: {
+    "Retry-After": "60", RateLimit: "limit=600, remaining=0, reset=120",
+  } })).client.get(ID).catch((error) => error) as PrivateCloudError;
+  expect(max.retryAfterSeconds).toBe(120);
+
+  for (const headers of [{ "Retry-After": "garbage" }, { RateLimit: "limit=600, remaining=0, reset=garbage" }, {}]) {
+    const unavailable = await api(() => new Response("", { status: 429, headers }))
+      .client.get(ID).catch((error) => error) as PrivateCloudError;
+    expect(unavailable.retryAfterSeconds).toBeNull();
+  }
+});
+
+test("a PTX 429 wait never undercuts Retry-After and a long 429 run does not fail", async () => {
+  const sleeps: number[] = [];
+  let now = 0;
+  let reads = 0;
+  const rateLimited = Object.assign(
+    new PrivateCloudError("service_busy", "429", { retryAfterSeconds: 900 }),
+    { statusCode: 429 },
+  );
+  const clock = {
+    now: () => now,
+    sleep: async (ms: number) => { sleeps.push(ms); now += ms; },
+    random: () => 0,
+  };
+  const poller = createCloudJobPoller({
+    async get(id: string) {
+      reads++;
+      if (reads === 1) throw rateLimited;
+      return { id, status: "completed" };
+    },
+    async result() { return { status: "completed", transcript: { segments: [], text: "" } }; },
+  } as never, { clock, connectionLost: () => new Error("connection lost") });
+
+  expect((await poller.pollTranscript(ID, () => {})).text).toBe("");
+  expect(sleeps[0]).toBeGreaterThanOrEqual(900_000);
+
+  now = 0;
+  reads = 0;
+  sleeps.length = 0;
+  const repeatedlyLimited = createCloudJobPoller({
+    async get(id: string) {
+      reads++;
+      if (now < 11 * 60_000) throw new PrivateCloudError("service_busy", "429", { retryAfterSeconds: 60, statusCode: 429 });
+      return { id, status: "completed" };
+    },
+    async result() { return { status: "completed", transcript: { segments: [], text: "" } }; },
+  } as never, { clock, connectionLost: () => new Error("connection lost") });
+  expect((await repeatedlyLimited.pollTranscript(ID, () => {})).text).toBe("");
+  expect(now).toBeGreaterThanOrEqual(11 * 60_000);
+});
+
+test("a PTX 429 without a readable wait uses the slow polling interval", async () => {
+  const sleeps: number[] = [];
+  let reads = 0;
+  const clock = {
+    now: () => sleeps.reduce((sum, ms) => sum + ms, 0),
+    sleep: async (ms: number) => { sleeps.push(ms); },
+    random: () => 0,
+  };
+  const poller = createCloudJobPoller({
+    async get(id: string) {
+      if (reads++ === 0) throw new PrivateCloudError("service_busy", "429", { statusCode: 429 });
+      return { id, status: "completed" };
+    },
+    async result() { return { status: "completed", transcript: { segments: [], text: "" } }; },
+  } as never, {
+    clock,
+    polling: { slowIntervalMs: 30_000 },
+    connectionLost: () => new Error("connection lost"),
+  });
+  await poller.pollTranscript(ID, () => {});
+  expect(sleeps[0]).toBeGreaterThanOrEqual(30_000);
 });

@@ -67,7 +67,7 @@ function harness(failAt?: "part" | "submit" | "result" | "space" | "delete", noS
       return json({ status: "submitted", id: "handle-1" });
     }
     if (path === "/hosted/transcripts/handle-1" && method === "GET") {
-      if (failAt === "result" && !failed) { failed = true; throw new Error("offline"); }
+      if (failAt === "result" && !failed) { failed = true; return json({ error: "read_failed" }, 400); }
       return json({ id: "handle-1", status: "completed", utterances: noSpeech ? [] : [{ start: 0, end: 1000, text: "Hello", speaker: "A" }] });
     }
     if (path === "/hosted/transcripts/handle-1/sentences" && method === "GET") return json({ sentences: [] });
@@ -83,6 +83,7 @@ function harness(failAt?: "part" | "submit" | "result" | "space" | "delete", noS
   const account = { did: "did:test:one" } as TinyCloudWeb;
   const track = () => createHostedVoiceNoteTrack(() => account, "https://exo.test", {} as SessionStore, account.did, {
     client, native, readCommit: async () => commit, createRow: async () => ({ inserted: true }) as Awaited<ReturnType<typeof import("./voiceNoteRows").createVoiceNoteRow>>,
+    clock: { now: () => 0, sleep: async () => {}, random: () => 0.5 },
     readNote: async () => ({ ok: true, data: { captureTranscriber: "assemblyai", durationSeconds: 1 } }) as Awaited<ReturnType<typeof import("./voiceNoteStore").readVoiceNoteForTranscription>>,
     loadAudio: async () => ({ ok: true, data: { mimeType: "audio/mp4", base64: bytesToBase64(audio) } }) as Awaited<ReturnType<typeof import("./voiceNoteStore").loadVoiceNoteAudio>>,
     save: async (_account, _id, transcript) => {
@@ -91,7 +92,7 @@ function harness(failAt?: "part" | "submit" | "result" | "space" | "delete", noS
       if (failAt === "space" && !failed) { failed = true; return { ok: false, error: new Error("offline") } as StoreResult<UpsertMeetingOutcome>; }
       commit = { rev: transcript.rev, outcome: noSpeech ? "no_speech" : "transcribed" } as TranscriptCommit;
       return { ok: true } as StoreResult<UpsertMeetingOutcome>;
-    }, sleep: async () => {},
+    },
   });
   return { calls, recording, track, getLocal: () => local, getSavedMetadata: () => savedMetadata };
 }

@@ -121,7 +121,7 @@ import {
 } from "./services/connector-drain.js";
 import { assertStrongSecret, WebhookTokenService } from "./services/webhook-tokens.js";
 import { createTinychatBackendIdentity } from "./startup.js";
-import { appCorsOrigins } from "./cors-origins.js";
+import { appCorsOptions } from "./cors-origins.js";
 import { agentStreamPolicyFromEnv, type AgentStreamPolicy } from "./agent-stream-policy.js";
 import { localValidationFromEnv, localValidationGuard } from "./local-validation.js";
 import { createApiBodyParser } from "./body-parsing.js";
@@ -464,7 +464,7 @@ async function main() {
   if (localValidation) app.use(localValidationGuard);
   app.set("trust proxy", 1);
   applySecurityDefaults(app);
-  app.use(cors({ origin: appCorsOrigins(FRONTEND_URL) }));
+  app.use(cors(appCorsOptions(FRONTEND_URL)));
 
   // Stripe webhook MUST be mounted before the JSON body parser and CSRF
   // middleware: it needs the raw request bytes for signature verification, and

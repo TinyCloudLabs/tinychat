@@ -35,6 +35,7 @@ import {
   type PrivateCloudJob,
   type PrivateCloudTranscript,
   type PtxPutResponse,
+  type PrivateCloudResult,
 } from "../privateCloud";
 import { base64ToBytes, bytesToBase64, type AudioDecoder } from "./voiceNoteAudio";
 import { createFakeVoiceNotes } from "./fakeVoiceNotes";
@@ -207,10 +208,15 @@ const DID = "did:pkh:eip155:1:0x1111111111111111111111111111111111111111";
  * `creates` the create answers in order; `puts` the PUT answers in order.
  */
 function harness(script: {
+  clock?: { now: () => number; sleep: (ms: number) => Promise<void>; random: () => number };
+  getJob?: (now: number) => PrivateCloudJob;
+  onStatusRequest?: (now: number) => void;
+  onResultRequest?: (now: number) => void;
   jobs?: (PrivateCloudJob | PrivateCloudError)[];
   creates?: (PrivateCloudCreated | PrivateCloudError)[];
   puts?: (PtxPutResponse | PrivateCloudError)[];
   result?: PrivateCloudTranscript;
+  resultRequests?: (PrivateCloudResult | PrivateCloudError)[];
   pending?: ReturnType<typeof localStorageVoiceNotePendingStore>;
   now?: () => number;
   removeFails?: boolean;
@@ -227,6 +233,7 @@ function harness(script: {
   const removed: string[] = [];
   const cancelled: string[] = [];
   let n = 0;
+  let resultReads = 0;
   const api: PrivateCloudApi = {
     backendUrl: "https://api.example",
     bearer: () => "tok",
@@ -240,13 +247,19 @@ function harness(script: {
     },
     async get(id) {
       calls.push(`get:${id}`);
+      script.onStatusRequest?.(script.clock?.now() ?? clockNow);
+      if (script.getJob) return { ...script.getJob(script.clock?.now() ?? clockNow), id };
       const next = jobs.length > 1 ? jobs.shift()! : jobs[0]!;
       if (next instanceof PrivateCloudError) throw next;
       return { ...next, id };
     },
     async result(id) {
       calls.push(`result:${id}`);
-      return { status: "completed", transcript: script.result ?? TRANSCRIPT };
+      script.onResultRequest?.(script.clock?.now() ?? clockNow);
+      const results = script.resultRequests;
+      const answer = results?.[Math.min(resultReads++, results.length - 1)];
+      if (answer instanceof PrivateCloudError) throw answer;
+      return answer ?? { status: "completed", transcript: script.result ?? TRANSCRIPT };
     },
     async cancel(id) {
       calls.push(`cancel:${id}`);
@@ -268,7 +281,7 @@ function harness(script: {
     uploadSupported: script.uploadSupported,
     decode: script.decode ?? silentDecoder(),
     newId: () => `00000000-0000-4000-8000-${String(++n).padStart(12, "0")}`,
-    clock: {
+    clock: script.clock ?? {
       now: script.now ?? (() => clockNow),
       sleep: async (ms) => {
         sleeps.push(ms);
@@ -294,7 +307,7 @@ function harness(script: {
       return next;
     },
   });
-  return { cloud, calls, creates, puts, removed, cancelled, pending, sleeps };
+  return { cloud, calls, creates, puts, removed, cancelled, pending, sleeps, resultReads: () => resultReads };
 }
 
 const run = (h: ReturnType<typeof harness>, report: (s: VoiceNoteTranscriptionStatus) => void = () => {}) =>
@@ -559,6 +572,121 @@ describe("createVoiceNoteCloud.transcribe", () => {
     expect(err.code).toBe("connection_lost");
     expect(lost.pending.read("rec-1")?.transcriptionId).toBe(ID);
     expect(voiceNoteTranscriptionFailure(err).retryable).toBe(true);
+  });
+
+  test("alternating 503 and 429 preserves status failure history while excluding the 429 waits", async () => {
+    const transient = new PrivateCloudError("service_unavailable", "503");
+    const rateLimited = Object.assign(
+      new PrivateCloudError("service_busy", "429", { retryAfterSeconds: 60 }),
+      { statusCode: 429 },
+    );
+    const jobs: (PrivateCloudJob | PrivateCloudError)[] = Array.from({ length: 240 }, (_, index) =>
+      index % 2 === 0 ? transient : rateLimited);
+    jobs.push(new PrivateCloudError("stop", "429 cleared the failure history"));
+    const h = harness({ jobs });
+    const error = (await run(h).catch((caught: unknown) => caught)) as PrivateCloudError;
+    expect(error.code).toBe("connection_lost");
+    const throttles = h.sleeps.filter((delay) => delay >= 60_000);
+    expect(throttles.length).toBeGreaterThan(0);
+    expect(h.sleeps.filter((delay) => delay < 60_000).reduce((sum, delay) => sum + delay, 0)).toBeGreaterThanOrEqual(600_000);
+    expect(h.pending.read("rec-1")?.transcriptionId).toBe(ID);
+  });
+
+  test("eleven minutes of resumed-status 429s waits for the server and does not fail the job", async () => {
+    const rateLimited = Object.assign(
+      new PrivateCloudError("service_busy", "429", { retryAfterSeconds: 60 }),
+      { statusCode: 429 },
+    );
+    const pending = localStorageVoiceNotePendingStore(DID, memoryStorage());
+    pending.write("rec-1", { attemptId: "00000000-0000-4000-8000-00000000abcd", transcriptionId: ID });
+    const h = harness({ pending, jobs: [...Array.from({ length: 11 }, () => rateLimited), job("completed")] });
+    expect((await run(h)).transcriptionId).toBe(ID);
+    expect(h.sleeps.reduce((total, ms) => total + ms, 0)).toBeGreaterThanOrEqual(11 * 60_000);
+  });
+
+  test("status 429 suspension leaves the result failure budget active", async () => {
+    const rateLimited = Object.assign(
+      new PrivateCloudError("service_busy", "429", { retryAfterSeconds: 900 }),
+      { statusCode: 429 },
+    );
+    const h = harness({
+      jobs: [job("completed"), rateLimited, job("completed")],
+      resultRequests: [new PrivateCloudError("service_unavailable", "503"), { status: "completed", transcript: TRANSCRIPT }],
+    });
+    expect((await run(h)).transcriptionId).toBe(ID);
+    expect(Math.max(...h.sleeps)).toBeGreaterThanOrEqual(900_000);
+  });
+
+  test("successful status reads do not reset repeated result failures", async () => {
+    const results = [
+      ...Array.from({ length: 49 }, () => new PrivateCloudError("service_unavailable", "503")),
+      new PrivateCloudError("stop", "result retry escaped its failure budget"),
+    ];
+    const h = harness({ jobs: [job("completed")], resultRequests: results });
+    const error = (await run(h).catch((caught: unknown) => caught)) as PrivateCloudError;
+    expect(error.code).toBe("connection_lost");
+  });
+
+  test("a 30-second voice note completes in the fast polling phase", async () => {
+    let now = 0;
+    const reads: number[] = [];
+    const h = harness({
+      clock: {
+        now: () => now,
+        sleep: async (ms) => { now += ms; },
+        random: () => 0.5,
+      },
+      creates: [{ id: ID, status: "queued", upload: null }],
+      getJob: (at) => job(at >= 30_000 ? "completed" : "processing"),
+      onStatusRequest: (at) => reads.push(at),
+    });
+    await h.cloud.transcribe({
+      sourceId: "short-note",
+      capabilities: CAPS,
+      loadAudio: async () => AUDIO,
+      durationSeconds: 30,
+    }, () => {});
+    expect(reads).toEqual([0, 5_000, 10_000, 15_000, 20_000, 25_000, 30_000]);
+    expect(now).toBeLessThanOrEqual(30_000);
+  });
+
+  test("three independent 72-minute voice-note poll loops stay inside the shared 900-second budget", async () => {
+    const maxRequests = (timestamps: number[]) => {
+      timestamps.sort((a, b) => a - b);
+      let max = 0;
+      let left = 0;
+      for (let right = 0; right < timestamps.length; right++) {
+        while (timestamps[right]! - timestamps[left]! >= 900_000) left++;
+        max = Math.max(max, right - left + 1);
+      }
+      return max;
+    };
+    for (const completionMs of [25 * 60_000, 40 * 60_000]) {
+      for (const randomValue of [0, 0.999]) {
+        const requests: number[] = [];
+        await Promise.all([0, 1, 2].map(async (index) => {
+          let now = 0;
+          const h = harness({
+            clock: {
+              now: () => now,
+              sleep: async (ms) => { now += ms; },
+              random: () => randomValue,
+            },
+            creates: [{ id: ID, status: "queued", upload: null }],
+            getJob: (at) => job(at >= completionMs ? "completed" : "processing"),
+            onStatusRequest: (at) => requests.push(at),
+            onResultRequest: (at) => requests.push(at),
+          });
+          await h.cloud.transcribe({
+            sourceId: `long-note-${index}`,
+            capabilities: CAPS,
+            loadAudio: async () => AUDIO,
+            durationSeconds: 72 * 60,
+          }, () => {});
+        }));
+        expect(maxRequests(requests)).toBeLessThanOrEqual(80);
+      }
+    }
   });
 
   test("a job that fails while processing is reported with its code and forgotten", async () => {

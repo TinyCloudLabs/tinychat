@@ -1,6 +1,8 @@
 import { describe, expect, it } from "bun:test";
+import cors from "cors";
 import express from "express";
 import { issueSessionToken } from "@tinyboilerplate/server";
+import { appCorsOptions } from "../cors-origins.js";
 import {
   applyRateLimiters,
   ASSEMBLYAI_HOSTED_UPLOAD_LIMIT,
@@ -690,3 +692,29 @@ describe("aggregate ceilings over per-session buckets", () => {
     });
   }, 60_000);
 });
+
+it("exposes limiter headers on a cross-origin PTX status 429", async () => {
+  const origin = "https://tinycloud.chat";
+  const app = express();
+  app.use(cors(appCorsOptions(origin)));
+  applyRateLimiters(app, { sessionKey: SESSION_KEY });
+  app.get("/api/transcriber/private-cloud/transcriptions/:id", (_req, res) => res.json({ ok: true }));
+  const authorization = `Bearer ${(await issueSessionToken("0x0000000000000000000000000000000000000b0b", SESSION_KEY)).token}`;
+
+  await withServer(app, async (port) => {
+    const url = `http://localhost:${port}/api/transcriber/private-cloud/transcriptions/job-1`;
+    for (let i = 0; i < SESSION_LIMITS.privateCloudTranscription; i++) {
+      const response = await realFetch(url, { headers: { authorization, Origin: origin } });
+      expect(response.status).toBe(200);
+    }
+    const limited = await realFetch(url, { headers: { authorization, Origin: origin } });
+    expect(limited.status).toBe(429);
+    expect(limited.headers.get("access-control-allow-origin")).toBe(origin);
+    expect(limited.headers.has("retry-after")).toBe(true);
+    expect(limited.headers.has("ratelimit")).toBe(true);
+    expect(limited.headers.has("ratelimit-policy")).toBe(true);
+    const exposed = (limited.headers.get("access-control-expose-headers") ?? "")
+      .split(",").map((header) => header.trim().toLowerCase());
+    expect(exposed).toEqual(expect.arrayContaining(["retry-after", "ratelimit", "ratelimit-policy"]));
+  });
+}, 30_000);
