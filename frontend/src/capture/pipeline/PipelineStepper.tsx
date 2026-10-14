@@ -41,7 +41,7 @@ export function PipelineStepper(props: {
         {visible.map((step) => (
           <li key={step.key} data-step={step.key} data-state={step.state} data-current={pipeline.current === step.key ? "" : undefined}>
             <span className="pipeline-stepper-label">{step.label}</span>
-            <span className="pipeline-stepper-status">{step.sublabel ?? statusText(step)}</span>
+            <span className="pipeline-stepper-status" title={step.caption?.includes(" parts done") === true ? "Recordings are transcribed in parts" : undefined}>{step.sublabel ?? statusText(step)}</span>
           </li>
         ))}
       </ul>

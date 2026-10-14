@@ -53,7 +53,7 @@ export function PipelineTrackSummary(props: { pipeline: NotePipeline }) {
   return (
     <span className="pipeline-track-summary" data-pipeline-track-summary="">
       {audio && <span>Audio: {audio}</span>}
-      {transcript && transcript.state !== "skipped" && <span>Transcript: {detail(transcript, "Saved")}</span>}
+      {transcript && transcript.state !== "skipped" && <span title={transcript.caption?.includes(" parts done") === true ? "Recordings are transcribed in parts" : undefined}>Transcript: {detail(transcript, "Saved")}</span>}
       {transcriptStatus && <span>{transcriptStatus}</span>}
       {props.pipeline.steps.some((step) => step.key === "notes" && step.state !== "skipped" && step.state !== "done") && <span>Notes: {detail(props.pipeline.steps.find((step) => step.key === "notes")!, "Saved")}</span>}
     </span>

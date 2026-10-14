@@ -2111,8 +2111,10 @@ describe("progress copy", () => {
     expect(transcriptionStatusText({ kind: "uploading" })).toBe("Sending audio to Private transcription…");
     expect(transcriptionStatusText({ kind: "uploading", progress: 0.42 })).toBe("Sending audio to Private transcription · 42%");
     expect(transcriptionStatusText({ kind: "queued", position: 3 })).toBe("Queued (position 3)…");
-    expect(transcriptionStatusText({ kind: "processing", completed: 2, total: 5 })).toBe("Transcribing in private cloud… 2/5");
+    expect(transcriptionStatusText({ kind: "processing", completed: 2, total: 5 })).toBe("Transcribing in private cloud… 2 of 5 parts done");
+    expect(transcriptionStatusText({ kind: "processing", completed: 9, total: 9 })).toBe("Transcribing in private cloud… 9 of 9 parts done");
     expect(transcriptionStatusText({ kind: "processing", completed: null, total: null })).toBe("Transcribing in private cloud…");
+    expect(transcriptionStatusText({ kind: "processing", completed: 2, total: 0 })).toBe("Transcribing in private cloud…");
   });
 });
 
