@@ -75,6 +75,7 @@ async function runIsolatedStartup(env: Record<string, string | undefined>) {
       },
     },
     "./services/ingest-mode.js": { backendIngestEnabled: () => false },
+    "./rate-limits.js": { applyRateLimiters: () => ({ globalRoutes: {}, paidChatLimiter: middleware() }), logGlobalBucketRoutes: () => {} },
     "./services/google-oauth.js": { googleMeetOAuthEnabled: () => false },
     // TC-641: the real default-off parser, so `transcriptDeliveryConfig` is a config, not undefined.
     "./services/transcription-api.js": {
@@ -289,8 +290,8 @@ describe("backend index middleware wiring", () => {
     const LIMITS = readFileSync(resolve(import.meta.dir, "../rate-limits.ts"), "utf8");
     expect(LIMITS).toContain('CONNECTOR_COMPANION_PATHS = ["/api/connectors/webhooks"]');
     expect(LIMITS).toContain('DELEGATION_PATHS = ["/api/delegations"]');
-    expect(LIMITS).toContain("connectorCompanionLimiter");
-    expect(LIMITS).toContain("delegationLimiter");
+    expect(LIMITS).toContain('[CONNECTOR_COMPANION_PATHS, "connectorCompanion"]');
+    expect(LIMITS).toContain('[DELEGATION_PATHS, "delegation"]');
   });
 
   test("no companion path can overlap the two-segment public route", () => {
@@ -405,9 +406,10 @@ describe("backend index middleware wiring", () => {
     // the same rule §4.4 applies to the connector companions.
     const LIMITS = readFileSync(resolve(import.meta.dir, "../rate-limits.ts"), "utf8");
     expect(LIMITS).toContain('GOOGLE_OAUTH_PATHS = ["/api/connectors/google/oauth"]');
-    expect(LIMITS).toContain("googleOAuthLimiter");
-    // …and the prefix is EXEMPTED from the global bucket, not merely given a second one.
-    expect(LIMITS).toMatch(/const DEDICATED_PATHS = \[[\s\S]*\.\.\.GOOGLE_OAUTH_PATHS,[\s\S]*\]/);
+    expect(LIMITS).toContain('[GOOGLE_OAUTH_PATHS, "googleOAuth"]');
+    // …and the prefix is EXEMPTED from the global bucket, not merely given a second one:
+    // `bucketFor` assigns each request exactly one bucket.
+    expect(LIMITS).toContain('skip: (req) => bucketFor(req.method, req.path) !== bucket');
   });
 
   test("an armed-but-unregistered google OAuth config refuses to boot", () => {
@@ -731,7 +733,7 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
     "./routes/delegations.js": { createDelegationRouter: () => router() },
     "./middleware/auth.js": { createAuthMiddleware: auth },
     "./services/ingest-nudge.js": { createIngestOnDelivery: noop },
-    "./rate-limits.js": { applyRateLimiters: noop },
+    "./rate-limits.js": { applyRateLimiters: () => ({ globalRoutes: { top: () => ({}) }, paidChatLimiter: noop }), logGlobalBucketRoutes: noop },
     "./security.js": { applySecurityDefaults: noop },
     "./routes/nras-proxy.js": { createNrasProxyRouter: router },
     "./routes/assemblyai-hosted.js": { ASSEMBLYAI_HOSTED_MOUNT: "/api/assemblyai", createAssemblyAiHostedRouter: router },
