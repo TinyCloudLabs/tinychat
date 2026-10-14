@@ -1,6 +1,7 @@
 import {
   createCipheriv,
   createDecipheriv,
+  createHmac,
   hkdfSync,
   randomBytes,
   timingSafeEqual,
@@ -370,6 +371,12 @@ export class CredentialStore {
     this.upstreamRevoker = options.upstreamRevoker ?? null;
     this.lastUsedThrottleMs =
       options.lastUsedThrottleMs ?? LAST_USED_THROTTLE_MS;
+  }
+
+  /** Domain-separated identity digest for internal reference indexes; never exposes the master. */
+  referenceHasher(namespace: string): (identity: string) => string {
+    const key = Buffer.from(hkdfSync("sha256", this.master(), "tinychat-credential-reference-v1", namespace, 32));
+    return identity => createHmac("sha256", key).update(identity).digest("hex");
   }
 
   /**
