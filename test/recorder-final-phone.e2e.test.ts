@@ -495,7 +495,7 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
   test("first run: the scale shows the provider's mode; Private waits on consent, then asks again", async () => {
     const { page, calls, activeName } = await open("first-run");
     await modeIs(page, "Audio only");
-    await shown(page.getByText("Just the recording, kept on this phone."));
+    await shown(page.getByText("Just the recording. Audio follows your Upload audio to TinyCloud setting."));
 
     await slider(page).focus();
     await page.keyboard.press("ArrowRight");
