@@ -66,6 +66,8 @@ function harness(failAt?: "part" | "submit" | "result" | "space" | "delete", noS
       const body = JSON.parse(String(init?.body));
       expect(body.content_type).toBe(mimeType.split(";")[0].trim().toLowerCase());
       expect(body.source_id).toBe("note-1");
+      if (serverJob.status === "needs_reconciliation" || serverJob.status === "unresolved")
+        return json({ upload_id: "upload-1", part_size: 2, status: serverJob.status });
       if (createFailure && !failed) {
         failed = true;
         if (createFailure === "existing") serverJob = { status: "receiving", upload_id: "upload-1" };
@@ -219,7 +221,7 @@ test("hosted AssemblyAI commits never set PTX-only missing-stats metadata", asyn
 test("Powerful checks the space commit before sending audio to the provider", async () => {
   let release!: () => void;
   const gate = new Promise<void>((resolve) => { release = resolve; });
-  const { calls, recording, track } = harness(undefined, false, false, "audio/mp4", gate);
+  const { calls, recording, track } = harness(undefined, false, false, "audio/mp4", 1000, [], gate);
   const lane = track(); lane.consent();
   const running = lane.run(recording);
   try {
@@ -268,7 +270,7 @@ test("a crashed owner with an upload ID is taken over and resumed", async () => 
 
 for (const result of ["existing", "missing"] as const) {
   test(`an ambiguous create reconciles ${result} server state`, async () => {
-    const { calls, recording, track } = harness(undefined, false, false, "audio/mp4", undefined, result);
+    const { calls, recording, track } = harness(undefined, false, false, "audio/mp4", 1000, [], undefined, result);
     const first = track(); first.consent();
     await first.run(recording);
     expect(first.jobs.get(recording.id)?.kind).toBe("failed");

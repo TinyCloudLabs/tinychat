@@ -160,6 +160,16 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
       const handle = await withHostedUploadQueue(did, async () => {
         let handle = stored.handle;
         if (!handle) {
+          const existingJob = await client.lookupJob(id);
+          if (existingJob.status === "needs_reconciliation" || existingJob.status === "unresolved")
+            throw new AssemblyAiError("needs-reconciliation", "Powerful couldn't confirm an earlier attempt. Exo is checking with AssemblyAI.");
+          if (existingJob.status === "deleted")
+            throw new AssemblyAiError("rejected", "This note's earlier transcript was deleted. Contact support before retrying.");
+          if (existingJob.status === "submitted" && existingJob.id) return existingJob.id;
+          if (existingJob.status === "receiving" && existingJob.upload_id) {
+            stored.uploadId = existingJob.upload_id;
+            persist(id, { uploadId: existingJob.upload_id });
+          }
           const caps = await client.capabilities();
           if (!caps.hosted) throw new AssemblyAiError("failed", "Powerful isn't available right now. Try again later.");
           if (source.size > caps.max_bytes) throw new AssemblyAiError("rejected", "This recording is too large for Powerful (120 MB maximum).");
@@ -185,7 +195,7 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
               const opId = crypto.randomUUID();
               await native.beginRemoteOp({ id, did, opId, provider: "assemblyai", mode: "hosted", kind: "hosted_create",
                 fingerprint: `${source.size}:${source.mimeType}`, startedAt: Date.now() });
-              const created = await client.createUpload(source.size, contentType);
+              const created = await client.createUpload(source.size, contentType, id);
               uploadId = created.uploadId;
               persist(id, { uploadId });
               await native.recordRemoteResult({ id, did, opId, result: { outcome: "created", uploadId } });
@@ -258,8 +268,9 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
         if (existing?.claim.status === "failed") return null;
         let claim: Claim = existing?.claim ?? { version: 1, status: "active", token, claimedAt: Date.now(),
           uploadId: latest.uploadId, handle: latest.handle };
-        let handle = claim.handle ?? latest.handle;
-        if (existing?.claim.status === "submitted") return handle ?? null;
+        const claimHandle = claim.handle ?? latest.handle;
+        if (existing?.claim.status === "submitted") break;
+        let handle = claimHandle;
         const advance = async (patch: Partial<Claim>) => {
           const current = await readClaim(account, id);
           if (!current || current.claim.token !== token || !await writeClaim(account, id, { ...current.claim, ...patch }, current.etag))
@@ -345,7 +356,7 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
               }
             }
           }
-          return handle;
+          break;
         } catch (error) {
           // Keep a submitted handle immutable. A failed upload can be claimed
           // again with a conditional write and resumed from its upload ID.

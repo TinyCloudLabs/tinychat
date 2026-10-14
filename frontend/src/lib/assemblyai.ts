@@ -238,7 +238,7 @@ export function createHostedAssemblyAiClient(config: {
       const created = (await request("/hosted/uploads", { method: "POST", json: { byte_size: size, content_type: contentType, ...(sourceId ? { source_id: sourceId } : {}) } }).then((r) => r.json())) as { upload_id?: unknown; part_size?: unknown; status?: HostedSubmission["status"]; id?: string };
       if (typeof created.upload_id !== "string" || typeof created.part_size !== "number" || created.part_size <= 0)
         throw new AssemblyAiError("failed", "Exo's server returned an unexpected upload.");
-      if (created.status === "needs_reconciliation")
+      if (created.status === "needs_reconciliation" || created.status === "unresolved")
         throw new AssemblyAiError("needs-reconciliation", "Powerful couldn't confirm an earlier attempt. Exo is checking with AssemblyAI.");
       return { uploadId: created.upload_id, partSize: created.part_size, status: created.status, id: created.id };
     },
