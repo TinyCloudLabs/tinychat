@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.7.4-beta.4
+
+### Patch Changes
+
+- c745b4d: Keep completed Private transcription results until the shared transcript commit is verified; keep device-local save and admission failures out of shared failure metadata.
+
 ## 0.7.4-beta.3
 
 ### Patch Changes
