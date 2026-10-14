@@ -3,7 +3,7 @@
 export interface PendingSaveState {
   id: string;
   failed?: { kind: "offline" | "rejected" | "timeout" | "quota" | "auth" | "server" | "source" | "other"; message: string };
-  held?: "signed-out" | "other-account" | "legacy" | "unowned" | "audio-upload-disabled";
+  held?: "signed-out" | "other-account" | "legacy" | "unowned";
   retryAt?: number;
 }
 

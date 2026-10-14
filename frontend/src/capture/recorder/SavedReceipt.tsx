@@ -31,7 +31,7 @@ export interface SavedReceiptProps {
   device?: "phone" | "mac";
   outcome: "local" | "saved" | "failed";
   localUpload?: "uploading" | "held" | "in-flight" | null;
-  localUploadHeldReason?: "signed-out" | "other-account" | "legacy" | "unowned" | "audio-upload-disabled";
+  localUploadHeldReason?: "signed-out" | "other-account" | "legacy" | "unowned";
   /** The actual hold on this recording, when localUpload is held. */
   holdReason?: PipelineHeldReason | null;
   /** The saved note (absent after a failure). */
@@ -307,8 +307,7 @@ export function SavedReceipt(props: SavedReceiptProps) {
         <>
           {!pipelineView && <RouteLine nodes={route} landed={saved} />}
           {props.outcome === "local" && !pipelineView && !pipelineWaiting && <p className="text-meta text-muted-foreground">{props.localUpload === "held"
-            ? holdReason === "audio-upload-disabled" ? "Audio upload is off. This note stays on this phone."
-              : holdReason === "other-account" ? "Recorded on another account"
+            ? holdReason === "other-account" ? "Recorded on another account"
                 : holdReason === "signed-out" ? "Sign in to sync to your TinyCloud space"
                   : holdReason === "legacy" || holdReason === "unowned" ? `Exo can't tell which account this note belongs to. It stays on ${localDevice}.`
                     : "Waiting to sync to your TinyCloud space"

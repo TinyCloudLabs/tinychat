@@ -77,7 +77,7 @@ export async function transcribeWith(
     return await transcription.onTranscribeAgain(noteId, provider) ?? null;
   }
   if (provider === "on-device") return (await retryOnDeviceNote(noteId)) === null ? null : LOCAL_START_FAILED;
-  if (provider === "assemblyai") return "Powerful transcription is available for confirmed reruns only.";
+  if (provider === "assemblyai") return "Powerful transcription isn't available here yet.";
   if (!transcription) return "Private transcription isn’t available here.";
   // A Local job on the phone (committed, or chosen here earlier) stops first, so the two never both transcribe it.
   if (phone?.committed != null && phone.committed !== "private-cloud") {

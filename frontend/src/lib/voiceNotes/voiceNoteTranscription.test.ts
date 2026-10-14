@@ -42,9 +42,9 @@ import { base64ToBytes, bytesToBase64, type AudioDecoder } from "./voiceNoteAudi
 import { createFakeVoiceNotes } from "./fakeVoiceNotes";
 import { __resetCaptureEngineForTests, __setInstalledEngineForTests, captureCapabilities } from "./captureEngine";
 import { __setVoiceNotesForTests, VoiceNotes, type LocalTranscript, type VoiceNoteRecording } from "./nativeVoiceNotes";
-import { syncOnDeviceTranscript } from "./onDeviceTranscriber";
+import { onDeviceTranscriptSyncState, syncOnDeviceTranscript } from "./onDeviceTranscriber";
 import { readTranscriptCommit } from "./voiceNoteCommits";
-import { transcriptHistoryKvKey } from "./voiceNoteTranscriptHistory";
+import { preserveVoiceNoteTranscriptHistory, transcriptHistoryKvKey } from "./voiceNoteTranscriptHistory";
 import { resolveVoiceNoteRow } from "./voiceNoteRows";
 import { pendingStore } from "./recorderSaves";
 import { advanceAccountGeneration } from "./accountContext";
@@ -1997,6 +1997,76 @@ describe("transcribeVoiceNote (one note end to end)", () => {
       expect(space.kv.get(String(history.body_key))).toContain(TRANSCRIPT.segments[0]!.text.trim());
     } finally { unmount(); }
   });
+  test("a Local rerun that loses to a concurrent revision is never acknowledged on later syncs", async () => {
+    const space = sqliteSpace();
+    // sqliteSpace hides its fake client behind `never`; isolate this sync cache by space context.
+    const isolatedSpace = space.tcw as unknown as { spaceId?: string };
+    isolatedSpace.spaceId = "space:local-rerun-race";
+    await saveVoiceNote(space.tcw, RECORDING, AUDIO, "ios");
+    await saveVoiceNoteTranscript(space.tcw, "rec-1", prepareVoiceNoteTranscript(TRANSCRIPT, "2026-10-03T10:00:00.000Z", 1));
+    const prior = await readTranscriptCommit(space.tcw, "rec-1");
+    const local = {
+      version: 1, noteId: "rec-1", transcriber: "on-device", rev: 2, engine: "apple-speech",
+      model: null, language: "en", outcome: "transcribed", diarized: false, createdAt: "2026-10-03T11:00:00.000Z",
+      segments: [{ start: 0, end: 1000, text: "Losing Local rerun.", speaker: null }],
+      rerunBase: { rev: prior!.rev, hash: prior!.hash },
+    } as LocalTranscript;
+    VoiceNotes.listPending = async () => ({ recordings: [{ ...RECORDING, rev: 1, owner: space.tcw.did,
+      ledger: { audio: { state: "saved", rowId: "row-1" }, transcriptSync: { state: "pending", rev: 1, at: null } } } as never] });
+    VoiceNotes.getTranscript = async () => ({ transcript: local });
+    const savedAcknowledgements: unknown[] = [];
+    VoiceNotes.updateLedger = async (args) => { savedAcknowledgements.push(args); return {}; };
+    const kv = space.tcw as unknown as { kv: { put: (key: string, value: string | Uint8Array,
+      options?: { ifNoneMatch?: string }) => Promise<unknown> } };
+    const write = kv.kv.put.bind(kv.kv);
+    let competitorCommitted = false;
+    kv.kv.put = async (key, value, options) => {
+      if (!competitorCommitted && key === transcriptHistoryKvKey("rec-1", prior!.rev, prior!.hash)) {
+        competitorCommitted = true;
+        const competing = prepareVoiceNoteTranscript({ ...TRANSCRIPT, text: "Competing rev 3.",
+          segments: [{ channel: 0, start: 0, end: 1, text: "Competing rev 3." }] },
+        "2026-10-03T11:30:00.000Z", 3);
+        expect((await saveVoiceNoteTranscript(space.tcw, "rec-1", competing)).ok).toBe(true);
+      }
+      return write(key, value, options);
+    };
+    const unmount = mountVoiceNoteAccount(space.tcw.did);
+    try {
+      const input = { id: "rec-1", owner: space.tcw.did, ledger: { audio: { state: "saved", rowId: "row-1" } } };
+      await syncOnDeviceTranscript(space.tcw, input);
+      expect(onDeviceTranscriptSyncState(space.tcw, "rec-1")?.state).toBe("failed");
+      await syncOnDeviceTranscript(space.tcw, input);
+      expect(onDeviceTranscriptSyncState(space.tcw, "rec-1")?.state).toBe("failed");
+      expect(savedAcknowledgements).toEqual([]);
+      expect(await readTranscriptCommit(space.tcw, "rec-1")).toMatchObject({ rev: 3 });
+    } finally { unmount(); }
+  });
+  test("an account switch after the history commit reread prevents its history write", async () => {
+    const space = sqliteSpace();
+    await saveVoiceNote(space.tcw, RECORDING, AUDIO, "ios");
+    await saveVoiceNoteTranscript(space.tcw, "rec-1", prepareVoiceNoteTranscript(TRANSCRIPT, "2026-10-03T10:00:00.000Z", 1));
+    const commit = await readTranscriptCommit(space.tcw, "rec-1");
+    const client = space.tcw as unknown as { sql: { db: (name: string) => {
+      query: (sql: string, params?: unknown[], options?: unknown) => Promise<{ ok: boolean; data?: { rows: unknown[][] }; error?: unknown }>;
+    } } };
+    const db = client.sql.db.bind(client.sql);
+    client.sql.db = (name) => {
+      const current = db(name);
+      return { query: async (sql, params, options) => {
+        const result = await current.query(sql, params, options);
+        if (sql.includes("FROM voice_note_transcript")) advanceAccountGeneration();
+        return result;
+      } };
+    };
+    const generation = currentAccountGeneration();
+    const checkpoint = () => {
+      if (currentAccountGeneration() !== generation) throw new Error("account changed");
+    };
+    await expect(preserveVoiceNoteTranscriptHistory(space.tcw, commit!, checkpoint)).rejects.toThrow("account changed");
+    expect(space.kvPutCalls.filter(({ key }) => key.includes("/transcript-history/"))).toEqual([]);
+  });
+  
+  
   test("ordinary transcript commits do not create history records", async () => {
     const space = sqliteSpace();
     await saveVoiceNote(space.tcw, RECORDING, AUDIO, "android");

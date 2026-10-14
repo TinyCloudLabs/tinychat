@@ -1,6 +1,7 @@
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { CONNECTORS_KV_PREFIX } from "../connectors/connectorStore";
 import { readTranscriptCommit, type TranscriptCommit } from "./voiceNoteCommits";
+import { withVoiceNoteSaveDeadline } from "./saveDeadline";
 
 export interface VoiceNoteTranscriptHistoryRecord {
   v: 1;
@@ -32,8 +33,12 @@ function existingRecordText(value: unknown): string | null {
 }
 
 /** Call only for an explicit rerun, immediately before replacement; refuses a changed expected commit. */
-export async function preserveVoiceNoteTranscriptHistory(tcw: TinyCloudWeb, expected: TranscriptCommit): Promise<void> {
-  const current = await readTranscriptCommit(tcw, expected.sourceId);
+export async function preserveVoiceNoteTranscriptHistory(tcw: TinyCloudWeb, expected: TranscriptCommit,
+  checkpoint: () => void): Promise<void> {
+  checkpoint();
+  const current = await withVoiceNoteSaveDeadline(`transcript history commit id=${expected.sourceId}`,
+    (signal) => readTranscriptCommit(tcw, expected.sourceId, checkpoint, signal));
+  checkpoint();
   if (current?.rev !== expected.rev || current.hash !== expected.hash)
     throw new Error("The committed transcript changed before history could be preserved. Retry the rerun.");
   const record: VoiceNoteTranscriptHistoryRecord = {
@@ -47,6 +52,7 @@ export async function preserveVoiceNoteTranscriptHistory(tcw: TinyCloudWeb, expe
     committed_at: expected.committedAt,
   };
   const key = transcriptHistoryKvKey(expected.sourceId, expected.rev, expected.hash);
+  checkpoint();
   const result = await tcw.kv.put(key, JSON.stringify(record), { ifNoneMatch: "*", contentType: "application/json" });
   if (result.ok) return;
   if (!/PRECONDITION|412/i.test(`${result.error.code} ${result.error.message}`))

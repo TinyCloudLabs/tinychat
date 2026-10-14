@@ -295,7 +295,7 @@ export type SaveOutcome =
   | { kind: "saved"; audio: VoiceNoteAudio | null; cleanupError: string | null; noteSyncError?: NoteSyncErrorCode }
   | { kind: "already-saved"; cleanupError: string | null }
   | { kind: "discarded"; cleanupError: string | null }
-  | { kind: "held"; reason: "signed-out" | "legacy" | "unowned" | "other-account" | "audio-upload-disabled" }
+  | { kind: "held"; reason: "signed-out" | "legacy" | "unowned" | "other-account" }
   | { kind: "in-flight" }
   | { kind: "failed"; failure: string; failureKind: "offline" | "rejected" | "timeout" | "quota" | "auth" | "server" | "source" | "other"; failureCause: unknown };
 
@@ -683,7 +683,7 @@ export interface PendingNote {
   durationMs: number;
   /** This note failed its latest save attempt, so its Recent row must not imply it's still saving. */
   failed?: { kind: "offline" | "rejected" | "timeout" | "quota" | "auth" | "server" | "source" | "other"; message: string };
-  held?: "signed-out" | "other-account" | "legacy" | "unowned" | "audio-upload-disabled";
+  held?: "signed-out" | "other-account" | "legacy" | "unowned";
   retryAt?: number;
   upload?: { state: "waiting" | "preparing" | "uploading" | "retrying"; bytes: number; total: number };
   waitingBehind?: number;

@@ -118,11 +118,6 @@ describe("the receipt's wording", () => {
 
 
 
-  test("a note without audio-upload approval says it stays on this phone", () => {
-    const html = render({ outcome: "local", localUpload: "held", localUploadHeldReason: "audio-upload-disabled" });
-    expect(html).toContain("Audio upload is off. This note stays on this phone.");
-    expect(html).not.toContain("ownership check");
-  });
   test("the saved location is said once, not as a heading and a label", () => {
     const html = render();
     expect(html).not.toContain("<h3");

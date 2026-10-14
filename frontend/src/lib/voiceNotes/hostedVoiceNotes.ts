@@ -368,7 +368,7 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
           ...(s.timing === undefined ? {} : { timing: s.timing }) })) };
       state(id, { kind: "saving" });
       guard();
-      if (explicitRerun && prior) await preserveHistory(account, prior);
+      if (explicitRerun && prior) await preserveHistory(account, prior, guard);
       if (!explicitRerun && recording.sizeBytes > 0 && (!local.transcript || local.transcript.rev < rev))
         await native.putTranscript({ id, transcript: prepared });
       guard();

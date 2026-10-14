@@ -33,7 +33,7 @@ export type PipelineCaptureIssue = "finalization_timed_out" | "recoveryFailed" |
  */
 export type PipelineFailureKind = "offline" | "rejected" | "timeout" | "quota" | "auth" | "server" | "source" | "other";
 /** `PendingNote.held` (P1; `SaveOutcome.held.reason` plus signed-out). */
-export type PipelineHeldReason = "signed-out" | "other-account" | "legacy" | "unowned" | "audio-upload-disabled";
+export type PipelineHeldReason = "signed-out" | "other-account" | "legacy" | "unowned";
 
 /** The part of `PendingNote` (P1) the pipeline reads. A note with no pending entry and no space row yet has `pending: null`. */
 export interface PipelinePending {

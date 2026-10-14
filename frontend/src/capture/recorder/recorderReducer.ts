@@ -58,7 +58,7 @@ export interface RecorderState {
   /** The phone receipt distinguishes an active upload from a held note or another saver. */
   localUpload: "uploading" | "held" | "in-flight" | null;
   /** Why the phone-only receipt is held, for a later actionable receipt. */
-  localUploadHeldReason?: "signed-out" | "other-account" | "legacy" | "unowned" | "audio-upload-disabled";
+  localUploadHeldReason?: "signed-out" | "other-account" | "legacy" | "unowned";
   lastSaved: { id: string; durationMs: number; at: number } | null;
   /** The recording behind a "Kept on this phone" receipt, so a later Save now can land it. */
   failedRecording: { id: string; durationMs: number } | null;
@@ -101,7 +101,7 @@ export type RecorderEvent =
   /** The save started (percent null) or moved on. */
   | { type: "SAVE_PROGRESS"; percent: number | null }
   | { type: "LOCAL_COMMITTED"; id: string; durationMs: number; at: number }
-  | { type: "LOCAL_UPLOAD_HELD"; id: string; reason: "signed-out" | "other-account" | "legacy" | "unowned" | "audio-upload-disabled" }
+  | { type: "LOCAL_UPLOAD_HELD"; id: string; reason: "signed-out" | "other-account" | "legacy" | "unowned" }
   | { type: "LOCAL_UPLOAD_IN_FLIGHT"; id: string }
   | { type: "SAVED"; id: string; durationMs: number; at: number }
   | { type: "SAVE_FAILED"; error: string; recording: { id: string; durationMs: number } | null }

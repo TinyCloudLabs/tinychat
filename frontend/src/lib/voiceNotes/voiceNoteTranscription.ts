@@ -1319,7 +1319,7 @@ export async function transcribeVoiceNote(args: {
     report({ kind: "saving" });
     if (!stillCurrent()) throw accountChangedError();
     if (args.explicitRerun && commit) {
-      try { await preserveVoiceNoteTranscriptHistory(tcw, commit); }
+      try { await preserveVoiceNoteTranscriptHistory(tcw, commit, accountCheckpoint); }
       catch {
         throw new PrivateCloudError("transcript_save_failed", "Could not preserve the current transcript revision");
       }

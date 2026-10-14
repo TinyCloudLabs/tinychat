@@ -248,11 +248,10 @@ async function syncOnce(tcw: TinyCloudWeb, key: string, id: string, expected: bo
         return await recordAndPublish(tcw, key, id, transcript, ctx);
       if (!current || current.rev !== transcript.rerunBase.rev || current.hash !== transcript.rerunBase.hash)
         throw new Error("The committed transcript changed before this rerun could sync. Try again.");
-      await preserveVoiceNoteTranscriptHistory(tcw, current);
+      await preserveVoiceNoteTranscriptHistory(tcw, current, checkpoint(tcw, ctx));
     }
     const result = await saveVoiceNoteTranscript(tcw, id, prepared,
       { generation: ctx.generation, did: ctx.did }, checkpoint(tcw, ctx));
-    if (result.ok) published.add(resultKey);
     if (!isCurrent(tcw, ctx)) return true;
     if (result.ok) {
       if (transcript.rerunBase) {
@@ -260,6 +259,7 @@ async function syncOnce(tcw: TinyCloudWeb, key: string, id: string, expected: bo
         if (current?.rev !== transcript.rev || current.hash !== await transcriptHash(prepared.sentences))
           throw new Error("A different transcript revision won this rerun. Try again.");
       }
+      published.add(resultKey);
       return await recordAndPublish(tcw, key, id, transcript, ctx);
     }
     console.warn("[OnDeviceStt] Could not save the on-device transcript to the space", result.error);
