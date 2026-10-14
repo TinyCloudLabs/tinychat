@@ -184,7 +184,8 @@ export class CalendarAutojoinConnection {
       const enabled: CalendarConnection = { ...latest!, state: "enabled", setupId: undefined,
         setupExpiresAt: undefined, nextScanAt: this.now(), errorCode: undefined, offReason: undefined, scanComplete: false };
       await this.grantWriter.run("grants", async () => {
-        await this.options.store.putConnection(enabled);
+        try { await this.options.store.putConnection(enabled); }
+        catch (error) { this.grantIndex.invalidate(); throw error; }
         this.holdGrant(enabled, secret, true);
       });
     });

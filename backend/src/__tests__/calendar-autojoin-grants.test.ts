@@ -257,6 +257,21 @@ describe("TC-1101 shared Google grant custody", () => {
     expect(f.calls).toHaveLength(1);
   });
 
+  test("an enable that committed before reporting failure invalidates the reference projection", async () => {
+    const f = fixture(); const a = await f.seed(); await f.seed(B); await f.backfill();
+    const write = f.stores.request.putConnection.bind(f.stores.request);
+    const put = spyOn(f.stores.request, "putConnection").mockImplementation(async row => {
+      await write(row);
+      if (row.state === "enabled") throw new Error("Synthetic committed enable uncertainty");
+    });
+    try { await expect(f.connect(C, SUBJECT)).rejects.toThrow("Synthetic committed enable uncertainty"); }
+    finally { put.mockRestore(); }
+    expect((await f.stores.request.getConnection(C))?.state).toBe("enabled");
+    expect(f.connection.grantIndex.needsBackfill).toBe(true);
+    await f.connection.disconnect(A, a.refreshToken);
+    expect(f.calls).toHaveLength(1);
+  });
+
   test("ordinary subject replacement moves bindings and stops old references, without any upstream revoke", async () => {
     const f = fixture(); await f.seed(); await f.seed(B); await f.backfill();
     const browser = f.mint(A, OTHER_SUBJECT);
