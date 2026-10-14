@@ -262,6 +262,89 @@ describe("private-cloud result polling failure budget", () => {
     expect(resultCalls).toBeLessThan(45);
     expect(now).toBeLessThanOrEqual(630);
   });
+  test("status 429 time is excluded from the active result-failure deadline", async () => {
+    let now = 0;
+    let gets = 0;
+    let results = 0;
+    const randomValues = [0.5, 0];
+    const poller = createCloudJobPoller({
+      get: async () => {
+        gets++;
+        if (gets === 2) throw new PrivateCloudError("service_busy", "limited", {
+          statusCode: 429, retryAfterSeconds: 900,
+        });
+        return { id: ID, status: "completed" } as never;
+      },
+      result: async () => {
+        results++;
+        if (results <= 2) throw new PrivateCloudError("service_unavailable", "temporarily unavailable", { statusCode: 503 });
+        return { status: "completed", transcript: {} } as never;
+      },
+    }, {
+      clock: { now: () => now, sleep: async (ms) => { now += ms; },
+        random: () => randomValues.shift() ?? 0.5 },
+      polling: { intervalMs: 5_000, slowAfterMs: 30_000, slowIntervalMs: 30_000, giveUpAfterMs: 600_000 },
+      connectionLost: () => new Error("connection_lost"),
+    });
+
+    const transcript = await poller.pollTranscript(ID, () => {});
+    expect(transcript).toEqual({});
+    expect(now).toBe(910_000);
+  });
+  test("a result succeeding at 905 seconds survives a status 429 wait", async () => {
+    let now = 0;
+    let gets = 0;
+    let results = 0;
+    const randomValues = [0.5, 0];
+    const poller = createCloudJobPoller({
+      get: async () => {
+        gets++;
+        if (gets === 2) throw new PrivateCloudError("service_busy", "limited", {
+          statusCode: 429, retryAfterSeconds: 900,
+        });
+        return { id: ID, status: "completed" } as never;
+      },
+      result: async () => {
+        results++;
+        if (results === 1) throw new PrivateCloudError("service_unavailable", "temporarily unavailable", { statusCode: 503 });
+        return { status: "completed", transcript: {} } as never;
+      },
+    }, {
+      clock: { now: () => now, sleep: async (ms) => { now += ms; },
+        random: () => randomValues.shift() ?? 0.5 },
+      polling: { intervalMs: 5_000, slowAfterMs: 30_000, slowIntervalMs: 30_000, giveUpAfterMs: 600_000 },
+      connectionLost: () => new Error("connection_lost"),
+    });
+    const transcript = await poller.pollTranscript(ID, () => {});
+    expect(transcript).toEqual({});
+    expect(now).toBe(905_000);
+  });
+  test("result 429 suspension preserves active result-failure history", async () => {
+    let now = 0;
+    let results = 0;
+    const randomValues = [0.5, 0];
+    const poller = createCloudJobPoller({
+      get: async () => ({ id: ID, status: "completed" }) as never,
+      result: async () => {
+        results++;
+        if (results === 1 || results === 3) {
+          throw new PrivateCloudError("service_unavailable", "temporarily unavailable", { statusCode: 503 });
+        }
+        if (results === 2) {
+          throw new PrivateCloudError("service_busy", "limited", { statusCode: 429, retryAfterSeconds: 900 });
+        }
+        return { status: "completed", transcript: {} } as never;
+      },
+    }, {
+      clock: { now: () => now, sleep: async (ms) => { now += ms; },
+        random: () => randomValues.shift() ?? 0.5 },
+      polling: { intervalMs: 5_000, slowAfterMs: 30_000, slowIntervalMs: 30_000, giveUpAfterMs: 600_000 },
+      connectionLost: () => new Error("connection_lost"),
+    });
+    const transcript = await poller.pollTranscript(ID, () => {});
+    expect(transcript).toEqual({});
+    expect(now).toBe(910_000);
+  });
 });
 
 describe("private-cloud messages", () => {

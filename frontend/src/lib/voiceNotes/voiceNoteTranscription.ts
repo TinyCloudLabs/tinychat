@@ -749,10 +749,11 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
   };
 
   /** Real failures retain their budget across 429 waits; only successful responses reset it. */
-  const transientTolerance = (wait: (ms: number) => Promise<void>) => {
+  const transientTolerance = (wait: (ms: number) => Promise<void>, throttledTime: () => number = () => 0) => {
     let failingSince: number | null = null;
+    let throttledAtFailure = 0;
     return {
-      reset: () => { failingSince = null; },
+      reset: () => { failingSince = null; throttledAtFailure = throttledTime(); },
       pause: async (ms: number, waitFor?: (delay: number) => Promise<void>) => {
         const before = clock.now();
         try {
@@ -764,8 +765,11 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
       rideOut: async (err: unknown) => {
         if (!isTransientCloudError(err)) throw err;
         const now = clock.now();
-        failingSince ??= now;
-        const failingFor = now - failingSince;
+        if (failingSince === null) {
+          failingSince = now;
+          throttledAtFailure = throttledTime();
+        }
+        const failingFor = Math.max(0, now - failingSince - (throttledTime() - throttledAtFailure));
         if (failingFor >= polling.giveUpAfterMs) {
           throw new PrivateCloudError(
             "connection_lost",
@@ -846,8 +850,22 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
         deps.locks ?? cloudJobLockManager(),
         (ms) => clock.sleep(ms),
         async (context: CloudPollContext<PrivateCloudTranscript, VoiceNoteTranscriptionStatus>) => {
-          const statusTolerance = transientTolerance((ms) => context.sleep(Math.round(ms * (0.8 + 0.4 * clock.random()))));
-          const resultTolerance = transientTolerance((ms) => context.sleep(Math.round(ms * (0.8 + 0.4 * clock.random()))));
+          let throttledMs = 0;
+          const throttledTime = () => throttledMs;
+          const waitThrottled = async (ms: number): Promise<void> => {
+            const before = clock.now();
+            try {
+              await context.sleep(ms);
+            } finally {
+              throttledMs += Math.max(0, clock.now() - before);
+            }
+          };
+          const statusTolerance = transientTolerance(
+            (ms) => context.sleep(Math.round(ms * (0.8 + 0.4 * clock.random()))), throttledTime,
+          );
+          const resultTolerance = transientTolerance(
+            (ms) => context.sleep(Math.round(ms * (0.8 + 0.4 * clock.random()))), throttledTime,
+          );
           context.report({ kind: "queued", position: null });
           for (;;) {
             context.checkpoint();
@@ -859,7 +877,7 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
               statusTolerance.reset();
             } catch (error) {
               if (error instanceof PrivateCloudError && error.statusCode === 429) {
-                await statusTolerance.pause(jitterRateLimitWait(error), (ms) => context.sleep(ms));
+                await waitThrottled(jitterRateLimitWait(error));
                 continue;
               }
               await statusTolerance.rideOut(error);
@@ -874,7 +892,7 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
                 resultTolerance.reset();
               } catch (error) {
                 if (error instanceof PrivateCloudError && error.statusCode === 429) {
-                  await resultTolerance.pause(jitterRateLimitWait(error), (ms) => context.sleep(ms));
+                  await waitThrottled(jitterRateLimitWait(error));
                   continue;
                 }
                 await resultTolerance.rideOut(error);

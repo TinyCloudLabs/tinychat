@@ -229,10 +229,12 @@ function harness(script: {
   rateLimitReads?: number;
   polling?: Partial<CloudPollingOptions>;
   sleep?: (ms: number) => Promise<void>;
-  random?: number;
+  random?: number | (() => number);
   resultFailureReads?: number;
   resultFailStopAfter?: number;
   locks?: CloudJobLockManager | null;
+  get?: (id: string, signal?: AbortSignal, read?: number) => Promise<PrivateCloudJob>;
+  resultRequest?: (id: string, signal?: AbortSignal, read?: number) => Promise<Awaited<ReturnType<PrivateCloudApi["result"]>>>;
 }) {
   const calls: string[] = [];
   const creates: { attemptId: string; body: PrivateCloudCreateBody }[] = [];
@@ -263,6 +265,7 @@ function harness(script: {
       calls.push(`get:${id}`);
       pollTimes.push(clockNow);
       statusReads++;
+      if (script.get !== undefined) return script.get(id, signal, statusReads);
       if ((script.rateLimitReads !== undefined && statusReads <= script.rateLimitReads)
         || (script.rateLimitUntilMs !== undefined && clockNow < script.rateLimitUntilMs)) {
         throw new PrivateCloudError("service_busy", "limited", {
@@ -274,9 +277,10 @@ function harness(script: {
       if (next instanceof PrivateCloudError) throw next;
       return { ...next, id };
     },
-    async result(id) {
+    async result(id, signal) {
       const reads = calls.filter((call) => call === `result:${id}`).length + 1;
       calls.push(`result:${id}`);
+      if (script.resultRequest !== undefined) return script.resultRequest(id, signal, reads);
       if (script.resultFailStopAfter !== undefined && reads > script.resultFailStopAfter) {
         throw new Error("result failure guard reached before connection_lost");
       }
@@ -313,7 +317,7 @@ function harness(script: {
         if (script.sleep) await script.sleep(ms);
         else clockNow += ms;
       },
-      random: () => script.random ?? 0.5,
+      random: () => typeof script.random === "function" ? script.random() : script.random ?? 0.5,
       
     },
     async create(request) {
@@ -2227,6 +2231,67 @@ test("a valid resume subscribes after the original account generation goes stale
   expect((oldResult as PrivateCloudError).code).toBe("account_changed");
   expect(newResult).toEqual(TRANSCRIPT);
 });
+test("a replacement PTX subscriber joins while the original status GET is open", async () => {
+  const pending = localStorageVoiceNotePendingStore(DID, memoryStorage());
+  pending.write("rec-1", { attemptId: "attempt-1", transcriptionId: ID });
+  let enterGet!: () => void;
+  const getStarted = new Promise<void>((resolve) => { enterGet = resolve; });
+  let resolveGet!: (value: PrivateCloudJob) => void;
+  const deferredGet = new Promise<PrivateCloudJob>((resolve) => { resolveGet = resolve; });
+  let reads = 0;
+  const h = harness({ pending, get: async () => {
+    reads++;
+    if (reads === 1) { enterGet(); return deferredGet; }
+    return job("completed");
+  } });
+  let oldAllowed = true;
+  const original = run(h, () => {}, undefined, () => oldAllowed);
+  await getStarted;
+  const replacement = run(h, () => {}, undefined, () => true);
+  for (let turn = 0; turn < 5; turn++) await Promise.resolve();
+  oldAllowed = false;
+  resolveGet(job("completed"));
+  const [originalResult, replacementResult] = await Promise.all([
+    original.catch((error: unknown) => error as PrivateCloudError),
+    replacement.then((result) => result.transcript),
+  ]);
+  expect((originalResult as PrivateCloudError).code).toBe("account_changed");
+  expect(replacementResult).toEqual(TRANSCRIPT);
+});
+
+test("a replacement PTX subscriber joins while the original result GET is open", async () => {
+  const pending = localStorageVoiceNotePendingStore(DID, memoryStorage());
+  pending.write("rec-1", { attemptId: "attempt-1", transcriptionId: ID });
+  let enterResult!: () => void;
+  const resultStarted = new Promise<void>((resolve) => { enterResult = resolve; });
+  let resolveResult!: () => void;
+  const deferredResult = new Promise<void>((resolve) => { resolveResult = resolve; });
+  const h = harness({
+    pending,
+    jobs: [job("completed")],
+    resultRequest: async (_id, _signal, read) => {
+      if (read === 1) { enterResult(); await deferredResult; }
+      return { status: "completed", transcript: TRANSCRIPT };
+    },
+  });
+  let oldAllowed = true;
+  const original = run(h, () => {}, undefined, () => oldAllowed);
+  await resultStarted;
+  const replacement = run(h, () => {}, undefined, () => true);
+  for (let turn = 0; turn < 30 && h.calls.filter((call) => call === `get:${ID}`).length < 3; turn++) {
+    await Promise.resolve();
+  }
+  for (let turn = 0; turn < 5; turn++) await Promise.resolve();
+  oldAllowed = false;
+  resolveResult();
+  const [originalResult, replacementResult] = await Promise.all([
+    original.catch((error: unknown) => error as PrivateCloudError),
+    replacement.then((result) => result.transcript),
+  ]);
+  expect((originalResult as PrivateCloudError).code).toBe("account_changed");
+  expect(replacementResult).toEqual(TRANSCRIPT);
+});
+
 test("aborting a resumed 429 status wait settles promptly and prevents another status read", async () => {
   const pending = localStorageVoiceNotePendingStore(DID, memoryStorage());
   pending.write("rec-1", { attemptId: "attempt-1", transcriptionId: ID });
@@ -2311,6 +2376,73 @@ test("repeated successful status reads do not reset the result-fetch failure bud
   expect((error as PrivateCloudError).code).toBe("connection_lost");
   expect(h.calls.filter((call) => call === `result:${ID}`).length).toBeLessThanOrEqual(40);
   expect(h.now).toBeLessThanOrEqual(10 * 60_000);
+});
+test("status 429 wait is excluded from an active result-failure deadline", async () => {
+  const pending = localStorageVoiceNotePendingStore(DID, memoryStorage());
+  pending.write("rec-1", { attemptId: "attempt-1", transcriptionId: ID });
+  const randomValues = [0.5, 0];
+  const h = harness({
+    pending,
+    get: async (_id, _signal, read) => {
+      if (read === 3) throw new PrivateCloudError("service_busy", "limited", {
+        statusCode: 429, retryAfterSeconds: 900,
+      });
+      return job("completed");
+    },
+    resultFailureReads: 2,
+    random: () => randomValues.shift() ?? 0.5,
+  });
+  const result = await run(h);
+  expect(result.transcript).toEqual(TRANSCRIPT);
+  expect(h.pollTimes).toContain(5_000);
+  expect(h.pollTimes).toContain(905_000);
+  expect(h.now).toBe(910_000);
+});
+test("a result succeeding at 905 seconds survives a status 429 wait", async () => {
+  const pending = localStorageVoiceNotePendingStore(DID, memoryStorage());
+  pending.write("rec-1", { attemptId: "attempt-1", transcriptionId: ID });
+  const randomValues = [0.5, 0];
+  const h = harness({
+    pending,
+    get: async (_id, _signal, read) => {
+      if (read === 3) throw new PrivateCloudError("service_busy", "limited", {
+        statusCode: 429, retryAfterSeconds: 900,
+      });
+      return job("completed");
+    },
+    resultFailureReads: 1,
+    random: () => randomValues.shift() ?? 0.5,
+  });
+  const result = await run(h);
+  expect(result.transcript).toEqual(TRANSCRIPT);
+  expect(h.pollTimes).toContain(5_000);
+  expect(h.pollTimes).toContain(905_000);
+  expect(h.now).toBe(905_000);
+});
+
+test("result 429 suspension preserves active result-failure history", async () => {
+  const pending = localStorageVoiceNotePendingStore(DID, memoryStorage());
+  pending.write("rec-1", { attemptId: "attempt-1", transcriptionId: ID });
+  let results = 0;
+  const randomValues = [0.5, 0];
+  const h = harness({
+    pending,
+    jobs: [job("completed")],
+    resultRequest: async () => {
+      results++;
+      if (results === 1 || results === 3) {
+        throw new PrivateCloudError("service_unavailable", "result unavailable", { statusCode: 503 });
+      }
+      if (results === 2) {
+        throw new PrivateCloudError("service_busy", "limited", { statusCode: 429, retryAfterSeconds: 900 });
+      }
+      return { status: "completed", transcript: TRANSCRIPT };
+    },
+    random: () => randomValues.shift() ?? 0.5,
+  });
+  const result = await run(h);
+  expect(result.transcript).toEqual(TRANSCRIPT);
+  expect(h.now).toBe(910_000);
 });
 
 test("Web Lock holder closure hands a resumed PTX job to the waiting tab", async () => {

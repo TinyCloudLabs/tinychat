@@ -211,6 +211,43 @@ test("a stale hosted poll subscriber leaves the remounted account's subscriber r
   expect(currentTrack.jobs.get("note-1")).toEqual({ kind: "done", outcome: "transcribed" });
   expect(h.transcriptReads).toBe(2);
 });
+test("a replacement hosted subscriber joins while the original transcript GET is open", async () => {
+  let enterGet!: () => void;
+  const getStarted = new Promise<void>((resolve) => { enterGet = resolve; });
+  let resolveGet!: () => void;
+  const deferredGet = new Promise<void>((resolve) => { resolveGet = resolve; });
+  const h = harness(undefined, false, false, "audio/mp4", {
+    getTranscript: async (read) => {
+      if (read === 1) { enterGet(); await deferredGet; }
+      return { id: "handle-1", status: "completed", utterances: [{ start: 0, end: 1000, text: "Hello", speaker: "A" }] };
+    },
+  });
+  h.data.set("exo.voiceNotes.powerfulJobs:did:test:one", JSON.stringify({
+    "note-1": { handle: "handle-1", recording: h.recording },
+  }));
+  const oldTrack = h.track();
+  oldTrack.consent();
+  const oldRun = oldTrack.run(h.recording);
+  await getStarted;
+  advanceAccountGeneration();
+  const currentTrack = h.track();
+  currentTrack.consent();
+  let currentSettled = false;
+  const currentRun = currentTrack.run(h.recording).then(
+    () => { currentSettled = true; },
+    () => { currentSettled = true; },
+  );
+  for (let turn = 0; turn < 5; turn++) await Promise.resolve();
+  resolveGet();
+  await oldRun;
+  for (let turn = 0; turn < 40 && !currentSettled; turn++) await Promise.resolve();
+  expect(h.transcriptReads).toBe(2);
+  expect(currentSettled).toBe(true);
+  await currentRun;
+  expect(oldTrack.jobs.get("note-1")?.kind).toBe("failed");
+  expect(currentTrack.jobs.get("note-1")).toEqual({ kind: "done", outcome: "transcribed" });
+});
+
 test("concurrent Powerful resumes share one hosted status stream", async () => {
   const h = harness();
   h.data.set("exo.voiceNotes.powerfulJobs:did:test:one", JSON.stringify({

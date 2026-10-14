@@ -947,11 +947,14 @@ export class CloudJobPollSession<T, P> {
 
   private async runWithSubscriber<R>(
     operation: (subscriber: CloudPollSubscriber<T, P>) => Promise<R>,
-    include: (subscriber: CloudPollSubscriber<T, P>) => boolean = () => true,
   ): Promise<R> {
-    this.checkpoint();
-    for (const subscriber of [...this.subscribers]) {
-      if (!this.subscribers.has(subscriber) || !include(subscriber)) continue;
+    for (;;) {
+      this.checkpoint();
+      const subscriber = this.subscribers.values().next().value as LiveCloudPollSubscriber<T, P> | undefined;
+      if (subscriber === undefined) {
+        this.checkpoint();
+        throw NO_CLOUD_POLL_SUBSCRIBERS;
+      }
       try {
         subscriber.guard?.();
       } catch (error) {
@@ -983,17 +986,37 @@ export class CloudJobPollSession<T, P> {
         throw error;
       }
     }
-    this.checkpoint();
-    throw NO_CLOUD_POLL_SUBSCRIBERS;
   }
 
   private async reconcile(): Promise<T | null> {
-    const subscriber = [...this.subscribers].find((candidate) => candidate.reconcile !== undefined);
-    if (subscriber === undefined) return null;
-    return this.runWithSubscriber(
-      (current) => current.reconcile!(),
-      (current) => current.reconcile !== undefined,
-    );
+    for (;;) {
+      this.checkpoint();
+      const subscriber = [...this.subscribers].find((candidate) => candidate.reconcile !== undefined);
+      if (subscriber === undefined) return null;
+      try {
+        const value = await subscriber.reconcile!();
+        if (!this.subscribers.has(subscriber)) continue;
+        try {
+          subscriber.guard?.();
+        } catch (error) {
+          subscriber.detach();
+          subscriber.reject(error);
+          continue;
+        }
+        this.checkpoint();
+        return value;
+      } catch (error) {
+        try {
+          subscriber.guard?.();
+        } catch (guardError) {
+          subscriber.detach();
+          subscriber.reject(guardError);
+          continue;
+        }
+        if (!this.subscribers.has(subscriber)) continue;
+        throw error;
+      }
+    }
   }
 
   private async sleep(ms: number): Promise<void> {
@@ -1104,10 +1127,11 @@ export function createCloudJobPoller(
   const jitterRateLimitWait = (err: PrivateCloudError) =>
     Math.min(MAX_RATE_LIMIT_WAIT_MS, Math.round(waitForRateLimit(err) * (1 + 0.2 * clock.random())));
 
-  const transientTolerance = () => {
+  const transientTolerance = (throttledTime: () => number = () => 0) => {
     let failingSince: number | null = null;
+    let throttledAtFailure = 0;
     return {
-      reset: () => { failingSince = null; },
+      reset: () => { failingSince = null; throttledAtFailure = throttledTime(); },
       pause: async (delay: number, wait: () => Promise<void>) => {
         const before = clock.now();
         try {
@@ -1120,8 +1144,11 @@ export function createCloudJobPoller(
       rideOut: async (err: unknown) => {
         if (!isTransientCloudError(err)) throw err;
         const now = clock.now();
-        failingSince ??= now;
-        const failingFor = now - failingSince;
+        if (failingSince === null) {
+          failingSince = now;
+          throttledAtFailure = throttledTime();
+        }
+        const failingFor = Math.max(0, now - failingSince - (throttledTime() - throttledAtFailure));
         if (failingFor >= polling.giveUpAfterMs) throw options.connectionLost();
         await sleep(failingFor >= polling.slowAfterMs ? polling.slowIntervalMs : polling.intervalMs);
       },
@@ -1155,8 +1182,18 @@ export function createCloudJobPoller(
           cloudJobLockManager(),
           (ms) => clock.sleep(ms),
           async (context) => {
-            const statusTolerance = transientTolerance();
-            const resultTolerance = transientTolerance();
+            let throttledMs = 0;
+            const throttledTime = () => throttledMs;
+            const waitThrottled = async (ms: number): Promise<void> => {
+              const before = clock.now();
+              try {
+                await context.sleep(ms);
+              } finally {
+                throttledMs += Math.max(0, clock.now() - before);
+              }
+            };
+            const statusTolerance = transientTolerance(throttledTime);
+            const resultTolerance = transientTolerance(throttledTime);
             for (;;) {
               context.checkpoint();
               let job: PrivateCloudJob;
@@ -1167,7 +1204,7 @@ export function createCloudJobPoller(
               } catch (err) {
                 if (err instanceof PrivateCloudError && err.statusCode === 429) {
                   const waitMs = jitterRateLimitWait(err);
-                  await statusTolerance.pause(waitMs, () => context.sleep(waitMs));
+                  await waitThrottled(waitMs);
                   continue;
                 }
                 await statusTolerance.rideOut(err);
@@ -1182,7 +1219,7 @@ export function createCloudJobPoller(
                 } catch (err) {
                   if (err instanceof PrivateCloudError && err.statusCode === 429) {
                     const waitMs = jitterRateLimitWait(err);
-                    await resultTolerance.pause(waitMs, () => context.sleep(waitMs));
+                    await waitThrottled(waitMs);
                     continue;
                   }
                   await resultTolerance.rideOut(err);
