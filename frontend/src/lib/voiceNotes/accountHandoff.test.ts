@@ -1,8 +1,11 @@
-import { expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
 import { createFakeVoiceNotes } from "./fakeVoiceNotes";
-import { __setVoiceNotesForTests } from "./nativeVoiceNotes";
+import { __setVoiceNotesForTests, VoiceNotes } from "./nativeVoiceNotes";
 import { handoffBeforeCredentialClear } from "./accountHandoff";
 import type { VoiceNotePipeline } from "./voiceNotePipeline";
+
+const originalVoiceNotes = VoiceNotes;
+afterEach(() => __setVoiceNotesForTests(originalVoiceNotes, { available: null }));
 
 const did = "did:example:A";
 async function setup() {
