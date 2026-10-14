@@ -7,6 +7,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
+import { localTranscriptTurns, MIC_CHANNEL, type LocalWord } from "@/lib/localTranscriptTurns";
 
 import type { VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
 import {
@@ -124,6 +125,59 @@ describe("NoteDetailView", () => {
     expect(failed).toContain("Try again");
     expect(render({ transcript: undefined })).toContain("Loading the transcript…");
   });
+  test("60-second transcript spans are timed only for PTX provenance", () => {
+    const body = [
+      { index: 0, speaker_name: "You", text: "Synthetic first.", start_time: 0, end_time: 45 },
+      { index: 1, speaker_name: "You", text: "Synthetic second.", start_time: 45, end_time: 105 },
+    ];
+    const ptx = render({
+      metadata: { status: "ok", metadata: { transcription_engine: "private-cloud" } },
+      transcript: { status: "ok", sentences: body },
+      onCopyWithTimestamps: noop,
+    });
+    expect(ptx).toContain('aria-label="Play from 0:45"');
+    expect(ptx).toContain("Copy with timestamps");
+
+    for (const metadata of [
+      { status: "ok" as const, metadata: { transcription_engine: "whispercpp", transcript_provider: "whispercpp" } },
+      { status: "ok" as const, metadata: { transcription_engine: "future-engine" } },
+      { status: "absent" as const },
+    ]) {
+      const plain = render({ metadata, transcript: { status: "ok", sentences: body } });
+      expect(plain).not.toContain("Play from 0:45");
+      expect(plain).not.toContain("Copy with timestamps");
+      expect(plain).toContain("Synthetic second.");
+    }
+
+    const providerOnly = render({
+      metadata: { status: "ok", metadata: { transcript_provider: "tinycloud-private-transcription" } },
+      transcript: { status: "ok", sentences: body },
+    });
+    expect(providerOnly).toContain('aria-label="Play from 0:45"');
+  });
+
+  test("real Local turn builder keeps its interpolated 60-second split untimed", () => {
+    const words = Array.from({ length: 100 }, (_, index) => {
+      const segment = Math.floor(index / 25);
+      const word = index % 25;
+      const start = segment * 25;
+      const wordStart = start + word;
+      return {
+        text: `synthetic${index}`,
+        start: wordStart,
+        end: word === 24 ? Math.max(start + 24.9, wordStart + 0.05) : wordStart + 1,
+        channel: MIC_CHANNEL,
+      };
+    }) satisfies LocalWord[];
+    const turns = localTranscriptTurns(words);
+
+    expect(turns.map(({ start_time, end_time }) => [start_time, end_time])).toEqual([[0, 60], [60, 99.9]]);
+    const html = render({ metadata: { status: "absent" }, transcript: { status: "ok", sentences: turns } });
+    expect(html).not.toContain('aria-label="Play from 1:00"');
+    expect(html).not.toContain("Copy with timestamps");
+    expect(html).toContain("synthetic60");
+  });
+
 
   test("timed copy is absent when the caller has no handler", () => {
     const html = render({ transcript: { status: "ok", sentences: [

@@ -14,7 +14,7 @@ import { appPlatform } from "@/lib/platform";
 import { VoiceNoteSaveTimeout, withVoiceNoteSaveDeadline } from "@/lib/voiceNotes/saveDeadline";
 import { localTranscriptToSave, VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
 import { NoteDetailView, type NoteDetailViewProps } from "./NoteDetailView";
-import { hasSegmentTimes, transcriptWithTimestamps } from "./transcriptSegments";
+import { hasPrivateCloudTimingProvenance, hasSegmentTimes, transcriptWithTimestamps } from "./transcriptSegments";
 import type { Library } from "./useLibrary";
 
 /** Matches markdown-text's copy button: the tick reverts on its own. */
@@ -80,9 +80,11 @@ export function NoteDetail(props: {
     },
     [reads.transcript, reads.metadata, local, localId],
   );
+  const isPrivateCloud = reads.transcript?.status === "ok" && reads.transcript.sentences.length > 0
+    && reads.metadata?.status === "ok" && hasPrivateCloudTimingProvenance(reads.metadata.metadata);
   const onCopy = useCallback(async (withTimestamps = false) => {
-    const text = sentences && (withTimestamps && hasSegmentTimes(sentences)
-      ? transcriptWithTimestamps(sentences) : transcriptCopyText(sentences));
+    const text = sentences && (withTimestamps && hasSegmentTimes(sentences, isPrivateCloud)
+      ? transcriptWithTimestamps(sentences, isPrivateCloud) : transcriptCopyText(sentences));
     if (!text) return;
     const ok = await copyText(text);
     if (!mounted.current) return;
@@ -92,7 +94,7 @@ export function NoteDetail(props: {
       timer.current = null;
       setCopyState("idle");
     }, COPIED_DURATION);
-  }, [sentences]);
+  }, [sentences, isPrivateCloud]);
 
   return (
     <NoteDetailView

@@ -36,7 +36,7 @@ import { privateCloudFits } from "./transcribeProviders";
 import { HowThisGotHere } from "./HowThisGotHere";
 import { librarySourceLabel } from "./libraryKinds";
 import { TimestampedTranscript } from "./TimestampedTranscript";
-import { hasSegmentTimes, transcriptMarkdown } from "./transcriptSegments";
+import { hasPrivateCloudTimingProvenance, hasSegmentTimes, transcriptMarkdown } from "./transcriptSegments";
 import type { LibraryItem } from "./LibraryRow";
 import type { LibraryStatus } from "./LibraryListView";
 import { LazySavedNote } from "./savedNote/LazySavedNote";
@@ -266,11 +266,13 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
   const remoteSentences = transcript?.status === "ok" ? transcript.sentences : [];
   const spaceReadFailed = remoteSentences.length === 0 && local !== null &&
     (transcript?.status === "failed" || metadata?.status === "failed");
+  const isPrivateCloud = remoteSentences.length > 0 && metadata?.status === "ok"
+    && hasPrivateCloudTimingProvenance(metadata.metadata);
   const sentences = remoteSentences.length > 0 ? remoteSentences
     : local?.outcome === "transcribed" ? localTranscriptToSave(local).sentences : [];
-  const timed = hasSegmentTimes(sentences);
+  const timed = hasSegmentTimes(sentences, isPrivateCloud);
   const exportMarkdown = async () => {
-    const markdown = transcriptMarkdown(item.title ?? "Voice note", item.startedAt, sentences);
+    const markdown = transcriptMarkdown(item.title ?? "Voice note", item.startedAt, sentences, isPrivateCloud);
     const filename = `${(item.title ?? "Voice note").replaceAll(/[^\w -]/g, "").trim() || "voice-note"}.md`;
     setExportError(false);
     try {
@@ -326,7 +328,7 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
             <p className="text-callout text-muted-foreground">On this device · Couldn’t check your space.</p>
             <Button type="button" variant="outline" onClick={props.onRetry}>Try again</Button>
           </div>}
-          {timed ? <TimestampedTranscript sentences={sentences} hasAudio={props.audio !== null} /> : transcriptBlocks(sentences).map((block, index) => (
+          {timed ? <TimestampedTranscript sentences={sentences} hasAudio={props.audio !== null} isPrivateCloud={isPrivateCloud} /> : transcriptBlocks(sentences).map((block, index) => (
             <div key={index}>
               {block.speaker && <p className="text-meta font-semibold text-muted-foreground">{block.speaker}</p>}
               <p className="whitespace-pre-wrap break-words text-body">{block.text}</p>
