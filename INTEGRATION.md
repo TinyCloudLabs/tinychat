@@ -87,6 +87,7 @@ After merging origin/main (TC-1128, #387, #392, 45d16e58) and PR #386 (TC-1108 p
 - **CI frontend lint**: `bunx eslint frontend test`, 0 errors
 - **Backend CI suite**: 2477 pass, 7 skip, 0 fail (2484 tests, 111 files)
 - **Backend TypeScript**: `bun run --cwd backend build`, 0 errors; transcript delivery/API regressions 56 pass, 0 fail.
+- **Backend PR CI**: TC-1151 adds `bun run --cwd backend build` after workspace package builds, before package/backend tests.
 - **Chromium Exo UI matrix**: phone, phone-land, desktop, and text200-phone pass; no reference image was re-baselined
 - **Native checks**: workspace dependency closure passes with `--locked`; desktop debug `cargo check --no-default-features --locked` passes
 - **Privacy invariant**: unchanged; audio reaches TinyCloud KV only when `recording.options?.uploadAudio === true`.

@@ -56,6 +56,8 @@ jobs:
 
       - name: Build workspace packages
         run: bun run build:packages
+      - name: Typecheck backend
+        run: bun run --cwd backend build
 
       - name: Package tests (core, client, server incl. node-sdk renewal)
         run: bun run test:packages
