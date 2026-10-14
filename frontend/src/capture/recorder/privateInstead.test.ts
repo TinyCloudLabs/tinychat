@@ -6,6 +6,7 @@ import { createFakeOnDeviceStt } from "@/lib/voiceNotes/fakeOnDeviceStt";
 import { __setVoiceNotesForTests, VoiceNotes, type VoiceNotesPlugin } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { __setOnDeviceSttForTests, OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
 import { privateInsteadOffered, switchToPrivate } from "./privateInstead";
+import { PRIVATE_DURATION_MARGIN_SECONDS } from "@/lib/voiceNotes/voiceNoteTranscription";
 import type { VoiceNoteTranscriptionProps } from "./transcriptionProps";
 
 const originalVoiceNotes = VoiceNotes;
@@ -38,15 +39,17 @@ describe("privateInsteadOffered", () => {
     expect(privateInsteadOffered(props({ consented: false }), "n1", 60)).toBe(false);
   });
 
-  test("not offered for a note longer than private cloud takes", () => {
-    expect(privateInsteadOffered(props({ maxSeconds: 100 }), "n1", 101)).toBe(false);
-    expect(privateInsteadOffered(props({ maxSeconds: 100 }), "n1", 100)).toBe(true);
+  test("offered only while the note plus the margin fits under the advertised ceiling, inclusive", () => {
+    const ceiling = 4_321.5;
+    const at = (duration: number) => privateInsteadOffered(props({ maxSeconds: ceiling }), "n1", duration);
+    expect(at(ceiling - PRIVATE_DURATION_MARGIN_SECONDS)).toBe(true);
+    expect(at(ceiling - PRIVATE_DURATION_MARGIN_SECONDS + 0.001)).toBe(false);
+    expect(at(ceiling)).toBe(false);
+    expect(at(ceiling + 17.5)).toBe(false);
   });
 
-  test("the grace PTX advertises past its maximum is part of the limit; an unrounded length past it is not offered", () => {
-    expect(privateInsteadOffered(props({ maxSeconds: 7_200, graceSeconds: 300 }), "n1", 7_217.5)).toBe(true);
-    expect(privateInsteadOffered(props({ maxSeconds: 7_200 }), "n1", 7_217.5)).toBe(false);
-    expect(privateInsteadOffered(props({ maxSeconds: 7_200, graceSeconds: 300 }), "n1", 7_500.1)).toBe(false);
+  test("no advertised ceiling: not offered", () => {
+    expect(privateInsteadOffered(props({ maxSeconds: null }), "n1", 60)).toBe(false);
   });
 
   test("not offered once private cloud is working on the note or has finished it; a failed job can be tried again", () => {

@@ -240,7 +240,7 @@ export function parseCapabilities(body: unknown) {
     check(Array.isArray(o.content_types) && o.content_types.length > 0);
     const contentTypes = (o.content_types as unknown[]).map((v) => oneOf(v, CONTENT_TYPES));
     check(new Set(contentTypes).size === contentTypes.length);
-    // PTX's optional limits: relayed only when valid (finite, in range); absent or malformed means not advertised.
+    // PTX's optional limits: relayed only when valid (finite, in range); absent or malformed means not advertised. accepted_max_duration_seconds is PTX's inclusive measured ceiling and takes precedence over max + grace.
     const accepted = diagnosticNum(o.accepted_max_duration_seconds, Number.MIN_VALUE);
     const grace = diagnosticNum(o.duration_grace_seconds, 0);
     return {

@@ -81,7 +81,7 @@ describe("NoteDetailView", () => {
   test("an over-limit note explains the advertised maximum before offering Transcribe", () => {
     const html = render({ item: { ...VOICE, durationSecs: 10_800 }, transcription: transcription({ maxSeconds: 7_200 }) });
     expect(html).toContain('data-testid="voice-note-transcription-over-limit"');
-    expect(html).toContain("Private Transcription accepts notes up to 2 h. This note is 3 h.");
+    expect(html).toContain("Private Transcription accepts notes up to 1 h 59 min 59 s. This note is 3 h.");
     expect(html).not.toContain('data-testid="voice-note-transcribe"');
   });
   test("a note whose PTX limit is unknown says Private's limits aren't available, with no duration and no Transcribe", () => {

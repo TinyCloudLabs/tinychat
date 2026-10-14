@@ -20,6 +20,7 @@ import { memoryHoldStore } from "@/harness/memoryHoldStore";
 import { TranscribeActionFor } from "./TranscribeAction";
 import type { PhoneRead } from "./TranscribeAction";
 import { LOCAL_START_FAILED, needsConsent, transcribeProviders, transcribeWith, type PhoneRecording } from "./transcribeProviders";
+import { PRIVATE_DURATION_MARGIN_SECONDS } from "@/lib/voiceNotes/voiceNoteTranscription";
 
 const NOTE = "rec-1";
 const noop = () => {};
@@ -80,10 +81,13 @@ describe("the providers on offer", () => {
   });
 
   test("Private only for a note within the length private cloud advertises, on the first try and the retry alike", () => {
-    expect(transcribeProviders(NOTE, transcription({ maxSeconds: 7200 }), phone(), 7200)).toEqual(["on-device", "private-cloud"]);
-    expect(transcribeProviders(NOTE, transcription({ maxSeconds: 7200 }), phone(), 7201)).toEqual(["on-device"]);
-    expect(transcribeProviders(NOTE, transcription({ maxSeconds: 7200 }), null, 7201)).toEqual([]);
-    expect(transcribeProviders(NOTE, transcription({ maxSeconds: 7200 }), phone(), null)).toEqual(["on-device", "private-cloud"]);
+    const ceiling = 4_321.5;
+    const eligible = ceiling - PRIVATE_DURATION_MARGIN_SECONDS;
+    expect(transcribeProviders(NOTE, transcription({ maxSeconds: ceiling }), phone(), eligible)).toEqual(["on-device", "private-cloud"]);
+    expect(transcribeProviders(NOTE, transcription({ maxSeconds: ceiling }), phone(), eligible + 0.001)).toEqual(["on-device"]);
+    expect(transcribeProviders(NOTE, transcription({ maxSeconds: ceiling }), phone(), ceiling)).toEqual(["on-device"]);
+    expect(transcribeProviders(NOTE, transcription({ maxSeconds: ceiling }), null, ceiling + 1)).toEqual([]);
+    expect(transcribeProviders(NOTE, transcription({ maxSeconds: ceiling }), phone(), null)).toEqual(["on-device", "private-cloud"]);
   });
 
   test("Local needs the recording on this browser", () => {

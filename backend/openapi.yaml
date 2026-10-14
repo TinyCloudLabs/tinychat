@@ -2775,16 +2775,15 @@ components:
           type: number
           minimum: 0
           description: >-
-            Optional. Seconds PTX accepts beyond the duration limit, compared against the unrounded ffprobe
-            duration. Absent means 0. Relayed only when valid; malformed values are dropped. Field name is
-            proposed and not yet confirmed by PTX.
+            Optional. Seconds added to max_duration_seconds only, never to accepted_max_duration_seconds. Absent
+            means 0. Relayed only when valid; malformed values are dropped.
         accepted_max_duration_seconds:
           type: number
           exclusiveMinimum: 0
           description: >-
-            Optional. PTX's accepted raw ceiling in seconds. When present it is the duration limit (before grace)
-            in place of max_duration_seconds. Relayed only when valid; malformed values are dropped. Field name is
-            proposed and not yet confirmed by PTX.
+            Optional. PTX's inclusive ceiling on measured (container) duration in seconds. When present and valid it
+            is the duration limit and takes precedence over max_duration_seconds plus duration_grace_seconds; no grace
+            is added to it. Relayed only when valid; malformed values are dropped.
         max_channels:
           type: integer
           maximum: 2

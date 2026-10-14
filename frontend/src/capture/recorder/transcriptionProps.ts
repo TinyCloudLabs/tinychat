@@ -24,10 +24,8 @@ export interface VoiceNoteTranscriptionProps {
   powerfulAvailable?: boolean;
   powerfulConsented?: boolean;
   onPowerfulConsent?: () => void;
-  /** The longest note offered, in seconds; null when PTX advertised no maximum, so Private is not offered. */
+  /** PTX's inclusive ceiling on measured duration (accepted limit, or max plus grace); null when unknown, so Private is not offered. */
   maxSeconds: number | null;
-  /** Seconds PTX accepts past `maxSeconds` (0 when it advertises none). */
-  graceSeconds?: number;
   /** PTX's byte cap, when it advertises one. */
   maxBytes?: number;
   /** Whether this deployment can identify speaker turns in Private notes. */
@@ -67,7 +65,6 @@ export function transcriptionProps(
     powerfulConsented: snapshot.powerfulConsented,
     onPowerfulConsent: () => transcriber.consentPowerful?.(),
     maxSeconds: limits?.maxSeconds ?? null,
-    graceSeconds: limits?.graceSeconds ?? 0,
     ...(limits === null || limits.maxBytes === null ? {} : { maxBytes: limits.maxBytes }),
     diarization: snapshot.capabilities?.diarization === true,
     jobs: snapshot.jobs,
@@ -81,12 +78,12 @@ export function transcriptionProps(
 
 /** Whether private cloud takes this note by the rule `run` enforces: PTX's limits (unknown when null), then the byte cap when known. */
 export function privateRefusal(
-  transcription: Pick<VoiceNoteTranscriptionProps, "maxSeconds" | "graceSeconds" | "maxBytes">,
+  transcription: Pick<VoiceNoteTranscriptionProps, "maxSeconds" | "maxBytes">,
   durationSecs: number | null,
   sizeBytes: number | null = null,
 ): PrivateCloudRefusal | null {
   const limits: PrivateCloudLimits | null = transcription.maxSeconds === null
     ? null
-    : { maxSeconds: transcription.maxSeconds, graceSeconds: transcription.graceSeconds ?? 0, maxBytes: transcription.maxBytes ?? null };
+    : { maxSeconds: transcription.maxSeconds, maxBytes: transcription.maxBytes ?? null };
   return privateCloudRefusal(durationSecs, sizeBytes, limits);
 }

@@ -30,6 +30,7 @@ import { readableError } from "@/lib/readableError";
 
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { captureEvents } from "@/capture/captureEvents";
+import { captureDurationMs, preciseDurationSeconds } from "./noteDuration";
 
 import {
   AUDIO_CORRUPT,
@@ -502,7 +503,7 @@ export async function listVoiceNotes(tcw: TinyCloudWeb, limit = 20): Promise<Sto
       sourceId,
       title: typeof row[2] === "string" ? row[2] : null,
       startedAt: typeof row[3] === "string" ? row[3] : null,
-      durationSecs: typeof row[4] === "number" ? row[4] : null,
+      durationSecs: preciseDurationSeconds(typeof row[4] === "number" ? row[4] : null, captureDurationMs(row[5])),
       transcript: await readVoiceNoteTranscriptState(tcw, sourceId),
     });
   }
@@ -538,27 +539,26 @@ export async function readVoiceNoteForTranscription(
   const row = res.data.rows[0];
   if (!row) return { ok: true, data: null };
   // Raw PTX uploads are not decoded just to measure duration; capture metadata is the fallback, and with neither value PTX decides.
-  let durationSeconds: number | null = typeof row[0] === "number" ? row[0] : null;
+  const storedSecs: number | null = typeof row[0] === "number" ? row[0] : null;
   let captureVersion: number | null = null;
   let captureTranscriber: string | null = null;
   let captureSource: string | null = null;
   let channels: 1 | 2 = 1;
   try {
-    const metadata = typeof row[1] === "string" ? JSON.parse(row[1]) as unknown : row[1];
-    const capture = metadata && typeof metadata === "object" ? (metadata as { capture?: unknown }).capture : null;
-    if (capture && typeof capture === "object") {
-      const saved = capture as { duration_ms?: unknown; channels?: unknown; version?: unknown; source?: unknown; options?: { transcriber?: unknown } };
-      if (saved.channels === 2) channels = 2;
-      if (durationSeconds === null && typeof saved.duration_ms === "number") durationSeconds = saved.duration_ms / 1000;
-      if (typeof saved.version === "number") captureVersion = saved.version;
-      if (typeof saved.options?.transcriber === "string") captureTranscriber = saved.options.transcriber;
-      if (typeof saved.source === "string") captureSource = saved.source;
+    const metadata: unknown = typeof row[1] === "string" ? JSON.parse(row[1]) : row[1];
+    const capture = metadata !== null && typeof metadata === "object" && "capture" in metadata ? metadata.capture : null;
+    if (capture !== null && typeof capture === "object") {
+      if ("channels" in capture && capture.channels === 2) channels = 2;
+      if ("version" in capture && typeof capture.version === "number") captureVersion = capture.version;
+      if ("source" in capture && typeof capture.source === "string") captureSource = capture.source;
+      const options = "options" in capture ? capture.options : null;
+      if (options !== null && typeof options === "object" && "transcriber" in options && typeof options.transcriber === "string") captureTranscriber = options.transcriber;
     }
   } catch {
     // Legacy metadata may be malformed; the audio's size is checked before decoding.
   }
   return { ok: true, data: { transcript: await readVoiceNoteTranscriptState(tcw, sourceId),
-    durationSeconds, channels, captureVersion, captureTranscriber, captureSource } };
+    durationSeconds: preciseDurationSeconds(storedSecs, captureDurationMs(row[1])), channels, captureVersion, captureTranscriber, captureSource } };
 }
 
 /** What a transcription adds to a note: the sentences for its transcript key and row metadata. */

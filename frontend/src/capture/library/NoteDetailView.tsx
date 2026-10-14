@@ -26,7 +26,7 @@ import type { NotePipelineView } from "@/lib/voiceNotes/useNotePipeline";
 import type { AppPlatform } from "@/lib/platform";
 import { activityForNote, deviceName, noteStatus } from "../activity/activitySelector";
 import type { LocalTranscript } from "@/lib/voiceNotes/nativeVoiceNotes";
-import { transcriptionStatusText } from "@/lib/voiceNotes/voiceNoteTranscription";
+import { PRIVATE_DURATION_MARGIN_SECONDS, transcriptionStatusText } from "@/lib/voiceNotes/voiceNoteTranscription";
 import { transcriptionErrorCopy, voiceNoteTranscriptionFailureForCode } from "@/lib/voiceNotes/transcriptionErrors";
 import { localTranscriptToSave, voiceNoteTitle, voiceNoteTranscriptState, VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
 import { PAGE_COLUMN, PageHeader } from "@/shell/PageHeader";
@@ -217,16 +217,20 @@ export function VoiceNoteTranscriptionStatus(props: {
     // Library items carry no byte size, so only the duration limit can refuse a note here.
     const refusal = privateRefusal(transcription, item.durationSecs);
     if (refusal?.kind === "unknown") {
+      // Limits unknown: no Private offer, but the recheck stays so the limits can come back.
       return (
-        <p className="text-callout text-muted-foreground" data-testid="voice-note-transcription-limits-unknown">
-          Private&apos;s limits aren’t available right now. Try again later.
-        </p>
+        <div className="flex flex-col gap-2" data-testid="voice-note-transcription-limits-unknown">
+          <p className="text-callout text-muted-foreground">
+            Private&apos;s limits aren’t available right now. Try again later.
+          </p>
+          <Button type="button" variant="outline" size="sm" onClick={() => void transcription.onRecheck()}>Check again</Button>
+        </div>
       );
     }
     if (refusal?.kind === "duration") {
       return (
         <p className="text-callout text-muted-foreground" data-testid="voice-note-transcription-over-limit">
-          Private Transcription accepts notes up to {formatExactDuration(refusal.limitSeconds, "floor")}. This note is {formatExactDuration(refusal.durationSeconds, "ceil")}.
+          Private Transcription accepts notes up to {formatExactDuration(refusal.limitSeconds - PRIVATE_DURATION_MARGIN_SECONDS, "floor")}. This note is {formatExactDuration(refusal.durationSeconds, "ceil")}.
         </p>
       );
     }

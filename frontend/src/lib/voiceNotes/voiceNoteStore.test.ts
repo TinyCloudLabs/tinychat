@@ -626,7 +626,7 @@ describe("listVoiceNotes", () => {
         sourceId: "rec-1",
         title: "Voice note",
         startedAt: "2026-09-29T05:40:00.000Z",
-        durationSecs: 12,
+        durationSecs: 12.5,
         transcript: { status: "pending", preview: null },
       }],
     });
