@@ -43,6 +43,7 @@ export type StoreOp =
 
 export interface SessionRecord {
   id: string;
+  channels?: 1 | 2;
   startedAt: number;
   source: CaptureSource;
   owner: string | null;
@@ -212,6 +213,7 @@ export function recordingFromSession(
   const silenced = spans.filter((span) => span.kind === "silenced");
   return {
     id: s.id, startedAt: s.startedAt, durationMs: o.durationMs, mimeType: s.mimeType, sizeBytes,
+    ...(s.channels ? { channels: s.channels } : {}),
     silencedMs: silenced.reduce((total, span) => total + span.audioMs, 0), silencedEvents: silenced.length, noSignalMs: 0,
     version: 2, rev: 1, wallMs: Math.max(0, o.endedAt - s.startedAt),
     pausedMs: s.pausedMs + (s.pauseStartedAt === null ? 0 : Math.max(0, o.endedAt - s.pauseStartedAt)),

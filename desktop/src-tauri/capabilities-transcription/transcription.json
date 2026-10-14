@@ -17,6 +17,7 @@
     "allow-read-audio-chunk",
     "allow-finalize-audio-file",
     "allow-recorder-whisper-stage-audio",
+    "allow-recorder-audio-envelope",
     "allow-recorder-whisper-start",
     "allow-recorder-whisper-cleanup-stages",
     "allow-delete-audio-file",
