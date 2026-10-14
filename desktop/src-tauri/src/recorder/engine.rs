@@ -1,13 +1,13 @@
 //! Capture lifecycle over anarlog's recorder. Pause/Stop report session-finalization
 //! state from the listener snapshot; that does not prove macOS released the input.
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use cpal::traits::{DeviceTrait, HostTrait};
 use parking_lot::Mutex;
-use recorder_state::{Error as RecorderError, Recorder, Request, Stall, Start, State, Step, Stop};
+use recorder_state::{Error as RecorderError, Recorder, Request, Stall, Start, State, Step, Stop, DURABLE_STOP_ATTEMPT_BUDGET};
 use serde::Serialize;
 use tauri::{Emitter, Manager};
 use tauri_plugin_settings::SettingsPluginExt;
@@ -38,6 +38,8 @@ pub struct EngineState {
     auto_stop_requested: bool,
     last_stop_reason: Option<&'static str>,
     capture_source_unconfirmed: bool,
+    active_input_devices: Option<Vec<u32>>,
+    unconfirmed_input_devices: Option<Vec<u32>>,
 }
 
 #[derive(Serialize, Clone, Copy)]
@@ -82,16 +84,19 @@ pub fn install(app: &tauri::AppHandle) {
             ticker.tick().await;
             if Instant::now() >= next_release_check {
                 next_release_check = Instant::now() + Duration::from_secs(2);
-                let unconfirmed = handle.state::<Engine>().0.lock().capture_source_unconfirmed;
-                if unconfirmed
-                    && capture_source_release_observed(true, default_input_running_somewhere())
-                {
-                    let status = {
-                        let engine = handle.state::<Engine>();
-                        let mut state = engine.0.lock();
+                let status = {
+                    let engine = handle.state::<Engine>();
+                    let mut state = engine.0.lock();
+                    let running = input_devices_running_somewhere(state.unconfirmed_input_devices.as_deref());
+                    if capture_source_release_observed(state.capture_source_unconfirmed, running) {
                         state.capture_source_unconfirmed = false;
-                        state.status()
-                    };
+                        state.unconfirmed_input_devices = Some(Vec::new());
+                        Some(state.status())
+                    } else {
+                        None
+                    }
+                };
+                if let Some(status) = status {
                     let _ = handle.emit(MIC_EVENT, status);
                 }
             }
@@ -199,15 +204,10 @@ fn source_never_stops_failpoint() -> bool {
     false
 }
 
-/// AudioObject's system-wide running property is conservative: another app can
-/// keep the default input marked running, so only `Some(false)` clears our flag.
-fn capture_source_release_observed(unconfirmed: bool, input_running: Option<bool>) -> bool {
-    unconfirmed && input_running == Some(false)
-}
 
 #[cfg(target_os = "macos")]
-fn default_input_running_somewhere() -> Option<bool> {
-    use std::ffi::c_void;
+mod core_audio_inputs {
+    use std::ffi::{c_void, CStr};
 
     #[repr(C)]
     struct AudioObjectPropertyAddress {
@@ -218,6 +218,13 @@ fn default_input_running_somewhere() -> Option<bool> {
 
     #[link(name = "CoreAudio", kind = "framework")]
     unsafe extern "C" {
+        fn AudioObjectGetPropertyDataSize(
+            object_id: u32,
+            address: *const AudioObjectPropertyAddress,
+            qualifier_data_size: u32,
+            qualifier_data: *const c_void,
+            data_size: *mut u32,
+        ) -> i32;
         fn AudioObjectGetPropertyData(
             object_id: u32,
             address: *const AudioObjectPropertyAddress,
@@ -228,50 +235,144 @@ fn default_input_running_somewhere() -> Option<bool> {
         ) -> i32;
     }
 
-    let default_input = AudioObjectPropertyAddress {
-        selector: u32::from_be_bytes(*b"dIn "),
-        scope: u32::from_be_bytes(*b"glob"),
-        element: 0,
-    };
-    let mut device_id = 0u32;
-    let mut size = std::mem::size_of::<u32>() as u32;
-    let status = unsafe {
-        AudioObjectGetPropertyData(
-            1,
-            &default_input,
-            0,
-            std::ptr::null(),
-            &mut size,
-            &mut device_id as *mut u32 as *mut c_void,
-        )
-    };
-    if status != 0 || device_id == 0 {
-        return None;
+    #[link(name = "CoreFoundation", kind = "framework")]
+    unsafe extern "C" {
+        fn CFStringGetCString(value: *const c_void, buffer: *mut i8, size: isize, encoding: u32) -> u8;
+        fn CFRelease(value: *const c_void);
     }
 
-    let running_somewhere = AudioObjectPropertyAddress {
-        selector: u32::from_be_bytes(*b"gone"),
-        scope: u32::from_be_bytes(*b"glob"),
-        element: 0,
-    };
-    let mut running = 0u32;
-    size = std::mem::size_of::<u32>() as u32;
-    let status = unsafe {
-        AudioObjectGetPropertyData(
-            device_id,
-            &running_somewhere,
-            0,
-            std::ptr::null(),
-            &mut size,
-            &mut running as *mut u32 as *mut c_void,
-        )
-    };
-    (status == 0).then_some(running != 0)
+    const SYSTEM_OBJECT: u32 = 1;
+    const GLOBAL: u32 = u32::from_be_bytes(*b"glob");
+    const MAIN: u32 = 0;
+    const UTF8: u32 = 0x0800_0100;
+
+    fn property(selector: [u8; 4]) -> AudioObjectPropertyAddress {
+        AudioObjectPropertyAddress {
+            selector: u32::from_be_bytes(selector),
+            scope: GLOBAL,
+            element: MAIN,
+        }
+    }
+
+    fn device_name(device_id: u32) -> Option<String> {
+        let address = property(*b"lnam");
+        let mut name: *const c_void = std::ptr::null();
+        let mut size = std::mem::size_of::<*const c_void>() as u32;
+        let status = unsafe {
+            AudioObjectGetPropertyData(
+                device_id,
+                &address,
+                0,
+                std::ptr::null(),
+                &mut size,
+                &mut name as *mut *const c_void as *mut c_void,
+            )
+        };
+        if status != 0 || name.is_null() {
+            return None;
+        }
+        let mut buffer = [0i8; 1024];
+        let converted = unsafe { CFStringGetCString(name, buffer.as_mut_ptr(), buffer.len() as isize, UTF8) };
+        unsafe { CFRelease(name) };
+        if converted == 0 {
+            return None;
+        }
+        unsafe { CStr::from_ptr(buffer.as_ptr()) }
+            .to_str()
+            .ok()
+            .map(str::to_owned)
+    }
+
+    pub fn devices_named(name: &str) -> Option<Vec<u32>> {
+        let address = property(*b"dev#");
+        let mut size = 0u32;
+        let status = unsafe {
+            AudioObjectGetPropertyDataSize(
+                SYSTEM_OBJECT,
+                &address,
+                0,
+                std::ptr::null(),
+                &mut size,
+            )
+        };
+        if status != 0 || size as usize % std::mem::size_of::<u32>() != 0 {
+            return None;
+        }
+        let mut devices = vec![0u32; size as usize / std::mem::size_of::<u32>()];
+        let status = unsafe {
+            AudioObjectGetPropertyData(
+                SYSTEM_OBJECT,
+                &address,
+                0,
+                std::ptr::null(),
+                &mut size,
+                devices.as_mut_ptr() as *mut c_void,
+            )
+        };
+        if status != 0 {
+            return None;
+        }
+        devices.retain(|device_id| device_name(*device_id).as_deref() == Some(name));
+        (!devices.is_empty()).then_some(devices)
+    }
+
+    pub fn running_somewhere(device_id: u32) -> Option<bool> {
+        let address = property(*b"gone");
+        let mut running = 0u32;
+        let mut size = std::mem::size_of::<u32>() as u32;
+        let status = unsafe {
+            AudioObjectGetPropertyData(
+                device_id,
+                &address,
+                0,
+                std::ptr::null(),
+                &mut size,
+                &mut running as *mut u32 as *mut c_void,
+            )
+        };
+        (status == 0).then_some(running != 0)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn capture_input_device_ids(name: &str) -> Option<Vec<u32>> {
+    core_audio_inputs::devices_named(name)
 }
 
 #[cfg(not(target_os = "macos"))]
-fn default_input_running_somewhere() -> Option<bool> {
+fn capture_input_device_ids(_name: &str) -> Option<Vec<u32>> {
     None
+}
+
+#[cfg(target_os = "macos")]
+fn input_device_running_somewhere(device_id: u32) -> Option<bool> {
+    core_audio_inputs::running_somewhere(device_id)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn input_device_running_somewhere(_device_id: u32) -> Option<bool> {
+    None
+}
+
+fn input_devices_running_somewhere(devices: Option<&[u32]>) -> Option<bool> {
+    let devices = devices.filter(|devices| !devices.is_empty())?;
+    combine_device_running_states(devices.iter().map(|device_id| input_device_running_somewhere(*device_id)))
+}
+
+fn combine_device_running_states(states: impl IntoIterator<Item = Option<bool>>) -> Option<bool> {
+    let mut unknown = false;
+    for state in states {
+        match state {
+            Some(true) => return Some(true),
+            Some(false) => {}
+            None => unknown = true,
+        }
+    }
+    (!unknown).then_some(false)
+}
+
+fn capture_source_release_observed(unconfirmed: bool, device_running: Option<bool>) -> bool {
+    unconfirmed && device_running == Some(false)
 }
 
 
@@ -457,6 +558,7 @@ pub async fn recorder_start(
         return Err("recovery_pending".into());
     }
     let input = recording_input(&app).await?;
+    let input_devices = capture_input_device_ids(&input);
     let (segment_id, input) = {
         let state = app.state::<Engine>();
         let mut state = state.0.lock();
@@ -530,6 +632,7 @@ pub async fn recorder_start(
         state.id = Some(id);
         state.started_at = Some(started_at);
         state.segment_id = Some(segment_id);
+        state.active_input_devices = input_devices;
         state.spans.clear();
         state.limit_ms = max_duration_ms
             .unwrap_or(MAX_DURATION_MS)
@@ -634,6 +737,76 @@ fn retain_stopped_source(session: &std::path::Path) -> Result<bool, String> {
         return Ok(false);
     }
     Ok(false)
+}
+
+/// Seal a bounded copy of the WAV bytes already flushed by the live writer.
+/// Hound leaves RIFF/data lengths unfinished until finalize, so patch the copied
+/// header to describe only complete interleaved frames in the captured prefix.
+fn snapshot_live_source(session: &std::path::Path) -> Result<bool, String> {
+    let retained = session.join("audio.exo-source.wav");
+    if retained.exists() {
+        return Ok(hound::WavReader::open(&retained)
+            .is_ok_and(|reader| reader.duration() > 0));
+    }
+    let source = session.join("audio.wav");
+    let mut input = std::fs::File::open(&source).map_err(|error| error.to_string())?;
+    let source_len = input.metadata().map_err(|error| error.to_string())?.len();
+    if source_len < 44 {
+        return Ok(false);
+    }
+    let mut header = [0u8; 44];
+    input.read_exact(&mut header).map_err(|error| error.to_string())?;
+    if &header[..4] != b"RIFF"
+        || &header[8..12] != b"WAVE"
+        || &header[12..16] != b"fmt "
+        || u32::from_le_bytes(header[16..20].try_into().unwrap()) != 16
+        || u16::from_le_bytes(header[20..22].try_into().unwrap()) != 3
+        || !matches!(u16::from_le_bytes(header[22..24].try_into().unwrap()), 1 | 2)
+        || u32::from_le_bytes(header[24..28].try_into().unwrap()) != 48_000
+        || u16::from_le_bytes(header[34..36].try_into().unwrap()) != 32
+        || &header[36..40] != b"data"
+    {
+        return Err("capture_wav_header_unrecognized".into());
+    }
+    let channels = u16::from_le_bytes(header[22..24].try_into().unwrap());
+    let block_align = u16::from_le_bytes(header[32..34].try_into().unwrap()) as u64;
+    if block_align != u64::from(channels) * 4 {
+        return Err("capture_wav_block_alignment_unrecognized".into());
+    }
+    let frame_bytes = (source_len - 44) / block_align * block_align;
+    if frame_bytes == 0 {
+        return Ok(false);
+    }
+    let data_len = u32::try_from(frame_bytes).map_err(|_| "capture_wav_too_large")?;
+    let riff_len = data_len.checked_add(36).ok_or("capture_wav_too_large")?;
+    header[4..8].copy_from_slice(&riff_len.to_le_bytes());
+    header[40..44].copy_from_slice(&data_len.to_le_bytes());
+
+    let temp = session.join("audio.exo-source.wav.tmp");
+    let result = (|| {
+        let mut output = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)
+            .map_err(|error| error.to_string())?;
+        output.write_all(&header).map_err(|error| error.to_string())?;
+        input.seek(SeekFrom::Start(44)).map_err(|error| error.to_string())?;
+        let copied = std::io::copy(&mut input.take(frame_bytes), &mut output)
+            .map_err(|error| error.to_string())?;
+        if copied != frame_bytes {
+            return Err("capture_snapshot_short_read".into());
+        }
+        output.sync_all().map_err(|error| error.to_string())?;
+        std::fs::rename(&temp, &retained).map_err(|error| error.to_string())?;
+        std::fs::File::open(session)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|error| error.to_string())?;
+        Ok(true)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    result
 }
 
 async fn durable_source(app: &tauri::AppHandle, segment_id: &str) -> Result<(), DurableError> {
@@ -925,6 +1098,7 @@ pub async fn recorder_pause(app: tauri::AppHandle) -> Result<CaptureStatus, Stri
         let _ = state.recorder.stop_outcome(stop_at, outcome);
         state.spans = spans;
         state.segment_id = None;
+        state.active_input_devices = None;
         state.status()
     };
     reset_meter(&app);
@@ -948,6 +1122,7 @@ pub async fn recorder_resume(app: tauri::AppHandle) -> Result<CaptureStatus, Str
         recorder_pause(app.clone()).await?;
     }
     let input = recording_input(&app).await?;
+    let input_devices = capture_input_device_ids(&input);
     let (segment_id, input) = {
         let state = app.state::<Engine>();
         let mut state = state.0.lock();
@@ -1025,6 +1200,7 @@ pub async fn recorder_resume(app: tauri::AppHandle) -> Result<CaptureStatus, Str
             .start_outcome(mono_ms(), Start::Opened)
             .map_err(|error| error.code().to_owned())?;
         state.segment_id = Some(segment_id);
+        state.active_input_devices = input_devices;
         cleanup?;
         state.status()
     };
@@ -1085,7 +1261,7 @@ pub async fn recorder_stop(app: tauri::AppHandle) -> Result<CaptureStatus, Strin
 #[tauri::command]
 pub async fn recorder_stop_durable(app: tauri::AppHandle) -> Result<CaptureStatus, String> {
     super::ensure(&app);
-    let (id, segment_id, stop_at, elapsed, recorded_before) = {
+    let (id, segment_id, mut stop_at, mut elapsed, recorded_before) = {
         let engine = app.state::<Engine>();
         let mut state = engine.0.lock();
         if state.busy {
@@ -1106,42 +1282,109 @@ pub async fn recorder_stop_durable(app: tauri::AppHandle) -> Result<CaptureStatu
             state.recorder.recorded_ms(),
         )
     };
-    if !source_never_stops_failpoint() {
-        app.listener().stop_capture().await;
-    }
-    let (empty, source_unconfirmed) = match durable_source(&app, &segment_id).await {
-        Ok(()) => (false, false),
-        Err(DurableError::Empty) => (true, false),
-        Err(error) => {
-            let (stall, detail) = match error {
-                DurableError::Stall(stall) => (stall, None),
-                DurableError::Failed(error) => (Stall::SourceUnusable, Some(error)),
-                DurableError::Empty => unreachable!("empty outcome handled above"),
-            };
-            let exhausted = {
-                let engine = app.state::<Engine>();
-                let mut state = engine.0.lock();
-                let _ = state
-                    .recorder
-                    .stop_outcome(stop_at, Stop::Stalled(stall));
-                let exhausted = state.recorder.can_finish_unconfirmed();
-                if exhausted {
-                    state.capture_source_unconfirmed = true;
-                } else {
-                    state.busy = false;
+    let mut result = None;
+    for attempt in 1..=DURABLE_STOP_ATTEMPT_BUDGET {
+        let stop_result = if source_never_stops_failpoint() {
+            Ok(())
+        } else {
+            tokio::time::timeout(Duration::from_secs(5), app.listener().stop_capture()).await
+        };
+        let stop_succeeded = stop_result.is_ok();
+        if !stop_succeeded {
+            tracing::warn!(
+                target: "exo_dev::recorder",
+                source_id = %id,
+                attempt,
+                "Listener stop request exceeded its bounded wait"
+            );
+        }
+        let source_result = if stop_succeeded {
+            durable_source(&app, &segment_id).await
+        } else {
+            Err(DurableError::Stall(Stall::SourceStillRunning))
+        };
+        match source_result {
+            Ok(()) => {
+                result = Some((false, false));
+                break;
+            }
+            Err(DurableError::Empty) => {
+                result = Some((true, false));
+                break;
+            }
+            Err(error) => {
+                let (stall, detail) = match error {
+                    DurableError::Stall(stall) => (stall, None),
+                    DurableError::Failed(error) => (Stall::SourceUnusable, Some(error)),
+                    DurableError::Empty => unreachable!("empty outcome handled above"),
+                };
+                let attempt_at = mono_ms();
+                let final_attempt = attempt == DURABLE_STOP_ATTEMPT_BUDGET;
+                {
+                    let engine = app.state::<Engine>();
+                    let mut state = engine.0.lock();
+                    let _ = state
+                        .recorder
+                        .stop_outcome(attempt_at, Stop::Stalled(stall));
+                    if final_attempt {
+                        stop_at = attempt_at;
+                        elapsed = state.recorder.segment_ms(attempt_at);
+                        if !state.capture_source_unconfirmed {
+                            state.unconfirmed_input_devices = Some(Vec::new());
+                        }
+                        match state.active_input_devices.take() {
+                            Some(devices) if !devices.is_empty() => {
+                                if let Some(unconfirmed) = state.unconfirmed_input_devices.as_mut() {
+                                    for device in devices {
+                                        if !unconfirmed.contains(&device) {
+                                            unconfirmed.push(device);
+                                        }
+                                    }
+                                }
+                            }
+                            _ => state.unconfirmed_input_devices = None,
+                        }
+                        state.capture_source_unconfirmed = true;
+                        debug_assert!(state.recorder.can_finish_unconfirmed());
+                    }
                 }
-                exhausted
-            };
-            if exhausted {
-                // Preserve the source session: bytes may be recoverable even
-                // though listener finalization was not observed.
-                (false, true)
-            } else {
-                emit_status(&app);
-                return Err(detail.unwrap_or_else(|| RecorderError::Stalled(stall).code().to_owned()));
+                tracing::warn!(
+                    target: "exo_dev::recorder",
+                    kind = "pipeline",
+                    source_id = %id,
+                    operation = "recorder",
+                    phase = "stop_unconfirmed",
+                    attempt,
+                    budget = DURABLE_STOP_ATTEMPT_BUDGET,
+                    reason = stall.reason(),
+                    detail = detail.as_deref().unwrap_or(stall.reason()),
+                    "Listener session finalization was not confirmed"
+                );
+                if final_attempt {
+                    if let Ok(root) = files::sessions_root(&app) {
+                        let session = root.join(&segment_id);
+                        match run_source_step(move || snapshot_live_source(&session)).await {
+                            Ok(true) => {}
+                            Ok(false) => tracing::warn!(
+                                target: "exo_dev::recorder",
+                                source_id = %id,
+                                "No flushed audio was available for the unconfirmed Stop snapshot"
+                            ),
+                            Err(error) => tracing::warn!(
+                                target: "exo_dev::recorder",
+                                source_id = %id,
+                                %error,
+                                "Could not seal the unconfirmed Stop snapshot"
+                            ),
+                        }
+                    }
+                    result = Some((false, true));
+                    break;
+                }
             }
         }
-    };
+    }
+    let (empty, source_unconfirmed) = result.unwrap_or((false, true));
 
     let handle = app.clone();
     let stop_id = id.clone();
@@ -1203,6 +1446,7 @@ pub async fn recorder_stop_durable(app: tauri::AppHandle) -> Result<CaptureStatu
         state.layout = journal::Layout::Mono;
         state.started_at = None;
         state.segment_id = None;
+        state.active_input_devices = None;
         state.spans.clear();
         state.last_stop_reason = status.reason;
         status
@@ -1282,18 +1526,26 @@ pub async fn recorder_finish(app: tauri::AppHandle, id: String) -> Result<u64, S
 #[cfg(test)]
 mod durable_stop_tests {
     use super::{
-        capture_source_release_observed, empty_segment_span, recorded_after_segment,
-        retain_stopped_source, source_mp3,
+        capture_source_release_observed, combine_device_running_states, empty_segment_span,
+        recorded_after_segment, retain_stopped_source, snapshot_live_source, source_mp3,
     };
     use std::io::Write;
     use std::time::{Duration, Instant};
 
     #[test]
-    fn release_poller_clears_only_on_a_false_system_running_signal() {
+    fn release_poller_clears_only_when_every_used_input_is_reported_stopped() {
         assert!(!capture_source_release_observed(false, Some(false)));
         assert!(!capture_source_release_observed(true, None));
         assert!(!capture_source_release_observed(true, Some(true)));
         assert!(capture_source_release_observed(true, Some(false)));
+        let default_stopped_selected_running =
+            combine_device_running_states([Some(false), Some(true)]);
+        assert_eq!(default_stopped_selected_running, Some(true));
+        assert!(!capture_source_release_observed(true, default_stopped_selected_running));
+        assert!(!capture_source_release_observed(
+            true,
+            combine_device_running_states([Some(false), None])
+        ));
     }
     fn sparse_wav(path: &std::path::Path, minutes: u64, finalized: bool) {
         let data_bytes = minutes * 60 * 48_000 * 8;
@@ -1319,6 +1571,34 @@ mod durable_stop_tests {
         file.write_all(b"data").unwrap();
         file.write_all(&(data_bytes as u32).to_le_bytes()).unwrap();
         file.set_len(data_bytes + 44).unwrap();
+    }
+
+    #[test]
+    fn unconfirmed_stop_seals_only_the_flushed_wav_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("audio.wav");
+        sparse_wav(&source, 1, false);
+        std::fs::File::options()
+            .write(true)
+            .open(&source)
+            .unwrap()
+            .set_len(60)
+            .unwrap();
+
+        assert!(snapshot_live_source(dir.path()).unwrap());
+        let retained = dir.path().join("audio.exo-source.wav");
+        let reader = hound::WavReader::open(&retained).unwrap();
+        assert_eq!(reader.spec().channels, 2);
+        assert_eq!(reader.duration(), 2);
+        assert_eq!(std::fs::metadata(&retained).unwrap().len(), 60);
+
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&source)
+            .unwrap()
+            .write_all(&[0; 8])
+            .unwrap();
+        assert_eq!(std::fs::metadata(&retained).unwrap().len(), 60);
     }
 
     #[test]

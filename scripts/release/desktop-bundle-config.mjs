@@ -34,17 +34,16 @@ writeFileSync(plist, `<?xml version="1.0" encoding="UTF-8"?>
 </dict>
 </plist>
 `);
-const config = join(out, 'tauri.bundle.conf.json');
+const configPath = join(out, 'tauri.bundle.conf.json');
 const macOS = {
   infoPlist: plist,
   ...(values['ad-hoc-sign'] ? { signingIdentity: '-' } : {}),
 };
-const bundle = {
-  identifier: values.smoke ? 'xyz.tinycloud.exo.smoke' : 'xyz.tinycloud.exo',
-  macOS,
+const config = {
+  ...(values.smoke ? { identifier: 'xyz.tinycloud.exo.smoke', productName: 'Exo Smoke' } : {}),
+  bundle: { macOS },
 };
-if (values.smoke) bundle.productName = 'Exo Smoke';
-writeFileSync(config, `${JSON.stringify({ bundle }, null, 2)}\n`);
+writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
 
 console.log(`Exo ${version}: CFBundleShortVersionString ${shortVersion}, CFBundleVersion ${bundleVersion}`);
 setOutput('version', version);

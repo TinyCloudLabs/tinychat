@@ -5,11 +5,13 @@ import { memoryLocks, openWebStore, type WebStoreOptions } from "../web/webStore
 import type { IdbEnv } from "../web/idb";
 import { createFileAudioBlobStore } from "./fileAudioBlobStore";
 import { openDesktopVoiceNotes, refreshDesktopWhisperCapability, type DesktopBridge } from "./desktopVoiceNotes";
-import type { DesktopWhisperBridge } from "./desktopWhisper";
+import { __setVoiceNotesForTests, VoiceNotes } from "../nativeVoiceNotes";
+import { createVoiceNoteRecorderController } from "@/capture/recorder/voiceNoteRecorderController";
 import type { TranscriptionEvent } from "@/lib/anarlog/transcription.gen";
 import { subscribeCaptureCapabilities } from "../captureEngine";
 import type { MissingAudioSpan } from "../nativeVoiceNotes";
 import { leaseWhisperServer } from "@/lib/whisperServerLease";
+const originalVoiceNotes = VoiceNotes;
 
 type Callback = (payload: never) => void;
 
@@ -39,7 +41,7 @@ class FakeBridge implements DesktopBridge {
   stopError: Error | null = null;
   stopDurableGate: Promise<void> | null = null;
   finishGate: Promise<void> | null = null;
-  finishError: Error | null = null;
+  failPause = false;
   stageError: unknown = null;
   now = 1_000_000;
 
@@ -83,7 +85,8 @@ class FakeBridge implements DesktopBridge {
           throw Object.assign(new Error("capture stop timed out"), { code: "capture_stop_timeout" });
         }
         this.state = "paused"; this.reason = null; result = this.status(); this.emit("exo://recorder-mic-state", result); break;
-      case "recorder_resume": this.state = "recording"; this.reason = null; result = this.status(); this.emit("exo://recorder-mic-state", result); break;
+      case "recorder_resume": if (this.failResume) throw Object.assign(new Error("audio session busy"), { code: "resume_failed" });
+        this.state = "recording"; this.reason = null; result = this.status(); this.emit("exo://recorder-mic-state", result); break;
       case "recorder_stop_durable":
         if (this.stopDurableGate) await this.stopDurableGate;
         if (this.unconfirmedStop) this.captureSourceUnconfirmed = true;
@@ -196,8 +199,86 @@ function rig(bridge = new FakeBridge(), dbName = crypto.randomUUID(), env: IdbEn
   return openDesktopVoiceNotes({ bridge, now: () => bridge.now, newId: () => id,
     storeOptions: { env, dbName, locks: memoryLocks(), decodeCheck: null, now: () => bridge.now, ...storeOptions } });
 }
+async function waitUntilRecorderReady(recorder: ReturnType<typeof createVoiceNoteRecorderController>): Promise<void> {
+  if (recorder.getState().ready) return;
+  await new Promise<void>((resolve) => {
+    let unsubscribe = () => {};
+    const check = () => {
+      if (recorder.getState().ready) {
+        unsubscribe();
+        resolve();
+      }
+    };
+    unsubscribe = recorder.subscribe(check);
+    check();
+  });
+}
 
 describe("desktop recorder adapter", () => {
+  test("a failed Resume reaches recorder_resume through the real controller and desktop adapter", async () => {
+    const bridge = new FakeBridge();
+    const engine = await rig(bridge);
+    __setVoiceNotesForTests(engine.plugin, { available: true });
+    const recorder = createVoiceNoteRecorderController({
+      tcw: null,
+      available: true,
+      transcriber: { check: async () => {}, noteSaved: () => {} },
+      onDeviceReady: () => true,
+    });
+    const detach = recorder.attach();
+    try {
+      await waitUntilRecorderReady(recorder);
+      await recorder.record();
+      await recorder.pause();
+      bridge.failResume = true;
+      await recorder.resume();
+      expect(bridge.calls.filter((command) => command === "recorder_resume")).toHaveLength(1);
+      expect(recorder.getState()).toMatchObject({
+        controlPending: null,
+        mic: { state: "paused", reason: "user" },
+        error: "Could not resume: audio session busy",
+      });
+      expect((await engine.plugin.status()).state).toBe("paused");
+    } finally {
+      detach();
+      engine.dispose();
+      __setVoiceNotesForTests(originalVoiceNotes, { available: null });
+    }
+  });
+  test("a stalled Resume retries through recorder_resume and recovers the real adapter intent", async () => {
+    const bridge = new FakeBridge();
+    const engine = await rig(bridge);
+    __setVoiceNotesForTests(engine.plugin, { available: true });
+    const recorder = createVoiceNoteRecorderController({
+      tcw: null,
+      available: true,
+      transcriber: { check: async () => {}, noteSaved: () => {} },
+      onDeviceReady: () => true,
+    });
+    const detach = recorder.attach();
+    try {
+      await waitUntilRecorderReady(recorder);
+      await recorder.record();
+      bridge.failPause = true;
+      await recorder.pause();
+      expect(recorder.getState().mic).toMatchObject({ state: "needs_user", reason: "writer_stalled" });
+      expect(bridge.calls).not.toContain("recorder_resume");
+
+      bridge.failPause = false;
+      await recorder.resume();
+      expect(bridge.calls.filter((command) => command === "recorder_resume")).toHaveLength(1);
+      expect((await engine.plugin.status()).state).toBe("recording");
+      expect(recorder.getState()).toMatchObject({
+        controlPending: null,
+        mic: { state: "recording" },
+      });
+    } finally {
+      detach();
+      engine.dispose();
+      __setVoiceNotesForTests(originalVoiceNotes, { available: null });
+    }
+  });
+
   slow("Whisper timeout stops native work before staged audio cleanup", async () => {
     const originalSetTimeout = globalThis.setTimeout;
     let fireTimeout: (() => void) | null = null;
@@ -409,29 +490,29 @@ describe("desktop recorder adapter", () => {
     engine.dispose();
   });
 
-  test("desktop adapter retries Resume after a stalled Pause and durable Stop saves after a second stall", async () => {
+  test("one durable Stop commits readable audio when the source never confirms release", async () => {
     const bridge = new FakeBridge();
+    bridge.unconfirmedStop = true;
     const engine = await rig(bridge);
     const started = await engine.plugin.start();
-    bridge.files.set(started.id, Uint8Array.of(1, 2, 3));
-    bridge.failPause = true;
-    await expect(engine.plugin.pause()).rejects.toMatchObject({ code: "capture_stop_timeout" });
-    expect((await engine.plugin.status()).reason).toBe("writer_stalled");
+    const captured = Uint8Array.of(3, 1, 4, 1, 5);
+    bridge.files.set(started.id, captured);
+    bridge.elapsed = 10_000;
 
-    await engine.plugin.resume();
-    expect(bridge.calls.filter((command) => command === "recorder_resume")).toHaveLength(1);
-    expect((await engine.plugin.status()).state).toBe("recording");
-
-    bridge.failPause = true;
-    await expect(engine.plugin.pause()).rejects.toMatchObject({ code: "capture_stop_timeout" });
-    bridge.unconfirmedStop = true;
-    bridge.finishGate = new Promise<void>(() => {});
     const recording = await engine.plugin.stop();
-    expect(bridge.calls).toContain("recorder_stop_durable");
+    expect(bridge.calls.filter((command) => command === "recorder_stop_durable")).toHaveLength(1);
     expect(recording.id).toBe(started.id);
-    expect(recording.ledger?.localAudio?.state).toBe("preparing");
-    expect((await engine.plugin.listPending()).recordings.map(({ id }) => id)).toContain(started.id);
     expect((await engine.plugin.status()).captureSourceUnconfirmed).toBe(true);
+    await engine.plugin.awaitAudioReady?.(recording.id);
+    const note = (await engine.plugin.listPending()).recordings.find(({ id }) => id === recording.id);
+    expect(note).toMatchObject({
+      id: recording.id,
+      sizeBytes: captured.length,
+      ledger: { localAudio: { state: "ready", error: null } },
+    });
+    expect(base64ToBytes((await engine.plugin.readAudioChunk({
+      id: recording.id, offset: 0, length: captured.length,
+    })).base64)).toEqual(captured);
     engine.dispose();
   });
 

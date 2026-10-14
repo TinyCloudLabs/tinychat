@@ -17,6 +17,7 @@ import { failureNotificationStorageKey, readFailureNotificationKeys, writeFailur
 import { registerPlayback } from "@/lib/audio/playback";
 import { installDom } from "@/test/dom";
 import { RecorderProvider, useRecorder, type RecorderValue } from "./RecorderProvider";
+import { CaptureSourceUnconfirmedIndicator } from "./CaptureSourceUnconfirmedIndicator";
 import type { VoiceNoteRecorder } from "./useVoiceNoteRecorder";
 import { selectRecorderView } from "./final/recorderView";
 import { createFakeVoiceNotes, type FakeVoiceNotes } from "@/harness/fakeVoiceNotes";
@@ -224,6 +225,48 @@ describe("voice-note recorder controller", () => {
     await stopping;
     detach();
   });
+  test("a second Done while Stop is pending does not call native Stop or invalidate controls", async () => {
+    const base = plugin;
+    let release!: (recording: VoiceNoteRecording) => void;
+    let stopCalls = 0;
+    __setVoiceNotesForTests({ ...base,
+      async stop() {
+        stopCalls++;
+        if (stopCalls > 1) throw new Error("native Stop called twice");
+        return new Promise<VoiceNoteRecording>((resolve) => { release = resolve; });
+      },
+    }, { available: true });
+    const { recorder, detach } = await attached();
+    await recorder.record();
+    const first = recorder.stop();
+    const second = recorder.stop();
+    expect(stopCalls).toBe(1);
+    expect(recorder.getState()).toMatchObject({ phase: "stopping", error: null });
+    release({ id: currentId!, startedAt: Date.now(), durationMs: 1, mimeType: "audio/mp4",
+      sizeBytes: 1, silencedMs: 0, silencedEvents: 0, noSignalMs: 0, version: 2, owner: tcw.did, rev: 1 });
+    await Promise.all([first, second]);
+    expect(stopCalls).toBe(1);
+    expect(recorder.getState().error).toBeNull();
+    detach();
+  });
+  test("idle native status hydrates and clears the capture-source-unconfirmed indicator", async () => {
+    const base = plugin;
+    let unconfirmed = true;
+    __setVoiceNotesForTests({ ...base, async status() {
+      return { ...(await base.status()), captureSourceUnconfirmed: unconfirmed };
+    } }, { available: true });
+    const recorder = controller();
+    const detach = recorder.attach();
+    await tick();
+    expect(recorder.getState()).toMatchObject({ phase: "idle", captureSourceUnconfirmed: true });
+    unconfirmed = false;
+    fake.emit("micState", { state: "idle", reason: null, id: null, audioMs: 0,
+      captureSourceUnconfirmed: false });
+    expect(recorder.getState().captureSourceUnconfirmed).toBe(false);
+    detach();
+  });
+
+
 
   test("a stereo Stop carries its channels through the final saved receipt state", async () => {
     const base = plugin;
@@ -1447,6 +1490,39 @@ const hostContainer = () => ({ nodeType: 1, nodeName: "DIV", tagName: "DIV", own
   textContent: "", addEventListener() {}, removeEventListener() {}, appendChild() {}, removeChild() {}, insertBefore() {} }) as unknown as HTMLElement;
 const hostWindow = () => ({ HTMLIFrameElement: class {}, document: hostDocument,
   addEventListener() {}, removeEventListener() {}, setTimeout, clearTimeout });
+  test("RecorderProvider keeps the idle native unconfirmed indicator mounted across navigation until native false", async () => {
+    const restoreDom = installDom();
+    const base = plugin;
+    let unconfirmed = true;
+    __setVoiceNotesForTests({ ...base, async status() {
+      return { ...(await base.status()), captureSourceUnconfirmed: unconfirmed };
+    } }, { available: true });
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    let recorder: RecorderValue | null = null;
+    function Probe({ route }: { route: string }) { recorder = useRecorder(); return createElement("div", { "data-route": route }); }
+    try {
+      await act(async () => root.render(createElement(RecorderProvider, { tcw },
+        createElement(Probe, { route: "capture" }), createElement(CaptureSourceUnconfirmedIndicator))));
+      await act(async () => { await tick(); await tick(); });
+      expect(container.querySelector('[data-testid="capture-source-unconfirmed"]')).not.toBeNull();
+      await act(async () => root.render(createElement(RecorderProvider, { tcw },
+        createElement(Probe, { route: "library" }), createElement(CaptureSourceUnconfirmedIndicator))));
+      expect(container.querySelector('[data-route="library"]')).not.toBeNull();
+      expect(container.querySelector('[data-testid="capture-source-unconfirmed"]')).not.toBeNull();
+      unconfirmed = false;
+      fake.emit("micState", { state: "idle", reason: null, id: null, audioMs: 0,
+        captureSourceUnconfirmed: false });
+      await act(async () => { await tick(); });
+      expect(container.querySelector('[data-testid="capture-source-unconfirmed"]')).toBeNull();
+      expect(recorder?.captureSourceUnconfirmed).toBe(false);
+    } finally {
+      await act(async () => root.unmount());
+      restoreDom();
+    }
+  });
+
 
   test("RecorderProvider with the App pipeline emits once for Save now and once for a new Stop", async () => {
     const previousWindow = globalThis.window;
@@ -2134,6 +2210,39 @@ const hostWindow = () => ({ HTMLIFrameElement: class {}, document: hostDocument,
     });
   });
 
+  test.each(["pause", "resume"] as const)("a hung native %s clears pending at the deadline", async (control) => {
+    const base = plugin;
+    __setVoiceNotesForTests({ ...base,
+      async pause() { if (control === "pause") return new Promise<void>(() => {}); paused = true; },
+      async resume() { if (control === "resume") return new Promise<void>(() => {}); paused = false; },
+    }, { available: true });
+    const { recorder } = await attached();
+    await recorder.record();
+    if (control === "resume") await recorder.pause();
+    const originalSetTimeout = globalThis.setTimeout;
+    let deadline: (() => void) | undefined;
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    globalThis.setTimeout = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
+      if (timeout === 45_000 && typeof handler === "function") {
+        timeoutHandle = originalSetTimeout(() => {}, 60_000);
+        deadline = () => handler(...args);
+        return timeoutHandle;
+      }
+      return originalSetTimeout(handler, timeout, ...args);
+    }) as typeof setTimeout;
+    const action = control === "pause" ? recorder.pause() : recorder.resume();
+    try {
+      expect(recorder.getState().controlPending).toBe(control);
+      expect(deadline).toBeDefined();
+      deadline!();
+      await action;
+    } finally {
+      globalThis.setTimeout = originalSetTimeout;
+      clearTimeout(timeoutHandle);
+    }
+    expect(recorder.getState()).toMatchObject({ controlPending: null, mic: { state: "needs_user", reason: "status_unknown" } });
+  });
+
   test("a status result arriving after the deadline cannot overwrite uncertain state", async () => {
     const base = plugin;
     let releaseStatus!: (status: Awaited<ReturnType<typeof base.status>>) => void;
@@ -2178,7 +2287,52 @@ const hostWindow = () => ({ HTMLIFrameElement: class {}, document: hostDocument,
     });
   });
 
-  test("a failed Stop after writer_stalled retries and commits captured audio", async () => {
+  test("a late status from an older control cannot overwrite a newer operation", async () => {
+    const base = plugin;
+    let hangOld = false;
+    let releaseOld!: (status: Awaited<ReturnType<typeof base.status>>) => void;
+    __setVoiceNotesForTests({ ...base,
+      async pause() { paused = true; },
+      async resume() { paused = false; },
+      async status() {
+        if (hangOld) {
+          hangOld = false;
+          return new Promise<Awaited<ReturnType<typeof base.status>>>((resolve) => { releaseOld = resolve; });
+        }
+        return base.status();
+      },
+    }, { available: true });
+    const { recorder } = await attached();
+    await recorder.record();
+    const originalSetTimeout = globalThis.setTimeout;
+    let deadline: (() => void) | undefined;
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    globalThis.setTimeout = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
+      if (timeout === 45_000 && typeof handler === "function") {
+        timeoutHandle = originalSetTimeout(() => {}, 60_000);
+        deadline = () => handler(...args);
+        return timeoutHandle;
+      }
+      return originalSetTimeout(handler, timeout, ...args);
+    }) as typeof setTimeout;
+    try {
+      hangOld = true;
+      const oldPause = recorder.pause();
+      for (let attempt = 0; attempt < 20 && !releaseOld; attempt++) await Promise.resolve();
+      deadline!();
+      await oldPause;
+      await recorder.resume();
+      expect(recorder.getState()).toMatchObject({ controlPending: null, mic: { state: "recording" } });
+      releaseOld({ ...(await base.status()), state: "paused", reason: "user" });
+      for (let attempt = 0; attempt < 10; attempt++) await Promise.resolve();
+      expect(recorder.getState()).toMatchObject({ mic: { state: "recording" } });
+    } finally {
+      globalThis.setTimeout = originalSetTimeout;
+      clearTimeout(timeoutHandle);
+    }
+  });
+
+  test("when Pause fails, Stop succeeds and commits captured audio", async () => {
     const base = plugin;
     let failedPause = true;
     __setVoiceNotesForTests({ ...base,

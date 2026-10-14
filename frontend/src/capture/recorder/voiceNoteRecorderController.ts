@@ -905,6 +905,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
               void VoiceNotes.consumeShortcutRecord().catch((caught: unknown) =>
                 console.warn("[VoiceNotes] Could not consume the shortcut Record offer", caught));
             }
+            sendMicState(status);
             if (status.state === "idle") return;
             acceptNativeOptions(status);
             send(activePickup(status));
@@ -1003,6 +1004,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         await reconcileFailedStop(state.error, state.finalizationPendingId);
         return;
       }
+      if (state.phase !== "recording") return;
       ++controlOperationId;
       nativeStopPending = true;
       send({ type: "STOP_REQUESTED", at: Date.now() });

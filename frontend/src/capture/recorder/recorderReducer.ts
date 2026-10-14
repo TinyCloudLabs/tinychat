@@ -38,7 +38,7 @@ export interface RecorderState {
   /** A recovery scan can fail before native knows which recording caused it. */
   recoveryScanFailure: string | null;
   maxDurationMs: number;
-  /** True after bounded Stop until CoreAudio reports no input running or Exo restarts. */
+  /** True after bounded Stop until CoreAudio reports all inputs Exo used stopped or Exo restarts. */
   captureSourceUnconfirmed: boolean;
   mic: RecorderMic;
   /** A native Pause or Resume call is outstanding; repeat taps stay disabled. */
