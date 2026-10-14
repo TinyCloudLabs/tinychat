@@ -61,7 +61,7 @@ class ResumableWorkTest {
     }
 
     @Test fun rerunsWithoutAnInterruptedQueueStateAreLeftAlone() {
-        val stt = ResumableWork.rerun(JSONObject().put("state", "done"), 7, 6, "base-hash")
+        val stt = ResumableWork.rerun(JSONObject().put("state", "queued"), 7, 6, "base-hash").put("state", "done")
         assertFalse(ResumableWork.cancelInterruptedRerun(stt))
         assertEquals(7, stt.getInt("rerunRev"))
     }
