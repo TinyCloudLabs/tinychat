@@ -51,9 +51,10 @@
     "build:mobile:android": "bun run --cwd mobile build:android"
   },
   "devDependencies": {
-    "ajv": "8.20.0",
     "@changesets/cli": "3.0.3",
+    "@eslint/js": "10.0.1",
     "@tinycloud/node-sdk": "3.2.1",
+    "ajv": "8.20.0",
     "eslint": "^10.1.0",
     "husky": "^9.1.7",
     "portless": "^0.13.0",
