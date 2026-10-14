@@ -4,7 +4,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
 
-import { reportStorageError, reportStorageWriteSucceeded } from "@/lib/storageStatus";
+import { __resetStorageStatusForTests, reportStorageError, reportStorageWriteSucceeded } from "@/lib/storageStatus";
 import { installDom } from "@/test/dom";
 import { NavRail } from "./NavRail";
 import { navItems } from "./navItems";
@@ -33,7 +33,7 @@ afterEach(async () => {
   root = null;
   restoreDom?.();
   restoreDom = null;
-  reportStorageWriteSucceeded();
+  await __resetStorageStatusForTests();
 });
 
 describe("the Settings destination's storage-full dot", () => {

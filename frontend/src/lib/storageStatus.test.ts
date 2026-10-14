@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
+  __resetStorageStatusForTests,
   isFreeStoragePlan,
   isStorageFullError,
   isStorageReadOnly,
@@ -19,7 +20,10 @@ import {
   subscribeStoragePlan,
 } from "./storageStatus";
 
-afterEach(() => reportStoragePlanTier(null));
+afterEach(async () => {
+  reportStoragePlanTier(null);
+  await __resetStorageStatusForTests();
+});
 
 const STORAGE_COPY = [
   STORAGE_FULL_SAVE_MESSAGE,

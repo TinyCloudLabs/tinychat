@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import {
   clearMemory,
@@ -10,12 +10,16 @@ import {
 import { MEMORY_TEMPLATE } from "./memory";
 import { onPaywallError } from "./chatApi";
 import {
+  __resetStorageStatusForTests,
   reportStorageWriteSucceeded,
   STORAGE_FULL_SAVE_MESSAGE,
   subscribeStorageReadOnly,
   isStorageReadOnly,
   storageSaveMessage,
 } from "./storageStatus";
+afterEach(async () => {
+  await __resetStorageStatusForTests();
+});
 
 /** Capture console.warn output for the duration of `fn` (restores after). */
 async function captureWarn(fn: () => Promise<void>): Promise<string> {
@@ -144,13 +148,9 @@ describe("threadStore memory backup/restore (Layer 3)", () => {
     db.existingTables.delete("compactions");
     db.rows.set(LIVE, "READABLE DOC");
     db.rejectWrites = true;
-    try {
-      expect(await getMemory(makeTcw(db))).toBe("READABLE DOC");
-      expect(db.writes).toBe(1); // only the rejected missing-table migration
-      expect(isStorageReadOnly()).toBe(true);
-    } finally {
-      reportStorageWriteSucceeded();
-    }
+    expect(await getMemory(makeTcw(db))).toBe("READABLE DOC");
+    expect(db.writes).toBe(1); // only the rejected missing-table migration
+    expect(isStorageReadOnly()).toBe(true);
   });
 
   it("getMemory returns the backup without repairing the live row", async () => {
@@ -291,7 +291,6 @@ describe("full TinyCloud storage", () => {
     } finally {
       unsubscribe();
       unwatch();
-      reportStorageWriteSucceeded();
     }
   });
 });

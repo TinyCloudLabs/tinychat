@@ -42,8 +42,9 @@ import { base64ToBytes, bytesToBase64, type AudioDecoder } from "./voiceNoteAudi
 import { createFakeVoiceNotes } from "./fakeVoiceNotes";
 import { __resetCaptureEngineForTests, __setInstalledEngineForTests, captureCapabilities } from "./captureEngine";
 import { __setVoiceNotesForTests, VoiceNotes, type LocalTranscript, type VoiceNoteRecording } from "./nativeVoiceNotes";
-import { syncOnDeviceTranscript } from "./onDeviceTranscriber";
+import { __resetOnDeviceTranscriberForTests, syncOnDeviceTranscript } from "./onDeviceTranscriber";
 import { readTranscriptCommit } from "./voiceNoteCommits";
+import { __resetStorageStatusForTests } from "@/lib/storageStatus";
 import { resolveVoiceNoteRow } from "./voiceNoteRows";
 import { pendingStore } from "./recorderSaves";
 import { advanceAccountGeneration } from "./accountContext";
@@ -169,7 +170,11 @@ beforeEach(() => {
   fake.plugin.getTranscript = async () => ({ transcript: null });
   __setVoiceNotesForTests(fake.plugin, { available: true });
 });
-afterEach(() => __setVoiceNotesForTests(originalVoiceNotes, { available: null }));
+afterEach(async () => {
+  __setVoiceNotesForTests(originalVoiceNotes, { available: null });
+  await __resetOnDeviceTranscriberForTests();
+  __resetStorageStatusForTests();
+});
 
 const silentDecoder = (seconds = 1): AudioDecoder => async (_bytes, sampleRate) => ({
   channels: [new Float32Array(Math.round(seconds * sampleRate)).fill(0.25)],

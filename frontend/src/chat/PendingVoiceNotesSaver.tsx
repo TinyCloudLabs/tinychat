@@ -150,7 +150,7 @@ export function PendingVoiceNotesSaver({
             if (transcriber) transcribeSavedNote(transcriber, note, () => generation === currentAccountGeneration());
           });
           await account.refresh(null);
-        });
+        }, did);
       } catch (error) {
         if (saveDeferredForAccountTransition(error)) return;
         const message = pendingSaveMessage(error);

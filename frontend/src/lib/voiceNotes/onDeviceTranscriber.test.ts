@@ -6,7 +6,7 @@ import { VoiceNotes, __setVoiceNotesForTests, type LocalTranscript, type VoiceNo
 import { setVoiceNoteSaveDeadlineForTests } from "./saveDeadline";
 import { advanceAccountGeneration } from "./accountContext";
 import { resetSpaceLaneForTests, runOnSpaceLane } from "../spaceWriteLane";
-import { reportStorageError, reportStorageWriteSucceeded, runStorageRecoveryWork } from "@/lib/storageStatus";
+import { __resetStorageStatusForTests, reportStorageError, reportStorageWriteSucceeded, runStorageRecoveryWork } from "@/lib/storageStatus";
 const realCommits = { ...(await import("./voiceNoteCommits")) };
 let spaceCommitPresent = true;
 mock.module("./voiceNoteCommits", () => ({ ...realCommits,
@@ -24,7 +24,7 @@ mock.module("./voiceNoteStore", () => ({ ...realStore,
     checkpoint?.();
     failures.push(code);
   } }));
-const { onDeviceTranscriptSyncState, recordOnDeviceTranscript, subscribeOnDeviceTranscriptSync, syncOnDeviceTranscript } = await import("./onDeviceTranscriber");
+const { __resetOnDeviceTranscriberForTests, onDeviceTranscriptSyncState, recordOnDeviceTranscript, subscribeOnDeviceTranscriptSync, syncOnDeviceTranscript } = await import("./onDeviceTranscriber");
 
 const SAVED = { id: "rec-1", ledger: { audio: { state: "saved" } } };
 const transcript: LocalTranscript = {
@@ -67,9 +67,11 @@ beforeEach(() => {
   } as unknown as VoiceNotesPlugin, { available: true });
   console.warn = () => {};
 });
-afterEach(() => {
+afterEach(async () => {
   console.warn = warn;
+  await __resetOnDeviceTranscriberForTests();
   __setVoiceNotesForTests(realPlugin, { available: null });
+  await __resetStorageStatusForTests();
 });
 afterAll(() => {
   mock.restore();

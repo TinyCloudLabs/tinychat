@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 
 import {
   AUDIO_CORRUPT,
@@ -14,8 +14,11 @@ import {
   getAudioManifest,
   putAudio,
 } from "./audioStore";
-import { isStorageFullError, isStorageReadOnly, reportStorageError, reportStorageWriteSucceeded } from "../storageStatus";
+import { __resetStorageStatusForTests, isStorageFullError, isStorageReadOnly, reportStorageError, reportStorageWriteSucceeded } from "../storageStatus";
 
+afterEach(async () => {
+  await __resetStorageStatusForTests();
+});
 interface KvErr {
   code: string;
   message: string;

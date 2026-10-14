@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { createElement, act } from "react";
 import { createRoot } from "react-dom/client";
@@ -19,20 +19,24 @@ import { NoteDetailView } from "@/capture/library/NoteDetailView";
 import { hasPrivateCloudTimingProvenance, transcriptMarkdown, transcriptWithTimestamps } from "@/capture/library/transcriptSegments";
 import { createFakeVoiceNotes } from "./fakeVoiceNotes";
 import { __setVoiceNotesForTests, VoiceNotes } from "./nativeVoiceNotes";
-import { syncOnDeviceTranscript } from "./onDeviceTranscriber";
+import { __resetOnDeviceTranscriberForTests, syncOnDeviceTranscript } from "./onDeviceTranscriber";
 import { createVoiceNotePipeline, VoiceNoteSaveDeferred, type VoiceNotePipeline } from "./voiceNotePipeline";
 import { handoffBeforeCredentialClear } from "./accountHandoff";
 import { advanceAccountGeneration, currentAccountGeneration } from "./accountContext";
 import { runOnSpaceLane, spaceLaneSnapshot, subscribeSpaceLane } from "../spaceWriteLane";
 import { setVoiceNoteSaveDeadlineForTests } from "./saveDeadline";
 import { putPendingSaveState, readPendingSaveStates } from "./pendingSaveState";
-import { reportStorageWriteSucceeded, trackStorageWrites } from "@/lib/storageStatus";
+import { __resetStorageStatusForTests, __waitForStorageRecoveryForTests, trackStorageWrites } from "@/lib/storageStatus";
 import { pendingStore, saveNoteForAccount } from "./recorderSaves";
 import { associateLegacyNotes, markLegacyOwnerUnknown, migrateLegacyDiscardLedger } from "./legacyMigration";
 import { loadNote, saveNote } from "./recordingNotes";
 import { readRecordingNoteFromSpace, syncRecordingNote, VOICE_NOTE_SOURCE, voiceNoteAudioKvKey, voiceNoteMarkdownKvKey } from "./voiceNoteStore";
 
 describe.serial("voice-note rows", () => {
+afterEach(async () => {
+  await __resetOnDeviceTranscriberForTests();
+  __resetStorageStatusForTests();
+});
 
 
 test("a healthy long drain does not consume the next save's call deadline", async () => {
@@ -101,7 +105,6 @@ test("after one storage-full audio put, later notes in the pass still save rows 
     expect(uploadStates).not.toContain("saved");
   } finally {
     kv.put = put;
-    reportStorageWriteSucceeded();
     __setVoiceNotesForTests(original, { available: null });
   }
 });
@@ -1290,6 +1293,7 @@ test("the mounted pending saver runs the real pipeline on sign-in and forced-swa
     expect((await fake.plugin.listPending()).recordings.filter((note) => note.ledger?.audio.state === "saved"))
       .toHaveLength(2);
     await act(async () => root.unmount());
+    await __waitForStorageRecoveryForTests(tcw.did);
     mounted = false;
     fake.plugin.getTranscript = async () => ({ transcript: {
       version: 1, noteId: initial.id, transcriber: "on-device", rev: 2,
@@ -2147,17 +2151,26 @@ test("an on-device transcript held by storage is retried by a foreground focus o
   const harness = foregroundHarness();
   Reflect.set(globalThis, "window", harness.windowStub);
   Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
-  const settle = () => act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); });
+  const settle = settleRecovery;
+  let reconciles: ReturnType<typeof watchReconciles> | null = null;
+  let signalReconcileEntered!: () => void;
+  const reconcileEntered = new Promise<void>((resolve) => { signalReconcileEntered = resolve; });
   try {
     await syncOnDeviceTranscript(tcw, { id: recording.id, ledger: { audio: { state: "saved" } } });
     expect(await readTranscriptCommit(tcw, recording.id)).toBeFalsy();
     // Mounting while space is still full: the mount reconcile stays parked, so held transcript recovery must not wait behind it.
     const parkedPipeline = createVoiceNotePipeline(tcw);
+    reconciles = watchReconciles(parkedPipeline);
     const reconcile = parkedPipeline.reconcileAll.bind(parkedPipeline);
     // Parks the mount reconcile in flight, so the foreground event arrives while that run is still awaiting.
-    parkedPipeline.reconcileAll = async (ctx, trigger, onSaved) => { await reconcileGate; return reconcile(ctx, trigger, onSaved); };
+    parkedPipeline.reconcileAll = async (ctx, trigger, onSaved) => {
+      signalReconcileEntered();
+      await reconcileGate;
+      return reconcile(ctx, trigger, onSaved);
+    };
     await act(async () => harness.root.render(createElement(PendingVoiceNotesSaver,
       { tcw, pipeline: parkedPipeline, backendUrl: "", sessionStore: {} as never })));
+    await reconcileEntered;
     await settle();
     expect(await readTranscriptCommit(tcw, recording.id)).toBeFalsy();
     spaceFull = false;
@@ -2167,12 +2180,12 @@ test("an on-device transcript held by storage is retried by a foreground focus o
     expect(await readTranscriptCommit(tcw, recording.id)).toMatchObject({ rev: 1 });
   } finally {
     releaseReconcile();
+    if (reconciles) await reconciles.waitFor(2);
     await act(async () => harness.root.unmount());
     __setOnDeviceSttForTests(previousStt);
     __setVoiceNotesForTests(original, { available: null });
     Reflect.set(globalThis, "window", previousWindow);
     Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", previousAct);
-    reportStorageWriteSucceeded();
   }
 });
 
@@ -2200,10 +2213,14 @@ test("a focus alone saves queued audio once space is restored after a full-space
   const harness = foregroundHarness();
   Reflect.set(globalThis, "window", harness.windowStub);
   Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
-  const settle = () => act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); });
+  const settle = settleRecovery;
+  const pipeline = createVoiceNotePipeline(tcw);
+  const reconciles = watchReconciles(pipeline);
   try {
     await act(async () => harness.root.render(createElement(PendingVoiceNotesSaver,
-      { tcw, pipeline: createVoiceNotePipeline(tcw), backendUrl: "", sessionStore: {} as never })));
+      { tcw, pipeline, backendUrl: "", sessionStore: {} as never })));
+    await reconciles.waitFor(1);
+    await __waitForStorageRecoveryForTests(tcw.did);
     await settle();
     expect(events).toEqual([]);
     const queued = (await fake.plugin.listPending()).recordings.find((note) => note.id === recording.id);
@@ -2211,6 +2228,8 @@ test("a focus alone saves queued audio once space is restored after a full-space
     expect(queued?.ledger?.audio.state).not.toBe("saved");
     spaceFull = false;
     harness.fire("focus");
+    await reconciles.waitFor(2);
+    await __waitForStorageRecoveryForTests(tcw.did);
     for (let i = 0; i < 100 && events.length === 0; i++) await settle();
     expect(events).toEqual([{ source: VOICE_NOTE_SOURCE, sourceId: recording.id }]);
   } finally {
@@ -2220,7 +2239,6 @@ test("a focus alone saves queued audio once space is restored after a full-space
     __setVoiceNotesForTests(original, { available: null });
     Reflect.set(globalThis, "window", previousWindow);
     Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", previousAct);
-    reportStorageWriteSucceeded();
   }
 });
 
@@ -2235,14 +2253,16 @@ function watchReconciles(pipeline: VoiceNotePipeline) {
   const waiting = new Map<number, (() => void)[]>();
   const reconcile = pipeline.reconcileAll.bind(pipeline);
   pipeline.reconcileAll = async (...args) => {
-    const result = await reconcile(...args);
-    completed++;
-    for (const [target, resolvers] of waiting) {
-      if (target > completed) continue;
-      waiting.delete(target);
-      for (const resolve of resolvers) resolve();
+    try {
+      return await reconcile(...args);
+    } finally {
+      completed++;
+      for (const [target, resolvers] of waiting) {
+        if (target > completed) continue;
+        waiting.delete(target);
+        for (const resolve of resolvers) resolve();
+      }
     }
-    return result;
   };
   return {
     waitFor(target: number): Promise<void> {
@@ -2299,6 +2319,7 @@ test("an on-device transcript held by storage resumes on an external successful 
     await act(async () => harness.root.render(createElement(PendingVoiceNotesSaver,
       { tcw, pipeline, backendUrl: "", sessionStore: {} as never })));
     await reconciles.waitFor(1);
+    await __waitForStorageRecoveryForTests(tcw.did);
     await settle();
     spaceFull = false;
     await settle();
@@ -2306,6 +2327,7 @@ test("an on-device transcript held by storage resumes on an external successful 
     expect(await readTranscriptCommit(tcw, recording.id)).toBeFalsy();
     await externalWrite(tcw);
     await reconciles.waitFor(2);
+    await __waitForStorageRecoveryForTests(tcw.did);
     await settle();
     expect(await readTranscriptCommit(tcw, recording.id)).toMatchObject({ rev: 1 });
     expect(committedWrites).toBe(1);
@@ -2315,7 +2337,6 @@ test("an on-device transcript held by storage resumes on an external successful 
     __setVoiceNotesForTests(original, { available: null });
     Reflect.set(globalThis, "window", previousWindow);
     Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", previousAct);
-    reportStorageWriteSucceeded();
   }
 });
 
@@ -2355,6 +2376,7 @@ test("queued audio uploads once on an external successful write, with no focus e
     await act(async () => harness.root.render(createElement(PendingVoiceNotesSaver,
       { tcw, pipeline, backendUrl: "", sessionStore: {} as never })));
     await reconciles.waitFor(1);
+    await __waitForStorageRecoveryForTests(tcw.did);
     await settle();
     expect(events).toEqual([]);
     spaceFull = false;
@@ -2365,6 +2387,7 @@ test("queued audio uploads once on an external successful write, with no focus e
     expect(audioSaved).toBe(0);
     await externalWrite(tcw);
     await reconciles.waitFor(2);
+    await __waitForStorageRecoveryForTests(tcw.did);
     await settle();
     expect(events).toEqual([{ source: VOICE_NOTE_SOURCE, sourceId: recording.id }]);
     expect(audioSaved).toBe(1);
@@ -2375,7 +2398,6 @@ test("queued audio uploads once on an external successful write, with no focus e
     __setVoiceNotesForTests(original, { available: null });
     Reflect.set(globalThis, "window", previousWindow);
     Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", previousAct);
-    reportStorageWriteSucceeded();
   }
 });
 
@@ -2412,11 +2434,13 @@ test("audio that never fits: each external successful write runs one recovery pa
     await act(async () => harness.root.render(createElement(PendingVoiceNotesSaver,
       { tcw, pipeline, backendUrl: "", sessionStore: {} as never })));
     await reconciles.waitFor(1);
+    await __waitForStorageRecoveryForTests(tcw.did);
     await settle();
     expect(audioAttempts).toBe(1);
     for (let i = 0; i < 3; i++) {
       await externalWrite(tcw);
       await reconciles.waitFor(i + 2);
+    await __waitForStorageRecoveryForTests(tcw.did);
       await settle();
       expect(audioAttempts).toBe(i + 2);
     }
@@ -2426,7 +2450,6 @@ test("audio that never fits: each external successful write runs one recovery pa
     __setVoiceNotesForTests(original, { available: null });
     Reflect.set(globalThis, "window", previousWindow);
     Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", previousAct);
-    reportStorageWriteSucceeded();
   }
 });
 
@@ -2468,6 +2491,7 @@ test("queued audio beside a text-only note uploads once on an external successfu
     await act(async () => harness.root.render(createElement(PendingVoiceNotesSaver,
       { tcw, pipeline, backendUrl: "", sessionStore: {} as never })));
     await reconciles.waitFor(1);
+    await __waitForStorageRecoveryForTests(tcw.did);
     expect(audioSaved).toBe(0);
     spaceFull = false;
     await settle();
@@ -2476,6 +2500,7 @@ test("queued audio beside a text-only note uploads once on an external successfu
     expect(audioSaved).toBe(0);
     await externalWrite(tcw);
     await reconciles.waitFor(2);
+    await __waitForStorageRecoveryForTests(tcw.did);
     expect(audioSaved).toBe(1);
   } finally {
     await act(async () => harness.root.unmount());
@@ -2483,7 +2508,6 @@ test("queued audio beside a text-only note uploads once on an external successfu
     __setVoiceNotesForTests(original, { available: null });
     Reflect.set(globalThis, "window", previousWindow);
     Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", previousAct);
-    reportStorageWriteSucceeded();
   }
 });
 test("a held on-device transcript commits once when an external write lands during a parked reconcile and a later one follows", async () => {
@@ -2519,31 +2543,37 @@ test("a held on-device transcript commits once when an external write lands duri
   // The mount pass parks in its reconcile after its held probe has already failed against the full space.
   let releaseReconcile!: () => void;
   const reconcileGate = new Promise<void>((resolve) => { releaseReconcile = resolve; });
+  let signalReconcileEntered!: () => void;
+  const reconcileEntered = new Promise<void>((resolve) => { signalReconcileEntered = resolve; });
   const parkedPipeline = createVoiceNotePipeline(tcw);
-  const reconcile = parkedPipeline.reconcileAll.bind(parkedPipeline);
-  parkedPipeline.reconcileAll = async (ctx, trigger, onSaved) => {
+  parkedPipeline.reconcileAll = async () => {
+    signalReconcileEntered();
     await reconcileGate;
-    return reconcile(ctx, trigger, onSaved);
   };
+  const reconciles = watchReconciles(parkedPipeline);
   const harness = foregroundHarness();
   Reflect.set(globalThis, "window", harness.windowStub);
   Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
-  const settle = () => act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); });
+  const settle = settleRecovery;
   try {
     await syncOnDeviceTranscript(tcw, { id: recording.id, ledger: { audio: { state: "saved" } } });
     expect(await readTranscriptCommit(tcw, recording.id)).toBeFalsy();
     await act(async () => harness.root.render(createElement(PendingVoiceNotesSaver,
       { tcw, pipeline: parkedPipeline, backendUrl: "", sessionStore: {} as never })));
     await settle();
+    await reconcileEntered;
     // Lands while the mount pass is in flight: no wake, and the pass does not replay it.
     await externalWrite(tcw);
     spaceFull = false;
     releaseReconcile();
-    await settleRecovery();
+    await reconciles.waitFor(1);
+    await __waitForStorageRecoveryForTests(tcw.did);
     expect(await readTranscriptCommit(tcw, recording.id)).toBeFalsy();
     // The next successful write after the pass settles is the one that wakes recovery.
     await externalWrite(tcw);
     await settleRecovery();
+    await reconciles.waitFor(2);
+    await __waitForStorageRecoveryForTests(tcw.did);
     await settle();
     expect(await readTranscriptCommit(tcw, recording.id)).toMatchObject({ rev: 1 });
     expect(committedWrites).toBe(1);
@@ -2554,7 +2584,6 @@ test("a held on-device transcript commits once when an external write lands duri
     __setVoiceNotesForTests(original, { available: null });
     Reflect.set(globalThis, "window", previousWindow);
     Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", previousAct);
-    reportStorageWriteSucceeded();
   }
 });
 

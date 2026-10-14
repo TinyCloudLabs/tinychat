@@ -46,7 +46,10 @@ import {
 import { loadNote, noteMarkdown, saveNote } from "./recordingNotes";
 import type { VoiceNoteRecording } from "./nativeVoiceNotes";
 import { setVoiceNoteSaveDeadlineForTests } from "./saveDeadline";
-import { isStorageReadOnly, reportStorageWriteSucceeded } from "@/lib/storageStatus";
+import { __resetStorageStatusForTests, isStorageReadOnly } from "@/lib/storageStatus";
+afterEach(async () => {
+  await __resetStorageStatusForTests();
+});
 
 type KvValue = string | Uint8Array;
 type KvFailure = { code: string; message: string; meta?: { status: number } };
@@ -336,7 +339,6 @@ describe("saveVoiceNote", () => {
     space.failPut((key) => key === noteKey ? { code: "STORAGE_LIMIT_REACHED", message: "Write exceeds remaining storage" } : null);
     await expect(syncRecordingNote(space.tcw, withNote.id)).rejects.toMatchObject({ cause: { code: "STORAGE_LIMIT_REACHED" } });
     expect(isStorageReadOnly()).toBe(true);
-    reportStorageWriteSucceeded();
   });
 
   test("a timed-out E1 Markdown put settles before E2 can write", async () => {
@@ -843,7 +845,6 @@ describe("loading a note's audio", () => {
 });
 
 describe("saveVoiceNote while TinyCloud storage is full", () => {
-  afterEach(() => reportStorageWriteSucceeded());
 
   // The note's Markdown lives under the note's audio prefix, so audio puts exclude it.
   const isAudioPut = (call: Call, id: string) => call.kind === "kv.put"

@@ -164,7 +164,7 @@ async function mountWith(kind: CaptureEngineKind, capabilities: CaptureCapabilit
     registerCaptureEngine(kind, async () => strict.engine);
     await installCaptureEngine();
   }
-  const tcw = { did: "did:example:alice", spaceId: "space:alice" } as TinyCloudWeb;
+  const tcw = { did: "did:example:alice", ...(recovery ? { spaceId: "space:alice" } : {}) } as TinyCloudWeb;
   root = createRoot({ nodeType: 1, nodeName: "DIV", tagName: "DIV", ownerDocument: documentStub, textContent: "", addEventListener() {}, removeEventListener() {},
     appendChild() {}, removeChild() {}, insertBefore() {} } as unknown as HTMLElement);
   await act(async () => root!.render(

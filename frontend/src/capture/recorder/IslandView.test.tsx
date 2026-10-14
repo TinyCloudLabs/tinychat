@@ -1,11 +1,11 @@
 // The minimised recorder: the island in each state, and the rail, sidebar and
 // header controls that stand in for it.
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { installDom } from "@/test/dom";
-import { reportStorageError, reportStorageWriteSucceeded } from "@/lib/storageStatus";
+import { __resetStorageStatusForTests, reportStorageError } from "@/lib/storageStatus";
 
 import { MinimizedProvider } from "./final/MinimizedProvider";
 import { HeaderLiveChipView } from "./HeaderLiveChip";
@@ -16,6 +16,9 @@ import { islandShown, StaticRecorderProvider, type RecorderValue } from "./Recor
 import { SidebarLiveCardView } from "./SidebarLiveCard";
 
 const noop = () => {};
+afterEach(async () => {
+  await __resetStorageStatusForTests();
+});
 
 function value(patch: Partial<RecorderValue> = {}): RecorderValue {
   return {
@@ -97,7 +100,6 @@ describe("IslandView", () => {
       expect(container.textContent).toContain("Manage storage");
       expect(container.textContent).not.toContain("Save now");
     } finally {
-      await act(async () => reportStorageWriteSucceeded());
       await act(async () => root.unmount());
       restoreDom();
     }

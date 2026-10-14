@@ -10,6 +10,8 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { fakeVoiceNoteStore } from "@/harness/fakeVoiceNoteStore";
 import { __setVoiceNotesForTests, VoiceNotes, type VoiceNoteRecording, type VoiceNotesPlugin } from "./nativeVoiceNotes";
 import { currentAccountGeneration } from "./accountContext";
+import { __resetStorageStatusForTests } from "../storageStatus";
+import { __resetOnDeviceTranscriberForTests } from "./onDeviceTranscriber";
 
 const originalVoiceNotes = VoiceNotes;
 
@@ -217,7 +219,9 @@ beforeEach(() => {
   saveCalls = 0;
   fakeVoiceNoteStore.save = ok;
 });
-afterEach(() => {
+afterEach(async () => {
+  await __resetOnDeviceTranscriberForTests();
+  __resetStorageStatusForTests();
   __setVoiceNotesForTests(originalVoiceNotes, { available: null });
   fakeVoiceNoteStore.save = null;
   delete (globalThis as { localStorage?: unknown }).localStorage;

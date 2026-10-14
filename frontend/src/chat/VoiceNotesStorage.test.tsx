@@ -3,7 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 
 import { StaticRecorderProvider } from "@/capture/recorder/RecorderProvider";
-import { reportStorageError, reportStorageWriteSucceeded } from "@/lib/storageStatus";
+import { __resetStorageStatusForTests, reportStorageError, reportStorageWriteSucceeded } from "@/lib/storageStatus";
 import { setUploadAudioPreference } from "@/lib/voiceNotes/transcriberPreference";
 import { installDom } from "@/test/dom";
 import { VoiceNotesTranscriberSettings } from "./VoiceNotesTranscriberSettings";
@@ -49,7 +49,7 @@ afterEach(async () => {
   root = null;
   restoreDom?.();
   restoreDom = null;
-  reportStorageWriteSucceeded();
+  await __resetStorageStatusForTests();
   if (savedStorage) Object.defineProperty(globalThis, "localStorage", savedStorage);
   else Reflect.deleteProperty(globalThis, "localStorage");
 });

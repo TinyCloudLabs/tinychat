@@ -142,6 +142,16 @@ function enqueue<T>(key: string, attempt: () => Promise<T>): Promise<T> {
   return run;
 }
 
+/** Clear account-scoped held sync state after its test has settled all in-flight attempts. */
+export async function __resetOnDeviceTranscriberForTests(): Promise<void> {
+  storageHeld.clear();
+  await Promise.all([...chains.values()]);
+  storageHeld.clear();
+  chains.clear();
+  syncStates.clear();
+  published.clear();
+}
+
 /**
  * The space already has this note's transcript, but the phone's ledger was never told (`transcriptSync` is not "saved"): tell it,
  * without writing the space again (what is there may be newer than the local copy). Publishes `synced`, or `unrecorded` with the cause.

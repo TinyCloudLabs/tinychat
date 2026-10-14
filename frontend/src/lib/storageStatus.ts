@@ -118,17 +118,63 @@ export function reportStorageError(error: unknown): void {
 let writableEdges = 0;
 /**
  * Storage-full work waits for a recovery pass. Every storage-full report sets it, independent of the `readOnly`
- * UI latch, so a success that clears the latch does not drop the work. Only a completed pass with no new
- * storage-full report clears it.
+ * UI latch. A pass clears it only if it performs a successful write without a new storage-full report; an empty
+ * unrelated pass cannot clear another writer's pending recovery.
  */
 let recoveryPending = false;
 /** Storage-full reports so far. A pass compares this before and after to see whether storage stayed full. */
 let storageFullReports = 0;
+/** Successful writes so far, used to confirm that a pass actually serviced pending work. */
+let successfulStorageWrites = 0;
 /** Recovery passes in flight (held-work probe or full pass). A successful write while any is running does not wake another. */
 let recoveryPassesInFlight = 0;
+let recoveryGeneration = 0;
 const recoveryWakeListeners = new Set<() => void>();
+const recoveryPassesByKey = new Map<string, number>();
+const recoveryKeyWaiters = new Map<string, Set<() => void>>();
+
+function recoveryPassFinished(generation: number, key?: string): void {
+  if (generation !== recoveryGeneration) return;
+  recoveryPassesInFlight--;
+  if (key) {
+    const count = (recoveryPassesByKey.get(key) ?? 1) - 1;
+    if (count === 0) {
+      recoveryPassesByKey.delete(key);
+      for (const resolve of recoveryKeyWaiters.get(key) ?? []) resolve();
+      recoveryKeyWaiters.delete(key);
+    } else recoveryPassesByKey.set(key, count);
+  }
+}
+
+
+/** Reset process-wide storage state between tests after their subscriptions are cleaned up. */
+export function __resetStorageStatusForTests(): void {
+  recoveryGeneration++;
+  recoveryPassesInFlight = 0;
+  for (const waiters of recoveryKeyWaiters.values()) for (const resolve of waiters) resolve();
+  recoveryKeyWaiters.clear();
+  recoveryPassesByKey.clear();
+  readOnly = false;
+  freePlan = false;
+  writableEdges = 0;
+  recoveryPending = false;
+  storageFullReports = 0;
+  successfulStorageWrites = 0;
+}
+
+/** Wait for the named account's saver pass after a mounted-saver test releases its gates. */
+export async function __waitForStorageRecoveryForTests(key: string): Promise<void> {
+  while ((recoveryPassesByKey.get(key) ?? 0) !== 0) {
+    await new Promise<void>((resolve) => {
+      const waiters = recoveryKeyWaiters.get(key) ?? new Set();
+      waiters.add(resolve);
+      recoveryKeyWaiters.set(key, waiters);
+    });
+  }
+}
 
 export function reportStorageWriteSucceeded(): void {
+  successfulStorageWrites++;
   if (readOnly) {
     readOnly = false;
     writableEdges++;
@@ -141,16 +187,20 @@ export function reportStorageWriteSucceeded(): void {
  * Full recovery pass: held work, then reconcile. Pending clears only when the pass completes with no storage-full
  * report, so a pass that re-hits quota leaves it set for the next write.
  */
-export async function runStorageRecoveryPass<T>(pass: () => Promise<T>): Promise<T> {
+export async function runStorageRecoveryPass<T>(pass: () => Promise<T>, key?: string): Promise<T> {
+  const generation = recoveryGeneration;
   const reportsBefore = storageFullReports;
+  const writesBefore = successfulStorageWrites;
   recoveryPassesInFlight++;
+  if (key) recoveryPassesByKey.set(key, (recoveryPassesByKey.get(key) ?? 0) + 1);
   let result: T;
   try {
     result = await pass();
   } finally {
-    recoveryPassesInFlight--;
+    recoveryPassFinished(generation, key);
   }
-  if (recoveryPassesInFlight === 0 && storageFullReports === reportsBefore) recoveryPending = false;
+  if (generation === recoveryGeneration && recoveryPassesInFlight === 0 &&
+    storageFullReports === reportsBefore && successfulStorageWrites > writesBefore) recoveryPending = false;
   return result;
 }
 
@@ -184,12 +234,13 @@ export function registerStorageRecoveryWork(work: () => Promise<void>): () => vo
 
 /** Probes each registered held item once. A failing item stays held and logs. Does not clear pending on its own. */
 export async function runStorageRecoveryWork(): Promise<void> {
+  const generation = recoveryGeneration;
   recoveryPassesInFlight++;
   try {
     await Promise.all([...storageRecoveryWork].map((work) =>
       work().catch((error: unknown) => console.warn("[Storage] Could not retry held work", error))));
   } finally {
-    recoveryPassesInFlight--;
+    recoveryPassFinished(generation);
   }
 }
 

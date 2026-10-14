@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 
-import { reportStorageError, reportStorageWriteSucceeded } from "@/lib/storageStatus";
+import { __resetStorageStatusForTests, reportStorageError, reportStorageWriteSucceeded } from "@/lib/storageStatus";
 import { installDom } from "@/test/dom";
 import { CaptureSettings, SettingsPanel, type SettingsPanelProps } from "./CaptureSettings";
 
@@ -55,7 +55,7 @@ afterEach(async () => {
   root = null;
   restoreDom?.();
   restoreDom = null;
-  reportStorageWriteSucceeded();
+  await __resetStorageStatusForTests();
 });
 
 describe("CaptureSettings while storage is full", () => {
