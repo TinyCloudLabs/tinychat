@@ -264,6 +264,9 @@ describe("the player in a DOM", () => {
       expect(player.fake.plays).toHaveLength(1);
       await act(async () => root!.unmount());
       root = null;
+      // mount() installs a fresh DOM; restore this one first or its globals outlive the test.
+      cleanupDom?.();
+      cleanupDom = undefined;
       const mono = await mount({ url: "blob:mono", channels: 1 });
       act(() => mono.q("[data-testid=note-audio-play]").click());
       expect(created).toBe(1);
