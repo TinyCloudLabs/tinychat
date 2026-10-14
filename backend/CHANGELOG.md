@@ -1,5 +1,11 @@
 # @tinychat/backend
 
+## 0.5.5-beta.1
+
+### Patch Changes
+
+- ada6d55: Keep calendar autojoin enabled when reconnecting the same Google account and explain why it is off in connector settings and Meeting sources.
+
 ## 0.5.5-beta.0
 
 ### Patch Changes
