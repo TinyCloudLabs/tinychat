@@ -132,6 +132,7 @@ export function PendingVoiceNotesSaver({
     let runInFlight: Promise<void> | null = null;
     let dirty = false;
     let disposed = false;
+    let recovery: Promise<void> | null = null;
     let appStateHandle: { remove(): Promise<void> } | undefined;
     const run = (): Promise<void> => {
       if (runInFlight) {
@@ -158,18 +159,27 @@ export function PendingVoiceNotesSaver({
         do {
           dirty = false;
           await runOnce();
-          await runStorageRecoveryWork();
         } while (dirty && !disposed);
       })().finally(() => { runInFlight = null; });
       return runInFlight;
     };
-    const unregister = registerPendingVoiceNotesRecovery(run);
+    // Held storage work runs on its own single-flight pass, so a long audio reconcile cannot delay it.
+    // Every foreground entry (mount, renewal, online, visible, focus, native app-active) comes through here.
+    const recoverHeld = (): Promise<void> => {
+      recovery ??= runStorageRecoveryWork().finally(() => { recovery = null; });
+      return recovery;
+    };
+    const foreground = (): Promise<void> => {
+      void recoverHeld();
+      return run();
+    };
+    const unregister = registerPendingVoiceNotesRecovery(foreground);
     if (transcriber) void recheckVoiceNoteAvailabilityAutomatically(transcriber, isAccountCurrent);
-    void run();
+    void foreground();
     const onOnline = () => {
       pendingStore.setOnline(true);
       if (transcriber) void recheckVoiceNoteAvailabilityAutomatically(transcriber, isAccountCurrent);
-      void run();
+      void foreground();
     };
     const onOffline = () => pendingStore.setOnline(false);
     const windowTarget = typeof window !== "undefined" && typeof window.addEventListener === "function" ? window : undefined;
@@ -179,16 +189,16 @@ export function PendingVoiceNotesSaver({
     const onVisible = () => {
       if (documentTarget?.visibilityState !== "visible") return;
       if (transcriber) void recheckVoiceNoteAvailabilityAutomatically(transcriber, isAccountCurrent);
-      void run();
+      void foreground();
     };
     documentTarget?.addEventListener("visibilitychange", onVisible);
-    const onFocus = () => void run();
+    const onFocus = () => void foreground();
     windowTarget?.addEventListener("focus", onFocus);
     if (Capacitor.isNativePlatform()) {
       void import("@capacitor/app").then(({ App }) => App.addListener("appStateChange", ({ isActive }) => {
         if (isActive) {
           if (transcriber) void recheckVoiceNoteAvailabilityAutomatically(transcriber, isAccountCurrent);
-          void run();
+          void foreground();
         }
       })).then((handle) => {
         if (disposed) void handle.remove();

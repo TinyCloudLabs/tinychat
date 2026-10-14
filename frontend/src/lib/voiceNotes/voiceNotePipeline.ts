@@ -9,6 +9,7 @@ import { withVoiceNoteSaveDeadline } from "./saveDeadline";
 import { syncRecordingNote, VOICE_NOTE_SOURCE } from "./voiceNoteStore";
 import { syncOnDeviceTranscript } from "./onDeviceTranscriber";
 import { appPlatform } from "@/lib/platform";
+import { isStorageFullError } from "@/lib/storageStatus";
 import type { StoreAudioOptions } from "./voiceNoteStore";
 import { logPipeline } from "@/lib/debugLog";
 
@@ -193,6 +194,7 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
           throw error;
         }
         let discardError: unknown;
+        let storageFull: { error: unknown } | null = null;
         const saveQueue = notes.filter((note) => note.owner === ctx.did && !note.ownerUnknown &&
           note.ledger?.audio.state !== "saved" && !isDiscarded(note.id)).sort((a, b) => a.startedAt - b.startedAt);
         const uploadTickets = new Map(saveQueue.map((note) => [note.id, pendingStore.enqueueUpload(note)]));
@@ -200,6 +202,10 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
         for (const note of [...notes].sort((a, b) => a.startedAt - b.startedAt)) {
           check();
           if (note.owner === ctx.did && !note.ownerUnknown) {
+            // Storage is full: each queued note would run its row INSERT, which clears the full
+            // state, then fail its audio put, which sets it again. One probe per trigger: the rest
+            // stay queued with their audio on the device until the next trigger.
+            if (storageFull) { pendingStore.reportNoteFailure(note.id, storageFull.error); continue; }
             if (trigger === "manual") {
               pendingStore.setRetrying(note.id, null);
               retryAttempts.delete(note.id);
@@ -217,7 +223,10 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
             catch (error) {
               check();
               if (isDiscarded(note.id)) discardError ??= error;
-              else pendingStore.reportNoteFailure(note.id, error);
+              else {
+                pendingStore.reportNoteFailure(note.id, error);
+                if (isStorageFullError(error)) storageFull = { error };
+              }
             } finally {
               // The native ledger is authoritative for the In progress count. Publish
               // each completed note during a long reconcile pass, not only at the end.
