@@ -433,11 +433,11 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     };
     const completeSaved = (saved: VoiceNoteRecording) => {
       if (!accountCurrent()) return;
-      send({ type: "SAVED", id: saved.id, durationMs: saved.durationMs, at: Date.now() });
+      send({ type: "SAVED", id: saved.id, durationMs: saved.durationMs, channels: saved.channels, at: Date.now() });
       if (privateStarted) onSaved?.(saved);
       else landed(generation, saved);
     };
-    send({ type: "LOCAL_COMMITTED", id: recording.id, durationMs: recording.durationMs, at: Date.now() });
+    send({ type: "LOCAL_COMMITTED", id: recording.id, durationMs: recording.durationMs, channels: recording.channels, at: Date.now() });
     void pendingStore.refresh();
     // The Mac receipt is backed by durable stopped sources. Readers and all
     // downstream work wait for the imported playable file before proceeding.

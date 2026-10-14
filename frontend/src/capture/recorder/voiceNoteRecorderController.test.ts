@@ -211,6 +211,21 @@ describe("voice-note recorder controller", () => {
     detach();
   });
 
+  test("a stereo Stop carries its channels through the saved receipt state", async () => {
+    const base = plugin;
+    __setVoiceNotesForTests({
+      ...base,
+      async stop() {
+        return { ...(await base.stop()), channels: 2 };
+      },
+    }, { available: true });
+    const { recorder, detach } = await attached();
+    await recorder.record();
+    await recorder.stop();
+    expect(recorder.getState().lastSaved).toMatchObject({ channels: 2 });
+    detach();
+  });
+
   test("starting and resuming silence a playing note before native capture", async () => {
     const cleanupDom = installDom();
     const { recorder, detach } = await attached();
