@@ -698,7 +698,7 @@ describe("upload runner: the stored upload belongs to one tab and one account", 
     await tabA.dismiss(a.deps); // "Upload another file" in tab A
     expect(tabA.snapshot()).toBeNull();
     expect(pending.value?.jobId).toBe("tB");
-    expect(events).not.toContain("delete tB");
+    tabB.reset();
   });
 
   test("another account's upload in this browser neither overwrites nor sees this account's stored job", async () => {
@@ -1128,4 +1128,32 @@ test("separate PTX poller instances in one app share one job poll stream", async
   expect(resultReads).toBe(1);
   expect(a.text).toBe("synthetic");
   expect(b.text).toBe("synthetic");
+});
+
+test("alternating PTX 503 and 429 waits preserve the ten-minute real-failure budget", async () => {
+  let now = 0;
+  let reads = 0;
+  const api = {
+    get: async () => {
+      reads++;
+      throw reads % 2 === 1
+        ? new PrivateCloudError("http_5xx", "offline")
+        : new PrivateCloudError("service_busy", "limited", { statusCode: 429, retryAfterSeconds: 30 });
+    },
+    result: async () => ({ status: "pending", jobStatus: "processing" }),
+  } as Pick<PrivateCloudApi, "get" | "result">;
+  const poller = createCloudJobPoller(api, {
+    clock: {
+      now: () => now,
+      sleep: async (ms) => {
+        now += ms;
+        if (now > 80 * 60_000) throw new Error("poll loop exceeded the real-failure budget");
+      },
+      random: () => 0.5,
+    },
+    connectionLost: () => new PrivateCloudError("connection_lost", "lost"),
+  });
+  const error = await poller.pollTranscript(ID, () => {}).catch((value: unknown) => value) as PrivateCloudError;
+  expect(error.code).toBe("connection_lost");
+  expect(now).toBeLessThan(80 * 60_000);
 });

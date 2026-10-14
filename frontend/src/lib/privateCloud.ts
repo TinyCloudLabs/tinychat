@@ -767,23 +767,247 @@ export function cloudJobLockManager(): CloudJobLockManager | null {
 }
 
 /** Poll owners hold a per-job lock; waiters retry so a closed owner hands the job to another tab. */
+export interface CloudJobLockOptions<T> {
+  signal?: AbortSignal;
+  guard?: () => void;
+  reconcile?: () => Promise<T | null>;
+}
+
+function checkLockWait(options: CloudJobLockOptions<unknown>): void {
+  if (options.signal?.aborted) {
+    throw new PrivateCloudError("cancelled", "Cloud job wait was cancelled");
+  }
+  options.guard?.();
+}
+
+async function waitForCloudJobLock(
+  wait: () => Promise<void>,
+  options: CloudJobLockOptions<unknown>,
+): Promise<void> {
+  checkLockWait(options);
+  const signal = options.signal;
+  if (signal === undefined) {
+    await wait();
+    checkLockWait(options);
+    return;
+  }
+  let removeAbort = (): void => {};
+  try {
+    await Promise.race([
+      wait(),
+      new Promise<never>((_, reject) => {
+        const abort = (): void => reject(new PrivateCloudError("cancelled", "Cloud job wait was cancelled"));
+        signal.addEventListener("abort", abort, { once: true });
+        removeAbort = () => signal.removeEventListener("abort", abort);
+        if (signal.aborted) abort();
+      }),
+    ]);
+  } finally {
+    removeAbort();
+  }
+  checkLockWait(options);
+}
+
+/** Poll owners hold a per-job lock; waiters retry so a closed owner hands the job to another tab. */
 export async function withCloudJobLock<T>(
   id: string,
   locks: CloudJobLockManager | null,
   wait: () => Promise<void>,
   poll: () => Promise<T>,
+  options: CloudJobLockOptions<T> = {},
 ): Promise<T> {
-  if (locks === null) return poll();
+  checkLockWait(options);
+  if (locks === null) {
+    const reconciled = await options.reconcile?.();
+    if (reconciled !== undefined && reconciled !== null) return reconciled;
+    checkLockWait(options);
+    return poll();
+  }
   for (;;) {
+    checkLockWait(options);
     let acquired = false;
     let result: T | undefined;
     await locks.request(`tinychat-private-transcription:${id}`, { ifAvailable: true }, async (lock) => {
       if (lock === null) return;
+      checkLockWait(options);
       acquired = true;
-      result = await poll();
+      const reconciled = await options.reconcile?.();
+      result = reconciled !== undefined && reconciled !== null ? reconciled : await poll();
     });
     if (acquired) return result as T;
-    await wait();
+    await waitForCloudJobLock(wait, options);
+  }
+}
+
+const NO_CLOUD_POLL_SUBSCRIBERS = Symbol("no-cloud-poll-subscribers");
+
+export interface CloudPollSubscriber<P> {
+  signal?: AbortSignal;
+  guard?: () => void;
+  onProgress?: (progress: P) => void;
+}
+
+export interface CloudPollContext<P> {
+  signal: AbortSignal;
+  checkpoint(): void;
+  report(progress: P): void;
+  sleep(ms: number): Promise<void>;
+}
+
+interface LiveCloudPollSubscriber<T, P> extends CloudPollSubscriber<P> {
+  abortHandler?: () => void;
+  resolve(value: T): void;
+  reject(error: unknown): void;
+  detach(): void;
+}
+
+/** One poll owner per job with independent cancellation, guards, and progress subscribers. */
+export class CloudJobPollSession<T, P> {
+  private readonly controller = new AbortController();
+  private readonly subscribers = new Set<LiveCloudPollSubscriber<T, P>>();
+  private started = false;
+  private settled = false;
+
+  constructor(
+    private readonly id: string,
+    private readonly locks: CloudJobLockManager | null,
+    private readonly wait: (ms: number) => Promise<void>,
+    private readonly poll: (context: CloudPollContext<P>) => Promise<T>,
+    private readonly reconcile: (() => Promise<T | null>) | undefined,
+    private readonly onEmpty: () => void,
+    private readonly onSettled: () => void,
+  ) {}
+
+  subscribe(subscriber: CloudPollSubscriber<P>): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const live: LiveCloudPollSubscriber<T, P> = {
+        ...subscriber,
+        resolve,
+        reject,
+        detach: () => {},
+      };
+      const remove = (): void => {
+        if (!this.subscribers.delete(live)) return;
+        live.signal?.removeEventListener("abort", onAbort);
+        if (this.subscribers.size === 0 && !this.settled) {
+          this.controller.abort();
+          this.onEmpty();
+        }
+      };
+      const onAbort = (): void => {
+        remove();
+        reject(new PrivateCloudError("cancelled", "Cloud job subscription was cancelled"));
+      };
+      live.detach = remove;
+      live.abortHandler = onAbort;
+      if (live.signal?.aborted) {
+        reject(new PrivateCloudError("cancelled", "Cloud job subscription was cancelled"));
+        return;
+      }
+      try {
+        live.guard?.();
+      } catch (error) {
+        reject(error);
+        return;
+      }
+      this.subscribers.add(live);
+      live.signal?.addEventListener("abort", onAbort, { once: true });
+      if (!this.started) {
+        this.started = true;
+        void this.run();
+      }
+    });
+  }
+
+  private checkpoint(): void {
+    for (const subscriber of [...this.subscribers]) {
+      if (subscriber.signal?.aborted) {
+        subscriber.detach();
+        subscriber.reject(new PrivateCloudError("cancelled", "Cloud job subscription was cancelled"));
+        continue;
+      }
+      try {
+        subscriber.guard?.();
+      } catch (error) {
+        subscriber.detach();
+        subscriber.reject(error);
+      }
+    }
+    if (this.subscribers.size === 0 || this.controller.signal.aborted) throw NO_CLOUD_POLL_SUBSCRIBERS;
+  }
+
+  private async sleep(ms: number): Promise<void> {
+    let remaining = Math.max(0, ms);
+    while (remaining > 0) {
+      this.checkpoint();
+      const duration = Math.min(60_000, remaining);
+      let removeAbort = (): void => {};
+      try {
+        await Promise.race([
+          this.wait(duration),
+          new Promise<never>((_, reject) => {
+            const abort = (): void => reject(NO_CLOUD_POLL_SUBSCRIBERS);
+            this.controller.signal.addEventListener("abort", abort, { once: true });
+            removeAbort = () => this.controller.signal.removeEventListener("abort", abort);
+            if (this.controller.signal.aborted) abort();
+          }),
+        ]);
+      } finally {
+        removeAbort();
+      }
+      remaining -= duration;
+    }
+    this.checkpoint();
+  }
+
+  private async run(): Promise<void> {
+    const context: CloudPollContext<P> = {
+      signal: this.controller.signal,
+      checkpoint: () => this.checkpoint(),
+      report: (progress) => {
+        this.checkpoint();
+        for (const subscriber of [...this.subscribers]) {
+          try {
+            subscriber.onProgress?.(progress);
+          } catch (error) {
+            subscriber.detach();
+            subscriber.reject(error);
+          }
+        }
+        this.checkpoint();
+      },
+      sleep: (ms) => this.sleep(ms),
+    };
+    try {
+      const result = await withCloudJobLock(
+        this.id,
+        this.locks,
+        () => context.sleep(5_000),
+        () => this.poll(context),
+        {
+          signal: this.controller.signal,
+          guard: context.checkpoint,
+          reconcile: this.reconcile,
+        },
+      );
+      this.checkpoint();
+      for (const subscriber of this.subscribers) {
+        if (subscriber.abortHandler !== undefined) subscriber.signal?.removeEventListener("abort", subscriber.abortHandler);
+        subscriber.resolve(result);
+      }
+      this.subscribers.clear();
+    } catch (error) {
+      if (error !== NO_CLOUD_POLL_SUBSCRIBERS) {
+        for (const subscriber of this.subscribers) {
+          if (subscriber.abortHandler !== undefined) subscriber.signal?.removeEventListener("abort", subscriber.abortHandler);
+          subscriber.reject(error);
+        }
+        this.subscribers.clear();
+      }
+    } finally {
+      this.settled = true;
+      this.onSettled();
+    }
   }
 }
 
@@ -804,7 +1028,7 @@ export interface CloudJobPoller {
   pollTranscript(id: string, onProgress: (p: CloudJobProgress) => void, signal?: AbortSignal): Promise<PrivateCloudTranscript>;
 }
 
-const activeCloudPolls = new Map<string, Promise<PrivateCloudTranscript>>();
+const activeCloudPolls = new Map<string, CloudJobPollSession<PrivateCloudTranscript, CloudJobProgress>>();
 
 export function createCloudJobPoller(
   api: Pick<PrivateCloudApi, "get" | "result">,
@@ -814,16 +1038,21 @@ export function createCloudJobPoller(
   const polling: CloudPolling = { ...DEFAULT_CLOUD_POLLING, ...options.polling };
   const sleep = (baseMs: number) => clock.sleep(Math.round(baseMs * (0.8 + 0.4 * clock.random())));
   const waitForRateLimit = (err: PrivateCloudError) =>
-    clock.sleep(Math.min(MAX_RATE_LIMIT_WAIT_MS, err.retryAfterSeconds === null
-      ? polling.slowIntervalMs : Math.max(0, err.retryAfterSeconds * 1000)));
+    Math.min(MAX_RATE_LIMIT_WAIT_MS, err.retryAfterSeconds === null
+      ? polling.slowIntervalMs : Math.max(0, err.retryAfterSeconds * 1000));
 
-  /** Rides out transient failures: waits and returns while they last under
- *  a bounded interval, backing off after one; then "connection lost". */
   const transientTolerance = () => {
     let failingSince: number | null = null;
     return {
-      reset: () => {
-        failingSince = null;
+      reset: () => { failingSince = null; },
+      pause: async (delay: number, wait: () => Promise<void>) => {
+        const before = clock.now();
+        try {
+          await wait();
+        } finally {
+          if (failingSince !== null) failingSince += Math.max(0, clock.now() - before);
+        }
+        return delay;
       },
       rideOut: async (err: unknown) => {
         if (!isTransientCloudError(err)) throw err;
@@ -841,11 +1070,12 @@ export function createCloudJobPoller(
       const tolerance = transientTolerance();
       for (;;) {
         try {
-          return await api.get(id);
+          const job = await api.get(id);
+          tolerance.reset();
+          return job;
         } catch (err) {
           if (err instanceof PrivateCloudError && err.statusCode === 429) {
-            tolerance.reset();
-            await waitForRateLimit(err);
+            await tolerance.pause(waitForRateLimit(err), () => clock.sleep(waitForRateLimit(err)));
             continue;
           }
           await tolerance.rideOut(err);
@@ -854,72 +1084,79 @@ export function createCloudJobPoller(
     },
 
     pollTranscript(id, onProgress, signal) {
-      const active = activeCloudPolls.get(id);
-      if (active) return active;
-      const runPoll = async () => {
-        const tolerance = transientTolerance();
-        const rideOut = tolerance.rideOut;
+      let session = activeCloudPolls.get(id);
+      if (session === undefined) {
         const startedAt = clock.now();
-        const cancelled = () => new PrivateCloudError("cancelled", "Stopped polling the transcription", { transcriptionId: id });
-      for (;;) {
-        if (signal?.aborted) throw cancelled();
-        let job: PrivateCloudJob;
-        try {
-          job = await api.get(id);
-        } catch (err) {
-          if (err instanceof PrivateCloudError && err.statusCode === 429) {
-            tolerance.reset();
-            await waitForRateLimit(err);
-            continue;
-          }
-          await rideOut(err);
-          continue;
-        }
-        if (signal?.aborted) throw cancelled();
-        if (job.status === "completed") {
-          let result: PrivateCloudResult;
-          try {
-            result = await api.result(id);
-          } catch (err) {
-            if (err instanceof PrivateCloudError && err.statusCode === 429) {
-              tolerance.reset();
-              await waitForRateLimit(err);
-              continue;
+        const sessionRef = new CloudJobPollSession(
+          id,
+          cloudJobLockManager(),
+          (ms) => clock.sleep(ms),
+          async (context) => {
+            const tolerance = transientTolerance();
+            for (;;) {
+              context.checkpoint();
+              let job: PrivateCloudJob;
+              try {
+                job = await api.get(id);
+                context.checkpoint();
+                tolerance.reset();
+              } catch (err) {
+                if (err instanceof PrivateCloudError && err.statusCode === 429) {
+                  const waitMs = waitForRateLimit(err);
+                  await tolerance.pause(waitMs, () => context.sleep(waitMs));
+                  continue;
+                }
+                await tolerance.rideOut(err);
+                continue;
+              }
+              if (job.status === "completed") {
+                let result: PrivateCloudResult;
+                try {
+                  result = await api.result(id);
+                  context.checkpoint();
+                  tolerance.reset();
+                } catch (err) {
+                  if (err instanceof PrivateCloudError && err.statusCode === 429) {
+                    const waitMs = waitForRateLimit(err);
+                    await tolerance.pause(waitMs, () => context.sleep(waitMs));
+                    continue;
+                  }
+                  await tolerance.rideOut(err);
+                  continue;
+                }
+                if (result.status === "completed") return result.transcript;
+                if (result.status !== "pending") throw result.error;
+              } else {
+                if (job.status === "failed" || job.status === "cancelled") {
+                  throw new PrivateCloudError(job.error?.code ?? job.status, job.error?.message ?? `The transcription ${job.status}`, {
+                    transcriptionId: id,
+                  });
+                }
+                if (job.status === "awaiting_upload") {
+                  throw new PrivateCloudError("upload_interrupted", "PTX has not received the recording", { transcriptionId: id });
+                }
+                context.report({
+                  stage: job.status === "queued" ? "queued" : "processing",
+                  queuePosition: job.progress?.queue_position ?? null,
+                  regionsCompleted: job.progress?.regions_completed ?? null,
+                  regionsTotal: job.progress?.regions_total ?? null,
+                });
+              }
+              await context.sleep(Math.round(cloudStatusIntervalMs(options.durationSeconds, clock.now() - startedAt, polling) * (0.8 + 0.4 * clock.random())));
             }
-            await rideOut(err);
-            continue;
-          }
-          tolerance.reset();
-          if (result.status === "completed") return result.transcript;
-          if (result.status !== "pending") throw result.error;
-        } else {
-          tolerance.reset();
-          if (job.status === "failed" || job.status === "cancelled") {
-            throw new PrivateCloudError(job.error?.code ?? job.status, job.error?.message ?? `The transcription ${job.status}`, {
-              transcriptionId: id,
-            });
-          }
-          if (job.status === "awaiting_upload") {
-            throw new PrivateCloudError("upload_interrupted", "PTX has not received the recording", { transcriptionId: id });
-          }
-          if (signal?.aborted) throw cancelled();
-          onProgress({
-            stage: job.status === "queued" ? "queued" : "processing",
-            queuePosition: job.progress?.queue_position ?? null,
-            regionsCompleted: job.progress?.regions_completed ?? null,
-            regionsTotal: job.progress?.regions_total ?? null,
-          });
-        }
-        await sleep(cloudStatusIntervalMs(options.durationSeconds, clock.now() - startedAt, polling));
+          },
+          undefined,
+          () => {
+            if (activeCloudPolls.get(id) === sessionRef) activeCloudPolls.delete(id);
+          },
+          () => {
+            if (activeCloudPolls.get(id) === sessionRef) activeCloudPolls.delete(id);
+          },
+        );
+        session = sessionRef;
+        activeCloudPolls.set(id, sessionRef);
       }
-      };
-      const task = withCloudJobLock(id, cloudJobLockManager(), () => clock.sleep(polling.intervalMs), runPoll);
-      activeCloudPolls.set(id, task);
-      void task.then(
-        () => { if (activeCloudPolls.get(id) === task) activeCloudPolls.delete(id); },
-        () => { if (activeCloudPolls.get(id) === task) activeCloudPolls.delete(id); },
-      );
-      return task;
+      return session.subscribe({ signal, onProgress });
     },
   };
 }

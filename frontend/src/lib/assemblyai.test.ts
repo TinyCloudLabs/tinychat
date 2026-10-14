@@ -67,7 +67,7 @@ describe("pollAssemblyAiTranscript", () => {
       { clock: k },
     );
     expect(done.status).toBe("completed");
-    expect(c.sleeps).toEqual([3_000, 4_500, 6_750]);
+    expect(c.sleeps).toEqual([5_000, 5_000, 5_000]);
   });
 
   test("a failed transcript ends polling with AssemblyAI's reason", async () => {
@@ -80,7 +80,38 @@ describe("pollAssemblyAiTranscript", () => {
     expect(err.kind).toBe("failed");
     expect(err.message).toContain("does not appear to contain audio");
   });
+  test("hosted upload polling honours a 900-second Retry-After and resumes on the shared slow cadence", async () => {
+    const { c, clock: k } = clock();
+    let requests = 0;
+    const done = await pollAssemblyAiTranscript({
+      getTranscript: async () => {
+        requests++;
+        if (requests === 1) throw new AssemblyAiError("rate-limited", "limited", false, 900_000);
+        return requests === 2 ? { id: "long-upload", status: "processing" } : { id: "long-upload", status: "completed" };
+      },
+    }, "long-upload", { clock: k });
+    expect(done.status).toBe("completed");
+    expect(requests).toBe(3);
+    expect(c.sleeps.slice(0, 15).reduce((total, ms) => total + ms, 0)).toBeGreaterThanOrEqual(900_000);
+    expect(c.sleeps[15]).toBe(30_000);
+  });
+  test("429-only hosted polling longer than ten minutes is not lost and missing delay uses the slow cadence", async () => {
+    const { c, clock: k } = clock();
+    let requests = 0;
+    const done = await pollAssemblyAiTranscript({
+      getTranscript: async () => {
+        requests++;
+        if (requests <= 11) throw new AssemblyAiError("rate-limited", "limited", false, requests === 1 ? null : 60_000);
+        return { id: "429-long", status: "completed" };
+      },
+    }, "429-long", { clock: k });
+    expect(done.status).toBe("completed");
+    expect(requests).toBe(12);
+    expect(c.sleeps[0]).toBe(30_000);
+    expect(c.sleeps.slice(1).reduce((total, ms) => total + ms, 0)).toBeGreaterThanOrEqual(10 * 60_000);
+  });
 });
+
 
 describe("TinyCloud's AssemblyAI account (hosted client)", () => {
   const MiB = 1024 * 1024;

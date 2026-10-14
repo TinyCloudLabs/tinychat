@@ -226,7 +226,10 @@ function harness(script: {
   completeAfterMs?: number;
   rateLimitUntilMs?: number;
   rateLimitRetryAfterSeconds?: number | null;
+  rateLimitReads?: number;
   polling?: Partial<CloudPollingOptions>;
+  sleep?: (ms: number) => Promise<void>;
+  locks?: CloudJobLockManager | null;
 }) {
   const calls: string[] = [];
   const creates: { attemptId: string; body: PrivateCloudCreateBody }[] = [];
@@ -239,6 +242,7 @@ function harness(script: {
   let n = 0;
   let clockNow = 0;
   const pollTimes: number[] = [];
+  let statusReads = 0;
   const api: PrivateCloudApi = {
     backendUrl: "https://api.example",
     bearer: () => "tok",
@@ -253,7 +257,9 @@ function harness(script: {
     async get(id) {
       calls.push(`get:${id}`);
       pollTimes.push(clockNow);
-      if (script.rateLimitUntilMs !== undefined && clockNow < script.rateLimitUntilMs) {
+      statusReads++;
+      if ((script.rateLimitReads !== undefined && statusReads <= script.rateLimitReads)
+        || (script.rateLimitUntilMs !== undefined && clockNow < script.rateLimitUntilMs)) {
         throw new PrivateCloudError("service_busy", "limited", {
           statusCode: 429, retryAfterSeconds: script.rateLimitRetryAfterSeconds ?? null,
         });
@@ -286,14 +292,17 @@ function harness(script: {
     uploadSupported: script.uploadSupported,
     decode: script.decode ?? silentDecoder(),
     polling: script.polling,
+    ...(script.locks !== undefined ? { locks: script.locks } : {}),
     newId: () => `00000000-0000-4000-8000-${String(++n).padStart(12, "0")}`,
     clock: {
       now: script.now ?? (() => clockNow),
       sleep: async (ms) => {
         sleeps.push(ms);
-        clockNow += ms;
+        if (script.sleep) await script.sleep(ms);
+        else clockNow += ms;
       },
       random: () => 0.5,
+      
     },
     async create(request) {
       calls.push(`create:${request.attemptId}`);
@@ -316,8 +325,10 @@ function harness(script: {
   return { cloud, calls, creates, puts, removed, cancelled, pending, sleeps, pollTimes, get now() { return clockNow; } };
 }
 
-const run = (h: ReturnType<typeof harness>, report: (s: VoiceNoteTranscriptionStatus) => void = () => {}, durationSeconds?: number) =>
-  h.cloud.transcribe({ sourceId: "rec-1", capabilities: CAPS, loadAudio: async () => AUDIO, durationSeconds }, report);
+const run = (h: ReturnType<typeof harness>, report: (s: VoiceNoteTranscriptionStatus) => void = () => {}, durationSeconds?: number,
+  allowed?: () => boolean) =>
+  h.cloud.transcribe({ sourceId: "rec-1", capabilities: CAPS, loadAudio: async () => AUDIO, durationSeconds,
+    ...(allowed ? { allowed: () => allowed() } : {}) }, report);
 
 
 test("Private asks PTX to identify speakers only when enabled, mono, and supported", async () => {
@@ -522,6 +533,21 @@ describe("createVoiceNoteCloud.transcribe", () => {
     expect(out.transcriptionId).toBe(ID);
     expect(h.creates).toHaveLength(0);
     expect(h.puts).toHaveLength(0);
+  });
+  test("a resumed job reconciles a durable completion before reading a deleted PTX job", async () => {
+    const pending = localStorageVoiceNotePendingStore(DID, memoryStorage());
+    pending.write("rec-1", { attemptId: "attempt-1", transcriptionId: ID });
+    const h = harness({ pending, jobs: [new PrivateCloudError("transcription_not_found", "deleted after save")] });
+    const saved = new Error("durable transcript commit exists");
+    const result = await h.cloud.transcribe({
+      sourceId: "rec-1",
+      capabilities: CAPS,
+      loadAudio: async () => { throw new Error("audio is not needed"); },
+      reconcile: async () => { throw saved; },
+    }, () => {}).catch((error: unknown) => error);
+    expect(result).toBe(saved);
+    expect(h.calls.filter((call) => call === `get:${ID}`)).toHaveLength(0);
+    expect(h.creates).toHaveLength(0);
   });
 
   test("a remembered job that is gone (404) is forgotten and the note gets a new job", async () => {
@@ -2140,9 +2166,55 @@ test("concurrent resumes of one PTX job share a single status-poll stream", asyn
   const h = harness({ pending, completeAfterMs: 15_000 });
   const results = await Promise.all([run(h), run(h)]);
   expect(results.map((result) => result.transcript)).toEqual([TRANSCRIPT, TRANSCRIPT]);
-  expect(h.pollTimes).toEqual([0, 0, 0, 5_000, 10_000, 15_000]);
+  expect(h.pollTimes).toEqual([0, 0, 5_000, 10_000, 15_000]);
 });
 
+
+test("concurrent resumes hold one lock across the initial rate-limited status inspection", async () => {
+  const pending = localStorageVoiceNotePendingStore(DID, memoryStorage());
+  pending.write("rec-1", { attemptId: "attempt-1", transcriptionId: ID });
+  let enterSleep!: () => void;
+  const sleeping = new Promise<void>((resolve) => { enterSleep = resolve; });
+  let releaseSleep!: () => void;
+  const sleepGate = new Promise<void>((resolve) => { releaseSleep = resolve; });
+  const h = harness({ pending, rateLimitReads: 1, completeAfterMs: 0,
+    sleep: async () => { enterSleep(); await sleepGate; } });
+  const first = run(h);
+  await sleeping;
+  const second = run(h);
+  for (let i = 0; i < 5; i++) await Promise.resolve();
+  const readsBeforeRelease = h.calls.filter((call) => call === `get:${ID}`).length;
+  releaseSleep();
+  await Promise.all([first, second]);
+  expect(readsBeforeRelease).toBe(1);
+});
+
+test("a valid resume subscribes after the original account generation goes stale", async () => {
+  const pending = localStorageVoiceNotePendingStore(DID, memoryStorage());
+  pending.write("rec-1", { attemptId: "attempt-1", transcriptionId: ID });
+  let enterSleep!: () => void;
+  const sleeping = new Promise<void>((resolve) => { enterSleep = resolve; });
+  let releaseSleep!: () => void;
+  const sleepGate = new Promise<void>((resolve) => { releaseSleep = resolve; });
+  const h = harness({
+    pending,
+    jobs: [job("processing"), job("processing"), job("processing"), job("completed")],
+    sleep: async () => { enterSleep(); await sleepGate; },
+  });
+  let firstAllowed = true;
+  const first = run(h, () => {}, undefined, () => firstAllowed);
+  await sleeping;
+  const second = run(h, () => {}, undefined, () => true);
+  for (let i = 0; i < 5; i++) await Promise.resolve();
+  firstAllowed = false;
+  releaseSleep();
+  const [oldResult, newResult] = await Promise.all([
+    first.catch((error: unknown) => error as PrivateCloudError),
+    second.then((result) => result.transcript),
+  ]);
+  expect((oldResult as PrivateCloudError).code).toBe("account_changed");
+  expect(newResult).toEqual(TRANSCRIPT);
+});
 test("Web Lock holder closure hands a resumed PTX job to the waiting tab", async () => {
   let held = false;
   let ownerDone!: () => void;
@@ -2170,6 +2242,77 @@ test("Web Lock holder closure hands a resumed PTX job to the waiting tab", async
   expect(await owner).toBe("owner");
   expect(await follower).toBe("follower");
   expect(followerWaits).toBe(1);
+});
+
+test("a lock follower reconciles the durable transcript before reading a deleted PTX job", async () => {
+  let durableOutcome: string | null = null;
+  let remoteReads = 0;
+  const locks: CloudJobLockManager = {
+    async request(_name, _options, callback) { return callback({} as Lock); },
+  };
+  const reconciled = withCloudJobLock as unknown as (
+    id: string, locks: CloudJobLockManager, wait: () => Promise<void>, poll: () => Promise<string>,
+    options: { reconcile: () => Promise<string | null> },
+  ) => Promise<string>;
+  const owner = await reconciled("job", locks, async () => {}, async () => {
+    durableOutcome = "transcribed";
+    return "transcript";
+  }, { reconcile: async () => null });
+  expect(owner).toBe("transcript");
+  const follower = await reconciled("job", locks, async () => {}, async () => {
+    remoteReads++;
+    throw new PrivateCloudError("transcription_not_found", "deleted");
+  }, { reconcile: async () => durableOutcome });
+  expect(follower).toBe("transcribed");
+  expect(remoteReads).toBe(0);
+});
+
+test("a Web Lock waiter abandons the retry loop immediately on abort", async () => {
+  const controller = new AbortController();
+  let waitCalls = 0;
+  let releaseWait!: () => void;
+  const locks: CloudJobLockManager = {
+    async request(_name, _options, callback) { return callback(null); },
+  };
+  const cancellable = withCloudJobLock as unknown as (
+    id: string, locks: CloudJobLockManager, wait: () => Promise<void>, poll: () => Promise<string>,
+    options: { signal: AbortSignal; guard: () => void },
+  ) => Promise<string>;
+  const waiting = cancellable("job", locks, () => {
+    if (waitCalls++ > 0) throw new Error("waiter retried after abort");
+    return new Promise<void>((resolve) => { releaseWait = resolve; });
+  }, async () => "polled", { signal: controller.signal, guard: () => {} });
+  for (let i = 0; i < 5 && !releaseWait; i++) await Promise.resolve();
+  controller.abort();
+  releaseWait();
+  const error = await waiting.catch((value: unknown) => value) as PrivateCloudError;
+  expect(error.code).toBe("cancelled");
+  expect(waitCalls).toBe(1);
+});
+
+test("a Web Lock waiter checks its account guard before every retry", async () => {
+  let allowed = true;
+  let waitCalls = 0;
+  let releaseWait!: () => void;
+  const locks: CloudJobLockManager = {
+    async request(_name, _options, callback) { return callback(null); },
+  };
+  const guarded = withCloudJobLock as unknown as (
+    id: string, locks: CloudJobLockManager, wait: () => Promise<void>, poll: () => Promise<string>,
+    options: { signal?: AbortSignal; guard: () => void },
+  ) => Promise<string>;
+  const waiting = guarded("job", locks, () => {
+    if (waitCalls++ > 0) throw new Error("stale waiter retried");
+    return new Promise<void>((resolve) => { releaseWait = resolve; });
+  }, async () => "polled", { guard: () => {
+    if (!allowed) throw new PrivateCloudError("account_changed", "stale account");
+  } });
+  for (let i = 0; i < 5 && !releaseWait; i++) await Promise.resolve();
+  allowed = false;
+  releaseWait();
+  const error = await waiting.catch((value: unknown) => value) as PrivateCloudError;
+  expect(error.code).toBe("account_changed");
+  expect(waitCalls).toBe(1);
 });
 test("CORS-hidden 429 network errors retain the existing ten-minute transient tolerance", async () => {
   const pending = localStorageVoiceNotePendingStore(DID, memoryStorage());

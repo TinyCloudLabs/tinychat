@@ -790,6 +790,7 @@ export function createUploadRunner(): UploadRunner {
     const done = await pollAssemblyAiTranscript(client, job.jobId!, {
       clock: deps.clock,
       signal: r.signal,
+      guard: () => stillLive(r),
       onStatus: (s) =>
         runSet(r, { stage: s === "queued" ? "queued" : "transcribing", detail: s === "queued" ? "Queued at AssemblyAI…" : "Transcribing at AssemblyAI…" }),
     });

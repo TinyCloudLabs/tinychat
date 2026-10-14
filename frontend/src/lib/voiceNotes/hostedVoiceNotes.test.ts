@@ -7,6 +7,7 @@ import { createHostedVoiceNoteTrack } from "./hostedVoiceNotes";
 import { withHostedUploadQueue } from "../hostedUploadQueue";
 import type { VoiceNoteRecording, VoiceNotesPlugin, LocalTranscript } from "./nativeVoiceNotes";
 import type { TranscriptCommit } from "./voiceNoteCommits";
+import { advanceAccountGeneration } from "./accountContext";
 
 const previousStorage = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
 afterEach(() => {
@@ -14,7 +15,13 @@ afterEach(() => {
   else Reflect.deleteProperty(globalThis, "localStorage");
 });
 
-function harness(failAt?: "part" | "submit" | "result" | "space" | "delete" | "poll-429", noSpeech = false, spaceOnly = false, mimeType = "audio/mp4") {
+function harness(
+  failAt?: "part" | "submit" | "result" | "space" | "delete" | "poll-429",
+  noSpeech = false,
+  spaceOnly = false,
+  mimeType = "audio/mp4",
+  options: { getTranscript?: (read: number) => unknown | Promise<unknown>; sleep?: (ms: number) => Promise<void> } = {},
+) {
   const data = new Map<string, string>();
   Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
     getItem: (key: string) => data.get(key) ?? null,
@@ -28,6 +35,7 @@ function harness(failAt?: "part" | "submit" | "result" | "space" | "delete" | "p
   let local: LocalTranscript | null = null;
   let commit: TranscriptCommit | null = null;
   let submitted = false;
+  let transcriptReads = 0;
   const recording = { id: "note-1", owner: "did:test:one", source: "in_app", startedAt: 1,
     durationMs: 1000, mimeType, sizeBytes: audio.length,
     options: { transcriber: "assemblyai", identifySpeakers: true } } as VoiceNoteRecording;
@@ -68,7 +76,10 @@ function harness(failAt?: "part" | "submit" | "result" | "space" | "delete" | "p
     if (path === "/hosted/transcripts/handle-1" && method === "GET") {
       if (failAt === "result" && !failed) { failed = true; throw new Error("offline"); }
       if (failAt === "poll-429" && !failed) { failed = true; return json({ error: "assemblyai_busy" }, 429, { "retry-after": "9" }); }
-      return json({ id: "handle-1", status: "completed", utterances: noSpeech ? [] : [{ start: 0, end: 1000, text: "Hello", speaker: "A" }] });
+      const transcript = options.getTranscript
+        ? await options.getTranscript(++transcriptReads)
+        : { id: "handle-1", status: "completed", utterances: noSpeech ? [] : [{ start: 0, end: 1000, text: "Hello", speaker: "A" }] };
+      return json(transcript);
     }
     if (path === "/hosted/transcripts/handle-1/sentences" && method === "GET") return json({ sentences: [] });
     if (path === "/hosted/transcripts/handle-1" && method === "DELETE") {
@@ -90,9 +101,9 @@ function harness(failAt?: "part" | "submit" | "result" | "space" | "delete" | "p
       if (failAt === "space" && !failed) { failed = true; return { ok: false, error: new Error("offline") } as Awaited<ReturnType<typeof import("./voiceNoteStore").saveVoiceNoteTranscript>>; }
       commit = { rev: transcript.rev, outcome: noSpeech ? "no_speech" : "transcribed" } as TranscriptCommit;
       return { ok: true } as Awaited<ReturnType<typeof import("./voiceNoteStore").saveVoiceNoteTranscript>>;
-    }, sleep: async (ms) => { sleeps.push(ms); },
+    }, sleep: async (ms) => { sleeps.push(ms); await options.sleep?.(ms); },
   });
-  return { calls, recording, track, sleeps, data, getLocal: () => local };
+  return { calls, recording, track, sleeps, data, getLocal: () => local, get transcriptReads() { return transcriptReads; } };
 }
 
 test("a space-only note uses its space audio and can resume without a native recording", async () => {
@@ -171,6 +182,35 @@ test("Powerful status polling waits through a 429 Retry-After and completes", as
   expect(lane.jobs.get(recording.id)).toEqual({ kind: "done", outcome: "transcribed" });
 });
 
+test("a stale hosted poll subscriber leaves the remounted account's subscriber running", async () => {
+  let enterSleep!: () => void;
+  const sleeping = new Promise<void>((resolve) => { enterSleep = resolve; });
+  let releaseSleep!: () => void;
+  const sleepGate = new Promise<void>((resolve) => { releaseSleep = resolve; });
+  const h = harness(undefined, false, false, "audio/mp4", {
+    getTranscript: (read) => read === 1
+      ? { id: "handle-1", status: "processing" }
+      : { id: "handle-1", status: "completed", utterances: [{ start: 0, end: 1000, text: "Hello", speaker: "A" }] },
+    sleep: async () => { enterSleep(); await sleepGate; },
+  });
+  h.data.set("exo.voiceNotes.powerfulJobs:did:test:one", JSON.stringify({
+    "note-1": { handle: "handle-1", recording: h.recording },
+  }));
+  const oldTrack = h.track();
+  oldTrack.consent();
+  const oldRun = oldTrack.run(h.recording);
+  await sleeping;
+  advanceAccountGeneration();
+  const currentTrack = h.track();
+  currentTrack.consent();
+  const currentRun = currentTrack.run(h.recording);
+  for (let turn = 0; turn < 5; turn++) await Promise.resolve();
+  releaseSleep();
+  await Promise.all([oldRun, currentRun]);
+  expect(oldTrack.jobs.get("note-1")?.kind).toBe("failed");
+  expect(currentTrack.jobs.get("note-1")).toEqual({ kind: "done", outcome: "transcribed" });
+  expect(h.transcriptReads).toBe(2);
+});
 test("concurrent Powerful resumes share one hosted status stream", async () => {
   const h = harness();
   h.data.set("exo.voiceNotes.powerfulJobs:did:test:one", JSON.stringify({

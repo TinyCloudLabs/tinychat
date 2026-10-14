@@ -1,7 +1,7 @@
 import type { SessionStore } from "@tinyboilerplate/client";
-import { logPipeline, logPipelineError } from "@/lib/debugLog";
+import { logPipeline } from "@/lib/debugLog";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
-import { AssemblyAiError, assemblyAiSentences, createHostedAssemblyAiClient, type AssemblyAiTranscript } from "../assemblyai";
+import { AssemblyAiError, assemblyAiSentences, createHostedAssemblyAiClient, pollAssemblyAiTranscript } from "../assemblyai";
 import { base64ToBytes } from "./voiceNoteAudio";
 import { currentAccountGeneration, isAccountWorkAllowed } from "./accountContext";
 import { nativeRecordingSource, VoiceNotes, type LocalTranscript, type VoiceNoteRecording, type VoiceNotesPlugin } from "./nativeVoiceNotes";
@@ -10,13 +10,10 @@ import { createVoiceNoteRow } from "./voiceNoteRows";
 import { loadVoiceNoteAudio, patchVoiceNoteTranscriptionFailure, readVoiceNoteForTranscription, saveVoiceNoteTranscript, voiceNoteTitle } from "./voiceNoteStore";
 import type { VoiceNoteTranscriptionStatus, NoteTranscriptionState } from "./voiceNoteTranscription";
 import { withHostedUploadQueue } from "../hostedUploadQueue";
-import { cloudJobLockManager, cloudStatusIntervalMs, DEFAULT_CLOUD_POLLING, MAX_RATE_LIMIT_WAIT_MS, withCloudJobLock } from "../privateCloud";
 
 const CONSENT = "exo.voiceNotes.powerfulConsent";
 const PENDING = "exo.voiceNotes.powerfulJobs";
 type Stored = { uploadId?: string; handle?: string; saved?: boolean; recording?: VoiceNoteRecording };
-const activeHostedPolls = new Map<string, Promise<AssemblyAiTranscript>>();
-
 function storage(): Storage | undefined {
   try { return globalThis.localStorage; } catch { return undefined; }
 }
@@ -31,6 +28,12 @@ function writeJobs(did: string, jobs: Record<string, Stored>): void {
   storage()?.setItem(`${PENDING}:${did}`, JSON.stringify(jobs));
 }
 function pause(ms: number) { return new Promise<void>((resolve) => setTimeout(resolve, ms)); }
+class HostedTranscriptAlreadySaved extends Error {
+  constructor(readonly outcome: "transcribed" | "no_speech") {
+    super("This voice note's transcript was saved by another tab");
+    this.name = "HostedTranscriptAlreadySaved";
+  }
+}
 
 /** One account's resumable Powerful lane. Audio parts always come from the local recording when it exists. */
 export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: string, sessionStore: SessionStore, did: string,
@@ -160,35 +163,23 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
       });
       if (!handle) throw new Error("Powerful did not return a transcript. Try again.");
       persist(id, { handle });
-      const pollKey = `${did}:${handle}`;
-      let statusPoll = activeHostedPolls.get(pollKey);
-      if (!statusPoll) {
-        const pollStartedAt = Date.now();
-        statusPoll = withCloudJobLock(handle, cloudJobLockManager(), () => sleep(DEFAULT_CLOUD_POLLING.intervalMs), async () => {
-          for (;;) {
-            guard();
-            let current: AssemblyAiTranscript;
-            try {
-              current = await client.getTranscript(handle);
-            } catch (error) {
-              if (!(error instanceof AssemblyAiError && error.kind === "rate-limited")) throw error;
-              await sleep(Math.min(MAX_RATE_LIMIT_WAIT_MS, error.retryAfterMs ?? DEFAULT_CLOUD_POLLING.slowIntervalMs));
-              continue;
-            }
-            if (current.status === "completed") return current;
-            if (current.status === "error") throw new AssemblyAiError("failed", "AssemblyAI couldn't finish this transcript. Try again.");
-            state(id, { kind: current.status === "queued" ? "queued" : "processing", ...(current.status === "queued" ? { position: null } : { completed: null, total: null }) } as VoiceNoteTranscriptionStatus);
-            const intervalMs = cloudStatusIntervalMs(recording.durationMs / 1000, Date.now() - pollStartedAt, DEFAULT_CLOUD_POLLING);
-            await sleep(Math.round(intervalMs * (0.8 + 0.4 * Math.random())));
-          }
-        });
-        activeHostedPolls.set(pollKey, statusPoll);
-        void statusPoll.then(
-          () => { if (activeHostedPolls.get(pollKey) === statusPoll) activeHostedPolls.delete(pollKey); },
-          () => { if (activeHostedPolls.get(pollKey) === statusPoll) activeHostedPolls.delete(pollKey); },
-        );
-      }
-      const transcript = await statusPoll;
+      const transcript = await pollAssemblyAiTranscript(client, handle, {
+        clock: { now: Date.now, sleep, random: Math.random },
+        durationSeconds: recording.durationMs / 1000,
+        guard,
+        retryNetworkErrors: false,
+        onStatus: (status) => state(id, {
+          kind: status === "queued" ? "queued" : "processing",
+          ...(status === "queued" ? { position: null } : { completed: null, total: null }),
+        } as VoiceNoteTranscriptionStatus),
+        reconcile: async () => {
+          guard();
+          const saved = await readCommit(tcw(), id);
+          guard();
+          if (saved !== null) throw new HostedTranscriptAlreadySaved(saved.outcome);
+          return null;
+        },
+      });
       guard();
       const stereo = (recording as VoiceNoteRecording & { layout?: string }).layout === "stereo";
       const sentences = assemblyAiSentences(transcript, transcript.utterances?.length ? null : await client.getSentences(handle))
@@ -222,7 +213,12 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
       logPipeline("transcription", id, "done", { engine: "assemblyai" });
       notify();
     } catch (error) {
-      logPipelineError("transcription", error, id);
+      if (error instanceof HostedTranscriptAlreadySaved) {
+        persist(id, null);
+        jobs.set(id, { kind: "done", outcome: error.outcome });
+        notify();
+        return;
+      }
       const current = currentAccountGeneration() === generation && tcw().did === did && isAccountWorkAllowed(tcw());
       const clientForFailure = current ? tcw() : null;
       if (!transcriptSaved && clientForFailure && typeof clientForFailure.sql?.db === "function") {
