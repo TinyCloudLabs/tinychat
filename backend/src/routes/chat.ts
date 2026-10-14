@@ -1,5 +1,5 @@
 import { Router } from "express";
-import type { Request, Response } from "express";
+import type { Request, RequestHandler, Response } from "express";
 import {
   TIERS,
   isModelAllowed,
@@ -196,12 +196,15 @@ function gateAnnotation(
 export interface ChatRouterOptions {
   flusher?: LedgerFlusher;
   rehydrator?: LedgerRehydrator;
+  /** The paid-chat rate limiter (`applyRateLimiters`), run before the send handler. */
+  paidLimiter?: RequestHandler;
 }
 
 export function createChatRouter(options?: ChatRouterOptions) {
   const flusher = options?.flusher;
   const rehydrator = options?.rehydrator;
   const router = Router();
+  const paidLimiter: RequestHandler = options?.paidLimiter ?? ((_req, _res, next) => next());
 
   router.get("/model-selection", async (_req: Request, res: Response) => {
     res.setHeader("Cache-Control", "no-store");
@@ -218,7 +221,7 @@ export function createChatRouter(options?: ChatRouterOptions) {
    * tier: the model must be allowed for the tier and the tier's credit budget
    * must not be exhausted. Actual credit usage is recorded after the stream.
    */
-  router.post("/", async (req: Request, res: Response) => {
+  router.post("/", paidLimiter, async (req: Request, res: Response) => {
     const apiKey = process.env.REDPILL_API_KEY;
     if (!apiKey) {
       res
