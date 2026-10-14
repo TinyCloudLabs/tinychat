@@ -496,7 +496,7 @@ export function useLibrary(
             }
             const cached = await cachedSpaceAudioOffline(String(space.spaceId), String(space.did), VOICE_NOTE_SOURCE, voiceSourceId);
             if (cached) return cached;
-            if (latest?.identity) throw new Error("This audio changed; reconnect to play the latest version");
+            if (latest?.identity) throw new Error("This audio changed; reconnect to play the latest version", { cause: error });
             throw error;
           }
           const identityReceipt = manifest && await manifestReceipt(manifest);
