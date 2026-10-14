@@ -528,3 +528,35 @@ describe("the transcript placeholder while the note's pipeline is not done", () 
     expect(render({ item: onPhone, metadata: { status: "ok", metadata: {} }, transcript: { status: "absent" }, transcription: undefined })).toContain("No transcript yet.");
   });
 });
+
+const gap = { start: 41, end: 52, speaker_name: "Kenny Tucker" };
+test("meeting gaps appear inline in time order with subtle accessible provenance labels", () => {
+  const html = render({ item: MEETING, metadata: { status: "ok", metadata: { partial: true, gaps: [gap] } },
+    transcript: { status: "ok", sentences: [
+      { index: 0, speaker_name: null, text: "Before gap.", start_time: 30, end_time: 40, source: "fallback" },
+      { index: 1, speaker_name: null, text: "After gap.", start_time: 53, end_time: 55, source: "recording" },
+    ] } });
+  expect(html).toContain("0:41–0:52 could not be transcribed — Kenny Tucker");
+  expect(html.indexOf("Before gap.")).toBeLessThan(html.indexOf("0:41–0:52"));
+  expect(html.indexOf("0:41–0:52")).toBeLessThan(html.indexOf("After gap."));
+  expect(html).toContain("Fallback transcript");
+  expect(html).toContain("Recovered from recording");
+});
+
+test("completed gaps-only meeting shows gaps instead of the empty state, omitting null speakers", () => {
+  const html = render({ item: MEETING, metadata: { status: "ok", metadata: { partial: true,
+    gaps: [gap, { start: 60, end: 70, speaker_name: null }] } } });
+  expect(html).toContain("0:41–0:52 could not be transcribed — Kenny Tucker");
+  expect(html).toContain("1:00–1:10 could not be transcribed</p>");
+  expect(html).not.toContain("No transcript stored yet.");
+});
+
+test("legacy meeting transcript has no gap or provenance additions", () => {
+  const html = render({ item: MEETING, metadata: { status: "ok", metadata: {} }, transcript: { status: "ok", sentences: [
+    { index: 0, speaker_name: "Alice", text: "Legacy words.", start_time: 0, end_time: 1 },
+  ] } });
+  expect(html).toContain("Legacy words.");
+  expect(html).not.toContain('data-testid="transcript-gap"');
+  expect(html).not.toContain("Fallback transcript");
+  expect(html).not.toContain("Recovered from recording");
+});
