@@ -1826,7 +1826,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
   /** Reconsider durable intents and this device's eligible stranded saves on each recovery opportunity. */
   const resume = (force = false) => {
     if (strandedRecovery !== null) {
-      if (force) recoveryRescanRequested = true;
+      if (force || recoveryNeeded) recoveryRescanRequested = true;
       return;
     }
     if (!on() || cloud === null) return;
