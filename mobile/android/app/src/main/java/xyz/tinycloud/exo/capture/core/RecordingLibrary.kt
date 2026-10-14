@@ -439,6 +439,10 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
             .put("state", state).put("createdAt", receipt.optLong("startedAt", System.currentTimeMillis()))
             .put("attempts", 0).put("receiptKind", kind)
     }
+
+    /** Stored receiptKind, or null. optString would return the string "null" for a JSON null, so read it with opt. */
+    private fun storedReceiptKind(row: JSONObject): String? = (row.opt("receiptKind") as? String)?.takeIf { it.isNotEmpty() }
+
     /** Outbox rows written before receiptKind existed. Returns the receipt kind only when the outbox kind names exactly
      *  one: own_upload_lookup also comes from own_create with a URL, and transcript from hosted_submit or own_create. */
     private fun legacyReceiptKind(previous: JSONObject): String? = when (previous.optString("kind")) {
@@ -487,7 +491,7 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
                     prior.optString("provider") != receipt.optString("provider"))
                     throw IllegalStateException("receipt_conflict")
                 // Rows written before receiptKind existed take the kind of the first repeated receipt that names them.
-                if (prior.optString("receiptKind").isEmpty()) saveOutbox(prior.put("receiptKind", receipt.getString("kind")), "receipt.begin")
+                if (storedReceiptKind(prior) == null) saveOutbox(prior.put("receiptKind", receipt.getString("kind")), "receipt.begin")
             } else saveOutbox(outboxReceipt(id, receipt.getString("did"), receipt), "receipt.begin")
         }
     }
@@ -536,7 +540,7 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
             }
             // Rows written before receiptKind existed carry only the outbox kind. That kind names one receipt kind only
             // sometimes, so the other cases keep receiptKind null: such a row is never retired as an own_upload.
-            val receiptKind = previous.optString("receiptKind").ifEmpty { legacyReceiptKind(previous) }
+            val receiptKind = storedReceiptKind(previous) ?: legacyReceiptKind(previous)
             val rebuildKind = receiptKind ?: when (previous.optString("kind")) {
                 "own_upload_lookup" -> "own_upload"
                 "transcript" -> "hosted_submit"

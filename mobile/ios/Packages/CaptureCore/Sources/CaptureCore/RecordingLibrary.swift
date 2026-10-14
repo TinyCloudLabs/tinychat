@@ -448,7 +448,11 @@ public final class RecordingLibrary {
         }
         try queue.sync {
             try check("receipt.begin")
-            if FileManager.default.fileExists(atPath: receiptOutboxURL(id: id, opId: opId).path) { return }
+            let outboxURL = receiptOutboxURL(id: id, opId: opId)
+            if FileManager.default.fileExists(atPath: outboxURL.path) {
+                try backfillReceiptKindUnlocked(outboxURL, kind: Self.knownReceiptKind(kind))
+                return
+            }
             let account = try accountStateUnlocked()
             if account.status == "signed_in", account.accountDid == did,
                !FileManager.default.fileExists(atPath: url("tombstones/\(id)").path),
@@ -469,7 +473,7 @@ public final class RecordingLibrary {
                     try publishSidecarUnlocked(id, item, failpointName: "receipt.begin")
                 }
             } else {
-                try writeReceiptOutboxUnlocked(id: id, opId: opId, receipt: receipt, result: nil)
+                try writeReceiptOutboxUnlocked(id: id, opId: opId, receipt: receipt, result: nil, receiptKind: Self.knownReceiptKind(kind))
             }
         }
     }
@@ -523,8 +527,10 @@ public final class RecordingLibrary {
             }
             var open = receipt
             let outboxKind = receipt["kind"] as? String
-            if let original = receipt["receiptKind"] as? String,
-               ["hosted_create", "hosted_submit", "own_upload", "own_create", "ptx_create"].contains(original) {
+            // Rows written before receiptKind existed name a receipt kind only when the outbox kind is unambiguous.
+            // Ambiguous rows keep receiptKind nil and are never retired as own_upload.
+            let receiptKind = (receipt["receiptKind"] as? String) ?? Self.legacyReceiptKind(outboxKind)
+            if let original = receiptKind {
                 open["kind"] = original
                 if let handle = receipt["handle"] as? String {
                     switch outboxKind {
@@ -536,30 +542,21 @@ public final class RecordingLibrary {
                 }
             } else {
                 switch outboxKind {
-                case "hosted_upload":
-                    open["kind"] = "hosted_create"
-                    if let handle = receipt["handle"] as? String { open["uploadId"] = handle }
-                case "hosted_submit":
-                    open["kind"] = "hosted_submit"
-                    if let handle = receipt["handle"] as? String { open["uploadId"] = handle }
                 case "own_upload_lookup":
                     open["kind"] = "own_upload"
                     if let handle = receipt["handle"] as? String { open["uploadUrl"] = handle }
-                case "ptx_job":
-                    open["kind"] = "ptx_create"
-                    if let handle = receipt["handle"] as? String { open["jobId"] = handle }
                 case "transcript":
-                    open["kind"] = "own_create"
+                    open["kind"] = "hosted_submit"
                     if let handle = receipt["handle"] as? String { open["jobId"] = handle }
                 default:
-                    open["kind"] = (receipt["provider"] as? String) == "ptx" ? "ptx_create" :
-                        (receipt["mode"] as? String) == "hosted" ? "hosted_submit" : "own_create"
+                    open["kind"] = "ptx_create"
+                    if let handle = receipt["handle"] as? String { open["jobId"] = handle }
                 }
             }
             if open["kind"] as? String == "own_create", result["outcome"] as? String == "created" {
                 try retireOwnUploadOutboxUnlocked(id)
             }
-            try writeReceiptOutboxUnlocked(id: id, opId: opId, receipt: open, result: result)
+            try writeReceiptOutboxUnlocked(id: id, opId: opId, receipt: open, result: result, receiptKind: receiptKind)
             return "outbox"
         }
     }
@@ -588,8 +585,36 @@ public final class RecordingLibrary {
         }
     }
 
+    /// Kinds an outbox entry may persist as receiptKind. Any other value means no receipt kind.
+    private static func knownReceiptKind(_ kind: String?) -> String? {
+        guard let kind = kind,
+              ["hosted_create", "hosted_submit", "own_upload", "own_create", "ptx_create"].contains(kind) else { return nil }
+        return kind
+    }
+
+    /// Rows written before receiptKind existed. Only these outbox kinds name exactly one receipt kind;
+    /// own_upload_lookup and transcript are ambiguous and stay nil.
+    private static func legacyReceiptKind(_ outboxKind: String?) -> String? {
+        switch outboxKind {
+        case "hosted_upload": return "hosted_create"
+        case "hosted_submit": return "hosted_submit"
+        case "ptx_job": return "ptx_create"
+        default: return nil
+        }
+    }
+
+    /// A repeated receipt names the kind of a row that predates receiptKind. Record it once so the row can be retired later.
+    private func backfillReceiptKindUnlocked(_ path: URL, kind: String?) throws {
+        guard let kind = kind,
+              var row = (try? JSONSerialization.jsonObject(with: Data(contentsOf: path))) as? [String: Any],
+              row["receiptKind"] as? String == nil else { return }
+        row["receiptKind"] = kind
+        try writeDurable(CanonicalJSON.file(row), to: path)
+        try sync(url("outbox"))
+    }
+
     private func writeReceiptOutboxUnlocked(id: String, opId: String, receipt: [String: Any],
-                                            result: [String: Any]?) throws {
+                                            result: [String: Any]?, receiptKind: String?) throws {
         try check("delete.outbox")
         let path = receiptOutboxURL(id: id, opId: opId)
         let existing = (try? JSONSerialization.jsonObject(with: Data(contentsOf: path))) as? [String: Any]
@@ -632,8 +657,8 @@ public final class RecordingLibrary {
             "kind": outboxKind,
             "createdAt": receipt["startedAt"] ?? wallMilliseconds(), "attempts": 0]
         entry["kind"] = outboxKind
-        if ["hosted_create", "hosted_submit", "own_upload", "own_create", "ptx_create"].contains(kind) {
-            entry["receiptKind"] = kind
+        if let receiptKind = receiptKind {
+            entry["receiptKind"] = receiptKind
         } else { entry["receiptKind"] = NSNull() }
         entry["handle"] = handle ?? NSNull()
         entry["handleExpiresAt"] = result?["handleExpiresAt"] ?? receipt["handleExpiresAt"] ?? NSNull()
@@ -788,7 +813,7 @@ public final class RecordingLibrary {
                 // Idempotent across a crash after the tombstone and before sidecar removal.
                 var receipt = remote
                 receipt["did"] = did
-                try writeReceiptOutboxUnlocked(id: id, opId: opId, receipt: receipt, result: remote)
+                try writeReceiptOutboxUnlocked(id: id, opId: opId, receipt: receipt, result: remote, receiptKind: Self.knownReceiptKind(remote["kind"] as? String))
                 continue
             }
             let mode = remote["mode"] ?? NSNull()

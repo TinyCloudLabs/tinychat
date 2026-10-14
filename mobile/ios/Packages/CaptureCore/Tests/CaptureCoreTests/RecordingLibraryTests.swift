@@ -1006,4 +1006,31 @@ final class RecordingLibraryTests: XCTestCase {
         XCTAssertEqual(job["handle"] as? String, "job-42")
         XCTAssertEqual(job["state"] as? String, "pending")
     }
+
+    func testLegacyAmbiguousOutboxRowIsNotRetiredByOwnCreateUntilRepeatedReceiptNamesIt() throws {
+        let (library, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID().uuidString.lowercased()
+        // Written before receiptKind existed: own_upload_lookup may come from own_upload or own_create.
+        let legacy: [String: Any] = ["entryId": "\(id):lookup", "did": "did:test", "provider": "assemblyai",
+            "mode": "own", "kind": "own_upload_lookup", "handle": "https://example.test/old",
+            "handleExpiresAt": NSNull(), "state": "lookup", "createdAt": 100, "attempts": 0]
+        try FileManager.default.createDirectory(at: library.url("outbox"), withIntermediateDirectories: true)
+        try JSONSerialization.data(withJSONObject: legacy).write(to: library.url("outbox/\(id):lookup.json"))
+        try library.beginRemoteOp(["id": id, "did": "did:test", "opId": "create",
+            "provider": "assemblyai", "mode": "own", "kind": "own_create",
+            "fingerprint": "create", "startedAt": 200])
+        XCTAssertEqual(try library.recordRemoteResult(id: id, did: "did:test", opId: "create",
+            result: ["outcome": "created", "jobId": "job-1"]), "outbox")
+        let lookup = try XCTUnwrap(library.listOutbox(did: "did:test").first { $0["entryId"] as? String == "\(id):lookup" })
+        XCTAssertEqual(lookup["kind"] as? String, "own_upload_lookup")
+        XCTAssertNil(lookup["receiptKind"] as? String)
+
+        // A repeated receipt for the legacy op names its kind, so a later own_create completion may retire it.
+        try library.beginRemoteOp(["id": id, "did": "did:test", "opId": "lookup",
+            "provider": "assemblyai", "mode": "own", "kind": "own_upload",
+            "fingerprint": "lookup", "startedAt": 100])
+        let backfilled = try XCTUnwrap(library.listOutbox(did: "did:test").first { $0["entryId"] as? String == "\(id):lookup" })
+        XCTAssertEqual(backfilled["receiptKind"] as? String, "own_upload")
+        XCTAssertEqual(backfilled["handle"] as? String, "https://example.test/old")
+    }
 }
