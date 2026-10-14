@@ -6,7 +6,8 @@ import {
 } from "./backend-storage-lane.js";
 import { normalizeGoogleMeetUrl } from "./google-calendar.js";
 import type { CreateMeetingInput } from "./transcription-api.js";
-import { CalendarAutojoinStatusCache } from "./calendar-autojoin-status-cache.js";
+import { CalendarAutojoinStatusCache, STATUS_CACHE_MAX_TENANTS } from "./calendar-autojoin-status-cache.js";
+import { calendarAutojoinOutcomes, type CalendarAutojoinStatusSummary } from "./calendar-autojoin-status-summary.js";
 
 export interface CalendarConnection {
   tenant: string;
@@ -118,6 +119,10 @@ export interface CalendarAutojoinStore {
   putConnection(row: CalendarConnection): Promise<void>;
   updateConnection(tenant: string, update: Update<CalendarConnection>): Promise<CalendarConnection | null>;
   listConnections(): Promise<CalendarConnection[]>;
+  getStatusSummary(tenant: string, deadline?: number, metrics?: CalendarAutojoinReadMetrics): Promise<CalendarAutojoinStatusSummary | null>;
+  getStatusSummaryOrLegacy(tenant: string, deadline?: number, metrics?: CalendarAutojoinReadMetrics): Promise<CalendarAutojoinStatusSummary>;
+  putStatusSummary(tenant: string, summary: CalendarAutojoinStatusSummary): Promise<void>;
+  forgetStatusSummaryDigest(tenant: string): void;
   getOccurrence(tenant: string, id: string): Promise<CalendarOccurrence | null>;
   putOccurrence(row: CalendarOccurrence): Promise<void>;
   updateOccurrence(tenant: string, id: string, update: Update<CalendarOccurrence>): Promise<CalendarOccurrence | null>;
@@ -153,19 +158,31 @@ interface JsonStore {
 const PREFIX = "calendar-autojoin/v1/";
 const tenantKey = (tenant: string) => createHash("sha256").update(tenant.toLowerCase()).digest("hex");
 const connectionKey = (tenant: string) => `${PREFIX}connections/${tenantKey(tenant)}`;
+const statusKey = (tenant: string) => `${PREFIX}status/${tenantKey(tenant)}`;
 const occurrencePrefix = (tenant: string) => `${PREFIX}occurrences/${tenantKey(tenant)}/`;
 const markerKey = (tenant: string, id: string) => `${PREFIX}sent/${tenantKey(tenant)}/${id}`;
 const captureKey = (meetingUrl: string) =>
   `${PREFIX}captures/${createHash("sha256").update(normalizeGoogleMeetUrl(meetingUrl) ?? meetingUrl).digest("hex")}`;
 const CLAIM_RETENTION_MS = 86_400_000;
+// The three stores already share a cache identity. Keep committed summary digests coherent across
+// worker publication and user teardown without extra KV reads, with the same bounded tenant cap.
+const summaryWriteDigests = new WeakMap<CalendarAutojoinStatusCache, Map<string, string>>();
+/** An unreadable projection can be rebuilt; authoritative connection corruption cannot. */
+class CalendarAutojoinSummaryInvalid extends Error {
+  constructor() { super("calendar_status_summary_invalid"); }
+}
 
 class JsonCalendarAutojoinStore implements CalendarAutojoinStore {
+  private readonly summaryDigests: Map<string, string>;
   constructor(
     private readonly json: JsonStore,
     private readonly lane: BackendStorageLane,
     private readonly laneOptions: BackendStorageLaneRunOptions = {},
     readonly statusCache = new CalendarAutojoinStatusCache(),
-  ) {}
+  ) {
+    this.summaryDigests = summaryWriteDigests.get(statusCache) ?? new Map();
+    summaryWriteDigests.set(statusCache, this.summaryDigests);
+  }
   getConnection(tenant: string, deadline?: number, metrics?: CalendarAutojoinReadMetrics) { return this.read(() => this.json.get<CalendarConnection>(connectionKey(tenant)), deadline, metrics); }
   putConnection(row: CalendarConnection) { return this.updateConnection(row.tenant, () => row).then(() => undefined); }
   updateConnection(tenant: string, fn: Update<CalendarConnection>) {
@@ -175,7 +192,14 @@ class JsonCalendarAutojoinStore implements CalendarAutojoinStore {
       const previous = await this.json.get<CalendarConnection>(key);
       const next = fn(previous === null ? null : structuredClone(previous));
       if (next !== null) {
-        const write = () => this.json.put(key, next);
+        const write = async () => {
+          await this.json.put(key, next);
+          // Connection rows are never deleted; a new tenant cannot have occurrence history.
+          if (previous === null) {
+            try { await this.writeSummary(tenant, { version: 1, outcomes: [] }); }
+            catch { this.forgetStatusSummaryDigest(tenant); }
+          }
+        };
         if (connectionPolicyChanged(previous, next)) await this.statusCache.mutate(tenant, write);
         else await write();
       }
@@ -183,6 +207,66 @@ class JsonCalendarAutojoinStore implements CalendarAutojoinStore {
     });
   }
   listConnections() { return this.list<CalendarConnection>(`${PREFIX}connections/`); }
+  getStatusSummary(tenant: string, deadline?: number, metrics?: CalendarAutojoinReadMetrics) {
+    return this.read(() => this.readSummary(tenant), deadline, metrics);
+  }
+  async getStatusSummaryOrLegacy(tenant: string, deadline?: number, metrics?: CalendarAutojoinReadMetrics) {
+    const summaryOrKeys = await this.read(async () => {
+      const summary = await this.readSummary(tenant);
+      if (summary) return summary;
+      // Share the summary probe's lane job with the legacy prefix lookup: the complete status
+      // path remains N+2 jobs, with each occurrence read yielding as before. The probe adds one
+      // KV call on this migration path; don't start the lookup after the request's deadline.
+      if (deadline !== undefined && Date.now() >= deadline) throw new BackendStorageLaneTimeout("request deadline passed before the legacy listing");
+      return this.json.keys(occurrencePrefix(tenant));
+    }, deadline, metrics);
+    if (!Array.isArray(summaryOrKeys)) return summaryOrKeys;
+    const rows = await this.listKeys<CalendarOccurrence>(summaryOrKeys, deadline, metrics);
+    return { version: 1 as const, outcomes: calendarAutojoinOutcomes(rows) };
+  }
+  /** Only called inside a lane job. Missing/invalid projections use the authoritative listing. */
+  private async readSummary(tenant: string) {
+    try {
+      const summary = await this.json.get<CalendarAutojoinStatusSummary>(statusKey(tenant));
+      if (summary === null) { this.forgetStatusSummaryDigest(tenant); return null; }
+      if (typeof summary !== "object" || summary.version !== 1 || !Array.isArray(summary.outcomes) || summary.outcomes.length > 30
+        || !summary.outcomes.every(row => row && typeof row.id === "string" && typeof row.reason === "string"
+          && typeof row.start === "number" && Number.isFinite(row.start)
+          && (row.title === undefined || typeof row.title === "string")
+          && (row.meetingId === undefined || typeof row.meetingId === "string"))) {
+        throw new CalendarAutojoinSummaryInvalid();
+      }
+      return summary;
+    } catch (error) {
+      // The JSON store also reports malformed projection JSON/envelopes through these errors.
+      // Scope their recovery to this key; connection/listing corruption keeps its old behavior.
+      if (!(error instanceof CalendarAutojoinSummaryInvalid || error instanceof SyntaxError
+        || (error instanceof Error && error.message === "calendar_state_invalid"))) throw error;
+      this.forgetStatusSummaryDigest(tenant);
+      return null;
+    }
+  }
+  forgetStatusSummaryDigest(tenant: string): void { this.summaryDigests.delete(tenant.toLowerCase()); }
+  putStatusSummary(tenant: string, summary: CalendarAutojoinStatusSummary) {
+    const digest = createHash("sha256").update(JSON.stringify(summary)).digest("hex");
+    if (this.summaryDigests.get(tenant.toLowerCase()) === digest) {
+      this.rememberSummaryDigest(tenant, digest);
+      return Promise.resolve();
+    }
+    return this.run(() => this.writeSummary(tenant, summary, digest));
+  }
+  /** Only called inside a lane job; remembered digests describe committed writes. */
+  private async writeSummary(tenant: string, summary: CalendarAutojoinStatusSummary,
+    digest = createHash("sha256").update(JSON.stringify(summary)).digest("hex")): Promise<void> {
+    if (this.summaryDigests.get(tenant.toLowerCase()) !== digest) await this.json.put(statusKey(tenant), summary);
+    this.rememberSummaryDigest(tenant, digest);
+  }
+  private rememberSummaryDigest(tenant: string, digest: string): void {
+    const key = tenant.toLowerCase();
+    this.summaryDigests.delete(key);
+    this.summaryDigests.set(key, digest);
+    if (this.summaryDigests.size > STATUS_CACHE_MAX_TENANTS) this.summaryDigests.delete(this.summaryDigests.keys().next().value!);
+  }
   getOccurrence(tenant: string, id: string) { return this.run(() => this.json.get<CalendarOccurrence>(occurrencePrefix(tenant) + id)); }
   putOccurrence(row: CalendarOccurrence) { return this.run(() => this.json.put(occurrencePrefix(row.tenant) + row.id, row)); }
   updateOccurrence(tenant: string, id: string, fn: Update<CalendarOccurrence>) { return this.update(occurrencePrefix(tenant) + id, fn); }
@@ -228,6 +312,9 @@ class JsonCalendarAutojoinStore implements CalendarAutojoinStore {
    * many rows. */
   private async list<T>(prefix: string, deadline?: number, metrics?: CalendarAutojoinReadMetrics): Promise<T[]> {
     const keys = await this.read(() => this.json.keys(prefix), deadline, metrics);
+    return this.listKeys<T>(keys, deadline, metrics);
+  }
+  private async listKeys<T>(keys: string[], deadline?: number, metrics?: CalendarAutojoinReadMetrics): Promise<T[]> {
     const rows: T[] = [];
     for (const key of keys) {
       const row = await this.read(() => this.json.get<T>(key), deadline, metrics);

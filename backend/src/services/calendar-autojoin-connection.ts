@@ -2,6 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import type { CredentialStore, OAuthCredentialSecret } from "./credential-store.js";
 import type { CalendarAutojoinStore, CalendarAutojoinReadMetrics, CalendarConnection, TenantCoordinator } from "./calendar-autojoin-store.js";
 import type { CalendarAutojoinStatus } from "./calendar-autojoin-status-cache.js";
+import { calendarAutojoinOutcomes } from "./calendar-autojoin-status-summary.js";
 import { REQUEST_LANE_WAIT_MS } from "./backend-storage-lane.js";
 import { GOOGLE_CALENDAR_SCOPE, GoogleOAuthError, type GoogleOAuthPort, type GoogleTokenPayload } from "./google-oauth.js";
 
@@ -57,7 +58,7 @@ export class CalendarAutojoinConnection {
   }
 
   private async readStatus(tenant: string, metrics?: CalendarAutojoinReadMetrics): Promise<CalendarAutojoinStatus> {
-    // One wall-clock deadline for every lane read below (lane timers run on real time).
+    // One wall-clock deadline for both the two-job summary and legacy N+2-job listing paths.
     const deadline = Date.now() + (this.options.statusBudgetMs ?? REQUEST_LANE_WAIT_MS);
     const connection = await this.options.store.getConnection(tenant, deadline, metrics);
     // Occurrences are only scheduled for a tenant with a connection row, and connection rows are
@@ -65,13 +66,9 @@ export class CalendarAutojoinConnection {
     // no outcomes, so skip the prefix listing: on the shared serialized storage lane it pushed this
     // read past the client's 20s abort, showing a never-connected account an error.
     if (!connection) return { state: "off" as const, enabled: false, lastScanAt: null, lastDispatchLag: null, errorCode: null, outcomes: [] };
-    const outcomes = (await this.options.store.listOccurrences(tenant, deadline, metrics))
-      .filter(row => !!row.errorCode || ["missed", "missed_window", "not_accepted", "failed", "event_ineligible", "event_changed", "already_recorded", "unverified_capture", "capacity_exhausted"].includes(row.disposition ?? ""))
-      // RSVP hints fill only spare slots; future unanswered invites must not hide real failures.
-      .sort((a, b) => Number((a.errorCode ?? a.disposition) === "not_accepted")
-        - Number((b.errorCode ?? b.disposition) === "not_accepted") || b.start - a.start).slice(0, 30)
-      .map(row => ({ id: row.id, title: row.title, start: row.start,
-        reason: row.errorCode ?? row.disposition ?? "failed", ...(row.meetingId ? { meetingId: row.meetingId } : {}) }));
+    // Until the first summary publication, preserve the existing history and timeout fallback.
+    const summary = await this.options.store.getStatusSummaryOrLegacy(tenant, deadline, metrics);
+    const outcomes = summary.outcomes;
     return {
       state: connection?.state === "needs_reconnect" ? "needs_reconnect" as const
         : connection?.errorCode ? "error" as const
@@ -162,6 +159,12 @@ export class CalendarAutojoinConnection {
       await this.options.store.putConnection({ ...latest!, state: "enabled", setupId: undefined,
         setupExpiresAt: undefined, nextScanAt: this.now(), errorCode: undefined, scanComplete: false });
     });
+    // A setup persisted by the previous backend can survive an upgrade without a summary.
+    // Backfill on this user action, outside tenant coordination, so subsequent reads are bounded.
+    if (!await this.options.store.getStatusSummary(tenant)) {
+      const occurrences = await this.options.store.listOccurrences(tenant);
+      await this.options.store.putStatusSummary(tenant, { version: 1, outcomes: calendarAutojoinOutcomes(occurrences) });
+    }
     return this.getStatus(tenant);
   }
 
@@ -177,25 +180,30 @@ export class CalendarAutojoinConnection {
 
   async disconnect(tenant: string, browserToken?: string) {
     let serverToken: string | undefined;
-    let unreadable = false;
-    await this.writeSettings(tenant, async () => {
-      // Read for revocation before ending custody, but never let a decrypt failure prevent deletion.
-      try {
-        const secret = await this.options.credentials.getCredential(GOOGLE_AUTOJOIN_CREDENTIAL_SOURCE, tenant, "teardown");
-        if (secret?.kind === "oauth") serverToken = secret.refreshToken ?? secret.accessToken;
-      } catch { unreadable = true; }
-      await this.disableLocked(tenant);
-    });
-    let failed = unreadable;
-    const tokens = [...new Set([serverToken, browserToken].filter((token): token is string => !!token))];
-    for (const token of tokens) {
-      try { await this.options.oauth.revoke(token); } catch (error) {
-        // Revoking a refresh token also revokes its sibling access tokens in the same grant.
-        if (!(error instanceof GoogleOAuthError && error.error === "invalid_token")) failed = true;
+    let failed = false;
+    let hadToken: boolean;
+    try {
+      await this.writeSettings(tenant, async () => {
+        // Capture before deleting custody; retain it through every post-commit failure.
+        try {
+          const secret = await this.options.credentials.getCredential(GOOGLE_AUTOJOIN_CREDENTIAL_SOURCE, tenant, "teardown");
+          if (secret?.kind === "oauth") serverToken = secret.refreshToken ?? secret.accessToken;
+        } catch { failed = true; }
+        await this.disableLocked(tenant);
+      });
+    } finally {
+      // Revoke outside tenant coordination, including when local teardown fails after commit.
+      const tokens = [...new Set([serverToken, browserToken].filter((token): token is string => !!token))];
+      hadToken = tokens.length > 0;
+      for (const token of tokens) {
+        try { await this.options.oauth.revoke(token); } catch (error) {
+          // Revoking a refresh token also revokes its sibling access tokens in the same grant.
+          if (!(error instanceof GoogleOAuthError && error.error === "invalid_token")) failed = true;
+        }
       }
     }
     return { status: "disconnected" as const,
-      upstreamRevoked: failed ? "failed" as const : tokens.length ? "ok" as const : "not_applicable" as const };
+      upstreamRevoked: failed ? "failed" as const : hadToken ? "ok" as const : "not_applicable" as const };
   }
 
   async cleanupEnabling(tenant: string): Promise<void> {
@@ -277,13 +285,22 @@ export class CalendarAutojoinConnection {
       state: "disabled", generation: (current?.generation ?? 0) + 1, nextScanAt: 0,
       credentialRef: undefined, setupId: undefined, setupExpiresAt: undefined, errorCode: undefined, scanComplete: false };
     await this.options.store.putConnection(disabled);
-    this.options.onDisabled?.(tenant);
-    for (const [key, value] of this.transactions) if (value.tenant === tenant) this.transactions.delete(key);
     try {
-      for (const row of await this.options.store.listOccurrences(tenant)) {
+      this.options.onDisabled?.(tenant);
+      for (const [key, value] of this.transactions) if (value.tenant === tenant) this.transactions.delete(key);
+      const occurrences = await this.options.store.listOccurrences(tenant);
+      for (const row of occurrences) {
         if (row.phase === "terminal" || (!row.createBody && !row.meetingId && !row.idempotencyKey)) continue;
         await this.options.store.updateOccurrence(tenant, row.id, latest => latest && latest.phase !== "terminal"
           ? { ...latest, stopRequested: true, nextAttemptAt: this.now(), updatedAt: this.now() } : latest);
+      }
+      // User writes must be immediately visible, including legacy tenants awaiting their first tick.
+      // Teardown already lists these rows; stopRequested does not change the outcome projection.
+      try {
+        await this.options.store.putStatusSummary(tenant, { version: 1, outcomes: calendarAutojoinOutcomes(occurrences) });
+      } catch {
+        // Projection availability cannot abort teardown or lose the captured revocation token.
+        this.options.store.forgetStatusSummaryDigest(tenant);
       }
     } finally {
       await this.options.credentials.delete(GOOGLE_AUTOJOIN_CREDENTIAL_SOURCE, tenant);

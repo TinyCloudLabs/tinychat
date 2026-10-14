@@ -11,6 +11,7 @@ import { CredentialStore, InMemoryCredentialRowStore } from "../services/credent
 import { GOOGLE_AUTOJOIN_SCOPES, type GoogleOAuthPort } from "../services/google-oauth.js";
 import { createHash } from "node:crypto";
 import { JsonTranscriberIndexStore, type JsonKv } from "../services/transcriber-index.js";
+import { calendarAutojoinOutcomes } from "../services/calendar-autojoin-status-summary.js";
 
 function gate() {
   let open!: () => void;
@@ -105,7 +106,7 @@ describe("backend storage lane", () => {
     expect(await store.listConnections()).toHaveLength(keys.length);
   });
 
-  test("one deadline bounds a whole status read: connection row plus occurrence listing", async () => {
+  test("one deadline bounds a whole status read: connection row plus summary", async () => {
     const tenant = "0xalice";
     const values = new Map<string, unknown>();
     let reads = 0;
@@ -120,11 +121,11 @@ describe("backend storage lane", () => {
     const store = new KvCalendarAutojoinStore(node, new BackendStorageLane());
     const connection = new CalendarAutojoinConnection({
       store, credentials: {} as CredentialStore, oauth: {} as GoogleOAuthPort,
-      coordinator: new TenantCoordinator(), calendar: { async probePrimary() {} }, statusBudgetMs: 60,
+      coordinator: new TenantCoordinator(), calendar: { async probePrimary() {} }, statusBudgetMs: 20,
     });
     await expect(connection.getStatus(tenant)).rejects.toBeInstanceOf(BackendStorageLaneTimeout);
-    // 1 connection read + 10 occurrence reads at 25 ms each would take 275 ms.
-    expect(reads).toBeLessThan(11);
+    // The connection read finished after the budget; no summary job can be queued.
+    expect(reads).toBe(1);
   });
 
   test("a background listing yields the lane between keys", async () => {
@@ -233,6 +234,8 @@ describe("TC-1006: request reads do not queue behind the auto-join worker", () =
     }
     await requestStore.putConnection(connectionRow("0xalice"));
     await requestStore.putOccurrence(occurrenceRow("0xalice", "missed-1", { phase: "terminal", disposition: "missed" }));
+    await workerStore.putStatusSummary("0xalice", { version: 1,
+      outcomes: calendarAutojoinOutcomes(await workerStore.listOccurrences("0xalice")) });
     const indexValues = new Map<string, unknown>();
     await new JsonTranscriberIndexStore(slowJson(indexValues, delay), lane).add("0xalice", "meeting-1");
     // A fresh instance has a cold cache, so its reads must take a lane slot like after a restart.
@@ -421,7 +424,7 @@ describe("TC-1006 review: request-store write flows on a tenant with many rows",
       async refresh() { return { access_token: "rotated", expires_in: 3600 }; },
       async revoke(token) { revokes.push(token); },
     };
-    // The status read after disable/enable is not under test here (see the known-limitation test).
+    // This test exercises write flows; the bounded status read is tested below.
     const connection = new CalendarAutojoinConnection({
       store, credentials, oauth, coordinator: new TenantCoordinator(), calendar: { async probePrimary() {} }, statusBudgetMs: 60_000,
     });
@@ -467,19 +470,18 @@ describe("TC-1006 review: request-store write flows on a tenant with many rows",
     expect(await credentials.status(GOOGLE_AUTOJOIN_CREDENTIAL_SOURCE, EXCHANGE)).toBeTruthy();
   }, 20_000);
 
-  test("known limitation: a status read whose rows exceed the one status deadline answers 503 fast instead of hanging", async () => {
+  test("a status read is bounded even when a full row listing would exceed the deadline", async () => {
     const f = await manyRowsFixture();
     await f.seed(STATUS);
+    await f.store.putStatusSummary(STATUS, { version: 1, outcomes: calendarAutojoinOutcomes(await f.store.listOccurrences(STATUS)) });
     f.slow();
-    // getStatus deliberately bounds its whole read (connection row + listing) by one deadline so the
-    // Connectors card never outwaits the client; past ~budget/op rows it rejects (route 503) on every
-    // call. Follow-up: a capped or cached outcome listing.
+    // Only connection and summary reads use the deadline, regardless of the tenant's history size.
     const status = new CalendarAutojoinConnection({
       store: f.store, credentials: f.credentials, oauth: {} as GoogleOAuthPort, coordinator: new TenantCoordinator(),
       calendar: { async probePrimary() {} }, statusBudgetMs: BUDGET_MS,
     });
     const started = Date.now();
-    await expect(status.getStatus(STATUS)).rejects.toBeInstanceOf(BackendStorageLaneTimeout);
+    expect((await status.getStatus(STATUS)).state).toBe("on");
     expect(Date.now() - started).toBeLessThan((ROWS + 2) * OP_MS);
   });
 });

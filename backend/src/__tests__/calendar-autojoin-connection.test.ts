@@ -8,6 +8,7 @@ import { CredentialStore, InMemoryCredentialRowStore } from "../services/credent
 import { GOOGLE_AUTOJOIN_SCOPES, GoogleOAuthError, type GoogleOAuthPort, type GoogleTokenPayload } from "../services/google-oauth.js";
 import { createGoogleOAuthRouter } from "../routes/google-oauth.js";
 import { createCalendarAutojoinRouter } from "../routes/calendar-autojoin.js";
+import { calendarAutojoinOutcomes } from "../services/calendar-autojoin-status-summary.js";
 
 const TENANT = "0x7d033300000000000000000000000000000073f2";
 const OTHER = "0xb1b1b10000000000000000000000000000001111";
@@ -37,6 +38,7 @@ function fixture() {
   const options: CalendarAutojoinConnectionOptions = { store, credentials, oauth, coordinator: new TenantCoordinator(), calendar, now: () => now };
   const connection = new CalendarAutojoinConnection(options);
   return { store, rows, credentials, oauth, probes, revokes, connection, calendar, options,
+    async publishOutcomes() { await store.putStatusSummary(TENANT, { version: 1, outcomes: calendarAutojoinOutcomes(await store.listOccurrences(TENANT)) }); },
     setTokens(tokens: Partial<GoogleTokenPayload>) { tokenResponse = { ...tokenResponse, ...tokens }; },
     get exchangeCount() { return exchangeCount; },
     advance(ms: number) { now += ms; },
@@ -62,6 +64,17 @@ function attempt(): CalendarOccurrence {
 }
 
 describe("Calendar OAuth custody lifecycle", () => {
+  test("TC-1086: exchange and enable immediately reflect policy while retaining summarized history", async () => {
+    const f = fixture(); await f.enable();
+    await f.store.putOccurrence({ ...attempt(), phase: "terminal", disposition: "missed_window" });
+    await f.publishOutcomes();
+    const setup = await f.exchange();
+    expect(await f.connection.getStatus(TENANT)).toMatchObject({ state: "off", enabled: false,
+      outcomes: [{ id: "old-attempt", reason: "missed_window" }] });
+    expect(await f.connection.enable(TENANT, setup.setupId)).toMatchObject({ state: "on", enabled: true,
+      outcomes: [{ id: "old-attempt", reason: "missed_window" }] });
+  });
+
   for (const operation of ["exchange", "enable", "disable", "disconnect", "browserReconnect"] as const) {
     test(`TC-1086: user ${operation} invalidates even if the policy fields stay the same`, async () => {
       const f = fixture(); await f.enable();
@@ -242,6 +255,7 @@ describe("Calendar OAuth custody lifecycle", () => {
     await f.store.putOccurrence({ ...attempt(), id: "attached", idempotencyKey: undefined, phase: "pending", errorCode: "shared_capture_pending",
       sharedCapture: { ownerTenant: OTHER, ownerOccurrenceId: "owner-occurrence", attachedAt: 0 } });
     await f.store.putOccurrence({ ...attempt(), id: "shared", idempotencyKey: undefined, phase: "terminal", disposition: "shared" });
+    await f.publishOutcomes();
     const status = await f.connection.getStatus(TENANT);
     expect(status.outcomes.map(outcome => outcome.reason).sort()).toEqual(["already_recorded", "shared_capture_pending"]);
     expect(status.outcomes.every(outcome => !("meetingId" in outcome))).toBe(true);
@@ -314,6 +328,7 @@ describe("Calendar OAuth custody lifecycle", () => {
     await f.enable();
     await f.store.putOccurrence({ ...attempt(), phase: "terminal", disposition: "missed_window" });
     await f.store.putOccurrence({ ...attempt(), id: "uncertain", errorCode: "lookup_identity_mismatch" });
+    await f.publishOutcomes();
     const status = await f.connection.getStatus(TENANT);
     expect(status.outcomes.map(outcome => outcome.reason).sort()).toEqual(["lookup_identity_mismatch", "missed_window"]);
   });
@@ -330,6 +345,7 @@ describe("Calendar OAuth custody lifecycle", () => {
       await f.store.putOccurrence({ ...attempt(), id: disposition, phase: "terminal", disposition });
     }
     await f.store.putOccurrence({ ...attempt(), id: "uncertain", disposition: "not_accepted", errorCode: "lookup_identity_mismatch" });
+    await f.publishOutcomes();
     const status = await f.connection.getStatus(TENANT);
     expect(status.outcomes).toHaveLength(30);
     expect(status.outcomes.slice(0, 4).map(row => row.reason).sort())
@@ -340,6 +356,7 @@ describe("Calendar OAuth custody lifecycle", () => {
       await f.store.putOccurrence({ ...attempt(), id: `failure-${i}`, phase: "terminal", disposition: "failed",
         start: attempt().start - (i + 1) * 60_000 });
     }
+    await f.publishOutcomes();
     const full = await f.connection.getStatus(TENANT);
     expect(full.outcomes).toHaveLength(30);
     expect(full.outcomes.every(row => row.reason !== "not_accepted")).toBe(true);
@@ -360,8 +377,8 @@ describe("Calendar OAuth custody lifecycle", () => {
     await expect(f.connection.getStatus(TENANT)).rejects.toThrow("kv_unavailable");
     f.store.getConnection = getConnection;
     await f.enable();
-    f.store.listOccurrences = async () => { throw new Error("kv_list_unavailable"); };
-    await expect(f.connection.getStatus(TENANT)).rejects.toThrow("kv_list_unavailable");
+    f.store.getStatusSummaryOrLegacy = async () => { throw new Error("kv_summary_unavailable"); };
+    await expect(f.connection.getStatus(TENANT)).rejects.toThrow("kv_summary_unavailable");
   });
 
   test("a disabled tenant keeps its outcome history", async () => {
@@ -381,9 +398,45 @@ describe("Calendar OAuth custody lifecycle", () => {
     expect(await f.credentials.status(source, TENANT)).toBeNull();
     expect((await f.connection.getStatus(TENANT)).enabled).toBe(false);
   });
+
+  for (const step of ["onDisabled", "listOccurrences", "updateOccurrence", "credentialDelete"] as const) {
+    test(`disconnect revokes its captured token even if post-commit ${step} fails`, async () => {
+      const f = fixture(); await f.enable(); await f.store.putOccurrence(attempt());
+      const fail = async () => { throw new Error("Synthetic post-commit failure"); };
+      if (step === "onDisabled") f.options.onDisabled = () => { throw new Error("Synthetic post-commit failure"); };
+      else if (step === "credentialDelete") f.credentials.delete = fail;
+      else if (step === "listOccurrences") f.store.listOccurrences = fail;
+      else f.store.updateOccurrence = fail;
+      await expect(f.connection.disconnect(TENANT)).rejects.toThrow("Synthetic post-commit failure");
+      expect(f.revokes).toHaveLength(1);
+      expect((await f.store.getConnection(TENANT))?.state).toBe("disabled");
+      expect(f.connection.getLastGoodStatus(TENANT)).toBeUndefined();
+      if (step === "credentialDelete") expect(await f.credentials.status(source, TENANT)).not.toBeNull();
+      else expect(await f.credentials.status(source, TENANT)).toBeNull();
+    });
+  }
 });
 
 describe("authenticated autojoin routes", () => {
+  test("Google OAuth revoke succeeds when optional teardown projection publication fails", async () => {
+    const f = fixture(); await f.enable();
+    const publish = spyOn(f.store, "putStatusSummary").mockRejectedValue(new Error("Synthetic projection failure"));
+    const app = express(); app.use(express.json());
+    app.use((req, _res, next) => { req.user = { address: TENANT } as typeof req.user; next(); });
+    app.use("/oauth", createGoogleOAuthRouter({ oauth: f.oauth, autojoin: f.connection, appOrigin: "https://app.example.test" }));
+    const server = app.listen(0); await new Promise<void>(done => server.once("listening", done));
+    try {
+      const response = await fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}/oauth/revoke`, {
+        method: "POST", headers: { "content-type": "application/json" }, body: "{}",
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ status: "disconnected", upstreamRevoked: "ok" });
+      expect(f.revokes).toHaveLength(1);
+      expect(await f.credentials.status(source, TENANT)).toBeNull();
+      expect((await f.store.getConnection(TENANT))?.state).toBe("disabled");
+    } finally { publish.mockRestore(); await new Promise<void>(done => server.close(() => done())); }
+  });
+
   test("TC-1086: Google OAuth revoke clears a cached enabled status before status can time out", async () => {
     const f = fixture(); await f.enable();
     expect(f.connection.getLastGoodStatus(TENANT)?.body.enabled).toBe(true);
