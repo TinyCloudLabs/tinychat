@@ -18,6 +18,10 @@ import { syncTranscriberLibrary } from "@/chat/useTranscriberLibrarySync";
 import type { TranscriberClient } from "@/lib/transcriberApi";
 import { captureEvents } from "../captureEvents";
 import { RELIST_AFTER_MS, useLibrary, type Library } from "./useLibrary";
+import { renderToStaticMarkup } from "react-dom/server";
+import { MemoryRouter } from "react-router-dom";
+import { NoteDetail } from "./NoteDetail";
+import { hasPrivateCloudTimingProvenance, transcriptMarkdown, transcriptWithTimestamps } from "./transcriptSegments";
 
 const saved = { window: (globalThis as { window?: unknown }).window, act: (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT };
 beforeAll(() => {
@@ -35,10 +39,16 @@ const row = (id: string): Row => [id, SOURCE, `rec-${id}`, `Recording ${id}`, "2
 
 let spaces = 0;
 /** A space whose reads wait for the test; `kinds` is the order they went out in. */
-function fakeSpace(options: { voiceCommit?: boolean; previews?: [string, string][]; commitProvenance?: [string | null, string | null] } = {}) {
+function fakeSpace(options: {
+  voiceCommit?: boolean;
+  previews?: [string, string][];
+  commitProvenance?: [string | null, string | null];
+  commitReads?: { rev: number; engine: string | null; provider: string | null }[];
+} = {}) {
   const previews = options.previews ?? [];
   const out: Array<{ kind: string; answer: (value: unknown) => void }> = [];
   const kinds: string[] = [];
+  let commitReadCount = 0;
   const transcriptKeys: string[] = [];
   let inFlight = 0;
   let most = 0;
@@ -62,10 +72,17 @@ function fakeSpace(options: { voiceCommit?: boolean; previews?: [string, string]
     sql: { db: () => ({ query: (sql: string) => {
       if (sql.includes("sqlite_schema")) return Promise.resolve({ ok: true, data: { rows: options.voiceCommit || previews.length > 0 ? [[1]] : [] } });
       if (sql.includes("WHERE source IN")) return call("list");
+      if (sql.includes("SELECT metadata FROM connector_meeting WHERE id = ?")) return call("metadata");
       if (sql.includes("SELECT source_id, preview FROM voice_note_transcript")) return Promise.resolve({ ok: true, data: { rows: previews } });
-      if (sql.includes("FROM voice_note_transcript")) return Promise.resolve({ ok: true, data: { rows: [
-        ["rec-a", 1, "hash", "committed/transcript", "transcribed", "Preview", ...(options.commitProvenance ?? [null, null]), null, null, null, null, null],
-      ] } });
+      if (sql.includes("FROM voice_note_transcript")) {
+        const selected = options.commitReads?.[Math.min(commitReadCount++, options.commitReads.length - 1)];
+        const [engine, provider] = selected ? [selected.engine, selected.provider] : options.commitProvenance ?? [null, null];
+        const rev = selected?.rev ?? 1;
+        const bodyKey = selected ? `committed/transcript/${rev}` : "committed/transcript";
+        return Promise.resolve({ ok: true, data: { rows: [
+          ["rec-a", rev, "hash", bodyKey, "transcribed", "Preview", engine, provider, null, null, null, null, null],
+        ] } });
+      }
       if (sql.includes("FROM connector_meeting g")) return Promise.resolve({ ok: true, data: { rows: [] } });
       return call("metadata");
     } }) },
@@ -200,7 +217,7 @@ describe("useLibrary, mounted", () => {
     await space.answer("metadata", { ok: true, data: { rows: [[JSON.stringify({ capture: { platform: "ios" } })]] } });
     await space.answer("transcript", { ok: false, error: { code: "KV_NOT_FOUND", message: "none" } });
     expect(seen.at(-1)!.note.reads.metadata?.status).toBe("ok");
-    expect(seen.at(-1)!.note.reads.transcript?.status).toBe("absent");
+    expect(seen.at(-1)!.note.reads.transcript?.transcript.status).toBe("absent");
     expect(space.most()).toBe(1);
   });
 
@@ -242,7 +259,7 @@ describe("useLibrary, mounted", () => {
     await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
     await space.answer("transcript", { ok: true, data: { data: JSON.stringify([{ text: "Saved during read" }]) } });
     expect(seen.at(-1)!.note.reads.transcript).toMatchObject({
-      status: "ok", sentences: [{ text: "Saved during read" }],
+      transcript: { status: "ok", sentences: [{ text: "Saved during read" }] },
     });
     expect(space.outstanding()).toBe(0);
   });
@@ -260,7 +277,7 @@ describe("useLibrary, mounted", () => {
     expect(space.kinds).toEqual(["list", "metadata", "transcript", "list", "metadata"]);
     await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
     await space.answer("transcript", { ok: true, data: { data: JSON.stringify([{ text: "New" }]) } });
-    expect(seen.at(-1)!.note.reads.transcript).toMatchObject({ status: "ok", sentences: [{ text: "New" }] });
+    expect(seen.at(-1)!.note.reads.transcript).toMatchObject({ transcript: { status: "ok", sentences: [{ text: "New" }] } });
     expect(space.outstanding()).toBe(0);
   });
 
@@ -271,13 +288,13 @@ describe("useLibrary, mounted", () => {
     await space.answer("list", listed("a"));
     await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
     await space.answer("transcript", { ok: false, error: { code: "KV_NOT_FOUND", message: "none" } });
-    expect(seen.at(-1)!.note.reads.transcript?.status).toBe("absent");
+    expect(seen.at(-1)!.note.reads.transcript?.transcript.status).toBe("absent");
 
     await act(async () => captureEvents.emit("library-changed", { source: SOURCE, sourceId: "rec-a" }));
     await space.answer("list", listed("a"));
     await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
     await space.answer("transcript", { ok: true, data: { data: JSON.stringify([{ text: "New transcript" }]) } });
-    expect(seen.at(-1)!.note.reads.transcript).toMatchObject({ status: "ok", sentences: [{ text: "New transcript" }] });
+    expect(seen.at(-1)!.note.reads.transcript).toMatchObject({ transcript: { status: "ok", sentences: [{ text: "New transcript" }] } });
     expect(space.kinds).toEqual(["list", "metadata", "transcript", "list", "metadata", "transcript"]);
   });
 
@@ -302,7 +319,7 @@ describe("useLibrary, mounted", () => {
     await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
     await space.answer("transcript", { ok: true, data: { data: JSON.stringify([{ text: "Committed" }]) } });
     expect(space.transcriptKeys).toEqual(["committed/transcript", "committed/transcript"]);
-    expect(seen.at(-1)!.note.reads.transcript).toMatchObject({ status: "ok", sentences: [{ text: "Committed" }] });
+    expect(seen.at(-1)!.note.reads.transcript).toMatchObject({ transcript: { status: "ok", sentences: [{ text: "Committed" }] } });
   });
   test("a committed transcript's provenance overrides stale row markers", async () => {
     const space = fakeSpace({ voiceCommit: true, commitProvenance: ["whispercpp", "whispercpp"] });
@@ -313,13 +330,92 @@ describe("useLibrary, mounted", () => {
       transcription_engine: "private-cloud", transcript_provider: "tinycloud-private-transcription",
     })]] } });
     await space.answer("transcript", { ok: true, data: { data: JSON.stringify([{ text: "Committed local body" }]) } });
-    expect(seen.at(-1)!.note.reads.transcriptProvenance).toEqual({
+    expect(seen.at(-1)!.note.reads.transcript?.provenance).toEqual({
       engine: "whispercpp", provider: "whispercpp",
     });
     expect(seen.at(-1)!.note.reads.metadata).toMatchObject({
       status: "ok",
       metadata: { transcription_engine: "whispercpp", transcript_provider: "whispercpp" },
     });
+  });
+  test("cached body provenance survives metadata flip, failed retry, and close/reopen", async () => {
+    const sentences = [
+      { index: 0, speaker_name: "You", text: "Synthetic first.", start_time: 0, end_time: 45 },
+      { index: 1, speaker_name: "You", text: "Synthetic second.", start_time: 60, end_time: 105 },
+    ];
+    const voiceList = listedVoice("a");
+    const voiceMetadata = (privateCloud: boolean) => ({
+      ok: true,
+      data: { rows: [[JSON.stringify({
+        audio: { stored: true, base: "audio/a" },
+        transcription_engine: privateCloud ? "private-cloud" : "whispercpp",
+        transcript_provider: privateCloud ? "tinycloud-private-transcription" : "whispercpp",
+      })]] },
+    });
+    const failure = { ok: false, error: { code: "NETWORK", message: "offline" } };
+
+    async function scenario(initiallyPrivate: boolean) {
+      const first = initiallyPrivate
+        ? { rev: 4, engine: "private-cloud", provider: "tinycloud-private-transcription" }
+        : { rev: 4, engine: "whispercpp", provider: "whispercpp" };
+      const flipped = initiallyPrivate
+        ? { rev: 5, engine: "whispercpp", provider: "whispercpp" }
+        : { rev: 5, engine: "private-cloud", provider: "tinycloud-private-transcription" };
+      const space = fakeSpace({ voiceCommit: true, commitReads: [first, flipped, flipped, flipped] });
+      const seen: Library[] = [];
+      const props = { tcw: space.tcw, visible: true, noteId: "a", now: () => 0, seen };
+      await render(props);
+      await space.answer("list", voiceList);
+      expect(seen.at(-1)!.note.item).toMatchObject({ source: "exo-voice-note", sourceId: "rec-a" });
+      expect(seen.at(-1)!.note.item?.onPhone).not.toBe(true);
+      expect(space.kinds).toEqual(["list", "metadata"]);
+      await space.answer("metadata", voiceMetadata(initiallyPrivate));
+      await space.answer("transcript", { ok: true, data: { data: JSON.stringify(sentences) } });
+
+      const assertSelectedBody = (expectedPrivate: boolean) => {
+        const library = seen.at(-1)!;
+        const transcript = library.note.reads.transcript;
+        const body = transcript?.transcript.status === "ok" ? transcript.transcript.sentences : [];
+        const metadata = library.note.reads.metadata?.status === "ok" ? library.note.reads.metadata.metadata : null;
+        const privateCloud = hasPrivateCloudTimingProvenance(metadata, transcript?.provenance);
+        const html = renderToStaticMarkup(<MemoryRouter><NoteDetail
+          library={library}
+          pushed
+          onBack={() => {}}
+          transcription={undefined}
+        /></MemoryRouter>);
+        const timestampCopy = transcriptWithTimestamps(body, privateCloud);
+        const markdown = transcriptMarkdown("Synthetic", null, body, privateCloud);
+        expect(privateCloud).toBe(expectedPrivate);
+        expect(html.includes('aria-label="Play from 1:00"')).toBe(expectedPrivate);
+        expect(html.match(/aria-label="Play from /g)?.length ?? 0).toBe(expectedPrivate ? 2 : 0);
+        expect(html.includes("Copy with timestamps")).toBe(expectedPrivate);
+        expect(timestampCopy.includes("[01:00]")).toBe(expectedPrivate);
+        expect(markdown.includes("[01:00]")).toBe(expectedPrivate);
+      };
+
+      assertSelectedBody(initiallyPrivate);
+      await act(async () => captureEvents.emit("library-changed", { source: "exo-voice-note", sourceId: "rec-a" }));
+      await space.answer("list", voiceList);
+      await space.answer("metadata", voiceMetadata(!initiallyPrivate));
+      await space.answer("transcript", failure);
+      assertSelectedBody(initiallyPrivate);
+
+      await act(async () => seen.at(-1)!.retry());
+      await space.answer("transcript", failure);
+      assertSelectedBody(initiallyPrivate);
+
+      await render({ ...props, noteId: null });
+      await render(props);
+      await space.answer("transcript", failure);
+      assertSelectedBody(initiallyPrivate);
+      expect(space.outstanding()).toBe(0);
+    }
+
+    await scenario(false);
+    await act(async () => root!.unmount());
+    root = null;
+    await scenario(true);
   });
 
 
@@ -365,7 +461,7 @@ describe("useLibrary, mounted", () => {
     await space.answer("metadata", { ok: true, data: { rows: [[JSON.stringify({ audio: { stored: true, base: "audio/a" } })]] } });
     expect(seen.at(-1)!.note.audio).toBe(before.audio);
     await space.answer("transcript", { ok: true, data: { data: JSON.stringify([{ text: "Updated" }]) } });
-    expect(seen.at(-1)!.note.reads.transcript).toMatchObject({ status: "ok", sentences: [{ text: "Updated" }] });
+    expect(seen.at(-1)!.note.reads.transcript).toMatchObject({ transcript: { status: "ok", sentences: [{ text: "Updated" }] } });
     expect(seen.at(-1)!.note.audio).toBe(before.audio);
   });
 
@@ -393,7 +489,7 @@ describe("useLibrary, mounted", () => {
     await space.answer("metadata", { ok: true, data: { rows: [[JSON.stringify({ audio: { stored: true, base: "audio/a" } })]] } });
     await space.answer("transcript", { ok: true, data: { data: JSON.stringify([{ text: "Recovered" }]) } });
     expect(seen.at(-1)!.note.reads.transcript).toMatchObject({
-      status: "ok", sentences: [{ text: "Recovered" }],
+      transcript: { status: "ok", sentences: [{ text: "Recovered" }] },
     });
     expect(seen.at(-1)!.note.audio).toBe(before.audio);
     expect(space.outstanding()).toBe(0);
@@ -451,7 +547,7 @@ describe("useLibrary, mounted", () => {
     expect(space.kinds).toEqual(["list", "metadata", "transcript", "list", "metadata", "transcript", "transcript"]);
     await space.answer("transcript", { ok: true, data: { data: JSON.stringify([{ text: "New" }]) } });
     expect(seen.at(-1)!.note.reads.metadata).toBe(newMeta);
-    expect(seen.at(-1)!.note.reads.transcript).toMatchObject({ status: "ok", sentences: [{ text: "New" }] });
+    expect(seen.at(-1)!.note.reads.transcript).toMatchObject({ transcript: { status: "ok", sentences: [{ text: "New" }] } });
     expect(seen.at(-1)!.note.audio).toMatchObject({ load: expect.any(Function) });
     expect(space.outstanding()).toBe(0);
 
@@ -466,13 +562,13 @@ describe("useLibrary, mounted", () => {
     await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
     await space.answer("transcript", { ok: true, data: { data: JSON.stringify([{ text: "Old" }]) } });
     expect(seen.at(-1)!.note.item?.id).toBe("a");
-    expect(seen.at(-1)!.note.reads.transcript).toMatchObject({ status: "ok", sentences: [{ text: "Old" }] });
+    expect(seen.at(-1)!.note.reads.transcript).toMatchObject({ transcript: { status: "ok", sentences: [{ text: "Old" }] } });
 
     await act(async () => captureEvents.emit("library-changed", { source: "exo-voice-note", sourceId: "rec-a" }));
     await space.answer("list", { ok: false, error: { code: "NETWORK", message: "offline" } });
     await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
     await space.answer("transcript", { ok: true, data: { data: JSON.stringify([{ text: "New" }]) } });
-    expect(seen.at(-1)!.note.reads.transcript).toMatchObject({ status: "ok", sentences: [{ text: "New" }] });
+    expect(seen.at(-1)!.note.reads.transcript).toMatchObject({ transcript: { status: "ok", sentences: [{ text: "New" }] } });
     expect(seen.at(-1)!.note.item?.id).toBe("a");
   });
 
@@ -491,7 +587,7 @@ describe("useLibrary, mounted", () => {
     await render({ ...props, noteId: "a" });
     await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
     await space.answer("transcript", { ok: true, data: { data: JSON.stringify([{ text: "Arrived" }]) } });
-    expect(seen.at(-1)!.note.reads.transcript).toMatchObject({ status: "ok", sentences: [{ text: "Arrived" }] });
+    expect(seen.at(-1)!.note.reads.transcript).toMatchObject({ transcript: { status: "ok", sentences: [{ text: "Arrived" }] } });
     expect(space.kinds).toEqual(["list", "metadata", "transcript", "list", "metadata", "transcript"]);
   });
 });
@@ -511,7 +607,10 @@ describe("useLibrary, notes still on this phone", () => {
     expect(library.items.map((item) => item.id)).toEqual(["on-phone:rec-p1", "a"]);
     expect(library.items[0]).toMatchObject({ onPhone: true, sourceId: "rec-p1", durationSecs: 14 });
     expect(library.note.item?.id).toBe("on-phone:rec-p1");
-    expect(library.note.reads).toEqual({ metadata: { status: "ok", metadata: {} }, transcript: { status: "absent" } });
+    expect(library.note.reads).toEqual({
+      metadata: { status: "ok", metadata: {} },
+      transcript: { transcript: { status: "absent" }, provenance: null },
+    });
     expect(library.note.audio).toHaveProperty("localUrl");
     expect(space.kinds).toEqual(["list"]);
   });
