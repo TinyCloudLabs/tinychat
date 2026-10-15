@@ -2436,6 +2436,74 @@ describe("transcribeVoiceNote (one note end to end)", () => {
     });
     expect(space.kv.has(historyKey)).toBe(false);
   });
+  test("a held explicit rerun history quota latches storage and retries the same held result", async () => {
+    const space = sqliteSpace();
+    const tcw = typedTcw(space);
+    const did = tcw.did;
+    (tcw as { spaceId?: string }).spaceId = "space:test";
+    beginStorageAccountSession(tcw, did, null);
+    expect((await saveVoiceNote(space.tcw, RECORDING, AUDIO, "ios")).ok).toBe(true);
+    expect((await saveVoiceNoteTranscript(space.tcw, "rec-1",
+      prepareVoiceNoteTranscript(TRANSCRIPT, "2026-10-03T10:00:00.000Z", 1))).ok).toBe(true);
+    const prior = await readTranscriptCommit(space.tcw, "rec-1");
+    expect(prior).not.toBeNull();
+    const historyKey = transcriptHistoryKvKey("rec-1", prior!.rev, prior!.hash);
+    const held = createHeldResultStore(did, { env: newIdbEnv(), isSignedIn: async () => true });
+    const receipt = await held.hold({
+      version: 1, did, spaceId: "space:test", sourceId: "rec-1", engine: "private-cloud",
+      transcript: prepareVoiceNoteTranscript({ ...TRANSCRIPT, text: "Revised synthetic transcript.",
+        segments: [{ ...TRANSCRIPT.segments[0]!, text: "Revised synthetic transcript." }] },
+      "2026-10-03T10:01:00.000Z", 2),
+      provider: { transcriptionId: ID },
+      intent: { kind: "rerun", base: { rev: prior!.rev, hash: prior!.hash } },
+    });
+    const kv = space.tcw as { kv: { put: (key: string, value: string | Uint8Array,
+      options?: { ifNoneMatch?: string }) => Promise<unknown> } };
+    const realPut = kv.kv.put;
+    let quotaFailure = true;
+    kv.kv.put = async (key, value, options) => quotaFailure && key === historyKey
+      ? { ok: false, error: { code: "STORAGE_QUOTA_EXCEEDED", message: "quota exceeded" } }
+      : realPut(key, value, options);
+    let commitAtRemoval: Awaited<ReturnType<typeof readTranscriptCommit>> | null = null;
+    let heldAtRemoval = true;
+    const h = harness({ pending: localStorageVoiceNotePendingStore(did, memoryStorage()), onRemove: async () => {
+      commitAtRemoval = await readTranscriptCommit(space.tcw, "rec-1");
+      heldAtRemoval = (await held.readHeld("rec-1")) !== null;
+    } });
+    const args = { tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, held, explicit: true,
+      explicitRerun: true, sourceId: "rec-1", report: () => {} };
+    try {
+      const error = await transcribeVoiceNote(args).catch((caught: unknown) => caught);
+      const readOnlyOnFailure = isStorageReadOnly();
+      expect(await readTranscriptCommit(space.tcw, "rec-1")).toMatchObject({
+        rev: prior!.rev, hash: prior!.hash, bodyKey: prior!.bodyKey,
+      });
+      expect(space.kv.get(prior!.bodyKey)).toContain(TRANSCRIPT.segments[0]!.text.trim());
+      expect((await resolveVoiceNoteRow(space.tcw, "rec-1"))?.metadata)
+        .toMatchObject({ transcription_outcome: "transcribed" });
+      expect(await held.readHeld("rec-1")).toMatchObject({
+        holdId: receipt.holdId, transcript: { rev: 2 }, provider: { transcriptionId: ID },
+      });
+      expect(space.kv.has(historyKey)).toBe(false);
+      expect(h.creates).toHaveLength(0);
+      expect(h.removed).toEqual([]);
+
+      quotaFailure = false;
+      expect(await transcribeVoiceNote(args)).toBe("transcribed");
+      expect(await readTranscriptCommit(space.tcw, "rec-1")).toMatchObject({ rev: 2 });
+      expect(space.kv.has(historyKey)).toBe(true);
+      expect(commitAtRemoval).toMatchObject({ rev: 2 });
+      expect(heldAtRemoval).toBe(false);
+      expect(await held.readHeld("rec-1")).toBeNull();
+      expect(h.creates).toHaveLength(0);
+      expect(h.removed).toEqual([ID]);
+      expect({ code: voiceNoteTranscriptionFailure(error).code, readOnly: readOnlyOnFailure })
+        .toEqual({ code: "storage_full", readOnly: true });
+      expect(error).toMatchObject({ code: "storage_full" });
+    } finally {
+      kv.kv.put = realPut;
+    }
+  });
 
   test("a conflicting history record aborts the rerun commit", async () => {
     const space = sqliteSpace();
