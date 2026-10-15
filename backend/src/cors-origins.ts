@@ -11,13 +11,31 @@ export const EXO_ANDROID_ORIGIN = "https://localhost";
 export const EXO_IOS_ORIGIN = "capacitor://localhost";
 
 /** TinyChat's Cloudflare Pages project, including branch and commit previews. */
-export const TINYCHAT_PAGES_ORIGIN = /^https:\/\/(?:[a-z0-9-]+\.)?tinychat-4jq\.pages\.dev$/;
+export const TINYCHAT_PAGES_ORIGIN = /^https:\/\/[a-z0-9-]+\.tinychat-4jq\.pages\.dev$/;
 
 /** Exact origins used by the documented local web development flow. */
 export const LOCAL_WEB_ORIGINS = [
   "http://localhost:5186",
   "https://localhost:5186",
 ] as const;
+const SESSION_KEY_URI = /^did:key:(z6Mk[1-9A-HJ-NP-Za-km-z]{44})#\1$/;
+
+/** Match the signed SIWE domain and delegation target, not the browser Origin.
+ * Both the web SDK and native OpenKey sign a per-session DID URI; older web
+ * clients may sign the exact HTTPS hostname instead. */
+export function isExpectedSiweOrigin(
+  domain: string,
+  uri: string,
+  webDomain: string,
+  nativeDomain: string,
+): boolean {
+  if (domain === nativeDomain) return SESSION_KEY_URI.test(uri);
+  if (domain !== webDomain &&
+    domain !== "localhost" &&
+    domain !== "tauri.localhost" &&
+    !TINYCHAT_PAGES_ORIGIN.test(`https://${domain}`)) return false;
+  return uri === `https://${domain}` || SESSION_KEY_URI.test(uri);
+}
 
 /** Browser origins allowed to call the TinyChat backend. */
 export function appCorsOrigins(frontendOrigin: string): Array<string | RegExp> {
