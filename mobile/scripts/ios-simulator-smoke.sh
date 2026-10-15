@@ -166,14 +166,17 @@ scan_simctl_pid() {
     "$private_logs/console.log" 2>/dev/null
 }
 observe_simctl_pid() {
-  local candidate
+  local candidate observed_epoch
   while [ "$SECONDS" -lt "$deadline" ] && [ ! -f "$private_logs/observer.stop" ]; do
     candidate=$(time_stage observer.pid-scan scan_simctl_pid)
-    if [ -n "$candidate" ] && [ "$SECONDS" -lt "$deadline" ]; then
-      printf '%s\n' "$candidate" >"$private_logs/simctl.pid"
-      printf 'simctl launch pid %s observed %s\n' "$candidate" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$out/launch-timeline.log"
-      : >"$private_logs/observer.complete"
-      return 0
+    if [ -n "$candidate" ]; then
+      observed_epoch=$(date -u +%s)
+      if [ "$SECONDS" -lt "$deadline" ] && [ ! -f "$private_logs/observer.stop" ]; then
+        printf '%s %s\n' "$candidate" "$observed_epoch" >"$private_logs/simctl.pid"
+        printf 'simctl launch pid %s observed %s\n' "$candidate" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$out/launch-timeline.log"
+        : >"$private_logs/observer.complete"
+        return 0
+      fi
     fi
     if [ "$SECONDS" -ge "$deadline" ] || [ -f "$private_logs/observer.stop" ]; then break; fi
     time_stage observer.sleep sleep 2
@@ -183,54 +186,122 @@ observe_simctl_pid() {
 
 # Only verified app PIDs from simctl or its matching launchctl job are checked.
 watch_liveness() {
-  local simctl_pid="" app_pid="" epoch last_epoch=$launch_epoch
+  local simctl_pid="" app_pid="" epoch last_epoch=$launch_epoch first_pid_epoch="" first_alive_epoch="" proof_gap_reported=0 published_epoch="" interval_start gap
+  refresh_pid_publications() {
+    local candidate_pid
+    if [ -s "$private_logs/simctl.pid" ]; then
+      read -r candidate_pid published_epoch <"$private_logs/simctl.pid"
+      [[ "$candidate_pid" =~ ^[0-9]+$ && "$published_epoch" =~ ^[0-9]+$ ]] || return 1
+      if [ -z "$simctl_pid" ]; then simctl_pid=$candidate_pid; fi
+      if [ -z "$first_pid_epoch" ] || [ "$published_epoch" -lt "$first_pid_epoch" ]; then
+        first_pid_epoch=$published_epoch
+      fi
+    fi
+    if [ -s "$private_logs/launchctl.pid" ]; then
+      read -r candidate_pid published_epoch <"$private_logs/launchctl.pid"
+      [[ "$candidate_pid" =~ ^[0-9]+$ && "$published_epoch" =~ ^[0-9]+$ ]] || return 1
+      if [ -z "$app_pid" ]; then app_pid=$candidate_pid; fi
+      if [ -z "$first_pid_epoch" ] || [ "$published_epoch" -lt "$first_pid_epoch" ]; then
+        first_pid_epoch=$published_epoch
+      fi
+    fi
+  }
+  check_first_alive_gap() {
+    local proof_gap
+    if [ -n "$first_pid_epoch" ] && [ -z "$first_alive_epoch" ] &&
+       [ "$proof_gap_reported" -eq 0 ] && [ "$first_pid_epoch" -le "$1" ]; then
+      proof_gap=$(($1 - first_pid_epoch))
+      if [ "$proof_gap" -gt 5 ]; then
+        printf '%s PID-alive proof gap %ss\n' "${2:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}" "$proof_gap" >>"$out/liveness.log"
+        : >"$private_logs/watcher.gap"
+        proof_gap_reported=1
+      fi
+    fi
+  }
   record_liveness() {
-    local observed_epoch observed_at gap
+    local observed_epoch observed_at state=$1
     observed_epoch=$(date -u +%s)
+    refresh_pid_publications || return 1
     observed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     gap=$((observed_epoch - last_epoch))
-    if [ "$gap" -gt 5 ]; then
-      printf '%s observation gap %ss\n' "$observed_at" "$gap" >>"$out/liveness.log"
-      : >"$private_logs/watcher.gap"
+    if [ -z "$first_pid_epoch" ] || [ "$first_pid_epoch" -gt "$observed_epoch" ]; then
+      if [ "$gap" -gt 5 ]; then
+        printf '%s pre-PID observation gap %ss\n' "$observed_at" "$gap" >>"$out/liveness.log"
+      fi
+    else
+      if [ "$first_pid_epoch" -gt "$last_epoch" ]; then
+        gap=$((first_pid_epoch - last_epoch))
+        if [ "$gap" -gt 5 ]; then
+          printf '%s pre-PID observation gap %ss\n' "$observed_at" "$gap" >>"$out/liveness.log"
+        fi
+      fi
+      interval_start=$last_epoch
+      if [ "$first_pid_epoch" -gt "$interval_start" ]; then interval_start=$first_pid_epoch; fi
+      gap=$((observed_epoch - interval_start))
+      if [ "$gap" -gt 5 ]; then
+        printf '%s observation gap %ss\n' "$observed_at" "$gap" >>"$out/liveness.log"
+        : >"$private_logs/watcher.gap"
+      fi
     fi
-    printf '%s %s\n' "$observed_at" "$1" >>"$out/liveness.log"
+    check_first_alive_gap "$observed_epoch" "$observed_at"
+    if [ "$state" = "pid not yet observed" ] && [ -n "$first_pid_epoch" ]; then
+      state="pid published; liveness check pending"
+    fi
+    printf '%s %s\n' "$observed_at" "$state" >>"$out/liveness.log"
+    if [ "${2:-}" = alive ] && [ "$SECONDS" -lt "$deadline" ]; then
+      if [ -z "$first_alive_epoch" ]; then first_alive_epoch=$observed_epoch; fi
+      : >"$private_logs/watcher.alive"
+    fi
     last_epoch=$observed_epoch
   }
   sample_liveness() {
     time_stage heartbeat.sleep sleep 2
-    if [ -z "$simctl_pid" ] && [ -s "$private_logs/simctl.pid" ]; then
-      read -r simctl_pid <"$private_logs/simctl.pid"
-    fi
-    if [ -z "$app_pid" ] && [ -s "$private_logs/launchctl.pid" ]; then
-      read -r app_pid <"$private_logs/launchctl.pid"
-    fi
+    refresh_pid_publications || return 1
     if [ -n "$simctl_pid" ]; then
       if ! time_stage heartbeat.pid-check app_pid_alive "$simctl_pid"; then
-        record_liveness "simctl pid $simctl_pid exited"
+        record_liveness "simctl pid $simctl_pid exited" || return 1
         : >"$private_logs/watcher.exited"
         return 1
       fi
-      record_liveness "simctl pid $simctl_pid alive"
+      record_liveness "simctl pid $simctl_pid alive" alive || return 1
     fi
     if [ -n "$app_pid" ]; then
       if [ "$app_pid" != "$simctl_pid" ] && ! time_stage heartbeat.pid-check app_pid_alive "$app_pid"; then
-        record_liveness "pid $app_pid exited"
+        record_liveness "pid $app_pid exited" || return 1
         : >"$private_logs/watcher.exited"
         return 1
       fi
-      record_liveness "pid $app_pid alive"
+      record_liveness "pid $app_pid alive" alive || return 1
     elif [ -z "$simctl_pid" ]; then
-      record_liveness "pid not yet observed"
+      record_liveness "pid not yet observed" || return 1
     fi
   }
   while [ "$SECONDS" -lt "$deadline" ]; do
     if ! time_stage heartbeat sample_liveness; then return 1; fi
   done
   epoch=$(date -u +%s)
-  if [ "$((epoch - last_epoch))" -gt 5 ]; then
-    printf '%s observation gap %ss\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$((epoch - last_epoch))" >>"$out/liveness.log"
-    : >"$private_logs/watcher.gap"
+  refresh_pid_publications || return 1
+  gap=$((epoch - last_epoch))
+  if [ -z "$first_pid_epoch" ] || [ "$first_pid_epoch" -gt "$epoch" ]; then
+    if [ "$gap" -gt 5 ]; then
+      printf '%s pre-PID observation gap %ss\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$gap" >>"$out/liveness.log"
+    fi
+  else
+    if [ "$first_pid_epoch" -gt "$last_epoch" ]; then
+      gap=$((first_pid_epoch - last_epoch))
+      if [ "$gap" -gt 5 ]; then
+        printf '%s pre-PID observation gap %ss\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$gap" >>"$out/liveness.log"
+      fi
+    fi
+    interval_start=$last_epoch
+    if [ "$first_pid_epoch" -gt "$interval_start" ]; then interval_start=$first_pid_epoch; fi
+    gap=$((epoch - interval_start))
+    if [ "$gap" -gt 5 ]; then
+      printf '%s observation gap %ss\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$gap" >>"$out/liveness.log"
+      : >"$private_logs/watcher.gap"
+    fi
   fi
+  check_first_alive_gap "$epoch"
   : >"$private_logs/watcher.complete"
 }
 discover_launchctl_pid() {
@@ -262,10 +333,13 @@ while [ "$SECONDS" -lt "$deadline" ]; do
   # launchd's job for the app: "<pid> <status> UIKitApplication:xyz.tinycloud.exo[...]".
   observed_pid=$(time_stage main.launchctl-list discover_launchctl_pid)
   if [ -z "$pid" ] && [ -n "$observed_pid" ]; then
-    pid=$observed_pid
-    printf '%s\n' "$pid" >"$private_logs/launchctl.pid"
-    printf 'pid %s observed %s\n' "$pid" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$out/launch-timeline.log"
-    log "running as pid $pid"
+    pid_observed_epoch=$(date -u +%s)
+    if [ "$SECONDS" -lt "$deadline" ]; then
+      pid=$observed_pid
+      printf '%s %s\n' "$pid" "$pid_observed_epoch" >"$private_logs/launchctl.pid"
+      printf 'pid %s observed %s\n' "$pid" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$out/launch-timeline.log"
+      log "running as pid $pid"
+    fi
   fi
   if [ -n "$pid" ] && [ "$observed_pid" != "$pid" ]; then
     printf '%s pid %s disappeared from launchctl\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$pid" >>"$out/liveness.log"
@@ -298,7 +372,7 @@ if [ "$process_exited" -eq 0 ] && { [ "$observer_failed" -ne 0 ] || [ ! -f "$pri
   fail "simctl PID observer did not complete through the probe deadline"
 fi
 if [ -s "$private_logs/simctl.pid" ]; then
-  read -r simctl_pid <"$private_logs/simctl.pid"
+  read -r simctl_pid simctl_observed_epoch <"$private_logs/simctl.pid"
 else
   printf 'simctl launch pid not reported\n' >>"$out/launch-timeline.log"
 fi
@@ -338,6 +412,9 @@ if [ -n "$probe" ] && [ "$process_exited" -eq 0 ]; then
 elif [ "${#failures[@]}" -eq 0 ]; then
   fail "no EXO_SMOKE probe line within ${timeout_s}s (is ExoBridgeViewController the root view controller?)"
 fi
+if [ ! -f "$private_logs/watcher.alive" ]; then
+  fail "no app PID-alive observation before probe deadline"
+fi
 if [ "$process_exited" -eq 0 ] && [ -n "$simctl_pid" ] && ! time_stage main.final-pid-check app_pid_alive "$simctl_pid"; then
   printf '%s simctl pid %s exited after probe deadline\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$simctl_pid" >>"$out/liveness.log"
   fail "the app was not running ${settle_s}s after the probe (simctl pid $simctl_pid)"
@@ -345,7 +422,7 @@ elif [ "$process_exited" -eq 0 ] && [ -n "$pid" ] && ! time_stage main.final-pid
   printf '%s pid %s exited after probe deadline\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$pid" >>"$out/liveness.log"
   fail "the app was not running ${settle_s}s after the probe (pid $pid)"
 elif [ -z "$pid" ]; then
-  fail "launchctl never reported an app pid"
+  fail "launchctl did not report an app pid before the probe deadline"
 fi
 
 log "collecting screenshot and logs"
