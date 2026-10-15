@@ -37,6 +37,7 @@ Integration branch: `dev/0.8.0`
 | #350 | 7f5fb1cd | 7b36ac1a | No | Clean merge of TC-947 Me vs Them after the approved P1 fixes; the PR already contained dev through `e775e736`, so the only branch-only delta was the later integration documentation. |
 | #403 | b00ebd38 | cedb3883 | No | Clean merge of the reviewed #350 follow-up: authoritative native channel metadata survives renderer adoption and durable Stop, and every receipt save path preserves channels for Me/Them playback. |
 | #402 | cdda8907 | 28efa0a2 | No | Clean merge of TC-1111 item 4: retrieval results retain voice-note provenance, and the published retrieval pack advances to `0.1.1-onboarding.22`. |
+| #389 | 5a25b037 | c3d39ed3 | No | Clean merge of TC-1102 “Transcribe again” after its iOS simulator and both signing dry-runs passed. Follow-up N1 is non-blocking: add deadlines to the Local rerun reads in `onDeviceTranscriber.ts:244,258`. |
 
 ## Test Fixes (2026-10-14)
 
@@ -80,8 +81,8 @@ After merging origin/main (TC-1128, #387, #392, 45d16e58) and PR #386 (TC-1108 p
 
 ## Current Status
 
-- **Verified code head**: `28efa0a2` (#402 merged)
-- **Frontend unit suite**: 4882 pass, 4 skip, 0 fail (4886 tests, 339 files)
+- **Verified code head**: `c3d39ed3` (#389 merged)
+- **Frontend unit suite**: 4930 pass, 4 skip, 0 fail (4934 tests, 339 files)
 - **`origin/main` `b9c538ee` baseline**: 4735 pass, 4 skip, 0 fail (4739 tests, 326 files)
 - **TypeScript**: pinned TypeScript 5.9.3, `tsc --noEmit -p frontend/tsconfig.json`, 0 errors
 - **CI frontend lint**: `bunx eslint frontend test`, 0 errors
