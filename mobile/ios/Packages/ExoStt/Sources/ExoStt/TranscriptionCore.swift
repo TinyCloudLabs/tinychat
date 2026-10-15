@@ -10,9 +10,9 @@ protocol TranscriptionLibrary: AnyObject {
     func repairTranscriptCommit(_ id: String) throws
     func updateStt(_ id: String, patch: [String: Any]) throws
     func updateRunning(_ id: String, generation: Int, patch: [String: Any],
-                       stillValid: () -> Bool) throws
+                       stillValid: @escaping () -> Bool) throws
     /// The storage implementation serializes these with deletion and all sidecar writes.
-    func yieldToOS(_ id: String, generation: Int, attempts: Int, stillValid: () -> Bool) throws -> Bool
+    func yieldToOS(_ id: String, generation: Int, attempts: Int, stillValid: @escaping () -> Bool) throws -> Bool
     func commitTranscript(_ id: String, generation: Int, object: [String: Any],
                           stillValid: () -> Bool) throws -> Bool
 }
@@ -517,7 +517,7 @@ final class TranscriptionCore {
             guard !state.isCancelRequested(id) else { return }
             do {
                 _ = try library.yieldToOS(id, generation: generation, attempts: previousAttempts) {
-                    clock() < deadline && !state.isCancelRequested(id)
+                    self.clock() < deadline && !self.state.isCancelRequested(id)
                 }
             } catch {
                 NSLog("ExoStt expiry yield persistence failed id=%@", id)
@@ -538,14 +538,14 @@ final class TranscriptionCore {
             },
             onProgress: { [self] percent, windowsDone in
                 try? library.updateRunning(id, generation: generation, patch: ["windowsDone": windowsDone]) {
-                    lease.isLive && !state.isCancelRequested(id)
+                    lease.isLive && !self.state.isCancelRequested(id)
                 }
                 guard lease.isLive, state.setProgress(percent, for: id) else { return }
                 onProgress?(id, percent)
             },
             onSegment: { [self] segmentsDone in
                 try? library.updateRunning(id, generation: generation, patch: ["segmentsDone": segmentsDone]) {
-                    lease.isLive && !state.isCancelRequested(id)
+                    lease.isLive && !self.state.isCancelRequested(id)
                 }
             })
         // An explicit rerun's revision and base are stored in the non-resumable queue marker before work starts.

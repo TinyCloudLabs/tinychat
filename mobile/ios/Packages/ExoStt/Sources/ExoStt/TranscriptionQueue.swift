@@ -110,10 +110,10 @@ private final class CaptureLibrary: TranscriptionLibrary {
     func readSidecar(_ id: String) throws -> [String: Any] { try library.readSidecar(id) }
     func updateStt(_ id: String, patch: [String: Any]) throws { try library.updateStt(id, patch: patch) }
     func updateRunning(_ id: String, generation: Int, patch: [String: Any],
-                       stillValid: () -> Bool) throws {
+                       stillValid: @escaping () -> Bool) throws {
         try library.updateRunning(id, generation: generation, patch: patch, stillValid: stillValid)
     }
-    func yieldToOS(_ id: String, generation: Int, attempts: Int, stillValid: () -> Bool) throws -> Bool {
+    func yieldToOS(_ id: String, generation: Int, attempts: Int, stillValid: @escaping () -> Bool) throws -> Bool {
         try library.yieldToOS(id, generation: generation, attempts: attempts, stillValid: stillValid)
     }
     func commitTranscript(_ id: String, generation: Int, object: [String: Any],
