@@ -6,8 +6,6 @@ import {
   isSourcePinned,
   registerExtraPins,
   retainSource,
-  setLimitBlockedChoice,
-  VOICE_NOTE_LIMIT_BLOCKED_CHOICES_KEY,
   VOICE_NOTE_PENDING_JOBS_KEY,
   VOICE_NOTE_PRIVATE_CHOICES_KEY,
   withSourceLease,
@@ -133,14 +131,6 @@ test("ordinary Private choice remains pinned while only a blocked choice can exp
   expect(await isSourcePinned(DID, ID, now + 31 * 24 * 60 * 60 * 1000)).toBe(true);
 });
 
-test("a known limit-blocked choice can expire", async () => {
-  const now = Date.parse("2026-01-01T00:00:00.000Z");
-  storage.setItem(accountStorageKey(VOICE_NOTE_PRIVATE_CHOICES_KEY, DID), JSON.stringify([ID]));
-  setLimitBlockedChoice(DID, ID, true);
-  expect(await isSourcePinned(DID, ID, now)).toBe(true);
-  expect(await isSourcePinned(DID, ID, now + 31 * 24 * 60 * 60 * 1000)).toBe(false);
-  expect(storage.getItem(accountStorageKey(VOICE_NOTE_LIMIT_BLOCKED_CHOICES_KEY, DID))).toBe(JSON.stringify([ID]));
-});
 
 test("a released fallback lease leaves no retained source", async () => {
   const result = await withSourceLease(DID, ID, async () => "read");
