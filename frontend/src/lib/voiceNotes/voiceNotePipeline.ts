@@ -7,7 +7,8 @@ import { errorCode, isDiscarded, pendingStore, saveNoteForAccount, type PendingU
 import { ensureVoiceNoteIdentity, publishDeviceTranscriptProgress, resolveVoiceNoteRows } from "./voiceNoteRows";
 import { withVoiceNoteSaveDeadline } from "./saveDeadline";
 import { syncRecordingNote, VOICE_NOTE_SOURCE } from "./voiceNoteStore";
-import { syncOnDeviceTranscript, syncOnDeviceTranscriptAttempt } from "./onDeviceTranscriber";
+import { registerOnDeviceTranscriptCoordinator, syncOnDeviceTranscriptAutomatically, syncOnDeviceTranscriptAttempt,
+  type TranscriptSyncOutcome } from "./onDeviceTranscriber";
 import { appPlatform } from "@/lib/platform";
 import type { StoreAudioOptions } from "./voiceNoteStore";
 import { logPipeline } from "@/lib/debugLog";
@@ -48,6 +49,7 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
   const transcriptRetries = new Map<string, { attempts: number; nextAt: number; exhaustedUntil: number }>();
   const settledTranscripts = new Map<string, number>();
   let continuation: ReturnType<typeof setTimeout> | null = null;
+  let unregisterTranscriptCoordinator: (() => void) | null = null;
   const run = <T>(job: () => Promise<T>): Promise<T> => {
     const promise = job();
     active.add(promise);
@@ -86,7 +88,7 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
   const syncDesktopAfterUpload = (ctx: AccountContext, note: VoiceNoteRecording | null) => {
     if (!note || appPlatform() !== "tauri" || note.options?.transcriber !== "on-device") return;
     // Upload owns no slot by this point. Whisper and upload may finish in either order.
-    void syncOnDeviceTranscript(tcw, { id: note.id, owner: note.owner,
+    void syncOnDeviceTranscriptAutomatically(tcw, { id: note.id, owner: note.owner,
       ledger: { audio: { state: "saved" } }, stt: note.stt }, ctx)
       .catch((error) => console.warn("[VoiceNotes] Desktop transcript sync is still pending", { id: note.id, error }));
   };
@@ -155,17 +157,81 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
   };
   let transcriptCursor: { startedAt: number; id: string } | null = null;
   let transcriptPassTail: Promise<void> = Promise.resolve();
+  let settledInspectionRun = 0;
+  const transcriptFlights = new Map<string, Promise<TranscriptSyncOutcome>>();
+  const retryRevisions = new Map<string, number>();
+  const transcriptKey = (ctx: AccountContext, id: string, rev: number) =>
+    `${ctx.did}:${ctx.generation}:${id}:${rev}`;
   const scheduleTranscriptTurn = (ctx: AccountContext, epoch: number, id: string, delay: number) => {
     if (transcriptTimers.has(id)) return;
     const timer = setTimeout(() => {
       transcriptTimers.delete(id);
       if (!accepting || cancellation !== epoch) return;
-      void run(() => transcriptPass(ctx, checkFor(ctx, epoch)))
-        .catch((error) => { if (!saveDeferredForAccountTransition(error)) console.warn("[VoiceNotes] Transcript retry deferred", { id, error }); });
+      void run(async () => {
+        const check = checkFor(ctx, epoch);
+        check();
+        const note = (await withVoiceNoteSaveDeadline(`native listPending for transcript retry ${id}`,
+          () => VoiceNotes.listPending())).recordings.find((entry) => entry.id === id);
+        check();
+        if (note && note.owner === ctx.did && !isDiscarded(id))
+          await attemptTranscript(ctx, note, check);
+      }).catch((error) => { if (!saveDeferredForAccountTransition(error)) console.warn("[VoiceNotes] Transcript retry deferred", { id, error }); });
     }, delay);
     transcriptTimers.set(id, timer);
   };
-  const inspectTranscripts = async (ctx: AccountContext, check: () => void): Promise<void> => {
+  const attemptTranscript = (ctx: AccountContext, note: VoiceNoteRecording, check: () => void,
+    revision?: number): Promise<TranscriptSyncOutcome> => {
+    const flightKey = transcriptKey(ctx, note.id, 0);
+    const current = transcriptFlights.get(flightKey);
+    if (current) return current;
+    const work = (async () => {
+      check();
+      if (note.owner !== ctx.did || note.ownerUnknown || isDiscarded(note.id)) return { state: "abandoned" } as const;
+      if (revision === undefined && retryRevisions.has(flightKey)) {
+        try {
+          const { transcript } = await withVoiceNoteSaveDeadline(`native getTranscript before retry ${note.id}`,
+            () => VoiceNotes.getTranscript({ id: note.id }));
+          check();
+          revision = transcript?.rev;
+        } catch (error) {
+          check();
+          console.warn("[VoiceNotes] Native transcript revision unavailable", { id: note.id, error });
+        }
+      }
+      const knownKey = transcriptKey(ctx, note.id, revision ?? 0);
+      const retry = transcriptRetries.get(knownKey);
+      if (retry && (retry.nextAt > Date.now() || retry.exhaustedUntil > Date.now()))
+        return { state: "deferred", rev: revision } as TranscriptSyncOutcome;
+      const result = await syncOnDeviceTranscriptAttempt(tcw, note, ctx);
+      if (result.state === "abandoned") return result;
+      check();
+      const key = transcriptKey(ctx, note.id, result.rev ?? revision ?? 0);
+      if (result.state === "committed" || result.state === "terminal") {
+        if (result.rev) settledTranscripts.set(note.id, result.rev);
+        transcriptRetries.delete(key);
+        retryRevisions.delete(flightKey);
+      } else if (result.state === "retryable" || result.state === "receipt-pending") {
+        retryRevisions.set(flightKey, result.rev ?? revision ?? 0);
+        const previous = transcriptRetries.get(key);
+        const delays = testOptions.transcriptRetryDelaysMs ?? [5_000, 30_000, 120_000];
+        const attempts = previous?.attempts ?? 0;
+        if (attempts >= delays.length)
+          transcriptRetries.set(key, { attempts, nextAt: 0, exhaustedUntil: Date.now() + 120_000 });
+        else {
+          const delay = delays[attempts]!;
+          transcriptRetries.set(key, { attempts: attempts + 1, nextAt: Date.now() + delay, exhaustedUntil: 0 });
+          scheduleTranscriptTurn(ctx, cancellation, note.id, delay);
+        }
+      }
+      return result;
+    })();
+    transcriptFlights.set(flightKey, work);
+    void work.finally(() => { if (transcriptFlights.get(flightKey) === work) transcriptFlights.delete(flightKey); })
+      .catch(() => undefined);
+    return work;
+  };
+  const inspectTranscripts = async (ctx: AccountContext, check: () => void,
+    scheduleContinuation: boolean): Promise<void> => {
     check();
     const notes = markLegacyOwnerUnknown((await withVoiceNoteSaveDeadline("native listPending for transcripts",
       () => VoiceNotes.listPending())).recordings);
@@ -181,9 +247,12 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
     const start = transcriptCursor === null ? 0 : candidates.findIndex((note) =>
       note.startedAt > transcriptCursor!.startedAt || (note.startedAt === transcriptCursor!.startedAt && note.id > transcriptCursor!.id));
     const ordered = start < 0 ? candidates : [...candidates.slice(start), ...candidates.slice(0, start)];
-    let attempted = 0;
-    let eligible = 0;
+    let inspected = 0;
+    let remaining = false;
     for (const note of ordered) {
+      if (inspected >= 8) { remaining = true; break; }
+      inspected++;
+      transcriptCursor = { startedAt: note.startedAt, id: note.id };
       check();
       let revision: number | undefined;
       try {
@@ -195,51 +264,31 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
         check();
         console.warn("[VoiceNotes] Native transcript inspection deferred", { id: note.id, error });
       }
-      const key = `${ctx.did}:${ctx.generation}:${note.id}:${revision ?? 0}`;
-      if (revision && settledTranscripts.get(note.id) === revision) continue;
-      const retry = transcriptRetries.get(key);
-      const now = Date.now();
-      if (retry && (retry.nextAt > now || retry.exhaustedUntil > now)) continue;
-      if (retry?.exhaustedUntil && retry.exhaustedUntil <= now) transcriptRetries.delete(key);
-      eligible++;
-      if (attempted >= 8) continue;
-      attempted++;
-      transcriptCursor = { startedAt: note.startedAt, id: note.id };
-      const result = await syncOnDeviceTranscriptAttempt(tcw, note, ctx);
-      check();
-      if (result.state === "committed" || result.state === "terminal") {
-        if (result.rev) settledTranscripts.set(note.id, result.rev);
-        transcriptRetries.delete(key);
+      if (revision && settledTranscripts.get(note.id) === revision) {
+        settledInspectionRun++;
         continue;
       }
-      if (result.state !== "retryable" && result.state !== "receipt-pending") continue;
-      const retryKey = `${ctx.did}:${ctx.generation}:${note.id}:${result.rev ?? revision ?? 0}`;
-      const previous = transcriptRetries.get(retryKey);
-      const delays = testOptions.transcriptRetryDelaysMs ?? [5_000, 30_000, 120_000];
-      const attempts = previous?.attempts ?? 0;
-      if (attempts >= delays.length) {
-        transcriptRetries.set(retryKey, { attempts, nextAt: 0, exhaustedUntil: Date.now() + 120_000 });
-        continue;
-      }
-      const delay = delays[attempts]!;
-      transcriptRetries.set(retryKey, { attempts: attempts + 1, nextAt: Date.now() + delay, exhaustedUntil: 0 });
-      scheduleTranscriptTurn(ctx, cancellation, note.id, delay);
+      const outcome = await attemptTranscript(ctx, note, check, revision);
+      settledInspectionRun = outcome.state === "deferred" ? settledInspectionRun + 1 : 0;
     }
-    if (eligible > 8 && continuation === null) {
+    if (remaining && settledInspectionRun < candidates.length && scheduleContinuation && continuation === null) {
       const epoch = cancellation;
       continuation = setTimeout(() => {
         continuation = null;
         if (!accepting || cancellation !== epoch) return;
-        void run(() => transcriptPass(ctx, checkFor(ctx, epoch)))
+        void run(() => transcriptPass(ctx, checkFor(ctx, epoch), true))
           .catch((error) => { if (!saveDeferredForAccountTransition(error)) console.warn("[VoiceNotes] Transcript continuation deferred", error); });
       }, testOptions.transcriptPassCooldownMs ?? 250);
     }
   };
-  const transcriptPass = (ctx: AccountContext, check: () => void): Promise<void> => {
-    const turn = transcriptPassTail.then(() => inspectTranscripts(ctx, check));
+  const transcriptPass = (ctx: AccountContext, check: () => void, scheduleContinuation: boolean): Promise<void> => {
+    const turn = transcriptPassTail.then(() => inspectTranscripts(ctx, check, scheduleContinuation));
     transcriptPassTail = turn.catch(() => undefined);
     return turn;
   };
+  unregisterTranscriptCoordinator = registerOnDeviceTranscriptCoordinator(tcw,
+    (recording, ctx) => run(() => attemptTranscript(ctx, recording as VoiceNoteRecording,
+      checkFor(ctx, cancellation))));
   return {
     process(ctx, id, _trigger = "stop", onRowCreated, onSaved) {
       if (!accepting) return Promise.reject(new VoiceNoteSaveDeferred());
@@ -313,7 +362,7 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
           }
           throw error;
         }
-        await transcriptPass(ctx, check);
+        await transcriptPass(ctx, check, false);
         check();
         let discardError: unknown;
         const saveQueue = notes.filter((note) => note.owner === ctx.did && !note.ownerUnknown &&
@@ -353,7 +402,7 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
         } finally {
           for (const ticket of uploadTickets.values()) pendingStore.settleUploadQueue(ticket);
         }
-        await transcriptPass(ctx, check);
+        await transcriptPass(ctx, check, true);
         check();
         // Pending audio uploads went first. This untracked catch-up pass restores
         // reconcile's Markdown retry without making saved audio look like an upload.
@@ -380,10 +429,20 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
       if (continuation !== null) clearTimeout(continuation);
       continuation = null;
       transcriptRetries.clear();
+      retryRevisions.clear();
+      settledInspectionRun = 0;
+      transcriptFlights.clear();
+      unregisterTranscriptCoordinator?.();
+      unregisterTranscriptCoordinator = null;
       settledTranscripts.clear();
       setAccountWorkPaused(tcw, true);
     },
-    resume() { accepting = true; setAccountWorkPaused(tcw, false); },
+    resume() {
+      accepting = true; setAccountWorkPaused(tcw, false);
+      unregisterTranscriptCoordinator ??= registerOnDeviceTranscriptCoordinator(tcw,
+        (recording, ctx) => run(() => attemptTranscript(ctx, recording as VoiceNoteRecording,
+          checkFor(ctx, cancellation))));
+    },
     isAccepting() { return accepting; },
     async quiescent(timeoutMs) {
       if (active.size === 0) return true;

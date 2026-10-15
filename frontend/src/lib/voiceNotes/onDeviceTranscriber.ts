@@ -28,6 +28,14 @@ export type OnDeviceTranscriptSyncState =
   | { state: "unrecorded"; message: string; rev?: number; retryable?: boolean };
 
 export type TranscriptSyncOutcome = { state: "committed" | "receipt-pending" | "retryable" | "deferred" | "terminal" | "abandoned"; rev?: number };
+const coordinators = new WeakMap<TinyCloudWeb, (recording: Parameters<typeof syncOnDeviceTranscript>[1],
+  account: AccountContext) => Promise<TranscriptSyncOutcome>>();
+export function registerOnDeviceTranscriptCoordinator(tcw: TinyCloudWeb,
+  coordinator: (recording: Parameters<typeof syncOnDeviceTranscript>[1],
+    account: AccountContext) => Promise<TranscriptSyncOutcome>): () => void {
+  coordinators.set(tcw, coordinator);
+  return () => { if (coordinators.get(tcw) === coordinator) coordinators.delete(tcw); };
+}
 const syncStates = new Map<string, OnDeviceTranscriptSyncState>();
 /** One active write per account/note; later triggers re-read the native revision in order. */
 const chains = new Map<string, Promise<void>>();
@@ -107,6 +115,22 @@ export async function syncOnDeviceTranscriptAttempt(tcw: TinyCloudWeb,
   if (result?.state === "failed" && result.retryable) return { state: "retryable", ...revision };
   return { state: result?.state === "failed" || result?.state === "unrecorded" ? "terminal" : "deferred", ...revision };
 }
+/** Automatic callers share the foreground pipeline's retry budget; explicit user actions keep the direct helper. */
+export function syncOnDeviceTranscriptAutomatically(tcw: TinyCloudWeb,
+  recording: Parameters<typeof syncOnDeviceTranscript>[1],
+  account: AccountContext = captureAccountContext(tcw)): Promise<TranscriptSyncOutcome> {
+  const coordinator = coordinators.get(tcw);
+  return coordinator ? coordinator(recording, account) : syncOnDeviceTranscriptAttempt(tcw, recording, account);
+}
+
+export function recordOnDeviceTranscriptAutomatically(tcw: TinyCloudWeb, id: string,
+  account: AccountContext = captureAccountContext(tcw)): Promise<boolean> {
+  const coordinator = coordinators.get(tcw);
+  if (!coordinator) return recordOnDeviceTranscript(tcw, id, account);
+  return coordinator({ id, owner: account.did, ledger: { audio: { state: "saved" } },
+    stt: { state: "done" } }, account).then((result) => result.state === "abandoned");
+}
+
 
 function enqueue(key: string, attempt: () => Promise<boolean>): Promise<boolean> {
   const run = (chains.get(key) ?? Promise.resolve()).then(attempt);
@@ -290,6 +314,19 @@ async function syncOnce(tcw: TinyCloudWeb, key: string, id: string, expected: bo
   }
   if (!isCurrent(tcw, ctx)) return true;
   syncRevisions.set(key, transcript.rev);
+  try {
+    checkpoint(tcw, ctx)();
+    if (!await resolveVoiceNoteRow(tcw, id, checkpoint(tcw, ctx))) {
+      checkpoint(tcw, ctx)();
+      publish(key, null);
+      return false;
+    }
+    checkpoint(tcw, ctx)();
+  } catch (err) {
+    if (!isCurrent(tcw, ctx)) return true;
+    publish(key, { state: "failed", message: LOCAL_COPY.transcriptCheckFailed, retryable: transientSyncError(err) });
+    return false;
+  }
   try {
     await publishDeviceTranscriptArtifact(tcw, id, transcript, checkpoint(tcw, ctx));
   } catch (err) {

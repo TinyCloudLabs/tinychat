@@ -17,7 +17,7 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { VoiceNotes } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { captureCapabilities, captureEngineAvailable } from "@/lib/voiceNotes/captureEngine";
 import { OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
-import { syncOnDeviceTranscript } from "@/lib/voiceNotes/onDeviceTranscriber";
+import { syncOnDeviceTranscriptAutomatically } from "@/lib/voiceNotes/onDeviceTranscriber";
 import { publishDeviceTranscriptProgress } from "@/lib/voiceNotes/voiceNoteRows";
 import { getDesktopWhisperQueue } from "@/lib/voiceNotes/desktop/desktopWhisper";
 import { isTinyCloudNetworkFailure, logVoiceNoteError, pendingSaveMessage, pendingStore, whenVoiceNoteSavesIdle } from "@/lib/voiceNotes/recorderSaves";
@@ -61,7 +61,7 @@ function installOnDeviceTranscriptSync(tcw: TinyCloudWeb, pipeline: VoiceNotePip
           return;
         }
         const recording = recordings.find((note) => note.id === id);
-        if (recording) return syncOnDeviceTranscript(tcw, recording, account);
+        if (recording) return syncOnDeviceTranscriptAutomatically(tcw, recording, account);
       })
       .catch((err: unknown) => console.warn("[OnDeviceStt] Could not sync a finished transcription", err));
   };
@@ -135,7 +135,7 @@ export function PendingVoiceNotesSaver({
           return;
         }
         const recording = recordings.find((note) => note.id === id);
-        if (recording) return syncOnDeviceTranscript(tcw, recording, account);
+        if (recording) return syncOnDeviceTranscriptAutomatically(tcw, recording, account);
       }).catch((error: unknown) => console.warn("[desktopWhisper] Could not sync transcript", error));
     };
     const unsubscribe = queue.onDone(sync);

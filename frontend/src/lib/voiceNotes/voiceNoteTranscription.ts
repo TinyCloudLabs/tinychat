@@ -2224,10 +2224,11 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
       if (!result.ok) return null;
       if (result.data === null) return false;
       const note = result.data;
-      const explicitRetry = chosenPrivate.has(sourceId);
+      const explicitRetry = isChosen(sourceId);
       const retryableFailure = note.transcript.status === "failed" && isAutomaticRetryableCode(note.transcriptionErrorCode);
       if (note.transcript.status !== "pending" && !retryableFailure
-        && !(note.transcript.status === "failed" && explicitRetry)) return false;
+        && !(note.transcript.status === "failed" && explicitRetry)
+        && !(note.transcript.status === "pending_device_sync" && explicitRetry)) return false;
       const commit = await readTranscriptCommit(tcw, sourceId);
       if (!identityCurrent()) return false;
       if (commit !== null) {

@@ -19,7 +19,7 @@ import {
   nativeRecordingSource,
   type VoiceNoteRecording,
 } from "@/lib/voiceNotes/nativeVoiceNotes";
-import { syncOnDeviceTranscript } from "@/lib/voiceNotes/onDeviceTranscriber";
+import { syncOnDeviceTranscriptAutomatically } from "@/lib/voiceNotes/onDeviceTranscriber";
 import { saveVoiceNote, type NoteSyncErrorCode, type VoiceNoteAudio, type VoiceNoteAudioSource, type StoreAudioOptions } from "@/lib/voiceNotes/voiceNoteStore";
 import { upgradeSavedAudioReceipt } from "./audioReceiptUpgrade";
 import { assertAccountContext, assertCurrent, captureAccountContext, type AccountContext } from "@/lib/voiceNotes/accountContext";
@@ -357,7 +357,7 @@ async function recordRowId(
       })).recordings.find((note) => note.id === recording.id);
       checkActive();
       if (updated?.owner === ctx.did && (updated.stt?.state === "done" || updated.stt?.state === "failed"))
-        void syncOnDeviceTranscript(tcw, updated, ctx);
+        void syncOnDeviceTranscriptAutomatically(tcw, updated, ctx);
       return;
     } catch (caught) {
       if (errorCode(caught) !== "rev_conflict") throw caught;
@@ -370,7 +370,7 @@ async function recordRowId(
       if (!current || current.owner !== ctx.did || isLegacyNote(current)) throw caught;
       if (current.ledger?.audio.rowId === rowId) {
         pendingStore.recordRowCreated();
-        if (current.stt?.state === "done" || current.stt?.state === "failed") void syncOnDeviceTranscript(tcw, current, ctx);
+        if (current.stt?.state === "done" || current.stt?.state === "failed") void syncOnDeviceTranscriptAutomatically(tcw, current, ctx);
         return;
       }
       fresh = current;
@@ -406,7 +406,7 @@ export async function saveRecording(
   };
   if (recording.ledger?.audio.state === "saved") {
     await upgradeSavedAudioReceipt(tcw, recording);
-    void syncOnDeviceTranscript(tcw, recording);
+    void syncOnDeviceTranscriptAutomatically(tcw, recording);
     return { kind: "already-saved", cleanupError: null };
   }
   // Old localStorage markers are never authority: a lost marker must be safe,
@@ -466,7 +466,7 @@ export async function saveRecording(
       } catch (caught) {
         cleanupError = `Saved to your space, but ${deviceName()} could not update its note status: ${messageOf(caught)}`;
       }
-      void syncOnDeviceTranscript(tcw, { id: recording.id, ledger: { audio: { state: "saved" } } });
+      void syncOnDeviceTranscriptAutomatically(tcw, { id: recording.id, ledger: { audio: { state: "saved" } } });
     }
     return {
       kind: "saved",

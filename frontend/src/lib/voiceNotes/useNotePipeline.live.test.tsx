@@ -742,7 +742,7 @@ describe("a saved Local note whose transcript is done on the phone but not in th
   });
 
   test("an abandoned automatic sync waits for pipeline resume, then retries", async () => {
-    const space = fakeSpace("did:p6-resume-sync", () => null);
+    const space = fakeSpace("did:p6-resume-sync", rowWithoutTranscript);
     const pipeline = createVoiceNotePipeline(space.tcw);
     phone.recordings = [{
       ...withSpaceRow(recording(ID, "on-device", stt("done")), space.tcw.did, "saved"),

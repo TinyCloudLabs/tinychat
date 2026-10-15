@@ -698,6 +698,17 @@ test('voice-note committed no_speech is an omission without fetching its body', 
   expect(bodyGets(f)).toHaveLength(0);
 });
 
+test('Astra: completed native artifact is pending_device_sync coverage, never transcript content', async () => {
+  const f = fixture();
+  f.add('device-ready', { source: 'exo-voice-note', sourceId: 'device-ready-note', voiceNoteCommit: false,
+    metadata: { transcription_outcome: 'pending', transcript_location: 'device',
+      device_transcript: { state: 'done', rev: 1, transcribed_at: '2026-10-15T00:00:00Z', engine: 'apple-speech' } }, body: [] });
+  const result = await invoke(f, 'read', { ref: await ref(f, 'device-ready') });
+  expect(result.error.code).toBe('TRANSCRIPT_OMITTED');
+  expect(bodyGets(f)).toHaveLength(0);
+  expect(result.coverage.omissions[0]).toMatchObject({ reason: 'pending_device_sync' });
+});
+
 test('voice-note no-commit statuses and legacy empty bodies are omissions, not transcript errors', async () => {
   const f = fixture();
   for (const status of ['pending', 'failed', 'skipped', 'no_speech']) f.add(status, { source: 'exo-voice-note', sourceId: `${status}-note`, metadata: { transcription_outcome: status }, voiceNoteCommit: false });

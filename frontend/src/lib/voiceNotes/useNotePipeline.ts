@@ -43,8 +43,10 @@ import { downloadOnDeviceModel, onDeviceSttStore, retryOnDeviceNote } from "./on
 import {
   onDeviceTranscriptSyncState,
   recordOnDeviceTranscript,
+  recordOnDeviceTranscriptAutomatically,
   subscribeOnDeviceTranscriptSync,
   syncOnDeviceTranscript,
+  syncOnDeviceTranscriptAutomatically,
   type OnDeviceTranscriptSyncState,
 } from "./onDeviceTranscriber";
 import { useQuarantinedRecordings } from "./quarantine";
@@ -736,8 +738,8 @@ function useAutoTranscriptSync(candidates: readonly { tcw: TinyCloudWeb; id: str
       if (autoSync.started.has(key)) continue;
       autoSync.started.add(key);
       const attempt = kind === "add"
-        ? syncOnDeviceTranscript(tcw, recording, context)
-        : recordOnDeviceTranscript(tcw, id, context);
+        ? syncOnDeviceTranscriptAutomatically(tcw, recording, context).then((result) => result.state === "abandoned")
+        : recordOnDeviceTranscriptAutomatically(tcw, id, context);
       void attempt.then((abandoned) => {
         if (abandoned) { autoSync.started.delete(key); autoSync.settled.delete(key); }
         else autoSync.settled.add(key);

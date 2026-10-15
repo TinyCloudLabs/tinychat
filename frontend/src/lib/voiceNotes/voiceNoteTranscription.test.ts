@@ -3116,6 +3116,9 @@ describe("every path that creates or resumes an off-phone job consults the hold 
     await first.check();
     first.noteSaved({ id: "rec-1", durationMs: 9_000, source: "in_app", options: { transcriber: "private-cloud", identifySpeakers: false, uploadAudio: true } });
     expect(choices.ids()).toEqual(["rec-1"]);
+    space.sqlite.query(`UPDATE connector_meeting SET metadata = json_patch(metadata, ?) WHERE source_id = 'rec-1'`)
+      .run(JSON.stringify({ transcript_location: "device",
+        device_transcript: { state: "done", rev: 1, transcribed_at: "2026-10-15T00:00:00Z" } }));
 
     let starts = 0;
     const relaunched = createVoiceNoteTranscriber({
@@ -3238,6 +3241,27 @@ describe("every path that creates or resumes an off-phone job consults the hold 
     await settle();
     expect(starts).toBe(0);
     expect(await readTranscriptCommit(space.tcw, "rec-1")).toMatchObject({ rev: 1 });
+  });
+
+  test("Astra: persisted explicit Private choice resumes despite a pending-device marker", async () => {
+    for (const withDeviceMarker of [false, true]) {
+      _resetConnectorSchemaMemoForTests();
+      const { space, h, storage, choices, holds } = await setup("in_app", { pending: false });
+      choices.add("rec-1");
+      if (withDeviceMarker) space.sqlite.query(`UPDATE connector_meeting SET metadata = json_patch(metadata, ?) WHERE source_id = 'rec-1'`)
+        .run(JSON.stringify({ transcript_location: "device",
+          device_transcript: { state: "done", rev: 1, transcribed_at: "2026-10-15T00:00:00Z" } }));
+      let starts = 0;
+      const transcriber = createVoiceNoteTranscriber({
+        cloud: { ...h.cloud, capabilities: async () => CAPS, pendingSourceIds: () => [] },
+        consent: localStorageVoiceNoteConsentStore(DID, storage), tcw: () => space.tcw,
+        holds, choices: localStorageVoiceNotePrivateChoiceStore(DID, storage), checkRetryMs: [],
+        runNote: async () => { starts++; return "no_speech"; },
+      });
+      await transcriber.check();
+      await settle();
+      expect({ withDeviceMarker, starts }).toEqual({ withDeviceMarker, starts: 1 });
+    }
   });
 
   test("first recovery loop preserves an already-held Private result despite a Local pending marker", async () => {
