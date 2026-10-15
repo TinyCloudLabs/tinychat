@@ -37,7 +37,8 @@ export interface HeldResultStore {
   listHeld(): Promise<HeldSummary[]>;
   saveHeldFirst(tcw: TinyCloudWeb, sourceId: string, ops: {
     save(row: HeldResult): Promise<void>;
-    afterCommit(row: HeldResult): Promise<void>;
+    /** False when only a different canonical winner superseded an unknown held result. */
+    afterCommit(row: HeldResult, verifiedHeldResult: boolean): Promise<void>;
     stillCurrent?: () => boolean;
   }, mode: "automatic" | "explicit"): Promise<SaveHeldOutcome>;
   discard(tcw: TinyCloudWeb, sourceId: string, holdId: string,
@@ -303,13 +304,13 @@ export function createHeldResultStore(did: string, options: HeldResultStoreOptio
           if (!current || current.rev < row.transcript.rev || current.rev === row.transcript.rev && current.hash !== row.hash)
             throw new PrivateCloudError("transcript_save_failed", "The held transcript commit could not be verified.");
           await removeIf(tcw, row, current.rev, assertStoreIdentity);
-          await ops.afterCommit(row);
+          await ops.afterCommit(row, true);
           return "committed";
         }
         if (current.rev === row.transcript.rev && current.hash === row.hash) {
           assertIdentity(tcw, did, row);
           await removeIf(tcw, row, current.rev, assertStoreIdentity);
-          await ops.afterCommit(row);
+          await ops.afterCommit(row, true);
           return "already_committed";
         }
         if (row.intent.kind === "rerun" && (current.rev > row.transcript.rev || current.rev === row.transcript.rev && current.hash !== row.hash)) {
@@ -324,7 +325,7 @@ export function createHeldResultStore(did: string, options: HeldResultStoreOptio
           if (historyExists) {
             assertIdentity(tcw, did, row);
             await removeIf(tcw, row, current.rev, assertStoreIdentity);
-            await ops.afterCommit(row);
+            await ops.afterCommit(row, true);
             return "discarded_superseded";
           }
           await replaceConflict(row, "rerun_lost");
@@ -333,7 +334,7 @@ export function createHeldResultStore(did: string, options: HeldResultStoreOptio
         if (row.intent.kind === "unknown" && (current.rev > row.transcript.rev || current.rev === row.transcript.rev)) {
           assertIdentity(tcw, did, row);
           await removeIf(tcw, row, current.rev, assertStoreIdentity);
-          await ops.afterCommit(row);
+          await ops.afterCommit(row, false);
           return "discarded_superseded";
         }
         return "conflict";

@@ -6591,6 +6591,133 @@ test("ordinary held-first Retry resolves transcribed when provider removal fails
   expect(h.creates).toHaveLength(0);
 });
 
+test("verified held commit finishes after legacy strip refusal and dedupes the next launch", async () => {
+  const space = sqliteSpace();
+  _resetConnectorSchemaMemoForTests();
+  const tcw = typedTcw(space);
+  const did = tcw.did;
+  (tcw as { spaceId?: string }).spaceId = "space:test";
+  beginStorageAccountSession(tcw, did, null);
+  expect((await saveVoiceNote(space.tcw, RECORDING, AUDIO, "ios")).ok).toBe(true);
+  expect((await saveVoiceNoteTranscript(space.tcw, "rec-1",
+    prepareVoiceNoteTranscript(TRANSCRIPT, "2026-10-15T00:00:00Z", 1))).ok).toBe(true);
+  const base = await readTranscriptCommit(space.tcw, "rec-1");
+  expect(base).not.toBeNull();
+  const transcript = prepareVoiceNoteTranscript({ ...TRANSCRIPT, text: "Revised synthetic transcript.",
+    segments: [{ ...TRANSCRIPT.segments[0]!, text: "Revised synthetic transcript." }] }, "2026-10-15T00:01:00Z", 2);
+  const held = createHeldResultStore(did, { env: newIdbEnv(), isSignedIn: async () => true });
+  await held.hold({
+    version: 1, did, spaceId: "space:test", sourceId: "rec-1", engine: "private-cloud",
+    transcript, provider: { transcriptionId: ID },
+    intent: { kind: "rerun", base: { rev: base!.rev, hash: base!.hash } },
+  });
+  const pending = localStorageVoiceNotePendingStore(did, memoryStorage());
+  pending.write("rec-1", { attemptId: "legacy-held", transcriptionId: ID, held: transcript });
+  const h = harness({ pending });
+  const refusal = new Error("synthetic cleanup refusal", { cause: {
+    code: "STORAGE_QUOTA_EXCEEDED", message: "quota exceeded",
+  } });
+  let commitAtFinish: Awaited<ReturnType<typeof readTranscriptCommit>> | null = null;
+  let heldAtFinish = true;
+  const finishIds: (string | null)[] = [];
+  const cloud = {
+    ...h.cloud,
+    stripLegacyHeld: async () => { throw refusal; },
+    finish: async (sourceId: string, transcriptionId?: string | null) => {
+      commitAtFinish = await readTranscriptCommit(space.tcw, sourceId);
+      heldAtFinish = (await held.readHeld(sourceId)) !== null;
+      finishIds.push(transcriptionId ?? null);
+      await h.cloud.finish(sourceId, transcriptionId);
+    },
+  };
+  const logged = vi.spyOn(console, "info").mockImplementation(() => {});
+  try {
+    const first = await transcribeVoiceNote({
+      tcw: space.tcw, cloud, capabilities: CAPS, held, explicit: true, explicitRerun: true,
+      sourceId: "rec-1", report: () => {},
+    }).then((result) => result, (error: unknown) => error);
+    const committed = await readTranscriptCommit(space.tcw, "rec-1");
+    expect(committed).toMatchObject({ rev: 2, outcome: "transcribed" });
+    expect(await held.readHeld("rec-1")).toBeNull();
+    expect(pending.legacyHeld?.("rec-1")).toEqual(transcript);
+    expect(isStorageReadOnly()).toBe(false);
+    expect(h.creates).toHaveLength(0);
+
+    const writesBeforeRetry = space.kvPutCalls.length;
+    const next = harness({ pending });
+    expect(await transcribeVoiceNote({
+      tcw: space.tcw, cloud: next.cloud, capabilities: CAPS, held, explicit: true,
+      sourceId: "rec-1", report: () => {},
+    })).toBe("transcribed");
+    expect(await readTranscriptCommit(space.tcw, "rec-1")).toMatchObject({
+      rev: committed!.rev, hash: committed!.hash, bodyKey: committed!.bodyKey,
+    });
+    expect(space.kvPutCalls).toHaveLength(writesBeforeRetry);
+    expect(next.creates).toHaveLength(0);
+    expect(next.removed).toEqual([]);
+    expect(pending.legacyHeld?.("rec-1")).toBeUndefined();
+    expect(await held.readHeld("rec-1")).toBeNull();
+
+    expect(first).toBe("transcribed");
+    expect(commitAtFinish).toMatchObject({ rev: 2, hash: committed!.hash });
+    expect(heldAtFinish).toBe(false);
+    expect(finishIds).toEqual([ID]);
+    expect(h.removed).toEqual([ID]);
+    const cleanupEvents = logged.mock.calls.map(([value]) => {
+      try { return JSON.parse(String(value)) as Record<string, unknown>; }
+      catch { return null; }
+    }).filter((event) => event?.operation === "voice_note_held_legacy_strip");
+    expect(cleanupEvents).toEqual([expect.objectContaining({
+      kind: "pipeline", operation: "voice_note_held_legacy_strip", phase: "failed", source_id: null, count: 1,
+    })]);
+    expect(cleanupEvents[0]?.chain).toBeUndefined();
+  } finally {
+    logged.mockRestore();
+  }
+});
+
+test("unknown superseded held result still reports a failed legacy strip", async () => {
+  const space = sqliteSpace();
+  _resetConnectorSchemaMemoForTests();
+  const tcw = typedTcw(space);
+  const did = tcw.did;
+  (tcw as { spaceId?: string }).spaceId = "space:test";
+  beginStorageAccountSession(tcw, did, null);
+  expect((await saveVoiceNote(space.tcw, RECORDING, AUDIO, "ios")).ok).toBe(true);
+  const winner = prepareVoiceNoteTranscript({ ...TRANSCRIPT, text: "Winning synthetic transcript.",
+    segments: [{ ...TRANSCRIPT.segments[0]!, text: "Winning synthetic transcript." }] }, "2026-10-15T00:01:00Z", 2);
+  expect((await saveVoiceNoteTranscript(space.tcw, "rec-1", winner)).ok).toBe(true);
+  const committed = await readTranscriptCommit(space.tcw, "rec-1");
+  const transcript = prepareVoiceNoteTranscript(TRANSCRIPT, "2026-10-15T00:00:00Z", 1);
+  const held = createHeldResultStore(did, { env: newIdbEnv(), isSignedIn: async () => true });
+  await held.hold({
+    version: 1, did, spaceId: "space:test", sourceId: "rec-1", engine: "private-cloud",
+    transcript, provider: { transcriptionId: ID }, intent: { kind: "unknown" },
+  });
+  const pending = localStorageVoiceNotePendingStore(did, memoryStorage());
+  pending.write("rec-1", { attemptId: "legacy-held", transcriptionId: ID, held: transcript });
+  const h = harness({ pending });
+  const cloud = {
+    ...h.cloud,
+    stripLegacyHeld: async () => { throw new Error("synthetic cleanup refusal", {
+      cause: { code: "STORAGE_QUOTA_EXCEEDED", message: "quota exceeded" },
+    }); },
+  };
+
+  const outcome = await transcribeVoiceNote({
+    tcw: space.tcw, cloud, capabilities: CAPS, held, explicit: true, sourceId: "rec-1", report: () => {},
+  }).then((result) => result, (error: unknown) => error);
+  expect(voiceNoteTranscriptionFailure(outcome).code).toBe("transcription_error");
+  expect(isStorageReadOnly()).toBe(false);
+  expect(await readTranscriptCommit(space.tcw, "rec-1")).toMatchObject({
+    rev: committed!.rev, hash: committed!.hash, bodyKey: committed!.bodyKey,
+  });
+  expect(await held.readHeld("rec-1")).toBeNull();
+  expect(pending.legacyHeld?.("rec-1")).toEqual(transcript);
+  expect(h.creates).toHaveLength(0);
+  expect(h.removed).toEqual([]);
+});
+
 
 test("legacy held result commits when durable held-store access raises SecurityError", async () => {
   const space = sqliteSpace();

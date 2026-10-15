@@ -925,9 +925,14 @@ export async function commitPreparedVoiceNoteTranscript(args: {
             beforeSave = false;
             return args.save();
           },
-          afterCommit: async (committed) => {
+          afterCommit: async (committed, verifiedHeldResult) => {
             beforeSave = false;
-            await args.cloud.stripLegacyHeld?.(args.sourceId, committed.transcript.rev, committed.hash);
+            try {
+              await args.cloud.stripLegacyHeld?.(args.sourceId, committed.transcript.rev, committed.hash);
+            } catch (error) {
+              if (!verifiedHeldResult) throw error;
+              logPipelineCount("voice_note_held_legacy_strip", "failed");
+            }
             try {
               await args.cloud.finish(args.sourceId,
                 committed.provider && "transcriptionId" in committed.provider ? committed.provider.transcriptionId : null);
@@ -1000,7 +1005,7 @@ export async function drainHeldVoiceNote(
   held: HeldResultStore,
   sourceId: string,
   stillCurrent: () => boolean,
-  afterCommit: (row: HeldResult) => Promise<void> = async () => undefined,
+  afterCommit: (row: HeldResult, verifiedHeldResult: boolean) => Promise<void> = async () => undefined,
 ): Promise<"committed" | "already_committed" | "discarded_superseded" | "conflict" | "lock_busy" | null> {
   const row = await held.readHeld(sourceId);
   if (!row) return null;
@@ -1024,8 +1029,8 @@ export async function drainHeldVoiceNote(
         throw new PrivateCloudError("transcript_save_failed", saved.error.message);
       }
     },
-    afterCommit: async (committed) => {
-      await afterCommit(committed);
+    afterCommit: async (committed, verifiedHeldResult) => {
+      await afterCommit(committed, verifiedHeldResult);
     },
     stillCurrent,
   }, "automatic");
@@ -2184,9 +2189,14 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
         jobs.set(summary.sourceId, { kind: "active", status: { kind: "saving" } });
         emit();
         try {
-          const finishAfterCommit = async (row: HeldResult) => {
-            try { await deps.heldAfterCommit?.(row); }
-            finally {
+          const finishAfterCommit = async (row: HeldResult, verifiedHeldResult: boolean) => {
+            try {
+              try { await deps.heldAfterCommit?.(row); }
+              catch (error) {
+                if (!verifiedHeldResult) throw error;
+                logPipelineCount("voice_note_held_legacy_strip", "failed");
+              }
+            } finally {
               const transcriptionId = row.provider && "transcriptionId" in row.provider
                 ? row.provider.transcriptionId : null;
               try { await cloud?.finish(summary.sourceId, transcriptionId); }
