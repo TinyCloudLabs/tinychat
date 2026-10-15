@@ -2,6 +2,7 @@
 // in-memory Fireflies upstream, driven through runFirefliesAgentSync's guards.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -208,6 +209,70 @@ describe("Fireflies agent runner", () => {
     expect(next.httpRequests).toBe(0);
   });
 
+  test("a corrupt quota file fails closed without reading the key or calling Fireflies", async () => {
+    await seedConnected(null);
+    const file = join(stateDir, "fireflies-runner.json");
+    for (const state of ["{", JSON.stringify({ day: new Date().toISOString().slice(0, 10), runs: -1, requests: -1, inserted: [] })]) {
+      writeFileSync(file, state);
+      const report = await runFirefliesAgentSync(deps({ mode: "now" }));
+      expect(report.result).toBe("error");
+      expect(keyReads).toBe(0);
+      expect(provider.calls.list + provider.calls.detail).toBe(0);
+      expect(readFileSync(file, "utf8")).toBe(state);
+    }
+  });
+
+  test("insufficient HTTP budget to audit does not report a complete sync", async () => {
+    await seedConnected(null);
+    seed.length = 0;
+    const day = new Date().toISOString().slice(0, 10);
+    writeFileSync(join(stateDir, "fireflies-runner.json"),
+      JSON.stringify({ day, runs: 0, requests: MAX_REQUESTS_PER_DAY - 3, inserted: [] }));
+    const report = await runFirefliesAgentSync(deps({ mode: "now" }));
+    expect(report.gapAuditComplete).toBe(false);
+    expect(report.result).toBe("partial");
+  });
+
+  test("an incomplete gap audit cannot report a completed sync", async () => {
+    seed.forEach((item, index) => { item.date = Date.now() - 3 * 24 * 3600_000 - index * 1000; });
+    await seedConnected(null);
+    expect((await runFirefliesAgentSync(deps({ mode: "now" }))).result).toBe("synced");
+    const template = [...fake.sql.meetings.values()][0];
+    for (let i = 30; i < 101; i++) {
+      const item = { ...seed[0], id: `known-${i}`, date: seed[0].date - i * 1000 };
+      seed.push(item);
+      fake.sql.meetings.set(`row-${i}`, { ...template, id: `row-${i}`, source_id: item.id });
+    }
+    const report = await runFirefliesAgentSync(deps({ mode: "now", now: later(31 * 60 * 1000) }));
+    expect(report.gapAuditComplete).toBe(false);
+    expect(report.result).toBe("partial");
+    const resumed = await runFirefliesAgentSync(deps({ now: later(62 * 60 * 1000) }));
+    expect(resumed.gapAuditComplete).toBe(true);
+    expect(resumed.result).toBe("synced");
+  });
+
+  test("unexpected exception names and messages never reach the report", async () => {
+    await seedConnected(null);
+    const exception = new Error("private-message-7");
+    exception.name = "private-name-8";
+    const report = await runFirefliesAgentSync(deps({ mode: "now", readApiKey: async () => { throw exception; } }));
+    expect(report.result).toBe("error");
+    expect(JSON.stringify(report)).not.toContain("private-message-7");
+    expect(JSON.stringify(report)).not.toContain("private-name-8");
+  });
+
+  test("CLI failure output does not disclose profile or exception text", () => {
+    const marker = "secret-9";
+    const run = spawnSync("bun", [
+      join(import.meta.dir, "../../scripts/agent-sync/fireflies.ts"),
+      "--now", "--owner", "did:pkh:eip155:1:0xd559CCd9EB87c530A9a349262669386dE93cf412",
+      "--tc", "/not-used", "--profile", marker,
+    ], { env: { ...process.env, TC_HOME: stateDir }, encoding: "utf8" });
+    expect(run.status).toBe(3);
+    expect(JSON.parse(run.stdout).result).toBe("needs_renewal");
+    expect(run.stdout).not.toContain(marker);
+  });
+
   test("a duplicate row inserted by the browser costs the runner its own row, never the browser's", async () => {
     await seedConnected(null);
     const first = await runFirefliesAgentSync(deps({ mode: "now" }));
@@ -252,11 +317,11 @@ describe("Fireflies agent runner", () => {
     expect(keyReads).toBe(0);
   });
 
-  test("a lock left by a dead process is taken over", async () => {
+  test("a standalone runner leaves an abandoned lock for the flock-protected wrapper to reclaim", async () => {
     await seedConnected(null);
     writeFileSync(join(stateDir, "fireflies.lock"), "2147483646 abandoned\n");
     const report = await runFirefliesAgentSync(deps({ mode: "now" }));
-    expect(report.result).toBe("synced");
+    expect(report.result).toBe("locked");
   });
 
   test("request accounting is on disk before each upstream call, so a killed run still counts it", async () => {

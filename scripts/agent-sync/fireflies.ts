@@ -37,6 +37,7 @@ export const GAP_AUDIT_PAGES = 4;
 export const RECHECK_INSERTED_MS = 24 * 60 * 60 * 1000;
 export const GAP_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_PENDING_IDS = 50;
+const INITIAL_AUDIT_CURSOR = { skip: 0, anchor: null, anchorDate: null, previousNeighbor: null };
 
 export type RunResult =
   | "synced"
@@ -92,6 +93,7 @@ export interface RunnerState {
   runs: number;
   requests: number;
   inserted: { id: string; at: string }[];
+  auditCursor?: { skip: number; anchor: string | null; anchorDate: number | string | null; previousNeighbor: string | null };
 }
 
 export interface RunDeps {
@@ -130,20 +132,31 @@ function readState(file: string, day: string): RunnerState {
   try {
     raw = JSON.parse(readFileSync(file, "utf8"));
   } catch {
-    return fresh;
+    throw new RunnerError("error", "invalid runner state");
   }
-  if (!raw || typeof raw !== "object") return fresh;
-  const inserted = "inserted" in raw && Array.isArray(raw.inserted)
-    ? raw.inserted.flatMap((entry: unknown) =>
-      entry && typeof entry === "object" && "id" in entry && "at" in entry
-        && typeof entry.id === "string" && typeof entry.at === "string"
-        ? [{ id: entry.id, at: entry.at }]
-        : [])
-    : [];
-  const sameDay = "day" in raw && raw.day === day;
-  const runs = sameDay && "runs" in raw && typeof raw.runs === "number" ? raw.runs : 0;
-  const requests = sameDay && "requests" in raw && typeof raw.requests === "number" ? raw.requests : 0;
-  return { day, runs, requests, inserted };
+  if (!raw || typeof raw !== "object" || !("day" in raw) || typeof raw.day !== "string"
+    || !/^\d{4}-\d{2}-\d{2}$/.test(raw.day)
+    || !("runs" in raw) || !Number.isSafeInteger(raw.runs) || (raw.runs as number) < 0
+    || !("requests" in raw) || !Number.isSafeInteger(raw.requests) || (raw.requests as number) < 0
+    || !("inserted" in raw) || !Array.isArray(raw.inserted)
+    || !raw.inserted.every((entry: unknown) => entry && typeof entry === "object"
+      && "id" in entry && typeof entry.id === "string" && "at" in entry && typeof entry.at === "string")) {
+    throw new RunnerError("error", "invalid runner state");
+  }
+  const cursor = "auditCursor" in raw ? raw.auditCursor : undefined;
+  if (cursor !== undefined && (!cursor || typeof cursor !== "object"
+    || !("skip" in cursor) || !Number.isSafeInteger(cursor.skip) || (cursor.skip as number) < 0
+    || !("anchor" in cursor) || !(cursor.anchor === null || typeof cursor.anchor === "string")
+    || !("anchorDate" in cursor) || !(cursor.anchorDate === null || typeof cursor.anchorDate === "string" || typeof cursor.anchorDate === "number")
+    || !("previousNeighbor" in cursor) || !(cursor.previousNeighbor === null || typeof cursor.previousNeighbor === "string"))) {
+    throw new RunnerError("error", "invalid runner state");
+  }
+  return {
+    day, runs: raw.day === day ? raw.runs as number : 0,
+    requests: raw.day === day ? raw.requests as number : 0,
+    inserted: raw.inserted as RunnerState["inserted"],
+    auditCursor: cursor as RunnerState["auditCursor"],
+  };
 }
 
 function writeState(file: string, state: RunnerState): void {
@@ -152,56 +165,26 @@ function writeState(file: string, state: RunnerState): void {
   renameSync(tmp, file);
 }
 
-function processAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return error instanceof Error && "code" in error && error.code === "EPERM";
-  }
-}
-
 /**
- * Per-host lock. A lock is abandoned only when its owner process is gone; the release removes
- * the lock only while it still holds this run's token, so a successor's lock is never deleted.
- * The wrapper (`bin/connector-sync`) also holds a kernel `flock`, which is the hard guarantee.
+ * In-process guard against overlapping direct invocations. The host wrapper holds `flock` and
+ * reclaims abandoned files; a standalone invocation never deletes another process's lock.
  */
 function acquireLock(file: string): (() => void) | null {
   const token = `${process.pid} ${randomUUID()}`;
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      const fd = openSync(file, "wx", 0o600);
-      writeFileSync(fd, `${token}\n`);
-      closeSync(fd);
-      return () => {
-        try {
-          if (readFileSync(file, "utf8").trim() === token) rmSync(file, { force: true });
-        } catch {
-          // Already gone.
-        }
-      };
-    } catch {
-      let observed: string;
+  try {
+    const fd = openSync(file, "wx", 0o600);
+    writeFileSync(fd, `${token}\n`);
+    closeSync(fd);
+    return () => {
       try {
-        observed = readFileSync(file, "utf8");
+        if (readFileSync(file, "utf8").trim() === token) rmSync(file, { force: true });
       } catch {
-        continue; // Released between our create and read: try to create again.
+        // Already gone.
       }
-      const holder = Number.parseInt(observed, 10);
-      if (!Number.isInteger(holder) || holder <= 0 || processAlive(holder)) return null;
-      // Abandoned. Move it aside atomically, and give up if what moved is not what we judged dead.
-      const aside = `${file}.abandoned.${process.pid}`;
-      try {
-        renameSync(file, aside);
-        const moved = readFileSync(aside, "utf8");
-        rmSync(aside, { force: true });
-        if (moved !== observed) return null;
-      } catch {
-        return null;
-      }
-    }
+    };
+  } catch {
+    return null;
   }
-  return null;
 }
 
 // ── Upstream request budget ─────────────────────────────────────────────
@@ -243,9 +226,9 @@ export async function runFirefliesAgentSync(deps: RunDeps): Promise<RunReport> {
     report.requestsToday = state.requests;
     await runLocked(deps, report, state, clock, stateFile);
   } catch (error) {
-    // Only codes reach the report: RunnerError messages are built from codes, anything else by name.
+    // Only fixed result codes reach the report.
     report.result = error instanceof RunnerError ? error.result : "error";
-    report.detail = error instanceof RunnerError ? redact(error.message) : error instanceof Error ? error.name : "unknown";
+    report.detail = error instanceof RunnerError ? error.result : "unexpected_error";
   } finally {
     release();
     report.durationMs = clock().getTime() - started.getTime();
@@ -281,7 +264,7 @@ async function runLocked(
 
   // The watermark stays the trigger: a connector that keeps finishing partial re-syncs each sweep.
   const lastSyncedMs = report.lastSyncedAt ? Date.parse(report.lastSyncedAt) : Number.NaN;
-  if (deps.mode === "auto" && Number.isFinite(lastSyncedMs) && nowMs - lastSyncedMs <= (deps.staleMs ?? DEFAULT_STALE_MS)) {
+  if (deps.mode === "auto" && !state.auditCursor && Number.isFinite(lastSyncedMs) && nowMs - lastSyncedMs <= (deps.staleMs ?? DEFAULT_STALE_MS)) {
     report.result = "fresh";
     return;
   }
@@ -348,11 +331,17 @@ async function runLocked(
 
     report.duplicateRowsRemoved = await removeOwnDuplicates(deps.audit, state.inserted.map((entry) => entry.id));
 
-    if (sync.ok && budget - counter.used() >= GAP_AUDIT_PAGES) {
-      const gaps = await gapAudit(client, tcw, nowMs);
-      report.gapIds = gaps.found;
-      report.requeued = gaps.requeued;
-      report.gapAuditComplete = gaps.complete;
+    if (sync.ok) {
+      if (budget - counter.used() >= GAP_AUDIT_PAGES) {
+        const gaps = await gapAudit(client, tcw, nowMs, state.auditCursor);
+        report.gapIds = gaps.found;
+        report.requeued = gaps.requeued;
+        report.gapAuditComplete = gaps.complete;
+        state.auditCursor = gaps.complete ? undefined : gaps.cursor ?? INITIAL_AUDIT_CURSOR;
+      } else {
+        report.gapAuditComplete = false;
+        state.auditCursor ??= INITIAL_AUDIT_CURSOR;
+      }
     }
 
     const after = await deps.audit.tables();
@@ -377,8 +366,8 @@ async function runLocked(
       report.result = sync.error.kind === "auth" ? "needs_reconnect"
         : sync.error.kind === "rate-limited" && capped ? "capped"
           : "error";
-    } else if (report.status !== "ok") {
-      // The engine reports rate limits and per-item failures as an incomplete run, not an error.
+    } else if (report.status !== "ok" || report.gapAuditComplete === false) {
+      // Incomplete audit may still hold missing meetings beyond this run's provider page cap.
       report.result = capped ? "capped" : "partial";
     } else {
       report.result = "synced";
@@ -409,40 +398,38 @@ async function gapAudit(
   client: FirefliesClient,
   tcw: TinyCloudWeb,
   nowMs: number,
-): Promise<{ found: number; requeued: number; complete: boolean }> {
+  cursor?: RunnerState["auditCursor"],
+): Promise<{ found: number; requeued: number; complete: boolean; cursor?: RunnerState["auditCursor"] }> {
   const known = await connectorStore.listKnownSourceIds(tcw, SOURCE);
-  if (!known.ok) return { found: 0, requeued: 0, complete: false };
+  if (!known.ok) return { found: 0, requeued: 0, complete: false, cursor };
   const listing = await client.listNewTranscriptIds({
     knownIds: known.data,
-    pageBudget: GAP_AUDIT_PAGES,
+    pageBudget: cursor ? GAP_AUDIT_PAGES + 4 : GAP_AUDIT_PAGES,
     detailCap: MAX_PENDING_IDS,
+    startSkip: cursor?.skip,
+    startAnchor: cursor?.anchor,
+    startAnchorDate: cursor?.anchorDate,
+    startPreviousNeighbor: cursor?.previousNeighbor,
     stopBeforeDate: new Date(nowMs - GAP_WINDOW_MS).toISOString(),
   });
-  if (!listing.ok) return { found: 0, requeued: 0, complete: false };
-  const { ids, complete } = listing.data;
-  if (ids.length === 0) return { found: 0, requeued: 0, complete };
+  if (!listing.ok) return { found: 0, requeued: 0, complete: false, cursor };
+  const { ids, complete, nextSkip, nextAnchor, nextAnchorDate, nextPreviousNeighbor } = listing.data;
+  const nextCursor = complete ? undefined : { skip: nextSkip, anchor: nextAnchor, anchorDate: nextAnchorDate, previousNeighbor: nextPreviousNeighbor };
+  if (ids.length === 0) return { found: 0, requeued: 0, complete, cursor: nextCursor };
   const attempt = await connectorStore.getFirefliesAttempt(tcw);
-  if (!attempt.ok || !attempt.data) return { found: ids.length, requeued: 0, complete };
+  if (!attempt.ok || !attempt.data) return { found: ids.length, requeued: 0, complete: false, cursor };
   const pending = new Set(attempt.data.pendingIds ?? []);
   const before = pending.size;
   for (const id of ids) if (pending.size < MAX_PENDING_IDS) pending.add(id);
-  if (pending.size === before) return { found: ids.length, requeued: 0, complete };
+  if (pending.size === before) return { found: ids.length, requeued: 0, complete, cursor: nextCursor };
   const written = await connectorStore.recordFirefliesAttempt(tcw, { ...attempt.data, pendingIds: [...pending] });
-  return { found: ids.length, requeued: written.ok ? pending.size - before : 0, complete };
+  return { found: ids.length, requeued: written.ok ? pending.size - before : 0, complete: written.ok && complete, cursor: written.ok ? nextCursor : cursor };
 }
 
 function storeFailure(error: { code?: string; message?: string }): RunResult {
   if (isStorageFullError(error)) return "storage_full";
   const text = `${error.code ?? ""} ${error.message ?? ""}`;
   return /AUTH|UNAUTHORI|PERMISSION|EXPIRED|401|403/i.test(text) ? "needs_renewal" : "error";
-}
-
-/** Drop anything token-shaped from error text before it is reported. */
-export function redact(text: string): string {
-  return text
-    .replace(/Bearer\s+\S+/gi, "Bearer <redacted>")
-    .replace(/[A-Za-z0-9_-]{24,}/g, "<redacted>")
-    .slice(0, 200);
 }
 
 // ── Real ports ──────────────────────────────────────────────────────────
@@ -650,7 +637,7 @@ async function main(): Promise<number> {
     report = {
       ...emptyReport(args.mode, at),
       result: error instanceof RunnerError ? error.result : "error",
-      detail: error instanceof Error ? redact(error.message) : "unknown failure",
+      detail: error instanceof RunnerError ? error.result : "unexpected_error",
     };
   }
   const line = JSON.stringify(report);
