@@ -1,5 +1,23 @@
 # @tinychat/backend
 
+## 0.5.6-beta.2
+
+### Patch Changes
+
+- 91a7981: Validate the signed SIWE audience before issuing sessions and bound pending nonces.
+
+## 0.5.6-beta.1
+
+### Patch Changes
+
+- 04a9e32: Revert the auth verify audience check.
+
+## 0.5.6-beta.0
+
+### Patch Changes
+
+- 2bfec5b: Validate the signed SIWE audience before issuing sessions and bound pending nonces.
+
 ## 0.5.5
 
 ### Patch Changes
