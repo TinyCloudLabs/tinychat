@@ -7483,3 +7483,281 @@ test("C:F1 IDB acknowledged hold quota refuses claim and keeps pending PTX until
   }finally{C_IDBObjectStore.prototype.put=originalPut;c.tcw.kv.put=originalKv;c.unmount();}
 });
 });
+
+// Criterion C is preservation GREEN-before/after, never RED credit.
+for(const stage of ["body-put"]){
+  test(`C:criterion-C ${stage} quota restart after provider expiry preserves original once`,async()=>{
+    _resetConnectorSchemaMemoForTests();const space=sqliteSpace();const tcw=typedTcw(space);
+    const identity=tcw as unknown as {spaceId:string};identity.spaceId="space:c-preservation";
+    const unmount=mountVoiceNoteAccount(tcw.did);
+    expect((await saveVoiceNote(tcw,RECORDING,AUDIO,"android")).ok).toBe(true);
+    const storage=memoryStorage(),pending=localStorageVoiceNotePendingStore(tcw.did,storage);
+    pending.write("rec-1",{attemptId:"00000000-0000-4000-8000-00000000abcd",transcriptionId:ID});
+    const env=newIdbEnv();
+    const modern={first:createHeldResultStore(tcw.did,{env,isSignedIn:async()=>true}),
+      relaunch:()=>createHeldResultStore(tcw.did,{env,isSignedIn:async()=>true})};
+    let quota=true,quotaHits=0,successfulCas=0,now=Date.parse("2026-10-01T00:00:00Z");
+    const originalPut=tcw.kv.put.bind(tcw.kv),originalDb=tcw.sql.db.bind(tcw.sql);
+    tcw.kv.put=(async(key,value,options)=>{
+      if(quota&&stage==="body-put"&&key.includes("/transcript-rev/")){quotaHits++;return{ok:false,error:{code:"QUOTA_EXCEEDED",message:"Storage quota exceeded"}};}
+      return originalPut(key,value,options);
+    }) as TestTcw["kv"]["put"];
+    tcw.sql.db=((name:string)=>{const db=originalDb(name);return {...db,execute:async(...args:Parameters<typeof db.execute>)=>{
+      const sql=args[0],isCas=sql.includes("INSERT INTO voice_note_transcript");
+      const isMirror=sql.includes("UPDATE connector_meeting SET metadata")&&sql.includes("participants = ?");
+      if(quota&&(stage==="cas-insert"&&isCas||stage==="metadata-mirror"&&isMirror)){
+        quotaHits++;return{ok:false,error:{code:"QUOTA_EXCEEDED",message:"Storage quota exceeded"}};
+      }
+      const answer=await db.execute(...args);if(isCas&&answer.ok)successfulCas++;return answer;
+    }}}) as TestTcw["sql"]["db"];
+    const expectedHash=await transcriptHash(prepareVoiceNoteTranscript(TRANSCRIPT,new Date(now).toISOString(),1).sentences);
+    let postCommitRemoves=0;
+    const observeRemove=async()=>{expect(await readTranscriptCommit(tcw,"rec-1")).toMatchObject({rev:1,hash:expectedHash});postCommitRemoves++;};
+    const first=harness({pending,jobs:[job("completed")],resultRequests:[{status:"completed",transcript:TRANSCRIPT}],onRemove:observeRemove});
+    try{
+      const failure=await transcribeVoiceNote({tcw,cloud:first.cloud,held:modern.first,capabilities:CAPS,sourceId:"rec-1",explicit:true,report:()=>{},now:()=>new Date(now)}).catch(error=>error);
+      expect(typeof failure).not.toBe("string");expect(quotaHits).toBeGreaterThan(0);expect(first.resultReads()).toBe(1);
+      expect(first.creates).toEqual([]);expect(first.removed).toEqual([]);
+      const firstCommit=await readTranscriptCommit(tcw,"rec-1");
+      if(stage==="metadata-mirror")expect(firstCommit).toMatchObject({rev:1,hash:expectedHash});else expect(firstCommit).toBeNull();
+      quota=false;__resetStorageStatusForTests();now+=25*60*60*1000;
+      const expired=new PrivateCloudError("transcription_not_found","expired");
+      const resumed=harness({pending:localStorageVoiceNotePendingStore(tcw.did,storage),jobs:[expired],resultRequests:[expired],creates:[],onRemove:observeRemove});
+      const outcome=await transcribeVoiceNote({tcw,cloud:resumed.cloud,held:modern.relaunch(),capabilities:CAPS,sourceId:"rec-1",explicit:true,report:()=>{},now:()=>new Date(now)});
+      expect(outcome).toBe("transcribed");expect(await readTranscriptCommit(tcw,"rec-1")).toMatchObject({rev:1,hash:expectedHash});
+      expect(successfulCas).toBe(1);expect(resumed.resultReads()).toBe(0);expect(resumed.creates).toEqual([]);
+      expect(resumed.calls.filter(call=>call.startsWith("get:")||call.startsWith("result:"))).toEqual([]);
+      expect([...first.removed,...resumed.removed]).toEqual([ID]);expect(postCommitRemoves).toBe(1);
+      expect(Number(space.sqlite.query("SELECT count(*) FROM voice_note_transcript WHERE source_id='rec-1'").values()[0][0])).toBe(1);
+    }finally{tcw.kv.put=originalPut;tcw.sql.db=originalDb;unmount();}
+  });
+}
+
+// Criterion C is preservation GREEN-before/after, never RED credit.
+for(const stage of ["cas-insert"]){
+  test(`C:criterion-C ${stage} quota restart after provider expiry preserves original once`,async()=>{
+    _resetConnectorSchemaMemoForTests();const space=sqliteSpace();const tcw=typedTcw(space);
+    const identity=tcw as unknown as {spaceId:string};identity.spaceId="space:c-preservation";
+    const unmount=mountVoiceNoteAccount(tcw.did);
+    expect((await saveVoiceNote(tcw,RECORDING,AUDIO,"android")).ok).toBe(true);
+    const storage=memoryStorage(),pending=localStorageVoiceNotePendingStore(tcw.did,storage);
+    pending.write("rec-1",{attemptId:"00000000-0000-4000-8000-00000000abcd",transcriptionId:ID});
+    const env=newIdbEnv();
+    const modern={first:createHeldResultStore(tcw.did,{env,isSignedIn:async()=>true}),
+      relaunch:()=>createHeldResultStore(tcw.did,{env,isSignedIn:async()=>true})};
+    let quota=true,quotaHits=0,successfulCas=0,now=Date.parse("2026-10-01T00:00:00Z");
+    const originalPut=tcw.kv.put.bind(tcw.kv),originalDb=tcw.sql.db.bind(tcw.sql);
+    tcw.kv.put=(async(key,value,options)=>{
+      if(quota&&stage==="body-put"&&key.includes("/transcript-rev/")){quotaHits++;return{ok:false,error:{code:"QUOTA_EXCEEDED",message:"Storage quota exceeded"}};}
+      return originalPut(key,value,options);
+    }) as TestTcw["kv"]["put"];
+    tcw.sql.db=((name:string)=>{const db=originalDb(name);return {...db,execute:async(...args:Parameters<typeof db.execute>)=>{
+      const sql=args[0],isCas=sql.includes("INSERT INTO voice_note_transcript");
+      const isMirror=sql.includes("UPDATE connector_meeting SET metadata")&&sql.includes("participants = ?");
+      if(quota&&(stage==="cas-insert"&&isCas||stage==="metadata-mirror"&&isMirror)){
+        quotaHits++;return{ok:false,error:{code:"QUOTA_EXCEEDED",message:"Storage quota exceeded"}};
+      }
+      const answer=await db.execute(...args);if(isCas&&answer.ok)successfulCas++;return answer;
+    }}}) as TestTcw["sql"]["db"];
+    const expectedHash=await transcriptHash(prepareVoiceNoteTranscript(TRANSCRIPT,new Date(now).toISOString(),1).sentences);
+    let postCommitRemoves=0;
+    const observeRemove=async()=>{expect(await readTranscriptCommit(tcw,"rec-1")).toMatchObject({rev:1,hash:expectedHash});postCommitRemoves++;};
+    const first=harness({pending,jobs:[job("completed")],resultRequests:[{status:"completed",transcript:TRANSCRIPT}],onRemove:observeRemove});
+    try{
+      const failure=await transcribeVoiceNote({tcw,cloud:first.cloud,held:modern.first,capabilities:CAPS,sourceId:"rec-1",explicit:true,report:()=>{},now:()=>new Date(now)}).catch(error=>error);
+      expect(typeof failure).not.toBe("string");expect(quotaHits).toBeGreaterThan(0);expect(first.resultReads()).toBe(1);
+      expect(first.creates).toEqual([]);expect(first.removed).toEqual([]);
+      const firstCommit=await readTranscriptCommit(tcw,"rec-1");
+      if(stage==="metadata-mirror")expect(firstCommit).toMatchObject({rev:1,hash:expectedHash});else expect(firstCommit).toBeNull();
+      quota=false;__resetStorageStatusForTests();now+=25*60*60*1000;
+      const expired=new PrivateCloudError("transcription_not_found","expired");
+      const resumed=harness({pending:localStorageVoiceNotePendingStore(tcw.did,storage),jobs:[expired],resultRequests:[expired],creates:[],onRemove:observeRemove});
+      const outcome=await transcribeVoiceNote({tcw,cloud:resumed.cloud,held:modern.relaunch(),capabilities:CAPS,sourceId:"rec-1",explicit:true,report:()=>{},now:()=>new Date(now)});
+      expect(outcome).toBe("transcribed");expect(await readTranscriptCommit(tcw,"rec-1")).toMatchObject({rev:1,hash:expectedHash});
+      expect(successfulCas).toBe(1);expect(resumed.resultReads()).toBe(0);expect(resumed.creates).toEqual([]);
+      expect(resumed.calls.filter(call=>call.startsWith("get:")||call.startsWith("result:"))).toEqual([]);
+      expect([...first.removed,...resumed.removed]).toEqual([ID]);expect(postCommitRemoves).toBe(1);
+      expect(Number(space.sqlite.query("SELECT count(*) FROM voice_note_transcript WHERE source_id='rec-1'").values()[0][0])).toBe(1);
+    }finally{tcw.kv.put=originalPut;tcw.sql.db=originalDb;unmount();}
+  });
+}
+
+// Criterion C is preservation GREEN-before/after, never RED credit.
+for(const stage of ["metadata-mirror"]){
+  test(`C:criterion-C ${stage} quota restart after provider expiry preserves original once`,async()=>{
+    _resetConnectorSchemaMemoForTests();const space=sqliteSpace();const tcw=typedTcw(space);
+    const identity=tcw as unknown as {spaceId:string};identity.spaceId="space:c-preservation";
+    const unmount=mountVoiceNoteAccount(tcw.did);
+    expect((await saveVoiceNote(tcw,RECORDING,AUDIO,"android")).ok).toBe(true);
+    const storage=memoryStorage(),pending=localStorageVoiceNotePendingStore(tcw.did,storage);
+    pending.write("rec-1",{attemptId:"00000000-0000-4000-8000-00000000abcd",transcriptionId:ID});
+    const env=newIdbEnv();
+    const modern={first:createHeldResultStore(tcw.did,{env,isSignedIn:async()=>true}),
+      relaunch:()=>createHeldResultStore(tcw.did,{env,isSignedIn:async()=>true})};
+    let quota=true,quotaHits=0,successfulCas=0,now=Date.parse("2026-10-01T00:00:00Z");
+    const originalPut=tcw.kv.put.bind(tcw.kv),originalDb=tcw.sql.db.bind(tcw.sql);
+    tcw.kv.put=(async(key,value,options)=>{
+      if(quota&&stage==="body-put"&&key.includes("/transcript-rev/")){quotaHits++;return{ok:false,error:{code:"QUOTA_EXCEEDED",message:"Storage quota exceeded"}};}
+      return originalPut(key,value,options);
+    }) as TestTcw["kv"]["put"];
+    tcw.sql.db=((name:string)=>{const db=originalDb(name);return {...db,execute:async(...args:Parameters<typeof db.execute>)=>{
+      const sql=args[0],isCas=sql.includes("INSERT INTO voice_note_transcript");
+      const isMirror=sql.includes("UPDATE connector_meeting SET metadata")&&sql.includes("participants = ?");
+      if(quota&&(stage==="cas-insert"&&isCas||stage==="metadata-mirror"&&isMirror)){
+        quotaHits++;return{ok:false,error:{code:"QUOTA_EXCEEDED",message:"Storage quota exceeded"}};
+      }
+      const answer=await db.execute(...args);if(isCas&&answer.ok)successfulCas++;return answer;
+    }}}) as TestTcw["sql"]["db"];
+    const expectedHash=await transcriptHash(prepareVoiceNoteTranscript(TRANSCRIPT,new Date(now).toISOString(),1).sentences);
+    let postCommitRemoves=0;
+    const observeRemove=async()=>{expect(await readTranscriptCommit(tcw,"rec-1")).toMatchObject({rev:1,hash:expectedHash});postCommitRemoves++;};
+    const first=harness({pending,jobs:[job("completed")],resultRequests:[{status:"completed",transcript:TRANSCRIPT}],onRemove:observeRemove});
+    try{
+      const failure=await transcribeVoiceNote({tcw,cloud:first.cloud,held:modern.first,capabilities:CAPS,sourceId:"rec-1",explicit:true,report:()=>{},now:()=>new Date(now)}).catch(error=>error);
+      expect(typeof failure).not.toBe("string");expect(quotaHits).toBeGreaterThan(0);expect(first.resultReads()).toBe(1);
+      expect(first.creates).toEqual([]);expect(first.removed).toEqual([]);
+      const firstCommit=await readTranscriptCommit(tcw,"rec-1");
+      if(stage==="metadata-mirror")expect(firstCommit).toMatchObject({rev:1,hash:expectedHash});else expect(firstCommit).toBeNull();
+      quota=false;__resetStorageStatusForTests();now+=25*60*60*1000;
+      const expired=new PrivateCloudError("transcription_not_found","expired");
+      const resumed=harness({pending:localStorageVoiceNotePendingStore(tcw.did,storage),jobs:[expired],resultRequests:[expired],creates:[],onRemove:observeRemove});
+      const outcome=await transcribeVoiceNote({tcw,cloud:resumed.cloud,held:modern.relaunch(),capabilities:CAPS,sourceId:"rec-1",explicit:true,report:()=>{},now:()=>new Date(now)});
+      expect(outcome).toBe("transcribed");expect(await readTranscriptCommit(tcw,"rec-1")).toMatchObject({rev:1,hash:expectedHash});
+      expect(successfulCas).toBe(1);expect(resumed.resultReads()).toBe(0);expect(resumed.creates).toEqual([]);
+      expect(resumed.calls.filter(call=>call.startsWith("get:")||call.startsWith("result:"))).toEqual([]);
+      expect([...first.removed,...resumed.removed]).toEqual([ID]);expect(postCommitRemoves).toBe(1);
+      expect(Number(space.sqlite.query("SELECT count(*) FROM voice_note_transcript WHERE source_id='rec-1'").values()[0][0])).toBe(1);
+    }finally{tcw.kv.put=originalPut;tcw.sql.db=originalDb;unmount();}
+  });
+}
+
+test("C:criterion-C ordinary second held attempt stays pending then Off-On commits original once",async()=>{
+  _resetConnectorSchemaMemoForTests();const space=sqliteSpace(),tcw=typedTcw(space);
+  const identity=tcw as unknown as {spaceId:string};identity.spaceId="space:c-held-toggle";
+  const unmount=mountVoiceNoteAccount(tcw.did);
+  expect((await saveVoiceNote(tcw,RECORDING,AUDIO,"android")).ok).toBe(true);
+  const storage=memoryStorage(),pending=localStorageVoiceNotePendingStore(tcw.did,storage);
+  pending.write("rec-1",{attemptId:"00000000-0000-4000-8000-00000000abcd",transcriptionId:ID});
+  const modern=createHeldResultStore(tcw.did,{env:newIdbEnv(),isSignedIn:async()=>true});
+  let refuse=true,successfulCas=0;
+  const originalPut=tcw.kv.put.bind(tcw.kv),originalDb=tcw.sql.db.bind(tcw.sql);
+  tcw.kv.put=(async(key,value,options)=>refuse&&key.includes("/transcript-rev/")?{ok:false,error:{code:"KV_ERROR",message:"synthetic offline"}}:originalPut(key,value,options)) as TestTcw["kv"]["put"];
+  tcw.sql.db=((name:string)=>{const db=originalDb(name);return {...db,execute:async(...args:Parameters<typeof db.execute>)=>{
+    const answer=await db.execute(...args);if(args[0].includes("INSERT INTO voice_note_transcript")&&answer.ok)successfulCas++;return answer;
+  }}}) as TestTcw["sql"]["db"];
+  const expectedHash=await transcriptHash(prepareVoiceNoteTranscript(TRANSCRIPT,"2026-10-01T00:00:00Z",1).sentences);
+  let removesAfterCommit=0;
+  const h=harness({pending,jobs:[job("completed")],resultRequests:[{status:"completed",transcript:TRANSCRIPT}],onRemove:async()=>{
+    expect(await readTranscriptCommit(tcw,"rec-1")).toMatchObject({rev:1,hash:expectedHash});removesAfterCommit++;
+  }});
+  const consent=localStorageVoiceNoteConsentStore(tcw.did,storage);consent.set(true);
+  const transcriber=createVoiceNoteTranscriber({cloud:h.cloud,held:modern,consent,tcw:()=>tcw,holds:memoryHoldStore(),checkRetryMs:[],timer:{schedule:()=>1,cancel:()=>{}}});
+  try{
+    for(let attempt=0;attempt<2;attempt++){
+      await expect(transcribeVoiceNote({tcw,cloud:h.cloud,held:modern,capabilities:CAPS,sourceId:"rec-1",explicit:true,report:()=>{}})).rejects.toMatchObject({code:"transcript_save_failed"});
+      expect(await readTranscriptCommit(tcw,"rec-1")).toBeNull();
+      expect((await resolveVoiceNoteRow(tcw,"rec-1"))?.metadata.transcription_outcome).toBe("pending");
+      expect(await modern.readHeld("rec-1")).toMatchObject({transcript:{rev:1}});
+      expect(h.removed).toEqual([]);
+    }
+    await transcriber.turnOff();
+    expect(await modern.readHeld("rec-1")).toMatchObject({transcript:{rev:1}});expect(h.removed).toEqual([]);
+    refuse=false;
+    const saved=Promise.withResolvers<void>();
+    const unsubscribe=transcriber.subscribe(event=>{if(event.kind==="saved"&&event.sourceId==="rec-1"){unsubscribe();saved.resolve();}});
+    // Existing legacy recovery needs availability before consent; held drain is independent of it on head.
+    await transcriber.check();transcriber.consent();await saved.promise;
+    expect(await readTranscriptCommit(tcw,"rec-1")).toMatchObject({rev:1,hash:expectedHash});
+    expect({successfulCas,removesAfterCommit,results:h.resultReads(),creates:h.creates.length}).toEqual({successfulCas:1,removesAfterCommit:1,results:1,creates:0});
+    expect(h.removed).toEqual([ID]);
+  }finally{tcw.kv.put=originalPut;tcw.sql.db=originalDb;unmount();}
+});
+
+// Required helpers only; original nine account-consumer bodies below are byte-identical.
+describe("TC-1143 held account lifecycle",()=>{
+const cTicks = async (n = 30) => { for (let i=0;i<n;i++) { const tick=Promise.withResolvers<void>(); setTimeout(tick.resolve,0); await tick.promise; } };
+const cTranscript = (rev = 1, variant = "original") => prepareVoiceNoteTranscript({ ...TRANSCRIPT,
+  segments: [{ id: "synthetic-1", speaker_id: "channel_0", channel: 0, start: 0, end: 1, text: `synthetic-${variant}` }],
+  text: `synthetic-${variant}` }, "2026-10-15T00:00:00Z", rev);
+async function cSetup() {
+  _resetConnectorSchemaMemoForTests();
+  const space = sqliteSpace(); const tcw = typedTcw(space);
+  (tcw as unknown as {spaceId:string}).spaceId = "space:c-evidence";
+  const unmount = mountVoiceNoteAccount(tcw.did);
+  expect((await saveVoiceNote(tcw, RECORDING, AUDIO, "ios")).ok).toBe(true);
+  const env = newIdbEnv();
+  const store = () => createHeldResultStore(tcw.did, { env, isSignedIn: async()=>true });
+  const input = (rev=1, variant="original") => ({ version:1 as const, did:tcw.did, spaceId:tcw.spaceId,
+    sourceId:"rec-1", engine:"private-cloud" as const, transcript:cTranscript(rev,variant),
+    provider:{transcriptionId:ID}, intent:{kind:"unknown" as const} });
+  return {space,tcw,env,store,input,unmount};
+}
+
+for(const status of ["signed_out","transitioning"] as const){
+  for(const operation of ["commit","committed_at_or_above","user_discarded","note_gone"] as const){
+    test(`C:A2 persisted ${status} blocks ${operation} with unchanged local generation`,async()=>{
+      const c=await cSetup();const fake=createFakeVoiceNotes();
+      await fake.plugin.setAccountState({status:"signed_in",accountDid:c.tcw.did,transitionGen:1});
+      __setVoiceNotesForTests(fake.plugin,{available:true});
+      const held=createHeldResultStore(c.tcw.did,{env:c.env}); // default actual persisted-state gate, no override
+      const receipt=await held.hold(c.input());
+      if(operation==="committed_at_or_above")expect((await saveVoiceNoteTranscript(c.tcw,"rec-1",c.input().transcript)).ok).toBe(true);
+      if(operation==="note_gone")c.space.sqlite.query("DELETE FROM connector_meeting WHERE source_id='rec-1'").run();
+      const canonicalBefore=await readTranscriptCommit(c.tcw,"rec-1");
+      const generation=currentAccountGeneration();
+      await fake.plugin.setAccountState({status,accountDid:null,transitionGen:2});
+      expect(currentAccountGeneration()).toBe(generation);
+      const h=harness({});
+      try{
+        const denied=operation==="commit"
+          ?transcribeVoiceNote({tcw:c.tcw,cloud:h.cloud,held,capabilities:CAPS,sourceId:"rec-1",report:()=>{}})
+          :held.discard(c.tcw,"rec-1",receipt.holdId,operation);
+        await expect(denied).rejects.toMatchObject({code:"voice_note_account_mismatch"});
+        expect(currentAccountGeneration()).toBe(generation);
+        expect(await held.readHeld("rec-1")).toMatchObject({holdId:receipt.holdId,provider:{transcriptionId:ID},hash:await transcriptHash(c.input().transcript.sentences)});
+        expect(await readTranscriptCommit(c.tcw,"rec-1")).toEqual(canonicalBefore);
+        expect(h.creates).toEqual([]);expect(h.removed).toEqual([]);
+        await fake.plugin.setAccountState({status:"signed_in",accountDid:c.tcw.did,transitionGen:3});
+        if(operation==="commit"){
+          expect(await transcribeVoiceNote({tcw:c.tcw,cloud:h.cloud,held,capabilities:CAPS,sourceId:"rec-1",report:()=>{}})).toBe("transcribed");
+          expect(await readTranscriptCommit(c.tcw,"rec-1")).toMatchObject({rev:1,hash:await transcriptHash(c.input().transcript.sentences)});
+          expect(h.removed).toEqual([ID]);
+        }else await held.discard(c.tcw,"rec-1",receipt.holdId,operation);
+        expect(await held.readHeld("rec-1")).toBeNull();
+      }finally{c.unmount();}
+    });
+  }
+}
+
+test("C:A1 account B lifecycle cannot expose or discard A held then A returns and commits once",async()=>{
+  const c=await cSetup();const a=c.store();const receipt=await a.hold(c.input());
+  const storage=memoryStorage();
+  const pendingA=localStorageVoiceNotePendingStore(c.tcw.did,storage);
+  pendingA.write("rec-1",{attemptId:"00000000-0000-4000-8000-00000000abcd",transcriptionId:ID});
+  const bDid="did:test:c-account-b";advanceAccountGeneration();const unmountB=mountVoiceNoteAccount(bDid);
+  const heldB=createHeldResultStore(bDid,{env:c.env,isSignedIn:async()=>true});
+  const pendingB=localStorageVoiceNotePendingStore(bDid,storage);
+  pendingB.write("b-unsent",{attemptId:"00000000-0000-4000-8000-00000000bb01",transcriptionId:null,explicitRerun:true});
+  const cloudB=harness({pending:pendingB});
+  const clientB={...c.tcw,did:bDid,spaceId:"space:b"} as TestTcw;
+  const consentB=localStorageVoiceNoteConsentStore(bDid,storage);consentB.set(true);
+  const transcriberB=createVoiceNoteTranscriber({cloud:cloudB.cloud,held:heldB,consent:consentB,holds:memoryHoldStore(),tcw:()=>clientB,
+    checkRetryMs:[],timer:{schedule:()=>1,cancel:()=>{}}});
+  try{
+    expect(await heldB.listHeld()).toEqual([]);expect(await heldB.readHeld("rec-1")).toBeNull();
+    await transcriberB.turnOff();await cloudB.cloud.releaseUnsent();pendingB.clearExplicitReruns!();
+    expect(await a.readHeld("rec-1")).toMatchObject({holdId:receipt.holdId,hash:await transcriptHash(c.input().transcript.sentences)});
+    expect(pendingA.read("rec-1")).toMatchObject({transcriptionId:ID});expect(cloudB.removed).toEqual([]);
+    unmountB();advanceAccountGeneration();const remountA=mountVoiceNoteAccount(c.tcw.did);
+    let removeAfterOriginal=0;
+    const cloudA=harness({pending:pendingA,onRemove:async()=>{expect(await readTranscriptCommit(c.tcw,"rec-1")).toMatchObject({rev:1,hash:await transcriptHash(c.input().transcript.sentences)});removeAfterOriginal++;}});
+    const returned=createVoiceNoteTranscriber({cloud:cloudA.cloud,held:c.store(),consent:{get:()=>true,set:()=>{}},holds:memoryHoldStore(),tcw:()=>c.tcw,
+      checkRetryMs:[],timer:{schedule:()=>1,cancel:()=>{}}});
+    await returned.check();await cTicks(30);
+    expect(await readTranscriptCommit(c.tcw,"rec-1")).toMatchObject({rev:1,hash:await transcriptHash(c.input().transcript.sentences)});
+    expect(await a.readHeld("rec-1")).toBeNull();expect(cloudA.creates).toEqual([]);expect(cloudA.removed).toEqual([ID]);expect(removeAfterOriginal).toBe(1);
+    remountA();
+  }finally{unmountB();c.unmount();}
+});
+
+});
