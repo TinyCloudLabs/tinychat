@@ -42,6 +42,7 @@ Integration branch: `dev/0.8.0`
 | #373 | c80f6c93 | db5e604a | Yes (4 files) | Merged the reviewed local-audio cache after all Apple, Chromium, and halo gates passed. Conflict resolution retained #389's rerun state and fail-closed upload gate while adding #373's hosted-ledger completion, verified local/space source selection, Local-request provenance, and verified-in-space receipt. Accepted limits remain: native eviction has no store-level owner re-check, and cache accounting overcounts outbox-pinned notes. TC-1171 tracks the pre-existing #350 stereo gaps separately; they are not caused by #373. |
 | #405 | 120aceaa | b19eae2a | Yes (6 files) | Merged the reviewed Private duration/byte admission after its authorized iOS capture-writer rerun passed. Conflict resolution preserves #389's explicit rerun route and #407's requested recovery rescan while adding #405's duration/source refusals and saved Private-note scan; native explicit-rerun records (`stt.rerunRev`) remain excluded from ordinary recovery. The client uses #405's 0.25-second media safety margin by default. The backend only relays capability fields: PTX #111 must deploy separately in Miller's release window before its advertised ceilings become active. |
 | #407 | 66617835 | 33747e64 | No | Clean merge of the approved TC-1140 recovery reconciliation. Exact-head CI passed; targeted recovery tests passed 228/228. |
+| `origin/main` | da787d7d | ae9cdd41 | Yes (2 files) | Refreshed through 0.7.4. Retained the approved #407 resolution and beta prerelease state (TC-1140). |
 
 ## Test Fixes (2026-10-14)
 
@@ -86,16 +87,17 @@ After merging origin/main (TC-1128, #387, #392, 45d16e58) and PR #386 (TC-1108 p
 
 ## Current Status
 
-- **Verified code head**: `33747e64` (#407 merged)
+- **Verified code head**: `ae9cdd41` (#407 plus current main)
 - **Frontend unit suite**: 5126 pass, 4 skip, 0 fail (5130 tests, 343 files)
 - **Recorded `origin/main` `b9c538ee` baseline**: 4735 pass, 4 skip, 0 fail (4739 tests, 326 files)
 - **TypeScript**: pinned TypeScript 5.9.3, `frontend/node_modules/.bin/tsc --noEmit -p frontend/tsconfig.json`, 0 errors
 - **CI frontend lint**: `bunx eslint frontend test`, 0 errors
+- **Next prerelease versions**: frontend and desktop `0.8.0-beta.4`; backend `0.5.5-beta.3`; changesets remain in beta pre mode
 - **Backend CI suite**: 2477 pass, 7 skip, 0 fail (2484 tests, 111 files)
 - **Backend TypeScript**: `bun run --cwd backend build`, 0 errors; transcript delivery/API regressions 56 pass, 0 fail.
 - **Backend PR CI**: TC-1151 adds `bun run --cwd backend build` after workspace package builds, before package/backend tests.
 - **Chromium Exo UI matrix**: phone, phone-land, desktop, and text200-phone pass; no reference image was re-baselined
 - **Native checks**: workspace dependency closure passes with `--locked`; desktop debug `cargo check --no-default-features --locked` passes
 - **Privacy invariant**: unchanged; audio reaches TinyCloud KV only when `recording.options?.uploadAudio === true`.
-- **TC-1140**: #407 merged; current-main refresh pending.
+- **TC-1140**: #407 and current main merged.
 
