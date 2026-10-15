@@ -150,19 +150,14 @@ public final class VoiceNotesPlugin: CAPPlugin, CAPBridgedPlugin, URLSessionData
         }
     }
 
-    // The JS source-pin gate is the only cache-eviction caller; native callers must preserve that coordination.
+    // Cache clear affects downloaded playback blobs only; RecordingLibrary rejects local-source eviction.
     @objc func evictCachedAudio(_ call: CAPPluginCall) {
         guard let id = call.getString("id"), RecordingLibrary.validID(id) else {
             call.reject("A valid id is required", "invalid_argument"); return
         }
-        DispatchQueue.main.async {
-            guard self.capture.status()["id"] as? String != id else {
-                call.reject("Recording is still in progress", "recording_in_progress"); return
-            }
-            DispatchQueue.global(qos: .userInitiated).async {
-                do { try self.capture.library.evictCachedAudio(id); call.resolve() }
-                catch { self.reject(call, error) }
-            }
+        DispatchQueue.global(qos: .userInitiated).async {
+            do { try self.capture.library.evictCachedAudio(id); call.resolve() }
+            catch { self.reject(call, error) }
         }
     }
 

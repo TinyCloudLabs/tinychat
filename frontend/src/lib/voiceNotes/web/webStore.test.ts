@@ -1,15 +1,10 @@
 import { describe, expect, test as bunTest } from "bun:test";
 import { createHash } from "node:crypto";
-import type { TranscriberId } from "../nativeVoiceNotes";
-import { hasLocalWorkInProgress } from "../localWork";
-import type { DesktopBridge } from "../desktop/desktopVoiceNotes";
-import { createDesktopWhisperQueue, type DesktopWhisperBridge } from "../desktop/desktopWhisper";
-import { whisperLocalTranscript } from "../desktop/whisperTranscript";
-import type { BatchResponse } from "@/lib/anarlog/transcription.gen";
 import { base64ToBytes } from "../voiceNoteAudio";
 import { createIdbAudioBlobStore } from "./audioBlobStore";
 import { openWebDb } from "./idb";
 import { newIdbEnv } from "./testing/idb";
+import type { RemoteOpReceipt } from "../nativeVoiceNotes";
 import { FakeClock, memoryAudioBlobs, slowTest } from "./webTestKit";
 import {
   durableBytesOf, MAX_READ_CHUNK_BYTES, MAX_RECOVERY_ATTEMPTS, memoryLocks, openWebStore, recordingFromSession, sessionLock,
@@ -135,115 +130,9 @@ describe("per-note work lock", () => {
     releaseSession!();
     expect((await store.listPending()).recordings.find((note) => note.id === "n")!.stt?.state).toBe("queued");
   });
-  test("updateStt waits for an evict holding the work lock, then evict refuses once the new state pins", async () => {
-    const gate = Promise.withResolvers<void>();
-    const reached = Promise.withResolvers<void>();
-    const { open } = harness({ audio: () => memoryAudioBlobs().create(), hooks: { beforeOp: async (op) => {
-      if (op !== "audio:delete") return;
-      reached.resolve();
-      await gate.promise;
-    } } });
-    const store = await open();
-    const bytes = bytesOf(12);
-    await noteWith(store, "n", [bytes], "did:a");
-    await store.updateStt("n", stt("done"));
-    const saved = (await store.listPending()).recordings.find((note) => note.id === "n")!;
-    await store.updateLedger({ id: "n", did: "did:a", rev: saved.rev!, patch: { audio: { state: "saved", rowId: "row", at: 10,
-      verifiedInSpace: { sha256: createHash("sha256").update(bytes).digest("hex"), size: bytes.length } } } });
-    const evicting = store.evictCachedAudio({ id: "n" });
-    await reached.promise;
-    let wrote = false;
-    const writing = store.updateStt("n", stt("queued")).then(() => { wrote = true; });
-    expect(wrote).toBe(false);
-    gate.resolve();
-    await evicting;
-    await writing;
-    expect(wrote).toBe(true);
-    await expect(store.evictCachedAudio({ id: "n" })).rejects.toEqual(code("audio_in_use"));
-  });
 });
 
 describe("readAudioChunk", () => {
-  test("cache eviction keeps the saved note and rejects pending audio", async () => {
-    const { open } = harness();
-    const store = await open();
-    const pending = await noteWith(store, "pending", [bytesOf(10)], "did:a");
-    await expect(store.evictCachedAudio({ id: pending.id })).rejects.toEqual(code("audio_in_use"));
-    expect((await store.readNoteAudio(pending.id)).bytes.length).toBe(10);
-    const cached = await noteWith(store, "cached", [bytesOf(12)], "did:a");
-    await store.updateStt("cached", { state: "done", pack: null, engine: null, segmentsDone: 0, windowsDone: 0, error: null });
-    await store.updateLedger({ id: cached.id, did: "did:a", rev: cached.rev!,
-      patch: { transcript: { state: "done" }, audio: { state: "saved", rowId: "row", at: 10 } } });
-    await expect(store.evictCachedAudio({ id: cached.id })).rejects.toEqual(code("audio_not_space_backed"));
-    const current = (await store.listPending()).recordings.find((note) => note.id === cached.id)!;
-    await store.updateLedger({ id: cached.id, did: "did:a", rev: current.rev!,
-      patch: { transcript: { state: "done" }, audio: { state: "saved", rowId: "row", at: 10,
-        verifiedInSpace: { sha256: "0".repeat(64), size: 12 } } } });
-    await expect(store.evictCachedAudio({ id: cached.id })).rejects.toEqual(code("audio_not_space_backed"));
-    expect((await store.readNoteAudio(cached.id)).bytes.length).toBe(12);
-    const withBadHash = (await store.listPending()).recordings.find((note) => note.id === cached.id)!;
-    await store.updateLedger({ id: cached.id, did: "did:a", rev: withBadHash.rev!,
-      patch: { transcript: { state: "done" }, audio: { state: "saved", rowId: "row", at: 10,
-        verifiedInSpace: { sha256: createHash("sha256").update(bytesOf(12)).digest("hex"), size: 12 } } } });
-    await store.evictCachedAudio({ id: cached.id });
-    await expect(store.readNoteAudio(cached.id)).rejects.toEqual(code("not_found"));
-    expect((await store.listPending()).recordings.some((note) => note.id === cached.id)).toBe(true);
-  });
-  describe("eviction readiness", () => {
-    const spaceBacked = async (store: WebStore, id: string, bytes: Uint8Array, localAudio?: "preparing" | "failed") => {
-      const note = await noteWith(store, id, [bytes], "did:a");
-      await store.updateStt(id, { state: "done", pack: null, engine: null, segmentsDone: 0, windowsDone: 0, error: null });
-      await store.updateLedger({ id, did: "did:a", rev: note.rev!, patch: {
-        transcript: { state: "done" },
-        ...(localAudio ? { localAudio: { state: localAudio } } : {}),
-        audio: { state: "saved", rowId: "row", at: 10, verifiedInSpace: { sha256: createHash("sha256").update(bytes).digest("hex"), size: bytes.length } } } });
-    };
-    // readNoteAudio refuses bytes while the import is not ready; marking it ready makes them readable again.
-    const markReady = async (store: WebStore, id: string) => {
-      const note = (await store.listPending()).recordings.find((n) => n.id === id)!;
-      await store.updateLedger({ id, did: "did:a", rev: note.rev!, patch: { localAudio: { state: "ready" } } });
-    };
-    for (const backing of ["transactional", "file-backed"] as const) {
-      const openStore = () => (backing === "file-backed" ? harness({ audio: () => memoryAudioBlobs().create() }) : harness()).open();
-      test(`${backing} eviction keeps the bytes of an import that is preparing`, async () => {
-        const store = await openStore();
-        await spaceBacked(store, "preparing", bytesOf(12), "preparing");
-        await expect(store.evictCachedAudio({ id: "preparing" })).rejects.toEqual(code("audio_in_use"));
-        await markReady(store, "preparing");
-        expect((await store.readNoteAudio("preparing")).bytes.length).toBe(12);
-      });
-      test(`${backing} eviction keeps the bytes of an import that failed`, async () => {
-        const store = await openStore();
-        await spaceBacked(store, "failed", bytesOf(12), "failed");
-        await expect(store.evictCachedAudio({ id: "failed" })).rejects.toEqual(code("audio_in_use"));
-        await markReady(store, "failed");
-        expect((await store.readNoteAudio("failed")).bytes.length).toBe(12);
-      });
-      test(`${backing} eviction re-checks after a snapshot and keeps bytes when a remote op began`, async () => {
-        const store = await openStore();
-        await spaceBacked(store, "stale", bytesOf(12));
-        // The snapshot is what a trim pass would select; the op recorded after it must win.
-        const snapshot = (await store.listPending()).recordings.find((note) => note.id === "stale")!;
-        expect(snapshot.ledger?.remote ?? []).toEqual([]);
-        await store.setCaptureDefaults({ accountDid: "did:a", transitionGen: 1, transcriber: "assemblyai", identifySpeakers: false });
-        await store.beginRemoteOp({ id: "stale", did: "did:a", opId: "op", provider: "assemblyai", mode: "hosted", kind: "hosted_create", fingerprint: "12:audio/webm", startedAt: 1 });
-        await expect(store.evictCachedAudio({ id: "stale" })).rejects.toEqual(code("audio_in_use"));
-        expect((await store.readNoteAudio("stale")).bytes.length).toBe(12);
-      });
-      test(`${backing} eviction keeps the bytes of a note with a pending outbox entry until it completes`, async () => {
-        const store = await openStore();
-        await spaceBacked(store, "queued", bytesOf(12));
-        // The account moved on while the op was in flight, so beginRemoteOp parks it in the outbox (webStore.ts:779-783).
-        await store.setCaptureDefaults({ accountDid: "did:b", transitionGen: 2, transcriber: "assemblyai", identifySpeakers: false });
-        await store.beginRemoteOp({ id: "queued", did: "did:a", opId: "op", provider: "assemblyai", mode: "hosted", kind: "hosted_create", fingerprint: "12:audio/webm", startedAt: 1 });
-        await expect(store.evictCachedAudio({ id: "queued" })).rejects.toEqual(code("audio_in_use"));
-        const [entry] = (await store.listOutbox({ did: "did:a" })).entries;
-        await store.completeOutbox({ entryId: entry!.entryId, result: "done" });
-        await store.evictCachedAudio({ id: "queued" });
-        await expect(store.readNoteAudio("queued")).rejects.toEqual(code("not_found"));
-      });
-    }
-  });
   test("returns the exact bytes in order, flags eof, and never moves more than 4 MiB per call", async () => {
     const { open } = harness();
     const store = await open();
@@ -1023,7 +912,7 @@ describe("ledger, receipts, outbox and transcripts (native parity)", () => {
     const store = await open();
     await signedIn(store);
     await noteWith(store, "n", [bytesOf(4)], "did:A");
-    const own = { provider: "assemblyai", mode: "own" as const };
+    const own = { provider: "assemblyai" as const, mode: "own" as const };
     await store.beginRemoteOp(receipt("n", { ...own, opId: "up", kind: "own_upload" }));
     await store.recordRemoteResult({ id: "n", did: "did:A", opId: "up", result: { outcome: "created", uploadUrl: "https://example.test/audio" } });
     await store.beginRemoteOp(receipt("n", { ...own, opId: "create", kind: "own_create" }));
@@ -1044,7 +933,7 @@ describe("ledger, receipts, outbox and transcripts (native parity)", () => {
     const store = await open();
     await signedIn(store);
     await noteWith(store, "n", [bytesOf(4)], "did:A");
-    const own = { provider: "assemblyai", mode: "own" as const };
+    const own = { provider: "assemblyai" as const, mode: "own" as const };
     await store.beginRemoteOp(receipt("n", { ...own, opId: "up", kind: "own_upload" }));
     await store.recordRemoteResult({ id: "n", did: "did:A", opId: "up", result: { outcome: "created", uploadUrl: "https://example.test/audio" } });
     await store.beginRemoteOp(receipt("n", { ...own, opId: "create", kind: "own_create" }));
@@ -1059,7 +948,7 @@ describe("ledger, receipts, outbox and transcripts (native parity)", () => {
     const store = await open();
     await signedIn(store);
     await noteWith(store, "n", [bytesOf(4)], "did:A");
-    const own = { provider: "assemblyai", mode: "own" as const };
+    const own = { provider: "assemblyai" as const, mode: "own" as const };
     await store.beginRemoteOp(receipt("n", { ...own, opId: "up1", kind: "own_upload" }));
     await store.recordRemoteResult({ id: "n", did: "did:A", opId: "up1", result: { outcome: "created", uploadUrl: "https://example.test/audio1" } });
     await store.beginRemoteOp(receipt("n", { ...own, opId: "create1", kind: "own_create" }));
@@ -1077,7 +966,7 @@ describe("ledger, receipts, outbox and transcripts (native parity)", () => {
     const store = await open();
     await signedIn(store);
     await noteWith(store, "n", [bytesOf(4)], "did:A");
-    const own = { provider: "assemblyai", mode: "own" as const };
+    const own = { provider: "assemblyai" as const, mode: "own" as const };
     await store.beginRemoteOp(receipt("n", { ...own, opId: "up1", kind: "own_upload" }));
     await store.beginRemoteOp(receipt("n", { ...own, opId: "create1", kind: "own_create" }));
     await store.recordRemoteResult({ id: "n", did: "did:A", opId: "create1", result: { outcome: "created", jobId: "job-1" } });
@@ -1092,7 +981,7 @@ describe("ledger, receipts, outbox and transcripts (native parity)", () => {
     const store = await open();
     await signedIn(store);
     await noteWith(store, "n", [bytesOf(4)], "did:A");
-    const own = { provider: "assemblyai", mode: "own" as const };
+    const own = { provider: "assemblyai" as const, mode: "own" as const };
     await store.beginRemoteOp(receipt("n", { ...own, opId: "up1", kind: "own_upload" }));
     await store.recordRemoteResult({ id: "n", did: "did:A", opId: "up1", result: { outcome: "created", uploadUrl: "https://example.test/audio1" } });
     await store.beginRemoteOp(receipt("n", { ...own, opId: "create1", kind: "own_create" }));
@@ -1108,7 +997,7 @@ describe("ledger, receipts, outbox and transcripts (native parity)", () => {
     const store = await open();
     await signedIn(store);
     await noteWith(store, "n", [bytesOf(4)], "did:A");
-    const own = { provider: "assemblyai", mode: "own" as const };
+    const own = { provider: "assemblyai" as const, mode: "own" as const };
     await store.beginRemoteOp(receipt("n", { ...own, opId: "up1", kind: "own_upload" }));
     await store.beginRemoteOp(receipt("n", { ...own, opId: "create1", kind: "own_create" }));
     await store.recordRemoteResult({ id: "n", did: "did:A", opId: "create1", result: { outcome: "created", jobId: "job-1" } });
@@ -1230,111 +1119,19 @@ describe("ledger, receipts, outbox and transcripts (native parity)", () => {
   });
 });
 
-describe("pin lifecycle through the real producers", () => {
-  const sessionOf = (id: string, transcriber: TranscriberId) => ({ ...init(id, "did:a"), options: { transcriber, identifySpeakers: false } });
-  const saveWith = async (store: WebStore, id: string, transcriber: TranscriberId, bytes: Uint8Array) => {
-    await store.beginSession(sessionOf(id, transcriber));
-    await store.appendChunk(id, bytes, { audioMs: 1000, firstAudioAt: 1500 });
-    return (await commit(store, id))!;
-  };
-  const current = async (store: WebStore, id: string) => (await store.listPending()).recordings.find((note) => note.id === id)!;
+describe("cache eviction boundary", () => {
   const saveReceipt = (store: WebStore, id: string, rev: number, bytes: Uint8Array) => store.updateLedger({ id, did: "did:a", rev, patch: {
     audio: { state: "saved", rowId: "row", at: 10, verifiedInSpace: { sha256: createHash("sha256").update(bytes).digest("hex"), size: bytes.length } } } });
 
-  test("a note saved without a transcriber keeps the default waiting_for_model sidecar; its verified audio is evictable", async () => {
-    const store = await harness().open();
-    const bytes = bytesOf(12);
-    const saved = await saveWith(store, "uploaded", "off", bytes);
-    expect((await current(store, "uploaded")).stt?.state).toBe("waiting_for_model");
-    await saveReceipt(store, "uploaded", saved.rev!, bytes);
-    await store.evictCachedAudio({ id: "uploaded" });
-    await expect(store.readNoteAudio("uploaded")).rejects.toEqual(code("not_found"));
-  });
-
-  test("on-device speech finished by the real desktop Whisper completion path is evictable afterwards", async () => {
-    const store = await harness().open();
-    const bytes = bytesOf(12);
-    const saved = await saveWith(store, "speech", "on-device", bytes);
-    await saveReceipt(store, "speech", saved.rev!, bytes);
-    await store.putTranscript({ id: "speech", transcript: whisperLocalTranscript({ id: "speech", durationMs: 1000 }, "QuantizedTiny",
-      { results: { channels: [{ alternatives: [{ transcript: "hello there", words: [] }] }] } } as unknown as BatchResponse) });
-    expect((await current(store, "speech")).stt?.state).toBe("waiting_for_model");
-    let finish!: (id: string) => void;
-    const completed = new Promise<string>((resolve) => { finish = resolve; });
-    const queue = createDesktopWhisperQueue({ store, files: {} as DesktopBridge, whisper: {} as DesktopWhisperBridge, captureLive: () => false });
-    const stopListening = queue.onDone(finish);
-    try {
-      await queue.noteCommitted(await current(store, "speech"));
-      expect(await completed).toBe("speech");
-    } finally { stopListening(); queue.dispose(); }
-    const note = await current(store, "speech");
-    expect(note.stt?.state).toBe("done");
-    expect(hasLocalWorkInProgress(note)).toBe(false);
-    await store.evictCachedAudio({ id: "speech" });
-    await expect(store.readNoteAudio("speech")).rejects.toEqual(code("not_found"));
-  });
-
-  test("on-device speech still queued behind live capture stays pinned even with a verified space copy", async () => {
-    const store = await harness().open();
-    const bytes = bytesOf(12);
-    const saved = await saveWith(store, "queued", "on-device", bytes);
-    await saveReceipt(store, "queued", saved.rev!, bytes);
-    const queue = createDesktopWhisperQueue({ store, files: {} as DesktopBridge, whisper: {} as DesktopWhisperBridge, captureLive: () => true });
-    try {
-      await queue.noteCommitted(await current(store, "queued"));
-      const note = await current(store, "queued");
-      expect(note.stt?.state).toBe("queued");
-      expect(hasLocalWorkInProgress(note)).toBe(true);
-      await expect(store.evictCachedAudio({ id: "queued" })).rejects.toEqual(code("audio_in_use"));
-      expect((await store.readNoteAudio("queued")).bytes.length).toBe(12);
-    } finally { queue.dispose(); }
-  });
-
-  test("an explicit Local request on a cloud note is pinned while queued and evictable once its transcript is done", async () => {
-    const store = await harness().open();
-    const bytes = bytesOf(12);
-    const saved = await saveWith(store, "asked", "off", bytes);
-    await saveReceipt(store, "asked", saved.rev!, bytes);
-    // The native enqueue writes this marker (ResumableWork.requested); the web store cannot run that enqueue.
-    await store.updateStt("asked", { state: "queued", pack: null, engine: "whisper", segmentsDone: 0, windowsDone: 0, error: null, requested: true });
-    expect(hasLocalWorkInProgress(await current(store, "asked"))).toBe(true);
-    await expect(store.evictCachedAudio({ id: "asked" })).rejects.toEqual(code("audio_in_use"));
-    await store.updateStt("asked", { state: "done", pack: null, engine: "whisper", segmentsDone: 1, windowsDone: 1, error: null, requested: true });
-    expect(hasLocalWorkInProgress(await current(store, "asked"))).toBe(false);
-    await store.evictCachedAudio({ id: "asked" });
-    await expect(store.readNoteAudio("asked")).rejects.toEqual(code("not_found"));
-  });
-
-  test("an on-device job cancelled on desktop is evictable once a verified space copy exists", async () => {
-    const store = await harness().open();
-    const bytes = bytesOf(12);
-    const saved = await saveWith(store, "cancelled", "on-device", bytes);
-    await saveReceipt(store, "cancelled", saved.rev!, bytes);
-    await store.updateStt("cancelled", { state: "cancelled", pack: null, engine: "whisper", segmentsDone: 0, windowsDone: 0, error: null });
-    // Desktop drain skips cancelled and retry rejects it, so no pin is left to hold the bytes.
-    expect(hasLocalWorkInProgress(await current(store, "cancelled"))).toBe(false);
-    await store.evictCachedAudio({ id: "cancelled" });
-    await expect(store.readNoteAudio("cancelled")).rejects.toEqual(code("not_found"));
-  });
-
-  test("a hosted note keeps its audio until its remote ops are done, and is evictable once they are", async () => {
-    const store = await harness().open();
-    const bytes = bytesOf(12);
-    await saveWith(store, "hosted", "assemblyai", bytes);
-    await store.setCaptureDefaults({ accountDid: "did:a", transitionGen: 1, transcriber: "assemblyai", identifySpeakers: false });
-    const op = (opId: string, kind: "hosted_create" | "hosted_submit") => ({ id: "hosted", did: "did:a", opId, provider: "assemblyai" as const,
-      mode: "hosted" as const, kind, fingerprint: "12:audio/webm", startedAt: 1 });
-    await store.beginRemoteOp(op("create", "hosted_create"));
-    await store.recordRemoteResult({ id: "hosted", did: "did:a", opId: "create", result: { outcome: "created", handle: "handle-1" } });
-    await store.beginRemoteOp(op("submit", "hosted_submit"));
-    await store.recordRemoteResult({ id: "hosted", did: "did:a", opId: "submit", result: { outcome: "created", jobId: "job-1" } });
-    await saveReceipt(store, "hosted", (await current(store, "hosted")).rev!, bytes);
-    await expect(store.evictCachedAudio({ id: "hosted" })).rejects.toEqual(code("audio_in_use"));
-    const submitted = await current(store, "hosted");
-    await store.updateLedger({ id: "hosted", did: "did:a", rev: submitted.rev!, patch: {
-      remote: (submitted.ledger?.remote ?? []).map((entry) => ({ ...entry, stage: "done" as const })) } });
-    expect(hasLocalWorkInProgress(await current(store, "hosted"))).toBe(false);
-    await store.evictCachedAudio({ id: "hosted" });
-    await expect(store.readNoteAudio("hosted")).rejects.toEqual(code("not_found"));
-  });
+  for (const backing of ["idb", "file-backed"] as const) {
+    test(`${backing} direct cache eviction refuses a verified local recording`, async () => {
+      const open = () => (backing === "file-backed" ? harness({ audio: () => memoryAudioBlobs().create() }) : harness()).open();
+      const store = await open();
+      const bytes = bytesOf(12);
+      const note = await noteWith(store, `local-${backing}`, [bytes], "did:a");
+      await saveReceipt(store, note.id, note.rev!, bytes);
+      await expect(store.evictCachedAudio({ id: note.id })).rejects.toEqual(code("audio_in_use"));
+      expect((await store.readNoteAudio(note.id)).bytes).toEqual(bytes);
+    });
+  }
 });

@@ -1,6 +1,4 @@
 import { readableError } from "@/lib/readableError";
-import { sha256 } from "@noble/hashes/sha256";
-import { bytesToHex } from "@noble/hashes/utils";
 // IndexedDB persistence for the whole VoiceNotes protocol on the web: capture sessions
 // and their audio, committed recordings and their ledger, account state, remote-op
 // receipts, the outbox, transcripts and the recovery quarantine. The semantics mirror
@@ -20,7 +18,6 @@ import { createIdbAudioBlobStore, type AudioBlobStore } from "./audioBlobStore";
 import {
   browserDecodeCheck, DECODE_WINDOW_MAX_BYTES, DECODE_WINDOW_MS, DECODE_WINDOW_SOFT_BYTES, DecodeCheckError, type DecodeCheck,
 } from "./decodeCheck";
-import { hasLocalWorkInProgress } from "../localWork";
 import { browserIdbEnv, failure, openWebDb, request, STORES, transact, type IdbEnv } from "./idb";
 
 export { failure, DecodeCheckError };
@@ -35,7 +32,7 @@ export const UNDECODABLE_REASON = "undecodable_audio";
 export const DECODER_UNAVAILABLE_REASON = "decoder_unavailable";
 export const RECORDING_LOCK = "exo-voice-note-recording";
 export const sessionLock = (id: string) => `exo-voice-note-session:${id}`;
-/** Per-note mutex for file-backed audio: evict's check and delete, and writers that add local work. */
+/** Per-note mutex for file-backed audio writers that add local work. */
 export const noteWorkLock = (id: string) => `exo-voice-note-work:${id}`;
 
 /** A named persistence step; `hooks.beforeOp` lets tests kill the "tab" at that exact boundary. */
@@ -353,9 +350,6 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
   const all = async <T>(tx: IDBTransaction, store: string): Promise<T[]> =>
     (await request(tx.objectStore(store).getAll())) as T[];
 
-  // An outbox entry pins its note's audio until its remote op completes. entryId is `${noteId}:${opId}`.
-  const hasOutboxEntry = async (tx: IDBTransaction, id: string): Promise<boolean> =>
-    (await all<OutboxEntry>(tx, STORES.outbox)).some((entry) => entry.entryId.startsWith(`${id}:`));
 
   // Once own_create has created its job, a sibling own_upload for the same note has no upload left to look up.
   // Its outbox entry must not keep pinning the note's audio.
@@ -691,44 +685,8 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
     },
 
     async evictCachedAudio({ id }) {
-      if (audio.transactional) {
-        await transact(db, [STORES.notes, STORES.tombstones, STORES.outbox, ...audio.transactional.stores], "readwrite", async (tx) => {
-          const note = await checkedNote(tx, id);
-          const receipt = note.ledger?.audio.verifiedInSpace;
-          if (hasLocalWorkInProgress(note) || await hasOutboxEntry(tx, id)) throw failure("audio_in_use");
-          const size = (await request(tx.objectStore(STORES.audioMeta).get(id)) as { size?: number } | undefined)?.size;
-          const content = await audio.transactional!.hashIn(tx, id);
-          if (note.ledger?.audio.state !== "saved" || !receipt || !/^[0-9a-f]{64}$/.test(receipt.sha256)
-            || (note.ledger.localAudio !== undefined && note.ledger.localAudio.state !== "ready")
-            || receipt.size !== size || content.size !== size || receipt.sha256 !== content.sha256)
-            throw failure("audio_not_space_backed");
-          audio.transactional!.deleteIn(tx, id);
-        });
-      } else {
-        // Desktop audio is file-backed. Hold the note's work lock across this check, hash, and delete; writers wait for it.
-        const release = await locks.wait(noteWorkLock(id));
-        try {
-          const { note, outboxPinned } = await transact(db, [STORES.notes, STORES.tombstones, STORES.outbox], "readonly", async (tx) => ({
-            note: await checkedNote(tx, id), outboxPinned: await hasOutboxEntry(tx, id),
-          }));
-          const receipt = note.ledger?.audio.verifiedInSpace;
-          if (hasLocalWorkInProgress(note) || outboxPinned) throw failure("audio_in_use");
-          if (note.ledger?.audio.state !== "saved" || !receipt || !/^[0-9a-f]{64}$/.test(receipt.sha256)
-            || (note.ledger.localAudio !== undefined && note.ledger.localAudio.state !== "ready"))
-            throw failure("audio_not_space_backed");
-          const size = await audio.size(id);
-          const hash = sha256.create();
-          for (let offset = 0; offset < size; offset += 1024 * 1024) {
-            const bytes = await audio.read(id, offset, Math.min(1024 * 1024, size - offset));
-            if (!bytes.length) throw failure("audio_not_space_backed");
-            hash.update(bytes);
-          }
-          if (receipt.size !== size || receipt.sha256 !== bytesToHex(hash.digest()))
-            throw failure("audio_not_space_backed");
-          await before("audio:delete", id);
-          await audio.delete(id);
-        } finally { release(); }
-      }
+      await transact(db, [STORES.notes, STORES.tombstones], "readonly", (tx) => checkedNote(tx, id));
+      throw failure("audio_in_use");
     },
 
     async listPending() {

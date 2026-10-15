@@ -2,4 +2,4 @@
 "@tinychat/frontend": patch
 ---
 
-Keep cached voice-note audio available while local transcription work still needs it.
+Never evict local voice-note recordings during cache trim or Clear; clear downloaded playback copies instead.

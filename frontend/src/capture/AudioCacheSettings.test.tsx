@@ -15,7 +15,7 @@ const originalVoiceNotes = VoiceNotes;
 const originalIndexedDb = globalThis.indexedDB;
 const originalStorage = (globalThis as typeof globalThis & { localStorage?: Storage }).localStorage;
 
-test("Settings reports pinned local audio bytes separately", async () => {
+test("Settings reports retained local recording bytes separately from playback cache", async () => {
   const values = new Map<string, string>();
   const storage = {
     getItem: (key: string) => values.get(key) ?? null,
@@ -30,9 +30,9 @@ test("Settings reports pinned local audio bytes separately", async () => {
   document.body.append(host);
   const root = createRoot(host);
   try {
-    const size = 2 * 1024 * 1024;
+    const size = 32;
     const note = {
-      id: "pinned-note", owner: DID, startedAt: 1, sizeBytes: size,
+      id: "local-note", owner: DID, startedAt: 1, sizeBytes: size,
       ledger: { audio: { state: "saved", rowId: "row", at: 1, verifiedInSpace: { sha256: "a".repeat(64), size } } },
     } as unknown as VoiceNoteRecording;
     __setVoiceNotesForTests({ ...VoiceNotes,
@@ -50,7 +50,8 @@ test("Settings reports pinned local audio bytes separately", async () => {
     for (let attempt = 0; attempt < 10 && !host.querySelector("[data-testid=cached-audio-pinned]"); attempt++)
       await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 
-    expect(host.textContent).toContain("2 MB pinned for transcription or other local work.");
+    expect(host.textContent).toContain("32 B in saved recordings; kept when playback cache is cleared.");
+    expect(host.textContent).toContain("32 B stored; 500 MB soft playback-cache limit");
   } finally {
     await act(async () => root.unmount());
     unmountAccount();

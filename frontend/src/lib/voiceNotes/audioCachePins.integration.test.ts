@@ -7,7 +7,7 @@ import { readTranscriptCommit } from "./voiceNoteCommits";
 import { __resetCaptureEngineForTests, __setInstalledEngineForTests, captureCapabilities } from "./captureEngine";
 import { mountVoiceNoteAccount } from "./accountContext";
 import { __setVoiceNotesForTests, VoiceNotes } from "./nativeVoiceNotes";
-import { clearCachedAudio, trimCachedAudio } from "./audioPlaybackCache";
+import { cachedSpaceAudio, cachedSpaceAudioOffline, clearCachedAudio, trimCachedAudio } from "./audioPlaybackCache";
 import { createVoiceNoteCloud, createVoiceNoteTranscriber, localStorageVoiceNoteHoldStore,
   localStorageVoiceNotePendingStore, localStorageVoiceNotePrivateChoiceStore, transcribeVoiceNote } from "./voiceNoteTranscription";
 import { saveVoiceNote } from "./voiceNoteStore";
@@ -460,7 +460,7 @@ for (const operation of ["trim", "clear"] as const) {
 
 for (const operation of ["trim", "clear"] as const) {
   for (const offline of [false, true]) {
-    test(`TC-1182 G1 ${operation}, offline=${offline}: successful commit releases the source pin`, async () => {
+    test(`TC-1182 G1 ${operation}, offline=${offline}: successful commit leaves the local original available`, async () => {
       const h = await setup();
       h.flags.failAudio = offline;
       const cloud = cloudFor(h);
@@ -468,13 +468,13 @@ for (const operation of ["trim", "clear"] as const) {
       await (operation === "trim" ? trimCachedAudio(0) : clearCachedAudio());
 
       expect((await readTranscriptCommit(h.tcw as never, h.sourceId))?.rev).toBe(1);
-      expect(await h.store.audio.size(h.sourceId)).toBe(0);
+      expect(await h.store.audio.size(h.sourceId)).toBe(h.bytes.length);
     });
   }
 }
 for (const operation of ["trim", "clear"] as const) {
   for (const offline of [false, true]) {
-    test(`TC-1182 G3 ${operation}, offline=${offline}: releaseUnsent clears its source pin`, async () => {
+    test(`TC-1182 G3 ${operation}, offline=${offline}: releaseUnsent clears the job but cache keeps local audio`, async () => {
       const h = await setup();
       h.flags.failAudio = offline;
       const cloud = cloudFor(h);
@@ -484,13 +484,13 @@ for (const operation of ["trim", "clear"] as const) {
       const report = operation === "trim" ? await trimCachedAudio(0) : await clearCachedAudio();
 
       expect(cloud.pending.read(h.sourceId)).toBeNull();
-      if (operation === "clear") expect(report).toMatchObject({ cleared: 1, inUse: 0, pinnedBytes: 0 });
-      expect(await h.store.audio.size(h.sourceId)).toBe(0);
+      if (operation === "clear") expect(report).toMatchObject({ cleared: 0, inUse: 1, pinnedBytes: h.bytes.length });
+      expect(await h.store.audio.size(h.sourceId)).toBe(h.bytes.length);
     });
   }
 }
 
-test("TC-1182 G3 turning Private off removes choice after releaseUnsent clears the pending job", async () => {
+test("TC-1182 G3 turning Private off clears the choice and job while retaining local audio", async () => {
   const h = await setup();
   const cloud = cloudFor(h);
   const choices = localStorageVoiceNotePrivateChoiceStore(DID);
@@ -506,11 +506,11 @@ test("TC-1182 G3 turning Private off removes choice after releaseUnsent clears t
 
   expect(cloud.pending.read(h.sourceId)).toBeNull();
   expect(choices.has(h.sourceId)).toBe(false);
-  expect(report).toMatchObject({ cleared: 1, inUse: 0, pinnedBytes: 0 });
-  expect(await h.store.audio.size(h.sourceId)).toBe(0);
+  expect(report).toMatchObject({ cleared: 0, inUse: 1, pinnedBytes: h.bytes.length });
+  expect(await h.store.audio.size(h.sourceId)).toBe(h.bytes.length);
 });
 
-test("TC-1182 G3 manual Retry ending in a release code drops the cancelled retry pin", async () => {
+test("TC-1182 G3 manual Retry ending in a release code clears the job but retains local audio", async () => {
   const h = await setup();
   const cloud = cloudFor(h);
   const choices = localStorageVoiceNotePrivateChoiceStore(DID);
@@ -548,8 +548,8 @@ test("TC-1182 G3 manual Retry ending in a release code drops the cancelled retry
   expect(transcriber.snapshot().jobs.get(h.sourceId)).toMatchObject({ kind: "failed", code: "decode_failed" });
   expect(choices.has(h.sourceId)).toBe(false);
   expect(cloud.pending.sourceIds()).toEqual([]);
-  expect(report).toMatchObject({ cleared: 1, inUse: 0, pinnedBytes: 0 });
-  expect(await h.store.audio.size(h.sourceId)).toBe(0);
+  expect(report).toMatchObject({ cleared: 0, inUse: 1, pinnedBytes: h.bytes.length });
+  expect(await h.store.audio.size(h.sourceId)).toBe(h.bytes.length);
 });
 
 
@@ -592,7 +592,7 @@ test("TC-1182 an ordinary Private choice remains pinned beyond 30 days", async (
   }
 });
 
-test("TC-1182 a limit-blocked Private choice expires after 30 days", async () => {
+test("TC-1182 a limit-blocked Private choice remains retained after 30 days", async () => {
   const h = await setup();
   const originalNow = Date.now;
   let now = Date.parse("2026-01-01T00:00:00.000Z");
@@ -610,7 +610,7 @@ test("TC-1182 a limit-blocked Private choice expires after 30 days", async () =>
     await clearCachedAudio();
     now += 31 * 24 * 60 * 60 * 1_000;
     await clearCachedAudio();
-    expect(await h.store.audio.size(h.sourceId)).toBe(0);
+    expect(await h.store.audio.size(h.sourceId)).toBe(h.bytes.length);
   } finally {
     Date.now = originalNow;
   }
@@ -820,5 +820,20 @@ for (const fileBacked of [false, true]) {
         }
       });
     }
+  }
+}
+for (const operation of ["trim", "clear"] as const) {
+  for (const backend of ["idb", "desktop"] as const) {
+    test(`TC-1182 ${operation}/${backend} clears remote playback cache but keeps local recording audio`, async () => {
+      const h = await setup({ fileBacked: backend === "desktop" });
+      await cachedSpaceAudio("space", DID, "exo-voice-note", h.sourceId, "space-revision",
+        async () => new Blob(["remote-playback"]));
+
+      if (operation === "trim") await trimCachedAudio(0);
+      else await clearCachedAudio();
+
+      expect(await h.store.audio.size(h.sourceId)).toBe(h.bytes.length);
+      expect(await cachedSpaceAudioOffline("space", DID, "exo-voice-note", h.sourceId)).toBeNull();
+    });
   }
 }
