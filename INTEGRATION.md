@@ -45,6 +45,7 @@ Integration branch: `dev/0.8.0`
 | `origin/main` | da787d7d | ae9cdd41 | Yes (2 files) | Refreshed through 0.7.4. Retained the approved #407 resolution and beta prerelease state (TC-1140). |
 | `origin/main` | e137f9fb | 130aa8b3 | No | Refreshed through #411, including the approved TC-641 consent-copy status and its pinned backend test. |
 | #413 | a3a1e771 | 2f69e54a | No | Clean TC-1185 copy-only merge: read-only space-lane activity no longer reports that another operation is blocking the note. TC-1185 problem 1, the post-save full-transcript load error, is not addressed by #413 and remains open. |
+| #414 | 850878a6 | d438e3d9 | No | Clean merge of the reviewed TC-1192 agent-sync continuation fix after all required checks passed; focused connector tests passed 17/17. |
 
 ## Test Fixes (2026-10-14)
 
@@ -89,9 +90,10 @@ After merging origin/main (TC-1128, #387, #392, 45d16e58) and PR #386 (TC-1108 p
 
 ## Current Status
 
-- **Verified code head**: `2f69e54a` (#413 merged)
+- **Verified code head**: `d438e3d9` (#414 merged)
 - **Frontend unit suite**: 5128 pass, 4 skip, 0 fail (5132 tests, 343 files)
 - **#413 scoped tests**: 198 pass, 0 fail across `useLibrary.test.tsx` and `notePipeline.test.ts`
+- **#414 scoped tests**: 17 pass, 0 fail in `test/connectors/agent-sync.e2e.test.ts`
 - **Recorded `origin/main` `b9c538ee` baseline**: 4735 pass, 4 skip, 0 fail (4739 tests, 326 files)
 - **TypeScript**: pinned TypeScript 5.9.3, `frontend/node_modules/.bin/tsc --noEmit -p frontend/tsconfig.json`, 0 errors
 - **CI frontend lint**: `bunx eslint frontend test`, 0 errors
