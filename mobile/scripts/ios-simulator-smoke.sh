@@ -38,14 +38,17 @@ out=$(cd "$out" && pwd)
 failures=()
 fail() { failures+=("$1"); echo "::error::iOS smoke: $1"; }
 log() { echo "[smoke $(date -u +%H:%M:%S)] $*"; }
-# The timing artifact contains fixed stage names and elapsed seconds, never command output or identifiers.
+# Stage names and UTC wall epochs are fixed structural fields; no command output or app content.
 time_stage() {
-  local stage=$1 started status
+  local stage=$1 started status wall_start wall_end
   shift
   started=$SECONDS
+  wall_start=$(date -u +%s)
   "$@"
   status=$?
-  printf '%s duration_s=%s\n' "$stage" "$((SECONDS - started))" >>"$out/stage-timings.log"
+  wall_end=$(date -u +%s)
+  printf '%s start_epoch_s=%s end_epoch_s=%s duration_s=%s\n' \
+    "$stage" "$wall_start" "$wall_end" "$((SECONDS - started))" >>"$out/stage-timings.log"
   return "$status"
 }
 
@@ -98,10 +101,12 @@ private_logs=$(mktemp -d)
 stream_pid=""
 watcher_pid=""
 observer_pid=""
+clock_pid=""
 cleanup_smoke() {
   if [ -n "$watcher_pid" ]; then kill "$watcher_pid" 2>/dev/null || true; wait "$watcher_pid" 2>/dev/null || true; fi
   if [ -n "$stream_pid" ]; then kill "$stream_pid" 2>/dev/null || true; wait "$stream_pid" 2>/dev/null || true; fi
   if [ -n "$observer_pid" ]; then kill "$observer_pid" 2>/dev/null || true; wait "$observer_pid" 2>/dev/null || true; fi
+  if [ -n "$clock_pid" ]; then kill "$clock_pid" 2>/dev/null || true; wait "$clock_pid" 2>/dev/null || true; fi
   rm -rf "$private_logs"
 }
 trap cleanup_smoke EXIT
@@ -130,11 +135,61 @@ mounted_probe() {
     done
 }
 app_pid_alive() {
-  kill -0 "$1" 2>/dev/null || return 1
-  # An exited child may remain a zombie until the launcher is reaped; kill -0 alone still succeeds.
   local state
   state=$(ps -p "$1" -o stat= 2>/dev/null) || return 1
-  case "$state" in *Z*) return 1 ;; esac
+  [ -n "$state" ] && [[ "$state" != *Z* ]]
+}
+# Darwin's binary kinfo_proc begins with kp_proc.p_starttime (timeval: seconds, microseconds).
+# Never place the binary record in a shell variable or upload it.
+kernel_start_time() {
+  local raw seconds micros extra
+  raw=$(sysctl -b "kern.proc.pid.$1" 2>/dev/null | od -An -tu8 -N16 -v) || return 1
+  read -r seconds micros extra <<<"$raw"
+  [[ "$seconds" =~ ^[0-9]+$ && "$micros" =~ ^[0-9]+$ && -z "$extra" ]] || return 1
+  [ "$seconds" -ge 946684800 ] && [ "$seconds" -le 4102444800 ] && [ "$micros" -lt 1000000 ] || return 1
+  printf '%s.%06d\n' "$seconds" "$micros"
+}
+# Output only a fixed source label plus a private start token. Exit 1 means absent/zombie;
+# exit 2 means a live PID whose required start-time telemetry is unavailable.
+process_identity() {
+  local pid=$1 required_source=${2:-} details state kernel_start lstart elapsed
+  local -x LC_ALL=C
+  details=$(time_stage identity.ps ps -p "$pid" -o stat= -o lstart= -o etime= 2>/dev/null) || return 1
+  [[ "$details" =~ ^[[:space:]]*([^[:space:]]+) ]] || return 1
+  state=${BASH_REMATCH[1]}
+  [[ "$state" != *Z* ]] || return 1
+  if [ "$required_source" != ps-lstart-etime-coarse ]; then
+    if kernel_start=$(time_stage identity.kernel-start kernel_start_time "$pid"); then
+      printf 'kernel-us %s\n' "$kernel_start"
+      return 0
+    fi
+    [ "$required_source" != kernel-us ] || return 2
+  fi
+  if [[ "$details" =~ ^[[:space:]]*[^[:space:]]+[[:space:]]+([[:alpha:]]{3}[[:space:]]+[[:alpha:]]{3}[[:space:]]+[[:digit:]]{1,2}[[:space:]]+[[:digit:]]{2}:[[:digit:]]{2}:[[:digit:]]{2}[[:space:]]+[[:digit:]]{4})[[:space:]]+([0-9:-]+)[[:space:]]*$ ]]; then
+    lstart=${BASH_REMATCH[1]// /_}
+    elapsed=${BASH_REMATCH[2]}
+    [[ "$elapsed" =~ ^[0-9]+(-[0-9]{1,2})?(:[0-9]{2}){1,2}$ ]] || return 2
+    printf 'ps-lstart-etime-coarse %s\n' "$lstart"
+    return 0
+  fi
+  return 2
+}
+publish_verified_pid() {
+  local origin=$1 candidate=$2 observed_epoch source token identity status=0
+  identity=$(time_stage "$origin.pid-identity" process_identity "$candidate") || status=$?
+  if [ "$status" -eq 0 ]; then
+    observed_epoch=$(date -u +%s)
+    if [ "$SECONDS" -lt "$deadline" ]; then
+      read -r source token <<<"$identity"
+      printf '%s %s %s %s\n' "$candidate" "$observed_epoch" "$source" "$token" >"$private_logs/$origin.pid.tmp.$$"
+      mv "$private_logs/$origin.pid.tmp.$$" "$private_logs/$origin.pid"
+    fi
+  elif [ "$status" -eq 1 ]; then
+    : >"$private_logs/publication.exited"
+  else
+    : >"$private_logs/publication.start-missing"
+    printf 'start-time unavailable at publication\n' >>"$out/launch-timeline.log"
+  fi
 }
 
 # Begin the app-process unified stream before simctl launch. It is stopped and sanitized before upload.
@@ -166,14 +221,15 @@ scan_simctl_pid() {
     "$private_logs/console.log" 2>/dev/null
 }
 observe_simctl_pid() {
-  local candidate observed_epoch
+  local candidate
   while [ "$SECONDS" -lt "$deadline" ] && [ ! -f "$private_logs/observer.stop" ]; do
     candidate=$(time_stage observer.pid-scan scan_simctl_pid)
     if [ -n "$candidate" ]; then
-      observed_epoch=$(date -u +%s)
       if [ "$SECONDS" -lt "$deadline" ] && [ ! -f "$private_logs/observer.stop" ]; then
-        printf '%s %s\n' "$candidate" "$observed_epoch" >"$private_logs/simctl.pid"
-        printf 'simctl launch pid %s observed %s\n' "$candidate" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$out/launch-timeline.log"
+        publish_verified_pid simctl "$candidate"
+        if [ -s "$private_logs/simctl.pid" ]; then
+          printf 'simctl launch pid %s observed %s\n' "$candidate" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$out/launch-timeline.log"
+        fi
         : >"$private_logs/observer.complete"
         return 0
       fi
@@ -186,36 +242,43 @@ observe_simctl_pid() {
 
 # Only verified app PIDs from simctl or its matching launchctl job are checked.
 watch_liveness() {
-  local simctl_pid="" app_pid="" epoch last_epoch=$launch_epoch first_pid_epoch="" first_alive_epoch="" proof_gap_reported=0 published_epoch="" interval_start gap
+  local epoch last_epoch=$launch_epoch first_pid_epoch="" first_alive_epoch="" proof_gap_reported=0 interval_start gap
+  local anchor_pid="" anchor_source="" anchor_start="" simctl_pid="" identity state status
   refresh_pid_publications() {
-    local candidate_pid
-    if [ -s "$private_logs/simctl.pid" ]; then
-      read -r candidate_pid published_epoch <"$private_logs/simctl.pid"
-      [[ "$candidate_pid" =~ ^[0-9]+$ && "$published_epoch" =~ ^[0-9]+$ ]] || return 1
-      if [ -z "$simctl_pid" ]; then simctl_pid=$candidate_pid; fi
+    local file candidate_pid published_epoch candidate_source candidate_start
+    for file in simctl launchctl; do
+      [ -s "$private_logs/$file.pid" ] || continue
+      read -r candidate_pid published_epoch candidate_source candidate_start <"$private_logs/$file.pid"
+      [[ "$candidate_pid" =~ ^[0-9]+$ && "$published_epoch" =~ ^[0-9]+$ &&
+        "$candidate_source" =~ ^(kernel-us|ps-lstart-etime-coarse)$ &&
+        "$candidate_start" =~ ^[a-zA-Z0-9_.:]+$ ]] || return 1
+      if [ -z "$anchor_pid" ]; then
+        anchor_pid=$candidate_pid
+        anchor_source=$candidate_source
+        anchor_start=$candidate_start
+        printf '%s %s %s\n' "$anchor_pid" "$anchor_source" "$anchor_start" >"$private_logs/identity.anchor"
+      elif [ "$candidate_pid" != "$anchor_pid" ] || [ "$candidate_source" != "$anchor_source" ] ||
+           [ "$candidate_start" != "$anchor_start" ]; then
+        printf '%s pid %s identity changed\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$anchor_pid" >>"$out/liveness.log"
+        : >"$private_logs/watcher.identity-changed"
+        return 1
+      fi
+      if [ "$file" = simctl ]; then simctl_pid=$candidate_pid; fi
       if [ -z "$first_pid_epoch" ] || [ "$published_epoch" -lt "$first_pid_epoch" ]; then
         first_pid_epoch=$published_epoch
       fi
-    fi
-    if [ -s "$private_logs/launchctl.pid" ]; then
-      read -r candidate_pid published_epoch <"$private_logs/launchctl.pid"
-      [[ "$candidate_pid" =~ ^[0-9]+$ && "$published_epoch" =~ ^[0-9]+$ ]] || return 1
-      if [ -z "$app_pid" ]; then app_pid=$candidate_pid; fi
-      if [ -z "$first_pid_epoch" ] || [ "$published_epoch" -lt "$first_pid_epoch" ]; then
-        first_pid_epoch=$published_epoch
-      fi
-    fi
+    done
   }
   check_first_alive_gap() {
     local proof_gap
     if [ -n "$first_pid_epoch" ] && [ -z "$first_alive_epoch" ] &&
-       [ "$proof_gap_reported" -eq 0 ] && [ "$first_pid_epoch" -le "$1" ]; then
+       [ "$first_pid_epoch" -le "$1" ]; then
       proof_gap=$(($1 - first_pid_epoch))
-      if [ "$proof_gap" -gt 5 ]; then
-        printf '%s PID-alive proof gap %ss\n' "${2:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}" "$proof_gap" >>"$out/liveness.log"
-        : >"$private_logs/watcher.gap"
+      if [ "$proof_gap" -gt 5 ] && [ "$proof_gap_reported" -eq 0 ]; then
+        printf '%s diagnostic PID-alive proof gap %ss\n' "$2" "$proof_gap" >>"$out/liveness.log"
         proof_gap_reported=1
       fi
+      if [ "$proof_gap" -gt 30 ]; then : >"$private_logs/watcher.gap"; fi
     fi
   }
   record_liveness() {
@@ -239,9 +302,9 @@ watch_liveness() {
       if [ "$first_pid_epoch" -gt "$interval_start" ]; then interval_start=$first_pid_epoch; fi
       gap=$((observed_epoch - interval_start))
       if [ "$gap" -gt 5 ]; then
-        printf '%s observation gap %ss\n' "$observed_at" "$gap" >>"$out/liveness.log"
-        : >"$private_logs/watcher.gap"
+        printf '%s diagnostic observation gap %ss\n' "$observed_at" "$gap" >>"$out/liveness.log"
       fi
+      if [ "$gap" -gt 30 ]; then : >"$private_logs/watcher.gap"; fi
     fi
     check_first_alive_gap "$observed_epoch" "$observed_at"
     if [ "$state" = "pid not yet observed" ] && [ -n "$first_pid_epoch" ]; then
@@ -254,56 +317,61 @@ watch_liveness() {
     fi
     last_epoch=$observed_epoch
   }
+  observe_identity() {
+    local stage=$1
+    status=0
+    identity=$(time_stage "$stage" process_identity "$anchor_pid" "$anchor_source") || status=$?
+    if [ -n "$simctl_pid" ]; then state="simctl pid $anchor_pid"; else state="pid $anchor_pid"; fi
+    if [ "$status" -eq 1 ]; then
+      record_liveness "$state exited" || return 1
+      : >"$private_logs/watcher.exited"
+      return 1
+    elif [ "$status" -ne 0 ]; then
+      record_liveness "$state start time unavailable" || return 1
+      : >"$private_logs/watcher.start-missing"
+      return 1
+    fi
+    local observed_source observed_start
+    read -r observed_source observed_start <<<"$identity"
+    if [ "$observed_source" != "$anchor_source" ] || [ "$observed_start" != "$anchor_start" ]; then
+      record_liveness "$state identity changed" || return 1
+      : >"$private_logs/watcher.identity-changed"
+      return 1
+    fi
+    record_liveness "$state alive" alive
+  }
   sample_liveness() {
     time_stage heartbeat.sleep sleep 2
     refresh_pid_publications || return 1
-    if [ -n "$simctl_pid" ]; then
-      if ! time_stage heartbeat.pid-check app_pid_alive "$simctl_pid"; then
-        record_liveness "simctl pid $simctl_pid exited" || return 1
-        : >"$private_logs/watcher.exited"
-        return 1
-      fi
-      record_liveness "simctl pid $simctl_pid alive" alive || return 1
-    fi
-    if [ -n "$app_pid" ]; then
-      if [ "$app_pid" != "$simctl_pid" ] && ! time_stage heartbeat.pid-check app_pid_alive "$app_pid"; then
-        record_liveness "pid $app_pid exited" || return 1
-        : >"$private_logs/watcher.exited"
-        return 1
-      fi
-      record_liveness "pid $app_pid alive" alive || return 1
-    elif [ -z "$simctl_pid" ]; then
-      record_liveness "pid not yet observed" || return 1
+    if [ -n "$anchor_pid" ]; then
+      observe_identity heartbeat.pid-check
+    else
+      record_liveness "pid not yet observed"
     fi
   }
   while [ "$SECONDS" -lt "$deadline" ]; do
     if ! time_stage heartbeat sample_liveness; then return 1; fi
   done
-  epoch=$(date -u +%s)
   refresh_pid_publications || return 1
-  gap=$((epoch - last_epoch))
-  if [ -z "$first_pid_epoch" ] || [ "$first_pid_epoch" -gt "$epoch" ]; then
-    if [ "$gap" -gt 5 ]; then
-      printf '%s pre-PID observation gap %ss\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$gap" >>"$out/liveness.log"
-    fi
+  if [ -n "$anchor_pid" ]; then
+    observe_identity heartbeat.terminal-pid-check || return 1
   else
-    if [ "$first_pid_epoch" -gt "$last_epoch" ]; then
-      gap=$((first_pid_epoch - last_epoch))
-      if [ "$gap" -gt 5 ]; then
-        printf '%s pre-PID observation gap %ss\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$gap" >>"$out/liveness.log"
-      fi
-    fi
-    interval_start=$last_epoch
-    if [ "$first_pid_epoch" -gt "$interval_start" ]; then interval_start=$first_pid_epoch; fi
-    gap=$((epoch - interval_start))
-    if [ "$gap" -gt 5 ]; then
-      printf '%s observation gap %ss\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$gap" >>"$out/liveness.log"
-      : >"$private_logs/watcher.gap"
-    fi
+    record_liveness "pid not yet observed" || return 1
   fi
-  check_first_alive_gap "$epoch"
   : >"$private_logs/watcher.complete"
 }
+# An app-independent scheduler clock; each printed interval is observed, never synthesized.
+bare_clock() {
+  local started ended
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    started=$(date -u +%s)
+    sleep 2
+    ended=$(date -u +%s)
+    printf 'clock start_epoch_s=%s end_epoch_s=%s duration_s=%s\n' \
+      "$started" "$ended" "$((ended - started))" >>"$out/clock-diagnostic.log"
+  done
+}
+
 discover_launchctl_pid() {
   xcrun simctl spawn "$udid" launchctl list 2>/dev/null |
     awk -v job="UIKitApplication:$bundle_id" 'index($3, job) == 1 && $1 ~ /^[0-9]+$/ { print $1; exit }'
@@ -327,18 +395,22 @@ observe_simctl_pid &
 observer_pid=$!
 watch_liveness &
 watcher_pid=$!
+: >"$out/clock-diagnostic.log"
+bare_clock &
+clock_pid=$!
 while [ "$SECONDS" -lt "$deadline" ]; do
   time_stage main.poll-sleep sleep 2
   if [ -f "$private_logs/watcher.exited" ]; then process_exited=1; break; fi
   # launchd's job for the app: "<pid> <status> UIKitApplication:xyz.tinycloud.exo[...]".
   observed_pid=$(time_stage main.launchctl-list discover_launchctl_pid)
   if [ -z "$pid" ] && [ -n "$observed_pid" ]; then
-    pid_observed_epoch=$(date -u +%s)
     if [ "$SECONDS" -lt "$deadline" ]; then
       pid=$observed_pid
-      printf '%s %s\n' "$pid" "$pid_observed_epoch" >"$private_logs/launchctl.pid"
-      printf 'pid %s observed %s\n' "$pid" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$out/launch-timeline.log"
-      log "running as pid $pid"
+      publish_verified_pid launchctl "$pid"
+      if [ -s "$private_logs/launchctl.pid" ]; then
+        printf 'pid %s observed %s\n' "$pid" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$out/launch-timeline.log"
+        log "running as pid $pid"
+      fi
     fi
   fi
   if [ -n "$pid" ] && [ "$observed_pid" != "$pid" ]; then
@@ -368,6 +440,9 @@ watcher_pid=""
 observer_failed=0
 time_stage main.observer-wait wait "$observer_pid" 2>/dev/null || observer_failed=1
 observer_pid=""
+time_stage main.clock-wait wait "$clock_pid" 2>/dev/null ||
+  printf 'clock diagnostic incomplete\n' >>"$out/clock-diagnostic.log"
+clock_pid=""
 if [ "$process_exited" -eq 0 ] && { [ "$observer_failed" -ne 0 ] || [ ! -f "$private_logs/observer.complete" ]; }; then
   fail "simctl PID observer did not complete through the probe deadline"
 fi
@@ -376,11 +451,19 @@ if [ -s "$private_logs/simctl.pid" ]; then
 else
   printf 'simctl launch pid not reported\n' >>"$out/launch-timeline.log"
 fi
+if [ -s "$private_logs/identity.anchor" ]; then
+  read -r expected_pid expected_source expected_start <"$private_logs/identity.anchor"
+  printf 'start-time source %s\n' "$expected_source" >>"$out/launch-timeline.log"
+fi
+if [ -f "$private_logs/publication.start-missing" ]; then fail "process start time unavailable at PID publication"; fi
+if [ -f "$private_logs/publication.exited" ]; then fail "app process exited during liveness"; fi
+if [ -f "$private_logs/watcher.start-missing" ]; then fail "process start time unavailable during liveness"; fi
+if [ -f "$private_logs/watcher.identity-changed" ]; then fail "app process identity changed"; fi
 if [ -f "$private_logs/watcher.exited" ]; then
   process_exited=1
-  fail "the app exited or crashed after launch"
+  fail "app process exited during liveness"
 fi
-if [ -f "$private_logs/watcher.gap" ]; then fail "liveness observation gap exceeded 5s"; fi
+if [ -f "$private_logs/watcher.gap" ]; then fail "liveness observation gap exceeded 30s"; fi
 if [ "$process_exited" -eq 0 ] && { [ "$watcher_failed" -ne 0 ] || [ ! -f "$private_logs/watcher.complete" ]; }; then
   fail "liveness watcher did not complete through the probe deadline"
 fi
@@ -415,13 +498,24 @@ fi
 if [ ! -f "$private_logs/watcher.alive" ]; then
   fail "no app PID-alive observation before probe deadline"
 fi
-if [ "$process_exited" -eq 0 ] && [ -n "$simctl_pid" ] && ! time_stage main.final-pid-check app_pid_alive "$simctl_pid"; then
-  printf '%s simctl pid %s exited after probe deadline\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$simctl_pid" >>"$out/liveness.log"
-  fail "the app was not running ${settle_s}s after the probe (simctl pid $simctl_pid)"
-elif [ "$process_exited" -eq 0 ] && [ -n "$pid" ] && ! time_stage main.final-pid-check app_pid_alive "$pid"; then
-  printf '%s pid %s exited after probe deadline\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$pid" >>"$out/liveness.log"
-  fail "the app was not running ${settle_s}s after the probe (pid $pid)"
-elif [ -z "$pid" ]; then
+if [ "$process_exited" -eq 0 ] && [ -n "${expected_pid:-}" ]; then
+  final_pid=${simctl_pid:-$pid}
+  if [ "$final_pid" != "$expected_pid" ]; then
+    fail "app process identity changed"
+  else
+    final_status=0
+    final_identity=$(time_stage main.final-pid-check process_identity "$final_pid" "$expected_source") || final_status=$?
+    if [ "$final_status" -eq 1 ]; then
+      printf '%s pid %s exited after probe deadline\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$final_pid" >>"$out/liveness.log"
+      fail "the app was not running ${settle_s}s after the probe (pid $final_pid)"
+    elif [ "$final_status" -ne 0 ]; then
+      fail "process start time unavailable during liveness"
+    elif [ "$final_identity" != "$expected_source $expected_start" ]; then
+      fail "app process identity changed"
+    fi
+  fi
+fi
+if [ -z "$pid" ]; then
   fail "launchctl did not report an app pid before the probe deadline"
 fi
 

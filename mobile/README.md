@@ -481,23 +481,33 @@ Xcode 26.6.
   The app must also still be running 10 s later, with no crash report. The
   `exo-ios-smoke-<sha>` artifact has `screenshot.png`, a sanitized `console.log`,
   allowlisted `unified.log` and `app-unified-stream.log` (started before launch),
-  `launch-timeline.log` (request and PID observation times), `liveness.log`
-  (roughly 2-second checks through the 120-second deadline),
-  `stage-timings.log` (fixed stage names and durations only), and `summary.md`.
+  `launch-timeline.log` (request, verified PID observation, and start-time source),
+  `liveness.log` (roughly 2-second actual observations through the original
+  120-second deadline), `stage-timings.log` (fixed stage names, UTC wall epochs
+  and elapsed durations), `clock-diagnostic.log` (an independent bare-clock
+  scheduling sample), and `summary.md`.
   The timeline records a simulator PID only when `simctl launch` reports one
   before the probe deadline; otherwise it says `simctl launch pid not reported`.
   The separate launchctl PID must also be observed before that same deadline.
-  PID parsing runs independently of the liveness sampler, which records actual
-  timestamps. Before the first verified in-window PID publication, gaps over
-  five seconds are recorded as fixed `pre-PID observation gap` classes with
-  durations, not passed off as app liveness. From that first publication,
-  every completed-observation gap over five seconds fails the smoke, including
-  one before the first process check completes. Pending PID observations cannot
-  reset the additional five-second publication-to-first-real-PID-alive limit.
-  Smoke also requires that alive proof and the mounted app-page probe within
-  the original deadline.
-  Stage timings include each heartbeat's wall time and blocking process
-  checks, PID scans, probes, and log operations without their content.
+  PID parsing runs independently of the liveness sampler. Before the earliest
+  verified in-window PID publication, gaps over five seconds are fixed
+  `pre-PID observation gap` diagnostics. At publication, the watcher binds the
+  PID to its process start time: Darwin kernel `kinfo_proc.p_starttime` seconds
+  plus microseconds when available, otherwise labelled coarse `ps lstart`
+  with `etime` present. The selected source is recorded per run; missing start
+  time at publication or observation fails, and a later source cannot reset
+  the pair. The accepted coarse fallback cannot distinguish same-PID reuse
+  within one second.
+  Every genuine alive observation, including the terminal check at the
+  deadline, must retain that PID/start-time pair. An exit, pair change,
+  missing in-window alive proof or post-publication gap above 30 seconds fails
+  smoke. Gaps above five seconds remain truthful diagnostic entries, not a
+  failure by themselves; pending records do not replace actual alive proof.
+  This establishes process identity **at observations**, not responsiveness
+  between them. The mounted app-page probe must separately arrive within the
+  original deadline to prove app responsiveness. Stage and bare-clock rows
+  contain only fixed labels, wall start/end epochs and durations, never app
+  content.
   If a crash report is detected, `crash-reports.txt` contains only the report
   count; raw diagnostic reports are not copied into the artifact.
   `mobile/scripts/ios-simulator-smoke.sh run <path/to/App.app> /tmp/exo-smoke`.
