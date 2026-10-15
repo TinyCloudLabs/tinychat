@@ -74,8 +74,8 @@ import {
   type VoiceNoteTranscriptSave,
   type VoiceNoteTranscriptAccount,
 } from "./voiceNoteStore";
-import { accountStorageKey, clearChoicePinMetadata, setLimitBlockedChoice, VOICE_NOTE_PENDING_JOBS_KEY,
-  VOICE_NOTE_PRIVATE_CHOICES_KEY, retainSource, withSourceLease } from "./sourcePins";
+import { accountStorageKey, beginPrivateChoiceIntent, clearChoicePinMetadata, setLimitBlockedChoice,
+  VOICE_NOTE_PENDING_JOBS_KEY, VOICE_NOTE_PRIVATE_CHOICES_KEY, retainSource, withSourceLease } from "./sourcePins";
 import { isAutomaticRetryableCode } from "./retryableVoiceNoteErrors";
 import { transcriptHash, type VoiceNoteTranscriptionStatsMetadata } from "./voiceNoteRows";
 
@@ -372,7 +372,7 @@ export function localStorageVoiceNotePrivateChoiceStore(
     has: (id) => read().includes(id),
     add: (id) => {
       const ids = read();
-      clearChoicePinMetadata(accountDid, id, storage as Storage | undefined);
+      beginPrivateChoiceIntent(accountDid, id, storage as Storage | undefined);
       if (!ids.includes(id)) write([...ids, id]);
     },
     remove: (id) => {

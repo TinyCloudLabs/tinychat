@@ -3,6 +3,7 @@ import { isAutomaticRetryableCode } from "./retryableVoiceNoteErrors";
 export const VOICE_NOTE_PENDING_JOBS_KEY = "exo.voiceNotes.privateCloudJobs";
 export const VOICE_NOTE_PRIVATE_CHOICES_KEY = "exo.voiceNotes.privateChoices";
 export const VOICE_NOTE_LIMIT_BLOCKED_CHOICES_KEY = "exo.voiceNotes.limitBlockedPrivateChoices";
+const CHOICE_INTENTS_KEY = "exo.voiceNotes.privateChoiceIntents";
 const PIN_AGE_KEY = "exo.voiceNotes.privateSourcePinAge";
 const PIN_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 
@@ -13,35 +14,67 @@ type LockState = { name: string; readers: number; writer: boolean; queue: Waiter
 const fallbackLocks = new Map<string, LockState>();
 const retained = new Map<string, number>();
 const extraPinChecks = new Set<(owner: string, id: string) => boolean | Promise<boolean>>();
+const unverifiedChoiceIntents = new Set<string>();
 const sourceKey = ({ owner, id }: Source) => `${owner}\u0000${id}`;
 const lockName = ({ owner, id }: Source) => `exo-voice-note-source:${encodeURIComponent(owner)}:${encodeURIComponent(id)}`;
 
 export function accountStorageKey(base: string, accountDid: string): string {
   return `${base}:${accountDid}`;
 }
+/** Record a durable intent generation so stale expiry metadata cannot govern a fresh choice. */
+export function beginPrivateChoiceIntent(owner: string, id: string, override?: Storage): void {
+  const store = override ?? storage();
+  if (!store) return;
+  const current = readChoiceIntents(owner, store);
+  const intents = current.corrupt ? {} : { ...current.value };
+  intents[id] = { intentId: newChoiceIntentId(), limitBlocked: false };
+  const key = sourceKey({ owner, id });
+  if (writeChoiceIntents(owner, store, intents)) unverifiedChoiceIntents.delete(key);
+  else unverifiedChoiceIntents.add(key);
+}
+
 /** Only a known admission limit may age out a persisted Private choice. */
 export function setLimitBlockedChoice(owner: string, id: string, blocked: boolean, override?: Storage): void {
   const store = override ?? storage();
   if (!store) return;
+  const current = readChoiceIntents(owner, store);
+  const intents = current.corrupt ? {} : { ...current.value };
+  const existing = intents[id];
+  intents[id] = { intentId: existing?.intentId ?? newChoiceIntentId(), limitBlocked: blocked };
+  const source = sourceKey({ owner, id });
+  if (!writeChoiceIntents(owner, store, intents)) {
+    unverifiedChoiceIntents.add(source);
+    return;
+  }
+  unverifiedChoiceIntents.delete(source);
   const key = accountStorageKey(VOICE_NOTE_LIMIT_BLOCKED_CHOICES_KEY, owner);
-  const current = readJson(store, key);
-  if (current.corrupt || current.present && (!Array.isArray(current.value)
-    || current.value.some((value) => typeof value !== "string"))) return;
-  const ids = current.present ? current.value as string[] : [];
+  const legacy = readJson(store, key);
+  if (legacy.corrupt || legacy.present && (!Array.isArray(legacy.value)
+    || legacy.value.some((value) => typeof value !== "string"))) return;
+  const ids = legacy.present ? legacy.value as string[] : [];
   const next = blocked ? [...new Set([...ids, id])] : ids.filter((value) => value !== id);
   try {
     if (next.length === 0) store.removeItem(key);
     else store.setItem(key, JSON.stringify(next));
-  } catch { /* Failure keeps the choice pinned conservatively. */ }
+  } catch { /* The intent record remains authoritative. */ }
 }
 
-/** A removed choice starts a fresh age if the same note is chosen again later. */
+/** Clear expired metadata on removal; a later add writes a fresh durable intent generation. */
 export function clearChoicePinMetadata(owner: string, id: string, override?: Storage): void {
   const store = override ?? storage();
   if (!store) return;
   try { store.removeItem(accountStorageKey(PIN_AGE_KEY, `${encodeURIComponent(owner)}:${encodeURIComponent(id)}`)); }
-  catch { /* Failure keeps any existing age conservative. */ }
-  setLimitBlockedChoice(owner, id, false, store);
+  catch { /* Fresh intent generations make failed age invalidation harmless. */ }
+  removeChoiceIntent(owner, id, store);
+  unverifiedChoiceIntents.delete(sourceKey({ owner, id }));
+  const key = accountStorageKey(VOICE_NOTE_LIMIT_BLOCKED_CHOICES_KEY, owner);
+  const legacy = readJson(store, key);
+  if (!legacy.present || legacy.corrupt || !Array.isArray(legacy.value)) return;
+  const ids = legacy.value.filter((value): value is string => typeof value === "string" && value !== id);
+  try {
+    if (ids.length === 0) store.removeItem(key);
+    else store.setItem(key, JSON.stringify(ids));
+  } catch { /* Fresh intent generations make stale markers harmless. */ }
 }
 
 function grant(state: LockState, mode: Waiter["mode"]): Release {
@@ -156,6 +189,49 @@ function readJson(storageValue: Storage, key: string): { present: boolean; value
   catch { return { present: true, value: null, corrupt: true }; }
 }
 
+type ChoiceIntent = { intentId: string; limitBlocked: boolean };
+type ChoiceIntentMap = Record<string, ChoiceIntent>;
+let choiceIntentSequence = 0;
+
+function readChoiceIntents(owner: string, store: Storage): { value: ChoiceIntentMap; corrupt: boolean } {
+  const record = readJson(store, accountStorageKey(CHOICE_INTENTS_KEY, owner));
+  if (record.corrupt) return { value: {}, corrupt: true };
+  if (!record.present) return { value: {}, corrupt: false };
+  if (!record.value || typeof record.value !== "object" || Array.isArray(record.value))
+    return { value: {}, corrupt: true };
+  const value: ChoiceIntentMap = {};
+  for (const [id, entry] of Object.entries(record.value)) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)
+      || typeof (entry as ChoiceIntent).intentId !== "string"
+      || !(entry as ChoiceIntent).intentId
+      || typeof (entry as ChoiceIntent).limitBlocked !== "boolean") return { value: {}, corrupt: true };
+    value[id] = entry as ChoiceIntent;
+  }
+  return { value, corrupt: false };
+}
+
+function newChoiceIntentId(): string {
+  try { return globalThis.crypto.randomUUID(); }
+  catch { return `${Date.now().toString(36)}-${(++choiceIntentSequence).toString(36)}`; }
+}
+
+function writeChoiceIntents(owner: string, store: Storage, intents: ChoiceIntentMap): boolean {
+  const key = accountStorageKey(CHOICE_INTENTS_KEY, owner);
+  try {
+    const encoded = JSON.stringify(intents);
+    store.setItem(key, encoded);
+    return store.getItem(key) === encoded;
+  } catch { return false; }
+}
+
+function removeChoiceIntent(owner: string, id: string, store: Storage): void {
+  const current = readChoiceIntents(owner, store);
+  if (current.corrupt || current.value[id] === undefined) return;
+  const intents = { ...current.value };
+  delete intents[id];
+  writeChoiceIntents(owner, store, intents);
+}
+
 function permanentPinIsCurrent(owner: string, id: string, store: Storage, now: number, signature: string): boolean {
   const key = accountStorageKey(PIN_AGE_KEY, `${encodeURIComponent(owner)}:${encodeURIComponent(id)}`);
   const age = readJson(store, key);
@@ -198,7 +274,8 @@ function persistedPin(owner: string, id: string, now: number): boolean {
   const pending = readJson(store, accountStorageKey(VOICE_NOTE_PENDING_JOBS_KEY, owner));
   const choices = readJson(store, accountStorageKey(VOICE_NOTE_PRIVATE_CHOICES_KEY, owner));
   const limitedChoices = readJson(store, accountStorageKey(VOICE_NOTE_LIMIT_BLOCKED_CHOICES_KEY, owner));
-  if (pending.corrupt || choices.corrupt || limitedChoices.corrupt) return true;
+  const choiceIntents = readChoiceIntents(owner, store);
+  if (pending.corrupt || choices.corrupt || limitedChoices.corrupt || choiceIntents.corrupt) return true;
   if (pending.present && (!pending.value || typeof pending.value !== "object" || Array.isArray(pending.value))) return true;
   if (choices.present && (!Array.isArray(choices.value) || choices.value.some((value) => typeof value !== "string"))) return true;
   if (limitedChoices.present && (!Array.isArray(limitedChoices.value)
@@ -218,12 +295,14 @@ function persistedPin(owner: string, id: string, now: number): boolean {
   }
   const hasChoice = choices.present && (choices.value as string[]).includes(id);
   if (!hasChoice) return false;
-  const isLimitBlocked = limitedChoices.present && (limitedChoices.value as string[]).includes(id);
-  return !isLimitBlocked || permanentPinIsCurrent(owner, id, store, now, "limit-choice");
+  const intent = choiceIntents.value[id];
+  if (!intent) return true; // Legacy choices have no durable expiry proof.
+  return !intent.limitBlocked
+    || permanentPinIsCurrent(owner, id, store, now, `limit-choice:${intent.intentId}`);
 }
 export async function isSourcePinned(owner: string, id: string, now = Date.now()): Promise<boolean> {
   const key = sourceKey({ owner, id });
-  if ((retained.get(key) ?? 0) > 0 || persistedPin(owner, id, now)) return true;
+  if ((retained.get(key) ?? 0) > 0 || unverifiedChoiceIntents.has(key) || persistedPin(owner, id, now)) return true;
   try {
     for (const check of extraPinChecks) if (await check(owner, id)) return true;
   } catch {
@@ -256,4 +335,5 @@ export function __resetSourcePinsForTests(): void {
   fallbackLocks.clear();
   retained.clear();
   extraPinChecks.clear();
+  unverifiedChoiceIntents.clear();
 }

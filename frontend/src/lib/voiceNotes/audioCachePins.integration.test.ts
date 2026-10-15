@@ -14,7 +14,8 @@ import { saveVoiceNote } from "./voiceNoteStore";
 import { memoryAudioBlobs } from "./web/webTestKit";
 import { newIdbEnv } from "./web/testing/idb";
 import { memoryLocks, openWebStore, recordingFromSession } from "./web/webStore";
-import { accountStorageKey, retainSource, VOICE_NOTE_PENDING_JOBS_KEY } from "./sourcePins";
+import { __resetSourcePinsForTests, accountStorageKey, isSourcePinned, retainSource, setLimitBlockedChoice,
+  VOICE_NOTE_PENDING_JOBS_KEY } from "./sourcePins";
 function deferred() {
   let resolve!: () => void;
   const promise = new Promise<void>((done) => { resolve = done; });
@@ -616,3 +617,54 @@ test("TC-1182 a malformed held:null pending row fails closed beyond 30 days", as
     Date.now = originalNow;
   }
 });
+
+for (const fileBacked of [false, true]) {
+  for (const operation of ["clear", "trim"] as const) {
+    for (const mode of ["age-remove-throws", "metadata-remove-throws", "metadata-remove-noop", "limit-remove-throws", "limit-remove-noop"] as const) {
+      test(`TC-1182 fresh Private choice survives ${mode}: ${operation}, fileBacked=${fileBacked}`, async () => {
+        const h = await setup({ fileBacked });
+        const originalNow = Date.now;
+        let now = Date.parse("2026-01-01T00:00:00.000Z");
+        Date.now = () => now;
+        try {
+          const choices = localStorageVoiceNotePrivateChoiceStore(DID);
+          choices.add(h.sourceId);
+          setLimitBlockedChoice(DID, h.sourceId, true);
+          expect(await isSourcePinned(DID, h.sourceId)).toBe(true);
+          now += 31 * 24 * 60 * 60 * 1_000;
+          expect(await isSourcePinned(DID, h.sourceId)).toBe(false);
+
+          const removeItem = h.pendingStorage.removeItem;
+          h.pendingStorage.removeItem = (key) => {
+            const age = key.startsWith("exo.voiceNotes.privateSourcePinAge");
+            const limit = key.startsWith("exo.voiceNotes.limitBlockedPrivateChoices");
+            const denied = mode === "age-remove-throws" ? age
+              : mode === "metadata-remove-throws" || mode === "metadata-remove-noop" ? age || limit : limit;
+            if (!denied) return removeItem(key);
+            if (mode.endsWith("-noop")) return;
+            throw new Error("synthetic metadata removal denied");
+          };
+          choices.remove(h.sourceId);
+          expect(choices.has(h.sourceId)).toBe(false);
+          now++;
+          choices.add(h.sourceId);
+          expect(choices.has(h.sourceId)).toBe(true);
+          if (mode === "age-remove-throws") setLimitBlockedChoice(DID, h.sourceId, true);
+          if (mode.startsWith("limit-remove-")) {
+            expect(await isSourcePinned(DID, h.sourceId)).toBe(true);
+            now += 31 * 24 * 60 * 60 * 1_000;
+          }
+
+          expect(await localStorageVoiceNotePrivateChoiceStore(DID, h.pendingStorage).has(h.sourceId)).toBe(true);
+          __resetSourcePinsForTests();
+          expect(await isSourcePinned(DID, h.sourceId)).toBe(true);
+          if (operation === "trim") await trimCachedAudio(0);
+          else await clearCachedAudio();
+          expect(await h.store.audio.size(h.sourceId)).toBe(h.bytes.length);
+        } finally {
+          Date.now = originalNow;
+        }
+      });
+    }
+  }
+}
