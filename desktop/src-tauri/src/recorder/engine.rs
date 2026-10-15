@@ -43,6 +43,9 @@ pub struct EngineState {
     unconfirmed_input_devices: Option<Vec<u32>>,
     snapshot_issue: Option<&'static str>,
     pending_discard_cleanup: Vec<(String, Option<String>)>,
+    discard_cleanup_in_flight: bool,
+    discard_cleanup_failures: u8,
+    discard_cleanup_retry_after: Option<Instant>,
 }
 
 #[derive(Serialize, Clone, Copy)]
@@ -83,62 +86,46 @@ pub fn install(app: &tauri::AppHandle) {
         let mut ticker = tokio::time::interval(Duration::from_millis(33));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut next_release_check = Instant::now();
+        let mut startup_cleanup_loaded = false;
         loop {
             ticker.tick().await;
             if Instant::now() >= next_release_check {
                 next_release_check = Instant::now() + Duration::from_secs(2);
-                let (status, cleanup) = {
+                if !startup_cleanup_loaded {
+                    let startup_handle = handle.clone();
+                    match tauri::async_runtime::spawn_blocking(move || {
+                        load_pending_discard_cleanup(&startup_handle)
+                    })
+                    .await
+                    {
+                        Ok(Ok(())) => startup_cleanup_loaded = true,
+                        Ok(Err(error)) => {
+                            tracing::warn!(target: "exo_dev::recorder", %error,
+                                "Could not load pending discard cleanup at startup");
+                        }
+                        Err(error) => {
+                            tracing::warn!(target: "exo_dev::recorder", %error,
+                                "Could not schedule startup discard cleanup scan");
+                        }
+                    }
+                }
+                let status = {
                     let engine = handle.state::<Engine>();
                     let mut state = engine.0.lock();
-                    let running = input_devices_running_somewhere(state.unconfirmed_input_devices.as_deref());
+                    let running =
+                        input_devices_running_somewhere(state.unconfirmed_input_devices.as_deref());
                     if capture_source_release_observed(state.capture_source_unconfirmed, running) {
                         state.capture_source_unconfirmed = false;
                         state.unconfirmed_input_devices = Some(Vec::new());
-                        let cleanup = state.pending_discard_cleanup.clone();
-                        (Some(state.status()), (!cleanup.is_empty()).then_some(cleanup))
+                        Some(state.status())
                     } else {
-                        (None, None)
+                        None
                     }
                 };
-                if let Some(cleanup) = cleanup {
-                    let cleanup_handle = handle.clone();
-                    tauri::async_runtime::spawn_blocking(move || {
-                        let result = super::with_import_lock(|| {
-                            let sessions = files::sessions_root(&cleanup_handle)?;
-                            for (id, segment_id) in &cleanup {
-                                if let Some(segment_id) = segment_id.as_deref() {
-                                    let source = sessions.join(segment_id);
-                                    if source.exists() {
-                                        files::remove_source_session(&sessions, segment_id)?;
-                                    }
-                                }
-                                journal::clear_stopped(&cleanup_handle, id)?;
-                            }
-                            super::refresh_finishing_quit(&cleanup_handle)
-                        });
-                        if let Err(error) = result {
-                            tracing::warn!(target: "exo_dev::recorder", count = cleanup.len(), %error,
-                                "Could not clean discarded sources after release confirmation");
-                            return;
-                        }
-                        let status = {
-                            let engine = cleanup_handle.state::<Engine>();
-                            let mut state = engine.0.lock();
-                            if state.pending_discard_cleanup == cleanup {
-                                state.pending_discard_cleanup.clear();
-                                Some(state.status())
-                            } else {
-                                None
-                            }
-                        };
-                        if let Some(status) = status {
-                            let _ = cleanup_handle.emit(MIC_EVENT, status);
-                        }
-                    });
-                }
                 if let Some(status) = status {
                     let _ = handle.emit(MIC_EVENT, status);
                 }
+                schedule_pending_discard_cleanup(&handle);
             }
             let (level, auto_stop) = {
                 let engine = handle.state::<Engine>();
@@ -442,6 +429,108 @@ fn retain_unconfirmed_input_devices(state: &mut EngineState) {
     state.capture_source_unconfirmed = true;
 }
 
+fn load_pending_discard_cleanup(app: &tauri::AppHandle) -> Result<(), String> {
+    let pending = super::with_import_lock(|| journal::list_stopped(app))?
+        .into_iter()
+        .filter(|entry| entry.discard_cleanup_pending)
+        .map(|entry| (entry.id, entry.segment_id))
+        .collect::<Vec<_>>();
+    let engine = app.state::<Engine>();
+    let mut state = engine.0.lock();
+    for entry in pending {
+        if !state.pending_discard_cleanup.contains(&entry) {
+            state.pending_discard_cleanup.push(entry);
+        }
+    }
+    Ok(())
+}
+
+
+fn schedule_pending_discard_cleanup(app: &tauri::AppHandle) {
+    let cleanup = {
+        let engine = app.state::<Engine>();
+        let mut state = engine.0.lock();
+        let retry_ready = state
+            .discard_cleanup_retry_after
+            .map_or(true, |deadline| Instant::now() >= deadline);
+        let action = recorder_state::pending_cleanup_action(
+            state.capture_source_unconfirmed,
+            !state.pending_discard_cleanup.is_empty(),
+            state.discard_cleanup_in_flight,
+            retry_ready,
+            None,
+        );
+        if action == recorder_state::PendingCleanupAction::Run {
+            state.discard_cleanup_in_flight = true;
+            Some(state.pending_discard_cleanup.clone())
+        } else {
+            None
+        }
+    };
+    let Some(cleanup) = cleanup else {
+        return;
+    };
+
+    let handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = super::with_import_lock(|| {
+            let sessions = files::sessions_root(&handle)?;
+            for (id, segment_id) in &cleanup {
+                journal::clear_active_if_matches(&handle, id)?;
+                if let Some(segment_id) = segment_id.as_deref() {
+                    let source = sessions.join(segment_id);
+                    if source.exists() {
+                        files::remove_source_session(&sessions, segment_id)?;
+                    }
+                }
+                journal::clear_stopped(&handle, id)?;
+            }
+            super::refresh_finishing_quit(&handle)
+        });
+        if let Err(error) = &result {
+            tracing::warn!(target: "exo_dev::recorder", count = cleanup.len(), %error,
+                "Could not clean discarded sources after release confirmation");
+        }
+        let status = {
+            let engine = handle.state::<Engine>();
+            let mut state = engine.0.lock();
+            match recorder_state::pending_cleanup_action(
+                state.capture_source_unconfirmed,
+                !state.pending_discard_cleanup.is_empty(),
+                state.discard_cleanup_in_flight,
+                false,
+                Some(result.is_ok()),
+            ) {
+                recorder_state::PendingCleanupAction::Remove => {
+                    state.pending_discard_cleanup.retain(|item| !cleanup.contains(item));
+                    state.discard_cleanup_in_flight = false;
+                    state.discard_cleanup_failures = 0;
+                    state.discard_cleanup_retry_after = None;
+                    Some(state.status())
+                }
+                recorder_state::PendingCleanupAction::Retry => {
+                    state.discard_cleanup_in_flight = false;
+                    state.discard_cleanup_failures = state.discard_cleanup_failures.saturating_add(1);
+                    state.discard_cleanup_retry_after =
+                        Some(Instant::now() + Duration::from_millis(
+                            recorder_state::pending_cleanup_backoff_ms(state.discard_cleanup_failures),
+                        ));
+                    None
+                }
+                recorder_state::PendingCleanupAction::Wait
+                | recorder_state::PendingCleanupAction::Run => {
+                    state.discard_cleanup_in_flight = false;
+                    None
+                }
+            }
+        };
+        if let Some(status) = status {
+            let _ = handle.emit(MIC_EVENT, status);
+        }
+        schedule_pending_discard_cleanup(&handle);
+    });
+}
+
 
 /// Monotonic clock for the recorder state machine. Only differences are used.
 fn mono_ms() -> u64 {
@@ -657,6 +746,7 @@ pub async fn recorder_start(
             layout,
             spans: Vec::new(),
             capture_source_unconfirmed: false,
+            discard_cleanup_pending: false,
         },
     );
     if saved.is_err() {
@@ -1598,6 +1688,7 @@ pub async fn recorder_discard_durable(
         pointer.recorded_ms = recorded_ms;
         pointer.paused_ms = paused_ms;
         pointer.capture_source_unconfirmed = source_unconfirmed;
+        pointer.discard_cleanup_pending = keep_native_source;
         if keep_native_source {
             journal::save_stopped(&handle, &pointer)?;
         } else if let Some(segment_id) = journal_segment_id.as_deref() {
@@ -1655,6 +1746,7 @@ pub async fn recorder_discard_durable(
         status.discard_cleanup_pending = !state.pending_discard_cleanup.is_empty();
         status
     };
+    schedule_pending_discard_cleanup(&app);
     emit_status(&app);
     Ok(DurableDiscardResult::Retired(status))
 }
@@ -1869,6 +1961,7 @@ pub async fn recorder_stopped_list(app: tauri::AppHandle) -> Result<Vec<String>,
 pub async fn recorder_recover(app: tauri::AppHandle) -> Result<RecoveryReport, String> {
     tauri::async_runtime::spawn_blocking(move || {
         super::ensure(&app);
+        load_pending_discard_cleanup(&app)?;
         super::with_import_lock(|| {
             if app.state::<Engine>().0.lock().id.is_some() {
                 return Err("recording_in_progress".into());

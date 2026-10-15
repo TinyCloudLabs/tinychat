@@ -56,6 +56,41 @@ pub fn is_current_recording(expected_id: &str, current_id: Option<&str>) -> bool
     current_id == Some(expected_id)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PendingCleanupAction {
+    Wait,
+    Run,
+    Retry,
+    Remove,
+}
+
+/// Decides whether deferred discard cleanup should run or how a completed attempt changes it.
+pub fn pending_cleanup_action(
+    source_unconfirmed: bool,
+    has_pending: bool,
+    in_flight: bool,
+    retry_ready: bool,
+    result: Option<bool>,
+) -> PendingCleanupAction {
+    if let Some(succeeded) = result {
+        if succeeded {
+            PendingCleanupAction::Remove
+        } else {
+            PendingCleanupAction::Retry
+        }
+    } else if source_unconfirmed || !has_pending || in_flight || !retry_ready {
+        PendingCleanupAction::Wait
+    } else {
+        PendingCleanupAction::Run
+    }
+}
+
+/// Retry delay in milliseconds. Exponential from two seconds, capped at thirty seconds.
+pub fn pending_cleanup_backoff_ms(failures: u8) -> u64 {
+    let exponent = failures.saturating_sub(1).min(4) as u32;
+    (2_000_u64 << exponent).min(30_000)
+}
+
 /// Why the listener session did not appear finalized before the deadline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stall {
@@ -619,5 +654,46 @@ mod tests {
         assert_eq!(recorder.request(Request::Stop), Ok(Step::StopSource));
         recorder.stop_outcome(2_000, Stop::SessionFinalized).unwrap();
         assert_eq!(recorder.finish(), Ok(2_000));
+    }
+
+    #[test]
+    fn pending_discard_cleanup_runs_after_release_retries_failures_and_removes_successes() {
+        assert_eq!(
+            pending_cleanup_action(false, true, false, true, None),
+            PendingCleanupAction::Run,
+            "a queued cleanup runs after its source was already released",
+        );
+        assert_eq!(
+            pending_cleanup_action(true, true, false, true, None),
+            PendingCleanupAction::Wait,
+        );
+        assert_eq!(
+            pending_cleanup_action(false, true, true, true, None),
+            PendingCleanupAction::Wait,
+        );
+        assert_eq!(
+            pending_cleanup_action(false, true, true, false, Some(false)),
+            PendingCleanupAction::Retry,
+            "a failure keeps the cleanup queued",
+        );
+        assert_eq!(
+            pending_cleanup_action(false, true, false, false, None),
+            PendingCleanupAction::Wait,
+            "backoff defers the next attempt",
+        );
+        assert_eq!(
+            pending_cleanup_action(false, true, false, true, None),
+            PendingCleanupAction::Run,
+            "a later tick retries the retained cleanup",
+        );
+        assert_eq!(
+            pending_cleanup_action(false, true, true, false, Some(true)),
+            PendingCleanupAction::Remove,
+            "success removes the queued cleanup",
+        );
+        assert_eq!(
+            (1..=6).map(pending_cleanup_backoff_ms).collect::<Vec<_>>(),
+            vec![2_000, 4_000, 8_000, 16_000, 30_000, 30_000],
+        );
     }
 }
