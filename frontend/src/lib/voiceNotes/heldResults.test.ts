@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { newIdbEnv } from "./web/testing/idb";
-import { createHeldResultStore } from "./heldResults";
+import { createHeldResultStore, MAX_HELD_DID_BYTES, MAX_HELD_TOTAL_BYTES } from "./heldResults";
+import { transcriptHash } from "./voiceNoteRows";
 import { localStorageVoiceNotePendingStore } from "./voiceNoteTranscription";
 const heldInput = (did: string, rev: number, text: string) => ({
   version: 1 as const,
@@ -42,6 +43,57 @@ test("concurrent stores preserve independent per-note holds", async () => {
   expect((await first.listHeld()).map((row) => row.sourceId).sort()).toEqual(["note-1", "note-2"]);
 });
 
+test("overlapping public holds preserve both independently acknowledged records", async () => {
+  const env = newIdbEnv();
+  const reached = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const first = createHeldResultStore("did:a", {
+    env: {
+      ...env,
+      storage: { persisted: async () => {
+        reached.resolve();
+        await release.promise;
+        return false;
+      } } as StorageManager,
+    },
+  });
+  const second = createHeldResultStore("did:a", {
+    env: { ...env, storage: { persisted: async () => false } as StorageManager },
+  });
+  const inputA = { ...heldInput("did:a", 1, "first"), sourceId: "note-1" };
+  const inputB = { ...heldInput("did:a", 1, "second"), sourceId: "note-2" };
+  const firstHold = first.hold(inputA);
+  let firstSettled = false;
+  void firstHold.then(() => { firstSettled = true; }, () => { firstSettled = true; });
+  try {
+    await Promise.race([
+      reached.promise,
+      firstHold.then(() => { throw new Error("first hold settled before its durability gate"); }),
+    ]);
+    expect(firstSettled).toBe(false);
+    const secondHold = second.hold(inputB);
+    expect(firstSettled).toBe(false);
+    const receiptB = await secondHold;
+    expect(firstSettled).toBe(false);
+    release.resolve();
+    const receiptA = await firstHold;
+    expect((await first.listHeld()).map((row) => row.sourceId).sort()).toEqual(["note-1", "note-2"]);
+    expect(await first.readHeld("note-1")).toMatchObject({
+      sourceId: "note-1", holdId: receiptA.holdId,
+      hash: await transcriptHash(inputA.transcript.sentences),
+      transcript: { rev: 1, sentences: [{ text: "first" }] },
+    });
+    expect(await second.readHeld("note-2")).toMatchObject({
+      sourceId: "note-2", holdId: receiptB.holdId,
+      hash: await transcriptHash(inputB.transcript.sentences),
+      transcript: { rev: 1, sentences: [{ text: "second" }] },
+    });
+  } finally {
+    release.resolve();
+    await firstHold;
+  }
+});
+
 test("per-DID shares and hard device cap reject without evicting earlier held rows", async () => {
   const env = newIdbEnv();
   for (const did of ["did:a", "did:b", "did:c", "did:d"]) {
@@ -62,6 +114,11 @@ test("user discard deletes only the selected DID's held row", async () => {
   const ownerB = createHeldResultStore("did:b", { env, isSignedIn: async () => true });
   const heldA = await ownerA.hold({ ...heldInput("did:a", 1, "a"), sourceId: "shared-note" });
   await ownerB.hold({ ...heldInput("did:b", 1, "b"), sourceId: "shared-note" });
+  await expect(ownerA.discard({ did: "did:b", spaceId: "space-a" } as never,
+    "shared-note", heldA.holdId, "user_discarded")).rejects.toMatchObject({ code: "voice_note_account_mismatch" });
+  await ownerA.discard({ did: "did:a", spaceId: "space-a" } as never, "shared-note", "wrong-hold", "user_discarded");
+  expect(await ownerA.readHeld("shared-note")).toMatchObject({ holdId: heldA.holdId, transcript: { sentences: [{ text: "a" }] } });
+  expect(await ownerB.readHeld("shared-note")).toMatchObject({ did: "did:b", transcript: { sentences: [{ text: "b" }] } });
   await ownerA.discard({ did: "did:a", spaceId: "space-a" } as never, "shared-note", heldA.holdId, "user_discarded");
   expect(await ownerA.readHeld("shared-note")).toBeNull();
   expect(await ownerB.readHeld("shared-note")).toMatchObject({ did: "did:b", transcript: { sentences: [{ text: "b" }] } });
@@ -136,4 +193,64 @@ test("persisted sign-out blocks a held commit and leaves its row intact", async 
     afterCommit: async () => {},
   }, "automatic")).rejects.toMatchObject({ code: "voice_note_account_mismatch" });
   expect(await store.readHeld("note-a")).not.toBeNull();
+});
+
+test("a fifty-first hold for one DID refuses without evicting any existing result", async () => {
+  const env = newIdbEnv();
+  const store = createHeldResultStore("did:a", { env });
+  const receipts = new Map<string, string>();
+  for (let index = 0; index < 50; index++) {
+    const sourceId = `note-${index}`;
+    const receipt = await store.hold({ ...heldInput("did:a", 1, `original-${index}`), sourceId });
+    receipts.set(sourceId, receipt.holdId);
+  }
+  await expect(store.hold({ ...heldInput("did:a", 1, "overflow"), sourceId: "note-50" }))
+    .rejects.toMatchObject({ code: "held_result_persistence_failed", reason: "store_full" });
+  expect(await store.readHeld("note-50")).toBeNull();
+  for (const [sourceId, holdId] of receipts) {
+    expect(await store.readHeld(sourceId)).toMatchObject({
+      holdId, transcript: { sentences: [{ text: `original-${sourceId.slice(5)}` }] },
+    });
+  }
+  expect(await store.listHeld()).toHaveLength(50);
+  const other = createHeldResultStore("did:b", { env });
+  expect(await other.hold({ ...heldInput("did:b", 1, "other"), sourceId: "other-note" })).toMatchObject({ rev: 1 });
+});
+
+test("UTF-8 byte shares reserve each DID and the hard device budget without eviction", async () => {
+  const env = newIdbEnv();
+  const dense = "x".repeat(Math.floor(MAX_HELD_DID_BYTES / 2) - 480_000);
+  const accepted: { did: string; sourceId: string; holdId: string; hash: string }[] = [];
+  for (const did of ["did:a", "did:b", "did:c", "did:d"]) {
+    const store = createHeldResultStore(did, { env });
+    for (let index = 0; index < 2; index++) {
+      const sourceId = `${did}-note-${index}`;
+      const receipt = await store.hold({ ...heldInput(did, 1, dense), sourceId });
+      const row = await store.readHeld(sourceId);
+      expect(row).not.toBeNull();
+      accepted.push({ did, sourceId, holdId: receipt.holdId, hash: row!.hash });
+    }
+    const rows = await store.listHeld();
+    expect(rows).toHaveLength(2);
+    expect(rows.reduce((bytes, row) => bytes + row.bytes, 0)).toBeLessThanOrEqual(MAX_HELD_DID_BYTES);
+    if (did === "did:a") {
+      await expect(store.hold({ ...heldInput(did, 1, "y".repeat(1_000_000)), sourceId: "did:a-overflow" }))
+        .rejects.toMatchObject({ code: "held_result_persistence_failed", reason: "store_full" });
+      expect(await store.readHeld("did:a-overflow")).toBeNull();
+    }
+  }
+  const fifth = createHeldResultStore("did:e", { env });
+  await expect(fifth.hold({ ...heldInput("did:e", 1, "🪐".repeat(1_000_000)), sourceId: "did:e-overflow" }))
+    .rejects.toMatchObject({ code: "held_result_persistence_failed", reason: "store_full" });
+  expect(await fifth.readHeld("did:e-overflow")).toBeNull();
+  let totalBytes = 0;
+  for (const did of ["did:a", "did:b", "did:c", "did:d"]) {
+    const store = createHeldResultStore(did, { env });
+    totalBytes += (await store.listHeld()).reduce((bytes, row) => bytes + row.bytes, 0);
+  }
+  expect(totalBytes).toBeLessThanOrEqual(MAX_HELD_TOTAL_BYTES);
+  for (const { did, sourceId, holdId, hash } of accepted) {
+    const row = await createHeldResultStore(did, { env }).readHeld(sourceId);
+    expect(row).toMatchObject({ holdId, hash, transcript: { sentences: [{ text: dense }] } });
+  }
 });

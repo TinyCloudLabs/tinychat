@@ -4095,13 +4095,22 @@ describe("every path that creates or resumes an off-phone job consults the hold 
     const unmount = mountVoiceNoteAccount(did);
     const spaceId = "space:test";
     (tcw as { spaceId?: string }).spaceId = spaceId;
+    const originalDb = tcw.sql.db.bind(tcw.sql);
+    let verificationReads = 0;
+    tcw.sql.db = ((name: string) => {
+      const db = originalDb(name);
+      return { ...db, query: async (sql: string, params?: unknown[], options?: unknown) => {
+        if (sql.includes("voice_note_transcript")) verificationReads++;
+        return db.query(sql, params as never, options as never);
+      } };
+    }) as TestTcw["sql"]["db"];
     let historyReads = 0;
     (tcw.kv as unknown as { get: () => Promise<never> }).get = async () => {
       historyReads++;
       throw new Error("unexpected history read");
     };
     const held = createHeldResultStore(did, { env: newIdbEnv(), isSignedIn: async () => true });
-    await held.hold({
+    const receipt = await held.hold({
       version: 1, did, spaceId, sourceId: "rec-1", engine: "private-cloud",
       transcript: prepareVoiceNoteTranscript(TRANSCRIPT, "2026-10-15T00:00:00.000Z", 1),
       provider: null, intent: { kind: "rerun", base: { rev: 0, hash: "base-hash" } },
@@ -4113,8 +4122,19 @@ describe("every path that creates or resumes an off-phone job consults the hold 
       await expect(held.saveHeldFirst(wrongIdentity, "rec-1", {
         save: async () => { throw new Error("unexpected save"); }, afterCommit: async () => {},
       }, "automatic")).rejects.toMatchObject({ code: "voice_note_account_mismatch" });
+      await expect(held.discard(wrongIdentity, "rec-1", receipt.holdId, "user_discarded"))
+        .rejects.toMatchObject({ code: "voice_note_account_mismatch" });
+      await expect(held.discard(wrongIdentity, "rec-1", receipt.holdId, "committed_at_or_above"))
+        .rejects.toMatchObject({ code: "voice_note_account_mismatch" });
     }
     expect(historyReads).toBe(0);
+    expect(verificationReads).toBe(0);
+    const exactTranscript = prepareVoiceNoteTranscript(TRANSCRIPT, "2026-10-15T00:00:00.000Z", 1);
+    expect(await held.readHeld("rec-1")).toMatchObject({
+      holdId: receipt.holdId, did, spaceId,
+      hash: await transcriptHash(exactTranscript.sentences), transcript: exactTranscript,
+    });
+    tcw.sql.db = originalDb as TestTcw["sql"]["db"];
     expect(await held.readHeld("rec-1")).toMatchObject({ intent: { kind: "rerun" } });
     unmount();
   });
@@ -7280,6 +7300,95 @@ test("held recovery stays done when best-effort provider deletion fails", async 
     expect(await held.readHeld("rec-1")).toBeNull();
     expect(h.calls).toContain(`remove:${ID}`);
     expect(transcriber.snapshot().jobs.get("rec-1")).toMatchObject({ kind: "done" });
+  } finally {
+    unmount();
+  }
+});
+
+test("missing space identity refuses the durable claim but continues the in-memory transcript save", async () => {
+  const space = sqliteSpace();
+  const tcw = typedTcw(space);
+  const did = tcw.did;
+  const unmount = mountVoiceNoteAccount(did);
+  try {
+    (tcw as { spaceId?: string }).spaceId = "space:test";
+    expect((await saveVoiceNote(tcw as never, RECORDING, AUDIO, "ios")).ok).toBe(true);
+    (tcw as { spaceId?: string }).spaceId = "";
+    const transcript = prepareVoiceNoteTranscript(TRANSCRIPT, "2026-10-15T00:00:00Z", 1);
+    const held = createHeldResultStore(did, { env: newIdbEnv(), isSignedIn: async () => true });
+    const originalHold = held.hold;
+    let holdRefusal: unknown;
+    held.hold = async (input) => originalHold(input).catch((error: unknown) => {
+      holdRefusal = error;
+      throw error;
+    });
+    const h = harness({});
+    let saves = 0;
+    let finishes = 0;
+    const committed = await commitPreparedVoiceNoteTranscript({
+      tcw, cloud: h.cloud, sourceId: "rec-1", transcript, held,
+      holdInput: {
+        version: 1, did, spaceId: "", sourceId: "rec-1", engine: "private-cloud",
+        transcript, provider: { transcriptionId: ID }, intent: { kind: "unknown" },
+      },
+      save: async () => {
+        saves++;
+        expect((await saveVoiceNoteTranscript(tcw, "rec-1", transcript)).ok).toBe(true);
+      },
+      finish: async () => {
+        expect(await readTranscriptCommit(tcw, "rec-1")).toMatchObject({ rev: 1 });
+        finishes++;
+      },
+      stillCurrent: () => true,
+    });
+    expect(holdRefusal).toMatchObject({ code: "held_result_persistence_failed", reason: "no_space" });
+    expect({ saves, finishes }).toEqual({ saves: 1, finishes: 1 });
+    expect(committed).toMatchObject({ rev: 1, hash: await transcriptHash(transcript.sentences) });
+    expect(await held.readHeld("rec-1")).toBeNull();
+    expect(await held.listHeld()).toEqual([]);
+    expect(held.heldHint("rec-1")).toBe(false);
+    expect(h.creates).toHaveLength(0);
+  } finally {
+    unmount();
+  }
+});
+
+test("nonexplicit cleanup cannot discard an uncommitted held result", async () => {
+  const space = sqliteSpace();
+  const tcw = typedTcw(space);
+  const did = tcw.did;
+  const unmount = mountVoiceNoteAccount(did);
+  try {
+    (tcw as { spaceId?: string }).spaceId = "space:test";
+    expect((await saveVoiceNote(tcw as never, RECORDING, AUDIO, "ios")).ok).toBe(true);
+    const env = newIdbEnv();
+    const held = createHeldResultStore(did, { env, isSignedIn: async () => true });
+    const other = createHeldResultStore("did:test:other", { env, isSignedIn: async () => true });
+    const transcript = prepareVoiceNoteTranscript(TRANSCRIPT, "2026-10-15T00:00:00Z", 1);
+    const receipt = await held.hold({
+      version: 1, did, spaceId: "space:test", sourceId: "rec-1", engine: "private-cloud",
+      transcript, provider: { transcriptionId: ID }, intent: { kind: "unknown" },
+    });
+    const otherReceipt = await other.hold({
+      version: 1, did: "did:test:other", spaceId: "space:test", sourceId: "rec-1", engine: "private-cloud",
+      transcript, provider: { transcriptionId: ID2 }, intent: { kind: "unknown" },
+    });
+    const original = await held.readHeld("rec-1");
+    expect(original).not.toBeNull();
+    expect(await readTranscriptCommit(tcw, "rec-1")).toBeNull();
+    await held.discard(tcw, "rec-1", receipt.holdId, "committed_at_or_above");
+    await held.discard(tcw, "rec-1", receipt.holdId, "note_gone");
+    expect(await held.readHeld("rec-1")).toMatchObject({
+      holdId: receipt.holdId, hash: original!.hash, provider: { transcriptionId: ID },
+    });
+    expect(await other.readHeld("rec-1")).toMatchObject({
+      holdId: otherReceipt.holdId, provider: { transcriptionId: ID2 },
+    });
+    await held.discard(tcw, "rec-1", receipt.holdId, "user_discarded");
+    expect(await held.readHeld("rec-1")).toBeNull();
+    expect(await other.readHeld("rec-1")).toMatchObject({
+      holdId: otherReceipt.holdId, provider: { transcriptionId: ID2 },
+    });
   } finally {
     unmount();
   }
