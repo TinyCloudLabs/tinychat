@@ -123,13 +123,12 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
   // subscription so the reopened renderer can adopt and stop the live session.
   let initialNative = await bridge.invoke<NativeStatus>("recorder_status");
   if (initialNative.id && await store.hasTombstone(initialNative.id)) {
-    // A previous renderer died after tombstoning Discard. Finish its native
-    // stop before sweeping the file, so the recorder cannot recreate it.
-    const id = initialNative.id;
-    await bridge.invoke("recorder_stop");
-    await store.sweepTombstones();
-    await bridge.invoke("recorder_acknowledge", { id });
-    initialNative = await bridge.invoke<NativeStatus>("recorder_status");
+    // A previous renderer died after tombstoning Discard. Use the bounded,
+    // snapshot-independent path; keep deferred source files until release.
+    initialNative = await bridge.invoke<NativeStatus>("recorder_discard_durable");
+    if (!initialNative.captureSourceUnconfirmed && !initialNative.discardCleanupPending) {
+      await store.sweepTombstones();
+    }
   }
   const listeners = new Map<EventName, Set<Listener>>();
   const retained = new Map<EventName, unknown[]>();
@@ -212,6 +211,7 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
       options: session?.options,
       owner: session?.owner,
       transitionGen: session?.transitionGen ?? defaults!.transitionGen,
+      discardCleanupPending: native.discardCleanupPending ?? false,
       captureSourceUnconfirmed: native.captureSourceUnconfirmed ?? false,
     };
   };
@@ -224,6 +224,10 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
       openSpan: session?.spans.find((span) => span.endedAt === null) ?? null,
       captureSourceUnconfirmed: native.captureSourceUnconfirmed ?? false,
     } satisfies MicStateEvent);
+    if (!native.captureSourceUnconfirmed && !native.discardCleanupPending) {
+      void store.sweepTombstones().catch((error: unknown) =>
+        console.warn("[VoiceNotes] Could not finish discarded-session cleanup", error));
+    }
   };
   const syncDurable = async (native: NativeStatus): Promise<void> => {
     const current = live;
@@ -373,11 +377,13 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
   };
 
   async function recoverInterrupted(): Promise<RecoveryResult> {
+    let deferTombstoneCleanup: boolean;
     let report: NativeRecoveryReport;
     try {
       const native = await bridge.invoke<NativeStatus>("recorder_status");
+      deferTombstoneCleanup = !!native.captureSourceUnconfirmed || !!native.discardCleanupPending;
       if (native.id) await adopt(native);
-      if (!live) for (const id of await bridge.invoke<string[]>("recorder_stopped_list")) {
+      if (!live && !deferTombstoneCleanup) for (const id of await bridge.invoke<string[]>("recorder_stopped_list")) {
         if (await store.hasTombstone(id)) await bridge.invoke("delete_audio_file", { id });
       }
       report = live ? { journal: null, quarantined: await nativeFailures() }
@@ -387,9 +393,9 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
       emit("recoveryFailed", failed);
       return { recovered: [], failed: [failed] };
     }
-    // Native recovery runs first. Sweep old Discard tombstones before turning
-    // failures into sessions, since a tombstoned id must never be resurrected.
-    await store.sweepTombstones();
+    // Native recovery runs first. Do not sweep native files while the source
+    // is unconfirmed or its terminal discard is still awaiting safe cleanup.
+    if (!deferTombstoneCleanup) await store.sweepTombstones();
     const imported = [...new Map([report.journal, ...(report.stopped ?? [])].filter((entry): entry is NativeJournal => !!entry)
       .map((entry) => [entry.id, entry])).values()];
     const stoppedIds = new Set((report.stopped ?? []).map((entry) => entry.id));
@@ -642,14 +648,39 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
         if (!live) return { id: null };
         const id = live.session.id;
         await store.tombstoneSession(id);
-        // If native Stop fails, the tombstone remains durable. A later launch
-        // finishes the Stop before sweeping the file and its sources.
-        await bridge.invoke<NativeStatus>("recorder_stop");
-        try { await store.discardSession(id); await bridge.invoke("recorder_acknowledge", { id }); }
-        finally { releaseLive(); whisperQueue?.captureEnded(); }
+        let native: NativeStatus | null = null;
+        try {
+          native = await bridge.invoke<NativeStatus>("recorder_discard_durable");
+        } catch (error) {
+          console.warn("[VoiceNotes] Native durable Discard did not finish; keeping the tombstone", error);
+          try { native = await bridge.invoke<NativeStatus>("recorder_status"); }
+          catch (statusError) {
+            console.warn("[VoiceNotes] Could not confirm native Discard status", statusError);
+          }
+        }
+        const deferCleanup = !native || !!native.captureSourceUnconfirmed || !!native.discardCleanupPending;
+        if (!deferCleanup) {
+          try {
+            await store.discardSession(id);
+            await bridge.invoke("recorder_acknowledge", { id });
+          } catch (error) {
+            console.warn("[VoiceNotes] Discard tombstone will finish cleanup later", error);
+          }
+        }
+        const session = live.session;
+        releaseLive();
+        whisperQueue?.captureEnded();
         const url = urls.get(id);
         if (url) { URL.revokeObjectURL(url); urls.delete(id); }
-        emitMic(await bridge.invoke<NativeStatus>("recorder_status"));
+        if (native) {
+          emitMic(native);
+        } else {
+          emit("micState", {
+            state: "needs_user", reason: "status_unknown", at: now(), id: null,
+            audioMs: session.audioMs, elapsedMs: session.audioMs, pausedMs: session.pausedMs,
+            captureSourceUnconfirmed: true,
+          } satisfies MicStateEvent);
+        }
         return { id };
       });
     },

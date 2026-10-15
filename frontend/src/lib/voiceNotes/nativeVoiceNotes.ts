@@ -206,6 +206,8 @@ export interface CaptureStatus {
   transitionGen: number; androidSdkInt?: number;
   /** True after bounded Stop lacks release evidence; CoreAudio clears it only when all inputs Exo used stop running somewhere. */
   captureSourceUnconfirmed?: boolean;
+  /** Deferred native source cleanup remains until the input is released or Exo restarts. */
+  discardCleanupPending?: boolean;
   /** Android shortcut recovery, queried without consuming a retained event. */
   micDeniedPresentation?: boolean;
   shortcutRecordPending?: boolean;

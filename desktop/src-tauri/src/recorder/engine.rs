@@ -41,6 +41,7 @@ pub struct EngineState {
     active_input_devices: Option<Vec<u32>>,
     unconfirmed_input_devices: Option<Vec<u32>>,
     snapshot_issue: Option<&'static str>,
+    pending_discard_cleanup: Vec<(String, Option<String>)>,
 }
 
 #[derive(Serialize, Clone, Copy)]
@@ -85,18 +86,55 @@ pub fn install(app: &tauri::AppHandle) {
             ticker.tick().await;
             if Instant::now() >= next_release_check {
                 next_release_check = Instant::now() + Duration::from_secs(2);
-                let status = {
+                let (status, cleanup) = {
                     let engine = handle.state::<Engine>();
                     let mut state = engine.0.lock();
                     let running = input_devices_running_somewhere(state.unconfirmed_input_devices.as_deref());
                     if capture_source_release_observed(state.capture_source_unconfirmed, running) {
                         state.capture_source_unconfirmed = false;
                         state.unconfirmed_input_devices = Some(Vec::new());
-                        Some(state.status())
+                        let cleanup = state.pending_discard_cleanup.clone();
+                        (Some(state.status()), (!cleanup.is_empty()).then_some(cleanup))
                     } else {
-                        None
+                        (None, None)
                     }
                 };
+                if let Some(cleanup) = cleanup {
+                    let cleanup_handle = handle.clone();
+                    tauri::async_runtime::spawn_blocking(move || {
+                        let result = super::with_import_lock(|| {
+                            let sessions = files::sessions_root(&cleanup_handle)?;
+                            for (id, segment_id) in &cleanup {
+                                if let Some(segment_id) = segment_id.as_deref() {
+                                    let source = sessions.join(segment_id);
+                                    if source.exists() {
+                                        files::remove_source_session(&sessions, segment_id)?;
+                                    }
+                                }
+                                journal::clear_stopped(&cleanup_handle, id)?;
+                            }
+                            super::refresh_finishing_quit(&cleanup_handle)
+                        });
+                        if let Err(error) = result {
+                            tracing::warn!(target: "exo_dev::recorder", count = cleanup.len(), %error,
+                                "Could not clean discarded sources after release confirmation");
+                            return;
+                        }
+                        let status = {
+                            let engine = cleanup_handle.state::<Engine>();
+                            let mut state = engine.0.lock();
+                            if state.pending_discard_cleanup == cleanup {
+                                state.pending_discard_cleanup.clear();
+                                Some(state.status())
+                            } else {
+                                None
+                            }
+                        };
+                        if let Some(status) = status {
+                            let _ = cleanup_handle.emit(MIC_EVENT, status);
+                        }
+                    });
+                }
                 if let Some(status) = status {
                     let _ = handle.emit(MIC_EVENT, status);
                 }
@@ -186,6 +224,7 @@ pub struct CaptureStatus {
     elapsed_at: u64,
     spans: Vec<journal::MissingAudioSpan>,
     capture_source_unconfirmed: bool,
+    discard_cleanup_pending: bool,
 }
 
 fn now_ms() -> u64 {
@@ -380,6 +419,32 @@ fn capture_source_release_observed(unconfirmed: bool, device_running: Option<boo
     unconfirmed && device_running == Some(false)
 }
 
+fn retain_unconfirmed_input_devices(state: &mut EngineState) {
+    if !state.capture_source_unconfirmed {
+        state.unconfirmed_input_devices = Some(Vec::new());
+    }
+    match state.active_input_devices.take() {
+        Some(devices) if !devices.is_empty() => {
+            if let Some(unconfirmed) = state.unconfirmed_input_devices.as_mut() {
+                for device in devices {
+                    if !unconfirmed.contains(&device) {
+                        unconfirmed.push(device);
+                    }
+                }
+            }
+        }
+        Some(_) if !state.capture_source_unconfirmed => {
+            state.unconfirmed_input_devices = None;
+        }
+        Some(_) => {}
+        None if !state.capture_source_unconfirmed => {
+            state.unconfirmed_input_devices = None;
+        }
+        None => {}
+    }
+    state.capture_source_unconfirmed = true;
+}
+
 
 /// Monotonic clock for the recorder state machine. Only differences are used.
 fn mono_ms() -> u64 {
@@ -477,6 +542,7 @@ impl EngineState {
             elapsed_at: at,
             spans: self.spans.clone(),
             capture_source_unconfirmed: self.capture_source_unconfirmed,
+            discard_cleanup_pending: !self.pending_discard_cleanup.is_empty(),
         }
     }
 }
@@ -644,13 +710,14 @@ pub async fn recorder_start(
             .clamp(MIN_DURATION_MS, MAX_DURATION_MS);
         state.auto_stop_requested = false;
         state.snapshot_issue = None;
+        state.last_stop_reason = None;
         cleanup?;
         state.status()
     };
     reset_meter(&app);
     emit_status(&app);
     if let Some(id) = status.id.as_deref() {
-        tracing::info!(target: "exo_dev::recorder", kind = "pipeline", source_id = %id, operation = "recorder", phase = "done");
+        tracing::info!(target: "exo_dev::recorder", source_id = %id, operation = "recorder", phase = "done");
     }
     Ok(status)
 }
@@ -1313,25 +1380,7 @@ pub async fn recorder_stop_durable(app: tauri::AppHandle) -> Result<CaptureStatu
                     if final_attempt {
                         stop_at = attempt_at;
                         elapsed = state.recorder.segment_ms(attempt_at);
-                        if !state.capture_source_unconfirmed {
-                            state.unconfirmed_input_devices = Some(Vec::new());
-                        }
-                        match state.active_input_devices.take() {
-                            Some(devices) if !devices.is_empty() => {
-                                if let Some(unconfirmed) = state.unconfirmed_input_devices.as_mut() {
-                                    for device in devices {
-                                        if !unconfirmed.contains(&device) {
-                                            unconfirmed.push(device);
-                                        }
-                                    }
-                                }
-                            }
-                            None if !state.capture_source_unconfirmed => {
-                                state.unconfirmed_input_devices = None;
-                            }
-                            None => {}
-                        }
-                        state.capture_source_unconfirmed = true;
+                        retain_unconfirmed_input_devices(&mut state);
                         debug_assert!(state.recorder.can_finish_unconfirmed());
                     }
                 }
@@ -1458,6 +1507,149 @@ pub async fn recorder_stop_durable(app: tauri::AppHandle) -> Result<CaptureStatu
     };
     tracing::info!(target: "exo_dev::recorder", kind = "pipeline", source_id = %id,
         operation = "recorder", phase = "source_durable");
+    emit_status(&app);
+    Ok(status)
+}
+
+#[tauri::command]
+pub async fn recorder_discard_durable(app: tauri::AppHandle) -> Result<CaptureStatus, String> {
+    super::ensure(&app);
+    let (id, segment_id, already_closed) = {
+        let engine = app.state::<Engine>();
+        let mut state = engine.0.lock();
+        if state.busy {
+            return Err("recorder_busy".into());
+        }
+        let id = state.id.clone().ok_or("no_recording")?;
+        let step = native_step(&state, Request::Stop)?;
+        let segment_id = state.segment_id.clone();
+        state.busy = true;
+        (id, segment_id, step == Step::Done)
+    };
+
+    let mut finalized = already_closed || segment_id.is_none();
+    if let Some(segment_id) = segment_id.as_deref() {
+        for attempt in 1..=DURABLE_STOP_ATTEMPT_BUDGET {
+            let stop_succeeded = !source_never_stops_failpoint()
+                && tokio::time::timeout(Duration::from_secs(5), app.listener().stop_capture())
+                    .await
+                    .is_ok_and(|result| result.is_ok());
+            let finalized_now = if stop_succeeded {
+                tokio::time::timeout(Duration::from_secs(5), app.listener().get_capture_snapshot())
+                    .await
+                    .ok()
+                    .and_then(Result::ok)
+                    .is_some_and(|snapshot| {
+                        snapshot.active_session_id.as_deref() != Some(segment_id)
+                            && !snapshot.finalizing_session_ids.iter().any(|id| id == segment_id)
+                    })
+            } else {
+                false
+            };
+            let attempt_at = mono_ms();
+            let engine = app.state::<Engine>();
+            let mut state = engine.0.lock();
+            if finalized_now {
+                let _ = state
+                    .recorder
+                    .stop_outcome(attempt_at, Stop::SessionFinalized);
+                finalized = true;
+                break;
+            }
+            let _ = state.recorder.stop_outcome(
+                attempt_at,
+                Stop::Stalled(Stall::SourceStillRunning),
+            );
+            if attempt == DURABLE_STOP_ATTEMPT_BUDGET {
+                retain_unconfirmed_input_devices(&mut state);
+            }
+        }
+    }
+
+    let stop_at = mono_ms();
+    let (source_unconfirmed, keep_native_source, recorded_ms, paused_ms) = {
+        let engine = app.state::<Engine>();
+        let state = engine.0.lock();
+        let elapsed = state.recorder.segment_ms(stop_at);
+        (
+            state.capture_source_unconfirmed,
+            state.capture_source_unconfirmed || !finalized,
+            state
+                .recorder
+                .recorded_ms()
+                .saturating_add(if finalized { 0 } else { elapsed }),
+            state.recorder.status(stop_at).paused_ms,
+        )
+    };
+
+    let handle = app.clone();
+    let journal_id = id.clone();
+    let journal_segment_id = segment_id.clone();
+    let journal_result = run_segment_import(move || {
+        let mut pointer = journal::load(&handle)?.ok_or("capture_journal_missing")?;
+        if pointer.id != journal_id || pointer.segment_id != journal_segment_id {
+            return Err("capture_journal_mismatch".into());
+        }
+        pointer.recorded_ms = recorded_ms;
+        pointer.paused_ms = paused_ms;
+        pointer.capture_source_unconfirmed = source_unconfirmed;
+        if keep_native_source {
+            journal::save_stopped(&handle, &pointer)?;
+        } else if let Some(segment_id) = journal_segment_id.as_deref() {
+            files::remove_source_session(&files::sessions_root(&handle)?, segment_id)?;
+        }
+        journal::clear_active_if_matches(&handle, &journal_id)?;
+        if !keep_native_source {
+            journal::clear_stopped(&handle, &journal_id)?;
+        }
+        super::refresh_finishing_quit(&handle)
+    })
+    .await;
+    if let Err(error) = journal_result {
+        clear_busy(&app);
+        emit_status(&app);
+        return Err(error);
+    }
+
+    let status = {
+        let engine = app.state::<Engine>();
+        let mut state = engine.0.lock();
+        if !finalized {
+            let _ = state.recorder.finish_unconfirmed(stop_at);
+        }
+        let _ = state.recorder.finish();
+        state.busy = false;
+        state.id = None;
+        state.layout = journal::Layout::Mono;
+        state.started_at = None;
+        state.segment_id = None;
+        state.active_input_devices = None;
+        state.spans.clear();
+        state.snapshot_issue = None;
+        state.last_stop_reason = None;
+        if !state.capture_source_unconfirmed {
+            state.unconfirmed_input_devices = Some(Vec::new());
+        }
+        if keep_native_source {
+            let cleanup = (id.clone(), segment_id.clone());
+            if !state.pending_discard_cleanup.contains(&cleanup) {
+                state.pending_discard_cleanup.push(cleanup);
+            }
+        }
+        let mut status = state.status();
+        status.state = "idle";
+        status.id = None;
+        status.intent = if state.capture_source_unconfirmed {
+            "recording"
+        } else {
+            "stopped"
+        };
+        status.reason = None;
+        status.audio_ms = 0;
+        status.elapsed_ms = 0;
+        status.discard_cleanup_pending = !state.pending_discard_cleanup.is_empty();
+        status
+    };
     emit_status(&app);
     Ok(status)
 }

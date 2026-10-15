@@ -21,7 +21,7 @@ afterEach(() => {
   cleanupDom = undefined;
 });
 
-test("warning remains across navigation and disappears when native status clears it", async () => {
+test("warning remains across navigation and every save outcome until native status clears it", async () => {
   cleanupDom = installDom();
   const host = document.createElement("div");
   document.body.append(host);
@@ -38,10 +38,15 @@ test("warning remains across navigation and disappears when native status clears
       </MemoryRouter>
     </StaticRecorderProvider>,
   ));
+  const expected = "The microphone Exo used may still be in use. This warning clears when macOS reports that input is no longer running or Exo restarts; another app using the same input can keep it on.";
 
-  await render(true);
-  expect(host.querySelector('[data-testid="capture-source-unconfirmed"]')?.textContent).toContain("The recording was saved.");
-  expect(host.querySelector('[role="status"]')).not.toBeNull();
+  for (const saveOutcome of ["before commit", "after commit", "after discard"]) {
+    await render(true);
+    const warning = host.querySelector('[data-testid="capture-source-unconfirmed"]');
+    expect(warning?.textContent, saveOutcome).toBe(expected);
+    expect(warning?.textContent, saveOutcome).not.toContain("saved");
+    expect(host.querySelector('[role="status"]')).not.toBeNull();
+  }
   await act(async () => host.querySelector("a")?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, button: 0 })));
   expect(host.querySelector('[data-testid="route"]')?.textContent).toBe("/library");
   expect(host.querySelector('[data-testid="capture-source-unconfirmed"]')).not.toBeNull();

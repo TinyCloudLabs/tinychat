@@ -32,10 +32,13 @@ class FakeBridge implements DesktopBridge {
   channels: 1 | 2 = 1;
   state: "idle" | "recording" | "paused" | "needs_user" = "idle";
   reason: "writer_stalled" | "source_still_running" | "source_unusable" | "snapshot_unavailable" | "snapshot_empty" | null = null;
+  lastStopReason: string | null = null;
   captureSourceUnconfirmed = false;
   unconfirmedStop = false;
   snapshotFailureCount = 0;
   emptySnapshotCount = 0;
+  discardNeverStops = false;
+  discardCleanupPending = false;
   selectedId: string | null = null;
   selectedModel: string | null = null;
   downloadedModels = new Set<string>();
@@ -51,11 +54,12 @@ class FakeBridge implements DesktopBridge {
     for (const callback of this.listeners.get(event) ?? []) callback(payload as never);
   }
   status() {
-    return { state: this.state, reason: this.reason ?? (this.state === "paused" ? "user" : null), id: this.current,
+    return { state: this.state, reason: this.reason ?? (this.state === "paused" ? "user" : this.lastStopReason), id: this.current,
       startedAt: this.current ? this.now : null, elapsedMs: this.elapsed, audioMs: this.elapsed, channels: this.channels,
       pausedMs: this.paused, maxDurationMs: 10_000, intent: this.state === "idle" ? "stopped" : this.state,
       availability: "available", at: this.now, elapsedAt: this.now, spans: this.spans,
-      captureSourceUnconfirmed: this.captureSourceUnconfirmed };
+      captureSourceUnconfirmed: this.captureSourceUnconfirmed,
+      discardCleanupPending: this.discardCleanupPending };
   }
   async listen<T>(event: string, callback: (payload: T) => void): Promise<() => void> {
     const set = this.listeners.get(event) ?? new Set<Callback>();
@@ -79,7 +83,7 @@ class FakeBridge implements DesktopBridge {
       case "recorder_failed_retry": this.failed = this.failed.filter((item) => item.id !== id); result = []; break;
       case "recorder_failed_delete": this.failed = this.failed.filter((item) => item.id !== id); result = null; break;
       case "recorder_start": if (this.recover) throw new Error("recovery_pending");
-        this.current = id; this.state = "recording"; this.reason = null; result = this.status(); this.emit("exo://recorder-mic-state", result); break;
+        this.current = id; this.state = "recording"; this.reason = null; this.lastStopReason = null; result = this.status(); this.emit("exo://recorder-mic-state", result); break;
       case "recorder_pause":
         if (this.failPause) {
           this.state = "needs_user";
@@ -121,6 +125,18 @@ class FakeBridge implements DesktopBridge {
         }
         this.state = "idle"; this.reason = null; this.current = null; this.elapsed = 0; this.paused = 0; this.channels = 1;
         this.emit("exo://recorder-mic-state", this.status()); break;
+      case "recorder_discard_durable":
+        if (this.current) this.stopped.push({ id: this.current, startedAt: this.now,
+          recordedMs: this.elapsed, pausedMs: this.paused, maxDurationMs: 3 * 60 * 60_000 });
+        if (this.discardNeverStops) {
+          this.captureSourceUnconfirmed = true;
+          this.discardCleanupPending = true;
+        } else {
+          this.captureSourceUnconfirmed = false;
+          this.discardCleanupPending = false;
+        }
+        this.state = "idle"; this.reason = null; this.current = null; this.elapsed = 0; this.paused = 0;
+        result = this.status(); this.emit("exo://recorder-mic-state", result); break;
       case "recorder_finish": if (this.finishGate) await this.finishGate;
         if (this.finishError) throw this.finishError;
         result = this.files.get(id)?.length ?? 0; break;
@@ -218,8 +234,8 @@ async function waitForAsync(check: () => Promise<boolean>): Promise<void> {
 const slow = (name: string, run: () => Promise<void>) => test(name, run, 30_000);
 
 function rig(bridge = new FakeBridge(), dbName = crypto.randomUUID(), env: IdbEnv = newIdbEnv(),
-  storeOptions: Partial<WebStoreOptions> = {}, id = "note-1") {
-  return openDesktopVoiceNotes({ bridge, now: () => bridge.now, newId: () => id,
+  storeOptions: Partial<WebStoreOptions> = {}, id: string | (() => string) = "note-1") {
+  return openDesktopVoiceNotes({ bridge, now: () => bridge.now, newId: typeof id === "function" ? id : () => id,
     storeOptions: { env, dbName, locks: memoryLocks(), decodeCheck: null, now: () => bridge.now, ...storeOptions } });
 }
 async function waitUntilRecorderReady(recorder: ReturnType<typeof createVoiceNoteRecorderController>): Promise<void> {
@@ -341,6 +357,11 @@ describe("desktop recorder adapter", () => {
       await waitForAsync(async () => (await engine.plugin.listPending()).recordings[0]?.ledger?.localAudio?.state === "ready");
       const note = (await engine.plugin.listPending()).recordings.find(({ id: noteId }) => noteId === id);
       expect(note).toMatchObject({ id, sizeBytes: captured.length, ledger: { localAudio: { state: "ready" } } });
+      expect(recorder.getState().captureSourceUnconfirmed).toBe(true);
+      expect(selectRecorderView(recorder.getState(), {
+        nowMs: bridge.now, elapsedMs: recorder.getState().elapsedMs, inputName: null,
+        silencedSinceMs: null, device: "mac", isDevelopmentOrTest: true,
+      })).toMatchObject({ ring: "idle" });
       expect(bridge.calls.filter((command) => command === "recorder_stop_durable")).toHaveLength(2);
       expect(bridge.calls.filter((command) => command === "recorder_finish")).toHaveLength(1);
       expect(base64ToBytes((await engine.plugin.readAudioChunk({
@@ -353,9 +374,10 @@ describe("desktop recorder adapter", () => {
     }
   });
 
-  test("zero-frame unconfirmed capture reports Nothing was recorded and creates no note", async () => {
+  test("zero-frame Try again retries; Done closes without saving and defers safe cleanup", async () => {
     const bridge = new FakeBridge();
-    bridge.emptySnapshotCount = 1;
+    bridge.emptySnapshotCount = 2;
+    bridge.discardNeverStops = true;
     const engine = await rig(bridge);
     __setVoiceNotesForTests(engine.plugin, { available: true });
     const recorder = createVoiceNoteRecorderController({
@@ -368,18 +390,88 @@ describe("desktop recorder adapter", () => {
     try {
       await waitUntilRecorderReady(recorder);
       await recorder.record();
+      const id = (await engine.plugin.status()).id!;
+      bridge.files.set(id, Uint8Array.of(7, 8, 9));
       bridge.elapsed = 10_000;
+      const selectView = () => selectRecorderView(recorder.getState(), {
+        nowMs: bridge.now, elapsedMs: recorder.getState().elapsedMs, inputName: null,
+        silencedSinceMs: null, device: "mac", isDevelopmentOrTest: true,
+      });
+
       await recorder.stop();
+      expect(selectView()).toMatchObject({
+        statusLine: "Nothing was recorded. Try again to check, or use Done to close without saving.",
+        tapRingAction: "stop",
+        doneAction: "discard",
+        controls: { stop: true, resume: false },
+      });
+      await recorder.stop();
+      expect(recorder.getState().phase).toBe("recording");
+      expect(bridge.calls.filter((command) => command === "recorder_stop_durable")).toHaveLength(2);
       expect((await engine.plugin.listPending()).recordings).toHaveLength(0);
-      expect(bridge.calls).not.toContain("recorder_finish");
+
+      await recorder.discard();
+      expect(recorder.getState()).toMatchObject({ phase: "idle", captureSourceUnconfirmed: true });
+      expect(selectView()).toMatchObject({ ring: "idle" });
+      expect(bridge.calls.filter((command) => command === "recorder_discard_durable")).toHaveLength(1);
+      expect(bridge.calls).not.toContain("recorder_stop");
+      expect(bridge.files.has(id)).toBe(true);
+      expect(bridge.stopped.some((entry) => entry.id === id)).toBe(true);
+      expect((await engine.plugin.listPending()).recordings).toHaveLength(0);
+
+      await expect(engine.plugin.start()).rejects.toThrow("tombstoned");
+      bridge.captureSourceUnconfirmed = false;
+      bridge.discardCleanupPending = false;
+      await engine.recoverInterrupted();
+      expect(bridge.files.has(id)).toBe(false);
+      expect(bridge.stopped.some((entry) => entry.id === id)).toBe(false);
+      expect((await engine.plugin.listPending()).recordings).toHaveLength(0);
+    } finally {
+      detach();
+      engine.dispose();
+      __setVoiceNotesForTests(originalVoiceNotes, { available: null });
+    }
+  });
+
+  test("discard after snapshot failure is terminal, tombstoned, and retried after release", async () => {
+    const bridge = new FakeBridge();
+    bridge.snapshotFailureCount = 1;
+    bridge.discardNeverStops = true;
+    const engine = await rig(bridge);
+    __setVoiceNotesForTests(engine.plugin, { available: true });
+    const recorder = createVoiceNoteRecorderController({
+      tcw: null,
+      available: true,
+      transcriber: { check: async () => {}, noteSaved: () => {} },
+      onDeviceReady: () => true,
+    });
+    const detach = recorder.attach();
+    try {
+      await waitUntilRecorderReady(recorder);
+      await recorder.record();
+      const id = (await engine.plugin.status()).id!;
+      bridge.files.set(id, Uint8Array.of(12, 13, 14));
+      await recorder.stop();
       expect(selectRecorderView(recorder.getState(), {
         nowMs: bridge.now, elapsedMs: recorder.getState().elapsedMs, inputName: null,
         silencedSinceMs: null, device: "mac", isDevelopmentOrTest: true,
-      })).toMatchObject({
-        statusLine: "Nothing was recorded. Try again to check, or use Done to stop.",
-        tapRingAction: "stop",
-        controls: { stop: true, resume: false },
-      });
+      }).statusLine).toContain("isn't saved yet");
+
+      await recorder.discard();
+      expect(recorder.getState()).toMatchObject({ phase: "idle", captureSourceUnconfirmed: true });
+      expect(bridge.calls).not.toContain("recorder_stop");
+      expect(bridge.calls.filter((command) => command === "recorder_discard_durable")).toHaveLength(1);
+      expect(bridge.files.has(id)).toBe(true);
+      expect(bridge.stopped.some((entry) => entry.id === id)).toBe(true);
+      expect((await engine.plugin.listPending()).recordings).toHaveLength(0);
+      await expect(engine.plugin.start()).rejects.toThrow("tombstoned");
+
+      bridge.captureSourceUnconfirmed = false;
+      bridge.discardCleanupPending = false;
+      await engine.recoverInterrupted();
+      expect(bridge.files.has(id)).toBe(false);
+      expect(bridge.stopped.some((entry) => entry.id === id)).toBe(false);
+      expect((await engine.plugin.listPending()).recordings).toHaveLength(0);
     } finally {
       detach();
       engine.dispose();
@@ -1151,20 +1243,24 @@ describe("desktop recorder adapter", () => {
     engine.dispose();
   });
 
-  test("discard writes its tombstone before native stop can fail", async () => {
+  test("discard stays terminal when native source stop exhausts its budget", async () => {
     const bridge = new FakeBridge();
     const env = newIdbEnv();
     const dbName = crypto.randomUUID();
     const engine = await rig(bridge, dbName, env);
     await engine.plugin.start();
     bridge.files.set("note-1", Uint8Array.of(1, 2, 3));
-    bridge.stopError = new Error("writer stopped responding");
-    await expect(engine.plugin.discard()).rejects.toThrow("writer stopped responding");
+    bridge.discardNeverStops = true;
+    await engine.plugin.discard();
     expect((await engine.plugin.listPending()).recordings).toHaveLength(0);
+    expect(bridge.calls).not.toContain("recorder_stop");
+    expect(bridge.calls).toContain("recorder_discard_durable");
+    expect(bridge.files.has("note-1")).toBe(true);
+    expect(bridge.stopped.some((entry) => entry.id === "note-1")).toBe(true);
     engine.dispose();
-    bridge.stopError = null;
+    bridge.captureSourceUnconfirmed = false;
+    bridge.discardCleanupPending = false;
     const reopened = await rig(bridge, dbName, env);
-    expect(bridge.state).toBe("idle");
     await reopened.recoverInterrupted();
     expect(bridge.files.has("note-1")).toBe(false);
     reopened.dispose();
@@ -1177,10 +1273,11 @@ describe("desktop recorder adapter", () => {
     const first = await rig(bridge, dbName, env);
     await first.plugin.start();
     bridge.files.set("note-1", Uint8Array.of(1, 2, 3));
-    bridge.stopError = new Error("interrupted stop");
-    await expect(first.plugin.discard()).rejects.toThrow("interrupted stop");
+    bridge.discardNeverStops = true;
+    await first.plugin.discard();
     first.dispose();
-    bridge.stopError = null;
+    bridge.captureSourceUnconfirmed = false;
+    bridge.discardCleanupPending = false;
     bridge.state = "idle"; bridge.current = null;
     const journal = { id: "note-1", startedAt: bridge.now, recordedMs: 500,
       pausedMs: 0, maxDurationMs: 10_000 };
@@ -1195,6 +1292,7 @@ describe("desktop recorder adapter", () => {
     expect(bridge.files.has("note-1")).toBe(false);
     reopened.dispose();
   });
+
   test("capabilities do not enable the mobile OnDeviceStt plugin", async () => {
     const engine = await rig();
     expect(engine.plugin.capabilities).toMatchObject({ localTranscription: false, background: true,
@@ -1393,6 +1491,66 @@ describe("desktop recorder adapter", () => {
     expect(auto).toHaveLength(1);
     expect((auto[0] as { recording: { durationMs: number; channels: number } }).recording).toMatchObject({ durationMs: 1500, channels: 2 });
     engine.dispose();
+  });
+
+  test("a new recording clears the prior max-duration reason through pause, resume, and remount", async () => {
+    const bridge = new FakeBridge();
+    const ids = ["note-auto", "note-next"];
+    const engine = await rig(bridge, crypto.randomUUID(), newIdbEnv(), {}, () => ids.shift()!);
+    __setVoiceNotesForTests(engine.plugin, { available: true });
+    const makeController = () => createVoiceNoteRecorderController({
+      tcw: null,
+      available: true,
+      transcriber: { check: async () => {}, noteSaved: () => {} },
+      onDeviceReady: () => true,
+    });
+    const recorder = makeController();
+    const detach = recorder.attach();
+    try {
+      await waitUntilRecorderReady(recorder);
+      await recorder.record();
+      bridge.files.set("note-auto", Uint8Array.of(1, 2, 3));
+      bridge.current = null;
+      bridge.state = "idle";
+      bridge.lastStopReason = "max_duration";
+      bridge.emit("exo://recorder-auto-stopped", { id: "note-auto", reason: "max_duration",
+        maxDurationMs: 10_000, at: bridge.now, elapsedMs: 1_500, pausedMs: 0, channels: 1 });
+      await waitFor(async () => (await engine.plugin.listPending()).recordings.some((item) =>
+        item.id === "note-auto" && item.ledger.localAudio.state === "ready"));
+      await waitFor(() => recorder.getState().phase === "idle");
+      await waitFor(() => recorder.getState().outcome !== null);
+      recorder.dismissOutcome();
+
+      await recorder.record();
+      expect(bridge.current).toBe("note-next");
+      expect(bridge.lastStopReason).toBeNull();
+      await recorder.pause();
+      expect(recorder.getState().mic).toMatchObject({ state: "paused", reason: "user" });
+      await recorder.resume();
+      expect(recorder.getState().mic).toMatchObject({ state: "recording", reason: null });
+      const view = () => selectRecorderView(recorder.getState(), {
+        nowMs: bridge.now, elapsedMs: recorder.getState().elapsedMs, inputName: null,
+        silencedSinceMs: null, device: "mac", isDevelopmentOrTest: true,
+      });
+      expect(view()).toMatchObject({ ring: "live", statusLine: null });
+
+      detach();
+      const remounted = makeController();
+      const detachRemounted = remounted.attach();
+      try {
+        await waitUntilRecorderReady(remounted);
+        expect(remounted.getState().mic).toMatchObject({ state: "recording", reason: null });
+        expect(selectRecorderView(remounted.getState(), {
+          nowMs: bridge.now, elapsedMs: remounted.getState().elapsedMs, inputName: null,
+          silencedSinceMs: null, device: "mac", isDevelopmentOrTest: true,
+        })).toMatchObject({ ring: "live", statusLine: null });
+      } finally {
+        detachRemounted();
+      }
+    } finally {
+      detach();
+      engine.dispose();
+    }
   });
 
   test("native interrupted segment imports before shared store recovery", async () => {

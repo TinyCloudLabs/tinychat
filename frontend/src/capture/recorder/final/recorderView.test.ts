@@ -249,6 +249,13 @@ describe("selectRecorderView: needs_user reason decisions", () => {
       controls: { stop: true, resume: false },
     });
   });
+  test("snapshot_empty maps Done to a terminal discard", () => {
+    expect(recordingView("needs_user", "snapshot_empty", { device: "mac" })).toMatchObject({
+      statusLine: "Nothing was recorded. Try again to check, or use Done to close without saving.",
+      doneAction: "discard",
+      tapRingAction: "stop",
+    });
+  });
 
 });
 

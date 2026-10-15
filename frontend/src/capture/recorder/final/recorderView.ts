@@ -37,6 +37,7 @@ export interface RecorderView {
   };
   micDenied: boolean;
   tapRingAction: "pause" | "resume" | "stop" | null;
+  doneAction?: "stop" | "discard";
   emphasis: "input" | "stop" | null;
 }
 
@@ -50,6 +51,7 @@ interface MicPresentation {
   stopEnabled?: boolean;
   emphasis?: RecorderView["emphasis"];
   tapRingAction?: RecorderView["tapRingAction"];
+  doneAction?: RecorderView["doneAction"];
 }
 
 const WARNING_WINDOW_MS = 10 * 60 * 1000;
@@ -296,6 +298,7 @@ function needsUserPresentation(
         ring: "still",
         stopEnabled: true,
         tapRingAction: "stop",
+        doneAction: "discard",
         emphasis: "stop",
       };
     case "status_unknown":
@@ -621,6 +624,7 @@ export function selectRecorderView(
     controls,
     micDenied: permissionDenied,
     tapRingAction: presentation.tapRingAction ?? (controls.resume ? "resume" : controls.pause ? "pause" : null),
+    doneAction: presentation.doneAction,
     emphasis: presentation.emphasis ?? null,
   };
 }
