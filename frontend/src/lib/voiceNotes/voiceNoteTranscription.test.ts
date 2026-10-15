@@ -6059,6 +6059,39 @@ test("ordinary Retry commits a valid held result before creating another PTX job
   expect(h.creates).toHaveLength(0);
   expect(await held.readHeld("rec-1")).toBeNull();
 });
+test("ordinary held-first Retry resolves transcribed when provider removal fails", async () => {
+  const space = sqliteSpace();
+  (space.tcw as { spaceId?: string }).spaceId = "space:test";
+  _resetConnectorSchemaMemoForTests();
+  expect((await saveVoiceNote(space.tcw as never, RECORDING, AUDIO, "ios")).ok).toBe(true);
+  const did = (space.tcw as { did: string }).did;
+  const held = createHeldResultStore(did, { env: newIdbEnv(), isSignedIn: async () => true });
+  await held.hold({
+    version: 1, did, spaceId: "space:test", sourceId: "rec-1", engine: "private-cloud",
+    transcript: prepareVoiceNoteTranscript(TRANSCRIPT, "2026-10-15T00:00:00Z", 1),
+    provider: { transcriptionId: ID }, intent: { kind: "unknown" },
+  });
+  const h = harness({ removeFails: true });
+  let commitAtFinish: unknown = null;
+  const cloud = {
+    ...h.cloud,
+    finish: async (sourceId: string, transcriptionId?: string | null) => {
+      commitAtFinish = await readTranscriptCommit(space.tcw, sourceId);
+      await h.cloud.finish(sourceId, transcriptionId);
+    },
+  };
+
+  const outcome = await transcribeVoiceNote({
+    tcw: space.tcw, cloud, capabilities: CAPS, held, explicit: true, sourceId: "rec-1", report: () => {},
+  }).then(() => "transcribed", (error: unknown) => error);
+  expect(commitAtFinish).toMatchObject({ rev: 1, outcome: "transcribed" });
+  expect(outcome).toBe("transcribed");
+  expect(await readTranscriptCommit(space.tcw, "rec-1")).toMatchObject({ rev: 1, outcome: "transcribed" });
+  expect(await held.readHeld("rec-1")).toBeNull();
+  expect(h.calls).toContain(`remove:${ID}`);
+  expect(h.creates).toHaveLength(0);
+});
+
 
 test("legacy held result commits when durable held-store access raises SecurityError", async () => {
   const space = sqliteSpace();

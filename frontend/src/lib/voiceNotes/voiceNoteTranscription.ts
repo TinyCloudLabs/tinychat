@@ -919,8 +919,12 @@ export async function commitPreparedVoiceNoteTranscript(args: {
         save: () => args.save(),
         afterCommit: async (committed) => {
           await args.cloud.stripLegacyHeld?.(args.sourceId, committed.transcript.rev, committed.hash);
-          await args.cloud.finish(args.sourceId,
-            committed.provider && "transcriptionId" in committed.provider ? committed.provider.transcriptionId : null);
+          try {
+            await args.cloud.finish(args.sourceId,
+              committed.provider && "transcriptionId" in committed.provider ? committed.provider.transcriptionId : null);
+          } catch (error) {
+            logPipelineError("Deleting a finished private cloud job failed; PTX deletes it on its own schedule", error);
+          }
         },
         stillCurrent: args.stillCurrent,
       }, args.mode ?? "automatic");
