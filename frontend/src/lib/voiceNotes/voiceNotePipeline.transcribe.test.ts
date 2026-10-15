@@ -12,7 +12,7 @@ import { createPrivateCloudApi, PrivateCloudError, type PrivateCloudCapabilities
 import type { SessionStore } from "@tinyboilerplate/client";
 import { advanceAccountGeneration, currentAccountGeneration } from "./accountContext";
 import { createFakeVoiceNotes } from "./fakeVoiceNotes";
-import { __setVoiceNotesForTests, VoiceNotes, type VoiceNoteRecording } from "./nativeVoiceNotes";
+import { __setVoiceNotesForTests, VoiceNotes, type LocalTranscript, type VoiceNoteRecording } from "./nativeVoiceNotes";
 import { createVoiceNotePipeline } from "./voiceNotePipeline";
 import { saveNote } from "./recordingNotes";
 import { voiceNoteAudioKvKey, voiceNoteMarkdownKvKey } from "./voiceNoteStore";
@@ -20,6 +20,10 @@ import { pendingStore, whenVoiceNoteSavesIdle } from "./recorderSaves";
 import { VoiceNoteSaveTimeout } from "./saveDeadline";
 import { createVoiceNoteRecorderController } from "@/capture/recorder/voiceNoteRecorderController";
 import { createVoiceNoteCloud, createVoiceNoteTranscriber, transcribeSavedNote, type VoiceNoteCloud, type VoiceNoteTranscriber } from "./voiceNoteTranscription";
+import { readTranscriptCommit } from "./voiceNoteCommits";
+import { onDeviceTranscriptSyncState, recordOnDeviceTranscript, subscribeOnDeviceTranscriptSync, syncOnDeviceTranscript } from "./onDeviceTranscriber";
+import { createVoiceNoteRow, resolveVoiceNoteRow } from "./voiceNoteRows";
+import { readVoiceNotePendingSnapshot } from "./voiceNotePendingSnapshot";
 
 const CAPS: PrivateCloudCapabilities = { max_bytes: 120_960_000, max_duration_seconds: 7_777, content_types: ["audio/wav"], admission: "open" };
 const original = VoiceNotes;
@@ -90,11 +94,12 @@ function transcriberWithRuns() {
   return { transcriber, runs, fail, finish };
 }
 
-async function setup(transcriberOption: "off" | "on-device" | "private-cloud") {
+async function setup(transcriberOption: "off" | "on-device" | "private-cloud",
+  transcriptRetryDelaysMs?: readonly number[]) {
   const fake = createFakeVoiceNotes();
   __setVoiceNotesForTests(fake.plugin, { available: true });
   const { tcw, values } = space();
-  const pipeline = createVoiceNotePipeline(tcw, { retryDelaysMs: [] });
+  const pipeline = createVoiceNotePipeline(tcw, { retryDelaysMs: [], transcriptPassCooldownMs: 0, transcriptRetryDelaysMs });
   const ctx = () => ({ did: tcw.did, spaceId: tcw.spaceId ?? tcw.did, generation: currentAccountGeneration() });
   let transitionGen = 0;
   const signInAs = (accountDid: string, transcriber = transcriberOption) =>
@@ -246,6 +251,356 @@ describe("a note saved by reconcileAll is handed to the transcriber", () => {
     await tick();
     expect(s.runs).toEqual([]);
   });
+});
+
+test("reconcileSavedDoneWithoutRenderedViewCommits", async () => {
+  const s = await setup("on-device");
+  const note = await s.recordFor(s.tcw.did);
+  await s.pipeline.reconcileAll(s.ctx());
+  const completed: LocalTranscript = {
+    version: 2, noteId: note.id, transcriber: "on-device", rev: 1,
+    engine: "apple-speech", model: null, language: "en", outcome: "transcribed", diarized: false,
+    segments: [{ start: 0, end: 1000, text: "synthetic spoken note", speaker: null }],
+    createdAt: "2026-10-15T00:00:00Z",
+  };
+  await s.fake.plugin.putTranscript!({ id: note.id, transcript: completed });
+  const listPending = s.fake.plugin.listPending.bind(s.fake.plugin);
+  __setVoiceNotesForTests({ ...s.fake.plugin, listPending: async () => ({
+    recordings: (await listPending()).recordings.map((entry) => entry.id === note.id
+      ? { ...entry, stt: { ...entry.stt!, state: "done" as const } } : entry),
+  }) }, { available: true });
+  await s.pipeline.reconcileAll(s.ctx());
+  const commit = await readTranscriptCommit(s.tcw, note.id);
+  expect(commit?.rev).toBe(1);
+  const body = await s.tcw.kv.get(commit!.bodyKey);
+  expect(body.ok && JSON.stringify(body.data.data)).toContain("synthetic spoken note");
+});
+
+test("overlapping reconciliation turns never inspect or sync the same revision concurrently", async () => {
+  const s = await setup("on-device");
+  const note = await s.recordFor(s.tcw.did);
+  await s.pipeline.process(s.ctx(), note.id);
+  await s.fake.plugin.putTranscript!({ id: note.id, transcript: {
+    version: 2, noteId: note.id, transcriber: "on-device", rev: 1, engine: "apple-speech",
+    model: null, language: "en", outcome: "no_speech", diarized: false, segments: [],
+    createdAt: "2026-10-15T00:00:00Z",
+  } });
+  const listPending = s.fake.plugin.listPending.bind(s.fake.plugin);
+  const getTranscript = s.fake.plugin.getTranscript.bind(s.fake.plugin);
+  const gate = Promise.withResolvers<void>();
+  const started = Promise.withResolvers<void>();
+  let reads = 0;
+  __setVoiceNotesForTests({ ...s.fake.plugin,
+    listPending: async () => ({ recordings: (await listPending()).recordings.map((entry) => entry.id === note.id
+      ? { ...entry, stt: { ...entry.stt!, state: "done" as const } } : entry) }),
+    getTranscript: async (args) => {
+      reads++;
+      if (reads === 1) { started.resolve(); await gate.promise; }
+      return getTranscript(args);
+    },
+  }, { available: true });
+  const first = s.pipeline.reconcileAll(s.ctx());
+  await started.promise;
+  const second = s.pipeline.reconcileAll(s.ctx());
+  try {
+    await tick();
+    expect(reads).toBe(1);
+  } finally { gate.resolve(); }
+  await Promise.all([first, second]);
+  expect((await readTranscriptCommit(s.tcw, note.id))?.rev).toBe(1);
+  s.pipeline.cancelAll();
+});
+
+test("saved audio without a row waits for row resolution before attempting its transcript", async () => {
+  const s = await setup("on-device");
+  const note = await s.recordFor(s.tcw.did);
+  const listPending = s.fake.plugin.listPending.bind(s.fake.plugin);
+  await s.fake.plugin.putTranscript!({ id: note.id, transcript: {
+    version: 2, noteId: note.id, transcriber: "on-device", rev: 1, engine: "apple-speech",
+    model: null, language: "en", outcome: "no_speech", diarized: false, segments: [],
+    createdAt: "2026-10-15T00:00:00Z",
+  } });
+  __setVoiceNotesForTests({ ...s.fake.plugin, listPending: async () => ({
+    recordings: (await listPending()).recordings.map((entry) => entry.id === note.id
+      ? { ...entry, ledger: { ...entry.ledger!, audio: { state: "saved" as const } },
+        stt: { ...entry.stt!, state: "done" as const } } : entry),
+  }) }, { available: true });
+  await s.pipeline.reconcileAll(s.ctx());
+  expect(onDeviceTranscriptSyncState(s.tcw, note.id)).toBeNull();
+  const current = (await VoiceNotes.listPending()).recordings.find((entry) => entry.id === note.id)!;
+  await createVoiceNoteRow(s.tcw, current, "Synthetic note", undefined, "ios");
+  await s.pipeline.reconcileAll(s.ctx());
+  expect((await readTranscriptCommit(s.tcw, note.id))?.rev).toBe(1);
+  s.pipeline.cancelAll();
+});
+
+test("foreground scan discovers a repaired durable sidecar without a transcribed callback", async () => {
+  const s = await setup("on-device");
+  const repaired = await s.recordFor(s.tcw.did);
+  await s.pipeline.process(s.ctx(), repaired.id);
+  await s.fake.plugin.putTranscript!({ id: repaired.id, transcript: {
+    version: 2, noteId: repaired.id, transcriber: "on-device", rev: 1, engine: "apple-speech",
+    model: null, language: "en", outcome: "no_speech", diarized: false, segments: [],
+    createdAt: "2026-10-15T00:00:00Z",
+  } });
+  const pending = await s.recordFor(s.tcw.did);
+  const listPending = s.fake.plugin.listPending.bind(s.fake.plugin);
+  const updateLedger = s.fake.plugin.updateLedger.bind(s.fake.plugin);
+  let repairedOnDisk = false;
+  __setVoiceNotesForTests({ ...s.fake.plugin,
+    listPending: async () => ({ recordings: (await listPending()).recordings.map((entry) => entry.id === repaired.id
+      ? { ...entry, stt: { ...entry.stt!, state: repairedOnDisk ? "done" as const : "running" as const } } : entry) }),
+    updateLedger: async (args) => {
+      const result = await updateLedger(args);
+      if (args.id === pending.id) repairedOnDisk = true;
+      return result;
+    },
+  }, { available: true });
+  await s.pipeline.reconcileAll(s.ctx());
+  expect(repairedOnDisk).toBe(true);
+  expect((await readTranscriptCommit(s.tcw, repaired.id))?.rev).toBe(1);
+  expect((await resolveVoiceNoteRow(s.tcw, repaired.id))?.metadata.transcription_outcome).toBe("no_speech");
+  expect(onDeviceTranscriptSyncState(s.tcw, repaired.id)).toMatchObject({ state: "synced" });
+  s.pipeline.cancelAll();
+});
+
+test("rowReceiptRefreshesSttAfterCASConflict", async () => {
+  const s = await setup("on-device");
+  await s.signInAs(s.tcw.did);
+  await s.fake.plugin.start({ uploadAudio: false });
+  const note = await s.fake.plugin.stop();
+  await s.fake.plugin.putTranscript!({ id: note.id, transcript: {
+    version: 2, noteId: note.id, transcriber: "on-device", rev: 1, engine: "apple-speech",
+    model: null, language: "en", outcome: "transcribed", diarized: false,
+    segments: [{ start: 0, end: 1000, text: "synthetic receipt case", speaker: null }],
+    createdAt: "2026-10-15T00:00:00Z",
+  } });
+  const listPending = s.fake.plugin.listPending.bind(s.fake.plugin);
+  const updateLedger = s.fake.plugin.updateLedger.bind(s.fake.plugin);
+  let conflict = true;
+  __setVoiceNotesForTests({ ...s.fake.plugin,
+    updateLedger: async (args) => {
+      if (conflict) { conflict = false; throw Object.assign(new Error("changed"), { code: "rev_conflict" }); }
+      return updateLedger(args);
+    },
+    listPending: async () => ({
+      recordings: (await listPending()).recordings.map((entry) => !conflict && entry.id === note.id
+        ? { ...entry, stt: { ...entry.stt!, state: "done" as const } } : entry),
+    }),
+  }, { available: true });
+  await s.pipeline.reconcileAll(s.ctx());
+  expect((await readTranscriptCommit(s.tcw, note.id))?.rev).toBe(1);
+});
+
+test("v1MissingTranscriptSyncAcknowledgesOrStaysUnrecorded", async () => {
+  const s = await setup("on-device");
+  const note = await s.recordFor(s.tcw.did);
+  await s.pipeline.reconcileAll(s.ctx());
+  await s.fake.plugin.putTranscript!({ id: note.id, transcript: {
+    version: 1, noteId: note.id, transcriber: "on-device", rev: 1, engine: "apple-speech",
+    model: null, language: "en", outcome: "transcribed", diarized: false,
+    segments: [{ start: 0, end: 1000, text: "synthetic imported note", speaker: null }],
+    createdAt: "2026-10-15T00:00:00Z",
+  } });
+  const listPending = s.fake.plugin.listPending.bind(s.fake.plugin);
+  const updateLedger = s.fake.plugin.updateLedger.bind(s.fake.plugin);
+  let acknowledged = false;
+  __setVoiceNotesForTests({ ...s.fake.plugin,
+    listPending: async () => ({ recordings: (await listPending()).recordings.map((entry) => entry.id !== note.id || acknowledged
+      ? entry : { ...entry, stt: { ...entry.stt!, state: "done" as const }, ledger: {
+        ...entry.ledger!, transcript: undefined, transcriptSync: undefined,
+      } as unknown as VoiceNoteRecording["ledger"] }) }),
+    updateLedger: async (args) => {
+      const result = await updateLedger(args);
+      if (args.patch.transcriptSync?.state === "saved") acknowledged = true;
+      return result;
+    },
+  }, { available: true });
+  await s.pipeline.reconcileAll(s.ctx());
+  expect((await readTranscriptCommit(s.tcw, note.id))?.rev).toBe(1);
+  expect(acknowledged).toBe(true);
+});
+
+test("receiptRepairRequiresMatchingRevisionOutcomeHashAndBody", async () => {
+  const s = await setup("on-device");
+  const note = await s.recordFor(s.tcw.did);
+  await s.pipeline.reconcileAll(s.ctx());
+  await s.fake.plugin.putTranscript!({ id: note.id, transcript: {
+    version: 2, noteId: note.id, transcriber: "on-device", rev: 1, engine: "apple-speech",
+    model: null, language: "en", outcome: "transcribed", diarized: false,
+    segments: [{ start: 0, end: 1000, text: "synthetic repairable body", speaker: null }],
+    createdAt: "2026-10-15T00:00:00Z",
+  } });
+  const saved = (await s.fake.plugin.listPending()).recordings.find((entry) => entry.id === note.id)!;
+  await s.fake.plugin.updateLedger({ id: note.id, did: s.tcw.did, rev: saved.rev!, patch: {
+    transcriptSync: { state: "saved", rev: 1, at: Date.now() },
+    transcript: { ...saved.ledger!.transcript, state: "done", outcome: "transcribed" },
+  } });
+  await recordOnDeviceTranscript(s.tcw, note.id, s.ctx());
+  expect((await readTranscriptCommit(s.tcw, note.id))?.rev).toBe(1);
+  const winner = await readTranscriptCommit(s.tcw, note.id);
+  const body = await s.tcw.kv.get(winner!.bodyKey);
+  expect(body.ok && JSON.stringify(body.data.data)).toContain("synthetic repairable body");
+});
+
+test("receipt repair restores a partial row mirror before acknowledging native saved receipt", async () => {
+  const s = await setup("on-device");
+  const note = await s.recordFor(s.tcw.did);
+  await s.pipeline.reconcileAll(s.ctx());
+  await s.fake.plugin.putTranscript!({ id: note.id, transcript: {
+    version: 2, noteId: note.id, transcriber: "on-device", rev: 1, engine: "apple-speech",
+    model: null, language: "en", outcome: "transcribed", diarized: false,
+    segments: [{ start: 0, end: 1000, text: "synthetic mirror recovery", speaker: null }],
+    createdAt: "2026-10-15T00:00:00Z",
+  } });
+  const saved = (await s.fake.plugin.listPending()).recordings.find((entry) => entry.id === note.id)!;
+  await syncOnDeviceTranscript(s.tcw, saved, s.ctx());
+  await s.tcw.sql.db(CONNECTORS_SQL_DB_NAME).execute(
+    `UPDATE connector_meeting SET metadata = json_patch(metadata, ?) WHERE source_id = ?`,
+    [JSON.stringify({ transcription_outcome: "pending", transcript_text: null, transcript_location: "device",
+      device_transcript: { state: "done", rev: 1, transcribed_at: "2026-10-15T00:00:00Z" } }), note.id]);
+  await recordOnDeviceTranscript(s.tcw, note.id, s.ctx());
+  const mirror = (await resolveVoiceNoteRow(s.tcw, note.id))?.metadata;
+  expect(mirror).toMatchObject({ transcription_outcome: "transcribed", transcript_text: "synthetic mirror recovery" });
+  expect(mirror?.transcript_location).toBeUndefined();
+});
+
+test("savedReceiptRevNStillSyncsLocalRerunNPlusOne", async () => {
+  const s = await setup("on-device");
+  const note = await s.recordFor(s.tcw.did);
+  await s.pipeline.reconcileAll(s.ctx());
+  const base: LocalTranscript = {
+    version: 2, noteId: note.id, transcriber: "on-device", rev: 1, engine: "apple-speech",
+    model: null, language: "en", outcome: "transcribed", diarized: false,
+    segments: [{ start: 0, end: 1000, text: "synthetic revision one", speaker: null }],
+    createdAt: "2026-10-15T00:00:00Z",
+  };
+  await s.fake.plugin.putTranscript!({ id: note.id, transcript: base });
+  const listPending = s.fake.plugin.listPending.bind(s.fake.plugin);
+  __setVoiceNotesForTests({ ...s.fake.plugin, listPending: async () => ({
+    recordings: (await listPending()).recordings.map((entry) => entry.id === note.id
+      ? { ...entry, stt: { ...entry.stt!, state: "done" as const } } : entry),
+  }) }, { available: true });
+  await s.pipeline.reconcileAll(s.ctx());
+  const first = await readTranscriptCommit(s.tcw, note.id);
+  expect(first?.rev).toBe(1);
+  await s.fake.plugin.putTranscript!({ id: note.id, transcript: {
+    ...base, rev: 2, rerunBase: { rev: 1, hash: first!.hash },
+    segments: [{ start: 0, end: 1000, text: "synthetic revision two", speaker: null }],
+  } });
+  await s.pipeline.reconcileAll(s.ctx());
+  const second = await readTranscriptCommit(s.tcw, note.id);
+  expect(second?.rev).toBe(2);
+  expect((await s.tcw.kv.get(second!.bodyKey)).data.data).toContain("synthetic revision two");
+});
+
+test("completedLocalArtifactBeforeCommitKeepsPendingMarkerAndVerifiedCommitClearsIt", async () => {
+  const s = await setup("on-device");
+  const note = await s.recordFor(s.tcw.did);
+  await s.pipeline.reconcileAll(s.ctx());
+  await s.fake.plugin.putTranscript!({ id: note.id, transcript: {
+    version: 2, noteId: note.id, transcriber: "on-device", rev: 1, engine: "apple-speech",
+    model: null, language: "en", outcome: "transcribed", diarized: false,
+    segments: [{ start: 0, end: 1000, text: "synthetic pending artifact", speaker: null }],
+    createdAt: "2026-10-15T00:00:00Z",
+  } });
+  const originalPut = s.tcw.kv.put.bind(s.tcw.kv);
+  let offline = true;
+  s.tcw.kv.put = (async (...args: Parameters<typeof originalPut>) => offline && args[0].includes("/transcript-rev/")
+    ? { ok: false, error: { code: "NETWORK_ERROR", message: "offline" } } as never
+    : originalPut(...args)) as typeof s.tcw.kv.put;
+  const saved = (await s.fake.plugin.listPending()).recordings.find((entry) => entry.id === note.id)!;
+  await syncOnDeviceTranscript(s.tcw, saved, s.ctx());
+  const pending = (await resolveVoiceNoteRow(s.tcw, note.id))?.metadata;
+  expect(pending).toMatchObject({ transcription_outcome: "pending", transcript_location: "device",
+    device_transcript: { state: "done", rev: 1 }, device_sync_error: expect.any(String) });
+  expect((await readTranscriptCommit(s.tcw, note.id))).toBeNull();
+  offline = false;
+  await syncOnDeviceTranscript(s.tcw, saved, s.ctx());
+  expect((await readTranscriptCommit(s.tcw, note.id))?.rev).toBe(1);
+  const committed = (await resolveVoiceNoteRow(s.tcw, note.id))?.metadata;
+  expect(committed).toMatchObject({ transcription_outcome: "transcribed" });
+  expect(committed?.transcript_location).toBeUndefined();
+  expect(committed?.device_transcript).toBeUndefined();
+  expect(committed?.device_sync_error).toBeUndefined();
+});
+
+test("foreground transcript turns continue past sixteen saved notes without another launch", async () => {
+  const s = await setup("on-device");
+  const ids: string[] = [];
+  for (let i = 0; i < 17; i++) {
+    const note = await s.recordFor(s.tcw.did);
+    ids.push(note.id);
+    await s.pipeline.process(s.ctx(), note.id);
+    await s.fake.plugin.putTranscript!({ id: note.id, transcript: {
+      version: 2, noteId: note.id, transcriber: "on-device", rev: 1, engine: "apple-speech",
+      model: null, language: "en", outcome: "transcribed", diarized: false,
+      segments: [{ start: 0, end: 1000, text: `synthetic ${i}`, speaker: null }],
+      createdAt: "2026-10-15T00:00:00Z",
+    } });
+  }
+  const listPending = s.fake.plugin.listPending.bind(s.fake.plugin);
+  __setVoiceNotesForTests({ ...s.fake.plugin, listPending: async () => ({
+    recordings: (await listPending()).recordings.map((entry) => ids.includes(entry.id)
+      ? { ...entry, stt: { ...entry.stt!, state: "done" as const } } : entry),
+  }) }, { available: true });
+  await s.pipeline.reconcileAll(s.ctx());
+  await tick();
+  await s.pipeline.quiescent(1000);
+  const committed = await Promise.all(ids.map((id) => readTranscriptCommit(s.tcw, id)));
+  expect(committed.filter((winner) => winner?.rev === 1)).toHaveLength(17);
+  s.pipeline.cancelAll();
+});
+
+test("reconcile publishes an owner-only inventory snapshot before its audio queue", async () => {
+  const s = await setup("on-device");
+  const mine = await s.recordFor(s.tcw.did);
+  await s.recordFor("did:test:another-owner");
+  await s.pipeline.reconcileAll(s.ctx());
+  await s.pipeline.quiescent(1000);
+  const report = await readVoiceNotePendingSnapshot(s.tcw, s.ctx());
+  expect(report).toMatchObject({ status: "fresh",
+    snapshot: { pending_row: 1, oldest_started_at: new Date(mine.startedAt).toISOString() } });
+  s.pipeline.cancelAll();
+});
+
+test("a transient transcript write retries without replaying saved audio", async () => {
+  const s = await setup("on-device", [10]);
+  const note = await s.recordFor(s.tcw.did);
+  await s.pipeline.process(s.ctx(), note.id);
+  const audioKeysBefore = [...s.values.keys()].filter((key) => key.includes(`/audio/${note.id}`));
+  await s.fake.plugin.putTranscript!({ id: note.id, transcript: {
+    version: 2, noteId: note.id, transcriber: "on-device", rev: 1, engine: "apple-speech",
+    model: null, language: "en", outcome: "transcribed", diarized: false,
+    segments: [{ start: 0, end: 1000, text: "synthetic retry", speaker: null }],
+    createdAt: "2026-10-15T00:00:00Z",
+  } });
+  const listPending = s.fake.plugin.listPending.bind(s.fake.plugin);
+  __setVoiceNotesForTests({ ...s.fake.plugin, listPending: async () => ({
+    recordings: (await listPending()).recordings.map((entry) => entry.id === note.id
+      ? { ...entry, stt: { ...entry.stt!, state: "done" as const } } : entry),
+  }) }, { available: true });
+  const originalPut = s.tcw.kv.put.bind(s.tcw.kv);
+  let failed = false;
+  s.tcw.kv.put = ((...args: Parameters<typeof originalPut>) => {
+    if (!failed && args[0].includes(`/transcript-rev/${note.id}/`)) {
+      failed = true;
+      return Promise.resolve({ ok: false, error: { code: "NETWORK_ERROR", message: "offline" } } as never);
+    }
+    return originalPut(...args);
+  }) as typeof s.tcw.kv.put;
+  const synced = Promise.withResolvers<void>();
+  const unsubscribe = subscribeOnDeviceTranscriptSync(() => {
+    if (onDeviceTranscriptSyncState(s.tcw, note.id)?.state === "synced") synced.resolve();
+  });
+  try {
+    await s.pipeline.reconcileAll(s.ctx());
+    // Exercises the foreground timer itself; no clock guess is used to decide success.
+    if (onDeviceTranscriptSyncState(s.tcw, note.id)?.state !== "synced") await synced.promise;
+    expect(failed).toBe(true);
+    expect((await readTranscriptCommit(s.tcw, note.id))?.rev).toBe(1);
+    expect([...s.values.keys()].filter((key) => key.includes(`/audio/${note.id}`))).toEqual(audioKeysBefore);
+  } finally { unsubscribe(); s.pipeline.cancelAll(); }
 });
 
 const PRIVATE_NOTE = { durationMs: 1000, source: "in_app" as const, options: { transcriber: "private-cloud" as const, identifySpeakers: false } };

@@ -12,7 +12,8 @@ import { SQL_MEETING_METADATA_QUERY } from "../meetingChat/corpus";
 import { legacyTranscriptWinner, readTranscriptCommit, voiceNoteTranscriptLocator } from "./voiceNoteCommits";
 import { whisperLocalTranscript } from "./desktop/whisperTranscript";
 import { commitVoiceNoteTranscript, createVoiceNoteRow, ensureVoiceNoteIdentity, patchVoiceNoteAudio,
-  patchVoiceNoteTranscriptionFailure, reconcileDuplicates, resolveVoiceNoteRow, sweepArchived, transcriptHash, transcriptRevKvKey } from "./voiceNoteRows";
+  patchVoiceNoteTranscriptionFailure, publishDeviceTranscriptArtifact, publishDeviceTranscriptProgress, reconcileDuplicates,
+  resolveVoiceNoteRow, sweepArchived, transcriptHash, transcriptRevKvKey } from "./voiceNoteRows";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 import { NoteDetailView } from "@/capture/library/NoteDetailView";
@@ -26,6 +27,7 @@ import { advanceAccountGeneration, currentAccountGeneration } from "./accountCon
 import { runOnSpaceLane, spaceLaneSnapshot, subscribeSpaceLane } from "../spaceWriteLane";
 import { setVoiceNoteSaveDeadlineForTests } from "./saveDeadline";
 import { putPendingSaveState, readPendingSaveStates } from "./pendingSaveState";
+import { __setBuildInfoForTests } from "../buildInfo";
 
 test("a healthy long drain does not consume the next save's call deadline", async () => {
   let releaseDrain!: () => void;
@@ -409,6 +411,72 @@ describe("voice-note identity and transcript authority", () => {
     expect(skipped.metadata.transcription_outcome).toBe("skipped");
     expect(sqlite.query("SELECT COUNT(*) AS count FROM connector_meeting WHERE source='exo-voice-note'").get())
       .toEqual({ count: 2 });
+  });
+
+  test("pendingQueuedIsNotPendingDeviceSync", async () => {
+    const { tcw } = space();
+    await ensureSchema(tcw);
+    const recording = { id: "queued-local", startedAt: 0, durationMs: 1000, mimeType: "audio/mp4",
+      sizeBytes: 1, silencedMs: 0, silencedEvents: 0, noSignalMs: 0,
+      options: { transcriber: "on-device" as const, identifySpeakers: false },
+      stt: { state: "waiting_for_model" as const, pack: null, engine: null,
+        segmentsDone: 0, windowsDone: 0, error: null } };
+    const row = await createVoiceNoteRow(tcw, recording, "Local queued");
+    expect(row.metadata).toMatchObject({ transcription_outcome: "pending",
+      device_transcript: { state: "waiting_for_model" } });
+    expect(row.metadata.transcript_location).toBeUndefined();
+    expect(await readVoiceNoteTranscriptState(tcw, recording.id)).toEqual({ status: "pending", preview: null });
+  });
+
+  test("completed Local silence clears its device marker only after the no-speech winner is readable", async () => {
+    const { tcw } = space();
+    const recording = { id: "silent-local", startedAt: 0, durationMs: 1000, mimeType: "audio/mp4",
+      sizeBytes: 1, silencedMs: 0, silencedEvents: 0, noSignalMs: 0 };
+    await createVoiceNoteRow(tcw, recording, "Silent Local");
+    await publishDeviceTranscriptArtifact(tcw, recording.id, {
+      version: 2, noteId: recording.id, transcriber: "on-device", rev: 1,
+      engine: "apple-speech", model: null, language: "en", outcome: "no_speech", diarized: false,
+      segments: [], createdAt: "2026-10-15T00:00:00Z",
+    });
+    expect((await resolveVoiceNoteRow(tcw, recording.id))?.metadata).toMatchObject({
+      transcription_outcome: "pending", transcript_location: "device" });
+    await commitVoiceNoteTranscript(tcw, recording.id, { rev: 1, outcome: "no_speech", text: null, sentences: [] });
+    const metadata = (await resolveVoiceNoteRow(tcw, recording.id))?.metadata;
+    expect(metadata).toMatchObject({ transcription_outcome: "no_speech" });
+    expect(metadata?.transcript_location).toBeUndefined();
+    expect(metadata?.device_transcript).toBeUndefined();
+    expect(await readVoiceNoteTranscriptState(tcw, recording.id)).toEqual({ status: "no_speech", preview: null });
+  });
+
+  test("explicit Local choice marks an existing Private row queued without claiming a completed artifact", async () => {
+    const { tcw } = space();
+    const recording = { id: "private-then-local", startedAt: 0, durationMs: 1000, mimeType: "audio/mp4",
+      sizeBytes: 1, silencedMs: 0, silencedEvents: 0, noSignalMs: 0,
+      options: { transcriber: "private-cloud" as const, identifySpeakers: false } };
+    await createVoiceNoteRow(tcw, recording, "Existing Private note");
+    await publishDeviceTranscriptProgress(tcw, recording.id, "queued");
+    const metadata = (await resolveVoiceNoteRow(tcw, recording.id))?.metadata;
+    expect(metadata).toMatchObject({ transcription_outcome: "pending", device_transcript: { state: "queued" } });
+    expect(metadata?.transcript_location).toBeUndefined();
+  });
+
+  test("writer build and native recording build remain separate in recovered rows", async () => {
+    const { tcw } = space();
+    __setBuildInfoForTests({ version: "0.8.0", build: "408", id: "xyz.tinycloud.exo.dev" });
+    try {
+      const fields = { startedAt: 0, durationMs: 1000, mimeType: "audio/mp4", sizeBytes: 1,
+        silencedMs: 0, silencedEvents: 0, noSignalMs: 0 };
+      const recorded = await createVoiceNoteRow(tcw, {
+        ...fields, id: "recorded-old-build", recorded_app_version: "0.7.0", recorded_app_build: "101",
+      }, "Recorded on old build", undefined, "ios");
+      expect(recorded.metadata.capture).toMatchObject({ app_build: "408",
+        recorded_app_version: "0.7.0", recorded_app_build: "101" });
+      const recovered = await createVoiceNoteRow(tcw, { ...fields, id: "legacy-no-native-stamp" },
+        "Older recording", undefined, "ios");
+      expect(recovered.metadata.capture).toMatchObject({ app_build: "408" });
+      expect(recovered.metadata.capture).not.toHaveProperty("recorded_app_version");
+      expect(recovered.metadata.capture).not.toHaveProperty("recorded_app_build");
+    } finally { __setBuildInfoForTests(null); }
   });
 
   test("legacy text without an outcome stays transcribed when an off-mode save reuses the row", async () => {
@@ -1743,7 +1811,9 @@ test("a never-settling audio KV put reports a visible timeout and clears Saving 
       identifySpeakers: false, uploadAudio: true });
     await fake.plugin.start();
     const recording = await fake.plugin.stop();
-    tcw.kv.put = ((_key, _value, options) => {
+    const originalPut = tcw.kv.put.bind(tcw.kv);
+    tcw.kv.put = ((key, value, options) => {
+      if (!key.includes("/audio/")) return originalPut(key, value, options);
       putStarted();
       return new Promise((_resolve, reject) => options?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
     }) as typeof tcw.kv.put;

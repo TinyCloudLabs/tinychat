@@ -684,6 +684,23 @@ describe("listVoiceNotes", () => {
     expect(long!.preview!.length).toBeLessThanOrEqual(281);
     expect(long!.preview!.endsWith("…")).toBe(true);
   });
+  test("completedLocalArtifactBeforeCommitShowsPendingDeviceSyncWithoutText", async () => {
+    const row = (metadata: unknown) => ["row-1", "rec-1", "Voice note", "2026-09-29T05:40:00.000Z", 12, JSON.stringify(metadata)];
+    const state = async (metadata: unknown) => {
+      const res = await listVoiceNotes(fakeSpace({ rows: [row(metadata)] }).tcw);
+      return res.ok ? res.data[0]!.transcript : null;
+    };
+    const marker = { state: "done", rev: 1, transcribed_at: "2026-10-15T00:00:00Z", engine: "apple-speech" };
+    expect(await state({ transcription_outcome: "pending", device_transcript: { state: "queued" } }))
+      .toEqual({ status: "pending", preview: null });
+    expect(await state({ transcription_outcome: "pending", transcript_location: "device", device_transcript: marker }))
+      .toEqual({ status: "pending_device_sync", preview: null });
+    expect(await state({ transcription_outcome: "no_speech", transcript_location: "device", device_transcript: marker }))
+      .toEqual({ status: "no_speech", preview: null });
+    expect(await state({ transcription_outcome: "pending", transcript_location: "device", device_transcript: marker,
+      transcript_text: "legacy terminal words" })).toEqual({ status: "transcribed", preview: "legacy terminal words" });
+  });
+
 });
 
 describe("saveVoiceNoteTranscript", () => {

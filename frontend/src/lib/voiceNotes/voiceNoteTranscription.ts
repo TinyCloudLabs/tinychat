@@ -2228,10 +2228,11 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
       if (!result.ok) return null;
       if (result.data === null) return false;
       const note = result.data;
-      const explicitRetry = chosenPrivate.has(sourceId);
+      const explicitRetry = isChosen(sourceId);
       const retryableFailure = note.transcript.status === "failed" && isAutomaticRetryableCode(note.transcriptionErrorCode);
       if (note.transcript.status !== "pending" && !retryableFailure
-        && !(note.transcript.status === "failed" && explicitRetry)) return false;
+        && !(note.transcript.status === "failed" && explicitRetry)
+        && !(note.transcript.status === "pending_device_sync" && explicitRetry)) return false;
       const commit = await readTranscriptCommit(tcw, sourceId);
       if (!identityCurrent()) return false;
       if (commit !== null) {
@@ -2347,6 +2348,26 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
           if (held || current?.kind === "active" || current?.kind === "done"
             || current?.kind === "failed" && !isAutomaticRetryableCode(current.code) && !hasRemoteJob
             || hasRemoteJob || choices.has(recording.id) || isHeld(recording.id)) continue;
+          // A capture originally configured for Private may later receive an explicit Local choice.
+          // Do not invent a second Private job while that choice is active or its artifact awaits publication.
+          // Held and submitted Private jobs above still resume; neither their result nor consent is discarded.
+          if (recording.stt?.requested) {
+            if (recording.stt.state !== "done") continue;
+            try {
+              const { transcript } = await withVoiceNoteSaveDeadline(
+                `checking Local transcript before Private recovery ${recording.id}`,
+                () => VoiceNotes.getTranscript({ id: recording.id }));
+              if (!identityCurrent() || !on()) { retry = true; return; }
+              if (transcript?.rev && (transcript.outcome === "transcribed" || transcript.outcome === "no_speech")) continue;
+            } catch (error) {
+              logPipelineError("[VoiceNotes] Could not check Local transcript before Private recovery", error, recording.id);
+              retry = true;
+              continue;
+            }
+            // A completed native receipt without its readable artifact needs the original device's retry,
+            // not an implicit switch back to Private.
+            continue;
+          }
           const stillPending = await stillPendingInSpace(recording.id, true);
           if (stillPending === null) {
             retry = true;

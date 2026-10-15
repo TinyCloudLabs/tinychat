@@ -191,6 +191,8 @@ export interface VoiceNoteRecording {
   /** Time the input level stayed at zero while the OS said we were live. */
   noSignalMs: number;
   version?: 2; rev?: number; wallMs?: number; pausedMs?: number; spans?: MissingAudioSpan[];
+  /** Stamped by native capture when recording began; absent on older sidecars. */
+  recorded_app_version?: string | null; recorded_app_build?: string | null;
   firstAudioAt?: number | null; captureStoppedAt?: number | null;
   recovered?: boolean; endedUnexpectedly?: boolean; lastHeartbeatAt?: number | null; exitReason?: string | null;
   legacyImport?: boolean; ownerUnknown?: boolean;

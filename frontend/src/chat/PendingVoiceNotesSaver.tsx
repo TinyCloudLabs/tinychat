@@ -17,7 +17,8 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { VoiceNotes } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { captureCapabilities, captureEngineAvailable } from "@/lib/voiceNotes/captureEngine";
 import { OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
-import { syncOnDeviceTranscript } from "@/lib/voiceNotes/onDeviceTranscriber";
+import { syncOnDeviceTranscriptAutomatically } from "@/lib/voiceNotes/onDeviceTranscriber";
+import { publishDeviceTranscriptProgress } from "@/lib/voiceNotes/voiceNoteRows";
 import { getDesktopWhisperQueue } from "@/lib/voiceNotes/desktop/desktopWhisper";
 import { isTinyCloudNetworkFailure, logVoiceNoteError, pendingSaveMessage, pendingStore, whenVoiceNoteSavesIdle } from "@/lib/voiceNotes/recorderSaves";
 import { advanceAccountGeneration, captureAccountContext, currentAccountGeneration, isAccountContextCurrent, mountVoiceNoteAccount } from "@/lib/voiceNotes/accountContext";
@@ -42,6 +43,7 @@ export function schedulePendingVoiceNotesRecovery(): void {
  */
 function installOnDeviceTranscriptSync(tcw: TinyCloudWeb, pipeline: VoiceNotePipeline): () => void {
   let disposed = false;
+  const observedProgress = new Map<string, string>();
   const accountWorkAllowed = () => pipeline.isAccepting?.() ?? true;
   const sync = (event: { id: string }, eventType: "transcribed" | "failed") => {
     const { id } = event;
@@ -59,16 +61,42 @@ function installOnDeviceTranscriptSync(tcw: TinyCloudWeb, pipeline: VoiceNotePip
           return;
         }
         const recording = recordings.find((note) => note.id === id);
-        if (recording) return syncOnDeviceTranscript(tcw, recording, account);
+        if (recording) return syncOnDeviceTranscriptAutomatically(tcw, recording, account);
       })
       .catch((err: unknown) => console.warn("[OnDeviceStt] Could not sync a finished transcription", err));
   };
   const transcribed = OnDeviceStt.addListener("transcribed", (event) => sync(event, "transcribed"));
   const failed = OnDeviceStt.addListener("failed", (event) => sync(event, "failed"));
+  const status = OnDeviceStt.addListener("status", (event) => {
+    if (disposed || !accountWorkAllowed()) return;
+    const waiting = event.queue.filter((entry): entry is typeof entry & {
+      state: "queued" | "waiting_for_model" | "running";
+    } => entry.state === "queued" || entry.state === "waiting_for_model" || entry.state === "running");
+    const changed = waiting.filter((entry) => observedProgress.get(entry.id) !== entry.state);
+    observedProgress.clear();
+    for (const entry of waiting) observedProgress.set(entry.id, entry.state);
+    if (changed.length === 0) return;
+    const account = captureAccountContext(tcw);
+    void VoiceNotes.listPending().then(async ({ recordings }) => {
+      for (const entry of changed) {
+        if (disposed || !accountWorkAllowed() || !isAccountContextCurrent(account, tcw)) return;
+        const recording = recordings.find((note) => note.id === entry.id && note.owner === account.did);
+        if (!recording || (!recording.ledger?.audio.rowId && recording.ledger?.audio.state !== "saved")) continue;
+        await publishDeviceTranscriptProgress(tcw, entry.id, entry.state, () => {
+          if (disposed || !accountWorkAllowed() || !isAccountContextCurrent(account, tcw))
+            throw new Error("The account changed before Local progress could publish");
+        });
+      }
+    }).catch((error: unknown) => {
+      if (!disposed && accountWorkAllowed() && isAccountContextCurrent(account, tcw))
+        console.warn("[OnDeviceStt] Local progress publication deferred", error);
+    });
+  });
   return () => {
     disposed = true;
     void transcribed.then((handle) => handle.remove());
     void failed.then((handle) => handle.remove());
+    void status.then((handle) => handle.remove());
   };
 }
 
@@ -107,7 +135,7 @@ export function PendingVoiceNotesSaver({
           return;
         }
         const recording = recordings.find((note) => note.id === id);
-        if (recording) return syncOnDeviceTranscript(tcw, recording, account);
+        if (recording) return syncOnDeviceTranscriptAutomatically(tcw, recording, account);
       }).catch((error: unknown) => console.warn("[desktopWhisper] Could not sync transcript", error));
     };
     const unsubscribe = queue.onDone(sync);

@@ -3,7 +3,7 @@
 // left out when its source has nothing to say.
 import { describe, expect, test } from "bun:test";
 
-import { channelOf, formatBuildInfo, targetLabel } from "./buildInfo";
+import { __setBuildInfoForTests, channelOf, formatBuildInfo, resolveBuildInfo, resolveBuildInfoFields, targetLabel } from "./buildInfo";
 
 describe("formatBuildInfo", () => {
   test("a native dev build: version, build number, target, channel, bundle id, short sha", () => {
@@ -87,4 +87,14 @@ describe("targetLabel", () => {
     expect(targetLabel("android")).toBe("android");
     expect(targetLabel("web")).toBe("web");
   });
+});
+
+test("structured writer provenance retains native build without parsing the display label", async () => {
+  __setBuildInfoForTests({ version: "0.8.0", build: "408", id: "xyz.tinycloud.exo.dev" });
+  try {
+    const fields = await resolveBuildInfoFields("ios");
+    const label = formatBuildInfo(fields);
+    expect(fields).toMatchObject({ version: expect.any(String), build: "408", target: "ios" });
+    expect(await resolveBuildInfo("ios")).toBe(label);
+  } finally { __setBuildInfoForTests(null); }
 });
