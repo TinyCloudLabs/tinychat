@@ -15,7 +15,7 @@ interface MeetingAudioPlayerProps {
   load?: (
     signal: AbortSignal,
     onProgress: (loadedBytes: number, totalBytes: number) => void,
-  ) => Promise<Blob | null>;
+  ) => Promise<Blob | string | null>;
   /** A local native file URL. It is handed straight to the audio element. */
   url?: string;
   /**
@@ -39,6 +39,9 @@ export type PlayerState =
   | { phase: "ready"; url: string }
   | { phase: "missing" }
   | { phase: "failed"; reason?: string };
+
+/** The messages a failed load shows as its reason; any other failure reads as "Couldn't load the audio just now.". */
+const SHOWN_LOAD_FAILURES = ["This audio changed; reconnect to play the latest version", PHONE_AUDIO_UNAVAILABLE];
 
 /** Ready with the resolved URL, or failed with calm copy; the real reason it could not be resolved goes to the console. */
 export async function stateForResolvedUrl(resolveUrl: () => Promise<string>): Promise<PlayerState> {
@@ -213,13 +216,19 @@ export function MeetingAudioPlayer({ load, url, resolveUrl, durationSecs, channe
         setState({ phase: "missing" });
         return;
       }
+      if (typeof blob === "string") {
+        playWhenSourceSet.current = true;
+        setState({ phase: "ready", url: blob });
+        return;
+      }
       if (urlRef.current) URL.revokeObjectURL(urlRef.current);
       const objectUrl = URL.createObjectURL(blob);
       urlRef.current = objectUrl;
       playWhenSourceSet.current = true;
       setState({ phase: "ready", url: objectUrl });
-    } catch {
-      if (!controller.signal.aborted) setState({ phase: "failed" });
+    } catch (error) {
+      if (!controller.signal.aborted) setState({ phase: "failed",
+        reason: error instanceof Error && SHOWN_LOAD_FAILURES.includes(error.message) ? error.message : undefined });
     }
   };
 

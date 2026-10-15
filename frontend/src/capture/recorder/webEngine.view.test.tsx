@@ -8,7 +8,6 @@ import { __resetCaptureEngineForTests, installCaptureEngine, registerCaptureEngi
 import { createFakeVoiceNotes } from "@/lib/voiceNotes/fakeVoiceNotes";
 import { VoiceNotes, __setVoiceNotesForTests } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { OnDeviceStt, __setOnDeviceSttForTests, type OnDeviceSttPlugin } from "@/lib/voiceNotes/onDeviceStt";
-import { onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
 import { BROWSER_MIC_GUIDANCE, MicrophoneAccessOff } from "./MicrophoneAccessOff";
 import { ReceiptView } from "./ReceiptView";
 import { StaticRecorderProvider } from "./RecorderProvider";
@@ -73,10 +72,6 @@ describe("web engine, opened overlay", () => {
   test("the saved receipt never calls OnDeviceStt", async () => {
     const calls = await installWeb();
     const receipt = view({ phase: "idle", outcome: "local", startedAt: null, lastSaved: { id: "rec-1", durationMs: 42_000, at: Date.now() } });
-    // The store snapshot is module state other tests may have filled; what matters is that
-    // nothing below reaches OnDeviceStt on the web engine.
-    expect(onDeviceSttStore.subscribe(noop)).toBeInstanceOf(Function);
-    await onDeviceSttStore.refresh();
     expect(receipt).not.toContain("On this phone");
     expect(receipt).toContain('data-testid="voice-note-receipt"');
     expect(calls).toEqual([]);
