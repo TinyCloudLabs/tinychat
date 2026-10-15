@@ -72,7 +72,7 @@ describe.serial("agent access banner across chat navigation", () => {
   test("hides off the chat view and returns on it, with the provider kept mounted", async () => {
     const page = await openAt("/chat");
     await page.getByText(BANNER_TEXT).waitFor();
-    expect(await page.getByRole("button", { name: "Connect agent" }).count()).toBe(1);
+    expect(await page.getByRole("button", { name: "Connect agent" }).count()).toBe(2);
 
     for (const path of [
       "/chat/capture",
@@ -86,11 +86,13 @@ describe.serial("agent access banner across chat navigation", () => {
       "/chat/foo",
     ]) {
       await navigate(page, path);
+      expect(await page.getByText("Agent access: Access status unknown").count()).toBe(0);
       expect(await bannerCount(page)).toBe(0);
     }
 
     await navigate(page, "/chat");
     await page.getByText(BANNER_TEXT).waitFor();
+    expect(await page.getByText("Agent access: Access status unknown").count()).toBe(1);
 
     // One controller, one mount, one probe: navigation only toggled the banner.
     expect(await page.evaluate(() => window.bannerHarness!.controllers())).toBe(1);
@@ -98,11 +100,29 @@ describe.serial("agent access banner across chat navigation", () => {
     expect(probes).toBe(1);
     await page.close();
   });
+  test("keeps the persistent status indicator visible within phone and desktop widths", async () => {
+    const page = await openAt("/chat");
+    const indicator = page.locator('[aria-live="polite"]').filter({ hasText: "Agent access:" });
+    await indicator.waitFor();
+
+    for (const viewport of [{ width: 390, height: 844 }, { width: 1280, height: 800 }]) {
+      await page.setViewportSize(viewport);
+      const bounds = await indicator.boundingBox();
+      expect(bounds).not.toBeNull();
+      expect(bounds!.x).toBeGreaterThanOrEqual(0);
+      expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(viewport.width);
+      expect(await page.getByRole("button", { name: "Connect agent" }).count()).toBe(2);
+    }
+
+    await page.close();
+  });
+
 
   test("a cold load of a non-chat address never renders the banner", async () => {
     for (const path of ["/chat/capture", "/chat/capture/library/x", "/chat/connectors", "/chat/meetings", "/chat/foo"]) {
       const page = await openAt(path);
       expect(await bannerCount(page)).toBe(0);
+      expect(await page.getByText("Agent access: Access status unknown").count()).toBe(0);
       await page.close();
     }
   });

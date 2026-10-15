@@ -36,6 +36,15 @@ export interface AgentAccessState extends AgentSessionProbe {
   reconnectReason: AgentDelegationErrorCode | "delegation_stale" | null;
   silentlyEnabled: boolean;
 }
+export function agentAccessStatusLabel(state: Pick<AgentAccessState, "capability" | "status" | "reconnectReason" | "disconnecting">): string {
+  if (state.disconnecting) return "Disconnecting…";
+  if (state.capability === "probing") return "Checking…";
+  if (state.capability === "enabled") return "Connected";
+  if (state.capability === "unavailable") return "Agent unavailable";
+  if (state.status === null && state.reconnectReason === "delegation_unverified") return "Access could not be verified";
+  if (state.status === null) return "Access status unknown";
+  return "Disconnected";
+}
 export interface UseAgentEnablementOptions {
   backendUrl: string;
   sessionStore: SessionStore;

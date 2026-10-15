@@ -144,6 +144,7 @@ export function SettingsPage({
             </div>
           </SectionCard>
           <SectionCard
+            id="agent-access"
             icon={ShieldCheckIcon}
             title="Agent access"
             aside={

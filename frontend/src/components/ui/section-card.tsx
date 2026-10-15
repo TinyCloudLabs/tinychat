@@ -5,13 +5,15 @@ import type { LucideIcon } from "lucide-react";
 export function SectionCard(props: {
   icon: LucideIcon;
   title: string;
+  /** Optional fragment target for in-page navigation. */
+  id?: string;
   /** Beside the title: a one-line InfoTip, in place of a paragraph of explanation. */
   aside?: React.ReactNode;
   children?: React.ReactNode;
 }) {
   const Icon = props.icon;
   return (
-    <section className="rounded-lg border border-border bg-card p-4">
+    <section id={props.id} className="rounded-lg border border-border bg-card p-4">
       <div className="flex items-center gap-2">
         <Icon className="size-4 text-muted-foreground" />
         <h2 className="text-sm font-semibold tracking-tight">{props.title}</h2>

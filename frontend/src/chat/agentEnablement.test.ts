@@ -3,7 +3,7 @@
 // network error handling, and the 200+active→enabled / 200+other→available paths.
 
 import { afterEach, describe, expect, it } from "bun:test";
-import { connectErrorMessage, createAgentAccessController, probeAgentCapability, probeAgentSession } from "./useAgentEnablement.js";
+import { agentAccessStatusLabel, connectErrorMessage, createAgentAccessController, probeAgentCapability, probeAgentSession } from "./useAgentEnablement.js";
 import { AgentOwnerMismatchError } from "../lib/agentDelegation.js";
 
 const realFetch = globalThis.fetch;
@@ -243,6 +243,18 @@ describe("turn admission reports", () => {
   });
 });
 
+describe("agent access status labels", () => {
+  const state = { status: null, reconnectReason: null, disconnecting: false };
+
+  it("maps each shared controller state to a visible label", () => {
+    expect(agentAccessStatusLabel({ ...state, capability: "enabled", status: "active" })).toBe("Connected");
+    expect(agentAccessStatusLabel({ ...state, capability: "available", status: "none" })).toBe("Disconnected");
+    expect(agentAccessStatusLabel({ ...state, capability: "available", reconnectReason: "delegation_unverified" }))
+      .toBe("Access could not be verified");
+    expect(agentAccessStatusLabel({ ...state, capability: "unavailable" })).toBe("Agent unavailable");
+    expect(agentAccessStatusLabel({ ...state, capability: "probing" })).toBe("Checking…");
+  });
+});
 describe("connectErrorMessage", () => {
   it("shows the wrong-key message as is", () => {
     const message = "You picked a different OpenKey key (0xbbbb…bbbb) than the one you're signed in with (0xaaaa…aaaa). To connect the agent, choose 0xaaaa…aaaa in OpenKey.";
