@@ -20,7 +20,7 @@ import {
 import { onDeviceQueuePlace } from "@/lib/voiceNotes/onDeviceQueue";
 import { localModelGuide, modelActionLabel, waitingForModelSentence } from "@/capture/recorder/final/localModelGuide";
 import { privateInsteadOffered, switchToPrivate } from "@/capture/recorder/privateInstead";
-import type { VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
+import type { PrivateAudioSource, VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
 import { TranscribeAction } from "./TranscribeAction";
 
 export type OnDeviceNote =
@@ -238,7 +238,7 @@ export function OnDeviceNoteStatusView(props: {
   transcription?: VoiceNoteTranscriptionProps;
   /** The note's length, which decides whether Private is offered for the retry. */
   durationSecs?: number | null;
-  /** The note's pipeline stepper is on screen: it already says queued, running, done, waiting and failed, with their retry (and its provider choice) and model actions, so only the way off the phone's model while it waits is left here. */
+  privateAudioSource?: PrivateAudioSource;
   stepperShown?: boolean;
   /** On an already committed transcript, show only this explicit rerun's active/failure state. */
   rerunOnly?: boolean;
@@ -301,7 +301,7 @@ export function OnDeviceNoteStatusView(props: {
       return (
         <div className="flex flex-col gap-2" data-testid="voice-note-on-device-failed">
           <p role="alert" className="min-w-0 text-callout text-destructive">Couldn&apos;t transcribe on {deviceName()}.</p>
-          <TranscribeAction noteId={props.noteId} transcription={props.transcription} durationSecs={props.durationSecs ?? null} label="Try again" />
+          <TranscribeAction noteId={props.noteId} transcription={props.transcription} durationSecs={props.durationSecs ?? null} privateAudioSource={props.privateAudioSource} label="Try again" />
         </div>
       );
     case "no_speech":
@@ -319,17 +319,17 @@ export function OnDeviceNoteStatusView(props: {
   }
 }
 
-function OnDeviceNoteStatusReading(props: { noteId: string; fallback: ReactNode; transcription?: VoiceNoteTranscriptionProps; durationSecs?: number | null; stepperShown?: boolean; rerunOnly?: boolean }) {
+function OnDeviceNoteStatusReading(props: { noteId: string; fallback: ReactNode; transcription?: VoiceNoteTranscriptionProps; durationSecs?: number | null; privateAudioSource?: PrivateAudioSource; stepperShown?: boolean; rerunOnly?: boolean }) {
   const view = useOnDeviceNote(props.noteId);
   const { transcription } = props;
-  const onUsePrivate = transcription && privateInsteadOffered(transcription, props.noteId, props.durationSecs ?? null)
-    ? () => switchToPrivate(transcription, props.noteId)
+  const onUsePrivate = transcription && privateInsteadOffered(transcription, props.noteId, props.durationSecs ?? null, props.privateAudioSource)
+    ? () => switchToPrivate(transcription, props.noteId, props.durationSecs ?? null, undefined, props.privateAudioSource)
     : undefined;
-  return <OnDeviceNoteStatusView noteId={props.noteId} view={view} fallback={props.fallback} onUsePrivate={onUsePrivate} transcription={transcription} durationSecs={props.durationSecs} stepperShown={props.stepperShown} rerunOnly={props.rerunOnly} />;
+  return <OnDeviceNoteStatusView noteId={props.noteId} view={view} fallback={props.fallback} onUsePrivate={onUsePrivate} transcription={transcription} durationSecs={props.durationSecs} privateAudioSource={props.privateAudioSource} stepperShown={props.stepperShown} rerunOnly={props.rerunOnly} />;
 }
 
 /** Only a phone with on-device speech has a state to read; elsewhere the fallback stands. A note private cloud has taken is the fallback's to show. */
-export function OnDeviceNoteStatus(props: { noteId: string; fallback: ReactNode; transcription?: VoiceNoteTranscriptionProps; durationSecs?: number | null; stepperShown?: boolean; rerunOnly?: boolean }) {
+export function OnDeviceNoteStatus(props: { noteId: string; fallback: ReactNode; transcription?: VoiceNoteTranscriptionProps; durationSecs?: number | null; privateAudioSource?: PrivateAudioSource; stepperShown?: boolean; rerunOnly?: boolean }) {
   if (!captureCapabilities().localTranscription) return <>{props.fallback}</>;
   if (props.transcription?.jobs.has(props.noteId) && !props.rerunOnly) return <>{props.fallback}</>;
   return <OnDeviceNoteStatusReading {...props} />;

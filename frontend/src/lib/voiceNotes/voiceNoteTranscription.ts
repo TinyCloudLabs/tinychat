@@ -62,6 +62,7 @@ import {
   prepareTranscriptionAudio,
   VoiceNoteAudioError,
   type AudioDecoder,
+  type PreparedTranscriptionAudio,
 } from "./voiceNoteAudio";
 import {
   loadVoiceNoteAudio,
@@ -180,7 +181,7 @@ const FETCH_PUT_TIMEOUT_MS = 240_000;
  * not JSON is null, exactly as on the phone.
  */
 export function createFetchPtxPut(
-  fetchImpl: typeof fetch = (input, init) => fetch(input, init),
+  fetchImpl: typeof fetch = fetch,
   timeoutMs = FETCH_PUT_TIMEOUT_MS,
 ): PtxPut {
   return async (request) => {
@@ -712,21 +713,83 @@ export function acceptedContentTypes(capabilities: PrivateCloudCapabilities): st
     : ["audio/mpeg", "audio/wav", "audio/ogg"];
 }
 
-/** The duration capability reported by PTX for this account. */
-export function maxTranscriptionSeconds(capabilities: PrivateCloudCapabilities | null): number {
-  const ptx = capabilities?.max_duration_seconds;
-  return typeof ptx === "number" && ptx > 0 ? ptx : Number.POSITIVE_INFINITY;
+/** The limit fields PTX's /capabilities may carry; each is optional on the wire. */
+export type PrivateCloudLimitFields = Partial<Pick<PrivateCloudCapabilities, "max_duration_seconds" | "accepted_max_duration_seconds" | "max_bytes" | "duration_grace_seconds">>;
+
+/**
+ * Seconds PTX's measured container duration can exceed the decoded one by (an MP3 that decodes to 10 s measures
+ * 10.031 s). A note is admitted only if it still fits under PTX's inclusive ceiling with this margin added.
+ */
+export const PRIVATE_DURATION_MARGIN_SECONDS = 0.25;
+
+/**
+ * PTX's limits from /capabilities. Null when it advertises no maximum duration: no Private limit is ever assumed.
+ * `maxSeconds` is PTX's inclusive ceiling on measured duration, before the client margin.
+ */
+export interface PrivateCloudLimits {
+  maxSeconds: number;
+  /** PTX's byte cap (`max_bytes`), or null when absent. */
+  maxBytes: number | null;
 }
 
-/** Whether a recording fits the duration limit advertised by PTX. Shared by route controls and note actions. */
+export type PrivateCloudRefusal =
+  | { kind: "unknown" }
+  | { kind: "duration"; limitSeconds: number; durationSeconds: number }
+  | { kind: "bytes"; limitBytes: number; sizeBytes: number };
+
+/** What a Private start returns to its caller when refused: a state, or the duration limit a note breaks. */
+export type PrivateStartRefusal = TranscriptionAdmissionRefusal | Extract<PrivateCloudRefusal, { kind: "duration" | "bytes" }>;
+
+/** Thrown before any PTX job exists when a note is not admissible under the limits as they are now. */
+export class PrivateCloudRefusedError extends Error {
+  readonly refusal: PrivateCloudRefusal;
+  constructor(refusal: PrivateCloudRefusal) {
+    super(`Private transcription refused: ${refusal.kind}`);
+    this.name = "PrivateCloudRefusedError";
+    this.refusal = refusal;
+  }
+}
+
+/**
+ * The limits a Private job is held to. `accepted_max_duration_seconds` is already the inclusive ceiling, so grace is
+ * never added to it. Without it, `max_duration_seconds` plus the optional `duration_grace_seconds` (absent = 0).
+ */
+export function privateCloudLimits(capabilities: PrivateCloudLimitFields | null): PrivateCloudLimits | null {
+  const accepted = capabilities?.accepted_max_duration_seconds;
+  const advertised = capabilities?.max_duration_seconds;
+  const grace = capabilities?.duration_grace_seconds;
+  const bytes = capabilities?.max_bytes;
+  const graceSeconds = typeof grace === "number" && Number.isFinite(grace) && grace > 0 ? grace : 0;
+  const seconds = typeof accepted === "number" && Number.isFinite(accepted) && accepted > 0 ? accepted
+    : typeof advertised === "number" && Number.isFinite(advertised) && advertised > 0 ? advertised + graceSeconds : null;
+  const validBytes = typeof bytes === "number" && Number.isSafeInteger(bytes) && bytes > 0 ? bytes : null;
+  if (seconds === null || validBytes === null) return null;
+  return { maxSeconds: seconds, maxBytes: validBytes };
+}
+
+/**
+ * The first limit a note breaks, or null. Unknown limits refuse every note. The server measures the raw duration,
+ * so seconds are compared unrounded, with the margin added: a duration is eligible iff duration + margin ≤ ceiling.
+ * A null duration or size is not checked. Shared by route controls, note actions and `run`.
+ */
+export function privateCloudRefusal(durationSecs: number | null, sizeBytes: number | null, limits: PrivateCloudLimits | null): PrivateCloudRefusal | null {
+  if (limits === null) return { kind: "unknown" };
+  if (durationSecs !== null && (!Number.isFinite(durationSecs) || durationSecs < 0 || durationSecs + PRIVATE_DURATION_MARGIN_SECONDS > limits.maxSeconds)) {
+    return { kind: "duration", limitSeconds: limits.maxSeconds, durationSeconds: durationSecs };
+  }
+  if (sizeBytes !== null && limits.maxBytes !== null && sizeBytes > limits.maxBytes) {
+    return { kind: "bytes", limitBytes: limits.maxBytes, sizeBytes };
+  }
+  return null;
+}
+
+/** Whether a recording fits the limits PTX advertises. Unknown limits accept nothing. Shared by route controls and note actions. */
 export function privateCloudAccepts(
   durationSecs: number | null,
-  capabilities: Pick<PrivateCloudCapabilities, "max_duration_seconds"> | null,
+  capabilities: PrivateCloudLimitFields | null,
+  sizeBytes: number | null = null,
 ): boolean {
-  if (capabilities === null || typeof capabilities.max_duration_seconds !== "number") return false;
-  if (durationSecs === null) return true;
-  return typeof capabilities.max_duration_seconds === "number"
-    && Number.isFinite(durationSecs) && durationSecs >= 0 && durationSecs <= capabilities.max_duration_seconds;
+  return privateCloudRefusal(durationSecs, sizeBytes, privateCloudLimits(capabilities)) === null;
 }
 
 export interface VoiceNoteCloudDeps {
@@ -752,6 +815,8 @@ export interface VoiceNoteTranscribeInput {
   rerunBase?: VoiceNoteRerunBase;
   sourceId: string;
   capabilities: PrivateCloudCapabilities;
+  /** PTX's limits as they are now, read again right before a job is created. A limit that moved while the audio loaded refuses there. */
+  currentCapabilities?: () => PrivateCloudCapabilities | null;
   identifySpeakers?: boolean;
   /** Stereo Mac notes use channel labels instead of PTX diarization. */
   channelCount?: 1 | 2;
@@ -1024,10 +1089,11 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
     }
   };
 
-  const createJob = async (sourceId: string, job: PendingVoiceNoteJob, body: PrivateCloudCreateBody, guard: Guard) => {
+  const createJob = async (sourceId: string, job: PendingVoiceNoteJob, body: PrivateCloudCreateBody, guard: Guard, revalidate: () => void) => {
     let current = job;
     for (let fresh = 0; ; fresh++) {
       guard();
+      revalidate();
       try {
         const created = await deps.create({ attemptId: current.attemptId, correlationId: newId(), body });
         return { job: current, created };
@@ -1047,7 +1113,7 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
 
   const run = async (
     { sourceId, capabilities, loadAudio, durationSeconds, identifySpeakers = false, channelCount = 1, allowed = () => true,
-      explicitRerun = false, rerunBase }: VoiceNoteTranscribeInput,
+      explicitRerun = false, rerunBase, currentCapabilities = () => capabilities }: VoiceNoteTranscribeInput,
     report: (status: VoiceNoteTranscriptionStatus) => void,
   ) => {
     const guard: Guard = () => {
@@ -1081,12 +1147,16 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
     }
 
     // Everything up to the upload happens with no job waiting on it, or releases the one that is.
-    const maxSeconds = maxTranscriptionSeconds(capabilities);
-    let audio: Awaited<ReturnType<typeof prepareTranscriptionAudio>> & { nativeFileId?: string; loadSpaceCopy?: () => Promise<VoiceNoteAudio> };
+    const limits = privateCloudLimits(currentCapabilities());
+    let audio: PreparedTranscriptionAudio & { nativeFileId?: string; loadSpaceCopy?: () => Promise<VoiceNoteAudio> };
+    let effectiveDuration = durationSeconds ?? null;
     try {
-      if (typeof durationSeconds === "number" && durationSeconds > maxSeconds) {
-        throw new VoiceNoteAudioError("recording_too_long", "This recording exceeds the private cloud duration limit.");
-      }
+      // Unknown limits and a note too long for them are refused before any audio is read or any job is created.
+      if (limits === null) throw new PrivateCloudRefusedError({ kind: "unknown" });
+      const early = privateCloudRefusal(durationSeconds ?? null, null, limits);
+      if (early !== null) throw new PrivateCloudRefusedError(early);
+      // The prepared WAV is checked against the latest ceiling after decoding; this cap only bounds pre-decode work.
+      const maxSeconds = limits.maxSeconds;
       guard();
       if (!allowed()) throw transcriptionOffError();
       report({ kind: "preparing" });
@@ -1116,11 +1186,32 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
       });
       guard();
       if (!allowed()) throw transcriptionOffError();
+      // Last check, against the limits as they are now: a limit that moved while the audio loaded refuses here, before a job exists.
+      const latest = privateCloudLimits(currentCapabilities());
+      if (latest === null) throw new PrivateCloudRefusedError({ kind: "unknown" });
+      const preparedDuration = audio.durationSeconds;
+      const clientDuration = durationSeconds ?? null;
+      effectiveDuration = preparedDuration === null ? clientDuration
+        : clientDuration === null ? preparedDuration : Math.max(clientDuration, preparedDuration);
+      const latestRefusal = privateCloudRefusal(effectiveDuration, audio.byteSize, latest);
+      if (latestRefusal !== null) throw new PrivateCloudRefusedError(latestRefusal);
     } catch (err) {
+      let failure: unknown = err;
+      if (err instanceof VoiceNoteAudioError) {
+        const latest = privateCloudLimits(currentCapabilities());
+        if (err.durationSeconds !== undefined) {
+          const measured = Math.max(durationSeconds ?? 0, err.durationSeconds);
+          const refusal = privateCloudRefusal(measured, null, latest);
+          if (refusal !== null) failure = new PrivateCloudRefusedError(refusal);
+        } else if (err.sizeBytes !== undefined) {
+          const refusal = privateCloudRefusal(durationSeconds ?? null, err.sizeBytes, latest);
+          if (refusal?.kind === "bytes") failure = new PrivateCloudRefusedError(refusal);
+        }
+      }
       // An account that left keeps its job whatever this failure was (nothing is sent for it now).
       guard();
       await release(sourceId, guard);
-      throw err;
+      throw failure;
     }
     if (job === null) {
       job = { attemptId: newId(), transcriptionId: null, ...(rerunBase ? { rerunBase } : {}) };
@@ -1135,7 +1226,12 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
       channel_labels: [...(channelCount === 2 ? ME_THEM_CHANNEL_LABELS : VOICE_NOTE_CHANNEL_LABELS)],
       ...(identifySpeakers && channelCount === 1 && capabilities.diarization === true ? { diarize: true } : {}),
     };
-    const createdJob = await createJob(sourceId, job, body, guard);
+    const revalidate = () => {
+      const latest = privateCloudLimits(currentCapabilities());
+      const refusal = privateCloudRefusal(effectiveDuration, audio.byteSize, latest);
+      if (refusal !== null) throw new PrivateCloudRefusedError(refusal);
+    };
+    const createdJob = await createJob(sourceId, job, body, guard, revalidate);
     job = { ...createdJob.job, transcriptionId: createdJob.created.id };
     writePending(sourceId, job, explicitRerun);
     const created = createdJob.created;
@@ -1144,6 +1240,13 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
       // The last moment to stop: nothing has been sent yet.
       guard();
       if (!allowed()) throw transcriptionOffError();
+      try {
+        revalidate();
+      } catch (err) {
+        // The new PTX job is still awaiting bytes, so release this reservation without touching uploaded jobs.
+        await release(sourceId, guard);
+        throw err;
+      }
       report({ kind: "uploading" });
       const correlationId = newId();
       try {
@@ -1334,6 +1437,7 @@ export async function transcribeVoiceNote(args: {
   tcw: TinyCloudWeb;
   cloud: VoiceNoteCloud;
   capabilities: PrivateCloudCapabilities;
+  currentCapabilities?: () => PrivateCloudCapabilities | null;
   sourceId: string;
   audio?: VoiceNoteAudio;
   allowed?: (scope?: "account") => boolean;
@@ -1506,7 +1610,7 @@ export async function transcribeVoiceNote(args: {
     const res = await loadVoiceNoteAudio(tcw, sourceId, { maxBytes: args.capabilities.max_bytes });
     if (!res.ok) {
       if (res.error.code === VOICE_NOTE_AUDIO_TOO_LARGE) {
-        throw new VoiceNoteAudioError("recording_too_large", "This recording exceeds the private cloud upload limit.");
+        throw new VoiceNoteAudioError("recording_too_large", "This recording exceeds the private cloud upload limit.", undefined, res.error.sizeBytes);
       }
       logPipelineError("[VoiceNotes] Could not read note audio from the space", res.error);
       throw new VoiceNoteAudioError(res.error.code === "VOICE_NOTE_AUDIO_CORRUPT" ? res.error.code : "audio_read_failed",
@@ -1550,7 +1654,8 @@ export async function transcribeVoiceNote(args: {
   let transcript: PrivateCloudTranscript;
   try {
     ({ transcriptionId, transcript } = await cloud.transcribe(
-      { sourceId, capabilities: args.capabilities, loadAudio: modeOff ? async () => { throw transcriptionOffError(); } : loadAudio,
+      { sourceId, capabilities: args.capabilities, currentCapabilities: args.currentCapabilities,
+        loadAudio: modeOff ? async () => { throw transcriptionOffError(); } : loadAudio,
         durationSeconds: note.data.durationSeconds,
         explicitRerun: args.explicitRerun,
         rerunBase: expectedRerunBase ?? undefined,
@@ -1560,6 +1665,8 @@ export async function transcribeVoiceNote(args: {
       report,
     ));
   } catch (err) {
+    // A limit refusal came before any job existed: it is not this note's transcription failure.
+    if (err instanceof PrivateCloudRefusedError) throw err;
     if (voiceNoteErrorCode(err) !== "no_speech") {
       await persistFailure(err);
       throw err;
@@ -1623,7 +1730,7 @@ export type NoteTranscriptionState =
   | { kind: "blocked"; reason: TranscriptionBlockedReason };
 
 /** Why private cloud was not on when a note was offered to it. */
-export type TranscriptionBlockedReason = "checking" | "unavailable" | "check-failed" | "no-consent";
+export type TranscriptionBlockedReason = "checking" | "unavailable" | "check-failed" | "no-consent" | "limits-unknown" | "limits-exceeded";
 export type TranscriptionAdmissionRefusal = TranscriptionBlockedReason | "account-changed";
 
 export type TranscriptionAvailability = "checking" | "available" | "failed";
@@ -1672,8 +1779,10 @@ export interface VoiceNoteTranscriber {
   /**
    * The user's "Use Private instead" for a note committed to another mode (its on-device job is
    * cancelled by the caller first). Runs like `transcribe`, and its Retry keeps the choice.
+   * Known duration and byte refusals are returned synchronously, with the choice kept; the queue
+   * re-checks the current limits when the note starts.
    */
-  transcribePrivately(sourceId: string): TranscriptionAdmissionRefusal | null;
+  transcribePrivately(sourceId: string, durationSecs: number | null, sizeBytes?: number | null): PrivateStartRefusal | null;
   /** Starts only after the detail's explicit confirmation; reruns are never added to resume choices. */
   transcribeAgain?(sourceId: string, engine: VoiceNoteRerunEngine): Promise<string | null>;
   /**
@@ -1763,6 +1872,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
   };
   /** Notes queued but not started; turning off empties it, and a dropped note never starts. */
   const waiting = new Set<string>();
+  let recoveryRescanRequested = false;
   let state: Omit<VoiceNoteTranscriberSnapshot, "jobs"> = {
     availability: cloud === null ? "failed" : "checking",
     checkError: cloud === null ? "Private transcription is not configured in this build" : undefined,
@@ -1806,7 +1916,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
     for (const listener of listeners) listener(event);
   };
   const identityCurrent = () => accountCurrent === null || accountCurrent();
-  const on = () => identityCurrent() && state.availability === "available" && state.consented && state.capabilities !== null;
+  const on = () => identityCurrent() && state.availability === "available" && state.consented && privateCloudLimits(state.capabilities) !== null;
   const blockedReason = (): TranscriptionBlockedReason => {
     if (cloud === null) return "check-failed";
     switch (state.availability) {
@@ -1815,15 +1925,15 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
       case "failed":
         return "check-failed";
       case "available":
-        return state.consented ? "unavailable" : "no-consent";
+        if (!state.consented) return "no-consent";
+        return privateCloudLimits(state.capabilities) === null ? "limits-unknown" : "unavailable";
     }
   };
-  /** A blocked note shows why private cloud is off now; once it is on, the note either started (resume) or is not ours to start. */
+  /** A blocked note remains a recovery candidate when service state or caps change. */
   const refreshBlocked = () => {
     for (const [sourceId, job] of jobs) {
       if (job.kind !== "blocked") continue;
-      if (on()) jobs.delete(sourceId);
-      else if (job.reason !== blockedReason()) jobs.set(sourceId, { kind: "blocked", reason: blockedReason() });
+      if (!on() && job.reason !== blockedReason()) jobs.set(sourceId, { kind: "blocked", reason: blockedReason() });
     }
   };
   /** Records why an offered note is not going to private cloud. Never replaces a held, running, failed or finished job. */
@@ -1940,7 +2050,6 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
     return true;
   };
 
-  let recoveryRequested = false;
   let explicitRerunsCleared = false;
   /** Every job, new or resumed, starts here. Only `explicit` (the user's Transcribe on this note) may pass a held note. */
   const enqueue = (sourceId: string, audio: VoiceNoteAudio | undefined, explicit: boolean,
@@ -1950,7 +2059,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
       if (explicit || !isHeld(sourceId)) block(sourceId);
       return reason;
     }
-    if (!explicit && isHeld(sourceId)) return null;
+    if (!explicit && isHeld(sourceId) && (cloud.heldTranscript?.(sourceId) ?? null) === null) return null;
     if (!explicit) {
       if ((cloud.heldTranscript?.(sourceId) ?? null) === null) {
         const deadline = automaticRetryDeadlines.get(sourceId);
@@ -1981,7 +2090,14 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
       if (jobs.get(sourceId)?.kind === "active") jobs.set(sourceId, { kind: "active", status: { kind: "preparing" } });
       emit();
       if (!on() || state.capabilities === null) {
-        jobs.delete(sourceId);
+        if (identityCurrent() && state.consented) {
+          // Stopped by the limits or the service, not by the user: keep the intent, shown as blocked, and admit it again when they return.
+          jobs.set(sourceId, { kind: "blocked", reason: blockedReason() });
+          recoveryNeeded = true;
+          if (nextRecoveryAt === Number.POSITIVE_INFINITY) nextRecoveryAt = now();
+        } else {
+          jobs.delete(sourceId);
+        }
         if (!identityCurrent()) {
           recoveryNeeded = true;
           nextRecoveryAt = now();
@@ -1991,18 +2107,18 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
         return;
       }
       if (deferClosedAdmission(sourceId, explicit)) return;
-      const authorised = explicit || holdStates.get(sourceId) === "released";
       try {
         const outcome = await runNote({
           tcw: deps.tcw(),
           cloud,
           capabilities: state.capabilities,
+          currentCapabilities: () => state.capabilities,
           sourceId,
           audio,
           account,
           allowed: (scope) => identityCurrent() && (scope === "account" || state.consented),
           overrideCommitted: isChosen(sourceId),
-          explicit: authorised,
+          explicit: explicit || holdStates.get(sourceId) === "released",
           explicitRerun,
           report: (status) => {
             if (jobs.get(sourceId)?.kind !== "active") return;
@@ -2015,6 +2131,14 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
         jobs.set(sourceId, { kind: "done", outcome });
         emit({ kind: "saved", sourceId });
       } catch (err) {
+        if (err instanceof PrivateCloudRefusedError) {
+          // A cap can change after CREATE too; keep the intent blocked for a later recovery scan.
+          jobs.set(sourceId, { kind: "blocked", reason: err.refusal.kind === "unknown" ? blockedReason() : "limits-exceeded" });
+          recoveryNeeded = true;
+          nextRecoveryAt = now();
+          emit();
+          return;
+        }
         if (voiceNoteErrorCode(err) === "note_held") {
           console.warn("[VoiceNotes] Held a note back from private-cloud transcription: it did not begin in the app", { id: sourceId });
           hold(sourceId);
@@ -2067,8 +2191,10 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
       if (!result.ok) return null;
       if (result.data === null) return false;
       const note = result.data;
+      const explicitRetry = chosenPrivate.has(sourceId);
       const retryableFailure = note.transcript.status === "failed" && isAutomaticRetryableCode(note.transcriptionErrorCode);
-      if (note.transcript.status !== "pending" && !retryableFailure) return false;
+      if (note.transcript.status !== "pending" && !retryableFailure
+        && !(note.transcript.status === "failed" && explicitRetry)) return false;
       const commit = await readTranscriptCommit(tcw, sourceId);
       if (!identityCurrent()) return false;
       if (commit !== null) {
@@ -2079,7 +2205,8 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
         hold(sourceId);
         return false;
       }
-      if (!privateCloudAccepts(note.durationSeconds, state.capabilities)) return false;
+      // A duration/byte refusal or unknown limits keeps the intent for a later capability refresh.
+      if (privateCloudRefusal(note.durationSeconds, null, privateCloudLimits(state.capabilities)) !== null) return false;
       return !requirePrivateCommit || (note.captureSource === "in_app" && note.captureTranscriber === "private-cloud");
     } catch (err) {
       logPipelineError("[VoiceNotes] Could not re-check a saved Private note before recovery", err, sourceId);
@@ -2090,7 +2217,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
   const resume = (force = false) => {
     if (!on() || cloud === null) return;
     if (strandedRecovery !== null) {
-      recoveryRequested = true;
+      if (force || recoveryNeeded) recoveryRescanRequested = true;
       return;
     }
     if (!explicitRerunsCleared) {
@@ -2100,107 +2227,123 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
     if (!force && (!recoveryNeeded || now() < nextRecoveryAt && !hasDueAutomaticRetry())) return;
     recoveryNeeded = false;
     let retry = false;
-    strandedRecovery = (async () => {
-      let cloudPending: Set<string>;
+    strandedRecovery = Promise.resolve().then(async () => {
       try {
-        cloudPending = new Set(cloud.pendingSourceIds());
-      } catch (err) {
-        logPipelineError("[VoiceNotes] Could not list pending Private jobs for recovery", err);
-        retry = true;
-        return;
-      }
-      const ids = new Set([...cloudPending, ...choices.ids()]);
-      for (const sourceId of ids) {
-        if (!identityCurrent() || !on()) {
+        let cloudPending: Set<string>;
+        try {
+          cloudPending = new Set(cloud.pendingSourceIds());
+        } catch (err) {
+          logPipelineError("[VoiceNotes] Could not list pending Private jobs for recovery", err);
           retry = true;
           return;
         }
-        const current = jobs.get(sourceId);
-        const held = (cloud.heldTranscript?.(sourceId) ?? null) !== null;
-        const hasRemoteJob = cloud.hasRemoteJob?.(sourceId) ?? false;
-        const terminalFailure = cloud.terminalFailure?.(sourceId);
-        if (terminalFailure && !held && !hasRemoteJob) {
-          publishTerminalFailure(sourceId, terminalFailure);
-          continue;
+        const ids = new Set([...cloudPending, ...choices.ids(), ...[...jobs].flatMap(([id, job]) => job.kind === "blocked" ? [id] : [])]);
+        for (const sourceId of ids) {
+          if (!identityCurrent() || !on()) {
+            retry = true;
+            return;
+          }
+          const current = jobs.get(sourceId);
+          const held = (cloud.heldTranscript?.(sourceId) ?? null) !== null;
+          const hasRemoteJob = cloud.hasRemoteJob?.(sourceId) ?? false;
+          const terminalFailure = cloud.terminalFailure?.(sourceId);
+          if (terminalFailure && !held && !hasRemoteJob) {
+            publishTerminalFailure(sourceId, terminalFailure);
+            continue;
+          }
+          if (held) {
+            enqueue(sourceId, undefined, false);
+            continue;
+          }
+          if (current?.kind === "active" || current?.kind === "done"
+            || current?.kind === "failed" && !isAutomaticRetryableCode(current.code) && !hasRemoteJob
+            || isHeld(sourceId)) continue;
+
+          const pendingInSpace = await stillPendingInSpace(sourceId);
+          if (pendingInSpace === false) {
+            if (hasRemoteJob) {
+              if (!identityCurrent()) {
+                retry = true;
+                return;
+              }
+              enqueue(sourceId, undefined, false);
+            }
+            continue;
+          }
+          if (pendingInSpace === null) {
+            retry = true;
+            if (!hasRemoteJob) continue;
+          }
+          if (!identityCurrent()) {
+            retry = true;
+            return;
+          }
+          enqueue(sourceId, undefined, chosenPrivate.has(sourceId));
         }
-        if (held) {
-          enqueue(sourceId, undefined, false);
-          continue;
+
+        let recordings: VoiceNoteRecording[];
+        try {
+          recordings = (await VoiceNotes.listPending()).recordings;
+        } catch (err) {
+          logPipelineError("[VoiceNotes] Could not scan this device's saved Private notes for recovery", err);
+          retry = true;
+          return;
         }
-        if (current?.kind === "active" || current?.kind === "done"
-          || current?.kind === "failed" && !isAutomaticRetryableCode(current.code) && !hasRemoteJob || isHeld(sourceId)) continue;
-        const pendingInSpace = await stillPendingInSpace(sourceId);
-        if (pendingInSpace === false) {
-          if (hasRemoteJob) {
+        for (const recording of recordings) {
+          if (!identityCurrent() || !on()) {
+            retry = true;
+            return;
+          }
+          if (recording.source !== "in_app" || recording.options?.transcriber !== "private-cloud"
+            || recording.stt?.rerunRev != null
+            || recording.ledger?.audio.state !== "saved"
+            || recording.ledger.transcript.state !== "pending"
+            || !privateCloudAccepts(recording.durationMs / 1000, state.capabilities)) continue;
+          const current = jobs.get(recording.id);
+          const held = (cloud.heldTranscript?.(recording.id) ?? null) !== null;
+          const hasRemoteJob = cloud.hasRemoteJob?.(recording.id) ?? false;
+          const terminalFailure = cloud.terminalFailure?.(recording.id);
+          if (terminalFailure && !held && !hasRemoteJob) {
+            publishTerminalFailure(recording.id, terminalFailure);
+            continue;
+          }
+          if (held || current?.kind === "active" || current?.kind === "done"
+            || current?.kind === "failed" && !isAutomaticRetryableCode(current.code) && !hasRemoteJob
+            || hasRemoteJob || choices.has(recording.id) || isHeld(recording.id)) continue;
+          const stillPending = await stillPendingInSpace(recording.id, true);
+          if (stillPending === null) {
+            retry = true;
+            continue;
+          }
+          if (stillPending) {
             if (!identityCurrent()) {
               retry = true;
               return;
             }
-            enqueue(sourceId, undefined, false);
+            enqueue(recording.id, undefined, false);
           }
-          continue;
         }
-        if (pendingInSpace === null) {
-          retry = true;
-          if (!cloudPending.has(sourceId)) continue;
-        }
-        enqueue(sourceId, undefined, false);
-      }
-
-      let recordings: VoiceNoteRecording[];
-      try {
-        recordings = (await VoiceNotes.listPending()).recordings;
       } catch (err) {
-        logPipelineError("[VoiceNotes] Could not scan this device's saved Private notes for recovery", err);
+        logPipelineError("[VoiceNotes] Private recovery scan failed", err);
         retry = true;
-        return;
-      }
-      for (const recording of recordings) {
-        if (!identityCurrent() || !on()) {
-          retry = true;
-          return;
+      } finally {
+        strandedRecovery = null;
+        if (recoveryRescanRequested) {
+          recoveryRescanRequested = false;
+          recoveryNeeded = true;
+          nextRecoveryAt = now();
+          queueMicrotask(() => resume(true));
+        } else if (retry) {
+          recoveryNeeded = true;
+          const delays = deps.recoveryBackoffMs ?? failedBackoffMs;
+          const delay = delays[Math.min(recoveryFailures, delays.length - 1)] ?? 0;
+          recoveryFailures++;
+          nextRecoveryAt = now() + delay;
+        } else {
+          recoveryNeeded = false;
+          recoveryFailures = 0;
+          nextRecoveryAt = Number.POSITIVE_INFINITY;
         }
-        if (recording.source !== "in_app" || recording.options?.transcriber !== "private-cloud"
-          || recording.stt?.rerunRev != null
-          || recording.ledger?.audio.state !== "saved"
-          || recording.ledger.transcript.state !== "pending"
-          || !privateCloudAccepts(recording.durationMs / 1000, state.capabilities)) continue;
-        const current = jobs.get(recording.id);
-        const terminalFailure = cloud.terminalFailure?.(recording.id);
-        if (terminalFailure && (cloud.heldTranscript?.(recording.id) ?? null) === null
-          && !(cloud.hasRemoteJob?.(recording.id) ?? false)) {
-          publishTerminalFailure(recording.id, terminalFailure);
-          continue;
-        }
-        if (isHeld(recording.id) || current?.kind === "active" || current?.kind === "done"
-          || current?.kind === "failed" && !isAutomaticRetryableCode(current.code) && !(cloud.hasRemoteJob?.(recording.id) ?? false)
-          || cloudPending.has(recording.id) || choices.has(recording.id)) continue;
-        const stillPending = await stillPendingInSpace(recording.id, true);
-        if (stillPending === null) {
-          retry = true;
-          continue;
-        }
-        if (stillPending) enqueue(recording.id, undefined, false);
-      }
-    })().finally(() => {
-      const runAgain = recoveryRequested;
-      recoveryRequested = false;
-      strandedRecovery = null;
-      if (retry) {
-        recoveryNeeded = true;
-        const delays = deps.recoveryBackoffMs ?? failedBackoffMs;
-        const delay = delays[Math.min(recoveryFailures, delays.length - 1)] ?? 0;
-        recoveryFailures++;
-        nextRecoveryAt = now() + delay;
-      } else {
-        recoveryNeeded = false;
-        recoveryFailures = 0;
-        nextRecoveryAt = Number.POSITIVE_INFINITY;
-      }
-      if (runAgain && !retry) {
-        recoveryNeeded = true;
-        nextRecoveryAt = Math.min(nextRecoveryAt, now());
-        queueMicrotask(() => resume());
       }
     });
   };
@@ -2269,6 +2412,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
           recoveryNeeded = true;
           nextRecoveryAt = now();
         }
+        const limitsBefore = JSON.stringify(privateCloudLimits(state.capabilities));
         failedChecks = result.availability === "failed" ? failedChecks + 1 : 0;
         settledAt = now();
         state = {
@@ -2278,18 +2422,20 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
           checkError: result.availability === "failed" ? result.error : undefined,
           checkErrorCode: result.availability === "failed" ? result.code : undefined,
         };
+        const limitsChanged = limitsBefore !== JSON.stringify(privateCloudLimits(state.capabilities));
         if (result.availability === "failed") {
           recoveryNeeded = true;
           nextRecoveryAt = now();
         }
         emit();
         if (result.availability === "available"
-          && (availabilityChanged || admissionChanged || recoveryNeeded && (now() >= nextRecoveryAt || hasDueAutomaticRetry())))
-          resume(availabilityChanged || admissionChanged);
+          && (availabilityChanged || admissionChanged || limitsChanged || recoveryNeeded && (now() >= nextRecoveryAt || hasDueAutomaticRetry())))
+          resume(availabilityChanged || admissionChanged || limitsChanged);
         if (result.availability === "available" && result.caps.admission !== "open") {
           if (recoveryTimer === undefined) {
             const delay = failedBackoffMs[0] ?? 15_000;
             recoveryTimer = timer.schedule(() => {
+              recoveryTimer = undefined;
               recoveryNeeded = true;
               nextRecoveryAt = now();
               settledAt = null;
@@ -2351,15 +2497,28 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
       release(sourceId);
     },
 
-    transcribePrivately(sourceId) {
+    transcribePrivately(sourceId, durationSecs, sizeBytes = null) {
       cloud?.clearTerminalFailure?.(sourceId);
+      const limit = privateCloudRefusal(durationSecs, sizeBytes, privateCloudLimits(state.capabilities));
+      if (on() && limit !== null && limit.kind !== "unknown") {
+        choices.add(sourceId);
+        chosenPrivate.add(sourceId);
+        jobs.set(sourceId, { kind: "blocked", reason: "limits-exceeded" });
+        emit();
+        return limit;
+      }
+      const alreadyChosen = choices.has(sourceId);
+      choices.add(sourceId);
       chosenPrivate.add(sourceId);
       const refusal = enqueue(sourceId, undefined, true);
       if (refusal !== null) {
         chosenPrivate.delete(sourceId);
+        // Limits or availability may return: keep the intent; withdrawn consent and account changes are not kept.
+        if (refusal === "no-consent" || refusal === "account-changed") {
+          if (!alreadyChosen) choices.remove(sourceId);
+        }
         return refusal;
       }
-      choices.add(sourceId);
       release(sourceId);
       return null;
     },
@@ -2381,7 +2540,9 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
       }
       const current = jobs.get(recording.id);
       if (current?.kind === "active" || current?.kind === "done" || current?.kind === "failed") return;
-      if (state.availability === "available" && !privateCloudAccepts(recording.durationMs / 1000, state.capabilities)) return;
+      const refusal = privateCloudRefusal(recording.durationMs / 1000, null, privateCloudLimits(state.capabilities));
+      // A known limit refusal on a usable service drops the save; unknown limits keep the intent until they return.
+      if (state.availability === "available" && refusal !== null && refusal.kind !== "unknown") return;
       choices.add(recording.id);
       if (!on()) {
         recoveryNeeded = true;
@@ -2389,7 +2550,6 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
         block(recording.id);
         return;
       }
-      if (!privateCloudAccepts(recording.durationMs / 1000, state.capabilities)) return;
       enqueue(recording.id, audio, false);
     },
   };

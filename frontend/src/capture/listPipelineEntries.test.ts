@@ -25,6 +25,7 @@ describe("listPipelineEntries", () => {
       },
     };
     const entry = listPipelineEntries([item], {} as TinyCloudWeb)[0]!;
+    expect(entry.source.durationSecs).toBe(item.durationSecs);
     expect(entry.source.metadata).toEqual(item.metadata);
     const input = buildNotePipelineInput({
       id: entry.id,

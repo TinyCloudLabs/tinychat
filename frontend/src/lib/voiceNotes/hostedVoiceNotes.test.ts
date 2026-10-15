@@ -1,6 +1,7 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import { hasLocalWorkInProgress } from "./localWork";
 import type { StoreResult, UpsertMeetingOutcome } from "../connectors/connectorStore";
 import { createHostedAssemblyAiClient } from "../assemblyai";
 import { bytesToBase64 } from "./voiceNoteAudio";
@@ -47,12 +48,28 @@ function harness(failAt?: "part" | "submit" | "result" | "space" | "storage_full
   const recording = { id: "note-1", owner: "did:test:one", source: "in_app", startedAt: 1,
     durationMs, mimeType, sizeBytes: audio.length,
     options: { transcriber: "assemblyai", identifySpeakers: true, uploadAudio: true } } as VoiceNoteRecording;
+  const remoteOps: Array<Record<string, unknown>> = [];
+  let ledgerRev = 0;
+  let ledgerErrors: string[] = [];
   const native = {
-    listPending: async () => ({ recordings: spaceOnly ? [] : [recording] }),
+    listPending: async () => ({ recordings: spaceOnly ? [] : [{ ...recording, rev: ledgerRev, ledger: { remote: remoteOps } }] }),
     readAudioChunk: async ({ offset, length }: { offset: number; length: number }) => ({
       base64: bytesToBase64(audio.slice(offset, offset + length)), bytesRead: length, size: audio.length,
     }),
-    beginRemoteOp: async () => {}, recordRemoteResult: async () => {},
+    beginRemoteOp: async (op: { opId: string; provider: string; mode: string }) => {
+      remoteOps.push({ opId: op.opId, provider: op.provider, mode: op.mode, stage: "create_unknown", cleanup: "none" });
+    },
+    recordRemoteResult: async () => {},
+    updateLedger: async ({ patch }: { patch: { remote: Array<Record<string, unknown>> } }) => {
+      const code = ledgerErrors.shift();
+      if (code) {
+        if (code === "rev_conflict") ledgerRev += 1;
+        throw Object.assign(new Error(`ledger ${code}`), { code });
+      }
+      remoteOps.splice(0, remoteOps.length, ...patch.remote);
+      ledgerRev += 1;
+    },
+    localAudioSize: async () => ({ size: audio.length }),
     getTranscript: async () => ({ transcript: local }),
     putTranscript: async ({ transcript }: { transcript: LocalTranscript }) => { calls.push("local:put"); local = transcript; },
   } as unknown as VoiceNotesPlugin;
@@ -149,15 +166,16 @@ function harness(failAt?: "part" | "submit" | "result" | "space" | "storage_full
         outcome: noSpeech ? "no_speech" : "transcribed" } as TranscriptCommit;
       calls.push("space:commit");
       return { ok: true } as StoreResult<UpsertMeetingOutcome>;
-    }, sleep: async () => {}, reconciliationDelayMs,
+    }, reconciliationDelayMs,
   });
   return { calls, submits, claimCalls, recording, track, setCommit: (value: TranscriptCommit | null) => { commit = value; },
     setCommitAfterSave: (value: TranscriptCommit) => { commitAfterSave = value; },
     getCommit: () => commit, commitReads: () => commitReads, getClaims: () => new Map(claims),
     getPending: () => data.get(`exo.voiceNotes.powerfulJobs:${account.did}`) ?? null,
-    getLocal: () => local, getSavedMetadata: () => savedMetadata, sleeps,
+    getLocal: () => local, getRemoteOps: () => remoteOps, getSavedMetadata: () => savedMetadata, sleeps,
     setClaim: (claim: object) => claims.set("exo/voiceNotes/hostedJobs/note-1", { value: JSON.stringify(claim), etag: String(++revision) }),
     failReleases: (count: number) => { releaseFailures = count; },
+    failLedgerUpdates: (...codes: string[]) => { ledgerErrors = codes; },
     setServerJob: (job: typeof serverJob) => { serverJob = job; } };
 }
 
@@ -311,6 +329,54 @@ test("Powerful accepts webm with codec parameters and sends the base MIME type",
   const lane = track(); lane.consent();
   await lane.run(recording);
   expect(lane.jobs.get(recording.id)).toEqual({ kind: "done", outcome: "transcribed" });
+});
+test("a finished hosted run marks its remote ops done so the local audio can be evicted", async () => {
+  const { recording, track, getRemoteOps } = harness();
+  const lane = track(); lane.consent();
+  await lane.run(recording);
+  expect(lane.jobs.get(recording.id)).toEqual({ kind: "done", outcome: "transcribed" });
+  expect(getRemoteOps().length).toBeGreaterThan(0);
+  expect(getRemoteOps().every((op) => op.stage === "done")).toBe(true);
+  const note = { ...recording, ledger: { remote: getRemoteOps() } } as VoiceNoteRecording;
+  expect(hasLocalWorkInProgress(note)).toBe(false);
+});
+test("a hosted run that fails before its transcript is saved keeps its local audio pinned", async () => {
+  const { recording, track, getRemoteOps } = harness("submit");
+  const lane = track(); lane.consent();
+  await lane.run(recording);
+  expect(lane.jobs.get(recording.id)?.kind).toBe("failed");
+  expect(getRemoteOps().some((op) => op.stage !== "done")).toBe(true);
+  expect(hasLocalWorkInProgress({ ...recording, ledger: { remote: getRemoteOps() } } as VoiceNoteRecording)).toBe(true);
+});
+test("a revision conflict while marking remote ops done retries until the ledger accepts it", async () => {
+  const { recording, track, getRemoteOps, failLedgerUpdates } = harness();
+  failLedgerUpdates("rev_conflict");
+  const lane = track(); lane.consent();
+  await lane.run(recording);
+  expect(lane.jobs.get(recording.id)).toEqual({ kind: "done", outcome: "transcribed" });
+  expect(getRemoteOps().every((op) => op.stage === "done")).toBe(true);
+});
+test("marking remote ops done gives up after three revision conflicts and keeps them pinned", async () => {
+  const { recording, track, getRemoteOps, failLedgerUpdates } = harness();
+  failLedgerUpdates("rev_conflict", "rev_conflict", "rev_conflict");
+  const warn = spyOn(console, "warn").mockImplementation(() => {});
+  const lane = track(); lane.consent();
+  await lane.run(recording);
+  expect(lane.jobs.get(recording.id)).toEqual({ kind: "done", outcome: "transcribed" });
+  expect(getRemoteOps().some((op) => op.stage !== "done")).toBe(true);
+  expect(warn).toHaveBeenCalledTimes(1);
+  warn.mockRestore();
+});
+test("a non-conflict ledger error while marking remote ops done keeps them pinned and does not fail the job", async () => {
+  const { recording, track, getRemoteOps, failLedgerUpdates } = harness();
+  failLedgerUpdates("io");
+  const warn = spyOn(console, "warn").mockImplementation(() => {});
+  const lane = track(); lane.consent();
+  await lane.run(recording);
+  expect(lane.jobs.get(recording.id)).toEqual({ kind: "done", outcome: "transcribed" });
+  expect(getRemoteOps().some((op) => op.stage !== "done")).toBe(true);
+  expect(warn).toHaveBeenCalledTimes(1);
+  warn.mockRestore();
 });
 test("hosted AssemblyAI commits never set PTX-only missing-stats metadata", async () => {
   const { recording, track, getSavedMetadata } = harness();

@@ -541,9 +541,11 @@ describe("putVoiceNoteAudio (parts + manifest)", () => {
     // Interleaved: read, put, read, put... (never the whole file first).
     expect(calls.filter((c) => c.kind === "kv.put").map((c) => c.target).at(-1)).toBe(`${AUDIO_BASE}/manifest`);
     const manifest = parseAudioManifest(kv.get(`${AUDIO_BASE}/manifest`));
-    expect(manifest).toEqual(expect.objectContaining({ v: 1, mimeType: "audio/mp4", size, partSize: MAX_AUDIO_PART_SIZE, sha256: null }));
+    expect(manifest).toEqual(expect.objectContaining({ v: 1, mimeType: "audio/mp4", size, partSize: MAX_AUDIO_PART_SIZE,
+      sha256: expect.any(String) }));
     expect(manifest!.parts).toHaveLength(30);
-    expect(manifest!.parts[0]).toEqual({ size: MAX_AUDIO_PART_SIZE, etag: '"etag-000000"' });
+    expect(manifest!.parts[0]).toEqual(expect.objectContaining({ size: MAX_AUDIO_PART_SIZE, etag: '"etag-000000"',
+      sha256: expect.any(String) }));
   });
 
   test("a part read that comes back short fails before anything is sent for it", async () => {
@@ -592,7 +594,7 @@ describe("a save that fails part-way stays pending and retries without duplicate
     const second = trackedSource(bytes);
     const saved = await saveVoiceNote(space.tcw, recording, second.source, "android", { partSize: 1_000, ...noWait });
     expect(saved.ok).toBe(true);
-    expect(second.reads).toEqual([[2_000, 1_000], [3_000, 1_000], [4_000, 500]]);
+    expect(second.reads).toEqual([[0, 1_000], [1_000, 1_000], [2_000, 1_000], [3_000, 1_000], [4_000, 500]]);
     expect(puts(space.calls).map((c) => c.target.replace(`${AUDIO_BASE}/`, ""))).toEqual([
       `${APP_ID}/connectors/exo-voice-note/transcript/rec-1`,
       "p/000002",
@@ -617,7 +619,7 @@ describe("a save that fails part-way stays pending and retries without duplicate
     space.calls.length = 0;
     const retry = trackedSource(bytes);
     expect((await saveVoiceNote(space.tcw, recording, retry.source, "android", { partSize: 1_000 })).ok).toBe(true);
-    expect(retry.reads).toEqual([]);
+    expect(retry.reads).toEqual([[0, 1_000], [1_000, 500]]);
     expect(puts(space.calls).filter((c) => c.target.includes("/audio/")).map((c) => c.target)).toEqual([`${AUDIO_BASE}/manifest`]);
 
     // And once more after the row exists (the device delete failed): still one row.
@@ -653,7 +655,7 @@ describe("listVoiceNotes", () => {
         sourceId: "rec-1",
         title: "Voice note",
         startedAt: "2026-09-29T05:40:00.000Z",
-        durationSecs: 12,
+        durationSecs: 12.5,
         transcript: { status: "pending", preview: null },
       }],
     });

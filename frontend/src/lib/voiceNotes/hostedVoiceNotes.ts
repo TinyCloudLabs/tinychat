@@ -132,6 +132,30 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
     // Powerful reruns stay disabled until TC-1139; reject before touching claims, jobs, or backend state.
     if (explicitRerun) throw new Error("Transcribe again isn't available with Powerful yet.");
   };
+  /**
+   * A hosted job's remote ops stay non-done until its transcript is durable, because their uploads read local
+   * bytes (hasLocalWorkInProgress keeps the audio while any op is non-done). Call once the transcript is committed.
+   * Best effort: a failure leaves the note pinned, which is safe; the next run that finds the commit retries it.
+   */
+  const markHostedRemoteDone = async (id: string): Promise<void> => {
+    try {
+      for (let attempt = 0; ; attempt += 1) {
+        const note = (await native.listPending()).recordings.find((candidate) => candidate.id === id);
+        const remote = note?.ledger?.remote ?? [];
+        if (!note || !remote.some((op) => op.mode === "hosted" && op.stage !== "done")) return;
+        try {
+          await native.updateLedger({ id, did, rev: note.rev ?? 0,
+            patch: { remote: remote.map((op) => op.mode === "hosted" ? { ...op, stage: "done" as const } : op) } });
+          return;
+        } catch (error) {
+          const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
+          if (code !== "rev_conflict" || attempt >= 2) throw error;
+        }
+      }
+    } catch (error) {
+      console.warn("[HostedVoiceNotes] Could not mark the remote job done; its audio stays on this device", error);
+    }
+  };
   const run = async (recording: Pick<VoiceNoteRecording, "id" | "owner" | "source" | "options" | "startedAt" | "sizeBytes" | "mimeType" | "durationMs" | "channels">
     & { ledger?: VoiceNoteRecording["ledger"] }, explicitRerun = false) => {
     rejectPowerfulRerun(explicitRerun);
@@ -170,6 +194,7 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
           try { await client.deleteTranscript(stored.handle); persist(id, null); }
           catch (error) { console.warn("[HostedVoiceNotes] Could not delete the saved remote transcript", error); }
         }
+        await markHostedRemoteDone(id);
         jobs.set(id, { kind: "done", outcome: prior.outcome }); notify(); return;
       }
       if (!prior) await createRow(account, recording as VoiceNoteRecording, voiceNoteTitle(recording.startedAt));
@@ -181,8 +206,11 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
       if (explicitRerun) persist(id, null);
       if (!stored.recording) persist(id, { recording: recording as VoiceNoteRecording,
         ...(explicitRerun ? { explicitRerun: true } : {}) });
+      // Eviction keeps sizeBytes while removing the file, so a positive size can't prove local bytes exist.
+      // Read the file's current size and use the verified space copy whenever it doesn't match.
+      const localSize = recording.sizeBytes > 0 ? (await native.localAudioSize({ id })).size : 0;
       let source = nativeRecordingSource(recording, native);
-      if (!recording.sizeBytes) {
+      if (!recording.sizeBytes || localSize !== recording.sizeBytes) {
         const space = await loadAudio(account, id);
         if (!space.ok) throw new Error("Could not read this note's audio. Try again.");
         const bytes = base64ToBytes(space.data.base64);
@@ -199,6 +227,7 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
             throw new Error("The committed transcript changed before this rerun could start. Retry the rerun.");
         } else if (committed) {
           transcriptSaved = true;
+          await markHostedRemoteDone(id);
           jobs.set(id, { kind: "done", outcome: committed.outcome }); notify();
           return null;
         }
@@ -392,6 +421,7 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
       persist(id, { saved: true });
       try { await client.deleteTranscript(handle); persist(id, null); }
       catch (error) { console.warn("[HostedVoiceNotes] Could not delete the saved remote transcript", error); }
+      await markHostedRemoteDone(id);
       jobs.set(id, { kind: "done", outcome });
       logPipeline("transcription", id, "done", { engine: "assemblyai" });
       notify();
@@ -416,7 +446,7 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
       }
       if (transcriptSaved) {
         const commit = await readCommit(tcw(), id);
-        if (commit) { jobs.set(id, { kind: "done", outcome: commit.outcome }); notify(); return; }
+        if (commit) { await markHostedRemoteDone(id); jobs.set(id, { kind: "done", outcome: commit.outcome }); notify(); return; }
       }
       const message = error instanceof AssemblyAiError ? error.message
         : error instanceof Error && (error.message.startsWith("The transcript is ready")

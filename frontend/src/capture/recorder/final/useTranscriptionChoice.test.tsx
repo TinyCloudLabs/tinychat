@@ -28,6 +28,7 @@ const transcription = (
   diarization: true,
   consented: true,
   maxSeconds: 600,
+  maxBytes: 186_496_800,
   jobs: new Map(),
   onTranscribe: noop,
   onConsent: noop,

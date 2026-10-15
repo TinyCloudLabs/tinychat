@@ -21,7 +21,7 @@ export function onPhoneItem(note: PendingNote): LibraryItem {
     sourceId: note.id,
     title: null,
     startedAt: new Date(note.startedAt).toISOString(),
-    durationSecs: Math.round(note.durationMs / 1000),
+    durationSecs: note.durationMs / 1000,
     onPhone: true,
   };
 }

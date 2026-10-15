@@ -222,6 +222,10 @@ export function privateCloudMessage(err: PrivateCloudError): string {
 export interface PrivateCloudCapabilities {
   max_bytes: number;
   max_duration_seconds?: number;
+  /** Seconds past max_duration_seconds that PTX accepts (optional; absent means 0). Added only to max_duration_seconds, never to accepted_max_duration_seconds. */
+  duration_grace_seconds?: number;
+  /** PTX's inclusive ceiling on measured (container) duration, when advertised. It takes precedence over max_duration_seconds and grace. */
+  accepted_max_duration_seconds?: number;
   admission?: string;
   /** Accepted upload content types (contract C1). */
   content_types?: string[];

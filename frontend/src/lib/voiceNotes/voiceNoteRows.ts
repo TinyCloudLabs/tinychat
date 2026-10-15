@@ -253,7 +253,7 @@ export async function createVoiceNoteRow(tcw: TinyCloudWeb, recording: VoiceNote
      summary_action_items, keywords, meeting_type, metadata, created_at, updated_at)
     VALUES (?, 'exo-voice-note', ?, ?, ?, ?, NULL, '[]', NULL, NULL, NULL, NULL, ?, ?, ?)
     ON CONFLICT DO NOTHING`, [`vn-${recording.id}`, recording.id, title, new Date(recording.startedAt).toISOString(),
-    Math.round(recording.durationMs / 1000), JSON.stringify({ transcription_outcome: outcome,
+    recording.durationMs / 1000, JSON.stringify({ transcription_outcome: outcome,
       capture: captureMetadata(recording, platform) }), now, now], checkpoint);
   const row = await resolveVoiceNoteRow(tcw, recording.id, checkpoint);
   if (!row) throw new Error("The voice-note identity index was established but its row is missing");

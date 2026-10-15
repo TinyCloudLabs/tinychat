@@ -24,8 +24,7 @@ import {
   type VoiceNoteTranscriptionStatus,
 } from "./voiceNoteTranscription";
 
-const CAPS: PrivateCloudCapabilities = { max_bytes: 120_960_000, max_duration_seconds: 7_200,
-  content_types: ["audio/wav"], admission: "open" };
+const CAPS: PrivateCloudCapabilities = { max_bytes: 120_960_000, max_duration_seconds: 7_777, content_types: ["audio/wav"], admission: "open" };
 const AUDIO = { mimeType: "audio/mp4", base64: "AAAA" };
 
 const TEST_TCW = {
@@ -153,7 +152,7 @@ describe("availability and consent", () => {
     const s = setup({ consented: true });
     await s.transcriber.check();
     s.transcriber.transcribe("plain");
-    s.transcriber.transcribePrivately("moved");
+    s.transcriber.transcribePrivately("moved", null);
     await tick();
     expect(s.runs.map((run) => [run.sourceId, run.overrideCommitted])).toEqual([["plain", false]]);
     s.runs[0]!.resolve("transcribed");
@@ -170,7 +169,7 @@ describe("availability and consent", () => {
   test("Use Private instead offers nothing while private cloud is off", async () => {
     const s = setup({ consented: false });
     await s.transcriber.check();
-    s.transcriber.transcribePrivately("moved");
+    s.transcriber.transcribePrivately("moved", null);
     await tick();
     expect(s.runs).toHaveLength(0);
     expect(s.job("moved")).toEqual({ kind: "blocked", reason: "no-consent" });
@@ -565,7 +564,7 @@ describe("notes that did not begin in the app are held, per note", () => {
     await s.transcriber.check();
     s.transcriber.noteSaved({ id: "n", durationMs: 5_000, source: "quick_action" }, AUDIO);
     expect(s.job("n")?.kind).toBe("held");
-    s.transcriber.transcribePrivately("n");
+    s.transcriber.transcribePrivately("n", null);
     await tick();
     expect(s.runs.map((run) => ({ id: run.sourceId, explicit: run.explicit, overrideCommitted: run.overrideCommitted }))).toEqual([{ id: "n", explicit: true, overrideCommitted: true }]);
     expect(holds.held).toEqual([]);

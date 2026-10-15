@@ -11,6 +11,8 @@ import {
   getAudio,
   getAudioManifest,
   putAudio,
+  reconcileAudioReceipt,
+  verifiedManifestReceipt,
 } from "./audioStore";
 
 interface KvErr {
@@ -139,14 +141,57 @@ describe("audioStore", () => {
     expect(fake.puts).toEqual([`${BASE}/p/000001`, `${BASE}/p/000002`, `${BASE}/manifest`]);
     expect(progress).toEqual([0.4, 0.8, 1]);
     expect(manifest.parts).toEqual([
-      { size: 4, etag: null },
-      { size: 4, etag: `"etag-${BASE}/p/000001"` },
-      { size: 2, etag: `"etag-${BASE}/p/000002"` },
+      expect.objectContaining({ size: 4, etag: null, sha256: expect.any(String) }),
+      expect.objectContaining({ size: 4, etag: `"etag-${BASE}/p/000001"`, sha256: expect.any(String) }),
+      expect.objectContaining({ size: 2, etag: `"etag-${BASE}/p/000002"`, sha256: expect.any(String) }),
     ]);
 
     const blob = await getAudio(fake.kv, BASE);
     expect(blob?.type).toBe("audio/mp4");
     expect(await bytesOf(blob!)).toEqual(await bytesOf(audioBlob()));
+  });
+
+  test("a truncated listed part is re-uploaded before a verified receipt is possible", async () => {
+    const fake = new FakeKv();
+    const local = await putAudio(fake.kv, BASE, blobPartSource(audioBlob()), OPTS);
+    fake.entries.set(`${BASE}/p/000000`, { bytes: new Uint8Array([1, 2]), contentType: "application/octet-stream" });
+    await expect(getAudio(fake.kv, BASE)).rejects.toMatchObject({ code: AUDIO_CORRUPT });
+    await expect(verifiedManifestReceipt(fake.kv, BASE, local)).rejects.toMatchObject({ code: AUDIO_CORRUPT });
+    fake.puts = [];
+    const resumed = await putAudio(fake.kv, BASE, blobPartSource(audioBlob()), OPTS);
+    expect(fake.puts).toContain(`${BASE}/p/000000`);
+    expect(await verifiedManifestReceipt(fake.kv, BASE, resumed)).toEqual({ sha256: resumed.sha256, size: 10 });
+    expect(resumed.sha256).toBe(local.sha256);
+  });
+
+  test("a same-size stale part is re-uploaded, and a mismatched manifest has no receipt", async () => {
+    const fake = new FakeKv();
+    const local = await putAudio(fake.kv, BASE, blobPartSource(audioBlob()), OPTS);
+    fake.entries.set(`${BASE}/p/000000`, { bytes: new Uint8Array([9, 9, 9, 9]), contentType: "application/octet-stream" });
+    await expect(verifiedManifestReceipt(fake.kv, BASE, local)).rejects.toMatchObject({ code: AUDIO_CORRUPT });
+    fake.puts = [];
+    const resumed = await putAudio(fake.kv, BASE, blobPartSource(audioBlob()), OPTS);
+    expect(fake.puts).toContain(`${BASE}/p/000000`);
+    const changed = { ...resumed, parts: resumed.parts.map((part, index) =>
+      index ? part : { ...part, sha256: "0".repeat(64) }) };
+    await expect(verifiedManifestReceipt(fake.kv, BASE, changed)).rejects.toMatchObject({ code: AUDIO_CORRUPT });
+    expect(local.sha256).toBe(resumed.sha256);
+  });
+
+  test("an older saved manifest gains a receipt only when its stored bytes match the local file", async () => {
+    const fake = new FakeKv();
+    const modern = await putAudio(fake.kv, BASE, blobPartSource(audioBlob()), OPTS);
+    const old = { ...modern, sha256: null, parts: modern.parts.map(({ size, etag }) => ({ size, etag })) };
+    await fake.put(`${BASE}/manifest`, JSON.stringify(old), { contentType: "application/json" });
+    fake.puts = [];
+    expect(await reconcileAudioReceipt(fake.kv, BASE, blobPartSource(audioBlob()))).toEqual({
+      sha256: modern.sha256, size: modern.size,
+    });
+    expect(fake.puts).toEqual([`${BASE}/manifest`]);
+    fake.entries.set(`${BASE}/p/000000`, { bytes: new Uint8Array([9, 9, 9, 9]), contentType: "application/octet-stream" });
+    fake.puts = [];
+    expect(await reconcileAudioReceipt(fake.kv, BASE, blobPartSource(audioBlob()))).toBeNull();
+    expect(fake.puts).toEqual([]);
   });
 
   test("a part larger than the node's request-body cap is refused before any write", async () => {

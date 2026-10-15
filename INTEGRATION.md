@@ -38,6 +38,9 @@ Integration branch: `dev/0.8.0`
 | #403 | b00ebd38 | cedb3883 | No | Clean merge of the reviewed #350 follow-up: authoritative native channel metadata survives renderer adoption and durable Stop, and every receipt save path preserves channels for Me/Them playback. |
 | #402 | cdda8907 | 28efa0a2 | No | Clean merge of TC-1111 item 4: retrieval results retain voice-note provenance, and the published retrieval pack advances to `0.1.1-onboarding.22`. |
 | #389 | 5a25b037 | c3d39ed3 | No | Clean merge of TC-1102 “Transcribe again” after its iOS simulator and both signing dry-runs passed. Follow-up N1 is non-blocking: add deadlines to the Local rerun reads in `onDeviceTranscriber.ts:244,258`. |
+| #409 | d4db8404 | 8b244a31 | No | Clean copy-only merge of the dev storage-full wording fix after its macOS ad-hoc signing gate passed. #401 was not present; the scoped canonical-copy checks passed 3/3. |
+| #373 | c80f6c93 | db5e604a | Yes (4 files) | Merged the reviewed local-audio cache after all Apple, Chromium, and halo gates passed. Conflict resolution retained #389's rerun state and fail-closed upload gate while adding #373's hosted-ledger completion, verified local/space source selection, Local-request provenance, and verified-in-space receipt. Accepted limits remain: native eviction has no store-level owner re-check, and cache accounting overcounts outbox-pinned notes. TC-1171 tracks the pre-existing #350 stereo gaps separately; they are not caused by #373. |
+| #405 | 120aceaa | b19eae2a | Yes (6 files) | Merged the reviewed Private duration/byte admission after its authorized iOS capture-writer rerun passed. Conflict resolution preserves #389's explicit rerun route and #407's requested recovery rescan while adding #405's duration/source refusals and saved Private-note scan; native explicit-rerun records (`stt.rerunRev`) remain excluded from ordinary recovery. The client uses #405's 0.25-second media safety margin by default. The backend only relays capability fields: PTX #111 must deploy separately in Miller's release window before its advertised ceilings become active. |
 
 ## Test Fixes (2026-10-14)
 
@@ -78,13 +81,14 @@ After merging origin/main (TC-1128, #387, #392, 45d16e58) and PR #386 (TC-1108 p
 | Capture-settings Chromium follow-up | #351 merge (`92ff5241`) | #351 replaced the old automatic-space-save switch with privacy-default-off `Upload audio to TinyCloud`, but the browser interaction still waited for the removed label. | Exercise the upload-audio switch's false-to-true transition while retaining the system-audio rejection check. | #351 `760a64fa` (`bfd8aae6`) |
 | Me/Them metadata after reload and receipt save settlement | #350 merge (`7b36ac1a`) | Existing-session adoption and durable Stop could omit authoritative native channels, while no-pipeline `SAVED` events overwrote the local receipt's channels after save settlement. | Restore native channels during adoption/Stop and carry the matching recording's channels through every `LOCAL_COMMITTED`/`SAVED` receipt transition, including Save now. | #403 `b00ebd38`; #350 `7f5fb1cd` |
 | Backend transcript-delivery TypeScript | #394 re-land (`167d4786`) | TC-760 narrowed the shared `gaps` contract to structured transcript gaps, but the existing backend API type still exposed `unknown[]`, so the unchanged delivery call no longer typechecked. | Give the backend transcript response the same `{ start, end, speaker_name }[]` gap shape as the approved shared contract. | #394 `f4a21845`; #394 re-land `167d4786` |
+| Dynamic recorder-device copy after local-cache tests | #373 merge (`db5e604a`) | #373's authenticated audio-receipt test rendered `AudioCacheSettings`, which installs the native capture engine singleton, but its cleanup restored only the plugin binding. A later mode-copy test therefore observed “this phone” instead of its isolated browser fixture. | Reset the capture-engine singleton in the owning test's `afterEach`; the full suite is order-independent again without changing product copy. | #373 `c80f6c93`; existing `__resetCaptureEngineForTests` isolation contract |
 
 ## Current Status
 
-- **Verified code head**: `c3d39ed3` (#389 merged)
-- **Frontend unit suite**: 4930 pass, 4 skip, 0 fail (4934 tests, 339 files)
+- **Verified code head**: `b19eae2a` (#405 merged)
+- **Frontend unit suite**: 5064 pass, 4 skip, 0 fail (5068 tests, 343 files)
 - **`origin/main` `b9c538ee` baseline**: 4735 pass, 4 skip, 0 fail (4739 tests, 326 files)
-- **TypeScript**: pinned TypeScript 5.9.3, `tsc --noEmit -p frontend/tsconfig.json`, 0 errors
+- **TypeScript**: pinned TypeScript 5.9.3, `frontend/node_modules/.bin/tsc --noEmit -p frontend/tsconfig.json`, 0 errors
 - **CI frontend lint**: `bunx eslint frontend test`, 0 errors
 - **Backend CI suite**: 2477 pass, 7 skip, 0 fail (2484 tests, 111 files)
 - **Backend TypeScript**: `bun run --cwd backend build`, 0 errors; transcript delivery/API regressions 56 pass, 0 fail.

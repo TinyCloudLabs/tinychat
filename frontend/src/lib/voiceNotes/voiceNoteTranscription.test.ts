@@ -47,6 +47,8 @@ import { readTranscriptCommit } from "./voiceNoteCommits";
 import { preserveVoiceNoteTranscriptHistory, transcriptHistoryKvKey } from "./voiceNoteTranscriptHistory";
 import { resolveVoiceNoteRow } from "./voiceNoteRows";
 import { pendingStore } from "./recorderSaves";
+import { preciseDurationSeconds } from "./noteDuration";
+import { privateRefusalCopy } from "@/capture/recorder/privateInstead";
 import {
   readVoiceNoteForTranscription,
   VOICE_NOTE_SOURCE,
@@ -68,8 +70,9 @@ import {
   localStorageVoiceNoteHoldStore,
   localStorageVoiceNotePendingStore,
   localStorageVoiceNotePrivateChoiceStore,
-  maxTranscriptionSeconds,
   privateCloudAccepts,
+  privateCloudLimits,
+  privateCloudRefusal,
   acceptedContentTypes,
   prepareVoiceNoteTranscript,
   transcribeVoiceNote,
@@ -82,6 +85,9 @@ import {
   type VoiceNoteCloud,
   type VoiceNoteHoldStore,
   type VoiceNoteTranscriptionStatus,
+  type VoiceNoteTranscriber,
+  PRIVATE_DURATION_MARGIN_SECONDS,
+  PrivateCloudRefusedError,
 } from "./voiceNoteTranscription";
 
 import { transcribeWith } from "@/capture/library/transcribeProviders";
@@ -95,11 +101,12 @@ const CAP2 = "tcu_zyxwvutsrqponmlk9876543210";
 const ORIGIN = "https://ptx.example";
 const CAPS: PrivateCloudCapabilities = {
   max_bytes: 120_960_000,
-  max_duration_seconds: 7_200,
+  max_duration_seconds: 7_777,
   content_types: ["audio/mpeg", "audio/wav", "audio/ogg"],
   admission: "open",
   diarization: true,
 };
+const LEGACY_OVER_MS = Math.round((CAPS.max_duration_seconds! - PRIVATE_DURATION_MARGIN_SECONDS) * 1000) + 1;
 const AUDIO = { mimeType: "audio/mp4", base64: bytesToBase64(new Uint8Array([1, 2, 3, 4])) };
 test("accepted PTX content types drop parameters and normalize case", () => {
   expect(acceptedContentTypes({ ...CAPS, content_types: ["Audio/WebM;codecs=opus"] }))
@@ -229,7 +236,9 @@ function harness(script: {
   onRemove?: () => void | Promise<void>;
   uploadSupported?: () => Promise<boolean>;
   decode?: AudioDecoder;
+  capabilities?: () => PrivateCloudCapabilities;
   nativeTransport?: boolean;
+  beforeCreateAttempt?: (attempt: number) => void | Promise<void>;
 }) {
   const calls: string[] = [];
   const creates: { attemptId: string; body: PrivateCloudCreateBody }[] = [];
@@ -246,7 +255,7 @@ function harness(script: {
     bearer: () => "tok",
     capabilities: async () => {
       calls.push("capabilities");
-      return CAPS;
+      return script.capabilities?.() ?? CAPS;
     },
     // The phone never lists the account's jobs: it re-joins only the ones it remembers.
     list: async () => {
@@ -298,6 +307,7 @@ function harness(script: {
       random: () => 0.5,
     },
     async create(request) {
+      await script.beforeCreateAttempt?.(creates.length);
       calls.push(`create:${request.attemptId}`);
       creates.push({ attemptId: request.attemptId, body: request.body });
       const next = createAnswers.shift();
@@ -385,15 +395,66 @@ describe("gating", () => {
     }
   });
 
-  test("the supported duration comes from PTX", () => {
-    expect(maxTranscriptionSeconds(null)).toBe(Number.POSITIVE_INFINITY);
-    expect(maxTranscriptionSeconds(CAPS)).toBe(7_200);
-    expect(maxTranscriptionSeconds({ ...CAPS, max_duration_seconds: 120 })).toBe(120);
-    expect(maxTranscriptionSeconds({ ...CAPS, max_duration_seconds: 10_800 })).toBe(10_800);
-    expect(privateCloudAccepts(7_200, CAPS)).toBe(true);
-    expect(privateCloudAccepts(7_201, CAPS)).toBe(false);
+  test("the supported duration and byte cap come from PTX's /capabilities, never a constant", () => {
+    const max = privateCloudLimits(CAPS)?.maxSeconds ?? 0;
+    expect(max).toBe(CAPS.max_duration_seconds);
+    expect(privateCloudLimits(null)).toBeNull();
+    expect(privateCloudLimits({ ...CAPS, max_duration_seconds: undefined })).toBeNull();
+    expect(privateCloudLimits({ ...CAPS, max_bytes: undefined })).toBeNull();
+    expect(privateCloudLimits({ ...CAPS, max_duration_seconds: 12_000 })?.maxSeconds).toBe(12_000);
+    expect(privateCloudAccepts(max - PRIVATE_DURATION_MARGIN_SECONDS, CAPS)).toBe(true);
+    expect(privateCloudAccepts(max, CAPS)).toBe(false);
     expect(privateCloudAccepts(null, CAPS)).toBe(true);
     expect(privateCloudAccepts(1, null)).toBe(false);
+  });
+
+  test("with incomplete PTX limits, Private is never eligible and the refusal says the limit is unknown", () => {
+    expect(privateCloudRefusal(1, null, privateCloudLimits(null))).toEqual({ kind: "unknown" });
+    expect(privateCloudRefusal(1, null, privateCloudLimits({ ...CAPS, max_bytes: undefined }))).toEqual({ kind: "unknown" });
+    expect(privateCloudAccepts(1, { ...CAPS, max_bytes: undefined })).toBe(false);
+    expect(privateCloudRefusal(1, null, privateCloudLimits({ max_bytes: CAPS.max_bytes }))).toEqual({ kind: "unknown" });
+  });
+
+  test("the length is compared unrounded against the ceiling less the margin; the byte cap applies only when size is known", () => {
+    const max = privateCloudLimits(CAPS)?.maxSeconds ?? 0;
+    const bytes = { ...CAPS, max_bytes: 1_000_000 };
+    expect(privateCloudAccepts(max - PRIVATE_DURATION_MARGIN_SECONDS, CAPS)).toBe(true);
+    expect(privateCloudAccepts(max - PRIVATE_DURATION_MARGIN_SECONDS + 0.1, CAPS)).toBe(false);
+    expect(privateCloudRefusal(max + 17.5, null, privateCloudLimits(CAPS)))
+      .toEqual({ kind: "duration", limitSeconds: max, durationSeconds: max + 17.5 });
+    expect(privateCloudLimits({ ...CAPS, duration_grace_seconds: -5 })).toEqual({ maxSeconds: max, maxBytes: CAPS.max_bytes });
+    expect(privateCloudRefusal(60, 1_000_001, privateCloudLimits(bytes)))
+      .toEqual({ kind: "bytes", limitBytes: 1_000_000, sizeBytes: 1_000_001 });
+    expect(privateCloudAccepts(60, bytes, 1_000_000)).toBe(true);
+    expect(privateCloudAccepts(60, bytes)).toBe(true);
+  });
+
+  test("the accepted ceiling is inclusive with the media-duration margin; grace does not extend it", () => {
+    const accepted = CAPS.max_duration_seconds! + 114;
+    const caps = { ...CAPS, accepted_max_duration_seconds: accepted, duration_grace_seconds: 300 };
+    expect(privateCloudLimits(caps)?.maxSeconds).toBe(accepted);
+    expect(privateCloudAccepts(accepted - PRIVATE_DURATION_MARGIN_SECONDS, caps)).toBe(true);
+    expect(privateCloudAccepts(accepted - PRIVATE_DURATION_MARGIN_SECONDS + 0.001, caps)).toBe(false);
+    expect(privateCloudAccepts(accepted, caps)).toBe(false);
+    expect(privateCloudAccepts(accepted + 17.5, caps)).toBe(false);
+    for (const malformed of [String(accepted), Number.NaN, 0, -1]) {
+      expect(privateCloudLimits({
+        ...CAPS,
+        accepted_max_duration_seconds: malformed as number,
+      })?.maxSeconds).toBe(CAPS.max_duration_seconds);
+    }
+
+    expect(privateCloudAccepts(preciseDurationSeconds(accepted - PRIVATE_DURATION_MARGIN_SECONDS, null), caps)).toBe(true);
+    expect(privateCloudAccepts(preciseDurationSeconds(accepted - PRIVATE_DURATION_MARGIN_SECONDS + 0.001, null), caps)).toBe(false);
+    expect(privateCloudAccepts(preciseDurationSeconds(accepted - 1, null), caps)).toBe(true);
+    expect(privateCloudAccepts(preciseDurationSeconds(accepted, null), caps)).toBe(false);
+  });
+
+  test("without an accepted ceiling, max_duration_seconds plus duration_grace_seconds is the limit", () => {
+    const caps = { ...CAPS, max_duration_seconds: 4_000.5, duration_grace_seconds: 300 };
+    expect(privateCloudLimits(caps)?.maxSeconds).toBe(4_300.5);
+    expect(privateCloudAccepts(4_300.25, caps)).toBe(true);
+    expect(privateCloudAccepts(4_300.5, caps)).toBe(false);
   });
 });
 
@@ -446,13 +507,127 @@ describe("interpretUploadResponse (desktop upload_result)", () => {
 });
 
 describe("createVoiceNoteCloud.transcribe", () => {
-  test.each([3_600, 10_800])("uploads a %i-second note when PTX advertises that duration", async (durationSeconds) => {
+  test.each([3_600, CAPS.max_duration_seconds!])("uploads a note up to the advertised %i-second ceiling less the margin", async (ceiling) => {
     const h = harness({});
-    await h.cloud.transcribe({ sourceId: "rec-1", capabilities: { ...CAPS, max_duration_seconds: durationSeconds },
-      loadAudio: async () => AUDIO, durationSeconds }, () => {});
+    await h.cloud.transcribe({ sourceId: "rec-1", capabilities: { ...CAPS, max_duration_seconds: ceiling },
+      loadAudio: async () => AUDIO, durationSeconds: ceiling - PRIVATE_DURATION_MARGIN_SECONDS }, () => {});
     expect(h.creates).toHaveLength(1);
     expect(h.puts).toHaveLength(1);
   });
+
+  test("a note at the advertised ceiling is refused before any PTX job is created", async () => {
+    const h = harness({});
+    const refusal = await h.cloud.transcribe({ sourceId: "rec-1", capabilities: { ...CAPS, max_duration_seconds: 3_600 },
+      loadAudio: async () => AUDIO, durationSeconds: 3_600 }, () => {}).catch((caught: unknown) => caught);
+    expect(refusal).toBeInstanceOf(PrivateCloudRefusedError);
+    expect(refusal).toMatchObject({ refusal: { kind: "duration", limitSeconds: 3_600, durationSeconds: 3_600 } });
+    expect(h.creates).toHaveLength(0);
+  });
+  test("a WebM whose decoded WAV exceeds its wall-clock duration is refused with exact payload time before upload", async () => {
+    const h = harness({ decode: silentDecoder(5.4) });
+    const refusal = await h.cloud.transcribe({
+      sourceId: "rec-1",
+      capabilities: { ...CAPS, max_duration_seconds: 5.25, content_types: ["audio/wav"] },
+      loadAudio: async () => ({ mimeType: "audio/webm", base64: AUDIO.base64 }),
+      durationSeconds: 4.5,
+    }, () => {}).catch((caught: unknown) => caught);
+    expect(refusal).toBeInstanceOf(PrivateCloudRefusedError);
+    expect(refusal).toMatchObject({ refusal: { kind: "duration", limitSeconds: 5.25, durationSeconds: 5.4 } });
+    expect(privateRefusalCopy((refusal as PrivateCloudRefusedError).refusal as Extract<PrivateCloudRefusedError["refusal"], { kind: "duration" }>))
+      .toBe("Private Transcription accepts notes up to 5 s. This note is 6 s.");
+    expect(h.creates).toHaveLength(0);
+    expect(h.puts).toHaveLength(0);
+  });
+
+  test("latest byte cap checks the prepared WAV's actual payload size before create", async () => {
+    let latest = { ...CAPS, max_duration_seconds: 10, content_types: ["audio/wav"] };
+    const h = harness({
+      capabilities: () => latest,
+      decode: async (bytes, sampleRate) => {
+        const decoded = await silentDecoder(2)(bytes, sampleRate);
+        latest = { ...latest, max_bytes: 1_000 };
+        return decoded;
+      },
+    });
+    const refusal = await h.cloud.transcribe({
+      sourceId: "rec-1",
+      capabilities: latest,
+      currentCapabilities: () => latest,
+      loadAudio: async () => ({ mimeType: "audio/webm", base64: AUDIO.base64 }),
+      durationSeconds: 2,
+    }, () => {}).catch((caught: unknown) => caught);
+    expect(refusal).toBeInstanceOf(PrivateCloudRefusedError);
+    expect(refusal).toMatchObject({ refusal: { kind: "bytes", limitBytes: 1_000, sizeBytes: 64_044 } });
+    expect(h.creates).toHaveLength(0);
+    expect(h.puts).toHaveLength(0);
+  });
+  test("a byte cap lowered during CREATE refuses the 4-byte payload, releases the unsent job, and skips PUT", async () => {
+    let enterCreate!: () => void;
+    let releaseCreate!: () => void;
+    const entered = new Promise<void>((resolve) => { enterCreate = resolve; });
+    const gate = new Promise<void>((resolve) => { releaseCreate = resolve; });
+    let latest: PrivateCloudCapabilities = { ...CAPS, max_duration_seconds: 10, max_bytes: 4, content_types: [...CAPS.content_types, "audio/mp4"] };
+    const h = harness({
+      capabilities: () => latest,
+      beforeCreateAttempt: async () => { enterCreate(); await gate; },
+    });
+    const attempt = h.cloud.transcribe({
+      sourceId: "rec-1", capabilities: latest, currentCapabilities: () => latest,
+      loadAudio: async () => AUDIO, durationSeconds: 1,
+    }, () => {}).catch((caught: unknown) => caught);
+    await entered;
+    latest = { ...latest, max_bytes: 3 };
+    releaseCreate();
+    const refusal = await attempt;
+    expect(refusal).toBeInstanceOf(PrivateCloudRefusedError);
+    expect(refusal).toMatchObject({ refusal: { kind: "bytes", limitBytes: 3, sizeBytes: 4 } });
+    expect(h.creates).toHaveLength(1);
+    expect(h.puts).toHaveLength(0);
+    expect(h.cancelled).toEqual([ID]);
+    expect(h.pending.read("rec-1")).toBeNull();
+  });
+
+  test("a cap lowered after a failed CREATE prevents the idempotency retry", async () => {
+    let latest: PrivateCloudCapabilities = { ...CAPS, max_duration_seconds: 10, max_bytes: 4, content_types: [...CAPS.content_types, "audio/mp4"] };
+    const h = harness({
+      capabilities: () => latest,
+      creates: [new PrivateCloudError("idempotency_conflict", "conflict"), { id: ID, status: "awaiting_upload", upload: { path: `/uploads/${ID}`, capability: CAP } }],
+      beforeCreateAttempt: (attempt) => { if (attempt === 0) latest = { ...latest, max_bytes: 3 }; },
+    });
+    const refusal = await h.cloud.transcribe({
+      sourceId: "rec-1", capabilities: latest, currentCapabilities: () => latest,
+      loadAudio: async () => AUDIO, durationSeconds: 1,
+    }, () => {}).catch((caught: unknown) => caught);
+    expect(refusal).toBeInstanceOf(PrivateCloudRefusedError);
+    expect(refusal).toMatchObject({ refusal: { kind: "bytes", limitBytes: 3, sizeBytes: 4 } });
+    expect(h.creates).toHaveLength(1);
+    expect(h.puts).toHaveLength(0);
+  });
+
+  test("latest duration admission takes the greater of note metadata and the decoded WAV", async () => {
+    let latest = { ...CAPS, max_duration_seconds: 10, content_types: ["audio/wav"] };
+    const h = harness({
+      capabilities: () => latest,
+      decode: async (bytes, sampleRate) => {
+        const decoded = await silentDecoder(2)(bytes, sampleRate);
+        latest = { ...latest, max_duration_seconds: 5.25 };
+        return decoded;
+      },
+    });
+    const refusal = await h.cloud.transcribe({
+      sourceId: "rec-1",
+      capabilities: latest,
+      currentCapabilities: () => latest,
+      loadAudio: async () => ({ mimeType: "audio/webm", base64: AUDIO.base64 }),
+      durationSeconds: 5.1,
+    }, () => {}).catch((caught: unknown) => caught);
+    expect(refusal).toBeInstanceOf(PrivateCloudRefusedError);
+    expect(refusal).toMatchObject({ refusal: { kind: "duration", limitSeconds: 5.25, durationSeconds: 5.1 } });
+    expect(h.creates).toHaveLength(0);
+    expect(h.puts).toHaveLength(0);
+  });
+
+
 
   test("happy path: create (metadata only) → one PUT of the WAV to the build's origin → poll → result", async () => {
     const h = harness({});
@@ -579,15 +754,15 @@ describe("createVoiceNoteCloud.transcribe", () => {
     expect(voiceNoteTranscriptionFailure(err)).toEqual(expect.objectContaining({ retryable: true }));
   });
 
-  test("a note over PTX's advertised duration is refused before any job exists", async () => {
+  test("a decoded WAV over PTX's advertised duration is refused with its measured length before any job exists", async () => {
     const h = harness({});
     const err = await h.cloud
       .transcribe({ sourceId: "rec-1", capabilities: { ...CAPS, max_duration_seconds: 0.5 }, loadAudio: async () => AUDIO }, () => {})
       .catch((e: unknown) => e);
-    expect((err as { code: string }).code).toBe("recording_too_long");
+    expect(err).toBeInstanceOf(PrivateCloudRefusedError);
+    expect(err).toMatchObject({ refusal: { kind: "duration", limitSeconds: 0.5, durationSeconds: 1 } });
     expect(h.creates).toHaveLength(0);
     expect(h.pending.read("rec-1")).toBeNull();
-    expect(voiceNoteTranscriptionFailure(err)).toEqual(expect.objectContaining({ retryable: true }));
   });
 
   test("transient poll failures are ridden out; ten minutes of them is 'connection lost', and the job is kept", async () => {
@@ -1274,15 +1449,14 @@ describe("transcribeVoiceNote (one note end to end)", () => {
       sourceId: "rec-1", report: () => {} })).toBe("transcribed");
     expect(await readTranscriptCommit(space.tcw, "rec-1")).toMatchObject({ rev: 1 });
   });
-  test("a null row duration uses capture duration, then leaves an unknown raw duration to PTX", async () => {
+  test("a saved fractional duration is refused from the row before any PTX job; a note with no duration at all is left to PTX", async () => {
     const tooLong = sqliteSpace();
-    expect((await saveVoiceNote(tooLong.tcw, RECORDING, AUDIO, "web")).ok).toBe(true);
-    tooLong.sqlite.query(`UPDATE connector_meeting SET duration_secs = NULL,
-      metadata = json_set(metadata, '$.capture.duration_ms', 7201000) WHERE source_id = 'rec-1'`).run();
+    expect((await saveVoiceNote(tooLong.tcw, { ...RECORDING, durationMs: LEGACY_OVER_MS }, AUDIO, "web")).ok).toBe(true);
     const rejected = harness({});
     const refusal = await transcribeVoiceNote({ tcw: tooLong.tcw, cloud: rejected.cloud, capabilities: CAPS, explicit: true,
       sourceId: "rec-1", report: () => {} }).catch((caught: unknown) => caught);
-    expect(refusal).toMatchObject({ code: "recording_too_long" });
+    expect(refusal).toBeInstanceOf(PrivateCloudRefusedError);
+    expect(refusal).toMatchObject({ refusal: { kind: "duration", limitSeconds: CAPS.max_duration_seconds, durationSeconds: LEGACY_OVER_MS / 1000 } });
     expect(rejected.creates).toHaveLength(0);
 
     _resetConnectorSchemaMemoForTests();
@@ -1294,6 +1468,25 @@ describe("transcribeVoiceNote (one note end to end)", () => {
     expect(await transcribeVoiceNote({ tcw: unknownDuration.tcw, cloud: ptx.cloud,
       capabilities: { ...CAPS, content_types: [...(CAPS.content_types ?? []), "audio/mp4"] },
       explicit: true, sourceId: "rec-1", report: () => {} })).toBe("transcribed");
+    expect(ptx.creates).toHaveLength(1);
+  });
+
+  test("a saved note is checked against PTX's accepted ceiling on a rerun; grace is ignored once an accepted ceiling is advertised", async () => {
+    const capabilities = { ...CAPS, accepted_max_duration_seconds: 4_321.5, duration_grace_seconds: 300, content_types: [...CAPS.content_types, "audio/mp4"] };
+    const refused = sqliteSpace();
+    expect((await saveVoiceNote(refused.tcw, { ...RECORDING, durationMs: 4_500_000 }, AUDIO, "web")).ok).toBe(true);
+    const rejected = harness({});
+    const refusal = await transcribeVoiceNote({ tcw: refused.tcw, cloud: rejected.cloud, capabilities, explicit: true,
+      sourceId: "rec-1", report: () => {} }).catch((caught: unknown) => caught);
+    expect(refusal).toMatchObject({ refusal: { kind: "duration", limitSeconds: 4_321.5, durationSeconds: 4_500 } });
+    expect(rejected.creates).toHaveLength(0);
+
+    _resetConnectorSchemaMemoForTests();
+    const accepted = sqliteSpace();
+    expect((await saveVoiceNote(accepted.tcw, { ...RECORDING, durationMs: 4_321_250 }, AUDIO, "web")).ok).toBe(true);
+    const ptx = harness({});
+    expect(await transcribeVoiceNote({ tcw: accepted.tcw, cloud: ptx.cloud, capabilities, explicit: true,
+      sourceId: "rec-1", report: () => {} })).toBe("transcribed");
     expect(ptx.creates).toHaveLength(1);
   });
 
@@ -2273,6 +2466,7 @@ describe("transcribeVoiceNote (one note end to end)", () => {
   });
   test("on-device rerun writes prior history only when its local revision is synced", async () => {
     const space = sqliteSpace();
+    const spaceDid = typedTcw(space).did!;
     await saveVoiceNote(space.tcw, RECORDING, AUDIO, "ios");
     await saveVoiceNoteTranscript(space.tcw, "rec-1", prepareVoiceNoteTranscript(TRANSCRIPT, "2026-10-03T10:00:00.000Z", 1));
     const prior = await readTranscriptCommit(space.tcw, "rec-1");
@@ -2286,13 +2480,13 @@ describe("transcribeVoiceNote (one note end to end)", () => {
       rerunBase: { rev: prior!.rev, hash: prior!.hash },
     } as LocalTranscript;
     VoiceNotes.listPending = async () => ({ recordings: [{ ...RECORDING, options: { ...RECORDING.options, uploadAudio: false },
-      rev: 1, owner: space.tcw.did, ledger: { audio: { state: "saved", rowId: "row-1" },
+      rev: 1, owner: spaceDid, ledger: { audio: { state: "saved", rowId: "row-1" },
         transcriptSync: { state: "pending", rev: 1, at: null } } } as never] });
     VoiceNotes.getTranscript = async () => ({ transcript: local });
-    VoiceNotes.updateLedger = async () => ({});
-    const unmount = mountVoiceNoteAccount(space.tcw.did);
+    VoiceNotes.updateLedger = async () => ({ rev: 1 });
+    const unmount = mountVoiceNoteAccount(spaceDid);
     try {
-      expect(await syncOnDeviceTranscript(space.tcw, { id: "rec-1", owner: space.tcw.did,
+      expect(await syncOnDeviceTranscript(space.tcw, { id: "rec-1", owner: spaceDid,
         ledger: { audio: { state: "saved", rowId: "row-1" } } })).toBe(false);
       const audioWritesAfter = space.kvPutCalls.filter(({ key }) => key.startsWith(voiceNoteAudioKvKey("rec-1"))).length;
       expect(audioWritesAfter).toBe(audioWritesBefore);
@@ -2305,6 +2499,7 @@ describe("transcribeVoiceNote (one note end to end)", () => {
   });
   test("a Local rerun that loses to a concurrent revision is never acknowledged on later syncs", async () => {
     const space = sqliteSpace();
+    const spaceDid = typedTcw(space).did!;
     // sqliteSpace hides its fake client behind `never`; isolate this sync cache by space context.
     const isolatedSpace = space.tcw as unknown as { spaceId?: string };
     isolatedSpace.spaceId = "space:local-rerun-race";
@@ -2317,11 +2512,11 @@ describe("transcribeVoiceNote (one note end to end)", () => {
       segments: [{ start: 0, end: 1000, text: "Losing Local rerun.", speaker: null }],
       rerunBase: { rev: prior!.rev, hash: prior!.hash },
     } as LocalTranscript;
-    VoiceNotes.listPending = async () => ({ recordings: [{ ...RECORDING, rev: 1, owner: space.tcw.did,
+    VoiceNotes.listPending = async () => ({ recordings: [{ ...RECORDING, rev: 1, owner: spaceDid,
       ledger: { audio: { state: "saved", rowId: "row-1" }, transcriptSync: { state: "pending", rev: 1, at: null } } } as never] });
     VoiceNotes.getTranscript = async () => ({ transcript: local });
     const savedAcknowledgements: unknown[] = [];
-    VoiceNotes.updateLedger = async (args) => { savedAcknowledgements.push(args); return {}; };
+    VoiceNotes.updateLedger = async (args) => { savedAcknowledgements.push(args); return { rev: 1 }; };
     const kv = space.tcw as unknown as { kv: { put: (key: string, value: string | Uint8Array,
       options?: { ifNoneMatch?: string }) => Promise<unknown> } };
     const write = kv.kv.put.bind(kv.kv);
@@ -2336,9 +2531,9 @@ describe("transcribeVoiceNote (one note end to end)", () => {
       }
       return write(key, value, options);
     };
-    const unmount = mountVoiceNoteAccount(space.tcw.did);
+    const unmount = mountVoiceNoteAccount(spaceDid);
     try {
-      const input = { id: "rec-1", owner: space.tcw.did, ledger: { audio: { state: "saved", rowId: "row-1" } } };
+      const input = { id: "rec-1", owner: spaceDid, ledger: { audio: { state: "saved", rowId: "row-1" } } };
       await syncOnDeviceTranscript(space.tcw, input);
       expect(onDeviceTranscriptSyncState(space.tcw, "rec-1")?.state).toBe("failed");
       await syncOnDeviceTranscript(space.tcw, input);
@@ -2422,7 +2617,7 @@ describe("transcribeVoiceNote (one note end to end)", () => {
 
   test("the note's own length is checked against PTX before its audio is read", async () => {
     const space = sqliteSpace();
-    await saveVoiceNote(space.tcw, { ...RECORDING, durationMs: 7_201_000 }, AUDIO, "android");
+    await saveVoiceNote(space.tcw, { ...RECORDING, durationMs: LEGACY_OVER_MS }, AUDIO, "android");
     const h = harness({});
     let loads = 0;
     const realGet = (space.tcw as { kv: { get: (k: string) => Promise<unknown> } }).kv.get;
@@ -2432,7 +2627,8 @@ describe("transcribeVoiceNote (one note end to end)", () => {
     };
     const err = await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, explicit: true, sourceId: "rec-1", report: () => {} })
       .catch((e: unknown) => e);
-    expect((err as { code: string }).code).toBe("recording_too_long");
+    expect(err).toBeInstanceOf(PrivateCloudRefusedError);
+    expect(err).toMatchObject({ refusal: { kind: "duration", limitSeconds: CAPS.max_duration_seconds } });
     expect(loads).toBe(0);
     expect(h.creates).toHaveLength(0);
   });
@@ -2646,7 +2842,8 @@ describe("transcribeVoiceNote reads the note's stored audio (TC-517)", () => {
     };
     const err = await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: { ...CAPS, max_bytes: 1_000 }, explicit: true, sourceId: "rec-1", report: () => {} })
       .catch((e: unknown) => e);
-    expect((err as { code: string }).code).toBe("recording_too_large");
+    expect(err).toBeInstanceOf(PrivateCloudRefusedError);
+    expect((err as PrivateCloudRefusedError).refusal).toEqual({ kind: "bytes", limitBytes: 1_000, sizeBytes: big.byteLength });
     expect(gets.filter((k) => k.includes("/p/"))).toEqual([]);
     expect(h.creates).toHaveLength(0);
   });
@@ -2783,6 +2980,26 @@ describe("every path that creates or resumes an off-phone job consults the hold 
     await settle();
     expect(starts).toBe(1);
     expect(transcriber.snapshot().jobs.get("rec-1")).toEqual({ kind: "done", outcome: "transcribed" });
+  });
+
+  test("Private with no PTX duration limit never starts automatically: the note stays blocked as limits-unknown, and an explicit Transcribe is refused the same way", async () => {
+    const { space, h, storage, choices } = await setup("in_app", { pending: false });
+    const cloud: VoiceNoteCloud = {
+      ...h.cloud,
+      capabilities: async () => ({ ...CAPS, max_duration_seconds: undefined }),
+      pendingSourceIds: () => [],
+    };
+    const transcriber = createVoiceNoteTranscriber({
+      cloud, consent: localStorageVoiceNoteConsentStore(DID, storage), tcw: () => space.tcw,
+      holds: memoryHoldStore(), choices, checkRetryMs: [],
+      runNote: async () => "transcribed",
+    });
+    await transcriber.check();
+    transcriber.noteSaved({ id: "rec-1", durationMs: 9_000, source: "in_app", options: { transcriber: "private-cloud", identifySpeakers: false } });
+    expect(transcriber.snapshot().jobs.get("rec-1")).toEqual({ kind: "blocked", reason: "limits-unknown" });
+    expect(choices.ids()).toEqual(["rec-1"]);
+    expect(transcriber.transcribePrivately("rec-1", RECORDING.durationMs / 1000)).toBe("limits-unknown");
+    expect(transcriber.snapshot().jobs.get("rec-1")).toEqual({ kind: "blocked", reason: "limits-unknown" });
   });
 
   test("a later outage does not strand a Private note after an earlier success", async () => {
@@ -2962,7 +3179,7 @@ describe("every path that creates or resumes an off-phone job consults the hold 
     expect(relaunched.snapshot().jobs.get("rec-1")).toMatchObject({ kind: "failed", code: "processing_failed" });
     expect(h.creates).toHaveLength(0);
 
-    relaunched.transcribePrivately("rec-1");
+    relaunched.transcribePrivately("rec-1", RECORDING.durationMs / 1000);
     await settle();
     expect(attempts).toBe(2);
   });
@@ -3007,7 +3224,7 @@ describe("every path that creates or resumes an off-phone job consults the hold 
     h.cloud.transcribe = async () => { throw new PrivateCloudError("service_busy", "busy"); };
     const transcriber = createVoiceNoteTranscriber({
       cloud: h.cloud, consent: localStorageVoiceNoteConsentStore(DID, storage), choices,
-      holds: memoryHoldStore(), pending, tcw: () => space.tcw,
+      holds: memoryHoldStore(), tcw: () => space.tcw,
     });
     await transcriber.check();
     choices.add("another-note");
@@ -3273,7 +3490,7 @@ describe("every path that creates or resumes an off-phone job consults the hold 
       });
     });
     await transcriber.check();
-    expect(transcriber.transcribePrivately("rec-1")).toBeNull();
+    expect(transcriber.transcribePrivately("rec-1", RECORDING.durationMs / 1000)).toBeNull();
     await failed;
     expect(h.removed).toEqual([]);
     expect(h.pending.read("rec-1")?.held).toBeDefined();
@@ -3477,7 +3694,7 @@ describe("an explicit move to private cloud survives a restart", () => {
     });
     return space;
   }
-  const settle = async (t: ReturnType<typeof createVoiceNoteTranscriber>) => {
+  const settle = async (t: VoiceNoteTranscriber) => {
     for (let i = 0; i < 30 && t.snapshot().jobs.get("rec-1")?.kind === "active"; i++) await new Promise((resolve) => setTimeout(resolve, 0));
   };
 
@@ -3500,7 +3717,7 @@ describe("an explicit move to private cloud survives a restart", () => {
     const first = harness({ pending, jobs: [new PrivateCloudError("offline", "network gone")] });
     const t = launch(first);
     await t.check();
-    t.transcribePrivately("rec-1");
+    t.transcribePrivately("rec-1", RECORDING.durationMs / 1000);
     await settle(t);
     expect(t.snapshot().jobs.get("rec-1")).toMatchObject({ kind: "failed", retryable: true });
     expect(first.puts).toHaveLength(1);
@@ -3551,7 +3768,7 @@ describe("an explicit move to private cloud survives a restart", () => {
     const h = harness({ jobs: [job("completed")], creates: [new PrivateCloudError("invalid_argument", "no")] });
     const t = createVoiceNoteTranscriber({ cloud: h.cloud, consent: { get: () => true, set: () => {} }, choices, holds: memoryHoldStore(), tcw: () => space.tcw });
     await t.check();
-    t.transcribePrivately("rec-1");
+    t.transcribePrivately("rec-1", RECORDING.durationMs / 1000);
     await settle(t);
     expect(t.snapshot().jobs.get("rec-1")?.kind).toBe("failed");
     expect(choices.ids()).toEqual([]);
@@ -3568,7 +3785,7 @@ describe("an explicit move to private cloud survives a restart", () => {
       holds: localStorageVoiceNoteHoldStore(DID, storage),
       tcw: () => space.tcw,
     });
-    const settle = async (t: ReturnType<typeof createVoiceNoteTranscriber>) => {
+    const settle = async (t: VoiceNoteTranscriber) => {
       for (let i = 0; i < 30 && t.snapshot().jobs.get("rec-1")?.kind === "active"; i++)
         await new Promise((resolve) => setTimeout(resolve, 0));
     };
@@ -3583,7 +3800,7 @@ describe("an explicit move to private cloud survives a restart", () => {
     });
     const transcriber = launch(first);
     await transcriber.check();
-    transcriber.transcribePrivately("rec-1");
+    transcriber.transcribePrivately("rec-1", RECORDING.durationMs / 1000);
     await settle(transcriber);
     expect(transcriber.snapshot().jobs.get("rec-1")).toMatchObject({ kind: "failed", code: "transcript_incomplete" });
     expect(choices.ids()).toEqual([]);
@@ -3601,7 +3818,7 @@ describe("an explicit move to private cloud survives a restart", () => {
     expect(retry.creates).toHaveLength(0);
     expect(retry.puts).toHaveLength(0);
 
-    restarted.transcribePrivately("rec-1");
+    restarted.transcribePrivately("rec-1", RECORDING.durationMs / 1000);
     await settle(restarted);
     expect(retry.creates).toHaveLength(1);
     expect(retry.puts).toHaveLength(1);
@@ -3710,7 +3927,7 @@ describe("an explicit move to private cloud survives a restart", () => {
       tcw: () => space.tcw,
     });
     await transcriber.check();
-    transcriber.transcribePrivately("rec-1");
+    transcriber.transcribePrivately("rec-1", RECORDING.durationMs / 1000);
     await settle(transcriber);
     expect(h.creates).toHaveLength(1);
     expect(transcriber.snapshot().jobs.get("rec-1")).toMatchObject({ kind: "failed", code: "transcript_incomplete" });
@@ -3755,14 +3972,14 @@ test("a failed audio-read attempt clears Private intent and never restarts on th
     choices: localStorageVoiceNotePrivateChoiceStore(DID, storage),
     holds: localStorageVoiceNoteHoldStore(DID, storage), tcw: () => space.tcw,
   });
-  const settle = async (t: ReturnType<typeof createVoiceNoteTranscriber>) => {
+  const settle = async (t: VoiceNoteTranscriber) => {
     for (let i = 0; i < 200 && t.snapshot().jobs.get("rec-1")?.kind === "active"; i++)
       await new Promise(resolve => setTimeout(resolve, 50));
   };
   const first = harness({ pending });
   const t = launch(first);
   await t.check();
-  t.transcribePrivately("rec-1");
+  t.transcribePrivately("rec-1", RECORDING.durationMs / 1000);
   await settle(t);
   expect(t.snapshot().jobs.get("rec-1")).toMatchObject({ kind: "failed", retryable: true });
   expect(first.creates).toHaveLength(0);
@@ -3867,7 +4084,7 @@ describe("TC-1140 main hotfix zero-loss regressions", () => {
       const h = harness({});
       const transcriber = privateTranscriber(space, h, choices);
       await transcriber.check();
-      expect(transcriber.transcribePrivately("rec-1")).toBe(null);
+      expect(transcriber.transcribePrivately("rec-1", RECORDING.durationMs / 1000)).toBe(null);
       await waitFor(transcriber, "failed");
 
       const row = await resolveVoiceNoteRow(space.tcw, "rec-1");
@@ -3924,7 +4141,7 @@ describe("TC-1140 main hotfix zero-loss regressions", () => {
     const first = privateTranscriber(space, h, choices);
     await first.check();
     const restore = withKvFailure(space);
-    expect(first.transcribePrivately("rec-1")).toBe(null);
+    expect(first.transcribePrivately("rec-1", RECORDING.durationMs / 1000)).toBe(null);
     await waitFor(first, "failed");
     expect(choices.has("rec-1")).toBe(true);
     expect(h.pending.read("rec-1")?.transcriptionId).toBe(ID);
@@ -3963,7 +4180,7 @@ describe("TC-1140 main hotfix zero-loss regressions", () => {
     const first = privateTranscriber(space, h, choices);
     await first.check();
     const restore = withKvFailure(space);
-    expect(first.transcribePrivately("rec-1")).toBe(null);
+    expect(first.transcribePrivately("rec-1", RECORDING.durationMs / 1000)).toBe(null);
     await waitFor(first, "failed");
     expect(choices.has("rec-1")).toBe(true);
     expect(h.pending.read("rec-1")?.transcriptionId).toBe(ID);
@@ -3989,7 +4206,7 @@ describe("TC-1140 main hotfix zero-loss regressions", () => {
     const transcriber = privateTranscriber(space, h, choices);
     await transcriber.check();
     const restore = withKvFailure(space);
-    expect(transcriber.transcribePrivately("rec-1")).toBe(null);
+    expect(transcriber.transcribePrivately("rec-1", RECORDING.durationMs / 1000)).toBe(null);
     await waitFor(transcriber, "failed");
     restore();
 
@@ -4009,7 +4226,7 @@ describe("TC-1140 main hotfix zero-loss regressions", () => {
     const h = harness({ creates: [new PrivateCloudError("service_paused", "draining", { statusCode: 503 })] });
     const transcriber = privateTranscriber(space, h, choices);
     await transcriber.check();
-    expect(transcriber.transcribePrivately("rec-1")).toBe(null);
+    expect(transcriber.transcribePrivately("rec-1", RECORDING.durationMs / 1000)).toBe(null);
     await waitFor(transcriber, "failed");
 
     const note = await readVoiceNoteForTranscription(space.tcw, "rec-1");
@@ -4390,7 +4607,7 @@ describe("TC-1140 main hotfix zero-loss regressions", () => {
     expect(pipeline.steps.find((step) => step.key === "transcript")).toMatchObject({
       state: "failed", blocker: { action: { kind: "retry", label: "Try again" } },
     });
-    transcriber.transcribePrivately("rec-1");
+    transcriber.transcribePrivately("rec-1", RECORDING.durationMs / 1000);
     for (let i = 0; i < 40 && transcriber.snapshot().jobs.get("rec-1")?.kind === "active"; i++)
       await new Promise((resolve) => setTimeout(resolve, 0));
     expect(attempts).toBe(2);
@@ -4436,7 +4653,7 @@ describe("TC-1140 main hotfix zero-loss regressions", () => {
 
     const first = createTranscriber();
     await first.check();
-    expect(first.transcribePrivately("rec-1")).toBe(null);
+    expect(first.transcribePrivately("rec-1", RECORDING.durationMs / 1000)).toBe(null);
     await settle();
     expect(first.snapshot().jobs.get("rec-1")).toMatchObject({ kind: "failed", code: "processing_failed" });
     expect(h.creates).toHaveLength(1);
@@ -4508,7 +4725,7 @@ describe("TC-1140 main hotfix zero-loss regressions", () => {
       holds: memoryHoldStore(), checkRetryMs: [],
     });
     await transcriber.check();
-    expect(transcriber.transcribePrivately("rec-1")).toBe(null);
+    expect(transcriber.transcribePrivately("rec-1", RECORDING.durationMs / 1000)).toBe(null);
     for (let i = 0; i < 60 && transcriber.snapshot().jobs.get("rec-1")?.kind === "active"; i++)
       await new Promise((resolve) => setTimeout(resolve, 0));
     expect(pending.read("rec-1")).toMatchObject({ transcriptionId: ID, failure: "processing_failed" });
@@ -4841,14 +5058,14 @@ describe("TC-1140 round-six merge regressions", () => {
     await controller.check();
     await ticks();
     let props = transcriptionProps(controller, controller.snapshot());
-    await transcribeWith("private-cloud", "rec-1", props, null, true);
+    await transcribeWith("private-cloud", "rec-1", props, null, RECORDING.durationMs / 1000, undefined, true);
     await ticks();
     expect(controller.snapshot().jobs.get("rec-1")).toMatchObject({ kind: "failed", code: "quota_exceeded" });
     expect(pending.read("rec-1")).toMatchObject({ explicitRerun: true, rerunBase: { rev: 1, hash: base.hash } });
     expect(pending.read("rec-1")?.failure).toBe("quota_exceeded");
 
     props = transcriptionProps(controller, controller.snapshot());
-    await transcribeWith("private-cloud", "rec-1", props, null, true);
+    await transcribeWith("private-cloud", "rec-1", props, null, RECORDING.durationMs / 1000, undefined, true);
     await ticks(200);
     expect(controller.snapshot().jobs.get("rec-1")).toMatchObject({ kind: "done" });
 
@@ -4890,7 +5107,7 @@ describe("TC-1140 round-six merge regressions", () => {
     });
     await first.check();
     await ticks();
-    await transcribeWith("private-cloud", "rec-1", transcriptionProps(first, first.snapshot()), null, true);
+    await transcribeWith("private-cloud", "rec-1", transcriptionProps(first, first.snapshot()), null, RECORDING.durationMs / 1000, undefined, true);
     await ticks();
     expect(first.snapshot().jobs.get("rec-1")).toMatchObject({ kind: "failed", code: "quota_exceeded" });
     expect(pending.read("rec-1")).toMatchObject({ explicitRerun: true, rerunBase: { rev: 1, hash: base.hash } });
@@ -5010,5 +5227,339 @@ describe("TC-1140 round-six merge regressions", () => {
     expect(h.creates).toHaveLength(2);
     expect(h.puts).toHaveLength(1);
     expect(h.removed).toEqual([ID2]);
+  });
+});
+
+describe("admission at a nonstandard advertised ceiling (real cloud, transcriber, SQLite and stores)", () => {
+  beforeEach(() => _resetConnectorSchemaMemoForTests());
+  // Waits on the transcriber's own change event, never a clock: every admission step emits one.
+  const nextChange = (t: { subscribe(listener: () => void): () => void }) => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    const off = t.subscribe(() => { off(); resolve(); });
+    return promise;
+  };
+  // Until no note is active (waiting, preparing, uploading or processing).
+  const settle = async (t: VoiceNoteTranscriber) => {
+    while ([...t.snapshot().jobs.values()].some((job) => job.kind === "active")) await nextChange(t);
+  };
+  // Until the note has finished: transcribed, or failed.
+  const untilFinished = async (t: VoiceNoteTranscriber, id: string) => {
+    while (!["done", "failed"].includes(t.snapshot().jobs.get(id)?.kind ?? "")) await nextChange(t);
+  };
+  const untouched = (h: { creates: unknown[]; puts: unknown[] }) => {
+    expect(h.creates).toHaveLength(0);
+    expect(h.puts).toHaveLength(0);
+  };
+  // The ceiling is a fixture carried by the advertised caps; every expectation derives from it, never from a product number.
+  const ACCEPTED = 4_321.5;
+  const LOWER_ACCEPTED = 4_000.2;
+  const ADVERTISED: PrivateCloudCapabilities = { ...CAPS, accepted_max_duration_seconds: ACCEPTED, content_types: ["audio/mp4"] };
+  // Precise duration plus the client margin: the first millisecond past the ceiling, and exactly on it.
+  const OVER_MS = Math.round((ACCEPTED - PRIVATE_DURATION_MARGIN_SECONDS) * 1000) + 1;
+  const EDGE_MS = OVER_MS - 1;
+
+  /** Saved private-cloud notes on real SQLite, with the consent, choice and hold stores that a relaunch reads back. */
+  async function build(notes: [string, number][], script: Parameters<typeof harness>[0] = {}) {
+    const space = sqliteSpace();
+    for (const [id, durationMs] of notes) {
+      expect((await saveVoiceNote(space.tcw, { ...RECORDING, id, durationMs }, AUDIO, "ios")).ok).toBe(true);
+      space.sqlite.query(`UPDATE connector_meeting SET metadata = json_set(metadata, '$.capture.version', 2,
+        '$.capture.options.transcriber', 'private-cloud', '$.capture.source', 'in_app') WHERE source_id = ?`).run(id);
+    }
+    VoiceNotes.listPending = async () => ({ recordings: [] });
+    const storage = memoryStorage();
+    const h = harness(script);
+    localStorageVoiceNoteConsentStore(DID, storage).set(true);
+    const launch = () => createVoiceNoteTranscriber({
+      cloud: h.cloud, consent: localStorageVoiceNoteConsentStore(DID, storage), tcw: () => space.tcw,
+      holds: localStorageVoiceNoteHoldStore(DID, storage), choices: localStorageVoiceNotePrivateChoiceStore(DID, storage),
+    });
+    return { h, launch, choices: localStorageVoiceNotePrivateChoiceStore(DID, storage), space };
+  }
+
+  test("auto: a save past the ceiling less the margin is refused before any PTX job, and no choice is kept for it", async () => {
+    const { h, launch, choices } = await build([["rec-1", OVER_MS]], { capabilities: () => ADVERTISED });
+    const t = launch();
+    await t.check();
+    t.noteSaved({ id: "rec-1", durationMs: OVER_MS, source: "in_app", options: { transcriber: "private-cloud", identifySpeakers: false } });
+    await settle(t);
+    expect(privateCloudRefusal(OVER_MS / 1000, null, privateCloudLimits(ADVERTISED)))
+      .toEqual({ kind: "duration", limitSeconds: ACCEPTED, durationSeconds: OVER_MS / 1000 });
+    untouched(h);
+    expect(t.snapshot().jobs.has("rec-1")).toBe(false);
+    expect(choices.ids()).toEqual([]);
+  });
+
+  test("auto: a note exactly at the ceiling less the margin is admitted and transcribed once", async () => {
+    const { h, launch } = await build([["rec-1", EDGE_MS]], { capabilities: () => ADVERTISED });
+    const t = launch();
+    await t.check();
+    t.noteSaved({ id: "rec-1", durationMs: EDGE_MS, source: "in_app", options: { transcriber: "private-cloud", identifySpeakers: false } });
+    await untilFinished(t, "rec-1");
+    expect(h.creates).toHaveLength(1);
+    expect(t.snapshot().jobs.get("rec-1")).toEqual({ kind: "done", outcome: "transcribed" });
+  });
+
+  test("explicit (Use Private): a refusal comes back synchronously with no PTX job, and the choice is kept", async () => {
+    const { h, launch, choices } = await build([["rec-1", OVER_MS]], { capabilities: () => ADVERTISED });
+    const t = launch();
+    await t.check();
+    expect(t.transcribePrivately("rec-1", OVER_MS / 1000))
+      .toEqual({ kind: "duration", limitSeconds: ACCEPTED, durationSeconds: OVER_MS / 1000 });
+    await settle(t);
+    untouched(h);
+    expect(t.snapshot().jobs.get("rec-1")).toEqual({ kind: "blocked", reason: "limits-exceeded" });
+    expect(choices.ids()).toEqual(["rec-1"]);
+  });
+
+  test("a refused note does not occupy the line: the next note transcribes once", async () => {
+    const { h, launch, choices } = await build([["rec-1", OVER_MS], ["rec-2", EDGE_MS]], { capabilities: () => ADVERTISED });
+    const t = launch();
+    await t.check();
+    expect(t.transcribePrivately("rec-1", OVER_MS / 1000))
+      .toEqual({ kind: "duration", limitSeconds: ACCEPTED, durationSeconds: OVER_MS / 1000 });
+    expect(t.transcribePrivately("rec-2", EDGE_MS / 1000)).toBeNull();
+    await untilFinished(t, "rec-2");
+    expect(h.creates).toHaveLength(1);
+    expect(h.puts).toHaveLength(1);
+    expect(t.snapshot().jobs.get("rec-1")).toEqual({ kind: "blocked", reason: "limits-exceeded" });
+    expect(t.snapshot().jobs.get("rec-2")).toEqual({ kind: "done", outcome: "transcribed" });
+    expect(choices.ids()).toEqual(["rec-1"]);
+  });
+  test("an explicit byte refusal is returned and retained, then the saved space-only note resumes when max_bytes rises", async () => {
+    const audioBytes = base64ToBytes(AUDIO.base64).byteLength;
+    let limits: PrivateCloudCapabilities = { ...ADVERTISED, max_bytes: audioBytes - 1 };
+    const { h, launch, choices } = await build([["rec-1", EDGE_MS]], { capabilities: () => limits });
+    const transcriber = launch();
+    await transcriber.check();
+    expect(transcriber.transcribePrivately("rec-1", EDGE_MS / 1000, audioBytes))
+      .toEqual({ kind: "bytes", limitBytes: audioBytes - 1, sizeBytes: audioBytes });
+    expect(transcriber.snapshot().jobs.get("rec-1")).toEqual({ kind: "blocked", reason: "limits-exceeded" });
+    expect(choices.ids()).toEqual(["rec-1"]);
+    untouched(h);
+
+    limits = { ...limits, max_bytes: audioBytes };
+    await transcriber.check();
+    await untilFinished(transcriber, "rec-1");
+    expect(h.creates).toHaveLength(1);
+    expect(h.puts).toHaveLength(1);
+    expect(transcriber.snapshot().jobs.get("rec-1")).toEqual({ kind: "done", outcome: "transcribed" });
+    expect(choices.ids()).toEqual([]);
+  });
+  test("a limits-change check during an active recovery scan is latched and re-admits the saved SQLite intent", async () => {
+    let caps: PrivateCloudCapabilities = { ...ADVERTISED, accepted_max_duration_seconds: 60 };
+    const { h, launch } = await build([["rec-1", 80_000]], { capabilities: () => caps });
+    const listingStarted = Promise.withResolvers<void>();
+    const releaseListing = Promise.withResolvers<void>();
+    let listings = 0;
+    VoiceNotes.listPending = async () => {
+      listings++;
+      if (listings === 1) {
+        listingStarted.resolve();
+        await releaseListing.promise;
+      }
+      return { recordings: [] };
+    };
+    const transcriber = launch();
+    // Before capabilities settle, the saved intent is kept as limits-unknown.
+    transcriber.noteSaved({ id: "rec-1", durationMs: 80_000, source: "in_app", options: { transcriber: "private-cloud", identifySpeakers: false } });
+    await transcriber.check();
+    await listingStarted.promise;
+
+    caps = { ...ADVERTISED, accepted_max_duration_seconds: 100 };
+    await transcriber.check();
+    releaseListing.resolve();
+    await untilFinished(transcriber, "rec-1");
+    expect(listings).toBeGreaterThanOrEqual(2);
+    expect(h.creates).toHaveLength(1);
+    expect(h.puts).toHaveLength(1);
+    expect(transcriber.snapshot().jobs.get("rec-1")).toEqual({ kind: "done", outcome: "transcribed" });
+  });
+  test("an account exit during a nonempty native scan releases recovery so a returned account re-admits the stranded intent", async () => {
+    let caps: PrivateCloudCapabilities = { ...ADVERTISED, accepted_max_duration_seconds: 100 };
+    const { h, launch } = await build([["stranded", 80_000]], { capabilities: () => caps });
+    const listingStarted = Promise.withResolvers<void>();
+    const releaseListing = Promise.withResolvers<void>();
+    const accountExitObserved = Promise.withResolvers<void>();
+    let listings = 0;
+    let account = true;
+    let absentChecks = 0;
+    const current = () => {
+      if (account) return true;
+      absentChecks++;
+      if (absentChecks === 2) {
+        account = true;
+        accountExitObserved.resolve();
+      }
+      return false;
+    };
+    const native = { ...RECORDING, id: "native-eligible", durationMs: 1_000, source: "in_app",
+      options: { transcriber: "private-cloud", identifySpeakers: false },
+      ledger: { audio: { state: "saved", rowId: "native-eligible", at: null },
+        transcript: { state: "pending", outcome: null, reason: null, attempts: 0, nextAttemptAt: null } } } as unknown as VoiceNoteRecording;
+    VoiceNotes.listPending = async () => {
+      listings++;
+      if (listings === 1) {
+        listingStarted.resolve();
+        await releaseListing.promise;
+        return { recordings: [native] };
+      }
+      return { recordings: [] };
+    };
+    const transcriber = launch();
+    await transcriber.check({ current });
+    await listingStarted.promise;
+
+    account = false;
+    transcriber.noteSaved({ id: "stranded", durationMs: 80_000, source: "in_app", options: { transcriber: "private-cloud", identifySpeakers: false } });
+    releaseListing.resolve();
+    await accountExitObserved.promise;
+    caps = { ...caps, accepted_max_duration_seconds: 101 };
+    await transcriber.check({ current });
+    await untilFinished(transcriber, "stranded");
+
+    expect(listings).toBeGreaterThanOrEqual(2);
+    expect(h.creates).toHaveLength(1);
+    expect(h.puts).toHaveLength(1);
+    expect(transcriber.snapshot().jobs.get("stranded")).toEqual({ kind: "done", outcome: "transcribed" });
+  });
+
+  test("a native listing failure releases recovery so a later check retries and admits the saved intent once", async () => {
+    let caps: PrivateCloudCapabilities = { ...ADVERTISED, accepted_max_duration_seconds: 60 };
+    const { h, launch, choices } = await build([["stranded", 80_000]], { capabilities: () => caps });
+    choices.add("stranded");
+    const listingFailed = Promise.withResolvers<void>();
+    let listings = 0;
+    VoiceNotes.listPending = async () => {
+      listings++;
+      if (listings === 1) {
+        listingFailed.resolve();
+        throw new Error("native listing failed");
+      }
+      return { recordings: [] };
+    };
+    const transcriber = launch();
+    await transcriber.check();
+    await listingFailed.promise;
+    expect(h.creates).toHaveLength(0);
+
+    caps = { ...caps, accepted_max_duration_seconds: 100 };
+    await transcriber.check();
+    await untilFinished(transcriber, "stranded");
+    expect(listings).toBeGreaterThanOrEqual(2);
+    expect(h.creates).toHaveLength(1);
+    expect(h.puts).toHaveLength(1);
+    expect(transcriber.snapshot().jobs.get("stranded")).toEqual({ kind: "done", outcome: "transcribed" });
+  });
+  test("an explicit queued Retry retains a persisted failed-row intent through unknown caps and recovers once", async () => {
+    let caps: PrivateCloudCapabilities = { ...ADVERTISED, accepted_max_duration_seconds: 100 };
+    const pollStarted = Promise.withResolvers<void>();
+    const releasePoll = Promise.withResolvers<void>();
+    let paused = false;
+    const clock = {
+      now: () => 0,
+      sleep: async () => {
+        if (paused) return;
+        paused = true;
+        pollStarted.resolve();
+        await releasePoll.promise;
+      },
+      random: () => 0.5,
+    };
+    const { h, launch, space } = await build([["first", 10_000], ["retry", 10_000]], {
+      capabilities: () => caps,
+      clock,
+      creates: [
+        { id: ID, status: "awaiting_upload", upload: { path: `/uploads/${ID}`, capability: CAP } },
+        { id: ID2, status: "awaiting_upload", upload: { path: `/uploads/${ID2}`, capability: CAP2 } },
+      ],
+      puts: [{ status: 201, body: { status: "queued" } }, { status: 201, body: { status: "queued" } }],
+      jobs: [job("queued"), job("completed"), job("completed")],
+    });
+    space.sqlite.query(`UPDATE connector_meeting SET metadata = json_set(metadata,
+      '$.transcription_outcome', 'failed', '$.transcription_error_code', 'server_error') WHERE source_id = 'retry'`).run();
+    const transcriber = launch();
+    await transcriber.check();
+    transcriber.transcribePrivately("first", 10);
+    await pollStarted.promise;
+    expect(h.creates).toHaveLength(1);
+    expect(h.puts).toHaveLength(1);
+
+    expect(transcriber.transcribePrivately("retry", 10)).toBeNull();
+    caps = { ...caps, max_duration_seconds: undefined, accepted_max_duration_seconds: undefined };
+    await transcriber.check();
+    releasePoll.resolve();
+    await untilFinished(transcriber, "first");
+    while (transcriber.snapshot().jobs.get("retry")?.kind !== "blocked") await nextChange(transcriber);
+    expect(transcriber.snapshot().jobs.get("retry")).toEqual({ kind: "blocked", reason: "limits-unknown" });
+
+    caps = { ...caps, accepted_max_duration_seconds: 100 };
+    await transcriber.check();
+    await untilFinished(transcriber, "retry");
+    expect(transcriber.snapshot().jobs.get("retry")).toEqual({ kind: "done", outcome: "transcribed" });
+    expect(h.creates).toHaveLength(2);
+    expect(h.puts).toHaveLength(2);
+  });
+
+
+
+  test("a fresh transcriber rechecks the refused choice and actually admits the eligible choice after relaunch", async () => {
+    const { h, launch, choices } = await build([["rec-1", OVER_MS], ["rec-2", EDGE_MS]], { capabilities: () => ADVERTISED });
+    const first = launch();
+    await first.check();
+    first.transcribePrivately("rec-1", OVER_MS / 1000);
+    await settle(first);
+    expect(choices.ids()).toEqual(["rec-1"]);
+    choices.add("rec-2");
+    const relaunched = launch();
+    await relaunched.check();
+    await untilFinished(relaunched, "rec-2");
+    expect(h.creates).toHaveLength(1);
+    expect(h.puts).toHaveLength(1);
+    expect(relaunched.snapshot().jobs.get("rec-2")).toEqual({ kind: "done", outcome: "transcribed" });
+    expect(relaunched.snapshot().jobs.has("rec-1")).toBe(false);
+    expect(choices.ids()).toEqual(["rec-1"]);
+  });
+
+  test("a ceiling lowered while a note is in audio preparation is applied before create or upload; the intent is kept", async () => {
+    const released = Promise.withResolvers<void>();
+    const gate = released.promise;
+    const decode: AudioDecoder = async (bytes, sampleRate) => {
+      await gate;
+      return silentDecoder()(bytes, sampleRate);
+    };
+    let caps: PrivateCloudCapabilities = ADVERTISED;
+    const { h, launch, choices } = await build([["rec-1", 4_000_100]], { capabilities: () => caps, decode });
+    const t = launch();
+    await t.check();
+    t.transcribePrivately("rec-1", 4_000_100 / 1000);
+    // Parked in the decoder until released below.
+    expect(h.creates).toHaveLength(0);
+    caps = { ...ADVERTISED, accepted_max_duration_seconds: LOWER_ACCEPTED };
+    await t.check();
+    released.resolve();
+    await settle(t);
+    untouched(h);
+    expect(t.snapshot().jobs.get("rec-1")).toEqual({ kind: "blocked", reason: "limits-exceeded" });
+    expect(choices.ids()).toEqual(["rec-1"]);
+  });
+
+  test("unknown limits block a saved note with no PTX job; once a ceiling is advertised, admission re-runs by itself and transcribes it once", async () => {
+    let caps: PrivateCloudCapabilities = { ...CAPS, max_duration_seconds: undefined };
+    const { h, launch, choices } = await build([["rec-1", EDGE_MS]], { capabilities: () => caps });
+    const t = launch();
+    await t.check();
+    t.noteSaved({ id: "rec-1", durationMs: EDGE_MS, source: "in_app", options: { transcriber: "private-cloud", identifySpeakers: false } });
+    await settle(t);
+    untouched(h);
+    expect(t.snapshot().jobs.get("rec-1")).toEqual({ kind: "blocked", reason: "limits-unknown" });
+    expect(choices.ids()).toEqual(["rec-1"]);
+    caps = ADVERTISED;
+    await t.check();
+    await untilFinished(t, "rec-1");
+    expect(h.creates).toHaveLength(1);
+    expect(h.puts).toHaveLength(1);
+    expect(t.snapshot().jobs.get("rec-1")).toEqual({ kind: "done", outcome: "transcribed" });
+    expect(choices.ids()).toEqual([]);
   });
 });

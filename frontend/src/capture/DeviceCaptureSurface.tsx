@@ -24,6 +24,7 @@ import type { LibraryFilter } from "./library/libraryKinds";
 import { NoteDetailView } from "./library/NoteDetailView";
 import { transcriptWithTimestamps } from "./library/transcriptSegments";
 import { VoiceNotesTranscriberSettings } from "@/chat/VoiceNotesTranscriberSettings";
+import { AudioCacheSettings } from "./AudioCacheSettings";
 import { useRecorder } from "./recorder/RecorderProvider";
 import { SoftHomeProvider } from "./home/softHome";
 import { SystemAudioStart } from "./home/desktop/SystemAudioStart";
@@ -174,6 +175,7 @@ export function DeviceCaptureSettings({ onBack, onSignIn, offline = false }: { o
     <div className="mx-auto w-full max-w-2xl space-y-4 px-4 pb-8 pt-2">
       <SectionCard icon={UserIcon} title="Account"><p className="text-callout text-muted-foreground">{offline ? "Exo will sync when it reconnects." : "Sign in to sync your recordings."}</p><Button className="mt-3" onClick={onSignIn}>{offline ? "Try again" : "Sign in"}</Button></SectionCard>
       <SectionCard icon={MicIcon} title="Voice notes"><VoiceNotesTranscriberSettings /></SectionCard>
+      <SectionCard icon={MicIcon} title="Storage"><AudioCacheSettings /></SectionCard>
     </div>
   </div>;
 }
