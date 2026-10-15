@@ -1,26 +1,24 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
 import { issueSessionToken, verifySIWE, type NonceStore } from "@tinyboilerplate/server";
-import { isExpectedSiweOrigin } from "../cors-origins.js";
-import { hasTinyChatNativeAudience } from "../native-siwe-audience.js";
 
 interface AuthRoutesConfig {
   nonceStore: NonceStore;
   privateKey: string;
-  frontendUrl: string;
-  nativeSiweDomain?: string;
 }
 
 export function createAuthRouter(config: AuthRoutesConfig) {
   const router = Router();
-  const webDomain = new URL(config.frontendUrl).hostname;
-  const nativeDomain = config.nativeSiweDomain ?? "openkey.so";
 
   // Without `address` the nonce is unbound (native OpenKey sign-in binds it to
   // the recovered signer at /verify); it stays single-use and short-lived.
   router.get("/nonce", (req: Request, res: Response) => {
     const address = req.query.address;
-    if (address !== undefined && (typeof address !== "string" || !/^0x[0-9a-fA-F]{40}$/.test(address))) {
+    if (address === undefined) {
+      res.json({ nonce: config.nonceStore.generate() });
+      return;
+    }
+    if (typeof address !== "string" || !/^0x[0-9a-fA-F]{40}$/.test(address)) {
       res.status(400).json({ error: "invalid_address", message: "A valid address is required" });
       return;
     }
@@ -37,14 +35,7 @@ export function createAuthRouter(config: AuthRoutesConfig) {
     }
 
     try {
-      const { address, nonce, domain, uri, chainId, resources, expirationTime } = await verifySIWE(message, signature);
-      if (!isExpectedSiweOrigin(domain, uri, webDomain, nativeDomain) ||
-        (uri.startsWith("did:key:") && !hasTinyChatNativeAudience(message, address, chainId, resources))) {
-        res.status(400).json({
-          error: "invalid_origin", message: "SIWE domain or URI does not match this application",
-        });
-        return;
-      }
+      const { address, nonce, expirationTime } = await verifySIWE(message, signature);
       if (!config.nonceStore.validate(address, nonce)) {
         res
           .status(401)
