@@ -51,6 +51,7 @@ Integration branch: `dev/0.8.0`
 | #412 | bd049fd7 | 46f59002 | No | Clean merge of the approved TC-985 persistent agent-status fix after exact-head CI and Clarissa's branch-preview QA passed; focused status and route tests passed 41/41. |
 | #416 | 603e6792 | c743a29a | No | Clean merge of the approved TC-1182 no-local-source-eviction interim after all required checks passed; focused source-pin, cache, receipt, transcription, and web-store tests passed 506/506. |
 | #424 | dcc7c468 | 1e67e03f | No | Clean merge of the approved TC-1183 web sign-in prefetch after all required checks passed; nonce and manifest prefetch retain freshness gating, and focused prefetch/encryption/boot tests passed 22/22. |
+| #427 | 272e4022 | 4bfad174 | No | Clean test-only merge of the approved TC-1140 Retry-After clock stabilization after every required check passed; the focused transcription suite passed 228/228. |
 
 ## Test Fixes (2026-10-14)
 
@@ -96,7 +97,7 @@ After merging origin/main (TC-1128, #387, #392, 45d16e58) and PR #386 (TC-1108 p
 
 ## Current Status
 
-- **Verified code head**: `1e67e03f` (#424 merged after #416)
+- **Verified code head**: `4bfad174` (#427 merged after #424)
 - **Frontend unit suite**: 5284 pass, 4 skip, 0 fail (5288 tests, 349 files)
 - **#415 scoped tests**: 54 pass, 0 fail across `useLibrary.retry.test.tsx` and `useLibrary.test.tsx`
 - **#413 scoped tests**: 198 pass, 0 fail across `useLibrary.test.tsx` and `notePipeline.test.ts`
@@ -105,6 +106,7 @@ After merging origin/main (TC-1128, #387, #392, 45d16e58) and PR #386 (TC-1108 p
 - **#412 scoped tests**: 41 pass, 0 fail across status-indicator/enablement units and the rendered route harness
 - **#416 scoped tests**: 506 pass, 0 fail across nine source-pin, cache, receipt, transcription, and web-store files
 - **#424 scoped tests**: 22 pass, 0 fail across web sign-in prefetch, encryption-grant, and boot-surface files
+- **#427 scoped tests**: 228 pass, 0 fail in `voiceNoteTranscription.test.ts`
 - **Recorded `origin/main` `b9c538ee` baseline**: 4735 pass, 4 skip, 0 fail (4739 tests, 326 files)
 - **TypeScript**: pinned TypeScript 5.9.3, `frontend/node_modules/.bin/tsc --noEmit -p frontend/tsconfig.json`, 0 errors
 - **CI frontend lint**: `bunx eslint frontend test`, 0 errors
