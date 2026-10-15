@@ -28,6 +28,7 @@ export interface AgentSessionProbe {
   capability: AgentCapability;
   status: AgentSessionStatus | null;
   revision: string | null;
+  probeFailed: boolean;
 }
 export interface AgentAccessState extends AgentSessionProbe {
   enableError: string | null;
@@ -36,11 +37,11 @@ export interface AgentAccessState extends AgentSessionProbe {
   reconnectReason: AgentDelegationErrorCode | "delegation_stale" | null;
   silentlyEnabled: boolean;
 }
-export function agentAccessStatusLabel(state: Pick<AgentAccessState, "capability" | "status" | "reconnectReason" | "disconnecting">): string {
+export function agentAccessStatusLabel(state: Pick<AgentAccessState, "capability" | "status" | "reconnectReason" | "disconnecting" | "probeFailed">): string {
   if (state.disconnecting) return "Disconnecting…";
   if (state.capability === "probing") return "Checking…";
   if (state.capability === "enabled") return "Connected";
-  if (state.capability === "unavailable") return "Agent unavailable";
+  if (state.capability === "unavailable") return state.probeFailed ? "Agent unavailable" : "Disconnected";
   if (state.status === null && state.reconnectReason === "delegation_unverified") return "Access could not be verified";
   if (state.status === null) return "Access status unknown";
   return "Disconnected";
@@ -60,15 +61,23 @@ export async function probeAgentSession(backendUrl: string, token: string): Prom
     const res = await fetch(`${backendUrl.replace(/\/$/, "")}/api/agent/session`, {
       method: "GET", headers: { Authorization: `Bearer ${token}`, "X-Requested-With": "XMLHttpRequest" },
     });
-    if (!res.ok) return { capability: res.status === 401 ? "available" : "unavailable", status: null, revision: null };
+    if (!res.ok) return {
+      capability: res.status === 401 ? "available" : "unavailable",
+      status: null,
+      revision: null,
+      // A missing route means the agent feature is disabled; other probe errors
+      // must remain visible as backend failures.
+      probeFailed: res.status !== 401 && res.status !== 404,
+    };
     const body = await res.json() as AgentSessionSnapshot;
     const status = ["active", "expired", "stale", "none"].includes(body.status ?? "") ? body.status! : null;
     return {
       capability: isActiveAgentBundle(body) ? "enabled" : "available",
       status: status === "active" && !isActiveAgentBundle(body) ? "stale" : status,
       revision: typeof body.revision === "string" ? body.revision : null,
+      probeFailed: false,
     };
-  } catch { return { capability: "unavailable", status: null, revision: null }; }
+  } catch { return { capability: "unavailable", status: null, revision: null, probeFailed: true }; }
 }
 export async function probeAgentCapability(backendUrl: string, token: string): Promise<AgentCapability> {
   return (await probeAgentSession(backendUrl, token)).capability;
@@ -79,7 +88,7 @@ export function createAgentAccessController(opts: UseAgentEnablementOptions) {
   const agentEnabledRef = { current: false }; // Route availability, including public-only access.
   const activeThreadIdRef = { current: null as string | null };
   const privateAccessRef = { current: { active: false, revision: null, generation: 0 } as PrivateAgentAccess };
-  let state: AgentAccessState = { capability: "probing", status: null, revision: null, enableError: null,
+  let state: AgentAccessState = { capability: "probing", status: null, revision: null, probeFailed: false, enableError: null,
     enabling: false, disconnecting: false, reconnectReason: null, silentlyEnabled: false };
   const listeners = new Set<() => void>();
   let operation = 0;
@@ -112,7 +121,7 @@ export function createAgentAccessController(opts: UseAgentEnablementOptions) {
     const sequence = ++probeSequence;
     const token = opts.sessionStore.getToken();
     const result = token ? await probeAgentSession(opts.backendUrl, token)
-      : { capability: "unavailable" as const, status: null, revision: null };
+      : { capability: "unavailable" as const, status: null, revision: null, probeFailed: false };
     if (!disposed && currentOperation === operation && sequence === probeSequence) apply(result);
   };
   const invalidate = () => {
@@ -136,8 +145,7 @@ export function createAgentAccessController(opts: UseAgentEnablementOptions) {
             replacementPending = true;
             probeSequence++;
             access(false, null);
-            update({ capability: "available", status: null, revision: null });
-            signalChange();
+            update({ capability: "available", status: null, revision: null, probeFailed: false });
           },
           _mint: opts._mint ?? (() => mintAgentSessionViaFreshSignIn({ appName: opts.appName,
             openkeyHost: opts.openkeyHost, tinycloudHosts: opts.tinycloudHosts, sessionAddress: opts.tcw.address(),
@@ -162,15 +170,14 @@ export function createAgentAccessController(opts: UseAgentEnablementOptions) {
     invalidate(); // Synchronous: neither old browser results nor old ceremonies can win.
     const currentOperation = operation;
     update({ capability: agentEnabledRef.current ? "available" : "unavailable", status: null,
-      revision: null, disconnecting: true, enableError: null, reconnectReason: null });
-    signalChange();
+      revision: null, probeFailed: false, disconnecting: true, enableError: null, reconnectReason: null });
     stopping = (async () => {
       try {
         const token = opts.sessionStore.getToken();
         if (!token) throw new Error("Disconnection was not confirmed. Sign in and retry.");
         const body = await disconnectAgentSession(opts.backendUrl, token);
         if (!disposed && operation === currentOperation) {
-          apply({ capability: "available", status: "none", revision: body.revision! });
+          apply({ capability: "available", status: "none", revision: body.revision!, probeFailed: false });
         }
       } catch {
         if (operation === currentOperation) update({ status: null, enableError: "Disconnection was not confirmed. Please retry." });
@@ -189,6 +196,7 @@ export function createAgentAccessController(opts: UseAgentEnablementOptions) {
       capability: "available",
       // A failed check is unknown, not stale: Settings shows "could not be verified".
       status: code === "delegation_expired" ? "expired" : code === "delegation_unverified" ? null : "stale",
+      probeFailed: false,
       reconnectReason: code,
     });
   };
@@ -206,7 +214,7 @@ export function createAgentAccessController(opts: UseAgentEnablementOptions) {
         channel?.postMessage("changed");
         if (!channel) window.localStorage.setItem(key, `${Date.now()}:${Math.random()}`);
       };
-      const changed = () => { invalidate(); update({ status: null, capability: "available" }); void refresh(); };
+      const changed = () => { invalidate(); update({ status: null, capability: "available", probeFailed: false }); void refresh(); };
       const storage = (event: StorageEvent) => { if (event.key === key) changed(); };
       const focus = () => { void refresh(); };
       const visible = () => { if (document.visibilityState === "visible") void refresh(); };

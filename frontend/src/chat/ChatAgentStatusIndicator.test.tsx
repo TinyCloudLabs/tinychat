@@ -12,6 +12,7 @@ const baseProps: UseAgentEnablementResult = {
   enabling: false,
   disconnecting: false,
   reconnectReason: null,
+  probeFailed: false,
   silentlyEnabled: false,
   onEnable: async () => {},
   onDisconnect: async () => {},
@@ -57,8 +58,14 @@ describe("ChatAgentStatusIndicator", () => {
     expect(html).toContain("Reconnect agent");
   });
 
+  it("shows a disabled route as Disconnected", () => {
+    const html = render({ capability: "unavailable", status: null, probeFailed: false });
+    expect(html).toContain("Disconnected");
+    expect(html).toContain("/chat/settings#agent-access");
+  });
+
   it("shows a failed backend probe instead of hiding the status", () => {
-    const html = render({ capability: "unavailable", status: null });
+    const html = render({ capability: "unavailable", status: null, probeFailed: true });
     expect(html).toContain("Agent unavailable");
     expect(html).toContain("/chat/settings#agent-access");
   });

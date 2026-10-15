@@ -17,7 +17,7 @@ export function ChatAgentStatusIndicator(props: UseAgentEnablementResult) {
       <span role="status" className="flex min-w-0 items-center gap-2 font-medium text-foreground">
         <span
           aria-hidden="true"
-          className={`size-2 shrink-0 rounded-full ${connected ? "bg-green-500" : props.capability === "unavailable" ? "bg-destructive" : "bg-muted-foreground"}`}
+          className={`size-2 shrink-0 rounded-full ${connected ? "bg-green-500" : props.capability === "unavailable" && props.probeFailed ? "bg-destructive" : "bg-muted-foreground"}`}
         />
         <span className="truncate">Agent access: {statusLabel}</span>
       </span>

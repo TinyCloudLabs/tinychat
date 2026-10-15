@@ -63,6 +63,35 @@ describe("probeAgentCapability", () => {
       capability: "available",
       status: "expired",
       revision: null,
+      probeFailed: false,
+    });
+  });
+
+  it("distinguishes a disabled route from an unhealthy backend probe", async () => {
+    globalThis.fetch = (async () => new Response(null, { status: 404 })) as typeof fetch;
+    expect(await probeAgentSession("https://api.test", "tok")).toMatchObject({
+      capability: "unavailable",
+      probeFailed: false,
+    });
+
+    globalThis.fetch = (async () => new Response(null, { status: 503 })) as typeof fetch;
+    expect(await probeAgentSession("https://api.test", "tok")).toMatchObject({
+      capability: "unavailable",
+      probeFailed: true,
+    });
+
+    globalThis.fetch = (async () => { throw new TypeError("Failed to fetch"); }) as typeof fetch;
+    expect(await probeAgentSession("https://api.test", "tok")).toMatchObject({
+      capability: "unavailable",
+      probeFailed: true,
+    });
+  });
+
+  it("keeps 401 as a reachable route with stale credentials", async () => {
+    globalThis.fetch = (async () => new Response(null, { status: 401 })) as typeof fetch;
+    expect(await probeAgentSession("https://api.test", "tok")).toMatchObject({
+      capability: "available",
+      probeFailed: false,
     });
   });
 
@@ -224,7 +253,6 @@ describe("turn admission reports", () => {
     expect(c.getSnapshot()).toMatchObject({ status: "expired", reconnectReason: "delegation_expired" });
     c.dispose();
   });
-
   it("names the server's rejection code instead of a generic Connect failure", async () => {
     for (const [code, copy] of [
       ["delegation_expiry_too_long", "device clock"],
@@ -244,14 +272,15 @@ describe("turn admission reports", () => {
 });
 
 describe("agent access status labels", () => {
-  const state = { status: null, reconnectReason: null, disconnecting: false };
+  const state = { status: null, reconnectReason: null, disconnecting: false, probeFailed: false };
 
   it("maps each shared controller state to a visible label", () => {
     expect(agentAccessStatusLabel({ ...state, capability: "enabled", status: "active" })).toBe("Connected");
     expect(agentAccessStatusLabel({ ...state, capability: "available", status: "none" })).toBe("Disconnected");
     expect(agentAccessStatusLabel({ ...state, capability: "available", reconnectReason: "delegation_unverified" }))
       .toBe("Access could not be verified");
-    expect(agentAccessStatusLabel({ ...state, capability: "unavailable" })).toBe("Agent unavailable");
+    expect(agentAccessStatusLabel({ ...state, capability: "unavailable", probeFailed: false })).toBe("Disconnected");
+    expect(agentAccessStatusLabel({ ...state, capability: "unavailable", probeFailed: true })).toBe("Agent unavailable");
     expect(agentAccessStatusLabel({ ...state, capability: "probing" })).toBe("Checking…");
   });
 });

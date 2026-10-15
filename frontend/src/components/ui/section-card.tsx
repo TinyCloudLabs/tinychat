@@ -16,7 +16,7 @@ export function SectionCard(props: {
     <section id={props.id} className="rounded-lg border border-border bg-card p-4">
       <div className="flex items-center gap-2">
         <Icon className="size-4 text-muted-foreground" />
-        <h2 className="text-sm font-semibold tracking-tight">{props.title}</h2>
+        <h2 tabIndex={props.id ? -1 : undefined} className="text-sm font-semibold tracking-tight">{props.title}</h2>
         {props.aside}
       </div>
       {props.children && <div className="mt-3">{props.children}</div>}

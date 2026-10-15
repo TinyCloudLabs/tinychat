@@ -100,22 +100,6 @@ describe.serial("agent access banner across chat navigation", () => {
     expect(probes).toBe(1);
     await page.close();
   });
-  test("keeps the persistent status indicator visible within phone and desktop widths", async () => {
-    const page = await openAt("/chat");
-    const indicator = page.locator('[aria-live="polite"]').filter({ hasText: "Agent access:" });
-    await indicator.waitFor();
-
-    for (const viewport of [{ width: 390, height: 844 }, { width: 1280, height: 800 }]) {
-      await page.setViewportSize(viewport);
-      const bounds = await indicator.boundingBox();
-      expect(bounds).not.toBeNull();
-      expect(bounds!.x).toBeGreaterThanOrEqual(0);
-      expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(viewport.width);
-      expect(await page.getByRole("button", { name: "Connect agent" }).count()).toBe(2);
-    }
-
-    await page.close();
-  });
 
 
   test("a cold load of a non-chat address never renders the banner", async () => {

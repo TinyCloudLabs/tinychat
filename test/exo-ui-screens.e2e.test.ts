@@ -582,7 +582,6 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
               });
               await page.waitForLoadState("networkidle");
               await page.waitForTimeout(300);
-
               const allow = allowlist.filter((entry) => entry.screen === screen.id).map(({ selector, check }) => ({ selector, check }));
               const findings: Finding[] = await page.evaluate(inspectPage, {
                 layout: screen.layout,
@@ -594,6 +593,51 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
                 routeMode: screen.id === "capture-notetaker-route" ? (viewport.textScale && viewport.width <= 400 ? "stacked" : "horizontal") : null,
                 allow,
               });
+              if (screen.id === "shell-settings-agent-access") {
+                const anchor = await page.evaluate(() => {
+                  const card = document.getElementById("agent-access");
+                  const rect = card?.getBoundingClientRect();
+                  return {
+                    exists: Boolean(card),
+                    focused: Boolean(card?.contains(document.activeElement)),
+                    inViewport: Boolean(rect && rect.top >= 0 && rect.bottom <= window.innerHeight),
+                  };
+                });
+                if (!anchor.exists || !anchor.focused || !anchor.inViewport) {
+                  findings.push({ check: "agent-settings-anchor", detail: `exists ${anchor.exists}; focused ${anchor.focused}; in viewport ${anchor.inViewport}` });
+                }
+              }
+              if (screen.id === "shell-chat" && ["phone", "phone-small", "desktop"].includes(viewport.id)) {
+                const statusLayout = await page.evaluate(() => {
+                  const row = [...document.querySelectorAll<HTMLElement>('[aria-live="polite"]')]
+                    .find((element) => element.querySelector('[role="status"]')?.textContent?.includes("Agent access:"));
+                  const status = row?.querySelector<HTMLElement>('[role="status"]');
+                  const label = status?.querySelector<HTMLElement>(".truncate");
+                  const action = row?.querySelector<HTMLButtonElement>("button");
+                  const composer = document.querySelector<HTMLElement>('textarea[placeholder="Message TinyCloud Chat…"]');
+                  const rowRect = row?.getBoundingClientRect();
+                  const composerRect = composer?.getBoundingClientRect();
+                  const bannerRect = document.querySelector<HTMLElement>('[aria-label="Agent tools"]')?.getBoundingClientRect();
+                  return {
+                    label: status?.textContent?.trim() ?? "",
+                    action: action?.innerText.trim() ?? "",
+                    textClipped: Boolean(label && label.scrollWidth > label.clientWidth + 1),
+                    rowInViewport: Boolean(rowRect && rowRect.left >= 0 && rowRect.right <= window.innerWidth),
+                    composerVisible: Boolean(composerRect && composerRect.height > 0),
+                    separatedFromComposer: Boolean(rowRect && composerRect && rowRect.bottom <= composerRect.top),
+                    overlapsBanner: Boolean(rowRect && bannerRect && rowRect.left < bannerRect.right &&
+                      rowRect.right > bannerRect.left && rowRect.top < bannerRect.bottom && rowRect.bottom > bannerRect.top),
+                  };
+                });
+                if (statusLayout.label !== "Agent access: Disconnected" || statusLayout.action !== "Connect agent") {
+                  findings.push({ check: "agent-status-accessibility", detail: `status "${statusLayout.label}"; action "${statusLayout.action}"` });
+                }
+                if (statusLayout.textClipped || !statusLayout.rowInViewport || !statusLayout.composerVisible ||
+                  !statusLayout.separatedFromComposer || statusLayout.overlapsBanner) {
+                  findings.push({ check: "agent-status-layout", detail: `clipped ${statusLayout.textClipped}; row in viewport ${statusLayout.rowInViewport}; composer visible ${statusLayout.composerVisible}; separated ${statusLayout.separatedFromComposer}; overlaps banner ${statusLayout.overlapsBanner}` });
+                }
+              }
+
               // The native Capture home must finish recorder setup; generic layout checks missed a missing Record button.
               if (["shell-capture", "capture-first-use", "capture-items", "capture-in-progress"].includes(screen.id)) {
                 const record = page.locator('[data-testid="voice-note-record"]');
