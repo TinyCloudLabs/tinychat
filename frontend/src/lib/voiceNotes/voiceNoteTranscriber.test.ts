@@ -24,7 +24,7 @@ import {
   type VoiceNoteTranscriptionStatus,
 } from "./voiceNoteTranscription";
 
-const CAPS: PrivateCloudCapabilities = { max_bytes: 120_960_000, max_duration_seconds: 7_777, content_types: ["audio/wav"] };
+const CAPS: PrivateCloudCapabilities = { max_bytes: 120_960_000, max_duration_seconds: 7_777, content_types: ["audio/wav"], admission: "open" };
 const AUDIO = { mimeType: "audio/mp4", base64: "AAAA" };
 
 const TEST_TCW = {
@@ -64,6 +64,9 @@ function fakeCloud(opts: { capabilities?: () => Promise<PrivateCloudCapabilities
       return (opts.capabilities ?? (async () => CAPS))();
     },
     pendingSourceIds: () => opts.pending ?? [],
+    hasRemoteJob: () => false,
+    holdTranscript: () => {},
+    heldTranscript: () => null,
     transcribe: async () => {
       throw new Error("runNote is faked");
     },

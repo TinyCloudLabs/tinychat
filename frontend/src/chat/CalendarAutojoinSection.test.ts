@@ -1,15 +1,66 @@
 import { describe, expect, test } from "bun:test";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { CONNECTORS } from "@/lib/connectors/registry";
 import type { CalendarAutojoinStatus } from "@/lib/connectors/calendarAutojoinApi";
-import { createCalendarAutojoinActions } from "./CalendarAutojoinSection";
+import { CalendarAutojoinOffReason, createCalendarAutojoinActions } from "./CalendarAutojoinSection";
 import { revokeGoogleUpstream } from "./ConnectorDialog";
+import { autojoinDetail } from "@/capture/meetingSources/useCalendarAutojoin";
+import { CalendarAutojoinRow } from "@/capture/meetingSources/MeetingSourcesView";
+import { deleteConnectorKey } from "@/lib/connectors/connectorSecrets";
+import { runDisconnect } from "@/lib/connectors/connectorLifecycle";
 
 const session = { getToken: () => "tinychat-session", isExpired: () => false } as SessionStore;
 const google = CONNECTORS.find((row) => row.id === "google-meet")!;
 const on: CalendarAutojoinStatus = { state: "on", enabled: true, lastScanAt: 123, errorCode: null, outcomes: [] };
 const off: CalendarAutojoinStatus = { ...on, state: "off", enabled: false };
+
+describe("TC-1100 visible off reasons", () => {
+  for (const [reason, copy] of [
+    ["user_disabled", "You turned calendar autojoin off."],
+    ["google_account_changed", "Google account changed. Turn on calendar autojoin for this account."],
+    ["disconnected", "Google was disconnected. Reconnect to turn calendar autojoin on."],
+    ["needs_reconnect", "Google access needs to be renewed. It may have been revoked from another TinyChat account or your Google settings. Reconnect to resume calendar autojoin."],
+    ["invalid_grant", "Google access was revoked elsewhere, such as from another TinyChat account or your Google settings, or expired. Reconnect Google to resume calendar autojoin."],
+    ["setup_expired", "Google setup expired. Turn on calendar autojoin to try again."],
+    ["setup_pending", "Finish Google setup to turn calendar autojoin on."],
+    ["never_enabled", "Calendar autojoin has not been turned on yet."],
+    ["unknown", "The reason calendar autojoin was turned off is unavailable. Turn it on to resume."],
+  ] as const) {
+    test(`${reason} renders the same short copy in connector settings and Meeting sources`, () => {
+      const status: CalendarAutojoinStatus = { ...off, offReason: reason };
+      const section = renderToStaticMarkup(createElement(CalendarAutojoinOffReason, { status }));
+      expect(section).toContain(copy);
+      const detail = autojoinDetail(status, null);
+      expect(detail.warning).toBeNull();
+      const source = renderToStaticMarkup(createElement(CalendarAutojoinRow, {
+        on: status.enabled, disabled: false, ...detail, onToggle() {},
+      }));
+      expect(source).toContain(copy);
+      expect(source).toContain('aria-checked="false"');
+    });
+  }
+
+  test("a read error does not hide an already-known off reason", () => {
+    const detail = autojoinDetail({ ...off, offReason: "user_disabled" }, "Status unavailable");
+    expect(detail.detail).toBe("You turned calendar autojoin off.");
+    expect(detail.warning).toBe("Status unavailable");
+  });
+
+  test("enabled and loading states render no off explanation", () => {
+    for (const status of [on, null]) {
+      expect(renderToStaticMarkup(createElement(CalendarAutojoinOffReason, { status }))).toBe("");
+      expect(autojoinDetail(status, null).detail).toBeNull();
+    }
+  });
+
+  test("older backend bodies still get a visible explanation", () => {
+    expect(renderToStaticMarkup(createElement(CalendarAutojoinOffReason, { status: off }))).toContain("reason calendar autojoin was turned off is unavailable");
+    expect(autojoinDetail({ ...off, state: "needs_reconnect", errorCode: "invalid_grant" }, null).detail).toContain("revoked elsewhere");
+  });
+});
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (error: unknown) => void;
@@ -22,6 +73,31 @@ function unlockedBrowser() {
 }
 
 describe("Google disconnect across interrupted account replacement", () => {
+  test("shared-grant skips still finish both browser requests and delete the vault key", async () => {
+    let stored: string | null = "synthetic-shared-refresh-token";
+    const paths: string[] = [];
+    const tcw = { secrets: { isUnlocked: true,
+      get: async () => ({ ok: true, data: stored }),
+      delete: async () => { stored = null; return { ok: true }; },
+    } } as unknown as TinyCloudWeb;
+    const revoke = await revokeGoogleUpstream({ tcw, descriptor: google,
+      backendUrl: "https://backend.example", sessionStore: session,
+      fetchImpl: (async url => { paths.push(new URL(String(url)).pathname);
+        return Response.json({ status: "disconnected", upstreamRevoked: "not_applicable" }); }) as typeof fetch,
+    });
+    expect(revoke.status).toBe("revoked");
+    expect(paths).toEqual(["/api/connectors/google/autojoin/disconnect", "/api/connectors/google/oauth/revoke"]);
+    const result = await runDisconnect({ connectorId: google.id, source: google.source, mode: "keep-data",
+      webhooks: { disable: async () => ({ status: "feature-dark" }), recordPurge: async () => ({ status: "feature-dark" }) },
+      featureDark: true,
+      secrets: { isUnlocked: () => true, unlock: async () => ({ ok: true }), deleteKey: () => deleteConnectorKey(tcw, google) },
+      store: { listKnownSourceIds: async () => ({ ok: true, data: [] }), purgeConnector: async () => ({ ok: true, data: undefined }),
+        clearFirefliesAttempt: async () => ({ ok: true, data: undefined }), getConnection: async () => ({ ok: true, data: null }),
+        countMeetings: async () => ({ ok: true, data: 0 }), updateSyncState: async () => ({ ok: true, data: undefined }) },
+    }, () => {});
+    expect(result.done).toBe(true);
+    expect(stored).toBeNull();
+  });
   for (const browserStatus of [200, 400]) {
     test(`server-account revoke failure stays visible after browser-account ${browserStatus === 200 ? "revoke succeeds" : "invalid_grant"}`, async () => {
       const calls: { url: string; body: string }[] = [];

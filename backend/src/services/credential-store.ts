@@ -1,13 +1,14 @@
 import {
   createCipheriv,
   createDecipheriv,
+  createHmac,
   hkdfSync,
   randomBytes,
   timingSafeEqual,
 } from "node:crypto";
 import type { TinyCloudNode } from "@tinycloud/node-sdk";
 import * as serverPackage from "@tinyboilerplate/server";
-import { BackendStorageLane } from "./backend-storage-lane.js";
+import { BackendStorageLane, type BackendStorageLaneRunOptions } from "./backend-storage-lane.js";
 import {
   assertStrongSecret,
   isValidSource,
@@ -372,6 +373,12 @@ export class CredentialStore {
       options.lastUsedThrottleMs ?? LAST_USED_THROTTLE_MS;
   }
 
+  /** Domain-separated identity digest for internal reference indexes; never exposes the master. */
+  referenceHasher(namespace: string): (identity: string) => string {
+    const key = Buffer.from(hkdfSync("sha256", this.master(), "tinychat-credential-reference-v1", namespace, 32));
+    return identity => createHmac("sha256", key).update(identity).digest("hex");
+  }
+
   /**
    * OBTAIN (§6.2). The credential arrives from the connect flow and goes straight in here — it is
    * never written to the user's browser vault for this purpose, and the existing Option-C vault
@@ -690,6 +697,7 @@ export class KvCredentialRowStore implements CredentialRowStore {
   constructor(
     private readonly node: TinyCloudNode,
     storageLane?: BackendStorageLane,
+    private readonly laneOptions: BackendStorageLaneRunOptions = {},
   ) {
     this.lane = storageLane ?? new BackendStorageLane();
   }
@@ -749,7 +757,7 @@ export class KvCredentialRowStore implements CredentialRowStore {
   }
 
   private run<T>(fn: () => Promise<T>): Promise<T> {
-    return this.lane.run(fn);
+    return this.lane.run(fn, this.laneOptions);
   }
 }
 

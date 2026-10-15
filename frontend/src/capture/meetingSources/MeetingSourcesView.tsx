@@ -352,12 +352,14 @@ export function CalendarAutojoinRow({
   disabled,
   scan,
   warning,
+  detail,
   onToggle,
 }: {
   on: boolean;
   disabled: boolean;
   scan: string;
   warning: string | null;
+  detail?: string | null;
   onToggle: () => void;
 }) {
   return (
@@ -369,6 +371,7 @@ export function CalendarAutojoinRow({
             Exo&apos;s notetaker joins the Google Meet calls on your calendar and transcribes them.
             Last scan: {scan}.
           </p>
+          {detail && <p className="ms-opt-text">{detail}</p>}
           {warning && <InlineError>{warning}</InlineError>}
         </div>
         <Switch checked={on} label="Calendar autojoin" disabled={disabled} onToggle={onToggle} />

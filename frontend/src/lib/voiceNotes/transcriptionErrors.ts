@@ -8,17 +8,18 @@ export interface VoiceNoteTranscriptionFailure {
   reference: string | null;
 }
 
-const NON_RETRYABLE_CODES: ReadonlySet<string> = new Set([
-  "invalid_audio",
-  "no_speech",
-  "feature_unavailable",
-  "service_misconfigured",
-  "audio_size_mismatch",
-  "VOICE_NOTE_AUDIO_CORRUPT",
-  "invalid_argument",
-  "voice_note_not_found",
-  "transcription_off",
-]);
+const NON_RETRYABLE_CODES: Record<string, true> = {
+  invalid_audio: true,
+  no_speech: true,
+  feature_unavailable: true,
+  service_misconfigured: true,
+  audio_size_mismatch: true,
+  VOICE_NOTE_AUDIO_CORRUPT: true,
+  invalid_argument: true,
+  voice_note_not_found: true,
+  transcription_off: true,
+  voice_note_account_mismatch: true,
+};
 
 const TRANSCRIPTION_ERROR_COPY: Readonly<Record<string, string>> = {
   recording_too_long_for_phone: "Private cloud can't transcribe a recording this long or large.",
@@ -44,6 +45,8 @@ const TRANSCRIPTION_ERROR_COPY: Readonly<Record<string, string>> = {
   invalid_argument: "This note cannot be transcribed with the supplied audio.",
   transcription_off: "Transcription was turned off.",
   transcript_incomplete: "Private Transcription returned a transcript that may be incomplete. Try again later.",
+  held_result_persistence_failed: "The finished transcript could not be kept on this device. The Private job remains available for 24 hours; retry now.",
+  voice_note_account_mismatch: "This voice note belongs to a different account. Switch accounts and retry there.",
 };
 
 export function transcriptionErrorCopy(code: string): string | undefined {
@@ -56,7 +59,7 @@ export function voiceNoteTranscriptionFailureForCode(code: string | null | undef
   return {
     code: normalized,
     message: transcriptionErrorCopy(normalized) ?? privateCloudCodeMessage(normalized) ?? "Transcription failed. Try again.",
-    retryable: !NON_RETRYABLE_CODES.has(normalized),
+    retryable: !Object.hasOwn(NON_RETRYABLE_CODES, normalized),
     reference: null,
   };
 }

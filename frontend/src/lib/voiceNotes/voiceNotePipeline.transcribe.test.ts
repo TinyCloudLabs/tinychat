@@ -9,7 +9,7 @@ import { captureEvents } from "@/capture/captureEvents";
 import { memoryHoldStore } from "@/harness/memoryHoldStore";
 import { CONNECTORS_SQL_DB_NAME } from "../connectors/connectorStore";
 import { createPrivateCloudApi, PrivateCloudError, type PrivateCloudCapabilities } from "../privateCloud";
-import type { SessionStore } from "../session";
+import type { SessionStore } from "@tinyboilerplate/client";
 import { advanceAccountGeneration, currentAccountGeneration } from "./accountContext";
 import { createFakeVoiceNotes } from "./fakeVoiceNotes";
 import { __setVoiceNotesForTests, VoiceNotes, type VoiceNoteRecording } from "./nativeVoiceNotes";
@@ -21,7 +21,7 @@ import { VoiceNoteSaveTimeout } from "./saveDeadline";
 import { createVoiceNoteRecorderController } from "@/capture/recorder/voiceNoteRecorderController";
 import { createVoiceNoteCloud, createVoiceNoteTranscriber, transcribeSavedNote, type VoiceNoteCloud, type VoiceNoteTranscriber } from "./voiceNoteTranscription";
 
-const CAPS: PrivateCloudCapabilities = { max_bytes: 120_960_000, max_duration_seconds: 7_777, content_types: ["audio/wav"] };
+const CAPS: PrivateCloudCapabilities = { max_bytes: 120_960_000, max_duration_seconds: 7_777, content_types: ["audio/wav"], admission: "open" };
 const original = VoiceNotes;
 afterEach(() => __setVoiceNotesForTests(original, { available: null }));
 
@@ -69,6 +69,9 @@ function transcriberWithRuns() {
   const cloud: VoiceNoteCloud = {
     capabilities: async () => CAPS,
     pendingSourceIds: () => [],
+    hasRemoteJob: () => false,
+    holdTranscript: () => {},
+    heldTranscript: () => null,
     transcribe: async () => { throw new Error("runNote is faked"); },
     finish: async () => {},
     releaseUnsent: async () => {},
@@ -92,7 +95,7 @@ async function setup(transcriberOption: "off" | "on-device" | "private-cloud") {
   __setVoiceNotesForTests(fake.plugin, { available: true });
   const { tcw, values } = space();
   const pipeline = createVoiceNotePipeline(tcw, { retryDelaysMs: [] });
-  const ctx = () => ({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() });
+  const ctx = () => ({ did: tcw.did, spaceId: tcw.spaceId ?? tcw.did, generation: currentAccountGeneration() });
   let transitionGen = 0;
   const signInAs = (accountDid: string, transcriber = transcriberOption) =>
     fake.plugin.setCaptureDefaults({ accountDid, transitionGen: ++transitionGen, transcriber, identifySpeakers: false, uploadAudio: true });
@@ -180,7 +183,7 @@ describe("a note saved by reconcileAll is handed to the transcriber", () => {
     await s.signInAs(s.tcw.did, "on-device");
     await s.fake.plugin.start();
     const onDevice = await s.fake.plugin.stop();
-    expect(onDevice.options.transcriber).toBe("on-device");
+    expect(onDevice.options?.transcriber).toBe("on-device");
     await s.pipeline.reconcileAll(s.ctx(), "reconcile", s.handOver());
     await tick();
     const states = (await s.fake.plugin.listPending()).recordings.map((entry) => [entry.id, entry.ledger?.audio.state]);
@@ -294,7 +297,8 @@ test("a hand-off's cached check leaves an earlier failed job waiting for Retry a
   let current = true;
   let interrupt: (error: unknown) => void = () => {};
   const runs: string[] = [];
-  const cloud = { capabilities: async () => CAPS, pendingSourceIds: () => ["failed-note", "interrupted-note"] } as unknown as VoiceNoteCloud;
+  const cloud = { capabilities: async () => CAPS, pendingSourceIds: () => ["failed-note", "interrupted-note"],
+    hasRemoteJob: () => true } as unknown as VoiceNoteCloud;
   const transcriber = createVoiceNoteTranscriber({ cloud, holds: memoryHoldStore(), tcw: () => ({}) as TinyCloudWeb,
     consent: { get: () => true, set() {} },
     runNote: async (args) => {
@@ -372,7 +376,7 @@ test("a timed-out Stop retry creates the row, refreshes the Library, and starts 
       firstRow = false;
       throw new VoiceNoteSaveTimeout("first row insert", 1);
     }
-    return db.execute(statement, params);
+    return db.execute(statement, params as never[]);
   } }) as ReturnType<typeof s.tcw.sql.db>;
   const pipeline = createVoiceNotePipeline(s.tcw, { retryDelaysMs: [], saveRetryDelaysMs: [60] });
   let autoStopped: (event: unknown) => void = () => { throw new Error("autoStopped listener not installed"); };

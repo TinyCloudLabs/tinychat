@@ -18,7 +18,7 @@ import { calendarAutojoinOutcomes } from "../services/calendar-autojoin-status-s
 const TENANT = "tenant-a";
 const OTHER = "tenant-b";
 const AT = Date.parse("2026-10-14T12:00:00Z");
-const on: CalendarAutojoinStatus = { state: "on", enabled: true, lastScanAt: AT, lastDispatchLag: null, errorCode: null, outcomes: [] };
+const on: CalendarAutojoinStatus = { state: "on", enabled: true, offReason: null, lastScanAt: AT, lastDispatchLag: null, errorCode: null, outcomes: [] };
 const connectionRow = (tenant = TENANT): CalendarConnection => ({ tenant, subject: "subject", state: "enabled", generation: 1,
   scopes: [], nextScanAt: 0, lastScanAt: AT, scanComplete: true });
 const occurrenceRow = (tenant = TENANT): CalendarOccurrence => ({ tenant, subject: "subject", id: "occurrence", eventId: "event",
@@ -72,7 +72,7 @@ describe("TC-1086 status fallback and metadata", () => {
     await withRoute(f, async (request, lines) => {
       const response = await request(TENANT);
       expect(response.status).toBe(200);
-      expect(await response.json()).toEqual({ ...on, state: "off", enabled: false, lastScanAt: null });
+      expect(await response.json()).toEqual({ ...on, state: "off", enabled: false, offReason: "never_enabled", lastScanAt: null });
       timing(response, "ok", 1, lines[0]);
     });
   });
@@ -334,7 +334,7 @@ describe("TC-1086 store mutation coverage", () => {
     expect(stores.worker.statusCache).toBe(cache);
     expect(stores.dispatch.statusCache).toBe(cache);
     for (const store of Object.values(stores)) {
-      for (const patch of [{ state: "disabled" as const }, { generation: 2 }, { subject: "replacement" }, { errorCode: "scan_incomplete" }]) {
+      for (const patch of [{ state: "disabled" as const }, { generation: 2 }, { subject: "replacement" }, { errorCode: "scan_incomplete" }, { offReason: "user_disabled" as const }]) {
         for (const writer of ["put", "update"]) {
           await store.putConnection(connectionRow());
           await cache.refresh(TENANT, async () => on);
