@@ -617,7 +617,7 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
                   const row = [...document.querySelectorAll<HTMLElement>('[aria-live="polite"]')]
                     .find((element) => element.querySelector('[role="status"]')?.textContent?.includes("Agent access:"));
                   const status = row?.querySelector<HTMLElement>('[role="status"]');
-                  const label = status?.querySelector<HTMLElement>(".truncate");
+                  const label = status?.querySelector<HTMLElement>(".break-words");
                   const action = row?.querySelector<HTMLButtonElement>("button");
                   const composer = document.querySelector<HTMLElement>('textarea[placeholder="Message TinyCloud Chat…"]');
                   const rowRect = row?.getBoundingClientRect();
@@ -626,6 +626,7 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
                   return {
                     label: status?.textContent?.trim() ?? "",
                     action: action?.innerText.trim() ?? "",
+                    labelFound: Boolean(label),
                     textClipped: Boolean(label && label.scrollWidth > label.clientWidth + 1),
                     rowInViewport: Boolean(rowRect && rowRect.left >= 0 && rowRect.right <= window.innerWidth),
                     composerVisible: Boolean(composerRect && composerRect.height > 0),
@@ -637,9 +638,9 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
                 if (statusLayout.label !== "Agent access: Disconnected" || statusLayout.action !== "Connect agent") {
                   findings.push({ check: "agent-status-accessibility", detail: `status "${statusLayout.label}"; action "${statusLayout.action}"` });
                 }
-                if (statusLayout.textClipped || !statusLayout.rowInViewport || !statusLayout.composerVisible ||
-                  !statusLayout.separatedFromComposer || statusLayout.overlapsBanner) {
-                  findings.push({ check: "agent-status-layout", detail: `clipped ${statusLayout.textClipped}; row in viewport ${statusLayout.rowInViewport}; composer visible ${statusLayout.composerVisible}; separated ${statusLayout.separatedFromComposer}; overlaps banner ${statusLayout.overlapsBanner}` });
+                if (!statusLayout.labelFound || statusLayout.textClipped || !statusLayout.rowInViewport ||
+                  !statusLayout.composerVisible || !statusLayout.separatedFromComposer || statusLayout.overlapsBanner) {
+                  findings.push({ check: "agent-status-layout", detail: `label found ${statusLayout.labelFound}; clipped ${statusLayout.textClipped}; row in viewport ${statusLayout.rowInViewport}; composer visible ${statusLayout.composerVisible}; separated ${statusLayout.separatedFromComposer}; overlaps banner ${statusLayout.overlapsBanner}` });
                 }
               }
 
