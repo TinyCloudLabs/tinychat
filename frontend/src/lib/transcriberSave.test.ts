@@ -215,7 +215,8 @@ test("ptx null speakers pass through both API clients and both storage writers w
       } else {
         expect((await ensureConnectorSchema(webConnectorPort(f.tcw))).ok).toBe(true);
         const access = { sql: f.tcw.sql, kv: f.tcw.kv } as unknown as DelegatedAccess;
-        const normalized = await normalizeTranscriberTranscript(meeting, backendResult.transcript);
+        const { gaps: _unvalidatedGaps, ...backendTranscript } = backendResult.transcript;
+        const normalized = await normalizeTranscriberTranscript(meeting, backendTranscript);
         expect((await writeTranscriberMeeting(delegatedConnectorPort(access, async (operation) => operation()), normalized, { ensureSchema: false })).ok).toBe(true);
       }
       expect(f.sql.query("SELECT participants FROM connector_meeting").get())

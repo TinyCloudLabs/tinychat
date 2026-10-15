@@ -17,7 +17,7 @@ afterEach(() => {
   else Reflect.deleteProperty(globalThis, "localStorage");
 });
 
-function harness(failAt?: "part" | "submit" | "result" | "space" | "delete", noSpeech = false, spaceOnly = false, mimeType = "audio/mp4",
+function harness(failAt?: "part" | "submit" | "result" | "space" | "storage_full" | "delete", noSpeech = false, spaceOnly = false, mimeType = "audio/mp4",
   durationMs = 1000, transcriptResponses: Record<string, unknown>[] = [], deleteFails = false,
   clientOverride?: ReturnType<typeof createHostedAssemblyAiClient>, readGate?: Promise<void>,
   createFailure?: "existing" | "missing", reconciliationDelayMs?: number, committedChannels: 1 | 2 = 1) {
@@ -155,11 +155,18 @@ function harness(failAt?: "part" | "submit" | "result" | "space" | "delete", noS
     save: async (_account, _id, transcript) => {
       calls.push("space:save");
       savedMetadata = transcript.metadata;
-      if (failAt === "space" && !failed) { failed = true; return { ok: false, error: new Error("offline") } as StoreResult<UpsertMeetingOutcome>; }
+      if ((failAt === "space" || failAt === "storage_full") && !failed) {
+        failed = true;
+        const error = failAt === "storage_full"
+          ? { code: "STORAGE_QUOTA_EXCEEDED", message: "storage full" }
+          : { code: "NETWORK", message: "offline" };
+        return { ok: false, error } satisfies StoreResult<UpsertMeetingOutcome>;
+      }
       commit = commitAfterSave ?? { rev: transcript.rev, hash: await transcriptHash(transcript.sentences),
         outcome: noSpeech ? "no_speech" : "transcribed" } as TranscriptCommit;
+      calls.push("space:commit");
       return { ok: true } as StoreResult<UpsertMeetingOutcome>;
-    }, sleep: async () => {}, reconciliationDelayMs,
+    }, reconciliationDelayMs,
   });
   return { calls, submits, claimCalls, recording, track, setCommit: (value: TranscriptCommit | null) => { commit = value; },
     setCommitAfterSave: (value: TranscriptCommit) => { commitAfterSave = value; },
@@ -224,6 +231,23 @@ test("a space-only note uses its space audio and can resume without a native rec
   expect(calls.indexOf("space:save")).toBeLessThan(calls.indexOf("DELETE /hosted/transcripts/handle-1"));
 });
 
+test("storage-full commit keeps the hosted result until a verified commit", async () => {
+  const h = harness("storage_full");
+  const lane = h.track(); lane.consent();
+  await lane.run(h.recording);
+  expect(h.calls).toContain("space:save");
+  expect(h.calls).not.toContain("DELETE /hosted/transcripts/handle-1");
+  expect(lane.jobs.get(h.recording.id)).toMatchObject({ kind: "failed", retryable: true });
+
+  await h.track().resume();
+  for (let turn = 0; turn < 5 && !h.calls.includes("DELETE /hosted/transcripts/handle-1"); turn++)
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  const commitIndex = h.calls.indexOf("space:commit");
+  const deleteIndex = h.calls.indexOf("DELETE /hosted/transcripts/handle-1");
+  expect(commitIndex).toBeGreaterThan(h.calls.indexOf("space:save"));
+  expect(deleteIndex).toBeGreaterThan(commitIndex);
+});
+
 test("an explicit Powerful rerun is never restarted by resume and its stale marker is removed", async () => {
   const { calls, recording, track } = harness();
   const key = "exo.voiceNotes.powerfulJobs:did:test:one";
@@ -234,7 +258,6 @@ test("an explicit Powerful rerun is never restarted by resume and its stale mark
   expect(calls).toEqual([]);
   expect(JSON.parse(localStorage.getItem(key) ?? "{}")).toEqual({});
 });
-
 test("a paid outcome needing reconciliation blocks the note without another upload or automatic retry", async () => {
   const h = harness();
   h.setServerJob({ status: "needs_reconciliation", upload_id: "upload-1" });
