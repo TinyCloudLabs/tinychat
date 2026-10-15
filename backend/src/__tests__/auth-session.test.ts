@@ -38,11 +38,11 @@ afterEach(async () => {
   }
 });
 
-async function startAuthServer(frontendUrl = "http://localhost:5186") {
+async function startAuthServer(frontendUrl = "http://localhost:5186", nonceStore = createNonceStore()) {
   const app = express();
   app.use(express.json());
   app.use(createCsrfMiddleware());
-  app.use("/api/auth", createAuthRouter({ nonceStore: createNonceStore(), privateKey: KEY, frontendUrl }));
+  app.use("/api/auth", createAuthRouter({ nonceStore, privateKey: KEY, frontendUrl }));
   app.get("/whoami", createAuthMiddleware(KEY), (req, res) => res.json(req.user));
   const server = await new Promise<Server>((resolve) => {
     const listener = app.listen(0, "127.0.0.1", () => resolve(listener));
@@ -364,6 +364,20 @@ describe("HTTP SIWE sessions", () => {
       status: 401,
       body: { error: "verification_failed", message: "SIWE signature verification failed" },
     });
+  });
+
+  test("a full nonce store evicts the oldest sign-in without blocking new verification", async () => {
+    setSystemTime(NOW);
+    const nonceStore = createNonceStore();
+    const oldest = nonceStore.generate(account.address);
+    for (let i = 1; i < 2048; i++) nonceStore.generate(account.address);
+    const base = await startAuthServer("http://localhost:5186", nonceStore);
+    const fresh = await requestNonce(base, account.address);
+    expect(await postVerify(base, await signMessage(oldest))).toEqual({
+      status: 401,
+      body: { error: "invalid_nonce", message: "Nonce is invalid, expired, or already used" },
+    });
+    expect((await postVerify(base, await signMessage(fresh))).status).toBe(200);
   });
 
   test("signing in again at +10 days issues a new token without extending the old one", async () => {

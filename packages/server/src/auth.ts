@@ -26,12 +26,6 @@ export interface SessionTokenPayload {
 const NONCE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 const MAX_PENDING_NONCES = 2048;
 
-export class NonceStoreFullError extends Error {
-  constructor() {
-    super("Nonce store full");
-  }
-}
-
 /**
  * Create an in-memory nonce store for SIWE authentication.
  *
@@ -71,7 +65,10 @@ export function createNonceStore(): NonceStore {
         for (const [key, entry] of store) {
           if (now - entry.createdAt > NONCE_TTL_MS) store.delete(key);
         }
-        if (store.size >= MAX_PENDING_NONCES) throw new NonceStoreFullError();
+        if (store.size >= MAX_PENDING_NONCES) {
+          const oldest = store.keys().next().value;
+          if (oldest !== undefined) store.delete(oldest);
+        }
       }
       const normalizedAddress = address?.toLowerCase() ?? "";
       const nonce = randomBytes(32).toString("hex");

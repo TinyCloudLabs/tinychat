@@ -53,14 +53,17 @@ describe("createNonceStore", () => {
       Date.now = realNow;
     }
   });
-  it("rejects issuance when live outstanding nonces reach capacity without evicting them", () => {
+  it("evicts the oldest live nonce when full and keeps accepting new sign-ins", () => {
     const store = createNonceStore();
     const issued = Array.from({ length: 2048 }, () => store.generate(ADDR_A));
-    expect(() => store.generate(ADDR_A)).toThrow("Nonce store full");
-    expect(store.validate(ADDR_A, issued[0])).toBe(true);
+    const firstReplacement = store.generate(ADDR_B);
+    const secondReplacement = store.generate(ADDR_B);
     expect(store.validate(ADDR_A, issued[0])).toBe(false);
-    expect(store.generate(ADDR_A)).toMatch(/^[0-9a-f]{64}$/);
+    expect(store.validate(ADDR_A, issued[1])).toBe(false);
+    expect(store.validate(ADDR_A, issued[2])).toBe(true);
     expect(store.validate(ADDR_A, issued.at(-1)!)).toBe(true);
+    expect(store.validate(ADDR_B, firstReplacement)).toBe(true);
+    expect(store.validate(ADDR_B, secondReplacement)).toBe(true);
   });
 
   it("reclaims expired nonces when issuing after capacity is reached", () => {

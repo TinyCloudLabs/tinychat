@@ -556,8 +556,8 @@ nothing below may be reported as done on its behalf.
 - **SIWE audience (TC-1201):** `/api/auth/verify` compares the signed domain
   and URI as a pair, before consuming the nonce. The web SDK signs the page
   hostname and `https://<hostname>` (no port or trailing slash): production
-  `tinycloud.chat` / `https://tinycloud.chat`; Pages project apex and one-label
-  branch/commit previews under `tinychat-4jq.pages.dev` use their exact hostname
+  `tinycloud.chat` / `https://tinycloud.chat`; one-label branch/commit previews
+  under `tinychat-4jq.pages.dev` use their exact hostname
   and matching HTTPS URI; local web and macOS desktop use `localhost` /
   `https://localhost`; Windows desktop uses `tauri.localhost` /
   `https://tauri.localhost`. The production web origin is configured by
@@ -571,8 +571,9 @@ nothing below may be reported as done on its behalf.
   `OPENKEY_SIWE_DOMAIN` on the backend if that client's `siweDomain` changes;
   never use the API host as the signed audience.
   Nonces remain single-use for five minutes, with at most 2048 pending per
-  backend process (429 at capacity) and the shared `/api/auth` limit of
-  1200 requests per 15 minutes.
+  backend process; a full store evicts its oldest nonce rather than blocking
+  new sign-ins. The shared `/api/auth` limit is 1200 requests per 15 minutes
+  for all unauthenticated clients, not a per-IP limit.
 - **TLS:** Phala's `dstack-ingress` terminates TLS for the API. The backend's
   local-only `HTTPS_CERT_FILE`/`HTTPS_KEY_FILE` path is unused in production.
 - **What's not included yet:** CI (`ci.yml`) and PR-preview deployments. Port
