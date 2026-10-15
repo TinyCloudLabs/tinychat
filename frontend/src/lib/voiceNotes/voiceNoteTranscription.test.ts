@@ -7393,3 +7393,91 @@ test("nonexplicit cleanup cannot discard an uncommitted held result", async () =
     unmount();
   }
 });
+
+// Exact original helper lines4-20 and consumer lines22-42, scoped only; no R3/EP1 test.
+describe("C:R2 standalone compound",()=>{
+const cTranscript = (rev = 1, variant = "original") => prepareVoiceNoteTranscript({ ...TRANSCRIPT,
+  segments: [{ id: "synthetic-1", speaker_id: "channel_0", channel: 0, start: 0, end: 1, text: `synthetic-${variant}` }],
+  text: `synthetic-${variant}` }, "2026-10-15T00:00:00Z", rev);
+async function cSetup() {
+  _resetConnectorSchemaMemoForTests();
+  const space = sqliteSpace(); const tcw = typedTcw(space);
+  (tcw as unknown as {spaceId:string}).spaceId = "space:c-evidence";
+  const unmount = mountVoiceNoteAccount(tcw.did);
+  expect((await saveVoiceNote(tcw, RECORDING, AUDIO, "ios")).ok).toBe(true);
+  const env = newIdbEnv();
+  const store = () => createHeldResultStore(tcw.did, { env, isSignedIn: async()=>true });
+  const input = (rev=1, variant="original") => ({ version:1 as const, did:tcw.did, spaceId:tcw.spaceId,
+    sourceId:"rec-1", engine:"private-cloud" as const, transcript:cTranscript(rev,variant),
+    provider:{transcriptionId:ID}, intent:{kind:"unknown" as const} });
+  return {space,tcw,env,store,input,unmount};
+}
+test("C:R2 verified rev1 delete retains concurrently acknowledged rev2 exact identity", async()=>{
+  const c=await cSetup(); let auth=0;
+  const gate=Promise.withResolvers<void>(); const reached=Promise.withResolvers<void>();
+  const first=createHeldResultStore(c.tcw.did,{env:c.env,isSignedIn:async()=>{
+    if(++auth===3){ reached.resolve(); await gate.promise; } return true;
+  }});
+  const second=c.store(); await first.hold(c.input());
+  let saves=0,callbacks=0;
+  const draining=first.saveHeldFirst(c.tcw,"rec-1",{
+    save:async row=>{saves++;expect((await saveVoiceNoteTranscript(c.tcw,"rec-1",row.transcript)).ok).toBe(true);},
+    afterCommit:async()=>{callbacks++;}
+  },"automatic");
+  try{
+    await reached.promise;
+    expect(await readTranscriptCommit(c.tcw,"rec-1")).toMatchObject({rev:1,hash:await transcriptHash(c.input().transcript.sentences)});
+    const newer=await second.hold(c.input(2,"newer")); gate.resolve(); await draining;
+    expect(await second.readHeld("rec-1")).toMatchObject({holdId:newer.holdId,transcript:{rev:2},hash:await transcriptHash(c.input(2,"newer").transcript.sentences)});
+    expect({saves,callbacks}).toEqual({saves:1,callbacks:1});
+    expect(await readTranscriptCommit(c.tcw,"rec-1")).toMatchObject({rev:1});
+  }finally{gate.resolve();c.unmount();}
+});
+});
+
+import { IDBObjectStore as C_IDBObjectStore } from "fake-indexeddb";
+// Exact original helper lines4-20 and consumer lines87-112, scoped only; no R3/EP1 test.
+describe("C:F1 standalone compound",()=>{
+const cTranscript = (rev = 1, variant = "original") => prepareVoiceNoteTranscript({ ...TRANSCRIPT,
+  segments: [{ id: "synthetic-1", speaker_id: "channel_0", channel: 0, start: 0, end: 1, text: `synthetic-${variant}` }],
+  text: `synthetic-${variant}` }, "2026-10-15T00:00:00Z", rev);
+async function cSetup() {
+  _resetConnectorSchemaMemoForTests();
+  const space = sqliteSpace(); const tcw = typedTcw(space);
+  (tcw as unknown as {spaceId:string}).spaceId = "space:c-evidence";
+  const unmount = mountVoiceNoteAccount(tcw.did);
+  expect((await saveVoiceNote(tcw, RECORDING, AUDIO, "ios")).ok).toBe(true);
+  const env = newIdbEnv();
+  const store = () => createHeldResultStore(tcw.did, { env, isSignedIn: async()=>true });
+  const input = (rev=1, variant="original") => ({ version:1 as const, did:tcw.did, spaceId:tcw.spaceId,
+    sourceId:"rec-1", engine:"private-cloud" as const, transcript:cTranscript(rev,variant),
+    provider:{transcriptionId:ID}, intent:{kind:"unknown" as const} });
+  return {space,tcw,env,store,input,unmount};
+}
+test("C:F1 IDB acknowledged hold quota refuses claim and keeps pending PTX until healthy Retry",async()=>{
+  const c=await cSetup(); const held=c.store();
+  const pending=localStorageVoiceNotePendingStore(c.tcw.did,memoryStorage());
+  pending.write("rec-1",{attemptId:"00000000-0000-4000-8000-00000000abcd",transcriptionId:ID});
+  const h=harness({pending,jobs:[job("completed")],result:{...TRANSCRIPT,segments:[{id:"s",speaker_id:"channel_0",channel:0,start:0,end:1,text:"synthetic-original"}],text:"synthetic-original"}});
+  const originalPut=C_IDBObjectStore.prototype.put; let refuse=true,refusals=0;
+  C_IDBObjectStore.prototype.put=function(...args:Parameters<typeof originalPut>){
+    if(this.name==="held"&&refuse){refusals++;throw new DOMException("synthetic quota","QuotaExceededError");}
+    return originalPut.apply(this,args);
+  };
+  const originalKv=c.tcw.kv.put.bind(c.tcw.kv); let bodyRefuse=true;
+  c.tcw.kv.put=(async(...args:Parameters<typeof originalKv>)=>bodyRefuse?{ok:false,error:{code:"STORAGE_QUOTA_EXCEEDED",message:"quota exceeded"}}:originalKv(...args)) as typeof originalKv;
+  try{
+    const error=await transcribeVoiceNote({tcw:c.tcw,cloud:h.cloud,held,capabilities:CAPS,sourceId:"rec-1",explicit:true,report:()=>{}}).catch(e=>e);
+    expect(error).toMatchObject({code:"held_result_persistence_failed"});
+    expect(refusals).toBe(1); expect(await held.readHeld("rec-1")).toBeNull();
+    expect(h.pending.read("rec-1")).toMatchObject({transcriptionId:ID});
+    expect(h.removed).toEqual([]);expect(h.creates).toEqual([]);
+    expect(await readTranscriptCommit(c.tcw,"rec-1")).toBeNull();
+    expect((await resolveVoiceNoteRow(c.tcw,"rec-1"))?.metadata.transcription_outcome).toBe("pending");
+    refuse=false;bodyRefuse=false;__resetStorageStatusForTests();
+    expect(await transcribeVoiceNote({tcw:c.tcw,cloud:h.cloud,held,capabilities:CAPS,sourceId:"rec-1",explicit:true,report:()=>{}})).toBe("transcribed");
+    expect(await readTranscriptCommit(c.tcw,"rec-1")).toMatchObject({rev:1,hash:await transcriptHash(c.input().transcript.sentences)});
+    expect(await held.readHeld("rec-1")).toBeNull();expect(h.removed).toEqual([ID]);expect(h.creates).toEqual([]);
+  }finally{C_IDBObjectStore.prototype.put=originalPut;c.tcw.kv.put=originalKv;c.unmount();}
+});
+});
