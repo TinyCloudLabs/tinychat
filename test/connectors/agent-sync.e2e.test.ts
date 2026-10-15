@@ -233,6 +233,34 @@ describe("Fireflies agent runner", () => {
     expect(report.result).toBe("partial");
   });
 
+  test("a full pending queue preserves the gap-audit cursor for the next auto sweep", async () => {
+    seed.forEach((item, index) => { item.date = Date.now() - 3 * 24 * 3600_000 - index * 1000; });
+    await seedConnected(null);
+    expect((await runFirefliesAgentSync(deps({ mode: "now" }))).result).toBe("synced");
+    const lost = [...fake.sql.meetings.values()].find((row) => row.source_id === seed[27].id)!;
+    fake.sql.meetings.delete(lost.id);
+
+    // A concurrent writer fills the queue after the engine's sync but before the audit reads it.
+    const query = fake.sql.query.bind(fake.sql);
+    fake.sql.query = async (sql, params) => {
+      if (sql.trim() === "SELECT source_id FROM connector_meeting WHERE source = ?") {
+        const key = firefliesAttemptKvKey();
+        const attempt = JSON.parse(fake.kv.entries.get(key)!);
+        fake.kv.entries.set(key, JSON.stringify({ ...attempt, pending_ids: Array.from({ length: 50 }, (_, i) => `queued-${i}`) }));
+      }
+      return query(sql, params);
+    };
+    const report = await runFirefliesAgentSync(deps({ mode: "now", now: later(31 * 60 * 1000) }));
+    expect(report.gapIds).toBe(1);
+    expect(report.requeued).toBe(0);
+    expect(report.gapAuditComplete).toBe(false);
+    expect(report.result).toBe("partial");
+    expect(JSON.parse(readFileSync(join(stateDir, "fireflies-runner.json"), "utf8")).auditCursor).toBeDefined();
+    fake.sql.query = query;
+    const next = await runFirefliesAgentSync(deps({ now: later(62 * 60 * 1000) }));
+    expect(next.result).not.toBe("fresh");
+  });
+
   test("an incomplete gap audit cannot report a completed sync", async () => {
     seed.forEach((item, index) => { item.date = Date.now() - 3 * 24 * 3600_000 - index * 1000; });
     await seedConnected(null);

@@ -420,10 +420,16 @@ async function gapAudit(
   if (!attempt.ok || !attempt.data) return { found: ids.length, requeued: 0, complete: false, cursor };
   const pending = new Set(attempt.data.pendingIds ?? []);
   const before = pending.size;
-  for (const id of ids) if (pending.size < MAX_PENDING_IDS) pending.add(id);
-  if (pending.size === before) return { found: ids.length, requeued: 0, complete, cursor: nextCursor };
+  let overflow = false;
+  for (const id of ids) {
+    if (pending.has(id)) continue;
+    if (pending.size < MAX_PENDING_IDS) pending.add(id);
+    else overflow = true;
+  }
+  const retainedCursor = overflow ? cursor : nextCursor;
+  if (pending.size === before) return { found: ids.length, requeued: 0, complete: !overflow && complete, cursor: retainedCursor };
   const written = await connectorStore.recordFirefliesAttempt(tcw, { ...attempt.data, pendingIds: [...pending] });
-  return { found: ids.length, requeued: written.ok ? pending.size - before : 0, complete: written.ok && complete, cursor: written.ok ? nextCursor : cursor };
+  return { found: ids.length, requeued: written.ok ? pending.size - before : 0, complete: written.ok && !overflow && complete, cursor: written.ok ? retainedCursor : cursor };
 }
 
 function storeFailure(error: { code?: string; message?: string }): RunResult {
