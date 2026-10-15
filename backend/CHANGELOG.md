@@ -1,5 +1,11 @@
 # @tinychat/backend
 
+## 0.5.6-beta.0
+
+### Patch Changes
+
+- 2bfec5b: Validate the signed SIWE audience before issuing sessions and bound pending nonces.
+
 ## 0.5.5
 
 ### Patch Changes
