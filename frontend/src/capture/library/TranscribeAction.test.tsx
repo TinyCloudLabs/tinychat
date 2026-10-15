@@ -21,15 +21,17 @@ import { TranscribeActionFor } from "./TranscribeAction";
 import type { PhoneRead } from "./TranscribeAction";
 import { LOCAL_START_FAILED, needsConsent, transcribeProviders, transcribeWith, type PhoneRecording } from "./transcribeProviders";
 import { registerDesktopWhisperQueue, type DesktopWhisperQueue } from "@/lib/voiceNotes/desktop/desktopWhisper";
+import { PRIVATE_DURATION_MARGIN_SECONDS } from "@/lib/voiceNotes/voiceNoteTranscription";
 
 const NOTE = "rec-1";
 const noop = () => {};
 const phone = (patch: Partial<PhoneRecording> = {}): PhoneRecording => ({ committed: "on-device", hasLocalState: false, ...patch });
 const onPhone = (patch: Partial<PhoneRecording> = {}): PhoneRead => ({ state: "read", phone: phone(patch) });
 const nowhere: PhoneRead = { state: "read", phone: null };
+const PRIVATE_MAX_DURATION_SECONDS = 7_777;
 
 function transcription(patch: Partial<VoiceNoteTranscriptionProps> = {}): VoiceNoteTranscriptionProps {
-  return { availability: "available", consented: true, maxSeconds: 600, jobs: new Map(), onTranscribe: noop, onTranscribePrivately: noop, onConsent: noop, onTurnOff: noop, onRecheck: noop, ...patch };
+  return { availability: "available", consented: true, maxSeconds: 600, maxBytes: 186_496_800, jobs: new Map(), onTranscribe: noop, onTranscribePrivately: noop, onConsent: noop, onTurnOff: noop, onRecheck: noop, ...patch };
 }
 
 const originals = { voiceNotes: VoiceNotes, onDeviceStt: OnDeviceStt };
@@ -83,10 +85,13 @@ describe("the providers on offer", () => {
   });
 
   test("Private only for a note within the length private cloud advertises, on the first try and the retry alike", () => {
-    expect(transcribeProviders(NOTE, transcription({ maxSeconds: 7200 }), phone(), 7200)).toEqual(["on-device", "private-cloud"]);
-    expect(transcribeProviders(NOTE, transcription({ maxSeconds: 7200 }), phone(), 7201)).toEqual(["on-device"]);
-    expect(transcribeProviders(NOTE, transcription({ maxSeconds: 7200 }), null, 7201)).toEqual([]);
-    expect(transcribeProviders(NOTE, transcription({ maxSeconds: 7200 }), phone(), null)).toEqual(["on-device", "private-cloud"]);
+    const ceiling = 4_321.5;
+    const eligible = ceiling - PRIVATE_DURATION_MARGIN_SECONDS;
+    expect(transcribeProviders(NOTE, transcription({ maxSeconds: ceiling }), phone(), eligible)).toEqual(["on-device", "private-cloud"]);
+    expect(transcribeProviders(NOTE, transcription({ maxSeconds: ceiling }), phone(), eligible + 0.001)).toEqual(["on-device"]);
+    expect(transcribeProviders(NOTE, transcription({ maxSeconds: ceiling }), phone(), ceiling)).toEqual(["on-device"]);
+    expect(transcribeProviders(NOTE, transcription({ maxSeconds: ceiling }), null, ceiling + 1)).toEqual([]);
+    expect(transcribeProviders(NOTE, transcription({ maxSeconds: ceiling }), phone(), null)).toEqual(["on-device", "private-cloud"]);
   });
 
   test("Local needs the recording on this browser", () => {
@@ -105,11 +110,11 @@ describe("the providers on offer", () => {
   test("desktop Whisper offers Local again for a confirmed rerun when the recording is on this Mac", () => {
     __setInstalledEngineForTests("tauri", { ...captureCapabilities(), localTranscription: false, desktopWhisper: true });
     const rerunTranscription = transcription({ onTranscribeAgain: async () => null });
-    expect(transcribeProviders(NOTE, rerunTranscription, phone(), 60, true)).toEqual(["on-device", "private-cloud"]);
+    expect(transcribeProviders(NOTE, rerunTranscription, phone(), 60, undefined, true)).toEqual(["on-device", "private-cloud"]);
   });
   test("Powerful is hidden from confirmed rerun choices even when available", () => {
     const rerunTranscription = transcription({ powerfulAvailable: true, onTranscribeAgain: async () => null });
-    expect(transcribeProviders(NOTE, rerunTranscription, phone(), 60, true)).toEqual(["on-device", "private-cloud"]);
+    expect(transcribeProviders(NOTE, rerunTranscription, phone(), 60, undefined, true)).toEqual(["on-device", "private-cloud"]);
   });
 
   test("Private asks for consent once", () => {
@@ -300,6 +305,47 @@ describe("the Transcribe action", () => {
       console.error = originalError;
     }
   });
+  test("a WebM whose expected browser WAV exceeds PTX bytes hides Private, shows its copy, and keeps Local offered", async () => {
+    const maxBytes = 64_000;
+    const durationSecs = 2;
+    const privateAudioSource = { capturePlatform: "web", mimeType: "audio/webm;codecs=opus" };
+    expect(transcribeProviders(NOTE, transcription({ maxSeconds: 30, maxBytes }), phone(), durationSecs, privateAudioSource))
+      .toEqual(["on-device"]);
+    __setVoiceNotesForTests({
+      listPending: async () => ({ recordings: [{ id: NOTE, options: { transcriber: "on-device" }, stt: {} }] }),
+    } as unknown as VoiceNotesPlugin, { available: true });
+    cleanupDom = installDom();
+    const host = document.createElement("div");
+    document.body.append(host);
+    root = createRoot(host);
+    await act(async () => root!.render(createElement(MemoryRouter, null,
+      createElement(PlatformContext.Provider, { value: "web" },
+        createElement(NoteDetailView, {
+          item: { id: "row-1", source: "exo-voice-note", sourceId: NOTE, title: "Voice note", startedAt: null, durationSecs },
+          listStatus: "ready",
+          metadata: {
+            status: "ok",
+            metadata: {
+              transcription_outcome: "skipped",
+              audio_mime_type: "audio/webm;codecs=opus",
+              capture: { platform: "web", version: 2, options: { transcriber: "off" } },
+              audio: { stored: true },
+            },
+          },
+          transcript: { status: "absent" },
+          audio: { load: async () => null },
+          transcription: transcription({ maxSeconds: 30, maxBytes }),
+          copyState: "idle", onCopy: noop, onRetry: noop, pushed: true, onBack: noop,
+        }),
+      ),
+    )));
+    await act(async () => { await Promise.resolve(); });
+    expect(host.querySelector('[data-testid="voice-note-browser-wav-too-large"]')?.textContent)
+      .toBe("This recording is too long for Private transcription in the browser. Use the desktop or phone app to transcribe it privately.");
+    expect(host.querySelector('[data-testid="transcribe-button"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="transcribe-provider"] option[value="private-cloud"]')).toBeNull();
+  });
+
   test("a Private tap after the account changes alerts and unlocks without starting", async () => {
     let current = true;
     let starts = 0;
@@ -307,7 +353,7 @@ describe("the Transcribe action", () => {
       cloud: {
         capabilities: async () => ({
           max_bytes: 120_960_000,
-          max_duration_seconds: 7_200,
+          max_duration_seconds: PRIVATE_MAX_DURATION_SECONDS,
           content_types: ["audio/webm"],
           admission: "open",
           diarization: true,
@@ -356,7 +402,7 @@ describe("the Transcribe action", () => {
     OnDeviceStt.cancel = async () => { localState = "cancelled"; };
     const transcriber = createVoiceNoteTranscriber({
       cloud: {
-        capabilities: async () => ({ max_bytes: 120_960_000, max_duration_seconds: 7_200, content_types: ["audio/webm"], admission: "open", diarization: true }),
+        capabilities: async () => ({ max_bytes: 120_960_000, max_duration_seconds: PRIVATE_MAX_DURATION_SECONDS, content_types: ["audio/webm"], admission: "open", diarization: true }),
         pendingSourceIds: () => [],
       } as never,
       consent: { get: () => true, set: noop },
@@ -511,7 +557,7 @@ describe("the Transcribe action", () => {
 
 describe("starting a transcription", () => {
   test("Local on the phone queues the note", async () => {
-    expect(await transcribeWith("on-device", NOTE, transcription(), phone())).toBeNull();
+    expect(await transcribeWith("on-device", NOTE, transcription(), phone(), null)).toBeNull();
     expect(enqueued).toEqual([NOTE]);
   });
 
@@ -520,7 +566,7 @@ describe("starting a transcription", () => {
     const originalError = console.error;
     console.error = noop;
     try {
-      const failure = await transcribeWith("on-device", NOTE, transcription(), phone());
+      const failure = await transcribeWith("on-device", NOTE, transcription(), phone(), null);
       expect(failure).toBe(LOCAL_START_FAILED);
       expect(failure).not.toContain("tombstoned");
     } finally {
@@ -538,7 +584,7 @@ describe("starting a transcription", () => {
     );
     OnDeviceStt.cancel = async ({ id }) => { cancelled.push(id); };
     const props = transcription({ onTranscribePrivately: (id) => { sent.push(id); } });
-    expect(await transcribeWith("private-cloud", NOTE, props, phone({ hasLocalState: true }))).toBeNull();
+    expect(await transcribeWith("private-cloud", NOTE, props, phone({ hasLocalState: true }), null)).toBeNull();
     expect(cancelled).toEqual([NOTE]);
     expect(sent).toEqual([NOTE]);
   });
@@ -549,7 +595,7 @@ describe("starting a transcription", () => {
       listPending: async () => ({ recordings: [{ id: NOTE, stt: { state: "running" } }] }),
     } as unknown as VoiceNotesPlugin, { available: true });
     const props = transcription({ onTranscribeAgain: () => { starts++; return null; } });
-    const failure = await transcribeWith("private-cloud", NOTE, props, phone(), true);
+    const failure = await transcribeWith("private-cloud", NOTE, props, phone(), null, undefined, true);
     expect(failure).toContain("Wait for this phone’s transcription to stop");
     expect(starts).toBe(0);
   });
@@ -558,12 +604,22 @@ describe("starting a transcription", () => {
     const calls: string[] = [];
     expect(await transcribeWith("private-cloud", NOTE,
       transcription({ onTranscribe: () => { calls.push("ordinary"); }, onTranscribePrivately: (id) => { calls.push(`private:${id}`); } }),
-      phone({ committed: "private-cloud" }))).toBeNull();
+      phone({ committed: "private-cloud" }), null)).toBeNull();
     expect(calls).toEqual([`private:${NOTE}`]);
   });
+  test("a Private duration refusal reaches the caller as a failure result, not success", async () => {
+    const limitSeconds = 4_321.5;
+    const durationSeconds = 4_321.251;
+    const result = await transcribeWith("private-cloud", NOTE, transcription({
+      maxSeconds: limitSeconds,
+      onTranscribePrivately: () => ({ kind: "duration", limitSeconds, durationSeconds }),
+    }), phone({ committed: "private-cloud" }), durationSeconds);
+    expect(result).toBe("Private Transcription accepts notes up to 1 h 12 min 1 s. This note is 1 h 12 min 2 s.");
+  });
+
 
   test("a Local choice leaves the on-device queue in the store's snapshot", async () => {
-    await transcribeWith("on-device", NOTE, transcription(), phone());
+    await transcribeWith("on-device", NOTE, transcription(), phone(), null);
     await onDeviceSttStore.refresh();
     expect(onDeviceSttStore.snapshot().queue.some((entry) => entry.id === NOTE)).toBe(true);
   });

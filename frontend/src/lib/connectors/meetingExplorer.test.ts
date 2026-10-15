@@ -309,7 +309,7 @@ describe("listMeetingsRead", () => {
     });
     const read = await listMeetingsRead(tcw);
     expect(read.status).toBe("ok");
-    expect(read.status === "ok" && read.meetings.map((m) => m.durationSecs)).toEqual([42, null]);
+    expect(read.status === "ok" && read.meetings.map((m) => m.durationSecs)).toEqual([42.5, null]);
     expect(sqlCalls.at(-1)?.sql).toContain("duration_secs");
   });
 

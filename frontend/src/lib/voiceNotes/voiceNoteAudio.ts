@@ -17,6 +17,11 @@ export const WAV_CONTENT_TYPE = "audio/wav";
 /** 16-bit mono at TRANSCRIPTION_SAMPLE_RATE. */
 export const WAV_BYTES_PER_SECOND = TRANSCRIPTION_SAMPLE_RATE * 2;
 const WAV_HEADER_BYTES = 44;
+/** Upper bound for the 16 kHz mono WAV payload produced from a recording of this duration. */
+export function expectedTranscriptionWavBytes(durationSeconds: number): number {
+  return WAV_HEADER_BYTES + Math.ceil(durationSeconds * WAV_BYTES_PER_SECOND);
+}
+
 
 /**
  * Compressed bytes per second allowed before decoding, used with the current
@@ -36,10 +41,14 @@ export type AudioDecoder = (bytes: ArrayBuffer, sampleRate: number) => Promise<D
 /** A failure preparing the audio, with a stable code like every private cloud failure. */
 export class VoiceNoteAudioError extends Error {
   readonly code: string;
-  constructor(code: string, message: string) {
+  readonly durationSeconds?: number;
+  readonly sizeBytes?: number;
+  constructor(code: string, message: string, durationSeconds?: number, sizeBytes?: number) {
     super(message);
     this.name = "VoiceNoteAudioError";
     this.code = code;
+    this.durationSeconds = durationSeconds;
+    this.sizeBytes = sizeBytes;
   }
 }
 
@@ -158,11 +167,11 @@ export async function prepareTranscriptionAudio(
   },
 ): Promise<PreparedTranscriptionAudio> {
   const maxSeconds = options.maxSeconds ?? Number.POSITIVE_INFINITY;
-  const tooLarge = () => new VoiceNoteAudioError("recording_too_large", "The recording is larger than the private cloud limit.");
+  const tooLarge = (sizeBytes: number) => new VoiceNoteAudioError("recording_too_large", "The recording is larger than the private cloud limit.", undefined, sizeBytes);
   const recorded = base64ToBytes(audio.base64);
   const contentType = bareMimeType(audio.mimeType);
   if (options.acceptedContentTypes.some((type) => bareMimeType(type) === contentType)) {
-    if (recorded.byteLength > options.maxBytes) throw tooLarge();
+    if (recorded.byteLength > options.maxBytes) throw tooLarge(recorded.byteLength);
     return {
       contentType,
       base64: audio.base64,
@@ -186,10 +195,10 @@ export async function prepareTranscriptionAudio(
   const durationSeconds = mono.length / TRANSCRIPTION_SAMPLE_RATE;
   if (mono.length === 0) throw new VoiceNoteAudioError("no_speech", "The recording is empty.");
   if (durationSeconds > maxSeconds) {
-    throw new VoiceNoteAudioError("recording_too_long", "This recording exceeds the private cloud duration limit.");
+    throw new VoiceNoteAudioError("recording_too_long", "This recording exceeds the private cloud duration limit.", durationSeconds);
   }
   const wav = encodeWavPcm16(mono, TRANSCRIPTION_SAMPLE_RATE);
-  if (wav.byteLength > options.maxBytes) throw tooLarge();
+  if (wav.byteLength > options.maxBytes) throw tooLarge(wav.byteLength);
   return {
     contentType: WAV_CONTENT_TYPE,
     base64: bytesToBase64(wav),

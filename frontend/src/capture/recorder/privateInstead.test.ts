@@ -6,6 +6,7 @@ import { createFakeOnDeviceStt } from "@/lib/voiceNotes/fakeOnDeviceStt";
 import { __setVoiceNotesForTests, VoiceNotes, type VoiceNotesPlugin } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { __setOnDeviceSttForTests, OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
 import { privateInsteadOffered, switchToPrivate } from "./privateInstead";
+import { PRIVATE_DURATION_MARGIN_SECONDS } from "@/lib/voiceNotes/voiceNoteTranscription";
 import type { VoiceNoteTranscriptionProps } from "./transcriptionProps";
 
 const originalVoiceNotes = VoiceNotes;
@@ -13,11 +14,12 @@ afterAll(() => {
   __setOnDeviceSttForTests(OnDeviceStt);
   __setVoiceNotesForTests(originalVoiceNotes, { available: null });
 });
+const PRIVATE_CAP = 7_777;
 
 function props(patch: Partial<VoiceNoteTranscriptionProps> = {}): VoiceNoteTranscriptionProps & { privately: string[] } {
   const privately: string[] = [];
   return {
-    availability: "available", consented: true, maxSeconds: 7_200, jobs: new Map(),
+    availability: "available", consented: true, maxSeconds: PRIVATE_CAP, maxBytes: 186_496_800, jobs: new Map(),
     onTranscribe: () => {}, onTranscribePrivately: (id) => void privately.push(id),
     onConsent: () => {}, onTurnOff: () => {}, onRecheck: () => {},
     ...patch, privately,
@@ -38,9 +40,17 @@ describe("privateInsteadOffered", () => {
     expect(privateInsteadOffered(props({ consented: false }), "n1", 60)).toBe(false);
   });
 
-  test("not offered for a note longer than private cloud takes", () => {
-    expect(privateInsteadOffered(props({ maxSeconds: 100 }), "n1", 101)).toBe(false);
-    expect(privateInsteadOffered(props({ maxSeconds: 100 }), "n1", 100)).toBe(true);
+  test("offered only while the note plus the margin fits under the advertised ceiling, inclusive", () => {
+    const ceiling = 4_321.5;
+    const at = (duration: number) => privateInsteadOffered(props({ maxSeconds: ceiling }), "n1", duration);
+    expect(at(ceiling - PRIVATE_DURATION_MARGIN_SECONDS)).toBe(true);
+    expect(at(ceiling - PRIVATE_DURATION_MARGIN_SECONDS + 0.001)).toBe(false);
+    expect(at(ceiling)).toBe(false);
+    expect(at(ceiling + 17.5)).toBe(false);
+  });
+
+  test("no advertised ceiling: not offered", () => {
+    expect(privateInsteadOffered(props({ maxSeconds: null }), "n1", 60)).toBe(false);
   });
 
   test("not offered once private cloud is working on the note or has finished it; a failed job can be tried again", () => {
@@ -73,7 +83,7 @@ describe("switchToPrivate", () => {
     listing(() => note("cancelled"));
     const transcription = props();
     transcription.onTranscribePrivately = (id) => void order.push(`private ${id}`);
-    expect(await switchToPrivate(transcription, "n1", wait)).toBeNull();
+    expect(await switchToPrivate(transcription, "n1", null, wait)).toBeNull();
     expect(order).toEqual(["cancel n1", "private n1"]);
   });
 
@@ -85,7 +95,7 @@ describe("switchToPrivate", () => {
     const transcription = props();
     transcription.onTranscribePrivately = () => void (startedWhileRunning = running);
     const sleeps: number[] = [];
-    const result = await switchToPrivate(transcription, "n1", {
+    const result = await switchToPrivate(transcription, "n1", null, {
       ...wait,
       sleep: async (ms) => {
         sleeps.push(ms);
@@ -102,7 +112,7 @@ describe("switchToPrivate", () => {
     const states = ["queued", "queued", "cancelled"];
     listing(() => note(states.shift() ?? "cancelled"));
     const transcription = props();
-    expect(await switchToPrivate(transcription, "n1", wait)).toBeNull();
+    expect(await switchToPrivate(transcription, "n1", null, wait)).toBeNull();
     expect(transcription.privately).toEqual(["n1"]);
   });
 
@@ -110,7 +120,7 @@ describe("switchToPrivate", () => {
     withCancel();
     listing(() => note("failed"));
     const transcription = props();
-    expect(await switchToPrivate(transcription, "n1", wait)).toBeNull();
+    expect(await switchToPrivate(transcription, "n1", null, wait)).toBeNull();
     expect(transcription.privately).toEqual(["n1"]);
   });
 
@@ -119,7 +129,7 @@ describe("switchToPrivate", () => {
     withCancel(() => void order.push("cancel n1"));
     listing(() => note("done"));
     const transcription = props();
-    expect(await switchToPrivate(transcription, "n1", wait)).toBe("This note finished transcribing on this browser just now.");
+    expect(await switchToPrivate(transcription, "n1", null, wait)).toBe("This note finished transcribing on this browser just now.");
     expect(order).toEqual([]);
     expect(transcription.privately).toEqual([]);
   });
@@ -130,7 +140,7 @@ describe("switchToPrivate", () => {
     listing(() => note(state), () => null);
     const transcription = props();
     const sleeps: number[] = [];
-    expect(await switchToPrivate(transcription, "n1", { ...wait, sleep: async () => { state = "done"; sleeps.push(1); } }))
+    expect(await switchToPrivate(transcription, "n1", null, { ...wait, sleep: async () => { state = "done"; sleeps.push(1); } }))
       .toBe("This note finished transcribing on this browser just now.");
     expect(transcription.privately).toEqual([]);
   });
@@ -142,7 +152,7 @@ describe("switchToPrivate", () => {
     withCancel(() => { order.push("cancel n1"); state = "cancelled"; });
     listing(() => note(state), () => (state === "cancelled" ? transcript : null));
     const transcription = props();
-    expect(await switchToPrivate(transcription, "n1", wait)).toBe("This note finished transcribing on this browser just now.");
+    expect(await switchToPrivate(transcription, "n1", null, wait)).toBe("This note finished transcribing on this browser just now.");
     expect(order).toEqual(["cancel n1"]);
     expect(transcription.privately).toEqual([]);
   });
@@ -155,7 +165,7 @@ describe("switchToPrivate", () => {
       getTranscript: async () => { throw new Error("bridge closed"); },
     } as unknown as VoiceNotesPlugin, { available: true });
     const transcription = props();
-    expect(await switchToPrivate(transcription, "n1", wait)).toBe("Could not confirm the on-device transcription stopped: bridge closed");
+    expect(await switchToPrivate(transcription, "n1", null, wait)).toBe("Could not confirm the on-device transcription stopped: bridge closed");
     expect(transcription.privately).toEqual([]);
     logged.mockRestore();
   });
@@ -164,7 +174,7 @@ describe("switchToPrivate", () => {
     withCancel();
     listing(() => note("running"));
     const transcription = props();
-    expect(await switchToPrivate(transcription, "n1", { ...wait, timeoutMs: 5 })).toBe("The on-device transcription is still stopping. Try again in a moment.");
+    expect(await switchToPrivate(transcription, "n1", null, { ...wait, timeoutMs: 5 })).toBe("The on-device transcription is still stopping. Try again in a moment.");
     expect(transcription.privately).toEqual([]);
   });
 
@@ -173,7 +183,7 @@ describe("switchToPrivate", () => {
     const logged = spyOn(console, "error").mockImplementation(() => {});
     listing(() => Promise.reject(new Error("bridge closed")));
     const transcription = props();
-    expect(await switchToPrivate(transcription, "n1", wait)).toBe("Could not confirm the on-device transcription stopped: bridge closed");
+    expect(await switchToPrivate(transcription, "n1", null, wait)).toBe("Could not confirm the on-device transcription stopped: bridge closed");
     expect(transcription.privately).toEqual([]);
     logged.mockRestore();
   });
@@ -182,7 +192,7 @@ describe("switchToPrivate", () => {
     withCancel();
     listing(() => ({ recordings: [] }));
     const transcription = props();
-    expect(await switchToPrivate(transcription, "n1", wait)).toContain("the note was not found on this browser");
+    expect(await switchToPrivate(transcription, "n1", null, wait)).toContain("the note was not found on this browser");
     expect(transcription.privately).toEqual([]);
   });
 
@@ -191,8 +201,20 @@ describe("switchToPrivate", () => {
     listing(() => note("running"));
     const logged = spyOn(console, "error").mockImplementation(() => {});
     const transcription = props();
-    expect(await switchToPrivate(transcription, "n1", wait)).toBe("Could not stop the on-device transcription: bridge closed");
+    expect(await switchToPrivate(transcription, "n1", null, wait)).toBe("Could not stop the on-device transcription: bridge closed");
     expect(transcription.privately).toEqual([]);
     logged.mockRestore();
+  });
+
+  test("an over-limit note is refused before the on-device job is stopped, so it stays on Local with the duration copy", async () => {
+    const order: string[] = [];
+    withCancel(() => void order.push("cancel n1"));
+    listing(() => note("running"));
+    const transcription = props({ maxSeconds: 4_321.5 });
+    const over = 4_321.5 - PRIVATE_DURATION_MARGIN_SECONDS + 0.001;
+    expect(await switchToPrivate(transcription, "n1", over, wait))
+      .toBe("Private Transcription accepts notes up to 1 h 12 min 1 s. This note is 1 h 12 min 2 s.");
+    expect(order).toEqual([]);
+    expect(transcription.privately).toEqual([]);
   });
 });

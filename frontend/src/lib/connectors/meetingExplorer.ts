@@ -41,6 +41,7 @@ import {
   LOCAL_MEETING_SOURCE_LABEL,
 } from "../localTranscriber";
 import { VOICE_NOTE_SOURCE, VOICE_NOTE_SOURCE_LABEL } from "../voiceNotes/voiceNoteStore";
+import { preciseDurationSeconds } from "../voiceNotes/noteDuration";
 import { UPLOAD_MEETING_SOURCE, UPLOAD_MEETING_SOURCE_LABEL } from "../audioUpload";
 import { CONNECTORS } from "./registry";
 
@@ -187,7 +188,9 @@ export async function listMeetingsRead(
                   'audio_stored',          json_extract(metadata, '$.audio.stored'),
                   'audio_device_platform', json_extract(metadata, '$.audio.device.platform'))
                 ELSE 'invalid' END
-              END AS pipeline_metadata
+              END AS pipeline_metadata,
+              CASE WHEN source = 'exo-voice-note' AND json_valid(COALESCE(metadata, '{}'))
+                THEN json_extract(metadata, '$.capture.duration_ms') END AS capture_duration_ms
        FROM connector_meeting
        WHERE source IN (${placeholders}) ORDER BY started_at DESC`,
       [...sources],
@@ -214,7 +217,7 @@ export async function listMeetingsRead(
       sourceId,
       title: cellStr(row, 3),
       startedAt: cellStr(row, 4),
-      durationSecs: cellNum(row, 5),
+      durationSecs: source === VOICE_NOTE_SOURCE ? preciseDurationSeconds(cellNum(row, 5), row[7]) : cellNum(row, 5),
     };
     if (source === VOICE_NOTE_SOURCE) {
       const rawPipelineMetadata = cellStr(row, 6);
