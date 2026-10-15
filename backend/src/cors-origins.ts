@@ -18,6 +18,7 @@ export const LOCAL_WEB_ORIGINS = [
   "http://localhost:5186",
   "https://localhost:5186",
 ] as const;
+const NATIVE_SESSION_URI = /^did:key:(z6Mk[1-9A-HJ-NP-Za-km-z]{44})#\1$/;
 
 /** Match the SDK's signed audience, not the browser Origin or the API host.
  * The web SDK signs hostname (without the port) and `https://${hostname}`;
@@ -25,10 +26,9 @@ export const LOCAL_WEB_ORIGINS = [
 export function isExpectedSiweOrigin(
   domain: string,
   uri: string,
-  frontendUrl: string,
+  webDomain: string,
   nativeDomain: string,
 ): boolean {
-  const webDomain = new URL(frontendUrl).hostname;
   const webPair =
     (domain === webDomain ||
       domain === "localhost" ||
@@ -37,7 +37,7 @@ export function isExpectedSiweOrigin(
     uri === `https://${domain}`;
   return webPair || (
     domain === nativeDomain &&
-    /^did:key:(z6Mk[1-9A-HJ-NP-Za-km-z]{44})#\1$/.test(uri)
+    NATIVE_SESSION_URI.test(uri)
   );
 }
 

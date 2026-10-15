@@ -13,6 +13,8 @@ interface AuthRoutesConfig {
 
 export function createAuthRouter(config: AuthRoutesConfig) {
   const router = Router();
+  const webDomain = new URL(config.frontendUrl).hostname;
+  const nativeDomain = config.nativeSiweDomain ?? "openkey.so";
 
   // Without `address` the nonce is unbound (native OpenKey sign-in binds it to
   // the recovered signer at /verify); it stays single-use and short-lived.
@@ -41,7 +43,7 @@ export function createAuthRouter(config: AuthRoutesConfig) {
 
     try {
       const { address, nonce, domain, uri, chainId, resources, expirationTime } = await verifySIWE(message, signature);
-      if (!isExpectedSiweOrigin(domain, uri, config.frontendUrl, config.nativeSiweDomain ?? "openkey.so") ||
+      if (!isExpectedSiweOrigin(domain, uri, webDomain, nativeDomain) ||
         (uri.startsWith("did:key:") && !hasTinyChatNativeAudience(message, address, chainId, resources))) {
         res.status(400).json({
           error: "invalid_origin", message: "SIWE domain or URI does not match this application",
