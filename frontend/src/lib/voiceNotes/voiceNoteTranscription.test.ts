@@ -4667,6 +4667,99 @@ describe("TC-1140 main hotfix zero-loss regressions", () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     expect(attempts).toBe(2);
   });
+  test("a real quota marker does not poll under drain; explicit Retry still creates and commits", async () => {
+    const space = sqliteSpace();
+    expect((await saveVoiceNote(space.tcw, RECORDING, AUDIO, "ios")).ok).toBe(true);
+    space.sqlite.query(`UPDATE connector_meeting SET metadata = json_set(metadata, '$.capture.version', 2,
+      '$.capture.source', 'in_app', '$.capture.options.transcriber', 'private-cloud') WHERE source_id = 'rec-1'`).run();
+    VoiceNotes.listPending = async () => ({ recordings: [] });
+    const storage = memoryStorage();
+    const consent = localStorageVoiceNoteConsentStore(DID, storage);
+    consent.set(true);
+    const choices = localStorageVoiceNotePrivateChoiceStore(DID, storage);
+    const scheduled: { callback: () => void; delayMs: number; cancelled: boolean }[] = [];
+    let caps: PrivateCloudCapabilities = CAPS;
+    let capabilityCalls = 0;
+    let now = 0;
+    const h = harness({
+      creates: [
+        new PrivateCloudError("quota_exceeded", "daily quota", { statusCode: 429, retryAfterSeconds: 120 }),
+        { id: ID, status: "awaiting_upload", upload: { path: `/uploads/${ID}`, capability: CAP } },
+      ],
+    });
+    const transcriber = createVoiceNoteTranscriber({
+      cloud: { ...h.cloud, capabilities: async () => { capabilityCalls++; return caps; } },
+      consent, choices, tcw: () => space.tcw,
+      holds: memoryHoldStore(), checkRetryMs: [], now: () => now,
+      timer: {
+        schedule: (callback, delayMs) => { scheduled.push({ callback, delayMs, cancelled: false }); return scheduled.length; },
+        cancel: (handle) => { scheduled[Number(handle) - 1]!.cancelled = true; },
+      },
+    });
+
+    await transcriber.check();
+    transcriber.noteSaved({ id: "rec-1", durationMs: 9_000, source: "in_app",
+      options: { transcriber: "private-cloud", identifySpeakers: false, uploadAudio: true } });
+    for (let i = 0; i < 40 && transcriber.snapshot().jobs.get("rec-1")?.kind === "active"; i++)
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(transcriber.snapshot().jobs.get("rec-1")).toMatchObject({ kind: "failed", code: "quota_exceeded" });
+    expect(h.pending.read("rec-1")).toMatchObject({ transcriptionId: null, failure: "quota_exceeded" });
+    expect(choices.ids()).toEqual([]);
+
+    caps = { ...CAPS, admission: "drain" };
+    now = 1_000;
+    await transcriber.check();
+    for (let i = 0; i < 40; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(capabilityCalls).toBe(2);
+    expect(scheduled).toEqual([]);
+
+    now = 601_000;
+    for (let i = 0; i < 40; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(capabilityCalls).toBe(2);
+    expect(h.creates).toHaveLength(1);
+    expect(h.puts).toHaveLength(0);
+
+    caps = CAPS;
+    await transcriber.check();
+    for (let i = 0; i < 40; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(capabilityCalls).toBe(3);
+    expect(h.creates).toHaveLength(1);
+    expect(transcriber.snapshot().jobs.get("rec-1")).toMatchObject({ kind: "failed", code: "quota_exceeded" });
+
+    expect(transcriber.transcribePrivately("rec-1", 9)).toBeNull();
+    for (let i = 0; i < 40 && transcriber.snapshot().jobs.get("rec-1")?.kind === "active"; i++)
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(h.creates).toHaveLength(2);
+    expect(h.puts).toHaveLength(1);
+    expect(await readTranscriptCommit(space.tcw, "rec-1")).toMatchObject({ rev: 1, outcome: "transcribed" });
+  });
+
+  test("a terminal marker does not hide a live completed remote job during drain", async () => {
+    const space = sqliteSpace();
+    expect((await saveVoiceNote(space.tcw, RECORDING, AUDIO, "ios")).ok).toBe(true);
+    space.sqlite.query(`UPDATE connector_meeting SET metadata = json_set(metadata, '$.capture.version', 2,
+      '$.capture.source', 'in_app', '$.capture.options.transcriber', 'private-cloud') WHERE source_id = 'rec-1'`).run();
+    VoiceNotes.listPending = async () => ({ recordings: [] });
+    const storage = memoryStorage();
+    const consent = localStorageVoiceNoteConsentStore(DID, storage);
+    consent.set(true);
+    const choices = localStorageVoiceNotePrivateChoiceStore(DID, storage);
+    const h = harness({ jobs: [job("completed")] });
+    h.pending.write("rec-1", { attemptId: "terminal-attempt", transcriptionId: ID, failure: "quota_exceeded" });
+    const transcriber = createVoiceNoteTranscriber({
+      cloud: { ...h.cloud, capabilities: async () => ({ ...CAPS, admission: "drain" }) },
+      consent, choices, tcw: () => space.tcw,
+      holds: memoryHoldStore(), checkRetryMs: [],
+    });
+
+    await transcriber.check();
+    for (let i = 0; i < 40; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(await readTranscriptCommit(space.tcw, "rec-1")).toMatchObject({ rev: 1, outcome: "transcribed" });
+    expect(h.creates).toHaveLength(0);
+    expect(h.puts).toHaveLength(0);
+    expect(h.removed).toEqual([ID]);
+    expect(h.pending.read("rec-1")).toBeNull();
+  });
 
   test("restored terminal failure is published to snapshot and notePipeline after Off→On", async () => {
     const space = sqliteSpace();

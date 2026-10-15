@@ -1902,8 +1902,15 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
   let triggerAutomaticRecheck: () => void = () => undefined;
   const hasAdmissionRecoveryWork = () => {
     if (recoveryNeeded || automaticRetryDeadlines.size > 0) return true;
+    for (const job of jobs.values()) if (job.kind === "blocked") return true;
     try {
-      return (cloud?.pendingSourceIds().length ?? 0) > 0 || choices.ids().length > 0;
+      if (choices.ids().length > 0) return true;
+      if (cloud === null) return false;
+      return cloud.pendingSourceIds().some((sourceId) =>
+        cloud.hasRemoteJob(sourceId)
+        || cloud.heldTranscript(sourceId) !== null
+        || cloud.terminalFailure?.(sourceId) == null,
+      );
     } catch {
       return true;
     }
@@ -1915,6 +1922,8 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
       const delay = failedBackoffMs[0] ?? 15_000;
       recoveryTimer = timer.schedule(() => {
         recoveryTimer = undefined;
+        if (state.availability !== "available" || state.capabilities?.admission === "open"
+          || !hasAdmissionRecoveryWork()) return;
         recoveryNeeded = true;
         nextRecoveryAt = now();
         settledAt = null;
