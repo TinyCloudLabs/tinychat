@@ -7306,6 +7306,7 @@ test("held recovery stays done when best-effort provider deletion fails", async 
 });
 
 test("missing space identity refuses the durable claim but continues the in-memory transcript save", async () => {
+  _resetConnectorSchemaMemoForTests();
   const space = sqliteSpace();
   const tcw = typedTcw(space);
   const did = tcw.did;
@@ -7354,6 +7355,7 @@ test("missing space identity refuses the durable claim but continues the in-memo
 });
 
 test("nonexplicit cleanup cannot discard an uncommitted held result", async () => {
+  _resetConnectorSchemaMemoForTests();
   const space = sqliteSpace();
   const tcw = typedTcw(space);
   const did = tcw.did;
