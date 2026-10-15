@@ -48,6 +48,7 @@ pub struct Journal {
     pub max_duration_ms: u64,
     #[serde(default)]
     pub system_audio: bool,
+    #[serde(default)]
     pub layout: Layout,
     #[serde(default)]
     pub spans: Vec<MissingAudioSpan>,
