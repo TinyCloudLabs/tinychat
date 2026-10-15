@@ -728,6 +728,40 @@ public final class RecordingLibrary {
         }
     }
 
+    /// Complete an installed transcript's sidecar after process death, or restore a rerun's
+    /// prior transcript if the process stopped between moving it aside and installing the new one.
+    /// The backup lives at the root rather than staging, which launch cleanup discards.
+    public func repairTranscriptCommit(_ id: String) throws {
+        try queue.sync {
+            guard Self.validID(id), !FileManager.default.fileExists(atPath: url("tombstones/\(id)").path) else { return }
+            let final = url("\(id).transcript.json")
+            let prior = url("\(id).prior.transcript.json")
+            let hasPrior = FileManager.default.fileExists(atPath: prior.path)
+            var item = try readSidecarUnlocked(id)
+            var stt = item["stt"] as? [String: Any] ?? [:]
+            let state = stt["state"] as? String
+            let transcript = (try? JSONSerialization.jsonObject(with: Data(contentsOf: final))) as? [String: Any]
+            let targetRev = (stt["rerunRev"] as? Int) ?? 1
+            if state == "running", transcript?["rev"] as? Int == targetRev,
+               ["transcribed", "no_speech"].contains(transcript?["outcome"] as? String ?? "") {
+                stt["state"] = "done"
+                stt["error"] = NSNull()
+                item["stt"] = stt
+                item["rev"] = (item["rev"] as? Int ?? 0) + 1
+                try publishSidecarUnlocked(id, item, failpointName: "stt.write")
+            } else if hasPrior && state != "done" {
+                if FileManager.default.fileExists(atPath: final.path) { try FileManager.default.removeItem(at: final) }
+                try FileManager.default.moveItem(at: prior, to: final)
+                try sync(root)
+                return
+            }
+            if hasPrior {
+                try FileManager.default.removeItem(at: prior)
+                try sync(root)
+            }
+        }
+    }
+
     @discardableResult
     public func commitTranscript(_ id: String, generation: Int, object: [String: Any],
                                  stillValid: () -> Bool) throws -> Bool {
@@ -747,9 +781,14 @@ public final class RecordingLibrary {
             guard stillValid(), stt["state"] as? String == "running",
                   stt["yieldGeneration"] as? Int == generation else { return false }
             let final = url("\(id).transcript.json")
-            let prior = url("staging/\(id).\(operation).\(UUID().uuidString.lowercased()).prior.transcript.json")
+            let prior = url("\(id).prior.transcript.json")
             let hadPrior = FileManager.default.fileExists(atPath: final.path)
-            if hadPrior { try FileManager.default.moveItem(at: final, to: prior) }
+            if hadPrior {
+                // Do not overwrite a backup from an interrupted earlier publication.
+                guard !FileManager.default.fileExists(atPath: prior.path) else { throw CaptureError.io("unrepaired transcript") }
+                try FileManager.default.moveItem(at: final, to: prior)
+                try sync(root)
+            }
             do {
                 try FileManager.default.moveItem(at: staged, to: final)
                 try sync(root)

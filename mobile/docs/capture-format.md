@@ -156,7 +156,7 @@ recordings omit them, never substituting the current writer build. The iOS `yiel
 state retains queued native work and pins audio; `yieldGeneration` fences late recognition,
 while `attempts` is restored only after a durable OS yield. A failed yield retains its crash count.
 
-An explicit rerun stores its target `rerunRev` and committed base `(rerunBaseRev, rerunBaseHash)` in the sidecar `stt` state while it is queued, running, or waiting for a model. The local transcript written for that attempt carries `rerunBase: { rev, hash }`. The worker verifies that base before publishing; launch recovery cancels unfinished reruns and clears their markers, while a failed rerun retains its base across relaunch for an explicit retry. These markers never cause a rerun to restart automatically.
+An explicit rerun stores its target `rerunRev` and committed base `(rerunBaseRev, rerunBaseHash)` in the sidecar `stt` state while it is queued, running, or waiting for a model. The local transcript written for that attempt carries `rerunBase: { rev, hash }`. The worker verifies that base before publishing. On iOS, launch repair first completes a published transcript's `stt.done` state or restores the prior rerun transcript from its durable backup if publication stopped before installation. Launch recovery then cancels unfinished reruns and clears their markers; a failed rerun retains its base across relaunch for an explicit retry. These markers never cause a rerun to restart automatically.
 
 Space audio writes are admitted only when `recording.options?.uploadAudio === true`; absent and false values stay local. Private-cloud/PTX and hosted-engine uploads are transcription-service requests, not writes to the user's space.
 
