@@ -1,5 +1,13 @@
 # exo-desktop
 
+## 0.7.4
+
+No changes in this release.
+
+## 0.7.4-beta.4
+
+No changes in this release.
+
 ## 0.7.4-beta.3
 
 No changes in this release.
