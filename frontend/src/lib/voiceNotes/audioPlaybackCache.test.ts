@@ -188,6 +188,37 @@ test("with nobody signed in no saved note is a cache candidate", async () => {
   expect(evicted).toEqual([]);
 });
 
+for (const operation of ["trim", "clear"] as const) {
+  test(`TC-1182 ${operation} stops at a cached remote row after the account changes`, async () => {
+    notes = [saved("account-a-note", "saved")];
+    sizes.set("account-a-note", 40);
+    const remoteScope = ["space", "did:test", "exo-voice-note", "remote-after-switch"] as const;
+    await cachedSpaceAudio(...remoteScope, "rev-1", async () => new Blob(["remote bytes"]));
+
+    __setVoiceNotesForTests({
+      listPending: async () => ({ recordings: notes }),
+      localAudioSize: async ({ id }: { id: string }) => ({ size: sizes.get(id) ?? 0 }),
+      evictCachedAudio: async ({ id }: { id: string }) => {
+        sizes.set(id, 0);
+        evicted.push(id);
+        if (id === "account-a-note") {
+          unmountAccount();
+          unmountAccount = mountVoiceNoteAccount("did:test:account-b");
+        }
+      },
+    } as unknown as VoiceNotesPlugin, { available: true });
+
+    if (operation === "trim") await trimCachedAudio(0);
+    else {
+      const report = await clearCachedAudio();
+      expect(report).toMatchObject({ stopped: "account_changed", cleared: 1 });
+    }
+
+    expect(evicted).toEqual(["account-a-note"]);
+    expect(await cachedSpaceAudioOffline(...remoteScope)).not.toBeNull();
+  });
+}
+
 test("a candidate native refuses as in use is skipped and the rest of the cache is still trimmed", async () => {
   notes = [saved("busy", "saved"), saved("free", "saved")];
   sizes.set("busy", 40); sizes.set("free", 40);
@@ -202,6 +233,27 @@ test("a candidate native refuses as in use is skipped and the rest of the cache 
   await trimCachedAudio(0);
   expect(evicted).toEqual(["free"]);
   expect(sizes.get("busy")).toBe(40);
+});
+
+test("Clear treats recording_in_progress as in use and continues to the next candidate", async () => {
+  notes = [saved("recording", "saved"), saved("free-after-recording", "saved")];
+  sizes.set("recording", 40); sizes.set("free-after-recording", 40);
+  __setVoiceNotesForTests({
+    listPending: async () => ({ recordings: notes }),
+    localAudioSize: async ({ id }: { id: string }) => ({ size: sizes.get(id) ?? 0 }),
+    evictCachedAudio: async ({ id }: { id: string }) => {
+      if (id === "recording")
+        throw Object.assign(new Error("recording_in_progress"), { code: "recording_in_progress" });
+      sizes.set(id, 0);
+      evicted.push(id);
+    },
+  } as VoiceNotesPlugin, { available: true });
+
+  const report = await clearCachedAudio();
+
+  expect(report).toMatchObject({ cleared: 1, inUse: 1, pinnedBytes: 40 });
+  expect(evicted).toEqual(["free-after-recording"]);
+  expect(sizes.get("recording")).toBe(40);
 });
 // Pin tests exercise the durable PTX and consent stores consumed by trim and Clear.
 

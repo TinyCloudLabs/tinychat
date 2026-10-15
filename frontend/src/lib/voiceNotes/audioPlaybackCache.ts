@@ -99,6 +99,10 @@ function accountIsCurrent(context: EvictionContext): boolean {
     && currentAccountGeneration() === context.generation;
 }
 
+function accountContextChanged(context: EvictionContext): boolean {
+  return mountedVoiceNoteDid() !== context.owner || currentAccountGeneration() !== context.generation;
+}
+
 async function savedRecordings(context: EvictionContext): Promise<SavedAudio[]> {
   if (!context.owner) return [];
   const notes = (await VoiceNotes.listPending()).recordings.filter((note) =>
@@ -244,7 +248,7 @@ async function evict(entry: CacheCandidate, context: EvictionContext): Promise<E
         () => VoiceNotes.evictCachedAudio({ id: entry.id! }));
     } catch (error) {
       const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
-      if (code === "audio_in_use") return { kind: "in_use" };
+      if (code === "audio_in_use" || code === "recording_in_progress") return { kind: "in_use" };
       throw error;
     }
     if (result.kind !== "evicted") return result;
@@ -280,7 +284,7 @@ async function trimCachedAudioUnlocked(limit = AUDIO_CACHE_LIMIT): Promise<void>
   let evicted = false;
   for (const row of state.rows) {
     if (bytes <= limit) break;
-    if (row.id && !accountIsCurrent(context)) return;
+    if (accountContextChanged(context)) return;
     const result = await evict(row, context);
     if (result.kind === "account_changed") return;
     if (result.kind !== "evicted") continue;
@@ -310,7 +314,7 @@ export async function clearCachedAudio(): Promise<ClearCachedAudioReport> {
     let pinnedBytes = state.pinnedBytes;
     if (state.stopped) return { cleared, inUse, pinnedBytes, stopped: "account_changed" };
     for (const row of state.rows) {
-      if (row.id && !accountIsCurrent(context))
+      if (accountContextChanged(context))
         return { cleared, inUse, pinnedBytes, stopped: "account_changed" };
       const result = await evict(row, context);
       if (result.kind === "account_changed") return { cleared, inUse, pinnedBytes, stopped: "account_changed" };
