@@ -4560,23 +4560,40 @@ describe("TC-1140 main hotfix zero-loss regressions", () => {
   test("Retry-After is capped before scheduling a platform timer", async () => {
     const space = sqliteSpace();
     await saveVoiceNote(space.tcw, RECORDING, AUDIO, "ios");
+    space.sqlite.query(`UPDATE connector_meeting SET metadata = json_set(metadata, '$.capture.version', 2,
+      '$.capture.source', 'in_app', '$.capture.options.transcriber', 'private-cloud') WHERE source_id = 'rec-1'`).run();
     VoiceNotes.listPending = async () => ({ recordings: [] });
     let pendingIds: string[] = [];
+    let now = 0;
+    let attempts = 0;
     const h = harness({});
     const scheduled: { callback: () => void; delayMs: number; cancelled: boolean }[] = [];
     const t = createVoiceNoteTranscriber({
       cloud: { ...h.cloud, capabilities: async () => CAPS, pendingSourceIds: () => pendingIds },
       consent: { get: () => true, set: () => {} }, tcw: () => space.tcw, holds: memoryHoldStore(),
-      checkRetryMs: [], failedBackoffMs: [1_000],
+      checkRetryMs: [], now: () => now, failedBackoffMs: [1_000],
       timer: { schedule: (callback, delayMs) => { scheduled.push({ callback, delayMs, cancelled: false }); return scheduled.length; },
         cancel: (handle) => { scheduled[Number(handle) - 1]!.cancelled = true; } },
-      runNote: async () => { throw new PrivateCloudError("service_paused", "draining", { statusCode: 503, retryAfterSeconds: 10_000_000 }); },
+      runNote: async () => {
+        attempts++;
+        if (attempts === 1) throw new PrivateCloudError("service_paused", "draining", { statusCode: 503, retryAfterSeconds: 10_000_000 });
+        return "transcribed";
+      },
     });
     await t.check();
     pendingIds = ["rec-1"];
     t.noteSaved({ id: "rec-1", durationMs: 9_000, source: "in_app", options: { transcriber: "private-cloud", identifySpeakers: false, uploadAudio: true } });
     for (let i = 0; i < 40; i++) await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(scheduled[0]?.delayMs).toBe(900_000);
+    expect(attempts).toBe(1);
+    expect(scheduled[0]).toMatchObject({ delayMs: 900_000, cancelled: false });
+    now = 899_999;
+    scheduled[0]!.callback();
+    expect(attempts).toBe(1);
+    expect(scheduled[1]).toMatchObject({ delayMs: 1, cancelled: false });
+    now = 900_000;
+    scheduled[1]!.callback();
+    for (let i = 0; i < 40; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(attempts).toBe(2);
   });
 
   test("recovery rechecks account identity after its note reread before deleting", async () => {
