@@ -27,6 +27,7 @@ const noop = () => {};
 const phone = (patch: Partial<PhoneRecording> = {}): PhoneRecording => ({ committed: "on-device", hasLocalState: false, ...patch });
 const onPhone = (patch: Partial<PhoneRecording> = {}): PhoneRead => ({ state: "read", phone: phone(patch) });
 const nowhere: PhoneRead = { state: "read", phone: null };
+const PRIVATE_MAX_DURATION_SECONDS = 7_777;
 
 function transcription(patch: Partial<VoiceNoteTranscriptionProps> = {}): VoiceNoteTranscriptionProps {
   return { availability: "available", consented: true, maxSeconds: 600, maxBytes: 186_496_800, jobs: new Map(), onTranscribe: noop, onTranscribePrivately: noop, onConsent: noop, onTurnOff: noop, onRecheck: noop, ...patch };
@@ -313,7 +314,7 @@ describe("the Transcribe action", () => {
       cloud: {
         capabilities: async () => ({
           max_bytes: 120_960_000,
-          max_duration_seconds: 11_101,
+          max_duration_seconds: PRIVATE_MAX_DURATION_SECONDS,
           content_types: ["audio/webm"],
           admission: "open",
           diarization: true,
@@ -362,7 +363,7 @@ describe("the Transcribe action", () => {
     OnDeviceStt.cancel = async () => { localState = "cancelled"; };
     const transcriber = createVoiceNoteTranscriber({
       cloud: {
-        capabilities: async () => ({ max_bytes: 120_960_000, max_duration_seconds: 11_101, content_types: ["audio/webm"], admission: "open", diarization: true }),
+        capabilities: async () => ({ max_bytes: 120_960_000, max_duration_seconds: PRIVATE_MAX_DURATION_SECONDS, content_types: ["audio/webm"], admission: "open", diarization: true }),
         pendingSourceIds: () => [],
       } as never,
       consent: { get: () => true, set: noop },

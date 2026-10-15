@@ -14,7 +14,7 @@ afterAll(() => {
   __setOnDeviceSttForTests(OnDeviceStt);
   __setVoiceNotesForTests(originalVoiceNotes, { available: null });
 });
-const PRIVATE_CAP = 11_101;
+const PRIVATE_CAP = 7_777;
 
 function props(patch: Partial<VoiceNoteTranscriptionProps> = {}): VoiceNoteTranscriptionProps & { privately: string[] } {
   const privately: string[] = [];

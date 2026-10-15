@@ -48,6 +48,7 @@ const { isDiscarded, pendingStore, saveRecording } = await import("@/lib/voiceNo
 const { useVoiceNoteRecorder } = await import("./useVoiceNoteRecorder");
 
 const tcw = { did: "did:example:alice", spaceId: "tinycloud:space" } as TinyCloudWeb;
+const PRIVATE_MAX_DURATION_SECONDS = 7_777;
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 /** Waits for a save to settle without assuming how many macrotasks it takes (CI and local runs differ). */
@@ -510,7 +511,7 @@ describe("voice-note recorder controller", () => {
     const started: string[] = [];
     const transcriber = createVoiceNoteTranscriber({
       cloud: {
-        capabilities: async () => ({ max_bytes: 120_960_000, max_duration_seconds: 11_101, content_types: ["audio/mp4"] }),
+        capabilities: async () => ({ max_bytes: 120_960_000, max_duration_seconds: PRIVATE_MAX_DURATION_SECONDS, content_types: ["audio/mp4"] }),
         pendingSourceIds: () => [],
         transcribe: async () => { throw new Error("runNote is injected"); },
         finish: async () => {},
@@ -2023,7 +2024,7 @@ const hostWindow = () => ({ HTMLIFrameElement: class {}, document: hostDocument,
         const enclaveJobs: string[] = [];
         const transcriber = createVoiceNoteTranscriber({
           cloud: {
-            capabilities: async () => ({ max_bytes: 120_960_000, max_duration_seconds: 11_101, content_types: ["audio/mp4"] }),
+            capabilities: async () => ({ max_bytes: 120_960_000, max_duration_seconds: PRIVATE_MAX_DURATION_SECONDS, content_types: ["audio/mp4"] }),
             pendingSourceIds: () => [],
             transcribe: async () => { throw new Error("runNote is injected"); },
             finish: async () => {},
@@ -2293,7 +2294,7 @@ const hostWindow = () => ({ HTMLIFrameElement: class {}, document: hostDocument,
           const enclaveJobs: string[] = [];
           const transcriber = createVoiceNoteTranscriber({
             cloud: {
-              capabilities: async () => ({ max_bytes: 120_960_000, max_duration_seconds: 11_101, content_types: ["audio/mp4"] }),
+              capabilities: async () => ({ max_bytes: 120_960_000, max_duration_seconds: PRIVATE_MAX_DURATION_SECONDS, content_types: ["audio/mp4"] }),
               pendingSourceIds: () => [],
               transcribe: async () => { throw new Error("runNote is injected"); },
               finish: async () => {},
@@ -2445,7 +2446,7 @@ const hostWindow = () => ({ HTMLIFrameElement: class {}, document: hostDocument,
         const jobs: string[] = [];
         const real = createVoiceNoteTranscriber({
           cloud: {
-            capabilities: async () => ({ max_bytes: 120_960_000, max_duration_seconds: 11_101, content_types: ["audio/mp4"] }),
+            capabilities: async () => ({ max_bytes: 120_960_000, max_duration_seconds: PRIVATE_MAX_DURATION_SECONDS, content_types: ["audio/mp4"] }),
             pendingSourceIds: () => [],
             transcribe: async () => { throw new Error("runNote is injected"); },
             finish: async () => {},
@@ -2561,7 +2562,7 @@ const hostWindow = () => ({ HTMLIFrameElement: class {}, document: hostDocument,
         const jobs: string[] = [];
         const real = createVoiceNoteTranscriber({
           cloud: {
-            capabilities: async () => ({ max_bytes: 120_960_000, max_duration_seconds: 11_101, content_types: ["audio/mp4"] }),
+            capabilities: async () => ({ max_bytes: 120_960_000, max_duration_seconds: PRIVATE_MAX_DURATION_SECONDS, content_types: ["audio/mp4"] }),
             pendingSourceIds: () => [],
             transcribe: async () => { throw new Error("runNote is injected"); },
             finish: async () => {},

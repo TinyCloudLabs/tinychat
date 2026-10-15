@@ -96,7 +96,7 @@ const CAP2 = "tcu_zyxwvutsrqponmlk9876543210";
 const ORIGIN = "https://ptx.example";
 const CAPS: PrivateCloudCapabilities = {
   max_bytes: 120_960_000,
-  max_duration_seconds: 11_101,
+  max_duration_seconds: 7_777,
   content_types: ["audio/mpeg", "audio/wav", "audio/ogg"],
   admission: "open",
   diarization: true,
@@ -404,25 +404,24 @@ describe("gating", () => {
   });
 
   test("the accepted ceiling is inclusive with the media-duration margin; grace does not extend it", () => {
-    const accepted = 11_101;
+    const accepted = CAPS.max_duration_seconds! + 114;
     const caps = { ...CAPS, accepted_max_duration_seconds: accepted, duration_grace_seconds: 300 };
     expect(privateCloudLimits(caps)?.maxSeconds).toBe(accepted);
-    expect(privateCloudAccepts(11_100.75, caps)).toBe(true);
-    expect(privateCloudAccepts(11_100.751, caps)).toBe(false);
+    expect(privateCloudAccepts(accepted - PRIVATE_DURATION_MARGIN_SECONDS, caps)).toBe(true);
+    expect(privateCloudAccepts(accepted - PRIVATE_DURATION_MARGIN_SECONDS + 0.001, caps)).toBe(false);
     expect(privateCloudAccepts(accepted, caps)).toBe(false);
     expect(privateCloudAccepts(accepted + 17.5, caps)).toBe(false);
-    for (const malformed of ["11101", Number.NaN, 0, -1]) {
+    for (const malformed of [String(accepted), Number.NaN, 0, -1]) {
       expect(privateCloudLimits({
         ...CAPS,
-        max_duration_seconds: 10_800,
         accepted_max_duration_seconds: malformed as number,
-      })?.maxSeconds).toBe(10_800);
+      })?.maxSeconds).toBe(CAPS.max_duration_seconds);
     }
 
-    expect(privateCloudAccepts(preciseDurationSeconds(11_100.75, null), caps)).toBe(true);
-    expect(privateCloudAccepts(preciseDurationSeconds(11_100.751, null), caps)).toBe(false);
-    expect(privateCloudAccepts(preciseDurationSeconds(11_100, null), caps)).toBe(true);
-    expect(privateCloudAccepts(preciseDurationSeconds(11_101, null), caps)).toBe(false);
+    expect(privateCloudAccepts(preciseDurationSeconds(accepted - PRIVATE_DURATION_MARGIN_SECONDS, null), caps)).toBe(true);
+    expect(privateCloudAccepts(preciseDurationSeconds(accepted - PRIVATE_DURATION_MARGIN_SECONDS + 0.001, null), caps)).toBe(false);
+    expect(privateCloudAccepts(preciseDurationSeconds(accepted - 1, null), caps)).toBe(true);
+    expect(privateCloudAccepts(preciseDurationSeconds(accepted, null), caps)).toBe(false);
   });
 
   test("without an accepted ceiling, max_duration_seconds plus duration_grace_seconds is the limit", () => {
@@ -482,7 +481,7 @@ describe("interpretUploadResponse (desktop upload_result)", () => {
 });
 
 describe("createVoiceNoteCloud.transcribe", () => {
-  test.each([3_600, 10_800])("uploads a note up to the advertised %i-second ceiling less the margin", async (ceiling) => {
+  test.each([3_600, CAPS.max_duration_seconds!])("uploads a note up to the advertised %i-second ceiling less the margin", async (ceiling) => {
     const h = harness({});
     await h.cloud.transcribe({ sourceId: "rec-1", capabilities: { ...CAPS, max_duration_seconds: ceiling },
       loadAudio: async () => AUDIO, durationSeconds: ceiling - PRIVATE_DURATION_MARGIN_SECONDS }, () => {});

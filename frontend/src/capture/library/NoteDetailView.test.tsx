@@ -29,7 +29,7 @@ const noop = () => {};
 const VOICE: LibraryItem = { id: "row-1", source: "exo-voice-note", sourceId: "rec-1", title: "Voice note · Oct 6, 9:28 AM", startedAt: "2026-10-06T09:28:00.000Z", durationSecs: 42 };
 const MEETING: LibraryItem = { id: "row-2", source: "tinycloud-transcriber", sourceId: "mtg-2", title: "Weekly sync", startedAt: "2026-10-05T14:00:00.000Z", durationSecs: 1880 };
 const UPLOAD: LibraryItem = { id: "row-3", source: "exo-upload", sourceId: "up-3", title: "Interview", startedAt: "2026-10-01T11:00:00.000Z", durationSecs: 600 };
-const PRIVATE_CAP = 11_101;
+const PRIVATE_CAP = 7_777;
 const audio = { load: async () => null };
 
 function transcription(patch: Partial<VoiceNoteTranscriptionProps> = {}): VoiceNoteTranscriptionProps {
@@ -82,11 +82,11 @@ describe("NoteDetailView", () => {
   test("an over-limit note explains the advertised maximum before offering Transcribe", () => {
     const html = render({ item: { ...VOICE, durationSecs: PRIVATE_CAP + 1 }, transcription: transcription({ maxSeconds: PRIVATE_CAP }) });
     expect(html).toContain('data-testid="voice-note-transcription-over-limit"');
-    expect(html).toContain("Private Transcription accepts notes up to 3 h 5 min. This note is 3 h 5 min 2 s.");
+    expect(html).toContain("Private Transcription accepts notes up to 2 h 9 min 36 s. This note is 2 h 9 min 38 s.");
     expect(html).not.toContain('data-testid="voice-note-transcribe"');
   });
   test("a note whose PTX limit is unknown says Private's limits aren't available, with no duration and no Transcribe", () => {
-    const html = render({ item: { ...VOICE, durationSecs: 10_800 }, transcription: transcription({ maxSeconds: null }) });
+    const html = render({ item: { ...VOICE, durationSecs: 321 }, transcription: transcription({ maxSeconds: null }) });
     expect(html).toContain('data-testid="voice-note-transcription-limits-unknown"');
     expect(html).not.toContain('data-testid="voice-note-transcription-over-limit"');
     expect(html).not.toContain('data-testid="voice-note-transcribe"');

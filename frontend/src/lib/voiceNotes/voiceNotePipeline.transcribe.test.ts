@@ -19,7 +19,7 @@ import { VoiceNoteSaveTimeout } from "./saveDeadline";
 import { createVoiceNoteRecorderController } from "@/capture/recorder/voiceNoteRecorderController";
 import { createVoiceNoteCloud, createVoiceNoteTranscriber, transcribeSavedNote, type VoiceNoteCloud, type VoiceNoteTranscriber } from "./voiceNoteTranscription";
 
-const CAPS: PrivateCloudCapabilities = { max_bytes: 120_960_000, max_duration_seconds: 11_101, content_types: ["audio/wav"] };
+const CAPS: PrivateCloudCapabilities = { max_bytes: 120_960_000, max_duration_seconds: 7_777, content_types: ["audio/wav"] };
 const original = VoiceNotes;
 afterEach(() => __setVoiceNotesForTests(original, { available: null }));
 

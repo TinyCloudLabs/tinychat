@@ -113,8 +113,9 @@ describe("ReceiptView", () => {
 
 describe("receiptRouting: where a saved note stands", () => {
   const saved = { id: "rec-1", durationMs: 42_000, at: Date.now() };
+  const PRIVATE_CAP = 7_777;
   const transcription = (patch: Partial<VoiceNoteTranscriptionProps> = {}): VoiceNoteTranscriptionProps => ({
-    availability: "available", consented: true, maxSeconds: 11_101, maxBytes: 186_496_800, jobs: new Map(),
+    availability: "available", consented: true, maxSeconds: PRIVATE_CAP, maxBytes: 186_496_800, jobs: new Map(),
     onTranscribe: noop, onTranscribePrivately: noop, onConsent: noop, onTurnOff: noop, onRecheck: noop, ...patch,
   });
   const jobs = (kind: "active" | "failed") =>
