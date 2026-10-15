@@ -72,6 +72,7 @@ import {
 import { accountStorageKey, VOICE_NOTE_PENDING_JOBS_KEY, VOICE_NOTE_PRIVATE_CHOICES_KEY } from "./sourcePins";
 import {
   capacitorPtxPut,
+  commitPreparedVoiceNoteTranscript,
   createVoiceNoteTranscriber,
   createVoiceNoteCloud,
   createVoiceNoteCloudForBuild,
@@ -6716,6 +6717,222 @@ test("unknown superseded held result still reports a failed legacy strip", async
   expect(pending.legacyHeld?.("rec-1")).toEqual(transcript);
   expect(h.creates).toHaveLength(0);
   expect(h.removed).toEqual([]);
+});
+
+test("a higher concurrent winner does not verify an unknown held result", async () => {
+  const space = sqliteSpace();
+  _resetConnectorSchemaMemoForTests();
+  const tcw = typedTcw(space);
+  const did = tcw.did;
+  (tcw as { spaceId?: string }).spaceId = "space:test";
+  beginStorageAccountSession(tcw, did, null);
+  expect((await saveVoiceNote(space.tcw, RECORDING, AUDIO, "ios")).ok).toBe(true);
+  expect((await saveVoiceNoteTranscript(space.tcw, "rec-1",
+    prepareVoiceNoteTranscript(TRANSCRIPT, "2026-10-15T00:00:00Z", 1))).ok).toBe(true);
+  const heldTranscript = prepareVoiceNoteTranscript({ ...TRANSCRIPT, text: "Held synthetic transcript.",
+    segments: [{ ...TRANSCRIPT.segments[0]!, text: "Held synthetic transcript." }] }, "2026-10-15T00:01:00Z", 2);
+  const winner = prepareVoiceNoteTranscript({ ...TRANSCRIPT, text: "Different synthetic winner.",
+    segments: [{ ...TRANSCRIPT.segments[0]!, text: "Different synthetic winner." }] }, "2026-10-15T00:02:00Z", 3);
+  const held = createHeldResultStore(did, { env: newIdbEnv(), isSignedIn: async () => true });
+  await held.hold({
+    version: 1, did, spaceId: "space:test", sourceId: "rec-1", engine: "private-cloud",
+    transcript: heldTranscript, provider: { transcriptionId: ID }, intent: { kind: "unknown" },
+  });
+  const record = await held.readHeld("rec-1");
+  expect(record).not.toBeNull();
+  const pending = localStorageVoiceNotePendingStore(did, memoryStorage());
+  pending.write("rec-1", { attemptId: "legacy-held", transcriptionId: ID, held: heldTranscript });
+  const h = harness({ pending });
+  const refusal = new Error("synthetic legacy strip refusal");
+  const cloud = {
+    ...h.cloud,
+    stripLegacyHeld: async () => { throw refusal; },
+  };
+  let saveReturned = false;
+  const outcome = await commitPreparedVoiceNoteTranscript({
+    tcw: space.tcw, cloud, sourceId: "rec-1", transcript: heldTranscript,
+    held, heldRecord: record, mode: "explicit", stillCurrent: () => true,
+    finish: async () => { throw new Error("unexpected fallback"); },
+    save: async () => {
+      expect((await saveVoiceNoteTranscript(space.tcw, "rec-1", winner)).ok).toBe(true);
+      saveReturned = (await saveVoiceNoteTranscript(space.tcw, "rec-1", heldTranscript)).ok;
+      expect(saveReturned).toBe(true);
+    },
+  }).then((result) => result, (error: unknown) => error);
+  const committed = await readTranscriptCommit(space.tcw, "rec-1");
+  expect(committed).toMatchObject({ rev: 3 });
+  expect(committed!.hash).not.toBe(record!.hash);
+  expect(saveReturned).toBe(true);
+  expect(space.kv.has(transcriptHistoryKvKey("rec-1", 2, record!.hash))).toBe(false);
+  expect(outcome).toBe(refusal);
+  expect(await held.readHeld("rec-1")).toMatchObject({ holdId: record!.holdId, transcript: heldTranscript });
+  expect(pending.legacyHeld?.("rec-1")).toEqual(heldTranscript);
+  expect(h.removed).toEqual([]);
+  expect(h.creates).toHaveLength(0);
+});
+
+test("held recovery does not finish a provider when a higher winner leaves cleanup unverified", async () => {
+  const space = sqliteSpace();
+  _resetConnectorSchemaMemoForTests();
+  const tcw = typedTcw(space);
+  const did = tcw.did;
+  (tcw as { spaceId?: string }).spaceId = "space:test";
+  beginStorageAccountSession(tcw, did, null);
+  expect((await saveVoiceNote(space.tcw, RECORDING, AUDIO, "ios")).ok).toBe(true);
+  expect((await saveVoiceNoteTranscript(space.tcw, "rec-1",
+    prepareVoiceNoteTranscript(TRANSCRIPT, "2026-10-15T00:00:00Z", 1))).ok).toBe(true);
+  const heldTranscript = prepareVoiceNoteTranscript({ ...TRANSCRIPT, text: "Held synthetic transcript.",
+    segments: [{ ...TRANSCRIPT.segments[0]!, text: "Held synthetic transcript." }] }, "2026-10-15T00:01:00Z", 2);
+  const winner = prepareVoiceNoteTranscript({ ...TRANSCRIPT, text: "Different synthetic winner.",
+    segments: [{ ...TRANSCRIPT.segments[0]!, text: "Different synthetic winner." }] }, "2026-10-15T00:02:00Z", 3);
+  const held = createHeldResultStore(did, { env: newIdbEnv(), isSignedIn: async () => true });
+  await held.hold({
+    version: 1, did, spaceId: "space:test", sourceId: "rec-1", engine: "private-cloud",
+    transcript: heldTranscript, provider: { transcriptionId: ID }, intent: { kind: "unknown" },
+  });
+  const record = await held.readHeld("rec-1");
+  expect(record).not.toBeNull();
+  const originalSave = held.saveHeldFirst.bind(held);
+  let rawError: unknown;
+  let saveReturned = false;
+  held.saveHeldFirst = (ctx, sourceId, ops, mode) => originalSave(ctx, sourceId, {
+    ...ops,
+    save: async (row) => {
+      expect((await saveVoiceNoteTranscript(space.tcw, sourceId, winner)).ok).toBe(true);
+      await ops.save(row);
+      saveReturned = true;
+    },
+  }, mode).catch((error: unknown) => { rawError = error; throw error; });
+  const pending = localStorageVoiceNotePendingStore(did, memoryStorage());
+  pending.write("rec-1", { attemptId: "legacy-held", transcriptionId: ID, held: heldTranscript });
+  const h = harness({ pending });
+  const refusal = new Error("synthetic legacy strip refusal");
+  const consent = localStorageVoiceNoteConsentStore(did, memoryStorage());
+  consent.set(true);
+  const transcriber = createVoiceNoteTranscriber({
+    cloud: { ...h.cloud, capabilities: async () => { throw new PrivateCloudError("service_unavailable", "synthetic offline"); } },
+    consent, tcw: () => space.tcw, holds: memoryHoldStore(), held,
+    heldAfterCommit: async () => { throw refusal; },
+    checkRetryMs: [], failedBackoffMs: [], ready: Promise.resolve(),
+  });
+  let unsubscribe = () => {};
+  const settled = new Promise<void>((resolve) => {
+    unsubscribe = transcriber.subscribe(() => {
+      const kind = transcriber.snapshot().jobs.get("rec-1")?.kind;
+      if (kind === "done" || kind === "failed") resolve();
+    });
+  });
+  try {
+    await transcriber.check();
+    await settled;
+    const current = await readTranscriptCommit(space.tcw, "rec-1");
+    expect(current).toMatchObject({ rev: 3 });
+    expect(current!.hash).not.toBe(record!.hash);
+    expect(saveReturned).toBe(true);
+    expect(space.kv.has(transcriptHistoryKvKey("rec-1", 2, record!.hash))).toBe(false);
+    expect(transcriber.snapshot().jobs.get("rec-1")).toMatchObject({ kind: "failed", code: "transcription_error" });
+    expect(rawError).toBe(refusal);
+    expect(await held.readHeld("rec-1")).toMatchObject({ holdId: record!.holdId, transcript: heldTranscript });
+    expect(pending.legacyHeld?.("rec-1")).toEqual(heldTranscript);
+    expect(h.removed).toEqual([]);
+    expect(h.creates).toHaveLength(0);
+  } finally {
+    unsubscribe();
+  }
+});
+
+test("unknown higher-winner cleanup does not report discard if the held row changes", async () => {
+  const space = sqliteSpace();
+  _resetConnectorSchemaMemoForTests();
+  const tcw = typedTcw(space);
+  const did = tcw.did;
+  (tcw as { spaceId?: string }).spaceId = "space:test";
+  beginStorageAccountSession(tcw, did, null);
+  expect((await saveVoiceNote(space.tcw, RECORDING, AUDIO, "ios")).ok).toBe(true);
+  expect((await saveVoiceNoteTranscript(space.tcw, "rec-1",
+    prepareVoiceNoteTranscript(TRANSCRIPT, "2026-10-15T00:00:00Z", 1))).ok).toBe(true);
+  const heldTranscript = prepareVoiceNoteTranscript({ ...TRANSCRIPT, text: "Held synthetic transcript.",
+    segments: [{ ...TRANSCRIPT.segments[0]!, text: "Held synthetic transcript." }] }, "2026-10-15T00:01:00Z", 2);
+  const winner = prepareVoiceNoteTranscript({ ...TRANSCRIPT, text: "Different synthetic winner.",
+    segments: [{ ...TRANSCRIPT.segments[0]!, text: "Different synthetic winner." }] }, "2026-10-15T00:02:00Z", 3);
+  const nextHeld = prepareVoiceNoteTranscript({ ...TRANSCRIPT, text: "Next held synthetic result.",
+    segments: [{ ...TRANSCRIPT.segments[0]!, text: "Next held synthetic result." }] }, "2026-10-15T00:03:00Z", 4);
+  const held = createHeldResultStore(did, { env: newIdbEnv(), isSignedIn: async () => true });
+  await held.hold({
+    version: 1, did, spaceId: "space:test", sourceId: "rec-1", engine: "private-cloud",
+    transcript: heldTranscript, provider: { transcriptionId: ID }, intent: { kind: "unknown" },
+  });
+  const record = await held.readHeld("rec-1");
+  const h = harness({});
+  let finishCalls = 0;
+  const cloud = {
+    ...h.cloud,
+    stripLegacyHeld: async () => {},
+    finish: async (sourceId: string, transcriptionId?: string | null) => {
+      finishCalls++;
+      await h.cloud.finish(sourceId, transcriptionId);
+      await held.hold({
+        version: 1, did, spaceId: "space:test", sourceId, engine: "private-cloud",
+        transcript: nextHeld, provider: null, intent: { kind: "unknown" },
+      });
+    },
+  };
+  const outcome = await commitPreparedVoiceNoteTranscript({
+    tcw: space.tcw, cloud, sourceId: "rec-1", transcript: heldTranscript,
+    held, heldRecord: record, mode: "explicit", stillCurrent: () => true,
+    finish: async () => { throw new Error("unexpected fallback"); },
+    save: async () => {
+      expect((await saveVoiceNoteTranscript(space.tcw, "rec-1", winner)).ok).toBe(true);
+      expect((await saveVoiceNoteTranscript(space.tcw, "rec-1", heldTranscript)).ok).toBe(true);
+    },
+  }).then((result) => result, (error: unknown) => error);
+  expect(outcome).toMatchObject({ code: "held_result_persistence_failed" });
+  expect(await readTranscriptCommit(space.tcw, "rec-1")).toMatchObject({ rev: 3 });
+  expect(await held.readHeld("rec-1")).toMatchObject({ transcript: { rev: 4 } });
+  expect(finishCalls).toBe(1);
+  expect(h.removed).toEqual([ID]);
+  expect(h.creates).toHaveLength(0);
+});
+
+test("a higher winner verifies a held commit only when its history confirms the result", async () => {
+  const space = sqliteSpace();
+  _resetConnectorSchemaMemoForTests();
+  const tcw = typedTcw(space);
+  const did = tcw.did;
+  (tcw as { spaceId?: string }).spaceId = "space:test";
+  beginStorageAccountSession(tcw, did, null);
+  expect((await saveVoiceNote(space.tcw, RECORDING, AUDIO, "ios")).ok).toBe(true);
+  expect((await saveVoiceNoteTranscript(space.tcw, "rec-1",
+    prepareVoiceNoteTranscript(TRANSCRIPT, "2026-10-15T00:00:00Z", 1))).ok).toBe(true);
+  const heldTranscript = prepareVoiceNoteTranscript({ ...TRANSCRIPT, text: "Held synthetic transcript.",
+    segments: [{ ...TRANSCRIPT.segments[0]!, text: "Held synthetic transcript." }] }, "2026-10-15T00:01:00Z", 2);
+  const winner = prepareVoiceNoteTranscript({ ...TRANSCRIPT, text: "Later synthetic winner.",
+    segments: [{ ...TRANSCRIPT.segments[0]!, text: "Later synthetic winner." }] }, "2026-10-15T00:02:00Z", 3);
+  const held = createHeldResultStore(did, { env: newIdbEnv(), isSignedIn: async () => true });
+  await held.hold({
+    version: 1, did, spaceId: "space:test", sourceId: "rec-1", engine: "private-cloud",
+    transcript: heldTranscript, provider: { transcriptionId: ID }, intent: { kind: "unknown" },
+  });
+  const record = await held.readHeld("rec-1");
+  const h = harness({});
+  const cloud = { ...h.cloud, stripLegacyHeld: async () => { throw new Error("synthetic cleanup refusal"); } };
+  const outcome = await commitPreparedVoiceNoteTranscript({
+    tcw: space.tcw, cloud, sourceId: "rec-1", transcript: heldTranscript,
+    held, heldRecord: record, mode: "explicit", stillCurrent: () => true,
+    finish: async () => { throw new Error("unexpected fallback"); },
+    save: async () => {
+      expect((await saveVoiceNoteTranscript(space.tcw, "rec-1", heldTranscript)).ok).toBe(true);
+      const committed = await readTranscriptCommit(space.tcw, "rec-1");
+      expect(committed).toMatchObject({ rev: 2, hash: record!.hash });
+      await preserveVoiceNoteTranscriptHistory(tcw, committed!, () => {});
+      expect((await saveVoiceNoteTranscript(space.tcw, "rec-1", winner)).ok).toBe(true);
+    },
+  });
+  expect(outcome).toMatchObject({ rev: 3 });
+  expect(space.kv.has(transcriptHistoryKvKey("rec-1", 2, record!.hash))).toBe(true);
+  expect(await held.readHeld("rec-1")).toBeNull();
+  expect(h.removed).toEqual([ID]);
+  expect(h.creates).toHaveLength(0);
 });
 
 

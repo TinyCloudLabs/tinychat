@@ -2190,19 +2190,16 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
         emit();
         try {
           const finishAfterCommit = async (row: HeldResult, verifiedHeldResult: boolean) => {
-            try {
-              try { await deps.heldAfterCommit?.(row); }
-              catch (error) {
-                if (!verifiedHeldResult) throw error;
-                logPipelineCount("voice_note_held_legacy_strip", "failed");
-              }
-            } finally {
-              const transcriptionId = row.provider && "transcriptionId" in row.provider
-                ? row.provider.transcriptionId : null;
-              try { await cloud?.finish(summary.sourceId, transcriptionId); }
-              catch (error) {
-                logPipelineError("Deleting a finished private cloud job failed; PTX deletes it on its own schedule", error);
-              }
+            try { await deps.heldAfterCommit?.(row); }
+            catch (error) {
+              if (!verifiedHeldResult) throw error;
+              logPipelineCount("voice_note_held_legacy_strip", "failed");
+            }
+            const transcriptionId = row.provider && "transcriptionId" in row.provider
+              ? row.provider.transcriptionId : null;
+            try { await cloud?.finish(summary.sourceId, transcriptionId); }
+            catch (error) {
+              logPipelineError("Deleting a finished private cloud job failed; PTX deletes it on its own schedule", error);
             }
           };
           const outcome = await drainHeldVoiceNote(deps.tcw(), deps.held!, summary.sourceId,

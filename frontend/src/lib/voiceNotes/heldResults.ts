@@ -169,6 +169,15 @@ export function createHeldResultStore(did: string, options: HeldResultStoreOptio
     if (!await isSignedIn(did))
       throw new PrivateCloudError("voice_note_account_mismatch", "The active account cannot commit this held transcript.");
   };
+  const hasCommittedHistory = async (tcw: TinyCloudWeb, row: HeldResult): Promise<boolean> => {
+    assertIdentity(tcw, did, row);
+    await assertStoreIdentity(tcw, row);
+    assertIdentity(tcw, did, row);
+    try {
+      const history = await tcw.kv.get(transcriptHistoryKvKey(row.sourceId, row.transcript.rev, row.hash));
+      return history.ok && historyConfirmsHeldResult(history.data.data, row);
+    } catch { return false; } // A failed history read is absent, never proof of commit.
+  };
   let dbPromise: Promise<IDBDatabase> | null = null;
   let channel: BroadcastChannel | null = null;
   const hints = new Set<string>();
@@ -303,9 +312,26 @@ export function createHeldResultStore(did: string, options: HeldResultStoreOptio
           current = await readTranscriptCommit(tcw, sourceId);
           if (!current || current.rev < row.transcript.rev || current.rev === row.transcript.rev && current.hash !== row.hash)
             throw new PrivateCloudError("transcript_save_failed", "The held transcript commit could not be verified.");
-          await removeIf(tcw, row, current.rev, assertStoreIdentity);
-          await ops.afterCommit(row, true);
-          return "committed";
+          const verifiedHeldResult = current.rev === row.transcript.rev && current.hash === row.hash
+            || current.rev > row.transcript.rev && await hasCommittedHistory(tcw, row);
+          if (verifiedHeldResult) {
+            await removeIf(tcw, row, current.rev, assertStoreIdentity);
+            await ops.afterCommit(row, true);
+            return "committed";
+          }
+          if (row.intent.kind === "rerun") {
+            await replaceConflict(row, "rerun_lost");
+            return "conflict";
+          }
+          if (ops.stillCurrent && !ops.stillCurrent()) throw new PrivateCloudError("account_changed", "The account changed during the held transcript commit.");
+          await assertStoreIdentity(tcw, row);
+          assertIdentity(tcw, did, row);
+          // The winner superseded this unknown result without proving it committed. A failed
+          // cleanup keeps the held copy and its provider; successful cleanup precedes compare-delete.
+          await ops.afterCommit(row, false);
+          if (!await removeIf(tcw, row, current.rev, assertStoreIdentity))
+            throw new PrivateCloudError("held_result_persistence_failed", "The held transcript changed before cleanup finished.");
+          return "discarded_superseded";
         }
         if (current.rev === row.transcript.rev && current.hash === row.hash) {
           assertIdentity(tcw, did, row);
@@ -314,14 +340,7 @@ export function createHeldResultStore(did: string, options: HeldResultStoreOptio
           return "already_committed";
         }
         if (row.intent.kind === "rerun" && (current.rev > row.transcript.rev || current.rev === row.transcript.rev && current.hash !== row.hash)) {
-          assertIdentity(tcw, did, row);
-          await assertStoreIdentity(tcw, row);
-          assertIdentity(tcw, did, row);
-          let historyExists = false;
-          try {
-            const history = await tcw.kv.get(transcriptHistoryKvKey(sourceId, row.transcript.rev, row.hash));
-            historyExists = history.ok && historyConfirmsHeldResult(history.data.data, row);
-          } catch { /* A failed KV read is absent, never proof of commit. */ }
+          const historyExists = await hasCommittedHistory(tcw, row);
           if (historyExists) {
             assertIdentity(tcw, did, row);
             await removeIf(tcw, row, current.rev, assertStoreIdentity);
