@@ -82,73 +82,177 @@ reports="$HOME/Library/Logs/DiagnosticReports"
 marker="$out/.launched"
 touch "$marker"
 
-# --console-pty gives the app a terminal, so its stdout is line-buffered and lands in console.log as it happens.
-log "launching $bundle_id"
+# Raw simulator output stays outside the uploaded artifact; only allowlisted event names and times are retained.
+private_logs=$(mktemp -d)
+stream_pid=""
+cleanup_smoke() {
+  if [ -n "$stream_pid" ]; then kill "$stream_pid" 2>/dev/null || true; wait "$stream_pid" 2>/dev/null || true; fi
+  rm -rf "$private_logs"
+}
+trap cleanup_smoke EXIT
+safe_log_lines() {
+  awk '{
+    time = substr($0, 1, 19)
+    if (substr(time, 5, 1) != "-") time = "timestamp-unavailable"
+    if (index($0, "EXO_WEB_APP_READY")) print time " EXO_WEB_APP_READY"
+    else if (index($0, "EXO_SMOKE ")) print time " EXO_SMOKE"
+    else if (index($0, "EXO_LOCATION_SMOKE ")) print time " EXO_LOCATION_SMOKE"
+    else if (index($0, "scene willConnect")) print time " scene willConnect"
+    else if (index($0, "sceneDidBecomeActive")) print time " sceneDidBecomeActive"
+    else if (index($0, "setAppActive(true)")) print time " setAppActive(true)"
+    else if (index($0, "WebView load start")) print time " WebView load start"
+    else if (index($0, "WebView didCommit")) print time " WebView didCommit"
+  }' "$1" >"$2"
+}
+mounted_probe() {
+  grep -a 'EXO_SMOKE ' "$1" 2>/dev/null | sed 's/^.*EXO_SMOKE //' | tr -d '\r' |
+    while IFS= read -r candidate; do
+      if jq -e '(.href | startswith("capacitor://localhost")) and .mounted == true' \
+        >/dev/null 2>&1 <<<"$candidate"; then
+        printf '%s\n' "$candidate"
+        break
+      fi
+    done
+}
+app_pid_alive() {
+  kill -0 "$1" 2>/dev/null || return 1
+  # An exited child may remain a zombie until the launcher is reaped; kill -0 alone still succeeds.
+  local state
+  state=$(ps -p "$1" -o stat= 2>/dev/null) || return 1
+  case "$state" in *Z*) return 1 ;; esac
+}
+
+# Begin the app-process unified stream before simctl launch. It is stopped and sanitized before upload.
+xcrun simctl spawn "$udid" log stream --style compact --info --debug \
+  --predicate 'process == "App"' \
+  >"$private_logs/stream.log" 2>"$private_logs/stream.err" &
+stream_pid=$!
+sleep 1
+if ! kill -0 "$stream_pid" 2>/dev/null; then fail "app unified log stream could not start"; fi
+printf 'stream requested %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$out/launch-timeline.log"
+: >"$out/liveness.log"
+
+# --console-pty gives the app a terminal, so its stdout is line-buffered as it happens.
+launch_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+launch_log_at=$(date -u '+%Y-%m-%d %H:%M:%S')
+deadline_epoch=$(($(date -u +%s) + timeout_s))
+deadline_log_at=$(date -u -r "$deadline_epoch" '+%Y-%m-%d %H:%M:%S' 2>/dev/null ||
+  date -u -d "@$deadline_epoch" '+%Y-%m-%d %H:%M:%S')
+printf 'launch requested %s\n' "$launch_at" >>"$out/launch-timeline.log"
+log "launching $bundle_id at $launch_at"
 SIMCTL_CHILD_EXO_LOCATION_SMOKE="$location_smoke" SIMCTL_CHILD_EXO_CAPTURE_SMOKE="$capture_smoke" \
-  xcrun simctl launch --console-pty "$udid" "$bundle_id" >"$out/console.log" 2>&1 &
+  xcrun simctl launch --console-pty "$udid" "$bundle_id" >"$private_logs/console.log" 2>&1 &
 launcher=$!
 
+# The simctl launch line can report an app PID before launchctl lists its job.
+simctl_pid=""
 pid=""
 probe=""
+process_exited=0
 deadline=$((SECONDS + timeout_s))
 while [ "$SECONDS" -lt "$deadline" ]; do
   sleep 2
-  if [ -z "$pid" ]; then
-    # launchd's job for the app: "<pid> <status> UIKitApplication:xyz.tinycloud.exo[...]". The simulator's
-    # processes are host processes, so kill -0 can watch it.
-    pid=$(xcrun simctl spawn "$udid" launchctl list 2>/dev/null | awk -v job="UIKitApplication:$bundle_id" 'index($3, job) == 1 && $1 ~ /^[0-9]+$/ { print $1; exit }')
-    [ -n "$pid" ] && log "running as pid $pid"
+  observed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  if [ -z "$simctl_pid" ]; then
+    simctl_pid=$(awk -v app="$bundle_id:" '$1 == app { gsub(/\r/, "", $2); if ($2 ~ /^[0-9]+$/) { print $2; exit } }' \
+      "$private_logs/console.log" 2>/dev/null)
+    if [ -n "$simctl_pid" ]; then
+      printf 'simctl launch pid %s observed %s\n' "$simctl_pid" "$observed_at" >>"$out/launch-timeline.log"
+      log "simctl launch reported pid $simctl_pid"
+    fi
   fi
-  if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
-    fail "the app exited or crashed after launch (pid $pid)"
-    break
+  if [ -n "$simctl_pid" ]; then
+    if ! app_pid_alive "$simctl_pid"; then
+      printf '%s simctl pid %s exited\n' "$observed_at" "$simctl_pid" >>"$out/liveness.log"
+      fail "the app exited or crashed after simctl launch (pid $simctl_pid)"
+      process_exited=1
+      break
+    fi
+    printf '%s simctl pid %s alive\n' "$observed_at" "$simctl_pid" >>"$out/liveness.log"
   fi
-  probe=$(grep -a -m1 'EXO_SMOKE ' "$out/console.log" 2>/dev/null | sed 's/^.*EXO_SMOKE //' | tr -d '\r')
-  [ -n "$probe" ] && break
+  # launchd's job for the app: "<pid> <status> UIKitApplication:xyz.tinycloud.exo[...]".
+  # Simulator app processes are host processes, so check the PID and reject an unreaped zombie.
+  observed_pid=$(xcrun simctl spawn "$udid" launchctl list 2>/dev/null | awk -v job="UIKitApplication:$bundle_id" 'index($3, job) == 1 && $1 ~ /^[0-9]+$/ { print $1; exit }')
+  if [ -z "$pid" ] && [ -n "$observed_pid" ]; then
+    pid=$observed_pid
+    printf 'pid %s observed %s\n' "$pid" "$observed_at" >>"$out/launch-timeline.log"
+    log "running as pid $pid"
+  fi
+  if [ -n "$pid" ]; then
+    if [ "$observed_pid" != "$pid" ] || ! app_pid_alive "$pid"; then
+      printf '%s pid %s exited or disappeared\n' "$observed_at" "$pid" >>"$out/liveness.log"
+      fail "the app exited or crashed after launch (pid $pid)"
+      process_exited=1
+      break
+    fi
+    printf '%s pid %s alive\n' "$observed_at" "$pid" >>"$out/liveness.log"
+  else
+    printf '%s pid not yet observed\n' "$observed_at" >>"$out/liveness.log"
+  fi
+  if [ -z "$probe" ] && [ "$SECONDS" -lt "$deadline" ]; then
+    probe=$(mounted_probe "$private_logs/console.log")
+    if [ -n "$probe" ]; then
+      printf 'mounted app-page probe observed %s\n' "$observed_at" >>"$out/launch-timeline.log"
+      log "mounted app-page probe received"
+    fi
+  fi
 done
 
-if [ -z "$probe" ]; then
-  # A PTY can lose a late stdout line under CI load; the same payload is also in os_log.
-  xcrun simctl spawn "$udid" log show --style compact --last 4m --info \
-    --predicate 'subsystem == "xyz.tinycloud.exo" AND category == "smoke"' \
-    >"$out/smoke-fallback.log" 2>&1 || true
-  probe=$(grep -a -m1 'EXO_SMOKE ' "$out/smoke-fallback.log" 2>/dev/null | sed 's/^.*EXO_SMOKE //' | tr -d '\r')
+if [ -z "$probe" ] && [ "$process_exited" -eq 0 ]; then
+  # A PTY can lose a late stdout line; accept only the same mounted app-page payload from os_log.
+  xcrun simctl spawn "$udid" log show --style compact --start "$launch_log_at" --end "$deadline_log_at" --info \
+    --predicate 'process == "App" AND subsystem == "xyz.tinycloud.exo" AND category == "smoke"' \
+    >"$private_logs/smoke-fallback.log" 2>/dev/null || true
+  safe_log_lines "$private_logs/smoke-fallback.log" "$out/smoke-fallback.log"
+  probe=$(mounted_probe "$private_logs/smoke-fallback.log")
+  if [ -n "$probe" ]; then
+    printf 'mounted app-page fallback probe observed %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$out/launch-timeline.log"
+  fi
 fi
 
 location_probe=""
-if [ -n "$probe" ]; then
-  log "probe: $probe"
+if [ -n "$probe" ] && [ "$process_exited" -eq 0 ]; then
   # The location probe captures for about 15 s after the main probe; give it up to 60 s.
   location_deadline=$((SECONDS + 60))
   while [ "$location_smoke" = 1 ] && [ -z "$location_probe" ] && [ "$SECONDS" -lt "$location_deadline" ]; do
     sleep 2
-    if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then break; fi
-    location_probe=$(grep -a -m1 'EXO_LOCATION_SMOKE ' "$out/console.log" 2>/dev/null | sed 's/^.*EXO_LOCATION_SMOKE //' | tr -d '\r')
+    if [ -n "$pid" ] && ! app_pid_alive "$pid"; then break; fi
+    location_probe=$(grep -a -m1 'EXO_LOCATION_SMOKE ' "$private_logs/console.log" 2>/dev/null | sed 's/^.*EXO_LOCATION_SMOKE //' | tr -d '\r')
   done
-  log "location probe: ${location_probe:-none}"
+  log "location probe: $([ -n "$location_probe" ] && echo received || echo none)"
   log "letting it run ${settle_s}s more"
   sleep "$settle_s"
 elif [ "${#failures[@]}" -eq 0 ]; then
   fail "no EXO_SMOKE probe line within ${timeout_s}s (is ExoBridgeViewController the root view controller?)"
 fi
-if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
-  case " ${failures[*]} " in *"exited or crashed"*) ;; *) fail "the app was not running ${settle_s}s after the probe (pid $pid)" ;; esac
+if [ "$process_exited" -eq 0 ] && [ -n "$simctl_pid" ] && ! app_pid_alive "$simctl_pid"; then
+  printf '%s simctl pid %s exited after probe deadline\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$simctl_pid" >>"$out/liveness.log"
+  fail "the app was not running ${settle_s}s after the probe (simctl pid $simctl_pid)"
+elif [ "$process_exited" -eq 0 ] && [ -n "$pid" ] && ! app_pid_alive "$pid"; then
+  printf '%s pid %s exited after probe deadline\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$pid" >>"$out/liveness.log"
+  fail "the app was not running ${settle_s}s after the probe (pid $pid)"
 elif [ -z "$pid" ]; then
-  fail "simctl launch never reported a pid"
+  fail "launchctl never reported an app pid"
 fi
 
 log "collecting screenshot and logs"
 xcrun simctl io "$udid" screenshot "$out/screenshot.png" >/dev/null 2>&1 || fail "screenshot failed"
 xcrun simctl spawn "$udid" log show --style compact --last 10m --info --debug \
-  --predicate 'process == "App" OR subsystem == "xyz.tinycloud.exo"' >"$out/unified.log" 2>&1 || true
+  --predicate 'process == "App"' \
+  >"$private_logs/unified.log" 2>/dev/null || true
+xcrun simctl terminate "$udid" "$bundle_id" >/dev/null 2>&1 || true
+wait "$launcher" 2>/dev/null || true
+kill "$stream_pid" 2>/dev/null || true
+wait "$stream_pid" 2>/dev/null || true
+stream_pid=""
+safe_log_lines "$private_logs/stream.log" "$out/app-unified-stream.log"
+safe_log_lines "$private_logs/unified.log" "$out/unified.log"
 crashes=$(find "$reports" -newer "$marker" -type f \( -name 'App-*' -o -name 'App_*' -o -name 'ExoWidgets*' \) 2>/dev/null || true)
 if [ -n "$crashes" ]; then
   fail "crash report(s): $(echo "$crashes" | xargs -n1 basename | tr '\n' ' ')"
   mkdir -p "$out/crashes"
   echo "$crashes" | while read -r file; do cp "$file" "$out/crashes/"; done
 fi
-xcrun simctl terminate "$udid" "$bundle_id" >/dev/null 2>&1 || true
-wait "$launcher" 2>/dev/null || true
 
 checks=()
 check() { # check <jq filter> <description>
@@ -199,8 +303,9 @@ note() { # note <jq filter> <description>
 note '.before.permission == "background"' "location authorization is Always (granted by simctl)"
 note '.started.active == true' "Location.start() began a continuous capture"
 note '.pending.samples > 0' "the native queue recorded location samples"
-loads=$(grep -a -c 'Loading app at capacitor://localhost' "$out/console.log" || true)
+loads=$(grep -a -c 'Loading app at capacitor://localhost' "$private_logs/console.log" || true)
 [ "${loads:-0}" -le 1 ] || fail "the web app was loaded $loads times (two bridges?)"
+safe_log_lines "$private_logs/console.log" "$out/console.log"
 
 {
   echo "### iOS Simulator smoke"
@@ -209,19 +314,19 @@ loads=$(grep -a -c 'Loading app at capacitor://localhost' "$out/console.log" || 
   echo
   printf '%s\n' "${checks[@]}"
   echo
-  echo "Probe: \`${probe:-none}\`"
+  echo "Probe: \`$([ -n "$probe" ] && echo 'committed app page, React mounted' || echo none)\`"
   echo
   # Health spike (TC-525), informational: what HealthKit says to this unsigned build.
   if [ -n "$probe" ] && jq -e '.healthHeader == true' >/dev/null 2>&1 <<<"$probe"; then
-    echo "Health plugin (not gated): \`$(jq -c '.health // null' <<<"$probe")\`"
+    echo "Health plugin (not gated): available"
     echo
   fi
-  echo "Location probe: \`${location_probe:-none}\`"
+  echo "Location probe: \`$([ -n "$location_probe" ] && echo received || echo none)\`"
   echo
   echo "Capacitor log (\`console.log\`):"
   echo
   echo '```'
-  grep -a -E '⚡️|EXO_SMOKE|EXO_LOCATION|STARTUP JS ERROR' "$out/console.log" | tr -d '\r' | head -60
+  cat "$out/console.log"
   echo '```'
   if [ "${#failures[@]}" -gt 0 ]; then
     echo
