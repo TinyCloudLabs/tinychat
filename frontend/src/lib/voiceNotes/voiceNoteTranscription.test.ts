@@ -15,6 +15,12 @@
 //   9. a note whose outcome is saved is never transcribed again, even if its PTX delete failed.
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "bun:test";
+import { act, createElement } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { MemoryRouter } from "react-router-dom";
+import { PlatformContext } from "@/lib/platform";
+import { installDom } from "@/test/dom";
+import { NoteDetailView, type NoteDetailViewProps } from "@/capture/library/NoteDetailView";
 import { Database } from "bun:sqlite";
 import { captureEvents } from "@/capture/captureEvents";
 import { advanceAccountGeneration, currentAccountGeneration, mountVoiceNoteAccount } from "./accountContext";
@@ -95,6 +101,43 @@ import { transcribeWith } from "@/capture/library/transcribeProviders";
 import { transcriptionProps } from "@/capture/recorder/transcriptionProps";
 import { notePipeline } from "./notePipeline";
 import { buildNotePipelineInput } from "./useNotePipeline";
+const mountedRoots: { root: Root; cleanup: () => void }[] = [];
+async function mountTranscriptionDetail(
+  transcription: NoteDetailViewProps["transcription"],
+  transcriptProvenance: NoteDetailViewProps["transcriptProvenance"] = null,
+) {
+  const cleanup = installDom();
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  mountedRoots.push({ root, cleanup });
+  const committed = transcriptProvenance != null;
+  const props: NoteDetailViewProps = {
+    item: { id: "row-1", source: VOICE_NOTE_SOURCE, sourceId: "rec-1", title: "Voice note", startedAt: null,
+      durationSecs: 9, onPhone: false, localAudioReady: false } as never,
+    listStatus: "ready",
+    metadata: { status: "ok", metadata: {
+      transcription_outcome: committed ? "transcribed" : "failed",
+      ...(committed ? {} : { transcription_error_code: "storage_full" }),
+      capture: { version: 2, options: { transcriber: "private-cloud" } },
+      audio: { stored: true },
+    } },
+    transcript: committed ? { status: "ok", sentences: [] } : { status: "absent" },
+    transcriptProvenance,
+    audio: { load: async () => null },
+    transcription,
+    desktopWhisper: false,
+    copyState: "idle",
+    onCopy: () => {},
+    onRetry: () => {},
+    pushed: true,
+    onBack: () => {},
+  };
+  await act(async () => root.render(createElement(MemoryRouter, null,
+    createElement(PlatformContext.Provider, { value: "web" },
+      createElement(NoteDetailView, props)))));
+  return host;
+}
 const ID = "trn_01J8Z3K4M5N6P7Q8R9S0T1V2W3";
 const ID2 = "trn_01J8Z3K4M5N6P7Q8R9S0T1V2W4";
 const CAP = "tcu_abcdefghijklmnop0123456789";
@@ -184,6 +227,10 @@ beforeEach(() => {
 afterEach(async () => {
   __setVoiceNotesForTests(originalVoiceNotes, { available: null });
   await __resetOnDeviceTranscriberForTests();
+  for (const mounted of mountedRoots.splice(0)) {
+    await act(async () => mounted.root.unmount());
+    mounted.cleanup();
+  }
   __resetStorageStatusForTests();
 });
 
@@ -4298,17 +4345,19 @@ describe("TC-1140 main hotfix zero-loss regressions", () => {
     expect(transcriber.snapshot().jobs.get("rec-1")).toMatchObject({ kind: "failed", code: "service_paused", retryable: true });
     expect(h.removed).toEqual([]);
   });
-  test("a first-run no-speech quota failure persists through controller recreation", async () => {
+  test("a failed no-speech commit persists its storage-full failure across controller recreation", async () => {
     const space = sqliteSpace();
     beginStorageAccountSession(space.tcw, DID, null);
     expect((await saveVoiceNote(space.tcw, RECORDING, AUDIO, "ios")).ok).toBe(true);
     const tcw = typedTcw(space);
     const baseDb = tcw.sql.db.bind(tcw.sql);
+    let quotaAttempts = 0;
+    let quotaFailure = true;
     tcw.sql.db = ((name: string) => {
       const db = baseDb(name);
       return { ...db, execute: async (sql: string, params?: unknown[], options?: unknown) =>
-        sql.includes("INSERT INTO voice_note_transcript")
-          ? { ok: false, error: { code: "STORAGE_QUOTA_EXCEEDED", message: "quota exceeded" } }
+        quotaFailure && sql.includes("INSERT INTO voice_note_transcript")
+          ? (quotaAttempts++, { ok: false, error: { code: "STORAGE_QUOTA_EXCEEDED", message: "quota exceeded" } })
           : db.execute(sql, params as never, options as never) };
     }) as TestTcw["sql"]["db"];
     const storage = memoryStorage();
@@ -4323,7 +4372,7 @@ describe("TC-1140 main hotfix zero-loss regressions", () => {
       expect((await resolveVoiceNoteRow(space.tcw, "rec-1"))?.metadata).toMatchObject({
         transcription_outcome: "failed", transcription_error_code: "storage_full",
       });
-      expect(isStorageReadOnly()).toBe(true);
+      expect(await readTranscriptCommit(space.tcw, "rec-1")).toBeNull();
       expect(voiceNoteTranscriptionFailure(new PrivateCloudError("storage_full", "quota")))
         .toMatchObject({ code: "storage_full", retryable: false, message: expect.stringContaining("storage is full") });
 
@@ -4334,9 +4383,24 @@ describe("TC-1140 main hotfix zero-loss regressions", () => {
       expect((await resolveVoiceNoteRow(space.tcw, "rec-1"))?.metadata).toMatchObject({
         transcription_outcome: "failed", transcription_error_code: "storage_full",
       });
-      expect(isStorageReadOnly()).toBe(true);
+      expect(h.pending.read("rec-1")?.held).toBeDefined();
+      expect(await readTranscriptCommit(space.tcw, "rec-1")).toBeNull();
+      expect(quotaAttempts).toBe(2);
+
+      quotaFailure = false;
+      __setInstalledEngineForTests("web", { ...captureCapabilities(), localTranscription: false, desktopWhisper: false });
+      const actionHost = await mountTranscriptionDetail(transcriptionProps(relaunched, relaunched.snapshot()));
+      const action = actionHost.querySelector<HTMLButtonElement>('[data-testid="transcribe-button"]');
+      expect(action?.textContent).toContain("Transcribe again");
+      await act(async () => action?.dispatchEvent(new window.MouseEvent("click", { bubbles: true })));
+      await waitFor(relaunched, "done");
+
+      expect(await readTranscriptCommit(space.tcw, "rec-1")).toMatchObject({ outcome: "no_speech" });
+      expect(h.pending.read("rec-1")).toBeNull();
+      expect(isStorageReadOnly()).toBe(false);
     } finally {
       tcw.sql.db = baseDb as TestTcw["sql"]["db"];
+      __resetCaptureEngineForTests();
     }
   });
 
@@ -5111,6 +5175,53 @@ describe("TC-1140 round-six merge regressions", () => {
       expect(base.rev).toBe(1);
     } finally {
       history.restore();
+    }
+  });
+  test("a storage-full rerun action keeps the guarded committed-revision path", async () => {
+    const { space, base } = await committedRerunNote();
+    beginStorageAccountSession(space.tcw, DID, null);
+    const storage = memoryStorage();
+    const pending = localStorageVoiceNotePendingStore(DID, storage);
+    const h = harness({ pending, result: revised });
+    const kv = typedTcw(space).kv;
+    const originalPut = kv.put.bind(kv);
+    let quotaFailure = true;
+    kv.put = (async (key, value, options) => key.includes("/transcript-history/") && quotaFailure
+      ? { ok: false, error: { code: "STORAGE_QUOTA_EXCEEDED", message: "quota exceeded" } }
+      : originalPut(key, value, options)) as typeof kv.put;
+    const controller = controllerFor(space, h, storage, [], { value: 1_000 });
+    try {
+      await controller.check();
+      const startResult = await controller.transcribeAgain!("rec-1", "private-cloud");
+      await ticks(100);
+      const failedRerun = controller.snapshot().jobs.get("rec-1");
+      if (failedRerun?.kind !== "failed") throw new Error(JSON.stringify({ startResult, failedRerun, pending: pending.read("rec-1"), calls: h.calls }));
+      expect(failedRerun).toMatchObject({ kind: "failed", code: "storage_full" });
+      expect(pending.read("rec-1")?.held).toBeDefined();
+      expect((await readTranscriptCommit(space.tcw, "rec-1"))).toMatchObject({ rev: base.rev, hash: base.hash });
+      expect(pending.read("rec-1")?.explicitRerun).toBe(true);
+      expect(isStorageReadOnly()).toBe(true);
+
+      quotaFailure = false;
+      __setInstalledEngineForTests("web", { ...captureCapabilities(), localTranscription: false, desktopWhisper: false });
+      const actionHost = await mountTranscriptionDetail(transcriptionProps(controller, controller.snapshot()), {
+        engine: base.engine, provider: base.provider,
+      });
+      const action = actionHost.querySelector<HTMLButtonElement>('[data-testid="transcribe-button"]');
+      expect(action?.textContent).toContain("Try again");
+      await act(async () => action?.dispatchEvent(new window.MouseEvent("click", { bubbles: true })));
+      const confirmation = actionHost.querySelector<HTMLButtonElement>('[data-testid="transcribe-again-confirm"]');
+      expect(confirmation).not.toBeNull();
+      await act(async () => confirmation?.dispatchEvent(new window.MouseEvent("click", { bubbles: true })));
+      await ticks(100);
+      expect(controller.snapshot().jobs.get("rec-1")).toMatchObject({ kind: "done" });
+
+      expect(await readTranscriptCommit(space.tcw, "rec-1")).toMatchObject({ rev: base.rev + 1 });
+      expect(pending.read("rec-1")).toBeNull();
+      expect(isStorageReadOnly()).toBe(false);
+    } finally {
+      kv.put = originalPut;
+      __resetCaptureEngineForTests();
     }
   });
 
