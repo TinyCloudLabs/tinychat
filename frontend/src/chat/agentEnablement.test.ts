@@ -124,8 +124,13 @@ const active = { status: "active", transcriptStatus: "active", revision: "r1" };
 function installBrowserEvents() {
   const names = ["window", "document", "BroadcastChannel"];
   const descriptors = names.map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)] as const);
-  const browserWindow = new EventTarget() as EventTarget & { navigator: { onLine: boolean }; setTimeout: Window["setTimeout"] };
+  const browserWindow = new EventTarget() as EventTarget & {
+    navigator: { onLine: boolean };
+    setTimeout: Window["setTimeout"];
+    localStorage: Pick<Storage, "setItem">;
+  };
   browserWindow.navigator = { onLine: true };
+  browserWindow.localStorage = { setItem() {} };
   browserWindow.setTimeout = ((handler: TimerHandler, timeout?: number) =>
     globalThis.setTimeout(handler as () => void, timeout)) as Window["setTimeout"];
   const browserDocument = new EventTarget() as EventTarget & { visibilityState: DocumentVisibilityState };
@@ -177,6 +182,84 @@ describe("agent access connectivity monitoring", () => {
       vi.useRealTimers();
     }
   });
+  it("keeps polling when a streamed delegation error invalidates a pending probe", async () => {
+    vi.useFakeTimers();
+    const browser = installBrowserEvents();
+    const pending = deferred<Response>();
+    let probes = 0;
+    globalThis.fetch = (async () => {
+      probes++;
+      return probes === 2 ? pending.promise : Response.json(active);
+    }) as typeof fetch;
+    const c = controller();
+    const unlisten = c.listen();
+    try {
+      await c.refresh();
+      vi.advanceTimersByTime(60_000);
+      await flushMicrotasks();
+      expect(probes).toBe(2);
+
+      c.onDelegationError("delegation_unverified");
+      expect(agentAccessStatusLabel(c.getSnapshot())).toBe("Access could not be verified");
+      pending.resolve(Response.json(active));
+      await flushMicrotasks();
+      expect(c.getSnapshot().reconnectReason).toBe("delegation_unverified");
+
+      vi.advanceTimersByTime(60_000);
+      await flushMicrotasks();
+      expect(probes).toBe(3);
+      expect(c.getSnapshot().capability).toBe("enabled");
+    } finally {
+      unlisten();
+      c.dispose();
+      browser.restore();
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps polling when a timer tick is skipped during disconnect", async () => {
+    vi.useFakeTimers();
+    const browser = installBrowserEvents();
+    const deletion = deferred<Response>();
+    const deleteStarted = deferred<void>();
+    let probes = 0;
+    globalThis.fetch = (async (_url, init) => {
+      if (init?.method === "DELETE") {
+        deleteStarted.resolve();
+        return deletion.promise;
+      }
+      probes++;
+      return Response.json(active);
+    }) as typeof fetch;
+    const c = controller();
+    const unlisten = c.listen();
+    let stopping: Promise<void> | undefined;
+    try {
+      await c.refresh();
+      stopping = c.onDisconnect();
+      await deleteStarted.promise;
+      vi.advanceTimersByTime(60_000);
+      await flushMicrotasks();
+      expect(probes).toBe(1);
+
+      deletion.resolve(Response.json({ status: "none", revision: "r2" }));
+      await stopping;
+      vi.advanceTimersByTime(60_000);
+      await flushMicrotasks();
+      expect(probes).toBe(2);
+      expect(c.getSnapshot().capability).toBe("enabled");
+    } finally {
+      deletion.resolve(Response.json({ status: "none", revision: "r2" }));
+      await stopping;
+      unlisten();
+      c.dispose();
+      browser.restore();
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
 
   it("re-probes when visible and pauses its timer while hidden", async () => {
     vi.useFakeTimers();

@@ -120,11 +120,11 @@ export function createAgentAccessController(opts: UseAgentEnablementOptions) {
     clearPollTimer();
     update({ capability: "unavailable", status: null, revision: null, probeFailed: false, reconnectReason: null });
   };
-  const scheduleProbe = (probeFailed: boolean) => {
+  const scheduleProbe = (probeFailed?: boolean) => {
     clearPollTimer();
     if (!listening || !isVisible() || !isOnline()) return;
-    consecutiveProbeFailures = probeFailed ? consecutiveProbeFailures + 1 : 0;
-    const delay = probeFailed
+    if (probeFailed !== undefined) consecutiveProbeFailures = probeFailed ? consecutiveProbeFailures + 1 : 0;
+    const delay = consecutiveProbeFailures > 0
       ? Math.min(AGENT_PROBE_INTERVAL_MS * 2 ** consecutiveProbeFailures, AGENT_PROBE_MAX_BACKOFF_MS)
       : AGENT_PROBE_INTERVAL_MS;
     pollTimer = window.setTimeout(() => {
@@ -145,7 +145,7 @@ export function createAgentAccessController(opts: UseAgentEnablementOptions) {
       : result.status === "stale" ? "delegation_stale" : null });
   };
   const refresh = async () => {
-    if (replacementPending || stopping) return;
+    if (replacementPending || stopping) { scheduleProbe(); return; }
     if (!isOnline()) { markOffline(); return; }
     const currentOperation = operation;
     const sequence = ++probeSequence;
@@ -216,7 +216,12 @@ export function createAgentAccessController(opts: UseAgentEnablementOptions) {
         }
       } catch {
         if (operation === currentOperation) update({ status: null, enableError: "Disconnection was not confirmed. Please retry." });
-      } finally { stopping = null; update({ disconnecting: false }); signalChange(); }
+      } finally {
+        stopping = null;
+        update({ disconnecting: false });
+        signalChange();
+        scheduleProbe();
+      }
     })();
     return stopping;
   };
@@ -234,6 +239,7 @@ export function createAgentAccessController(opts: UseAgentEnablementOptions) {
       probeFailed: false,
       reconnectReason: code,
     });
+    scheduleProbe();
   };
   return {
     agentEnabledRef, activeThreadIdRef, privateAccessRef, refresh, onEnable, onDisconnect, onDelegationError,
