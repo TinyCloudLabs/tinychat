@@ -62,22 +62,36 @@ async function signMessage(
     notBefore?: Date;
     domain?: string;
     uri?: string;
+    statement?: string;
+    resources?: string[];
+    chainId?: number;
   } = {},
 ) {
   const signer = options.signer ?? account;
   const message = createSiweMessage({
     domain: options.domain ?? "localhost",
     address: options.address ?? signer.address,
-    statement: "Sign in",
+    statement: options.statement ?? "Sign in",
     uri: options.uri ?? "https://localhost",
     version: "1",
-    chainId: 1,
+    chainId: options.chainId ?? 1,
     nonce,
     issuedAt: new Date(),
     ...(options.expirationTime ? { expirationTime: options.expirationTime } : {}),
     ...(options.notBefore ? { notBefore: options.notBefore } : {}),
+    ...(options.resources ? { resources: options.resources } : {}),
   });
   return { message, signature: await signer.signMessage({ message }) };
+}
+
+function nativeAudience(appId: string) {
+  const resource = `tinycloud:pkh:eip155:1:${account.address.toLowerCase()}:applications/kv/${appId}/threads/`;
+  return {
+    statement: `I further authorize the stated URI to perform the following actions on my behalf: (1) 'tinycloud.kv': 'get' for '${resource}'.`,
+    resources: [`urn:recap:${Buffer.from(JSON.stringify({
+      att: { [resource]: { "tinycloud.kv/get": [{}] } }, prf: [],
+    })).toString("base64url")}`],
+  };
 }
 
 async function signIn(base: string, options: { expirationTime?: Date } = {}) {
@@ -213,10 +227,10 @@ describe("HTTP SIWE sessions", () => {
     });
   });
 
-  test("accepts exact production and Pages preview signed pairs, but not lookalikes", async () => {
+  test("accepts exact production, desktop and Pages preview signed pairs, but not lookalikes", async () => {
     setSystemTime(NOW);
     const base = await startAuthServer("https://tinycloud.chat");
-    for (const domain of ["tinycloud.chat", "tinychat-4jq.pages.dev", "feature-12.tinychat-4jq.pages.dev"]) {
+    for (const domain of ["tinycloud.chat", "localhost", "tauri.localhost", "tinychat-4jq.pages.dev", "feature-12.tinychat-4jq.pages.dev"]) {
       const nonce = await requestNonce(base, account.address);
       const signed = await signMessage(nonce, { domain, uri: `https://${domain}` });
       expect((await postVerify(base, signed)).status).toBe(200);
@@ -234,11 +248,59 @@ describe("HTTP SIWE sessions", () => {
     const base = await startAuthServer("https://tinycloud.chat");
     const nonce = await requestNonce(base);
     const did = "did:key:z6MkhqPVyvUbDHzPTaEyHUVMuyCg26uED8fLsGECC2dbPQbJ";
-    const native = await signMessage(nonce, { domain: "openkey.so", uri: `${did}#${did.slice(8)}` });
+    const native = await signMessage(nonce, {
+      domain: "openkey.so", uri: `${did}#${did.slice(8)}`,
+      ...nativeAudience("xyz.tinycloud.tinychat"),
+    });
     expect((await postVerify(base, native)).status).toBe(200);
     const webNonce = await requestNonce(base);
     const web = await signMessage(webNonce, { domain: "openkey.so", uri: "https://openkey.so" });
     expect((await postVerify(base, web)).status).toBe(400);
+  });
+
+  test("rejects another OpenKey app's signed delegation even with a valid nonce and DID URI", async () => {
+    setSystemTime(NOW);
+    const base = await startAuthServer("https://tinycloud.chat");
+    const did = "did:key:z6MkhqPVyvUbDHzPTaEyHUVMuyCg26uED8fLsGECC2dbPQbJ";
+    const nonce = await requestNonce(base);
+    const foreign = await signMessage(nonce, {
+      domain: "openkey.so", uri: `${did}#${did.slice(8)}`,
+      ...nativeAudience("xyz.other.application"),
+    });
+    expect((await postVerify(base, foreign)).status).toBe(400);
+    const valid = await signMessage(nonce, {
+      domain: "openkey.so", uri: `${did}#${did.slice(8)}`,
+      ...nativeAudience("xyz.tinycloud.tinychat"),
+    });
+    expect((await postVerify(base, valid)).status).toBe(200);
+  });
+
+  test("rejects native SIWE with no signed TinyChat capability", async () => {
+    setSystemTime(NOW);
+    const base = await startAuthServer("https://tinycloud.chat");
+    const did = "did:key:z6MkhqPVyvUbDHzPTaEyHUVMuyCg26uED8fLsGECC2dbPQbJ";
+    const nonce = await requestNonce(base);
+    expect((await postVerify(base, await signMessage(nonce, {
+      domain: "openkey.so", uri: `${did}#${did.slice(8)}`,
+    }))).status).toBe(400);
+  });
+
+  test("rejects a native ReCap hidden behind another signed resource or a foreign chain", async () => {
+    setSystemTime(NOW);
+    const base = await startAuthServer("https://tinycloud.chat");
+    const did = "did:key:z6MkhqPVyvUbDHzPTaEyHUVMuyCg26uED8fLsGECC2dbPQbJ";
+    const audience = nativeAudience("xyz.tinycloud.tinychat");
+    for (const changes of [
+      { resources: ["https://foreign.example", ...audience.resources] },
+      { chainId: 2 },
+    ]) {
+      const nonce = await requestNonce(base);
+      const signed = await signMessage(nonce, {
+        domain: "openkey.so", uri: `${did}#${did.slice(8)}`,
+        ...audience, ...changes,
+      });
+      expect((await postVerify(base, signed)).status).toBe(400);
+    }
   });
 
   test("rejects malformed native verification-method URIs and the wrong native domain", async () => {

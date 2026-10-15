@@ -2,6 +2,7 @@ import { Router } from "express";
 import type { Request, Response } from "express";
 import { issueSessionToken, NonceStoreFullError, verifySIWE, type NonceStore } from "@tinyboilerplate/server";
 import { isExpectedSiweOrigin } from "../cors-origins.js";
+import { hasTinyChatNativeAudience } from "../native-siwe-audience.js";
 
 interface AuthRoutesConfig {
   nonceStore: NonceStore;
@@ -39,8 +40,9 @@ export function createAuthRouter(config: AuthRoutesConfig) {
     }
 
     try {
-      const { address, nonce, domain, uri, expirationTime } = await verifySIWE(message, signature);
-      if (!isExpectedSiweOrigin(domain, uri, config.frontendUrl, config.nativeSiweDomain ?? "openkey.so")) {
+      const { address, nonce, domain, uri, chainId, resources, expirationTime } = await verifySIWE(message, signature);
+      if (!isExpectedSiweOrigin(domain, uri, config.frontendUrl, config.nativeSiweDomain ?? "openkey.so") ||
+        (uri.startsWith("did:key:") && !hasTinyChatNativeAudience(message, address, chainId, resources))) {
         res.status(400).json({
           error: "invalid_origin", message: "SIWE domain or URI does not match this application",
         });

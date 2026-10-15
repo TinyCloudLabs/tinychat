@@ -564,9 +564,12 @@ nothing below may be reported as done on its behalf.
   `FRONTEND_URL` in `docker-compose.phala.yml`; local origins and Pages preview
   hosts come from `backend/src/cors-origins.ts`. Native OpenKey sign-in (iOS and
   Android) signs its configured issuer domain (`openkey.so` by default) and a
-  canonical `did:key` session verification-method URI. Set
-  `OPENKEY_SIWE_DOMAIN` on the backend if the registered OpenKey native client
-  changes its `siweDomain`; never use the API host as the signed audience.
+  canonical `did:key` session verification-method URI. Its signed ReCap must
+  include at least one KV/SQL grant under `xyz.tinycloud.tinychat/` in the
+  recovered address's applications space, and no foreign app grants. OpenKey's
+  registered native client confines those grants to its `appId`. Set
+  `OPENKEY_SIWE_DOMAIN` on the backend if that client's `siweDomain` changes;
+  never use the API host as the signed audience.
   Nonces remain single-use for five minutes, with at most 2048 pending per
   backend process (429 at capacity) and the shared `/api/auth` limit of
   1200 requests per 15 minutes.

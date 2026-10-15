@@ -104,6 +104,7 @@ export interface VerifiedSiweSession {
   domain: string;
   expirationTime?: string;
   nonce: string;
+  resources?: string[];
 }
 
 /**
@@ -127,6 +128,7 @@ export async function verifySiweSession(
     domain: result.data.domain,
     uri: result.data.uri,
     expirationTime: result.data.expirationTime,
+    resources: result.data.resources,
     nonce: result.data.nonce,
   };
 }
@@ -138,10 +140,10 @@ export async function verifySiweSession(
 export async function verifySIWE(
   message: string,
   signature: string,
-): Promise<{ address: string; nonce: string; domain: string; uri: string; expirationTime?: string }> {
-  const { address, nonce, domain, uri, expirationTime } = await verifySiweSession(message, signature);
+): Promise<{ address: string; nonce: string; domain: string; uri: string; chainId: number; resources?: string[]; expirationTime?: string }> {
+  const { address, nonce, domain, uri, chainId, resources, expirationTime } = await verifySiweSession(message, signature);
   if (expirationTime && Date.parse(expirationTime) <= Date.now()) throw new Error("SIWE session expired");
-  return { address, nonce, domain, uri, expirationTime };
+  return { address, nonce, domain, uri, chainId, resources, expirationTime };
 }
 
 // ── Session Token ───────────────────────────────────────────────────
