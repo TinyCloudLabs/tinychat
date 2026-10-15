@@ -118,6 +118,7 @@ import {
 } from "./chat/useBackgroundDrain";
 import { TranscriberLibrarySyncProvider } from "./chat/useTranscriberLibrarySync";
 import { DeviceCaptureSurface, DeviceCaptureSettings } from "./capture/DeviceCaptureSurface";
+import { useAudioCacheBoot } from "./lib/voiceNotes/audioReceiptUpgrade";
 import { PendingVoiceNotesSaver } from "./chat/PendingVoiceNotesSaver";
 import { VoiceNotes } from "./lib/voiceNotes/nativeVoiceNotes";
 import { captureCapabilities, captureEngineAvailable } from "./lib/voiceNotes/captureEngine";
@@ -200,6 +201,7 @@ export function App() {
   const [captureFailClosed, setCaptureFailClosed] = useState(false);
   const [captureReadyTcw, setCaptureReadyTcw] = useState<TinyCloudWeb | null>(null);
   const voiceNotePipeline = useMemo(() => tcw ? createVoiceNotePipeline(tcw) : null, [tcw]);
+  useAudioCacheBoot(LOCAL_VALIDATION ? null : tcw);
   const captureHandoffInFlight = useRef<Promise<boolean> | null>(null);
   const performCaptureHandoff = useCallback(async () => {
     if (!captureEngineAvailable() || LOCAL_VALIDATION) return true;

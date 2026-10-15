@@ -190,9 +190,9 @@ test("one save publishes note text while an audio part is stalled", async () => 
     });
   } finally { releaseAudio(); }
   expect((await saving).ok).toBe(true);
-  // Ten save requests plus the assertion's row read above. The old path
-  // performed 12+ sequential requests in Sam's log.
-  expect(calls).toBe(11);
+  // Ten save requests, the assertion's row read above, and two receipt read-back requests (manifest GET
+  // and the one part GET) that verify the committed upload before local eviction is authorized (#373).
+  expect(calls).toBe(13);
 });
 
 test("one save overlaps short text and audio requests at fixed fixture latency", async () => {
@@ -229,7 +229,8 @@ test("one save overlaps short text and audio requests at fixed fixture latency",
     readPart: async () => new Uint8Array([1, 2, 3, 4]) }, "tauri");
   const elapsed = performance.now() - start;
   expect(saved.ok).toBe(true);
-  expect(calls).toBe(10);
+  // Ten save requests plus two receipt read-back requests (manifest GET and one part GET) after upload (#373).
+  expect(calls).toBe(12);
   // Compare against the observed sum of request delays, so concurrent test
   // load cannot turn a fixed wall-clock threshold into a false failure.
   expect(elapsed).toBeLessThan(serialLatency - 10);
@@ -1911,7 +1912,7 @@ test("a late part put settles before retry writes and retry commits one complete
       if (key === partKey) {
         partWrites++;
         return new Promise((resolve) => { resolveLate = (result) => {
-          values.set(key, "late part committed");
+          values.set(key, value as string);
           resolve(result);
         }; }) as ReturnType<typeof put>;
       }

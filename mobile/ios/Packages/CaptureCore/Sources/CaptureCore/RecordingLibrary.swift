@@ -1,6 +1,7 @@
 import Foundation
 import Darwin
 import OSLog
+import CryptoKit
 
 /// All metadata publications go through one synchronous queue. Muxing and probing run outside it,
 /// holding an operation generation that delete/discard can invalidate at any time.
@@ -447,7 +448,11 @@ public final class RecordingLibrary {
         }
         try queue.sync {
             try check("receipt.begin")
-            if FileManager.default.fileExists(atPath: receiptOutboxURL(id: id, opId: opId).path) { return }
+            let outboxURL = receiptOutboxURL(id: id, opId: opId)
+            if FileManager.default.fileExists(atPath: outboxURL.path) {
+                try backfillReceiptKindUnlocked(outboxURL, kind: Self.knownReceiptKind(kind))
+                return
+            }
             let account = try accountStateUnlocked()
             if account.status == "signed_in", account.accountDid == did,
                !FileManager.default.fileExists(atPath: url("tombstones/\(id)").path),
@@ -468,7 +473,7 @@ public final class RecordingLibrary {
                     try publishSidecarUnlocked(id, item, failpointName: "receipt.begin")
                 }
             } else {
-                try writeReceiptOutboxUnlocked(id: id, opId: opId, receipt: receipt, result: nil)
+                try writeReceiptOutboxUnlocked(id: id, opId: opId, receipt: receipt, result: nil, receiptKind: Self.knownReceiptKind(kind))
             }
         }
     }
@@ -498,10 +503,17 @@ public final class RecordingLibrary {
                                 (remote[index]["kind"] as? String) == "own_upload" ? "uploadUrl" : "jobId"
                             remote[index][key] = handle
                         }
+                        if remote[index]["kind"] as? String == "own_create", result["outcome"] as? String == "created" {
+                            remote.removeAll { $0["kind"] as? String == "own_upload" }
+                        }
                     }
                     ledger["remote"] = remote; item["ledger"] = ledger
                     item["rev"] = (item["rev"] as? Int ?? 0) + 1
                     try publishSidecarUnlocked(id, item, failpointName: "receipt.result")
+                    if result["outcome"] as? String == "created",
+                       remote.contains(where: { $0["opId"] as? String == opId && $0["kind"] as? String == "own_create" }) {
+                        try retireOwnUploadOutboxUnlocked(id)
+                    }
                     return "ledger"
                 }
             }
@@ -515,8 +527,11 @@ public final class RecordingLibrary {
             }
             var open = receipt
             let outboxKind = receipt["kind"] as? String
-            if let original = receipt["receiptKind"] as? String,
-               ["hosted_create", "hosted_submit", "own_upload", "own_create", "ptx_create"].contains(original) {
+            // Rows written before receiptKind existed name a receipt kind only when the outbox kind is unambiguous.
+            // Ambiguous rows keep receiptKind nil and are never retired as own_upload.
+            let receiptKind = (receipt["receiptKind"] as? String) ??
+                Self.legacyReceiptKind(outboxKind, provider: receipt["provider"] as? String)
+            if let original = receiptKind {
                 open["kind"] = original
                 if let handle = receipt["handle"] as? String {
                     switch outboxKind {
@@ -527,33 +542,46 @@ public final class RecordingLibrary {
                     }
                 }
             } else {
-                switch outboxKind {
-                case "hosted_upload":
-                    open["kind"] = "hosted_create"
-                    if let handle = receipt["handle"] as? String { open["uploadId"] = handle }
-                case "hosted_submit":
-                    open["kind"] = "hosted_submit"
-                    if let handle = receipt["handle"] as? String { open["uploadId"] = handle }
-                case "own_upload_lookup":
+                // Legacy row: route from what this result proves, with the known own_create priority (a job beats a
+                // URL, and a URL never replaces a job). Provider gates ptx. A row with no provable kind stays inert.
+                let provider = receipt["provider"] as? String
+                let resultJob = result["jobId"] as? String
+                if provider == "ptx", let job = resultJob {
+                    open["kind"] = "ptx_create"; open["jobId"] = job
+                } else if provider == "assemblyai", let job = resultJob {
+                    open["kind"] = "hosted_submit"; open["jobId"] = job
+                } else if provider == "assemblyai", let url = result["uploadUrl"] as? String, outboxKind != "transcript" {
+                    open["kind"] = "own_upload"; open["uploadUrl"] = url
+                } else if outboxKind == "own_upload_lookup" {
                     open["kind"] = "own_upload"
                     if let handle = receipt["handle"] as? String { open["uploadUrl"] = handle }
-                case "ptx_job":
-                    open["kind"] = "ptx_create"
+                } else if outboxKind == "transcript" {
+                    open["kind"] = "hosted_submit"
                     if let handle = receipt["handle"] as? String { open["jobId"] = handle }
-                case "transcript":
-                    open["kind"] = "own_create"
-                    if let handle = receipt["handle"] as? String { open["jobId"] = handle }
-                default:
-                    open["kind"] = (receipt["provider"] as? String) == "ptx" ? "ptx_create" :
-                        (receipt["mode"] as? String) == "hosted" ? "hosted_submit" : "own_create"
                 }
             }
-            try writeReceiptOutboxUnlocked(id: id, opId: opId, receipt: open, result: result)
+            if open["kind"] as? String == "own_create", result["outcome"] as? String == "created" {
+                try retireOwnUploadOutboxUnlocked(id)
+            }
+            try writeReceiptOutboxUnlocked(id: id, opId: opId, receipt: open, result: result, receiptKind: receiptKind)
             return "outbox"
         }
     }
 
     private func receiptOutboxURL(id: String, opId: String) -> URL { url("outbox/\(id):\(opId).json") }
+
+    /// Once own_create has created its job, a sibling own_upload for the same note has no upload left to look up.
+    /// Its outbox receipt must not keep pinning the note's audio.
+    private func retireOwnUploadOutboxUnlocked(_ id: String) throws {
+        for path in try FileManager.default.contentsOfDirectory(at: url("outbox"), includingPropertiesForKeys: nil)
+        where path.lastPathComponent.hasPrefix("\(id):") {
+            guard let data = try? Data(contentsOf: path),
+                  let receipt = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  receipt["receiptKind"] as? String == "own_upload" else { continue }
+            try FileManager.default.removeItem(at: path)
+        }
+        try sync(url("outbox"))
+    }
 
     private static func receiptStage(_ kind: String, outcome: String) -> String {
         guard outcome == "created" else { return kind == "hosted_submit" ? "submit_unknown" : "create_unknown" }
@@ -564,8 +592,37 @@ public final class RecordingLibrary {
         }
     }
 
+    /// Kinds an outbox entry may persist as receiptKind. Any other value means no receipt kind.
+    private static func knownReceiptKind(_ kind: String?) -> String? {
+        guard let kind = kind,
+              ["hosted_create", "hosted_submit", "own_upload", "own_create", "ptx_create"].contains(kind) else { return nil }
+        return kind
+    }
+
+    /// Rows written before receiptKind existed. Only these outbox kinds name exactly one receipt kind;
+    /// own_upload_lookup and transcript are ambiguous and stay nil. ptx_job also came from the old writer default for
+    /// unknown receipts, so it names ptx_create only when the provider is ptx.
+    private static func legacyReceiptKind(_ outboxKind: String?, provider: String?) -> String? {
+        switch outboxKind {
+        case "hosted_upload": return "hosted_create"
+        case "hosted_submit": return "hosted_submit"
+        case "ptx_job": return provider == "ptx" ? "ptx_create" : nil
+        default: return nil
+        }
+    }
+
+    /// A repeated receipt names the kind of a row that predates receiptKind. Record it once so the row can be retired later.
+    private func backfillReceiptKindUnlocked(_ path: URL, kind: String?) throws {
+        guard let kind = kind,
+              var row = (try? JSONSerialization.jsonObject(with: Data(contentsOf: path))) as? [String: Any],
+              row["receiptKind"] as? String == nil else { return }
+        row["receiptKind"] = kind
+        try writeDurable(CanonicalJSON.file(row), to: path)
+        try sync(url("outbox"))
+    }
+
     private func writeReceiptOutboxUnlocked(id: String, opId: String, receipt: [String: Any],
-                                            result: [String: Any]?) throws {
+                                            result: [String: Any]?, receiptKind: String?) throws {
         try check("delete.outbox")
         let path = receiptOutboxURL(id: id, opId: opId)
         let existing = (try? JSONSerialization.jsonObject(with: Data(contentsOf: path))) as? [String: Any]
@@ -598,18 +655,20 @@ public final class RecordingLibrary {
             } else if let url = uploadURL as? String {
                 outboxKind = "own_upload_lookup"; handle = url; state = "lookup"
             } else { outboxKind = "unknown"; handle = nil; state = "unknown" }
-        default:
+        case "ptx_create":
             outboxKind = "ptx_job"
             handle = job ?? direct
             state = handle is String ? "pending" : "unknown"
+        default:
+            outboxKind = "unknown"; handle = nil; state = "unknown"
         }
         var entry: [String: Any] = existing ?? ["entryId": "\(id):\(opId)", "did": receipt["did"] ?? "",
             "provider": receipt["provider"] ?? "", "mode": mode,
             "kind": outboxKind,
             "createdAt": receipt["startedAt"] ?? wallMilliseconds(), "attempts": 0]
         entry["kind"] = outboxKind
-        if ["hosted_create", "hosted_submit", "own_upload", "own_create", "ptx_create"].contains(kind) {
-            entry["receiptKind"] = kind
+        if let receiptKind = receiptKind {
+            entry["receiptKind"] = receiptKind
         } else { entry["receiptKind"] = NSNull() }
         entry["handle"] = handle ?? NSNull()
         entry["handleExpiresAt"] = result?["handleExpiresAt"] ?? receipt["handleExpiresAt"] ?? NSNull()
@@ -666,6 +725,65 @@ public final class RecordingLibrary {
         try queue.sync { try deleteUnlocked(id) }
     }
 
+    /// Mirrors `hasLocalWorkInProgress` in frontend/src/lib/voiceNotes/localWork.ts. Keep the two in sync.
+    private static func hasLocalWorkInProgress(_ note: [String: Any]) -> Bool {
+        guard let ledger = note["ledger"] as? [String: Any] else { return true }
+        let transcriber = (note["options"] as? [String: Any])?["transcriber"] as? String
+        let localAudio = ledger["localAudio"] as? [String: Any]
+        let localAudioUnready = localAudio != nil && localAudio?["state"] as? String != "ready"
+        let sttState = (note["stt"] as? [String: Any])?["state"] as? String ?? ""
+        let sttRequested = (note["stt"] as? [String: Any])?["requested"] as? Bool == true
+        let sttPinned = (transcriber == "on-device" || sttRequested) && ["waiting_for_model", "queued", "running", "failed", "cancelled"].contains(sttState)
+        let remotes = ledger["remote"] as? [[String: Any]] ?? []
+        let remoteOpen = remotes.contains(where: { op in
+            let stage = op["stage"] as? String
+            return stage != "done" && (op["mode"] as? String != "own" || stage != "submitted")
+        })
+        return localAudioUnready || sttPinned || remoteOpen
+    }
+
+    /// Outbox receipts are stored as `outbox/<id>:<opId>.json`. Any such file pins the note's audio.
+    private func hasOutboxEntryUnlocked(_ id: String) throws -> Bool {
+        try FileManager.default.contentsOfDirectory(at: url("outbox"), includingPropertiesForKeys: nil)
+            .contains { $0.lastPathComponent.hasPrefix("\(id):") }
+    }
+
+    /// A space-backed recording may shed its audio while retaining its note, transcript and ledger.
+    public func evictCachedAudio(_ id: String) throws {
+        guard Self.validID(id) else { throw CaptureError.invalidArgument }
+        try queue.sync {
+            let note = try readSidecarUnlocked(id)
+            let pinnedByOutbox = try hasOutboxEntryUnlocked(id)
+            guard !Self.hasLocalWorkInProgress(note), !pinnedByOutbox else { throw CaptureError.audioInUse }
+            let ledger = note["ledger"] as? [String: Any]
+            let audio = ledger?["audio"] as? [String: Any]
+            let receipt = audio?["verifiedInSpace"] as? [String: Any]
+            guard audio?["state"] as? String == "saved",
+                  let expectedHash = receipt?["sha256"] as? String,
+                  expectedHash.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil,
+                  let expectedSize = receipt?["size"] as? Int, expectedSize >= 0 else {
+                throw CaptureError.io("audio_not_space_backed")
+            }
+            if FileManager.default.fileExists(atPath: audioURL(id).path) {
+                let path = audioURL(id)
+                let handle = try FileHandle(forReadingFrom: path)
+                defer { try? handle.close() }
+                var hash = SHA256()
+                var size = 0
+                while let bytes = try handle.read(upToCount: 1024 * 1024), !bytes.isEmpty {
+                    size += bytes.count
+                    hash.update(data: bytes)
+                }
+                let actualHash = hash.finalize().map { String(format: "%02x", $0) }.joined()
+                guard size == expectedSize && actualHash == expectedHash else {
+                    throw CaptureError.io("audio_not_space_backed")
+                }
+                try FileManager.default.removeItem(at: audioURL(id))
+                try sync(root)
+            }
+        }
+    }
+
     /// Recovery cleanup of a session that has nothing to publish. The committed check and the
     /// delete share one critical section, so a concurrent commit can never be tombstoned: a
     /// published note is reported (false) and left untouched.
@@ -705,7 +823,7 @@ public final class RecordingLibrary {
                 // Idempotent across a crash after the tombstone and before sidecar removal.
                 var receipt = remote
                 receipt["did"] = did
-                try writeReceiptOutboxUnlocked(id: id, opId: opId, receipt: receipt, result: remote)
+                try writeReceiptOutboxUnlocked(id: id, opId: opId, receipt: receipt, result: remote, receiptKind: Self.knownReceiptKind(remote["kind"] as? String))
                 continue
             }
             let mode = remote["mode"] ?? NSNull()

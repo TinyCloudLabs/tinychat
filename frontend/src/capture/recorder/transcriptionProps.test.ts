@@ -40,4 +40,21 @@ describe("transcriptionProps", () => {
       consented: false,
     });
   });
+
+  test("with no PTX duration limit, Private is not offered: maxSeconds is null", () => {
+    const fake = { transcribe() {}, consent() {}, turnOff: async () => {}, check: async () => {} } as never;
+    expect(transcriptionProps(fake, { availability: "available", capabilities: { max_bytes: 1 }, consented: true, jobs: new Map() })).toMatchObject({
+      maxSeconds: null,
+    });
+  });
+  test("missing PTX byte cap keeps Private ineligible even with a duration ceiling", () => {
+    const fake = { transcribe() {}, consent() {}, turnOff: async () => {}, check: async () => {} } as never;
+    expect(transcriptionProps(fake, {
+      availability: "available",
+      capabilities: { max_duration_seconds: 120 },
+      consented: true,
+      jobs: new Map(),
+    })).toMatchObject({ maxSeconds: null });
+  });
+
 });

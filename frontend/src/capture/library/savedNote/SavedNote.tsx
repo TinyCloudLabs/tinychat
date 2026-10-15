@@ -13,6 +13,7 @@ import { TranscribeAction } from "../TranscribeAction";
 import { rowHasCommittedAudio, useNotePipeline, type NotePipelineSource, type NotePipelineView } from "@/lib/voiceNotes/useNotePipeline";
 import type { MeetingMetadataRead } from "@/lib/connectors/meetingExplorer";
 import type { NoteAudio } from "../NoteDetailView";
+import { privateAudioSourceFromMetadata } from "@/capture/recorder/transcriptionProps";
 import type { LibraryItem } from "../LibraryRow";
 import { savedNoteMeta } from "./savedNoteMeta";
 import { savedNoteStoreFor, type SavedNoteStore } from "./savedNoteStore";
@@ -63,8 +64,9 @@ function SavedNoteContent({
   const space = useMemo(() => store ?? savedNoteStoreFor(tcw, () => hasSpaceRow.current), [store, tcw]);
   const screen = useSavedNoteScreen(item.sourceId, space);
   const rowMetadata = metadata?.status === "ok" ? metadata.metadata : null;
+  const privateAudioSource = privateAudioSourceFromMetadata(rowMetadata);
   const localOnly = (rowMetadata?.audio as { stored?: unknown } | undefined)?.stored === false;
-  const hasLocalAudio = audio !== null && "localUrl" in audio;
+  const hasLocalAudio = audio !== null && ("localUrl" in audio || audio.onPhone === true);
   const capturePlatform = (rowMetadata?.capture as { platform?: string } | undefined)?.platform;
   const onDevice = capturePlatform === "ios" ? "iPhone" : capturePlatform === "tauri" ? "Mac"
     : capturePlatform === "android" ? "phone" : "browser";
@@ -90,7 +92,7 @@ function SavedNoteContent({
     channels: (rowMetadata?.capture as { channels?: number } | undefined)?.channels === 2 || audio?.channels === 2 ? 2 : 1,
     title: item.title ?? voiceNoteTitle(Date.parse(item.startedAt ?? "") || Date.now()),
     meta: savedNoteMeta(item, rowMetadata, platform, pipeline?.pipeline.done === true),
-    stepper: status ? <div className="flex flex-wrap items-center gap-3" data-testid="note-detail-status"><p className={status.startsWith("Needs attention") ? "sn-hint text-amber-700 dark:text-amber-300" : "sn-hint"}>{status}</p>{actions.map((action, index) => <button key={`${action.label}:${index}`} type="button" className="min-h-11 text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={action.run}>{action.label}</button>)}{cloudFailedWithoutRetry && <TranscribeAction noteId={item.sourceId} transcription={recorder.transcription} durationSecs={item.durationSecs} label="Try again" />}{pipeline?.actionError && <p role="alert" className="text-callout text-destructive">{pipeline.actionError}</p>}</div> : null,
+    stepper: status ? <div className="flex flex-wrap items-center gap-3" data-testid="note-detail-status"><p className={status.startsWith("Needs attention") ? "sn-hint text-amber-700 dark:text-amber-300" : "sn-hint"}>{status}</p>{actions.map((action, index) => <button key={`${action.label}:${index}`} type="button" className="min-h-11 text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={action.run}>{action.label}</button>)}{cloudFailedWithoutRetry && <TranscribeAction noteId={item.sourceId} transcription={recorder.transcription} durationSecs={item.durationSecs} privateAudioSource={privateAudioSource} label="Try again" />}{pipeline?.actionError && <p role="alert" className="text-callout text-destructive">{pipeline.actionError}</p>}</div> : null,
     audio,
     audioStorage: localOnly ? (hasLocalAudio ? (
       <div className="flex flex-col items-start gap-2 text-sm">
@@ -126,8 +128,8 @@ const MemoSavedNoteContent = memo(SavedNoteContent);
 export default function SavedNote(props: SavedNoteProps) {
   const pipelineMetadata = props.metadata?.status === "ok" ? props.metadata.metadata : undefined;
   const pipelineSource = useMemo<NotePipelineSource>(
-    () => ({ tcw: props.tcw, rowExists: props.item.onPhone !== true, audioSaved: props.item.onPhone !== true && rowHasCommittedAudio(pipelineMetadata), metadata: pipelineMetadata }),
-    [props.tcw, props.item.onPhone, pipelineMetadata],
+    () => ({ tcw: props.tcw, rowExists: props.item.onPhone !== true, audioSaved: props.item.onPhone !== true && rowHasCommittedAudio(pipelineMetadata), metadata: pipelineMetadata, durationSecs: props.item.durationSecs }),
+    [props.tcw, props.item.onPhone, props.item.durationSecs, pipelineMetadata],
   );
   const live = useNotePipeline(props.item.sourceId, pipelineSource);
   const [visible, setVisible] = useState<NotePipelineView | null>(live);

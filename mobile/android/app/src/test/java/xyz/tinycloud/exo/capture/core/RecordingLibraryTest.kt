@@ -8,11 +8,88 @@ import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.File
 import java.io.IOException
+import java.security.MessageDigest
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 class RecordingLibraryTest {
+    @Test fun cacheEvictionRequiresSpaceCopyAndKeepsSidecar() {
+        val lib = library(); val pending = id(); begin(lib, pending); commit(lib, pending); transcriptDone(lib, pending)
+        try { lib.evictCachedAudio(pending); fail("pending audio was evicted") }
+        catch (e: IllegalStateException) { assertEquals("audio_not_space_backed", e.message) }
+        assertTrue(lib.audio(pending).isFile)
+
+        val localOnly = id(); begin(lib, localOnly); commit(lib, localOnly); transcriptDone(lib, localOnly)
+        lib.mutate(localOnly, "test.saved") {
+            it.getJSONObject("ledger").put("audio", JSONObject().put("state", "saved"))
+            it.getJSONObject("options").put("uploadAudio", false)
+        }
+        try { lib.evictCachedAudio(localOnly); fail("local-only audio was evicted") }
+        catch (e: IllegalStateException) { assertEquals("audio_not_space_backed", e.message) }
+        assertTrue(lib.audio(localOnly).isFile)
+
+        val cached = id(); begin(lib, cached); commit(lib, cached); transcriptDone(lib, cached)
+        lib.mutate(cached, "test.saved") { it.getJSONObject("ledger").put("audio", JSONObject().put("state", "saved")) }
+        try { lib.evictCachedAudio(cached); fail("unverified audio was evicted") }
+        catch (e: IllegalStateException) { assertEquals("audio_not_space_backed", e.message) }
+        assertTrue(lib.audio(cached).isFile)
+        lib.mutate(cached, "test.badHash") {
+            it.getJSONObject("ledger").put("audio", JSONObject().put("state", "saved")
+                .put("verifiedInSpace", JSONObject().put("sha256", "0".repeat(64)).put("size", 3)))
+        }
+        try { lib.evictCachedAudio(cached); fail("wrong-hash audio was evicted") }
+        catch (e: IllegalStateException) { assertEquals("audio_not_space_backed", e.message) }
+        assertTrue(lib.audio(cached).isFile)
+        val hash = MessageDigest.getInstance("SHA-256").digest(byteArrayOf(1, 2, 3)).joinToString("") { "%02x".format(it) }
+        lib.mutate(cached, "test.verified") {
+            it.getJSONObject("options").put("uploadAudio", false)
+            it.getJSONObject("ledger").put("audio", JSONObject().put("state", "saved")
+                .put("verifiedInSpace", JSONObject().put("sha256", hash).put("size", 3)))
+        }
+        lib.evictCachedAudio(cached)
+        assertFalse(lib.audio(cached).exists())
+        assertNotNull(lib.read(cached))
+    }
+
+    @Test fun evictionWaitsForLocalWorkToFinish() {
+        val lib = library(); val id = id(); begin(lib, id); commit(lib, id)
+        val hash = MessageDigest.getInstance("SHA-256").digest(byteArrayOf(1, 2, 3)).joinToString("") { "%02x".format(it) }
+        lib.mutate(id, "test.queuedStt") {
+            it.getJSONObject("options").put("uploadAudio", false).put("transcriber", "on-device")
+            it.put("stt", JSONObject().put("state", "queued"))
+            it.getJSONObject("ledger").put("transcript", JSONObject().put("state", "done"))
+                .put("audio", JSONObject().put("state", "saved")
+                    .put("verifiedInSpace", JSONObject().put("sha256", hash).put("size", 3)))
+        }
+        try { lib.evictCachedAudio(id); fail("audio with queued local work was evicted") }
+        catch (e: IllegalStateException) { assertEquals("audio_in_use", e.message) }
+        assertTrue(lib.audio(id).isFile)
+    }
+    @Test fun evictionWaitsForOutboxReceipt() {
+        val lib = library(); val id = id(); begin(lib, id); commit(lib, id)
+        val hash = MessageDigest.getInstance("SHA-256").digest(byteArrayOf(1, 2, 3)).joinToString("") { "%02x".format(it) }
+        lib.mutate(id, "test.spaceBacked") {
+            it.getJSONObject("options").put("uploadAudio", false).put("transcriber", "assemblyai")
+            it.getJSONObject("ledger").put("transcript", JSONObject().put("state", "done"))
+                .put("audio", JSONObject().put("state", "saved")
+                    .put("verifiedInSpace", JSONObject().put("sha256", hash).put("size", 3)))
+        }
+        // Receipt for another account parks in outbox/<id>:<opId>.json instead of the sidecar.
+        lib.beginRemoteOp(JSONObject().put("id", id).put("did", "did:other").put("opId", "op-1")
+            .put("provider", "assemblyai").put("mode", "hosted").put("kind", "hosted_create")
+            .put("fingerprint", "sha256").put("startedAt", 1000))
+        try { lib.evictCachedAudio(id); fail("audio with a pending outbox receipt was evicted") }
+        catch (e: IllegalStateException) { assertEquals("audio_in_use", e.message) }
+        assertTrue(lib.audio(id).isFile)
+    }
+    // A finished on-device pipeline: STT and transcript are both done, so the note no longer pins its audio.
+    private fun transcriptDone(lib: RecordingLibrary, id: String) {
+        lib.mutate(id, "test.transcriptDone") {
+            it.put("stt", defaultStt().put("state", "done"))
+            it.getJSONObject("ledger").put("transcript", JSONObject().put("state", "done"))
+        }
+    }
     @get:Rule val temp = TemporaryFolder()
     private fun id() = UUID.randomUUID().toString()
     private fun library() = RecordingLibrary(temp.newFolder())
@@ -176,7 +253,7 @@ class RecordingLibraryTest {
             assertEquals(if (kind == "own_upload") "lookup" else "pending", entry.getString("state"))
             assertEquals("handle-1", entry.getString("handle"))
             assertEquals(setOf("entryId", "did", "provider", "mode", "kind", "handle", "handleExpiresAt",
-                "state", "createdAt", "attempts"), entry.keys().asSequence().toSet())
+            "state", "createdAt", "attempts", "receiptKind"), entry.keys().asSequence().toSet())
         }
     }
     @Test fun failedRemoteRequestRemovesItsOpenReceipt() {
@@ -217,6 +294,123 @@ class RecordingLibraryTest {
             assertEquals(kind, expectedState, entry.getString("state"))
             assertEquals("remote-handle", entry.getString("handle"))
         }
+    }
+    @Test fun ownCreateRetirementRemovesOnlyOwnUploadReceipts() {
+        val lib = library(); val note = id()
+        fun receipt(op: String, kind: String) = JSONObject().put("id", note).put("did", "did:a").put("opId", op)
+            .put("provider", "assemblyai").put("mode", "own").put("kind", kind).put("fingerprint", "sha256").put("startedAt", 1000)
+        // An own_create whose upload URL is known keeps its own lookup, which must survive a sibling own_create's job.
+        lib.beginRemoteOp(receipt("c-lookup", "own_create"))
+        lib.recordRemoteResult(note, "did:a", "c-lookup", JSONObject().put("outcome", "created").put("uploadUrl", "https://u/create"))
+        lib.beginRemoteOp(receipt("u-1", "own_upload"))
+        lib.recordRemoteResult(note, "did:a", "u-1", JSONObject().put("outcome", "created").put("uploadUrl", "https://u/upload"))
+        val entries = { lib.listOutbox("did:a").let { a -> (0 until a.length()).map { a.getJSONObject(it) } } }
+        assertEquals(setOf("https://u/create", "https://u/upload"),
+            entries().filter { it.getString("kind") == "own_upload_lookup" }.map { it.getString("handle") }.toSet())
+        lib.beginRemoteOp(receipt("c-job", "own_create"))
+        lib.recordRemoteResult(note, "did:a", "c-job", JSONObject().put("outcome", "created").put("jobId", "job-1"))
+        val outbox = entries()
+        assertEquals(listOf("https://u/create"), outbox.filter { it.getString("kind") == "own_upload_lookup" }.map { it.getString("handle") })
+        assertEquals(listOf("job-1"), outbox.filter { it.getString("kind") == "transcript" }.map { it.getString("handle") })
+        assertEquals(2, outbox.size)
+    }
+    @Test fun legacyOutboxRowsWithoutReceiptKindAreReadAndRetiredOnlyWhenUnambiguous() {
+        val lib = library(); val note = id()
+        fun receipt(op: String, kind: String) = JSONObject().put("id", note).put("did", "did:a").put("opId", op)
+            .put("provider", "assemblyai").put("mode", "own").put("kind", kind).put("fingerprint", "sha256").put("startedAt", 1000)
+        fun outbox() = lib.listOutbox("did:a").let { a -> (0 until a.length()).map { a.getJSONObject(it) } }
+        // Write the row as 94d22c56 did: the outbox entry has no receiptKind field on disk.
+        lib.beginRemoteOp(receipt("u-1", "own_upload"))
+        lib.recordRemoteResult(note, "did:a", "u-1", JSONObject().put("outcome", "created").put("uploadUrl", "https://u/upload"))
+        val file = lib.outbox.listFiles()!!.single()
+        file.writeText(JSONObject(file.readText()).apply { remove("receiptKind") }.toString())
+        // The outbox kind own_upload_lookup is ambiguous, so the result must record without throwing and keep receiptKind null.
+        assertEquals("outbox", lib.recordRemoteResult(note, "did:a", "u-1",
+            JSONObject().put("outcome", "created").put("uploadUrl", "https://u/upload")))
+        assertTrue(outbox().single().isNull("receiptKind"))
+        // An own_create must not retire a row whose receipt kind is unknown.
+        lib.beginRemoteOp(receipt("c-job", "own_create"))
+        lib.recordRemoteResult(note, "did:a", "c-job", JSONObject().put("outcome", "created").put("jobId", "job-1"))
+        assertEquals(listOf("https://u/upload"),
+            outbox().filter { it.getString("kind") == "own_upload_lookup" }.map { it.getString("handle") })
+        // A repeated receipt names the row's kind and backfills receiptKind, so a later own_create retires it.
+        lib.beginRemoteOp(receipt("u-1", "own_upload"))
+        assertEquals("own_upload", outbox().single { it.getString("handle") == "https://u/upload" }.getString("receiptKind"))
+        lib.beginRemoteOp(receipt("c-job-2", "own_create"))
+        lib.recordRemoteResult(note, "did:a", "c-job-2", JSONObject().put("outcome", "created").put("jobId", "job-2"))
+        assertTrue(outbox().none { it.getString("handle") == "https://u/upload" })
+        assertEquals(2, outbox().size)
+    }
+    /** Writes an outbox row as it existed before receiptKind: the outbox kind only, no receiptKind field. */
+    private fun writeLegacyOutboxRow(lib: RecordingLibrary, id: String, opId: String, provider: String, kind: String) {
+        lib.outbox.mkdirs()
+        val row = JSONObject().put("entryId", "$id:$opId").put("did", "did:a").put("provider", provider)
+            .put("mode", "own").put("kind", kind).put("handle", JSONObject.NULL).put("handleExpiresAt", JSONObject.NULL)
+            .put("state", "unknown").put("createdAt", 100).put("attempts", 0)
+        File(lib.outbox, "$id:$opId.json").writeText(row.toString())
+    }
+    private fun legacyRow(lib: RecordingLibrary, id: String, opId: String): JSONObject =
+        lib.listOutbox("did:a").let { a -> (0 until a.length()).map { a.getJSONObject(it) } }
+            .single { it.getString("entryId") == "$id:$opId" }
+    @Test fun legacyUnknownAssemblyAIJobIsRecordedAsTranscriptNotPtx() {
+        val lib = library(); val id = id()
+        writeLegacyOutboxRow(lib, id, "legacy", "assemblyai", "unknown")
+        assertEquals("outbox", lib.recordRemoteResult(id, "did:a", "legacy",
+            JSONObject().put("outcome", "created").put("jobId", "job-9")))
+        val row = legacyRow(lib, id, "legacy")
+        assertEquals("transcript", row.getString("kind"))
+        assertEquals("job-9", row.getString("handle"))
+        assertTrue(row.isNull("receiptKind"))
+    }
+    @Test fun legacyPtxJobKindFromAssemblyAIIsTranscriptNotPtx() {
+        val lib = library(); val id = id()
+        writeLegacyOutboxRow(lib, id, "legacy", "assemblyai", "ptx_job")
+        lib.recordRemoteResult(id, "did:a", "legacy", JSONObject().put("outcome", "created").put("jobId", "job-4"))
+        val row = legacyRow(lib, id, "legacy")
+        assertEquals("transcript", row.getString("kind"))
+        assertEquals("job-4", row.getString("handle"))
+    }
+    @Test fun legacyUnknownAssemblyAIUploadURLRoutesToLookupWithURLHandle() {
+        val lib = library(); val id = id()
+        writeLegacyOutboxRow(lib, id, "legacy", "assemblyai", "unknown")
+        lib.recordRemoteResult(id, "did:a", "legacy",
+            JSONObject().put("outcome", "unknown").put("uploadUrl", "https://example.test/late"))
+        val row = legacyRow(lib, id, "legacy")
+        assertEquals("own_upload_lookup", row.getString("kind"))
+        assertEquals("https://example.test/late", row.getString("handle"))
+        assertTrue(row.isNull("receiptKind"))
+    }
+    @Test fun legacyJobFirstThenLateURLKeepsJobAndNeverBecomesPtx() {
+        val lib = library(); val id = id()
+        writeLegacyOutboxRow(lib, id, "legacy", "assemblyai", "unknown")
+        lib.recordRemoteResult(id, "did:a", "legacy", JSONObject().put("outcome", "created").put("jobId", "job-9"))
+        lib.recordRemoteResult(id, "did:a", "legacy",
+            JSONObject().put("outcome", "unknown").put("uploadUrl", "https://example.test/late"))
+        val row = legacyRow(lib, id, "legacy")
+        assertEquals("transcript", row.getString("kind"))
+        assertEquals("job-9", row.getString("handle"))
+    }
+    @Test fun legacyUnknownRowWithoutProvableKindStaysInert() {
+        val lib = library(); val id = id()
+        writeLegacyOutboxRow(lib, id, "other", "unrecognised", "unknown")
+        writeLegacyOutboxRow(lib, id, "ptxurl", "ptx", "unknown")
+        lib.recordRemoteResult(id, "did:a", "other", JSONObject().put("outcome", "created").put("jobId", "job-7"))
+        lib.recordRemoteResult(id, "did:a", "ptxurl",
+            JSONObject().put("outcome", "unknown").put("uploadUrl", "https://example.test/nope"))
+        for (opId in listOf("other", "ptxurl")) {
+            val row = legacyRow(lib, id, opId)
+            assertEquals("unknown", row.getString("kind"))
+            assertTrue(row.isNull("handle"))
+            assertTrue(row.isNull("receiptKind"))
+        }
+    }
+    @Test fun legacyPtxJobRoutesAsPtxCreate() {
+        val lib = library(); val id = id()
+        writeLegacyOutboxRow(lib, id, "legacy", "ptx", "unknown")
+        lib.recordRemoteResult(id, "did:a", "legacy", JSONObject().put("outcome", "created").put("jobId", "ptx-3"))
+        val row = legacyRow(lib, id, "legacy")
+        assertEquals("ptx_job", row.getString("kind"))
+        assertEquals("ptx-3", row.getString("handle"))
     }
     @Test fun receiptFailpointsAndInterruptedOutboxTransferKeepAnAuthority() {
         val ops = FileOps(); val dir = temp.newFolder(); val lib = RecordingLibrary(dir, ops)

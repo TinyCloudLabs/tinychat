@@ -17,7 +17,7 @@ import { openManageStorage } from "@/lib/openManageStorage";
 import { Empty } from "@/components/ui/empty";
 import { Skeleton } from "@/components/ui/skeleton";
 import { NotePipelineContext } from "@/capture/pipeline/NotePipelineContext";
-import type { VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
+import { privateAudioSourceFromMetadata, privateRefusal, type PrivateAudioSource, type VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
 import type { FirefliesSentence } from "@/lib/connectors/firefliesClient";
 import type { MeetingMetadataRead, TranscriptRead } from "@/lib/connectors/meetingExplorer";
 import { UPLOAD_MEETING_SOURCE } from "@/lib/audioUpload";
@@ -35,9 +35,9 @@ import { detailWhen, formatSpokenDuration } from "./formatters";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { DesktopWhisperStatus } from "./DesktopWhisperStatus";
 import { OnDeviceNoteStatus } from "./OnDeviceNoteStatus";
+import { privateRefusalCopy } from "@/capture/recorder/privateInstead";
 import { TranscribeAction } from "./TranscribeAction";
 import type { TranscribeActionProps } from "./TranscribeAction";
-import { privateCloudFits } from "./transcribeProviders";
 import { HowThisGotHere } from "./HowThisGotHere";
 import { librarySourceLabel } from "./libraryKinds";
 import { TimestampedTranscript, type TranscriptGap } from "./TimestampedTranscript";
@@ -49,10 +49,10 @@ import { LazySavedNote } from "./savedNote/LazySavedNote";
 import { SAVED_NOTE_COPY } from "./savedNote/savedNoteCopy";
 import type { SavedNoteStore } from "./savedNote/savedNoteStore";
 
-export type AudioLoad = (signal: AbortSignal, onProgress: (loadedBytes: number, totalBytes: number) => void) => Promise<Blob | null>;
+export type AudioLoad = (signal: AbortSignal, onProgress: (loadedBytes: number, totalBytes: number) => void) => Promise<Blob | string | null>;
 
-/** A note's audio: fetched from the space as a blob, or a file still on this phone, played from its URL. */
-export type NoteAudio = { load: AudioLoad; channels?: 1 | 2 } | { localUrl: () => Promise<string>; channels?: 1 | 2 };
+/** A note's audio: loaded through the player (a Blob from the space, or the phone's file URL; `onPhone` marks a note still on this phone), or a native URL resolved on demand. */
+export type NoteAudio = { load: AudioLoad; channels?: 1 | 2; onPhone?: true } | { localUrl: () => Promise<string>; channels?: 1 | 2 };
 
 export function noteAudioPlayerProps(audio: NoteAudio): { load: AudioLoad; channels?: 1 | 2 } | { resolveUrl: () => Promise<string>; channels?: 1 | 2 } {
   return "load" in audio ? { load: audio.load, channels: audio.channels } : { resolveUrl: audio.localUrl, channels: audio.channels };
@@ -127,11 +127,11 @@ function Frame(props: { title: string; pushed: boolean; onBack: () => void; acti
 }
 
 /** Private storage-full: Manage storage first. Transcribe again is the retry; storage-full is never retried by itself. */
-function StorageFullActions(props: Pick<TranscribeActionProps, "noteId" | "transcription" | "durationSecs">) {
+function StorageFullActions(props: Pick<TranscribeActionProps, "noteId" | "transcription" | "durationSecs"> & { privateAudioSource?: PrivateAudioSource }) {
   return (
     <div className="flex flex-wrap items-center gap-2">
       <Button type="button" onClick={() => void openManageStorage()}>Manage storage</Button>
-      <TranscribeAction noteId={props.noteId} transcription={props.transcription} durationSecs={props.durationSecs} label="Transcribe again" />
+      <TranscribeAction noteId={props.noteId} transcription={props.transcription} durationSecs={props.durationSecs} privateAudioSource={props.privateAudioSource} rerun label="Transcribe again" />
     </div>
   );
 }
@@ -142,9 +142,10 @@ export function VoiceNoteTranscriptionStatus(props: {
   outcome: "none" | "pending" | "failed" | "skipped" | "transcribed" | "no_speech";
   errorCode?: string | null;
   transcription: VoiceNoteTranscriptionProps | undefined;
+  privateAudioSource?: PrivateAudioSource;
   provider?: "private" | "powerful" | "unknown";
 }) {
-  const { item, transcription } = props;
+  const { item, transcription, privateAudioSource } = props;
   const provider = props.provider ?? "private";
   if (props.outcome === "no_speech") {
     return (
@@ -153,6 +154,7 @@ export function VoiceNoteTranscriptionStatus(props: {
       </p>
     );
   }
+  const refusal = transcription ? privateRefusal(transcription, item.durationSecs, null, privateAudioSource) : null;
   const job = transcription?.jobs.get(item.sourceId);
   // Saved just now; the reads have not caught up yet. Never offer Transcribe again meanwhile.
   if (job?.kind === "done") {
@@ -176,7 +178,7 @@ export function VoiceNoteTranscriptionStatus(props: {
     return (
       <div className="flex flex-col gap-2" data-testid="voice-note-transcription-held">
         <p role="status" className="min-w-0 text-callout text-muted-foreground">{job.message}</p>
-        <TranscribeAction noteId={item.sourceId} transcription={transcription} durationSecs={item.durationSecs} />
+        <TranscribeAction noteId={item.sourceId} transcription={transcription} durationSecs={item.durationSecs} privateAudioSource={privateAudioSource} />
       </div>
     );
   }
@@ -190,8 +192,8 @@ export function VoiceNoteTranscriptionStatus(props: {
         </p>
         {job.reference && <ReferenceDetails reference={job.reference} />}
         {storageFull
-          ? <StorageFullActions noteId={item.sourceId} transcription={transcription} durationSecs={item.durationSecs} />
-          : job.retryable && failure.retryable && <TranscribeAction noteId={item.sourceId} transcription={transcription} durationSecs={item.durationSecs} label="Try again" />}
+          ? <StorageFullActions noteId={item.sourceId} transcription={transcription} durationSecs={item.durationSecs} privateAudioSource={privateAudioSource} />
+          : job.retryable && failure.retryable && <TranscribeAction noteId={item.sourceId} transcription={transcription} durationSecs={item.durationSecs} privateAudioSource={privateAudioSource} label="Try again" />}
       </div>
     );
   }
@@ -200,14 +202,13 @@ export function VoiceNoteTranscriptionStatus(props: {
     const storageFull = failure.code === TRANSCRIPT_STORAGE_FULL_CODE;
     const canChoosePrivate = transcription?.availability === "available"
       || (transcription?.availability === "failed" && transcription.consented);
-    const privateFits = item.durationSecs === null || transcription === undefined || privateCloudFits(transcription, item.durationSecs);
     return (
       <div className="flex flex-col gap-2" data-testid="voice-note-transcription-failed">
         <p role="alert" className="min-w-0 text-callout text-destructive">{storageFull ? storageFullTranscriptCopy(item.localAudioReady === true) : failure.message}</p>
         {storageFull
-          ? <StorageFullActions noteId={item.sourceId} transcription={transcription} durationSecs={item.durationSecs} />
-          : failure.retryable && (captureCapabilities().localTranscription || (canChoosePrivate && privateFits))
-            && <TranscribeAction noteId={item.sourceId} transcription={transcription} durationSecs={item.durationSecs} label="Try again" />}
+          ? <StorageFullActions noteId={item.sourceId} transcription={transcription} durationSecs={item.durationSecs} privateAudioSource={privateAudioSource} />
+          : failure.retryable && (captureCapabilities().localTranscription || canChoosePrivate || transcription !== undefined)
+            && <TranscribeAction noteId={item.sourceId} transcription={transcription} durationSecs={item.durationSecs} privateAudioSource={privateAudioSource} label="Try again" />}
       </div>
     );
   }
@@ -226,24 +227,44 @@ export function VoiceNoteTranscriptionStatus(props: {
             : "Private cloud availability is being checked — we’ll retry."}
         </p>
         {transcription?.consented
-          && <TranscribeAction noteId={item.sourceId} transcription={transcription} durationSecs={item.durationSecs} />}
+          && <TranscribeAction noteId={item.sourceId} transcription={transcription} durationSecs={item.durationSecs} privateAudioSource={privateAudioSource} />}
       </div>
     );
   }
   if (!localCapable && !choosable) return null;
-  if (!localCapable && transcription && item.durationSecs !== null && !privateCloudFits(transcription, item.durationSecs)) {
+  if (refusal?.kind === "browser-wav-too-large") {
     return (
-      <p className="text-callout text-muted-foreground" data-testid="voice-note-transcription-over-limit">
-        Private Transcription accepts notes up to {formatSpokenDuration(transcription.maxSeconds)}. This note is {formatSpokenDuration(item.durationSecs)}.
-      </p>
+      <div className="flex flex-col gap-2">
+        <TranscribeAction noteId={item.sourceId} transcription={transcription} durationSecs={item.durationSecs} privateAudioSource={privateAudioSource} />
+      </div>
     );
+  }
+  if (!localCapable && transcription) {
+    if (refusal?.kind === "unknown") {
+      // Limits unknown: no Private offer, but the recheck stays so the limits can come back.
+      return (
+        <div className="flex flex-col gap-2" data-testid="voice-note-transcription-limits-unknown">
+          <p className="text-callout text-muted-foreground">
+            Private&apos;s limits aren’t available right now. Try again later.
+          </p>
+          <Button type="button" variant="outline" size="sm" onClick={() => void transcription.onRecheck()}>Check again</Button>
+        </div>
+      );
+    }
+    if (refusal?.kind === "duration") {
+      return (
+        <p className="text-callout text-muted-foreground" data-testid="voice-note-transcription-over-limit">
+          {privateRefusalCopy(refusal)}
+        </p>
+      );
+    }
   }
   return (
     <div className="flex flex-col gap-2">
       <p className="text-callout text-muted-foreground">
         {props.outcome === "skipped" ? "Transcription skipped" : "Not transcribed"}
       </p>
-      <TranscribeAction noteId={item.sourceId} transcription={transcription} durationSecs={item.durationSecs} />
+      <TranscribeAction noteId={item.sourceId} transcription={transcription} durationSecs={item.durationSecs} privateAudioSource={privateAudioSource} />
     </div>
   );
 }
@@ -272,6 +293,7 @@ function NoTranscript(props: { item: LibraryItem; metadata: MeetingMetadataRead;
   const errorCode = props.metadata.status === "ok" && typeof props.metadata.metadata.transcription_error_code === "string"
     ? props.metadata.metadata.transcription_error_code
     : null;
+  const privateAudioSource = privateAudioSourceFromMetadata(props.metadata.status === "ok" ? props.metadata.metadata : null);
   const view = useContext(NotePipelineContext);
   const capture = props.metadata.status === "ok" ? props.metadata.metadata.capture : null;
   const options = capture && typeof capture === "object" ? (capture as { options?: { transcriber?: string } }).options : null;
@@ -288,25 +310,25 @@ function NoTranscript(props: { item: LibraryItem; metadata: MeetingMetadataRead;
     // stepper skips the transcript step nothing will start one, and the Transcribe action below stands.
     const privateComing = stepperShown && line !== null && view.route === "private-cloud" && job === undefined;
     const stepperCovers = onPhoneRoute || privateComing || job?.kind === "active" || job?.kind === "failed";
-    const status = stepperCovers ? null : VoiceNoteTranscriptionStatus({ item: props.item, outcome, errorCode, transcription: props.transcription, provider });
+    const status = stepperCovers ? null : VoiceNoteTranscriptionStatus({ item: props.item, outcome, errorCode, transcription: props.transcription, privateAudioSource, provider });
     // "Will appear here" would sit beside a Transcribe action that says it won't unless asked.
     const shownLine = status !== null && line === SAVED_NOTE_COPY.transcriptHere ? null : line;
     return (
       <>
         {shownLine !== null && <p className="text-callout text-muted-foreground" data-testid="note-transcript-pipeline">{shownLine}</p>}
         {status}
-        <OnDeviceNoteStatus noteId={props.item.sourceId} fallback={null} transcription={props.transcription} durationSecs={props.item.durationSecs} stepperShown />
+        <OnDeviceNoteStatus noteId={props.item.sourceId} fallback={null} transcription={props.transcription} durationSecs={props.item.durationSecs} privateAudioSource={privateAudioSource} stepperShown />
       </>
     );
   }
   // A plain function of its props (no hooks), so its "nothing to say" is known here.
-  const status = VoiceNoteTranscriptionStatus({ item: props.item, outcome, errorCode, transcription: props.transcription, provider }) ?? (
+  const status = VoiceNoteTranscriptionStatus({ item: props.item, outcome, errorCode, transcription: props.transcription, privateAudioSource, provider }) ?? (
     <p className="text-callout text-muted-foreground" data-testid={props.item.onPhone ? "note-transcript-on-phone" : undefined}>
       {props.item.onPhone ? "No transcript yet. It shows here once this note is saved to your space." : "No transcript."}
     </p>
   );
   if (outcome === "no_speech") return status;
-  return <OnDeviceNoteStatus noteId={props.item.sourceId} fallback={status} transcription={props.transcription} durationSecs={props.item.durationSecs} />;
+  return <OnDeviceNoteStatus noteId={props.item.sourceId} fallback={status} transcription={props.transcription} durationSecs={props.item.durationSecs} privateAudioSource={privateAudioSource} />;
 }
 
 /** The transcript text a voice note's row carries (`transcript_text`), for when its body can't be read. */

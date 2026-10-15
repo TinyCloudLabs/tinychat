@@ -1,0 +1,197 @@
+import { afterEach, beforeEach, expect, test } from "bun:test";
+import { IDBFactory } from "fake-indexeddb";
+import { VoiceNotes, __setVoiceNotesForTests, type VoiceNoteRecording, type VoiceNotesPlugin } from "./nativeVoiceNotes";
+import { mountVoiceNoteAccount } from "./accountContext";
+import { cachedAudioSize, cachedSpaceAudio, cachedSpaceAudioOffline, clearCachedAudio,
+  latestSpaceAudioIdentity, localPlaybackUrl, observeSpaceAudioIdentity, trimCachedAudio } from "./audioPlaybackCache";
+
+const original = VoiceNotes;
+const originalIdb = globalThis.indexedDB;
+const saved = (id: string, state: "saved" | "pending"): VoiceNoteRecording => ({
+  id, owner: "did:test", startedAt: 1, durationMs: 1000, mimeType: "audio/mp4", sizeBytes: 40,
+  silencedMs: 0, silencedEvents: 0, noSignalMs: 0,
+  ledger: { audio: { state, rowId: state === "saved" ? "row" : null, at: 1,
+    ...(state === "saved" ? { verifiedInSpace: { sha256: "a".repeat(64), size: 40 } } : {}) },
+  } as VoiceNoteRecording["ledger"],
+});
+
+let notes: VoiceNoteRecording[];
+let sizes: Map<string, number>;
+let evicted: string[];
+let unmountAccount: () => void;
+beforeEach(() => {
+  unmountAccount = mountVoiceNoteAccount("did:test");
+  globalThis.indexedDB = new IDBFactory() as unknown as IDBFactory;
+  notes = [];
+  sizes = new Map();
+  evicted = [];
+  __setVoiceNotesForTests({
+    listPending: async () => ({ recordings: notes }),
+    localAudioSize: async ({ id }: { id: string }) => ({ size: sizes.get(id) ?? 0 }),
+    evictCachedAudio: async ({ id }: { id: string }) => {
+      if (notes.find((note) => note.id === id)?.ledger?.audio.state !== "saved") throw new Error("not space backed");
+      sizes.set(id, 0); evicted.push(id);
+    },
+  } as VoiceNotesPlugin, { available: true });
+});
+afterEach(() => {
+  globalThis.indexedDB = originalIdb;
+  unmountAccount();
+  __setVoiceNotesForTests(original, { available: null });
+});
+
+test("a complete first download is reused without a second space read", async () => {
+  let reads = 0;
+  const load = async () => { reads++; return new Blob(["complete audio"], { type: "audio/mp4" }); };
+  expect((await cachedSpaceAudio("space", "did", "exo-voice-note", "a", "rev-1", load))?.size).toBe(14);
+  expect((await cachedSpaceAudio("space", "did", "exo-voice-note", "a", "rev-1", load))?.size).toBe(14);
+  expect(reads).toBe(1);
+});
+
+test("a failed or aborted download leaves no cache entry", async () => {
+  const broken = async (): Promise<Blob> => { throw new Error("part 2 failed"); };
+  await expect(cachedSpaceAudio("space", "did", "exo-voice-note", "partial", "rev-1", broken)).rejects.toThrow("part 2 failed");
+  const controller = new AbortController();
+  controller.abort();
+  await cachedSpaceAudio("space", "did", "exo-voice-note", "aborted", "rev-1", async () => new Blob(["bytes"]), controller.signal);
+  expect((await cachedAudioSize()).bytes).toBe(0);
+});
+
+test("eviction and Clear cached audio touch only confirmed space copies", async () => {
+  const localOnly = saved("local-only", "saved");
+  delete localOnly.ledger!.audio.verifiedInSpace;
+  notes = [saved("uploaded", "saved"), localOnly, saved("pending", "pending")];
+  sizes.set("uploaded", 40);
+  sizes.set("local-only", 40);
+  sizes.set("pending", 40);
+  await cachedSpaceAudio("space", "did", "exo-voice-note", "downloaded", "rev-1", async () => new Blob(["remote"]));
+  expect((await cachedAudioSize()).bytes).toBe(46);
+  await trimCachedAudio(5);
+  expect(evicted).toEqual(["uploaded"]);
+  expect(sizes.get("local-only")).toBe(40);
+  expect(sizes.get("pending")).toBe(40);
+  await cachedSpaceAudio("space", "did", "exo-voice-note", "again", "rev-1", async () => new Blob(["remote"]));
+  await clearCachedAudio();
+  expect((await cachedAudioSize()).bytes).toBe(0);
+  expect(sizes.get("local-only")).toBe(40);
+  expect(sizes.get("pending")).toBe(40);
+});
+
+test("trim keeps notes whose local audio, queued on-device STT, or hosted job still reads this device's bytes", async () => {
+  const withLedger = (id: string, patch: Record<string, unknown>): VoiceNoteRecording => {
+    const note = saved(id, "saved");
+    return { ...note, ledger: { ...note.ledger!, ...patch } } as VoiceNoteRecording;
+  };
+  notes = [
+    withLedger("importing", { localAudio: { state: "preparing", error: null } }),
+    { ...withLedger("transcribing", {}), stt: { state: "queued" }, options: { uploadAudio: false, transcriber: "on-device" } } as VoiceNoteRecording,
+    withLedger("hosted", { remote: [{ opId: "op", provider: "assemblyai", mode: "hosted", stage: "submitted", cleanup: "none" }] }),
+    withLedger("finished", { remote: [{ opId: "op", provider: "assemblyai", mode: "hosted", stage: "done", cleanup: "done" }] }),
+    saved("uploaded", "saved"),
+  ];
+  for (const note of notes) sizes.set(note.id, 40);
+  await trimCachedAudio(0);
+  expect(evicted).toEqual(["finished", "uploaded"]);
+});
+
+test("a note whose local audio is still importing or failed to import is a cache miss", async () => {
+  for (const code of ["audio_preparing", "audio_preparation_failed"]) {
+    __setVoiceNotesForTests({
+      localAudioUrl: async () => { throw Object.assign(new Error(code), { code }); },
+    } as VoiceNotesPlugin, { available: true });
+    expect(await localPlaybackUrl("importing")).toBeNull();
+  }
+});
+
+test("a replacement with a new manifest identity plays its new bytes", async () => {
+  let reads = 0;
+  const first = await cachedSpaceAudio("space", "did", "exo-voice-note", "same", "hash-1", async () => {
+    reads++; return new Blob(["old"]);
+  });
+  const second = await cachedSpaceAudio("space", "did", "exo-voice-note", "same", "hash-2", async () => {
+    reads++; return new Blob(["new"]);
+  });
+  expect(await first!.text()).toBe("old");
+  expect(await second!.text()).toBe("new");
+  expect(reads).toBe(2);
+  expect((await cachedAudioSize()).bytes).toBe(3);
+});
+
+test("a failed replacement download persists its identity and cannot replay the old cache", async () => {
+  const scope = ["space", "did", "exo-voice-note", "same"] as const;
+  await cachedSpaceAudio(...scope, "rev-1", async () => new Blob(["old"]));
+  await expect(cachedSpaceAudio(...scope, "rev-2", async () => { throw new Error("download failed"); }))
+    .rejects.toThrow("download failed");
+  expect((await latestSpaceAudioIdentity(...scope))?.identity).toBe("rev-2");
+  expect(await cachedSpaceAudioOffline(...scope)).toBeNull();
+  expect((await cachedAudioSize()).bytes).toBe(3); // The old bytes remain stored.
+});
+
+test("an explicitly uploaded note joins the bounded cache after verification", async () => {
+  notes = [{ ...saved("explicit", "saved"), options: { uploadAudio: false } as VoiceNoteRecording["options"] }];
+  sizes.set("explicit", 40);
+  expect((await cachedAudioSize()).bytes).toBe(40);
+  await trimCachedAudio(0);
+  expect(evicted).toEqual(["explicit"]);
+});
+
+test("a failing device cache never blocks space playback or an offline lookup", async () => {
+  globalThis.indexedDB = { open: () => { throw new DOMException("disk full", "QuotaExceededError"); } } as unknown as IDBFactory;
+  const blob = await cachedSpaceAudio("space", "did", "exo-voice-note", "a", "rev-1", async () => new Blob(["fresh"]));
+  expect(await blob!.text()).toBe("fresh");
+  expect(await latestSpaceAudioIdentity("space", "did", "exo-voice-note", "a")).toBeUndefined();
+  expect(await cachedSpaceAudioOffline("space", "did", "exo-voice-note", "a")).toBeNull();
+});
+
+test("trim and Clear drop identities whose bytes left the device, so offline is a plain miss", async () => {
+  const scope = ["space", "did", "exo-voice-note", "played"] as const;
+  await cachedSpaceAudio(...scope, "rev-1", async () => new Blob(["bytes"]));
+  await trimCachedAudio(0);
+  expect(await latestSpaceAudioIdentity(...scope)).toBeUndefined();
+  expect(await cachedSpaceAudioOffline(...scope)).toBeNull();
+  await cachedSpaceAudio(...scope, "rev-2", async () => new Blob(["again"]));
+  await clearCachedAudio();
+  expect(await latestSpaceAudioIdentity(...scope)).toBeUndefined();
+  expect(await cachedSpaceAudioOffline(...scope)).toBeNull();
+});
+
+test("a note still on the device keeps its identity through a trim", async () => {
+  notes = [saved("local", "pending")];
+  sizes.set("local", 40);
+  await observeSpaceAudioIdentity("space", "did", "exo-voice-note", "local", "rev-1");
+  await cachedSpaceAudio("space", "did", "exo-voice-note", "other", "rev-1", async () => new Blob(["remote"]));
+  await trimCachedAudio(0);
+  expect((await latestSpaceAudioIdentity("space", "did", "exo-voice-note", "local"))?.identity).toBe("rev-1");
+});
+
+test("only the signed-in account's verified copies are cache candidates", async () => {
+  notes = [saved("mine", "saved"), { ...saved("theirs", "saved"), owner: "did:test:other" }];
+  sizes.set("mine", 40); sizes.set("theirs", 40);
+  await trimCachedAudio(0);
+  expect(evicted).toEqual(["mine"]);
+});
+
+test("with nobody signed in no saved note is a cache candidate", async () => {
+  unmountAccount();
+  notes = [saved("mine", "saved")];
+  sizes.set("mine", 40);
+  expect((await cachedAudioSize()).bytes).toBe(0);
+  await trimCachedAudio(0);
+  expect(evicted).toEqual([]);
+});
+
+test("a candidate native refuses as in use is skipped and the rest of the cache is still trimmed", async () => {
+  notes = [saved("busy", "saved"), saved("free", "saved")];
+  sizes.set("busy", 40); sizes.set("free", 40);
+  __setVoiceNotesForTests({
+    listPending: async () => ({ recordings: notes }),
+    localAudioSize: async ({ id }: { id: string }) => ({ size: sizes.get(id) ?? 0 }),
+    evictCachedAudio: async ({ id }: { id: string }) => {
+      if (id === "busy") throw Object.assign(new Error("audio_in_use"), { code: "audio_in_use" });
+      sizes.set(id, 0); evicted.push(id);
+    },
+  } as VoiceNotesPlugin, { available: true });
+  await trimCachedAudio(0);
+  expect(evicted).toEqual(["free"]);
+  expect(sizes.get("busy")).toBe(40);
+});

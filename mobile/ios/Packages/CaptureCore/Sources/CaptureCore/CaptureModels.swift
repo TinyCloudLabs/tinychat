@@ -6,7 +6,7 @@ public enum CaptureError: Error, Equatable, LocalizedError {
     case staleTransition, ownerMismatch, revConflict, recordingInProgress
     case insufficientStorage, noAudio, cancelled, pauseFailed, resumeFailed, io(String)
     case finalizationTimedOut(String)
-    case rowIDRequired, claimEvidenceRequired, claimEvidenceInvalid
+    case rowIDRequired, claimEvidenceRequired, claimEvidenceInvalid, audioInUse
 
     public var code: String {
         switch self {
@@ -30,6 +30,7 @@ public enum CaptureError: Error, Equatable, LocalizedError {
         case .rowIDRequired: "row_id_required"
         case .claimEvidenceRequired: "claim_evidence_required"
         case .claimEvidenceInvalid: "claim_evidence_invalid"
+        case .audioInUse: "audio_in_use"
         }
     }
 

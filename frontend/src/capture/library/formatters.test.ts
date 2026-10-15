@@ -1,15 +1,17 @@
 import { describe, expect, test } from "bun:test";
 
-import { dayGroupLabel, detailWhen, formatClockDuration, formatSpokenDuration, groupByDay, rowWhen, timeOfDay } from "./formatters";
+import { dayGroupLabel, detailWhen, formatClockDuration, formatExactDuration, formatSpokenDuration, groupByDay, rowWhen, timeOfDay } from "./formatters";
 
 const NOW = new Date(2026, 9, 6, 9, 41);
 const at = (day: number, hour = 14, year = 2026, month = 9) => new Date(year, month, day, hour, 0).toISOString();
 
 describe("formatters", () => {
-  test("durations as tabular clock times", () => {
+  test("clock durations floor fractional seconds, matching elapsed media time", () => {
     expect(formatClockDuration(42)).toBe("0:42");
     expect(formatClockDuration(31 * 60 + 20)).toBe("31:20");
     expect(formatClockDuration(3725)).toBe("1:02:05");
+    expect(formatClockDuration(42.999)).toBe("0:42");
+    expect(formatClockDuration(43)).toBe("0:43");
     expect(formatClockDuration(-3)).toBe("0:00");
   });
 
@@ -18,6 +20,16 @@ describe("formatters", () => {
     expect(formatSpokenDuration(31 * 60)).toBe("31 min");
     expect(formatSpokenDuration(62 * 60)).toBe("1 h 2 min");
     expect(formatSpokenDuration(120 * 60)).toBe("2 h");
+  });
+
+  test("exact durations: a limit floors, a note's length ceils, so a rejected note never reads as its limit", () => {
+    const advertisedLimit = 7_777;
+    expect(formatExactDuration(advertisedLimit, "floor")).toBe("2 h 9 min 37 s");
+    expect(formatExactDuration(advertisedLimit + 17.5, "floor")).toBe("2 h 9 min 54 s");
+    expect(formatExactDuration(advertisedLimit + 17.532, "ceil")).toBe("2 h 9 min 55 s");
+    expect(formatExactDuration(advertisedLimit + 0.1, "ceil")).toBe("2 h 9 min 38 s");
+    expect(formatExactDuration(advertisedLimit + 459, "ceil")).toBe("2 h 17 min 16 s");
+    expect(formatExactDuration(45, "ceil")).toBe("45 s");
   });
 
   test("day groups: Today, Yesterday, then the date (with the year only when it differs)", () => {

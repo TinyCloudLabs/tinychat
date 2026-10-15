@@ -127,6 +127,7 @@ export const PRIVATE_COPY = {
   afterUpload: "After audio uploads",
   noSpeech: "No speech found",
   unavailable: "Private transcription isn't available right now",
+  limitsUnknown: "Private's limits aren't available right now. Try again later.",
   checkFailed: "Couldn't check whether private transcription is available",
   checking: "Checking private transcription…",
   noConsent: "Waiting for your OK to use Private",

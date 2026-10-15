@@ -29,10 +29,11 @@ const noop = () => {};
 const VOICE: LibraryItem = { id: "row-1", source: "exo-voice-note", sourceId: "rec-1", title: "Voice note · Oct 6, 9:28 AM", startedAt: "2026-10-06T09:28:00.000Z", durationSecs: 42 };
 const MEETING: LibraryItem = { id: "row-2", source: "tinycloud-transcriber", sourceId: "mtg-2", title: "Weekly sync", startedAt: "2026-10-05T14:00:00.000Z", durationSecs: 1880 };
 const UPLOAD: LibraryItem = { id: "row-3", source: "exo-upload", sourceId: "up-3", title: "Interview", startedAt: "2026-10-01T11:00:00.000Z", durationSecs: 600 };
+const PRIVATE_CAP = 7_777;
 const audio = { load: async () => null };
 
 function transcription(patch: Partial<VoiceNoteTranscriptionProps> = {}): VoiceNoteTranscriptionProps {
-  return { availability: "available", consented: true, maxSeconds: 600, jobs: new Map(), onTranscribe: noop, onConsent: noop, onTurnOff: noop, onRecheck: noop, ...patch };
+  return { availability: "available", consented: true, maxSeconds: 600, maxBytes: 186_496_800, jobs: new Map(), onTranscribe: noop, onTranscribeAgain: () => null, onConsent: noop, onTurnOff: noop, onRecheck: noop, ...patch };
 }
 
 function render(patch: Partial<NoteDetailViewProps> = {}) {
@@ -79,9 +80,15 @@ describe("NoteDetailView", () => {
       .toContain("Saving from this browser…");
   });
   test("an over-limit note explains the advertised maximum before offering Transcribe", () => {
-    const html = render({ item: { ...VOICE, durationSecs: 10_800 }, transcription: transcription({ maxSeconds: 7_200 }) });
+    const html = render({ item: { ...VOICE, durationSecs: PRIVATE_CAP + 1 }, transcription: transcription({ maxSeconds: PRIVATE_CAP }) });
     expect(html).toContain('data-testid="voice-note-transcription-over-limit"');
-    expect(html).toContain("Private Transcription accepts notes up to 2 h. This note is 3 h.");
+    expect(html).toContain("Private Transcription accepts notes up to 2 h 9 min 36 s. This note is 2 h 9 min 38 s.");
+    expect(html).not.toContain('data-testid="voice-note-transcribe"');
+  });
+  test("a note whose PTX limit is unknown says Private's limits aren't available, with no duration and no Transcribe", () => {
+    const html = render({ item: { ...VOICE, durationSecs: 321 }, transcription: transcription({ maxSeconds: null }) });
+    expect(html).toContain('data-testid="voice-note-transcription-limits-unknown"');
+    expect(html).not.toContain('data-testid="voice-note-transcription-over-limit"');
     expect(html).not.toContain('data-testid="voice-note-transcribe"');
   });
   test("a committed transcript with a missing body does not show its preview as full text", () => {
@@ -265,7 +272,7 @@ describe("a voice note's transcription", () => {
 
   test("chosen: Transcribe, for a long note too while it is within the advertised limit", () => {
     expect(render({ transcription: transcription() })).toContain('data-testid="transcribe-button"');
-    const long = render({ item: { ...VOICE, durationSecs: 900 }, transcription: transcription({ maxSeconds: 7_200 }) });
+    const long = render({ item: { ...VOICE, durationSecs: 900 }, transcription: transcription({ maxSeconds: PRIVATE_CAP }) });
     expect(long).toContain('data-testid="transcribe-button"');
     expect(long).not.toContain("minutes can be transcribed");
   });
@@ -289,7 +296,7 @@ describe("a voice note's transcription", () => {
           transcription_error_code: code,
         } },
         transcript: { status: "absent" },
-        transcription: transcription({ maxSeconds: 7_200 }),
+        transcription: transcription({ maxSeconds: PRIVATE_CAP }),
       });
       expect(html).toContain('data-testid="voice-note-transcription-failed"');
       expect(html).toContain("Private cloud couldn&#x27;t accept this recording&#x27;s length or size. Try again.");
@@ -326,10 +333,11 @@ describe("a voice note's transcription", () => {
         transcription_error_code: "provider_unavailable",
       } },
       transcript: { status: "absent" },
-      transcription: transcription({ maxSeconds: 7_200 }),
+      transcription: transcription({ availability: "checking", maxSeconds: null }),
     });
     expect(html).toContain("Private cloud transcription failed while transcribing. Retrying uploads the recording again.");
-    expect(html).toContain("Try again");
+    expect(html).toContain('data-testid="transcribe-private-recheck"');
+    expect(html).toContain("Check again");
   });
   test("persisted incomplete transcript is retryable with explicit may-be-incomplete copy", () => {
     const html = render({
@@ -338,7 +346,7 @@ describe("a voice note's transcription", () => {
         transcription_error_code: "transcript_incomplete",
       } },
       transcript: { status: "absent" },
-      transcription: transcription({ maxSeconds: 7_200 }),
+      transcription: transcription({ maxSeconds: PRIVATE_CAP }),
     });
     expect(html).toContain("Private Transcription returned a transcript that may be incomplete. Try again later.");
     expect(html).toContain("Try again");

@@ -75,7 +75,7 @@ describe("ReceiptView", () => {
   test("a note held back from transcription is not announced as transcribing", () => {
     const route = (jobs: NonNullable<RecorderValue["transcription"]>["jobs"]) => render({ phase: "idle", outcome: "saved", startedAt: null,
       lastSaved: { id: "rec-1", durationMs: 42_000, at: Date.now() },
-      transcription: { availability: "available", consented: true, maxSeconds: 600, jobs, onTranscribe: noop, onConsent: noop, onTurnOff: noop, onRecheck: noop } });
+      transcription: { availability: "available", consented: true, maxSeconds: 600, maxBytes: 186_496_800, jobs, onTranscribe: noop, onConsent: noop, onTurnOff: noop, onRecheck: noop } });
     const active = route(new Map([["rec-1", { kind: "active", status: { kind: "waiting" } }]]));
     // Before the native ledger resolves, the receipt cannot claim a route from a job alone.
     expect(active).toContain("Getting this iPhone&#x27;s audio…");
@@ -113,8 +113,9 @@ describe("ReceiptView", () => {
 
 describe("receiptRouting: where a saved note stands", () => {
   const saved = { id: "rec-1", durationMs: 42_000, at: Date.now() };
+  const PRIVATE_CAP = 7_777;
   const transcription = (patch: Partial<VoiceNoteTranscriptionProps> = {}): VoiceNoteTranscriptionProps => ({
-    availability: "available", consented: true, maxSeconds: 7_200, jobs: new Map(),
+    availability: "available", consented: true, maxSeconds: PRIVATE_CAP, maxBytes: 186_496_800, jobs: new Map(),
     onTranscribe: noop, onTranscribePrivately: noop, onConsent: noop, onTurnOff: noop, onRecheck: noop, ...patch,
   });
   const jobs = (kind: "active" | "failed") =>

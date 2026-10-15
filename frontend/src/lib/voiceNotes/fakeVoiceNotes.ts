@@ -353,6 +353,11 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
           jobId: stored?.jobId ?? undefined });
       }
     },
+    async evictCachedAudio({ id }) {
+      const note = checked(id);
+      if (note.ledger?.audio.state !== "saved") throw failure("audio_not_space_backed");
+      note.sizeBytes = 0;
+    },
     async listPending() { return { recordings: [...notes.values()].map((note) => structuredClone(note)) }; },
     async pause() {
       const s = session;
@@ -492,6 +497,7 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
       return { rev: note.rev };
     },
     async localAudioUrl({ id }) { checked(id); return { url: `fake://voice-notes/${id}.m4a` }; },
+    async localAudioSize({ id }) { return { size: checked(id).sizeBytes }; },
     async putTranscript({ id, transcript }) {
       checked(id);
       if (transcript.noteId !== id) throw failure("transcript_note_mismatch");

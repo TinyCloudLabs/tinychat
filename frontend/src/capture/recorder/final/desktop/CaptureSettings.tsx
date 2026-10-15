@@ -34,6 +34,7 @@ import {
   type FocusTarget,
 } from "./captureSettingsModel";
 import { onOpenCaptureSettings } from "./openCaptureSettings";
+import { AudioCacheSettings } from "@/capture/AudioCacheSettings";
 import "../soft.css";
 import "./captureSettings.css";
 
@@ -382,6 +383,7 @@ export function SettingsPanel({
           Local transcription and meeting audio need the Exo app.
         </p>
         <MicrophoneSection microphone={microphone} />
+        <AudioCacheSettings />
       </>
     );
   if (!extrasAvailable)
@@ -419,6 +421,7 @@ export function SettingsPanel({
         />
       )}
       <MicrophoneSection microphone={microphone} />
+      <AudioCacheSettings />
       {load.status === "ready" && (
         <section aria-labelledby="cs-meet-h">
           <h3 id="cs-meet-h" className="cs-h">

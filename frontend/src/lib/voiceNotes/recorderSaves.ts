@@ -21,16 +21,23 @@ import {
 } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { syncOnDeviceTranscript } from "@/lib/voiceNotes/onDeviceTranscriber";
 import { saveVoiceNote, type NoteSyncErrorCode, type VoiceNoteAudio, type VoiceNoteAudioSource, type StoreAudioOptions } from "@/lib/voiceNotes/voiceNoteStore";
+import { upgradeSavedAudioReceipt } from "./audioReceiptUpgrade";
 import { assertAccountContext, assertCurrent, captureAccountContext, type AccountContext } from "@/lib/voiceNotes/accountContext";
 import { isLegacyNote } from "@/lib/voiceNotes/legacyMigration";
 import { deleteNote } from "@/lib/voiceNotes/recordingNotes";
 import { VoiceNoteSaveTimeout, saveSlowMessage, withVoiceNoteSaveDeadline } from "@/lib/voiceNotes/saveDeadline";
 import { readableError } from "@/lib/readableError";
 import { logPipeline, logPipelineError } from "@/lib/debugLog";
+import { trimCachedAudio } from "@/lib/voiceNotes/audioPlaybackCache";
+import type { VerifiedAudioReceipt } from "@/lib/audio/audioStore";
 import { putPendingSaveState, readPendingSaveStates } from "./pendingSaveState";
 import { captureEvents } from "@/capture/captureEvents";
 import { appPlatform, deviceName } from "@/lib/platform";
 import { STORAGE_FULL_RECORDING_LINE, isStorageFullError } from "@/lib/storageStatus";
+
+function enforceAudioCacheAfterSave(id: string): void {
+  void trimCachedAudio().catch((error: unknown) => logPipelineError("audio cache trim", error, id));
+}
 
 export const TINYCLOUD_NETWORK_FAILURE_MESSAGE =
   `Couldn't reach your TinyCloud space. This note is safe on ${deviceName()} — try again.`;
@@ -90,6 +97,26 @@ export function pendingSaveMessage(error: unknown): string {
   return `Could not save notes kept on ${deviceName()}: ${message}`;
 }
 
+/**
+ * Record the space receipt an explicit upload verified. A revision conflict re-reads the note and
+ * retries once. The device bytes stay until this lands: eviction needs the receipt on the ledger.
+ */
+async function recordUploadedReceipt(tcw: TinyCloudWeb, id: string, rowId: string, receipt: VerifiedAudioReceipt): Promise<void> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const fresh = (await VoiceNotes.listPending()).recordings.find((note) => note.id === id);
+    if (!fresh || fresh.owner !== tcw.did) throw new Error("Audio is not on this device");
+    const current = fresh.ledger?.audio.verifiedInSpace;
+    if (current?.sha256 === receipt.sha256 && current.size === receipt.size) return;
+    try {
+      await VoiceNotes.updateLedger({ id, did: tcw.did, rev: fresh.rev ?? 0,
+        patch: { audio: { state: "saved", rowId, at: fresh.ledger?.audio.at ?? Date.now(), verifiedInSpace: receipt } } });
+      return;
+    } catch (error) {
+      if (errorCode(error) !== "rev_conflict" || attempt === 1) throw error;
+    }
+  }
+}
+
 /** Explicitly put an older local-only recording in the space; changing the device default does not call this. */
 export async function uploadLocalVoiceNote(tcw: TinyCloudWeb, id: string, explicitUpload: boolean = false): Promise<void> {
   if (savesInFlight.has(id)) throw new Error("This note is already being saved");
@@ -101,7 +128,10 @@ export async function uploadLocalVoiceNote(tcw: TinyCloudWeb, id: string, explic
   try {
     const result = await saveVoiceNote(tcw, recording, nativeRecordingSource(recording), appPlatform(), {}, explicitUpload);
     if (!result.ok) throw new Error(result.error.message);
+    const receipt = result.data.verifiedInSpace;
+    if (receipt) await recordUploadedReceipt(tcw, id, result.data.id, receipt);
     captureEvents.emit("library-changed", { source: "exo-voice-note", sourceId: id });
+    enforceAudioCacheAfterSave(id);
   } finally {
     savesInFlight.delete(id);
     publishSaveIdle();
@@ -378,6 +408,7 @@ export async function saveRecording(
     if (isDiscarded(recording.id)) throw new Error("Recording was discarded");
   };
   if (recording.ledger?.audio.state === "saved") {
+    await upgradeSavedAudioReceipt(tcw, recording);
     void syncOnDeviceTranscript(tcw, recording);
     return { kind: "already-saved", cleanupError: null };
   }
@@ -409,7 +440,10 @@ export async function saveRecording(
         })).recordings.find((note) => note.id === recording.id);
         checkActive();
         if (!fresh || isLegacyNote(fresh) || fresh.owner !== owner || fresh.rev === undefined) throw new Error(`Could not reread ${deviceName()}'s note status`);
-        const patch = { audio: { state: "saved" as const, rowId: saved.data.id, at: Date.now() } };
+        // Local-only saves return no space receipt; the ledger then records only the row.
+        const receipt = saved.data.verifiedInSpace;
+        const patch = { audio: { state: "saved" as const, rowId: saved.data.id, at: Date.now(),
+          ...(receipt ? { verifiedInSpace: receipt } : {}) } };
         try {
           await withVoiceNoteSaveDeadline(`native updateLedger id=${recording.id}`, () => {
             checkActive();
@@ -422,13 +456,16 @@ export async function saveRecording(
           fresh = (await withVoiceNoteSaveDeadline(`native listPending id=${recording.id}`, () => { checkActive(); return VoiceNotes.listPending(); })).recordings.find((note) => note.id === recording.id);
           checkActive();
           if (!fresh || isLegacyNote(fresh) || fresh.owner !== owner || fresh.rev === undefined) throw caught;
-          if (fresh.ledger?.audio?.state !== "saved") {
+          if (fresh.ledger?.audio?.state !== "saved"
+            || (receipt && (fresh.ledger.audio.verifiedInSpace?.sha256 !== receipt.sha256
+              || fresh.ledger.audio.verifiedInSpace.size !== receipt.size))) {
             const rev = fresh.rev;
             await withVoiceNoteSaveDeadline(`native updateLedger id=${recording.id}`, () => { checkActive(); return VoiceNotes.updateLedger({ id: recording.id, did: owner, rev, patch }); });
             checkActive();
           }
         }
         savedThisSession.add(recording.id);
+        enforceAudioCacheAfterSave(recording.id);
       } catch (caught) {
         cleanupError = `Saved to your space, but ${deviceName()} could not update its note status: ${messageOf(caught)}`;
       }
@@ -463,7 +500,10 @@ export async function saveNoteForAccount(tcw: TinyCloudWeb, ctx: AccountContext,
   if (isLegacyNote(recording)) return { kind: "held", reason: "legacy" };
   if (!recording.owner) return { kind: "held", reason: "unowned" };
   if (recording.owner !== ctx.did) return { kind: "held", reason: "other-account" };
-  if (recording.ledger?.audio.state === "saved") return { kind: "already-saved", cleanupError: null };
+  if (recording.ledger?.audio.state === "saved") {
+    await upgradeSavedAudioReceipt(tcw, recording);
+    return { kind: "already-saved", cleanupError: null };
+  }
   if (audioOptions.uploadTicket && !audioOptions.uploadTicket.owns) return { kind: "in-flight" };
   if (savesInFlight.has(recording.id)) return { kind: "in-flight" };
   savesInFlight.add(recording.id);
@@ -503,20 +543,26 @@ export async function saveNoteForAccount(tcw: TinyCloudWeb, ctx: AccountContext,
       ? { kind: "discarded", cleanupError: await deleteDiscarded(recording.id) }
       : failedOutcome(saved.error);
     checkActive();
-    const patch = { audio: { state: "saved" as const, rowId: saved.data.id, at: Date.now() } };
+    const receipt = saved.data.verifiedInSpace;
+    const patch = { audio: { state: "saved" as const, rowId: saved.data.id, at: Date.now(),
+      ...(receipt ? { verifiedInSpace: receipt } : {}) } };
     let fresh = recording;
     for (let attempt = 0; attempt < 2; attempt++) {
       check();
       try {
         await withVoiceNoteSaveDeadline(`native updateLedger id=${recording.id}`, () => VoiceNotes.updateLedger({ id: recording.id, did: ctx.did, rev: fresh.rev ?? 0, patch }));
+        enforceAudioCacheAfterSave(recording.id);
         return { kind: "saved", audio: null, cleanupError: null, noteSyncError: saved.data.noteSyncError };
       } catch (caught) {
         if (errorCode(caught) !== "rev_conflict") throw caught;
         check();
         const current = (await withVoiceNoteSaveDeadline(`native listPending id=${recording.id}`, () => VoiceNotes.listPending())).recordings.find((note) => note.id === recording.id);
         if (!current || current.owner !== ctx.did || isLegacyNote(current)) throw caught;
-        if (current.ledger?.audio.state === "saved") return { kind: "saved", audio: null, cleanupError: null,
-          noteSyncError: saved.data.noteSyncError };
+        if (current.ledger?.audio.state === "saved"
+          && (!receipt || (current.ledger.audio.verifiedInSpace?.sha256 === receipt.sha256
+            && current.ledger.audio.verifiedInSpace.size === receipt.size))) {
+          enforceAudioCacheAfterSave(recording.id); return { kind: "saved", audio: null, cleanupError: null,
+          noteSyncError: saved.data.noteSyncError }; }
         fresh = current;
       }
     }

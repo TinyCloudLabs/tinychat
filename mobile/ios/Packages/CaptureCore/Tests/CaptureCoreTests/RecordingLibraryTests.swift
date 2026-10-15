@@ -1,7 +1,109 @@
 import XCTest
+import CryptoKit
 @testable import CaptureCore
 
 final class RecordingLibraryTests: XCTestCase {
+    func testCacheEvictionRequiresSpaceCopyAndKeepsNote() throws {
+        let (library, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let pending = UUID().uuidString.lowercased()
+        _ = try library.commit(pending, sidecar: ["id": pending, "version": 2,
+            "ledger": ["audio": ["state": "pending"]]]) { try Data("pending".utf8).write(to: $0) }
+        XCTAssertThrowsError(try library.evictCachedAudio(pending))
+        XCTAssertNotNil(try library.openAudio(pending))
+
+        let localOnly = UUID().uuidString.lowercased()
+        _ = try library.commit(localOnly, sidecar: ["id": localOnly, "version": 2,
+            "options": ["uploadAudio": false], "ledger": ["audio": ["state": "saved"]]]) {
+            try Data("local-only".utf8).write(to: $0)
+        }
+        XCTAssertThrowsError(try library.evictCachedAudio(localOnly))
+        XCTAssertNotNil(try library.openAudio(localOnly))
+
+        let cached = UUID().uuidString.lowercased()
+        _ = try library.commit(cached, sidecar: ["id": cached, "version": 2, "owner": "did:test", "rev": 0,
+            "options": ["uploadAudio": false],
+            "ledger": ["audio": ["state": "saved"], "transcript": ["state": "done"]]]) { try Data("cached".utf8).write(to: $0) }
+        XCTAssertThrowsError(try library.evictCachedAudio(cached))
+        XCTAssertNotNil(try library.openAudio(cached))
+        let badHash = String(repeating: "0", count: 64)
+        let goodHash = SHA256.hash(data: Data("cached".utf8)).map { String(format: "%02x", $0) }.joined()
+        let rev = try library.readSidecar(cached)["rev"] as? Int ?? 0
+        let next = try library.updateLedger(cached, did: "did:test", rev: rev,
+            patch: ["audio": ["state": "saved", "verifiedInSpace": ["sha256": badHash, "size": 6]]])
+        XCTAssertThrowsError(try library.evictCachedAudio(cached))
+        XCTAssertNotNil(try library.openAudio(cached))
+        _ = try library.updateLedger(cached, did: "did:test", rev: next,
+            patch: ["audio": ["state": "saved", "verifiedInSpace": ["sha256": goodHash, "size": 6]]])
+        try library.evictCachedAudio(cached)
+        XCTAssertThrowsError(try library.openAudio(cached))
+        XCTAssertEqual((try library.readSidecar(cached))["id"] as? String, cached)
+    }
+
+    func testCacheEvictionWaitsForLocalWorkToFinish() throws {
+        let (library, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID().uuidString.lowercased()
+        let hash = SHA256.hash(data: Data("work".utf8)).map { String(format: "%02x", $0) }.joined()
+        _ = try library.commit(id, sidecar: ["id": id, "version": 2, "owner": "did:test", "rev": 0,
+            "options": ["uploadAudio": false, "transcriber": "on-device"],
+            "stt": ["state": "queued"],
+            "ledger": ["audio": ["state": "saved", "verifiedInSpace": ["sha256": hash, "size": 4]],
+                       "transcript": ["state": "done"]]]) { try Data("work".utf8).write(to: $0) }
+        do {
+            try library.evictCachedAudio(id)
+            XCTFail("audio with queued local work was evicted")
+        } catch CaptureError.audioInUse {
+            XCTAssertEqual(CaptureError.audioInUse.code, "audio_in_use")
+        }
+        XCTAssertNotNil(try library.openAudio(id))
+    }
+
+    func testExplicitLocalRequestPinsCloudNoteUntilItsTranscriptIsDone() throws {
+        let (library, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let hash = SHA256.hash(data: Data("asked".utf8)).map { String(format: "%02x", $0) }.joined()
+        // The native enqueue writes `requested: true` on the note's stt (ResumableWork.requested).
+        func commitNote(_ state: String) throws -> String {
+            let id = UUID().uuidString.lowercased()
+            _ = try library.commit(id, sidecar: ["id": id, "version": 2, "owner": "did:test", "rev": 0,
+                "options": ["uploadAudio": false, "transcriber": "off"],
+                "stt": ["state": state, "requested": true],
+                "ledger": ["audio": ["state": "saved", "verifiedInSpace": ["sha256": hash, "size": 5]],
+                           "transcript": ["state": "done"]]]) { try Data("asked".utf8).write(to: $0) }
+            return id
+        }
+        let queued = try commitNote("queued")
+        do {
+            try library.evictCachedAudio(queued)
+            XCTFail("an explicit Local request still queued was evicted")
+        } catch CaptureError.audioInUse {
+            XCTAssertEqual(CaptureError.audioInUse.code, "audio_in_use")
+        }
+        XCTAssertNotNil(try library.openAudio(queued))
+        let done = try commitNote("done")
+        try library.evictCachedAudio(done)
+        XCTAssertThrowsError(try library.openAudio(done))
+    }
+
+    func testCacheEvictionWaitsForOutboxReceipt() throws {
+        let (library, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID().uuidString.lowercased()
+        let bytes = Data("kept".utf8)
+        let hash = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+        _ = try library.commit(id, sidecar: ["id": id, "version": 2, "owner": "did:test", "rev": 0,
+            "options": ["uploadAudio": false, "transcriber": "assemblyai"],
+            "ledger": ["audio": ["state": "saved", "verifiedInSpace": ["sha256": hash, "size": bytes.count]],
+                       "transcript": ["state": "done"]]]) { try bytes.write(to: $0) }
+        // No signed-in account: the receipt parks in outbox/<id>:<opId>.json instead of the sidecar.
+        try library.beginRemoteOp(["id": id, "did": "did:other", "opId": "op-1", "provider": "assemblyai",
+            "mode": "hosted", "kind": "hosted_create", "fingerprint": "fp", "startedAt": NSNumber(value: 1)])
+        do {
+            try library.evictCachedAudio(id)
+            XCTFail("audio with a pending outbox receipt was evicted")
+        } catch CaptureError.audioInUse {
+            XCTAssertEqual(CaptureError.audioInUse.code, "audio_in_use")
+        }
+        XCTAssertNotNil(try library.openAudio(id))
+    }
+
     private func fixture() throws -> (RecordingLibrary, URL) {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         return (try RecordingLibrary(root: root), root)
@@ -751,6 +853,45 @@ final class RecordingLibraryTests: XCTestCase {
         XCTAssertFalse(try library.listOutbox(did: "did:test").contains { $0["entryId"] as? String == "\(id):deleted" })
     }
 
+    func testFailedRemoteResultOnSoleEntryRemovesItWithoutCrashing() throws {
+        let (library, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID().uuidString.lowercased()
+        try library.setAccountState(CaptureAccountState(status: "signed_in", accountDid: "did:test", transitionGen: 1))
+        _ = try library.commit(id, sidecar: ["id": id, "version": 2, "rev": 0, "owner": "did:test",
+            "ledger": ["remote": []]]) { try Data("audio".utf8).write(to: $0) }
+        func receipt(_ op: String, _ kind: String, _ mode: String) -> [String: Any] {
+            ["id": id, "did": "did:test", "opId": op, "provider": "assemblyai", "mode": mode,
+             "kind": kind, "fingerprint": op, "startedAt": 100]
+        }
+        func remote() throws -> [[String: Any]] {
+            ((try library.readSidecar(id))["ledger"] as? [String: Any])?["remote"] as? [[String: Any]] ?? []
+        }
+        try library.beginRemoteOp(receipt("submit", "hosted_submit", "hosted"))
+        XCTAssertEqual(try remote().map { $0["opId"] as? String }, ["submit"])
+        XCTAssertEqual(try library.recordRemoteResult(id: id, did: "did:test", opId: "submit",
+            result: ["outcome": "failed"]), "ledger")
+        XCTAssertEqual(try remote().count, 0)
+        XCTAssertEqual((try library.readSidecar(id))["id"] as? String, id)
+    }
+
+    func testFailedOwnCreateRemovesOnlyItsEntryWithoutCrashing() throws {
+        let (library, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID().uuidString.lowercased()
+        try library.setAccountState(CaptureAccountState(status: "signed_in", accountDid: "did:test", transitionGen: 1))
+        _ = try library.commit(id, sidecar: ["id": id, "version": 2, "rev": 0, "owner": "did:test",
+            "ledger": ["remote": []]]) { try Data("audio".utf8).write(to: $0) }
+        func receipt(_ op: String, _ kind: String) -> [String: Any] {
+            ["id": id, "did": "did:test", "opId": op, "provider": "assemblyai", "mode": "own",
+             "kind": kind, "fingerprint": op, "startedAt": 100]
+        }
+        try library.beginRemoteOp(receipt("upload", "own_upload"))
+        try library.beginRemoteOp(receipt("create", "own_create"))
+        XCTAssertEqual(try library.recordRemoteResult(id: id, did: "did:test", opId: "create",
+            result: ["outcome": "failed"]), "ledger")
+        let remote = ((try library.readSidecar(id))["ledger"] as? [String: Any])?["remote"] as? [[String: Any]] ?? []
+        XCTAssertEqual(remote.map { $0["opId"] as? String }, ["upload"])
+    }
+
     func testReceiptKindStageAndOutboxTable() throws {
         let cases: [(String, String, [String: Any], String, String)] = [
             ("hosted_create", "uploading", ["uploadId": "up"], "hosted_upload", "pending"),
@@ -864,5 +1005,121 @@ final class RecordingLibraryTests: XCTestCase {
         XCTAssertEqual(job["receiptKind"] as? String, "own_create")
         XCTAssertEqual(job["handle"] as? String, "job-42")
         XCTAssertEqual(job["state"] as? String, "pending")
+    }
+
+    func testLegacyAmbiguousOutboxRowIsNotRetiredByOwnCreateUntilRepeatedReceiptNamesIt() throws {
+        let (library, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID().uuidString.lowercased()
+        // Written before receiptKind existed: own_upload_lookup may come from own_upload or own_create.
+        let legacy: [String: Any] = ["entryId": "\(id):lookup", "did": "did:test", "provider": "assemblyai",
+            "mode": "own", "kind": "own_upload_lookup", "handle": "https://example.test/old",
+            "handleExpiresAt": NSNull(), "state": "lookup", "createdAt": 100, "attempts": 0]
+        try FileManager.default.createDirectory(at: library.url("outbox"), withIntermediateDirectories: true)
+        try JSONSerialization.data(withJSONObject: legacy).write(to: library.url("outbox/\(id):lookup.json"))
+        try library.beginRemoteOp(["id": id, "did": "did:test", "opId": "create",
+            "provider": "assemblyai", "mode": "own", "kind": "own_create",
+            "fingerprint": "create", "startedAt": 200])
+        XCTAssertEqual(try library.recordRemoteResult(id: id, did: "did:test", opId: "create",
+            result: ["outcome": "created", "jobId": "job-1"]), "outbox")
+        let lookup = try XCTUnwrap(library.listOutbox(did: "did:test").first { $0["entryId"] as? String == "\(id):lookup" })
+        XCTAssertEqual(lookup["kind"] as? String, "own_upload_lookup")
+        XCTAssertNil(lookup["receiptKind"] as? String)
+
+        // A repeated receipt for the legacy op names its kind, so a later own_create completion may retire it.
+        try library.beginRemoteOp(["id": id, "did": "did:test", "opId": "lookup",
+            "provider": "assemblyai", "mode": "own", "kind": "own_upload",
+            "fingerprint": "lookup", "startedAt": 100])
+        let backfilled = try XCTUnwrap(library.listOutbox(did: "did:test").first { $0["entryId"] as? String == "\(id):lookup" })
+        XCTAssertEqual(backfilled["receiptKind"] as? String, "own_upload")
+        XCTAssertEqual(backfilled["handle"] as? String, "https://example.test/old")
+    }
+
+    private func writeLegacyOutboxRow(_ library: RecordingLibrary, id: String, opId: String,
+                                      provider: String, kind: String) throws {
+        try FileManager.default.createDirectory(at: library.url("outbox"), withIntermediateDirectories: true)
+        let row: [String: Any] = ["entryId": "\(id):\(opId)", "did": "did:test", "provider": provider,
+            "mode": "own", "kind": kind, "handle": NSNull(), "handleExpiresAt": NSNull(),
+            "state": "unknown", "createdAt": 100, "attempts": 0]
+        try JSONSerialization.data(withJSONObject: row).write(to: library.url("outbox/\(id):\(opId).json"))
+    }
+
+    private func legacyRow(_ library: RecordingLibrary, _ id: String, _ opId: String) throws -> [String: Any] {
+        try XCTUnwrap(library.listOutbox(did: "did:test").first { $0["entryId"] as? String == "\(id):\(opId)" })
+    }
+
+    func testLegacyUnknownAssemblyAIJobIsRecordedAsTranscriptNotPtx() throws {
+        let (library, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID().uuidString.lowercased()
+        try writeLegacyOutboxRow(library, id: id, opId: "legacy", provider: "assemblyai", kind: "unknown")
+        XCTAssertEqual(try library.recordRemoteResult(id: id, did: "did:test", opId: "legacy",
+            result: ["outcome": "created", "jobId": "job-9"]), "outbox")
+        let row = try legacyRow(library, id, "legacy")
+        XCTAssertEqual(row["kind"] as? String, "transcript")
+        XCTAssertEqual(row["handle"] as? String, "job-9")
+        XCTAssertNil(row["receiptKind"] as? String)
+    }
+
+    func testLegacyUnknownAssemblyAIUploadURLRoutesToLookupWithURLHandle() throws {
+        let (library, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID().uuidString.lowercased()
+        try writeLegacyOutboxRow(library, id: id, opId: "legacy", provider: "assemblyai", kind: "unknown")
+        _ = try library.recordRemoteResult(id: id, did: "did:test", opId: "legacy",
+            result: ["outcome": "unknown", "uploadUrl": "https://example.test/late"])
+        let row = try legacyRow(library, id, "legacy")
+        XCTAssertEqual(row["kind"] as? String, "own_upload_lookup")
+        XCTAssertEqual(row["handle"] as? String, "https://example.test/late")
+        XCTAssertNil(row["receiptKind"] as? String)
+    }
+
+    func testLegacyJobFirstThenLateURLKeepsJobAndNeverBecomesPtx() throws {
+        let (library, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID().uuidString.lowercased()
+        try writeLegacyOutboxRow(library, id: id, opId: "legacy", provider: "assemblyai", kind: "unknown")
+        _ = try library.recordRemoteResult(id: id, did: "did:test", opId: "legacy",
+            result: ["outcome": "created", "jobId": "job-9"])
+        _ = try library.recordRemoteResult(id: id, did: "did:test", opId: "legacy",
+            result: ["outcome": "unknown", "uploadUrl": "https://example.test/late"])
+        let row = try legacyRow(library, id, "legacy")
+        XCTAssertEqual(row["kind"] as? String, "transcript")
+        XCTAssertEqual(row["handle"] as? String, "job-9")
+    }
+
+    func testLegacyUnknownRowWithoutProvableKindStaysInert() throws {
+        let (library, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID().uuidString.lowercased()
+        try writeLegacyOutboxRow(library, id: id, opId: "other", provider: "unrecognised", kind: "unknown")
+        try writeLegacyOutboxRow(library, id: id, opId: "ptxurl", provider: "ptx", kind: "unknown")
+        _ = try library.recordRemoteResult(id: id, did: "did:test", opId: "other",
+            result: ["outcome": "created", "jobId": "job-7"])
+        _ = try library.recordRemoteResult(id: id, did: "did:test", opId: "ptxurl",
+            result: ["outcome": "unknown", "uploadUrl": "https://example.test/nope"])
+        for opId in ["other", "ptxurl"] {
+            let row = try legacyRow(library, id, opId)
+            XCTAssertEqual(row["kind"] as? String, "unknown")
+            XCTAssertNil(row["handle"] as? String)
+            XCTAssertNil(row["receiptKind"] as? String)
+        }
+    }
+
+    func testLegacyPtxJobRoutesAsPtxCreate() throws {
+        let (library, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID().uuidString.lowercased()
+        try writeLegacyOutboxRow(library, id: id, opId: "legacy", provider: "ptx", kind: "unknown")
+        _ = try library.recordRemoteResult(id: id, did: "did:test", opId: "legacy",
+            result: ["outcome": "created", "jobId": "ptx-3"])
+        let row = try legacyRow(library, id, "legacy")
+        XCTAssertEqual(row["kind"] as? String, "ptx_job")
+        XCTAssertEqual(row["handle"] as? String, "ptx-3")
+    }
+
+    func testLegacyPtxJobKindFromAssemblyAIIsTranscriptNotPtx() throws {
+        let (library, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID().uuidString.lowercased()
+        try writeLegacyOutboxRow(library, id: id, opId: "legacy", provider: "assemblyai", kind: "ptx_job")
+        _ = try library.recordRemoteResult(id: id, did: "did:test", opId: "legacy",
+            result: ["outcome": "created", "jobId": "job-4"])
+        let row = try legacyRow(library, id, "legacy")
+        XCTAssertEqual(row["kind"] as? String, "transcript")
+        XCTAssertEqual(row["handle"] as? String, "job-4")
     }
 }
