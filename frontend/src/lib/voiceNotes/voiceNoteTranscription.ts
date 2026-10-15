@@ -79,7 +79,7 @@ import { accountStorageKey, beginPrivateChoiceIntent, clearChoicePinMetadata, se
   VOICE_NOTE_PENDING_JOBS_KEY, VOICE_NOTE_PRIVATE_CHOICES_KEY, retainSource, withSourceLease } from "./sourcePins";
 import { isAutomaticRetryableCode } from "./retryableVoiceNoteErrors";
 import { transcriptHash, type VoiceNoteTranscriptionStatsMetadata } from "./voiceNoteRows";
-import { createHeldResultStore, type HeldResult, type HeldResultInput, type HeldResultStore } from "./heldResults";
+import { createHeldResultStore, type HeldResult, type HeldResultInput, type HeldResultStore, type SaveHeldOutcome } from "./heldResults";
 
 // ── Upload ─────────────────────────────────────────────────────────────
 
@@ -917,19 +917,34 @@ export async function commitPreparedVoiceNoteTranscript(args: {
       holdFailed = true;
     }
     if (row) {
-      const outcome = await args.held.saveHeldFirst(args.tcw, args.sourceId, {
-        save: () => args.save(),
-        afterCommit: async (committed) => {
-          await args.cloud.stripLegacyHeld?.(args.sourceId, committed.transcript.rev, committed.hash);
-          try {
-            await args.cloud.finish(args.sourceId,
-              committed.provider && "transcriptionId" in committed.provider ? committed.provider.transcriptionId : null);
-          } catch (error) {
-            logPipelineError("Deleting a finished private cloud job failed; PTX deletes it on its own schedule", error);
-          }
-        },
-        stillCurrent: args.stillCurrent,
-      }, args.mode ?? "automatic");
+      let beforeSave = true;
+      let outcome: SaveHeldOutcome;
+      try {
+        outcome = await args.held.saveHeldFirst(args.tcw, args.sourceId, {
+          save: () => {
+            beforeSave = false;
+            return args.save();
+          },
+          afterCommit: async (committed) => {
+            beforeSave = false;
+            await args.cloud.stripLegacyHeld?.(args.sourceId, committed.transcript.rev, committed.hash);
+            try {
+              await args.cloud.finish(args.sourceId,
+                committed.provider && "transcriptionId" in committed.provider ? committed.provider.transcriptionId : null);
+            } catch (error) {
+              logPipelineError("Deleting a finished private cloud job failed; PTX deletes it on its own schedule", error);
+            }
+          },
+          stillCurrent: args.stillCurrent,
+        }, args.mode ?? "automatic");
+      } catch (cause) {
+        if (beforeSave && isStorageFullError(cause)) {
+          if (!args.stillCurrent()) throw accountChangedError();
+          reportStorageError(cause, storageScopeFor(args.tcw));
+          throw new PrivateCloudError(TRANSCRIPT_STORAGE_FULL_CODE, STORAGE_FULL_SAVE_MESSAGE);
+        }
+        throw cause;
+      }
       if (outcome === "conflict") {
         const conflict = (await args.held.readHeld(args.sourceId))?.conflict ?? "rerun_lost";
         throw new PrivateCloudError(conflict, "Held transcript commit conflict.");
