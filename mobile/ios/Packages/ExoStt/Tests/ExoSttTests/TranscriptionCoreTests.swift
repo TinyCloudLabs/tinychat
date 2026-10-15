@@ -282,6 +282,43 @@ final class TranscriptionCoreTests: XCTestCase {
         XCTAssertFalse(library.hasTranscript("b"))
     }
 
+    #if DEBUG
+    func testExpiryWinsAtFinalLeaseDecisionAndParksCancelledNotesFollowers() {
+        library.seed("a", state: "queued")
+        library.seed("b", state: "queued")
+        let activity = FakeActivity()
+        withActivity(activity)
+        let entered = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
+        session.decode = { id, check in
+            try check()
+            if id == "a" {
+                entered.signal()
+                release.wait()
+                try check()
+            }
+        }
+        core.enqueue(id: "a")
+        XCTAssertEqual(entered.wait(timeout: .now() + 5), .success)
+        core.enqueue(id: "b")
+        core.cancel(id: "a")
+        core.controlQueue.sync {}
+        let boundary = Recorder()
+        core.onBeforeLeaseFinalization = {
+            guard boundary.add("finish") == 1 else { return }
+            activity.expire() // Worker saw live; expiry owns the lease before the final release.
+        }
+        release.signal()
+        settle()
+        XCTAssertEqual(library.sidecar("a")["state"] as? String, "cancelled")
+        XCTAssertEqual(session.startedIds, ["a"], "B must not run in the expired assertion's pass")
+        XCTAssertFalse(library.hasTranscript("b"))
+        XCTAssertEqual(activity.ends, 1)
+        core.admitForeground()
+        settle()
+        XCTAssertTrue(library.hasTranscript("b"))
+    }
+    #endif
+
     func testReviewerLateCancelledCollectorCannotChangeNextNoteProgress() {
         library.seed("a", state: "queued")
         library.seed("b", state: "queued")
