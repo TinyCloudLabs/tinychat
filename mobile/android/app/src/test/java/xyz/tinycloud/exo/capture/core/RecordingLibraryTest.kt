@@ -14,10 +14,10 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 class RecordingLibraryTest {
-    @Test fun cacheEvictionRequiresSpaceCopyAndKeepsSidecar() {
+    @Test fun cacheEvictionIsDisabledAndKeepsTheRecording() {
         val lib = library(); val pending = id(); begin(lib, pending); commit(lib, pending); transcriptDone(lib, pending)
         try { lib.evictCachedAudio(pending); fail("pending audio was evicted") }
-        catch (e: IllegalStateException) { assertEquals("audio_not_space_backed", e.message) }
+        catch (e: IllegalStateException) { assertEquals("audio_in_use", e.message) }
         assertTrue(lib.audio(pending).isFile)
 
         val localOnly = id(); begin(lib, localOnly); commit(lib, localOnly); transcriptDone(lib, localOnly)
@@ -26,20 +26,20 @@ class RecordingLibraryTest {
             it.getJSONObject("options").put("uploadAudio", false)
         }
         try { lib.evictCachedAudio(localOnly); fail("local-only audio was evicted") }
-        catch (e: IllegalStateException) { assertEquals("audio_not_space_backed", e.message) }
+        catch (e: IllegalStateException) { assertEquals("audio_in_use", e.message) }
         assertTrue(lib.audio(localOnly).isFile)
 
         val cached = id(); begin(lib, cached); commit(lib, cached); transcriptDone(lib, cached)
         lib.mutate(cached, "test.saved") { it.getJSONObject("ledger").put("audio", JSONObject().put("state", "saved")) }
         try { lib.evictCachedAudio(cached); fail("unverified audio was evicted") }
-        catch (e: IllegalStateException) { assertEquals("audio_not_space_backed", e.message) }
+        catch (e: IllegalStateException) { assertEquals("audio_in_use", e.message) }
         assertTrue(lib.audio(cached).isFile)
         lib.mutate(cached, "test.badHash") {
             it.getJSONObject("ledger").put("audio", JSONObject().put("state", "saved")
                 .put("verifiedInSpace", JSONObject().put("sha256", "0".repeat(64)).put("size", 3)))
         }
         try { lib.evictCachedAudio(cached); fail("wrong-hash audio was evicted") }
-        catch (e: IllegalStateException) { assertEquals("audio_not_space_backed", e.message) }
+        catch (e: IllegalStateException) { assertEquals("audio_in_use", e.message) }
         assertTrue(lib.audio(cached).isFile)
         val hash = MessageDigest.getInstance("SHA-256").digest(byteArrayOf(1, 2, 3)).joinToString("") { "%02x".format(it) }
         lib.mutate(cached, "test.verified") {
@@ -47,8 +47,9 @@ class RecordingLibraryTest {
             it.getJSONObject("ledger").put("audio", JSONObject().put("state", "saved")
                 .put("verifiedInSpace", JSONObject().put("sha256", hash).put("size", 3)))
         }
-        lib.evictCachedAudio(cached)
-        assertFalse(lib.audio(cached).exists())
+        try { lib.evictCachedAudio(cached); fail("verified local audio was evicted") }
+        catch (e: IllegalStateException) { assertEquals("audio_in_use", e.message) }
+        assertTrue(lib.audio(cached).isFile)
         assertNotNull(lib.read(cached))
     }
 
@@ -926,5 +927,17 @@ class RecordingLibraryTest {
         lib.delete(note); release.countDown(); worker.join(5000)
         recoverTwice(lib)
         assertFalse(lib.sidecar(note).exists()); assertFalse(lib.audio(note).exists())
+    }
+    @Test fun directCacheEvictionRefusesVerifiedSavedAudio() {
+        val lib = library(); val id = id(); begin(lib, id); commit(lib, id); transcriptDone(lib, id)
+        val hash = MessageDigest.getInstance("SHA-256").digest(byteArrayOf(1, 2, 3)).joinToString("") { "%02x".format(it) }
+        lib.mutate(id, "test.spaceBacked") {
+            it.getJSONObject("options").put("uploadAudio", false)
+            it.getJSONObject("ledger").put("audio", JSONObject().put("state", "saved")
+                .put("verifiedInSpace", JSONObject().put("sha256", hash).put("size", 3)))
+        }
+        try { lib.evictCachedAudio(id); fail("saved local audio was evicted") }
+        catch (e: IllegalStateException) { assertEquals("audio_in_use", e.message) }
+        assertTrue(lib.audio(id).isFile)
     }
 }

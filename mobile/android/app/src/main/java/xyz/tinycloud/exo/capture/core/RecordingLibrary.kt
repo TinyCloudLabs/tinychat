@@ -4,7 +4,6 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.IOException
-import java.security.MessageDigest
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.locks.ReentrantLock
@@ -619,38 +618,10 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
         }
         return localAudioUnready || sttPinned || remoteOpen
     }
-    fun evictCachedAudio(id: String) = lock.withLock {
+    /** Cache trimming never removes local recording originals; callers may clear playback copies only. */
+    fun evictCachedAudio(id: String): Unit = lock.withLock {
         requireId(id)
-        val note = read(id) ?: throw IllegalStateException("not_found")
-        // Receipt entries are named `<id>:<opId>.json`; handle entries come only from tombstoned notes, which read() refuses.
-        val pinnedByOutbox = outbox.listFiles().orEmpty().any { it.name.startsWith("$id:") }
-        if (hasLocalWorkInProgress(note) || pinnedByOutbox) throw IllegalStateException("audio_in_use")
-        val ledgerAudio = note.optJSONObject("ledger")?.optJSONObject("audio")
-        val receipt = ledgerAudio?.optJSONObject("verifiedInSpace")
-        val expectedHash = receipt?.optString("sha256")
-        val expectedSize = receipt?.optLong("size", -1L) ?: -1L
-        if (ledgerAudio?.optString("state") != "saved" || expectedHash == null ||
-            !expectedHash.matches(Regex("[0-9a-f]{64}")) || expectedSize < 0)
-            throw IllegalStateException("audio_not_space_backed")
-        val file = audio(id)
-        if (file.exists()) {
-            val digest = MessageDigest.getInstance("SHA-256")
-            var size = 0L
-            file.inputStream().use { stream ->
-                val buffer = ByteArray(1024 * 1024)
-                while (true) {
-                    val count = stream.read(buffer)
-                    if (count < 0) break
-                    size += count
-                    digest.update(buffer, 0, count)
-                }
-            }
-            val actualHash = digest.digest().joinToString("") { "%02x".format(it) }
-            if (size != expectedSize || actualHash != expectedHash)
-                throw IllegalStateException("audio_not_space_backed")
-            ops.unlink(file, "cache.evict")
-            ops.syncDir(root)
-        }
+        throw IllegalStateException("audio_in_use")
     }
     /** Discard applies only to an unpublished session; saved notes use explicit deleteAudio. */
     fun discardUncommitted(id: String) = lock.withLock {

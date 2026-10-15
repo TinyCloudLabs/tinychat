@@ -748,39 +748,11 @@ public final class RecordingLibrary {
             .contains { $0.lastPathComponent.hasPrefix("\(id):") }
     }
 
-    /// A space-backed recording may shed its audio while retaining its note, transcript and ledger.
+    /// Cache trimming never removes local recording originals; callers may clear playback copies only.
     public func evictCachedAudio(_ id: String) throws {
         guard Self.validID(id) else { throw CaptureError.invalidArgument }
         try queue.sync {
-            let note = try readSidecarUnlocked(id)
-            let pinnedByOutbox = try hasOutboxEntryUnlocked(id)
-            guard !Self.hasLocalWorkInProgress(note), !pinnedByOutbox else { throw CaptureError.audioInUse }
-            let ledger = note["ledger"] as? [String: Any]
-            let audio = ledger?["audio"] as? [String: Any]
-            let receipt = audio?["verifiedInSpace"] as? [String: Any]
-            guard audio?["state"] as? String == "saved",
-                  let expectedHash = receipt?["sha256"] as? String,
-                  expectedHash.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil,
-                  let expectedSize = receipt?["size"] as? Int, expectedSize >= 0 else {
-                throw CaptureError.io("audio_not_space_backed")
-            }
-            if FileManager.default.fileExists(atPath: audioURL(id).path) {
-                let path = audioURL(id)
-                let handle = try FileHandle(forReadingFrom: path)
-                defer { try? handle.close() }
-                var hash = SHA256()
-                var size = 0
-                while let bytes = try handle.read(upToCount: 1024 * 1024), !bytes.isEmpty {
-                    size += bytes.count
-                    hash.update(data: bytes)
-                }
-                let actualHash = hash.finalize().map { String(format: "%02x", $0) }.joined()
-                guard size == expectedSize && actualHash == expectedHash else {
-                    throw CaptureError.io("audio_not_space_backed")
-                }
-                try FileManager.default.removeItem(at: audioURL(id))
-                try sync(root)
-            }
+            throw CaptureError.audioInUse
         }
     }
 

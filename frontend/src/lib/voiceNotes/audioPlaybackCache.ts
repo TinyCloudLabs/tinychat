@@ -1,8 +1,7 @@
 import { logPipeline, logPipelineError } from "@/lib/debugLog";
 import { Capacitor } from "@capacitor/core";
 import { VoiceNotes, type VoiceNoteRecording } from "./nativeVoiceNotes";
-import { hasLocalWorkInProgress } from "./localWork";
-import { mountedVoiceNoteDid } from "./accountContext";
+import { currentAccountGeneration, mountedVoiceNoteDid } from "./accountContext";
 
 type CacheRow = { key: string; blob?: Blob; size: number; playedAt: number; identity?: string;
   receipt?: { sha256: string; size: number } | null };
@@ -85,16 +84,27 @@ export function hasVerifiedSpaceCopy(note: VoiceNoteRecording): boolean {
   return note.ledger?.audio.state === "saved" && isVerifiedSpaceReceipt(note.ledger.audio.verifiedInSpace);
 }
 
-async function savedRecordings(): Promise<VoiceNoteRecording[]> {
-  // Only the signed-in account's notes are cache candidates. Another account's verified copy is not ours to trim,
-  // and with nobody signed in there is no owner to check against, so nothing is a candidate.
-  const owner = mountedVoiceNoteDid();
-  if (!owner) return [];
-  const notes = (await VoiceNotes.listPending()).recordings.filter((note) =>
-    note.owner === owner && hasVerifiedSpaceCopy(note) && !hasLocalWorkInProgress(note, { cancelledRetryable: Capacitor.isNativePlatform() }));
+type EvictionContext = { owner: string | null; generation: number };
+type SavedAudio = { size: number };
+type CacheCandidate = { key: string; size: number; playedAt: number };
+
+function evictionContext(): EvictionContext {
+  return { owner: mountedVoiceNoteDid(), generation: currentAccountGeneration() };
+}
+
+function accountIsCurrent(context: EvictionContext): boolean {
+  return context.owner !== null && mountedVoiceNoteDid() === context.owner
+    && currentAccountGeneration() === context.generation;
+}
+
+function accountContextChanged(context: EvictionContext): boolean {
+  return mountedVoiceNoteDid() !== context.owner || currentAccountGeneration() !== context.generation;
+}
+
+async function savedRecordings(): Promise<SavedAudio[]> {
+  const notes = (await VoiceNotes.listPending()).recordings;
   const sizes = await Promise.all(notes.map((note) => VoiceNotes.localAudioSize({ id: note.id })));
-  return notes.flatMap((note, index) => sizes[index]!.size === note.ledger!.audio.verifiedInSpace!.size
-    ? [{ ...note, sizeBytes: sizes[index]!.size }] : []);
+  return sizes.flatMap(({ size }) => size > 0 ? [{ size }] : []);
 }
 
 /** A missing or still-importing local copy is a normal cache miss. Other read errors remain visible. */
@@ -186,64 +196,57 @@ export async function cachedSpaceAudioOffline(
   return latest.blob;
 }
 
-export async function cachedAudioSize(): Promise<{ bytes: number; limit: number }> {
+export async function cachedAudioSize(): Promise<{ bytes: number; pinnedBytes: number; limit: number }> {
   const [entries, notes] = await Promise.all([rows(), savedRecordings()]);
-  const remoteBytes = entries.filter((row) => row.blob).reduce((sum, row) => sum + row.size, 0);
-  return { bytes: remoteBytes + notes.reduce((sum, note) => sum + note.sizeBytes, 0), limit: AUDIO_CACHE_LIMIT };
+  const bytes = entries.filter((row) => row.blob).reduce((sum, row) => sum + row.size, 0);
+  const pinnedBytes = notes.reduce((sum, entry) => sum + entry.size, 0);
+  return { bytes, pinnedBytes, limit: AUDIO_CACHE_LIMIT };
+}
+async function candidates(context: EvictionContext): Promise<{
+  rows: CacheCandidate[]; pinnedCount: number; pinnedBytes: number; stopped: boolean;
+}> {
+  const [entries, notes] = await Promise.all([rows(), savedRecordings()]);
+  const pinnedBytes = notes.reduce((sum, entry) => sum + entry.size, 0);
+  if (context.owner && !accountIsCurrent(context))
+    return { rows: [], pinnedCount: notes.length, pinnedBytes, stopped: true };
+  return {
+    // Only downloaded Space playback blobs are cache-eviction candidates. Saved local recordings are originals.
+    rows: entries.filter((row) => row.blob).map((row) => ({ key: row.key, size: row.size, playedAt: row.playedAt }))
+      .sort((a, b) => a.playedAt - b.playedAt),
+    pinnedCount: notes.length,
+    pinnedBytes,
+    stopped: false,
+  };
 }
 
-async function candidates(): Promise<{ key: string; size: number; playedAt: number; id?: string }[]> {
-  const [entries, notes] = await Promise.all([rows(), savedRecordings()]);
-  const stamps = new Map(entries.map((row) => [row.key, row.playedAt]));
-  return [
-    ...entries.filter((row) => row.blob).map((row) => ({ key: row.key, size: row.size, playedAt: row.playedAt })),
-    ...notes.map((note) => ({ key: localKey(note.id), size: note.sizeBytes,
-      playedAt: stamps.get(localKey(note.id)) ?? note.startedAt, id: note.id })),
-  ].sort((a, b) => a.playedAt - b.playedAt);
-}
-
-async function evict(entry: { key: string; size: number; id?: string }): Promise<boolean> {
-  if (entry.id) {
-    // Native and web implementations independently recheck the saved ledger under their storage lock.
-    try {
-      await VoiceNotes.evictCachedAudio({ id: entry.id });
-    } catch (error) {
-      // A concurrent write made this note pin its bytes; eviction is optional, so skip it.
-      const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
-      if (code === "audio_in_use") return false;
-      throw error;
-    }
-  }
+// This function removes only downloaded playback blobs; local recordings are excluded from candidates.
+async function evict(entry: CacheCandidate): Promise<void> {
   await remove(entry.key);
-  logPipeline("audio playback", entry.id ?? "", "evicted", { destination: "device", bodyBytes: entry.size });
-  return true;
+  logPipeline("audio playback", "", "evicted", { destination: "device", bodyBytes: entry.size });
 }
 
-/**
- * An identity guards cached bytes against replaying a superseded revision. Once a note has no bytes left
- * on this device it guards nothing, and keeping it would report "audio changed" for a plain cache miss.
- */
+/** Remove identities only when no downloaded playback blob remains behind them. */
 async function pruneOrphanIdentities(): Promise<void> {
-  const [all, { recordings }] = await Promise.all([rows(), VoiceNotes.listPending()]);
-  const sizes = await Promise.all(recordings.map((note) => VoiceNotes.localAudioSize({ id: note.id })));
-  const local = new Set(recordings.filter((_, index) => sizes[index]!.size > 0).map((note) => note.id));
+  const all = await rows();
   const backed = new Set(all.filter((row) => row.blob && row.key.startsWith('["space",'))
     .map((row) => JSON.stringify((JSON.parse(row.key) as string[]).slice(1, 5))));
   for (const row of all) {
     if (!row.key.startsWith('["identity",')) continue;
     const scope = (JSON.parse(row.key) as string[]).slice(1, 5);
-    if (local.has(scope[3]!) || backed.has(JSON.stringify(scope))) continue;
-    await remove(row.key);
+    if (!backed.has(JSON.stringify(scope))) await remove(row.key);
   }
 }
 
 async function trimCachedAudioUnlocked(limit = AUDIO_CACHE_LIMIT): Promise<void> {
-  const all = await candidates();
-  let bytes = all.reduce((sum, row) => sum + row.size, 0);
+  const context = evictionContext();
+  const state = await candidates(context);
+  if (state.stopped) return;
+  let bytes = state.rows.reduce((sum, row) => sum + row.size, 0);
   let evicted = false;
-  for (const row of all) {
+  for (const row of state.rows) {
     if (bytes <= limit) break;
-    if (!(await evict(row))) continue;
+    if (accountContextChanged(context)) return;
+    await evict(row);
     bytes -= row.size;
     evicted = true;
   }
@@ -254,9 +257,28 @@ export function trimCachedAudio(limit = AUDIO_CACHE_LIMIT): Promise<void> {
   return exclusive(() => trimCachedAudioUnlocked(limit));
 }
 
-export async function clearCachedAudio(): Promise<void> {
-  await exclusive(async () => {
-    for (const row of await candidates()) await evict(row);
+export interface ClearCachedAudioReport {
+  cleared: number;
+  inUse: number;
+  pinnedBytes: number;
+  stopped?: "account_changed";
+}
+
+export async function clearCachedAudio(): Promise<ClearCachedAudioReport> {
+  return exclusive(async () => {
+    const context = evictionContext();
+    const state = await candidates(context);
+    let cleared = 0;
+    const inUse = state.pinnedCount;
+    const pinnedBytes = state.pinnedBytes;
+    if (state.stopped) return { cleared, inUse, pinnedBytes, stopped: "account_changed" };
+    for (const row of state.rows) {
+      if (accountContextChanged(context))
+        return { cleared, inUse, pinnedBytes, stopped: "account_changed" };
+      await evict(row);
+      cleared++;
+    }
     await pruneOrphanIdentities();
+    return { cleared, inUse, pinnedBytes };
   });
 }
