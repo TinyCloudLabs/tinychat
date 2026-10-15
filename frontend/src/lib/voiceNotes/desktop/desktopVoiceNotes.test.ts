@@ -18,6 +18,10 @@ type Callback = (payload: never) => void;
 class FakeBridge implements DesktopBridge {
   files = new Map<string, Uint8Array>();
   calls: string[] = [];
+  discardTargets: string[] = [];
+  discardResults: ("retired" | "not_current")[] = [];
+  statusGate: Promise<void> | null = null;
+  delayedStatusObserved = 0;
   stageCalls: Record<string, unknown>[] = [];
   listeners = new Map<string, Set<Callback>>();
   recover: { id: string; startedAt: number; recordedMs: number; pausedMs: number; maxDurationMs: number;
@@ -72,6 +76,7 @@ class FakeBridge implements DesktopBridge {
   async invoke<T>(command: string, args: Record<string, unknown> = {}): Promise<T> {
     this.calls.push(command);
     const id = String(args.id ?? "");
+    const recordingId = String(args.recordingId ?? "");
     let result: unknown;
     switch (command) {
       case "recorder_models_get": result = this.selectedModel; break;
@@ -139,6 +144,12 @@ class FakeBridge implements DesktopBridge {
         this.state = "idle"; this.reason = null; this.current = null; this.elapsed = 0; this.paused = 0; this.channels = 1;
         this.emit("exo://recorder-mic-state", this.status()); break;
       case "recorder_discard_durable":
+        this.discardTargets.push(recordingId);
+        if (recordingId !== this.current) {
+          this.discardResults.push("not_current");
+          result = { result: "not_current" };
+          break;
+        }
         if (this.discardRejectCount > 0) {
           this.discardRejectCount--;
           throw new Error("journal write refused");
@@ -156,11 +167,21 @@ class FakeBridge implements DesktopBridge {
           this.discardCleanupPending = false;
         }
         this.state = "idle"; this.reason = null; this.current = null; this.elapsed = 0; this.paused = 0;
-        result = this.status(); this.emit("exo://recorder-mic-state", result); break;
+        this.discardResults.push("retired");
+        result = { result: "retired", status: this.status() };
+        this.emit("exo://recorder-mic-state", this.status()); break;
       case "recorder_finish": if (this.finishGate) await this.finishGate;
         if (this.finishError) throw this.finishError;
         result = this.files.get(id)?.length ?? 0; break;
-      case "recorder_status": result = this.status(); break;
+      case "recorder_status":
+        result = this.status();
+        if (this.statusGate) {
+          const gate = this.statusGate;
+          this.statusGate = null;
+          this.delayedStatusObserved++;
+          await gate;
+        }
+        break;
       case "recorder_list_inputs": result = { inputs: [{ id: "mic-1", name: "Fixture microphone", kind: "built_in" }],
         selectedId: this.selectedId, activeId: "mic-1", selectedMissing: null }; break;
       case "recorder_select_input": this.selectedId = args.id as string | null; result = null; break;
@@ -271,6 +292,35 @@ async function waitUntilRecorderReady(recorder: ReturnType<typeof createVoiceNot
     unsubscribe = recorder.subscribe(check);
     check();
   });
+}
+
+async function rejectedDiscardFixture() {
+  const bridge = new FakeBridge();
+  bridge.discardRejectCount = 1;
+  const ids = ["discarded-session", "new-session"];
+  const engine = await rig(bridge, crypto.randomUUID(), newIdbEnv(), {}, () => ids.shift()!);
+  __setVoiceNotesForTests(engine.plugin, { available: true });
+  const makeController = () => createVoiceNoteRecorderController({
+    tcw: null,
+    available: true,
+    transcriber: { check: async () => {}, noteSaved: () => {} },
+    onDeviceReady: () => true,
+  });
+  const recorder = makeController();
+  const detach = recorder.attach();
+  await waitUntilRecorderReady(recorder);
+  await recorder.record();
+  const id = bridge.current!;
+  bridge.files.set(id, Uint8Array.of(21, 22, 23));
+  await recorder.discard();
+  return {
+    bridge, engine, id, makeController, recorder, detach,
+    dispose: () => {
+      detach();
+      engine.dispose();
+      __setVoiceNotesForTests(originalVoiceNotes, { available: null });
+    },
+  };
 }
 
 describe("desktop recorder adapter", () => {
@@ -504,11 +554,137 @@ describe("desktop recorder adapter", () => {
     }
   });
 
-  test("rejected durable Discard stays terminal and recovery retries before admitting Record", async () => {
+  test("recoverInterrupted alone retries a rejected discard before admitting Record", async () => {
+    const fixture = await rejectedDiscardFixture();
+    try {
+      expect(fixture.bridge.calls.filter((command) => command === "recorder_discard_durable")).toHaveLength(1);
+      const recovered = await fixture.engine.recoverInterrupted();
+      expect(recovered.failed).toHaveLength(0);
+      expect(fixture.bridge.calls.filter((command) => command === "recorder_discard_durable")).toHaveLength(2);
+      expect(fixture.bridge.current).toBeNull();
+      expect(fixture.bridge.files.has(fixture.id)).toBe(false);
+      expect(fixture.bridge.stopped.some((entry) => entry.id === fixture.id)).toBe(false);
+      expect(fixture.recorder.getState()).toMatchObject({ phase: "idle", outcome: null });
+      expect((await fixture.engine.plugin.listPending()).recordings).toHaveLength(0);
+
+      await fixture.recorder.record();
+      expect(fixture.bridge.current).toBe("new-session");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  test("same-adapter controller remount retries a rejected discard before exposing status", async () => {
+    const fixture = await rejectedDiscardFixture();
+    fixture.detach();
+    const remounted = fixture.makeController();
+    const detachRemounted = remounted.attach();
+    try {
+      await waitUntilRecorderReady(remounted);
+      expect(fixture.bridge.calls.filter((command) => command === "recorder_discard_durable")).toHaveLength(2);
+      expect(fixture.bridge.current).toBeNull();
+      expect(fixture.bridge.files.has(fixture.id)).toBe(false);
+      expect(fixture.bridge.stopped.some((entry) => entry.id === fixture.id)).toBe(false);
+      expect(remounted.getState()).toMatchObject({ phase: "idle", outcome: null, mic: { state: "idle", reason: null } });
+      expect((await fixture.engine.plugin.listPending()).recordings).toHaveLength(0);
+
+      await remounted.record();
+      expect(fixture.bridge.current).toBe("new-session");
+    } finally {
+      detachRemounted();
+      fixture.dispose();
+    }
+  });
+
+  test("the next Record retries a rejected discard before starting a new native session", async () => {
+    const fixture = await rejectedDiscardFixture();
+    try {
+      expect(fixture.bridge.calls.filter((command) => command === "recorder_discard_durable")).toHaveLength(1);
+      await fixture.recorder.record();
+      expect(fixture.bridge.calls.filter((command) => command === "recorder_discard_durable")).toHaveLength(2);
+      expect(fixture.bridge.current).toBe("new-session");
+      expect(fixture.bridge.files.has(fixture.id)).toBe(false);
+      expect(fixture.bridge.stopped.some((entry) => entry.id === fixture.id)).toBe(false);
+      expect((await fixture.engine.plugin.listPending()).recordings).toHaveLength(0);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  test("a failed remount retry masks a tombstoned native id as idle until the next retry", async () => {
+    const fixture = await rejectedDiscardFixture();
+    fixture.bridge.discardRejectCount = 1;
+    fixture.detach();
+    const remounted = fixture.makeController();
+    const detachRemounted = remounted.attach();
+    try {
+      await waitUntilRecorderReady(remounted);
+      expect(fixture.bridge.calls.filter((command) => command === "recorder_discard_durable")).toHaveLength(2);
+      expect(fixture.bridge.current).toBe(fixture.id);
+      expect(remounted.getState()).toMatchObject({
+        phase: "idle", outcome: null, recordingId: null, captureSourceUnconfirmed: true,
+        mic: { state: "idle", reason: null },
+      });
+      expect((await fixture.engine.plugin.listPending()).recordings).toHaveLength(0);
+
+      await remounted.record();
+      expect(fixture.bridge.calls.filter((command) => command === "recorder_discard_durable")).toHaveLength(3);
+      expect(fixture.bridge.current).toBe("new-session");
+      expect(fixture.bridge.files.has(fixture.id)).toBe(false);
+    } finally {
+      detachRemounted();
+      fixture.dispose();
+    }
+  });
+
+  test("a delayed old status cannot discard a new Record and the new capture still saves", async () => {
+    const fixture = await rejectedDiscardFixture();
+    let releaseStatus!: () => void;
+    fixture.bridge.statusGate = new Promise<void>((resolve) => { releaseStatus = resolve; });
+    try {
+      const staleStatus = fixture.engine.plugin.status();
+      await waitFor(() => fixture.bridge.delayedStatusObserved === 1);
+      await fixture.recorder.record();
+      expect(fixture.bridge.current).toBe("new-session");
+      fixture.bridge.files.set("new-session", Uint8Array.of(31, 32, 33));
+
+      releaseStatus();
+      const reconciled = await staleStatus;
+      expect(reconciled).toMatchObject({ id: "new-session", state: "recording" });
+      expect(fixture.bridge.current).toBe("new-session");
+      expect(fixture.bridge.discardTargets).toEqual([fixture.id, fixture.id, fixture.id]);
+      expect(fixture.bridge.discardResults).toEqual(["retired", "not_current"]);
+      expect(fixture.bridge.files.has("new-session")).toBe(true);
+
+      fixture.bridge.elapsed = 60_000;
+      await fixture.recorder.stop();
+      const saved = (await fixture.engine.plugin.listPending()).recordings;
+      expect(saved).toHaveLength(1);
+      expect(saved[0]).toMatchObject({ id: "new-session", sizeBytes: 3, ledger: { localAudio: { state: "ready" } } });
+    } finally {
+      releaseStatus?.();
+      fixture.dispose();
+    }
+  });
+
+  test("retryRecovery and Record serialize tombstone retirement before starting new capture", async () => {
     const bridge = new FakeBridge();
-    bridge.discardRejectCount = 1;
-    const ids = ["discarded-session", "new-session"];
-    const engine = await rig(bridge, crypto.randomUUID(), newIdbEnv(), {}, () => ids.shift()!);
+    const id = "discarded-old";
+    const env = newIdbEnv();
+    const dbName = crypto.randomUUID();
+    const store = await openWebStore({ env, dbName, locks: memoryLocks(), decodeCheck: null,
+      now: () => bridge.now, audio: () => createFileAudioBlobStore(bridge) });
+    const defaults = await store.getCaptureDefaults();
+    await store.beginSession({ id, startedAt: bridge.now, source: "in_app", owner: null,
+      transitionGen: defaults.transitionGen,
+      options: { transcriber: "off", identifySpeakers: false, uploadAudio: false },
+      mimeType: "audio/mpeg", input: null, maxDurationMs: 10_000 });
+    await store.quarantineInterrupted(id, "source_unusable", "fixture failure");
+    await store.tombstoneSession(id);
+    bridge.failed = [{ id, segmentId: "old-segment", reason: "source_unusable", error: "fixture failure",
+      journal: { id, startedAt: bridge.now, recordedMs: 0, pausedMs: 0, maxDurationMs: 10_000 } }];
+    const ids = ["new-live"];
+    const engine = await openDesktopVoiceNotes({ bridge, store, now: () => bridge.now, newId: () => ids.shift()! });
     __setVoiceNotesForTests(engine.plugin, { available: true });
     const recorder = createVoiceNoteRecorderController({
       tcw: null,
@@ -517,31 +693,37 @@ describe("desktop recorder adapter", () => {
       onDeviceReady: () => true,
     });
     const detach = recorder.attach();
+    let releaseStatus!: () => void;
     try {
       await waitUntilRecorderReady(recorder);
-      await recorder.record();
-      const id = (await engine.plugin.status()).id!;
-      bridge.files.set(id, Uint8Array.of(21, 22, 23));
+      bridge.current = id;
+      bridge.state = "recording";
+      bridge.statusGate = new Promise<void>((resolve) => { releaseStatus = resolve; });
 
-      await recorder.discard();
-      expect(recorder.getState().phase).toBe("idle");
-      expect(bridge.current).toBe(id);
-      expect(bridge.files.has(id)).toBe(true);
+      const retrying = engine.plugin.retryRecovery({ id });
+      await waitFor(() => bridge.delayedStatusObserved === 1);
+      const recording = recorder.record();
+      releaseStatus();
+      await Promise.all([retrying, recording]);
+      expect(bridge.current).toBe("new-live");
+      expect(bridge.discardTargets).toEqual([id]);
+      expect(bridge.discardResults).toEqual(["retired"]);
+      expect(bridge.calls.indexOf("recorder_discard_durable")).toBeLessThan(bridge.calls.indexOf("recorder_start"));
       expect((await engine.plugin.listPending()).recordings).toHaveLength(0);
 
-      const recovered = await engine.recoverInterrupted();
-      expect(recovered.failed).toHaveLength(0);
+      bridge.files.set("new-live", Uint8Array.of(41, 42, 43));
+      bridge.elapsed = 60_000;
+      await recorder.stop();
       expect(bridge.current).toBeNull();
-      expect(bridge.files.has(id)).toBe(false);
-      expect((await engine.plugin.listPending()).recordings).toHaveLength(0);
-      expect(bridge.calls.filter((command) => command === "recorder_discard_durable")).toHaveLength(2);
-
-      await recorder.record();
-      expect((await engine.plugin.status()).id).toBe("new-session");
-      expect((await engine.plugin.listPending()).recordings).toHaveLength(0);
+      expect(await store.hasTombstone(id)).toBe(true);
+      const saved = (await engine.plugin.listPending()).recordings;
+      expect(saved).toHaveLength(1);
+      expect(saved[0]).toMatchObject({ id: "new-live", sizeBytes: 3, ledger: { localAudio: { state: "ready" } } });
     } finally {
+      releaseStatus?.();
       detach();
       engine.dispose();
+      store.close();
       __setVoiceNotesForTests(originalVoiceNotes, { available: null });
     }
   });

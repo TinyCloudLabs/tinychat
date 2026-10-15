@@ -50,6 +50,12 @@ pub fn merge_unconfirmed_devices(
     Some(merged)
 }
 
+/// True only when an expected recording id still owns the native recorder.
+/// Callers must make this decision while holding the lock that protects current ownership.
+pub fn is_current_recording(expected_id: &str, current_id: Option<&str>) -> bool {
+    current_id == Some(expected_id)
+}
+
 /// Why the listener session did not appear finalized before the deadline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stall {
@@ -430,6 +436,13 @@ mod tests {
             .as_deref()
             .map(|devices| devices.iter().any(|device| *device == 7));
         assert_eq!(after_old_released, None);
+    }
+
+    #[test]
+    fn discard_owner_match_rejects_a_stale_or_missing_recording() {
+        assert!(is_current_recording("old", Some("old")));
+        assert!(!is_current_recording("old", Some("new")));
+        assert!(!is_current_recording("old", None));
     }
     fn recording_at(now_ms: u64) -> Recorder {
         let mut recorder = Recorder::new();

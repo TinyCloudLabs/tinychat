@@ -21,6 +21,7 @@ type EventName = "micState" | "level" | "autoStopped" | "committed" | "recovered
 type Listener = (event: never) => void;
 type NativeStatus = Omit<CaptureStatus, "spans" | "openSpan" | "transitionGen"> & {
   at: number; elapsedAt: number; spans?: MissingAudioSpan[] };
+type NativeDiscardResult = { result: "retired"; status: NativeStatus } | { result: "not_current" };
 type NativeAutoStop = { id: string; reason: "max_duration"; maxDurationMs: number; at: number; elapsedMs: number; pausedMs: number;
   channels: 1 | 2; spans?: MissingAudioSpan[] };
 type NativeJournal = { id: string; startedAt: number; recordedMs: number; pausedMs: number; maxDurationMs: number;
@@ -120,34 +121,55 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
   const store = options.store ?? await openWebStore({ locks: memoryLocks(), ...options.storeOptions,
     audio: () => createFileAudioBlobStore(bridge) });
   let pendingNativeDiscardId: string | null = null;
+  let pendingDiscardRetry: { id: string; promise: Promise<NativeStatus> } | null = null;
   const uncertainDiscardStatus = (native: NativeStatus): NativeStatus => ({
     ...native,
-    state: "needs_user",
-    reason: "status_unknown",
+    state: "idle",
+    reason: null,
     id: null,
+    startedAt: null,
     intent: "stopped",
     availability: "blocked",
     captureSourceUnconfirmed: true,
     discardCleanupPending: true,
   });
+  const invokeDurableDiscard = async (recordingId: string): Promise<NativeStatus> => {
+    const result = await bridge.invoke<NativeDiscardResult>("recorder_discard_durable", { recordingId });
+    switch (result.result) {
+      case "retired":
+        return result.status;
+      case "not_current":
+        if (pendingNativeDiscardId === recordingId) pendingNativeDiscardId = null;
+        return bridge.invoke<NativeStatus>("recorder_status");
+    }
+  };
   const retryTombstonedNativeDiscard = async (native: NativeStatus): Promise<NativeStatus> => {
     const id = native.id;
     if (!id || (pendingNativeDiscardId !== id && !await store.hasTombstone(id))) return native;
+    if (pendingDiscardRetry?.id === id) return pendingDiscardRetry.promise;
     pendingNativeDiscardId = id;
-    try {
-      const retired = await bridge.invoke<NativeStatus>("recorder_discard_durable");
-      pendingNativeDiscardId = retired.id === id ? id : null;
-      return retired;
-    } catch (error) {
-      console.warn("[VoiceNotes] Retrying durable Discard for a tombstoned native session", error);
-      let current: NativeStatus;
-      try { current = await bridge.invoke<NativeStatus>("recorder_status"); }
-      catch (statusError) {
-        console.warn("[VoiceNotes] Could not confirm tombstoned native session status", statusError);
-        current = native;
+    const retry = (async (): Promise<NativeStatus> => {
+      try {
+        const retired = await invokeDurableDiscard(id);
+        pendingNativeDiscardId = retired.id === id ? id : null;
+        return retired;
+      } catch (error) {
+        console.warn("[VoiceNotes] Retrying durable Discard for a tombstoned native session", error);
+        let current: NativeStatus;
+        try { current = await bridge.invoke<NativeStatus>("recorder_status"); }
+        catch (statusError) {
+          console.warn("[VoiceNotes] Could not confirm tombstoned native session status", statusError);
+          current = native;
+        }
+        pendingNativeDiscardId = current.id === id ? id : null;
+        return current;
       }
-      pendingNativeDiscardId = current.id === id ? id : null;
-      return current;
+    })();
+    pendingDiscardRetry = { id, promise: retry };
+    try {
+      return await retry;
+    } finally {
+      if (pendingDiscardRetry?.promise === retry) pendingDiscardRetry = null;
     }
   };
   const ensureNativeDiscardRetired = async (): Promise<void> => {
@@ -261,6 +283,12 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
   const status = async (): Promise<CaptureStatus> => {
     let native = await bridge.invoke<NativeStatus>("recorder_status");
     if (pendingNativeDiscardId && pendingNativeDiscardId !== native.id) pendingNativeDiscardId = null;
+    if (native.id && (pendingNativeDiscardId === native.id || await store.hasTombstone(native.id))) {
+      const discardedId = native.id;
+      native = await retryTombstonedNativeDiscard(native);
+      if (pendingNativeDiscardId === discardedId) native = uncertainDiscardStatus(native);
+      else if (!native.captureSourceUnconfirmed && !native.discardCleanupPending) await store.sweepTombstones();
+    }
     native = visibleNativeStatus(native);
     const session = live?.session ?? (native.id ? await store.getSession(native.id) : null);
     const defaults = session ? null : await store.getCaptureDefaults();
@@ -438,7 +466,7 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
     return results;
   };
 
-  async function recoverInterrupted(): Promise<RecoveryResult> {
+  async function recoverInterruptedInRun(): Promise<RecoveryResult> {
     let deferTombstoneCleanup: boolean;
     let report: NativeRecoveryReport;
     try {
@@ -550,6 +578,9 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
     for (const recording of result.recovered) emit("recovered", { id: recording.id, recording });
     for (const failed of result.failed) emit("recoveryFailed", failed);
     return { recovered: [...result.recovered, ...preparedRecovered], failed: [...quarantined, ...result.failed] };
+  }
+  async function recoverInterrupted(): Promise<RecoveryResult> {
+    return run(recoverInterruptedInRun);
   }
 
   const requireReadyAudio = async (id: string): Promise<void> => {
@@ -732,7 +763,7 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
         await store.tombstoneSession(id);
         let native: NativeStatus | null = null;
         try {
-          native = await bridge.invoke<NativeStatus>("recorder_discard_durable");
+          native = await invokeDurableDiscard(id);
         } catch (error) {
           console.warn("[VoiceNotes] Native durable Discard did not finish; keeping the tombstone", error);
           try { native = await bridge.invoke<NativeStatus>("recorder_status"); }
@@ -817,30 +848,35 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
       });
     },
     async retryRecovery({ id }) {
-      if (live?.session.id === id) throw failure("recording_in_progress");
-      const prepared = (await store.listPending()).recordings.find((note) => note.id === id
-        && note.ledger?.localAudio?.state === "failed");
-      if (prepared) {
-        await store.retryPreparingAudio(id);
-        const nativeFailed = (await nativeFailures(id)).length > 0;
-        if (nativeFailed) {
-          const remaining = await bridge.invoke<NativeFailed[]>("recorder_failed_retry", { id });
-          if (remaining.length) {
-            await store.failPreparingAudio(id, remaining[0]!.error);
-            throw failure("recovery_failed", remaining[0]!.error);
+      return run(async () => {
+        if (live?.session.id === id) throw failure("recording_in_progress");
+        const prepared = (await store.listPending()).recordings.find((note) => note.id === id
+          && note.ledger?.localAudio?.state === "failed");
+        if (prepared) {
+          await store.retryPreparingAudio(id);
+          const nativeFailed = (await nativeFailures(id)).length > 0;
+          if (nativeFailed) {
+            const remaining = await bridge.invoke<NativeFailed[]>("recorder_failed_retry", { id });
+            if (remaining.length) {
+              await store.failPreparingAudio(id, remaining[0]!.error);
+              throw failure("recovery_failed", remaining[0]!.error);
+            }
+            const ready = await store.completePreparingAudio(id);
+            await bridge.invoke("recorder_acknowledge", { id });
+            emit("recovered", { id, recording: ready });
+            return;
           }
-          const ready = await store.completePreparingAudio(id);
-          await bridge.invoke("recorder_acknowledge", { id });
-          emit("recovered", { id, recording: ready });
+          await finishPrepared(id);
           return;
         }
-        await finishPrepared(id);
-        return;
-      }
-      const remaining = await bridge.invoke<NativeFailed[]>("recorder_failed_retry", { id });
-      if (remaining.length) { await quarantineFailures(remaining); throw failure("recovery_failed", remaining[0]!.error); }
-      await store.rearmQuarantined(id);
-      await recoverInterrupted();
+        const remaining = await bridge.invoke<NativeFailed[]>("recorder_failed_retry", { id });
+        if (remaining.length) {
+          await quarantineFailures(remaining);
+          throw failure("recovery_failed", remaining[0]!.error);
+        }
+        await store.rearmQuarantined(id);
+        await recoverInterruptedInRun();
+      });
     },
     async discardFailedRecording({ id }) {
       if (live?.session.id === id) throw failure("recording_in_progress");

@@ -228,6 +228,13 @@ pub struct CaptureStatus {
     discard_cleanup_pending: bool,
 }
 
+#[derive(Serialize)]
+#[serde(tag = "result", content = "status", rename_all = "snake_case")]
+pub enum DurableDiscardResult {
+    Retired(CaptureStatus),
+    NotCurrent,
+}
+
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1504,11 +1511,17 @@ pub async fn recorder_stop_durable(app: tauri::AppHandle) -> Result<CaptureStatu
 }
 
 #[tauri::command]
-pub async fn recorder_discard_durable(app: tauri::AppHandle) -> Result<CaptureStatus, String> {
+pub async fn recorder_discard_durable(
+    app: tauri::AppHandle,
+    recording_id: String,
+) -> Result<DurableDiscardResult, String> {
     super::ensure(&app);
     let (id, segment_id, already_closed) = {
         let engine = app.state::<Engine>();
         let mut state = engine.0.lock();
+        if !recorder_state::is_current_recording(&recording_id, state.id.as_deref()) {
+            return Ok(DurableDiscardResult::NotCurrent);
+        }
         if state.busy {
             return Err("recorder_busy".into());
         }
@@ -1643,7 +1656,7 @@ pub async fn recorder_discard_durable(app: tauri::AppHandle) -> Result<CaptureSt
         status
     };
     emit_status(&app);
-    Ok(status)
+    Ok(DurableDiscardResult::Retired(status))
 }
 
 #[tauri::command]
