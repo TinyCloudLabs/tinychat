@@ -9,6 +9,7 @@ const AUTOMATIC_RETRY_CODES: ReadonlySet<string> = new Set([
   "service_busy",
   "transcript_save_failed",
   "held_result_persistence_failed",
+  "held_result_lock_busy",
   "STORAGE_QUOTA_EXCEEDED",
   "upload_capability_limit",
 ]);

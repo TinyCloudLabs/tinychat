@@ -79,6 +79,7 @@ import { accountStorageKey, beginPrivateChoiceIntent, clearChoicePinMetadata, se
   VOICE_NOTE_PENDING_JOBS_KEY, VOICE_NOTE_PRIVATE_CHOICES_KEY, retainSource, withSourceLease } from "./sourcePins";
 import { isAutomaticRetryableCode } from "./retryableVoiceNoteErrors";
 import { transcriptHash, type VoiceNoteTranscriptionStatsMetadata } from "./voiceNoteRows";
+import { createHeldResultStore, type HeldResult, type HeldResultInput, type HeldResultStore, type SaveHeldOutcome } from "./heldResults";
 
 // ── Upload ─────────────────────────────────────────────────────────────
 
@@ -250,9 +251,11 @@ export interface PendingVoiceNoteJob {
 export interface VoiceNotePendingStore {
   read(sourceId: string): PendingVoiceNoteJob | null;
   write(sourceId: string, job: PendingVoiceNoteJob): void;
-  clear(sourceId: string): void;
+  clear(sourceId: string, options?: { held?: "verified_commit" | "note_gone" }): void;
   clearExplicitReruns?(): void;
   sourceIds(): string[];
+  legacyHeld?(sourceId: string): unknown;
+  stripLegacyHeld?(sourceId: string, rev: number, hash: string): Promise<void>;
 }
 
 function isHeldTranscript(value: unknown): value is VoiceNoteTranscriptSave {
@@ -277,17 +280,10 @@ export function localStorageVoiceNotePendingStore(
       for (const [sourceId, value] of Object.entries(parsed as Record<string, unknown>)) {
         const v = value as Partial<PendingVoiceNoteJob> | null;
         if (!v || typeof v.attemptId !== "string") continue;
-        const held: unknown = v.held;
-        const failure: unknown = v.failure;
-        const rerunBase = v.rerunBase as Partial<VoiceNoteRerunBase> | undefined;
         out[sourceId] = {
+          ...v,
           attemptId: v.attemptId,
           transcriptionId: typeof v.transcriptionId === "string" ? v.transcriptionId : null,
-          ...(isHeldTranscript(held) ? { held } : {}),
-          ...(typeof failure === "string" ? { failure } : {}),
-          ...(v.explicitRerun === true ? { explicitRerun: true } : {}),
-          ...(rerunBase && Number.isSafeInteger(rerunBase.rev) && typeof rerunBase.hash === "string"
-            ? { rerunBase: { rev: rerunBase.rev!, hash: rerunBase.hash } } : {}),
         };
       }
       return out;
@@ -309,14 +305,43 @@ export function localStorageVoiceNotePendingStore(
     read: (sourceId) => readAll()[sourceId] ?? null,
     write: (sourceId, job) => {
       const all = readAll();
-      const next = { ...all, [sourceId]: { ...job, held: job.held ?? all[sourceId]?.held } };
+      const old = all[sourceId];
+      const next = { ...all, [sourceId]: {
+        ...job, held: job.held ?? old?.held,
+        explicitRerun: job.explicitRerun ?? old?.explicitRerun,
+        rerunBase: job.rerunBase ?? old?.rerunBase,
+      } };
       if (!writeAll(next) && next[sourceId]?.held !== undefined)
         throw new PrivateCloudError("held_result_persistence_failed", "The completed transcript could not be kept in this device's pending store.");
     },
-    clear: (sourceId) => {
+    clear: (sourceId, options) => {
       const all = readAll();
-      if (!(sourceId in all)) return;
-      delete all[sourceId];
+      const old = all[sourceId];
+      if (!old) return;
+      if (old.held !== undefined && options?.held === undefined) {
+        all[sourceId] = { attemptId: old.attemptId, transcriptionId: null, held: old.held };
+      } else {
+        delete all[sourceId];
+      }
+      writeAll(all);
+    },
+    legacyHeld: (sourceId) => readAll()[sourceId]?.held,
+    async stripLegacyHeld(sourceId, rev, hash) {
+      const original = readAll()[sourceId]?.held;
+      if (!isHeldTranscript(original) || original.rev !== rev
+        || await transcriptHash(original.sentences) !== hash) return;
+      const payload = JSON.stringify(original);
+      const all = readAll();
+      const current = all[sourceId];
+      if (!current || !isHeldTranscript(current.held) || current.held.rev !== rev
+        || JSON.stringify(current.held) !== payload) return;
+      const { held: _held, ...rest } = current;
+      if (Object.keys(rest).some((field) => field !== "attemptId" && field !== "transcriptionId")) {
+        all[sourceId] = rest;
+      } else {
+        delete all[sourceId];
+      }
+      // Mutations merge synchronously against the latest map; never write the pre-hash snapshot.
       writeAll(all);
     },
     clearExplicitReruns: () => {
@@ -650,6 +675,7 @@ const JOB_ENDED_CODES: ReadonlySet<string> = new Set([
 ]);
 
 
+
 function isAutomaticRetryableError(error: unknown): boolean {
   return isAutomaticRetryableCode(voiceNoteErrorCode(error));
 }
@@ -853,10 +879,11 @@ export interface VoiceNoteCloud {
   ): Promise<{ transcriptionId: string; transcript: PrivateCloudTranscript }>;
   /** Call only after a verified commit or deliberate terminal discard. */
   finish(sourceId: string, transcriptionId?: string | null): Promise<void>;
-  /** Keep a prepared transcript with its pending job until commit is verified. */
   holdTranscript(sourceId: string, transcript: VoiceNoteTranscriptSave, rerunBase?: VoiceNoteRerunBase | null): void;
   /** The prepared transcript whose save is still owed, if any. */
   heldTranscript(sourceId: string): VoiceNoteTranscriptSave | null;
+  stripLegacyHeld?(sourceId: string, rev: number, hash: string): Promise<void>;
+  clearLegacyHeld?(sourceId: string, reason: "note_gone"): void;
   /** Cancel and forget jobs still waiting for upload; completed jobs are preserved. */
   releaseUnsent(sourceId?: string): Promise<void>;
 }
@@ -872,15 +899,71 @@ export async function commitPreparedVoiceNoteTranscript(args: {
   transcript: VoiceNoteTranscriptSave;
   rerunBase?: VoiceNoteRerunBase | null;
   heldRerunResult?: boolean;
+  held?: HeldResultStore;
+  heldRecord?: HeldResult | null;
+  holdInput?: HeldResultInput;
+  mode?: "automatic" | "explicit";
   save: () => Promise<void>;
   finish: () => Promise<void>;
   stillCurrent: () => boolean;
 }): Promise<TranscriptCommit | null> {
   let holdFailed = false;
-  try {
-    args.cloud.holdTranscript(args.sourceId, args.transcript, args.rerunBase);
-  } catch {
-    holdFailed = true;
+  let row = args.heldRecord ?? null;
+  if (args.held) {
+    try {
+      if (!row && args.holdInput) await args.held.hold(args.holdInput);
+      row ??= await args.held.readHeld(args.sourceId);
+    } catch {
+      holdFailed = true;
+    }
+    if (row) {
+      let beforeSave = true;
+      let outcome: SaveHeldOutcome;
+      try {
+        outcome = await args.held.saveHeldFirst(args.tcw, args.sourceId, {
+          save: () => {
+            beforeSave = false;
+            return args.save();
+          },
+          afterCommit: async (committed, verifiedHeldResult) => {
+            beforeSave = false;
+            try {
+              await args.cloud.stripLegacyHeld?.(args.sourceId, committed.transcript.rev, committed.hash);
+            } catch (error) {
+              if (!verifiedHeldResult) throw error;
+              logPipelineCount("voice_note_held_legacy_strip", "failed");
+            }
+            try {
+              await args.cloud.finish(args.sourceId,
+                committed.provider && "transcriptionId" in committed.provider ? committed.provider.transcriptionId : null);
+            } catch (error) {
+              logPipelineError("Deleting a finished private cloud job failed; PTX deletes it on its own schedule", error);
+            }
+          },
+          stillCurrent: args.stillCurrent,
+        }, args.mode ?? "automatic");
+      } catch (cause) {
+        if (beforeSave && isStorageFullError(cause)) {
+          if (!args.stillCurrent()) throw accountChangedError();
+          reportStorageError(cause, storageScopeFor(args.tcw));
+          throw new PrivateCloudError(TRANSCRIPT_STORAGE_FULL_CODE, STORAGE_FULL_SAVE_MESSAGE);
+        }
+        throw cause;
+      }
+      if (outcome === "conflict") {
+        const conflict = (await args.held.readHeld(args.sourceId))?.conflict ?? "rerun_lost";
+        throw new PrivateCloudError(conflict, "Held transcript commit conflict.");
+      }
+      if (outcome === "lock_busy") throw new PrivateCloudError("held_result_lock_busy", "The held transcript is being committed in another tab.");
+      if (outcome === "discarded_superseded") return await readTranscriptCommit(args.tcw, args.sourceId);
+      return await readTranscriptCommit(args.tcw, args.sourceId);
+    }
+  } else {
+    try {
+      args.cloud.holdTranscript(args.sourceId, args.transcript, args.rerunBase);
+    } catch {
+      holdFailed = true;
+    }
   }
   if (!args.stillCurrent()) throw accountChangedError();
   const existing = await readTranscriptCommit(args.tcw, args.sourceId);
@@ -900,7 +983,10 @@ export async function commitPreparedVoiceNoteTranscript(args: {
   try {
     await args.save();
   } catch (err) {
-    if (voiceNoteErrorCode(err) === "voice_note_not_found" && args.stillCurrent()) await args.finish();
+    if (voiceNoteErrorCode(err) === "voice_note_not_found" && args.stillCurrent()) {
+      await args.finish();
+      args.cloud.clearLegacyHeld?.(args.sourceId, "note_gone");
+    }
     if (holdFailed && voiceNoteErrorCode(err) !== ACCOUNT_CHANGED)
       throw new PrivateCloudError("held_result_persistence_failed", "The finished transcript could not be kept on this device; retry now.");
     throw err;
@@ -911,6 +997,43 @@ export async function commitPreparedVoiceNoteTranscript(args: {
     throw new PrivateCloudError("transcript_save_failed", "The transcript commit could not be verified");
   await args.finish();
   return committed;
+}
+
+/** Commit an already-held Private result when no PTX client is available. */
+export async function drainHeldVoiceNote(
+  tcw: TinyCloudWeb,
+  held: HeldResultStore,
+  sourceId: string,
+  stillCurrent: () => boolean,
+  afterCommit: (row: HeldResult, verifiedHeldResult: boolean) => Promise<void> = async () => undefined,
+): Promise<"committed" | "already_committed" | "discarded_superseded" | "conflict" | "lock_busy" | null> {
+  const row = await held.readHeld(sourceId);
+  if (!row) return null;
+  const note = await readVoiceNoteForTranscription(tcw, sourceId);
+  if (!note.ok) throw new PrivateCloudError("note_unreadable", note.error.message);
+  if (note.data === null) {
+    await held.discard(tcw, sourceId, row.holdId, "note_gone");
+    return null;
+  }
+  const account = { generation: currentAccountGeneration(), did: tcw.did };
+  return held.saveHeldFirst(tcw, sourceId, {
+    save: async () => {
+      if (!stillCurrent()) throw accountChangedError();
+      const saved = await saveVoiceNoteTranscript(tcw, sourceId, row.transcript, account,
+        () => {
+          if (!stillCurrent()) throw accountChangedError();
+        });
+      if (!saved.ok) {
+        if (saved.error.code === "VOICE_NOTE_NOT_FOUND")
+          throw new PrivateCloudError("voice_note_not_found", saved.error.message);
+        throw new PrivateCloudError("transcript_save_failed", saved.error.message);
+      }
+    },
+    afterCommit: async (committed, verifiedHeldResult) => {
+      await afterCommit(committed, verifiedHeldResult);
+    },
+    stillCurrent,
+  }, "automatic");
 }
 
 
@@ -1355,6 +1478,8 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
       });
     },
     heldTranscript: (sourceId) => pending.read(sourceId)?.held ?? null,
+    stripLegacyHeld: (sourceId, rev, hash) => pending.stripLegacyHeld?.(sourceId, rev, hash) ?? Promise.resolve(),
+    clearLegacyHeld: (sourceId, reason) => pending.clear(sourceId, { held: reason }),
 
 
 
@@ -1437,6 +1562,7 @@ export function voiceNoteTranscriptionFailure(err: unknown): VoiceNoteTranscript
 export async function transcribeVoiceNote(args: {
   tcw: TinyCloudWeb;
   cloud: VoiceNoteCloud;
+  held?: HeldResultStore;
   capabilities: PrivateCloudCapabilities;
   currentCapabilities?: () => PrivateCloudCapabilities | null;
   sourceId: string;
@@ -1478,12 +1604,11 @@ export async function transcribeVoiceNote(args: {
   };
   const persistFailure = async (error: unknown, statsMetadata: VoiceNoteTranscriptionStatsMetadata = {}) => {
     const code = voiceNoteErrorCode(error);
-    const current = stillCurrent();
     const firstRunStorageFull = code === TRANSCRIPT_STORAGE_FULL_CODE && !args.explicitRerun;
-    if (!current || (code === TRANSCRIPT_STORAGE_FULL_CODE && args.explicitRerun)
+    if (!stillCurrent() || (code === TRANSCRIPT_STORAGE_FULL_CODE && args.explicitRerun)
       || (!firstRunStorageFull && (error instanceof DeviceLocalVoiceNoteAudioError
         || !NOTE_INTRINSIC_FAILURE_CODES.has(code) || isAutomaticRetryableError(error)
-        || cloud.heldTranscript(sourceId) !== null))) return;
+        || (args.held?.heldHint(sourceId) ?? false) || cloud.heldTranscript(sourceId) !== null))) return;
     try { await patchVoiceNoteTranscriptionFailure(tcw, sourceId, code, accountCheckpoint, statsMetadata); }
     catch (persistError) { logPipelineError("[VoiceNotes] Could not persist the transcription failure", persistError); }
   };
@@ -1496,6 +1621,12 @@ export async function transcribeVoiceNote(args: {
       await cloud.finish(sourceId, transcriptionId);
     } catch (err) {
       logPipelineError("Deleting a finished private cloud job failed; PTX deletes it on its own schedule", err);
+    }
+    try {
+      const committed = await readTranscriptCommit(tcw, sourceId);
+      if (committed) await cloud.stripLegacyHeld?.(sourceId, committed.rev, committed.hash);
+    } catch {
+      // The space commit is already verified; a failed compare-strip leaves the legacy copy intact.
     }
   };
   let expectedRerunBase: VoiceNoteRerunBase | null = null;
@@ -1533,27 +1664,58 @@ export async function transcribeVoiceNote(args: {
         throw new PrivateCloudError("transcript_save_failed", "A different transcript revision won this rerun. Try again.");
     }
   };
-  const commitPrepared = (prepared: VoiceNoteTranscriptSave, transcriptionId?: string | null) =>
-    commitPreparedVoiceNoteTranscript({
+  let heldStore = args.held;
+  const commitPrepared = (prepared: VoiceNoteTranscriptSave, transcriptionId?: string | null,
+    existingHeld?: HeldResult | null) => commitPreparedVoiceNoteTranscript({
       tcw, cloud, sourceId, transcript: prepared, rerunBase: expectedRerunBase, heldRerunResult,
+      held: heldStore, heldRecord: existingHeld,
+      ...(heldStore && !existingHeld ? { holdInput: {
+        version: 1, did: tcw.did, spaceId: tcw.spaceId ?? "", sourceId, engine: "private-cloud",
+        transcript: prepared, provider: transcriptionId ? { transcriptionId } : null,
+        intent: expectedRerunBase ? { kind: "rerun", base: expectedRerunBase } : { kind: "unknown" },
+        ...(args.overrideCommitted ? { overrideCommitted: true } : {}),
+      } } : {}),
+      mode: args.explicit ? "explicit" : "automatic",
       save: () => save(prepared), finish: () => finish(transcriptionId), stillCurrent,
     });
 
   const note = await readVoiceNoteForTranscription(tcw, sourceId);
   if (!note.ok) throw new PrivateCloudError("note_unreadable", note.error.message);
-  const held = cloud.heldTranscript(sourceId);
+  const legacyHeld = cloud.heldTranscript(sourceId);
+  let heldRecord: HeldResult | null = null;
+  if (heldStore) {
+    try { heldRecord = await heldStore.readHeld(sourceId); }
+    catch (error) {
+      const reason = error && typeof error === "object" && "reason" in error
+        ? String((error as { reason: unknown }).reason) : "";
+      if (legacyHeld === null || reason !== "unavailable" || note.data === null) throw error;
+      if (!stillCurrent()) throw accountChangedError();
+      heldStore = undefined;
+    }
+  }
+
   if (note.data === null) {
+    if (heldRecord && args.held) await args.held.discard(tcw, sourceId, heldRecord.holdId, "note_gone");
     await finish();
+    cloud.clearLegacyHeld?.(sourceId, "note_gone");
     throw new PrivateCloudError("voice_note_not_found", "The voice note no longer exists");
   }
 
   const noteData = note.data;
   const currentCommit = await readTranscriptCommit(tcw, sourceId);
   const commit = args.explicitRerun ? requireVoiceNoteTranscriptCommit(currentCommit) : currentCommit;
-  expectedRerunBase = args.explicitRerun ? commit : cloud.rerunBase?.(sourceId) ?? null;
-  heldRerunResult = held !== null && expectedRerunBase !== null;
-  if (held !== null) {
-    const committed = await commitPrepared(held);
+  expectedRerunBase = args.explicitRerun ? commit
+    : heldRecord ? (heldRecord.intent.kind === "rerun" ? heldRecord.intent.base : null)
+      : cloud.rerunBase?.(sourceId) ?? null;
+  heldRerunResult = (heldRecord !== null || legacyHeld !== null) && expectedRerunBase !== null;
+  const authorizedConflictRerun = args.explicit && args.explicitRerun && heldRecord?.conflict !== undefined;
+  if (heldRecord?.conflict && !authorizedConflictRerun)
+    throw new PrivateCloudError(heldRecord.conflict, "Held transcript commit conflict.");
+  if ((heldRecord && !authorizedConflictRerun) || legacyHeld !== null) {
+    const held = heldRecord?.transcript ?? legacyHeld!;
+    const providerId = heldRecord?.provider && "transcriptionId" in heldRecord.provider
+      ? heldRecord.provider.transcriptionId : undefined;
+    const committed = await commitPrepared(held, providerId, heldRecord);
     return committed?.outcome ?? "no_speech";
   }
   const nativeNote = (await VoiceNotes.listPending()).recordings.find((recording) => recording.id === sourceId);
@@ -1757,12 +1919,21 @@ export interface VoiceNoteTranscriberSnapshot {
   capabilities: PrivateCloudCapabilities | null;
   consented: boolean;
   jobs: ReadonlyMap<string, NoteTranscriptionState>;
+  heldDurability?: "persistent" | "best-effort" | "unavailable";
   powerfulAvailable?: boolean;
   powerfulConsented?: boolean;
   /** The error of the last availability check when it failed (`availability` "failed"). */
   checkError?: string;
   /** Stable public cause for a failed availability check. */
   checkErrorCode?: string;
+}
+
+function requestHeldResultPersistence(): void {
+  try {
+    if (typeof navigator !== "undefined" && navigator.storage?.persist) void navigator.storage.persist().catch(() => {});
+  } catch {
+    // Persistence is best-effort; the held store reports the actual durability state.
+  }
 }
 
 /** `saved`: a note's outcome was written to the space (refresh the list). */
@@ -1830,6 +2001,12 @@ export interface VoiceNoteTranscriberDeps {
   choices?: VoiceNotePrivateChoiceStore;
   /** Which notes were held back from transcription, kept across launches. */
   holds: VoiceNoteHoldStore;
+  /** Durable held-result store for the current DID. */
+  held?: HeldResultStore;
+  /** Legacy migration plus the held-store summary/index restore. */
+  ready?: Promise<void>;
+  /** Strip the matching legacy fallback after a held commit is verified. */
+  heldAfterCommit?: (row: HeldResult) => Promise<void>;
   /** The current session's space client. */
   tcw: () => TinyCloudWeb;
   /** Injected in tests. */
@@ -1859,6 +2036,8 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
     cancel: (handle: unknown) => clearTimeout(handle as ReturnType<typeof setTimeout>),
   };
   const cloud = deps.cloud;
+  const hasHeldHint = (sourceId: string) => (deps.held?.heldHint(sourceId) ?? false)
+    || (cloud?.heldTranscript?.(sourceId) ?? null) !== null;
   const listeners = new Set<(event: VoiceNoteTranscriberEvent) => void>();
   const jobs = new Map<string, NoteTranscriptionState>();
   const holdStates = new Map<string, VoiceNoteHoldState>();
@@ -1934,7 +2113,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
       if (cloud === null) return false;
       return cloud.pendingSourceIds().some((sourceId) =>
         cloud.hasRemoteJob(sourceId)
-        || cloud.heldTranscript(sourceId) !== null
+        || hasHeldHint(sourceId)
         || cloud.terminalFailure?.(sourceId) == null,
       );
     } catch {
@@ -1988,6 +2167,64 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
         return privateCloudLimits(state.capabilities) === null ? "limits-unknown" : "unavailable";
     }
   };
+  const listHeldForRecovery = async () => {
+    if (!deps.held) return [];
+    try { return await deps.held.listHeld(); }
+    catch (error) {
+      logPipelineError("[VoiceNotes] Could not list held results for recovery", error);
+      return null;
+    }
+  };
+  let drainingHeld: Promise<void> | null = null;
+  const drainHeldOnly = (): Promise<void> => {
+    if (!deps.held || !state.consented || !identityCurrent()) return Promise.resolve();
+    if (drainingHeld) return drainingHeld;
+    drainingHeld = (async () => {
+      await deps.ready;
+      if (!state.consented || !identityCurrent()) return;
+      const rows = await listHeldForRecovery();
+      if (rows === null) return;
+      for (const summary of rows) {
+        if (summary.engine !== "private-cloud" || !state.consented || !identityCurrent()) continue;
+        jobs.set(summary.sourceId, { kind: "active", status: { kind: "saving" } });
+        emit();
+        try {
+          const finishAfterCommit = async (row: HeldResult, verifiedHeldResult: boolean) => {
+            try { await deps.heldAfterCommit?.(row); }
+            catch (error) {
+              if (!verifiedHeldResult) throw error;
+              logPipelineCount("voice_note_held_legacy_strip", "failed");
+            }
+            const transcriptionId = row.provider && "transcriptionId" in row.provider
+              ? row.provider.transcriptionId : null;
+            try { await cloud?.finish(summary.sourceId, transcriptionId); }
+            catch (error) {
+              logPipelineError("Deleting a finished private cloud job failed; PTX deletes it on its own schedule", error);
+            }
+          };
+          const outcome = await drainHeldVoiceNote(deps.tcw(), deps.held!, summary.sourceId,
+            () => state.consented && identityCurrent(), finishAfterCommit);
+          if (outcome === "lock_busy") {
+            timer.schedule(() => { void drainHeldOnly(); }, failedBackoffMs[0] ?? 15_000);
+            jobs.delete(summary.sourceId);
+          } else if (outcome === "conflict") {
+            const row = await deps.held!.readHeld(summary.sourceId);
+            const code = row?.conflict ?? "rerun_lost";
+            jobs.set(summary.sourceId, { kind: "failed", ...voiceNoteTranscriptionFailureForCode(code) });
+          } else if (outcome === null || outcome === "discarded_superseded") {
+            jobs.delete(summary.sourceId);
+          } else {
+            jobs.set(summary.sourceId, { kind: "done", outcome: "transcribed" });
+            emit({ kind: "saved", sourceId: summary.sourceId });
+          }
+        } catch (err) {
+          jobs.set(summary.sourceId, { kind: "failed", ...voiceNoteTranscriptionFailure(err) });
+        }
+        emit();
+      }
+    })().finally(() => { drainingHeld = null; });
+    return drainingHeld;
+  };
   /** A blocked note remains a recovery candidate when service state or caps change. */
   const refreshBlocked = () => {
     for (const [sourceId, job] of jobs) {
@@ -2018,10 +2255,10 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
   const isChosen = (sourceId: string) => chosenPrivate.has(sourceId) || choices.has(sourceId);
   /** Drop persisted intent only after the pending job is gone, except deliberate user-mode cleanup. */
   const settleChoice = (sourceId: string, force = false): boolean => {
+    if (hasHeldHint(sourceId)) return true;
     const terminalFailure = cloud?.terminalFailure?.(sourceId);
     const terminal = terminalFailure !== null && terminalFailure !== undefined
-      && !cloud?.hasRemoteJob(sourceId)
-      && cloud?.heldTranscript(sourceId) === null;
+      && !cloud?.hasRemoteJob(sourceId);
     if (!force && !terminal && (cloud === null || cloud.pendingSourceIds().includes(sourceId))) return true;
     return choices.remove(sourceId);
   };
@@ -2129,9 +2366,9 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
       if (explicit || !isHeld(sourceId)) block(sourceId);
       return reason;
     }
-    if (!explicit && isHeld(sourceId) && (cloud.heldTranscript?.(sourceId) ?? null) === null) return null;
+    if (!explicit && isHeld(sourceId) && !hasHeldHint(sourceId)) return null;
     if (!explicit) {
-      if ((cloud.heldTranscript?.(sourceId) ?? null) === null) {
+      if (!hasHeldHint(sourceId)) {
         const deadline = automaticRetryDeadlines.get(sourceId);
         if (deadline !== undefined && now() < deadline) return null;
         if (deadline !== undefined) automaticRetryDeadlines.delete(sourceId);
@@ -2148,7 +2385,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
     // Queued, running, or just saved (the list may not show it yet): never a second job.
     if (current?.kind === "active" || (current?.kind === "done" && !explicitRerun)) return null;
     if (!explicit && current?.kind === "failed" && !isAutomaticRetryableCode(current.code)
-      && (cloud.heldTranscript?.(sourceId) ?? null) === null && !(cloud.hasRemoteJob?.(sourceId) ?? false)) return null;
+      && !hasHeldHint(sourceId) && !(cloud.hasRemoteJob?.(sourceId) ?? false)) return null;
     const account = { generation: currentAccountGeneration(), did: deps.tcw().did };
     retainSourceFor(sourceId, account.did);
     waiting.add(sourceId);
@@ -2186,6 +2423,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
         const outcome = await runNote({
           tcw: deps.tcw(),
           cloud,
+          held: deps.held,
           capabilities: state.capabilities,
           currentCapabilities: () => state.capabilities,
           sourceId,
@@ -2276,7 +2514,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
       const commit = await readTranscriptCommit(tcw, sourceId);
       if (!identityCurrent()) return false;
       if (commit !== null) {
-        if (!cloud?.hasRemoteJob(sourceId) && cloud?.heldTranscript(sourceId) === null
+        if (!cloud?.hasRemoteJob(sourceId) && !hasHeldHint(sourceId)
           && !choices.remove(sourceId)) reportChoicePersistenceFailure(sourceId);
         return false;
       }
@@ -2294,7 +2532,9 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
   };
 
   const resume = (force = false) => {
-    if (!on() || cloud === null) return;
+    void drainHeldOnly();
+    if (cloud === null) return;
+    if (!on()) return;
     if (strandedRecovery !== null) {
       if (force || recoveryNeeded) recoveryRescanRequested = true;
       return;
@@ -2316,14 +2556,17 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
           retry = true;
           return;
         }
-        const ids = new Set([...cloudPending, ...choices.ids(), ...[...jobs].flatMap(([id, job]) => job.kind === "blocked" ? [id] : [])]);
+        const heldRows = await listHeldForRecovery();
+        if (heldRows === null) retry = true;
+        const heldIds = (heldRows ?? []).map((row) => row.sourceId);
+        const ids = new Set([...cloudPending, ...heldIds, ...choices.ids(), ...[...jobs].flatMap(([id, job]) => job.kind === "blocked" ? [id] : [])]);
         for (const sourceId of ids) {
           if (!identityCurrent() || !on()) {
             retry = true;
             return;
           }
           const current = jobs.get(sourceId);
-          const held = (cloud.heldTranscript?.(sourceId) ?? null) !== null;
+          const held = hasHeldHint(sourceId);
           const hasRemoteJob = cloud.hasRemoteJob?.(sourceId) ?? false;
           const terminalFailure = cloud.terminalFailure?.(sourceId);
           if (terminalFailure && !held && !hasRemoteJob) {
@@ -2379,7 +2622,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
             || recording.ledger.transcript.state !== "pending"
             || !privateCloudAccepts(recording.durationMs / 1000, state.capabilities)) continue;
           const current = jobs.get(recording.id);
-          const held = (cloud.heldTranscript?.(recording.id) ?? null) !== null;
+          const held = hasHeldHint(recording.id);
           const hasRemoteJob = cloud.hasRemoteJob?.(recording.id) ?? false;
           const terminalFailure = cloud.terminalFailure?.(recording.id);
           if (terminalFailure && !held && !hasRemoteJob) {
@@ -2437,8 +2680,8 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
     },
 
     check(options = {}) {
-      if (cloud === null) return Promise.resolve();
       if (options.current) accountCurrent = options.current;
+      if (cloud === null) return drainHeldOnly();
       if (checking !== null) return checking;
       if (options.automatic && settledAt !== null && state.availability !== "checking") {
         const wait = state.availability === "failed" ? failedBackoffMs[Math.min(failedChecks, failedBackoffMs.length) - 1] ?? 0 : freshMs;
@@ -2453,6 +2696,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
         emit();
       }
       const attempt = async () => {
+        if (deps.ready) await deps.ready;
         if (!identityCurrent()) return { availability: "stale" } as const;
         try {
           const caps = await cloud.capabilities();
@@ -2507,6 +2751,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
           nextRecoveryAt = now();
         }
         emit();
+        void drainHeldOnly();
         if (result.availability === "available"
           && (availabilityChanged || admissionChanged || limitsChanged || recoveryNeeded && (now() >= nextRecoveryAt || hasDueAutomaticRetry())))
           resume(availabilityChanged || admissionChanged || limitsChanged);
@@ -2549,6 +2794,9 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
       nextRecoveryAt = Number.POSITIVE_INFINITY;
       // Keep the committed mode override while a PTX job/result still needs reconciliation.
       chosenPrivate.clear();
+      const pending = new Set(cloud?.pendingSourceIds() ?? []);
+      for (const sourceId of choices.ids())
+        if (!pending.has(sourceId) && !hasHeldHint(sourceId)) choices.remove(sourceId);
       emit();
       try { await cancelActiveNativeUpload(); } catch (err) { logPipelineError("Cancelling the native upload failed", err); }
       try {
@@ -2556,9 +2804,9 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
       } catch (err) {
         logPipelineError("Releasing unsent private cloud jobs failed; they expire on their own", err);
       }
-      const pending = new Set(cloud?.pendingSourceIds() ?? []);
+      const pendingAfterRelease = new Set(cloud?.pendingSourceIds() ?? []);
       for (const sourceId of choices.ids())
-        if (!pending.has(sourceId) && (cloud?.heldTranscript?.(sourceId) ?? null) === null
+        if (!pendingAfterRelease.has(sourceId) && !hasHeldHint(sourceId)
           && !choices.remove(sourceId)) reportChoicePersistenceFailure(sourceId);
     },
 
@@ -2568,6 +2816,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
         reportChoicePersistenceFailure(sourceId);
         return;
       }
+      requestHeldResultPersistence();
       const rerunBase = cloud?.rerunBase?.(sourceId) ?? null;
       cloud?.clearTerminalFailure?.(sourceId);
       enqueue(sourceId, audio, true, rerunBase !== null);
@@ -2577,6 +2826,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
     transcribePrivately(sourceId, durationSecs, sizeBytes = null) {
       const alreadyChosen = choices.has(sourceId);
       if (!choices.add(sourceId)) return "choice-persistence-failed";
+      requestHeldResultPersistence();
       cloud?.clearTerminalFailure?.(sourceId);
       const limit = privateCloudRefusal(durationSecs, sizeBytes, privateCloudLimits(state.capabilities));
       if (on() && limit !== null && limit.kind !== "unknown") {
@@ -2600,6 +2850,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
     },
     async transcribeAgain(sourceId, engine) {
       if (engine !== "private-cloud") return "unavailable";
+      requestHeldResultPersistence();
       cloud?.clearTerminalFailure?.(sourceId);
       chosenPrivate.add(sourceId);
       return enqueue(sourceId, undefined, true, true);
@@ -2674,18 +2925,56 @@ export function voiceNoteTranscriberFor(
     return existing.transcriber;
   }
   const ref = { current: tcw };
+  let heldDurability: "persistent" | "best-effort" | "unavailable" = "best-effort";
+  const held = createHeldResultStore(did);
+  const legacyPending = localStorageVoiceNotePendingStore(did);
+  const migrateLegacyHeld = async () => {
+    for (const sourceId of legacyPending.sourceIds()) {
+      const legacy = legacyPending.legacyHeld?.(sourceId);
+      if (!isHeldTranscript(legacy)) continue;
+      const job = legacyPending.read(sourceId);
+      const candidateBase = job?.rerunBase;
+      const intent = job?.explicitRerun && candidateBase && Number.isSafeInteger(candidateBase.rev)
+        && candidateBase.rev >= 0 && typeof candidateBase.hash === "string" && candidateBase.hash.length > 0
+        ? { kind: "rerun" as const, base: { rev: candidateBase.rev, hash: candidateBase.hash } }
+        : { kind: "unknown" as const };
+      try {
+        await held.hold({
+          version: 1, did, spaceId: ref.current.spaceId ?? "", sourceId, engine: "private-cloud",
+          transcript: legacy, provider: job?.transcriptionId ? { transcriptionId: job.transcriptionId } : null, intent,
+        });
+        const saved = await held.readHeld(sourceId);
+        if (saved) await legacyPending.stripLegacyHeld?.(sourceId, saved.transcript.rev, saved.hash);
+      } catch {
+        // The legacy copy remains available until the durable destination acknowledges it.
+      }
+    }
+    try { await held.listHeld(); } catch { /* Readiness still permits the legacy fallback. */ }
+  };
+  const ready = migrateLegacyHeld().then(async () => { heldDurability = await held.durability(); });
+  if (typeof window !== "undefined") {
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === accountStorageKey(VOICE_NOTE_PENDING_JOBS_KEY, did)) void migrateLegacyHeld();
+    };
+    window.addEventListener("storage", onStorage);
+  }
   const privateTranscriber = createVoiceNoteTranscriber({
     cloud: createVoiceNoteCloudForBuild(backendUrl, sessionStore, did),
     consent: localStorageVoiceNoteConsentStore(did),
     choices: localStorageVoiceNotePrivateChoiceStore(did),
     holds: localStorageVoiceNoteHoldStore(did),
+    held,
+    ready,
+    heldAfterCommit: async (row) => {
+      await legacyPending.stripLegacyHeld?.(row.sourceId, row.transcript.rev, row.hash);
+    },
     tcw: () => ref.current,
   });
   const hosted = createHostedVoiceNoteTrack(() => ref.current, backendUrl, sessionStore, did);
   let powerfulAvailable = false;
   const listeners = new Set<(event: VoiceNoteTranscriberEvent) => void>();
   const makeSnapshot = (): VoiceNoteTranscriberSnapshot => ({
-    ...privateTranscriber.snapshot(), powerfulAvailable, powerfulConsented: hosted.consented(),
+    ...privateTranscriber.snapshot(), heldDurability, powerfulAvailable, powerfulConsented: hosted.consented(),
     jobs: new Map([...privateTranscriber.snapshot().jobs, ...hosted.jobs]),
   });
   let combinedSnapshot = makeSnapshot();
@@ -2693,6 +2982,7 @@ export function voiceNoteTranscriberFor(
     combinedSnapshot = makeSnapshot();
     for (const listener of listeners) listener(event);
   };
+  void ready.then(() => emit());
   privateTranscriber.subscribe(emit);
   hosted.subscribe(() => emit());
   const transcriber: VoiceNoteTranscriber = {
