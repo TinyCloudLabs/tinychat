@@ -649,16 +649,40 @@ describe("recovered recordings are decode-checked: whole up to the cap, a prefix
     }
   });
 
-  test("a prefix the decoder rejects is inconclusive: a recording over the cap is published as recovered with a warning, never quarantined", async () => {
+  const testName = "a prefix the decoder rejects is inconclusive: a recording over the cap is published as recovered with a warning, never quarantined";
+  test(testName, async () => {
     const h = harness();
     const sent = await record(await h.open(), "long", longChunks());
     h.locks.releaseAll();
     const tab = await h.open({ decodeCheck: async () => { throw invalid("EncodingError: cut inside a cluster"); } });
-    const warned: unknown[][] = [];
+    const warned: { args: unknown[]; captureStack?: string }[] = [];
     const warn = console.warn;
-    console.warn = (...args: unknown[]) => { warned.push(args); };
+    console.warn = (...args: unknown[]) => { warned.push({ args, captureStack: new Error("captured console.warn call").stack }); };
     let result: Awaited<ReturnType<typeof tab.recoverInterruptedSessions>>;
     try { result = await tab.recoverInterruptedSessions(); } finally { console.warn = warn; }
+    const safeMessages = new Set([
+      "[webStore] The decoder rejected the leading bytes of a long recovered recording; that is inconclusive, publishing it as recovered",
+      "[webStore] A recovered recording has no journaled duration and no decoder measured it",
+      "[VoiceNotes] Could not load recording note warn: The account changed while this voice note was being saved",
+      "EncodingError: cut inside a cluster",
+    ]);
+    const safeMessage = (value: string) => safeMessages.has(value) ? value.slice(0, 200) : "[REDACTED]";
+    const firstCaller = (stack?: string) => {
+      const frame = stack?.split("\n").slice(2).find((line) => line.trim().startsWith("at "));
+      const location = frame?.match(/(?:\/|\\)([^/\\():]+):(\d+):\d+\)?$/);
+      return location ? `${location[1]}:${location[2]}` : "[unavailable]";
+    };
+    console.log("[warning diagnostic]", JSON.stringify({
+      test: testName,
+      warnings: warned.map(({ args, captureStack }) => ({
+        messages: args.flatMap((arg) => {
+          if (typeof arg === "string") return [safeMessage(arg)];
+          if (arg instanceof Error) return [safeMessage(arg.message)];
+          return [];
+        }),
+        caller: firstCaller(captureStack),
+      })),
+    }, null, 2));
     expect(result.failed).toEqual([]);
     expect(result.recovered).toMatchObject([{ id: "long", recovered: true, endedUnexpectedly: true, sizeBytes: 70 * 80 * KIB, durationMs: 70_000 }]);
     expect(warned).toHaveLength(1);
