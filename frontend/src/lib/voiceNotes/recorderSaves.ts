@@ -95,6 +95,8 @@ export async function uploadLocalVoiceNote(tcw: TinyCloudWeb, id: string, explic
   if (savesInFlight.has(id)) throw new Error("This note is already being saved");
   const recording = (await VoiceNotes.listPending()).recordings.find((note) => note.id === id);
   if (!recording || recording.owner !== tcw.did) throw new Error("Audio is not on this device");
+  if (explicitUpload && recording.options?.uploadAudio !== true)
+    throw new Error("Audio upload is not enabled for this recording");
   savesInFlight.add(id);
   try {
     const result = await saveVoiceNote(tcw, recording, nativeRecordingSource(recording), appPlatform(), {}, explicitUpload);

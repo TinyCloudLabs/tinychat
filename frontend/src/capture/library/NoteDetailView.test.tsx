@@ -345,6 +345,25 @@ describe("a voice note's transcription", () => {
     expect(html).toContain('data-testid="transcribe-button"');
   });
 
+  test("committed transcript reruns are offered only when commit provenance was read", () => {
+    const committed = render({
+      metadata: { status: "ok", metadata: { transcription_outcome: "no_speech" } },
+      transcriptProvenance: { engine: "private-cloud", provider: "ptx" },
+      transcription: transcription(),
+    });
+    expect(committed).toContain("No speech found");
+    expect(committed).toContain('data-testid="voice-note-transcription-rerun"');
+    expect(committed).toContain('data-testid="transcribe-button"');
+    const legacy = render({
+      metadata: { status: "ok", metadata: { transcription_outcome: "transcribed" } },
+      transcript: { status: "ok", sentences: [] },
+      transcriptProvenance: null,
+      transcription: transcription(),
+    });
+    expect(legacy).not.toContain('data-testid="voice-note-transcription-rerun"');
+    expect(legacy).not.toContain("Transcribe again");
+  });
+
   test("a live incomplete failure keeps the mapped explanation and only offers a retry when allowed", () => {
     const failed = (retryable: boolean) => render({ transcription: transcription({ jobs: new Map([["rec-1", {
       kind: "failed", code: "transcript_incomplete", message: "Generic job error", retryable, reference: "cid-7",
@@ -373,16 +392,13 @@ describe("a voice note's transcription", () => {
     expect(html.match(/Private Transcription returned a transcript that may be incomplete/g)).toHaveLength(1);
     expect(html.match(/data-testid="transcribe-button"/g)).toHaveLength(1);
   });
-
-  test("no speech, part progress, just saved, and a failure with Retry only when it can help", () => {
-    const silent = render({ metadata: { status: "ok", metadata: { transcription_outcome: "no_speech" } }, transcription: transcription() });
-    expect(silent).toContain("No speech found");
-    expect(silent).not.toContain('data-testid="transcribe-button"');
+  test("part progress, completed jobs, and retry eligibility are reflected accurately", () => {
     const job = (state: NoteTranscriptionState) => transcription({ jobs: new Map([["rec-1", state]]) });
     expect(render({ transcription: job({ kind: "active", status: { kind: "processing", completed: 1, total: 3 } }) })).toContain("1 of 3 parts done");
     expect(render({ transcription: job({ kind: "active", status: { kind: "processing", completed: 4, total: 9 } }) })).toContain('title="Recordings are transcribed in parts"');
     expect(render({ transcription: job({ kind: "active", status: { kind: "processing", completed: 9, total: 9 } }) })).toContain("9 of 9 parts done");
     expect(render({ transcription: job({ kind: "active", status: { kind: "processing", completed: 2, total: 0 } }) })).toContain("Transcribing");
+    expect(render({ transcription: job({ kind: "done", outcome: "transcribed" }) })).toContain("Transcript saved.");
     const failed = (retryable: boolean) =>
       job({ kind: "failed", code: "upload_interrupted", message: "The upload did not complete.", retryable, reference: "cid-7" });
     const retry = render({ transcription: failed(true) });

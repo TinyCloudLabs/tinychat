@@ -26,7 +26,7 @@ import { advanceAccountGeneration, captureAccountContext, currentAccountGenerati
 import { runOnSpaceLane, spaceLaneSnapshot, subscribeSpaceLane } from "../spaceWriteLane";
 import { setVoiceNoteSaveDeadlineForTests } from "./saveDeadline";
 import { putPendingSaveState, readPendingSaveStates } from "./pendingSaveState";
-import { __resetStorageStatusForTests, __waitForStorageRecoveryForTests, beginStorageAccountSession, endStorageAccountSession, isStorageReadOnly, trackStorageWrites } from "@/lib/storageStatus";
+import { __resetStorageStatusForTests, __waitForStorageRecoveryForTests, beginStorageAccountSession, endStorageAccountSession, isStorageReadOnly, storageScopeFor, trackStorageWrites } from "@/lib/storageStatus";
 import { pendingStore, saveNoteForAccount } from "./recorderSaves";
 import { associateLegacyNotes, markLegacyOwnerUnknown, migrateLegacyDiscardLedger } from "./legacyMigration";
 import { loadNote, saveNote } from "./recordingNotes";
@@ -222,7 +222,8 @@ test("one save overlaps short text and audio requests at fixed fixture latency",
   tcw.kv.get = (async (...args: Parameters<typeof get>) => { calls++; await delay(); return get(...args); }) as typeof tcw.kv.get;
   tcw.kv.list = (async (...args: Parameters<typeof list>) => { calls++; await delay(); return list(...args); }) as typeof tcw.kv.list;
   const recording = { id, startedAt: Date.now(), durationMs: 52_000, mimeType: "audio/mp4", sizeBytes: 4,
-    silencedMs: 0, silencedEvents: 0, noSignalMs: 0, options: { uploadAudio: true } };
+    silencedMs: 0, silencedEvents: 0, noSignalMs: 0, version: 2 as const,
+    source: "in_app" as const, options: { transcriber: "private-cloud" as const, identifySpeakers: false, uploadAudio: true } };
   const start = performance.now();
   const saved = await saveVoiceNote(tcw, recording, { mimeType: "audio/mp4", size: 4,
     readPart: async () => new Uint8Array([1, 2, 3, 4]) }, "tauri");
@@ -1701,7 +1702,8 @@ test("a user-choice claimed legacy note uploads once and keeps its owner", async
   __setVoiceNotesForTests(fake.plugin, { available: true });
   try {
     const legacy = { id: "chosen-legacy", startedAt: 1, durationMs: 1000, mimeType: "audio/mp4", sizeBytes: 4,
-      silencedMs: 0, silencedEvents: 0, noSignalMs: 0, version: 1 as const, legacyImport: true };
+      silencedMs: 0, silencedEvents: 0, noSignalMs: 0, version: 1 as const, legacyImport: true,
+      options: { transcriber: "on-device" as const, identifySpeakers: false, uploadAudio: true } };
     fake.controls.commitLegacy(legacy);
     await fake.plugin.claim({ id: legacy.id, did: tcw.did, evidence: "user_choice" });
     const owned = (await fake.plugin.listPending()).recordings[0]!;
@@ -2519,7 +2521,7 @@ test("storage recovery debt is retired across sign-out and never wakes the next 
 
 // An ordinary successful write outside the saver: the only signal that storage has room again, with no focus event.
 async function externalWrite(tcw: TinyCloudWeb): Promise<void> {
-  const result = await trackStorageWrites(tcw.sql.db(CONNECTORS_SQL_DB_NAME))
+  const result = await trackStorageWrites(tcw.sql.db(CONNECTORS_SQL_DB_NAME), storageScopeFor(tcw))
     .execute("DELETE FROM connector_meeting WHERE source_id = ?", ["external-write"]);
   expect(result).toMatchObject({ ok: true });
 }

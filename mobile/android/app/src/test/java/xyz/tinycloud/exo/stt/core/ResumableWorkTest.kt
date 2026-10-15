@@ -41,4 +41,28 @@ class ResumableWorkTest {
         assertTrue(stt.getBoolean("requested"))
         assertTrue(ResumableWork.owed(JSONObject().put("options", JSONObject().put("transcriber", "off")).put("stt", stt)))
     }
+    @Test fun anExplicitRerunIsNotResumedAfterRelaunch() {
+        val stt = ResumableWork.rerun(JSONObject().put("state", "done"), 7, 6, "base-hash")
+        assertEquals(7, stt.getInt("rerunRev"))
+        assertEquals(6, stt.getInt("rerunBaseRev"))
+        assertEquals("base-hash", stt.getString("rerunBaseHash"))
+        assertFalse(ResumableWork.owed(JSONObject().put("options", JSONObject().put("transcriber", "on-device")).put("stt", stt)))
+    }
+
+    @Test fun interruptedRerunsAreCancelledAndTheirMarkerCleared() {
+        for (state in listOf("queued", "running", "waiting_for_model")) {
+            val stt = ResumableWork.rerun(JSONObject().put("state", "done"), 7, 6, "base-hash").put("state", state)
+            assertTrue(ResumableWork.cancelInterruptedRerun(stt))
+            assertEquals("cancelled", stt.getString("state"))
+            assertTrue(stt.isNull("rerunRev"))
+            assertTrue(stt.isNull("rerunBaseRev"))
+            assertTrue(stt.isNull("rerunBaseHash"))
+        }
+    }
+
+    @Test fun rerunsWithoutAnInterruptedQueueStateAreLeftAlone() {
+        val stt = ResumableWork.rerun(JSONObject().put("state", "queued"), 7, 6, "base-hash").put("state", "done")
+        assertFalse(ResumableWork.cancelInterruptedRerun(stt))
+        assertEquals(7, stt.getInt("rerunRev"))
+    }
 }

@@ -111,13 +111,13 @@ describe("recorderReducer", () => {
     expect(stopping.phase).toBe("stopping");
     const saving = run([{ type: "SAVE_PROGRESS", percent: null }, { type: "SAVE_PROGRESS", percent: 42 }], stopping);
     expect(saving).toMatchObject({ phase: "saving", savePercent: 42 });
-    const saved = recorderReducer(saving, { type: "SAVED", id: "rec-1", durationMs: 42_000, at: 9 });
+    const saved = recorderReducer(saving, { type: "SAVED", id: "rec-1", durationMs: 42_000, channels: 2, at: 9 });
     expect(saved).toMatchObject({
       phase: "idle",
       startedAt: null,
       savePercent: null,
       outcome: "saved",
-      lastSaved: { id: "rec-1", durationMs: 42_000, at: 9 },
+      lastSaved: { id: "rec-1", durationMs: 42_000, channels: 2, at: 9 },
       mic: { state: "idle", reason: null },
     });
     expect(recorderReducer(saved, { type: "DISMISSED" }).outcome).toBeNull();
@@ -127,10 +127,10 @@ describe("recorderReducer", () => {
     const saving = run([{ type: "STOP_REQUESTED", at: 0 }, { type: "SAVE_PROGRESS", percent: 42 }], recording());
     const denied = recorderReducer(saving, { type: "PERMISSION_DENIED" });
     expect(denied).toMatchObject({ phase: "saving", permissionDenied: true });
-    const committed = recorderReducer(denied, { type: "LOCAL_COMMITTED", id: "rec-1", durationMs: 42_000, at: 9 });
-    expect(committed).toMatchObject({ phase: "idle", permissionDenied: true, outcome: "local" });
-    const saved = recorderReducer(committed, { type: "SAVED", id: "rec-1", durationMs: 42_000, at: 10 });
-    expect(saved).toMatchObject({ permissionDenied: true, outcome: "saved" });
+    const committed = recorderReducer(denied, { type: "LOCAL_COMMITTED", id: "rec-1", durationMs: 42_000, channels: 2, at: 9 });
+    expect(committed).toMatchObject({ phase: "idle", permissionDenied: true, outcome: "local", lastSaved: { channels: 2 } });
+    const saved = recorderReducer(committed, { type: "SAVED", id: "rec-1", durationMs: 42_000, channels: 2, at: 10 });
+    expect(saved).toMatchObject({ permissionDenied: true, outcome: "saved", lastSaved: { channels: 2 } });
   });
 
   test("a held receipt retains why upload is waiting", () => {

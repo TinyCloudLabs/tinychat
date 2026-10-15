@@ -83,7 +83,7 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
     handleExpiresAt: number | null; outcome: "created" | "failed" | "unknown" }>();
   const quarantine = new Map<string, { id: string; reason: string; sizeBytes: number }>();
   const inputs: AudioInput[] = [{ id: "built-in", name: "Built-in microphone", kind: "built_in" }];
-  let defaults: CaptureDefaults = { accountDid: null, transitionGen: 0, transcriber: "on-device", identifySpeakers: false };
+  let defaults: CaptureDefaults = { accountDid: null, transitionGen: 0, transcriber: "on-device", identifySpeakers: false, uploadAudio: true };
   let accountStatus: AccountStatus = "signed_out";
   let accountStateFailure = false;
   let remoteBeginFailure = false;
@@ -398,7 +398,8 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
       if (sameGeneration && next.accountDid !== effectiveDid) throw failure("stale_transition");
       if (!sameGeneration) accountStatus = next.accountDid ? "signed_in" : "signed_out";
       defaults = { ...next, accountDid: sameGeneration ? defaults.accountDid : next.accountDid,
-        transcriber: accountStatus === "signed_in" ? next.transcriber : "on-device" };
+        transcriber: accountStatus === "signed_in" ? next.transcriber : "on-device",
+        uploadAudio: next.uploadAudio ?? defaults.uploadAudio };
       const claimed: string[] = [];
       if (accountStatus === "signed_in" && next.accountDid) {
         if (session && !session.owner) { session.owner = next.accountDid; claimed.push(session.id); }

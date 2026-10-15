@@ -177,7 +177,7 @@ function trackedSource(bytes: Uint8Array) {
   return { source, reads };
 }
 
-const noWait = { retryDelaysMs: [0, 0] };
+const noWait = { uploadAudio: true, retryDelaysMs: [0, 0] };
 const puts = (calls: Call[]) => calls.filter((c): c is Extract<Call, { kind: "kv.put" }> => c.kind === "kv.put");
 const AUDIO_BASE = `${APP_ID}/connectors/exo-voice-note/audio/rec-1`;
 
@@ -278,7 +278,20 @@ describe("note sync state", () => {
 });
 
 describe("saveVoiceNote", () => {
-  test("new local-only note writes its row and note text with zero audio puts, then explicit upload adds audio", async () => {
+  test("recordings without explicit space-audio approval never write audio", async () => {
+    for (const uploadAudio of [undefined, false]) {
+      const space = fakeSpace();
+      const note = { ...recording, id: `no-audio-${String(uploadAudio)}-${++fakeSpaceNumber}`,
+        options: { transcriber: "on-device" as const, identifySpeakers: false, ...(uploadAudio === undefined ? {} : { uploadAudio }) } };
+      const result = await saveVoiceNote(space.tcw, note, voiceNoteAudioSourceFromBase64({ mimeType: "audio/mp4", base64: "AAAA" }), "android");
+      expect(result.ok).toBe(true);
+      expect(space.calls.filter((call) => call.kind === "kv.put" && call.target.includes(`/audio/${note.id}/`)
+        && !call.target.endsWith("note.md"))).toEqual([]);
+      expect(space.calls.filter((call) => call.kind === "sql.execute" && String(call.params[0]).includes("INSERT INTO connector_meeting"))).toHaveLength(1);
+    }
+  });
+
+  test("new local-only note writes its row and note text with zero audio puts, then explicit approval adds audio", async () => {
     const space = fakeSpace();
     const note = { ...recording, id: `rec-local-${++fakeSpaceNumber}`, version: 2 as const,
       options: { transcriber: "private-cloud" as const, identifySpeakers: false, uploadAudio: false } };
@@ -294,10 +307,17 @@ describe("saveVoiceNote", () => {
     if (!row.ok) return;
     expect(JSON.parse(String(row.data.rows[0]?.[0])).audio).toEqual({ stored: false, reason: "local_only", device: { platform: "ios" } });
 
-    // An explicit upload must leave the existing transcript mirror intact.
+    // The separate upload flag cannot bypass the recording's explicit consent.
+    const denied = await saveVoiceNote(space.tcw, note, source, "ios", {}, true);
+    expect(denied.ok).toBe(true);
+    expect(space.calls.filter((call) => call.kind === "kv.put" && call.target.includes(`/audio/${note.id}/`)
+      && !call.target.endsWith("note.md"))).toHaveLength(0);
+
+    // Explicit approval is represented on the recording before audio is written.
+    const approved = { ...note, options: { ...note.options, uploadAudio: true } };
     const transcriptKey = transcriptKvKey(VOICE_NOTE_SOURCE, note.id);
     space.kv.set(transcriptKey, '[{"text":"Already transcribed"}]');
-    const uploaded = await saveVoiceNote(space.tcw, note, source, "ios", {}, true);
+    const uploaded = await saveVoiceNote(space.tcw, approved, source, "ios", {}, true);
     expect(uploaded.ok).toBe(true);
     expect(space.kv.has(voiceNoteAudioManifestKey(note.id))).toBe(true);
     expect(space.kv.get(transcriptKey)).toBe('[{"text":"Already transcribed"}]');
@@ -520,12 +540,19 @@ describe("saveVoiceNote", () => {
 });
 
 describe("putVoiceNoteAudio (parts + manifest)", () => {
+  test("the low-level audio writer requires explicit approval", async () => {
+    const { tcw, calls } = fakeSpace();
+    const result = await putVoiceNoteAudio(tcw, "rec-1", trackedSource(audioBytes(4)).source);
+    expect(result).toMatchObject({ ok: false, error: { code: "AUDIO_UPLOAD_DISABLED" } });
+    expect(puts(calls)).toEqual([]);
+  });
   test("a 60-minute note (~29 MB) is 1 MiB parts, each read from the phone only as it is sent", async () => {
     const size = 29 * 1024 * 1024 + 12_345;
     const bytes = audioBytes(size);
     const { source, reads } = trackedSource(bytes);
+
     const { tcw, calls, kv } = fakeSpace();
-    const res = await putVoiceNoteAudio(tcw, "rec-1", source);
+    const res = await putVoiceNoteAudio(tcw, "rec-1", source, { uploadAudio: true });
     expect(res.ok).toBe(true);
     const parts = puts(calls).filter((c) => c.target.includes("/p/"));
     expect(parts).toHaveLength(30);
@@ -544,7 +571,7 @@ describe("putVoiceNoteAudio (parts + manifest)", () => {
   test("a part read that comes back short fails before anything is sent for it", async () => {
     const { tcw, calls } = fakeSpace();
     const source: VoiceNoteAudioSource = { mimeType: "audio/mp4", size: 2_000, readPart: async (_o, length) => new Uint8Array(length - 1) };
-    const res = await putVoiceNoteAudio(tcw, "rec-1", source, { partSize: 1_000 });
+    const res = await putVoiceNoteAudio(tcw, "rec-1", source, { uploadAudio: true, partSize: 1_000 });
     expect(res).toEqual({ ok: false, error: expect.objectContaining({ code: "VOICE_NOTE_SOURCE_READ_FAILED" }) });
     expect(puts(calls)).toEqual([]);
   });
@@ -608,7 +635,7 @@ describe("a save that fails part-way stays pending and retries without duplicate
   test("a save that stored everything but failed on the row: the retry rewrites only the manifest and inserts one row", async () => {
     const space = fakeSpace();
     const bytes = audioBytes(1_500);
-    await putVoiceNoteAudio(space.tcw, "rec-1", trackedSource(bytes).source, { partSize: 1_000 });
+    await putVoiceNoteAudio(space.tcw, "rec-1", trackedSource(bytes).source, { uploadAudio: true, partSize: 1_000 });
     space.calls.length = 0;
     const retry = trackedSource(bytes);
     expect((await saveVoiceNote(space.tcw, recording, retry.source, "android", { partSize: 1_000 })).ok).toBe(true);
@@ -777,7 +804,7 @@ describe("listVoiceNotes dedup", () => {
 describe("loading a note's audio", () => {
   async function stored(bytes: Uint8Array, partSize = 1_000) {
     const space = fakeSpace();
-    expect((await putVoiceNoteAudio(space.tcw, "rec-1", trackedSource(bytes).source, { partSize })).ok).toBe(true);
+    expect((await putVoiceNoteAudio(space.tcw, "rec-1", trackedSource(bytes).source, { uploadAudio: true, partSize })).ok).toBe(true);
     space.calls.length = 0;
     return space;
   }

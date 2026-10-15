@@ -7,7 +7,9 @@ import { splitLongTimedSegment } from "../timedSegments";
 /** Stream result ranges are the VAD chunk bounds; Whisper word offsets are interpolated. */
 export function whisperLocalTranscript(
   note: { id: string; durationMs: number; channels?: 1 | 2 }, model: WhisperModel, response: BatchResponse,
-  { detail = false, chunks = [] }: { detail?: boolean; chunks?: StreamResponse[] } = {},
+  { detail = false, rev = 1, rerunBase, chunks = [] }: {
+    detail?: boolean; rev?: number; rerunBase?: { rev: number; hash: string }; chunks?: StreamResponse[];
+  } = {},
 ): LocalTranscript {
   const alternative = response.results.channels[0]?.alternatives[0];
   const words = alternative?.words ?? [];
@@ -42,6 +44,7 @@ export function whisperLocalTranscript(
       text: part, start: 0, end: note.durationMs / 1000, channel: 0, timing: "none" as const,
     }));
   }
-  return { version: 2, noteId: note.id, transcriber: "on-device", rev: 1, engine: "whispercpp", model, language: "en",
-    outcome: segments.length ? "transcribed" : "no_speech", diarized: note.channels === 2, segments, createdAt: new Date().toISOString() };
+  return { version: 2, noteId: note.id, transcriber: "on-device", rev, engine: "whispercpp", model, language: "en",
+    outcome: segments.length ? "transcribed" : "no_speech", diarized: note.channels === 2, segments, createdAt: new Date().toISOString(),
+    ...(rerunBase ? { rerunBase } : {}) };
 }
