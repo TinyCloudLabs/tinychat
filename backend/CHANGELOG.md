@@ -1,5 +1,11 @@
 # @tinychat/backend
 
+## 0.5.6-beta.1
+
+### Patch Changes
+
+- 04a9e32: Revert the auth verify audience check.
+
 ## 0.5.6-beta.0
 
 ### Patch Changes
