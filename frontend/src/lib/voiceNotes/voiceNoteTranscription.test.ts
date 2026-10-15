@@ -561,6 +561,31 @@ describe("createVoiceNoteCloud.transcribe", () => {
     expect(h.creates).toHaveLength(0);
     expect(h.puts).toHaveLength(0);
   });
+  test("native metadata uses the latest byte cap after its read completes", async () => {
+    const entered = Promise.withResolvers<void>();
+    const released = Promise.withResolvers<void>();
+    const fake = createFakeVoiceNotes();
+    fake.plugin.audioMetadata = async () => {
+      entered.resolve();
+      await released.promise;
+      return { size: 4, mimeType: "audio/mp4", sha256: "a".repeat(64) };
+    };
+    __setVoiceNotesForTests(fake.plugin, { available: true });
+    let latest: PrivateCloudCapabilities = { ...CAPS, max_bytes: 3, content_types: [...CAPS.content_types!, "audio/mp4"] };
+    const h = harness({ capabilities: () => latest });
+    const attempt = h.cloud.transcribe({
+      sourceId: "rec-1", capabilities: latest, currentCapabilities: () => latest,
+      loadAudio: async () => ({ mimeType: "audio/mp4", base64: "", nativeFileId: "rec-1" }), durationSeconds: 1,
+    }, () => {});
+
+    await entered.promise;
+    latest = { ...latest, max_bytes: 4 };
+    released.resolve();
+    await expect(attempt).resolves.toMatchObject({ transcriptionId: ID });
+    expect(h.creates).toHaveLength(1);
+    expect(h.puts).toHaveLength(1);
+    expect(h.puts[0]).toMatchObject({ nativeFileId: "rec-1", contentLength: 4 });
+  });
   test("a byte cap lowered during CREATE refuses the 4-byte payload, releases the unsent job, and skips PUT", async () => {
     let enterCreate!: () => void;
     let releaseCreate!: () => void;
@@ -3316,6 +3341,36 @@ describe("every path that creates or resumes an off-phone job consults the hold 
     expect(h.creates).toHaveLength(0);
     expect(choices.has("rec-1")).toBe(true);
 
+    caps = CAPS;
+    await transcriber.check();
+    await settle();
+    expect(h.creates).toHaveLength(1);
+    expect((await readTranscriptCommit(space.tcw, "rec-1"))?.outcome).toBe("transcribed");
+  });
+  test("a successful drain does not poll capabilities without recovery work", async () => {
+    const { space, h, storage, choices } = await setup("in_app", { pending: false });
+    const scheduled: { callback: () => void; delayMs: number; cancelled: boolean }[] = [];
+    let caps: PrivateCloudCapabilities = { ...CAPS, admission: "drain" };
+    let capabilityCalls = 0;
+    const transcriber = createVoiceNoteTranscriber({
+      cloud: { ...h.cloud, capabilities: async () => { capabilityCalls++; return caps; } },
+      consent: localStorageVoiceNoteConsentStore(DID, storage), tcw: () => space.tcw,
+      holds: memoryHoldStore(), choices, checkRetryMs: [],
+      timer: {
+        schedule: (callback, delayMs) => { scheduled.push({ callback, delayMs, cancelled: false }); return scheduled.length; },
+        cancel: (handle) => { scheduled[Number(handle) - 1]!.cancelled = true; },
+      },
+    });
+    await transcriber.check();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await settle();
+    expect(capabilityCalls).toBe(1);
+    expect(scheduled).toHaveLength(0);
+    expect(h.creates).toHaveLength(0);
+
+    transcriber.noteSaved({ id: "rec-1", durationMs: 9_000, source: "in_app",
+      options: { transcriber: "private-cloud", identifySpeakers: false, uploadAudio: true } });
+    await settle();
     caps = CAPS;
     await transcriber.check();
     await settle();

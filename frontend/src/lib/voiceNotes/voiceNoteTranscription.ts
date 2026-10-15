@@ -1165,7 +1165,6 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
         if (!VoiceNotes.audioMetadata) throw new VoiceNoteAudioError("audio_read_failed", "Native audio metadata is unavailable");
         try {
           const meta = await VoiceNotes.audioMetadata({ id: source.nativeFileId });
-          if (meta.size > capabilities.max_bytes) throw new VoiceNoteAudioError("recording_too_large", "The recording is larger than the private cloud limit.");
           if (!acceptedContentTypes(capabilities).includes(meta.mimeType))
             throw new DeviceLocalVoiceNoteAudioError("unsupported_recording", "Private cloud transcription does not accept this recording's format.");
           audio = { contentType: meta.mimeType, base64: "", byteSize: meta.size, sha256: meta.sha256, durationSeconds: null, nativeFileId: source.nativeFileId };
@@ -1901,6 +1900,31 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
   };
   let strandedRecovery: Promise<void> | null = null;
   let triggerAutomaticRecheck: () => void = () => undefined;
+  const hasAdmissionRecoveryWork = () => {
+    if (recoveryNeeded || automaticRetryDeadlines.size > 0) return true;
+    try {
+      return (cloud?.pendingSourceIds().length ?? 0) > 0 || choices.ids().length > 0;
+    } catch {
+      return true;
+    }
+  };
+  const scheduleClosedAdmissionCheck = () => {
+    const schedule = () => {
+      if (recoveryTimer !== undefined || state.availability !== "available"
+        || state.capabilities?.admission === "open" || !hasAdmissionRecoveryWork()) return;
+      const delay = failedBackoffMs[0] ?? 15_000;
+      recoveryTimer = timer.schedule(() => {
+        recoveryTimer = undefined;
+        recoveryNeeded = true;
+        nextRecoveryAt = now();
+        settledAt = null;
+        triggerAutomaticRecheck();
+      }, delay);
+    };
+    if (strandedRecovery === null) schedule();
+    else void strandedRecovery.then(schedule, schedule);
+  };
+
 
   const emit = (event: VoiceNoteTranscriberEvent = { kind: "changed" }) => {
     refreshBlocked();
@@ -2432,16 +2456,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
           && (availabilityChanged || admissionChanged || limitsChanged || recoveryNeeded && (now() >= nextRecoveryAt || hasDueAutomaticRetry())))
           resume(availabilityChanged || admissionChanged || limitsChanged);
         if (result.availability === "available" && result.caps.admission !== "open") {
-          if (recoveryTimer === undefined) {
-            const delay = failedBackoffMs[0] ?? 15_000;
-            recoveryTimer = timer.schedule(() => {
-              recoveryTimer = undefined;
-              recoveryNeeded = true;
-              nextRecoveryAt = now();
-              settledAt = null;
-              triggerAutomaticRecheck();
-            }, delay);
-          }
+          scheduleClosedAdmissionCheck();
         } else if (result.availability === "failed" && failedBackoffMs.length > 0) {
           clearRecoveryTimer();
           const delay = failedBackoffMs[Math.min(failedChecks - 1, failedBackoffMs.length - 1)] ?? 0;
