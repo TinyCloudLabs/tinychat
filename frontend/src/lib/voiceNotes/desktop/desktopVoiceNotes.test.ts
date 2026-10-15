@@ -38,7 +38,9 @@ class FakeBridge implements DesktopBridge {
   snapshotFailureCount = 0;
   emptySnapshotCount = 0;
   discardNeverStops = false;
+  discardRejectCount = 0;
   discardCleanupPending = false;
+  pendingDiscardIds = new Set<string>();
   selectedId: string | null = null;
   selectedModel: string | null = null;
   downloadedModels = new Set<string>();
@@ -76,7 +78,18 @@ class FakeBridge implements DesktopBridge {
       case "recorder_models_list": result = [...this.downloadedModels].map((model) => ({ id: model, downloaded: true })); break;
       case "recorder_models_select": this.selectedModel = id;
         this.emit("exo://recorder-model-selection", id); result = null; break;
-      case "recorder_recover": result = { journal: this.recover, stopped: this.stopped, quarantined: this.failed }; break;
+      case "recorder_recover":
+        if (!this.captureSourceUnconfirmed) {
+          for (const pendingId of this.pendingDiscardIds) {
+            this.files.delete(pendingId);
+            this.stopped = this.stopped.filter((entry) => entry.id !== pendingId);
+          }
+          this.pendingDiscardIds.clear();
+          this.discardCleanupPending = false;
+        }
+        result = { journal: this.recover, stopped: this.stopped.filter((entry) =>
+          !this.pendingDiscardIds.has(entry.id)), quarantined: this.failed };
+        break;
       case "recorder_stopped_list": result = this.stopped.map((entry) => entry.id); break;
       case "recorder_acknowledge": this.recover = null; this.stopped = this.stopped.filter((entry) => entry.id !== id); result = null; break;
       case "recorder_failed_list": result = this.failed; break;
@@ -126,12 +139,19 @@ class FakeBridge implements DesktopBridge {
         this.state = "idle"; this.reason = null; this.current = null; this.elapsed = 0; this.paused = 0; this.channels = 1;
         this.emit("exo://recorder-mic-state", this.status()); break;
       case "recorder_discard_durable":
-        if (this.current) this.stopped.push({ id: this.current, startedAt: this.now,
+        if (this.discardRejectCount > 0) {
+          this.discardRejectCount--;
+          throw new Error("journal write refused");
+        }
+        if (this.current && this.discardNeverStops) this.stopped.push({ id: this.current, startedAt: this.now,
           recordedMs: this.elapsed, pausedMs: this.paused, maxDurationMs: 3 * 60 * 60_000 });
         if (this.discardNeverStops) {
+          if (this.current) this.pendingDiscardIds.add(this.current);
           this.captureSourceUnconfirmed = true;
           this.discardCleanupPending = true;
         } else {
+          if (this.current) this.files.delete(this.current);
+          this.stopped = this.stopped.filter(({ id: stoppedId }) => stoppedId !== this.current);
           this.captureSourceUnconfirmed = false;
           this.discardCleanupPending = false;
         }
@@ -466,11 +486,58 @@ describe("desktop recorder adapter", () => {
       expect((await engine.plugin.listPending()).recordings).toHaveLength(0);
       await expect(engine.plugin.start()).rejects.toThrow("tombstoned");
 
+      const deferred = await engine.recoverInterrupted();
+      expect(deferred.failed).toHaveLength(0);
+      expect(bridge.files.has(id)).toBe(true);
+      expect(bridge.stopped.some((entry) => entry.id === id)).toBe(true);
+      expect((await engine.plugin.listPending()).recordings).toHaveLength(0);
       bridge.captureSourceUnconfirmed = false;
       bridge.discardCleanupPending = false;
       await engine.recoverInterrupted();
       expect(bridge.files.has(id)).toBe(false);
       expect(bridge.stopped.some((entry) => entry.id === id)).toBe(false);
+      expect((await engine.plugin.listPending()).recordings).toHaveLength(0);
+    } finally {
+      detach();
+      engine.dispose();
+      __setVoiceNotesForTests(originalVoiceNotes, { available: null });
+    }
+  });
+
+  test("rejected durable Discard stays terminal and recovery retries before admitting Record", async () => {
+    const bridge = new FakeBridge();
+    bridge.discardRejectCount = 1;
+    const ids = ["discarded-session", "new-session"];
+    const engine = await rig(bridge, crypto.randomUUID(), newIdbEnv(), {}, () => ids.shift()!);
+    __setVoiceNotesForTests(engine.plugin, { available: true });
+    const recorder = createVoiceNoteRecorderController({
+      tcw: null,
+      available: true,
+      transcriber: { check: async () => {}, noteSaved: () => {} },
+      onDeviceReady: () => true,
+    });
+    const detach = recorder.attach();
+    try {
+      await waitUntilRecorderReady(recorder);
+      await recorder.record();
+      const id = (await engine.plugin.status()).id!;
+      bridge.files.set(id, Uint8Array.of(21, 22, 23));
+
+      await recorder.discard();
+      expect(recorder.getState().phase).toBe("idle");
+      expect(bridge.current).toBe(id);
+      expect(bridge.files.has(id)).toBe(true);
+      expect((await engine.plugin.listPending()).recordings).toHaveLength(0);
+
+      const recovered = await engine.recoverInterrupted();
+      expect(recovered.failed).toHaveLength(0);
+      expect(bridge.current).toBeNull();
+      expect(bridge.files.has(id)).toBe(false);
+      expect((await engine.plugin.listPending()).recordings).toHaveLength(0);
+      expect(bridge.calls.filter((command) => command === "recorder_discard_durable")).toHaveLength(2);
+
+      await recorder.record();
+      expect((await engine.plugin.status()).id).toBe("new-session");
       expect((await engine.plugin.listPending()).recordings).toHaveLength(0);
     } finally {
       detach();

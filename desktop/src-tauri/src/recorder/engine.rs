@@ -38,6 +38,7 @@ pub struct EngineState {
     auto_stop_requested: bool,
     last_stop_reason: Option<&'static str>,
     capture_source_unconfirmed: bool,
+    active_input_mapping_pending: bool,
     active_input_devices: Option<Vec<u32>>,
     unconfirmed_input_devices: Option<Vec<u32>>,
     snapshot_issue: Option<&'static str>,
@@ -420,28 +421,17 @@ fn capture_source_release_observed(unconfirmed: bool, device_running: Option<boo
 }
 
 fn retain_unconfirmed_input_devices(state: &mut EngineState) {
-    if !state.capture_source_unconfirmed {
-        state.unconfirmed_input_devices = Some(Vec::new());
+    if state.active_input_mapping_pending {
+        let existing = if state.capture_source_unconfirmed {
+            state.unconfirmed_input_devices.as_deref()
+        } else {
+            Some(&[][..])
+        };
+        state.unconfirmed_input_devices =
+            recorder_state::merge_unconfirmed_devices(existing, state.active_input_devices.as_deref());
+        state.active_input_mapping_pending = false;
     }
-    match state.active_input_devices.take() {
-        Some(devices) if !devices.is_empty() => {
-            if let Some(unconfirmed) = state.unconfirmed_input_devices.as_mut() {
-                for device in devices {
-                    if !unconfirmed.contains(&device) {
-                        unconfirmed.push(device);
-                    }
-                }
-            }
-        }
-        Some(_) if !state.capture_source_unconfirmed => {
-            state.unconfirmed_input_devices = None;
-        }
-        Some(_) => {}
-        None if !state.capture_source_unconfirmed => {
-            state.unconfirmed_input_devices = None;
-        }
-        None => {}
-    }
+    state.active_input_devices = None;
     state.capture_source_unconfirmed = true;
 }
 
@@ -703,6 +693,7 @@ pub async fn recorder_start(
         state.id = Some(id);
         state.started_at = Some(started_at);
         state.segment_id = Some(segment_id);
+        state.active_input_mapping_pending = true;
         state.active_input_devices = input_devices;
         state.spans.clear();
         state.limit_ms = max_duration_ms
@@ -1249,6 +1240,7 @@ pub async fn recorder_resume(app: tauri::AppHandle) -> Result<CaptureStatus, Str
             .start_outcome(mono_ms(), Start::Opened)
             .map_err(|error| error.code().to_owned())?;
         state.segment_id = Some(segment_id);
+        state.active_input_mapping_pending = true;
         state.active_input_devices = input_devices;
         cleanup?;
         state.status()
@@ -1533,7 +1525,7 @@ pub async fn recorder_discard_durable(app: tauri::AppHandle) -> Result<CaptureSt
             let stop_succeeded = !source_never_stops_failpoint()
                 && tokio::time::timeout(Duration::from_secs(5), app.listener().stop_capture())
                     .await
-                    .is_ok_and(|result| result.is_ok());
+                    .is_ok();
             let finalized_now = if stop_succeeded {
                 tokio::time::timeout(Duration::from_secs(5), app.listener().get_capture_snapshot())
                     .await
@@ -1838,6 +1830,17 @@ pub struct RecoveryReport {
     quarantined: Vec<journal::FailedSegment>,
 }
 
+fn is_pending_discard_source(app: &tauri::AppHandle, id: &str, segment_id: Option<&str>) -> bool {
+    app.state::<Engine>()
+        .0
+        .lock()
+        .pending_discard_cleanup
+        .iter()
+        .any(|(pending_id, pending_segment)| {
+            pending_id == id && pending_segment.as_deref() == segment_id
+        })
+}
+
 #[tauri::command]
 pub async fn recorder_stopped_list(app: tauri::AppHandle) -> Result<Vec<String>, String> {
     run_source_step(move || {
@@ -1858,7 +1861,7 @@ pub async fn recorder_recover(app: tauri::AppHandle) -> Result<RecoveryReport, S
                 return Err("recording_in_progress".into());
             }
             let mut pending = journal::load(&app)?;
-            if let Some(ref mut current) = pending {
+            if let Some(current) = &mut pending {
                 if !files::valid_recording_id(&current.id) {
                     return Err("invalid_recording_id".into());
                 }
@@ -1866,9 +1869,10 @@ pub async fn recorder_recover(app: tauri::AppHandle) -> Result<RecoveryReport, S
                     if !files::valid_recording_id(&segment_id) {
                         return Err("invalid_segment_id".into());
                     }
-                    if !journal::list_failed(&app)?
-                        .iter()
-                        .any(|failed| failed.segment_id == segment_id)
+                    if !is_pending_discard_source(&app, &current.id, Some(&segment_id))
+                        && !journal::list_failed(&app)?
+                            .iter()
+                            .any(|failed| failed.segment_id == segment_id)
                     {
                         match import_finished_segment(
                             &app,
@@ -1897,16 +1901,25 @@ pub async fn recorder_recover(app: tauri::AppHandle) -> Result<RecoveryReport, S
                             Ok(()) => (),
                         }
                     }
-                    current.segment_id = None;
-                    journal::save(&app, current)?;
+                    if !is_pending_discard_source(&app, &current.id, Some(&segment_id)) {
+                        current.segment_id = None;
+                        journal::save(&app, current)?;
+                    }
                 }
             }
-            let stopped = journal::list_stopped(&app)?;
+            let stopped: Vec<_> = journal::list_stopped(&app)?
+                .into_iter()
+                .filter(|current| {
+                    !is_pending_discard_source(&app, &current.id, current.segment_id.as_deref())
+                })
+                .collect();
             for current in &stopped {
                 recover_stopped_segment(&app, current)?;
             }
             Ok(RecoveryReport {
-                journal: pending,
+                journal: pending.filter(|current| {
+                    !is_pending_discard_source(&app, &current.id, current.segment_id.as_deref())
+                }),
                 stopped,
                 quarantined: journal::list_failed(&app)?,
             })
@@ -2023,6 +2036,9 @@ fn recover_stopped_segment(
     let Some(segment_id) = current.segment_id.as_deref() else {
         return Ok(());
     };
+    if is_pending_discard_source(app, &current.id, Some(segment_id)) {
+        return Ok(());
+    }
     if journal::list_failed(app)?
         .iter()
         .any(|failed| failed.segment_id == segment_id)

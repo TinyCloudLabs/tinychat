@@ -31,6 +31,25 @@ pub fn resolve_named_devices(selected_name: &str, devices: &[(u32, Option<String
     selected.map(|device_id| vec![device_id])
 }
 
+/// Merge a newly unconfirmed source mapping into the devices still being polled.
+/// An unknown mapping for a new source poisons the aggregate; retaining only an
+/// older known device could incorrectly clear the warning while the new source runs.
+pub fn merge_unconfirmed_devices(
+    existing: Option<&[u32]>,
+    newly_unconfirmed: Option<&[u32]>,
+) -> Option<Vec<u32>> {
+    let (Some(existing), Some(newly_unconfirmed)) = (existing, newly_unconfirmed) else {
+        return None;
+    };
+    let mut merged = existing.to_vec();
+    for device in newly_unconfirmed {
+        if !merged.contains(device) {
+            merged.push(*device);
+        }
+    }
+    Some(merged)
+}
+
 /// Why the listener session did not appear finalized before the deadline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stall {
@@ -400,6 +419,17 @@ mod tests {
             resolve_named_devices("USB Mic", &[(1, Some("Internal Mic".into())), (2, Some("USB Mic".into()))]),
             Some(vec![2]),
         );
+    }
+
+    #[test]
+    fn unknown_new_source_keeps_unconfirmed_aggregate_unknown_after_old_device_releases() {
+        let old = Some(vec![7]);
+        let after_new_unknown = merge_unconfirmed_devices(old.as_deref(), None);
+        assert_eq!(after_new_unknown, None);
+        let after_old_released = after_new_unknown
+            .as_deref()
+            .map(|devices| devices.iter().any(|device| *device == 7));
+        assert_eq!(after_old_released, None);
     }
     fn recording_at(now_ms: u64) -> Recorder {
         let mut recorder = Recorder::new();

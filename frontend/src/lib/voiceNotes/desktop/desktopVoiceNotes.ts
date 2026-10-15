@@ -119,14 +119,61 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
   const newId = options.newId ?? (() => crypto.randomUUID());
   const store = options.store ?? await openWebStore({ locks: memoryLocks(), ...options.storeOptions,
     audio: () => createFileAudioBlobStore(bridge) });
-  // Native capture survives a WebView reload. Read it before recovery or event
-  // subscription so the reopened renderer can adopt and stop the live session.
+  let pendingNativeDiscardId: string | null = null;
+  const uncertainDiscardStatus = (native: NativeStatus): NativeStatus => ({
+    ...native,
+    state: "needs_user",
+    reason: "status_unknown",
+    id: null,
+    intent: "stopped",
+    availability: "blocked",
+    captureSourceUnconfirmed: true,
+    discardCleanupPending: true,
+  });
+  const retryTombstonedNativeDiscard = async (native: NativeStatus): Promise<NativeStatus> => {
+    const id = native.id;
+    if (!id || (pendingNativeDiscardId !== id && !await store.hasTombstone(id))) return native;
+    pendingNativeDiscardId = id;
+    try {
+      const retired = await bridge.invoke<NativeStatus>("recorder_discard_durable");
+      pendingNativeDiscardId = retired.id === id ? id : null;
+      return retired;
+    } catch (error) {
+      console.warn("[VoiceNotes] Retrying durable Discard for a tombstoned native session", error);
+      let current: NativeStatus;
+      try { current = await bridge.invoke<NativeStatus>("recorder_status"); }
+      catch (statusError) {
+        console.warn("[VoiceNotes] Could not confirm tombstoned native session status", statusError);
+        current = native;
+      }
+      pendingNativeDiscardId = current.id === id ? id : null;
+      return current;
+    }
+  };
+  const ensureNativeDiscardRetired = async (): Promise<void> => {
+    const native = await bridge.invoke<NativeStatus>("recorder_status");
+    const id = native.id;
+    if (!id) {
+      pendingNativeDiscardId = null;
+      return;
+    }
+    if (pendingNativeDiscardId !== id && !await store.hasTombstone(id)) {
+      if (pendingNativeDiscardId) pendingNativeDiscardId = null;
+      return;
+    }
+    await retryTombstonedNativeDiscard(native);
+    if (pendingNativeDiscardId === id) {
+      throw failure("discard_pending", "A discarded recording is still being retired. Try again.");
+    }
+  };
+  // Native capture survives a WebView reload. Resolve a tombstoned native owner
+  // before any recovery path can adopt it as a live recording.
   let initialNative = await bridge.invoke<NativeStatus>("recorder_status");
-  if (initialNative.id && await store.hasTombstone(initialNative.id)) {
-    // A previous renderer died after tombstoning Discard. Use the bounded,
-    // snapshot-independent path; keep deferred source files until release.
-    initialNative = await bridge.invoke<NativeStatus>("recorder_discard_durable");
-    if (!initialNative.captureSourceUnconfirmed && !initialNative.discardCleanupPending) {
+  if (initialNative.id && (pendingNativeDiscardId === initialNative.id || await store.hasTombstone(initialNative.id))) {
+    const discardedId = initialNative.id;
+    initialNative = await retryTombstonedNativeDiscard(initialNative);
+    if (pendingNativeDiscardId === discardedId) initialNative = uncertainDiscardStatus(initialNative);
+    if (!initialNative.captureSourceUnconfirmed && !initialNative.discardCleanupPending && !pendingNativeDiscardId) {
       await store.sweepTombstones();
     }
   }
@@ -142,6 +189,15 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
 
   const adopt = async (native: NativeStatus) => {
     if (!native.id || live) return;
+    if (pendingNativeDiscardId === native.id || await store.hasTombstone(native.id)) {
+      const discarded = await retryTombstonedNativeDiscard(native);
+      if (pendingNativeDiscardId === native.id) {
+        throw failure("discard_pending", "A discarded recording is still being retired. Try again.");
+      }
+      if (!discarded.id) return;
+      if (await store.hasTombstone(discarded.id)) throw failure("discard_pending");
+      return adopt(discarded);
+    }
     const releaseRecording = await store.locks.hold(RECORDING_LOCK);
     if (!releaseRecording) throw failure("already_recording");
     const releaseSession = await store.locks.hold(sessionLock(native.id));
@@ -199,8 +255,13 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
       await store.updateSession(live.session.id, { lastHeartbeatAt: live.session.lastHeartbeatAt });
     }).catch((error: unknown) => console.error("[desktopVoiceNotes] Could not journal capture heartbeat", error));
   }, 2_000);
+  const visibleNativeStatus = (native: NativeStatus): NativeStatus =>
+    pendingNativeDiscardId !== null && pendingNativeDiscardId === native.id
+      ? uncertainDiscardStatus(native) : native;
   const status = async (): Promise<CaptureStatus> => {
-    const native = await bridge.invoke<NativeStatus>("recorder_status");
+    let native = await bridge.invoke<NativeStatus>("recorder_status");
+    if (pendingNativeDiscardId && pendingNativeDiscardId !== native.id) pendingNativeDiscardId = null;
+    native = visibleNativeStatus(native);
     const session = live?.session ?? (native.id ? await store.getSession(native.id) : null);
     const defaults = session ? null : await store.getCaptureDefaults();
     return {
@@ -216,15 +277,16 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
     };
   };
   const emitMic = (native: NativeStatus) => {
+    const visible = visibleNativeStatus(native);
     const session = live?.session;
     emit("micState", {
-      state: native.state, reason: native.reason, at: native.at, id: native.id,
-      audioMs: native.audioMs, elapsedMs: native.elapsedMs, pausedMs: native.pausedMs,
+      state: visible.state, reason: visible.reason, at: visible.at, id: visible.id,
+      audioMs: visible.audioMs, elapsedMs: visible.elapsedMs, pausedMs: visible.pausedMs,
       options: session?.options, input: session?.input ?? null,
       openSpan: session?.spans.find((span) => span.endedAt === null) ?? null,
-      captureSourceUnconfirmed: native.captureSourceUnconfirmed ?? false,
+      captureSourceUnconfirmed: visible.captureSourceUnconfirmed ?? false,
     } satisfies MicStateEvent);
-    if (!native.captureSourceUnconfirmed && !native.discardCleanupPending) {
+    if (!visible.captureSourceUnconfirmed && !visible.discardCleanupPending) {
       void store.sweepTombstones().catch((error: unknown) =>
         console.warn("[VoiceNotes] Could not finish discarded-session cleanup", error));
     }
@@ -336,7 +398,7 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
         if (capabilities.desktopWhisper) return whisperQueue?.modelAvailable();
       }).catch((error: unknown) => console.warn("[desktopVoiceNotes] Could not refresh Whisper model", error));
     }));
-    if (initialNative.id) emitMic(initialNative);
+    if (initialNative.id || initialNative.captureSourceUnconfirmed) emitMic(initialNative);
   } catch (error) {
     clearInterval(heartbeat);
     for (const stop of unlisten) stop();
@@ -380,8 +442,27 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
     let deferTombstoneCleanup: boolean;
     let report: NativeRecoveryReport;
     try {
-      const native = await bridge.invoke<NativeStatus>("recorder_status");
+      let native = await bridge.invoke<NativeStatus>("recorder_status");
+      if (native.id && (pendingNativeDiscardId === native.id || await store.hasTombstone(native.id))) {
+        const discardedId = native.id;
+        native = await retryTombstonedNativeDiscard(native);
+        if (pendingNativeDiscardId === discardedId) {
+          deferTombstoneCleanup = true;
+          emitMic(uncertainDiscardStatus(native));
+          const failed = { id: discardedId, reason: "discard_pending",
+            error: "Native discard is not yet retired; cleanup remains deferred." };
+          emit("recoveryFailed", failed);
+          return { recovered: [], failed: [failed] };
+        }
+      }
       deferTombstoneCleanup = !!native.captureSourceUnconfirmed || !!native.discardCleanupPending;
+      if (native.id && (pendingNativeDiscardId === native.id || await store.hasTombstone(native.id))) {
+        deferTombstoneCleanup = true;
+        const failed = { id: native.id, reason: "discard_pending",
+          error: "Native discard is not yet retired; cleanup remains deferred." };
+        emit("recoveryFailed", failed);
+        return { recovered: [], failed: [failed] };
+      }
       if (native.id) await adopt(native);
       if (!live && !deferTombstoneCleanup) for (const id of await bridge.invoke<string[]>("recorder_stopped_list")) {
         if (await store.hasTombstone(id)) await bridge.invoke("delete_audio_file", { id });
@@ -490,6 +571,7 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
     async start(startOptions) {
       return run(async () => {
         if (live) throw failure("recording_in_progress");
+        await ensureNativeDiscardRetired();
         const releaseRecording = await store.locks.hold(RECORDING_LOCK);
         if (!releaseRecording) throw failure("already_recording");
         const releases = [releaseRecording];
@@ -658,7 +740,11 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
             console.warn("[VoiceNotes] Could not confirm native Discard status", statusError);
           }
         }
-        const deferCleanup = !native || !!native.captureSourceUnconfirmed || !!native.discardCleanupPending;
+        if (!native || native.id === id) pendingNativeDiscardId = id;
+        else pendingNativeDiscardId = null;
+        const nativeStillOwnsDiscardedSession = !native || native.id === id || pendingNativeDiscardId === id;
+        const deferCleanup = nativeStillOwnsDiscardedSession
+          || !!native?.captureSourceUnconfirmed || !!native?.discardCleanupPending;
         if (!deferCleanup) {
           try {
             await store.discardSession(id);
