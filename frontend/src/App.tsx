@@ -46,6 +46,7 @@ import {
   isStorageReadOnly,
   storageScopeFor,
   subscribeStorageReadOnly,
+  subscribeStorageScopeRetired,
   reportStoragePlanTier,
 } from "./lib/storageStatus";
 import { openManageStorage } from "./lib/openManageStorage";
@@ -331,6 +332,7 @@ export function App() {
   const [pricingOpen, setPricingOpen] = useState(false);
   const [storageDialogOpen, setStorageDialogOpen] = useState(false);
   const storageReadOnly = useSyncExternalStore(subscribeStorageReadOnly, isStorageReadOnly, () => false);
+  useEffect(() => subscribeStorageScopeRetired(() => setStorageDialogOpen(false)), []);
   const [ratesOpen, setRatesOpen] = useState(false);
   const [billingNotice, setBillingNotice] = useState<string | null>(null);
   const [shareToken, setShareToken] = useState<string | null>(initialShareToken);
@@ -867,6 +869,7 @@ export function App() {
         setDid(accountDid);
         setSpaceId(readyTcw.spaceId ?? null);
         void ensureTranscriptWriterDelegation({ tcw: readyTcw, backendUrl: BACKEND_URL, sessionStore: sessionStoreRef.current });
+        setState("ready");
         return;
       }
       const { address: connectedAddress, openkey, web3Provider } = await connectWallet({
@@ -920,6 +923,7 @@ export function App() {
       setDid(signedTcw.did ?? null);
       setSpaceId(signedTcw.spaceId ?? null);
       void ensureTranscriptWriterDelegation({ tcw: signedTcw, backendUrl: BACKEND_URL, sessionStore: sessionStoreRef.current });
+      setState("ready");
     } catch (caught) {
       if (isSignInCancelled(caught)) {
         setError(null);
