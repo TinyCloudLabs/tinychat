@@ -229,17 +229,19 @@ describe("Fireflies agent runner", () => {
     await seedConnected(null);
     expect((await runFirefliesAgentSync(deps({ mode: "now" }))).result).toBe("synced");
 
-    const lost = [...fake.sql.meetings.values()].find((row) => row.source_id === seed[3].id)!;
+    // Past the first 25-meeting listing page, so the audit must read more than one page.
+    const lost = [...fake.sql.meetings.values()].find((row) => row.source_id === seed[27].id)!;
     fake.sql.meetings.delete(lost.id);
 
     const audit = await runFirefliesAgentSync(deps({ mode: "now", now: later(31 * 60 * 1000) }));
     expect(audit.gapIds).toBe(1);
     expect(audit.requeued).toBe(1);
+    expect(audit.gapAuditComplete).toBe(true);
     expect(fake.sql.meetings.size).toBe(seed.length - 1);
 
     const restored = await runFirefliesAgentSync(deps({ mode: "now", now: later(62 * 60 * 1000) }));
     expect(restored.added).toBe(1);
-    expect([...fake.sql.meetings.values()].some((row) => row.source_id === seed[3].id)).toBe(true);
+    expect([...fake.sql.meetings.values()].some((row) => row.source_id === seed[27].id)).toBe(true);
   });
 
   test("a held lock blocks a second runner", async () => {
@@ -248,5 +250,25 @@ describe("Fireflies agent runner", () => {
     const report = await runFirefliesAgentSync(deps({ mode: "now" }));
     expect(report.result).toBe("locked");
     expect(keyReads).toBe(0);
+  });
+
+  test("a lock left by a dead process is taken over", async () => {
+    await seedConnected(null);
+    writeFileSync(join(stateDir, "fireflies.lock"), "2147483646 abandoned\n");
+    const report = await runFirefliesAgentSync(deps({ mode: "now" }));
+    expect(report.result).toBe("synced");
+  });
+
+  test("request accounting is on disk before each upstream call, so a killed run still counts it", async () => {
+    await seedConnected(null);
+    const persisted: number[] = [];
+    const inner = provider.fetchImpl;
+    provider.fetchImpl = Object.assign(async (input: RequestInfo | URL, init?: RequestInit) => {
+      persisted.push(JSON.parse(readFileSync(join(stateDir, "fireflies-runner.json"), "utf8")).requests);
+      return inner(input, init);
+    }, fetch);
+    const report = await runFirefliesAgentSync(deps({ mode: "now" }));
+    expect(report.result).toBe("synced");
+    expect(persisted).toEqual(persisted.map((_, index) => index + 1));
   });
 });

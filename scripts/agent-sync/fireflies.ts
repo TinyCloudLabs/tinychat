@@ -12,8 +12,8 @@
 // the key. See docs plan samgbafa/tinycloud-dev#100 for the grant shape and the guards.
 
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -32,7 +32,8 @@ export const MAX_REQUESTS_PER_DAY = 200;
 export const MAX_RUNS_PER_DAY = 4;
 export const BUSY_WINDOW_MS = 30 * 60 * 1000;
 export const DEFAULT_STALE_MS = 6 * 60 * 60 * 1000;
-export const LOCK_STALE_MS = 30 * 60 * 1000;
+/** Gap-audit listing pages (25 meetings each) over the last GAP_WINDOW_MS. */
+export const GAP_AUDIT_PAGES = 4;
 export const RECHECK_INSERTED_MS = 24 * 60 * 60 * 1000;
 export const GAP_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_PENDING_IDS = 50;
@@ -66,6 +67,8 @@ export interface RunReport {
   duplicateRowsRemoved: number;
   gapIds: number;
   requeued: number;
+  /** False when the gap audit stopped before reaching the end of its 7-day window; null when it did not run. */
+  gapAuditComplete: boolean | null;
   tableDeltas: Record<string, number>;
   schemaChanged: boolean;
   /** connector_state.last_synced_at: advances only on a complete reconcile (TC-979). */
@@ -113,7 +116,7 @@ class RunnerError extends Error {
 function emptyReport(mode: RunDeps["mode"], at: Date): RunReport {
   return {
     v: 1, at: at.toISOString(), mode, result: "error", status: null, added: 0, skipped: 0, errors: 0,
-    httpRequests: 0, requestsToday: 0, runsToday: 0, duplicateRowsRemoved: 0, gapIds: 0, requeued: 0,
+    httpRequests: 0, requestsToday: 0, runsToday: 0, duplicateRowsRemoved: 0, gapIds: 0, requeued: 0, gapAuditComplete: null,
     tableDeltas: {}, schemaChanged: false, lastSyncedAt: null, lastRunAt: null, durationMs: 0,
   };
 }
@@ -149,18 +152,50 @@ function writeState(file: string, state: RunnerState): void {
   renameSync(tmp, file);
 }
 
-/** Exclusive per-host lock; a lock older than LOCK_STALE_MS is treated as abandoned. */
-function acquireLock(file: string, now: Date): (() => void) | null {
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error instanceof Error && "code" in error && error.code === "EPERM";
+  }
+}
+
+/**
+ * Per-host lock. A lock is abandoned only when its owner process is gone; the release removes
+ * the lock only while it still holds this run's token, so a successor's lock is never deleted.
+ * The wrapper (`bin/connector-sync`) also holds a kernel `flock`, which is the hard guarantee.
+ */
+function acquireLock(file: string): (() => void) | null {
+  const token = `${process.pid} ${randomUUID()}`;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const fd = openSync(file, "wx", 0o600);
-      writeFileSync(fd, `${process.pid} ${now.toISOString()}\n`);
+      writeFileSync(fd, `${token}\n`);
       closeSync(fd);
-      return () => rmSync(file, { force: true });
+      return () => {
+        try {
+          if (readFileSync(file, "utf8").trim() === token) rmSync(file, { force: true });
+        } catch {
+          // Already gone.
+        }
+      };
     } catch {
+      let observed: string;
       try {
-        if (now.getTime() - statSync(file).mtimeMs <= LOCK_STALE_MS) return null;
-        rmSync(file, { force: true });
+        observed = readFileSync(file, "utf8");
+      } catch {
+        continue; // Released between our create and read: try to create again.
+      }
+      const holder = Number.parseInt(observed, 10);
+      if (!Number.isInteger(holder) || holder <= 0 || processAlive(holder)) return null;
+      // Abandoned. Move it aside atomically, and give up if what moved is not what we judged dead.
+      const aside = `${file}.abandoned.${process.pid}`;
+      try {
+        renameSync(file, aside);
+        const moved = readFileSync(aside, "utf8");
+        rmSync(aside, { force: true });
+        if (moved !== observed) return null;
       } catch {
         return null;
       }
@@ -172,7 +207,11 @@ function acquireLock(file: string, now: Date): (() => void) | null {
 // ── Upstream request budget ─────────────────────────────────────────────
 
 /** Counts every HTTP attempt, retries included; past the budget it answers 429 without calling out. */
-export function countingFetch(inner: typeof fetch, budget: number): { fetch: typeof fetch; used: () => number } {
+export function countingFetch(
+  inner: typeof fetch,
+  budget: number,
+  onRequest: () => void = () => undefined,
+): { fetch: typeof fetch; used: () => number } {
   let used = 0;
   const counted = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
     if (used >= budget) {
@@ -180,6 +219,7 @@ export function countingFetch(inner: typeof fetch, budget: number): { fetch: typ
       return new Response("{}", { status: 429, headers: { "retry-after": "86400" } });
     }
     used++;
+    onRequest();
     return inner(input, init);
   };
   // Object.assign carries over runtime statics such as Bun's fetch.preconnect.
@@ -195,7 +235,7 @@ export async function runFirefliesAgentSync(deps: RunDeps): Promise<RunReport> {
   const day = started.toISOString().slice(0, 10);
   mkdirSync(deps.stateDir, { recursive: true, mode: 0o700 });
   const stateFile = join(deps.stateDir, "fireflies-runner.json");
-  const release = acquireLock(join(deps.stateDir, "fireflies.lock"), started);
+  const release = acquireLock(join(deps.stateDir, "fireflies.lock"));
   if (!release) return { ...report, result: "locked" };
   try {
     const state = readState(stateFile, day);
@@ -203,8 +243,9 @@ export async function runFirefliesAgentSync(deps: RunDeps): Promise<RunReport> {
     report.requestsToday = state.requests;
     await runLocked(deps, report, state, clock, stateFile);
   } catch (error) {
+    // Only codes reach the report: RunnerError messages are built from codes, anything else by name.
     report.result = error instanceof RunnerError ? error.result : "error";
-    report.detail = error instanceof Error ? redact(error.message) : "unknown failure";
+    report.detail = error instanceof RunnerError ? redact(error.message) : error instanceof Error ? error.name : "unknown";
   } finally {
     release();
     report.durationMs = clock().getTime() - started.getTime();
@@ -258,7 +299,13 @@ async function runLocked(
 
   const before = await deps.audit.tables();
   const apiKey = await deps.readApiKey();
-  const counter = countingFetch(deps.fetchImpl ?? globalThis.fetch.bind(globalThis), budget);
+  // State is written as it changes, so a killed run still counts its requests and its inserted rows.
+  state.runs += 1;
+  writeState(stateFile, state);
+  const counter = countingFetch(deps.fetchImpl ?? globalThis.fetch.bind(globalThis), budget, () => {
+    state.requests += 1;
+    writeState(stateFile, state);
+  });
   const defaults = defaultFirefliesClientOptions();
   const client = new FirefliesClient({
     apiKey,
@@ -267,7 +314,7 @@ async function runLocked(
     fetchImpl: counter.fetch,
   });
 
-  const insertedThisRun: string[] = [];
+  state.inserted = state.inserted.filter((entry) => nowMs - Date.parse(entry.at) < RECHECK_INSERTED_MS);
   let storageFull = false;
   const watch = <T>(res: StoreResult<T>): StoreResult<T> => {
     if (!res.ok && isStorageFullError(res.error)) storageFull = true;
@@ -277,7 +324,10 @@ async function runLocked(
     ...connectorStore,
     insertMeeting: async (target, meeting) => {
       const res = watch(await connectorStore.insertMeeting(target, meeting));
-      if (res.ok && res.data) insertedThisRun.push(meeting.id);
+      if (res.ok && res.data) {
+        state.inserted.push({ id: meeting.id, at: clock().toISOString() });
+        writeState(stateFile, state);
+      }
       return res;
     },
     putTranscriptBody: async (...args) => watch(await connectorStore.putTranscriptBody(...args)),
@@ -285,7 +335,6 @@ async function runLocked(
     recordFirefliesAttempt: async (...args) => watch(await connectorStore.recordFirefliesAttempt(...args)),
   };
 
-  state.runs += 1;
   try {
     const sync = await syncFireflies({ client, store, tcw });
     if (sync.ok) {
@@ -294,20 +343,16 @@ async function runLocked(
       report.errors = sync.data.errors.length;
     } else {
       report.errors = 1;
-      report.detail = `${sync.error.kind}: ${redact(sync.error.message)}`;
+      report.detail = sync.error.kind;
     }
 
-    const insertedAt = clock().toISOString();
-    state.inserted = [
-      ...state.inserted.filter((entry) => nowMs - Date.parse(entry.at) < RECHECK_INSERTED_MS),
-      ...insertedThisRun.map((id) => ({ id, at: insertedAt })),
-    ];
     report.duplicateRowsRemoved = await removeOwnDuplicates(deps.audit, state.inserted.map((entry) => entry.id));
 
-    if (sync.ok && counter.used() < budget) {
+    if (sync.ok && budget - counter.used() >= GAP_AUDIT_PAGES) {
       const gaps = await gapAudit(client, tcw, nowMs);
       report.gapIds = gaps.found;
       report.requeued = gaps.requeued;
+      report.gapAuditComplete = gaps.complete;
     }
 
     const after = await deps.audit.tables();
@@ -340,7 +385,6 @@ async function runLocked(
     }
   } finally {
     report.httpRequests = counter.used();
-    state.requests += counter.used();
     report.runsToday = state.runs;
     report.requestsToday = state.requests;
     writeState(stateFile, state);
@@ -360,25 +404,31 @@ async function removeOwnDuplicates(audit: AuditPort, ownIds: string[]): Promise<
   return removed;
 }
 
-/** One listing page: re-queue recent Fireflies ids that have no row through the engine's pendingIds. */
-async function gapAudit(client: FirefliesClient, tcw: TinyCloudWeb, nowMs: number): Promise<{ found: number; requeued: number }> {
+/** Re-queue recent Fireflies ids that have no row, through the engine's own pendingIds. */
+async function gapAudit(
+  client: FirefliesClient,
+  tcw: TinyCloudWeb,
+  nowMs: number,
+): Promise<{ found: number; requeued: number; complete: boolean }> {
   const known = await connectorStore.listKnownSourceIds(tcw, SOURCE);
-  if (!known.ok) return { found: 0, requeued: 0 };
+  if (!known.ok) return { found: 0, requeued: 0, complete: false };
   const listing = await client.listNewTranscriptIds({
     knownIds: known.data,
-    pageBudget: 1,
+    pageBudget: GAP_AUDIT_PAGES,
     detailCap: MAX_PENDING_IDS,
     stopBeforeDate: new Date(nowMs - GAP_WINDOW_MS).toISOString(),
   });
-  if (!listing.ok || listing.data.ids.length === 0) return { found: 0, requeued: 0 };
+  if (!listing.ok) return { found: 0, requeued: 0, complete: false };
+  const { ids, complete } = listing.data;
+  if (ids.length === 0) return { found: 0, requeued: 0, complete };
   const attempt = await connectorStore.getFirefliesAttempt(tcw);
-  if (!attempt.ok || !attempt.data) return { found: listing.data.ids.length, requeued: 0 };
+  if (!attempt.ok || !attempt.data) return { found: ids.length, requeued: 0, complete };
   const pending = new Set(attempt.data.pendingIds ?? []);
   const before = pending.size;
-  for (const id of listing.data.ids) if (pending.size < MAX_PENDING_IDS) pending.add(id);
-  if (pending.size === before) return { found: listing.data.ids.length, requeued: 0 };
+  for (const id of ids) if (pending.size < MAX_PENDING_IDS) pending.add(id);
+  if (pending.size === before) return { found: ids.length, requeued: 0, complete };
   const written = await connectorStore.recordFirefliesAttempt(tcw, { ...attempt.data, pendingIds: [...pending] });
-  return { found: listing.data.ids.length, requeued: written.ok ? pending.size - before : 0 };
+  return { found: ids.length, requeued: written.ok ? pending.size - before : 0, complete };
 }
 
 function storeFailure(error: { code?: string; message?: string }): RunResult {
@@ -576,7 +626,7 @@ async function main(): Promise<number> {
   try {
     const home = process.env.TC_HOME ?? join(homedir(), ".tinycloud");
     const profile = loadProfile(home, args.writeProfile);
-    const [, , chain, address] = args.owner.split(":");
+    const [, , , chain, address] = args.owner.split(":");
     const expectedSpace = `tinycloud:pkh:eip155:${chain}:${address.toLowerCase()}:applications`;
     if (profile.ownerDid.toLowerCase() !== args.owner.toLowerCase() || profile.spaceId.toLowerCase() !== expectedSpace) {
       throw new RunnerError("error", "write profile is not signed in to the owner's applications space");
