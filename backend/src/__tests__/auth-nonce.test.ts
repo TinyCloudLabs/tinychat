@@ -27,7 +27,7 @@ function app() {
   const nonceStore = createNonceStore();
   const instance = express();
   instance.use(express.json());
-  instance.use("/api/auth", createAuthRouter({ nonceStore, privateKey: "test-key" }));
+  instance.use("/api/auth", createAuthRouter({ nonceStore, privateKey: "test-key", frontendUrl: "http://localhost:5186" }));
   return { app: instance, nonceStore };
 }
 

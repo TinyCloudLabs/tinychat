@@ -266,7 +266,7 @@ export interface VoiceNotesPlugin {
   cancelAudioUpload?(options: { uploadId: string }): Promise<void>;
   /** Delete after a confirmed save: until then the recording stays on the device. */
   deleteAudio(options: { id: string }): Promise<void>;
-  /** Remove bytes only after the local ledger confirms a space copy; preserve the note and transcript. */
+  /** Remove bytes only through the shared JS source-pin gate; native eviction must not be initiated directly. */
   evictCachedAudio(options: { id: string }): Promise<void>;
   /** Stopped recordings still on the device, i.e. not yet confirmed saved. */
   listPending(): Promise<{ recordings: VoiceNoteRecording[] }>;

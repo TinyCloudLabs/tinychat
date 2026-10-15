@@ -16,6 +16,7 @@ import { PrivateCloudError, type PrivateCloudCapabilities } from "../privateClou
 import {
   createVoiceNoteTranscriber,
   HELD_NOTE_MESSAGE,
+  localStorageVoiceNotePrivateChoiceStore,
   voiceNoteTranscriberFor,
   type VoiceNoteCloud,
   type VoiceNoteConsentStore,
@@ -23,6 +24,7 @@ import {
   type VoiceNoteTranscriberEvent,
   type VoiceNoteTranscriptionStatus,
 } from "./voiceNoteTranscription";
+import { isSourcePinned } from "./sourcePins";
 
 const CAPS: PrivateCloudCapabilities = { max_bytes: 120_960_000, max_duration_seconds: 7_777, content_types: ["audio/wav"], admission: "open" };
 const AUDIO = { mimeType: "audio/mp4", base64: "AAAA" };
@@ -665,4 +667,90 @@ describe("notes that did not begin in the app are held, per note", () => {
     expect(s.runs.map((run) => run.sourceId)).toEqual(["free"]);
     expect(s.job("held")?.kind).toBe("held");
   });
+});
+test("TC-1182 P7 queued Private work pins its source until it starts or is dropped", async () => {
+  const originalStorage = (globalThis as typeof globalThis & { localStorage?: Storage }).localStorage;
+  const values = new Map<string, string>();
+  const storage = {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => { values.set(key, value); },
+    removeItem: (key: string) => { values.delete(key); },
+  } as Storage;
+  Object.defineProperty(globalThis, "localStorage", { configurable: true, value: storage });
+  try {
+    const s = setup({ consented: true });
+    await s.transcriber.check();
+    s.transcriber.noteSaved({ id: "active", durationMs: 5_000, source: "in_app" }, AUDIO);
+    s.transcriber.noteSaved({ id: "queued", durationMs: 5_000, source: "in_app" }, AUDIO);
+    await tick();
+    expect(s.runs.map((run) => run.sourceId)).toEqual(["active"]);
+
+    localStorageVoiceNotePrivateChoiceStore(TEST_TCW.did, storage).remove("queued");
+    expect(await isSourcePinned(TEST_TCW.did, "queued")).toBe(true);
+
+    await s.transcriber.turnOff();
+    expect(await isSourcePinned(TEST_TCW.did, "queued")).toBe(false);
+    s.runs[0]!.resolve("transcribed");
+    await tick();
+  } finally {
+    if (originalStorage === undefined) Reflect.deleteProperty(globalThis, "localStorage");
+    else Object.defineProperty(globalThis, "localStorage", { configurable: true, value: originalStorage });
+  }
+});
+
+test("TC-1182 G3 settleChoice releases a successful note's remaining source pin", async () => {
+  const originalStorage = (globalThis as typeof globalThis & { localStorage?: Storage }).localStorage;
+  const values = new Map<string, string>();
+  const storage = {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => { values.set(key, value); },
+    removeItem: (key: string) => { values.delete(key); },
+  } as Storage;
+  Object.defineProperty(globalThis, "localStorage", { configurable: true, value: storage });
+  try {
+    const s = setup({ consented: true });
+    await s.transcriber.check();
+    s.transcriber.noteSaved({ id: "settled", durationMs: 5_000, source: "in_app" }, AUDIO);
+    await tick();
+    expect(await isSourcePinned(TEST_TCW.did, "settled")).toBe(true);
+    s.runs[0]!.resolve("transcribed");
+    await tick();
+    expect(await isSourcePinned(TEST_TCW.did, "settled")).toBe(false);
+  } finally {
+    if (originalStorage === undefined) Reflect.deleteProperty(globalThis, "localStorage");
+    else Object.defineProperty(globalThis, "localStorage", { configurable: true, value: originalStorage });
+  }
+});
+test("TC-1182 retry backoff retains source bytes after PTX release", async () => {
+  const originalStorage = (globalThis as typeof globalThis & { localStorage?: Storage }).localStorage;
+  const values = new Map<string, string>();
+  const storage = {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => { values.set(key, value); },
+    removeItem: (key: string) => { values.delete(key); },
+  } as Storage;
+  Object.defineProperty(globalThis, "localStorage", { configurable: true, value: storage });
+  try {
+    const { cloud } = fakeCloud();
+    const consent = memoryConsent(true);
+    const choices = localStorageVoiceNotePrivateChoiceStore(TEST_TCW.did, storage);
+    const scheduled: (() => void)[] = [];
+    const transcriber = createVoiceNoteTranscriber({
+      cloud, consent, choices, tcw: () => TEST_TCW, holds: memoryHoldStore(), checkRetryMs: [],
+      timer: { schedule: (callback) => { scheduled.push(callback); return scheduled.length; }, cancel: () => {} },
+      runNote: async () => { throw new PrivateCloudError("service_paused", "synthetic retryable admission", { statusCode: 503 }); },
+    });
+    await transcriber.check();
+    transcriber.noteSaved({ id: "backoff", durationMs: 5_000, source: "in_app" }, AUDIO);
+    await tick();
+    choices.remove("backoff");
+    expect(scheduled).toHaveLength(1);
+    expect(await isSourcePinned(TEST_TCW.did, "backoff")).toBe(true);
+
+    await transcriber.turnOff();
+    expect(await isSourcePinned(TEST_TCW.did, "backoff")).toBe(false);
+  } finally {
+    if (originalStorage === undefined) Reflect.deleteProperty(globalThis, "localStorage");
+    else Object.defineProperty(globalThis, "localStorage", { configurable: true, value: originalStorage });
+  }
 });

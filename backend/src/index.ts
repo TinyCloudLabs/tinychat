@@ -649,6 +649,8 @@ async function main() {
     createAuthRouter({
       nonceStore,
       privateKey: backendPrivateKey,
+      frontendUrl: FRONTEND_URL,
+      nativeSiweDomain: process.env.OPENKEY_SIWE_DOMAIN,
     }),
   );
   app.use(

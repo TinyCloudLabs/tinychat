@@ -3,7 +3,7 @@ import CryptoKit
 @testable import CaptureCore
 
 final class RecordingLibraryTests: XCTestCase {
-    func testCacheEvictionRequiresSpaceCopyAndKeepsNote() throws {
+    func testCacheEvictionIsDisabledAndKeepsNote() throws {
         let (library, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
         let pending = UUID().uuidString.lowercased()
         _ = try library.commit(pending, sidecar: ["id": pending, "version": 2,
@@ -34,12 +34,14 @@ final class RecordingLibraryTests: XCTestCase {
         XCTAssertNotNil(try library.openAudio(cached))
         _ = try library.updateLedger(cached, did: "did:test", rev: next,
             patch: ["audio": ["state": "saved", "verifiedInSpace": ["sha256": goodHash, "size": 6]]])
-        try library.evictCachedAudio(cached)
-        XCTAssertThrowsError(try library.openAudio(cached))
+        XCTAssertThrowsError(try library.evictCachedAudio(cached)) { error in
+            XCTAssertEqual(error as? CaptureError, .audioInUse)
+        }
+        XCTAssertNotNil(try library.openAudio(cached))
         XCTAssertEqual((try library.readSidecar(cached))["id"] as? String, cached)
     }
 
-    func testCacheEvictionWaitsForLocalWorkToFinish() throws {
+    func testCacheEvictionAlwaysKeepsLocalWorkAudio() throws {
         let (library, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
         let id = UUID().uuidString.lowercased()
         let hash = SHA256.hash(data: Data("work".utf8)).map { String(format: "%02x", $0) }.joined()
@@ -79,8 +81,10 @@ final class RecordingLibraryTests: XCTestCase {
         }
         XCTAssertNotNil(try library.openAudio(queued))
         let done = try commitNote("done")
-        try library.evictCachedAudio(done)
-        XCTAssertThrowsError(try library.openAudio(done))
+        XCTAssertThrowsError(try library.evictCachedAudio(done)) { error in
+            XCTAssertEqual(error as? CaptureError, .audioInUse)
+        }
+        XCTAssertNotNil(try library.openAudio(done))
     }
 
     func testCacheEvictionWaitsForOutboxReceipt() throws {
@@ -1121,5 +1125,20 @@ final class RecordingLibraryTests: XCTestCase {
         let row = try legacyRow(library, id, "legacy")
         XCTAssertEqual(row["kind"] as? String, "transcript")
         XCTAssertEqual(row["handle"] as? String, "job-4")
+    }
+    func testDirectCacheEvictionRefusesVerifiedSavedAudio() throws {
+        let (library, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID().uuidString.lowercased()
+        let bytes = Data([1, 2, 3])
+        let hash = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+        _ = try library.commit(id, sidecar: ["id": id, "version": 2, "owner": "did:test", "rev": 0,
+            "options": ["uploadAudio": false],
+            "ledger": ["audio": ["state": "saved", "verifiedInSpace": ["sha256": hash, "size": bytes.count]]]]) {
+            try bytes.write(to: $0)
+        }
+        XCTAssertThrowsError(try library.evictCachedAudio(id)) { error in
+            XCTAssertEqual(error as? CaptureError, .audioInUse)
+        }
+        XCTAssertNotNil(try library.openAudio(id))
     }
 }

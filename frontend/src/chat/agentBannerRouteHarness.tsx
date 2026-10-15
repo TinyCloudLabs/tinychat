@@ -10,7 +10,7 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import type { SessionStore } from "@tinyboilerplate/client";
 import { AgentAccessProvider, useAgentAccess } from "./useAgentEnablement";
 import { ChatViewAgentEnablementBanner } from "./AgentEnablementBanner";
-
+import { ChatViewAgentStatusIndicator } from "./ChatAgentStatusIndicator";
 declare global {
   interface Window {
     bannerHarness?: {
@@ -61,6 +61,7 @@ createRoot(document.getElementById("root")!).render(
     >
       <Probe />
       <ChatViewAgentEnablementBanner />
+      <ChatViewAgentStatusIndicator />
     </AgentAccessProvider>
   </BrowserRouter>,
 );
