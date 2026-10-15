@@ -83,6 +83,9 @@ export async function probeAgentCapability(backendUrl: string, token: string): P
   return (await probeAgentSession(backendUrl, token)).capability;
 }
 
+const AGENT_PROBE_INTERVAL_MS = 60_000;
+const AGENT_PROBE_MAX_BACKOFF_MS = 5 * 60_000;
+
 /** One account's controller is shared by Settings and the persistent chat runtime. */
 export function createAgentAccessController(opts: UseAgentEnablementOptions) {
   const agentEnabledRef = { current: false }; // Route availability, including public-only access.
@@ -98,10 +101,36 @@ export function createAgentAccessController(opts: UseAgentEnablementOptions) {
   let stopping: Promise<void> | null = null;
   let replacementPending = false;
   let signalChange = () => {};
+  let pollTimer: number | undefined;
+  let listening = false;
+  let consecutiveProbeFailures = 0;
   const update = (patch: Partial<AgentAccessState>) => {
     if (disposed) return;
     state = { ...state, ...patch };
     listeners.forEach((listener) => listener());
+  };
+  const clearPollTimer = () => {
+    clearTimeout(pollTimer);
+    pollTimer = undefined;
+  };
+  const isVisible = () => typeof document === "undefined" || document.visibilityState === "visible";
+  const isOnline = () => typeof window === "undefined" || window.navigator?.onLine !== false;
+  const markOffline = () => {
+    probeSequence++;
+    clearPollTimer();
+    update({ capability: "unavailable", status: null, revision: null, probeFailed: false, reconnectReason: null });
+  };
+  const scheduleProbe = (probeFailed: boolean) => {
+    clearPollTimer();
+    if (!listening || !isVisible() || !isOnline()) return;
+    consecutiveProbeFailures = probeFailed ? consecutiveProbeFailures + 1 : 0;
+    const delay = probeFailed
+      ? Math.min(AGENT_PROBE_INTERVAL_MS * 2 ** consecutiveProbeFailures, AGENT_PROBE_MAX_BACKOFF_MS)
+      : AGENT_PROBE_INTERVAL_MS;
+    pollTimer = window.setTimeout(() => {
+      pollTimer = undefined;
+      if (isVisible() && isOnline()) void refresh();
+    }, delay);
   };
   const access = (active: boolean, revision: string | null) => {
     const old = privateAccessRef.current;
@@ -117,12 +146,16 @@ export function createAgentAccessController(opts: UseAgentEnablementOptions) {
   };
   const refresh = async () => {
     if (replacementPending || stopping) return;
+    if (!isOnline()) { markOffline(); return; }
     const currentOperation = operation;
     const sequence = ++probeSequence;
     const token = opts.sessionStore.getToken();
     const result = token ? await probeAgentSession(opts.backendUrl, token)
       : { capability: "unavailable" as const, status: null, revision: null, probeFailed: false };
-    if (!disposed && currentOperation === operation && sequence === probeSequence) apply(result);
+    if (!disposed && currentOperation === operation && sequence === probeSequence) {
+      apply(result);
+      scheduleProbe(result.probeFailed);
+    }
   };
   const invalidate = () => {
     operation++;
@@ -210,6 +243,7 @@ export function createAgentAccessController(opts: UseAgentEnablementOptions) {
     listen: () => {
       disposed = false;
       if (typeof window === "undefined") return () => {};
+      listening = true;
       const key = `tinychat-agent-access:${opts.backendUrl.replace(/\/$/, "")}:${opts.tcw.address()?.toLowerCase()}`;
       const channel = typeof BroadcastChannel === "undefined" ? null : new BroadcastChannel(key);
       signalChange = () => {
@@ -219,20 +253,32 @@ export function createAgentAccessController(opts: UseAgentEnablementOptions) {
       const changed = () => { invalidate(); update({ status: null, capability: "available", probeFailed: false }); void refresh(); };
       const storage = (event: StorageEvent) => { if (event.key === key) changed(); };
       const focus = () => { void refresh(); };
-      const visible = () => { if (document.visibilityState === "visible") void refresh(); };
+      const online = () => { void refresh(); };
+      const offline = () => { markOffline(); };
+      const visible = () => {
+        if (document.visibilityState === "visible") void refresh();
+        else clearPollTimer();
+      };
       if (channel) channel.onmessage = changed;
       window.addEventListener("storage", storage);
       window.addEventListener("focus", focus);
+      window.addEventListener("online", online);
+      window.addEventListener("offline", offline);
       document.addEventListener("visibilitychange", visible);
+      if (!isOnline()) markOffline();
       return () => {
+        listening = false;
+        clearPollTimer();
         signalChange = () => {};
         channel?.close();
         window.removeEventListener("storage", storage);
         window.removeEventListener("focus", focus);
+        window.removeEventListener("online", online);
+        window.removeEventListener("offline", offline);
         document.removeEventListener("visibilitychange", visible);
       };
     },
-    dispose: () => { invalidate(); disposed = true; agentEnabledRef.current = false; listeners.clear(); },
+    dispose: () => { listening = false; clearPollTimer(); invalidate(); disposed = true; agentEnabledRef.current = false; listeners.clear(); },
   };
 }
 export type AgentAccessController = ReturnType<typeof createAgentAccessController>;

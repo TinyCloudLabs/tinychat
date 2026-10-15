@@ -2,7 +2,7 @@
 // Tests the C3 capability-off branch (404→unavailable), 401 treatment,
 // network error handling, and the 200+active→enabled / 200+other→available paths.
 
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, vi } from "bun:test";
 import { agentAccessStatusLabel, connectErrorMessage, createAgentAccessController, probeAgentCapability, probeAgentSession } from "./useAgentEnablement.js";
 import { AgentOwnerMismatchError } from "../lib/agentDelegation.js";
 
@@ -121,6 +121,161 @@ function controller(mint: () => Promise<any> = async () => ({ version: 2, delega
 }
 const active = { status: "active", transcriptStatus: "active", revision: "r1" };
 
+function installBrowserEvents() {
+  const names = ["window", "document", "BroadcastChannel"];
+  const descriptors = names.map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)] as const);
+  const browserWindow = new EventTarget() as EventTarget & { navigator: { onLine: boolean }; setTimeout: Window["setTimeout"] };
+  browserWindow.navigator = { onLine: true };
+  browserWindow.setTimeout = ((handler: TimerHandler, timeout?: number) =>
+    globalThis.setTimeout(handler as () => void, timeout)) as Window["setTimeout"];
+  const browserDocument = new EventTarget() as EventTarget & { visibilityState: DocumentVisibilityState };
+  browserDocument.visibilityState = "visible";
+  Object.defineProperty(globalThis, "window", { configurable: true, value: browserWindow });
+  Object.defineProperty(globalThis, "document", { configurable: true, value: browserDocument });
+  Object.defineProperty(globalThis, "BroadcastChannel", { configurable: true, value: undefined });
+  return {
+    window: browserWindow,
+    document: browserDocument,
+    restore() {
+      for (const [name, descriptor] of descriptors) {
+        if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+        else Reflect.deleteProperty(globalThis, name);
+      }
+    },
+  };
+}
+async function flushMicrotasks() {
+  for (let i = 0; i < 8; i++) await Promise.resolve();
+}
+
+describe("agent access connectivity monitoring", () => {
+  it("shows Disconnected immediately offline and probes again online", async () => {
+    vi.useFakeTimers();
+    const browser = installBrowserEvents();
+    let probes = 0;
+    globalThis.fetch = (async () => { probes++; return Response.json(active); }) as typeof fetch;
+    const c = controller();
+    const unlisten = c.listen();
+    try {
+      await c.refresh();
+      expect(c.getSnapshot().capability).toBe("enabled");
+      browser.window.navigator.onLine = false;
+      browser.window.dispatchEvent(new Event("offline"));
+      expect(agentAccessStatusLabel(c.getSnapshot())).toBe("Disconnected");
+      expect(probes).toBe(1);
+
+      browser.window.navigator.onLine = true;
+      browser.window.dispatchEvent(new Event("online"));
+      await flushMicrotasks();
+      expect(probes).toBe(2);
+      expect(c.getSnapshot().capability).toBe("enabled");
+    } finally {
+      unlisten();
+      c.dispose();
+      browser.restore();
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it("re-probes when visible and pauses its timer while hidden", async () => {
+    vi.useFakeTimers();
+    const browser = installBrowserEvents();
+    let probes = 0;
+    globalThis.fetch = (async () => { probes++; return Response.json(active); }) as typeof fetch;
+    const c = controller();
+    const unlisten = c.listen();
+    try {
+      await c.refresh();
+      expect(probes).toBe(1);
+      browser.document.visibilityState = "hidden";
+      browser.document.dispatchEvent(new Event("visibilitychange"));
+      vi.advanceTimersByTime(120_000);
+      expect(probes).toBe(1);
+
+      browser.document.visibilityState = "visible";
+      browser.document.dispatchEvent(new Event("visibilitychange"));
+      await flushMicrotasks();
+      expect(probes).toBe(2);
+      vi.advanceTimersByTime(60_000);
+      expect(probes).toBe(3);
+    } finally {
+      unlisten();
+      c.dispose();
+      browser.restore();
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it("recovers from Agent unavailable on a backed-off visible probe", async () => {
+    vi.useFakeTimers();
+    const browser = installBrowserEvents();
+    let probes = 0;
+    globalThis.fetch = (async () => {
+      probes++;
+      return probes === 1 ? new Response(null, { status: 503 }) : Response.json(active);
+    }) as typeof fetch;
+    const c = controller();
+    const unlisten = c.listen();
+    try {
+      await c.refresh();
+      expect(agentAccessStatusLabel(c.getSnapshot())).toBe("Agent unavailable");
+      vi.advanceTimersByTime(119_999);
+      expect(probes).toBe(1);
+      vi.advanceTimersByTime(1);
+      await flushMicrotasks();
+      expect(probes).toBe(2);
+      expect(c.getSnapshot().capability).toBe("enabled");
+      expect(agentAccessStatusLabel(c.getSnapshot())).toBe("Connected");
+    } finally {
+      unlisten();
+      c.dispose();
+      browser.restore();
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it("backs off consecutive failed probes and resets to one minute after recovery", async () => {
+    vi.useFakeTimers();
+    const browser = installBrowserEvents();
+    let probes = 0;
+    globalThis.fetch = (async () => {
+      probes++;
+      return probes < 3 ? new Response(null, { status: 503 }) : Response.json(active);
+    }) as typeof fetch;
+    const c = controller();
+    const unlisten = c.listen();
+    try {
+      await c.refresh();
+      vi.advanceTimersByTime(119_999);
+      expect(probes).toBe(1);
+      vi.advanceTimersByTime(1);
+      await flushMicrotasks();
+      expect(probes).toBe(2);
+
+      vi.advanceTimersByTime(239_999);
+      expect(probes).toBe(2);
+      vi.advanceTimersByTime(1);
+      await flushMicrotasks();
+      expect(probes).toBe(3);
+      expect(c.getSnapshot().capability).toBe("enabled");
+
+      vi.advanceTimersByTime(59_999);
+      expect(probes).toBe(3);
+      vi.advanceTimersByTime(1);
+      await flushMicrotasks();
+      expect(probes).toBe(4);
+    } finally {
+      unlisten();
+      c.dispose();
+      browser.restore();
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+});
 describe("shared private access controller", () => {
   it("coalesces immediate repeated clicks into one ceremony", async () => {
     const mint = deferred<any>(); let count = 0;
@@ -171,6 +326,7 @@ describe("shared private access controller", () => {
     c.dispose();
   });
   it("broadcasts access invalidation before replacement and disconnect requests", async () => {
+    vi.useFakeTimers();
     const names = ["window", "document", "BroadcastChannel"];
     const descriptors = names.map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)] as const);
     const messages: unknown[] = [];
@@ -181,6 +337,7 @@ describe("shared private access controller", () => {
       close() {}
     }
     Object.defineProperty(globalThis, "window", { configurable: true, value: {
+      navigator: { onLine: true }, setTimeout: globalThis.setTimeout,
       addEventListener() {}, removeEventListener() {},
     } });
     Object.defineProperty(globalThis, "document", { configurable: true, value: {
@@ -219,6 +376,8 @@ describe("shared private access controller", () => {
         if (descriptor) Object.defineProperty(globalThis, name, descriptor);
         else Reflect.deleteProperty(globalThis, name);
       }
+      vi.clearAllTimers();
+      vi.useRealTimers();
     }
   });
 

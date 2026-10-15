@@ -11,6 +11,7 @@ let browser: Browser;
 let server: ReturnType<typeof Bun.serve>;
 let bundle = "";
 let probes = 0;
+let agentSessionStatus = 401;
 
 const BANNER_TEXT = "Connect private agent access";
 
@@ -34,7 +35,9 @@ beforeAll(async () => {
       }
       if (url.pathname === "/api/agent/session") {
         probes++;
-        return new Response("unauthorized", { status: 401 });
+        return agentSessionStatus === 200
+          ? Response.json({ status: "active", transcriptStatus: "active", revision: "r1" })
+          : new Response("unauthorized", { status: 401 });
       }
       return new Response('<!doctype html><html><body><div id="root"></div><script type="module" src="/bundle.js"></script></body></html>', {
         headers: { "content-type": "text/html" },
@@ -57,7 +60,7 @@ async function openAt(path: string): Promise<Page> {
   const page = await browser.newPage();
   page.on("pageerror", (error) => console.error("Browser error:", error.message));
   await page.goto(`http://127.0.0.1:${server.port}${path}`);
-  await page.waitForFunction(() => window.bannerHarness?.capability() === "available");
+  await page.waitForFunction(() => ["available", "enabled"].includes(window.bannerHarness?.capability() ?? ""));
   return page;
 }
 
@@ -99,6 +102,25 @@ describe.serial("agent access banner across chat navigation", () => {
     expect(await page.evaluate(() => window.bannerHarness!.providerChildMounts())).toBe(1);
     expect(probes).toBe(1);
     await page.close();
+  });
+
+  test("updates the visible chat indicator immediately offline and probes again online", async () => {
+    agentSessionStatus = 200;
+    let page: Page | undefined;
+    try {
+      page = await openAt("/chat");
+      await page.getByText("Agent access: Connected").waitFor();
+      await page.context().setOffline(true);
+      await page.getByText("Agent access: Disconnected").waitFor();
+      expect(probes).toBe(1);
+
+      await page.context().setOffline(false);
+      await page.getByText("Agent access: Connected").waitFor();
+      expect(probes).toBe(2);
+    } finally {
+      await page?.close();
+      agentSessionStatus = 401;
+    }
   });
 
 
