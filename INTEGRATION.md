@@ -46,6 +46,7 @@ Integration branch: `dev/0.8.0`
 | `origin/main` | e137f9fb | 130aa8b3 | No | Refreshed through #411, including the approved TC-641 consent-copy status and its pinned backend test. |
 | #413 | a3a1e771 | 2f69e54a | No | Clean TC-1185 copy-only merge: read-only space-lane activity no longer reports that another operation is blocking the note. TC-1185 problem 1, the post-save full-transcript load error, is not addressed by #413 and remains open. |
 | #414 | 850878a6 | d438e3d9 | No | Clean merge of the reviewed TC-1192 agent-sync continuation fix after all required checks passed; focused connector tests passed 17/17. |
+| #415 | 187227da | eddf432d | No | Clean TC-1185 Retry merge: Try again re-reads the current committed transcript body after an absent read. The original post-save full-transcript load error is not addressed by #415 and remains open. |
 
 ## Test Fixes (2026-10-14)
 
@@ -87,11 +88,13 @@ After merging origin/main (TC-1128, #387, #392, 45d16e58) and PR #386 (TC-1108 p
 | Me/Them metadata after reload and receipt save settlement | #350 merge (`7b36ac1a`) | Existing-session adoption and durable Stop could omit authoritative native channels, while no-pipeline `SAVED` events overwrote the local receipt's channels after save settlement. | Restore native channels during adoption/Stop and carry the matching recording's channels through every `LOCAL_COMMITTED`/`SAVED` receipt transition, including Save now. | #403 `b00ebd38`; #350 `7f5fb1cd` |
 | Backend transcript-delivery TypeScript | #394 re-land (`167d4786`) | TC-760 narrowed the shared `gaps` contract to structured transcript gaps, but the existing backend API type still exposed `unknown[]`, so the unchanged delivery call no longer typechecked. | Give the backend transcript response the same `{ start, end, speaker_name }[]` gap shape as the approved shared contract. | #394 `f4a21845`; #394 re-land `167d4786` |
 | Dynamic recorder-device copy after local-cache tests | #373 merge (`db5e604a`) | #373's authenticated audio-receipt test rendered `AudioCacheSettings`, which installs the native capture engine singleton, but its cleanup restored only the plugin binding. A later mode-copy test therefore observed “this phone” instead of its isolated browser fixture. | Reset the capture-engine singleton in the owning test's `afterEach`; the full suite is order-independent again without changing product copy. | #373 `c80f6c93`; existing `__resetCaptureEngineForTests` isolation contract |
+| #415 post-merge Library retry fixture | #415 merge (`eddf432d`) | The new standalone retry test replaced process-wide DOM, IndexedDB, and native VoiceNotes bindings without restoring them; the post-merge full suite then failed five existing tests that inherited those fixtures. | Capture and restore every replaced global plus the original native VoiceNotes binding after the file. | #415 `187227da`; existing `useLibrary.test.tsx` isolation contract |
 
 ## Current Status
 
-- **Verified code head**: `d438e3d9` (#414 merged)
-- **Frontend unit suite**: 5128 pass, 4 skip, 0 fail (5132 tests, 343 files)
+- **Verified code head**: `09b78ae5` (#415 merged; post-merge retry fixture isolated)
+- **Frontend unit suite**: 5129 pass, 4 skip, 0 fail (5133 tests, 344 files)
+- **#415 scoped tests**: 54 pass, 0 fail across `useLibrary.retry.test.tsx` and `useLibrary.test.tsx`
 - **#413 scoped tests**: 198 pass, 0 fail across `useLibrary.test.tsx` and `notePipeline.test.ts`
 - **#414 scoped tests**: 17 pass, 0 fail in `test/connectors/agent-sync.e2e.test.ts`
 - **Recorded `origin/main` `b9c538ee` baseline**: 4735 pass, 4 skip, 0 fail (4739 tests, 326 files)
