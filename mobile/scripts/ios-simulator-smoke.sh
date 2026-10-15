@@ -93,7 +93,7 @@ trap cleanup_smoke EXIT
 safe_log_lines() {
   awk '{
     time = substr($0, 1, 19)
-    if (substr(time, 5, 1) != "-") time = "timestamp-unavailable"
+    if (time !~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9]$/) time = "timestamp-unavailable"
     if (index($0, "EXO_WEB_APP_READY")) print time " EXO_WEB_APP_READY"
     else if (index($0, "EXO_SMOKE ")) print time " EXO_SMOKE"
     else if (index($0, "EXO_LOCATION_SMOKE ")) print time " EXO_LOCATION_SMOKE"
@@ -247,11 +247,11 @@ wait "$stream_pid" 2>/dev/null || true
 stream_pid=""
 safe_log_lines "$private_logs/stream.log" "$out/app-unified-stream.log"
 safe_log_lines "$private_logs/unified.log" "$out/unified.log"
-crashes=$(find "$reports" -newer "$marker" -type f \( -name 'App-*' -o -name 'App_*' -o -name 'ExoWidgets*' \) 2>/dev/null || true)
-if [ -n "$crashes" ]; then
-  fail "crash report(s): $(echo "$crashes" | xargs -n1 basename | tr '\n' ' ')"
-  mkdir -p "$out/crashes"
-  echo "$crashes" | while read -r file; do cp "$file" "$out/crashes/"; done
+crash_count=$(find "$reports" -newer "$marker" -type f \( -name 'App-*' -o -name 'App_*' -o -name 'ExoWidgets*' \) \
+  -exec sh -c 'for report do printf x; done' sh {} + 2>/dev/null | wc -c | tr -d '[:space:]')
+if [ "$crash_count" -gt 0 ]; then
+  fail "crash report(s) detected: $crash_count"
+  printf 'count=%s\n' "$crash_count" >"$out/crash-reports.txt"
 fi
 
 checks=()

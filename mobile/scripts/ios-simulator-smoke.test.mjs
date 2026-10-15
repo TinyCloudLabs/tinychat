@@ -38,6 +38,12 @@ if (op === 'launch') {
   if (mode === 'mounted') console.log('EXO_SMOKE ' + process.env.FAKE_GOOD_PROBE);
   if (mode === 'early-then-mounted' || mode === 'late-mounted') setTimeout(() => { console.log('EXO_WEB_APP_READY'); console.log('EXO_SMOKE ' + process.env.FAKE_GOOD_PROBE); }, 2600);
   console.log('SENSITIVE_FAKE_USER_CONTENT');
+  if (process.env.FAKE_BAD_PREFIX === '1') console.log('FAKE-PRIVATE-ABCD EXO_WEB_APP_READY');
+  if (process.env.FAKE_CRASH === '1') {
+    const reports = path.join(process.env.HOME, 'Library/Logs/DiagnosticReports');
+    fs.mkdirSync(reports, { recursive: true });
+    fs.writeFileSync(path.join(reports, 'App-synthetic.ips'), 'SYNTHETIC_CRASH_PRIVATE');
+  }
   if (process.env.FAKE_EXIT_AFTER_MS) setTimeout(() => {
     fs.writeFileSync(path.join(state, 'exited'), '1');
     process.exit(0);
@@ -66,7 +72,7 @@ if (op === 'launch') {
 }
 `;
 
-function runSmoke({ mode, exitAfterMs, hideLaunchctl = false, timeout = 6 }) {
+function runSmoke({ mode, exitAfterMs, hideLaunchctl = false, badPrefix = false, crash = false, timeout = 6 }) {
   const dir = mkdtempSync(join(tmpdir(), "exo-smoke-test-"));
   const bin = join(dir, "bin");
   const app = join(dir, "App.app");
@@ -86,13 +92,15 @@ function runSmoke({ mode, exitAfterMs, hideLaunchctl = false, timeout = 6 }) {
     FAKE_EARLY_PROBE: JSON.stringify(earlyProbe),
     FAKE_EXIT_AFTER_MS: exitAfterMs ? String(exitAfterMs) : "",
     FAKE_HIDE_LAUNCHCTL: hideLaunchctl ? "1" : "0",
+    FAKE_BAD_PREFIX: badPrefix ? "1" : "0",
+    FAKE_CRASH: crash ? "1" : "0",
     EXO_CAPTURE_SMOKE: "0", EXO_LOCATION_SMOKE: "0",
     SMOKE_TIMEOUT: String(timeout), SMOKE_SETTLE: "0",
   };
   try {
     const result = spawnSync("bash", [smoke, "run", app, out], { env, timeout: 20000, encoding: "utf8" });
     const artifact = (name) => { try { return readFileSync(join(out, name), "utf8"); } catch { return ""; } };
-    const files = ["../events", "launch-timeline.log", "liveness.log", "app-unified-stream.log", "unified.log", "console.log", "summary.md"];
+    const files = ["../events", "launch-timeline.log", "liveness.log", "app-unified-stream.log", "unified.log", "console.log", "summary.md", "crashes/App-synthetic.ips", "crash-reports.txt"];
     const snapshots = new Map(files.map((name) => [name, artifact(name)]));
     return {
       result, events: snapshots.get("../events").trim().split("\n"),
@@ -140,4 +148,21 @@ test("a mounted probe emitted after the deadline remains a failure", { timeout: 
   const { result, artifact } = runSmoke({ mode: "late-mounted", timeout: 2 });
   assert.equal(result.status, 1, result.stdout + result.stderr);
   assert.match(artifact("summary.md"), /no EXO_SMOKE probe line within 2s/);
+});
+
+test("sanitized artifacts and CI output reject a marker-bearing non-timestamp prefix", { timeout: 20000 }, () => {
+  const { result, artifact } = runSmoke({ mode: "mounted", badPrefix: true });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  for (const content of [artifact("console.log"), artifact("summary.md"), result.stdout, result.stderr]) {
+    assert.doesNotMatch(content, /FAKE-PRIVATE-ABCD/, "synthetic non-timestamp prefix escaped");
+  }
+  assert.match(artifact("console.log"), /timestamp-unavailable EXO_WEB_APP_READY/);
+});
+
+test("crash still fails without publishing raw report contents", { timeout: 20000 }, () => {
+  const { result, artifact } = runSmoke({ mode: "mounted", crash: true });
+  assert.equal(result.status, 1, "a crash report must fail the smoke");
+  assert.equal(artifact("crashes/App-synthetic.ips"), "", "raw crash report must not be published");
+  assert.match(artifact("crash-reports.txt"), /^count=1$/m);
+  assert.doesNotMatch(artifact("summary.md") + result.stdout, /SYNTHETIC_CRASH_PRIVATE/);
 });
