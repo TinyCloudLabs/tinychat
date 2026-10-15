@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createFakeVoiceNotes } from "@/lib/voiceNotes/fakeVoiceNotes";
 import { __setVoiceNotesForTests } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { isOnDeviceReady, type OnDeviceSttStatus } from "@/lib/voiceNotes/onDeviceStt";
+import { FINAL_COPY } from "./finalCopy";
 import {
   availableStops,
   identifySpeakersControl,
@@ -93,6 +94,19 @@ describe("transcription modes availability", () => {
 
   test("Audio only is available", () => {
     expect(modeAvailability("skip", "phone")).toEqual({ available: true });
+  });
+
+  test("Local shows shell-specific copy and names the selected Mac model", () => {
+    const local = modeStop("local");
+    const context = { modelName: "Example Model" };
+    const captions = shells.map((shell) => local.captions[shell]);
+    const explanations = shells.map((shell) => local.explanations[shell](context));
+
+    expect(new Set(captions).size).toBe(shells.length);
+    expect(new Set(explanations).size).toBe(shells.length);
+    expect(local.explanations.desktop(context)).toContain(context.modelName);
+    expect(local.captions.web).toBe(FINAL_COPY.needsApp);
+    expect(local.explanations.web(context)).toBe(FINAL_COPY.modes.localWebExplanation);
   });
 
   test("unknown mode ids fail with a typed error", () => {
