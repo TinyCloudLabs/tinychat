@@ -1241,7 +1241,7 @@ describe("transcript normalization", () => {
 });
 
 /** Save a note whose audio is already in memory (the phone reads it part by part instead). */
-const saveVoiceNote = (tcw: never, recording: typeof RECORDING, audio: VoiceNoteAudio, platform: string) =>
+const saveVoiceNote = (tcw: TestTcw, recording: typeof RECORDING, audio: VoiceNoteAudio, platform: string) =>
   storeVoiceNote(tcw, recording, voiceNoteAudioSourceFromBase64(audio), platform, {}, true);
 
 /** The connector store on real SQLite plus in-memory KV (strings, and raw bytes for audio parts). */
@@ -7405,11 +7405,13 @@ async function cSetup() {
   _resetConnectorSchemaMemoForTests();
   const space = sqliteSpace(); const tcw = typedTcw(space);
   (tcw as unknown as {spaceId:string}).spaceId = "space:c-evidence";
+  const spaceId = tcw.spaceId;
+  if (!spaceId) throw new Error("synthetic space missing");
   const unmount = mountVoiceNoteAccount(tcw.did);
   expect((await saveVoiceNote(tcw, RECORDING, AUDIO, "ios")).ok).toBe(true);
   const env = newIdbEnv();
   const store = () => createHeldResultStore(tcw.did, { env, isSignedIn: async()=>true });
-  const input = (rev=1, variant="original") => ({ version:1 as const, did:tcw.did, spaceId:tcw.spaceId,
+  const input = (rev=1, variant="original") => ({ version:1 as const, did:tcw.did, spaceId,
     sourceId:"rec-1", engine:"private-cloud" as const, transcript:cTranscript(rev,variant),
     provider:{transcriptionId:ID}, intent:{kind:"unknown" as const} });
   return {space,tcw,env,store,input,unmount};
@@ -7447,11 +7449,13 @@ async function cSetup() {
   _resetConnectorSchemaMemoForTests();
   const space = sqliteSpace(); const tcw = typedTcw(space);
   (tcw as unknown as {spaceId:string}).spaceId = "space:c-evidence";
+  const spaceId = tcw.spaceId;
+  if (!spaceId) throw new Error("synthetic space missing");
   const unmount = mountVoiceNoteAccount(tcw.did);
   expect((await saveVoiceNote(tcw, RECORDING, AUDIO, "ios")).ok).toBe(true);
   const env = newIdbEnv();
   const store = () => createHeldResultStore(tcw.did, { env, isSignedIn: async()=>true });
-  const input = (rev=1, variant="original") => ({ version:1 as const, did:tcw.did, spaceId:tcw.spaceId,
+  const input = (rev=1, variant="original") => ({ version:1 as const, did:tcw.did, spaceId,
     sourceId:"rec-1", engine:"private-cloud" as const, transcript:cTranscript(rev,variant),
     provider:{transcriptionId:ID}, intent:{kind:"unknown" as const} });
   return {space,tcw,env,store,input,unmount};
@@ -7683,11 +7687,13 @@ async function cSetup() {
   _resetConnectorSchemaMemoForTests();
   const space = sqliteSpace(); const tcw = typedTcw(space);
   (tcw as unknown as {spaceId:string}).spaceId = "space:c-evidence";
+  const spaceId = tcw.spaceId;
+  if (!spaceId) throw new Error("synthetic space missing");
   const unmount = mountVoiceNoteAccount(tcw.did);
   expect((await saveVoiceNote(tcw, RECORDING, AUDIO, "ios")).ok).toBe(true);
   const env = newIdbEnv();
   const store = () => createHeldResultStore(tcw.did, { env, isSignedIn: async()=>true });
-  const input = (rev=1, variant="original") => ({ version:1 as const, did:tcw.did, spaceId:tcw.spaceId,
+  const input = (rev=1, variant="original") => ({ version:1 as const, did:tcw.did, spaceId,
     sourceId:"rec-1", engine:"private-cloud" as const, transcript:cTranscript(rev,variant),
     provider:{transcriptionId:ID}, intent:{kind:"unknown" as const} });
   return {space,tcw,env,store,input,unmount};
@@ -7810,12 +7816,14 @@ describe("C:R3 EP1 real locked held recovery", () => {
       _resetConnectorSchemaMemoForTests();
       const space = sqliteSpace(), tcw = typedTcw(space);
       (tcw as unknown as { spaceId: string }).spaceId = "space:c-evidence";
+      const spaceId = tcw.spaceId;
+      if (!spaceId) throw new Error("synthetic space missing");
       unmount = mountVoiceNoteAccount(tcw.did);
       expect((await saveVoiceNote(tcw, RECORDING, AUDIO, "ios")).ok).toBe(true);
       const env = newIdbEnv();
       const first = createHeldResultStore(tcw.did, { env, isSignedIn: async () => true });
       const second = createHeldResultStore(tcw.did, { env, isSignedIn: async () => true });
-      await first.hold({ version: 1, did: tcw.did, spaceId: tcw.spaceId, sourceId: "rec-1",
+      await first.hold({ version: 1, did: tcw.did, spaceId, sourceId: "rec-1",
         engine: "private-cloud", transcript: cTranscript, provider: { transcriptionId: ID }, intent: { kind: "unknown" } });
       const storage = memoryStorage(), pending = localStorageVoiceNotePendingStore(tcw.did, storage);
       pending.write("rec-1", { attemptId: "00000000-0000-4000-8000-00000000abcd", transcriptionId: ID });
@@ -7920,7 +7928,7 @@ describe("C:R3 EP1 real locked held recovery", () => {
       replayArmed = true;
       for (const item of scheduled.splice(0)) item.callback();
       await bounded(replayListed.promise, "real second replay list");
-      expect(replayRows).toEqual([]);
+      expect<Awaited<ReturnType<typeof second.listHeld>> | null>(replayRows).toEqual([]);
       for (let i = 0; i < 60; i++) await new Promise<void>((resolve) => setTimeout(resolve, 0));
       expect({ saveDelegations, casAttempts, successfulCas, removesAtCommit })
         .toEqual({ saveDelegations: 1, casAttempts: 1, successfulCas: 1, removesAtCommit: 1 });
