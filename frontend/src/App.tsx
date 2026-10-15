@@ -32,6 +32,7 @@ import { withEncryptionDecryptGrant } from "./lib/connectors/encryptionGrant";
 import { uploadRunner } from "./lib/audioUpload";
 import { openkeyPasskeysSupported } from "./lib/openkeyPasskeys";
 import { useVisualViewportFit } from "./lib/useVisualViewport";
+import { createWebSignInPrefetch, type WebSignInPrefetch } from "./lib/webSignInPrefetch";
 import { ChatWorkspace } from "./chat/ChatWorkspace";
 import { ModelPicker, type ModelOption } from "./chat/ModelPicker";
 import { UsageIndicator } from "./chat/UsageIndicator";
@@ -821,6 +822,7 @@ export function App() {
   }, [state]);
 
   const signIn = useCallback(async (hints?: NativeSignInHints) => {
+    let prefetch: WebSignInPrefetch | undefined;
     setError(null);
     // Each tab's remembered place belongs to the account that left it.
     resetNavigationMemory();
@@ -847,6 +849,7 @@ export function App() {
         void ensureTranscriptWriterDelegation({ tcw: readyTcw, backendUrl: BACKEND_URL, sessionStore: sessionStoreRef.current });
         return;
       }
+      prefetch = createWebSignInPrefetch(BACKEND_URL, { requestNonce, loadManifest: loadAppManifest });
       const { address: connectedAddress, openkey, web3Provider } = await connectWallet({
         appName: APP_NAME,
         host: OPENKEY_HOST,
@@ -855,11 +858,9 @@ export function App() {
       openkeyRef.current = openkey;
       setAddress(connectedAddress);
 
-      const [nonce, manifest] = await Promise.all([
-        requestNonce(BACKEND_URL, connectedAddress),
-        loadAppManifest(`${BACKEND_URL}/api/manifest`),
-      ]);
+      const manifest = await prefetch.manifest();
 
+      const nonce = await prefetch.nonceForSigning(connectedAddress);
       setState("signing");
       // setupSpaceSession + ensureSpaceExists happen inside the SDK when
       // autoCreateSpace is true; the manifest grants tinycloud.kv on the space.
@@ -880,16 +881,19 @@ export function App() {
       };
       const { tcw: signedTcw, session } = LOCAL_VALIDATION
         ? await (async () => {
-            const localTcw = createTinyCloudWeb(web3Provider, { ...signInConfig, siweConfig: { nonce } });
+            const localTcw = createTinyCloudWeb(prefetch.guardSigning(web3Provider), { ...signInConfig, siweConfig: { nonce } });
             await prepareLocalSignIn(localTcw);
             await localTcw.clearPersistedSession(connectedAddress);
             return { tcw: localTcw, session: await localTcw.signIn({ nonce }) };
           })()
-        : await createAndSignIn(web3Provider, signInConfig);
+        : await createAndSignIn(prefetch.guardSigning(web3Provider), signInConfig);
 
       // Exchange the SIWE message for a backend Bearer token (for /api/chat).
       const verified = await verifySession(BACKEND_URL, session.siwe, session.signature);
       sessionStoreRef.current.setSession(verified.token, verified.expiresIn, connectedAddress);
+      // The SDK keeps this provider for later user-authorized operations;
+      // only the verified login's signatures use the prefetched nonce guard.
+      prefetch.complete();
 
       setTcw(LOCAL_VALIDATION ? useLocalCanvasStorage(useLocalThreadStorage(signedTcw)) : signedTcw);
       setDid(signedTcw.did ?? null);
@@ -904,6 +908,10 @@ export function App() {
       }
       setError(describeAuthFailure(caught));
       setState("recoverableError");
+    } finally {
+      if (prefetch) {
+        prefetch.cancel();
+      }
     }
   }, []);
 
