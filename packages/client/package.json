@@ -28,7 +28,7 @@
   },
   "devDependencies": {
     "@openkey/sdk": "0.12.0",
-    "@tinycloud/web-sdk": "3.2.1",
+    "@tinycloud/web-sdk": "3.2.6-beta.2",
     "typescript": "^5.7.0"
   }
 }

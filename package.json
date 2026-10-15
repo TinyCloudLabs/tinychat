@@ -14,8 +14,8 @@
   "overrides": {
     "@tinycloud/sdk-core": "3.2.1",
     "@tinycloud/sdk-services": "3.2.1",
-    "@tinycloud/web-sdk": "3.2.1",
-    "@tinycloud/node-sdk": "3.2.1",
+    "@tinycloud/web-sdk": "3.2.6-beta.2",
+    "@tinycloud/node-sdk": "3.2.6-beta.2",
     "@tinycloud/node-sdk-wasm": "1.7.7",
     "@tinycloud/web-sdk-wasm": "1.7.6",
     "ethers": "6.16.0",
@@ -53,7 +53,7 @@
   "devDependencies": {
     "@changesets/cli": "3.0.3",
     "@eslint/js": "^10.0.1",
-    "@tinycloud/node-sdk": "3.2.1",
+    "@tinycloud/node-sdk": "3.2.6-beta.2",
     "eslint": "^10.1.0",
     "husky": "^9.1.7",
     "portless": "^0.13.0",
