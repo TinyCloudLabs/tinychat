@@ -326,6 +326,19 @@ describe("a voice note's transcription", () => {
     expect(live).toContain("Manage storage");
     expect(live).toContain("Transcribe again");
   });
+  test("TC-1206: a persisted storage-full transcript takes precedence over a local Private-choice failure", () => {
+    const html = render({
+      metadata: { status: "ok", metadata: { transcription_outcome: "failed", transcription_error_code: "storage_full" } },
+      transcript: { status: "absent" },
+      transcription: transcription({ jobs: new Map([["rec-1", {
+        kind: "failed", code: "private_choice_persistence_failed", message: "Could not save this Private choice.",
+        retryable: true, reference: null,
+      }]]) }),
+    });
+    expect(html).toContain("Transcribe it again when space is available.");
+    expect(html).toContain("Manage storage");
+    expect(html).not.toContain("Could not save this Private choice");
+  });
   test("a persisted provider failure keeps its private-cloud re-upload sentence", () => {
     const html = render({
       metadata: { status: "ok", metadata: {
