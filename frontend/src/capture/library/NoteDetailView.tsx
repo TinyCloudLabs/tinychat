@@ -28,7 +28,7 @@ import type { AppPlatform } from "@/lib/platform";
 import { activityForNote, deviceName, noteStatus } from "../activity/activitySelector";
 import type { LocalTranscript } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { transcriptionStatusText } from "@/lib/voiceNotes/voiceNoteTranscription";
-import { storageFullTranscriptCopy, TRANSCRIPT_STORAGE_FULL_CODE, transcriptionErrorCopy, voiceNoteTranscriptionFailureForCode } from "@/lib/voiceNotes/transcriptionErrors";
+import { storageFullPrecedesChoiceFailure, storageFullTranscriptCopy, TRANSCRIPT_STORAGE_FULL_CODE, transcriptionErrorCopy, voiceNoteTranscriptionFailureForCode } from "@/lib/voiceNotes/transcriptionErrors";
 import { localTranscriptToSave, voiceNoteTitle, voiceNoteTranscriptState, VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
 import { PAGE_COLUMN, PageHeader } from "@/shell/PageHeader";
 import { detailWhen, formatSpokenDuration } from "./formatters";
@@ -184,12 +184,14 @@ export function VoiceNoteTranscriptionStatus(props: {
     );
   }
   if (job?.kind === "failed") {
-    const failure = voiceNoteTranscriptionFailureForCode(job.code);
-    const storageFull = job.code === TRANSCRIPT_STORAGE_FULL_CODE;
+    const code = storageFullPrecedesChoiceFailure(props.outcome, props.errorCode, job.code)
+      ? TRANSCRIPT_STORAGE_FULL_CODE : job.code;
+    const failure = voiceNoteTranscriptionFailureForCode(code);
+    const storageFull = code === TRANSCRIPT_STORAGE_FULL_CODE;
     return (
       <div className="flex flex-col gap-2" data-testid="voice-note-transcription-failed">
         <p role="alert" className="min-w-0 text-callout text-destructive">
-          {storageFull ? storageFullTranscriptCopy(item.localAudioReady === true) : (transcriptionErrorCopy(job.code) ?? job.message)}
+          {storageFull ? storageFullTranscriptCopy(item.localAudioReady === true) : (transcriptionErrorCopy(code) ?? job.message)}
         </p>
         {job.reference && <ReferenceDetails reference={job.reference} />}
         {storageFull

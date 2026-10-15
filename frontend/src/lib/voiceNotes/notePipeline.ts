@@ -14,7 +14,7 @@ import {
   deviceName,
   percentText,
 } from "./notePipelineCopy";
-import { TRANSCRIPT_STORAGE_FULL_CODE } from "./transcriptionErrors";
+import { storageFullPrecedesChoiceFailure, TRANSCRIPT_STORAGE_FULL_CODE } from "./transcriptionErrors";
 import { STORAGE_FULL_TRANSCRIPT_NOT_SAVED_LINE, STORAGE_FULL_TRANSCRIPT_NOT_SAVED_LOCAL_AUDIO_LINE } from "@/lib/storageStatus";
 
 export type PipelineDevice = "phone" | "mac" | "iphone" | "android" | "browser";
@@ -382,6 +382,9 @@ function transcriptStep(input: NotePipelineInput): Result {
   if (input.route === "private-cloud" && !input.space.saved) return { state: "waiting", caption: PRIVATE_COPY.afterUpload };
   if (inSpace !== null) return { state: "done", sublabel: inSpace === "no_speech" ? TRANSCRIPT_COPY.noSpeechInSpace : TRANSCRIPT_COPY.savedInSpace };
   if (input.route === "private-cloud" && cloud === null && input.transcript.cloudIdle === true) return { state: "skipped" };
+  if (input.route === "private-cloud" && cloud?.kind === "failed"
+    && storageFullPrecedesChoiceFailure(input.transcript.persistedState, input.transcript.errorCode, cloud.code))
+    return { state: "blocked", blocker: storageFullBlocker(input.transcript.localAudioReady === true) };
   if (input.route === "private-cloud") return cloudStep(cloud, input.space.saved, input.transcript.spaceReading === true ? checking(input.transcript) : null, input.transcriptProvider, input.transcript.localAudioReady === true);
   if (onDevice === null) return input.space.saved ? { state: "waiting", caption: input.transcript.spaceReading === true ? checking(input.transcript) : LOCAL_COPY.notStarted } : { state: "upcoming" };
   return onDeviceStep(input, onDevice);

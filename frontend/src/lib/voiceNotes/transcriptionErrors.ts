@@ -52,8 +52,17 @@ const TRANSCRIPTION_ERROR_COPY: Readonly<Record<string, string>> = {
   transcript_incomplete: "Private Transcription returned a transcript that may be incomplete. Try again later.",
   [TRANSCRIPT_STORAGE_FULL_CODE]: STORAGE_FULL_TRANSCRIPT_NOT_SAVED_LINE,
   held_result_persistence_failed: "The finished transcript could not be kept on this device. The Private job remains available for 24 hours; retry now.",
-  voice_note_account_mismatch: "This voice note belongs to a different account. Switch accounts and retry there."
+  private_choice_persistence_failed: "Could not save this Private choice on this device. Check storage and retry.",
+  voice_note_account_mismatch: "This voice note belongs to a different account. Switch accounts and retry there.",
 };
+
+/** A persisted storage refusal remains the actionable blocker when local choice cleanup also fails. */
+export function storageFullPrecedesChoiceFailure(
+  outcome: string | undefined, persistedCode: string | null | undefined, localCode: string,
+): boolean {
+  return outcome === "failed" && persistedCode === TRANSCRIPT_STORAGE_FULL_CODE
+    && localCode === "private_choice_persistence_failed";
+}
 
 export function transcriptionErrorCopy(code: string): string | undefined {
   return TRANSCRIPTION_ERROR_COPY[code];

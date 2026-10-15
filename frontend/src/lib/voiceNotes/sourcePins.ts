@@ -33,7 +33,8 @@ export function beginPrivateChoiceIntent(owner: string, id: string, override?: S
   const intent = { intentId: newChoiceIntentId(), limitBlocked: false };
   if (!writeChoiceIntent(owner, id, store, intent)) {
     unverifiedChoiceIntents.add(key);
-    return markChoiceFailClosed(owner, id, store, intent);
+    markChoiceFailClosed(owner, id, store, intent);
+    return false;
   }
   if (clearChoiceFailClosed(owner, id, store)) unverifiedChoiceIntents.delete(key);
   else unverifiedChoiceIntents.add(key);

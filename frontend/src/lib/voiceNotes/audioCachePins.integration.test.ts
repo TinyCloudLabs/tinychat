@@ -758,9 +758,7 @@ for (const fileBacked of [false, true]) {
           }
           setItem(key, value);
         };
-        expect(transcriber.transcribePrivately(h.sourceId, 1, h.bytes.length)).toEqual({
-          kind: "bytes", limitBytes: 16, sizeBytes: h.bytes.length,
-        });
+        expect(transcriber.transcribePrivately(h.sourceId, 1, h.bytes.length)).toBe("choice-persistence-failed");
         expect(failedFirstIntentWrite).toBe(true);
 
         expect(await isSourcePinned(DID, h.sourceId)).toBe(true);
