@@ -53,6 +53,7 @@ Integration branch: `dev/0.8.0`
 | #424 | dcc7c468 | 1e67e03f | No | Clean merge of the approved TC-1183 web sign-in prefetch after all required checks passed; nonce and manifest prefetch retain freshness gating, and focused prefetch/encryption/boot tests passed 22/22. |
 | #427 | 272e4022 | 4bfad174 | No | Clean test-only merge of the approved TC-1140 Retry-After clock stabilization after every required check passed; the focused transcription suite passed 228/228. |
 | #401 | fcbab307 | 10d68fbe | No | Clean merge of the approved storage-full handling after #427: storage state is scoped to the active session, quota-blocked work pauses for recovery, and Manage storage actions are available on supported surfaces. The current-main TC-1201 auth files remain unchanged. |
+| #426 | ecb4506a | 2d49064c | No | Clean merge of the refreshed approved TC-1206 fail-closed Private-choice persistence fix after Astra's exact-head approval and every required check passed; the head already merged current dev and retained #401 storage-full behavior. Focused choice, pipeline, transcription, cache-pin, and detail-view tests passed 554/554. |
 
 ## Test Fixes (2026-10-14)
 
@@ -98,8 +99,8 @@ After merging origin/main (TC-1128, #387, #392, 45d16e58) and PR #386 (TC-1108 p
 
 ## Current Status
 
-- **Verified code head**: `10d68fbe` (#401 merged after #427)
-- **Frontend unit suite**: 5364 pass, 4 skip, 0 fail (5368 tests, 355 files)
+- **Verified code head**: `2d49064c` (#426 merged after #401)
+- **Frontend unit suite**: 5374 pass, 4 skip, 0 fail (5378 tests, 355 files)
 - **#415 scoped tests**: 54 pass, 0 fail across `useLibrary.retry.test.tsx` and `useLibrary.test.tsx`
 - **#413 scoped tests**: 198 pass, 0 fail across `useLibrary.test.tsx` and `notePipeline.test.ts`
 - **#414 scoped tests**: 17 pass, 0 fail in `test/connectors/agent-sync.e2e.test.ts`
@@ -109,6 +110,7 @@ After merging origin/main (TC-1128, #387, #392, 45d16e58) and PR #386 (TC-1108 p
 - **#424 scoped tests**: 22 pass, 0 fail across web sign-in prefetch, encryption-grant, and boot-surface files
 - **#427 scoped tests**: 228 pass, 0 fail in `voiceNoteTranscription.test.ts`
 - **#401 scoped tests**: 67 pass, 0 fail across nine storage-status, recovery, thread-store, and UI files
+- **#426 scoped tests**: 554 pass, 0 fail across five Private-choice, pipeline, transcription, cache-pin, and detail-view files
 - **Recorded `origin/main` `b9c538ee` baseline**: 4735 pass, 4 skip, 0 fail (4739 tests, 326 files)
 - **TypeScript**: pinned TypeScript 5.9.3, `frontend/node_modules/.bin/tsc --noEmit -p frontend/tsconfig.json`, 0 errors
 - **CI frontend lint**: `bunx eslint frontend test`, 0 errors

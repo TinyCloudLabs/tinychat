@@ -362,14 +362,19 @@ export function localStorageVoiceNotePendingStore(
 /** Notes the user explicitly moved to private cloud from another committed mode (per account). */
 export interface VoiceNotePrivateChoiceStore {
   has(sourceId: string): boolean;
-  add(sourceId: string): void;
-  remove(sourceId: string): void;
+  add(sourceId: string): boolean;
+  remove(sourceId: string): boolean;
   ids(): string[];
 }
 
 export function memoryVoiceNotePrivateChoiceStore(): VoiceNotePrivateChoiceStore {
   const set = new Set<string>();
-  return { has: (id) => set.has(id), add: (id) => void set.add(id), remove: (id) => void set.delete(id), ids: () => [...set] };
+  return {
+    has: (id) => set.has(id),
+    add: (id) => { set.add(id); return true; },
+    remove: (id) => set.delete(id) || !set.has(id),
+    ids: () => [...set],
+  };
 }
 
 /** Without it a relaunch would treat the user's choice as an unauthorized leftover and delete its job. */
@@ -378,34 +383,46 @@ export function localStorageVoiceNotePrivateChoiceStore(
   storage: KeyValueStorage | undefined = globalThis.localStorage,
 ): VoiceNotePrivateChoiceStore {
   const key = accountStorageKey(VOICE_NOTE_PRIVATE_CHOICES_KEY, accountDid);
-  const read = (): string[] => {
+  const read = (): string[] | null => {
     try {
-      const parsed = JSON.parse(storage?.getItem(key) ?? "null") as unknown;
-      return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === "string") : [];
+      const raw = storage?.getItem(key);
+      if (raw === null || raw === undefined) return [];
+      const parsed = JSON.parse(raw) as unknown;
+      return Array.isArray(parsed) && parsed.every((id) => typeof id === "string") ? parsed : null;
     } catch {
-      return [];
+      return null;
     }
   };
-  const write = (ids: string[]) => {
+  const write = (ids: string[]): boolean => {
+    if (!storage) return false;
+    const expected = ids.length === 0 ? null : JSON.stringify(ids);
     try {
-      if (ids.length === 0) storage?.removeItem(key);
-      else storage?.setItem(key, JSON.stringify(ids));
+      if (expected === null) storage.removeItem(key);
+      else storage.setItem(key, expected);
     } catch {
-      // Best-effort: the choice then lasts for this session only.
+      // Readback decides whether a storage exception happened before or after the durable write.
     }
+    try { return storage.getItem(key) === expected; }
+    catch { return false; }
   };
   return {
-    has: (id) => read().includes(id),
+    has: (id) => read()?.includes(id) ?? false,
     add: (id) => {
+      if (!beginPrivateChoiceIntent(accountDid, id, storage as Storage | undefined)) return false;
+      // Read after intent persistence: another note may have committed its choice during that write.
       const ids = read();
-      if (!beginPrivateChoiceIntent(accountDid, id, storage as Storage | undefined)) return;
-      if (!ids.includes(id)) write([...ids, id]);
+      if (ids === null) return false;
+      return ids.includes(id) || write([...ids, id]);
     },
     remove: (id) => {
+      const ids = read();
+      if (ids === null) return false;
+      if (!ids.includes(id)) return true;
+      if (!write(ids.filter((other) => other !== id))) return false;
       clearChoicePinMetadata(accountDid, id, storage as Storage | undefined);
-      write(read().filter((other) => other !== id));
+      return true;
     },
-    ids: read,
+    ids: () => read() ?? [],
   };
 }
 
@@ -1873,7 +1890,7 @@ export type NoteTranscriptionState =
 
 /** Why private cloud was not on when a note was offered to it. */
 export type TranscriptionBlockedReason = "checking" | "unavailable" | "check-failed" | "no-consent" | "limits-unknown" | "limits-exceeded";
-export type TranscriptionAdmissionRefusal = TranscriptionBlockedReason | "account-changed";
+export type TranscriptionAdmissionRefusal = TranscriptionBlockedReason | "account-changed" | "choice-persistence-failed";
 
 export type TranscriptionAvailability = "checking" | "available" | "failed";
 
@@ -2215,12 +2232,13 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
   const chosenPrivate = new Set<string>();
   const isChosen = (sourceId: string) => chosenPrivate.has(sourceId) || choices.has(sourceId);
   /** Drop persisted intent only after the pending job is gone, except deliberate user-mode cleanup. */
-  const settleChoice = (sourceId: string, force = false) => {
+  const settleChoice = (sourceId: string, force = false): boolean => {
+    if (hasHeldHint(sourceId)) return true;
     const terminalFailure = cloud?.terminalFailure?.(sourceId);
     const terminal = terminalFailure !== null && terminalFailure !== undefined
-      && !cloud?.hasRemoteJob(sourceId)
-      && !hasHeldHint(sourceId);
-    if (force || terminal || cloud !== null && !cloud.pendingSourceIds().includes(sourceId)) choices.remove(sourceId);
+      && !cloud?.hasRemoteJob(sourceId);
+    if (!force && !terminal && (cloud === null || cloud.pendingSourceIds().includes(sourceId))) return true;
+    return choices.remove(sourceId);
   };
 
   const publishTerminalFailure = (sourceId: string, code: string) => {
@@ -2228,6 +2246,14 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
     if (current?.kind === "active" || current?.kind === "done"
       || current?.kind === "failed" && current.code === code) return;
     jobs.set(sourceId, { kind: "failed", ...voiceNoteTranscriptionFailureForCode(code) });
+    emit();
+  };
+
+  const reportChoicePersistenceFailure = (sourceId: string) => {
+    const failure = voiceNoteTranscriptionFailure(new PrivateCloudError(
+      "private_choice_persistence_failed", "Could not save this Private choice on this device. Check storage and retry.",
+    ));
+    jobs.set(sourceId, { kind: "failed", ...failure });
     emit();
   };
 
@@ -2392,8 +2418,8 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
           },
         });
         clearAutomaticRetry(sourceId, true);
-        settleChoice(sourceId);
-        jobs.set(sourceId, { kind: "done", outcome });
+        if (settleChoice(sourceId)) jobs.set(sourceId, { kind: "done", outcome });
+        else reportChoicePersistenceFailure(sourceId);
         releaseSourceFor(sourceId);
         emit({ kind: "saved", sourceId });
       } catch (err) {
@@ -2420,7 +2446,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
           console.warn("[Transcription] Stopped a private cloud job: its account is no longer the signed-in one", sourceId);
         } else if (!state.consented || voiceNoteErrorCode(err) === "transcription_off") {
           jobs.delete(sourceId);
-          settleChoice(sourceId);
+          if (!settleChoice(sourceId)) reportChoicePersistenceFailure(sourceId);
         } else {
           const code = voiceNoteErrorCode(err);
           const terminalFailure = cloud?.terminalFailure?.(sourceId);
@@ -2435,11 +2461,11 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
             cloud?.rememberTerminalFailure?.(sourceId, failure.code);
           if (isAutomaticRetryableError(err)) {
             const retryAfterSeconds = err instanceof PrivateCloudError ? err.retryAfterSeconds ?? 0 : 0;
-            settleChoice(sourceId);
+            if (!settleChoice(sourceId)) reportChoicePersistenceFailure(sourceId);
             scheduleAutomaticRetry(sourceId, retryAfterSeconds);
           } else {
             clearAutomaticRetry(sourceId);
-            settleChoice(sourceId);
+            if (!settleChoice(sourceId)) reportChoicePersistenceFailure(sourceId);
           }
         }
         if (!automaticRetryDeadlines.has(sourceId)) releaseSourceFor(sourceId);
@@ -2466,7 +2492,8 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
       const commit = await readTranscriptCommit(tcw, sourceId);
       if (!identityCurrent()) return false;
       if (commit !== null) {
-        if (!cloud?.hasRemoteJob(sourceId) && !hasHeldHint(sourceId)) choices.remove(sourceId);
+        if (!cloud?.hasRemoteJob(sourceId) && !hasHeldHint(sourceId)
+          && !choices.remove(sourceId)) reportChoicePersistenceFailure(sourceId);
         return false;
       }
       if (note.captureSource !== "in_app" && holdStates.get(sourceId) !== "released") {
@@ -2757,10 +2784,16 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
       }
       const pendingAfterRelease = new Set(cloud?.pendingSourceIds() ?? []);
       for (const sourceId of choices.ids())
-        if (!pendingAfterRelease.has(sourceId) && !hasHeldHint(sourceId)) choices.remove(sourceId);
+        if (!pendingAfterRelease.has(sourceId) && !hasHeldHint(sourceId)
+          && !choices.remove(sourceId)) reportChoicePersistenceFailure(sourceId);
     },
 
     transcribe(sourceId, audio) {
+      const current = jobs.get(sourceId);
+      if (current?.kind === "failed" && current.code === "private_choice_persistence_failed" && !choices.add(sourceId)) {
+        reportChoicePersistenceFailure(sourceId);
+        return;
+      }
       requestHeldResultPersistence();
       const rerunBase = cloud?.rerunBase?.(sourceId) ?? null;
       cloud?.clearTerminalFailure?.(sourceId);
@@ -2769,27 +2802,25 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
     },
 
     transcribePrivately(sourceId, durationSecs, sizeBytes = null) {
+      const alreadyChosen = choices.has(sourceId);
+      if (!choices.add(sourceId)) return "choice-persistence-failed";
       requestHeldResultPersistence();
       cloud?.clearTerminalFailure?.(sourceId);
       const limit = privateCloudRefusal(durationSecs, sizeBytes, privateCloudLimits(state.capabilities));
       if (on() && limit !== null && limit.kind !== "unknown") {
-        choices.add(sourceId);
         setLimitBlockedChoice(deps.tcw().did, sourceId, true);
         chosenPrivate.add(sourceId);
         jobs.set(sourceId, { kind: "blocked", reason: "limits-exceeded" });
         emit();
         return limit;
       }
-      const alreadyChosen = choices.has(sourceId);
-      choices.add(sourceId);
       chosenPrivate.add(sourceId);
       const refusal = enqueue(sourceId, undefined, true);
       if (refusal !== null) {
         chosenPrivate.delete(sourceId);
         // Limits or availability may return: keep the intent; withdrawn consent and account changes are not kept.
-        if (refusal === "no-consent" || refusal === "account-changed") {
-          if (!alreadyChosen) choices.remove(sourceId);
-        }
+        if ((refusal === "no-consent" || refusal === "account-changed") && !alreadyChosen && !choices.remove(sourceId))
+          return "choice-persistence-failed";
         return refusal;
       }
       release(sourceId);
@@ -2817,7 +2848,10 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
       const refusal = privateCloudRefusal(recording.durationMs / 1000, null, privateCloudLimits(state.capabilities));
       // A known limit refusal on a usable service drops the save; unknown limits keep the intent until they return.
       if (state.availability === "available" && refusal !== null && refusal.kind !== "unknown") return;
-      choices.add(recording.id);
+      if (!choices.add(recording.id)) {
+        reportChoicePersistenceFailure(recording.id);
+        return;
+      }
       if (!on()) {
         recoveryNeeded = true;
         if (nextRecoveryAt === Number.POSITIVE_INFINITY) nextRecoveryAt = now();

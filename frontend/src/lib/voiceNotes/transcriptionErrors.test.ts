@@ -57,4 +57,12 @@ describe("durable voice-note transcription failure copy", () => {
     expect(storageFullTranscriptCopy(false)).not.toContain("safe on this device");
     expect(storageFullTranscriptCopy(true)).toContain("Your recording is safe on this device.");
   });
+  test("keeps Private-choice Retry copy distinct from storage-full actions", () => {
+    expect(voiceNoteTranscriptionFailureForCode("private_choice_persistence_failed")).toMatchObject({
+      retryable: true, message: "Could not save this Private choice on this device. Check storage and retry.",
+    });
+    expect(voiceNoteTranscriptionFailureForCode("storage_full")).toMatchObject({
+      retryable: false, message: expect.stringContaining("Your TinyCloud storage is full"),
+    });
+  });
 });
