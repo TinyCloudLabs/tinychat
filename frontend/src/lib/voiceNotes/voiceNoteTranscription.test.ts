@@ -1512,7 +1512,7 @@ describe("transcribeVoiceNote (one note end to end)", () => {
       expect(h.calls).toContain(`result:${ID}`);
       expect(h.creates).toEqual([]);
       expect(h.removed).toEqual([ID]);
-      expect(commitAtRemove).toBe(1);
+      expect(commitAtRemove as number | null).toBe(1);
     } finally {
       tcw.sql.db = baseDb as TestTcw["sql"]["db"];
     }
