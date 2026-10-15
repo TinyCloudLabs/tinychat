@@ -1007,6 +1007,35 @@ describe("useLibrary, which audio a note on the phone plays", () => {
     });
   });
 
+  test("a receipt that lands while a local-only note's list is held plays the space's copy at Play", async () => {
+    await withLocalAudio(async (counts, space) => {
+      const seen: Library[] = [];
+      await render({ tcw: space.tcw, visible: true, now: () => 0, seen, noteId: "play", onPhone: [] });
+      await space.answer("list", listedVoice("play"));
+      await space.answer("metadata", { ok: true, data: { rows: [["{\"title\":\"Note\",\"audio\":{\"stored\":false}}"]] } });
+      // The cached metadata says the note is local-only; the receipt lands and the space's audio is replaced underneath.
+      counts.land();
+      counts.replace();
+      const before = { local: counts.local(), remote: counts.remote() };
+      expect(await (await playFromSpace(seen.at(-1)!))?.text()).toBe("newer bytes");
+      expect({ local: counts.local() - before.local, remote: counts.remote() > before.remote }).toEqual({ local: 0, remote: true });
+    });
+  });
+
+  test("a local-only note whose phone copy is gone and unverified makes no space read", async () => {
+    await withLocalAudio(async (counts, space) => {
+      const seen: Library[] = [];
+      await render({ tcw: space.tcw, visible: true, now: () => 0, seen, noteId: "play", onPhone: [] });
+      await space.answer("list", listedVoice("play"));
+      await space.answer("metadata", { ok: true, data: { rows: [["{\"title\":\"Note\",\"audio\":{\"stored\":false}}"]] } });
+      counts.setAvailable(false);
+      const before = { remote: counts.remote(), fetched: counts.fetches() };
+      const error = await playFromSpace(seen.at(-1)!).catch((caught: unknown) => caught);
+      expect((error as Error).message).toBe(PHONE_AUDIO_UNAVAILABLE);
+      expect({ remote: counts.remote() - before.remote, fetched: counts.fetches() - before.fetched }).toEqual({ remote: 0, fetched: 0 });
+    });
+  });
+
   test("once the phone's copy is evicted, a held list plays the space's copy", async () => {
     await withLocalAudio(async (counts, space) => {
       const seen: Library[] = [];

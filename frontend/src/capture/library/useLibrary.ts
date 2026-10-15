@@ -98,14 +98,16 @@ export const RELIST_AFTER_MS = 2 * 60 * 1000;
  * The fresh ledger decides first: a verified space copy is what plays, so the phone's file (possibly
  * replaced since the note was opened) is not read. Otherwise the phone's file plays, handed to the audio
  * element as a URL and never fetched (the WKWebView scheme handler answers a fetch of it with status 0).
- * An unverified phone copy is the only audio, and when the phone's file is gone a space copy is read
- * through `spaceLoad` with the player's signal. The player owns the object URL a Blob becomes.
+ * An unverified phone copy plays while its file exists. When the file is gone, an owned unverified copy
+ * is an error, and a `localOnly` note (cached metadata says the space holds no audio) is an error too;
+ * any other note reads the space through `spaceLoad`. A verified receipt, fresh at Play, reads the space
+ * first. The player owns the object URL a Blob becomes.
  *
  * Any failure shows the calm phone copy; the detail goes to the console.
  */
-function phoneFirstAudio(recordingId: string, channels: 1 | 2 | undefined, owner: string, spaceLoad: AudioLoad | null): NoteAudio {
+function phoneFirstAudio(recordingId: string, channels: 1 | 2 | undefined, owner: string, spaceLoad: AudioLoad, localOnly: boolean): NoteAudio {
   const fromSpace = async (signal: AbortSignal, onProgress: (loaded: number, total: number) => void): Promise<Blob | string> => {
-    const audio = spaceLoad ? await spaceLoad(signal, onProgress) : null;
+    const audio = await spaceLoad(signal, onProgress);
     if (audio === null) throw new Error("Audio is no longer on this device");
     return audio;
   };
@@ -120,7 +122,7 @@ function phoneFirstAudio(recordingId: string, channels: 1 | 2 | undefined, owner
         if (local?.owner === owner && hasVerifiedSpaceCopy(local)) return await fromSpace(signal, onProgress);
         const url = await localPlaybackUrl(recordingId);
         if (url) return url;
-        if (local?.owner === owner) throw new Error("Audio is no longer on this device");
+        if (localOnly || local?.owner === owner) throw new Error("Audio is no longer on this device");
         return await fromSpace(signal, onProgress);
       } catch (caught) {
         console.error("[Audio] Could not open local audio", caught);
@@ -553,9 +555,9 @@ export function useLibrary(
         });
     };
     // The phone's own copy, until the space has the audio; once the phone's copy is gone, the space's copy.
+    // The space loader is always built: a verified receipt that lands after the cached metadata still plays it.
     if (voiceSourceId !== null && phoneFirst) return phoneFirstAudio(voiceSourceId,
-      phoneChannels, space.did,
-      localOnlyAudio ? null : spaceLoad(voiceSourceId));
+      phoneChannels, space.did, spaceLoad(voiceSourceId), localOnlyAudio);
     if (voiceSourceId !== null && metadataLoaded && !pendingAudioRow && !localOnlyAudio) return { load: spaceLoad(voiceSourceId) };
     if (audioBase !== null && !localOnlyAudio) return { load: (signal, onProgress) => getAudio(space.kv, audioBase, { signal, onProgress }) };
     return null;
