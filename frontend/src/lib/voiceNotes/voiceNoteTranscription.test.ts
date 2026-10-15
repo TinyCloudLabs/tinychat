@@ -6677,7 +6677,10 @@ test("verified held commit finishes after legacy strip refusal and dedupes the n
   }
 });
 
-test("unknown superseded held result still reports a failed legacy strip", async () => {
+for (const winnerRev of [2, 1] as const) {
+test(winnerRev === 2
+  ? "unknown superseded held result retains its provider when legacy strip refuses"
+  : "unknown equal-rev different-hash held result retains its provider when legacy strip refuses", async () => {
   const space = sqliteSpace();
   _resetConnectorSchemaMemoForTests();
   const tcw = typedTcw(space);
@@ -6686,7 +6689,7 @@ test("unknown superseded held result still reports a failed legacy strip", async
   beginStorageAccountSession(tcw, did, null);
   expect((await saveVoiceNote(space.tcw, RECORDING, AUDIO, "ios")).ok).toBe(true);
   const winner = prepareVoiceNoteTranscript({ ...TRANSCRIPT, text: "Winning synthetic transcript.",
-    segments: [{ ...TRANSCRIPT.segments[0]!, text: "Winning synthetic transcript." }] }, "2026-10-15T00:01:00Z", 2);
+    segments: [{ ...TRANSCRIPT.segments[0]!, text: "Winning synthetic transcript." }] }, "2026-10-15T00:01:00Z", winnerRev);
   expect((await saveVoiceNoteTranscript(space.tcw, "rec-1", winner)).ok).toBe(true);
   const committed = await readTranscriptCommit(space.tcw, "rec-1");
   const transcript = prepareVoiceNoteTranscript(TRANSCRIPT, "2026-10-15T00:00:00Z", 1);
@@ -6695,29 +6698,45 @@ test("unknown superseded held result still reports a failed legacy strip", async
     version: 1, did, spaceId: "space:test", sourceId: "rec-1", engine: "private-cloud",
     transcript, provider: { transcriptionId: ID }, intent: { kind: "unknown" },
   });
+  const row = await held.readHeld("rec-1");
+  expect(row).not.toBeNull();
   const pending = localStorageVoiceNotePendingStore(did, memoryStorage());
   pending.write("rec-1", { attemptId: "legacy-held", transcriptionId: ID, held: transcript });
   const h = harness({ pending });
-  const cloud = {
-    ...h.cloud,
-    stripLegacyHeld: async () => { throw new Error("synthetic cleanup refusal", {
-      cause: { code: "STORAGE_QUOTA_EXCEEDED", message: "quota exceeded" },
-    }); },
-  };
+  const refusal = new Error("synthetic cleanup refusal", {
+    cause: { code: "STORAGE_QUOTA_EXCEEDED", message: "quota exceeded" },
+  });
+  const cloud = { ...h.cloud, stripLegacyHeld: async () => { throw refusal; } };
 
   const outcome = await transcribeVoiceNote({
     tcw: space.tcw, cloud, capabilities: CAPS, held, explicit: true, sourceId: "rec-1", report: () => {},
   }).then((result) => result, (error: unknown) => error);
+  expect(outcome).toBe(refusal);
   expect(voiceNoteTranscriptionFailure(outcome).code).toBe("transcription_error");
   expect(isStorageReadOnly()).toBe(false);
   expect(await readTranscriptCommit(space.tcw, "rec-1")).toMatchObject({
     rev: committed!.rev, hash: committed!.hash, bodyKey: committed!.bodyKey,
   });
-  expect(await held.readHeld("rec-1")).toBeNull();
+  expect(await held.readHeld("rec-1")).toMatchObject({
+    holdId: row!.holdId, provider: { transcriptionId: ID },
+  });
   expect(pending.legacyHeld?.("rec-1")).toEqual(transcript);
   expect(h.creates).toHaveLength(0);
   expect(h.removed).toEqual([]);
+  if (winnerRev === 1) {
+    expect(await transcribeVoiceNote({
+      tcw: space.tcw, cloud: { ...h.cloud, stripLegacyHeld: async () => {} },
+      capabilities: CAPS, held, explicit: true, sourceId: "rec-1", report: () => {},
+    })).toBe("transcribed");
+    expect(await readTranscriptCommit(space.tcw, "rec-1")).toMatchObject({
+      rev: committed!.rev, hash: committed!.hash,
+    });
+    expect(await held.readHeld("rec-1")).toBeNull();
+    expect(h.removed).toEqual([ID]);
+    expect(h.creates).toHaveLength(0);
+  }
 });
+}
 
 test("a higher concurrent winner does not verify an unknown held result", async () => {
   const space = sqliteSpace();
@@ -6771,7 +6790,7 @@ test("a higher concurrent winner does not verify an unknown held result", async 
   expect(h.creates).toHaveLength(0);
 });
 
-test("held recovery does not finish a provider when a higher winner leaves cleanup unverified", async () => {
+test("held recovery retains an unknown result and provider across a refused next-launch drain", async () => {
   const space = sqliteSpace();
   _resetConnectorSchemaMemoForTests();
   const tcw = typedTcw(space);
@@ -6785,7 +6804,8 @@ test("held recovery does not finish a provider when a higher winner leaves clean
     segments: [{ ...TRANSCRIPT.segments[0]!, text: "Held synthetic transcript." }] }, "2026-10-15T00:01:00Z", 2);
   const winner = prepareVoiceNoteTranscript({ ...TRANSCRIPT, text: "Different synthetic winner.",
     segments: [{ ...TRANSCRIPT.segments[0]!, text: "Different synthetic winner." }] }, "2026-10-15T00:02:00Z", 3);
-  const held = createHeldResultStore(did, { env: newIdbEnv(), isSignedIn: async () => true });
+  const env = newIdbEnv();
+  const held = createHeldResultStore(did, { env, isSignedIn: async () => true });
   await held.hold({
     version: 1, did, spaceId: "space:test", sourceId: "rec-1", engine: "private-cloud",
     transcript: heldTranscript, provider: { transcriptionId: ID }, intent: { kind: "unknown" },
@@ -6836,6 +6856,48 @@ test("held recovery does not finish a provider when a higher winner leaves clean
     expect(pending.legacyHeld?.("rec-1")).toEqual(heldTranscript);
     expect(h.removed).toEqual([]);
     expect(h.creates).toHaveLength(0);
+    const restored = createHeldResultStore(did, { env, isSignedIn: async () => true });
+    expect(await restored.readHeld("rec-1")).toMatchObject({
+      holdId: record!.holdId, provider: { transcriptionId: ID },
+    });
+    const restoredSave = restored.saveHeldFirst.bind(restored);
+    let nextError: unknown;
+    let nextVerified: boolean | undefined;
+    restored.saveHeldFirst = (ctx, sourceId, ops, mode) => restoredSave(ctx, sourceId, {
+      ...ops,
+      afterCommit: async (row, verified) => {
+        nextVerified = verified;
+        await ops.afterCommit(row, verified);
+      },
+    }, mode).catch((error: unknown) => { nextError = error; throw error; });
+    const next = createVoiceNoteTranscriber({
+      cloud: { ...h.cloud, capabilities: async () => { throw new PrivateCloudError("service_unavailable", "synthetic offline"); } },
+      consent, tcw: () => space.tcw, holds: memoryHoldStore(), held: restored,
+      heldAfterCommit: async () => { throw refusal; },
+      checkRetryMs: [], failedBackoffMs: [], ready: Promise.resolve(),
+    });
+    let unsubscribeNext = () => {};
+    const nextSettled = new Promise<void>((resolve) => {
+      unsubscribeNext = next.subscribe(() => {
+        const kind = next.snapshot().jobs.get("rec-1")?.kind;
+        if (kind === "done" || kind === "failed") resolve();
+      });
+    });
+    try {
+      await next.check();
+      await nextSettled;
+      expect(next.snapshot().jobs.get("rec-1")).toMatchObject({ kind: "failed", code: "transcription_error" });
+      expect(nextError).toBe(refusal);
+      expect(nextVerified).toBe(false);
+      expect(await restored.readHeld("rec-1")).toMatchObject({
+        holdId: record!.holdId, provider: { transcriptionId: ID },
+      });
+      expect(await readTranscriptCommit(space.tcw, "rec-1")).toMatchObject({ rev: 3 });
+      expect(h.removed).toEqual([]);
+      expect(h.creates).toHaveLength(0);
+    } finally {
+      unsubscribeNext();
+    }
   } finally {
     unsubscribe();
   }

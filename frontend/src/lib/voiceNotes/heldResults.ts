@@ -323,40 +323,38 @@ export function createHeldResultStore(did: string, options: HeldResultStoreOptio
             await replaceConflict(row, "rerun_lost");
             return "conflict";
           }
-          if (ops.stillCurrent && !ops.stillCurrent()) throw new PrivateCloudError("account_changed", "The account changed during the held transcript commit.");
-          await assertStoreIdentity(tcw, row);
-          assertIdentity(tcw, did, row);
-          // The winner superseded this unknown result without proving it committed. A failed
-          // cleanup keeps the held copy and its provider; successful cleanup precedes compare-delete.
-          await ops.afterCommit(row, false);
-          if (!await removeIf(tcw, row, current.rev, assertStoreIdentity))
-            throw new PrivateCloudError("held_result_persistence_failed", "The held transcript changed before cleanup finished.");
-          return "discarded_superseded";
-        }
-        if (current.rev === row.transcript.rev && current.hash === row.hash) {
-          assertIdentity(tcw, did, row);
-          await removeIf(tcw, row, current.rev, assertStoreIdentity);
-          await ops.afterCommit(row, true);
-          return "already_committed";
-        }
-        if (row.intent.kind === "rerun" && (current.rev > row.transcript.rev || current.rev === row.transcript.rev && current.hash !== row.hash)) {
-          const historyExists = await hasCommittedHistory(tcw, row);
-          if (historyExists) {
+        } else {
+          if (current.rev === row.transcript.rev && current.hash === row.hash) {
             assertIdentity(tcw, did, row);
             await removeIf(tcw, row, current.rev, assertStoreIdentity);
             await ops.afterCommit(row, true);
-            return "discarded_superseded";
+            return "already_committed";
           }
-          await replaceConflict(row, "rerun_lost");
-          return "conflict";
+          if (row.intent.kind === "rerun" && (current.rev > row.transcript.rev || current.rev === row.transcript.rev && current.hash !== row.hash)) {
+            const historyExists = await hasCommittedHistory(tcw, row);
+            if (historyExists) {
+              assertIdentity(tcw, did, row);
+              await removeIf(tcw, row, current.rev, assertStoreIdentity);
+              await ops.afterCommit(row, true);
+              return "discarded_superseded";
+            }
+            await replaceConflict(row, "rerun_lost");
+            return "conflict";
+          }
+          if (row.intent.kind !== "unknown" || current.rev < row.transcript.rev) return "conflict";
         }
-        if (row.intent.kind === "unknown" && (current.rev > row.transcript.rev || current.rev === row.transcript.rev)) {
-          assertIdentity(tcw, did, row);
-          await removeIf(tcw, row, current.rev, assertStoreIdentity);
-          await ops.afterCommit(row, false);
-          return "discarded_superseded";
-        }
-        return "conflict";
+        if (ops.stillCurrent && !ops.stillCurrent()) throw new PrivateCloudError("account_changed", "The account changed during the held transcript commit.");
+        await assertStoreIdentity(tcw, row);
+        assertIdentity(tcw, did, row);
+        // This winner does not prove the unknown held result committed. A failed cleanup
+        // retains its row and provider, whether the winner appeared before or during save.
+        await ops.afterCommit(row, false);
+        if (ops.stillCurrent && !ops.stillCurrent()) throw new PrivateCloudError("account_changed", "The account changed during the held transcript commit.");
+        await assertStoreIdentity(tcw, row);
+        assertIdentity(tcw, did, row);
+        if (!await removeIf(tcw, row, current.rev, assertStoreIdentity))
+          throw new PrivateCloudError("held_result_persistence_failed", "The held transcript changed before cleanup finished.");
+        return "discarded_superseded";
       };
       const outcome = await withHeldLock(did, sourceId, run, mode === "explicit");
       return outcome === "busy" ? "lock_busy" : outcome;
