@@ -55,6 +55,13 @@ test("pins a cancelled on-device job on mobile, where retry rewrites it to queue
   expect(hasLocalWorkInProgress(note({}, { ...onDevice, stt: { state: "cancelled" } }), { cancelledRetryable: true })).toBe(true);
 });
 
+test("keeps yielded iOS audio pinned across a cache trim, including an explicit Local choice", () => {
+  const yielded = { state: "yielded_by_os", requested: true, yieldGeneration: 2, attempts: 0 };
+  const off = note({}, { options: { transcriber: "off" }, stt: yielded });
+  expect(hasLocalWorkInProgress(off, { cancelledRetryable: true })).toBe(true);
+  expect(hasLocalWorkInProgress(off)).toBe(false); // Desktop has no iOS assertion/yield state.
+});
+
 test("pins a cancelled Local request on mobile even when the transcriber is off", () => {
   const cancelledLocal = note({}, { options: { transcriber: "off" }, stt: { state: "cancelled", requested: true } });
   expect(hasLocalWorkInProgress(cancelledLocal, { cancelledRetryable: true })).toBe(true);

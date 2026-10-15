@@ -129,21 +129,28 @@ public struct SessionInfo: Codable {
     public var transitionGen: Int64
     public var options: CaptureOptions
     public var startedAt: Int64
+    public var recordedAppVersion: String?
+    public var recordedAppBuild: String?
 
     public init(id: String, platform: String = "ios", rate: Int = 48_000, bitrate: Int = 64_000,
                 maxDurationMs: Int64 = 10_800_000, source: String, owner: String?,
-                transitionGen: Int64, options: CaptureOptions, startedAt: Int64) {
+                transitionGen: Int64, options: CaptureOptions, startedAt: Int64,
+                recordedAppVersion: String? = nil, recordedAppBuild: String? = nil) {
         self.id = id; self.platform = platform; self.rate = rate; self.bitrate = bitrate
         self.maxDurationMs = maxDurationMs; self.source = source; self.owner = owner
         self.transitionGen = transitionGen; self.options = options; self.startedAt = startedAt
+        self.recordedAppVersion = recordedAppVersion; self.recordedAppBuild = recordedAppBuild
     }
 
     public func journalEvent() -> [String: Any] {
-        ["e": "session", "t": startedAt, "a": 0, "v": 1, "id": id, "platform": platform,
-         "codec": "aac-lc", "container": "adts", "rate": rate, "channels": 1,
-         "bitrate": bitrate, "maxDurationMs": maxDurationMs, "source": source,
-         "owner": owner as Any? ?? NSNull(), "transitionGen": transitionGen,
-         "options": ["transcriber": options.transcriber, "identifySpeakers": options.identifySpeakers]]
+        var event: [String: Any] = ["e": "session", "t": startedAt, "a": 0, "v": 1, "id": id, "platform": platform,
+            "codec": "aac-lc", "container": "adts", "rate": rate, "channels": 1,
+            "bitrate": bitrate, "maxDurationMs": maxDurationMs, "source": source,
+            "owner": owner as Any? ?? NSNull(), "transitionGen": transitionGen,
+            "options": ["transcriber": options.transcriber, "identifySpeakers": options.identifySpeakers]]
+        if let recordedAppVersion { event["recorded_app_version"] = recordedAppVersion }
+        if let recordedAppBuild { event["recorded_app_build"] = recordedAppBuild }
+        return event
     }
 }
 
