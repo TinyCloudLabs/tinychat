@@ -179,6 +179,7 @@ export function useLibrary(
   });
   const [listing, setListing] = useState(false);
   const [localAudioIds, setLocalAudioIds] = useState<ReadonlySet<string>>(new Set());
+  const [localAudioReadyIds, setLocalAudioReadyIds] = useState<ReadonlySet<string>>(new Set());
   // The subset whose space copy is not verified: the phone's copy is the only audio to play. Each entry keeps the note's channel count.
   const [phoneOnlyAudio, setPhoneOnlyAudio] = useState<ReadonlyMap<string, 1 | 2 | undefined>>(new Map());
   const [filter, setFilter] = useState<LibraryFilter>("all");
@@ -324,9 +325,10 @@ export function useLibrary(
       if (entry.source !== VOICE_NOTE_SOURCE) return entry;
       const snippet = moments.get(entry.sourceId) ?? noteSnippet(list.previews.get(entry.sourceId));
       return { ...entry, ...(snippet === null ? {} : { snippet }),
-        ...(localAudioIds.has(entry.sourceId) ? { hasLocalAudio: true as const } : {}) };
+        ...(localAudioIds.has(entry.sourceId) ? { hasLocalAudio: true as const } : {}),
+        ...(localAudioReadyIds.has(entry.sourceId) ? { localAudioReady: true as const } : {}) };
     });
-  }, [list.items, list.previews, moments, onPhoneNotes, currentHandoff.lingering, localAudioIds]);
+  }, [list.items, list.previews, moments, onPhoneNotes, currentHandoff.lingering, localAudioIds, localAudioReadyIds]);
 
   // The open note by its id; a stand-in's sheet stays open when its row replaces it.
   const item = useMemo(() => {
@@ -344,16 +346,25 @@ export function useLibrary(
     if (!options.visible) return;
     if (!nativeVoiceNotesAvailable()) {
       setLocalAudioIds(new Set());
+      setLocalAudioReadyIds(new Set());
       setPhoneOnlyAudio(new Map());
       return;
     }
     let live = true;
     void Promise.resolve().then(() => VoiceNotes.listPending()).then(({ recordings }) => {
       if (!live) return;
-      const own = recordings.filter((note) => note.owner === tcw.did);
-      setLocalAudioIds(new Set(own.map((note) => note.id)));
-      setPhoneOnlyAudio(new Map(own.filter((note) => !hasVerifiedSpaceCopy(note)).map((note) => [note.id, note.channels] as const)));
-    }, () => { if (live) { setLocalAudioIds(new Set()); setPhoneOnlyAudio(new Map()); } });
+      const owned = recordings.filter((note) => note.owner === tcw.did);
+      setLocalAudioIds(new Set(owned.map((note) => note.id)));
+      // The transcript copy may claim local audio only when the native ledger says it is ready.
+      setLocalAudioReadyIds(new Set(owned.filter((note) => note.ledger?.localAudio?.state === "ready").map((note) => note.id)));
+      // Keep phone playback while the space copy is not verified; channels come from this owned recording.
+      setPhoneOnlyAudio(new Map(owned.filter((note) => !hasVerifiedSpaceCopy(note)).map((note) => [note.id, note.channels] as const)));
+    }, () => {
+      if (!live) return;
+      setLocalAudioIds(new Set());
+      setLocalAudioReadyIds(new Set());
+      setPhoneOnlyAudio(new Map());
+    });
     return () => { live = false; };
   }, [options.visible, tcw.did, listingRevision, onPhoneNotes]);
   const lastOpened = useRef<string | null>(null);

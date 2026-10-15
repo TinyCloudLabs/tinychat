@@ -14,7 +14,7 @@ import type { WrittenTranscriberMeeting } from "@tinyboilerplate/core";
 import { listKnownSourceIds } from "./connectors/connectorStore";
 import type { StoreResult } from "./connectors/connectorStore";
 import { webConnectorPort } from "./connectors/connectorPort";
-import { reportStorageError, reportStorageWriteSucceeded, storageSaveMessage } from "./storageStatus";
+import { reportStorageError, reportStorageWriteSucceeded, storageScopeFor, storageSaveMessage } from "./storageStatus";
 import { captureEvents } from "../capture/captureEvents";
 import type { TranscriberMeeting, TranscriberTranscript } from "./transcriberApi";
 export { normalizeTranscriberTranscript, transcriberMeetingTitle, TRANSCRIBER_MEETING_SOURCE };
@@ -36,10 +36,10 @@ export async function saveTranscriberMeeting(
     webConnectorPort(tcw), await normalizeTranscriberTranscript(meeting, transcript), { ensureSchema: true },
   );
   if (!saved.ok) {
-    reportStorageError(saved);
+    reportStorageError(saved, storageScopeFor(tcw));
     return { ok: false, error: { code: saved.code, message: storageSaveMessage(saved) ?? saved.message } };
   }
-  if (saved.data.row === "inserted" || saved.data.body === "written") reportStorageWriteSucceeded();
+  if (saved.data.row === "inserted" || saved.data.body === "written") reportStorageWriteSucceeded(storageScopeFor(tcw));
   return { ok: true, data: saved.data };
 }
 
@@ -86,14 +86,14 @@ export async function listSavedTranscriberVersions(
       [TRANSCRIBER_MEETING_SOURCE],
     ));
     if (result === null) return { ok: true, data: new Map() };
-    if (!result.ok) return storageFailure(result.error);
+    if (!result.ok) return storageFailure(result.error, tcw);
     const rows = result.data.rows as unknown[][];
     return { ok: true, data: new Map(rows.map((row) => [String(row[0]), row[1] == null ? 1 : Number(row[1])])) };
-  } catch { return storageFailure({ code: "SQL_ERROR" }); }
+  } catch { return storageFailure({ code: "SQL_ERROR" }, tcw); }
 }
 
-function storageFailure(error: { code?: string }): StoreResult<never> {
-  reportStorageError(error);
+function storageFailure(error: { code?: string }, tcw: TinyCloudWeb): StoreResult<never> {
+  reportStorageError(error, storageScopeFor(tcw));
   return { ok: false, error: { code: error.code ?? "STORE_ERROR", message: "Transcriber storage operation failed" } };
 }
 
@@ -119,7 +119,7 @@ export async function refreshTranscriberMeeting(
     const current = await db.query(
       "SELECT id, title, participants, duration_secs, metadata FROM connector_meeting WHERE id = ?", [id],
     );
-    if (!current.ok) return storageFailure(current.error);
+    if (!current.ok) return storageFailure(current.error, tcw);
     const old = (current.data.rows as unknown[][])[0];
     if (!old) {
       const saved = await saveTranscriberMeeting(tcw, row, transcript);
@@ -129,7 +129,7 @@ export async function refreshTranscriberMeeting(
     const oldVersion = Number.isInteger(metadata.ptx_transcript_version) ? metadata.ptx_transcript_version as number : 1;
     if (transcript.version! <= oldVersion) return { ok: true, data: undefined };
     const oldBody = await tcw.kv.get(transcriptKvKey(TRANSCRIBER_MEETING_SOURCE, row.id));
-    if (!oldBody.ok) return storageFailure(oldBody.error);
+    if (!oldBody.ok) return storageFailure(oldBody.error, tcw);
     const archive: TranscriberArchive = {
       version: oldVersion, archived_at: new Date().toISOString(),
       row: { title: old[1] as string | null, participants: old[2] as string | null,
@@ -137,10 +137,10 @@ export async function refreshTranscriberMeeting(
       body: oldBody.data.data as string,
     };
     const archived = await tcw.kv.put(archiveKvKey(row.id, oldVersion), JSON.stringify(archive), { ifNoneMatch: "*" });
-    if (!archived.ok && archived.error.code !== "KV_PRECONDITION_FAILED") return storageFailure(archived.error);
+    if (!archived.ok && archived.error.code !== "KV_PRECONDITION_FAILED") return storageFailure(archived.error, tcw);
     const normalized = await normalizeTranscriberTranscript(row, transcript);
     const body = await tcw.kv.put(transcriptKvKey(TRANSCRIBER_MEETING_SOURCE, row.id), normalized.body);
-    if (!body.ok) return storageFailure(body.error);
+    if (!body.ok) return storageFailure(body.error, tcw);
     // Transcriber metadata is publication-owned; user edits live in separate columns.
     const updated = await db.execute(
       "UPDATE connector_meeting SET participants = ?, duration_secs = ?, metadata = ?, updated_at = ? WHERE id = ? AND COALESCE(json_extract(metadata, '$.ptx_transcript_version'), 1) = ?",
@@ -150,11 +150,11 @@ export async function refreshTranscriberMeeting(
         previous_transcript_versions: [...(metadata.previous_transcript_versions as number[] ?? []), oldVersion],
       }), new Date().toISOString(), id, oldVersion],
     );
-    if (!updated.ok) return storageFailure(updated.error);
+    if (!updated.ok) return storageFailure(updated.error, tcw);
     const committed = await db.query(
       "SELECT COALESCE(json_extract(metadata, '$.ptx_transcript_version'), 1) FROM connector_meeting WHERE id = ?", [id],
     );
-    if (!committed.ok) return storageFailure(committed.error);
+    if (!committed.ok) return storageFailure(committed.error, tcw);
     const vNow = Number((committed.data.rows as unknown[][])[0]?.[0]);
     if (vNow !== transcript.version) {
       if (vNow >= transcript.version!) {
@@ -162,13 +162,13 @@ export async function refreshTranscriberMeeting(
         if (latest?.version === vNow) {
           const repaired = await normalizeTranscriberTranscript(row, latest);
           const repair = await tcw.kv.put(transcriptKvKey(TRANSCRIBER_MEETING_SOURCE, row.id), repaired.body);
-          if (!repair.ok) return storageFailure(repair.error);
+          if (!repair.ok) return storageFailure(repair.error, tcw);
         }
       }
       return { ok: true, data: undefined };
     }
-    reportStorageWriteSucceeded();
+    reportStorageWriteSucceeded(storageScopeFor(tcw));
     captureEvents.emit("library-changed", { source: TRANSCRIBER_MEETING_SOURCE, sourceId: row.id });
     return { ok: true, data: undefined };
-  } catch { return storageFailure({ code: "STORE_ERROR" }); }
+  } catch { return storageFailure({ code: "STORE_ERROR" }, tcw); }
 }

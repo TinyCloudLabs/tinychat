@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { createElement, act } from "react";
 import { createRoot } from "react-dom/client";
@@ -19,13 +19,25 @@ import { NoteDetailView } from "@/capture/library/NoteDetailView";
 import { hasPrivateCloudTimingProvenance, transcriptMarkdown, transcriptWithTimestamps } from "@/capture/library/transcriptSegments";
 import { createFakeVoiceNotes } from "./fakeVoiceNotes";
 import { __setVoiceNotesForTests, VoiceNotes } from "./nativeVoiceNotes";
-import { syncOnDeviceTranscript } from "./onDeviceTranscriber";
-import { createVoiceNotePipeline, VoiceNoteSaveDeferred } from "./voiceNotePipeline";
+import { __resetOnDeviceTranscriberForTests, syncOnDeviceTranscript } from "./onDeviceTranscriber";
+import { createVoiceNotePipeline, VoiceNoteSaveDeferred, type VoiceNotePipeline } from "./voiceNotePipeline";
 import { handoffBeforeCredentialClear } from "./accountHandoff";
-import { advanceAccountGeneration, currentAccountGeneration } from "./accountContext";
+import { advanceAccountGeneration, captureAccountContext, currentAccountGeneration } from "./accountContext";
 import { runOnSpaceLane, spaceLaneSnapshot, subscribeSpaceLane } from "../spaceWriteLane";
 import { setVoiceNoteSaveDeadlineForTests } from "./saveDeadline";
 import { putPendingSaveState, readPendingSaveStates } from "./pendingSaveState";
+import { __resetStorageStatusForTests, __waitForStorageRecoveryForTests, beginStorageAccountSession, endStorageAccountSession, isStorageReadOnly, storageScopeFor, trackStorageWrites } from "@/lib/storageStatus";
+import { pendingStore, saveNoteForAccount } from "./recorderSaves";
+import { associateLegacyNotes, markLegacyOwnerUnknown, migrateLegacyDiscardLedger } from "./legacyMigration";
+import { loadNote, saveNote } from "./recordingNotes";
+import { readRecordingNoteFromSpace, syncRecordingNote, VOICE_NOTE_SOURCE, voiceNoteAudioKvKey, voiceNoteMarkdownKvKey } from "./voiceNoteStore";
+
+describe.serial("voice-note rows", () => {
+afterEach(async () => {
+  await __resetOnDeviceTranscriberForTests();
+  __resetStorageStatusForTests();
+});
+
 
 test("a healthy long drain does not consume the next save's call deadline", async () => {
   let releaseDrain!: () => void;
@@ -47,6 +59,56 @@ test("a healthy long drain does not consume the next save's call deadline", asyn
     expect(saveStarted).toBe(true);
   } finally { releaseDrain(); }
 });
+test("after one storage-full audio put, later notes in the pass still save rows and text; only their audio PUT is skipped", async () => {
+  const original = VoiceNotes;
+  const fake = createFakeVoiceNotes();
+  const { tcw, values } = space();
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  const kv = tcw.kv;
+  const put = kv.put.bind(kv);
+  const audioPrefix = voiceNoteAudioKvKey("");
+  const audioPutIds = new Set<string>();
+  kv.put = (async (...args: Parameters<typeof put>) => {
+    const [key] = args;
+    if (key.startsWith(audioPrefix) && !key.endsWith("note.md")) {
+      audioPutIds.add(key.slice(audioPrefix.length).split("/")[0]!);
+      return { ok: false, error: { code: "STORAGE_QUOTA_EXCEEDED", message: "Your TinyCloud storage is full" } } as Awaited<ReturnType<typeof put>>;
+    }
+    return put(...args);
+  }) as typeof kv.put;
+  const captureDefaults = (uploadAudio: boolean) => ({ accountDid: tcw.did, transitionGen: 1, transcriber: "on-device" as const,
+    identifySpeakers: false, uploadAudio });
+  const idsOf = async () => (await fake.plugin.listPending()).recordings.map((note) => note.id);
+  const record = async (uploadAudio: boolean) => {
+    await fake.plugin.setCaptureDefaults(captureDefaults(uploadAudio));
+    await Bun.sleep(5);
+    const before = new Set(await idsOf());
+    await fake.plugin.start();
+    await fake.plugin.stop();
+    return (await idsOf()).find((id) => !before.has(id))!;
+  };
+  try {
+    const first = await record(true);
+    const second = await record(true);
+    const local = await record(false);
+    await createVoiceNotePipeline(tcw).reconcileAll({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() });
+    // One audio probe per pass: only the first note's audio PUT reaches the space.
+    expect([...audioPutIds]).toEqual([first]);
+    // Every note in the pass still gets its row and transcript text, including the local-only one.
+    for (const id of [first, second, local]) {
+      expect(values.has(transcriptKvKey(VOICE_NOTE_SOURCE, id))).toBe(true);
+      expect(await resolveVoiceNoteRow(tcw, id)).not.toBeNull();
+    }
+    // Local-only notes report audio as saved (nothing to upload); only the two upload notes may not be saved.
+    const uploadStates = (await fake.plugin.listPending()).recordings.filter((note) => note.id !== local).map((note) => note.ledger?.audio.state);
+    expect(uploadStates).toHaveLength(2);
+    expect(uploadStates).not.toContain("saved");
+  } finally {
+    kv.put = put;
+    __setVoiceNotesForTests(original, { available: null });
+  }
+});
+
 
 test("a stalled background drain cannot delay a voice-note row request", async () => {
   let release!: () => void;
@@ -226,10 +288,6 @@ test("reconcile honors a persisted retry due time", async () => {
     expect(sqlite.query("SELECT id FROM connector_meeting WHERE source_id = ?").all(started.id)).toEqual([{ id: `vn-${started.id}` }]);
   } finally { __setVoiceNotesForTests(original, { available: null }); }
 });
-import { pendingStore, saveNoteForAccount } from "./recorderSaves";
-import { associateLegacyNotes, markLegacyOwnerUnknown, migrateLegacyDiscardLedger } from "./legacyMigration";
-import { loadNote, saveNote } from "./recordingNotes";
-import { readRecordingNoteFromSpace, syncRecordingNote, VOICE_NOTE_SOURCE, voiceNoteAudioKvKey, voiceNoteMarkdownKvKey } from "./voiceNoteStore";
 
 let count = 0;
 function space() {
@@ -485,7 +543,7 @@ describe("voice-note identity and transcript authority", () => {
 
   test("deferral codes do not persist failed outcomes", async () => {
     for (const code of ["audio_upload_pending", "transcription_off", "upload_outcome_unknown", "account_changed",
-      "active_transcription_exists"]) {
+      "active_transcription_exists", "transcript_save_timed_out"]) {
       const { tcw } = space();
       await ensureSchema(tcw);
       await createVoiceNoteRow(tcw, { id: code, startedAt: 0, durationMs: 1000,
@@ -1237,6 +1295,7 @@ test("the mounted pending saver runs the real pipeline on sign-in and forced-swa
     expect((await fake.plugin.listPending()).recordings.filter((note) => note.ledger?.audio.state === "saved"))
       .toHaveLength(2);
     await act(async () => root.unmount());
+    await __waitForStorageRecoveryForTests(tcw.did);
     mounted = false;
     fake.plugin.getTranscript = async () => ({ transcript: {
       version: 1, noteId: initial.id, transcriber: "on-device", rev: 2,
@@ -2037,4 +2096,775 @@ test("a discarded note cannot upload when discard migration cannot delete its au
     __setVoiceNotesForTests(original, { available: null });
     Object.defineProperty(globalThis, "localStorage", { configurable: true, value: storage });
   }
+});
+
+// A window stub that records listeners, so a test can fire the foreground events the saver subscribes to.
+function foregroundHarness() {
+  const listeners = new Map<string, Set<() => void>>();
+  function hostNode(): unknown {
+    return new Proxy(function () {}, { get: (_target, key) => key === "nodeType" ? 1 : key === "ownerDocument" ? documentStub
+      : key === "style" ? {} : key === "firstChild" || key === "parentNode" ? null : () => hostNode(), set: () => true });
+  }
+  const documentStub = { nodeType: 9, activeElement: null, addEventListener() {}, removeEventListener() {},
+    createElement: () => hostNode(), createTextNode: () => hostNode() };
+  const windowStub = { HTMLIFrameElement: class {}, document: documentStub,
+    addEventListener(type: string, listener: () => void) {
+      const set = listeners.get(type) ?? new Set<() => void>();
+      set.add(listener);
+      listeners.set(type, set);
+    },
+    removeEventListener(type: string, listener: () => void) { listeners.get(type)?.delete(listener); },
+    setTimeout, clearTimeout };
+  const root = createRoot({ nodeType: 1, nodeName: "DIV", tagName: "DIV", ownerDocument: documentStub, textContent: "",
+    addEventListener() {}, removeEventListener() {}, appendChild() {}, removeChild() {}, insertBefore() {} } as unknown as HTMLElement);
+  return { windowStub, root, fire(type: string) { for (const listener of [...listeners.get(type) ?? []]) listener(); } };
+}
+
+describe.serial("storage recovery wakes", () => {
+test("an on-device transcript held by storage is retried by a foreground focus once space is back", async () => {
+  const original = VoiceNotes;
+  const previousWindow = globalThis.window;
+  const previousAct = Reflect.get(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+  const previousStt = OnDeviceStt;
+  __setOnDeviceSttForTests({ addListener: async () => ({ remove: async () => {} }) } as unknown as OnDeviceSttPlugin);
+  const fake = createFakeVoiceNotes();
+  const { tcw } = space();
+  let spaceFull = true;
+  let releaseReconcile = (): void => {};
+  const reconcileGate = new Promise<void>((resolve) => { releaseReconcile = resolve; });
+  const originalDb = tcw.sql.db.bind(tcw.sql);
+  tcw.sql.db = ((name: string) => ({ ...originalDb(name), execute: async (statement: string, params: unknown[] = []) =>
+    spaceFull && statement.includes("INSERT INTO voice_note_transcript")
+      ? { ok: false, error: { code: "STORAGE_QUOTA_EXCEEDED", message: "Storage is full" } }
+      : originalDb(name).execute(statement, params as never[]),
+  })) as typeof tcw.sql.db;
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1, transcriber: "on-device", identifySpeakers: false });
+  await ensureSchema(tcw);
+  await fake.plugin.start();
+  const recording = await fake.plugin.stop();
+  await createVoiceNoteRow(tcw, { id: recording.id, startedAt: 0, durationMs: 1_000, mimeType: "audio/mpeg",
+    sizeBytes: 4, silencedMs: 0, silencedEvents: 0, noSignalMs: 0 }, "Held note");
+  fake.plugin.getTranscript = async () => ({ transcript: {
+    version: 1, noteId: recording.id, transcriber: "on-device", rev: 1,
+    engine: "apple-speech", model: null, language: "en", outcome: "transcribed",
+    diarized: false, segments: [{ start: 0, end: 1000, text: "Held words", speaker: null }],
+    createdAt: "2026-10-03T10:00:00.000Z",
+  } });
+  const harness = foregroundHarness();
+  Reflect.set(globalThis, "window", harness.windowStub);
+  Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
+  const settle = settleRecovery;
+  let signalReconcileEntered!: () => void;
+  const reconcileEntered = new Promise<void>((resolve) => { signalReconcileEntered = resolve; });
+  try {
+    await syncOnDeviceTranscript(tcw, { id: recording.id, ledger: { audio: { state: "saved" } } });
+    expect(await readTranscriptCommit(tcw, recording.id)).toBeFalsy();
+    // Mounting while space is still full: the mount reconcile stays parked, so held transcript recovery must not wait behind it.
+    const parkedPipeline = createVoiceNotePipeline(tcw);
+    
+    const reconcile = parkedPipeline.reconcileAll.bind(parkedPipeline);
+    // Parks the mount reconcile in flight, so the foreground event arrives while that run is still awaiting.
+    parkedPipeline.reconcileAll = async (ctx, trigger, onSaved) => {
+      signalReconcileEntered();
+      await reconcileGate;
+      return reconcile(ctx, trigger, onSaved);
+    };
+    await act(async () => harness.root.render(createElement(PendingVoiceNotesSaver,
+      { tcw, pipeline: parkedPipeline, backendUrl: "", sessionStore: {} as never })));
+    await reconcileEntered;
+    await settle();
+    expect(await readTranscriptCommit(tcw, recording.id)).toBeFalsy();
+    spaceFull = false;
+    harness.fire("focus");
+    // The audio put is still parked: the foreground event alone must finish the held transcript.
+    for (let i = 0; i < 100 && !(await readTranscriptCommit(tcw, recording.id)); i++) await settle();
+    expect(await readTranscriptCommit(tcw, recording.id)).toMatchObject({ rev: 1 });
+  } finally {
+    releaseReconcile();
+    try {
+      await act(async () => harness.root.unmount());
+      await __waitForStorageRecoveryForTests(tcw.did);
+    } finally {
+      __setOnDeviceSttForTests(previousStt);
+      __setVoiceNotesForTests(original, { available: null });
+      Reflect.set(globalThis, "window", previousWindow);
+      Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", previousAct);
+    }
+  }
+});
+
+test("a focus alone saves queued audio once space is restored after a full-space mount pass", async () => {
+  const original = VoiceNotes;
+  const previousWindow = globalThis.window;
+  const previousAct = Reflect.get(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+  const previousStt = OnDeviceStt;
+  __setOnDeviceSttForTests({ addListener: async () => ({ remove: async () => {} }) } as unknown as OnDeviceSttPlugin);
+  const fake = createFakeVoiceNotes();
+  const { tcw } = space();
+  let spaceFull = true;
+  const put = tcw.kv.put.bind(tcw.kv);
+  tcw.kv.put = (async (key: string, value: string, options?: { ifNoneMatch?: string }) => spaceFull && key.includes("/audio/")
+    ? { ok: false, error: { code: "STORAGE_QUOTA_EXCEEDED", message: "Storage is full" } }
+    : put(key, value, options)) as typeof tcw.kv.put;
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1, transcriber: "on-device",
+    identifySpeakers: false, uploadAudio: true });
+  await ensureSchema(tcw);
+  await fake.plugin.start();
+  const recording = await fake.plugin.stop();
+  const events: unknown[] = [];
+  const off = captureEvents.on("library-changed", (event) => { events.push(event); });
+  const harness = foregroundHarness();
+  Reflect.set(globalThis, "window", harness.windowStub);
+  Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
+  const settle = settleRecovery;
+  const pipeline = createVoiceNotePipeline(tcw);
+  const reconciles = watchReconciles(pipeline);
+  try {
+    await act(async () => harness.root.render(createElement(PendingVoiceNotesSaver,
+      { tcw, pipeline, backendUrl: "", sessionStore: {} as never })));
+    await reconciles.waitFor(1);
+    await __waitForStorageRecoveryForTests(tcw.did);
+    await settle();
+    expect(events).toEqual([]);
+    const queued = (await fake.plugin.listPending()).recordings.find((note) => note.id === recording.id);
+    expect(queued).toBeDefined();
+    expect(queued?.ledger?.audio.state).not.toBe("saved");
+    spaceFull = false;
+    harness.fire("focus");
+    await reconciles.waitFor(2);
+    await __waitForStorageRecoveryForTests(tcw.did);
+    for (let i = 0; i < 100 && events.length === 0; i++) await settle();
+    expect(events).toEqual([{ source: VOICE_NOTE_SOURCE, sourceId: recording.id }]);
+  } finally {
+    off();
+    await act(async () => harness.root.unmount());
+    __setOnDeviceSttForTests(previousStt);
+    __setVoiceNotesForTests(original, { available: null });
+    Reflect.set(globalThis, "window", previousWindow);
+    Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", previousAct);
+  }
+});
+
+test("a parked old-account audio quota report cannot mark the new account full", async () => {
+  const original = VoiceNotes;
+  const previousWindow = globalThis.window;
+  const previousAct = Reflect.get(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+  const previousStt = OnDeviceStt;
+  __setOnDeviceSttForTests({ addListener: async () => ({ remove: async () => {} }) } as unknown as OnDeviceSttPlugin);
+  const fake = createFakeVoiceNotes();
+  const a = space();
+  const b = space();
+  let releaseInsert!: () => void;
+  let enteredInsert!: () => void;
+  let scopeA: ReturnType<typeof beginStorageAccountSession> | null = null;
+  const insertGate = new Promise<void>((resolve) => { releaseInsert = resolve; });
+  const insertEntered = new Promise<void>((resolve) => { enteredInsert = resolve; });
+  await ensureSchema(a.tcw);
+  const originalDb = a.tcw.sql.db.bind(a.tcw.sql);
+  a.tcw.sql.db = ((name: string) => {
+    const db = originalDb(name);
+    return { ...db, execute: async (statement: string, params: unknown[] = []) => {
+      if (statement.includes("INSERT INTO connector_meeting")) {
+        enteredInsert();
+        await insertGate;
+        return { ok: false, error: { code: "STORAGE_QUOTA_EXCEEDED", message: "Storage is full" } };
+      }
+      return db.execute(statement, params as never[]);
+    } };
+  }) as typeof a.tcw.sql.db;
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  let activeHarness = foregroundHarness();
+  Reflect.set(globalThis, "window", activeHarness.windowStub);
+  Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
+  try {
+    scopeA = beginStorageAccountSession(a.tcw, a.tcw.did, a.tcw.spaceId);
+    await fake.plugin.setCaptureDefaults({ accountDid: a.tcw.did, transitionGen: 1, transcriber: "on-device", identifySpeakers: false });
+    await fake.plugin.start();
+    const recording = await fake.plugin.stop();
+    const pipelineA = createVoiceNotePipeline(a.tcw);
+    const oldSave = pipelineA.process(captureAccountContext({ did: a.tcw.did, spaceId: a.tcw.spaceId }), recording.id);
+    await insertEntered;
+    expect(await handoffBeforeCredentialClear(a.tcw.did, pipelineA, 40)).toMatchObject({ ok: true });
+    endStorageAccountSession();
+    await act(async () => activeHarness.root.unmount());
+    const fakeB = createFakeVoiceNotes();
+    __setVoiceNotesForTests(fakeB.plugin, { available: true });
+    beginStorageAccountSession(b.tcw, b.tcw.did, b.tcw.spaceId);
+    await fakeB.plugin.setCaptureDefaults({ accountDid: b.tcw.did, transitionGen: 4, transcriber: "on-device", identifySpeakers: false });
+    await ensureSchema(b.tcw);
+    const harnessB = foregroundHarness();
+    activeHarness = harnessB;
+    Reflect.set(globalThis, "window", harnessB.windowStub);
+    const pipelineB = createVoiceNotePipeline(b.tcw);
+    await act(async () => harnessB.root.render(createElement(PendingVoiceNotesSaver,
+      { tcw: b.tcw, pipeline: pipelineB, backendUrl: "", sessionStore: {} as never })));
+    expect(isStorageReadOnly()).toBe(false);
+    releaseInsert();
+    await oldSave.catch(() => undefined);
+    expect(isStorageReadOnly()).toBe(false);
+    await externalWrite(b.tcw);
+    await settleRecovery();
+    expect(isStorageReadOnly()).toBe(false);
+  } finally {
+    releaseInsert();
+    endStorageAccountSession();
+    await act(async () => activeHarness.root.unmount());
+    if (scopeA) await __waitForStorageRecoveryForTests(a.tcw.did, scopeA);
+    __setOnDeviceSttForTests(previousStt);
+    __setVoiceNotesForTests(original, { available: null });
+    Reflect.set(globalThis, "window", previousWindow);
+    Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", previousAct);
+  }
+});
+
+test("a new account recovery pass runs while the old account's held transcript read stays parked", async () => {
+  const original = VoiceNotes;
+  const previousWindow = globalThis.window;
+  const previousAct = Reflect.get(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+  const previousStt = OnDeviceStt;
+  __setOnDeviceSttForTests({ addListener: async () => ({ remove: async () => {} }) } as unknown as OnDeviceSttPlugin);
+  const fakeA = createFakeVoiceNotes();
+  const fakeB = createFakeVoiceNotes();
+  const a = space();
+  const b = space();
+  let scopeA: ReturnType<typeof beginStorageAccountSession> | null = null;
+  let releaseTranscript!: () => void;
+  let enteredTranscript!: () => void;
+  let spaceFullB = true;
+  let audioPutsB = 0;
+  const transcriptGate = new Promise<void>((resolve) => { releaseTranscript = resolve; });
+  const transcriptEntered = new Promise<void>((resolve) => { enteredTranscript = resolve; });
+  const originalDbA = a.tcw.sql.db.bind(a.tcw.sql);
+  a.tcw.sql.db = ((name: string) => {
+    const db = originalDbA(name);
+    return { ...db, execute: async (statement: string, params: unknown[] = []) =>
+      statement.includes("INSERT INTO voice_note_transcript")
+        ? { ok: false, error: { code: "STORAGE_QUOTA_EXCEEDED", message: "Storage is full" } }
+        : db.execute(statement, params as never[]) };
+  }) as typeof a.tcw.sql.db;
+  const putB = b.tcw.kv.put.bind(b.tcw.kv);
+  b.tcw.kv.put = (async (key: string, value: string, options?: { ifNoneMatch?: string }) => {
+    if (/\/audio\/[^/]+\/p\/\d+$/.test(key)) {
+      audioPutsB++;
+      if (spaceFullB) return { ok: false, error: { code: "STORAGE_QUOTA_EXCEEDED", message: "Storage is full" } };
+    }
+    return putB(key, value, options);
+  }) as typeof b.tcw.kv.put;
+  const harnessA = foregroundHarness();
+  let activeHarness = harnessA;
+  Reflect.set(globalThis, "window", harnessA.windowStub);
+  Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
+  let pipelineA: VoiceNotePipeline | null = null;
+  try {
+    __setVoiceNotesForTests(fakeA.plugin, { available: true });
+    scopeA = beginStorageAccountSession(a.tcw, a.tcw.did, a.tcw.spaceId);
+    await fakeA.plugin.setCaptureDefaults({ accountDid: a.tcw.did, transitionGen: 1, transcriber: "on-device", identifySpeakers: false });
+    await ensureSchema(a.tcw);
+    await fakeA.plugin.start();
+    const discarded = await fakeA.plugin.stop();
+    await fakeA.plugin.deleteAudio({ id: discarded.id });
+    await fakeA.plugin.start();
+    const held = await fakeA.plugin.stop();
+    await createVoiceNoteRow(a.tcw, { id: held.id, startedAt: 0, durationMs: 1_000, mimeType: "audio/mpeg",
+      sizeBytes: 4, silencedMs: 0, silencedEvents: 0, noSignalMs: 0 }, "Held transcript");
+    fakeA.plugin.getTranscript = async () => ({ transcript: {
+      version: 1, noteId: held.id, transcriber: "on-device", rev: 1, engine: "apple-speech", model: null,
+      language: "en", outcome: "transcribed", diarized: false,
+      segments: [{ start: 0, end: 1000, text: "A's original words", speaker: null }],
+      createdAt: "2026-10-03T10:00:00.000Z",
+    } });
+    await syncOnDeviceTranscript(a.tcw, { id: held.id, owner: a.tcw.did, ledger: { audio: { state: "saved" } } });
+    expect(await readTranscriptCommit(a.tcw, held.id)).toBeFalsy();
+
+    fakeA.plugin.getTranscript = async () => {
+      enteredTranscript();
+      await transcriptGate;
+      return { transcript: {
+        version: 1, noteId: held.id, transcriber: "on-device", rev: 1, engine: "apple-speech", model: null,
+        language: "en", outcome: "transcribed", diarized: false,
+        segments: [{ start: 0, end: 1000, text: "A's original words", speaker: null }],
+        createdAt: "2026-10-03T10:00:00.000Z",
+      } };
+    };
+    pipelineA = createVoiceNotePipeline(a.tcw);
+    await act(async () => harnessA.root.render(createElement(PendingVoiceNotesSaver,
+      { tcw: a.tcw, pipeline: pipelineA!, backendUrl: "", sessionStore: {} as never })));
+    await transcriptEntered;
+
+    expect(await handoffBeforeCredentialClear(a.tcw.did, pipelineA)).toMatchObject({ ok: true });
+    endStorageAccountSession();
+    await act(async () => harnessA.root.unmount());
+
+    __setVoiceNotesForTests(fakeB.plugin, { available: true });
+    beginStorageAccountSession(b.tcw, b.tcw.did, b.tcw.spaceId);
+    await fakeB.plugin.setCaptureDefaults({ accountDid: b.tcw.did, transitionGen: 4, transcriber: "on-device",
+      identifySpeakers: false, uploadAudio: true });
+    await ensureSchema(b.tcw);
+    await fakeB.plugin.start();
+    await fakeB.plugin.stop();
+    const harnessB = foregroundHarness();
+    activeHarness = harnessB;
+    Reflect.set(globalThis, "window", harnessB.windowStub);
+    const pipelineB = createVoiceNotePipeline(b.tcw);
+    const reconcilesB = watchReconciles(pipelineB);
+    await act(async () => harnessB.root.render(createElement(PendingVoiceNotesSaver,
+      { tcw: b.tcw, pipeline: pipelineB, backendUrl: "", sessionStore: {} as never })));
+    await reconcilesB.waitFor(1);
+    await __waitForStorageRecoveryForTests(b.tcw.did);
+    expect(audioPutsB).toBe(1);
+    expect(isStorageReadOnly()).toBe(true);
+
+    spaceFullB = false;
+    await externalWrite(b.tcw);
+    await reconcilesB.waitFor(2);
+    await __waitForStorageRecoveryForTests(b.tcw.did);
+    expect(audioPutsB).toBe(2);
+    expect(reconcilesB.completed).toBe(2);
+
+    releaseTranscript();
+    if (scopeA) await __waitForStorageRecoveryForTests(a.tcw.did, scopeA);
+    expect(await readTranscriptCommit(a.tcw, held.id)).toBeFalsy();
+    expect(b.sqlite.query("SELECT count(*) AS n FROM connector_meeting WHERE source_id = ?").get(held.id))
+      .toMatchObject({ n: 0 });
+  } finally {
+    releaseTranscript();
+    endStorageAccountSession();
+    await act(async () => activeHarness.root.unmount());
+    if (scopeA) await __waitForStorageRecoveryForTests(a.tcw.did, scopeA);
+    __setOnDeviceSttForTests(previousStt);
+    __setVoiceNotesForTests(original, { available: null });
+    Reflect.set(globalThis, "window", previousWindow);
+    Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", previousAct);
+  }
+});
+
+test("storage recovery debt is retired across sign-out and never wakes the next account", async () => {
+  const original = VoiceNotes;
+  const previousWindow = globalThis.window;
+  const previousAct = Reflect.get(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+  const previousStt = OnDeviceStt;
+  __setOnDeviceSttForTests({ addListener: async () => ({ remove: async () => {} }) } as unknown as OnDeviceSttPlugin);
+  const fake = createFakeVoiceNotes();
+  const a = space();
+  const b = space();
+  const spaceFull = true;
+  let bAudioPuts = 0;
+  const putA = a.tcw.kv.put.bind(a.tcw.kv);
+  a.tcw.kv.put = (async (key: string, value: string, options?: { ifNoneMatch?: string }) => spaceFull && key.includes("/audio/")
+    ? { ok: false, error: { code: "STORAGE_QUOTA_EXCEEDED", message: "Storage is full" } }
+    : putA(key, value, options)) as typeof a.tcw.kv.put;
+  const putB = b.tcw.kv.put.bind(b.tcw.kv);
+  b.tcw.kv.put = (async (key: string, value: string, options?: { ifNoneMatch?: string }) => {
+    if (key.includes("/audio/")) bAudioPuts++;
+    return putB(key, value, options);
+  }) as typeof b.tcw.kv.put;
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  const harnessA = foregroundHarness();
+  let harness = harnessA;
+  Reflect.set(globalThis, "window", harnessA.windowStub);
+  Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
+  try {
+    beginStorageAccountSession(a.tcw, a.tcw.did, a.tcw.spaceId);
+    await fake.plugin.setCaptureDefaults({ accountDid: a.tcw.did, transitionGen: 1, transcriber: "on-device",
+      identifySpeakers: false, uploadAudio: true });
+    await ensureSchema(a.tcw);
+    await fake.plugin.start();
+    await fake.plugin.stop();
+    const pipelineA = createVoiceNotePipeline(a.tcw);
+    const reconcilesA = watchReconciles(pipelineA);
+    await act(async () => harnessA.root.render(createElement(PendingVoiceNotesSaver,
+      { tcw: a.tcw, pipeline: pipelineA, backendUrl: "", sessionStore: {} as never })));
+    await reconcilesA.waitFor(1);
+    await __waitForStorageRecoveryForTests(a.tcw.did);
+    expect(isStorageReadOnly()).toBe(true);
+
+    expect(await handoffBeforeCredentialClear(a.tcw.did, pipelineA)).toMatchObject({ ok: true });
+    endStorageAccountSession();
+    await act(async () => harnessA.root.unmount());
+    expect(isStorageReadOnly()).toBe(false);
+
+    beginStorageAccountSession(b.tcw, b.tcw.did, b.tcw.spaceId);
+    await fake.plugin.setCaptureDefaults({ accountDid: b.tcw.did, transitionGen: 4, transcriber: "on-device",
+      identifySpeakers: false, uploadAudio: false });
+    await ensureSchema(b.tcw);
+    const harnessB = foregroundHarness();
+    harness = harnessB;
+    Reflect.set(globalThis, "window", harnessB.windowStub);
+    const pipelineB = createVoiceNotePipeline(b.tcw);
+    const reconcilesB = watchReconciles(pipelineB);
+    await act(async () => harnessB.root.render(createElement(PendingVoiceNotesSaver,
+      { tcw: b.tcw, pipeline: pipelineB, backendUrl: "", sessionStore: {} as never })));
+    await reconcilesB.waitFor(1);
+    await __waitForStorageRecoveryForTests(b.tcw.did);
+    expect(isStorageReadOnly()).toBe(false);
+    expect(bAudioPuts).toBe(0);
+    await externalWrite(b.tcw);
+    await settleRecovery();
+    expect(reconcilesB.completed).toBe(1);
+    expect(bAudioPuts).toBe(0);
+    expect(await handoffBeforeCredentialClear(b.tcw.did, pipelineB)).toMatchObject({ ok: true });
+    endStorageAccountSession();
+    await act(async () => harnessB.root.unmount());
+    harness = foregroundHarness();
+    beginStorageAccountSession(a.tcw, a.tcw.did, a.tcw.spaceId);
+    expect(isStorageReadOnly()).toBe(false);
+  } finally {
+    endStorageAccountSession();
+    await act(async () => harness.root.unmount());
+    __setOnDeviceSttForTests(previousStt);
+    __setVoiceNotesForTests(original, { available: null });
+    Reflect.set(globalThis, "window", previousWindow);
+    Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", previousAct);
+  }
+});
+
+// An ordinary successful write outside the saver: the only signal that storage has room again, with no focus event.
+async function externalWrite(tcw: TinyCloudWeb): Promise<void> {
+  const result = await trackStorageWrites(tcw.sql.db(CONNECTORS_SQL_DB_NAME), storageScopeFor(tcw))
+    .execute("DELETE FROM connector_meeting WHERE source_id = ?", ["external-write"]);
+  expect(result).toMatchObject({ ok: true });
+}
+function watchReconciles(pipeline: VoiceNotePipeline) {
+  let completed = 0;
+  const waiting = new Map<number, (() => void)[]>();
+  const reconcile = pipeline.reconcileAll.bind(pipeline);
+  pipeline.reconcileAll = async (...args) => {
+    try {
+      return await reconcile(...args);
+    } finally {
+      completed++;
+      for (const [target, resolvers] of waiting) {
+        if (target > completed) continue;
+        waiting.delete(target);
+        for (const resolve of resolvers) resolve();
+      }
+    }
+  };
+  return {
+    get completed() { return completed; },
+    waitFor(target: number): Promise<void> {
+      if (completed >= target) return Promise.resolve();
+      return new Promise((resolve) => waiting.set(target, [...(waiting.get(target) ?? []), resolve]));
+    },
+  };
+}
+
+
+async function settleRecovery(): Promise<void> {
+  await act(async () => { for (let i = 0; i < 300; i++) await Promise.resolve(); });
+}
+
+test("an on-device transcript held by storage resumes on an external successful write, with no focus event", async () => {
+  const original = VoiceNotes;
+  const previousWindow = globalThis.window;
+  const previousAct = Reflect.get(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+  const previousStt = OnDeviceStt;
+  __setOnDeviceSttForTests({ addListener: async () => ({ remove: async () => {} }) } as unknown as OnDeviceSttPlugin);
+  const fake = createFakeVoiceNotes();
+  const { tcw } = space();
+  let spaceFull = true;
+  let committedWrites = 0;
+  const originalDb = tcw.sql.db.bind(tcw.sql);
+  tcw.sql.db = ((name: string) => ({ ...originalDb(name), execute: async (statement: string, params: unknown[] = []) => {
+    if (spaceFull && statement.includes("INSERT INTO voice_note_transcript")) return { ok: false, error: { code: "STORAGE_QUOTA_EXCEEDED", message: "Storage is full" } };
+    const result = await originalDb(name).execute(statement, params as never[]);
+    if (result.ok && statement.includes("INSERT INTO voice_note_transcript")) committedWrites++;
+    return result;
+  } })) as typeof tcw.sql.db;
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1, transcriber: "on-device", identifySpeakers: false });
+  await ensureSchema(tcw);
+  await fake.plugin.start();
+  const recording = await fake.plugin.stop();
+  await createVoiceNoteRow(tcw, { id: recording.id, startedAt: 0, durationMs: 1_000, mimeType: "audio/mpeg",
+    sizeBytes: 4, silencedMs: 0, silencedEvents: 0, noSignalMs: 0 }, "Held note");
+  fake.plugin.getTranscript = async () => ({ transcript: {
+    version: 1, noteId: recording.id, transcriber: "on-device", rev: 1,
+    engine: "apple-speech", model: null, language: "en", outcome: "transcribed",
+    diarized: false, segments: [{ start: 0, end: 1000, text: "Held words", speaker: null }],
+    createdAt: "2026-10-03T10:00:00.000Z",
+  } });
+  const harness = foregroundHarness();
+  Reflect.set(globalThis, "window", harness.windowStub);
+  Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
+  const settle = () => act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); });
+  try {
+    await syncOnDeviceTranscript(tcw, { id: recording.id, ledger: { audio: { state: "saved" } } });
+    expect(await readTranscriptCommit(tcw, recording.id)).toBeFalsy();
+    const pipeline = createVoiceNotePipeline(tcw);
+    const reconciles = watchReconciles(pipeline);
+    await act(async () => harness.root.render(createElement(PendingVoiceNotesSaver,
+      { tcw, pipeline, backendUrl: "", sessionStore: {} as never })));
+    await reconciles.waitFor(1);
+    await __waitForStorageRecoveryForTests(tcw.did);
+    await settle();
+    spaceFull = false;
+    await settle();
+    // Capacity is back but nothing has written since: the held transcript stays put until an external write.
+    expect(await readTranscriptCommit(tcw, recording.id)).toBeFalsy();
+    await externalWrite(tcw);
+    await reconciles.waitFor(2);
+    await __waitForStorageRecoveryForTests(tcw.did);
+    await settle();
+    expect(await readTranscriptCommit(tcw, recording.id)).toMatchObject({ rev: 1 });
+    expect(committedWrites).toBe(1);
+  } finally {
+    await act(async () => harness.root.unmount());
+    __setOnDeviceSttForTests(previousStt);
+    __setVoiceNotesForTests(original, { available: null });
+    Reflect.set(globalThis, "window", previousWindow);
+    Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", previousAct);
+  }
+});
+
+test("queued audio uploads once on an external successful write, with no focus event", async () => {
+  const original = VoiceNotes;
+  const previousWindow = globalThis.window;
+  const previousAct = Reflect.get(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+  const previousStt = OnDeviceStt;
+  __setOnDeviceSttForTests({ addListener: async () => ({ remove: async () => {} }) } as unknown as OnDeviceSttPlugin);
+  const fake = createFakeVoiceNotes();
+  const { tcw } = space();
+  let spaceFull = true;
+  let audioSaved = 0;
+  const put = tcw.kv.put.bind(tcw.kv);
+  tcw.kv.put = (async (key: string, value: string, options?: { ifNoneMatch?: string }) => {
+    if (spaceFull && key.includes("/audio/")) return { ok: false, error: { code: "STORAGE_QUOTA_EXCEEDED", message: "Storage is full" } };
+    const result = await put(key, value, options);
+    // Each upload writes its parts, then the manifest last: the manifest marks one completed upload.
+    if (key.endsWith("/manifest") && result.ok) audioSaved++;
+    return result;
+  }) as typeof tcw.kv.put;
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1, transcriber: "on-device",
+    identifySpeakers: false, uploadAudio: true });
+  await ensureSchema(tcw);
+  await fake.plugin.start();
+  const recording = await fake.plugin.stop();
+  const events: unknown[] = [];
+  const off = captureEvents.on("library-changed", (event) => { events.push(event); });
+  const harness = foregroundHarness();
+  Reflect.set(globalThis, "window", harness.windowStub);
+  Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
+  const settle = () => act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); });
+  try {
+    const pipeline = createVoiceNotePipeline(tcw);
+    const reconciles = watchReconciles(pipeline);
+    await act(async () => harness.root.render(createElement(PendingVoiceNotesSaver,
+      { tcw, pipeline, backendUrl: "", sessionStore: {} as never })));
+    await reconciles.waitFor(1);
+    await __waitForStorageRecoveryForTests(tcw.did);
+    await settle();
+    expect(events).toEqual([]);
+    spaceFull = false;
+    await settle();
+    await settle();
+    // Capacity is back but nothing has written since: the queued audio stays queued until an external write.
+    expect(events).toEqual([]);
+    expect(audioSaved).toBe(0);
+    await externalWrite(tcw);
+    await reconciles.waitFor(2);
+    await __waitForStorageRecoveryForTests(tcw.did);
+    await settle();
+    expect(events).toEqual([{ source: VOICE_NOTE_SOURCE, sourceId: recording.id }]);
+    expect(audioSaved).toBe(1);
+  } finally {
+    off();
+    await act(async () => harness.root.unmount());
+    __setOnDeviceSttForTests(previousStt);
+    __setVoiceNotesForTests(original, { available: null });
+    Reflect.set(globalThis, "window", previousWindow);
+    Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", previousAct);
+  }
+});
+
+test("audio that never fits: each external successful write runs one recovery pass, and that pass's own writes do not re-trigger it", async () => {
+  const original = VoiceNotes;
+  const previousWindow = globalThis.window;
+  const previousAct = Reflect.get(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+  const previousStt = OnDeviceStt;
+  __setOnDeviceSttForTests({ addListener: async () => ({ remove: async () => {} }) } as unknown as OnDeviceSttPlugin);
+  const fake = createFakeVoiceNotes();
+  const { tcw } = space();
+  let audioAttempts = 0;
+  const put = tcw.kv.put.bind(tcw.kv);
+  tcw.kv.put = (async (key: string, value: string, options?: { ifNoneMatch?: string }) => {
+    if (/\/audio\/[^/]+\/p\/\d+$/.test(key)) {
+      audioAttempts++;
+      return { ok: false, error: { code: "STORAGE_QUOTA_EXCEEDED", message: "Storage is full" } };
+    }
+    return put(key, value, options);
+  }) as typeof tcw.kv.put;
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1, transcriber: "on-device",
+    identifySpeakers: false, uploadAudio: true });
+  await ensureSchema(tcw);
+  await fake.plugin.start();
+  await fake.plugin.stop();
+  const harness = foregroundHarness();
+  Reflect.set(globalThis, "window", harness.windowStub);
+  Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
+  const settle = () => act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); });
+  try {
+    const pipeline = createVoiceNotePipeline(tcw);
+    const reconciles = watchReconciles(pipeline);
+    await act(async () => harness.root.render(createElement(PendingVoiceNotesSaver,
+      { tcw, pipeline, backendUrl: "", sessionStore: {} as never })));
+    await reconciles.waitFor(1);
+    await __waitForStorageRecoveryForTests(tcw.did);
+    await settle();
+    expect(audioAttempts).toBe(1);
+    for (let i = 0; i < 3; i++) {
+      await externalWrite(tcw);
+      await reconciles.waitFor(i + 2);
+    await __waitForStorageRecoveryForTests(tcw.did);
+      await settle();
+      expect(audioAttempts).toBe(i + 2);
+    }
+  } finally {
+    await act(async () => harness.root.unmount());
+    __setOnDeviceSttForTests(previousStt);
+    __setVoiceNotesForTests(original, { available: null });
+    Reflect.set(globalThis, "window", previousWindow);
+    Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", previousAct);
+  }
+});
+
+test("queued audio beside a text-only note uploads once on an external successful write, with no focus event", async () => {
+  const original = VoiceNotes;
+  const previousWindow = globalThis.window;
+  const previousAct = Reflect.get(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+  const previousStt = OnDeviceStt;
+  __setOnDeviceSttForTests({ addListener: async () => ({ remove: async () => {} }) } as unknown as OnDeviceSttPlugin);
+  const fake = createFakeVoiceNotes();
+  const { tcw } = space();
+  let spaceFull = true;
+  let audioSaved = 0;
+  const put = tcw.kv.put.bind(tcw.kv);
+  tcw.kv.put = (async (key: string, value: string, options?: { ifNoneMatch?: string }) => {
+    if (spaceFull && key.includes("/audio/")) return { ok: false, error: { code: "STORAGE_QUOTA_EXCEEDED", message: "Storage is full" } };
+    const result = await put(key, value, options);
+    if (key.endsWith("/manifest") && result.ok) audioSaved++;
+    return result;
+  }) as typeof tcw.kv.put;
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1, transcriber: "on-device",
+    identifySpeakers: false, uploadAudio: true });
+  await ensureSchema(tcw);
+  await fake.plugin.start();
+  await fake.plugin.stop();
+  // A text-only note saves fine while space is full: its successful row writes are what used to hide the audio failure.
+  await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1, transcriber: "on-device",
+    identifySpeakers: false, uploadAudio: false });
+  await fake.plugin.start();
+  await fake.plugin.stop();
+  const harness = foregroundHarness();
+  Reflect.set(globalThis, "window", harness.windowStub);
+  Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
+  const settle = () => act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); });
+  try {
+    const pipeline = createVoiceNotePipeline(tcw);
+    const reconciles = watchReconciles(pipeline);
+    await act(async () => harness.root.render(createElement(PendingVoiceNotesSaver,
+      { tcw, pipeline, backendUrl: "", sessionStore: {} as never })));
+    await reconciles.waitFor(1);
+    await __waitForStorageRecoveryForTests(tcw.did);
+    expect(audioSaved).toBe(0);
+    spaceFull = false;
+    await settle();
+    await settle();
+    // Nothing has written since the failure: no wake, so the queued audio stays queued.
+    expect(audioSaved).toBe(0);
+    await externalWrite(tcw);
+    await reconciles.waitFor(2);
+    await __waitForStorageRecoveryForTests(tcw.did);
+    expect(audioSaved).toBe(1);
+  } finally {
+    await act(async () => harness.root.unmount());
+    __setOnDeviceSttForTests(previousStt);
+    __setVoiceNotesForTests(original, { available: null });
+    Reflect.set(globalThis, "window", previousWindow);
+    Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", previousAct);
+  }
+});
+test("a held on-device transcript commits once when an external write lands during a parked reconcile and a later one follows", async () => {
+  const original = VoiceNotes;
+  const previousWindow = globalThis.window;
+  const previousAct = Reflect.get(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+  const previousStt = OnDeviceStt;
+  __setOnDeviceSttForTests({ addListener: async () => ({ remove: async () => {} }) } as unknown as OnDeviceSttPlugin);
+  const fake = createFakeVoiceNotes();
+  const { tcw } = space();
+  let spaceFull = true;
+  let committedWrites = 0;
+  const originalDb = tcw.sql.db.bind(tcw.sql);
+  tcw.sql.db = ((name: string) => ({ ...originalDb(name), execute: async (statement: string, params: unknown[] = []) => {
+    if (spaceFull && statement.includes("INSERT INTO voice_note_transcript")) return { ok: false, error: { code: "STORAGE_QUOTA_EXCEEDED", message: "Storage is full" } };
+    const result = await originalDb(name).execute(statement, params as never[]);
+    if (result.ok && statement.includes("INSERT INTO voice_note_transcript")) committedWrites++;
+    return result;
+  } })) as typeof tcw.sql.db;
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1, transcriber: "on-device", identifySpeakers: false });
+  await ensureSchema(tcw);
+  await fake.plugin.start();
+  const recording = await fake.plugin.stop();
+  await createVoiceNoteRow(tcw, { id: recording.id, startedAt: 0, durationMs: 1_000, mimeType: "audio/mpeg",
+    sizeBytes: 4, silencedMs: 0, silencedEvents: 0, noSignalMs: 0 }, "Held note");
+  fake.plugin.getTranscript = async () => ({ transcript: {
+    version: 1, noteId: recording.id, transcriber: "on-device", rev: 1,
+    engine: "apple-speech", model: null, language: "en", outcome: "transcribed",
+    diarized: false, segments: [{ start: 0, end: 1000, text: "Held words", speaker: null }],
+    createdAt: "2026-10-03T10:00:00.000Z",
+  } });
+  // The mount pass parks in its reconcile after its held probe has already failed against the full space.
+  let releaseReconcile!: () => void;
+  const reconcileGate = new Promise<void>((resolve) => { releaseReconcile = resolve; });
+  let signalReconcileEntered!: () => void;
+  const reconcileEntered = new Promise<void>((resolve) => { signalReconcileEntered = resolve; });
+  const parkedPipeline = createVoiceNotePipeline(tcw);
+  parkedPipeline.reconcileAll = async () => {
+    signalReconcileEntered();
+    await reconcileGate;
+  };
+  const reconciles = watchReconciles(parkedPipeline);
+  const harness = foregroundHarness();
+  Reflect.set(globalThis, "window", harness.windowStub);
+  Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
+  const settle = settleRecovery;
+  try {
+    await syncOnDeviceTranscript(tcw, { id: recording.id, ledger: { audio: { state: "saved" } } });
+    expect(await readTranscriptCommit(tcw, recording.id)).toBeFalsy();
+    await act(async () => harness.root.render(createElement(PendingVoiceNotesSaver,
+      { tcw, pipeline: parkedPipeline, backendUrl: "", sessionStore: {} as never })));
+    await settle();
+    await reconcileEntered;
+    // Lands while the mount pass is in flight: no wake, and the pass does not replay it.
+    await externalWrite(tcw);
+    spaceFull = false;
+    releaseReconcile();
+    await reconciles.waitFor(1);
+    await __waitForStorageRecoveryForTests(tcw.did);
+    expect(await readTranscriptCommit(tcw, recording.id)).toBeFalsy();
+    // The next successful write after the pass settles is the one that wakes recovery.
+    await externalWrite(tcw);
+    await settleRecovery();
+    await reconciles.waitFor(2);
+    await __waitForStorageRecoveryForTests(tcw.did);
+    await settle();
+    expect(await readTranscriptCommit(tcw, recording.id)).toMatchObject({ rev: 1 });
+    expect(committedWrites).toBe(1);
+  } finally {
+    releaseReconcile();
+    await act(async () => harness.root.unmount());
+    __setOnDeviceSttForTests(previousStt);
+    __setVoiceNotesForTests(original, { available: null });
+    Reflect.set(globalThis, "window", previousWindow);
+    Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", previousAct);
+  }
+});
+
+});
 });

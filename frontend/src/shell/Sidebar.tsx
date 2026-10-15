@@ -6,6 +6,7 @@ import { Link, useLocation } from "react-router-dom";
 import { SettingsIcon, type LucideIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { useStorageReadOnly } from "@/lib/useStorageReadOnly";
 import { BuildInfoLine } from "@/components/BuildInfoLine";
 import { CaptureDot } from "@/capture/recorder/final/CaptureDot";
 import { ActivityPanel } from "@/capture/activity/ActivityPanel";
@@ -54,6 +55,7 @@ export function Sidebar({
 }) {
   const { pathname } = useLocation();
   const onSettings = current === null;
+  const storageFull = useStorageReadOnly();
   return (
     <nav
       aria-label="Primary"
@@ -95,6 +97,7 @@ export function Sidebar({
             className={cn(ROW, rowState(onSettings))}
           >
             <RowContent icon={SettingsIcon} label="Settings" active={onSettings} />
+            {storageFull && <span role="img" aria-label="Storage full" className="absolute right-2 top-2 size-2.5 rounded-full bg-destructive ring-2 ring-background" />}
           </Link>
         </div>
       )}

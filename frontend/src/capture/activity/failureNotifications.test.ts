@@ -163,6 +163,17 @@ test("a failed on-device transcript sync notifies once across three reconcile pa
   expect(dedupe.keys()).toHaveLength(1);
 });
 
+test("a storage-held on-device transcript raises one friendly notification", () => {
+  const held = new Map([[item.sourceId, localTranscriptSync({ state: "held" })]]);
+  const failures = failureNotifications([item], held, "tauri");
+  expect(failures).toHaveLength(1);
+  expect(failures[0]?.track).toBe("sync");
+  expect(failures[0]?.message).toContain("Your TinyCloud storage is full.");
+  const dedupe = new FailureNotificationDedupe();
+  expect(dedupe.take(failures, null)).toHaveLength(1);
+  expect(dedupe.take(failures, null)).toEqual([]);
+});
+
 test("a failed on-device transcript sync stays consumed through syncing and a repeat failure", () => {
   const dedupe = new FailureNotificationDedupe();
   const failed = new Map([[item.sourceId, localTranscriptSync({ state: "failed", message: "write timed out" })]]);

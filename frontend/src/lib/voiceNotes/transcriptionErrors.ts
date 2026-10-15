@@ -1,4 +1,7 @@
 import { privateCloudCodeMessage } from "../privateCloud";
+import { STORAGE_FULL_TRANSCRIPT_NOT_SAVED_LINE, STORAGE_FULL_TRANSCRIPT_NOT_SAVED_LOCAL_AUDIO_LINE } from "../storageStatus";
+
+export const TRANSCRIPT_STORAGE_FULL_CODE = "storage_full";
 
 export interface VoiceNoteTranscriptionFailure {
   code: string;
@@ -8,7 +11,7 @@ export interface VoiceNoteTranscriptionFailure {
   reference: string | null;
 }
 
-const NON_RETRYABLE_CODES: Record<string, true> = {
+const NON_RETRYABLE_CODES: Readonly<Record<string, true>> = {
   invalid_audio: true,
   no_speech: true,
   feature_unavailable: true,
@@ -18,6 +21,7 @@ const NON_RETRYABLE_CODES: Record<string, true> = {
   invalid_argument: true,
   voice_note_not_found: true,
   transcription_off: true,
+  [TRANSCRIPT_STORAGE_FULL_CODE]: true,
   voice_note_account_mismatch: true,
 };
 
@@ -36,6 +40,7 @@ const TRANSCRIPTION_ERROR_COPY: Readonly<Record<string, string>> = {
   service_misconfigured: "Private transcription is not configured for this account.",
   voice_note_not_found: "This voice note no longer exists.",
   transcript_save_failed: "The transcript could not be saved to your space. Retry saves it again.",
+  transcript_save_timed_out: "Saving the transcript to your space took too long. Retry saves it again.",
   note_unreadable: "Could not read this note from your space just now. Retry tries again.",
   audio_read_failed: "Could not read this note's audio from this device or your space. Retry tries again.",
   audio_not_ready: "This recording is still being saved on this device. Try again when it finishes.",
@@ -45,12 +50,18 @@ const TRANSCRIPTION_ERROR_COPY: Readonly<Record<string, string>> = {
   invalid_argument: "This note cannot be transcribed with the supplied audio.",
   transcription_off: "Transcription was turned off.",
   transcript_incomplete: "Private Transcription returned a transcript that may be incomplete. Try again later.",
+  [TRANSCRIPT_STORAGE_FULL_CODE]: STORAGE_FULL_TRANSCRIPT_NOT_SAVED_LINE,
   held_result_persistence_failed: "The finished transcript could not be kept on this device. The Private job remains available for 24 hours; retry now.",
-  voice_note_account_mismatch: "This voice note belongs to a different account. Switch accounts and retry there.",
+  voice_note_account_mismatch: "This voice note belongs to a different account. Switch accounts and retry there."
 };
 
 export function transcriptionErrorCopy(code: string): string | undefined {
   return TRANSCRIPTION_ERROR_COPY[code];
+}
+
+/** A Private transcript that storage refused: the local-audio sentence only with positive evidence the recording is on this device. */
+export function storageFullTranscriptCopy(localAudioReady: boolean): string {
+  return localAudioReady ? STORAGE_FULL_TRANSCRIPT_NOT_SAVED_LOCAL_AUDIO_LINE : STORAGE_FULL_TRANSCRIPT_NOT_SAVED_LINE;
 }
 
 /** Durable failures have only a code; unmapped and unknown codes remain retryable with generic copy. */

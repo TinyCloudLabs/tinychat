@@ -81,7 +81,7 @@ export function isVerifiedSpaceReceipt(receipt: { sha256: string; size: number }
 
 /** Saved, with a verified receipt: the only copy the space is known to hold. Anything else is the phone's own audio. */
 export function hasVerifiedSpaceCopy(note: VoiceNoteRecording): boolean {
-  return note.ledger?.audio.state === "saved" && isVerifiedSpaceReceipt(note.ledger.audio.verifiedInSpace);
+  return note.ledger?.audio?.state === "saved" && isVerifiedSpaceReceipt(note.ledger.audio.verifiedInSpace);
 }
 
 type EvictionContext = { owner: string | null; generation: number };

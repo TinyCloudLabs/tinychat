@@ -7,6 +7,7 @@ import { SettingsIcon } from "lucide-react";
 
 import { CaptureDot } from "@/capture/recorder/final/CaptureDot";
 import { cn } from "@/lib/utils";
+import { useStorageReadOnly } from "@/lib/useStorageReadOnly";
 import { NavBadge } from "./NavBadge";
 import { tabTarget } from "./navigation";
 import { PATHS } from "./routes";
@@ -25,6 +26,7 @@ export function NavRail({
   /** The minimised recorder, above Settings. */
   live?: ReactNode;
 }) {
+  const storageFull = useStorageReadOnly();
   const { pathname } = useLocation();
   const onSettings = current === null;
   return (
@@ -76,7 +78,7 @@ export function NavRail({
             to={PATHS.settings}
             aria-label="Settings"
             aria-current={onSettings ? "page" : undefined}
-            className="tap-transparent group flex size-12 items-center justify-center"
+            className="tap-transparent group relative flex size-12 items-center justify-center"
           >
             <span
               className={cn(
@@ -89,6 +91,7 @@ export function NavRail({
                 className={cn("size-6", onSettings ? "text-foreground [stroke-width:2.25]" : "text-muted-foreground")}
               />
             </span>
+            {storageFull && <span role="img" aria-label="Storage full" className="absolute right-2 top-2 size-2.5 rounded-full bg-destructive ring-2 ring-background" />}
           </Link>
         )}
       </div>

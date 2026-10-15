@@ -5,6 +5,8 @@ import { pipelineTranscriptStatus } from "../pipeline/PipelineTrackSummary";
 import type { NotePipelineView } from "@/lib/voiceNotes/useNotePipeline";
 import type { UploadState } from "@/lib/audioUpload";
 import type { PausedUpload } from "@/capture/upload/pausedUpload";
+import { STORAGE_FULL_SAVE_MESSAGE, isStorageFullError, storageSaveMessage } from "@/lib/storageStatus";
+import { LOCAL_COPY } from "@/lib/voiceNotes/notePipelineCopy";
 
 export type ActivityKind = "finish" | "transcribe" | "sync" | "upload-audio";
 export type ActivityState = "running" | "retrying" | "waiting" | "needs-attention";
@@ -34,6 +36,12 @@ const actionFor = (view: NotePipelineView, step: PipelineStep): ActivityJob["act
   return run ? { label: action.label, run } : undefined;
 };
 const retryCaption = (retryAt: number, now: number): string => `Your TinyCloud space is slow to answer · trying again in ${Math.max(1, Math.ceil((retryAt - now) / 1000))} s`;
+
+/** Details copy. A storage-full failure shows the approved copy, never the raw quota code or message. */
+function failureDetails(failure: { kind: string; message: string }): string {
+  if (failure.kind === "quota" || isStorageFullError(failure.message)) return storageSaveMessage(failure.message) ?? STORAGE_FULL_SAVE_MESSAGE;
+  return `${failure.kind}: ${failure.message}`;
+}
 
 /** One projection for Activity, Library and note detail. The shared space lane is never mistaken for a queue position. */
 export function activityForNote(view: NotePipelineView | undefined, platform: AppPlatform, now = Date.now()): ActivityJob[] {
@@ -66,7 +74,7 @@ export function activityForNote(view: NotePipelineView | undefined, platform: Ap
     const cloud = input.transcript.cloud;
     const phase = cloud?.kind === "active" ? cloud.status.kind : null;
     const od = input.transcript.onDevice;
-    const syncOnly = local && (od?.stt?.state === "done" || od?.sync?.state === "syncing" || od?.sync?.state === "failed");
+    const syncOnly = local && (od?.stt?.state === "done" || od?.sync?.state === "syncing" || od?.sync?.state === "failed" || od?.sync?.state === "held");
     if (!syncOnly) {
       let detail: string;
       if (transcribe.state === "failed") detail = transcribe.blocker?.cause ?? (local ? `Couldn't transcribe on ${device}.` : `${provider === "powerful" ? "Powerful" : provider === "private" ? "Private" : "Cloud"} transcription didn't finish.`);
@@ -82,7 +90,7 @@ export function activityForNote(view: NotePipelineView | undefined, platform: Ap
       else if (phase === "preparing") detail = `Preparing for ${destination}…`;
       else if (phase === "saving") detail = "Saving the transcript to your TinyCloud space…";
       else detail = provider === "powerful" ? "Transcribing with Powerful…" : provider === "private" ? "Transcribing privately…" : "Transcribing…";
-      const diagnostics = cloud?.kind === "failed" ? `${cloud.code}: ${cloud.message}${cloud.reference ? ` · ${cloud.reference}` : ""}` : od?.stt?.error ?? undefined;
+      const diagnostics = cloud?.kind === "failed" ? `${storageSaveMessage(cloud) ?? `${cloud.code}: ${cloud.message}`}${cloud.reference ? ` · ${cloud.reference}` : ""}` : od?.stt?.error ?? undefined;
       jobs.push({ kind: "transcribe", state: stateOf(transcribe), label: "Transcribe", destination, detail,
         progress: transcribe.progress, retry: retryFor(view, transcribe), action: actionFor(view, transcribe), diagnostics,
         failureCode: cloud?.kind === "failed" ? cloud.code : od?.stt?.state === "failed" ? "on-device-stt" : undefined });
@@ -99,7 +107,7 @@ export function activityForNote(view: NotePipelineView | undefined, platform: Ap
     jobs.push({ kind: "sync", state: retryAt && retryAt > now ? "retrying" : upload && state === "running" ? "waiting" : state, label: "Sync", destination: "your TinyCloud space",
       detail: state === "running" && !upload ? "Syncing to your TinyCloud space…" : reason,
       retry: retryFor(view, space), action: retryAt && retryAt > now ? { label: "Try now", run: () => view.onRetryStep ? view.onRetryStep("space") : view.onAction("retry") } : actionFor(view, space),
-      diagnostics: input.space.pending?.failed ? `${input.space.pending.failed.kind}: ${input.space.pending.failed.message}` : undefined,
+      diagnostics: input.space.pending?.failed ? failureDetails(input.space.pending.failed) : undefined,
       failureCode: input.space.pending?.failed?.kind });
     if (upload && input.audioUploadIntent !== false) {
       const progress = upload.total > 0 ? Math.min(1, upload.bytes / upload.total) : undefined;
@@ -109,7 +117,7 @@ export function activityForNote(view: NotePipelineView | undefined, platform: Ap
         detail: uploadFailure ? `Couldn't upload the audio. It's safe on ${device}.` : !input.online ? "Waiting for a connection · syncs by itself" : upload.state === "preparing" ? "Preparing audio upload…"
           : upload.state === "uploading" ? `Uploading audio to your TinyCloud space${progress === undefined ? "…" : ` · ${percent(progress)}`}` : upload.state === "retrying" ? "Retrying audio upload…" : "Waiting to upload audio",
         progress, retry: uploadFailure ? retryFor(view, space) : undefined, action: uploadFailure ? actionFor(view, space) : undefined,
-        diagnostics: uploadFailure ? `${uploadFailure.kind}: ${uploadFailure.message}` : undefined, failureCode: uploadFailure?.kind });
+        diagnostics: uploadFailure ? failureDetails(uploadFailure) : undefined, failureCode: uploadFailure?.kind });
     }
   }
   const notes = steps.get("notes");
@@ -121,9 +129,9 @@ export function activityForNote(view: NotePipelineView | undefined, platform: Ap
   const transcriptSync = input.transcript.onDevice?.sync;
   const existingSync = jobs.findIndex((job) => job.kind === "sync");
   if (transcriptSync?.state === "unrecorded" && existingSync >= 0) jobs[existingSync] = { ...jobs[existingSync]!, state: "needs-attention", detail: "The transcript is in your space, but this device couldn't record that.", diagnostics: transcriptSync.message, failureCode: "transcript-unrecorded", action: view.pipeline.blocker?.action ? { label: view.pipeline.blocker.action.label, run: () => view.onAction(view.pipeline.blocker!.action!.kind) } : undefined };
-  if (transcriptSync && (transcriptSync.state === "syncing" || transcriptSync.state === "failed" || transcriptSync.state === "unrecorded") && !jobs.some((job) => job.kind === "sync")) {
-    jobs.push({ kind: "sync", state: transcriptSync.state === "failed" || transcriptSync.state === "unrecorded" ? "needs-attention" : "running", label: "Sync", destination: "your TinyCloud space",
-      detail: transcriptSync.state === "unrecorded" ? "The transcript is in your space, but this device couldn't record that." : transcriptSync.state === "failed" ? "Couldn't sync to your TinyCloud space." : "Syncing to your TinyCloud space…",
+  if (transcriptSync && (transcriptSync.state === "syncing" || transcriptSync.state === "failed" || transcriptSync.state === "unrecorded" || transcriptSync.state === "held") && !jobs.some((job) => job.kind === "sync")) {
+    jobs.push({ kind: "sync", state: transcriptSync.state === "syncing" ? "running" : "needs-attention", label: "Sync", destination: "your TinyCloud space",
+      detail: transcriptSync.state === "unrecorded" ? "The transcript is in your space, but this device couldn't record that." : transcriptSync.state === "held" ? LOCAL_COPY.transcriptStorageFull(input.device) : transcriptSync.state === "failed" ? "Couldn't sync to your TinyCloud space." : "Syncing to your TinyCloud space…",
       retry: transcribe ? retryFor(view, transcribe) : undefined, action: transcriptSync.state === "unrecorded" && view.pipeline.blocker?.action ? { label: view.pipeline.blocker.action.label, run: () => view.onAction(view.pipeline.blocker!.action!.kind) } : transcribe ? actionFor(view, transcribe) : undefined,
       diagnostics: transcriptSync.state === "unrecorded" || transcriptSync.state === "failed" ? transcriptSync.message : undefined,
       failureCode: transcriptSync.state === "unrecorded" ? "transcript-unrecorded" : transcriptSync.state === "failed" ? "transcript-sync-failed" : undefined });
