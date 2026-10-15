@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { changelogSection, classifyPagesCheckRuns, desktopBundleVersions, planDispatches, setCargoLockVersion, setCargoTomlVersion } from '../release/lib.mjs';
 
@@ -748,6 +748,50 @@ test('desktop-bundle-config.mjs writes the Info.plist overlay for tauri build --
   const plist = read(out, 'Info.bundle-version.plist');
   assert.match(plist, /<key>CFBundleShortVersionString<\/key>\n\t<string>0\.3\.0<\/string>/);
   assert.match(plist, /<key>CFBundleVersion<\/key>\n\t<string>300004<\/string>/);
+});
+
+test('desktop-bundle-config emits a usable config path for normal and smoke builds', t => {
+  const root = manifests(t);
+  for (const dir of ['desktop', 'frontend']) editJson(root, `${dir}/package.json`, pkg => { pkg.version = '0.3.0-beta.4'; });
+  const base = JSON.parse(read(repo, 'desktop/src-tauri/tauri.conf.json'));
+  const expectedOutputs = ['version', 'short-version', 'bundle-version', 'prerelease', 'product-name', 'bundle-identifier', 'config'];
+
+  for (const { smoke, identifier, productName } of [
+    { smoke: false, identifier: 'xyz.tinycloud.exo', productName: 'Exo' },
+    { smoke: true, identifier: 'xyz.tinycloud.exo.smoke', productName: 'Exo Smoke' },
+  ]) {
+    const temp = tempDir(t);
+    const out = join(temp, 'bundle');
+    const githubOutput = join(temp, 'github-output');
+    const args = ['--root', root, '--out', out, ...(smoke ? ['--smoke'] : [])];
+    const result = run('desktop-bundle-config.mjs', args, { GITHUB_OUTPUT: githubOutput });
+    assert.equal(result.status, 0, result.stderr);
+
+    const lines = readFileSync(githubOutput, 'utf8').trimEnd().split('\n');
+    const outputs = Object.fromEntries(lines.map(line => {
+      const separator = line.indexOf('=');
+      assert.ok(separator > 0, `malformed workflow output: ${line}`);
+      return [line.slice(0, separator), line.slice(separator + 1)];
+    }));
+    assert.deepEqual(Object.keys(outputs).sort(), [...expectedOutputs].sort());
+    for (const value of Object.values(outputs)) {
+      assert.equal(typeof value, 'string');
+      assert.ok(!value.includes('[object Object]'), 'outputs must not stringify an object');
+    }
+
+    assert.ok(isAbsolute(outputs.config));
+    assert.ok(outputs.config.endsWith('tauri.bundle.conf.json'));
+    assert.equal(outputs.config, join(out, 'tauri.bundle.conf.json'));
+    assert.ok(existsSync(outputs.config));
+    const overlay = JSON.parse(readFileSync(outputs.config, 'utf8'));
+    const effective = {
+      ...base,
+      ...overlay,
+      bundle: { ...base.bundle, ...overlay.bundle, macOS: { ...base.bundle.macOS, ...overlay.bundle.macOS } },
+    };
+    assert.equal(effective.identifier, identifier);
+    assert.equal(effective.productName, productName);
+  }
 });
 
 // A repo whose main has a release commit at `version`, tagged `exo-desktop@<version>`.

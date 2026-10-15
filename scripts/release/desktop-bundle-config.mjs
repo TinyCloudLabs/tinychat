@@ -52,4 +52,4 @@ setOutput('bundle-version', bundleVersion);
 setOutput('prerelease', String(prerelease));
 setOutput('product-name', values.smoke ? 'Exo Smoke' : 'Exo');
 setOutput('bundle-identifier', values.smoke ? 'xyz.tinycloud.exo.smoke' : 'xyz.tinycloud.exo');
-setOutput('config', config);
+setOutput('config', configPath);
