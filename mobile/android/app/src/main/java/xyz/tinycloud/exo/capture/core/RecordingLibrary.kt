@@ -619,7 +619,7 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
         return localAudioUnready || sttPinned || remoteOpen
     }
     /** Cache trimming never removes local recording originals; callers may clear playback copies only. */
-    fun evictCachedAudio(id: String) = lock.withLock {
+    fun evictCachedAudio(id: String): Unit = lock.withLock {
         requireId(id)
         throw IllegalStateException("audio_in_use")
     }
