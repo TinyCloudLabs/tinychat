@@ -553,6 +553,29 @@ nothing below may be reported as done on its behalf.
   documented local origins on port `5186`. Production must still set
   `FRONTEND_URL=https://tinycloud.chat`; unrelated Pages projects, localhost
   ports, and lookalike domains remain blocked.
+- **SIWE audience (TC-1201):** `/api/auth/verify` checks the signed domain
+  and URI before consuming the nonce. The web SDK signs the page hostname
+  (without the port) and a canonical `did:key` session verification-method
+  URI, not the page origin. Production signs `tinycloud.chat`; one-label
+  branch/commit previews under `tinychat-4jq.pages.dev` sign their exact
+  hostname; local web and macOS desktop sign `localhost`, and Windows desktop
+  signs `tauri.localhost`. Older clients signing the paired
+  `https://<hostname>` URI remain accepted for those web domains. The
+  production web domain comes from `FRONTEND_URL` in
+  `docker-compose.phala.yml`; local and Pages hosts come from
+  `backend/src/cors-origins.ts`. Native OpenKey sign-in (iOS and Android)
+  signs its configured issuer domain (`openkey.so` by default) and a canonical
+  `did:key` session URI, never a web HTTPS URI. Only this native domain
+  requires a strict signed ReCap with at least one KV/SQL grant under
+  `xyz.tinycloud.tinychat/` in the recovered address's applications space,
+  and no foreign app grants. OpenKey's registered native client confines
+  grants issued through its native consent flow to its `appId`. Set
+  `OPENKEY_SIWE_DOMAIN` on the backend if that client's `siweDomain` changes;
+  never use the API host as the signed audience.
+  Nonces remain single-use for five minutes, with at most 2048 pending per
+  backend process; a full store evicts its oldest nonce rather than blocking
+  new sign-ins. The shared `/api/auth` limit is 1200 requests per 15 minutes
+  for all unauthenticated clients, not a per-IP limit.
 - **TLS:** Phala's `dstack-ingress` terminates TLS for the API. The backend's
   local-only `HTTPS_CERT_FILE`/`HTTPS_KEY_FILE` path is unused in production.
 - **What's not included yet:** CI (`ci.yml`) and PR-preview deployments. Port

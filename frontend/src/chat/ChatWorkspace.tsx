@@ -6,6 +6,7 @@ import { useChatRuntime } from "./runtime";
 import { Thread } from "./Thread";
 import { ThreadList } from "./ThreadList";
 import { useAgentAccess } from "./useAgentEnablement";
+import { ChatViewAgentStatusIndicator } from "./ChatAgentStatusIndicator";
 import { ChatViewAgentEnablementBanner } from "./AgentEnablementBanner";
 import { appendCompaction, getLatestCompaction } from "../lib/threadStore";
 import { completeChat, emitReceipt, type ChatMessage } from "../lib/chatApi";
@@ -170,6 +171,7 @@ export function ChatWorkspace(props: {
             newChat={size !== "expanded"}
             verification={wide && model ? <ModelVerificationIndicator model={model} /> : undefined}
           />
+          <ChatViewAgentStatusIndicator />
           <div className="min-h-0 flex-1">
             <Thread
               tcw={props.tcw}

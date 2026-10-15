@@ -15,6 +15,7 @@ import { reconcileAudioCache, useAudioCacheBoot } from "./audioReceiptUpgrade";
 
 const original = VoiceNotes;
 const originalIdb = globalThis.indexedDB;
+const originalStorage = (globalThis as typeof globalThis & { localStorage?: Storage }).localStorage;
 let root: Root | null = null;
 let unmountAccount: (() => void) | null = null;
 let restoreDom: (() => void) | null = null;
@@ -24,6 +25,8 @@ afterEach(async () => {
   unmountAccount?.(); unmountAccount = null;
   restoreDom?.(); restoreDom = null;
   globalThis.indexedDB = originalIdb;
+  if (originalStorage === undefined) Reflect.deleteProperty(globalThis, "localStorage");
+  else Object.defineProperty(globalThis, "localStorage", { configurable: true, value: originalStorage });
   __setVoiceNotesForTests(original, { available: null });
   __resetCaptureEngineForTests();
 });
@@ -59,6 +62,12 @@ function Boot({ tcw }: { tcw: TinyCloudWeb }) {
 async function fixture(mismatch = false, uploadAudio?: boolean) {
   restoreDom = installDom();
   globalThis.indexedDB = new IDBFactory() as unknown as IDBFactory;
+  const storage = new Map<string, string>();
+  Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
+    getItem: (key: string) => storage.get(key) ?? null,
+    setItem: (key: string, value: string) => { storage.set(key, value); },
+    removeItem: (key: string) => { storage.delete(key); },
+  } });
   const did = "did:test:receipt-upgrade";
   // The authenticated saver mount is what makes this account's notes cache candidates.
   unmountAccount?.(); unmountAccount = mountVoiceNoteAccount(did);
@@ -102,14 +111,17 @@ async function fixture(mismatch = false, uploadAudio?: boolean) {
   return { note, kv, tcw, container, size: () => size, evictions: () => evictions };
 }
 
-test("real authenticated boot upgrades a pre-receipt saved file in one remote part read before eviction", async () => {
-  const { note, kv, container, evictions } = await fixture();
+test("authenticated boot upgrades a pre-receipt saved file while trim retains its local bytes", async () => {
+  const { note, kv, container, size, evictions } = await fixture();
   expect(note.ledger?.audio.verifiedInSpace).toMatchObject({ size: 1024 * 1024 });
   expect(kv.gets.filter((key) => key.endsWith("/p/000000"))).toHaveLength(1);
   expect(container.textContent).toContain("1 MB");
-  expect((await cachedAudioSize()).bytes).toBe(1024 * 1024);
+  const cached = await cachedAudioSize();
+  expect(cached.bytes).toBe(0);
+  expect(cached.pinnedBytes).toBe(1024 * 1024);
   await trimCachedAudio(0);
-  expect(evictions()).toBe(1);
+  expect(evictions()).toBe(0);
+  expect(size()).toBe(1024 * 1024);
 });
 
 test("completed reconciliation is cooled down until Settings explicitly requests another pass", async () => {

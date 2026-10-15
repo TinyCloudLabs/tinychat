@@ -62,8 +62,8 @@ import {
   voiceNoteAudioSourceFromBase64,
   type VoiceNoteAudio,
 } from "./voiceNoteStore";
+import { accountStorageKey, VOICE_NOTE_PENDING_JOBS_KEY } from "./sourcePins";
 import {
-  accountStorageKey,
   capacitorPtxPut,
   createVoiceNoteTranscriber,
   createVoiceNoteCloud,
@@ -82,7 +82,6 @@ import {
   voiceNoteSentences,
   voiceNoteTranscriptionFailure,
   VOICE_NOTE_CONSENT_KEY,
-  VOICE_NOTE_PENDING_JOBS_KEY,
   type PtxPutRequest,
   type VoiceNoteCloud,
   type VoiceNoteHoldStore,

@@ -152,9 +152,9 @@ class VoiceNotesPlugin : Plugin(), CaptureEngine.Listener {
         if (engine.status().optString("id") == id) throw IllegalStateException("recording_in_progress")
         engine.library.delete(id); null
     }
+    // Cache clear affects downloaded playback blobs only; RecordingLibrary rejects local-source eviction.
     @PluginMethod fun evictCachedAudio(call: PluginCall) = async(call) {
         val id = call.getString("id") ?: throw IllegalArgumentException("invalid_argument")
-        if (engine.status().optString("id") == id) throw IllegalStateException("recording_in_progress")
         engine.library.evictCachedAudio(id); null
     }
     @PluginMethod fun readAudioChunk(call: PluginCall) = async(call) {
