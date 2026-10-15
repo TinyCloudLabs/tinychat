@@ -23,6 +23,8 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { uploadRunner } from "@/lib/audioUpload";
 import { PlatformContext } from "@/lib/platform";
+import { openManageStorage } from "@/lib/openManageStorage";
+import { isStorageReadOnly, subscribeStorageReadOnly } from "@/lib/storageStatus";
 import { useSizeClass } from "@/lib/sizeClass";
 import { cn } from "@/lib/utils";
 import { activeMeetings, useMeetingBot } from "@/chat/TranscriberSection";
@@ -122,6 +124,7 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
   // The notetaker: one per app, for the Meeting sheet and the In progress rows.
   const bot = useMeetingBot({ backendUrl, sessionStore, active: homeShown });
   const paused = useSyncExternalStore(pausedUpload.subscribe, pausedUpload.snapshot, pausedUpload.snapshot);
+  const storageFull = useSyncExternalStore(subscribeStorageReadOnly, isStorageReadOnly, () => false);
   const { deps: uploadDeps } = useUploadDeps(tcw, backendUrl, sessionStore);
   const [sheet, setSheet] = useState<Sheet | null>(null);
   const [recentNoteId, setRecentNoteId] = useState<string | null>(null);
@@ -199,7 +202,8 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
           pendingNotes: pendingVisible ? recorder.pending.notes ?? [] : [],
           lastError: pendingVisible ? recorder.pending.lastError : null,
           limitNotice: recorder.phase === "recording" ? null : recorder.limitNotice,
-          onSaveNow: recorder.retryPending,
+          onSaveNow: storageFull ? openManageStorage : recorder.retryPending,
+          storageFull,
         }
       : undefined,
     onOpenUpload: () => setSheet("upload"),

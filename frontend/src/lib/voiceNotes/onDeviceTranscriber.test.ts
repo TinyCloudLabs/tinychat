@@ -6,6 +6,7 @@ import { VoiceNotes, __setVoiceNotesForTests, type LocalTranscript, type VoiceNo
 import { setVoiceNoteSaveDeadlineForTests } from "./saveDeadline";
 import { advanceAccountGeneration } from "./accountContext";
 import { resetSpaceLaneForTests, runOnSpaceLane } from "../spaceWriteLane";
+import { __resetStorageStatusForTests, reportStorageError, reportStorageWriteSucceeded, runStorageRecoveryWork } from "@/lib/storageStatus";
 const realCommits = { ...(await import("./voiceNoteCommits")) };
 let spaceCommitPresent = true;
 mock.module("./voiceNoteCommits", () => ({ ...realCommits,
@@ -23,7 +24,7 @@ mock.module("./voiceNoteStore", () => ({ ...realStore,
     checkpoint?.();
     failures.push(code);
   } }));
-const { onDeviceTranscriptSyncState, recordOnDeviceTranscript, subscribeOnDeviceTranscriptSync, syncOnDeviceTranscript } = await import("./onDeviceTranscriber");
+const { __resetOnDeviceTranscriberForTests, onDeviceTranscriptSyncState, recordOnDeviceTranscript, subscribeOnDeviceTranscriptSync, syncOnDeviceTranscript } = await import("./onDeviceTranscriber");
 
 const SAVED = { id: "rec-1", ledger: { audio: { state: "saved" } } };
 const transcript: LocalTranscript = {
@@ -66,9 +67,11 @@ beforeEach(() => {
   } as unknown as VoiceNotesPlugin, { available: true });
   console.warn = () => {};
 });
-afterEach(() => {
+afterEach(async () => {
   console.warn = warn;
+  await __resetOnDeviceTranscriberForTests();
   __setVoiceNotesForTests(realPlugin, { available: null });
+  await __resetStorageStatusForTests();
 });
 afterAll(() => {
   mock.restore();
@@ -109,6 +112,65 @@ describe("syncOnDeviceTranscript publishes the result", () => {
     save = async () => ({ ok: false, error: { code: "SQL", message: "offline" } });
     await syncOnDeviceTranscript(tcw, { ...SAVED, owner: tcw.did, stt: { state: "done" } });
     expect(failures).toEqual(["on_device_transcript_missing", "transcript_read_failed", "transcript_save_failed"]);
+  });
+  test("a timed-out transcript save is shown as failed and passes the transient code to the shared failure boundary", async () => {
+    const tcw = account();
+    save = async () => ({ ok: false, error: { code: "VOICE_NOTE_OPERATION_TIMEOUT", message: "slow" } });
+    await syncOnDeviceTranscript(tcw, { ...SAVED, owner: tcw.did, stt: { state: "done" } });
+    expect(onDeviceTranscriptSyncState(tcw, "rec-1")).toMatchObject({ state: "failed" });
+    expect(failures).toEqual(["transcript_save_timed_out"]);
+  });
+  test("a storage-full transcript save is held: no failure is recorded, a write success alone does not retry it, and a foreground recovery pass re-syncs it", async () => {
+    const tcw = account();
+    let saves = 0;
+    save = async () => {
+      saves++;
+      return saves === 1
+        ? { ok: false, error: { code: "STORAGE_QUOTA_EXCEEDED", message: "Your TinyCloud storage is full" } }
+        : { ok: true, data: {} };
+    };
+    await syncOnDeviceTranscript(tcw, { ...SAVED, owner: tcw.did, stt: { state: "done" } });
+    expect(failures).toEqual([]);
+    expect(onDeviceTranscriptSyncState(tcw, "rec-1")?.state).toBe("held");
+    reportStorageError({ code: "STORAGE_QUOTA_EXCEEDED", message: "full" });
+    reportStorageWriteSucceeded();
+    expect(saves).toBe(1);
+    await runStorageRecoveryWork();
+    expect(onDeviceTranscriptSyncState(tcw, "rec-1")?.state).toBe("synced");
+    expect(saves).toBe(2);
+    expect(failures).toEqual([]);
+  });
+  test("a writable edge that lands while the save is still in flight re-probes once instead of holding the note", async () => {
+    const tcw = account();
+    let saves = 0;
+    save = async () => {
+      saves++;
+      if (saves > 1) return { ok: true, data: {} };
+      reportStorageError({ code: "STORAGE_QUOTA_EXCEEDED", message: "full" });
+      reportStorageWriteSucceeded();
+      return { ok: false, error: { code: "STORAGE_QUOTA_EXCEEDED", message: "Your TinyCloud storage is full" } };
+    };
+    await syncOnDeviceTranscript(tcw, { ...SAVED, owner: tcw.did, stt: { state: "done" } });
+    expect(saves).toBe(2);
+    expect(onDeviceTranscriptSyncState(tcw, "rec-1")?.state).toBe("synced");
+    expect(failures).toEqual([]);
+  });
+  test("a held note survives a sign-out cancelled by the same account and is re-offered under the new generation", async () => {
+    const tcw = account();
+    let saves = 0;
+    save = async () => {
+      saves++;
+      return saves === 1
+        ? { ok: false, error: { code: "STORAGE_QUOTA_EXCEEDED", message: "Your TinyCloud storage is full" } }
+        : { ok: true, data: {} };
+    };
+    await syncOnDeviceTranscript(tcw, { ...SAVED, owner: tcw.did, stt: { state: "done" } });
+    expect(onDeviceTranscriptSyncState(tcw, "rec-1")?.state).toBe("held");
+    advanceAccountGeneration();
+    await runStorageRecoveryWork();
+    expect(saves).toBe(2);
+    expect(onDeviceTranscriptSyncState(tcw, "rec-1")?.state).toBe("synced");
+    expect(failures).toEqual([]);
   });
   test("audio-first and transcript-first completion retain both ledger results", async () => {
     for (const audioFirst of [false, true]) {

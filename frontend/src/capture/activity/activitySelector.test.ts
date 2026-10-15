@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { notePipeline, type NotePipelineInput } from "@/lib/voiceNotes/notePipeline";
 import type { NotePipelineView } from "@/lib/voiceNotes/useNotePipeline";
 import type { UploadState } from "@/lib/audioUpload";
+import { STORAGE_FULL_SAVE_MESSAGE } from "@/lib/storageStatus";
 import { activityForFileUpload, activityForNote, deviceName, noteStatus, type ActivityKind, type ActivityState } from "./activitySelector";
 
 function view(patch: Partial<NotePipelineInput> = {}, provider: NotePipelineView["provider"] = "local"): NotePipelineView {
@@ -200,4 +201,18 @@ test("file import covers paused, uploading, queued, saving, failed and audio sto
   }
   expect(activityForFileUpload({ ...base, stage: "saved", audio: { stage: "stored", pct: 100 } }, null, actions)).toBeNull();
   expect(activityForFileUpload({ ...base, stage: "saved", audio: { stage: "failed", pct: null } }, null, actions)?.jobs[0]?.state).toBe("needs-attention");
+});
+
+test("storage-full sync failure shows approved Details copy, never the raw quota code", () => {
+  const jobs = activityForNote(view({ space: { saved: false, pending: { failed: { kind: "quota", message: "STORAGE_QUOTA_EXCEEDED: full" } }, lane: { busy: false, depth: 0 } } }), "tauri");
+  const sync = jobs.find((job) => job.kind === "sync");
+  expect(sync?.diagnostics).toBe(STORAGE_FULL_SAVE_MESSAGE);
+  expect(JSON.stringify(jobs.map((job) => job.diagnostics))).not.toContain("STORAGE_QUOTA_EXCEEDED");
+});
+
+test("a transcript held by full storage is Manage storage on the sync job, with no second transcribe job", () => {
+  const jobs = activityForNote(view({ space: { saved: true, pending: null, lane: { busy: false, depth: 0 } }, transcript: { inSpace: null, cloud: null, onDevice: { stt: { state: "done", error: null }, queue: null, model: null, download: "idle", sync: { state: "held", message: "x" } } } }), "tauri");
+  expect(jobs.filter((job) => job.kind === "transcribe")).toEqual([]);
+  expect(jobs.find((job) => job.kind === "sync")?.state).toBe("needs-attention");
+  expect(jobs.find((job) => job.kind === "sync")?.action?.label).toBe("Manage storage");
 });

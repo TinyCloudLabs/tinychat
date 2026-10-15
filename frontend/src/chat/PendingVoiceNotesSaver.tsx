@@ -23,6 +23,7 @@ import { isTinyCloudNetworkFailure, logVoiceNoteError, pendingSaveMessage, pendi
 import { advanceAccountGeneration, captureAccountContext, currentAccountGeneration, isAccountContextCurrent, mountVoiceNoteAccount } from "@/lib/voiceNotes/accountContext";
 import { saveDeferredForAccountTransition, type VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
 import { recheckVoiceNoteAvailabilityAutomatically, transcribeSavedNote, voiceNoteTranscriberFor } from "@/lib/voiceNotes/voiceNoteTranscription";
+import { runStorageRecoveryPass, runStorageRecoveryWork, storageScopeFor, subscribeStorageRecoveryWake } from "@/lib/storageStatus";
 
 let recovery: (() => Promise<void>) | null = null;
 /** Keep the mounted saver available to renewal without remounting the view. */
@@ -121,6 +122,7 @@ export function PendingVoiceNotesSaver({
     const did = tcw.did;
     const spaceId = tcw.spaceId;
     if (!did || !spaceId) return;
+    const storageScope = storageScopeFor(tcw);
     pendingStore.setAccount(did);
     pendingStore.setOnline(typeof navigator === "undefined" ? true : navigator.onLine !== false);
     const unmountAccount = mountVoiceNoteAccount(did);
@@ -132,42 +134,64 @@ export function PendingVoiceNotesSaver({
     let dirty = false;
     let disposed = false;
     let appStateHandle: { remove(): Promise<void> } | undefined;
+    // Held storage work keeps its own single-flight, so a long audio reconcile cannot delay it.
+    let heldRecovery: Promise<void> | null = null;
+    const recoverHeld = (): Promise<void> => {
+      heldRecovery ??= runStorageRecoveryWork(storageScope).finally(() => { heldRecovery = null; });
+      return heldRecovery;
+    };
+    // The full pass services held work before reconciling audio and refreshing.
+    const pass = async (): Promise<void> => {
+      const generation = currentAccountGeneration();
+      const account = pendingStore.forAccount(did);
+      try {
+        await runStorageRecoveryPass(async () => {
+          await recoverHeld();
+          await pipeline.reconcileAll({ did, spaceId, generation }, "reconcile", (note) => {
+            if (transcriber) transcribeSavedNote(transcriber, note, () => generation === currentAccountGeneration());
+          });
+          await account.refresh(null);
+        }, did, storageScope);
+      } catch (error) {
+        if (saveDeferredForAccountTransition(error)) return;
+        const message = pendingSaveMessage(error);
+        // Network errors are already logged by messageOf through the redacting formatter.
+        if (!isTinyCloudNetworkFailure(error)) logVoiceNoteError("Saving pending notes failed", error);
+        account.reportError(message);
+      }
+    };
+    // Single-flight. A foreground entry that lands mid-pass marks one follow-up pass.
     const run = (): Promise<void> => {
       if (runInFlight) {
         dirty = true;
         return runInFlight;
       }
-      const runOnce = async () => {
-        const generation = currentAccountGeneration();
-        const account = pendingStore.forAccount(did);
-        try {
-          await pipeline.reconcileAll({ did, spaceId, generation }, "reconcile", (note) => {
-            if (transcriber) transcribeSavedNote(transcriber, note, () => generation === currentAccountGeneration());
-          });
-          await account.refresh(null);
-        } catch (error) {
-          if (saveDeferredForAccountTransition(error)) return;
-          const message = pendingSaveMessage(error);
-          // Network errors are already logged by messageOf through the redacting formatter.
-          if (!isTinyCloudNetworkFailure(error)) logVoiceNoteError("Saving pending notes failed", error);
-          account.reportError(message);
-        }
-      };
       runInFlight = (async () => {
         do {
           dirty = false;
-          await runOnce();
+          await pass();
         } while (dirty && !disposed);
       })().finally(() => { runInFlight = null; });
       return runInFlight;
     };
-    const unregister = registerPendingVoiceNotesRecovery(run);
+    const foreground = (): Promise<void> => {
+      // A new foreground event during a parked reconcile services held work immediately;
+      // otherwise the full pass itself owns the probe so quota stays inside its accounting.
+      if (runInFlight) void recoverHeld();
+      return run();
+    };
+    const unregister = registerPendingVoiceNotesRecovery(foreground);
+    // A successful write outside any pass starts one full recovery pass.
+    // Writes during a pass do not mark it dirty or replay audio probes.
+    const unsubscribeWake = subscribeStorageRecoveryWake(() => {
+      if (!runInFlight) void run();
+    }, storageScope);
     if (transcriber) void recheckVoiceNoteAvailabilityAutomatically(transcriber, isAccountCurrent);
-    void run();
+    void foreground();
     const onOnline = () => {
       pendingStore.setOnline(true);
       if (transcriber) void recheckVoiceNoteAvailabilityAutomatically(transcriber, isAccountCurrent);
-      void run();
+      void foreground();
     };
     const onOffline = () => pendingStore.setOnline(false);
     const windowTarget = typeof window !== "undefined" && typeof window.addEventListener === "function" ? window : undefined;
@@ -177,14 +201,16 @@ export function PendingVoiceNotesSaver({
     const onVisible = () => {
       if (documentTarget?.visibilityState !== "visible") return;
       if (transcriber) void recheckVoiceNoteAvailabilityAutomatically(transcriber, isAccountCurrent);
-      void run();
+      void foreground();
     };
     documentTarget?.addEventListener("visibilitychange", onVisible);
+    const onFocus = () => void foreground();
+    windowTarget?.addEventListener("focus", onFocus);
     if (Capacitor.isNativePlatform()) {
       void import("@capacitor/app").then(({ App }) => App.addListener("appStateChange", ({ isActive }) => {
         if (isActive) {
           if (transcriber) void recheckVoiceNoteAvailabilityAutomatically(transcriber, isAccountCurrent);
-          void run();
+          void foreground();
         }
       })).then((handle) => {
         if (disposed) void handle.remove();
@@ -196,7 +222,9 @@ export function PendingVoiceNotesSaver({
       windowTarget?.removeEventListener("online", onOnline);
       windowTarget?.removeEventListener("offline", onOffline);
       documentTarget?.removeEventListener("visibilitychange", onVisible);
+      windowTarget?.removeEventListener("focus", onFocus);
       if (appStateHandle) void appStateHandle.remove();
+      unsubscribeWake();
       unregister(); unmountAccount(); pipeline.cancelAll(); pendingStore.setAccount(null);
     };
   }, [backendUrl, pipeline, sessionStore, tcw]);

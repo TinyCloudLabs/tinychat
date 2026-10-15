@@ -23,6 +23,7 @@ import {
 import type { VoiceNoteTranscriptionStatus, NoteTranscriptionState } from "./voiceNoteTranscription";
 import { withHostedUploadQueue } from "../hostedUploadQueue";
 import type { CloudClock } from "../privateCloud";
+import { reportStorageError, storageScopeFor } from "../storageStatus";
 
 const CONSENT = "exo.voiceNotes.powerfulConsent";
 const PENDING = "exo.voiceNotes.powerfulJobs";
@@ -53,6 +54,7 @@ async function writeClaim(account: TinyCloudWeb, id: string, claim: Claim, etag?
     etag ? { ifMatch: etag, contentType: "application/json" } : { ifNoneMatch: "*", contentType: "application/json" });
   if (result.ok) return true;
   if (precondition(result.error)) return false;
+  reportStorageError(result.error, storageScopeFor(account));
   throw new Error(`Could not save the Powerful job claim: ${result.error.message}`);
 }
 

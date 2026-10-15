@@ -5,7 +5,7 @@ export function installDom() {
   const dom = new Window({ url: "http://localhost/chat/capture" });
   Object.assign(dom, { TypeError, Error });
   const target = globalThis as typeof globalThis & Record<string, unknown>;
-  const names = ["window", "document", "navigator", "HTMLElement", "Element", "Node", "KeyboardEvent", "CompositionEvent", "Event", "CustomEvent", "FocusEvent", "InputEvent", "MouseEvent", "PointerEvent", "MutationObserver", "getComputedStyle", "requestAnimationFrame", "cancelAnimationFrame"] as const;
+  const names = ["window", "document", "navigator", "HTMLElement", "HTMLInputElement", "Element", "Node", "NodeFilter", "KeyboardEvent", "CompositionEvent", "Event", "CustomEvent", "FocusEvent", "InputEvent", "MouseEvent", "PointerEvent", "MutationObserver", "customElements", "getComputedStyle", "requestAnimationFrame", "cancelAnimationFrame"] as const;
   const previous = new Map<string, PropertyDescriptor | undefined>();
   for (const name of names) {
     previous.set(name, Object.getOwnPropertyDescriptor(globalThis, name));

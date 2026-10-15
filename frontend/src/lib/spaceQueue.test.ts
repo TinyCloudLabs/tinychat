@@ -1,7 +1,14 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import type { SessionStore } from "@tinyboilerplate/client";
 
+import { buildUploadDeps } from "@/capture/upload/useUploadDeps";
+import { prepareLocalTranscript } from "@/lib/localTranscriber";
+import { __resetStorageStatusForTests, beginStorageAccountSession, isStorageReadOnly,
+  storageScopeFor, subscribeStorageRecoveryWake } from "./storageStatus";
 import { runOnSpace, scheduledSpace } from "./spaceQueue";
+
+afterEach(() => __resetStorageStatusForTests());
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -137,3 +144,49 @@ describe("scheduledSpace", () => {
     expect(log).toEqual(["start upload part", "end upload part", "start kv.get", "end kv.get"]);
   });
 });
+  test("managed-session upload saver reports quota and later success through its scheduled-space scope", async () => {
+    const owner = "did:example:upload";
+    const inserted: { value: boolean } = { value: false };
+    const tcw = {
+      did: owner,
+      spaceId: "space-upload",
+      sql: { db: () => ({
+        query: async (sql: string, params: unknown[] = []) => ({
+          ok: true,
+          data: { rows: sql.includes("sqlite_master") ? params.map((name) => [name]) : [] },
+        }),
+        execute: async (sql: string) => {
+          if (!sql.startsWith("INSERT INTO connector_meeting")) return { ok: true, data: { rows: [] } };
+          if (!inserted.value) return { ok: false, error: { code: "STORAGE_QUOTA_EXCEEDED", message: "full" } };
+          return { ok: true, data: { rows: [] } };
+        },
+      }) },
+      kv: { put: async () => ({ ok: true, data: null }) },
+    } as unknown as TinyCloudWeb;
+    beginStorageAccountSession(tcw, owner, tcw.spaceId);
+    const scope = storageScopeFor(tcw)!;
+    const wakes: number[] = [];
+    const unsubscribe = subscribeStorageRecoveryWake(() => wakes.push(1), scope);
+    const deps = buildUploadDeps({ tcw, backendUrl: "http://localhost", sessionStore: {} as SessionStore,
+      origin: null, api: {} as never, hosted: {} as never });
+    const prepared = prepareLocalTranscript({
+      sessionId: "upload-scope",
+      startedAt: "2026-10-14T12:00:00.000Z",
+      model: "QuantizedTinyEn",
+      language: "en",
+      response: { metadata: {}, results: { channels: [{ alternatives: [{ transcript: "hello", confidence: 1,
+        words: [{ word: "hello", start: 0, end: 1, channel: 0 }] }] }] } } as never,
+    });
+    try {
+      const refused = await deps.save(prepared);
+      expect(refused.ok).toBe(false);
+      expect(isStorageReadOnly()).toBe(true);
+      inserted.value = true;
+      const saved = await deps.save(prepared);
+      expect(saved.ok).toBe(true);
+      expect(isStorageReadOnly()).toBe(false);
+      expect(wakes.length).toBeGreaterThan(0);
+    } finally {
+      unsubscribe();
+    }
+  });

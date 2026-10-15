@@ -33,7 +33,7 @@ const PRIVATE_CAP = 7_777;
 const audio = { load: async () => null };
 
 function transcription(patch: Partial<VoiceNoteTranscriptionProps> = {}): VoiceNoteTranscriptionProps {
-  return { availability: "available", consented: true, maxSeconds: 600, maxBytes: 186_496_800, jobs: new Map(), onTranscribe: noop, onConsent: noop, onTurnOff: noop, onRecheck: noop, ...patch };
+  return { availability: "available", consented: true, maxSeconds: 600, maxBytes: 186_496_800, jobs: new Map(), onTranscribe: noop, onTranscribeAgain: () => null, onConsent: noop, onTurnOff: noop, onRecheck: noop, ...patch };
 }
 
 function render(patch: Partial<NoteDetailViewProps> = {}) {
@@ -303,6 +303,28 @@ describe("a voice note's transcription", () => {
       expect(html).toContain("Try again");
       expect(html).toContain('data-testid="transcribe-button"');
     }
+  });
+  test("a Private transcript storage refused: Manage storage, then Transcribe again; the local-audio line only with evidence the recording is here", () => {
+    const persisted = (item: typeof VOICE) => render({
+      item,
+      metadata: { status: "ok", metadata: { transcription_outcome: "failed", transcription_error_code: "storage_full" } },
+      transcript: { status: "absent" },
+      transcription: transcription(),
+    });
+    const bare = persisted(VOICE);
+    expect(bare).toContain("Transcribe it again when space is available.");
+    expect(bare).not.toContain("safe on this device");
+    expect(bare).toContain("Manage storage");
+    expect(bare).toContain("Transcribe again");
+    const withAudio = persisted({ ...VOICE, localAudioReady: true });
+    expect(withAudio).toContain("Your recording is safe on this device.");
+    expect(persisted({ ...VOICE, hasLocalAudio: true })).not.toContain("Your recording is safe on this device.");
+    expect(withAudio).toContain("Manage storage");
+    const live = render({ transcription: transcription({ jobs: new Map([["rec-1", { kind: "failed", code: "storage_full", message: "Your TinyCloud storage is full.", retryable: false, reference: null }]]) }) });
+    expect(live).toContain("Transcribe it again when space is available.");
+    expect(live).not.toContain("safe on this device");
+    expect(live).toContain("Manage storage");
+    expect(live).toContain("Transcribe again");
   });
   test("a persisted provider failure keeps its private-cloud re-upload sentence", () => {
     const html = render({

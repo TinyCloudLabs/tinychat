@@ -40,11 +40,19 @@ import { AgentAccessProvider } from "./chat/useAgentEnablement";
 import { PricingDialog } from "./chat/PricingDialog";
 import { StorageFullDialog } from "./chat/StorageFullDialog";
 import {
+  associateStorageAccountClient,
+  beginStorageAccountSession,
+  endStorageAccountSession,
+  isStorageAccountScopeCurrent,
   isStorageReadOnly,
-  MANAGE_STORAGE_URL,
-  STORAGE_READ_ONLY_NOTICE,
+  storageScopeFor,
   subscribeStorageReadOnly,
+  subscribeStorageScopeRetired,
+  reportStoragePlanTier,
+  STORAGE_READ_ONLY_NOTICE,
 } from "./lib/storageStatus";
+import { openManageStorage } from "./lib/openManageStorage";
+import { useStorageFreePlan } from "./lib/useStorageFreePlan";
 import { RatesDialog } from "./chat/RatesDialog";
 import {
   readMemoryCache,
@@ -251,6 +259,7 @@ export function App() {
     if (storedAddress) clearSendIntentsForOwner(storedAddress);
     clearTranscriptDelegationSchedule(storedAddress);
     sessionStoreRef.current.clear();
+    endStorageAccountSession();
     voiceNotePipeline?.cancelAll();
     openkeyRef.current = null;
     setNativeSessionActive(false);
@@ -268,6 +277,7 @@ export function App() {
     setSpaceId(null);
     setModels(OFFERED_CHAT_MODELS.map(({ id, contextTokens }) => ({ id, contextLength: contextTokens })));
     setBillingStatus(null);
+    reportStoragePlanTier(null);
     setPricingOpen(false);
     setError(warning);
     setState(terminal ? "unauthenticated" : warning ? "recoverableError" : "unauthenticated");
@@ -326,10 +336,12 @@ export function App() {
   const [pricingOpen, setPricingOpen] = useState(false);
   const [storageDialogOpen, setStorageDialogOpen] = useState(false);
   const storageReadOnly = useSyncExternalStore(subscribeStorageReadOnly, isStorageReadOnly, () => false);
+  useEffect(() => subscribeStorageScopeRetired(() => setStorageDialogOpen(false)), []);
   const [ratesOpen, setRatesOpen] = useState(false);
   const [billingNotice, setBillingNotice] = useState<string | null>(null);
   const [shareToken, setShareToken] = useState<string | null>(initialShareToken);
   const paywallEnabled = billingConfig?.paywallEnabled === true;
+  const canUpgrade = useStorageFreePlan() && paywallEnabled;
   const billingTierName = billingConfig?.tiers.find(
     (tier) => tier.id === billingStatus?.tier,
   )?.name ?? (billingStatus
@@ -339,12 +351,15 @@ export function App() {
 
   const refreshBillingStatus = useCallback(async () => {
     try {
+      const scope = tcw ? storageScopeFor(tcw) : null;
       const status = await billingRef.current.getStatus();
+      if (!isStorageAccountScopeCurrent(scope)) return;
       setBillingStatus(status);
+      reportStoragePlanTier(status.tier, scope);
     } catch {
       // status is optional UI; a failure just leaves the indicator unpopulated.
     }
-  }, []);
+  }, [tcw]);
   // Soft refresh after an import: bumping this key remounts the inner runtime
   // tree so useChatRuntime re-runs listThreads() cold. The dialog already
   // clears the index cache, so this avoids window.location.reload while still
@@ -448,10 +463,13 @@ export function App() {
           if (boot.verified) sessionStoreRef.current.setSession(boot.verified.token, boot.verified.expiresIn, boot.verified.address);
           setNativeSessionActive(true);
           const nativeTcw = await startNativeRenewal(boot.tcw, boot.session, boot.openkey, boot.renewAt);
+          const accountDid = boot.tcw.did ?? `did:pkh:eip155:1:${boot.address}`;
+          beginStorageAccountSession(nativeTcw, accountDid, nativeTcw.spaceId ?? null);
+          associateStorageAccountClient(boot.tcw, storageScopeFor(nativeTcw)!);
           setTcw(nativeTcw);
           setAddress(boot.address);
-          setDid(boot.tcw.did ?? `did:pkh:eip155:1:${boot.address}`);
-          setSpaceId(boot.tcw.spaceId ?? null);
+          setDid(accountDid);
+          setSpaceId(nativeTcw.spaceId ?? null);
           setState("ready");
           void ensureTranscriptWriterDelegation({ tcw: nativeTcw, backendUrl: BACKEND_URL, sessionStore: sessionStoreRef.current });
           return;
@@ -500,6 +518,7 @@ export function App() {
           }
         }
         sessionStoreRef.current.clear();
+        endStorageAccountSession();
         setNativeSessionActive(false);
         if (boot.kind === "terminal") setError(NATIVE_SESSION_ENDED_MESSAGE);
         setState("unauthenticated");
@@ -535,15 +554,20 @@ export function App() {
           }),
       });
       switch (restored.kind) {
-        case "restored":
+        case "restored": {
           logSession("restore", "done");
-          setTcw(LOCAL_VALIDATION ? useLocalCanvasStorage(useLocalThreadStorage(restored.tcw)) : restored.tcw);
+          const restoredTcw = LOCAL_VALIDATION ? useLocalCanvasStorage(useLocalThreadStorage(restored.tcw)) : restored.tcw;
+          const accountDid = restored.tcw.did ?? `did:pkh:eip155:1:${restored.address}`;
+          beginStorageAccountSession(restoredTcw, accountDid, restored.tcw.spaceId ?? null);
+          associateStorageAccountClient(restored.tcw, storageScopeFor(restoredTcw)!);
+          setTcw(restoredTcw);
           setAddress(restored.address);
-          setDid(restored.tcw.did ?? `did:pkh:eip155:1:${restored.address}`);
+          setDid(accountDid);
           setSpaceId(restored.tcw.spaceId ?? null);
           setState("ready");
           void ensureTranscriptWriterDelegation({ tcw: restored.tcw, backendUrl: BACKEND_URL, sessionStore: sessionStoreRef.current });
           return;
+        }
         case "unavailable":
           setError(restored.message);
           setState("offline");
@@ -551,6 +575,7 @@ export function App() {
           return;
         case "signedOut":
           if (!await captureHandoff()) { setState("recoverableError"); return; }
+          endStorageAccountSession();
           setState("unauthenticated");
           logSession("restore", "signed_out");
           return;
@@ -842,11 +867,14 @@ export function App() {
         setNativeSessionActive(true);
         const nativeTcw = native.tcw as TinyCloudWeb;
         const readyTcw = await startNativeRenewal(nativeTcw, native.session, native.openkey);
+        const accountDid = nativeTcw.did ?? `did:pkh:eip155:1:${native.verified.address}`;
+        beginStorageAccountSession(readyTcw, accountDid, readyTcw.spaceId ?? null);
+        associateStorageAccountClient(nativeTcw, storageScopeFor(readyTcw)!);
         setTcw(readyTcw);
-        setDid(nativeTcw.did ?? `did:pkh:eip155:1:${native.verified.address}`);
-        setSpaceId(nativeTcw.spaceId ?? null);
-        setState("ready");
+        setDid(accountDid);
+        setSpaceId(readyTcw.spaceId ?? null);
         void ensureTranscriptWriterDelegation({ tcw: readyTcw, backendUrl: BACKEND_URL, sessionStore: sessionStoreRef.current });
+        setState("ready");
         return;
       }
       prefetch = createWebSignInPrefetch(BACKEND_URL, { requestNonce, loadManifest: loadAppManifest });
@@ -895,11 +923,14 @@ export function App() {
       // only the verified login's signatures use the prefetched nonce guard.
       prefetch.complete();
 
-      setTcw(LOCAL_VALIDATION ? useLocalCanvasStorage(useLocalThreadStorage(signedTcw)) : signedTcw);
+      const signedInTcw = LOCAL_VALIDATION ? useLocalCanvasStorage(useLocalThreadStorage(signedTcw)) : signedTcw;
+      beginStorageAccountSession(signedInTcw, signedTcw.did ?? null, signedTcw.spaceId ?? null);
+      associateStorageAccountClient(signedTcw, storageScopeFor(signedInTcw)!);
+      setTcw(signedInTcw);
       setDid(signedTcw.did ?? null);
       setSpaceId(signedTcw.spaceId ?? null);
-      setState("ready");
       void ensureTranscriptWriterDelegation({ tcw: signedTcw, backendUrl: BACKEND_URL, sessionStore: sessionStoreRef.current });
+      setState("ready");
     } catch (caught) {
       if (isSignInCancelled(caught)) {
         setError(null);
@@ -1277,13 +1308,18 @@ export function App() {
         <button type="button" className="ml-3 underline" onClick={() => void signOut()}>Retry</button>
       </div>}
       <MicDeniedRecovery enabled={platform === "android" && voiceNotesInApp && capabilities.micDeniedPresentation && !LOCAL_VALIDATION && (authSettledSignedOut || state === "offline")} onContinue={nativeSignInFlow.micRecoveryContinue} />
-      {storageReadOnly && (
-        <div role="region" aria-label="Storage full: read-only" aria-live="polite" className="border-t border-border bg-muted px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] text-sm">
-          <strong>Storage full: read-only.</strong>{" "}
+      {storageReadOnly && screen.id !== "settings" && (
+        <div data-testid="app-storage-read-only-notice" role="region" aria-label="Storage full" aria-live="polite" className="border-t border-border bg-muted px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] text-sm">
+          <strong>Storage full</strong>{" "}
           {STORAGE_READ_ONLY_NOTICE}{" "}
-          <a className="font-medium underline underline-offset-2" href={MANAGE_STORAGE_URL} target="_blank" rel="noreferrer">
+          <button type="button" className="font-medium underline underline-offset-2" onClick={() => void openManageStorage()}>
             Manage storage
-          </a>
+          </button>
+          {canUpgrade && (
+            <button type="button" className="ml-3 font-medium underline underline-offset-2" onClick={() => void openManageStorage()}>
+              Upgrade
+            </button>
+          )}
         </div>
       )}
 
@@ -1296,7 +1332,7 @@ export function App() {
           onOpenRates={openRates}
         />
       )}
-      <StorageFullDialog open={storageDialogOpen} onOpenChange={setStorageDialogOpen} />
+      <StorageFullDialog open={storageDialogOpen} onOpenChange={setStorageDialogOpen} paywallEnabled={paywallEnabled} />
 
       <RatesDialog
         open={ratesOpen}

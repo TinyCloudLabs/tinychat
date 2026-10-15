@@ -2,6 +2,7 @@
 // no em dashes. Every blocker line says what is wrong and, where it is true, that the note is safe.
 import type { PipelineActionKind, PipelineDevice, StepKey } from "./notePipeline";
 import { deviceName as platformDeviceName } from "@/lib/platform";
+import { STORAGE_FULL_RECORDING_LINE, STORAGE_FULL_TRANSCRIPT_LINE } from "@/lib/storageStatus";
 
 export const deviceName = (device: PipelineDevice): string => platformDeviceName(device === "mac" ? "tauri" : device === "iphone" ? "ios" : device === "android" ? "android" : device === "browser" ? "web" : undefined);
 
@@ -16,6 +17,7 @@ export const ACTION_LABEL: Record<PipelineActionKind, string> = {
   "sign-in": "Sign in",
   retry: "Try again",
   "get-model": "Get model",
+  "manage-storage": "Manage storage",
   "check-again": "Check again",
   "review-consent": "Review consent",
   reread: "Try again",
@@ -64,7 +66,7 @@ export const SPACE_COPY = {
   sessionExpired: (device: PipelineDevice) => `Your session ended. This note is safe on ${deviceName(device)}.`,
   otherAccount: "Recorded on another account",
   accountUnknown: (device: PipelineDevice) => `Exo can't tell which account this note belongs to. It stays on ${deviceName(device)}.`,
-  quota: "Your space is full",
+  quota: (device: PipelineDevice) => `Saved on ${deviceName(device)}. ${STORAGE_FULL_RECORDING_LINE}`,
   timeout: (device: PipelineDevice) => `Saving timed out. This note is safe on ${deviceName(device)}.`,
   server: (_detail: string | null | undefined, device: PipelineDevice) =>
     `Your space couldn't take this note. It is safe on ${deviceName(device)}. Try again.`,
@@ -101,6 +103,7 @@ export const LOCAL_COPY = {
   transcriptReadFailed: `Couldn't read the transcript on ${deviceName("phone")}.`,
   transcriptCheckFailed: `Couldn't check this note on ${deviceName("phone")}.`,
   transcriptSyncFailed: "Couldn't add the transcript to this note.",
+  transcriptStorageFull: (device: PipelineDevice) => `Saved on ${deviceName(device)}. ${STORAGE_FULL_TRANSCRIPT_LINE}`,
   unrecorded: (device: PipelineDevice) => `The transcript is in your space, but ${deviceName(device)} couldn't record it.`,
   checkingSpace: "Checking your space…",
   checkingSpaceAfterUploads: "Checking your space · after uploads",
