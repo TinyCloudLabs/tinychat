@@ -240,6 +240,17 @@ describe("createFetchPtxPut", () => {
     expect(Array.from(ptx.puts[0]!.body)).toEqual([82, 73, 70, 70]);
   });
 
+  test("passes AbortSignal to the PUT and aborts the request at the timeout", async () => {
+    let signal: AbortSignal | undefined;
+    const fetcher = ((_: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      signal = init?.signal ?? undefined;
+      signal?.addEventListener("abort", () => reject(new DOMException("The upload timed out", "AbortError")), { once: true });
+    })) as typeof fetch;
+    const error = await createFetchPtxPut(fetcher, 1)(request).catch((caught: unknown) => caught);
+    expect(signal).toBeInstanceOf(AbortSignal);
+    expect(signal?.aborted).toBe(true);
+    expect(error).toMatchObject({ code: "upload_outcome_unknown", correlationId: "cid-1" });
+  });
   test("a non-JSON or empty body is null, the status still comes through", async () => {
     expect(await createFetchPtxPut(fakePtx(() => new Response("<html>", { status: 502 })).fetchImpl)(request)).toEqual({ status: 502, body: null });
     expect(await createFetchPtxPut(fakePtx(() => new Response(null, { status: 201 })).fetchImpl)(request)).toEqual({ status: 201, body: null });
@@ -286,7 +297,7 @@ const undecodable = async (): Promise<{ durationMs: number }> => { throw new Dec
 describe("boot recovery", () => {
   test("a recording whose tab died is committed before the engine is handed back, and drains through T18", async () => {
     const first = await createRig();
-    await first.engine.plugin.setCaptureDefaults({ accountDid: A, transitionGen: 1, transcriber: "private-cloud", identifySpeakers: false });
+    await first.engine.plugin.setCaptureDefaults({ accountDid: A, transitionGen: 1, transcriber: "private-cloud", identifySpeakers: false, uploadAudio: true });
     const { id } = await first.engine.plugin.start();
     await first.chunk([9, 8, 7]);
     // The tab reloads mid-recording: nothing was stopped.
@@ -308,7 +319,7 @@ describe("boot recovery", () => {
 
   test("a recording A made is never drained under B; it uploads when A is back", async () => {
     const first = await createRig();
-    await first.engine.plugin.setCaptureDefaults({ accountDid: A, transitionGen: 1, transcriber: "private-cloud", identifySpeakers: false });
+    await first.engine.plugin.setCaptureDefaults({ accountDid: A, transitionGen: 1, transcriber: "private-cloud", identifySpeakers: false, uploadAudio: true });
     const { id } = await first.engine.plugin.start();
     await first.chunk([1, 2, 3]);
     rig = await first.reopen();
@@ -333,7 +344,7 @@ describe("boot recovery", () => {
 
   test("an account switch while recovery runs: recovery still completes and the note stays with its owner", async () => {
     const first = await createRig();
-    await first.engine.plugin.setCaptureDefaults({ accountDid: A, transitionGen: 1, transcriber: "private-cloud", identifySpeakers: false });
+    await first.engine.plugin.setCaptureDefaults({ accountDid: A, transitionGen: 1, transcriber: "private-cloud", identifySpeakers: false, uploadAudio: true });
     const { id } = await first.engine.plugin.start();
     await first.chunk([5, 5, 5]);
     rig = await first.reopen();
@@ -354,7 +365,7 @@ describe("boot recovery", () => {
 
   test("a recording already in quarantine from an earlier run reaches the controller's recoveryFailed once", async () => {
     const first = await createRig();
-    await first.engine.plugin.setCaptureDefaults({ accountDid: A, transitionGen: 1, transcriber: "private-cloud", identifySpeakers: false });
+    await first.engine.plugin.setCaptureDefaults({ accountDid: A, transitionGen: 1, transcriber: "private-cloud", identifySpeakers: false, uploadAudio: true });
     const { id } = await first.engine.plugin.start();
     await first.chunk([1, 2, 3]);
     rig = await first.reopen({ decodeCheck: undecodable });
@@ -394,7 +405,7 @@ describe("the controller receives boot recovery", () => {
   /** A recording of `owner` (null: recorded signed out) whose tab died and that this boot cannot decode. */
   async function bootWithParked(owner: string | null) {
     const first = await createRig();
-    if (owner) await first.engine.plugin.setCaptureDefaults({ accountDid: owner, transitionGen: 1, transcriber: "private-cloud", identifySpeakers: false });
+    if (owner) await first.engine.plugin.setCaptureDefaults({ accountDid: owner, transitionGen: 1, transcriber: "private-cloud", identifySpeakers: false, uploadAudio: true });
     const { id } = await first.engine.plugin.start();
     await first.chunk([1, 2, 3]);
     rig = await first.reopen({ decodeCheck: undecodable });
@@ -477,7 +488,7 @@ describe("the controller receives boot recovery", () => {
 
   test("a decoder_unavailable recording that is not quarantined is announced to a later controller too", async () => {
     const first = await createRig();
-    await first.engine.plugin.setCaptureDefaults({ accountDid: A, transitionGen: 1, transcriber: "private-cloud", identifySpeakers: false });
+    await first.engine.plugin.setCaptureDefaults({ accountDid: A, transitionGen: 1, transcriber: "private-cloud", identifySpeakers: false, uploadAudio: true });
     const { id } = await first.engine.plugin.start();
     await first.chunk([1, 2, 3]);
     rig = await first.reopen({ decodeCheck: async () => { throw new DecodeCheckError("resource", "no decoder"); } });

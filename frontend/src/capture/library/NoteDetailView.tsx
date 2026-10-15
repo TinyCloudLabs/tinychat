@@ -336,6 +336,10 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
       if (!(error instanceof DOMException && error.name === "AbortError")) setExportError(true);
     }
   };
+  const committedOutcome = voiceNote && props.transcriptProvenance !== null && props.transcriptProvenance !== undefined
+    && metadata?.status === "ok"
+    && (metadata.metadata.transcription_outcome === "transcribed" || metadata.metadata.transcription_outcome === "no_speech");
+  const rerunJob = props.transcription?.jobs.get(item.sourceId);
   return (
     <section aria-labelledby="note-transcript" data-testid="note-transcript" className="flex flex-col gap-3">
       <div className="flex min-h-11 flex-wrap items-center gap-x-3">
@@ -439,6 +443,27 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
         <p className="text-callout text-muted-foreground" data-testid="note-transcript-absent">
           No transcript stored yet.
         </p>
+      )}
+      {committedOutcome && (
+        <div className="flex flex-col gap-2" data-testid="voice-note-transcription-rerun">
+          {rerunJob?.kind === "active" && (
+            <p role="status" className="flex items-center gap-2 text-callout text-muted-foreground">
+              <Loader2Icon className="size-4 shrink-0 motion-safe:animate-spin" aria-hidden /> {transcriptionStatusText(rerunJob.status)}
+            </p>
+          )}
+          {rerunJob?.kind === "failed" && (
+            <p role="alert" className="text-callout text-destructive" data-testid="voice-note-rerun-failed">
+              {rerunJob.message}{rerunJob.reference && <span className="text-muted-foreground"> Reference: {rerunJob.reference}</span>}
+            </p>
+          )}
+          <OnDeviceNoteStatus noteId={item.sourceId} fallback={null} transcription={props.transcription}
+            durationSecs={item.durationSecs} rerunOnly />
+          <DesktopWhisperStatus noteId={item.sourceId} fallback={null} enabled={props.desktopWhisper} rerunOnly />
+          {rerunJob?.kind !== "active" && (
+            <TranscribeAction noteId={item.sourceId} transcription={props.transcription} durationSecs={item.durationSecs}
+              rerun label={rerunJob?.kind === "failed" ? "Try again" : "Transcribe again…"} />
+          )}
+        </div>
       )}
     </section>
   );

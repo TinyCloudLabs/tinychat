@@ -76,6 +76,7 @@ export interface RecorderValue {
   /** How the last recording ended; drives the receipt. */
   outcome: "local" | "saved" | "failed" | null;
   localUpload: RecorderState["localUpload"];
+  localUploadHeldReason?: RecorderState["localUploadHeldReason"];
   lastSaved: RecorderState["lastSaved"];
   /** The recording in progress, or stopping: its capture issue and error belong to it. */
   recordingId: RecorderState["recordingId"];
@@ -403,6 +404,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       error: state.error ?? defaultsError,
       outcome: state.outcome,
       localUpload: state.localUpload,
+      localUploadHeldReason: state.localUploadHeldReason,
       lastSaved: state.lastSaved,
       ...recordingIdentity(state),
       pending: recorder.pending,
