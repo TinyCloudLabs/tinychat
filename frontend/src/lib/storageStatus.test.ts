@@ -9,6 +9,8 @@ import {
   reportStoragePlanTier,
   reportStorageWriteSucceeded,
   runStorageRecoveryWork,
+  MANAGE_STORAGE_URL,
+  STORAGE_READ_ONLY_NOTICE,
   STORAGE_FULL_DETAIL,
   STORAGE_FULL_RECORDING_LINE,
   STORAGE_FULL_TRANSCRIPT_LINE,
@@ -63,6 +65,12 @@ describe("storage-full copy", () => {
     expect(STORAGE_FULL_DETAIL[isFreeStoragePlan() ? "free" : "paid"]).toBe(STORAGE_FULL_DETAIL.paid);
     reportStoragePlanTier("free");
     expect(STORAGE_FULL_DETAIL[isFreeStoragePlan() ? "free" : "paid"]).toBe(STORAGE_FULL_DETAIL.free);
+  });
+  test("uses the canonical shared storage notice and billing link", () => {
+    expect(STORAGE_READ_ONLY_NOTICE).toBe(
+      "Your TinyCloud storage, shared by all your TinyCloud apps, is full. You can still view and copy your data. New changes can't be saved while your storage is full.",
+    );
+    expect(MANAGE_STORAGE_URL).toBe("https://account.tinycloud.xyz/billing?reason=storage-full");
   });
 });
 
