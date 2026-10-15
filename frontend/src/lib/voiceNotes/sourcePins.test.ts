@@ -58,6 +58,14 @@ test("durable PTX pins are account-scoped", async () => {
   expect(await isSourcePinned("did:test:other", ID)).toBe(false);
 });
 
+test("a held-result lock miss remains pinned for automatic retry", async () => {
+  const pending = localStorageVoiceNotePendingStore(DID, storage);
+  pending.write(ID, { attemptId: "held-lock", transcriptionId: null, failure: "held_result_lock_busy" });
+  const heldAt = Date.parse("2026-01-01T00:00:00.000Z");
+  expect(await isSourcePinned(DID, ID, heldAt)).toBe(true);
+  expect(await isSourcePinned(DID, ID, heldAt + 31 * 24 * 60 * 60 * 1000)).toBe(true);
+});
+
 test("corrupt pending and choice JSON fail closed", async () => {
   storage.setItem(accountStorageKey(VOICE_NOTE_PENDING_JOBS_KEY, DID), "{");
   expect(await isSourcePinned(DID, ID)).toBe(true);
