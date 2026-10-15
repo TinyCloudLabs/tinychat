@@ -14,13 +14,15 @@ import {
   deviceName,
   percentText,
 } from "./notePipelineCopy";
+import { storageFullPrecedesChoiceFailure, TRANSCRIPT_STORAGE_FULL_CODE } from "./transcriptionErrors";
+import { STORAGE_FULL_TRANSCRIPT_NOT_SAVED_LINE, STORAGE_FULL_TRANSCRIPT_NOT_SAVED_LOCAL_AUDIO_LINE } from "@/lib/storageStatus";
 
 export type PipelineDevice = "phone" | "mac" | "iphone" | "android" | "browser";
 export type PipelineRoute = "off" | "on-device" | "private-cloud";
 export type StepKey = "phone" | "space" | "transcript" | "notes";
 export type StepState = "done" | "active" | "waiting" | "blocked" | "failed" | "upcoming" | "skipped";
 /** `reread`: read again what failed to read (it belongs to no one step). */
-export type PipelineActionKind = "sign-in" | "retry" | "get-model" | "check-again" | "reread" | "review-consent";
+export type PipelineActionKind = "sign-in" | "retry" | "get-model" | "check-again" | "reread" | "review-consent" | "manage-storage";
 
 // --- Input: mirrors of the signals --------------------------------------------------------------------------
 
@@ -60,7 +62,7 @@ export type PipelineModelState = "absent" | "queued" | "downloading" | "verifyin
 export type PipelineDownloadState = "idle" | "running" | "waiting_for_network" | "low_data_mode" | "failed";
 
 /** `OnDeviceTranscriptSyncState` (P2): the local transcript's write onto the space row. */
-export type PipelineTranscriptSync = { state: "syncing" } | { state: "synced" } | { state: "failed"; message: string } | { state: "unrecorded"; message: string };
+export type PipelineTranscriptSync = { state: "syncing" } | { state: "synced" } | { state: "failed"; message: string } | { state: "unrecorded"; message: string } | { state: "held"; message: string };
 
 export interface PipelineOnDevice {
   /** This note's native queue job; null when native has no job for it. */
@@ -138,6 +140,11 @@ export interface NotePipelineInput {
      * not being transcribed and will not be unless asked, so the step is skipped, like a note committed to no transcript.
      */
     cloudIdle?: true;
+    /**
+     * Positive evidence the recording's audio is on this device (the phone's ledger says its local copy is ready). Without it
+     * the storage-full copy makes no claim about the recording.
+     */
+    localAudioReady?: true;
     /** The space row has not been read yet (it queues behind uploads on the write lane): what only it can say is not known. */
     spaceReading?: boolean;
     /** With `spaceReading`: uploads are ahead of that read in the write lane. */
@@ -165,6 +172,8 @@ export interface PipelineStep {
 export interface PipelineBlocker {
   cause: string;
   action?: { kind: PipelineActionKind; label: string };
+  /** A second action after `action`: Private storage full offers Manage storage, then Transcribe again. Surfaces that show one action show `action`. */
+  secondaryAction?: { kind: PipelineActionKind; label: string };
   /** The action transcribes the note again, so a surface that can offer the user's choice of provider shows that in its place. */
   chooseProvider?: true;
 }
@@ -189,6 +198,7 @@ export function pipelineActionPriority(kind: PipelineActionKind | undefined): nu
     case "sign-in": return 4;
     case "get-model": return 3;
     case "retry": return 2;
+    case "manage-storage": return 2;
     case "check-again": return 1;
     case "review-consent": return 1;
     case "reread": return 0;
@@ -205,6 +215,13 @@ const block = (cause: string, kind?: PipelineActionKind, chooseProvider = false)
   kind === undefined ? { cause } : { cause, action: { kind, label: ACTION_LABEL[kind] }, ...(chooseProvider ? { chooseProvider: true as const } : {}) };
 const blocked = (cause: string, kind?: PipelineActionKind, chooseProvider = false): Result => ({ state: "blocked", blocker: block(cause, kind, chooseProvider) });
 const failed = (cause: string, kind?: PipelineActionKind, chooseProvider = false): Result => ({ state: "failed", blocker: block(cause, kind, chooseProvider) });
+const TRANSCRIBE_AGAIN_LABEL = "Transcribe again";
+/** Private transcript refused by full storage: it was not saved, and its copy claims local audio only with positive evidence. */
+const storageFullBlocker = (localAudioReady: boolean): PipelineBlocker => ({
+  cause: localAudioReady ? STORAGE_FULL_TRANSCRIPT_NOT_SAVED_LOCAL_AUDIO_LINE : STORAGE_FULL_TRANSCRIPT_NOT_SAVED_LINE,
+  action: { kind: "manage-storage", label: ACTION_LABEL["manage-storage"] },
+  secondaryAction: { kind: "retry", label: TRANSCRIBE_AGAIN_LABEL },
+});
 const fraction = (done: number, total: number): number | null => (total > 0 && Number.isFinite(done) ? Math.min(1, Math.max(0, done / total)) : null);
 const withProgress = (state: "active" | "waiting", caption: string, progress: number | null): Result =>
   progress === null ? { state, caption } : { state, caption, progress };
@@ -240,7 +257,7 @@ function spaceStep(input: NotePipelineInput): Result {
   if (failure !== undefined) {
     switch (failure.kind) {
       case "auth": return blocked(SPACE_COPY.sessionExpired(device), "sign-in");
-      case "quota": return blocked(SPACE_COPY.quota);
+      case "quota": return blocked(SPACE_COPY.quota(device), "manage-storage");
       case "offline":
         return failed(SPACE_COPY.unreachable(device), "retry");
       case "timeout": return failed(SPACE_COPY.timeout(device), "retry");
@@ -294,6 +311,7 @@ function modelStep(od: PipelineOnDevice, device: PipelineDevice): Result | null 
 function onDeviceStep(input: NotePipelineInput, od: PipelineOnDevice): Result {
   const saved = input.space.saved;
   const { sync, stt, queue } = od;
+  if (sync?.state === "held") return blocked(LOCAL_COPY.transcriptStorageFull(input.device), "manage-storage");
   if (sync?.state === "failed") return failed(LOCAL_COPY.syncFailed(), "retry");
   if (sync?.state === "syncing") return { state: "active", caption: LOCAL_COPY.adding };
   if (sync?.state === "synced" || sync?.state === "unrecorded") return { state: "done" };
@@ -330,13 +348,14 @@ function cloudBlockedStep(reason: PipelineBlockedReason, provider: NotePipelineI
   }
 }
 
-function cloudStep(cloud: PipelineCloud | null, spaceSaved: boolean, checkingCaption: string | null, provider: NotePipelineInput["transcriptProvider"] = "private"): Result {
+function cloudStep(cloud: PipelineCloud | null, spaceSaved: boolean, checkingCaption: string | null, provider: NotePipelineInput["transcriptProvider"] = "private", localAudioReady = false): Result {
   if (!spaceSaved) return { state: "upcoming" };
   if (cloud === null) return { state: "waiting", caption: checkingCaption ?? (provider === "powerful" ? "Waiting for Powerful" : provider === "unknown" ? "Waiting for transcription" : PRIVATE_COPY.notStarted) };
   switch (cloud.kind) {
     case "done": return { state: "done", sublabel: cloud.outcome === "no_speech" ? TRANSCRIPT_COPY.noSpeechInSpace : TRANSCRIPT_COPY.savedInSpace };
     case "held": return blocked(cloud.message.trim() || PRIVATE_COPY.notStarted);
     case "failed":
+      if (cloud.code === TRANSCRIPT_STORAGE_FULL_CODE) return { state: "blocked", blocker: storageFullBlocker(localAudioReady) };
       return failed(PRIVATE_COPY.failed(cloud.code, provider), cloud.retryable ? "retry" : undefined, cloud.retryable);
     case "blocked": return cloudBlockedStep(cloud.reason, provider);
     case "active": {
@@ -363,7 +382,10 @@ function transcriptStep(input: NotePipelineInput): Result {
   if (input.route === "private-cloud" && !input.space.saved) return { state: "waiting", caption: PRIVATE_COPY.afterUpload };
   if (inSpace !== null) return { state: "done", sublabel: inSpace === "no_speech" ? TRANSCRIPT_COPY.noSpeechInSpace : TRANSCRIPT_COPY.savedInSpace };
   if (input.route === "private-cloud" && cloud === null && input.transcript.cloudIdle === true) return { state: "skipped" };
-  if (input.route === "private-cloud") return cloudStep(cloud, input.space.saved, input.transcript.spaceReading === true ? checking(input.transcript) : null, input.transcriptProvider);
+  if (input.route === "private-cloud" && cloud?.kind === "failed"
+    && storageFullPrecedesChoiceFailure(input.transcript.persistedState, input.transcript.errorCode, cloud.code))
+    return { state: "blocked", blocker: storageFullBlocker(input.transcript.localAudioReady === true) };
+  if (input.route === "private-cloud") return cloudStep(cloud, input.space.saved, input.transcript.spaceReading === true ? checking(input.transcript) : null, input.transcriptProvider, input.transcript.localAudioReady === true);
   if (onDevice === null) return input.space.saved ? { state: "waiting", caption: input.transcript.spaceReading === true ? checking(input.transcript) : LOCAL_COPY.notStarted } : { state: "upcoming" };
   return onDeviceStep(input, onDevice);
 }

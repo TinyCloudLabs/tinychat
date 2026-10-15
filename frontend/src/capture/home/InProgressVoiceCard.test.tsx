@@ -7,6 +7,7 @@ import { createFakeVoiceNotes } from "@/lib/voiceNotes/fakeVoiceNotes";
 import { __setVoiceNotesForTests } from "@/lib/voiceNotes/nativeVoiceNotes";
 import type { NotePipeline, PipelineActionKind } from "@/lib/voiceNotes/notePipeline";
 import type { NotePipelineView } from "@/lib/voiceNotes/useNotePipeline";
+import { pipelineOf } from "../pipeline/pipelineFixtures";
 import { installDom } from "@/test/dom";
 import { InProgressVoiceCard, type InProgressNoteRow } from "./InProgressVoiceCard";
 
@@ -148,5 +149,13 @@ describe("InProgressVoiceCard", () => {
     ));
     await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="voice-note-action"]')!.click());
     expect(seen).toEqual([["sign-in", "rec-a"]]);
+  });
+
+  test("a full TinyCloud space offers Manage storage, never Save now or the raw quota code", () => {
+    const full = pipelineOf({ space: { saved: false, pending: { failed: { kind: "quota", message: "STORAGE_QUOTA_EXCEEDED: saveVoiceNote(audio)" } } } });
+    const output = html([row("full", full)]);
+    expect(output).toContain(">Manage storage<");
+    expect(output).not.toContain("Save now");
+    expect(output).not.toContain("STORAGE_QUOTA_EXCEEDED");
   });
 });

@@ -6,6 +6,8 @@ import { AlertCircleIcon, CheckIcon, Loader2Icon, PlayIcon, SquareIcon } from "l
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { openManageStorage } from "@/lib/openManageStorage";
+import { useStorageReadOnly } from "@/lib/useStorageReadOnly";
 import { LevelTrace } from "./LevelTrace";
 import { islandShown, useRecorder, type RecorderValue } from "./RecorderProvider";
 import { ISLAND_KEPT, ISLAND_SAVED, micWarning } from "./recorderCopy";
@@ -21,6 +23,7 @@ export function islandState(value: Pick<RecorderValue, "phase" | "outcome">): Is
 
 export function IslandView(props: { recorder: RecorderValue; onOpenNote?: (id: string) => void; className?: string }) {
   const { recorder } = props;
+  const storageFull = useStorageReadOnly();
   const state = islandState(recorder);
   const warning = recorder.phase === "recording" && micWarning(recorder.mic) !== null;
   const paused = recorder.phase === "recording" && (recorder.mic.state === "paused" || recorder.mic.state === "interrupted" || recorder.mic.state === "needs_user");
@@ -115,11 +118,11 @@ export function IslandView(props: { recorder: RecorderValue; onOpenNote?: (id: s
           type="button"
           variant="ghost"
           className="h-11 min-w-11 shrink-0 rounded-full px-4"
-          onClick={recorder.retryPending}
+          onClick={storageFull ? openManageStorage : recorder.retryPending}
           disabled={recorder.pending.running}
           data-testid="island-save-now"
         >
-          Save now
+          {storageFull ? "Manage storage" : "Save now"}
         </Button>
       )}
     </div>

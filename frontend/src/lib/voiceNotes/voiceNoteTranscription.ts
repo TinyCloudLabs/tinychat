@@ -50,7 +50,8 @@ import { readTranscriptCommit, requireVoiceNoteTranscriptCommit, type Transcript
 import { preserveVoiceNoteTranscriptHistory } from "./voiceNoteTranscriptHistory";
 import { pendingStore } from "./recorderSaves";
 import { voiceNoteCallDeadlineMs, withVoiceNoteSaveDeadline } from "./saveDeadline";
-import { transcriptionErrorCopy, voiceNoteTranscriptionFailureForCode } from "./transcriptionErrors";
+import { isStorageFullError, reportStorageError, storageScopeFor, STORAGE_FULL_SAVE_MESSAGE } from "../storageStatus";
+import { TRANSCRIPT_STORAGE_FULL_CODE, transcriptionErrorCopy, voiceNoteTranscriptionFailureForCode } from "./transcriptionErrors";
 import { privatePartsDone } from "./notePipelineCopy";
 import type { VoiceNoteTranscriptionFailure } from "./transcriptionErrors";
 export type { VoiceNoteTranscriptionFailure } from "./transcriptionErrors";
@@ -1458,6 +1459,7 @@ export async function transcribeVoiceNote(args: {
   if (args.explicitRerun && !args.explicit)
     throw new PrivateCloudError("transcription_off", "A transcript rerun requires an explicit user action");
   const { tcw, cloud, sourceId } = args;
+  const storageScope = storageScopeFor(tcw);
   logPipeline("transcription", sourceId, "start", { engine: "private-cloud" });
   const report = (status: VoiceNoteTranscriptionStatus) => {
     logPipeline(status.kind === "uploading" ? "transcription_audio_upload" : "transcription",
@@ -1476,8 +1478,12 @@ export async function transcribeVoiceNote(args: {
   };
   const persistFailure = async (error: unknown, statsMetadata: VoiceNoteTranscriptionStatsMetadata = {}) => {
     const code = voiceNoteErrorCode(error);
-    if (error instanceof DeviceLocalVoiceNoteAudioError || !NOTE_INTRINSIC_FAILURE_CODES.has(code)
-      || isAutomaticRetryableError(error) || cloud.heldTranscript(sourceId) !== null || !stillCurrent()) return;
+    const current = stillCurrent();
+    const firstRunStorageFull = code === TRANSCRIPT_STORAGE_FULL_CODE && !args.explicitRerun;
+    if (!current || (code === TRANSCRIPT_STORAGE_FULL_CODE && args.explicitRerun)
+      || (!firstRunStorageFull && (error instanceof DeviceLocalVoiceNoteAudioError
+        || !NOTE_INTRINSIC_FAILURE_CODES.has(code) || isAutomaticRetryableError(error)
+        || cloud.heldTranscript(sourceId) !== null))) return;
     try { await patchVoiceNoteTranscriptionFailure(tcw, sourceId, code, accountCheckpoint, statsMetadata); }
     catch (persistError) { logPipelineError("[VoiceNotes] Could not persist the transcription failure", persistError); }
   };
@@ -1504,12 +1510,20 @@ export async function transcribeVoiceNote(args: {
       if (rerunCommit === null)
         throw new PrivateCloudError("transcript_save_failed", "The committed transcript changed before this rerun could be saved");
       try { await preserveVoiceNoteTranscriptHistory(tcw, rerunCommit, accountCheckpoint); }
-      catch {
+      catch (cause) {
+        if (isStorageFullError(cause)) {
+          reportStorageError(cause, storageScope);
+          throw new PrivateCloudError(TRANSCRIPT_STORAGE_FULL_CODE, STORAGE_FULL_SAVE_MESSAGE);
+        }
         throw new PrivateCloudError("transcript_save_failed", "Could not preserve the current transcript revision");
       }
     }
     const saved = await saveVoiceNoteTranscript(tcw, sourceId, prepared, account, accountCheckpoint);
     if (!saved.ok) {
+      if (isStorageFullError(saved.error)) {
+        reportStorageError(saved.error, storageScope);
+        throw new PrivateCloudError(TRANSCRIPT_STORAGE_FULL_CODE, STORAGE_FULL_SAVE_MESSAGE);
+      }
       if (saved.error.code === "VOICE_NOTE_NOT_FOUND") throw new PrivateCloudError("voice_note_not_found", saved.error.message);
       throw new PrivateCloudError("transcript_save_failed", saved.error.message);
     }
@@ -1651,6 +1665,7 @@ export async function transcribeVoiceNote(args: {
     return loadSpaceAudio();
   };
   const transcribedAt = () => (args.now ?? (() => new Date()))().toISOString();
+
 
   let transcriptionId: string;
   let transcript: PrivateCloudTranscript;

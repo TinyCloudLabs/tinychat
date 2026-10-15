@@ -98,4 +98,3 @@ export async function transcribeWith(
   const refusal = transcription.onTranscribePrivately(noteId, durationSecs, source?.sizeBytes ?? phone?.sizeBytes);
   return refusal ? privateRefusalCopy(refusal) : null;
 }
-

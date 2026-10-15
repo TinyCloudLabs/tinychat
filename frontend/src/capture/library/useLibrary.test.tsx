@@ -25,6 +25,7 @@ import { PHONE_AUDIO_UNAVAILABLE } from "@/chat/audioPlayback";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 import { NoteDetail } from "./NoteDetail";
+import type { VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
 import { hasPrivateCloudTimingProvenance, transcriptMarkdown, transcriptWithTimestamps } from "./transcriptSegments";
 
 const saved = { window: (globalThis as { window?: unknown }).window, act: (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT };
@@ -881,6 +882,48 @@ describe("useLibrary, which audio a note on the phone plays", () => {
     });
   });
 
+  const provenanceCases: { id: string; owner?: string; ledger: unknown; claims: boolean; recordings?: boolean }[] = [
+    { id: "ready", ledger: { audio: { state: "pending", rowId: null, at: null }, localAudio: { state: "ready" } }, claims: true },
+    { id: "preparing", ledger: { audio: { state: "pending", rowId: null, at: null }, localAudio: { state: "preparing" } }, claims: false },
+    { id: "failed-missing", ledger: { audio: { state: "pending", rowId: null, at: null }, localAudio: { state: "failed" } }, claims: false },
+    { id: "absent-ledger", ledger: undefined, claims: false },
+    { id: "not-owned", owner: "did:key:someone-else", ledger: { audio: { state: "pending", rowId: null, at: null }, localAudio: { state: "ready" } }, claims: false },
+    { id: "no-owned-note", ledger: undefined, claims: false, recordings: false },
+  ];
+  const storageFullTranscription: VoiceNoteTranscriptionProps = {
+    availability: "ready",
+    consented: true,
+    maxSeconds: 7200,
+    jobs: new Map([["rec-provenance", { kind: "failed", code: "storage_full", message: "Your TinyCloud storage is full.", retryable: false, reference: null }]]),
+    onTranscribe: () => {},
+    onTranscribePrivately: () => null,
+    onTranscribeAgain: () => null,
+    onConsent: () => {},
+    onTurnOff: () => {},
+    onRecheck: () => {},
+  };
+  for (const c of provenanceCases) {
+    test(`mounted note detail claims local audio only when the owned native ledger is ready (${c.id})`, async () => {
+      await withLocalAudio(async (_counts, space) => {
+        __setVoiceNotesForTests({
+          listPending: async () => ({ recordings: c.recordings === false ? [] : [{ id: "rec-provenance", owner: c.owner ?? space.tcw.did, ledger: c.ledger }] }),
+        } as unknown as VoiceNotesPlugin, { available: true });
+        const seen: Library[] = [];
+        await render({ tcw: space.tcw, visible: true, now: () => 0, seen, onPhone: [], noteId: "provenance" });
+        await space.answer("list", listedVoice("provenance"));
+        await space.answer("metadata", { ok: true, data: { rows: [[JSON.stringify({
+          transcription_outcome: "failed", transcription_error_code: "storage_full",
+        })]] } });
+        const html = renderToStaticMarkup(<MemoryRouter><NoteDetail
+          library={seen.at(-1)!}
+          pushed
+          onBack={() => {}}
+          transcription={storageFullTranscription}
+        /></MemoryRouter>);
+        expect(html.includes("Your recording is safe on this device.")).toBe(c.claims);
+      });
+    });
+  }
   test("a receipt that lands before the phone's copy is evicted plays the space's copy at Play time", async () => {
     await withLocalAudio(async (counts, space) => {
       const seen: Library[] = [];

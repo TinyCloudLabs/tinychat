@@ -178,6 +178,7 @@ export function PendingVoiceCard(props: {
   saving: boolean;
   note: string;
   onSaveNow: () => void;
+  storageFull?: boolean;
 }) {
   return (
     <div className="soft-card dch-mac" data-testid="voice-note-pending">
@@ -194,7 +195,7 @@ export function PendingVoiceCard(props: {
           disabled={props.saving}
           data-testid="voice-note-retry"
         >
-          {COPY.saveNow}
+          {props.storageFull ? COPY.manageStorage : COPY.saveNow}
         </button>
       </span>
     </div>
@@ -267,6 +268,7 @@ function InProgress(props: {
           saving={voice.saving}
           note={pendingNote(props.issues, voice.lastError, props.place)}
           onSaveNow={voice.onSaveNow}
+          storageFull={voice.storageFull}
         />
       )}
       {listFailed && (

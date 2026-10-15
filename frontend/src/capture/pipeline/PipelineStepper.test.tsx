@@ -217,3 +217,45 @@ describe("PipelineStepper: a failed transcription's retry", () => {
     expect(html).toContain("Try again");
   });
 });
+
+describe("PipelineStepper: a Private storage-full refusal", () => {
+  const storageFull = (localAudioReady: boolean) =>
+    pipelineOf({
+      route: "private-cloud",
+      space: { saved: true, pending: null, lane: { busy: false, depth: 0 } },
+      transcript: {
+        inSpace: null, onDevice: null,
+        cloud: { kind: "failed", code: "storage_full", message: "Storage full.", retryable: false, reference: null },
+        ...(localAudioReady ? { localAudioReady: true as const } : {}),
+      },
+    });
+
+  test("names the recording as safe on this device only with local audio, and offers Manage storage then Transcribe again", async () => {
+    cleanupDom = installDom();
+    const host = document.createElement("div");
+    document.body.append(host);
+    const calls: PipelineActionKind[] = [];
+    const root = createRoot(host);
+    await act(async () => root.render(createElement(PipelineStepper, { pipeline: storageFull(true), onAction: (k: PipelineActionKind) => calls.push(k) })));
+    const cause = host.querySelector(".pipeline-stepper-cause")!;
+    expect(cause.textContent).toBe("Your TinyCloud storage is full, so this transcript wasn't saved. Your recording is safe on this device. Transcribe it again when space is available.");
+    const buttons = [...host.querySelectorAll("button")];
+    expect(buttons.map((b) => b.textContent)).toEqual(["Manage storage", "Transcribe again"]);
+    for (const b of buttons) expect(b.getAttribute("aria-describedby")).toBe(cause.id);
+    await act(async () => { buttons[1]!.dispatchEvent(new window.MouseEvent("click", { bubbles: true })); });
+    await act(async () => { buttons[0]!.dispatchEvent(new window.MouseEvent("click", { bubbles: true })); });
+    expect(calls).toEqual(["retry", "manage-storage"]);
+    await act(async () => root.unmount());
+  });
+
+  test("without positive local-audio evidence the cause makes no claim that the recording is on this device", async () => {
+    cleanupDom = installDom();
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    await act(async () => root.render(createElement(PipelineStepper, { pipeline: storageFull(false), onAction: noop })));
+    expect(host.querySelector(".pipeline-stepper-cause")!.textContent).toBe("Your TinyCloud storage is full, so this transcript wasn't saved. Transcribe it again when space is available.");
+    expect(host.textContent).not.toContain("safe on this device");
+    await act(async () => root.unmount());
+  });
+});

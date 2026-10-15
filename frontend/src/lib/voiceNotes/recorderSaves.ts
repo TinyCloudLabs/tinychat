@@ -33,6 +33,7 @@ import type { VerifiedAudioReceipt } from "@/lib/audio/audioStore";
 import { putPendingSaveState, readPendingSaveStates } from "./pendingSaveState";
 import { captureEvents } from "@/capture/captureEvents";
 import { appPlatform, deviceName } from "@/lib/platform";
+import { STORAGE_FULL_RECORDING_LINE, isStorageFullError } from "@/lib/storageStatus";
 
 function enforceAudioCacheAfterSave(id: string): void {
   void trimCachedAudio().catch((error: unknown) => logPipelineError("audio cache trim", error, id));
@@ -65,9 +66,15 @@ export function logVoiceNoteError(operation: string, error: unknown): void {
   console.warn(`[VoiceNotes] ${operation}${code ? ` (code=${code})` : ""}`);
 }
 
+/** The one line for a note whose text is safe but whose audio waits for TinyCloud space. */
+export function storageFullNoteMessage(): string {
+  return `Saved on ${deviceName()}. ${STORAGE_FULL_RECORDING_LINE}`;
+}
+
 /** Map WebKit's unhelpful network messages to specific recovery copy. */
 export function messageOf(error: unknown): string {
   const message = rawErrorMessage(error);
+  if (classifyNoteFailure(error) === "quota") return storageFullNoteMessage();
   if (isTinyCloudUploadRejected(error)) {
     logVoiceNoteError("TinyCloud upload rejected", error);
     return TINYCLOUD_UPLOAD_REJECTED_MESSAGE;
@@ -83,6 +90,7 @@ export function messageOf(error: unknown): string {
 
 /** A pending-save failure is one useful line, without stacking two recovery sentences. */
 export function pendingSaveMessage(error: unknown): string {
+  if (classifyNoteFailure(error) === "quota") return storageFullNoteMessage();
   const message = messageOf(error);
   if (error instanceof VoiceNoteSaveTimeout || /(?:timed out|timeout)/i.test(message)) return saveSlowMessage();
   if (/^(?:This note|Saving to|Couldn't reach|The TinyCloud node)/.test(message)) return message;
@@ -482,7 +490,7 @@ export async function saveRecording(
 /** The one owner-aware upload entry point used by the T18 pipeline. */
 export async function saveNoteForAccount(tcw: TinyCloudWeb, ctx: AccountContext,
   recording: VoiceNoteRecording, checkpoint: () => void = () => undefined,
-  audioOptions: Pick<StoreAudioOptions, "retryDelaysMs" | "onProgress" | "onRetry" | "onUploadStart"> &
+  audioOptions: Pick<StoreAudioOptions, "retryDelaysMs" | "onProgress" | "onRetry" | "onUploadStart" | "audioGate"> &
     { uploadTicket?: PendingUploadTicket; onRowCreated?: () => void } = {}): Promise<SaveOutcome> {
   const check = () => { assertCurrent(ctx); checkpoint(); };
   const checkActive = () => { check(); if (isDiscarded(recording.id)) throw new Error("Recording was discarded"); };
@@ -637,7 +645,7 @@ export function classifyNoteFailure(error: unknown): NoteFailure["kind"] {
   const statuses = chain.map(failureStatus);
   if (codes.some((code) => code === "VOICE_NOTE_SOURCE_READ_FAILED" || code === "VOICE_NOTE_AUDIO_TOO_LARGE"
     || code === "STORE_CORRUPT_AUDIO" || code === "VOICE_NOTE_AUDIO_CORRUPT")) return "source";
-  if (codes.some((code) => code === "STORAGE_QUOTA_EXCEEDED" || code === "STORAGE_LIMIT_REACHED" || /quota/i.test(code))) return "quota";
+  if (chain.some(isStorageFullError) || codes.some((code) => code === "STORAGE_QUOTA_EXCEEDED" || code === "STORAGE_LIMIT_REACHED" || /quota/i.test(code))) return "quota";
   if (statuses.some((status) => status === 401 || status === 403)
     || codes.some((code) => /AUTH|UNAUTHENTICATED|UNAUTHORIZED|FORBIDDEN|CAPABILITY/.test(code))) return "auth";
   if (statuses.some((status) => status !== undefined && status >= 500)

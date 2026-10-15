@@ -1,5 +1,6 @@
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { readableError } from "@/lib/readableError";
+import { storageScopeFor, trackStorageWrites } from "@/lib/storageStatus";
 import { deviceName } from "@/lib/platform";
 import type { FirefliesSentence } from "../connectors/firefliesClient";
 import { CONNECTORS_KV_PREFIX, CONNECTORS_SQL_DB_NAME, ensureSchema, transcriptKvKey } from "../connectors/connectorStore";
@@ -17,7 +18,9 @@ export const VOICE_NOTE_INDEX_DDL = "CREATE UNIQUE INDEX IF NOT EXISTS uq_connec
 export type VoiceNoteIdentity = "established" | "needs_authorization" | "blocked" | "retry" | "storage_full";
 export interface IdentityResult { status: VoiceNoteIdentity; reason?: string; cause?: unknown }
 
-function db(tcw: TinyCloudWeb) { return tcw.sql.db(CONNECTORS_SQL_DB_NAME); }
+function db(tcw: TinyCloudWeb, reportSuccessfulWrites = true) {
+  return trackStorageWrites(tcw.sql.db(CONNECTORS_SQL_DB_NAME), storageScopeFor(tcw), { reportSuccessfulWrites });
+}
 function errorOf(result: { ok: boolean; error?: { code?: string; message?: string; meta?: unknown; requiredAction?: unknown } }): Error {
   const e = result.error;
   return Object.assign(new Error(e?.message ?? "TinyCloud storage failed"), {
@@ -30,9 +33,11 @@ async function query(tcw: TinyCloudWeb, sql: string, params: unknown[] = [], che
   if (!result.ok) throw errorOf(result);
   return result.data.rows as unknown[][];
 }
-async function execute(tcw: TinyCloudWeb, sql: string, params: unknown[] = [], checkpoint: () => void = () => undefined): Promise<number> {
-  const result = await runOnSpaceLane((signal) => { checkpoint(); return db(tcw).execute(sql, params as never[], { signal }); },
-    { operation: `SQL execute: ${sql.slice(0, 80)}` });
+async function execute(tcw: TinyCloudWeb, sql: string, params: unknown[] = [], checkpoint: () => void = () => undefined,
+  reportSuccessfulWrites = true): Promise<number> {
+  const result = await runOnSpaceLane((signal) => {
+    checkpoint(); return db(tcw, reportSuccessfulWrites).execute(sql, params as never[], { signal });
+  }, { operation: `SQL execute: ${sql.slice(0, 80)}` });
   if (!result.ok) throw errorOf(result);
   return Number((result.data as { changes?: number }).changes ?? 0);
 }
@@ -289,8 +294,9 @@ export interface VoiceNoteTranscriptionStatsMetadata {
 /** Persist retryable transcription failures without replacing a terminal result. */
 export async function patchVoiceNoteTranscriptionFailure(tcw: TinyCloudWeb, sourceId: string, errorCode: string,
   checkpoint: () => void = () => undefined, statsMetadata: VoiceNoteTranscriptionStatsMetadata = {}): Promise<void> {
+  // A timed-out save is transient: the local transcript and job stay, so it is never a durable failure.
   if (["audio_upload_pending", "transcription_off", "upload_outcome_unknown", "account_changed",
-    "active_transcription_exists"].includes(errorCode)) return;
+    "active_transcription_exists", "transcript_save_timed_out"].includes(errorCode)) return;
   checkpoint();
   const identity = await ensureVoiceNoteIdentity(tcw, checkpoint);
   if (identity.status !== "established") {
@@ -306,7 +312,7 @@ export async function patchVoiceNoteTranscriptionFailure(tcw: TinyCloudWeb, sour
         AND length(trim(json_extract(metadata, '$.transcript_text'))) > 0)
       AND NOT EXISTS (SELECT 1 FROM voice_note_transcript t WHERE t.source_id = ? AND t.outcome IN ('transcribed','no_speech'))`,
   [JSON.stringify({ ...statsMetadata, transcription_outcome: "failed", transcription_error_code: errorCode }),
-    new Date().toISOString(), row.id, sourceId], checkpoint);
+    new Date().toISOString(), row.id, sourceId], checkpoint, errorCode !== "storage_full");
 }
 export async function patchVoiceNoteAudio(tcw: TinyCloudWeb, recording: VoiceNoteRecording, platform: string,
   audio: { base: string; mimeType: string; size: number; parts: number }, checkpoint: () => void = () => undefined,

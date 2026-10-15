@@ -1,7 +1,9 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 
 import {
   AUDIO_CORRUPT,
+  AUDIO_PAYMENT_REQUIRED,
+  AUDIO_UPLOAD_TOO_LARGE,
   AudioStoreQuotaError,
   MAX_AUDIO_PART_SIZE,
   type TinyCloudKv,
@@ -14,7 +16,11 @@ import {
   reconcileAudioReceipt,
   verifiedManifestReceipt,
 } from "./audioStore";
+import { __resetStorageStatusForTests, isStorageFullError, isStorageReadOnly, reportStorageError, reportStorageWriteSucceeded } from "../storageStatus";
 
+afterEach(async () => {
+  await __resetStorageStatusForTests();
+});
 interface KvErr {
   code: string;
   message: string;
@@ -104,6 +110,64 @@ describe("audioStore", () => {
       await expect(result).rejects.toBeInstanceOf(AudioStoreQuotaError);
       expect(fake.entries.has(`${BASE}/manifest`)).toBe(false);
       expect(await getAudioManifest(fake.kv, BASE)).toBeNull();
+    }
+  });
+
+  test("a plain HTTP 413 is an upload-too-large error, not a full space", async () => {
+    const fake = new FakeKv();
+    fake.putFailures.set(`${BASE}/p/000001`, {
+      code: "KV_WRITE_FAILED",
+      message: "Failed to put key: 413 - Request Entity Too Large",
+      service: "kv",
+      meta: { status: 413 },
+    });
+
+    const err = await putAudio(fake.kv, BASE, blobPartSource(audioBlob()), OPTS).catch((e: unknown) => e);
+
+    expect(err).toMatchObject({ code: AUDIO_UPLOAD_TOO_LARGE });
+    expect(err).not.toBeInstanceOf(AudioStoreQuotaError);
+    expect(isStorageFullError(err)).toBe(false);
+    reportStorageError(err);
+    expect(isStorageReadOnly()).toBe(false);
+    expect(await getAudioManifest(fake.kv, BASE)).toBeNull();
+  });
+
+  test("a plain HTTP 402 that is not a storage code is a payment error, not a full space", async () => {
+    const fake = new FakeKv();
+    fake.putFailures.set(`${BASE}/p/000001`, {
+      code: "KV_WRITE_FAILED",
+      message: "Failed to put key: 402 - Payment Required",
+      service: "kv",
+      meta: { status: 402 },
+    });
+
+    const err = await putAudio(fake.kv, BASE, blobPartSource(audioBlob()), OPTS).catch((e: unknown) => e);
+
+    expect(err).toMatchObject({ code: AUDIO_PAYMENT_REQUIRED });
+    expect(err).not.toBeInstanceOf(AudioStoreQuotaError);
+    expect(isStorageFullError(err)).toBe(false);
+    reportStorageError(err);
+    expect(isStorageReadOnly()).toBe(false);
+  });
+
+  test("an explicit storage code is a full space: the classifier flags it and the shared state is set", async () => {
+    for (const code of ["STORAGE_QUOTA_EXCEEDED", "STORAGE_LIMIT_REACHED"] as const) {
+      const fake = new FakeKv();
+      fake.putFailures.set(`${BASE}/p/000001`, {
+        code,
+        message: "Write exceeds remaining storage",
+        service: "kv",
+        meta: { status: 413 },
+      });
+
+      const err = await putAudio(fake.kv, BASE, blobPartSource(audioBlob()), OPTS).catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(AudioStoreQuotaError);
+      expect(isStorageFullError(err)).toBe(true);
+      reportStorageError(err);
+      expect(isStorageReadOnly()).toBe(true);
+      reportStorageWriteSucceeded();
+      expect(isStorageReadOnly()).toBe(false);
     }
   });
 

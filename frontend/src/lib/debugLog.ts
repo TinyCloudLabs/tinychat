@@ -28,6 +28,8 @@ const nativeLog = registerPlugin<{ append(options: { line: string }): Promise<vo
 const recordingIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function debugLogEnabled(): boolean { return enabled; }
+/** Lets tests exercise the log without depending on the build mode. */
+export function setDebugLogEnabledForTests(on: boolean): void { enabled = on; }
 export function debugEvents(): readonly DebugEvent[] { return events; }
 export function subscribeDebugLog(listener: () => void): () => void {
   listeners.add(listener);
