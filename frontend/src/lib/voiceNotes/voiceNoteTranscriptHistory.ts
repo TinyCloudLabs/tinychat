@@ -32,7 +32,7 @@ function existingRecordText(value: unknown): string | null {
   return null;
 }
 
-/** Call only for an explicit rerun, immediately before replacement; refuses a changed expected commit. */
+/** Preserve a verified committed revision before a held replacement or explicit rerun. */
 export async function preserveVoiceNoteTranscriptHistory(tcw: TinyCloudWeb, expected: TranscriptCommit,
   checkpoint: () => void): Promise<void> {
   checkpoint();
