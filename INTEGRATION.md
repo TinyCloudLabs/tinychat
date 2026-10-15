@@ -84,8 +84,8 @@ After merging origin/main (TC-1128, #387, #392, 45d16e58) and PR #386 (TC-1108 p
 
 ## Current Status
 
-- **Verified code head**: `8b244a31` (#409 merged)
-- **Frontend unit suite**: 4933 pass, 4 skip, 0 fail (4937 tests, 340 files)
+- **Verified code head**: `a1eaf576` (#373 merged; capture-engine test isolation repaired)
+- **Frontend unit suite**: 5025 pass, 4 skip, 0 fail (5029 tests, 343 files)
 - **`origin/main` `b9c538ee` baseline**: 4735 pass, 4 skip, 0 fail (4739 tests, 326 files)
 - **TypeScript**: pinned TypeScript 5.9.3, `tsc --noEmit -p frontend/tsconfig.json`, 0 errors
 - **CI frontend lint**: `bunx eslint frontend test`, 0 errors
