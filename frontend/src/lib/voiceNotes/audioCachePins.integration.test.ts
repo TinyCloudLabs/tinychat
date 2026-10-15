@@ -8,13 +8,13 @@ import { __resetCaptureEngineForTests, __setInstalledEngineForTests, captureCapa
 import { mountVoiceNoteAccount } from "./accountContext";
 import { __setVoiceNotesForTests, VoiceNotes } from "./nativeVoiceNotes";
 import { clearCachedAudio, trimCachedAudio } from "./audioPlaybackCache";
-import { createVoiceNoteCloud, localStorageVoiceNotePendingStore, localStorageVoiceNotePrivateChoiceStore,
-  transcribeVoiceNote } from "./voiceNoteTranscription";
+import { createVoiceNoteCloud, createVoiceNoteTranscriber, localStorageVoiceNoteHoldStore,
+  localStorageVoiceNotePendingStore, localStorageVoiceNotePrivateChoiceStore, transcribeVoiceNote } from "./voiceNoteTranscription";
 import { saveVoiceNote } from "./voiceNoteStore";
 import { memoryAudioBlobs } from "./web/webTestKit";
 import { newIdbEnv } from "./web/testing/idb";
 import { memoryLocks, openWebStore, recordingFromSession } from "./web/webStore";
-import { retainSource } from "./sourcePins";
+import { accountStorageKey, retainSource, VOICE_NOTE_PENDING_JOBS_KEY } from "./sourcePins";
 function deferred() {
   let resolve!: () => void;
   const promise = new Promise<void>((done) => { resolve = done; });
@@ -472,3 +472,147 @@ for (const operation of ["trim", "clear"] as const) {
     });
   }
 }
+
+test("TC-1182 G3 turning Private off removes choice after releaseUnsent clears the pending job", async () => {
+  const h = await setup();
+  const cloud = cloudFor(h);
+  const choices = localStorageVoiceNotePrivateChoiceStore(DID);
+  choices.add(h.sourceId);
+  cloud.pending.write(h.sourceId, { attemptId: "off-attempt", transcriptionId: PTX_ID });
+  const transcriber = createVoiceNoteTranscriber({
+    cloud: cloud.cloud, consent: { get: () => true, set: () => {} }, choices,
+    holds: localStorageVoiceNoteHoldStore(DID), tcw: () => h.tcw as never, checkRetryMs: [],
+  });
+
+  await transcriber.turnOff();
+  const report = await clearCachedAudio();
+
+  expect(cloud.pending.read(h.sourceId)).toBeNull();
+  expect(choices.has(h.sourceId)).toBe(false);
+  expect(report).toMatchObject({ cleared: 1, inUse: 0, pinnedBytes: 0 });
+  expect(await h.store.audio.size(h.sourceId)).toBe(0);
+});
+
+test("TC-1182 G3 manual Retry ending in a release code drops the cancelled retry pin", async () => {
+  const h = await setup();
+  const cloud = cloudFor(h);
+  const choices = localStorageVoiceNotePrivateChoiceStore(DID);
+  const scheduled: { callback: () => void; delayMs: number }[] = [];
+  let attempts = 0;
+  const transcriber = createVoiceNoteTranscriber({
+    cloud: cloud.cloud, consent: { get: () => true, set: () => {} }, choices,
+    holds: localStorageVoiceNoteHoldStore(DID), tcw: () => h.tcw as never,
+    checkRetryMs: [], failedBackoffMs: [60_000], now: () => 0,
+    timer: {
+      schedule: (callback, delayMs) => { scheduled.push({ callback, delayMs }); return scheduled.length; },
+      cancel: () => {},
+    },
+    runNote: async () => {
+      attempts++;
+      if (attempts === 1) throw new PrivateCloudError("service_paused", "synthetic admission pause");
+      throw new PrivateCloudError("decode_failed", "synthetic release code");
+    },
+  });
+  const settle = async () => {
+    for (let i = 0; i < 40 && transcriber.snapshot().jobs.get(h.sourceId)?.kind === "active"; i++)
+      await new Promise((resolve) => setTimeout(resolve, 0));
+  };
+  await transcriber.check();
+  transcriber.transcribePrivately(h.sourceId, 1);
+  await settle();
+  expect(transcriber.snapshot().jobs.get(h.sourceId)).toMatchObject({ kind: "failed", code: "service_paused" });
+  expect(scheduled).toHaveLength(1);
+
+  transcriber.transcribePrivately(h.sourceId, 1);
+  await settle();
+  const report = await clearCachedAudio();
+
+  expect(attempts).toBe(2);
+  expect(transcriber.snapshot().jobs.get(h.sourceId)).toMatchObject({ kind: "failed", code: "decode_failed" });
+  expect(choices.has(h.sourceId)).toBe(false);
+  expect(cloud.pending.sourceIds()).toEqual([]);
+  expect(report).toMatchObject({ cleared: 1, inUse: 0, pinnedBytes: 0 });
+  expect(await h.store.audio.size(h.sourceId)).toBe(0);
+});
+
+
+test("TC-1182 a removed and re-added choice receives a fresh permanent-pin age", async () => {
+  const h = await setup();
+  const originalNow = Date.now;
+  let now = Date.parse("2026-01-01T00:00:00.000Z");
+  Date.now = () => now;
+  try {
+    const choices = localStorageVoiceNotePrivateChoiceStore(DID);
+    choices.add(h.sourceId);
+    await clearCachedAudio();
+    now += 31 * 24 * 60 * 60 * 1_000;
+    await trimCachedAudio(h.bytes.length);
+
+    choices.remove(h.sourceId);
+    choices.add(h.sourceId);
+    await clearCachedAudio();
+
+    expect(choices.has(h.sourceId)).toBe(true);
+    expect(await h.store.audio.size(h.sourceId)).toBe(h.bytes.length);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("TC-1182 an ordinary Private choice remains pinned beyond 30 days", async () => {
+  const h = await setup();
+  const originalNow = Date.now;
+  let now = Date.parse("2026-01-01T00:00:00.000Z");
+  Date.now = () => now;
+  try {
+    localStorageVoiceNotePrivateChoiceStore(DID).add(h.sourceId);
+    await clearCachedAudio();
+    now += 31 * 24 * 60 * 60 * 1_000;
+    await clearCachedAudio();
+    expect(await h.store.audio.size(h.sourceId)).toBe(h.bytes.length);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("TC-1182 a limit-blocked Private choice expires after 30 days", async () => {
+  const h = await setup();
+  const originalNow = Date.now;
+  let now = Date.parse("2026-01-01T00:00:00.000Z");
+  Date.now = () => now;
+  try {
+    const cloud = cloudFor(h);
+    const choices = localStorageVoiceNotePrivateChoiceStore(DID);
+    const transcriber = createVoiceNoteTranscriber({
+      cloud: cloud.cloud, consent: { get: () => true, set: () => {} }, choices,
+      holds: localStorageVoiceNoteHoldStore(DID), tcw: () => h.tcw as never, checkRetryMs: [],
+    });
+    await transcriber.check();
+    expect(transcriber.transcribePrivately(h.sourceId, CAPS.max_duration_seconds + 1)).not.toBe(null);
+    expect(choices.has(h.sourceId)).toBe(true);
+    await clearCachedAudio();
+    now += 31 * 24 * 60 * 60 * 1_000;
+    await clearCachedAudio();
+    expect(await h.store.audio.size(h.sourceId)).toBe(0);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("TC-1182 a malformed held:null pending row fails closed beyond 30 days", async () => {
+  const h = await setup();
+  const originalNow = Date.now;
+  let now = Date.parse("2026-01-01T00:00:00.000Z");
+  Date.now = () => now;
+  try {
+    h.pendingStorage.setItem(accountStorageKey(VOICE_NOTE_PENDING_JOBS_KEY, DID), JSON.stringify({
+      [h.sourceId]: { attemptId: "malformed-held", transcriptionId: null, held: null },
+    }));
+    await clearCachedAudio();
+    now += 31 * 24 * 60 * 60 * 1_000;
+    await clearCachedAudio();
+    expect(await h.store.audio.size(h.sourceId)).toBe(h.bytes.length);
+  } finally {
+    Date.now = originalNow;
+  }
+});

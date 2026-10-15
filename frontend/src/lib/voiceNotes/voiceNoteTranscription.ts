@@ -74,8 +74,8 @@ import {
   type VoiceNoteTranscriptSave,
   type VoiceNoteTranscriptAccount,
 } from "./voiceNoteStore";
-import { accountStorageKey, VOICE_NOTE_PENDING_JOBS_KEY, VOICE_NOTE_PRIVATE_CHOICES_KEY,
-  retainSource, withSourceLease } from "./sourcePins";
+import { accountStorageKey, clearChoicePinMetadata, setLimitBlockedChoice, VOICE_NOTE_PENDING_JOBS_KEY,
+  VOICE_NOTE_PRIVATE_CHOICES_KEY, retainSource, withSourceLease } from "./sourcePins";
 import { isAutomaticRetryableCode } from "./retryableVoiceNoteErrors";
 import { transcriptHash, type VoiceNoteTranscriptionStatsMetadata } from "./voiceNoteRows";
 
@@ -372,9 +372,13 @@ export function localStorageVoiceNotePrivateChoiceStore(
     has: (id) => read().includes(id),
     add: (id) => {
       const ids = read();
+      clearChoicePinMetadata(accountDid, id, storage as Storage | undefined);
       if (!ids.includes(id)) write([...ids, id]);
     },
-    remove: (id) => write(read().filter((other) => other !== id)),
+    remove: (id) => {
+      clearChoicePinMetadata(accountDid, id, storage as Storage | undefined);
+      write(read().filter((other) => other !== id));
+    },
     ids: read,
   };
 }
@@ -2023,6 +2027,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
     const handle = automaticRetryTimers.get(sourceId);
     if (handle !== undefined) timer.cancel(handle);
     automaticRetryTimers.delete(sourceId);
+    automaticRetryDeadlines.delete(sourceId);
     automaticRetryServerDeadlines.delete(sourceId);
     if (succeeded) automaticRetryFailures.delete(sourceId);
   };
@@ -2502,9 +2507,6 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
       nextRecoveryAt = Number.POSITIVE_INFINITY;
       // Keep the committed mode override while a PTX job/result still needs reconciliation.
       chosenPrivate.clear();
-      const pending = new Set(cloud?.pendingSourceIds() ?? []);
-      for (const sourceId of choices.ids())
-        if (!pending.has(sourceId) && (cloud?.heldTranscript?.(sourceId) ?? null) === null) choices.remove(sourceId);
       emit();
       try { await cancelActiveNativeUpload(); } catch (err) { logPipelineError("Cancelling the native upload failed", err); }
       try {
@@ -2512,6 +2514,9 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
       } catch (err) {
         logPipelineError("Releasing unsent private cloud jobs failed; they expire on their own", err);
       }
+      const pending = new Set(cloud?.pendingSourceIds() ?? []);
+      for (const sourceId of choices.ids())
+        if (!pending.has(sourceId) && (cloud?.heldTranscript?.(sourceId) ?? null) === null) choices.remove(sourceId);
     },
 
     transcribe(sourceId, audio) {
@@ -2526,6 +2531,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
       const limit = privateCloudRefusal(durationSecs, sizeBytes, privateCloudLimits(state.capabilities));
       if (on() && limit !== null && limit.kind !== "unknown") {
         choices.add(sourceId);
+        setLimitBlockedChoice(deps.tcw().did, sourceId, true);
         chosenPrivate.add(sourceId);
         jobs.set(sourceId, { kind: "blocked", reason: "limits-exceeded" });
         emit();

@@ -2,6 +2,7 @@ import { isAutomaticRetryableCode } from "./retryableVoiceNoteErrors";
 
 export const VOICE_NOTE_PENDING_JOBS_KEY = "exo.voiceNotes.privateCloudJobs";
 export const VOICE_NOTE_PRIVATE_CHOICES_KEY = "exo.voiceNotes.privateChoices";
+export const VOICE_NOTE_LIMIT_BLOCKED_CHOICES_KEY = "exo.voiceNotes.limitBlockedPrivateChoices";
 const PIN_AGE_KEY = "exo.voiceNotes.privateSourcePinAge";
 const PIN_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 
@@ -17,6 +18,30 @@ const lockName = ({ owner, id }: Source) => `exo-voice-note-source:${encodeURICo
 
 export function accountStorageKey(base: string, accountDid: string): string {
   return `${base}:${accountDid}`;
+}
+/** Only a known admission limit may age out a persisted Private choice. */
+export function setLimitBlockedChoice(owner: string, id: string, blocked: boolean, override?: Storage): void {
+  const store = override ?? storage();
+  if (!store) return;
+  const key = accountStorageKey(VOICE_NOTE_LIMIT_BLOCKED_CHOICES_KEY, owner);
+  const current = readJson(store, key);
+  if (current.corrupt || current.present && (!Array.isArray(current.value)
+    || current.value.some((value) => typeof value !== "string"))) return;
+  const ids = current.present ? current.value as string[] : [];
+  const next = blocked ? [...new Set([...ids, id])] : ids.filter((value) => value !== id);
+  try {
+    if (next.length === 0) store.removeItem(key);
+    else store.setItem(key, JSON.stringify(next));
+  } catch { /* Failure keeps the choice pinned conservatively. */ }
+}
+
+/** A removed choice starts a fresh age if the same note is chosen again later. */
+export function clearChoicePinMetadata(owner: string, id: string, override?: Storage): void {
+  const store = override ?? storage();
+  if (!store) return;
+  try { store.removeItem(accountStorageKey(PIN_AGE_KEY, `${encodeURIComponent(owner)}:${encodeURIComponent(id)}`)); }
+  catch { /* Failure keeps any existing age conservative. */ }
+  setLimitBlockedChoice(owner, id, false, store);
 }
 
 function grant(state: LockState, mode: Waiter["mode"]): Release {
@@ -157,14 +182,27 @@ function permanentPinIsCurrent(owner: string, id: string, store: Storage, now: n
   } catch { return true; }
 }
 
+function isHeldTranscript(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const held = value as { rev?: unknown; sentences?: unknown; metadata?: unknown; speakers?: unknown };
+  return Number.isSafeInteger(held.rev) && (held.rev as number) > 0
+    && Array.isArray(held.sentences)
+    && held.sentences.every((sentence) => sentence !== null && typeof sentence === "object" && !Array.isArray(sentence))
+    && !!held.metadata && typeof held.metadata === "object" && !Array.isArray(held.metadata)
+    && Array.isArray(held.speakers) && held.speakers.every((speaker) => typeof speaker === "string");
+}
+
 function persistedPin(owner: string, id: string, now: number): boolean {
   const store = storage();
   if (!store) return true;
   const pending = readJson(store, accountStorageKey(VOICE_NOTE_PENDING_JOBS_KEY, owner));
   const choices = readJson(store, accountStorageKey(VOICE_NOTE_PRIVATE_CHOICES_KEY, owner));
-  if (pending.corrupt || choices.corrupt) return true;
+  const limitedChoices = readJson(store, accountStorageKey(VOICE_NOTE_LIMIT_BLOCKED_CHOICES_KEY, owner));
+  if (pending.corrupt || choices.corrupt || limitedChoices.corrupt) return true;
   if (pending.present && (!pending.value || typeof pending.value !== "object" || Array.isArray(pending.value))) return true;
   if (choices.present && (!Array.isArray(choices.value) || choices.value.some((value) => typeof value !== "string"))) return true;
+  if (limitedChoices.present && (!Array.isArray(limitedChoices.value)
+    || limitedChoices.value.some((value) => typeof value !== "string"))) return true;
   const all = pending.present ? pending.value as Record<string, unknown> : {};
   const rawJob = all[id];
   if (rawJob !== undefined) {
@@ -173,12 +211,15 @@ function persistedPin(owner: string, id: string, now: number): boolean {
     if (typeof job.attemptId !== "string") return true;
     const remote = typeof job.transcriptionId === "string";
     const failure = typeof job.failure === "string" ? job.failure : null;
-    if (remote || (job.held === undefined && failure === null) || isAutomaticRetryableCode(failure)) return true;
+    if (remote || job.held === undefined && failure === null || isAutomaticRetryableCode(failure)) return true;
+    if (job.held !== undefined && !isHeldTranscript(job.held)) return true;
     const signature = JSON.stringify({ attemptId: job.attemptId, held: job.held ?? null, failure });
     return permanentPinIsCurrent(owner, id, store, now, signature);
   }
   const hasChoice = choices.present && (choices.value as string[]).includes(id);
-  return hasChoice && permanentPinIsCurrent(owner, id, store, now, "choice");
+  if (!hasChoice) return false;
+  const isLimitBlocked = limitedChoices.present && (limitedChoices.value as string[]).includes(id);
+  return !isLimitBlocked || permanentPinIsCurrent(owner, id, store, now, "limit-choice");
 }
 export async function isSourcePinned(owner: string, id: string, now = Date.now()): Promise<boolean> {
   const key = sourceKey({ owner, id });
@@ -203,7 +244,10 @@ export async function evictUnlessPinned<T>(
   if (!release) return { kind: "in_use" };
   try {
     if (!stillCurrent()) return { kind: "account_changed" };
-    if (await isSourcePinned(owner, id)) return { kind: "pinned" };
+    const pinned = await isSourcePinned(owner, id);
+    if (!stillCurrent()) return { kind: "account_changed" };
+    if (pinned) return { kind: "pinned" };
+    if (!stillCurrent()) return { kind: "account_changed" };
     return { kind: "evicted", value: await evict() };
   } finally { release(); }
 }

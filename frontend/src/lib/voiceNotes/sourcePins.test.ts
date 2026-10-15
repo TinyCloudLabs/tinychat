@@ -6,11 +6,13 @@ import {
   isSourcePinned,
   registerExtraPins,
   retainSource,
+  setLimitBlockedChoice,
+  VOICE_NOTE_LIMIT_BLOCKED_CHOICES_KEY,
   VOICE_NOTE_PENDING_JOBS_KEY,
   VOICE_NOTE_PRIVATE_CHOICES_KEY,
   withSourceLease,
 } from "./sourcePins";
-import { localStorageVoiceNotePendingStore } from "./voiceNoteTranscription";
+import { localStorageVoiceNotePendingStore, localStorageVoiceNotePrivateChoiceStore } from "./voiceNoteTranscription";
 
 const DID = "did:test:source-pins";
 const ID = "note-1";
@@ -90,6 +92,54 @@ test("extra pin lookup is awaited and a lookup error fails closed", async () => 
   const unregisterFailure = registerExtraPins(async () => { throw new Error("synthetic unavailable"); });
   expect(await isSourcePinned(DID, ID)).toBe(true);
   unregisterFailure();
+});
+
+test("eviction rechecks account identity after an awaited pin lookup", async () => {
+  const entered = deferred();
+  const unblock = deferred();
+  let current = true;
+  let deleted = false;
+  const unregister = registerExtraPins(async () => {
+    entered.resolve();
+    await unblock.promise;
+    return false;
+  });
+  const eviction = evictUnlessPinned(DID, ID, () => current, async () => { deleted = true; });
+  await entered.promise;
+  current = false;
+  unblock.resolve();
+  expect(await eviction).toEqual({ kind: "account_changed" });
+  expect(deleted).toBe(false);
+  unregister();
+});
+
+test("malformed held data remains pinned rather than aging out", async () => {
+  const now = Date.parse("2026-01-01T00:00:00.000Z");
+  storage.setItem(accountStorageKey(VOICE_NOTE_PENDING_JOBS_KEY, DID), JSON.stringify({
+    [ID]: { attemptId: "attempt-1", held: null },
+  }));
+  expect(await isSourcePinned(DID, ID, now)).toBe(true);
+  expect(await isSourcePinned(DID, ID, now + 31 * 24 * 60 * 60 * 1000)).toBe(true);
+});
+
+test("ordinary Private choice remains pinned while only a blocked choice can expire", async () => {
+  const now = Date.parse("2026-01-01T00:00:00.000Z");
+  const choices = localStorageVoiceNotePrivateChoiceStore(DID, storage);
+  choices.add(ID);
+  expect(await isSourcePinned(DID, ID, now)).toBe(true);
+  expect(await isSourcePinned(DID, ID, now + 31 * 24 * 60 * 60 * 1000)).toBe(true);
+  choices.remove(ID);
+  choices.add(ID);
+  expect(await isSourcePinned(DID, ID, now + 31 * 24 * 60 * 60 * 1000)).toBe(true);
+});
+
+test("a known limit-blocked choice can expire", async () => {
+  const now = Date.parse("2026-01-01T00:00:00.000Z");
+  storage.setItem(accountStorageKey(VOICE_NOTE_PRIVATE_CHOICES_KEY, DID), JSON.stringify([ID]));
+  setLimitBlockedChoice(DID, ID, true);
+  expect(await isSourcePinned(DID, ID, now)).toBe(true);
+  expect(await isSourcePinned(DID, ID, now + 31 * 24 * 60 * 60 * 1000)).toBe(false);
+  expect(storage.getItem(accountStorageKey(VOICE_NOTE_LIMIT_BLOCKED_CHOICES_KEY, DID))).toBe(JSON.stringify([ID]));
 });
 
 test("a released fallback lease leaves no retained source", async () => {

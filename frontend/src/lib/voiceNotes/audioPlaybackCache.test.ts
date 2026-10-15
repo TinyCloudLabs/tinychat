@@ -339,7 +339,7 @@ test("TC-1182 C1 Clear removes unpinned bytes and reports retained pinned bytes"
 
 for (const operation of ["trim", "clear"] as const) {
   for (const offline of [false, true]) {
-    for (const pinKind of ["terminal", "choice", "held"] as const) {
+    for (const pinKind of ["terminal", "held"] as const) {
       test(`TC-1182 permanent ${pinKind} pin expires after 30 days with ${operation}, offline=${offline}`, async () => {
         const originalNow = Date.now;
         let now = new Date("2026-01-01T00:00:00.000Z").getTime();
@@ -349,8 +349,7 @@ for (const operation of ["trim", "clear"] as const) {
           const note = saved(id, "saved");
           notes = [note];
           sizes.set(id, 40);
-          if (pinKind === "choice") localStorageVoiceNotePrivateChoiceStore("did:test", testStorage).add(id);
-          else localStorageVoiceNotePendingStore("did:test", testStorage).write(id, {
+          localStorageVoiceNotePendingStore("did:test", testStorage).write(id, {
             attemptId: "permanent-attempt", transcriptionId: null,
             ...(pinKind === "terminal" ? { failure: "transcript_incomplete" } : {}),
             ...(pinKind === "held" ? { held: { rev: 2, sentences: [], speakers: [], metadata: {} } as never } : {}),
@@ -367,6 +366,27 @@ for (const operation of ["trim", "clear"] as const) {
         }
       });
     }
+  }
+  for (const offline of [false, true]) {
+    test(`TC-1182 ordinary Private choice stays pinned past 30 days with ${operation}, offline=${offline}`, async () => {
+      const originalNow = Date.now;
+      let now = new Date("2026-01-01T00:00:00.000Z").getTime();
+      Date.now = () => now;
+      try {
+        const id = `ordinary-choice-${operation}-${offline}`;
+        notes = [saved(id, "saved")];
+        sizes.set(id, 40);
+        localStorageVoiceNotePrivateChoiceStore("did:test", testStorage).add(id);
+        const evict = () => operation === "trim" ? trimCachedAudio(0) : clearCachedAudio();
+
+        await evict();
+        now += 31 * 24 * 60 * 60 * 1_000;
+        await evict();
+        expect(sizes.get(id)).toBe(40);
+      } finally {
+        Date.now = originalNow;
+      }
+    });
   }
 }
 
