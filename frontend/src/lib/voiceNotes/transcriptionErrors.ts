@@ -46,6 +46,7 @@ const TRANSCRIPTION_ERROR_COPY: Readonly<Record<string, string>> = {
   transcription_off: "Transcription was turned off.",
   transcript_incomplete: "Private Transcription returned a transcript that may be incomplete. Try again later.",
   held_result_persistence_failed: "The finished transcript could not be kept on this device. The Private job remains available for 24 hours; retry now.",
+  private_choice_persistence_failed: "Could not save this Private choice on this device. Check storage and retry.",
   voice_note_account_mismatch: "This voice note belongs to a different account. Switch accounts and retry there.",
 };
 

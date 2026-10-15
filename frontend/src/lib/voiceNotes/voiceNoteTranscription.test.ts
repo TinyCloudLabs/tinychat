@@ -60,7 +60,7 @@ import {
   voiceNoteAudioSourceFromBase64,
   type VoiceNoteAudio,
 } from "./voiceNoteStore";
-import { accountStorageKey, VOICE_NOTE_PENDING_JOBS_KEY } from "./sourcePins";
+import { accountStorageKey, VOICE_NOTE_PENDING_JOBS_KEY, VOICE_NOTE_PRIVATE_CHOICES_KEY } from "./sourcePins";
 import {
   capacitorPtxPut,
   createVoiceNoteTranscriber,
@@ -3004,6 +3004,150 @@ describe("every path that creates or resumes an off-phone job consults the hold 
     await settle();
     expect(starts).toBe(1);
     expect(transcriber.snapshot().jobs.get("rec-1")).toEqual({ kind: "done", outcome: "transcribed" });
+  });
+
+  for (const failure of ["intent", "choice-array"] as const) {
+    test(`TC-1206: ${failure} persistence failure blocks Private until a user retry can persist the choice`, async () => {
+      const { space, h, storage, choices } = await setup("in_app", { pending: false });
+      const transcriber = createVoiceNoteTranscriber({
+        cloud: h.cloud, consent: localStorageVoiceNoteConsentStore(DID, storage), tcw: () => space.tcw,
+        holds: memoryHoldStore(), choices, checkRetryMs: [],
+      });
+      await transcriber.check();
+      const setItem = storage.setItem;
+      storage.setItem = (key, value) => {
+        if (failure === "intent" && key.includes("privateChoiceIntents:rec-1:")) throw new Error("synthetic intent write failure");
+        if (failure === "choice-array" && key === accountStorageKey(VOICE_NOTE_PRIVATE_CHOICES_KEY, DID))
+          throw new Error("synthetic choice write failure");
+        setItem(key, value);
+      };
+
+      expect(transcriber.transcribePrivately("rec-1", RECORDING.durationMs / 1000)).toBe("choice-persistence-failed");
+      await settle();
+      expect(transcriber.snapshot().jobs.has("rec-1")).toBe(false);
+      expect(choices.has("rec-1")).toBe(false);
+      expect(h.creates).toHaveLength(0);
+      expect(h.puts).toHaveLength(0);
+
+      storage.setItem = setItem;
+      expect(transcriber.transcribePrivately("rec-1", RECORDING.durationMs / 1000)).toBeNull();
+      expect(choices.has("rec-1")).toBe(true);
+      await settle();
+      expect(choices.has("rec-1")).toBe(false);
+      expect(h.creates).toHaveLength(1);
+      expect(h.puts).toHaveLength(1);
+      expect((await readTranscriptCommit(space.tcw, "rec-1"))?.rev).toBe(1);
+      expect(h.removed).toEqual([ID]);
+    });
+  }
+
+  test("TC-1206: noteSaved does not enqueue when its choice write fails; Retry starts once storage recovers", async () => {
+    const { space, h, storage, choices } = await setup("in_app", { pending: false });
+    const transcriber = createVoiceNoteTranscriber({
+      cloud: h.cloud, consent: localStorageVoiceNoteConsentStore(DID, storage), tcw: () => space.tcw,
+      holds: memoryHoldStore(), choices, checkRetryMs: [],
+    });
+    await transcriber.check();
+    const setItem = storage.setItem;
+    storage.setItem = (key, value) => {
+      if (key === accountStorageKey(VOICE_NOTE_PRIVATE_CHOICES_KEY, DID)) throw new Error("synthetic choice write failure");
+      setItem(key, value);
+    };
+    transcriber.noteSaved({ id: "rec-1", durationMs: 9_000, source: "in_app",
+      options: { transcriber: "private-cloud", identifySpeakers: false, uploadAudio: true } });
+    await settle();
+    expect(transcriber.snapshot().jobs.get("rec-1")).toMatchObject({ kind: "failed", code: "private_choice_persistence_failed", retryable: true });
+    expect(choices.has("rec-1")).toBe(false);
+    expect(h.creates).toHaveLength(0);
+    expect(h.puts).toHaveLength(0);
+
+    storage.setItem = setItem;
+    transcriber.transcribe("rec-1");
+    expect(choices.has("rec-1")).toBe(true);
+    await settle();
+    expect(choices.has("rec-1")).toBe(false);
+    expect(h.creates).toHaveLength(1);
+    expect(h.puts).toHaveLength(1);
+    expect((await readTranscriptCommit(space.tcw, "rec-1"))?.rev).toBe(1);
+    expect(h.removed).toEqual([ID]);
+  });
+  test("TC-1206: failed choice cleanup stays actionable until Retry can verify removal", async () => {
+    const { space, h, storage, choices } = await setup("in_app", { pending: false });
+    const transcriber = createVoiceNoteTranscriber({
+      cloud: h.cloud, consent: localStorageVoiceNoteConsentStore(DID, storage), tcw: () => space.tcw,
+      holds: memoryHoldStore(), choices, checkRetryMs: [],
+    });
+    await transcriber.check();
+    const key = accountStorageKey(VOICE_NOTE_PRIVATE_CHOICES_KEY, DID);
+    const removeItem = storage.removeItem;
+    storage.removeItem = (candidate) => {
+      if (candidate === key) return;
+      removeItem(candidate);
+    };
+
+    expect(transcriber.transcribePrivately("rec-1", RECORDING.durationMs / 1000)).toBeNull();
+    expect(choices.has("rec-1")).toBe(true);
+    await settle();
+    expect((await readTranscriptCommit(space.tcw, "rec-1"))?.rev).toBe(1);
+    expect(transcriber.snapshot().jobs.get("rec-1")).toMatchObject({
+      kind: "failed", code: "private_choice_persistence_failed", retryable: true,
+    });
+    expect(choices.has("rec-1")).toBe(true);
+
+    storage.removeItem = removeItem;
+    transcriber.transcribe("rec-1");
+    await settle();
+    expect(transcriber.snapshot().jobs.get("rec-1")?.kind).toBe("done");
+    expect(choices.has("rec-1")).toBe(false);
+    expect(h.creates).toHaveLength(1);
+    expect(h.puts).toHaveLength(1);
+  });
+
+  test("TC-1206: failed choice removal leaves the persisted choice and its pin metadata intact", async () => {
+    const { storage, choices } = await setup("in_app", { pending: false });
+    choices.add("rec-1");
+    const key = accountStorageKey(VOICE_NOTE_PRIVATE_CHOICES_KEY, DID);
+    const intentKey = accountStorageKey("exo.voiceNotes.privateChoiceIntents:rec-1", DID);
+    const removeItem = storage.removeItem;
+    storage.removeItem = (candidate) => {
+      if (candidate === key) return;
+      removeItem(candidate);
+    };
+
+    expect(choices.remove("rec-1")).toBe(false);
+    expect(choices.has("rec-1")).toBe(true);
+    expect(storage.getItem(intentKey)).not.toBeNull();
+
+    storage.removeItem = removeItem;
+    expect(choices.remove("rec-1")).toBe(true);
+    expect(choices.has("rec-1")).toBe(false);
+  });
+
+  test("TC-1206: a nested second-note add during intent persistence keeps both durable choices", async () => {
+    const { space, h, storage } = await setup("in_app", { pending: false });
+    const outer = localStorageVoiceNotePrivateChoiceStore(DID, storage);
+    const inner = localStorageVoiceNotePrivateChoiceStore(DID, storage);
+    const transcriber = createVoiceNoteTranscriber({
+      cloud: h.cloud, consent: localStorageVoiceNoteConsentStore(DID, storage), tcw: () => space.tcw,
+      holds: memoryHoldStore(), choices: inner, checkRetryMs: [],
+    });
+    await transcriber.check();
+    const setItem = storage.setItem;
+    let interleaved = false;
+    storage.setItem = (key, value) => {
+      if (!interleaved && key.includes("privateChoiceIntents:other-note:")) {
+        interleaved = true;
+        expect(transcriber.transcribePrivately("rec-1", 1, CAPS.max_bytes + 1)).toEqual({
+          kind: "bytes", limitBytes: CAPS.max_bytes, sizeBytes: CAPS.max_bytes + 1,
+        });
+      }
+      setItem(key, value);
+    };
+
+    outer.add("other-note");
+    storage.setItem = setItem;
+    expect(interleaved).toBe(true);
+    expect(outer.ids().sort()).toEqual(["other-note", "rec-1"]);
   });
 
   test("Private with no PTX duration limit never starts automatically: the note stays blocked as limits-unknown, and an explicit Transcribe is refused the same way", async () => {

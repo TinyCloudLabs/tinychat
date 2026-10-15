@@ -17,6 +17,7 @@ const PRIVATE_REFUSAL_COPY: Record<TranscriptionAdmissionRefusal, string> = {
   "check-failed": "Couldn’t check Private transcription. Try again in a moment.",
   "no-consent": "Enable Private transcription before trying again.",
   "account-changed": "Your account changed. Try again after signing in.",
+  "choice-persistence-failed": "Could not save this Private choice on this device. Check storage and retry.",
 };
 
 /** The copy for a Private start refused by service state, duration, bytes, or the browser's WAV payload ceiling. */
