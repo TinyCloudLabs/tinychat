@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { Window } from "happy-dom";
 import { IDBFactory } from "fake-indexeddb";
@@ -13,7 +13,7 @@ import { captureEvents } from "../captureEvents";
 import { ensureSchema } from "@/lib/connectors/connectorStore";
 import { readTranscriptCommit } from "@/lib/voiceNotes/voiceNoteCommits";
 import { saveVoiceNoteTranscript, type VoiceNoteTranscriptSave } from "@/lib/voiceNotes/voiceNoteStore";
-import { __setVoiceNotesForTests } from "@/lib/voiceNotes/nativeVoiceNotes";
+import { VoiceNotes, __setVoiceNotesForTests } from "@/lib/voiceNotes/nativeVoiceNotes";
 
 const SOURCE = "exo-voice-note";
 const SOURCE_ID = "synthetic-recording";
@@ -26,6 +26,18 @@ let dom: Window;
 let root: Root | null = null;
 let host: HTMLElement;
 let dbToClose: Database | null = null;
+const saved = {
+  window: globalThis.window,
+  document: globalThis.document,
+  navigator: globalThis.navigator,
+  HTMLElement: globalThis.HTMLElement,
+  Element: globalThis.Element,
+  Node: globalThis.Node,
+  MutationObserver: globalThis.MutationObserver,
+  indexedDB: globalThis.indexedDB,
+  IS_REACT_ACT_ENVIRONMENT: globalThis.IS_REACT_ACT_ENVIRONMENT,
+};
+const originalVoiceNotes = VoiceNotes;
 
 function Detail({ tcw }: { tcw: TinyCloudWeb }) {
   const library = useLibrary(tcw, { visible: true, noteId: NOTE_ID });
@@ -46,6 +58,11 @@ beforeAll(() => {
     IS_REACT_ACT_ENVIRONMENT: true,
   });
   __setVoiceNotesForTests({ listPending: async () => ({ recordings: [] }), getTranscript: async () => ({ transcript: null }), localAudioSize: async () => ({ size: 0 }) } as never, { available: false });
+});
+
+afterAll(() => {
+  __setVoiceNotesForTests(originalVoiceNotes, { available: null });
+  Object.assign(globalThis, saved);
 });
 
 afterEach(async () => {
