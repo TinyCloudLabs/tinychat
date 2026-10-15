@@ -78,16 +78,20 @@ private final class DecodeLease {
     }
 
     var isStopped: Bool { lock.withLock { stopped } }
-    var expiryOpportunity: UInt64? { lock.withLock { stoppedAtOpportunity } }
     var isLive: Bool { lock.withLock { !stopped && !ended } }
 
-    func end(_ activity: TranscriptionActivity, fromExpiry: Bool = false) {
-        let shouldEnd = lock.withLock { () -> Bool in
-            guard !ended, !stopped || fromExpiry else { return false }
+    /// Worker completion and OS expiry are decided under one lock. The returned opportunity
+    /// parks the entire pass even when expiry already released the assertion.
+    @discardableResult
+    func end(_ activity: TranscriptionActivity, fromExpiry: Bool = false) -> UInt64? {
+        let (shouldEnd, expiredAt) = lock.withLock { () -> (Bool, UInt64?) in
+            let expiredAt = stopped ? stoppedAtOpportunity : nil
+            guard !ended, !stopped || fromExpiry else { return (false, expiredAt) }
             ended = true
-            return acquired
+            return (acquired, expiredAt)
         }
         if shouldEnd { activity.end() }
+        return expiredAt
     }
 }
 
@@ -152,6 +156,10 @@ final class TranscriptionCore {
     private var opportunityVersion: UInt64 = 0
     /// A relaunch must not treat a background inventory scan as admission for durable OS-yielded work.
     private var admittedSinceLaunch = false
+    #if DEBUG
+    /// Injects expiry immediately before the single final lease decision.
+    var onBeforeLeaseFinalization: (() -> Void)?
+    #endif
     var onQueueChanged: (() -> Void)?
     var onProgress: ((String, Int) -> Void)?
     var onTranscribed: ((String, String) -> Void)?
@@ -395,7 +403,6 @@ final class TranscriptionCore {
                 do { try library.updateStt(id, patch: patch) }
                 catch { return }
             }
-            let opportunity = opportunityLock.withLock { opportunityVersion }
             onQueueChanged?()
             let lease = DecodeLease()
             let activity = makeActivity()
@@ -412,13 +419,14 @@ final class TranscriptionCore {
                 }
             }
             defer {
-                if lease.isStopped {
+                #if DEBUG
+                onBeforeLeaseFinalization?()
+                #endif
+                if let expiry = lease.end(activity) {
                     expiredThisPass = true
-                    let expiry = lease.expiryOpportunity ?? opportunity
                     expiredOpportunity = expiry
                     pauseUntilReconcile(since: expiry)
                 }
-                lease.end(activity)
             }
             do {
                 try process(id: id, generation: generation, session: session, lease: lease)

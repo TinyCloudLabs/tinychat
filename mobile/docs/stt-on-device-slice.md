@@ -60,10 +60,11 @@ Per the scoping discussion before this slice was built:
   (decision 12).
 - **No scheduled background execution.** There is no `BGProcessingTask` (iOS) or `SttWorker`/WorkManager
   (Android). iOS may finish an already-running, eligible short decode during a finite assertion; an
-  expired assertion durably yields and parks the queue until foreground activation or explicit Retry,
-  including after relaunch. Committed and asset-install notifications only refresh inventory; they do
-  not admit expired work. A genuine crash still consumes an attempt. A note interrupted mid-decode
-  restarts from the beginning at its next admitted opportunity, rather than resuming mid-file.
+  expired assertion durably yields and parks the queue until `SceneDelegate.sceneDidBecomeActive`
+  admits a foreground turn or the user explicitly retries, including after relaunch. Committed and
+  asset-install notifications only refresh inventory; they do not admit expired work. A genuine crash
+  still consumes an attempt. A note interrupted mid-decode restarts from the beginning at its next
+  admitted opportunity, rather than resuming mid-file.
 - **No model card or licences screen.** `OnDeviceStt.status()` is shown as one line with a
   Download/Cancel action, not the full model card, queue display and licences T27 adds.
   `deleteModels()` is implemented but not yet exposed in the UI.
