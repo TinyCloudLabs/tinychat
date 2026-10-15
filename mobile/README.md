@@ -482,11 +482,14 @@ Xcode 26.6.
   `exo-ios-smoke-<sha>` artifact has `screenshot.png`, a sanitized `console.log`,
   allowlisted `unified.log` and `app-unified-stream.log` (started before launch),
   `launch-timeline.log` (request and PID observation times), `liveness.log`
-  (roughly 2-second checks through the 120-second deadline), and `summary.md`.
+  (roughly 2-second checks through the 120-second deadline),
+  `stage-timings.log` (fixed stage names and durations only), and `summary.md`.
   The timeline records a simulator PID only when `simctl launch` reports one;
   otherwise it says `simctl launch pid not reported` and keeps the separate
-  launchctl PID. An independent sampler records actual liveness timestamps;
-  an observation gap over five seconds fails the smoke.
+  launchctl PID. PID parsing runs independently of the liveness sampler,
+  which records actual timestamps; an observation gap over five seconds fails
+  the smoke. Stage timings include each heartbeat's wall time and blocking
+  process checks, PID scans, probes, and log operations without their content.
   If a crash report is detected, `crash-reports.txt` contains only the report
   count; raw diagnostic reports are not copied into the artifact.
   `mobile/scripts/ios-simulator-smoke.sh run <path/to/App.app> /tmp/exo-smoke`.

@@ -38,7 +38,18 @@ out=$(cd "$out" && pwd)
 failures=()
 fail() { failures+=("$1"); echo "::error::iOS smoke: $1"; }
 log() { echo "[smoke $(date -u +%H:%M:%S)] $*"; }
+# The timing artifact contains fixed stage names and elapsed seconds, never command output or identifiers.
+time_stage() {
+  local stage=$1 started status
+  shift
+  started=$SECONDS
+  "$@"
+  status=$?
+  printf '%s duration_s=%s\n' "$stage" "$((SECONDS - started))" >>"$out/stage-timings.log"
+  return "$status"
+}
 
+if [ "$command" = run ]; then : >"$out/stage-timings.log"; fi
 # The newest iOS runtime that has an iPhone simulator; `boot` remembers it in device.txt for `run`.
 if [ -f "$out/device.txt" ]; then
   read -r runtime udid device <"$out/device.txt"
@@ -67,16 +78,16 @@ if [ "$command" = boot ]; then
 fi
 
 [ -d "$app" ] || { echo "::error::no app bundle at $app"; exit 1; }
-plutil -lint "$app/PrivacyInfo.xcprivacy" || fail "App.app has no valid PrivacyInfo.xcprivacy"
+time_stage main.privacy-lint plutil -lint "$app/PrivacyInfo.xcprivacy" || fail "App.app has no valid PrivacyInfo.xcprivacy"
 
 log "waiting for the simulator to finish booting"
-xcrun simctl bootstatus "$udid" -b >/dev/null || { echo "::error::simulator $udid did not boot"; exit 1; }
+time_stage main.bootstatus xcrun simctl bootstatus "$udid" -b >/dev/null || { echo "::error::simulator $udid did not boot"; exit 1; }
 log "booted; installing $app"
-xcrun simctl install "$udid" "$app" || { echo "::error::install failed"; exit 1; }
-xcrun simctl privacy "$udid" grant microphone "$bundle_id" || fail "could not grant the microphone"
+time_stage main.install xcrun simctl install "$udid" "$app" || { echo "::error::install failed"; exit 1; }
+time_stage main.microphone-grant xcrun simctl privacy "$udid" grant microphone "$bundle_id" || fail "could not grant the microphone"
 # TC-524 location probe: "Always" and a simulated position (Apple Park). Informational; see the header.
-xcrun simctl privacy "$udid" grant location-always "$bundle_id" || log "could not grant location-always"
-xcrun simctl location "$udid" set 37.3349,-122.0090 || log "could not set a simulated location"
+time_stage main.location-grant xcrun simctl privacy "$udid" grant location-always "$bundle_id" || log "could not grant location-always"
+time_stage main.location-set xcrun simctl location "$udid" set 37.3349,-122.0090 || log "could not set a simulated location"
 
 reports="$HOME/Library/Logs/DiagnosticReports"
 marker="$out/.launched"
@@ -86,9 +97,11 @@ touch "$marker"
 private_logs=$(mktemp -d)
 stream_pid=""
 watcher_pid=""
+observer_pid=""
 cleanup_smoke() {
   if [ -n "$watcher_pid" ]; then kill "$watcher_pid" 2>/dev/null || true; wait "$watcher_pid" 2>/dev/null || true; fi
   if [ -n "$stream_pid" ]; then kill "$stream_pid" 2>/dev/null || true; wait "$stream_pid" 2>/dev/null || true; fi
+  if [ -n "$observer_pid" ]; then kill "$observer_pid" 2>/dev/null || true; wait "$observer_pid" 2>/dev/null || true; fi
   rm -rf "$private_logs"
 }
 trap cleanup_smoke EXIT
@@ -129,7 +142,7 @@ xcrun simctl spawn "$udid" log stream --style compact --info --debug \
   --predicate 'process == "App"' \
   >"$private_logs/stream.log" 2>"$private_logs/stream.err" &
 stream_pid=$!
-sleep 1
+time_stage main.stream-start sleep 1
 if ! kill -0 "$stream_pid" 2>/dev/null; then fail "app unified log stream could not start"; fi
 printf 'stream requested %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$out/launch-timeline.log"
 : >"$out/liveness.log"
@@ -146,10 +159,31 @@ SIMCTL_CHILD_EXO_LOCATION_SMOKE="$location_smoke" SIMCTL_CHILD_EXO_CAPTURE_SMOKE
   xcrun simctl launch --console-pty "$udid" "$bundle_id" >"$private_logs/console.log" 2>&1 &
 launcher=$!
 
-# The liveness sampler is independent of simulator and probe calls, which can block for many seconds.
-# Only PIDs reported for this app by simctl or by its matching launchctl job are checked.
+# App PID discovery parses private console output in a separate process: it cannot delay the heartbeat.
+# Only a bundle-qualified numeric simctl result may be published as an app PID.
+scan_simctl_pid() {
+  awk -v app="$bundle_id:" '$1 == app { gsub(/\r/, "", $2); if ($2 ~ /^[0-9]+$/) { print $2; exit } }' \
+    "$private_logs/console.log" 2>/dev/null
+}
+observe_simctl_pid() {
+  local candidate
+  while [ "$SECONDS" -lt "$deadline" ] && [ ! -f "$private_logs/observer.stop" ]; do
+    candidate=$(time_stage observer.pid-scan scan_simctl_pid)
+    if [ -n "$candidate" ] && [ "$SECONDS" -lt "$deadline" ]; then
+      printf '%s\n' "$candidate" >"$private_logs/simctl.pid"
+      printf 'simctl launch pid %s observed %s\n' "$candidate" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$out/launch-timeline.log"
+      : >"$private_logs/observer.complete"
+      return 0
+    fi
+    if [ "$SECONDS" -ge "$deadline" ] || [ -f "$private_logs/observer.stop" ]; then break; fi
+    time_stage observer.sleep sleep 2
+  done
+  : >"$private_logs/observer.complete"
+}
+
+# Only verified app PIDs from simctl or its matching launchctl job are checked.
 watch_liveness() {
-  local simctl_pid="" app_pid="" candidate epoch last_epoch=$launch_epoch
+  local simctl_pid="" app_pid="" epoch last_epoch=$launch_epoch
   record_liveness() {
     local observed_epoch observed_at gap
     observed_epoch=$(date -u +%s)
@@ -162,22 +196,16 @@ watch_liveness() {
     printf '%s %s\n' "$observed_at" "$1" >>"$out/liveness.log"
     last_epoch=$observed_epoch
   }
-  while [ "$SECONDS" -lt "$deadline" ]; do
-    sleep 2
-    if [ -z "$simctl_pid" ]; then
-      candidate=$(awk -v app="$bundle_id:" '$1 == app { gsub(/\r/, "", $2); if ($2 ~ /^[0-9]+$/) { print $2; exit } }' \
-        "$private_logs/console.log" 2>/dev/null)
-      if [ -n "$candidate" ]; then
-        simctl_pid=$candidate
-        printf '%s\n' "$simctl_pid" >"$private_logs/simctl.pid"
-        printf 'simctl launch pid %s observed %s\n' "$simctl_pid" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$out/launch-timeline.log"
-      fi
+  sample_liveness() {
+    time_stage heartbeat.sleep sleep 2
+    if [ -z "$simctl_pid" ] && [ -s "$private_logs/simctl.pid" ]; then
+      read -r simctl_pid <"$private_logs/simctl.pid"
     fi
     if [ -z "$app_pid" ] && [ -s "$private_logs/launchctl.pid" ]; then
       read -r app_pid <"$private_logs/launchctl.pid"
     fi
     if [ -n "$simctl_pid" ]; then
-      if ! app_pid_alive "$simctl_pid"; then
+      if ! time_stage heartbeat.pid-check app_pid_alive "$simctl_pid"; then
         record_liveness "simctl pid $simctl_pid exited"
         : >"$private_logs/watcher.exited"
         return 1
@@ -185,7 +213,7 @@ watch_liveness() {
       record_liveness "simctl pid $simctl_pid alive"
     fi
     if [ -n "$app_pid" ]; then
-      if [ "$app_pid" != "$simctl_pid" ] && ! app_pid_alive "$app_pid"; then
+      if [ "$app_pid" != "$simctl_pid" ] && ! time_stage heartbeat.pid-check app_pid_alive "$app_pid"; then
         record_liveness "pid $app_pid exited"
         : >"$private_logs/watcher.exited"
         return 1
@@ -194,6 +222,9 @@ watch_liveness() {
     elif [ -z "$simctl_pid" ]; then
       record_liveness "pid not yet observed"
     fi
+  }
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    if ! time_stage heartbeat sample_liveness; then return 1; fi
   done
   epoch=$(date -u +%s)
   if [ "$((epoch - last_epoch))" -gt 5 ]; then
@@ -202,6 +233,18 @@ watch_liveness() {
   fi
   : >"$private_logs/watcher.complete"
 }
+discover_launchctl_pid() {
+  xcrun simctl spawn "$udid" launchctl list 2>/dev/null |
+    awk -v job="UIKitApplication:$bundle_id" 'index($3, job) == 1 && $1 ~ /^[0-9]+$/ { print $1; exit }'
+}
+parse_location_probe() {
+  grep -a -m1 'EXO_LOCATION_SMOKE ' "$private_logs/console.log" 2>/dev/null |
+    sed 's/^.*EXO_LOCATION_SMOKE //' | tr -d '\r'
+}
+count_crash_reports() {
+  find "$reports" -newer "$marker" -type f \( -name 'App-*' -o -name 'App_*' -o -name 'ExoWidgets*' \) \
+    -exec sh -c 'for report do printf x; done' sh {} + 2>/dev/null | wc -c | tr -d '[:space:]'
+}
 
 simctl_pid=""
 pid=""
@@ -209,13 +252,15 @@ probe=""
 process_exited=0
 deadline=$((SECONDS + timeout_s))
 launch_epoch=$((deadline_epoch - timeout_s))
+observe_simctl_pid &
+observer_pid=$!
 watch_liveness &
 watcher_pid=$!
 while [ "$SECONDS" -lt "$deadline" ]; do
-  sleep 2
+  time_stage main.poll-sleep sleep 2
   if [ -f "$private_logs/watcher.exited" ]; then process_exited=1; break; fi
   # launchd's job for the app: "<pid> <status> UIKitApplication:xyz.tinycloud.exo[...]".
-  observed_pid=$(xcrun simctl spawn "$udid" launchctl list 2>/dev/null | awk -v job="UIKitApplication:$bundle_id" 'index($3, job) == 1 && $1 ~ /^[0-9]+$/ { print $1; exit }')
+  observed_pid=$(time_stage main.launchctl-list discover_launchctl_pid)
   if [ -z "$pid" ] && [ -n "$observed_pid" ]; then
     pid=$observed_pid
     printf '%s\n' "$pid" >"$private_logs/launchctl.pid"
@@ -229,7 +274,7 @@ while [ "$SECONDS" -lt "$deadline" ]; do
     break
   fi
   if [ -z "$probe" ] && [ "$SECONDS" -lt "$deadline" ]; then
-    candidate=$(mounted_probe "$private_logs/console.log")
+    candidate=$(time_stage main.probe-parse mounted_probe "$private_logs/console.log")
     if [ -n "$candidate" ] && [ "$SECONDS" -lt "$deadline" ]; then
       probe=$candidate
       printf 'mounted app-page probe observed %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$out/launch-timeline.log"
@@ -240,9 +285,18 @@ done
 if [ "$process_exited" -eq 1 ] && [ ! -f "$private_logs/watcher.exited" ]; then
   kill "$watcher_pid" 2>/dev/null || true
 fi
+if [ "$process_exited" -eq 1 ]; then
+  : >"$private_logs/observer.stop"
+fi
 watcher_failed=0
-wait "$watcher_pid" 2>/dev/null || watcher_failed=1
+time_stage main.watcher-wait wait "$watcher_pid" 2>/dev/null || watcher_failed=1
 watcher_pid=""
+observer_failed=0
+time_stage main.observer-wait wait "$observer_pid" 2>/dev/null || observer_failed=1
+observer_pid=""
+if [ "$process_exited" -eq 0 ] && { [ "$observer_failed" -ne 0 ] || [ ! -f "$private_logs/observer.complete" ]; }; then
+  fail "simctl PID observer did not complete through the probe deadline"
+fi
 if [ -s "$private_logs/simctl.pid" ]; then
   read -r simctl_pid <"$private_logs/simctl.pid"
 else
@@ -259,11 +313,11 @@ fi
 
 if [ -z "$probe" ] && [ "$process_exited" -eq 0 ]; then
   # A PTY can lose a late stdout line; accept only the same mounted app-page payload from os_log.
-  xcrun simctl spawn "$udid" log show --style compact --start "$launch_log_at" --end "$deadline_log_at" --info \
+  time_stage main.fallback-log-show xcrun simctl spawn "$udid" log show --style compact --start "$launch_log_at" --end "$deadline_log_at" --info \
     --predicate 'process == "App" AND subsystem == "xyz.tinycloud.exo" AND category == "smoke"' \
     >"$private_logs/smoke-fallback.log" 2>/dev/null || true
-  safe_log_lines "$private_logs/smoke-fallback.log" "$out/smoke-fallback.log"
-  probe=$(mounted_probe "$private_logs/smoke-fallback.log")
+  time_stage main.fallback-sanitize safe_log_lines "$private_logs/smoke-fallback.log" "$out/smoke-fallback.log"
+  probe=$(time_stage main.fallback-probe-parse mounted_probe "$private_logs/smoke-fallback.log")
   if [ -n "$probe" ]; then
     printf 'mounted app-page fallback probe observed %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$out/launch-timeline.log"
   fi
@@ -274,20 +328,20 @@ if [ -n "$probe" ] && [ "$process_exited" -eq 0 ]; then
   # The location probe captures for about 15 s after the main probe; give it up to 60 s.
   location_deadline=$((SECONDS + 60))
   while [ "$location_smoke" = 1 ] && [ -z "$location_probe" ] && [ "$SECONDS" -lt "$location_deadline" ]; do
-    sleep 2
-    if [ -n "$pid" ] && ! app_pid_alive "$pid"; then break; fi
-    location_probe=$(grep -a -m1 'EXO_LOCATION_SMOKE ' "$private_logs/console.log" 2>/dev/null | sed 's/^.*EXO_LOCATION_SMOKE //' | tr -d '\r')
+    time_stage main.location-sleep sleep 2
+    if [ -n "$pid" ] && ! time_stage main.location-pid-check app_pid_alive "$pid"; then break; fi
+    location_probe=$(time_stage main.location-probe-parse parse_location_probe)
   done
   log "location probe: $([ -n "$location_probe" ] && echo received || echo none)"
   log "letting it run ${settle_s}s more"
-  sleep "$settle_s"
+  time_stage main.settle sleep "$settle_s"
 elif [ "${#failures[@]}" -eq 0 ]; then
   fail "no EXO_SMOKE probe line within ${timeout_s}s (is ExoBridgeViewController the root view controller?)"
 fi
-if [ "$process_exited" -eq 0 ] && [ -n "$simctl_pid" ] && ! app_pid_alive "$simctl_pid"; then
+if [ "$process_exited" -eq 0 ] && [ -n "$simctl_pid" ] && ! time_stage main.final-pid-check app_pid_alive "$simctl_pid"; then
   printf '%s simctl pid %s exited after probe deadline\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$simctl_pid" >>"$out/liveness.log"
   fail "the app was not running ${settle_s}s after the probe (simctl pid $simctl_pid)"
-elif [ "$process_exited" -eq 0 ] && [ -n "$pid" ] && ! app_pid_alive "$pid"; then
+elif [ "$process_exited" -eq 0 ] && [ -n "$pid" ] && ! time_stage main.final-pid-check app_pid_alive "$pid"; then
   printf '%s pid %s exited after probe deadline\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$pid" >>"$out/liveness.log"
   fail "the app was not running ${settle_s}s after the probe (pid $pid)"
 elif [ -z "$pid" ]; then
@@ -295,19 +349,18 @@ elif [ -z "$pid" ]; then
 fi
 
 log "collecting screenshot and logs"
-xcrun simctl io "$udid" screenshot "$out/screenshot.png" >/dev/null 2>&1 || fail "screenshot failed"
-xcrun simctl spawn "$udid" log show --style compact --last 10m --info --debug \
+time_stage main.screenshot xcrun simctl io "$udid" screenshot "$out/screenshot.png" >/dev/null 2>&1 || fail "screenshot failed"
+time_stage main.unified-log-show xcrun simctl spawn "$udid" log show --style compact --last 10m --info --debug \
   --predicate 'process == "App"' \
   >"$private_logs/unified.log" 2>/dev/null || true
-xcrun simctl terminate "$udid" "$bundle_id" >/dev/null 2>&1 || true
-wait "$launcher" 2>/dev/null || true
+time_stage main.terminate xcrun simctl terminate "$udid" "$bundle_id" >/dev/null 2>&1 || true
+time_stage main.launcher-wait wait "$launcher" 2>/dev/null || true
 kill "$stream_pid" 2>/dev/null || true
-wait "$stream_pid" 2>/dev/null || true
+time_stage main.stream-wait wait "$stream_pid" 2>/dev/null || true
 stream_pid=""
-safe_log_lines "$private_logs/stream.log" "$out/app-unified-stream.log"
-safe_log_lines "$private_logs/unified.log" "$out/unified.log"
-crash_count=$(find "$reports" -newer "$marker" -type f \( -name 'App-*' -o -name 'App_*' -o -name 'ExoWidgets*' \) \
-  -exec sh -c 'for report do printf x; done' sh {} + 2>/dev/null | wc -c | tr -d '[:space:]')
+time_stage main.stream-sanitize safe_log_lines "$private_logs/stream.log" "$out/app-unified-stream.log"
+time_stage main.unified-sanitize safe_log_lines "$private_logs/unified.log" "$out/unified.log"
+crash_count=$(time_stage main.crash-count count_crash_reports)
 if [ "$crash_count" -gt 0 ]; then
   fail "crash report(s) detected: $crash_count"
   printf 'count=%s\n' "$crash_count" >"$out/crash-reports.txt"
@@ -315,7 +368,7 @@ fi
 
 checks=()
 check() { # check <jq filter> <description>
-  if [ -n "$probe" ] && jq -e "$1" >/dev/null 2>&1 <<<"$probe"; then
+  if [ -n "$probe" ] && time_stage main.check jq -e "$1" >/dev/null 2>&1 <<<"$probe"; then
     checks+=("- [x] $2")
   else
     checks+=("- [ ] $2")
@@ -353,7 +406,7 @@ check '.locationStatus.declared.foreground == true and .locationStatus.declared.
   "Debug Info.plist has the location usage strings and the location background mode"
 # Informational (never fails the job): the capture probe.
 note() { # note <jq filter> <description>
-  if [ -n "$location_probe" ] && jq -e "$1" >/dev/null 2>&1 <<<"$location_probe"; then
+  if [ -n "$location_probe" ] && time_stage main.note jq -e "$1" >/dev/null 2>&1 <<<"$location_probe"; then
     checks+=("- [x] (info) $2")
   else
     checks+=("- [ ] (info) $2")
@@ -362,9 +415,9 @@ note() { # note <jq filter> <description>
 note '.before.permission == "background"' "location authorization is Always (granted by simctl)"
 note '.started.active == true' "Location.start() began a continuous capture"
 note '.pending.samples > 0' "the native queue recorded location samples"
-loads=$(grep -a -c 'Loading app at capacitor://localhost' "$private_logs/console.log" || true)
+loads=$(time_stage main.load-count grep -a -c 'Loading app at capacitor://localhost' "$private_logs/console.log" || true)
 [ "${loads:-0}" -le 1 ] || fail "the web app was loaded $loads times (two bridges?)"
-safe_log_lines "$private_logs/console.log" "$out/console.log"
+time_stage main.console-sanitize safe_log_lines "$private_logs/console.log" "$out/console.log"
 
 {
   echo "### iOS Simulator smoke"
@@ -376,7 +429,7 @@ safe_log_lines "$private_logs/console.log" "$out/console.log"
   echo "Probe: \`$([ -n "$probe" ] && echo 'committed app page, React mounted' || echo none)\`"
   echo
   # Health spike (TC-525), informational: what HealthKit says to this unsigned build.
-  if [ -n "$probe" ] && jq -e '.healthHeader == true' >/dev/null 2>&1 <<<"$probe"; then
+  if [ -n "$probe" ] && time_stage main.health-check jq -e '.healthHeader == true' >/dev/null 2>&1 <<<"$probe"; then
     echo "Health plugin (not gated): available"
     echo
   fi

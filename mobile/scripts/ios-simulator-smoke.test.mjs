@@ -81,7 +81,7 @@ if (op === 'launch') {
 }
 `;
 
-function runSmoke({ mode, exitAfterMs, hideLaunchctl = false, badPrefix = false, crash = false, simctlPid = "immediate", pidDelayMs = 0, launchctlStallMs = 0, probeStallSeconds = 0, psStallCall = 0, psStallSeconds = 6, timeout = 6 }) {
+function runSmoke({ mode, exitAfterMs, hideLaunchctl = false, badPrefix = false, crash = false, simctlPid = "immediate", pidDelayMs = 0, launchctlStallMs = 0, probeStallSeconds = 0, psStallCall = 0, psStallSeconds = 6, awkStallCall = 0, timeout = 6 }) {
   const dir = mkdtempSync(join(tmpdir(), "exo-smoke-test-"));
   const bin = join(dir, "bin");
   const app = join(dir, "App.app");
@@ -99,6 +99,8 @@ function runSmoke({ mode, exitAfterMs, hideLaunchctl = false, badPrefix = false,
   chmodSync(join(bin, "grep"), 0o755);
   writeFileSync(join(bin, "ps"), "#!/bin/sh\nif [ -n \"$FAKE_PS_STALL_CALL\" ]; then\n  n=0\n  if [ -f \"$FAKE_SIM_STATE/ps-count\" ]; then read -r n < \"$FAKE_SIM_STATE/ps-count\"; fi\n  n=$((n + 1))\n  printf '%s\\n' \"$n\" > \"$FAKE_SIM_STATE/ps-count\"\n  if [ \"$n\" -eq \"$FAKE_PS_STALL_CALL\" ]; then sleep \"$FAKE_PS_STALL_SECONDS\"; fi\nfi\nPATH=${PATH#*:} exec ps \"$@\"\n");
   chmodSync(join(bin, "ps"), 0o755);
+  writeFileSync(join(bin, "awk"), "#!/bin/sh\ncase \"$*\" in\n  *app=xyz.tinycloud.exo:*)\n    if [ -n \"$FAKE_AWK_STALL_CALL\" ]; then\n      n=0\n      if [ -f \"$FAKE_SIM_STATE/awk-count\" ]; then read -r n < \"$FAKE_SIM_STATE/awk-count\"; fi\n      n=$((n + 1))\n      printf '%s\\n' \"$n\" > \"$FAKE_SIM_STATE/awk-count\"\n      if [ \"$n\" -eq \"$FAKE_AWK_STALL_CALL\" ]; then sleep 4; fi\n    fi ;;\nesac\nPATH=${PATH#*:} exec awk \"$@\"\n");
+  chmodSync(join(bin, "awk"), 0o755);
   const env = {
     ...process.env, PATH: bin + ":" + process.env.PATH, HOME: dir, FAKE_SIM_STATE: dir,
     FAKE_PROBE_MODE: mode, FAKE_GOOD_PROBE: JSON.stringify(goodProbe),
@@ -112,13 +114,14 @@ function runSmoke({ mode, exitAfterMs, hideLaunchctl = false, badPrefix = false,
     FAKE_PROBE_STALL_SECONDS: String(probeStallSeconds || ""),
     FAKE_PS_STALL_CALL: String(psStallCall || ""),
     FAKE_PS_STALL_SECONDS: String(psStallSeconds),
+    FAKE_AWK_STALL_CALL: String(awkStallCall || ""),
     EXO_CAPTURE_SMOKE: "0", EXO_LOCATION_SMOKE: "0",
     SMOKE_TIMEOUT: String(timeout), SMOKE_SETTLE: "0",
   };
   try {
     const result = spawnSync("bash", [smoke, "run", app, out], { env, timeout: 30000, encoding: "utf8" });
     const artifact = (name) => { try { return readFileSync(join(out, name), "utf8"); } catch { return ""; } };
-    const files = ["../events", "launch-timeline.log", "liveness.log", "app-unified-stream.log", "unified.log", "console.log", "summary.md", "crashes/App-synthetic.ips", "crash-reports.txt"];
+    const files = ["../events", "launch-timeline.log", "liveness.log", "stage-timings.log", "app-unified-stream.log", "unified.log", "console.log", "summary.md", "crashes/App-synthetic.ips", "crash-reports.txt"];
     const snapshots = new Map(files.map((name) => [name, artifact(name)]));
     return {
       result, events: snapshots.get("../events").trim().split("\n"),
@@ -240,10 +243,50 @@ test("an end-of-deadline watcher stall cannot be reported as complete liveness",
 test("a four-second final ps stall exposes the actual sleep-plus-stall gap", { timeout: 30000 }, () => {
   const { result, artifact } = runSmoke({ mode: "mounted", psStallCall: 2, psStallSeconds: 4, timeout: 5 });
   const liveness = artifact("liveness.log");
-  const observations = [...liveness.matchAll(/^(\S+) simctl pid \d+ alive$/gm)].map((match) => Date.parse(match[1]));
+  const observations = [...liveness.matchAll(/^(\S+) (?:simctl )?pid \d+ alive$/gm)].map((match) => Date.parse(match[1]));
   assert.ok(observations.some((time, index) => index > 0 && time - observations[index - 1] > 5000),
     "fixture must create a gap between completed alive observations");
   assert.equal(result.status, 1, "the watcher must not pass an actual gap over five seconds");
   assert.match(liveness, /observation gap \d+s/);
   assert.match(artifact("summary.md"), /liveness observation gap exceeded 5s/);
+  assert.match(artifact("stage-timings.log"), /heartbeat\.pid-check duration_s=[4-9]/,
+    "the real blocking process check must be measured independently");
+  assert.match(artifact("stage-timings.log"), /heartbeat duration_s=[6-9]/,
+    "the whole stalled heartbeat must expose its elapsed wall time");
+});
+
+test("slow simctl PID scanning cannot starve an independent liveness watcher", { timeout: 30000 }, () => {
+  const { result, artifact } = runSmoke({ mode: "mounted", simctlPid: "absent", awkStallCall: 2, timeout: 9 });
+  const liveness = artifact("liveness.log");
+  assert.equal(result.status, 0,
+    artifact("summary.md").includes("liveness observation gap") ? "PID scan stalled liveness" : "unexpected smoke failure");
+  assert.match(artifact("launch-timeline.log"), /simctl launch pid not reported/);
+  const observations = [...liveness.matchAll(/^(\S+) pid \d+ alive$/gm)].map((match) => Date.parse(match[1]));
+  assert.ok(observations.length >= 3, "continue real app PID observations through the deadline");
+  for (let index = 1; index < observations.length; index++) {
+    assert.ok(observations[index] - observations[index - 1] <= 5000, "PID scan starved liveness");
+  }
+});
+
+test("does not publish a simctl PID discovered only after the unchanged deadline", { timeout: 30000 }, () => {
+  const { result, artifact } = runSmoke({ mode: "mounted", pidDelayMs: 1000, awkStallCall: 1, timeout: 3 });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(artifact("launch-timeline.log"), /simctl launch pid not reported/);
+  assert.doesNotMatch(artifact("launch-timeline.log"), /simctl launch pid \d+ observed/);
+  assert.match(artifact("launch-timeline.log"), /pid \d+ observed/);
+});
+
+test("publishes only structural duration fields for every heartbeat and blocking stage", { timeout: 30000 }, () => {
+  const { result, artifact } = runSmoke({ mode: "mounted", simctlPid: "absent" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const timing = artifact("stage-timings.log");
+  const lines = timing.trim().split("\n");
+  assert.ok(lines.every((line) => /^[a-z][a-z.-]* duration_s=[0-9]+$/.test(line)),
+    "stage timings may contain only stage names and durations");
+  for (const stage of ["heartbeat", "heartbeat.sleep", "heartbeat.pid-check", "observer.pid-scan", "main.launchctl-list", "main.probe-parse", "main.unified-log-show"]) {
+    assert.ok(lines.some((line) => line.startsWith(stage + " duration_s=")), `missing ${stage} timing`);
+  }
+  const heartbeatCount = lines.filter((line) => line.startsWith("heartbeat duration_s=")).length;
+  assert.equal(heartbeatCount, artifact("liveness.log").trim().split("\n").length,
+    "every actual liveness observation needs a wall-time measurement");
 });
