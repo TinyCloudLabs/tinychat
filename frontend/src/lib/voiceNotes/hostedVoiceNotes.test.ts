@@ -140,8 +140,10 @@ function harness(failAt?: "part" | "submit" | "result" | "space" | "storage_full
       savedMetadata = transcript.metadata;
       if ((failAt === "space" || failAt === "storage_full") && !failed) {
         failed = true;
-        const error = failAt === "storage_full" ? Object.assign(new Error("storage full"), { code: "STORAGE_QUOTA_EXCEEDED" }) : new Error("offline");
-        return { ok: false, error } as StoreResult<UpsertMeetingOutcome>;
+        const error = failAt === "storage_full"
+          ? { code: "STORAGE_QUOTA_EXCEEDED", message: "storage full" }
+          : { code: "NETWORK", message: "offline" };
+        return { ok: false, error } satisfies StoreResult<UpsertMeetingOutcome>;
       }
       commit = commitAfterSave ?? { rev: transcript.rev, hash: await transcriptHash(transcript.sentences),
         outcome: noSpeech ? "no_speech" : "transcribed" } as TranscriptCommit;
