@@ -54,6 +54,7 @@ Integration branch: `dev/0.8.0`
 | #427 | 272e4022 | 4bfad174 | No | Clean test-only merge of the approved TC-1140 Retry-After clock stabilization after every required check passed; the focused transcription suite passed 228/228. |
 | #401 | fcbab307 | 10d68fbe | No | Clean merge of the approved storage-full handling after #427: storage state is scoped to the active session, quota-blocked work pauses for recovery, and Manage storage actions are available on supported surfaces. The current-main TC-1201 auth files remain unchanged. |
 | #426 | ecb4506a | 2d49064c | No | Clean merge of the refreshed approved TC-1206 fail-closed Private-choice persistence fix after Astra's exact-head approval and every required check passed; the head already merged current dev and retained #401 storage-full behavior. Focused choice, pipeline, transcription, cache-pin, and detail-view tests passed 554/554. |
+| #428 | f7a12ac9 | 0d2410da | No | Clean merge of the approved TC-1214 iOS smoke instrumentation after Astra's exact-head approval and all six required checks passed, including simulator, archive, signing, and Cloudflare. The smoke harness passed 7/7 post-merge, covering launch/liveness evidence, deadline and exit failures, and public-safe sanitization. |
 
 ## Test Fixes (2026-10-14)
 
@@ -99,7 +100,7 @@ After merging origin/main (TC-1128, #387, #392, 45d16e58) and PR #386 (TC-1108 p
 
 ## Current Status
 
-- **Verified code head**: `2d49064c` (#426 merged after #401)
+- **Verified code head**: `0d2410da` (#428 merged after #426)
 - **Frontend unit suite**: 5374 pass, 4 skip, 0 fail (5378 tests, 355 files)
 - **#415 scoped tests**: 54 pass, 0 fail across `useLibrary.retry.test.tsx` and `useLibrary.test.tsx`
 - **#413 scoped tests**: 198 pass, 0 fail across `useLibrary.test.tsx` and `notePipeline.test.ts`
@@ -111,6 +112,7 @@ After merging origin/main (TC-1128, #387, #392, 45d16e58) and PR #386 (TC-1108 p
 - **#427 scoped tests**: 228 pass, 0 fail in `voiceNoteTranscription.test.ts`
 - **#401 scoped tests**: 67 pass, 0 fail across nine storage-status, recovery, thread-store, and UI files
 - **#426 scoped tests**: 554 pass, 0 fail across five Private-choice, pipeline, transcription, cache-pin, and detail-view files
+- **#428 smoke harness**: 7 pass, 0 fail in `mobile/scripts/ios-simulator-smoke.test.mjs`
 - **Recorded `origin/main` `b9c538ee` baseline**: 4735 pass, 4 skip, 0 fail (4739 tests, 326 files)
 - **TypeScript**: pinned TypeScript 5.9.3, `frontend/node_modules/.bin/tsc --noEmit -p frontend/tsconfig.json`, 0 errors
 - **CI frontend lint**: `bunx eslint frontend test`, 0 errors
