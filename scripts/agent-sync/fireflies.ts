@@ -426,7 +426,12 @@ interface ProfileFiles {
 }
 
 function readJson(file: string): Record<string, unknown> {
-  const parsed: unknown = JSON.parse(readFileSync(file, "utf8"));
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(file, "utf8"));
+  } catch {
+    throw new RunnerError("needs_renewal", `no session file ${file.split("/").slice(-2).join("/")}`);
+  }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new RunnerError("needs_renewal", `unreadable ${file}`);
   return Object.fromEntries(Object.entries(parsed));
 }
