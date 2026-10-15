@@ -140,6 +140,7 @@ export const ON_DEVICE_STT: OnDeviceSttPlugin = {
   deleteModels: async () => {},
   installSpeechAssets: async () => {},
   enqueue: async () => {},
+  enqueueAgain: async () => {},
   cancel: async () => {},
   addListener: async () => ({ remove: async () => {} }),
 };

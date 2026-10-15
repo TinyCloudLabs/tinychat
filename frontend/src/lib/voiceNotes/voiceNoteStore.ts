@@ -235,6 +235,8 @@ export function voiceNoteAudioSourceFromBase64(audio: VoiceNoteAudio): VoiceNote
 }
 
 export interface StoreAudioOptions {
+  /** Copied only from the recording's explicit space-audio consent. */
+  uploadAudio?: boolean;
   partSize?: number;
   onUploadStart?: (totalBytes: number) => void;
   onProgress?: (storedBytes: number, totalBytes: number) => void;
@@ -246,6 +248,11 @@ export interface StoreAudioOptions {
   checkpoint?: () => void;
   onRowCreated?: (rowId: string) => Promise<void>;
 }
+
+const AUDIO_UPLOAD_DISABLED = {
+  ok: false as const,
+  error: { code: "AUDIO_UPLOAD_DISABLED", message: "Audio upload is not enabled for this recording." },
+};
 
 /** Storage error codes the voice notes UI tells apart. */
 export const VOICE_NOTE_STORAGE_FULL = AUDIO_STORAGE_FULL;
@@ -292,6 +299,7 @@ export async function putVoiceNoteAudio(
   source: VoiceNoteAudioSource,
   opts: StoreAudioOptions = {},
 ): Promise<StoreResult<StoredAudioManifest>> {
+  if (opts.uploadAudio !== true) return AUDIO_UPLOAD_DISABLED;
   try {
     const manifest = await putAudio(tcw.kv, voiceNoteAudioKvKey(id), source, {
       ...opts,
@@ -393,6 +401,7 @@ export async function saveVoiceNote(
   opts: StoreAudioOptions = {},
   uploadAudio = recording.options?.uploadAudio === true,
 ): Promise<StoreResult<UpsertMeetingOutcome & { noteSyncError?: NoteSyncErrorCode }>> {
+  const audioApproved = recording.options?.uploadAudio === true && uploadAudio;
   logPipeline("save", recording.id, "start");
   try {
     opts.checkpoint?.();
@@ -420,7 +429,7 @@ export async function saveVoiceNote(
       return { ok: false, error: { code: empty.error.code ?? "STORE_ERROR", message: empty.error.message, cause: empty.error } };
     logPipeline("space_write", recording.id, "done", { destination: "legacy_transcript_key", bodyBytes: 2 });
     opts.checkpoint?.();
-    if (!uploadAudio) {
+    if (!audioApproved) {
       await patchVoiceNoteLocalOnly(tcw, recording, platform, opts.checkpoint);
       let noteSyncError: NoteSyncErrorCode | undefined;
       try {
@@ -447,7 +456,8 @@ export async function saveVoiceNote(
       return noteSyncError;
     })().then((noteSyncError) => ({ noteSyncError }), (error: unknown) => ({ error }));
     logPipeline("audio_upload", recording.id, "start");
-    const audio = await putVoiceNoteAudio(tcw, recording.id, source, { ...opts, schedule: (job, operation, timeoutMs, payloadBytes) =>
+    const audio = await putVoiceNoteAudio(tcw, recording.id, source, { ...opts, uploadAudio: audioApproved,
+      schedule: (job, operation, timeoutMs, payloadBytes) =>
       (opts.schedule ?? ((call, label, limit, size) => runOnSpaceLane(call, {
         operation: label ?? "voice-note audio KV call", track: "audio", timeoutMs: limit, payloadBytes: size,
       })))((signal) => { opts.checkpoint?.(); return job(signal); }, operation, timeoutMs, payloadBytes),

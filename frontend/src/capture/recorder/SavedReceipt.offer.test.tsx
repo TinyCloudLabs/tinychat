@@ -116,6 +116,8 @@ describe("the receipt's wording", () => {
       route={voiceNoteRoute("on-device")} transcriber="on-device" onDone={noop} onSaveNow={noop} {...patch} />,
   );
 
+
+
   test("the saved location is said once, not as a heading and a label", () => {
     const html = render();
     expect(html).not.toContain("<h3");

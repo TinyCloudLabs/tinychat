@@ -7,7 +7,7 @@ public final class OnDeviceSttPlugin: CAPPlugin, CAPBridgedPlugin {
     public let identifier = "OnDeviceSttPlugin"
     public let jsName = "OnDeviceStt"
     public var pluginMethods: [CAPPluginMethod] {
-        ["status", "installSpeechAssets", "enqueue", "cancel"]
+        ["status", "installSpeechAssets", "enqueue", "enqueueAgain", "cancel"]
             .map { CAPPluginMethod(name: $0, returnType: CAPPluginReturnPromise) }
     }
 
@@ -66,6 +66,19 @@ public final class OnDeviceSttPlugin: CAPPlugin, CAPBridgedPlugin {
         guard let id = call.getString("id") else { call.reject("id is required", "invalid_argument"); return }
         queue.enqueue(id: id, accepted: { accepted in
             if accepted { call.resolve() } else { call.reject("This note already has a transcript", "already_transcribed") }
+        }, failed: { error in
+            call.reject("Could not queue this note", "enqueue_failed", error)
+        })
+    }
+    @objc public func enqueueAgain(_ call: CAPPluginCall) {
+        guard let id = call.getString("id"), let rev = call.getInt("rev"), rev > 0,
+              let baseRev = call.getInt("baseRev"), baseRev > 0,
+              let baseHash = call.getString("baseHash"), !baseHash.isEmpty else {
+            call.reject("id, positive rev and baseRev, and baseHash are required", "invalid_argument")
+            return
+        }
+        queue.enqueueAgain(id: id, rev: rev, baseRev: baseRev, baseHash: baseHash, accepted: { accepted in
+            if accepted { call.resolve() } else { call.reject("Could not queue this note", "enqueue_failed") }
         }, failed: { error in
             call.reject("Could not queue this note", "enqueue_failed", error)
         })

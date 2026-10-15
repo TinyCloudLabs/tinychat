@@ -8,6 +8,7 @@ import { createHostedVoiceNoteTrack } from "./hostedVoiceNotes";
 import { withHostedUploadQueue } from "../hostedUploadQueue";
 import type { VoiceNoteRecording, VoiceNotesPlugin, LocalTranscript } from "./nativeVoiceNotes";
 import type { TranscriptCommit } from "./voiceNoteCommits";
+import { transcriptHash } from "./voiceNoteRows";
 
 const previousStorage = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
 afterEach(() => {
@@ -16,10 +17,12 @@ afterEach(() => {
 });
 
 function harness(failAt?: "part" | "submit" | "result" | "space" | "delete", noSpeech = false, spaceOnly = false, mimeType = "audio/mp4",
-  durationMs = 1000, transcriptResponses: Record<string, unknown>[] = [], readGate?: Promise<void>,
+  durationMs = 1000, transcriptResponses: Record<string, unknown>[] = [], deleteFails = false,
+  clientOverride?: ReturnType<typeof createHostedAssemblyAiClient>, readGate?: Promise<void>,
   createFailure?: "existing" | "missing", reconciliationDelayMs?: number, committedChannels: 1 | 2 = 1) {
   const data = new Map<string, string>();
   const claims = new Map<string, { value: string; etag: string }>();
+  const claimCalls: string[] = [];
   let revision = 0;
   let releaseFailures = 0;
   Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
@@ -29,15 +32,17 @@ function harness(failAt?: "part" | "submit" | "result" | "space" | "delete", noS
   } });
   const calls: string[] = [];
   const submits: unknown[] = [];
+  let commitReads = 0;
   let transcriptReads = 0;
   let now = 0;
   const sleeps: number[] = [];
   const audio = new Uint8Array([1, 2, 3, 4]);
   let failed = false;
+  let submitted = false;
   let local: LocalTranscript | null = null;
   let savedMetadata: Record<string, unknown> | null = null;
   let commit: TranscriptCommit | null = null;
-  let submitted = false;
+  let commitAfterSave: TranscriptCommit | undefined;
   let serverJob: { status: string; upload_id?: string; id?: string } = { status: "missing" };
   const recording = { id: "note-1", owner: "did:test:one", source: "in_app", startedAt: 1,
     durationMs, mimeType, sizeBytes: audio.length,
@@ -96,22 +101,24 @@ function harness(failAt?: "part" | "submit" | "result" | "space" | "delete", noS
       return json({ id: "handle-1", status: "completed", utterances: noSpeech ? [] : [{ start: 0, end: 1000, text: "Hello", speaker: recording.channels === 2 ? "1" : "A" }] });
     }
     if (path === "/hosted/transcripts/handle-1/sentences" && method === "GET") return json({ sentences: [] });
-    if (path === "/hosted/transcripts/handle-1" && method === "DELETE") {
-      if (failAt === "delete") throw new Error("offline");
+    if (path.startsWith("/hosted/transcripts/") && method === "DELETE") {
+      if (failAt === "delete" || deleteFails) throw new Error("offline");
       return json({ ok: true });
     }
     throw new Error(`Unexpected request: ${method} ${path}`);
   };
-  const client = createHostedAssemblyAiClient({ backendUrl: "https://exo.test",
+  const client = clientOverride ?? createHostedAssemblyAiClient({ backendUrl: "https://exo.test",
     sessionStore: { getToken: () => "session", isExpired: () => false }, fetchImpl: fetchImpl as typeof fetch,
     sleep: async () => {} });
   const account = { did: "did:test:one", kv: {
     get: async (key: string) => {
+      claimCalls.push("get");
       const entry = claims.get(key);
       return entry ? { ok: true, data: { data: entry.value, headers: { etag: entry.etag } } }
         : { ok: false, error: { code: "KV_NOT_FOUND", message: "missing" } };
     },
     put: async (key: string, value: string, options?: { ifNoneMatch?: string; ifMatch?: string }) => {
+      claimCalls.push("put");
       if (JSON.parse(value).status === "failed" && releaseFailures-- > 0)
         return { ok: false, error: { code: "KV_UNAVAILABLE", message: "offline" } };
       const entry = claims.get(key);
@@ -122,8 +129,9 @@ function harness(failAt?: "part" | "submit" | "result" | "space" | "delete", noS
     },
   } } as unknown as TinyCloudWeb;
   const track = () => createHostedVoiceNoteTrack(() => account, "https://exo.test", {} as SessionStore, account.did, {
-    client, native, readCommit: async () => { await readGate; return commit; },
+    client, native, readCommit: async () => { commitReads++; await readGate; return commit; },
     createRow: async () => ({ inserted: true }) as Awaited<ReturnType<typeof import("./voiceNoteRows").createVoiceNoteRow>>,
+    preserveHistory: async () => {},
     clock: { now: () => now, sleep: async (ms) => { sleeps.push(ms); now += ms; }, random: () => 0.5 },
     readNote: async () => ({ ok: true, data: { captureTranscriber: "assemblyai", durationSeconds: 1, channels: committedChannels } }) as Awaited<ReturnType<typeof import("./voiceNoteStore").readVoiceNoteForTranscription>>,
     loadAudio: async () => { calls.push("space:audio"); return { ok: true, data: { mimeType: "audio/mp4", base64: bytesToBase64(audio) } } as Awaited<ReturnType<typeof import("./voiceNoteStore").loadVoiceNoteAudio>>; },
@@ -131,15 +139,43 @@ function harness(failAt?: "part" | "submit" | "result" | "space" | "delete", noS
       calls.push("space:save");
       savedMetadata = transcript.metadata;
       if (failAt === "space" && !failed) { failed = true; return { ok: false, error: new Error("offline") } as StoreResult<UpsertMeetingOutcome>; }
-      commit = { rev: transcript.rev, outcome: noSpeech ? "no_speech" : "transcribed" } as TranscriptCommit;
-      return { ok: true } as Awaited<ReturnType<typeof import("./voiceNoteStore").saveVoiceNoteTranscript>>;
+      commit = commitAfterSave ?? { rev: transcript.rev, hash: await transcriptHash(transcript.sentences),
+        outcome: noSpeech ? "no_speech" : "transcribed" } as TranscriptCommit;
+      return { ok: true } as StoreResult<UpsertMeetingOutcome>;
     }, sleep: async () => {}, reconciliationDelayMs,
   });
-  return { calls, submits, recording, track, getLocal: () => local, getSavedMetadata: () => savedMetadata, sleeps,
+  return { calls, submits, claimCalls, recording, track, setCommit: (value: TranscriptCommit | null) => { commit = value; },
+    setCommitAfterSave: (value: TranscriptCommit) => { commitAfterSave = value; },
+    getCommit: () => commit, commitReads: () => commitReads, getClaims: () => new Map(claims),
+    getPending: () => data.get(`exo.voiceNotes.powerfulJobs:${account.did}`) ?? null,
+    getLocal: () => local, getSavedMetadata: () => savedMetadata, sleeps,
     setClaim: (claim: object) => claims.set("exo/voiceNotes/hostedJobs/note-1", { value: JSON.stringify(claim), etag: String(++revision) }),
     failReleases: (count: number) => { releaseFailures = count; },
     setServerJob: (job: typeof serverJob) => { serverJob = job; } };
 }
+
+test("Powerful explicit reruns refuse before claims, backend calls, or pending-state changes", async () => {
+  const h = harness();
+  h.setCommit({ sourceId: "note-1", rev: 1, hash: "base-hash", outcome: "transcribed" } as TranscriptCommit);
+  h.setClaim({ version: 1, status: "submitted", token: "existing-claim", handle: "existing-handle" });
+  const claimSnapshot = h.getClaims();
+  const commit = h.getCommit();
+  const key = "exo.voiceNotes.powerfulJobs:did:test:one";
+  const pending = JSON.stringify({ "note-1": { handle: "existing-handle", saved: true, recording: h.recording } });
+  localStorage.setItem(key, pending);
+  const lane = h.track();
+  lane.consent();
+
+  await expect(lane.run(h.recording, true)).rejects.toThrow("Transcribe again isn't available with Powerful yet.");
+  await expect(lane.runSpaceOnly("note-1", true)).rejects.toThrow("Transcribe again isn't available with Powerful yet.");
+  expect(h.calls).toEqual([]);
+  expect(h.claimCalls).toEqual([]);
+  expect(h.getClaims()).toEqual(claimSnapshot);
+  expect(h.commitReads()).toBe(0);
+  expect(h.getCommit()).toBe(commit);
+  expect(localStorage.getItem(key)).toBe(pending);
+  expect(lane.jobs.has("note-1")).toBe(false);
+});
 
 test("Powerful requests multichannel and labels stereo turns Me and Them", async () => {
   const h = harness();
@@ -152,13 +188,12 @@ test("Powerful requests multichannel and labels stereo turns Me and Them", async
 });
 
 test("a space-only stereo note uses the committed channels for Powerful", async () => {
-  const h = harness(undefined, false, true, "audio/mp4", 1000, [], undefined, undefined, undefined, 2);
+  const h = harness(undefined, false, true, "audio/mp4", 1000, [], false, undefined, undefined, undefined, undefined, 2);
   const lane = h.track(); lane.consent();
   expect(await lane.runSpaceOnly("note-1")).toBe(true);
   expect(h.submits[0]).toMatchObject({ multichannel: true });
   expect(h.getLocal()).toBeNull();
 });
-
 test("a space-only note uses its space audio and can resume without a native recording", async () => {
   const { calls, track } = harness("result", false, true);
   const first = track(); first.consent();
@@ -169,6 +204,17 @@ test("a space-only note uses its space audio and can resume without a native rec
   expect(calls).toContain("space:save");
   expect(calls).not.toContain("local:put");
   expect(calls.indexOf("space:save")).toBeLessThan(calls.indexOf("DELETE /hosted/transcripts/handle-1"));
+});
+
+test("an explicit Powerful rerun is never restarted by resume and its stale marker is removed", async () => {
+  const { calls, recording, track } = harness();
+  const key = "exo.voiceNotes.powerfulJobs:did:test:one";
+  localStorage.setItem(key, JSON.stringify({
+    "note-1": { explicitRerun: true, recording },
+  }));
+  await track().resume();
+  expect(calls).toEqual([]);
+  expect(JSON.parse(localStorage.getItem(key) ?? "{}")).toEqual({});
 });
 
 test("a paid outcome needing reconciliation blocks the note without another upload or automatic retry", async () => {
@@ -182,7 +228,7 @@ test("a paid outcome needing reconciliation blocks the note without another uplo
 });
 
 test("a quarantined or missing lookup never enables Retry; provider-confirmed submission does", async () => {
-  const h = harness(undefined, false, false, "audio/mp4", undefined, undefined, undefined, undefined, 5);
+  const h = harness(undefined, false, false, "audio/mp4", undefined, undefined, undefined, undefined, undefined, undefined, 5);
   h.setServerJob({ status: "unresolved" });
   const lane = h.track(); lane.consent();
   await lane.run(h.recording);
@@ -195,7 +241,6 @@ test("a quarantined or missing lookup never enables Retry; provider-confirmed su
   await Bun.sleep(20);
   expect(lane.jobs.get("note-1")).toMatchObject({ kind: "failed", retryable: true, code: "reconciled" });
 });
-
 test("hosted AssemblyAI no_speech never sets PTX missing-stats metadata", async () => {
   const { calls, recording, track, getLocal, getSavedMetadata } = harness(undefined, true);
   const lane = track(); lane.consent();
@@ -212,6 +257,19 @@ test("Powerful keeps a saved outcome when remote transcript deletion fails", asy
   expect(calls).toContain("space:save");
   expect(getLocal()?.outcome).toBe("transcribed");
   expect(lane.jobs.get(recording.id)).toEqual({ kind: "done", outcome: "transcribed" });
+});
+
+test("a saved handle whose cleanup fails remains in the pending store", async () => {
+  const h = harness("delete");
+  h.setCommit({ sourceId: "note-1", rev: 1, hash: "prior-hash", outcome: "transcribed" } as TranscriptCommit);
+  const key = "exo.voiceNotes.powerfulJobs:did:test:one";
+  const existing = JSON.stringify({ "note-1": { handle: "handle-1", saved: true, recording: h.recording } });
+  localStorage.setItem(key, existing);
+  const lane = h.track();
+  lane.consent();
+  await lane.run(h.recording);
+  expect(lane.jobs.get("note-1")).toMatchObject({ kind: "done", outcome: "transcribed" });
+  expect(JSON.parse(String(h.getPending()))["note-1"]).toMatchObject({ handle: "handle-1", saved: true });
 });
 
 test("Powerful transcribes local-only audio and deletes the server copy", async () => {
@@ -238,10 +296,20 @@ test("hosted AssemblyAI commits never set PTX-only missing-stats metadata", asyn
   expect(getSavedMetadata()).not.toHaveProperty("transcription_stats_missing");
 });
 
+
+test("ordinary hosted admission still uploads, submits, and saves once", async () => {
+  const h = harness();
+  const lane = h.track();
+  lane.consent();
+  await lane.run(h.recording);
+  expect(h.calls.filter((call) => call === "POST /hosted/uploads")).toHaveLength(1);
+  expect(h.calls.filter((call) => call === "POST /hosted/transcripts")).toHaveLength(1);
+  expect(h.calls.filter((call) => call === "space:save")).toHaveLength(1);
+});
 test("Powerful checks the space commit before sending audio to the provider", async () => {
   let release!: () => void;
   const gate = new Promise<void>((resolve) => { release = resolve; });
-  const { calls, recording, track } = harness(undefined, false, false, "audio/mp4", 1000, [], gate);
+  const { calls, recording, track } = harness(undefined, false, false, "audio/mp4", 1000, [], false, undefined, gate);
   const lane = track(); lane.consent();
   const running = lane.run(recording);
   try {
@@ -267,7 +335,7 @@ test("noteSaved after Powerful completes does not create a second paid upload", 
 test("two instances racing on one note create one upload and one transcript", async () => {
   let release!: () => void;
   const gate = new Promise<void>((resolve) => { release = resolve; });
-  const { calls, recording, track } = harness(undefined, false, false, "audio/mp4", gate);
+  const { calls, recording, track } = harness(undefined, false, false, "audio/mp4", 1000, [], false, undefined, gate);
   const first = track(); const second = track(); first.consent();
   const runs = Promise.all([first.run(recording), second.run(recording)]);
   await Bun.sleep(10);
@@ -290,7 +358,7 @@ test("a crashed owner with an upload ID is taken over and resumed", async () => 
 
 for (const result of ["existing", "missing"] as const) {
   test(`an ambiguous create reconciles ${result} server state`, async () => {
-    const { calls, recording, track } = harness(undefined, false, false, "audio/mp4", 1000, [], undefined, result);
+    const { calls, recording, track } = harness(undefined, false, false, "audio/mp4", 1000, [], undefined, undefined, undefined, result);
     const first = track(); first.consent();
     await first.run(recording);
     expect(first.jobs.get(recording.id)?.kind).toBe("failed");
@@ -310,7 +378,6 @@ test("a failed claim release is retried before the next run", async () => {
   expect(calls.filter((call) => call === "POST /hosted/uploads")).toHaveLength(1);
   expect(calls.filter((call) => call === "POST /hosted/transcripts")).toHaveLength(1);
 });
-
 test("Powerful waits for the account's Upload audio submission before creating an upload", async () => {
   const { calls, recording, track } = harness();
   let release!: () => void;

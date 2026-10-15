@@ -68,7 +68,9 @@ let paused = false;
 let plugin: VoiceNotesPlugin;
 
 async function stopNatively(): Promise<VoiceNoteRecording> {
-  const recording = { ...(await fake.plugin.stop()), id: currentId!, version: 2 as const, owner: tcw.did, rev: 1 };
+  const stopped = await fake.plugin.stop();
+  const recording = { ...stopped, id: currentId!, version: 2 as const, owner: tcw.did,
+    options: { ...stopped.options, uploadAudio: stopped.options?.uploadAudio ?? true }, rev: 1 };
   currentId = null;
   paused = false;
   onPhone.push(recording);
@@ -77,10 +79,13 @@ async function stopNatively(): Promise<VoiceNoteRecording> {
 
 /** A recording made before this one, stopped at its limit, still on the phone. */
 function earlier(): VoiceNoteRecording {
-  const recording = { id: `old-${++serial}`, startedAt: 1, durationMs: 60_000, mimeType: "audio/mp4", sizeBytes: 4, silencedMs: 0, silencedEvents: 0, noSignalMs: 0, version: 2 as const, owner: tcw.did, rev: 1 };
+  const recording = { id: `old-${++serial}`, startedAt: 1, durationMs: 60_000, mimeType: "audio/mp4",
+    sizeBytes: 4, silencedMs: 0, silencedEvents: 0, noSignalMs: 0, version: 2 as const,
+    owner: tcw.did, rev: 1, options: { transcriber: "private-cloud" as const, identifySpeakers: false, uploadAudio: true } };
   onPhone.push(recording);
   return recording;
 }
+
 
 /** deleteAudio calls that fail before the phone lets a copy go. */
 let deleteFailures: number;

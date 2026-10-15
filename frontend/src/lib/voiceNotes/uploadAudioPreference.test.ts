@@ -38,6 +38,7 @@ test("the Mac preference reaches durable capture defaults for a native-started n
   const fake = createFakeVoiceNotes();
   __setVoiceNotesForTests(fake.plugin, { available: true });
   try {
+    await setUploadAudioPreference(false);
     expect((await fake.plugin.getCaptureDefaults()).uploadAudio ?? false).toBe(false);
     await setUploadAudioPreference(true);
     expect((await fake.plugin.getCaptureDefaults()).uploadAudio).toBe(true);
