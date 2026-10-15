@@ -2,7 +2,7 @@ import { registerHeldConflictPin, removeHeldConflictPin } from "./heldConflictPi
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { PrivateCloudError } from "../privateCloud";
 import { VoiceNotes } from "./nativeVoiceNotes";
-import type { VoiceNoteTranscriptSave } from "./voiceNoteStore";
+import { readVoiceNoteForTranscription, type VoiceNoteTranscriptSave } from "./voiceNoteStore";
 import { isAccountWorkAllowed } from "./accountContext";
 import { readTranscriptCommit } from "./voiceNoteCommits";
 import { preserveVoiceNoteTranscriptHistory, transcriptHistoryKvKey } from "./voiceNoteTranscriptHistory";
@@ -197,10 +197,13 @@ export function createHeldResultStore(did: string, options: HeldResultStoreOptio
     authorize: (tcw: TinyCloudWeb, row: HeldResult) => Promise<void>): Promise<boolean> => {
     const database = await db();
     await authorize(tcw, row);
+    assertIdentity(tcw, did, row);
     const removed = await transact(database, [HELD_RESULTS_STORE], "readwrite", async (tx) => {
       const objectStore = tx.objectStore(HELD_RESULTS_STORE);
       const value = await request(objectStore.get([did, row.sourceId]));
-      if (!isHeldResult(value) || value.holdId !== row.holdId || value.transcript.rev > maxRev) return false;
+      if (!isHeldResult(value) || value.did !== did || value.spaceId !== row.spaceId
+        || value.holdId !== row.holdId || value.transcript.rev > maxRev) return false;
+      assertIdentity(tcw, did, row);
       objectStore.delete([did, row.sourceId]);
       return true;
     });
@@ -339,17 +342,37 @@ export function createHeldResultStore(did: string, options: HeldResultStoreOptio
       return outcome === "busy" ? "lock_busy" : outcome;
     },
     async discard(tcw, sourceId, holdId, reason) {
-      const row = await read(sourceId);
-      if (!row || row.holdId !== holdId) return;
-      assertIdentity(tcw, did, row);
-      if (reason === "committed_at_or_above") {
-        await assertStoreIdentity(tcw, row);
+      await withHeldLock(did, sourceId, async () => {
+        const row = await read(sourceId);
+        if (!row || row.holdId !== holdId) return;
         assertIdentity(tcw, did, row);
-        const verified = await readTranscriptCommit(tcw, sourceId);
-        if (!verified || verified.rev < row.transcript.rev) return;
-      }
-      assertIdentity(tcw, did, row);
-      await removeIf(tcw, row, reason === "committed_at_or_above" ? Number.MAX_SAFE_INTEGER : row.transcript.rev, assertStoreIdentity);
+        if (reason === "note_gone") {
+          await assertStoreIdentity(tcw, row);
+          assertIdentity(tcw, did, row);
+          const note = await readVoiceNoteForTranscription(tcw, sourceId);
+          if (!note.ok) throw new PrivateCloudError("note_unreadable", note.error.message);
+          assertIdentity(tcw, did, row);
+          if (note.data !== null) return;
+        } else if (reason === "committed_at_or_above") {
+          await assertStoreIdentity(tcw, row);
+          assertIdentity(tcw, did, row);
+          const winner = await readTranscriptCommit(tcw, sourceId);
+          assertIdentity(tcw, did, row);
+          if (!winner) return;
+          let provesHeldCommit = winner.rev === row.transcript.rev && winner.hash === row.hash;
+          if (!provesHeldCommit && winner.rev > row.transcript.rev) {
+            assertIdentity(tcw, did, row);
+            try {
+              const history = await tcw.kv.get(transcriptHistoryKvKey(sourceId, row.transcript.rev, row.hash));
+              provesHeldCommit = history.ok && historyConfirmsHeldResult(history.data.data, row);
+            } catch { /* A failed history read is not proof that the held result committed. */ }
+            assertIdentity(tcw, did, row);
+          }
+          if (!provesHeldCommit) return;
+        }
+        assertIdentity(tcw, did, row);
+        await removeIf(tcw, row, reason === "user_discarded" ? row.transcript.rev : Number.MAX_SAFE_INTEGER, assertStoreIdentity);
+      }, false);
     },
     heldHint: (sourceId) => hints.has(sourceId),
     async durability() {

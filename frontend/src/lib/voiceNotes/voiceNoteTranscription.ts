@@ -327,16 +327,21 @@ export function localStorageVoiceNotePendingStore(
     },
     legacyHeld: (sourceId) => readAll()[sourceId]?.held,
     async stripLegacyHeld(sourceId, rev, hash) {
+      const original = readAll()[sourceId]?.held;
+      if (!isHeldTranscript(original) || original.rev !== rev
+        || await transcriptHash(original.sentences) !== hash) return;
+      const payload = JSON.stringify(original);
       const all = readAll();
-      const old = all[sourceId];
-      if (!old || !isHeldTranscript(old.held) || old.held.rev !== rev
-        || await transcriptHash(old.held.sentences) !== hash) return;
-      const { held: _held, ...rest } = old;
+      const current = all[sourceId];
+      if (!current || !isHeldTranscript(current.held) || current.held.rev !== rev
+        || JSON.stringify(current.held) !== payload) return;
+      const { held: _held, ...rest } = current;
       if (Object.keys(rest).some((field) => field !== "attemptId" && field !== "transcriptionId")) {
         all[sourceId] = rest;
       } else {
         delete all[sourceId];
       }
+      // Mutations merge synchronously against the latest map; never write the pre-hash snapshot.
       writeAll(all);
     },
     clearExplicitReruns: () => {
@@ -1622,11 +1627,12 @@ export async function transcribeVoiceNote(args: {
         throw new PrivateCloudError("transcript_save_failed", "A different transcript revision won this rerun. Try again.");
     }
   };
+  let heldStore = args.held;
   const commitPrepared = (prepared: VoiceNoteTranscriptSave, transcriptionId?: string | null,
     existingHeld?: HeldResult | null) => commitPreparedVoiceNoteTranscript({
       tcw, cloud, sourceId, transcript: prepared, rerunBase: expectedRerunBase, heldRerunResult,
-      held: args.held, heldRecord: existingHeld,
-      ...(args.held && !existingHeld ? { holdInput: {
+      held: heldStore, heldRecord: existingHeld,
+      ...(heldStore && !existingHeld ? { holdInput: {
         version: 1, did: tcw.did, spaceId: tcw.spaceId ?? "", sourceId, engine: "private-cloud",
         transcript: prepared, provider: transcriptionId ? { transcriptionId } : null,
         intent: expectedRerunBase ? { kind: "rerun", base: expectedRerunBase } : { kind: "unknown" },
@@ -1638,8 +1644,19 @@ export async function transcribeVoiceNote(args: {
 
   const note = await readVoiceNoteForTranscription(tcw, sourceId);
   if (!note.ok) throw new PrivateCloudError("note_unreadable", note.error.message);
-  const heldRecord = await args.held?.readHeld(sourceId) ?? null;
   const legacyHeld = cloud.heldTranscript(sourceId);
+  let heldRecord: HeldResult | null = null;
+  if (heldStore) {
+    try { heldRecord = await heldStore.readHeld(sourceId); }
+    catch (error) {
+      const reason = error && typeof error === "object" && "reason" in error
+        ? String((error as { reason: unknown }).reason) : "";
+      if (legacyHeld === null || reason !== "unavailable" || note.data === null) throw error;
+      if (!stillCurrent()) throw accountChangedError();
+      heldStore = undefined;
+    }
+  }
+
   if (note.data === null) {
     if (heldRecord && args.held) await args.held.discard(tcw, sourceId, heldRecord.holdId, "note_gone");
     await finish();
@@ -1652,9 +1669,10 @@ export async function transcribeVoiceNote(args: {
     : heldRecord ? (heldRecord.intent.kind === "rerun" ? heldRecord.intent.base : null)
       : cloud.rerunBase?.(sourceId) ?? null;
   heldRerunResult = (heldRecord !== null || legacyHeld !== null) && expectedRerunBase !== null;
-  if (heldRecord?.conflict && !args.explicit)
+  const authorizedConflictRerun = args.explicit && args.explicitRerun && heldRecord?.conflict !== undefined;
+  if (heldRecord?.conflict && !authorizedConflictRerun)
     throw new PrivateCloudError(heldRecord.conflict, "Held transcript commit conflict.");
-  if ((heldRecord && !args.explicit) || legacyHeld !== null) {
+  if ((heldRecord && !authorizedConflictRerun) || legacyHeld !== null) {
     const held = heldRecord?.transcript ?? legacyHeld!;
     const providerId = heldRecord?.provider && "transcriptionId" in heldRecord.provider
       ? heldRecord.provider.transcriptionId : undefined;
@@ -2103,7 +2121,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
   };
   let drainingHeld: Promise<void> | null = null;
   const drainHeldOnly = (): Promise<void> => {
-    if (cloud !== null || !deps.held || !state.consented || !identityCurrent()) return Promise.resolve();
+    if (!deps.held || !state.consented || !identityCurrent()) return Promise.resolve();
     if (drainingHeld) return drainingHeld;
     drainingHeld = (async () => {
       await deps.ready;
@@ -2424,10 +2442,8 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
   };
 
   const resume = (force = false) => {
-    if (cloud === null) {
-      void drainHeldOnly();
-      return;
-    }
+    void drainHeldOnly();
+    if (cloud === null) return;
     if (!on()) return;
     if (strandedRecovery !== null) {
       if (force || recoveryNeeded) recoveryRescanRequested = true;
@@ -2643,6 +2659,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
           nextRecoveryAt = now();
         }
         emit();
+        void drainHeldOnly();
         if (result.availability === "available"
           && (availabilityChanged || admissionChanged || limitsChanged || recoveryNeeded && (now() >= nextRecoveryAt || hasDueAutomaticRetry())))
           resume(availabilityChanged || admissionChanged || limitsChanged);
