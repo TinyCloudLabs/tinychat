@@ -111,14 +111,17 @@ async function fixture(mismatch = false, uploadAudio?: boolean) {
   return { note, kv, tcw, container, size: () => size, evictions: () => evictions };
 }
 
-test("real authenticated boot upgrades a pre-receipt saved file in one remote part read before eviction", async () => {
-  const { note, kv, container, evictions } = await fixture();
+test("authenticated boot upgrades a pre-receipt saved file while trim retains its local bytes", async () => {
+  const { note, kv, container, size, evictions } = await fixture();
   expect(note.ledger?.audio.verifiedInSpace).toMatchObject({ size: 1024 * 1024 });
   expect(kv.gets.filter((key) => key.endsWith("/p/000000"))).toHaveLength(1);
   expect(container.textContent).toContain("1 MB");
-  expect((await cachedAudioSize()).bytes).toBe(1024 * 1024);
+  const cached = await cachedAudioSize();
+  expect(cached.bytes).toBe(0);
+  expect(cached.pinnedBytes).toBe(1024 * 1024);
   await trimCachedAudio(0);
-  expect(evictions()).toBe(1);
+  expect(evictions()).toBe(0);
+  expect(size()).toBe(1024 * 1024);
 });
 
 test("completed reconciliation is cooled down until Settings explicitly requests another pass", async () => {
