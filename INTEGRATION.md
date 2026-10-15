@@ -40,6 +40,7 @@ Integration branch: `dev/0.8.0`
 | #389 | 5a25b037 | c3d39ed3 | No | Clean merge of TC-1102 “Transcribe again” after its iOS simulator and both signing dry-runs passed. Follow-up N1 is non-blocking: add deadlines to the Local rerun reads in `onDeviceTranscriber.ts:244,258`. |
 | #409 | d4db8404 | 8b244a31 | No | Clean copy-only merge of the dev storage-full wording fix after its macOS ad-hoc signing gate passed. #401 was not present; the scoped canonical-copy checks passed 3/3. |
 | #373 | c80f6c93 | db5e604a | Yes (4 files) | Merged the reviewed local-audio cache after all Apple, Chromium, and halo gates passed. Conflict resolution retained #389's rerun state and fail-closed upload gate while adding #373's hosted-ledger completion, verified local/space source selection, Local-request provenance, and verified-in-space receipt. Accepted limits remain: native eviction has no store-level owner re-check, and cache accounting overcounts outbox-pinned notes. TC-1171 tracks the pre-existing #350 stereo gaps separately; they are not caused by #373. |
+| #405 | 120aceaa | b19eae2a | Yes (6 files) | Merged the reviewed Private duration/byte admission after its authorized iOS capture-writer rerun passed. Conflict resolution preserves #389's explicit rerun route and #407's requested recovery rescan while adding #405's duration/source refusals and saved Private-note scan; native explicit-rerun records (`stt.rerunRev`) remain excluded from ordinary recovery. The client uses #405's 0.25-second media safety margin by default. The backend only relays capability fields: PTX #111 must deploy separately in Miller's release window before its advertised ceilings become active. |
 
 ## Test Fixes (2026-10-14)
 
@@ -84,10 +85,10 @@ After merging origin/main (TC-1128, #387, #392, 45d16e58) and PR #386 (TC-1108 p
 
 ## Current Status
 
-- **Verified code head**: `a1eaf576` (#373 merged; capture-engine test isolation repaired)
-- **Frontend unit suite**: 5025 pass, 4 skip, 0 fail (5029 tests, 343 files)
+- **Verified code head**: `b19eae2a` (#405 merged)
+- **Frontend unit suite**: 5064 pass, 4 skip, 0 fail (5068 tests, 343 files)
 - **`origin/main` `b9c538ee` baseline**: 4735 pass, 4 skip, 0 fail (4739 tests, 326 files)
-- **TypeScript**: pinned TypeScript 5.9.3, `tsc --noEmit -p frontend/tsconfig.json`, 0 errors
+- **TypeScript**: pinned TypeScript 5.9.3, `frontend/node_modules/.bin/tsc --noEmit -p frontend/tsconfig.json`, 0 errors
 - **CI frontend lint**: `bunx eslint frontend test`, 0 errors
 - **Backend CI suite**: 2477 pass, 7 skip, 0 fail (2484 tests, 111 files)
 - **Backend TypeScript**: `bun run --cwd backend build`, 0 errors; transcript delivery/API regressions 56 pass, 0 fail.
