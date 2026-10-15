@@ -11,8 +11,8 @@
 # With location granted ("Always") and a simulated position set, the app also runs a location capture probe
 # (EXO_LOCATION_SMOKE=1 in its environment) and logs `EXO_LOCATION_SMOKE {json}`; its results are reported in the
 # summary but do not fail the job (simulated location delivery is not a property of the app).
-# Always writes screenshot.png, console.log (the app's stdout/stderr: Capacitor's "⚡️" lines and the WebView
-# console), unified.log (os_log of the App process), any crash reports and summary.md to <out-dir>.
+# Writes screenshot.png, sanitized console.log, allowlisted unified.log and app-unified-stream.log, structural
+# liveness/launch evidence, and summary.md to <out-dir>; crash reports are counted but never copied.
 #
 # Usage (macOS with Xcode, jq):
 #   mobile/scripts/ios-simulator-smoke.sh boot <out-dir>           pick the simulator and start booting it, so the
@@ -85,7 +85,9 @@ touch "$marker"
 # Raw simulator output stays outside the uploaded artifact; only allowlisted event names and times are retained.
 private_logs=$(mktemp -d)
 stream_pid=""
+watcher_pid=""
 cleanup_smoke() {
+  if [ -n "$watcher_pid" ]; then kill "$watcher_pid" 2>/dev/null || true; wait "$watcher_pid" 2>/dev/null || true; fi
   if [ -n "$stream_pid" ]; then kill "$stream_pid" 2>/dev/null || true; wait "$stream_pid" 2>/dev/null || true; fi
   rm -rf "$private_logs"
 }
@@ -144,59 +146,111 @@ SIMCTL_CHILD_EXO_LOCATION_SMOKE="$location_smoke" SIMCTL_CHILD_EXO_CAPTURE_SMOKE
   xcrun simctl launch --console-pty "$udid" "$bundle_id" >"$private_logs/console.log" 2>&1 &
 launcher=$!
 
-# The simctl launch line can report an app PID before launchctl lists its job.
+# The liveness sampler is independent of simulator and probe calls, which can block for many seconds.
+# Only PIDs reported for this app by simctl or by its matching launchctl job are checked.
+watch_liveness() {
+  local simctl_pid="" app_pid="" candidate stamp epoch last_epoch=$launch_epoch
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    sleep 2
+    epoch=$(date -u +%s)
+    stamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    if [ "$((epoch - last_epoch))" -gt 5 ]; then
+      printf '%s observation gap %ss\n' "$stamp" "$((epoch - last_epoch))" >>"$out/liveness.log"
+      : >"$private_logs/watcher.gap"
+    fi
+    last_epoch=$epoch
+    if [ -z "$simctl_pid" ]; then
+      candidate=$(awk -v app="$bundle_id:" '$1 == app { gsub(/\r/, "", $2); if ($2 ~ /^[0-9]+$/) { print $2; exit } }' \
+        "$private_logs/console.log" 2>/dev/null)
+      if [ -n "$candidate" ]; then
+        simctl_pid=$candidate
+        printf '%s\n' "$simctl_pid" >"$private_logs/simctl.pid"
+        printf 'simctl launch pid %s observed %s\n' "$simctl_pid" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$out/launch-timeline.log"
+      fi
+    fi
+    if [ -z "$app_pid" ] && [ -s "$private_logs/launchctl.pid" ]; then
+      read -r app_pid <"$private_logs/launchctl.pid"
+    fi
+    if [ -n "$simctl_pid" ]; then
+      if ! app_pid_alive "$simctl_pid"; then
+        printf '%s simctl pid %s exited\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$simctl_pid" >>"$out/liveness.log"
+        : >"$private_logs/watcher.exited"
+        return 1
+      fi
+      printf '%s simctl pid %s alive\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$simctl_pid" >>"$out/liveness.log"
+    fi
+    if [ -n "$app_pid" ]; then
+      if [ "$app_pid" != "$simctl_pid" ] && ! app_pid_alive "$app_pid"; then
+        printf '%s pid %s exited\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$app_pid" >>"$out/liveness.log"
+        : >"$private_logs/watcher.exited"
+        return 1
+      fi
+      printf '%s pid %s alive\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$app_pid" >>"$out/liveness.log"
+    elif [ -z "$simctl_pid" ]; then
+      printf '%s pid not yet observed\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$out/liveness.log"
+    fi
+  done
+  epoch=$(date -u +%s)
+  if [ "$((epoch - last_epoch))" -gt 5 ]; then
+    printf '%s observation gap %ss\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$((epoch - last_epoch))" >>"$out/liveness.log"
+    : >"$private_logs/watcher.gap"
+  fi
+  : >"$private_logs/watcher.complete"
+}
+
 simctl_pid=""
 pid=""
 probe=""
 process_exited=0
 deadline=$((SECONDS + timeout_s))
+launch_epoch=$((deadline_epoch - timeout_s))
+watch_liveness &
+watcher_pid=$!
 while [ "$SECONDS" -lt "$deadline" ]; do
   sleep 2
-  observed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  if [ -z "$simctl_pid" ]; then
-    simctl_pid=$(awk -v app="$bundle_id:" '$1 == app { gsub(/\r/, "", $2); if ($2 ~ /^[0-9]+$/) { print $2; exit } }' \
-      "$private_logs/console.log" 2>/dev/null)
-    if [ -n "$simctl_pid" ]; then
-      printf 'simctl launch pid %s observed %s\n' "$simctl_pid" "$observed_at" >>"$out/launch-timeline.log"
-      log "simctl launch reported pid $simctl_pid"
-    fi
-  fi
-  if [ -n "$simctl_pid" ]; then
-    if ! app_pid_alive "$simctl_pid"; then
-      printf '%s simctl pid %s exited\n' "$observed_at" "$simctl_pid" >>"$out/liveness.log"
-      fail "the app exited or crashed after simctl launch (pid $simctl_pid)"
-      process_exited=1
-      break
-    fi
-    printf '%s simctl pid %s alive\n' "$observed_at" "$simctl_pid" >>"$out/liveness.log"
-  fi
+  if [ -f "$private_logs/watcher.exited" ]; then process_exited=1; break; fi
   # launchd's job for the app: "<pid> <status> UIKitApplication:xyz.tinycloud.exo[...]".
-  # Simulator app processes are host processes, so check the PID and reject an unreaped zombie.
   observed_pid=$(xcrun simctl spawn "$udid" launchctl list 2>/dev/null | awk -v job="UIKitApplication:$bundle_id" 'index($3, job) == 1 && $1 ~ /^[0-9]+$/ { print $1; exit }')
   if [ -z "$pid" ] && [ -n "$observed_pid" ]; then
     pid=$observed_pid
-    printf 'pid %s observed %s\n' "$pid" "$observed_at" >>"$out/launch-timeline.log"
+    printf '%s\n' "$pid" >"$private_logs/launchctl.pid"
+    printf 'pid %s observed %s\n' "$pid" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$out/launch-timeline.log"
     log "running as pid $pid"
   fi
-  if [ -n "$pid" ]; then
-    if [ "$observed_pid" != "$pid" ] || ! app_pid_alive "$pid"; then
-      printf '%s pid %s exited or disappeared\n' "$observed_at" "$pid" >>"$out/liveness.log"
-      fail "the app exited or crashed after launch (pid $pid)"
-      process_exited=1
-      break
-    fi
-    printf '%s pid %s alive\n' "$observed_at" "$pid" >>"$out/liveness.log"
-  else
-    printf '%s pid not yet observed\n' "$observed_at" >>"$out/liveness.log"
+  if [ -n "$pid" ] && [ "$observed_pid" != "$pid" ]; then
+    printf '%s pid %s disappeared from launchctl\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$pid" >>"$out/liveness.log"
+    fail "the app exited or crashed after launch (pid $pid)"
+    process_exited=1
+    break
   fi
   if [ -z "$probe" ] && [ "$SECONDS" -lt "$deadline" ]; then
-    probe=$(mounted_probe "$private_logs/console.log")
-    if [ -n "$probe" ]; then
-      printf 'mounted app-page probe observed %s\n' "$observed_at" >>"$out/launch-timeline.log"
+    candidate=$(mounted_probe "$private_logs/console.log")
+    if [ -n "$candidate" ] && [ "$SECONDS" -lt "$deadline" ]; then
+      probe=$candidate
+      printf 'mounted app-page probe observed %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$out/launch-timeline.log"
       log "mounted app-page probe received"
     fi
   fi
 done
+if [ "$process_exited" -eq 1 ] && [ ! -f "$private_logs/watcher.exited" ]; then
+  kill "$watcher_pid" 2>/dev/null || true
+fi
+watcher_failed=0
+wait "$watcher_pid" 2>/dev/null || watcher_failed=1
+watcher_pid=""
+if [ -s "$private_logs/simctl.pid" ]; then
+  read -r simctl_pid <"$private_logs/simctl.pid"
+else
+  printf 'simctl launch pid not reported\n' >>"$out/launch-timeline.log"
+fi
+if [ -f "$private_logs/watcher.exited" ]; then
+  process_exited=1
+  fail "the app exited or crashed after launch"
+fi
+if [ -f "$private_logs/watcher.gap" ]; then fail "liveness observation gap exceeded 5s"; fi
+if [ "$process_exited" -eq 0 ] && { [ "$watcher_failed" -ne 0 ] || [ ! -f "$private_logs/watcher.complete" ]; }; then
+  fail "liveness watcher did not complete through the probe deadline"
+fi
 
 if [ -z "$probe" ] && [ "$process_exited" -eq 0 ]; then
   # A PTY can lose a late stdout line; accept only the same mounted app-page payload from os_log.

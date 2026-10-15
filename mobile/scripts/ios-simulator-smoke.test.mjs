@@ -32,7 +32,11 @@ const op = args[1];
 if (op === 'launch') {
   event('launch');
   fs.writeFileSync(path.join(state, 'pid'), String(process.pid));
-  console.log('xyz.tinycloud.exo: ' + process.pid);
+  if (process.env.FAKE_SIMCTL_PID !== 'absent') {
+    const delay = Number(process.env.FAKE_SIMCTL_PID_DELAY_MS || 0);
+    if (delay) setTimeout(() => console.log('xyz.tinycloud.exo: ' + process.pid), delay);
+    else console.log('xyz.tinycloud.exo: ' + process.pid);
+  }
   const mode = process.env.FAKE_PROBE_MODE;
   if (mode === 'early-then-mounted') console.log('EXO_SMOKE ' + process.env.FAKE_EARLY_PROBE);
   if (mode === 'mounted') console.log('EXO_SMOKE ' + process.env.FAKE_GOOD_PROBE);
@@ -50,6 +54,11 @@ if (op === 'launch') {
   }, Number(process.env.FAKE_EXIT_AFTER_MS));
   setInterval(() => {}, 1000);
 } else if (op === 'spawn' && args[3] === 'launchctl') {
+  const stallFile = path.join(state, 'launchctl-stalled');
+  if (process.env.FAKE_LAUNCHCTL_STALL_MS && !fs.existsSync(stallFile)) {
+    fs.writeFileSync(stallFile, '1');
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(process.env.FAKE_LAUNCHCTL_STALL_MS));
+  }
   const pidFile = path.join(state, 'pid');
   if (fs.existsSync(pidFile) && !fs.existsSync(path.join(state, 'exited')) && process.env.FAKE_HIDE_LAUNCHCTL !== '1') {
     const pid = Number(fs.readFileSync(pidFile, 'utf8'));
@@ -72,7 +81,7 @@ if (op === 'launch') {
 }
 `;
 
-function runSmoke({ mode, exitAfterMs, hideLaunchctl = false, badPrefix = false, crash = false, timeout = 6 }) {
+function runSmoke({ mode, exitAfterMs, hideLaunchctl = false, badPrefix = false, crash = false, simctlPid = "immediate", pidDelayMs = 0, launchctlStallMs = 0, probeStallSeconds = 0, psStallCall = 0, timeout = 6 }) {
   const dir = mkdtempSync(join(tmpdir(), "exo-smoke-test-"));
   const bin = join(dir, "bin");
   const app = join(dir, "App.app");
@@ -86,6 +95,10 @@ function runSmoke({ mode, exitAfterMs, hideLaunchctl = false, badPrefix = false,
   chmodSync(join(bin, "xcrun"), 0o755);
   writeFileSync(join(bin, "plutil"), "#!/bin/sh\nexit 0\n");
   chmodSync(join(bin, "plutil"), 0o755);
+  writeFileSync(join(bin, "grep"), "#!/bin/sh\nif [ \"$1\" = -a ] && [ \"$2\" = 'EXO_SMOKE ' ] && [ -n \"$FAKE_PROBE_STALL_SECONDS\" ]; then sleep \"$FAKE_PROBE_STALL_SECONDS\"; fi\nPATH=${PATH#*:} exec grep \"$@\"\n");
+  chmodSync(join(bin, "grep"), 0o755);
+  writeFileSync(join(bin, "ps"), "#!/bin/sh\nif [ -n \"$FAKE_PS_STALL_CALL\" ]; then\n  n=0\n  if [ -f \"$FAKE_SIM_STATE/ps-count\" ]; then read -r n < \"$FAKE_SIM_STATE/ps-count\"; fi\n  n=$((n + 1))\n  printf '%s\\n' \"$n\" > \"$FAKE_SIM_STATE/ps-count\"\n  if [ \"$n\" -eq \"$FAKE_PS_STALL_CALL\" ]; then sleep \"$FAKE_PS_STALL_SECONDS\"; fi\nfi\nPATH=${PATH#*:} exec ps \"$@\"\n");
+  chmodSync(join(bin, "ps"), 0o755);
   const env = {
     ...process.env, PATH: bin + ":" + process.env.PATH, HOME: dir, FAKE_SIM_STATE: dir,
     FAKE_PROBE_MODE: mode, FAKE_GOOD_PROBE: JSON.stringify(goodProbe),
@@ -94,11 +107,16 @@ function runSmoke({ mode, exitAfterMs, hideLaunchctl = false, badPrefix = false,
     FAKE_HIDE_LAUNCHCTL: hideLaunchctl ? "1" : "0",
     FAKE_BAD_PREFIX: badPrefix ? "1" : "0",
     FAKE_CRASH: crash ? "1" : "0",
+    FAKE_SIMCTL_PID: simctlPid, FAKE_SIMCTL_PID_DELAY_MS: String(pidDelayMs),
+    FAKE_LAUNCHCTL_STALL_MS: String(launchctlStallMs || ""),
+    FAKE_PROBE_STALL_SECONDS: String(probeStallSeconds || ""),
+    FAKE_PS_STALL_CALL: String(psStallCall || ""),
+    FAKE_PS_STALL_SECONDS: "6",
     EXO_CAPTURE_SMOKE: "0", EXO_LOCATION_SMOKE: "0",
     SMOKE_TIMEOUT: String(timeout), SMOKE_SETTLE: "0",
   };
   try {
-    const result = spawnSync("bash", [smoke, "run", app, out], { env, timeout: 20000, encoding: "utf8" });
+    const result = spawnSync("bash", [smoke, "run", app, out], { env, timeout: 30000, encoding: "utf8" });
     const artifact = (name) => { try { return readFileSync(join(out, name), "utf8"); } catch { return ""; } };
     const files = ["../events", "launch-timeline.log", "liveness.log", "app-unified-stream.log", "unified.log", "console.log", "summary.md", "crashes/App-synthetic.ips", "crash-reports.txt"];
     const snapshots = new Map(files.map((name) => [name, artifact(name)]));
@@ -165,4 +183,56 @@ test("crash still fails without publishing raw report contents", { timeout: 2000
   assert.equal(artifact("crashes/App-synthetic.ips"), "", "raw crash report must not be published");
   assert.match(artifact("crash-reports.txt"), /^count=1$/m);
   assert.doesNotMatch(artifact("summary.md") + result.stdout, /SYNTHETIC_CRASH_PRIVATE/);
+});
+
+test("timestamps the actual delayed simctl PID despite a slow launchctl response", { timeout: 30000 }, () => {
+  const { result, artifact } = runSmoke({ mode: "mounted", pidDelayMs: 3000, launchctlStallMs: 5000, timeout: 10 });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const timeline = artifact("launch-timeline.log");
+  const launch = timeline.match(/launch requested (\S+)/);
+  const reported = timeline.match(/simctl launch pid (\d+) observed (\S+)/);
+  assert.ok(launch && reported, "record only the delayed simctl bundle: PID output");
+  const delay = Date.parse(reported[2]) - Date.parse(launch[1]);
+  assert.ok(delay >= 2000 && delay <= 6500, `simctl PID observation lagged ${delay}ms`);
+});
+
+test("records a fixed unavailable class without confusing launchctl PID for simctl", { timeout: 30000 }, () => {
+  const { result, artifact } = runSmoke({ mode: "mounted", simctlPid: "absent" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const timeline = artifact("launch-timeline.log");
+  assert.match(timeline, /pid \d+ observed .*Z/);
+  assert.match(timeline, /simctl launch pid not reported/);
+  assert.doesNotMatch(timeline, /simctl launch pid \d+ observed/);
+});
+
+test("slow launchctl and probe work cannot starve real liveness samples", { timeout: 30000 }, () => {
+  const { result, artifact } = runSmoke({ mode: "early-then-mounted", launchctlStallMs: 5000, probeStallSeconds: 4, timeout: 13 });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const times = [...artifact("liveness.log").matchAll(/^(\S+) (?:simctl )?pid \d+ alive$/gm)].map((match) => Date.parse(match[1]));
+  assert.ok(times.length >= 5, "the independent watcher must retain actual samples");
+  for (let index = 1; index < times.length; index++) {
+    assert.ok(times[index] - times[index - 1] <= 5000, "liveness observation gap exceeded five seconds");
+  }
+});
+
+test("a slow probe cannot accept a mounted page past the original deadline", { timeout: 30000 }, () => {
+  const { result, artifact } = runSmoke({ mode: "early-then-mounted", probeStallSeconds: 4, timeout: 5 });
+  assert.equal(result.status, 1, "a late probe must not extend the deadline");
+  assert.match(artifact("summary.md"), /no EXO_SMOKE probe line within 5s/);
+});
+
+test("records an app exit while the main probe parser is stalled", { timeout: 30000 }, () => {
+  const { result, artifact } = runSmoke({ mode: "early-then-mounted", exitAfterMs: 3200, probeStallSeconds: 4, timeout: 8 });
+  assert.equal(result.status, 1, "an early exit must fail despite the stalled probe");
+  const launch = artifact("launch-timeline.log").match(/launch requested (\S+)/);
+  const exit = artifact("liveness.log").match(/^(\S+) (?:simctl )?pid \d+ exited/m);
+  assert.ok(launch && exit, "record an actual timestamped exit observation");
+  assert.ok(Date.parse(exit[1]) - Date.parse(launch[1]) <= 6500, "the exit was discovered only after the probe unblocked");
+});
+
+test("an end-of-deadline watcher stall cannot be reported as complete liveness", { timeout: 30000 }, () => {
+  const { result, artifact } = runSmoke({ mode: "mounted", psStallCall: 2, timeout: 5 });
+  assert.equal(result.status, 1, "a stalled watcher cannot claim complete instrumentation");
+  assert.match(artifact("liveness.log"), /observation gap \d+s/);
+  assert.match(artifact("summary.md"), /liveness observation gap exceeded 5s/);
 });
