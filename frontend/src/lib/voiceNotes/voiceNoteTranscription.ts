@@ -372,7 +372,7 @@ export function localStorageVoiceNotePrivateChoiceStore(
     has: (id) => read().includes(id),
     add: (id) => {
       const ids = read();
-      beginPrivateChoiceIntent(accountDid, id, storage as Storage | undefined);
+      if (!beginPrivateChoiceIntent(accountDid, id, storage as Storage | undefined)) return;
       if (!ids.includes(id)) write([...ids, id]);
     },
     remove: (id) => {

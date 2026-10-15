@@ -14,8 +14,8 @@ import { saveVoiceNote } from "./voiceNoteStore";
 import { memoryAudioBlobs } from "./web/webTestKit";
 import { newIdbEnv } from "./web/testing/idb";
 import { memoryLocks, openWebStore, recordingFromSession } from "./web/webStore";
-import { __resetSourcePinsForTests, accountStorageKey, isSourcePinned, retainSource, setLimitBlockedChoice,
-  VOICE_NOTE_PENDING_JOBS_KEY } from "./sourcePins";
+import { __resetSourcePinsForTests, accountStorageKey, isSourcePinned, retainSource,
+  setLimitBlockedChoice, VOICE_NOTE_PENDING_JOBS_KEY } from "./sourcePins";
 function deferred() {
   let resolve!: () => void;
   const promise = new Promise<void>((done) => { resolve = done; });
@@ -195,6 +195,22 @@ function cloudFor(h: Awaited<ReturnType<typeof setup>>, options: {
   });
   const run = () => transcribeVoiceNote({ tcw: h.tcw as never, cloud, capabilities: CAPS, sourceId: h.sourceId, explicit: true, report: () => {} });
   return { cloud, pending, counts, run };
+}
+
+function choiceController(h: Awaited<ReturnType<typeof setup>>, choices: ReturnType<typeof localStorageVoiceNotePrivateChoiceStore>,
+  capabilitiesAvailable: boolean) {
+  const cloud = {
+    pendingSourceIds: () => [],
+    capabilities: async () => {
+      if (!capabilitiesAvailable) throw new Error("synthetic capability check failure");
+      return { ...CAPS, max_bytes: 16, max_duration_seconds: 100, accepted_max_duration_seconds: 100 };
+    },
+  };
+  return createVoiceNoteTranscriber({
+    cloud: cloud as never, consent: { get: () => true, set: () => {} }, choices,
+    holds: localStorageVoiceNoteHoldStore(DID), tcw: () => h.tcw as never,
+    runNote: async () => "transcribed", checkRetryMs: [], failedBackoffMs: [], freshMs: 0,
+  });
 }
 
 for (const operation of ["trim", "clear"] as const) {
@@ -657,6 +673,144 @@ for (const fileBacked of [false, true]) {
 
           expect(await localStorageVoiceNotePrivateChoiceStore(DID, h.pendingStorage).has(h.sourceId)).toBe(true);
           __resetSourcePinsForTests();
+          expect(await isSourcePinned(DID, h.sourceId)).toBe(true);
+          if (operation === "trim") await trimCachedAudio(0);
+          else await clearCachedAudio();
+          expect(await h.store.audio.size(h.sourceId)).toBe(h.bytes.length);
+        } finally {
+          Date.now = originalNow;
+        }
+      });
+    }
+  }
+}
+
+for (const fileBacked of [false, true]) {
+  for (const operation of ["clear", "trim"] as const) {
+    for (const writeFault of ["throws", "no-op"] as const) {
+      test(`TC-1182 failed fresh intent write pins across reconstruction (${writeFault}): ${operation}, fileBacked=${fileBacked}`, async () => {
+        const h = await setup({ fileBacked });
+        const originalNow = Date.now;
+        let now = Date.parse("2026-01-01T00:00:00.000Z");
+        Date.now = () => now;
+        try {
+          const choices = localStorageVoiceNotePrivateChoiceStore(DID);
+          const initial = choiceController(h, choices, true);
+          await initial.check();
+          expect(initial.transcribePrivately(h.sourceId, 1, h.bytes.length)).toEqual({
+            kind: "bytes", limitBytes: 16, sizeBytes: h.bytes.length,
+          });
+          expect(await isSourcePinned(DID, h.sourceId)).toBe(true);
+          now += 31 * 24 * 60 * 60 * 1_000;
+          expect(await isSourcePinned(DID, h.sourceId)).toBe(false);
+
+          const setItem = h.pendingStorage.setItem;
+          h.pendingStorage.setItem = (key, value) => {
+            if (key.includes("privateChoiceIntents")) {
+              if (writeFault === "no-op") return;
+              throw new Error("synthetic intent write failure");
+            }
+            setItem(key, value);
+          };
+          const retry = choiceController(h, choices, false);
+          await retry.check();
+          retry.transcribePrivately(h.sourceId, 1, h.bytes.length);
+          expect(choices.has(h.sourceId)).toBe(true);
+
+          __resetSourcePinsForTests();
+          expect(localStorageVoiceNotePrivateChoiceStore(DID, h.pendingStorage).has(h.sourceId)).toBe(true);
+          expect(await isSourcePinned(DID, h.sourceId)).toBe(true);
+          if (operation === "trim") await trimCachedAudio(0);
+          else await clearCachedAudio();
+          expect(await h.store.audio.size(h.sourceId)).toBe(h.bytes.length);
+        } finally {
+          Date.now = originalNow;
+        }
+      });
+    }
+  }
+}
+
+for (const fileBacked of [false, true]) {
+  for (const operation of ["clear", "trim"] as const) {
+    test(`TC-1182 limit update after a failed fresh intent does not reuse its old generation: ${operation}, fileBacked=${fileBacked}`, async () => {
+      const h = await setup({ fileBacked });
+      const originalNow = Date.now;
+      let now = Date.parse("2026-01-01T00:00:00.000Z");
+      Date.now = () => now;
+      try {
+        const choices = localStorageVoiceNotePrivateChoiceStore(DID);
+        const transcriber = choiceController(h, choices, true);
+        await transcriber.check();
+        expect(transcriber.transcribePrivately(h.sourceId, 1, h.bytes.length)).toEqual({
+          kind: "bytes", limitBytes: 16, sizeBytes: h.bytes.length,
+        });
+        expect(await isSourcePinned(DID, h.sourceId)).toBe(true);
+        now += 31 * 24 * 60 * 60 * 1_000;
+        expect(await isSourcePinned(DID, h.sourceId)).toBe(false);
+
+        const setItem = h.pendingStorage.setItem;
+        let failedFirstIntentWrite = false;
+        h.pendingStorage.setItem = (key, value) => {
+          if (!failedFirstIntentWrite && key.includes("privateChoiceIntents")) {
+            failedFirstIntentWrite = true;
+            throw new Error("synthetic first intent write failure");
+          }
+          setItem(key, value);
+        };
+        expect(transcriber.transcribePrivately(h.sourceId, 1, h.bytes.length)).toEqual({
+          kind: "bytes", limitBytes: 16, sizeBytes: h.bytes.length,
+        });
+        expect(failedFirstIntentWrite).toBe(true);
+
+        expect(await isSourcePinned(DID, h.sourceId)).toBe(true);
+        if (operation === "trim") await trimCachedAudio(0);
+        else await clearCachedAudio();
+        expect(await h.store.audio.size(h.sourceId)).toBe(h.bytes.length);
+      } finally {
+        Date.now = originalNow;
+      }
+    });
+  }
+}
+
+for (const fileBacked of [false, true]) {
+  for (const operation of ["clear", "trim"] as const) {
+    for (const reconstructed of [false, true]) {
+      test(`TC-1182 concurrent choice lifetimes for separate notes do not overwrite (${operation}, fileBacked=${fileBacked}, reconstructed=${reconstructed})`, async () => {
+        const h = await setup({ fileBacked });
+        const originalNow = Date.now;
+        let now = Date.parse("2026-01-01T00:00:00.000Z");
+        Date.now = () => now;
+        try {
+          const choices = localStorageVoiceNotePrivateChoiceStore(DID);
+          const initial = choiceController(h, choices, true);
+          await initial.check();
+          expect(initial.transcribePrivately(h.sourceId, 1, h.bytes.length)).toEqual({
+            kind: "bytes", limitBytes: 16, sizeBytes: h.bytes.length,
+          });
+          expect(await isSourcePinned(DID, h.sourceId)).toBe(true);
+          now += 31 * 24 * 60 * 60 * 1_000;
+          expect(await isSourcePinned(DID, h.sourceId)).toBe(false);
+
+          const setItem = h.pendingStorage.setItem;
+          const secondTabStorage = {
+            getItem: (key: string) => h.pendingStorage.getItem(key),
+            setItem: (key: string, value: string) => h.pendingStorage.setItem(key, value),
+            removeItem: (key: string) => h.pendingStorage.removeItem(key),
+          } as Storage;
+          const targetChoices = localStorageVoiceNotePrivateChoiceStore(DID, secondTabStorage);
+          let interleaved = false;
+          h.pendingStorage.setItem = (key, value) => {
+            if (!interleaved && key.includes("privateChoiceIntents")) {
+              interleaved = true;
+              targetChoices.add(h.sourceId);
+            }
+            setItem(key, value);
+          };
+          localStorageVoiceNotePrivateChoiceStore(DID).add("synthetic-other-note");
+          expect(interleaved).toBe(true);
+          if (reconstructed) __resetSourcePinsForTests();
           expect(await isSourcePinned(DID, h.sourceId)).toBe(true);
           if (operation === "trim") await trimCachedAudio(0);
           else await clearCachedAudio();
