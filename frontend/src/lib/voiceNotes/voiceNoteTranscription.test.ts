@@ -3150,6 +3150,53 @@ describe("every path that creates or resumes an off-phone job consults the hold 
     expect(outer.ids().sort()).toEqual(["other-note", "rec-1"]);
   });
 
+  test("TC-1206: recovery reports failed choice removal when a transcript commits during its reread", async () => {
+    const { space, h, storage, choices } = await setup("in_app", { pending: false });
+    const tcw = typedTcw(space);
+    const baseDb = tcw.sql.db.bind(tcw.sql);
+    let commitReads = 0;
+    tcw.sql.db = ((name: string) => {
+      const db = baseDb(name);
+      return { ...db, query: async (sql: string, params?: unknown[], options?: unknown) => {
+        if (sql.includes("FROM voice_note_transcript WHERE source_id = ?") && ++commitReads === 2)
+          expect((await saveVoiceNoteTranscript(space.tcw, "rec-1",
+            prepareVoiceNoteTranscript(TRANSCRIPT, "2026-10-03T10:00:00.000Z", 1))).ok).toBe(true);
+        return db.query(sql, params as never, options as never);
+      } };
+    }) as TestTcw["sql"]["db"];
+    expect(choices.add("rec-1")).toBe(true);
+    const key = accountStorageKey(VOICE_NOTE_PRIVATE_CHOICES_KEY, DID);
+    const removeItem = storage.removeItem;
+    let refusedRemovals = 0;
+    storage.removeItem = (candidate) => {
+      if (candidate === key) { refusedRemovals++; return; }
+      removeItem(candidate);
+    };
+    const transcriber = createVoiceNoteTranscriber({
+      cloud: h.cloud, consent: localStorageVoiceNoteConsentStore(DID, storage), tcw: () => space.tcw,
+      holds: memoryHoldStore(), choices, checkRetryMs: [],
+    });
+    await transcriber.check();
+    await settle();
+    expect(commitReads).toBeGreaterThanOrEqual(2);
+    expect(refusedRemovals).toBe(1);
+    expect(choices.has("rec-1")).toBe(true);
+    expect(await readTranscriptCommit(space.tcw, "rec-1")).toMatchObject({ rev: 1 });
+    expect(h.creates).toEqual([]);
+    expect(transcriber.snapshot().jobs.get("rec-1")).toMatchObject({
+      kind: "failed", code: "private_choice_persistence_failed", retryable: true,
+    });
+
+    storage.removeItem = removeItem;
+    transcriber.transcribe("rec-1");
+    await settle();
+    expect(transcriber.snapshot().jobs.get("rec-1")?.kind).toBe("done");
+    expect(choices.has("rec-1")).toBe(false);
+    expect(await readTranscriptCommit(space.tcw, "rec-1")).toMatchObject({ rev: 1 });
+    expect(h.creates).toEqual([]);
+    expect(h.puts).toEqual([]);
+  });
+
   test("Private with no PTX duration limit never starts automatically: the note stays blocked as limits-unknown, and an explicit Transcribe is refused the same way", async () => {
     const { space, h, storage, choices } = await setup("in_app", { pending: false });
     const cloud: VoiceNoteCloud = {

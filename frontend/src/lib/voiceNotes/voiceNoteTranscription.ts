@@ -2261,7 +2261,8 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
       const commit = await readTranscriptCommit(tcw, sourceId);
       if (!identityCurrent()) return false;
       if (commit !== null) {
-        if (!cloud?.hasRemoteJob(sourceId) && cloud?.heldTranscript(sourceId) === null) choices.remove(sourceId);
+        if (!cloud?.hasRemoteJob(sourceId) && cloud?.heldTranscript(sourceId) === null
+          && !choices.remove(sourceId)) reportChoicePersistenceFailure(sourceId);
         return false;
       }
       if (note.captureSource !== "in_app" && holdStates.get(sourceId) !== "released") {
