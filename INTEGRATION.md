@@ -44,6 +44,11 @@ Integration branch: `dev/0.8.0`
 | #407 | 66617835 | 33747e64 | No | Clean merge of the approved TC-1140 recovery reconciliation. Exact-head CI passed; targeted recovery tests passed 228/228. |
 | `origin/main` | da787d7d | ae9cdd41 | Yes (2 files) | Refreshed through 0.7.4. Retained the approved #407 resolution and beta prerelease state (TC-1140). |
 | `origin/main` | e137f9fb | 130aa8b3 | No | Refreshed through #411, including the approved TC-641 consent-copy status and its pinned backend test. |
+| #413 | a3a1e771 | 2f69e54a | No | Clean TC-1185 copy-only merge: read-only space-lane activity no longer reports that another operation is blocking the note. TC-1185 problem 1, the post-save full-transcript load error, is not addressed by #413 and remains open. |
+| #414 | 850878a6 | d438e3d9 | No | Clean merge of the reviewed TC-1192 agent-sync continuation fix after all required checks passed; focused connector tests passed 17/17. |
+| #415 | 187227da | eddf432d | No | Clean TC-1185 Retry merge: Try again re-reads the current committed transcript body after an absent read. The original post-save full-transcript load error is not addressed by #415 and remains open. |
+| `origin/main` | 6f63a5e7 | a22bb386 | Yes (`bun.lock`) | Refreshed through corrected TC-1201 #423 after #417 was reverted by #421. The lock/package resolution retains dev's beta pre-mode release plan, all main changeset files are present, and `auth.ts`, `native-siwe-audience.ts`, and `cors-origins.ts` match main exactly. |
+| #412 | bd049fd7 | 46f59002 | No | Clean merge of the approved TC-985 persistent agent-status fix after exact-head CI and Clarissa's branch-preview QA passed; focused status and route tests passed 41/41. |
 
 ## Test Fixes (2026-10-14)
 
@@ -85,18 +90,24 @@ After merging origin/main (TC-1128, #387, #392, 45d16e58) and PR #386 (TC-1108 p
 | Me/Them metadata after reload and receipt save settlement | #350 merge (`7b36ac1a`) | Existing-session adoption and durable Stop could omit authoritative native channels, while no-pipeline `SAVED` events overwrote the local receipt's channels after save settlement. | Restore native channels during adoption/Stop and carry the matching recording's channels through every `LOCAL_COMMITTED`/`SAVED` receipt transition, including Save now. | #403 `b00ebd38`; #350 `7f5fb1cd` |
 | Backend transcript-delivery TypeScript | #394 re-land (`167d4786`) | TC-760 narrowed the shared `gaps` contract to structured transcript gaps, but the existing backend API type still exposed `unknown[]`, so the unchanged delivery call no longer typechecked. | Give the backend transcript response the same `{ start, end, speaker_name }[]` gap shape as the approved shared contract. | #394 `f4a21845`; #394 re-land `167d4786` |
 | Dynamic recorder-device copy after local-cache tests | #373 merge (`db5e604a`) | #373's authenticated audio-receipt test rendered `AudioCacheSettings`, which installs the native capture engine singleton, but its cleanup restored only the plugin binding. A later mode-copy test therefore observed “this phone” instead of its isolated browser fixture. | Reset the capture-engine singleton in the owning test's `afterEach`; the full suite is order-independent again without changing product copy. | #373 `c80f6c93`; existing `__resetCaptureEngineForTests` isolation contract |
+| #415 post-merge Library retry fixture | #415 merge (`eddf432d`) | The new standalone retry test replaced process-wide DOM, IndexedDB, and native VoiceNotes bindings without restoring them; the post-merge full suite then failed five existing tests that inherited those fixtures. | Capture and restore every replaced global plus the original native VoiceNotes binding after the file. | #415 `187227da`; existing `useLibrary.test.tsx` isolation contract |
 
 ## Current Status
 
-- **Verified code head**: `f72d6aeb` (#407 plus current main and the corrected backend release baseline)
-- **Frontend unit suite**: 5126 pass, 4 skip, 0 fail (5130 tests, 343 files)
+- **Verified code head**: `46f59002` (#412 merged after the current-main TC-1201 refresh)
+- **Frontend unit suite**: 5147 pass, 4 skip, 0 fail (5151 tests, 345 files)
+- **#415 scoped tests**: 54 pass, 0 fail across `useLibrary.retry.test.tsx` and `useLibrary.test.tsx`
+- **#413 scoped tests**: 198 pass, 0 fail across `useLibrary.test.tsx` and `notePipeline.test.ts`
+- **#414 scoped tests**: 17 pass, 0 fail in `test/connectors/agent-sync.e2e.test.ts`
+- **TC-1201 auth tests**: 37 pass, 0 fail across six backend/server files
+- **#412 scoped tests**: 41 pass, 0 fail across status-indicator/enablement units and the rendered route harness
 - **Recorded `origin/main` `b9c538ee` baseline**: 4735 pass, 4 skip, 0 fail (4739 tests, 326 files)
 - **TypeScript**: pinned TypeScript 5.9.3, `frontend/node_modules/.bin/tsc --noEmit -p frontend/tsconfig.json`, 0 errors
 - **CI frontend lint**: `bunx eslint frontend test`, 0 errors
 - **Next prerelease versions**: frontend and desktop `0.8.0-beta.4`; backend `0.5.6-beta.0`; changesets remain in beta pre mode
 - **Stable-release dry run**: after simulated beta versioning, frontend and desktop graduate to `0.8.0`; backend graduates to `0.5.6`, above main's published `0.5.5`
 - **Release checks**: `node scripts/release/check.mjs` passed; release script tests 67 pass, 0 fail; #411 consent-scope tests 46 pass, 0 fail
-- **Backend CI suite**: 2477 pass, 7 skip, 0 fail (2484 tests, 111 files)
+- **Backend CI suite**: 2666 pass, 7 skip, 0 fail (2673 tests, 114 files)
 - **Backend TypeScript**: `bun run --cwd backend build`, 0 errors; transcript delivery/API regressions 56 pass, 0 fail.
 - **Backend PR CI**: TC-1151 adds `bun run --cwd backend build` after workspace package builds, before package/backend tests.
 - **Chromium Exo UI matrix**: phone, phone-land, desktop, and text200-phone pass; no reference image was re-baselined

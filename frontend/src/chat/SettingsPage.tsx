@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { AgentSetupCard } from "./AgentSetupCard";
 import { useAgentAccess } from "./useAgentEnablement";
 import { AgentAccessControls } from "./AgentEnablementBanner";
@@ -14,7 +15,7 @@ import {
   SunIcon,
   UserIcon,
 } from "lucide-react";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { StorageFullMessage } from "./StorageFullDialog";
 import { openManageStorage } from "@/lib/openManageStorage";
 import { useStorageReadOnly } from "@/lib/useStorageReadOnly";
@@ -90,6 +91,7 @@ export function SettingsPage({
   backendUrl,
   sessionStore,
 }: SettingsPageProps) {
+  const { hash } = useLocation();
   const agentAccess = useAgentAccess();
   const conversationCanvas = useConversationCanvasFeature(tcw, billingStatus);
   const compact = useSizeClass().size === "compact";
@@ -102,6 +104,14 @@ export function SettingsPage({
   const storageFull = useStorageReadOnly();
   const canUpgrade = useStorageFreePlan() && paywallEnabled;
   const resetsLabel = usage?.resetsAt ? formatResetsAt(usage.resetsAt) : null;
+  useEffect(() => {
+    if (hash !== "#agent-access") return;
+    const card = document.getElementById("agent-access");
+    const heading = card?.querySelector("h2");
+    if (!card || !heading) return;
+    card.scrollIntoView({ block: "start" });
+    heading.focus({ preventScroll: true });
+  }, [hash]);
   return (
     // `relative`: the containing block for sr-only/absolute descendants, so they
     // scroll and clip with this pane instead of stretching the document (see
@@ -165,6 +175,7 @@ export function SettingsPage({
             </div>
           </SectionCard>
           <SectionCard
+            id="agent-access"
             icon={ShieldCheckIcon}
             title="Agent access"
             aside={

@@ -28,6 +28,7 @@ export interface AgentSessionProbe {
   capability: AgentCapability;
   status: AgentSessionStatus | null;
   revision: string | null;
+  probeFailed: boolean;
 }
 export interface AgentAccessState extends AgentSessionProbe {
   enableError: string | null;
@@ -35,6 +36,15 @@ export interface AgentAccessState extends AgentSessionProbe {
   disconnecting: boolean;
   reconnectReason: AgentDelegationErrorCode | "delegation_stale" | null;
   silentlyEnabled: boolean;
+}
+export function agentAccessStatusLabel(state: Pick<AgentAccessState, "capability" | "status" | "reconnectReason" | "disconnecting" | "probeFailed">): string {
+  if (state.disconnecting) return "Disconnecting…";
+  if (state.capability === "probing") return "Checking…";
+  if (state.capability === "enabled") return "Connected";
+  if (state.capability === "unavailable") return state.probeFailed ? "Agent unavailable" : "Disconnected";
+  if (state.status === null && state.reconnectReason === "delegation_unverified") return "Access could not be verified";
+  if (state.status === null) return "Access status unknown";
+  return "Disconnected";
 }
 export interface UseAgentEnablementOptions {
   backendUrl: string;
@@ -51,26 +61,37 @@ export async function probeAgentSession(backendUrl: string, token: string): Prom
     const res = await fetch(`${backendUrl.replace(/\/$/, "")}/api/agent/session`, {
       method: "GET", headers: { Authorization: `Bearer ${token}`, "X-Requested-With": "XMLHttpRequest" },
     });
-    if (!res.ok) return { capability: res.status === 401 ? "available" : "unavailable", status: null, revision: null };
+    if (!res.ok) return {
+      capability: res.status === 401 ? "available" : "unavailable",
+      status: null,
+      revision: null,
+      // A missing route means the agent feature is disabled; other probe errors
+      // must remain visible as backend failures.
+      probeFailed: res.status !== 401 && res.status !== 404,
+    };
     const body = await res.json() as AgentSessionSnapshot;
     const status = ["active", "expired", "stale", "none"].includes(body.status ?? "") ? body.status! : null;
     return {
       capability: isActiveAgentBundle(body) ? "enabled" : "available",
       status: status === "active" && !isActiveAgentBundle(body) ? "stale" : status,
       revision: typeof body.revision === "string" ? body.revision : null,
+      probeFailed: false,
     };
-  } catch { return { capability: "unavailable", status: null, revision: null }; }
+  } catch { return { capability: "unavailable", status: null, revision: null, probeFailed: true }; }
 }
 export async function probeAgentCapability(backendUrl: string, token: string): Promise<AgentCapability> {
   return (await probeAgentSession(backendUrl, token)).capability;
 }
+
+const AGENT_PROBE_INTERVAL_MS = 60_000;
+const AGENT_PROBE_MAX_BACKOFF_MS = 5 * 60_000;
 
 /** One account's controller is shared by Settings and the persistent chat runtime. */
 export function createAgentAccessController(opts: UseAgentEnablementOptions) {
   const agentEnabledRef = { current: false }; // Route availability, including public-only access.
   const activeThreadIdRef = { current: null as string | null };
   const privateAccessRef = { current: { active: false, revision: null, generation: 0 } as PrivateAgentAccess };
-  let state: AgentAccessState = { capability: "probing", status: null, revision: null, enableError: null,
+  let state: AgentAccessState = { capability: "probing", status: null, revision: null, probeFailed: false, enableError: null,
     enabling: false, disconnecting: false, reconnectReason: null, silentlyEnabled: false };
   const listeners = new Set<() => void>();
   let operation = 0;
@@ -80,10 +101,36 @@ export function createAgentAccessController(opts: UseAgentEnablementOptions) {
   let stopping: Promise<void> | null = null;
   let replacementPending = false;
   let signalChange = () => {};
+  let pollTimer: number | undefined;
+  let listening = false;
+  let consecutiveProbeFailures = 0;
   const update = (patch: Partial<AgentAccessState>) => {
     if (disposed) return;
     state = { ...state, ...patch };
     listeners.forEach((listener) => listener());
+  };
+  const clearPollTimer = () => {
+    clearTimeout(pollTimer);
+    pollTimer = undefined;
+  };
+  const isVisible = () => typeof document === "undefined" || document.visibilityState === "visible";
+  const isOnline = () => typeof window === "undefined" || window.navigator?.onLine !== false;
+  const markOffline = () => {
+    probeSequence++;
+    clearPollTimer();
+    update({ capability: "unavailable", status: null, revision: null, probeFailed: false, reconnectReason: null });
+  };
+  const scheduleProbe = (probeFailed?: boolean) => {
+    clearPollTimer();
+    if (!listening || !isVisible() || !isOnline()) return;
+    if (probeFailed !== undefined) consecutiveProbeFailures = probeFailed ? consecutiveProbeFailures + 1 : 0;
+    const delay = consecutiveProbeFailures > 0
+      ? Math.min(AGENT_PROBE_INTERVAL_MS * 2 ** consecutiveProbeFailures, AGENT_PROBE_MAX_BACKOFF_MS)
+      : AGENT_PROBE_INTERVAL_MS;
+    pollTimer = window.setTimeout(() => {
+      pollTimer = undefined;
+      if (isVisible() && isOnline()) void refresh();
+    }, delay);
   };
   const access = (active: boolean, revision: string | null) => {
     const old = privateAccessRef.current;
@@ -98,13 +145,17 @@ export function createAgentAccessController(opts: UseAgentEnablementOptions) {
       : result.status === "stale" ? "delegation_stale" : null });
   };
   const refresh = async () => {
-    if (replacementPending || stopping) return;
+    if (replacementPending || stopping) { scheduleProbe(); return; }
+    if (!isOnline()) { markOffline(); return; }
     const currentOperation = operation;
     const sequence = ++probeSequence;
     const token = opts.sessionStore.getToken();
     const result = token ? await probeAgentSession(opts.backendUrl, token)
-      : { capability: "unavailable" as const, status: null, revision: null };
-    if (!disposed && currentOperation === operation && sequence === probeSequence) apply(result);
+      : { capability: "unavailable" as const, status: null, revision: null, probeFailed: false };
+    if (!disposed && currentOperation === operation && sequence === probeSequence) {
+      apply(result);
+      scheduleProbe(result.probeFailed);
+    }
   };
   const invalidate = () => {
     operation++;
@@ -127,7 +178,7 @@ export function createAgentAccessController(opts: UseAgentEnablementOptions) {
             replacementPending = true;
             probeSequence++;
             access(false, null);
-            update({ capability: "available", status: null, revision: null });
+            update({ capability: "available", status: null, revision: null, probeFailed: false });
             signalChange();
           },
           _mint: opts._mint ?? (() => mintAgentSessionViaFreshSignIn({ appName: opts.appName,
@@ -153,7 +204,7 @@ export function createAgentAccessController(opts: UseAgentEnablementOptions) {
     invalidate(); // Synchronous: neither old browser results nor old ceremonies can win.
     const currentOperation = operation;
     update({ capability: agentEnabledRef.current ? "available" : "unavailable", status: null,
-      revision: null, disconnecting: true, enableError: null, reconnectReason: null });
+      revision: null, probeFailed: false, disconnecting: true, enableError: null, reconnectReason: null });
     signalChange();
     stopping = (async () => {
       try {
@@ -161,11 +212,16 @@ export function createAgentAccessController(opts: UseAgentEnablementOptions) {
         if (!token) throw new Error("Disconnection was not confirmed. Sign in and retry.");
         const body = await disconnectAgentSession(opts.backendUrl, token);
         if (!disposed && operation === currentOperation) {
-          apply({ capability: "available", status: "none", revision: body.revision! });
+          apply({ capability: "available", status: "none", revision: body.revision!, probeFailed: false });
         }
       } catch {
         if (operation === currentOperation) update({ status: null, enableError: "Disconnection was not confirmed. Please retry." });
-      } finally { stopping = null; update({ disconnecting: false }); signalChange(); }
+      } finally {
+        stopping = null;
+        update({ disconnecting: false });
+        signalChange();
+        scheduleProbe();
+      }
     })();
     return stopping;
   };
@@ -180,8 +236,10 @@ export function createAgentAccessController(opts: UseAgentEnablementOptions) {
       capability: "available",
       // A failed check is unknown, not stale: Settings shows "could not be verified".
       status: code === "delegation_expired" ? "expired" : code === "delegation_unverified" ? null : "stale",
+      probeFailed: false,
       reconnectReason: code,
     });
+    scheduleProbe();
   };
   return {
     agentEnabledRef, activeThreadIdRef, privateAccessRef, refresh, onEnable, onDisconnect, onDelegationError,
@@ -191,29 +249,42 @@ export function createAgentAccessController(opts: UseAgentEnablementOptions) {
     listen: () => {
       disposed = false;
       if (typeof window === "undefined") return () => {};
+      listening = true;
       const key = `tinychat-agent-access:${opts.backendUrl.replace(/\/$/, "")}:${opts.tcw.address()?.toLowerCase()}`;
       const channel = typeof BroadcastChannel === "undefined" ? null : new BroadcastChannel(key);
       signalChange = () => {
         channel?.postMessage("changed");
         if (!channel) window.localStorage.setItem(key, `${Date.now()}:${Math.random()}`);
       };
-      const changed = () => { invalidate(); update({ status: null, capability: "available" }); void refresh(); };
+      const changed = () => { invalidate(); update({ status: null, capability: "available", probeFailed: false }); void refresh(); };
       const storage = (event: StorageEvent) => { if (event.key === key) changed(); };
       const focus = () => { void refresh(); };
-      const visible = () => { if (document.visibilityState === "visible") void refresh(); };
+      const online = () => { void refresh(); };
+      const offline = () => { markOffline(); };
+      const visible = () => {
+        if (document.visibilityState === "visible") void refresh();
+        else clearPollTimer();
+      };
       if (channel) channel.onmessage = changed;
       window.addEventListener("storage", storage);
       window.addEventListener("focus", focus);
+      window.addEventListener("online", online);
+      window.addEventListener("offline", offline);
       document.addEventListener("visibilitychange", visible);
+      if (!isOnline()) markOffline();
       return () => {
+        listening = false;
+        clearPollTimer();
         signalChange = () => {};
         channel?.close();
         window.removeEventListener("storage", storage);
         window.removeEventListener("focus", focus);
+        window.removeEventListener("online", online);
+        window.removeEventListener("offline", offline);
         document.removeEventListener("visibilitychange", visible);
       };
     },
-    dispose: () => { invalidate(); disposed = true; agentEnabledRef.current = false; listeners.clear(); },
+    dispose: () => { listening = false; clearPollTimer(); invalidate(); disposed = true; agentEnabledRef.current = false; listeners.clear(); },
   };
 }
 export type AgentAccessController = ReturnType<typeof createAgentAccessController>;

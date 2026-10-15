@@ -165,6 +165,14 @@ export const shellScreens: HarnessScreen[] = [
   },
   {
     ...SHELL,
+    id: "shell-settings-agent-access",
+    path: "/chat/settings#agent-access",
+    platform: "ios",
+    readyWhen: "#agent-access",
+    render: () => <Shell />,
+  },
+  {
+    ...SHELL,
     id: "shell-chat-ribbon",
     path: "/chat",
     platform: "ios",

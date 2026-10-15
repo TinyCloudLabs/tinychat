@@ -576,7 +576,14 @@ export function useLibrary(
 
   const retry = useCallback(() => {
     if (list.status === "failed") refresh();
-    if (item) readNote(item);
+    if (item) {
+      if (reads.current.get(item.id)?.transcript?.transcript.status === "absent") {
+        const fields = staleReads.current.get(item.id) ?? new Set<keyof NoteReads>();
+        fields.add("transcript");
+        staleReads.current.set(item.id, fields);
+      }
+      readNote(item);
+    }
   }, [item, list.status, readNote, refresh]);
 
   return {

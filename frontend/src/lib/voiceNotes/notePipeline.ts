@@ -276,7 +276,6 @@ function spaceStep(input: NotePipelineInput): Result {
   if (upload?.state === "retrying") return withProgress("active", SPACE_COPY.retrying, fraction(upload.bytes, upload.total));
   const ahead = pending?.waitingBehind;
   if (ahead !== undefined && ahead > 0) return { state: "waiting", caption: "Waiting to start" };
-  if (input.space.lane.busy) return { state: "waiting", caption: "Waiting to start" };
   return { state: "waiting", caption: SPACE_COPY.waiting };
 }
 
