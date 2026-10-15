@@ -65,6 +65,17 @@ describe("NoteDetailView", () => {
     expect(html).not.toContain('data-testid="transcribe-button"');
     expect(html).not.toContain("meeting-audio-player");
   });
+  test("completed Local artifact pending publication is not offered Private transcription or called no speech", () => {
+    const html = render({ audio: null, transcript: { status: "absent" }, transcription: transcription(),
+      metadata: { status: "ok", metadata: { transcription_outcome: "pending", transcript_location: "device",
+        device_transcript: { state: "done", rev: 1, transcribed_at: "2026-10-15T00:00:00Z" },
+        capture: { platform: "ios", options: { transcriber: "private-cloud" } },
+        audio: { stored: false, reason: "local_only", device: { platform: "ios" } } } } });
+    expect(html).toContain('data-testid="voice-note-pending-device-sync"');
+    expect(html).not.toContain('data-testid="voice-note-transcribe-on-device"');
+    expect(html).not.toContain('data-testid="voice-note-transcribe"');
+    expect(html).not.toContain("No speech found");
+  });
   test("a note only on this phone opens from its own audio, titled by its time, with nothing to transcribe or explain", () => {
     const onPhone: LibraryItem = { ...VOICE, id: "on-phone:rec-1", title: null, onPhone: true };
     const html = render({ item: onPhone, metadata: { status: "ok", metadata: {} }, transcript: { status: "absent" }, transcription: undefined });

@@ -2343,6 +2343,26 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
           if (held || current?.kind === "active" || current?.kind === "done"
             || current?.kind === "failed" && !isAutomaticRetryableCode(current.code) && !hasRemoteJob
             || hasRemoteJob || choices.has(recording.id) || isHeld(recording.id)) continue;
+          // A capture originally configured for Private may later receive an explicit Local choice.
+          // Do not invent a second Private job while that choice is active or its artifact awaits publication.
+          // Held and submitted Private jobs above still resume; neither their result nor consent is discarded.
+          if (recording.stt?.requested) {
+            if (recording.stt.state !== "done") continue;
+            try {
+              const { transcript } = await withVoiceNoteSaveDeadline(
+                `checking Local transcript before Private recovery ${recording.id}`,
+                () => VoiceNotes.getTranscript({ id: recording.id }));
+              if (!identityCurrent() || !on()) { retry = true; return; }
+              if (transcript?.rev && (transcript.outcome === "transcribed" || transcript.outcome === "no_speech")) continue;
+            } catch (error) {
+              logPipelineError("[VoiceNotes] Could not check Local transcript before Private recovery", error, recording.id);
+              retry = true;
+              continue;
+            }
+            // A completed native receipt without its readable artifact needs the original device's retry,
+            // not an implicit switch back to Private.
+            continue;
+          }
           const stillPending = await stillPendingInSpace(recording.id, true);
           if (stillPending === null) {
             retry = true;

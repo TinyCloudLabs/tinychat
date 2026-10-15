@@ -137,6 +137,23 @@ test('v2 non-private notes need the original phone; v1 null options stay eligibl
   ]);
 });
 
+test('privateOriginExplicitLocalDoneIsNeedsOriginalPhoneNotEligible', () => {
+  const metadata = { capture: { version: 2, options: { transcriber: 'private-cloud' } },
+    transcription_outcome: 'pending', transcript_location: 'device',
+    device_transcript: { state: 'done', rev: 2, transcribed_at: '2026-10-15T00:00:00Z', engine: 'apple-speech' } };
+  const results = plan([
+    row('local-after-private', { metadata }),
+    row('queued-only', { metadata: { ...metadata, transcript_location: undefined,
+      device_transcript: { state: 'queued' } } }),
+    row('commit-first', { metadata, hasTranscriptCommit: true }),
+    row('legacy-first', { metadata, legacyWinner: { transcription_outcome: 'no_speech' } }),
+  ], audioFor(['local-after-private', 'queued-only', 'commit-first', 'legacy-first'].map(source_id => ({ source_id }))));
+  assert.deepEqual(results.map(({ classification }) => classification), [
+    'needs-original-phone', 'eligible', 'has-commit', 'skip-terminal',
+  ]);
+  assert.match(results[0].reason, /device sync/i);
+});
+
 test('capture duration fallback is inclusive at the cap', () => {
   const rows = [
     row('fallback-below', { duration_secs: null, metadata: { capture: { duration_ms: 7_199_000 } } }),

@@ -351,8 +351,13 @@ async function recordRowId(
       });
       checkActive();
       pendingStore.recordRowCreated();
-      if (recording.stt?.state === "done" || recording.stt?.state === "failed")
-        void syncOnDeviceTranscript(tcw, { ...fresh, ledger: { ...fresh.ledger, audio: { ...patch.audio } } }, ctx);
+      const updated = (await withVoiceNoteSaveDeadline(`native listPending after row id=${recording.id}`, () => {
+        checkActive();
+        return VoiceNotes.listPending();
+      })).recordings.find((note) => note.id === recording.id);
+      checkActive();
+      if (updated?.owner === ctx.did && (updated.stt?.state === "done" || updated.stt?.state === "failed"))
+        void syncOnDeviceTranscript(tcw, updated, ctx);
       return;
     } catch (caught) {
       if (errorCode(caught) !== "rev_conflict") throw caught;

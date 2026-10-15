@@ -4,8 +4,9 @@ import { deviceName } from "@/lib/platform";
 import type { FirefliesSentence } from "../connectors/firefliesClient";
 import { CONNECTORS_KV_PREFIX, CONNECTORS_SQL_DB_NAME, ensureSchema, transcriptKvKey } from "../connectors/connectorStore";
 import { runOnSpaceLane, SpaceLaneQueueWaitTimeout, spaceLaneSnapshot, subscribeSpaceLane } from "../spaceWriteLane";
-import type { VoiceNoteRecording } from "./nativeVoiceNotes";
+import type { LocalTranscript, VoiceNoteRecording } from "./nativeVoiceNotes";
 import { hasTranscriptCommitTable, LEGACY_TRANSCRIPT_KEYS, legacyTranscriptWinner, readTranscriptCommit, SQL_CHUNK, type LegacyTranscriptRow, type TranscriptCommit } from "./voiceNoteCommits";
+import { resolveBuildInfoFields } from "../buildInfo";
 
 export { SpaceLaneQueueWaitTimeout, spaceLaneSnapshot, subscribeSpaceLane };
 
@@ -248,13 +249,17 @@ export async function createVoiceNoteRow(tcw: TinyCloudWeb, recording: VoiceNote
   if (identity.status !== "established") throw Object.assign(new Error(identity.reason ?? identity.status), { code: identity.status, cause: identity.cause });
   const now = new Date().toISOString();
   const outcome = recording.options?.transcriber === "off" ? "skipped" : "pending";
+  const deviceState = (recording.options?.transcriber === "on-device" || recording.stt?.requested)
+    && ["queued", "waiting_for_model", "running"].includes(recording.stt?.state ?? "")
+    ? { state: recording.stt!.state } : null;
   const changes = await execute(tcw, `INSERT INTO connector_meeting
     (id, source, source_id, title, started_at, duration_secs, organizer_email, participants, summary_overview,
      summary_action_items, keywords, meeting_type, metadata, created_at, updated_at)
     VALUES (?, 'exo-voice-note', ?, ?, ?, ?, NULL, '[]', NULL, NULL, NULL, NULL, ?, ?, ?)
     ON CONFLICT DO NOTHING`, [`vn-${recording.id}`, recording.id, title, new Date(recording.startedAt).toISOString(),
     recording.durationMs / 1000, JSON.stringify({ transcription_outcome: outcome,
-      capture: captureMetadata(recording, platform) }), now, now], checkpoint);
+      ...(deviceState ? { device_transcript: deviceState } : {}),
+      capture: await captureMetadata(recording, platform) }), now, now], checkpoint);
   const row = await resolveVoiceNoteRow(tcw, recording.id, checkpoint);
   if (!row) throw new Error("The voice-note identity index was established but its row is missing");
   if (changes === 0) {
@@ -264,6 +269,15 @@ export async function createVoiceNoteRow(tcw: TinyCloudWeb, recording: VoiceNote
         AND NOT (typeof(json_extract(metadata, '$.transcript_text')) = 'text'
           AND length(trim(json_extract(metadata, '$.transcript_text'))) > 0)`,
     [outcome, now, row.id], checkpoint);
+    if (deviceState) await execute(tcw, `UPDATE connector_meeting
+      SET metadata = json_set(COALESCE(metadata,'{}'), '$.device_transcript', json(?)), updated_at = ?
+      WHERE id = ? AND source = 'exo-voice-note'
+        AND COALESCE(json_extract(metadata, '$.transcription_outcome'), 'pending') NOT IN ('transcribed','no_speech')
+        AND json_extract(metadata, '$.device_transcript.state') IS NOT 'done'
+        AND NOT (typeof(json_extract(metadata, '$.transcript_text')) = 'text'
+          AND length(trim(json_extract(metadata, '$.transcript_text'))) > 0)
+        AND NOT EXISTS (SELECT 1 FROM voice_note_transcript t WHERE t.source_id = ?)`,
+    [JSON.stringify(deviceState), now, row.id, recording.id], checkpoint);
     const initialized = await resolveVoiceNoteRow(tcw, recording.id, checkpoint);
     if (!initialized) throw new Error("The voice-note identity index was established but its row is missing");
     return { ...initialized, inserted: false };
@@ -308,6 +322,60 @@ export async function patchVoiceNoteTranscriptionFailure(tcw: TinyCloudWeb, sour
   [JSON.stringify({ ...statsMetadata, transcription_outcome: "failed", transcription_error_code: errorCode }),
     new Date().toISOString(), row.id, sourceId], checkpoint);
 }
+export async function publishDeviceTranscriptProgress(tcw: TinyCloudWeb, sourceId: string,
+  state: "queued" | "waiting_for_model" | "running", checkpoint: () => void = () => undefined): Promise<void> {
+  checkpoint();
+  const row = await resolveVoiceNoteRow(tcw, sourceId, checkpoint);
+  if (!row) return;
+  const rank = state === "running" ? 3 : state === "queued" ? 2 : 1;
+  await execute(tcw, `UPDATE connector_meeting SET metadata = json_patch(COALESCE(metadata,'{}'), ?), updated_at = ?
+    WHERE id = ? AND source = 'exo-voice-note'
+      AND COALESCE(json_extract(metadata, '$.transcription_outcome'), 'pending') NOT IN ('transcribed','no_speech')
+      AND NOT (typeof(json_extract(metadata, '$.transcript_text')) = 'text'
+        AND length(trim(json_extract(metadata, '$.transcript_text'))) > 0)
+      AND json_extract(metadata, '$.device_transcript.state') IS NOT 'done'
+      AND CASE json_extract(metadata, '$.device_transcript.state')
+        WHEN 'running' THEN 3 WHEN 'queued' THEN 2 WHEN 'waiting_for_model' THEN 1 ELSE 0 END <= ?
+      AND json_extract(metadata, '$.device_transcript.state') IS NOT ?
+      AND NOT EXISTS (SELECT 1 FROM voice_note_transcript t WHERE t.source_id = ?)`,
+  [JSON.stringify({ transcription_outcome: "pending", transcription_error_code: null,
+    device_transcript: { state } }), new Date().toISOString(), row.id, rank, state, sourceId], checkpoint);
+}
+
+/** A readable local artifact is evidence of pending publication, not a failed transcription. */
+export async function publishDeviceTranscriptArtifact(tcw: TinyCloudWeb, sourceId: string,
+  transcript: LocalTranscript, checkpoint: () => void = () => undefined): Promise<void> {
+  checkpoint();
+  const row = await resolveVoiceNoteRow(tcw, sourceId, checkpoint);
+  if (!row) return;
+  const marker = { state: "done", rev: transcript.rev, transcribed_at: transcript.createdAt, engine: transcript.engine };
+  await execute(tcw, `UPDATE connector_meeting SET metadata = json_patch(COALESCE(metadata,'{}'), ?), updated_at = ?
+    WHERE id = ? AND source = 'exo-voice-note'
+      AND COALESCE(json_extract(metadata, '$.transcription_outcome'), 'pending') NOT IN ('transcribed','no_speech')
+      AND NOT (typeof(json_extract(metadata, '$.transcript_text')) = 'text'
+        AND length(trim(json_extract(metadata, '$.transcript_text'))) > 0)
+      AND COALESCE(json_extract(metadata, '$.device_transcript.rev'), 0) <= ?
+      AND NOT EXISTS (SELECT 1 FROM voice_note_transcript t WHERE t.source_id = ?)`,
+  [JSON.stringify({ transcription_outcome: "pending", transcription_error_code: null,
+    transcript_location: "device", device_transcript: marker, device_sync_error: null }),
+  new Date().toISOString(), row.id, transcript.rev, sourceId], checkpoint);
+}
+
+export async function patchDeviceTranscriptSyncError(tcw: TinyCloudWeb, sourceId: string,
+  rev: number, errorCode: string, checkpoint: () => void = () => undefined): Promise<void> {
+  checkpoint();
+  const row = await resolveVoiceNoteRow(tcw, sourceId, checkpoint);
+  if (!row) return;
+  await execute(tcw, `UPDATE connector_meeting SET metadata = json_set(COALESCE(metadata,'{}'),
+      '$.device_sync_error', ?), updated_at = ?
+    WHERE id = ? AND source = 'exo-voice-note'
+      AND json_extract(metadata, '$.device_transcript.state') = 'done'
+      AND json_extract(metadata, '$.device_transcript.rev') = ?
+      AND COALESCE(json_extract(metadata, '$.transcription_outcome'), 'pending') = 'pending'
+      AND NOT EXISTS (SELECT 1 FROM voice_note_transcript t WHERE t.source_id = ?)`,
+  [errorCode, new Date().toISOString(), row.id, rev, sourceId], checkpoint);
+}
+
 export async function patchVoiceNoteAudio(tcw: TinyCloudWeb, recording: VoiceNoteRecording, platform: string,
   audio: { base: string; mimeType: string; size: number; parts: number }, checkpoint: () => void = () => undefined,
   knownRow?: VoiceNoteRow): Promise<VoiceNoteRow> {
@@ -318,7 +386,7 @@ export async function patchVoiceNoteAudio(tcw: TinyCloudWeb, recording: VoiceNot
     WHERE id = ? AND source = 'exo-voice-note'`, [JSON.stringify({ audio_kv_key: audio.base, audio_format: "parts-v1",
     audio_mime_type: audio.mimeType, audio_bytes: audio.size, audio_parts: audio.parts,
     audio: { stored: true, base: audio.base, reason: null, device: null },
-    capture: captureMetadata(recording, platform),
+    capture: await captureMetadata(recording, platform),
   }), new Date().toISOString(), row.id], checkpoint);
   return row;
 }
@@ -332,14 +400,20 @@ export async function patchVoiceNoteLocalOnly(tcw: TinyCloudWeb, recording: Voic
   await execute(tcw, `UPDATE connector_meeting SET metadata = json_patch(COALESCE(metadata,'{}'), ?), updated_at = ?
     WHERE id = ? AND source = 'exo-voice-note'`, [JSON.stringify({
     audio: { stored: false, reason: "local_only", device: { platform } },
-    capture: captureMetadata(recording, platform),
+    capture: await captureMetadata(recording, platform),
   }), new Date().toISOString(), row.id], checkpoint);
   return row;
 }
 
-function captureMetadata(recording: VoiceNoteRecording, platform: string) {
+async function captureMetadata(recording: VoiceNoteRecording, platform: string) {
+  const writer = await resolveBuildInfoFields(platform === "ios" || platform === "android" || platform === "tauri"
+    ? platform : "web");
   return { platform, duration_ms: recording.durationMs, channels: recording.channels ?? 1, silenced_ms: recording.silencedMs,
     silenced_events: recording.silencedEvents, no_signal_ms: recording.noSignalMs,
+    ...(writer.version ? { app_version: writer.version } : {}),
+    ...(writer.build ? { app_build: writer.build } : {}),
+    ...(recording.recorded_app_version ? { recorded_app_version: recording.recorded_app_version } : {}),
+    ...(recording.recorded_app_build ? { recorded_app_build: recording.recorded_app_build } : {}),
     ...(recording.version === 2 ? { version: 2, wall_ms: recording.wallMs, paused_ms: recording.pausedMs,
       spans: recording.spans ?? [], source: recording.source, options: recording.options, input: recording.input } : {}) };
 }
@@ -455,13 +529,24 @@ export async function commitVoiceNoteTranscript(
   if (committed.rev === input.rev && committed.hash === hash) {
     checkpoint();
     const live = await resolveVoiceNoteRow(tcw, sourceId, checkpoint);
-    if (live) await execute(tcw, "UPDATE connector_meeting SET metadata = json_patch(COALESCE(metadata,'{}'), ?), participants = ?, updated_at = ? WHERE id = ? AND source = 'exo-voice-note'",
-      [JSON.stringify(mirror), JSON.stringify((input.participants ?? []).map((name) => ({ name, email: null }))),
-        new Date().toISOString(), live.id], checkpoint);
+    if (live) await execute(tcw, `UPDATE connector_meeting SET metadata = json_patch(COALESCE(metadata,'{}'), ?),
+      participants = ?, updated_at = ? WHERE id = ? AND source = 'exo-voice-note'
+      AND EXISTS (SELECT 1 FROM voice_note_transcript t WHERE t.source_id = ? AND t.rev = ? AND t.hash = ? AND t.outcome = ?)`,
+    [JSON.stringify(mirror), JSON.stringify((input.participants ?? []).map((name) => ({ name, email: null }))),
+      new Date().toISOString(), live.id, sourceId, input.rev, hash, input.outcome], checkpoint);
     const key = transcriptKvKey("exo-voice-note", sourceId);
     const fixed = await runOnSpaceLane((signal) => { checkpoint(); return tcw.kv.put(key, body,
       { contentType: "application/json", signal }); }, { operation: `KV put ${key}`, payloadBytes: new TextEncoder().encode(body).byteLength });
     if (!fixed.ok) throw errorOf(fixed);
+    const winner = await verifyVoiceNoteTranscript(tcw, sourceId, input.rev, checkpoint);
+    if (winner.rev === input.rev && winner.hash === hash && winner.outcome === input.outcome && live) {
+      await execute(tcw, `UPDATE connector_meeting SET
+        metadata = json_remove(COALESCE(metadata,'{}'), '$.transcript_location', '$.device_transcript', '$.device_sync_error'),
+        updated_at = ? WHERE id = ? AND source = 'exo-voice-note'
+        AND COALESCE(json_extract(metadata, '$.device_transcript.rev'), 0) <= ?
+        AND EXISTS (SELECT 1 FROM voice_note_transcript t WHERE t.source_id = ? AND t.rev = ? AND t.hash = ? AND t.outcome = ?)`,
+      [new Date().toISOString(), live.id, input.rev, sourceId, input.rev, hash, input.outcome], checkpoint);
+    }
   }
   return committed;
 }

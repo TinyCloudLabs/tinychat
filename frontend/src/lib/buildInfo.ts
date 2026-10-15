@@ -87,21 +87,21 @@ export function __setBuildInfoForTests(info: Pick<AppInfo, "version" | "build" |
  * number, plus fallback values when the baseline is absent (a browser capture
  * running as "ios").
  */
-export async function resolveBuildInfo(platform: AppPlatform): Promise<string> {
+export async function resolveBuildInfoFields(platform: AppPlatform): Promise<BuildInfoInput> {
   const base = INJECTED;
   const target = targetLabel(platform);
 
   if (platform === "ios" || platform === "android") {
     const info = appInfoForTests ?? (Capacitor.isNativePlatform() ? await CapacitorApp.getInfo().catch(() => null) : null);
     if (info) {
-      return formatBuildInfo({
+      return {
         version: base.version || info.version,
         build: info.build,
         target,
         appId: info.id,
         commit: base.commit,
         channel: base.channel,
-      });
+      };
     }
   }
 
@@ -110,18 +110,22 @@ export async function resolveBuildInfo(platform: AppPlatform): Promise<string> {
       // Lazy: @tauri-apps/api must never enter the web bundle's main chunk.
       const { getVersion, getIdentifier } = await import("@tauri-apps/api/app");
       const [version, appId] = await Promise.all([getVersion(), getIdentifier()]);
-      return formatBuildInfo({
+      return {
         version: base.version || version,
         build: base.build,
         target,
         appId,
         commit: base.commit,
         channel: base.channel,
-      });
+      };
     } catch {
       // Fall through to the injected baseline.
     }
   }
 
-  return formatBuildInfo({ version: base.version, build: base.build, target, commit: base.commit, channel: base.channel });
+  return { version: base.version, build: base.build, target, commit: base.commit, channel: base.channel };
+}
+
+export async function resolveBuildInfo(platform: AppPlatform): Promise<string> {
+  return formatBuildInfo(await resolveBuildInfoFields(platform));
 }

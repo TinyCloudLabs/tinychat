@@ -346,7 +346,7 @@ export interface VoiceNoteAudio {
 
 /** Where a note's transcription stands, from its row's metadata. */
 export interface VoiceNoteTranscriptState {
-  status: "none" | "pending" | "failed" | "skipped" | "transcribed" | "no_speech";
+  status: "none" | "pending" | "pending_device_sync" | "failed" | "skipped" | "transcribed" | "no_speech";
   /** The start of the transcript text, for the card; the full text is in Library. */
   preview: string | null;
 }
@@ -382,7 +382,6 @@ export function voiceNoteTranscriptState(metadata: unknown, commit?: TranscriptC
       ? text.length > TRANSCRIPT_PREVIEW_CHARS ? `${text.slice(0, TRANSCRIPT_PREVIEW_CHARS).trimEnd()}…` : text
       : null };
   }
-  if (m.transcription_outcome === "failed") return { status: "failed", preview: null };
   if (typeof m.transcript_text === "string" && m.transcript_text.trim().length > 0) {
     const text = m.transcript_text.trim();
     return {
@@ -390,6 +389,14 @@ export function voiceNoteTranscriptState(metadata: unknown, commit?: TranscriptC
       preview: text.length > TRANSCRIPT_PREVIEW_CHARS ? `${text.slice(0, TRANSCRIPT_PREVIEW_CHARS).trimEnd()}…` : text,
     };
   }
+  if (m.transcription_outcome === "failed") return { status: "failed", preview: null };
+  const device = m.device_transcript;
+  if (m.transcript_location === "device" && device && typeof device === "object" && !Array.isArray(device)
+    && (device as Record<string, unknown>).state === "done"
+    && Number.isSafeInteger((device as Record<string, unknown>).rev)
+    && Number((device as Record<string, unknown>).rev) > 0
+    && typeof (device as Record<string, unknown>).transcribed_at === "string")
+    return { status: "pending_device_sync", preview: null };
   if (m.transcription_outcome === "skipped") return { status: "skipped", preview: null };
   return { status: "pending", preview: null };
 }

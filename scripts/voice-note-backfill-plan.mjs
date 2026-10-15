@@ -49,6 +49,11 @@ export function planVoiceNoteBackfill(rows, audioIndex, { maxSeconds = 7200, max
     } else if (TERMINAL_OUTCOMES.has(outcome)) {
       classification = 'skip-terminal';
       reason = `terminal outcome: ${outcome}`;
+    } else if (metadata.transcript_location === 'device' && objectValue(metadata.device_transcript).state === 'done'
+      && Number.isSafeInteger(objectValue(metadata.device_transcript).rev) && objectValue(metadata.device_transcript).rev > 0
+      && typeof objectValue(metadata.device_transcript).transcribed_at === 'string') {
+      classification = 'needs-original-phone';
+      reason = 'completed local artifact pending device sync; original phone must finish the commit';
     } else if (transcriberOption === 'off') {
       classification = 'skip-opted-out';
       reason = 'capture transcriber was explicitly off';

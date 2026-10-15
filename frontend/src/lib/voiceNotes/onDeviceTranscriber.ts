@@ -15,21 +15,29 @@ import { withVoiceNoteSaveDeadline } from "./saveDeadline";
 import { LOCAL_COPY } from "./notePipelineCopy";
 import { assertAccountContext, captureAccountContext, isAccountContextCurrent, isAccountWorkAllowed, StaleAccountContext, type AccountContext } from "./accountContext";
 import { preserveVoiceNoteTranscriptHistory } from "./voiceNoteTranscriptHistory";
-import { transcriptHash } from "./voiceNoteRows";
+import { patchDeviceTranscriptSyncError, publishDeviceTranscriptArtifact, resolveVoiceNoteRow, transcriptHash } from "./voiceNoteRows";
+import { runOnSpaceLane } from "../spaceWriteLane";
+import { transcriptKvKey } from "../connectors/connectorStore";
 
-/** One note's local transcript -> space write: running, written, or why it did not land (the local transcript stays valid). */
+/** One note's local transcript -> space write, including retry classification for foreground recovery. */
 export type OnDeviceTranscriptSyncState =
-  | { state: "syncing" }
-  | { state: "synced" }
-  | { state: "failed"; message: string }
-  /** The transcript is in the space, but this phone's ledger could not be told (`message` is the cause). */
-  | { state: "unrecorded"; message: string };
+  | { state: "syncing"; rev?: number }
+  | { state: "synced"; rev?: number }
+  | { state: "failed"; message: string; rev?: number; retryable?: boolean }
+  /** The transcript is committed, but the native receipt still needs repair. */
+  | { state: "unrecorded"; message: string; rev?: number; retryable?: boolean };
 
+export type TranscriptSyncOutcome = { state: "committed" | "receipt-pending" | "retryable" | "deferred" | "terminal" | "abandoned"; rev?: number };
 const syncStates = new Map<string, OnDeviceTranscriptSyncState>();
-/** The tail of each note's sync chain: attempts for one note run one after another. */
+/** One active write per account/note; later triggers re-read the native revision in order. */
 const chains = new Map<string, Promise<void>>();
-/** Successful remote publications whose native acknowledgement may still need retry. */
-const published = new Set<string>();
+const syncRevisions = new Map<string, number>();
+function transientSyncError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const code = "code" in error && typeof error.code === "string" ? error.code : "";
+  const message = "message" in error && typeof error.message === "string" ? error.message : "";
+  return /network|offline|timeout|timed.out|lane|429|503|unavailable|temporar/i.test(`${code} ${message}`);
+}
 const syncListeners = new Set<() => void>();
 const syncKey = (tcw: TinyCloudWeb, id: string) => JSON.stringify([tcw.spaceId, tcw.did, id]);
 const isCurrent = (tcw: TinyCloudWeb, ctx: AccountContext) => isAccountContextCurrent(ctx, tcw) && isAccountWorkAllowed(tcw);
@@ -85,9 +93,23 @@ export function syncOnDeviceTranscript(
   });
 }
 
-function enqueue<T>(key: string, attempt: () => Promise<T>): Promise<T> {
+export async function syncOnDeviceTranscriptAttempt(tcw: TinyCloudWeb,
+  recording: Parameters<typeof syncOnDeviceTranscript>[1],
+  requestedAccount: AccountContext = captureAccountContext(tcw)): Promise<TranscriptSyncOutcome> {
+  if (recording.ledger?.audio.state !== "saved" && !recording.ledger?.audio.rowId) return { state: "deferred" };
+  const abandoned = await syncOnDeviceTranscript(tcw, recording, requestedAccount);
+  if (abandoned) return { state: "abandoned" };
+  const result = onDeviceTranscriptSyncState(tcw, recording.id);
+  const rev = syncRevisions.get(syncKey(tcw, recording.id));
+  const revision = rev === undefined ? {} : { rev };
+  if (result?.state === "synced") return { state: "committed", ...revision };
+  if (result?.state === "unrecorded" && result.retryable) return { state: "receipt-pending", ...revision };
+  if (result?.state === "failed" && result.retryable) return { state: "retryable", ...revision };
+  return { state: result?.state === "failed" || result?.state === "unrecorded" ? "terminal" : "deferred", ...revision };
+}
+
+function enqueue(key: string, attempt: () => Promise<boolean>): Promise<boolean> {
   const run = (chains.get(key) ?? Promise.resolve()).then(attempt);
-  // The chain goes on whatever this attempt does; the caller still sees this attempt's own outcome.
   const tail = run.then(() => undefined, () => undefined).then(() => {
     if (chains.get(key) === tail) chains.delete(key);
   });
@@ -95,10 +117,48 @@ function enqueue<T>(key: string, attempt: () => Promise<T>): Promise<T> {
   return run;
 }
 
-/**
- * The space already has this note's transcript, but the phone's ledger was never told (`transcriptSync` is not "saved"): tell it,
- * without writing the space again (what is there may be newer than the local copy). Publishes `synced`, or `unrecorded` with the cause.
- */
+/** Check both the authoritative winner and its readable revision/fixed bodies before a receipt-only acknowledgement. */
+async function verifiedLocalCommit(tcw: TinyCloudWeb, id: string, transcript: LocalTranscript,
+  ctx: AccountContext): Promise<"matching" | "missing" | "conflict"> {
+  const check = checkpoint(tcw, ctx);
+  check();
+  const commit = await readTranscriptCommit(tcw, id, check);
+  check();
+  if (!commit) return "missing";
+  const expectedHash = await transcriptHash(localTranscriptToSave(transcript).sentences);
+  check();
+  if (commit.rev > transcript.rev || (commit.rev === transcript.rev
+    && (commit.outcome !== transcript.outcome || commit.hash !== expectedHash))) return "conflict";
+  if (commit.rev < transcript.rev) return "missing";
+  const body = await runOnSpaceLane((signal) => { check(); return tcw.kv.get(commit.bodyKey, { signal }); },
+    { operation: "KV verify voice note transcript" });
+  check();
+  if (!body.ok) return body.error.code === "KV_NOT_FOUND" ? "missing" : Promise.reject(body.error);
+  let sentences: unknown;
+  try { sentences = typeof body.data.data === "string" ? JSON.parse(body.data.data) : body.data.data; }
+  catch { return "missing"; }
+  if (!Array.isArray(sentences) || await transcriptHash(sentences) !== expectedHash) return "missing";
+  check();
+  const fixed = await runOnSpaceLane((signal) => { check(); return tcw.kv.get(transcriptKvKey("exo-voice-note", id), { signal }); },
+    { operation: "KV verify fixed voice note transcript" });
+  check();
+  if (!fixed.ok) return fixed.error.code === "KV_NOT_FOUND" ? "missing" : Promise.reject(fixed.error);
+  let fixedSentences: unknown;
+  try { fixedSentences = typeof fixed.data.data === "string" ? JSON.parse(fixed.data.data) : fixed.data.data; }
+  catch { return "missing"; }
+  if (!Array.isArray(fixedSentences) || await transcriptHash(fixedSentences) !== expectedHash) return "missing";
+  check();
+  const row = await resolveVoiceNoteRow(tcw, id, check);
+  check();
+  const text = localTranscriptToSave(transcript).metadata.transcript_text;
+  if (!row || row.metadata.transcription_outcome !== transcript.outcome
+    || (row.metadata.transcript_text ?? null) !== text) return "missing";
+  const winner = await readTranscriptCommit(tcw, id, check);
+  check();
+  return winner?.rev === transcript.rev && winner.hash === expectedHash && winner.outcome === transcript.outcome
+    ? "matching" : "conflict";
+}
+
 export function recordOnDeviceTranscript(
   tcw: TinyCloudWeb,
   id: string,
@@ -106,6 +166,7 @@ export function recordOnDeviceTranscript(
 ): Promise<boolean> {
   const key = syncKey(tcw, id);
   return enqueue(key, async () => {
+    syncRevisions.delete(key);
     if (!isCurrent(tcw, requestedAccount)) { abandonSync(key, id, tcw); return true; }
     if (!await ownsNativeNote(tcw, key, id, requestedAccount, "unrecorded")) {
       if (!isCurrent(tcw, requestedAccount)) { abandonSync(key, id, tcw); return true; }
@@ -122,16 +183,30 @@ export function recordOnDeviceTranscript(
     } catch (err) {
       if (!isCurrent(tcw, requestedAccount)) { abandonSync(key, id, tcw); return true; }
       console.warn("[OnDeviceStt] Could not read the local transcript", err);
-      publish(key, { state: "unrecorded", message: LOCAL_COPY.transcriptReadFailed });
+      publish(key, { state: "unrecorded", message: LOCAL_COPY.transcriptReadFailed, retryable: transientSyncError(err) });
       return false;
     }
     if (!transcript) {
       publish(key, { state: "unrecorded", message: LOCAL_COPY.missingTranscript });
       return false;
     }
-    const abandoned = await recordAndPublish(tcw, key, id, transcript, requestedAccount);
-    if (abandoned) abandonSync(key, id, tcw);
-    return abandoned;
+    syncRevisions.set(key, transcript.rev);
+    try {
+      const evidence = await verifiedLocalCommit(tcw, id, transcript, requestedAccount);
+      if (evidence === "conflict") {
+        publish(key, { state: "failed", message: "A different transcript revision is already in this space." });
+        return false;
+      }
+      const abandoned = evidence === "matching"
+        ? await recordAndPublish(tcw, key, id, transcript, requestedAccount)
+        : await syncOnce(tcw, key, id, true, false, requestedAccount);
+      if (abandoned) abandonSync(key, id, tcw);
+      return abandoned;
+    } catch (err) {
+      if (!isCurrent(tcw, requestedAccount)) { abandonSync(key, id, tcw); return true; }
+      publish(key, { state: "unrecorded", message: LOCAL_COPY.transcriptCheckFailed, retryable: transientSyncError(err) });
+      return false;
+    }
   });
 }
 
@@ -153,7 +228,7 @@ async function ownsNativeNote(tcw: TinyCloudWeb, key: string, id: string, ctx: A
   } catch (err) {
     if (!isCurrent(tcw, ctx)) return null;
     console.warn("[OnDeviceStt] Could not verify local note ownership", err);
-    publish(key, { state: failureState, message: LOCAL_COPY.transcriptCheckFailed });
+    publish(key, { state: failureState, message: LOCAL_COPY.transcriptCheckFailed, retryable: transientSyncError(err) });
     return null;
   }
   const note = recordings.find((recording) => recording.id === id);
@@ -179,7 +254,8 @@ async function recordAndPublish(tcw: TinyCloudWeb, key: string, id: string, tran
   } catch (err) {
     if (!isCurrent(tcw, ctx)) return true;
     console.warn("[OnDeviceStt] The transcript is in the space but this phone's ledger was not updated", err);
-    publish(key, { state: "unrecorded", message: LOCAL_COPY.transcriptSyncFailed });
+    publish(key, { state: "unrecorded", message: LOCAL_COPY.transcriptSyncFailed,
+      retryable: !/newer transcript receipt|belongs to another account/i.test(String(err)) });
     return false;
   }
 }
@@ -188,6 +264,7 @@ async function syncOnce(tcw: TinyCloudWeb, key: string, id: string, expected: bo
   if (!isCurrent(tcw, ctx)) return true;
   const current = await ownsNativeNote(tcw, key, id, ctx, "failed", expected || failed);
   if (!current) return !isCurrent(tcw, ctx);
+  syncRevisions.delete(key);
   let transcript: LocalTranscript | null;
   try {
     checkpoint(tcw, ctx)();
@@ -199,8 +276,9 @@ async function syncOnce(tcw: TinyCloudWeb, key: string, id: string, expected: bo
   } catch (err) {
     if (!isCurrent(tcw, ctx)) return true;
     console.warn("[OnDeviceStt] Could not read the local transcript", err);
-    publish(key, { state: "failed", message: LOCAL_COPY.transcriptReadFailed });
-    if (expected || failed) await persistOnDeviceFailure(tcw, id, "transcript_read_failed", ctx);
+    const transient = transientSyncError(err);
+    publish(key, { state: "failed", message: LOCAL_COPY.transcriptReadFailed, retryable: transient });
+    if ((expected || failed) && !transient) await persistOnDeviceFailure(tcw, id, "transcript_read_failed", ctx);
     return false;
   }
   if (!transcript) {
@@ -211,30 +289,36 @@ async function syncOnce(tcw: TinyCloudWeb, key: string, id: string, expected: bo
     return false;
   }
   if (!isCurrent(tcw, ctx)) return true;
-  const resultKey = JSON.stringify([ctx.spaceId, ctx.did, id, transcript.rev]);
-  // The row-created callback, native STT event and post-upload reconcile can
-  // all request this same result. The first listPending already supplied the
-  // durable ledger. Verify its space commit so a missing copy can be repaired.
+  syncRevisions.set(key, transcript.rev);
   try {
-    checkpoint(tcw, ctx)();
-    if (current.ledger?.transcriptSync?.state === "saved"
-      && current.ledger.transcriptSync.rev >= transcript.rev
-      && current.ledger.transcript.outcome === transcript.outcome) {
-      const commit = await withVoiceNoteSaveDeadline(`space transcript commit id=${id}`,
-        () => readTranscriptCommit(tcw, id, checkpoint(tcw, ctx)));
-      checkpoint(tcw, ctx)();
-      if (commit && commit.rev >= transcript.rev && commit.outcome === transcript.outcome) {
+    await publishDeviceTranscriptArtifact(tcw, id, transcript, checkpoint(tcw, ctx));
+  } catch (err) {
+    if (!isCurrent(tcw, ctx)) return true;
+    publish(key, { state: "failed", message: LOCAL_COPY.transcriptSyncFailed, retryable: transientSyncError(err) });
+    return false;
+  }
+  // Native callbacks, row receipts and sweeps all verify the same durable winner.
+  // A local saved receipt alone is not evidence that either KV body was published.
+  try {
+    const evidence = await verifiedLocalCommit(tcw, id, transcript, ctx);
+    if (evidence === "conflict") {
+      publish(key, { state: "failed", message: "A different transcript revision is already in this space." });
+      return false;
+    }
+    if (evidence === "matching") {
+      if (current.ledger?.transcriptSync?.state === "saved"
+        && current.ledger.transcriptSync.rev === transcript.rev
+        && current.ledger.transcript?.outcome === transcript.outcome) {
         publish(key, { state: "synced" });
         return false;
       }
-      published.delete(resultKey);
+      return recordAndPublish(tcw, key, id, transcript, ctx);
     }
-  } catch {
+  } catch (err) {
     if (!isCurrent(tcw, ctx)) return true;
-    publish(key, { state: "failed", message: LOCAL_COPY.transcriptCheckFailed });
+    publish(key, { state: "failed", message: LOCAL_COPY.transcriptCheckFailed, retryable: transientSyncError(err) });
     return false;
   }
-  if (published.has(resultKey)) return recordAndPublish(tcw, key, id, transcript, ctx);
   publish(key, { state: "syncing" });
   try {
     const prepared = localTranscriptToSave(transcript);
@@ -243,9 +327,6 @@ async function syncOnce(tcw: TinyCloudWeb, key: string, id: string, expected: bo
       check();
       const current = await readTranscriptCommit(tcw, id, check);
       check();
-      const expectedHash = await transcriptHash(prepared.sentences);
-      if (current?.rev === transcript.rev && current.hash === expectedHash)
-        return await recordAndPublish(tcw, key, id, transcript, ctx);
       if (!current || current.rev !== transcript.rerunBase.rev || current.hash !== transcript.rerunBase.hash)
         throw new Error("The committed transcript changed before this rerun could sync. Try again.");
       await preserveVoiceNoteTranscriptHistory(tcw, current, checkpoint(tcw, ctx));
@@ -254,31 +335,33 @@ async function syncOnce(tcw: TinyCloudWeb, key: string, id: string, expected: bo
       { generation: ctx.generation, did: ctx.did }, checkpoint(tcw, ctx));
     if (!isCurrent(tcw, ctx)) return true;
     if (result.ok) {
-      if (transcript.rerunBase) {
-        const current = await readTranscriptCommit(tcw, id);
-        if (current?.rev !== transcript.rev || current.hash !== await transcriptHash(prepared.sentences))
-          throw new Error("A different transcript revision won this rerun. Try again.");
+      const evidence = await verifiedLocalCommit(tcw, id, transcript, ctx);
+      if (evidence !== "matching") {
+        publish(key, { state: "failed", message: LOCAL_COPY.transcriptSyncFailed, retryable: true });
+        await persistOnDeviceFailure(tcw, id, "transcript_save_failed", ctx, transcript);
+        return false;
       }
-      published.add(resultKey);
       return await recordAndPublish(tcw, key, id, transcript, ctx);
     }
     console.warn("[OnDeviceStt] Could not save the on-device transcript to the space", result.error);
-    publish(key, { state: "failed", message: LOCAL_COPY.transcriptSyncFailed });
-    await persistOnDeviceFailure(tcw, id, "transcript_save_failed", ctx);
+    publish(key, { state: "failed", message: LOCAL_COPY.transcriptSyncFailed, retryable: transientSyncError(result.error) });
+    await persistOnDeviceFailure(tcw, id, "transcript_save_failed", ctx, transcript);
     return false;
   } catch (err) {
     if (!isCurrent(tcw, ctx) || err instanceof StaleAccountContext) return true;
     console.warn("[OnDeviceStt] Could not save the on-device transcript to the space", err);
-    publish(key, { state: "failed", message: LOCAL_COPY.transcriptSyncFailed });
-    await persistOnDeviceFailure(tcw, id, "transcript_save_failed", ctx);
+    publish(key, { state: "failed", message: LOCAL_COPY.transcriptSyncFailed, retryable: transientSyncError(err) });
+    await persistOnDeviceFailure(tcw, id, "transcript_save_failed", ctx, transcript);
     return false;
   }
 }
 
-async function persistOnDeviceFailure(tcw: TinyCloudWeb, id: string, code: string, ctx: AccountContext): Promise<void> {
+async function persistOnDeviceFailure(tcw: TinyCloudWeb, id: string, code: string, ctx: AccountContext,
+  transcript?: LocalTranscript): Promise<void> {
   if (!isCurrent(tcw, ctx)) return;
   try {
-    await patchVoiceNoteTranscriptionFailure(tcw, id, code, checkpoint(tcw, ctx));
+    if (transcript) await patchDeviceTranscriptSyncError(tcw, id, transcript.rev, code, checkpoint(tcw, ctx));
+    else await patchVoiceNoteTranscriptionFailure(tcw, id, code, checkpoint(tcw, ctx));
   } catch (error) {
     if (isCurrent(tcw, ctx)) console.warn("[OnDeviceStt] Could not persist the local transcription failure", error);
   }
@@ -296,11 +379,14 @@ async function recordTranscriptSaved(tcw: TinyCloudWeb, id: string, transcript: 
     const note = pending.recordings.find((recording) => recording.id === id);
     if (!note?.ledger || note.rev === undefined) throw new Error(`This note has no ledger entry on ${deviceName()} to record the transcript in`);
     if (note.owner !== ctx.did) throw new Error(`This note belongs to another account on ${deviceName()}`);
-    const { transcriptSync } = note.ledger;
-    if (transcriptSync.state === "saved" && transcriptSync.rev >= transcript.rev && note.ledger.transcript.outcome === transcript.outcome) return;
+    const transcriptSync = note.ledger.transcriptSync;
+    if (transcriptSync?.state === "saved" && transcriptSync.rev === transcript.rev
+      && note.ledger.transcript?.outcome === transcript.outcome) return;
+    if ((transcriptSync?.rev ?? 0) > transcript.rev) throw new Error("A newer transcript receipt already exists");
     const patch = {
       transcriptSync: { state: "saved" as const, rev: transcript.rev, at: Date.now() },
-      transcript: { ...note.ledger.transcript, outcome: transcript.outcome },
+      transcript: { ...note.ledger.transcript, state: "done" as const, outcome: transcript.outcome,
+        reason: null, attempts: note.ledger.transcript?.attempts ?? 0, nextAttemptAt: null },
     };
     const rev = note.rev;
     try {
