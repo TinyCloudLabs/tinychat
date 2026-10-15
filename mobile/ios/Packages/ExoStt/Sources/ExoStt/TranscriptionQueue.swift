@@ -104,6 +104,7 @@ private final class CaptureLibrary: TranscriptionLibrary {
     func audioURL(_ id: String) -> URL { library.audioURL(id) }
     func listCommitted() throws -> [[String: Any]] { try library.listCommitted() }
     func transcript(_ id: String) throws -> [String: Any]? { try library.transcript(id) }
+    func repairTranscriptCommit(_ id: String) throws { try library.repairTranscriptCommit(id) }
     func readSidecar(_ id: String) throws -> [String: Any] { try library.readSidecar(id) }
     func updateStt(_ id: String, patch: [String: Any]) throws { try library.updateStt(id, patch: patch) }
     func updateRunning(_ id: String, generation: Int, patch: [String: Any],

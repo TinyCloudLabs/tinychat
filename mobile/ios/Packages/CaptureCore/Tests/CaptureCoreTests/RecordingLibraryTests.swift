@@ -97,6 +97,63 @@ final class RecordingLibraryTests: XCTestCase {
         XCTAssertEqual((try library.readSidecar(id)["stt"] as? [String: Any])?["state"] as? String, "running")
     }
 
+    func testInterruptedTranscriptPublicationCompletesSidecarOnRecovery() throws {
+        let (library, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID().uuidString.lowercased()
+        _ = try library.commit(id, sidecar: ["id": id, "version": 2, "rev": 0,
+            "options": ["transcriber": "on-device"],
+            "stt": ["state": "running", "yieldGeneration": 1, "attempts": 1]]) {
+            try Data("audio".utf8).write(to: $0)
+        }
+        let transcript: [String: Any] = ["noteId": id, "rev": 1, "outcome": "no_speech"]
+        try CanonicalJSON.file(transcript).write(to: library.url("\(id).transcript.json"))
+        let restarted = try RecordingLibrary(root: root)
+        try restarted.repairTranscriptCommit(id)
+        XCTAssertEqual((try restarted.readSidecar(id)["stt"] as? [String: Any])?["state"] as? String, "done")
+        XCTAssertEqual((try restarted.transcript(id))?["outcome"] as? String, "no_speech")
+    }
+
+    func testInterruptedRerunRestoresPriorTranscriptAfterStagingCleanup() throws {
+        let (library, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID().uuidString.lowercased()
+        _ = try library.commit(id, sidecar: ["id": id, "version": 2, "rev": 0,
+            "options": ["transcriber": "on-device"],
+            "stt": ["state": "running", "yieldGeneration": 2, "rerunRev": 2,
+                "rerunBaseRev": 1, "attempts": 1]]) {
+            try Data("audio".utf8).write(to: $0)
+        }
+        try library.putTranscript(id, object: ["noteId": id, "rev": 1, "outcome": "transcribed"])
+        try FileManager.default.moveItem(at: library.url("\(id).transcript.json"),
+            to: library.url("\(id).prior.transcript.json"))
+        let restarted = try RecordingLibrary(root: root)
+        _ = try restarted.recoverableSessions()
+        try restarted.repairTranscriptCommit(id)
+        XCTAssertEqual((try restarted.transcript(id))?["rev"] as? Int, 1)
+        XCTAssertEqual((try restarted.readSidecar(id)["stt"] as? [String: Any])?["state"] as? String, "running")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: restarted.url("\(id).prior.transcript.json").path))
+    }
+
+    func testInterruptedRerunWithNewTranscriptCompletesAndRetiresPrior() throws {
+        let (library, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID().uuidString.lowercased()
+        _ = try library.commit(id, sidecar: ["id": id, "version": 2, "rev": 0,
+            "options": ["transcriber": "on-device"],
+            "stt": ["state": "running", "yieldGeneration": 2, "rerunRev": 2,
+                "rerunBaseRev": 1, "attempts": 1]]) {
+            try Data("audio".utf8).write(to: $0)
+        }
+        try library.putTranscript(id, object: ["noteId": id, "rev": 1, "outcome": "transcribed"])
+        try FileManager.default.moveItem(at: library.url("\(id).transcript.json"),
+            to: library.url("\(id).prior.transcript.json"))
+        try CanonicalJSON.file(["noteId": id, "rev": 2, "outcome": "no_speech"])
+            .write(to: library.url("\(id).transcript.json"))
+        let restarted = try RecordingLibrary(root: root)
+        try restarted.repairTranscriptCommit(id)
+        XCTAssertEqual((try restarted.readSidecar(id)["stt"] as? [String: Any])?["state"] as? String, "done")
+        XCTAssertEqual((try restarted.transcript(id))?["rev"] as? Int, 2)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: restarted.url("\(id).prior.transcript.json").path))
+    }
+
     func testYieldedOnDeviceAudioRemainsPinnedAfterSpaceReceipt() throws {
         let (library, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
         let id = UUID().uuidString.lowercased()
