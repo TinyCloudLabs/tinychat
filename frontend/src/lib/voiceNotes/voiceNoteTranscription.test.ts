@@ -6205,3 +6205,144 @@ test("ordinary Retry cannot bypass a held conflict without explicit rerun author
   expect(h.creates).toHaveLength(0);
   expect(result).toMatchObject({ code: "base_mismatch" });
 });
+test("foreground recovery commits a legacy held result when held listing is unavailable", async () => {
+  const space = sqliteSpace();
+  (space.tcw as { spaceId?: string }).spaceId = "space:test";
+  _resetConnectorSchemaMemoForTests();
+  expect((await saveVoiceNote(space.tcw as never, RECORDING, AUDIO, "ios")).ok).toBe(true);
+  const did = (space.tcw as { did: string }).did;
+  const unmount = mountVoiceNoteAccount(did);
+  const pending = localStorageVoiceNotePendingStore(did, memoryStorage());
+  pending.write("rec-1", {
+    attemptId: "legacy-recovery-attempt",
+    transcriptionId: ID,
+    held: prepareVoiceNoteTranscript(TRANSCRIPT, "2026-10-15T00:00:00Z", 1),
+  });
+  const h = harness({ pending });
+  const env = newIdbEnv();
+  (env.factory as unknown as { open: () => IDBOpenDBRequest }).open = () => {
+    throw new DOMException("synthetic refusal", "SecurityError");
+  };
+  const held = createHeldResultStore(did, { env, isSignedIn: async () => true });
+  const transcriber = createVoiceNoteTranscriber({
+    cloud: h.cloud,
+    held,
+    consent: { get: () => true, set: () => {} },
+    holds: memoryHoldStore(),
+    tcw: () => space.tcw,
+    checkRetryMs: [],
+    timer: { schedule: () => 1, cancel: () => {} },
+  });
+  const unhandled: unknown[] = [];
+  const captureUnhandled = (error: unknown) => { unhandled.push(error); };
+  process.on("unhandledRejection", captureUnhandled);
+  try {
+    await transcriber.check();
+    for (let i = 0; i < 20; i++) await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(await readTranscriptCommit(space.tcw, "rec-1")).toMatchObject({ rev: 1, outcome: "transcribed" });
+    expect(h.creates).toHaveLength(0);
+    expect(h.removed).toEqual([ID]);
+    expect(pending.read("rec-1")?.held).toBeUndefined();
+    expect(unhandled).toEqual([]);
+  } finally {
+    process.off("unhandledRejection", captureUnhandled);
+    unmount();
+  }
+});
+
+test("configured-cloud held recovery removes its provider job after the verified commit", async () => {
+  const space = sqliteSpace();
+  (space.tcw as { spaceId?: string }).spaceId = "space:test";
+  _resetConnectorSchemaMemoForTests();
+  expect((await saveVoiceNote(space.tcw as never, RECORDING, AUDIO, "ios")).ok).toBe(true);
+  const did = (space.tcw as { did: string }).did;
+  const unmount = mountVoiceNoteAccount(did);
+  const held = createHeldResultStore(did, { env: newIdbEnv(), isSignedIn: async () => true });
+  await held.hold({
+    version: 1,
+    did,
+    spaceId: "space:test",
+    sourceId: "rec-1",
+    engine: "private-cloud",
+    transcript: prepareVoiceNoteTranscript(TRANSCRIPT, "2026-10-15T00:00:00Z", 1),
+    provider: { transcriptionId: ID },
+    intent: { kind: "unknown" },
+  });
+  const h = harness({});
+  const consent = localStorageVoiceNoteConsentStore(did, memoryStorage());
+  consent.set(true);
+  let resolveSaved!: () => void;
+  const saved = new Promise<void>((resolve) => { resolveSaved = resolve; });
+  const transcriber = createVoiceNoteTranscriber({
+    cloud: {
+      ...h.cloud,
+      capabilities: async () => { throw new PrivateCloudError("service_unavailable", "offline"); },
+    },
+    consent,
+    holds: memoryHoldStore(),
+    held,
+    tcw: () => space.tcw,
+    checkRetryMs: [],
+    failedBackoffMs: [],
+    timer: { schedule: () => 1, cancel: () => {} },
+  });
+  const unsubscribe = transcriber.subscribe((event) => {
+    if (event.kind === "saved" && event.sourceId === "rec-1") resolveSaved();
+  });
+  try {
+    await transcriber.check();
+    await saved;
+    expect(await readTranscriptCommit(space.tcw, "rec-1")).toMatchObject({ rev: 1, outcome: "transcribed" });
+    expect(await held.readHeld("rec-1")).toBeNull();
+    expect(h.creates).toHaveLength(0);
+    expect(h.removed).toEqual([ID]);
+  } finally {
+    unsubscribe();
+    unmount();
+  }
+});
+test("held recovery stays done when best-effort provider deletion fails", async () => {
+  const space = sqliteSpace();
+  (space.tcw as { spaceId?: string }).spaceId = "space:test";
+  _resetConnectorSchemaMemoForTests();
+  expect((await saveVoiceNote(space.tcw as never, RECORDING, AUDIO, "ios")).ok).toBe(true);
+  const did = (space.tcw as { did: string }).did;
+  const unmount = mountVoiceNoteAccount(did);
+  const held = createHeldResultStore(did, { env: newIdbEnv(), isSignedIn: async () => true });
+  await held.hold({
+    version: 1,
+    did,
+    spaceId: "space:test",
+    sourceId: "rec-1",
+    engine: "private-cloud",
+    transcript: prepareVoiceNoteTranscript(TRANSCRIPT, "2026-10-15T00:00:00Z", 1),
+    provider: { transcriptionId: ID },
+    intent: { kind: "unknown" },
+  });
+  const h = harness({ removeFails: true });
+  const consent = localStorageVoiceNoteConsentStore(did, memoryStorage());
+  consent.set(true);
+  const transcriber = createVoiceNoteTranscriber({
+    cloud: {
+      ...h.cloud,
+      capabilities: async () => { throw new PrivateCloudError("service_unavailable", "offline"); },
+    },
+    consent,
+    holds: memoryHoldStore(),
+    held,
+    tcw: () => space.tcw,
+    checkRetryMs: [],
+    failedBackoffMs: [],
+    timer: { schedule: () => 1, cancel: () => {} },
+  });
+  try {
+    await transcriber.check();
+    for (let i = 0; i < 20; i++) await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(await readTranscriptCommit(space.tcw, "rec-1")).toMatchObject({ rev: 1, outcome: "transcribed" });
+    expect(await held.readHeld("rec-1")).toBeNull();
+    expect(h.calls).toContain(`remove:${ID}`);
+    expect(transcriber.snapshot().jobs.get("rec-1")).toMatchObject({ kind: "done" });
+  } finally {
+    unmount();
+  }
+});

@@ -2119,6 +2119,14 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
         return privateCloudLimits(state.capabilities) === null ? "limits-unknown" : "unavailable";
     }
   };
+  const listHeldForRecovery = async () => {
+    if (!deps.held) return [];
+    try { return await deps.held.listHeld(); }
+    catch (error) {
+      logPipelineError("[VoiceNotes] Could not list held results for recovery", error);
+      return null;
+    }
+  };
   let drainingHeld: Promise<void> | null = null;
   const drainHeldOnly = (): Promise<void> => {
     if (!deps.held || !state.consented || !identityCurrent()) return Promise.resolve();
@@ -2126,14 +2134,26 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
     drainingHeld = (async () => {
       await deps.ready;
       if (!state.consented || !identityCurrent()) return;
-      const rows = await deps.held!.listHeld();
+      const rows = await listHeldForRecovery();
+      if (rows === null) return;
       for (const summary of rows) {
         if (summary.engine !== "private-cloud" || !state.consented || !identityCurrent()) continue;
         jobs.set(summary.sourceId, { kind: "active", status: { kind: "saving" } });
         emit();
         try {
+          const finishAfterCommit = async (row: HeldResult) => {
+            try { await deps.heldAfterCommit?.(row); }
+            finally {
+              const transcriptionId = row.provider && "transcriptionId" in row.provider
+                ? row.provider.transcriptionId : null;
+              try { await cloud?.finish(summary.sourceId, transcriptionId); }
+              catch (error) {
+                logPipelineError("Deleting a finished private cloud job failed; PTX deletes it on its own schedule", error);
+              }
+            }
+          };
           const outcome = await drainHeldVoiceNote(deps.tcw(), deps.held!, summary.sourceId,
-            () => state.consented && identityCurrent(), deps.heldAfterCommit);
+            () => state.consented && identityCurrent(), finishAfterCommit);
           if (outcome === "lock_busy") {
             timer.schedule(() => { void drainHeldOnly(); }, failedBackoffMs[0] ?? 15_000);
             jobs.delete(summary.sourceId);
@@ -2466,7 +2486,9 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
           retry = true;
           return;
         }
-        const heldIds = (await deps.held?.listHeld() ?? []).map((row) => row.sourceId);
+        const heldRows = await listHeldForRecovery();
+        if (heldRows === null) retry = true;
+        const heldIds = (heldRows ?? []).map((row) => row.sourceId);
         const ids = new Set([...cloudPending, ...heldIds, ...choices.ids(), ...[...jobs].flatMap(([id, job]) => job.kind === "blocked" ? [id] : [])]);
         for (const sourceId of ids) {
           if (!identityCurrent() || !on()) {
