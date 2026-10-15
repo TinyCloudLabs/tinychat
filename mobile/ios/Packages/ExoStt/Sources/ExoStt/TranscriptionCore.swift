@@ -150,6 +150,8 @@ final class TranscriptionCore {
     private let opportunityLock = NSLock()
     private var waitingForOpportunity = false
     private var opportunityVersion: UInt64 = 0
+    /// A relaunch must not treat a background inventory scan as admission for durable OS-yielded work.
+    private var admittedSinceLaunch = false
     var onQueueChanged: (() -> Void)?
     var onProgress: ((String, Int) -> Void)?
     var onTranscribed: ((String, String) -> Void)?
@@ -168,17 +170,28 @@ final class TranscriptionCore {
         controlQueue = DispatchQueue(label: "\(label).control")
     }
 
+    /// Refreshes inventory; committed/asset notifications do not grant execution after OS expiry.
     func reconcile() {
-        controlQueue.async { [self] in reconcileOnControlQueue() }
+        controlQueue.async { [self] in scanOnControlQueue() }
     }
 
-    private func reconcileOnControlQueue() {
+    func admitForeground() {
+        controlQueue.async { [self] in admitOnControlQueue() }
+    }
+
+    private func admitOnControlQueue() {
         opportunityLock.withLock {
             opportunityVersion &+= 1
+            admittedSinceLaunch = true
             waitingForOpportunity = false
         }
+        scanOnControlQueue()
+    }
+
+    private func scanOnControlQueue() {
         let scanStartedAt = state.scanStarted()
         guard let notes = try? library.listCommitted() else { return }
+        var hasYieldedWork = false
         for note in notes {
             guard let id = note["id"] as? String else { continue }
             guard (try? library.repairTranscriptCommit(id)) != nil,
@@ -187,7 +200,15 @@ final class TranscriptionCore {
             updated["stt"] = fresh["stt"]
             guard ResumableWork.owed(updated) else { continue }
             if (try? library.transcript(id)) != nil { continue }
+            if let stt = fresh["stt"] as? [String: Any], stt["state"] as? String == "yielded_by_os" {
+                hasYieldedWork = true
+            }
             state.addScanned(id, scanStartedAt: scanStartedAt)
+        }
+        if hasYieldedWork {
+            opportunityLock.withLock {
+                if !admittedSinceLaunch { waitingForOpportunity = true }
+            }
         }
         kickWorker()
     }
@@ -228,7 +249,7 @@ final class TranscriptionCore {
                 if rerunRev == nil,
                    let stt = ((try? library.readSidecar(id))?["stt"] as? [String: Any]),
                    stt["state"] as? String == "yielded_by_os" {
-                    reconcileOnControlQueue()
+                    admitOnControlQueue()
                 }
                 accepted?(true)
                 return
@@ -239,7 +260,7 @@ final class TranscriptionCore {
                ["running", "yielded_by_os"].contains(stt["state"] as? String ?? "") {
                 state.releaseReserved(id)
                 accepted?(true)
-                reconcileOnControlQueue()
+                admitOnControlQueue()
                 return
             }
             if rerunRev == nil, (try? library.transcript(id)) != nil {
@@ -390,21 +411,22 @@ final class TranscriptionCore {
                            lease: lease, activity: activity)
                 }
             }
-            defer { lease.end(activity) }
-            do {
-                try process(id: id, generation: generation, session: session, lease: lease)
-            } catch TranscriptionQueueError.yieldedByOS {
-                expiredThisPass = true
-                let cancelled = transition { () -> Bool in
-                    guard state.isCancelRequested(id) else { return false }
-                    try? library.updateStt(id, patch: ["state": "cancelled"])
-                    state.finishCurrent()
-                    return true
-                }
-                if !cancelled {
+            defer {
+                if lease.isStopped {
+                    expiredThisPass = true
                     let expiry = lease.expiryOpportunity ?? opportunity
                     expiredOpportunity = expiry
                     pauseUntilReconcile(since: expiry)
+                }
+                lease.end(activity)
+            }
+            do {
+                try process(id: id, generation: generation, session: session, lease: lease)
+            } catch TranscriptionQueueError.yieldedByOS {
+                transition {
+                    guard state.isCancelRequested(id) else { return }
+                    try? library.updateStt(id, patch: ["state": "cancelled"])
+                    state.finishCurrent()
                 }
                 onQueueChanged?()
             } catch TranscriptionQueueError.captureStarted {
@@ -420,12 +442,8 @@ final class TranscriptionCore {
                 state.finishCurrent()
                 onQueueChanged?()
             } catch {
-                if lease.isStopped {
-                    expiredThisPass = true // Failed persistence is a crash attempt, not an orderly yield.
-                    let expiry = lease.expiryOpportunity ?? opportunity
-                    expiredOpportunity = expiry
-                    pauseUntilReconcile(since: expiry)
-                } else {
+                // Failed expiry persistence remains a crash attempt, not an orderly yield.
+                if !lease.isStopped {
                     fail(id, code: "decode_failed", message: String(describing: error)) { state.finishCurrent() }
                 }
             }
@@ -433,7 +451,7 @@ final class TranscriptionCore {
         if let expiredOpportunity,
            opportunityLock.withLock({ opportunityVersion != expiredOpportunity }) {
             // A prior foreground scan saw the still-current note. Rescan after its unwind.
-            controlQueue.sync { reconcileOnControlQueue() }
+            controlQueue.sync { scanOnControlQueue() }
             pump()
             return
         }

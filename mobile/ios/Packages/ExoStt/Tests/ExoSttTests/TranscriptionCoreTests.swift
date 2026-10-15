@@ -245,6 +245,43 @@ final class TranscriptionCoreTests: XCTestCase {
         }
     }
 
+    func testBackgroundCommittedScanDoesNotAdmitExpiredWork() {
+        library.seed("a", state: "queued")
+        let activity = FakeActivity()
+        withActivity(activity)
+        let entered = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
+        holdDecode(of: "a", entered: entered, release: release)
+        core.enqueue(id: "a")
+        XCTAssertEqual(entered.wait(timeout: .now() + 5), .success)
+        activity.expire()
+        release.signal()
+        settle()
+        core.reconcile() // Committed observer or asset-install inventory scan, without foreground admission.
+        settle()
+        XCTAssertEqual(session.startedIds, ["a"])
+        XCTAssertFalse(library.hasTranscript("a"))
+    }
+
+    func testCancelAndExpiryStillParkRemainingQueue() {
+        library.seed("a", state: "queued")
+        library.seed("b", state: "queued")
+        let activity = FakeActivity()
+        withActivity(activity)
+        let entered = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
+        holdDecode(of: "a", entered: entered, release: release)
+        core.enqueue(id: "a")
+        XCTAssertEqual(entered.wait(timeout: .now() + 5), .success)
+        core.enqueue(id: "b")
+        core.cancel(id: "a")
+        core.controlQueue.sync {}
+        activity.expire()
+        release.signal()
+        settle()
+        XCTAssertEqual(library.sidecar("a")["state"] as? String, "cancelled")
+        XCTAssertEqual(session.startedIds, ["a"])
+        XCTAssertFalse(library.hasTranscript("b"))
+    }
+
     func testReviewerLateCancelledCollectorCannotChangeNextNoteProgress() {
         library.seed("a", state: "queued")
         library.seed("b", state: "queued")
@@ -352,7 +389,7 @@ final class TranscriptionCoreTests: XCTestCase {
         core.enqueue(id: "a")
         XCTAssertEqual(entered.wait(timeout: .now() + 5), .success)
         activity.expire()
-        core.reconcile()
+        core.admitForeground()
         core.controlQueue.sync {}
         release.signal()
         settle()
@@ -412,6 +449,10 @@ final class TranscriptionCoreTests: XCTestCase {
         XCTAssertTrue(core.queueSnapshot().isEmpty)
         relaunch()
         core.reconcile()
+        settle()
+        XCTAssertEqual(session.startedIds, ["a"], "background relaunch scans but must not decode yielded work")
+        XCTAssertEqual(library.sidecar("a")["state"] as? String, "yielded_by_os")
+        core.admitForeground()
         settle()
         XCTAssertEqual(session.startedIds, ["a", "a"])
         XCTAssertEqual(library.sidecar("a")["attempts"] as? Int, 1)
@@ -609,7 +650,7 @@ final class TranscriptionCoreTests: XCTestCase {
         settle()
         XCTAssertEqual(session.startedIds, ["a"])
         XCTAssertFalse(library.hasTranscript("b"))
-        core.reconcile() // A new foreground opportunity admits the owed job.
+        core.admitForeground() // A new foreground opportunity admits the owed job.
         settle()
         XCTAssertTrue(library.hasTranscript("b"))
     }

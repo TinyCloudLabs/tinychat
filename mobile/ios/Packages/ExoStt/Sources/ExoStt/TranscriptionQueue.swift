@@ -64,6 +64,8 @@ public final class TranscriptionQueue {
     /// and adds it to the queue. Called at launch (after recovery), on every `committed` event, and
     /// when the speech assets finish installing.
     public func reconcile() { core.reconcile() }
+    /// Grants the next execution opportunity only on actual foreground activation.
+    public func admitForeground() { core.admitForeground() }
     /// Clears interrupted explicit reruns during app launch; reruns are never resumed.
     public func recoverInterruptedReruns() { core.recoverInterruptedReruns() }
 
