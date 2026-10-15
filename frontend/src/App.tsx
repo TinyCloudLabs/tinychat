@@ -37,7 +37,7 @@ import { ModelPicker, type ModelOption } from "./chat/ModelPicker";
 import { UsageIndicator } from "./chat/UsageIndicator";
 import { AgentAccessProvider } from "./chat/useAgentEnablement";
 import { PricingDialog } from "./chat/PricingDialog";
-import { StorageFullDialog, StorageFullMessage } from "./chat/StorageFullDialog";
+import { StorageFullDialog } from "./chat/StorageFullDialog";
 import {
   associateStorageAccountClient,
   beginStorageAccountSession,
@@ -48,6 +48,7 @@ import {
   subscribeStorageReadOnly,
   subscribeStorageScopeRetired,
   reportStoragePlanTier,
+  STORAGE_READ_ONLY_NOTICE,
 } from "./lib/storageStatus";
 import { openManageStorage } from "./lib/openManageStorage";
 import { useStorageFreePlan } from "./lib/useStorageFreePlan";
@@ -1297,10 +1298,10 @@ export function App() {
         <button type="button" className="ml-3 underline" onClick={() => void signOut()}>Retry</button>
       </div>}
       <MicDeniedRecovery enabled={platform === "android" && voiceNotesInApp && capabilities.micDeniedPresentation && !LOCAL_VALIDATION && (authSettledSignedOut || state === "offline")} onContinue={nativeSignInFlow.micRecoveryContinue} />
-      {storageReadOnly && (
-        <div role="region" aria-label="Storage full" aria-live="polite" className="border-t border-border bg-muted px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] text-sm">
+      {storageReadOnly && screen.id !== "settings" && (
+        <div data-testid="app-storage-read-only-notice" role="region" aria-label="Storage full" aria-live="polite" className="border-t border-border bg-muted px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] text-sm">
           <strong>Storage full</strong>{" "}
-          <StorageFullMessage detail={false} />{" "}
+          {STORAGE_READ_ONLY_NOTICE}{" "}
           <button type="button" className="font-medium underline underline-offset-2" onClick={() => void openManageStorage()}>
             Manage storage
           </button>

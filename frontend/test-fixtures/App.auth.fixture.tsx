@@ -5,7 +5,8 @@ import { BrowserRouter } from "react-router-dom";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { installDom } from "@/test/dom";
 import { PlatformContext, type AppPlatform } from "@/lib/platform";
-import { __resetStorageStatusForTests, isStorageReadOnly, reportStorageError } from "@/lib/storageStatus";
+import { __resetStorageStatusForTests, isStorageReadOnly, reportStorageError, reportStoragePlanTier,
+  STORAGE_FULL_DETAIL, STORAGE_FULL_RECORDING_LINE, STORAGE_READ_ONLY_NOTICE } from "@/lib/storageStatus";
 
 const restoreImportDom = installDom();
 const clientApi = await import("@tinyboilerplate/client");
@@ -20,6 +21,7 @@ const agentEnablementApi = await import("@/chat/useAgentEnablement");
 const transcriberSyncApi = await import("@/chat/useTranscriberLibrarySync");
 const recorderProviderApi = await import("@/capture/recorder/RecorderProvider");
 const uploadResumerApi = await import("@/capture/upload/UploadResumer");
+const storageDialogApi = await import("../src/chat/StorageFullDialog");
 
 let nativeMode = false;
 let loginAddress = "0x00000000000000000000000000000000000000a1";
@@ -88,7 +90,16 @@ mock.module("../src/chat/ChatWorkspace", () => ({
   ChatWorkspace: ({ settings }: { settings: React.ReactNode }) => <div data-testid="authenticated-workspace">{settings}</div>,
 }));
 mock.module("../src/chat/SettingsPage", () => ({
-  SettingsPage: ({ onSignOut }: { onSignOut: () => void }) => <button onClick={() => void onSignOut()}>Test sign out</button>,
+  SettingsPage: ({ onSignOut }: { onSignOut: () => void }) => (
+    <>
+      {window.location.pathname === "/chat/settings" && isStorageReadOnly() && (
+        <div data-testid="settings-storage-full-banner" role="region" aria-label="Storage full">
+          <storageDialogApi.StorageFullMessage detail />
+        </div>
+      )}
+      <button onClick={() => void onSignOut()}>Test sign out</button>
+    </>
+  ),
 }));
 mock.module("../src/chat/useAgentEnablement", () => ({
   ...agentEnablementApi,
@@ -128,6 +139,14 @@ async function click(label: string) {
   const button = [...host!.querySelectorAll("button")].find((entry) => entry.textContent?.trim() === label);
   expect(button, `missing ${label}; DOM=${host!.innerHTML}`).toBeTruthy();
   await act(async () => { button!.click(); await tick(); });
+}
+async function navigate(path: string) {
+  await act(async () => {
+    window.history.pushState({}, "", path);
+    window.dispatchEvent(new window.Event("popstate"));
+    await tick();
+  });
+  await settle();
 }
 
 beforeEach(() => {
@@ -197,4 +216,25 @@ test("native interactive sign-in mounts the authenticated workspace", async () =
   await click("Continue with Google");
   await settle();
   expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeTruthy();
+});
+test("mounted App shows one shared read-only notice outside Settings and keeps Settings detail there", async () => {
+  await mount("web");
+  await click("Sign in");
+  await settle();
+  await act(async () => {
+    reportStoragePlanTier("free");
+    reportStorageError({ code: "STORAGE_QUOTA_EXCEEDED", message: "full" });
+    await tick();
+  });
+
+  const globalNotice = host!.querySelector('[data-testid="app-storage-read-only-notice"]');
+  expect(globalNotice?.textContent).toContain(STORAGE_READ_ONLY_NOTICE);
+  expect(globalNotice?.textContent).not.toContain(STORAGE_FULL_RECORDING_LINE);
+  expect(host!.querySelectorAll('[aria-label="Storage full"]')).toHaveLength(1);
+
+  await navigate("/chat/settings");
+  expect(host!.querySelector('[data-testid="app-storage-read-only-notice"]')).toBeNull();
+  const settingsBanner = host!.querySelector('[data-testid="settings-storage-full-banner"]');
+  expect(settingsBanner?.textContent).toContain(STORAGE_FULL_DETAIL.free);
+  expect(host!.querySelectorAll('[aria-label="Storage full"]')).toHaveLength(1);
 });

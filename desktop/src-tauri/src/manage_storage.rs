@@ -1,7 +1,7 @@
 use tauri_plugin_opener::OpenerExt;
 
 /// The TinyCloud billing page. Fixed here, so the webview cannot choose what opens.
-const MANAGE_STORAGE_URL: &str = "https://account.tinycloud.xyz/billing";
+const MANAGE_STORAGE_URL: &str = "https://account.tinycloud.xyz/billing?reason=storage-full";
 
 /// Opens the storage page in the system browser, never in the webview.
 #[tauri::command]
