@@ -149,16 +149,21 @@ launcher=$!
 # The liveness sampler is independent of simulator and probe calls, which can block for many seconds.
 # Only PIDs reported for this app by simctl or by its matching launchctl job are checked.
 watch_liveness() {
-  local simctl_pid="" app_pid="" candidate stamp epoch last_epoch=$launch_epoch
-  while [ "$SECONDS" -lt "$deadline" ]; do
-    sleep 2
-    epoch=$(date -u +%s)
-    stamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-    if [ "$((epoch - last_epoch))" -gt 5 ]; then
-      printf '%s observation gap %ss\n' "$stamp" "$((epoch - last_epoch))" >>"$out/liveness.log"
+  local simctl_pid="" app_pid="" candidate epoch last_epoch=$launch_epoch
+  record_liveness() {
+    local observed_epoch observed_at gap
+    observed_epoch=$(date -u +%s)
+    observed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    gap=$((observed_epoch - last_epoch))
+    if [ "$gap" -gt 5 ]; then
+      printf '%s observation gap %ss\n' "$observed_at" "$gap" >>"$out/liveness.log"
       : >"$private_logs/watcher.gap"
     fi
-    last_epoch=$epoch
+    printf '%s %s\n' "$observed_at" "$1" >>"$out/liveness.log"
+    last_epoch=$observed_epoch
+  }
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    sleep 2
     if [ -z "$simctl_pid" ]; then
       candidate=$(awk -v app="$bundle_id:" '$1 == app { gsub(/\r/, "", $2); if ($2 ~ /^[0-9]+$/) { print $2; exit } }' \
         "$private_logs/console.log" 2>/dev/null)
@@ -173,21 +178,21 @@ watch_liveness() {
     fi
     if [ -n "$simctl_pid" ]; then
       if ! app_pid_alive "$simctl_pid"; then
-        printf '%s simctl pid %s exited\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$simctl_pid" >>"$out/liveness.log"
+        record_liveness "simctl pid $simctl_pid exited"
         : >"$private_logs/watcher.exited"
         return 1
       fi
-      printf '%s simctl pid %s alive\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$simctl_pid" >>"$out/liveness.log"
+      record_liveness "simctl pid $simctl_pid alive"
     fi
     if [ -n "$app_pid" ]; then
       if [ "$app_pid" != "$simctl_pid" ] && ! app_pid_alive "$app_pid"; then
-        printf '%s pid %s exited\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$app_pid" >>"$out/liveness.log"
+        record_liveness "pid $app_pid exited"
         : >"$private_logs/watcher.exited"
         return 1
       fi
-      printf '%s pid %s alive\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$app_pid" >>"$out/liveness.log"
+      record_liveness "pid $app_pid alive"
     elif [ -z "$simctl_pid" ]; then
-      printf '%s pid not yet observed\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$out/liveness.log"
+      record_liveness "pid not yet observed"
     fi
   done
   epoch=$(date -u +%s)

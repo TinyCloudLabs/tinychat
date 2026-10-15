@@ -81,7 +81,7 @@ if (op === 'launch') {
 }
 `;
 
-function runSmoke({ mode, exitAfterMs, hideLaunchctl = false, badPrefix = false, crash = false, simctlPid = "immediate", pidDelayMs = 0, launchctlStallMs = 0, probeStallSeconds = 0, psStallCall = 0, timeout = 6 }) {
+function runSmoke({ mode, exitAfterMs, hideLaunchctl = false, badPrefix = false, crash = false, simctlPid = "immediate", pidDelayMs = 0, launchctlStallMs = 0, probeStallSeconds = 0, psStallCall = 0, psStallSeconds = 6, timeout = 6 }) {
   const dir = mkdtempSync(join(tmpdir(), "exo-smoke-test-"));
   const bin = join(dir, "bin");
   const app = join(dir, "App.app");
@@ -111,7 +111,7 @@ function runSmoke({ mode, exitAfterMs, hideLaunchctl = false, badPrefix = false,
     FAKE_LAUNCHCTL_STALL_MS: String(launchctlStallMs || ""),
     FAKE_PROBE_STALL_SECONDS: String(probeStallSeconds || ""),
     FAKE_PS_STALL_CALL: String(psStallCall || ""),
-    FAKE_PS_STALL_SECONDS: "6",
+    FAKE_PS_STALL_SECONDS: String(psStallSeconds),
     EXO_CAPTURE_SMOKE: "0", EXO_LOCATION_SMOKE: "0",
     SMOKE_TIMEOUT: String(timeout), SMOKE_SETTLE: "0",
   };
@@ -234,5 +234,16 @@ test("an end-of-deadline watcher stall cannot be reported as complete liveness",
   const { result, artifact } = runSmoke({ mode: "mounted", psStallCall: 2, timeout: 5 });
   assert.equal(result.status, 1, "a stalled watcher cannot claim complete instrumentation");
   assert.match(artifact("liveness.log"), /observation gap \d+s/);
+  assert.match(artifact("summary.md"), /liveness observation gap exceeded 5s/);
+});
+
+test("a four-second final ps stall exposes the actual sleep-plus-stall gap", { timeout: 30000 }, () => {
+  const { result, artifact } = runSmoke({ mode: "mounted", psStallCall: 2, psStallSeconds: 4, timeout: 5 });
+  const liveness = artifact("liveness.log");
+  const observations = [...liveness.matchAll(/^(\S+) simctl pid \d+ alive$/gm)].map((match) => Date.parse(match[1]));
+  assert.ok(observations.some((time, index) => index > 0 && time - observations[index - 1] > 5000),
+    "fixture must create a gap between completed alive observations");
+  assert.equal(result.status, 1, "the watcher must not pass an actual gap over five seconds");
+  assert.match(liveness, /observation gap \d+s/);
   assert.match(artifact("summary.md"), /liveness observation gap exceeded 5s/);
 });
