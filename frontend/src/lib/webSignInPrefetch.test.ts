@@ -55,6 +55,37 @@ describe("web sign-in prefetch", () => {
     expect(await guarded.request({ method: "eth_chainId" })).toBe("signature");
   });
 
+  test("a verified client keeps its signer after prefetch cleanup, but abandoned attempts fail closed", async () => {
+    let now = 0;
+    let signCalls = 0;
+    const services = {
+      now: () => now,
+      requestNonce: async () => "nonce",
+      loadManifest: async () => manifest,
+    };
+    const provider = {
+      on() {},
+      removeListener() {},
+      async request() { signCalls++; return "signature"; },
+    };
+    const completed = createWebSignInPrefetch(backend, services);
+    await completed.nonceForSigning(address);
+    const retainedSigner = completed.guardSigning(provider);
+    await retainedSigner.request({ method: "personal_sign", params: ["login"] });
+    completed.complete();
+    completed.cancel(); // App's finally runs after publishing the SDK client.
+    now = 4 * 60_000;
+    expect(await retainedSigner.request({ method: "personal_sign", params: ["host-secrets"] })).toBe("signature");
+    expect(signCalls).toBe(2);
+
+    const abandoned = createWebSignInPrefetch(backend, services);
+    await abandoned.nonceForSigning(address);
+    const abandonedSigner = abandoned.guardSigning(provider);
+    abandoned.cancel();
+    await expect(abandonedSigner.request({ method: "personal_sign", params: ["abandoned"] })).rejects.toThrow(/cancelled/i);
+    expect(signCalls).toBe(2);
+  });
+
   test("never reuses a nonce within or across cancelled attempts", async () => {
     const firstNonce = Promise.withResolvers<string>();
     let requests = 0;

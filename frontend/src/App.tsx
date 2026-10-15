@@ -891,6 +891,9 @@ export function App() {
       // Exchange the SIWE message for a backend Bearer token (for /api/chat).
       const verified = await verifySession(BACKEND_URL, session.siwe, session.signature);
       sessionStoreRef.current.setSession(verified.token, verified.expiresIn, connectedAddress);
+      // The SDK keeps this provider for later user-authorized operations;
+      // only the verified login's signatures use the prefetched nonce guard.
+      prefetch.complete();
 
       setTcw(LOCAL_VALIDATION ? useLocalCanvasStorage(useLocalThreadStorage(signedTcw)) : signedTcw);
       setDid(signedTcw.did ?? null);

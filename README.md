@@ -77,6 +77,8 @@ Web sign-in starts an unbound SIWE nonce request and manifest load while the
 OpenKey connection is in progress. The nonce is scoped to that sign-in attempt:
 if it is four minutes old when signing begins, the app requests a new
 address-bound nonce; it refuses to sign if SDK setup lets the nonce age out.
+After backend verification succeeds, the SDK-retained provider can sign later
+user-approved operations; abandoned sign-in attempts remain blocked.
 The backend must enforce the signed SIWE domain and URI (TC-1201) before
 previewing this flow. Native sign-in is unchanged.
 

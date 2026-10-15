@@ -12,6 +12,7 @@ type Services = {
 
 export interface WebSignInPrefetch {
   cancel(): void;
+  complete(): void;
   manifest(): Promise<Manifest>;
   nonceForSigning(address: string): Promise<string>;
   guardSigning(provider: EIP1193Provider): EIP1193Provider;
@@ -30,6 +31,7 @@ export function createWebSignInPrefetch(backendUrl: string, services: Services):
     (error: unknown) => ({ error }),
   );
   let cancelled = false;
+  let completed = false;
   let consumed = false;
   let signingNonceAt: number | undefined;
 
@@ -39,6 +41,7 @@ export function createWebSignInPrefetch(backendUrl: string, services: Services):
 
   return {
     cancel() { cancelled = true; },
+    complete() { assertActive(); completed = true; },
     async manifest() {
       assertActive();
       const result = await prefetchedManifest;
@@ -70,7 +73,7 @@ export function createWebSignInPrefetch(backendUrl: string, services: Services):
         on: (event, listener) => provider.on(event, listener),
         removeListener: (event, listener) => provider.removeListener(event, listener),
         request: (args) => {
-          if (args.method === "personal_sign") {
+          if (args.method === "personal_sign" && !completed) {
             if (cancelled) return Promise.reject(new Error("Sign-in attempt cancelled"));
             if (signingNonceAt === undefined || now() - signingNonceAt >= MAX_NONCE_AGE_MS) {
               return Promise.reject(new Error("Sign-in nonce expired; try again"));
