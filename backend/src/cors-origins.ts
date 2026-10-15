@@ -11,7 +11,7 @@ export const EXO_ANDROID_ORIGIN = "https://localhost";
 export const EXO_IOS_ORIGIN = "capacitor://localhost";
 
 /** TinyChat's Cloudflare Pages project, including branch and commit previews. */
-export const TINYCHAT_PAGES_ORIGIN = /^https:\/\/(?:[a-z0-9-]+\.)?tinychat-4jq\.pages\.dev$/;
+export const TINYCHAT_PAGES_ORIGIN = /^https:\/\/[a-z0-9-]+\.tinychat-4jq\.pages\.dev$/;
 
 /** Exact origins used by the documented local web development flow. */
 export const LOCAL_WEB_ORIGINS = [

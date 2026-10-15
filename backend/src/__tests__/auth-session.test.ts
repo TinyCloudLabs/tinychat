@@ -230,17 +230,22 @@ describe("HTTP SIWE sessions", () => {
   test("accepts exact production, desktop and Pages preview signed pairs, but not lookalikes", async () => {
     setSystemTime(NOW);
     const base = await startAuthServer("https://tinycloud.chat");
-    for (const domain of ["tinycloud.chat", "localhost", "tauri.localhost", "tinychat-4jq.pages.dev", "feature-12.tinychat-4jq.pages.dev"]) {
+    for (const domain of ["tinycloud.chat", "localhost", "tauri.localhost", "feature-12.tinychat-4jq.pages.dev"]) {
       const nonce = await requestNonce(base, account.address);
       const signed = await signMessage(nonce, { domain, uri: `https://${domain}` });
       expect((await postVerify(base, signed)).status).toBe(200);
     }
+    for (const domain of ["tinychat-4jq.pages.dev", "evil.pages.dev", "feature-12.tinychat-4jq.pages.dev.evil.com"]) {
+      const nonce = await requestNonce(base, account.address);
+      const lookalike = await signMessage(nonce, { domain, uri: `https://${domain}` });
+      expect((await postVerify(base, lookalike)).status).toBe(400);
+    }
     const nonce = await requestNonce(base, account.address);
-    const lookalike = await signMessage(nonce, {
-      domain: "feature-12.tinychat-4jq.pages.dev.evil.example",
-      uri: "https://feature-12.tinychat-4jq.pages.dev.evil.example",
+    const mismatchedUri = await signMessage(nonce, {
+      domain: "feature-12.tinychat-4jq.pages.dev",
+      uri: "https://feature-13.tinychat-4jq.pages.dev",
     });
-    expect((await postVerify(base, lookalike)).status).toBe(400);
+    expect((await postVerify(base, mismatchedUri)).status).toBe(400);
   });
 
   test("accepts native OpenKey DID sessions but rejects a web URI on the native domain", async () => {
