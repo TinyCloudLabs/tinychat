@@ -1,4 +1,5 @@
 ---
+"@tinychat/backend": patch
 ---
 
-The SIWE audience validation was reverted by TC-1201.
+Validate the signed SIWE audience before issuing sessions and bound pending nonces.
