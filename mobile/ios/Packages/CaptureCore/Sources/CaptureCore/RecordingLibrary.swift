@@ -696,7 +696,7 @@ public final class RecordingLibrary {
     /// Sidecar generation is persisted with `running`. These guarded mutations share `queue`
     /// with deletion and transcript publication; no stale recognizer callback can undo an OS yield.
     public func updateRunning(_ id: String, generation: Int, patch: [String: Any],
-                              stillValid: () -> Bool) throws {
+                              stillValid: @escaping () -> Bool) throws {
         try queue.sync {
             guard stillValid(), !FileManager.default.fileExists(atPath: url("tombstones/\(id)").path) else { return }
             var item = try readSidecarUnlocked(id)
@@ -712,7 +712,7 @@ public final class RecordingLibrary {
 
     @discardableResult
     public func yieldToOS(_ id: String, generation: Int, attempts: Int,
-                          stillValid: () -> Bool) throws -> Bool {
+                          stillValid: @escaping () -> Bool) throws -> Bool {
         try queue.sync {
             guard stillValid(), !FileManager.default.fileExists(atPath: url("tombstones/\(id)").path) else { return false }
             var item = try readSidecarUnlocked(id)
