@@ -18,8 +18,8 @@ import type { VoiceNoteRecording } from "./nativeVoiceNotes";
  *   until `submitted`, the point after which the upload no longer reads local bytes.
  * Transcript state is not a pin. Phone producers never move `transcript.state` past `pending`: the on-device
  * transcriber writes `transcriptSync` and `outcome` only (onDeviceTranscriber.ts:282-284), and transcription
- * failures go to the space row (voiceNoteRows.ts:290). Private-cloud jobs read the space copy once local bytes
- * are gone (voiceNoteTranscription.ts:1272-1280).
+ * failures go to the space row (voiceNoteRows.ts:290). Private-cloud jobs and choices are pinned by
+ * sourcePins.ts at the JS eviction gate; native stores must not initiate cache eviction themselves.
  * A note without a ledger has no verified space copy, so it pins too.
  * A note with a pending outbox entry pins as well. That check is not in this predicate: the store
  * (webStore.ts `evictCachedAudio`) and the native evict paths test the outbox directly.

@@ -152,6 +152,7 @@ class VoiceNotesPlugin : Plugin(), CaptureEngine.Listener {
         if (engine.status().optString("id") == id) throw IllegalStateException("recording_in_progress")
         engine.library.delete(id); null
     }
+    // The JS source-pin gate is the only cache-eviction caller; native callers must preserve that coordination.
     @PluginMethod fun evictCachedAudio(call: PluginCall) = async(call) {
         val id = call.getString("id") ?: throw IllegalArgumentException("invalid_argument")
         if (engine.status().optString("id") == id) throw IllegalStateException("recording_in_progress")

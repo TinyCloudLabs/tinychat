@@ -74,6 +74,9 @@ import {
   type VoiceNoteTranscriptSave,
   type VoiceNoteTranscriptAccount,
 } from "./voiceNoteStore";
+import { accountStorageKey, VOICE_NOTE_PENDING_JOBS_KEY, VOICE_NOTE_PRIVATE_CHOICES_KEY,
+  retainSource, withSourceLease } from "./sourcePins";
+import { isAutomaticRetryableCode } from "./retryableVoiceNoteErrors";
 import { transcriptHash, type VoiceNoteTranscriptionStatsMetadata } from "./voiceNoteRows";
 
 // ── Upload ─────────────────────────────────────────────────────────────
@@ -221,15 +224,11 @@ export function createFetchPtxPut(
 // account's DID, so a second account signed in on the same phone neither
 // inherits the first one's consent nor resumes its jobs.
 
-export const VOICE_NOTE_PENDING_JOBS_KEY = "exo.voiceNotes.privateCloudJobs";
 /** Versioned consent for Private transcription. Older consent must be confirmed once more. */
 export const VOICE_NOTE_CONSENT_KEY = "exo.voiceNotes.privateCloudConsent";
 export const VOICE_NOTE_CONSENT_VERSION = "2";
 export const VOICE_NOTE_HELD_KEY = "exo.voiceNotes.heldFromTranscription";
 
-export function accountStorageKey(base: string, accountDid: string): string {
-  return `${base}:${accountDid}`;
-}
 
 type KeyValueStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 
@@ -333,7 +332,6 @@ export function localStorageVoiceNotePendingStore(
   };
 }
 
-export const VOICE_NOTE_PRIVATE_CHOICES_KEY = "exo.voiceNotes.privateChoices";
 
 /** Notes the user explicitly moved to private cloud from another committed mode (per account). */
 export interface VoiceNotePrivateChoiceStore {
@@ -629,24 +627,6 @@ const JOB_ENDED_CODES: ReadonlySet<string> = new Set([
   "transcription_not_found",
 ]);
 
-const AUTOMATIC_RETRY_CODES: Record<string, true> = {
-  service_paused: true,
-  service_unavailable: true,
-  connection_lost: true,
-  offline: true,
-  request_timeout: true,
-  upstream_bad_response: true,
-  http_5xx: true,
-  service_busy: true,
-  transcript_save_failed: true,
-  held_result_persistence_failed: true,
-  STORAGE_QUOTA_EXCEEDED: true,
-  upload_capability_limit: true,
-};
-
-function isAutomaticRetryableCode(code: string | null): boolean {
-  return code !== null && Object.hasOwn(AUTOMATIC_RETRY_CODES, code);
-}
 
 function isAutomaticRetryableError(error: unknown): boolean {
   return isAutomaticRetryableCode(voiceNoteErrorCode(error));
@@ -1531,6 +1511,8 @@ export async function transcribeVoiceNote(args: {
     await finish();
     throw new PrivateCloudError("voice_note_not_found", "The voice note no longer exists");
   }
+
+  const noteData = note.data;
   const currentCommit = await readTranscriptCommit(tcw, sourceId);
   const commit = args.explicitRerun ? requireVoiceNoteTranscriptCommit(currentCommit) : currentCommit;
   expectedRerunBase = args.explicitRerun ? commit : cloud.rerunBase?.(sourceId) ?? null;
@@ -1652,17 +1634,17 @@ export async function transcribeVoiceNote(args: {
   let transcriptionId: string;
   let transcript: PrivateCloudTranscript;
   try {
-    ({ transcriptionId, transcript } = await cloud.transcribe(
+    ({ transcriptionId, transcript } = await withSourceLease(accountContext.did, sourceId, () => cloud.transcribe(
       { sourceId, capabilities: args.capabilities, currentCapabilities: args.currentCapabilities,
         loadAudio: modeOff ? async () => { throw transcriptionOffError(); } : loadAudio,
-        durationSeconds: note.data.durationSeconds,
+        durationSeconds: noteData.durationSeconds,
         explicitRerun: args.explicitRerun,
         rerunBase: expectedRerunBase ?? undefined,
         identifySpeakers: nativeNote?.options?.identifySpeakers === true,
-        channelCount: note.data.channels === 2 ? 2 : nativeNote?.channels === 2 ? 2 : 1,
+        channelCount: noteData.channels === 2 ? 2 : nativeNote?.channels === 2 ? 2 : 1,
         allowed: args.allowed },
       report,
-    ));
+    )));
   } catch (err) {
     // A limit refusal came before any job existed: it is not this note's transcription failure.
     if (err instanceof PrivateCloudRefusedError) throw err;
@@ -1871,6 +1853,14 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
   };
   /** Notes queued but not started; turning off empties it, and a dropped note never starts. */
   const waiting = new Set<string>();
+  const sourceRetains = new Map<string, () => void>();
+  const retainSourceFor = (sourceId: string, owner: string) => {
+    if (!sourceRetains.has(sourceId)) sourceRetains.set(sourceId, retainSource(owner, sourceId));
+  };
+  const releaseSourceFor = (sourceId: string) => {
+    sourceRetains.get(sourceId)?.();
+    sourceRetains.delete(sourceId);
+  };
   let recoveryRescanRequested = false;
   let state: Omit<VoiceNoteTranscriberSnapshot, "jobs"> = {
     availability: cloud === null ? "failed" : "checking",
@@ -2058,6 +2048,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
     automaticRetryTimers.set(sourceId, handle);
   };
   const scheduleAutomaticRetry = (sourceId: string, retryAfterSeconds = 0) => {
+    retainSourceFor(sourceId, deps.tcw().did);
     const failures = automaticRetryFailures.get(sourceId) ?? 0;
     const baseDelay = failedBackoffMs[Math.min(failures, failedBackoffMs.length - 1)] ?? 15_000;
     const serverDelay = Math.min(MAX_RATE_LIMIT_WAIT_MS, Math.max(0, Math.ceil(retryAfterSeconds * 1_000)));
@@ -2113,12 +2104,16 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
     if (!explicit && current?.kind === "failed" && !isAutomaticRetryableCode(current.code)
       && (cloud.heldTranscript?.(sourceId) ?? null) === null && !(cloud.hasRemoteJob?.(sourceId) ?? false)) return null;
     const account = { generation: currentAccountGeneration(), did: deps.tcw().did };
+    retainSourceFor(sourceId, account.did);
     waiting.add(sourceId);
     jobs.set(sourceId, { kind: "active", status: { kind: "waiting", position: waiting.size } });
     emit();
     chain = chain.then(async () => {
       // Dropped by turn-off while it waited, or turned off since: never starts.
-      if (!waiting.delete(sourceId)) return;
+      if (!waiting.delete(sourceId)) {
+        releaseSourceFor(sourceId);
+        return;
+      }
       // Leaving the line, starting, and the others moving up are one change: no snapshot shows the starting note as waiting.
       if (jobs.get(sourceId)?.kind === "active") jobs.set(sourceId, { kind: "active", status: { kind: "preparing" } });
       emit();
@@ -2137,6 +2132,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
           console.warn("[Transcription] Not starting a private cloud job: its account is no longer the signed-in one", sourceId);
         }
         emit();
+        releaseSourceFor(sourceId);
         return;
       }
       if (deferClosedAdmission(sourceId, explicit)) return;
@@ -2162,6 +2158,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
         clearAutomaticRetry(sourceId, true);
         settleChoice(sourceId);
         jobs.set(sourceId, { kind: "done", outcome });
+        releaseSourceFor(sourceId);
         emit({ kind: "saved", sourceId });
       } catch (err) {
         if (err instanceof PrivateCloudRefusedError) {
@@ -2170,12 +2167,13 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
           recoveryNeeded = true;
           nextRecoveryAt = now();
           emit();
+          releaseSourceFor(sourceId);
           return;
         }
         if (voiceNoteErrorCode(err) === "note_held") {
           console.warn("[VoiceNotes] Held a note back from private-cloud transcription: it did not begin in the app", { id: sourceId });
           hold(sourceId);
-          settleChoice(sourceId, true);
+          releaseSourceFor(sourceId);
           return;
         }
         // Whatever stopped a note after the user turned transcription off is not a failure to show.
@@ -2208,6 +2206,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
             settleChoice(sourceId);
           }
         }
+        if (!automaticRetryDeadlines.has(sourceId)) releaseSourceFor(sourceId);
         emit();
       }
     });
@@ -2496,6 +2495,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
       state = { ...state, consented: false };
       for (const sourceId of waiting) jobs.delete(sourceId);
       waiting.clear();
+      for (const sourceId of [...sourceRetains.keys()]) releaseSourceFor(sourceId);
       // A failure shown with Retry is no longer actionable once off.
       for (const [sourceId, job] of jobs) if (job.kind === "failed") jobs.delete(sourceId);
       recoveryNeeded = false;

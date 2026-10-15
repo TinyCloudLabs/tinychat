@@ -150,6 +150,7 @@ public final class VoiceNotesPlugin: CAPPlugin, CAPBridgedPlugin, URLSessionData
         }
     }
 
+    // The JS source-pin gate is the only cache-eviction caller; native callers must preserve that coordination.
     @objc func evictCachedAudio(_ call: CAPPluginCall) {
         guard let id = call.getString("id"), RecordingLibrary.validID(id) else {
             call.reject("A valid id is required", "invalid_argument"); return

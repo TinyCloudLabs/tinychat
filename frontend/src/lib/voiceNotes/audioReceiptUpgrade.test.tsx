@@ -15,6 +15,7 @@ import { reconcileAudioCache, useAudioCacheBoot } from "./audioReceiptUpgrade";
 
 const original = VoiceNotes;
 const originalIdb = globalThis.indexedDB;
+const originalStorage = (globalThis as typeof globalThis & { localStorage?: Storage }).localStorage;
 let root: Root | null = null;
 let unmountAccount: (() => void) | null = null;
 let restoreDom: (() => void) | null = null;
@@ -24,6 +25,8 @@ afterEach(async () => {
   unmountAccount?.(); unmountAccount = null;
   restoreDom?.(); restoreDom = null;
   globalThis.indexedDB = originalIdb;
+  if (originalStorage === undefined) Reflect.deleteProperty(globalThis, "localStorage");
+  else Object.defineProperty(globalThis, "localStorage", { configurable: true, value: originalStorage });
   __setVoiceNotesForTests(original, { available: null });
   __resetCaptureEngineForTests();
 });
@@ -59,6 +62,12 @@ function Boot({ tcw }: { tcw: TinyCloudWeb }) {
 async function fixture(mismatch = false, uploadAudio?: boolean) {
   restoreDom = installDom();
   globalThis.indexedDB = new IDBFactory() as unknown as IDBFactory;
+  const storage = new Map<string, string>();
+  Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
+    getItem: (key: string) => storage.get(key) ?? null,
+    setItem: (key: string, value: string) => { storage.set(key, value); },
+    removeItem: (key: string) => { storage.delete(key); },
+  } });
   const did = "did:test:receipt-upgrade";
   // The authenticated saver mount is what makes this account's notes cache candidates.
   unmountAccount?.(); unmountAccount = mountVoiceNoteAccount(did);
