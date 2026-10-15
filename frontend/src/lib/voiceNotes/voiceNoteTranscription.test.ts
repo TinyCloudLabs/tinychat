@@ -1691,23 +1691,51 @@ describe("transcribeVoiceNote (one note end to end)", () => {
       explicit: true, sourceId: "rec-1", report: () => {} })).rejects.toMatchObject({ code: "active_transcription_exists" });
     expect((await resolveVoiceNoteRow(space.tcw, "rec-1"))?.metadata.transcription_outcome).toBe("pending");
   });
-  test("a failed no-speech commit persists its save failure", async () => {
+  test("a failed no-speech commit persists its storage-full failure across controller recreation", async () => {
     const space = sqliteSpace();
+    beginStorageAccountSession(space.tcw, DID, null);
     await saveVoiceNote(space.tcw, RECORDING, AUDIO, "ios");
     const baseDb = space.tcw.sql.db.bind(space.tcw.sql);
     space.tcw.sql.db = ((name: string) => {
       const db = baseDb(name);
       return { ...db, execute: async (sql: string, params?: unknown[], options?: unknown) =>
         sql.includes("INSERT INTO voice_note_transcript")
-          ? { ok: false, error: { code: "SQL", message: "offline" } }
+          ? { ok: false, error: { code: "STORAGE_QUOTA_EXCEEDED", message: "quota exceeded" } }
           : db.execute(sql, params as never, options as never) };
     }) as typeof space.tcw.sql.db;
     const h = harness({ jobs: [job("failed", { error: { code: "no_speech", message: "No speech was found in the recording." } })] });
-    await expect(transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, explicit: true,
-      sourceId: "rec-1", allowed: () => true, report: () => {} })).rejects.toMatchObject({ code: "transcript_save_failed" });
+    const storage = memoryStorage();
+    const consent = localStorageVoiceNoteConsentStore(DID, storage);
+    consent.set(true);
+    const choices = localStorageVoiceNotePrivateChoiceStore(DID, storage);
+    VoiceNotes.listPending = async () => ({ recordings: [] });
+    const first = createVoiceNoteTranscriber({ cloud: h.cloud, consent, choices, holds: memoryHoldStore(),
+      tcw: () => space.tcw, checkRetryMs: [] });
+    await first.check();
+    first.transcribe("rec-1", AUDIO);
+    for (let i = 0; i < 30 && first.snapshot().jobs.get("rec-1")?.kind !== "failed"; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    expect(first.snapshot().jobs.get("rec-1")).toMatchObject({ kind: "failed", code: "storage_full" });
+    expect(choices.ids()).toEqual([]);
     expect((await resolveVoiceNoteRow(space.tcw, "rec-1"))?.metadata).toMatchObject({
-      transcription_outcome: "failed", transcription_error_code: "transcript_save_failed",
+      transcription_outcome: "failed", transcription_error_code: "storage_full",
     });
+    expect(isStorageReadOnly()).toBe(true);
+
+    let restartedRuns = 0;
+    const relaunched = createVoiceNoteTranscriber({
+      cloud: h.cloud, consent: localStorageVoiceNoteConsentStore(DID, storage),
+      choices: localStorageVoiceNotePrivateChoiceStore(DID, storage), holds: memoryHoldStore(), tcw: () => space.tcw,
+      checkRetryMs: [], runNote: async (args) => { restartedRuns++; return transcribeVoiceNote(args); },
+    });
+    await relaunched.check();
+    expect(restartedRuns).toBe(0);
+    expect(relaunched.snapshot().jobs.has("rec-1")).toBe(false);
+    expect((await resolveVoiceNoteRow(space.tcw, "rec-1"))?.metadata).toMatchObject({
+      transcription_outcome: "failed", transcription_error_code: "storage_full",
+    });
+    expect(isStorageReadOnly()).toBe(true);
   });
 
 

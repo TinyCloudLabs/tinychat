@@ -159,13 +159,17 @@ export function endStorageAccountSession(): void {
   for (const listener of [...planListeners]) listener();
 }
 
-const trackedDatabases = new WeakMap<object, { proxy: object; scope: StorageAccountScope | null }>();
+const trackedDatabases = new WeakMap<object, {
+  proxy: object; scope: StorageAccountScope | null; reportSuccessfulWrites: boolean;
+}>();
 
 export function trackStorageWrites<T extends object>(
   database: T, scope: StorageAccountScope | null = activeStorageScope,
+  options: { reportSuccessfulWrites?: boolean } = {},
 ): T {
+  const reportSuccessfulWrites = options.reportSuccessfulWrites !== false;
   const cached = trackedDatabases.get(database);
-  if (cached && cached.scope === scope) return cached.proxy as T;
+  if (cached && cached.scope === scope && cached.reportSuccessfulWrites === reportSuccessfulWrites) return cached.proxy as T;
   const tracked = new Proxy(database, {
     get(target, property, receiver) {
       const value = Reflect.get(target, property, receiver);
@@ -175,8 +179,9 @@ export function trackStorageWrites<T extends object>(
       return async (...args: unknown[]) => {
         try {
           const result = await Reflect.apply(value, target, args) as { ok?: boolean; error?: unknown };
-          if (result.ok) reportStorageWriteSucceeded(scope);
-          else reportStorageError(result.error, scope);
+          if (result.ok) {
+            if (reportSuccessfulWrites) reportStorageWriteSucceeded(scope);
+          } else reportStorageError(result.error, scope);
           return result;
         } catch (error) {
           reportStorageError(error, scope);
@@ -185,7 +190,7 @@ export function trackStorageWrites<T extends object>(
       };
     },
   });
-  trackedDatabases.set(database, { proxy: tracked, scope });
+  trackedDatabases.set(database, { proxy: tracked, scope, reportSuccessfulWrites });
   return tracked;
 }
 

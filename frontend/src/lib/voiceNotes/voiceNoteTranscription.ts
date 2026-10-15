@@ -1184,8 +1184,9 @@ export async function transcribeVoiceNote(args: {
   const persistFailure = async (error: unknown, statsMetadata: VoiceNoteTranscriptionStatsMetadata = {}) => {
     const code = voiceNoteErrorCode(error);
     const current = stillCurrent();
-    if ([TRANSCRIPT_STORAGE_FULL_CODE, "audio_upload_pending", "transcription_off", "upload_outcome_unknown", "account_changed",
-      "active_transcription_exists"].includes(code)
+    if ((code === TRANSCRIPT_STORAGE_FULL_CODE && args.explicitRerun)
+      || ["audio_upload_pending", "transcription_off", "upload_outcome_unknown", "account_changed",
+        "active_transcription_exists"].includes(code)
       || !current) return;
     try { await patchVoiceNoteTranscriptionFailure(tcw, sourceId, code, accountCheckpoint, statsMetadata); }
     catch (persistError) { logPipelineError("[VoiceNotes] Could not persist the transcription failure", persistError); }
