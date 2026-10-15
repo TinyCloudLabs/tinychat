@@ -325,6 +325,35 @@ describe("useLibrary, mounted", () => {
     expect(space.transcriptKeys).toEqual(["committed/transcript", "committed/transcript"]);
     expect(seen.at(-1)!.note.reads.transcript).toMatchObject({ transcript: { status: "ok", sentences: [{ text: "Committed" }] } });
   });
+  test("a post-commit body miss is re-read instead of reported as a missing transcript", async () => {
+    const space = fakeSpace({ voiceCommit: true, commitReads: [
+      { rev: 1, engine: null, provider: null },
+      { rev: 2, engine: null, provider: null },
+    ] });
+    const seen: Library[] = [];
+    await render({ tcw: space.tcw, visible: true, noteId: "a", now: () => 0, seen });
+    await space.answer("list", listedVoice("a"));
+    await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
+
+    await act(async () => captureEvents.emit("library-changed", { source: "exo-voice-note", sourceId: "rec-a" }));
+    await space.answer("transcript", { ok: false, error: { code: "NOT_FOUND", message: "missing" } });
+    await space.answer("list", listedVoice("a"));
+    await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
+    await space.answer("transcript", { ok: true, data: { data: JSON.stringify([{ text: "Synthetic committed body" }]) } });
+
+    expect(space.transcriptKeys).toEqual(["committed/transcript/1", "committed/transcript/2"]);
+    expect(seen.at(-1)!.note.reads.transcript).toMatchObject({
+      transcript: { status: "ok", sentences: [{ text: "Synthetic committed body" }] },
+    });
+    const html = renderToStaticMarkup(<MemoryRouter><NoteDetail
+      library={seen.at(-1)!}
+      pushed
+      onBack={() => {}}
+      transcription={undefined}
+    /></MemoryRouter>);
+    expect(html).not.toContain("Couldn’t load this note’s full transcript.");
+  });
+
   test("a committed transcript's provenance overrides stale row markers", async () => {
     const space = fakeSpace({ voiceCommit: true, commitProvenance: ["whispercpp", "whispercpp"] });
     const seen: Library[] = [];

@@ -82,12 +82,13 @@ const ROWS: Row[] = [
 
   // 2. In your space
   { name: "space: waiting to upload", patch: {}, states: { phone: "done", space: "waiting" }, current: "space", caption: "Waiting to upload" },
-  { name: "space: another operation is using the lane", patch: { space: { pending: { upload: { state: "waiting", bytes: 0, total: 100 }, waitingBehind: 0 }, lane: { busy: true, depth: 3 } } }, current: "space", caption: "Waiting to start" },
+  { name: "space: read-only lane work does not block this note", patch: { space: { pending: { upload: { state: "waiting", bytes: 0, total: 100 }, waitingBehind: 0 }, lane: { busy: true, depth: 3 } } }, current: "space", caption: "Waiting to upload" },
+
   { name: "space: setup before upload", patch: { space: { pending: { upload: { state: "preparing", bytes: 0, total: 100 } } } }, states: { space: "active" }, current: "space", caption: "Preparing audio upload…" },
   { name: "space: nothing ahead and an idle lane is just waiting", patch: { space: { pending: { waitingBehind: 0 }, lane: { busy: false, depth: 0 } } }, current: "space", caption: "Waiting to upload" },
   { name: "space: one save ahead stays a plain wait", patch: { space: { pending: { waitingBehind: 1 }, lane: { busy: true, depth: 2 } } }, current: "space", caption: "Waiting to start" },
   { name: "space: many saves ahead stay a plain wait", patch: { space: { pending: { waitingBehind: 11 }, lane: { busy: true, depth: 12 } } }, current: "space", caption: "Waiting to start" },
-  { name: "space: a busy lane with no per-note position never invents one", patch: { space: { pending: {}, lane: { busy: true, depth: 5 } } }, current: "space", caption: "Waiting to start" },
+  { name: "space: a busy lane without this note's queue position stays a plain wait", patch: { space: { pending: {}, lane: { busy: true, depth: 5 } } }, current: "space", caption: "Waiting to upload" },
   { name: "space: uploading 42%", patch: { space: { pending: { upload: { state: "uploading", bytes: 42, total: 100 } } } }, states: { space: "active" }, current: "space", caption: "Uploading audio to your TinyCloud space · 42%" },
   { name: "space: retrying", patch: { space: { pending: { upload: { state: "retrying", bytes: 42, total: 100 } } } }, states: { space: "active" }, current: "space", caption: "Retrying…" },
   { name: "space: signed out", patch: { space: { pending: { held: "signed-out" } } }, states: { space: "blocked" }, current: "space", cause: "You're signed out. This note is safe on this browser.", action: "sign-in" },
@@ -194,6 +195,13 @@ const ROWS: Row[] = [
   { name: "done: route off, no notes, in the space", patch: { space: SAVED }, states: { phone: "done", space: "done", transcript: "skipped", notes: "skipped" }, current: null },
   { name: "done: private transcript and notes", patch: { route: "private-cloud", hasNotesOrMoments: true, space: SAVED, transcript: { inSpace: "transcribed" }, notes: { state: "synced" } }, states: { phone: "done", space: "done", transcript: "done", notes: "done" }, current: null },
 ];
+  test("read-only lane work does not claim another operation is blocking this note", () => {
+    const pipeline = notePipeline(input({ space: {
+      pending: { upload: { state: "waiting", bytes: 0, total: 100 }, waitingBehind: 0 },
+      lane: { busy: true, depth: 1 },
+    } }));
+    expect(pipeline.steps.find((step) => step.key === "space")?.caption).toBe("Waiting to upload");
+  });
 
 const caption = (pipeline: NotePipeline, key: StepKey | null) => pipeline.steps.find((step) => step.key === key)?.caption;
 
