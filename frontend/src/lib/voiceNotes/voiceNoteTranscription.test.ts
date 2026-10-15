@@ -4912,4 +4912,103 @@ describe("TC-1140 round-six merge regressions", () => {
     expect((await readTranscriptCommit(space.tcw, "rec-1"))?.rev).toBe(2);
     expect(space.kv.has(transcriptHistoryKvKey("rec-1", base.rev, base.hash))).toBe(true);
   });
+  test("a confirmed rerun refreshes the in-memory base before automatic recovery", async () => {
+    const { space, base } = await committedRerunNote();
+    const storage = memoryStorage();
+    const pending = localStorageVoiceNotePendingStore(DID, storage);
+    const scheduled: { callback: () => void; delayMs: number; cancelled: boolean }[] = [];
+    const clock = { value: 1_000 };
+    let statusRequests = 0;
+    let newerBaseHash: string | null = null;
+    const deleteObservation: { commitRev: number | null; hasHistory: boolean } = {
+      commitRev: null,
+      hasHistory: false,
+    };
+    const historyKeyAtDelete = () => newerBaseHash === null ? null
+      : transcriptHistoryKvKey("rec-1", 3, newerBaseHash);
+    const h = harness({
+      pending,
+      creates: [
+        new PrivateCloudError("quota_exceeded", "Synthetic initial create quota"),
+        { id: ID2, status: "awaiting_upload", upload: { path: `/uploads/${ID2}`, capability: CAP2 } },
+      ],
+      puts: [{ status: 201, body: { status: "queued" } }],
+      onStatusRequest: () => {
+        if (statusRequests++ === 0) throw new PrivateCloudError("quota_exceeded", "Synthetic status quota");
+      },
+      onRemove: async () => {
+        deleteObservation.commitRev = (await readTranscriptCommit(space.tcw, "rec-1"))?.rev ?? null;
+        const historyKey = historyKeyAtDelete();
+        deleteObservation.hasHistory = historyKey !== null && space.kv.has(historyKey);
+      },
+    });
+    const first = controllerFor(space, h, storage, scheduled, clock);
+    await first.check();
+    await first.transcribeAgain!("rec-1", "private-cloud");
+    await ticks();
+    expect(first.snapshot().jobs.get("rec-1")).toMatchObject({ kind: "failed", code: "quota_exceeded" });
+    expect(pending.read("rec-1")).toMatchObject({ explicitRerun: true, rerunBase: { rev: 1, hash: base.hash } });
+
+    expect((await saveVoiceNoteTranscript(space.tcw, "rec-1", prepareVoiceNoteTranscript({
+      ...TRANSCRIPT,
+      text: "Independent revision three",
+      segments: [{ ...TRANSCRIPT.segments[0]!, text: "Independent revision three" }],
+    }, "2026-10-03T11:00:00.000Z", 3))).ok).toBe(true);
+    const newerBase = (await readTranscriptCommit(space.tcw, "rec-1"))!;
+    newerBaseHash = newerBase.hash;
+    await first.transcribeAgain!("rec-1", "private-cloud");
+    await ticks();
+    expect(pending.read("rec-1")).toMatchObject({ explicitRerun: true, rerunBase: { rev: 3, hash: newerBase.hash } });
+
+    const relaunched = controllerFor(space, h, storage, scheduled, clock);
+    await relaunched.check();
+    await ticks(200);
+
+    const committed = await readTranscriptCommit(space.tcw, "rec-1");
+    expect(committed?.rev).toBe(4);
+    expect(space.kv.has(transcriptHistoryKvKey("rec-1", 3, newerBase.hash))).toBe(true);
+    expect(relaunched.snapshot().jobs.get("rec-1")?.kind).toBe("done");
+    expect(pending.read("rec-1")).toBeNull();
+    expect(h.creates).toHaveLength(2);
+    expect(h.puts).toHaveLength(1);
+    expect(h.removed).toEqual([ID2]);
+    expect(deleteObservation.commitRev).toBe(4);
+    expect(deleteObservation.hasHistory).toBe(true);
+  });
+
+  test("a reused rerun job still recovers automatically when its base is unchanged", async () => {
+    const { space, base } = await committedRerunNote();
+    const storage = memoryStorage();
+    const pending = localStorageVoiceNotePendingStore(DID, storage);
+    let statusRequests = 0;
+    const h = harness({
+      pending,
+      creates: [
+        new PrivateCloudError("quota_exceeded", "Synthetic initial create quota"),
+        { id: ID2, status: "awaiting_upload", upload: { path: `/uploads/${ID2}`, capability: CAP2 } },
+      ],
+      puts: [{ status: 201, body: { status: "queued" } }],
+      onStatusRequest: () => {
+        if (statusRequests++ === 0) throw new PrivateCloudError("quota_exceeded", "Synthetic status quota");
+      },
+    });
+    const controller = controllerFor(space, h, storage, [], { value: 1_000 });
+    await controller.check();
+    await controller.transcribeAgain!("rec-1", "private-cloud");
+    await ticks();
+    await controller.transcribeAgain!("rec-1", "private-cloud");
+    await ticks();
+
+    const relaunched = controllerFor(space, h, storage, [], { value: 1_000 });
+    await relaunched.check();
+    await ticks(200);
+
+    expect((await readTranscriptCommit(space.tcw, "rec-1"))?.rev).toBe(2);
+    expect(space.kv.has(transcriptHistoryKvKey("rec-1", base.rev, base.hash))).toBe(true);
+    expect(relaunched.snapshot().jobs.get("rec-1")?.kind).toBe("done");
+    expect(pending.read("rec-1")).toBeNull();
+    expect(h.creates).toHaveLength(2);
+    expect(h.puts).toHaveLength(1);
+    expect(h.removed).toEqual([ID2]);
+  });
 });

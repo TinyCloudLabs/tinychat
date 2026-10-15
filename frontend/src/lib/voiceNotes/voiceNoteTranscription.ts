@@ -1055,7 +1055,10 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
     };
     guard();
     let job = pending.read(sourceId);
-    if (job && explicitRerun) writePending(sourceId, { ...job, ...(rerunBase ? { rerunBase } : {}) }, true);
+    if (job && explicitRerun) {
+      job = { ...job, ...(rerunBase ? { rerunBase } : {}) };
+      writePending(sourceId, job, true);
+    }
     if (job === null && rerunBase !== undefined) {
       job = { attemptId: newId(), transcriptionId: null, rerunBase };
       writePending(sourceId, job, explicitRerun);
