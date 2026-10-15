@@ -32,7 +32,6 @@ export function createWebSignInPrefetch(backendUrl: string, services: Services):
   let cancelled = false;
   let consumed = false;
   let signingNonceAt: number | undefined;
-  let signingChecked = false;
 
   function assertActive() {
     if (cancelled) throw new Error("Sign-in attempt cancelled");
@@ -71,12 +70,11 @@ export function createWebSignInPrefetch(backendUrl: string, services: Services):
         on: (event, listener) => provider.on(event, listener),
         removeListener: (event, listener) => provider.removeListener(event, listener),
         request: (args) => {
-          if (args.method === "personal_sign" && !signingChecked) {
+          if (args.method === "personal_sign") {
             if (cancelled) return Promise.reject(new Error("Sign-in attempt cancelled"));
             if (signingNonceAt === undefined || now() - signingNonceAt >= MAX_NONCE_AGE_MS) {
               return Promise.reject(new Error("Sign-in nonce expired; try again"));
             }
-            signingChecked = true;
           }
           return provider.request(args);
         },

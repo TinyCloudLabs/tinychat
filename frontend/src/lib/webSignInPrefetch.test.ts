@@ -49,6 +49,7 @@ describe("web sign-in prefetch", () => {
       async request() { return "signature"; },
     };
     const guarded = attempt.guardSigning(provider);
+    expect(await guarded.request({ method: "personal_sign", params: ["0x00"] })).toBe("signature");
     now = 4 * 60_000;
     await expect(guarded.request({ method: "personal_sign", params: ["0x00"] })).rejects.toThrow(/nonce expired/i);
     expect(await guarded.request({ method: "eth_chainId" })).toBe("signature");
