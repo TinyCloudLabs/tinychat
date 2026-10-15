@@ -613,6 +613,7 @@ const AUTOMATIC_RETRY_CODES: Record<string, true> = {
   http_5xx: true,
   service_busy: true,
   transcript_save_failed: true,
+  held_result_persistence_failed: true,
   STORAGE_QUOTA_EXCEEDED: true,
   upload_capability_limit: true,
 };

@@ -65,6 +65,9 @@ function fakeCloud(opts: { capabilities?: () => Promise<PrivateCloudCapabilities
       return (opts.capabilities ?? (async () => CAPS))();
     },
     pendingSourceIds: () => opts.pending ?? [],
+    hasRemoteJob: () => false,
+    holdTranscript: () => {},
+    heldTranscript: () => null,
     transcribe: async () => {
       throw new Error("runNote is faked");
     },

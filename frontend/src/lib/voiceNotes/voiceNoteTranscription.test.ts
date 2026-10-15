@@ -1434,6 +1434,89 @@ describe("transcribeVoiceNote (one note end to end)", () => {
     expect(resumed.removed).toEqual([ID]);
     expect(await readTranscriptCommit(space.tcw, "rec-1")).toMatchObject({ rev: 1, outcome: "transcribed" });
   });
+  test("a held-write and Space-save failure automatically salvages the completed result after storage recovers", async () => {
+    const space = sqliteSpace();
+    await saveVoiceNote(space.tcw, RECORDING, AUDIO, "android");
+    const storage = memoryStorage();
+    let holdWritesAllowed = false;
+    const setItem = storage.setItem;
+    storage.setItem = (key, value) => {
+      if (!holdWritesAllowed && key === `${VOICE_NOTE_PENDING_JOBS_KEY}:${DID}` && value.includes('"held"'))
+        throw new Error("quota");
+      setItem(key, value);
+    };
+    const pending = localStorageVoiceNotePendingStore(DID, storage);
+    const h = harness({
+      pending,
+      jobs: [job("completed")],
+      onRemove: async () => {
+        commitAtRemove = (await readTranscriptCommit(space.tcw, "rec-1"))?.rev ?? null;
+      },
+    });
+    const tcw = typedTcw(space);
+    const baseDb = tcw.sql.db.bind(tcw.sql);
+    tcw.sql.db = ((name: string) => {
+      const db = baseDb(name);
+      return { ...db, execute: async (sql: string, params?: unknown[], options?: unknown) =>
+        sql.includes("INSERT INTO voice_note_transcript")
+          ? { ok: false, error: { code: "SQL", message: "offline" } }
+          : db.execute(sql, params as never, options as never) };
+    }) as TestTcw["sql"]["db"];
+    let commitAtRemove: number | null = null;
+    let now = 0;
+    const scheduled: { callback: () => void; delayMs: number; cancelled: boolean }[] = [];
+    const consent = localStorageVoiceNoteConsentStore(DID, storage);
+    consent.set(true);
+    const transcriber = createVoiceNoteTranscriber({
+      cloud: h.cloud,
+      consent,
+      choices: localStorageVoiceNotePrivateChoiceStore(DID, storage),
+      holds: memoryHoldStore(),
+      tcw: () => space.tcw,
+      checkRetryMs: [],
+      failedBackoffMs: [15_000],
+      now: () => now,
+      timer: {
+        schedule: (callback, delayMs) => {
+          scheduled.push({ callback, delayMs, cancelled: false });
+          return scheduled.length;
+        },
+        cancel: (handle) => { scheduled[Number(handle) - 1]!.cancelled = true; },
+      },
+    });
+    try {
+      await transcriber.check();
+      pending.write("rec-1", { attemptId: "00000000-0000-4000-8000-00000000abcd", transcriptionId: ID });
+      transcriber.transcribe("rec-1");
+      for (let i = 0; i < 30 && transcriber.snapshot().jobs.get("rec-1")?.kind !== "failed"; i++)
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(transcriber.snapshot().jobs.get("rec-1")).toMatchObject({ kind: "failed", code: "held_result_persistence_failed" });
+      expect(scheduled[0]?.delayMs).toBe(15_000);
+      expect(h.creates).toEqual([]);
+      expect(h.removed).toEqual([]);
+      expect(await readTranscriptCommit(space.tcw, "rec-1")).toBeNull();
+      const pendingRow = await readVoiceNoteForTranscription(space.tcw, "rec-1");
+      expect(pendingRow.ok && pendingRow.data?.transcript.status).toBe("pending");
+
+      now = 1_000;
+      holdWritesAllowed = true;
+      tcw.sql.db = baseDb as TestTcw["sql"]["db"];
+      now = 15_000;
+      scheduled[0]!.callback();
+      for (let i = 0; i < 30 && transcriber.snapshot().jobs.get("rec-1")?.kind !== "done"; i++)
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+      const commit = await readTranscriptCommit(space.tcw, "rec-1");
+      expect(commit).toMatchObject({ rev: 1, outcome: "transcribed" });
+      expect(commit?.preview).toContain("Remember to book");
+      expect(h.calls).toContain(`result:${ID}`);
+      expect(h.creates).toEqual([]);
+      expect(h.removed).toEqual([ID]);
+      expect(commitAtRemove).toBe(1);
+    } finally {
+      tcw.sql.db = baseDb as TestTcw["sql"]["db"];
+    }
+  });
   test("a failed pending-store hold still commits in-memory transcript before deleting the job", async () => {
     const space = sqliteSpace();
     await saveVoiceNote(space.tcw, RECORDING, AUDIO, "android");

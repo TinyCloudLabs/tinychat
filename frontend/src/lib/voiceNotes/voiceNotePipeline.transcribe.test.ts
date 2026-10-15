@@ -68,6 +68,9 @@ function transcriberWithRuns() {
   const cloud: VoiceNoteCloud = {
     capabilities: async () => CAPS,
     pendingSourceIds: () => [],
+    hasRemoteJob: () => false,
+    holdTranscript: () => {},
+    heldTranscript: () => null,
     transcribe: async () => { throw new Error("runNote is faked"); },
     finish: async () => {},
     releaseUnsent: async () => {},
