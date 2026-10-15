@@ -170,6 +170,57 @@ describe("shared private access controller", () => {
     expect(c.privateAccessRef.current.active).toBe(true);
     c.dispose();
   });
+  it("broadcasts access invalidation before replacement and disconnect requests", async () => {
+    const names = ["window", "document", "BroadcastChannel"];
+    const descriptors = names.map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)] as const);
+    const messages: unknown[] = [];
+    class TestBroadcastChannel {
+      onmessage: ((event: MessageEvent) => void) | null = null;
+      constructor(readonly name: string) {}
+      postMessage(message: unknown) { messages.push(message); }
+      close() {}
+    }
+    Object.defineProperty(globalThis, "window", { configurable: true, value: {
+      addEventListener() {}, removeEventListener() {},
+    } });
+    Object.defineProperty(globalThis, "document", { configurable: true, value: {
+      addEventListener() {}, removeEventListener() {}, visibilityState: "visible",
+    } });
+    Object.defineProperty(globalThis, "BroadcastChannel", { configurable: true, value: TestBroadcastChannel });
+
+    const post = deferred<Response>(); const posted = deferred<void>();
+    const deletion = deferred<Response>(); const deleted = deferred<void>();
+    globalThis.fetch = (async (_url, init) => {
+      if (init?.method === "POST") { posted.resolve(); return post.promise; }
+      if (init?.method === "DELETE") { deleted.resolve(); return deletion.promise; }
+      return Response.json(active);
+    }) as typeof fetch;
+    const c = controller();
+    const unlisten = c.listen();
+    try {
+      await c.refresh();
+      const enabling = c.onEnable();
+      await posted.promise;
+      expect(messages).toEqual(["changed"]);
+      post.resolve(Response.json(active));
+      await enabling;
+      expect(messages).toEqual(["changed", "changed"]);
+
+      const disconnecting = c.onDisconnect();
+      await deleted.promise;
+      expect(messages).toEqual(["changed", "changed", "changed"]);
+      deletion.resolve(Response.json({ status: "none", revision: "r2" }));
+      await disconnecting;
+      expect(messages).toEqual(["changed", "changed", "changed", "changed"]);
+    } finally {
+      unlisten();
+      c.dispose();
+      for (const [name, descriptor] of descriptors) {
+        if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+        else Reflect.deleteProperty(globalThis, name);
+      }
+    }
+  });
 
   it("rejects an old status response after disconnect", async () => {
     const old = deferred<Response>();

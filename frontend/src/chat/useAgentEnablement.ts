@@ -146,6 +146,7 @@ export function createAgentAccessController(opts: UseAgentEnablementOptions) {
             probeSequence++;
             access(false, null);
             update({ capability: "available", status: null, revision: null, probeFailed: false });
+            signalChange();
           },
           _mint: opts._mint ?? (() => mintAgentSessionViaFreshSignIn({ appName: opts.appName,
             openkeyHost: opts.openkeyHost, tinycloudHosts: opts.tinycloudHosts, sessionAddress: opts.tcw.address(),
@@ -171,6 +172,7 @@ export function createAgentAccessController(opts: UseAgentEnablementOptions) {
     const currentOperation = operation;
     update({ capability: agentEnabledRef.current ? "available" : "unavailable", status: null,
       revision: null, probeFailed: false, disconnecting: true, enableError: null, reconnectReason: null });
+    signalChange();
     stopping = (async () => {
       try {
         const token = opts.sessionStore.getToken();

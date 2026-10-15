@@ -13,7 +13,7 @@ export function SectionCard(props: {
 }) {
   const Icon = props.icon;
   return (
-    <section id={props.id} className="rounded-lg border border-border bg-card p-4">
+    <section id={props.id} className={`${props.id ? "scroll-mt-14 " : ""}rounded-lg border border-border bg-card p-4`}>
       <div className="flex items-center gap-2">
         <Icon className="size-4 text-muted-foreground" />
         <h2 tabIndex={props.id ? -1 : undefined} className="text-sm font-semibold tracking-tight">{props.title}</h2>

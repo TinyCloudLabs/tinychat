@@ -596,15 +596,20 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
               if (screen.id === "shell-settings-agent-access") {
                 const anchor = await page.evaluate(() => {
                   const card = document.getElementById("agent-access");
+                  const heading = card?.querySelector("h2");
+                  const header = document.querySelector<HTMLElement>("[data-scroll-root] > header");
                   const rect = card?.getBoundingClientRect();
+                  const headingRect = heading?.getBoundingClientRect();
+                  const headerRect = header?.getBoundingClientRect();
                   return {
                     exists: Boolean(card),
-                    focused: Boolean(card?.contains(document.activeElement)),
+                    focused: Boolean(heading && document.activeElement === heading),
                     inViewport: Boolean(rect && rect.top >= 0 && rect.bottom <= window.innerHeight),
+                    headingClear: Boolean(headingRect && headerRect && headingRect.top >= headerRect.bottom + 4),
                   };
                 });
-                if (!anchor.exists || !anchor.focused || !anchor.inViewport) {
-                  findings.push({ check: "agent-settings-anchor", detail: `exists ${anchor.exists}; focused ${anchor.focused}; in viewport ${anchor.inViewport}` });
+                if (!anchor.exists || !anchor.focused || !anchor.inViewport || !anchor.headingClear) {
+                  findings.push({ check: "agent-settings-anchor", detail: `exists ${anchor.exists}; focused ${anchor.focused}; in viewport ${anchor.inViewport}; clear of header ${anchor.headingClear}` });
                 }
               }
               if (screen.id === "shell-chat" && ["phone", "phone-small", "desktop"].includes(viewport.id)) {

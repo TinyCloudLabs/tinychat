@@ -12,14 +12,14 @@ export function ChatAgentStatusIndicator(props: UseAgentEnablementResult) {
     <div
       aria-live="polite"
       aria-atomic="true"
-      className="flex min-h-11 items-center justify-between gap-3 border-b border-border/70 bg-background px-3 text-xs sm:px-4"
+      className="flex min-h-11 flex-wrap items-center justify-between gap-x-3 gap-y-1 border-b border-border/70 bg-background px-3 text-xs sm:px-4"
     >
-      <span role="status" className="flex min-w-0 items-center gap-2 font-medium text-foreground">
+      <span role="status" className="flex min-w-[12rem] flex-1 items-center gap-2 font-medium text-foreground">
         <span
           aria-hidden="true"
           className={`size-2 shrink-0 rounded-full ${connected ? "bg-green-500" : props.capability === "unavailable" && props.probeFailed ? "bg-destructive" : "bg-muted-foreground"}`}
         />
-        <span className="truncate">Agent access: {statusLabel}</span>
+        <span className="break-words">Agent access: {statusLabel}</span>
       </span>
       {canConnect ? (
         <Button
