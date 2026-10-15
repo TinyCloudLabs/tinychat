@@ -19,6 +19,28 @@ export const LOCAL_WEB_ORIGINS = [
   "https://localhost:5186",
 ] as const;
 
+/** Match the SDK's signed audience, not the browser Origin or the API host.
+ * The web SDK signs hostname (without the port) and `https://${hostname}`;
+ * native OpenKey signs its issuer domain with a session-key DID URI. */
+export function isExpectedSiweOrigin(
+  domain: string,
+  uri: string,
+  frontendUrl: string,
+  nativeDomain: string,
+): boolean {
+  const webDomain = new URL(frontendUrl).hostname;
+  const webPair =
+    (domain === webDomain ||
+      domain === "localhost" ||
+      domain === "tauri.localhost" ||
+      TINYCHAT_PAGES_ORIGIN.test(`https://${domain}`)) &&
+    uri === `https://${domain}`;
+  return webPair || (
+    domain === nativeDomain &&
+    /^did:key:(z6Mk[1-9A-HJ-NP-Za-km-z]{44})#\1$/.test(uri)
+  );
+}
+
 /** Browser origins allowed to call the TinyChat backend. */
 export function appCorsOrigins(frontendOrigin: string): Array<string | RegExp> {
   return [

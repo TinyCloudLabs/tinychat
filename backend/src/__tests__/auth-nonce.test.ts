@@ -27,7 +27,7 @@ function app() {
   const nonceStore = createNonceStore();
   const instance = express();
   instance.use(express.json());
-  instance.use("/api/auth", createAuthRouter({ nonceStore, privateKey: "test-key" }));
+  instance.use("/api/auth", createAuthRouter({ nonceStore, privateKey: "test-key", frontendUrl: "http://localhost:5186" }));
   return { app: instance, nonceStore };
 }
 
@@ -61,5 +61,15 @@ describe("GET /api/auth/nonce", () => {
     expect(res.status).toBe(400);
     const { error } = await res.json();
     expect(error).toBe("invalid_address");
+  });
+  it("responds 429 when outstanding nonces fill the store", async () => {
+    const { app: instance, nonceStore } = app();
+    for (let i = 0; i < 2048; i++) nonceStore.generate();
+    const res = await request(instance, "/api/auth/nonce");
+    expect(res.status).toBe(429);
+    expect(await res.json()).toEqual({
+      error: "nonce_capacity",
+      message: "Too many pending sign-ins; try again shortly",
+    });
   });
 });

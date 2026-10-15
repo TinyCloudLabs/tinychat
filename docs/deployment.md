@@ -553,6 +553,23 @@ nothing below may be reported as done on its behalf.
   documented local origins on port `5186`. Production must still set
   `FRONTEND_URL=https://tinycloud.chat`; unrelated Pages projects, localhost
   ports, and lookalike domains remain blocked.
+- **SIWE audience (TC-1201):** `/api/auth/verify` compares the signed domain
+  and URI as a pair, before consuming the nonce. The web SDK signs the page
+  hostname and `https://<hostname>` (no port or trailing slash): production
+  `tinycloud.chat` / `https://tinycloud.chat`; Pages project apex and one-label
+  branch/commit previews under `tinychat-4jq.pages.dev` use their exact hostname
+  and matching HTTPS URI; local web and macOS desktop use `localhost` /
+  `https://localhost`; Windows desktop uses `tauri.localhost` /
+  `https://tauri.localhost`. The production web origin is configured by
+  `FRONTEND_URL` in `docker-compose.phala.yml`; local origins and Pages preview
+  hosts come from `backend/src/cors-origins.ts`. Native OpenKey sign-in (iOS and
+  Android) signs its configured issuer domain (`openkey.so` by default) and a
+  canonical `did:key` session verification-method URI. Set
+  `OPENKEY_SIWE_DOMAIN` on the backend if the registered OpenKey native client
+  changes its `siweDomain`; never use the API host as the signed audience.
+  Nonces remain single-use for five minutes, with at most 2048 pending per
+  backend process (429 at capacity) and the shared `/api/auth` limit of
+  1200 requests per 15 minutes.
 - **TLS:** Phala's `dstack-ingress` terminates TLS for the API. The backend's
   local-only `HTTPS_CERT_FILE`/`HTTPS_KEY_FILE` path is unused in production.
 - **What's not included yet:** CI (`ci.yml`) and PR-preview deployments. Port

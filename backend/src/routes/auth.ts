@@ -1,10 +1,13 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
-import { issueSessionToken, verifySIWE, type NonceStore } from "@tinyboilerplate/server";
+import { issueSessionToken, NonceStoreFullError, verifySIWE, type NonceStore } from "@tinyboilerplate/server";
+import { isExpectedSiweOrigin } from "../cors-origins.js";
 
 interface AuthRoutesConfig {
   nonceStore: NonceStore;
   privateKey: string;
+  frontendUrl: string;
+  nativeSiweDomain?: string;
 }
 
 export function createAuthRouter(config: AuthRoutesConfig) {
@@ -14,15 +17,16 @@ export function createAuthRouter(config: AuthRoutesConfig) {
   // the recovered signer at /verify); it stays single-use and short-lived.
   router.get("/nonce", (req: Request, res: Response) => {
     const address = req.query.address;
-    if (address === undefined) {
-      res.json({ nonce: config.nonceStore.generate() });
-      return;
-    }
-    if (typeof address !== "string" || !/^0x[0-9a-fA-F]{40}$/.test(address)) {
+    if (address !== undefined && (typeof address !== "string" || !/^0x[0-9a-fA-F]{40}$/.test(address))) {
       res.status(400).json({ error: "invalid_address", message: "A valid address is required" });
       return;
     }
-    res.json({ nonce: config.nonceStore.generate(address) });
+    try {
+      res.json({ nonce: config.nonceStore.generate(address) });
+    } catch (error) {
+      if (!(error instanceof NonceStoreFullError)) throw error;
+      res.status(429).json({ error: "nonce_capacity", message: "Too many pending sign-ins; try again shortly" });
+    }
   });
 
   router.post("/verify", async (req: Request, res: Response) => {
@@ -35,7 +39,13 @@ export function createAuthRouter(config: AuthRoutesConfig) {
     }
 
     try {
-      const { address, nonce, expirationTime } = await verifySIWE(message, signature);
+      const { address, nonce, domain, uri, expirationTime } = await verifySIWE(message, signature);
+      if (!isExpectedSiweOrigin(domain, uri, config.frontendUrl, config.nativeSiweDomain ?? "openkey.so")) {
+        res.status(400).json({
+          error: "invalid_origin", message: "SIWE domain or URI does not match this application",
+        });
+        return;
+      }
       if (!config.nonceStore.validate(address, nonce)) {
         res
           .status(401)

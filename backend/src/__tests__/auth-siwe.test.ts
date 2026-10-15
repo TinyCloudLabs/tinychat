@@ -19,7 +19,7 @@ describe("SIWE login without an expiration time", () => {
     }).prepareMessage();
     const signature = await account.signMessage({ message });
 
-    expect(await verifySIWE(message, signature)).toEqual({ address: account.address, nonce });
+    expect(await verifySIWE(message, signature)).toEqual({ address: account.address, nonce, domain: "localhost", uri: "https://localhost/" });
     expect((await verifySiweSession(message, signature)).expirationTime).toBeUndefined();
   });
 });

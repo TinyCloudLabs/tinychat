@@ -38,11 +38,11 @@ afterEach(async () => {
   }
 });
 
-async function startAuthServer() {
+async function startAuthServer(frontendUrl = "http://localhost:5186") {
   const app = express();
   app.use(express.json());
   app.use(createCsrfMiddleware());
-  app.use("/api/auth", createAuthRouter({ nonceStore: createNonceStore(), privateKey: KEY }));
+  app.use("/api/auth", createAuthRouter({ nonceStore: createNonceStore(), privateKey: KEY, frontendUrl }));
   app.get("/whoami", createAuthMiddleware(KEY), (req, res) => res.json(req.user));
   const server = await new Promise<Server>((resolve) => {
     const listener = app.listen(0, "127.0.0.1", () => resolve(listener));
@@ -60,14 +60,16 @@ async function signMessage(
     address?: typeof account.address;
     expirationTime?: Date;
     notBefore?: Date;
+    domain?: string;
+    uri?: string;
   } = {},
 ) {
   const signer = options.signer ?? account;
   const message = createSiweMessage({
-    domain: "localhost",
+    domain: options.domain ?? "localhost",
     address: options.address ?? signer.address,
     statement: "Sign in",
-    uri: "http://localhost",
+    uri: options.uri ?? "https://localhost",
     version: "1",
     chainId: 1,
     nonce,
@@ -186,8 +188,75 @@ describe("HTTP SIWE sessions", () => {
     }
   });
 
+  test("rejects a signed message for another domain without consuming its nonce", async () => {
+    setSystemTime(NOW);
+    const base = await startAuthServer();
+    const nonce = await requestNonce(base, account.address);
+    const wrong = await signMessage(nonce, { domain: "evil.example" });
+    const rejected = await postVerify(base, wrong);
+    expect(rejected.status).toBe(400);
+    expect(rejected.body).toEqual({
+      error: "invalid_origin", message: "SIWE domain or URI does not match this application",
+    });
+    expect((await postVerify(base, await signMessage(nonce))).status).toBe(200);
+  });
+
+  test("rejects a signed message for another URI even when the domain matches", async () => {
+    setSystemTime(NOW);
+    const base = await startAuthServer();
+    const nonce = await requestNonce(base, account.address);
+    const wrong = await signMessage(nonce, { uri: "https://evil.example" });
+    const rejected = await postVerify(base, wrong);
+    expect(rejected.status).toBe(400);
+    expect(rejected.body).toEqual({
+      error: "invalid_origin", message: "SIWE domain or URI does not match this application",
+    });
+  });
+
+  test("accepts exact production and Pages preview signed pairs, but not lookalikes", async () => {
+    setSystemTime(NOW);
+    const base = await startAuthServer("https://tinycloud.chat");
+    for (const domain of ["tinycloud.chat", "tinychat-4jq.pages.dev", "feature-12.tinychat-4jq.pages.dev"]) {
+      const nonce = await requestNonce(base, account.address);
+      const signed = await signMessage(nonce, { domain, uri: `https://${domain}` });
+      expect((await postVerify(base, signed)).status).toBe(200);
+    }
+    const nonce = await requestNonce(base, account.address);
+    const lookalike = await signMessage(nonce, {
+      domain: "feature-12.tinychat-4jq.pages.dev.evil.example",
+      uri: "https://feature-12.tinychat-4jq.pages.dev.evil.example",
+    });
+    expect((await postVerify(base, lookalike)).status).toBe(400);
+  });
+
+  test("accepts native OpenKey DID sessions but rejects a web URI on the native domain", async () => {
+    setSystemTime(NOW);
+    const base = await startAuthServer("https://tinycloud.chat");
+    const nonce = await requestNonce(base);
+    const did = "did:key:z6MkhqPVyvUbDHzPTaEyHUVMuyCg26uED8fLsGECC2dbPQbJ";
+    const native = await signMessage(nonce, { domain: "openkey.so", uri: `${did}#${did.slice(8)}` });
+    expect((await postVerify(base, native)).status).toBe(200);
+    const webNonce = await requestNonce(base);
+    const web = await signMessage(webNonce, { domain: "openkey.so", uri: "https://openkey.so" });
+    expect((await postVerify(base, web)).status).toBe(400);
+  });
+
+  test("rejects malformed native verification-method URIs and the wrong native domain", async () => {
+    setSystemTime(NOW);
+    const base = await startAuthServer("https://tinycloud.chat");
+    for (const [domain, uri] of [
+      ["openkey.so", "did:key:z6MkhqPVyvUbDHzPTaEyHUVMuyCg26uED8fLsGECC2dbPQbJ"],
+      ["openkey.so", "did:key:z6MkhqPVyvUbDHzPTaEyHUVMuyCg26uED8fLsGECC2dbPQbJ#other"],
+      ["foreign.example", "did:key:z6MkhqPVyvUbDHzPTaEyHUVMuyCg26uED8fLsGECC2dbPQbJ#z6MkhqPVyvUbDHzPTaEyHUVMuyCg26uED8fLsGECC2dbPQbJ"],
+    ]) {
+      const nonce = await requestNonce(base);
+      expect((await postVerify(base, await signMessage(nonce, { domain, uri }))).status).toBe(400);
+    }
+  });
+
   test("nonce is single-use, address-bound, and valid through exactly five minutes", async () => {
     setSystemTime(NOW);
+
     const base = await startAuthServer();
     const firstNonce = await requestNonce(base, account.address);
     const lateNonce = await requestNonce(base, account.address);
