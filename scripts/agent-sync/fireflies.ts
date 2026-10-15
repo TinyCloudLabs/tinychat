@@ -22,8 +22,9 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { FirefliesClient, defaultFirefliesClientOptions } from "../../frontend/src/lib/connectors/firefliesClient";
 import * as connectorStore from "../../frontend/src/lib/connectors/connectorStore";
-import { CONNECTORS_SQL_DB_NAME } from "../../frontend/src/lib/connectors/connectorStore";
+import { CONNECTORS_SQL_DB_NAME, type StoreResult } from "../../frontend/src/lib/connectors/connectorStore";
 import { syncFireflies, type SyncStore } from "../../frontend/src/lib/connectors/firefliesSync";
+import { isStorageFullError } from "../../frontend/src/lib/storageStatus";
 
 export const SOURCE = "fireflies";
 export const MAX_REQUESTS_PER_RUN = 100;
@@ -46,6 +47,7 @@ export type RunResult =
   | "not_connected"
   | "needs_reconnect"
   | "needs_renewal"
+  | "storage_full"
   | "error";
 
 export interface RunReport {
@@ -66,7 +68,10 @@ export interface RunReport {
   requeued: number;
   tableDeltas: Record<string, number>;
   schemaChanged: boolean;
+  /** connector_state.last_synced_at: advances only on a complete reconcile (TC-979). */
   lastSyncedAt: string | null;
+  /** The attempt record's last_attempt_at: when any writer last ran, complete or not. */
+  lastRunAt: string | null;
   durationMs: number;
   detail?: string;
 }
@@ -109,7 +114,7 @@ function emptyReport(mode: RunDeps["mode"], at: Date): RunReport {
   return {
     v: 1, at: at.toISOString(), mode, result: "error", status: null, added: 0, skipped: 0, errors: 0,
     httpRequests: 0, requestsToday: 0, runsToday: 0, duplicateRowsRemoved: 0, gapIds: 0, requeued: 0,
-    tableDeltas: {}, schemaChanged: false, lastSyncedAt: null, durationMs: 0,
+    tableDeltas: {}, schemaChanged: false, lastSyncedAt: null, lastRunAt: null, durationMs: 0,
   };
 }
 
@@ -218,27 +223,30 @@ async function runLocked(
   const nowMs = clock().getTime();
 
   const connection = await connectorStore.getConnection(tcw, SOURCE);
-  if (!connection.ok) throw new RunnerError(grantFailure(connection.error), `read connection: ${connection.error.code ?? "error"}`);
+  if (!connection.ok) throw new RunnerError(storeFailure(connection.error), `read connection: ${connection.error.code ?? "error"}`);
   report.lastSyncedAt = connection.data?.lastSyncedAt ?? null;
   if (connection.data?.status !== "connected") {
     report.result = "not_connected";
     return;
   }
+
+  const attempt = await connectorStore.getFirefliesAttempt(tcw);
+  if (!attempt.ok && attempt.error.code !== "KV_NOT_FOUND") {
+    throw new RunnerError(storeFailure(attempt.error), `read attempt: ${attempt.error.code ?? "error"}`);
+  }
+  const lastAttempt = attempt.ok ? attempt.data : null;
+  report.lastRunAt = lastAttempt?.lastAttemptAt ?? null;
+  report.status = lastAttempt?.lastAttemptStatus ?? null;
+
+  // The watermark stays the trigger: a connector that keeps finishing partial re-syncs each sweep.
   const lastSyncedMs = report.lastSyncedAt ? Date.parse(report.lastSyncedAt) : Number.NaN;
   if (deps.mode === "auto" && Number.isFinite(lastSyncedMs) && nowMs - lastSyncedMs <= (deps.staleMs ?? DEFAULT_STALE_MS)) {
     report.result = "fresh";
     return;
   }
-
-  const attempt = await connectorStore.getFirefliesAttempt(tcw);
-  if (!attempt.ok && attempt.error.code !== "KV_NOT_FOUND") {
-    throw new RunnerError(grantFailure(attempt.error), `read attempt: ${attempt.error.code ?? "error"}`);
-  }
-  const lastAttempt = attempt.ok ? attempt.data : null;
   const lastAttemptMs = lastAttempt ? Date.parse(lastAttempt.lastAttemptAt) : Number.NaN;
   if (Number.isFinite(lastAttemptMs) && nowMs - lastAttemptMs < BUSY_WINDOW_MS) {
     report.result = "busy";
-    report.status = lastAttempt?.lastAttemptStatus ?? null;
     return;
   }
 
@@ -260,13 +268,21 @@ async function runLocked(
   });
 
   const insertedThisRun: string[] = [];
+  let storageFull = false;
+  const watch = <T>(res: StoreResult<T>): StoreResult<T> => {
+    if (!res.ok && isStorageFullError(res.error)) storageFull = true;
+    return res;
+  };
   const store: SyncStore = {
     ...connectorStore,
     insertMeeting: async (target, meeting) => {
-      const res = await connectorStore.insertMeeting(target, meeting);
+      const res = watch(await connectorStore.insertMeeting(target, meeting));
       if (res.ok && res.data) insertedThisRun.push(meeting.id);
       return res;
     },
+    putTranscriptBody: async (...args) => watch(await connectorStore.putTranscriptBody(...args)),
+    updateSyncState: async (...args) => watch(await connectorStore.updateSyncState(...args)),
+    recordFirefliesAttempt: async (...args) => watch(await connectorStore.recordFirefliesAttempt(...args)),
   };
 
   state.runs += 1;
@@ -302,12 +318,17 @@ async function runLocked(
     }
 
     const finalAttempt = await connectorStore.getFirefliesAttempt(tcw);
-    report.status = finalAttempt.ok ? finalAttempt.data?.lastAttemptStatus ?? null : null;
+    if (finalAttempt.ok && finalAttempt.data) {
+      report.status = finalAttempt.data.lastAttemptStatus;
+      report.lastRunAt = finalAttempt.data.lastAttemptAt;
+    }
     const finalConnection = await connectorStore.getConnection(tcw, SOURCE);
     if (finalConnection.ok) report.lastSyncedAt = finalConnection.data?.lastSyncedAt ?? null;
 
     const capped = counter.used() >= budget;
-    if (!sync.ok) {
+    if (storageFull) {
+      report.result = "storage_full";
+    } else if (!sync.ok) {
       report.result = sync.error.kind === "auth" ? "needs_reconnect"
         : sync.error.kind === "rate-limited" && capped ? "capped"
           : "error";
@@ -360,7 +381,8 @@ async function gapAudit(client: FirefliesClient, tcw: TinyCloudWeb, nowMs: numbe
   return { found: listing.data.ids.length, requeued: written.ok ? pending.size - before : 0 };
 }
 
-function grantFailure(error: { code?: string; message?: string }): RunResult {
+function storeFailure(error: { code?: string; message?: string }): RunResult {
+  if (isStorageFullError(error)) return "storage_full";
   const text = `${error.code ?? ""} ${error.message ?? ""}`;
   return /AUTH|UNAUTHORI|PERMISSION|EXPIRED|401|403/i.test(text) ? "needs_renewal" : "error";
 }
@@ -379,9 +401,12 @@ const TABLE_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 function rowsOf(result: unknown): unknown[][] {
   if (!result || typeof result !== "object" || !("ok" in result) || result.ok !== true) {
-    const code = result && typeof result === "object" && "error" in result && result.error
-      && typeof result.error === "object" && "code" in result.error ? String(result.error.code) : "SQL_ERROR";
-    throw new RunnerError(/AUTH|PERMISSION|401|403/i.test(code) ? "needs_renewal" : "error", `sql: ${code}`);
+    const error = result && typeof result === "object" && "error" in result && result.error && typeof result.error === "object"
+      ? result.error
+      : {};
+    const code = "code" in error ? String(error.code) : "SQL_ERROR";
+    const message = "message" in error ? String(error.message) : "";
+    throw new RunnerError(storeFailure({ code, message }), `sql: ${code}`);
   }
   const data = "data" in result ? result.data : null;
   return data && typeof data === "object" && "rows" in data && Array.isArray(data.rows)
@@ -534,7 +559,7 @@ function parseArgs(argv: string[]): CliArgs {
 }
 
 export const EXIT_CODES: Record<RunResult, number> = {
-  synced: 0, fresh: 0, not_connected: 0, busy: 75, capped: 75, partial: 75, locked: 75,
+  synced: 0, fresh: 0, not_connected: 0, busy: 75, capped: 75, partial: 75, locked: 75, storage_full: 75,
   needs_reconnect: 3, needs_renewal: 3, error: 1,
 };
 

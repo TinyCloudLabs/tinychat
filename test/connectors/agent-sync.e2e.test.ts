@@ -132,6 +132,7 @@ describe("Fireflies agent runner", () => {
     expect(first.tableDeltas).toEqual({ connector_meeting: seed.length });
     expect(first.httpRequests).toBe(provider.calls.list + provider.calls.detail);
     expect(first.lastSyncedAt).not.toBe("2026-06-01T00:00:00.000Z");
+    expect(first.lastRunAt).not.toBeNull();
     expect(JSON.stringify(first)).not.toContain(KEY);
     expect(readFileSync(join(stateDir, "fireflies-runner.json"), "utf8")).not.toContain(KEY);
 
@@ -139,6 +140,7 @@ describe("Fireflies agent runner", () => {
     const calls = provider.calls.list + provider.calls.detail;
     const fresh = await runFirefliesAgentSync(deps());
     expect(fresh.result).toBe("fresh");
+    expect(fresh.lastRunAt).toBe(first.lastRunAt);
     expect(keyReads).toBe(1);
 
     // On demand once the busy window has passed: runs, adds nothing, fetches no detail.
@@ -149,6 +151,26 @@ describe("Fireflies agent runner", () => {
     expect(again.tableDeltas).toEqual({});
     expect(provider.calls.detail).toBe(detailsBefore);
     expect(provider.calls.list + provider.calls.detail).toBeGreaterThan(calls);
+  });
+
+  test("a partial run leaves the watermark stale but reports when it ran", async () => {
+    await seedConnected(null);
+    fake.sql.nextMeetingWriteError = { code: "SQL_ERROR", message: "transient write failure" };
+    const report = await runFirefliesAgentSync(deps());
+    expect(report.result).toBe("partial");
+    expect(report.lastSyncedAt).toBeNull();
+    expect(report.lastRunAt).not.toBeNull();
+
+    // The stale watermark still triggers the next auto run once the busy window has passed.
+    const next = await runFirefliesAgentSync(deps({ now: later(31 * 60 * 1000) }));
+    expect(next.result).toBe("synced");
+  });
+
+  test("a storage limit on the user's space is reported as storage_full", async () => {
+    await seedConnected(null);
+    fake.sql.nextMeetingWriteError = { code: "STORAGE_LIMIT_REACHED", message: "storage limit reached" };
+    const report = await runFirefliesAgentSync(deps({ mode: "now" }));
+    expect(report.result).toBe("storage_full");
   });
 
   test("a recent attempt record from another writer makes the run busy without reading the key", async () => {
