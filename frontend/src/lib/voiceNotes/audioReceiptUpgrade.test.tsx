@@ -5,6 +5,7 @@ import { IDBFactory } from "fake-indexeddb";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { installDom } from "@/test/dom";
 import { AudioCacheSettings } from "@/capture/AudioCacheSettings";
+import { __resetCaptureEngineForTests } from "./captureEngine";
 import { audioBaseKey, blobPartSource, putAudio, type TinyCloudKv } from "@/lib/audio/audioStore";
 import { cachedAudioSize, trimCachedAudio } from "./audioPlaybackCache";
 import { mountVoiceNoteAccount } from "./accountContext";
@@ -24,6 +25,7 @@ afterEach(async () => {
   restoreDom?.(); restoreDom = null;
   globalThis.indexedDB = originalIdb;
   __setVoiceNotesForTests(original, { available: null });
+  __resetCaptureEngineForTests();
 });
 
 class SpaceKv {
