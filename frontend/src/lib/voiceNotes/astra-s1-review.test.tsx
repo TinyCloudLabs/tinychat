@@ -13,7 +13,7 @@ import { advanceAccountGeneration, currentAccountGeneration } from "./accountCon
 import { createVoiceNotePipeline } from "./voiceNotePipeline";
 import { readTranscriptCommit } from "./voiceNoteCommits";
 import { commitVoiceNoteTranscript, resolveVoiceNoteRow } from "./voiceNoteRows";
-import { syncOnDeviceTranscriptAttempt, onDeviceTranscriptSyncState } from "./onDeviceTranscriber";
+import { syncOnDeviceTranscriptAttempt, syncOnDeviceTranscriptAutomatically, onDeviceTranscriptSyncState } from "./onDeviceTranscriber";
 import { CONNECTORS_SQL_DB_NAME } from "../connectors/connectorStore";
 
 const original = VoiceNotes;
@@ -144,7 +144,7 @@ test("Astra positive: a newer authoritative winner prevents local acknowledgemen
   await commitVoiceNoteTranscript(s.tcw, note.id, { rev: 2, sentences: [], outcome: "no_speech", text: null });
   const listed = (await s.plugin.listPending()).recordings.find((n) => n.id === note.id)!;
   try {
-    expect((await syncOnDeviceTranscriptAttempt(s.tcw, listed, s.ctx())).state).toBe("terminal");
+    expect((await syncOnDeviceTranscriptAutomatically(s.tcw, listed, s.ctx())).state).toBe("terminal");
     expect((await readTranscriptCommit(s.tcw, note.id))?.rev).toBe(2);
     expect((await resolveVoiceNoteRow(s.tcw, note.id))?.metadata.transcription_outcome).toBe("no_speech");
     const after = (await s.plugin.listPending()).recordings.find((n) => n.id === note.id)!;
@@ -161,7 +161,7 @@ test("Astra positive: account generation change during native read fences commit
   const entered = Promise.withResolvers<void>();
   const gate = Promise.withResolvers<void>();
   s.plugin.getTranscript = async (args) => { entered.resolve(); await gate.promise; return read(args); };
-  const sync = syncOnDeviceTranscriptAttempt(s.tcw, listed, s.ctx());
+  const sync = syncOnDeviceTranscriptAutomatically(s.tcw, listed, s.ctx());
   await entered.promise;
   advanceAccountGeneration();
   gate.resolve();
@@ -171,4 +171,94 @@ test("Astra positive: account generation change during native read fences commit
     const after = (await s.plugin.listPending()).recordings.find((n) => n.id === note.id)!;
     expect(after.ledger?.transcriptSync.state).not.toBe("saved");
   } finally { s.pipeline.cancelAll(); }
+});
+
+test("Astra rereview: later completed revision is not swallowed by an earlier receipt flight", async () => {
+  const s = fixture();
+  const note = await s.record();
+  await s.complete(note.id);
+  const update = s.plugin.updateLedger;
+  const entered = Promise.withResolvers<void>();
+  const gate = Promise.withResolvers<void>();
+  let held = false;
+  s.plugin.updateLedger = async (args) => {
+    if (!held && args.patch.transcriptSync?.state === "saved" && args.patch.transcriptSync.rev === 1) {
+      held = true; entered.resolve(); await gate.promise;
+    }
+    return update(args);
+  };
+  const firstNote = (await s.plugin.listPending()).recordings.find((n) => n.id === note.id)!;
+  const first = syncOnDeviceTranscriptAutomatically(s.tcw, firstNote, s.ctx());
+  await entered.promise;
+  await s.complete(note.id, 2);
+  const base = await readTranscriptCommit(s.tcw, note.id);
+  const local = (await s.plugin.getTranscript({ id: note.id })).transcript!;
+  await s.fake.plugin.putTranscript!({ id: note.id, transcript: {
+    ...local, rerunBase: { rev: base!.rev, hash: base!.hash },
+  } });
+  const nextNote = (await s.plugin.listPending()).recordings.find((n) => n.id === note.id)!;
+  const second = syncOnDeviceTranscriptAutomatically(s.tcw, nextNote, s.ctx());
+  gate.resolve();
+  try {
+    await Promise.all([first, second]);
+    await tick(100);
+    const observed = (await readTranscriptCommit(s.tcw, note.id))?.rev;
+    // A third trigger proves that the local rerun base and remote row allow revision two.
+    await syncOnDeviceTranscriptAutomatically(s.tcw, nextNote, s.ctx());
+    expect((await readTranscriptCommit(s.tcw, note.id))?.rev).toBe(2);
+    expect(observed).toBe(2);
+  } finally { gate.resolve(); s.pipeline.cancelAll(); }
+});
+
+test("overlapping automatic triggers for one revision acknowledge its receipt once", async () => {
+  const s = fixture();
+  const note = await s.record();
+  await s.complete(note.id);
+  const listed = (await s.plugin.listPending()).recordings.find((n) => n.id === note.id)!;
+  const update = s.plugin.updateLedger;
+  const entered = Promise.withResolvers<void>();
+  const gate = Promise.withResolvers<void>();
+  let receipts = 0;
+  s.plugin.updateLedger = async (args) => {
+    if (args.patch.transcriptSync?.state === "saved" && args.patch.transcriptSync.rev === 1) {
+      if (++receipts === 1) { entered.resolve(); await gate.promise; }
+    }
+    return update(args);
+  };
+  const first = syncOnDeviceTranscriptAutomatically(s.tcw, listed, s.ctx());
+  await entered.promise;
+  const duplicate = syncOnDeviceTranscriptAutomatically(s.tcw, listed, s.ctx());
+  gate.resolve();
+  try {
+    await Promise.all([first, duplicate]);
+    expect(receipts).toBe(1);
+    expect((await readTranscriptCommit(s.tcw, note.id))?.rev).toBe(1);
+  } finally { gate.resolve(); s.pipeline.cancelAll(); }
+});
+
+test("Astra rereview: foreground after exhausted cooldown receives a fresh bounded retry episode", async () => {
+  const s = fixture();
+  const note = await s.record();
+  await s.complete(note.id);
+  const listed = (await s.plugin.listPending()).recordings.find((n) => n.id === note.id)!;
+  const put = s.tcw.kv.put.bind(s.tcw.kv);
+  let attempts = 0;
+  s.tcw.kv.put = ((...args: Parameters<typeof put>) => {
+    if (args[0].includes(`/transcript-rev/${note.id}/`) && ++attempts <= 5)
+      return Promise.resolve({ ok: false, error: { code: "NETWORK_ERROR", message: "synthetic unavailable" } } as never);
+    return put(...args);
+  }) as typeof put;
+  const now = Date.now;
+  try {
+    await syncOnDeviceTranscriptAutomatically(s.tcw, listed, s.ctx());
+    const deadline = now() + 1000;
+    while (attempts < 4 && now() < deadline) await tick(5);
+    expect(attempts).toBe(4);
+    await s.pipeline.quiescent(1000);
+    Date.now = () => now() + 121_000;
+    await s.pipeline.reconcileAll(s.ctx());
+    await tick(150);
+    expect((await readTranscriptCommit(s.tcw, note.id))?.rev).toBe(1);
+    expect(onDeviceTranscriptSyncState(s.tcw, note.id)?.state).toBe("synced");
+  } finally { Date.now = now; s.pipeline.cancelAll(); }
 });

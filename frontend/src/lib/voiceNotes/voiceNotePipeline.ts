@@ -158,7 +158,7 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
   let transcriptCursor: { startedAt: number; id: string } | null = null;
   let transcriptPassTail: Promise<void> = Promise.resolve();
   let settledInspectionRun = 0;
-  const transcriptFlights = new Map<string, Promise<TranscriptSyncOutcome>>();
+  const transcriptFlights = new Map<string, { promise: Promise<TranscriptSyncOutcome>; markDirty: (note: VoiceNoteRecording) => void }>();
   const retryRevisions = new Map<string, number>();
   const transcriptKey = (ctx: AccountContext, id: string, rev: number) =>
     `${ctx.did}:${ctx.generation}:${id}:${rev}`;
@@ -179,54 +179,86 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
     }, delay);
     transcriptTimers.set(id, timer);
   };
+  const syncTranscriptRevision = async (ctx: AccountContext, note: VoiceNoteRecording, check: () => void,
+    flightKey: string, revision?: number): Promise<TranscriptSyncOutcome> => {
+    check();
+    if (note.owner !== ctx.did || note.ownerUnknown || isDiscarded(note.id)) return { state: "abandoned" };
+    if (revision === undefined && retryRevisions.has(flightKey)) {
+      try {
+        const { transcript } = await withVoiceNoteSaveDeadline(`native getTranscript before retry ${note.id}`,
+          () => VoiceNotes.getTranscript({ id: note.id }));
+        check();
+        revision = transcript?.rev;
+      } catch (error) {
+        check();
+        console.warn("[VoiceNotes] Native transcript revision unavailable", { id: note.id, error });
+      }
+    }
+    const knownKey = transcriptKey(ctx, note.id, revision ?? 0);
+    const retry = transcriptRetries.get(knownKey);
+    const now = Date.now();
+    if (retry && (retry.nextAt > now || retry.exhaustedUntil > now))
+      return { state: "deferred", rev: revision };
+    // A later foreground turn starts a new bounded episode only after the exhausted cooldown.
+    if (retry?.exhaustedUntil && retry.exhaustedUntil <= now) transcriptRetries.delete(knownKey);
+    const result = await syncOnDeviceTranscriptAttempt(tcw, note, ctx);
+    if (result.state === "abandoned") return result;
+    check();
+    const key = transcriptKey(ctx, note.id, result.rev ?? revision ?? 0);
+    if (result.state === "committed" || result.state === "terminal") {
+      if (result.rev) settledTranscripts.set(note.id, result.rev);
+      transcriptRetries.delete(key);
+      retryRevisions.delete(flightKey);
+    } else if (result.state === "retryable" || result.state === "receipt-pending") {
+      retryRevisions.set(flightKey, result.rev ?? revision ?? 0);
+      const previous = transcriptRetries.get(key);
+      const delays = testOptions.transcriptRetryDelaysMs ?? [5_000, 30_000, 120_000];
+      const attempts = previous?.attempts ?? 0;
+      if (attempts >= delays.length)
+        transcriptRetries.set(key, { attempts, nextAt: 0, exhaustedUntil: Date.now() + 120_000 });
+      else {
+        const delay = delays[attempts]!;
+        transcriptRetries.set(key, { attempts: attempts + 1, nextAt: Date.now() + delay, exhaustedUntil: 0 });
+        scheduleTranscriptTurn(ctx, cancellation, note.id, delay);
+      }
+    }
+    return result;
+  };
   const attemptTranscript = (ctx: AccountContext, note: VoiceNoteRecording, check: () => void,
     revision?: number): Promise<TranscriptSyncOutcome> => {
     const flightKey = transcriptKey(ctx, note.id, 0);
     const current = transcriptFlights.get(flightKey);
-    if (current) return current;
+    if (current) {
+      current.markDirty(note);
+      return current.promise;
+    }
+    let dirty = false;
+    let latest = note;
     const work = (async () => {
-      check();
-      if (note.owner !== ctx.did || note.ownerUnknown || isDiscarded(note.id)) return { state: "abandoned" } as const;
-      if (revision === undefined && retryRevisions.has(flightKey)) {
+      let outcome = await syncTranscriptRevision(ctx, note, check, flightKey, revision);
+      let completedRev = outcome.rev ?? revision ?? 0;
+      while (dirty) {
+        dirty = false;
+        check();
+        let nextRev: number | undefined;
         try {
-          const { transcript } = await withVoiceNoteSaveDeadline(`native getTranscript before retry ${note.id}`,
+          const { transcript } = await withVoiceNoteSaveDeadline(`native getTranscript after overlapping sync ${note.id}`,
             () => VoiceNotes.getTranscript({ id: note.id }));
           check();
-          revision = transcript?.rev;
+          nextRev = transcript?.rev;
         } catch (error) {
           check();
-          console.warn("[VoiceNotes] Native transcript revision unavailable", { id: note.id, error });
+          console.warn("[VoiceNotes] Overlapping transcript revision read deferred", { id: note.id, error });
+          scheduleTranscriptTurn(ctx, cancellation, note.id, testOptions.transcriptRetryDelaysMs?.[0] ?? 5_000);
         }
+        if (nextRev === undefined || nextRev <= completedRev) continue;
+        outcome = await syncTranscriptRevision(ctx, latest, check, flightKey, nextRev);
+        completedRev = Math.max(completedRev, outcome.rev ?? nextRev);
       }
-      const knownKey = transcriptKey(ctx, note.id, revision ?? 0);
-      const retry = transcriptRetries.get(knownKey);
-      if (retry && (retry.nextAt > Date.now() || retry.exhaustedUntil > Date.now()))
-        return { state: "deferred", rev: revision } as TranscriptSyncOutcome;
-      const result = await syncOnDeviceTranscriptAttempt(tcw, note, ctx);
-      if (result.state === "abandoned") return result;
-      check();
-      const key = transcriptKey(ctx, note.id, result.rev ?? revision ?? 0);
-      if (result.state === "committed" || result.state === "terminal") {
-        if (result.rev) settledTranscripts.set(note.id, result.rev);
-        transcriptRetries.delete(key);
-        retryRevisions.delete(flightKey);
-      } else if (result.state === "retryable" || result.state === "receipt-pending") {
-        retryRevisions.set(flightKey, result.rev ?? revision ?? 0);
-        const previous = transcriptRetries.get(key);
-        const delays = testOptions.transcriptRetryDelaysMs ?? [5_000, 30_000, 120_000];
-        const attempts = previous?.attempts ?? 0;
-        if (attempts >= delays.length)
-          transcriptRetries.set(key, { attempts, nextAt: 0, exhaustedUntil: Date.now() + 120_000 });
-        else {
-          const delay = delays[attempts]!;
-          transcriptRetries.set(key, { attempts: attempts + 1, nextAt: Date.now() + delay, exhaustedUntil: 0 });
-          scheduleTranscriptTurn(ctx, cancellation, note.id, delay);
-        }
-      }
-      return result;
+      return outcome;
     })();
-    transcriptFlights.set(flightKey, work);
-    void work.finally(() => { if (transcriptFlights.get(flightKey) === work) transcriptFlights.delete(flightKey); })
+    transcriptFlights.set(flightKey, { promise: work, markDirty: (next) => { dirty = true; latest = next; } });
+    void work.finally(() => { if (transcriptFlights.get(flightKey)?.promise === work) transcriptFlights.delete(flightKey); })
       .catch(() => undefined);
     return work;
   };
