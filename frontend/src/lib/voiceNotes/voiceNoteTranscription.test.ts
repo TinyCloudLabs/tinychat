@@ -7761,3 +7761,206 @@ test("C:A1 account B lifecycle cannot expose or discard A held then A returns an
 });
 
 });
+// Two public transcribers coordinate held recovery before provider cleanup.
+describe("C:R3 EP1 real locked held recovery", () => {
+  const cTranscript = prepareVoiceNoteTranscript({ ...TRANSCRIPT,
+    segments: [{ id: "synthetic-1", speaker_id: "channel_0", channel: 0, start: 0, end: 1, text: "synthetic-original" }],
+    text: "synthetic-original" }, "2026-10-15T00:00:00Z", 1);
+  const bounded = async <T>(work: Promise<T>, phase: string): Promise<T> => {
+    let deadline!: ReturnType<typeof setTimeout>;
+    const expired = new Promise<never>((_, reject) => {
+      deadline = setTimeout(() => reject(new Error(`C:R3 EP1 ${phase} did not settle`)), 5000);
+    });
+    try { return await Promise.race([work, expired]); }
+    finally { clearTimeout(deadline); }
+  };
+  const awaitIdle = async (transcriber: VoiceNoteTranscriber, phase: string): Promise<void> => {
+    const idle = Promise.withResolvers<void>();
+    const done = () => {
+      if (transcriber.snapshot().jobs.get("rec-1")?.kind !== "active") idle.resolve();
+    };
+    const off = transcriber.subscribe(done);
+    try { done(); await bounded(idle.promise, phase); }
+    finally { off(); }
+  };
+
+  test("C:R3 EP1 two public consumers bound real lock misses and remove PTX once after commit", async () => {
+    const gate = Promise.withResolvers<void>();
+    const entered = Promise.withResolvers<void>();
+    const lockMiss = Promise.withResolvers<void>();
+    const firstReturned = Promise.withResolvers<{ ok: true } | { ok: false; error: unknown }>();
+    const replayListed = Promise.withResolvers<void>();
+    let live = true;
+    let unmount: (() => void) | null = null;
+    let restoreDb: (() => void) | null = null;
+    let offA: (() => void) | null = null, offB: (() => void) | null = null;
+    let controllerA: VoiceNoteTranscriber | null = null, controllerB: VoiceNoteTranscriber | null = null;
+    let aCheck: Promise<void> | null = null, bCheck: Promise<void> | null = null;
+    const activeDelegates = new Set<Promise<unknown>>();
+    const track = async <T>(work: Promise<T>): Promise<T> => {
+      activeDelegates.add(work);
+      try { return await work; }
+      finally { activeDelegates.delete(work); }
+    };
+    let firstStarted = false, saveDelegations = 0, lists = 0, lockBusyCount = 0;
+    let replayArmed = false, replayRows: Awaited<ReturnType<ReturnType<typeof createHeldResultStore>["listHeld"]>> | null = null;
+    let failure: unknown, failed = false;
+    const cleanupErrors: unknown[] = [];
+    try {
+      _resetConnectorSchemaMemoForTests();
+      const space = sqliteSpace(), tcw = typedTcw(space);
+      (tcw as unknown as { spaceId: string }).spaceId = "space:c-evidence";
+      unmount = mountVoiceNoteAccount(tcw.did);
+      expect((await saveVoiceNote(tcw, RECORDING, AUDIO, "ios")).ok).toBe(true);
+      const env = newIdbEnv();
+      const first = createHeldResultStore(tcw.did, { env, isSignedIn: async () => true });
+      const second = createHeldResultStore(tcw.did, { env, isSignedIn: async () => true });
+      await first.hold({ version: 1, did: tcw.did, spaceId: tcw.spaceId, sourceId: "rec-1",
+        engine: "private-cloud", transcript: cTranscript, provider: { transcriptionId: ID }, intent: { kind: "unknown" } });
+      const storage = memoryStorage(), pending = localStorageVoiceNotePendingStore(tcw.did, storage);
+      pending.write("rec-1", { attemptId: "00000000-0000-4000-8000-00000000abcd", transcriptionId: ID });
+      let removesAtCommit = 0;
+      const h = harness({ pending, onRemove: async () => {
+        expect(await readTranscriptCommit(tcw, "rec-1")).toMatchObject({
+          rev: 1, hash: await transcriptHash(cTranscript.sentences),
+        });
+        removesAtCommit++;
+      } });
+      const originalDb = tcw.sql.db;
+      restoreDb = () => { tcw.sql.db = originalDb; };
+      let casAttempts = 0, successfulCas = 0;
+      tcw.sql.db = ((name: string) => {
+        const db = originalDb.call(tcw.sql, name);
+        return { ...db, execute: async (...args: Parameters<typeof db.execute>) => {
+          const isCas = args[0].includes("INSERT INTO voice_note_transcript");
+          if (isCas) casAttempts++;
+          const result = await db.execute(...args);
+          if (isCas && result.ok) successfulCas++;
+          return result;
+        } };
+      }) as TestTcw["sql"]["db"];
+      const heldFirst = { ...first, saveHeldFirst: async (
+        account: Parameters<typeof first.saveHeldFirst>[0],
+        id: Parameters<typeof first.saveHeldFirst>[1],
+        ops: Parameters<typeof first.saveHeldFirst>[2],
+        mode: Parameters<typeof first.saveHeldFirst>[3],
+      ) => {
+        firstStarted = true;
+        try {
+          const outcome = await track(first.saveHeldFirst(account, id, {
+            ...ops,
+            save: async (row) => {
+              entered.resolve();
+              await gate.promise;
+              saveDelegations++;
+              await ops.save(row);
+            },
+          }, mode));
+          firstReturned.resolve({ ok: true });
+          return outcome;
+        } catch (error) {
+          firstReturned.resolve({ ok: false, error });
+          throw error;
+        }
+      } };
+      const heldSecond = { ...second,
+        listHeld: async () => {
+          const invokedAfterReplay = replayArmed;
+          lists++;
+          const rows = await second.listHeld();
+          if (invokedAfterReplay) { replayRows = rows; replayListed.resolve(); }
+          return rows;
+        },
+        saveHeldFirst: async (...args: Parameters<typeof second.saveHeldFirst>) => {
+          const outcome = await track(second.saveHeldFirst(...args));
+          if (outcome === "lock_busy") { lockBusyCount++; lockMiss.resolve(); }
+          return outcome;
+        },
+      };
+      const scheduled: { callback: () => void; delay: number }[] = [];
+      const make = (held: typeof first) => createVoiceNoteTranscriber({ cloud: h.cloud, held,
+        consent: { get: () => true, set: () => {} }, holds: memoryHoldStore(), tcw: () => tcw,
+        checkRetryMs: [], failedBackoffMs: [15000], timer: {
+          schedule: (callback, delay) => { scheduled.push({ callback, delay }); return scheduled.length; },
+          cancel: () => {},
+        },
+      });
+      controllerA = make(heldFirst);
+      controllerB = make(heldSecond);
+      const a = controllerA, b = controllerB;
+      const postResultChanged = Promise.withResolvers<void>(), saved = Promise.withResolvers<void>();
+      offB = b.subscribe((event) => {
+        if (event.kind === "changed" && lockBusyCount === 1 && !b.snapshot().jobs.has("rec-1"))
+          postResultChanged.resolve();
+      });
+      offA = a.subscribe((event) => {
+        if (event.kind === "saved" && event.sourceId === "rec-1") saved.resolve();
+      });
+      aCheck = a.check({ current: () => live });
+      await bounded(aCheck, "first check");
+      await bounded(entered.promise, "first real save gate");
+      expect(await readTranscriptCommit(tcw, "rec-1")).toBeNull();
+      bCheck = b.check({ current: () => live });
+      await bounded(bCheck, "second check");
+      await bounded(lockMiss.promise, "real second lock_busy result");
+      await bounded(postResultChanged.promise, "second post-result changed emission");
+      expect(lockBusyCount).toBe(1);
+      expect(scheduled.some((entry) => entry.delay === 15000)).toBe(true);
+      expect(scheduled.every((entry) => entry.delay >= 15000)).toBe(true);
+      expect(scheduled.length).toBeLessThanOrEqual(4);
+      const before = { lists, schedules: scheduled.length, saveDelegations, casAttempts };
+      for (let i = 0; i < 60; i++) await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      expect({ lists, schedules: scheduled.length, saveDelegations, casAttempts }).toEqual(before);
+      expect({ saveDelegations, casAttempts, successfulCas }).toEqual({ saveDelegations: 0, casAttempts: 0, successfulCas: 0 });
+      expect(h.removed).toEqual([]);
+      gate.resolve();
+      const firstState = await bounded(firstReturned.promise, "first real save return");
+      if (!firstState.ok) throw firstState.error;
+      await bounded(saved.promise, "first verified saved emission");
+      replayArmed = true;
+      for (const item of scheduled.splice(0)) item.callback();
+      await bounded(replayListed.promise, "real second replay list");
+      expect(replayRows).toEqual([]);
+      for (let i = 0; i < 60; i++) await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      expect({ saveDelegations, casAttempts, successfulCas, removesAtCommit })
+        .toEqual({ saveDelegations: 1, casAttempts: 1, successfulCas: 1, removesAtCommit: 1 });
+      expect(h.removed).toEqual([ID]);
+      expect(h.creates).toEqual([]);
+      expect(h.calls.filter((call) => call.startsWith("result:") || call.startsWith("get:"))).toEqual([]);
+      expect(await first.readHeld("rec-1")).toBeNull();
+      expect(await readTranscriptCommit(tcw, "rec-1")).toMatchObject({ rev: 1, hash: await transcriptHash(cTranscript.sentences) });
+      expect(Number(space.sqlite.query("SELECT count(*) FROM voice_note_transcript WHERE source_id='rec-1'").values()[0][0])).toBe(1);
+    } catch (error) {
+      failure = error; failed = true;
+    } finally {
+      live = false;
+      gate.resolve();
+      const settle = async (work: Promise<unknown> | null, phase: string) => {
+        if (work) try { await bounded(work, phase); } catch (error) { cleanupErrors.push(error); }
+      };
+      await settle(aCheck, "first check cleanup");
+      await settle(bCheck, "second check cleanup");
+      if (controllerA) await settle(awaitIdle(controllerA, "first drain cleanup"), "first drain cleanup bound");
+      if (controllerB) await settle(awaitIdle(controllerB, "second drain cleanup"), "second drain cleanup bound");
+      if (firstStarted) {
+        try {
+          const firstState = await bounded(firstReturned.promise, "first store cleanup");
+          if (!firstState.ok) cleanupErrors.push(firstState.error);
+        } catch (error) { cleanupErrors.push(error); }
+      }
+      if (activeDelegates.size) {
+        try {
+          const states = await bounded(Promise.allSettled([...activeDelegates]), "delegate cleanup");
+          for (const state of states) if (state.status === "rejected") cleanupErrors.push(state.reason);
+        } catch (error) { cleanupErrors.push(error); }
+      }
+      try { offA?.(); } catch (error) { cleanupErrors.push(error); }
+      try { offB?.(); } catch (error) { cleanupErrors.push(error); }
+      try { restoreDb?.(); } catch (error) { cleanupErrors.push(error); }
+      try { unmount?.(); } catch (error) { cleanupErrors.push(error); }
+    }
+    if (cleanupErrors.length)
+      throw new AggregateError(failed ? [failure, ...cleanupErrors] : cleanupErrors, "C:R3 EP1 fixture cleanup failed");
+    if (failed) throw failure;
+  }, 60000);
+});
