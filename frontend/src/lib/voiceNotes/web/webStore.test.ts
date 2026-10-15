@@ -538,14 +538,18 @@ describe("recovered recordings are decode-checked: whole up to the cap, a prefix
     }
   });
 
-  test("a prefix the decoder rejects is inconclusive: a recording over the cap is published as recovered with a warning, never quarantined", async () => {
+  const testName = "a prefix the decoder rejects is inconclusive: a recording over the cap is published as recovered with a warning, never quarantined";
+  test(testName, async () => {
     const h = harness();
     const sent = await record(await h.open(), "long", longChunks());
     h.locks.releaseAll();
     const tab = await h.open({ decodeCheck: async () => { throw invalid("EncodingError: cut inside a cluster"); } });
+    const expectedWarning = "[webStore] The decoder rejected the leading bytes of a long recovered recording; that is inconclusive, publishing it as recovered";
     const warned: unknown[][] = [];
     const warn = console.warn;
-    console.warn = (...args: unknown[]) => { warned.push(args); };
+    console.warn = (...args: unknown[]) => {
+      if (args[0] === expectedWarning) warned.push(args);
+    };
     let result: Awaited<ReturnType<typeof tab.recoverInterruptedSessions>>;
     try { result = await tab.recoverInterruptedSessions(); } finally { console.warn = warn; }
     expect(result.failed).toEqual([]);

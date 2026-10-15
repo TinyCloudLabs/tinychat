@@ -55,6 +55,7 @@ Integration branch: `dev/0.8.0`
 | #401 | fcbab307 | 10d68fbe | No | Clean merge of the approved storage-full handling after #427: storage state is scoped to the active session, quota-blocked work pauses for recovery, and Manage storage actions are available on supported surfaces. The current-main TC-1201 auth files remain unchanged. |
 | #426 | ecb4506a | 2d49064c | No | Clean merge of the refreshed approved TC-1206 fail-closed Private-choice persistence fix after Astra's exact-head approval and every required check passed; the head already merged current dev and retained #401 storage-full behavior. Focused choice, pipeline, transcription, cache-pin, and detail-view tests passed 554/554. |
 | #428 | f7a12ac9 | 0d2410da | No | Clean merge of the approved TC-1214 iOS smoke instrumentation after Astra's exact-head approval and all six required checks passed, including simulator, archive, signing, and Cloudflare. The smoke harness passed 7/7 post-merge, covering launch/liveness evidence, deadline and exit failures, and public-safe sanitization. |
+| #418 | fd0fc7b8 | 96ed36e3 | No | Clean merge of approved TC-1143 PR-A durable held-result storage after exact-head Astra approval and all required checks passed; the acceptance and review evidence ledger is recorded in TC-1143. PR-A covers WEB only: Capacitor and Tauri remain on WebView IndexedDB until PR-C. |
 
 ## Test Fixes (2026-10-14)
 
@@ -100,8 +101,8 @@ After merging origin/main (TC-1128, #387, #392, 45d16e58) and PR #386 (TC-1108 p
 
 ## Current Status
 
-- **Verified code head**: `0d2410da` (#428 merged after #426)
-- **Frontend unit suite**: 5374 pass, 4 skip, 0 fail (5378 tests, 355 files)
+- **Verified code head**: `96ed36e3` (#418 merged after #428; TC-1143 PR-A, WEB only)
+- **Frontend unit suite**: 5439 pass, 4 skip, 0 fail (5443 tests, 357 files)
 - **#415 scoped tests**: 54 pass, 0 fail across `useLibrary.retry.test.tsx` and `useLibrary.test.tsx`
 - **#413 scoped tests**: 198 pass, 0 fail across `useLibrary.test.tsx` and `notePipeline.test.ts`
 - **#414 scoped tests**: 17 pass, 0 fail in `test/connectors/agent-sync.e2e.test.ts`
