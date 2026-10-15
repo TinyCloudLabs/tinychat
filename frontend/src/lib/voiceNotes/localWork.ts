@@ -8,9 +8,8 @@ import type { VoiceNoteRecording } from "./nativeVoiceNotes";
  *   explicitly chose Local for (`stt.requested`, written by the native enqueue: TranscriptionCore.swift:44,
  *   ResumableWork.kt:20-21), queue STT (desktopWhisper.ts:260-262 drains `waiting_for_model`, `queued`,
  *   `running`). Retry re-reads the staged file for `failed` and `waiting_for_model` (desktopWhisper.ts:339-345).
- *   `done` never re-reads bytes. `cancelled` pins only on mobile (`cancelledRetryable`): the native enqueue accepts a
- *   retry of a cancelled job and rewrites it to `queued`, so the staged bytes are still read. Desktop drain skips
- *   `cancelled` and retry rejects it, so desktop releases it. Every new note
+ *   `done` never re-reads bytes. `cancelled` and `yielded_by_os` pin only on mobile: a native retry
+ *   may still read the original audio, while desktop drain skips these states. Every new note
  *   starts at `waiting_for_model` (webStore.ts:259); that default is not a request unless the note was recorded
  *   with `on-device` or the user chose Local, so other transcribers do not pin;
  * - a remote job whose stage is not `done`. Hosted uploads read local bytes until the transcript is saved and
@@ -26,8 +25,8 @@ import type { VoiceNoteRecording } from "./nativeVoiceNotes";
  *
  * Mirrored by the native eviction checks (CaptureCore RecordingLibrary.swift, RecordingLibrary.kt).
  */
-const STT_PINNED_STATES: ReadonlySet<string> = new Set(["waiting_for_model", "queued", "running", "failed"]);
-const MOBILE_STT_PINNED_STATES: ReadonlySet<string> = new Set([...STT_PINNED_STATES, "cancelled"]);
+const STT_PINNED_STATES: Record<string, true> = { waiting_for_model: true, queued: true, running: true, failed: true };
+const MOBILE_STT_PINNED_STATES: Record<string, true> = { ...STT_PINNED_STATES, cancelled: true, yielded_by_os: true };
 
 export interface LocalWorkOptions {
   /** Mobile only: the native enqueue accepts a retry of a cancelled job, so its staged bytes are still needed. */
@@ -40,7 +39,7 @@ export function hasLocalWorkInProgress(note: VoiceNoteRecording, options: LocalW
   const sttState: string | undefined = note.stt?.state;
   const localIntent = note.options?.transcriber === "on-device" || note.stt?.requested === true;
   const pinnedStates = options.cancelledRetryable ? MOBILE_STT_PINNED_STATES : STT_PINNED_STATES;
-  const sttPinned = localIntent && sttState !== undefined && pinnedStates.has(sttState);
+  const sttPinned = localIntent && sttState !== undefined && pinnedStates[sttState] === true;
   return (ledger.localAudio !== undefined && ledger.localAudio.state !== "ready")
     || sttPinned
     || (ledger.remote?.some((op) => op.stage !== "done" && (op.mode !== "own" || op.stage !== "submitted")) ?? false);

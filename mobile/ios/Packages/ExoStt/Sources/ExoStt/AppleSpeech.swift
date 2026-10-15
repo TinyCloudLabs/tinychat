@@ -315,14 +315,21 @@ final class AppleSpeechSession: TranscriptionSession {
                     onProgress: @escaping (Int, Int) -> Void, onSegment: @escaping (Int) -> Void) throws -> [String: Any] {
         let url = audioURL(id)
         let outcome = BlockingResult<[SpeechPhrase]>()
-        Task.detached(priority: .utility) { [self] in
+        let task = Task.detached(priority: .utility) { [self] in
             do {
                 outcome.finish(.success(try await recognize(url, checkCapturing: checkCapturing, onProgress: onProgress, onSegment: onSegment)))
             } catch {
                 outcome.finish(.failure(error))
             }
         }
-        let segments = SpeechTranscript.segments(try outcome.wait())
+        let phrases: [SpeechPhrase]
+        do {
+            phrases = try outcome.wait(timeout: 120, check: checkCapturing)
+        } catch {
+            task.cancel()
+            throw error
+        }
+        let segments = SpeechTranscript.segments(phrases)
         return [
             "version": 2, "noteId": id, "transcriber": "on-device", "rev": 1,
             "engine": "apple-speech", "model": target.kind.modelName, "language": target.locale.identifier(.bcp47),
@@ -333,11 +340,13 @@ final class AppleSpeechSession: TranscriptionSession {
 
     private func recognize(_ url: URL, checkCapturing: @escaping () throws -> Void,
                            onProgress: @escaping (Int, Int) -> Void, onSegment: @escaping (Int) -> Void) async throws -> [SpeechPhrase] {
+        try Task.checkCancellation()
         let duration = durationSeconds(url)
         let module = target.kind.makeModule(locale: target.locale)
         guard let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [module.module]) else {
             throw AppleSpeechError.noAudioFormat
         }
+        try Task.checkCancellation()
         let feed = try SpeechAudioFeed(url: url, format: format, checkCapturing: checkCapturing)
         let analyzer = SpeechAnalyzer(modules: [module.module])
         let phrases = PhraseLog()
@@ -349,21 +358,28 @@ final class AppleSpeechSession: TranscriptionSession {
                 onSegment(count)
             }
         }
-        do {
-            let last = try await analyzer.analyzeSequence(feed)
-            if let failure = feed.failure { throw failure }
-            if let last {
-                try await analyzer.finalizeAndFinish(through: last)
-            } else {
-                await analyzer.cancelAndFinishNow()
+        return try await withTaskCancellationHandler {
+            do {
+                let last = try await analyzer.analyzeSequence(feed)
+                try Task.checkCancellation()
+                if let failure = feed.failure { throw failure }
+                if let last {
+                    try await analyzer.finalizeAndFinish(through: last)
+                } else {
+                    await analyzer.cancelAndFinishNow()
+                }
+                try Task.checkCancellation()
+                try await collector.value
+                return phrases.all
+            } catch {
+                collector.cancel()
+                Task { await analyzer.cancelAndFinishNow() }
+                throw error
             }
-        } catch {
-            await analyzer.cancelAndFinishNow()
+        } onCancel: {
             collector.cancel()
-            throw error
+            Task { await analyzer.cancelAndFinishNow() }
         }
-        try await collector.value
-        return phrases.all
     }
 
     /// The note's length from its container; does not decode any audio. Nil if the file can't be opened.
@@ -393,20 +409,4 @@ private final class PhraseLog: @unchecked Sendable {
     }
 }
 
-/// Hands an async result to the synchronous `TranscriptionSession` protocol, whose caller is the queue's
-/// dedicated serial work queue (never the main thread).
-final class BlockingResult<Value>: @unchecked Sendable {
-    private let semaphore = DispatchSemaphore(value: 0)
-    private var result: Result<Value, Error>?
-
-    func finish(_ result: Result<Value, Error>) {
-        self.result = result
-        semaphore.signal()
-    }
-
-    func wait() throws -> Value {
-        semaphore.wait()
-        return try result!.get()
-    }
-}
 #endif

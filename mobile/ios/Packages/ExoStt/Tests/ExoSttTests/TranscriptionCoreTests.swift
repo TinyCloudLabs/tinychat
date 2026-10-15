@@ -9,6 +9,7 @@ final class TranscriptionCoreTests: XCTestCase {
         private let lock = NSLock()
         private var stt: [String: [String: Any]] = [:]
         private var committed: [String: String] = [:]
+        private var durations: [String: Int] = [:]
         var updateError: Error?
         private var transcripts: [String: [String: Any]] = [:]
         /// Runs (outside the lock) before a matching `updateStt` is applied, to hold it.
@@ -17,10 +18,11 @@ final class TranscriptionCoreTests: XCTestCase {
         private var afterTranscriptRead: ((String) -> Void)?
         private var history: [(id: String, patch: [String: Any])] = []
 
-        func seed(_ id: String, state: String, attempts: Int = 0, committed mode: String = "on-device") {
+        func seed(_ id: String, state: String, attempts: Int = 0, committed mode: String = "on-device", durationMs: Int = 15_000) {
             lock.lock(); defer { lock.unlock() }
             stt[id] = ["state": state, "attempts": attempts]
             committed[id] = mode
+            durations[id] = durationMs
         }
 
         func armAfterTranscriptRead(_ hook: @escaping (String) -> Void) {
@@ -68,7 +70,7 @@ final class TranscriptionCoreTests: XCTestCase {
 
         func readSidecar(_ id: String) throws -> [String: Any] {
             lock.lock(); defer { lock.unlock() }
-            return ["stt": stt[id] ?? [:]]
+            return ["stt": stt[id] ?? [:], "durationMs": durations[id] ?? 0]
         }
 
         func updateStt(_ id: String, patch: [String: Any]) throws {
@@ -81,13 +83,69 @@ final class TranscriptionCoreTests: XCTestCase {
             history.append((id, patch))
         }
 
-        func putTranscript(_ id: String, object: [String: Any]) throws {
+        func updateRunning(_ id: String, generation: Int, patch: [String: Any],
+                           stillValid: () -> Bool) throws {
+            lock.lock(); defer { lock.unlock() }
+            guard stillValid(), stt[id]?["state"] as? String == "running",
+                  stt[id]?["yieldGeneration"] as? Int == generation else { return }
+            stt[id]?.merge(patch) { _, newer in newer }
+        }
+
+
+        func yieldToOS(_ id: String, generation: Int, attempts: Int, stillValid: () -> Bool) throws -> Bool {
+            beforeUpdate?(id, ["state": "yielded_by_os"])
+            if let updateError { throw updateError }
+            lock.lock(); defer { lock.unlock() }
+            guard stillValid(), stt[id]?["state"] as? String == "running",
+                  stt[id]?["yieldGeneration"] as? Int == generation else { return false }
+            stt[id]?["state"] = "yielded_by_os"
+            stt[id]?["attempts"] = attempts
+            history.append((id, ["state": "yielded_by_os", "attempts": attempts]))
+            return true
+        }
+
+        func commitTranscript(_ id: String, generation: Int, object: [String: Any],
+                              stillValid: () -> Bool) throws -> Bool {
             beforePut?(id)
             lock.lock(); defer { lock.unlock() }
+            guard stillValid(), stt[id]?["state"] as? String == "running",
+                  stt[id]?["yieldGeneration"] as? Int == generation else { return false }
             transcripts[id] = object
+            stt[id]?["state"] = "done"
+            stt[id]?["error"] = NSNull()
+            history.append((id, ["state": "done"]))
+            return true
         }
 
         var beforePut: ((String) -> Void)?
+    }
+
+    private final class FakeActivity: TranscriptionActivity {
+        private let lock = NSLock()
+        var allowed = true
+        var expireOnBegin = false
+        private var expiry: (() -> Void)?
+        private(set) var begins = 0
+        private(set) var ends = 0
+        var onEnd: (() -> Void)?
+
+        func begin(expired: @escaping () -> Void) -> Bool {
+            lock.withLock { begins += 1; expiry = expired }
+            if expireOnBegin { expired() }
+            return allowed
+        }
+        func end() {
+            lock.withLock { ends += 1 }
+            onEnd?()
+        }
+        func expire() { let callback = lock.withLock { expiry }; callback?() }
+    }
+
+    private final class FakeClock {
+        private let lock = NSLock()
+        private var date = Date(timeIntervalSince1970: 100)
+        func now() -> Date { lock.withLock { date } }
+        func advance(_ seconds: TimeInterval) { lock.withLock { date.addTimeInterval(seconds) } }
     }
 
     private final class FakeBackend: TranscriptionBackend {
@@ -177,17 +235,256 @@ final class TranscriptionCoreTests: XCTestCase {
         }
     }
 
+    func testYieldedJobRemainsOwedAndKeepsItsPriorAttemptBudget() {
+        let note: [String: Any] = ["id": "a", "options": ["transcriber": "on-device"],
+            "stt": ["state": "yielded_by_os", "attempts": 2, "yieldGeneration": 7]]
+        XCTAssertTrue(ResumableWork.owed(note))
+        XCTAssertEqual(AttemptGuard.next(previousAttempts: 2), .proceed(attempt: 3))
+    }
+
+    private func withActivity(_ activity: FakeActivity, expiryBudget: TimeInterval = 1,
+                              clock: @escaping () -> Date = Date.init) {
+        core = TranscriptionCore(library: library, backend: backend, activity: { activity },
+            clock: clock, expiryBudget: expiryBudget,
+            label: "xyz.tinycloud.exo.stt.activity.\(UUID().uuidString)")
+        core.onTranscribed = { [events] id, outcome in events!.add("transcribed:\(id):\(outcome)") }
+    }
+
+    func testExpiryDuringCheckpointFreeFinalizationPersistsBeforeReleaseAndFencesLateResult() {
+        library.seed("a", state: "queued")
+        let activity = FakeActivity()
+        activity.onEnd = { [library] in
+            XCTAssertEqual(library!.sidecar("a")["state"] as? String, "yielded_by_os")
+            XCTAssertEqual(library!.sidecar("a")["attempts"] as? Int, 0)
+        }
+        withActivity(activity)
+        let entered = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
+        holdDecode(of: "a", entered: entered, release: release)
+        core.enqueue(id: "a")
+        XCTAssertEqual(entered.wait(timeout: .now() + 5), .success)
+        activity.expire()
+        XCTAssertEqual(activity.ends, 1)
+        release.signal()
+        settle()
+        XCTAssertFalse(library.hasTranscript("a"))
+        XCTAssertEqual(session.startedIds, ["a"])
+        XCTAssertEqual(library.sidecar("a")["state"] as? String, "yielded_by_os")
+        XCTAssertTrue(core.queueSnapshot().isEmpty)
+        relaunch()
+        core.reconcile()
+        settle()
+        XCTAssertEqual(session.startedIds, ["a", "a"])
+        XCTAssertEqual(library.sidecar("a")["attempts"] as? Int, 1)
+        XCTAssertTrue(library.hasTranscript("a"))
+    }
+
+    func testFailedExpiryPersistenceRetainsCrashAttemptAndFencesResult() {
+        library.seed("a", state: "queued")
+        let activity = FakeActivity()
+        withActivity(activity)
+        let entered = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
+        holdDecode(of: "a", entered: entered, release: release)
+        core.enqueue(id: "a")
+        XCTAssertEqual(entered.wait(timeout: .now() + 5), .success)
+        library.updateError = TranscriptionQueueError.decodeFailed
+        activity.expire()
+        XCTAssertEqual(activity.ends, 1)
+        XCTAssertEqual(library.sidecar("a")["state"] as? String, "running")
+        release.signal()
+        settle()
+        XCTAssertFalse(library.hasTranscript("a"))
+        XCTAssertEqual(library.sidecar("a")["attempts"] as? Int, 1)
+        library.updateError = nil
+        relaunch()
+        core.reconcile()
+        settle()
+        XCTAssertEqual(library.sidecar("a")["attempts"] as? Int, 2)
+    }
+
+    func testInvalidAssertionAcquisitionNeverEndsInvalidTask() {
+        library.seed("a", state: "queued")
+        let activity = FakeActivity()
+        activity.allowed = false
+        withActivity(activity)
+        core.enqueue(id: "a")
+        settle()
+        XCTAssertTrue(library.hasTranscript("a"))
+        XCTAssertEqual(activity.ends, 0)
+    }
+
+    func testExpiryDuringAssertionAcquisitionYieldsBeforeDecode() {
+        library.seed("a", state: "queued")
+        let activity = FakeActivity()
+        activity.expireOnBegin = true
+        withActivity(activity)
+        core.enqueue(id: "a")
+        waitUntil("assertion released") { activity.ends == 1 }
+        settle()
+        XCTAssertEqual(activity.begins, 1)
+        XCTAssertEqual(activity.ends, 1)
+        XCTAssertEqual(library.sidecar("a")["state"] as? String, "yielded_by_os")
+        XCTAssertFalse(library.hasTranscript("a"))
+    }
+
+    func testLongDecodeDoesNotAcquireShortBackgroundAssertion() {
+        library.seed("long", state: "queued", durationMs: 30_001)
+        let activity = FakeActivity()
+        withActivity(activity)
+        core.enqueue(id: "long")
+        settle()
+        XCTAssertTrue(library.hasTranscript("long"))
+        XCTAssertEqual(activity.begins, 0)
+        XCTAssertEqual(activity.ends, 0)
+    }
+
+    func testCancelAcceptedBeforeExpiryWinsWithoutPublishing() {
+        library.seed("a", state: "queued")
+        let activity = FakeActivity()
+        withActivity(activity)
+        let entered = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
+        holdDecode(of: "a", entered: entered, release: release)
+        core.enqueue(id: "a")
+        XCTAssertEqual(entered.wait(timeout: .now() + 5), .success)
+        core.cancel(id: "a")
+        waitUntil("cancel accepted") { core.state.isCancelRequested("a") }
+        activity.expire()
+        release.signal()
+        settle()
+        XCTAssertFalse(library.hasTranscript("a"))
+        XCTAssertEqual(library.sidecar("a")["state"] as? String, "cancelled")
+        XCTAssertEqual(activity.ends, 1)
+    }
+
+    func testAssertionEndsOnceAfterNormalCommitAndDecodeError() {
+        for throwsError in [false, true] {
+            let id = throwsError ? "error" : "success"
+            library.seed(id, state: "queued")
+            let activity = FakeActivity()
+            withActivity(activity)
+            if throwsError {
+                session.decode = { _, _ in throw TranscriptionQueueError.decodeFailed }
+            } else {
+                session.decode = { _, _ in }
+                activity.onEnd = { [library] in
+                    XCTAssertEqual(library!.sidecar(id)["state"] as? String, "done")
+                    XCTAssertNotNil(library!.transcriptObject(id))
+                }
+            }
+            core.enqueue(id: id)
+            settle()
+            XCTAssertEqual(activity.ends, 1)
+            XCTAssertEqual(library.sidecar(id)["state"] as? String, throwsError ? "failed" : "done")
+            activity.expire()
+            XCTAssertEqual(activity.ends, 1)
+        }
+    }
+
+    func testWorkerCannotReleaseAssertionBeforeExpiryStorageFinishes() {
+        library.seed("a", state: "queued")
+        let activity = FakeActivity()
+        withActivity(activity)
+        let decodeEntered = DispatchSemaphore(value: 0), decodeRelease = DispatchSemaphore(value: 0)
+        holdDecode(of: "a", entered: decodeEntered, release: decodeRelease)
+        core.enqueue(id: "a")
+        XCTAssertEqual(decodeEntered.wait(timeout: .now() + 5), .success)
+        let writeEntered = DispatchSemaphore(value: 0), writeRelease = DispatchSemaphore(value: 0)
+        library.beforeUpdate = { _, patch in
+            if patch["state"] as? String == "yielded_by_os" { writeEntered.signal(); writeRelease.wait() }
+        }
+        let expiryFinished = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async { activity.expire(); expiryFinished.signal() }
+        XCTAssertEqual(writeEntered.wait(timeout: .now() + 5), .success)
+        decodeRelease.signal()
+        settle()
+        XCTAssertEqual(activity.ends, 0)
+        library.beforeUpdate = nil
+        writeRelease.signal()
+        XCTAssertEqual(expiryFinished.wait(timeout: .now() + 5), .success)
+        XCTAssertEqual(activity.ends, 1)
+        XCTAssertEqual(library.sidecar("a")["state"] as? String, "yielded_by_os")
+    }
+
+    func testTimedOutPersistenceCannotLaterClaimAnOrderlyYield() {
+        library.seed("a", state: "queued")
+        let activity = FakeActivity()
+        withActivity(activity, expiryBudget: 0.05)
+        let decodeEntered = DispatchSemaphore(value: 0), decodeRelease = DispatchSemaphore(value: 0)
+        holdDecode(of: "a", entered: decodeEntered, release: decodeRelease)
+        core.enqueue(id: "a")
+        XCTAssertEqual(decodeEntered.wait(timeout: .now() + 5), .success)
+        let writeEntered = DispatchSemaphore(value: 0), writeRelease = DispatchSemaphore(value: 0)
+        library.beforeUpdate = { _, patch in
+            if patch["state"] as? String == "yielded_by_os" { writeEntered.signal(); writeRelease.wait() }
+        }
+        let expiryFinished = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async { activity.expire(); expiryFinished.signal() }
+        XCTAssertEqual(writeEntered.wait(timeout: .now() + 5), .success)
+        XCTAssertEqual(expiryFinished.wait(timeout: .now() + 1), .success)
+        XCTAssertEqual(activity.ends, 1)
+        library.beforeUpdate = nil
+        writeRelease.signal()
+        decodeRelease.signal()
+        settle()
+        XCTAssertEqual(library.sidecar("a")["state"] as? String, "running")
+        XCTAssertEqual(library.sidecar("a")["attempts"] as? Int, 1)
+        XCTAssertFalse(library.hasTranscript("a"))
+    }
+
+    func testClockDeadlineRejectsLateYieldEvenBeforeSemaphoreTimeout() {
+        library.seed("a", state: "queued")
+        let activity = FakeActivity()
+        let clock = FakeClock()
+        withActivity(activity, clock: { clock.now() })
+        let entered = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
+        holdDecode(of: "a", entered: entered, release: release)
+        core.enqueue(id: "a")
+        XCTAssertEqual(entered.wait(timeout: .now() + 5), .success)
+        library.beforeUpdate = { _, patch in
+            if patch["state"] as? String == "yielded_by_os" { clock.advance(2) }
+        }
+        activity.expire()
+        release.signal()
+        settle()
+        XCTAssertEqual(activity.ends, 1)
+        XCTAssertEqual(library.sidecar("a")["state"] as? String, "running")
+        XCTAssertEqual(library.sidecar("a")["attempts"] as? Int, 1)
+        XCTAssertFalse(library.hasTranscript("a"))
+    }
+
+    func testOSYieldDoesNotRepumpAnotherNoteAfterTwoSeconds() {
+        library.seed("a", state: "queued")
+        library.seed("b", state: "queued")
+        let activity = FakeActivity()
+        withActivity(activity)
+        let entered = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
+        holdDecode(of: "a", entered: entered, release: release)
+        core.enqueue(id: "a")
+        XCTAssertEqual(entered.wait(timeout: .now() + 5), .success)
+        core.enqueue(id: "b")
+        core.controlQueue.sync {}
+        activity.expire()
+        release.signal()
+        settle()
+        Thread.sleep(forTimeInterval: 2.1)
+        settle()
+        XCTAssertEqual(session.startedIds, ["a"])
+        XCTAssertFalse(library.hasTranscript("b"))
+        core.reconcile() // A new foreground opportunity admits the owed job.
+        settle()
+        XCTAssertTrue(library.hasTranscript("b"))
+    }
+
     // MARK: a Local choice on a note committed to another mode survives a restart
 
     func testInterruptedRerunIsCancelledAndItsMarkerClearedAtLaunchRecovery() {
-        for state in ["queued", "running", "waiting_for_model"] {
+        for state in ["queued", "running", "waiting_for_model", "yielded_by_os"] {
             let id = "rerun-\(state)"
             library.seed(id, state: state)
             try? library.updateStt(id, patch: ["rerunRev": 2, "rerunBaseRev": 1, "rerunBaseHash": "old-hash"])
         }
         core.recoverInterruptedReruns()
         settle()
-        for state in ["queued", "running", "waiting_for_model"] {
+        for state in ["queued", "running", "waiting_for_model", "yielded_by_os"] {
             let sidecar = library.sidecar("rerun-\(state)")
             XCTAssertEqual(sidecar["state"] as? String, "cancelled")
             XCTAssertTrue(sidecar["rerunRev"] is NSNull)

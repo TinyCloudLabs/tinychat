@@ -10,7 +10,7 @@ public enum SidecarFactory {
         var captureOptions: [String: Any] = ["transcriber": session.options.transcriber,
                                              "identifySpeakers": session.options.identifySpeakers]
         if let uploadAudio = session.options.uploadAudio { captureOptions["uploadAudio"] = uploadAudio }
-        return [
+        var sidecar: [String: Any] = [
             "id": session.id, "startedAt": session.startedAt, "durationMs": durationMs,
             "mimeType": "audio/mp4", "sizeBytes": 0, "silencedMs": silenced.reduce(0) { $0 + $1.audioMs },
             "silencedEvents": silenced.count, "noSignalMs": noSignalMs,
@@ -41,5 +41,8 @@ public enum SidecarFactory {
             "stt": ["state": "waiting_for_model", "pack": NSNull(), "engine": NSNull(),
                     "segmentsDone": 0, "windowsDone": 0, "error": NSNull()]
         ]
+        if let version = session.recordedAppVersion { sidecar["recorded_app_version"] = version }
+        if let build = session.recordedAppBuild { sidecar["recorded_app_build"] = build }
+        return sidecar
     }
 }

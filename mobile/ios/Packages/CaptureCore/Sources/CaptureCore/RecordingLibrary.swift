@@ -344,13 +344,15 @@ public final class RecordingLibrary {
         }
     }
 
-    private func publishSidecarUnlocked(_ id: String, _ object: [String: Any], failpointName: String) throws {
+    private func publishSidecarUnlocked(_ id: String, _ object: [String: Any], failpointName: String,
+                                        stillValid: (() -> Bool)? = nil) throws {
         guard !FileManager.default.fileExists(atPath: url("tombstones/\(id)").path) else {
             throw CaptureError.tombstoned
         }
         let tmp = url("\(id).json.tmp")
         try check(failpointName)
         try writeDurable(CanonicalJSON.file(object), to: tmp)
+        guard stillValid?() ?? true else { throw CaptureError.cancelled }
         try check("publish.sidecarRename")
         let destination = sidecarURL(id)
         if FileManager.default.fileExists(atPath: destination.path) {
@@ -691,6 +693,87 @@ public final class RecordingLibrary {
         }
     }
 
+    /// Sidecar generation is persisted with `running`. These guarded mutations share `queue`
+    /// with deletion and transcript publication; no stale recognizer callback can undo an OS yield.
+    public func updateRunning(_ id: String, generation: Int, patch: [String: Any],
+                              stillValid: () -> Bool) throws {
+        try queue.sync {
+            guard stillValid(), !FileManager.default.fileExists(atPath: url("tombstones/\(id)").path) else { return }
+            var item = try readSidecarUnlocked(id)
+            var stt = item["stt"] as? [String: Any] ?? [:]
+            guard stt["state"] as? String == "running",
+                  stt["yieldGeneration"] as? Int == generation else { return }
+            stt.merge(patch) { _, newer in newer }
+            item["stt"] = stt
+            item["rev"] = (item["rev"] as? Int ?? 0) + 1
+            try publishSidecarUnlocked(id, item, failpointName: "stt.write", stillValid: stillValid)
+        }
+    }
+
+    @discardableResult
+    public func yieldToOS(_ id: String, generation: Int, attempts: Int,
+                          stillValid: () -> Bool) throws -> Bool {
+        try queue.sync {
+            guard stillValid(), !FileManager.default.fileExists(atPath: url("tombstones/\(id)").path) else { return false }
+            var item = try readSidecarUnlocked(id)
+            var stt = item["stt"] as? [String: Any] ?? [:]
+            guard stt["state"] as? String == "running",
+                  stt["yieldGeneration"] as? Int == generation else { return false }
+            stt["state"] = "yielded_by_os"
+            stt["attempts"] = attempts
+            item["stt"] = stt
+            item["rev"] = (item["rev"] as? Int ?? 0) + 1
+            try publishSidecarUnlocked(id, item, failpointName: "stt.write", stillValid: stillValid)
+            return true
+        }
+    }
+
+    @discardableResult
+    public func commitTranscript(_ id: String, generation: Int, object: [String: Any],
+                                 stillValid: () -> Bool) throws -> Bool {
+        let operation = try beginOperation(id)
+        let staged = url("staging/\(id).\(operation).\(UUID().uuidString.lowercased()).transcript.json")
+        defer { endOperation(id) }
+        defer { try? FileManager.default.removeItem(at: staged) }
+        try writeDurable(CanonicalJSON.file(object), to: staged)
+        gate?("stt.beforePublish")
+        return try queue.sync {
+            guard generations[id, default: 0] == operation,
+                  !FileManager.default.fileExists(atPath: url("tombstones/\(id)").path) else {
+                throw CaptureError.tombstoned
+            }
+            var item = try readSidecarUnlocked(id)
+            var stt = item["stt"] as? [String: Any] ?? [:]
+            guard stillValid(), stt["state"] as? String == "running",
+                  stt["yieldGeneration"] as? Int == generation else { return false }
+            let final = url("\(id).transcript.json")
+            let prior = url("staging/\(id).\(operation).\(UUID().uuidString.lowercased()).prior.transcript.json")
+            let hadPrior = FileManager.default.fileExists(atPath: final.path)
+            if hadPrior { try FileManager.default.moveItem(at: final, to: prior) }
+            do {
+                try FileManager.default.moveItem(at: staged, to: final)
+                try sync(root)
+                stt["state"] = "done"
+                stt["error"] = NSNull()
+                item["stt"] = stt
+                item["rev"] = (item["rev"] as? Int ?? 0) + 1
+                try publishSidecarUnlocked(id, item, failpointName: "stt.write")
+                if hadPrior { try? FileManager.default.removeItem(at: prior) }
+                return true
+            } catch {
+                // A post-rename fsync can throw after the sidecar is already durable. In that
+                // case the new transcript is the winner and must not be rolled back.
+                if let published = (try? readSidecarUnlocked(id))?["stt"] as? [String: Any],
+                   published["state"] as? String == "done",
+                   published["yieldGeneration"] as? Int == generation { return true }
+                try? FileManager.default.removeItem(at: final)
+                if hadPrior { try FileManager.default.moveItem(at: prior, to: final) }
+                try sync(root)
+                throw error
+            }
+        }
+    }
+
     public func putTranscript(_ id: String, object: [String: Any]) throws {
         let generation = try beginOperation(id)
         let staged = url("staging/\(id).\(generation).\(UUID().uuidString.lowercased()).transcript.json")
@@ -733,7 +816,8 @@ public final class RecordingLibrary {
         let localAudioUnready = localAudio != nil && localAudio?["state"] as? String != "ready"
         let sttState = (note["stt"] as? [String: Any])?["state"] as? String ?? ""
         let sttRequested = (note["stt"] as? [String: Any])?["requested"] as? Bool == true
-        let sttPinned = (transcriber == "on-device" || sttRequested) && ["waiting_for_model", "queued", "running", "failed", "cancelled"].contains(sttState)
+        let sttPinned = (transcriber == "on-device" || sttRequested)
+            && ["waiting_for_model", "queued", "running", "yielded_by_os", "failed", "cancelled"].contains(sttState)
         let remotes = ledger["remote"] as? [[String: Any]] ?? []
         let remoteOpen = remotes.contains(where: { op in
             let stage = op["stage"] as? String

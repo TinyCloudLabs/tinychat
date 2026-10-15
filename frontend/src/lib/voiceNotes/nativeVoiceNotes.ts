@@ -75,10 +75,12 @@ export interface NoteLedger {
     cleanup: "none" | "pending" | "done" }[];
 }
 export interface NoteSttState {
-  state: "waiting_for_model" | "queued" | "running" | "done" | "failed" | "cancelled";
+  state: "waiting_for_model" | "queued" | "running" | "yielded_by_os" | "done" | "failed" | "cancelled";
   pack: "full" | "small" | null; engine: "parakeet" | "apple-speech" | "whisper" | null;
   segmentsDone: number; windowsDone: number; error: string | null; rerunRev?: number | null;
   rerunBaseRev?: number | null; rerunBaseHash?: string | null;
+  /** iOS attempt generation; a yielded generation cannot publish a late recognition result. */
+  yieldGeneration?: number;
   /** Set by the native enqueue (`ResumableWork.requested`, TranscriptionCore.swift:44, ResumableWork.kt:20-21) when the user chose Local for this note. */
   requested?: boolean;
 }
@@ -194,6 +196,9 @@ export interface VoiceNoteRecording {
   firstAudioAt?: number | null; captureStoppedAt?: number | null;
   recovered?: boolean; endedUnexpectedly?: boolean; lastHeartbeatAt?: number | null; exitReason?: string | null;
   legacyImport?: boolean; ownerUnknown?: boolean;
+  /** iOS capture-time build; absent on old or migrated recordings, never inferred from the current app. */
+  recorded_app_version?: string;
+  recorded_app_build?: string;
   source?: CaptureSource; owner?: string | null; transitionGen?: number;
   options?: CaptureOptions; input?: AudioInput | null; sampleRate?: number; bitrate?: number;
   ledger?: NoteLedger; stt?: NoteSttState;

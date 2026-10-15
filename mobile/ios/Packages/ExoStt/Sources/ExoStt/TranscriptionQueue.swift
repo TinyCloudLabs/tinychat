@@ -1,15 +1,17 @@
 #if os(iOS)
 import ExoCapture
 import Foundation
+import UIKit
 
-/// Transcribes a committed note's audio with Apple's built-in on-device speech (plan §2.5), for notes
-/// whose `options.transcriber == "on-device"`. This slice runs the whole job in-process on a
-/// background queue: there is no `BGProcessingTask`/checkpoint persistence (T24 adds that), so a
-/// note interrupted by the app dying restarts its decode from the beginning next time the queue
-/// runs, instead of resuming mid-file. It never runs while a capture session is live: it checks
-/// `CapturePauseGate.isActive()` before starting a note and again before every second of audio fed to
-/// the analyzer, and stops promptly instead of competing with capture for CPU/memory. Audio is read
-/// and fed lazily (`SpeechAudioFeed`), never as one in-memory array, so a note's memory use does not
+/// Transcribes a committed note's audio with Apple's built-in on-device speech, for notes
+/// whose `options.transcriber == "on-device"`. Jobs run in-process on a background queue.
+/// Eligible short decodes hold a finite iOS background assertion, not a `BGProcessingTask`.
+/// At expiry the current generation and attempt rollback are written before ending the assertion
+/// when possible; an interrupted note restarts from the beginning at a later foreground reconcile.
+/// It never runs while a capture session is live: it checks `CapturePauseGate.isActive()` before
+/// starting a note and again before every second of audio fed to the analyzer, and stops promptly
+/// instead of competing with capture for CPU/memory. Audio is read and fed lazily
+/// (`SpeechAudioFeed`), never as one in-memory array, so a note's memory use does not
 /// scale with its length: a note left recording for a long time once crashed every launch decoding
 /// itself whole (TC-836 incident).
 /// Before each attempt, `AttemptGuard` persists an incremented attempt count to the note's sidecar;
@@ -48,7 +50,8 @@ public final class TranscriptionQueue {
     public init() {
         let library = CaptureLibrary()
         let assets = AppleSpeechAssets.shared
-        core = TranscriptionCore(library: library, backend: AppleSpeechBackend(assets: assets, audioURL: library.audioURL))
+        core = TranscriptionCore(library: library, backend: AppleSpeechBackend(assets: assets, audioURL: library.audioURL),
+                                 activity: { UIKitTranscriptionActivity() })
         // The launch-time asset check runs in the background; the worker waits for it (rather than
         // concluding the speech assets are missing) and this restarts the queue and refreshes the UI once done.
         Task { [weak self] in
@@ -103,7 +106,17 @@ private final class CaptureLibrary: TranscriptionLibrary {
     func transcript(_ id: String) throws -> [String: Any]? { try library.transcript(id) }
     func readSidecar(_ id: String) throws -> [String: Any] { try library.readSidecar(id) }
     func updateStt(_ id: String, patch: [String: Any]) throws { try library.updateStt(id, patch: patch) }
-    func putTranscript(_ id: String, object: [String: Any]) throws { try library.putTranscript(id, object: object) }
+    func updateRunning(_ id: String, generation: Int, patch: [String: Any],
+                       stillValid: () -> Bool) throws {
+        try library.updateRunning(id, generation: generation, patch: patch, stillValid: stillValid)
+    }
+    func yieldToOS(_ id: String, generation: Int, attempts: Int, stillValid: () -> Bool) throws -> Bool {
+        try library.yieldToOS(id, generation: generation, attempts: attempts, stillValid: stillValid)
+    }
+    func commitTranscript(_ id: String, generation: Int, object: [String: Any],
+                          stillValid: () -> Bool) throws -> Bool {
+        try library.commitTranscript(id, generation: generation, object: object, stillValid: stillValid)
+    }
 }
 
 /// Where Apple's speech assets come from: `makeSession` returns nil (the note waits) until the OS has them
@@ -122,9 +135,14 @@ private final class AppleSpeechBackend: TranscriptionBackend {
 
     func makeSession() throws -> TranscriptionSession? {
         let target = BlockingResult<AppleSpeechAssets.Target?>()
-        Task.detached(priority: .utility) { [assets] in target.finish(.success(await assets.refresh())) }
-        guard let ready = try target.wait() else { return nil }
-        return AppleSpeechSession(target: ready, audioURL: audioURL)
+        let task = Task.detached(priority: .utility) { [assets] in target.finish(.success(await assets.refresh())) }
+        do {
+            guard let ready = try target.wait(timeout: 30, check: {}) else { return nil }
+            return AppleSpeechSession(target: ready, audioURL: audioURL)
+        } catch {
+            task.cancel()
+            throw error
+        }
     }
 }
 #endif

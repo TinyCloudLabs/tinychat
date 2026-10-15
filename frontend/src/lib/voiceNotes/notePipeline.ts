@@ -53,7 +53,7 @@ export interface PipelinePending {
 export interface PipelineSpaceLane { busy: boolean; depth: number }
 
 /** `NoteSttState["state"]`. */
-export type PipelineSttState = "waiting_for_model" | "queued" | "running" | "done" | "failed" | "cancelled";
+export type PipelineSttState = "waiting_for_model" | "queued" | "running" | "yielded_by_os" | "done" | "failed" | "cancelled";
 /** `OnDeviceSttStatus["models"][number]["state"]`. */
 export type PipelineModelState = "absent" | "queued" | "downloading" | "verifying" | "checking" | "ready" | "failed";
 /** `OnDeviceSttStatus["download"]["state"]`. */
@@ -314,6 +314,7 @@ function onDeviceStep(input: NotePipelineInput, od: PipelineOnDevice): Result {
       return withProgress("active", input.device === "mac" ? LOCAL_COPY.transcribingOnMac(progress) : LOCAL_COPY.transcribing(progress), progress);
     }
     case "queued": return { state: "waiting", caption: LOCAL_COPY.queued(queue?.position ?? null) };
+    case "yielded_by_os": return { state: "waiting", caption: LOCAL_COPY.queued(null) };
     case "waiting_for_model": return modelStep(od, input.device) ?? { state: "waiting", caption: LOCAL_COPY.queued(queue?.position ?? null) };
   }
 }
