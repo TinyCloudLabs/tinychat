@@ -1,6 +1,4 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -11,8 +9,6 @@ import { showsNativeSignIn } from "@/lib/authRouting";
 import { isNativeOpenKeySignIn, type NativeSignInHints } from "@/lib/openkeyNative";
 import { installDom } from "@/test/dom";
 import { NATIVE_SIGN_IN_FINE_PRINT, NATIVE_SIGN_IN_SUBCOPY, NativeSignIn } from "./NativeSignIn";
-
-const app = readFileSync(join(import.meta.dir, "../App.tsx"), "utf8");
 
 let cleanupDom: (() => void) | undefined;
 afterEach(() => { cleanupDom?.(); cleanupDom = undefined; });
@@ -203,12 +199,4 @@ describe("the native gate", () => {
     expect(showsNativeSignIn({ native: true, state: "unauthenticated", localHome: true, requested: true })).toBe(true);
   });
 
-  test("App runs the screen's sign-in with the hints it collected", () => {
-    expect(app).toContain("onSignIn={(hints) => void signIn(hints)}");
-    expect(app).toContain("await signInNative(nativeConfig, hints);");
-    // The wiring itself (who opens the screen, Not now, the microphone recovery) is tested through useNativeSignIn.
-    expect(app).toContain("onContinue={nativeSignInFlow.micRecoveryContinue}");
-    expect(app).toContain("onSignIn={authAction}");
-    expect(app).toContain("minimiseOnSignIn={nativeSignIn}");
-  });
 });

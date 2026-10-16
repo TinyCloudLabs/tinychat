@@ -45,7 +45,7 @@ The app configuration for this setup page is:
 ```json
 {
   "schemaVersion": 1,
-  "host": "https://tee.node.tinycloud.xyz",
+  "host": "https://node.tinycloud.xyz",
   "space": "applications"
 }
 ```
