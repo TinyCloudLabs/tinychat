@@ -14,6 +14,7 @@ export {
   normalizeTranscriberTranscript,
   ensureConnectorSchema,
   writeTranscriberMeeting,
+  writeConnectorMeeting,
   transcriberMeetingInSpace,
   type NormalizedMeeting,
   type TranscriptSentence,

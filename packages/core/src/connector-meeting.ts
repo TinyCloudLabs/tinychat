@@ -64,7 +64,7 @@ export const CONNECTOR_SCHEMA: { sql: string; table: string }[] = [
 ];
 
 export interface NormalizedMeeting {
-  /** Stable UUIDv8 derived from source and sourceId. */
+  /** Candidate ID for transcriber writes; browser connector writes derive new IDs from source/sourceId. */
   id: string;
   source: string;
   sourceId: string;
@@ -229,7 +229,7 @@ export type PortResult<T> = { ok: true; data: T } | { ok: false; code: string; m
 
 export interface ConnectorStorePort {
   query(sql: string, params: unknown[]): Promise<PortResult<{ rows: unknown[][] }>>;
-  execute(sql: string, params?: unknown[]): Promise<PortResult<unknown>>;
+  execute(sql: string, params?: unknown[]): Promise<PortResult<{ changes: number }>>;
   kvGet(key: string): Promise<PortResult<"present" | "missing">>;
   kvPutIfAbsent(key: string, body: string): Promise<PortResult<"written" | "exists">>;
 }
@@ -301,6 +301,145 @@ export async function writeTranscriberMeeting(
   const body = await port.kvPutIfAbsent(transcriptKvKey(meeting.source, meeting.sourceId), normalized.body);
   if (!body.ok) return body;
   return { ok: true, data: { id, row, body: body.data } };
+}
+
+/** One meeting identity in the user's applications space, independent of the caller's SDK. */
+export async function writeConnectorMeeting(
+  port: ConnectorStorePort,
+  meeting: NormalizedMeeting,
+  body: string,
+  options: { preserveExistingTitle?: boolean; preserveTranscriptBody?: boolean } = {},
+): Promise<PortResult<{ id: string; inserted: boolean; createdAt: string }>> {
+  const columns = "id, created_at, title, started_at, duration_secs, organizer_email, participants, "
+    + "summary_overview, summary_action_items, keywords, meeting_type, metadata";
+  const lookup = () => port.query(
+    `SELECT ${columns} FROM connector_meeting WHERE source = ? AND source_id = ? LIMIT 1`,
+    [meeting.source, meeting.sourceId],
+  );
+  const first = await lookup();
+  if (!first.ok) return first;
+  let row = first.data.rows[0];
+  let inserted = false;
+  const bodyFirst = meeting.source === "google-meet";
+  const needsBody = body !== "[]" || !row || options.preserveTranscriptBody;
+  if (bodyFirst && needsBody) {
+    const saved = await writeMissingConnectorBody(port, meeting, body);
+    if (!saved.ok) return saved;
+  }
+  if (!row) {
+    // The pre-INSERT lookup protects legacy random UUIDs; the primary key makes
+    // simultaneous upgraded writers for the same identity converge.
+    const id = await connectorMeetingId(meeting.source, meeting.sourceId);
+    const now = new Date().toISOString();
+    const write = await port.execute(
+      `INSERT INTO connector_meeting
+        (id, source, source_id, title, started_at, duration_secs, organizer_email,
+         participants, summary_overview, summary_action_items, keywords, meeting_type,
+         metadata, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO NOTHING`,
+      [id, meeting.source, meeting.sourceId, meeting.title, meeting.startedAt,
+        meeting.durationSecs, meeting.organizerEmail, JSON.stringify(meeting.participants),
+        meeting.summaryOverview, meeting.summaryActionItems,
+        meeting.keywords === null ? null : JSON.stringify(meeting.keywords),
+        meeting.meetingType, JSON.stringify(meeting.metadata), now, now],
+    );
+    if (!write.ok) return write;
+    inserted = write.data.changes > 0;
+    const winner = await lookup();
+    if (!winner.ok) return winner;
+    row = winner.data.rows[0];
+  }
+  const id = row?.[0];
+  const createdAt = row?.[1];
+  if (typeof id !== "string" || typeof createdAt !== "string") {
+    return { ok: false, code: "STORE_CORRUPT_ROW", message: "meeting row missing id or created_at" };
+  }
+  // Reconcile the winner even after our INSERT attempt: another writer may
+  // have won the primary-key race with an earlier/partial source response.
+  {
+    const text = (index: number) => typeof row![index] === "string" ? row![index] as string : null;
+    const number = (index: number) => typeof row![index] === "number" ? row![index] as number : null;
+    const existingMetadata = parseMeetingMetadata(row[11]);
+    const acceptsDatetime = meeting.startedAt !== null && (text(3) === null
+      || meetingDatetimeConfidence(meeting.metadata, true) >= meetingDatetimeConfidence(existingMetadata, true));
+    const metadata = { ...existingMetadata, ...meeting.metadata };
+    if (!acceptsDatetime) {
+      for (const key of ["datetime_source", "datetime_exact", "datetime_resolution_version"] as const) {
+        if (key in existingMetadata) metadata[key] = existingMetadata[key];
+        else delete metadata[key];
+      }
+    }
+    const notesOwnedFields = meeting.metadata.notes_owned_fields;
+    const ownsNotes = (field: "summary_overview" | "summary_action_items") =>
+      meeting.source === "google-meet"
+      && meeting.metadata.notes_association === "standalone"
+      && meeting.metadata.notes_kind === "gemini"
+      && Array.isArray(notesOwnedFields) && notesOwnedFields.includes(field);
+    const keep = (next: string | null, index: number) => next ?? text(index);
+    const next = [
+      options.preserveExistingTitle ? text(2) ?? meeting.title : keep(meeting.title, 2),
+      acceptsDatetime ? meeting.startedAt : text(3),
+      meeting.durationSecs ?? number(4),
+      keep(meeting.organizerEmail, 5),
+      meeting.participants.length ? JSON.stringify(meeting.participants) : text(6) ?? "[]",
+      ownsNotes("summary_overview") ? meeting.summaryOverview : keep(meeting.summaryOverview, 7),
+      ownsNotes("summary_action_items") ? meeting.summaryActionItems : keep(meeting.summaryActionItems, 8),
+      meeting.keywords === null ? text(9) : JSON.stringify(meeting.keywords),
+      keep(meeting.meetingType, 10),
+      JSON.stringify(metadata),
+    ];
+    const current = [text(2), text(3), number(4), text(5), text(6) ?? "[]",
+      text(7), text(8), text(9), text(10), JSON.stringify(existingMetadata)];
+    if (next.some((value, index) => value !== current[index])) {
+      const updated = await port.execute(
+        `UPDATE connector_meeting SET
+           title = ?, started_at = ?, duration_secs = ?, organizer_email = ?,
+           participants = ?, summary_overview = ?, summary_action_items = ?,
+           keywords = ?, meeting_type = ?, metadata = ?, updated_at = ?
+         WHERE id = ?`,
+        [...next, new Date().toISOString(), id],
+      );
+      if (!updated.ok) return updated;
+    }
+  }
+  if (!bodyFirst && needsBody) {
+    const saved = await writeMissingConnectorBody(port, meeting, body);
+    if (!saved.ok) return saved;
+  }
+  return { ok: true, data: { id, inserted, createdAt } };
+}
+
+async function writeMissingConnectorBody(
+  port: ConnectorStorePort, meeting: NormalizedMeeting, body: string,
+): Promise<PortResult<void>> {
+  const key = transcriptKvKey(meeting.source, meeting.sourceId);
+  const existing = await port.kvGet(key);
+  if (!existing.ok) return existing;
+  if (existing.data === "present") return { ok: true, data: undefined };
+  const written = await port.kvPutIfAbsent(key, body);
+  return written.ok ? { ok: true, data: undefined } : written;
+}
+
+function parseMeetingMetadata(raw: unknown): Record<string, unknown> {
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) return raw as Record<string, unknown>;
+  if (typeof raw !== "string") return {};
+  try {
+    const value: unknown = JSON.parse(raw);
+    return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  } catch {
+    return {};
+  }
+}
+
+function meetingDatetimeConfidence(metadata: Record<string, unknown>, hasStartedAt: boolean): number {
+  switch (metadata.datetime_source) {
+    case "meet_conference_start": return 3;
+    case "docs_content": return 2;
+    case "drive_created_time": return 1;
+    case "unavailable": return 0;
+    default: return hasStartedAt ? 3 : 0;
+  }
 }
 
 /** Both parts must exist; never create schema while merely checking delivery status. */

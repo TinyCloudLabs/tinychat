@@ -11,11 +11,11 @@
 // does (see the DB HANDLE CONVENTION note in threadStore.ts:16-22).
 //
 // TinyCloud SQLite authorizer restrictions (from listen): no CREATE INDEX,
-// no UNIQUE constraints, no REFERENCES. Dedup is app-level (SELECT before
-// INSERT). Schema existence is checked through sqlite_master before any DDL,
-// so existing tables remain readable when storage is full.
+// no UNIQUE constraints, no REFERENCES. The shared writer first looks up
+// legacy IDs, then uses the deterministic primary key for upgraded-writer races.
+// Schema existence is checked through sqlite_master before any DDL.
 //
-// Sequential writes only — TinyCloud drops concurrent responses.
+// Calls within one write are sequential — TinyCloud drops concurrent responses.
 //
 // All exported functions return Result-style objects (spec §4). Callers
 // branch on `.ok`; nothing throws across the module boundary.
@@ -27,6 +27,7 @@ import {
   CONNECTORS_KV_PREFIX,
   CONNECTOR_SCHEMA,
   transcriptKvKey,
+  writeConnectorMeeting,
   type NormalizedMeeting,
 } from "@tinyboilerplate/core";
 export {
@@ -40,6 +41,7 @@ import type {
   FirefliesTranscript,
 } from "./firefliesClient";
 import type { ConnectorConnection, ConnectorId } from "./types";
+import { webConnectorPort } from "./connectorPort";
 
 
 /** Fireflies attempt metadata; SQL `last_synced_at` remains the success clock. */
@@ -552,67 +554,6 @@ export async function countMeetings(
   return { ok: true, data: parsed };
 }
 
-/**
- * Insert a normalized meeting row, dedup'd on (source, source_id).
- * Returns true if inserted, false if a row for this (source, source_id) already
- * existed and the insert was skipped. Writes are sequential — SELECT-before-INSERT
- * is race-safe under the single-writer model.
- */
-export async function insertMeeting(
-  tcw: TinyCloudWeb,
-  meeting: NormalizedMeeting,
-): Promise<StoreResult<boolean>> {
-  const schema = await ensureSchema(tcw);
-  if (!schema.ok) return schema;
-  const existing = await store(tcw).query(
-    "SELECT id FROM connector_meeting WHERE source = ? AND source_id = ? LIMIT 1",
-    [meeting.source, meeting.sourceId],
-  );
-  if (!existing.ok) return fail(existing.error, "insertMeeting(dedupSelect)", storageScopeFor(tcw));
-  if (existing.data.rows.length > 0) return { ok: true, data: false };
-
-  const now = new Date().toISOString();
-  const res = await insertMeetingRow(tcw, meeting, now, "insertMeeting(insert)");
-  if (!res.ok) return res;
-  return { ok: true, data: true };
-}
-
-/** Shared INSERT used by both the v1 sync path and the targeted upsert. */
-async function insertMeetingRow(
-  tcw: TinyCloudWeb,
-  meeting: NormalizedMeeting,
-  now: string,
-  context: string,
-): Promise<StoreResult<void>> {
-  const res = await store(tcw).execute(
-    `INSERT INTO connector_meeting
-      (id, source, source_id, title, started_at, duration_secs, organizer_email,
-       participants, summary_overview, summary_action_items, keywords, meeting_type,
-       metadata, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      meeting.id,
-      meeting.source,
-      meeting.sourceId,
-      meeting.title,
-      meeting.startedAt,
-      meeting.durationSecs,
-      meeting.organizerEmail,
-      JSON.stringify(meeting.participants),
-      meeting.summaryOverview,
-      meeting.summaryActionItems,
-      meeting.keywords === null ? null : JSON.stringify(meeting.keywords),
-      meeting.meetingType,
-      JSON.stringify(meeting.metadata),
-      now,
-      now,
-    ],
-  );
-  if (!res.ok) return fail(res.error, context, storageScopeFor(tcw));
-  return { ok: true, data: undefined };
-}
-
-// ── Targeted upsert (webhook queued-id ingest) ─────────────────────────
 
 export interface UpsertMeetingOutcome {
   /** The row id actually in the store — the PRE-EXISTING id when updated. */
@@ -673,11 +614,6 @@ export async function getMeetingDatetimeStats(
   return { ok: true, data: stats };
 }
 
-/** Columns the upsert lookup reads, in the order the merge below unpacks them. */
-const UPSERT_LOOKUP_COLUMNS =
-  "id, created_at, title, started_at, duration_secs, organizer_email, participants, "
-  + "summary_overview, summary_action_items, keywords, meeting_type, metadata";
-
 function parseJsonObject(raw: unknown): Record<string, unknown> {
   if (raw && typeof raw === "object" && !Array.isArray(raw)) {
     return raw as Record<string, unknown>;
@@ -706,31 +642,8 @@ function datetimeConfidence(metadata: Record<string, unknown>, hasStartedAt: boo
 }
 
 /**
- * Insert-or-update a meeting keyed on (source, source_id), then write/refresh
- * the transcript KV body.
- *
- * WHY this exists alongside `insertMeeting`: the v1 sync (`syncFireflies`)
- * lists newest-first and deliberately SKIPS ids it already has, so a
- * `meeting.summarized` webhook for an already-stored meeting would be
- * dropped forever. The webhook path supplies exact ids and must be able to
- * land late-arriving summary fields on the existing row. `insertMeeting`
- * keeps its skip semantics — v1 sync behaviour is unchanged.
- *
- * Merge rules (a re-delivery must never destroy data):
- *  - the existing row id and `created_at` are preserved; the throwaway
- *    `meeting.id` from normalize() is used only when inserting;
- *  - a `null` scalar in the new payload keeps the stored value — Fireflies
- *    summaries lag transcripts, so a later `meeting.transcribed` fetch with
- *    no summary must not erase one. The two fields explicitly owned by a
- *    standalone Notes by Gemini Doc are the exception: a later Doc revision
- *    can delete either section, which must clear the stored field;
- *  - an empty participants list / `null` keywords keep what's stored;
- *  - metadata is shallow-merged, new keys winning;
- *  - an empty sentence list on an UPDATE leaves the stored transcript body
- *    alone (on INSERT it is written, so the key always exists).
- *
- * All storage calls are sequential — TinyCloud drops concurrent responses on
- * one space. Every resolved `{ ok: false }` surfaces; nothing is swallowed.
+ * Both browser connectors use the core identity/field-ownership writer. The
+ * browser adapter retains storage-status reporting and schema memoization.
  */
 export async function upsertMeeting(
   tcw: TinyCloudWeb,
@@ -740,123 +653,20 @@ export async function upsertMeeting(
 ): Promise<StoreResult<UpsertMeetingOutcome>> {
   const schema = await ensureSchema(tcw);
   if (!schema.ok) return schema;
-
-  const existing = await store(tcw).query(
-    `SELECT ${UPSERT_LOOKUP_COLUMNS} FROM connector_meeting
-     WHERE source = ? AND source_id = ? LIMIT 1`,
-    [meeting.source, meeting.sourceId],
-  );
-  if (!existing.ok) return fail(existing.error, "upsertMeeting(lookup)", storageScopeFor(tcw));
-
-  const now = new Date().toISOString();
-  const row = existing.data.rows[0];
-
-  if (!row) {
-    const ins = await insertMeetingRow(tcw, meeting, now, "upsertMeeting(insert)");
-    if (!ins.ok) return ins;
-    const kv = await (options.preserveTranscriptBody ? putMissingTranscriptBody : putTranscriptBody)(tcw, meeting.source, meeting.sourceId, sentences);
-    if (!kv.ok) return kv;
-    return { ok: true, data: { id: meeting.id, inserted: true, createdAt: now } };
-  }
-
-  const existingId = cellStr(row, 0, null);
-  const createdAt = cellStr(row, 1, null);
-  if (existingId === null || createdAt === null) {
-    return {
-      ok: false,
-      error: {
-        code: "STORE_CORRUPT_ROW",
-        message: "upsertMeeting: existing row is missing id or created_at",
-      },
-    };
-  }
-
-  const keepStr = (next: string | null, idx: number): string | null =>
-    next !== null ? next : cellStr(row, idx, null);
-  const notesOwnedFields = meeting.metadata.notes_owned_fields;
-  const ownsStandaloneNotesField = (field: "summary_overview" | "summary_action_items") =>
-    meeting.source === "google-meet"
-    && meeting.metadata.notes_association === "standalone"
+  const standaloneNotes = meeting.source === "google-meet"
     && meeting.metadata.notes_kind === "gemini"
-    && Array.isArray(notesOwnedFields)
-    && notesOwnedFields.includes(field);
-  const existingStartedAt = cellStr(row, 3, null);
-  const existingMetadata = parseJsonObject(row[11]);
-  const acceptsIncomingDatetime = meeting.startedAt !== null
-    && (existingStartedAt === null
-      || datetimeConfidence(meeting.metadata, true) >= datetimeConfidence(existingMetadata, true));
-  const mergedMetadata: Record<string, unknown> = {
-    ...existingMetadata,
-    ...meeting.metadata,
-  };
-  if (!acceptsIncomingDatetime) {
-    for (const key of ["datetime_source", "datetime_exact", "datetime_resolution_version"] as const) {
-      if (key in existingMetadata) mergedMetadata[key] = existingMetadata[key];
-      else delete mergedMetadata[key];
-    }
+    && meeting.metadata.notes_association === "standalone";
+  if (standaloneNotes) {
+    const body = await putTranscriptBody(tcw, meeting.source, meeting.sourceId, sentences);
+    if (!body.ok) return body;
   }
-
-  const updateValues = [
-    options.preserveExistingTitle ? cellStr(row, 2, meeting.title) : keepStr(meeting.title, 2),
-    acceptsIncomingDatetime ? meeting.startedAt : existingStartedAt,
-    meeting.durationSecs !== null ? meeting.durationSecs : cellNum(row, 4, null),
-    keepStr(meeting.organizerEmail, 5),
-    meeting.participants.length > 0
-      ? JSON.stringify(meeting.participants)
-      : (cellStr(row, 6, null) ?? "[]"),
-    ownsStandaloneNotesField("summary_overview")
-      ? meeting.summaryOverview
-      : keepStr(meeting.summaryOverview, 7),
-    ownsStandaloneNotesField("summary_action_items")
-      ? meeting.summaryActionItems
-      : keepStr(meeting.summaryActionItems, 8),
-    meeting.keywords !== null ? JSON.stringify(meeting.keywords) : cellStr(row, 9, null),
-    keepStr(meeting.meetingType, 10),
-    JSON.stringify(mergedMetadata),
-  ];
-  const currentValues = [
-    cellStr(row, 2, null),
-    existingStartedAt,
-    cellNum(row, 4, null),
-    cellStr(row, 5, null),
-    cellStr(row, 6, null) ?? "[]",
-    cellStr(row, 7, null),
-    cellStr(row, 8, null),
-    cellStr(row, 9, null),
-    cellStr(row, 10, null),
-    JSON.stringify(existingMetadata),
-  ];
-  if (updateValues.some((value, index) => value !== currentValues[index])) {
-    const upd = await store(tcw).execute(
-      `UPDATE connector_meeting SET
-         title = ?, started_at = ?, duration_secs = ?, organizer_email = ?,
-         participants = ?, summary_overview = ?, summary_action_items = ?,
-         keywords = ?, meeting_type = ?, metadata = ?, updated_at = ?
-       WHERE id = ?`,
-      [...updateValues, now, existingId],
-    );
-    if (!upd.ok) return fail(upd.error, "upsertMeeting(update)", storageScopeFor(tcw));
-  }
-
-  if (sentences.length > 0 || options.preserveTranscriptBody) {
-    const kv = await (options.preserveTranscriptBody ? putMissingTranscriptBody : putTranscriptBody)(tcw, meeting.source, meeting.sourceId, sentences);
-    if (!kv.ok) return kv;
-  }
-
-  return { ok: true, data: { id: existingId, inserted: false, createdAt } };
+  const result = await writeConnectorMeeting(webConnectorPort(tcw), meeting, JSON.stringify(sentences), options);
+  if (!result.ok) return fail(result, "upsertMeeting", storageScopeFor(tcw));
+  return result;
 }
 
 // ── Transcript bodies (KV) ──────────────────────────────────────────────
 
-/** A SQL row may survive a failed KV write. Repair it, including a valid empty transcript. */
-async function putMissingTranscriptBody(
-  tcw: TinyCloudWeb, source: string, sourceId: string, sentences: FirefliesSentence[],
-): Promise<StoreResult<void>> {
-  const existing = await tcw.kv.get(transcriptKvKey(source, sourceId));
-  if (existing.ok) return { ok: true, data: undefined };
-  if (!/NOT_FOUND/i.test(existing.error.code ?? "")) return fail(existing.error, "putMissingTranscriptBody", storageScopeFor(tcw));
-  return putTranscriptBody(tcw, source, sourceId, sentences);
-}
 export async function listTranscriptBodyIds(
   tcw: TinyCloudWeb,
   source: string,
@@ -906,6 +716,7 @@ export async function clearFirefliesAttempt(tcw: TinyCloudWeb): Promise<StoreRes
   return { ok: true, data: undefined };
 }
 
+/** Standalone Notes revisions use an ETag CAS; identical bytes never trigger a write. */
 export async function putTranscriptBody(
   tcw: TinyCloudWeb,
   source: string,
@@ -913,8 +724,38 @@ export async function putTranscriptBody(
   sentences: FirefliesSentence[],
 ): Promise<StoreResult<void>> {
   const key = transcriptKvKey(source, sourceId);
-  const res = await tcw.kv.put(key, JSON.stringify(sentences));
-  if (!res.ok) return fail(res.error, "putTranscriptBody", storageScopeFor(tcw));
+  const body = JSON.stringify(sentences);
+  const previous = await tcw.kv.get(key);
+  if (!previous.ok && previous.error.code !== "KV_NOT_FOUND") {
+    return fail(previous.error, "putTranscriptBody(read)", storageScopeFor(tcw));
+  }
+  if (previous.ok) {
+    const stored = typeof previous.data.data === "string" ? previous.data.data : JSON.stringify(previous.data.data);
+    if (stored === body) return { ok: true, data: undefined };
+    const etag = previous.data.headers?.etag;
+    if (!etag) {
+      return fail({ code: "KV_ETAG_MISSING", message: "Transcript revision cannot be replaced without an ETag" },
+        "putTranscriptBody", storageScopeFor(tcw));
+    }
+    const updated = await tcw.kv.put(key, body, { ifMatch: etag });
+    if (!updated.ok && updated.error.code === "KV_PRECONDITION_FAILED") {
+      const winner = await tcw.kv.get(key);
+      if (!winner.ok) return fail(winner.error, "putTranscriptBody(race)", storageScopeFor(tcw));
+      const current = typeof winner.data.data === "string" ? winner.data.data : JSON.stringify(winner.data.data);
+      if (current === body) return { ok: true, data: undefined };
+    }
+    if (!updated.ok) return fail(updated.error, "putTranscriptBody(update)", storageScopeFor(tcw));
+  } else {
+    const inserted = await tcw.kv.put(key, body, { ifNoneMatch: "*" });
+    if (!inserted.ok && inserted.error.code === "KV_PRECONDITION_FAILED") {
+      const winner = await tcw.kv.get(key);
+      if (winner.ok) {
+        const current = typeof winner.data.data === "string" ? winner.data.data : JSON.stringify(winner.data.data);
+        if (current === body) return { ok: true, data: undefined };
+      }
+    }
+    if (!inserted.ok) return fail(inserted.error, "putTranscriptBody(create)", storageScopeFor(tcw));
+  }
   reportStorageWriteSucceeded(storageScopeFor(tcw));
   return { ok: true, data: undefined };
 }

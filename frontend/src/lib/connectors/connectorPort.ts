@@ -22,7 +22,7 @@ export function webConnectorPort(tcw: TinyCloudWeb): ConnectorStorePort {
       return result.ok ? { ok: true, data: result.data } : failure(result.error);
     },
     async kvGet(key) {
-      const result = await tcw.kv.get(key);
+      const result = await tcw.kv.head(key);
       if (result.ok) return { ok: true, data: "present" };
       if (result.error.code === "KV_NOT_FOUND") return { ok: true, data: "missing" };
       return failure(result.error);

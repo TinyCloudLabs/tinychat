@@ -98,6 +98,9 @@ class FakeStore implements GmeetSyncStore {
     sentences: FirefliesSentence[],
   ): Promise<StoreResult<UpsertMeetingOutcome>> {
     this.calls.push(`upsertMeeting:${meeting.sourceId}`);
+    if (this.failBodyFor.has(meeting.sourceId)) {
+      return { ok: false, error: { code: "KV", message: "kv write refused" } };
+    }
     const existing = this.rows.find(
       (r) => r.meeting.source === meeting.source && r.meeting.sourceId === meeting.sourceId,
     );
@@ -548,25 +551,6 @@ describe("re-sweep overlap", () => {
 // ── Persist ordering + abort ────────────────────────────────────────────
 
 describe("persist ordering and abort", () => {
-  test("the KV blob is written BEFORE the row, per record", async () => {
-    const store = new FakeStore();
-    const client = new FakeClient([
-      fixture("rec-b", { entryTexts: ["b"] }),
-      fixture("rec-a", { entryTexts: ["a"] }),
-    ]);
-
-    await run(client, store);
-
-    // Oldest-first (the client hands them back newest-first), and for each
-    // record the blob precedes the row — the row is the commit point.
-    expect(store.calls.filter((c) => c.includes(":rec-"))).toEqual([
-      "putTranscriptBody:rec-a",
-      "upsertMeeting:rec-a",
-      "putTranscriptBody:rec-b",
-      "upsertMeeting:rec-b",
-    ]);
-  });
-
   test("an abort mid-batch stops between items and leaves no row without its blob", async () => {
     const store = new FakeStore();
     const controller = new AbortController();
@@ -658,9 +642,9 @@ describe("error handling", () => {
     if (!res.ok) return;
     expect(res.data.failed).toBe(1);
     expect(res.data.created).toBe(1);
-    // The failed record never reached the row write — no row without a blob.
-    expect(store.calls).not.toContain("upsertMeeting:rec-kv");
+    // A failed shared write creates neither row nor body.
     expect(store.rows.map((r) => r.meeting.sourceId)).toEqual(["rec-fine"]);
+    expect(store.bodies.has("google-meet/rec-kv")).toBe(false);
   });
 
   test("terminal vs per-item split", () => {

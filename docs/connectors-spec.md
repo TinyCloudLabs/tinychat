@@ -229,10 +229,10 @@ match that string. Reuse the `APP_ID` const. Schema bootstrap memoized per space
 `threadStore.ts` does with `schemaReadySpaces`.
 
 **TinyCloud SQLite authorizer restrictions (hard constraints, from listen):** no
-`CREATE INDEX`, no `UNIQUE` constraints, no `REFERENCES`. Dedup is app-level. Also:
-`CREATE TABLE IF NOT EXISTS` can return "not authorized" when the table already exists —
-on that error, probe with `SELECT 1 FROM <table> LIMIT 1` and treat success as
-"schema ready" (copy listen's `ensureSchema` fallback).
+`CREATE INDEX`, no composite `UNIQUE` constraints, no `REFERENCES`. The shared
+writer looks up `(source, source_id)` first to retain legacy row IDs, then inserts
+new rows with a deterministic primary key using `ON CONFLICT(id) DO NOTHING`.
+It reads the winner and merges only changed, source-owned fields.
 
 ```sql
 CREATE TABLE IF NOT EXISTS connector_state (
@@ -246,8 +246,8 @@ CREATE TABLE IF NOT EXISTS connector_state (
 );
 
 CREATE TABLE IF NOT EXISTS connector_meeting (
-  id TEXT PRIMARY KEY,             -- crypto.randomUUID(); Fireflies id lives in source_id
-  source TEXT NOT NULL,            -- 'fireflies'
+  id TEXT PRIMARY KEY,             -- deterministic for new rows; preserve legacy UUIDs
+  source TEXT NOT NULL,            -- 'fireflies' or 'google-meet'
   source_id TEXT NOT NULL,
   title TEXT,
   started_at TEXT,                 -- ISO
@@ -294,17 +294,18 @@ key carries the full `${APP_ID}/connectors/` prefix that the manifest's `connect
 grant resolves to. Build keys through `transcriptKvKey()` — the prefix lives in exactly
 one place (`CONNECTORS_KV_PREFIX`).
 
-Store API (all take `tcw` as first arg, mirror `threadStore` style):
+Browser storage API (all take `tcw` as first arg):
 `ensureSchema`, `getConnection(connectorId)`, `listKnownSourceIds(source)`,
-`listTranscriptBodyIds(source)`, `insertMeeting(normalized)` (skip if `(source, source_id)`
-already present — app-level dedup, SELECT-before-INSERT is fine since writes are sequential),
-`putTranscriptBody(sourceId, sentences)`, `updateSyncState(...)`,
-`getFirefliesAttempt()`, `recordFirefliesAttempt(...)`, `clearFirefliesAttempt()`,
-`purgeConnector(source)` (delete meeting rows + KV meeting/transcript keys + Drive cursor +
-Fireflies `sync-attempt` + state row), `countMeetings(source)`.
-
-**Sequential writes only** — TinyCloud drops concurrent responses (known platform
-gotcha; ImportDialog imports sequentially for the same reason).
+`listTranscriptBodyIds(source)`, `upsertMeeting(normalized, sentences)`,
+`updateSyncState(...)`, `getFirefliesAttempt()`, `recordFirefliesAttempt(...)`,
+`clearFirefliesAttempt()`, `purgeConnector(source)`, `countMeetings(source)`.
+`upsertMeeting` adapts the core `writeConnectorMeeting` to the browser SDK.
+Unchanged rows keep `updated_at`; Fireflies and Meet transcript bodies use a
+create-only conditional KV put after an existence probe. A standalone Notes by
+Gemini Doc revision instead compares bytes and uses the previous ETag for a
+conditional replacement; an unchanged revision makes no KV write. Meet bodies
+are written before their row becomes visible. Storage calls within each writer
+are sequential; separate browser writers can overlap.
 
 ### Normalization (from raw `GetTranscript`)
 
@@ -455,10 +456,13 @@ algorithm for Connect, Sync now, the background catch-up, and Meeting sources:
    Connect over a missing/disconnected row and keep-data Disconnect clear the
    continuation and per-ID proof history; purge deletes `sync-attempt`. SQL
    `last_synced_at` remains authoritative; the KV record is advisory only.
-7. Same-tab single-flight does not prevent cross-tab Sync now overlap. Cross-tab
-   deduplication is out of scope: TinyCloud user SQL does not support a unique
-   index, so this build does not claim cross-tab serialization. Cross-tab purge
-   resurrection is part of this same limitation.
+7. Same-tab single-flight does not prevent cross-tab Sync now overlap. Updated
+   browsers converge on one deterministic primary key for a new meeting, but
+   an old random-UUID client can still race after the initial lookup: there is
+   no `(source, source_id)` unique constraint. **G-OLD-CLIENT-UNIQUENESS** is a
+   pre-rollout gate requiring zero unrepaired duplicates during old-client
+   overlap; S1 does not claim uniqueness against old bundled clients. Cross-tab
+   purge resurrection remains a separate limitation.
 8. A background catch-up starts only on mount or unlock when Fireflies is
    connected, secrets are already unlocked, and SQL success is older than 24 h.
    Focus only drains queued webhook IDs. In the default route-dark deployment,

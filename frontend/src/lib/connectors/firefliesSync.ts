@@ -32,6 +32,7 @@ import {
   type StoreError,
   type StoreResult,
   type UpdateSyncStateInput,
+  type UpsertMeetingOutcome,
 } from "./connectorStore";
 import { isStorageFullError } from "../storageStatus";
 import { runOnSpaceLane } from "../spaceWriteLane";
@@ -55,13 +56,11 @@ export interface SyncStore {
   listKnownSourceIds(tcw: TinyCloudWeb, source: string): Promise<StoreResult<string[]>>;
   listTranscriptBodyIds(tcw: TinyCloudWeb, source: string): Promise<StoreResult<Set<string>>>;
   clearFirefliesAttempt?(tcw: TinyCloudWeb): Promise<StoreResult<void>>;
-  insertMeeting(tcw: TinyCloudWeb, meeting: NormalizedMeeting): Promise<StoreResult<boolean>>;
-  putTranscriptBody(
+  upsertMeeting(
     tcw: TinyCloudWeb,
-    source: string,
-    sourceId: string,
+    meeting: NormalizedMeeting,
     sentences: FirefliesSentence[],
-  ): Promise<StoreResult<void>>;
+  ): Promise<StoreResult<UpsertMeetingOutcome>>;
   updateSyncState(tcw: TinyCloudWeb, input: UpdateSyncStateInput): Promise<StoreResult<void>>;
   getConnection(tcw: TinyCloudWeb, connectorId: "fireflies"): Promise<StoreResult<{
     status: "connected" | "disconnected";
@@ -575,10 +574,8 @@ async function runFirefliesSync(
                         || connectionBeforeWrite.data.status === "disconnected"));
                   if (!mayWrite) return { disconnected: true };
                   if (!current()) return null;
-                  const insert = await store.insertMeeting(tcw, meeting);
-                  if (!insert.ok) return { insert, body: null };
-                  const body = await store.putTranscriptBody(tcw, SOURCE, meeting.sourceId, sentences);
-                  return { insert, body };
+                  const write = await store.upsertMeeting(tcw, meeting, sentences);
+                  return { write };
                 });
                 if (!itemWrite) {
                   storedPrefix = false;
@@ -599,34 +596,20 @@ async function runFirefliesSync(
                   );
                   return false;
                 }
-                if (!itemWrite.insert.ok) {
-                  result.errors.push(`${id}: ${itemWrite.insert.error.message}`);
+                if (!itemWrite.write.ok) {
+                  result.errors.push(`${id}: ${itemWrite.write.error.message}`);
                   if (!rememberPending(id)) {
                     storedPrefix = false;
                     cursorBlocked = true;
                   }
-                  if (isStorageFullError(itemWrite.insert.error)) {
-                    terminal = fromStore(itemWrite.insert.error, "insertMeeting");
+                  if (isStorageFullError(itemWrite.write.error)) {
+                    terminal = fromStore(itemWrite.write.error, "upsertMeeting");
                     storedPrefix = false;
                     return false;
                   }
                   return true;
                 }
-                if (!itemWrite.body?.ok) {
-                  const bodyError = itemWrite.body?.error;
-                  result.errors.push(`${id}: ${bodyError?.message ?? "Transcript body write failed"}`);
-                  if (!rememberPending(id)) {
-                    storedPrefix = false;
-                    cursorBlocked = true;
-                  }
-                  if (bodyError && isStorageFullError(bodyError)) {
-                    terminal = fromStore(bodyError, "putTranscriptBody");
-                    storedPrefix = false;
-                    return false;
-                  }
-                  return true;
-                }
-                if (itemWrite.insert.data) result.added += 1;
+                if (itemWrite.write.data.inserted) result.added += 1;
                 else result.skipped += 1;
                 pendingIds.delete(id);
                 suspectIds.delete(id);

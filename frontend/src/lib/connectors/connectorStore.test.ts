@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import { connectorMeetingId } from "@tinyboilerplate/core";
 
 import type { FirefliesTranscript } from "./firefliesClient";
 import type { GmeetConferenceRecord, GmeetParticipant, GmeetResult, GmeetTranscript, GmeetTranscriptEntry } from "./gmeetClient";
@@ -19,9 +20,7 @@ import {
   getDriveCursor,
   getMeetingDatetimeStats,
   listTranscriptBodyIds,
-  insertMeeting,
   meetingKvKey,
-  listKnownSourceIds,
   normalizeFirefliesTranscript,
   putDriveCursor,
   purgeConnector,
@@ -32,7 +31,7 @@ import {
   updateSyncState,
   upsertMeeting,
 } from "./connectorStore";
-import type { NormalizedMeeting } from "./connectorStore";
+import type { NormalizedMeeting, StoreResult } from "./connectorStore";
 
 // ── Minimal in-memory fakes for TinyCloud sql/kv ────────────────────────
 //
@@ -101,6 +100,7 @@ class OpTracker {
 class FakeSqlDb {
   meetings = new Map<string, MeetingRow>();
   states = new Map<string, StateRow>();
+  lookupBarrier: (() => Promise<void>) | null = null;
   createdTables = new Set<string>();
   createAttempts = 0;
   tracker = new OpTracker();
@@ -119,7 +119,13 @@ class FakeSqlDb {
   }
 
   async query(sql: string, params: unknown[] = []): Promise<SqlResult> {
-    return this.tracker.run("sql.query", () => this.queryImpl(sql, params));
+    return this.tracker.run("sql.query", async () => {
+      const result = this.queryImpl(sql, params);
+      if (this.lookupBarrier && /^SELECT\s+id,\s*created_at[\s\S]*FROM\s+connector_meeting/i.test(sql.trim())) {
+        await this.lookupBarrier();
+      }
+      return result;
+    });
   }
 
   private queryImpl(sql: string, params: unknown[] = []): SqlResult {
@@ -284,6 +290,12 @@ class FakeSqlDb {
         string,
         string,
       ];
+      if (this.meetings.has(id)) {
+        if (/ON\s+CONFLICT\s*\(\s*id\s*\)\s+DO\s+NOTHING/i.test(s)) {
+          return { ok: true, data: { rows: [], changes: 0 } };
+        }
+        return { ok: false, error: { code: "SQL_CONSTRAINT", message: "PRIMARY KEY collision" } };
+      }
       this.meetings.set(id, {
         id,
         source,
@@ -301,7 +313,7 @@ class FakeSqlDb {
         created_at,
         updated_at,
       });
-      return { ok: true, data: { rows: [] } };
+      return { ok: true, data: { rows: [], changes: 1 } };
     }
     if (/^INSERT\s+INTO\s+connector_state/i.test(s)) {
       const [
@@ -435,7 +447,9 @@ interface KvErr {
 
 class FakeKv {
   entries = new Map<string, string>();
+  getBarrier: (() => Promise<void>) | null = null;
   putKeys: string[] = [];
+  putAttempts: string[] = [];
   putValues: unknown[] = [];
   tracker = new OpTracker();
   headCalls: string[] = [];
@@ -450,11 +464,13 @@ class FakeKv {
   deleteErrors = new Map<string, KvErr>();
 
   async get(key: string): Promise<{ ok: true; data: { data: unknown; headers: Record<string, string> } } | { ok: false; error: KvErr }> {
-    return this.tracker.run("kv.get", () => {
-      if (!this.entries.has(key)) {
-        return { ok: false, error: { code: "KV_NOT_FOUND", message: `no key ${key}` } } as const;
-      }
-      return { ok: true, data: { data: this.entries.get(key), headers: {} } } as const;
+    return this.tracker.run("kv.get", async () => {
+      const value = this.entries.get(key);
+      const result = value === undefined
+        ? { ok: false as const, error: { code: "KV_NOT_FOUND", message: `no key ${key}` } }
+        : { ok: true as const, data: { data: value, headers: { etag: JSON.stringify(value) } } };
+      if (this.getBarrier) await this.getBarrier();
+      return result;
     });
   }
 
@@ -467,12 +483,17 @@ class FakeKv {
       return { ok: true, data: { data: undefined as unknown as void, headers: {} } } as const;
     });
   }
-  async put(key: string, value: unknown): Promise<{ ok: true; data: { data: void; headers: Record<string, string> } } | { ok: false; error: KvErr }> {
+  async put(key: string, value: unknown, options?: { ifNoneMatch?: "*"; ifMatch?: string }): Promise<{ ok: true; data: { data: void; headers: Record<string, string> } } | { ok: false; error: KvErr }> {
     return this.tracker.run("kv.put", () => {
+      this.putAttempts.push(key);
       if (this.nextPutError) {
         const err = this.nextPutError;
         this.nextPutError = null;
         return { ok: false, error: err } as const;
+      }
+      if ((options?.ifNoneMatch === "*" && this.entries.has(key))
+        || (options?.ifMatch !== undefined && options.ifMatch !== JSON.stringify(this.entries.get(key)))) {
+        return { ok: false, error: { code: "KV_PRECONDITION_FAILED", message: "etag changed" } } as const;
       }
       const stored = typeof value === "string" ? value : JSON.stringify(value);
       this.entries.set(key, stored);
@@ -552,6 +573,24 @@ function makeFake(): Fake {
   } as unknown as TinyCloudWeb;
   return { tcw, sql, kv, dbNamesRequested, tracker };
 }
+/** Seed a pre-upgrade SQL row without exercising the shared writer. */
+async function insertMeeting(tcw: TinyCloudWeb, meeting: NormalizedMeeting): Promise<StoreResult<boolean>> {
+  const now = "2026-01-01T00:00:00.000Z";
+  const saved = await tcw.sql.db(CONNECTORS_SQL_DB_NAME).execute(
+    `INSERT INTO connector_meeting
+      (id, source, source_id, title, started_at, duration_secs, organizer_email,
+       participants, summary_overview, summary_action_items, keywords, meeting_type,
+       metadata, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [meeting.id, meeting.source, meeting.sourceId, meeting.title, meeting.startedAt,
+      meeting.durationSecs, meeting.organizerEmail, JSON.stringify(meeting.participants),
+      meeting.summaryOverview, meeting.summaryActionItems,
+      meeting.keywords === null ? null : JSON.stringify(meeting.keywords),
+      meeting.meetingType, JSON.stringify(meeting.metadata), now, now],
+  );
+  return saved.ok ? { ok: true, data: true } : { ok: false, error: saved.error };
+}
+
 
 beforeEach(() => {
   _resetConnectorSchemaMemoForTests();
@@ -595,43 +634,6 @@ describe("connectorStore.ensureSchema", () => {
 
 // ── Meetings: dedup + purge ─────────────────────────────────────────────
 
-describe("connectorStore.insertMeeting — app-level dedup on (source, source_id)", () => {
-  test("first insert returns true; second insert with same (source, source_id) returns false and does NOT duplicate", async () => {
-    const f = makeFake();
-    const meeting = {
-      id: "row-1",
-      source: "fireflies",
-      sourceId: "abc",
-      title: "Standup",
-      startedAt: "2026-07-01T10:00:00.000Z",
-      durationSecs: 1800,
-      organizerEmail: "org@ex.com",
-      participants: [{ name: "Ada", email: null }],
-      summaryOverview: "overview",
-      summaryActionItems: "actions",
-      keywords: ["k1"],
-      meetingType: "call",
-      metadata: {},
-    };
-
-    const first = await insertMeeting(f.tcw, meeting);
-    expect(first.ok).toBe(true);
-    if (first.ok) expect(first.data).toBe(true);
-
-    // A second call with a DIFFERENT `id` but the same (source, source_id)
-    // must be skipped — dedup key is (source, source_id), not id.
-    const second = await insertMeeting(f.tcw, { ...meeting, id: "row-2" });
-    expect(second.ok).toBe(true);
-    if (second.ok) expect(second.data).toBe(false);
-
-    const known = await listKnownSourceIds(f.tcw, "fireflies");
-    expect(known.ok).toBe(true);
-    if (known.ok) expect(known.data).toEqual(["abc"]);
-    const count = await countMeetings(f.tcw, "fireflies");
-    expect(count.ok).toBe(true);
-    if (count.ok) expect(count.data).toBe(1);
-  });
-});
 
 describe("connectorStore.purgeConnector", () => {
   test("deletes every listed KV-only meeting/transcript record, cursor, SQL rows, and state sequentially", async () => {
@@ -1747,13 +1749,10 @@ describe("normalizeFirefliesTranscript", () => {
   });
 });
 
-// ── Targeted upsert (webhook queued-id ingest) ──────────────────────────
-//
-// The v1 sync only INSERTS new ids and skips existing rows, so a
-// `meeting.summarized` webhook for an already-stored meeting would be
-// permanently dropped. `upsertMeeting` is the targeted path: keyed on
-// (source, source_id), it preserves the row id + created_at and refreshes
-// meeting metadata, summary fields, and the transcript KV body.
+// ── Shared Fireflies/Meet upsert through the fake user space ────────────
+// Both browser engines preserve a legacy row ID and merge corrected metadata.
+// Fireflies/Meet transcript bodies stay create-only; standalone Notes Doc
+// revisions use a conditional KV replacement.
 
 function meetingFixture(over: Partial<NormalizedMeeting> = {}): NormalizedMeeting {
   return {
@@ -1775,6 +1774,8 @@ function meetingFixture(over: Partial<NormalizedMeeting> = {}): NormalizedMeetin
 }
 
 const S = (text: string) => ({ index: 0, speaker_name: "Ada", text, start_time: 0, end_time: 1 });
+const storedMeeting = (f: Fake, sourceId = "mtg-1") =>
+  [...f.sql.meetings.values()].find((row) => row.source_id === sourceId);
 
 describe("connectorStore.upsertMeeting — insert path", () => {
   test("inserts a genuinely new (source, source_id) and writes the transcript KV body", async () => {
@@ -1783,7 +1784,7 @@ describe("connectorStore.upsertMeeting — insert path", () => {
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     expect(res.data.inserted).toBe(true);
-    expect(res.data.id).toBe("row-new");
+    expect(res.data.id).toBe(await connectorMeetingId("fireflies", "mtg-1"));
     expect(typeof res.data.createdAt).toBe("string");
 
     const count = await countMeetings(f.tcw, "fireflies");
@@ -1811,6 +1812,7 @@ describe("connectorStore.upsertMeeting — insert path", () => {
 describe("connectorStore.upsertMeeting — update path (the meeting.summarized case)", () => {
   test("preserves the existing row id and created_at while updating metadata + summary", async () => {
     const f = makeFake();
+    expect((await insertMeeting(f.tcw, meetingFixture({ id: "row-original" }))).ok).toBe(true);
     const first = await upsertMeeting(f.tcw, meetingFixture({ id: "row-original" }), [S("a")]);
     expect(first.ok).toBe(true);
     if (!first.ok) return;
@@ -1855,21 +1857,21 @@ describe("connectorStore.upsertMeeting — update path (the meeting.summarized c
     expect(JSON.parse(row?.keywords ?? "null")).toEqual(["ship"]);
     expect(row?.meeting_type).toBe("standup");
 
-    // Transcript body refreshed with the newer sentences.
+    // Fireflies transcript bodies are create-only, even when late summary fields change.
     const key = transcriptKvKey("fireflies", "mtg-1");
-    expect(JSON.parse(f.kv.entries.get(key) ?? "[]")).toHaveLength(2);
+    expect(JSON.parse(f.kv.entries.get(key) ?? "[]")).toHaveLength(1);
   });
   test("identical input leaves updated_at unchanged, while content changes bump it", async () => {
     const f = makeFake();
     const original = meetingFixture({ id: "row-stable" });
     expect((await upsertMeeting(f.tcw, original, [S("a")])).ok).toBe(true);
     const unchangedUpdatedAt = "2026-10-12T00:00:00.000Z";
-    f.sql.meetings.get("row-stable")!.updated_at = unchangedUpdatedAt;
+    storedMeeting(f)!.updated_at = unchangedUpdatedAt;
 
     expect((await upsertMeeting(f.tcw, { ...original, id: "throwaway" }, [S("a")])).ok).toBe(true);
-    expect(f.sql.meetings.get("row-stable")?.updated_at).toBe(unchangedUpdatedAt);
+    expect(storedMeeting(f)?.updated_at).toBe(unchangedUpdatedAt);
     expect((await upsertMeeting(f.tcw, { ...original, id: "throwaway", title: "Changed" }, [S("a")])).ok).toBe(true);
-    expect(f.sql.meetings.get("row-stable")?.updated_at).not.toBe(unchangedUpdatedAt);
+    expect(storedMeeting(f)?.updated_at).not.toBe(unchangedUpdatedAt);
   });
 
 
@@ -1900,7 +1902,7 @@ describe("connectorStore.upsertMeeting — update path (the meeting.summarized c
       [S("a")],
     );
     expect(res.ok).toBe(true);
-    const row = f.sql.meetings.get("row-new");
+    const row = storedMeeting(f);
     expect(row?.title).toBe("Standup");
     expect(row?.summary_overview).toBe("overview");
     expect(row?.summary_action_items).toBe("actions");
@@ -1937,7 +1939,7 @@ describe("connectorStore.upsertMeeting — update path (the meeting.summarized c
     }, [S("Publish the revised draft.")]);
 
     expect(revised.ok).toBe(true);
-    const row = f.sql.meetings.get("row-new");
+    const row = storedMeeting(f, "notes-drive-1");
     expect(row?.summary_overview).toBeNull();
     expect(row?.summary_action_items).toBe("Publish the revised draft.");
     expect(f.kv.entries.get(transcriptKvKey("google-meet", "notes-drive-1"))).toContain("Publish the revised draft.");
@@ -1960,7 +1962,7 @@ describe("connectorStore.upsertMeeting — update path (the meeting.summarized c
       [S("a")],
     );
     expect(res.ok).toBe(true);
-    const row = f.sql.meetings.get("row-new");
+    const row = storedMeeting(f);
     expect(JSON.parse(row?.participants ?? "[]")).toEqual([{ name: "Ada", email: "ada@ex.com" }]);
     expect(JSON.parse(row?.metadata ?? "{}")).toEqual({ duration_source: "sentences", seen: 2 });
   });
@@ -1993,7 +1995,7 @@ describe("connectorStore.upsertMeeting — update path (the meeting.summarized c
     }, []);
 
     expect(update.ok).toBe(true);
-    const row = f.sql.meetings.get("row-new");
+    const row = storedMeeting(f, "conference-1");
     expect(row?.started_at).toBe("2026-08-17T09:00:00.000Z");
     expect(JSON.parse(row?.metadata ?? "{}")).toMatchObject({
       drive_file_id: "notes-1",
@@ -2038,9 +2040,10 @@ describe("connectorStore.upsertMeeting — fail-closed Result handling", () => {
   test("a resolved { ok: false } from the KV put surfaces (no silent fallback)", async () => {
     const f = makeFake();
     f.kv.nextPutError = { code: "KV_ERROR", message: "boom-kv" };
-    const res = await upsertMeeting(f.tcw, meetingFixture(), [S("a")]);
+    const res = await upsertMeeting(f.tcw, meetingFixture({ source: "google-meet" }), [S("a")]);
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.error.message).toContain("boom-kv");
+    expect(f.sql.meetings.size).toBe(0);
   });
 
   test("an ensureSchema failure short-circuits before any row or KV write", async () => {
@@ -2053,14 +2056,117 @@ describe("connectorStore.upsertMeeting — fail-closed Result handling", () => {
   });
 });
 
-describe("connectorStore.insertMeeting — unchanged v1 skip behaviour", () => {
-  test("still SKIPS an existing (source, source_id) — upsert did not change v1 sync semantics", async () => {
+
+describe("shared browser meeting writer", () => {
+  test.each(["fireflies", "google-meet"])("%s uses a stable new ID but preserves a legacy row ID", async (source) => {
     const f = makeFake();
-    const m = meetingFixture({ summaryOverview: null });
-    const first = await insertMeeting(f.tcw, m);
-    expect(first.ok && first.data === true).toBe(true);
-    const second = await insertMeeting(f.tcw, { ...m, id: "row-2", summaryOverview: "late summary" });
-    expect(second.ok && second.data === false).toBe(true);
-    expect(f.sql.meetings.get("row-new")?.summary_overview).toBe(null);
+    const meeting = meetingFixture({ source, sourceId: source === "fireflies" ? "ff-t1" : "conference-1" });
+    const first = await upsertMeeting(f.tcw, meeting, [S("hello")]);
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    expect(first.data.id).toBe(await connectorMeetingId(source, meeting.sourceId));
+
+    const legacy = makeFake();
+    const oldId = "legacy-uuid-preserved";
+    legacy.sql.meetings.set(oldId, { ...f.sql.meetings.get(first.data.id)!, id: oldId });
+    const updated = await upsertMeeting(legacy.tcw, { ...meeting, title: "Corrected title" }, [S("hello")]);
+    expect(updated.ok && updated.data.id).toBe(oldId);
+    expect(legacy.sql.meetings.size).toBe(1);
+    expect(legacy.sql.meetings.get(oldId)?.title).toBe("Corrected title");
+  });
+
+  test.each(["fireflies", "google-meet"])("%s overlapping writers create one row and body", async (source) => {
+    const f = makeFake();
+    await ensureSchema(f.tcw);
+    let arrivals = 0;
+    let release!: () => void;
+    const bothLookedUp = new Promise<void>((resolve) => { release = resolve; });
+    f.sql.lookupBarrier = () => {
+      if (++arrivals === 2) release();
+      return bothLookedUp;
+    };
+    const meeting = meetingFixture({ source, sourceId: "same-meeting" });
+    const [a, b] = await Promise.all([
+      upsertMeeting(f.tcw, meeting, [S("body")]),
+      upsertMeeting(f.tcw, meeting, [S("body")]),
+    ]);
+    expect(a.ok && b.ok).toBe(true);
+    expect(f.sql.meetings.size).toBe(1);
+    expect(f.kv.putKeys.filter((key) => key === transcriptKvKey(source, "same-meeting"))).toHaveLength(1);
+    expect(a.ok && b.ok && a.data.id === b.data.id).toBe(true);
+    if (a.ok && b.ok) expect([a.data.inserted, b.data.inserted].sort()).toEqual([false, true]);
+  });
+  test.each(["fireflies", "google-meet"])("%s loser merges corrected metadata after a same-ID insert race", async (source) => {
+    const f = makeFake();
+    await ensureSchema(f.tcw);
+    let arrivals = 0;
+    let release!: () => void;
+    const bothLookedUp = new Promise<void>((resolve) => { release = resolve; });
+    f.sql.lookupBarrier = () => {
+      if (++arrivals === 2) release();
+      return bothLookedUp;
+    };
+    const meeting = meetingFixture({ source, sourceId: "race-correction", summaryOverview: null });
+    const [first, corrected] = await Promise.all([
+      upsertMeeting(f.tcw, meeting, [S("body")]),
+      upsertMeeting(f.tcw, { ...meeting, summaryOverview: "Final summary" }, [S("body")]),
+    ]);
+    expect(first.ok && corrected.ok).toBe(true);
+    expect(f.sql.meetings.size).toBe(1);
+    expect(storedMeeting(f, "race-correction")?.summary_overview).toBe("Final summary");
+  });
+
+
+  test("unchanged Fireflies and Meet deliveries do not rewrite the row or transcript", async () => {
+    for (const source of ["fireflies", "google-meet"]) {
+      const f = makeFake();
+      const meeting = meetingFixture({ source });
+      const first = await upsertMeeting(f.tcw, meeting, [S("original")]);
+      expect(first.ok).toBe(true);
+      if (!first.ok) continue;
+      f.sql.meetings.get(first.data.id)!.updated_at = "2020-01-01T00:00:00.000Z";
+      const writesBefore = f.tracker.order.filter((label) => label === "sql.execute").length;
+      const kvBefore = f.kv.putKeys.length;
+      const attemptsBefore = f.kv.putAttempts.length;
+      const second = await upsertMeeting(f.tcw, meeting, [S("original")]);
+      expect(second.ok).toBe(true);
+      expect(f.sql.meetings.get(first.data.id)?.updated_at).toBe("2020-01-01T00:00:00.000Z");
+      expect(f.tracker.order.filter((label) => label === "sql.execute")).toHaveLength(writesBefore);
+      expect(f.kv.putKeys).toHaveLength(kvBefore);
+      expect(f.kv.putAttempts).toHaveLength(attemptsBefore);
+    }
+  });
+  test("two changed standalone Notes imports replace the body once, then unchanged imports write nothing", async () => {
+    const f = makeFake();
+    const notes = meetingFixture({
+      source: "google-meet", sourceId: "doc-1",
+      metadata: { notes_kind: "gemini", notes_association: "standalone",
+        notes_owned_fields: ["summary_overview", "summary_action_items"] },
+    });
+    expect((await upsertMeeting(f.tcw, notes, [S("old")])).ok).toBe(true);
+    const key = transcriptKvKey("google-meet", "doc-1");
+    let arrivals = 0;
+    let release!: () => void;
+    const bothRead = new Promise<void>((resolve) => { release = resolve; });
+    f.kv.getBarrier = () => {
+      if (++arrivals === 2) release();
+      return bothRead;
+    };
+    const changed = { ...notes, summaryOverview: "new", metadata: { ...notes.metadata, drive_modified_time: "2026-10-15T01:00:00Z" } };
+    const importRevision = async () => {
+      const body = await putTranscriptBody(f.tcw, "google-meet", "doc-1", [S("new")]);
+      if (!body.ok) return body;
+      return upsertMeeting(f.tcw, changed, [S("new")]);
+    };
+    const [a, b] = await Promise.all([importRevision(), importRevision()]);
+    expect(a.ok && b.ok).toBe(true);
+    expect(f.kv.entries.get(key)).toBe(JSON.stringify([S("new")]));
+    expect(f.kv.putKeys.filter((written) => written === key)).toHaveLength(2);
+    f.kv.getBarrier = null;
+    const attemptsBefore = f.kv.putAttempts.length;
+    const again = await importRevision();
+    expect(again.ok).toBe(true);
+    expect(f.kv.putAttempts).toHaveLength(attemptsBefore);
+    expect(f.kv.putKeys.filter((written) => written === key)).toHaveLength(2);
   });
 });
