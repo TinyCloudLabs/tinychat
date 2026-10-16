@@ -2,4 +2,4 @@
 "@tinychat/backend": patch
 ---
 
-Revert the auth verify audience check.
+Replace the earlier auth audience check with signed SIWE audience validation.
