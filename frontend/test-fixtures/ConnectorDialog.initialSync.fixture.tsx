@@ -4,12 +4,14 @@ import { afterAll, afterEach, beforeEach, expect, test, vi } from "bun:test";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import type { Root } from "react-dom/client";
+import { MemoryRouter } from "react-router-dom";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { installDom } from "@/test/dom";
 import * as store from "@/lib/connectors/connectorStore";
 import { CONNECTORS } from "@/lib/connectors/registry";
-import { _resetGmeetSyncSingleFlightForTests } from "@/lib/connectors/gmeetSync";
+import { _resetGmeetSyncSingleFlightForTests, syncGoogleMeet } from "@/lib/connectors/gmeetSync";
+import { GmeetClient } from "@/lib/connectors/gmeetClient";
 import { __resetStorageStatusForTests } from "@/lib/storageStatus";
 
 // Static import cannot work for the dialog: Radix captures DOM availability at
@@ -17,6 +19,7 @@ import { __resetStorageStatusForTests } from "@/lib/storageStatus";
 // No module mocking is used for the dialog, engine, client, store, or secrets.
 const restoreImportDom = installDom();
 const { ConnectorConnectDialog } = await import("@/chat/ConnectorDialog");
+const { ConnectorsCard } = await import("@/chat/ConnectorsCard");
 
 const descriptor = CONNECTORS.find((entry) => entry.id === "google-meet")!;
 const backend = "https://synthetic-oauth.invalid";
@@ -62,6 +65,7 @@ class MemoryBoundaries {
   secretUnlocks = 0;
   exchangeCalls = 0;
   recordListings = 0;
+  connectionReads = 0;
   refreshCalls = 0;
   popupCalls = 0;
   popupUrl = "";
@@ -93,6 +97,7 @@ class MemoryBoundaries {
     sql: {
       db: () => ({
         query: async (sql: string, params: SQLQueryBindings[] = []) => {
+          if (/FROM connector_state\b/i.test(sql) && params[0] === "google-meet") this.connectionReads++;
           if (/SELECT COUNT\(\*\) FROM connector_meeting/i.test(sql)) {
             const error = await this.reach("count");
             if (error) return { ok: false, error };
@@ -163,6 +168,9 @@ class MemoryBoundaries {
       return Response.json({ access_token: "synthetic-refreshed-access" });
     }
     if (method !== "GET") return this.deny(url, method);
+    if (url.origin === backend && url.pathname === "/api/connectors/google/autojoin/status") {
+      return Response.json({ state: "off", enabled: false, offReason: "never_enabled", lastScanAt: null, errorCode: null, outcomes: [] });
+    }
     if (url.origin === "https://meet.googleapis.com") {
       switch (url.pathname) {
         case "/v2/conferenceRecords":
@@ -216,6 +224,7 @@ let root: Root | undefined;
 let host: HTMLDivElement | undefined;
 let connectedCalls = 0;
 let throwOnConnected = false;
+let heldCompletion: Gate | undefined;
 let fakeClockActive = false;
 let restoreOpen: (() => void) | undefined;
 
@@ -301,6 +310,7 @@ beforeEach(async () => {
   };
   connectedCalls = 0;
   throwOnConnected = false;
+  heldCompletion = undefined;
   expect((await store.ensureSchema(memory.tcw)).ok).toBe(true);
   expect((await store.updateSyncState(memory.tcw, { connectorId: "google-meet", status: "connected", lastSyncedAt: oldWatermark,
     lastSyncStatus: "ok", lastSyncError: null, itemCount: 0 })).ok).toBe(true);
@@ -313,12 +323,14 @@ beforeEach(async () => {
     open onOpenChange={() => {}} onConnected={() => {
       connectedCalls++;
       if (throwOnConnected) throw new Error("completion failed synthetically");
+      return heldCompletion?.promise;
     }} />));
   await settle();
 });
 afterEach(async () => {
   if (root) await act(async () => root!.unmount());
   root = undefined;
+  heldCompletion?.resolve();
   memory.dispose();
   await settle();
   host?.remove();
@@ -467,3 +479,119 @@ for (const stop of ["unmount", "Stop sync"] as const) {
     if (stop === "unmount") expect(connectedCalls).toBe(0);
   });
 }
+
+function startFirstFlight() {
+  return syncGoogleMeet({
+    client: new GmeetClient({ accessToken: "synthetic-first-access", fetchImpl: memory.fetch }),
+    store,
+    tcw: memory.tcw,
+  });
+}
+
+for (const outcome of ["done", "error"] as const) {
+  test(`a dialog joining a real flight refreshes the actual parent row exactly once on ${outcome}`, async () => {
+    await act(async () => root!.unmount());
+    memory.db.run("UPDATE connector_state SET status = 'disconnected' WHERE connector_id = 'google-meet'");
+    root = createRoot(host!);
+    await act(async () => root!.render(<MemoryRouter><ConnectorsCard tcw={memory.tcw} backendUrl={backend}
+      sessionStore={{ getToken: () => "synthetic-session", isExpired: () => false } as unknown as SessionStore} /></MemoryRouter>));
+    await until(() => Boolean(host!.querySelector('button[aria-label="Connect Google Meet"]')), "expected disconnected parent row");
+    const row = [...host!.querySelectorAll<HTMLElement>('[data-testid="connector-row"]')]
+      .find((entry) => entry.textContent?.includes("Google Meet"))!;
+    expect(row.querySelector("[data-row-status]")?.textContent).toBe("Not connected");
+
+    const drive = memory.hold("drive-fetch");
+    if (outcome === "error") memory.failures.set("count", "reject");
+    const first = startFirstFlight();
+    try {
+      await until(() => memory.entered.has("drive-fetch"), "expected first flight held after its record loop");
+      const readsBeforeDialog = memory.connectionReads;
+      await act(async () => host!.querySelector<HTMLButtonElement>('button[aria-label="Connect Google Meet"]')!.click());
+      await authorize();
+      await until(() => memory.secretWrites === 1, "expected the second dialog to save its connection and join");
+      expect(memory.recordListings).toBe(1);
+      expect(row.querySelector("[data-row-status]")?.textContent).toBe("Not connected");
+      await act(async () => {
+        drive.resolve();
+        expect((await first).ok).toBe(outcome === "done");
+        await tick();
+      });
+      if (outcome === "done") await expectDone();
+      else {
+        await settle();
+        expectErrorAndRetry();
+      }
+      await until(() => row.querySelector("[data-row-status]")?.textContent === (outcome === "done" ? "Connected" : "Last sync failed"),
+        "expected the joined dialog to refresh the persisted parent row");
+      if (outcome === "done") expect(row.textContent).toContain("1 meeting");
+      expect(memory.connectionReads).toBe(readsBeforeDialog + 1);
+      expect(memory.savedMeeting()).toHaveLength(1);
+      await click("Close");
+      await settle();
+      expect(memory.connectionReads).toBe(readsBeforeDialog + 1);
+    } finally {
+      drive.resolve();
+      await first;
+    }
+  });
+}
+
+for (const caller of ["owner", "joiner"] as const) {
+  test(`${caller} completion notification runs once and times out to Retry without late Done`, async () => {
+    vi.useFakeTimers();
+    fakeClockActive = true;
+    heldCompletion = deferred();
+    const drive = memory.hold("drive-fetch");
+    const first = caller === "joiner" ? startFirstFlight() : undefined;
+    try {
+      if (first) await until(() => memory.entered.has("drive-fetch"), "expected an existing flight");
+      await authorize();
+      await until(() => memory.entered.has("drive-fetch") && memory.secretWrites === 1, "expected authorized dialog");
+      await act(async () => {
+        drive.resolve();
+        if (first) expect((await first).ok).toBe(true);
+        await tick();
+      });
+      await until(() => connectedCalls === 1, "expected exactly one bounded parent notification");
+      expect(document.body.textContent).not.toContain("Google Meet connected ·");
+      await act(async () => { vi.advanceTimersByTime(120_001); await tick(); });
+      await settle();
+      expectErrorAndRetry();
+      await act(async () => { heldCompletion!.resolve(); await tick(); });
+      await settle();
+      expectErrorAndRetry();
+      expect(connectedCalls).toBe(1);
+      heldCompletion = undefined;
+      await click("Retry");
+      await expectDone();
+      expect(connectedCalls).toBe(2);
+      expect(memory.secretWrites).toBe(1);
+    } finally {
+      drive.resolve();
+      heldCompletion?.resolve();
+      await first;
+    }
+  });
+}
+
+test("a joined flight with a throwing parent notification settles to Error and notifies only once", async () => {
+  const drive = memory.hold("drive-fetch");
+  const first = startFirstFlight();
+  throwOnConnected = true;
+  try {
+    await until(() => memory.entered.has("drive-fetch"), "expected an existing flight");
+    await authorize();
+    await act(async () => {
+      drive.resolve();
+      expect((await first).ok).toBe(true);
+      await tick();
+    });
+    await settle();
+    expectErrorAndRetry();
+    expect(connectedCalls).toBe(1);
+    expect(memory.savedMeeting()).toHaveLength(1);
+  } finally {
+    drive.resolve();
+    await first;
+  }
+});

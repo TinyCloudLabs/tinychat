@@ -883,7 +883,25 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
     setSummary(null);
     const ac = new AbortController();
     abortRef.current = ac;
-    let notified = false;
+    let notification: Promise<void> | undefined;
+    const notifyOnce = () => {
+      if (notification) return notification;
+      let cleanup: (() => void) | undefined;
+      notification = new Promise<void>((resolve, reject) => {
+        const stop = () => reject(new Error("Google Meet completion was stopped."));
+        const timer = setTimeout(() => reject(new Error("Google Meet completion timed out.")), 10_000);
+        ac.signal.addEventListener("abort", stop, { once: true });
+        cleanup = () => {
+          clearTimeout(timer);
+          ac.signal.removeEventListener("abort", stop);
+        };
+        Promise.resolve().then(() => {
+          if (abortRef.current !== ac || ac.signal.aborted) throw new Error("Google Meet completion was stopped.");
+          return onConnected();
+        }).then(resolve, reject);
+      }).finally(() => cleanup?.());
+      return notification;
+    };
     try {
       const client = new GmeetClient({
         accessToken,
@@ -898,14 +916,16 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
           if (abortRef.current !== ac || ac.signal.aborted) return;
           setProgress(next);
           if (next.type === "status" && next.message === "finishing") setPhase("finishing");
-          // Completion refresh runs inside the engine's finishing deadline.
-          // A throwing/rejected consumer is an error, not a stranded dialog.
-          if (!notified && (next.type === "complete" || next.type === "error")) {
-            notified = true;
-            return onConnected();
+          // Owners notify inside the engine deadline; joiners use the same
+          // bounded notification after receiving the shared flight's result.
+          if (next.type === "complete" || next.type === "error") {
+            return notifyOnce();
           }
         },
       });
+      if (abortRef.current !== ac) return;
+      setPhase("finishing");
+      await notifyOnce();
       if (abortRef.current !== ac) return;
       if (!res.ok) {
         failWith(fromGmeetSyncError(res.error));
@@ -919,7 +939,10 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
       setPhase("done");
     } catch {
       if (abortRef.current === ac) {
-        failWith({ kind: "unknown", message: "Google Meet sync could not finish. Saved meetings are kept. Retry to finish syncing." });
+        await notifyOnce().catch(() => {});
+      }
+      if (abortRef.current === ac) {
+        failWith({ kind: "unknown", message: "Saved meetings are kept. Retry to finish syncing." });
       }
     } finally {
       if (abortRef.current === ac) abortRef.current = null;
@@ -1526,7 +1549,9 @@ const GmeetSyncingPanel: FC<{ progress: GmeetSyncProgress | null; finishing?: bo
       </p>
       {finishing && (
         <p className="text-xs text-muted-foreground" role="status">
-          {current}/{total ?? current} meetings checked. Reconciling Notes and saving sync state…
+          {progress === null
+            ? "Refreshing your connection…"
+            : `${current}/${total ?? current} meetings checked. Reconciling Notes and saving sync state…`}
         </p>
       )}
       {(finishing || pct !== null) && (
@@ -1667,7 +1692,7 @@ const OAuthFailedPanel: FC<{ error: OAuthErrorState; canRetrySync: boolean }> = 
   <div className="flex flex-col gap-2 py-2 text-sm">
     <p role="alert" className="flex items-start gap-2 text-destructive">
       <AlertTriangleIcon className="mt-0.5 size-4 shrink-0" aria-hidden />
-      <span>{canRetrySync && error.kind === "network"
+      <span>{canRetrySync && (error.kind === "network" || error.kind === "unknown")
         ? `Sync could not finish. ${error.message}`
         : formatOAuthError(error)}</span>
     </p>
