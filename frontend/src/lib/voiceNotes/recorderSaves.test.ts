@@ -10,6 +10,8 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { fakeVoiceNoteStore } from "@/harness/fakeVoiceNoteStore";
 import { __setVoiceNotesForTests, VoiceNotes, type VoiceNoteRecording, type VoiceNotesPlugin } from "./nativeVoiceNotes";
 import { currentAccountGeneration } from "./accountContext";
+import { __resetStorageStatusForTests } from "../storageStatus";
+import { __resetOnDeviceTranscriberForTests } from "./onDeviceTranscriber";
 
 const originalVoiceNotes = VoiceNotes;
 
@@ -33,7 +35,7 @@ describe("voice-note network error copy", () => {
     console.warn = (...args: unknown[]) => { logged.push(args); };
     try {
       expect(saves.messageOf(new TypeError(raw))).toBe(
-        "Couldn't reach your TinyCloud space. This note is still on your phone — try again.",
+        "Couldn't reach your TinyCloud space. This note is safe on this browser — try again.",
       );
       const output = logged.map((args) => args.join(" ")).join(" ");
       expect(output).toContain("TinyCloud network failure");
@@ -159,7 +161,7 @@ const tcw = { did: "did:example:alice" } as TinyCloudWeb;
 
 function recording(id: string, startedAt: number): VoiceNoteRecording {
   return { id, startedAt, durationMs: 1000, mimeType: "audio/mp4", sizeBytes: 4, silencedMs: 0, silencedEvents: 0, noSignalMs: 0,
-    version: 2, owner: tcw.did, rev: 1 };
+    version: 2, owner: tcw.did, rev: 1, options: { transcriber: "private-cloud", identifySpeakers: false, uploadAudio: true } };
 }
 
 /** The phone: what is listed as pending, and how deleteAudio and listPending behave. */
@@ -217,7 +219,9 @@ beforeEach(() => {
   saveCalls = 0;
   fakeVoiceNoteStore.save = ok;
 });
-afterEach(() => {
+afterEach(async () => {
+  await __resetOnDeviceTranscriberForTests();
+  __resetStorageStatusForTests();
   __setVoiceNotesForTests(originalVoiceNotes, { available: null });
   fakeVoiceNoteStore.save = null;
   delete (globalThis as { localStorage?: unknown }).localStorage;
@@ -229,8 +233,8 @@ describe("savePendingRecordings", () => {
     await saves.pendingStore.refresh(null);
     saves.pendingStore.reportNoteFailure("retrying", "Load failed");
     expect(saves.pendingStore.snapshot()).toMatchObject({
-      lastError: "Couldn't reach your TinyCloud space. This note is still on your phone — try again.",
-      notes: [{ id: "retrying", failed: { kind: "offline", message: "Couldn't reach your TinyCloud space. This note is still on your phone — try again." } }],
+      lastError: "Couldn't reach your TinyCloud space. This note is safe on this browser — try again.",
+      notes: [{ id: "retrying", failed: { kind: "offline", message: "Couldn't reach your TinyCloud space. This note is safe on this browser — try again." } }],
     });
     const finish = saves.pendingStore.beginManualSave();
     try {
@@ -278,11 +282,11 @@ describe("savePendingRecordings", () => {
     const run = await saves.savePendingRecordings(tcw);
     expect(run.saved).toEqual([]);
     expect(run.left.map((r) => r.id)).toEqual(["a", "b"]);
-    expect(run.lastError).toBe("Couldn't reach your TinyCloud space. This note is still on your phone — try again.");
+    expect(run.lastError).toBe("Couldn't reach your TinyCloud space. This note is safe on this browser — try again.");
     expect(saves.pendingStore.snapshot()).toMatchObject({
       listing: { state: "ok", count: 2 },
       running: false,
-      lastError: "Couldn't reach your TinyCloud space. This note is still on your phone — try again.",
+      lastError: "Couldn't reach your TinyCloud space. This note is safe on this browser — try again.",
     });
   });
 
@@ -321,7 +325,7 @@ describe("saveRecording", () => {
     await Promise.resolve();
     expect(idle).toBe(false);
     finish();
-    expect(await saving).toMatchObject({ kind: "failed", failure: "Couldn't reach your TinyCloud space. This note is still on your phone — try again.",
+    expect(await saving).toMatchObject({ kind: "failed", failure: "Couldn't reach your TinyCloud space. This note is safe on this browser — try again.",
       failureKind: "offline", failureCause: { code: "NETWORK", message: "The network connection was lost." } });
     await waiting;
     expect(idle).toBe(true);
@@ -338,6 +342,24 @@ describe("saveRecording", () => {
     expect(saveCalls).toBe(1);
     expect(phone.deletes).toBe(0);
     expect(phone.pending).toEqual([note]);
+  });
+
+  test("Private metadata saves without explicit audio upload approval", async () => {
+    const note = { ...recording("no-audio-consent", 1),
+      options: { transcriber: "private-cloud", identifySpeakers: false, uploadAudio: false } };
+    const outcome = await saves.saveRecording(tcw, note);
+    expect(outcome.kind).toBe("saved");
+    expect(saveCalls).toBe(1);
+  });
+
+  test("account reconciliation saves on-device metadata without audio upload approval", async () => {
+    const note = { ...recording("reconcile-no-audio-consent", 1),
+      options: { transcriber: "on-device", identifySpeakers: false, uploadAudio: false } };
+    const account = { ...tcw, spaceId: "space" } as TinyCloudWeb;
+    const ctx = { did: tcw.did, spaceId: "space", generation: currentAccountGeneration() };
+    const outcome = await saves.saveNoteForAccount(account, ctx, note);
+    expect(outcome.kind).toBe("saved");
+    expect(saveCalls).toBe(1);
   });
 
   test("every v1 note, including one missing ownerUnknown, is held by the sign-in saver", async () => {
@@ -451,9 +473,9 @@ describe("after a reload", () => {
     expect(cold.pendingStore.snapshot().listing).toEqual({ state: "unknown" });
     __setVoiceNotesForTests({ ...plugin, listPending: async () => Promise.reject(new Error("no bridge")) } as VoiceNotesPlugin, { available: true });
     const run = await cold.savePendingRecordings(tcw);
-    expect(run).toEqual({ total: 0, left: [], saved: [], lastError: "Could not check this phone for unsaved notes: no bridge" });
+    expect(run).toEqual({ total: 0, left: [], saved: [], lastError: "Could not check this browser for unsaved notes: no bridge" });
     expect(cold.pendingStore.snapshot()).toEqual({
-      listing: { state: "error", message: "Could not check this phone for unsaved notes: no bridge" },
+      listing: { state: "error", message: "Could not check this browser for unsaved notes: no bridge" },
       accountDid: null,
       running: false,
       lastError: null,
@@ -463,6 +485,35 @@ describe("after a reload", () => {
       online: true,
     });
     expect(cold.pendingCount(cold.pendingStore.snapshot())).toBe(0);
+  });
+});
+
+describe("explicit upload receipt", () => {
+  const SHA = "a".repeat(64);
+  const savedLocally = (id: string) => ({ ...recording(id, 1),
+    ledger: { audio: { state: "saved", rowId: "row-local", at: 1 } } }) as VoiceNoteRecording;
+  const uploadedWith = (receipt: { sha256: string; size: number }) => async () =>
+    ({ ok: true, data: { id: "row-local", inserted: false, createdAt: 1, verifiedInSpace: receipt } }) as never;
+
+  test("an explicit upload writes the verified space receipt to the ledger", async () => {
+    phone.pending = [savedLocally("uploaded")];
+    fakeVoiceNoteStore.save = uploadedWith({ sha256: SHA, size: 4 });
+    await saves.uploadLocalVoiceNote(tcw, "uploaded", true);
+    expect(phone.ledgerUpdates).toEqual([expect.objectContaining({
+      patch: { audio: expect.objectContaining({ state: "saved", verifiedInSpace: { sha256: SHA, size: 4 } }) },
+    })]);
+  });
+
+  test("a revision conflict on the receipt write re-reads the note and retries once", async () => {
+    phone.pending = [savedLocally("raced")];
+    phone.ledgerConflicts = 1;
+    fakeVoiceNoteStore.save = uploadedWith({ sha256: SHA, size: 4 });
+    await saves.uploadLocalVoiceNote(tcw, "raced", true);
+    expect(phone.ledgerUpdates).toHaveLength(2);
+    expect(phone.ledgerUpdates[1]).toEqual(expect.objectContaining({
+      rev: 2,
+      patch: { audio: expect.objectContaining({ verifiedInSpace: { sha256: SHA, size: 4 } }) },
+    }));
   });
 });
 
@@ -580,7 +631,7 @@ describe("pendingStore", () => {
     expect(saves.pendingStore.snapshot()).toBe(snapshot);
     __setVoiceNotesForTests({ ...plugin, listPending: async () => Promise.reject(new Error("no bridge")) } as VoiceNotesPlugin, { available: true });
     await saves.pendingStore.refresh(null);
-    expect(saves.pendingStore.snapshot().listing).toEqual({ state: "error", message: "Could not check this phone for unsaved notes: no bridge" });
+    expect(saves.pendingStore.snapshot().listing).toEqual({ state: "error", message: "Could not check this browser for unsaved notes: no bridge" });
   });
 });
 
@@ -651,7 +702,7 @@ describe("discard guard", () => {
     saves.markDiscarded("discard-busy");
     const first = await saves.savePendingRecordings(tcw);
     expect(first.saved).toEqual([]);
-    expect(first.lastError).toBe("Discarded, but this phone kept its copy: the file is busy");
+    expect(first.lastError).toBe("Discarded, but this browser kept its copy: the file is busy");
     expect(saves.isDiscarded("discard-busy")).toBe(true);
     expect(storage.get(saves.VOICE_NOTE_DISCARDED_KEY)).toBe('["discard-busy"]');
     // Still on the phone, and counted.
@@ -682,5 +733,16 @@ describe("discard guard", () => {
     expect(saves.isDiscarded(note.id)).toBe(true);
     expect((await saves.saveRecording(tcw, note)).kind).toBe("discarded");
     expect(saveCalls).toBe(0);
+  });
+});
+
+describe("storage-full failure classification", () => {
+  test.each<[string, unknown]>([
+    ["code on the error", { code: "STORAGE_QUOTA_EXCEEDED", message: "full" }],
+    ["message-only error with the code", new Error("STORAGE_QUOTA_EXCEEDED: full")],
+    ["message-only error with the phrase", new Error("storage quota exceeded")],
+    ["wrapped too-large message", new Error("save failed", { cause: new Error("write exceeds remaining storage") })],
+  ])("%s classifies as quota", (_label, error) => {
+    expect(saves.classifyNoteFailure(error)).toBe("quota");
   });
 });

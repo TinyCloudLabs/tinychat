@@ -470,7 +470,8 @@ Xcode 26.6.
   test)*): a Debug build for the simulator, then
   `mobile/scripts/ios-simulator-smoke.sh`. It boots the newest iPhone
   simulator, installs the app, grants the microphone and launches it. The job
-  fails unless the Debug-only probe in `ExoBridgeViewController` logs
+  fails unless the Debug-only probe in `ExoBridgeViewController` logs, after the
+  bundled app page has committed and React has mounted,
   `EXO_SMOKE {…}` reporting:
   - the bundled web app at `capacitor://localhost`, platform `ios`, and React
     mounted;
@@ -478,9 +479,12 @@ Xcode 26.6.
     bridge.
 
   The app must also still be running 10 s later, with no crash report. The
-  `exo-ios-smoke-<sha>` artifact has `screenshot.png`, `console.log`
-  (Capacitor's `⚡️` lines and the WebView console), `unified.log` and
-  `summary.md`. To run it on a Mac:
+  `exo-ios-smoke-<sha>` artifact has `screenshot.png`, a sanitized `console.log`,
+  allowlisted `unified.log` and `app-unified-stream.log` (started before launch),
+  `launch-timeline.log` (request and PID observation times), `liveness.log`
+  (roughly 2-second checks through the 120-second deadline), and `summary.md`.
+  If a crash report is detected, `crash-reports.txt` contains only the report
+  count; raw diagnostic reports are not copied into the artifact.
   `mobile/scripts/ios-simulator-smoke.sh run <path/to/App.app> /tmp/exo-smoke`.
 - **Release dry run** (`Mobile (Exo)` → *iOS release*): the TestFlight build
   (`.github/workflows/ios-build.yml`) without signing. Its archive job produces

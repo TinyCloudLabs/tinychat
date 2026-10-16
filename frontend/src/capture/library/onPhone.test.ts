@@ -16,7 +16,7 @@ describe("withOnPhone", () => {
     const [item] = withOnPhone([], [note("rec-1", "2026-10-10T19:16:00.000Z")]);
     expect(item).toEqual({
       id: "on-phone:rec-1", source: "exo-voice-note", sourceId: "rec-1", title: null,
-      startedAt: "2026-10-10T19:16:00.000Z", durationSecs: 14, onPhone: true,
+      startedAt: "2026-10-10T19:16:00.000Z", durationSecs: 14.4, onPhone: true,
     });
     expect(recordingIdOfOnPhoneId(item.id)).toBe("rec-1");
     expect(recordingIdOfOnPhoneId("row-1")).toBeNull();
@@ -28,14 +28,14 @@ describe("withOnPhone", () => {
     const rows = [row("a", "rec-a", "2026-10-10T19:00:00.000Z"), row("b", "rec-b", "2026-10-10T18:00:00.000Z")];
     const merged = withOnPhone(rows, [note("rec-a", "2026-10-10T19:00:00.000Z")]);
     expect(merged.map((item) => item.id)).toEqual(["a", "b"]);
-    expect(merged[0]).toMatchObject({ saving: true });
+    expect(merged[0]).toMatchObject({ saving: true, hasLocalAudio: true });
     expect(merged[1].saving).toBeUndefined();
   });
 
   test("a failed note stays pending but its Recent row does not claim it is saving", () => {
     const rows = [row("a", "rec-a", "2026-10-10T19:00:00.000Z")];
     const merged = withOnPhone(rows, [{ ...note("rec-a", "2026-10-10T19:00:00.000Z"), failed: { kind: "other", message: "failed" } }]);
-    expect(merged).toEqual(rows);
+    expect(merged).toEqual([{ ...rows[0], hasLocalAudio: true }]);
     expect(merged[0]?.saving).toBeUndefined();
   });
 

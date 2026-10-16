@@ -1,3 +1,4 @@
+import { associateStorageAccountClient, storageScopeFor } from "./storageStatus";
 // One queue per TinyCloud space for the reads and writes that share a screen
 // (TC-761): the Library's reads and an upload's storage calls. TinyCloud drops
 // concurrent responses on one space, so they take turns.
@@ -59,6 +60,7 @@ const scheduled = new WeakMap<TinyCloudWeb, TinyCloudWeb>();
  * gets the same handle (stable for React dependencies).
  */
 export function scheduledSpace(tcw: TinyCloudWeb): TinyCloudWeb {
+  const scope = storageScopeFor(tcw);
   const cached = scheduled.get(tcw);
   if (cached) return cached;
   const spaceKey = tcw.spaceId ?? tcw.did;
@@ -85,5 +87,6 @@ export function scheduledSpace(tcw: TinyCloudWeb): TinyCloudWeb {
     },
   });
   scheduled.set(tcw, proxy);
+  if (scope) associateStorageAccountClient(proxy, scope);
   return proxy;
 }

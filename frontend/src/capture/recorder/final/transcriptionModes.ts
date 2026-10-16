@@ -54,7 +54,7 @@ export const MODE_STOPS: readonly ModeStop[] = [
     transcriber: "on-device",
     shortName: COPY.localName,
     subLabel: {
-      phone: FINAL_COPY.onThisPhone,
+      get phone() { return FINAL_COPY.onThisPhone; },
       desktop: FINAL_COPY.onThisMac,
       web: FINAL_COPY.needsApp,
     },
@@ -64,7 +64,7 @@ export const MODE_STOPS: readonly ModeStop[] = [
       web: FINAL_COPY.needsApp,
     },
     explanations: {
-      phone: explain(COPY.localPhoneExplanation),
+      phone: () => COPY.localPhoneExplanation,
       desktop: ({ modelName }) => COPY.localDesktopExplanation(modelName),
       web: explain(COPY.localWebExplanation),
     },

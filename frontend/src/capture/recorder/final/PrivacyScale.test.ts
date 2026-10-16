@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { nearestStop, stopFraction } from "./PrivacyScale";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { MODE_STOPS } from "./transcriptionModes";
+import { PrivacyScale, nearestStop, stopFraction } from "./PrivacyScale";
 
 describe("privacy scale geometry", () => {
   test("stops are spread evenly from 0 to 1", () => {
@@ -14,4 +17,15 @@ describe("privacy scale geometry", () => {
     expect(nearestStop(4, 3)).toBe(2);
     expect(nearestStop(0.9, 1)).toBe(0);
   });
+});
+
+test("the slider is named for the transcription mode it selects", () => {
+  const html = renderToStaticMarkup(createElement(PrivacyScale, {
+    stops: MODE_STOPS.map((stop) => ({ stop, available: true })),
+    mode: "skip",
+    onChoose: () => null,
+    step: () => "local",
+    onUnavailable: () => {},
+  }));
+  expect(html).toContain('role="slider" tabindex="0" aria-label="Transcription mode"');
 });

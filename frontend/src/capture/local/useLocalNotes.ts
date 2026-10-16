@@ -2,6 +2,8 @@ import { readableError } from "@/lib/readableError";
 import { useCallback, useEffect, useState } from "react";
 import { VoiceNotes, type VoiceNoteRecording } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { clearDeletedPartialAudioIssue } from "../recorder/partialAudioIssues";
+import { captureEvents } from "../captureEvents";
+import { pruneDeletedFailureNotification } from "../activity/failureNotifications";
 
 export function useLocalNotes(did: string | null, offline = false) {
   const [notes, setNotes] = useState<VoiceNoteRecording[]>([]);
@@ -23,8 +25,10 @@ export function useLocalNotes(did: string | null, offline = false) {
   }, [refresh]);
   const remove = useCallback(async (id: string) => {
     await VoiceNotes.deleteAudio({ id });
+    if (did) pruneDeletedFailureNotification(did, id);
+    captureEvents.emit("note-deleted", { source: "exo-voice-note", sourceId: id });
     clearDeletedPartialAudioIssue(id);
     await refresh();
-  }, [refresh]);
+  }, [did, refresh]);
   return { notes, error, refresh, remove };
 }

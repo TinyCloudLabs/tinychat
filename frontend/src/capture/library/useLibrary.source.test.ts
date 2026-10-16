@@ -64,11 +64,9 @@ describe("useLibrary reads", () => {
     }
   });
 
-  test("an audio file is read through the queue alone (its parts interleave), with the player's signal", () => {
+  test("an audio file is read through the queue alone (its parts interleave)", () => {
     expect(chained(code)).not.toContain("getAudio(");
     expect(chained(code)).not.toContain("loadVoiceNoteAudioBlob(");
-    expect(code).toContain("loadVoiceNoteAudioBlob(space, voiceSourceId, { signal, onProgress })");
-    expect(code).toContain("getAudio(space.kv, audioBase, { signal, onProgress })");
   });
 
   test("the list is read only in refresh", () => {

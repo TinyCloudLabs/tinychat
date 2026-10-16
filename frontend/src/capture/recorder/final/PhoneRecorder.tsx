@@ -821,7 +821,7 @@ export function PhoneRecorder({
             <span>more private</span>
             <span>more capable</span>
           </div>
-          <div className={choice.modelNote ? "pr-capline pr-capline-wrap" : "pr-capline"}>
+          <div className={choice.modelNote || stop.id === "skip" ? "pr-capline pr-capline-wrap" : "pr-capline"}>
             {choice.modelNote ? (
               <>
                 <span data-testid="local-model-note">{choice.modelNote.reason}</span>

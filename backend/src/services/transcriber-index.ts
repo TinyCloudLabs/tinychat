@@ -113,6 +113,16 @@ export class KvJsonKv implements JsonKv {
     });
   }
 
+  /** Atomically enroll a new durable marker. An existing marker is never overwritten. */
+  async putIfAbsent(key: string, value: unknown): Promise<boolean> {
+    return withSessionRefresh(this.node, async () => {
+      const result = await this.node.kv.put(key, value, { ifNoneMatch: "*" });
+      if (!result.ok && result.error.code === "KV_PRECONDITION_FAILED") return false;
+      assertKvResult(result);
+      return true;
+    });
+  }
+
   async remove(key: string): Promise<void> {
     await withSessionRefresh(this.node, async () => {
       const response = await this.node.kv.delete(key);

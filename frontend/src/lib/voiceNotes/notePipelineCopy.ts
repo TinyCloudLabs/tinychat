@@ -1,11 +1,13 @@
 // Words for the note pipeline (notePipeline.ts). Short sentences, "·" between a state and its detail,
 // no em dashes. Every blocker line says what is wrong and, where it is true, that the note is safe.
 import type { PipelineActionKind, PipelineDevice, StepKey } from "./notePipeline";
+import { deviceName as platformDeviceName } from "@/lib/platform";
+import { STORAGE_FULL_RECORDING_LINE, STORAGE_FULL_TRANSCRIPT_LINE } from "@/lib/storageStatus";
 
-export const deviceName = (device: PipelineDevice): string => (device === "mac" ? "this Mac" : "this phone");
+export const deviceName = (device: PipelineDevice): string => platformDeviceName(device === "mac" ? "tauri" : device === "iphone" ? "ios" : device === "android" ? "android" : device === "browser" ? "web" : undefined);
 
 export const STEP_LABEL = {
-  phone: (device: PipelineDevice) => (device === "mac" ? "Audio on this Mac" : "Audio on this phone"),
+  phone: (device: PipelineDevice) => `Audio on ${deviceName(device)}`,
   space: "Audio in your space",
   transcript: "Transcript",
   notes: "Notes",
@@ -14,9 +16,10 @@ export const STEP_LABEL = {
 export const ACTION_LABEL: Record<PipelineActionKind, string> = {
   "sign-in": "Sign in",
   retry: "Try again",
-  "get-model": "Get the model",
+  "get-model": "Get model",
+  "manage-storage": "Manage storage",
   "check-again": "Check again",
-  "review-consent": "Review",
+  "review-consent": "Review consent",
   reread: "Try again",
 };
 
@@ -37,8 +40,10 @@ export const percentText = (fraction: number): string => `${Math.round(Math.min(
 /** "next" for the first place, "2nd" after. */
 const place = (position: number): string => (position <= 1 ? "next" : ordinal(position));
 
-const hasText = (text: string | null | undefined): text is string => typeof text === "string" && text.trim().length > 0;
-const withDetail = (lead: string, detail: string | null | undefined): string => (hasText(detail) ? `${lead} · ${detail.trim()}` : lead);
+const withDetail = (lead: string, _detail: string | null | undefined): string => lead;
+
+export const privatePartsDone = (completed: number | null, total: number | null): string | null =>
+  completed === null || total === null || total <= 0 ? null : `${completed} of ${total} parts done`;
 
 export const PHONE_COPY = {
   finishing: "Finishing the recording…",
@@ -52,29 +57,25 @@ export const PHONE_COPY = {
 export const SPACE_COPY = {
   afterRecording: "After recording",
   waiting: "Waiting to upload",
-  preparing: "Preparing your space for audio upload…",
-  waitingForSpace: "Waiting for your space to finish another operation",
-  waitingInLine: (position: number) => `Waiting to upload · ${place(position)} in line`,
   uploading: (fraction: number | null) => (fraction === null ? "Uploading audio to your TinyCloud space…" : `Uploading audio to your TinyCloud space · ${percentText(fraction)}`),
   retrying: "Retrying…",
+  retryIn: (ms: number) => `Your TinyCloud space is slow to answer · trying again in ${Math.max(1, Math.ceil(ms / 1_000))} s`,
   offline: "Waiting for a connection",
   offlineCaption: "Offline · Resumes automatically",
   signedOut: (device: PipelineDevice) => `You're signed out. This note is safe on ${deviceName(device)}.`,
   sessionExpired: (device: PipelineDevice) => `Your session ended. This note is safe on ${deviceName(device)}.`,
   otherAccount: "Recorded on another account",
   accountUnknown: (device: PipelineDevice) => `Exo can't tell which account this note belongs to. It stays on ${deviceName(device)}.`,
-  quota: "Your space is full",
+  quota: (device: PipelineDevice) => `Saved on ${deviceName(device)}. ${STORAGE_FULL_RECORDING_LINE}`,
   timeout: (device: PipelineDevice) => `Saving timed out. This note is safe on ${deviceName(device)}.`,
   server: (_detail: string | null | undefined, device: PipelineDevice) =>
     `Your space couldn't take this note. It is safe on ${deviceName(device)}. Try again.`,
   unreachable: (device: PipelineDevice) => `Couldn't reach your space. This note is safe on ${deviceName(device)}.`,
-  source: (_message: string | null | undefined) => "Couldn't read the recording on this phone.",
-  unknown: (_message: string | null | undefined) => "Couldn't save this note. It is safe on this phone. Try again.",
 };
 
 export const TRANSCRIPT_COPY = {
   savedInSpace: "Saved in your space",
-  noSpeechInSpace: "No speech found in your space",
+  noSpeechInSpace: "No speech found",
 };
 
 export const LOCAL_COPY = {
@@ -97,12 +98,13 @@ export const LOCAL_COPY = {
   failed: (detail: string | null | undefined, device: PipelineDevice) => withDetail(`Couldn't transcribe on ${deviceName(device)}`, detail),
   cancelled: (device: PipelineDevice) => `Transcribing on ${deviceName(device)} was cancelled`,
   syncFailed: () => "Couldn't add the transcript to this note",
-  notAdded: "The transcript is ready on this phone but hasn't been added to this note",
-  missingTranscript: "this phone says it finished transcribing but has no transcript for the note",
-  transcriptReadFailed: "Couldn't read the transcript on this phone.",
-  transcriptCheckFailed: "Couldn't check this note on this phone.",
+  notAdded: (device: PipelineDevice) => `The transcript is ready on ${deviceName(device)} but hasn't been added to this note`,
+  missingTranscript: `${deviceName("phone")} says it finished transcribing but has no transcript for the note`,
+  transcriptReadFailed: `Couldn't read the transcript on ${deviceName("phone")}.`,
+  transcriptCheckFailed: `Couldn't check this note on ${deviceName("phone")}.`,
   transcriptSyncFailed: "Couldn't add the transcript to this note.",
-  unrecorded: () => "The transcript is in your space, but this phone couldn't record it.",
+  transcriptStorageFull: (device: PipelineDevice) => `Saved on ${deviceName(device)}. ${STORAGE_FULL_TRANSCRIPT_LINE}`,
+  unrecorded: (device: PipelineDevice) => `The transcript is in your space, but ${deviceName(device)} couldn't record it.`,
   checkingSpace: "Checking your space…",
   checkingSpaceAfterUploads: "Checking your space · after uploads",
   notStarted: "Waiting to transcribe",
@@ -116,20 +118,20 @@ export const PRIVATE_COPY = {
   preparing: "Preparing…",
   sending: "Sending audio to Private transcription",
   inQueue: (position: number | null) => (position === null ? "In the queue" : `In the queue · #${position}`),
-  transcribing: (completed: number | null, total: number | null) =>
-    completed === null || total === null ? "Transcribing…" : `Transcribing · ${completed} of ${total}`,
+  transcribing: (completed: number | null, total: number | null) => {
+    const partsDone = privatePartsDone(completed, total);
+    return partsDone === null ? "Transcribing…" : `Transcribing · ${partsDone}`;
+  },
   saving: "Saving transcript",
   notStarted: "Waiting for private transcription",
   afterUpload: "After audio uploads",
   noSpeech: "No speech found",
   unavailable: "Private transcription isn't available right now",
+  limitsUnknown: "Private's limits aren't available right now. Try again later.",
   checkFailed: "Couldn't check whether private transcription is available",
   checking: "Checking private transcription…",
   noConsent: "Waiting for your OK to use Private",
-  failed: (message: string | null | undefined, reference: string | null) => {
-    const copy = hasText(message) ? message.trim() : "Private transcription couldn't finish.";
-    return hasText(reference) ? `${copy} · Reference ${reference.trim()}` : copy;
-  },
+  failed: (code: string, provider: "private" | "powerful" | "unknown" = "private") => code === "recording_too_long" ? "This recording is too long to transcribe." : provider === "powerful" ? "Powerful transcription didn't finish." : provider === "unknown" ? "Transcription didn't finish." : "Private transcription didn't finish.",
 };
 
 export const NOTES_COPY = {
@@ -137,5 +139,5 @@ export const NOTES_COPY = {
   failed: "Couldn't sync your notes",
   waitingForRow: "Waiting for the note to reach your space",
   notSynced: "Your notes haven't reached your space yet",
-  unreadable: (detail: string | null | undefined) => withDetail("Couldn't read this note's text on this phone", detail),
+  unreadable: (detail: string | null | undefined, device: PipelineDevice) => withDetail(`Couldn't read this note's text on ${deviceName(device)}`, detail),
 };

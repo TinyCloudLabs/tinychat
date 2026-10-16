@@ -67,6 +67,13 @@ export function createFakeOnDeviceStt(pack: "full" | "small" = "full", isTombsto
       if (!status.queue.some((entry) => entry.id === id)) status.queue.push({ id, state: ready() ? "queued" : "waiting_for_model", percent: null, error: null });
       emitStatus();
     },
+    async enqueueAgain({ id }) {
+      checkTombstone(id);
+      const item = status.queue.find((entry) => entry.id === id);
+      if (item) { item.state = ready() ? "queued" : "waiting_for_model"; item.percent = null; item.error = null; }
+      else status.queue.push({ id, state: ready() ? "queued" : "waiting_for_model", percent: null, error: null });
+      emitStatus();
+    },
     async cancel({ id }) { const item = queueEntry(id); item.state = "cancelled"; emitStatus(); },
     addListener(event: string, listener: Listener) {
       let set = listeners.get(event); if (!set) { set = new Set(); listeners.set(event, set); }

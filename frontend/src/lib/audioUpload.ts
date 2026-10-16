@@ -37,7 +37,7 @@ import { withHostedUploadQueue } from "./hostedUploadQueue";
 import type { NormalizedMeeting } from "./connectors/connectorStore";
 import type { FirefliesSentence } from "./connectors/firefliesClient";
 import { NO_SPEECH_MESSAGE, type LocalTranscriptSaver, type PreparedLocalTranscript } from "./localTranscriber";
-import { accountStorageKey } from "./voiceNotes/voiceNoteTranscription";
+import { accountStorageKey } from "./voiceNotes/sourcePins";
 import {
   createCloudJobPoller,
   privateCloudMessage,

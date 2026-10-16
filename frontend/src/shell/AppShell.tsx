@@ -8,8 +8,9 @@
 // change; a kept-alive subtree is never re-parented by a resize or rotation.
 //
 // Mounting. Chat is always mounted and hidden when another surface shows
-// (streams, drafts and the open thread survive). Capture mounts on its first
-// visit and is then kept, hidden (its scroll, the Library and a desktop local
+// (streams, drafts and the open thread survive). Capture mounts at launch on
+// Mac so the sidebar can report resumed jobs; elsewhere it mounts on its first
+// visit. It is then kept, hidden (its scroll, the Library and a desktop local
 // recording survive). Connectors, Settings and How it works mount only while
 // shown.
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
@@ -77,7 +78,7 @@ const GRID: Record<NavKind | "none", string> = {
 
 export interface AppShellViewProps extends AppShellProps {
   sizeClass: SizeClassState;
-  /** Capture has been visited, so its surface stays mounted. */
+  /** Capture is mounted after its first visit, or at Mac launch for Activity. */
   captureMounted: boolean;
   mainRef?: RefObject<HTMLElement | null>;
   onReselect?: (destination: Destination) => void;
@@ -170,8 +171,10 @@ export function AppShell(props: AppShellProps) {
   const nav = shellNavKind(sizeClass, props);
   const hasIsland = props.island !== undefined && props.island !== null && props.island !== false;
 
-  // Capture mounts on its first visit and is kept from then on.
-  const [captureMounted, setCaptureMounted] = useState(shown === "capture");
+  // Mac Capture reads background activity at launch; other platforms mount it on first visit.
+  // Mac background jobs need their Capture reader even when the app opens on Chat.
+  // Its Activity control is drawn by Sidebar, outside the hidden surface.
+  const [captureMounted, setCaptureMounted] = useState(shown === "capture" || (props.platform === "tauri" && props.capture !== null));
   if (shown === "capture" && !captureMounted) setCaptureMounted(true);
 
   // The bottom chrome (--tc-bottom-chrome in index.css) follows the navigation kind.

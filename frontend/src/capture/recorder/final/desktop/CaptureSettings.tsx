@@ -1,4 +1,7 @@
 import { readableError } from "@/lib/readableError";
+import { readUploadAudioPreference, setUploadAudioPreference } from "@/lib/voiceNotes/transcriberPreference";
+import { useStorageReadOnly } from "@/lib/useStorageReadOnly";
+import { InfoTip } from "@/components/ui/info-tip";
 import {
   useCallback,
   useEffect,
@@ -31,18 +34,19 @@ import {
   type FocusTarget,
 } from "./captureSettingsModel";
 import { onOpenCaptureSettings } from "./openCaptureSettings";
+import { AudioCacheSettings } from "@/capture/AudioCacheSettings";
 import "../soft.css";
 import "./captureSettings.css";
 
 export type CaptureSettingsVariant = "app" | "microphone-only";
 
-type SwitchKey = "systemAudio" | "autoSave";
+type SwitchKey = "systemAudio" | "uploadAudio";
 
 interface Loaded {
   models: WhisperModelInfo[];
   selected: WhisperModelId | null;
   systemAudio: boolean;
-  autoSave: boolean;
+  uploadAudio: boolean;
 }
 
 type Load =
@@ -306,6 +310,8 @@ function ModelSection({
   );
 }
 
+const UPLOAD_PAUSED = "Paused: storage full";
+
 function Switch({
   label,
   description,
@@ -313,6 +319,7 @@ function Switch({
   pending,
   error,
   testId,
+  notice,
   onToggle,
 }: {
   label: string;
@@ -321,6 +328,7 @@ function Switch({
   pending: boolean;
   error: string | null;
   testId: string;
+  notice?: string | null;
   onToggle: (on: boolean) => void;
 }) {
   const id = useId();
@@ -343,6 +351,7 @@ function Switch({
       <div>
         <b id={`${id}-l`}>{label}</b>
         <span id={`${id}-d`}>{description}</span>
+        {notice && <p role="status">{notice}</p>}
         {error && (
           <p className="cs-error" role="alert">
             {error}
@@ -366,13 +375,15 @@ export function SettingsPanel({
   onGetModel,
   onToggle,
 }: SettingsPanelProps) {
+  const storageFull = useStorageReadOnly();
   if (variant === "microphone-only")
     return (
       <>
         <p className="cs-lede">
-          Local transcription, meeting audio and auto-save need the Exo app.
+          Local transcription and meeting audio need the Exo app.
         </p>
         <MicrophoneSection microphone={microphone} />
+        <AudioCacheSettings />
       </>
     );
   if (!extrasAvailable)
@@ -410,6 +421,7 @@ export function SettingsPanel({
         />
       )}
       <MicrophoneSection microphone={microphone} />
+      <AudioCacheSettings />
       {load.status === "ready" && (
         <section aria-labelledby="cs-meet-h">
           <h3 id="cs-meet-h" className="cs-h">
@@ -417,7 +429,7 @@ export function SettingsPanel({
           </h3>
           <Switch
             label="Also record this Mac's audio"
-            description="Records everything this Mac plays, mixed with your mic. Applies when you start or resume a recording. macOS asks for permission once."
+            description="Records everything this Mac plays as Them, with your mic as Me. Turning it off applies when you resume. Turning it on applies to your next recording. macOS asks for permission once."
             checked={load.data.systemAudio}
             pending={switches.systemAudio.pending}
             error={switches.systemAudio.error}
@@ -425,14 +437,16 @@ export function SettingsPanel({
             onToggle={(on) => onToggle("systemAudio", on)}
           />
           <Switch
-            label="Save to your space automatically"
-            description="Recordings and notes sync to TinyCloud when you stop."
-            checked={load.data.autoSave}
-            pending={switches.autoSave.pending}
-            error={switches.autoSave.error}
-            testId="switch-auto-save"
-            onToggle={(on) => onToggle("autoSave", on)}
+            label="Upload audio to TinyCloud"
+            description="Audio stays on this Mac. Transcripts and notes still sync to your TinyCloud space. Private transcription still sends audio to be transcribed, then deletes it."
+            checked={load.data.uploadAudio}
+            pending={switches.uploadAudio.pending}
+            error={switches.uploadAudio.error}
+            testId="switch-upload-audio"
+            notice={storageFull ? UPLOAD_PAUSED : null}
+            onToggle={(on) => onToggle("uploadAudio", on)}
           />
+          <InfoTip label="About audio storage">Other devices cannot play or transcribe local-only audio. This Mac holds the only copy. Local transcription, chat and quota still work. You can upload an individual note later.</InfoTip>
         </section>
       )}
     </>
@@ -471,7 +485,7 @@ export function CaptureSettings({
   const [modelError, setModelError] = useState<string | null>(null);
   const [switches, setSwitches] = useState<
     Record<SwitchKey, { pending: boolean; error: string | null }>
-  >({ systemAudio: NO_SWITCH, autoSave: NO_SWITCH });
+  >({ systemAudio: NO_SWITCH, uploadAudio: NO_SWITCH });
   const root = useRef<HTMLDivElement>(null);
   const button = useRef<HTMLButtonElement>(null);
   const panel = useRef<HTMLDivElement>(null);
@@ -482,6 +496,7 @@ export function CaptureSettings({
   const titleId = useId();
   const panelId = useId();
   const audio = useAudioInputs(inputs);
+  const storageFull = useStorageReadOnly();
   useEffect(() => { if (open) audio.refresh(); }, [open, audio.refresh]);
 
   // The model whose progress element has focus, if one does: read before a row changes shape under it.
@@ -513,11 +528,10 @@ export function CaptureSettings({
       const mine = ++request.current;
       if (showLoading) setLoad({ status: "loading" });
       try {
-        const [models, selected, systemAudio, autoSave] = await Promise.all([
+        const [models, selected, systemAudio] = await Promise.all([
           extras.models.list(),
           extras.models.get(),
           extras.systemAudio.get(),
-          extras.autoSaveToSpace.get(),
         ]);
         if (mine === request.current) {
           focusTarget.current =
@@ -531,7 +545,7 @@ export function CaptureSettings({
           dispatch({ type: "sync", models });
           setLoad({
             status: "ready",
-            data: { models, selected, systemAudio, autoSave },
+            data: { models, selected, systemAudio, uploadAudio: readUploadAudioPreference() },
           });
         }
       } catch (caught) {
@@ -682,9 +696,20 @@ export function CaptureSettings({
   };
 
   const onToggle = (switchKey: SwitchKey, on: boolean) => {
+    if (switchKey === "uploadAudio") {
+      setSwitches((s) => ({ ...s, uploadAudio: { pending: true, error: null } }));
+      void setUploadAudioPreference(on).then(() => {
+        setSwitches((s) => ({ ...s, uploadAudio: NO_SWITCH }));
+        setLoad((current) => current.status === "ready"
+          ? { status: "ready", data: { ...current.data, uploadAudio: on } } : current);
+      }, (caught: unknown) => {
+        setSwitches((s) => ({ ...s, uploadAudio: { pending: false,
+          error: `Could not change this setting: ${messageOf(caught)}` } }));
+      });
+      return;
+    }
     if (!extras) return;
-    const target =
-      switchKey === "systemAudio" ? extras.systemAudio : extras.autoSaveToSpace;
+    const target = extras.systemAudio;
     setSwitches((s) => ({ ...s, [switchKey]: { pending: true, error: null } }));
     target.set(on).then(
       () => {
@@ -723,6 +748,7 @@ export function CaptureSettings({
       >
         <GearIcon />
       </button>
+      {storageFull && <span role="img" aria-label="Storage full" className="absolute right-0 top-0 size-2.5 rounded-full bg-destructive ring-2 ring-background" />}
       {open && (
         <div
           ref={panel}

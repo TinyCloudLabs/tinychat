@@ -98,6 +98,15 @@ describe("localChannelLabel", () => {
 });
 
 describe("localTranscriptTurns: echo", () => {
+  test("overlapping duplicate words keep Others even when mic echo is louder", () => {
+    const first = "Ship the release on Thursday.";
+    const second = "Blue kites fly over the harbor.";
+    const mic = [...chunk(MIC, 0.2, 3.1, first), ...chunk(MIC, 8.2, 11.1, second)]
+      .map((word) => ({ ...word, loudness: 0.4 }));
+    const system = [...chunk(SYS, 0, 3, first), ...chunk(SYS, 8, 11, second)]
+      .map((word) => ({ ...word, loudness: 0.1 }));
+    expect(lines(recording(mic, system))).toEqual([`Others: ${first} ${second}`]);
+  });
   test("mic echo of system audio is dropped and the words stay with Others (no word-by-word interleave)", () => {
     const first = "Ship the release on Thursday. Blue kites fly over the harbor.";
     const second = "Deploy the canary build tonight.";
@@ -258,6 +267,17 @@ describe("localTranscriptTurns: distinct speech is never dropped", () => {
     expect(lines(words)).toEqual([
       "You: Can you send me the deck after this call?",
       "Others: Sure, I will send the deck right after lunch.",
+    ]);
+  });
+
+  test("the user talking over Others keeps both distinct turns even when the mic is louder", () => {
+    const words = recording(
+      chunk(SYS, 10, 14, "Please send the report before lunch.").map((word) => ({ ...word, loudness: 0.1 })),
+      chunk(MIC, 10.2, 14.2, "I can review the budget after this call.").map((word) => ({ ...word, loudness: 0.8 })),
+    );
+    expect(lines(words)).toEqual([
+      "Others: Please send the report before lunch.",
+      "You: I can review the budget after this call.",
     ]);
   });
 

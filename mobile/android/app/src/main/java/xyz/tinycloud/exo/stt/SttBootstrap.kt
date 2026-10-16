@@ -21,6 +21,8 @@ object SttBootstrap {
                 }
             })
         }
+        // Queue ordering guarantees rerun markers are cleared before launch reconciliation.
+        queue.recoverInterruptedReruns()
         // Deferred to the main looper's next idle point (after the first frame is up), not run
         // synchronously from here: a note that reliably crashes the decode must never compete with
         // app launch for CPU/memory before the UI exists (TC-836 incident, a crash-looping note).

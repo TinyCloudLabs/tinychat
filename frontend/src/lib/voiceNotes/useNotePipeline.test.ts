@@ -192,7 +192,7 @@ describe("route", () => {
     expect(pipelineRoute({ transcriber: "assemblyai", stt: null }, false)).toBe("private-cloud");
   });
 
-  test("a note this phone has no committed mode for: a cloud job or a native job says where, else nobody is transcribing it", () => {
+  test("a note this browser has no committed mode for: a cloud job or a native job says where, else nobody is transcribing it", () => {
     expect(pipelineRoute(null, true)).toBe("private-cloud");
     expect(pipelineRoute(null, false)).toBe("off");
     expect(pipelineRoute({ transcriber: null, stt: { state: "queued", error: null } }, false)).toBe("on-device");
@@ -303,7 +303,7 @@ describe("failed reads are never read as absent or ready", () => {
   test("a failed ledger read shows its cause on the transcript step, and the note is not done", () => {
     const pipeline = run({ saved: true, native: null, readError: "The phone's note list wouldn't open: busy" });
     expect(stateOf(pipeline, "transcript")).toBe("failed");
-    expect(pipeline.blocker?.cause).toBe("Couldn't check this note's transcript · The phone's note list wouldn't open: busy");
+    expect(pipeline.blocker?.cause).toBe("Couldn't check this note's transcript");
     expect(pipeline.blocker?.action?.kind).toBe("retry");
     expect(pipeline.done).toBe(false);
   });
@@ -311,7 +311,7 @@ describe("failed reads are never read as absent or ready", () => {
   test("a failed read of the note's own text is a failed notes step with its cause, never skipped", () => {
     const pipeline = run({ saved: true, native: { transcriber: "off", stt: null }, localNote: null, localNoteError: "EIO" });
     expect(stateOf(pipeline, "notes")).toBe("failed");
-    expect(pipeline.blocker?.cause).toBe("Couldn't read this note's text on this phone · EIO");
+    expect(pipeline.blocker?.cause).toBe("Couldn't read this note's text on this browser");
     expect(pipeline.done).toBe(false);
   });
 
@@ -387,7 +387,7 @@ describe("actions", () => {
   afterEach(() => { errors.mockRestore(); });
 
   const transcription = (patch: Partial<VoiceNoteTranscriptionProps> = {}): VoiceNoteTranscriptionProps => ({
-    availability: "available", consented: true, maxSeconds: 600, jobs: new Map(), onTranscribe: () => {}, onConsent: () => {}, onTurnOff: () => {}, onRecheck: () => {}, ...patch,
+    availability: "available", consented: true, maxSeconds: 600, maxBytes: 186_496_800, jobs: new Map(), onTranscribe: () => {}, onConsent: () => {}, onTurnOff: () => {}, onRecheck: () => {}, ...patch,
   } as VoiceNoteTranscriptionProps);
   const envFor = (patch: Partial<NotePipelineFacts>, env: Partial<PipelineActionEnv> = {}): PipelineActionEnv => {
     const input = buildNotePipelineInput(facts(patch));
@@ -413,16 +413,58 @@ describe("actions", () => {
     expect(saves).toBe(1);
   });
 
-  test("retry on a private-cloud transcript sends the note to the transcriber", async () => {
+  test("Powerful Retry keeps the provider-aware hosted dispatch instead of Private", async () => {
+    const hosted: string[] = [];
+    const privateCalls: string[] = [];
+    const env = envFor(
+      { saved: true, native: { transcriber: "assemblyai", stt: null }, rowMetadata: { capture: { options: { transcriber: "assemblyai" } } },
+        cloudJob: { kind: "failed", message: "no", retryable: true } as never },
+      { transcription: transcription({
+        maxSeconds: 1,
+        maxBytes: 1,
+        onTranscribe: (id) => { hosted.push(id); },
+        onTranscribePrivately: (id) => { privateCalls.push(id); return null; },
+      }), durationSecs: 9_999 },
+    );
+    expect(env.pipeline.current).toBe("transcript");
+    expect(env.input.transcriptProvider).toBe("powerful");
+    expect(await runPipelineAction("retry", env)).toBeNull();
+    expect(hosted).toEqual([ID]);
+    expect(privateCalls).toEqual([]);
+  });
+
+  test("retry on a private-cloud transcript sends the note to Private only", async () => {
+    const hosted: string[] = [];
     const sent: string[] = [];
     const env = envFor(
       { saved: true, native: { transcriber: "private-cloud", stt: null }, cloudJob: { kind: "failed", message: "no", retryable: true } as never },
-      { transcription: transcription({ onTranscribe: (id: string) => { sent.push(id); } }) },
+      { transcription: transcription({
+        onTranscribe: (id) => { hosted.push(id); },
+        onTranscribePrivately: (id: string) => { sent.push(id); },
+      }) },
     );
     expect(env.pipeline.current).toBe("transcript");
     expect(await runPipelineAction("retry", env)).toBeNull();
     expect(sent).toEqual([ID]);
+    expect(hosted).toEqual([]);
   });
+  test("pipeline Retry refuses an oversized client WAV before dispatch and returns the browser copy", async () => {
+    const dispatched: string[] = [];
+    const env = envFor(
+      { saved: true, native: { transcriber: "private-cloud", stt: null }, cloudJob: { kind: "failed", message: "too large", retryable: true } as never },
+      {
+        transcription: transcription({ maxSeconds: 10, maxBytes: 64_000,
+          onTranscribePrivately: (id) => { dispatched.push(id); return null; } }),
+        durationSecs: 2,
+        privateAudioSource: { capturePlatform: "web", mimeType: "audio/webm;codecs=opus", sizeBytes: null },
+      },
+    );
+    expect(env.pipeline.current).toBe("transcript");
+    expect(await runPipelineAction("retry", env))
+      .toBe("This recording is too long for Private transcription in the browser. Use the desktop or phone app to transcribe it privately.");
+    expect(dispatched).toEqual([]);
+  });
+
 
   test("check-again asks the transcriber; its rejection gets calm copy", async () => {
     let checks = 0;
@@ -448,7 +490,7 @@ describe("actions", () => {
     expect(await runPipelineAction("retry", env(async () => { throw new Error("the account is not ready"); }))).toBe("Couldn't complete this step. Try again.");
     pendingStore.reportError("Couldn't set up your space defaults");
     try {
-      expect(await runPipelineAction("retry", env(async () => { await Promise.resolve(); }))).toBe("Couldn't save this note. It is safe on this phone. Try again.");
+      expect(await runPipelineAction("retry", env(async () => { await Promise.resolve(); }))).toBe("Couldn't save this note. It is safe on this browser. Try again.");
     } finally {
       await pendingStore.refresh(null);
     }
@@ -465,7 +507,7 @@ describe("actions", () => {
   test("a failed parked-recordings read reaches the pipeline, and its action rereads", async () => {
     let rereads = 0;
     const env = envFor({ saved: true, native: null, capture: { finalizing: false, issue: null, readError: "EIO" } }, { reread: () => { rereads += 1; } });
-    expect(env.pipeline.blocker?.cause).toBe("Couldn't check for recordings that failed to save · EIO");
+    expect(env.pipeline.blocker?.cause).toBe("Couldn't check for recordings that failed to save");
     expect(env.pipeline.blocker?.action?.kind).toBe("reread");
     expect(env.pipeline.done).toBe(false);
     expect(await runPipelineAction("reread", env)).toBeNull();

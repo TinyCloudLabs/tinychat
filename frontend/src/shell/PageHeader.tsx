@@ -15,6 +15,7 @@ import { Link } from "react-router-dom";
 import { ChevronLeftIcon, SettingsIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { useStorageReadOnly } from "@/lib/useStorageReadOnly";
 import { PATHS } from "./routes";
 
 /** The header row's height, which the collapse is measured against. */
@@ -141,13 +142,15 @@ export const PAGE_COLUMN = "mx-auto w-full max-w-2xl px-4 medium:px-6 expanded:p
 
 /** Settings from a page header: on a phone held upright, where the navigation has no place for it. */
 export function SettingsGear() {
+  const storageFull = useStorageReadOnly();
   return (
     <Link
       to={PATHS.settings}
       aria-label="Settings"
-      className="tap-transparent flex size-11 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-surface-2 hover:text-foreground active:bg-surface-2"
+      className="tap-transparent relative flex size-11 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-surface-2 hover:text-foreground active:bg-surface-2"
     >
       <SettingsIcon aria-hidden className="size-6" />
+      {storageFull && <span role="img" aria-label="Storage full" className="absolute right-2 top-2 size-2.5 rounded-full bg-destructive ring-2 ring-background" />}
     </Link>
   );
 }

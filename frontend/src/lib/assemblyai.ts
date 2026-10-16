@@ -1,6 +1,7 @@
 // Hosted AssemblyAI: authenticated Exo server proxy; the server keeps the key.
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { FirefliesSentence } from "./connectors/firefliesClient";
+import { splitLongTimedSegment } from "./voiceNotes/timedSegments";
 import {
   cloudStatusIntervalMs,
   jitteredCloudIntervalMs,
@@ -11,7 +12,7 @@ import {
   type CloudClock,
 } from "./privateCloud";
 
-export type AssemblyAiErrorKind = "invalid-key" | "network" | "rate-limited" | "rejected" | "failed" | "not-found";
+export type AssemblyAiErrorKind = "invalid-key" | "network" | "rate-limited" | "rejected" | "failed" | "not-found" | "needs-reconciliation";
 
 export class AssemblyAiError extends Error {
   readonly kind: AssemblyAiErrorKind;
@@ -32,6 +33,7 @@ export interface AssemblyAiUtterance {
   /** Milliseconds. */
   start: number;
   end: number;
+  channel?: 0 | 1 | null;
 }
 
 export interface AssemblyAiSentence {
@@ -39,6 +41,8 @@ export interface AssemblyAiSentence {
   start: number;
   end: number;
   speaker?: string | null;
+  channel?: 0 | 1 | null;
+  words?: { start: number; end: number; text: string }[];
 }
 
 export interface AssemblyAiTranscript {
@@ -46,6 +50,7 @@ export interface AssemblyAiTranscript {
   status: "queued" | "processing" | "completed" | "error";
   text?: string | null;
   utterances?: AssemblyAiUtterance[] | null;
+  audio_channels?: number | null;
   /** Seconds. */
   audio_duration?: number | null;
   language_code?: string | null;
@@ -110,6 +115,7 @@ async function hostedError(response: Response): Promise<AssemblyAiError> {
   const retryAfterMs = retryAfterSeconds === null ? null : retryAfterSeconds * 1000;
   if (response.status === 401) return new AssemblyAiError("rejected", "Your session expired. Sign in again, then retry.");
   if (response.status === 404) return new AssemblyAiError("not-found", "AssemblyAI no longer has this transcript.");
+  if (code === "assemblyai_needs_reconciliation") return new AssemblyAiError("needs-reconciliation", "Powerful couldn't confirm an earlier attempt. Exo is checking with AssemblyAI.");
   if (code === "assemblyai_quota_exceeded") {
     const hours = retryAfterSeconds === null ? null : Math.max(1, Math.ceil(retryAfterSeconds / 3600));
     return new AssemblyAiError(
@@ -137,8 +143,9 @@ async function hostedError(response: Response): Promise<AssemblyAiError> {
 }
 
 interface HostedSubmission {
-  status: "receiving" | "submitting" | "submitted" | "failed";
+  status: "missing" | "receiving" | "submitting" | "submitted" | "failed" | "needs_reconciliation" | "unresolved" | "deleted";
   id?: string;
+  upload_id?: string;
   error?: { code?: string } | null;
 }
 
@@ -166,9 +173,11 @@ export function createHostedAssemblyAiClient(config: {
   sessionStore: Pick<SessionStore, "getToken" | "isExpired">;
   fetchImpl?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
-}): AssemblyAiClient & {
+}): Omit<AssemblyAiClient, "createTranscript"> & {
+  createTranscript(uploadId: string, options: { speakerLabels: boolean; multichannel?: boolean; signal?: AbortSignal; sourceId?: string }): Promise<AssemblyAiTranscript>;
   capabilities(): Promise<HostedAssemblyAiCapabilities>;
-  createUpload(size: number, contentType: string): Promise<{ uploadId: string; partSize: number }>;
+  createUpload(size: number, contentType: string, sourceId?: string): Promise<{ uploadId: string; partSize: number; status?: HostedSubmission["status"]; id?: string }>;
+  lookupJob(sourceId: string): Promise<HostedSubmission>;
   putPart(uploadId: string, index: number, bytes: Uint8Array): Promise<void>;
   uploadState(uploadId: string): Promise<HostedSubmission>;
 } {
@@ -225,11 +234,17 @@ export function createHostedAssemblyAiClient(config: {
       return (await request("/capabilities").then((r) => r.json())) as HostedAssemblyAiCapabilities;
     },
 
-    async createUpload(size, contentType) {
-      const created = (await request("/hosted/uploads", { method: "POST", json: { byte_size: size, content_type: contentType } }).then((r) => r.json())) as { upload_id?: unknown; part_size?: unknown };
+    async createUpload(size, contentType, sourceId) {
+      const created = (await request("/hosted/uploads", { method: "POST", json: { byte_size: size, content_type: contentType, ...(sourceId ? { source_id: sourceId } : {}) } }).then((r) => r.json())) as { upload_id?: unknown; part_size?: unknown; status?: HostedSubmission["status"]; id?: string };
       if (typeof created.upload_id !== "string" || typeof created.part_size !== "number" || created.part_size <= 0)
         throw new AssemblyAiError("failed", "Exo's server returned an unexpected upload.");
-      return { uploadId: created.upload_id, partSize: created.part_size };
+      if (created.status === "needs_reconciliation")
+        throw new AssemblyAiError("needs-reconciliation", "Powerful couldn't confirm an earlier attempt. Exo is checking with AssemblyAI.");
+      return { uploadId: created.upload_id, partSize: created.part_size, status: created.status, id: created.id };
+    },
+
+    async lookupJob(sourceId) {
+      return submission(await request(`/hosted/jobs/${encodeURIComponent(sourceId)}`));
     },
 
     async putPart(uploadId, index, bytes) {
@@ -287,14 +302,14 @@ export function createHostedAssemblyAiClient(config: {
       return uploadId;
     },
 
-    async createTranscript(uploadId, { speakerLabels, multichannel = false, signal }) {
+    async createTranscript(uploadId, { speakerLabels, multichannel = false, signal, sourceId }: { speakerLabels: boolean; multichannel?: boolean; signal?: AbortSignal; sourceId?: string }) {
       // The backend sends the file on to AssemblyAI in the background: 202 with the submission's state,
       // then its state by upload id until it has the transcript's handle. A replay re-joins it.
       const path = `/hosted/uploads/${encodeURIComponent(uploadId)}`;
       let state: HostedSubmission;
       try {
         state = await submission(
-          await request("/hosted/transcripts", { method: "POST", json: { upload_id: uploadId, speaker_labels: speakerLabels, multichannel }, signal }),
+          await request("/hosted/transcripts", { method: "POST", json: { upload_id: uploadId, speaker_labels: speakerLabels, multichannel, ...(sourceId ? { source_id: sourceId } : {}) }, signal }),
         );
       } catch (err) {
         if (!(err instanceof AssemblyAiError) || (err.kind !== "not-found" && err.kind !== "failed")) throw err;
@@ -485,24 +500,77 @@ export function assemblyAiSpeakerName(label: string): string {
   return `Speaker ${label}`;
 }
 
-/**
- * A finished transcript as the stored sentence shape: diarized utterances
- * become "Speaker A"/"Speaker B" turns; without speaker labels, AssemblyAI's
- * own sentence split (no speaker). Times are seconds.
- */
-export function assemblyAiSentences(t: AssemblyAiTranscript, sentences: AssemblyAiSentence[] | null): FirefliesSentence[] {
-  const rows =
-    t.utterances && t.utterances.length > 0
-      ? t.utterances.map((u) => ({ text: u.text, start: u.start, end: u.end, speaker: u.speaker ? assemblyAiSpeakerName(u.speaker) : null }))
-      : (sentences ?? []).map((s) => ({ text: s.text, start: s.start, end: s.end, speaker: null }));
+/** Prefer AssemblyAI sentence and word ranges while retaining speaker and channel identity. */
+export function assemblyAiSentences(t: AssemblyAiTranscript, sentences: AssemblyAiSentence[] | null,
+  options: { stereo?: boolean } = {}): FirefliesSentence[] {
+  const stereo = options.stereo ?? t.audio_channels === 2;
+  const utterances = t.utterances ?? [];
+  const bySpeaker = new Map<string, { rows: typeof utterances; maxEnd: number[] }>();
+  if (stereo && sentences?.length) {
+    for (const utterance of utterances) {
+      for (const key of ["*", ...(utterance.speaker == null ? [] : [utterance.speaker])]) {
+        const index = bySpeaker.get(key) ?? { rows: [], maxEnd: [] };
+        index.rows.push(utterance);
+        bySpeaker.set(key, index);
+      }
+    }
+    for (const index of bySpeaker.values()) {
+      index.rows.sort((a, b) => a.start - b.start);
+      for (const row of index.rows) index.maxEnd.push(Math.max(row.end, index.maxEnd.at(-1) ?? -Infinity));
+    }
+  }
+  const containingUtterance = (sentence: AssemblyAiSentence) => {
+    const index = bySpeaker.get(sentence.speaker == null ? "*" : sentence.speaker);
+    if (!index) return undefined;
+    let lo = 0; let hi = index.rows.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (index.maxEnd[mid]! >= sentence.end) hi = mid;
+      else lo = mid + 1;
+    }
+    const row = index.rows[lo];
+    return row && row.start <= sentence.start ? row : undefined;
+  };
+  const channelOf = (label: string | null | undefined): 0 | 1 | undefined => {
+    if (!stereo || !label) return undefined;
+    const match = /^([12])(?:[A-Z])?$/.exec(label);
+    return match ? (Number(match[1]) - 1) as 0 | 1 : undefined;
+  };
+  const rows: AssemblyAiSentence[] = sentences?.length ? sentences.map((s) => ({ ...s,
+    speaker: s.speaker ?? null,
+    channel: s.channel ?? (stereo ? containingUtterance(s)?.channel : undefined) ?? channelOf(s.speaker) }))
+    : utterances.map((u) => ({ text: u.text, start: u.start, end: u.end,
+      speaker: u.speaker, channel: u.channel ?? channelOf(u.speaker) }));
   const out: FirefliesSentence[] = rows
     .map((r) => ({ ...r, text: r.text.trim() }))
     .filter((r) => r.text.length > 0 && Number.isFinite(r.start) && Number.isFinite(r.end))
-    .map((r, index) => ({ index, speaker_name: r.speaker, text: r.text, start_time: r.start / 1000, end_time: r.end / 1000 }));
+    .flatMap((r) => {
+      const base = { start: r.start, end: r.end, text: r.text, speaker: r.speaker ?? null,
+        channel: r.channel, timing: "engine" as const };
+      const words = r.words;
+      if (words?.length && words[0]!.start <= r.start + 1_000 && words.at(-1)!.end >= r.end - 1_000
+        && r.end - r.start > 30_000) {
+        const pieces: typeof base[] = [];
+        for (const word of words) {
+          const last = pieces.at(-1);
+          if (last && word.end - last.start <= 30_000) { last.end = word.end; last.text += ` ${word.text}`; }
+          else pieces.push({ ...base, start: word.start, end: word.end, text: word.text });
+        }
+        return pieces.flatMap((piece) => splitLongTimedSegment(piece, 30_000));
+      }
+      return splitLongTimedSegment(base, 30_000);
+    })
+    .sort((a, b) => a.start - b.start || a.end - b.end)
+    .map((r, index) => ({ index, speaker_name: r.speaker ? assemblyAiSpeakerName(r.speaker) : null,
+      ...(r.speaker ? { speaker_id: r.speaker } : {}), text: r.text, start_time: r.start / 1000,
+      end_time: r.end / 1000, timing: r.timing,
+      ...(r.channel === 0 || r.channel === 1 ? { channel: r.channel } : {}) }));
   // Neither utterances nor sentences, but text: one sentence rather than silently dropping speech.
   const text = t.text?.trim() ?? "";
   if (out.length === 0 && text.length > 0) {
-    out.push({ index: 0, speaker_name: null, text, start_time: 0, end_time: t.audio_duration ?? 0 });
+    out.push(...splitLongTimedSegment({ start: 0, end: t.audio_duration ?? 0, text, timing: "coarse" as const }, 30)
+      .map((r, index) => ({ index, speaker_name: null, text: r.text, start_time: r.start,
+        end_time: r.end, timing: r.timing })));
   }
   return out;
 }

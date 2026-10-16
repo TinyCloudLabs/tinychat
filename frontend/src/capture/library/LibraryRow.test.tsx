@@ -1,6 +1,6 @@
 // The Library's row (P1-8): a voice note is titled by its own words, "Voice note" without any, and its line is
 // "7:16 PM · 0:14" inside a day (with "Today" outside one), so notes minutes apart tell apart; a note not yet in the
-// space says "On this phone" or "Saving…". The same on the phone's Soft rows and the plain list.
+// space says "On this browser" or "Saving…". The same on the phone's Soft rows and the plain list.
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
@@ -69,11 +69,11 @@ describe("a voice note's row", () => {
 });
 
 describe("a note not yet settled in the space", () => {
-  test("says where it is: On this phone, or Saving…, as a badge in the row's name too", () => {
-    expect(libraryRowBadge(voice({ onPhone: true }))).toBe("On this phone");
+  test("says where a local note is without a stale Saving badge", () => {
+    expect(libraryRowBadge(voice({ onPhone: true }))).toBe("On this browser");
     expect(libraryRowBadge(voice({ onPhone: true }), "on this Mac")).toBe("On this Mac");
     expect(libraryRowBadge(voice({ onPhone: true }), "in this browser")).toBe("In this browser");
-    expect(libraryRowBadge(voice({ saving: true }))).toBe("Saving…");
+    expect(libraryRowBadge(voice({ saving: true }))).toBeNull();
     expect(libraryRowBadge(voice())).toBeNull();
     expect(libraryRowBadge(meeting)).toBeNull();
   });
@@ -81,7 +81,7 @@ describe("a note not yet settled in the space", () => {
   test("shows track statuses on Soft rows and keeps the old badge in the plain list", () => {
     const onPhone = voice({ id: "on-phone:rec-1", onPhone: true, title: null });
     const active: NotePipeline = { steps: [
-      { key: "phone", label: "On this phone", state: "done" },
+      { key: "phone", label: "On this browser", state: "done" },
       { key: "space", label: "In your space", state: "waiting", caption: "Waiting to upload" },
       { key: "transcript", label: "Transcript", state: "upcoming" },
       { key: "notes", label: "Notes", state: "skipped" },
@@ -93,7 +93,7 @@ describe("a note not yet settled in the space", () => {
     expect(html).toContain("Audio: Waiting to upload");
     expect(html).not.toContain("row-badge");
     const done: NotePipeline = { steps: [
-      { key: "phone", label: "On this phone", state: "done" },
+      { key: "phone", label: "On this browser", state: "done" },
       { key: "space", label: "In your space", state: "done" },
       { key: "transcript", label: "Transcript", state: "skipped" },
       { key: "notes", label: "Notes", state: "skipped" },
