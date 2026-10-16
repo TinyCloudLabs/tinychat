@@ -1075,10 +1075,9 @@ describe("rate limits", () => {
 });
 
 describe("Phala deploy environment", () => {
-  const KEYS = ["ASSEMBLYAI_API_KEY", "ASSEMBLYAI_HOSTED_HANDLE_KEY"] as const;
   const repoRoot = resolve(import.meta.dir, "../../..");
 
-  test("the deploy workflow and compose pass hosted secrets and fresh-install authorization", () => {
+  test("production keeps the AssemblyAI API key available but leaves hosted mode off", () => {
     const workflow = loadYaml(readFileSync(resolve(repoRoot, ".github/workflows/deploy-backend-phala.yml"), "utf8")) as {
       jobs?: { deploy?: { steps?: { env?: Record<string, unknown>; run?: string }[] } };
     };
@@ -1088,16 +1087,20 @@ describe("Phala deploy environment", () => {
     };
     const env = compose.services?.["tinychat-backend"]?.environment ?? {};
     const example = readFileSync(resolve(repoRoot, "backend/.env.example"), "utf8");
-    for (const key of KEYS) {
-      expect(String(writer?.env?.[key])).toBe(`\${{ secrets.${key} }}`);
-      expect(writer?.run).toContain(`"${key}=$${key}"`);
-      expect(env[key]).toBe(`\${${key}:-}`);
-    }
-    const fresh = "ASSEMBLYAI_HOSTED_FRESH_INSTALL";
-    expect(String(writer?.env?.[fresh])).toBe(`\${{ vars.${fresh} }}`);
-    expect(writer?.run).toContain(`"${fresh}=$${fresh}"`);
-    expect(env[fresh]).toBe(`\${${fresh}:-}`);
-    for (const key of [...KEYS, "ASSEMBLYAI_HOSTED_DAILY_BYTES", "ASSEMBLYAI_HOSTED_SPOOL_DIR", fresh])
+    expect(String(writer?.env?.ASSEMBLYAI_API_KEY)).toBe("${{ secrets.ASSEMBLYAI_API_KEY }}");
+    expect(writer?.run).toContain('"ASSEMBLYAI_API_KEY=$ASSEMBLYAI_API_KEY"');
+    expect(writer?.env?.ASSEMBLYAI_HOSTED_HANDLE_KEY).toBeUndefined();
+    expect(writer?.run).not.toContain("ASSEMBLYAI_HOSTED_HANDLE_KEY=");
+    expect(env.ASSEMBLYAI_API_KEY).toBe("${ASSEMBLYAI_API_KEY:-}");
+    expect(env.ASSEMBLYAI_HOSTED_HANDLE_KEY).toBeUndefined();
+    expect(assemblyAiHostedConfigFromEnv({
+      ASSEMBLYAI_API_KEY: API_KEY,
+      ASSEMBLYAI_HOSTED_HANDLE_KEY:
+        writer?.env?.ASSEMBLYAI_HOSTED_HANDLE_KEY === undefined && env.ASSEMBLYAI_HOSTED_HANDLE_KEY === undefined ? undefined : HANDLE_KEY,
+      ASSEMBLYAI_HOSTED_SPOOL_DIR: "/persistent/assemblyai",
+    })).toEqual({ hosted: false, reason: "handle_key_unset" });
+    for (const key of ["ASSEMBLYAI_API_KEY", "ASSEMBLYAI_HOSTED_HANDLE_KEY", "ASSEMBLYAI_HOSTED_DAILY_BYTES",
+      "ASSEMBLYAI_HOSTED_SPOOL_DIR", "ASSEMBLYAI_HOSTED_FRESH_INSTALL"])
       expect(example).toMatch(new RegExp(`^${key}=$`, "m"));
   });
 });
