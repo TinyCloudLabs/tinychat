@@ -18,6 +18,7 @@ import { initSizeClass } from "./lib/sizeClass";
 import { initTheme } from "./lib/theme";
 import { registerDesktopVoiceNotes } from "./lib/voiceNotes/desktop/desktopVoiceNotes";
 import { installDebugLog } from "./lib/debugLog";
+import { createTinyCloudFetch } from "./lib/tinycloudHosts";
 
 // False on the web and in the desktop (Tauri) app; true only inside Exo mobile.
 const nativeShell = Capacitor.isNativePlatform();
@@ -72,6 +73,7 @@ void installEd25519Polyfill().catch((error: unknown) => {
   console.error(`[webcrypto] Ed25519 probe failed; WebCrypto left unchanged: ${error instanceof Error ? error.name : "unknown error"}`);
 }).then(async () => {
   await installDebugLog();
+  globalThis.fetch = createTinyCloudFetch(globalThis.fetch.bind(globalThis));
   createRoot(document.getElementById("root")!).render(
     <StrictMode>
       <RootErrorBoundary>

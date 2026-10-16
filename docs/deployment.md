@@ -50,7 +50,35 @@ In the Cloudflare dashboard → **Workers & Pages → Create → Pages → Conne
 - Environment variables (Production) — **required**, this is how Git builds get
   `VITE_*`: `VITE_OPENKEY_HOST=https://openkey.so`,
   `VITE_BACKEND_URL=https://api.tinycloud.chat`,
-  `VITE_TINYCLOUD_HOST=https://tee.node.tinycloud.xyz`
+  `VITE_TINYCLOUD_HOST=https://node.tinycloud.xyz`
+
+### TinyCloud client host rollout (TC-1272)
+
+Roll out in this order:
+
+1. Deploy the backend verifier's exact allowlist for both
+   `https://tee.node.tinycloud.xyz` and `https://node.tinycloud.xyz` before clients.
+2. Amos updates the Pages dashboard Production build variable to
+   `VITE_TINYCLOUD_HOST=https://node.tinycloud.xyz`. This dashboard value overrides
+   the checked-in `.env.production` value for Pages Git builds.
+3. Ship the client change with the next normal web release; implementation does
+   not include merging or deploying it. Desktop and mobile receive it in their
+   next `0.8.x` build.
+
+New hosted sessions default to `https://node.tinycloud.xyz`; existing sessions
+and grants retain their stored host. For new sessions only, an anonymous
+`GET /info` connectivity probe may select `https://tee.node.tinycloud.xyz` once
+after a transport failure. Custom configured hosts are unchanged. Mutations and
+uploads, including large bodies, are never automatically replayed on another
+host.
+Share links keep their encoded host. Policy-v3 `nodeAudience` and signed target
+origin (`target.origin`, or `targetOrigin` in older formats), and `share_email`
+trust metadata are not rewritten or derived from the new default.
+
+Worker protections were deployed separately by the operator. Worker-generated
+400/413/414 responses can be opaque to browsers and appear as network errors.
+This rollout does not establish node TEE enforcement or ingress parity, and
+makes no 504-fix claim. Backend outbound TinyCloud defaults are unchanged.
 
 ### Option B — Direct upload from your machine
 

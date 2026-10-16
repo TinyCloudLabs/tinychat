@@ -42,6 +42,21 @@ const expected = [
   { service: "kv", path: `${APP_ID}/connectors/tinycloud-transcriber/`, actions: ["tinycloud.kv/get", "tinycloud.kv/put"] },
 ];
 const verificationCache = new Map<string, { verified: VerifiedTranscriptWriter; until: number }>();
+const productionHostOrigins: Record<string, true> = {
+  "https://tee.node.tinycloud.xyz": true,
+  "https://node.tinycloud.xyz": true,
+};
+
+function hostOrigin(host: unknown): string | undefined {
+  if (typeof host !== "string") return undefined;
+  try {
+    const url = new URL(host);
+    // Only origin URLs are routing metadata; userinfo, paths, queries and fragments are not.
+    return url.href === `${url.origin}/` ? url.origin : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 export function verificationCacheKey(address: string, envelope: string, backendDid: string, configuredHost: string): string {
   return sha256(JSON.stringify({ address: address.toLowerCase(), envelopeSha256: sha256(envelope), backendDid, configuredHost, policyHash: backendDelegationPolicyHash(backendDid) }));
@@ -57,9 +72,12 @@ export async function verifyTranscriptWriterGrant(input: GrantInput, deps: Grant
   try { bundle = JSON.parse(input.serialized); } catch { return failure("unsupported_bundle_shape"); }
   if (!isRecord(bundle) || bundle.format === "tinycloud.delegation-bundle" || Array.isArray(bundle.delegations)) return failure("unsupported_bundle_shape");
   if (bundle.host !== undefined) {
-    try {
-      if (typeof bundle.host !== "string" || new URL(bundle.host).origin !== new URL(input.configuredHost).origin) return failure("untrusted_host");
-    } catch { return failure("untrusted_host"); }
+    const origin = hostOrigin(bundle.host);
+    const configuredOrigin = hostOrigin(input.configuredHost);
+    if (!origin || !configuredOrigin ||
+      (origin !== configuredOrigin && !(productionHostOrigins[origin] && productionHostOrigins[configuredOrigin]))) {
+      return failure("untrusted_host");
+    }
   }
   const header = bundle.delegationHeader;
   if (!isRecord(header) || typeof header.Authorization !== "string") return failure("unsupported_delegation_format");

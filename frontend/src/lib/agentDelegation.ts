@@ -22,6 +22,7 @@ import type { ConnectWalletResult } from "@tinyboilerplate/client";
 import { openkeyPasskeysSupported } from "./openkeyPasskeys.js";
 import { SESSION_EXPIRATION_MS } from "@tinyboilerplate/core";
 import { localValidationEnabled, prepareLocalSignIn } from "./localValidation";
+import { DEFAULT_TINYCLOUD_HOST } from "./tinycloudHosts";
 
 /** Production agent identity (Layer-1 contract §2). Local E2E may override it. */
 const DEFAULT_AGENT_DID = "did:pkh:eip155:1:0x83cD9777d4128012F878376aCbd6a092DcdDE01c";
@@ -88,7 +89,6 @@ export interface AgentSessionEnvelope {
   delegations: { memory: string; transcripts: string };
 }
 
-const DEFAULT_HOST = "https://tee.node.tinycloud.xyz";
 const CSRF_HEADER = "X-Requested-With";
 const CSRF_VALUE = "XMLHttpRequest";
 
@@ -196,7 +196,7 @@ export async function mintAgentDelegation(
 ): Promise<string> {
   const delegateDID = options.delegateDID ?? AGENT_DID;
   const path = options.path ?? AGENT_MEMORY_PATH;
-  const host = options.host ?? tcw.hosts?.[0] ?? DEFAULT_HOST;
+  const host = options.host ?? tcw.hosts?.[0] ?? DEFAULT_TINYCLOUD_HOST;
   const expiryMs = options.expiryMs ?? AGENT_DELEGATION_EXPIRY_MS;
 
   const space = tcw.space(AGENT_MEMORY_SPACE);
@@ -228,7 +228,7 @@ export async function mintTranscriptDelegation(
   options: Pick<MintAgentDelegationOptions, "delegateDID" | "host" | "expiryMs"> = {},
 ): Promise<string> {
   const delegateDID = options.delegateDID ?? AGENT_DID;
-  const host = options.host ?? tcw.hosts?.[0] ?? DEFAULT_HOST;
+  const host = options.host ?? tcw.hosts?.[0] ?? DEFAULT_TINYCLOUD_HOST;
   const result = await tcw.delegateTo(delegateDID, TRANSCRIPT_PERMISSIONS, {
     expiry: options.expiryMs ?? AGENT_DELEGATION_EXPIRY_MS,
   });
