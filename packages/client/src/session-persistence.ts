@@ -9,6 +9,8 @@ export interface PersistedTinyCloudSession {
   chainId: number;
   did: string;
   expiresAt: string;
+  /** Persisted transport hosts take precedence over a changed application default. */
+  tinycloudHosts?: string[];
 }
 
 /** localStorage key prefix used by BrowserSessionStorage. */
@@ -44,6 +46,10 @@ export function loadPersistedSession(address: string): PersistedTinyCloudSession
       chainId,
       did,
       expiresAt: data.expiresAt,
+      tinycloudHosts: Array.isArray(data.tinycloudHosts)
+        && data.tinycloudHosts.length > 0
+        && data.tinycloudHosts.every((host: unknown) => typeof host === "string" && host.length > 0)
+        ? data.tinycloudHosts : undefined,
     };
   } catch {
     return null;

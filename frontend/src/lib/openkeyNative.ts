@@ -24,6 +24,7 @@ import type {
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { authErrorMessage, UserFacingError } from "./authErrors";
 import { nativeRenewAt, renewalLeadMs, terminalRenewalError, nativeCode } from "./openkeyNativeRenewal";
+import { NATIVE_TINYCLOUD_HOST } from "./tinycloudHosts";
 
 // ── Gate ──────────────────────────────────────────────────────────────
 
@@ -251,9 +252,8 @@ export function normalizeLoginHint(value: string): string | null {
 
 export interface NativeSignInConfig {
   backendUrl: string;
-  /** The configured TinyCloud node the delegation must name (VITE_TINYCLOUD_HOST). */
+  /** Expected issuer response host, not a requested host. Restores retain the stored host. */
   tinycloudHost: string;
-  tinycloudHosts?: string[];
   env?: {
     VITE_OPENKEY_NATIVE_CLIENT_ID?: string;
     /** The same widget host App.tsx reads (OPENKEY_HOST); defaults to https://openkey.so. */
@@ -327,7 +327,10 @@ function nativeIssuer(openKeyHost: string): string {
   return `${deriveOAuthHost(openKeyHost)}/api/auth`;
 }
 
-let defaultOpenKeyNative: OpenKeyNative | null = null;
+let defaultOpenKeyNative: {
+  client: OpenKeyNative;
+  options: Parameters<NativeSignInDeps["createOpenKeyNative"]>[0];
+} | null = null;
 
 /** Exported for tests only: the exact options a native sign-in hands to OpenKeyNative. */
 export function nativeClientOptions(
@@ -350,7 +353,16 @@ function nativeClient(
   options: Parameters<NativeSignInDeps["createOpenKeyNative"]>[0],
   create: NativeSignInDeps["createOpenKeyNative"],
 ): OpenKeyNative {
-  return defaultOpenKeyNative ??= create(options);
+  const current = defaultOpenKeyNative;
+  if (
+    current?.options.clientId === options.clientId &&
+    current.options.redirectUri === options.redirectUri &&
+    current.options.issuer === options.issuer &&
+    current.options.tinycloudHost === options.tinycloudHost
+  ) return current.client;
+  const client = create(options);
+  defaultOpenKeyNative = { client, options };
+  return client;
 }
 
 /** iOS 15 WKWebView predates AbortSignal.timeout. */
@@ -476,9 +488,17 @@ export async function restoreNativeAtBoot(
   let openkey: OpenKeyNative | null = null;
   try {
     const d = deps ?? await defaultDeps();
-    openkey = nativeClient(nativeClientOptions(config.env ?? import.meta.env, config.tinycloudHost), d.createOpenKeyNative);
+    const options = nativeClientOptions(config.env ?? import.meta.env, config.tinycloudHost);
+    openkey = nativeClient(options, d.createOpenKeyNative);
     let session = await openkey.current();
     if (!session) return { kind: "none" };
+    // OpenKey's secure-store namespace is issuer/clientId, not TinyCloud host.
+    // Read the existing grant first, then bind renewal validation to its exact host.
+    const sessionConfig = session.delegation.tinycloudHost === config.tinycloudHost
+      ? config : { ...config, tinycloudHost: session.delegation.tinycloudHost };
+    if (sessionConfig !== config) {
+      openkey = nativeClient({ ...options, tinycloudHost: sessionConfig.tinycloudHost }, d.createOpenKeyNative);
+    }
     let renewed = false;
     let renewAt: number | undefined;
     const expiresAt = new Date(session.delegation.expiresAt).getTime();
@@ -503,7 +523,7 @@ export async function restoreNativeAtBoot(
         renewAt = Date.now() + (typeof retryAfterSeconds === "number" ? retryAfterSeconds * 1000 : 15_000);
       }
     }
-    const installed = await installNativeSession(openkey, session, config, d, undefined, !renewed, true);
+    const installed = await installNativeSession(openkey, session, sessionConfig, d, undefined, !renewed);
     let verified: NativeSignInResult["verified"] | undefined;
     if (renewed) {
       try {
@@ -558,10 +578,13 @@ export async function nativeRenewalServices(
   deps?: NativeSignInDeps,
 ) {
   const d = deps ?? await defaultDeps();
+  const current = await openkey.current();
+  const tinycloudHost = current?.delegation.tinycloudHost ?? config.tinycloudHost;
+  const sessionConfig = tinycloudHost === config.tinycloudHost ? config : { ...config, tinycloudHost };
   return {
     requestNonce: (address: string) => d.requestNonce(config.backendUrl, address),
     verifySession: (siwe: string, signature: string) => d.verifySession(config.backendUrl, siwe, signature),
-    install: (session: NativeSession, tcw: TinyCloudWeb) => installNativeSession(openkey, session, config, d, tcw).then(() => undefined),
+    install: (session: NativeSession, tcw: TinyCloudWeb) => installNativeSession(openkey, session, sessionConfig, d, tcw).then(() => undefined),
   };
 }
 
@@ -573,7 +596,6 @@ export async function installNativeSession(
   d: NativeSignInDeps,
   liveTcw?: TinyCloudWeb,
   alreadyStored = false,
-  restoringExisting = false,
 ): Promise<{ address: string; tcw: TinyCloudWeb }> {
   const { delegation, sessionKey } = session;
   const address = delegation.address;
@@ -586,7 +608,8 @@ export async function installNativeSession(
     !delegation.delegationHeader ||
     !delegation.delegationCid ||
     !delegation.spaceId ||
-    (!restoringExisting && delegation.tinycloudHost !== config.tinycloudHost)
+    !delegation.tinycloudHost ||
+    delegation.tinycloudHost !== config.tinycloudHost
   ) {
     throw new Error("OpenKey returned an incomplete delegation for a different TinyCloud node.");
   }
@@ -627,7 +650,7 @@ export async function installNativeSession(
     return { address, tcw: liveTcw };
   }
   const restored = await d.restoreSession(address, {
-    tinycloudHosts: [delegation.tinycloudHost, ...(config.tinycloudHosts ?? [config.tinycloudHost])].filter((host, index, hosts) => hosts.indexOf(host) === index),
+    tinycloudHosts: [delegation.tinycloudHost],
     autoCreateSpace: false,
     sessionStorage: storage,
     provider: createNativeReadOnlyProvider(address, chainId),
@@ -641,13 +664,17 @@ export async function installNativeSession(
 /** Sign the native OpenKey session out: revoke the delegation grant and drop the secure-store record. */
 export async function signOutNative(deps?: {
   createOpenKeyNative?: NativeSignInDeps["createOpenKeyNative"];
-  env?: NativeSignInConfig["env"] & { VITE_TINYCLOUD_HOST?: string };
+  env?: NativeSignInConfig["env"];
 }): Promise<void> {
   const env = deps?.env ?? import.meta.env;
   const create = deps?.createOpenKeyNative ?? (await defaultDeps()).createOpenKeyNative;
-  const openkey = nativeClient(
-    nativeClientOptions(env, env.VITE_TINYCLOUD_HOST ?? "https://tee.node.tinycloud.xyz"),
-    create,
-  );
+  const options = nativeClientOptions(env, NATIVE_TINYCLOUD_HOST);
+  // Revocation is namespace-bound and does not validate a TinyCloud response.
+  // Reuse the restored grant's client even when the build's default host changed.
+  const current = defaultOpenKeyNative;
+  const openkey = current?.options.clientId === options.clientId &&
+    current.options.redirectUri === options.redirectUri &&
+    current.options.issuer === options.issuer
+    ? current.client : nativeClient(options, create);
   await withNativeDeadline(openkey.signOut());
 }

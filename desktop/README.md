@@ -86,12 +86,15 @@ Whisper provider. The upstream server start/stop grants remain for the
 recorder's existing model lease; TC-927 will replace them with a native
 lifetime lease to close the same-host stale-port race.
 
-`EXO_IPC_SELFTEST=1 bun run dev:desktop` probes the real webview ACL in
-debug builds. macOS CI runs `cargo test --release --lib --locked`, launches a
-release-profile app with `ipc-selftest` against an isolated vault, and requires
-its `[EXO_IPC_SELFTEST] ALL PASSED` sentinel with no FAIL/TIMEOUT lines. CI
-also fails when generated permissions (including untracked files) differ from
-the committed tree. Ordinary release builds compile the self-test out.
+`VITE_EXO_IPC_SELFTEST=1 EXO_IPC_SELFTEST=1 bun run dev:desktop` probes the
+real webview ACL and widget-host policy in debug builds. macOS CI runs
+`cargo test --release --lib --locked`, bundles the `ipc-selftest` release into
+`Exo.app`, then launches that packaged executable against an isolated vault.
+It requires `[EXO_IPC_SELFTEST] ALL PASSED` with no FAIL/TIMEOUT lines, including
+Tauri widget mode and a node-host anonymous probe through an offline transport.
+The smoke opens no OAuth flow and sends no node data requests. CI also fails
+when generated permissions (including untracked files) differ from the committed
+tree. Ordinary builds omit the frontend flag and compile the self-test out.
 
 The vault lives under `~/Library/Application Support/xyz.tinycloud.exo` in
 both dev and release builds. Exo's vendored anarlog storage crate uses the

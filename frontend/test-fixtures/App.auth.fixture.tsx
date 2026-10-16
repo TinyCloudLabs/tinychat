@@ -23,6 +23,18 @@ const recorderProviderApi = await import("@/capture/recorder/RecorderProvider");
 const uploadResumerApi = await import("@/capture/upload/UploadResumer");
 const storageDialogApi = await import("../src/chat/StorageFullDialog");
 
+const originalFetch = globalThis.fetch;
+globalThis.fetch = (async (input, init) => {
+  const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, window.location.href);
+  if (["https://node.tinycloud.xyz", "https://tee.node.tinycloud.xyz"].includes(url.origin) && url.pathname === "/info") {
+    expect(init?.method).toBe("GET");
+    expect(init?.body).toBeUndefined();
+    return Response.json({ protocol: 1 });
+  }
+  if (url.hostname === "localhost" || url.hostname === "127.0.0.1") return new Response(null, { status: 404 });
+  throw new Error(`App auth fixture forbids external HTTP to ${url.origin}`);
+}) as typeof fetch;
+
 let nativeMode = false;
 let loginAddress = "0x00000000000000000000000000000000000000a1";
 let signInCalls = 0;
@@ -166,7 +178,7 @@ afterEach(async () => {
   restoreDom = undefined;
   __resetStorageStatusForTests();
 });
-afterAll(() => { mock.restore(); restoreImportDom(); });
+afterAll(() => { globalThis.fetch = originalFetch; mock.restore(); restoreImportDom(); });
 
 test("browser sign-in mounts the workspace; committed A sign-out clears storage UI before B becomes ready", async () => {
   await mount("web");

@@ -78,6 +78,10 @@ const SCRIPT: &str = r#"(async () => {
       results[label] = { ok: false, error: String(error), code: error?.code ?? null };
     }
   }
+  for (let n = 0; n < 300 && !window.__exoTinyCloudHostSelftest; n++) {
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  results.tinycloud_host_policy = window.__exoTinyCloudHostSelftest ?? { ok: false, error: "host policy did not become ready" };
   window.__exoIpcSelftest = results;
 })()"#;
 
@@ -150,6 +154,42 @@ fn assert_results(value: &serde_json::Value) -> bool {
         );
         all_pass &= passed;
     }
+    let host_policy = value.get("tinycloud_host_policy");
+    let host_passed = host_policy.is_some_and(|policy| {
+        let Some([host]) = policy
+            .get("hosts")
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::as_slice)
+        else {
+            return false;
+        };
+        let Some([probe]) = policy
+            .get("probes")
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::as_slice)
+        else {
+            return false;
+        };
+        policy.get("ok").and_then(serde_json::Value::as_bool) == Some(true)
+            && policy.get("platform").and_then(serde_json::Value::as_str) == Some("tauri")
+            && policy.get("flow").and_then(serde_json::Value::as_str) == Some("widget")
+            && host.as_str() == Some("https://node.tinycloud.xyz")
+            && probe.get("url").and_then(serde_json::Value::as_str)
+                == Some("https://node.tinycloud.xyz/info")
+            && probe.get("method").and_then(serde_json::Value::as_str) == Some("GET")
+            && probe.get("credentials").and_then(serde_json::Value::as_str) == Some("omit")
+            && probe.get("hasBody").and_then(serde_json::Value::as_bool) == Some(false)
+            && probe
+                .get("hasAuthorization")
+                .and_then(serde_json::Value::as_bool)
+                == Some(false)
+    });
+    eprintln!(
+        "[EXO_IPC_SELFTEST] {} tinycloud_host_policy: {:?}",
+        if host_passed { "PASS" } else { "FAIL" },
+        host_policy
+    );
+    all_pass &= host_passed;
     all_pass
 }
 
