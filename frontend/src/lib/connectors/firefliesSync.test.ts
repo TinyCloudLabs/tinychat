@@ -14,6 +14,7 @@ import type {
   NormalizedMeeting,
   StoreResult,
   UpdateSyncStateInput,
+  UpsertMeetingOutcome,
 } from "./connectorStore";
 import {
   initialDisconnectProgress,
@@ -47,8 +48,8 @@ class FakeStore implements SyncStore {
   updateCalls = 0;
   countThrows = false;
   rejectAttempt = false;
-  /** Optional hook so a test can throw at insertMeeting boundary (per-item error). */
-  insertHook: ((m: NormalizedMeeting) => void) | null = null;
+  /** Optional hook so a test can throw at the shared writer boundary. */
+  writeHook: ((m: NormalizedMeeting) => void) | null = null;
 
   async ensureSchema(_: TinyCloudWeb): Promise<StoreResult<void>> {
     this.schemaEnsured++;
@@ -69,35 +70,24 @@ class FakeStore implements SyncStore {
     ));
   }
 
-  async insertMeeting(_: TinyCloudWeb, meeting: NormalizedMeeting): Promise<StoreResult<boolean>> {
+  async upsertMeeting(
+    _tcw: TinyCloudWeb, meeting: NormalizedMeeting, sentences: FirefliesSentence[],
+  ): Promise<StoreResult<UpsertMeetingOutcome>> {
     try {
-      this.insertHook?.(meeting);
+      this.writeHook?.(meeting);
     } catch (err) {
-      return {
-        ok: false,
-        error: { code: "INSERT", message: err instanceof Error ? err.message : String(err) },
-      };
+      return { ok: false, error: { code: "INSERT", message: err instanceof Error ? err.message : String(err) } };
     }
     if (this.rejectInsertFor === meeting.sourceId) {
       return { ok: false, error: { code: "STORAGE_QUOTA_EXCEEDED", message: "Your TinyCloud storage is full, so this change was not saved." } };
     }
-    const dup = this.meetings.some((m) => m.source === meeting.source && m.sourceId === meeting.sourceId);
-    if (dup) return ok(false);
-    this.meetings.push(meeting);
-    return ok(true);
-  }
-
-  async putTranscriptBody(
-    _: TinyCloudWeb,
-    source: string,
-    sourceId: string,
-    sentences: FirefliesSentence[],
-  ): Promise<StoreResult<void>> {
-    if (this.rejectBodyFor === sourceId) {
+    const existing = this.meetings.find((item) => item.source === meeting.source && item.sourceId === meeting.sourceId);
+    if (!existing) this.meetings.push(meeting);
+    if (this.rejectBodyFor === meeting.sourceId) {
       return { ok: false, error: { code: "STORAGE_LIMIT_REACHED", message: "Write exceeds remaining storage" } };
     }
-    this.bodies.set(`${source}/${sourceId}`, sentences);
-    return ok(undefined);
+    this.bodies.set(`${meeting.source}/${meeting.sourceId}`, sentences);
+    return ok({ id: existing?.id ?? meeting.id, inserted: !existing, createdAt: "2026-01-01T00:00:00Z" });
   }
 
   async updateSyncState(_: TinyCloudWeb, input: UpdateSyncStateInput): Promise<StoreResult<void>> {
@@ -490,7 +480,7 @@ describe("Fireflies row and transcript writes form one item unit", () => {
   test("generation invalidation after row insert still finishes that row's body put", async () => {
     const store = new FakeStore();
     let current = true;
-    store.insertHook = () => { current = false; };
+    store.writeHook = () => { current = false; };
     const { client } = makeRealClient(["meeting"]);
 
     await syncFireflies({
@@ -634,9 +624,9 @@ describe("syncFireflies — per-item error skip", () => {
     expect(store.state?.preserveLastSyncedAt).toBe(true);
   });
 
-  test("insertMeeting throw is recorded and the loop continues", async () => {
+  test("shared writer error is recorded and the loop continues", async () => {
     const store = new FakeStore();
-    store.insertHook = (m) => {
+    store.writeHook = (m) => {
       if (m.sourceId === "b") throw new Error("sql exploded");
     };
     const { client } = makeClient({
@@ -809,14 +799,10 @@ describe("Fireflies engine single-flight and attempt metadata", () => {
     const listing = deferred();
     const listStarted = deferred();
     const store = new FakeStore();
-    store.insertMeeting = async (_tcw, meeting) => {
-      const existed = store.meetings.some(
-        (row) => row.source === meeting.source && row.sourceId === meeting.sourceId,
-      );
+    const write = store.upsertMeeting.bind(store);
+    store.upsertMeeting = async (tcw, meeting, sentences) => {
       await Promise.resolve();
-      if (existed) return ok(false);
-      store.meetings.push(meeting);
-      return ok(true);
+      return write(tcw, meeting, sentences);
     };
     const { client, listCalls } = makeRealClient(["same-meeting"], {
       onList: () => { listStarted.resolve(); return listing.promise; },

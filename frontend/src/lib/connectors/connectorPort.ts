@@ -1,6 +1,6 @@
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { CONNECTORS_SQL_DB_NAME } from "@tinyboilerplate/core";
-import type { ConnectorStorePort, PortResult } from "@tinyboilerplate/core";
+import type { ConnectorMeetingPort, PortResult } from "@tinyboilerplate/core";
 import { storageScopeFor, trackStorageWrites } from "../storageStatus";
 
 type SqlParam = string | number | Uint8Array | null;
@@ -9,8 +9,8 @@ function failure(error: { code?: string; message?: string }): PortResult<never> 
   return { ok: false, code: error.code ?? "STORE_ERROR", message: error.message ?? "Storage unavailable" };
 }
 
-/** Browser adapter for the shared, create-only transcript writer. */
-export function webConnectorPort(tcw: TinyCloudWeb): ConnectorStorePort {
+/** Browser adapter for the shared, conditional transcript writer. */
+export function webConnectorPort(tcw: TinyCloudWeb): ConnectorMeetingPort {
   const db = trackStorageWrites(tcw.sql.db(CONNECTORS_SQL_DB_NAME), storageScopeFor(tcw));
   return {
     async query(sql, params) {
@@ -27,10 +27,28 @@ export function webConnectorPort(tcw: TinyCloudWeb): ConnectorStorePort {
       if (result.error.code === "KV_NOT_FOUND") return { ok: true, data: "missing" };
       return failure(result.error);
     },
+    async kvRead(key) {
+      const result = await tcw.kv.get(key);
+      if (result.ok) {
+        const value = result.data.data;
+        return { ok: true, data: {
+          body: typeof value === "string" ? value : JSON.stringify(value),
+          etag: result.data.headers?.etag ?? null,
+        } };
+      }
+      if (result.error.code === "KV_NOT_FOUND") return { ok: true, data: null };
+      return failure(result.error);
+    },
     async kvPutIfAbsent(key, body) {
       const result = await tcw.kv.put(key, body, { ifNoneMatch: "*" });
       if (result.ok) return { ok: true, data: "written" };
       if (result.error.code === "KV_PRECONDITION_FAILED") return { ok: true, data: "exists" };
+      return failure(result.error);
+    },
+    async kvReplaceIfMatch(key, body, etag) {
+      const result = await tcw.kv.put(key, body, { ifMatch: etag });
+      if (result.ok) return { ok: true, data: "written" };
+      if (result.error.code === "KV_PRECONDITION_FAILED") return { ok: true, data: "conflict" };
       return failure(result.error);
     },
   };
