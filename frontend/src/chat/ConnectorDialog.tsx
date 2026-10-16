@@ -688,6 +688,7 @@ type OAuthConnectPhase =
   | "exchange"
   | "save-token"
   | "initial-sync"
+  | "finishing"
   | "done"
   | "error";
 
@@ -765,6 +766,7 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
   const [error, setError] = useState<OAuthErrorState | null>(null);
   const [progress, setProgress] = useState<GmeetSyncProgress | null>(null);
   const [summary, setSummary] = useState<GmeetSyncSummary | null>(null);
+  const [canRetrySync, setCanRetrySync] = useState(false);
   const [autoTranscription, setAutoTranscription] = useState<AutoTranscriptionState>({
     status: "idle",
   });
@@ -813,6 +815,7 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
     setError(null);
     setProgress(null);
     setSummary(null);
+    setCanRetrySync(false);
     setAutoTranscription({ status: "idle" });
     setCustodyConsent(false);
     setMeetingCode("");
@@ -833,12 +836,15 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
 
   // An unmount mid-attempt must not leave native listeners behind.
   useEffect(() => () => {
+    const sync = abortRef.current;
+    abortRef.current = null;
+    sync?.abort();
     cancelNativeAttempt();
     if (appPlatform() === "tauri") cancelDesktopGoogleOAuth();
   }, [cancelNativeAttempt]);
 
   const busy =
-    phase === "exchange" || phase === "save-token" || phase === "initial-sync";
+    phase === "exchange" || phase === "save-token" || phase === "initial-sync" || phase === "finishing";
   // Inside the Exo app: the system browser, or (while this build keeps it off) an
   // explanation in place of "Continue with Google". Never a popup there. Native
   // OpenKey sessions have no vault to hold the refresh token, so the surface is
@@ -869,6 +875,64 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
     setError(next);
     setPhase("error");
   }, []);
+
+  const runInitialSync = useCallback(async (accessToken: string, refreshToken: string) => {
+    setPhase("initial-sync");
+    setError(null);
+    setProgress(null);
+    setSummary(null);
+    const ac = new AbortController();
+    abortRef.current = ac;
+    let notified = false;
+    try {
+      const client = new GmeetClient({
+        accessToken,
+        refreshAccessToken: () => mintGmeetAccessToken({
+          backendUrl, sessionStore, refreshToken, signal: ac.signal,
+        }),
+        signal: ac.signal,
+      });
+      const res = await syncGoogleMeet({
+        client, store: GMEET_STORE, tcw, signal: ac.signal,
+        onProgress: (next) => {
+          if (abortRef.current !== ac || ac.signal.aborted) return;
+          setProgress(next);
+          if (next.type === "status" && next.message === "finishing") setPhase("finishing");
+          // Completion refresh runs inside the engine's finishing deadline.
+          // A throwing/rejected consumer is an error, not a stranded dialog.
+          if (!notified && (next.type === "complete" || next.type === "error")) {
+            notified = true;
+            return onConnected();
+          }
+        },
+      });
+      if (abortRef.current !== ac) return;
+      if (!res.ok) {
+        failWith(fromGmeetSyncError(res.error));
+        return;
+      }
+      if (res.data.aborted || ac.signal.aborted) {
+        failWith({ kind: "network", message: "Sync was stopped. Saved meetings are kept. Retry to finish syncing." });
+        return;
+      }
+      setSummary(res.data);
+      setPhase("done");
+    } catch {
+      if (abortRef.current === ac) {
+        failWith({ kind: "unknown", message: "Google Meet sync could not finish. Saved meetings are kept. Retry to finish syncing." });
+      }
+    } finally {
+      if (abortRef.current === ac) abortRef.current = null;
+      ac.abort();
+    }
+  }, [backendUrl, failWith, onConnected, sessionStore, tcw]);
+
+  const handleRetrySync = useCallback(() => {
+    const accessToken = accessTokenRef.current;
+    const refreshToken = refreshTokenRef.current;
+    if (!canRetrySync || accessToken === null || refreshToken === null || abortRef.current !== null) return;
+    void runInitialSync(accessToken, refreshToken);
+  }, [canRetrySync, runInitialSync]);
 
   /** save-token → initial-sync. Reached only with both tokens in hand. */
   const saveAndSync = useCallback(
@@ -911,41 +975,10 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
         } catch { failWith({ kind: "network", message: "" }); return; }
       }
 
-      setPhase("initial-sync");
-      setProgress(null);
-      const ac = new AbortController();
-      abortRef.current = ac;
-      const client = new GmeetClient({
-        accessToken,
-        // One 401 re-mints through the authenticated proxy — the refresh token
-        // never leaves this scope, and the new access token stays in the client.
-        refreshAccessToken: () =>
-          mintGmeetAccessToken({
-            backendUrl,
-            sessionStore,
-            refreshToken: storedRefreshToken,
-            signal: ac.signal,
-          }),
-        signal: ac.signal,
-      });
-      const res = await syncGoogleMeet({
-        client,
-        store: GMEET_STORE,
-        tcw,
-        onProgress: setProgress,
-        signal: ac.signal,
-      });
-      abortRef.current = null;
-      // The engine wrote the connector row either way — refresh the card.
-      onConnected();
-      if (!res.ok) {
-        failWith(fromGmeetSyncError(res.error));
-        return;
-      }
-      setSummary(res.data);
-      setPhase("done");
+      setCanRetrySync(true);
+      await runInitialSync(accessToken, storedRefreshToken);
     },
-    [autojoin, backendUrl, descriptor, failWith, onConnected, sessionStore, tcw],
+    [autojoin, backendUrl, descriptor, failWith, onConnected, runInitialSync, sessionStore, tcw],
   );
 
   /**
@@ -1372,7 +1405,7 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
         {phase === "save-token" && (
           <OAuthStepPanel label="Saving your Google connection to encrypted secrets…" />
         )}
-        {phase === "initial-sync" && <GmeetSyncingPanel progress={progress} />}
+        {(phase === "initial-sync" || phase === "finishing") && <GmeetSyncingPanel progress={progress} finishing={phase === "finishing"} />}
         {phase === "done" && summary && (
           <GmeetDonePanel
             summary={summary}
@@ -1383,7 +1416,7 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
             onDecline={() => setAutoTranscription({ status: "declined" })}
           />
         )}
-        {phase === "error" && error && <OAuthFailedPanel error={error} />}
+        {phase === "error" && error && <OAuthFailedPanel error={error} canRetrySync={canRetrySync} />}
 
         <OAuthConnectFooter
           phase={phase}
@@ -1394,6 +1427,7 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
           onCancelAuthorize={handleCancelAuthorize}
           onClose={handleClose}
           onStopSync={handleStopSync}
+          onRetrySync={canRetrySync ? handleRetrySync : undefined}
         />
       </DialogContent>
     </Dialog>
@@ -1469,13 +1503,14 @@ const OAuthStepPanel: FC<{ label: string }> = ({ label }) => (
   </div>
 );
 
-const GmeetSyncingPanel: FC<{ progress: GmeetSyncProgress | null }> = ({
-  progress,
+const GmeetSyncingPanel: FC<{ progress: GmeetSyncProgress | null; finishing?: boolean }> = ({
+  progress, finishing = false,
 }) => {
   const total = progress?.total ?? null;
   const current = progress?.current ?? 0;
-  const label =
-    progress === null || progress.type === "status"
+  const label = finishing
+    ? "Finishing…"
+    : progress === null || progress.type === "status"
       ? "Looking for Google Meet recordings…"
       : total !== null && total > 0
         ? `Checking ${current}/${total} meetings…`
@@ -1489,18 +1524,23 @@ const GmeetSyncingPanel: FC<{ progress: GmeetSyncProgress | null }> = ({
         <Loader2Icon className="size-4 animate-spin" aria-hidden />
         {label}
       </p>
-      {pct !== null && (
+      {finishing && (
+        <p className="text-xs text-muted-foreground" role="status">
+          {current}/{total ?? current} meetings checked. Reconciling Notes and saving sync state…
+        </p>
+      )}
+      {(finishing || pct !== null) && (
         <div
           role="progressbar"
-          aria-valuemin={0}
-          aria-valuemax={total ?? 0}
-          aria-valuenow={current}
-          aria-label="Initial sync progress"
+          aria-valuemin={finishing ? undefined : 0}
+          aria-valuemax={finishing ? undefined : total ?? 0}
+          aria-valuenow={finishing ? undefined : current}
+          aria-label={finishing ? "Finishing Google Meet sync" : "Initial sync progress"}
           className="h-2 w-full overflow-hidden rounded-full bg-muted"
         >
           <div
-            className="h-full bg-primary transition-[width] duration-200"
-            style={{ width: `${pct}%` }}
+            className={`h-full bg-primary transition-[width] duration-200${finishing ? " animate-pulse" : ""}`}
+            style={{ width: finishing ? "33%" : `${pct}%` }}
           />
         </div>
       )}
@@ -1623,14 +1663,18 @@ const GmeetDonePanel: FC<{
   );
 };
 
-const OAuthFailedPanel: FC<{ error: OAuthErrorState }> = ({ error }) => (
+const OAuthFailedPanel: FC<{ error: OAuthErrorState; canRetrySync: boolean }> = ({ error, canRetrySync }) => (
   <div className="flex flex-col gap-2 py-2 text-sm">
-    <p className="flex items-start gap-2 text-destructive">
+    <p role="alert" className="flex items-start gap-2 text-destructive">
       <AlertTriangleIcon className="mt-0.5 size-4 shrink-0" aria-hidden />
-      <span>{formatOAuthError(error)}</span>
+      <span>{canRetrySync && error.kind === "network"
+        ? `Sync could not finish. ${error.message}`
+        : formatOAuthError(error)}</span>
     </p>
     <p className="text-xs text-muted-foreground">
-      You can close this and try again — nothing was left half-connected.
+      {canRetrySync
+        ? "Your Google connection and already-saved meetings are kept. Retry to finish syncing without reconnecting."
+        : "You can close this and try connecting again."}
     </p>
   </div>
 );
@@ -1645,7 +1689,8 @@ const OAuthConnectFooter: FC<{
   onCancelAuthorize: () => void;
   onClose: () => void;
   onStopSync: () => void;
-}> = ({ phase, canAuthorize, authorizeDisabled, onAuthorize, onSameTabAuthorize, onCancelAuthorize, onClose, onStopSync }) => (
+  onRetrySync?: () => void;
+}> = ({ phase, canAuthorize, authorizeDisabled, onAuthorize, onSameTabAuthorize, onCancelAuthorize, onClose, onStopSync, onRetrySync }) => (
   <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
     {phase === "authorize" && !canAuthorize && (
       <Button size="sm" onClick={onClose}>
@@ -1675,10 +1720,13 @@ const OAuthConnectFooter: FC<{
         Working…
       </Button>
     )}
-    {phase === "initial-sync" && (
+    {(phase === "initial-sync" || phase === "finishing") && (
       <Button variant="outline" size="sm" onClick={onStopSync}>
         Stop sync
       </Button>
+    )}
+    {phase === "error" && onRetrySync && (
+      <Button size="sm" onClick={onRetrySync}>Retry</Button>
     )}
     {(phase === "done" || phase === "error") && (
       <Button size="sm" onClick={onClose}>

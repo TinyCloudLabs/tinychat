@@ -1,9 +1,9 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, test, vi } from "bun:test";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import type { FirefliesTranscript } from "./firefliesClient";
 import type { GmeetConferenceRecord, GmeetParticipant, GmeetResult, GmeetTranscript, GmeetTranscriptEntry } from "./gmeetClient";
-import { _resetGmeetSyncSingleFlightForTests, syncGoogleMeet, type GmeetSyncClient, type GmeetSyncStore } from "./gmeetSync";
+import { _resetGmeetSyncSingleFlightForTests, isGmeetSyncInFlight, syncGoogleMeet, type GmeetSyncClient, type GmeetSyncProgress, type GmeetSyncResult, type GmeetSyncStore } from "./gmeetSync";
 import {
   CONNECTORS_KV_PREFIX,
   CONNECTORS_SQL_DB_NAME,
@@ -1285,6 +1285,229 @@ describe("connectorStore Drive Notes lifecycle", () => {
     expect(f.kv.entries.has(transcriptKvKey(source, "notes-1"))).toBe(false);
     expect(f.kv.entries.get(transcriptKvKey(source, "conference-later"))).toContain("Meet transcript survives");
     expect((await getDriveCursor(f.tcw, source)).data).toBe("cursor-2");
+  });
+
+  describe("finishing failure Retry on the same real store", () => {
+    const source = "google-meet";
+    const watermark = "2026-08-16T12:00:00.000Z";
+    const firstRunAt = "2026-08-17T12:00:00.000Z";
+    const retryAt = "2026-08-17T12:05:00.000Z";
+    const identities = (f: Fake) => [...f.sql.meetings.values()]
+      .map(({ id, source, source_id, created_at }) => ({ id, source, source_id, created_at }))
+      .sort((a, b) => a.source_id.localeCompare(b.source_id));
+
+    async function setupRetry() {
+      const f = makeFake();
+      const existing = conferenceFixture("conference-1", "2026-08-17T09:00:00.000Z", ["Meet transcript survives"]);
+      const added = conferenceFixture("conference-2", "2026-08-17T11:00:00.000Z", ["New Meet transcript survives"]);
+      added.record.endTime = "2026-08-17T11:30:00.000Z";
+      expect((await insertMeeting(f.tcw, {
+        id: "saved-conference-row", source, sourceId: "conference-1", title: "Meet with Alice — Aug 17",
+        startedAt: existing.record.startTime, durationSecs: 1800, organizerEmail: null, participants: [],
+        summaryOverview: "Saved Gemini summary", summaryActionItems: "Saved Gemini action",
+        keywords: null, meetingType: null,
+        metadata: {
+          docs_export_uris: ["https://docs.google.com/document/d/notes-1/edit"],
+          drive_file_id: "notes-1", notes_kind: "gemini", notes_association: "conference",
+          notes_owned_fields: ["summary_overview", "summary_action_items"],
+        },
+      })).ok).toBe(true);
+      expect((await putTranscriptBody(f.tcw, source, "conference-1", [
+        { index: 0, speaker_name: "Alice", text: "Meet transcript survives", start_time: 0, end_time: 0 },
+      ])).ok).toBe(true);
+      expect((await putDriveCursor(f.tcw, source, "cursor-0")).ok).toBe(true);
+      expect((await updateSyncState(f.tcw, {
+        connectorId: source, status: "connected", lastSyncedAt: watermark,
+        lastSyncStatus: "ok", lastSyncError: null, itemCount: 1,
+      })).ok).toBe(true);
+      const client: GmeetSyncClient = {
+        ...driveChangeClient("notes-1", validNotesDocument(), "cursor-1"),
+        async listConferenceRecords() { return { ok: true, data: [added.record, existing.record] }; },
+        async listParticipants(name) { return { ok: true, data: name === existing.record.name ? existing.participants : added.participants }; },
+        async listTranscripts(name) { return { ok: true, data: name === existing.record.name ? existing.transcripts : added.transcripts }; },
+        async listTranscriptEntries(name) { return { ok: true, data: existing.entries[name] ?? added.entries[name] ?? [] }; },
+        async listDriveChangesPage(cursor) {
+          return { ok: true, data: {
+            changes: cursor === "cursor-0"
+              ? [{ fileId: "notes-1", file: { id: "notes-1", name: "Notes by Gemini — updated", mimeType: "application/vnd.google-apps.document" } }]
+              : [],
+            nextPageToken: null,
+            newStartPageToken: "cursor-1",
+          } };
+        },
+      };
+      return { f, client, store: realGmeetStore(), savedIdentity: identities(f)[0] };
+    }
+
+    test.each([
+      ["count", "result"], ["count", "rejection"],
+      ["state", "result"], ["state", "rejection"],
+      ["notes-cursor-read", "result"], ["notes-cursor-read", "rejection"],
+      ["notes-cursor-write", "result"], ["notes-cursor-write", "rejection"],
+    ] as const)("%s %s preserves saved data and permits a complete Retry", async (phase, failure) => {
+      const { f, client, store, savedIdentity } = await setupRetry();
+      const message = `Synthetic ${phase} finishing failure`;
+      let pending = true;
+      const fault = () => {
+        pending = false;
+        if (failure === "rejection") throw new Error(message);
+        return { ok: false as const, error: { code: "STORAGE_ERROR", message } };
+      };
+      const query = f.sql.query.bind(f.sql);
+      const execute = f.sql.execute.bind(f.sql);
+      const get = f.kv.get.bind(f.kv);
+      const put = f.kv.put.bind(f.kv);
+      f.sql.query = async (sql, params) => pending && phase === "count" && /^SELECT COUNT\(\*\)/i.test(sql.trim())
+        ? fault() : query(sql, params);
+      f.sql.execute = async (sql, params) => pending && phase === "state" && /^INSERT INTO connector_state/i.test(sql.trim())
+        ? fault() : execute(sql, params);
+      f.kv.get = async (key) => pending && phase === "notes-cursor-read" && key === driveCursorKvKey(source)
+        ? fault() : get(key);
+      f.kv.put = async (key, value) => pending && phase === "notes-cursor-write" && key === driveCursorKvKey(source)
+        ? fault() : put(key, value);
+      const events: GmeetSyncProgress[] = [];
+
+      try {
+        const first = await syncGoogleMeet({
+          client, store, tcw: f.tcw, now: () => Date.parse(firstRunAt),
+          onProgress: (event) => events.push(event),
+        });
+        expect(first.ok).toBe(false);
+        if (!first.ok) expect(first.error.message).toContain(message);
+        expect(events.filter((event) => event.type === "error" || event.type === "complete").map((event) => event.type)).toEqual(["error"]);
+        expect(events).toContainEqual(expect.objectContaining({ type: "status", message: "finishing", current: 2, total: 2 }));
+        expect(isGmeetSyncInFlight()).toBe(false);
+        expect(identities(f)).toHaveLength(2);
+        expect(identities(f)[0]).toEqual(savedIdentity);
+        const afterFailure = identities(f);
+        const transcript = f.kv.entries.get(transcriptKvKey(source, "conference-1"));
+        expect(transcript).toContain("Meet transcript survives");
+        const newTranscript = f.kv.entries.get(transcriptKvKey(source, "conference-2"));
+        expect(newTranscript).toContain("New Meet transcript survives");
+        expect(f.sql.meetings.get("saved-conference-row")?.summary_overview)
+          .toBe(phase === "notes-cursor-read" ? "Saved Gemini summary" : "The pilot is approved.");
+        expect(f.sql.meetings.get("saved-conference-row")?.summary_action_items)
+          .toBe(phase === "notes-cursor-read" ? "Saved Gemini action" : "Publish the checklist.");
+        const failedConnection = await getConnection(f.tcw, source);
+        expect(failedConnection.ok && failedConnection.data?.lastSyncedAt).toBe(watermark);
+        // Completed Notes reconciliation need not roll back when final count/state fails.
+        const failedCursor = await getDriveCursor(f.tcw, source);
+        expect(failedCursor.ok && failedCursor.data)
+          .toBe(phase === "count" || phase === "state" ? "cursor-1" : "cursor-0");
+
+        const retryEvents: GmeetSyncProgress[] = [];
+        const retry = await syncGoogleMeet({
+          client, store, tcw: f.tcw, now: () => Date.parse(retryAt),
+          onProgress: (event) => retryEvents.push(event),
+        });
+        expect(retry.ok).toBe(true);
+        expect(retryEvents.filter((event) => event.type === "error" || event.type === "complete").map((event) => event.type)).toEqual(["complete"]);
+        expect(isGmeetSyncInFlight()).toBe(false);
+        expect(identities(f)).toEqual(afterFailure);
+        expect(identities(f).map(({ source, source_id }) => [source, source_id]))
+          .toEqual([[source, "conference-1"], [source, "conference-2"]]);
+        expect(f.kv.entries.get(transcriptKvKey(source, "conference-1"))).toBe(transcript);
+        expect(f.kv.entries.get(transcriptKvKey(source, "conference-2"))).toBe(newTranscript);
+        expect(f.sql.meetings.get("saved-conference-row")?.summary_overview).toBe("The pilot is approved.");
+        expect(f.sql.meetings.get("saved-conference-row")?.summary_action_items).toBe("Publish the checklist.");
+        const count = await countMeetings(f.tcw, source);
+        expect(count.ok && count.data).toBe(2);
+        const cursor = await getDriveCursor(f.tcw, source);
+        expect(cursor.ok && cursor.data).toBe("cursor-1");
+        const connection = await getConnection(f.tcw, source);
+        expect(connection.ok && connection.data).toMatchObject({
+          lastSyncedAt: retryAt, lastSyncStatus: "ok", lastSyncError: null, itemCount: 2,
+        });
+      } finally {
+        _resetGmeetSyncSingleFlightForTests();
+      }
+    });
+
+    test("a timed-out Notes store await cannot advance the cursor or emit late success before Retry", async () => {
+      const { f, client, store, savedIdentity } = await setupRetry();
+      // The real store/writer still run; transport fake operations need no timer while the deadline clock is controlled.
+      f.tracker.run = async (_label, operation) => operation();
+      let release!: () => void;
+      let entered!: () => void;
+      let resumed!: () => void;
+      const held = new Promise<void>((resolve) => { release = resolve; });
+      const attachmentEntered = new Promise<void>((resolve) => { entered = resolve; });
+      const attachmentResumed = new Promise<void>((resolve) => { resumed = resolve; });
+      const execute = f.sql.execute.bind(f.sql);
+      let holdOnce = true;
+      f.sql.execute = async (sql, params) => {
+        if (holdOnce && /^UPDATE connector_meeting SET summary_overview = \?/i.test(sql.trim())) {
+          holdOnce = false;
+          entered();
+          await held;
+          const result = await execute(sql, params);
+          resumed();
+          return result;
+        }
+        return execute(sql, params);
+      };
+      const events: GmeetSyncProgress[] = [];
+      let result: GmeetSyncResult | undefined;
+      let rejection: unknown;
+      let run: Promise<GmeetSyncResult> | undefined;
+      const flush = async () => { for (let i = 0; i < 100; i++) await Promise.resolve(); };
+      vi.useFakeTimers();
+      try {
+        run = syncGoogleMeet({
+          client, store, tcw: f.tcw, now: () => Date.parse(firstRunAt),
+          onProgress: (event) => events.push(event),
+        });
+        void run.then((value) => { result = value; }, (error) => { rejection = error; });
+        await attachmentEntered;
+        expect(events).toContainEqual(expect.objectContaining({ type: "status", message: "finishing", current: 2, total: 2 }));
+        vi.advanceTimersByTime(120_001);
+        await flush();
+        expect(rejection).toBeUndefined();
+        expect(result?.ok).toBe(false);
+        expect(events.filter((event) => event.type === "error" || event.type === "complete").map((event) => event.type)).toEqual(["error"]);
+        expect(isGmeetSyncInFlight()).toBe(false);
+        expect(identities(f)[0]).toEqual(savedIdentity);
+        const savedRows = identities(f);
+        expect(savedRows).toHaveLength(2);
+        const timedOutCursor = await getDriveCursor(f.tcw, source);
+        expect(timedOutCursor.ok && timedOutCursor.data).toBe("cursor-0");
+        const timedOutConnection = await getConnection(f.tcw, source);
+        expect(timedOutConnection.ok && timedOutConnection.data?.lastSyncedAt).toBe(watermark);
+        const eventCount = events.length;
+        const stateAtTimeout = { ...f.sql.states.get(source) };
+
+        release();
+        await attachmentResumed;
+        await flush();
+        expect(events).toHaveLength(eventCount);
+        expect(f.sql.states.get(source)).toEqual(stateAtTimeout);
+        const lateCursor = await getDriveCursor(f.tcw, source);
+        expect(lateCursor.ok && lateCursor.data).toBe("cursor-0");
+        expect(identities(f)).toEqual(savedRows);
+        expect(f.kv.entries.get(transcriptKvKey(source, "conference-1"))).toContain("Meet transcript survives");
+        expect(f.kv.entries.get(transcriptKvKey(source, "conference-2"))).toContain("New Meet transcript survives");
+
+        const retry = await syncGoogleMeet({ client, store, tcw: f.tcw, now: () => Date.parse(retryAt) });
+        expect(retry.ok).toBe(true);
+        expect(isGmeetSyncInFlight()).toBe(false);
+        expect(identities(f)).toEqual(savedRows);
+        expect(f.sql.meetings.get("saved-conference-row")?.summary_overview).toBe("The pilot is approved.");
+        expect(f.sql.meetings.get("saved-conference-row")?.summary_action_items).toBe("Publish the checklist.");
+        const cursor = await getDriveCursor(f.tcw, source);
+        expect(cursor.ok && cursor.data).toBe("cursor-1");
+        const count = await countMeetings(f.tcw, source);
+        expect(count.ok && count.data).toBe(2);
+        const connection = await getConnection(f.tcw, source);
+        expect(connection.ok && connection.data).toMatchObject({
+          lastSyncedAt: retryAt, lastSyncStatus: "ok", lastSyncError: null, itemCount: 2,
+        });
+      } finally {
+        release();
+        await run?.catch(() => {});
+        vi.useRealTimers();
+        _resetGmeetSyncSingleFlightForTests();
+      }
+    });
   });
 });
 

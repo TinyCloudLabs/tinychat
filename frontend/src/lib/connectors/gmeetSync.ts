@@ -58,7 +58,7 @@ import {
   type GmeetTranscriptBundle,
 } from "./gmeetNormalize";
 import { GMEET_DATETIME_RESOLUTION_VERSION, diagnoseGmeetNotesDocument } from "./gmeetNotes";
-import { listMeetings } from "./meetingExplorer";
+import { listMeetingsRead } from "./meetingExplorer";
 import type { ConnectorConnection, ConnectorId } from "./types";
 
 /** SQL `source` column value and connector id — one string, one meaning. */
@@ -387,6 +387,13 @@ function errorMessage(err: unknown): string {
 
 let inFlight: Promise<GmeetSyncResult> | null = null;
 
+// Storage has no AbortSignal contract. A timed-out transport may still commit;
+// do not start another writer on that space until the outstanding call settles.
+const pendingFinishingStorage = new WeakMap<TinyCloudWeb, Set<Promise<unknown>>>();
+const FINISHING_TIMEOUT_MS = 120_000;
+type FinishingStep = <T>(work: () => Promise<T>, storage?: boolean) => Promise<T>;
+type FinishingOptions = GmeetSyncOptions & { step: FinishingStep };
+
 /** True while a run is in flight — lets the UI disable "Sync now" honestly. */
 export function isGmeetSyncInFlight(): boolean {
   return inFlight !== null;
@@ -412,6 +419,13 @@ export function _resetGmeetSyncSingleFlightForTests(): void {
  */
 export function syncGoogleMeet(opts: GmeetSyncOptions): Promise<GmeetSyncResult> {
   if (inFlight) return inFlight;
+  if (pendingFinishingStorage.get(opts.tcw)?.size) {
+    return Promise.resolve({
+      ok: false,
+      error: { kind: "storage", message: "The previous Google Meet save is still settling. Saved meetings are kept. Retry shortly." },
+      data: null,
+    });
+  }
   const run = runGoogleMeetSync(opts).finally(() => {
     inFlight = null;
   });
@@ -435,13 +449,22 @@ async function runGoogleMeetSync(opts: GmeetSyncOptions): Promise<GmeetSyncResul
   let terminal: GmeetSyncError | null = null;
   let reconnectRequired = false;
   const diagnostics = emptyDiagnostics();
+  let step: FinishingStep = (work) => work();
+  let finishing = false;
+  const readDiagnosticMeetings = async (sources?: readonly string[]) => {
+    const result = await step(() => listMeetingsRead(tcw, sources), true);
+    if (result.status === "ok") return result.meetings;
+    if (finishing) throw new Error("Could not read Google Meet sync diagnostics from storage.");
+    return [];
+  };
 
   const readDatetimeStats = async (): Promise<MeetingDatetimeStats> => {
     if (store.getMeetingDatetimeStats) {
-      const result = await store.getMeetingDatetimeStats(tcw, SOURCE);
+      const result = await step(() => store.getMeetingDatetimeStats!(tcw, SOURCE), true);
       if (result.ok) return result.data;
+      if (finishing) throw new Error(fromStore(result.error, "getMeetingDatetimeStats").message);
     }
-    const rows = await listMeetings(tcw, [SOURCE]);
+    const rows = await readDiagnosticMeetings([SOURCE]);
     const dated = rows.filter((row) => row.startedAt !== null && Number.isFinite(Date.parse(row.startedAt))).length;
     const seen = new Set<string>();
     let duplicates = 0;
@@ -459,8 +482,8 @@ async function runGoogleMeetSync(opts: GmeetSyncOptions): Promise<GmeetSyncResul
 
   const emitDiagnostics = async () => {
     if (!onDiagnostics) return;
-    const allRows = await listMeetings(tcw);
-    const googleRows = await listMeetings(tcw, [SOURCE]);
+    const allRows = await readDiagnosticMeetings();
+    const googleRows = await readDiagnosticMeetings([SOURCE]);
     diagnostics.meetings_page_rows_all_sources = allRows.length;
     diagnostics.explorer_google_meet_rows = googleRows.length;
     const datetime = await readDatetimeStats();
@@ -471,11 +494,11 @@ async function runGoogleMeetSync(opts: GmeetSyncOptions): Promise<GmeetSyncResul
     diagnostics.datetime_source_unavailable = datetime.sourceUnavailable;
     diagnostics.datetime_invalid_ambiguous = datetime.invalidAmbiguous;
     diagnostics.datetime_duplicates = datetime.duplicates;
-    onDiagnostics({ ...diagnostics });
+    await step(async () => { await onDiagnostics({ ...diagnostics }); });
   };
 
   const emit = (type: GmeetSyncProgress["type"], message?: string) => {
-    onProgress?.({ type, current, total, synced: created + updated, failed, skipped, message });
+    return onProgress?.({ type, current, total, synced: created + updated, failed, skipped, message });
   };
 
   const record = (sourceId: string, outcome: GmeetItemOutcome, reason?: string) => {
@@ -566,56 +589,117 @@ async function runGoogleMeetSync(opts: GmeetSyncOptions): Promise<GmeetSyncResul
         emit("progress");
       }
     }
-    if (terminal === null && !aborted) {
-      const drive = await syncDriveNotes(opts, record, diagnostics);
-      if (drive.terminal) terminal = drive.terminal;
-      if (drive.aborted) aborted = true;
-      if (drive.reconnectRequired) reconnectRequired = true;
-    }
   } catch (err) {
     // Nothing in the loop is expected to throw (every seam is Result-shaped);
     // an unexpected one is surfaced rather than swallowed.
     terminal = { kind: "storage", message: errorMessage(err) };
   }
 
-  // Final state write — reached by every path that got past getConnection.
-  // countMeetings is best-effort so a broken read cannot mask the real error.
-  const countRes = await store.countMeetings(tcw, SOURCE);
-  const itemCount = countRes.ok ? countRes.data : (connRes.data?.itemCount ?? 0);
-  diagnostics.persisted_item_count_after = itemCount;
-
-  // The watermark advances ONLY on a completed run. Advancing it after a
-  // terminal error or an abort would silently narrow the next window past
-  // records this run never looked at.
-  const completed = terminal === null && !aborted;
-  const updateRes = await store.updateSyncState(tcw, {
-    connectorId: SOURCE,
-    status: "connected",
-    lastSyncedAt: completed ? startedAtIso : watermarkIso,
-    lastSyncStatus: terminal ? "error" : reconnectRequired ? "partial" : "ok",
-    lastSyncError: terminal?.message ?? (reconnectRequired ? "Reconnect Google Meet to sync Notes by Gemini" : null),
-    itemCount,
-  });
-  if (!updateRes.ok && !terminal) {
-    terminal = fromStore(updateRes.error, "updateSyncState");
+  // One deadline covers the whole post-record phase, not a fresh allowance per
+  // page/call. Every await in Drive reconciliation uses step: timing out cannot
+  // leave an abandoned continuation writing a cursor or publishing success.
+  finishing = true;
+  const controller = new AbortController();
+  let stopped: GmeetSyncError | null = null;
+  let rejectStop!: (reason: Error) => void;
+  const stopPromise = new Promise<never>((_, reject) => { rejectStop = reject; });
+  // A synchronous progress consumer can fail before the first raced await.
+  void stopPromise.catch(() => {});
+  const stop = (message: string) => {
+    if (stopped !== null) return;
+    stopped = { kind: "network", message };
+    const error = new Error(message);
+    controller.abort(error);
+    rejectStop(error);
+  };
+  const onAbort = () => stop("Google Meet sync was stopped. Saved meetings are kept. Retry to finish syncing.");
+  const timer = setTimeout(() => stop("Finishing Google Meet sync timed out. Saved meetings are kept. Retry to finish syncing."), FINISHING_TIMEOUT_MS);
+  // Preserve the pre-record cancellation result; cancellation during Finishing
+  // is an error, never a completed import.
+  if (!aborted) {
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) onAbort();
   }
-
-  if (terminal) {
-    onProgress?.({
-      type: "error",
-      current,
-      total,
-      synced: created + updated,
-      failed,
-      skipped,
-      message: terminal.message,
-    });
+  step = async <T>(work: () => Promise<T>, storage = false): Promise<T> => {
+    if (stopped) throw new Error(stopped.message);
+    const pending = work();
+    if (storage) {
+      const calls = pendingFinishingStorage.get(tcw) ?? new Set<Promise<unknown>>();
+      pendingFinishingStorage.set(tcw, calls);
+      calls.add(pending);
+      const settled = () => {
+        calls.delete(pending);
+        if (calls.size === 0 && pendingFinishingStorage.get(tcw) === calls) pendingFinishingStorage.delete(tcw);
+      };
+      void pending.then(settled, settled);
+    }
+    const result = await Promise.race([pending, stopPromise]);
+    if (controller.signal.aborted) throw controller.signal.reason;
+    return result;
+  };
+  let itemCount = connRes.data?.itemCount ?? 0;
+  const writeState = async () => {
+    const completed = terminal === null && !aborted;
+    const update = await step(() => store.updateSyncState(tcw, {
+      connectorId: SOURCE,
+      status: "connected",
+      lastSyncedAt: completed ? startedAtIso : watermarkIso,
+      lastSyncStatus: terminal ? "error" : reconnectRequired ? "partial" : "ok",
+      lastSyncError: terminal?.message ?? (reconnectRequired ? "Reconnect Google Meet to sync Notes by Gemini" : null),
+      itemCount,
+    }), true);
+    if (!update.ok) terminal ??= fromStore(update.error, "updateSyncState");
+  };
+  try {
+    await step(async () => { await emit("status", "finishing"); });
+    if (terminal === null && !aborted) {
+      const failuresBeforeNotes = failed;
+      const drive = await syncDriveNotes({ ...opts, signal: controller.signal, step }, record, diagnostics);
+      if (drive.terminal) terminal = drive.terminal;
+      if (drive.aborted) {
+        aborted = true;
+        terminal ??= { kind: "network", message: "Google Meet sync was stopped. Saved meetings are kept. Retry to finish syncing." };
+      }
+      if (drive.reconnectRequired) reconnectRequired = true;
+      if (terminal === null && (drive.failed || failed > failuresBeforeNotes)) {
+        let reason = "Google Meet Notes could not finish syncing. Retry to finish syncing.";
+        for (let i = items.length - 1; i >= 0; i--) {
+          if (items[i]!.outcome !== "error") continue;
+          reason = items[i]!.reason ?? reason;
+          break;
+        }
+        terminal = {
+          kind: diagnostics.drive_storage_failed > 0 ? "storage" : "network",
+          message: reason,
+        };
+      }
+    }
+    const count = await step(() => store.countMeetings(tcw, SOURCE), true);
+    if (count.ok) itemCount = count.data;
+    else terminal ??= fromStore(count.error, "countMeetings");
+    diagnostics.persisted_item_count_after = itemCount;
     await emitDiagnostics();
-    return { ok: false, error: terminal, data: summary() };
+    await writeState();
+    if (terminal === null) {
+      await step(async () => { await emit("complete"); });
+      return { ok: true, data: summary() };
+    }
+  } catch (error) {
+    terminal ??= stopped ?? { kind: "storage", message: errorMessage(error) };
+    // Report a failure when storage is usable, under the SAME deadline. Once
+    // stopped, no new store operation or diagnostic continuation is started.
+    if (stopped === null) {
+      try { await writeState(); } catch { /* The error result remains authoritative when state cannot be written. */ }
+    }
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", onAbort);
   }
-  emit("complete");
-  await emitDiagnostics();
-  return { ok: true, data: summary() };
+  const error = terminal ?? { kind: "network" as const, message: "Google Meet sync did not finish. Retry to finish syncing." };
+  try {
+    void Promise.resolve(emit("error", error.message)).catch(() => {});
+  } catch { /* A broken progress consumer must not turn the terminal result into a rejection. */ }
+  return { ok: false, error, data: summary() };
 }
 
 /** A narrow metadata gate. Non-candidates must never reach Docs documents.get. */
@@ -627,7 +711,7 @@ export function isLikelyGmeetNotesFile(file: GoogleDriveFile): boolean {
   return /\bnotes by gemini\b/.test(marker);
 }
 
-interface DriveOutcome { terminal?: GmeetSyncError; aborted?: boolean; reconnectRequired?: boolean }
+interface DriveOutcome { terminal?: GmeetSyncError; aborted?: boolean; reconnectRequired?: boolean; failed?: boolean }
 
 type DriveTerminalCounter =
   | "drive_unprocessed_due_run_stop" | "drive_missing_id" | "drive_removed_or_trashed"
@@ -648,7 +732,7 @@ function recordRemovalMutation(diagnostics: GmeetSyncDiagnostics, outcome: Gmeet
 }
 
 async function syncDriveNotes(
-  opts: GmeetSyncOptions,
+  opts: FinishingOptions,
   record: (sourceId: string, outcome: GmeetItemOutcome, reason?: string) => void,
   diagnostics: GmeetSyncDiagnostics,
 ): Promise<DriveOutcome> {
@@ -657,7 +741,7 @@ async function syncDriveNotes(
   if (!client.listDriveFiles || !client.getDriveStartPageToken || !client.listDriveChangesPage || !client.getDriveDocument
     || !store.getDriveCursor || !store.putDriveCursor || !store.findGmeetNotesAssociation || !store.attachGmeetNotes || !store.removeGmeetNotes) return {};
 
-  const cursor = await store.getDriveCursor(tcw, SOURCE);
+  const cursor = await opts.step(() => store.getDriveCursor!(tcw, SOURCE), true);
   if (!cursor.ok) return { terminal: fromStore(cursor.error, "getDriveCursor") };
   if (signal?.aborted) return { aborted: true };
   if (opts.driveMode === "snapshot") return snapshotDriveNotes(opts, record, diagnostics, "snapshot");
@@ -668,7 +752,7 @@ async function syncDriveNotes(
   let finalCursor: string | null;
   let anyFailure = false;
   while (true) {
-    const page = await client.listDriveChangesPage(pageToken, { signal });
+    const page = await opts.step(() => client.listDriveChangesPage!(pageToken, { signal }));
     if (!page.ok) {
       if (page.error.kind === "aborted") return { aborted: true };
       // A stale Drive token is explicitly recovered with a fresh guarded snapshot.
@@ -700,15 +784,15 @@ async function syncDriveNotes(
     diagnostics.drive_diagnostics_complete = 1;
     break;
   }
-  if (anyFailure) return {};
+  if (anyFailure) return { failed: true };
   if (!finalCursor) return { terminal: { kind: "network", message: "Google Drive changes page had no new start token" } };
-  const write = await store.putDriveCursor(tcw, SOURCE, finalCursor);
+  const write = await opts.step(() => store.putDriveCursor!(tcw, SOURCE, finalCursor!), true);
   if (write.ok) diagnostics.drive_cursor_committed = 1;
   return write.ok ? {} : { terminal: fromStore(write.error, "putDriveCursor") };
 }
 
 async function snapshotDriveNotes(
-  opts: GmeetSyncOptions,
+  opts: FinishingOptions,
   record: (sourceId: string, outcome: GmeetItemOutcome, reason?: string) => void,
   diagnostics: GmeetSyncDiagnostics,
   mode: "snapshot" | "stale_cursor_snapshot",
@@ -716,7 +800,7 @@ async function snapshotDriveNotes(
   const { client, store, tcw, signal } = opts;
   diagnostics.drive_mode = mode;
   if (!client.getDriveStartPageToken || !client.listDriveFiles || !store.putDriveCursor) return {};
-  const start = await client.getDriveStartPageToken({ signal });
+  const start = await opts.step(() => client.getDriveStartPageToken!({ signal }));
   if (!start.ok) {
     if (start.error.kind === "aborted") return { aborted: true };
     // Refresh tokens granted before Notes support have only the Meet scopes.
@@ -727,7 +811,7 @@ async function snapshotDriveNotes(
     }
     return { terminal: fromGmeetError(start.error) };
   }
-  const files = await client.listDriveFiles({ signal });
+  const files = await opts.step(() => client.listDriveFiles!({ signal }));
   if (!files.ok) {
     if (files.error.kind === "aborted") return { aborted: true };
     if (files.error.kind === "forbidden") return { reconnectRequired: true };
@@ -744,17 +828,17 @@ async function snapshotDriveNotes(
     }
     if (outcome.failed) failed = true;
   }
-  if (failed) return {};
-  const write = await store.putDriveCursor(tcw, SOURCE, start.data);
+  if (failed) return { failed: true };
+  const write = await opts.step(() => store.putDriveCursor!(tcw, SOURCE, start.data), true);
   if (write.ok) diagnostics.drive_cursor_committed = 1;
   return write.ok ? {} : { terminal: fromStore(write.error, "putDriveCursor") };
 }
 
-async function syncDriveChange(change: GoogleDriveChange, opts: GmeetSyncOptions, record: (sourceId: string, outcome: GmeetItemOutcome, reason?: string) => void, diagnostics: GmeetSyncDiagnostics): Promise<DriveOutcome & { failed?: boolean }> {
+async function syncDriveChange(change: GoogleDriveChange, opts: FinishingOptions, record: (sourceId: string, outcome: GmeetItemOutcome, reason?: string) => void, diagnostics: GmeetSyncDiagnostics): Promise<DriveOutcome & { failed?: boolean }> {
   const fileId = change.fileId ?? change.file?.id;
   if (!fileId) { terminalDriveItem(diagnostics, "drive_missing_id"); return { failed: true }; }
   if (change.removed || change.file?.trashed) {
-    const removed = await opts.store.removeGmeetNotes!(opts.tcw, SOURCE, fileId);
+    const removed = await opts.step(() => opts.store.removeGmeetNotes!(opts.tcw, SOURCE, fileId), true);
     if (!removed.ok) { terminalDriveItem(diagnostics, "drive_storage_failed"); record(fileId, "error", fromStore(removed.error, "removeGmeetNotes").message); return { failed: true }; }
     recordRemovalMutation(diagnostics, removed.data);
     terminalDriveItem(diagnostics, "drive_removed_or_trashed");
@@ -764,7 +848,7 @@ async function syncDriveChange(change: GoogleDriveChange, opts: GmeetSyncOptions
   return syncDriveFile(change.file ?? { id: fileId }, opts, record, diagnostics);
 }
 
-async function syncDriveFile(file: GoogleDriveFile, opts: GmeetSyncOptions, record: (sourceId: string, outcome: GmeetItemOutcome, reason?: string) => void, diagnostics: GmeetSyncDiagnostics): Promise<DriveOutcome & { failed?: boolean }> {
+async function syncDriveFile(file: GoogleDriveFile, opts: FinishingOptions, record: (sourceId: string, outcome: GmeetItemOutcome, reason?: string) => void, diagnostics: GmeetSyncDiagnostics): Promise<DriveOutcome & { failed?: boolean }> {
   const fileId = file.id?.trim();
   if (!fileId) { terminalDriveItem(diagnostics, "drive_missing_id"); return { failed: true }; }
   // A snapshot can surface a trashed file without a separate Changes removal.
@@ -776,16 +860,16 @@ async function syncDriveFile(file: GoogleDriveFile, opts: GmeetSyncOptions, reco
   if (likelyNotes) diagnostics.drive_metadata_candidate++;
   // An already-associated exported transcript is eligible even if its Drive
   // name no longer carries the marker; all other files must pass metadata gate.
-  const association = await opts.store.findGmeetNotesAssociation!(opts.tcw, SOURCE, fileId, null, null);
+  const association = await opts.step(() => opts.store.findGmeetNotesAssociation!(opts.tcw, SOURCE, fileId, null, null), true);
   if (!association.ok) { terminalDriveItem(diagnostics, "drive_storage_failed"); record(fileId, "error", fromStore(association.error, "findGmeetNotesAssociation").message); return { failed: true }; }
   if (!likelyNotes && association.data === null) { terminalDriveItem(diagnostics, "drive_metadata_non_candidate"); return {}; }
   if (!likelyNotes) diagnostics.drive_association_bypass++;
   let migrationTarget: { id: string; sourceId: string; title: string | null; startedAt: string | null; metadata: Record<string, unknown> } | null = null;
   if (association.data?.sourceId === fileId && association.data.title !== null && association.data.startedAt !== null
     && association.data.metadata.datetime_exact === true) {
-    const migration = await opts.store.findGmeetNotesAssociation!(
-      opts.tcw, SOURCE, fileId, association.data.title, association.data.startedAt, fileId,
-    );
+    const migration = await opts.step(() => opts.store.findGmeetNotesAssociation!(
+      opts.tcw, SOURCE, fileId, association.data!.title, association.data!.startedAt, fileId,
+    ), true);
     if (!migration.ok) { terminalDriveItem(diagnostics, "drive_storage_failed"); record(fileId, "error", fromStore(migration.error, "findGmeetNotesAssociation").message); return { failed: true }; }
     migrationTarget = migration.data;
   }
@@ -799,7 +883,7 @@ async function syncDriveFile(file: GoogleDriveFile, opts: GmeetSyncOptions, reco
     record(fileId, "skipped", "Drive file unchanged");
     return {};
   }
-  const doc = await opts.client.getDriveDocument!(fileId, { signal: opts.signal });
+  const doc = await opts.step(() => opts.client.getDriveDocument!(fileId, { signal: opts.signal }));
   diagnostics.drive_docs_get_attempted++;
   if (!doc.ok) {
     if (doc.error.kind === "aborted") { terminalDriveItem(diagnostics, "drive_docs_get_aborted"); return { aborted: true }; }
@@ -823,7 +907,7 @@ async function syncDriveFile(file: GoogleDriveFile, opts: GmeetSyncOptions, reco
     // section. Its content was read successfully, so remove only this file's
     // owned fields/body before allowing the Changes cursor to advance.
     if (association.data !== null) {
-      const removed = await opts.store.removeGmeetNotes!(opts.tcw, SOURCE, fileId);
+      const removed = await opts.step(() => opts.store.removeGmeetNotes!(opts.tcw, SOURCE, fileId), true);
       if (!removed.ok) { terminalDriveItem(diagnostics, "drive_storage_failed"); record(fileId, "error", fromStore(removed.error, "removeGmeetNotes").message); return { failed: true }; }
       recordRemovalMutation(diagnostics, removed.data);
       terminalDriveItem(diagnostics, parsedOutcome.reason === "no-marker" ? "drive_parser_rejected_no_marker" : "drive_parser_rejected_no_supported_section");
@@ -841,18 +925,18 @@ async function syncDriveFile(file: GoogleDriveFile, opts: GmeetSyncOptions, reco
   const identityStartedAt = exactIdentity ? parsed.meeting.startedAt : null;
   const target = association.data?.sourceId === fileId
     ? (migrationTarget === null
-      ? await opts.store.findGmeetNotesAssociation!(opts.tcw, SOURCE, fileId, identityTitle, identityStartedAt, fileId)
+      ? await opts.step(() => opts.store.findGmeetNotesAssociation!(opts.tcw, SOURCE, fileId, identityTitle, identityStartedAt, fileId), true)
       : { ok: true as const, data: migrationTarget })
     : association.data === null
-      ? await opts.store.findGmeetNotesAssociation!(opts.tcw, SOURCE, fileId, identityTitle, identityStartedAt)
+      ? await opts.step(() => opts.store.findGmeetNotesAssociation!(opts.tcw, SOURCE, fileId, identityTitle, identityStartedAt), true)
       : association;
   if (!target.ok) { terminalDriveItem(diagnostics, "drive_storage_failed"); diagnostics.drive_post_parse_storage_failed++; record(fileId, "error", fromStore(target.error, "findGmeetNotesAssociation").message); return { failed: true }; }
   if (target.data && target.data.sourceId !== fileId) {
-    const attached = await opts.store.attachGmeetNotes!(opts.tcw, target.data, parsed.meeting);
+    const attached = await opts.step(() => opts.store.attachGmeetNotes!(opts.tcw, target.data!, parsed.meeting), true);
     if (!attached.ok) { terminalDriveItem(diagnostics, "drive_storage_failed"); diagnostics.drive_post_parse_storage_failed++; record(fileId, "error", fromStore(attached.error, "attachGmeetNotes").message); return { failed: true }; }
     if (target.data.startedAt === null && parsed.meeting.startedAt !== null) diagnostics.datetime_rows_backfilled++;
     if (association.data?.sourceId === fileId) {
-      const removed = await opts.store.removeGmeetNotes!(opts.tcw, SOURCE, fileId);
+      const removed = await opts.step(() => opts.store.removeGmeetNotes!(opts.tcw, SOURCE, fileId), true);
       if (!removed.ok) { terminalDriveItem(diagnostics, "drive_storage_failed"); diagnostics.drive_post_parse_storage_failed++; record(fileId, "error", fromStore(removed.error, "removeGmeetNotes").message); return { failed: true }; }
       recordRemovalMutation(diagnostics, removed.data);
       terminalDriveItem(diagnostics, "drive_accepted_migrated");
@@ -863,9 +947,9 @@ async function syncDriveFile(file: GoogleDriveFile, opts: GmeetSyncOptions, reco
   }
   const standalone = { ...parsed.meeting, metadata: { ...parsed.meeting.metadata, notes_association: "standalone" } };
   // As with Meet transcripts, the body reaches KV before its visible row.
-  const body = await opts.store.putTranscriptBody(opts.tcw, SOURCE, fileId, parsed.sentences);
+  const body = await opts.step(() => opts.store.putTranscriptBody(opts.tcw, SOURCE, fileId, parsed.sentences), true);
   if (!body.ok) { terminalDriveItem(diagnostics, "drive_storage_failed"); diagnostics.drive_post_parse_storage_failed++; record(fileId, "error", fromStore(body.error, "putTranscriptBody(notes)").message); return { failed: true }; }
-  const write = await opts.store.upsertMeeting(opts.tcw, standalone, parsed.sentences);
+  const write = await opts.step(() => opts.store.upsertMeeting(opts.tcw, standalone, parsed.sentences), true);
   if (!write.ok) { terminalDriveItem(diagnostics, "drive_storage_failed"); diagnostics.drive_post_parse_storage_failed++; record(fileId, "error", fromStore(write.error, "upsertMeeting(notes)").message); return { failed: true }; }
   terminalDriveItem(diagnostics, write.data.inserted ? "drive_accepted_standalone_created" : "drive_accepted_standalone_updated");
   if (!write.data.inserted && association.data?.startedAt === null && parsed.meeting.startedAt !== null) {
