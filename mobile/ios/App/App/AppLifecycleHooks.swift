@@ -6,7 +6,10 @@ import UIKit
 import UserNotifications
 
 enum AppLifecycleHooks {
-    static func setAppActive(_ active: Bool) { CaptureEngine.shared.setAppActive(active) }
+    static func setAppActive(_ active: Bool) {
+        CaptureEngine.shared.setAppActive(active)
+        if active { TranscriptionQueue.shared.admitForeground() }
+    }
     static func didFinishLaunching(_ app: UIApplication,
                                    options: [UIApplication.LaunchOptionsKey: Any]?) {
         ExoCaptureBootstrap.start()

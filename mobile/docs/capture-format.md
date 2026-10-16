@@ -126,6 +126,7 @@ For `outcome: "unknown"`, a known definitive job or upload handle still uses the
   "legacyImport": false, "ownerUnknown": false,          // true for every legacy note (§1.9)
   "source": "in_app", "owner": "did:pkh:eip155:1:0x…",   // null = recorded signed out, not claimed yet
   "transitionGen": 12,                                    // the account-transition generation at start (§2.1)
+  "recorded_app_version": "0.8.0", "recorded_app_build": "42", // iOS only; omitted if unknown
   "options": { "transcriber": "on-device", "identifySpeakers": false },
   "input": { "id": "…", "name": "iPhone Microphone", "kind": "built_in" }, "sampleRate": 48000, "bitrate": 64000,
   "ledger": {
@@ -142,15 +143,20 @@ For `outcome: "unknown"`, a known definitive job or upload handle still uses the
                       "uploadId": null, "uploadUrl": null, "jobId": null, "handleExpiresAt": null,
                       "cleanup": "none" | "pending" | "done" } ]
   },
-  "stt": { "state": "waiting_for_model" | "queued" | "running" | "done" | "failed" | "cancelled", "pack": null, "engine": null, "segmentsDone": 0, "windowsDone": 0, "error": null,
-           "rerunRev": 2 | null, "rerunBaseRev": 1 | null, "rerunBaseHash": "32 lowercase hex" | null }
+  "stt": { "state": "waiting_for_model" | "queued" | "running" | "yielded_by_os" | "done" | "failed" | "cancelled", "pack": null, "engine": null, "segmentsDone": 0, "windowsDone": 0, "error": null,
+           "yieldGeneration": 1, "rerunRev": 2 | null, "rerunBaseRev": 1 | null, "rerunBaseHash": "32 lowercase hex" | null }
   // "attempts" (Int, TC-836) is added once a note first enters "running": a crash-loop guard
   // persisted before each decode attempt, absent until then; readers default a missing value to 0.
 }
 ```
-`durationMs` in v2 is `a` at the final durable frame, including any written priming or padding access units; `wallMs` is start→stop (or the last durable event in recovery). `pausedMs` is the sum of user-pause intervals within `wallMs`. V1 sidecars keep their wall-clock `durationMs`. A v2 writer emits the full exact key set of `sidecar-v2-ios.json` or `sidecar-v2-android.json` (with platform-specific values), including explicit `null` for unknown nullable fields and empty arrays for no spans or remote handles. Readers remain tolerant of older v2 files that omit newly added fields.
+`durationMs` in v2 is `a` at the final durable frame, including any written priming or padding access units; `wallMs` is start→stop (or the last durable event in recovery). `pausedMs` is the sum of user-pause intervals within `wallMs`. V1 sidecars keep their wall-clock `durationMs`. A v2 writer emits the baseline key set of `sidecar-v2-ios.json` or `sidecar-v2-android.json` (with platform-specific values), including explicit `null` for unknown nullable fields and empty arrays for no spans or remote handles. Readers remain tolerant of older v2 files that omit newly added fields.
+On iOS, the optional `recorded_app_version` and `recorded_app_build` come from the bundle **when
+the session starts**. Journal recovery copies those saved values; legacy import and pre-stamp
+recordings omit them, never substituting the current writer build. The iOS `yielded_by_os` STT
+state retains queued native work and pins audio; `yieldGeneration` fences late recognition,
+while `attempts` is restored only after a durable OS yield. A failed yield retains its crash count.
 
-An explicit rerun stores its target `rerunRev` and committed base `(rerunBaseRev, rerunBaseHash)` in the sidecar `stt` state while it is queued, running, or waiting for a model. The local transcript written for that attempt carries `rerunBase: { rev, hash }`. The worker verifies that base before publishing; launch recovery cancels unfinished reruns and clears their markers, while a failed rerun retains its base across relaunch for an explicit retry. These markers never cause a rerun to restart automatically.
+An explicit rerun stores its target `rerunRev` and committed base `(rerunBaseRev, rerunBaseHash)` in the sidecar `stt` state while it is queued, running, yielded by the OS, or waiting for a model. The local transcript written for that attempt carries `rerunBase: { rev, hash }`. The worker verifies that base before publishing. On iOS, launch repair first completes a published transcript's `stt.done` state or restores the prior rerun transcript from its durable backup if publication stopped before installation. Launch recovery then cancels unfinished reruns and clears their markers; a failed rerun retains its base across relaunch for an explicit retry. These markers never cause a rerun to restart automatically.
 
 Space audio writes are admitted only when `recording.options?.uploadAudio === true`; absent and false values stay local. Private-cloud/PTX and hosted-engine uploads are transcription-service requests, not writes to the user's space.
 

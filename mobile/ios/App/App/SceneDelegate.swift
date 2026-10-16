@@ -18,6 +18,14 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         SceneDelegateProxy.shared.scene(scene, willConnectTo: session, options: connectionOptions)
     }
 
+    func sceneDidBecomeActive(_ scene: UIScene) {
+        AppLifecycleHooks.setAppActive(true)
+    }
+
+    func sceneWillResignActive(_ scene: UIScene) {
+        AppLifecycleHooks.setAppActive(false)
+    }
+
     func windowScene(_ windowScene: UIWindowScene, performActionFor shortcutItem: UIApplicationShortcutItem,
                      completionHandler: @escaping (Bool) -> Void) {
         completionHandler(AppLifecycleHooks.performShortcut(shortcutItem))

@@ -5,7 +5,9 @@
 > simulator and A13 phones), fed by `ExoStt/AppleSpeech.swift` behind the same native-owned queue. There is no model
 > download, no `ModelStore`, no `CBZip2`; iOS installs its own speech assets (`OnDeviceStt.installSpeechAssets()`,
 > `AssetInventory`) and `status()` reports `engine: "apple-speech"`, `appleSpeech` and `models: []`. The iOS minimum is
-> iOS 26. Everything below describes Android, which keeps Parakeet unchanged.
+> iOS 26. Eligible short decodes hold a finite background assertion; expiry records `yielded_by_os`
+> with the restored attempt count before releasing it when storage permits. This does not schedule
+> background work or guarantee completion after suspension. Everything below describes Android.
 
 This is the thinnest working version of on-device transcription, pulled forward from the planned
 T13 (iOS model downloads), T17 (Android model downloads), T23 (iOS on-device engine), T24 (Android
@@ -56,10 +58,13 @@ Per the scoping discussion before this slice was built:
 - **No auto-download.** The model downloads only when the user taps Download (recorder or
   Settings). T13/T17 add the "10 s after first foreground, Wi-Fi, toggle on by default" behaviour
   (decision 12).
-- **No background execution.** There is no `BGProcessingTask` (iOS) or `SttWorker`/WorkManager
-  (Android): the queue only runs while the app process is alive. T23/T24 add background
-  continuation. A note interrupted mid-decode (app killed) restarts its decode from the beginning
-  next time the queue runs, rather than resuming mid-file.
+- **No scheduled background execution.** There is no `BGProcessingTask` (iOS) or `SttWorker`/WorkManager
+  (Android). iOS may finish an already-running, eligible short decode during a finite assertion; an
+  expired assertion durably yields and parks the queue until `SceneDelegate.sceneDidBecomeActive`
+  admits a foreground turn or the user explicitly retries, including after relaunch. Committed and
+  asset-install notifications only refresh inventory; they do not admit expired work. A genuine crash
+  still consumes an attempt. A note interrupted mid-decode restarts from the beginning at its next
+  admitted opportunity, rather than resuming mid-file.
 - **No model card or licences screen.** `OnDeviceStt.status()` is shown as one line with a
   Download/Cancel action, not the full model card, queue display and licences T27 adds.
   `deleteModels()` is implemented but not yet exposed in the UI.
