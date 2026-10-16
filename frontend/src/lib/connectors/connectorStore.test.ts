@@ -452,7 +452,6 @@ class FakeKv {
   putAttempts: string[] = [];
   putValues: unknown[] = [];
   tracker = new OpTracker();
-  headCalls: string[] = [];
   listCalls: { path: string; cursor?: string }[] = [];
   /** Split each matching prefix listing into deterministic pages when set. */
   listPageSize: number | null = null;
@@ -474,15 +473,6 @@ class FakeKv {
     });
   }
 
-  async head(key: string): Promise<{ ok: true; data: { data: void; headers: Record<string, string> } } | { ok: false; error: KvErr }> {
-    return this.tracker.run("kv.head", () => {
-      this.headCalls.push(key);
-      if (!this.entries.has(key)) {
-        return { ok: false, error: { code: "KV_NOT_FOUND", message: `no key ${key}` } } as const;
-      }
-      return { ok: true, data: { data: undefined as unknown as void, headers: {} } } as const;
-    });
-  }
   async put(key: string, value: unknown, options?: { ifNoneMatch?: "*"; ifMatch?: string }): Promise<{ ok: true; data: { data: void; headers: Record<string, string> } } | { ok: false; error: KvErr }> {
     return this.tracker.run("kv.put", () => {
       this.putAttempts.push(key);
@@ -1647,7 +1637,6 @@ describe("connectorStore.listTranscriptBodyIds", () => {
     f.kv.entries.set(`${prefix}second`, "another body");
     f.kv.listPageSize = 1;
     f.kv.get = async () => { throw new Error("body GET must not be used for completeness"); };
-    f.kv.head = async () => { throw new Error("metadata HEAD is not granted"); };
 
     const listed = await listTranscriptBodyIds(f.tcw, "fireflies");
 
@@ -1656,7 +1645,6 @@ describe("connectorStore.listTranscriptBodyIds", () => {
       { path: prefix },
       { path: prefix, cursor: "1" },
     ]);
-    expect(f.kv.headCalls).toEqual([]);
   });
 });
 

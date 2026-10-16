@@ -64,7 +64,7 @@ export const CONNECTOR_SCHEMA: { sql: string; table: string }[] = [
 ];
 
 export interface NormalizedMeeting {
-  /** Candidate ID for transcriber writes; browser connector writes derive new IDs from source/sourceId. */
+  /** Candidate ID for other sources; new Fireflies/Meet row IDs derive from source/sourceId. */
   id: string;
   source: string;
   sourceId: string;
@@ -327,9 +327,11 @@ export async function writeConnectorMeeting(
     if (!saved.ok) return saved;
   }
   if (!row) {
-    // The pre-INSERT lookup protects legacy random UUIDs; the primary key makes
-    // simultaneous upgraded writers for the same identity converge.
-    const id = await connectorMeetingId(meeting.source, meeting.sourceId);
+    // The pre-INSERT lookup protects legacy UUIDs; Fireflies and Meet use the
+    // deterministic primary key to converge upgraded writers. Other browser
+    // sources retain their existing caller-supplied ID contract.
+    const id = meeting.source === "fireflies" || meeting.source === "google-meet"
+      ? await connectorMeetingId(meeting.source, meeting.sourceId) : meeting.id;
     const now = new Date().toISOString();
     const write = await port.execute(
       `INSERT INTO connector_meeting

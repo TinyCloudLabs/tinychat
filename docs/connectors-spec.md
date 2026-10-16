@@ -229,10 +229,11 @@ match that string. Reuse the `APP_ID` const. Schema bootstrap memoized per space
 `threadStore.ts` does with `schemaReadySpaces`.
 
 **TinyCloud SQLite authorizer restrictions (hard constraints, from listen):** no
-`CREATE INDEX`, no composite `UNIQUE` constraints, no `REFERENCES`. The shared
-writer looks up `(source, source_id)` first to retain legacy row IDs, then inserts
-new rows with a deterministic primary key using `ON CONFLICT(id) DO NOTHING`.
-It reads the winner and merges only changed, source-owned fields.
+`CREATE INDEX`, no composite `UNIQUE` constraints, no `REFERENCES`. For Fireflies
+and Meet, the shared writer looks up `(source, source_id)` first to retain
+legacy row IDs, then inserts new rows with a deterministic primary key using
+`ON CONFLICT(id) DO NOTHING`. It reads the winner and merges only changed,
+source-owned fields. Other existing sources retain their caller-supplied IDs.
 
 ```sql
 CREATE TABLE IF NOT EXISTS connector_state (
@@ -246,8 +247,8 @@ CREATE TABLE IF NOT EXISTS connector_state (
 );
 
 CREATE TABLE IF NOT EXISTS connector_meeting (
-  id TEXT PRIMARY KEY,             -- deterministic for new rows; preserve legacy UUIDs
-  source TEXT NOT NULL,            -- 'fireflies' or 'google-meet'
+  id TEXT PRIMARY KEY,             -- deterministic for new Fireflies/Meet rows; legacy IDs retained
+  source TEXT NOT NULL,            -- 'fireflies', 'google-meet', or another existing source
   source_id TEXT NOT NULL,
   title TEXT,
   started_at TEXT,                 -- ISO

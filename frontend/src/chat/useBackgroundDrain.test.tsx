@@ -932,14 +932,14 @@ function realCatchUpHarness(
     async ensureSchema() { return { ok: true, data: undefined }; },
     async listKnownSourceIds() { return { ok: true, data: meetings.map((m) => m.sourceId) }; },
     async listTranscriptBodyIds() { return { ok: true, data: new Set(bodies) }; },
-    async insertMeeting(_tcw, meeting) {
-      if (meetings.some((m) => m.sourceId === meeting.sourceId)) return { ok: true, data: false };
+    async upsertMeeting(_tcw, meeting) {
+      const existing = meetings.find((m) => m.sourceId === meeting.sourceId);
+      if (existing) {
+        return { ok: true, data: { id: existing.id, inserted: false, createdAt: "2026-10-12T12:00:00.000Z" } };
+      }
       meetings.push(meeting);
-      return { ok: true, data: true };
-    },
-    async putTranscriptBody(_tcw, _source, sourceId) {
-      bodies.add(sourceId);
-      return { ok: true, data: undefined };
+      bodies.add(meeting.sourceId);
+      return { ok: true, data: { id: meeting.id, inserted: true, createdAt: "2026-10-12T12:00:00.000Z" } };
     },
     async updateSyncState(_tcw, input) {
       state = input;
