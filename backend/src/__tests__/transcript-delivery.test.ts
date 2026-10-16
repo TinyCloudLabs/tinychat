@@ -18,8 +18,9 @@ import type { JsonKv } from "../services/transcriber-index.js";
 import { BackendStorageLane } from "../services/backend-storage-lane.js";
 import { MemoryTranscriberIndexStore } from "../services/transcriber-index.js";
 import { KvTranscriptDeliveryStore, TranscriptDeliveryWorker, WriteGovernor, type DeliveryState, type TranscriptDeliveryOptions } from "../services/transcript-delivery.js";
-import { TranscriptionApiError, type TranscriptionApiClient, type TranscriptionMeeting } from "../services/transcription-api.js";
+import { createTranscriptionApiClient, TranscriptionApiError, type TranscriptionApiClient, type TranscriptionMeeting } from "../services/transcription-api.js";
 import { makeSignedTranscriptGrant, type SignedTranscriptGrant } from "./helpers/transcript-grant.js";
+import { createRequestContextMiddleware, installRequestLogBoundary, type RequestEvent } from "../request-context.js";
 
 const databases: Database[] = [];
 afterEach(() => { for (const db of databases.splice(0)) db.close(); });
@@ -319,6 +320,168 @@ describe("durable transcript delivery", () => {
     expect(f.counts.put).toBe(1);
     expect(f.bodies.get(transcriptKvKey(TRANSCRIBER_MEETING_SOURCE, "m-1")) === originalBody).toBe(true);
     await worker.stop();
+  });
+
+  it("TC-959 overlapping signed delivery wakes retain each tenant's origin after both HTTP responses", async () => {
+    installRequestLogBoundary();
+    const f = await fixture();
+    const second = await makeSignedTranscriptGrant({ wallet: "B" });
+    f.records.set(second.address.toLowerCase(), {
+      serialized: second.envelope, expiresAt: second.expiresAt.toISOString(), grantedAt: new Date().toISOString(),
+      actions: [], path: "connectors",
+    });
+    await admit(f, "tc959-wake-a");
+    await admit(f, "tc959-wake-b", f.meeting("tc959-wake-b", second.address), second.address);
+    const firstReceived = Promise.withResolvers<void>();
+    const releaseFirst = Promise.withResolvers<void>();
+    const secondPersisted = Promise.withResolvers<void>();
+    f.backend.onPut = key => {
+      if (key === `transcriber/delivery/${second.address.toLowerCase()}`) secondPersisted.resolve();
+    };
+    const observed: Array<{ path: string; requestId: string | undefined }> = [];
+    const upstream = express();
+    upstream.get("/v1/meetings/:id", async (req, res) => {
+      observed.push({ path: req.path, requestId: req.get("x-request-id") });
+      if (req.params.id === "tc959-wake-a") { firstReceived.resolve(); await releaseFirst.promise; }
+      res.json(f.meetings.get(req.params.id));
+    });
+    upstream.get("/v1/meetings/:id/transcript", async (req, res) => {
+      observed.push({ path: req.path, requestId: req.get("x-request-id") });
+      const transcript = await f.api.getTranscript(req.params.id);
+      if (transcript.pending) res.status(202).json({ status: transcript.status });
+      else res.json({
+        ...transcript.transcript, text: "TC959_ASYNC_RAW_TENANT_TRANSCRIPT_CANARY",
+        segments: transcript.transcript.segments?.map(segment => ({ ...segment, text: "TC959_ASYNC_RAW_TENANT_TRANSCRIPT_CANARY" })),
+      });
+    });
+    await withServer(upstream, async ptx => {
+      const api = createTranscriptionApiClient({
+        baseUrl: ptx, apiKey: "synthetic-ptx-key", requestIdFirstPartyOrigins: new Set([ptx]),
+      });
+      // A dependency-shaped log canary must remain redacted during item work and shared flushes.
+      const governor = { take: async () => {
+        console.warn("TC959_ASYNC_RAW_TENANT_TRANSCRIPT_CANARY", { tenant: second.address, transcript: "private transcript" });
+      } } as WriteGovernor;
+      const worker = f.worker({ api, governor });
+      const ingress: RequestEvent[] = [];
+      const app = express();
+      app.use(createRequestContextMiddleware(event => ingress.push(event)));
+      const secret = `whsec_${"c".repeat(48)}`;
+      app.use("/api/transcriber/webhooks/ptx", createTranscriberWebhookRouter(worker, secret));
+      const a = "12345678-abcd-4abc-8abc-123456789abc";
+      const b = "87654321-abcd-4abc-8abc-123456789abc";
+      try {
+        await withServer(app, async base => {
+          const post = (address: string, id: string, requestId: string) => {
+            const body = JSON.stringify({ type: "meeting.completed", data: { meeting_id: id, metadata: { tinychat_address: address } } });
+            return fetch(`${base}/api/transcriber/webhooks/ptx`, {
+              method: "POST", headers: {
+                "content-type": "application/json", "x-request-id": requestId.toUpperCase(),
+                "x-webhook-signature": `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`,
+              }, body,
+            });
+          };
+          const first = await post(f.grant.address, "tc959-wake-a", a);
+          expect(first.status).toBe(202);
+          expect(first.headers.get("x-request-id")).toBe(a);
+          await firstReceived.promise;
+          const queued = await post(second.address, "tc959-wake-b", b);
+          expect(queued.status).toBe(202);
+          expect(queued.headers.get("x-request-id")).toBe(b);
+          expect(ingress.filter(event => event.event === "tinychat_request").map(event => ({
+            id: event.request_id, status: event.status,
+          }))).toEqual([{ id: a, status: 202 }, { id: b, status: 202 }]);
+          releaseFirst.resolve();
+          await secondPersisted.promise;
+          await worker.stop();
+          expect(observed).toEqual([
+            { path: "/v1/meetings/tc959-wake-a", requestId: a },
+            { path: "/v1/meetings/tc959-wake-a/transcript", requestId: a },
+            { path: "/v1/meetings/tc959-wake-b", requestId: b },
+            { path: "/v1/meetings/tc959-wake-b/transcript", requestId: b },
+          ]);
+          expect(f.state().done["tc959-wake-a"].how).toBe("written");
+          expect(f.state(second.address).done["tc959-wake-b"].how).toBe("written");
+        });
+      } finally {
+        releaseFirst.resolve();
+        await worker.stop();
+      }
+    });
+    console.log("TC959_ASYNC_WORKER_CAPTURE_CONTROL");
+  });
+
+  it("TC-959 recovery sweeps and persisted retries do not inherit their triggering HTTP request", async () => {
+    installRequestLogBoundary();
+    const f = await fixture();
+    await admit(f, "tc959-retry");
+    const persisted = Promise.withResolvers<void>();
+    f.backend.onPut = () => persisted.resolve();
+    const observed: Array<{ operation: string; requestId: string | undefined }> = [];
+    let fail = true;
+    const upstream = express();
+    upstream.get("/v1/meetings/by-idempotency-key", (req, res) => {
+      observed.push({ operation: "lookup", requestId: req.get("x-request-id") });
+      res.status(404).json({ error: { code: "meeting_not_found" } });
+    });
+    upstream.get("/v1/meetings/:id", (req, res) => {
+      observed.push({ operation: "meeting", requestId: req.get("x-request-id") });
+      if (fail) res.status(503).json({ error: { code: "unavailable" } });
+      else res.json({ ...f.meeting(req.params.id), status: "processing" });
+    });
+    const realNow = Date.now;
+    let now = realNow();
+    Date.now = () => now;
+    try {
+      await withServer(upstream, async ptx => {
+        const api = createTranscriptionApiClient({
+          baseUrl: ptx, apiKey: "synthetic-ptx-key", requestIdFirstPartyOrigins: new Set([ptx]),
+        });
+        let worker = f.worker({ api });
+        const ingress: RequestEvent[] = [];
+        const app = express();
+        app.use(createRequestContextMiddleware(event => ingress.push(event)));
+        const secret = `whsec_${"d".repeat(48)}`;
+        app.use("/webhook", createTranscriberWebhookRouter(worker, secret));
+        app.get("/sweep", (_req, res, next) => {
+          worker.sweep().then(() => res.sendStatus(204), next);
+        });
+        const origin = "12345678-abcd-4abc-8abc-123456789abc";
+        const sweepCaller = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+        try {
+          await withServer(app, async base => {
+            const body = JSON.stringify({ type: "meeting.completed", data: {
+              meeting_id: "tc959-retry", metadata: { tinychat_address: f.grant.address },
+            } });
+            expect((await fetch(base + "/webhook", {
+              method: "POST", headers: {
+                "content-type": "application/json", "x-request-id": origin,
+                "x-webhook-signature": `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`,
+              }, body,
+            })).status).toBe(202);
+            await persisted.promise;
+            await worker.stop();
+            expect(f.state().retry["tc959-retry"].code).toBe("upstream_unavailable");
+            expect(observed).toEqual([{ operation: "meeting", requestId: origin }]);
+            now = Math.max(f.state().retry["tc959-retry"].nextAt + 1, now + 60_001);
+            fail = false;
+            await f.index.beginCreate(f.grant.address, { key: "tc959-intent", hash: "a".repeat(64), createdAt: now });
+            worker = f.worker({ api }); // No persisted delivery/intent record contains an origin ID.
+            const response = await fetch(base + "/sweep", { headers: { "x-request-id": sweepCaller } });
+            expect(response.status).toBe(204);
+            expect(response.headers.get("x-request-id")).toBe(sweepCaller);
+            expect(observed).toEqual([
+              { operation: "meeting", requestId: origin },
+              { operation: "lookup", requestId: undefined },
+              { operation: "meeting", requestId: undefined },
+            ]);
+            expect(ingress.filter(event => event.event === "tinychat_request").map(event => ({
+              id: event.request_id, status: event.status,
+            }))).toEqual([{ id: origin, status: 202 }, { id: sweepCaller, status: 204 }]);
+          });
+        } finally { await worker.stop(); }
+      });
+    } finally { Date.now = realNow; }
   });
 
   it("serializes concurrent wakes for one owner without overlapping upstream operations", async () => {

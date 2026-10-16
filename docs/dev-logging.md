@@ -76,8 +76,8 @@ incoming header was rejected; it is `false` for accepted or absent input.
 Rejected bytes are never logged. The header is correlation metadata, not an
 authentication or tenant identity.
 
-The same request ID is forwarded only on request-scoped first-party ptx-dev
-and ptx-batch calls. `TRANSCRIPTION_API_URL` and
+The same request ID is forwarded only on request-scoped or explicitly attributed
+queued first-party ptx-dev and ptx-batch calls. `TRANSCRIPTION_API_URL` and
 `PRIVATE_CLOUD_TRANSCRIPTION_API_URL` select destinations; **neither implicitly
 classifies a destination as first-party**. Separately set the nonsecret
 `REQUEST_ID_FIRST_PARTY_ORIGINS` to a comma-separated list of bare HTTP(S)
@@ -87,12 +87,27 @@ startup without echoing the configuration. Paths, hostname suffixes and
 webhook status do not confer trust. Do not classify Google, Vexa, Tinfoil or
 any other third party.
 
+The allowlist requires a separate reviewed configuration rollout and authorized
+end-to-end verification before claiming production correlation. Code-only
+approval does not establish it; default deny remains until explicitly configured.
+
 Both PTX clients refuse to follow redirects (including 302 and 307), so neither
 the request ID nor credentials reach a redirect destination. Transport retries
 to a classified origin retain the same ID. No global fetch hook forwards IDs to
-third-party requests. Calls started outside an HTTP request do not inherit an
-unrelated caller's ID. There is no backend OpenKey HTTP client: OpenKey signing
-runs in the web/native clients and the backend verifies the session locally.
+third-party requests. Unattributed background calls send no request ID.
+There is no backend OpenKey HTTP client: OpenKey signing runs in the web/native
+clients and the backend verifies the session locally.
+
+`TranscriptDeliveryWorker` detaches its shared drain, timers, sweep and cleanup
+from the initiating HTTP context. An admitted wake carries only its own request
+ID on the **in-memory queue item**; processing restores a fresh scope with that
+ID, not the original request or emitter. Overlapping tenants therefore retain
+their own IDs even after their webhook responses finish. Coalesced duplicate
+wakes retain the first admitted item's origin rather than relabeling its work.
+No request ID is persisted in delivery state or pending create intents.
+Recovery, retries and sweeps without a retained queue-item origin send **no
+request-ID header**, including when an HTTP caller triggers the sweep. This is
+an explicit restart/retry correlation gap, not durable async end-to-end tracing.
 
 Private transcription's `X-Correlation-Id` remains an **independent** contract:
 its existing UUID acceptance/minting, response header, `error.correlation_id`
@@ -116,21 +131,25 @@ the router mount prefix. Early middleware failures and unmatched requests use
 strings: even a router mount can contain credentials. `correlation_id` is
 optional and admitted only as a UUID from the response header.
 
-While an HTTP request context is active, console and dependency stdout/stderr
-payloads are replaced with fixed `tinychat_request_diagnostic` events containing
+While an HTTP request or explicitly attributed queue-item context is active,
+console and dependency stdout/stderr payloads are replaced with fixed
+`tinychat_request_diagnostic` events containing
 only `request_id` and `level` (`info` or `error`). Arbitrary JSON is not trusted
 as a typed event. The terminal error handler also drops error names, messages
 and properties. No account, wallet, tenant, capability, meeting ID, transcript
 or keyed identity field is added. Existing `LOG_HASH_SALT`/keyed-hash patterns
-remain unchanged. Startup/background logging and native writes that bypass
-JavaScript console/stream APIs are outside this request-scoped boundary; this
-change is not a backend-wide log shipping/redaction cutover.
-Outside request scope, stream writes preserve the original receiver, argument
-list and callback overloads, including `write(chunk, undefined, callback)`.
+remain unchanged. The detached worker lifecycle also keeps payload-safe logging:
+unattributed diagnostics are `tinychat_background_diagnostic` events containing
+only `event` and `level`, with no request or identity field.
+Other startup/background logging and native writes that bypass JavaScript
+console/stream APIs are outside these opted-in scopes; this change is not a
+backend-wide log shipping/redaction cutover.
+Outside the opted-in scopes, stream writes preserve the original receiver,
+argument list and callback overloads, including `write(chunk, undefined, callback)`.
 
 Regression checks (synthetic localhost HTTP and subprocess output only):
 
 ```sh
-bun test backend/src/__tests__/request-id.test.ts backend/src/__tests__/index-wiring.test.ts backend/src/__tests__/request-log-boundary.test.ts
+bun test backend/src/__tests__/request-id.test.ts backend/src/__tests__/index-wiring.test.ts backend/src/__tests__/request-log-boundary.test.ts backend/src/__tests__/transcript-delivery.test.ts
 ```
 

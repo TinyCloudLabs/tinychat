@@ -24,10 +24,13 @@ export type RequestEvent = {
   event: "tinychat_request_diagnostic";
   request_id: string;
   level: "info" | "error";
+} | {
+  event: "tinychat_background_diagnostic";
+  level: "info" | "error";
 };
 
 type EventSink = (event: RequestEvent) => void;
-const context = new AsyncLocalStorage<{ requestId: string; emit: EventSink }>();
+const context = new AsyncLocalStorage<{ requestId?: string; emit: EventSink }>();
 
 /** The backend entry ID, available to outbound HTTP without threading credentials or request objects. */
 export function currentRequestId(): string | undefined {
@@ -38,6 +41,13 @@ export function currentRequestId(): string | undefined {
 export function normalizeRequestId(incoming: string | undefined): string | undefined {
   if (incoming === undefined || incoming.length !== 36 || !REQUEST_ID.test(incoming)) return undefined;
   return incoming.toLowerCase();
+}
+
+/** Restore only an item's origin ID, never its HTTP request/emitter. Undefined removes attribution
+ * while retaining payload-safe diagnostics for shared drains, sweeps and cleanup.
+ */
+export function runWithRequestId<T>(requestId: string | undefined, operation: () => T): T {
+  return context.run({ requestId: normalizeRequestId(requestId), emit: emitToStdout }, operation);
 }
 
 /** Explicit classification, separate from configurable PTX destinations. Empty means deny all. */
@@ -91,8 +101,8 @@ export function createRequestContextMiddleware(emit: EventSink = emitToStdout): 
 
 let installed = false;
 
-/** Keep legacy request/dependency diagnostics observable, but never inspect or emit their payloads.
- * Outside HTTP request context, existing startup/background logging is unchanged.
+/** Keep scoped request/worker diagnostics observable without inspecting their payloads.
+ * Logging outside an opted-in scope is unchanged.
  */
 export function installRequestLogBoundary(): void {
   if (installed) return;
@@ -106,10 +116,10 @@ export function installRequestLogBoundary(): void {
     console[method] = (...args: unknown[]) => {
       const active = context.getStore();
       if (!active) return Reflect.apply(original, console, args);
-      active.emit({
-        event: "tinychat_request_diagnostic", request_id: active.requestId,
-        level: method === "warn" || method === "error" || method === "trace" || method === "assert" ? "error" : "info",
-      });
+      const level = method === "warn" || method === "error" || method === "trace" || method === "assert" ? "error" : "info";
+      active.emit(active.requestId === undefined
+        ? { event: "tinychat_background_diagnostic", level }
+        : { event: "tinychat_request_diagnostic", request_id: active.requestId, level });
     };
   }
   for (const stream of [process.stdout, process.stderr]) {
@@ -124,10 +134,10 @@ export function installRequestLogBoundary(): void {
     ): boolean {
       const active = context.getStore();
       if (!active) return Reflect.apply(original, this, args);
-      active.emit({
-        event: "tinychat_request_diagnostic", request_id: active.requestId,
-        level: stream === process.stderr ? "error" : "info",
-      });
+      const level = stream === process.stderr ? "error" : "info";
+      active.emit(active.requestId === undefined
+        ? { event: "tinychat_background_diagnostic", level }
+        : { event: "tinychat_request_diagnostic", request_id: active.requestId, level });
       const [, encodingOrCallback, callback] = args;
       const done = typeof encodingOrCallback === "function" ? encodingOrCallback : callback;
       if (done) queueMicrotask(done);

@@ -58,3 +58,26 @@ test.each(["stdout", "stderr"] as const)("preserves unscoped %s write callback o
   expect({ exit, error: exit === 0 ? null : stderr }).toEqual({ exit: 0, error: null });
   expect(stdout).toContain("TC959_UNSCOPED_CALLBACKS_PASSED");
 });
+
+test("shared transcript worker item and unattributed diagnostics never expose tenant or transcript payloads", async () => {
+  const child = Bun.spawn([
+    process.execPath, "--no-env-file", "test", resolve(import.meta.dir, "transcript-delivery.test.ts"),
+    "--test-name-pattern", "TC-959 overlapping signed delivery",
+  ], { env: { PATH: process.env.PATH }, stdout: "pipe", stderr: "pipe" });
+  const [stdout, stderr, exit] = await Promise.all([
+    new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited,
+  ]);
+  expect({ exit, error: exit === 0 ? null : stderr }).toEqual({ exit: 0, error: null });
+  expect(stdout).toContain("TC959_ASYNC_WORKER_CAPTURE_CONTROL");
+  expect(stdout + stderr).not.toContain("TC959_ASYNC_RAW_TENANT_TRANSCRIPT_CANARY");
+  expect(stdout + stderr).not.toContain("private transcript");
+  expect(stdout + stderr).not.toMatch(/0x[0-9a-f]{40}/i);
+  const events = stdout.split("\n").filter(line => line.startsWith("{")).map(line => JSON.parse(line));
+  const itemIds = events.filter(event => event.event === "tinychat_request_diagnostic").map(event => event.request_id);
+  expect([...new Set(itemIds)].sort()).toEqual([
+    "12345678-abcd-4abc-8abc-123456789abc", "87654321-abcd-4abc-8abc-123456789abc",
+  ]);
+  const shared = events.filter(event => event.event === "tinychat_background_diagnostic");
+  expect(shared.some(event => event.level === "error")).toBe(true);
+  for (const event of shared) expect(Object.keys(event).sort()).toEqual(["event", "level"]);
+});
