@@ -18,7 +18,6 @@ test("timed copy and Markdown retain speaker, minute and hour clocks", () => {
   expect(transcriptMarkdown("Interview", null, long)).toContain("## Transcript\n\n[00:00] Me: Hello.");
 });
 
-
 test("PTX turns up to 60 seconds render, copy, follow, and seek as timed rows", async () => {
   const ptx = [
     { index: 0, speaker_name: "You", text: "First turn.", start_time: 0, end_time: 22.6 },

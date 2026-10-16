@@ -4,6 +4,7 @@ import {
   primaryOnDeviceModel,
 } from "@/lib/voiceNotes/onDeviceSttStore";
 import { FINAL_COPY } from "./finalCopy";
+import { deviceName } from "@/lib/platform";
 
 export interface StopAction {
   label: string;
@@ -43,7 +44,7 @@ export function localModelGuide(
   if (!model || !download) return { reason: FINAL_COPY.modelUnavailable };
   const get = (label: string): StopAction => ({ label, run: download.start });
   if (download.error) {
-    return { reason: download.error, action: get(FINAL_COPY.modelTryAgain) };
+    return { reason: download.error.startsWith("Couldn't download the on-device model") ? download.error : `Couldn't download the on-device model: ${download.error}`, action: get(FINAL_COPY.modelTryAgain) };
   }
   if (isAppleSpeech(model)) return appleSpeechGuide(model, download.start);
   const needed = [primaryOnDeviceModel(model), model.models.find((m) => m.id === "silero-vad")].filter(
@@ -51,9 +52,8 @@ export function localModelGuide(
   );
   const failed = needed.find((entry) => entry.state === "failed");
   if (failed || model.download.state === "failed") {
-    const why = failed?.error ?? null;
     return {
-      reason: why ? `Couldn't download the on-device model: ${why}` : "Couldn't download the on-device model",
+      reason: "Couldn't download the on-device model",
       action: get(FINAL_COPY.modelTryAgain),
     };
   }
@@ -92,5 +92,5 @@ export function modelActionLabel(action: StopAction): string {
 export function waitingForModelSentence(model: OnDeviceSttStatus | null, guide: { reason: string; action?: StopAction }): string {
   if (guide.action?.label !== FINAL_COPY.modelUnavailable) return guide.reason;
   const total = model ? onDeviceDownloadTotalBytes(model) : 0;
-  return total > 0 ? `Transcribe on this phone — needs a ${mb(total)} MB download` : "Transcribe on this phone — needs the on-device model";
+  return total > 0 ? `Transcribe on ${deviceName()} — needs a ${mb(total)} MB download` : `Transcribe on ${deviceName()} — needs the on-device model`;
 }

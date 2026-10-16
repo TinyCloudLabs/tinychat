@@ -32,12 +32,28 @@
   margin-top: 4px;
   min-height: 24px;
 }
-.dr-system-audio {
-  margin: 0;
+.dr-via-system {
   color: var(--dim);
-  font-size: 12px;
-  font-weight: 600;
-  text-align: center;
+  white-space: nowrap;
+}
+.dr-them-trace {
+  position: absolute;
+  inset: -8px;
+  width: calc(100% + 16px);
+  height: calc(100% + 16px);
+  overflow: visible;
+  pointer-events: none;
+  transform: rotate(-90deg);
+  fill: none;
+  stroke-width: 0.6;
+}
+.dr-them-track {
+  stroke: var(--gedge);
+}
+.dr-them-level {
+  stroke: currentColor;
+  stroke-linecap: round;
+  transition: stroke-dasharray 100ms linear;
 }
 .dr[data-compact="true"] .pr-extra {
   min-height: 20px;

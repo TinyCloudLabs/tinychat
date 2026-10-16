@@ -32,8 +32,11 @@ describe("recording Markdown", () => {
       },
     } });
     try {
-      await expect(loadNote(id())).rejects.toThrow("open 1 failed");
-      await expect(loadNote(id())).rejects.toThrow("open 2 failed");
+      // Dynamic import on purpose: a static import shares one module instance, and recordingNotes caches its
+      // first successful DB connection process-wide, so an earlier file that opened IndexedDB would satisfy this read.
+      const fresh = await import(`./recordingNotes?fresh=${id()}`);
+      await expect(fresh.loadNote(id())).rejects.toThrow("open 1 failed");
+      await expect(fresh.loadNote(id())).rejects.toThrow("open 2 failed");
       expect(opens).toBe(2);
     } finally {
       if (previousDb) Object.defineProperty(globalThis, "indexedDB", previousDb);

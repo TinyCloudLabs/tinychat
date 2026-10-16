@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import {
   clearMemory,
@@ -10,13 +10,20 @@ import {
 import { MEMORY_TEMPLATE } from "./memory";
 import { onPaywallError } from "./chatApi";
 import {
+  __resetStorageStatusForTests,
+  beginStorageAccountSession,
+  endStorageAccountSession,
+  reportStorageError,
   reportStorageWriteSucceeded,
   STORAGE_FULL_SAVE_MESSAGE,
   subscribeStorageReadOnly,
+  subscribeStorageRecoveryWake,
   isStorageReadOnly,
-  isStorageFullError,
   storageSaveMessage,
 } from "./storageStatus";
+afterEach(async () => {
+  await __resetStorageStatusForTests();
+});
 
 /** Capture console.warn output for the duration of `fn` (restores after). */
 async function captureWarn(fn: () => Promise<void>): Promise<string> {
@@ -145,13 +152,9 @@ describe("threadStore memory backup/restore (Layer 3)", () => {
     db.existingTables.delete("compactions");
     db.rows.set(LIVE, "READABLE DOC");
     db.rejectWrites = true;
-    try {
-      expect(await getMemory(makeTcw(db))).toBe("READABLE DOC");
-      expect(db.writes).toBe(1); // only the rejected missing-table migration
-      expect(isStorageReadOnly()).toBe(true);
-    } finally {
-      reportStorageWriteSucceeded();
-    }
+    expect(await getMemory(makeTcw(db))).toBe("READABLE DOC");
+    expect(db.writes).toBe(1); // only the rejected missing-table migration
+    expect(isStorageReadOnly()).toBe(true);
   });
 
   it("getMemory returns the backup without repairing the live row", async () => {
@@ -283,7 +286,7 @@ describe("full TinyCloud storage", () => {
       await expect(setMemory(tcw, "cannot save")).rejects.toThrow(STORAGE_FULL_SAVE_MESSAGE);
       expect(db.writes).toBe(1);
       expect(isStorageReadOnly()).toBe(true);
-      expect(isStorageFullError({ code: "NETWORK_ERROR", message: "SQL batch failed: 402 - Storage quota exceeded" })).toBe(true);
+      // A raw 402 is not asserted separately: the SDK already maps every 402 to STORAGE_QUOTA_EXCEEDED (TC-1142).
       expect(storageSaveMessage({ code: "STORAGE_LIMIT_REACHED", message: "limited" })).toContain("This change is larger");
       db.rejectWrites = false;
       await setMemory(tcw, "saved after space was freed");
@@ -292,7 +295,66 @@ describe("full TinyCloud storage", () => {
     } finally {
       unsubscribe();
       unwatch();
-      reportStorageWriteSucceeded();
     }
+  });
+  it("does not attribute a parked A memory batch quota result to B after handoff", async () => {
+    let releaseBatch!: (result: { ok: boolean; error?: { code: string; message: string }; data?: { rows: unknown[][] } }) => void;
+    let batchStarted!: () => void;
+    const started = new Promise<void>((resolve) => { batchStarted = resolve; });
+    const batchResult = new Promise<{ ok: boolean; error?: { code: string; message: string }; data?: { rows: unknown[][] } }>((resolve) => { releaseBatch = resolve; });
+    const db = {
+      query: async (sql: string, params: unknown[] = []) => /sqlite_master/i.test(sql)
+        ? { ok: true as const, data: { rows: params.map((table) => [table]) } }
+        : { ok: true as const, data: { rows: [] } },
+      execute: async () => ({ ok: true as const, data: { rows: [] } }),
+      batch: async () => { batchStarted(); return batchResult; },
+    };
+    const a = { did: "did:example:memory-A", spaceId: "space-memory-A", sql: { db: () => db } } as unknown as TinyCloudWeb;
+    beginStorageAccountSession(a, a.did!, a.spaceId!);
+    const saving = setMemory(a, "A memory");
+    await started;
+
+    endStorageAccountSession();
+    const b = { did: "did:example:memory-B", spaceId: "space-memory-B", sql: { db: () => db } } as unknown as TinyCloudWeb;
+    beginStorageAccountSession(b, b.did!, b.spaceId!);
+    releaseBatch({ ok: false, error: { code: "STORAGE_QUOTA_EXCEEDED", message: "full" } });
+    await expect(saving).rejects.toThrow(STORAGE_FULL_SAVE_MESSAGE);
+    expect(isStorageReadOnly()).toBe(false);
+  });
+
+  it("keeps a parked A memory read and write from waking B recovery", async () => {
+    let releasePrior!: (result: { ok: true; data: { rows: unknown[][] } }) => void;
+    let priorStarted!: () => void;
+    const started = new Promise<void>((resolve) => { priorStarted = resolve; });
+    const priorResult = new Promise<{ ok: true; data: { rows: unknown[][] } }>((resolve) => { releasePrior = resolve; });
+    const db = {
+      query: async (sql: string, params: unknown[] = []) => {
+        if (/sqlite_master/i.test(sql)) return { ok: true as const, data: { rows: params.map((table) => [table]) } };
+        if (/SELECT content FROM memory/i.test(sql) && params[0] === "user_context") {
+          priorStarted();
+          return priorResult;
+        }
+        return { ok: true as const, data: { rows: [] } };
+      },
+      execute: async () => ({ ok: true as const, data: { rows: [] } }),
+      batch: async () => ({ ok: true as const, data: { rows: [] } }),
+    };
+    const a = { did: "did:example:memory-read-A", spaceId: "space-memory-read-A", sql: { db: () => db } } as unknown as TinyCloudWeb;
+    beginStorageAccountSession(a, a.did!, a.spaceId!);
+    const saving = setMemory(a, "A memory");
+    await started;
+
+    endStorageAccountSession();
+    const b = { did: "did:example:memory-read-B", spaceId: "space-memory-read-B", sql: { db: () => db } } as unknown as TinyCloudWeb;
+    const bScope = beginStorageAccountSession(b, b.did!, b.spaceId!);
+    let wakes = 0;
+    const unsubscribe = subscribeStorageRecoveryWake(() => { wakes++; }, bScope);
+    reportStorageError({ code: "STORAGE_QUOTA_EXCEEDED", message: "B full" }, bScope);
+    releasePrior({ ok: true, data: { rows: [] } });
+    await saving;
+    unsubscribe();
+
+    expect(isStorageReadOnly()).toBe(true);
+    expect(wakes).toBe(0);
   });
 });

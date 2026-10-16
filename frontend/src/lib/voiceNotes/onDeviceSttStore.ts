@@ -136,7 +136,7 @@ function appleSpeechLine(status: OnDeviceSttStatus): string {
     case "locale_unsupported": return "Not available in this language";
     case "asset_missing":
       if (status.download.state === "failed") return "Couldn't get speech from iOS";
-      return status.download.state === "running" ? "Getting speech from iOS…" : "Speech from iOS isn't on this phone yet";
+      return status.download.state === "running" ? "Getting speech from iOS…" : "Speech from iOS isn't on this iPhone yet";
   }
 }
 

@@ -1,4 +1,5 @@
-import { accountStorageKey, VOICE_NOTE_CONSENT_VERSION } from "@/lib/voiceNotes/voiceNoteTranscription";
+import { accountStorageKey } from "@/lib/voiceNotes/sourcePins";
+import { VOICE_NOTE_CONSENT_VERSION } from "@/lib/voiceNotes/voiceNoteTranscription";
 
 export const PRIVATE_CONSENT_PROMPT_KEY = "exo.voiceNotes.privateConsentPrompted";
 

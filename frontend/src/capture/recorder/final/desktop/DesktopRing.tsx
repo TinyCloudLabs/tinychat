@@ -1,5 +1,7 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { HaloRing, LevelSourceAdapter, QUIET } from "../halo";
+import { levelFromAmplitude } from "@/lib/voiceNotes/web/webLevels";
+import type { LevelEvent } from "@/lib/voiceNotes/nativeVoiceNotes";
 import type { RecorderView } from "../recorderView";
 import { RingGlyph } from "../softIcons";
 
@@ -9,6 +11,8 @@ export interface DesktopRingProps {
   theme: "night" | "day";
   size: 214 | 172;
   subscribeLevel: (listener: (level: number) => void) => () => void;
+  subscribeLevels?: (listener: (levels: LevelEvent) => void) => () => void;
+  systemAudioCaptured?: boolean;
   /** The ring is the pause/resume button: its label and press handler. */
   action: { label: string; onPress: () => void; disabled: boolean } | null;
   glyph: "pause" | "play" | null;
@@ -21,15 +25,25 @@ export function DesktopRing({
   theme,
   size,
   subscribeLevel,
+  subscribeLevels,
+  systemAudioCaptured = false,
   action,
   glyph,
 }: DesktopRingProps) {
   const adapter = useMemo(() => new LevelSourceAdapter(), []);
+  const themTrace = useRef<SVGCircleElement>(null);
   const subscribe = useMemo(() => adapter.subscribe.bind(adapter), [adapter]);
   useEffect(
     () => subscribeLevel((level) => void adapter.update(level)),
     [adapter, subscribeLevel],
   );
+  useEffect(() => {
+    if (!systemAudioCaptured || !subscribeLevels) return;
+    return subscribeLevels((levels) => {
+      const level = levelFromAmplitude(levels.sources?.system?.level ?? 0);
+      themTrace.current?.setAttribute("stroke-dasharray", `${Math.max(1, level * 100)} 100`);
+    });
+  }, [subscribeLevels, systemAudioCaptured]);
   const body = (
     <>
       <HaloRing
@@ -43,6 +57,12 @@ export function DesktopRing({
         source={QUIET}
         subscribe={ring === "live" && !flat ? subscribe : undefined}
       />
+      {ring === "live" && systemAudioCaptured && (
+        <svg className="dr-them-trace" viewBox="0 0 100 100" role="img" aria-label="Them audio level">
+          <circle className="dr-them-track" cx="50" cy="50" r="48" pathLength="100" />
+          <circle ref={themTrace} className="dr-them-level" cx="50" cy="50" r="48" pathLength="100" strokeDasharray="1 100" />
+        </svg>
+      )}
       {glyph && <RingGlyph kind={glyph} />}
     </>
   );

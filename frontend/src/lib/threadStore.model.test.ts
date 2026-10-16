@@ -14,7 +14,7 @@ import {
   setThreadModel,
 } from "./threadStore";
 import { runImportLoop } from "../chat/importLoop";
-import { isStorageReadOnly, reportStorageWriteSucceeded, STORAGE_FULL_SAVE_MESSAGE } from "./storageStatus";
+import { __resetStorageStatusForTests, isStorageReadOnly, reportStorageWriteSucceeded, STORAGE_FULL_SAVE_MESSAGE } from "./storageStatus";
 
 type Gate = { promise: Promise<void>; release: () => void };
 function gate(): Gate {
@@ -23,9 +23,10 @@ function gate(): Gate {
 }
 
 const originalWindow = globalThis.window;
-afterEach(() => {
+afterEach(async () => {
   if (originalWindow) globalThis.window = originalWindow;
   else delete (globalThis as { window?: Window }).window;
+  await __resetStorageStatusForTests();
 });
 
 function localStorageWindow() {

@@ -19,18 +19,27 @@ class FakeBridge implements DesktopBridge {
   stageCalls: Record<string, unknown>[] = [];
   listeners = new Map<string, Set<Callback>>();
   recover: { id: string; startedAt: number; recordedMs: number; pausedMs: number; maxDurationMs: number;
-    spans?: MissingAudioSpan[] } | null = null;
+    spans?: MissingAudioSpan[]; layout?: "mono" | "stereo" } | null = null;
+  stopped: NonNullable<FakeBridge["recover"]>[] = [];
+  emptyFinal = false;
+  priorAudioMs = 0;
   failed: { id: string; segmentId: string; reason: string; error: string; journal: NonNullable<FakeBridge["recover"]> }[] = [];
   elapsed = 0;
   paused = 0;
   current: string | null = null;
+  channels: 1 | 2 = 1;
   state: "idle" | "recording" | "paused" = "idle";
   selectedId: string | null = null;
   selectedModel: string | null = null;
   downloadedModels = new Set<string>();
   spans: MissingAudioSpan[] = [];
   stopError: Error | null = null;
+  stopDurableGate: Promise<void> | null = null;
+  finishGate: Promise<void> | null = null;
+  finishError: Error | null = null;
   stageError: unknown = null;
+  deleteGate: Promise<void> | null = null;
+  deleteStarted = false;
   now = 1_000_000;
 
   emit(event: string, payload: unknown) {
@@ -38,7 +47,7 @@ class FakeBridge implements DesktopBridge {
   }
   status() {
     return { state: this.state, reason: this.state === "paused" ? "user" : null, id: this.current,
-      startedAt: this.current ? this.now : null, elapsedMs: this.elapsed, audioMs: this.elapsed,
+      startedAt: this.current ? this.now : null, elapsedMs: this.elapsed, audioMs: this.elapsed, channels: this.channels,
       pausedMs: this.paused, maxDurationMs: 10_000, intent: this.state === "idle" ? "stopped" : this.state,
       availability: "available", at: this.now, elapsedAt: this.now, spans: this.spans };
   }
@@ -57,8 +66,9 @@ class FakeBridge implements DesktopBridge {
       case "recorder_models_list": result = [...this.downloadedModels].map((model) => ({ id: model, downloaded: true })); break;
       case "recorder_models_select": this.selectedModel = id;
         this.emit("exo://recorder-model-selection", id); result = null; break;
-      case "recorder_recover": result = { journal: this.recover, quarantined: this.failed }; break;
-      case "recorder_acknowledge": this.recover = null; result = null; break;
+      case "recorder_recover": result = { journal: this.recover, stopped: this.stopped, quarantined: this.failed }; break;
+      case "recorder_stopped_list": result = this.stopped.map((entry) => entry.id); break;
+      case "recorder_acknowledge": this.recover = null; this.stopped = this.stopped.filter((entry) => entry.id !== id); result = null; break;
       case "recorder_failed_list": result = this.failed; break;
       case "recorder_failed_retry": this.failed = this.failed.filter((item) => item.id !== id); result = []; break;
       case "recorder_failed_delete": this.failed = this.failed.filter((item) => item.id !== id); result = null; break;
@@ -66,10 +76,22 @@ class FakeBridge implements DesktopBridge {
         this.current = id; this.state = "recording"; result = this.status(); this.emit("exo://recorder-mic-state", result); break;
       case "recorder_pause": this.state = "paused"; result = this.status(); this.emit("exo://recorder-mic-state", result); break;
       case "recorder_resume": this.state = "recording"; result = this.status(); this.emit("exo://recorder-mic-state", result); break;
+      case "recorder_stop_durable":
+        if (this.stopDurableGate) await this.stopDurableGate;
+        if (this.current) this.stopped.push({ id: this.current, startedAt: this.now,
+          recordedMs: this.emptyFinal ? this.priorAudioMs : this.elapsed, pausedMs: this.paused,
+          maxDurationMs: 3 * 60 * 60_000 });
+        // falls through
       case "recorder_stop": if (this.stopError) throw this.stopError;
         result = { ...this.status(), state: "idle", intent: "stopped" };
-        this.state = "idle"; this.current = null; this.elapsed = 0; this.paused = 0;
+        if (command === "recorder_stop_durable" && this.emptyFinal) {
+          result = { ...(result as object), audioMs: this.priorAudioMs, elapsedMs: this.priorAudioMs };
+        }
+        this.state = "idle"; this.current = null; this.elapsed = 0; this.paused = 0; this.channels = 1;
         this.emit("exo://recorder-mic-state", this.status()); break;
+      case "recorder_finish": if (this.finishGate) await this.finishGate;
+        if (this.finishError) throw this.finishError;
+        result = this.files.get(id)?.length ?? 0; break;
       case "recorder_status": result = this.status(); break;
       case "recorder_list_inputs": result = { inputs: [{ id: "mic-1", name: "Fixture microphone", kind: "built_in" }],
         selectedId: this.selectedId, activeId: "mic-1", selectedMissing: null }; break;
@@ -109,9 +131,13 @@ class FakeBridge implements DesktopBridge {
         result = removed;
         break;
       }
-      case "delete_audio_file": this.files.delete(id);
+      case "delete_audio_file":
+        if (this.deleteGate) { this.deleteStarted = true; await this.deleteGate; }
+        this.files.delete(id);
         this.failed = this.failed.filter((item) => item.id !== id);
+        this.stopped = this.stopped.filter((item) => item.id !== id);
         result = null; break;
+      case "recorder_quit_anyway": result = null; break;
       default: throw new Error(`Unexpected command ${command}`);
     }
     return result as T;
@@ -255,6 +281,224 @@ describe("desktop recorder adapter", () => {
     }
   });
 
+  test("1 minute, 30 minute and 3 hour fixtures commit before background finishing", async () => {
+    for (const minutes of [1, 30, 180]) {
+      const bridge = new FakeBridge();
+      bridge.finishGate = new Promise<void>(() => {});
+      const engine = await rig(bridge);
+      await engine.plugin.start();
+      bridge.elapsed = minutes * 60_000;
+      bridge.files.set("note-1", Uint8Array.of(1, 2, 3));
+      const started = performance.now();
+      const receipt = await engine.plugin.stop();
+      const elapsedMs = performance.now() - started;
+      expect(receipt.durationMs).toBe(minutes * 60_000);
+      expect(receipt.ledger?.localAudio?.state).toBe("preparing");
+      expect(elapsedMs).toBeLessThanOrEqual(1_000);
+      console.info(`[U2 fixture] duration=${minutes}m stop_to_local_commit_ms=${elapsedMs.toFixed(1)}`);
+      engine.dispose();
+    }
+  });
+
+  test("stop does not publish a note until native source and journal are durable", async () => {
+    const bridge = new FakeBridge();
+    let release!: () => void;
+    bridge.stopDurableGate = new Promise<void>((resolve) => { release = resolve; });
+    const engine = await rig(bridge);
+    await engine.plugin.start();
+    bridge.files.set("note-1", Uint8Array.of(1, 2, 3));
+    bridge.elapsed = 60_000;
+    const stopping = engine.plugin.stop();
+    await Bun.sleep(0);
+    expect((await engine.plugin.listPending()).recordings).toHaveLength(0);
+    release();
+    const receipt = await stopping;
+    expect(receipt.ledger?.localAudio?.state).toBe("preparing");
+    await engine.plugin.awaitAudioReady?.(receipt.id);
+    engine.dispose();
+  });
+
+  test("a killed finishing job recovers one complete note", async () => {
+    const bridge = new FakeBridge();
+    bridge.finishGate = new Promise<void>(() => {});
+    const env = newIdbEnv();
+    const dbName = crypto.randomUUID();
+    let sequence = 0;
+    const first = await openDesktopVoiceNotes({ bridge, now: () => bridge.now,
+      newId: () => `note-${++sequence}`,
+      storeOptions: { env, dbName, locks: memoryLocks(), decodeCheck: null } });
+    await first.plugin.start();
+    bridge.files.set("note-1", Uint8Array.of(1, 2, 3, 4));
+    bridge.elapsed = 30 * 60_000;
+    const receipt = await first.plugin.stop();
+    expect(receipt.ledger?.localAudio?.state).toBe("preparing");
+    // Finishing does not hold the capture command lane or microphone.
+    const another = await first.plugin.start();
+    expect(another.id).toBe("note-2");
+    await first.plugin.discard();
+    // The old process has stopped after showing the receipt. The native source
+    // remains under its stop journal; the next process imports that same note.
+    bridge.recover = { id: receipt.id, startedAt: bridge.now, recordedMs: receipt.durationMs,
+      pausedMs: 0, maxDurationMs: 3 * 60 * 60_000 };
+    first.dispose();
+    bridge.finishGate = null;
+    const reopened = await rig(bridge, dbName, env);
+    const result = await reopened.recoverInterrupted();
+    expect(result.recovered).toHaveLength(1);
+    expect((await reopened.plugin.listPending()).recordings.filter((note) => note.id === receipt.id))
+      .toMatchObject([{ id: receipt.id, sizeBytes: 4, durationMs: receipt.durationMs,
+        ledger: { localAudio: { state: "ready", error: null } } }]);
+    expect(base64ToBytes((await reopened.plugin.readAudioChunk({ id: receipt.id, offset: 0, length: 4 })).base64))
+      .toEqual(Uint8Array.of(1, 2, 3, 4));
+    reopened.dispose();
+  });
+
+  test("playback, chunk reads, metadata and upload wait while audio is preparing", async () => {
+    const bridge = new FakeBridge();
+    let release!: () => void;
+    bridge.finishGate = new Promise<void>((resolve) => { release = resolve; });
+    const engine = await rig(bridge);
+    await engine.plugin.start();
+    bridge.files.set("note-1", Uint8Array.of(1, 2, 3, 4));
+    bridge.elapsed = 60_000;
+    const receipt = await engine.plugin.stop();
+    const settled: string[] = [];
+    const playback = engine.plugin.localAudioUrl({ id: receipt.id }).then(() => settled.push("playback"));
+    const chunk = engine.plugin.readAudioChunk({ id: receipt.id, offset: 0, length: 1 }).then(() => settled.push("chunk"));
+    const metadata = engine.plugin.audioMetadata!({ id: receipt.id }).then(() => settled.push("metadata"));
+    const upload = engine.plugin.uploadAudio!({ id: receipt.id, uploadId: "fixture", url: "https://example.test",
+      capability: "fixture", contentType: "audio/mpeg", contentLength: 4, correlationId: "fixture" })
+      .then(() => settled.push("upload"));
+    await Bun.sleep(0);
+    expect(settled).toEqual([]);
+    expect(bridge.calls).not.toContain("ptx_upload_audio");
+    release();
+    await Promise.all([playback, chunk, metadata, upload]);
+    expect(settled.sort()).toEqual(["chunk", "metadata", "playback", "upload"]);
+    engine.dispose();
+  });
+
+  test("an empty final interval keeps earlier audio playable and uploadable", async () => {
+    const bridge = new FakeBridge();
+    const engine = await rig(bridge);
+    await engine.plugin.start();
+    bridge.files.set("note-1", Uint8Array.of(1, 2, 3, 4));
+    bridge.elapsed = 60_000;
+    await engine.plugin.pause();
+    await engine.plugin.resume();
+    bridge.emptyFinal = true;
+    bridge.priorAudioMs = 60_000;
+    bridge.elapsed = 60_800;
+    const note = await engine.plugin.stop();
+    expect(note.durationMs).toBe(60_000);
+    await engine.plugin.awaitAudioReady?.(note.id);
+    expect(base64ToBytes((await engine.plugin.readAudioChunk({ id: note.id, offset: 0, length: 4 })).base64))
+      .toEqual(Uint8Array.of(1, 2, 3, 4));
+    await engine.plugin.uploadAudio!({ id: note.id, uploadId: "fixture", url: "https://example.test",
+      capability: "fixture", contentType: "audio/mpeg", contentLength: 4, correlationId: "fixture" });
+    expect(bridge.calls).toContain("ptx_upload_audio");
+    engine.dispose();
+  });
+
+  test("an empty first interval does not publish a saved receipt", async () => {
+    const bridge = new FakeBridge();
+    bridge.emptyFinal = true;
+    const engine = await rig(bridge);
+    await engine.plugin.start();
+    await expect(engine.plugin.stop()).rejects.toThrow("no_audio_captured");
+    expect((await engine.plugin.listPending()).recordings).toHaveLength(0);
+    expect(bridge.stopped).toHaveLength(0);
+    engine.dispose();
+  });
+
+  test("deleting during finishing clears the stopped source and cannot restore audio", async () => {
+    const bridge = new FakeBridge();
+    let release!: () => void;
+    bridge.finishGate = new Promise<void>((resolve) => { release = resolve; });
+    const engine = await rig(bridge);
+    await engine.plugin.start();
+    bridge.files.set("note-1", Uint8Array.of(1, 2, 3));
+    bridge.elapsed = 60_000;
+    const note = await engine.plugin.stop();
+    await engine.plugin.deleteAudio({ id: note.id });
+    release();
+    await Bun.sleep(0);
+    expect(bridge.stopped).toHaveLength(0);
+    expect(bridge.files.has(note.id)).toBe(false);
+    expect((await engine.plugin.listPending()).recordings).toHaveLength(0);
+    engine.dispose();
+  });
+
+  test("relaunch deletes a tombstoned source before native recovery can import it", async () => {
+    const bridge = new FakeBridge();
+    bridge.finishGate = new Promise<void>(() => {});
+    const env = newIdbEnv();
+    const dbName = crypto.randomUUID();
+    const first = await rig(bridge, dbName, env, { hooks: { beforeOp(op) {
+      if (op === "audio:delete") throw new Error("simulated kill after tombstone");
+    } } });
+    await first.plugin.start();
+    bridge.files.set("note-1", Uint8Array.of(1, 2, 3));
+    bridge.elapsed = 60_000;
+    const note = await first.plugin.stop();
+    await expect(first.plugin.deleteAudio({ id: note.id })).rejects.toThrow("simulated kill");
+    expect(bridge.stopped).toHaveLength(1);
+    first.dispose();
+    bridge.finishGate = null;
+    const second = await rig(bridge, dbName, env);
+    const recovered = await second.recoverInterrupted();
+    expect(recovered.recovered).toHaveLength(0);
+    expect(bridge.stopped).toHaveLength(0);
+    expect(bridge.files.has(note.id)).toBe(false);
+    const listed = bridge.calls.lastIndexOf("recorder_stopped_list");
+    const recoveredAt = bridge.calls.lastIndexOf("recorder_recover");
+    expect(bridge.calls.slice(listed + 1, recoveredAt)).toContain("delete_audio_file");
+    second.dispose();
+  });
+
+  test("Whisper resume skips preparing audio until finishing publishes ready", async () => {
+    const bridge = new FakeBridge();
+    bridge.selectedModel = "QuantizedTinyEn";
+    bridge.downloadedModels.add("QuantizedTinyEn");
+    let release!: () => void;
+    bridge.finishGate = new Promise<void>((resolve) => { release = resolve; });
+    const whisper = new FakeWhisper();
+    const engine = await openDesktopVoiceNotes({ bridge, whisper, newId: () => "note-1",
+      storeOptions: { env: newIdbEnv(), dbName: crypto.randomUUID(), locks: memoryLocks(), decodeCheck: null } });
+    await engine.plugin.start();
+    bridge.files.set("note-1", Uint8Array.of(1, 2, 3));
+    bridge.elapsed = 60_000;
+    await engine.plugin.stop();
+    await engine.whisper?.resume();
+    expect(whisper.calls).toHaveLength(0);
+    expect(engine.whisper?.snapshot().get("note-1")?.state).not.toBe("failed");
+    release();
+    await waitFor(() => whisper.calls.length === 1);
+    engine.dispose();
+  });
+
+  test("preparation failure keeps sources and exposes a typed retry", async () => {
+    const bridge = new FakeBridge();
+    bridge.finishError = new Error("fixture encode failed");
+    const engine = await rig(bridge);
+    await engine.plugin.start();
+    bridge.files.set("note-1", Uint8Array.of(7, 8, 9));
+    bridge.elapsed = 60_000;
+    const receipt = await engine.plugin.stop();
+    let state: string | undefined;
+    for (let attempt = 0; attempt < 100; attempt++) {
+      state = (await engine.plugin.listPending()).recordings[0]?.ledger?.localAudio?.state;
+      if (state === "failed") break;
+      await Bun.sleep(10);
+    }
+    expect(state).toBe("failed");
+    expect(bridge.files.get(receipt.id)).toEqual(Uint8Array.of(7, 8, 9));
+    bridge.finishError = null;
+    await engine.plugin.retryRecovery({ id: receipt.id });
+    expect((await engine.plugin.listPending()).recordings[0]?.ledger?.localAudio?.state).toBe("ready");
+    engine.dispose();
+  });
+
   slow("stop queues Whisper and commits a local transcript once", async () => {
     const bridge = new FakeBridge();
     bridge.selectedModel = "QuantizedTinyEn";
@@ -305,6 +549,77 @@ describe("desktop recorder adapter", () => {
     db.close();
     await engine.whisper!.resume();
     expect(engine.whisper!.snapshot().get(id)).toMatchObject({ state: "failed" });
+    engine.dispose();
+  });
+  slow("explicit desktop Whisper rerun replaces an existing local transcript at the requested revision", async () => {
+    const bridge = new FakeBridge();
+    bridge.selectedModel = "QuantizedTinyEn";
+    bridge.downloadedModels.add("QuantizedTinyEn");
+    const whisper = new FakeWhisper();
+    const engine = await openDesktopVoiceNotes({ bridge, whisper,
+      storeOptions: { env: newIdbEnv(), dbName: crypto.randomUUID(), locks: memoryLocks(), decodeCheck: null } });
+    const id = (await engine.plugin.start()).id;
+    bridge.files.set(id, Uint8Array.of(1, 2, 3));
+    await engine.plugin.stop();
+    await waitFor(() => engine.whisper?.snapshot().get(id)?.state === "done");
+    const original = (await engine.plugin.getTranscript({ id })).transcript;
+    expect(original?.rev).toBe(1);
+    await engine.whisper!.rerun({ id, rev: 2, baseRev: 1, baseHash: "a".repeat(32) });
+    await waitFor(() => engine.whisper?.snapshot().get(id)?.state === "done" && whisper.calls.length === 2);
+    const replacement = (await engine.plugin.getTranscript({ id })).transcript;
+    expect(replacement).toMatchObject({ rev: 2, rerunBase: { rev: 1, hash: "a".repeat(32) } });
+    expect(whisper.calls).toHaveLength(2);
+    await engine.whisper!.resume();
+    expect(whisper.calls).toHaveLength(2);
+    engine.dispose();
+  });
+  slow("explicit desktop Whisper reruns decode Private and Powerful notes", async () => {
+    const bridge = new FakeBridge();
+    bridge.selectedModel = "QuantizedTinyEn";
+    bridge.downloadedModels.add("QuantizedTinyEn");
+    const whisper = new FakeWhisper();
+    const env = newIdbEnv();
+    const dbName = crypto.randomUUID();
+    const store = await openWebStore({ env, dbName, locks: memoryLocks(), decodeCheck: null,
+      audio: () => createFileAudioBlobStore(bridge) });
+    const engine = await openDesktopVoiceNotes({ bridge, whisper, now: () => bridge.now, store });
+    await engine.plugin.setAccountState({ status: "signed_in", accountDid: "did:owner", transitionGen: 1 });
+    for (const [index, transcriber] of (["private-cloud", "assemblyai"] as const).entries()) {
+      await engine.plugin.setCaptureDefaults({ accountDid: "did:owner", transitionGen: index + 2,
+        transcriber, identifySpeakers: false });
+      const id = (await engine.plugin.start({ transcriber })).id;
+      bridge.files.set(id, Uint8Array.of(1, 2, 3));
+      bridge.elapsed = 1000;
+      await engine.plugin.stop();
+      await engine.whisper!.rerun({ id, rev: 2, baseRev: 1, baseHash: "a".repeat(32) });
+      await waitFor(() => engine.whisper?.snapshot().get(id)?.state === "done");
+      expect(whisper.calls[index]?.id).toBe(id);
+    }
+    expect(whisper.calls).toHaveLength(2);
+    engine.dispose();
+    store.close();
+  });
+  slow("Whisper subscribers observe queued, transcribing and completed status", async () => {
+    const bridge = new FakeBridge();
+    bridge.selectedModel = "QuantizedTinyEn";
+    bridge.downloadedModels.add("QuantizedTinyEn");
+    const whisper = new FakeWhisper();
+    const engine = await openDesktopVoiceNotes({ bridge, whisper,
+      storeOptions: { env: newIdbEnv(), dbName: crypto.randomUUID(), locks: memoryLocks(), decodeCheck: null } });
+    const states: string[] = [];
+    const unsubscribe = engine.whisper!.subscribe(() => {
+      const job = engine.whisper!.snapshot().values().next().value;
+      if (job) states.push(job.state);
+    });
+    const id = (await engine.plugin.start()).id;
+    bridge.files.set(id, Uint8Array.of(1, 2, 3));
+    bridge.elapsed = 1000;
+    await engine.plugin.stop();
+    await waitFor(() => engine.whisper?.snapshot().get(id)?.state === "done");
+    expect(states).toContain("queued");
+    expect(states).toContain("transcribing");
+    expect(states.at(-1)).toBe("done");
+    unsubscribe();
     engine.dispose();
   });
 
@@ -374,6 +689,160 @@ describe("desktop recorder adapter", () => {
     whisper.onStopServer = null;
     await engine.plugin.discard();
     engine.dispose();
+  });
+  slow("capture preemption resumes a desktop rerun instead of completing the old transcript", async () => {
+    const bridge = new FakeBridge();
+    bridge.selectedModel = "QuantizedTinyEn";
+    bridge.downloadedModels.add("QuantizedTinyEn");
+    const whisper = new FakeWhisper();
+    const env = newIdbEnv();
+    const dbName = crypto.randomUUID();
+    const store = await openWebStore({ env, dbName, locks: memoryLocks(), decodeCheck: null,
+      audio: () => createFileAudioBlobStore(bridge) });
+    const engine = await openDesktopVoiceNotes({ bridge, whisper, now: () => bridge.now, store });
+    const id = (await engine.plugin.start()).id;
+    bridge.files.set(id, Uint8Array.of(1, 2, 3));
+    bridge.elapsed = 1000;
+    await engine.plugin.stop();
+    await waitFor(() => engine.whisper?.snapshot().get(id)?.state === "done");
+    const original = (await store.getTranscript({ id })).transcript;
+    expect(original?.rev).toBe(1);
+
+    whisper.pending = true;
+    await engine.whisper!.rerun({ id, rev: 2, baseRev: 1, baseHash: "a".repeat(32) });
+    await waitFor(() => whisper.calls.length === 2);
+    const recording = (await engine.plugin.start()).id;
+    expect(recording).not.toBe(id);
+    await waitFor(() => engine.whisper?.snapshot().get(id)?.state === "queued");
+    expect((await store.listPending()).recordings.find((note) => note.id === id)?.stt)
+      .toMatchObject({ state: "queued", rerunRev: 2, rerunBaseRev: 1, rerunBaseHash: "a".repeat(32) });
+
+    whisper.pending = false;
+    bridge.files.set(recording, Uint8Array.of(4, 5, 6));
+    bridge.elapsed = 1000;
+    await engine.plugin.stop();
+    await waitFor(() => whisper.calls.filter((call) => call.id === id).length === 3
+      && engine.whisper?.snapshot().get(id)?.state === "done");
+    expect(whisper.calls.filter((call) => call.id === id)).toHaveLength(3);
+    expect((await store.getTranscript({ id })).transcript).toMatchObject({
+      rev: 2, rerunBase: { rev: 1, hash: "a".repeat(32) },
+    });
+    engine.dispose();
+    store.close();
+  });
+
+  slow("desktop resume preserves a failed rerun base so it can be retried", async () => {
+    const bridge = new FakeBridge();
+    bridge.selectedModel = "QuantizedTinyEn";
+    bridge.downloadedModels.add("QuantizedTinyEn");
+    const whisper = new FakeWhisper();
+    const env = newIdbEnv();
+    const dbName = crypto.randomUUID();
+    const store = await openWebStore({ env, dbName, locks: memoryLocks(), decodeCheck: null,
+      audio: () => createFileAudioBlobStore(bridge) });
+    const engine = await openDesktopVoiceNotes({ bridge, whisper, now: () => bridge.now, store });
+    const completions: string[] = [];
+    engine.whisper!.onDone((completedId) => completions.push(completedId));
+    const id = (await engine.plugin.start()).id;
+    bridge.files.set(id, Uint8Array.of(1, 2, 3));
+    bridge.elapsed = 1000;
+    await engine.plugin.stop();
+    await waitFor(() => engine.whisper?.snapshot().get(id)?.state === "done");
+    const completedBeforeFailure = completions.length;
+    bridge.downloadedModels.clear();
+
+    whisper.fail = true;
+    await engine.whisper!.rerun({ id, rev: 2, baseRev: 1, baseHash: "a".repeat(32) });
+    await waitFor(() => engine.whisper?.snapshot().get(id)?.state === "failed");
+    await engine.whisper!.resume();
+    bridge.downloadedModels.add("QuantizedTinyEn");
+    await engine.whisper!.modelAvailable();
+    expect(engine.whisper!.snapshot().get(id)).toMatchObject({ state: "failed", explicitRerun: true });
+    expect(whisper.calls).toHaveLength(1);
+    expect(completions).toHaveLength(completedBeforeFailure);
+    expect((await store.getTranscript({ id })).transcript).toMatchObject({ rev: 1 });
+    expect((await store.listPending()).recordings.find((note) => note.id === id)?.stt)
+      .toMatchObject({ state: "failed", rerunRev: 2, rerunBaseRev: 1, rerunBaseHash: "a".repeat(32) });
+
+    whisper.fail = false;
+    await engine.whisper!.retry(id);
+    await waitFor(() => engine.whisper?.snapshot().get(id)?.state === "done");
+    expect(whisper.calls).toHaveLength(2);
+    expect((await store.getTranscript({ id })).transcript).toMatchObject({ rev: 2 });
+    engine.dispose();
+    store.close();
+  });
+
+  slow("resume restores failed explicit rerun identity for every original provider without restarting it", async () => {
+    for (const transcriber of ["on-device", "private-cloud", "assemblyai"] as const) {
+      const bridge = new FakeBridge();
+      bridge.selectedModel = "QuantizedTinyEn";
+      bridge.downloadedModels.add("QuantizedTinyEn");
+      const whisper = new FakeWhisper();
+      const env = newIdbEnv();
+      const dbName = crypto.randomUUID();
+      let store = await openWebStore({ env, dbName, locks: memoryLocks(), decodeCheck: null,
+        audio: () => createFileAudioBlobStore(bridge) });
+      let engine = await openDesktopVoiceNotes({ bridge, whisper, now: () => bridge.now, store });
+      const id = (await engine.plugin.start({ transcriber })).id;
+      bridge.files.set(id, Uint8Array.of(1, 2, 3));
+      bridge.elapsed = 1000;
+      await engine.plugin.stop();
+      await engine.plugin.putTranscript({ id, transcript: {
+        version: 2, noteId: id, transcriber: "private-cloud", rev: 1, engine: "tinycloud-private-transcription",
+        model: null, language: "en", outcome: "transcribed", diarized: false,
+        segments: [{ start: 0, end: 1000, text: "old transcript", speaker: null, timing: "coarse" }],
+        createdAt: "2025-01-01T00:00:00.000Z",
+      } });
+      await store.updateStt(id, { state: "failed", pack: null, engine: "whisper", segmentsDone: 0, windowsDone: 0,
+        error: "rerun failed", rerunRev: 2, rerunBaseRev: 1, rerunBaseHash: "a".repeat(32) });
+      engine.dispose();
+      store.close();
+
+      store = await openWebStore({ env, dbName, locks: memoryLocks(), decodeCheck: null,
+        audio: () => createFileAudioBlobStore(bridge) });
+      engine = await openDesktopVoiceNotes({ bridge, whisper, now: () => bridge.now, store });
+      await engine.whisper!.resume();
+      expect(engine.whisper!.snapshot().get(id)).toMatchObject({ state: "failed", explicitRerun: true });
+      expect(whisper.calls).toHaveLength(0);
+      expect((await store.getTranscript({ id })).transcript).toMatchObject({ rev: 1 });
+      await engine.whisper!.retry(id);
+      await waitFor(() => engine.whisper?.snapshot().get(id)?.state === "done");
+      expect(whisper.calls).toHaveLength(1);
+      expect((await store.getTranscript({ id })).transcript).toMatchObject({
+        rev: 2, rerunBase: { rev: 1, hash: "a".repeat(32) },
+      });
+
+      engine.dispose();
+      store.close();
+    }
+  });
+
+  slow("completed Whisper is not stopped while its audio cleanup is pending", async () => {
+    const bridge = new FakeBridge();
+    bridge.selectedModel = "QuantizedTinyEn";
+    bridge.downloadedModels.add("QuantizedTinyEn");
+    let release!: () => void;
+    bridge.deleteGate = new Promise<void>((resolve) => { release = resolve; });
+    const whisper = new FakeWhisper();
+    const env = newIdbEnv();
+    const dbName = crypto.randomUUID();
+    const store = await openWebStore({ env, dbName, locks: memoryLocks(), decodeCheck: null,
+      audio: () => createFileAudioBlobStore(bridge) });
+    const engine = await openDesktopVoiceNotes({ bridge, whisper, now: () => bridge.now, store });
+    try {
+      const id = (await engine.plugin.start()).id;
+      bridge.files.set(id, Uint8Array.of(1, 2, 3));
+      bridge.elapsed = 1000;
+      await engine.plugin.stop();
+      await waitFor(() => bridge.deleteStarted && engine.whisper?.snapshot().get(id)?.state === "done");
+      await engine.whisper!.beforeCapture();
+      expect(whisper.stops).toEqual([]);
+    } finally {
+      release();
+      engine.dispose();
+      store.close();
+    }
   });
 
   slow("a server failure during Record requeues the interrupted note", async () => {
@@ -618,12 +1087,16 @@ describe("desktop recorder adapter", () => {
     expect((await third.plugin.getTranscript({ id })).transcript?.noteId).toBe(id);
     third.dispose();
   });
-  test("reopens a live native capture after WebView reload and can stop it", async () => {
+  test("reopens a live native stereo capture after WebView reload and commits its native channels", async () => {
     const bridge = new FakeBridge();
+    bridge.channels = 2;
     const env = newIdbEnv();
     const dbName = crypto.randomUUID();
     const first = await rig(bridge, dbName, env);
-    await first.plugin.start();
+    const started = await first.plugin.start();
+    const interruptedPersist = await openWebStore({ env, dbName, locks: memoryLocks(), decodeCheck: null });
+    await interruptedPersist.updateSession(started.id, { channels: undefined });
+    interruptedPersist.close();
     bridge.elapsed = 1_500;
     bridge.files.set("note-1", Uint8Array.of(1, 2, 3));
     first.dispose();
@@ -633,9 +1106,22 @@ describe("desktop recorder adapter", () => {
     expect(bridge.calls).not.toContain("recorder_recover");
     expect((await reopened.plugin.status()).elapsedMs).toBe(1_500);
     const note = await reopened.plugin.stop();
-    expect(note.id).toBe("note-1");
-    expect(note.durationMs).toBe(1_500);
+    expect(note).toMatchObject({ id: "note-1", durationMs: 1_500, channels: 2 });
     reopened.dispose();
+  });
+
+  test("adopts a native-started Mac session with the durable upload preference", async () => {
+    const bridge = new FakeBridge();
+    bridge.current = "native-note";
+    bridge.state = "recording";
+    const env = newIdbEnv();
+    const dbName = crypto.randomUUID();
+    const store = await openWebStore({ env, dbName, locks: memoryLocks(), decodeCheck: null });
+    await store.setCaptureDefaults({ accountDid: null, transitionGen: 0, transcriber: "on-device",
+      identifySpeakers: false, uploadAudio: true });
+    const engine = await rig(bridge, dbName, env);
+    expect((await engine.plugin.status()).options?.uploadAudio).toBe(true);
+    engine.dispose();
   });
 
   test("native import failure enters quarantine and can be discarded", async () => {
@@ -648,6 +1134,21 @@ describe("desktop recorder adapter", () => {
     expect((await engine.plugin.listQuarantine()).items).toMatchObject([{ id: "note-1", reason: "write_failed" }]);
     await engine.plugin.discardFailedRecording({ id: "note-1" });
     expect((await engine.plugin.listQuarantine()).items).toHaveLength(0);
+    engine.dispose();
+  });
+
+  test("a first stereo segment keeps its journal layout through quarantine and retry", async () => {
+    const bridge = new FakeBridge();
+    bridge.channels = 2;
+    const engine = await rig(bridge);
+    await engine.plugin.start();
+    const journal = { id: "note-1", startedAt: bridge.now, recordedMs: 1_000, pausedMs: 0,
+      maxDurationMs: 10_000, layout: "stereo" as const };
+    bridge.failed = [{ id: "note-1", segmentId: "rec-broken", reason: "write_failed", error: "bad MP3", journal }];
+    await expect(engine.plugin.stop()).rejects.toThrow("bad MP3");
+    bridge.files.set("note-1", Uint8Array.of(1, 2, 3));
+    await engine.plugin.retryRecovery({ id: "note-1" });
+    expect((await engine.plugin.listPending()).recordings[0]?.channels).toBe(2);
     engine.dispose();
   });
 
@@ -817,6 +1318,7 @@ describe("desktop recorder adapter", () => {
 
   test("start, pause and resume keep elapsed time and committed bytes", async () => {
     const bridge = new FakeBridge();
+    bridge.channels = 2;
     const engine = await rig(bridge);
     const seen: string[] = [];
     const levels: { level: number; peak?: number }[] = [];
@@ -840,7 +1342,11 @@ describe("desktop recorder adapter", () => {
     const recording = await engine.plugin.stop();
     expect(recording.durationMs).toBe(1800);
     expect(recording.pausedMs).toBe(5000);
-    expect(recording.sizeBytes).toBe(4);
+    expect(recording.sizeBytes).toBe(0);
+    expect(recording.channels).toBe(2);
+    expect(recording.ledger?.localAudio?.state).toBe("preparing");
+    await engine.plugin.awaitAudioReady?.(started.id);
+    expect((await engine.plugin.listPending()).recordings[0]?.sizeBytes).toBe(4);
     expect((await engine.plugin.listPending()).recordings).toHaveLength(1);
     expect(base64ToBytes((await engine.plugin.readAudioChunk({ id: started.id, offset: 1, length: 2 })).base64))
       .toEqual(Uint8Array.of(20, 30));
@@ -869,6 +1375,7 @@ describe("desktop recorder adapter", () => {
 
   test("native auto-stop commits once with the terminal elapsed time", async () => {
     const bridge = new FakeBridge();
+    bridge.channels = 2;
     const engine = await rig(bridge);
     const committed: unknown[] = [];
     const auto: unknown[] = [];
@@ -879,13 +1386,13 @@ describe("desktop recorder adapter", () => {
     bridge.elapsed = 1500;
     await bridge.invoke("recorder_stop");
     bridge.emit("exo://recorder-auto-stopped", { id: "note-1", reason: "max_duration", maxDurationMs: 1500,
-      at: bridge.now, elapsedMs: 1500, pausedMs: 0 });
+      at: bridge.now, elapsedMs: 1500, pausedMs: 0, channels: 2 });
     await engine.plugin.status();
     // Let the serialized native event finish its async commit.
     for (let n = 0; n < 20 && auto.length === 0; n++) await new Promise((resolve) => setTimeout(resolve, 1));
     expect(committed).toHaveLength(1);
     expect(auto).toHaveLength(1);
-    expect((auto[0] as { recording: { durationMs: number } }).recording.durationMs).toBe(1500);
+    expect((auto[0] as { recording: { durationMs: number; channels: number } }).recording).toMatchObject({ durationMs: 1500, channels: 2 });
     engine.dispose();
   });
 
@@ -1056,5 +1563,59 @@ describe("desktop recorder adapter", () => {
     expect(result.recovered[0]).toMatchObject({ id: "note-1", sizeBytes: 3, durationMs: 1200 });
     expect(bridge.files.get("note-1")).toEqual(Uint8Array.of(8, 9, 10));
     second.dispose();
+  });
+
+  test("recovery with uploadAudio preference OFF creates session with uploadAudio: false", async () => {
+    const bridge = new FakeBridge();
+    const env = newIdbEnv();
+    const dbName = crypto.randomUUID();
+    const store = await openWebStore({ env, dbName, locks: memoryLocks(), decodeCheck: null });
+    await store.setCaptureDefaults({ accountDid: null, transitionGen: 0, transcriber: "on-device",
+      identifySpeakers: false, uploadAudio: false });
+    store.close();
+    bridge.recover = { id: "note-1", startedAt: bridge.now, recordedMs: 5000, pausedMs: 0, maxDurationMs: 3600000 };
+    bridge.files.set("note-1", Uint8Array.of(1, 2, 3, 4));
+    const engine = await rig(bridge, dbName, env);
+    const result = await engine.recoverInterrupted();
+    expect(result.recovered).toHaveLength(1);
+    const recordings = (await engine.plugin.listPending()).recordings;
+    expect(recordings.find((r) => r.id === "note-1")?.options?.uploadAudio).toBe(false);
+    engine.dispose();
+  });
+
+  test("recovery with uploadAudio preference ON creates session with uploadAudio: true", async () => {
+    const bridge = new FakeBridge();
+    const env = newIdbEnv();
+    const dbName = crypto.randomUUID();
+    const store = await openWebStore({ env, dbName, locks: memoryLocks(), decodeCheck: null });
+    await store.setCaptureDefaults({ accountDid: null, transitionGen: 0, transcriber: "on-device",
+      identifySpeakers: false, uploadAudio: true });
+    store.close();
+    bridge.recover = { id: "note-1", startedAt: bridge.now, recordedMs: 5000, pausedMs: 0, maxDurationMs: 3600000 };
+    bridge.files.set("note-1", Uint8Array.of(1, 2, 3, 4));
+    const engine = await rig(bridge, dbName, env);
+    const result = await engine.recoverInterrupted();
+    expect(result.recovered).toHaveLength(1);
+    const recordings = (await engine.plugin.listPending()).recordings;
+    expect(recordings.find((r) => r.id === "note-1")?.options?.uploadAudio).toBe(true);
+    engine.dispose();
+  });
+
+  test("recovery with no uploadAudio preference creates session with uploadAudio: false", async () => {
+    const bridge = new FakeBridge();
+    const env = newIdbEnv();
+    const dbName = crypto.randomUUID();
+    const store = await openWebStore({ env, dbName, locks: memoryLocks(), decodeCheck: null });
+    await store.setCaptureDefaults({ accountDid: null, transitionGen: 0, transcriber: "on-device",
+      identifySpeakers: false });
+    store.close();
+    bridge.recover = { id: "note-1", startedAt: bridge.now, recordedMs: 5000, pausedMs: 0, maxDurationMs: 3600000 };
+    bridge.files.set("note-1", Uint8Array.of(1, 2, 3, 4));
+    const engine = await rig(bridge, dbName, env);
+    const result = await engine.recoverInterrupted();
+    expect(result.recovered).toHaveLength(1);
+    const recordings = (await engine.plugin.listPending()).recordings;
+    expect(recordings.find((r) => r.id === "note-1")?.options?.uploadAudio).toBe(false);
+    engine.dispose();
   });
 });

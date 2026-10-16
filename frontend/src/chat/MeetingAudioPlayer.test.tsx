@@ -23,7 +23,7 @@ describe("MeetingAudioPlayerView", () => {
     expect(player).not.toContain("src=");
   });
 
-  test("a note on this phone has its source set from the start, so the first tap can play it", () => {
+  test("a note on this browser has its source set from the start, so the first tap can play it", () => {
     const player = renderToStaticMarkup(<MeetingAudioPlayer url="capacitor://localhost/_capacitor_file_/a.m4a" durationSecs={42} />);
     expect(player).toContain('src="capacitor://localhost/_capacitor_file_/a.m4a"');
     expect(player).toContain("Play audio");
@@ -50,7 +50,7 @@ describe("MeetingAudioPlayerView", () => {
 
   test("a local URL that could not be resolved shows calm copy, with Try again, and no internal text", () => {
     const html = render({ phase: "failed", reason: PHONE_AUDIO_UNAVAILABLE });
-    expect(html).toContain("Couldn\u2019t open this note\u2019s audio on this phone.");
+    expect(html).toContain("Couldn\u2019t open this note\u2019s audio on this browser.");
     expect(html).toContain("Try again");
   });
 
@@ -61,9 +61,9 @@ describe("MeetingAudioPlayerView", () => {
     });
     const logged = spyOn(console, "error").mockImplementation(() => {});
     try {
-      const cause = new Error("Could not open this phone's audio: loadVoiceNoteAudio: Key not found: xyz/abc");
+      const cause = new Error("Could not open this browser's audio: loadVoiceNoteAudio: Key not found: xyz/abc");
       expect(await stateForResolvedUrl(async () => { throw cause; })).toEqual({ phase: "failed", reason: PHONE_AUDIO_UNAVAILABLE });
-      expect(logged).toHaveBeenCalledWith("[Audio] Could not resolve this phone's audio", cause);
+      expect(logged).toHaveBeenCalledWith("[Audio] Could not resolve local audio", cause);
     } finally {
       logged.mockRestore();
     }
@@ -214,7 +214,40 @@ describe("the player in a DOM", () => {
     }
   });
 
-  test("a note on this phone plays on the first tap with its source already set", async () => {
+  test("a blob the player loaded is released when its note closes", async () => {
+    const created = spyOn(URL, "createObjectURL").mockReturnValue("blob:note");
+    const revoked = spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+    try {
+      const player = await mount({ durationSecs: 42, load: async () => new Blob(["x"]) });
+      await act(async () => player.q("[data-testid=note-audio-play]").click());
+      expect(created).toHaveBeenCalledTimes(1);
+      await act(async () => root!.unmount());
+      root = null;
+      expect(revoked).toHaveBeenCalledWith("blob:note");
+    } finally {
+      created.mockRestore();
+      revoked.mockRestore();
+    }
+  });
+
+  test("closing a note while its audio downloads aborts the download", async () => {
+    let signal!: AbortSignal;
+    const player = await mount({ durationSecs: 42, load: (loadSignal) => { signal = loadSignal; return new Promise<Blob | null>(() => {}); } });
+    await act(async () => player.q("[data-testid=note-audio-play]").click());
+    expect(signal.aborted).toBe(false);
+    await act(async () => root!.unmount());
+    root = null;
+    expect(signal.aborted).toBe(true);
+  });
+
+  test("a phone note whose audio cannot be opened shows the phone's copy", async () => {
+    logged = spyOn(console, "error").mockImplementation(() => {});
+    const player = await mount({ durationSecs: 42, load: async () => { throw new Error(PHONE_AUDIO_UNAVAILABLE); } });
+    await act(async () => player.q("[data-testid=note-audio-play]").click());
+    expect(player.host.textContent).toContain("Couldn\u2019t open this note\u2019s audio on this browser.");
+  });
+
+  test("a note on this browser plays on the first tap with its source already set", async () => {
     const player = await mount({ url: "blob:note", durationSecs: 42 });
     expect(player.audio.getAttribute("src")).toBe("blob:note");
     let playsInClick: FakeMedia["plays"] = [];
@@ -226,6 +259,56 @@ describe("the player in a DOM", () => {
     expect(player.q("[data-testid=note-audio-toggle]")).not.toBeNull();
   });
 
+  test("stereo downmix averages channel level, while mono stays on the full-level media path", async () => {
+    const previous = globalThis.AudioContext;
+    const links: string[] = [];
+    let created = 0;
+    const gainNodes: { channelCount: number; channelCountMode: string; channelInterpretation: string; gain: { value: number } }[] = [];
+    const node = (name: string) => ({ connect: (target: { name: string }, output = 0, input = 0) => {
+      links.push(`${name}:${output}->${target.name}:${input}`);
+    }, name });
+    class FakeAudioContext {
+      constructor() { created++; }
+      state = "suspended";
+      destination = node("speakers");
+      createMediaElementSource() { return node("source"); }
+      createGain() {
+        const gain = Object.assign(node("mono"), { channelCount: 2, channelCountMode: "max", channelInterpretation: "discrete", gain: { value: 1 } });
+        gainNodes.push(gain);
+        return gain;
+      }
+      resume() { links.push("resume"); return Promise.resolve(); }
+      close() { return Promise.resolve(); }
+    }
+    Object.defineProperty(globalThis, "AudioContext", { configurable: true, value: FakeAudioContext });
+    try {
+      const player = await mount({ url: "blob:stereo", channels: 2 });
+      act(() => player.q("[data-testid=note-audio-play]").click());
+      expect(links).toContain("source:0->mono:0");
+      expect(links).toContain("mono:0->speakers:0");
+      expect(gainNodes).toMatchObject([{ channelCount: 1, channelCountMode: "explicit", channelInterpretation: "speakers", gain: { value: 1 } }]);
+      // A 0.8 L and 0.2 R fixture reaches the speaker at 0.5. The old
+      // discrete splitter would send a mono 0.8 fixture at 0.4 (-6 dB).
+      const level = (channels: number[]) => gainNodes[0]!.gain.value *
+        (gainNodes[0]!.channelCountMode === "explicit" && gainNodes[0]!.channelInterpretation === "speakers"
+          ? channels.reduce((sum, sample) => sum + sample, 0) / channels.length : channels[0]!);
+      expect(level([0.8, 0.2])).toBeCloseTo(0.5);
+      expect(links).toContain("resume");
+      expect(player.fake.plays).toHaveLength(1);
+      await act(async () => root!.unmount());
+      root = null;
+      // mount() installs a fresh DOM; restore this one first or its globals outlive the test.
+      cleanupDom?.();
+      cleanupDom = undefined;
+      const mono = await mount({ url: "blob:mono", channels: 1 });
+      act(() => mono.q("[data-testid=note-audio-play]").click());
+      expect(created).toBe(1);
+      expect(mono.fake.plays).toHaveLength(1);
+    } finally {
+      Object.defineProperty(globalThis, "AudioContext", { configurable: true, value: previous });
+    }
+  });
+
   test("a play the browser refuses ends in Try again, with the cause in the console", async () => {
     logged = spyOn(console, "error").mockImplementation(() => {});
     const player = await mount({ url: "blob:note", durationSecs: 42 });
@@ -235,6 +318,13 @@ describe("the player in a DOM", () => {
     expect(player.host.textContent).toContain("Try again");
     expect(player.host.textContent).toContain("Couldn\u2019t load the audio just now.");
     expect(logged).toHaveBeenCalledWith("[Audio] Could not play", refused);
+  });
+
+  test("an outdated offline copy tells the listener to reconnect", async () => {
+    const message = "This audio changed; reconnect to play the latest version";
+    const player = await mount({ load: async () => { throw new Error(message); } });
+    await act(async () => player.q("[data-testid=note-audio-play]").click());
+    expect(player.host.textContent).toContain(message);
   });
 
   test("a play that a pause or a new source supersedes is not an error", async () => {
@@ -260,9 +350,19 @@ describe("the player in a DOM", () => {
 
     player.fake.duration = 41.6;
     await player.fire("durationchange");
-    expect(player.time()).toBe("0:00 / 0:42");
+    expect(player.time()).toBe("0:00 / 0:41");
     expect(player.range().max).toBe("41.6");
   });
+  test("precise fractional media time floors the position and total consistently at the end", async () => {
+    const player = await mount({ url: "blob:note", durationSecs: 42.999 });
+    await act(async () => player.q("[data-testid=note-audio-play]").click());
+    await player.metadata(42.999);
+    player.fake.currentTime = 42.999;
+    await player.fire("timeupdate");
+    expect(player.time()).toBe("0:42 / 0:42");
+    expect(player.range().getAttribute("aria-valuetext")).toBe("0:42 of 0:42");
+  });
+
 
   test("a stream that never reports a length keeps the saved one and the elapsed time moves", async () => {
     const player = await mount({ url: "blob:note", durationSecs: 42 });

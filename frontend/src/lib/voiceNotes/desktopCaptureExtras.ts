@@ -53,7 +53,6 @@ export interface DesktopCaptureExtras {
   };
   systemAudio: { get(): Promise<boolean>; set(on: boolean): Promise<void> };
   systemAudioConsent: { get(): Promise<boolean>; set(consented: boolean): Promise<void> };
-  autoSaveToSpace: { get(): Promise<boolean>; set(on: boolean): Promise<void> };
 }
 
 let registered: DesktopCaptureExtras | null = null;

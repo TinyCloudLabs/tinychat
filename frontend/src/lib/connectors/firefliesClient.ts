@@ -119,11 +119,16 @@ export interface FirefliesAttendee {
 }
 
 export interface FirefliesSentence {
+  source?: "recording" | "fallback";
+  attribution?: "identified" | "unknown" | "overlap";
   index: number;
   speaker_name: string | null;
   text: string;
   start_time: number;
   end_time: number;
+  channel?: 0 | 1;
+  speaker_id?: string | null;
+  timing?: "engine" | "coarse" | "unknown";
 }
 
 export interface FirefliesSummary {

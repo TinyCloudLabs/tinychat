@@ -11,6 +11,8 @@ import { MemoryRouter } from "react-router-dom";
 import type { SizeClassState } from "../lib/sizeClass";
 import { AppShell, AppShellView, shownSurface } from "./AppShell";
 import { PATHS, screenFor } from "./routes";
+import { sidebarActivityStore } from "@/capture/activity/sidebarActivityStore";
+import { notePipeline, type NotePipelineInput } from "@/lib/voiceNotes/notePipeline";
 
 const SLOTS = {
   chat: <p>chat-slot</p>,
@@ -106,6 +108,25 @@ describe("the fixed tree", () => {
 });
 
 describe("mounting", () => {
+  test("Mac Activity stays in the sidebar on Chat, Connectors, and Settings", () => {
+    const owner = {};
+    const input: NotePipelineInput = { device: "mac", route: "off", hasNotesOrMoments: false, online: true,
+      capture: { finalizing: true, issue: null }, space: { saved: false, pending: {}, lane: { busy: false, depth: 0 } },
+      transcript: { inSpace: null, cloud: null, onDevice: null }, notes: { state: "idle" } };
+    sidebarActivityStore.publish(owner, { items: [{ id: "row", source: "exo-voice-note", sourceId: "rec", title: "Voice note", startedAt: null, durationSecs: null }],
+      views: new Map([["rec", { input, pipeline: notePipeline(input), provider: "off", onAction: () => {}, actionError: null }]]),
+      upload: null, paused: null, onOpenNote: () => {}, onOpenUpload: () => {}, onContinueUpload: () => {}, onRetryUpload: () => {} });
+    try {
+      for (const path of [PATHS.chat, PATHS.connectors, PATHS.settings]) {
+        const markup = wrap(<AppShellView screen={screenFor(path)} platform="tauri" pendingMeetings={0} {...SLOTS}
+          sizeClass={SIZES[3]![1]} captureMounted />, path);
+        expect(markup).toContain('data-testid="sidebar"');
+        expect(markup).toContain('data-testid="activity-button"');
+      }
+    } finally {
+      sidebarActivityStore.clear(owner);
+    }
+  });
   test("Chat is always mounted, and hidden while another surface shows", () => {
     for (const path of [PATHS.capture, PATHS.connectors, PATHS.settings, PATHS.library]) {
       const chat = surface(view(path, SIZES[0]![1], true), "chat");
@@ -128,6 +149,8 @@ describe("mounting", () => {
     expect(wrap(<AppShell screen={screenFor(PATHS.chat)} platform="ios" pendingMeetings={0} {...SLOTS} />, PATHS.chat)).not.toContain(
       "capture-slot",
     );
+    // Mac jobs may resume at launch, before Capture is opened.
+    expect(wrap(<AppShell screen={screenFor(PATHS.chat)} platform="tauri" pendingMeetings={0} {...SLOTS} />, PATHS.chat)).toContain("capture-slot");
   });
 
   test("Connectors, Settings and How it works are mounted only while shown", () => {

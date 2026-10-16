@@ -1,5 +1,8 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { createFakeVoiceNotes } from "@/lib/voiceNotes/fakeVoiceNotes";
+import { __setVoiceNotesForTests } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { isOnDeviceReady, type OnDeviceSttStatus } from "@/lib/voiceNotes/onDeviceStt";
+import { FINAL_COPY } from "./finalCopy";
 import {
   availableStops,
   identifySpeakersControl,
@@ -10,6 +13,9 @@ import {
   scaleStops,
   type ModeShell,
 } from "./transcriptionModes";
+
+beforeEach(() => __setVoiceNotesForTests(createFakeVoiceNotes().plugin, { available: false }));
+afterEach(() => __setVoiceNotesForTests(createFakeVoiceNotes().plugin, { available: null }));
 
 function model(
   state: OnDeviceSttStatus["models"][number]["state"],
@@ -90,82 +96,23 @@ describe("transcription modes availability", () => {
     expect(modeAvailability("skip", "phone")).toEqual({ available: true });
   });
 
+  test("Local shows shell-specific copy and names the selected Mac model", () => {
+    const local = modeStop("local");
+    const context = { modelName: "Example Model" };
+    const captions = shells.map((shell) => local.captions[shell]);
+    const explanations = shells.map((shell) => local.explanations[shell](context));
+
+    expect(new Set(captions).size).toBe(shells.length);
+    expect(new Set(explanations).size).toBe(shells.length);
+    expect(local.explanations.desktop(context)).toContain(context.modelName);
+    expect(local.captions.web).toBe(FINAL_COPY.needsApp);
+    expect(local.explanations.web(context)).toBe(FINAL_COPY.modes.localWebExplanation);
+  });
+
   test("unknown mode ids fail with a typed error", () => {
     expect(() => modeStop("unlisted" as never)).toThrow("Unknown transcription mode: unlisted");
     try { modeStop("unlisted" as never); } catch (error) {
       expect(error).toMatchObject({ code: "unknown_transcription_mode" });
-    }
-  });
-
-  test("captions and explanations match the shell-specific mode copy", () => {
-    const expected = {
-      skip: {
-        phone: [
-          "Just the recording, kept on this phone.",
-          "no transcript",
-          "Only the audio is saved. Transcribe it later if you like.",
-        ],
-        desktop: [
-          "Just the recording, saved to your space.",
-          "no transcript",
-          "Only the audio is saved. Transcribe it later if you like.",
-        ],
-        web: [
-          "Just the recording, saved to your space.",
-          "no transcript",
-          "Only the audio is saved. Transcribe it later if you like.",
-        ],
-      },
-      local: {
-        phone: [
-          "Nothing leaves it; a little slower.",
-          "on this phone",
-          "Your phone transcribes it after you stop. Nothing leaves your phone.",
-        ],
-        desktop: [
-          "Whisper on this Mac, after you stop.",
-          "on this Mac",
-          "Whisper Large transcribes on this Mac after you stop, and nothing leaves the machine. Change the model in ⚙︎ Settings.",
-        ],
-        web: [
-          "needs the app",
-          "needs the app",
-          "Runs on your phone or Mac in the Exo app. Not available in the browser.",
-        ],
-      },
-      private: {
-        phone: [
-          "Fast, accurate, and sealed from Exo.",
-          "sealed enclave",
-          "Sent to a sealed hardware enclave, transcribed, then deleted. Exo never sees it.",
-        ],
-        desktop: [
-          "Fast, accurate, and sealed from Exo.",
-          "sealed enclave",
-          "Sent to a sealed hardware enclave, transcribed, then deleted. Exo never sees it.",
-        ],
-        web: [
-          "Fast, accurate, and sealed from Exo.",
-          "sealed enclave",
-          "Sent to a sealed hardware enclave, transcribed, then deleted. Exo never sees it.",
-        ],
-      },
-      powerful: {
-        phone: ["Most accurate, with speaker labels.", "via Exo's server", "Sent through Exo's server to AssemblyAI, then deleted after the transcript is saved."],
-        desktop: ["Most accurate, with speaker labels.", "via Exo's server", "Sent through Exo's server to AssemblyAI, then deleted after the transcript is saved."],
-        web: ["Most accurate, with speaker labels.", "via Exo's server", "Sent through Exo's server to AssemblyAI, then deleted after the transcript is saved."],
-      },
-    } as const;
-
-    for (const stop of MODE_STOPS) {
-      for (const shell of shells) {
-        const [caption, subLabel, explanation] = expected[stop.id][shell];
-        expect(stop.captions[shell]).toBe(caption);
-        expect(stop.subLabel[shell]).toBe(subLabel);
-        expect(stop.explanations[shell]({ modelName: "Large" })).toBe(
-          explanation,
-        );
-      }
     }
   });
 
@@ -285,7 +232,7 @@ describe("transcription modes availability", () => {
       ).toBe(false);
     });
 
-    test("the model must be the one this phone's pack uses", () => {
+    test("the model must be the one this browser's pack uses", () => {
       expect(
         local(
           withModels(

@@ -83,7 +83,7 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
     handleExpiresAt: number | null; outcome: "created" | "failed" | "unknown" }>();
   const quarantine = new Map<string, { id: string; reason: string; sizeBytes: number }>();
   const inputs: AudioInput[] = [{ id: "built-in", name: "Built-in microphone", kind: "built_in" }];
-  let defaults: CaptureDefaults = { accountDid: null, transitionGen: 0, transcriber: "on-device", identifySpeakers: false };
+  let defaults: CaptureDefaults = { accountDid: null, transitionGen: 0, transcriber: "on-device", identifySpeakers: false, uploadAudio: true };
   let accountStatus: AccountStatus = "signed_out";
   let accountStateFailure = false;
   let remoteBeginFailure = false;
@@ -289,7 +289,8 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
       if (tombstones.has(id)) throw failure("tombstoned");
       const signedIn = accountStatus === "signed_in" && !!defaults.accountDid;
       const opts: CaptureOptions = { transcriber: signedIn ? (options?.transcriber ?? defaults.transcriber) : "on-device",
-        identifySpeakers: options?.identifySpeakers ?? defaults.identifySpeakers };
+        identifySpeakers: options?.identifySpeakers ?? defaults.identifySpeakers,
+        uploadAudio: options?.uploadAudio ?? defaults.uploadAudio ?? false };
       session = { id, startedAt: now(), audioMs: 0, pausedMs: 0, pauseStarted: null, intent: "recording", availability: "available",
         reason: null, gen: ++generation, source: "in_app", owner: signedIn ? defaults.accountDid : null, transitionGen: defaults.transitionGen,
         options: opts, spans: [], openSpan: null, maxDurationMs: Math.min(10_800_000, Math.max(1000, options?.maxDurationMs ?? 10_800_000)),
@@ -352,6 +353,11 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
           jobId: stored?.jobId ?? undefined });
       }
     },
+    async evictCachedAudio({ id }) {
+      const note = checked(id);
+      if (note.ledger?.audio.state !== "saved") throw failure("audio_not_space_backed");
+      note.sizeBytes = 0;
+    },
     async listPending() { return { recordings: [...notes.values()].map((note) => structuredClone(note)) }; },
     async pause() {
       const s = session;
@@ -397,7 +403,8 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
       if (sameGeneration && next.accountDid !== effectiveDid) throw failure("stale_transition");
       if (!sameGeneration) accountStatus = next.accountDid ? "signed_in" : "signed_out";
       defaults = { ...next, accountDid: sameGeneration ? defaults.accountDid : next.accountDid,
-        transcriber: accountStatus === "signed_in" ? next.transcriber : "on-device" };
+        transcriber: accountStatus === "signed_in" ? next.transcriber : "on-device",
+        uploadAudio: next.uploadAudio ?? defaults.uploadAudio };
       const claimed: string[] = [];
       if (accountStatus === "signed_in" && next.accountDid) {
         if (session && !session.owner) { session.owner = next.accountDid; claimed.push(session.id); }
@@ -490,6 +497,7 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
       return { rev: note.rev };
     },
     async localAudioUrl({ id }) { checked(id); return { url: `fake://voice-notes/${id}.m4a` }; },
+    async localAudioSize({ id }) { return { size: checked(id).sizeBytes }; },
     async putTranscript({ id, transcript }) {
       checked(id);
       if (transcript.noteId !== id) throw failure("transcript_note_mismatch");

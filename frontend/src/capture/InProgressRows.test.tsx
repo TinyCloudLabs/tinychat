@@ -1,4 +1,4 @@
-// In progress on Capture: the recorder's rows. Notes still only on this phone
+// In progress on Capture: the recorder's rows. Notes still only on this browser
 // are told with Save now (busy while a save runs), and a recording stopped at
 // its length limit says so (TC-517). Nothing in progress, nothing shown.
 import { describe, expect, test } from "bun:test";
@@ -32,9 +32,9 @@ describe("In progress: voice notes", () => {
   });
 
   test("a listing that failed is never \"nothing pending\": a recovery row with Try again", () => {
-    const html = render({ listing: { state: "error", message: "Could not check this phone for unsaved notes: no bridge" } });
+    const html = render({ listing: { state: "error", message: "Could not check this browser for unsaved notes: no bridge" } });
     expect(html).toContain('data-testid="voice-note-list-failed"');
-    expect(html).toContain("Couldn&#x27;t check this phone for unsaved notes");
+    expect(html).toContain("Couldn&#x27;t check this browser for unsaved notes");
     expect(html).toContain("no bridge");
     expect(html).toContain('data-testid="voice-note-list-retry"');
     expect(html).toContain(">Try again</button>");
@@ -43,10 +43,10 @@ describe("In progress: voice notes", () => {
   test("notes left on the phone are told, with Save now", () => {
     const one = render({ listing: { state: "ok", count: 1 } });
     expect(one).toContain('data-testid="voice-note-pending"');
-    expect(one).toContain("1 voice note on this phone");
+    expect(one).toContain("1 voice note on this browser");
     expect(one).toContain("Not in your space yet");
     expect(one).toContain('data-testid="voice-note-retry"');
-    expect(render({ listing: { state: "ok", count: 3 } })).toContain("3 voice notes on this phone");
+    expect(render({ listing: { state: "ok", count: 3 } })).toContain("3 voice notes on this browser");
   });
 
   test("Save now is disabled while a save runs, and a failure is told", () => {

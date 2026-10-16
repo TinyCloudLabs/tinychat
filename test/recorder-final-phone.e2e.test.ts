@@ -5,6 +5,7 @@
 //   EXO_UI_ENGINE=chromium   webkit (default: Exo's WKWebView) or chromium
 import {
   afterAll,
+  afterEach,
   beforeAll,
   describe,
   expect,
@@ -16,6 +17,7 @@ import {
   chromium,
   webkit,
   type Browser,
+  type BrowserContext,
   type Locator,
   type Page,
 } from "playwright";
@@ -27,6 +29,7 @@ const engine = engineName === "chromium" ? chromium : webkit;
 setDefaultTimeout(30_000);
 
 let browser: Browser;
+const contexts: BrowserContext[] = [];
 let server: ReturnType<typeof serveHarness>;
 
 type NativeHarness = {
@@ -59,6 +62,10 @@ afterAll(async () => {
   server?.stop(true);
 });
 
+afterEach(async () => {
+  await Promise.all(contexts.splice(0).map((context) => context.close()));
+});
+
 interface Opened {
   page: Page;
   calls: () => Promise<string[]>;
@@ -77,12 +84,12 @@ async function open(
     | "permission-denied",
   options: { clock?: boolean; theme?: "light" | "dark" } = {},
 ): Promise<Opened> {
-  const page = await (
-    await browser.newContext({
-      viewport: { width: 390, height: 844 },
-      reducedMotion: "reduce",
-    })
-  ).newPage();
+  const context = await browser.newContext({
+    viewport: { width: 390, height: 844 },
+    reducedMotion: "reduce",
+  });
+  contexts.push(context);
+  const page = await context.newPage();
   if (options.clock) await page.clock.install();
   const errors: string[] = [];
   page.on("console", (message) => {
@@ -151,7 +158,7 @@ const text = (locator: Locator, value: string) =>
   );
 
 const slider = (page: Page) =>
-  page.getByRole("slider", { name: "Transcription privacy" });
+  page.getByRole("slider", { name: "Transcription mode" });
 const mode = (page: Page) => slider(page).getAttribute("aria-valuetext");
 const modeIs = (page: Page, value: string) =>
   until(`mode ${value}`, async () => (await mode(page)) === value);
@@ -488,7 +495,7 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
   test("first run: the scale shows the provider's mode; Private waits on consent, then asks again", async () => {
     const { page, calls, activeName } = await open("first-run");
     await modeIs(page, "Audio only");
-    await shown(page.getByText("Just the recording, kept on this phone."));
+    await shown(page.getByText("Just the recording. Audio follows your Upload audio to TinyCloud setting."));
 
     await slider(page).focus();
     await page.keyboard.press("ArrowRight");

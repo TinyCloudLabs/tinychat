@@ -9,10 +9,12 @@ import { withVoiceNoteSaveDeadline } from "./saveDeadline";
 import { syncRecordingNote, VOICE_NOTE_SOURCE } from "./voiceNoteStore";
 import { syncOnDeviceTranscript } from "./onDeviceTranscriber";
 import { appPlatform } from "@/lib/platform";
-import type { StoreAudioOptions } from "./voiceNoteStore";
+import type { AudioPutGate, StoreAudioOptions } from "./voiceNoteStore";
+import { logPipeline } from "@/lib/debugLog";
 
 export interface VoiceNotePipeline {
-  process(ctx: AccountContext, id: string, trigger?: "stop" | "background"): Promise<void | "owned-by-another-run">;
+  process(ctx: AccountContext, id: string, trigger?: "stop" | "background", onRowCreated?: () => void,
+    onSaved?: (note: VoiceNoteRecording) => void): Promise<void | "owned-by-another-run" | "retry-scheduled">;
   /** T19 calls setCaptureDefaults on ready before this association and upload pass. */
   reconcileAll(ctx: AccountContext, trigger?: "reconcile" | "manual", onSaved?: (note: VoiceNoteRecording) => void): Promise<void>;
   cancelAll(): void;
@@ -32,11 +34,13 @@ export function saveDeferredForAccountTransition(error: unknown): boolean {
 
 /** T22 extends these lanes with transcription and cleanup, retaining this API. */
 export function createVoiceNotePipeline(tcw: TinyCloudWeb,
-  testOptions: Pick<StoreAudioOptions, "retryDelaysMs"> = {}): VoiceNotePipeline {
+  testOptions: Pick<StoreAudioOptions, "retryDelaysMs"> & { saveRetryDelaysMs?: readonly number[] } = {}): VoiceNotePipeline {
   setAccountWorkPaused(tcw, false);
   let cancellation = 0;
   let accepting = true;
   const active = new Set<Promise<unknown>>();
+  const retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const retryAttempts = new Map<string, number>();
   const run = <T>(job: () => Promise<T>): Promise<T> => {
     const promise = job();
     active.add(promise);
@@ -48,6 +52,30 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
     assertCurrent(ctx);
     if (tcw.did !== ctx.did || tcw.spaceId !== ctx.spaceId) throw new Error("Voice-note space changed");
   };
+  const scheduleRetry = (ctx: AccountContext, id: string, epoch: number, at: number,
+    onRowCreated?: () => void, onSaved?: (note: VoiceNoteRecording) => void) => {
+    if (retryTimers.has(id)) return;
+    const timer = setTimeout(() => {
+      retryTimers.delete(id);
+      if (!accepting || epoch !== cancellation) return;
+      const ticket = pendingStore.enqueueUpload(id);
+      if (!ticket.owns) return;
+      void run(async () => {
+        try {
+          const saved = await processOne(ctx, id, epoch, true, ticket, onRowCreated, onSaved);
+          syncDesktopAfterUpload(ctx, saved);
+          if (saved) {
+            checkFor(ctx, epoch)();
+            captureEvents.emit("library-changed", { source: VOICE_NOTE_SOURCE, sourceId: saved.id });
+            onSaved?.(saved);
+          }
+        } catch (error) {
+          if (!saveDeferredForAccountTransition(error)) pendingStore.reportNoteFailure(id, error);
+        } finally { await pendingStore.refresh(); }
+      }).catch((error) => console.warn("[VoiceNotes] Scheduled retry could not refresh pending notes", error));
+    }, Math.max(0, at - Date.now()));
+    retryTimers.set(id, timer);
+  };
   const syncDesktopAfterUpload = (ctx: AccountContext, note: VoiceNoteRecording | null) => {
     if (!note || appPlatform() !== "tauri" || note.options?.transcriber !== "on-device") return;
     // Upload owns no slot by this point. Whisper and upload may finish in either order.
@@ -56,11 +84,17 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
       .catch((error) => console.warn("[VoiceNotes] Desktop transcript sync is still pending", { id: note.id, error }));
   };
   const processOne = async (ctx: AccountContext, id: string, epoch: number, trackPending = false,
-    uploadTicket?: PendingUploadTicket): Promise<VoiceNoteRecording | null> => {
+    uploadTicket?: PendingUploadTicket, onRowCreated?: () => void,
+    onSaved?: (note: VoiceNoteRecording) => void, audioGate?: AudioPutGate): Promise<VoiceNoteRecording | null> => {
     if (uploadTicket && !uploadTicket.owns) return null;
     try {
     const check = checkFor(ctx, epoch);
     check();
+    const retryAt = pendingStore.retryAt(id);
+    if (retryAt && retryAt > Date.now()) {
+      scheduleRetry(ctx, id, epoch, retryAt, onRowCreated, onSaved);
+      return null;
+    }
     if (uploadTicket) pendingStore.preparingUpload(uploadTicket);
     const gate = await withVoiceNoteSaveDeadline("voice-note space setup", () => ensureVoiceNoteIdentity(tcw, check));
     if (gate.status !== "established") throw Object.assign(new Error(gate.reason ?? gate.status), { code: gate.status, cause: gate.cause });
@@ -77,10 +111,30 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
     const finish = trackPending && note.ledger?.audio.state !== "saved"
       ? pendingStore.beginAutomaticSave() : () => undefined;
     try {
+      const retryDelays = testOptions.saveRetryDelaysMs ?? [5_000, 30_000, 120_000];
+      check();
+      pendingStore.setHeld(id, undefined);
+      pendingStore.setRetrying(id, null);
       const result = await saveNoteForAccount(tcw, ctx, note, check, {
         ...testOptions,
         uploadTicket,
+        onRowCreated,
+        audioGate,
       });
+      const attempt = retryAttempts.get(id) ?? 0;
+      if (result.kind === "failed" && result.failureKind === "timeout" && attempt < retryDelays.length) {
+        const delay = testOptions.saveRetryDelaysMs
+          ? retryDelays[attempt]!
+          : Math.round(retryDelays[attempt]! * (0.8 + Math.random() * 0.4));
+        const nextAttemptAt = Date.now() + delay;
+        retryAttempts.set(id, attempt + 1);
+        pendingStore.setRetrying(id, nextAttemptAt);
+        if (uploadTicket) pendingStore.publishUpload(id, uploadTicket.owner, { state: "retrying", bytes: 0, total: note.sizeBytes });
+        logPipeline("save", id, "retrying");
+        scheduleRetry(ctx, id, epoch, nextAttemptAt, onRowCreated, onSaved);
+        return null;
+      }
+      retryAttempts.delete(id);
       if (result.kind === "failed") {
         check();
         throw Object.assign(new Error(result.failure), {
@@ -94,14 +148,17 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
     } finally { if (uploadTicket) pendingStore.settleUploadQueue(uploadTicket); }
   };
   return {
-    process(ctx, id, _trigger = "stop") {
+    process(ctx, id, _trigger = "stop", onRowCreated, onSaved) {
       if (!accepting) return Promise.reject(new VoiceNoteSaveDeferred());
       const epoch = cancellation;
       const uploadTicket = pendingStore.enqueueUpload(id);
       if (!uploadTicket.owns) return Promise.resolve("owned-by-another-run");
-      return run(async () => { syncDesktopAfterUpload(ctx, await processOne(ctx, id, epoch, false, uploadTicket)); });
+      return run(async () => {
+        syncDesktopAfterUpload(ctx, await processOne(ctx, id, epoch, false, uploadTicket, onRowCreated, onSaved));
+        if ((pendingStore.retryAt(id) ?? 0) > Date.now()) return "retry-scheduled" as const;
+      });
     },
-    reconcileAll(ctx, _trigger = "reconcile", onSaved) {
+    reconcileAll(ctx, trigger = "reconcile", onSaved) {
       if (!accepting) return Promise.reject(new VoiceNoteSaveDeferred());
       const epoch = cancellation;
       return run(async () => {
@@ -137,6 +194,8 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
           throw error;
         }
         let discardError: unknown;
+        // At most one audio PUT per pass: the first storage-full error sets this gate for the rest.
+        const audioGate: AudioPutGate = { full: null };
         const saveQueue = notes.filter((note) => note.owner === ctx.did && !note.ownerUnknown &&
           note.ledger?.audio.state !== "saved" && !isDiscarded(note.id)).sort((a, b) => a.startedAt - b.startedAt);
         const uploadTickets = new Map(saveQueue.map((note) => [note.id, pendingStore.enqueueUpload(note)]));
@@ -144,9 +203,18 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
         for (const note of [...notes].sort((a, b) => a.startedAt - b.startedAt)) {
           check();
           if (note.owner === ctx.did && !note.ownerUnknown) {
+            // Storage full: later notes in this pass still save their row, Markdown and
+            // local-only work. Only their audio PUT is skipped, so each trigger probes once.
+            if (trigger === "manual") {
+              pendingStore.setRetrying(note.id, null);
+              retryAttempts.delete(note.id);
+              const timer = retryTimers.get(note.id);
+              if (timer) clearTimeout(timer);
+              retryTimers.delete(note.id);
+            }
             let saved: VoiceNoteRecording | null = null;
             try {
-              saved = await processOne(ctx, note.id, epoch, true, uploadTickets.get(note.id));
+              saved = await processOne(ctx, note.id, epoch, true, uploadTickets.get(note.id), undefined, onSaved, audioGate);
               syncDesktopAfterUpload(ctx, saved);
               check();
               if (saved) captureEvents.emit("library-changed", { source: VOICE_NOTE_SOURCE, sourceId: note.id });
@@ -154,7 +222,9 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
             catch (error) {
               check();
               if (isDiscarded(note.id)) discardError ??= error;
-              else pendingStore.reportNoteFailure(note.id, error);
+              else {
+                pendingStore.reportNoteFailure(note.id, error);
+              }
             } finally {
               // The native ledger is authoritative for the In progress count. Publish
               // each completed note during a long reconcile pass, not only at the end.
@@ -183,7 +253,7 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
         if (discardError) throw discardError;
       });
     },
-    cancelAll() { accepting = false; cancellation++; setAccountWorkPaused(tcw, true); },
+    cancelAll() { accepting = false; cancellation++; for (const timer of retryTimers.values()) clearTimeout(timer); retryTimers.clear(); setAccountWorkPaused(tcw, true); },
     resume() { accepting = true; setAccountWorkPaused(tcw, false); },
     isAccepting() { return accepting; },
     async quiescent(timeoutMs) {

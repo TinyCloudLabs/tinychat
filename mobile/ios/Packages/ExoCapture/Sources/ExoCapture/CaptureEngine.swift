@@ -10,10 +10,33 @@ public enum CaptureResumeError: Error, LocalizedError {
     public var errorDescription: String? { code }
 }
 
+private final class FinishBackgroundTask {
+    private let lock = NSLock()
+    private let log = Logger(subsystem: "xyz.tinycloud.exo", category: "capture")
+    private var identifier: UIBackgroundTaskIdentifier = .invalid
+
+    func begin() {
+        identifier = UIApplication.shared.beginBackgroundTask(withName: "Finish voice note") { [self] in
+            log.error("Voice-note finalization exceeded background time; recovery will retry on launch")
+            end()
+        }
+    }
+
+    func end() {
+        lock.lock()
+        let task = identifier
+        identifier = .invalid
+        lock.unlock()
+        guard task != .invalid else { return }
+        DispatchQueue.main.async { UIApplication.shared.endBackgroundTask(task) }
+    }
+}
+
 public final class CaptureEngine {
     public static let shared = CaptureEngine()
     public let library: RecordingLibrary
     private let log = Logger(subsystem: "xyz.tinycloud.exo", category: "capture")
+    private let stopSignposter = OSSignposter(subsystem: "xyz.tinycloud.exo", category: "capture.stop")
     private let defaultsKey = "exo.capture.defaults.v2"
     private let recovery = DispatchGroup()
     private var startedRecovery = false
@@ -38,6 +61,8 @@ public final class CaptureEngine {
     private var consecutiveStalls = 0
     private var stallBackoffActive = false
     private var writer: AacAdtsWriter?
+    private var stopInProgress = false
+    private var pendingStopFinalizations = 0
     private var info: SessionInfo?
     private var intent = "stopped"
     private var availability = "available"
@@ -85,6 +110,8 @@ public final class CaptureEngine {
     /// Receives the id, the backoff delay and the retry itself; the test decides when it runs.
     var debugScheduleTimedOutRetry: ((String, TimeInterval, @escaping () -> Void) -> Void)?
     var debugMuxWaitSeam: RecordingFinalizer.WaitSeam?
+    var debugBeforeWriterFinish: (() -> Void)?
+    var debugStopInputFailure = false
     #endif
     /// Recovery of one note runs at most once at a time: launch sweep, automatic retry and
     /// "Try again" all claim the id first. The mux itself runs outside the library's queue.
@@ -160,6 +187,7 @@ public final class CaptureEngine {
     var debugEpoch: Int { attempts.epoch }
     func debugRetryTick() { retryTimer?.invalidate(); retryTimer = nil; try? attemptResume(automatic: true) }
     func debugStopEngineWithoutTransition() { stopInputWithoutBookkeeping() }
+    func debugWriterFailure(_ error: Error) { writerFailed(error) }
     func debugAgeLastTap(by seconds: TimeInterval) {
         tapTimeLock.lock(); lastTapAt = retryNow - seconds; tapTimeLock.unlock()
     }
@@ -244,6 +272,12 @@ public final class CaptureEngine {
     /// ended, so the STT queue can resume from its checkpoint.
     public var captureSessionStarted: (() -> Void)?
     public var captureSessionEnded: (() -> Void)?
+
+    private func resumeSttIfIdle() {
+        if info == nil && !stopInProgress && pendingStopFinalizations == 0 {
+            captureSessionEnded?()
+        }
+    }
     public func presentRecorder() {
         if let id = info?.id {
             log.notice("presentRecorder id=\(id, privacy: .public)")
@@ -317,7 +351,8 @@ public final class CaptureEngine {
                                                         accountDid: preserveTransition ? current.accountDid : value.accountDid,
                                                         transitionGen: value.transitionGen,
                                                         options: CaptureOptions(transcriber: value.transcriber,
-                                                                                identifySpeakers: value.identifySpeakers)))
+                                                                                identifySpeakers: value.identifySpeakers,
+                                                                                uploadAudio: value.uploadAudio ?? false)))
         var claimed: [String] = []
         if let did = value.accountDid {
             if var live = info, live.owner == nil {
@@ -360,7 +395,7 @@ public final class CaptureEngine {
     public func start(source: String = "in_app", requestedLimitMs: Int64? = nil,
                       override: CaptureOptions? = nil) throws -> [String: Any] {
         recoverOnce()
-        guard info == nil else { throw CaptureError.alreadyRecording }
+        guard info == nil && !stopInProgress else { throw CaptureError.alreadyRecording }
         guard let free = try library.root.resourceValues(forKeys: [.volumeAvailableCapacityKey]).volumeAvailableCapacity else {
             throw CaptureError.io("read available storage")
         }
@@ -408,7 +443,7 @@ public final class CaptureEngine {
                 limitTimer?.invalidate(); limitTimer = nil
                 try? library.delete(session.id)
                 info = nil; intent = "stopped"; attempts.stop()
-                captureSessionEnded?()
+                resumeSttIfIdle()
             }
             throw error
         }
@@ -605,7 +640,7 @@ public final class CaptureEngine {
         audioEngine?.stop()
     }
 
-    private func deactivateGraph(tapRemoved: Bool = false) {
+    private func deactivateGraph(tapRemoved: Bool = false, deactivateSession: Bool = true) {
         #if DEBUG && targetEnvironment(simulator)
         silentInput?.stop()
         silentInput = nil
@@ -615,7 +650,7 @@ public final class CaptureEngine {
             engine.stop()
         }
         audioEngine = nil
-        guard usesHardwareSession else { return }
+        guard deactivateSession && usesHardwareSession else { return }
         do {
             try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
             graphActive = false
@@ -624,6 +659,9 @@ public final class CaptureEngine {
     }
 
     @discardableResult private func stopInput() -> Bool {
+        #if DEBUG
+        if debugStopInputFailure { return false }
+        #endif
         #if DEBUG && targetEnvironment(simulator)
         if let source = silentInput {
             source.stop()
@@ -656,7 +694,9 @@ public final class CaptureEngine {
             do { try library.appendJournal(id, ["e": "capture_stopped", "t": stoppedAt, "a": audioMs]) }
             catch {
                 log.error("Capture-stop journal failed: \(String(describing: error), privacy: .public)")
-                emit("writeFailure", ["id": id, "error": String(describing: error)], retained: true)
+                DispatchQueue.main.async { [self] in
+                    emit("writeFailure", ["id": id, "error": String(describing: error)], retained: true)
+                }
             }
         }
         if let renderEnd, let deliveredEnd {
@@ -665,6 +705,7 @@ public final class CaptureEngine {
     }
 
     private func receiveLevel(_ level: Double, peak: Double) {
+        guard !stopInProgress else { return }
         guard intent == "recording", availability == "available" else { return }
         let now = Date()
         if peak == 0 {
@@ -689,10 +730,12 @@ public final class CaptureEngine {
     }
 
     private func receiveFrames(_ value: Int64) {
+        guard !stopInProgress else { return }
         audioMs = value
     }
 
     private func checkDurationLimit() {
+        guard !stopInProgress else { return }
         if let session = info, intent == "recording", !lowBatteryReported,
            UIDevice.current.batteryState == .unplugged {
             let level = UIDevice.current.batteryLevel
@@ -755,7 +798,7 @@ public final class CaptureEngine {
     }
 
     private func writerFailed(_ error: Error) {
-        guard let id = info?.id, intent == "recording" else { return }
+        guard !stopInProgress, let id = info?.id, intent == "recording" else { return }
         log.error("Writer failed: \(String(describing: error), privacy: .public)")
         emit("writeFailure", ["id": id, "error": String(describing: error)], retained: true)
         stop(reason: "write_failed") { [weak self] result in
@@ -764,13 +807,14 @@ public final class CaptureEngine {
     }
 
     private func writerStallChanged(_ active: Bool, droppedFrames: Int) {
-        guard info != nil, intent == "recording" else { return }
+        guard !stopInProgress, info != nil, intent == "recording" else { return }
         log.error("Writer stall \(active ? "opened" : "closed", privacy: .public); dropped PCM frames=\(droppedFrames)")
         if active { openOmittedSpan("writer_stalled") }
         else if openSpan?.reason == "writer_stalled" { closeSpan() }
     }
 
     public func pause() throws {
+        guard !stopInProgress else { throw CaptureError.notRecording }
         guard let session = info else { throw CaptureError.notRecording }
         if intent == "paused" { return }
         guard intent == "recording" else { throw CaptureError.notRecording }
@@ -809,11 +853,13 @@ public final class CaptureEngine {
     }
 
     public func resume() throws {
+        guard !stopInProgress else { throw CaptureError.notRecording }
         try attemptResume(automatic: false)
     }
 
     private func attemptResume(automatic: Bool, allowedBackgroundIntent: Bool = false,
                                retryOnFailure: Bool = true) throws {
+        guard !stopInProgress else { throw CaptureError.notRecording }
         guard let session = info else { throw CaptureError.notRecording }
         guard intent == "paused" || availability != "available" else { return }
         let wasPaused = intent == "paused"
@@ -870,10 +916,14 @@ public final class CaptureEngine {
     }
 
     public func interruptionBegan() {
+        guard !stopInProgress else { return }
         suspendForInterruption("interruption", notify: true)
     }
 
-    public func appWasSuspended() { suspendForInterruption("app_suspended", notify: false) }
+    public func appWasSuspended() {
+        guard !stopInProgress else { return }
+        suspendForInterruption("app_suspended", notify: false)
+    }
 
     private static func failureReason(_ error: Error) -> String {
         let code = (error as NSError).code
@@ -887,6 +937,7 @@ public final class CaptureEngine {
     }
 
     private func suspendForInterruption(_ cause: String, notify: Bool) {
+        guard !stopInProgress else { return }
         guard let session = info, intent == "recording", availability == "available" else { return }
         let notice = attempts.interrupted()
         if cause == "interruption" || cause == "app_suspended" {
@@ -924,6 +975,7 @@ public final class CaptureEngine {
     }
 
     public func interruptionEnded() {
+        guard !stopInProgress else { return }
         guard info != nil, intent == "recording", availability == "interrupted" else { return }
         do { try attemptResume(automatic: true) }
         catch { log.error("Interruption restart failed: \(String(describing: error), privacy: .public)") }
@@ -995,6 +1047,7 @@ public final class CaptureEngine {
     }
 
     public func resumeFromNotification(id: String, epoch: Int) {
+        guard !stopInProgress else { return }
         guard attempts.accepts(.init(id: id, epoch: epoch)) else { return }
         presentRecorder()
         // Notification taps open the app; input acquisition waits for foreground delivery.
@@ -1033,6 +1086,7 @@ public final class CaptureEngine {
     }
 
     public func inputMuteChanged(_ muted: Bool) {
+        guard !stopInProgress else { return }
         guard let session = info, intent == "recording" else { return }
         if muted {
             guard openSpan == nil else { return }
@@ -1054,47 +1108,95 @@ public final class CaptureEngine {
 
     public func stop(reason stopReason: String = "user",
                      completion: @escaping (Result<[String: Any], Error>) -> Void) {
+        let signpost = stopSignposter.beginInterval("Stop Main Handoff")
+        defer { stopSignposter.endInterval("Stop Main Handoff", signpost) }
+        guard !stopInProgress else { completion(.failure(CaptureError.notRecording)); return }
         guard let session = info else { completion(.failure(CaptureError.notRecording)); return }
-        clearResumeNotification(); attempts.stop(); cancelRetry()
+        stopInProgress = true
         guard stopInput() else {
+            // The input may still be running. Keep the tap and live session intact for Retry Stop.
+            stopInProgress = false
             completion(.failure(CaptureError.io("stop capture input")))
             return
         }
-        closeNoSignal()
         let stoppedAt = wallClock.nowMilliseconds()
-        let final: (audioMs: Int64, heartbeatAt: Int64?)
-        do { final = try writer?.finish(at: stoppedAt) ?? (audioMs: 0, heartbeatAt: nil) }
-        catch {
-            emit("writeFailure", ["id": session.id, "error": String(describing: error)], retained: true)
-            library.endLiveCapture(session.id)
-            deactivateGraph(tapRemoved: true)
-            limitTimer?.invalidate(); limitTimer = nil
-            writer = nil; info = nil; intent = "stopped"; availability = "available"; reason = "write_failed"
-            captureSessionEnded?()
-            emitState()
-            DispatchQueue.global(qos: .utility).async { [self] in
-                guard claimRecovery(session.id) else {
-                    log.notice("recovery skipped id=\(session.id, privacy: .public) reason=already_recovering")
-                    return
+        let releaseSession = usesHardwareSession
+        deactivateGraph(tapRemoved: true, deactivateSession: false)
+        clearResumeNotification(); attempts.stop(); cancelRetry()
+        limitTimer?.invalidate(); limitTimer = nil
+        let backgroundTask = FinishBackgroundTask()
+        backgroundTask.begin()
+        let finishingWriter = writer
+        #if DEBUG
+        let beforeWriterFinish = debugBeforeWriterFinish
+        #endif
+        DispatchQueue.global(qos: .userInitiated).async { [self] in
+            #if DEBUG
+            beforeWriterFinish?()
+            #endif
+            let result = Result { try finishingWriter?.finish(at: stoppedAt) ?? (audioMs: 0, heartbeatAt: nil) }
+            let deactivated: Bool
+            if releaseSession {
+                do {
+                    try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+                    deactivated = true
+                } catch {
+                    log.error("Audio session deactivation failed: \(String(describing: error), privacy: .public)")
+                    deactivated = false
                 }
-                defer { releaseRecovery(session.id) }
-                do { try recoverSession(session.id) }
-                catch {
-                    log.error("Write-failure recovery failed: \(String(describing: error), privacy: .public)")
-                    DispatchQueue.main.async {
-                        self.emit("recoveryFailed", ["id": session.id, "reason": String(describing: error)], retained: true)
-                    }
+            } else { deactivated = false }
+            DispatchQueue.main.async {
+                if deactivated { self.graphActive = false }
+                switch result {
+                case .success(let final):
+                    self.finishStop(session: session, stopReason: stopReason, stoppedAt: stoppedAt,
+                                    audioMs: final.audioMs, heartbeatAt: final.heartbeatAt,
+                                    backgroundTask: backgroundTask, completion: completion)
+                case .failure(let error):
+                    self.failStop(session: session, error: error, backgroundTask: backgroundTask,
+                                  completion: completion)
                 }
             }
-            completion(.failure(error))
-            return
         }
-        deactivateGraph(tapRemoved: true)
+    }
+
+    private func failStop(session: SessionInfo, error: Error, backgroundTask: FinishBackgroundTask,
+                          completion: @escaping (Result<[String: Any], Error>) -> Void) {
+        let id = session.id
+        backgroundTask.end()
+        emit("writeFailure", ["id": id, "error": String(describing: error)], retained: true)
+        library.endLiveCapture(id)
+        writer = nil; info = nil; intent = "stopped"; availability = "available"; reason = "write_failed"
+        stopInProgress = false
+        resumeSttIfIdle()
+        emitState()
+        DispatchQueue.global(qos: .utility).async { [self] in
+            guard claimRecovery(id) else {
+                log.notice("recovery skipped id=\(id, privacy: .public) reason=already_recovering")
+                return
+            }
+            defer { releaseRecovery(id) }
+            do { try recoverSession(id) }
+            catch {
+                log.error("Write-failure recovery failed: \(String(describing: error), privacy: .public)")
+                DispatchQueue.main.async {
+                    self.emit("recoveryFailed", ["id": id, "reason": String(describing: error)], retained: true)
+                }
+            }
+        }
+        completion(.failure(error))
+    }
+
+    private func finishStop(session: SessionInfo, stopReason: String, stoppedAt: Int64,
+                            audioMs finalAudioMs: Int64, heartbeatAt: Int64?,
+                            backgroundTask: FinishBackgroundTask,
+                            completion: @escaping (Result<[String: Any], Error>) -> Void) {
+        closeNoSignal()
         // Keep the live mark until commit publishes its sidecar. A launch sweep can still be
         // running here; dropping the mark would let it commit this stop as a recovered note.
         if openSpan != nil { closeSpan(at: stoppedAt, journal: false) }
         var next = transitions ?? CaptureTransitionMachine()
-        let stopEvents = next.stopped(at: stoppedAt, audioMs: final.audioMs, reason: stopReason)
+        let stopEvents = next.stopped(at: stoppedAt, audioMs: finalAudioMs, reason: stopReason)
         transitions = next
         if let since = pausedSince { pausedMs += max(0, stoppedAt - since) }
         let paused = pausedMs
@@ -1104,17 +1206,15 @@ public final class CaptureEngine {
         let firstAudio = firstAudioAt
         let inputStopped = captureStoppedAt
         let muxConfig = self.muxConfig()
-        limitTimer?.invalidate(); limitTimer = nil
         writer = nil; info = nil; intent = "stopped"; availability = "available"; reason = stopReason
-        captureSessionEnded?()
+        stopInProgress = false
+        pendingStopFinalizations += 1
         emitState()
-        let backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Finish voice note") {
-            self.log.error("Voice-note finalization exceeded background time; recovery will retry on launch")
-        }
+        // STT reads the committed audio, so resume it only once the mux has published that file.
         DispatchQueue.global(qos: .userInitiated).async { [self] in
-            defer { DispatchQueue.main.async { UIApplication.shared.endBackgroundTask(backgroundTask) } }
+            defer { backgroundTask.end() }
             do {
-                let duration = final.audioMs
+                let duration = finalAudioMs
                 guard duration > 0 else {
                     try library.delete(session.id)
                     throw CaptureError.noAudio
@@ -1123,7 +1223,7 @@ public final class CaptureEngine {
                     try library.appendJournal(session.id, event, fullSync: index == stopEvents.count - 1)
                 }
                 let lastHeartbeat: Int64?
-                if let at = final.heartbeatAt { lastHeartbeat = at }
+                if let at = heartbeatAt { lastHeartbeat = at }
                 else {
                     lastHeartbeat = try library.readJournal(session.id)
                         .last(where: { $0["e"] as? String == "hb" })?["t"] as? Int64
@@ -1150,12 +1250,16 @@ public final class CaptureEngine {
                 }
                 DispatchQueue.main.async {
                     self.emit("committed", committed, retained: true)
+                    self.pendingStopFinalizations -= 1
+                    self.resumeSttIfIdle()
                     completion(.success(committed))
                 }
             } catch {
                 library.endLiveCapture(session.id)
                 log.error("finalize stage=failed id=\(session.id, privacy: .public) error=\(String(describing: error), privacy: .public)")
                 DispatchQueue.main.async {
+                    self.pendingStopFinalizations -= 1
+                    self.resumeSttIfIdle()
                     completion(.failure(error))
                     if let captureError = error as? CaptureError,
                        case .finalizationTimedOut = captureError {
@@ -1221,6 +1325,7 @@ public final class CaptureEngine {
     }
 
     public func discard() throws -> String? {
+        guard !stopInProgress else { throw CaptureError.notRecording }
         guard let session = info else { return nil }
         clearResumeNotification(); attempts.stop(); cancelRetry()
         try library.delete(session.id)
@@ -1228,19 +1333,21 @@ public final class CaptureEngine {
         deactivateGraph(tapRemoved: true)
         _ = try? writer?.finish(at: wallClock.nowMilliseconds())
         writer = nil; info = nil; intent = "stopped"; reason = "user"
-        captureSessionEnded?()
+        resumeSttIfIdle()
         limitTimer?.invalidate(); limitTimer = nil
         emitState()
         return session.id
     }
 
     public func setRecordingOptions(_ changed: CaptureOptions) throws {
+        guard !stopInProgress else { throw CaptureError.notRecording }
         guard let session = info else { throw CaptureError.notRecording }
         var actual = changed
         if session.owner == nil { actual.transcriber = "on-device" }
-        try library.appendJournal(session.id, ["e": "options", "t": wallClock.nowMilliseconds(), "a": audioMs,
-                                               "transcriber": actual.transcriber,
-                                               "identifySpeakers": actual.identifySpeakers])
+        var optionEvent: [String: Any] = ["e": "options", "t": wallClock.nowMilliseconds(), "a": audioMs,
+                                          "transcriber": actual.transcriber, "identifySpeakers": actual.identifySpeakers]
+        if let uploadAudio = actual.uploadAudio { optionEvent["uploadAudio"] = uploadAudio }
+        try library.appendJournal(session.id, optionEvent)
         options = actual
         info?.options = actual
     }
@@ -1259,7 +1366,8 @@ public final class CaptureEngine {
                 "maxDurationMs": info?.maxDurationMs ?? 10_800_000,
                 "spans": spans.map(Self.spanObject), "openSpan": openSpan.map(Self.spanObject) as Any? ?? NSNull(),
                 "source": info?.source as Any? ?? NSNull(),
-                "options": ["transcriber": options.transcriber, "identifySpeakers": options.identifySpeakers],
+                "options": ["transcriber": options.transcriber, "identifySpeakers": options.identifySpeakers,
+                            "uploadAudio": options.uploadAudio ?? false],
                 "input": currentInput as Any? ?? NSNull(), "owner": info?.owner as Any? ?? NSNull(),
                 "transitionGen": info?.transitionGen ?? defaults().transitionGen]
     }
@@ -1278,6 +1386,7 @@ public final class CaptureEngine {
     }
 
     public func selectInput(_ id: String?) throws {
+        guard !stopInProgress else { throw CaptureError.notRecording }
         #if DEBUG && targetEnvironment(simulator)
         let mode = try simulatorInputMode()
         if mode != .host {
@@ -1294,6 +1403,7 @@ public final class CaptureEngine {
     }
 
     public func routeChanged() {
+        guard !stopInProgress else { return }
         defer {
             do { emit("inputs", try listInputs()) }
             catch { log.error("Could not publish inputs after route change (inputs_unavailable): \(String(describing: error), privacy: .public)") }
@@ -1317,15 +1427,20 @@ public final class CaptureEngine {
     }
 
     public func engineConfigurationChanged(_ engine: AVAudioEngine?) {
+        guard !stopInProgress else { return }
         guard engine != nil, engine === audioEngine else { return }
         if intent == "recording", availability == "available" { rebuildForRoute("route_change") }
     }
 
     #if DEBUG
-    func debugConfigurationRebuild() { if intent == "recording", availability == "available" { rebuildForRoute("route_change") } }
+    func debugConfigurationRebuild() {
+        guard !stopInProgress else { return }
+        if intent == "recording", availability == "available" { rebuildForRoute("route_change") }
+    }
     #endif
 
     public func mediaServicesReset() {
+        guard !stopInProgress else { return }
         guard info != nil else { return }
         if intent == "paused" { return }
         if availability == "available", rebuildForRoute("media_services_reset"), let id = info?.id {
@@ -1494,7 +1609,8 @@ public final class CaptureEngine {
                                   source: first["source"] as? String ?? "in_app", owner: recovered.owner,
                                   transitionGen: first["transitionGen"] as? Int64 ?? 0,
                                   options: CaptureOptions(transcriber: option["transcriber"] as? String ?? "on-device",
-                                                          identifySpeakers: option["identifySpeakers"] as? Bool ?? false),
+                                                          identifySpeakers: option["identifySpeakers"] as? Bool ?? false,
+                                                          uploadAudio: option["uploadAudio"] as? Bool),
                                   startedAt: startedAt)
         var sidecar = makeSidecar(session, duration: Int64(frames) * 1024 * 1000 / 48_000,
                                   wallMs: recovered.wallMs, pausedMs: recovered.pausedMs,
@@ -1543,7 +1659,8 @@ public final class CaptureEngine {
                                   source: first["source"] as? String ?? "in_app", owner: recovered.owner,
                                   transitionGen: first["transitionGen"] as? Int64 ?? 0,
                                   options: CaptureOptions(transcriber: choice["transcriber"] as? String ?? "on-device",
-                                                          identifySpeakers: choice["identifySpeakers"] as? Bool ?? false),
+                                                          identifySpeakers: choice["identifySpeakers"] as? Bool ?? false,
+                                                          uploadAudio: choice["uploadAudio"] as? Bool),
                                   startedAt: startedAt)
         let lastSegment = events.compactMap { $0["e"] as? String == "segment" ? $0["index"] as? Int : nil }.last ?? 0
         try DispatchQueue.main.sync {

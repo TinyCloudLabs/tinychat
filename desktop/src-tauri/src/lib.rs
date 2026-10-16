@@ -10,6 +10,7 @@ mod recorder;
 #[cfg(debug_assertions)]
 mod dev_log;
 mod google_oauth;
+mod manage_storage;
 // Release-profile library tests validate probe names without putting the
 // self-test in the ordinary shipped binary.
 #[cfg(all(
@@ -27,6 +28,21 @@ mod local_url;
 mod session_audio;
 #[cfg(all(feature = "transcription", debug_assertions))]
 mod smoke;
+
+#[cfg(feature = "transcription")]
+pub(crate) static FINISHING_QUIT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(feature = "transcription")]
+fn guard_user_exit(finishing: bool, code: Option<i32>) -> bool {
+    finishing && code.is_none()
+}
+
+#[cfg(feature = "transcription")]
+#[tauri::command]
+fn recorder_quit_anyway(app: tauri::AppHandle) {
+    app.exit(0);
+}
 
 #[cfg(feature = "transcription")]
 fn install_recorder_runtime<R: tauri::Runtime>(app: &mut tauri::App<R>) {
@@ -48,6 +64,7 @@ pub fn run() {
         google_oauth::google_oauth_wait,
         google_oauth::google_oauth_cancel,
         google_oauth::google_oauth_open_browser,
+        manage_storage::open_manage_storage,
     ]);
 
     // anarlog (MIT) transcription stack: local capture + on-device Whisper.
@@ -91,6 +108,7 @@ pub fn run() {
             google_oauth::google_oauth_wait,
             google_oauth::google_oauth_cancel,
             google_oauth::google_oauth_open_browser,
+            manage_storage::open_manage_storage,
             recorder::files::append_audio_chunk,
             ptx_upload::ptx_audio_metadata,
             ptx_upload::ptx_upload_audio,
@@ -99,6 +117,7 @@ pub fn run() {
             recorder::files::read_audio_chunk,
             recorder::files::finalize_audio_file,
             recorder::files::recorder_whisper_stage_audio,
+            recorder::files::recorder_audio_envelope,
             recorder::files::recorder_whisper_cleanup_stages,
             local::recorder_whisper_start,
             recorder::files::delete_audio_file,
@@ -106,10 +125,14 @@ pub fn run() {
             recorder::engine::recorder_pause,
             recorder::engine::recorder_resume,
             recorder::engine::recorder_stop,
+            recorder::engine::recorder_stop_durable,
+            recorder::engine::recorder_finish,
+            recorder_quit_anyway,
             recorder::engine::recorder_status,
             recorder::engine::recorder_list_inputs,
             recorder::engine::recorder_select_input,
             recorder::engine::recorder_recover,
+            recorder::engine::recorder_stopped_list,
             recorder::engine::recorder_acknowledge,
             recorder::engine::recorder_failed_list,
             recorder::engine::recorder_failed_retry,
@@ -123,8 +146,6 @@ pub fn run() {
             recorder::extras::recorder_system_audio_set,
             recorder::extras::recorder_system_audio_consent_get,
             recorder::extras::recorder_system_audio_consent_set,
-            recorder::extras::recorder_auto_save_to_space_get,
-            recorder::extras::recorder_auto_save_to_space_set,
         ]);
         // Debug builds add a diagnostic that lets the webview verify the
         // native wiring in one invoke before any recording is attempted.
@@ -134,6 +155,7 @@ pub fn run() {
             google_oauth::google_oauth_wait,
             google_oauth::google_oauth_cancel,
             google_oauth::google_oauth_open_browser,
+            manage_storage::open_manage_storage,
             recorder::files::append_audio_chunk,
             ptx_upload::ptx_audio_metadata,
             ptx_upload::ptx_upload_audio,
@@ -142,6 +164,7 @@ pub fn run() {
             recorder::files::read_audio_chunk,
             recorder::files::finalize_audio_file,
             recorder::files::recorder_whisper_stage_audio,
+            recorder::files::recorder_audio_envelope,
             recorder::files::recorder_whisper_cleanup_stages,
             local::recorder_whisper_start,
             recorder::files::delete_audio_file,
@@ -149,10 +172,14 @@ pub fn run() {
             recorder::engine::recorder_pause,
             recorder::engine::recorder_resume,
             recorder::engine::recorder_stop,
+            recorder::engine::recorder_stop_durable,
+            recorder::engine::recorder_finish,
+            recorder_quit_anyway,
             recorder::engine::recorder_status,
             recorder::engine::recorder_list_inputs,
             recorder::engine::recorder_select_input,
             recorder::engine::recorder_recover,
+            recorder::engine::recorder_stopped_list,
             recorder::engine::recorder_acknowledge,
             recorder::engine::recorder_failed_list,
             recorder::engine::recorder_failed_retry,
@@ -166,8 +193,6 @@ pub fn run() {
             recorder::extras::recorder_system_audio_set,
             recorder::extras::recorder_system_audio_consent_get,
             recorder::extras::recorder_system_audio_consent_set,
-            recorder::extras::recorder_auto_save_to_space_get,
-            recorder::extras::recorder_auto_save_to_space_set,
             smoke::exo_desktop_smoke,
             dev_log::append_dev_log,
             dev_log::debug_logging_enabled,
@@ -175,6 +200,12 @@ pub fn run() {
 
         builder.setup(|app| {
             install_recorder_runtime(app);
+            if let Err(error) = recorder::refresh_finishing_quit(app.handle()) {
+                FINISHING_QUIT.store(false, std::sync::atomic::Ordering::SeqCst);
+                tracing::error!(target: "exo_dev::recorder", kind = "pipeline",
+                    source_id = "recorder-stopped", operation = "startup_journal_scan",
+                    phase = "failed", error = %error);
+            }
             app.add_capability(include_str!(
                 "../capabilities-transcription/transcription.json"
             ))?;
@@ -191,8 +222,33 @@ pub fn run() {
     };
 
     builder
-        .run(tauri::generate_context!())
-        .expect("error while running Exo");
+        .build(tauri::generate_context!())
+        .expect("error building Exo")
+        .run(|app, event| {
+            #[cfg(feature = "transcription")]
+            if let tauri::RunEvent::ExitRequested { code, api, .. } = event {
+                use tauri::Emitter;
+                if guard_user_exit(
+                    FINISHING_QUIT.load(std::sync::atomic::Ordering::SeqCst),
+                    code,
+                ) {
+                    api.prevent_exit();
+                    let _ = app.emit("exo://recorder-exit-requested", ());
+                }
+            }
+            #[cfg(not(feature = "transcription"))]
+            let _ = (app, event);
+        });
+}
+
+#[cfg(all(test, feature = "transcription"))]
+mod finishing_exit_tests {
+    #[test]
+    fn app_menu_quit_is_guarded_only_for_user_exit_while_finishing() {
+        assert!(super::guard_user_exit(true, None));
+        assert!(!super::guard_user_exit(false, None));
+        assert!(!super::guard_user_exit(true, Some(0)));
+    }
 }
 
 #[cfg(all(test, feature = "transcription"))]
@@ -213,18 +269,22 @@ mod tests {
 
         super::install_recorder_runtime(&mut app);
 
-        assert!(app
-            .try_state::<super::recorder::RecorderRuntime>()
-            .is_some());
+        assert!(
+            app.try_state::<super::recorder::RecorderRuntime>()
+                .is_some()
+        );
         assert!(app.try_state::<super::recorder::engine::Engine>().is_none());
-        assert!(app
-            .state::<tauri_plugin_settings::StartupSnapshot>()
-            .load()
-            .await
-            .is_err());
-        assert!(super::recorder::extras::load_system_audio(app.handle())
-            .await
-            .is_err());
+        assert!(
+            app.state::<tauri_plugin_settings::StartupSnapshot>()
+                .load()
+                .await
+                .is_err()
+        );
+        assert!(
+            super::recorder::extras::load_system_audio(app.handle())
+                .await
+                .is_err()
+        );
         std::fs::remove_dir_all(vault).unwrap();
     }
 }

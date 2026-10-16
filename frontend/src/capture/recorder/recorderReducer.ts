@@ -59,7 +59,7 @@ export interface RecorderState {
   localUpload: "uploading" | "held" | "in-flight" | null;
   /** Why the phone-only receipt is held, for a later actionable receipt. */
   localUploadHeldReason?: "signed-out" | "other-account" | "legacy" | "unowned";
-  lastSaved: { id: string; durationMs: number; at: number } | null;
+  lastSaved: { id: string; durationMs: number; channels?: 1 | 2; at: number } | null;
   /** The recording behind a "Kept on this phone" receipt, so a later Save now can land it. */
   failedRecording: { id: string; durationMs: number } | null;
   /**
@@ -100,10 +100,10 @@ export type RecorderEvent =
   | { type: "STOP_FAILED"; error: string | null; status: "idle" | "unknown"; id?: string | null }
   /** The save started (percent null) or moved on. */
   | { type: "SAVE_PROGRESS"; percent: number | null }
-  | { type: "LOCAL_COMMITTED"; id: string; durationMs: number; at: number }
+  | { type: "LOCAL_COMMITTED"; id: string; durationMs: number; channels?: 1 | 2; at: number }
   | { type: "LOCAL_UPLOAD_HELD"; id: string; reason: "signed-out" | "other-account" | "legacy" | "unowned" }
   | { type: "LOCAL_UPLOAD_IN_FLIGHT"; id: string }
-  | { type: "SAVED"; id: string; durationMs: number; at: number }
+  | { type: "SAVED"; id: string; durationMs: number; channels?: 1 | 2; at: number }
   | { type: "SAVE_FAILED"; error: string; recording: { id: string; durationMs: number } | null }
   /**
    * A recorder stopped itself at its limit: `id` is that recording's (null when it
@@ -322,7 +322,7 @@ function reduce(state: RecorderState, event: RecorderEvent): RecorderState {
       if (!savingThis(state, event.id)) return state;
       return {
         ...toIdle(state), outcome: "local", localUpload: "uploading", audioMs: event.durationMs,
-        lastSaved: { id: event.id, durationMs: event.durationMs, at: event.at },
+        lastSaved: { id: event.id, durationMs: event.durationMs, channels: event.channels, at: event.at },
         error: null,
       };
     case "LOCAL_UPLOAD_HELD":
@@ -342,7 +342,7 @@ function reduce(state: RecorderState, event: RecorderEvent): RecorderState {
         localUpload: null,
         error: null,
         failedRecording: null,
-        lastSaved: { id: event.id, durationMs: event.durationMs, at: event.at },
+        lastSaved: { id: event.id, durationMs: event.durationMs, channels: event.channels, at: event.at },
       };
     case "SAVE_FAILED":
       if (!savingThis(state, event.recording?.id ?? null) && !(state.phase === "idle" && state.outcome === "local" && state.lastSaved?.id === event.recording?.id)) return state;

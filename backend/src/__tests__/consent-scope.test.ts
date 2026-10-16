@@ -856,10 +856,10 @@ describe("the cohort consent copy tells the new truth (plan §11 requirements 1-
   /**
    * The approval artifact and the shipped constant are ONE text. The Gate 6 approval covers the
    * original cohort copy, which is what renders while delivery is inactive, so that is matched
-   * sentence for sentence. The transcript-writer variant replaces one paragraph the operator has
-   * NOT approved: the doc mirrors it under an explicit "NOT APPROVED" status, never inside the
-   * approved text, and this test holds the mirror to the shipped words and the rest of the
-   * variant to the approved text.
+   * sentence for sentence. Sam separately approved the transcript-writer variant's two replaced
+   * paragraphs on 2026-10-15: the doc mirrors them under that explicit approval status, outside the
+   * original Gate 6-approved text, and this test holds the mirror to the shipped words and the rest
+   * of the variant to the original approved text.
    */
   it("matches the operator approval artifact sentence for sentence", () => {
     const doc = readDoc(COHORT_COPY_DOC);
@@ -891,10 +891,10 @@ describe("the cohort consent copy tells the new truth (plan §11 requirements 1-
       else expect(collapse(bullet)).toBe(approved[`bullet ${index + 1}`]);
     });
     expect(approved[TRANSCRIPT_WRITER_BULLET]).toBe(collapse(active.bullets[TRANSCRIPT_WRITER_BULLET_INDEX]!));
-    // …and the mirror says, in its own section, that it is not approved.
+    // …and the mirror records the separate approval in its own section.
     const section = doc.slice(doc.indexOf("## Transcript-writer variant"));
     expect(section.indexOf(`## ${TRANSCRIPT_WRITER_BULLET}`)).toBeGreaterThan(0);
-    expect(section.slice(0, section.indexOf(`## ${TRANSCRIPT_WRITER_BULLET}`))).toContain("**Status: NOT APPROVED.**");
+    expect(section.slice(0, section.indexOf(`## ${TRANSCRIPT_WRITER_BULLET}`))).toContain("**Status: APPROVED 2026-10-15 (Sam).**");
     const prose = (markdown: string) => normalize(markdown.replace(/^> /gm, ""));
     expect(prose(doc.slice(0, doc.indexOf("## Transcript-writer variant")))).not.toContain(TRANSCRIPT_WRITER_NOTICE_TEXT);
     expect(prose(section)).toContain(TRANSCRIPT_WRITER_NOTICE_TEXT);

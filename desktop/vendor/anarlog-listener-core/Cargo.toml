@@ -1,0 +1,51 @@
+[package]
+name = "listener-core"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = []
+specta = ["dep:specta"]
+tauri-event = ["specta", "dep:tauri-specta"]
+
+[dependencies]
+anlg-audio = { package = "audio", git = "https://github.com/fastrepl/anarlog", rev = "864ddc1f692116d128eea2692fd72b0a51007768" }
+anlg-audio-utils = { package = "audio-utils", git = "https://github.com/fastrepl/anarlog", rev = "864ddc1f692116d128eea2692fd72b0a51007768" }
+anlg-device-monitor = { package = "device-monitor", git = "https://github.com/fastrepl/anarlog", rev = "864ddc1f692116d128eea2692fd72b0a51007768" }
+anlg-host = { package = "host", git = "https://github.com/fastrepl/anarlog", rev = "864ddc1f692116d128eea2692fd72b0a51007768" }
+anlg-language = { package = "language", git = "https://github.com/fastrepl/anarlog", rev = "864ddc1f692116d128eea2692fd72b0a51007768" }
+anlg-storage = { package = "storage", git = "https://github.com/fastrepl/anarlog", rev = "864ddc1f692116d128eea2692fd72b0a51007768" }
+anlg-supervisor = { package = "supervisor", git = "https://github.com/fastrepl/anarlog", rev = "864ddc1f692116d128eea2692fd72b0a51007768" }
+anlg-transcribe-soniqo = { package = "transcribe-soniqo", git = "https://github.com/fastrepl/anarlog", rev = "864ddc1f692116d128eea2692fd72b0a51007768" }
+anlg-transcribe-speechanalyzer = { package = "transcribe-speechanalyzer", git = "https://github.com/fastrepl/anarlog", rev = "864ddc1f692116d128eea2692fd72b0a51007768" }
+anlg-transcript = { package = "transcript", git = "https://github.com/fastrepl/anarlog", rev = "864ddc1f692116d128eea2692fd72b0a51007768" }
+anlg-vad-masking = { package = "vad-masking", git = "https://github.com/fastrepl/anarlog", rev = "864ddc1f692116d128eea2692fd72b0a51007768" }
+
+owhisper-client = { package = "owhisper-client", git = "https://github.com/fastrepl/anarlog", rev = "864ddc1f692116d128eea2692fd72b0a51007768", features = ["local"] }
+owhisper-interface = { package = "owhisper-interface", git = "https://github.com/fastrepl/anarlog", rev = "864ddc1f692116d128eea2692fd72b0a51007768" }
+
+anlg-mp3 = { package = "mp3", git = "https://github.com/fastrepl/anarlog", rev = "864ddc1f692116d128eea2692fd72b0a51007768" }
+hound = { version = "3.5.1" }
+vorbis_rs = { version = "0.5.5" }
+
+ractor = { version = "0.15.10", features = ["async-trait"] }
+
+bytes = { version = "1.11" }
+futures-util = { version = "0.3.31" }
+serde = { version = "1" }
+serde_json = { version = "1" }
+specta = { version = "2.0.0-rc.22", optional = true }
+tauri-specta = { version = "2.0.0-rc.21", optional = true, features = ["derive"] }
+thiserror = { version = "2" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
+tokio-stream = { version = "0.1.17" }
+tokio-util = { version = "0.7.15" }
+tracing = { version = "0.1" }
+uuid = { version = "1" }
+
+sentry = { version = "=0.42.0" }
+
+[dev-dependencies]
+anlg-data = { package = "data", git = "https://github.com/fastrepl/anarlog", rev = "864ddc1f692116d128eea2692fd72b0a51007768" }
+tempfile = { version = "3" }
+tracing-subscriber = { version = "0.3" }
