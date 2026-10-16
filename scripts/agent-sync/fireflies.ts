@@ -305,15 +305,14 @@ async function runLocked(
   };
   const store: SyncStore = {
     ...connectorStore,
-    insertMeeting: async (target, meeting) => {
-      const res = watch(await connectorStore.insertMeeting(target, meeting));
-      if (res.ok && res.data) {
-        state.inserted.push({ id: meeting.id, at: clock().toISOString() });
+    upsertMeeting: async (target, meeting, sentences) => {
+      const res = watch(await connectorStore.upsertMeeting(target, meeting, sentences));
+      if (res.ok && res.data.inserted) {
+        state.inserted.push({ id: res.data.id, at: clock().toISOString() });
         writeState(stateFile, state);
       }
       return res;
     },
-    putTranscriptBody: async (...args) => watch(await connectorStore.putTranscriptBody(...args)),
     updateSyncState: async (...args) => watch(await connectorStore.updateSyncState(...args)),
     recordFirefliesAttempt: async (...args) => watch(await connectorStore.recordFirefliesAttempt(...args)),
   };

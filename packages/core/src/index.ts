@@ -22,6 +22,7 @@ export {
   type TranscriberTranscriptJson,
   type PortResult,
   type ConnectorStorePort,
+  type ConnectorMeetingPort,
   type NormalizedTranscriberMeeting,
   type WrittenTranscriberMeeting,
 } from "./connector-meeting.js";

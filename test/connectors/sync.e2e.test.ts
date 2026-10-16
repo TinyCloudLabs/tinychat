@@ -475,8 +475,7 @@ test("resumed head page does not complete after the detail cap before a date cut
   const fake = makeFakeTinyCloud({ did: "did:test:head-detail-cap" });
   for (const item of items.slice(0, 5)) {
     const normalized = connectorStore.normalizeFirefliesTranscript(item);
-    expect((await connectorStore.insertMeeting(fake.tcw, normalized.meeting)).ok).toBe(true);
-    expect((await connectorStore.putTranscriptBody(fake.tcw, "fireflies", item.id, normalized.sentences)).ok).toBe(true);
+    expect((await connectorStore.upsertMeeting(fake.tcw, normalized.meeting, normalized.sentences)).ok).toBe(true);
   }
   expect((await connectorStore.updateSyncState(fake.tcw, {
     connectorId: "fireflies",
@@ -678,8 +677,7 @@ test("stale legacy proof timestamps are immediately eligible after map loss", as
     for (const item of items) {
       if (item.id === pending.id) continue;
       const normalized = connectorStore.normalizeFirefliesTranscript(item);
-      expect((await connectorStore.insertMeeting(fake.tcw, normalized.meeting)).ok).toBe(true);
-      expect((await connectorStore.putTranscriptBody(fake.tcw, "fireflies", item.id, normalized.sentences)).ok).toBe(true);
+      expect((await connectorStore.upsertMeeting(fake.tcw, normalized.meeting, normalized.sentences)).ok).toBe(true);
     }
     expect((await connectorStore.updateSyncState(fake.tcw, {
       connectorId: "fireflies",
@@ -738,8 +736,7 @@ test("a cooling deleted ID joins a due proof generation", async () => {
   for (const item of items) {
     if (item.id === deleted.id || item.id === failing.id) continue;
     const normalized = connectorStore.normalizeFirefliesTranscript(item);
-    expect((await connectorStore.insertMeeting(fake.tcw, normalized.meeting)).ok).toBe(true);
-    expect((await connectorStore.putTranscriptBody(fake.tcw, "fireflies", item.id, normalized.sentences)).ok).toBe(true);
+    expect((await connectorStore.upsertMeeting(fake.tcw, normalized.meeting, normalized.sentences)).ok).toBe(true);
   }
   const watermark = new Date(now - 3 * 86_400_000).toISOString();
   expect((await connectorStore.updateSyncState(fake.tcw, {
@@ -1393,8 +1390,7 @@ test("invalid pending metadata restarts the engine at zero and repairs skipped h
     for (let itemIndex = 0; itemIndex < 100; itemIndex++) {
       if (itemIndex === 60) continue;
       const normalized = connectorStore.normalizeFirefliesTranscript(items[itemIndex]!);
-      expect((await connectorStore.insertMeeting(fake.tcw, normalized.meeting)).ok).toBe(true);
-      expect((await connectorStore.putTranscriptBody(fake.tcw, "fireflies", items[itemIndex]!.id, normalized.sentences)).ok).toBe(true);
+      expect((await connectorStore.upsertMeeting(fake.tcw, normalized.meeting, normalized.sentences)).ok).toBe(true);
     }
     expect((await connectorStore.updateSyncState(fake.tcw, {
       connectorId: "fireflies",
@@ -1436,8 +1432,7 @@ test("malformed per-ID proof map restarts listing while retaining pending IDs", 
   for (let index = 0; index < 100; index++) {
     if (index === 60) continue;
     const normalized = connectorStore.normalizeFirefliesTranscript(items[index]!);
-    expect((await connectorStore.insertMeeting(fake.tcw, normalized.meeting)).ok).toBe(true);
-    expect((await connectorStore.putTranscriptBody(fake.tcw, "fireflies", items[index]!.id, normalized.sentences)).ok).toBe(true);
+    expect((await connectorStore.upsertMeeting(fake.tcw, normalized.meeting, normalized.sentences)).ok).toBe(true);
   }
   const watermark = new Date(now).toISOString();
   expect((await connectorStore.updateSyncState(fake.tcw, {
@@ -1934,8 +1929,7 @@ describe("sync e2e (spec §10 driver 2)", () => {
     try {
       for (const item of staleSeed.slice(0, 510)) {
         const { meeting, sentences } = connectorStore.normalizeFirefliesTranscript(item);
-        expect((await connectorStore.insertMeeting(fake.tcw, meeting)).ok).toBe(true);
-        expect((await connectorStore.putTranscriptBody(fake.tcw, "fireflies", item.id, sentences)).ok).toBe(true);
+        expect((await connectorStore.upsertMeeting(fake.tcw, meeting, sentences)).ok).toBe(true);
       }
       expect((await connectorStore.updateSyncState(fake.tcw, {
         connectorId: "fireflies",

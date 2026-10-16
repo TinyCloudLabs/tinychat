@@ -301,12 +301,14 @@ Browser storage API (all take `tcw` as first arg):
 `updateSyncState(...)`, `getFirefliesAttempt()`, `recordFirefliesAttempt(...)`,
 `clearFirefliesAttempt()`, `purgeConnector(source)`, `countMeetings(source)`.
 `upsertMeeting` adapts the core `writeConnectorMeeting` to the browser SDK.
-Unchanged rows keep `updated_at`; Fireflies and Meet transcript bodies use a
-create-only conditional KV put after an existence probe. A standalone Notes by
-Gemini Doc revision instead compares bytes and uses the previous ETag for a
-conditional replacement; an unchanged revision makes no KV write. Meet bodies
-are written before their row becomes visible. Storage calls within each writer
-are sequential; separate browser writers can overlap.
+Unchanged rows keep `updated_at`. Fireflies transcript bodies use a create-only
+conditional KV put. Meet transcripts use the same conditional create; if a later
+import has more entries than the stored body, it replaces that body using the
+previous ETag. Identical or shorter Meet imports make no KV write. A standalone
+Notes by Gemini Doc revision instead compares bytes and conditionally replaces
+the body on any changed revision, even if it is shorter; unchanged revisions make
+no KV write. Meet bodies are written before their row becomes visible. Storage
+calls within each writer are sequential; separate browser writers can overlap.
 
 ### Normalization (from raw `GetTranscript`)
 

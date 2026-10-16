@@ -234,6 +234,12 @@ export interface ConnectorStorePort {
   kvPutIfAbsent(key: string, body: string): Promise<PortResult<"written" | "exists">>;
 }
 
+/** Browser meeting writes need a versioned read to repair a fuller Meet transcript. */
+export interface ConnectorMeetingPort extends ConnectorStorePort {
+  kvRead(key: string): Promise<PortResult<{ body: string; etag: string | null } | null>>;
+  kvReplaceIfMatch(key: string, body: string, etag: string): Promise<PortResult<"written" | "conflict">>;
+}
+
 /** Check tables by read-only probe; only create the tables that do not exist. */
 export async function ensureConnectorSchema(port: ConnectorStorePort): Promise<PortResult<void>> {
   const tables = CONNECTOR_SCHEMA.map(({ table }) => table);
@@ -305,7 +311,7 @@ export async function writeTranscriberMeeting(
 
 /** One meeting identity in the user's applications space, independent of the caller's SDK. */
 export async function writeConnectorMeeting(
-  port: ConnectorStorePort,
+  port: ConnectorMeetingPort,
   meeting: NormalizedMeeting,
   body: string,
   options: { preserveExistingTitle?: boolean; preserveTranscriptBody?: boolean } = {},
@@ -413,14 +419,60 @@ export async function writeConnectorMeeting(
 }
 
 async function writeMissingConnectorBody(
-  port: ConnectorStorePort, meeting: NormalizedMeeting, body: string,
+  port: ConnectorMeetingPort, meeting: NormalizedMeeting, body: string,
 ): Promise<PortResult<void>> {
   const key = transcriptKvKey(meeting.source, meeting.sourceId);
+  if (meeting.source === "google-meet") {
+    const existing = await port.kvRead(key);
+    if (!existing.ok) return existing;
+    if (existing.data !== null) return repairFullerMeetBody(port, key, body, existing.data);
+    const written = await port.kvPutIfAbsent(key, body);
+    if (!written.ok) return written;
+    if (written.data === "written") return { ok: true, data: undefined };
+    const winner = await port.kvRead(key);
+    if (!winner.ok) return winner;
+    if (winner.data === null) {
+      return { ok: false, code: "KV_PRECONDITION_FAILED", message: "Meet transcript disappeared during insert race" };
+    }
+    return repairFullerMeetBody(port, key, body, winner.data);
+  }
   const existing = await port.kvGet(key);
   if (!existing.ok) return existing;
   if (existing.data === "present") return { ok: true, data: undefined };
   const written = await port.kvPutIfAbsent(key, body);
   return written.ok ? { ok: true, data: undefined } : written;
+}
+
+async function repairFullerMeetBody(
+  port: ConnectorMeetingPort, key: string, body: string, existing: { body: string; etag: string | null },
+): Promise<PortResult<void>> {
+  if (existing.body === body) return { ok: true, data: undefined };
+  const previousCount = transcriptEntryCount(existing.body);
+  const nextCount = transcriptEntryCount(body);
+  if (previousCount === null || nextCount === null || nextCount <= previousCount) {
+    return { ok: true, data: undefined };
+  }
+  if (!existing.etag) {
+    return { ok: false, code: "KV_ETAG_MISSING", message: "Meet transcript cannot be repaired without an ETag" };
+  }
+  const replaced = await port.kvReplaceIfMatch(key, body, existing.etag);
+  if (!replaced.ok) return replaced;
+  if (replaced.data === "written") return { ok: true, data: undefined };
+  const winner = await port.kvRead(key);
+  if (!winner.ok) return winner;
+  if (winner.data !== null && (transcriptEntryCount(winner.data.body) ?? -1) >= nextCount) {
+    return { ok: true, data: undefined };
+  }
+  return { ok: false, code: "KV_PRECONDITION_FAILED", message: "Meet transcript changed during repair" };
+}
+
+function transcriptEntryCount(body: string): number | null {
+  try {
+    const entries: unknown = JSON.parse(body);
+    return Array.isArray(entries) ? entries.length : null;
+  } catch {
+    return null;
+  }
 }
 
 function parseMeetingMetadata(raw: unknown): Record<string, unknown> {

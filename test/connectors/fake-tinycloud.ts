@@ -86,7 +86,7 @@ type OkErr<T, E = { code: string; message: string }> =
   | { ok: true; data: T }
   | { ok: false; error: E };
 
-type SqlResult = OkErr<{ rows: unknown[][] }>;
+type SqlResult = OkErr<{ rows: unknown[][]; changes: number }>;
 type KvErr = { code: string; message: string };
 
 interface MeetingRow {
@@ -290,6 +290,10 @@ export class FakeSqlDb {
         string,
         string,
       ];
+      if (this.meetings.has(id)) {
+        return /ON\s+CONFLICT\s*\(\s*id\s*\)\s*DO\s+NOTHING/i.test(s)
+          ? ok([], 0) : err("SQLITE_CONSTRAINT_PRIMARYKEY", `duplicate meeting id ${id}`);
+      }
       this.meetings.set(id, {
         id,
         source,
@@ -307,7 +311,7 @@ export class FakeSqlDb {
         created_at,
         updated_at,
       });
-      return ok([]);
+      return ok([], 1);
     }
 
     // `upsertMeeting`'s update arm: the row id is the last param and every other column is
@@ -344,7 +348,7 @@ export class FakeSqlDb {
         string,
       ];
       const existing = this.meetings.get(id);
-      if (!existing) return ok([]);
+      if (!existing) return ok([], 0);
       this.meetings.set(id, {
         ...existing,
         title,
@@ -359,7 +363,7 @@ export class FakeSqlDb {
         metadata,
         updated_at,
       });
-      return ok([]);
+      return ok([], 1);
     }
 
     if (/^INSERT\s+INTO\s+connector_state/i.test(s)) {
@@ -446,7 +450,7 @@ export class FakeKv {
         error: { code: "KV_NOT_FOUND", message: `no key ${key}` },
       };
     }
-    return { ok: true, data: { data: this.entries.get(key), headers: {} } };
+    return { ok: true, data: { data: this.entries.get(key), headers: { etag: JSON.stringify(this.entries.get(key)) } } };
   }
 
   async head(key: string): Promise<OkErr<{ data: void; headers: Record<string, string> }, KvErr>> {
@@ -455,21 +459,26 @@ export class FakeKv {
     if (!this.entries.has(key)) {
       return { ok: false, error: { code: "KV_NOT_FOUND", message: `no key ${key}` } };
     }
-    return { ok: true, data: { data: undefined as unknown as void, headers: {} } };
+    return { ok: true, data: { data: undefined as unknown as void, headers: { etag: JSON.stringify(this.entries.get(key)) } } };
   }
 
   async put(
     key: string,
     value: unknown,
+    options?: { ifNoneMatch?: "*"; ifMatch?: string },
   ): Promise<OkErr<{ data: void; headers: Record<string, string> }, KvErr>> {
     const denied = this.deny(key, "put");
     if (denied) return { ok: false, error: denied };
     await this.putHook?.(key, value);
+    if ((options?.ifNoneMatch === "*" && this.entries.has(key))
+      || (options?.ifMatch !== undefined && options.ifMatch !== JSON.stringify(this.entries.get(key)))) {
+      return { ok: false, error: { code: "KV_PRECONDITION_FAILED", message: "etag changed" } };
+    }
     const stored = typeof value === "string" ? value : JSON.stringify(value);
     this.entries.set(key, stored);
     return {
       ok: true,
-      data: { data: undefined as unknown as void, headers: {} },
+      data: { data: undefined as unknown as void, headers: { etag: JSON.stringify(stored) } },
     };
   }
 
@@ -653,8 +662,8 @@ function unauthorizedDb(error: { code: string; message: string }): FakeSqlDb {
   } as unknown as FakeSqlDb;
 }
 
-function ok(rows: unknown[][]): SqlResult {
-  return { ok: true, data: { rows } };
+function ok(rows: unknown[][], changes = 0): SqlResult {
+  return { ok: true, data: { rows, changes } };
 }
 
 function err(code: string, message: string): SqlResult {
