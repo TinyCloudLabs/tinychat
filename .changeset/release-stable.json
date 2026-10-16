@@ -1,0 +1,9 @@
+{
+  "versions": {
+    "exo-desktop": "0.8.1",
+    "@tinychat/frontend": "0.8.1"
+  },
+  "changesets": [
+    ".changeset/pre/tc-1270-meet-sync-terminal.md"
+  ]
+}
