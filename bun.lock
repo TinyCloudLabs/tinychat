@@ -67,7 +67,7 @@
         "@franken-suite/franken-markdown": "0.5.0",
         "@noble/curves": "1.9.7",
         "@noble/hashes": "1.8.0",
-        "@openkey/sdk": "0.12.1-beta.0",
+        "@openkey/sdk": "0.12.1-beta.1",
         "@openkey/sdk-capacitor": "0.1.0",
         "@peculiar/x509": "^2.0.0",
         "@radix-ui/react-alert-dialog": "^1.1.4",
@@ -139,7 +139,7 @@
         "@tinycloud/sdk-core": "3.3.0",
       },
       "devDependencies": {
-        "@openkey/sdk": "0.12.1-beta.0",
+        "@openkey/sdk": "0.12.1-beta.1",
         "@tinycloud/web-sdk": "3.3.0",
         "typescript": "^5.7.0",
       },
@@ -593,7 +593,7 @@
 
     "@openkey/core": ["@openkey/core@0.12.0", "", { "dependencies": { "@noble/curves": "^1.9.7" } }, "sha512-BXUGFCeP4763uyIl5uM16oDMGhMPFyAX8gEhs93FxiWjyLkl+pzcj8iDuNzW1mzy7IQyizP0pufTKeZxTpq5sw=="],
 
-    "@openkey/sdk": ["@openkey/sdk@0.12.1-beta.0", "", { "dependencies": { "@openkey/core": "^0.12.0" } }, "sha512-24GJoBPizPV0eYlwYzUrH2aZ3/iDMK530WKaUAzIWItLNuDZFigg69UhEU7O0ljsjccT04LAC9MoqloRyVbvvQ=="],
+    "@openkey/sdk": ["@openkey/sdk@0.12.1-beta.1", "", { "dependencies": { "@openkey/core": "^0.12.0" } }, "sha512-pPHCFK46u3wqXzdTGkwn8SPo6B5jx7ZGjF1pxOzVX329eNbjDncqU8jxk0SKtmY82q8EKiehgXhu5vOsm5/N8w=="],
 
     "@openkey/sdk-capacitor": ["@openkey/sdk-capacitor@0.1.0", "", { "peerDependencies": { "@capacitor/core": "^8.0.0", "@tinycloud/web-sdk": "^2.11.0 || ^3.1.0" } }, "sha512-JDAKUlJenSRCQi/oTC5ykrAYvPImz26aTvgG1VeI5V8opIgUfpPj7WLJQe8l0ZxOEmdv2XZPN0p5n2nE+XQ86A=="],
 
