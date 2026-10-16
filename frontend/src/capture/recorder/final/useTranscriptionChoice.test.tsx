@@ -497,6 +497,7 @@ describe("useTranscriptionChoice on the Mac with Whisper", () => {
     expect(outNone.mode).toBe("skip");
     expect(available(outNone)).toEqual({ skip: true, local: false, private: false, powerful: false });
     expect(outNone.caption).toBe(DESKTOP_SIGNED_OUT_CAPTION);
+    expect(outNone.explanationFor?.skip).toBe(DESKTOP_SIGNED_OUT_CAPTION);
 
     const outReady = desktop(false, ready, "on-device").result;
     expect(outReady.mode).toBe("local");
@@ -507,6 +508,7 @@ describe("useTranscriptionChoice on the Mac with Whisper", () => {
     expect(inNone.mode).toBe("private");
     expect(available(inNone).local).toBe(false);
     expect(inNone.caption).toBeNull();
+    expect(inNone.explanationFor?.skip).toBeUndefined();
 
     const inReady = desktop(true, ready, "on-device").result;
     expect(inReady.mode).toBe("local");
