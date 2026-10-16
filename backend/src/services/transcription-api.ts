@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { currentRequestId } from "../request-context.js";
 
 /**
  * Client for the TinyCloud Private Transcription API
@@ -267,11 +268,13 @@ export function createTranscriptionApiClient(config: TranscriptionApiConfig): Tr
     retryTransport = true,
     onAttempt?: () => void,
   ): Promise<{ status: number; json: unknown }> {
+    const requestId = currentRequestId();
     const init: RequestInit = {
       method,
       headers: {
         Authorization: `Bearer ${config.apiKey}`,
         Accept: "application/json",
+        ...(requestId === undefined ? {} : { "X-Request-Id": requestId }),
         ...(body === undefined ? {} : { "content-type": "application/json" }),
         ...extraHeaders,
       },

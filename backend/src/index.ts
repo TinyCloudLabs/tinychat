@@ -125,6 +125,7 @@ import { appCorsOptions } from "./cors-origins.js";
 import { agentStreamPolicyFromEnv, type AgentStreamPolicy } from "./agent-stream-policy.js";
 import { localValidationFromEnv, localValidationGuard } from "./local-validation.js";
 import { createApiBodyParser } from "./body-parsing.js";
+import { createRequestContextMiddleware, installRequestLogBoundary } from "./request-context.js";
 
 const BACKEND_PRIVATE_KEY = process.env.BACKEND_PRIVATE_KEY;
 const TINYCLOUD_HOST = process.env.TINYCLOUD_HOST ?? "https://tee.node.tinycloud.xyz";
@@ -461,6 +462,8 @@ async function main() {
   // on the delegation cache built at startup for no reader.
 
   const app = express();
+  installRequestLogBoundary();
+  app.use(createRequestContextMiddleware());
   if (localValidation) app.use(localValidationGuard);
   app.set("trust proxy", 1);
   applySecurityDefaults(app);
@@ -1046,24 +1049,12 @@ async function main() {
       next(err);
       return;
     }
-    const detail = (err ?? {}) as { status?: unknown; name?: unknown; message?: unknown; type?: unknown };
-    const status = typeof detail.status === "number" ? detail.status : 500;
-    // A PROJECTION, never the error object (§6.3: public_logs=true on the CVM). body-parser
-    // attaches the raw request body to an `entity.parse.failed` error as `err.body`, and
-    // inspecting an Error prints its own enumerable properties — so logging `err` here prints
-    // attacker-chosen bytes from an unauthenticated route, including the two connector bodies
-    // that matter (a serialized delegation bundle, raw meeting ids). Fields only.
-    // `message` is dropped for body-parser's own errors (the ones carrying `type`): a
-    // `entity.parse.failed` message is the JSON parser's, and that echoes a fragment of the
-    // body it choked on. `type` + `status` say everything an operator needs about those.
-    const parserError = typeof detail.type === "string";
-    console.error("[express] route error", {
-      name: typeof detail.name === "string" ? detail.name : "unknown",
-      message: parserError ? "<omitted: parser error>" : typeof detail.message === "string" ? detail.message : "unknown",
-      status,
-      type: parserError ? detail.type : undefined,
-    });
-    res.status(status >= 400 && status < 600 ? status : 500).json({ error: "internal_error" });
+    const errorStatus = typeof err === "object" && err !== null && "status" in err ? err.status : undefined;
+    const status = typeof errorStatus === "number" && Number.isInteger(errorStatus) && errorStatus >= 400 && errorStatus < 600
+      ? errorStatus : 500;
+    // Error names/messages/properties may contain raw request or dependency payloads.
+    console.error("[express] route error", { status });
+    res.status(status).json({ error: "internal_error" });
   });
 
   const tlsConfig = loadTlsConfig();

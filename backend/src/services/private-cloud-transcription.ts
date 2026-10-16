@@ -2,6 +2,7 @@ import { createHmac } from "node:crypto";
 
 import { TRANSCRIPTION_ID_RE } from "./private-cloud-transcription-dto.js";
 import { assertStrongSecret } from "./webhook-tokens.js";
+import { currentRequestId } from "../request-context.js";
 
 /**
  * Private cloud transcription for Exo desktop (plan: exo-private-cloud-transcription v2, §4.4 P4).
@@ -304,10 +305,12 @@ export function createPtxClient(config: {
   const timeoutMs = config.timeoutMs ?? 15_000;
   return {
     async request({ method, path, correlationId, maxBytes, tenantRef, idempotencyKey, body }) {
+      const requestId = currentRequestId();
       const headers: Record<string, string> = {
         Authorization: `Bearer ${config.apiKey}`,
         Accept: "application/json",
         "X-Correlation-Id": correlationId,
+        ...(requestId === undefined ? {} : { "X-Request-Id": requestId }),
       };
       if (tenantRef !== undefined) headers["X-Tenant-Ref"] = tenantRef;
       if (idempotencyKey !== undefined) headers["Idempotency-Key"] = idempotencyKey;

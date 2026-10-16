@@ -2,7 +2,22 @@ openapi: 3.1.0
 info:
   title: "TinyChat API"
   version: 0.1.0
-  description: "API contract for the TinyChat backend."
+  description: |
+    API contract for the TinyChat backend.
+
+    All responses include X-Request-Id. A single UUID (8-4-4-4-12 hexadecimal)
+    supplied as x-request-id is accepted case-insensitively and normalized to
+    lowercase; missing, malformed or duplicate values are replaced with a
+    server-generated UUID. This includes authentication, CSRF and parser errors.
+    The same ID is forwarded to request-scoped ptx-dev and ptx-batch HTTP calls.
+    It is correlation metadata, never an authentication or tenant identity.
+
+    Private transcription's X-Correlation-Id remains independent and unchanged:
+    accepted UUIDs still round-trip through its response header,
+    error.correlation_id and ptx-batch forwarding. If both headers are valid and
+    different, both are preserved. With only X-Correlation-Id, X-Request-Id is
+    minted separately. Authentication/CSRF rejection before the Private router
+    still has no X-Correlation-Id. CORS exposes both response headers.
 
 security:
   - bearerAuth: []
