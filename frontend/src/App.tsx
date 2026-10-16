@@ -155,7 +155,7 @@ import { isAuthSettledSignedOut } from "./lib/authRouting";
 import { clearSendIntentsForOwner } from "./chat/TranscriberSection";
 import { browserIsOffline, restorePersistedSession } from "./lib/sessionRestore";
 import { applyManifestRevisionGate, browserRevisionStore, recordManifestRevision } from "./lib/manifestRevision";
-import { DEFAULT_TINYCLOUD_HOST, selectNewSessionHosts } from "./lib/tinycloudHosts";
+import { DEFAULT_TINYCLOUD_HOST, NATIVE_TINYCLOUD_HOST, selectNewSessionHosts } from "./lib/tinycloudHosts";
 import { restoreSessionOnStoredHost } from "./lib/tinycloudSession";
 import { clearTranscriptDelegationSchedule, ensureTranscriptWriterDelegation } from "./lib/transcriptDelegation";
 import { onAgentPaywallError, onAgentModelSelectionError } from "./lib/agentChatApi";
@@ -418,8 +418,7 @@ export function App() {
 
   const nativeConfig: NativeSignInConfig = {
     backendUrl: BACKEND_URL,
-    tinycloudHost: TINYCLOUD_HOSTS[0],
-    tinycloudHosts: TINYCLOUD_HOSTS,
+    tinycloudHost: NATIVE_TINYCLOUD_HOST,
   };
 
   const startNativeRenewal = async (rawTcw: TinyCloudWeb, session: NativeSession, openkey: OpenKeyNative, renewAt?: number): Promise<TinyCloudWeb> => {
@@ -918,8 +917,8 @@ export function App() {
         // TC-775 E1: OpenKey delegation sign-in in the system browser. The SDK
         // keeps the session key in the device secure store; nothing wallet-shaped
         // signs in the WebView. Throws a user-facing message on cancel/deny.
-        const hosts = await selectNewSessionHosts(nativeConfig.tinycloudHost);
-        const native = await signInNative({ ...nativeConfig, tinycloudHost: hosts[0], tinycloudHosts: hosts }, hints);
+        const hosts = await selectNewSessionHosts(TINYCLOUD_HOSTS[0], undefined, "native");
+        const native = await signInNative({ ...nativeConfig, tinycloudHost: hosts[0] }, hints);
         setAddress(native.verified.address);
         sessionStoreRef.current.setSession(
           native.verified.token,

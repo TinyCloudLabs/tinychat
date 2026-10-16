@@ -18,7 +18,8 @@ import { initSizeClass } from "./lib/sizeClass";
 import { initTheme } from "./lib/theme";
 import { registerDesktopVoiceNotes } from "./lib/voiceNotes/desktop/desktopVoiceNotes";
 import { installDebugLog } from "./lib/debugLog";
-import { createTinyCloudFetch } from "./lib/tinycloudHosts";
+import { createTinyCloudFetch, DEFAULT_TINYCLOUD_HOST } from "./lib/tinycloudHosts";
+import { runTinyCloudHostSelftest } from "./lib/tinycloudHostSelftest";
 
 // False on the web and in the desktop (Tauri) app; true only inside Exo mobile.
 const nativeShell = Capacitor.isNativePlatform();
@@ -74,6 +75,15 @@ void installEd25519Polyfill().catch((error: unknown) => {
 }).then(async () => {
   await installDebugLog();
   globalThis.fetch = createTinyCloudFetch(globalThis.fetch.bind(globalThis));
+  // Compiled out of normal builds; CI's ipc-selftest release runs the packaged webview.
+  if (import.meta.env.VITE_EXO_IPC_SELFTEST === "1") {
+    const target = window as Window & { __exoTinyCloudHostSelftest?: unknown };
+    try {
+      target.__exoTinyCloudHostSelftest = { ok: true, ...await runTinyCloudHostSelftest(import.meta.env.VITE_TINYCLOUD_HOST || DEFAULT_TINYCLOUD_HOST) };
+    } catch (error) {
+      target.__exoTinyCloudHostSelftest = { ok: false, error: error instanceof Error ? error.message : "Host policy self-test failed" };
+    }
+  }
   createRoot(document.getElementById("root")!).render(
     <StrictMode>
       <RootErrorBoundary>
