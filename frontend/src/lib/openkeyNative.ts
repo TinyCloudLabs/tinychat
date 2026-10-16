@@ -24,7 +24,7 @@ import type {
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { authErrorMessage, UserFacingError } from "./authErrors";
 import { nativeRenewAt, renewalLeadMs, terminalRenewalError, nativeCode } from "./openkeyNativeRenewal";
-import { DEFAULT_TINYCLOUD_HOST } from "./tinycloudHosts";
+import { NATIVE_TINYCLOUD_HOST } from "./tinycloudHosts";
 
 // ── Gate ──────────────────────────────────────────────────────────────
 
@@ -252,9 +252,8 @@ export function normalizeLoginHint(value: string): string | null {
 
 export interface NativeSignInConfig {
   backendUrl: string;
-  /** The selected TinyCloud node a fresh delegation must name. Restores retain the stored host. */
+  /** Expected issuer response host, not a requested host. Restores retain the stored host. */
   tinycloudHost: string;
-  tinycloudHosts?: string[];
   env?: {
     VITE_OPENKEY_NATIVE_CLIENT_ID?: string;
     /** The same widget host App.tsx reads (OPENKEY_HOST); defaults to https://openkey.so. */
@@ -665,11 +664,11 @@ export async function installNativeSession(
 /** Sign the native OpenKey session out: revoke the delegation grant and drop the secure-store record. */
 export async function signOutNative(deps?: {
   createOpenKeyNative?: NativeSignInDeps["createOpenKeyNative"];
-  env?: NativeSignInConfig["env"] & { VITE_TINYCLOUD_HOST?: string };
+  env?: NativeSignInConfig["env"];
 }): Promise<void> {
   const env = deps?.env ?? import.meta.env;
   const create = deps?.createOpenKeyNative ?? (await defaultDeps()).createOpenKeyNative;
-  const options = nativeClientOptions(env, env.VITE_TINYCLOUD_HOST ?? DEFAULT_TINYCLOUD_HOST);
+  const options = nativeClientOptions(env, NATIVE_TINYCLOUD_HOST);
   // Revocation is namespace-bound and does not validate a TinyCloud response.
   // Reuse the restored grant's client even when the build's default host changed.
   const current = defaultOpenKeyNative;

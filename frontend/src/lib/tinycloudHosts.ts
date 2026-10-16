@@ -2,6 +2,9 @@ import { UserFacingError } from "./authErrors";
 
 export const DEFAULT_TINYCLOUD_HOST = "https://node.tinycloud.xyz";
 export const FALLBACK_TINYCLOUD_HOST = "https://tee.node.tinycloud.xyz";
+// Legacy Capacitor issuer expectation, retained until TC-1310. This is not a
+// statement about a freshly inspected production registration.
+export const NATIVE_TINYCLOUD_HOST = "https://tee.node.tinycloud.xyz";
 export const TINYCLOUD_CONNECTION_MESSAGE =
   "Couldn't connect to TinyCloud. The connection or request limits may have blocked it. The request was not automatically retried. Check your connection or try a smaller upload.";
 
@@ -44,20 +47,23 @@ async function probe(host: string, fetchImpl: FetchTransport): Promise<void> {
   }
 }
 
-/** Choose a host before signing a NEW hosted session. Stored/custom hosts do not use this fallback. */
+/** Native issuance is registration-bound; only fresh widget sessions probe/fall back. */
 export async function selectNewSessionHosts(
   configuredHost = DEFAULT_TINYCLOUD_HOST,
-  fetchImpl: FetchTransport = globalThis.fetch.bind(globalThis),
+  fetchImpl?: FetchTransport,
+  flow: "widget" | "native" = "widget",
 ): Promise<string[]> {
+  if (flow === "native") return [NATIVE_TINYCLOUD_HOST];
   if (configuredHost !== DEFAULT_TINYCLOUD_HOST && configuredHost !== `${DEFAULT_TINYCLOUD_HOST}/`) return [configuredHost];
+  const transport = fetchImpl ?? globalThis.fetch.bind(globalThis);
   try {
-    await probe(configuredHost, fetchImpl);
+    await probe(configuredHost, transport);
     return [configuredHost];
   } catch (error) {
     if (!isConnectivityFailure(error)) throw error;
   }
   try {
-    await probe(FALLBACK_TINYCLOUD_HOST, fetchImpl);
+    await probe(FALLBACK_TINYCLOUD_HOST, transport);
     return [FALLBACK_TINYCLOUD_HOST];
   } catch (error) {
     if (!isConnectivityFailure(error)) throw error;

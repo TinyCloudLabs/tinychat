@@ -62,18 +62,29 @@ Roll out in this order:
    `VITE_TINYCLOUD_HOST=https://node.tinycloud.xyz`. This dashboard value overrides
    the checked-in `.env.production` value for Pages Git builds.
 3. Ship the client change with the next normal web release; implementation does
-   not include merging or deploying it. Desktop and mobile receive it in their
-   next `0.8.x` build.
+   not include merging or deploying it. Tauri desktop receives the widget
+   change in its next `0.8.x` build.
 
-New hosted sessions default to `https://node.tinycloud.xyz`; existing sessions
-and grants retain their stored host. For new sessions only, an anonymous
-`GET /info` connectivity probe may select `https://tee.node.tinycloud.xyz` once
-after a transport failure. Custom configured hosts are unchanged. Mutations and
-uploads, including large bodies, are never automatically replayed on another
-host.
+New web and Tauri widget sessions default to `https://node.tinycloud.xyz`;
+existing sessions and grants retain their stored host. For new widget sessions
+only, an anonymous `GET /info` connectivity probe may select
+`https://tee.node.tinycloud.xyz` once after a transport failure. Custom configured
+hosts are unchanged. Mutations and uploads, including large bodies, are never
+automatically replayed on another host.
 Share links keep their encoded host. Policy-v3 `nodeAudience` and signed target
 origin (`target.origin`, or `targetOrigin` in older formats), and `share_email`
 trust metadata are not rewritten or derived from the new default.
+
+Capacitor iOS/Android fresh issuance is explicitly deferred in
+[TC-1310 — Mobile native → node.tinycloud.xyz](https://linear.app/tinycloud-labs/issue/TC-1310/mobile-native-nodetinycloudxyz).
+Pinned OpenKey native `0.1.0` validates its configured host against the issuer's
+response; it does not request that host in PAR/authorization. Mobile therefore
+retains its legacy tee-host expectation, with no connectivity probe or fallback.
+Existing native grants still restore/renew on their stored host; a mismatched
+fresh grant is rejected. This does not assert today's production registration
+host. TC-1310 is unscheduled; no registration receipt or production DB access is
+required for this rollout. Future work may add a reviewed registration-host
+admin view before an authorized key holder reads that one record.
 
 Worker protections were deployed separately by the operator. Worker-generated
 400/413/414 responses can be opaque to browsers and appear as network errors.

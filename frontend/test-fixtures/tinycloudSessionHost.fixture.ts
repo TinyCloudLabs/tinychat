@@ -179,6 +179,7 @@ async function expectReadHost(client: TinyCloudWeb, host: string) {
 }
 
 beforeEach(() => {
+  dom.happyDOM.setURL("https://chat.fixture.invalid/chat");
   dom.localStorage.clear();
   requests.length = 0;
   walletCalls = [];
@@ -195,16 +196,19 @@ afterAll(() => {
   }
 });
 
-test("new sessions select anonymous node info and sign in with real SDK/WASM/viem", async () => {
-  const selected = await selectNewSessionHosts(undefined, fixtureFetch);
-  expect(selected).toEqual([NODE]);
-  expect(requests.map((request) => request.url.href)).toEqual([`${NODE}/info`]);
-  const { tcw } = await signIn(selected[0]);
-  expect(walletCalls.filter((method) => method === "personal_sign")).toHaveLength(1);
-  validateRecord(record());
-  await expectReadHost(tcw, NODE);
-  expect(requests.every((request) => request.url.origin === NODE)).toBe(true);
-});
+for (const [platform, origin] of [["web", "https://chat.fixture.invalid"], ["Tauri", "http://tauri.localhost"]] as const) {
+  test(`${platform} widget sessions use node with real SDK/WASM/viem`, async () => {
+    dom.happyDOM.setURL(`${origin}/chat`);
+    const selected = await selectNewSessionHosts(undefined, fixtureFetch, "widget");
+    expect(selected).toEqual([NODE]);
+    expect(requests.map((request) => request.url.href)).toEqual([`${NODE}/info`]);
+    const { tcw } = await signIn(selected[0]);
+    expect(walletCalls.filter((method) => method === "personal_sign")).toHaveLength(1);
+    validateRecord(record());
+    await expectReadHost(tcw, NODE);
+    expect(requests.every((request) => request.url.origin === NODE)).toBe(true);
+  });
+}
 
 test("real SDK upload errors stay clear through its error wrapper and never replay the body", async () => {
   const { tcw } = await signIn(NODE);

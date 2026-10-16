@@ -24,6 +24,7 @@ import {
   type NativeSignInDeps,
 } from "../src/lib/openkeyNative";
 import { NativeRenewal } from "../src/lib/openkeyNativeRenewal";
+import { selectNewSessionHosts } from "../src/lib/tinycloudHosts";
 
 const TEE = "https://tee.node.tinycloud.xyz";
 const NODE = "https://node.tinycloud.xyz";
@@ -48,7 +49,7 @@ const bindings = {
 
 function config(host: string): NativeSignInConfig {
   return {
-    backendUrl: "https://backend.invalid", tinycloudHost: host, tinycloudHosts: [host],
+    backendUrl: "https://backend.invalid", tinycloudHost: host,
     env: { VITE_OPENKEY_NATIVE_CLIENT_ID: CLIENT_ID, VITE_OPENKEY_HOST: "https://openkey.invalid" },
   };
 }
@@ -57,9 +58,9 @@ type PublicJwk = NativeSession["sessionKey"]["publicJwk"];
 type Grant = { publicJwk: PublicJwk; host: string; permissions: NativeDelegationPermission[] };
 type Par = Grant & { state: string; redirect: string; challenge: string; nonce?: string };
 
-// All HTTP is injected. The platform alone is fake; OAuth, proof signing, SDK
-// response validation, key coordination and secure-store session adapters are real.
-function fixture(initialHost: string) {
+// The issuer/client registration is fixed, independent of the app's expected
+// response host. OAuth/platform are fixtures; the pinned SDK and proofs are real.
+function fixture(registeredHost: string) {
   const secureValues = new Map<string, string>();
   const refreshGrants = new Map<string, Grant>();
   const signed = new Map<string, TinyCloudDelegation>();
@@ -68,7 +69,6 @@ function fixture(initialHost: string) {
   const activations: string[] = [];
   const restoredHosts: string[][] = [];
   const verifiedCids: string[] = [];
-  let responseHost = initialHost;
   let par: Par | undefined;
   let serial = 0;
   let browserOpens = 0;
@@ -149,7 +149,7 @@ function fixture(initialHost: string) {
     if (parsed.pathname === "/api/auth/par") {
       const details = JSON.parse(body.get("authorization_details")!)[0];
       par = {
-        publicJwk: details.session_key, permissions: details.permissions, host: responseHost,
+        publicJwk: details.session_key, permissions: details.permissions, host: registeredHost,
         state: body.get("state")!, redirect: body.get("redirect_uri")!,
         challenge: body.get("code_challenge")!, nonce: details.siwe_nonce,
       };
@@ -224,10 +224,9 @@ function fixture(initialHost: string) {
   };
   return {
     create, deps, secureValues, renewalTokens, activations, restoredHosts, revoked, verifiedCids,
-    setResponseHost: (host: string) => { responseHost = host; },
     browserOpens: () => browserOpens,
     installed: () => installed,
-    seed: () => create(nativeClientOptions(config(initialHost).env, initialHost)).signIn({ capabilities: PERMISSIONS }),
+    seed: () => create(nativeClientOptions(config(registeredHost).env, registeredHost)).signIn({ capabilities: PERMISSIONS }),
   };
 }
 
@@ -316,21 +315,48 @@ for (const [storedHost, configuredHost] of [[TEE, NODE], [NODE, TEE]] as const) 
     expect(f.revoked).toHaveLength(1);
   });
 
-  test(`fresh ${configuredHost} sign-in after ${storedHost} restore selects the configured host`, async () => {
+  test(`fresh ${configuredHost} expectation cannot retarget the fixed ${storedHost} issuer after restore`, async () => {
     setSystemTime(new Date(ISSUED));
     const f = fixture(storedHost);
     const original = await f.seed();
-    const restored = await restoreNativeAtBoot(config(configuredHost), true, f.deps);
-    expect(restored.kind).toBe("restored");
-    f.setResponseHost(configuredHost);
-    const next = await signInNative(config(configuredHost), undefined, f.deps);
-    expect(next.session.delegation.tinycloudHost).toBe(configuredHost);
-    expect(next.session.sessionKey.privateJwk.x).not.toBe(original.sessionKey.privateJwk.x);
-    expect(next.session.tokens.refreshToken).not.toBe(original.tokens.refreshToken);
-    expect(f.installed()!.tinycloudHosts).toEqual([configuredHost]);
-    expect(f.revoked).toEqual([original.tokens.refreshToken]);
+    expect((await restoreNativeAtBoot(config(configuredHost), true, f.deps)).kind).toBe("restored");
+    await expect(signInNative(config(configuredHost), undefined, f.deps)).rejects.toThrow();
+    const retained = await f.create(nativeClientOptions(config(configuredHost).env, configuredHost)).current();
+    expect(retained!.tokens.refreshToken).toBe(original.tokens.refreshToken);
+    expect(retained!.sessionKey.privateJwk.x).toBe(original.sessionKey.privateJwk.x);
+    expect(retained!.delegation.tinycloudHost).toBe(storedHost);
+    expect(f.revoked).not.toContain(original.tokens.refreshToken);
+    expect(f.revoked).toHaveLength(1);
     expect(f.browserOpens()).toBe(2);
   });
+}
+
+for (const registeredHost of [TEE, NODE]) {
+  for (const nodeReachable of [true, false]) {
+    test(`native App selection retains its tee contract with fixed ${registeredHost} issuer and node ${nodeReachable ? "reachable" : "unreachable"}`, async () => {
+      setSystemTime(new Date(ISSUED));
+      const f = fixture(registeredHost);
+      const probes: string[] = [];
+      const hosts = await selectNewSessionHosts(NODE, async (input) => {
+        probes.push(String(input));
+        if (String(input).startsWith(NODE) && !nodeReachable) throw new TypeError("Failed to fetch");
+        return Response.json({ protocol: 1 });
+      }, "native");
+      if (registeredHost === TEE) {
+        const result = await signInNative(config(hosts[0]), undefined, f.deps);
+        expect(result.session.delegation.tinycloudHost).toBe(registeredHost);
+        expect(f.activations).toEqual([TEE]);
+        expect(f.installed()!.tinycloudHosts).toEqual([TEE]);
+      } else {
+        // A different issuer registration cannot be negotiated by changing a
+        // local validator; keep rejecting it until the tracked mobile cutover.
+        await expect(signInNative(config(hosts[0]), undefined, f.deps)).rejects.toThrow();
+        expect(f.activations).toEqual([]);
+        expect(f.revoked).toHaveLength(1);
+      }
+      expect(probes).toEqual([]);
+    });
+  }
 }
 
 test("the pinned SDK refuses signed delegation material with a substituted CID", async () => {
