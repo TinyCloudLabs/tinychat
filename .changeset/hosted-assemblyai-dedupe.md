@@ -3,4 +3,4 @@
 "@tinychat/frontend": patch
 ---
 
-Deduplicate hosted AssemblyAI jobs by account and note ID with a durable server journal, atomic off-volume spool identity enrollment, and client claim and lookup reconciliation. Deploy the backend before or with the frontend. Hosted mode requires a persistent volume and a fresh-install environment ID for the first boot.
+Hosted AssemblyAI transcription is not available in 0.8.0. This release includes dedupe and durable-spool groundwork only; it takes effect in a future, separately approved rollout.
