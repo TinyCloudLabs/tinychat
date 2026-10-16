@@ -1032,7 +1032,7 @@ describe("TC-959 backend request contract", () => {
     expect(requests).toHaveLength(1);
     expect(requests[0]).toEqual({
       event: "tinychat_request", request_id: id, method: "GET", route: "/health",
-      status: 200, duration_ms: expect.any(Number),
+      status: 200, duration_ms: expect.any(Number), request_id_replaced: false,
     });
     expect(requests[0].duration_ms).toBeGreaterThanOrEqual(0);
     expect(Number.isFinite(requests[0].duration_ms)).toBe(true);
@@ -1085,6 +1085,7 @@ describe("TC-959 backend request contract", () => {
     if (!address || typeof address === "string") throw new Error("Synthetic upstream did not listen");
     const api = transcription.createTranscriptionApiClient({
       baseUrl: `http://127.0.0.1:${address.port}`, apiKey: "synthetic-ptx-key",
+      requestIdFirstPartyOrigins: new Set([`http://127.0.0.1:${address.port}`]),
     });
     const boot = await bootIndex({}, { requestHandler: (req, res, next) => {
       api.getMeeting(req.params.id).then((meeting: unknown) => res.json(meeting), next);
@@ -1126,6 +1127,7 @@ describe("TC-959 backend request contract", () => {
     if (!address || typeof address === "string") throw new Error("Synthetic batch did not listen");
     const boot = await bootIndex({
       ...ptxEnv, PRIVATE_CLOUD_TRANSCRIPTION_API_URL: `http://127.0.0.1:${address.port}`,
+      REQUEST_ID_FIRST_PARTY_ORIGINS: `http://127.0.0.1:${address.port}`,
     });
     const correlation = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
     try {
@@ -1173,5 +1175,111 @@ describe("TC-959 backend request contract", () => {
     console.log("TC959_CAPTURE_POSITIVE_CONTROL");
     const response = await fetch(boot.url! + "/api/manifest/canary/meeting", { headers: { "x-request-id": id } });
     expect(response.status).toBe(204);
+  });
+
+  test.each([302, 307])("rejects ptx-dev %i cross-origin redirects without exposing IDs or credentials", async status => {
+    const received: Array<{ id: string | undefined; authorization: string | undefined }> = [];
+    const untrusted = express();
+    untrusted.use((req, res) => {
+      received.push({ id: req.get("x-request-id"), authorization: req.get("authorization") });
+      res.json({ id: "untrusted-meeting", status: "queued" });
+    });
+    const untrustedReady = Promise.withResolvers<void>();
+    const untrustedServer = untrusted.listen(0, "127.0.0.1", untrustedReady.resolve);
+    await untrustedReady.promise;
+    const untrustedAddress = untrustedServer.address();
+    if (!untrustedAddress || typeof untrustedAddress === "string") throw new Error("Untrusted receiver did not listen");
+    const untrustedUrl = `http://127.0.0.1:${untrustedAddress.port}`;
+    const firstPartySeen: string[] = [];
+    const firstParty = express();
+    firstParty.use((req, res) => {
+      firstPartySeen.push(req.get("x-request-id") ?? "missing");
+      res.redirect(status, untrustedUrl + "/redirect-target");
+    });
+    const firstPartyReady = Promise.withResolvers<void>();
+    const firstPartyServer = firstParty.listen(0, "127.0.0.1", firstPartyReady.resolve);
+    await firstPartyReady.promise;
+    const firstPartyAddress = firstPartyServer.address();
+    if (!firstPartyAddress || typeof firstPartyAddress === "string") throw new Error("First-party PTX did not listen");
+    const api = transcription.createTranscriptionApiClient({
+      baseUrl: `http://127.0.0.1:${firstPartyAddress.port}`, apiKey: "synthetic-first-party-ptx-key",
+      requestIdFirstPartyOrigins: new Set([`http://127.0.0.1:${firstPartyAddress.port}`]),
+    });
+    const boot = await bootIndex({}, { requestHandler: (req, res) => {
+      const result = req.params.id === "create"
+        ? api.createMeeting({ meeting_url: "https://meeting.invalid/synthetic" })
+        : api.getMeeting("synthetic-meeting");
+      result.then(meeting => res.json(meeting), () => res.status(502).json({ error: "upstream_rejected" }));
+    } });
+    try {
+      for (const operation of ["get", "create"]) {
+        const response = await fetch(boot.url! + "/api/manifest/canary/" + operation, {
+          headers: { "x-request-id": id },
+        });
+        expect(received).toEqual([]);
+        expect(response.status).toBe(502);
+        expect(response.headers.get("x-request-id")).toBe(id);
+      }
+      expect(firstPartySeen).toEqual([id, id]);
+      const thirdParty = await bootIndex({}, { requestHandler: (_req, res, next) => {
+        fetch(untrustedUrl + "/direct-third-party").then(response => response.json()).then(body => res.json(body), next);
+      } });
+      const direct = await fetch(thirdParty.url! + "/api/manifest/canary/direct", { headers: { "x-request-id": id } });
+      expect(direct.status).toBe(200);
+      expect(received).toEqual([{ id: undefined, authorization: undefined }]);
+    } finally {
+      for (const server of [firstPartyServer, untrustedServer]) {
+        const closed = Promise.withResolvers<void>();
+        server.closeAllConnections();
+        server.close(() => closed.resolve());
+        await closed.promise;
+      }
+    }
+  });
+
+  test.each([302, 307])("keeps legacy Private IDs while rejecting ptx-batch %i redirects", async status => {
+    const received: string[] = [];
+    const untrusted = express();
+    untrusted.use((req, res) => { received.push(req.get("x-request-id") ?? "missing"); res.sendStatus(200); });
+    const untrustedReady = Promise.withResolvers<void>();
+    const untrustedServer = untrusted.listen(0, "127.0.0.1", untrustedReady.resolve);
+    await untrustedReady.promise;
+    const untrustedAddress = untrustedServer.address();
+    if (!untrustedAddress || typeof untrustedAddress === "string") throw new Error("Untrusted receiver did not listen");
+    const seen: Array<{ request: string | undefined; correlation: string | undefined }> = [];
+    const firstParty = express();
+    firstParty.use((req, res) => {
+      seen.push({ request: req.get("x-request-id"), correlation: req.get("x-correlation-id") });
+      res.redirect(status, `http://127.0.0.1:${untrustedAddress.port}/redirect-target`);
+    });
+    const firstPartyReady = Promise.withResolvers<void>();
+    const firstPartyServer = firstParty.listen(0, "127.0.0.1", firstPartyReady.resolve);
+    await firstPartyReady.promise;
+    const firstPartyAddress = firstPartyServer.address();
+    if (!firstPartyAddress || typeof firstPartyAddress === "string") throw new Error("First-party PTX did not listen");
+    const boot = await bootIndex({
+      ...ptxEnv, PRIVATE_CLOUD_TRANSCRIPTION_API_URL: `http://127.0.0.1:${firstPartyAddress.port}`,
+      REQUEST_ID_FIRST_PARTY_ORIGINS: `http://127.0.0.1:${firstPartyAddress.port}`,
+    });
+    // Private accepts this legacy correlation UUID; the stricter request-ID policy must not replace it.
+    const legacyCorrelation = "00000000-0000-0000-0000-000000000000";
+    try {
+      const response = await fetch(boot.url! + "/api/transcriber/private-cloud/capabilities", {
+        headers: { authorization: "Bearer test-session", "x-request-id": id, "x-correlation-id": legacyCorrelation },
+      });
+      expect(received).toEqual([]);
+      expect(response.status).toBe(503);
+      expect(response.headers.get("x-request-id")).toBe(id);
+      expect(response.headers.get("x-correlation-id")).toBe(legacyCorrelation);
+      expect((await response.json()).error.correlation_id).toBe(legacyCorrelation);
+      expect(seen).toEqual([{ request: id, correlation: legacyCorrelation }]);
+    } finally {
+      for (const server of [firstPartyServer, untrustedServer]) {
+        const closed = Promise.withResolvers<void>();
+        server.closeAllConnections();
+        server.close(() => closed.resolve());
+        await closed.promise;
+      }
+    }
   });
 });

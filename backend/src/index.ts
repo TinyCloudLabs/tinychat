@@ -125,7 +125,7 @@ import { appCorsOptions } from "./cors-origins.js";
 import { agentStreamPolicyFromEnv, type AgentStreamPolicy } from "./agent-stream-policy.js";
 import { localValidationFromEnv, localValidationGuard } from "./local-validation.js";
 import { createApiBodyParser } from "./body-parsing.js";
-import { createRequestContextMiddleware, installRequestLogBoundary } from "./request-context.js";
+import { createRequestContextMiddleware, installRequestLogBoundary, parseRequestIdFirstPartyOrigins } from "./request-context.js";
 
 const BACKEND_PRIVATE_KEY = process.env.BACKEND_PRIVATE_KEY;
 const TINYCLOUD_HOST = process.env.TINYCLOUD_HOST ?? "https://tee.node.tinycloud.xyz";
@@ -260,6 +260,7 @@ export function validateLedgerStartupConfig(
 
 async function main() {
   const localValidation = localValidationFromEnv(process.env);
+  const requestIdFirstPartyOrigins = parseRequestIdFirstPartyOrigins(process.env.REQUEST_ID_FIRST_PARTY_ORIGINS);
   let transcriptDeliveryConfig;
   try {
     transcriptDeliveryConfig = transcriptDeliveryConfigFromEnv(process.env);
@@ -521,7 +522,7 @@ async function main() {
     : null;
   const transcriptionConfig = transcriptionApiConfigFromEnv();
   const transcriberStorageLane = connectorWebhooks?.backendStorageLane ?? new BackendStorageLane();
-  const transcriberApi = transcriptionConfig ? createTranscriptionApiClient(transcriptionConfig) : null;
+  const transcriberApi = transcriptionConfig ? createTranscriptionApiClient({ ...transcriptionConfig, requestIdFirstPartyOrigins }) : null;
   const transcriberIndex = new KvTranscriberIndexStore(node, transcriberStorageLane);
   const transcriptCoordinator = new TenantCoordinator();
   const transcriptEligibility = (address: string) =>
@@ -1028,7 +1029,7 @@ async function main() {
     PRIVATE_CLOUD_TRANSCRIPTION_MOUNT,
     authMiddleware,
     createPrivateCloudTranscriptionRouter({
-      client: privateCloudTranscription.enabled ? createPtxClient(privateCloudTranscription) : null,
+      client: privateCloudTranscription.enabled ? createPtxClient({ ...privateCloudTranscription, requestIdFirstPartyOrigins }) : null,
       tenantKey: privateCloudTranscription.enabled ? privateCloudTranscription.tenantKey : null,
     }),
   );

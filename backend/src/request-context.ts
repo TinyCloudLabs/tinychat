@@ -2,7 +2,9 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import type { RequestHandler } from "express";
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// Legacy Private/hosted correlation headers intentionally keep their existing broader UUID syntax.
+const LEGACY_CORRELATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const METHODS: Record<string, true> = {
   GET: true, HEAD: true, POST: true, PUT: true, PATCH: true, DELETE: true,
   OPTIONS: true, CONNECT: true, TRACE: true,
@@ -11,6 +13,7 @@ const METHODS: Record<string, true> = {
 export type RequestEvent = {
   event: "tinychat_request";
   request_id: string;
+  request_id_replaced: boolean;
   method: string;
   /** Registered terminal route template, never baseUrl/originalUrl (which contain parameter values). */
   route: string;
@@ -31,6 +34,28 @@ export function currentRequestId(): string | undefined {
   return context.getStore()?.requestId;
 }
 
+/** Shared TC-959 full-value predicate; HTTP frameworks may fold repeated fields with commas. */
+export function normalizeRequestId(incoming: string | undefined): string | undefined {
+  if (incoming === undefined || incoming.length !== 36 || !REQUEST_ID.test(incoming)) return undefined;
+  return incoming.toLowerCase();
+}
+
+/** Explicit classification, separate from configurable PTX destinations. Empty means deny all. */
+export function parseRequestIdFirstPartyOrigins(value: string | undefined): ReadonlySet<string> {
+  const origins = new Set<string>();
+  if (!value?.trim()) return origins;
+  for (const entry of value.split(",")) {
+    try {
+      const url = new URL(entry.trim());
+      if ((url.protocol !== "https:" && url.protocol !== "http:") || url.href !== url.origin + "/") throw new Error();
+      origins.add(url.origin);
+    } catch {
+      throw new Error("REQUEST_ID_FIRST_PARTY_ORIGINS must contain only comma-separated HTTP(S) origins");
+    }
+  }
+  return origins;
+}
+
 function emitToStdout(event: RequestEvent): void {
   // Only this typed projection bypasses the request output boundary.
   context.exit(() => process.stdout.write(JSON.stringify(event) + "\n"));
@@ -39,7 +64,8 @@ function emitToStdout(event: RequestEvent): void {
 export function createRequestContextMiddleware(emit: EventSink = emitToStdout): RequestHandler {
   return (req, res, next) => {
     const incoming = req.get("x-request-id");
-    const requestId = incoming !== undefined && UUID.test(incoming) ? incoming.toLowerCase() : randomUUID();
+    const normalized = normalizeRequestId(incoming);
+    const requestId = normalized ?? randomUUID();
     const started = performance.now();
     res.setHeader("X-Request-Id", requestId);
     context.run({ requestId, emit }, () => {
@@ -49,12 +75,13 @@ export function createRequestContextMiddleware(emit: EventSink = emitToStdout): 
         emit({
           event: "tinychat_request",
           request_id: requestId,
+          request_id_replaced: incoming !== undefined && normalized === undefined,
           method: Object.hasOwn(METHODS, req.method) ? req.method : "OTHER",
           route: typeof route === "string" && route.length <= 256 ? route : "unmatched",
           status: res.statusCode,
           duration_ms: Math.max(0, performance.now() - started),
           // Private/hosted correlation remains independent, including when callers send both IDs.
-          ...(typeof correlation === "string" && UUID.test(correlation) ? { correlation_id: correlation.toLowerCase() } : {}),
+          ...(typeof correlation === "string" && LEGACY_CORRELATION_ID.test(correlation) ? { correlation_id: correlation.toLowerCase() } : {}),
         });
       });
       next();
@@ -86,22 +113,22 @@ export function installRequestLogBoundary(): void {
     };
   }
   for (const stream of [process.stdout, process.stderr]) {
-    const original = stream.write.bind(stream);
-    stream.write = (
-      chunk: string | Uint8Array,
-      encodingOrCallback?: BufferEncoding | ((error?: Error) => void),
-      callback?: (error?: Error) => void,
-    ): boolean => {
+    const original = stream.write;
+    stream.write = function (
+      this: typeof stream,
+      ...args: [
+        chunk: string | Uint8Array,
+        encodingOrCallback?: BufferEncoding | ((error?: Error) => void),
+        callback?: (error?: Error) => void,
+      ]
+    ): boolean {
       const active = context.getStore();
-      if (!active) {
-        return typeof encodingOrCallback === "string"
-          ? original(chunk, encodingOrCallback, callback)
-          : original(chunk, encodingOrCallback);
-      }
+      if (!active) return Reflect.apply(original, this, args);
       active.emit({
         event: "tinychat_request_diagnostic", request_id: active.requestId,
         level: stream === process.stderr ? "error" : "info",
       });
+      const [, encodingOrCallback, callback] = args;
       const done = typeof encodingOrCallback === "function" ? encodingOrCallback : callback;
       if (done) queueMicrotask(done);
       return true;

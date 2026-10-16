@@ -298,14 +298,16 @@ async function readCapped(response: Response, maxBytes: number): Promise<Uint8Ar
 export function createPtxClient(config: {
   baseUrl: string;
   apiKey: string;
+  requestIdFirstPartyOrigins?: ReadonlySet<string>;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
 }): PtxClient {
   const fetchImpl = config.fetchImpl ?? fetch.bind(globalThis);
   const timeoutMs = config.timeoutMs ?? 15_000;
+  const forwardRequestId = config.requestIdFirstPartyOrigins?.has(new URL(config.baseUrl).origin) ?? false;
   return {
     async request({ method, path, correlationId, maxBytes, tenantRef, idempotencyKey, body }) {
-      const requestId = currentRequestId();
+      const requestId = forwardRequestId ? currentRequestId() : undefined;
       const headers: Record<string, string> = {
         Authorization: `Bearer ${config.apiKey}`,
         Accept: "application/json",
