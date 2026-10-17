@@ -211,30 +211,36 @@ the rulesets and their residual risk.
 release: the `Release` run tags the stable versions, then its dispatch step
 runs `desktop-release.yml` (for a new stable `exo-desktop` tag) and then
 `deploy-production.yml` (for new stable backend or web tags). GitHub refuses
-to dispatch a disabled workflow (HTTP 422). The step then fails and nothing
-after it runs: no production deploy, no desktop build, no regenerated Release
-stable PR. That is how 0.8.0 (#420) and 0.8.1 (#439) failed to deploy
-(TC-1324). **Never disable `release.yml`, `desktop-release.yml` or
-`deploy-production.yml` for a cut.** Only these holds are needed:
+to dispatch a disabled workflow (HTTP 422). The first refused dispatch fails
+the step, and every later dispatch and the Release stable PR refresh are
+skipped. Both 0.8.0 (#420) and 0.8.1 (#439) disabled both workflows, so
+neither deployed production or built desktop (TC-1324). **Never disable
+`release.yml`, `desktop-release.yml` or `deploy-production.yml` for a cut.**
+Only these holds are needed:
 
 1. **Freeze `main`** (no merges, coordination only) from the exact-SHA checks
    until the stable `Release` run has pushed its tags. QA and CI cover one
    SHA; a merge in between makes the stable PR stale, so the release is
    refused, or puts code nobody checked into the release.
 2. **No manual `deploy-production.yml` or `desktop-release.yml` runs** while the
-   `Release` run and the runs it dispatches are in progress. They queue in the
-   same concurrency group and would redeploy or race the tagged commit.
+   `Release` run and the runs it dispatches are in progress. `Deploy production`
+   has one fixed concurrency group that keeps only one pending run, so a manual
+   run queued behind the dispatched one replaces (cancels) it; a manual
+   `Desktop release (Exo)` run for the same tag races the dispatched one.
 3. **Only if the go excludes desktop** (for example a web-only hotfix; the
    fixed group still tags `exo-desktop`): let the dispatch happen, then cancel
    the `Desktop release (Exo)` run it started (`gh run cancel <id>`) before its
    publish job. Never block it by disabling the workflow.
 
-Immediately before the merge, every dispatched workflow must read `active`:
+Immediately before the merge, every dispatched workflow must read `active`, and
+`EXO_DESKTOP_SIGNING` must be set (`unsigned` or `required`; unset fails the
+desktop plan job):
 
 ```bash
 for w in release desktop-release deploy-production; do
   gh api repos/TinyCloudLabs/tinychat/actions/workflows/$w.yml --jq '"\(.path) \(.state)"'
 done
+gh variable get EXO_DESKTOP_SIGNING -R TinyCloudLabs/tinychat
 ```
 
 After the merge, watch `Release`, `Deploy production` and `Desktop release (Exo)`
@@ -243,7 +249,10 @@ published, latest release with the DMG, `.app.zip` and `SHA256SUMS.txt`. If the
 dispatch step failed anyway, start what it didn't, with the same inputs:
 `gh workflow run desktop-release.yml --ref main -f tag=exo-desktop@<version>`
 and `gh workflow run deploy-production.yml --ref main -f tag=<backend tag, else
-web tag> -f backend=<true|false> -f web=<true|false>`.
+web tag> -f backend=<true|false> -f web=<true|false>`. The skipped Release
+stable PR refresh comes back with the next push to main, or now with
+`gh workflow run release.yml --ref main` (the tags exist, so it dispatches
+nothing).
 
 `desktop/package.json` is the single source of the desktop version:
 `tauri.conf.json` reads it (`"version": "../package.json"`), and the release
