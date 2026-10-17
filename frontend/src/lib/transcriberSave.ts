@@ -48,7 +48,8 @@ export async function saveTranscriberMeeting(
  * Saved IDs separated from rows whose saved-body completeness is unknown. Ids in
  * `confirmed` already had their body confirmed this session and skip the KV check;
  * `onConfirmed` hears each body this scan confirms, as soon as it is read. A body
- * that could not be read is never reported.
+ * that could not be read is never reported. `scanned` is true only when every row
+ * was classified (a stale pass stops early).
  */
 export async function listSavedTranscriberMeetingIds(
   tcw: TinyCloudWeb,
@@ -56,22 +57,23 @@ export async function listSavedTranscriberMeetingIds(
   isCurrent: () => boolean = () => true,
   confirmed: ReadonlySet<string> = new Set(),
   onConfirmed: (id: string) => void = () => {},
-): Promise<StoreResult<{ saved: string[]; unknown: string[] }>> {
+): Promise<StoreResult<{ saved: string[]; unknown: string[]; scanned: boolean }>> {
   const rows = await scheduleRead(() => listKnownSourceIds(tcw, TRANSCRIBER_MEETING_SOURCE));
-  if (rows === null) return { ok: true, data: { saved: [], unknown: [] } };
+  if (rows === null) return { ok: true, data: { saved: [], unknown: [], scanned: false } };
   if (!rows.ok) return rows;
   const saved: string[] = [];
   const unknown: string[] = [];
+  let scanned = true;
   for (const id of rows.data) {
     if (confirmed.has(id)) {
       saved.push(id);
       continue;
     }
     // Don't queue more old-account reads after the pass has been cancelled.
-    if (!isCurrent()) break;
+    if (!isCurrent()) { scanned = false; break; }
     try {
       const body = await scheduleRead(() => tcw.kv.get(transcriptKvKey(TRANSCRIBER_MEETING_SOURCE, id)));
-      if (body === null || !isCurrent()) break;
+      if (body === null || !isCurrent()) { scanned = false; break; }
       if (body.ok) {
         saved.push(id);
         onConfirmed(id);
@@ -86,7 +88,7 @@ export async function listSavedTranscriberMeetingIds(
       console.debug("[transcriberSave] incomplete meeting", id, "kv-read-threw");
     }
   }
-  return { ok: true, data: { saved, unknown } };
+  return { ok: true, data: { saved, unknown, scanned } };
 }
 
 /**

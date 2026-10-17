@@ -43,7 +43,7 @@ export interface TranscriberLibrarySaver {
     isCurrent?: () => boolean,
     confirmed?: ReadonlySet<string>,
     onConfirmed?: (id: string) => void,
-): Promise<{ ok: boolean; data?: { saved: string[]; unknown: string[] } }>;
+): Promise<{ ok: boolean; data?: { saved: string[]; unknown: string[]; scanned?: boolean } }>;
   listVersions?: typeof listSavedTranscriberVersions;
   refresh?: typeof refreshTranscriberMeeting;
   save(tcw: TinyCloudWeb, meeting: TranscriberMeeting, transcript: TranscriberTranscript): Promise<{ ok: boolean }>;
@@ -123,17 +123,21 @@ onPendingSnapshot?: (
   // Each SQL/KV completeness read takes its own turn. A library with many
   // saved recordings therefore yields the lane between keys for voice notes.
   const complete = await saver.listSaved(tcw, readOnDrainLane(isCurrent, onProgress), isCurrent, confirmedSaved, confirm);
-  flushConfirmed();
+  // A pass that stalled and lost the lock must not announce late: another tab may have
+  // pruned one of these ids since, and a late `confirmed` would undo that prune.
   if (!complete?.ok || !isCurrent()) return;
+  flushConfirmed();
   const saved = new Set(complete.data?.saved ?? []);
   for (const id of saved) confirm(id);
   flushConfirmed();
-  // The scan covered every row, so a confirmed id with no row any more was deleted or
-  // purged: forget it, so a row written again under that id gets its body checked.
-  const listedIds = new Set([...saved, ...(complete.data?.unknown ?? [])]);
-  const gone = [...confirmedSaved].filter((id) => !listedIds.has(id));
-  for (const id of gone) confirmedSaved.delete(id);
-  if (gone.length > 0) onUnconfirmed(gone);
+  // Only a scan that reached every row can say a confirmed id has no row any more
+  // (deleted or purged): forget it, so a row written again under it gets its body checked.
+  if (complete.data?.scanned) {
+    const listedIds = new Set([...saved, ...(complete.data.unknown ?? [])]);
+    const gone = [...confirmedSaved].filter((id) => !listedIds.has(id));
+    for (const id of gone) confirmedSaved.delete(id);
+    if (gone.length > 0) onUnconfirmed(gone);
+  }
   const newer = listed.value.meetings.filter((row) => !("unavailable" in row) && row.status === "completed"
     && saved.has(row.id) && Number.isInteger(row.transcript?.version)
     && row.transcript!.version! > (knownVersions.get(row.id) ?? 1)).map((row) => row.id);

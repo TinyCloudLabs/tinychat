@@ -651,6 +651,72 @@ test("a saved-id scan longer than the deadline still saves a new meeting, and la
   }
 });
 
+test("a tab applies other tabs' confirmed and unconfirmed announcements to its next scan", async () => {
+  const sql = new Database(":memory:");
+  for (const { sql: ddl } of CONNECTOR_SCHEMA) sql.exec(ddl);
+  const insert = sql.query(`INSERT INTO connector_meeting (id, source, source_id, metadata, created_at, updated_at) VALUES (?, ?, ?, '{}', 'c', 'u')`);
+  for (let n = 0; n < 3; n++) insert.run(`row-${n}`, TRANSCRIBER_MEETING_SOURCE, `m-${n}`);
+  const reads: string[] = [];
+  const tcw = {
+    did: `did:test:peers-${crypto.randomUUID()}`, secrets: { isUnlocked: true },
+    sql: { db: () => ({
+      query: async (q: string, p: never[] = []) => ({ ok: true, data: { rows: sql.query(q).values(...p) } }),
+      execute: async (q: string, p: never[] = []) => ({ ok: true, data: sql.query(q).run(...p) }),
+    }) },
+    kv: { get: async (key: string) => {
+      if (!key.includes("/transcript/")) return { ok: false, error: { code: "KV_NOT_FOUND", message: "missing" } };
+      reads.push(key.split("/").at(-1)!);
+      return { ok: true, data: { data: "body" } };
+    } },
+  } as unknown as TinyCloudWeb;
+  const f = setup();
+  const client = { list: async () => ({ status: "ok", value: { meetings: [] } }) } as unknown as TranscriberClient;
+  const saver: TranscriberLibrarySaver = { listSaved: listSavedTranscriberMeetingIds, save: async () => ({ ok: true }) };
+  const scope = `tinychat:transcriber-library-sync:${tcw.did}`;
+  // `peer` is another tab; `watcher` sees passes finish, and the peer's marker, which
+  // arrives after anything the peer posted before it.
+  const [peer, watcher] = [new BroadcastChannel(scope), new BroadcastChannel(scope)];
+  let passFinished: () => void = () => {};
+  let markerSeen: () => void = () => {};
+  watcher.onmessage = (event: MessageEvent<{ kind: string }>) => {
+    if (event.data.kind === "pass") passFinished();
+    if (event.data.kind === "marker") markerSeen();
+  };
+  const nextPass = () => new Promise<void>((resolve) => { passFinished = resolve; });
+  const announce = async (message: { kind: "confirmed" | "unconfirmed"; ids: string[] }) => {
+    const delivered = new Promise<void>((resolve) => { markerSeen = resolve; });
+    peer.postMessage(message);
+    peer.postMessage({ kind: "marker" });
+    await delivered;
+  };
+  const passAfterFocus = async () => {
+    const done = nextPass();
+    await act(async () => { fire("focus"); });
+    await done;
+  };
+  try {
+    const first = nextPass();
+    await mount({ ...f, tcw, client, saver });
+    await first;
+    expect(reads.sort()).toEqual(["m-0", "m-1", "m-2"]);
+    // The peer found m-1's body gone: this tab reads it again.
+    reads.length = 0;
+    await announce({ kind: "unconfirmed", ids: ["m-1"] });
+    await passAfterFocus();
+    expect(reads).toEqual(["m-1"]);
+    // The peer read m-3's body: this tab trusts it without reading.
+    insert.run("row-3", TRANSCRIBER_MEETING_SOURCE, "m-3");
+    reads.length = 0;
+    await announce({ kind: "confirmed", ids: ["m-3"] });
+    await passAfterFocus();
+    expect(reads).toEqual([]);
+  } finally {
+    peer.close();
+    watcher.close();
+    sql.close();
+  }
+});
+
 test("a tab whose Web Lock request rejects still syncs, and warns once", async () => {
   const f = setup();
   let lists = 0;
