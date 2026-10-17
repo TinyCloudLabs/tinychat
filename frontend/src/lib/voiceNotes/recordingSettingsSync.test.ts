@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { getSetting, setSetting, useLocalThreadStorage } from "../threadStore";
+import * as threadStore from "../threadStore";
 import { readDefaultUploadEngine, writeDefaultUploadEngine } from "../audioUpload";
 import { DEFAULT_STOP_AFTER, RECORDING_FIELDS, RECORDING_SETTING_KEY } from "./recordingSettings";
 import { attachRecordingSettingsSync, syncRecordingSettings } from "./recordingSettingsSync";
@@ -197,17 +198,87 @@ test("adopting one field leaves keys nobody set unset, and never replaces an edi
   try {
     const phone = device();
     phone.use();
-    await adoptSyncedFields({ transcriber: "off" });
+    await adoptSyncedFields({ transcriber: "off" }, () => true);
     expect(phone.values.get("exo.voiceNotes.transcriber")).toBe("off");
     expect(phone.values.has("exo.voiceNotes.identifySpeakers")).toBe(false);
     expect(phone.values.has("exo.voiceNotes.uploadAudio")).toBe(false);
 
     setStopAfterPreference("15");
-    await adoptSyncedFields({ stopAfter: "120", transcriber: "private-cloud" });
+    await adoptSyncedFields({ stopAfter: "120", transcriber: "private-cloud" }, () => true);
     expect(readStopAfterPreference()).toBe("15");
     expect(phone.values.get("exo.voiceNotes.transcriber")).toBe("private-cloud");
   } finally {
     // The engine-backed defaults also live in module memory; put them back while the engine is still installed.
+    await setDefaultTranscriber("on-device");
+    await setDefaultIdentifySpeakers(true);
+    __setVoiceNotesForTests(null, { available: null });
+  }
+});
+
+/** Lets the microtasks that reach `reached` run; the tests hold the engine or the space open at a known point. */
+async function until(reached: () => boolean): Promise<void> {
+  for (let turn = 0; turn < 200 && !reached(); turn++) await Promise.resolve();
+  expect(reached()).toBe(true);
+}
+
+test("two tabs, two accounts: a cycle waiting on the space never writes what the other account just edited", async () => {
+  const spaceA = space(ACCOUNT_A);
+  const spaceB = space(ACCOUNT_B);
+  device().use();
+  const gate = Promise.withResolvers<void>();
+  let entered = false;
+  const original = threadStore.getSetting;
+  const spy = spyOn(threadStore, "getSetting").mockImplementationOnce(async (tcw, key) => {
+    entered = true;
+    await gate.promise;
+    return original(tcw, key);
+  });
+  try {
+    const detachA = attachRecordingSettingsSync(spaceA);
+    await until(() => entered);
+    // The other tab signs in as B and edits; A's tab is still attached and still waiting on its read.
+    const detachB = attachRecordingSettingsSync(spaceB);
+    setStopAfterPreference("15");
+    gate.resolve();
+    await syncRecordingSettings(spaceB);
+    await syncRecordingSettings(spaceA);
+    detachA();
+    detachB();
+    expect(await remoteDoc(spaceA)).toBeNull();
+  } finally {
+    spy.mockRestore();
+  }
+});
+
+test("an adopt still in the engine when the account changes writes nothing for the new account", async () => {
+  const spaceA = space(ACCOUNT_A);
+  const spaceB = space(ACCOUNT_B);
+  await setSetting(spaceA, RECORDING_SETTING_KEY, JSON.stringify({ v: 1, updatedAt: 5, transcriber: "off" }));
+  const shared = device();
+  shared.use();
+  const fake = createFakeVoiceNotes();
+  const gate = Promise.withResolvers<void>();
+  let entered = false;
+  const plugin = { ...fake.plugin, getCaptureDefaults: async () => {
+    if (!entered) { entered = true; await gate.promise; }
+    return fake.plugin.getCaptureDefaults();
+  } };
+  __setVoiceNotesForTests(plugin, { available: true });
+  try {
+    const detachA = attachRecordingSettingsSync(spaceA);
+    await until(() => entered);
+    detachA();
+    const detachB = attachRecordingSettingsSync(spaceB);
+    // B edits on the cache while A's adopt is still inside the engine: the cache is B's now.
+    setStopAfterPreference("15");
+    gate.resolve();
+    await syncRecordingSettings(spaceB);
+    detachB();
+    // A's adopted mode never reached this device's cache for B, and B's space got only what B chose.
+    expect(shared.values.get("exo.voiceNotes.transcriber")).toBeUndefined();
+    expect(await remoteDoc(spaceB)).toEqual({ v: 1, updatedAt: expect.any(Number), stopAfter: "15" });
+    expect((await fake.plugin.getCaptureDefaults()).transcriber).toBe("on-device");
+  } finally {
     await setDefaultTranscriber("on-device");
     await setDefaultIdentifySpeakers(true);
     __setVoiceNotesForTests(null, { available: null });

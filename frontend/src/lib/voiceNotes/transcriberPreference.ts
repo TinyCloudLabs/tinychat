@@ -205,9 +205,11 @@ export function writeAccountDefaults(
  * an earlier change replaced. The stored keys are read first, then the engine is written, then both keys. If any
  * step fails, `restoreAfterFailure` puts the keys and the engine back, each on its own, and the call throws.
  */
-async function commitPreference(change: Partial<CaptureOptions>, edit = true): Promise<void> {
+async function commitPreference(change: Partial<CaptureOptions>, edit = true, mayWrite: () => boolean = () => true): Promise<void> {
   await inOrder(async () => {
-    // An adopted value never lands over an edit still waiting to be synced, whichever got into the lane first.
+    // An adopted value never lands over an edit still waiting to be synced, whichever got into the lane first, and
+    // never once the account it was read for is gone.
+    if (!mayWrite()) return;
     const dirty = edit ? [] : readLocalState()?.dirty ?? [];
     const applied = Object.fromEntries(Object.entries(change).filter(([key]) => !dirty.includes(key as RecordingField))) as Partial<CaptureOptions>;
     if (Object.keys(applied).length === 0) return;
@@ -218,6 +220,8 @@ async function commitPreference(change: Partial<CaptureOptions>, edit = true): P
     let before: EngineDefaults | null = null;
     try {
       await writeEffectiveDefaults(pref, (current) => { before = current; });
+      // The engine write above is the one await in the lane: the account can change during it. Put the engine back then.
+      if (!mayWrite()) throw new Error("The account changed while the synced defaults were being applied.");
       // An edit writes its keys as before. An adopted value writes only what changed: a key nobody set stays unset,
       // so it never travels as a choice.
       if (store) {
@@ -259,9 +263,9 @@ export async function setDefaultIdentifySpeakers(identifySpeakers: boolean): Pro
  * device nor tells sync. Fields with an edit still waiting to be synced are skipped. Throws if the engine refuses, after
  * the fields that do not need it were applied; nothing is marked synced then, and the next cycle repeats it.
  */
-export async function adoptSyncedFields(fields: SetFields): Promise<void> {
+export async function adoptSyncedFields(fields: SetFields, mayWrite: () => boolean): Promise<void> {
   const store = storage();
-  if (!store) return;
+  if (!store || !mayWrite()) return;
   const dirty = readLocalState()?.dirty ?? [];
   const open = (field: RecordingField) => fields[field] !== undefined && !dirty.includes(field);
   const current = readTranscriberPreference();
@@ -281,7 +285,7 @@ export async function adoptSyncedFields(fields: SetFields): Promise<void> {
   if (!web && open("uploadAudio") && fields.uploadAudio !== current.uploadAudio) change.uploadAudio = fields.uploadAudio;
   if (Object.keys(change).length === 0) return;
   if (captureEngineAvailable()) {
-    await commitPreference(change, false);
+    await commitPreference(change, false, mayWrite);
     return;
   }
   if (change.transcriber !== undefined) store.setItem(TRANSCRIBER_KEY, change.transcriber);

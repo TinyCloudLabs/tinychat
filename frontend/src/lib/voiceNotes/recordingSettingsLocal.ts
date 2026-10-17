@@ -104,6 +104,16 @@ export function markSynced(at: number | null, owner: string): void {
   try { writeMeta(store, { at, owner, dirty: [] }); } catch { /* Next cycle repeats it. */ }
 }
 
+/** The cache is this account's from now on, whatever its stamp: keeps the values and the pending edits. */
+export function claimCache(owner: string): void {
+  const store = localStorageOrNull();
+  if (!store) return;
+  try {
+    const meta = readMeta(store);
+    if (meta.owner !== owner) writeMeta(store, { ...meta, owner });
+  } catch { /* Next cycle repeats it. */ }
+}
+
 /** Forgets every synced value and the stamp: another account's choices must not outlive its session on this device. */
 export function dropSyncedKeys(): void {
   const store = localStorageOrNull();
