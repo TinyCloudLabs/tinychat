@@ -78,7 +78,7 @@ describe("timed engine fixtures", () => {
     const rows = localTranscriptToSave(local).sentences;
     bounded(rows.map((s) => ({ start: s.start_time, end: s.end_time })), 30);
     expect(rows.map((s) => s.timing)).toEqual(["engine", "engine"]);
-    expect(localTranscriptToSave({ ...local, version: 1 }).sentences[0]?.speaker_name).toBe("You");
+    expect(localTranscriptToSave({ ...local, version: 1 }).sentences[0]?.speaker_name).toBe("Speaker 1");
   });
 
   test("PTX keeps regions, channels and diarized speaker IDs", () => {

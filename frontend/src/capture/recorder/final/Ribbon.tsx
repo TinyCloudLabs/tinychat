@@ -5,7 +5,7 @@ import { cn } from "@/lib/utils";
 import type { RecorderValue } from "../RecorderProvider";
 import { MinimizedBars } from "./MinimizedBars";
 import { PauseGlyph, PlayGlyph } from "./minimizedIcons";
-import { MinimizedAlert } from "./MinimizedAlert";
+import { MinimizedAlert, MinimizedLimitNotice } from "./MinimizedAlert";
 import {
   useEntrance,
   useMinimizedAnnouncement,
@@ -44,6 +44,7 @@ export function RibbonView({
   const view = minimizedView(recorder, elapsedMs, silencedSinceMs, device);
   const live = view.ring === "live";
   const timerId = useId();
+  const stopsId = useId();
   const canToggle = view.controls.resume || view.controls.pause;
   return (
     <div
@@ -63,7 +64,7 @@ export function RibbonView({
           className="ribbon-open"
           onClick={recorder.openSheet}
           aria-label={`${view.status}. Open recorder`}
-          aria-describedby={timerId}
+          aria-describedby={view.timer.countdown ? `${timerId} ${stopsId}` : timerId}
           data-testid="ribbon-open"
         >
           <span
@@ -81,6 +82,11 @@ export function RibbonView({
               theme={theme}
             />
           </span>
+          {view.timer.countdown && (
+            <span id={stopsId} className="ribbon-stops" data-testid="ribbon-stops">
+              {view.timer.countdown.text}
+            </span>
+          )}
         </button>
         <button
           type="button"
@@ -146,13 +152,14 @@ export function Ribbon({ layout }: { layout?: RibbonViewProps["layout"] }) {
 
 /**
  * From 768 to 1023 px the Ribbon sits in a reserved row at the foot of the main area.
- * Without the Ribbon (after Stop) the row holds only the error, if there is one.
+ * Without the Ribbon (after Stop) the row holds only the error and why the recorder stopped itself, if either.
  */
 export function FloatingRibbon({ ribbon = true }: { ribbon?: boolean }) {
   return (
     <div className="ribbon-float" data-ribbon={ribbon}>
       <div className="ribbon-float-inner">
         <MinimizedAlert layout="rail" />
+        {!ribbon && <MinimizedLimitNotice layout="rail" />}
         {ribbon && <Ribbon layout="rail" />}
       </div>
     </div>

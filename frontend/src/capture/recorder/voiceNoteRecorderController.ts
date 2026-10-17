@@ -35,8 +35,8 @@ import { isOnDeviceReady } from "@/lib/voiceNotes/onDeviceStt";
 import { isLegacyNote } from "@/lib/voiceNotes/legacyMigration";
 import { setQuarantineAccount } from "@/lib/voiceNotes/quarantine";
 import { ensureAppleSpeechAssets, ensureOnDeviceModel, onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
-import { effectiveCaptureOptions, readTranscriberPreference, readUploadAudioPreference,
-  setDefaultIdentifySpeakers, setDefaultTranscriber, settleDefaults, subscribeTranscriberPreference, writeAccountDefaults,
+import { effectiveCaptureOptions, readStopAfterPreference, readTranscriberPreference, readUploadAudioPreference,
+  setDefaultIdentifySpeakers, setDefaultTranscriber, settleDefaults, stopAfterMs, subscribeTranscriberPreference, writeAccountDefaults,
   } from "@/lib/voiceNotes/transcriberPreference";
 import {
   clearDiscarded,
@@ -350,7 +350,8 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
   };
 
   const sendMicState = (status: CaptureStatus | MicStateEvent) => {
-    const event = { type: "MIC_STATE" as const, mic: micFromStatus(status), audioMs: status.audioMs };
+    const event = { type: "MIC_STATE" as const, mic: micFromStatus(status), audioMs: status.audioMs,
+      captureSourceUnconfirmed: status.captureSourceUnconfirmed };
     send(status.elapsedMs === undefined ? event : { ...event, elapsedMs: status.elapsedMs, elapsedAt: Date.now() });
   };
 
@@ -370,7 +371,8 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         void pendingStore.refresh();
       } else if (status.id === state.recordingId) {
         acceptNativeOptions(status);
-        send({ type: "STOP_FAILED", status: "active", error, id,
+        const statusError = status.reason === "snapshot_unavailable" || status.reason === "snapshot_empty" ? null : error;
+        send({ type: "STOP_FAILED", status: "active", error: statusError, id,
           mic: micFromStatus(status), audioMs: status.audioMs, elapsedMs: status.elapsedMs, elapsedAt: Date.now() });
       } else {
         send({ type: "STOP_FAILED", status: "idle", error: error ?? `Another recording is active on this ${recorderDevice()}.`, id });
@@ -402,6 +404,74 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     } catch (caught) {
       send({ type: "DISCARD_FAILED", id: shown, uncertain: true,
         error: `${error} Could not check whether recording continues: ${messageOf(caught)}` });
+    }
+  };
+
+  /** One deadline covers the native control and every status reconciliation read. */
+  const CONTROL_TIMEOUT_MS = 45_000;
+  let controlOperationId = 0;
+  const controlStillCurrent = (operationId: number, recordingId: string | null) =>
+    operationId === controlOperationId && state.phase === "recording" && state.recordingId === recordingId;
+
+  const uncertainControlError = (control: "pause" | "resume") => control === "pause"
+    ? "Could not confirm that recording paused. Recording may still be running. Try again or stop."
+    : "Could not confirm that recording resumed. Try again or stop.";
+
+  const runControl = async (control: "pause" | "resume"): Promise<void> => {
+    const operationId = ++controlOperationId;
+    const recordingId = state.recordingId;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const operation = (async () => {
+      let error: string | null = null;
+      try {
+        await (control === "pause" ? VoiceNotes.pause() : VoiceNotes.resume());
+      } catch (caught) {
+        error = `${control === "pause" ? "Could not pause" : "Could not resume"}: ${messageOf(caught)}`;
+      }
+      if (!controlStillCurrent(operationId, recordingId)) return;
+
+      let status: CaptureStatus | undefined;
+      try {
+        status = await VoiceNotes.status();
+      } catch (caught) {
+        console.warn(`[VoiceNotes] Could not read status after ${control}`, caught);
+      }
+      if (!controlStillCurrent(operationId, recordingId)) return;
+
+      if (!status) {
+        send(control === "pause"
+          ? { type: "PAUSE_FAILED", error: uncertainControlError(control) }
+          : { type: "RESUME_FAILED", error: uncertainControlError(control) });
+        send({ type: "MIC_STATE", mic: { state: "needs_user", reason: "status_unknown" } });
+        return;
+      }
+
+      acceptNativeOptions(status);
+      if (error) {
+        send(control === "pause" ? { type: "PAUSE_FAILED", error } : { type: "RESUME_FAILED", error });
+      } else {
+        send(control === "pause" ? { type: "PAUSE_CONFIRMED" } : { type: "RESUME_CONFIRMED" });
+      }
+      // Native state is authoritative when a bridge call fails after making progress.
+      sendMicState(status);
+    })();
+    const deadline = new Promise<void>((resolve) => {
+      timer = setTimeout(() => {
+        if (controlStillCurrent(operationId, recordingId)) {
+          send(control === "pause"
+            ? { type: "PAUSE_FAILED", error: uncertainControlError(control) }
+            : { type: "RESUME_FAILED", error: uncertainControlError(control) });
+          send({ type: "MIC_STATE", mic: { state: "needs_user", reason: "status_unknown" } });
+          // The timeout ends this operation; neither its native call nor a late status may mutate state.
+          ++controlOperationId;
+        }
+        resolve();
+      }, CONTROL_TIMEOUT_MS);
+    });
+    try {
+      await Promise.race([operation, deadline]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
     }
   };
 
@@ -590,7 +660,8 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       ? Math.max(0, recording.wallMs - recording.pausedMs) : undefined;
     send({ type: "AUTO_STOPPED", id: recording?.id ?? null, notice: autoStopNoticeText(event.reason, event.maxDurationMs),
       captured: recording !== null, at: Date.now(), elapsedMs: finalElapsed, error: event.error,
-      pendingId: event.error === "finalization_timed_out" ? event.id ?? state.recordingId : null });
+      pendingId: event.error === "finalization_timed_out" ? event.id ?? state.recordingId : null,
+      ...(event.reason === "max_duration" ? { limitMs: event.maxDurationMs } : {}) });
     if (!recording) return;
     void saveStopped(recording).catch((caught: unknown) =>
       send({ type: "SAVE_FAILED", error: messageOf(caught), recording: { id: recording.id, durationMs: recording.durationMs } }),
@@ -836,6 +907,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
               void VoiceNotes.consumeShortcutRecord().catch((caught: unknown) =>
                 console.warn("[VoiceNotes] Could not consume the shortcut Record offer", caught));
             }
+            sendMicState(status);
             if (status.state === "idle") return;
             acceptNativeOptions(status);
             send(activePickup(status));
@@ -885,7 +957,8 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       stopAllPlayback();
       send({ type: "START_REQUESTED" });
       if (choice.id === "on-device") ensureLocalModel(true);
-      const requested = voiceNoteMaxDurationMs();
+      // Settings' Stop recording after, never above the test override or the 3-hour limit (voiceNoteMaxDurationMs caps both).
+      const requested = Math.min(stopAfterMs(readStopAfterPreference()), voiceNoteMaxDurationMs());
       try {
         // The recording starts from the engine's default: wait for any default write in flight, and refuse to start on one that could not be put right.
         await settleDefaults();
@@ -935,6 +1008,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         return;
       }
       if (state.phase !== "recording") return;
+      ++controlOperationId;
       nativeStopPending = true;
       send({ type: "STOP_REQUESTED", at: Date.now() });
       let recording: VoiceNoteRecording;
@@ -946,7 +1020,8 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         if (code === "finalization_timed_out") {
           send({ type: "CAPTURE_ISSUE", id: state.recordingId, issue: { kind: "finalization_timed_out" } });
         }
-        await reconcileFailedStop(code === "not_recording" ? null
+        const handledByNativeStatus = code === "not_recording" || code === "capture_snapshot_unavailable" || code === "no_audio_captured";
+        await reconcileFailedStop(handledByNativeStatus ? null
           : code === "finalization_timed_out" ? FINALIZATION_PENDING
           : `Could not stop: ${messageOf(caught)}`, code === "finalization_timed_out" ? state.recordingId : null);
         return;
@@ -961,42 +1036,14 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     async pause() {
       if (state.phase !== "recording" || state.controlPending || (state.mic.state !== "recording" && state.mic.state !== "silenced")) return;
       send({ type: "PAUSE_REQUESTED" });
-      try {
-        await VoiceNotes.pause();
-      } catch (caught) {
-        send({ type: "PAUSE_FAILED", error: `Could not pause: ${messageOf(caught)}` });
-        return;
-      }
-      try {
-        const status = await VoiceNotes.status();
-        acceptNativeOptions(status);
-        sendMicState(status);
-      } catch (caught) {
-        console.warn("[VoiceNotes] Pause succeeded, but status could not be read", caught);
-        send({ type: "MIC_STATE", mic: { state: "paused", reason: "user" } });
-      }
-      send({ type: "PAUSE_CONFIRMED" });
+      await runControl("pause");
     },
     async resume() {
       if (state.phase !== "recording" || state.controlPending || (state.mic.state !== "paused" && state.mic.state !== "interrupted" && state.mic.state !== "needs_user")) return;
       setCapturePlaybackBlocked(true);
       stopAllPlayback();
       send({ type: "RESUME_REQUESTED" });
-      try {
-        await VoiceNotes.resume();
-      } catch (caught) {
-        send({ type: "RESUME_FAILED", error: `Could not resume: ${messageOf(caught)}` });
-        return;
-      }
-      try {
-        const status = await VoiceNotes.status();
-        acceptNativeOptions(status);
-        sendMicState(status);
-      } catch (caught) {
-        console.warn("[VoiceNotes] Resume succeeded, but status could not be read", caught);
-        send({ type: "MIC_STATE", mic: { state: "recording", reason: null } });
-      }
-      send({ type: "RESUME_CONFIRMED" });
+      await runControl("resume");
     },
     async discard() {
       if (state.phase === "discarding" && state.error) {

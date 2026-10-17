@@ -24,8 +24,8 @@ export type MicState = "idle" | "recording" | "silenced" | "paused" | "interrupt
 export type MicStateReason = "os_silenced" | "no_signal" | "input_muted" | "call" | "user" | "interruption"
   | "route_change" | "media_services_reset" | "read_error" | "stalled" | "app_suspended" | "writer_stalled"
   | "resume_blocked" | "resume_not_allowed" | "mic_unavailable" | "pause_timeout"
-  | "max_duration" | "disk_full" | "write_failed" | "permission_revoked"
-  | "unsafe_sessions_folder" | "session_exists" | null;
+  | "max_duration" | "disk_full" | "write_failed" | "permission_revoked" | "source_still_running" | "source_unusable"
+  | "snapshot_unavailable" | "snapshot_empty" | "status_unknown" | "unsafe_sessions_folder" | "session_exists" | null;
 
 export type TranscriberId = "off" | "on-device" | "private-cloud" | "assemblyai";
 export type CaptureSource = "in_app" | "quick_action" | "app_shortcut" | "intent" | "control" | "tile" | "widget" | "notification";
@@ -141,6 +141,7 @@ export interface MicStateEvent {
   elapsedMs?: number;
   pausedMs?: number;
   openSpan?: MissingAudioSpan | null;
+  captureSourceUnconfirmed?: boolean;
 }
 
 export interface LevelEvent {
@@ -209,6 +210,10 @@ export interface CaptureStatus {
   source?: CaptureSource; options?: CaptureOptions; input?: AudioInput | null; owner?: string | null;
   activeId?: string | null;
   transitionGen: number; androidSdkInt?: number;
+  /** True after bounded Stop lacks release evidence; CoreAudio clears it only when all inputs Exo used stop running somewhere. */
+  captureSourceUnconfirmed?: boolean;
+  /** Deferred native source cleanup remains until the input is released or Exo restarts. */
+  discardCleanupPending?: boolean;
   /** Android shortcut recovery, queried without consuming a retained event. */
   micDeniedPresentation?: boolean;
   shortcutRecordPending?: boolean;

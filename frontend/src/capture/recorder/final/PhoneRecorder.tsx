@@ -84,9 +84,11 @@ function recorderState(recorder: RecorderValue): RecorderState {
     elapsedMs: recorder.elapsedMs,
     elapsedAt: recorder.elapsedAt,
     maxDurationMs: recorder.maxDurationMs,
+    captureSourceUnconfirmed: recorder.captureSourceUnconfirmed,
     mic: recorder.mic,
     controlPending: recorder.controlPending,
     limitNotice: recorder.limitNotice,
+    limitStopMs: null,
     savePercent: recorder.savePercent,
     error: recorder.error,
     outcome: recorder.outcome,
@@ -599,7 +601,7 @@ export function PhoneRecorder({
     ringKind === null
       ? null
       : {
-          label: ringKind === "pause" ? "Pause recording" : "Resume recording",
+          label: ringKind === "pause" ? "Pause recording" : ringKind === "stop" ? "Try again" : "Resume recording",
           disabled: view.tapRingAction === null,
           onPress: () => {
             hapticLight();
@@ -714,9 +716,12 @@ export function PhoneRecorder({
               <PlusIcon />
             </button>
           </div>
-          {view.timer.countdown && (
+          {view.timer.countdown ? (
             <div className="pr-countdown">{view.timer.countdown.text}</div>
-          )}
+          ) : idleDenied ? (
+            // Mic denied keeps the recording layout's positions, so it holds the stop time's line.
+            <div className="pr-countdown" data-placeholder="true" aria-hidden="true">{FINAL_COPY.stopAt("0:00")}</div>
+          ) : null}
         </div>
         <div
           className="pr-extra"
@@ -775,7 +780,7 @@ export function PhoneRecorder({
             glyph={
               ringKind === "pause"
                 ? "pause"
-                : ringKind === "resume"
+                : ringKind === "resume" || ringKind === "stop"
                   ? "play"
                   : null
             }

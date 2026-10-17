@@ -1,5 +1,9 @@
 import type { FirefliesSentence } from "./connectors/firefliesClient";
 import { isLocalContentWord } from "./localTranscriptTurns";
+import { anonymousSpeakerName } from "./voiceNotes/anonymousSpeakers";
+
+/** A mono save names its one speaker anonymously (or not at all); the reference calls the mic "You". */
+const MONO_SPEAKER = anonymousSpeakerName(1);
 
 /** expected.json v1. Times are seconds; sentenceEnds are exclusive word indices. */
 export interface EvalExpected {
@@ -170,7 +174,8 @@ export function scoreTranscript(input: EvalInput): EvalScore {
     return parts.map((text, index) => {
       const word = lineage?.[index];
       return { text, key: key(text), start: word && word.timing !== "none" ? word.start : null,
-        end: word && word.timing !== "none" ? word.end : null, speaker: sentence.speaker_name ?? "You",
+        end: word && word.timing !== "none" ? word.end : null,
+        speaker: sentence.speaker_name == null || sentence.speaker_name === MONO_SPEAKER ? "You" : sentence.speaker_name,
         sentence: sentenceIndex, timing: word?.timing ?? "none" };
     }).filter(word => word.key);
   });

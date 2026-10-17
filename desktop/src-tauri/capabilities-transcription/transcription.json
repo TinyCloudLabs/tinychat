@@ -26,6 +26,7 @@
     "allow-recorder-resume",
     "allow-recorder-stop",
     "allow-recorder-stop-durable",
+    "allow-recorder-discard-durable",
     "allow-recorder-finish",
     "allow-recorder-quit-anyway",
     "allow-recorder-status",

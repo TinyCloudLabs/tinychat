@@ -1,5 +1,48 @@
 # @tinychat/frontend
 
+## 0.9.0
+
+### Minor Changes
+
+- 516ae0e: Settings → Voice notes has a "Stop recording after" choice (15 min to 2 h, default 1 h, or Off for the 3-hour limit); the recorder shows when it will stop, and the Mac app and browser can notify before and at an automatic stop.
+
+### Patch Changes
+
+- a4664bc: Exo desktop: Pause no longer shows "Paused" before it completes, and Stop settles instead of hanging while preserving the recorded audio. A Stop timeout does not confirm microphone release; the microphone may remain in use until Exo restarts (TC-1158).
+- 67588ff: An on-device transcript from a single-channel recording saves its speaker as "Speaker 1", an anonymous name for that note only, instead of "You" or no name, and lists it as the note's participant. Each engine segment stays its own timed record. Two-channel desktop labels and private-cloud speaker labels are unchanged. Notes transcribed by AssemblyAI say that its speaker labels apply within that note only, and the retrieval pack (`0.1.1-onboarding.23`) documents the same for agents.
+- 007062a: TinyCloud Transcriber sync shares each saved meeting it confirms with your other open tabs as it goes, so if the syncing tab closes partway through, the next one picks up where it stopped. A meeting whose saved copy can't be read is never treated as confirmed, and a meeting removed from your space is checked again if it comes back.
+- 66fa0fe: Put less load on your space's meetings database. The Library list finds each voice note's older transcript in one pass instead of rescanning every row for every note. The TinyCloud Transcriber sync no longer reads every saved transcript to compare versions, checks only meetings it hasn't already confirmed this session, runs once per interval across all open tabs instead of once per tab (a tab whose sync makes no progress for a minute hands over to the others), and waits while the device is offline. After a database save times out, retries wait until the space has finished the abandoned request instead of queueing behind it.
+
+## 0.9.0-beta.4
+
+### Minor Changes
+
+- 516ae0e: Settings → Voice notes has a "Stop recording after" choice (15 min to 2 h, default 1 h, or Off for the 3-hour limit); the recorder shows when it will stop, and the Mac app and browser can notify before and at an automatic stop.
+
+## 0.8.2-beta.3
+
+### Patch Changes
+
+- 67588ff: An on-device transcript from a single-channel recording saves its speaker as "Speaker 1", an anonymous name for that note only, instead of "You" or no name, and lists it as the note's participant. Each engine segment stays its own timed record. Two-channel desktop labels and private-cloud speaker labels are unchanged. Notes transcribed by AssemblyAI say that its speaker labels apply within that note only, and the retrieval pack (`0.1.1-onboarding.23`) documents the same for agents.
+
+## 0.8.2-beta.2
+
+### Patch Changes
+
+- 007062a: TinyCloud Transcriber sync shares each saved meeting it confirms with your other open tabs as it goes, so if the syncing tab closes partway through, the next one picks up where it stopped. A meeting whose saved copy can't be read is never treated as confirmed, and a meeting removed from your space is checked again if it comes back.
+
+## 0.8.2-beta.1
+
+### Patch Changes
+
+- 66fa0fe: Put less load on your space's meetings database. The Library list finds each voice note's older transcript in one pass instead of rescanning every row for every note. The TinyCloud Transcriber sync no longer reads every saved transcript to compare versions, checks only meetings it hasn't already confirmed this session, runs once per interval across all open tabs instead of once per tab (a tab whose sync makes no progress for a minute hands over to the others), and waits while the device is offline. After a database save times out, retries wait until the space has finished the abandoned request instead of queueing behind it.
+
+## 0.8.2-beta.0
+
+### Patch Changes
+
+- a4664bc: Exo desktop: Pause no longer shows "Paused" before it completes, and Stop settles instead of hanging while preserving the recorded audio. A Stop timeout does not confirm microphone release; the microphone may remain in use until Exo restarts (TC-1158).
+
 ## 0.8.1
 
 ### Patch Changes

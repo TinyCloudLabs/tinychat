@@ -12,6 +12,14 @@ const QUEUE_WAIT_LIMIT_MS = 10 * 60_000;
 let testAbortSettleGraceMs: number | null = null;
 let testQueueWaitLimitMs: number | null = null;
 let nextLaneJobId = 0;
+let abandonedSqlCalls = 0;
+/**
+ * Started connectors-SQL calls aborted at their deadline (TC-1274). Aborting stops only
+ * the client; the node keeps each one queued or running in the database's FIFO, so
+ * retries must not assume it is gone. KV calls are not counted: the node orders them
+ * separately, so an SQL probe says nothing about them.
+ */
+export function spaceLaneAbandonedSqlCalls(): number { return abandonedSqlCalls; }
 const laneListeners = new Set<() => void>();
 function publishLane(): void { for (const listener of laneListeners) listener(); }
 export interface SpaceLaneSnapshot { busy: boolean; depth: number }
@@ -31,6 +39,8 @@ export interface SpaceLaneCallDeadline {
   /** Payload size for uploads; establishes 8 KB/s minimum throughput headroom. */
   payloadBytes?: number;
   timeoutMs?: number;
+  /** The call is one request to the connectors SQL database (see spaceLaneAbandonedSqlCalls). */
+  sql?: boolean;
 }
 
 export class SpaceLaneQueueWaitTimeout extends Error {
@@ -119,6 +129,7 @@ export function runOnSpaceLane<T>(job: (signal?: AbortSignal) => Promise<T>, dea
       callDeadlineTimer = setTimeout(() => {
         if (callerSettled) return;
         timedOut = true;
+        if (deadline.sql) abandonedSqlCalls++;
         controller.abort();
         settleCaller({ kind: "reject", error: createVoiceNoteSaveTimeout(deadline.operation, timeoutMs) });
         if (!released) {
@@ -157,6 +168,7 @@ export function runOnSpaceLane<T>(job: (signal?: AbortSignal) => Promise<T>, dea
 /** Tests only: discard a completed lane from the previous case. */
 export function resetSpaceLaneForTests(): void {
   for (const lane of Object.values(lanes)) { lane.tail = Promise.resolve(); lane.active = null; lane.queued.clear(); }
+  abandonedSqlCalls = 0;
   publishLane();
 }
 /** Tests only: shorten the post-abort lane grace period. */

@@ -7,6 +7,12 @@ name: Desktop (Exo)
 
 on:
   workflow_dispatch:
+    inputs:
+      smoke:
+        description: Build the recorder-failpoints smoke artifact
+        type: boolean
+        default: false
+        required: false
   schedule:
     - cron: "17 5 * * 1"
   pull_request:
@@ -41,5 +47,6 @@ jobs:
     name: Build
     uses: ./.github/workflows/desktop-build.yml
     with:
-      artifact-name: exo-macos-arm64-${{ github.sha }}
+      artifact-name: ${{ inputs.smoke && format('exo-smoke-macos-arm64-{0}', github.sha) || format('exo-macos-arm64-{0}', github.sha) }}
+      smoke: ${{ inputs.smoke || false }}
       ipc-selftest: true

@@ -2,12 +2,13 @@ import { readableError } from "@/lib/readableError";
 // JS owns the user's default. Native owns a live session's journaled options.
 import { captureEngineAvailable, captureEngineKind, onDeviceTranscriptionAvailable } from "./captureEngine";
 import { withCaptureDeadline } from "./accountHandoff";
-import { VoiceNotes, type CaptureOptions, type TranscriberId } from "./nativeVoiceNotes";
+import { VoiceNotes, VOICE_NOTE_MAX_DURATION_MS, type CaptureOptions, type TranscriberId } from "./nativeVoiceNotes";
 import { appPlatform } from "@/lib/platform";
 
 const TRANSCRIBER_KEY = "exo.voiceNotes.transcriber";
 const SPEAKERS_KEY = "exo.voiceNotes.identifySpeakers";
 const UPLOAD_AUDIO_KEY = "exo.voiceNotes.uploadAudio";
+const STOP_AFTER_KEY = "exo.voiceNotes.stopAfter";
 const listeners = new Set<() => void>();
 let memoryPreference: CaptureOptions = { transcriber: "on-device", identifySpeakers: true };
 
@@ -59,6 +60,36 @@ export async function setUploadAudioPreference(enabled: boolean): Promise<void> 
     return;
   }
   await commitPreference({ uploadAudio: enabled });
+}
+
+/** When new recordings stop by themselves: minutes, or "off" for the recorder's 3-hour limit. Per device; JS only. */
+export type StopAfter = "15" | "30" | "60" | "120" | "off";
+export const STOP_AFTER_VALUES: readonly StopAfter[] = ["15", "30", "60", "120", "off"];
+export const DEFAULT_STOP_AFTER: StopAfter = "60";
+let memoryStopAfter: StopAfter = DEFAULT_STOP_AFTER;
+
+const isStopAfter = (value: string | null | undefined): value is StopAfter =>
+  STOP_AFTER_VALUES.includes(value as StopAfter);
+
+/** The stored choice; a missing or unknown value is the 1-hour default. */
+export function readStopAfterPreference(): StopAfter {
+  const store = storage();
+  if (!store) return memoryStopAfter;
+  try {
+    const saved = store.getItem(STOP_AFTER_KEY);
+    return isStopAfter(saved) ? saved : DEFAULT_STOP_AFTER;
+  } catch { return memoryStopAfter; }
+}
+
+export function setStopAfterPreference(value: StopAfter): void {
+  memoryStopAfter = value;
+  try { storage()?.setItem(STOP_AFTER_KEY, value); } catch { /* This session only. */ }
+  for (const listener of listeners) listener();
+}
+
+/** The limit a choice asks for; "off" is the 3-hour limit every recorder enforces. */
+export function stopAfterMs(value: StopAfter): number {
+  return value === "off" ? VOICE_NOTE_MAX_DURATION_MS : Number(value) * 60_000;
 }
 
 /** What the engine will start the next recording with: the one truth the default mode is shown from. */
