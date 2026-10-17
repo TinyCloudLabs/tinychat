@@ -150,7 +150,8 @@ export async function listMeetingsRead(
   if (sources.length === 0) return { status: "ok", meetings: [] };
   const placeholders = sources.map(() => "?").join(", ");
   let hasCommitTable = false;
-  if (sources.includes(VOICE_NOTE_SOURCE)) {
+  const listsVoiceNotes = sources.includes(VOICE_NOTE_SOURCE);
+  if (listsVoiceNotes) {
     const schema = await tolerate(() => tcw.sql.db(CONNECTORS_SQL_DB_NAME).query(
       "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'voice_note_transcript'",
       [],
@@ -169,12 +170,11 @@ export async function listMeetingsRead(
   // `winner` takes `outcome` from its MIN(id) row (SQLite's bare-column rule).
   // `LIMIT -1 OFFSET 0` makes SQLite materialize `legacy` once instead of inlining it
   // into both readers, so each row's JSON is parsed once (the node's SQL parser rejects
-  // `AS MATERIALIZED`). The outer `+c.source` keeps the full-table read a sequential scan
-  // in rowid order whether or not the source index exists: every listed source is read,
-  // and the scan order decides the order of rows with equal started_at.
-  const res = await tolerate(() =>
-    tcw.sql.db(CONNECTORS_SQL_DB_NAME).query(
-      `WITH legacy AS (
+  // `AS MATERIALIZED`). A list without voice notes never reads the winner, so it skips
+  // the step. The outer `+c.source` keeps the full-table read a sequential scan in rowid
+  // order even if a source index is added later: every listed source is read, and the
+  // scan order decides the order of rows with equal started_at.
+  const legacyWinner = listsVoiceNotes ? `WITH legacy AS (
          SELECT source_id, id,
                 COALESCE(json_extract(metadata, '$.transcribed_at'), '') AS transcribed_at,
                 CASE WHEN json_extract(metadata, '$.transcription_outcome') IN ('transcribed','no_speech')
@@ -192,12 +192,15 @@ export async function listMeetingsRead(
          SELECT l.source_id, MIN(l.id) AS id, l.outcome FROM legacy l
          JOIN latest m ON m.source_id = l.source_id AND m.transcribed_at = l.transcribed_at
          GROUP BY l.source_id)
-       SELECT c.id, c.source, c.source_id, c.title, c.started_at, c.duration_secs,
+       ` : "";
+  const res = await tolerate(() =>
+    tcw.sql.db(CONNECTORS_SQL_DB_NAME).query(
+      `${legacyWinner}SELECT c.id, c.source, c.source_id, c.title, c.started_at, c.duration_secs,
               CASE WHEN c.source = 'exo-voice-note' THEN
                 CASE WHEN json_valid(COALESCE(c.metadata, '{}')) THEN json_object(
                   'transcription_outcome', json_extract(c.metadata, '$.transcription_outcome'),
                   'transcription_error_code', json_extract(c.metadata, '$.transcription_error_code'),
-                  'legacy_transcript_outcome', w.outcome,
+                  'legacy_transcript_outcome', ${listsVoiceNotes ? "w.outcome" : "NULL"},
                   'transcript_commit_outcome', ${commitOutcome},
                   'note_kv_key',           json_extract(c.metadata, '$.note_kv_key'),
                   'note_edited_at',        json_extract(c.metadata, '$.note_edited_at'),
@@ -208,7 +211,7 @@ export async function listMeetingsRead(
               END AS pipeline_metadata,
               CASE WHEN c.source = 'exo-voice-note' AND json_valid(COALESCE(c.metadata, '{}'))
                 THEN json_extract(c.metadata, '$.capture.duration_ms') END AS capture_duration_ms
-       FROM connector_meeting c LEFT JOIN winner w ON w.source_id = c.source_id
+       FROM connector_meeting c${listsVoiceNotes ? " LEFT JOIN winner w ON w.source_id = c.source_id" : ""}
        WHERE +c.source IN (${placeholders}) ORDER BY c.started_at DESC`,
       [...sources],
     ),

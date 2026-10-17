@@ -15,6 +15,16 @@ export const TRANSCRIBER_LIBRARY_RETRY_MS = 30_000;
 const SERVER_DELIVERY_GRACE_MS = 10 * 60_000;
 /** Web Lock and BroadcastChannel name prefix; the account DID completes it. */
 const SYNC_SCOPE = "tinychat:transcriber-library-sync";
+/**
+ * Longest a pass may hold the account-wide sync lock (TC-1274). Each transcriber API call
+ * is bounded at 20 s; a pass still running at 60 s is stuck behind this tab's space lane
+ * or has more to save than one pass should hold the lock for. The next pass continues:
+ * saves skip rows already in the space.
+ */
+export const TRANSCRIBER_PASS_DEADLINE_MS = 60_000;
+let passDeadlineMs: number | null = null;
+/** Tests only: shorten the pass deadline; null restores it. */
+export function setTranscriberPassDeadlineForTests(ms: number | null): void { passDeadlineMs = ms; }
 type SyncMessage =
   | { kind: "pass"; at: number }
   | { kind: "state"; id: string; state: TranscriberSaveState }
@@ -193,6 +203,7 @@ export function useTranscriberLibrarySync(input: {
   useEffect(() => {
     let cancelled = false;
     let running = false;
+    let lockWarned = false;
     // Newest finished pass by any of this account's tabs (TC-1274).
     let lastPassAt = 0;
     let relaying = false;
@@ -208,7 +219,6 @@ export function useTranscriberLibrarySync(input: {
     const accountCurrent = () => enabled && !cancelled && tcw.did === accountDid
       && sessionStore.getAddress() === accountAddress && !!sessionStore.getToken();
     const sessionCurrent = () => accountCurrent() && !sessionStore.isExpired();
-    const isCurrent = accountCurrent;
     const setState = (id: string, state: TranscriberSaveState) => {
       if (accountCurrent()) setSaved((old) => ({ ...old, [id]: state }));
     };
@@ -235,12 +245,12 @@ export function useTranscriberLibrarySync(input: {
     const unsubscribeChanges = captureEvents.on("library-changed", (detail) => {
       if (!relaying && detail?.source === TRANSCRIBER_MEETING_SOURCE) post({ kind: "library-changed", sourceId: detail.sourceId });
     });
-    const pass = async () => {
+    const pass = async (current: () => boolean) => {
       // Meeting storage is readable with the vault locked. Snapshot now so
       // another device's saves during the lock are not part of the baseline.
       if (!observedSaved.initialized && !unlocked()) {
-        const baseline = await saver.listSaved(tcw, readOnDrainLane(accountCurrent), accountCurrent);
-        if (baseline?.ok && accountCurrent()) {
+        const baseline = await saver.listSaved(tcw, readOnDrainLane(current), current);
+        if (baseline?.ok && current()) {
           for (const id of baseline.data?.saved ?? []) observedSaved.ids.add(id);
           observedSaved.initialized = true;
         }
@@ -248,21 +258,30 @@ export function useTranscriberLibrarySync(input: {
       if (sessionCurrent() && unlocked()) {
         // Each save takes the drain lane itself; the pass as a whole does not hold it.
         await syncTranscriberLibrary({
-          tcw, client: api, saver, isCurrent, observedSaved, refreshBackoff, knownVersions, onState: (id, state) => {
+          tcw, client: api, saver, isCurrent: current, observedSaved, refreshBackoff, knownVersions, onState: (id, state) => {
             setState(id, state);
             if (accountCurrent()) post({ kind: "state", id, state });
           },
           onPendingSnapshot: async (rows, savedIds, unknownIds, observedAt) => {
-            if (!accountCurrent()) return;
-            await enqueueDrainWork(() => accountCurrent()
-              ? writePendingReconcileSnapshot(tcw.kv, "transcriber", transcriberPendingRows(rows, savedIds, unknownIds), observedAt, accountCurrent)
+            if (!current()) return;
+            await enqueueDrainWork(() => current()
+              ? writePendingReconcileSnapshot(tcw.kv, "transcriber", transcriberPendingRows(rows, savedIds, unknownIds), observedAt, current)
               : Promise.resolve({ ok: true, changed: false }));
           },
         });
       }
     };
-    // A failed pass counts too: the next interval retries it either way.
-    const passed = () => {
+    // The pass holds the account-wide lock, and its space calls have no deadline of their
+    // own: a hung drain lane in this tab must not stop sync in every tab. At the deadline
+    // the pass is abandoned (its remaining steps see `current()` false and stop) and the
+    // lock is let go; the next tick, here or in another tab, starts a fresh pass.
+    const boundedPass = async () => {
+      const deadline = AbortSignal.timeout(passDeadlineMs ?? TRANSCRIBER_PASS_DEADLINE_MS);
+      const current = () => accountCurrent() && !deadline.aborted;
+      const expired = new Promise<void>((resolve) => deadline.addEventListener("abort", () => resolve(), { once: true }));
+      await Promise.race([pass(current).catch(() => { /* The next wake retries failures outside an individual recording. */ }), expired]);
+      // A failed pass counts too; one that ran out of time does not hold other tabs back.
+      if (deadline.aborted) return;
       lastPassAt = Date.now();
       post({ kind: "pass", at: lastPassAt });
     };
@@ -275,10 +294,15 @@ export function useTranscriberLibrarySync(input: {
       running = true;
       const locks = typeof navigator === "undefined" ? undefined : navigator.locks;
       const exclusive = locks?.request
-        ? locks.request(scope, { mode: "exclusive", ifAvailable: true }, async (lock) => { if (lock) await pass().finally(passed); })
-        : pass().finally(passed);
-      void exclusive.catch(() => { /* The next wake retries failures outside an individual recording. */ })
-        .finally(() => { running = false; });
+        ? locks.request(scope, { mode: "exclusive", ifAvailable: true }, async (lock) => { if (lock) await boundedPass(); })
+          .catch((error: unknown) => {
+            // The lock only saves load; a tab that cannot take it syncs on its own.
+            if (!lockWarned) console.warn("[transcriber-sync] Web Lock unavailable; this tab syncs on its own", error);
+            lockWarned = true;
+            return boundedPass();
+          })
+        : boundedPass();
+      void exclusive.finally(() => { running = false; });
     };
     const run = () => start(false);
     const tick = () => start(true);

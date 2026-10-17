@@ -1861,62 +1861,131 @@ test("a lane timeout is retrying before its final failed attempt", async () => {
   }
 });
 
-test("timed-out saves retry only after one shared probe proves the abandoned calls finished (TC-1274)", async () => {
-  const original = VoiceNotes;
+/**
+ * Two recorded notes whose saves stall until `unstick()`: either the audio row patch
+ * (connectors SQL) or the audio part puts (KV) never answer, the way the node keeps an
+ * aborted call queued. `SELECT 1` drain probes are counted and held once `holdProbes()`
+ * is called: earlier cases may have abandoned SQL calls too (the count is module-wide).
+ */
+async function stalledSaves(stall: "sql" | "kv") {
   const { tcw } = space();
   const fake = createFakeVoiceNotes();
   __setVoiceNotesForTests(fake.plugin, { available: true });
-  try {
-    await ensureVoiceNoteIdentity(tcw);
-    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1, transcriber: "off",
-      identifySpeakers: false, uploadAudio: true });
-    const notes = [await fake.plugin.start(), await fake.plugin.stop(), await fake.plugin.start(), await fake.plugin.stop()]
-      .filter((_, index) => index % 2 === 0);
-    pendingStore.setAccount(tcw.did);
-    await pendingStore.refresh();
-    // The node keeps an aborted call queued; model that as part puts that never answer until released.
-    let stuck = true;
-    const partPuts = new Map<string, number>();
-    const put = tcw.kv.put.bind(tcw.kv);
-    tcw.kv.put = ((key, value, options) => {
-      const note = notes.find((recording) => key.includes(recording.id) && key.includes("/p/"));
-      if (!note) return put(key, value, options);
-      partPuts.set(note.id, (partPuts.get(note.id) ?? 0) + 1);
-      return stuck ? new Promise((_resolve, reject) => options?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true }))
-        : put(key, value, options);
-    }) as typeof tcw.kv.put;
-    // Earlier cases may have abandoned calls too (the count is module-wide), so the probe is
-    // held, and counted, only once this case's own saves have timed out.
-    let holding = false;
-    let probes = 0;
-    let answerProbe: () => void = () => { throw new Error("no probe sent"); };
-    const db = tcw.sql.db.bind(tcw.sql);
-    tcw.sql.db = ((name: string) => {
-      const handle = db(name);
-      return { ...handle, query: async (statement: string, params?: never[]) => {
+  await ensureVoiceNoteIdentity(tcw);
+  await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1, transcriber: "off",
+    identifySpeakers: false, uploadAudio: true });
+  const notes = [await fake.plugin.start(), await fake.plugin.stop(), await fake.plugin.start(), await fake.plugin.stop()]
+    .filter((_, index) => index % 2 === 0);
+  pendingStore.setAccount(tcw.did);
+  await pendingStore.refresh();
+  let stuck = true;
+  const attempts = new Map<string, number>();
+  const hang = (signal?: AbortSignal) => new Promise<never>((_resolve, reject) =>
+    signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
+  const put = tcw.kv.put.bind(tcw.kv);
+  tcw.kv.put = ((key, value, options) => {
+    const note = stall === "kv" && notes.find((recording) => key.includes(recording.id) && key.includes("/p/"));
+    if (!note) return put(key, value, options);
+    attempts.set(note.id, (attempts.get(note.id) ?? 0) + 1);
+    return stuck ? hang(options?.signal) : put(key, value, options);
+  }) as typeof tcw.kv.put;
+  let holding = false;
+  const probes: Array<{ answer: () => void; signal?: AbortSignal }> = [];
+  const db = tcw.sql.db.bind(tcw.sql);
+  tcw.sql.db = ((name: string) => {
+    const handle = db(name);
+    return { ...handle,
+      query: async (statement: string, params?: never[], options?: { signal?: AbortSignal }) => {
         if (statement !== "SELECT 1" || !holding) return handle.query(statement, params);
-        probes++;
-        await new Promise<void>((resolve) => { answerProbe = resolve; });
+        // A held probe ignores its abort signal, like a transport that never settles.
+        await new Promise<void>((resolve) => { probes.push({ answer: resolve, signal: options?.signal }); });
         return handle.query(statement, params);
+      },
+      execute: (statement: string, params: never[] = [], options?: { signal?: AbortSignal }) => {
+        const note = stall === "sql" && String(params[0]).includes("audio_kv_key")
+          && notes.find((recording) => params.includes(`vn-${recording.id}` as never));
+        if (!note) return handle.execute(statement, params);
+        attempts.set(note.id, (attempts.get(note.id) ?? 0) + 1);
+        return stuck ? hang(options?.signal) : handle.execute(statement, params);
       } };
-    }) as typeof db;
+  }) as typeof db;
+  return { tcw, notes, attempts, probes, unstick: () => { stuck = false; }, holdProbes: () => { holding = true; },
+    retriedAll: (since: Map<string, number>) => notes.every((note) => (attempts.get(note.id) ?? 0) > (since.get(note.id) ?? 0)) };
+}
+
+test("timed-out SQL saves retry only after one shared probe proves the abandoned calls finished (TC-1274)", async () => {
+  const original = VoiceNotes;
+  try {
+    const s = await stalledSaves("sql");
     setVoiceNoteSaveDeadlineForTests(10);
-    const pipeline = createVoiceNotePipeline(tcw, { retryDelaysMs: [], saveRetryDelaysMs: [20] });
-    await pipeline.reconcileAll({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() });
-    holding = true;
-    const afterTimeouts = new Map(partPuts);
-    expect(notes.every((note) => (afterTimeouts.get(note.id) ?? 0) > 0)).toBe(true);
+    const pipeline = createVoiceNotePipeline(s.tcw, { retryDelaysMs: [], saveRetryDelaysMs: [20] });
+    await pipeline.reconcileAll({ did: s.tcw.did, spaceId: s.tcw.spaceId, generation: currentAccountGeneration() });
+    s.holdProbes();
+    const afterTimeouts = new Map(s.attempts);
+    expect(s.notes.every((note) => (afterTimeouts.get(note.id) ?? 0) > 0)).toBe(true);
     // Real time: the retry ladder and lane deadlines are module-internal setTimeouts, and the
     // waiting retries expose no signal but the probe they share (this file's convention).
     await Bun.sleep(80); // both 20 ms retry timers have fired
-    expect(probes).toBe(1);
-    expect(partPuts).toEqual(afterTimeouts);
-    stuck = false;
-    answerProbe();
-    for (let turn = 0; turn < 200 && notes.some((note) => partPuts.get(note.id) === afterTimeouts.get(note.id)); turn++)
-      await Bun.sleep(1);
-    expect(notes.every((note) => partPuts.get(note.id)! > afterTimeouts.get(note.id)!)).toBe(true);
-    expect(probes).toBe(1);
+    expect(s.probes).toHaveLength(1);
+    expect(s.attempts).toEqual(afterTimeouts);
+    s.unstick();
+    s.probes[0]!.answer();
+    for (let turn = 0; turn < 200 && !s.retriedAll(afterTimeouts); turn++) await Bun.sleep(1);
+    expect(s.retriedAll(afterTimeouts)).toBe(true);
+    expect(s.probes).toHaveLength(1);
+  } finally {
+    setVoiceNoteSaveDeadlineForTests(null);
+    __setVoiceNotesForTests(original, { available: null });
+  }
+});
+
+test("KV-only timeouts retry without an SQL drain probe: the node orders KV separately", async () => {
+  const original = VoiceNotes;
+  try {
+    const s = await stalledSaves("kv");
+    setVoiceNoteSaveDeadlineForTests(10);
+    const pipeline = createVoiceNotePipeline(s.tcw, { retryDelaysMs: [], saveRetryDelaysMs: [20] });
+    await pipeline.reconcileAll({ did: s.tcw.did, spaceId: s.tcw.spaceId, generation: currentAccountGeneration() });
+    s.holdProbes();
+    const afterTimeouts = new Map(s.attempts);
+    s.unstick();
+    for (let turn = 0; turn < 200 && !s.retriedAll(afterTimeouts); turn++) await Bun.sleep(1);
+    expect(s.retriedAll(afterTimeouts)).toBe(true);
+    expect(s.probes).toHaveLength(0);
+  } finally {
+    setVoiceNoteSaveDeadlineForTests(null);
+    __setVoiceNotesForTests(original, { available: null });
+  }
+});
+
+test("a drain probe that never answers times out into a fresh probe, and resume() never rejoins it", async () => {
+  const original = VoiceNotes;
+  try {
+    const s = await stalledSaves("sql");
+    setVoiceNoteSaveDeadlineForTests(10);
+    const ctx = () => ({ did: s.tcw.did, spaceId: s.tcw.spaceId, generation: currentAccountGeneration() });
+    const pipeline = createVoiceNotePipeline(s.tcw, { retryDelaysMs: [], saveRetryDelaysMs: [20],
+      drainProbeTimeoutMs: 15, drainProbeBackoffMs: 5 });
+    await pipeline.reconcileAll(ctx());
+    s.holdProbes();
+    const afterTimeouts = new Map(s.attempts);
+    // The first probe hangs; its timeout counts as "still busy", and after the backoff the
+    // waiting retries send a fresh probe instead of waiting on the hung one forever.
+    for (let turn = 0; turn < 300 && s.probes.length < 2; turn++) await Bun.sleep(1);
+    expect(s.probes.length).toBeGreaterThanOrEqual(2);
+    expect(s.probes[0]!.signal?.aborted).toBe(true);
+    expect(s.attempts).toEqual(afterTimeouts);
+    // An account transition drops the in-flight probe; after resume() a new pass probes afresh.
+    pipeline.cancelAll();
+    pipeline.resume();
+    const before = s.probes.length;
+    s.unstick();
+    const reconciling = pipeline.reconcileAll(ctx(), "manual"); // the user's Try again
+    for (let turn = 0; turn < 300 && s.probes.length === before; turn++) await Bun.sleep(1);
+    expect(s.probes.length).toBe(before + 1);
+    s.probes.at(-1)!.answer();
+    await reconciling;
+    expect(s.retriedAll(afterTimeouts)).toBe(true);
   } finally {
     setVoiceNoteSaveDeadlineForTests(null);
     __setVoiceNotesForTests(original, { available: null });

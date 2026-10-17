@@ -665,7 +665,7 @@ export async function saveVoiceNoteTranscript(
     if (!schema.ok) return schema;
     existing = await runOnSpaceLane((signal) => { checkpoint(); return tcw.sql.db(CONNECTORS_SQL_DB_NAME).query(
       `SELECT id FROM connector_meeting WHERE source = ? AND source_id = ? LIMIT 1`,
-      [VOICE_NOTE_SOURCE, sourceId], { signal }); }, { operation: "SQL query: voice note exists" });
+      [VOICE_NOTE_SOURCE, sourceId], { signal }); }, { operation: "SQL query: voice note exists", sql: true });
     checkpoint();
   } catch (caught) {
     if (caught instanceof StaleAccountContext) throw caught;

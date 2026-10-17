@@ -1,6 +1,6 @@
 // Mounted sync: triggers share one pass, and locked secrets do not erase the
 // baseline of meetings already in Library when the provider first appeared.
-import { afterAll, afterEach, beforeAll, expect, setSystemTime, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, expect, setSystemTime, spyOn, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { SessionStore } from "@tinyboilerplate/client";
@@ -13,7 +13,7 @@ import { PENDING_RECONCILE_SNAPSHOT_KEY } from "@/lib/connectors/pendingReconcil
 import type { TranscriberClient } from "@/lib/transcriberApi";
 import { TRANSCRIBER_MEETING_SOURCE } from "@/lib/transcriberSave";
 import { harnessSessionStore } from "@/harness/stubs";
-import { syncTranscriberLibrary, useTranscriberLibrarySync, type TranscriberLibrarySaver } from "./useTranscriberLibrarySync";
+import { setTranscriberPassDeadlineForTests, syncTranscriberLibrary, useTranscriberLibrarySync, type TranscriberLibrarySaver } from "./useTranscriberLibrarySync";
 
 const globals = {
   window: (globalThis as { window?: unknown }).window,
@@ -527,4 +527,65 @@ test("an offline tab starts no pass until it is back online", async () => {
     await act(async () => { fire("online"); });
     expect(lists).toBe(1);
   } finally { Reflect.deleteProperty(navigator, "onLine"); }
+});
+
+test("a pass stuck past its deadline lets go of the sync lock, and another tab syncs (TC-1274)", async () => {
+  const f = setup();
+  // Tab A's space reads never answer, like a hung background lane.
+  const stuckSaver: TranscriberLibrarySaver = { ...f.saver, listSaved: () => new Promise(() => {}) };
+  let tabBListed: () => void = () => {};
+  const tabBList = new Promise<void>((resolve) => { tabBListed = resolve; });
+  const clientB = { ...f.client, list: async () => { tabBListed(); return { status: "ok", value: { meetings: f.rows } }; } } as unknown as TranscriberClient;
+  let released: () => void = () => {};
+  const lockReleased = new Promise<void>((resolve) => { released = resolve; });
+  const held = new Set<string>();
+  const requests: string[] = [];
+  Object.defineProperty(navigator, "locks", { configurable: true, value: {
+    request: async (name: string, _options: unknown, callback: (lock: unknown) => Promise<unknown>) => {
+      requests.push(name);
+      if (held.has(name)) return callback(null);
+      held.add(name);
+      try { return await callback({ name }); } finally { held.delete(name); released(); }
+    },
+  } });
+  const ticks: Array<() => void> = [];
+  const win = window as unknown as { setInterval: (fn: () => void) => number };
+  const plainSetInterval = win.setInterval;
+  win.setInterval = (fn) => { ticks.push(fn); return ticks.length; };
+  setTranscriberPassDeadlineForTests(20);
+  const tabs = [createRoot(container), createRoot(container)];
+  try {
+    await act(async () => tabs[0]!.render(<Probe {...f} saver={stuckSaver} />));
+    await act(async () => tabs[1]!.render(<Probe {...f} client={clientB} />));
+    expect(requests).toHaveLength(2); // tab B asked while tab A held the lock, and skipped
+    expect(held.size).toBe(1);
+    await lockReleased; // tab A's 20 ms deadline
+    await act(async () => { ticks[1]!(); });
+    await tabBList;
+  } finally {
+    for (const tabRoot of tabs) await act(async () => tabRoot.unmount());
+    win.setInterval = plainSetInterval;
+    Reflect.deleteProperty(navigator, "locks");
+    setTranscriberPassDeadlineForTests(null);
+  }
+});
+
+test("a tab whose Web Lock request rejects still syncs, and warns once", async () => {
+  const f = setup();
+  let lists = 0;
+  f.client.list = async () => { lists++; return { status: "ok", value: { meetings: f.rows } } as never; };
+  Object.defineProperty(navigator, "locks", { configurable: true, value: {
+    request: async () => { throw new Error("SecurityError: lock manager unavailable"); },
+  } });
+  const warn = spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    await mount(f);
+    expect(lists).toBe(1);
+    await act(async () => { fire("focus"); });
+    expect(lists).toBe(2);
+    expect(warn.mock.calls.filter(([message]) => String(message).includes("Web Lock unavailable"))).toHaveLength(1);
+  } finally {
+    warn.mockRestore();
+    Reflect.deleteProperty(navigator, "locks");
+  }
 });

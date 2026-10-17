@@ -24,7 +24,6 @@ import {
 } from "./meetingExplorer.js";
 import { notePipeline } from "../voiceNotes/notePipeline";
 import { TRANSCRIPT_TABLE_DDL, VOICE_NOTE_INDEX_DDL } from "../voiceNotes/voiceNoteRows";
-import { CONNECTOR_MEETING_SOURCE_INDEX_DDL } from "./connectorStore";
 
 type SqlResult =
   | { ok: true; data: { rows: unknown[][] } }
@@ -501,11 +500,12 @@ function seedLegacyWinnerSpace(sqlite: Database, seed: number): void {
 }
 
 describe("listMeetingsRead legacy-winner rewrite (TC-1274)", () => {
-  // The baseline runs on the schema spaces have today; the rewrite runs after the
-  // optional source index is added, as ensureSchema now does.
+  // The baseline runs on the schema spaces have today. One variant adds a (source, source_id)
+  // index afterwards, as a later provisioning step might: the Library order must not change.
   for (const variant of [
     { name: "app schema", addedIndexes: [], noCommitTable: false },
-    { name: "after the connector source index is added", addedIndexes: [CONNECTOR_MEETING_SOURCE_INDEX_DDL], noCommitTable: false },
+    { name: "after a source index is added",
+      addedIndexes: ["CREATE INDEX idx_connector_meeting_source ON connector_meeting(source, source_id)"], noCommitTable: false },
     { name: "no commit table", addedIndexes: [], noCommitTable: true },
   ]) {
     it(`returns the baseline rows in the baseline order (${variant.name})`, async () => {
@@ -516,11 +516,13 @@ describe("listMeetingsRead legacy-winner rewrite (TC-1274)", () => {
         sqlite.exec(VOICE_NOTE_INDEX_DDL);
         seedLegacyWinnerSpace(sqlite, seed);
         if (variant.noCommitTable) sqlite.exec("DROP TABLE voice_note_transcript");
-        const baseline = sqlite.query(BASELINE_LIST_SQL
+        // Every source, Google Meet alone (gmeet diagnostics), and every source but voice notes.
+        const lists = [EXPLORER_MEETING_SOURCES, ["google-meet"], EXPLORER_MEETING_SOURCES.filter((source) => source !== "exo-voice-note")];
+        const baselines = lists.map((sources) => sqlite.query(BASELINE_LIST_SQL
           .replace("__COMMIT_OUTCOME__", variant.noCommitTable ? "NULL"
             : "(SELECT t.outcome FROM voice_note_transcript t WHERE t.source_id = connector_meeting.source_id LIMIT 1)")
-          .replace("__PLACEHOLDERS__", EXPLORER_MEETING_SOURCES.map(() => "?").join(", ")))
-          .values(...(EXPLORER_MEETING_SOURCES as never[]));
+          .replace("__PLACEHOLDERS__", sources.map(() => "?").join(", ")))
+          .values(...(sources as never[])));
         for (const ddl of variant.addedIndexes) sqlite.exec(ddl);
         let listed: unknown[][] | null = null;
         const tcw = { sql: { db: () => ({ async query(sql: string, params: unknown[] = []) {
@@ -528,11 +530,15 @@ describe("listMeetingsRead legacy-winner rewrite (TC-1274)", () => {
           if (!sql.includes("sqlite_schema")) listed = rows;
           return { ok: true as const, data: { rows } };
         } }) } } as unknown as TinyCloudWeb;
-        expect((await listMeetingsRead(tcw)).status).toBe("ok");
-        expect(baseline.length).toBeGreaterThan(300);
-        expect(baseline.some((row) => String(row[6]).includes("\"legacy_transcript_outcome\":\"no_speech\""))).toBe(true);
-        expect(baseline.some((row) => String(row[6]).includes("\"legacy_transcript_outcome\":\"transcribed\""))).toBe(true);
-        expect(listed).toEqual(baseline);
+        const [baseline] = baselines;
+        expect(baseline!.length).toBeGreaterThan(300);
+        expect(baseline!.some((row) => String(row[6]).includes("\"legacy_transcript_outcome\":\"no_speech\""))).toBe(true);
+        expect(baseline!.some((row) => String(row[6]).includes("\"legacy_transcript_outcome\":\"transcribed\""))).toBe(true);
+        expect(baselines[1]!.length).toBeGreaterThan(0);
+        for (const [index, sources] of lists.entries()) {
+          expect((await listMeetingsRead(tcw, sources)).status).toBe("ok");
+          expect(listed).toEqual(baselines[index]!);
+        }
         sqlite.close();
       }
     });

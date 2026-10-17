@@ -229,10 +229,7 @@ match that string. Reuse the `APP_ID` const. Schema bootstrap memoized per space
 `threadStore.ts` does with `schemaReadySpaces`.
 
 **TinyCloud SQLite authorizer restrictions (hard constraints, from listen):** no
-`UNIQUE` constraints, no `REFERENCES`, no window functions (the node's function allowlist
-omits them). Dedup is app-level. `CREATE INDEX` is allowed under the session's `schema`
-grant (node v1.4.3 and later); `ensureSchema` adds `idx_connector_meeting_source` best effort
-(TC-1274). Also:
+`CREATE INDEX`, no `UNIQUE` constraints, no `REFERENCES`. Dedup is app-level. Also:
 `CREATE TABLE IF NOT EXISTS` can return "not authorized" when the table already exists —
 on that error, probe with `SELECT 1 FROM <table> LIMIT 1` and treat success as
 "schema ready" (copy listen's `ensureSchema` fallback).

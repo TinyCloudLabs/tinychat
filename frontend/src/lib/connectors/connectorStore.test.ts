@@ -5,7 +5,6 @@ import type { FirefliesTranscript } from "./firefliesClient";
 import type { GmeetConferenceRecord, GmeetParticipant, GmeetResult, GmeetTranscript, GmeetTranscriptEntry } from "./gmeetClient";
 import { _resetGmeetSyncSingleFlightForTests, isGmeetSyncInFlight, syncGoogleMeet, type GmeetSyncClient, type GmeetSyncProgress, type GmeetSyncResult, type GmeetSyncStore } from "./gmeetSync";
 import {
-  CONNECTOR_MEETING_SOURCE_INDEX,
   CONNECTORS_KV_PREFIX,
   CONNECTORS_SQL_DB_NAME,
   _resetConnectorSchemaMemoForTests,
@@ -104,10 +103,6 @@ class FakeSqlDb {
   states = new Map<string, StateRow>();
   createdTables = new Set<string>();
   createAttempts = 0;
-  createdIndexes = new Set<string>();
-  indexAttempts = 0;
-  /** When set, the NEXT CREATE INDEX call fails with the given error. Consumed on use. */
-  nextIndexError: SqlError | null = null;
   tracker = new OpTracker();
   /** When set, the NEXT CREATE TABLE call fails with the given error. Consumed on use. */
   nextCreateError: SqlError | null = null;
@@ -135,7 +130,7 @@ class FakeSqlDb {
       return { ok: false, error: err };
     }
     if (/FROM sqlite_master/i.test(s)) {
-      return { ok: true, data: { rows: params.filter((name) => this.createdTables.has(String(name)) || this.createdIndexes.has(String(name))).map((name) => [name]) } };
+      return { ok: true, data: { rows: params.filter((table) => this.createdTables.has(String(table))).map((table) => [table]) } };
     }
     // Targeted upsert lookup: full column set for (source, source_id).
     if (/^SELECT\s+id,\s*created_at[\s\S]*FROM\s+connector_meeting/i.test(s)) {
@@ -244,17 +239,6 @@ class FakeSqlDb {
 
   private applyOne(sql: string, params: unknown[] = []): SqlResult | null {
     const s = sql.trim();
-    const indexMatch = s.match(/^CREATE\s+INDEX\s+IF\s+NOT\s+EXISTS\s+(\w+)/i);
-    if (indexMatch) {
-      this.indexAttempts++;
-      if (this.nextIndexError) {
-        const err = this.nextIndexError;
-        this.nextIndexError = null;
-        return { ok: false, error: err };
-      }
-      this.createdIndexes.add(indexMatch[1]);
-      return { ok: true, data: { rows: [] } };
-    }
     const createMatch = s.match(/^CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+(\w+)/i);
     if (createMatch) {
       this.createAttempts++;
@@ -423,7 +407,7 @@ class FakeSqlDb {
 
   async execute(sql: string, params: unknown[] = []): Promise<SqlResult> {
     return this.tracker.run("sql.execute", () => {
-      if (this.nextExecuteError && !/^CREATE\s+(TABLE|INDEX)/i.test(sql.trim())) {
+      if (this.nextExecuteError && !/^CREATE\s+TABLE/i.test(sql.trim())) {
         const err = this.nextExecuteError;
         this.nextExecuteError = null;
         return { ok: false, error: err } as SqlResult;
@@ -589,28 +573,11 @@ describe("connectorStore.ensureSchema", () => {
     const f = makeFake();
     f.sql.createdTables.add("connector_state");
     f.sql.createdTables.add("connector_meeting");
-    f.sql.createdIndexes.add(CONNECTOR_MEETING_SOURCE_INDEX);
     f.sql.nextCreateError = { code: "STORAGE_QUOTA_EXCEEDED", message: "Storage quota exceeded" };
     const res = await ensureSchema(f.tcw);
     expect(res.ok).toBe(true);
     expect(f.sql.createAttempts).toBe(0);
-    expect(f.sql.indexAttempts).toBe(0);
     expect(f.sql.nextCreateError?.code).toBe("STORAGE_QUOTA_EXCEEDED");
-  });
-
-  test("adds the source index to an existing schema once, and a refused index leaves the schema usable", async () => {
-    const f = makeFake();
-    f.sql.createdTables.add("connector_state");
-    f.sql.createdTables.add("connector_meeting");
-    f.sql.nextIndexError = { code: "STORAGE_QUOTA_EXCEEDED", message: "Storage quota exceeded" };
-    expect((await ensureSchema(f.tcw)).ok).toBe(true);
-    expect(f.sql.createAttempts).toBe(0);
-    expect(f.sql.createdIndexes.size).toBe(0);
-    expect((await upsertMeeting(f.tcw, meetingFixture(), [S("a")])).ok).toBe(true);
-    expect(f.sql.createdIndexes).toEqual(new Set([CONNECTOR_MEETING_SOURCE_INDEX]));
-    const attempts = f.sql.indexAttempts;
-    expect((await ensureSchema(f.tcw)).ok).toBe(true);
-    expect(f.sql.indexAttempts).toBe(attempts);
   });
 
   test("schema failure that is NOT 'not authorized' surfaces as { ok: false, error }", async () => {

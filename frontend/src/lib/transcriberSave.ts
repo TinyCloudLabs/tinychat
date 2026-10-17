@@ -90,7 +90,7 @@ export async function listSavedTranscriberVersions(
   const versions = new Map<string, number>();
   try {
     const rowIds = await Promise.all(sourceIds.map((sourceId) => connectorMeetingId(TRANSCRIBER_MEETING_SOURCE, sourceId)));
-    // `+source` only filters: without it SQLite prefers the source index over the primary key.
+    // `+source` only filters, so the primary key drives the lookup even if a source index is added later.
     for (const [match, keys] of [["+source = ? AND id", rowIds], ["source = ? AND source_id", null]] as const) {
       const wanted = keys ?? sourceIds.filter((sourceId) => !versions.has(sourceId));
       for (let from = 0; from < wanted.length; from += SQL_CHUNK) {

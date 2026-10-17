@@ -4,11 +4,11 @@ import { storageScopeFor, trackStorageWrites } from "@/lib/storageStatus";
 import { deviceName } from "@/lib/platform";
 import type { FirefliesSentence } from "../connectors/firefliesClient";
 import { CONNECTORS_KV_PREFIX, CONNECTORS_SQL_DB_NAME, ensureSchema, transcriptKvKey } from "../connectors/connectorStore";
-import { runOnSpaceLane, SpaceLaneQueueWaitTimeout, spaceLaneAbandonedCalls, spaceLaneSnapshot, subscribeSpaceLane } from "../spaceWriteLane";
+import { runOnSpaceLane, SpaceLaneQueueWaitTimeout, spaceLaneAbandonedSqlCalls, spaceLaneSnapshot, subscribeSpaceLane } from "../spaceWriteLane";
 import type { VoiceNoteRecording } from "./nativeVoiceNotes";
 import { hasTranscriptCommitTable, LEGACY_TRANSCRIPT_KEYS, legacyTranscriptWinner, readTranscriptCommit, SQL_CHUNK, type LegacyTranscriptRow, type TranscriptCommit } from "./voiceNoteCommits";
 
-export { SpaceLaneQueueWaitTimeout, spaceLaneAbandonedCalls, spaceLaneSnapshot, subscribeSpaceLane };
+export { SpaceLaneQueueWaitTimeout, spaceLaneAbandonedSqlCalls, spaceLaneSnapshot, subscribeSpaceLane };
 
 export const TRANSCRIPT_TABLE_DDL = `CREATE TABLE IF NOT EXISTS voice_note_transcript (
   source_id TEXT PRIMARY KEY, rev INTEGER NOT NULL, hash TEXT NOT NULL, body_key TEXT NOT NULL,
@@ -29,7 +29,7 @@ function errorOf(result: { ok: boolean; error?: { code?: string; message?: strin
 }
 async function query(tcw: TinyCloudWeb, sql: string, params: unknown[] = [], checkpoint: () => void = () => undefined): Promise<unknown[][]> {
   const result = await runOnSpaceLane((signal) => { checkpoint(); return db(tcw).query(sql, params as never[], { signal }); },
-    { operation: `SQL query: ${sql.slice(0, 80)}` });
+    { operation: `SQL query: ${sql.slice(0, 80)}`, sql: true });
   if (!result.ok) throw errorOf(result);
   return result.data.rows as unknown[][];
 }
@@ -37,7 +37,7 @@ async function execute(tcw: TinyCloudWeb, sql: string, params: unknown[] = [], c
   reportSuccessfulWrites = true): Promise<number> {
   const result = await runOnSpaceLane((signal) => {
     checkpoint(); return db(tcw, reportSuccessfulWrites).execute(sql, params as never[], { signal });
-  }, { operation: `SQL execute: ${sql.slice(0, 80)}` });
+  }, { operation: `SQL execute: ${sql.slice(0, 80)}`, sql: true });
   if (!result.ok) throw errorOf(result);
   return Number((result.data as { changes?: number }).changes ?? 0);
 }
@@ -46,10 +46,10 @@ async function readTranscriptCommitOnLane(tcw: TinyCloudWeb, sourceId: string,
   // The helper may issue a schema check and then a row query. Bound and serialize
   // each actual SQL request on its own lane turn rather than timing the pair as one job.
   const hasTable = await runOnSpaceLane((signal) => hasTranscriptCommitTable(tcw, checkpoint, signal),
-    { operation: "SQL check transcript commit table" });
+    { operation: "SQL check transcript commit table", sql: true });
   if (!hasTable) return null;
   return runOnSpaceLane((signal) => readTranscriptCommit(tcw, sourceId, checkpoint, signal),
-    { operation: "SQL read transcript commit" });
+    { operation: "SQL read transcript commit", sql: true });
 }
 function normalizedStoredDDL(ddl: string): string {
   return ddl.replace(/\bIF NOT EXISTS\s+/i, "").replace(/\s+/g, " ").trim();

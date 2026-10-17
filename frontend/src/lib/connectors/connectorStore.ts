@@ -10,12 +10,10 @@
 // `connectors/...` key fails AUTH_UNAUTHORIZED, exactly like db("connectors")
 // does (see the DB HANDLE CONVENTION note in threadStore.ts:16-22).
 //
-// TinyCloud SQLite authorizer restrictions: no UNIQUE constraints, no
-// REFERENCES, no window functions. Dedup is app-level (SELECT before INSERT).
-// CREATE INDEX is allowed under the session's `schema` grant (node
-// tinycloud-core/src/sql/authorizer.rs CreateIndex/Reindex arm, since v1.4.3).
-// Schema existence is checked through sqlite_master before any DDL, so
-// existing tables remain readable when storage is full.
+// TinyCloud SQLite authorizer restrictions (from listen): no CREATE INDEX,
+// no UNIQUE constraints, no REFERENCES. Dedup is app-level (SELECT before
+// INSERT). Schema existence is checked through sqlite_master before any DDL,
+// so existing tables remain readable when storage is full.
 //
 // Sequential writes only — TinyCloud drops concurrent responses.
 //
@@ -354,15 +352,6 @@ function cellNum(row: unknown[], idx: number, fallback: number | null): number |
   return fallback;
 }
 
-/**
- * Serves every `source = ?` / `source IN (…)` read, with or without `source_id`
- * (TC-1274): Library legacy-winner set, transcriber and voice-note ID lists,
- * archive sweeps. A performance aid only, so ensureSchema creates it best effort.
- */
-export const CONNECTOR_MEETING_SOURCE_INDEX = "idx_connector_meeting_source";
-export const CONNECTOR_MEETING_SOURCE_INDEX_DDL =
-  `CREATE INDEX IF NOT EXISTS ${CONNECTOR_MEETING_SOURCE_INDEX} ON connector_meeting(source, source_id)`;
-
 // ── Schema bootstrap (memoized per space, keyed by tcw.did) ─────────────
 
 const schemaReadySpaces = new Set<string>();
@@ -406,9 +395,8 @@ export async function ensureSchema(tcw: TinyCloudWeb, checkpoint: () => void = (
     const tables = CONNECTOR_SCHEMA.map(({ table }) => table);
     checkCallers();
     const existingResult = await db.query(
-      `SELECT name FROM sqlite_master WHERE (type = 'table' AND name IN (${tables.map(() => "?").join(", ")}))
-        OR (type = 'index' AND name = ?)`,
-      [...tables, CONNECTOR_MEETING_SOURCE_INDEX],
+      `SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (${tables.map(() => "?").join(", ")})`,
+      tables,
     );
     if (!existingResult.ok) return fail(existingResult.error, "ensureSchema probe", storageScopeFor(tcw));
     const existingRows = existingResult.data.rows as unknown as unknown[][];
@@ -418,14 +406,6 @@ export async function ensureSchema(tcw: TinyCloudWeb, checkpoint: () => void = (
       checkCallers();
       const created = await db.execute(sql);
       if (!created.ok) return fail(created.error, `ensureSchema(${table})`, storageScopeFor(tcw));
-    }
-    if (!existing.has(CONNECTOR_MEETING_SOURCE_INDEX)) {
-      checkCallers();
-      // Untracked: a session without the schema grant, or a full space, keeps
-      // working unindexed and must not surface a storage error for it.
-      const indexed = await tcw.sql.db(CONNECTORS_SQL_DB_NAME).execute(CONNECTOR_MEETING_SOURCE_INDEX_DDL)
-        .catch((error: unknown) => ({ ok: false as const, error }));
-      if (!indexed.ok) console.warn("[connectors] source index not created; reads stay unindexed", indexed.error);
     }
     checkCallers();
     if (memoKey) schemaReadySpaces.add(memoKey);
