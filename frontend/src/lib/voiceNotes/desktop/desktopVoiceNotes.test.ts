@@ -2028,6 +2028,7 @@ describe("desktop recorder adapter", () => {
     } finally {
       detach();
       engine.dispose();
+      __setVoiceNotesForTests(originalVoiceNotes, { available: null });
     }
   });
 
