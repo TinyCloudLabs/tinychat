@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.9.0-beta.4
+
+### Minor Changes
+
+- 516ae0e: Settings → Voice notes has a "Stop recording after" choice (15 min to 2 h, default 1 h, or Off for the 3-hour limit); the recorder shows when it will stop, and the Mac app and browser can notify before and at an automatic stop.
+
 ## 0.8.2-beta.3
 
 ### Patch Changes
