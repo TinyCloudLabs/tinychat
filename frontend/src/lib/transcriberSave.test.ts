@@ -956,6 +956,94 @@ test("a row saved under a legacy id still reports its publication number", async
   } finally { f.sql.close(); }
 });
 
+/** A library with `count` saved meetings; `gets` records each transcript-body KV read. */
+async function confirmedFixture(count: number) {
+  const f = libraryFixture(); f.allowWrites();
+  const rows = Array.from({ length: count }, (_, n) => ({ ...meeting, id: `m-${n}` }));
+  for (const row of rows) expect((await saveTranscriberMeeting(f.tcw, row, transcript)).ok).toBe(true);
+  const gets: string[] = [];
+  const get = f.tcw.kv.get.bind(f.tcw.kv);
+  f.tcw.kv.get = ((key: string) => {
+    if (key.includes("/transcript/")) gets.push(key.split("/").at(-1)!);
+    return get(key);
+  }) as typeof f.tcw.kv.get;
+  return { ...f, rows, gets, client: refreshClient(rows).client };
+}
+
+test("a transcript body that could not be read never enters the confirmed set (TC-1274)", async () => {
+  const f = await confirmedFixture(3);
+  try {
+    f.bodies.delete(transcriptKvKey(TRANSCRIBER_MEETING_SOURCE, "m-1"));
+    const confirmedSaved = new Set<string>();
+    const announced: string[] = [];
+    // m-1 is not listed upstream, so no save repairs it within the test.
+    const client = refreshClient([f.rows[0]!, f.rows[2]!]).client;
+    const syncOnce = () => syncTranscriberLibrary({ tcw: f.tcw, client, confirmedSaved, deliveryActive: () => true,
+      onConfirmed: (ids) => announced.push(...ids) });
+    await syncOnce();
+    expect([...confirmedSaved].sort()).toEqual(["m-0", "m-2"]);
+    expect(announced.sort()).toEqual(["m-0", "m-2"]);
+    // The next pass reads only the body it could not confirm.
+    f.gets.length = 0;
+    await syncOnce();
+    expect(f.gets).toEqual(["m-1"]);
+    expect(confirmedSaved.has("m-1")).toBe(false);
+  } finally { f.sql.close(); }
+});
+
+test("a scan cut short still hands its confirmations on, so the next tab resumes instead of restarting", async () => {
+  const f = await confirmedFixture(120);
+  try {
+    // Tab A closes during its 60th body read: what other tabs heard is only what it had
+    // already announced by then (a closed tab runs no end-of-scan code).
+    const announced: string[] = [];
+    let heard: string[] | null = null;
+    await syncTranscriberLibrary({ tcw: f.tcw, client: f.client, confirmedSaved: new Set(),
+      isCurrent: () => {
+        if (f.gets.length >= 60) heard ??= [...announced];
+        return f.gets.length < 60;
+      },
+      onConfirmed: (ids) => announced.push(...ids) });
+    expect(f.gets).toHaveLength(60);
+    expect(heard!.length).toBeGreaterThanOrEqual(50);
+    // Tab B starts from what it heard and reads only the rest.
+    f.gets.length = 0;
+    const confirmedSaved = new Set(heard!);
+    await syncTranscriberLibrary({ tcw: f.tcw, client: f.client, confirmedSaved, deliveryActive: () => true });
+    expect(f.gets).toHaveLength(120 - heard!.length);
+    expect(f.gets.some((id) => heard!.includes(id))).toBe(false);
+    expect(confirmedSaved.size).toBe(120);
+  } finally { f.sql.close(); }
+});
+
+test("a confirmed id whose row disappears is forgotten, so a row written again under it is checked", async () => {
+  const f = await confirmedFixture(2);
+  try {
+    const confirmedSaved = new Set<string>();
+    const forgotten: string[] = [];
+    // m-1 is not listed upstream, so no save re-imports or repairs it within the test.
+    const client = refreshClient([f.rows[0]!]).client;
+    const syncOnce = () => syncTranscriberLibrary({ tcw: f.tcw, client, confirmedSaved, deliveryActive: () => true,
+      onUnconfirmed: (ids) => forgotten.push(...ids) });
+    await syncOnce();
+    expect(confirmedSaved.has("m-1")).toBe(true);
+    // A purge removes the row and its body.
+    const row = f.sql.query("SELECT * FROM connector_meeting WHERE source_id = 'm-1'").get() as Record<string, unknown>;
+    f.sql.query("DELETE FROM connector_meeting WHERE source_id = 'm-1'").run();
+    f.bodies.delete(transcriptKvKey(TRANSCRIBER_MEETING_SOURCE, "m-1"));
+    await syncOnce();
+    expect(forgotten).toEqual(["m-1"]);
+    expect(confirmedSaved.has("m-1")).toBe(false);
+    // Another writer puts the row back but its body write failed: this pass must notice.
+    f.sql.query(`INSERT INTO connector_meeting (${Object.keys(row).join(", ")}) VALUES (${Object.keys(row).map(() => "?").join(", ")})`)
+      .run(...(Object.values(row) as never[]));
+    f.gets.length = 0;
+    await syncOnce();
+    expect(f.gets).toEqual(["m-1"]);
+    expect(confirmedSaved.has("m-1")).toBe(false);
+  } finally { f.sql.close(); }
+});
+
 test("a failed row commit resumes next pass without replacing the original archive or duplicating events", async () => {
   const f = await savedFixture();
   const key = transcriptKvKey(TRANSCRIBER_MEETING_SOURCE, meeting.id);

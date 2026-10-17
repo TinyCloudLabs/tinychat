@@ -15,6 +15,8 @@ export const TRANSCRIBER_LIBRARY_RETRY_MS = 30_000;
 const SERVER_DELIVERY_GRACE_MS = 10 * 60_000;
 /** Web Lock and BroadcastChannel name prefix; the account DID completes it. */
 const SYNC_SCOPE = "tinychat:transcriber-library-sync";
+/** Confirmed ids per cross-tab message during a scan: frequent enough to survive a tab closing mid-scan. */
+const CONFIRM_BATCH = 50;
 /**
  * Longest a pass may hold the account-wide sync lock (TC-1274). Each transcriber API call
  * is bounded at 20 s; a pass still running at 60 s is stuck behind this tab's space lane
@@ -29,6 +31,7 @@ type SyncMessage =
   | { kind: "pass"; at: number }
   | { kind: "state"; id: string; state: TranscriberSaveState }
   | { kind: "confirmed"; ids: string[] }
+  | { kind: "unconfirmed"; ids: string[] }
   | { kind: "library-changed"; sourceId: string };
 const SavedContext = createContext<Readonly<Record<string, TranscriberSaveState>>>({});
 export const useTranscriberSavedState = () => useContext(SavedContext);
@@ -39,6 +42,7 @@ export interface TranscriberLibrarySaver {
     scheduleRead?: <T>(read: () => Promise<T>) => Promise<T | null>,
     isCurrent?: () => boolean,
     confirmed?: ReadonlySet<string>,
+    onConfirmed?: (id: string) => void,
 ): Promise<{ ok: boolean; data?: { saved: string[]; unknown: string[] } }>;
   listVersions?: typeof listSavedTranscriberVersions;
   refresh?: typeof refreshTranscriberMeeting;
@@ -78,8 +82,10 @@ refreshBackoff?: TranscriberRefreshBackoff;
    * Only ids outside it get a KV check, so a steady-state pass costs O(new), not O(saved).
    */
   confirmedSaved?: Set<string>;
-  /** Ids newly added to `confirmedSaved`, for other tabs. */
+  /** Ids newly added to `confirmedSaved`, for other tabs; sent in batches while the scan runs. */
   onConfirmed?: (ids: string[]) => void;
+  /** Ids dropped from `confirmedSaved` because their row is gone, for other tabs. */
+  onUnconfirmed?: (ids: string[]) => void;
   /** Each completed step (API call, space read or write): the pass is making progress. */
   onProgress?: () => void;
 onPendingSnapshot?: (
@@ -92,12 +98,17 @@ onPendingSnapshot?: (
 }): Promise<void> {
   const { tcw, client, saver = defaultSaver, isCurrent = () => true, onState = () => {}, observedSaved,
     deliveryActive = serverDeliveryActive, now = Date.now, refreshBackoff = new Map(), knownVersions = new Map(),
-    confirmedSaved = new Set<string>(), onConfirmed = () => {}, onProgress = () => {} } = input;
+    confirmedSaved = new Set<string>(), onConfirmed = () => {}, onUnconfirmed = () => {}, onProgress = () => {} } = input;
   const step = <T,>(work: Promise<T>): Promise<T> => work.finally(onProgress);
-  const confirm = (ids: Iterable<string>) => {
-    const fresh = [...ids].filter((id) => !confirmedSaved.has(id));
-    for (const id of fresh) confirmedSaved.add(id);
-    if (fresh.length > 0) onConfirmed(fresh);
+  // Confirmations go out in batches as the scan runs, so a tab that takes over after this
+  // one closes mid-scan starts from the ids already confirmed instead of from zero.
+  const unsent: string[] = [];
+  const flushConfirmed = () => { if (unsent.length > 0) onConfirmed(unsent.splice(0)); };
+  const confirm = (id: string) => {
+    if (confirmedSaved.has(id)) return;
+    confirmedSaved.add(id);
+    unsent.push(id);
+    if (unsent.length >= CONFIRM_BATCH) flushConfirmed();
   };
   const failedRefresh = (id: string) => {
     const failures = (refreshBackoff.get(id)?.failures ?? 0) + 1;
@@ -111,10 +122,18 @@ onPendingSnapshot?: (
   if (listed.status !== "ok" || !isCurrent()) return;
   // Each SQL/KV completeness read takes its own turn. A library with many
   // saved recordings therefore yields the lane between keys for voice notes.
-  const complete = await saver.listSaved(tcw, readOnDrainLane(isCurrent, onProgress), isCurrent, confirmedSaved);
+  const complete = await saver.listSaved(tcw, readOnDrainLane(isCurrent, onProgress), isCurrent, confirmedSaved, confirm);
+  flushConfirmed();
   if (!complete?.ok || !isCurrent()) return;
   const saved = new Set(complete.data?.saved ?? []);
-  confirm(saved);
+  for (const id of saved) confirm(id);
+  flushConfirmed();
+  // The scan covered every row, so a confirmed id with no row any more was deleted or
+  // purged: forget it, so a row written again under that id gets its body checked.
+  const listedIds = new Set([...saved, ...(complete.data?.unknown ?? [])]);
+  const gone = [...confirmedSaved].filter((id) => !listedIds.has(id));
+  for (const id of gone) confirmedSaved.delete(id);
+  if (gone.length > 0) onUnconfirmed(gone);
   const newer = listed.value.meetings.filter((row) => !("unavailable" in row) && row.status === "completed"
     && saved.has(row.id) && Number.isInteger(row.transcript?.version)
     && row.transcript!.version! > (knownVersions.get(row.id) ?? 1)).map((row) => row.id);
@@ -201,7 +220,8 @@ onPendingSnapshot?: (
       if (!isCurrent()) return;
       if (ok) {
         saved.add(row.id);
-        confirm([row.id]);
+        confirm(row.id);
+        flushConfirmed();
         observedSaved?.ids.add(row.id);
         captureEvents.emit("library-changed", { source: TRANSCRIBER_MEETING_SOURCE, sourceId: row.id });
       }
@@ -260,6 +280,7 @@ export function useTranscriberLibrarySync(input: {
       if (message.kind === "pass") lastPassAt = Math.max(lastPassAt, message.at);
       else if (message.kind === "state") setState(message.id, message.state);
       else if (message.kind === "confirmed") for (const id of message.ids) confirmedSaved.add(id);
+      else if (message.kind === "unconfirmed") for (const id of message.ids) confirmedSaved.delete(id);
       else if (message.kind === "library-changed") {
         relaying = true;
         try { captureEvents.emit("library-changed", { source: TRANSCRIBER_MEETING_SOURCE, sourceId: message.sourceId }); }
@@ -270,6 +291,7 @@ export function useTranscriberLibrarySync(input: {
       if (!relaying && detail?.source === TRANSCRIBER_MEETING_SOURCE) post({ kind: "library-changed", sourceId: detail.sourceId });
     });
     const confirmed = (ids: string[]) => { if (accountCurrent()) post({ kind: "confirmed", ids }); };
+    const unconfirmed = (ids: string[]) => { if (accountCurrent()) post({ kind: "unconfirmed", ids }); };
     const pass = async (current: () => boolean, progress: () => void) => {
       // Meeting storage is readable with the vault locked. Snapshot now so
       // another device's saves during the lock are not part of the baseline.
@@ -284,7 +306,7 @@ export function useTranscriberLibrarySync(input: {
         // Each save takes the drain lane itself; the pass as a whole does not hold it.
         await syncTranscriberLibrary({
           tcw, client: api, saver, isCurrent: current, observedSaved, refreshBackoff, knownVersions,
-          confirmedSaved, onConfirmed: confirmed, onProgress: progress, onState: (id, state) => {
+          confirmedSaved, onConfirmed: confirmed, onUnconfirmed: unconfirmed, onProgress: progress, onState: (id, state) => {
             setState(id, state);
             if (accountCurrent()) post({ kind: "state", id, state });
           },

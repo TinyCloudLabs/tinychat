@@ -46,13 +46,16 @@ export async function saveTranscriberMeeting(
 
 /**
  * Saved IDs separated from rows whose saved-body completeness is unknown. Ids in
- * `confirmed` already had their body confirmed this session and skip the KV check.
+ * `confirmed` already had their body confirmed this session and skip the KV check;
+ * `onConfirmed` hears each body this scan confirms, as soon as it is read. A body
+ * that could not be read is never reported.
  */
 export async function listSavedTranscriberMeetingIds(
   tcw: TinyCloudWeb,
   scheduleRead: TranscriberSpaceReadScheduler = (read) => read(),
   isCurrent: () => boolean = () => true,
   confirmed: ReadonlySet<string> = new Set(),
+  onConfirmed: (id: string) => void = () => {},
 ): Promise<StoreResult<{ saved: string[]; unknown: string[] }>> {
   const rows = await scheduleRead(() => listKnownSourceIds(tcw, TRANSCRIBER_MEETING_SOURCE));
   if (rows === null) return { ok: true, data: { saved: [], unknown: [] } };
@@ -69,8 +72,10 @@ export async function listSavedTranscriberMeetingIds(
     try {
       const body = await scheduleRead(() => tcw.kv.get(transcriptKvKey(TRANSCRIBER_MEETING_SOURCE, id)));
       if (body === null || !isCurrent()) break;
-      if (body.ok) saved.push(id);
-      else {
+      if (body.ok) {
+        saved.push(id);
+        onConfirmed(id);
+      } else {
         unknown.push(id);
         console.debug("[transcriberSave] incomplete meeting", id, "kv-read-failed");
       }
