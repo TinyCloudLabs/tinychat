@@ -5,7 +5,7 @@
 import { useState } from "react";
 import { useNavKind } from "@/shell/navItems";
 import { AppShell, type AppShellProps } from "@/shell/AppShell";
-import { MinimizedAlert } from "./final/MinimizedAlert";
+import { limitNoticeShown, MinimizedAlert } from "./final/MinimizedAlert";
 import { MinimizedProvider } from "./final/MinimizedProvider";
 import { showsMinimizedError } from "./final/minimizedView";
 import { useNotesLifecycle } from "./final/notes/notesLifecycle";
@@ -52,7 +52,7 @@ export function RecorderShell({ onOpenNote, ...shell }: RecorderShellProps) {
         <Island onOpenNote={onOpenNote} />
       </div>
     );
-  } else if (minimized && navKind === "rail" && (recording || showsMinimizedError(recorder))) {
+  } else if (minimized && navKind === "rail" && (recording || showsMinimizedError(recorder) || limitNoticeShown(recorder))) {
     island = <FloatingRibbon ribbon={recording} />;
   }
   const noteNotice = useShellNoteNotice();

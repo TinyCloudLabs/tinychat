@@ -45,6 +45,8 @@ export interface RecorderState {
   controlPending: "pause" | "resume" | null;
   /** Set when the recorder stopped itself at the limit, e.g. "Stopped at the 3-hour limit." */
   limitNotice: string | null;
+  /** The limit the recording on screen stopped itself at with its audio kept (reason max_duration); null otherwise. */
+  limitStopMs: number | null;
   /** How much of the note being saved is stored. */
   savePercent: number | null;
   error: string | null;
@@ -111,7 +113,9 @@ export type RecorderEvent =
    * A recorder stopped itself at its limit: `id` is that recording's (null when it
    * captured nothing). Applied only when it is the recording on screen (autoStopIsCurrent).
    */
-  | { type: "AUTO_STOPPED"; id: string | null; notice: string; captured: boolean; at: number; elapsedMs?: number; error?: string | null; pendingId?: string | null }
+  | { type: "AUTO_STOPPED"; id: string | null; notice: string; captured: boolean; at: number; elapsedMs?: number; error?: string | null; pendingId?: string | null;
+    /** Set when the duration limit (not storage, a write failure or permission) stopped it. */
+    limitMs?: number }
   /** status() and the retained events have been heard: Record may start. */
   | { type: "RECONCILED" }
   | { type: "PERMISSION_DENIED" }
@@ -143,6 +147,7 @@ export const initialRecorderState: RecorderState = {
   captureSourceUnconfirmed: false,
   controlPending: null,
   limitNotice: null,
+  limitStopMs: null,
   savePercent: null,
   error: null,
   finalizationPendingId: null,
@@ -223,7 +228,7 @@ function reduce(state: RecorderState, event: RecorderEvent): RecorderState {
   switch (event.type) {
     case "START_REQUESTED":
       if (state.phase !== "idle") return state;
-      return { ...state, phase: "starting", permissionDenied: false, error: null, limitNotice: null, outcome: null, localUpload: null, failedRecording: null, savePercent: null, elapsedMs: 0, audioMs: 0, elapsedAt: null, startedAt: null };
+      return { ...state, phase: "starting", permissionDenied: false, error: null, limitNotice: null, limitStopMs: null, outcome: null, localUpload: null, failedRecording: null, savePercent: null, elapsedMs: 0, audioMs: 0, elapsedAt: null, startedAt: null };
     case "STARTED":
       if (state.phase !== "starting") return state;
       return {
@@ -362,7 +367,7 @@ function reduce(state: RecorderState, event: RecorderEvent): RecorderState {
       state = freezeElapsed(state, event.at);
       if (event.elapsedMs !== undefined) state = { ...state, elapsedMs: event.elapsedMs, elapsedAt: event.at };
       if (!event.captured) {
-        const failed = { ...state, limitNotice: event.notice,
+        const failed = { ...state, limitNotice: event.notice, limitStopMs: null,
           error: event.error === "finalization_timed_out"
             ? FINALIZATION_PENDING
             : `${event.notice} The recording captured no audio.` };
@@ -376,6 +381,7 @@ function reduce(state: RecorderState, event: RecorderEvent): RecorderState {
         recordingId: event.id ?? state.recordingId,
         savePercent: null,
         limitNotice: event.notice,
+        limitStopMs: event.limitMs ?? null,
         error: null,
         outcome: null,
         autoSaving: true,
@@ -393,7 +399,7 @@ function reduce(state: RecorderState, event: RecorderEvent): RecorderState {
       return { ...state, phase: "discarding", controlPending: null, error: null };
     case "DISCARDED":
       if (!discardingThis(state, "discarding", event.id)) return state;
-      return { ...toIdle(state), error: null, limitNotice: null };
+      return { ...toIdle(state), error: null, limitNotice: null, limitStopMs: null };
     case "DISCARD_FAILED":
       if (!discardingThis(state, "discarding", event.id)) return state;
       if (event.uncertain) return { ...state, error: event.error };

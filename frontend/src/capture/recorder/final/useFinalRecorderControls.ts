@@ -44,6 +44,7 @@ export function recorderState(recorder: RecorderValue): RecorderState {
     captureSourceUnconfirmed: recorder.captureSourceUnconfirmed,
     controlPending: recorder.controlPending,
     limitNotice: recorder.limitNotice,
+    limitStopMs: null,
     savePercent: recorder.savePercent,
     error: recorder.error,
     outcome: recorder.outcome,

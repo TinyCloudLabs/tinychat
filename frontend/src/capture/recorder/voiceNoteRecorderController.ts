@@ -35,8 +35,8 @@ import { isOnDeviceReady } from "@/lib/voiceNotes/onDeviceStt";
 import { isLegacyNote } from "@/lib/voiceNotes/legacyMigration";
 import { setQuarantineAccount } from "@/lib/voiceNotes/quarantine";
 import { ensureAppleSpeechAssets, ensureOnDeviceModel, onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
-import { effectiveCaptureOptions, readTranscriberPreference, readUploadAudioPreference,
-  setDefaultIdentifySpeakers, setDefaultTranscriber, settleDefaults, subscribeTranscriberPreference, writeAccountDefaults,
+import { effectiveCaptureOptions, readStopAfterPreference, readTranscriberPreference, readUploadAudioPreference,
+  setDefaultIdentifySpeakers, setDefaultTranscriber, settleDefaults, stopAfterMs, subscribeTranscriberPreference, writeAccountDefaults,
   } from "@/lib/voiceNotes/transcriberPreference";
 import {
   clearDiscarded,
@@ -660,7 +660,8 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       ? Math.max(0, recording.wallMs - recording.pausedMs) : undefined;
     send({ type: "AUTO_STOPPED", id: recording?.id ?? null, notice: autoStopNoticeText(event.reason, event.maxDurationMs),
       captured: recording !== null, at: Date.now(), elapsedMs: finalElapsed, error: event.error,
-      pendingId: event.error === "finalization_timed_out" ? event.id ?? state.recordingId : null });
+      pendingId: event.error === "finalization_timed_out" ? event.id ?? state.recordingId : null,
+      ...(event.reason === "max_duration" ? { limitMs: event.maxDurationMs } : {}) });
     if (!recording) return;
     void saveStopped(recording).catch((caught: unknown) =>
       send({ type: "SAVE_FAILED", error: messageOf(caught), recording: { id: recording.id, durationMs: recording.durationMs } }),
@@ -956,7 +957,8 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       stopAllPlayback();
       send({ type: "START_REQUESTED" });
       if (choice.id === "on-device") ensureLocalModel(true);
-      const requested = voiceNoteMaxDurationMs();
+      // Settings' Stop recording after, never above the test override or the 3-hour limit (voiceNoteMaxDurationMs caps both).
+      const requested = Math.min(stopAfterMs(readStopAfterPreference()), voiceNoteMaxDurationMs());
       try {
         // The recording starts from the engine's default: wait for any default write in flight, and refuse to start on one that could not be put right.
         await settleDefaults();

@@ -22,6 +22,7 @@ function recorderState(recorder: RecorderValue): RecorderState {
     mic: recorder.mic,
     controlPending: recorder.controlPending,
     limitNotice: recorder.limitNotice,
+    limitStopMs: null,
     savePercent: recorder.savePercent,
     error: recorder.error,
     outcome: recorder.outcome,

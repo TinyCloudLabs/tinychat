@@ -1,5 +1,5 @@
 // The minimised recorder in the expanded sidebar's footer: the status and the
-// time, with Open.
+// time, with Open, and why the recorder stopped itself.
 import { AlertCircleIcon, CheckIcon, Loader2Icon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -20,33 +20,38 @@ export function SidebarLiveCardView(props: { recorder: RecorderValue; className?
       data-state={state}
       className={cn("flex items-center gap-2 rounded-lg bg-surface-2 py-1.5 pl-3 pr-1.5", props.className)}
     >
-      <p role="status" className="flex min-w-0 flex-1 items-center gap-2 text-callout">
-        {state === "live" && (
-          <>
-            <span className={cn("size-2.5 shrink-0 rounded-full", paused ? "bg-muted-foreground" : warning ? "bg-warning" : "bg-live motion-safe:animate-live-pulse")} aria-hidden="true" />
-            <RecorderTimer audioMs={recorder.audioMs} running={!paused && recorder.phase === "recording"} className="font-semibold" />
-            <span className="sr-only">{paused ? "Paused" : warning ? "Recording, mic problem" : "Recording"}</span>
-          </>
+      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+        <p role="status" className="flex min-w-0 items-center gap-2 text-callout">
+          {state === "live" && (
+            <>
+              <span className={cn("size-2.5 shrink-0 rounded-full", paused ? "bg-muted-foreground" : warning ? "bg-warning" : "bg-live motion-safe:animate-live-pulse")} aria-hidden="true" />
+              <RecorderTimer audioMs={recorder.audioMs} running={!paused && recorder.phase === "recording"} className="font-semibold" />
+              <span className="sr-only">{paused ? "Paused" : warning ? "Recording, mic problem" : "Recording"}</span>
+            </>
+          )}
+          {state === "saving" && (
+            <>
+              <Loader2Icon className="size-4 shrink-0 animate-spin text-muted-foreground" aria-hidden="true" />
+              <span className="tnum min-w-0 [overflow-wrap:anywhere]">Saving{typeof recorder.savePercent === "number" ? ` · ${recorder.savePercent}%` : "…"}</span>
+            </>
+          )}
+          {state === "landed" && (
+            <>
+              <CheckIcon className="size-4 shrink-0 text-primary" aria-hidden="true" />
+              <span className="min-w-0 [overflow-wrap:anywhere]">{ISLAND_SAVED}</span>
+            </>
+          )}
+          {state === "failed" && (
+            <>
+              <AlertCircleIcon className="size-4 shrink-0 text-warning" aria-hidden="true" />
+              <span className="min-w-0 [overflow-wrap:anywhere]">{ISLAND_KEPT}</span>
+            </>
+          )}
+        </p>
+        {state !== "live" && recorder.limitNotice && (
+          <p data-testid="sidebar-live-limit" className="min-w-0 text-meta text-warning [overflow-wrap:anywhere]">{recorder.limitNotice}</p>
         )}
-        {state === "saving" && (
-          <>
-            <Loader2Icon className="size-4 shrink-0 animate-spin text-muted-foreground" aria-hidden="true" />
-            <span className="tnum min-w-0 [overflow-wrap:anywhere]">Saving{typeof recorder.savePercent === "number" ? ` · ${recorder.savePercent}%` : "…"}</span>
-          </>
-        )}
-        {state === "landed" && (
-          <>
-            <CheckIcon className="size-4 shrink-0 text-primary" aria-hidden="true" />
-            <span className="min-w-0 [overflow-wrap:anywhere]">{ISLAND_SAVED}</span>
-          </>
-        )}
-        {state === "failed" && (
-          <>
-            <AlertCircleIcon className="size-4 shrink-0 text-warning" aria-hidden="true" />
-            <span className="min-w-0 [overflow-wrap:anywhere]">{ISLAND_KEPT}</span>
-          </>
-        )}
-      </p>
+      </div>
       <Button type="button" variant="ghost" size="sm" onClick={recorder.openSheet} aria-label="Open recorder" data-testid="sidebar-live-open">
         Open
       </Button>

@@ -7,6 +7,7 @@ import type { LibraryItem } from "../library/LibraryRow";
 import { FailureNotificationDedupe, failureNotifications, failureNotificationStorageKey, readFailureNotificationKeys, writeFailureNotificationKeys, type FailureNotification } from "./failureNotifications";
 import { captureEvents } from "../captureEvents";
 import { VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
+import { showSystemNotification } from "./systemNotification";
 
 const TOAST_MS = 8000;
 const sameKeys = (left: readonly string[], right: readonly string[]): boolean => {
@@ -23,16 +24,8 @@ export function nativeFailurePayload(failure: FailureNotification): { path: stri
 }
 
 function showMacNotification(failure: FailureNotification, open: (path: string) => void): boolean {
-  if (!nativeAvailable() || Notification.permission !== "granted" || document.hasFocus()) return false;
-  try {
-    const notification = new Notification(failure.title, { body: failure.message, data: nativeFailurePayload(failure) });
-    notification.onclick = () => {
-      window.focus();
-      open((notification.data as { path?: string } | undefined)?.path ?? failure.path);
-      notification.close();
-    };
-    return true;
-  } catch { return false; }
+  return showSystemNotification(failure.title, { body: failure.message, data: nativeFailurePayload(failure) },
+    (notification) => open((notification.data as { path?: string } | undefined)?.path ?? failure.path));
 }
 
 export function FailureNotificationHost(props: {

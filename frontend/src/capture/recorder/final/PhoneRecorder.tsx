@@ -88,6 +88,7 @@ function recorderState(recorder: RecorderValue): RecorderState {
     mic: recorder.mic,
     controlPending: recorder.controlPending,
     limitNotice: recorder.limitNotice,
+    limitStopMs: null,
     savePercent: recorder.savePercent,
     error: recorder.error,
     outcome: recorder.outcome,
@@ -715,9 +716,12 @@ export function PhoneRecorder({
               <PlusIcon />
             </button>
           </div>
-          {view.timer.countdown && (
+          {view.timer.countdown ? (
             <div className="pr-countdown">{view.timer.countdown.text}</div>
-          )}
+          ) : idleDenied ? (
+            // Mic denied keeps the recording layout's positions, so it holds the stop time's line.
+            <div className="pr-countdown" data-placeholder="true" aria-hidden="true">{FINAL_COPY.stopAt("0:00")}</div>
+          ) : null}
         </div>
         <div
           className="pr-extra"
