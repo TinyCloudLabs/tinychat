@@ -1861,6 +1861,160 @@ test("a lane timeout is retrying before its final failed attempt", async () => {
   }
 });
 
+/**
+ * Two recorded notes whose saves stall until `unstick()`: either the audio row patch
+ * (connectors SQL) or the audio part puts (KV) never answer, the way the node keeps an
+ * aborted call queued. `SELECT 1` drain probes are counted and held once `holdProbes()`
+ * is called: earlier cases may have abandoned SQL calls too (the count is module-wide).
+ */
+async function stalledSaves(stall: "sql" | "kv") {
+  const { tcw } = space();
+  const fake = createFakeVoiceNotes();
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  await ensureVoiceNoteIdentity(tcw);
+  await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1, transcriber: "off",
+    identifySpeakers: false, uploadAudio: true });
+  const notes = [await fake.plugin.start(), await fake.plugin.stop(), await fake.plugin.start(), await fake.plugin.stop()]
+    .filter((_, index) => index % 2 === 0);
+  pendingStore.setAccount(tcw.did);
+  await pendingStore.refresh();
+  let stuck = true;
+  const attempts = new Map<string, number>();
+  const hang = (signal?: AbortSignal) => new Promise<never>((_resolve, reject) =>
+    signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
+  const put = tcw.kv.put.bind(tcw.kv);
+  tcw.kv.put = ((key, value, options) => {
+    const note = stall === "kv" && notes.find((recording) => key.includes(recording.id) && key.includes("/p/"));
+    if (!note) return put(key, value, options);
+    attempts.set(note.id, (attempts.get(note.id) ?? 0) + 1);
+    return stuck ? hang(options?.signal) : put(key, value, options);
+  }) as typeof tcw.kv.put;
+  let holding = false;
+  const probes: Array<{ answer: () => void; signal?: AbortSignal }> = [];
+  const db = tcw.sql.db.bind(tcw.sql);
+  tcw.sql.db = ((name: string) => {
+    const handle = db(name);
+    return { ...handle,
+      query: async (statement: string, params?: never[], options?: { signal?: AbortSignal }) => {
+        if (statement !== "SELECT 1" || !holding) return handle.query(statement, params);
+        // A held probe ignores its abort signal, like a transport that never settles.
+        await new Promise<void>((resolve) => { probes.push({ answer: resolve, signal: options?.signal }); });
+        return handle.query(statement, params);
+      },
+      execute: (statement: string, params: never[] = [], options?: { signal?: AbortSignal }) => {
+        const note = stall === "sql" && String(params[0]).includes("audio_kv_key")
+          && notes.find((recording) => params.includes(`vn-${recording.id}` as never));
+        if (!note) return handle.execute(statement, params);
+        attempts.set(note.id, (attempts.get(note.id) ?? 0) + 1);
+        return stuck ? hang(options?.signal) : handle.execute(statement, params);
+      } };
+  }) as typeof db;
+  return { tcw, notes, attempts, probes, unstick: () => { stuck = false; }, holdProbes: () => { holding = true; },
+    retriedAll: (since: Map<string, number>) => notes.every((note) => (attempts.get(note.id) ?? 0) > (since.get(note.id) ?? 0)) };
+}
+
+test("timed-out SQL saves retry only after one shared probe proves the abandoned calls finished (TC-1274)", async () => {
+  const original = VoiceNotes;
+  try {
+    const s = await stalledSaves("sql");
+    setVoiceNoteSaveDeadlineForTests(10);
+    const pipeline = createVoiceNotePipeline(s.tcw, { retryDelaysMs: [], saveRetryDelaysMs: [20] });
+    await pipeline.reconcileAll({ did: s.tcw.did, spaceId: s.tcw.spaceId, generation: currentAccountGeneration() });
+    s.holdProbes();
+    const afterTimeouts = new Map(s.attempts);
+    expect(s.notes.every((note) => (afterTimeouts.get(note.id) ?? 0) > 0)).toBe(true);
+    // Real time: the retry ladder and lane deadlines are module-internal setTimeouts, and the
+    // waiting retries expose no signal but the probe they share (this file's convention).
+    await Bun.sleep(80); // both 20 ms retry timers have fired
+    expect(s.probes).toHaveLength(1);
+    expect(s.attempts).toEqual(afterTimeouts);
+    s.unstick();
+    s.probes[0]!.answer();
+    for (let turn = 0; turn < 200 && !s.retriedAll(afterTimeouts); turn++) await Bun.sleep(1);
+    expect(s.retriedAll(afterTimeouts)).toBe(true);
+    expect(s.probes).toHaveLength(1);
+  } finally {
+    setVoiceNoteSaveDeadlineForTests(null);
+    __setVoiceNotesForTests(original, { available: null });
+  }
+});
+
+test("KV-only timeouts retry without an SQL drain probe: the node orders KV separately", async () => {
+  const original = VoiceNotes;
+  try {
+    const s = await stalledSaves("kv");
+    setVoiceNoteSaveDeadlineForTests(10);
+    const pipeline = createVoiceNotePipeline(s.tcw, { retryDelaysMs: [], saveRetryDelaysMs: [20] });
+    await pipeline.reconcileAll({ did: s.tcw.did, spaceId: s.tcw.spaceId, generation: currentAccountGeneration() });
+    s.holdProbes();
+    const afterTimeouts = new Map(s.attempts);
+    s.unstick();
+    for (let turn = 0; turn < 200 && !s.retriedAll(afterTimeouts); turn++) await Bun.sleep(1);
+    expect(s.retriedAll(afterTimeouts)).toBe(true);
+    expect(s.probes).toHaveLength(0);
+  } finally {
+    setVoiceNoteSaveDeadlineForTests(null);
+    __setVoiceNotesForTests(original, { available: null });
+  }
+});
+
+test("a drain probe that never answers times out into a fresh probe", async () => {
+  const original = VoiceNotes;
+  try {
+    const s = await stalledSaves("sql");
+    setVoiceNoteSaveDeadlineForTests(10);
+    const ctx = { did: s.tcw.did, spaceId: s.tcw.spaceId, generation: currentAccountGeneration() };
+    const pipeline = createVoiceNotePipeline(s.tcw, { retryDelaysMs: [], saveRetryDelaysMs: [20],
+      drainProbeTimeoutMs: 15, drainProbeBackoffMs: 5 });
+    await pipeline.reconcileAll(ctx);
+    s.holdProbes();
+    const afterTimeouts = new Map(s.attempts);
+    // The first probe hangs; its timeout counts as "still busy", and after the backoff the
+    // waiting retries send a fresh probe instead of waiting on the hung one forever.
+    for (let turn = 0; turn < 300 && s.probes.length < 2; turn++) await Bun.sleep(1);
+    expect(s.probes.length).toBeGreaterThanOrEqual(2);
+    expect(s.probes[0]!.signal?.aborted).toBe(true);
+    expect(s.attempts).toEqual(afterTimeouts);
+    s.unstick();
+    s.probes.at(-1)!.answer();
+    for (let turn = 0; turn < 300 && !s.retriedAll(afterTimeouts); turn++) await Bun.sleep(1);
+    expect(s.retriedAll(afterTimeouts)).toBe(true);
+  } finally {
+    setVoiceNoteSaveDeadlineForTests(null);
+    __setVoiceNotesForTests(original, { available: null });
+  }
+});
+
+test("cancelAll drops a hung drain probe: after resume() the next pass sends a fresh one", async () => {
+  const original = VoiceNotes;
+  try {
+    const s = await stalledSaves("sql");
+    setVoiceNoteSaveDeadlineForTests(10);
+    const ctx = () => ({ did: s.tcw.did, spaceId: s.tcw.spaceId, generation: currentAccountGeneration() });
+    // The probe timeout outlasts the test, so only cancelAll can stop the waiters reusing it.
+    const pipeline = createVoiceNotePipeline(s.tcw, { retryDelaysMs: [], saveRetryDelaysMs: [20],
+      drainProbeTimeoutMs: 60_000 });
+    await pipeline.reconcileAll(ctx());
+    s.holdProbes();
+    const afterTimeouts = new Map(s.attempts);
+    for (let turn = 0; turn < 300 && s.probes.length < 1; turn++) await Bun.sleep(1);
+    expect(s.probes).toHaveLength(1);
+    pipeline.cancelAll();
+    pipeline.resume();
+    s.unstick();
+    // The user's Try again; the cancelled retries settled their upload tickets, so it saves both.
+    const reconciling = pipeline.reconcileAll(ctx(), "manual");
+    for (let turn = 0; turn < 300 && s.probes.length < 2; turn++) await Bun.sleep(1);
+    expect(s.probes).toHaveLength(2);
+    s.probes[1]!.answer();
+    await reconciling;
+    expect(s.retriedAll(afterTimeouts)).toBe(true);
+  } finally {
+    setVoiceNoteSaveDeadlineForTests(null);
+    __setVoiceNotesForTests(original, { available: null });
+  }
+});
+
 test("a real audio KV failure with meta.status 500 is reported as server", async () => {
   const original = VoiceNotes;
   const { tcw } = space();

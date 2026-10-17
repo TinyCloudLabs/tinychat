@@ -911,11 +911,48 @@ test("legacy metadata without a publication version counts as 1", async () => {
     const metadata = JSON.parse(readSavedRow(f).metadata);
     delete metadata.ptx_transcript_version;
     f.sql.query("UPDATE connector_meeting SET metadata = ?").run(JSON.stringify(metadata));
-    const versions = await listSavedTranscriberVersions(f.tcw);
+    const versions = await listSavedTranscriberVersions(f.tcw, [meeting.id]);
     expect(versions.ok && versions.data.get(meeting.id)).toBe(1);
     await syncTranscriberLibrary({ tcw: f.tcw, client: refreshClient().client });
     expect(savedVersion(f)).toBe(2);
     expect(f.bodies.has(archiveKvKey(meeting.id, 1))).toBe(true);
+  } finally { f.sql.close(); }
+});
+
+test("a pass reads stored publication numbers only for listings newer than any already read (TC-1274)", async () => {
+  const f = await savedFixture();
+  const versionReads: string[] = [];
+  const db = f.tcw.sql.db.bind(f.tcw.sql);
+  // The fixture's db handle is a plain object; spreading keeps its execute and swaps query.
+  f.tcw.sql.db = ((name: string) => {
+    const handle = db(name);
+    return { ...handle, query: (query: string, params?: never[]) => {
+      if (query.includes("ptx_transcript_version") && /^\s*SELECT source_id/.test(query)) versionReads.push(query);
+      return handle.query(query, params);
+    } };
+  }) as typeof db;
+  const knownVersions = new Map<string, number>();
+  try {
+    await syncTranscriberLibrary({ tcw: f.tcw, client: refreshClient([{ ...meeting, transcript: { version: 1 } }]).client, knownVersions });
+    expect(versionReads).toHaveLength(0);
+    const { client } = refreshClient();
+    await syncTranscriberLibrary({ tcw: f.tcw, client, knownVersions });
+    expect(savedVersion(f)).toBe(2);
+    expect(versionReads).toHaveLength(1);
+    await syncTranscriberLibrary({ tcw: f.tcw, client, knownVersions });
+    await syncTranscriberLibrary({ tcw: f.tcw, client, knownVersions });
+    expect(versionReads).toHaveLength(2);
+    expect(knownVersions.get(meeting.id)).toBe(2);
+  } finally { f.sql.close(); }
+});
+
+test("a row saved under a legacy id still reports its publication number", async () => {
+  const f = await savedFixture();
+  try {
+    const metadata = JSON.parse(readSavedRow(f).metadata);
+    f.sql.query("UPDATE connector_meeting SET id = 'legacy-row-id', metadata = ?").run(JSON.stringify({ ...metadata, ptx_transcript_version: 3 }));
+    const versions = await listSavedTranscriberVersions(f.tcw, [meeting.id, "never-saved"]);
+    expect(versions.ok && [...versions.data]).toEqual([[meeting.id, 3]]);
   } finally { f.sql.close(); }
 });
 
@@ -952,7 +989,7 @@ test("unsupported json_extract skips refreshes each pass but still imports first
   const f = await savedFixture();
   f.failVersionReads();
   try {
-    expect((await listSavedTranscriberVersions(f.tcw)).ok).toBe(false);
+    expect((await listSavedTranscriberVersions(f.tcw, [meeting.id])).ok).toBe(false);
     const { client, fetches } = refreshClient([
       { ...meeting, transcript: { version: 2 } }, { ...meeting, id: "new-publication", transcript: { version: 2 } },
     ]);

@@ -1,6 +1,6 @@
 // Mounted sync: triggers share one pass, and locked secrets do not erase the
 // baseline of meetings already in Library when the provider first appeared.
-import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, expect, setSystemTime, spyOn, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { SessionStore } from "@tinyboilerplate/client";
@@ -11,9 +11,11 @@ import { notifySecretsUnlockedForTests } from "@/lib/connectors/connectorSecrets
 import { setSecretsAvailableForTests } from "@/lib/openkeyNative";
 import { PENDING_RECONCILE_SNAPSHOT_KEY } from "@/lib/connectors/pendingReconcileSnapshot";
 import type { TranscriberClient } from "@/lib/transcriberApi";
-import { TRANSCRIBER_MEETING_SOURCE } from "@/lib/transcriberSave";
+import { listSavedTranscriberMeetingIds, TRANSCRIBER_MEETING_SOURCE } from "@/lib/transcriberSave";
+import { Database } from "bun:sqlite";
+import { CONNECTOR_SCHEMA } from "@tinyboilerplate/core";
 import { harnessSessionStore } from "@/harness/stubs";
-import { syncTranscriberLibrary, useTranscriberLibrarySync, type TranscriberLibrarySaver } from "./useTranscriberLibrarySync";
+import { setTranscriberPassDeadlineForTests, syncTranscriberLibrary, useTranscriberLibrarySync, type TranscriberLibrarySaver } from "./useTranscriberLibrarySync";
 
 const globals = {
   window: (globalThis as { window?: unknown }).window,
@@ -448,4 +450,223 @@ test("a mounted publication refresh emits library-changed once for an already kn
     expect(sql.query("SELECT json_extract(metadata, '$.ptx_transcript_version') AS version FROM connector_meeting").get())
       .toEqual({ version: 2 });
   } finally { unsubscribe(); sql.close(); }
+});
+
+test("open tabs of one account share one pass per interval, and every tab shows the pass's row states (TC-1274)", async () => {
+  const f = setup();
+  let lists = 0;
+  let release: (() => void) | null = null;
+  f.client.list = async () => {
+    lists++;
+    if (release === null && lists === 4) await new Promise<void>((resolve) => { release = resolve; });
+    return { status: "ok", value: { meetings: f.rows } } as never;
+  };
+  // Tab B's own passes list nothing, so any row state it shows came from tab A.
+  const clientB = { ...f.client, list: async () => { lists++; return { status: "ok", value: { meetings: [] } }; } } as unknown as TranscriberClient;
+  // Web Locks as browsers grant them: an `ifAvailable` request gets null while another tab holds the name.
+  const held = new Set<string>();
+  Object.defineProperty(navigator, "locks", { configurable: true, value: {
+    request: async (name: string, _options: unknown, callback: (lock: unknown) => Promise<unknown>) => {
+      if (held.has(name)) return callback(null);
+      held.add(name);
+      try { return await callback({ name }); } finally { held.delete(name); }
+    },
+  } });
+  const ticks: Array<() => void> = [];
+  const win = window as unknown as { setInterval: (fn: () => void) => number };
+  const plainSetInterval = win.setInterval;
+  win.setInterval = (fn) => { ticks.push(fn); return ticks.length; };
+  const states: Array<Readonly<Record<string, string>>> = [{}, {}];
+  function Tab(props: Parameters<typeof Probe>[0] & { tab: number }) {
+    states[props.tab] = useTranscriberLibrarySync(props);
+    return null;
+  }
+  const tabs = [createRoot(container), createRoot(container)];
+  const settle = () => act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); });
+  const start = Date.parse("2026-10-17T00:00:00Z");
+  try {
+    setSystemTime(start);
+    for (const [tab, tabRoot] of tabs.entries()) {
+      await act(async () => tabRoot.render(<Tab {...f} client={tab === 0 ? f.client : clientB} tab={tab} />));
+      await settle();
+    }
+    expect(lists).toBe(2); // each tab's mount pass
+    expect(states[1]).toEqual({});
+    setSystemTime(start + 30_000);
+    await act(async () => { ticks[0]!(); });
+    await settle();
+    await act(async () => { ticks[1]!(); });
+    await settle();
+    expect(lists).toBe(3); // tab B's tick saw tab A's finished pass
+    expect(states[1]).toEqual({ initial: "saved" });
+    setSystemTime(start + 60_000);
+    await act(async () => { ticks[0]!(); });
+    await settle();
+    expect(lists).toBe(4); // tab A is mid-pass and holds the lock
+    await act(async () => { ticks[1]!(); });
+    await settle();
+    expect(lists).toBe(4);
+    release!();
+    await settle();
+  } finally {
+    for (const tabRoot of tabs) await act(async () => tabRoot.unmount());
+    win.setInterval = plainSetInterval;
+    Reflect.deleteProperty(navigator, "locks");
+    setSystemTime();
+  }
+});
+
+test("an offline tab starts no pass until it is back online", async () => {
+  const f = setup();
+  let lists = 0;
+  f.client.list = async () => { lists++; return { status: "ok", value: { meetings: f.rows } } as never; };
+  Object.defineProperty(navigator, "onLine", { configurable: true, value: false });
+  try {
+    await mount(f);
+    await act(async () => { fire("focus"); interval?.(); });
+    expect(lists).toBe(0);
+    Object.defineProperty(navigator, "onLine", { configurable: true, value: true });
+    await act(async () => { fire("online"); });
+    expect(lists).toBe(1);
+  } finally { Reflect.deleteProperty(navigator, "onLine"); }
+});
+
+test("a pass stuck past its deadline lets go of the sync lock, and another tab syncs (TC-1274)", async () => {
+  const f = setup();
+  // Tab A's space reads never answer, like a hung background lane.
+  const stuckSaver: TranscriberLibrarySaver = { ...f.saver, listSaved: () => new Promise(() => {}) };
+  let tabBListed: () => void = () => {};
+  const tabBList = new Promise<void>((resolve) => { tabBListed = resolve; });
+  const clientB = { ...f.client, list: async () => { tabBListed(); return { status: "ok", value: { meetings: f.rows } }; } } as unknown as TranscriberClient;
+  let released: () => void = () => {};
+  const lockReleased = new Promise<void>((resolve) => { released = resolve; });
+  const held = new Set<string>();
+  const requests: string[] = [];
+  Object.defineProperty(navigator, "locks", { configurable: true, value: {
+    request: async (name: string, _options: unknown, callback: (lock: unknown) => Promise<unknown>) => {
+      requests.push(name);
+      if (held.has(name)) return callback(null);
+      held.add(name);
+      try { return await callback({ name }); } finally { held.delete(name); released(); }
+    },
+  } });
+  const ticks: Array<() => void> = [];
+  const win = window as unknown as { setInterval: (fn: () => void) => number };
+  const plainSetInterval = win.setInterval;
+  win.setInterval = (fn) => { ticks.push(fn); return ticks.length; };
+  setTranscriberPassDeadlineForTests(20);
+  const tabs = [createRoot(container), createRoot(container)];
+  // Two bystander channels on the account's scope: what tab A posts, and a marker that
+  // arrives after anything tab A posted before it.
+  const scope = `tinychat:transcriber-library-sync:${f.tcw.did}`;
+  const [marker, watcher] = [new BroadcastChannel(scope), new BroadcastChannel(scope)];
+  const seen: string[] = [];
+  let markerSeen: () => void = () => {};
+  watcher.onmessage = (event: MessageEvent<{ kind: string }>) => {
+    if (event.data.kind === "marker") markerSeen(); else seen.push(event.data.kind);
+  };
+  try {
+    await act(async () => tabs[0]!.render(<Probe {...f} saver={stuckSaver} />));
+    await act(async () => tabs[1]!.render(<Probe {...f} client={clientB} />));
+    expect(requests).toHaveLength(2); // tab B asked while tab A held the lock, and skipped
+    expect(held.size).toBe(1);
+    await lockReleased; // 20 ms with no step finished
+    const delivered = new Promise<void>((resolve) => { markerSeen = resolve; });
+    marker.postMessage({ kind: "marker" });
+    await delivered;
+    // A stalled pass must not tell other tabs to skip their next tick.
+    expect(seen).not.toContain("pass");
+    await act(async () => { ticks[1]!(); });
+    await tabBList;
+  } finally {
+    marker.close();
+    watcher.close();
+    for (const tabRoot of tabs) await act(async () => tabRoot.unmount());
+    win.setInterval = plainSetInterval;
+    Reflect.deleteProperty(navigator, "locks");
+    setTranscriberPassDeadlineForTests(null);
+  }
+});
+
+test("a saved-id scan longer than the deadline still saves a new meeting, and later passes re-check only new ids (TC-1274)", async () => {
+  // The reviewer's repro: one sequential KV get per saved meeting, slow enough that the
+  // whole scan outlasts the deadline. It keeps finishing steps, so it is not stuck.
+  const sql = new Database(":memory:");
+  for (const { sql: ddl } of CONNECTOR_SCHEMA) sql.exec(ddl);
+  const insert = sql.query(`INSERT INTO connector_meeting (id, source, source_id, metadata, created_at, updated_at) VALUES (?, ?, ?, '{}', 'c', 'u')`);
+  const savedCount = 60;
+  for (let n = 0; n < savedCount; n++) insert.run(`row-${n}`, TRANSCRIBER_MEETING_SOURCE, `m-${n}`);
+  let kvGets = 0;
+  const tcw = {
+    did: `did:test:scan-${crypto.randomUUID()}`, secrets: { isUnlocked: true },
+    sql: { db: () => ({
+      query: async (q: string, p: never[] = []) => ({ ok: true, data: { rows: sql.query(q).values(...p) } }),
+      execute: async (q: string, p: never[] = []) => ({ ok: true, data: sql.query(q).run(...p) }),
+    }) },
+    // Real time: the deadline is a real setTimeout, so the scan has to take real time too.
+    kv: { get: async (key: string) => {
+      if (!key.includes("/transcript/")) return { ok: false, error: { code: "KV_NOT_FOUND", message: "missing" } };
+      kvGets++;
+      await Bun.sleep(5);
+      return { ok: true, data: { data: "body" } };
+    } },
+  } as unknown as TinyCloudWeb;
+  const f = setup();
+  const rows = [...Array.from({ length: savedCount }, (_, n) => row(`m-${n}`)), row("fresh")];
+  const client = {
+    list: async () => ({ status: "ok", value: { meetings: rows } }),
+    transcript: async () => ({ status: "ok", value: { status: "ready", transcript: { meeting_id: "fresh", status: "completed", version: 1, segments: [] } } }),
+  } as unknown as TranscriberClient;
+  let savedFresh: () => void = () => {};
+  const freshSaved = new Promise<void>((resolve) => { savedFresh = resolve; });
+  const saver: TranscriberLibrarySaver = { listSaved: listSavedTranscriberMeetingIds,
+    save: async (_tcw, meeting) => {
+      insert.run(`row-${meeting.id}`, TRANSCRIBER_MEETING_SOURCE, meeting.id);
+      if (meeting.id === "fresh") savedFresh();
+      return { ok: true };
+    } };
+  setTranscriberPassDeadlineForTests(100); // the scan takes about 60 × 5 ms = 300 ms
+  // Each finished pass is announced on the account's channel; wait on that, not on time.
+  const watcher = new BroadcastChannel(`tinychat:transcriber-library-sync:${tcw.did}`);
+  let passes = 0;
+  let passFinished: () => void = () => {};
+  watcher.onmessage = (event: MessageEvent<{ kind: string }>) => { if (event.data.kind === "pass") { passes++; passFinished(); } };
+  const nextPass = () => new Promise<void>((resolve) => { passFinished = resolve; });
+  try {
+    const first = nextPass();
+    await mount({ ...f, tcw, client, saver });
+    await freshSaved;
+    await first;
+    expect(kvGets).toBe(savedCount);
+    // The next pass trusts the bodies confirmed this session and checks no saved id again.
+    const second = nextPass();
+    await act(async () => { fire("focus"); });
+    await second;
+    expect(passes).toBe(2);
+    expect(kvGets).toBe(savedCount);
+  } finally {
+    watcher.close();
+    setTranscriberPassDeadlineForTests(null);
+    sql.close();
+  }
+});
+
+test("a tab whose Web Lock request rejects still syncs, and warns once", async () => {
+  const f = setup();
+  let lists = 0;
+  f.client.list = async () => { lists++; return { status: "ok", value: { meetings: f.rows } } as never; };
+  Object.defineProperty(navigator, "locks", { configurable: true, value: {
+    request: async () => { throw new Error("SecurityError: lock manager unavailable"); },
+  } });
+  const warn = spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    await mount(f);
+    expect(lists).toBe(1);
+    await act(async () => { fire("focus"); });
+    expect(lists).toBe(2);
+    expect(warn.mock.calls.filter(([message]) => String(message).includes("Web Lock unavailable"))).toHaveLength(1);
+  } finally {
+    warn.mockRestore();
+    Reflect.deleteProperty(navigator, "locks");
+  }
 });
