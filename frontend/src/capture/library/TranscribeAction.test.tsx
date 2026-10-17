@@ -258,6 +258,62 @@ describe("the Transcribe action", () => {
     expect(host.querySelector<HTMLSelectElement>('[data-testid="transcribe-provider"]')!.value).toBe("on-device");
     await choose(host, "private-cloud");
     await click(button(host));
+  test("Local-to-Private after an account change alerts and unlocks without starting", async () => {
+    let current = true;
+    let localState = "running";
+    let starts = 0;
+    __setVoiceNotesForTests({
+      listPending: async () => ({ recordings: [{
+        id: NOTE,
+        options: { transcriber: "on-device" },
+        stt: { state: localState },
+      }] }),
+      getTranscript: async () => ({ transcript: null }),
+    } as unknown as VoiceNotesPlugin, { available: true });
+    OnDeviceStt.cancel = async () => { localState = "cancelled"; };
+    const transcriber = createVoiceNoteTranscriber({
+      cloud: {
+        capabilities: async () => ({
+          max_bytes: 120_960_000,
+          max_duration_seconds: 7_200,
+          content_types: ["audio/webm"],
+          admission: "open",
+          diarization: true,
+        }),
+        pendingSourceIds: () => [],
+      } as never,
+      consent: { get: () => true, set: noop },
+      holds: memoryHoldStore(),
+      tcw: () => ({ did: "did:example:signed-in" } as never),
+      runNote: async () => { starts += 1; return "transcribed"; },
+    });
+    await transcriber.check({ current: () => current });
+    const props = transcriptionProps(transcriber, transcriber.snapshot())!;
+    cleanupDom = installDom();
+    const host = document.createElement("div");
+    document.body.append(host);
+    root = createRoot(host);
+    await act(async () => root!.render(createElement(MemoryRouter, null,
+      createElement(PlatformContext.Provider, { value: "ios" },
+        createElement(NoteDetailView, {
+          item: { id: "row-1", source: "exo-voice-note", sourceId: NOTE, title: "Voice note", startedAt: null, durationSecs: 60 },
+          listStatus: "ready",
+          metadata: { status: "ok", metadata: { transcription_outcome: "skipped", capture: { version: 2, options: { transcriber: "off" } }, audio: { stored: true } } },
+          transcript: { status: "absent" },
+          audio: { load: async () => null },
+          transcription: props,
+          copyState: "idle", onCopy: noop, onRetry: noop, pushed: true, onBack: noop,
+        }),
+      ),
+    )));
+
+    current = false;
+    await choose(host, "private-cloud");
+    await click(button(host));
+    expect(starts).toBe(0);
+    expect(host.querySelector('[data-testid="transcribe-problem"]')?.textContent).toBe("Your account changed. Try again after signing in.");
+    expect(button(host).disabled).toBe(false);
+  });
     expect(sent).toEqual([NOTE]);
     expect(enqueued).toEqual([]);
   });
