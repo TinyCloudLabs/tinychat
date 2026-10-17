@@ -12,6 +12,12 @@ const QUEUE_WAIT_LIMIT_MS = 10 * 60_000;
 let testAbortSettleGraceMs: number | null = null;
 let testQueueWaitLimitMs: number | null = null;
 let nextLaneJobId = 0;
+let abandonedCalls = 0;
+/**
+ * Started calls aborted at their deadline (TC-1274). Aborting stops only the client;
+ * the node keeps each one queued or running, so retries must not assume it is gone.
+ */
+export function spaceLaneAbandonedCalls(): number { return abandonedCalls; }
 const laneListeners = new Set<() => void>();
 function publishLane(): void { for (const listener of laneListeners) listener(); }
 export interface SpaceLaneSnapshot { busy: boolean; depth: number }
@@ -119,6 +125,7 @@ export function runOnSpaceLane<T>(job: (signal?: AbortSignal) => Promise<T>, dea
       callDeadlineTimer = setTimeout(() => {
         if (callerSettled) return;
         timedOut = true;
+        abandonedCalls++;
         controller.abort();
         settleCaller({ kind: "reject", error: createVoiceNoteSaveTimeout(deadline.operation, timeoutMs) });
         if (!released) {
@@ -157,6 +164,7 @@ export function runOnSpaceLane<T>(job: (signal?: AbortSignal) => Promise<T>, dea
 /** Tests only: discard a completed lane from the previous case. */
 export function resetSpaceLaneForTests(): void {
   for (const lane of Object.values(lanes)) { lane.tail = Promise.resolve(); lane.active = null; lane.queued.clear(); }
+  abandonedCalls = 0;
   publishLane();
 }
 /** Tests only: shorten the post-abort lane grace period. */

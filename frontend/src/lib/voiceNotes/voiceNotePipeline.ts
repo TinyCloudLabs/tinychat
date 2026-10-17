@@ -6,6 +6,8 @@ import { VoiceNotes, type VoiceNoteRecording } from "./nativeVoiceNotes";
 import { errorCode, isDiscarded, pendingStore, saveNoteForAccount, type PendingUploadTicket } from "./recorderSaves";
 import { ensureVoiceNoteIdentity } from "./voiceNoteRows";
 import { withVoiceNoteSaveDeadline } from "./saveDeadline";
+import { spaceLaneAbandonedCalls } from "@/lib/spaceWriteLane";
+import { CONNECTORS_SQL_DB_NAME } from "@/lib/connectors/connectorStore";
 import { syncRecordingNote, VOICE_NOTE_SOURCE } from "./voiceNoteStore";
 import { syncOnDeviceTranscript } from "./onDeviceTranscriber";
 import { appPlatform } from "@/lib/platform";
@@ -32,6 +34,10 @@ export function saveDeferredForAccountTransition(error: unknown): boolean {
   return error instanceof VoiceNoteSaveDeferred || error instanceof StaleAccountContext;
 }
 
+/** First wait between drain probes that got no answer; doubles up to the maximum (TC-1274). */
+const DRAIN_PROBE_BACKOFF_MS = 30_000;
+const DRAIN_PROBE_MAX_BACKOFF_MS = 10 * 60_000;
+
 /** T22 extends these lanes with transcription and cleanup, retaining this API. */
 export function createVoiceNotePipeline(tcw: TinyCloudWeb,
   testOptions: Pick<StoreAudioOptions, "retryDelaysMs"> & { saveRetryDelaysMs?: readonly number[] } = {}): VoiceNotePipeline {
@@ -41,6 +47,35 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
   const active = new Set<Promise<unknown>>();
   const retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const retryAttempts = new Map<string, number>();
+  // TC-1274: the node runs one request at a time per space database, in arrival order,
+  // and keeps running a call this app aborted at its deadline. A retry sent then queues
+  // behind the abandoned call and deepens the backlog. Retries and reconcile passes
+  // therefore first wait for one probe of the connectors database to answer: once it
+  // does, everything queued before it has finished. One probe serves every waiter.
+  let drainedThrough = 0;
+  let drainProbe: Promise<void> | null = null;
+  let probeBackoffMs = DRAIN_PROBE_BACKOFF_MS;
+  // Executor form: the frontend's ES2022 lib has no Promise.withResolvers.
+  let releaseDrainWaiters = () => {};
+  let drainWaitersReleased = new Promise<void>((resolve) => { releaseDrainWaiters = resolve; });
+  const awaitServerDrain = async (check: () => void) => {
+    while (spaceLaneAbandonedCalls() > drainedThrough) {
+      drainProbe ??= (async () => {
+        const through = spaceLaneAbandonedCalls();
+        const answered = await tcw.sql.db(CONNECTORS_SQL_DB_NAME).query("SELECT 1").then((result) => result.ok, () => false);
+        if (answered) {
+          drainedThrough = Math.max(drainedThrough, through);
+          probeBackoffMs = DRAIN_PROBE_BACKOFF_MS;
+          return;
+        }
+        // A probe the gateway gave up on may itself stay queued: space them out.
+        await new Promise<void>((resolve) => setTimeout(resolve, Math.round(probeBackoffMs * (0.8 + Math.random() * 0.4))));
+        probeBackoffMs = Math.min(probeBackoffMs * 2, DRAIN_PROBE_MAX_BACKOFF_MS);
+      })().finally(() => { drainProbe = null; });
+      await Promise.race([drainProbe, drainWaitersReleased]);
+      check();
+    }
+  };
   const run = <T>(job: () => Promise<T>): Promise<T> => {
     const promise = job();
     active.add(promise);
@@ -62,6 +97,7 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
       if (!ticket.owns) return;
       void run(async () => {
         try {
+          await awaitServerDrain(checkFor(ctx, epoch));
           const saved = await processOne(ctx, id, epoch, true, ticket, onRowCreated, onSaved);
           syncDesktopAfterUpload(ctx, saved);
           if (saved) {
@@ -177,6 +213,7 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
             { code: "discard_migration_failed", cause: migrationError });
           return;
         }
+        await awaitServerDrain(check);
         try {
           const gate = await withVoiceNoteSaveDeadline("voice-note space setup", () => ensureVoiceNoteIdentity(tcw, check));
           if (gate.status !== "established") throw Object.assign(new Error(gate.reason ?? gate.status), { code: gate.status, cause: gate.cause });
@@ -253,7 +290,11 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
         if (discardError) throw discardError;
       });
     },
-    cancelAll() { accepting = false; cancellation++; for (const timer of retryTimers.values()) clearTimeout(timer); retryTimers.clear(); setAccountWorkPaused(tcw, true); },
+    cancelAll() {
+      accepting = false; cancellation++; for (const timer of retryTimers.values()) clearTimeout(timer); retryTimers.clear();
+      releaseDrainWaiters(); drainWaitersReleased = new Promise<void>((resolve) => { releaseDrainWaiters = resolve; });
+      setAccountWorkPaused(tcw, true);
+    },
     resume() { accepting = true; setAccountWorkPaused(tcw, false); },
     isAccepting() { return accepting; },
     async quiescent(timeoutMs) {

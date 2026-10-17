@@ -160,39 +160,50 @@ export async function listMeetingsRead(
     hasCommitTable = Array.isArray(schema.data?.rows) && schema.data.rows.length > 0;
   }
   const commitOutcome = hasCommitTable
-    ? "(SELECT t.outcome FROM voice_note_transcript t WHERE t.source_id = connector_meeting.source_id LIMIT 1)"
+    ? "(SELECT t.outcome FROM voice_note_transcript t WHERE t.source_id = c.source_id LIMIT 1)"
     : "NULL";
+  // The legacy transcript winner for each voice note is computed once for the whole
+  // set (TC-1274): a per-row correlated subquery rescanned the table for every note.
+  // The winner is the eligible row with the latest transcribed_at, then the lowest id.
+  // The node authorizer allows no window functions, so this uses MAX/MIN groupings;
+  // `winner` takes `outcome` from its MIN(id) row (SQLite's bare-column rule).
   const res = await tolerate(() =>
     tcw.sql.db(CONNECTORS_SQL_DB_NAME).query(
-      `SELECT id, source, source_id, title, started_at, duration_secs,
-              CASE WHEN source = 'exo-voice-note' THEN
-                CASE WHEN json_valid(COALESCE(metadata, '{}')) THEN json_object(
-                  'transcription_outcome', json_extract(metadata, '$.transcription_outcome'),
-                  'transcription_error_code', json_extract(metadata, '$.transcription_error_code'),
-                  'legacy_transcript_outcome',
-                    (SELECT CASE WHEN json_extract(g.metadata, '$.transcription_outcome') IN ('transcribed','no_speech')
-                                 THEN json_extract(g.metadata, '$.transcription_outcome') ELSE 'transcribed' END
-                     FROM connector_meeting g
-                     WHERE g.source_id = connector_meeting.source_id
-                       AND g.source IN ('exo-voice-note','exo-voice-note-dup')
-                       AND json_valid(g.metadata)
-                       AND (json_extract(g.metadata, '$.transcription_outcome') IN ('transcribed','no_speech')
-                         OR (json_extract(g.metadata, '$.transcription_outcome') IS NULL
-                           AND typeof(json_extract(g.metadata, '$.transcript_text')) = 'text'
-                           AND length(trim(json_extract(g.metadata, '$.transcript_text'))) > 0))
-                     ORDER BY COALESCE(json_extract(g.metadata, '$.transcribed_at'), '') DESC, g.id ASC LIMIT 1),
+      `WITH legacy AS (
+         SELECT source_id, id,
+                COALESCE(json_extract(metadata, '$.transcribed_at'), '') AS transcribed_at,
+                CASE WHEN json_extract(metadata, '$.transcription_outcome') IN ('transcribed','no_speech')
+                     THEN json_extract(metadata, '$.transcription_outcome') ELSE 'transcribed' END AS outcome
+         FROM connector_meeting
+         WHERE source IN ('exo-voice-note','exo-voice-note-dup')
+           AND json_valid(metadata)
+           AND (json_extract(metadata, '$.transcription_outcome') IN ('transcribed','no_speech')
+             OR (json_extract(metadata, '$.transcription_outcome') IS NULL
+               AND typeof(json_extract(metadata, '$.transcript_text')) = 'text'
+               AND length(trim(json_extract(metadata, '$.transcript_text'))) > 0))),
+       latest AS (SELECT source_id, MAX(transcribed_at) AS transcribed_at FROM legacy GROUP BY source_id),
+       winner AS (
+         SELECT l.source_id, MIN(l.id) AS id, l.outcome FROM legacy l
+         JOIN latest m ON m.source_id = l.source_id AND m.transcribed_at = l.transcribed_at
+         GROUP BY l.source_id)
+       SELECT c.id, c.source, c.source_id, c.title, c.started_at, c.duration_secs,
+              CASE WHEN c.source = 'exo-voice-note' THEN
+                CASE WHEN json_valid(COALESCE(c.metadata, '{}')) THEN json_object(
+                  'transcription_outcome', json_extract(c.metadata, '$.transcription_outcome'),
+                  'transcription_error_code', json_extract(c.metadata, '$.transcription_error_code'),
+                  'legacy_transcript_outcome', w.outcome,
                   'transcript_commit_outcome', ${commitOutcome},
-                  'note_kv_key',           json_extract(metadata, '$.note_kv_key'),
-                  'note_edited_at',        json_extract(metadata, '$.note_edited_at'),
-                  'audio_kv_key',          json_extract(metadata, '$.audio_kv_key'),
-                  'audio_stored',          json_extract(metadata, '$.audio.stored'),
-                  'audio_device_platform', json_extract(metadata, '$.audio.device.platform'))
+                  'note_kv_key',           json_extract(c.metadata, '$.note_kv_key'),
+                  'note_edited_at',        json_extract(c.metadata, '$.note_edited_at'),
+                  'audio_kv_key',          json_extract(c.metadata, '$.audio_kv_key'),
+                  'audio_stored',          json_extract(c.metadata, '$.audio.stored'),
+                  'audio_device_platform', json_extract(c.metadata, '$.audio.device.platform'))
                 ELSE 'invalid' END
               END AS pipeline_metadata,
-              CASE WHEN source = 'exo-voice-note' AND json_valid(COALESCE(metadata, '{}'))
-                THEN json_extract(metadata, '$.capture.duration_ms') END AS capture_duration_ms
-       FROM connector_meeting
-       WHERE source IN (${placeholders}) ORDER BY started_at DESC`,
+              CASE WHEN c.source = 'exo-voice-note' AND json_valid(COALESCE(c.metadata, '{}'))
+                THEN json_extract(c.metadata, '$.capture.duration_ms') END AS capture_duration_ms
+       FROM connector_meeting c LEFT JOIN winner w ON w.source_id = c.source_id
+       WHERE c.source IN (${placeholders}) ORDER BY c.started_at DESC`,
       [...sources],
     ),
   );

@@ -12,6 +12,7 @@ import {
 } from "@tinyboilerplate/core";
 import type { WrittenTranscriberMeeting } from "@tinyboilerplate/core";
 import { listKnownSourceIds } from "./connectors/connectorStore";
+import { SQL_CHUNK } from "./voiceNotes/voiceNoteCommits";
 import type { StoreResult } from "./connectors/connectorStore";
 import { webConnectorPort } from "./connectors/connectorPort";
 import { reportStorageError, reportStorageWriteSucceeded, storageScopeFor, storageSaveMessage } from "./storageStatus";
@@ -75,20 +76,35 @@ export async function listSavedTranscriberMeetingIds(
   return { ok: true, data: { saved, unknown } };
 }
 
-/** Read only publication numbers: full metadata also contains transcript text. */
+/**
+ * Publication numbers for `sourceIds` only (TC-1274). Metadata embeds the full
+ * transcript text, so json_extract parses every byte of each row it reads: look
+ * rows up by their derived primary key instead of scanning the source. A row
+ * saved under a legacy id falls back to (source, source_id).
+ */
 export async function listSavedTranscriberVersions(
   tcw: TinyCloudWeb,
+  sourceIds: readonly string[],
   scheduleRead: TranscriberSpaceReadScheduler = (read) => read(),
 ): Promise<StoreResult<Map<string, number>>> {
+  const versions = new Map<string, number>();
   try {
-    const result = await scheduleRead(() => tcw.sql.db(CONNECTORS_SQL_DB_NAME).query(
-      "SELECT source_id, json_extract(metadata, '$.ptx_transcript_version') FROM connector_meeting WHERE source = ?",
-      [TRANSCRIBER_MEETING_SOURCE],
-    ));
-    if (result === null) return { ok: true, data: new Map() };
-    if (!result.ok) return storageFailure(result.error, tcw);
-    const rows = result.data.rows as unknown[][];
-    return { ok: true, data: new Map(rows.map((row) => [String(row[0]), row[1] == null ? 1 : Number(row[1])])) };
+    const rowIds = await Promise.all(sourceIds.map((sourceId) => connectorMeetingId(TRANSCRIBER_MEETING_SOURCE, sourceId)));
+    for (const [column, keys] of [["id", rowIds], ["source_id", null]] as const) {
+      const wanted = keys ?? sourceIds.filter((sourceId) => !versions.has(sourceId));
+      for (let from = 0; from < wanted.length; from += SQL_CHUNK) {
+        const chunk = wanted.slice(from, from + SQL_CHUNK);
+        const result = await scheduleRead(() => tcw.sql.db(CONNECTORS_SQL_DB_NAME).query(
+          `SELECT source_id, json_extract(metadata, '$.ptx_transcript_version') FROM connector_meeting
+           WHERE source = ? AND ${column} IN (${chunk.map(() => "?").join(", ")})`,
+          [TRANSCRIBER_MEETING_SOURCE, ...chunk],
+        ));
+        if (result === null) return { ok: true, data: new Map() };
+        if (!result.ok) return storageFailure(result.error, tcw);
+        for (const row of result.data.rows as unknown[][]) versions.set(String(row[0]), row[1] == null ? 1 : Number(row[1]));
+      }
+    }
+    return { ok: true, data: versions };
   } catch { return storageFailure({ code: "SQL_ERROR" }, tcw); }
 }
 

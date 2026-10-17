@@ -1861,6 +1861,64 @@ test("a lane timeout is retrying before its final failed attempt", async () => {
   }
 });
 
+test("timed-out saves retry only after one shared probe proves the abandoned calls finished (TC-1274)", async () => {
+  const original = VoiceNotes;
+  const { tcw } = space();
+  const fake = createFakeVoiceNotes();
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  try {
+    await ensureVoiceNoteIdentity(tcw);
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1, transcriber: "off",
+      identifySpeakers: false, uploadAudio: true });
+    const notes = [await fake.plugin.start(), await fake.plugin.stop(), await fake.plugin.start(), await fake.plugin.stop()]
+      .filter((_, index) => index % 2 === 0);
+    pendingStore.setAccount(tcw.did);
+    await pendingStore.refresh();
+    // The node keeps an aborted call queued; model that as part puts that never answer until released.
+    let stuck = true;
+    const partPuts = new Map<string, number>();
+    const put = tcw.kv.put.bind(tcw.kv);
+    tcw.kv.put = ((key, value, options) => {
+      const note = notes.find((recording) => key.includes(recording.id) && key.includes("/p/"));
+      if (!note) return put(key, value, options);
+      partPuts.set(note.id, (partPuts.get(note.id) ?? 0) + 1);
+      return stuck ? new Promise((_resolve, reject) => options?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true }))
+        : put(key, value, options);
+    }) as typeof tcw.kv.put;
+    let probes = 0;
+    let answerProbe: () => void = () => { throw new Error("no probe sent"); };
+    const db = tcw.sql.db.bind(tcw.sql);
+    tcw.sql.db = ((name: string) => {
+      const handle = db(name);
+      return { ...handle, query: async (statement: string, params?: never[]) => {
+        if (statement !== "SELECT 1") return handle.query(statement, params);
+        probes++;
+        await new Promise<void>((resolve) => { answerProbe = resolve; });
+        return handle.query(statement, params);
+      } };
+    }) as typeof db;
+    setVoiceNoteSaveDeadlineForTests(10);
+    const pipeline = createVoiceNotePipeline(tcw, { retryDelaysMs: [], saveRetryDelaysMs: [20] });
+    await pipeline.reconcileAll({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() });
+    const afterTimeouts = new Map(partPuts);
+    expect(notes.every((note) => (afterTimeouts.get(note.id) ?? 0) > 0)).toBe(true);
+    // Real time: the retry ladder and lane deadlines are module-internal setTimeouts, and the
+    // waiting retries expose no signal but the probe they share (this file's convention).
+    await Bun.sleep(80); // both 20 ms retry timers have fired
+    expect(probes).toBe(1);
+    expect(partPuts).toEqual(afterTimeouts);
+    stuck = false;
+    answerProbe();
+    for (let turn = 0; turn < 200 && notes.some((note) => partPuts.get(note.id) === afterTimeouts.get(note.id)); turn++)
+      await Bun.sleep(1);
+    expect(notes.every((note) => partPuts.get(note.id)! > afterTimeouts.get(note.id)!)).toBe(true);
+    expect(probes).toBe(1);
+  } finally {
+    setVoiceNoteSaveDeadlineForTests(null);
+    __setVoiceNotesForTests(original, { available: null });
+  }
+});
+
 test("a real audio KV failure with meta.status 500 is reported as server", async () => {
   const original = VoiceNotes;
   const { tcw } = space();

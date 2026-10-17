@@ -1,6 +1,6 @@
 // Mounted sync: triggers share one pass, and locked secrets do not erase the
 // baseline of meetings already in Library when the provider first appeared.
-import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, expect, setSystemTime, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { SessionStore } from "@tinyboilerplate/client";
@@ -448,4 +448,83 @@ test("a mounted publication refresh emits library-changed once for an already kn
     expect(sql.query("SELECT json_extract(metadata, '$.ptx_transcript_version') AS version FROM connector_meeting").get())
       .toEqual({ version: 2 });
   } finally { unsubscribe(); sql.close(); }
+});
+
+test("open tabs of one account share one pass per interval, and every tab shows the pass's row states (TC-1274)", async () => {
+  const f = setup();
+  let lists = 0;
+  let release: (() => void) | null = null;
+  f.client.list = async () => {
+    lists++;
+    if (release === null && lists === 4) await new Promise<void>((resolve) => { release = resolve; });
+    return { status: "ok", value: { meetings: f.rows } } as never;
+  };
+  // Tab B's own passes list nothing, so any row state it shows came from tab A.
+  const clientB = { ...f.client, list: async () => { lists++; return { status: "ok", value: { meetings: [] } }; } } as unknown as TranscriberClient;
+  // Web Locks as browsers grant them: an `ifAvailable` request gets null while another tab holds the name.
+  const held = new Set<string>();
+  Object.defineProperty(navigator, "locks", { configurable: true, value: {
+    request: async (name: string, _options: unknown, callback: (lock: unknown) => Promise<unknown>) => {
+      if (held.has(name)) return callback(null);
+      held.add(name);
+      try { return await callback({ name }); } finally { held.delete(name); }
+    },
+  } });
+  const ticks: Array<() => void> = [];
+  const win = window as unknown as { setInterval: (fn: () => void) => number };
+  const plainSetInterval = win.setInterval;
+  win.setInterval = (fn) => { ticks.push(fn); return ticks.length; };
+  const states: Array<Readonly<Record<string, string>>> = [{}, {}];
+  function Tab(props: Parameters<typeof Probe>[0] & { tab: number }) {
+    states[props.tab] = useTranscriberLibrarySync(props);
+    return null;
+  }
+  const tabs = [createRoot(container), createRoot(container)];
+  const settle = () => act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); });
+  const start = Date.parse("2026-10-17T00:00:00Z");
+  try {
+    setSystemTime(start);
+    for (const [tab, tabRoot] of tabs.entries()) {
+      await act(async () => tabRoot.render(<Tab {...f} client={tab === 0 ? f.client : clientB} tab={tab} />));
+      await settle();
+    }
+    expect(lists).toBe(2); // each tab's mount pass
+    expect(states[1]).toEqual({});
+    setSystemTime(start + 30_000);
+    await act(async () => { ticks[0]!(); });
+    await settle();
+    await act(async () => { ticks[1]!(); });
+    await settle();
+    expect(lists).toBe(3); // tab B's tick saw tab A's finished pass
+    expect(states[1]).toEqual({ initial: "saved" });
+    setSystemTime(start + 60_000);
+    await act(async () => { ticks[0]!(); });
+    await settle();
+    expect(lists).toBe(4); // tab A is mid-pass and holds the lock
+    await act(async () => { ticks[1]!(); });
+    await settle();
+    expect(lists).toBe(4);
+    release!();
+    await settle();
+  } finally {
+    for (const tabRoot of tabs) await act(async () => tabRoot.unmount());
+    win.setInterval = plainSetInterval;
+    Reflect.deleteProperty(navigator, "locks");
+    setSystemTime();
+  }
+});
+
+test("an offline tab starts no pass until it is back online", async () => {
+  const f = setup();
+  let lists = 0;
+  f.client.list = async () => { lists++; return { status: "ok", value: { meetings: f.rows } } as never; };
+  Object.defineProperty(navigator, "onLine", { configurable: true, value: false });
+  try {
+    await mount(f);
+    await act(async () => { fire("focus"); interval?.(); });
+    expect(lists).toBe(0);
+    Object.defineProperty(navigator, "onLine", { configurable: true, value: true });
+    await act(async () => { fire("online"); });
+    expect(lists).toBe(1);
+  } finally { Reflect.deleteProperty(navigator, "onLine"); }
 });
