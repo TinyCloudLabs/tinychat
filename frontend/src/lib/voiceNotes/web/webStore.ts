@@ -231,7 +231,7 @@ export const emptyLedger = (): NoteLedger => ({
 });
 
 const INITIAL_CAPTURE: Omit<CaptureRow, "key"> = {
-  defaults: { accountDid: null, transitionGen: 0, transcriber: "on-device", identifySpeakers: false },
+  defaults: { accountDid: null, transitionGen: 0, transcriber: "on-device", identifySpeakers: true },
   status: "signed_out",
 };
 

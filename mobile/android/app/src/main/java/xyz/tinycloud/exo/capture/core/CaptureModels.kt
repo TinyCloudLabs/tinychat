@@ -11,7 +11,7 @@ fun requireTransitionGeneration(next: Long, current: Long) {
     if (next < current) throw IllegalStateException("stale_transition")
 }
 
-fun defaultOptions() = JSONObject().put("transcriber", "on-device").put("identifySpeakers", false).put("uploadAudio", false)
+fun defaultOptions() = JSONObject().put("transcriber", "on-device").put("identifySpeakers", true).put("uploadAudio", false)
 fun defaultLedger() = JSONObject()
     .put("spaceId", JSONObject.NULL)
     .put("audio", JSONObject().put("state", "pending").put("rowId", JSONObject.NULL).put("at", JSONObject.NULL))

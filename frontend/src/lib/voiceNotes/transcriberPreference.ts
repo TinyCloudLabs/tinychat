@@ -5,21 +5,15 @@ import { withCaptureDeadline } from "./accountHandoff";
 import { VoiceNotes, VOICE_NOTE_MAX_DURATION_MS, type CaptureOptions, type TranscriberId } from "./nativeVoiceNotes";
 import { appPlatform } from "@/lib/platform";
 
-const TRANSCRIBER_KEY = "exo.voiceNotes.transcriber";
-const SPEAKERS_KEY = "exo.voiceNotes.identifySpeakers";
-const UPLOAD_AUDIO_KEY = "exo.voiceNotes.uploadAudio";
-const STOP_AFTER_KEY = "exo.voiceNotes.stopAfter";
-const listeners = new Set<() => void>();
+import { DEFAULT_STOP_AFTER, STOP_AFTER_VALUES, type RecordingField, type SetFields, type StopAfter } from "./recordingSettings";
+import {
+  SPEAKERS_KEY, STOP_AFTER_KEY, TRANSCRIBER_KEY, UPLOAD_AUDIO_KEY, UPLOAD_ENGINE_KEY,
+  localStorageOrNull as storage, markLocalEdit, notifyRecordingSettings, subscribeRecordingSettings,
+} from "./recordingSettingsLocal";
+
 let memoryPreference: CaptureOptions = { transcriber: "on-device", identifySpeakers: true };
 
-export function subscribeTranscriberPreference(listener: () => void): () => void {
-  listeners.add(listener);
-  return () => { listeners.delete(listener); };
-}
-
-function storage(): Storage | undefined {
-  try { return globalThis.localStorage; } catch { return undefined; }
-}
+export const subscribeTranscriberPreference = subscribeRecordingSettings;
 
 export function readTranscriberPreference(): CaptureOptions {
   const store = storage();
@@ -56,16 +50,13 @@ export async function setUploadAudioPreference(enabled: boolean): Promise<void> 
   if (appPlatform() === "web") {
     storage()?.setItem(UPLOAD_AUDIO_KEY, enabled ? "1" : "0");
     memoryPreference = { ...memoryPreference, uploadAudio: enabled };
-    for (const listener of listeners) listener();
+    notifyRecordingSettings();
+    markLocalEdit(["uploadAudio"]);
     return;
   }
   await commitPreference({ uploadAudio: enabled });
 }
 
-/** When new recordings stop by themselves: minutes, or "off" for the recorder's 3-hour limit. Per device; JS only. */
-export type StopAfter = "15" | "30" | "60" | "120" | "off";
-export const STOP_AFTER_VALUES: readonly StopAfter[] = ["15", "30", "60", "120", "off"];
-export const DEFAULT_STOP_AFTER: StopAfter = "60";
 let memoryStopAfter: StopAfter = DEFAULT_STOP_AFTER;
 
 const isStopAfter = (value: string | null | undefined): value is StopAfter =>
@@ -84,7 +75,8 @@ export function readStopAfterPreference(): StopAfter {
 export function setStopAfterPreference(value: StopAfter): void {
   memoryStopAfter = value;
   try { storage()?.setItem(STOP_AFTER_KEY, value); } catch { /* This session only. */ }
-  for (const listener of listeners) listener();
+  notifyRecordingSettings();
+  markLocalEdit(["stopAfter"]);
 }
 
 /** The limit a choice asks for; "off" is the 3-hour limit every recorder enforces. */
@@ -168,7 +160,7 @@ async function restoreAfterFailure(
       problems.push("the engine's default could not be put back, so recording is held until it is");
     }
   }
-  for (const listener of listeners) listener();
+  notifyRecordingSettings();
   if (!problems.length) return caught;
   return new Error(`${readableError(caught)} (${problems.join("; ")})`, { cause: caught });
 }
@@ -213,7 +205,7 @@ export function writeAccountDefaults(
  * an earlier change replaced. The stored keys are read first, then the engine is written, then both keys. If any
  * step fails, `restoreAfterFailure` puts the keys and the engine back, each on its own, and the call throws.
  */
-async function commitPreference(change: Partial<CaptureOptions>): Promise<void> {
+async function commitPreference(change: Partial<CaptureOptions>, edit = true): Promise<void> {
   await inOrder(async () => {
     const store = storage();
     const prior = store ? { transcriber: store.getItem(TRANSCRIBER_KEY), speakers: store.getItem(SPEAKERS_KEY),
@@ -234,7 +226,8 @@ async function commitPreference(change: Partial<CaptureOptions>): Promise<void> 
     memoryPreference = pref;
     unreconciled = null;
   });
-  for (const listener of listeners) listener();
+  notifyRecordingSettings();
+  if (edit) markLocalEdit(Object.keys(change) as RecordingField[]);
 }
 
 /** The effective choice changed under an unchanged preference (the Mac's Whisper became ready): rewrite the engine's default and tell the listeners. */
@@ -243,7 +236,7 @@ export async function refreshEffectiveTranscriber(): Promise<void> {
     await writeEffectiveDefaults(readTranscriberPreference());
     unreconciled = null;
   });
-  for (const listener of listeners) listener();
+  notifyRecordingSettings();
 }
 
 export async function setDefaultTranscriber(transcriber: TranscriberId): Promise<void> {
@@ -252,6 +245,38 @@ export async function setDefaultTranscriber(transcriber: TranscriberId): Promise
 
 export async function setDefaultIdentifySpeakers(identifySpeakers: boolean): Promise<void> {
   await commitPreference({ identifySpeakers });
+}
+
+/**
+ * Puts fields adopted from the synced document into this device's cache and, for the engine-backed ones, the capture
+ * engine's copy (the same lane an edit uses, so phone shortcuts record with them). Not an edit: it neither stamps the
+ * device nor tells sync. Throws if the engine refuses; nothing is marked synced then, and the next cycle repeats it.
+ */
+export async function adoptSyncedFields(fields: SetFields): Promise<void> {
+  const store = storage();
+  if (!store) return;
+  const current = readTranscriberPreference();
+  const web = appPlatform() === "web";
+  const change: Partial<CaptureOptions> = {};
+  if (fields.transcriber !== undefined && fields.transcriber !== current.transcriber) change.transcriber = fields.transcriber;
+  if (fields.identifySpeakers !== undefined && fields.identifySpeakers !== current.identifySpeakers) change.identifySpeakers = fields.identifySpeakers;
+  // On the web the audio preference is a cache only; the engine's copy follows at the next account write.
+  if (!web && fields.uploadAudio !== undefined && fields.uploadAudio !== current.uploadAudio) change.uploadAudio = fields.uploadAudio;
+  if (Object.keys(change).length > 0) {
+    if (captureEngineAvailable()) await commitPreference(change, false);
+    else {
+      if (change.transcriber !== undefined) store.setItem(TRANSCRIBER_KEY, change.transcriber);
+      if (change.identifySpeakers !== undefined) store.setItem(SPEAKERS_KEY, change.identifySpeakers ? "1" : "0");
+      if (change.uploadAudio !== undefined) store.setItem(UPLOAD_AUDIO_KEY, change.uploadAudio ? "1" : "0");
+    }
+  }
+  if (web && fields.uploadAudio !== undefined) {
+    store.setItem(UPLOAD_AUDIO_KEY, fields.uploadAudio ? "1" : "0");
+    memoryPreference = { ...memoryPreference, uploadAudio: fields.uploadAudio };
+  }
+  if (fields.stopAfter !== undefined) store.setItem(STOP_AFTER_KEY, fields.stopAfter);
+  if (fields.uploadEngine !== undefined) store.setItem(UPLOAD_ENGINE_KEY, fields.uploadEngine);
+  notifyRecordingSettings();
 }
 
 /** Legacy view helper; the controller API surfaces errors and is the new owner of choices. */

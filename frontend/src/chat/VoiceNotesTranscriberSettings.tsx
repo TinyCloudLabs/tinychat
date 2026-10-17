@@ -17,7 +17,10 @@ import { isAppleSpeech, isOnDeviceReady, isOnDeviceStatusLoaded } from "@/lib/vo
 import { downloadOnDeviceModel, ensureOnDeviceModel, onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
 import { captureCapabilities } from "@/lib/voiceNotes/captureEngine";
 import { nativeVoiceNotesAvailable, type TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
-import { readDefaultTranscriber, readStopAfterPreference, readUploadAudioPreference, setDefaultTranscriber, setStopAfterPreference, setUploadAudioPreference, subscribeTranscriberPreference, type StopAfter } from "@/lib/voiceNotes/transcriberPreference";
+import { effectiveTranscriber, readDefaultTranscriber, readStopAfterPreference, readUploadAudioPreference, setDefaultTranscriber, setStopAfterPreference, setUploadAudioPreference, subscribeTranscriberPreference } from "@/lib/voiceNotes/transcriberPreference";
+import type { StopAfter } from "@/lib/voiceNotes/recordingSettings";
+import { readLocalState } from "@/lib/voiceNotes/recordingSettingsLocal";
+import { deviceName } from "@/lib/platform";
 
 type Transcription = ReturnType<typeof useRecorder>["transcription"];
 
@@ -95,6 +98,8 @@ export function VoiceNotesTranscriberSettings() {
   const platform = useContext(PlatformContext);
   const uploadAudio = useSyncExternalStore(subscribeTranscriberPreference, readUploadAudioPreference, readUploadAudioPreference);
   const stopAfter = useSyncExternalStore(subscribeTranscriberPreference, readStopAfterPreference, readStopAfterPreference);
+  // The default the user chose (here or on another device); never the untouched default, so nobody is told about a choice they did not make.
+  const chosenDefault = useSyncExternalStore(subscribeTranscriberPreference, () => readLocalState()?.fields.transcriber, () => undefined);
   const storageFull = useStorageReadOnly();
   const [uploadError, setUploadError] = useState<string | null>(null);
   const { transcription, signedIn } = useRecorder();
@@ -127,8 +132,19 @@ export function VoiceNotesTranscriberSettings() {
           {STOP_AFTER_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
         </select>
       </div>
-      <p className="text-xs text-muted-foreground">New recordings stop by themselves after this long. Recordings never run longer than 3 hours.</p>
+      <p className="text-xs text-muted-foreground">
+        {signedIn
+          ? "New recordings stop by themselves after this long, on all your devices. Recordings never run longer than 3 hours."
+          : "New recordings stop by themselves after this long. Recordings never run longer than 3 hours."}
+      </p>
     </div>
+  );
+  // The saved choice follows the account to every device; one that cannot run it keeps the choice and says what it uses.
+  const usedHere = chosenDefault !== undefined && signedIn ? effectiveTranscriber(chosenDefault, signedIn) : undefined;
+  const fallbackNote = chosenDefault !== undefined && usedHere !== undefined && usedHere !== chosenDefault && (
+    <p role="status" className="text-xs text-muted-foreground" data-testid="voice-notes-default-fallback">
+      Your default is {TRANSCRIBER_NAME[chosenDefault]}, which {deviceName(platform)} can't run, so recordings here use {TRANSCRIBER_NAME[usedHere]}. Your other devices keep {TRANSCRIBER_NAME[chosenDefault]}.
+    </p>
   );
   const uploadSetting = (
     <>
@@ -152,13 +168,14 @@ export function VoiceNotesTranscriberSettings() {
     </>
   );
 
-  if (!nativeVoiceNotesAvailable() || value === null) return <div className="flex flex-col gap-3">{stopAfterSetting}{uploadSetting}</div>;
+  if (!nativeVoiceNotesAvailable() || value === null) return <div className="flex flex-col gap-3">{stopAfterSetting}{fallbackNote}{uploadSetting}</div>;
 
   const { privateOffered, options } = transcriberOptions(signedIn, transcription);
 
   return (
     <div className="flex flex-col gap-3">
       {stopAfterSetting}
+      {fallbackNote}
       <p className="text-xs text-muted-foreground">New recordings are transcribed this way by default. Each recording can still choose a different route.</p>
       {uploadSetting}
       <SegmentedControl<TranscriberId> aria-label="Default transcriber" value={value} onValueChange={choose} options={options} />
