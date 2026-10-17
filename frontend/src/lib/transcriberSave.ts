@@ -44,11 +44,15 @@ export async function saveTranscriberMeeting(
   return { ok: true, data: saved.data };
 }
 
-/** Saved IDs separated from rows whose saved-body completeness is unknown. */
+/**
+ * Saved IDs separated from rows whose saved-body completeness is unknown. Ids in
+ * `confirmed` already had their body confirmed this session and skip the KV check.
+ */
 export async function listSavedTranscriberMeetingIds(
   tcw: TinyCloudWeb,
   scheduleRead: TranscriberSpaceReadScheduler = (read) => read(),
   isCurrent: () => boolean = () => true,
+  confirmed: ReadonlySet<string> = new Set(),
 ): Promise<StoreResult<{ saved: string[]; unknown: string[] }>> {
   const rows = await scheduleRead(() => listKnownSourceIds(tcw, TRANSCRIBER_MEETING_SOURCE));
   if (rows === null) return { ok: true, data: { saved: [], unknown: [] } };
@@ -56,6 +60,10 @@ export async function listSavedTranscriberMeetingIds(
   const saved: string[] = [];
   const unknown: string[] = [];
   for (const id of rows.data) {
+    if (confirmed.has(id)) {
+      saved.push(id);
+      continue;
+    }
     // Don't queue more old-account reads after the pass has been cancelled.
     if (!isCurrent()) break;
     try {

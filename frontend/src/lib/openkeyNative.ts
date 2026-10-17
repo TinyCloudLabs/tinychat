@@ -24,6 +24,7 @@ import type {
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { authErrorMessage, UserFacingError } from "./authErrors";
 import { nativeRenewAt, renewalLeadMs, terminalRenewalError, nativeCode } from "./openkeyNativeRenewal";
+import { withAbortTimeout } from "./abortTimeout";
 
 // ── Gate ──────────────────────────────────────────────────────────────
 
@@ -353,12 +354,7 @@ function nativeClient(
   return defaultOpenKeyNative ??= create(options);
 }
 
-/** iOS 15 WKWebView predates AbortSignal.timeout. */
-function withNativeFetchTimeout<T>(run: (signal: AbortSignal) => Promise<T>): Promise<T> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 10_000);
-  return run(controller.signal).finally(() => clearTimeout(timeout));
-}
+const NATIVE_FETCH_TIMEOUT_MS = 10_000;
 
 export const NATIVE_SIGN_OUT_DEADLINE_MS = 10_000;
 
@@ -390,13 +386,13 @@ async function defaultDeps(): Promise<NativeSignInDeps> {
     createOpenKeyNative: (options) => new OpenKeyNative({ ...options, ephemeralSession: true,
       browserTheme: NATIVE_BROWSER_THEME,
       fetchFn: (url: string, init?: { method?: string; headers?: Record<string, string>; body?: string }) =>
-        withNativeFetchTimeout((signal) => fetch(url, { ...init, signal })),
+        withAbortTimeout(NATIVE_FETCH_TIMEOUT_MS, (signal) => fetch(url, { ...init, signal })),
     }),
-    requestNonce: (backendUrl, address) => withNativeFetchTimeout((signal) => client.requestNonce(backendUrl, address, { signal })),
+    requestNonce: (backendUrl, address) => withAbortTimeout(NATIVE_FETCH_TIMEOUT_MS, (signal) => client.requestNonce(backendUrl, address, { signal })),
     loadManifest: client.loadAppManifest,
     activateSession: activateSessionWithHost,
     restoreSession: client.restoreTinyCloudWebSession,
-    verifySession: (backendUrl, siwe, signature) => withNativeFetchTimeout((signal) => client.verifySession(backendUrl, siwe, signature, { signal })),
+    verifySession: (backendUrl, siwe, signature) => withAbortTimeout(NATIVE_FETCH_TIMEOUT_MS, (signal) => client.verifySession(backendUrl, siwe, signature, { signal })),
   };
 }
 

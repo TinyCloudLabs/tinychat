@@ -7,6 +7,7 @@ import { errorCode, isDiscarded, pendingStore, saveNoteForAccount, type PendingU
 import { ensureVoiceNoteIdentity, spaceLaneAbandonedSqlCalls } from "./voiceNoteRows";
 import { withVoiceNoteSaveDeadline } from "./saveDeadline";
 import { CONNECTORS_SQL_DB_NAME } from "@/lib/connectors/connectorStore";
+import { withAbortTimeout } from "@/lib/abortTimeout";
 import { syncRecordingNote, VOICE_NOTE_SOURCE } from "./voiceNoteStore";
 import { syncOnDeviceTranscript } from "./onDeviceTranscriber";
 import { appPlatform } from "@/lib/platform";
@@ -67,12 +68,11 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
       if (!drainProbe) {
         const probe: Promise<void> = (async () => {
           const through = spaceLaneAbandonedSqlCalls();
-          const timeout = AbortSignal.timeout(probeTimeoutMs);
           // The race also covers a transport that ignores the abort signal.
-          const answered = await Promise.race([
+          const answered = await withAbortTimeout(probeTimeoutMs, (timeout) => Promise.race([
             tcw.sql.db(CONNECTORS_SQL_DB_NAME).query("SELECT 1", [], { signal: timeout }).then((result) => result.ok, () => false),
             new Promise<false>((resolve) => timeout.addEventListener("abort", () => resolve(false), { once: true })),
-          ]);
+          ]));
           if (answered) {
             drainedThrough = Math.max(drainedThrough, through);
             probeBackoffMs = firstBackoffMs;

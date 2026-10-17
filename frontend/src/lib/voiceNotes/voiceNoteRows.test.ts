@@ -1958,15 +1958,15 @@ test("KV-only timeouts retry without an SQL drain probe: the node orders KV sepa
   }
 });
 
-test("a drain probe that never answers times out into a fresh probe, and resume() never rejoins it", async () => {
+test("a drain probe that never answers times out into a fresh probe", async () => {
   const original = VoiceNotes;
   try {
     const s = await stalledSaves("sql");
     setVoiceNoteSaveDeadlineForTests(10);
-    const ctx = () => ({ did: s.tcw.did, spaceId: s.tcw.spaceId, generation: currentAccountGeneration() });
+    const ctx = { did: s.tcw.did, spaceId: s.tcw.spaceId, generation: currentAccountGeneration() };
     const pipeline = createVoiceNotePipeline(s.tcw, { retryDelaysMs: [], saveRetryDelaysMs: [20],
       drainProbeTimeoutMs: 15, drainProbeBackoffMs: 5 });
-    await pipeline.reconcileAll(ctx());
+    await pipeline.reconcileAll(ctx);
     s.holdProbes();
     const afterTimeouts = new Map(s.attempts);
     // The first probe hangs; its timeout counts as "still busy", and after the backoff the
@@ -1975,15 +1975,38 @@ test("a drain probe that never answers times out into a fresh probe, and resume(
     expect(s.probes.length).toBeGreaterThanOrEqual(2);
     expect(s.probes[0]!.signal?.aborted).toBe(true);
     expect(s.attempts).toEqual(afterTimeouts);
-    // An account transition drops the in-flight probe; after resume() a new pass probes afresh.
+    s.unstick();
+    s.probes.at(-1)!.answer();
+    for (let turn = 0; turn < 300 && !s.retriedAll(afterTimeouts); turn++) await Bun.sleep(1);
+    expect(s.retriedAll(afterTimeouts)).toBe(true);
+  } finally {
+    setVoiceNoteSaveDeadlineForTests(null);
+    __setVoiceNotesForTests(original, { available: null });
+  }
+});
+
+test("cancelAll drops a hung drain probe: after resume() the next pass sends a fresh one", async () => {
+  const original = VoiceNotes;
+  try {
+    const s = await stalledSaves("sql");
+    setVoiceNoteSaveDeadlineForTests(10);
+    const ctx = () => ({ did: s.tcw.did, spaceId: s.tcw.spaceId, generation: currentAccountGeneration() });
+    // The probe timeout outlasts the test, so only cancelAll can stop the waiters reusing it.
+    const pipeline = createVoiceNotePipeline(s.tcw, { retryDelaysMs: [], saveRetryDelaysMs: [20],
+      drainProbeTimeoutMs: 60_000 });
+    await pipeline.reconcileAll(ctx());
+    s.holdProbes();
+    const afterTimeouts = new Map(s.attempts);
+    for (let turn = 0; turn < 300 && s.probes.length < 1; turn++) await Bun.sleep(1);
+    expect(s.probes).toHaveLength(1);
     pipeline.cancelAll();
     pipeline.resume();
-    const before = s.probes.length;
     s.unstick();
-    const reconciling = pipeline.reconcileAll(ctx(), "manual"); // the user's Try again
-    for (let turn = 0; turn < 300 && s.probes.length === before; turn++) await Bun.sleep(1);
-    expect(s.probes.length).toBe(before + 1);
-    s.probes.at(-1)!.answer();
+    // The user's Try again; the cancelled retries settled their upload tickets, so it saves both.
+    const reconciling = pipeline.reconcileAll(ctx(), "manual");
+    for (let turn = 0; turn < 300 && s.probes.length < 2; turn++) await Bun.sleep(1);
+    expect(s.probes).toHaveLength(2);
+    s.probes[1]!.answer();
     await reconciling;
     expect(s.retriedAll(afterTimeouts)).toBe(true);
   } finally {

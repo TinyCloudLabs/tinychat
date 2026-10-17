@@ -28,6 +28,7 @@ export function setTranscriberPassDeadlineForTests(ms: number | null): void { pa
 type SyncMessage =
   | { kind: "pass"; at: number }
   | { kind: "state"; id: string; state: TranscriberSaveState }
+  | { kind: "confirmed"; ids: string[] }
   | { kind: "library-changed"; sourceId: string };
 const SavedContext = createContext<Readonly<Record<string, TranscriberSaveState>>>({});
 export const useTranscriberSavedState = () => useContext(SavedContext);
@@ -37,6 +38,7 @@ export interface TranscriberLibrarySaver {
     tcw: TinyCloudWeb,
     scheduleRead?: <T>(read: () => Promise<T>) => Promise<T | null>,
     isCurrent?: () => boolean,
+    confirmed?: ReadonlySet<string>,
 ): Promise<{ ok: boolean; data?: { saved: string[]; unknown: string[] } }>;
   listVersions?: typeof listSavedTranscriberVersions;
   refresh?: typeof refreshTranscriberMeeting;
@@ -48,8 +50,9 @@ const defaultSaver: TranscriberLibrarySaver = {
 };
 
 /** Each completeness read takes its own turn on the drain lane, and is dropped once the pass is stale. */
-const readOnDrainLane = (isCurrent: () => boolean) => <T,>(read: () => Promise<T>): Promise<T | null> =>
-  enqueueDrainWork(() => isCurrent() ? read() : Promise.resolve(null));
+const readOnDrainLane = (isCurrent: () => boolean, onProgress: () => void = () => {}) =>
+  <T,>(read: () => Promise<T>): Promise<T | null> =>
+    enqueueDrainWork(() => isCurrent() ? read() : Promise.resolve(null)).finally(onProgress);
 
 export type TranscriberRefreshBackoff = Map<string, { failures: number; retryAt: number }>;
 
@@ -70,6 +73,15 @@ refreshBackoff?: TranscriberRefreshBackoff;
    * listed version at or below one needs no SQL read; only newer listings are looked up.
    */
   knownVersions?: Map<string, number>;
+  /**
+   * Per account: saved ids whose transcript body this session already confirmed (TC-1274).
+   * Only ids outside it get a KV check, so a steady-state pass costs O(new), not O(saved).
+   */
+  confirmedSaved?: Set<string>;
+  /** Ids newly added to `confirmedSaved`, for other tabs. */
+  onConfirmed?: (ids: string[]) => void;
+  /** Each completed step (API call, space read or write): the pass is making progress. */
+  onProgress?: () => void;
 onPendingSnapshot?: (
     rows: readonly TranscriberListRow[],
     savedIds: readonly string[],
@@ -79,7 +91,14 @@ onPendingSnapshot?: (
   observedAt?: () => string;
 }): Promise<void> {
   const { tcw, client, saver = defaultSaver, isCurrent = () => true, onState = () => {}, observedSaved,
-    deliveryActive = serverDeliveryActive, now = Date.now, refreshBackoff = new Map(), knownVersions = new Map() } = input;
+    deliveryActive = serverDeliveryActive, now = Date.now, refreshBackoff = new Map(), knownVersions = new Map(),
+    confirmedSaved = new Set<string>(), onConfirmed = () => {}, onProgress = () => {} } = input;
+  const step = <T,>(work: Promise<T>): Promise<T> => work.finally(onProgress);
+  const confirm = (ids: Iterable<string>) => {
+    const fresh = [...ids].filter((id) => !confirmedSaved.has(id));
+    for (const id of fresh) confirmedSaved.add(id);
+    if (fresh.length > 0) onConfirmed(fresh);
+  };
   const failedRefresh = (id: string) => {
     const failures = (refreshBackoff.get(id)?.failures ?? 0) + 1;
     refreshBackoff.set(id, { failures, retryAt: now() + Math.min(30 * 60_000, 60_000 * 2 ** (failures - 1)) });
@@ -88,19 +107,20 @@ onPendingSnapshot?: (
   // This API call can be slow or retry for tens of seconds; it does not touch
   // the user's space and must never occupy the serial space-write lane.
   const observedAt = input.observedAt?.() ?? new Date().toISOString();
-  const listed = await client.list();
+  const listed = await step(client.list());
   if (listed.status !== "ok" || !isCurrent()) return;
   // Each SQL/KV completeness read takes its own turn. A library with many
   // saved recordings therefore yields the lane between keys for voice notes.
-  const complete = await saver.listSaved(tcw, readOnDrainLane(isCurrent), isCurrent);
+  const complete = await saver.listSaved(tcw, readOnDrainLane(isCurrent, onProgress), isCurrent, confirmedSaved);
   if (!complete?.ok || !isCurrent()) return;
   const saved = new Set(complete.data?.saved ?? []);
+  confirm(saved);
   const newer = listed.value.meetings.filter((row) => !("unavailable" in row) && row.status === "completed"
     && saved.has(row.id) && Number.isInteger(row.transcript?.version)
     && row.transcript!.version! > (knownVersions.get(row.id) ?? 1)).map((row) => row.id);
   const versions = !saver.listVersions ? { ok: false as const }
     : newer.length === 0 ? { ok: true as const }
-      : await saver.listVersions(tcw, newer, readOnDrainLane(isCurrent));
+      : await saver.listVersions(tcw, newer, readOnDrainLane(isCurrent, onProgress));
   if (!isCurrent()) return;
   if (versions.ok && "data" in versions) for (const [id, version] of versions.data) knownVersions.set(id, version);
   let refreshes = 0;
@@ -121,18 +141,18 @@ onPendingSnapshot?: (
         refreshes++;
         onState(row.id, "saving");
         try {
-          const fetched = await client.transcript(row.id);
+          const fetched = await step(client.transcript(row.id));
           if (!isCurrent()) return;
           if (fetched.status === "ok" && fetched.value.status === "ready"
             && fetched.value.transcript.version === version) {
             const fetchedTranscript = fetched.value.transcript;
-            const result = await enqueueDrainWork(() => isCurrent()
+            const result = await step(enqueueDrainWork(() => isCurrent()
               ? (saver.refresh ?? refreshTranscriberMeeting)(tcw, row, fetchedTranscript, async () => {
-                const latest = await client.transcript(row.id);
+                const latest = await step(client.transcript(row.id));
                 return isCurrent() && latest.status === "ok" && latest.value.status === "ready"
                   ? latest.value.transcript : null;
               })
-              : Promise.resolve(null));
+              : Promise.resolve(null)));
             if (!isCurrent()) return;
             onState(row.id, result?.ok ? "saved" : "error");
             if (result?.ok) {
@@ -167,20 +187,21 @@ onPendingSnapshot?: (
     }
     onState(row.id, "saving");
     try {
-      const result = await client.transcript(row.id);
+      const result = await step(client.transcript(row.id));
       if (!isCurrent()) return;
       let ok = false;
       if (result.status === "ok" && result.value.status === "ready") {
         const fetchedTranscript = result.value.transcript;
-        const saved = await enqueueDrainWork(async () => {
+        const saved = await step(enqueueDrainWork(async () => {
           if (!isCurrent()) return null;
           return saver.save(tcw, row, fetchedTranscript);
-        });
+        }));
         ok = saved?.ok === true;
       }
       if (!isCurrent()) return;
       if (ok) {
         saved.add(row.id);
+        confirm([row.id]);
         observedSaved?.ids.add(row.id);
         captureEvents.emit("library-changed", { source: TRANSCRIBER_MEETING_SOURCE, sourceId: row.id });
       }
@@ -209,6 +230,8 @@ export function useTranscriberLibrarySync(input: {
     let relaying = false;
     const refreshBackoff: TranscriberRefreshBackoff = new Map();
     const knownVersions = new Map<string, number>();
+    // Saved ids whose transcript body this account's tabs confirmed this session (TC-1274).
+    const confirmedSaved = new Set<string>();
     const observedSaved = { initialized: false, ids: new Set<string>() };
     setSaved({});
     // This sync writes the user's space but never touches the vault; native
@@ -236,6 +259,7 @@ export function useTranscriberLibrarySync(input: {
       if (!accountCurrent()) return;
       if (message.kind === "pass") lastPassAt = Math.max(lastPassAt, message.at);
       else if (message.kind === "state") setState(message.id, message.state);
+      else if (message.kind === "confirmed") for (const id of message.ids) confirmedSaved.add(id);
       else if (message.kind === "library-changed") {
         relaying = true;
         try { captureEvents.emit("library-changed", { source: TRANSCRIBER_MEETING_SOURCE, sourceId: message.sourceId }); }
@@ -245,11 +269,12 @@ export function useTranscriberLibrarySync(input: {
     const unsubscribeChanges = captureEvents.on("library-changed", (detail) => {
       if (!relaying && detail?.source === TRANSCRIBER_MEETING_SOURCE) post({ kind: "library-changed", sourceId: detail.sourceId });
     });
-    const pass = async (current: () => boolean) => {
+    const confirmed = (ids: string[]) => { if (accountCurrent()) post({ kind: "confirmed", ids }); };
+    const pass = async (current: () => boolean, progress: () => void) => {
       // Meeting storage is readable with the vault locked. Snapshot now so
       // another device's saves during the lock are not part of the baseline.
       if (!observedSaved.initialized && !unlocked()) {
-        const baseline = await saver.listSaved(tcw, readOnDrainLane(current), current);
+        const baseline = await saver.listSaved(tcw, readOnDrainLane(current, progress), current, confirmedSaved);
         if (baseline?.ok && current()) {
           for (const id of baseline.data?.saved ?? []) observedSaved.ids.add(id);
           observedSaved.initialized = true;
@@ -258,7 +283,8 @@ export function useTranscriberLibrarySync(input: {
       if (sessionCurrent() && unlocked()) {
         // Each save takes the drain lane itself; the pass as a whole does not hold it.
         await syncTranscriberLibrary({
-          tcw, client: api, saver, isCurrent: current, observedSaved, refreshBackoff, knownVersions, onState: (id, state) => {
+          tcw, client: api, saver, isCurrent: current, observedSaved, refreshBackoff, knownVersions,
+          confirmedSaved, onConfirmed: confirmed, onProgress: progress, onState: (id, state) => {
             setState(id, state);
             if (accountCurrent()) post({ kind: "state", id, state });
           },
@@ -266,22 +292,34 @@ export function useTranscriberLibrarySync(input: {
             if (!current()) return;
             await enqueueDrainWork(() => current()
               ? writePendingReconcileSnapshot(tcw.kv, "transcriber", transcriberPendingRows(rows, savedIds, unknownIds), observedAt, current)
-              : Promise.resolve({ ok: true, changed: false }));
+              : Promise.resolve({ ok: true, changed: false })).finally(progress);
           },
         });
       }
     };
     // The pass holds the account-wide lock, and its space calls have no deadline of their
-    // own: a hung drain lane in this tab must not stop sync in every tab. At the deadline
-    // the pass is abandoned (its remaining steps see `current()` false and stop) and the
-    // lock is let go; the next tick, here or in another tab, starts a fresh pass.
+    // own: a hung drain lane in this tab must not stop sync in every tab. The deadline is
+    // an idle one: every completed step restarts it, so a long scan that keeps moving runs
+    // to the end, and only a pass with no step finished for the whole deadline counts as
+    // stuck. Then the pass is abandoned (its remaining steps see `current()` false and
+    // stop) and the lock is let go; the next tick, here or in another tab, starts afresh.
+    // setTimeout, not AbortSignal.timeout: Safari before 16 lacks it.
     const boundedPass = async () => {
-      const deadline = AbortSignal.timeout(passDeadlineMs ?? TRANSCRIBER_PASS_DEADLINE_MS);
-      const current = () => accountCurrent() && !deadline.aborted;
-      const expired = new Promise<void>((resolve) => deadline.addEventListener("abort", () => resolve(), { once: true }));
-      await Promise.race([pass(current).catch(() => { /* The next wake retries failures outside an individual recording. */ }), expired]);
-      // A failed pass counts too; one that ran out of time does not hold other tabs back.
-      if (deadline.aborted) return;
+      const idleMs = passDeadlineMs ?? TRANSCRIBER_PASS_DEADLINE_MS;
+      const stalled = new AbortController();
+      let timer = setTimeout(() => stalled.abort(), idleMs);
+      const progress = () => {
+        if (stalled.signal.aborted) return;
+        clearTimeout(timer);
+        timer = setTimeout(() => stalled.abort(), idleMs);
+      };
+      const current = () => accountCurrent() && !stalled.signal.aborted;
+      const expired = new Promise<void>((resolve) => stalled.signal.addEventListener("abort", () => resolve(), { once: true }));
+      try {
+        await Promise.race([pass(current, progress).catch(() => { /* The next wake retries failures outside an individual recording. */ }), expired]);
+      } finally { clearTimeout(timer); }
+      // A failed pass counts too; a stalled one does not hold other tabs back.
+      if (stalled.signal.aborted) return;
       lastPassAt = Date.now();
       post({ kind: "pass", at: lastPassAt });
     };
