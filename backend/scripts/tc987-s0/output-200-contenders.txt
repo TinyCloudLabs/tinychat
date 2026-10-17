@@ -1,0 +1,112 @@
+[S0] node host=http://127.0.0.1:18471 version={"protocol":1,"version":"1.20.7","features":["kv","delegation","sharing","sql","hooks","signed-urls","encryption","kv-sync-v1","kv-sync-root"],"nodeId":"did:key:z6MkoBu74SNrMGhQBN4p7zmbGTbLPWZToMXfpRi3wvEBcgyU","inTEE":false,"did_resolution":{"network_methods":false,"refused_total":0}}
+TinyCloud account index initialization failed; continuing registry sync {
+  status: 404,
+  code: "SQL_DATABASE_NOT_FOUND",
+}
+[S0] owner=did:pkh:eip155:1:0x575434b375d40BAA95BC7807e9e90E5295eFcC4c space=tinycloud:pkh:eip155:1:0x575434b375d40BAA95BC7807e9e90E5295eFcC4c:applications library tables created by owner
+[S0] backend did=did:pkh:eip155:1:0x0B6843b77FE79744F62725Ce88844f02d3Cbb2ED
+[S0] item=grant verdict=PASS check="G1 is a silent session-key UCAN (prompted=false)" detail={"prompted":false}
+[S0] item=grant verdict=INFO check="G1 att is exactly sql read+write on the library with empty nota-bene" detail={"aud":"did:pkh:eip155:1:0x0B6843b77FE79744F62725Ce88844f02d3Cbb2ED","att":{"tinycloud:pkh:eip155:1:0x575434b375d40BAA95BC7807e9e90E5295eFcC4c:applications/sql/xyz.tinycloud.feed-workflows/library":{"tinycloud.sql/read":[{}],"tinycloud.sql/write":[{}]}}}
+TinyCloud account index initialization failed; continuing registry sync {
+  status: 404,
+  code: "SQL_DATABASE_NOT_FOUND",
+}
+TinyCloud account index initialization failed; continuing registry sync {
+  status: 404,
+  code: "SQL_DATABASE_NOT_FOUND",
+}
+[S0] item=note verdict=INFO check="DDL via SDK under G1 (read+write only)" detail=AUTH_UNAUTHORIZED status=401 SQL execute failed: 401 - Unauthorized Action: tinycloud:pkh:eip155:1:0x575434b375d40BAA95BC7807e9e90E5295eFcC4c:applications/sql/xyz.tinycloud.feed-workflows/library / tinycloud.sql/schema
+[S0] item=1 verdict=PASS check="first INSERT … ON CONFLICT(run_key) DO NOTHING inserts (changes=1)" detail={"actual":1,"expected":1}
+[S0] item=1 verdict=PASS check="duplicate enqueue is a no-op (changes=0, no error)" detail={"actual":0,"expected":0}
+[S0] item=1 verdict=PASS check="INSERT … ON CONFLICT DO UPDATE … WHERE (upsert form) accepted (changes=1)" detail={"actual":1,"expected":1}
+[S0] item=1 verdict=PASS check="exactly one row for the run_key" detail={"actual":1,"expected":1}
+[S0] item=2 verdict=PASS check="acquire with fresh claim_gen=0 → changes=1" detail={"actual":1,"expected":1}
+[S0] item=2 verdict=PASS check="second acquire with the same seen claim_gen → changes=0" detail={"actual":0,"expected":0}
+[S0] item=2 verdict=PASS check="acquire of a run whose next_at is in the future → changes=0" detail={"actual":0,"expected":0}
+[S0] item=2 verdict=PASS check="renew with own token → changes=1" detail={"actual":1,"expected":1}
+[S0] item=2 verdict=PASS check="renew with a foreign token → changes=0 (lease lost)" detail={"actual":0,"expected":0}
+[S0] item=2 verdict=PASS check="reclaim of an unexpired lease → changes=0" detail={"actual":0,"expected":0}
+[S0] item=2 verdict=PASS check="reclaim of an expired lease with seen claim_gen=1 → changes=1" detail={"actual":1,"expected":1}
+[S0] item=2 verdict=PASS check="old holder's renew after reclaim → changes=0" detail={"actual":0,"expected":0}
+[S0] item=2 verdict=PASS check="retry by current holder → changes=1 and clears token/lease" detail={"actual":1,"expected":1}
+[S0] item=2 verdict=PASS check="after retry: state=queued, claim_token/lease cleared, claim_gen=2" detail={"actual":["queued",null,null,2],"expected":["queued",null,null,2]}
+TinyCloud account registry sync failed after retries warn: Failed to write manifest registry records: Failed to put key "applications/xyz.tinycloud.tinychat": 404 - Space not found
+ cause: {
+  code: "KV_WRITE_FAILED",
+  message: "Failed to put key \"applications/xyz.tinycloud.tinychat\": 404 - Space not found",
+  service: "account",
+  cause: undefined,
+  meta: [Object ...],
+},
+
+      at writeManifestRegistryRecords (/tmp/tc987-s0/tinychat/node_modules/.bun/@tinycloud+node-sdk@3.2.1+a87db4669db97ac8/node_modules/@tinycloud/node-sdk/dist/index.js:22110:13)
+      at async <anonymous> (/tmp/tc987-s0/tinychat/node_modules/.bun/@tinycloud+node-sdk@3.2.1+a87db4669db97ac8/node_modules/@tinycloud/node-sdk/dist/index.js:22219:22)
+      at async withAccountRegistryRetry (/tmp/tc987-s0/tinychat/node_modules/.bun/@tinycloud+node-sdk@3.2.1+a87db4669db97ac8/node_modules/@tinycloud/node-sdk/dist/index.js:22300:15)
+      at async <anonymous> (/tmp/tc987-s0/tinychat/node_modules/.bun/@tinycloud+node-sdk@3.2.1+a87db4669db97ac8/node_modules/@tinycloud/node-sdk/dist/index.js:22200:20)
+      at async <anonymous> (/tmp/tc987-s0/tinychat/node_modules/.bun/@tinycloud+node-sdk@3.2.1+a87db4669db97ac8/node_modules/@tinycloud/node-sdk/dist/index.js:22255:15)
+
+[S0] item=2 verdict=PASS check="concurrent acquire from two instances, 200 trials: exactly one winner each" detail={"actual":200,"expected":200,"extra":{"outcomes":["10","01","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10"]}}
+[S0] item=2 verdict=PASS check="fenced publish by holder → changes=1" detail={"actual":1,"expected":1}
+[S0] item=2 verdict=PASS check="done row: acquire/reclaim/renew/retry/publish all → changes=0" detail={"actual":[0,0,0,0,0],"expected":[0,0,0,0,0]}
+[S0] item=2 verdict=PASS check="done row unchanged (state=done, published_attempt=1, gen=1)" detail={"actual":["done",1,1],"expected":["done",1,1]}
+[S0] item=note verdict=PASS check="strftime deadline CAS, future deadline → changes=1" detail={"actual":1,"expected":1}
+[S0] item=note verdict=PASS check="strftime deadline CAS, expired deadline → changes=0" detail={"actual":0,"expected":0}
+[S0] item=3 verdict=PASS check="G1 is unconstrained: raw execute already accepted above, so named statements are not required" detail={"actual":0,"expected":0}
+[S0] item=3 verdict=INFO check="node-sdk 3.2.1 delegateTo with constrained-statements readOnly:false with a write statement" detail={"failedAt":"delegateTo","error":"Cannot create a caveated delegation because this WASM delegation boundary cannot preserve every ReCap caveat branch exactly."}
+[S0] item=3 verdict=INFO check="node-sdk 3.2.1 delegateTo with constrained-statements readOnly:true with a write statement" detail={"failedAt":"delegateTo","error":"Cannot create a caveated delegation because this WASM delegation boundary cannot preserve every ReCap caveat branch exactly."}
+[S0] item=3 verdict=INFO check="node-sdk 3.2.1 delegateTo with constrained-statements readOnly:true with a SELECT statement (control)" detail={"failedAt":"delegateTo","error":"Cannot create a caveated delegation because this WASM delegation boundary cannot preserve every ReCap caveat branch exactly."}
+[S0] item=4 verdict=PASS check="stale worker A's fenced publish matches zero rows" detail={"actual":0,"expected":0,"extra":{"trace":["A acquire changes=1 gen=1","A token check changes=1; pausing","B reclaim (seen gen=1) changes=1 gen=2","B fenced publish changes=1","A resumed","A attempt-scoped output changes=1","A fenced publish changes=0"]}}
+[S0] item=4 verdict=PASS check="Home-resolved content (via published_attempt) is the replacement's" detail={"actual":["content-from-REPLACEMENT-attempt-B",2,"done"],"expected":["content-from-REPLACEMENT-attempt-B",2,"done"],"extra":{"outputs":[[1,"content-from-STALE-attempt-A"],[2,"content-from-REPLACEMENT-attempt-B"]]}}
+[S0] item=4 verdict=PASS check="control (legacy-upsert): stale worker overwrites the replacement's published content without the pointer" detail={"visible":"content-from-STALE-attempt-A","aPublish":1,"trace":["A acquire changes=1 gen=1","A token check changes=1; pausing","B reclaim (seen gen=1) changes=1 gen=2","B upsert + fenced finish changes=1","A resumed","A overwritable upsert changes=1"]}
+[S0] item=4 verdict=PASS check="control (batch): stale worker overwrites the replacement's published content without the pointer" detail={"visible":"content-from-STALE-attempt-A","aPublish":[0,1],"trace":["A acquire changes=1 gen=1","A token check changes=1; pausing","B reclaim (seen gen=1) changes=1 gen=2","B upsert + fenced finish changes=1","A resumed","A batch [fenced publish, upsert] → [0,1]"]}
+[S0] item=5 verdict=PASS check="transcript-writer grant passes backend verifyTranscriptWriterGrant" detail={"resources":["kv:xyz.tinycloud.tinychat/connectors/tinycloud-transcriber/","sql:xyz.tinycloud.tinychat/connectors"]}
+TinyCloud account index initialization failed; continuing registry sync {
+  status: 404,
+  code: "SQL_DATABASE_NOT_FOUND",
+}
+[S0] item=5 verdict=PASS check="backend writes a transcriber meeting through the grant (delivery path)" detail={"id":"f1a79652-7383-83b3-902b-f73e72b2a5e4","row":"inserted","body":"written"}
+[S0] item=5 verdict=PASS check="backend reads connector_meeting.started_at via the transcript-writer grant" detail={"actual":"2026-10-16T15:04:05.000Z","expected":"2026-10-16T15:04:05.000Z"}
+[S0] item=5 verdict=PASS check="a meeting with no start time reads back as NULL (unknown_start path)" detail={"actual":[[null]],"expected":[[null]]}
+[S0] item=5 verdict=PASS check="a meeting not yet in the space reads back as no row" detail={"actual":[],"expected":[]}
+[S0] item=5 verdict=PASS check="G1 (library grant) is refused on the connectors DB: start time needs the transcript-writer grant" detail=AUTH_UNAUTHORIZED status=401 SQL query failed: 401 - Unauthorized Action: tinycloud:pkh:eip155:1:0x575434b375d40BAA95BC7807e9e90E5295eFcC4c:applications/sql/xyz.tinycloud.tinychat/connectors / tinycloud.sql/read
+
+[S0] ===== summary =====
+[S0] PASS item=grant G1 is a silent session-key UCAN (prompted=false)
+[S0] INFO item=grant G1 att is exactly sql read+write on the library with empty nota-bene
+[S0] INFO item=note  DDL via SDK under G1 (read+write only)
+[S0] PASS item=1     first INSERT … ON CONFLICT(run_key) DO NOTHING inserts (changes=1)
+[S0] PASS item=1     duplicate enqueue is a no-op (changes=0, no error)
+[S0] PASS item=1     INSERT … ON CONFLICT DO UPDATE … WHERE (upsert form) accepted (changes=1)
+[S0] PASS item=1     exactly one row for the run_key
+[S0] PASS item=2     acquire with fresh claim_gen=0 → changes=1
+[S0] PASS item=2     second acquire with the same seen claim_gen → changes=0
+[S0] PASS item=2     acquire of a run whose next_at is in the future → changes=0
+[S0] PASS item=2     renew with own token → changes=1
+[S0] PASS item=2     renew with a foreign token → changes=0 (lease lost)
+[S0] PASS item=2     reclaim of an unexpired lease → changes=0
+[S0] PASS item=2     reclaim of an expired lease with seen claim_gen=1 → changes=1
+[S0] PASS item=2     old holder's renew after reclaim → changes=0
+[S0] PASS item=2     retry by current holder → changes=1 and clears token/lease
+[S0] PASS item=2     after retry: state=queued, claim_token/lease cleared, claim_gen=2
+[S0] PASS item=2     concurrent acquire from two instances, 200 trials: exactly one winner each
+[S0] PASS item=2     fenced publish by holder → changes=1
+[S0] PASS item=2     done row: acquire/reclaim/renew/retry/publish all → changes=0
+[S0] PASS item=2     done row unchanged (state=done, published_attempt=1, gen=1)
+[S0] PASS item=note  strftime deadline CAS, future deadline → changes=1
+[S0] PASS item=note  strftime deadline CAS, expired deadline → changes=0
+[S0] PASS item=3     G1 is unconstrained: raw execute already accepted above, so named statements are not required
+[S0] INFO item=3     node-sdk 3.2.1 delegateTo with constrained-statements readOnly:false with a write statement
+[S0] INFO item=3     node-sdk 3.2.1 delegateTo with constrained-statements readOnly:true with a write statement
+[S0] INFO item=3     node-sdk 3.2.1 delegateTo with constrained-statements readOnly:true with a SELECT statement (control)
+[S0] PASS item=4     stale worker A's fenced publish matches zero rows
+[S0] PASS item=4     Home-resolved content (via published_attempt) is the replacement's
+[S0] PASS item=4     control (legacy-upsert): stale worker overwrites the replacement's published content without the pointer
+[S0] PASS item=4     control (batch): stale worker overwrites the replacement's published content without the pointer
+[S0] PASS item=5     transcript-writer grant passes backend verifyTranscriptWriterGrant
+[S0] PASS item=5     backend writes a transcriber meeting through the grant (delivery path)
+[S0] PASS item=5     backend reads connector_meeting.started_at via the transcript-writer grant
+[S0] PASS item=5     a meeting with no start time reads back as NULL (unknown_start path)
+[S0] PASS item=5     a meeting not yet in the space reads back as no row
+[S0] PASS item=5     G1 (library grant) is refused on the connectors DB: start time needs the transcript-writer grant
+[S0] node calls=704 p50=45ms p95=62ms max=1908ms (item2.contend.B) stalls(>=5000ms)=0 wall=31239ms
+[S0] RESULT ALL PASS
