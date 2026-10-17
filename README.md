@@ -207,6 +207,44 @@ run's final "Production state" table says what changed, including when a later
 check failed. See [docs/deployment.md](docs/deployment.md) for the deploy key,
 the rulesets and their residual risk.
 
+**Cutting a stable release.** Merging the Release stable PR is the whole
+release: the `Release` run tags the stable versions, then its dispatch step
+runs `desktop-release.yml` (for a new stable `exo-desktop` tag) and then
+`deploy-production.yml` (for new stable backend or web tags). GitHub refuses
+to dispatch a disabled workflow (HTTP 422). The step then fails and nothing
+after it runs: no production deploy, no desktop build, no regenerated Release
+stable PR. That is how 0.8.0 (#420) and 0.8.1 (#439) failed to deploy
+(TC-1324). **Never disable `release.yml`, `desktop-release.yml` or
+`deploy-production.yml` for a cut.** Only these holds are needed:
+
+1. **Freeze `main`** (no merges, coordination only) from the exact-SHA checks
+   until the stable `Release` run has pushed its tags. QA and CI cover one
+   SHA; a merge in between makes the stable PR stale, so the release is
+   refused, or puts code nobody checked into the release.
+2. **No manual `deploy-production.yml` or `desktop-release.yml` runs** while the
+   `Release` run and the runs it dispatches are in progress. They queue in the
+   same concurrency group and would redeploy or race the tagged commit.
+3. **Only if the go excludes desktop** (for example a web-only hotfix; the
+   fixed group still tags `exo-desktop`): let the dispatch happen, then cancel
+   the `Desktop release (Exo)` run it started (`gh run cancel <id>`) before its
+   publish job. Never block it by disabling the workflow.
+
+Immediately before the merge, every dispatched workflow must read `active`:
+
+```bash
+for w in release desktop-release deploy-production; do
+  gh api repos/TinyCloudLabs/tinychat/actions/workflows/$w.yml --jq '"\(.path) \(.state)"'
+done
+```
+
+After the merge, watch `Release`, `Deploy production` and `Desktop release (Exo)`
+to the end, then check that `gh release view exo-desktop@<version>` shows a
+published, latest release with the DMG, `.app.zip` and `SHA256SUMS.txt`. If the
+dispatch step failed anyway, start what it didn't, with the same inputs:
+`gh workflow run desktop-release.yml --ref main -f tag=exo-desktop@<version>`
+and `gh workflow run deploy-production.yml --ref main -f tag=<backend tag, else
+web tag> -f backend=<true|false> -f web=<true|false>`.
+
 `desktop/package.json` is the single source of the desktop version:
 `tauri.conf.json` reads it (`"version": "../package.json"`), and the release
 workflow copies it into `desktop/src-tauri/Cargo.toml` and `Cargo.lock`.
