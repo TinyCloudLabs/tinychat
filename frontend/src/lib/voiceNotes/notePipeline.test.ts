@@ -67,6 +67,8 @@ interface Row {
   caption?: string;
   cause?: string | RegExp;
   action?: PipelineActionKind;
+  /** The second action's label, when the row has one (a Private storage-full refusal: Transcribe again). */
+  secondary?: string;
   notice?: string;
 }
 
@@ -82,12 +84,13 @@ const ROWS: Row[] = [
 
   // 2. In your space
   { name: "space: waiting to upload", patch: {}, states: { phone: "done", space: "waiting" }, current: "space", caption: "Waiting to upload" },
-  { name: "space: another operation is using the lane", patch: { space: { pending: { upload: { state: "waiting", bytes: 0, total: 100 }, waitingBehind: 0 }, lane: { busy: true, depth: 3 } } }, current: "space", caption: "Waiting to start" },
+  { name: "space: read-only lane work does not block this note", patch: { space: { pending: { upload: { state: "waiting", bytes: 0, total: 100 }, waitingBehind: 0 }, lane: { busy: true, depth: 3 } } }, current: "space", caption: "Waiting to upload" },
+
   { name: "space: setup before upload", patch: { space: { pending: { upload: { state: "preparing", bytes: 0, total: 100 } } } }, states: { space: "active" }, current: "space", caption: "Preparing audio upload…" },
   { name: "space: nothing ahead and an idle lane is just waiting", patch: { space: { pending: { waitingBehind: 0 }, lane: { busy: false, depth: 0 } } }, current: "space", caption: "Waiting to upload" },
   { name: "space: one save ahead stays a plain wait", patch: { space: { pending: { waitingBehind: 1 }, lane: { busy: true, depth: 2 } } }, current: "space", caption: "Waiting to start" },
   { name: "space: many saves ahead stay a plain wait", patch: { space: { pending: { waitingBehind: 11 }, lane: { busy: true, depth: 12 } } }, current: "space", caption: "Waiting to start" },
-  { name: "space: a busy lane with no per-note position never invents one", patch: { space: { pending: {}, lane: { busy: true, depth: 5 } } }, current: "space", caption: "Waiting to start" },
+  { name: "space: a busy lane without this note's queue position stays a plain wait", patch: { space: { pending: {}, lane: { busy: true, depth: 5 } } }, current: "space", caption: "Waiting to upload" },
   { name: "space: uploading 42%", patch: { space: { pending: { upload: { state: "uploading", bytes: 42, total: 100 } } } }, states: { space: "active" }, current: "space", caption: "Uploading audio to your TinyCloud space · 42%" },
   { name: "space: retrying", patch: { space: { pending: { upload: { state: "retrying", bytes: 42, total: 100 } } } }, states: { space: "active" }, current: "space", caption: "Retrying…" },
   { name: "space: signed out", patch: { space: { pending: { held: "signed-out" } } }, states: { space: "blocked" }, current: "space", cause: "You're signed out. This note is safe on this browser.", action: "sign-in" },
@@ -101,7 +104,7 @@ const ROWS: Row[] = [
   { name: "space: a node-rejected upload has calm copy", patch: { space: { pending: { failed: { kind: "rejected", message: "The TinyCloud node rejected this upload." } } } }, states: { space: "failed" }, current: "space", cause: "Couldn't sync to your TinyCloud space.", action: "retry" },
   { name: "space: timeout is Try again", patch: { space: { pending: { failed: { kind: "timeout", message: "deadline" } } } }, states: { space: "failed" }, current: "space", cause: "Saving timed out. This note is safe on this browser.", action: "retry" },
   { name: "space: server error is calm Try again copy", patch: { space: { pending: { failed: { kind: "server", message: "503 from kv" } } } }, states: { space: "failed" }, current: "space", cause: "Your space couldn't take this note. It is safe on this browser. Try again.", action: "retry" },
-  { name: "space: quota is full (no action)", patch: { space: { pending: { failed: { kind: "quota", message: "quota" } } } }, states: { space: "blocked" }, current: "space", cause: "Your space is full" },
+  { name: "space: quota is full offers Manage storage", patch: { space: { pending: { failed: { kind: "quota", message: "quota" } } } }, states: { space: "blocked" }, current: "space", cause: /Your TinyCloud storage is full\. Your recordings are safe on this device and will upload when space is available\./, action: "manage-storage" },
   { name: "space: an expired session is Sign in", patch: { space: { pending: { failed: { kind: "auth", message: "401" } } } }, states: { space: "blocked" }, current: "space", cause: "Your session ended. This note is safe on this browser.", action: "sign-in" },
   { name: "space: a source failure has calm copy and no action", patch: { space: { pending: { failed: { kind: "source", message: "Audio file is too large to read" } } } }, states: { space: "failed" }, current: "space", cause: "Couldn't read the recording on this browser." },
   { name: "space: a source failure with no message has the same copy", patch: { space: { pending: { failed: { kind: "source", message: " " } } } }, states: { space: "failed" }, current: "space", cause: "Couldn't read the recording on this browser." },
@@ -143,6 +146,7 @@ const ROWS: Row[] = [
   { name: "uploads ahead mean nothing once the row has been read", patch: local({ onDevice: od({ stt: stt("done") }), afterUploads: true }, { space: SAVED }), states: { transcript: "blocked" }, current: "transcript", cause: "The transcript is ready on this browser but hasn't been added to this note", action: "retry" },
   { name: "local: transcript syncing to the space", patch: local({ onDevice: od({ stt: stt("done"), sync: { state: "syncing" } }) }, { space: SAVED }), states: { transcript: "active" }, current: "transcript", caption: "Adding to this note…" },
   { name: "local: transcript sync failed has calm copy", patch: local({ onDevice: od({ stt: stt("done"), sync: { state: "failed", message: "write lane timed out" } }) }, { space: SAVED }), states: { transcript: "failed" }, current: "transcript", cause: "Couldn't add the transcript to this note", action: "retry" },
+  { name: "local: transcript held for storage offers Manage storage, not Try again", patch: local({ onDevice: od({ stt: stt("done"), sync: { state: "held", message: "x" } }) }, { space: SAVED }), states: { transcript: "blocked" }, current: "transcript", cause: /^Saved on this \w+\. Your TinyCloud storage is full\. Your transcript is kept on this device and will save when space is available\.$/, action: "manage-storage" },
   { name: "local: transcript synced", patch: local({ onDevice: od({ stt: stt("done"), sync: { state: "synced" } }) }, { space: SAVED }), states: { space: "done", transcript: "done" }, current: null },
   { name: "local: native transcription failed has calm copy", patch: local({ onDevice: od({ stt: stt("failed", "decoder crashed") }) }, { space: SAVED }), states: { transcript: "failed" }, current: "transcript", cause: "Couldn't transcribe on this browser", action: "retry" },
   { name: "local: native transcription failed with no error still names the failure", patch: local({ onDevice: od({ stt: stt("failed") }) }, { space: SAVED }), current: "transcript", cause: "Couldn't transcribe on this browser", action: "retry" },
@@ -165,9 +169,19 @@ const ROWS: Row[] = [
   { name: "private: check failed is Check again", patch: cloud({ kind: "blocked", reason: "check-failed" }), states: { transcript: "blocked" }, current: "transcript", cause: "Couldn't check whether private transcription is available", action: "check-again" },
   { name: "private: still checking just waits", patch: cloud({ kind: "blocked", reason: "checking" }), states: { transcript: "waiting" }, current: "transcript", caption: "Checking private transcription…" },
   { name: "private: no consent offers Review", patch: cloud({ kind: "blocked", reason: "no-consent" }), states: { transcript: "blocked" }, current: "transcript", cause: "Waiting for your OK to use Private", action: "review-consent" },
+  { name: "private: unknown limits says so and offers a re-check", patch: cloud({ kind: "blocked", reason: "limits-unknown" }), states: { transcript: "blocked" }, current: "transcript", cause: "Private's limits aren't available right now. Try again later.", action: "check-again" },
   { name: "private: held note shows its message (no action)", patch: cloud({ kind: "held", message: "This note began outside Exo. Transcribe it when you want." }), states: { transcript: "blocked" }, current: "transcript", cause: "This note began outside Exo. Transcribe it when you want." },
   { name: "private: retryable failure uses calm copy", patch: cloud({ kind: "failed", code: "server_error", message: "Transcription hit a snag.", retryable: true, reference: "ref-1" }), states: { transcript: "failed" }, current: "transcript", cause: "Private transcription didn't finish.", action: "retry" },
   { name: "private: non-retryable length failure has useful copy without a raw reference", patch: cloud({ kind: "failed", code: "recording_too_long", message: "This recording is too long to transcribe.", retryable: false, reference: "ref-9" }), states: { transcript: "failed" }, current: "transcript", cause: "This recording is too long to transcribe." },
+  { name: "private: storage full without local audio says it wasn't saved, with Manage storage then Transcribe again", patch: cloud({ kind: "failed", code: "storage_full", message: "Storage full.", retryable: false, reference: null }), states: { transcript: "blocked" }, current: "transcript", cause: "Your TinyCloud storage is full, so this transcript wasn't saved. Transcribe it again when space is available.", action: "manage-storage", secondary: "Transcribe again" },
+  { name: "private: storage full with the recording's local audio ready says it is safe on this device", patch: { route: "private-cloud", space: SAVED, transcript: { cloud: { kind: "failed", code: "storage_full", message: "Storage full.", retryable: false, reference: null }, localAudioReady: true } }, states: { transcript: "blocked" }, current: "transcript", cause: "Your TinyCloud storage is full, so this transcript wasn't saved. Your recording is safe on this device. Transcribe it again when space is available.", action: "manage-storage", secondary: "Transcribe again" },
+  { name: "private: a persisted full-storage refusal precedes a device-local choice failure", patch: cloud({
+    kind: "failed", code: "private_choice_persistence_failed", message: "Could not save this Private choice.", retryable: true, reference: null,
+  }, { transcript: { persistedState: "failed", errorCode: "storage_full", cloud: {
+    kind: "failed", code: "private_choice_persistence_failed", message: "Could not save this Private choice.", retryable: true, reference: null,
+  } } }), states: { transcript: "blocked" }, current: "transcript",
+  cause: "Your TinyCloud storage is full, so this transcript wasn't saved. Transcribe it again when space is available.",
+  action: "manage-storage", secondary: "Transcribe again" },
   { name: "private: no speech found is done", patch: cloud({ kind: "done", outcome: "no_speech" }), states: { transcript: "done" }, current: null },
   { name: "private: saved but no job yet", patch: { route: "private-cloud", space: SAVED }, states: { transcript: "waiting" }, current: "transcript", caption: "Waiting for private transcription" },
   { name: "private: a transcript in the space is not done before the note is saved", patch: { route: "private-cloud", transcript: { inSpace: "transcribed" } }, states: { space: "waiting", transcript: "waiting" }, current: "space" },
@@ -193,6 +207,13 @@ const ROWS: Row[] = [
   { name: "done: route off, no notes, in the space", patch: { space: SAVED }, states: { phone: "done", space: "done", transcript: "skipped", notes: "skipped" }, current: null },
   { name: "done: private transcript and notes", patch: { route: "private-cloud", hasNotesOrMoments: true, space: SAVED, transcript: { inSpace: "transcribed" }, notes: { state: "synced" } }, states: { phone: "done", space: "done", transcript: "done", notes: "done" }, current: null },
 ];
+  test("read-only lane work does not claim another operation is blocking this note", () => {
+    const pipeline = notePipeline(input({ space: {
+      pending: { upload: { state: "waiting", bytes: 0, total: 100 }, waitingBehind: 0 },
+      lane: { busy: true, depth: 1 },
+    } }));
+    expect(pipeline.steps.find((step) => step.key === "space")?.caption).toBe("Waiting to upload");
+  });
 
 const caption = (pipeline: NotePipeline, key: StepKey | null) => pipeline.steps.find((step) => step.key === key)?.caption;
 
@@ -210,6 +231,7 @@ describe("notePipeline: every row of the stages table", () => {
       else if (typeof row.cause === "string") expect(pipeline.blocker?.cause).toBe(row.cause);
       else expect(pipeline.blocker?.cause).toMatch(row.cause);
       if (row.cause !== undefined) expect(pipeline.blocker?.action?.kind).toBe(row.action);
+      if (row.secondary !== undefined) expect(pipeline.blocker?.secondaryAction).toEqual({ kind: "retry", label: row.secondary });
       expect(pipeline.notice).toBe(row.notice);
     });
   }

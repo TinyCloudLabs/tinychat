@@ -9,6 +9,7 @@ import type {
   CaptureOptions,
   CaptureSource,
   CaptureStatus,
+  LevelEvent,
   MicState,
   MicStateEvent,
   VoiceNoteAutoStopEvent,
@@ -24,12 +25,13 @@ export interface FakeVoiceNotes {
   plugin: VoiceNotesPlugin;
   /** Listeners added since creation, listeners not yet removed, and the ids deleteAudio was given. */
   stats(): { adds: number; active: number; recording: boolean; deleted: string[] };
-  emit(event: "level", payload: { level: number }): void;
+  emit(event: "level", payload: LevelEvent): void;
   emit(event: "micState", payload: MicStateEvent): void;
   emit(event: "recoveryFailed", payload: RecoveryFailedEvent): void;
   emit(event: "writeFailure", payload: WriteFailureEvent): void;
   emit(event: "recovered" | "committed", payload: { id: string }): void;
   emit(event: "autoStopped", payload: VoiceNoteAutoStopEvent): void;
+  emit(event: "presentRecorder", payload: { id: string | null; reason?: string }): void;
   /** Capacitor hands a retained presentRecorder event to the first listener only. */
   retainPresentRecorder(payload: { id: string | null; reason?: string }): void;
   /** A start the app did not make: a shortcut, intent or widget takes the engine's own default, as the native engines do. */
@@ -80,6 +82,8 @@ export function createFakeVoiceNotes(options: FakeVoiceNotesOptions = {}): FakeV
   };
 
   const plugin: VoiceNotesPlugin = {
+    evictCachedAudio: unsupported,
+    localAudioSize: unsupported,
     openSettings: unsupported,
     dismissShortcutRecovery: unsupported,
     consumeShortcutRecord: unsupported,

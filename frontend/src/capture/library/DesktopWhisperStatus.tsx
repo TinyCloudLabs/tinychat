@@ -93,10 +93,11 @@ export function desktopWhisperEnabled(): boolean {
   return appPlatform() === "tauri";
 }
 
-function DesktopWhisperJobStatus(props: { noteId: string; fallback: ReactNode; localRead: "loading" | "missing" | "timeout" | "failed"; onReadRetry?: () => void }) {
+function DesktopWhisperJobStatus(props: { noteId: string; fallback: ReactNode; localRead: "loading" | "missing" | "timeout" | "failed"; onReadRetry?: () => void; rerunOnly?: boolean }) {
   const job = useDesktopWhisperJob(props.noteId);
   const [retryError, setRetryError] = useState(false);
   useLogWhisperFailure(props.noteId, job);
+  if (props.rerunOnly && (!job?.explicitRerun || job.state === "done")) return null;
   if (!job) return <>{props.fallback}</>;
   const onRetry = () => {
     setRetryError(false);
@@ -105,9 +106,10 @@ function DesktopWhisperJobStatus(props: { noteId: string; fallback: ReactNode; l
   return <DesktopWhisperStatusView job={job} retryError={retryError} onRetry={onRetry} localRead={props.localRead} onReadRetry={props.onReadRetry} />;
 }
 
+
 /** Shows the note's Whisper job when it has one; otherwise `fallback`. Disabled, it is `fallback` and never touches the queue. */
-export function DesktopWhisperStatus(props: { noteId: string; fallback: ReactNode; enabled?: boolean; localRead?: "loading" | "missing" | "timeout" | "failed"; onReadRetry?: () => void }) {
+export function DesktopWhisperStatus(props: { noteId: string; fallback: ReactNode; enabled?: boolean; localRead?: "loading" | "missing" | "timeout" | "failed"; onReadRetry?: () => void; rerunOnly?: boolean }) {
   const enabled = props.enabled ?? desktopWhisperEnabled();
   if (!enabled) return <>{props.fallback}</>;
-  return <DesktopWhisperJobStatus noteId={props.noteId} fallback={props.fallback} localRead={props.localRead ?? "loading"} onReadRetry={props.onReadRetry} />;
+  return <DesktopWhisperJobStatus noteId={props.noteId} fallback={props.fallback} localRead={props.localRead ?? "loading"} onReadRetry={props.onReadRetry} rerunOnly={props.rerunOnly} />;
 }

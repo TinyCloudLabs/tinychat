@@ -18,7 +18,7 @@ import type { VoiceNoteTranscriptionProps } from "./transcriptionProps";
 const noop = () => {};
 
 function transcription(patch: Partial<VoiceNoteTranscriptionProps> = {}): VoiceNoteTranscriptionProps {
-  return { availability: "available", consented: true, maxSeconds: 600, jobs: new Map(), onTranscribe: noop, onConsent: noop, onTurnOff: noop, onRecheck: noop, ...patch };
+  return { availability: "available", consented: true, maxSeconds: 600, maxBytes: 186_496_800, jobs: new Map(), onTranscribe: noop, onConsent: noop, onTurnOff: noop, onRecheck: noop, ...patch };
 }
 
 function render(value: VoiceNoteTranscriptionProps | undefined, defaultAsking?: boolean, signedIn = true): string {

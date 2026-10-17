@@ -50,6 +50,7 @@ const { isDiscarded, pendingStore, saveRecording } = await import("@/lib/voiceNo
 const { useVoiceNoteRecorder } = await import("./useVoiceNoteRecorder");
 
 const tcw = { did: "did:example:alice", spaceId: "tinycloud:space" } as TinyCloudWeb;
+const PRIVATE_MAX_DURATION_SECONDS = 7_777;
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 /** Waits for a save to settle without assuming how many macrotasks it takes (CI and local runs differ). */
@@ -70,7 +71,11 @@ let paused = false;
 let plugin: VoiceNotesPlugin;
 
 async function stopNatively(): Promise<VoiceNoteRecording> {
-  const recording = { ...(await fake.plugin.stop()), id: currentId!, version: 2 as const, owner: tcw.did, rev: 1 };
+  const stopped = await fake.plugin.stop();
+  const recording = { ...stopped, id: currentId!, version: 2 as const, owner: tcw.did,
+    options: { ...stopped.options, transcriber: stopped.options?.transcriber ?? "on-device",
+      identifySpeakers: stopped.options?.identifySpeakers ?? false,
+      uploadAudio: stopped.options?.uploadAudio ?? true }, rev: 1 };
   currentId = null;
   paused = false;
   onPhone.push(recording);
@@ -79,10 +84,13 @@ async function stopNatively(): Promise<VoiceNoteRecording> {
 
 /** A recording made before this one, stopped at its limit, still on the phone. */
 function earlier(): VoiceNoteRecording {
-  const recording = { id: `old-${++serial}`, startedAt: 1, durationMs: 60_000, mimeType: "audio/mp4", sizeBytes: 4, silencedMs: 0, silencedEvents: 0, noSignalMs: 0, version: 2 as const, owner: tcw.did, rev: 1 };
+  const recording = { id: `old-${++serial}`, startedAt: 1, durationMs: 60_000, mimeType: "audio/mp4",
+    sizeBytes: 4, silencedMs: 0, silencedEvents: 0, noSignalMs: 0, version: 2 as const,
+    owner: tcw.did, rev: 1, options: { transcriber: "private-cloud" as const, identifySpeakers: false, uploadAudio: true } };
   onPhone.push(recording);
   return recording;
 }
+
 
 /** deleteAudio calls that fail before the phone lets a copy go. */
 let deleteFailures: number;
@@ -330,7 +338,7 @@ describe("voice-note recorder controller", () => {
     const { recorder, detach } = await attached();
     const received: number[] = [];
     const unsubscribe = recorder.subscribeLevel((level) => received.push(level));
-    fake.emit("level", { level: 10 ** (-25 / 20), peak: 10 ** (-10 / 20) });
+    fake.emit("level", { level: 10 ** (-25 / 20) });
     expect(received.at(-1)).toBeCloseTo(0.623, 2);
     fake.emit("level", { level: 0, peak: 0 });
     expect(received.at(-1)).toBe(0);
@@ -443,7 +451,7 @@ describe("voice-note recorder controller", () => {
     await expect(reopened.setNoteText("x")).rejects.toBe(readFailure);
     expect((await loadNote(id))?.md).toBe("Do not overwrite");
     expect(timers.map((timer) => timer.ms)).toEqual([1_000]);
-    fake.emit("micState", { id, state: "recording", reason: null, elapsedMs: 2_000 });
+    fake.emit("micState", { id, state: "recording", reason: null, elapsedMs: 2_000, at: Date.now() });
     await tick();
     expect(reads).toBe(1);
     expect(timers).toHaveLength(1);
@@ -528,13 +536,13 @@ describe("voice-note recorder controller", () => {
       const { recorder, detach } = await attached();
       await recorder.record();
       const id = currentId!;
-      fake.emit("micState", { id, state: "recording", reason: null, elapsedMs: 20_000 });
+      fake.emit("micState", { id, state: "recording", reason: null, elapsedMs: 20_000, at: Date.now() });
       now += 5_000;
       expect(recorder.markMoment()).toBe(25_000);
-      fake.emit("micState", { id, state: "paused", reason: "user", elapsedMs: 25_000 });
+      fake.emit("micState", { id, state: "paused", reason: "user", elapsedMs: 25_000, at: Date.now() });
       now += 40_000;
       expect(recorder.markMoment()).toBe(25_000);
-      fake.emit("micState", { id, state: "recording", reason: null, elapsedMs: 25_000 });
+      fake.emit("micState", { id, state: "recording", reason: null, elapsedMs: 25_000, at: Date.now() });
       expect(recorder.markMoment()).toBe(25_000);
       expect(await loadNote(id)).toBeNull();
       detach();
@@ -546,13 +554,14 @@ describe("voice-note recorder controller", () => {
       transcriber: "on-device", identifySpeakers: false });
     let consented = false;
     const recorder = controller({ consented: () => consented });
+    const route = { get transcriber() { return recorder.getTranscriber(); }, setTranscriber: recorder.setTranscriber.bind(recorder) };
     const detach = recorder.attach();
     await tick();
     await recorder.record();
-    expect(await setRecordingRoute(recorder, "private-cloud")).toBe("needs_consent");
+    expect(await setRecordingRoute(route, "private-cloud")).toBe("needs_consent");
     expect((await fake.plugin.status()).options?.transcriber).toBe("on-device");
 
-    expect(await consentToRecordingPrivateCloud(recorder, () => { consented = true; })).toBe("ok");
+    expect(await consentToRecordingPrivateCloud(route, () => { consented = true; })).toBe("ok");
     expect((await fake.plugin.status()).options?.transcriber).toBe("private-cloud");
     expect(recorder.getTranscriber()).toEqual({ id: "private-cloud", identifySpeakers: true, source: "recording" });
     expect((await fake.plugin.getCaptureDefaults()).transcriber).toBe("on-device");
@@ -567,8 +576,11 @@ describe("voice-note recorder controller", () => {
     const started: string[] = [];
     const transcriber = createVoiceNoteTranscriber({
       cloud: {
-        capabilities: async () => ({ max_bytes: 120_960_000, max_duration_seconds: 7_200, content_types: ["audio/mp4"] }),
+        capabilities: async () => ({ max_bytes: 120_960_000, max_duration_seconds: PRIVATE_MAX_DURATION_SECONDS, content_types: ["audio/mp4"], admission: "open" }),
         pendingSourceIds: () => [],
+        hasRemoteJob: () => false,
+        holdTranscript: () => {},
+        heldTranscript: () => null,
         transcribe: async () => { throw new Error("runNote is injected"); },
         finish: async () => {},
         releaseUnsent: async () => {},
@@ -1025,11 +1037,11 @@ describe("voice-note recorder controller", () => {
     await recorder.record();
     await recorder.stop();
     await tick();
-    expect(["local", "saved"]).toContain(recorder.getState().outcome);
-    const emit = fake.emit as unknown as (event: string, payload: { id: null; reason: string }) => void;
+    const outcome = recorder.getState().outcome;
+    expect(outcome === "local" || outcome === "saved").toBe(true);
     micDenied = true;
     microphoneGranted = false;
-    emit("presentRecorder", { id: null, reason: "permission_denied" });
+    fake.emit("presentRecorder", { id: null, reason: "permission_denied" });
     await tick();
     expect(recorder.getState().permissionDenied).toBe(true);
     expect(presented).toBe(1);
@@ -1569,7 +1581,7 @@ const hostWindow = () => ({ HTMLIFrameElement: class {}, document: hostDocument,
     function Probe() { recorder = useRecorder(); return null; }
     try {
       fakeVoiceNoteStore.save = fails;
-      await act(async () => root.render(createElement(RecorderProvider, { tcw: account, pipeline }, createElement(Probe))));
+      await act(async () => root.render(createElement(RecorderProvider, { tcw: account, pipeline, children: createElement(Probe) })));
       await act(async () => { await tick(); await tick(); });
       await act(async () => recorder!.record());
       await act(async () => { await tick(); });
@@ -1621,7 +1633,7 @@ const hostWindow = () => ({ HTMLIFrameElement: class {}, document: hostDocument,
     }
     try {
       fakeVoiceNoteStore.save = fails;
-      await act(async () => root.render(createElement(RecorderProvider, { tcw }, createElement(Probe))));
+      await act(async () => root.render(createElement(RecorderProvider, { tcw, children: createElement(Probe) })));
       await act(async () => { await tick(); await tick(); });
       await act(async () => recorder!.record());
       await tick();
@@ -1635,8 +1647,8 @@ const hostWindow = () => ({ HTMLIFrameElement: class {}, document: hostDocument,
       expect(recorder!.lastSaved).toBeTruthy();
       expect(changed).toEqual([{ source: "exo-voice-note", sourceId: recorder!.lastSaved!.id }]);
       await act(async () => root.render(createElement(RecorderProvider, {
-        tcw, onSaved: (recording: VoiceNoteRecording) => overridden.push(recording.id),
-      }, createElement(Probe))));
+        tcw, onSaved: (recording: VoiceNoteRecording) => overridden.push(recording.id), children: createElement(Probe),
+      })));
       await act(async () => recorder!.dismissOutcome());
       await act(async () => recorder!.record());
       await tick();
@@ -1971,7 +1983,7 @@ const hostWindow = () => ({ HTMLIFrameElement: class {}, document: hostDocument,
       expect(first.recorder.getState().captureIssues[recording.id]?.kind).toBe("write_failed");
       first.detach();
       const second = await attached();
-      fake.emit("recovered", { id: recording.id, recording });
+      fake.emit("recovered", { id: recording.id });
       expect(second.recorder.getState().captureIssues[recording.id]?.kind).toBe("partial_audio");
       second.detach();
       onPhone = []; // Upload removed the native sidecar; the notice is still local.
@@ -2039,14 +2051,14 @@ const hostWindow = () => ({ HTMLIFrameElement: class {}, document: hostDocument,
   test("a mic event cannot hide a failed Resume", async () => {
     const base = plugin;
     __setVoiceNotesForTests({ ...base, async resume() {
-      fake.emit("micState", { id: currentId, state: "needs_user", reason: "resume_blocked" });
+      fake.emit("micState", { id: currentId, state: "needs_user", reason: "resume_blocked", at: Date.now() });
       throw Object.assign(new Error("microphone busy"), { code: "resume_failed" });
     } }, { available: true });
     const { recorder } = await attached();
     await recorder.record();
     await recorder.pause();
     await recorder.resume();
-    fake.emit("micState", { id: currentId, state: "needs_user", reason: "resume_blocked" });
+    fake.emit("micState", { id: currentId, state: "needs_user", reason: "resume_blocked", at: Date.now() });
     expect(recorder.getState()).toMatchObject({ mic: { state: "needs_user" }, error: "Could not resume: microphone busy" });
   });
 
@@ -2451,8 +2463,11 @@ const hostWindow = () => ({ HTMLIFrameElement: class {}, document: hostDocument,
         const enclaveJobs: string[] = [];
         const transcriber = createVoiceNoteTranscriber({
           cloud: {
-            capabilities: async () => ({ max_bytes: 120_960_000, max_duration_seconds: 7_200, content_types: ["audio/mp4"] }),
+            capabilities: async () => ({ max_bytes: 120_960_000, max_duration_seconds: PRIVATE_MAX_DURATION_SECONDS, content_types: ["audio/mp4"], admission: "open" }),
             pendingSourceIds: () => [],
+            hasRemoteJob: () => false,
+            holdTranscript: () => {},
+            heldTranscript: () => null,
             transcribe: async () => { throw new Error("runNote is injected"); },
             finish: async () => {},
             releaseUnsent: async () => {},
@@ -2721,8 +2736,11 @@ const hostWindow = () => ({ HTMLIFrameElement: class {}, document: hostDocument,
           const enclaveJobs: string[] = [];
           const transcriber = createVoiceNoteTranscriber({
             cloud: {
-              capabilities: async () => ({ max_bytes: 120_960_000, max_duration_seconds: 7_200, content_types: ["audio/mp4"] }),
+              capabilities: async () => ({ max_bytes: 120_960_000, max_duration_seconds: PRIVATE_MAX_DURATION_SECONDS, content_types: ["audio/mp4"], admission: "open" }),
               pendingSourceIds: () => [],
+              hasRemoteJob: () => false,
+              holdTranscript: () => {},
+              heldTranscript: () => null,
               transcribe: async () => { throw new Error("runNote is injected"); },
               finish: async () => {},
               releaseUnsent: async () => {},
@@ -2873,8 +2891,11 @@ const hostWindow = () => ({ HTMLIFrameElement: class {}, document: hostDocument,
         const jobs: string[] = [];
         const real = createVoiceNoteTranscriber({
           cloud: {
-            capabilities: async () => ({ max_bytes: 120_960_000, max_duration_seconds: 7_200, content_types: ["audio/mp4"] }),
+            capabilities: async () => ({ max_bytes: 120_960_000, max_duration_seconds: PRIVATE_MAX_DURATION_SECONDS, content_types: ["audio/mp4"], admission: "open" }),
             pendingSourceIds: () => [],
+            hasRemoteJob: () => false,
+            holdTranscript: () => {},
+            heldTranscript: () => null,
             transcribe: async () => { throw new Error("runNote is injected"); },
             finish: async () => {},
             releaseUnsent: async () => {},
@@ -2989,8 +3010,11 @@ const hostWindow = () => ({ HTMLIFrameElement: class {}, document: hostDocument,
         const jobs: string[] = [];
         const real = createVoiceNoteTranscriber({
           cloud: {
-            capabilities: async () => ({ max_bytes: 120_960_000, max_duration_seconds: 7_200, content_types: ["audio/mp4"] }),
+            capabilities: async () => ({ max_bytes: 120_960_000, max_duration_seconds: PRIVATE_MAX_DURATION_SECONDS, content_types: ["audio/mp4"], admission: "open" }),
             pendingSourceIds: () => [],
+            hasRemoteJob: () => false,
+            holdTranscript: () => {},
+            heldTranscript: () => null,
             transcribe: async () => { throw new Error("runNote is injected"); },
             finish: async () => {},
             releaseUnsent: async () => {},

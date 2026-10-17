@@ -10,6 +10,8 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { fakeVoiceNoteStore } from "@/harness/fakeVoiceNoteStore";
 import { __setVoiceNotesForTests, VoiceNotes, type VoiceNoteRecording, type VoiceNotesPlugin } from "./nativeVoiceNotes";
 import { currentAccountGeneration } from "./accountContext";
+import { __resetStorageStatusForTests } from "../storageStatus";
+import { __resetOnDeviceTranscriberForTests } from "./onDeviceTranscriber";
 
 const originalVoiceNotes = VoiceNotes;
 
@@ -159,7 +161,7 @@ const tcw = { did: "did:example:alice" } as TinyCloudWeb;
 
 function recording(id: string, startedAt: number): VoiceNoteRecording {
   return { id, startedAt, durationMs: 1000, mimeType: "audio/mp4", sizeBytes: 4, silencedMs: 0, silencedEvents: 0, noSignalMs: 0,
-    version: 2, owner: tcw.did, rev: 1, options: { transcriber: "private-cloud", uploadAudio: true } };
+    version: 2, owner: tcw.did, rev: 1, options: { transcriber: "private-cloud", identifySpeakers: false, uploadAudio: true } };
 }
 
 /** The phone: what is listed as pending, and how deleteAudio and listPending behave. */
@@ -217,7 +219,9 @@ beforeEach(() => {
   saveCalls = 0;
   fakeVoiceNoteStore.save = ok;
 });
-afterEach(() => {
+afterEach(async () => {
+  await __resetOnDeviceTranscriberForTests();
+  __resetStorageStatusForTests();
   __setVoiceNotesForTests(originalVoiceNotes, { available: null });
   fakeVoiceNoteStore.save = null;
   delete (globalThis as { localStorage?: unknown }).localStorage;
@@ -338,6 +342,24 @@ describe("saveRecording", () => {
     expect(saveCalls).toBe(1);
     expect(phone.deletes).toBe(0);
     expect(phone.pending).toEqual([note]);
+  });
+
+  test("Private metadata saves without explicit audio upload approval", async () => {
+    const note = { ...recording("no-audio-consent", 1),
+      options: { transcriber: "private-cloud", identifySpeakers: false, uploadAudio: false } };
+    const outcome = await saves.saveRecording(tcw, note);
+    expect(outcome.kind).toBe("saved");
+    expect(saveCalls).toBe(1);
+  });
+
+  test("account reconciliation saves on-device metadata without audio upload approval", async () => {
+    const note = { ...recording("reconcile-no-audio-consent", 1),
+      options: { transcriber: "on-device", identifySpeakers: false, uploadAudio: false } };
+    const account = { ...tcw, spaceId: "space" } as TinyCloudWeb;
+    const ctx = { did: tcw.did, spaceId: "space", generation: currentAccountGeneration() };
+    const outcome = await saves.saveNoteForAccount(account, ctx, note);
+    expect(outcome.kind).toBe("saved");
+    expect(saveCalls).toBe(1);
   });
 
   test("every v1 note, including one missing ownerUnknown, is held by the sign-in saver", async () => {
@@ -463,6 +485,35 @@ describe("after a reload", () => {
       online: true,
     });
     expect(cold.pendingCount(cold.pendingStore.snapshot())).toBe(0);
+  });
+});
+
+describe("explicit upload receipt", () => {
+  const SHA = "a".repeat(64);
+  const savedLocally = (id: string) => ({ ...recording(id, 1),
+    ledger: { audio: { state: "saved", rowId: "row-local", at: 1 } } }) as VoiceNoteRecording;
+  const uploadedWith = (receipt: { sha256: string; size: number }) => async () =>
+    ({ ok: true, data: { id: "row-local", inserted: false, createdAt: 1, verifiedInSpace: receipt } }) as never;
+
+  test("an explicit upload writes the verified space receipt to the ledger", async () => {
+    phone.pending = [savedLocally("uploaded")];
+    fakeVoiceNoteStore.save = uploadedWith({ sha256: SHA, size: 4 });
+    await saves.uploadLocalVoiceNote(tcw, "uploaded", true);
+    expect(phone.ledgerUpdates).toEqual([expect.objectContaining({
+      patch: { audio: expect.objectContaining({ state: "saved", verifiedInSpace: { sha256: SHA, size: 4 } }) },
+    })]);
+  });
+
+  test("a revision conflict on the receipt write re-reads the note and retries once", async () => {
+    phone.pending = [savedLocally("raced")];
+    phone.ledgerConflicts = 1;
+    fakeVoiceNoteStore.save = uploadedWith({ sha256: SHA, size: 4 });
+    await saves.uploadLocalVoiceNote(tcw, "raced", true);
+    expect(phone.ledgerUpdates).toHaveLength(2);
+    expect(phone.ledgerUpdates[1]).toEqual(expect.objectContaining({
+      rev: 2,
+      patch: { audio: expect.objectContaining({ verifiedInSpace: { sha256: SHA, size: 4 } }) },
+    }));
   });
 });
 
@@ -682,5 +733,16 @@ describe("discard guard", () => {
     expect(saves.isDiscarded(note.id)).toBe(true);
     expect((await saves.saveRecording(tcw, note)).kind).toBe("discarded");
     expect(saveCalls).toBe(0);
+  });
+});
+
+describe("storage-full failure classification", () => {
+  test.each<[string, unknown]>([
+    ["code on the error", { code: "STORAGE_QUOTA_EXCEEDED", message: "full" }],
+    ["message-only error with the code", new Error("STORAGE_QUOTA_EXCEEDED: full")],
+    ["message-only error with the phrase", new Error("storage quota exceeded")],
+    ["wrapped too-large message", new Error("save failed", { cause: new Error("write exceeds remaining storage") })],
+  ])("%s classifies as quota", (_label, error) => {
+    expect(saves.classifyNoteFailure(error)).toBe("quota");
   });
 });

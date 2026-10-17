@@ -30,6 +30,9 @@ import { readableError } from "@/lib/readableError";
 
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { captureEvents } from "@/capture/captureEvents";
+import { isStorageFullError, reportStorageError, storageScopeFor } from "@/lib/storageStatus";
+
+import { captureDurationMs, preciseDurationSeconds } from "./noteDuration";
 
 import {
   AUDIO_CORRUPT,
@@ -41,8 +44,11 @@ import {
   audioPartKey,
   getAudio,
   putAudio,
+  reconcileAudioReceipt,
+  verifiedManifestReceipt,
   type AudioPartSource,
   type StoredAudioManifest,
+  type VerifiedAudioReceipt,
 } from "../audio/audioStore";
 import type { FirefliesSentence } from "../connectors/firefliesClient";
 import {
@@ -174,7 +180,10 @@ export function syncRecordingNote(tcw: TinyCloudWeb, id: string,
       const body = noteMarkdown({ ...note, savedEditAt: adopted });
       const put = await runOnSpaceLane((signal) => { checkpoint(); return tcw.kv.put(key, body, { contentType: "text/markdown", signal }); },
         { operation: `KV put ${key}`, payloadBytes: new TextEncoder().encode(body).byteLength });
-      if (!put.ok) throw new Error(`Could not sync recording note: ${put.error.message}`);
+      if (!put.ok) {
+        reportStorageError(put.error, storageScopeFor(tcw));
+        throw new Error(`Could not sync recording note: ${put.error.message}`, { cause: put.error });
+      }
       checkpoint();
       await patchVoiceNoteMarkdown(tcw, id, key, note.editedAt, checkpoint, row);
       const latest = await loadNote(id);
@@ -235,6 +244,8 @@ export function voiceNoteAudioSourceFromBase64(audio: VoiceNoteAudio): VoiceNote
 }
 
 export interface StoreAudioOptions {
+  /** Copied only from the recording's explicit space-audio consent. */
+  uploadAudio?: boolean;
   partSize?: number;
   onUploadStart?: (totalBytes: number) => void;
   onProgress?: (storedBytes: number, totalBytes: number) => void;
@@ -245,17 +256,28 @@ export interface StoreAudioOptions {
     payloadBytes?: number) => Promise<T>;
   checkpoint?: () => void;
   onRowCreated?: (rowId: string) => Promise<void>;
+  /** One audio PUT per reconcile pass: after one hits storage full, later notes in the pass skip theirs. */
+  audioGate?: AudioPutGate;
 }
+
+/** Shared across one reconcile pass. `full` holds the first storage-full audio error seen in that pass. */
+export interface AudioPutGate { full: StoreFailure["error"] | null }
+
+const AUDIO_UPLOAD_DISABLED = {
+  ok: false as const,
+  error: { code: "AUDIO_UPLOAD_DISABLED", message: "Audio upload is not enabled for this recording." },
+};
 
 /** Storage error codes the voice notes UI tells apart. */
 export const VOICE_NOTE_STORAGE_FULL = AUDIO_STORAGE_FULL;
 export const VOICE_NOTE_AUDIO_TOO_LARGE = "VOICE_NOTE_AUDIO_TOO_LARGE";
 export const VOICE_NOTE_AUDIO_CORRUPT = AUDIO_CORRUPT;
 
-type StoreFailure = { ok: false; error: { code: string; message: string; cause?: unknown } };
+type StoreFailure = { ok: false; error: { code: string; message: string; cause?: unknown; sizeBytes?: number } };
 
 /** A shared audio store rejection as this module's Result, in the codes the UI shows. */
-function audioFailure(op: string, err: unknown): StoreFailure {
+function audioFailure(op: string, err: unknown, scope: ReturnType<typeof storageScopeFor>): StoreFailure {
+  if (isStorageFullError(err)) reportStorageError(err, scope);
   if (!(err instanceof AudioStoreError)) {
     return { ok: false, error: { code: "STORE_ERROR", message: `${op}: ${readableError(err)}`, cause: err } };
   }
@@ -265,7 +287,7 @@ function audioFailure(op: string, err: unknown): StoreFailure {
     case AUDIO_SOURCE_READ_FAILED:
       return { ok: false, error: { code: "VOICE_NOTE_SOURCE_READ_FAILED", message: `${op}: ${err.message}`, cause: err } };
     case AUDIO_TOO_LARGE:
-      return { ok: false, error: { code: VOICE_NOTE_AUDIO_TOO_LARGE, message: `${op}: ${err.message}`, cause: err } };
+      return { ok: false, error: { code: VOICE_NOTE_AUDIO_TOO_LARGE, message: `${op}: ${err.message}`, cause: err, sizeBytes: err.sizeBytes } };
     default:
       return { ok: false, error: { code: err.code, message: `${op}: ${err.message}`, cause: err } };
   }
@@ -282,8 +304,8 @@ export function audioFileExtension(mimeType: string): string {
 /**
  * Store a note's audio with the shared audio store: raw parts of at most 1 MiB,
  * then its manifest (last, so a manifest always means a complete file). Saving
- * again after any failure resumes after the parts already stored, so a retry
- * never reads, sends or duplicates anything twice. Until the manifest is
+ * again after any failure checks each listed part against the local bytes and
+ * resends only missing or mismatched parts. Until the manifest is
  * written the note reads as having no audio.
  */
 export async function putVoiceNoteAudio(
@@ -292,6 +314,7 @@ export async function putVoiceNoteAudio(
   source: VoiceNoteAudioSource,
   opts: StoreAudioOptions = {},
 ): Promise<StoreResult<StoredAudioManifest>> {
+  if (opts.uploadAudio !== true) return AUDIO_UPLOAD_DISABLED;
   try {
     const manifest = await putAudio(tcw.kv, voiceNoteAudioKvKey(id), source, {
       ...opts,
@@ -300,8 +323,19 @@ export async function putVoiceNoteAudio(
     });
     return { ok: true, data: manifest };
   } catch (err) {
-    return audioFailure("saveVoiceNote(audio)", err);
+    return audioFailure("saveVoiceNote(audio)", err, storageScopeFor(tcw));
   }
+}
+
+/** Recheck a pre-receipt saved recording without changing any remote part. */
+export function reconcileSavedVoiceNoteAudio(tcw: TinyCloudWeb, id: string, source: VoiceNoteAudioSource): Promise<VerifiedAudioReceipt | null> {
+  let bytesRead = 0;
+  return reconcileAudioReceipt(tcw.kv, voiceNoteAudioKvKey(id), source, {
+    retryDelaysMs: [500],
+    onBytesRead: (bytes) => { bytesRead += bytes; },
+    schedule: (job, operation, timeoutMs, payloadBytes) => runOnSpaceLane(job,
+      { operation: operation ?? "reconcile saved audio", timeoutMs, payloadBytes }),
+  }).finally(() => logPipeline("audio receipt upgrade", id, "read", { destination: "space", bodyBytes: bytesRead }));
 }
 
 export function voiceNoteTitle(startedAt: number): string {
@@ -392,7 +426,8 @@ export async function saveVoiceNote(
   platform: string,
   opts: StoreAudioOptions = {},
   uploadAudio = recording.options?.uploadAudio === true,
-): Promise<StoreResult<UpsertMeetingOutcome & { noteSyncError?: NoteSyncErrorCode }>> {
+): Promise<StoreResult<UpsertMeetingOutcome & { noteSyncError?: NoteSyncErrorCode; verifiedInSpace?: VerifiedAudioReceipt }>> {
+  const audioApproved = recording.options?.uploadAudio === true && uploadAudio;
   logPipeline("save", recording.id, "start");
   try {
     opts.checkpoint?.();
@@ -416,11 +451,13 @@ export async function saveVoiceNote(
     const emptyKey = transcriptKvKey(VOICE_NOTE_SOURCE, recording.id);
     const empty = await runOnSpaceLane((signal) => { opts.checkpoint?.(); return tcw.kv.put(emptyKey, "[]",
       { ifNoneMatch: "*", contentType: "application/json", signal }); }, { operation: `KV put ${emptyKey}` });
-    if (!empty.ok && !/PRECONDITION|412/i.test(`${empty.error.code} ${empty.error.message}`))
+    if (!empty.ok && !/PRECONDITION|412/i.test(`${empty.error.code} ${empty.error.message}`)) {
+      reportStorageError(empty.error, storageScopeFor(tcw));
       return { ok: false, error: { code: empty.error.code ?? "STORE_ERROR", message: empty.error.message, cause: empty.error } };
+    }
     logPipeline("space_write", recording.id, "done", { destination: "legacy_transcript_key", bodyBytes: 2 });
     opts.checkpoint?.();
-    if (!uploadAudio) {
+    if (!audioApproved) {
       await patchVoiceNoteLocalOnly(tcw, recording, platform, opts.checkpoint);
       let noteSyncError: NoteSyncErrorCode | undefined;
       try {
@@ -430,6 +467,7 @@ export async function saveVoiceNote(
         opts.checkpoint?.();
         noteSyncError = "sync_failed";
         logPipelineError("[VoiceNotes] Local-only note's Markdown did not sync", caught);
+        reportStorageError(caught, storageScopeFor(tcw));
       }
       return { ok: true, data: { id: row.id, inserted: row.inserted, createdAt: row.createdAt, noteSyncError } };
     }
@@ -443,14 +481,20 @@ export async function saveVoiceNote(
         opts.checkpoint?.();
         noteSyncError = "sync_failed";
         logPipelineError("markdown_space_write", caught, recording.id);
+        reportStorageError(caught, storageScopeFor(tcw));
       }
       return noteSyncError;
     })().then((noteSyncError) => ({ noteSyncError }), (error: unknown) => ({ error }));
+    // A storage-full audio PUT earlier in this pass: skip this one and report the same error.
+    // Row, Markdown and local-only work already ran above.
+    const gated = opts.audioGate?.full;
+    if (gated) { await text; return { ok: false, error: gated }; }
     logPipeline("audio_upload", recording.id, "start");
-    const audio = await putVoiceNoteAudio(tcw, recording.id, source, { ...opts, schedule: (job, operation, timeoutMs, payloadBytes) =>
+    const schedule: NonNullable<StoreAudioOptions["schedule"]> = (job, operation, timeoutMs, payloadBytes) =>
       (opts.schedule ?? ((call, label, limit, size) => runOnSpaceLane(call, {
         operation: label ?? "voice-note audio KV call", track: "audio", timeoutMs: limit, payloadBytes: size,
-      })))((signal) => { opts.checkpoint?.(); return job(signal); }, operation, timeoutMs, payloadBytes),
+      })))((signal) => { opts.checkpoint?.(); return job(signal); }, operation, timeoutMs, payloadBytes);
+    const audio = await putVoiceNoteAudio(tcw, recording.id, source, { ...opts, uploadAudio: audioApproved, schedule,
       onProgress: (stored, total) => {
         logPipeline("audio_upload", recording.id, "progress", { bodyBytes: stored, totalBytes: total });
         opts.onProgress?.(stored, total);
@@ -458,8 +502,14 @@ export async function saveVoiceNote(
     if (!audio.ok) {
       await text;
       logPipelineError("audio_upload", audio.error, recording.id);
+      reportStorageError(audio.error, storageScopeFor(tcw));
+      if (opts.audioGate && isStorageFullError(audio.error)) opts.audioGate.full = audio.error;
       return audio;
     }
+    // A successful put alone is insufficient evidence for removing local bytes.
+    // Read the committed manifest through the space and bind it to local part hashes.
+    const verifiedInSpace = await verifiedManifestReceipt(tcw.kv, voiceNoteAudioKvKey(recording.id), audio.data,
+      { schedule, retryDelaysMs: opts.retryDelaysMs });
     logPipeline("audio_upload", recording.id, "done", { bodyBytes: audio.data.size });
     const base = voiceNoteAudioKvKey(recording.id);
     opts.checkpoint?.();
@@ -470,9 +520,10 @@ export async function saveVoiceNote(
     if ("error" in textResult) throw textResult.error;
     const noteSyncError = textResult.noteSyncError;
     logPipeline("save", recording.id, "done");
-    return { ok: true, data: { id: row.id, inserted: row.inserted, createdAt: row.createdAt, noteSyncError } };
+    return { ok: true, data: { id: row.id, inserted: row.inserted, createdAt: row.createdAt, noteSyncError, verifiedInSpace } };
   } catch (caught) {
     logPipelineError("save", caught, recording.id);
+    reportStorageError(caught, storageScopeFor(tcw));
     return { ok: false, error: { code: (caught as { code?: string }).code ?? "STORE_ERROR",
       message: readableError(caught), cause: caught } };
   }
@@ -502,7 +553,7 @@ export async function listVoiceNotes(tcw: TinyCloudWeb, limit = 20): Promise<Sto
       sourceId,
       title: typeof row[2] === "string" ? row[2] : null,
       startedAt: typeof row[3] === "string" ? row[3] : null,
-      durationSecs: typeof row[4] === "number" ? row[4] : null,
+      durationSecs: preciseDurationSeconds(typeof row[4] === "number" ? row[4] : null, captureDurationMs(row[5])),
       transcript: await readVoiceNoteTranscriptState(tcw, sourceId),
     });
   }
@@ -520,6 +571,7 @@ export interface VoiceNoteForTranscription {
   captureTranscriber: string | null;
   /** Where the note's recording began (v2 notes only); null when the row does not say. */
   captureSource: string | null;
+  transcriptionErrorCode: string | null;
 }
 
 export async function readVoiceNoteForTranscription(
@@ -538,27 +590,31 @@ export async function readVoiceNoteForTranscription(
   const row = res.data.rows[0];
   if (!row) return { ok: true, data: null };
   // Raw PTX uploads are not decoded just to measure duration; capture metadata is the fallback, and with neither value PTX decides.
-  let durationSeconds: number | null = typeof row[0] === "number" ? row[0] : null;
+  const storedSecs: number | null = typeof row[0] === "number" ? row[0] : null;
   let captureVersion: number | null = null;
   let captureTranscriber: string | null = null;
   let captureSource: string | null = null;
+  let transcriptionErrorCode: string | null = null;
   let channels: 1 | 2 = 1;
   try {
-    const metadata = typeof row[1] === "string" ? JSON.parse(row[1]) as unknown : row[1];
-    const capture = metadata && typeof metadata === "object" ? (metadata as { capture?: unknown }).capture : null;
-    if (capture && typeof capture === "object") {
-      const saved = capture as { duration_ms?: unknown; channels?: unknown; version?: unknown; source?: unknown; options?: { transcriber?: unknown } };
-      if (saved.channels === 2) channels = 2;
-      if (durationSeconds === null && typeof saved.duration_ms === "number") durationSeconds = saved.duration_ms / 1000;
-      if (typeof saved.version === "number") captureVersion = saved.version;
-      if (typeof saved.options?.transcriber === "string") captureTranscriber = saved.options.transcriber;
-      if (typeof saved.source === "string") captureSource = saved.source;
+    const metadata: unknown = typeof row[1] === "string" ? JSON.parse(row[1]) : row[1];
+    if (metadata !== null && typeof metadata === "object") {
+      const saved = metadata as { capture?: unknown; transcription_error_code?: unknown };
+      if (typeof saved.transcription_error_code === "string") transcriptionErrorCode = saved.transcription_error_code;
+      const capture = saved.capture;
+      if (capture !== null && typeof capture === "object") {
+        const captureData = capture as { duration_ms?: unknown; channels?: unknown; version?: unknown; source?: unknown; options?: { transcriber?: unknown } };
+        if (captureData.channels === 2) channels = 2;
+        if (typeof captureData.version === "number") captureVersion = captureData.version;
+        if (typeof captureData.options?.transcriber === "string") captureTranscriber = captureData.options.transcriber;
+        if (typeof captureData.source === "string") captureSource = captureData.source;
+      }
     }
   } catch {
     // Legacy metadata may be malformed; the audio's size is checked before decoding.
   }
   return { ok: true, data: { transcript: await readVoiceNoteTranscriptState(tcw, sourceId),
-    durationSeconds, channels, captureVersion, captureTranscriber, captureSource } };
+    durationSeconds: preciseDurationSeconds(storedSecs, captureDurationMs(row[1])), channels, captureVersion, captureTranscriber, captureSource, transcriptionErrorCode } };
 }
 
 /** What a transcription adds to a note: the sentences for its transcript key and row metadata. */
@@ -614,10 +670,12 @@ export async function saveVoiceNoteTranscript(
   } catch (caught) {
     if (caught instanceof StaleAccountContext) throw caught;
     logPipelineError("transcript_persist", caught, sourceId);
+    reportStorageError(caught, storageScopeFor(tcw));
     return { ok: false, error: { code: (caught as { code?: string }).code ?? "STORE_ERROR",
       message: readableError(caught) } };
   }
   if (!existing.ok) {
+    reportStorageError(existing.error, storageScopeFor(tcw));
     return { ok: false, error: { code: existing.error.code ?? "STORE_ERROR", message: `saveVoiceNoteTranscript: ${existing.error.message}` } };
   }
   if (existing.data.rows.length === 0) {
@@ -652,6 +710,7 @@ export async function saveVoiceNoteTranscript(
   } catch (caught) {
     if (caught instanceof StaleAccountContext) throw caught;
     logPipelineError("transcript_persist", caught, sourceId);
+    reportStorageError(caught, storageScopeFor(tcw));
     return { ok: false, error: { code: (caught as { code?: string }).code ?? "STORE_ERROR",
       message: readableError(caught) } };
   }
@@ -691,7 +750,7 @@ async function readStoredAudio(tcw: TinyCloudWeb, sourceId: string, opts: LoadAu
   try {
     return { ok: true, data: await getAudio(tcw.kv, voiceNoteAudioKvKey(sourceId), opts) };
   } catch (err) {
-    return audioFailure("loadVoiceNoteAudio", err);
+    return audioFailure("loadVoiceNoteAudio", err, storageScopeFor(tcw));
   }
 }
 
@@ -724,7 +783,7 @@ async function readLegacyAudio(tcw: TinyCloudWeb, sourceId: string): Promise<Sto
 
 function tooLarge(size: number, maxBytes: number | undefined): StoreFailure | null {
   return maxBytes !== undefined && size > maxBytes
-    ? { ok: false, error: { code: VOICE_NOTE_AUDIO_TOO_LARGE, message: `loadVoiceNoteAudio: the note's audio is ${size} bytes, over ${maxBytes}` } }
+    ? { ok: false, error: { code: VOICE_NOTE_AUDIO_TOO_LARGE, message: `loadVoiceNoteAudio: the note's audio is ${size} bytes, over ${maxBytes}`, sizeBytes: size } }
     : null;
 }
 
@@ -740,7 +799,7 @@ export async function loadVoiceNoteAudioBlob(
   const stored = await readStoredAudio(tcw, sourceId, opts);
   if (!stored.ok) return stored;
   if (stored.data) return { ok: true, data: stored.data };
-  if (opts.signal?.aborted) return audioFailure("loadVoiceNoteAudio", new DOMException("The read was cancelled.", "AbortError"));
+  if (opts.signal?.aborted) return audioFailure("loadVoiceNoteAudio", new DOMException("The read was cancelled.", "AbortError"), storageScopeFor(tcw));
   const legacy = await readLegacyAudio(tcw, sourceId);
   if (!legacy.ok) return legacy;
   const bytes = base64ToBytes(legacy.data.base64);

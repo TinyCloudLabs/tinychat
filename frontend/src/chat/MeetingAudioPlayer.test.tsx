@@ -214,6 +214,39 @@ describe("the player in a DOM", () => {
     }
   });
 
+  test("a blob the player loaded is released when its note closes", async () => {
+    const created = spyOn(URL, "createObjectURL").mockReturnValue("blob:note");
+    const revoked = spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+    try {
+      const player = await mount({ durationSecs: 42, load: async () => new Blob(["x"]) });
+      await act(async () => player.q("[data-testid=note-audio-play]").click());
+      expect(created).toHaveBeenCalledTimes(1);
+      await act(async () => root!.unmount());
+      root = null;
+      expect(revoked).toHaveBeenCalledWith("blob:note");
+    } finally {
+      created.mockRestore();
+      revoked.mockRestore();
+    }
+  });
+
+  test("closing a note while its audio downloads aborts the download", async () => {
+    let signal!: AbortSignal;
+    const player = await mount({ durationSecs: 42, load: (loadSignal) => { signal = loadSignal; return new Promise<Blob | null>(() => {}); } });
+    await act(async () => player.q("[data-testid=note-audio-play]").click());
+    expect(signal.aborted).toBe(false);
+    await act(async () => root!.unmount());
+    root = null;
+    expect(signal.aborted).toBe(true);
+  });
+
+  test("a phone note whose audio cannot be opened shows the phone's copy", async () => {
+    logged = spyOn(console, "error").mockImplementation(() => {});
+    const player = await mount({ durationSecs: 42, load: async () => { throw new Error(PHONE_AUDIO_UNAVAILABLE); } });
+    await act(async () => player.q("[data-testid=note-audio-play]").click());
+    expect(player.host.textContent).toContain("Couldn\u2019t open this note\u2019s audio on this browser.");
+  });
+
   test("a note on this browser plays on the first tap with its source already set", async () => {
     const player = await mount({ url: "blob:note", durationSecs: 42 });
     expect(player.audio.getAttribute("src")).toBe("blob:note");
@@ -287,6 +320,13 @@ describe("the player in a DOM", () => {
     expect(logged).toHaveBeenCalledWith("[Audio] Could not play", refused);
   });
 
+  test("an outdated offline copy tells the listener to reconnect", async () => {
+    const message = "This audio changed; reconnect to play the latest version";
+    const player = await mount({ load: async () => { throw new Error(message); } });
+    await act(async () => player.q("[data-testid=note-audio-play]").click());
+    expect(player.host.textContent).toContain(message);
+  });
+
   test("a play that a pause or a new source supersedes is not an error", async () => {
     logged = spyOn(console, "error").mockImplementation(() => {});
     const player = await mount({ url: "blob:note", durationSecs: 42 });
@@ -310,9 +350,19 @@ describe("the player in a DOM", () => {
 
     player.fake.duration = 41.6;
     await player.fire("durationchange");
-    expect(player.time()).toBe("0:00 / 0:42");
+    expect(player.time()).toBe("0:00 / 0:41");
     expect(player.range().max).toBe("41.6");
   });
+  test("precise fractional media time floors the position and total consistently at the end", async () => {
+    const player = await mount({ url: "blob:note", durationSecs: 42.999 });
+    await act(async () => player.q("[data-testid=note-audio-play]").click());
+    await player.metadata(42.999);
+    player.fake.currentTime = 42.999;
+    await player.fire("timeupdate");
+    expect(player.time()).toBe("0:42 / 0:42");
+    expect(player.range().getAttribute("aria-valuetext")).toBe("0:42 of 0:42");
+  });
+
 
   test("a stream that never reports a length keeps the saved one and the elapsed time moves", async () => {
     const player = await mount({ url: "blob:note", durationSecs: 42 });

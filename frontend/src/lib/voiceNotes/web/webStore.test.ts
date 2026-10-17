@@ -1,9 +1,10 @@
 import { describe, expect, test as bunTest } from "bun:test";
-import type { RemoteOpReceipt } from "../nativeVoiceNotes";
+import { createHash } from "node:crypto";
 import { base64ToBytes } from "../voiceNoteAudio";
 import { createIdbAudioBlobStore } from "./audioBlobStore";
 import { openWebDb } from "./idb";
 import { newIdbEnv } from "./testing/idb";
+import type { RemoteOpReceipt } from "../nativeVoiceNotes";
 import { FakeClock, memoryAudioBlobs, slowTest } from "./webTestKit";
 import {
   durableBytesOf, MAX_READ_CHUNK_BYTES, MAX_RECOVERY_ATTEMPTS, memoryLocks, openWebStore, recordingFromSession, sessionLock,
@@ -113,6 +114,21 @@ describe("IDB audio blob store", () => {
     expect(Array.from(await audio.read("b", 4, 100))).toEqual(Array.from(bytesOf(6, 9).subarray(4)));
     await audio.delete("a");
     expect(await audio.size("b")).toBe(6);
+  });
+});
+
+describe("per-note work lock", () => {
+  const stt = (state: "done" | "queued") => ({ state, pack: null, engine: null, segmentsDone: 0, windowsDone: 0, error: null });
+  // The desktop commit path holds sessionLock while it awaits updateStt. Writers must not wait on sessionLock.
+  test("updateStt completes while the commit path holds the session lock", async () => {
+    const { open, locks } = harness({ audio: () => memoryAudioBlobs().create() });
+    const store = await open();
+    await noteWith(store, "n", [bytesOf(10)], "did:a");
+    const releaseSession = await locks.hold(sessionLock("n"));
+    expect(releaseSession).not.toBeNull();
+    await store.updateStt("n", stt("queued"));
+    releaseSession!();
+    expect((await store.listPending()).recordings.find((note) => note.id === "n")!.stt?.state).toBe("queued");
   });
 });
 
@@ -522,14 +538,18 @@ describe("recovered recordings are decode-checked: whole up to the cap, a prefix
     }
   });
 
-  test("a prefix the decoder rejects is inconclusive: a recording over the cap is published as recovered with a warning, never quarantined", async () => {
+  const testName = "a prefix the decoder rejects is inconclusive: a recording over the cap is published as recovered with a warning, never quarantined";
+  test(testName, async () => {
     const h = harness();
     const sent = await record(await h.open(), "long", longChunks());
     h.locks.releaseAll();
     const tab = await h.open({ decodeCheck: async () => { throw invalid("EncodingError: cut inside a cluster"); } });
+    const expectedWarning = "[webStore] The decoder rejected the leading bytes of a long recovered recording; that is inconclusive, publishing it as recovered";
     const warned: unknown[][] = [];
     const warn = console.warn;
-    console.warn = (...args: unknown[]) => { warned.push(args); };
+    console.warn = (...args: unknown[]) => {
+      if (args[0] === expectedWarning) warned.push(args);
+    };
     let result: Awaited<ReturnType<typeof tab.recoverInterruptedSessions>>;
     try { result = await tab.recoverInterruptedSessions(); } finally { console.warn = warn; }
     expect(result.failed).toEqual([]);
@@ -891,6 +911,108 @@ describe("ledger, receipts, outbox and transcripts (native parity)", () => {
     expect((await store.listOutbox({ did: "did:A" })).entries).toMatchObject([{ kind: "transcript", handle: "job-9", state: "pending" }]);
   });
 
+  test("an own_create that creates its job retires the note's own_upload, live and from the outbox", async () => {
+    const { open } = harness();
+    const store = await open();
+    await signedIn(store);
+    await noteWith(store, "n", [bytesOf(4)], "did:A");
+    const own = { provider: "assemblyai" as const, mode: "own" as const };
+    await store.beginRemoteOp(receipt("n", { ...own, opId: "up", kind: "own_upload" }));
+    await store.recordRemoteResult({ id: "n", did: "did:A", opId: "up", result: { outcome: "created", uploadUrl: "https://example.test/audio" } });
+    await store.beginRemoteOp(receipt("n", { ...own, opId: "create", kind: "own_create" }));
+    await store.recordRemoteResult({ id: "n", did: "did:A", opId: "create", result: { outcome: "created", jobId: "job-1" } });
+    expect((await store.listPending()).recordings[0]!.ledger?.remote).toMatchObject([{ opId: "create", stage: "submitted", jobId: "job-1" }]);
+
+    await store.beginRemoteOp(receipt("n", { ...own, opId: "up2", kind: "own_upload" }));
+    await store.deleteAudio({ id: "n" });
+    await store.recordRemoteResult({ id: "n", did: "did:A", opId: "up2", result: { outcome: "created", uploadUrl: "https://example.test/audio2" } });
+    await store.beginRemoteOp(receipt("n", { ...own, opId: "create2", kind: "own_create" }));
+    await store.recordRemoteResult({ id: "n", did: "did:A", opId: "create2", result: { outcome: "created", jobId: "job-2" } });
+    const kinds = (await store.listOutbox({ did: "did:A" })).entries.map((entry) => [entry.kind, entry.handle]).sort();
+    expect(kinds).toEqual([["transcript", "job-1"], ["transcript", "job-2"]]);
+  });
+
+  test("deleteAudio does not resurrect an own_upload that an earlier own_create already retired", async () => {
+    const { open } = harness();
+    const store = await open();
+    await signedIn(store);
+    await noteWith(store, "n", [bytesOf(4)], "did:A");
+    const own = { provider: "assemblyai" as const, mode: "own" as const };
+    await store.beginRemoteOp(receipt("n", { ...own, opId: "up", kind: "own_upload" }));
+    await store.recordRemoteResult({ id: "n", did: "did:A", opId: "up", result: { outcome: "created", uploadUrl: "https://example.test/audio" } });
+    await store.beginRemoteOp(receipt("n", { ...own, opId: "create", kind: "own_create" }));
+    await store.recordRemoteResult({ id: "n", did: "did:A", opId: "create", result: { outcome: "created", jobId: "job-1" } });
+    await store.deleteAudio({ id: "n" });
+    const entries = (await store.listOutbox({ did: "did:A" })).entries;
+    expect(entries.map((entry) => [entry.kind, entry.handle])).toEqual([["transcript", "job-1"]]);
+  });
+
+  test("deleteAudio keeps the lookup of an own_upload begun after an own_create retired its predecessor", async () => {
+    const { open } = harness();
+    const store = await open();
+    await signedIn(store);
+    await noteWith(store, "n", [bytesOf(4)], "did:A");
+    const own = { provider: "assemblyai" as const, mode: "own" as const };
+    await store.beginRemoteOp(receipt("n", { ...own, opId: "up1", kind: "own_upload" }));
+    await store.recordRemoteResult({ id: "n", did: "did:A", opId: "up1", result: { outcome: "created", uploadUrl: "https://example.test/audio1" } });
+    await store.beginRemoteOp(receipt("n", { ...own, opId: "create1", kind: "own_create" }));
+    await store.recordRemoteResult({ id: "n", did: "did:A", opId: "create1", result: { outcome: "created", jobId: "job-1" } });
+    await store.beginRemoteOp(receipt("n", { ...own, opId: "up2", kind: "own_upload" }));
+    await store.recordRemoteResult({ id: "n", did: "did:A", opId: "up2", result: { outcome: "created", uploadUrl: "https://example.test/audio2" } });
+    await store.deleteAudio({ id: "n" });
+    const reopened = await open();
+    const entries = (await reopened.listOutbox({ did: "did:A" })).entries;
+    expect(entries.map((entry) => [entry.kind, entry.handle]).sort()).toEqual([["own_upload_lookup", "https://example.test/audio2"], ["transcript", "job-1"]]);
+  });
+
+  test("a retired own_upload's late result after deletion does not enqueue a lookup", async () => {
+    const { open } = harness();
+    const store = await open();
+    await signedIn(store);
+    await noteWith(store, "n", [bytesOf(4)], "did:A");
+    const own = { provider: "assemblyai" as const, mode: "own" as const };
+    await store.beginRemoteOp(receipt("n", { ...own, opId: "up1", kind: "own_upload" }));
+    await store.beginRemoteOp(receipt("n", { ...own, opId: "create1", kind: "own_create" }));
+    await store.recordRemoteResult({ id: "n", did: "did:A", opId: "create1", result: { outcome: "created", jobId: "job-1" } });
+    await store.deleteAudio({ id: "n" });
+    await store.recordRemoteResult({ id: "n", did: "did:A", opId: "up1", result: { outcome: "created", uploadUrl: "https://example.test/audio1" } });
+    const entries = (await store.listOutbox({ did: "did:A" })).entries;
+    expect(entries.map((entry) => [entry.kind, entry.handle])).toEqual([["transcript", "job-1"]]);
+  });
+
+  test("re-beginning a retired own_upload keeps it retired: no ledger pin and no re-enqueued lookup", async () => {
+    const { open } = harness();
+    const store = await open();
+    await signedIn(store);
+    await noteWith(store, "n", [bytesOf(4)], "did:A");
+    const own = { provider: "assemblyai" as const, mode: "own" as const };
+    await store.beginRemoteOp(receipt("n", { ...own, opId: "up1", kind: "own_upload" }));
+    await store.recordRemoteResult({ id: "n", did: "did:A", opId: "up1", result: { outcome: "created", uploadUrl: "https://example.test/audio1" } });
+    await store.beginRemoteOp(receipt("n", { ...own, opId: "create1", kind: "own_create" }));
+    await store.recordRemoteResult({ id: "n", did: "did:A", opId: "create1", result: { outcome: "created", jobId: "job-1" } });
+    await store.beginRemoteOp(receipt("n", { ...own, opId: "up1", kind: "own_upload" }));
+    expect((await store.listPending()).recordings[0]!.ledger?.remote.map((entry) => entry.opId)).toEqual(["create1"]);
+    await store.deleteAudio({ id: "n" });
+    expect((await store.listOutbox({ did: "did:A" })).entries.map((entry) => [entry.kind, entry.handle])).toEqual([["transcript", "job-1"]]);
+  });
+
+  test("an expiry rewrite of an own_create does not retire an own_upload begun after its first completion", async () => {
+    const { open } = harness();
+    const store = await open();
+    await signedIn(store);
+    await noteWith(store, "n", [bytesOf(4)], "did:A");
+    const own = { provider: "assemblyai" as const, mode: "own" as const };
+    await store.beginRemoteOp(receipt("n", { ...own, opId: "up1", kind: "own_upload" }));
+    await store.beginRemoteOp(receipt("n", { ...own, opId: "create1", kind: "own_create" }));
+    await store.recordRemoteResult({ id: "n", did: "did:A", opId: "create1", result: { outcome: "created", jobId: "job-1" } });
+    await store.beginRemoteOp(receipt("n", { ...own, opId: "up2", kind: "own_upload" }));
+    await store.recordRemoteResult({ id: "n", did: "did:A", opId: "up2", result: { outcome: "created", uploadUrl: "https://example.test/audio2" } });
+    await store.recordRemoteResult({ id: "n", did: "did:A", opId: "create1", result: { outcome: "created", jobId: "job-1", handleExpiresAt: 999 } });
+    await store.deleteAudio({ id: "n" });
+    const entries = (await store.listOutbox({ did: "did:A" })).entries;
+    expect(entries.map((entry) => [entry.kind, entry.handle]).sort()).toEqual([["own_upload_lookup", "https://example.test/audio2"], ["transcript", "job-1"]]);
+  });
+
   test("deleteAudio queues durable cleanup for hosted handles, then outbox entries complete, retry and disappear", async () => {
     const { open } = harness();
     const store = await open();
@@ -999,4 +1121,21 @@ describe("ledger, receipts, outbox and transcripts (native parity)", () => {
     expect(await second.getCaptureDefaults()).toMatchObject({ accountDid: "did:A", status: "signed_in" });
     expect((await second.listPending()).recordings.map((r) => r.id)).toEqual(["n"]);
   });
+});
+
+describe("cache eviction boundary", () => {
+  const saveReceipt = (store: WebStore, id: string, rev: number, bytes: Uint8Array) => store.updateLedger({ id, did: "did:a", rev, patch: {
+    audio: { state: "saved", rowId: "row", at: 10, verifiedInSpace: { sha256: createHash("sha256").update(bytes).digest("hex"), size: bytes.length } } } });
+
+  for (const backing of ["idb", "file-backed"] as const) {
+    test(`${backing} direct cache eviction refuses a verified local recording`, async () => {
+      const open = () => (backing === "file-backed" ? harness({ audio: () => memoryAudioBlobs().create() }) : harness()).open();
+      const store = await open();
+      const bytes = bytesOf(12);
+      const note = await noteWith(store, `local-${backing}`, [bytes], "did:a");
+      await saveReceipt(store, note.id, note.rev!, bytes);
+      await expect(store.evictCachedAudio({ id: note.id })).rejects.toEqual(code("audio_in_use"));
+      expect((await store.readNoteAudio(note.id)).bytes).toEqual(bytes);
+    });
+  }
 });

@@ -7,12 +7,13 @@ import { Capacitor } from "@capacitor/core";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { transcriptionProps } from "@/capture/recorder/transcriptionProps";
+import { memoryHoldStore } from "@/harness/memoryHoldStore";
 import { PrivateCloudError, type PrivateCloudCapabilities } from "../privateCloud";
 import { __resetCaptureEngineForTests } from "./captureEngine";
 import { VoiceNotes, __setVoiceNotesForTests } from "./nativeVoiceNotes";
 import { createVoiceNoteTranscriber, devicePtxUploadSupported, recheckVoiceNoteAvailabilityAutomatically, type VoiceNoteCloud, type VoiceNoteConsentStore } from "./voiceNoteTranscription";
 
-const CAPS: PrivateCloudCapabilities = { max_bytes: 120_960_000, max_duration_seconds: 7_200, content_types: ["audio/wav"] };
+const CAPS: PrivateCloudCapabilities = { max_bytes: 120_960_000, max_duration_seconds: 7_777, content_types: ["audio/wav"], admission: "open" };
 const FRESH = 5 * 60_000;
 const BACKOFF = [15_000, 60_000, 5 * 60_000];
 
@@ -34,12 +35,14 @@ function setup(opts: {
       return (opts.capabilities ?? (async () => CAPS))();
     },
     pendingSourceIds: () => opts.pending ?? [],
+    hasRemoteJob: (sourceId: string) => opts.pending?.includes(sourceId) === true,
     releaseUnsent: async () => {},
   } as unknown as VoiceNoteCloud;
   const transcriber = createVoiceNoteTranscriber({
     cloud,
     consent: consent(opts.consented ?? false),
-    tcw: () => ({}) as TinyCloudWeb,
+    holds: memoryHoldStore(),
+    tcw: () => ({ did: "did:example:guard", spaceId: "space" }) as TinyCloudWeb,
     now: () => clock.at,
     sleep: opts.sleep ?? (async () => {}),
     checkRetryMs: opts.checkRetryMs ?? [],
@@ -103,9 +106,10 @@ describe("account guard", () => {
     const started: string[] = [];
     // The first note starts as the check settles; the account leaves before the second one's turn.
     const transcriber = createVoiceNoteTranscriber({
-      cloud: { capabilities: async () => CAPS, pendingSourceIds: () => ["one", "two"], releaseUnsent: async () => {} } as unknown as VoiceNoteCloud,
+      cloud: { capabilities: async () => CAPS, pendingSourceIds: () => ["one", "two"], hasRemoteJob: () => true, releaseUnsent: async () => {} } as unknown as VoiceNoteCloud,
       consent: consent(true),
-      tcw: () => ({}) as TinyCloudWeb,
+      holds: memoryHoldStore(),
+      tcw: () => ({ did: "did:example:guard", spaceId: "space" }) as TinyCloudWeb,
       runNote: async (args) => {
         started.push(args.sourceId);
         current = false;
@@ -234,33 +238,66 @@ describe("work an account's departure paused", () => {
   test("returning to a settled available account resumes it without asking again", async () => {
     let current = true;
     let pendingIds: string[] = [];
-    let finish: () => void = () => {};
+    let finish!: () => void;
     let started = 0;
     let requests = 0;
-    const transcriber = createVoiceNoteTranscriber({
-      cloud: { capabilities: async () => { requests++; return CAPS; }, pendingSourceIds: () => pendingIds, releaseUnsent: async () => {} } as unknown as VoiceNoteCloud,
-      consent: consent(true),
-      tcw: () => ({}) as TinyCloudWeb,
-      runNote: async (args) => {
-        started++;
-        if (started === 1) {
-          await new Promise<void>((resolve) => { finish = resolve; });
-          if (!args.allowed!()) throw new PrivateCloudError("account_changed", "left");
-        }
-        return "no_speech";
+    const firstStarted = Promise.withResolvers<void>();
+    const secondStarted = Promise.withResolvers<void>();
+    const listingStarted = Promise.withResolvers<void>();
+    const listingGate = Promise.withResolvers<void>();
+    const plugin = VoiceNotes;
+    __setVoiceNotesForTests({
+      ...plugin,
+      listPending: async () => {
+        listingStarted.resolve();
+        await listingGate.promise;
+        return { recordings: [] };
       },
-    });
-    await transcriber.check({ automatic: true, current: () => current });
-    transcriber.transcribe("a-note");
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    current = false;
-    pendingIds = ["a-note"];
-    finish();
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    current = true;
-    await transcriber.check({ automatic: true, current: () => current });
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(requests).toBe(1);
-    expect(started).toBe(2);
+    }, { available: null });
+    try {
+      const transcriber = createVoiceNoteTranscriber({
+        cloud: { capabilities: async () => { requests++; return CAPS; }, pendingSourceIds: () => pendingIds,
+          hasRemoteJob: (sourceId: string) => pendingIds.includes(sourceId), releaseUnsent: async () => {} } as unknown as VoiceNoteCloud,
+        consent: consent(true),
+        holds: memoryHoldStore(),
+        tcw: () => ({ did: "did:example:guard", spaceId: "space" }) as TinyCloudWeb,
+        runNote: async (args) => {
+          started++;
+          if (started === 1) {
+            firstStarted.resolve();
+            await new Promise<void>((resolve) => { finish = resolve; });
+            if (!args.allowed!()) throw new PrivateCloudError("account_changed", "left");
+          } else {
+            secondStarted.resolve();
+          }
+          return "no_speech";
+        },
+      });
+      await transcriber.check({ automatic: true, current: () => current });
+      await listingStarted.promise;
+      transcriber.transcribe("a-note");
+      await firstStarted.promise;
+      current = false;
+      pendingIds = ["a-note"];
+      const stopped = Promise.withResolvers<void>();
+      let unsubscribe = () => {};
+      unsubscribe = transcriber.subscribe(() => {
+        if (transcriber.snapshot().jobs.get("a-note")?.kind !== "active") {
+          unsubscribe();
+          stopped.resolve();
+        }
+      });
+      finish();
+      await stopped.promise;
+      current = true;
+      await transcriber.check({ automatic: true, current: () => current });
+      listingGate.resolve();
+      await secondStarted.promise;
+      expect(requests).toBe(1);
+      expect(started).toBe(2);
+    } finally {
+      listingGate.resolve();
+      __setVoiceNotesForTests(plugin, { available: null });
+    }
   });
 });

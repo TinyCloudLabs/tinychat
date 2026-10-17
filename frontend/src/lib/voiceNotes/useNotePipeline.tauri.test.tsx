@@ -11,7 +11,8 @@ import { installDom } from "@/test/dom";
 import { getDesktopWhisperQueue, registerDesktopWhisperQueue, type DesktopWhisperJob, type DesktopWhisperQueue } from "./desktop/desktopWhisper";
 import { openDesktopVoiceNotes, type DesktopBridge } from "./desktop/desktopVoiceNotes";
 import { nativeVoiceNotesAvailable, installVoiceNotesEngine, VoiceNotes } from "./nativeVoiceNotes";
-import { onDeviceTranscriptSyncState, syncOnDeviceTranscript } from "./onDeviceTranscriber";
+import { __resetOnDeviceTranscriberForTests, onDeviceTranscriptSyncState, syncOnDeviceTranscript } from "./onDeviceTranscriber";
+import { __resetStorageStatusForTests } from "@/lib/storageStatus";
 import { pendingStore } from "./recorderSaves";
 import { useNotePipelineWithLedger, type NativeNote, type NotePipelineSource, type NotePipelineView } from "./useNotePipeline";
 import { newIdbEnv } from "./web/testing/idb";
@@ -63,6 +64,8 @@ beforeEach(() => {
 afterEach(async () => {
   if (root) await act(async () => root!.unmount());
   root = null;
+  await __resetOnDeviceTranscriberForTests();
+  __resetStorageStatusForTests();
   pendingStore.snapshot = originalSnapshot;
   pendingStore.subscribe = originalSubscribe;
   registerDesktopWhisperQueue(null);

@@ -121,7 +121,7 @@ export const FINAL_COPY = {
       web: "Just the recording. Audio follows your Upload audio to TinyCloud setting.",
     },
     skipExplanation:
-      "Only the audio is saved. Transcribe it later if you like.",
+      "Saves the recording without a transcript. Audio follows your Upload audio to TinyCloud setting.",
     localPhoneCaption: "Nothing leaves it; a little slower.",
     localDesktopCaption: "Whisper on this Mac, after you stop.",
     get localPhoneExplanation() { return `${captureDeviceName().replace(/^t/, "T")} transcribes it after you stop. Nothing leaves it.`; },

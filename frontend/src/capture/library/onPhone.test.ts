@@ -16,7 +16,7 @@ describe("withOnPhone", () => {
     const [item] = withOnPhone([], [note("rec-1", "2026-10-10T19:16:00.000Z")]);
     expect(item).toEqual({
       id: "on-phone:rec-1", source: "exo-voice-note", sourceId: "rec-1", title: null,
-      startedAt: "2026-10-10T19:16:00.000Z", durationSecs: 14, onPhone: true,
+      startedAt: "2026-10-10T19:16:00.000Z", durationSecs: 14.4, onPhone: true,
     });
     expect(recordingIdOfOnPhoneId(item.id)).toBe("rec-1");
     expect(recordingIdOfOnPhoneId("row-1")).toBeNull();

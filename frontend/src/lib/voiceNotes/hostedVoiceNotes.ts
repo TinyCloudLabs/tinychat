@@ -10,17 +10,25 @@ import {
 import { base64ToBytes } from "./voiceNoteAudio";
 import { currentAccountGeneration, isAccountWorkAllowed } from "./accountContext";
 import { nativeRecordingSource, VoiceNotes, type LocalTranscript, type VoiceNoteRecording, type VoiceNotesPlugin } from "./nativeVoiceNotes";
-import { readTranscriptCommit } from "./voiceNoteCommits";
-import { createVoiceNoteRow } from "./voiceNoteRows";
-import { loadVoiceNoteAudio, patchVoiceNoteTranscriptionFailure, readVoiceNoteForTranscription, saveVoiceNoteTranscript, voiceNoteTitle } from "./voiceNoteStore";
+import { readTranscriptCommit, requireVoiceNoteTranscriptCommit } from "./voiceNoteCommits";
+import { createVoiceNoteRow, transcriptHash } from "./voiceNoteRows";
+import { preserveVoiceNoteTranscriptHistory } from "./voiceNoteTranscriptHistory";
+import {
+  loadVoiceNoteAudio,
+  patchVoiceNoteTranscriptionFailure,
+  readVoiceNoteForTranscription,
+  saveVoiceNoteTranscript,
+  voiceNoteTitle,
+} from "./voiceNoteStore";
 import type { VoiceNoteTranscriptionStatus, NoteTranscriptionState } from "./voiceNoteTranscription";
 import { withHostedUploadQueue } from "../hostedUploadQueue";
 import type { CloudClock } from "../privateCloud";
+import { reportStorageError, storageScopeFor } from "../storageStatus";
 
 const CONSENT = "exo.voiceNotes.powerfulConsent";
 const PENDING = "exo.voiceNotes.powerfulJobs";
 const CLAIM_TAKEOVER_MS = 5 * 60_000;
-type Stored = { uploadId?: string; handle?: string; saved?: boolean; recording?: VoiceNoteRecording };
+type Stored = { uploadId?: string; handle?: string; saved?: boolean; explicitRerun?: boolean; cleanupOnly?: boolean; recording?: VoiceNoteRecording };
 type Claim = { version: 1; status: "active" | "failed" | "submitted"; token: string; claimedAt?: number; uploadId?: string; handle?: string };
 const claimKey = (id: string) => `exo/voiceNotes/hostedJobs/${encodeURIComponent(id)}`;
 const precondition = (error: { code?: string; message?: string }) => /PRECONDITION|412/i.test(`${error.code} ${error.message}`);
@@ -46,6 +54,7 @@ async function writeClaim(account: TinyCloudWeb, id: string, claim: Claim, etag?
     etag ? { ifMatch: etag, contentType: "application/json" } : { ifNoneMatch: "*", contentType: "application/json" });
   if (result.ok) return true;
   if (precondition(result.error)) return false;
+  reportStorageError(result.error, storageScopeFor(account));
   throw new Error(`Could not save the Powerful job claim: ${result.error.message}`);
 }
 
@@ -67,10 +76,11 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
   services: { client?: ReturnType<typeof createHostedAssemblyAiClient>; native?: VoiceNotesPlugin; clock?: CloudClock;
     readCommit?: typeof readTranscriptCommit; createRow?: typeof createVoiceNoteRow;
     save?: typeof saveVoiceNoteTranscript; readNote?: typeof readVoiceNoteForTranscription;
-    loadAudio?: typeof loadVoiceNoteAudio; reconciliationDelayMs?: number } = {}) {
+    loadAudio?: typeof loadVoiceNoteAudio; preserveHistory?: typeof preserveVoiceNoteTranscriptHistory; reconciliationDelayMs?: number } = {}) {
   const client = services.client ?? createHostedAssemblyAiClient({ backendUrl, sessionStore });
   const native = services.native ?? VoiceNotes;
   const readCommit = services.readCommit ?? readTranscriptCommit;
+  const preserveHistory = services.preserveHistory ?? preserveVoiceNoteTranscriptHistory;
   const createRow = services.createRow ?? createVoiceNoteRow;
   const save = services.save ?? saveVoiceNoteTranscript;
   const readNote = services.readNote ?? readVoiceNoteForTranscription;
@@ -110,16 +120,51 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
   const persist = (id: string, patch: Stored | null) => {
     const all = readJobs(did);
     if (patch === null) delete all[id];
-    else all[id] = { ...all[id], ...patch };
+    else {
+      all[id] = { ...all[id], ...patch };
+      if (patch.cleanupOnly) delete all[id]!.explicitRerun;
+    }
     writeJobs(did, all);
   };
   const check = async () => {
     const caps = await client.capabilities();
     return caps.hosted;
   };
-  const run = async (recording: Pick<VoiceNoteRecording, "id" | "owner" | "source" | "options" | "startedAt" | "sizeBytes" | "mimeType" | "durationMs" | "channels">) => {
+  const rejectPowerfulRerun = (explicitRerun: boolean) => {
+    // Powerful reruns stay disabled until TC-1139; reject before touching claims, jobs, or backend state.
+    if (explicitRerun) throw new Error("Transcribe again isn't available with Powerful yet.");
+  };
+  /**
+   * A hosted job's remote ops stay non-done until its transcript is durable, because their uploads read local
+   * bytes (hasLocalWorkInProgress keeps the audio while any op is non-done). Call once the transcript is committed.
+   * Best effort: a failure leaves the note pinned, which is safe; the next run that finds the commit retries it.
+   */
+  const markHostedRemoteDone = async (id: string): Promise<void> => {
+    try {
+      for (let attempt = 0; ; attempt += 1) {
+        const note = (await native.listPending()).recordings.find((candidate) => candidate.id === id);
+        const remote = note?.ledger?.remote ?? [];
+        if (!note || !remote.some((op) => op.mode === "hosted" && op.stage !== "done")) return;
+        try {
+          await native.updateLedger({ id, did, rev: note.rev ?? 0,
+            patch: { remote: remote.map((op) => op.mode === "hosted" ? { ...op, stage: "done" as const } : op) } });
+          return;
+        } catch (error) {
+          const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
+          if (code !== "rev_conflict" || attempt >= 2) throw error;
+        }
+      }
+    } catch (error) {
+      console.warn("[HostedVoiceNotes] Could not mark the remote job done; its audio stays on this device", error);
+    }
+  };
+  const run = async (recording: Pick<VoiceNoteRecording, "id" | "owner" | "source" | "options" | "startedAt" | "sizeBytes" | "mimeType" | "durationMs" | "channels">
+    & { ledger?: VoiceNoteRecording["ledger"] }, explicitRerun = false) => {
+    rejectPowerfulRerun(explicitRerun);
     const id = recording.id;
-    if (active.has(id) || jobs.get(id)?.kind === "done" || !consented() || (recording.owner && recording.owner !== did) || recording.source !== "in_app" || recording.options?.transcriber !== "assemblyai") return;
+    if (active.has(id) || (!explicitRerun && jobs.get(id)?.kind === "done") || !consented()
+      || (recording.owner && recording.owner !== did) || recording.source !== "in_app"
+      || (!explicitRerun && recording.options?.transcriber !== "assemblyai")) return;
     const pendingCheck = reconciliationChecks.get(id);
     if (pendingCheck) { clearTimeout(pendingCheck); reconciliationChecks.delete(id); }
     active.add(id);
@@ -131,18 +176,27 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
         throw new Error("The recording account changed. Retry after signing in.");
     };
     let transcriptSaved = false;
+    let remoteHandle: string | undefined;
     try {
       guard();
       const account = tcw();
-      const stored = readJobs(did)[id] ?? {};
-      // The durable commit is checked before any provider upload, including
-      // a fresh trigger after an earlier job cleared its local resume entry.
-      const prior = await readCommit(account, id);
-      if (prior) transcriptSaved = true;
-      if (prior && !stored.handle) { jobs.set(id, { kind: "done", outcome: prior.outcome }); notify(); return; }
-      if (prior && stored.handle && stored.saved) {
-        try { await client.deleteTranscript(stored.handle); persist(id, null); }
-        catch (error) { console.warn("[HostedVoiceNotes] Could not delete the saved remote transcript", error); }
+      // The durable commit is checked before any provider upload, including a fresh trigger.
+      // Explicit reruns require the committed base they were admitted against.
+      const currentCommit = await readCommit(account, id);
+      const prior = explicitRerun ? requireVoiceNoteTranscriptCommit(currentCommit) : currentCommit;
+      const previous = readJobs(did)[id] ?? {};
+      const stored = explicitRerun ? {} : previous;
+      if (explicitRerun && previous.cleanupOnly && previous.handle) {
+        await client.deleteTranscript(previous.handle);
+        persist(id, null);
+      }
+      if (prior && !explicitRerun) {
+        transcriptSaved = true;
+        if (stored.handle && stored.saved) {
+          try { await client.deleteTranscript(stored.handle); persist(id, null); }
+          catch (error) { console.warn("[HostedVoiceNotes] Could not delete the saved remote transcript", error); }
+        }
+        await markHostedRemoteDone(id);
         jobs.set(id, { kind: "done", outcome: prior.outcome }); notify(); return;
       }
       if (!prior) await createRow(account, recording as VoiceNoteRecording, voiceNoteTitle(recording.startedAt));
@@ -151,9 +205,14 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
       const rowChannels = noteRow.ok && noteRow.data && (noteRow.data.channels === 1 || noteRow.data.channels === 2)
         ? noteRow.data.channels : undefined;
       const channels = recording.sizeBytes > 0 ? recording.channels ?? rowChannels ?? 1 : rowChannels ?? recording.channels ?? 1;
-      if (!stored.recording) persist(id, { recording: recording as VoiceNoteRecording });
+      if (explicitRerun) persist(id, null);
+      if (!stored.recording) persist(id, { recording: recording as VoiceNoteRecording,
+        ...(explicitRerun ? { explicitRerun: true } : {}) });
+      // Eviction keeps sizeBytes while removing the file, so a positive size can't prove local bytes exist.
+      // Read the file's current size and use the verified space copy whenever it doesn't match.
+      const localSize = recording.sizeBytes > 0 ? (await native.localAudioSize({ id })).size : 0;
       let source = nativeRecordingSource(recording, native);
-      if (!recording.sizeBytes) {
+      if (!recording.sizeBytes || localSize !== recording.sizeBytes) {
         const space = await loadAudio(account, id);
         if (!space.ok) throw new Error("Could not read this note's audio. Try again.");
         const bytes = base64ToBytes(space.data.base64);
@@ -165,8 +224,12 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
         // this invocation waited for the account's upload lane.
         const latest = readJobs(did)[id] ?? {};
         const committed = await readCommit(account, id);
-        if (committed) {
+        if (explicitRerun) {
+          if (!committed || !prior || committed.rev !== prior.rev || committed.hash !== prior.hash)
+            throw new Error("The committed transcript changed before this rerun could start. Retry the rerun.");
+        } else if (committed) {
           transcriptSaved = true;
+          await markHostedRemoteDone(id);
           jobs.set(id, { kind: "done", outcome: committed.outcome }); notify();
           return null;
         }
@@ -301,7 +364,11 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
           throw error;
         } finally { clearInterval(heartbeat); }
       });
-      if (!handle) return;
+      if (!handle) {
+        if (explicitRerun) throw new Error("Powerful couldn't confirm this rerun. Try again.");
+        return;
+      }
+      remoteHandle = handle;
       persist(id, { handle });
       const transcript = await pollAssemblyAiTranscript(client, handle, {
         clock: services.clock,
@@ -318,11 +385,11 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
         .map((sentence) => stereo && sentence.channel !== undefined ? { ...sentence,
           speaker_name: sentence.channel === 0 ? "Me" : "Them" } : sentence);
       const local = recording.sizeBytes > 0 ? await native.getTranscript({ id }) : { transcript: null };
-      const commit = await readCommit(account, id);
-      const rev = Math.max(local.transcript?.rev ?? 0, commit?.rev ?? 0) + 1;
+      const rev = explicitRerun ? prior!.rev + 1 : Math.max(local.transcript?.rev ?? 0, prior?.rev ?? 0) + 1;
       const at = new Date().toISOString();
       const outcome = sentences.length ? "transcribed" : "no_speech";
       const prepared: LocalTranscript = { version: 2, noteId: id, transcriber: "assemblyai", rev,
+        ...(explicitRerun && prior ? { rerunBase: { rev: prior.rev, hash: prior.hash } } : {}),
         engine: "assemblyai", model: transcript.speech_model_used ?? null, language: transcript.language_code ?? null,
         outcome, diarized: stereo || recording.options?.identifySpeakers !== false, createdAt: at,
         segments: sentences.map((s) => ({ start: Math.round(s.start_time * 1000), end: Math.round(s.end_time * 1000),
@@ -331,7 +398,10 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
           ...(s.channel === undefined ? {} : { channel: s.channel }),
           ...(s.timing === undefined ? {} : { timing: s.timing }) })) };
       state(id, { kind: "saving" });
-      if (recording.sizeBytes > 0 && (!local.transcript || local.transcript.rev < rev)) await native.putTranscript({ id, transcript: prepared });
+      guard();
+      if (explicitRerun && prior) await preserveHistory(account, prior, guard);
+      if (!explicitRerun && recording.sizeBytes > 0 && (!local.transcript || local.transcript.rev < rev))
+        await native.putTranscript({ id, transcript: prepared });
       guard();
       const saved = await save(account, id, { rev, sentences,
         speakers: [...new Set(sentences.map((s) => s.speaker_name).filter((s): s is string => !!s))],
@@ -340,15 +410,35 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
           speaker_labels: stereo ? "channels" : recording.options?.identifySpeakers !== false ? "diarized" : "single-speaker", transcribed_at: at,
           model: transcript.speech_model_used ?? null, language: transcript.language_code ?? null } }, { generation, did });
       if (!saved.ok) throw new Error("The transcript is ready, but could not be saved to your space. Try again.");
+      if (explicitRerun) {
+        const committed = await readCommit(account, id);
+        if (committed?.rev !== rev || committed.hash !== await transcriptHash(sentences))
+          throw new Error("A different transcript revision won this rerun. Try again.");
+      }
       transcriptSaved = true;
+      if (explicitRerun && recording.sizeBytes > 0 && (!local.transcript || local.transcript.rev < rev)) {
+        try { await native.putTranscript({ id, transcript: prepared }); }
+        catch (error) { console.warn("[HostedVoiceNotes] Could not mirror the saved transcript on-device", error); }
+      }
       persist(id, { saved: true });
       try { await client.deleteTranscript(handle); persist(id, null); }
       catch (error) { console.warn("[HostedVoiceNotes] Could not delete the saved remote transcript", error); }
+      await markHostedRemoteDone(id);
       jobs.set(id, { kind: "done", outcome });
       logPipeline("transcription", id, "done", { engine: "assemblyai" });
       notify();
     } catch (error) {
       logPipelineError("transcription", error, id);
+      if (explicitRerun) {
+        const cleanupHandle = remoteHandle ?? readJobs(did)[id]?.handle;
+        if (cleanupHandle) {
+          try { await client.deleteTranscript(cleanupHandle); persist(id, null); }
+          catch (cleanupError) {
+            console.warn("[HostedVoiceNotes] Could not delete the failed rerun's remote transcript", cleanupError);
+            persist(id, { handle: cleanupHandle, cleanupOnly: true, recording: recording as VoiceNoteRecording });
+          }
+        } else persist(id, null);
+      }
       const current = currentAccountGeneration() === generation && tcw().did === did && isAccountWorkAllowed(tcw());
       const clientForFailure = current ? tcw() : null;
       if (!transcriptSaved && clientForFailure && typeof clientForFailure.sql?.db === "function") {
@@ -358,10 +448,11 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
       }
       if (transcriptSaved) {
         const commit = await readCommit(tcw(), id);
-        if (commit) { jobs.set(id, { kind: "done", outcome: commit.outcome }); notify(); return; }
+        if (commit) { await markHostedRemoteDone(id); jobs.set(id, { kind: "done", outcome: commit.outcome }); notify(); return; }
       }
       const message = error instanceof AssemblyAiError ? error.message
-        : error instanceof Error && error.message.startsWith("The transcript is ready") ? error.message
+        : error instanceof Error && (error.message.startsWith("The transcript is ready")
+          || error.message === "A different transcript revision won this rerun. Try again.") ? error.message
         : "Powerful couldn't finish this transcript. Try again.";
       jobs.set(id, { kind: "failed", message, retryable: !(error instanceof AssemblyAiError && error.kind === "needs-reconciliation"), reference: null,
         code: error instanceof AssemblyAiError ? error.kind : "transcription_error" });
@@ -375,17 +466,35 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
     subscribe(listener: () => void) { listeners.add(listener); return () => { listeners.delete(listener); }; },
     async resume() {
       for (const [id, stored] of Object.entries(readJobs(did))) {
+        if (stored.explicitRerun) {
+          if (stored.handle) {
+            try { await client.deleteTranscript(stored.handle); persist(id, null); }
+            catch (error) {
+              console.warn("[HostedVoiceNotes] Could not delete an interrupted rerun's remote transcript", error);
+              persist(id, { handle: stored.handle, cleanupOnly: true });
+            }
+          } else persist(id, null);
+          continue;
+        }
+        if (stored.cleanupOnly) {
+          if (stored.handle) {
+            try { await client.deleteTranscript(stored.handle); persist(id, null); }
+            catch (error) { console.warn("[HostedVoiceNotes] Could not delete a failed rerun's remote transcript", error); }
+          } else persist(id, null);
+          continue;
+        }
         const recording = (await native.listPending()).recordings.find((r) => r.id === id);
         if (recording ?? stored.recording) void run(recording ?? stored.recording!);
       }
     },
-    async runSpaceOnly(id: string) {
+    async runSpaceOnly(id: string, explicitRerun = false) {
+      rejectPowerfulRerun(explicitRerun);
       const note = await readNote(tcw(), id);
-      if (!note.ok || !note.data || note.data.captureTranscriber !== "assemblyai") return false;
+      if (!note.ok || !note.data || (!explicitRerun && note.data.captureTranscriber !== "assemblyai")) return false;
       const recording = { id, owner: did, source: "in_app", startedAt: Date.now(), sizeBytes: 0,
         mimeType: "audio/mp4", durationMs: Math.round((note.data.durationSeconds ?? 0) * 1000),
         channels: note.data.channels, options: { transcriber: "assemblyai", identifySpeakers: true } } as VoiceNoteRecording;
-      await run(recording);
+      await run(recording, explicitRerun);
       return true;
     },
   };

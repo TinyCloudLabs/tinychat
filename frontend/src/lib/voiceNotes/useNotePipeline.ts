@@ -8,7 +8,8 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { recoveryFailedKey, withQuarantine, type HomeIssue } from "@/capture/home/captureIssues";
 import { useSoftHome } from "@/capture/home/softHome";
 import { useRecorder } from "@/capture/recorder/RecorderProvider";
-import type { VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
+import { privateRefusal, privateAudioSourceFromMetadata, type PrivateAudioSource, type VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
+import { privateRefusalCopy } from "@/capture/recorder/privateInstead";
 import { PlatformContext, type AppPlatform } from "@/lib/platform";
 import { deviceName } from "./notePipelineCopy";
 import { localTranscriptionUnavailable } from "./captureEngine";
@@ -51,6 +52,7 @@ import { loadNote } from "./recordingNotes";
 import { captureAccountContext, isAccountWorkAllowed, subscribeAccountWork } from "./accountContext";
 import { VOICE_NOTE_READ_TIMEOUT_MESSAGE, VoiceNoteSaveTimeout, withVoiceNoteReadDeadline } from "./saveDeadline";
 import { pendingStore, type PendingNote } from "./recorderSaves";
+import { openManageStorage } from "@/lib/openManageStorage";
 import {
   recordingNoteSyncError,
   recordingNoteSyncSkip,
@@ -64,7 +66,6 @@ import {
   type VoiceNoteTranscriptState,
 } from "./voiceNoteStore";
 import type { NoteTranscriptionState } from "./voiceNoteTranscription";
-
 // --- Facts: the stores' answers, as plain data ----------------------------------------------------------------
 
 /**
@@ -336,6 +337,8 @@ export function buildNotePipelineInput(facts: NotePipelineFacts): NotePipelineIn
       cloud: route === "private-cloud" ? facts.cloudJob : null,
       // Jobs are written the moment a saved note is handed over, after the check: no job and no check pending is no hand-over.
       ...(route === "private-cloud" && facts.cloudJob === null && facts.saved && facts.cloudChecking !== true && facts.spaceReading !== true ? { cloudIdle: true as const } : {}),
+      // Positive evidence only: the ledger's local audio is ready. Anything else (absent, unknown, not ready) makes no local-copy claim.
+      ...(facts.native?.recording?.ledger?.localAudio?.state === "ready" ? { localAudioReady: true as const } : {}),
       readError: facts.readError ?? null,
       ...(facts.spaceReading === true ? { spaceReading: true, ...(facts.spaceAfterUploads === true ? { afterUploads: true } : {}) } : {}),
     },
@@ -365,6 +368,9 @@ export interface PipelineActionEnv {
   transcription: VoiceNoteTranscriptionProps | undefined;
   /** The transcription props as they are now, after an action ran (`transcription` is as they were when it began). */
   latestTranscription: () => VoiceNoteTranscriptionProps | undefined;
+  /** The saved note's duration and recorded source, used to re-run Private admission on Retry. */
+  durationSecs?: number | null;
+  privateAudioSource?: PrivateAudioSource;
   /** The existing Save now / recovery trigger (`recorder.retryPending`); its promise is awaited. */
   saveNow: () => void | Promise<void>;
   /** The app's sign-in entry; absent where there is none. */
@@ -407,6 +413,9 @@ export async function runPipelineAction(kind: PipelineActionKind, env: PipelineA
         const after = env.latestTranscription();
         return after?.availability === "failed" ? "Couldn't check private transcription right now. Try again." : null;
       }
+      case "manage-storage":
+        await openManageStorage();
+        return null;
       case "reread":
         env.reread();
         return null;
@@ -430,10 +439,18 @@ export async function runPipelineAction(kind: PipelineActionKind, env: PipelineA
               case "reread":
                 env.reread();
                 return null;
-              case "private-cloud":
+              case "private-cloud": {
                 if (!env.transcription) return "Private transcription isn't available here.";
-                env.transcription.onTranscribe(env.id);
-                return null;
+                if (env.input.transcriptProvider === "powerful") {
+                  env.transcription.onTranscribe(env.id);
+                  return null;
+                }
+                const sizeBytes = env.privateAudioSource?.sizeBytes ?? env.native?.recording?.sizeBytes ?? null;
+                const refusal = privateRefusal(env.transcription, env.durationSecs ?? null, sizeBytes, env.privateAudioSource);
+                if (refusal !== null) return privateRefusalCopy(refusal);
+                const result = env.transcription.onTranscribePrivately(env.id, env.durationSecs ?? null, sizeBytes);
+                return result ? privateRefusalCopy(result) : null;
+              }
               case "record":
                 if (env.tcw === null) return `Sign in to record the transcript on ${deviceName(env.input.device)}.`;
                 await recordOnDeviceTranscript(env.tcw, env.id);
@@ -744,6 +761,8 @@ export interface NotePipelineSource {
   rowExists: boolean;
   /** Authoritative when known; otherwise taken from the phone ledger's committed audio state. */
   audioSaved: boolean;
+  /** The saved note's exact length when the caller has it (as in the library item). */
+  durationSecs?: number | null;
   /**
    * The space row's metadata as the caller read it; null when it has no row or the read is not available.
    * Left out (undefined) when the caller has not read the row (the receipt): the hook reads it itself, and again
@@ -764,7 +783,7 @@ export interface NotePipelineView {
   actionError: string | null;
 }
 
-interface PipelineState { input: NotePipelineInput; pipeline: NotePipeline; native: NativeNote | null }
+interface PipelineState { input: NotePipelineInput; pipeline: NotePipeline; native: NativeNote | null; rowMetadata: Record<string, unknown> | null }
 
 /** Each note's input and pipeline, off one set of subscriptions. Notes the reads have not answered for are left out. */
 /** Desktop Whisper is a Tauri queue; Capacitor's native-plugin availability cannot gate it. */
@@ -927,7 +946,7 @@ function usePipelineStates(entries: readonly { id: string; source: NotePipelineS
         const key = autoTranscriptKey(tcw, id, "record");
         if (!autoSync.settled.has(key)) wantsTranscriptSync.push({ tcw, id, key, kind: "record", recording: nativeRecording, context: captureAccountContext(tcw) });
       }
-      out.set(id, { input, pipeline: notePipeline(input), native });
+      out.set(id, { input, pipeline: notePipeline(input), native, rowMetadata: facts.rowMetadata });
     }
     return { states: out, autoSyncs: wantsSync, autoTranscriptSyncs: wantsTranscriptSync };
     // The store versions say the per-key getters read above have new answers.
@@ -994,6 +1013,18 @@ function useNotePipelinesWithLedger(entries: readonly { id: string; source: Note
     const source = current.find((entry) => entry.id === id)?.source;
     if (source === undefined) return;
     setFailures((before) => { const next = new Map(before); next.delete(id); return next; });
+    const rowMetadata = source.metadata ?? state.rowMetadata;
+    const capture = rowMetadata?.capture;
+    const captureDurationMs = capture !== null && typeof capture === "object" && !Array.isArray(capture)
+      && typeof (capture as { duration_ms?: unknown }).duration_ms === "number"
+      ? (capture as { duration_ms: number }).duration_ms : null;
+    const recording = state.native?.recording;
+    const metadataSource = privateAudioSourceFromMetadata(rowMetadata);
+    const privateAudioSource = {
+      capturePlatform: metadataSource.capturePlatform ?? (state.input.device === "browser" ? "web" : null),
+      mimeType: metadataSource.mimeType ?? recording?.mimeType ?? null,
+      sizeBytes: metadataSource.sizeBytes ?? recording?.sizeBytes ?? null,
+    };
     void runPipelineAction(kind, {
       id,
       tcw: source.tcw,
@@ -1002,6 +1033,9 @@ function useNotePipelinesWithLedger(entries: readonly { id: string; source: Note
       native: state.native,
       transcription: rec.transcription,
       latestTranscription: () => latest.current.recorder.transcription,
+      durationSecs: source.durationSecs ?? (captureDurationMs === null ? null : captureDurationMs / 1000)
+        ?? (recording === undefined ? null : recording.durationMs / 1000),
+      privateAudioSource,
       saveNow: rec.retryPending,
       signIn: rec.signIn,
       reviewConsent: rec.reviewPrivateConsent,
@@ -1009,7 +1043,14 @@ function useNotePipelinesWithLedger(entries: readonly { id: string; source: Note
     }).then((reason) => {
       if (!live.current) return;
       if (reason !== null) console.error("[notePipeline] Action failed", { id, kind, reason });
-      setFailures((before) => { const next = new Map(before); if (reason === null) next.delete(id); else next.set(id, reason === "Sign in to sync this note." ? reason : "Couldn't complete that action. Try again."); return next; });
+      setFailures((before) => {
+        const next = new Map(before);
+        if (reason === null) next.delete(id);
+        else next.set(id, reason === "Sign in to sync this note."
+          || reason === privateRefusalCopy({ kind: "browser-wav-too-large" })
+          ? reason : "Couldn't complete that action. Try again.");
+        return next;
+      });
     });
   }, []);
   const views = useMemo(() => new Map([...states].map(([id, state]): [string, NotePipelineView] => [id, {

@@ -158,7 +158,7 @@ const text = (locator: Locator, value: string) =>
   );
 
 const slider = (page: Page) =>
-  page.getByRole("slider", { name: "Transcription privacy" });
+  page.getByRole("slider", { name: "Transcription mode" });
 const mode = (page: Page) => slider(page).getAttribute("aria-valuetext");
 const modeIs = (page: Page, value: string) =>
   until(`mode ${value}`, async () => (await mode(page)) === value);

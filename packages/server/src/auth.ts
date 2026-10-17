@@ -24,6 +24,7 @@ export interface SessionTokenPayload {
 // ── Nonce Store ─────────────────────────────────────────────────────
 
 const NONCE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const MAX_PENDING_NONCES = 2048;
 
 /**
  * Create an in-memory nonce store for SIWE authentication.
@@ -59,6 +60,16 @@ export function createNonceStore(): NonceStore {
 
   return {
     generate(address?: string): string {
+      if (store.size >= MAX_PENDING_NONCES) {
+        const now = Date.now();
+        for (const [key, entry] of store) {
+          if (now - entry.createdAt > NONCE_TTL_MS) store.delete(key);
+        }
+        if (store.size >= MAX_PENDING_NONCES) {
+          const oldest = store.keys().next().value;
+          if (oldest !== undefined) store.delete(oldest);
+        }
+      }
       const normalizedAddress = address?.toLowerCase() ?? "";
       const nonce = randomBytes(32).toString("hex");
       const key = `${normalizedAddress}:${nonce}`;
@@ -87,8 +98,10 @@ export interface VerifiedSiweSession {
   address: string;
   chainId: number;
   uri: string;
+  domain: string;
   expirationTime?: string;
   nonce: string;
+  resources?: string[];
 }
 
 /**
@@ -109,8 +122,10 @@ export async function verifySiweSession(
   return {
     address: result.data.address,
     chainId: result.data.chainId,
+    domain: result.data.domain,
     uri: result.data.uri,
     expirationTime: result.data.expirationTime,
+    resources: result.data.resources,
     nonce: result.data.nonce,
   };
 }
@@ -122,10 +137,10 @@ export async function verifySiweSession(
 export async function verifySIWE(
   message: string,
   signature: string,
-): Promise<{ address: string; nonce: string; expirationTime?: string }> {
-  const { address, nonce, expirationTime } = await verifySiweSession(message, signature);
+): Promise<{ address: string; nonce: string; domain: string; uri: string; chainId: number; resources?: string[]; expirationTime?: string }> {
+  const { address, nonce, domain, uri, chainId, resources, expirationTime } = await verifySiweSession(message, signature);
   if (expirationTime && Date.parse(expirationTime) <= Date.now()) throw new Error("SIWE session expired");
-  return { address, nonce, expirationTime };
+  return { address, nonce, domain, uri, chainId, resources, expirationTime };
 }
 
 // ── Session Token ───────────────────────────────────────────────────

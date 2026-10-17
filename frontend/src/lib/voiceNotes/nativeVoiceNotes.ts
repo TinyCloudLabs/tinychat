@@ -62,7 +62,8 @@ export interface NoteLedger {
   spaceId?: string | null;
   /** Local source is durable before the playable file has finished importing. Absent on legacy ready notes. */
   localAudio?: { state: "preparing" | "ready" | "failed"; error: string | null };
-  audio: { state: "pending" | "saved"; rowId: string | null; at: number | null };
+  audio: { state: "pending" | "saved"; rowId: string | null; at: number | null;
+    verifiedInSpace?: { sha256: string; size: number } };
   transcript: { state: "pending" | "running" | "retrying" | "blocked" | "needs_attention" | "cancelled" | "failed" | "done";
     outcome: "transcribed" | "no_speech" | null; reason: string | null; attempts: number; nextAttemptAt: number | null };
   transcriptSync: { state: "pending" | "saved"; rev: number; at: number | null };
@@ -76,7 +77,10 @@ export interface NoteLedger {
 export interface NoteSttState {
   state: "waiting_for_model" | "queued" | "running" | "done" | "failed" | "cancelled";
   pack: "full" | "small" | null; engine: "parakeet" | "apple-speech" | "whisper" | null;
-  segmentsDone: number; windowsDone: number; error: string | null;
+  segmentsDone: number; windowsDone: number; error: string | null; rerunRev?: number | null;
+  rerunBaseRev?: number | null; rerunBaseHash?: string | null;
+  /** Set by the native enqueue (`ResumableWork.requested`, TranscriptionCore.swift:44, ResumableWork.kt:20-21) when the user chose Local for this note. */
+  requested?: boolean;
 }
 export interface LocalTranscript {
   version: 1 | 2; noteId: string; transcriber: TranscriberId; rev: number;
@@ -88,6 +92,8 @@ export interface LocalTranscript {
     /** Eval-only lineage. Not included in production transcripts. Times are seconds. */
     words?: { text: string; start: number; end: number; channel: number | undefined;
       timing: "token" | "fallback" | "none" }[] }[]; createdAt: string;
+  /** Prior committed version for an explicit rerun; sync records history before the replacement commit. */
+  rerunBase?: { rev: number; hash: string };
   provider?: Record<string, unknown>;
 }
 
@@ -263,6 +269,8 @@ export interface VoiceNotesPlugin {
   cancelAudioUpload?(options: { uploadId: string }): Promise<void>;
   /** Delete after a confirmed save: until then the recording stays on the device. */
   deleteAudio(options: { id: string }): Promise<void>;
+  /** Remove bytes only through the shared JS source-pin gate; native eviction must not be initiated directly. */
+  evictCachedAudio(options: { id: string }): Promise<void>;
   /** Stopped recordings still on the device, i.e. not yet confirmed saved. */
   listPending(): Promise<{ recordings: VoiceNoteRecording[] }>;
   pause(): Promise<void>;
@@ -283,6 +291,7 @@ export interface VoiceNotesPlugin {
   claim(options: ClaimOptions): Promise<{ owner: string | null }>;
   updateLedger(options: { id: string; did: string; rev: number; patch: Partial<NoteLedger> }): Promise<{ rev: number }>;
   localAudioUrl(options: { id: string }): Promise<{ url: string }>;
+  localAudioSize(options: { id: string }): Promise<{ size: number }>;
   putTranscript(options: { id: string; transcript: LocalTranscript }): Promise<void>;
   getTranscript(options: { id: string }): Promise<{ transcript: LocalTranscript | null }>;
   listInputs(): Promise<{ inputs: AudioInput[]; selectedId: string | null; activeId: string | null }>;

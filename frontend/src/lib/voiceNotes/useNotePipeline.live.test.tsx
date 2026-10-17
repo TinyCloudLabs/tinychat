@@ -178,7 +178,7 @@ async function mountOne(source: NotePipelineSource, value: Partial<RecorderValue
 }
 
 const checkFailing = (message: string): VoiceNoteTranscriptionProps => ({
-  availability: "failed", checkError: "offline", consented: true, maxSeconds: 600,
+  availability: "failed", checkError: "offline", consented: true, maxSeconds: 600, maxBytes: 186_496_800,
 jobs: new Map([[ID, { kind: "blocked", reason: "check-failed" }], [OTHER, { kind: "blocked", reason: "check-failed" }]]),
   onTranscribe: () => {}, onConsent: () => {}, onTurnOff: () => {}, onTurnOn: () => {},
   onRecheck: async () => { throw new Error(message); },
@@ -353,6 +353,82 @@ describe("actions", () => {
     expect(seen.view!.actionError).toBe("Couldn't complete that action. Try again.");
   });
 });
+  const privateProps = (
+    patch: Partial<VoiceNoteTranscriptionProps> = {},
+  ): VoiceNoteTranscriptionProps => ({
+    availability: "available",
+    consented: true,
+    maxSeconds: 120,
+    maxBytes: 64_000,
+    jobs: new Map([[ID, { kind: "failed", message: "server_error", retryable: true }]]),
+    onTranscribe: () => {},
+    onTranscribePrivately: () => null,
+    onConsent: () => {},
+    onTurnOff: () => {},
+    onRecheck: () => {},
+    ...patch,
+  });
+
+  test("Review consent is wired from the recorder through the real hook action", async () => {
+    phone.recordings = [recording(ID, "private-cloud")];
+    let disclosures = 0;
+    const { seen } = await mountOne(SIGNED_OUT, {
+      transcription: privateProps({ consented: false,
+        jobs: new Map([[ID, { kind: "blocked", reason: "no-consent" } as never]]) }),
+      reviewPrivateConsent: () => { disclosures++; },
+    });
+    expect(seen.view!.pipeline.blocker?.action?.kind).toBe("review-consent");
+    await act(async () => seen.view!.onAction("review-consent"));
+    expect(disclosures).toBe(1);
+    expect(seen.view!.actionError).toBeNull();
+  });
+
+  test("list Retry derives browser WebM duration and source from listing metadata before dispatch", async () => {
+    phone.recordings = [recording(ID, "private-cloud")];
+    const dispatched: string[] = [];
+    const metadata = {
+      transcription_outcome: "failed",
+      audio_mime_type: "audio/webm;codecs=opus",
+      audio_bytes: 4,
+      audio: { stored: true },
+      capture: { platform: "web", duration_ms: 2_000, options: { transcriber: "private-cloud" } },
+    };
+    const item = { id: "row-webm", source: "exo-voice-note", sourceId: ID, title: "WebM", startedAt: null,
+      durationSecs: null, metadata };
+    const source = listPipelineEntries([item], SPACE)[0]!.source;
+    const { seen } = await mountOne(source, {
+      transcription: privateProps({ onTranscribePrivately: (id) => { dispatched.push(id); return null; } }),
+    });
+    expect(seen.view!.pipeline.blocker?.action?.kind).toBe("retry");
+    await act(async () => seen.view!.onAction("retry"));
+    expect(seen.view!.actionError)
+      .toBe("This recording is too long for Private transcription in the browser. Use the desktop or phone app to transcribe it privately.");
+    expect(dispatched).toEqual([]);
+  });
+
+  test("receipt Retry resolves the row's browser WebM facts when callers supply no duration or metadata", async () => {
+    phone.recordings = [recording(ID, "private-cloud")];
+    const dispatched: string[] = [];
+    const metadata = {
+      transcription_outcome: "failed",
+      audio_mime_type: "audio/webm;codecs=opus",
+      audio_bytes: 4,
+      audio: { stored: true },
+      capture: { platform: "web", duration_ms: 2_000, options: { transcriber: "private-cloud" } },
+    };
+    const space = fakeSpace("did:receipt-webm", () => metadata);
+    const { seen } = await mountOne({ tcw: space.tcw, rowExists: true, audioSaved: true }, {
+      transcription: privateProps({ onTranscribePrivately: (id) => { dispatched.push(id); return null; } }),
+    });
+    await settleUntil(() => seen.view?.input.transcript.persistedState === "failed");
+    expect(seen.view!.input.transcript.persistedState).toBe("failed");
+    expect(space.log.rowQueries).toContainEqual([ID]);
+    expect(seen.view!.pipeline.blocker?.action?.kind).toBe("retry");
+    await act(async () => seen.view!.onAction("retry"));
+    expect(seen.view!.actionError)
+      .toBe("This recording is too long for Private transcription in the browser. Use the desktop or phone app to transcribe it privately.");
+    expect(dispatched).toEqual([]);
+  });
 
 describe("the list hook", () => {
   const entries = [{ id: ID, source: SIGNED_OUT }, { id: OTHER, source: SIGNED_OUT }];

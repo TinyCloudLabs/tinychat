@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { AgentSetupCard } from "./AgentSetupCard";
 import { useAgentAccess } from "./useAgentEnablement";
 import { AgentAccessControls } from "./AgentEnablementBanner";
@@ -14,7 +15,11 @@ import {
   SunIcon,
   UserIcon,
 } from "lucide-react";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
+import { StorageFullMessage } from "./StorageFullDialog";
+import { openManageStorage } from "@/lib/openManageStorage";
+import { useStorageReadOnly } from "@/lib/useStorageReadOnly";
+import { useStorageFreePlan } from "@/lib/useStorageFreePlan";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { Button } from "@/components/ui/button";
@@ -33,6 +38,7 @@ import { useConversationCanvasFeature } from "./useExperimentalFeatures";
 import { TranscriptionSettings } from "./TranscriptionSettings";
 import { VoiceNotesTranscriberSettings } from "./VoiceNotesTranscriberSettings";
 import { DebugLogRow } from "./DebugLogRow";
+import { AudioCacheSettings } from "@/capture/AudioCacheSettings";
 import { nativeVoiceNotesAvailable } from "../lib/voiceNotes/nativeVoiceNotes";
 import { appPlatform } from "../lib/platform";
 import { useSizeClass } from "../lib/sizeClass";
@@ -85,6 +91,7 @@ export function SettingsPage({
   backendUrl,
   sessionStore,
 }: SettingsPageProps) {
+  const { hash } = useLocation();
   const agentAccess = useAgentAccess();
   const conversationCanvas = useConversationCanvasFeature(tcw, billingStatus);
   const compact = useSizeClass().size === "compact";
@@ -94,7 +101,17 @@ export function SettingsPage({
     ? Math.min(100, Math.round((usage.used / usage.limit) * 100))
     : 0;
   const near = pct >= 90;
+  const storageFull = useStorageReadOnly();
+  const canUpgrade = useStorageFreePlan() && paywallEnabled;
   const resetsLabel = usage?.resetsAt ? formatResetsAt(usage.resetsAt) : null;
+  useEffect(() => {
+    if (hash !== "#agent-access") return;
+    const card = document.getElementById("agent-access");
+    const heading = card?.querySelector("h2");
+    if (!card || !heading) return;
+    card.scrollIntoView({ block: "start" });
+    heading.focus({ preventScroll: true });
+  }, [hash]);
   return (
     // `relative`: the containing block for sr-only/absolute descendants, so they
     // scroll and clip with this pane instead of stretching the document (see
@@ -104,6 +121,21 @@ export function SettingsPage({
           navigation on wider screens, so no Back there. */}
       <PageHeader title="Settings" back={compact ? onBack : undefined} className="mx-auto w-full max-w-2xl px-4 sm:px-6" />
       <div className="mx-auto w-full max-w-2xl px-4 pb-[max(1.5rem,env(safe-area-inset-bottom))] pt-2 sm:px-6">
+        {storageFull && (
+          <div role="region" aria-label="Storage full" className="mb-4 rounded-xl border border-border bg-muted p-4 text-sm">
+            <p>
+              <strong>Storage full</strong> <StorageFullMessage detail />
+            </p>
+            <Button type="button" variant="outline" size="sm" className="mt-3" onClick={() => void openManageStorage()}>
+              Manage storage
+            </Button>
+            {canUpgrade && (
+              <Button type="button" variant="outline" size="sm" className="ml-2 mt-3" onClick={() => void openManageStorage()}>
+                Upgrade
+              </Button>
+            )}
+          </div>
+        )}
         <div className="flex flex-col gap-4">
           <SectionCard icon={UserIcon} title="Account">
             <div className="flex items-center gap-2 text-xs">
@@ -143,6 +175,7 @@ export function SettingsPage({
             </div>
           </SectionCard>
           <SectionCard
+            id="agent-access"
             icon={ShieldCheckIcon}
             title="Agent access"
             aside={
@@ -175,6 +208,9 @@ export function SettingsPage({
             />
           </SectionCard>
           <DebugLogRow />
+          <SectionCard icon={DatabaseIcon} title="Audio storage">
+            <AudioCacheSettings />
+          </SectionCard>
           <SectionCard icon={DatabaseIcon} title="Data">
             <p className="text-xs text-muted-foreground">
               Bring your Claude conversation history into this space.

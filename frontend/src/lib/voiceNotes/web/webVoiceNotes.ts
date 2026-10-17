@@ -362,7 +362,7 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
           const opts: CaptureOptions = {
             transcriber: signedIn ? (startOptions?.transcriber ?? defaults.transcriber) : "on-device",
             identifySpeakers: startOptions?.identifySpeakers ?? defaults.identifySpeakers,
-            uploadAudio: startOptions?.uploadAudio ?? false,
+            uploadAudio: startOptions?.uploadAudio ?? defaults.uploadAudio ?? false,
           };
           const maxDurationMs = Math.min(WEB_MAX_DURATION_MS, Math.max(WEB_MIN_DURATION_LIMIT_MS, startOptions?.maxDurationMs ?? WEB_MAX_DURATION_MS));
           const begun = await store.beginSession({ id, startedAt: now(), source: "in_app", owner: signedIn ? defaults.accountDid : null,
@@ -512,6 +512,11 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
       await store.deleteAudio({ id });
       revokeUrl(id);
     },
+    async evictCachedAudio({ id }) {
+      if (live?.id === id) throw failure("recording_in_progress");
+      await store.evictCachedAudio({ id });
+      revokeUrl(id);
+    },
 
     async localAudioUrl({ id }) {
       const cached = objectUrls.get(id);
@@ -521,6 +526,7 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
       objectUrls.set(id, url);
       return { url };
     },
+    async localAudioSize({ id }) { return { size: await store.audio.size(id) }; },
     async audioMetadata() { throw failure("not_available_on_web"); },
     async uploadAudio() { throw failure("not_available_on_web"); },
     async cancelAudioUpload() {},

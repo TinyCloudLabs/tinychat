@@ -1,7 +1,11 @@
 // The minimised recorder: the island in each state, and the rail, sidebar and
 // header controls that stand in for it.
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
+import { act } from "react";
+import { createRoot } from "react-dom/client";
+import { installDom } from "@/test/dom";
+import { __resetStorageStatusForTests, reportStorageError } from "@/lib/storageStatus";
 
 import { MinimizedProvider } from "./final/MinimizedProvider";
 import { HeaderLiveChipView } from "./HeaderLiveChip";
@@ -12,6 +16,9 @@ import { islandShown, StaticRecorderProvider, type RecorderValue } from "./Recor
 import { SidebarLiveCardView } from "./SidebarLiveCard";
 
 const noop = () => {};
+afterEach(async () => {
+  await __resetStorageStatusForTests();
+});
 
 function value(patch: Partial<RecorderValue> = {}): RecorderValue {
   return {
@@ -80,6 +87,22 @@ describe("IslandView", () => {
     const html = renderToStaticMarkup(<IslandView recorder={value({ phase: "idle", outcome: "failed" })} />);
     expect(html).toContain("Kept on this browser");
     expect(html).toContain('data-testid="island-save-now"');
+  });
+
+  test("failed while TinyCloud storage is full: Manage storage, never Save now", async () => {
+    const restoreDom = installDom();
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    reportStorageError({ code: "STORAGE_QUOTA_EXCEEDED", message: "storage is full" });
+    try {
+      await act(async () => root.render(<IslandView recorder={value({ phase: "idle", outcome: "failed" })} />));
+      expect(container.textContent).toContain("Manage storage");
+      expect(container.textContent).not.toContain("Save now");
+    } finally {
+      await act(async () => root.unmount());
+      restoreDom();
+    }
   });
 
   test("shown while minimised and under way or just ended; never over the open sheet or when idle", () => {

@@ -10,9 +10,9 @@ export function listPipelineEntries(items: readonly LibraryItem[], tcw: TinyClou
     .filter((item) => item.source === VOICE_NOTE_SOURCE)
     .map((item) => ({
       id: item.sourceId,
-      // Preserve the listing's three pipeline fields when present. `null`
-      // means the query confirmed no row metadata; `undefined` lets P4 batch
-      // read metadata when the listing could not provide it.
-      source: { tcw, rowExists: !item.onPhone, audioSaved: !item.onPhone && rowHasCommittedAudio(item.metadata), metadata: item.metadata } satisfies NotePipelineSource,
+      // Preserve the listing's duration and metadata. `null` means the query
+      // confirmed no row metadata; `undefined` lets P4 batch read it.
+      source: { tcw, rowExists: !item.onPhone, audioSaved: !item.onPhone && rowHasCommittedAudio(item.metadata),
+        durationSecs: item.durationSecs, metadata: item.metadata } satisfies NotePipelineSource,
     }));
 }

@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import type { StoredMessageItem } from "./threadStore";
 import { appendMessage, getThread, setSetting, useLocalThreadStorage } from "./threadStore";
@@ -22,10 +22,13 @@ import {
   setCanvasEnabled,
   useLocalCanvasStorage,
 } from "./conversationCanvasStore";
-import { STORAGE_FULL_SAVE_MESSAGE, reportStorageWriteSucceeded } from "./storageStatus";
+import { __resetStorageStatusForTests, STORAGE_FULL_SAVE_MESSAGE } from "./storageStatus";
 import { activeAncestry, createDocument, placeDocument } from "../chat/canvas/model";
 
 type Client = Parameters<typeof useLocalCanvasStorage>[0];
+afterEach(async () => {
+  await __resetStorageStatusForTests();
+});
 
 /**
  * A remote-shaped client that records which SQL databases and statements are
@@ -401,14 +404,10 @@ describe("Canvas never loses messages or edits made elsewhere", () => {
     const { space, a } = await sharedSwitchedChat([item("u0", "user", "zero")]);
     const before = space.batchCalls;
     space.rejectAfterRevisionBump = true;
-    try {
-      await expect(
-        mutateCanvas(a, "chat", (current) => ({ ...current!, activeHeadId: null })),
-      ).rejects.toThrow(STORAGE_FULL_SAVE_MESSAGE);
-      expect(space.batchCalls - before).toBe(1);
-    } finally {
-      reportStorageWriteSucceeded();
-    }
+    await expect(
+      mutateCanvas(a, "chat", (current) => ({ ...current!, activeHeadId: null })),
+    ).rejects.toThrow(STORAGE_FULL_SAVE_MESSAGE);
+    expect(space.batchCalls - before).toBe(1);
   });
 
   test("two devices: a send landing between a branch switch's read and write is kept, never erased", async () => {

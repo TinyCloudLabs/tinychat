@@ -36,6 +36,26 @@ Integration branch: `dev/0.8.0`
 | #400 | a988c05d | 4c7a34f7 | No | Clean merge of TC-1135 stranded Private-note recovery after the CI repairs; preserves the existing privacy gate and #394 recovery provenance. |
 | #350 | 7f5fb1cd | 7b36ac1a | No | Clean merge of TC-947 Me vs Them after the approved P1 fixes; the PR already contained dev through `e775e736`, so the only branch-only delta was the later integration documentation. |
 | #403 | b00ebd38 | cedb3883 | No | Clean merge of the reviewed #350 follow-up: authoritative native channel metadata survives renderer adoption and durable Stop, and every receipt save path preserves channels for Me/Them playback. |
+| #402 | cdda8907 | 28efa0a2 | No | Clean merge of TC-1111 item 4: retrieval results retain voice-note provenance, and the published retrieval pack advances to `0.1.1-onboarding.22`. |
+| #389 | 5a25b037 | c3d39ed3 | No | Clean merge of TC-1102 “Transcribe again” after its iOS simulator and both signing dry-runs passed. Follow-up N1 is non-blocking: add deadlines to the Local rerun reads in `onDeviceTranscriber.ts:244,258`. |
+| #409 | d4db8404 | 8b244a31 | No | Clean copy-only merge of the dev storage-full wording fix after its macOS ad-hoc signing gate passed. #401 was not present; the scoped canonical-copy checks passed 3/3. |
+| #373 | c80f6c93 | db5e604a | Yes (4 files) | Merged the reviewed local-audio cache after all Apple, Chromium, and halo gates passed. Conflict resolution retained #389's rerun state and fail-closed upload gate while adding #373's hosted-ledger completion, verified local/space source selection, Local-request provenance, and verified-in-space receipt. Accepted limits remain: native eviction has no store-level owner re-check, and cache accounting overcounts outbox-pinned notes. TC-1171 tracks the pre-existing #350 stereo gaps separately; they are not caused by #373. |
+| #405 | 120aceaa | b19eae2a | Yes (6 files) | Merged the reviewed Private duration/byte admission after its authorized iOS capture-writer rerun passed. Conflict resolution preserves #389's explicit rerun route and #407's requested recovery rescan while adding #405's duration/source refusals and saved Private-note scan; native explicit-rerun records (`stt.rerunRev`) remain excluded from ordinary recovery. The client uses #405's 0.25-second media safety margin by default. The backend only relays capability fields: PTX #111 must deploy separately in Miller's release window before its advertised ceilings become active. |
+| #407 | 66617835 | 33747e64 | No | Clean merge of the approved TC-1140 recovery reconciliation. Exact-head CI passed; targeted recovery tests passed 228/228. |
+| `origin/main` | da787d7d | ae9cdd41 | Yes (2 files) | Refreshed through 0.7.4. Retained the approved #407 resolution and beta prerelease state (TC-1140). |
+| `origin/main` | e137f9fb | 130aa8b3 | No | Refreshed through #411, including the approved TC-641 consent-copy status and its pinned backend test. |
+| #413 | a3a1e771 | 2f69e54a | No | Clean TC-1185 copy-only merge: read-only space-lane activity no longer reports that another operation is blocking the note. TC-1185 problem 1, the post-save full-transcript load error, is not addressed by #413 and remains open. |
+| #414 | 850878a6 | d438e3d9 | No | Clean merge of the reviewed TC-1192 agent-sync continuation fix after all required checks passed; focused connector tests passed 17/17. |
+| #415 | 187227da | eddf432d | No | Clean TC-1185 Retry merge: Try again re-reads the current committed transcript body after an absent read. The original post-save full-transcript load error is not addressed by #415 and remains open. |
+| `origin/main` | 6f63a5e7 | a22bb386 | Yes (`bun.lock`) | Refreshed through corrected TC-1201 #423 after #417 was reverted by #421. The lock/package resolution retains dev's beta pre-mode release plan, all main changeset files are present, and `auth.ts`, `native-siwe-audience.ts`, and `cors-origins.ts` match main exactly. |
+| #412 | bd049fd7 | 46f59002 | No | Clean merge of the approved TC-985 persistent agent-status fix after exact-head CI and Clarissa's branch-preview QA passed; focused status and route tests passed 41/41. |
+| #416 | 603e6792 | c743a29a | No | Clean merge of the approved TC-1182 no-local-source-eviction interim after all required checks passed; focused source-pin, cache, receipt, transcription, and web-store tests passed 506/506. |
+| #424 | dcc7c468 | 1e67e03f | No | Clean merge of the approved TC-1183 web sign-in prefetch after all required checks passed; nonce and manifest prefetch retain freshness gating, and focused prefetch/encryption/boot tests passed 22/22. |
+| #427 | 272e4022 | 4bfad174 | No | Clean test-only merge of the approved TC-1140 Retry-After clock stabilization after every required check passed; the focused transcription suite passed 228/228. |
+| #401 | fcbab307 | 10d68fbe | No | Clean merge of the approved storage-full handling after #427: storage state is scoped to the active session, quota-blocked work pauses for recovery, and Manage storage actions are available on supported surfaces. The current-main TC-1201 auth files remain unchanged. |
+| #426 | ecb4506a | 2d49064c | No | Clean merge of the refreshed approved TC-1206 fail-closed Private-choice persistence fix after Astra's exact-head approval and every required check passed; the head already merged current dev and retained #401 storage-full behavior. Focused choice, pipeline, transcription, cache-pin, and detail-view tests passed 554/554. |
+| #428 | f7a12ac9 | 0d2410da | No | Clean merge of the approved TC-1214 iOS smoke instrumentation after Astra's exact-head approval and all six required checks passed, including simulator, archive, signing, and Cloudflare. The smoke harness passed 7/7 post-merge, covering launch/liveness evidence, deadline and exit failures, and public-safe sanitization. |
+| #418 | fd0fc7b8 | 96ed36e3 | No | Clean merge of approved TC-1143 PR-A durable held-result storage after exact-head Astra approval and all required checks passed; the acceptance and review evidence ledger is recorded in TC-1143. PR-A covers WEB only: Capacitor and Tauri remain on WebView IndexedDB until PR-C. |
 
 ## Test Fixes (2026-10-14)
 
@@ -75,16 +95,36 @@ After merging origin/main (TC-1128, #387, #392, 45d16e58) and PR #386 (TC-1108 p
 | Clean-order Library unit suite | #400 merge (`4c7a34f7`) | #400's local-audio probe called the mutable native plugin unconditionally; web tests intentionally reset that binding to null, so a clean CI file order failed 32 later Library tests. | Run the probe only when the existing `nativeVoiceNotesAvailable()` contract says the plugin is installed; web keeps an empty local-audio set. | #400 `a988c05d`; existing native availability contract |
 | Capture-settings Chromium follow-up | #351 merge (`92ff5241`) | #351 replaced the old automatic-space-save switch with privacy-default-off `Upload audio to TinyCloud`, but the browser interaction still waited for the removed label. | Exercise the upload-audio switch's false-to-true transition while retaining the system-audio rejection check. | #351 `760a64fa` (`bfd8aae6`) |
 | Me/Them metadata after reload and receipt save settlement | #350 merge (`7b36ac1a`) | Existing-session adoption and durable Stop could omit authoritative native channels, while no-pipeline `SAVED` events overwrote the local receipt's channels after save settlement. | Restore native channels during adoption/Stop and carry the matching recording's channels through every `LOCAL_COMMITTED`/`SAVED` receipt transition, including Save now. | #403 `b00ebd38`; #350 `7f5fb1cd` |
+| Backend transcript-delivery TypeScript | #394 re-land (`167d4786`) | TC-760 narrowed the shared `gaps` contract to structured transcript gaps, but the existing backend API type still exposed `unknown[]`, so the unchanged delivery call no longer typechecked. | Give the backend transcript response the same `{ start, end, speaker_name }[]` gap shape as the approved shared contract. | #394 `f4a21845`; #394 re-land `167d4786` |
+| Dynamic recorder-device copy after local-cache tests | #373 merge (`db5e604a`) | #373's authenticated audio-receipt test rendered `AudioCacheSettings`, which installs the native capture engine singleton, but its cleanup restored only the plugin binding. A later mode-copy test therefore observed “this phone” instead of its isolated browser fixture. | Reset the capture-engine singleton in the owning test's `afterEach`; the full suite is order-independent again without changing product copy. | #373 `c80f6c93`; existing `__resetCaptureEngineForTests` isolation contract |
+| #415 post-merge Library retry fixture | #415 merge (`eddf432d`) | The new standalone retry test replaced process-wide DOM, IndexedDB, and native VoiceNotes bindings without restoring them; the post-merge full suite then failed five existing tests that inherited those fixtures. | Capture and restore every replaced global plus the original native VoiceNotes binding after the file. | #415 `187227da`; existing `useLibrary.test.tsx` isolation contract |
 
 ## Current Status
 
-- **Verified code head**: `cedb3883` (#403 merged)
-- **Frontend unit suite**: 4882 pass, 4 skip, 0 fail (4886 tests, 339 files)
-- **`origin/main` `b9c538ee` baseline**: 4735 pass, 4 skip, 0 fail (4739 tests, 326 files)
-- **TypeScript**: pinned TypeScript 5.9.3, `tsc --noEmit -p frontend/tsconfig.json`, 0 errors
+- **Verified code head**: `96ed36e3` (#418 merged after #428; TC-1143 PR-A, WEB only)
+- **Frontend unit suite**: 5439 pass, 4 skip, 0 fail (5443 tests, 357 files)
+- **#415 scoped tests**: 54 pass, 0 fail across `useLibrary.retry.test.tsx` and `useLibrary.test.tsx`
+- **#413 scoped tests**: 198 pass, 0 fail across `useLibrary.test.tsx` and `notePipeline.test.ts`
+- **#414 scoped tests**: 17 pass, 0 fail in `test/connectors/agent-sync.e2e.test.ts`
+- **TC-1201 auth tests**: 37 pass, 0 fail across six backend/server files
+- **#412 scoped tests**: 41 pass, 0 fail across status-indicator/enablement units and the rendered route harness
+- **#416 scoped tests**: 506 pass, 0 fail across nine source-pin, cache, receipt, transcription, and web-store files
+- **#424 scoped tests**: 22 pass, 0 fail across web sign-in prefetch, encryption-grant, and boot-surface files
+- **#427 scoped tests**: 228 pass, 0 fail in `voiceNoteTranscription.test.ts`
+- **#401 scoped tests**: 67 pass, 0 fail across nine storage-status, recovery, thread-store, and UI files
+- **#426 scoped tests**: 554 pass, 0 fail across five Private-choice, pipeline, transcription, cache-pin, and detail-view files
+- **#428 smoke harness**: 7 pass, 0 fail in `mobile/scripts/ios-simulator-smoke.test.mjs`
+- **Recorded `origin/main` `b9c538ee` baseline**: 4735 pass, 4 skip, 0 fail (4739 tests, 326 files)
+- **TypeScript**: pinned TypeScript 5.9.3, `frontend/node_modules/.bin/tsc --noEmit -p frontend/tsconfig.json`, 0 errors
 - **CI frontend lint**: `bunx eslint frontend test`, 0 errors
-- **Backend CI suite**: 2477 pass, 7 skip, 0 fail (2484 tests, 111 files)
+- **Next prerelease versions**: frontend and desktop `0.8.0-beta.4`; backend `0.5.6-beta.0`; changesets remain in beta pre mode
+- **Stable-release dry run**: after simulated beta versioning, frontend and desktop graduate to `0.8.0`; backend graduates to `0.5.6`, above main's published `0.5.5`
+- **Release checks**: `node scripts/release/check.mjs` passed; release script tests 67 pass, 0 fail; #411 consent-scope tests 46 pass, 0 fail
+- **Backend CI suite**: 2666 pass, 7 skip, 0 fail (2673 tests, 114 files)
+- **Backend TypeScript**: `bun run --cwd backend build`, 0 errors; transcript delivery/API regressions 56 pass, 0 fail.
+- **Backend PR CI**: TC-1151 adds `bun run --cwd backend build` after workspace package builds, before package/backend tests.
 - **Chromium Exo UI matrix**: phone, phone-land, desktop, and text200-phone pass; no reference image was re-baselined
 - **Native checks**: workspace dependency closure passes with `--locked`; desktop debug `cargo check --no-default-features --locked` passes
 - **Privacy invariant**: unchanged; audio reaches TinyCloud KV only when `recording.options?.uploadAudio === true`.
+- **TC-1140**: #407 and current main merged.
 

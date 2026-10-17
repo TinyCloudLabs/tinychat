@@ -29,10 +29,11 @@ const noop = () => {};
 const VOICE: LibraryItem = { id: "row-1", source: "exo-voice-note", sourceId: "rec-1", title: "Voice note · Oct 6, 9:28 AM", startedAt: "2026-10-06T09:28:00.000Z", durationSecs: 42 };
 const MEETING: LibraryItem = { id: "row-2", source: "tinycloud-transcriber", sourceId: "mtg-2", title: "Weekly sync", startedAt: "2026-10-05T14:00:00.000Z", durationSecs: 1880 };
 const UPLOAD: LibraryItem = { id: "row-3", source: "exo-upload", sourceId: "up-3", title: "Interview", startedAt: "2026-10-01T11:00:00.000Z", durationSecs: 600 };
+const PRIVATE_CAP = 7_777;
 const audio = { load: async () => null };
 
 function transcription(patch: Partial<VoiceNoteTranscriptionProps> = {}): VoiceNoteTranscriptionProps {
-  return { availability: "available", consented: true, maxSeconds: 600, jobs: new Map(), onTranscribe: noop, onConsent: noop, onTurnOff: noop, onRecheck: noop, ...patch };
+  return { availability: "available", consented: true, maxSeconds: 600, maxBytes: 186_496_800, jobs: new Map(), onTranscribe: noop, onTranscribeAgain: () => null, onConsent: noop, onTurnOff: noop, onRecheck: noop, ...patch };
 }
 
 function render(patch: Partial<NoteDetailViewProps> = {}) {
@@ -79,9 +80,15 @@ describe("NoteDetailView", () => {
       .toContain("Saving from this browser…");
   });
   test("an over-limit note explains the advertised maximum before offering Transcribe", () => {
-    const html = render({ item: { ...VOICE, durationSecs: 10_800 }, transcription: transcription({ maxSeconds: 7_200 }) });
+    const html = render({ item: { ...VOICE, durationSecs: PRIVATE_CAP + 1 }, transcription: transcription({ maxSeconds: PRIVATE_CAP }) });
     expect(html).toContain('data-testid="voice-note-transcription-over-limit"');
-    expect(html).toContain("Private Transcription accepts notes up to 2 h. This note is 3 h.");
+    expect(html).toContain("Private Transcription accepts notes up to 2 h 9 min 36 s. This note is 2 h 9 min 38 s.");
+    expect(html).not.toContain('data-testid="voice-note-transcribe"');
+  });
+  test("a note whose PTX limit is unknown says Private's limits aren't available, with no duration and no Transcribe", () => {
+    const html = render({ item: { ...VOICE, durationSecs: 321 }, transcription: transcription({ maxSeconds: null }) });
+    expect(html).toContain('data-testid="voice-note-transcription-limits-unknown"');
+    expect(html).not.toContain('data-testid="voice-note-transcription-over-limit"');
     expect(html).not.toContain('data-testid="voice-note-transcribe"');
   });
   test("a committed transcript with a missing body does not show its preview as full text", () => {
@@ -265,7 +272,7 @@ describe("a voice note's transcription", () => {
 
   test("chosen: Transcribe, for a long note too while it is within the advertised limit", () => {
     expect(render({ transcription: transcription() })).toContain('data-testid="transcribe-button"');
-    const long = render({ item: { ...VOICE, durationSecs: 900 }, transcription: transcription({ maxSeconds: 7_200 }) });
+    const long = render({ item: { ...VOICE, durationSecs: 900 }, transcription: transcription({ maxSeconds: PRIVATE_CAP }) });
     expect(long).toContain('data-testid="transcribe-button"');
     expect(long).not.toContain("minutes can be transcribed");
   });
@@ -289,13 +296,48 @@ describe("a voice note's transcription", () => {
           transcription_error_code: code,
         } },
         transcript: { status: "absent" },
-        transcription: transcription({ maxSeconds: 7_200 }),
+        transcription: transcription({ maxSeconds: PRIVATE_CAP }),
       });
       expect(html).toContain('data-testid="voice-note-transcription-failed"');
       expect(html).toContain("Private cloud couldn&#x27;t accept this recording&#x27;s length or size. Try again.");
       expect(html).toContain("Try again");
       expect(html).toContain('data-testid="transcribe-button"');
     }
+  });
+  test("a Private transcript storage refused: Manage storage, then Transcribe again; the local-audio line only with evidence the recording is here", () => {
+    const persisted = (item: typeof VOICE) => render({
+      item,
+      metadata: { status: "ok", metadata: { transcription_outcome: "failed", transcription_error_code: "storage_full" } },
+      transcript: { status: "absent" },
+      transcription: transcription(),
+    });
+    const bare = persisted(VOICE);
+    expect(bare).toContain("Transcribe it again when space is available.");
+    expect(bare).not.toContain("safe on this device");
+    expect(bare).toContain("Manage storage");
+    expect(bare).toContain("Transcribe again");
+    const withAudio = persisted({ ...VOICE, localAudioReady: true });
+    expect(withAudio).toContain("Your recording is safe on this device.");
+    expect(persisted({ ...VOICE, hasLocalAudio: true })).not.toContain("Your recording is safe on this device.");
+    expect(withAudio).toContain("Manage storage");
+    const live = render({ transcription: transcription({ jobs: new Map([["rec-1", { kind: "failed", code: "storage_full", message: "Your TinyCloud storage is full.", retryable: false, reference: null }]]) }) });
+    expect(live).toContain("Transcribe it again when space is available.");
+    expect(live).not.toContain("safe on this device");
+    expect(live).toContain("Manage storage");
+    expect(live).toContain("Transcribe again");
+  });
+  test("TC-1206: a persisted storage-full transcript takes precedence over a local Private-choice failure", () => {
+    const html = render({
+      metadata: { status: "ok", metadata: { transcription_outcome: "failed", transcription_error_code: "storage_full" } },
+      transcript: { status: "absent" },
+      transcription: transcription({ jobs: new Map([["rec-1", {
+        kind: "failed", code: "private_choice_persistence_failed", message: "Could not save this Private choice.",
+        retryable: true, reference: null,
+      }]]) }),
+    });
+    expect(html).toContain("Transcribe it again when space is available.");
+    expect(html).toContain("Manage storage");
+    expect(html).not.toContain("Could not save this Private choice");
   });
   test("a persisted provider failure keeps its private-cloud re-upload sentence", () => {
     const html = render({
@@ -304,10 +346,11 @@ describe("a voice note's transcription", () => {
         transcription_error_code: "provider_unavailable",
       } },
       transcript: { status: "absent" },
-      transcription: transcription({ maxSeconds: 7_200 }),
+      transcription: transcription({ availability: "checking", maxSeconds: null }),
     });
     expect(html).toContain("Private cloud transcription failed while transcribing. Retrying uploads the recording again.");
-    expect(html).toContain("Try again");
+    expect(html).toContain('data-testid="transcribe-private-recheck"');
+    expect(html).toContain("Check again");
   });
   test("persisted incomplete transcript is retryable with explicit may-be-incomplete copy", () => {
     const html = render({
@@ -316,11 +359,30 @@ describe("a voice note's transcription", () => {
         transcription_error_code: "transcript_incomplete",
       } },
       transcript: { status: "absent" },
-      transcription: transcription({ maxSeconds: 7_200 }),
+      transcription: transcription({ maxSeconds: PRIVATE_CAP }),
     });
     expect(html).toContain("Private Transcription returned a transcript that may be incomplete. Try again later.");
     expect(html).toContain("Try again");
     expect(html).toContain('data-testid="transcribe-button"');
+  });
+
+  test("committed transcript reruns are offered only when commit provenance was read", () => {
+    const committed = render({
+      metadata: { status: "ok", metadata: { transcription_outcome: "no_speech" } },
+      transcriptProvenance: { engine: "private-cloud", provider: "ptx" },
+      transcription: transcription(),
+    });
+    expect(committed).toContain("No speech found");
+    expect(committed).toContain('data-testid="voice-note-transcription-rerun"');
+    expect(committed).toContain('data-testid="transcribe-button"');
+    const legacy = render({
+      metadata: { status: "ok", metadata: { transcription_outcome: "transcribed" } },
+      transcript: { status: "ok", sentences: [] },
+      transcriptProvenance: null,
+      transcription: transcription(),
+    });
+    expect(legacy).not.toContain('data-testid="voice-note-transcription-rerun"');
+    expect(legacy).not.toContain("Transcribe again");
   });
 
   test("a live incomplete failure keeps the mapped explanation and only offers a retry when allowed", () => {
@@ -351,16 +413,13 @@ describe("a voice note's transcription", () => {
     expect(html.match(/Private Transcription returned a transcript that may be incomplete/g)).toHaveLength(1);
     expect(html.match(/data-testid="transcribe-button"/g)).toHaveLength(1);
   });
-
-  test("no speech, part progress, just saved, and a failure with Retry only when it can help", () => {
-    const silent = render({ metadata: { status: "ok", metadata: { transcription_outcome: "no_speech" } }, transcription: transcription() });
-    expect(silent).toContain("No speech found");
-    expect(silent).not.toContain('data-testid="transcribe-button"');
+  test("part progress, completed jobs, and retry eligibility are reflected accurately", () => {
     const job = (state: NoteTranscriptionState) => transcription({ jobs: new Map([["rec-1", state]]) });
     expect(render({ transcription: job({ kind: "active", status: { kind: "processing", completed: 1, total: 3 } }) })).toContain("1 of 3 parts done");
     expect(render({ transcription: job({ kind: "active", status: { kind: "processing", completed: 4, total: 9 } }) })).toContain('title="Recordings are transcribed in parts"');
     expect(render({ transcription: job({ kind: "active", status: { kind: "processing", completed: 9, total: 9 } }) })).toContain("9 of 9 parts done");
     expect(render({ transcription: job({ kind: "active", status: { kind: "processing", completed: 2, total: 0 } }) })).toContain("Transcribing");
+    expect(render({ transcription: job({ kind: "done", outcome: "transcribed" }) })).toContain("Transcript saved.");
     const failed = (retryable: boolean) =>
       job({ kind: "failed", code: "upload_interrupted", message: "The upload did not complete.", retryable, reference: "cid-7" });
     const retry = render({ transcription: failed(true) });

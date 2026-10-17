@@ -20,6 +20,8 @@ import { type NotePipelineView } from "@/lib/voiceNotes/useNotePipeline";
 import "./final/soft.css";
 import { VoiceNotes, type LocalTranscript, type NoteSttState, type TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { localTranscriptionUnavailable } from "@/lib/voiceNotes/captureEngine";
+import { openManageStorage } from "@/lib/openManageStorage";
+import { useStorageReadOnly } from "@/lib/useStorageReadOnly";
 import { isOnDeviceReady, isOnDeviceStatusLoaded, OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
 import { downloadOnDeviceModel, onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
 import { onDeviceQueuePlace } from "@/lib/voiceNotes/onDeviceQueue";
@@ -31,6 +33,7 @@ export interface SavedReceiptProps {
   device?: "phone" | "mac";
   outcome: "local" | "saved" | "failed";
   localUpload?: "uploading" | "held" | "in-flight" | null;
+  localUploadHeldReason?: "signed-out" | "other-account" | "legacy" | "unowned";
   /** The actual hold on this recording, when localUpload is held. */
   holdReason?: PipelineHeldReason | null;
   /** The saved note (absent after a failure). */
@@ -224,6 +227,8 @@ export function SavedReceipt(props: SavedReceiptProps) {
   const platform = useContext(PlatformContext);
   const localDevice = deviceName(props.device === "mac" ? "tauri" : platform);
   const saved = props.outcome === "saved";
+  const storageFull = useStorageReadOnly();
+  const holdReason = props.holdReason ?? props.localUploadHeldReason;
   const pipelineView = props.outcome === "failed" ? null : props.pipeline ?? null;
   const stepperShown = pipelineView !== null && !pipelineView.pipeline.done;
   const pipelineWaiting = props.outcome !== "failed" && props.pipelineReading === true;
@@ -305,11 +310,12 @@ export function SavedReceipt(props: SavedReceiptProps) {
         <>
           {!pipelineView && <RouteLine nodes={route} landed={saved} />}
           {props.outcome === "local" && !pipelineView && !pipelineWaiting && <p className="text-meta text-muted-foreground">{props.localUpload === "held"
-            ? props.holdReason === "other-account" ? "Recorded on another account"
-              : props.holdReason === "signed-out" ? "Sign in to sync to your TinyCloud space"
-                : props.holdReason === "legacy" || props.holdReason === "unowned" ? `Exo can't tell which account this note belongs to. It stays on ${localDevice}.`
-                  : "Waiting to sync to your TinyCloud space"
-            : "Waiting to sync to your TinyCloud space"}</p>}
+            ? holdReason === "other-account" ? "Recorded on another account"
+                : holdReason === "signed-out" ? "Sign in to sync to your TinyCloud space"
+                  : holdReason === "legacy" || holdReason === "unowned" ? `Exo can't tell which account this note belongs to. It stays on ${localDevice}.`
+                    : "Waiting to sync to your TinyCloud space"
+            : props.localUpload === "in-flight" ? "Another save is finishing in your TinyCloud space…"
+              : "Waiting to sync to your TinyCloud space"}</p>}
           {saved && <p className="text-meta text-muted-foreground">In your TinyCloud space</p>}
         </>
       )}
@@ -385,8 +391,8 @@ export function SavedReceipt(props: SavedReceiptProps) {
             <Button type="button" variant="outline" onClick={props.onDone} data-testid="voice-note-receipt-done">
               Done
             </Button>
-            <Button type="button" onClick={props.onSaveNow} disabled={props.retrying} data-testid="voice-note-retry">
-              {props.retrying && <Loader2Icon className="animate-spin" aria-hidden="true" />} Save now
+            <Button type="button" onClick={storageFull ? openManageStorage : props.onSaveNow} disabled={props.retrying} data-testid="voice-note-retry">
+              {props.retrying && <Loader2Icon className="animate-spin" aria-hidden="true" />} {storageFull ? "Manage storage" : "Save now"}
             </Button>
           </>
         )}

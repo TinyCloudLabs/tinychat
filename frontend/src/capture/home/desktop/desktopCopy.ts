@@ -29,6 +29,7 @@ export const DESKTOP_HOME_COPY = {
   pendingMany: (count: number, where: string) => `${count} voice notes ${where}`,
   notInSpace: "Not in your space yet",
   saveNow: "Save now",
+  manageStorage: "Manage storage",
   willFinish: (where: string) => `Kept ${where}. Exo will finish it automatically.`,
   willRetry: "Exo will retry when it next opens",
   timedOut: (where: string) => `Saving… · kept ${where}`,
