@@ -2,7 +2,7 @@ import type {
   MicState,
   MicStateReason,
 } from "@/lib/voiceNotes/nativeVoiceNotes";
-import { formatDuration } from "../recorderCopy";
+import { clockTime, formatDuration } from "../recorderCopy";
 import type { RecorderState } from "../recorderReducer";
 import { FINAL_COPY } from "./finalCopy";
 import { deniedLine, revokedLine } from "./shell/micDeniedCopy";
@@ -25,6 +25,7 @@ export interface RecorderView {
   statusLine: string | null;
   timer: {
     text: string;
+    /** While recording: the wall-clock time the limit stops it ("Stops at 10:45"); paused time moves it later. */
     countdown?: { text: string; remainingMs: number; remainingText: string };
   };
   controls: {
@@ -53,8 +54,6 @@ interface MicPresentation {
   tapRingAction?: RecorderView["tapRingAction"];
   doneAction?: RecorderView["doneAction"];
 }
-
-const WARNING_WINDOW_MS = 10 * 60 * 1000;
 
 function unreachable(value: never): never {
   throw new Error(`Unhandled recorder state: ${String(value)}`);
@@ -602,11 +601,16 @@ export function selectRecorderView(
     openSettings: presentation.openSettings ?? permissionDenied,
   };
   const remainingMs = Math.max(0, state.maxDurationMs - input.elapsedMs);
-  const warningAtMs = Math.max(0, state.maxDurationMs - WARNING_WINDOW_MS);
+  // While the clock runs, the stop time comes from the native checkpoint alone, so the 500 ms tick never moves it;
+  // paused (or before a checkpoint) it is now plus what is left, and moves later as the pause goes on.
+  const stopAtMs =
+    state.mic.state !== "paused" && state.elapsedAt !== null
+      ? state.elapsedAt + Math.max(0, state.maxDurationMs - state.elapsedMs)
+      : input.nowMs + remainingMs;
   const countdown =
-    input.elapsedMs >= warningAtMs
+    state.phase === "recording"
       ? {
-          text: FINAL_COPY.stopAt(formatDuration(state.maxDurationMs)),
+          text: FINAL_COPY.stopAt(clockTime(stopAtMs)),
           remainingMs,
           remainingText: formatDuration(remainingMs),
         }

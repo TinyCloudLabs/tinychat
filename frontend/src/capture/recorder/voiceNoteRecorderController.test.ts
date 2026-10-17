@@ -3284,3 +3284,76 @@ const hostWindow = () => ({ HTMLIFrameElement: class {}, document: hostDocument,
     });
   });
 });
+
+describe("Settings → Stop recording after reaches VoiceNotes.start", () => {
+  const HOUR = 60 * 60_000;
+  let previous: PropertyDescriptor | undefined;
+  let values: Map<string, string>;
+  let requested: (number | undefined)[];
+
+  beforeEach(() => {
+    previous = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+    values = new Map();
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, value); },
+      removeItem: (key: string) => { values.delete(key); },
+    } });
+    requested = [];
+    const base = plugin;
+    __setVoiceNotesForTests({ ...base, async start(options) { requested.push(options?.maxDurationMs); return base.start(options); } }, { available: true });
+  });
+  afterEach(() => {
+    if (previous) Object.defineProperty(globalThis, "localStorage", previous);
+    else Reflect.deleteProperty(globalThis, "localStorage");
+  });
+
+  async function recordOnce(): Promise<number> {
+    const { recorder, detach } = await attached();
+    await recorder.record();
+    const shown = recorder.getState().maxDurationMs;
+    await recorder.stop();
+    await settled(() => recorder.getState().phase === "idle", "the stop");
+    detach();
+    return shown;
+  }
+
+  test("the 1-hour default, each choice, Off as the 3-hour limit, and an unknown value as the default", async () => {
+    expect(await recordOnce()).toBe(HOUR);
+    for (const [stored, ms] of [["15", 15 * 60_000], ["30", 30 * 60_000], ["60", HOUR], ["120", 2 * HOUR], ["off", 3 * HOUR], ["45", HOUR], ["", HOUR]] as const) {
+      values.set("exo.voiceNotes.stopAfter", stored);
+      expect(await recordOnce()).toBe(ms);
+    }
+    expect(requested).toEqual([HOUR, 15 * 60_000, 30 * 60_000, HOUR, 2 * HOUR, 3 * HOUR, HOUR, HOUR]);
+  });
+
+  test("the test override can only lower the limit", async () => {
+    values.set("exo.voiceNotes.stopAfter", "off");
+    values.set("exo.voiceNotes.maxDurationMs", "90000");
+    await recordOnce();
+    values.set("exo.voiceNotes.stopAfter", "15");
+    values.set("exo.voiceNotes.maxDurationMs", String(5 * HOUR));
+    await recordOnce();
+    expect(requested).toEqual([90_000, 15 * 60_000]);
+  });
+
+  test("stopped at a 1-hour limit: the notice names it and the state keeps the limit for the notification", async () => {
+    const { recorder, detach } = await attached();
+    await recorder.record();
+    const recording = await stopNatively();
+    fake.emit("autoStopped", { reason: "max_duration", maxDurationMs: HOUR, at: Date.now(), recording });
+    await settled(() => recorder.getState().phase === "idle", "the save");
+    expect(recorder.getState()).toMatchObject({ limitNotice: "Stopped at the 1-hour limit.", limitStopMs: HOUR });
+    detach();
+  });
+
+  test("another reason for an automatic stop is not the limit", async () => {
+    const { recorder, detach } = await attached();
+    await recorder.record();
+    const recording = await stopNatively();
+    fake.emit("autoStopped", { reason: "disk_full", maxDurationMs: HOUR, at: Date.now(), recording });
+    await settled(() => recorder.getState().phase === "idle", "the save");
+    expect(recorder.getState()).toMatchObject({ limitNotice: "Recording stopped because device storage is full.", limitStopMs: null });
+    detach();
+  });
+});

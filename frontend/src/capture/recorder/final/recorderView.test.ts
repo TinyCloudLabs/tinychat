@@ -3,6 +3,7 @@ import type {
   MicState,
   MicStateReason,
 } from "@/lib/voiceNotes/nativeVoiceNotes";
+import { clockTime } from "../recorderCopy";
 import { initialRecorderState, type RecorderState } from "../recorderReducer";
 import { FINAL_COPY } from "./finalCopy";
 import { selectRecorderView, type RecorderViewInput } from "./recorderView";
@@ -543,61 +544,47 @@ describe("selectRecorderView: live, paused and transient phases", () => {
 });
 
 describe("selectRecorderView: elapsed time and limit", () => {
-  test("uses elapsedMs and the configured max duration, including the inclusive warning boundary", () => {
-    expect(
-      selectRecorderView(base, {
-        ...input,
-        elapsedMs: 2 * 60 * 60 * 1000 + 49 * 60 * 1000 + 59_000,
-      }).timer,
-    ).toEqual({ text: "2:49:59" });
-    expect(
-      selectRecorderView(base, {
-        ...input,
-        elapsedMs: 2 * 60 * 60 * 1000 + 50 * 60 * 1000,
-      }).timer,
-    ).toEqual({
-      text: "2:50:00",
-      countdown: {
-        text: "Stops at 3:00:00",
-        remainingMs: 10 * 60 * 1000,
-        remainingText: "10:00",
-      },
+  const NOW = new Date(2026, 9, 17, 9, 15, 0).getTime();
+
+  test("from the first second of a recording, the view says when the limit stops it", () => {
+    const oneHour = { ...base, maxDurationMs: 60 * 60 * 1000 };
+    expect(selectRecorderView(oneHour, { ...input, nowMs: NOW, elapsedMs: 0 }).timer).toEqual({
+      text: "0:00",
+      countdown: { text: `Stops at ${clockTime(NOW + 60 * 60 * 1000)}`, remainingMs: 60 * 60 * 1000, remainingText: "1:00:00" },
     });
-    expect(
-      selectRecorderView(
-        { ...base, audioMs: 10_799_000 },
-        {
-          ...input,
-          elapsedMs: 10_000,
-        },
-      ).timer,
-    ).toEqual({ text: "0:10" });
+    // Ten recorded minutes later the stop time is the same clock time.
+    expect(selectRecorderView(oneHour, { ...input, nowMs: NOW + 10 * 60_000, elapsedMs: 10 * 60_000 }).timer.countdown?.text)
+      .toBe(`Stops at ${clockTime(NOW + 60 * 60 * 1000)}`);
+    // Off: the 3-hour limit.
+    expect(selectRecorderView(base, { ...input, nowMs: NOW, elapsedMs: 0 }).timer.countdown?.text)
+      .toBe(`Stops at ${clockTime(NOW + 3 * 60 * 60 * 1000)}`);
   });
 
-  test("supports a non-default maxDurationMs and clamps remaining time", () => {
-    const oneHour = { ...base, maxDurationMs: 60 * 60 * 1000 };
-    expect(
-      selectRecorderView(oneHour, {
-        ...input,
-        elapsedMs: 50 * 60 * 1000,
-      }).timer,
-    ).toEqual({
-      text: "50:00",
-      countdown: {
-        text: "Stops at 1:00:00",
-        remainingMs: 10 * 60 * 1000,
-        remainingText: "10:00",
-      },
-    });
-    expect(
-      selectRecorderView(oneHour, {
-        ...input,
-        elapsedMs: 61 * 60 * 1000,
-      }).timer.countdown,
-    ).toEqual({
-      text: "Stops at 1:00:00",
-      remainingMs: 0,
-      remainingText: "0:00",
-    });
+  test("while recording, the stop time comes from the native checkpoint, so the view's tick never moves it", () => {
+    // The limit falls 300 ms before a minute boundary: a stop time from "now" plus the ticked remainder would flip a minute.
+    const at = NOW - 300;
+    const checkpointed = { ...base, maxDurationMs: 60 * 60 * 1000, elapsedMs: 10 * 60_000, elapsedAt: at };
+    const stop = `Stops at ${clockTime(at + 50 * 60_000)}`;
+    for (const lag of [0, 499]) {
+      expect(selectRecorderView(checkpointed, { ...input, nowMs: at + 30_000 + lag, elapsedMs: 10 * 60_000 + 30_000 }).timer.countdown?.text).toBe(stop);
+    }
+  });
+
+  test("time spent paused moves the stop time later", () => {
+    const paused = { ...base, maxDurationMs: 60 * 60 * 1000, mic: { state: "paused" as const, reason: "user" as const } };
+    expect(selectRecorderView(paused, { ...input, nowMs: NOW + 20 * 60_000, elapsedMs: 10 * 60_000 }).timer.countdown?.text)
+      .toBe(`Stops at ${clockTime(NOW + 70 * 60_000)}`);
+  });
+
+  test("only a live recording has a stop time", () => {
+    for (const phase of ["idle", "starting", "stopping", "saving", "discarding"] as const) {
+      expect(selectRecorderView({ ...base, phase }, { ...input, elapsedMs: 0 }).timer.countdown).toBeUndefined();
+    }
+  });
+
+  test("uses elapsedMs, never audioMs, and clamps remaining time", () => {
+    expect(selectRecorderView({ ...base, audioMs: 10_799_000 }, { ...input, elapsedMs: 10_000 }).timer.text).toBe("0:10");
+    expect(selectRecorderView({ ...base, maxDurationMs: 60 * 60 * 1000 }, { ...input, nowMs: NOW, elapsedMs: 61 * 60 * 1000 }).timer.countdown)
+      .toEqual({ text: `Stops at ${clockTime(NOW)}`, remainingMs: 0, remainingText: "0:00" });
   });
 });

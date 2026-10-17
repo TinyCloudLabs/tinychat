@@ -139,12 +139,9 @@ describe("PhoneRecorder", () => {
     expect(html).not.toContain('aria-label="Resume recording"');
   });
 
-  test("the 3-hour countdown replaces the timer near the limit", () => {
-    const html = render({
-      elapsedMs: 170 * 60_000 + 12_000,
-      audioMs: 170 * 60_000 + 12_000,
-    });
-    expect(html).toContain("Stops at 3:00:00");
+  test("from the start of a recording, the stop time sits under the timer", () => {
+    const html = render({ elapsedMs: 12_000, audioMs: 12_000, maxDurationMs: 60 * 60_000 });
+    expect(html).toMatch(/class="pr-countdown">Stops at [^<]+</);
   });
 
   test("denied replaces the controls with Open Settings and no recording controls", () => {
