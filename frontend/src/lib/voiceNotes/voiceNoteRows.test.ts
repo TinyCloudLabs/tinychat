@@ -1336,6 +1336,36 @@ test("Mac Whisper transcript sync never sets PTX missing-stats metadata", async 
     expect((await resolveVoiceNoteRow(tcw, id))?.metadata).not.toHaveProperty("transcription_stats_missing");
   } finally { __setVoiceNotesForTests(original, { available: null }); }
 });
+test("a mono on-device transcript saves one timed record per engine segment, all as the note's anonymous Speaker 1", async () => {
+  const original = VoiceNotes;
+  const { tcw, sqlite, values } = space();
+  const id = "desktop-whisper-mono";
+  await ensureSchema(tcw);
+  await createVoiceNoteRow(tcw, { id, startedAt: 0, durationMs: 80_000, mimeType: "audio/mpeg",
+    sizeBytes: 4, silencedMs: 0, silencedEvents: 0, noSignalMs: 0 }, "Mono note");
+  const long = Array.from({ length: 12 }, (_, i) => `word${i}`).join(" ");
+  const chunk = (start: number, duration: number, transcript: string) => ({ type: "Results", is_final: true, start, duration,
+    channel_index: [0], channel: { alternatives: [{ transcript }] } });
+  const transcript = whisperLocalTranscript({ id, durationMs: 80_000 }, "QuantizedLargeTurbo", {
+    results: { channels: [{ alternatives: [{ transcript: `First point. ${long} Last point.` }] }] },
+  } as never, { chunks: [chunk(0, 12, "First point."), chunk(15, 40, long), chunk(70, 6, "Last point.")] as never });
+  __setVoiceNotesForTests({
+    listPending: async () => ({ recordings: [{ id, owner: tcw.did, rev: 1, ledger: { audio: { state: "saved" } } }] }),
+    getTranscript: async () => ({ transcript }),
+    updateLedger: async () => ({}),
+  } as unknown as typeof VoiceNotes, { available: true });
+  try {
+    await syncOnDeviceTranscript(tcw, { id, owner: tcw.did, ledger: { audio: { state: "saved" } } });
+    const commit = await readTranscriptCommit(tcw, id);
+    const record = (start_time: number, end_time: number, timing: string) => ({ start_time, end_time, speaker_name: "Speaker 1", timing });
+    expect(JSON.parse(values.get(commit!.bodyKey)!)).toMatchObject([
+      record(0, 12, "engine"), record(15, 35, "coarse"), record(35, 55, "coarse"), record(70, 76, "engine"),
+    ]);
+    const participants = { participants: JSON.stringify([{ name: "Speaker 1", email: null }]) };
+    expect(sqlite.query("SELECT participants FROM voice_note_transcript WHERE source_id = ?").get(id)).toEqual(participants);
+    expect(sqlite.query("SELECT participants FROM connector_meeting WHERE source_id = ?").get(id)).toEqual(participants);
+  } finally { __setVoiceNotesForTests(original, { available: null }); }
+});
 test("on-device no_speech transcript sync never sets PTX missing-stats metadata", async () => {
   const original = VoiceNotes;
   const { tcw } = space();

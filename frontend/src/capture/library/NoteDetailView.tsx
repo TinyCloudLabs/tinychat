@@ -354,6 +354,11 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
     && hasPrivateCloudTimingProvenance(metadata?.status === "ok" ? metadata.metadata : null, props.transcriptProvenance);
   const sentences = localSyncPending && local ? localTranscriptToSave(local).sentences : remoteSentences.length > 0 ? remoteSentences
     : local?.outcome === "transcribed" ? localTranscriptToSave(local).sentences : [];
+  const shownLocal = localSyncPending || remoteSentences.length === 0 ? local : null;
+  const shownProvider = shownLocal ? shownLocal.engine
+    : props.transcriptProvenance?.provider ?? (metadata?.status === "ok" ? metadata.metadata.transcript_provider : null);
+  // AssemblyAI letters its speakers afresh for every note it transcribes.
+  const perNoteSpeakers = shownProvider === "assemblyai" && sentences.some((sentence) => sentence.speaker_name);
   const savedGaps = metadata?.status === "ok" ? metadata.metadata.gaps : null;
   const gaps = Array.isArray(savedGaps) ? savedGaps.filter((gap): gap is TranscriptGap =>
     gap !== null && typeof gap === "object" && Number.isFinite(gap.start) && Number.isFinite(gap.end)
@@ -428,6 +433,9 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
               <p className="whitespace-pre-wrap break-words text-body">{block.text}</p>
             </div>
           ))}
+          {perNoteSpeakers && <p className="text-meta text-muted-foreground">
+            AssemblyAI’s speaker labels apply within this note only. The same label in another note may be a different person.
+          </p>}
         </div>
       ) : spaceNoSpeech || local?.outcome === "no_speech" ? (
         <div className="flex flex-col gap-2">
