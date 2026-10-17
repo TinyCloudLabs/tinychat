@@ -4,11 +4,11 @@ import { storageScopeFor, trackStorageWrites } from "@/lib/storageStatus";
 import { deviceName } from "@/lib/platform";
 import type { FirefliesSentence } from "../connectors/firefliesClient";
 import { CONNECTORS_KV_PREFIX, CONNECTORS_SQL_DB_NAME, ensureSchema, transcriptKvKey } from "../connectors/connectorStore";
-import { runOnSpaceLane, SpaceLaneQueueWaitTimeout, spaceLaneSnapshot, subscribeSpaceLane } from "../spaceWriteLane";
+import { runOnSpaceLane, SpaceLaneQueueWaitTimeout, spaceLaneAbandonedCalls, spaceLaneSnapshot, subscribeSpaceLane } from "../spaceWriteLane";
 import type { VoiceNoteRecording } from "./nativeVoiceNotes";
 import { hasTranscriptCommitTable, LEGACY_TRANSCRIPT_KEYS, legacyTranscriptWinner, readTranscriptCommit, SQL_CHUNK, type LegacyTranscriptRow, type TranscriptCommit } from "./voiceNoteCommits";
 
-export { SpaceLaneQueueWaitTimeout, spaceLaneSnapshot, subscribeSpaceLane };
+export { SpaceLaneQueueWaitTimeout, spaceLaneAbandonedCalls, spaceLaneSnapshot, subscribeSpaceLane };
 
 export const TRANSCRIPT_TABLE_DDL = `CREATE TABLE IF NOT EXISTS voice_note_transcript (
   source_id TEXT PRIMARY KEY, rev INTEGER NOT NULL, hash TEXT NOT NULL, body_key TEXT NOT NULL,

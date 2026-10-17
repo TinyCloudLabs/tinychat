@@ -501,19 +501,27 @@ function seedLegacyWinnerSpace(sqlite: Database, seed: number): void {
 }
 
 describe("listMeetingsRead legacy-winner rewrite (TC-1274)", () => {
+  // The baseline runs on the schema spaces have today; the rewrite runs after the
+  // optional source index is added, as ensureSchema now does.
   for (const variant of [
-    { name: "app schema", indexes: [VOICE_NOTE_INDEX_DDL], noCommitTable: false },
-    { name: "app schema with the connector source index", indexes: [VOICE_NOTE_INDEX_DDL, CONNECTOR_MEETING_SOURCE_INDEX_DDL], noCommitTable: false },
-    { name: "no commit table", indexes: [VOICE_NOTE_INDEX_DDL], noCommitTable: true },
+    { name: "app schema", addedIndexes: [], noCommitTable: false },
+    { name: "after the connector source index is added", addedIndexes: [CONNECTOR_MEETING_SOURCE_INDEX_DDL], noCommitTable: false },
+    { name: "no commit table", addedIndexes: [], noCommitTable: true },
   ]) {
     it(`returns the baseline rows in the baseline order (${variant.name})`, async () => {
       for (const seed of [1, 2, 3, 4, 5]) {
         const sqlite = new Database(":memory:");
         for (const { sql } of CONNECTOR_SCHEMA) sqlite.exec(sql);
         sqlite.exec(TRANSCRIPT_TABLE_DDL);
-        for (const ddl of variant.indexes) sqlite.exec(ddl);
+        sqlite.exec(VOICE_NOTE_INDEX_DDL);
         seedLegacyWinnerSpace(sqlite, seed);
         if (variant.noCommitTable) sqlite.exec("DROP TABLE voice_note_transcript");
+        const baseline = sqlite.query(BASELINE_LIST_SQL
+          .replace("__COMMIT_OUTCOME__", variant.noCommitTable ? "NULL"
+            : "(SELECT t.outcome FROM voice_note_transcript t WHERE t.source_id = connector_meeting.source_id LIMIT 1)")
+          .replace("__PLACEHOLDERS__", EXPLORER_MEETING_SOURCES.map(() => "?").join(", ")))
+          .values(...(EXPLORER_MEETING_SOURCES as never[]));
+        for (const ddl of variant.addedIndexes) sqlite.exec(ddl);
         let listed: unknown[][] | null = null;
         const tcw = { sql: { db: () => ({ async query(sql: string, params: unknown[] = []) {
           const rows = sqlite.query(sql).values(...(params as never[])) as unknown[][];
@@ -521,11 +529,6 @@ describe("listMeetingsRead legacy-winner rewrite (TC-1274)", () => {
           return { ok: true as const, data: { rows } };
         } }) } } as unknown as TinyCloudWeb;
         expect((await listMeetingsRead(tcw)).status).toBe("ok");
-        const baseline = sqlite.query(BASELINE_LIST_SQL
-          .replace("__COMMIT_OUTCOME__", variant.noCommitTable ? "NULL"
-            : "(SELECT t.outcome FROM voice_note_transcript t WHERE t.source_id = connector_meeting.source_id LIMIT 1)")
-          .replace("__PLACEHOLDERS__", EXPLORER_MEETING_SOURCES.map(() => "?").join(", ")))
-          .values(...(EXPLORER_MEETING_SOURCES as never[]));
         expect(baseline.length).toBeGreaterThan(300);
         expect(baseline.some((row) => String(row[6]).includes("\"legacy_transcript_outcome\":\"no_speech\""))).toBe(true);
         expect(baseline.some((row) => String(row[6]).includes("\"legacy_transcript_outcome\":\"transcribed\""))).toBe(true);

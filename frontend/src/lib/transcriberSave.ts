@@ -90,13 +90,14 @@ export async function listSavedTranscriberVersions(
   const versions = new Map<string, number>();
   try {
     const rowIds = await Promise.all(sourceIds.map((sourceId) => connectorMeetingId(TRANSCRIBER_MEETING_SOURCE, sourceId)));
-    for (const [column, keys] of [["id", rowIds], ["source_id", null]] as const) {
+    // `+source` only filters: without it SQLite prefers the source index over the primary key.
+    for (const [match, keys] of [["+source = ? AND id", rowIds], ["source = ? AND source_id", null]] as const) {
       const wanted = keys ?? sourceIds.filter((sourceId) => !versions.has(sourceId));
       for (let from = 0; from < wanted.length; from += SQL_CHUNK) {
         const chunk = wanted.slice(from, from + SQL_CHUNK);
         const result = await scheduleRead(() => tcw.sql.db(CONNECTORS_SQL_DB_NAME).query(
           `SELECT source_id, json_extract(metadata, '$.ptx_transcript_version') FROM connector_meeting
-           WHERE source = ? AND ${column} IN (${chunk.map(() => "?").join(", ")})`,
+           WHERE ${match} IN (${chunk.map(() => "?").join(", ")})`,
           [TRANSCRIBER_MEETING_SOURCE, ...chunk],
         ));
         if (result === null) return { ok: true, data: new Map() };

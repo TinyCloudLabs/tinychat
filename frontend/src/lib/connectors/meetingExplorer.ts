@@ -167,6 +167,11 @@ export async function listMeetingsRead(
   // The winner is the eligible row with the latest transcribed_at, then the lowest id.
   // The node authorizer allows no window functions, so this uses MAX/MIN groupings;
   // `winner` takes `outcome` from its MIN(id) row (SQLite's bare-column rule).
+  // `LIMIT -1 OFFSET 0` makes SQLite materialize `legacy` once instead of inlining it
+  // into both readers, so each row's JSON is parsed once (the node's SQL parser rejects
+  // `AS MATERIALIZED`). The outer `+c.source` keeps the full-table read a sequential scan
+  // in rowid order whether or not the source index exists: every listed source is read,
+  // and the scan order decides the order of rows with equal started_at.
   const res = await tolerate(() =>
     tcw.sql.db(CONNECTORS_SQL_DB_NAME).query(
       `WITH legacy AS (
@@ -180,7 +185,8 @@ export async function listMeetingsRead(
            AND (json_extract(metadata, '$.transcription_outcome') IN ('transcribed','no_speech')
              OR (json_extract(metadata, '$.transcription_outcome') IS NULL
                AND typeof(json_extract(metadata, '$.transcript_text')) = 'text'
-               AND length(trim(json_extract(metadata, '$.transcript_text'))) > 0))),
+               AND length(trim(json_extract(metadata, '$.transcript_text'))) > 0))
+         LIMIT -1 OFFSET 0),
        latest AS (SELECT source_id, MAX(transcribed_at) AS transcribed_at FROM legacy GROUP BY source_id),
        winner AS (
          SELECT l.source_id, MIN(l.id) AS id, l.outcome FROM legacy l
@@ -203,7 +209,7 @@ export async function listMeetingsRead(
               CASE WHEN c.source = 'exo-voice-note' AND json_valid(COALESCE(c.metadata, '{}'))
                 THEN json_extract(c.metadata, '$.capture.duration_ms') END AS capture_duration_ms
        FROM connector_meeting c LEFT JOIN winner w ON w.source_id = c.source_id
-       WHERE c.source IN (${placeholders}) ORDER BY c.started_at DESC`,
+       WHERE +c.source IN (${placeholders}) ORDER BY c.started_at DESC`,
       [...sources],
     ),
   );

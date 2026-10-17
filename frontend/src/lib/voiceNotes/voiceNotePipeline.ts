@@ -4,9 +4,8 @@ import { assertCurrent, setAccountWorkPaused, StaleAccountContext, type AccountC
 import { associateLegacyNotes, markLegacyOwnerUnknown, migrateLegacyDiscardLedger } from "./legacyMigration";
 import { VoiceNotes, type VoiceNoteRecording } from "./nativeVoiceNotes";
 import { errorCode, isDiscarded, pendingStore, saveNoteForAccount, type PendingUploadTicket } from "./recorderSaves";
-import { ensureVoiceNoteIdentity } from "./voiceNoteRows";
+import { ensureVoiceNoteIdentity, spaceLaneAbandonedCalls } from "./voiceNoteRows";
 import { withVoiceNoteSaveDeadline } from "./saveDeadline";
-import { spaceLaneAbandonedCalls } from "@/lib/spaceWriteLane";
 import { CONNECTORS_SQL_DB_NAME } from "@/lib/connectors/connectorStore";
 import { syncRecordingNote, VOICE_NOTE_SOURCE } from "./voiceNoteStore";
 import { syncOnDeviceTranscript } from "./onDeviceTranscriber";

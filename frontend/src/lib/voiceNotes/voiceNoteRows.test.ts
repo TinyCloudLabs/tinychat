@@ -1885,13 +1885,16 @@ test("timed-out saves retry only after one shared probe proves the abandoned cal
       return stuck ? new Promise((_resolve, reject) => options?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true }))
         : put(key, value, options);
     }) as typeof tcw.kv.put;
+    // Earlier cases may have abandoned calls too (the count is module-wide), so the probe is
+    // held, and counted, only once this case's own saves have timed out.
+    let holding = false;
     let probes = 0;
     let answerProbe: () => void = () => { throw new Error("no probe sent"); };
     const db = tcw.sql.db.bind(tcw.sql);
     tcw.sql.db = ((name: string) => {
       const handle = db(name);
       return { ...handle, query: async (statement: string, params?: never[]) => {
-        if (statement !== "SELECT 1") return handle.query(statement, params);
+        if (statement !== "SELECT 1" || !holding) return handle.query(statement, params);
         probes++;
         await new Promise<void>((resolve) => { answerProbe = resolve; });
         return handle.query(statement, params);
@@ -1900,6 +1903,7 @@ test("timed-out saves retry only after one shared probe proves the abandoned cal
     setVoiceNoteSaveDeadlineForTests(10);
     const pipeline = createVoiceNotePipeline(tcw, { retryDelaysMs: [], saveRetryDelaysMs: [20] });
     await pipeline.reconcileAll({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() });
+    holding = true;
     const afterTimeouts = new Map(partPuts);
     expect(notes.every((note) => (afterTimeouts.get(note.id) ?? 0) > 0)).toBe(true);
     // Real time: the retry ladder and lane deadlines are module-internal setTimeouts, and the
