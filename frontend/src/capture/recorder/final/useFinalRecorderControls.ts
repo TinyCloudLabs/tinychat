@@ -41,6 +41,7 @@ export function recorderState(recorder: RecorderValue): RecorderState {
     elapsedAt: recorder.elapsedAt,
     maxDurationMs: recorder.maxDurationMs,
     mic: recorder.mic,
+    captureSourceUnconfirmed: recorder.captureSourceUnconfirmed,
     controlPending: recorder.controlPending,
     limitNotice: recorder.limitNotice,
     savePercent: recorder.savePercent,
@@ -180,7 +181,7 @@ export function useFinalRecorderControls({
     ringKind === null
       ? null
       : {
-          label: ringKind === "pause" ? "Pause recording" : "Resume recording",
+          label: ringKind === "pause" ? "Pause recording" : ringKind === "stop" ? "Try again" : "Resume recording",
           disabled: view.tapRingAction === null,
           onPress: () => {
             hapticLight();

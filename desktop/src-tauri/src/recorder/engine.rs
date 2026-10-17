@@ -1,12 +1,13 @@
-//! Capture lifecycle over anarlog's recorder. Stop closes the current segment
-//! and releases the microphone; resume opens a fresh native capture.
+//! Capture lifecycle over anarlog's recorder. Pause/Stop report session-finalization
+//! state from the listener snapshot; that does not prove macOS released the input.
 use std::io::Read;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use cpal::traits::{DeviceTrait, HostTrait};
 use parking_lot::Mutex;
+use recorder_state::{Error as RecorderError, Recorder, Request, Stall, Start, State, Step, Stop, DURABLE_STOP_ATTEMPT_BUDGET};
 use serde::Serialize;
 use tauri::{Emitter, Manager};
 use tauri_plugin_settings::SettingsPluginExt;
@@ -30,16 +31,21 @@ pub struct EngineState {
     layout: journal::Layout,
     started_at: Option<u64>,
     segment_id: Option<String>,
-    segment_started: Option<Instant>,
-    recorded_ms: u64,
+    recorder: Recorder,
     spans: Vec<journal::MissingAudioSpan>,
-    paused_ms: u64,
-    pause_started: Option<Instant>,
     busy: bool,
     limit_ms: u64,
     auto_stop_requested: bool,
-    blocked_reason: Option<&'static str>,
     last_stop_reason: Option<&'static str>,
+    capture_source_unconfirmed: bool,
+    active_input_mapping_pending: bool,
+    active_input_devices: Option<Vec<u32>>,
+    unconfirmed_input_devices: Option<Vec<u32>>,
+    snapshot_issue: Option<&'static str>,
+    pending_discard_cleanup: Vec<(String, Option<String>)>,
+    discard_cleanup_in_flight: bool,
+    discard_cleanup_failures: u8,
+    discard_cleanup_retry_after: Option<Instant>,
 }
 
 #[derive(Serialize, Clone, Copy)]
@@ -79,8 +85,48 @@ pub fn install(app: &tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
         let mut ticker = tokio::time::interval(Duration::from_millis(33));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut next_release_check = Instant::now();
+        let mut startup_cleanup_loaded = false;
         loop {
             ticker.tick().await;
+            if Instant::now() >= next_release_check {
+                next_release_check = Instant::now() + Duration::from_secs(2);
+                if !startup_cleanup_loaded {
+                    let startup_handle = handle.clone();
+                    match tauri::async_runtime::spawn_blocking(move || {
+                        load_pending_discard_cleanup(&startup_handle)
+                    })
+                    .await
+                    {
+                        Ok(Ok(())) => startup_cleanup_loaded = true,
+                        Ok(Err(error)) => {
+                            tracing::warn!(target: "exo_dev::recorder", %error,
+                                "Could not load pending discard cleanup at startup");
+                        }
+                        Err(error) => {
+                            tracing::warn!(target: "exo_dev::recorder", %error,
+                                "Could not schedule startup discard cleanup scan");
+                        }
+                    }
+                }
+                let status = {
+                    let engine = handle.state::<Engine>();
+                    let mut state = engine.0.lock();
+                    let running =
+                        input_devices_running_somewhere(state.unconfirmed_input_devices.as_deref());
+                    if capture_source_release_observed(state.capture_source_unconfirmed, running) {
+                        state.capture_source_unconfirmed = false;
+                        state.unconfirmed_input_devices = Some(Vec::new());
+                        Some(state.status())
+                    } else {
+                        None
+                    }
+                };
+                if let Some(status) = status {
+                    let _ = handle.emit(MIC_EVENT, status);
+                }
+                schedule_pending_discard_cleanup(&handle);
+            }
             let (level, auto_stop) = {
                 let engine = handle.state::<Engine>();
                 let mut state = engine.0.lock();
@@ -105,7 +151,8 @@ pub fn install(app: &tauri::AppHandle) {
                     };
                     let auto_stop = if !state.busy
                         && !state.auto_stop_requested
-                        && state.status().elapsed_ms >= state.limit_ms
+                        && state.recorder.is_live()
+                        && state.recorder.status(mono_ms()).elapsed_ms >= state.limit_ms
                     {
                         state.auto_stop_requested = true;
                         state.id.clone()
@@ -164,6 +211,15 @@ pub struct CaptureStatus {
     at: u64,
     elapsed_at: u64,
     spans: Vec<journal::MissingAudioSpan>,
+    capture_source_unconfirmed: bool,
+    discard_cleanup_pending: bool,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "result", content = "status", rename_all = "snake_case")]
+pub enum DurableDiscardResult {
+    Retired(CaptureStatus),
+    NotCurrent,
 }
 
 fn now_ms() -> u64 {
@@ -173,54 +229,397 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
+#[cfg(feature = "recorder-failpoints")]
+fn source_never_stops_failpoint() -> bool {
+    std::env::var("EXO_FAILPOINT").is_ok_and(|value| value == "source_never_stops")
+}
+
+#[cfg(not(feature = "recorder-failpoints"))]
+fn source_never_stops_failpoint() -> bool {
+    false
+}
+
+
+#[cfg(target_os = "macos")]
+mod core_audio_inputs {
+    use std::ffi::{c_void, CStr};
+
+    #[repr(C)]
+    struct AudioObjectPropertyAddress {
+        selector: u32,
+        scope: u32,
+        element: u32,
+    }
+
+    #[link(name = "CoreAudio", kind = "framework")]
+    unsafe extern "C" {
+        fn AudioObjectGetPropertyDataSize(
+            object_id: u32,
+            address: *const AudioObjectPropertyAddress,
+            qualifier_data_size: u32,
+            qualifier_data: *const c_void,
+            data_size: *mut u32,
+        ) -> i32;
+        fn AudioObjectGetPropertyData(
+            object_id: u32,
+            address: *const AudioObjectPropertyAddress,
+            qualifier_data_size: u32,
+            qualifier_data: *const c_void,
+            data_size: *mut u32,
+            data: *mut c_void,
+        ) -> i32;
+    }
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    unsafe extern "C" {
+        fn CFStringGetCString(value: *const c_void, buffer: *mut i8, size: isize, encoding: u32) -> u8;
+        fn CFRelease(value: *const c_void);
+    }
+
+    const SYSTEM_OBJECT: u32 = 1;
+    const GLOBAL: u32 = u32::from_be_bytes(*b"glob");
+    const MAIN: u32 = 0;
+    const UTF8: u32 = 0x0800_0100;
+
+    fn property(selector: [u8; 4]) -> AudioObjectPropertyAddress {
+        AudioObjectPropertyAddress {
+            selector: u32::from_be_bytes(selector),
+            scope: GLOBAL,
+            element: MAIN,
+        }
+    }
+
+    fn device_name(device_id: u32) -> Option<String> {
+        let address = property(*b"lnam");
+        let mut name: *const c_void = std::ptr::null();
+        let mut size = std::mem::size_of::<*const c_void>() as u32;
+        let status = unsafe {
+            AudioObjectGetPropertyData(
+                device_id,
+                &address,
+                0,
+                std::ptr::null(),
+                &mut size,
+                &mut name as *mut *const c_void as *mut c_void,
+            )
+        };
+        if status != 0 || name.is_null() {
+            return None;
+        }
+        let mut buffer = [0i8; 1024];
+        let converted = unsafe { CFStringGetCString(name, buffer.as_mut_ptr(), buffer.len() as isize, UTF8) };
+        unsafe { CFRelease(name) };
+        if converted == 0 {
+            return None;
+        }
+        unsafe { CStr::from_ptr(buffer.as_ptr()) }
+            .to_str()
+            .ok()
+            .map(str::to_owned)
+    }
+
+    pub fn devices_named(name: &str) -> Option<Vec<u32>> {
+        let address = property(*b"dev#");
+        let mut size = 0u32;
+        let status = unsafe {
+            AudioObjectGetPropertyDataSize(
+                SYSTEM_OBJECT,
+                &address,
+                0,
+                std::ptr::null(),
+                &mut size,
+            )
+        };
+        if status != 0 || size as usize % std::mem::size_of::<u32>() != 0 {
+            return None;
+        }
+        let mut devices = vec![0u32; size as usize / std::mem::size_of::<u32>()];
+        let status = unsafe {
+            AudioObjectGetPropertyData(
+                SYSTEM_OBJECT,
+                &address,
+                0,
+                std::ptr::null(),
+                &mut size,
+                devices.as_mut_ptr() as *mut c_void,
+            )
+        };
+        if status != 0 {
+            return None;
+        }
+        let resolved = devices
+            .into_iter()
+            .map(|device_id| (device_id, device_name(device_id)))
+            .collect::<Vec<_>>();
+        recorder_state::resolve_named_devices(name, &resolved)
+    }
+
+    pub fn running_somewhere(device_id: u32) -> Option<bool> {
+        let address = property(*b"gone");
+        let mut running = 0u32;
+        let mut size = std::mem::size_of::<u32>() as u32;
+        let status = unsafe {
+            AudioObjectGetPropertyData(
+                device_id,
+                &address,
+                0,
+                std::ptr::null(),
+                &mut size,
+                &mut running as *mut u32 as *mut c_void,
+            )
+        };
+        (status == 0).then_some(running != 0)
+    }
+}
+
+
+#[cfg(target_os = "macos")]
+fn capture_input_device_ids(name: &str) -> Option<Vec<u32>> {
+    core_audio_inputs::devices_named(name)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn capture_input_device_ids(_name: &str) -> Option<Vec<u32>> {
+    None
+}
+
+#[cfg(target_os = "macos")]
+fn input_device_running_somewhere(device_id: u32) -> Option<bool> {
+    core_audio_inputs::running_somewhere(device_id)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn input_device_running_somewhere(_device_id: u32) -> Option<bool> {
+    None
+}
+
+fn input_devices_running_somewhere(devices: Option<&[u32]>) -> Option<bool> {
+    let devices = devices.filter(|devices| !devices.is_empty())?;
+    combine_device_running_states(devices.iter().map(|device_id| input_device_running_somewhere(*device_id)))
+}
+
+fn combine_device_running_states(states: impl IntoIterator<Item = Option<bool>>) -> Option<bool> {
+    let mut unknown = false;
+    for state in states {
+        match state {
+            Some(true) => return Some(true),
+            Some(false) => {}
+            None => unknown = true,
+        }
+    }
+    (!unknown).then_some(false)
+}
+
+fn capture_source_release_observed(unconfirmed: bool, device_running: Option<bool>) -> bool {
+    unconfirmed && device_running == Some(false)
+}
+
+fn retain_unconfirmed_input_devices(state: &mut EngineState) {
+    if state.active_input_mapping_pending {
+        let existing = if state.capture_source_unconfirmed {
+            state.unconfirmed_input_devices.as_deref()
+        } else {
+            Some(&[][..])
+        };
+        state.unconfirmed_input_devices =
+            recorder_state::merge_unconfirmed_devices(existing, state.active_input_devices.as_deref());
+        state.active_input_mapping_pending = false;
+    }
+    state.active_input_devices = None;
+    state.capture_source_unconfirmed = true;
+}
+
+fn load_pending_discard_cleanup(app: &tauri::AppHandle) -> Result<(), String> {
+    let pending = super::with_import_lock(|| journal::list_stopped(app))?
+        .into_iter()
+        .filter(|entry| entry.discard_cleanup_pending)
+        .map(|entry| (entry.id, entry.segment_id))
+        .collect::<Vec<_>>();
+    let engine = app.state::<Engine>();
+    let mut state = engine.0.lock();
+    for entry in pending {
+        if !state.pending_discard_cleanup.contains(&entry) {
+            state.pending_discard_cleanup.push(entry);
+        }
+    }
+    Ok(())
+}
+
+
+fn schedule_pending_discard_cleanup(app: &tauri::AppHandle) {
+    let cleanup = {
+        let engine = app.state::<Engine>();
+        let mut state = engine.0.lock();
+        let retry_ready = state
+            .discard_cleanup_retry_after
+            .map_or(true, |deadline| Instant::now() >= deadline);
+        let action = recorder_state::pending_cleanup_action(
+            state.capture_source_unconfirmed,
+            !state.pending_discard_cleanup.is_empty(),
+            state.discard_cleanup_in_flight,
+            retry_ready,
+            None,
+        );
+        if action == recorder_state::PendingCleanupAction::Run {
+            state.discard_cleanup_in_flight = true;
+            Some(state.pending_discard_cleanup.clone())
+        } else {
+            None
+        }
+    };
+    let Some(cleanup) = cleanup else {
+        return;
+    };
+
+    let handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = super::with_import_lock(|| {
+            let sessions = files::sessions_root(&handle)?;
+            for (id, segment_id) in &cleanup {
+                journal::clear_active_if_matches(&handle, id)?;
+                if let Some(segment_id) = segment_id.as_deref() {
+                    let source = sessions.join(segment_id);
+                    if source.exists() {
+                        files::remove_source_session(&sessions, segment_id)?;
+                    }
+                }
+                journal::clear_stopped(&handle, id)?;
+            }
+            super::refresh_finishing_quit(&handle)
+        });
+        if let Err(error) = &result {
+            tracing::warn!(target: "exo_dev::recorder", count = cleanup.len(), %error,
+                "Could not clean discarded sources after release confirmation");
+        }
+        let status = {
+            let engine = handle.state::<Engine>();
+            let mut state = engine.0.lock();
+            match recorder_state::pending_cleanup_action(
+                state.capture_source_unconfirmed,
+                !state.pending_discard_cleanup.is_empty(),
+                state.discard_cleanup_in_flight,
+                false,
+                Some(result.is_ok()),
+            ) {
+                recorder_state::PendingCleanupAction::Remove => {
+                    state.pending_discard_cleanup.retain(|item| !cleanup.contains(item));
+                    state.discard_cleanup_in_flight = false;
+                    state.discard_cleanup_failures = 0;
+                    state.discard_cleanup_retry_after = None;
+                    Some(state.status())
+                }
+                recorder_state::PendingCleanupAction::Retry => {
+                    state.discard_cleanup_in_flight = false;
+                    state.discard_cleanup_failures = state.discard_cleanup_failures.saturating_add(1);
+                    state.discard_cleanup_retry_after =
+                        Some(Instant::now() + Duration::from_millis(
+                            recorder_state::pending_cleanup_backoff_ms(state.discard_cleanup_failures),
+                        ));
+                    None
+                }
+                recorder_state::PendingCleanupAction::Wait
+                | recorder_state::PendingCleanupAction::Run => {
+                    state.discard_cleanup_in_flight = false;
+                    None
+                }
+            }
+        };
+        if let Some(status) = status {
+            let _ = handle.emit(MIC_EVENT, status);
+        }
+        schedule_pending_discard_cleanup(&handle);
+    });
+}
+
+
+/// Monotonic clock for the recorder state machine. Only differences are used.
+fn mono_ms() -> u64 {
+    static START: OnceLock<Instant> = OnceLock::new();
+    START.get_or_init(Instant::now).elapsed().as_millis() as u64
+}
+
+fn native_step(state: &EngineState, request: Request) -> Result<Step, String> {
+    state
+        .recorder
+        .request(request)
+        .map_err(|error| error.code().to_owned())
+}
+
+/// Records an unconfirmed native stop. The segment stays retryable; returns the error code
+/// unless a detail string is given.
+fn stall_stop(
+    app: &tauri::AppHandle,
+    stop_at: u64,
+    stall: Stall,
+    detail: Option<String>,
+) -> String {
+    {
+        let engine = app.state::<Engine>();
+        let mut state = engine.0.lock();
+        state.busy = false;
+        // Stalled always returns Err(Stalled(stall)); the code is returned below.
+        let _ = state.recorder.stop_outcome(stop_at, Stop::Stalled(stall));
+    }
+    emit_status(app);
+    detail.unwrap_or_else(|| RecorderError::Stalled(stall).code().to_owned())
+}
+
+/// Outcome of making the stopped source durable.
+enum DurableError {
+    /// The finalized session contained no usable audio.
+    Empty,
+    /// Listener-session finalization was not observed before the deadline.
+    Stall(Stall),
+    /// Finalization was observed, but its audio could not be made durable.
+    Failed(String),
+}
+
+impl From<String> for DurableError {
+    fn from(error: String) -> Self {
+        if empty_capture(&error) {
+            Self::Empty
+        } else {
+            Self::Failed(error)
+        }
+    }
+}
+
+fn stall_for(session_active: bool) -> Stall {
+    if session_active {
+        Stall::SourceStillRunning
+    } else {
+        Stall::WriterStalled
+    }
+}
+
 impl EngineState {
     fn status(&self) -> CaptureStatus {
         let at = now_ms();
-        let recording = self.segment_started.is_some();
-        let paused = self.id.is_some() && !recording;
-        let elapsed = self.recorded_ms
-            + self
-                .segment_started
-                .map(|at| at.elapsed().as_millis() as u64)
-                .unwrap_or(0);
+        let status = self.recorder.status(mono_ms());
         CaptureStatus {
-            state: if self.blocked_reason.is_some() {
-                "needs_user"
-            } else if recording {
-                "recording"
-            } else if paused {
-                "paused"
-            } else {
-                "idle"
-            },
-            reason: self.blocked_reason.or(if paused {
-                Some("user")
-            } else {
-                self.last_stop_reason
-            }),
+            state: status.state.as_str(),
+            reason: self.snapshot_issue.or(status.reason).or(self.last_stop_reason),
             id: self.id.clone(),
             channels: self.layout.channels(),
             started_at: self.started_at,
-            elapsed_ms: elapsed,
-            audio_ms: elapsed,
-            paused_ms: self.paused_ms
-                + self
-                    .pause_started
-                    .map(|at| at.elapsed().as_millis() as u64)
-                    .unwrap_or(0),
+            elapsed_ms: status.elapsed_ms,
+            audio_ms: status.elapsed_ms,
+            paused_ms: status.paused_ms,
             max_duration_ms: if self.limit_ms == 0 {
                 MAX_DURATION_MS
             } else {
                 self.limit_ms
             },
-            intent: if recording {
+            intent: if self.capture_source_unconfirmed {
                 "recording"
-            } else if paused {
+            } else if self.recorder.is_native_open() {
+                "recording"
+            } else if self.id.is_some() {
                 "paused"
             } else {
                 "stopped"
             },
-            availability: if self.blocked_reason.is_some() {
+            availability: if status.state == State::NeedsUser {
                 "blocked"
             } else {
                 "available"
@@ -228,6 +627,8 @@ impl EngineState {
             at,
             elapsed_at: at,
             spans: self.spans.clone(),
+            capture_source_unconfirmed: self.capture_source_unconfirmed,
+            discard_cleanup_pending: !self.pending_discard_cleanup.is_empty(),
         }
     }
 }
@@ -314,6 +715,7 @@ pub async fn recorder_start(
         return Err("recovery_pending".into());
     }
     let input = recording_input(&app).await?;
+    let input_devices = capture_input_device_ids(&input);
     let (segment_id, input) = {
         let state = app.state::<Engine>();
         let mut state = state.0.lock();
@@ -343,6 +745,8 @@ pub async fn recorder_start(
             system_audio,
             layout,
             spans: Vec::new(),
+            capture_source_unconfirmed: false,
+            discard_cleanup_pending: false,
         },
     );
     if saved.is_err() {
@@ -368,7 +772,7 @@ pub async fn recorder_start(
         let mut state = engine.0.lock();
         state.busy = false;
         state.layout = journal::Layout::Mono;
-        state.blocked_reason = Some(reason);
+        let _ = state.recorder.start_outcome(mono_ms(), Start::Failed(reason));
         drop(state);
         emit_status(&app);
         cleanup?;
@@ -379,26 +783,29 @@ pub async fn recorder_start(
         let mut state = state.0.lock();
         state.busy = false;
         result?;
-        cleanup?;
+        state
+            .recorder
+            .start_outcome(mono_ms(), Start::Opened)
+            .map_err(|error| error.code().to_owned())?;
         state.id = Some(id);
         state.started_at = Some(started_at);
         state.segment_id = Some(segment_id);
-        state.segment_started = Some(Instant::now());
-        state.recorded_ms = 0;
+        state.active_input_mapping_pending = true;
+        state.active_input_devices = input_devices;
         state.spans.clear();
-        state.paused_ms = 0;
         state.limit_ms = max_duration_ms
             .unwrap_or(MAX_DURATION_MS)
             .clamp(MIN_DURATION_MS, MAX_DURATION_MS);
         state.auto_stop_requested = false;
-        state.blocked_reason = None;
+        state.snapshot_issue = None;
         state.last_stop_reason = None;
+        cleanup?;
         state.status()
     };
     reset_meter(&app);
     emit_status(&app);
     if let Some(id) = status.id.as_deref() {
-        tracing::info!(target: "exo_dev::recorder", kind = "pipeline", source_id = %id, operation = "recorder", phase = "done");
+        tracing::info!(target: "exo_dev::recorder", source_id = %id, operation = "recorder", phase = "done");
     }
     Ok(status)
 }
@@ -407,7 +814,7 @@ async fn end_segment(
     app: &tauri::AppHandle,
     segment_id: &str,
     elapsed_ms: u64,
-) -> Result<(), String> {
+) -> Result<(), Stall> {
     app.listener().stop_capture().await;
     wait_finalization(app, segment_id, elapsed_ms).await
 }
@@ -416,29 +823,32 @@ async fn wait_finalization(
     app: &tauri::AppHandle,
     segment_id: &str,
     elapsed_ms: u64,
-) -> Result<(), String> {
+) -> Result<(), Stall> {
+    if source_never_stops_failpoint() {
+        return Err(Stall::SourceStillRunning);
+    }
     // The upstream WAV->MP3 encode scales with segment length. A snapshot call
     // errors on actor timeout, unlike get_capture_state's false "Inactive".
     let deadline = Instant::now() + Duration::from_secs(30 + elapsed_ms / 15_000);
+    // A failed snapshot keeps the last known listener-session state.
+    let mut session_active = true;
     loop {
-        match app.listener().get_capture_snapshot().await {
-            Ok(snapshot)
-                if snapshot.active_session_id.as_deref() != Some(segment_id)
-                    && !snapshot
-                        .finalizing_session_ids
-                        .iter()
-                        .any(|id| id == segment_id) =>
+        if let Ok(snapshot) = app.listener().get_capture_snapshot().await {
+            session_active = snapshot.active_session_id.as_deref() == Some(segment_id);
+            if !session_active
+                && !snapshot
+                    .finalizing_session_ids
+                    .iter()
+                    .any(|id| id == segment_id)
             {
-                break;
+                return Ok(());
             }
-            _ => (),
         }
         if Instant::now() >= deadline {
-            return Err("capture_stop_timeout".into());
+            return Err(stall_for(session_active));
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    Ok(())
 }
 
 // anarlog closes the WAV writer before its length-dependent MP3 encode. Its
@@ -489,54 +899,107 @@ fn retain_stopped_source(session: &std::path::Path) -> Result<bool, String> {
     Ok(false)
 }
 
-async fn durable_source(app: &tauri::AppHandle, segment_id: &str) -> Result<(), String> {
+/// Seal a bounded copy of the WAV bytes already flushed by the live writer.
+/// Hound keeps RIFF/data lengths unfinished until finalize; wav-snapshot parses
+/// the actual chunk layout and emits a normalized header for complete frames.
+fn snapshot_live_source(session: &std::path::Path) -> Result<bool, String> {
+    let retained = session.join("audio.exo-source.wav");
+    if retained.exists() {
+        if hound::WavReader::open(&retained).is_ok_and(|reader| reader.duration() > 0) {
+            std::fs::File::open(&retained)
+                .and_then(|file| file.sync_all())
+                .map_err(|error| error.to_string())?;
+            std::fs::File::open(session)
+                .and_then(|directory| directory.sync_all())
+                .map_err(|error| error.to_string())?;
+            return Ok(true);
+        }
+        std::fs::remove_file(&retained).map_err(|error| error.to_string())?;
+    }
+    let source = session.join("audio.wav");
+    let mut input = std::fs::File::open(&source).map_err(|error| error.to_string())?;
+    let temp = session.join("audio.exo-source.wav.tmp");
+    if temp.exists() {
+        std::fs::remove_file(&temp).map_err(|error| error.to_string())?;
+    }
+    let result = (|| {
+        let mut output = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)
+            .map_err(|error| error.to_string())?;
+        let Some(_) = wav_snapshot::snapshot(&mut input, &mut output)
+            .map_err(|error| error.to_string())?
+        else {
+            return Ok(false);
+        };
+        output.sync_all().map_err(|error| error.to_string())?;
+        std::fs::rename(&temp, &retained).map_err(|error| error.to_string())?;
+        std::fs::File::open(session)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|error| error.to_string())?;
+        Ok(true)
+    })();
+    if !matches!(&result, Ok(true)) {
+        let _ = std::fs::remove_file(&temp);
+    }
+    result
+}
+
+async fn durable_source(app: &tauri::AppHandle, segment_id: &str) -> Result<(), DurableError> {
+    if source_never_stops_failpoint() {
+        // The smoke failpoint leaves the listener source running so CoreAudio's
+        // system mic indicator stays truthful. Do not snapshot its live writer.
+        return Err(DurableError::Stall(Stall::SourceStillRunning));
+    }
     let deadline = Instant::now() + Duration::from_secs(10);
+    // A failed snapshot keeps the last known source state.
+    let mut source_active = true;
     loop {
         let session = files::sessions_root(app)?.join(segment_id);
         let ready = run_source_step(move || retain_stopped_source(&session)).await?;
         if ready {
             return Ok(());
         }
-        let snapshot = app
-            .listener()
-            .get_capture_snapshot()
-            .await
-            .map_err(|e| e.to_string())?;
-        if !snapshot
-            .finalizing_session_ids
-            .iter()
-            .any(|id| id == segment_id)
-            && snapshot.active_session_id.as_deref() != Some(segment_id)
-        {
-            let session = files::sessions_root(app)?.join(segment_id);
-            let mp3 = session.join("audio.mp3");
-            return run_source_step(move || {
-                let wav = session.join("audio.wav");
-                if mp3.exists() && !wav.exists() {
-                    let file = std::fs::File::open(&mp3).map_err(|e| e.to_string())?;
-                    if file.metadata().map_err(|e| e.to_string())?.len() == 0 {
+        if let Ok(snapshot) = app.listener().get_capture_snapshot().await {
+            source_active = snapshot.active_session_id.as_deref() == Some(segment_id);
+            if !source_active
+                && !snapshot
+                    .finalizing_session_ids
+                    .iter()
+                    .any(|id| id == segment_id)
+            {
+                let session = files::sessions_root(app)?.join(segment_id);
+                let mp3 = session.join("audio.mp3");
+                return run_source_step(move || {
+                    let wav = session.join("audio.wav");
+                    if mp3.exists() && !wav.exists() {
+                        let file = std::fs::File::open(&mp3).map_err(|e| e.to_string())?;
+                        if file.metadata().map_err(|e| e.to_string())?.len() == 0 {
+                            return Err("capture_audio_empty".into());
+                        }
+                        file.sync_all().map_err(|e| e.to_string())?;
+                        std::fs::File::open(&session)
+                            .and_then(|dir| dir.sync_all())
+                            .map_err(|e| e.to_string())?;
+                        return Ok(());
+                    }
+                    if !wav.exists()
+                        || hound::WavReader::open(&wav)
+                            .map_err(|e| e.to_string())?
+                            .duration()
+                            == 0
+                    {
                         return Err("capture_audio_empty".into());
                     }
-                    file.sync_all().map_err(|e| e.to_string())?;
-                    std::fs::File::open(&session)
-                        .and_then(|dir| dir.sync_all())
-                        .map_err(|e| e.to_string())?;
-                    return Ok(());
-                }
-                if !wav.exists()
-                    || hound::WavReader::open(&wav)
-                        .map_err(|e| e.to_string())?
-                        .duration()
-                        == 0
-                {
-                    return Err("capture_audio_empty".into());
-                }
-                Err("capture_audio_missing".into())
-            })
-            .await;
+                    Err("capture_audio_missing".into())
+                })
+                .await
+                .map_err(DurableError::from);
+            }
         }
         if Instant::now() >= deadline {
-            return Err("capture_source_timeout".into());
+            return Err(DurableError::Stall(stall_for(source_active)));
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
@@ -677,58 +1140,51 @@ fn empty_segment_span(closed_at: u64, elapsed: u64, at_audio_ms: u64) -> journal
 #[tauri::command]
 pub async fn recorder_pause(app: tauri::AppHandle) -> Result<CaptureStatus, String> {
     super::ensure(&app);
-    let (id, segment_id) = {
+    let (id, segment_id, stop_at, elapsed, recorded_before, closed_at) = {
         let state = app.state::<Engine>();
         let mut state = state.0.lock();
         if state.busy {
             return Err("recorder_busy".into());
         }
         let id = state.id.clone().ok_or("no_recording")?;
+        native_step(&state, Request::Pause)?;
         let segment_id = state.segment_id.clone().ok_or("already_paused")?;
         state.busy = true;
-        (id, segment_id)
+        let stop_at = mono_ms();
+        (
+            id,
+            segment_id,
+            stop_at,
+            state.recorder.segment_ms(stop_at),
+            state.recorder.recorded_ms(),
+            now_ms(),
+        )
     };
-    let (elapsed, recorded_before, closed_at) = {
-        let state = app.state::<Engine>();
-        let state = state.0.lock();
-        let elapsed = state
-            .segment_started
-            .map(|at| at.elapsed().as_millis() as u64)
-            .unwrap_or(0);
-        (elapsed, state.recorded_ms, now_ms())
-    };
-    let stopped = end_segment(&app, &segment_id, elapsed).await;
+    if let Err(stall) = end_segment(&app, &segment_id, elapsed).await {
+        return Err(stall_stop(&app, stop_at, stall, None));
+    }
     let handle = app.clone();
     let import_id = id.clone();
     let import_segment_id = segment_id.clone();
     let completion = run_segment_import(move || {
         let current = journal::load(&handle)?.ok_or("capture_journal_missing")?;
         let mut skipped_empty = false;
-        let result = stopped.and_then(|_| {
-            match import_finished_segment(
-                &handle,
-                &import_segment_id,
-                &import_id,
-                current.system_audio,
-                current.layout,
-            ) {
-                Err(error) if empty_capture(&error) => {
-                    skipped_empty = true;
-                    files::remove_source_session(
-                        &files::sessions_root(&handle)?,
-                        &import_segment_id,
-                    )
-                }
-                result => result,
+        let result = match import_finished_segment(
+            &handle,
+            &import_segment_id,
+            &import_id,
+            current.system_audio,
+            current.layout,
+        ) {
+            Err(error) if empty_capture(&error) => {
+                skipped_empty = true;
+                files::remove_source_session(
+                    &files::sessions_root(&handle)?,
+                    &import_segment_id,
+                )
             }
-        });
-        if result
-            .as_ref()
-            .err()
-            .is_some_and(|error| error == "capture_stop_timeout")
-        {
-            return Err("capture_stop_timeout".into());
-        }
+            result => result,
+        };
         if let Err(error) = result {
             journal::save_failed(
                 &handle,
@@ -756,41 +1212,30 @@ pub async fn recorder_pause(app: tauri::AppHandle) -> Result<CaptureStatus, Stri
                 ..current
             },
         )?;
-        Ok((recorded_ms, spans))
+        Ok((skipped_empty, spans))
     })
     .await;
-    let (recorded_ms, spans) = match completion {
+    let (skipped_empty, spans) = match completion {
         Ok(saved) => saved,
-        Err(error) if error == "capture_stop_timeout" => {
-            let engine = app.state::<Engine>();
-            let mut state = engine.0.lock();
-            state.busy = false;
-            state.blocked_reason = Some("writer_stalled");
-            drop(state);
-            emit_status(&app);
-            return Err(error);
-        }
         Err(error) => {
             clear_busy(&app);
             return Err(error);
         }
     };
-
+    let outcome = if skipped_empty {
+        Stop::Empty
+    } else {
+        Stop::SessionFinalized
+    };
     let status = {
         let state = app.state::<Engine>();
         let mut state = state.0.lock();
         state.busy = false;
-        state.recorded_ms = recorded_ms;
+        // Confirmed and Empty always close an open segment.
+        let _ = state.recorder.stop_outcome(stop_at, outcome);
         state.spans = spans;
         state.segment_id = None;
-        state.segment_started = None;
-        state.paused_ms += state
-            .pause_started
-            .take()
-            .map(|at| at.elapsed().as_millis() as u64)
-            .unwrap_or(0);
-        state.pause_started = Some(Instant::now());
-        state.blocked_reason = None;
+        state.active_input_devices = None;
         state.status()
     };
     reset_meter(&app);
@@ -802,15 +1247,19 @@ pub async fn recorder_pause(app: tauri::AppHandle) -> Result<CaptureStatus, Stri
 pub async fn recorder_resume(app: tauri::AppHandle) -> Result<CaptureStatus, String> {
     super::ensure(&app);
     super::extras::load_system_audio(&app).await?;
-    let incomplete_pause = {
+    let stop_first = {
         let engine = app.state::<Engine>();
         let state = engine.0.lock();
-        state.segment_id.is_some() && state.segment_started.is_none()
+        if state.id.is_none() {
+            return Err("no_recording".into());
+        }
+        native_step(&state, Request::Resume)? == Step::StopSource
     };
-    if incomplete_pause {
+    if stop_first {
         recorder_pause(app.clone()).await?;
     }
     let input = recording_input(&app).await?;
+    let input_devices = capture_input_device_ids(&input);
     let (segment_id, input) = {
         let state = app.state::<Engine>();
         let mut state = state.0.lock();
@@ -825,7 +1274,7 @@ pub async fn recorder_resume(app: tauri::AppHandle) -> Result<CaptureStatus, Str
         {
             return Err("recovery_pending".into());
         }
-        if state.segment_id.is_some() {
+        if native_step(&state, Request::Resume)? != Step::StartSource {
             return Err("already_recording".into());
         }
         begin(&mut state, input)?
@@ -872,7 +1321,7 @@ pub async fn recorder_resume(app: tauri::AppHandle) -> Result<CaptureStatus, Str
         let engine = app.state::<Engine>();
         let mut state = engine.0.lock();
         state.busy = false;
-        state.blocked_reason = Some(reason);
+        let _ = state.recorder.start_outcome(mono_ms(), Start::Failed(reason));
         drop(state);
         emit_status(&app);
         cleanup?;
@@ -882,16 +1331,15 @@ pub async fn recorder_resume(app: tauri::AppHandle) -> Result<CaptureStatus, Str
         let state = app.state::<Engine>();
         let mut state = state.0.lock();
         state.busy = false;
-        result.map_err(|_| "mic_unavailable")?;
-        cleanup?;
-        state.paused_ms += state
-            .pause_started
-            .take()
-            .map(|at| at.elapsed().as_millis() as u64)
-            .unwrap_or(0);
+        result?;
+        state
+            .recorder
+            .start_outcome(mono_ms(), Start::Opened)
+            .map_err(|error| error.code().to_owned())?;
         state.segment_id = Some(segment_id);
-        state.segment_started = Some(Instant::now());
-        state.blocked_reason = None;
+        state.active_input_mapping_pending = true;
+        state.active_input_devices = input_devices;
+        cleanup?;
         state.status()
     };
     reset_meter(&app);
@@ -902,14 +1350,18 @@ pub async fn recorder_resume(app: tauri::AppHandle) -> Result<CaptureStatus, Str
 #[tauri::command]
 pub async fn recorder_stop(app: tauri::AppHandle) -> Result<CaptureStatus, String> {
     super::ensure(&app);
-    if app.state::<Engine>().0.lock().id.is_none() {
-        return Err("no_recording".into());
-    }
+    let step = {
+        let engine = app.state::<Engine>();
+        let state = engine.0.lock();
+        if state.id.is_none() {
+            return Err("no_recording".into());
+        }
+        native_step(&state, Request::Stop)?
+    };
     if let Some(id) = app.state::<Engine>().0.lock().id.as_deref() {
         tracing::info!(target: "exo_dev::recorder", kind = "pipeline", source_id = %id, operation = "recorder", phase = "stop");
     }
-    let active = app.state::<Engine>().0.lock().segment_id.is_some();
-    if active {
+    if step == Step::StopSource {
         recorder_pause(app.clone()).await?;
     }
     // JS acknowledges the journal only after its durable metadata commit.
@@ -919,11 +1371,6 @@ pub async fn recorder_stop(app: tauri::AppHandle) -> Result<CaptureStatus, Strin
         if state.id.is_none() {
             return Err("no_recording".into());
         }
-        state.paused_ms += state
-            .pause_started
-            .take()
-            .map(|at| at.elapsed().as_millis() as u64)
-            .unwrap_or(0);
         let mut status = state.status();
         status.state = "idle";
         status.intent = "stopped";
@@ -932,17 +1379,15 @@ pub async fn recorder_stop(app: tauri::AppHandle) -> Result<CaptureStatus, Strin
         } else {
             None
         };
+        state
+            .recorder
+            .finish()
+            .map_err(|error| error.code().to_owned())?;
         state.id = None;
         state.layout = journal::Layout::Mono;
         state.started_at = None;
-        state.recorded_ms = 0;
         state.spans.clear();
-        state.blocked_reason = None;
-        state.last_stop_reason = if state.auto_stop_requested {
-            Some("max_duration")
-        } else {
-            None
-        };
+        state.last_stop_reason = status.reason;
         status
     };
     emit_status(&app);
@@ -954,30 +1399,136 @@ pub async fn recorder_stop(app: tauri::AppHandle) -> Result<CaptureStatus, Strin
 #[tauri::command]
 pub async fn recorder_stop_durable(app: tauri::AppHandle) -> Result<CaptureStatus, String> {
     super::ensure(&app);
-    let (id, segment_id, elapsed, recorded_before) = {
+    let (id, segment_id, mut stop_at, mut elapsed, recorded_before) = {
         let engine = app.state::<Engine>();
         let mut state = engine.0.lock();
         if state.busy {
             return Err("recorder_busy".into());
         }
         let id = state.id.clone().ok_or("no_recording")?;
-        let segment_id = state.segment_id.clone().ok_or("already_paused")?;
-        let elapsed = state
-            .segment_started
-            .map(|at| at.elapsed().as_millis() as u64)
-            .unwrap_or(0);
-        state.busy = true;
-        (id, segment_id, elapsed, state.recorded_ms)
-    };
-    app.listener().stop_capture().await;
-    let empty = match durable_source(&app, &segment_id).await {
-        Ok(()) => false,
-        Err(error) if empty_capture(&error) => true,
-        Err(error) => {
-            clear_busy(&app);
-            return Err(error);
+        if native_step(&state, Request::Stop)? == Step::Done {
+            return Err("already_paused".into());
         }
+        let segment_id = state.segment_id.clone().ok_or("already_paused")?;
+        state.busy = true;
+        let stop_at = mono_ms();
+        (
+            id,
+            segment_id,
+            stop_at,
+            state.recorder.segment_ms(stop_at),
+            state.recorder.recorded_ms(),
+        )
     };
+    let mut result = None;
+    for attempt in 1..=DURABLE_STOP_ATTEMPT_BUDGET {
+        let stop_result = if source_never_stops_failpoint() {
+            Ok(())
+        } else {
+            tokio::time::timeout(Duration::from_secs(5), app.listener().stop_capture()).await
+        };
+        let stop_succeeded = stop_result.is_ok();
+        if !stop_succeeded {
+            tracing::warn!(
+                target: "exo_dev::recorder",
+                source_id = %id,
+                attempt,
+                "Listener stop request exceeded its bounded wait"
+            );
+        }
+        let source_result = if stop_succeeded {
+            durable_source(&app, &segment_id).await
+        } else {
+            Err(DurableError::Stall(Stall::SourceStillRunning))
+        };
+        match source_result {
+            Ok(()) => {
+                app.state::<Engine>().0.lock().snapshot_issue = None;
+                result = Some((false, false));
+                break;
+            }
+            Err(DurableError::Empty) => {
+                app.state::<Engine>().0.lock().snapshot_issue = None;
+                result = Some((true, false));
+                break;
+            }
+            Err(error) => {
+                let (stall, detail) = match error {
+                    DurableError::Stall(stall) => (stall, None),
+                    DurableError::Failed(error) => (Stall::SourceUnusable, Some(error)),
+                    DurableError::Empty => unreachable!("empty outcome handled above"),
+                };
+                let attempt_at = mono_ms();
+                let final_attempt = attempt == DURABLE_STOP_ATTEMPT_BUDGET;
+                {
+                    let engine = app.state::<Engine>();
+                    let mut state = engine.0.lock();
+                    let _ = state
+                        .recorder
+                        .stop_outcome(attempt_at, Stop::Stalled(stall));
+                    if final_attempt {
+                        stop_at = attempt_at;
+                        elapsed = state.recorder.segment_ms(attempt_at);
+                        retain_unconfirmed_input_devices(&mut state);
+                        debug_assert!(state.recorder.can_finish_unconfirmed());
+                    }
+                }
+                tracing::warn!(
+                    target: "exo_dev::recorder",
+                    kind = "pipeline",
+                    source_id = %id,
+                    operation = "recorder",
+                    phase = "stop_unconfirmed",
+                    attempt,
+                    budget = DURABLE_STOP_ATTEMPT_BUDGET,
+                    reason = stall.reason(),
+                    detail = detail.as_deref().unwrap_or(stall.reason()),
+                    "Listener session finalization was not confirmed"
+                );
+                if final_attempt {
+                    let snapshot_result = match files::sessions_root(&app) {
+                        Ok(root) => {
+                            let session = root.join(&segment_id);
+                            run_source_step(move || snapshot_live_source(&session)).await
+                        }
+                        Err(error) => Err(error),
+                    };
+                    match snapshot_result {
+                        Ok(true) => {
+                            app.state::<Engine>().0.lock().snapshot_issue = None;
+                            result = Some((false, true));
+                            break;
+                        }
+                        Ok(false) => {
+                            tracing::warn!(
+                                target: "exo_dev::recorder",
+                                source_id = %id,
+                                "No complete audio frames were available for the unconfirmed Stop snapshot"
+                            );
+                            app.state::<Engine>().0.lock().snapshot_issue = Some("snapshot_empty");
+                            clear_busy(&app);
+                            emit_status(&app);
+                            return Err("no_audio_captured".into());
+                        }
+                        Err(error) => {
+                            tracing::warn!(
+                                target: "exo_dev::recorder",
+                                source_id = %id,
+                                %error,
+                                "Could not seal the unconfirmed Stop snapshot"
+                            );
+                            app.state::<Engine>().0.lock().snapshot_issue = Some("snapshot_unavailable");
+                            clear_busy(&app);
+                            emit_status(&app);
+                            return Err("capture_snapshot_unavailable".into());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let (empty, source_unconfirmed) = result.unwrap_or((false, true));
+
     let handle = app.clone();
     let stop_id = id.clone();
     let stop_segment = segment_id.clone();
@@ -987,6 +1538,7 @@ pub async fn recorder_stop_durable(app: tauri::AppHandle) -> Result<CaptureStatu
             return Err("capture_journal_mismatch".into());
         }
         pointer.recorded_ms = recorded_after_segment(recorded_before, elapsed, empty);
+        pointer.capture_source_unconfirmed = source_unconfirmed;
         if empty {
             pointer.segment_id = None;
             if elapsed > 0 {
@@ -1009,28 +1561,36 @@ pub async fn recorder_stop_durable(app: tauri::AppHandle) -> Result<CaptureStatu
             return Err(error);
         }
     };
+    let outcome = if empty { Stop::Empty } else { Stop::SessionFinalized };
     let status = {
         let engine = app.state::<Engine>();
         let mut state = engine.0.lock();
+        state.busy = false;
+        // Unconfirmed source stays represented as potentially recording.
+        if source_unconfirmed {
+            let _ = state.recorder.finish_unconfirmed(stop_at);
+        } else {
+            let _ = state.recorder.stop_outcome(stop_at, outcome);
+        }
         let mut status = state.status();
         status.state = "idle";
-        status.intent = "stopped";
-        status.reason = if state.auto_stop_requested {
+        status.intent = if source_unconfirmed { "recording" } else { "stopped" };
+        status.reason = if source_unconfirmed {
+            None
+        } else if state.auto_stop_requested {
             Some("max_duration")
         } else {
             None
         };
         status.audio_ms = pointer.recorded_ms;
         status.elapsed_ms = pointer.recorded_ms;
+        let _ = state.recorder.finish();
         state.id = None;
         state.layout = journal::Layout::Mono;
         state.started_at = None;
         state.segment_id = None;
-        state.segment_started = None;
-        state.recorded_ms = 0;
+        state.active_input_devices = None;
         state.spans.clear();
-        state.busy = false;
-        state.blocked_reason = None;
         state.last_stop_reason = status.reason;
         status
     };
@@ -1038,6 +1598,157 @@ pub async fn recorder_stop_durable(app: tauri::AppHandle) -> Result<CaptureStatu
         operation = "recorder", phase = "source_durable");
     emit_status(&app);
     Ok(status)
+}
+
+#[tauri::command]
+pub async fn recorder_discard_durable(
+    app: tauri::AppHandle,
+    recording_id: String,
+) -> Result<DurableDiscardResult, String> {
+    super::ensure(&app);
+    let (id, segment_id, already_closed) = {
+        let engine = app.state::<Engine>();
+        let mut state = engine.0.lock();
+        if !recorder_state::is_current_recording(&recording_id, state.id.as_deref()) {
+            return Ok(DurableDiscardResult::NotCurrent);
+        }
+        if state.busy {
+            return Err("recorder_busy".into());
+        }
+        let id = state.id.clone().ok_or("no_recording")?;
+        let step = native_step(&state, Request::Stop)?;
+        let segment_id = state.segment_id.clone();
+        state.busy = true;
+        (id, segment_id, step == Step::Done)
+    };
+
+    let mut finalized = already_closed || segment_id.is_none();
+    if let Some(segment_id) = segment_id.as_deref() {
+        for attempt in 1..=DURABLE_STOP_ATTEMPT_BUDGET {
+            let stop_succeeded = !source_never_stops_failpoint()
+                && tokio::time::timeout(Duration::from_secs(5), app.listener().stop_capture())
+                    .await
+                    .is_ok();
+            let finalized_now = if stop_succeeded {
+                tokio::time::timeout(Duration::from_secs(5), app.listener().get_capture_snapshot())
+                    .await
+                    .ok()
+                    .and_then(Result::ok)
+                    .is_some_and(|snapshot| {
+                        snapshot.active_session_id.as_deref() != Some(segment_id)
+                            && !snapshot.finalizing_session_ids.iter().any(|id| id == segment_id)
+                    })
+            } else {
+                false
+            };
+            let attempt_at = mono_ms();
+            let engine = app.state::<Engine>();
+            let mut state = engine.0.lock();
+            if finalized_now {
+                let _ = state
+                    .recorder
+                    .stop_outcome(attempt_at, Stop::SessionFinalized);
+                finalized = true;
+                break;
+            }
+            let _ = state.recorder.stop_outcome(
+                attempt_at,
+                Stop::Stalled(Stall::SourceStillRunning),
+            );
+            if attempt == DURABLE_STOP_ATTEMPT_BUDGET {
+                retain_unconfirmed_input_devices(&mut state);
+            }
+        }
+    }
+
+    let stop_at = mono_ms();
+    let (source_unconfirmed, keep_native_source, recorded_ms, paused_ms) = {
+        let engine = app.state::<Engine>();
+        let state = engine.0.lock();
+        let elapsed = state.recorder.segment_ms(stop_at);
+        (
+            state.capture_source_unconfirmed,
+            state.capture_source_unconfirmed || !finalized,
+            state
+                .recorder
+                .recorded_ms()
+                .saturating_add(if finalized { 0 } else { elapsed }),
+            state.recorder.status(stop_at).paused_ms,
+        )
+    };
+
+    let handle = app.clone();
+    let journal_id = id.clone();
+    let journal_segment_id = segment_id.clone();
+    let journal_result = run_segment_import(move || {
+        let mut pointer = journal::load(&handle)?.ok_or("capture_journal_missing")?;
+        if pointer.id != journal_id || pointer.segment_id != journal_segment_id {
+            return Err("capture_journal_mismatch".into());
+        }
+        pointer.recorded_ms = recorded_ms;
+        pointer.paused_ms = paused_ms;
+        pointer.capture_source_unconfirmed = source_unconfirmed;
+        pointer.discard_cleanup_pending = keep_native_source;
+        if keep_native_source {
+            journal::save_stopped(&handle, &pointer)?;
+        } else if let Some(segment_id) = journal_segment_id.as_deref() {
+            files::remove_source_session(&files::sessions_root(&handle)?, segment_id)?;
+        }
+        journal::clear_active_if_matches(&handle, &journal_id)?;
+        if !keep_native_source {
+            journal::clear_stopped(&handle, &journal_id)?;
+        }
+        super::refresh_finishing_quit(&handle)
+    })
+    .await;
+    if let Err(error) = journal_result {
+        clear_busy(&app);
+        emit_status(&app);
+        return Err(error);
+    }
+
+    let status = {
+        let engine = app.state::<Engine>();
+        let mut state = engine.0.lock();
+        if !finalized {
+            let _ = state.recorder.finish_unconfirmed(stop_at);
+        }
+        let _ = state.recorder.finish();
+        state.busy = false;
+        state.id = None;
+        state.layout = journal::Layout::Mono;
+        state.started_at = None;
+        state.segment_id = None;
+        state.active_input_devices = None;
+        state.spans.clear();
+        state.snapshot_issue = None;
+        state.last_stop_reason = None;
+        if !state.capture_source_unconfirmed {
+            state.unconfirmed_input_devices = Some(Vec::new());
+        }
+        if keep_native_source {
+            let cleanup = (id.clone(), segment_id.clone());
+            if !state.pending_discard_cleanup.contains(&cleanup) {
+                state.pending_discard_cleanup.push(cleanup);
+            }
+        }
+        let mut status = state.status();
+        status.state = "idle";
+        status.id = None;
+        status.intent = if state.capture_source_unconfirmed {
+            "recording"
+        } else {
+            "stopped"
+        };
+        status.reason = None;
+        status.audio_ms = 0;
+        status.elapsed_ms = 0;
+        status.discard_cleanup_pending = !state.pending_discard_cleanup.is_empty();
+        status
+    };
+    schedule_pending_discard_cleanup(&app);
+    emit_status(&app);
+    Ok(DurableDiscardResult::Retired(status))
 }
 
 #[tauri::command]
@@ -1055,7 +1766,18 @@ pub async fn recorder_finish(app: tauri::AppHandle, id: String) -> Result<u64, S
     let Some(segment_id) = pointer.segment_id.clone() else {
         return files::audio_file_size(app, id).await;
     };
-    wait_finalization(&app, &segment_id, pointer.recorded_ms).await?;
+    if pointer.capture_source_unconfirmed {
+        // Import only a separately retained, complete WAV snapshot. The live
+        // writer must not be read while its source-release state is unknown.
+        let retained = files::sessions_root(&app)?.join(&segment_id).join("audio.exo-source.wav");
+        if !retained.exists() {
+            return Err(recorder_state::UNCONFIRMED_STOP_REASON.into());
+        }
+    } else {
+        wait_finalization(&app, &segment_id, pointer.recorded_ms)
+            .await
+            .map_err(|stall| RecorderError::Stalled(stall).code().to_owned())?;
+    }
     let handle = app.clone();
     let import_id = id.clone();
     let import_segment = segment_id.clone();
@@ -1097,9 +1819,28 @@ pub async fn recorder_finish(app: tauri::AppHandle, id: String) -> Result<u64, S
 
 #[cfg(test)]
 mod durable_stop_tests {
-    use super::{empty_segment_span, recorded_after_segment, retain_stopped_source, source_mp3};
+    use super::{
+        capture_source_release_observed, combine_device_running_states, empty_segment_span,
+        recorded_after_segment, retain_stopped_source, source_mp3,
+    };
     use std::io::Write;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn release_poller_clears_only_when_every_used_input_is_reported_stopped() {
+        assert!(!capture_source_release_observed(false, Some(false)));
+        assert!(!capture_source_release_observed(true, None));
+        assert!(!capture_source_release_observed(true, Some(true)));
+        assert!(capture_source_release_observed(true, Some(false)));
+        let default_stopped_selected_running =
+            combine_device_running_states([Some(false), Some(true)]);
+        assert_eq!(default_stopped_selected_running, Some(true));
+        assert!(!capture_source_release_observed(true, default_stopped_selected_running));
+        assert!(!capture_source_release_observed(
+            true,
+            combine_device_running_states([Some(false), None])
+        ));
+    }
 
     fn sparse_wav(path: &std::path::Path, minutes: u64, finalized: bool) {
         let data_bytes = minutes * 60 * 48_000 * 8;
@@ -1126,6 +1867,7 @@ mod durable_stop_tests {
         file.write_all(&(data_bytes as u32).to_le_bytes()).unwrap();
         file.set_len(data_bytes + 44).unwrap();
     }
+
 
     #[test]
     fn source_receipt_waits_for_closed_header_and_retains_audio_after_upstream_unlink() {
@@ -1193,6 +1935,17 @@ pub struct RecoveryReport {
     quarantined: Vec<journal::FailedSegment>,
 }
 
+fn is_pending_discard_source(app: &tauri::AppHandle, id: &str, segment_id: Option<&str>) -> bool {
+    app.state::<Engine>()
+        .0
+        .lock()
+        .pending_discard_cleanup
+        .iter()
+        .any(|(pending_id, pending_segment)| {
+            pending_id == id && pending_segment.as_deref() == segment_id
+        })
+}
+
 #[tauri::command]
 pub async fn recorder_stopped_list(app: tauri::AppHandle) -> Result<Vec<String>, String> {
     run_source_step(move || {
@@ -1208,12 +1961,13 @@ pub async fn recorder_stopped_list(app: tauri::AppHandle) -> Result<Vec<String>,
 pub async fn recorder_recover(app: tauri::AppHandle) -> Result<RecoveryReport, String> {
     tauri::async_runtime::spawn_blocking(move || {
         super::ensure(&app);
+        load_pending_discard_cleanup(&app)?;
         super::with_import_lock(|| {
             if app.state::<Engine>().0.lock().id.is_some() {
                 return Err("recording_in_progress".into());
             }
             let mut pending = journal::load(&app)?;
-            if let Some(ref mut current) = pending {
+            if let Some(current) = &mut pending {
                 if !files::valid_recording_id(&current.id) {
                     return Err("invalid_recording_id".into());
                 }
@@ -1221,9 +1975,10 @@ pub async fn recorder_recover(app: tauri::AppHandle) -> Result<RecoveryReport, S
                     if !files::valid_recording_id(&segment_id) {
                         return Err("invalid_segment_id".into());
                     }
-                    if !journal::list_failed(&app)?
-                        .iter()
-                        .any(|failed| failed.segment_id == segment_id)
+                    if !is_pending_discard_source(&app, &current.id, Some(&segment_id))
+                        && !journal::list_failed(&app)?
+                            .iter()
+                            .any(|failed| failed.segment_id == segment_id)
                     {
                         match import_finished_segment(
                             &app,
@@ -1252,16 +2007,25 @@ pub async fn recorder_recover(app: tauri::AppHandle) -> Result<RecoveryReport, S
                             Ok(()) => (),
                         }
                     }
-                    current.segment_id = None;
-                    journal::save(&app, current)?;
+                    if !is_pending_discard_source(&app, &current.id, Some(&segment_id)) {
+                        current.segment_id = None;
+                        journal::save(&app, current)?;
+                    }
                 }
             }
-            let stopped = journal::list_stopped(&app)?;
+            let stopped: Vec<_> = journal::list_stopped(&app)?
+                .into_iter()
+                .filter(|current| {
+                    !is_pending_discard_source(&app, &current.id, current.segment_id.as_deref())
+                })
+                .collect();
             for current in &stopped {
                 recover_stopped_segment(&app, current)?;
             }
             Ok(RecoveryReport {
-                journal: pending,
+                journal: pending.filter(|current| {
+                    !is_pending_discard_source(&app, &current.id, current.segment_id.as_deref())
+                }),
                 stopped,
                 quarantined: journal::list_failed(&app)?,
             })
@@ -1378,6 +2142,9 @@ fn recover_stopped_segment(
     let Some(segment_id) = current.segment_id.as_deref() else {
         return Ok(());
     };
+    if is_pending_discard_source(app, &current.id, Some(segment_id)) {
+        return Ok(());
+    }
     if journal::list_failed(app)?
         .iter()
         .any(|failed| failed.segment_id == segment_id)
@@ -1605,20 +2372,6 @@ mod tests {
             resolve_input(&[], Some("Bose"), None),
             Err("mic_unavailable".into())
         );
-    }
-    #[test]
-    fn elapsed_excludes_pause() {
-        let state = EngineState {
-            id: Some("note".into()),
-            recorded_ms: 1_250,
-            pause_started: Some(Instant::now() - Duration::from_secs(2)),
-            ..Default::default()
-        };
-        let status = state.status();
-        assert_eq!(status.elapsed_ms, 1_250);
-        assert!(status.paused_ms >= 2_000);
-        assert_eq!(status.state, "paused");
-        assert_eq!(status.reason, Some("user"));
     }
 
     #[tokio::test]

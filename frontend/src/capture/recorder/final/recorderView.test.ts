@@ -198,7 +198,6 @@ describe("selectRecorderView: needs_user reason decisions", () => {
     "media_services_reset",
     "read_error",
     "app_suspended",
-    "writer_stalled",
     "pause_timeout",
     "max_duration",
     "disk_full",
@@ -207,6 +206,57 @@ describe("selectRecorderView: needs_user reason decisions", () => {
       `Unexpected recorder mic combination: needs_user/${String(reason)}`,
     );
   });
+
+  test.each([
+    ["writer_stalled", FINAL_COPY.writerStalled("Stop")],
+    ["source_still_running", FINAL_COPY.sourceStillRunning("Stop")],
+    ["source_unusable", FINAL_COPY.sourceUnusable("Stop")],
+  ] as const)("needs_user/%s offers retry and Stop", (reason, statusLine) => {
+    expect(recordingView("needs_user", reason)).toMatchObject({
+      ring: "still-resumable",
+      statusLine,
+      tapRingAction: "resume",
+      emphasis: "stop",
+      controls: { stop: true, resume: true },
+    });
+  });
+
+  test("desktop stalled recovery names the Done action", () => {
+    expect(recordingView("needs_user", "writer_stalled", { device: "mac" })).toMatchObject({
+      statusLine: FINAL_COPY.writerStalled("Done"),
+      emphasis: "stop",
+      controls: { stop: true, resume: true },
+    });
+  });
+
+  test("needs_user/status_unknown offers a retry", () => {
+    expect(recordingView("needs_user", "status_unknown")).toMatchObject({
+      ring: "still-resumable",
+      statusLine: FINAL_COPY.statusUnknown,
+      tapRingAction: "resume",
+      controls: { resume: true },
+    });
+  });
+  test.each([
+    ["snapshot_unavailable", FINAL_COPY.snapshotUnavailable("Done")],
+    ["snapshot_empty", FINAL_COPY.snapshotEmpty("Done")],
+  ] as const)("needs_user/%s offers snapshot retry and Stop without Resume", (reason, statusLine) => {
+    expect(recordingView("needs_user", reason, { device: "mac" })).toMatchObject({
+      ring: "still",
+      statusLine,
+      tapRingAction: "stop",
+      emphasis: "stop",
+      controls: { stop: true, resume: false },
+    });
+  });
+  test("snapshot_empty maps Done to a terminal discard", () => {
+    expect(recordingView("needs_user", "snapshot_empty", { device: "mac" })).toMatchObject({
+      statusLine: "Nothing was recorded. Try again to check, or use Done to close without saving.",
+      doneAction: "discard",
+      tapRingAction: "stop",
+    });
+  });
+
 });
 
 describe("selectRecorderView: idle reason decisions", () => {

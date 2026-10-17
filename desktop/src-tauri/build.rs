@@ -57,6 +57,7 @@ fn main() {
             "recorder_resume",
             "recorder_stop",
             "recorder_stop_durable",
+            "recorder_discard_durable",
             "recorder_finish",
             "recorder_quit_anyway",
             "recorder_status",
