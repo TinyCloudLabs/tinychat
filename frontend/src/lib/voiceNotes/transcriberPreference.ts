@@ -8,7 +8,7 @@ import { appPlatform } from "@/lib/platform";
 import { DEFAULT_STOP_AFTER, STOP_AFTER_VALUES, type RecordingField, type SetFields, type StopAfter } from "./recordingSettings";
 import {
   SPEAKERS_KEY, STOP_AFTER_KEY, TRANSCRIBER_KEY, UPLOAD_AUDIO_KEY, UPLOAD_ENGINE_KEY,
-  localStorageOrNull as storage, markLocalEdit, notifyRecordingSettings, subscribeRecordingSettings,
+  localStorageOrNull as storage, markLocalEdit, notifyRecordingSettings, readLocalState, subscribeRecordingSettings,
 } from "./recordingSettingsLocal";
 
 let memoryPreference: CaptureOptions = { transcriber: "on-device", identifySpeakers: true };
@@ -207,27 +207,33 @@ export function writeAccountDefaults(
  */
 async function commitPreference(change: Partial<CaptureOptions>, edit = true): Promise<void> {
   await inOrder(async () => {
+    // An adopted value never lands over an edit still waiting to be synced, whichever got into the lane first.
+    const dirty = edit ? [] : readLocalState()?.dirty ?? [];
+    const applied = Object.fromEntries(Object.entries(change).filter(([key]) => !dirty.includes(key as RecordingField))) as Partial<CaptureOptions>;
+    if (Object.keys(applied).length === 0) return;
     const store = storage();
     const prior = store ? { transcriber: store.getItem(TRANSCRIBER_KEY), speakers: store.getItem(SPEAKERS_KEY),
       uploadAudio: store.getItem(UPLOAD_AUDIO_KEY) } : null;
-    const pref = { ...readTranscriberPreference(), ...change };
-    const chosenTranscriber = change.transcriber !== undefined;
+    const pref = { ...readTranscriberPreference(), ...applied };
     let before: EngineDefaults | null = null;
     try {
       await writeEffectiveDefaults(pref, (current) => { before = current; });
+      // An edit writes its keys as before. An adopted value writes only what changed: a key nobody set stays unset,
+      // so it never travels as a choice.
       if (store) {
-        if (chosenTranscriber) store.setItem(TRANSCRIBER_KEY, pref.transcriber);
-        store.setItem(SPEAKERS_KEY, pref.identifySpeakers ? "1" : "0");
-        store.setItem(UPLOAD_AUDIO_KEY, pref.uploadAudio ? "1" : "0");
+        if (applied.transcriber !== undefined) store.setItem(TRANSCRIBER_KEY, pref.transcriber);
+        if (edit || applied.identifySpeakers !== undefined) store.setItem(SPEAKERS_KEY, pref.identifySpeakers ? "1" : "0");
+        if (edit || applied.uploadAudio !== undefined) store.setItem(UPLOAD_AUDIO_KEY, pref.uploadAudio ? "1" : "0");
       }
     } catch (caught) {
       throw await restoreAfterFailure(caught, store, prior, before);
     }
     memoryPreference = pref;
     unreconciled = null;
+    // Stamped in the lane, right after the keys, so a sync can never see the new value under the old stamp.
+    if (edit) markLocalEdit(Object.keys(applied) as RecordingField[]);
   });
   notifyRecordingSettings();
-  if (edit) markLocalEdit(Object.keys(change) as RecordingField[]);
 }
 
 /** The effective choice changed under an unchanged preference (the Mac's Whisper became ready): rewrite the engine's default and tell the listeners. */
@@ -250,32 +256,37 @@ export async function setDefaultIdentifySpeakers(identifySpeakers: boolean): Pro
 /**
  * Puts fields adopted from the synced document into this device's cache and, for the engine-backed ones, the capture
  * engine's copy (the same lane an edit uses, so phone shortcuts record with them). Not an edit: it neither stamps the
- * device nor tells sync. Throws if the engine refuses; nothing is marked synced then, and the next cycle repeats it.
+ * device nor tells sync. Fields with an edit still waiting to be synced are skipped. Throws if the engine refuses, after
+ * the fields that do not need it were applied; nothing is marked synced then, and the next cycle repeats it.
  */
 export async function adoptSyncedFields(fields: SetFields): Promise<void> {
   const store = storage();
   if (!store) return;
+  const dirty = readLocalState()?.dirty ?? [];
+  const open = (field: RecordingField) => fields[field] !== undefined && !dirty.includes(field);
   const current = readTranscriberPreference();
   const web = appPlatform() === "web";
-  const change: Partial<CaptureOptions> = {};
-  if (fields.transcriber !== undefined && fields.transcriber !== current.transcriber) change.transcriber = fields.transcriber;
-  if (fields.identifySpeakers !== undefined && fields.identifySpeakers !== current.identifySpeakers) change.identifySpeakers = fields.identifySpeakers;
+  // The fields that need no engine are applied first and synchronously, so an edit cannot slip in between.
+  if (open("stopAfter")) store.setItem(STOP_AFTER_KEY, fields.stopAfter!);
+  if (open("uploadEngine")) store.setItem(UPLOAD_ENGINE_KEY, fields.uploadEngine!);
   // On the web the audio preference is a cache only; the engine's copy follows at the next account write.
-  if (!web && fields.uploadAudio !== undefined && fields.uploadAudio !== current.uploadAudio) change.uploadAudio = fields.uploadAudio;
-  if (Object.keys(change).length > 0) {
-    if (captureEngineAvailable()) await commitPreference(change, false);
-    else {
-      if (change.transcriber !== undefined) store.setItem(TRANSCRIBER_KEY, change.transcriber);
-      if (change.identifySpeakers !== undefined) store.setItem(SPEAKERS_KEY, change.identifySpeakers ? "1" : "0");
-      if (change.uploadAudio !== undefined) store.setItem(UPLOAD_AUDIO_KEY, change.uploadAudio ? "1" : "0");
-    }
-  }
-  if (web && fields.uploadAudio !== undefined) {
+  if (web && open("uploadAudio")) {
     store.setItem(UPLOAD_AUDIO_KEY, fields.uploadAudio ? "1" : "0");
     memoryPreference = { ...memoryPreference, uploadAudio: fields.uploadAudio };
   }
-  if (fields.stopAfter !== undefined) store.setItem(STOP_AFTER_KEY, fields.stopAfter);
-  if (fields.uploadEngine !== undefined) store.setItem(UPLOAD_ENGINE_KEY, fields.uploadEngine);
+  notifyRecordingSettings();
+  const change: Partial<CaptureOptions> = {};
+  if (open("transcriber") && fields.transcriber !== current.transcriber) change.transcriber = fields.transcriber;
+  if (open("identifySpeakers") && fields.identifySpeakers !== current.identifySpeakers) change.identifySpeakers = fields.identifySpeakers;
+  if (!web && open("uploadAudio") && fields.uploadAudio !== current.uploadAudio) change.uploadAudio = fields.uploadAudio;
+  if (Object.keys(change).length === 0) return;
+  if (captureEngineAvailable()) {
+    await commitPreference(change, false);
+    return;
+  }
+  if (change.transcriber !== undefined) store.setItem(TRANSCRIBER_KEY, change.transcriber);
+  if (change.identifySpeakers !== undefined) store.setItem(SPEAKERS_KEY, change.identifySpeakers ? "1" : "0");
+  if (change.uploadAudio !== undefined) store.setItem(UPLOAD_AUDIO_KEY, change.uploadAudio ? "1" : "0");
   notifyRecordingSettings();
 }
 

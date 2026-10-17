@@ -60,8 +60,8 @@ export function parseRecordingDoc(raw: string | null): ParsedRemote {
   try { parsed = JSON.parse(raw); } catch { return { kind: "none" }; }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return { kind: "none" };
   const record = parsed as Record<string, unknown>;
-  if (typeof record.v === "number" && record.v > RECORDING_DOC_VERSION) return { kind: "newer-version" };
-  if (record.v !== RECORDING_DOC_VERSION) return { kind: "none" };
+  // Anything but our own version is not ours to overwrite.
+  if (record.v !== RECORDING_DOC_VERSION) return { kind: "newer-version" };
   const updatedAt = typeof record.updatedAt === "number" && Number.isFinite(record.updatedAt) ? record.updatedAt : 0;
   const fields: SetFields = {};
   const extra: Record<string, unknown> = {};
@@ -84,10 +84,12 @@ export interface LocalState {
   fields: SetFields;
   /** Time of the last local edit, or the document's updatedAt after the last adopt or push. Null: never stamped (older than any document). */
   at: number | null;
-  /** The account the stamp belongs to. Null: not attributed yet. */
+  /** The account the stamp belongs to. Null: this device has never synced and nothing has been edited while signed in. */
   owner: string | null;
   /** Fields edited here since the last adopt or push. */
   dirty: readonly RecordingField[];
+  /** This device's recording default is Powerful, which never syncs: no document value replaces it. */
+  powerful: boolean;
 }
 
 export interface ReconcilePlan {
@@ -97,25 +99,22 @@ export interface ReconcilePlan {
   write: RecordingDoc | null;
   /** What the local stamp becomes once the plan is applied. */
   stamp: number | null;
-  /** False when this cache holds another account's values and the space has nothing: the cache is not claimed for this account. */
-  claim: boolean;
 }
 
 /**
  * The conflict rule. Newest updatedAt wins, whole document: a device whose stamp is newer than the document lays only
  * the fields it edited over it; otherwise the document is adopted. A local value without a stamp counts as older. An
  * explicitly set local field the document lacks is added to it, so an existing per-device value joins; a field that is
- * unset locally never overwrites anything. Values another account left in this cache neither seed nor win.
+ * unset locally never overwrites anything. The caller has already dropped a cache another account left behind.
  */
-export function reconcile(local: LocalState, remote: RecordingDoc | null, account: string, now: number): ReconcilePlan {
-  const foreign = local.owner !== null && local.owner !== account;
-  const mine: SetFields = foreign ? {} : local.fields;
-  const localAt = foreign ? null : local.at;
+export function reconcile(local: LocalState, remote: RecordingDoc | null, now: number): ReconcilePlan {
+  const mine = local.fields;
+  const localAt = local.at;
 
   if (!remote) {
-    if (RECORDING_FIELDS.every((field) => mine[field] === undefined)) return { adopt: {}, write: null, stamp: local.at, claim: !foreign };
+    if (RECORDING_FIELDS.every((field) => mine[field] === undefined)) return { adopt: {}, write: null, stamp: local.at };
     const updatedAt = Math.max(localAt ?? now, 1);
-    return { adopt: {}, write: { v: RECORDING_DOC_VERSION, updatedAt, fields: { ...mine }, extra: {} }, stamp: updatedAt, claim: true };
+    return { adopt: {}, write: { v: RECORDING_DOC_VERSION, updatedAt, fields: { ...mine }, extra: {} }, stamp: updatedAt };
   }
 
   const localNewer = localAt !== null && localAt > remote.updatedAt;
@@ -131,12 +130,12 @@ export function reconcile(local: LocalState, remote: RecordingDoc | null, accoun
   const updatedAt = !changed ? remote.updatedAt : localNewer ? localAt : Math.max(remote.updatedAt + 1, now);
   const adopt: SetFields = {};
   for (const field of RECORDING_FIELDS) {
+    if (field === "transcriber" && local.powerful) continue;
     if (merged[field] !== undefined && merged[field] !== local.fields[field]) (adopt as Record<string, unknown>)[field] = merged[field];
   }
   return {
     adopt,
     write: changed ? { v: RECORDING_DOC_VERSION, updatedAt, fields: merged, extra: remote.extra } : null,
     stamp: updatedAt,
-    claim: true,
   };
 }

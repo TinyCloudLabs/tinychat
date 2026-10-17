@@ -5,27 +5,50 @@ import { useEffect } from "react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { getSetting, setSetting } from "../threadStore";
 import { RECORDING_SETTING_KEY, parseRecordingDoc, reconcile, serializeRecordingDoc } from "./recordingSettings";
-import { markSynced, readLocalState, setActiveAccount, subscribeRecordingEdits } from "./recordingSettingsLocal";
-import { adoptSyncedFields } from "./transcriberPreference";
+import { dropSyncedKeys, markSynced, notifyRecordingSettings, readLocalState, setActiveAccount, subscribeRecordingEdits } from "./recordingSettingsLocal";
+import { captureEngineAvailable } from "./captureEngine";
+import { adoptSyncedFields, refreshEffectiveTranscriber } from "./transcriberPreference";
 
 // An edit that lands while a cycle is talking to the space makes that cycle's plan stale: it runs again.
 const MAX_ATTEMPTS = 3;
 
 let lane: Promise<void> = Promise.resolve();
 
+/**
+ * The values on this device belong to the account that last synced or edited here. Another account signing in starts
+ * from defaults: it never sees them, and they are never written to its space. The capture engine's copy follows.
+ */
+function forgetForeignCache(account: string): void {
+  const owner = readLocalState()?.owner ?? null;
+  if (owner === null || owner === account) return;
+  dropSyncedKeys();
+  notifyRecordingSettings();
+  if (captureEngineAvailable()) {
+    void refreshEffectiveTranscriber().catch((caught: unknown) => console.warn("[RecordingSettings] Could not reset the engine's default", caught));
+  }
+}
+
 async function cycle(tcw: TinyCloudWeb, account: string, isCurrent: () => boolean): Promise<"done" | "stale"> {
+  forgetForeignCache(account);
   const parsed = parseRecordingDoc(await getSetting(tcw, RECORDING_SETTING_KEY));
   // A document from a newer app is left exactly as it is.
   if (parsed.kind === "newer-version" || !isCurrent()) return "done";
   const local = readLocalState();
   if (!local) return "done";
-  const plan = reconcile(local, parsed.kind === "doc" ? parsed.doc : null, account, Date.now());
+  const plan = reconcile(local, parsed.kind === "doc" ? parsed.doc : null, Date.now());
   if (readLocalState()?.at !== local.at) return "stale";
-  if (Object.keys(plan.adopt).length > 0) await adoptSyncedFields(plan.adopt);
+  // A refusal by the capture engine must not hold back pushing this device's edits; the cycle just is not marked synced.
+  let adopted = true;
+  if (Object.keys(plan.adopt).length > 0) {
+    try { await adoptSyncedFields(plan.adopt); } catch (caught) {
+      adopted = false;
+      console.warn("[RecordingSettings] The recorder did not take the synced defaults yet; trying again later", caught);
+    }
+  }
   if (plan.write) await setSetting(tcw, RECORDING_SETTING_KEY, serializeRecordingDoc(plan.write));
   // An edit during the writes above keeps its own stamp and dirty fields; its own cycle pushes it.
   if (readLocalState()?.at !== local.at) return "stale";
-  if (plan.claim) markSynced(plan.stamp, account);
+  if (adopted) markSynced(plan.stamp, account);
   return "done";
 }
 
@@ -58,6 +81,7 @@ export function attachRecordingSettingsSync(tcw: TinyCloudWeb): () => void {
   const offEdits = subscribeRecordingEdits(run);
   document.addEventListener("visibilitychange", onVisible);
   globalThis.addEventListener("online", run);
+  if (tcw.did) forgetForeignCache(tcw.did);
   run();
   return () => {
     attached = false;

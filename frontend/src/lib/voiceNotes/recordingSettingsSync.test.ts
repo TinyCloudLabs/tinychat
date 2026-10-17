@@ -4,7 +4,9 @@ import { getSetting, setSetting, useLocalThreadStorage } from "../threadStore";
 import { readDefaultUploadEngine, writeDefaultUploadEngine } from "../audioUpload";
 import { RECORDING_SETTING_KEY } from "./recordingSettings";
 import { attachRecordingSettingsSync, syncRecordingSettings } from "./recordingSettingsSync";
-import { readStopAfterPreference, readTranscriberPreference, setStopAfterPreference } from "./transcriberPreference";
+import { adoptSyncedFields, readStopAfterPreference, readTranscriberPreference, setStopAfterPreference } from "./transcriberPreference";
+import { createFakeVoiceNotes } from "./fakeVoiceNotes";
+import { __setVoiceNotesForTests } from "./nativeVoiceNotes";
 
 const saved = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
 const space = (did = "did:pkh:eip155:1:0xme") => useLocalThreadStorage({ did } as unknown as TinyCloudWeb);
@@ -113,4 +115,77 @@ test("a document from a newer app is left exactly as written", async () => {
   await syncRecordingSettings(tcw);
   expect(await getSetting(tcw, RECORDING_SETTING_KEY)).toBe(raw);
   expect(readStopAfterPreference()).toBe("30");
+});
+
+test("a device that picked Powerful keeps it when the document holds a synced mode", async () => {
+  const tcw = space();
+  await setSetting(tcw, RECORDING_SETTING_KEY, JSON.stringify({ v: 1, updatedAt: 5, transcriber: "private-cloud", stopAfter: "120" }));
+  const phone = device({ "exo.voiceNotes.transcriber": "assemblyai" });
+  phone.use();
+  await syncRecordingSettings(tcw);
+  expect(phone.values.get("exo.voiceNotes.transcriber")).toBe("assemblyai");
+  expect(readStopAfterPreference()).toBe("120");
+  expect(await remoteDoc(tcw)).toMatchObject({ transcriber: "private-cloud" });
+});
+
+const ACCOUNT_A = "did:pkh:eip155:1:0xaaa";
+const ACCOUNT_B = "did:pkh:eip155:1:0xbbb";
+
+test("another account on the same device never sees the first account's values and never uploads them", async () => {
+  const spaceA = space(ACCOUNT_A);
+  const spaceB = space(ACCOUNT_B);
+  const shared = device({ "exo.voiceNotes.stopAfter": "30", "exo.voiceNotes.uploadAudio": "1", "exo.transcriber.uploadEngine": "assemblyai" });
+  shared.use();
+  await syncRecordingSettings(spaceA);
+  expect(await remoteDoc(spaceA)).toMatchObject({ stopAfter: "30", uploadAudio: true, uploadEngine: "assemblyai" });
+
+  // A signs out; a choice made while signed out stays attributed to A.
+  setStopAfterPreference("15");
+  expect(JSON.parse(shared.values.get("exo.voiceNotes.recordingSettings.sync")!).owner).toBe(ACCOUNT_A);
+
+  // B signs in: A's values are gone from the cache before anything syncs, and B's space gets none of them.
+  const detach = attachRecordingSettingsSync(spaceB);
+  expect(readStopAfterPreference()).toBe("60");
+  expect(readDefaultUploadEngine()).toBe("private-cloud");
+  await syncRecordingSettings(spaceB);
+  detach();
+  expect(await remoteDoc(spaceB)).toBeNull();
+  expect(shared.values.has("exo.voiceNotes.uploadAudio")).toBe(false);
+
+  // B's first edit writes only what B edited.
+  const again = attachRecordingSettingsSync(spaceB);
+  setStopAfterPreference("120");
+  await syncRecordingSettings(spaceB);
+  again();
+  expect(await remoteDoc(spaceB)).toEqual({ v: 1, updatedAt: expect.any(Number), stopAfter: "120" });
+  // A's own document is untouched by any of it.
+  expect(await remoteDoc(spaceA)).toMatchObject({ stopAfter: "30" });
+});
+
+test("signed out, or before there is a space, nothing is written to any space", async () => {
+  const tcw = space(ACCOUNT_A);
+  device().use();
+  setStopAfterPreference("15");
+  await syncRecordingSettings({} as TinyCloudWeb);
+  expect(await remoteDoc(tcw)).toBeNull();
+});
+
+test("adopting one field leaves keys nobody set unset, and never replaces an edit still waiting to sync", async () => {
+  const fake = createFakeVoiceNotes();
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  try {
+    const phone = device();
+    phone.use();
+    await adoptSyncedFields({ transcriber: "off" });
+    expect(phone.values.get("exo.voiceNotes.transcriber")).toBe("off");
+    expect(phone.values.has("exo.voiceNotes.identifySpeakers")).toBe(false);
+    expect(phone.values.has("exo.voiceNotes.uploadAudio")).toBe(false);
+
+    setStopAfterPreference("15");
+    await adoptSyncedFields({ stopAfter: "120", transcriber: "private-cloud" });
+    expect(readStopAfterPreference()).toBe("15");
+    expect(phone.values.get("exo.voiceNotes.transcriber")).toBe("private-cloud");
+  } finally {
+    __setVoiceNotesForTests(null, { available: null });
+  }
 });

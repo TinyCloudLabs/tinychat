@@ -143,7 +143,7 @@ export function VoiceNotesTranscriberSettings() {
   const usedHere = chosenDefault !== undefined && signedIn ? effectiveTranscriber(chosenDefault, signedIn) : undefined;
   const fallbackNote = chosenDefault !== undefined && usedHere !== undefined && usedHere !== chosenDefault && (
     <p role="status" className="text-xs text-muted-foreground" data-testid="voice-notes-default-fallback">
-      Your default is {TRANSCRIBER_NAME[chosenDefault]}, which {deviceName(platform)} can't run, so recordings here use {TRANSCRIBER_NAME[usedHere]}. Your other devices keep {TRANSCRIBER_NAME[chosenDefault]}.
+      Your default is {TRANSCRIBER_NAME[chosenDefault]}, which {deviceName(platform)} can't run, so recordings here use {TRANSCRIBER_NAME[usedHere]}.{usedHere === "private-cloud" && " Private sends audio to be transcribed, then deletes it."} Your other devices keep {TRANSCRIBER_NAME[chosenDefault]}.
     </p>
   );
   const uploadSetting = (

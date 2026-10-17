@@ -72,7 +72,7 @@ export function readLocalState(): LocalState | null {
     for (const field of RECORDING_FIELDS) {
       if (isValidField(field, raw[field])) (fields as Record<string, unknown>)[field] = raw[field];
     }
-    return { fields, ...readMeta(store) };
+    return { fields, powerful: raw.transcriber === "assemblyai", ...readMeta(store) };
   } catch { return null; }
 }
 
@@ -89,7 +89,8 @@ export function markLocalEdit(fields: readonly RecordingField[], now = Date.now(
   if (store) {
     try {
       const meta = readMeta(store);
-      writeMeta(store, { at: Math.max(now, (meta.at ?? 0) + 1), owner: activeAccount,
+      // A signed-out edit stays attributed to the account that last synced here, so no other account can adopt it.
+      writeMeta(store, { at: Math.max(now, (meta.at ?? 0) + 1), owner: activeAccount ?? meta.owner,
         dirty: RECORDING_FIELDS.filter((field) => meta.dirty.includes(field) || fields.includes(field)) });
     } catch { /* This session only; the edit still shows. */ }
   }
@@ -101,4 +102,13 @@ export function markSynced(at: number | null, owner: string): void {
   const store = localStorageOrNull();
   if (!store) return;
   try { writeMeta(store, { at, owner, dirty: [] }); } catch { /* Next cycle repeats it. */ }
+}
+
+/** Forgets every synced value and the stamp: another account's choices must not outlive its session on this device. */
+export function dropSyncedKeys(): void {
+  const store = localStorageOrNull();
+  if (!store) return;
+  for (const key of [TRANSCRIBER_KEY, SPEAKERS_KEY, UPLOAD_AUDIO_KEY, STOP_AFTER_KEY, UPLOAD_ENGINE_KEY, META_KEY]) {
+    try { store.removeItem(key); } catch { /* Next cycle repeats it. */ }
+  }
 }
