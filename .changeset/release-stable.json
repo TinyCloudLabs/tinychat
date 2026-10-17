@@ -1,0 +1,13 @@
+{
+  "versions": {
+    "exo-desktop": "0.9.0",
+    "@tinychat/frontend": "0.9.0"
+  },
+  "changesets": [
+    ".changeset/pre/exo-pause-stuck.md",
+    ".changeset/pre/tc-1111-anonymous-speaker-labels.md",
+    ".changeset/pre/tc-1274-confirmed-ids.md",
+    ".changeset/pre/tc-1274-lighter-connectors-sql.md",
+    ".changeset/pre/tc-1352-stop-recording-after.md"
+  ]
+}
