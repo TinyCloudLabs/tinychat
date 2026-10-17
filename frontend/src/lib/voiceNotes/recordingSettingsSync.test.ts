@@ -2,9 +2,9 @@ import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { getSetting, setSetting, useLocalThreadStorage } from "../threadStore";
 import { readDefaultUploadEngine, writeDefaultUploadEngine } from "../audioUpload";
-import { RECORDING_SETTING_KEY } from "./recordingSettings";
+import { DEFAULT_STOP_AFTER, RECORDING_FIELDS, RECORDING_SETTING_KEY } from "./recordingSettings";
 import { attachRecordingSettingsSync, syncRecordingSettings } from "./recordingSettingsSync";
-import { adoptSyncedFields, readStopAfterPreference, readTranscriberPreference, setStopAfterPreference } from "./transcriberPreference";
+import { adoptSyncedFields, readStopAfterPreference, readTranscriberPreference, setDefaultIdentifySpeakers, setDefaultTranscriber, setStopAfterPreference } from "./transcriberPreference";
 import { createFakeVoiceNotes } from "./fakeVoiceNotes";
 import { __setVoiceNotesForTests } from "./nativeVoiceNotes";
 
@@ -31,6 +31,8 @@ beforeEach(() => {
   }
 });
 afterEach(() => {
+  // The preferences also live in module memory for storage-less runs: leave the defaults for later test files.
+  setStopAfterPreference(DEFAULT_STOP_AFTER);
   if (saved) Object.defineProperty(globalThis, "localStorage", saved);
   else Reflect.deleteProperty(globalThis, "localStorage");
   Reflect.deleteProperty(globalThis, "document");
@@ -128,6 +130,25 @@ test("a device that picked Powerful keeps it when the document holds a synced mo
   expect(await remoteDoc(tcw)).toMatchObject({ transcriber: "private-cloud" });
 });
 
+test("per-device values survive a sync untouched, and only synced fields are read from or written to the document", async () => {
+  const tcw = space(ACCOUNT_A);
+  const consent = { [`exo.voiceNotes.privateCloudConsent:${ACCOUNT_A}`]: "2", [`exo.voiceNotes.powerfulConsent:${ACCOUNT_A}`]: "1" };
+  const local = { "exo.voiceNotes.transcriber": "assemblyai", "exo.voiceNotes.uploadAudio": "1", "exo_recorder.microphone": "usb", "exo_recorder.systemAudioV2": "0", "exo_recorder.selectedModel": "base" };
+  await setSetting(tcw, RECORDING_SETTING_KEY, JSON.stringify({ v: 1, updatedAt: 5, transcriber: "private-cloud", identifySpeakers: false, mic: "x", consent: true }));
+  const phone = device({ ...consent, ...local });
+  phone.use();
+  setStopAfterPreference("30");
+  await syncRecordingSettings(tcw);
+  await syncRecordingSettings(tcw);
+  // Powerful mode, consents, mic, Mac audio and local model are exactly as they were.
+  for (const [key, value] of Object.entries({ ...consent, ...local })) expect(phone.values.get(key)).toBe(value);
+  // What reached the document is only synced fields (plus the keys another app version put there, kept as found).
+  const written = await remoteDoc(tcw);
+  const synced = new Set<string>(["v", "updatedAt", ...RECORDING_FIELDS, "mic", "consent"]);
+  expect(Object.keys(written).filter((key) => !synced.has(key))).toEqual([]);
+  expect(written).toMatchObject({ transcriber: "private-cloud", stopAfter: "30", uploadAudio: true, mic: "x", consent: true });
+});
+
 const ACCOUNT_A = "did:pkh:eip155:1:0xaaa";
 const ACCOUNT_B = "did:pkh:eip155:1:0xbbb";
 
@@ -186,6 +207,9 @@ test("adopting one field leaves keys nobody set unset, and never replaces an edi
     expect(readStopAfterPreference()).toBe("15");
     expect(phone.values.get("exo.voiceNotes.transcriber")).toBe("private-cloud");
   } finally {
+    // The engine-backed defaults also live in module memory; put them back while the engine is still installed.
+    await setDefaultTranscriber("on-device");
+    await setDefaultIdentifySpeakers(true);
     __setVoiceNotesForTests(null, { available: null });
   }
 });
