@@ -61,7 +61,7 @@ public struct CaptureDefaults: Codable, Equatable {
     public var uploadAudio: Bool?
 
     public init(accountDid: String? = nil, transitionGen: Int64 = 0,
-                transcriber: String = "on-device", identifySpeakers: Bool = true, uploadAudio: Bool? = nil) {
+                transcriber: String = "on-device", identifySpeakers: Bool = false, uploadAudio: Bool? = nil) {
         self.accountDid = accountDid
         self.transitionGen = transitionGen
         self.transcriber = transcriber
