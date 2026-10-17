@@ -719,14 +719,14 @@ export async function saveVoiceNoteTranscript(
 
 /**
  * T22's on-device lane sends this directly to the commit-table writer. Each local segment stays
- * one record with its own times. A single-channel on-device transcript (and any version 1 one)
+ * one record with its own times. A single-channel on-device transcript (and any version 1 on-device one)
  * has one unnamed speaker, saved as the note's anonymous "Speaker 1" (TC-1111): never "You", never
  * mapped to the account owner, and not the same person as "Speaker 1" in another note.
  */
 export function localTranscriptToSave(local: LocalTranscript): VoiceNoteTranscriptSave {
   // local.segments' start/end are milliseconds (the native sidecar's canonical-JSON writer only
   // accepts integers); start_time/end_time follow every other transcript source's seconds.
-  const unnamed = local.version === 1 || (local.transcriber === "on-device" && !local.diarized)
+  const unnamed = local.transcriber === "on-device" && (local.version === 1 || !local.diarized)
     ? anonymousSpeakerName(1) : null;
   const sentences: FirefliesSentence[] = local.segments.map((segment, index) => ({
     index, text: segment.text, start_time: segment.start / 1000, end_time: segment.end / 1000,

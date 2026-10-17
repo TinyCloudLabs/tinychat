@@ -7,7 +7,7 @@ import { PendingVoiceNotesSaver, schedulePendingVoiceNotesRecovery } from "@/cha
 import { OnDeviceStt, __setOnDeviceSttForTests, type OnDeviceSttPlugin } from "./onDeviceStt";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { CONNECTORS_SQL_DB_NAME, ensureSchema, transcriptKvKey } from "../connectors/connectorStore";
-import { readVoiceNoteTranscriptState, saveVoiceNote } from "./voiceNoteStore";
+import { localTranscriptToSave, readVoiceNoteTranscriptState, saveVoiceNote } from "./voiceNoteStore";
 import { SQL_MEETING_METADATA_QUERY } from "../meetingChat/corpus";
 import { legacyTranscriptWinner, readTranscriptCommit, voiceNoteTranscriptLocator } from "./voiceNoteCommits";
 import { whisperLocalTranscript } from "./desktop/whisperTranscript";
@@ -18,7 +18,7 @@ import { MemoryRouter } from "react-router-dom";
 import { NoteDetailView } from "@/capture/library/NoteDetailView";
 import { hasPrivateCloudTimingProvenance, transcriptMarkdown, transcriptWithTimestamps } from "@/capture/library/transcriptSegments";
 import { createFakeVoiceNotes } from "./fakeVoiceNotes";
-import { __setVoiceNotesForTests, VoiceNotes } from "./nativeVoiceNotes";
+import { __setVoiceNotesForTests, VoiceNotes, type LocalTranscript } from "./nativeVoiceNotes";
 import { __resetOnDeviceTranscriberForTests, syncOnDeviceTranscript } from "./onDeviceTranscriber";
 import { createVoiceNotePipeline, VoiceNoteSaveDeferred, type VoiceNotePipeline } from "./voiceNotePipeline";
 import { handoffBeforeCredentialClear } from "./accountHandoff";
@@ -1364,6 +1364,35 @@ test("a mono on-device transcript saves one timed record per engine segment, all
     const participants = { participants: JSON.stringify([{ name: "Speaker 1", email: null }]) };
     expect(sqlite.query("SELECT participants FROM voice_note_transcript WHERE source_id = ?").get(id)).toEqual(participants);
     expect(sqlite.query("SELECT participants FROM connector_meeting WHERE source_id = ?").get(id)).toEqual(participants);
+  } finally { __setVoiceNotesForTests(original, { available: null }); }
+});
+test("a rerun an older build committed with no speaker name is recorded as synced, not reported as a changed transcript", async () => {
+  const original = VoiceNotes;
+  const { tcw } = space();
+  const id = "rerun-before-upgrade";
+  await ensureSchema(tcw);
+  await createVoiceNoteRow(tcw, { id, startedAt: 0, durationMs: 20_000, mimeType: "audio/mp4",
+    sizeBytes: 4, silencedMs: 0, silencedEvents: 0, noSignalMs: 0 }, "Rerun note");
+  const base = await commitVoiceNoteTranscript(tcw, id, { rev: 1, outcome: "transcribed", text: "first", sentences: sentence("first") });
+  const rerun: LocalTranscript = { version: 2, noteId: id, transcriber: "on-device", rev: 2, engine: "parakeet-tdt-0.6b-v3",
+    model: null, language: "en", outcome: "transcribed", diarized: false, createdAt: "2026-10-17T00:00:00Z",
+    rerunBase: { rev: base.rev, hash: base.hash }, segments: [
+      { start: 0, end: 9_000, text: "Again.", speaker: null, timing: "engine" },
+      { start: 10_000, end: 18_000, text: "Twice.", speaker: null, timing: "engine" }] };
+  // The older build's commit landed, then its ledger write was lost.
+  const unnamed = localTranscriptToSave(rerun).sentences.map((s) => ({ ...s, speaker_name: null }));
+  const older = await commitVoiceNoteTranscript(tcw, id, { rev: 2, outcome: "transcribed", text: "Again.\nTwice.", sentences: unnamed });
+  const ledgerWrites: unknown[] = [];
+  const ledger = { audio: { state: "saved" }, transcriptSync: { state: "pending", rev: 1, at: null }, transcript: { outcome: "transcribed" } };
+  __setVoiceNotesForTests({
+    listPending: async () => ({ recordings: [{ id, owner: tcw.did, rev: 3, ledger }] }),
+    getTranscript: async () => ({ transcript: rerun }),
+    updateLedger: async (args: unknown) => { ledgerWrites.push(args); return {}; },
+  } as unknown as typeof VoiceNotes, { available: true });
+  try {
+    await syncOnDeviceTranscript(tcw, { id, owner: tcw.did, ledger: ledger as never });
+    expect(ledgerWrites).toMatchObject([{ id, patch: { transcriptSync: { state: "saved", rev: 2 } } }]);
+    expect((await readTranscriptCommit(tcw, id))?.hash).toBe(older.hash);
   } finally { __setVoiceNotesForTests(original, { available: null }); }
 });
 test("on-device no_speech transcript sync never sets PTX missing-stats metadata", async () => {

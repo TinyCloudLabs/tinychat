@@ -357,8 +357,9 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
   const shownLocal = localSyncPending || remoteSentences.length === 0 ? local : null;
   const shownProvider = shownLocal ? shownLocal.engine
     : props.transcriptProvenance?.provider ?? (metadata?.status === "ok" ? metadata.metadata.transcript_provider : null);
-  // AssemblyAI letters its speakers afresh for every note it transcribes.
-  const perNoteSpeakers = shownProvider === "assemblyai" && sentences.some((sentence) => sentence.speaker_name);
+  // AssemblyAI letters its speakers ("Speaker A", assemblyAiSpeakerName) afresh for every note; channel rows keep their own names.
+  const perNoteSpeakers = shownProvider === "assemblyai"
+    && sentences.some((sentence) => sentence.channel === undefined && /^Speaker [A-Z]+$/.test(sentence.speaker_name ?? ""));
   const savedGaps = metadata?.status === "ok" ? metadata.metadata.gaps : null;
   const gaps = Array.isArray(savedGaps) ? savedGaps.filter((gap): gap is TranscriptGap =>
     gap !== null && typeof gap === "object" && Number.isFinite(gap.start) && Number.isFinite(gap.end)
