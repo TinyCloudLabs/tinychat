@@ -8,7 +8,7 @@ import { attachRecordingSettingsSync, syncRecordingSettings } from "./recordingS
 import { adoptSyncedFields, readStopAfterPreference, readTranscriberPreference, setDefaultIdentifySpeakers, setDefaultTranscriber, setStopAfterPreference } from "./transcriberPreference";
 import { createFakeVoiceNotes } from "./fakeVoiceNotes";
 import { __setVoiceNotesForTests } from "./nativeVoiceNotes";
-import { takeCacheFor } from "./recordingSettingsLocal";
+import { __resetAccountsForTests, takeCacheFor } from "./recordingSettingsLocal";
 
 const saved = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
 const space = (did = "did:pkh:eip155:1:0xme") => useLocalThreadStorage({ did } as unknown as TinyCloudWeb);
@@ -34,6 +34,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   // The preferences also live in module memory for storage-less runs: leave the defaults for later test files.
+  __resetAccountsForTests();
   setStopAfterPreference(DEFAULT_STOP_AFTER);
   if (saved) Object.defineProperty(globalThis, "localStorage", saved);
   else Reflect.deleteProperty(globalThis, "localStorage");
@@ -159,6 +160,8 @@ test("another account on the same device never sees the first account's values a
   const spaceB = space(ACCOUNT_B);
   const shared = device({ "exo.voiceNotes.stopAfter": "30", "exo.voiceNotes.uploadAudio": "1", "exo.transcriber.uploadEngine": "assemblyai" });
   shared.use();
+  // Tab 1 is signed in as A, syncs, then signs out.
+  attachRecordingSettingsSync(spaceA)();
   await syncRecordingSettings(spaceA);
   expect(await remoteDoc(spaceA)).toMatchObject({ stopAfter: "30", uploadAudio: true, uploadEngine: "assemblyai" });
 
@@ -308,5 +311,56 @@ test("an edit in a tab that missed another tab's sign-in as a different account 
   now.mockRestore();
   expect(await remoteDoc(spaceA)).toEqual({ v: 1, updatedAt: expect.any(Number), stopAfter: "15" });
   expect(shared.values.has("exo.voiceNotes.transcriber")).toBe(false);
+  expect(shared.values.has("exo.transcriber.uploadEngine")).toBe(false);
+});
+
+test("an engine write still in flight when another tab hands the cache to a different account never lands on its values", async () => {
+  const spaceA = space(ACCOUNT_A);
+  const shared = device();
+  shared.use();
+  const fake = createFakeVoiceNotes();
+  const gate = Promise.withResolvers<void>();
+  let entered = false;
+  const plugin = { ...fake.plugin, getCaptureDefaults: async () => {
+    if (!entered) { entered = true; await gate.promise; }
+    return fake.plugin.getCaptureDefaults();
+  } };
+  __setVoiceNotesForTests(plugin, { available: true });
+  try {
+    const detachA = attachRecordingSettingsSync(spaceA);
+    await syncRecordingSettings(spaceA);
+    // A's user picks a mode; the engine write is held open.
+    const edit = setDefaultTranscriber("off");
+    await until(() => entered);
+    // Another tab signs in as B and leaves B's choices in the cache.
+    expect(takeCacheFor(ACCOUNT_B)).toBe(true);
+    shared.values.set("exo.voiceNotes.stopAfter", "120");
+    shared.values.set("exo.transcriber.uploadEngine", "assemblyai");
+    gate.resolve();
+    await edit;
+    await syncRecordingSettings(spaceA);
+    detachA();
+    const doc = await remoteDoc(spaceA);
+    expect(doc).toMatchObject({ transcriber: "off" });
+    expect(doc).not.toHaveProperty("stopAfter");
+    expect(doc).not.toHaveProperty("uploadEngine");
+  } finally {
+    await setDefaultTranscriber("on-device");
+    await setDefaultIdentifySpeakers(true);
+    __setVoiceNotesForTests(null, { available: null });
+  }
+});
+
+test("a signed-out edit in a tab belongs to the account that tab was signed in as, never to one another tab signed in", async () => {
+  const spaceA = space(ACCOUNT_A);
+  const shared = device({ "exo.voiceNotes.stopAfter": "30" });
+  shared.use();
+  attachRecordingSettingsSync(spaceA)();
+  await syncRecordingSettings(spaceA);
+  // Another tab signs in as B and leaves its choices; this tab is signed out and its user edits.
+  expect(takeCacheFor(ACCOUNT_B)).toBe(true);
+  shared.values.set("exo.transcriber.uploadEngine", "assemblyai");
+  setStopAfterPreference("15");
+  expect(JSON.parse(shared.values.get("exo.voiceNotes.recordingSettings.sync")!).owner).toBe(ACCOUNT_A);
   expect(shared.values.has("exo.transcriber.uploadEngine")).toBe(false);
 });

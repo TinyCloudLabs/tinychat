@@ -77,10 +77,19 @@ export function readLocalState(): LocalState | null {
 }
 
 let activeAccount: string | null = null;
+// The account this tab was last signed in as. A signed-out edit in this tab belongs to it, whatever another tab did since.
+let lastAccount: string | null = null;
 
 /** The signed-in account edits are attributed to; null while signed out. Set by sync's attach. */
 export function setActiveAccount(account: string | null): void {
   activeAccount = account;
+  if (account !== null) lastAccount = account;
+}
+
+/** Tests only: forget which account this tab was signed in as. */
+export function __resetAccountsForTests(): void {
+  activeAccount = null;
+  lastAccount = null;
 }
 
 /** After a successful local edit: stamp it newer than anything this device has seen, and tell sync. */
@@ -90,7 +99,7 @@ export function markLocalEdit(fields: readonly RecordingField[], now = Date.now(
     try {
       const meta = readMeta(store);
       // A signed-out edit stays attributed to the account that last synced here, so no other account can adopt it.
-      writeMeta(store, { at: Math.max(now, (meta.at ?? 0) + 1), owner: activeAccount ?? meta.owner,
+      writeMeta(store, { at: Math.max(now, (meta.at ?? 0) + 1), owner: activeAccount ?? lastAccount ?? meta.owner,
         dirty: RECORDING_FIELDS.filter((field) => meta.dirty.includes(field) || fields.includes(field)) });
     } catch { /* This session only; the edit still shows. */ }
   }
@@ -122,7 +131,8 @@ export function takeCacheFor(account: string): boolean {
 
 /** Before an edit writes its key: another tab may have handed this cache to a different account since this tab last looked. */
 export function takeActiveCache(): boolean {
-  return activeAccount === null ? false : takeCacheFor(activeAccount);
+  const account = activeAccount ?? lastAccount;
+  return account === null ? false : takeCacheFor(account);
 }
 
 /** Forgets every synced value and the stamp: another account's choices must not outlive its session on this device. */

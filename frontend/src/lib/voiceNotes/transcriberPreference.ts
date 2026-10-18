@@ -236,8 +236,11 @@ async function commitPreference(change: Partial<CaptureOptions>, edit = true, ma
     let before: EngineDefaults | null = null;
     try {
       await writeEffectiveDefaults(pref, (current) => { before = current; });
-      // The engine write above is the one await in the lane: the account can change during it. Put the engine back then.
-      if (!mayWrite()) throw new Error("The account changed while the synced defaults were being applied.");
+      // The engine write above is the one await in the lane: the account can change during it. An adopted value is
+      // dropped then (the engine is put back); an edit claims the cache again, so its keys never land on another
+      // account's leftovers.
+      if (edit) takeCache();
+      else if (!mayWrite()) throw new Error("The account changed while the synced defaults were being applied.");
       // An edit writes its keys as before. An adopted value writes only what changed: a key nobody set stays unset,
       // so it never travels as a choice.
       if (store) {
