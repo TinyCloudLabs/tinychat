@@ -104,14 +104,25 @@ export function markSynced(at: number | null, owner: string): void {
   try { writeMeta(store, { at, owner, dirty: [] }); } catch { /* Next cycle repeats it. */ }
 }
 
-/** The cache is this account's from now on, whatever its stamp: keeps the values and the pending edits. */
-export function claimCache(owner: string): void {
+/**
+ * The cache is this account's from now on, keeping its values and pending edits. Values another account left in it are
+ * dropped first. True when they were: callers then refresh what is derived from the cache (the capture engine's copy).
+ */
+export function takeCacheFor(account: string): boolean {
   const store = localStorageOrNull();
-  if (!store) return;
+  if (!store) return false;
   try {
     const meta = readMeta(store);
-    if (meta.owner !== owner) writeMeta(store, { ...meta, owner });
-  } catch { /* Next cycle repeats it. */ }
+    const foreign = meta.owner !== null && meta.owner !== account;
+    if (foreign) dropSyncedKeys();
+    if (foreign || meta.owner !== account) writeMeta(store, foreign ? { at: null, owner: account, dirty: [] } : { ...meta, owner: account });
+    return foreign;
+  } catch { return false; }
+}
+
+/** Before an edit writes its key: another tab may have handed this cache to a different account since this tab last looked. */
+export function takeActiveCache(): boolean {
+  return activeAccount === null ? false : takeCacheFor(activeAccount);
 }
 
 /** Forgets every synced value and the stamp: another account's choices must not outlive its session on this device. */

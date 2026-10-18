@@ -17,6 +17,7 @@
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { captureEvents } from "@/capture/captureEvents";
 import { UPLOAD_ENGINE_KEY, markLocalEdit, notifyRecordingSettings } from "./voiceNotes/recordingSettingsLocal";
+import { takeCache } from "./voiceNotes/transcriberPreference";
 
 import {
   AudioStoreQuotaError,
@@ -75,6 +76,7 @@ export function readDefaultUploadEngine(): UploadEngine {
 
 export function writeDefaultUploadEngine(engine: UploadEngine): void {
   try {
+    takeCache();
     globalThis.localStorage?.setItem(UPLOAD_ENGINE_KEY, engine);
     notifyRecordingSettings();
     markLocalEdit(["uploadEngine"]);

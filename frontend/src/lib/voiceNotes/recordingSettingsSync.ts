@@ -5,31 +5,13 @@ import { useEffect } from "react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { getSetting, setSetting } from "../threadStore";
 import { RECORDING_SETTING_KEY, parseRecordingDoc, reconcile, serializeRecordingDoc } from "./recordingSettings";
-import { claimCache, dropSyncedKeys, markSynced, notifyRecordingSettings, readLocalState, setActiveAccount, subscribeRecordingEdits } from "./recordingSettingsLocal";
-import { captureEngineAvailable } from "./captureEngine";
-import { adoptSyncedFields, refreshEffectiveTranscriber } from "./transcriberPreference";
+import { markSynced, readLocalState, setActiveAccount, subscribeRecordingEdits } from "./recordingSettingsLocal";
+import { adoptSyncedFields, takeCache } from "./transcriberPreference";
 
 // An edit that lands while a cycle is talking to the space makes that cycle's plan stale: it runs again.
 const MAX_ATTEMPTS = 3;
 
 let lane: Promise<void> = Promise.resolve();
-
-/**
- * The values on this device belong to the account that last synced or edited here. Another account signing in starts
- * from defaults: it never sees them, and they are never written to its space. The capture engine's copy follows. The
- * cache is then claimed for this account at once, so a cache that was just cleared never reads as "nobody's".
- */
-function takeCache(account: string): void {
-  const owner = readLocalState()?.owner ?? null;
-  if (owner !== null && owner !== account) {
-    dropSyncedKeys();
-    notifyRecordingSettings();
-    if (captureEngineAvailable()) {
-      void refreshEffectiveTranscriber().catch((caught: unknown) => console.warn("[RecordingSettings] Could not reset the engine's default", caught));
-    }
-  }
-  claimCache(account);
-}
 
 /** Nothing in the cache belongs to another account. Checked again after every await: a second tab or a sign-in can change it meanwhile. */
 function cacheIsOf(account: string): boolean {

@@ -8,6 +8,7 @@ import { attachRecordingSettingsSync, syncRecordingSettings } from "./recordingS
 import { adoptSyncedFields, readStopAfterPreference, readTranscriberPreference, setDefaultIdentifySpeakers, setDefaultTranscriber, setStopAfterPreference } from "./transcriberPreference";
 import { createFakeVoiceNotes } from "./fakeVoiceNotes";
 import { __setVoiceNotesForTests } from "./nativeVoiceNotes";
+import { takeCacheFor } from "./recordingSettingsLocal";
 
 const saved = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
 const space = (did = "did:pkh:eip155:1:0xme") => useLocalThreadStorage({ did } as unknown as TinyCloudWeb);
@@ -283,4 +284,29 @@ test("an adopt still in the engine when the account changes writes nothing for t
     await setDefaultIdentifySpeakers(true);
     __setVoiceNotesForTests(null, { available: null });
   }
+});
+
+test("an edit in a tab that missed another tab's sign-in as a different account never carries that account's values", async () => {
+  const spaceA = space(ACCOUNT_A);
+  // Each read of the clock is later than the last, so the edit is newer than the first sync by construction.
+  let clock = 1_000_000;
+  const now = spyOn(Date, "now").mockImplementation(() => (clock += 10));
+  const shared = device({ "exo.voiceNotes.stopAfter": "30" });
+  shared.use();
+  // Tab 1 is signed in as A and has synced.
+  const detachA = attachRecordingSettingsSync(spaceA);
+  await syncRecordingSettings(spaceA);
+  // Tab 2 (same localStorage) signs in as B and leaves B's choices in the cache; tab 1 never hears about it.
+  expect(takeCacheFor(ACCOUNT_B)).toBe(true);
+  shared.values.set("exo.voiceNotes.transcriber", "private-cloud");
+  shared.values.set("exo.transcriber.uploadEngine", "assemblyai");
+  shared.values.set("exo.voiceNotes.uploadAudio", "1");
+  // Tab 1's user edits Stop recording after.
+  setStopAfterPreference("15");
+  await syncRecordingSettings(spaceA);
+  detachA();
+  now.mockRestore();
+  expect(await remoteDoc(spaceA)).toEqual({ v: 1, updatedAt: expect.any(Number), stopAfter: "15" });
+  expect(shared.values.has("exo.voiceNotes.transcriber")).toBe(false);
+  expect(shared.values.has("exo.transcriber.uploadEngine")).toBe(false);
 });

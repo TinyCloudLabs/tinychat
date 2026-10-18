@@ -8,12 +8,25 @@ import { appPlatform } from "@/lib/platform";
 import { DEFAULT_STOP_AFTER, STOP_AFTER_VALUES, type RecordingField, type SetFields, type StopAfter } from "./recordingSettings";
 import {
   SPEAKERS_KEY, STOP_AFTER_KEY, TRANSCRIBER_KEY, UPLOAD_AUDIO_KEY, UPLOAD_ENGINE_KEY,
-  localStorageOrNull as storage, markLocalEdit, notifyRecordingSettings, readLocalState, subscribeRecordingSettings,
+  localStorageOrNull as storage, markLocalEdit, notifyRecordingSettings, readLocalState, subscribeRecordingSettings, takeActiveCache, takeCacheFor,
 } from "./recordingSettingsLocal";
 
 let memoryPreference: CaptureOptions = { transcriber: "on-device", identifySpeakers: true };
 
 export const subscribeTranscriberPreference = subscribeRecordingSettings;
+
+/**
+ * Takes the cache for `account` (default: this tab's account) before a sync or an edit touches it: values another
+ * account left there are dropped, and so is the capture engine's copy of them. Another tab can hand the cache to a
+ * different account at any time, so an edit must never assume it still holds what this tab last saw.
+ */
+export function takeCache(account?: string): void {
+  if (!(account === undefined ? takeActiveCache() : takeCacheFor(account))) return;
+  notifyRecordingSettings();
+  if (captureEngineAvailable()) {
+    void refreshEffectiveTranscriber().catch((caught: unknown) => console.warn("[RecordingSettings] Could not reset the engine's default", caught));
+  }
+}
 
 export function readTranscriberPreference(): CaptureOptions {
   const store = storage();
@@ -48,6 +61,7 @@ export function readUploadAudioPreference(): boolean {
 
 export async function setUploadAudioPreference(enabled: boolean): Promise<void> {
   if (appPlatform() === "web") {
+    takeCache();
     storage()?.setItem(UPLOAD_AUDIO_KEY, enabled ? "1" : "0");
     memoryPreference = { ...memoryPreference, uploadAudio: enabled };
     notifyRecordingSettings();
@@ -73,6 +87,7 @@ export function readStopAfterPreference(): StopAfter {
 }
 
 export function setStopAfterPreference(value: StopAfter): void {
+  takeCache();
   memoryStopAfter = value;
   try { storage()?.setItem(STOP_AFTER_KEY, value); } catch { /* This session only. */ }
   notifyRecordingSettings();
@@ -209,6 +224,7 @@ async function commitPreference(change: Partial<CaptureOptions>, edit = true, ma
   await inOrder(async () => {
     // An adopted value never lands over an edit still waiting to be synced, whichever got into the lane first, and
     // never once the account it was read for is gone.
+    if (edit) takeCache();
     if (!mayWrite()) return;
     const dirty = edit ? [] : readLocalState()?.dirty ?? [];
     const applied = Object.fromEntries(Object.entries(change).filter(([key]) => !dirty.includes(key as RecordingField))) as Partial<CaptureOptions>;
