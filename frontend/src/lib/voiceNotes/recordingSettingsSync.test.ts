@@ -364,8 +364,12 @@ test("property: with two accounts signing in and out at any await point, no valu
     } finally {
       current?.signOut();
       await Promise.allSettled(pending);
-      __setVoiceNotesForTests(null, { available: null });
       __resetActiveAccountForTests();
+      // The defaults also live in module memory for storage-less runs; the engine is still installed to take them.
+      await setDefaultTranscriber("on-device");
+      await setDefaultIdentifySpeakers(true);
+      await setUploadAudioPreference(false);
+      __setVoiceNotesForTests(null, { available: null });
     }
   }
 });
@@ -376,4 +380,10 @@ test("reading a scope never looks at another scope's key", () => {
   expect(readStored(ACCOUNT_B)).toEqual({});
   expect(readStored(null)).toEqual({});
   expect(readStored(ACCOUNT_A).stopAfter).toBe("30");
+});
+
+test("the tests above leave the storage-less defaults as they found them", () => {
+  Reflect.deleteProperty(globalThis, "localStorage");
+  expect(readTranscriberPreference()).toMatchObject({ transcriber: "on-device", identifySpeakers: true });
+  expect(readUploadAudioPreference()).toBe(false);
 });
