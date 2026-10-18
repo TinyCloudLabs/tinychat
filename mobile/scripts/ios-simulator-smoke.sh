@@ -174,22 +174,82 @@ process_identity() {
   fi
   return 2
 }
-publish_verified_pid() {
-  local origin=$1 candidate=$2 observed_epoch source token identity status=0
-  identity=$(time_stage "$origin.pid-identity" process_identity "$candidate") || status=$?
-  if [ "$status" -eq 0 ]; then
-    observed_epoch=$(date -u +%s)
-    if [ "$SECONDS" -lt "$deadline" ]; then
-      read -r source token <<<"$identity"
-      printf '%s %s %s %s\n' "$candidate" "$observed_epoch" "$source" "$token" >"$private_logs/$origin.pid.tmp.$$"
-      mv "$private_logs/$origin.pid.tmp.$$" "$private_logs/$origin.pid"
+# Serialize only publication commits, not identity queries or the potentially slow rename.
+# A .pid record is private staging until its .ready line commits the completed epoch.
+publication_lock() {
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    if mkdir "$private_logs/publication.lock" 2>/dev/null; then return 0; fi
+    sleep 0.1
+  done
+  return 1
+}
+first_published_source() {
+  local file epoch order best="" selected="" pid source start
+  for file in simctl launchctl; do
+    [ -s "$private_logs/$file.ready" ] || continue
+    read -r epoch order <"$private_logs/$file.ready" || continue
+    [[ "$order" =~ ^[0-9]+$ ]] || continue
+    if [ -z "$best" ] || [ "$order" -lt "$best" ]; then
+      read -r pid source start <"$private_logs/$file.pid" || continue
+      best=$order
+      selected=$source
     fi
-  elif [ "$status" -eq 1 ]; then
+  done
+  printf '%s\n' "$selected"
+}
+publication_failure() {
+  if [ "$1" -eq 1 ]; then
     : >"$private_logs/publication.exited"
   else
     : >"$private_logs/publication.start-missing"
     printf 'start-time unavailable at publication\n' >>"$out/launch-timeline.log"
   fi
+}
+publish_verified_pid() {
+  local origin=$1 candidate=$2 epoch source token identity status=0 selected order
+  identity=$(time_stage "$origin.pid-identity" process_identity "$candidate") || status=$?
+  if [ "$status" -ne 0 ]; then publication_failure "$status"; return 1; fi
+  read -r source token <<<"$identity"
+  [ "$SECONDS" -lt "$deadline" ] || return 1
+  printf '%s %s %s\n' "$candidate" "$source" "$token" >"$private_logs/$origin.pid.tmp.$$"
+  # This rename may stall: readers must never use its contents without a later .ready.
+  time_stage "$origin.publish-rename" mv "$private_logs/$origin.pid.tmp.$$" "$private_logs/$origin.pid" || return 1
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    time_stage "$origin.publish-lock" publication_lock || return 1
+    selected=$(first_published_source)
+    if [ -n "$selected" ] && [ "$selected" != "$source" ]; then
+      time_stage "$origin.publish-unlock" rmdir "$private_logs/publication.lock"
+      status=0
+      identity=$(time_stage "$origin.pid-identity-source" process_identity "$candidate" "$selected") || status=$?
+      if [ "$status" -ne 0 ]; then publication_failure "$status"; return 1; fi
+      read -r source token <<<"$identity"
+      printf '%s %s %s\n' "$candidate" "$source" "$token" >"$private_logs/$origin.pid"
+      continue
+    fi
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      time_stage "$origin.publish-unlock" rmdir "$private_logs/publication.lock"
+      return 1
+    fi
+    order=0
+    if [ -s "$private_logs/publication.order" ]; then read -r order <"$private_logs/publication.order"; fi
+    order=$((order + 1))
+    printf '%s\n' "$order" >"$private_logs/publication.order"
+    epoch=$(date -u +%s)
+    if [ "$SECONDS" -lt "$deadline" ]; then
+      printf '%s %s\n' "$epoch" "$order" >"$private_logs/$origin.ready"
+      time_stage "$origin.publish-unlock" rmdir "$private_logs/publication.lock"
+      return 0
+    fi
+    time_stage "$origin.publish-unlock" rmdir "$private_logs/publication.lock"
+    return 1
+  done
+  return 1
+}
+published_at() {
+  local epoch order
+  read -r epoch order <"$private_logs/$1.ready" || return 1
+  date -u -r "$epoch" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null ||
+    date -u -d "@$epoch" +%Y-%m-%dT%H:%M:%SZ
 }
 
 # Begin the app-process unified stream before simctl launch. It is stopped and sanitized before upload.
@@ -227,8 +287,8 @@ observe_simctl_pid() {
     if [ -n "$candidate" ]; then
       if [ "$SECONDS" -lt "$deadline" ] && [ ! -f "$private_logs/observer.stop" ]; then
         publish_verified_pid simctl "$candidate"
-        if [ -s "$private_logs/simctl.pid" ]; then
-          printf 'simctl launch pid %s observed %s\n' "$candidate" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$out/launch-timeline.log"
+        if [ -s "$private_logs/simctl.ready" ]; then
+          printf 'simctl launch pid %s observed %s\n' "$candidate" "$(published_at simctl)" >>"$out/launch-timeline.log"
         fi
         : >"$private_logs/observer.complete"
         return 0
@@ -245,19 +305,31 @@ watch_liveness() {
   local epoch last_epoch=$launch_epoch first_pid_epoch="" first_alive_epoch="" proof_gap_reported=0 interval_start gap
   local anchor_pid="" anchor_source="" anchor_start="" simctl_pid="" identity state status
   refresh_pid_publications() {
-    local file candidate_pid published_epoch candidate_source candidate_start
-    for file in simctl launchctl; do
-      [ -s "$private_logs/$file.pid" ] || continue
-      read -r candidate_pid published_epoch candidate_source candidate_start <"$private_logs/$file.pid"
-      [[ "$candidate_pid" =~ ^[0-9]+$ && "$published_epoch" =~ ^[0-9]+$ &&
-        "$candidate_source" =~ ^(kernel-us|ps-lstart-etime-coarse)$ &&
-        "$candidate_start" =~ ^[a-zA-Z0-9_.:]+$ ]] || return 1
-      if [ -z "$anchor_pid" ]; then
-        anchor_pid=$candidate_pid
-        anchor_source=$candidate_source
-        anchor_start=$candidate_start
+    local file candidate_pid published_epoch candidate_source candidate_start order first_file="" first_order=""
+    if [ -z "$anchor_pid" ]; then
+      # Both sources can finish before this process wakes; use commit order, not filename order.
+      for file in simctl launchctl; do
+        [ -s "$private_logs/$file.ready" ] || continue
+        read -r published_epoch order <"$private_logs/$file.ready" || continue
+        [[ "$published_epoch" =~ ^[0-9]+$ && "$order" =~ ^[0-9]+$ ]] || return 1
+        if [ -z "$first_order" ] || [ "$order" -lt "$first_order" ]; then
+          first_order=$order
+          first_file=$file
+        fi
+      done
+      if [ -n "$first_file" ]; then
+        read -r anchor_pid anchor_source anchor_start <"$private_logs/$first_file.pid" || return 1
         printf '%s %s %s\n' "$anchor_pid" "$anchor_source" "$anchor_start" >"$private_logs/identity.anchor"
-      elif [ "$candidate_pid" != "$anchor_pid" ] || [ "$candidate_source" != "$anchor_source" ] ||
+      fi
+    fi
+    for file in simctl launchctl; do
+      [ -s "$private_logs/$file.ready" ] || continue
+      read -r published_epoch order <"$private_logs/$file.ready" || continue
+      read -r candidate_pid candidate_source candidate_start <"$private_logs/$file.pid" || return 1
+      [[ "$candidate_pid" =~ ^[0-9]+$ && "$published_epoch" =~ ^[0-9]+$ &&
+        "$order" =~ ^[0-9]+$ && "$candidate_source" =~ ^(kernel-us|ps-lstart-etime-coarse)$ &&
+        "$candidate_start" =~ ^[a-zA-Z0-9_.:]+$ ]] || return 1
+      if [ "$candidate_pid" != "$anchor_pid" ] || [ "$candidate_source" != "$anchor_source" ] ||
            [ "$candidate_start" != "$anchor_start" ]; then
         printf '%s pid %s identity changed\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$anchor_pid" >>"$out/liveness.log"
         : >"$private_logs/watcher.identity-changed"
@@ -407,8 +479,8 @@ while [ "$SECONDS" -lt "$deadline" ]; do
     if [ "$SECONDS" -lt "$deadline" ]; then
       pid=$observed_pid
       publish_verified_pid launchctl "$pid"
-      if [ -s "$private_logs/launchctl.pid" ]; then
-        printf 'pid %s observed %s\n' "$pid" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$out/launch-timeline.log"
+      if [ -s "$private_logs/launchctl.ready" ]; then
+        printf 'pid %s observed %s\n' "$pid" "$(published_at launchctl)" >>"$out/launch-timeline.log"
         log "running as pid $pid"
       fi
     fi
@@ -446,8 +518,8 @@ clock_pid=""
 if [ "$process_exited" -eq 0 ] && { [ "$observer_failed" -ne 0 ] || [ ! -f "$private_logs/observer.complete" ]; }; then
   fail "simctl PID observer did not complete through the probe deadline"
 fi
-if [ -s "$private_logs/simctl.pid" ]; then
-  read -r simctl_pid simctl_observed_epoch <"$private_logs/simctl.pid"
+if [ -s "$private_logs/simctl.ready" ]; then
+  read -r simctl_pid simctl_source simctl_start <"$private_logs/simctl.pid"
 else
   printf 'simctl launch pid not reported\n' >>"$out/launch-timeline.log"
 fi

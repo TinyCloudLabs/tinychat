@@ -487,8 +487,11 @@ Xcode 26.6.
   and elapsed durations), `clock-diagnostic.log` (an independent bare-clock
   scheduling sample), and `summary.md`.
   The timeline records a simulator PID only when `simctl launch` reports one
-  before the probe deadline; otherwise it says `simctl launch pid not reported`.
-  The separate launchctl PID must also be observed before that same deadline.
+  and its identity-checked publication finishes before the probe deadline;
+  otherwise it says `simctl launch pid not reported`. The separate launchctl
+  PID has the same completed-publication deadline. A staged PID record is not
+  accepted until its completion marker records the actual publication epoch;
+  both publishers retain the earliest source even if kernel telemetry changes.
   PID parsing runs independently of the liveness sampler. Before the earliest
   verified in-window PID publication, gaps over five seconds are fixed
   `pre-PID observation gap` diagnostics. At publication, the watcher binds the

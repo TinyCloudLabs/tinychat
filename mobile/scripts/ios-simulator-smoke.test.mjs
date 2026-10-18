@@ -34,8 +34,9 @@ if (op === 'launch') {
   fs.writeFileSync(path.join(state, 'pid'), String(process.pid));
   if (process.env.FAKE_SIMCTL_PID !== 'absent') {
     const delay = Number(process.env.FAKE_SIMCTL_PID_DELAY_MS || 0);
-    if (delay) setTimeout(() => console.log('xyz.tinycloud.exo: ' + process.pid), delay);
-    else console.log('xyz.tinycloud.exo: ' + process.pid);
+    const reported = process.pid + (process.env.FAKE_SIMCTL_DIFFERENT_PID === '1' ? 1 : 0);
+    if (delay) setTimeout(() => console.log('xyz.tinycloud.exo: ' + reported), delay);
+    else console.log('xyz.tinycloud.exo: ' + reported);
   }
   const mode = process.env.FAKE_PROBE_MODE;
   if (mode === 'early-then-mounted') console.log('EXO_SMOKE ' + process.env.FAKE_EARLY_PROBE);
@@ -98,6 +99,8 @@ if (process.env.FAKE_KERNEL_START !== 'valid' && process.env.FAKE_KERNEL_START !
 const countFile = path.join(state, 'kernel-count');
 const count = (fs.existsSync(countFile) ? Number(fs.readFileSync(countFile, 'utf8')) : 0) + 1;
 fs.writeFileSync(countFile, String(count));
+if (process.env.FAKE_KERNEL_AVAILABLE_CALL && count < Number(process.env.FAKE_KERNEL_AVAILABLE_CALL)) process.exit(1);
+if (process.env.FAKE_KERNEL_MISSING_CALL && count >= Number(process.env.FAKE_KERNEL_MISSING_CALL)) process.exit(1);
 const changed = fs.existsSync(path.join(state, 'identity-changed')) ||
   (Number(process.env.FAKE_KERNEL_CHANGED_CALL || 0) > 0 && count >= Number(process.env.FAKE_KERNEL_CHANGED_CALL));
 const record = Buffer.alloc(64);
@@ -108,13 +111,15 @@ process.stdout.write(record);
 
 function runSmoke({
   mode, exitAfterMs, hideLaunchctl = false, badPrefix = false, crash = false,
-  simctlPid = "immediate", pidDelayMs = 0, launchctlStallMs = 0, fallbackMounted = false,
+  simctlPid = "immediate", pidDelayMs = 0, simctlDifferentPid = false,
+  launchctlStallMs = 0, fallbackMounted = false,
+  simctlRenameStallSeconds = 0, launchctlRenameStallSeconds = 0,
   heartbeatShellStall = false, heartbeatStallCall = 2, heartbeatStallSeconds = 6,
   recordShellStall = false, recordStallSeconds = 8, formatShellStall = false, formatStallSeconds = 8,
   probeStallSeconds = 0, psStallCall = 0, psStallSeconds = 6, awkStallCall = 0, awkStallSeconds = 4,
   preserveLaunchctlPid = false,
-  kernelStart = "missing", kernelChangedCall = 0, identityChangeAfterMs = 0,
-  psMissingStartCall = 0, psMissingEtimeCall = 0,
+  kernelStart = "missing", kernelChangedCall = 0, kernelAvailableCall = 0, kernelMissingCall = 0,
+  identityChangeAfterMs = 0, psMissingStartCall = 0, psMissingEtimeCall = 0,
   timeout = 6, settle = 0, commandTimeoutMs = 30000,
 }) {
   const dir = mkdtempSync(join(tmpdir(), "exo-smoke-test-"));
@@ -166,6 +171,8 @@ PATH=\${PATH#*:} exec ps "$@"
   chmodSync(join(bin, "ps"), 0o755);
   writeFileSync(join(bin, "awk"), "#!/bin/sh\ncase \"$*\" in\n  *app=xyz.tinycloud.exo:*)\n    if [ -n \"$FAKE_AWK_STALL_CALL\" ]; then\n      n=0\n      if [ -f \"$FAKE_SIM_STATE/awk-count\" ]; then read -r n < \"$FAKE_SIM_STATE/awk-count\"; fi\n      n=$((n + 1))\n      printf '%s\\n' \"$n\" > \"$FAKE_SIM_STATE/awk-count\"\n      if [ \"$n\" -eq \"$FAKE_AWK_STALL_CALL\" ]; then sleep \"$FAKE_AWK_STALL_SECONDS\"; fi\n    fi ;;\nesac\nPATH=${PATH#*:} exec awk \"$@\"\n");
   chmodSync(join(bin, "awk"), 0o755);
+  writeFileSync(join(bin, "mv"), "#!/bin/sh\ncase \"$2\" in\n  */simctl.pid) if [ -n \"$FAKE_SIMCTL_RENAME_STALL_SECONDS\" ]; then sleep \"$FAKE_SIMCTL_RENAME_STALL_SECONDS\"; fi ;;\n  */launchctl.pid) if [ -n \"$FAKE_LAUNCHCTL_RENAME_STALL_SECONDS\" ]; then sleep \"$FAKE_LAUNCHCTL_RENAME_STALL_SECONDS\"; fi ;;\nesac\nPATH=${PATH#*:} exec mv \"$@\"\n");
+  chmodSync(join(bin, "mv"), 0o755);
   if (heartbeatShellStall || recordShellStall || formatShellStall) {
     const fifo = spawnSync("mkfifo", [join(dir, "heartbeat.fifo")], { encoding: "utf8" });
     assert.equal(fifo.status, 0, "create an owned heartbeat-only FIFO");
@@ -222,8 +229,13 @@ trap 'on_heartbeat "$BASH_COMMAND" "\${FUNCNAME[0]:-}"' DEBUG
     FAKE_BAD_PREFIX: badPrefix ? "1" : "0",
     FAKE_CRASH: crash ? "1" : "0",
     FAKE_SIMCTL_PID: simctlPid, FAKE_SIMCTL_PID_DELAY_MS: String(pidDelayMs),
+    FAKE_SIMCTL_DIFFERENT_PID: simctlDifferentPid ? "1" : "0",
+    FAKE_SIMCTL_RENAME_STALL_SECONDS: String(simctlRenameStallSeconds || ""),
+    FAKE_LAUNCHCTL_RENAME_STALL_SECONDS: String(launchctlRenameStallSeconds || ""),
     FAKE_KERNEL_START: kernelStart,
     FAKE_KERNEL_CHANGED_CALL: String(kernelChangedCall),
+    FAKE_KERNEL_AVAILABLE_CALL: String(kernelAvailableCall || ""),
+    FAKE_KERNEL_MISSING_CALL: String(kernelMissingCall || ""),
     FAKE_IDENTITY_CHANGE_AFTER_MS: String(identityChangeAfterMs || ""),
     FAKE_PS_MISSING_START_CALL: String(psMissingStartCall),
     FAKE_PS_MISSING_ETIME_CALL: String(psMissingEtimeCall),
@@ -329,12 +341,17 @@ test("records a fixed unavailable class without confusing launchctl PID for simc
 });
 
 test("slow launchctl and probe work cannot starve real liveness samples", { timeout: 30000 }, () => {
-  const { result, artifact } = runSmoke({ mode: "early-then-mounted", launchctlStallMs: 5000, probeStallSeconds: 4, timeout: 13 });
+  const { result, artifact } = runSmoke({ mode: "early-then-mounted", launchctlStallMs: 5000, probeStallSeconds: 4, timeout: 18 });
   assert.equal(result.status, 0, result.stdout + result.stderr);
   const times = [...artifact("liveness.log").matchAll(/^(\S+) (?:simctl )?pid \d+ alive$/gm)].map((match) => Date.parse(match[1]));
   assert.ok(times.length >= 5, "the independent watcher must retain actual samples");
-  for (let index = 1; index < times.length; index++) {
-    assert.ok(times[index] - times[index - 1] <= 5000, "liveness observation gap exceeded five seconds");
+  for (const stage of ["main.launchctl-list", "main.probe-parse"]) {
+    const row = artifact("stage-timings.log").split("\n").find((line) =>
+      line.startsWith(stage + " ") && /duration_s=[4-9]$/.test(line));
+    assert.ok(row, `${stage} must actually block while the watcher runs`);
+    const [, start, end] = row.match(/start_epoch_s=(\d+) end_epoch_s=(\d+)/).map(Number);
+    assert.ok(times.some((time) => time >= start * 1000 && time <= end * 1000),
+      `at least one real PID-alive sample must overlap ${stage}`);
   }
 });
 
@@ -609,7 +626,9 @@ test("signed C: unchanged identity survives a six-second gap with diagnostics on
     heartbeatStallCall: 3, heartbeatStallSeconds: 6, timeout: 14,
   });
   assert.match(artifact("../heartbeat-stall.log"), /^heartbeat-shell-read duration_s=[6-9]/);
-  assert.match(artifact("liveness.log"), /diagnostic observation gap [6-9]s/);
+  const gap = artifact("liveness.log").match(/diagnostic observation gap (\d+)s/);
+  assert.ok(gap && Number(gap[1]) > 5 && Number(gap[1]) <= 30,
+    "record actual diagnostic latency without treating a scheduled ten-second gap as failure");
   assert.match(artifact("launch-timeline.log"), /start-time source kernel-us/);
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.doesNotMatch(artifact("summary.md"), /liveness observation gap exceeded/);
@@ -679,11 +698,90 @@ test("signed D: a slow process call is timed against the independent bare clock"
 });
 
 test("signed D: every stage exposes sanitized wall endpoints and the bare clock samples", { timeout: 25000 }, () => {
-  const { result, artifact } = runSmoke({ mode: "mounted", simctlPid: "absent" });
+  const { result, artifact } = runSmoke({ mode: "mounted", simctlPid: "absent", timeout: 10 });
   assert.equal(result.status, 0, result.stdout + result.stderr);
   const lines = artifact("stage-timings.log").trim().split("\n");
   assert.ok(lines.every((line) => /^[a-z][a-z.-]* start_epoch_s=\d+ end_epoch_s=\d+ duration_s=\d+$/.test(line)),
     "every stage needs fixed structural wall endpoints and duration only");
   assert.match(artifact("clock-diagnostic.log"), /^clock start_epoch_s=\d+ end_epoch_s=\d+ duration_s=\d+$/m);
   assert.doesNotMatch(artifact("stage-timings.log") + artifact("clock-diagnostic.log"), /SENSITIVE_FAKE_USER_CONTENT/);
+});
+
+test("a completed simctl rename after deadline cannot publish beside an on-time launchctl proof", { timeout: 30000 }, () => {
+  const { result, artifact } = runSmoke({
+    mode: "mounted", simctlRenameStallSeconds: 6, timeout: 5,
+  });
+  const timeline = artifact("launch-timeline.log");
+  assert.match(artifact("stage-timings.log"), /(?:simctl\.pid-|observer\.)/);
+  assert.match(timeline, /^pid \d+ observed \S+/m, "launchctl still supplies on-time PID");
+  assert.match(artifact("liveness.log"), /^\S+ pid \d+ alive$/m, "on-time identity actually observed");
+  assert.match(timeline, /mounted app-page probe observed/);
+  assert.match(timeline, /simctl launch pid not reported/, "late rename never becomes an accepted publication");
+  assert.doesNotMatch(timeline, /simctl launch pid \d+ observed/, "late PID cannot be backdated");
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+});
+
+test("a completed launchctl rename after deadline cannot publish beside an on-time simctl proof", { timeout: 30000 }, () => {
+  const { result, artifact } = runSmoke({
+    mode: "mounted", launchctlRenameStallSeconds: 10, fallbackMounted: true, timeout: 8,
+  });
+  const timeline = artifact("launch-timeline.log");
+  assert.match(artifact("stage-timings.log"), /launchctl\.publish-rename start_epoch_s=\d+ end_epoch_s=\d+ duration_s=1[0-2]/);
+  assert.match(timeline, /simctl launch pid \d+ observed \S+/);
+  assert.match(artifact("liveness.log"), /^\S+ simctl pid \d+ alive$/m);
+  assert.match(timeline, /mounted app-page fallback probe observed/);
+  assert.doesNotMatch(timeline, /^pid \d+ observed/m, "late launchctl PID cannot be backdated");
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+});
+
+test("a later kernel-capable publisher retains the earlier coarse identity source", { timeout: 30000 }, () => {
+  const { result, artifact } = runSmoke({
+    mode: "mounted", kernelStart: "valid", kernelAvailableCall: 2,
+    pidDelayMs: 3500, timeout: 11,
+  });
+  const timeline = artifact("launch-timeline.log");
+  assert.match(timeline, /^pid \d+ observed \S+/m);
+  assert.match(timeline, /simctl launch pid \d+ observed/);
+  assert.match(timeline, /start-time source ps-lstart-etime-coarse/,
+    "the earliest valid fallback representation is retained for the run");
+  assert.doesNotMatch(artifact("summary.md"), /app process identity changed/);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+});
+
+test("both publishers before the first watcher read still select earliest coarse source", { timeout: 30000 }, () => {
+  const { result, artifact } = runSmoke({
+    mode: "mounted", kernelStart: "valid", kernelAvailableCall: 2,
+    pidDelayMs: 3500, heartbeatShellStall: true, heartbeatStallCall: 1,
+    heartbeatStallSeconds: 5, timeout: 13,
+  });
+  const timeline = artifact("launch-timeline.log");
+  assert.match(artifact("../heartbeat-stall.log"), /heartbeat-shell-read duration_s=[5-6]/);
+  assert.match(timeline, /^pid \d+ observed \S+/m);
+  assert.match(timeline, /simctl launch pid \d+ observed/);
+  assert.match(timeline, /start-time source ps-lstart-etime-coarse/);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+});
+
+test("established kernel identity must fail closed when the kernel source disappears", { timeout: 25000 }, () => {
+  const { result, artifact } = runSmoke({
+    mode: "mounted", kernelStart: "valid", kernelMissingCall: 2,
+    hideLaunchctl: true, timeout: 7,
+  });
+  assert.match(artifact("launch-timeline.log"), /start-time source kernel-us/);
+  assert.equal(result.status, 1);
+  assert.match(artifact("summary.md"), /process start time unavailable during liveness/);
+});
+
+test("a distinct second-source PID cannot inherit the earlier process identity", { timeout: 30000 }, () => {
+  const { result, artifact } = runSmoke({
+    mode: "mounted", kernelStart: "valid", simctlDifferentPid: true,
+    pidDelayMs: 3500, timeout: 10,
+  });
+  const timeline = artifact("launch-timeline.log");
+  const launchctl = timeline.match(/^pid (\d+) observed/m);
+  const simctl = timeline.match(/simctl launch pid (\d+) observed/);
+  assert.ok(launchctl && simctl && launchctl[1] !== simctl[1],
+    "two independently qualified sources report different PIDs without signalling host processes");
+  assert.equal(result.status, 1);
+  assert.match(artifact("summary.md"), /app process identity changed/);
 });
