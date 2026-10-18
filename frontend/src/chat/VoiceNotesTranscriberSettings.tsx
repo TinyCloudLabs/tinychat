@@ -1,6 +1,6 @@
 import { readableError } from "@/lib/readableError";
-// Settings → Voice notes: the audio preference is available on every capture surface.
-// Native transcription controls remain available only when their engine is present.
+// Settings → Voice notes: when recordings stop by themselves and the audio preference are available on every capture
+// surface. Native transcription controls remain available only when their engine is present.
 import { useContext, useEffect, useState, useSyncExternalStore } from "react";
 
 import { CHECK_AGAIN, FINAL_COPY, privateNotOffered, TRANSCRIBER_NAME } from "@/capture/recorder/final/finalCopy";
@@ -16,11 +16,20 @@ import { isAppleSpeech, isOnDeviceReady, isOnDeviceStatusLoaded } from "@/lib/vo
 import { downloadOnDeviceModel, ensureOnDeviceModel, onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
 import { captureCapabilities } from "@/lib/voiceNotes/captureEngine";
 import { nativeVoiceNotesAvailable, type TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
-import { readDefaultTranscriber, readUploadAudioPreference, setDefaultTranscriber, setUploadAudioPreference, subscribeTranscriberPreference } from "@/lib/voiceNotes/transcriberPreference";
+import { readDefaultTranscriber, readStopAfterPreference, readUploadAudioPreference, setDefaultTranscriber, setStopAfterPreference, setUploadAudioPreference, subscribeTranscriberPreference, type StopAfter } from "@/lib/voiceNotes/transcriberPreference";
 
 type Transcription = ReturnType<typeof useRecorder>["transcription"];
 
 const UPLOAD_PAUSED = "Paused: storage full";
+
+/** "Off" keeps only the 3-hour limit every recorder enforces, so it says so. */
+const STOP_AFTER_OPTIONS: readonly { value: StopAfter; label: string }[] = [
+  { value: "15", label: "15 min" },
+  { value: "30", label: "30 min" },
+  { value: "60", label: "1 h" },
+  { value: "120", label: "2 h" },
+  { value: "off", label: "Off (3-hour limit)" },
+];
 
 /** The same three routes the recorder names; Private is offered only when the recorder would offer it. */
 export function transcriberOptions(signedIn: boolean, transcription: Transcription) {
@@ -84,6 +93,7 @@ export function useDefaultTranscriber() {
 export function VoiceNotesTranscriberSettings() {
   const platform = useContext(PlatformContext);
   const uploadAudio = useSyncExternalStore(subscribeTranscriberPreference, readUploadAudioPreference, readUploadAudioPreference);
+  const stopAfter = useSyncExternalStore(subscribeTranscriberPreference, readStopAfterPreference, readStopAfterPreference);
   const storageFull = useStorageReadOnly();
   const [uploadError, setUploadError] = useState<string | null>(null);
   const { transcription, signedIn } = useRecorder();
@@ -98,6 +108,15 @@ export function VoiceNotesTranscriberSettings() {
     if (platform === "web") void navigator.storage?.persist?.().catch(() => undefined);
   }, [platform]);
 
+  const stopAfterSetting = (
+    <div className="flex flex-col gap-2" data-testid="voice-notes-stop-after">
+      <div className="flex flex-col gap-1 text-sm">
+        <p>Stop recording after</p>
+        <p className="text-xs text-muted-foreground">New recordings stop by themselves after this long. Recordings never run longer than 3 hours.</p>
+      </div>
+      <SegmentedControl<StopAfter> aria-label="Stop recording after" value={stopAfter} onValueChange={setStopAfterPreference} options={STOP_AFTER_OPTIONS} />
+    </div>
+  );
   const uploadSetting = (
     <>
       <div className="flex items-start gap-3">
@@ -120,12 +139,13 @@ export function VoiceNotesTranscriberSettings() {
     </>
   );
 
-  if (!nativeVoiceNotesAvailable() || value === null) return <div className="flex flex-col gap-3">{uploadSetting}</div>;
+  if (!nativeVoiceNotesAvailable() || value === null) return <div className="flex flex-col gap-3">{stopAfterSetting}{uploadSetting}</div>;
 
   const { privateOffered, options } = transcriberOptions(signedIn, transcription);
 
   return (
     <div className="flex flex-col gap-3">
+      {stopAfterSetting}
       <p className="text-xs text-muted-foreground">New recordings are transcribed this way by default. Each recording can still choose a different route.</p>
       {uploadSetting}
       <SegmentedControl<TranscriberId> aria-label="Default transcriber" value={value} onValueChange={choose} options={options} />

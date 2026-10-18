@@ -2,7 +2,7 @@ import type {
   MicState,
   MicStateReason,
 } from "@/lib/voiceNotes/nativeVoiceNotes";
-import { formatDuration } from "../recorderCopy";
+import { clockTime, formatDuration } from "../recorderCopy";
 import type { RecorderState } from "../recorderReducer";
 import { FINAL_COPY } from "./finalCopy";
 import { deniedLine, revokedLine } from "./shell/micDeniedCopy";
@@ -25,6 +25,7 @@ export interface RecorderView {
   statusLine: string | null;
   timer: {
     text: string;
+    /** While recording: the wall-clock time the limit stops it ("Stops at 10:45"); paused time moves it later. */
     countdown?: { text: string; remainingMs: number; remainingText: string };
   };
   controls: {
@@ -36,7 +37,8 @@ export interface RecorderView {
     openSettings: boolean;
   };
   micDenied: boolean;
-  tapRingAction: "pause" | "resume" | null;
+  tapRingAction: "pause" | "resume" | "stop" | null;
+  doneAction?: "stop" | "discard";
   emphasis: "input" | "stop" | null;
 }
 
@@ -49,9 +51,9 @@ interface MicPresentation {
   openSettings?: boolean;
   stopEnabled?: boolean;
   emphasis?: RecorderView["emphasis"];
+  tapRingAction?: RecorderView["tapRingAction"];
+  doneAction?: RecorderView["doneAction"];
 }
-
-const WARNING_WINDOW_MS = 10 * 60 * 1000;
 
 function unreachable(value: never): never {
   throw new Error(`Unhandled recorder state: ${String(value)}`);
@@ -92,6 +94,7 @@ function writeFailedPresentation(): MicPresentation {
     emphasis: "stop",
   };
 }
+
 
 function silenceLine(input: RecorderViewInput): string | null {
   if (
@@ -175,6 +178,11 @@ function interruptedPresentation(
     case "write_failed":
     case "permission_revoked":
     case "unsafe_sessions_folder":
+    case "source_still_running":
+    case "source_unusable":
+    case "snapshot_unavailable":
+    case "snapshot_empty":
+    case "status_unknown":
     case "session_exists":
       return unexpectedCombination("interrupted", reason, isDevelopmentOrTest);
     default: {
@@ -212,6 +220,7 @@ function livePresentation(
 function needsUserPresentation(
   reason: MicStateReason,
   isDevelopmentOrTest: boolean,
+  device: RecorderViewInput["device"],
 ): MicPresentation {
   switch (reason) {
     case "resume_blocked":
@@ -256,6 +265,47 @@ function needsUserPresentation(
             ? FINAL_COPY.unsafeSessionsFolder
             : FINAL_COPY.sessionExists,
       };
+    case "writer_stalled":
+      return {
+        ...retryPresentation(FINAL_COPY.writerStalled(device === "mac" ? "Done" : "Stop")),
+        stopEnabled: true,
+        emphasis: "stop",
+      };
+    case "source_still_running":
+      return {
+        ...retryPresentation(FINAL_COPY.sourceStillRunning(device === "mac" ? "Done" : "Stop")),
+        stopEnabled: true,
+        emphasis: "stop",
+      };
+    case "source_unusable":
+      return {
+        ...retryPresentation(FINAL_COPY.sourceUnusable(device === "mac" ? "Done" : "Stop")),
+        stopEnabled: true,
+        emphasis: "stop",
+      };
+    case "snapshot_unavailable":
+      return {
+        ...retryPresentation(FINAL_COPY.snapshotUnavailable(device === "mac" ? "Done" : "Stop")),
+        ring: "still",
+        stopEnabled: true,
+        tapRingAction: "stop",
+        emphasis: "stop",
+      };
+    case "snapshot_empty":
+      return {
+        ...retryPresentation(FINAL_COPY.snapshotEmpty(device === "mac" ? "Done" : "Stop")),
+        ring: "still",
+        stopEnabled: true,
+        tapRingAction: "stop",
+        doneAction: "discard",
+        emphasis: "stop",
+      };
+    case "status_unknown":
+      return {
+        ...retryPresentation(FINAL_COPY.statusUnknown),
+        stopEnabled: true,
+        emphasis: "stop",
+      };
     case null:
     case "os_silenced":
     case "no_signal":
@@ -267,7 +317,6 @@ function needsUserPresentation(
     case "media_services_reset":
     case "read_error":
     case "app_suspended":
-    case "writer_stalled":
     case "pause_timeout":
     case "max_duration":
     case "disk_full":
@@ -344,6 +393,11 @@ function idlePresentation(
     case "mic_unavailable":
     case "pause_timeout":
     case "unsafe_sessions_folder":
+    case "source_still_running":
+    case "source_unusable":
+    case "snapshot_unavailable":
+    case "snapshot_empty":
+    case "status_unknown":
     case "session_exists":
       return unexpectedCombination("idle", reason, isDevelopmentOrTest);
     default: {
@@ -390,6 +444,11 @@ function micPresentation(
         case "disk_full":
         case "permission_revoked":
         case "unsafe_sessions_folder":
+        case "source_still_running":
+        case "source_unusable":
+        case "snapshot_unavailable":
+        case "snapshot_empty":
+        case "status_unknown":
         case "session_exists":
           return unexpectedCombination(
             "recording",
@@ -430,6 +489,11 @@ function micPresentation(
         case "write_failed":
         case "permission_revoked":
         case "unsafe_sessions_folder":
+        case "source_still_running":
+        case "source_unusable":
+        case "snapshot_unavailable":
+        case "snapshot_empty":
+        case "status_unknown":
         case "session_exists":
           return unexpectedCombination("silenced", reason, isDevelopmentOrTest);
         default: {
@@ -454,7 +518,7 @@ function micPresentation(
     case "interrupted":
       return interruptedPresentation(reason, isDevelopmentOrTest);
     case "needs_user":
-      return needsUserPresentation(reason, isDevelopmentOrTest);
+      return needsUserPresentation(reason, isDevelopmentOrTest, input.device);
     default:
       return unreachable(micState);
   }
@@ -537,11 +601,16 @@ export function selectRecorderView(
     openSettings: presentation.openSettings ?? permissionDenied,
   };
   const remainingMs = Math.max(0, state.maxDurationMs - input.elapsedMs);
-  const warningAtMs = Math.max(0, state.maxDurationMs - WARNING_WINDOW_MS);
+  // While the clock runs, the stop time comes from the native checkpoint alone, so the 500 ms tick never moves it;
+  // paused (or before a checkpoint) it is now plus what is left, and moves later as the pause goes on.
+  const stopAtMs =
+    state.mic.state !== "paused" && state.elapsedAt !== null
+      ? state.elapsedAt + Math.max(0, state.maxDurationMs - state.elapsedMs)
+      : input.nowMs + remainingMs;
   const countdown =
-    input.elapsedMs >= warningAtMs
+    state.phase === "recording"
       ? {
-          text: FINAL_COPY.stopAt(formatDuration(state.maxDurationMs)),
+          text: FINAL_COPY.stopAt(clockTime(stopAtMs)),
           remainingMs,
           remainingText: formatDuration(remainingMs),
         }
@@ -558,7 +627,8 @@ export function selectRecorderView(
     },
     controls,
     micDenied: permissionDenied,
-    tapRingAction: controls.resume ? "resume" : controls.pause ? "pause" : null,
+    tapRingAction: presentation.tapRingAction ?? (controls.resume ? "resume" : controls.pause ? "pause" : null),
+    doneAction: presentation.doneAction,
     emphasis: presentation.emphasis ?? null,
   };
 }

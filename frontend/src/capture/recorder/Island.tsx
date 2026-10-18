@@ -84,6 +84,9 @@ export function IslandView(props: { recorder: RecorderValue; onOpenNote?: (id: s
         className="tap-transparent flex min-h-11 min-w-0 flex-1 flex-wrap items-center gap-2.5 rounded-full pl-3 pr-2 text-left transition-opacity active:opacity-70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
       >
         {summary}
+        {state !== "live" && recorder.limitNotice && (
+          <span data-testid="island-limit" className="basis-full break-normal text-meta text-warning [overflow-wrap:break-word]">{recorder.limitNotice}</span>
+        )}
       </button>
       {state === "live" && (
         <Button

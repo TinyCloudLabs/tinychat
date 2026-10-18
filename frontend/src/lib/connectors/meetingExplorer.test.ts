@@ -2,6 +2,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { Database } from "bun:sqlite";
 import { describe, expect, it } from "bun:test";
+import { CONNECTOR_SCHEMA } from "@tinyboilerplate/core";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { PipelineTrackSummary } from "@/capture/pipeline/PipelineTrackSummary";
 import { buildNotePipelineInput, type NotePipelineFacts } from "../voiceNotes/useNotePipeline";
@@ -22,6 +23,7 @@ import {
   type MeetingAudioRead,
 } from "./meetingExplorer.js";
 import { notePipeline } from "../voiceNotes/notePipeline";
+import { TRANSCRIPT_TABLE_DDL, VOICE_NOTE_INDEX_DDL } from "../voiceNotes/voiceNoteRows";
 
 type SqlResult =
   | { ok: true; data: { rows: unknown[][] } }
@@ -208,9 +210,6 @@ describe("listMeetings", () => {
     expect(sqlCalls).toHaveLength(1);
     expect(sqlCalls[0].db).toBe(CONNECTORS_SQL_DB_NAME);
     expect(sqlCalls[0].params).toEqual(["otter", "granola"]);
-    expect(sqlCalls[0].sql).toContain("FROM connector_meeting");
-    expect(sqlCalls[0].sql).toContain("source IN (?, ?)");
-    expect(sqlCalls[0].sql).toContain("ORDER BY started_at DESC");
   });
 
   it("defaults to fireflies, google-meet, the transcriber, exo local AND exo voice notes", async () => {
@@ -321,7 +320,7 @@ describe("listMeetingsRead", () => {
       audio_kv_key: "voice/audio",
       audio_stored: 1,
     });
-    const { tcw, sqlCalls } = fakeTcw({
+    const { tcw } = fakeTcw({
       sql: { ok: true, data: { rows: [
         ["row-voice", "exo-voice-note", "rec-1", null, "2026-10-11T10:00:00.000Z", 42, projectedMetadata],
         ["row-meeting", "fireflies", "src-1", "Standup", "2026-10-10T10:00:00.000Z", 180, null],
@@ -352,11 +351,6 @@ describe("listMeetingsRead", () => {
     expect(read.meetings[1]?.metadata).toBeUndefined();
     expect(read.meetings[2]?.metadata).toBeNull();
     expect(read.meetings[3]?.metadata).toBeUndefined();
-    expect(sqlCalls.at(-1)?.sql).toContain("json_valid(COALESCE(metadata, '{}'))");
-    expect(sqlCalls.at(-1)?.sql).toContain("json_extract(metadata, '$.note_kv_key')");
-    expect(sqlCalls.at(-1)?.sql).toContain("json_extract(metadata, '$.audio_kv_key')");
-    expect(sqlCalls.at(-1)?.sql).toContain("json_extract(metadata, '$.audio.stored')");
-    expect(sqlCalls.at(-1)?.sql).not.toMatch(/SELECT[^\n]*,\s*metadata\s+FROM/s);
   });
   it("resolves legacy transcript evidence and commit outcomes in the real listing SQL without loading bodies", async () => {
     const { sqlite, tcw } = realListingSpace();
@@ -433,6 +427,122 @@ describe("listMeetingsRead", () => {
     expect(await listMeetingsRead(throwingTcw())).toEqual({ status: "failed" });
     expect(await listMeetingsRead(throwingTcw("sync"))).toEqual({ status: "failed" });
   });
+});
+
+/**
+ * The listing SQL as shipped before TC-1274: a correlated legacy-winner subquery per voice-note row.
+ * Frozen here so the set-based rewrite is held to identical rows, in the same order.
+ */
+const BASELINE_LIST_SQL = `SELECT id, source, source_id, title, started_at, duration_secs,
+              CASE WHEN source = 'exo-voice-note' THEN
+                CASE WHEN json_valid(COALESCE(metadata, '{}')) THEN json_object(
+                  'transcription_outcome', json_extract(metadata, '$.transcription_outcome'),
+                  'transcription_error_code', json_extract(metadata, '$.transcription_error_code'),
+                  'legacy_transcript_outcome',
+                    (SELECT CASE WHEN json_extract(g.metadata, '$.transcription_outcome') IN ('transcribed','no_speech')
+                                 THEN json_extract(g.metadata, '$.transcription_outcome') ELSE 'transcribed' END
+                     FROM connector_meeting g
+                     WHERE g.source_id = connector_meeting.source_id
+                       AND g.source IN ('exo-voice-note','exo-voice-note-dup')
+                       AND json_valid(g.metadata)
+                       AND (json_extract(g.metadata, '$.transcription_outcome') IN ('transcribed','no_speech')
+                         OR (json_extract(g.metadata, '$.transcription_outcome') IS NULL
+                           AND typeof(json_extract(g.metadata, '$.transcript_text')) = 'text'
+                           AND length(trim(json_extract(g.metadata, '$.transcript_text'))) > 0))
+                     ORDER BY COALESCE(json_extract(g.metadata, '$.transcribed_at'), '') DESC, g.id ASC LIMIT 1),
+                  'transcript_commit_outcome', __COMMIT_OUTCOME__,
+                  'note_kv_key',           json_extract(metadata, '$.note_kv_key'),
+                  'note_edited_at',        json_extract(metadata, '$.note_edited_at'),
+                  'audio_kv_key',          json_extract(metadata, '$.audio_kv_key'),
+                  'audio_stored',          json_extract(metadata, '$.audio.stored'),
+                  'audio_device_platform', json_extract(metadata, '$.audio.device.platform'))
+                ELSE 'invalid' END
+              END AS pipeline_metadata,
+              CASE WHEN source = 'exo-voice-note' AND json_valid(COALESCE(metadata, '{}'))
+                THEN json_extract(metadata, '$.capture.duration_ms') END AS capture_duration_ms
+       FROM connector_meeting
+       WHERE source IN (__PLACEHOLDERS__) ORDER BY started_at DESC`;
+
+const SEED_TRANSCRIBED_AT: readonly unknown[] = ["2026-10-01T00:00:00Z", "2026-10-02T00:00:00Z", "2026-10-02T00:00:00Z", 7, null, undefined, { at: 1 }];
+const SEED_STARTED_AT = ["2026-10-01T00:00:00Z", "2026-10-02T00:00:00Z", "2026-10-03T00:00:00Z", null] as const;
+
+/** Deterministic space covering every legacy-winner edge the baseline SQL distinguishes. */
+function seedLegacyWinnerSpace(sqlite: Database, seed: number): void {
+  let state = seed;
+  const pick = <T,>(values: readonly T[]): T => {
+    state = (state * 1103515245 + 12345) % 2147483648;
+    return values[Math.floor((state / 2147483648) * values.length)]!;
+  };
+  const insert = sqlite.query(`INSERT INTO connector_meeting (id, source, source_id, title, started_at, duration_secs,
+    participants, metadata, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, '[]', ?, 'c', 'u')`);
+  const legacyMetadata = (): string | null => pick<() => string | null>([
+    () => null,
+    () => "{not json",
+    () => "[1,2]",
+    () => JSON.stringify({ transcription_outcome: pick(["transcribed", "no_speech", "pending", "failed", null, undefined]),
+      transcript_text: pick(["words", "  ", "", 42, null, undefined]), transcribed_at: pick(SEED_TRANSCRIBED_AT),
+      transcription_error_code: pick(["service_busy", undefined]), note_kv_key: pick(["k", undefined]),
+      audio_kv_key: pick(["a", undefined]), audio: pick([{ stored: true, device: { platform: "web" } }, undefined]),
+      capture: pick([{ duration_ms: 61_000 }, { duration_ms: "x" }, undefined]) }),
+  ])();
+  for (let n = 0; n < 400; n++) {
+    const sourceId = `note-${n % 300}`; // some notes have only archived rows; some ids repeat across sources
+    if (n < 300) insert.run(`vn-${n}`, "exo-voice-note", sourceId, `Note ${n}`, pick(SEED_STARTED_AT), pick([61, null, "x"]), legacyMetadata());
+    for (let d = 0, dups = pick([0, 0, 1, 2, 3]); d < dups; d++) {
+      insert.run(`dup-${n}-${d}-${pick(["a", "b", "c"])}`, "exo-voice-note-dup", sourceId, null, pick(SEED_STARTED_AT), null, legacyMetadata());
+    }
+    if (n % 7 === 0) insert.run(`ff-${n}`, pick(["fireflies", "google-meet", "tinycloud-transcriber", "exo-local", "exo-upload"]),
+      pick([sourceId, `other-${n}`]), `Meeting ${n}`, pick(SEED_STARTED_AT), 1800, JSON.stringify({ transcript_text: "words" }));
+  }
+  const commit = sqlite.query(`INSERT OR IGNORE INTO voice_note_transcript (source_id, rev, hash, body_key, outcome, committed_at)
+    VALUES (?, 1, 'h', 'b', ?, 'c')`);
+  for (let n = 0; n < 300; n += 3) commit.run(`note-${n}`, pick(["transcribed", "no_speech"]));
+}
+
+describe("listMeetingsRead legacy-winner rewrite (TC-1274)", () => {
+  // The baseline runs on the schema spaces have today. One variant adds a (source, source_id)
+  // index afterwards, as a later provisioning step might: the Library order must not change.
+  for (const variant of [
+    { name: "app schema", addedIndexes: [], noCommitTable: false },
+    { name: "after a source index is added",
+      addedIndexes: ["CREATE INDEX idx_connector_meeting_source ON connector_meeting(source, source_id)"], noCommitTable: false },
+    { name: "no commit table", addedIndexes: [], noCommitTable: true },
+  ]) {
+    it(`returns the baseline rows in the baseline order (${variant.name})`, async () => {
+      for (const seed of [1, 2, 3, 4, 5]) {
+        const sqlite = new Database(":memory:");
+        for (const { sql } of CONNECTOR_SCHEMA) sqlite.exec(sql);
+        sqlite.exec(TRANSCRIPT_TABLE_DDL);
+        sqlite.exec(VOICE_NOTE_INDEX_DDL);
+        seedLegacyWinnerSpace(sqlite, seed);
+        if (variant.noCommitTable) sqlite.exec("DROP TABLE voice_note_transcript");
+        // Every source, Google Meet alone (gmeet diagnostics), and every source but voice notes.
+        const lists = [EXPLORER_MEETING_SOURCES, ["google-meet"], EXPLORER_MEETING_SOURCES.filter((source) => source !== "exo-voice-note")];
+        const baselines = lists.map((sources) => sqlite.query(BASELINE_LIST_SQL
+          .replace("__COMMIT_OUTCOME__", variant.noCommitTable ? "NULL"
+            : "(SELECT t.outcome FROM voice_note_transcript t WHERE t.source_id = connector_meeting.source_id LIMIT 1)")
+          .replace("__PLACEHOLDERS__", sources.map(() => "?").join(", ")))
+          .values(...(sources as never[])));
+        for (const ddl of variant.addedIndexes) sqlite.exec(ddl);
+        let listed: unknown[][] | null = null;
+        const tcw = { sql: { db: () => ({ async query(sql: string, params: unknown[] = []) {
+          const rows = sqlite.query(sql).values(...(params as never[])) as unknown[][];
+          if (!sql.includes("sqlite_schema")) listed = rows;
+          return { ok: true as const, data: { rows } };
+        } }) } } as unknown as TinyCloudWeb;
+        const [baseline] = baselines;
+        expect(baseline!.length).toBeGreaterThan(300);
+        expect(baseline!.some((row) => String(row[6]).includes("\"legacy_transcript_outcome\":\"no_speech\""))).toBe(true);
+        expect(baseline!.some((row) => String(row[6]).includes("\"legacy_transcript_outcome\":\"transcribed\""))).toBe(true);
+        expect(baselines[1]!.length).toBeGreaterThan(0);
+        for (const [index, sources] of lists.entries()) {
+          expect((await listMeetingsRead(tcw, sources)).status).toBe("ok");
+          expect(listed).toEqual(baselines[index]!);
+        }
+        sqlite.close();
+      }
+    });
+  }
 });
 
 describe("findMeetingId", () => {

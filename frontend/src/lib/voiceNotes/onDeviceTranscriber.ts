@@ -7,6 +7,7 @@
 // does for its own source.
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { deviceName } from "@/lib/platform";
+import type { FirefliesSentence } from "@/lib/connectors/firefliesClient";
 
 import { localTranscriptToSave, patchVoiceNoteTranscriptionFailure, saveVoiceNoteTranscript } from "./voiceNoteStore";
 import { VoiceNotes, type LocalTranscript, type NoteSttState, type VoiceNoteRecording } from "./nativeVoiceNotes";
@@ -325,7 +326,8 @@ async function syncOnce(tcw: TinyCloudWeb, key: string, id: string, expected: bo
       const current = await readTranscriptCommit(tcw, id, check);
       check();
       const expectedHash = await transcriptHash(prepared.sentences);
-      if (current?.rev === transcript.rev && current.hash === expectedHash)
+      if (current?.rev === transcript.rev && (current.hash === expectedHash
+        || current.hash === await transcriptHash(namedBeforeAnonymousSpeakers(transcript, prepared.sentences))))
         return await recordAndPublish(tcw, key, id, transcript, ctx);
       if (!current || current.rev !== transcript.rerunBase.rev || current.hash !== transcript.rerunBase.hash)
         throw new Error("The committed transcript changed before this rerun could sync. Try again.");
@@ -398,4 +400,11 @@ async function recordTranscriptSaved(tcw: TinyCloudWeb, id: string, transcript: 
       if ((err as { code?: string }).code !== "rev_conflict" || attempt > 0) throw err;
     }
   }
+}
+
+/** This rerun's body as builds before the anonymous "Speaker 1" (TC-1111) saved it: an unnamed segment was "You" in a
+ *  version 1 transcript and had no speaker otherwise. Such a build may have committed it before its ledger write was lost. */
+function namedBeforeAnonymousSpeakers(transcript: LocalTranscript, sentences: FirefliesSentence[]): FirefliesSentence[] {
+  return sentences.map((sentence, index) => transcript.segments[index]?.speaker == null
+    ? { ...sentence, speaker_name: transcript.version === 1 ? "You" : null } : sentence);
 }

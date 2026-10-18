@@ -278,6 +278,23 @@ describe.serial(`minimised recorder interactions (${engineName})`, () => {
     expect(box.y + box.height).toBeGreaterThan(RAIL.height - 40);
   });
 
+  test("stopped at the limit with the recorder minimised on the rail: the floating row names the limit until the note is let go", async () => {
+    const { page, calls, patch } = await open("recording", RAIL);
+    await shown(ribbon(page));
+    const notice = page.getByTestId("minimized-limit");
+    await patch({ phase: "saving", limitNotice: "Stopped at the 1-hour limit." });
+    await gone(ribbon(page));
+    await shown(notice);
+    expect(await notice.getByRole("status").textContent()).toBe("Stopped at the 1-hour limit.");
+    await patch({ phase: "idle", outcome: "saved", lastSaved: { id: "rec-1", durationMs: 3_600_000, at: Date.now() } });
+    await shown(notice);
+    await notice.getByRole("button", { name: "Open recorder" }).click();
+    await until("openSheet", async () => (await calls()).includes("openSheet"));
+    // A Stop of the user's own has no notice.
+    await patch({ sheetOpen: false, limitNotice: null });
+    await gone(notice);
+  });
+
   test("the sidebar dock: pause, stop and a click anywhere else restore the recorder", async () => {
     const { page, calls, patch } = await open("recording", DESKTOP);
     await shown(dock(page));

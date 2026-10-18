@@ -3,6 +3,7 @@ import type {
   MicState,
   MicStateReason,
 } from "@/lib/voiceNotes/nativeVoiceNotes";
+import { clockTime } from "../recorderCopy";
 import { initialRecorderState, type RecorderState } from "../recorderReducer";
 import { FINAL_COPY } from "./finalCopy";
 import { selectRecorderView, type RecorderViewInput } from "./recorderView";
@@ -198,7 +199,6 @@ describe("selectRecorderView: needs_user reason decisions", () => {
     "media_services_reset",
     "read_error",
     "app_suspended",
-    "writer_stalled",
     "pause_timeout",
     "max_duration",
     "disk_full",
@@ -207,6 +207,57 @@ describe("selectRecorderView: needs_user reason decisions", () => {
       `Unexpected recorder mic combination: needs_user/${String(reason)}`,
     );
   });
+
+  test.each([
+    ["writer_stalled", FINAL_COPY.writerStalled("Stop")],
+    ["source_still_running", FINAL_COPY.sourceStillRunning("Stop")],
+    ["source_unusable", FINAL_COPY.sourceUnusable("Stop")],
+  ] as const)("needs_user/%s offers retry and Stop", (reason, statusLine) => {
+    expect(recordingView("needs_user", reason)).toMatchObject({
+      ring: "still-resumable",
+      statusLine,
+      tapRingAction: "resume",
+      emphasis: "stop",
+      controls: { stop: true, resume: true },
+    });
+  });
+
+  test("desktop stalled recovery names the Done action", () => {
+    expect(recordingView("needs_user", "writer_stalled", { device: "mac" })).toMatchObject({
+      statusLine: FINAL_COPY.writerStalled("Done"),
+      emphasis: "stop",
+      controls: { stop: true, resume: true },
+    });
+  });
+
+  test("needs_user/status_unknown offers a retry", () => {
+    expect(recordingView("needs_user", "status_unknown")).toMatchObject({
+      ring: "still-resumable",
+      statusLine: FINAL_COPY.statusUnknown,
+      tapRingAction: "resume",
+      controls: { resume: true },
+    });
+  });
+  test.each([
+    ["snapshot_unavailable", FINAL_COPY.snapshotUnavailable("Done")],
+    ["snapshot_empty", FINAL_COPY.snapshotEmpty("Done")],
+  ] as const)("needs_user/%s offers snapshot retry and Stop without Resume", (reason, statusLine) => {
+    expect(recordingView("needs_user", reason, { device: "mac" })).toMatchObject({
+      ring: "still",
+      statusLine,
+      tapRingAction: "stop",
+      emphasis: "stop",
+      controls: { stop: true, resume: false },
+    });
+  });
+  test("snapshot_empty maps Done to a terminal discard", () => {
+    expect(recordingView("needs_user", "snapshot_empty", { device: "mac" })).toMatchObject({
+      statusLine: "Nothing was recorded. Try again to check, or use Done to close without saving.",
+      doneAction: "discard",
+      tapRingAction: "stop",
+    });
+  });
+
 });
 
 describe("selectRecorderView: idle reason decisions", () => {
@@ -493,61 +544,47 @@ describe("selectRecorderView: live, paused and transient phases", () => {
 });
 
 describe("selectRecorderView: elapsed time and limit", () => {
-  test("uses elapsedMs and the configured max duration, including the inclusive warning boundary", () => {
-    expect(
-      selectRecorderView(base, {
-        ...input,
-        elapsedMs: 2 * 60 * 60 * 1000 + 49 * 60 * 1000 + 59_000,
-      }).timer,
-    ).toEqual({ text: "2:49:59" });
-    expect(
-      selectRecorderView(base, {
-        ...input,
-        elapsedMs: 2 * 60 * 60 * 1000 + 50 * 60 * 1000,
-      }).timer,
-    ).toEqual({
-      text: "2:50:00",
-      countdown: {
-        text: "Stops at 3:00:00",
-        remainingMs: 10 * 60 * 1000,
-        remainingText: "10:00",
-      },
+  const NOW = new Date(2026, 9, 17, 9, 15, 0).getTime();
+
+  test("from the first second of a recording, the view says when the limit stops it", () => {
+    const oneHour = { ...base, maxDurationMs: 60 * 60 * 1000 };
+    expect(selectRecorderView(oneHour, { ...input, nowMs: NOW, elapsedMs: 0 }).timer).toEqual({
+      text: "0:00",
+      countdown: { text: `Stops at ${clockTime(NOW + 60 * 60 * 1000)}`, remainingMs: 60 * 60 * 1000, remainingText: "1:00:00" },
     });
-    expect(
-      selectRecorderView(
-        { ...base, audioMs: 10_799_000 },
-        {
-          ...input,
-          elapsedMs: 10_000,
-        },
-      ).timer,
-    ).toEqual({ text: "0:10" });
+    // Ten recorded minutes later the stop time is the same clock time.
+    expect(selectRecorderView(oneHour, { ...input, nowMs: NOW + 10 * 60_000, elapsedMs: 10 * 60_000 }).timer.countdown?.text)
+      .toBe(`Stops at ${clockTime(NOW + 60 * 60 * 1000)}`);
+    // Off: the 3-hour limit.
+    expect(selectRecorderView(base, { ...input, nowMs: NOW, elapsedMs: 0 }).timer.countdown?.text)
+      .toBe(`Stops at ${clockTime(NOW + 3 * 60 * 60 * 1000)}`);
   });
 
-  test("supports a non-default maxDurationMs and clamps remaining time", () => {
-    const oneHour = { ...base, maxDurationMs: 60 * 60 * 1000 };
-    expect(
-      selectRecorderView(oneHour, {
-        ...input,
-        elapsedMs: 50 * 60 * 1000,
-      }).timer,
-    ).toEqual({
-      text: "50:00",
-      countdown: {
-        text: "Stops at 1:00:00",
-        remainingMs: 10 * 60 * 1000,
-        remainingText: "10:00",
-      },
-    });
-    expect(
-      selectRecorderView(oneHour, {
-        ...input,
-        elapsedMs: 61 * 60 * 1000,
-      }).timer.countdown,
-    ).toEqual({
-      text: "Stops at 1:00:00",
-      remainingMs: 0,
-      remainingText: "0:00",
-    });
+  test("while recording, the stop time comes from the native checkpoint, so the view's tick never moves it", () => {
+    // The limit falls 300 ms before a minute boundary: a stop time from "now" plus the ticked remainder would flip a minute.
+    const at = NOW - 300;
+    const checkpointed = { ...base, maxDurationMs: 60 * 60 * 1000, elapsedMs: 10 * 60_000, elapsedAt: at };
+    const stop = `Stops at ${clockTime(at + 50 * 60_000)}`;
+    for (const lag of [0, 499]) {
+      expect(selectRecorderView(checkpointed, { ...input, nowMs: at + 30_000 + lag, elapsedMs: 10 * 60_000 + 30_000 }).timer.countdown?.text).toBe(stop);
+    }
+  });
+
+  test("time spent paused moves the stop time later", () => {
+    const paused = { ...base, maxDurationMs: 60 * 60 * 1000, mic: { state: "paused" as const, reason: "user" as const } };
+    expect(selectRecorderView(paused, { ...input, nowMs: NOW + 20 * 60_000, elapsedMs: 10 * 60_000 }).timer.countdown?.text)
+      .toBe(`Stops at ${clockTime(NOW + 70 * 60_000)}`);
+  });
+
+  test("only a live recording has a stop time", () => {
+    for (const phase of ["idle", "starting", "stopping", "saving", "discarding"] as const) {
+      expect(selectRecorderView({ ...base, phase }, { ...input, elapsedMs: 0 }).timer.countdown).toBeUndefined();
+    }
+  });
+
+  test("uses elapsedMs, never audioMs, and clamps remaining time", () => {
+    expect(selectRecorderView({ ...base, audioMs: 10_799_000 }, { ...input, elapsedMs: 10_000 }).timer.text).toBe("0:10");
+    expect(selectRecorderView({ ...base, maxDurationMs: 60 * 60 * 1000 }, { ...input, nowMs: NOW, elapsedMs: 61 * 60 * 1000 }).timer.countdown)
+      .toEqual({ text: `Stops at ${clockTime(NOW)}`, remainingMs: 0, remainingText: "0:00" });
   });
 });

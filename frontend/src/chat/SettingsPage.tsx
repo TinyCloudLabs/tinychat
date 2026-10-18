@@ -196,7 +196,7 @@ export function SettingsPage({
             />
           </SectionCard>
           <TranscriptionSettings tcw={tcw} />
-          {(nativeVoiceNotesAvailable() || appPlatform() === "web") && (
+          {(nativeVoiceNotesAvailable() || appPlatform() === "web" || appPlatform() === "tauri") && (
             <SectionCard icon={MicIcon} title="Voice notes">
               <VoiceNotesTranscriberSettings />
             </SectionCard>

@@ -204,6 +204,9 @@
   color: var(--dim);
   font-variant-numeric: tabular-nums;
 }
+.pr-countdown[data-placeholder="true"] {
+  visibility: hidden;
+}
 .pr-extra {
   margin-top: 8px;
   min-height: 40px;

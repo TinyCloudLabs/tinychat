@@ -291,7 +291,7 @@ export function DesktopRecorder({
             glyph={
               ringKind === "pause"
                 ? "pause"
-                : ringKind === "resume"
+                : ringKind === "resume" || ringKind === "stop"
                   ? "play"
                   : null
             }
@@ -441,9 +441,11 @@ export function DesktopRecorder({
                 data-emphasis={mustSave}
                 data-secondary={view.controls.openSettings}
                 disabled={!(view.controls.stop || stopUnknown)}
-                onClick={() =>
-                  onDone ? onDone(() => control("stop")) : control("stop")
-                }
+                onClick={() => {
+                  const action = view.doneAction ?? "stop";
+                  if (action === "discard" || !onDone) control(action);
+                  else onDone(() => control(action));
+                }}
               >
                 <CheckIcon />
                 Done

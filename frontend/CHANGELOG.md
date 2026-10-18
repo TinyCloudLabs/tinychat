@@ -1,5 +1,174 @@
 # @tinychat/frontend
 
+## 0.9.0
+
+### Minor Changes
+
+- 516ae0e: Settings → Voice notes has a "Stop recording after" choice (15 min to 2 h, default 1 h, or Off for the 3-hour limit); the recorder shows when it will stop, and the Mac app and browser can notify before and at an automatic stop.
+
+### Patch Changes
+
+- a4664bc: Exo desktop: Pause no longer shows "Paused" before it completes, and Stop settles instead of hanging while preserving the recorded audio. A Stop timeout does not confirm microphone release; the microphone may remain in use until Exo restarts (TC-1158).
+- 67588ff: An on-device transcript from a single-channel recording saves its speaker as "Speaker 1", an anonymous name for that note only, instead of "You" or no name, and lists it as the note's participant. Each engine segment stays its own timed record. Two-channel desktop labels and private-cloud speaker labels are unchanged. Notes transcribed by AssemblyAI say that its speaker labels apply within that note only, and the retrieval pack (`0.1.1-onboarding.23`) documents the same for agents.
+- 007062a: TinyCloud Transcriber sync shares each saved meeting it confirms with your other open tabs as it goes, so if the syncing tab closes partway through, the next one picks up where it stopped. A meeting whose saved copy can't be read is never treated as confirmed, and a meeting removed from your space is checked again if it comes back.
+- 66fa0fe: Put less load on your space's meetings database. The Library list finds each voice note's older transcript in one pass instead of rescanning every row for every note. The TinyCloud Transcriber sync no longer reads every saved transcript to compare versions, checks only meetings it hasn't already confirmed this session, runs once per interval across all open tabs instead of once per tab (a tab whose sync makes no progress for a minute hands over to the others), and waits while the device is offline. After a database save times out, retries wait until the space has finished the abandoned request instead of queueing behind it.
+
+## 0.9.0-beta.4
+
+### Minor Changes
+
+- 516ae0e: Settings → Voice notes has a "Stop recording after" choice (15 min to 2 h, default 1 h, or Off for the 3-hour limit); the recorder shows when it will stop, and the Mac app and browser can notify before and at an automatic stop.
+
+## 0.8.2-beta.3
+
+### Patch Changes
+
+- 67588ff: An on-device transcript from a single-channel recording saves its speaker as "Speaker 1", an anonymous name for that note only, instead of "You" or no name, and lists it as the note's participant. Each engine segment stays its own timed record. Two-channel desktop labels and private-cloud speaker labels are unchanged. Notes transcribed by AssemblyAI say that its speaker labels apply within that note only, and the retrieval pack (`0.1.1-onboarding.23`) documents the same for agents.
+
+## 0.8.2-beta.2
+
+### Patch Changes
+
+- 007062a: TinyCloud Transcriber sync shares each saved meeting it confirms with your other open tabs as it goes, so if the syncing tab closes partway through, the next one picks up where it stopped. A meeting whose saved copy can't be read is never treated as confirmed, and a meeting removed from your space is checked again if it comes back.
+
+## 0.8.2-beta.1
+
+### Patch Changes
+
+- 66fa0fe: Put less load on your space's meetings database. The Library list finds each voice note's older transcript in one pass instead of rescanning every row for every note. The TinyCloud Transcriber sync no longer reads every saved transcript to compare versions, checks only meetings it hasn't already confirmed this session, runs once per interval across all open tabs instead of once per tab (a tab whose sync makes no progress for a minute hands over to the others), and waits while the device is offline. After a database save times out, retries wait until the space has finished the abandoned request instead of queueing behind it.
+
+## 0.8.2-beta.0
+
+### Patch Changes
+
+- a4664bc: Exo desktop: Pause no longer shows "Paused" before it completes, and Stop settles instead of hanging while preserving the recorded audio. A Stop timeout does not confirm microphone release; the microphone may remain in use until Exo restarts (TC-1158).
+
+## 0.8.1
+
+### Patch Changes
+
+- a31b425: Fixes the Google Meet sync dialog getting stuck after the last meeting; it doesn't speed up slow storage responses, so a slow sync may now end with an error and a Retry button instead of hanging.
+
+  Web only; no desktop or mobile release.
+
+## 0.8.1-beta.0
+
+### Patch Changes
+
+- a31b425: Show a bounded Finishing phase while Google Meet sync reconciles Notes and saves its final state. Surface finalization failures with in-dialog Retry, preserving saved meetings and preventing late completion from an abandoned attempt. Refresh the connector row once for both owned and joined syncs.
+
+  This fixes the dialog getting stuck; it does not fix slow storage responses, so a slow sync may now end with an error and a Retry button instead of hanging.
+
+## 0.8.0
+
+### Minor Changes
+
+- 111162e: Keep agent access status visible in chat and refresh it after connectivity changes.
+- 27569de: Add an explicit, confirmed action to transcribe a committed voice note again while preserving and addressing its previous transcript revision.
+- 8e2a931: Handle a full TinyCloud storage across voice notes. While storage is full, audio uploads pause: the audio stays on this device and shows as waiting for space. Each upload pass tries audio at most once while storage refuses it, so a full store is not probed once per note. The storage message is the same everywhere it appears. Plan detail appears only on the Settings banner and dialog, and Upgrade shows only when the plan is positively Free and the paywall is on. "Manage storage" opens the storage page in the external browser. Settings shows the storage state, and the upload and transcriber switches show "Paused: storage full".
+
+  A transcript that storage refuses is handled by where it was transcribed:
+  - On this device, the transcript is held on the device and marked as kept until space is available. A held transcript is retried on foreground, and after a successful write to storage. A transcript that is still refused stays held. A successful write that lands while a recovery pass is already running doesn't trigger another pass; the next write or a foreground event (focus, visibility, app active) does.
+  - Private, a storage-full save fails the transcript with a non-retryable `storage_full` failure. It says the transcript wasn't saved and offers Manage storage, then Transcribe again. It says the recording is safe on this device only when the local audio is confirmed ready. Nothing retries it automatically.
+
+  Private and hosted transcript retention (keeping a refused transcript for a later save) is not part of this change.
+
+  A transcript save on this device that times out fails with its own "took too long" message and can be retried. It is a persisted failure, not a storage hold.
+
+- 97cd667: Sync voice-note text independently of audio uploads and publish each local transcript revision once.
+
+### Patch Changes
+
+- 2b6fa8f: Keep held voice-note transcripts in a durable per-account web store.
+- 187227d: Retry re-reads a missing committed transcript body.
+- 898976d: Verify Private voice-note choices are stored before transcription starts.
+- 58f12d7: Never evict local voice-note recordings during cache trim or Clear; clear downloaded playback copies instead.
+- fa85621: Fix the Private transcription length boundary. Eligibility compares the unrounded note length with PTX's limit from `/capabilities`: `accepted_max_duration_seconds` (PTX's inclusive ceiling on measured duration) when present, otherwise `max_duration_seconds` plus the optional `duration_grace_seconds`. The client keeps a 0.25 s margin below the ceiling. Client-built WAVs are rechecked against the greater of the precise saved duration and exact decoded payload duration, and the latest byte cap is checked against the actual payload. Legacy integer durations use a conservative +0.5 s estimate. No Private limit is hard-coded; without a complete duration and byte advertisement Private is not offered. The backend relays the optional duration fields when PTX sends them; a client-only deploy is safe. Clock-style media durations floor fractional seconds consistently for the total and current position, and a refused Private start returns its refusal to the caller.
+- f9ab032: Play voice notes from device audio whenever it exists and cache complete space downloads for later playback. Settings shows cache size and clears downloaded playback copies only; original recordings are never evicted in 0.8.0.
+- 6f5605d: Show stored transcript timings in note detail with seek, playback follow, timestamped copy, and Markdown export.
+- ec28052: Run recorder file operations and recovery encoding away from the macOS main thread, and stop native Whisper work when its deadline expires.
+- 4d8481e: Keep stopped Mac audio sources durable before showing the save receipt, then prepare playable audio in a recoverable background job with reader gates and a quit prompt.
+- 22eb64f: Keep iOS recorder Stop work off the main thread and limit Android local transcription progress updates.
+- 272e402: Use a deterministic clock when checking the Private transcription retry timer.
+- a436537: Hosted AssemblyAI transcription is not available in 0.8.0. This release includes dedupe and durable-spool groundwork only; it takes effect in a future, separately approved rollout.
+- eb70350: Show current voice-note work in a shared Activity panel and note status line, with accurate destinations and retry actions.
+- 7a024fb: Persist optional PTX quiet-mode VAD diagnostics with voice-note transcription outcomes.
+- 7cd762c: Notify once for each voice-note track failure away from its note, with actionable deep links and a lazy Mac notification permission request. Dedupe retries by stable failure class and retain consumed failures across restarts without a 500-item limit.
+- d4db840: Use the canonical storage-full wording: drop the "free up space or upgrade your plan" advice (deleting doesn't lower usage yet, and paid plans have nothing to upgrade to), and open Manage storage on the billing page's storage-full view.
+- b341b89: Preserve short, timed transcript segments from local and hosted engines, including channel identity and honest coarse timing.
+
+  The backend hosted transcript GET responses gain additive sentence word times and normalized channel fields. Until the backend is deployed, long Powerful sentences fall back to coarse word-boundary splits.
+
+  A 0.7.1 same-revision write can still overwrite a richer transcript body. The next new-client commit repairs it on resync; this is repair, not prevention.
+
+- f4a2184: TC-760: Preserve partial transcript gaps and provenance, and show missing and recovered speech in Library notes.
+- ada6d55: Keep calendar autojoin enabled when reconnecting the same Google account and explain why it is off in connector settings and Meeting sources.
+- 42fbd33: Keep a shared Google grant when another live calendar autojoin account still uses it, while removing the disconnecting account's local credentials. Explain that Google access can be revoked from another TinyChat account or Google settings.
+- d337c7d: Clarify private transcription progress by labeling completed parts.
+- 955addc: Publish retrieval records with engine, provider, and model provenance paired with the selected Exo voice-note transcript body.
+- 710b410: Recover opted-in saved Private voice notes after availability returns, rate-limit automatic availability checks, bound readiness to each note's save progress, and keep pending notes actionable while Private cloud is unavailable.
+- c745b4d: Keep completed Private transcription results until the shared transcript commit is verified; keep device-local save and admission failures out of shared failure metadata.
+- bd43e90: Keep completed Private voice-note jobs available until transcript saves commit, and recover pending notes after admission drains or retryable failures.
+- 9c9bba8: Prefetch the web sign-in manifest and single-use nonce while OpenKey connects, refreshing stale nonces before signing. Requires backend SIWE domain and URI validation (TC-1201) before preview or release; native sign-in is unchanged.
+- a3a1e77: Use note-specific queue state for upload waiting copy.
+- 7246c82: Update the Exo transcription-mode glyphs, Audio only card copy, and slider accessible name.
+- 9abab0d: Keep Mac microphone and system audio in separate note channels, transcribe them as Me and Them, and play notes in mono.
+- bfd8aae: Add a per-device audio upload setting that defaults off, keeps audio on the recording device while syncing the note and transcript, and offers an explicit upload action for individual notes. Remove the unused Mac auto-save setting.
+- dfadb5b: Show separate mic and system-audio levels on Mac recordings, with the recorder ring following Me and a thin Them trace during system capture.
+
+## 0.8.0-beta.4
+
+### Minor Changes
+
+- 111162e: Keep agent access status visible in chat and refresh it after connectivity changes.
+- 27569de: Add an explicit, confirmed action to transcribe a committed voice note again while preserving and addressing its previous transcript revision.
+- 8e2a931: Handle a full TinyCloud storage across voice notes. While storage is full, audio uploads pause: the audio stays on this device and shows as waiting for space. Each upload pass tries audio at most once while storage refuses it, so a full store is not probed once per note. The storage message is the same everywhere it appears. Plan detail appears only on the Settings banner and dialog, and Upgrade shows only when the plan is positively Free and the paywall is on. "Manage storage" opens the storage page in the external browser. Settings shows the storage state, and the upload and transcriber switches show "Paused: storage full".
+
+  A transcript that storage refuses is handled by where it was transcribed:
+  - On this device, the transcript is held on the device and marked as kept until space is available. A held transcript is retried on foreground, and after a successful write to storage. A transcript that is still refused stays held. A successful write that lands while a recovery pass is already running doesn't trigger another pass; the next write or a foreground event (focus, visibility, app active) does.
+  - Private, a storage-full save fails the transcript with a non-retryable `storage_full` failure. It says the transcript wasn't saved and offers Manage storage, then Transcribe again. It says the recording is safe on this device only when the local audio is confirmed ready. Nothing retries it automatically.
+
+  Private and hosted transcript retention (keeping a refused transcript for a later save) is not part of this change.
+
+  A transcript save on this device that times out fails with its own "took too long" message and can be retried. It is a persisted failure, not a storage hold.
+
+- 97cd667: Sync voice-note text independently of audio uploads and publish each local transcript revision once.
+
+### Patch Changes
+
+- 2b6fa8f: Keep held voice-note transcripts in a durable per-account web store.
+- 187227d: Retry re-reads a missing committed transcript body.
+- 898976d: Verify Private voice-note choices are stored before transcription starts.
+- 58f12d7: Never evict local voice-note recordings during cache trim or Clear; clear downloaded playback copies instead.
+- fa85621: Fix the Private transcription length boundary. Eligibility compares the unrounded note length with PTX's limit from `/capabilities`: `accepted_max_duration_seconds` (PTX's inclusive ceiling on measured duration) when present, otherwise `max_duration_seconds` plus the optional `duration_grace_seconds`. The client keeps a 0.25 s margin below the ceiling. Client-built WAVs are rechecked against the greater of the precise saved duration and exact decoded payload duration, and the latest byte cap is checked against the actual payload. Legacy integer durations use a conservative +0.5 s estimate. No Private limit is hard-coded; without a complete duration and byte advertisement Private is not offered. The backend relays the optional duration fields when PTX sends them; a client-only deploy is safe. Clock-style media durations floor fractional seconds consistently for the total and current position, and a refused Private start returns its refusal to the caller.
+- f9ab032: Play voice notes from device audio whenever it exists and cache complete space downloads for later playback. Settings shows cache size and clears downloaded playback copies only; original recordings are never evicted in 0.8.0.
+- 6f5605d: Show stored transcript timings in note detail with seek, playback follow, timestamped copy, and Markdown export.
+- ec28052: Run recorder file operations and recovery encoding away from the macOS main thread, and stop native Whisper work when its deadline expires.
+- 4d8481e: Keep stopped Mac audio sources durable before showing the save receipt, then prepare playable audio in a recoverable background job with reader gates and a quit prompt.
+- 22eb64f: Keep iOS recorder Stop work off the main thread and limit Android local transcription progress updates.
+- 272e402: Use a deterministic clock when checking the Private transcription retry timer.
+- a436537: Hosted AssemblyAI transcription is not available in 0.8.0. This release includes dedupe and durable-spool groundwork only; it takes effect in a future, separately approved rollout.
+- eb70350: Show current voice-note work in a shared Activity panel and note status line, with accurate destinations and retry actions.
+- 7cd762c: Notify once for each voice-note track failure away from its note, with actionable deep links and a lazy Mac notification permission request. Dedupe retries by stable failure class and retain consumed failures across restarts without a 500-item limit.
+- d4db840: Use the canonical storage-full wording: drop the "free up space or upgrade your plan" advice (deleting doesn't lower usage yet, and paid plans have nothing to upgrade to), and open Manage storage on the billing page's storage-full view.
+- b341b89: Preserve short, timed transcript segments from local and hosted engines, including channel identity and honest coarse timing.
+
+  The backend hosted transcript GET responses gain additive sentence word times and normalized channel fields. Until the backend is deployed, long Powerful sentences fall back to coarse word-boundary splits.
+
+  A 0.7.1 same-revision write can still overwrite a richer transcript body. The next new-client commit repairs it on resync; this is repair, not prevention.
+
+- d337c7d: Clarify private transcription progress by labeling completed parts.
+- 955addc: Publish retrieval records with engine, provider, and model provenance paired with the selected Exo voice-note transcript body.
+- 710b410: Recover opted-in saved Private voice notes after availability returns, rate-limit automatic availability checks, bound readiness to each note's save progress, and keep pending notes actionable while Private cloud is unavailable.
+- c745b4d: Keep completed Private transcription results until the shared transcript commit is verified; keep device-local save and admission failures out of shared failure metadata.
+- bd43e90: Keep completed Private voice-note jobs available until transcript saves commit, and recover pending notes after admission drains or retryable failures.
+- 9c9bba8: Prefetch the web sign-in manifest and single-use nonce while OpenKey connects, refreshing stale nonces before signing. Requires backend SIWE domain and URI validation (TC-1201) before preview or release; native sign-in is unchanged.
+- a3a1e77: Use note-specific queue state for upload waiting copy.
+- 7246c82: Update the Exo transcription-mode glyphs, Audio only card copy, and slider accessible name.
+- 9abab0d: Keep Mac microphone and system audio in separate note channels, transcribe them as Me and Them, and play notes in mono.
+- bfd8aae: Add a per-device audio upload setting that defaults off, keeps audio on the recording device while syncing the note and transcript, and offers an explicit upload action for individual notes. Remove the unused Mac auto-save setting.
+- dfadb5b: Show separate mic and system-audio levels on Mac recordings, with the recorder ring following Me and a thin Them trace during system capture.
+
 ## 0.7.4
 
 ### Patch Changes

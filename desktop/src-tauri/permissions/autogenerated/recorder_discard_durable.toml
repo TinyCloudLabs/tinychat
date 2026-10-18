@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-recorder-discard-durable"
+description = "Enables the recorder_discard_durable command without any pre-configured scope."
+commands.allow = ["recorder_discard_durable"]
+
+[[permission]]
+identifier = "deny-recorder-discard-durable"
+description = "Denies the recorder_discard_durable command without any pre-configured scope."
+commands.deny = ["recorder_discard_durable"]

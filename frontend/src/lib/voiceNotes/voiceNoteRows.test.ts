@@ -7,7 +7,7 @@ import { PendingVoiceNotesSaver, schedulePendingVoiceNotesRecovery } from "@/cha
 import { OnDeviceStt, __setOnDeviceSttForTests, type OnDeviceSttPlugin } from "./onDeviceStt";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { CONNECTORS_SQL_DB_NAME, ensureSchema, transcriptKvKey } from "../connectors/connectorStore";
-import { readVoiceNoteTranscriptState, saveVoiceNote } from "./voiceNoteStore";
+import { localTranscriptToSave, readVoiceNoteTranscriptState, saveVoiceNote } from "./voiceNoteStore";
 import { SQL_MEETING_METADATA_QUERY } from "../meetingChat/corpus";
 import { legacyTranscriptWinner, readTranscriptCommit, voiceNoteTranscriptLocator } from "./voiceNoteCommits";
 import { whisperLocalTranscript } from "./desktop/whisperTranscript";
@@ -18,7 +18,7 @@ import { MemoryRouter } from "react-router-dom";
 import { NoteDetailView } from "@/capture/library/NoteDetailView";
 import { hasPrivateCloudTimingProvenance, transcriptMarkdown, transcriptWithTimestamps } from "@/capture/library/transcriptSegments";
 import { createFakeVoiceNotes } from "./fakeVoiceNotes";
-import { __setVoiceNotesForTests, VoiceNotes } from "./nativeVoiceNotes";
+import { __setVoiceNotesForTests, VoiceNotes, type LocalTranscript } from "./nativeVoiceNotes";
 import { __resetOnDeviceTranscriberForTests, syncOnDeviceTranscript } from "./onDeviceTranscriber";
 import { createVoiceNotePipeline, VoiceNoteSaveDeferred, type VoiceNotePipeline } from "./voiceNotePipeline";
 import { handoffBeforeCredentialClear } from "./accountHandoff";
@@ -1336,6 +1336,65 @@ test("Mac Whisper transcript sync never sets PTX missing-stats metadata", async 
     expect((await resolveVoiceNoteRow(tcw, id))?.metadata).not.toHaveProperty("transcription_stats_missing");
   } finally { __setVoiceNotesForTests(original, { available: null }); }
 });
+test("a mono on-device transcript saves one timed record per engine segment, all as the note's anonymous Speaker 1", async () => {
+  const original = VoiceNotes;
+  const { tcw, sqlite, values } = space();
+  const id = "desktop-whisper-mono";
+  await ensureSchema(tcw);
+  await createVoiceNoteRow(tcw, { id, startedAt: 0, durationMs: 80_000, mimeType: "audio/mpeg",
+    sizeBytes: 4, silencedMs: 0, silencedEvents: 0, noSignalMs: 0 }, "Mono note");
+  const long = Array.from({ length: 12 }, (_, i) => `word${i}`).join(" ");
+  const chunk = (start: number, duration: number, transcript: string) => ({ type: "Results", is_final: true, start, duration,
+    channel_index: [0], channel: { alternatives: [{ transcript }] } });
+  const transcript = whisperLocalTranscript({ id, durationMs: 80_000 }, "QuantizedLargeTurbo", {
+    results: { channels: [{ alternatives: [{ transcript: `First point. ${long} Last point.` }] }] },
+  } as never, { chunks: [chunk(0, 12, "First point."), chunk(15, 40, long), chunk(70, 6, "Last point.")] as never });
+  __setVoiceNotesForTests({
+    listPending: async () => ({ recordings: [{ id, owner: tcw.did, rev: 1, ledger: { audio: { state: "saved" } } }] }),
+    getTranscript: async () => ({ transcript }),
+    updateLedger: async () => ({}),
+  } as unknown as typeof VoiceNotes, { available: true });
+  try {
+    await syncOnDeviceTranscript(tcw, { id, owner: tcw.did, ledger: { audio: { state: "saved" } } });
+    const commit = await readTranscriptCommit(tcw, id);
+    const record = (start_time: number, end_time: number, timing: string) => ({ start_time, end_time, speaker_name: "Speaker 1", timing });
+    expect(JSON.parse(values.get(commit!.bodyKey)!)).toMatchObject([
+      record(0, 12, "engine"), record(15, 35, "coarse"), record(35, 55, "coarse"), record(70, 76, "engine"),
+    ]);
+    const participants = { participants: JSON.stringify([{ name: "Speaker 1", email: null }]) };
+    expect(sqlite.query("SELECT participants FROM voice_note_transcript WHERE source_id = ?").get(id)).toEqual(participants);
+    expect(sqlite.query("SELECT participants FROM connector_meeting WHERE source_id = ?").get(id)).toEqual(participants);
+  } finally { __setVoiceNotesForTests(original, { available: null }); }
+});
+test("a rerun an older build committed with no speaker name is recorded as synced, not reported as a changed transcript", async () => {
+  const original = VoiceNotes;
+  const { tcw } = space();
+  const id = "rerun-before-upgrade";
+  await ensureSchema(tcw);
+  await createVoiceNoteRow(tcw, { id, startedAt: 0, durationMs: 20_000, mimeType: "audio/mp4",
+    sizeBytes: 4, silencedMs: 0, silencedEvents: 0, noSignalMs: 0 }, "Rerun note");
+  const base = await commitVoiceNoteTranscript(tcw, id, { rev: 1, outcome: "transcribed", text: "first", sentences: sentence("first") });
+  const rerun: LocalTranscript = { version: 2, noteId: id, transcriber: "on-device", rev: 2, engine: "parakeet-tdt-0.6b-v3",
+    model: null, language: "en", outcome: "transcribed", diarized: false, createdAt: "2026-10-17T00:00:00Z",
+    rerunBase: { rev: base.rev, hash: base.hash }, segments: [
+      { start: 0, end: 9_000, text: "Again.", speaker: null, timing: "engine" },
+      { start: 10_000, end: 18_000, text: "Twice.", speaker: null, timing: "engine" }] };
+  // The older build's commit landed, then its ledger write was lost.
+  const unnamed = localTranscriptToSave(rerun).sentences.map((s) => ({ ...s, speaker_name: null }));
+  const older = await commitVoiceNoteTranscript(tcw, id, { rev: 2, outcome: "transcribed", text: "Again.\nTwice.", sentences: unnamed });
+  const ledgerWrites: unknown[] = [];
+  const ledger = { audio: { state: "saved" }, transcriptSync: { state: "pending", rev: 1, at: null }, transcript: { outcome: "transcribed" } };
+  __setVoiceNotesForTests({
+    listPending: async () => ({ recordings: [{ id, owner: tcw.did, rev: 3, ledger }] }),
+    getTranscript: async () => ({ transcript: rerun }),
+    updateLedger: async (args: unknown) => { ledgerWrites.push(args); return {}; },
+  } as unknown as typeof VoiceNotes, { available: true });
+  try {
+    await syncOnDeviceTranscript(tcw, { id, owner: tcw.did, ledger: ledger as never });
+    expect(ledgerWrites).toMatchObject([{ id, patch: { transcriptSync: { state: "saved", rev: 2 } } }]);
+    expect((await readTranscriptCommit(tcw, id))?.hash).toBe(older.hash);
+  } finally { __setVoiceNotesForTests(original, { available: null }); }
+});
 test("on-device no_speech transcript sync never sets PTX missing-stats metadata", async () => {
   const original = VoiceNotes;
   const { tcw } = space();
@@ -1855,6 +1914,160 @@ test("a lane timeout is retrying before its final failed attempt", async () => {
     for (let turn = 0; turn < 150 && pendingStore.snapshot().notes?.find((note) => note.id === started.id)?.failed?.kind !== "timeout"; turn++)
       await Bun.sleep(1);
     expect(pendingStore.snapshot().notes?.find((note) => note.id === started.id)?.failed?.kind).toBe("timeout");
+  } finally {
+    setVoiceNoteSaveDeadlineForTests(null);
+    __setVoiceNotesForTests(original, { available: null });
+  }
+});
+
+/**
+ * Two recorded notes whose saves stall until `unstick()`: either the audio row patch
+ * (connectors SQL) or the audio part puts (KV) never answer, the way the node keeps an
+ * aborted call queued. `SELECT 1` drain probes are counted and held once `holdProbes()`
+ * is called: earlier cases may have abandoned SQL calls too (the count is module-wide).
+ */
+async function stalledSaves(stall: "sql" | "kv") {
+  const { tcw } = space();
+  const fake = createFakeVoiceNotes();
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  await ensureVoiceNoteIdentity(tcw);
+  await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1, transcriber: "off",
+    identifySpeakers: false, uploadAudio: true });
+  const notes = [await fake.plugin.start(), await fake.plugin.stop(), await fake.plugin.start(), await fake.plugin.stop()]
+    .filter((_, index) => index % 2 === 0);
+  pendingStore.setAccount(tcw.did);
+  await pendingStore.refresh();
+  let stuck = true;
+  const attempts = new Map<string, number>();
+  const hang = (signal?: AbortSignal) => new Promise<never>((_resolve, reject) =>
+    signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
+  const put = tcw.kv.put.bind(tcw.kv);
+  tcw.kv.put = ((key, value, options) => {
+    const note = stall === "kv" && notes.find((recording) => key.includes(recording.id) && key.includes("/p/"));
+    if (!note) return put(key, value, options);
+    attempts.set(note.id, (attempts.get(note.id) ?? 0) + 1);
+    return stuck ? hang(options?.signal) : put(key, value, options);
+  }) as typeof tcw.kv.put;
+  let holding = false;
+  const probes: Array<{ answer: () => void; signal?: AbortSignal }> = [];
+  const db = tcw.sql.db.bind(tcw.sql);
+  tcw.sql.db = ((name: string) => {
+    const handle = db(name);
+    return { ...handle,
+      query: async (statement: string, params?: never[], options?: { signal?: AbortSignal }) => {
+        if (statement !== "SELECT 1" || !holding) return handle.query(statement, params);
+        // A held probe ignores its abort signal, like a transport that never settles.
+        await new Promise<void>((resolve) => { probes.push({ answer: resolve, signal: options?.signal }); });
+        return handle.query(statement, params);
+      },
+      execute: (statement: string, params: never[] = [], options?: { signal?: AbortSignal }) => {
+        const note = stall === "sql" && String(params[0]).includes("audio_kv_key")
+          && notes.find((recording) => params.includes(`vn-${recording.id}` as never));
+        if (!note) return handle.execute(statement, params);
+        attempts.set(note.id, (attempts.get(note.id) ?? 0) + 1);
+        return stuck ? hang(options?.signal) : handle.execute(statement, params);
+      } };
+  }) as typeof db;
+  return { tcw, notes, attempts, probes, unstick: () => { stuck = false; }, holdProbes: () => { holding = true; },
+    retriedAll: (since: Map<string, number>) => notes.every((note) => (attempts.get(note.id) ?? 0) > (since.get(note.id) ?? 0)) };
+}
+
+test("timed-out SQL saves retry only after one shared probe proves the abandoned calls finished (TC-1274)", async () => {
+  const original = VoiceNotes;
+  try {
+    const s = await stalledSaves("sql");
+    setVoiceNoteSaveDeadlineForTests(10);
+    const pipeline = createVoiceNotePipeline(s.tcw, { retryDelaysMs: [], saveRetryDelaysMs: [20] });
+    await pipeline.reconcileAll({ did: s.tcw.did, spaceId: s.tcw.spaceId, generation: currentAccountGeneration() });
+    s.holdProbes();
+    const afterTimeouts = new Map(s.attempts);
+    expect(s.notes.every((note) => (afterTimeouts.get(note.id) ?? 0) > 0)).toBe(true);
+    // Real time: the retry ladder and lane deadlines are module-internal setTimeouts, and the
+    // waiting retries expose no signal but the probe they share (this file's convention).
+    await Bun.sleep(80); // both 20 ms retry timers have fired
+    expect(s.probes).toHaveLength(1);
+    expect(s.attempts).toEqual(afterTimeouts);
+    s.unstick();
+    s.probes[0]!.answer();
+    for (let turn = 0; turn < 200 && !s.retriedAll(afterTimeouts); turn++) await Bun.sleep(1);
+    expect(s.retriedAll(afterTimeouts)).toBe(true);
+    expect(s.probes).toHaveLength(1);
+  } finally {
+    setVoiceNoteSaveDeadlineForTests(null);
+    __setVoiceNotesForTests(original, { available: null });
+  }
+});
+
+test("KV-only timeouts retry without an SQL drain probe: the node orders KV separately", async () => {
+  const original = VoiceNotes;
+  try {
+    const s = await stalledSaves("kv");
+    setVoiceNoteSaveDeadlineForTests(10);
+    const pipeline = createVoiceNotePipeline(s.tcw, { retryDelaysMs: [], saveRetryDelaysMs: [20] });
+    await pipeline.reconcileAll({ did: s.tcw.did, spaceId: s.tcw.spaceId, generation: currentAccountGeneration() });
+    s.holdProbes();
+    const afterTimeouts = new Map(s.attempts);
+    s.unstick();
+    for (let turn = 0; turn < 200 && !s.retriedAll(afterTimeouts); turn++) await Bun.sleep(1);
+    expect(s.retriedAll(afterTimeouts)).toBe(true);
+    expect(s.probes).toHaveLength(0);
+  } finally {
+    setVoiceNoteSaveDeadlineForTests(null);
+    __setVoiceNotesForTests(original, { available: null });
+  }
+});
+
+test("a drain probe that never answers times out into a fresh probe", async () => {
+  const original = VoiceNotes;
+  try {
+    const s = await stalledSaves("sql");
+    setVoiceNoteSaveDeadlineForTests(10);
+    const ctx = { did: s.tcw.did, spaceId: s.tcw.spaceId, generation: currentAccountGeneration() };
+    const pipeline = createVoiceNotePipeline(s.tcw, { retryDelaysMs: [], saveRetryDelaysMs: [20],
+      drainProbeTimeoutMs: 15, drainProbeBackoffMs: 5 });
+    await pipeline.reconcileAll(ctx);
+    s.holdProbes();
+    const afterTimeouts = new Map(s.attempts);
+    // The first probe hangs; its timeout counts as "still busy", and after the backoff the
+    // waiting retries send a fresh probe instead of waiting on the hung one forever.
+    for (let turn = 0; turn < 300 && s.probes.length < 2; turn++) await Bun.sleep(1);
+    expect(s.probes.length).toBeGreaterThanOrEqual(2);
+    expect(s.probes[0]!.signal?.aborted).toBe(true);
+    expect(s.attempts).toEqual(afterTimeouts);
+    s.unstick();
+    s.probes.at(-1)!.answer();
+    for (let turn = 0; turn < 300 && !s.retriedAll(afterTimeouts); turn++) await Bun.sleep(1);
+    expect(s.retriedAll(afterTimeouts)).toBe(true);
+  } finally {
+    setVoiceNoteSaveDeadlineForTests(null);
+    __setVoiceNotesForTests(original, { available: null });
+  }
+});
+
+test("cancelAll drops a hung drain probe: after resume() the next pass sends a fresh one", async () => {
+  const original = VoiceNotes;
+  try {
+    const s = await stalledSaves("sql");
+    setVoiceNoteSaveDeadlineForTests(10);
+    const ctx = () => ({ did: s.tcw.did, spaceId: s.tcw.spaceId, generation: currentAccountGeneration() });
+    // The probe timeout outlasts the test, so only cancelAll can stop the waiters reusing it.
+    const pipeline = createVoiceNotePipeline(s.tcw, { retryDelaysMs: [], saveRetryDelaysMs: [20],
+      drainProbeTimeoutMs: 60_000 });
+    await pipeline.reconcileAll(ctx());
+    s.holdProbes();
+    const afterTimeouts = new Map(s.attempts);
+    for (let turn = 0; turn < 300 && s.probes.length < 1; turn++) await Bun.sleep(1);
+    expect(s.probes).toHaveLength(1);
+    pipeline.cancelAll();
+    pipeline.resume();
+    s.unstick();
+    // The user's Try again; the cancelled retries settled their upload tickets, so it saves both.
+    const reconciling = pipeline.reconcileAll(ctx(), "manual");
+    for (let turn = 0; turn < 300 && s.probes.length < 2; turn++) await Bun.sleep(1);
+    expect(s.probes).toHaveLength(2);
+    s.probes[1]!.answer();
+    await reconciling;
+    expect(s.retriedAll(afterTimeouts)).toBe(true);
   } finally {
     setVoiceNoteSaveDeadlineForTests(null);
     __setVoiceNotesForTests(original, { available: null });
