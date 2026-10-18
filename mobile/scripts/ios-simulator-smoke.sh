@@ -30,6 +30,8 @@ esac
 bundle_id=xyz.tinycloud.exo
 timeout_s=${SMOKE_TIMEOUT:-120}
 settle_s=${SMOKE_SETTLE:-10}
+# Post-publication observation gap that fails the run; the 30 s default is the documented contract.
+gap_fail_s=${SMOKE_GAP_FAIL_S:-30}
 capture_smoke=${EXO_CAPTURE_SMOKE:-1}
 location_smoke=${EXO_LOCATION_SMOKE:-1}
 
@@ -102,14 +104,31 @@ stream_pid=""
 watcher_pid=""
 observer_pid=""
 clock_pid=""
+launcher=""
+app_launched=0
+# Job control gives every background job its own process group, so stopping a job also stops its sleep, ps and
+# simctl children instead of leaving them writing into a removed directory.
+set -m
+stop_job() {
+  [ -n "$1" ] || return 0
+  kill -TERM -- "-$1" 2>/dev/null || kill -TERM "$1" 2>/dev/null || true
+  wait "$1" 2>/dev/null || true
+}
 cleanup_smoke() {
-  if [ -n "$watcher_pid" ]; then kill "$watcher_pid" 2>/dev/null || true; wait "$watcher_pid" 2>/dev/null || true; fi
-  if [ -n "$stream_pid" ]; then kill "$stream_pid" 2>/dev/null || true; wait "$stream_pid" 2>/dev/null || true; fi
-  if [ -n "$observer_pid" ]; then kill "$observer_pid" 2>/dev/null || true; wait "$observer_pid" 2>/dev/null || true; fi
-  if [ -n "$clock_pid" ]; then kill "$clock_pid" 2>/dev/null || true; wait "$clock_pid" 2>/dev/null || true; fi
+  trap - INT TERM EXIT
+  stop_job "$watcher_pid"
+  stop_job "$observer_pid"
+  stop_job "$clock_pid"
+  if [ "$app_launched" -eq 1 ]; then xcrun simctl terminate "$udid" "$bundle_id" >/dev/null 2>&1 || true; fi
+  stop_job "$launcher"
+  stop_job "$stream_pid"
+  # Workers are gone, so a lock they held can no longer be released by them.
+  rmdir "$private_logs/publication.lock" 2>/dev/null || true
   rm -rf "$private_logs"
 }
 trap cleanup_smoke EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 safe_log_lines() {
   awk '{
     time = substr($0, 1, 19)
@@ -139,13 +158,16 @@ app_pid_alive() {
   state=$(ps -p "$1" -o stat= 2>/dev/null) || return 1
   [ -n "$state" ] && [[ "$state" != *Z* ]]
 }
-# Darwin's binary kinfo_proc begins with kp_proc.p_starttime (timeval: seconds, microseconds).
+# Darwin's binary kinfo_proc begins with extern_proc.p_starttime, a 64-bit-ABI timeval: tv_sec is 8 bytes and
+# tv_usec is a 32-bit suseconds_t followed by 4 padding bytes (the padding is not guaranteed to be zero).
+# Read exactly 12 bytes as three little-endian (x86_64 and arm64) 32-bit words: sec_lo sec_hi usec.
 # Never place the binary record in a shell variable or upload it.
 kernel_start_time() {
-  local raw seconds micros extra
-  raw=$(sysctl -b "kern.proc.pid.$1" 2>/dev/null | od -An -tu8 -N16 -v) || return 1
-  read -r seconds micros extra <<<"$raw"
-  [[ "$seconds" =~ ^[0-9]+$ && "$micros" =~ ^[0-9]+$ && -z "$extra" ]] || return 1
+  local raw sec_lo sec_hi micros extra seconds
+  raw=$(sysctl -b "kern.proc.pid.$1" 2>/dev/null | od -An -tu4 -N12 -v) || return 1
+  read -r sec_lo sec_hi micros extra <<<"$raw"
+  [[ "$sec_lo" =~ ^[0-9]+$ && "$sec_hi" =~ ^[0-9]+$ && "$micros" =~ ^[0-9]+$ && -z "$extra" ]] || return 1
+  seconds=$((sec_hi * 4294967296 + sec_lo))
   [ "$seconds" -ge 946684800 ] && [ "$seconds" -le 4102444800 ] && [ "$micros" -lt 1000000 ] || return 1
   printf '%s.%06d\n' "$seconds" "$micros"
 }
@@ -236,7 +258,12 @@ publish_verified_pid() {
     printf '%s\n' "$order" >"$private_logs/publication.order"
     epoch=$(date -u +%s)
     if [ "$SECONDS" -lt "$deadline" ]; then
-      printf '%s %s\n' "$epoch" "$order" >"$private_logs/$origin.ready"
+      # Readers take no lock: a .ready file must never be visible until it is complete.
+      if ! { printf '%s %s\n' "$epoch" "$order" >"$private_logs/$origin.ready.tmp.$$" &&
+             mv "$private_logs/$origin.ready.tmp.$$" "$private_logs/$origin.ready"; }; then
+        time_stage "$origin.publish-unlock" rmdir "$private_logs/publication.lock"
+        return 1
+      fi
       time_stage "$origin.publish-unlock" rmdir "$private_logs/publication.lock"
       return 0
     fi
@@ -273,6 +300,7 @@ log "launching $bundle_id at $launch_at"
 SIMCTL_CHILD_EXO_LOCATION_SMOKE="$location_smoke" SIMCTL_CHILD_EXO_CAPTURE_SMOKE="$capture_smoke" \
   xcrun simctl launch --console-pty "$udid" "$bundle_id" >"$private_logs/console.log" 2>&1 &
 launcher=$!
+app_launched=1
 
 # App PID discovery parses private console output in a separate process: it cannot delay the heartbeat.
 # Only a bundle-qualified numeric simctl result may be published as an app PID.
@@ -350,7 +378,7 @@ watch_liveness() {
         printf '%s diagnostic PID-alive proof gap %ss\n' "$2" "$proof_gap" >>"$out/liveness.log"
         proof_gap_reported=1
       fi
-      if [ "$proof_gap" -gt 30 ]; then : >"$private_logs/watcher.gap"; fi
+      if [ "$proof_gap" -gt "$gap_fail_s" ]; then : >"$private_logs/watcher.gap"; fi
     fi
   }
   record_liveness() {
@@ -376,7 +404,7 @@ watch_liveness() {
       if [ "$gap" -gt 5 ]; then
         printf '%s diagnostic observation gap %ss\n' "$observed_at" "$gap" >>"$out/liveness.log"
       fi
-      if [ "$gap" -gt 30 ]; then : >"$private_logs/watcher.gap"; fi
+      if [ "$gap" -gt "$gap_fail_s" ]; then : >"$private_logs/watcher.gap"; fi
     fi
     check_first_alive_gap "$observed_epoch" "$observed_at"
     if [ "$state" = "pid not yet observed" ] && [ -n "$first_pid_epoch" ]; then
@@ -535,7 +563,7 @@ if [ -f "$private_logs/watcher.exited" ]; then
   process_exited=1
   fail "app process exited during liveness"
 fi
-if [ -f "$private_logs/watcher.gap" ]; then fail "liveness observation gap exceeded 30s"; fi
+if [ -f "$private_logs/watcher.gap" ]; then fail "liveness observation gap exceeded ${gap_fail_s}s"; fi
 if [ "$process_exited" -eq 0 ] && { [ "$watcher_failed" -ne 0 ] || [ ! -f "$private_logs/watcher.complete" ]; }; then
   fail "liveness watcher did not complete through the probe deadline"
 fi
@@ -598,6 +626,8 @@ time_stage main.unified-log-show xcrun simctl spawn "$udid" log show --style com
   >"$private_logs/unified.log" 2>/dev/null || true
 time_stage main.terminate xcrun simctl terminate "$udid" "$bundle_id" >/dev/null 2>&1 || true
 time_stage main.launcher-wait wait "$launcher" 2>/dev/null || true
+launcher=""
+app_launched=0
 kill "$stream_pid" 2>/dev/null || true
 time_stage main.stream-wait wait "$stream_pid" 2>/dev/null || true
 stream_pid=""

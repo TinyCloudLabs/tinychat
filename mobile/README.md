@@ -513,6 +513,19 @@ Xcode 26.6.
   content.
   If a crash report is detected, `crash-reports.txt` contains only the report
   count; raw diagnostic reports are not copied into the artifact.
+  The completion marker is written to a temporary file and renamed, so readers
+  never see a partial one. SIGINT or SIGTERM terminates the app, the launcher
+  and every background job (with its child processes), releases the publication
+  lock and removes the private logs. The kernel start time is read from
+  `sysctl -b kern.proc.pid.<pid>` as an 8-byte `tv_sec` plus a 32-bit `tv_usec`
+  (the 4 bytes after it are padding); when that call is unavailable the run
+  records `ps-lstart-etime-coarse`, as the macOS CI run does.
+  The script's own cases run against fake `xcrun`, `ps` and `sysctl` binaries on
+  Linux (`Mobile (Exo)` → *iOS smoke script tests (fakes)*):
+  `node --test mobile/scripts/ios-simulator-smoke.test.mjs`. Run it locally the
+  same way. `SMOKE_GAP_FAIL_S` (default 30) overrides the hard
+  post-publication gap limit so the tests can exercise it quickly.
+  To run the smoke against a local build:
   `mobile/scripts/ios-simulator-smoke.sh run <path/to/App.app> /tmp/exo-smoke`.
 - **Release dry run** (`Mobile (Exo)` → *iOS release*): the TestFlight build
   (`.github/workflows/ios-build.yml`) without signing. Its archive job produces
