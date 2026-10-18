@@ -19,7 +19,7 @@ import { captureCapabilities } from "@/lib/voiceNotes/captureEngine";
 import { nativeVoiceNotesAvailable, type TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { effectiveTranscriber, readDefaultTranscriber, readStopAfterPreference, readUploadAudioPreference, setDefaultTranscriber, setStopAfterPreference, setUploadAudioPreference, subscribeTranscriberPreference } from "@/lib/voiceNotes/transcriberPreference";
 import type { StopAfter } from "@/lib/voiceNotes/recordingSettings";
-import { readLocalState } from "@/lib/voiceNotes/recordingSettingsLocal";
+import { readChosenTranscriber } from "@/lib/voiceNotes/recordingSettingsLocal";
 import { deviceName } from "@/lib/platform";
 
 type Transcription = ReturnType<typeof useRecorder>["transcription"];
@@ -99,7 +99,7 @@ export function VoiceNotesTranscriberSettings() {
   const uploadAudio = useSyncExternalStore(subscribeTranscriberPreference, readUploadAudioPreference, readUploadAudioPreference);
   const stopAfter = useSyncExternalStore(subscribeTranscriberPreference, readStopAfterPreference, readStopAfterPreference);
   // The default the user chose (here or on another device); never the untouched default, so nobody is told about a choice they did not make.
-  const chosenDefault = useSyncExternalStore(subscribeTranscriberPreference, () => readLocalState()?.fields.transcriber, () => undefined);
+  const chosenDefault = useSyncExternalStore(subscribeTranscriberPreference, readChosenTranscriber, () => undefined);
   const storageFull = useStorageReadOnly();
   const [uploadError, setUploadError] = useState<string | null>(null);
   const { transcription, signedIn } = useRecorder();

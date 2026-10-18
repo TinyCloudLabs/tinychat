@@ -79,13 +79,11 @@ export function serializeRecordingDoc(doc: RecordingDoc): string {
   return JSON.stringify({ ...doc.extra, ...doc.fields, v: RECORDING_DOC_VERSION, updatedAt: doc.updatedAt });
 }
 
-/** What this device holds: explicitly set fields, plus when and by whom they were last synced or edited. */
+/** What one account's cache on this device holds: explicitly set fields, plus when they were last synced or edited. */
 export interface LocalState {
   fields: SetFields;
   /** Time of the last local edit, or the document's updatedAt after the last adopt or push. Null: never stamped (older than any document). */
   at: number | null;
-  /** The account the stamp belongs to. Null: this device has never synced and nothing has been edited while signed in. */
-  owner: string | null;
   /** Fields edited here since the last adopt or push. */
   dirty: readonly RecordingField[];
   /** This device's recording default is Powerful, which never syncs: no document value replaces it. */

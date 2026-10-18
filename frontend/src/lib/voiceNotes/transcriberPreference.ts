@@ -7,35 +7,25 @@ import { appPlatform } from "@/lib/platform";
 
 import { DEFAULT_STOP_AFTER, STOP_AFTER_VALUES, type RecordingField, type SetFields, type StopAfter } from "./recordingSettings";
 import {
-  SPEAKERS_KEY, STOP_AFTER_KEY, TRANSCRIBER_KEY, UPLOAD_AUDIO_KEY, UPLOAD_ENGINE_KEY,
-  localStorageOrNull as storage, markLocalEdit, notifyRecordingSettings, readLocalState, subscribeRecordingSettings, takeActiveCache, takeCacheFor,
+  currentScope, localStorageOrNull as storage, notifyRecordingSettings, readStamp, readStored, snapshotStored,
+  subscribeRecordingSettings, writeStored, type Scope, type Snapshot, type Stored,
 } from "./recordingSettingsLocal";
 
+// The preference lives in the cache of ONE scope (the signed-in account, or this device). Live reads use the scope this
+// tab is signed in as. Every write names the scope it was started for and goes only there.
 let memoryPreference: CaptureOptions = { transcriber: "on-device", identifySpeakers: true };
 
 export const subscribeTranscriberPreference = subscribeRecordingSettings;
 
-/**
- * Takes the cache for `account` (default: this tab's account) before a sync or an edit touches it: values another
- * account left there are dropped, and so is the capture engine's copy of them. Another tab can hand the cache to a
- * different account at any time, so an edit must never assume it still holds what this tab last saw.
- */
-export function takeCache(account?: string): void {
-  if (!(account === undefined ? takeActiveCache() : takeCacheFor(account))) return;
-  notifyRecordingSettings();
-  if (captureEngineAvailable()) {
-    void refreshEffectiveTranscriber().catch((caught: unknown) => console.warn("[RecordingSettings] Could not reset the engine's default", caught));
-  }
+function preferenceOf(stored: Stored): CaptureOptions {
+  const saved = stored.transcriber;
+  const transcriber: TranscriberId = saved === "off" || saved === "on-device" || saved === "private-cloud" || saved === "assemblyai" ? saved : "on-device";
+  return { transcriber, identifySpeakers: stored.identifySpeakers !== false, uploadAudio: stored.uploadAudio === true };
 }
 
 export function readTranscriberPreference(): CaptureOptions {
-  const store = storage();
-  if (!store) return memoryPreference;
-  try {
-    const saved = store.getItem(TRANSCRIBER_KEY);
-    const transcriber: TranscriberId = saved === "off" || saved === "on-device" || saved === "private-cloud" || saved === "assemblyai" ? saved : "on-device";
-    return { transcriber, identifySpeakers: store.getItem(SPEAKERS_KEY) !== "0", uploadAudio: store.getItem(UPLOAD_AUDIO_KEY) === "1" };
-  } catch { return memoryPreference; }
+  if (!storage()) return memoryPreference;
+  return preferenceOf(readStored(currentScope()));
 }
 
 /** Signed-out Mac capture without Whisper records audio only. A signed-in saved choice stays selected. */
@@ -55,20 +45,19 @@ export function effectiveCaptureOptions(pref: CaptureOptions, signedIn: boolean)
 }
 
 export function readUploadAudioPreference(): boolean {
-  try { return storage()?.getItem(UPLOAD_AUDIO_KEY) === "1" || (!storage() && memoryPreference.uploadAudio === true); }
-  catch { return memoryPreference.uploadAudio === true; }
+  if (!storage()) return memoryPreference.uploadAudio === true;
+  return readStored(currentScope()).uploadAudio === true;
 }
 
 export async function setUploadAudioPreference(enabled: boolean): Promise<void> {
   if (appPlatform() === "web") {
-    takeCache();
-    storage()?.setItem(UPLOAD_AUDIO_KEY, enabled ? "1" : "0");
+    const scope = currentScope();
+    writeStored(scope, { uploadAudio: enabled }, { fields: ["uploadAudio"] });
     memoryPreference = { ...memoryPreference, uploadAudio: enabled };
     notifyRecordingSettings();
-    markLocalEdit(["uploadAudio"]);
     return;
   }
-  await commitPreference({ uploadAudio: enabled });
+  await commitPreference({ uploadAudio: enabled }, currentScope(), true);
 }
 
 let memoryStopAfter: StopAfter = DEFAULT_STOP_AFTER;
@@ -78,20 +67,15 @@ const isStopAfter = (value: string | null | undefined): value is StopAfter =>
 
 /** The stored choice; a missing or unknown value is the 1-hour default. */
 export function readStopAfterPreference(): StopAfter {
-  const store = storage();
-  if (!store) return memoryStopAfter;
-  try {
-    const saved = store.getItem(STOP_AFTER_KEY);
-    return isStopAfter(saved) ? saved : DEFAULT_STOP_AFTER;
-  } catch { return memoryStopAfter; }
+  if (!storage()) return memoryStopAfter;
+  const saved = readStored(currentScope()).stopAfter;
+  return isStopAfter(saved) ? saved : DEFAULT_STOP_AFTER;
 }
 
 export function setStopAfterPreference(value: StopAfter): void {
-  takeCache();
   memoryStopAfter = value;
-  try { storage()?.setItem(STOP_AFTER_KEY, value); } catch { /* This session only. */ }
+  try { writeStored(currentScope(), { stopAfter: value }, { fields: ["stopAfter"] }); } catch { /* This session only. */ }
   notifyRecordingSettings();
-  markLocalEdit(["stopAfter"]);
 }
 
 /** The limit a choice asks for; "off" is the 3-hour limit every recorder enforces. */
@@ -134,29 +118,17 @@ const leastCloud = (a: TranscriberId, b: TranscriberId): TranscriberId => (CLOUD
 let unreconciled: unknown = null;
 
 /**
- * After a failed save: put each stored key back on its own, then the engine's default, each attempted whatever the
- * others did. If the keys could not all be restored, the engine goes to the less cloud-reaching of its old default
- * and what is stored now, so it never reaches further than what the screen will show. If the engine cannot be
- * written at all, recording is held (`settleDefaults`) rather than left on a default the screen does not show.
+ * After a failed save: put the stored choice back, then the engine's default, each attempted whatever the other did.
+ * If the choice could not be restored, the engine goes to the less cloud-reaching of its old default and what is stored
+ * now, so it never reaches further than what the screen will show. If the engine cannot be written at all, recording is
+ * held (`settleDefaults`) rather than left on a default the screen does not show.
  */
 async function restoreAfterFailure(
   caught: unknown,
-  store: Storage | undefined,
-  prior: { transcriber: string | null; speakers: string | null; uploadAudio: string | null } | null,
+  snapshot: Snapshot | null,
   before: EngineDefaults | null,
 ): Promise<unknown> {
-  const problems: string[] = [];
-  if (store && prior) {
-    for (const [key, value] of [[TRANSCRIBER_KEY, prior.transcriber], [SPEAKERS_KEY, prior.speakers],
-      [UPLOAD_AUDIO_KEY, prior.uploadAudio]] as const) {
-      try {
-        if (value === null) store.removeItem(key); else store.setItem(key, value);
-      } catch (failure) {
-        console.error(`[VoiceNotes] Could not restore ${key} after a failed save`, failure);
-        problems.push("the saved choice could not be put back");
-      }
-    }
-  }
+  const problems: string[] = snapshot ? snapshot.restore() : [];
   if (before) {
     const shown = effectiveCaptureOptions(readTranscriberPreference(), before.accountDid !== null);
     const unchanged = shown.transcriber === before.transcriber && shown.identifySpeakers === before.identifySpeakers
@@ -215,46 +187,40 @@ export function writeAccountDefaults(
 }
 
 /**
- * One change to the preference, applied as one unit inside the write lane. Only the changed field is carried in; the
- * rest is read from the stored preference when the write runs, so a request queued earlier can never write back what
- * an earlier change replaced. The stored keys are read first, then the engine is written, then both keys. If any
- * step fails, `restoreAfterFailure` puts the keys and the engine back, each on its own, and the call throws.
+ * One change to one scope's preference, applied as one unit inside the write lane. `scope` is the account (or the
+ * device) the change was started for: the change is read from and written to that scope's cache only. Only the changed
+ * field is carried in; the rest is read from the stored preference when the write runs, so a request queued earlier can
+ * never write back what an earlier change replaced. The engine's copy follows only while that scope is the signed-in
+ * one. If any step fails, `restoreAfterFailure` puts the stored choice and the engine back, and the call throws.
  */
-async function commitPreference(change: Partial<CaptureOptions>, edit = true, mayWrite: () => boolean = () => true): Promise<void> {
+async function commitPreference(change: Partial<CaptureOptions>, scope: Scope, edit: boolean): Promise<void> {
   await inOrder(async () => {
-    // An adopted value never lands over an edit still waiting to be synced, whichever got into the lane first, and
-    // never once the account it was read for is gone.
-    if (edit) takeCache();
-    if (!mayWrite()) return;
-    const dirty = edit ? [] : readLocalState()?.dirty ?? [];
+    // An adopted value never lands over an edit still waiting to be synced, whichever got into the lane first.
+    const dirty = edit ? [] : readStamp(scope).dirty;
     const applied = Object.fromEntries(Object.entries(change).filter(([key]) => !dirty.includes(key as RecordingField))) as Partial<CaptureOptions>;
     if (Object.keys(applied).length === 0) return;
-    const store = storage();
-    const prior = store ? { transcriber: store.getItem(TRANSCRIBER_KEY), speakers: store.getItem(SPEAKERS_KEY),
-      uploadAudio: store.getItem(UPLOAD_AUDIO_KEY) } : null;
-    const pref = { ...readTranscriberPreference(), ...applied };
+    const snapshot = snapshotStored(scope);
+    const pref = { ...preferenceOf(readStored(scope)), ...applied };
     let before: EngineDefaults | null = null;
     try {
-      await writeEffectiveDefaults(pref, (current) => { before = current; });
-      // The engine write above is the one await in the lane: the account can change during it. An adopted value is
-      // dropped then (the engine is put back); an edit claims the cache again, so its keys never land on another
-      // account's leftovers.
-      if (edit) takeCache();
-      else if (!mayWrite()) throw new Error("The account changed while the synced defaults were being applied.");
-      // An edit writes its keys as before. An adopted value writes only what changed: a key nobody set stays unset,
-      // so it never travels as a choice.
-      if (store) {
-        if (applied.transcriber !== undefined) store.setItem(TRANSCRIBER_KEY, pref.transcriber);
-        if (edit || applied.identifySpeakers !== undefined) store.setItem(SPEAKERS_KEY, pref.identifySpeakers ? "1" : "0");
-        if (edit || applied.uploadAudio !== undefined) store.setItem(UPLOAD_AUDIO_KEY, pref.uploadAudio ? "1" : "0");
-      }
+      // The engine holds one copy for the whole device: it follows the scope this tab is signed in as, and no other.
+      if (scope === currentScope()) await writeEffectiveDefaults(pref, (current) => { before = current; });
+      // Only what changed is written into an account's cache: a key nobody set stays unset, so it never travels as a
+      // choice. The device's own keys keep writing all three, as they always have.
+      const all = edit && scope === null;
+      writeStored(scope, {
+        ...(applied.transcriber !== undefined ? { transcriber: pref.transcriber } : {}),
+        ...(all || applied.identifySpeakers !== undefined ? { identifySpeakers: pref.identifySpeakers } : {}),
+        ...(all || applied.uploadAudio !== undefined ? { uploadAudio: pref.uploadAudio } : {}),
+      }, edit ? { fields: Object.keys(applied) as RecordingField[] } : undefined);
     } catch (caught) {
-      throw await restoreAfterFailure(caught, store, prior, before);
+      throw await restoreAfterFailure(caught, snapshot, before);
     }
-    memoryPreference = pref;
+    if (scope === currentScope()) memoryPreference = pref;
     unreconciled = null;
-    // Stamped in the lane, right after the keys, so a sync can never see the new value under the old stamp.
-    if (edit) markLocalEdit(Object.keys(applied) as RecordingField[]);
+    // The engine write above is an await: if the signed-in account changed during it, the engine briefly holds this
+    // scope's values. Rewriting it from whoever is signed in now (queued behind this step) puts it right.
+    if (scope !== currentScope() && captureEngineAvailable()) void refreshEffectiveTranscriber().catch(() => {});
   });
   notifyRecordingSettings();
 }
@@ -269,34 +235,34 @@ export async function refreshEffectiveTranscriber(): Promise<void> {
 }
 
 export async function setDefaultTranscriber(transcriber: TranscriberId): Promise<void> {
-  await commitPreference({ transcriber });
+  await commitPreference({ transcriber }, currentScope(), true);
 }
 
 export async function setDefaultIdentifySpeakers(identifySpeakers: boolean): Promise<void> {
-  await commitPreference({ identifySpeakers });
+  await commitPreference({ identifySpeakers }, currentScope(), true);
 }
 
 /**
- * Puts fields adopted from the synced document into this device's cache and, for the engine-backed ones, the capture
- * engine's copy (the same lane an edit uses, so phone shortcuts record with them). Not an edit: it neither stamps the
- * device nor tells sync. Fields with an edit still waiting to be synced are skipped. Throws if the engine refuses, after
- * the fields that do not need it were applied; nothing is marked synced then, and the next cycle repeats it.
+ * Puts fields adopted from `account`'s synced document into that account's cache, and, while that account is the
+ * signed-in one, into the capture engine's copy (the same lane an edit uses, so phone shortcuts record with them). Not
+ * an edit: it neither stamps the cache nor tells sync. Fields with an edit still waiting to be synced are skipped.
+ * Throws if the engine refuses, after the fields that do not need it were applied; nothing is marked synced then, and
+ * the next cycle repeats it.
  */
-export async function adoptSyncedFields(fields: SetFields, mayWrite: () => boolean): Promise<void> {
-  const store = storage();
-  if (!store || !mayWrite()) return;
-  const dirty = readLocalState()?.dirty ?? [];
+export async function adoptSyncedFields(account: string, fields: SetFields): Promise<void> {
+  if (!storage()) return;
+  const dirty = readStamp(account).dirty;
   const open = (field: RecordingField) => fields[field] !== undefined && !dirty.includes(field);
-  const current = readTranscriberPreference();
+  const current = preferenceOf(readStored(account));
   const web = appPlatform() === "web";
-  // The fields that need no engine are applied first and synchronously, so an edit cannot slip in between.
-  if (open("stopAfter")) store.setItem(STOP_AFTER_KEY, fields.stopAfter!);
-  if (open("uploadEngine")) store.setItem(UPLOAD_ENGINE_KEY, fields.uploadEngine!);
-  // On the web the audio preference is a cache only; the engine's copy follows at the next account write.
-  if (web && open("uploadAudio")) {
-    store.setItem(UPLOAD_AUDIO_KEY, fields.uploadAudio ? "1" : "0");
-    memoryPreference = { ...memoryPreference, uploadAudio: fields.uploadAudio };
-  }
+  // The fields that need no engine are applied first, in one write.
+  writeStored(account, {
+    ...(open("stopAfter") ? { stopAfter: fields.stopAfter } : {}),
+    ...(open("uploadEngine") ? { uploadEngine: fields.uploadEngine } : {}),
+    // On the web the audio preference is a cache only; the engine's copy follows at the next account write.
+    ...(web && open("uploadAudio") ? { uploadAudio: fields.uploadAudio } : {}),
+  });
+  if (web && open("uploadAudio") && account === currentScope()) memoryPreference = { ...memoryPreference, uploadAudio: fields.uploadAudio };
   notifyRecordingSettings();
   const change: Partial<CaptureOptions> = {};
   if (open("transcriber") && fields.transcriber !== current.transcriber) change.transcriber = fields.transcriber;
@@ -304,12 +270,14 @@ export async function adoptSyncedFields(fields: SetFields, mayWrite: () => boole
   if (!web && open("uploadAudio") && fields.uploadAudio !== current.uploadAudio) change.uploadAudio = fields.uploadAudio;
   if (Object.keys(change).length === 0) return;
   if (captureEngineAvailable()) {
-    await commitPreference(change, false, mayWrite);
+    await commitPreference(change, account, false);
     return;
   }
-  if (change.transcriber !== undefined) store.setItem(TRANSCRIBER_KEY, change.transcriber);
-  if (change.identifySpeakers !== undefined) store.setItem(SPEAKERS_KEY, change.identifySpeakers ? "1" : "0");
-  if (change.uploadAudio !== undefined) store.setItem(UPLOAD_AUDIO_KEY, change.uploadAudio ? "1" : "0");
+  writeStored(account, {
+    ...(change.transcriber !== undefined ? { transcriber: change.transcriber } : {}),
+    ...(change.identifySpeakers !== undefined ? { identifySpeakers: change.identifySpeakers } : {}),
+    ...(change.uploadAudio !== undefined ? { uploadAudio: change.uploadAudio } : {}),
+  });
   notifyRecordingSettings();
 }
 
