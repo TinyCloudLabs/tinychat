@@ -121,12 +121,24 @@ const ROWS: Row[] = [
   { name: "local: no native job, Low Data Mode", patch: local({ onDevice: od({ download: "low_data_mode", model: { state: "queued", bytes: 0, totalBytes: 640, error: null } }) }, { space: SAVED }), states: { transcript: "waiting" }, current: "transcript", caption: "Waiting for Wi-Fi · Low Data Mode is on" },
   { name: "local: no native job, model absent is Get the model", patch: local({ onDevice: od({ model: { state: "absent", bytes: 0, totalBytes: 640, error: null } }) }, { space: SAVED }), states: { transcript: "blocked" }, current: "transcript", cause: "Transcripts on this phone need the on-device model.", action: "get-model" },
   { name: "local: no native job, model download in the background before upload", patch: local({ onDevice: od({ model: { state: "downloading", bytes: 64, totalBytes: 640, error: null }, download: "running" }) }), states: { space: "waiting", transcript: "active" }, current: "transcript", caption: "Waiting for the on-device model · 10%" },
+  { name: "local on iOS: speech not on the phone yet is a short Getting speech from iOS, not a model", patch: local({ onDevice: od({ stt: stt("waiting_for_model"), appleSpeech: "asset_missing", model: null }) }, { space: SAVED }), states: { transcript: "active" }, current: "transcript", caption: "Getting speech from iOS…" },
+  { name: "local on iOS: the speech install failed is Try again", patch: local({ onDevice: od({ stt: stt("waiting_for_model"), appleSpeech: "asset_missing", download: "failed", model: null }) }, { space: SAVED }), states: { transcript: "failed" }, current: "transcript", cause: "Couldn't get speech from iOS", action: "retry" },
+  { name: "local on iOS: an iPhone without on-device speech says so and offers nothing", patch: local({ onDevice: od({ stt: stt("waiting_for_model"), appleSpeech: "unsupported", model: null }) }, { space: SAVED }), states: { transcript: "blocked" }, current: "transcript", cause: "On-device transcription isn't available on this phone" },
+  { name: "local on iOS: a language it does not support says so and offers nothing", patch: local({ onDevice: od({ stt: stt("waiting_for_model"), appleSpeech: "locale_unsupported", model: null }) }, { space: SAVED }), states: { transcript: "blocked" }, current: "transcript", cause: "On-device transcription doesn't support this language yet" },
+  { name: "local on iOS: ready speech has no model step to block on", patch: local({ onDevice: od({ stt: stt("queued"), appleSpeech: "ready", model: null, queue: { position: 1, inLine: 1, percent: null } }) }, { space: SAVED }), states: { transcript: "waiting" }, current: "transcript", caption: "Queued · next" },
   { name: "local: queued 2nd", patch: local({ onDevice: od({ stt: stt("queued"), queue: { position: 2, inLine: 3, percent: null } }) }, { space: SAVED }), states: { transcript: "waiting" }, current: "transcript", caption: "Queued · 2nd" },
   { name: "local: queued next", patch: local({ onDevice: od({ stt: stt("queued"), queue: { position: 1, inLine: 1, percent: null } }) }, { space: SAVED }), current: "transcript", caption: "Queued · next" },
   { name: "local: transcribing 63%", patch: local({ onDevice: od({ stt: stt("running"), queue: { position: 1, inLine: 1, percent: 63 } }) }, { space: SAVED }), states: { transcript: "active" }, current: "transcript", caption: "Transcribing · 63%" },
   { name: "local: transcribing with no percent yet", patch: local({ onDevice: od({ stt: stt("running"), queue: { position: 1, inLine: 1, percent: null } }) }, { space: SAVED }), current: "transcript", caption: "Transcribing…" },
   { name: "local: transcript done on the phone before upload is Ready on this phone", patch: local({ onDevice: od({ stt: stt("done") }) }, { space: { saved: false, pending: { upload: { state: "uploading", bytes: 10, total: 100 } } } }), states: { phone: "done", space: "active", transcript: "done" }, current: "space", caption: "Uploading · 10%" },
-  { name: "local: transcript done and note saved, adding it to the note", patch: local({ onDevice: od({ stt: stt("done") }) }, { space: SAVED }), states: { transcript: "active" }, current: "transcript", caption: "Adding to this note…" },
+  { name: "local: transcript done on the phone, note saved, nothing adding it and no space evidence is a blocker, never an endless Adding", patch: local({ onDevice: od({ stt: stt("done") }) }, { space: SAVED }), states: { transcript: "blocked" }, current: "transcript", cause: "The transcript is ready on this phone but hasn't been added to this note", action: "retry" },
+  { name: "local: the space row not read yet is Checking your space, not a blocker", patch: local({ onDevice: od({ stt: stt("done") }), spaceReading: true }, { space: SAVED }), states: { transcript: "waiting" }, current: "transcript", caption: "Checking your space…" },
+  { name: "local: no on-device read yet and the space row not read yet is Checking your space", patch: local({ spaceReading: true }, { space: SAVED }), states: { transcript: "waiting" }, current: "transcript", caption: "Checking your space…" },
+  { name: "private: the space row not read yet is Checking your space", patch: { route: "private-cloud", space: SAVED, transcript: { spaceReading: true } }, states: { transcript: "waiting" }, current: "transcript", caption: "Checking your space…" },
+  { name: "local: the space row queued behind uploads says so", patch: local({ onDevice: od({ stt: stt("done") }), spaceReading: true, afterUploads: true }, { space: SAVED }), states: { transcript: "waiting" }, current: "transcript", caption: "Checking your space · after uploads" },
+  { name: "local: no on-device read yet and the space row queued behind uploads says so", patch: local({ spaceReading: true, afterUploads: true }, { space: SAVED }), states: { transcript: "waiting" }, current: "transcript", caption: "Checking your space · after uploads" },
+  { name: "private: the space row queued behind uploads says so", patch: { route: "private-cloud", space: SAVED, transcript: { spaceReading: true, afterUploads: true } }, states: { transcript: "waiting" }, current: "transcript", caption: "Checking your space · after uploads" },
+  { name: "uploads ahead mean nothing once the row has been read", patch: local({ onDevice: od({ stt: stt("done") }), afterUploads: true }, { space: SAVED }), states: { transcript: "blocked" }, current: "transcript", cause: "The transcript is ready on this phone but hasn't been added to this note", action: "retry" },
   { name: "local: transcript syncing to the space", patch: local({ onDevice: od({ stt: stt("done"), sync: { state: "syncing" } }) }, { space: SAVED }), states: { transcript: "active" }, current: "transcript", caption: "Adding to this note…" },
   { name: "local: transcript sync failed is Try again with its message", patch: local({ onDevice: od({ stt: stt("done"), sync: { state: "failed", message: "write lane timed out" } }) }, { space: SAVED }), states: { transcript: "failed" }, current: "transcript", cause: "Couldn't add the transcript to this note · write lane timed out", action: "retry" },
   { name: "local: transcript synced", patch: local({ onDevice: od({ stt: stt("done"), sync: { state: "synced" } }) }, { space: SAVED }), states: { space: "done", transcript: "done" }, current: null },
@@ -391,5 +403,30 @@ describe("a failed read that other evidence outranks", () => {
 
   test("reread never outranks a step's own action", () => {
     expect(pipelineActionPriority("reread")).toBe(0);
+  });
+});
+
+describe("a transcript in the space that the phone could not record (P6 r1)", () => {
+  const unrecorded = { state: "unrecorded" as const, message: "disk full" };
+
+  test("the transcript step is done, the failure is the blocker with Try again, and the note is not done", () => {
+    const pipeline = notePipeline(input({ space: SAVED, notes: { state: "synced" }, ...local({ inSpace: "no_speech", onDevice: od({ stt: stt("done"), sync: unrecorded }) }) }));
+    expect(pipeline.steps.find((step) => step.key === "transcript")?.state).toBe("done");
+    expect(pipeline.blocker).toEqual({ cause: "The transcript is in your space, but this phone couldn't record that: disk full", action: { kind: "retry", label: "Try again" } });
+    expect(pipeline.current).toBe("transcript");
+    expect(pipeline.done).toBe(false);
+  });
+
+  test("before the row catches up the transcript is still done, not Adding", () => {
+    const pipeline = notePipeline(input({ space: SAVED, ...local({ onDevice: od({ stt: stt("done"), sync: unrecorded }) }) }));
+    expect(pipeline.steps.find((step) => step.key === "transcript")?.state).toBe("done");
+    expect(pipeline.blocker?.cause).toContain("couldn't record that");
+  });
+
+  test("beside another blocker it is a notice, never dropped", () => {
+    const pipeline = notePipeline(input({ space: SAVED, hasNotesOrMoments: true, notes: { state: "failed" }, ...local({ inSpace: "transcribed", onDevice: od({ stt: stt("done"), sync: unrecorded }) }) }));
+    expect(pipeline.current).toBe("notes");
+    expect(pipeline.notice).toBe("The transcript is in your space, but this phone couldn't record that: disk full");
+    expect(pipeline.done).toBe(false);
   });
 });

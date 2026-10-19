@@ -3,12 +3,15 @@
 // on-device regardless of this choice (CaptureDefaults.options, CaptureModels.swift/.kt).
 import { useEffect, useState, useSyncExternalStore } from "react";
 
-import { CHECK_AGAIN, privateNotOffered, TRANSCRIBER_NAME } from "@/capture/recorder/final/finalCopy";
+import { CHECK_AGAIN, FINAL_COPY, privateNotOffered, TRANSCRIBER_NAME } from "@/capture/recorder/final/finalCopy";
 import { SIGNED_OUT } from "@/capture/recorder/final/useTranscriptionChoice";
 import { useRecorder } from "@/capture/recorder/RecorderProvider";
 import { SegmentedControl } from "@/components/ui/segmented-control";
 import { Button } from "@/components/ui/button";
-import { downloadOnDeviceModel, onDeviceSttStore, onDeviceModelLine, primaryOnDeviceModel } from "@/lib/voiceNotes/onDeviceSttStore";
+import { localModelGuide, modelActionLabel } from "@/capture/recorder/final/localModelGuide";
+import { isAppleSpeech, isOnDeviceReady, isOnDeviceStatusLoaded } from "@/lib/voiceNotes/onDeviceStt";
+import { downloadOnDeviceModel, ensureOnDeviceModel, onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
+import { captureCapabilities } from "@/lib/voiceNotes/captureEngine";
 import { nativeVoiceNotesAvailable, type TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { readDefaultTranscriber, setDefaultTranscriber, subscribeTranscriberPreference } from "@/lib/voiceNotes/transcriberPreference";
 
@@ -60,10 +63,14 @@ export function useDefaultTranscriber() {
   const choose = (next: TranscriberId) => {
     setError(null);
     // The control follows the engine's default through the preference listener, so it only moves once the engine has it.
-    setDefaultTranscriber(next).catch((err: unknown) => {
-      console.error("[VoiceNotes] Could not save the default transcriber", err);
-      setError(`Could not save the default transcriber: ${err instanceof Error ? err.message : String(err)}`);
-    });
+    setDefaultTranscriber(next).then(
+      // Choosing Local here is the request for the on-device model; keeping or restoring it elsewhere is not.
+      () => { if (next === "on-device" && captureCapabilities().localTranscription) ensureOnDeviceModel({ retry: true }); },
+      (err: unknown) => {
+        console.error("[VoiceNotes] Could not save the default transcriber", err);
+        setError(`Could not save the default transcriber: ${err instanceof Error ? err.message : String(err)}`);
+      },
+    );
   };
   return { value, error, choose };
 }
@@ -71,10 +78,11 @@ export function useDefaultTranscriber() {
 export function VoiceNotesTranscriberSettings() {
   const { transcription, signedIn } = useRecorder();
   const { value, error, choose } = useDefaultTranscriber();
-  const [downloadError, setDownloadError] = useState<string | null>(null);
   const sttStatus = useSyncExternalStore(onDeviceSttStore.subscribe, onDeviceSttStore.snapshot, onDeviceSttStore.snapshot);
-  const model = primaryOnDeviceModel(sttStatus);
-  const modelLine = onDeviceModelLine(sttStatus);
+  const downloadError = useSyncExternalStore(onDeviceSttStore.subscribe, onDeviceSttStore.downloadError, onDeviceSttStore.downloadError);
+  const modelGuide = localModelGuide(sttStatus, { start: () => void downloadOnDeviceModel(), error: downloadError });
+  const modelLabel = isAppleSpeech(sttStatus) ? "On-device speech" : "On-device model";
+  const modelFailed = modelGuide.action?.label === FINAL_COPY.modelTryAgain;
 
   if (!nativeVoiceNotesAvailable() || value === null) return null;
 
@@ -87,16 +95,17 @@ export function VoiceNotesTranscriberSettings() {
       {!privateOffered && <PrivateUnavailable signedIn={signedIn} transcription={transcription} />}
       {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
       {value === "on-device" && (
-        <div className="flex items-center justify-between gap-3 text-xs">
-          <span className="text-muted-foreground">On-device model: {modelLine.text}</span>
-          {model && model.state !== "ready" && model.state !== "checking" && model.state !== "downloading" && model.state !== "queued" && (
-            <Button type="button" variant="outline" size="sm" onClick={() => { setDownloadError(null); void downloadOnDeviceModel().then(setDownloadError); }}>
-              Download
+        <div className="flex items-center justify-between gap-3 text-xs" data-testid="voice-notes-on-device-model">
+          <span className={modelFailed ? "text-destructive" : "text-muted-foreground"} role={modelFailed ? "alert" : undefined}>
+            {!isOnDeviceStatusLoaded(sttStatus) ? `${modelLabel}: Checking…` : isOnDeviceReady(sttStatus) ? `${modelLabel}: Ready` : modelGuide.reason}
+          </span>
+          {modelGuide.action && !isOnDeviceReady(sttStatus) && (
+            <Button type="button" variant="outline" size="sm" onClick={modelGuide.action.run}>
+              {modelActionLabel(modelGuide.action)}
             </Button>
           )}
         </div>
       )}
-      {value === "on-device" && downloadError && <p role="alert" className="text-xs text-destructive">{downloadError}</p>}
     </div>
   );
 }

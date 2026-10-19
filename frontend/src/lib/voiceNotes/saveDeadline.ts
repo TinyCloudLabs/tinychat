@@ -60,10 +60,12 @@ export function withVoiceNoteSaveDeadline<T>(operation: string, request: (signal
   return timeBound(operation, Promise.resolve().then(() => request(controller.signal)), controller, timeoutMs);
 }
 
+export const VOICE_NOTE_READ_TIMEOUT_MESSAGE = "This recording note couldn't be loaded in time. Check your connection and try again.";
+
 /** Note-body reads stay off the serialized write lane and use a read-specific message. */
 export function withVoiceNoteReadDeadline<T>(operation: string, request: (signal: AbortSignal) => Promise<T>,
   timeoutMs = voiceNoteCallDeadlineMs()): Promise<T> {
   const controller = new AbortController();
   return timeBound(operation, Promise.resolve().then(() => request(controller.signal)), controller, timeoutMs,
-    "This recording note couldn't be loaded in time. Check your connection and try again.");
+    VOICE_NOTE_READ_TIMEOUT_MESSAGE);
 }

@@ -1,5 +1,12 @@
 # On-device transcription: vertical slice (TC-836)
 
+> **iOS no longer uses any of the Parakeet/sherpa-onnx machinery below (TC-919).** On iOS, Local is Apple's built-in
+> on-device speech: `SpeechAnalyzer` with `SpeechTranscriber` (`DictationTranscriber` where it is unavailable, e.g. the
+> simulator and A13 phones), fed by `ExoStt/AppleSpeech.swift` behind the same native-owned queue. There is no model
+> download, no `ModelStore`, no `CBZip2`; iOS installs its own speech assets (`OnDeviceStt.installSpeechAssets()`,
+> `AssetInventory`) and `status()` reports `engine: "apple-speech"`, `appleSpeech` and `models: []`. The iOS minimum is
+> iOS 26. Everything below describes Android, which keeps Parakeet unchanged.
+
 This is the thinnest working version of on-device transcription, pulled forward from the planned
 T13 (iOS model downloads), T17 (Android model downloads), T23 (iOS on-device engine), T24 (Android
 on-device engine), T26 (adapter) and T28 (choice UI) so the feature is visible and usable now.

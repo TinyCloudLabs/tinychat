@@ -1,4 +1,4 @@
-import type { OnDeviceSttStatus } from "@/lib/voiceNotes/onDeviceStt";
+import { isAppleSpeech, type OnDeviceSttStatus } from "@/lib/voiceNotes/onDeviceStt";
 import {
   onDeviceDownloadTotalBytes,
   primaryOnDeviceModel,
@@ -18,6 +18,19 @@ export interface OnDeviceDownload {
 
 const mb = (bytes: number) => Math.max(1, Math.round(bytes / (1024 * 1024)));
 
+/** iOS has its speech built in: nothing to size or download, only assets the OS installs, or a phone or language it cannot do. */
+function appleSpeechGuide(model: OnDeviceSttStatus, start: StopAction["run"]): { reason: string; action?: StopAction } {
+  switch (model.appleSpeech) {
+    case "ready": return { reason: "Ready" };
+    case "unsupported": return { reason: FINAL_COPY.speechUnsupported };
+    case "locale_unsupported": return { reason: FINAL_COPY.speechLocaleUnsupported };
+    case "asset_missing":
+      if (model.download.state === "failed") return { reason: FINAL_COPY.speechFailed, action: { label: FINAL_COPY.modelTryAgain, run: start } };
+      if (model.download.state === "running") return { reason: FINAL_COPY.speechGetting };
+      return { reason: FINAL_COPY.speechNotInstalled, action: { label: FINAL_COPY.speechGet, run: start } };
+  }
+}
+
 /**
  * What the Local row says while the on-device model is not ready: where the
  * download stands, and the control that moves it on. With no status there is
@@ -32,6 +45,7 @@ export function localModelGuide(
   if (download.error) {
     return { reason: download.error, action: get(FINAL_COPY.modelTryAgain) };
   }
+  if (isAppleSpeech(model)) return appleSpeechGuide(model, download.start);
   const needed = [primaryOnDeviceModel(model), model.models.find((m) => m.id === "silero-vad")].filter(
     (entry): entry is OnDeviceSttStatus["models"][number] => entry !== null && entry !== undefined,
   );
@@ -39,17 +53,17 @@ export function localModelGuide(
   if (failed || model.download.state === "failed") {
     const why = failed?.error ?? null;
     return {
-      reason: why ? `Couldn't download the model: ${why}` : "Couldn't download the model",
+      reason: why ? `Couldn't download the on-device model: ${why}` : "Couldn't download the on-device model",
       action: get(FINAL_COPY.modelTryAgain),
     };
   }
   if (needed.some((entry) => entry.state === "checking")) {
-    return { reason: "Checking the downloaded model…" };
+    return { reason: "Checking the on-device model…" };
   }
   const total = onDeviceDownloadTotalBytes(model);
   const size = total > 0 ? ` (${mb(total)} MB)` : "";
   if (model.download.state === "waiting_for_network") {
-    return { reason: `Waiting for Wi-Fi to download the model${size}` };
+    return { reason: `Waiting for Wi-Fi to download the on-device model${size}` };
   }
   if (model.download.state === "low_data_mode") {
     return { reason: `Paused: Low Data Mode is on${size}` };
@@ -58,7 +72,7 @@ export function localModelGuide(
   if (moving || model.download.state === "running") {
     const done = needed.reduce((sum, entry) => sum + entry.bytes, 0);
     const percent = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : null;
-    return { reason: percent === null ? `Downloading the model${size}` : `Downloading the model: ${percent}% of ${mb(total)} MB` };
+    return { reason: percent === null ? `Downloading on-device model${size}` : `Downloading on-device model · ${percent}%` };
   }
   return {
     reason: `The on-device model isn't downloaded${size}`,

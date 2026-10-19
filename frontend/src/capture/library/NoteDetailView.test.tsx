@@ -19,7 +19,7 @@ import {
 import { HELD_NOTE_MESSAGE, type NoteTranscriptionState } from "@/lib/voiceNotes/voiceNoteTranscription";
 import type { LibraryItem } from "./LibraryRow";
 import { NotePipelineContext } from "@/capture/pipeline/NotePipelineContext";
-import { allDone, signedOut, uploading, waitingForModel } from "@/capture/pipeline/pipelineFixtures";
+import { allDone, pipelineOf, signedOut, uploading, waitingForModel } from "@/capture/pipeline/pipelineFixtures";
 import type { NotePipeline } from "@/lib/voiceNotes/notePipeline";
 import { SAVED_NOTE_COPY } from "./savedNote/savedNoteCopy";
 import { NoteDetailView, transcriptBlocks, transcriptStepLine, type NoteDetailViewProps } from "./NoteDetailView";
@@ -297,6 +297,38 @@ describe("the transcript placeholder while the note's pipeline is not done", () 
     const pipeline = waitingForModel();
     expect(pipeline.current).toBe("transcript");
     expect(withContext(pipeline)).toContain(SAVED_NOTE_COPY.transcriptHere);
+  });
+
+  describe("a saved note whose transcript the phone is adding to the note", () => {
+    const saved: LibraryItem = { ...VOICE };
+    const adding = (route: "on-device" | "private-cloud") => pipelineOf({
+      route,
+      space: { saved: true, pending: null, lane: { busy: false, depth: 0 } },
+      transcript: route === "on-device"
+        ? { inSpace: null, cloud: null, onDevice: { stt: { state: "done", error: null }, queue: null, model: { state: "ready", bytes: 640, totalBytes: 640, error: null }, download: "idle", sync: { state: "syncing" } } }
+        : { inSpace: null, onDevice: null, cloud: null },
+    });
+    const offer = (route: "on-device" | "private-cloud") =>
+      renderToStaticMarkup(
+        <NotePipelineContext.Provider value={{ pipeline: adding(route), route, onAction: noop, actionError: null }}>
+          <MemoryRouter>
+            <NoteDetailView item={saved} listStatus="ready" metadata={{ status: "ok", metadata: { capture: { platform: "ios" } } }} transcript={{ status: "absent" }} audio={audio} copyState="idle" onCopy={noop} onRetry={noop} pushed onBack={noop} transcription={transcription()} />
+          </MemoryRouter>
+        </NotePipelineContext.Provider>,
+      );
+
+    test("the stepper's 'Adding to this note…' is not contradicted by 'Not transcribed' and Transcribe", () => {
+      const html = offer("on-device");
+      expect(html).not.toContain("Not transcribed");
+      expect(html).not.toContain("voice-note-transcribe");
+      expect(html).toContain(SAVED_NOTE_COPY.transcriptHere);
+    });
+
+    test("where the pipeline would not run the transcript itself, the Transcribe offer stands", () => {
+      const html = offer("private-cloud");
+      expect(html).toContain("Not transcribed");
+      expect(html).toContain('data-testid="voice-note-transcribe"');
+    });
   });
 
   test("done, or no pipeline at all: the plain empty state stands", () => {

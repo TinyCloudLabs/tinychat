@@ -3,7 +3,7 @@
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { upsertMeeting, type NormalizedMeeting, type StoreResult, type UpsertMeetingOutcome } from "./connectors/connectorStore";
 import type { FirefliesSentence } from "./connectors/firefliesClient";
-import { localChannelLabel, localTranscriptTurns, type LocalWord } from "./localTranscriptTurns";
+import { localTranscriptSentences } from "./localTranscriptTurns";
 import type { BatchResponse } from "./anarlog/transcription.gen";
 
 /** Source of local transcripts saved in the Meetings store. */
@@ -74,43 +74,10 @@ function withTimeout<T>(work: Promise<T>, timeoutMs: number, label: string): Pro
 
 // ── Normalization → Meetings store ─────────────────────────────────────
 
-function collectWords(response: BatchResponse): LocalWord[] {
-  const words: LocalWord[] = [];
-  for (const channel of response.results?.channels ?? []) {
-    const alt = channel.alternatives?.[0];
-    for (const w of alt?.words ?? []) {
-      const text = (w.punctuated_word ?? w.word ?? "").trim();
-      if (!text) continue;
-      const start = Number.isFinite(w.start) ? w.start : null;
-      const end = Number.isFinite(w.end) ? w.end : null;
-      if (start === null || end === null) continue;
-      words.push({ text, start, end, channel: w.channel });
-    }
-  }
-  return words.sort((a, b) => a.start - b.start);
-}
-
 export function normalizeLocalTranscript(
   r: LocalTranscriptResult,
 ): { meeting: NormalizedMeeting; sentences: FirefliesSentence[] } {
-  const sentences = localTranscriptTurns(collectWords(r.response));
-
-  // Fallback: a channel alternative with a transcript but no word timings still
-  // saves as one sentence, rather than silently dropping speech.
-  if (sentences.length === 0) {
-    for (const [i, channel] of (r.response.results?.channels ?? []).entries()) {
-      const text = channel.alternatives?.[0]?.transcript?.trim();
-      if (!text) continue;
-      sentences.push({
-        index: sentences.length,
-        speaker_name: localChannelLabel(i),
-        text,
-        start_time: 0,
-        end_time: 0,
-      });
-    }
-  }
-
+  const sentences = localTranscriptSentences(r.response);
   // Turns are ordered by start, so the last one need not end last.
   const lastEnd = sentences.reduce((end, s) => Math.max(end, s.end_time), 0);
   const transcriptText = sentences.map((s) => s.text).join("\n");

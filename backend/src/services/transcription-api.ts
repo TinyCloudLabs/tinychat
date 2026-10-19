@@ -49,6 +49,9 @@ export interface TranscriptionMeeting {
   transcript?: { status?: string };
   created_at: string;
   started_at?: string | null;
+  completed_at?: string | null;
+  transcript_provider?: string | null;
+  capture?: Record<string, unknown> | null;
   ended_at?: string | null;
   metadata?: Record<string, unknown>;
   error?: TranscriptionMeetingError | null;
@@ -72,6 +75,9 @@ export interface TranscriptionTranscript {
   segments?: TranscriptionSegment[];
   text?: string;
   created_at?: string;
+  provider?: string | null;
+  partial?: boolean;
+  gaps?: unknown[];
 }
 
 export interface CreateMeetingInput {
@@ -112,6 +118,8 @@ export interface CreateMeetingOptions {
   idempotencyKey?: string;
   /** The scheduler must recheck consent and eligibility before every create attempt. */
   retryTransport?: boolean;
+  /** Called as each HTTP attempt starts, so a caller can tell a lone attempt from a transport retry. */
+  onAttempt?: () => void;
 }
 
 export interface IdempotencyLookup {
@@ -178,6 +186,57 @@ export function transcriptionApiConfigFromEnv(
   return { baseUrl, apiKey };
 }
 
+export interface TranscriptDeliveryConfig {
+  enabled: boolean;
+  webhookUrl?: string;
+  webhookSecret?: string;
+  sweepMs: number;
+  maxWritesPerMin: number;
+  allowlist?: ReadonlySet<string>;
+}
+
+/** Validate delivery settings at boot, even when the feature is dark. */
+export function transcriptDeliveryConfigFromEnv(env: NodeJS.ProcessEnv = process.env): TranscriptDeliveryConfig {
+  const enabled = env.TRANSCRIPT_SERVER_DELIVERY_ENABLED === "true";
+  if (env.TRANSCRIPT_SERVER_DELIVERY_ENABLED && !["true", "false"].includes(env.TRANSCRIPT_SERVER_DELIVERY_ENABLED)) {
+    throw new Error("Invalid TRANSCRIPT_SERVER_DELIVERY_ENABLED");
+  }
+  if (enabled && (!env.TRANSCRIPTION_API_URL?.trim() || !env.TRANSCRIPTION_API_KEY?.trim())) {
+    throw new Error("Transcript delivery requires TRANSCRIPTION_API_URL and TRANSCRIPTION_API_KEY");
+  }
+  const webhookUrl = env.TRANSCRIPTION_WEBHOOK_URL?.trim() || undefined;
+  if (webhookUrl) {
+    let parsed: URL;
+    try { parsed = new URL(webhookUrl); } catch { throw new Error("Invalid TRANSCRIPTION_WEBHOOK_URL"); }
+    if (parsed.username || parsed.password || parsed.hash || !(
+      parsed.protocol === "https:" || (parsed.protocol === "http:" && ["localhost", "127.0.0.1"].includes(parsed.hostname))
+    )) throw new Error("Invalid TRANSCRIPTION_WEBHOOK_URL");
+  }
+  const webhookSecret = env.TRANSCRIPTION_WEBHOOK_SECRET?.trim() || undefined;
+  if (webhookSecret && !/^whsec_[0-9a-f]{48}$/.test(webhookSecret)) throw new Error("Invalid TRANSCRIPTION_WEBHOOK_SECRET");
+  const integer = (name: string, fallback: number, minimum: number): number => {
+    const raw = env[name];
+    if (raw === undefined || raw === "") return fallback;
+    const parsed = Number(raw);
+    if (!Number.isSafeInteger(parsed) || parsed < minimum) throw new Error(`Invalid ${name}`);
+    return parsed;
+  };
+  const rawAddresses = env.TRANSCRIPT_SERVER_DELIVERY_ADDRESSES;
+  let allowlist: Set<string> | undefined;
+  if (rawAddresses?.trim()) {
+    const addresses = rawAddresses.split(",").map((address) => address.trim());
+    if (addresses.some((address) => !/^0x[0-9a-fA-F]{40}$/.test(address))) {
+      throw new Error("Invalid TRANSCRIPT_SERVER_DELIVERY_ADDRESSES");
+    }
+    allowlist = new Set(addresses.map((address) => address.toLowerCase()));
+  }
+  return {
+    enabled, webhookUrl, webhookSecret, allowlist,
+    sweepMs: integer("TRANSCRIPT_DELIVERY_SWEEP_MS", 600_000, 60_000),
+    maxWritesPerMin: integer("TRANSCRIPT_DELIVERY_MAX_WRITES_PER_MIN", 6, 1),
+  };
+}
+
 /** Retry once on a transport failure (socket closed, reset, timeout) — never on an HTTP status. */
 const TRANSIENT_RETRY_DELAY_MS = 750;
 
@@ -205,6 +264,7 @@ export function createTranscriptionApiClient(config: TranscriptionApiConfig): Tr
     body?: unknown,
     extraHeaders: Record<string, string> = {},
     retryTransport = true,
+    onAttempt?: () => void,
   ): Promise<{ status: number; json: unknown }> {
     const init: RequestInit = {
       method,
@@ -221,6 +281,7 @@ export function createTranscriptionApiClient(config: TranscriptionApiConfig): Tr
     // Retried creates carry an Idempotency-Key, so they cannot send a second bot.
     // The only other POST is stop, whose upstream contract is explicitly idempotent.
     const attempt = async (): Promise<{ response: Response; text: string }> => {
+      onAttempt?.();
       const controller = new AbortController();
       let timer: ReturnType<typeof setTimeout> | undefined;
       const timeout = new Promise<never>((_resolve, reject) => {
@@ -277,7 +338,7 @@ export function createTranscriptionApiClient(config: TranscriptionApiConfig): Tr
     async createMeeting(input, options = {}) {
       const { json } = await request("POST", "/v1/meetings", input, {
         "Idempotency-Key": options.idempotencyKey ?? newIdempotencyKey(),
-      }, options.retryTransport ?? true);
+      }, options.retryTransport ?? true, options.onAttempt);
       return json as TranscriptionMeeting;
     },
     async lookupMeetingByIdempotencyKey(key) {

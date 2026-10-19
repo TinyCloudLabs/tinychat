@@ -22,6 +22,7 @@ import { __setOnDeviceSttForTests, type OnDeviceSttPlugin } from "@/lib/voiceNot
 import { createFakeVoiceNotes as createCaptureFakeVoiceNotes } from "@/lib/voiceNotes/fakeVoiceNotes";
 import type { HarnessScreen } from "./screen";
 import { captureScreens, captureSoftScreens } from "./screens/capture";
+import { capturePipelineScreens } from "./screens/capturePipeline";
 import { captureHomeDesktopScreens } from "./screens/captureHomeDesktop";
 import { captureSettingsScreens } from "./screens/captureSettings";
 import { legacyScreens } from "./screens/legacy";
@@ -67,6 +68,7 @@ const SCREENS: HarnessScreen[] = [
   ...recorderFinalPhoneInteractiveScreens,
   ...captureScreens,
   ...captureSoftScreens,
+  ...capturePipelineScreens,
   ...captureHomeDesktopScreens,
   ...captureSettingsScreens,
   ...libraryScreens,
@@ -98,7 +100,16 @@ applyTheme(params.get("theme") === "dark" ? "dark" : "light", false);
 document.documentElement.dataset.platform = platform;
 initSizeClass();
 // A saved Local note follows its on-device transcription through this plugin; the browser has none, so a fake stands in on every platform.
-__setOnDeviceSttForTests(createFakeOnDeviceStt().plugin);
+// Native `downloadNow` settles only when the download ends (the fake's returns at once with the models still queued), so
+// a screen that starts one keeps showing it downloading; no screen waits on the models becoming ready.
+const harnessOnDeviceStt = createFakeOnDeviceStt();
+__setOnDeviceSttForTests({
+  ...harnessOnDeviceStt.plugin,
+  downloadNow: async (options) => {
+    await harnessOnDeviceStt.plugin.downloadNow(options);
+    await new Promise<void>(() => {});
+  },
+} as OnDeviceSttPlugin);
 // The phone app records through its native plugin; here a fake stands in. A
 // fake App.getInfo() makes the build line resolve with the real native
 // segments (build number and bundle id), not just the web baseline (TC-840).

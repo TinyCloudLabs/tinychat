@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { TinyCloudNode } from "@tinycloud/node-sdk";
 import { assertKvResult, isKvMissingKeyResult, withSessionRefresh } from "@tinyboilerplate/server";
 import { BackendStorageLane } from "./backend-storage-lane.js";
+import { normalizeGoogleMeetUrl } from "./google-calendar.js";
 import type { CreateMeetingInput } from "./transcription-api.js";
 
 export interface CalendarConnection {
@@ -18,6 +19,26 @@ export interface CalendarConnection {
   scanComplete: boolean;
   setupId?: string;
   setupExpiresAt?: number;
+  /** Lowercased Google email, only when the ID token verified it (TC-581). Never sent to the browser. */
+  verifiedEmail?: string;
+}
+
+/** One tenant's intent to capture a Meet URL during a window (TC-581). Never holds a meeting id. */
+export interface CaptureClaim { tenant: string; occurrenceId: string; start: number; end: number; updatedAt: number }
+
+/**
+ * Set on a recipient occurrence that attached to another tenant's live capture instead of sending
+ * its own bot. The owner's meeting id is always read from the owner's own occurrence row.
+ */
+export interface SharedCapture {
+  ownerTenant: string;
+  ownerOccurrenceId: string;
+  attachedAt: number;
+  /** True only when the capturing account is on the attaching account's OWN invite. Anything else is unverified. */
+  corroborated?: boolean;
+  checkedAt?: number;
+  result?: "shared" | "not_shared";
+  reason?: string;
 }
 
 export type CalendarOccurrencePhase = "pending" | "outcome_unknown" | "ownership_pending" | "sent" | "stop_pending" | "terminal";
@@ -41,6 +62,10 @@ export interface CalendarOccurrence {
   stopRequested: boolean;
   errorCode?: string;
   disposition?: string;
+  /** TC-907: the latest create was refused with 429 `capacity_exhausted`, so it created nothing. */
+  capacityExhausted?: boolean;
+  /** Never put the owner's meeting id in `meetingId`: getStatus returns that to the browser. */
+  sharedCapture?: SharedCapture;
   updatedAt: number;
 }
 
@@ -64,6 +89,9 @@ export interface CalendarAutojoinStore {
   deleteOccurrence(tenant: string, id: string): Promise<void>;
   getMarker(tenant: string, id: string): Promise<CalendarSentMarker | null>;
   putMarker(row: CalendarSentMarker): Promise<void>;
+  getCaptureClaims(meetingUrl: string): Promise<CaptureClaim[]>;
+  /** Claims whose window ended more than 24h before `now` are pruned on every write. */
+  updateCaptureClaims(meetingUrl: string, update: (claims: CaptureClaim[]) => CaptureClaim[], now?: number): Promise<CaptureClaim[]>;
 }
 
 /** Same-process policy lock. Never hold the global storage lane across network I/O. */
@@ -91,6 +119,9 @@ const tenantKey = (tenant: string) => createHash("sha256").update(tenant.toLower
 const connectionKey = (tenant: string) => `${PREFIX}connections/${tenantKey(tenant)}`;
 const occurrencePrefix = (tenant: string) => `${PREFIX}occurrences/${tenantKey(tenant)}/`;
 const markerKey = (tenant: string, id: string) => `${PREFIX}sent/${tenantKey(tenant)}/${id}`;
+const captureKey = (meetingUrl: string) =>
+  `${PREFIX}captures/${createHash("sha256").update(normalizeGoogleMeetUrl(meetingUrl) ?? meetingUrl).digest("hex")}`;
+const CLAIM_RETENTION_MS = 86_400_000;
 
 class JsonCalendarAutojoinStore implements CalendarAutojoinStore {
   constructor(private readonly json: JsonStore, private readonly lane: BackendStorageLane) {}
@@ -105,6 +136,15 @@ class JsonCalendarAutojoinStore implements CalendarAutojoinStore {
   deleteOccurrence(tenant: string, id: string) { return this.lane.run(() => this.json.remove(occurrencePrefix(tenant) + id)); }
   getMarker(tenant: string, id: string) { return this.lane.run(() => this.json.get<CalendarSentMarker>(markerKey(tenant, id))); }
   putMarker(row: CalendarSentMarker) { return this.lane.run(() => this.json.put(markerKey(row.tenant, row.id), row)); }
+  async getCaptureClaims(meetingUrl: string) {
+    return (await this.lane.run(() => this.json.get<{ claims?: CaptureClaim[] }>(captureKey(meetingUrl))))?.claims ?? [];
+  }
+  async updateCaptureClaims(meetingUrl: string, fn: (claims: CaptureClaim[]) => CaptureClaim[], now = Date.now()) {
+    const doc = await this.update<{ claims: CaptureClaim[] }>(captureKey(meetingUrl), current => ({
+      claims: fn(current?.claims ?? []).filter(claim => claim.end >= now - CLAIM_RETENTION_MS),
+    }));
+    return doc!.claims;
+  }
   private update<T>(key: string, fn: Update<T>): Promise<T | null> {
     return this.lane.run(async () => {
       const next = fn(await this.json.get<T>(key));

@@ -674,20 +674,14 @@ this.
 
 ## Sign-in on mobile
 
-Tested on Android: OpenKey's embedded widget works inside the WebView with
-**email + code**. The virtual-passkey test harness does not apply (Android
-WebView DevTools has no `WebAuthn` domain). Passkeys inside the WebView need
-androidx.webkit WebAuthn support and Digital Asset Links on openkey.so, and
-this is untested. Google sign-in inside a WebView is blocked by Google
-(`disallowed_useragent`), so OpenKey's "Continue with Google" needs its own
-system-browser handoff on OpenKey's side (TC-520 territory). The Google
-connectors have one already (see "Google connectors (OAuth)").
+On iOS and Android, native OpenKey sign-in through the system browser is the
+only sign-in path — there is no embedded-widget fallback on these platforms.
+Web and the Tauri desktop app still use OpenKey's embedded widget.
 
-### Native sign-in and renewal (TC-775 E1/E2, flag off)
+### Native sign-in and renewal (TC-775 E1/E2)
 
-`VITE_EXO_NATIVE_OPENKEY=true` switches sign-in inside the app to the OpenKey
-native delegation flow instead of the embedded widget (iOS and Android only;
-web and the Tauri desktop keep the widget). `OpenKeyNative` (from
+On iOS and Android, sign-in always runs the OpenKey native delegation flow
+instead of the embedded widget. `OpenKeyNative` (from
 `@openkey/sdk-capacitor`) runs PAR + PKCE in the system browser —
 `ASWebAuthenticationSession` on iOS, a Custom Tab on Android — and OpenKey
 returns a capability-limited TinyCloud delegation bound to an Ed25519 session
@@ -696,29 +690,31 @@ The session JWK never touches WebView localStorage. Details:
 `frontend/src/lib/openkeyNative.ts`; the OpenKey protocol contract is
 `docs/native-tinycloud-delegation.md` in the openkey repo.
 
-- Config (all public): `VITE_OPENKEY_NATIVE_CLIENT_ID` (the registered native
-  client), `VITE_OPENKEY_NATIVE_REDIRECT_URI` (default
-  `xyz.tinycloud.exo://openkey/callback`), `VITE_OPENKEY_ISSUER` (default
-  `https://api.openkey.so/api/auth`). The backend nonce for the session SIWE is
-  address-less: `GET /api/auth/nonce` without `?address=` issues an unbound,
-  single-use, 5-minute nonce that `/verify` binds to the recovered signer.
+- Config (public, not a secret): `VITE_OPENKEY_NATIVE_CLIENT_ID`, the
+  registered native client id, set in `frontend/.env.production`. The redirect
+  URI (`xyz.tinycloud.exo://openkey/callback`) is a constant in
+  `openkeyNative.ts`. The OpenKey API issuer is derived from the same
+  `VITE_OPENKEY_HOST` the web widget reads (`api.` + host + `/api/auth`, so
+  `https://api.openkey.so/api/auth` for the default `https://openkey.so`); a
+  malformed host fails sign-in with the "not configured in this build" error. The backend nonce for the session SIWE is address-less: `GET
+  /api/auth/nonce` without `?address=` issues an unbound, single-use,
+  5-minute nonce that `/verify` binds to the recovered signer.
 - The delegation covers the manifest's applications-space KV/SQL entries plus
   capabilities/read — no secrets or vault. Everything that unlocks or stores
   credentials (connect, Sync now, disconnect key-delete, own AssemblyAI key,
   the background drains) is gated behind `secretsAvailable()` for native
   delegation sessions and shows "set up from Exo on the web or desktop" copy.
-  A session established earlier with the embedded widget keeps its vault access
-  and widget sign-out path even after the flag turns on. Voice notes are unaffected.
+  Voice notes are unaffected. A widget session persisted on the device from
+  before native sign-in was the only path is cleared once on next boot; it is
+  not restored — the user signs in again through the native flow.
 - Android: the plugin's redirect activity matches `${openkeyRedirectScheme}` /
   `${openkeyRedirectHost}` / `/callback`, set to `xyz.tinycloud.exo` / `openkey`
   in `app/build.gradle`. It does not touch the `oauth` / `/google` filter on
   MainActivity. Android backup rules exclude the plugin's device-bound
   `openkey_secure_store.xml` from cloud backup and device transfer. iOS already
   registers the `xyz.tinycloud.exo` scheme.
-- The flag is **off in every build today** (the OpenKey server side and the
-  registered client are not deployed). The local gate L1 runs it against a
-  local OpenKey over a tunnel; `scripts/android-dev/signin-openkey-native.sh`
-  is the emulator harness (Custom Tab + mailinator email OTP).
+- `scripts/android-dev/signin-openkey-native.sh` is the emulator harness
+  (Custom Tab + mailinator email OTP).
 - The same SDK instance handles boot, sign-in, renewal and sign-out so queued
   revocations and unfinished exchanges are retried. Boot restores a surviving
   native session before checking the backend JWT; an expired JWT is replaced
@@ -733,5 +729,5 @@ The session JWK never touches WebView localStorage. Details:
   handoff after consent revokes the new grant before showing an error. If
   secure storage fails during sign-out, the app keeps the native session for
   another attempt.
-- `@openkey/sdk-capacitor` is the published `0.1.0-beta.0` npm package (beta /
-  latest dist-tags).
+- `@openkey/sdk-capacitor` is the published `0.1.0-beta.2` npm package (beta
+  dist-tag). Its `@tinycloud/web-sdk` peer is `^2.11.0 || ^3.1.0`.

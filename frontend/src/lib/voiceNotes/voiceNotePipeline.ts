@@ -1,11 +1,12 @@
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
-import { assertCurrent, StaleAccountContext, type AccountContext } from "./accountContext";
+import { captureEvents } from "@/capture/captureEvents";
+import { assertCurrent, setAccountWorkPaused, StaleAccountContext, type AccountContext } from "./accountContext";
 import { associateLegacyNotes, markLegacyOwnerUnknown, migrateLegacyDiscardLedger } from "./legacyMigration";
 import { VoiceNotes, type VoiceNoteRecording } from "./nativeVoiceNotes";
 import { errorCode, isDiscarded, pendingStore, saveNoteForAccount, type PendingUploadTicket } from "./recorderSaves";
 import { ensureVoiceNoteIdentity, sweepArchived } from "./voiceNoteRows";
 import { withVoiceNoteSaveDeadline } from "./saveDeadline";
-import { syncRecordingNote } from "./voiceNoteStore";
+import { syncRecordingNote, VOICE_NOTE_SOURCE } from "./voiceNoteStore";
 import type { StoreAudioOptions } from "./voiceNoteStore";
 
 export interface VoiceNotePipeline {
@@ -34,6 +35,7 @@ function logSaveStart(id: string, trigger: "stop" | "background" | "reconcile" |
 /** T22 extends these lanes with transcription and cleanup, retaining this API. */
 export function createVoiceNotePipeline(tcw: TinyCloudWeb,
   testOptions: Pick<StoreAudioOptions, "retryDelaysMs"> = {}): VoiceNotePipeline {
+  setAccountWorkPaused(tcw, false);
   let cancellation = 0;
   let accepting = true;
   const active = new Set<Promise<unknown>>();
@@ -131,6 +133,8 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
             try {
               logSaveStart(note.id, trigger);
               saved = await processOne(ctx, note.id, epoch, true, uploadTickets.get(note.id));
+              check();
+              if (saved) captureEvents.emit("library-changed", { source: VOICE_NOTE_SOURCE, sourceId: note.id });
             }
             catch (error) {
               check();
@@ -164,8 +168,8 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
         if (discardError) throw discardError;
       });
     },
-    cancelAll() { accepting = false; cancellation++; },
-    resume() { accepting = true; },
+    cancelAll() { accepting = false; cancellation++; setAccountWorkPaused(tcw, true); },
+    resume() { accepting = true; setAccountWorkPaused(tcw, false); },
     isAccepting() { return accepting; },
     async quiescent(timeoutMs) {
       if (active.size === 0) return true;

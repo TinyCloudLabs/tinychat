@@ -3,13 +3,13 @@
 // Fixtures have the native shape: the sidecar says `waiting_for_model` for every mode, and iOS
 // takes the active note out of the queue and reports its percent only through `progress`.
 // There is no DOM in this workspace: the hook is mounted on a stub container, the view is rendered to markup.
-import { afterAll, afterEach, beforeAll, describe, expect, spyOn, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import { createFakeOnDeviceStt } from "@/lib/voiceNotes/fakeOnDeviceStt";
-import { onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
+import { __resetOnDeviceSttStoreForTests, onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
 import { __setOnDeviceSttForTests, OnDeviceStt, type OnDeviceSttStatus } from "@/lib/voiceNotes/onDeviceStt";
 import {
   __setVoiceNotesForTests,
@@ -81,7 +81,9 @@ async function iosStt(queue: OnDeviceSttStatus["queue"] = []) {
 
 const container = { nodeType: 1, nodeName: "DIV", tagName: "DIV", ownerDocument: null, textContent: "", addEventListener() {}, removeEventListener() {} } as unknown as HTMLElement;
 let root: Root | null = null;
+beforeEach(() => __resetOnDeviceSttStoreForTests());
 afterEach(async () => {
+  __resetOnDeviceSttStoreForTests();
   if (root) await act(async () => root!.unmount());
   root = null;
 });
@@ -282,10 +284,11 @@ describe("following the real iOS events", () => {
     const events = await iosStt();
     fakeVoiceNotes({ recordings: () => [] });
     await mount("n1");
-    expect(events.listening("progress")).toBe(1);
+    // The hook's own listener, and the shared store's, which stays for the life of the app.
+    expect(events.listening("progress")).toBe(2);
     await act(async () => root!.unmount());
     root = null;
-    expect(events.listening("progress")).toBe(0);
+    expect(events.listening("progress")).toBe(1);
     expect(events.listening("transcribed")).toBe(0);
     expect(events.listening("failed")).toBe(0);
   });

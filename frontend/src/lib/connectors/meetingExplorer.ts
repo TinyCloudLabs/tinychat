@@ -88,6 +88,8 @@ export interface MeetingListItem {
   startedAt: string | null;
   /** `connector_meeting.duration_secs`; null when the source did not say. */
   durationSecs: number | null;
+  /** Voice-note row metadata needed to derive the list pipeline after a relaunch. */
+  metadata?: Record<string, unknown> | null;
 }
 
 /**
@@ -151,7 +153,15 @@ export async function listMeetingsRead(
   const placeholders = sources.map(() => "?").join(", ");
   const res = await tolerate(() =>
     tcw.sql.db(CONNECTORS_SQL_DB_NAME).query(
-      `SELECT id, source, source_id, title, started_at, duration_secs FROM connector_meeting
+      `SELECT id, source, source_id, title, started_at, duration_secs,
+              CASE WHEN source = 'exo-voice-note' AND metadata IS NOT NULL THEN
+                CASE WHEN json_valid(metadata) THEN json_object(
+                  'transcription_outcome', json_extract(metadata, '$.transcription_outcome'),
+                  'note_kv_key',           json_extract(metadata, '$.note_kv_key'),
+                  'note_edited_at',        json_extract(metadata, '$.note_edited_at'))
+                ELSE 'invalid' END
+              END AS pipeline_metadata
+       FROM connector_meeting
        WHERE source IN (${placeholders}) ORDER BY started_at DESC`,
       [...sources],
     ),
@@ -171,14 +181,37 @@ export async function listMeetingsRead(
     // (source, source_id), so a row missing either half is unreadable. Drop it
     // rather than render a row that can only ever fail to expand.
     if (!id || !source || !sourceId) continue;
-    meetings.push({
+    const item: MeetingListItem = {
       id,
       source,
       sourceId,
       title: cellStr(row, 3),
       startedAt: cellStr(row, 4),
       durationSecs: cellNum(row, 5),
-    });
+    };
+    if (source === VOICE_NOTE_SOURCE) {
+      const rawPipelineMetadata = cellStr(row, 6);
+      if (rawPipelineMetadata === null) {
+        // The listing read the row and confirmed there is no metadata. Keep
+        // this distinct from an unreadable value, which lets the pipeline
+        // hook batch-read only the missing evidence.
+        item.metadata = null;
+      } else if (rawPipelineMetadata === "invalid") {
+        console.warn(`Meeting explorer: voice-note row ${id} has invalid metadata JSON; its pipeline will batch-read metadata`);
+      } else {
+        try {
+          const metadata: unknown = JSON.parse(rawPipelineMetadata);
+          if (metadata !== null && typeof metadata === "object" && !Array.isArray(metadata)) {
+            item.metadata = metadata as Record<string, unknown>;
+          } else {
+            console.warn(`Meeting explorer: voice-note row ${id} has non-object metadata; its pipeline will batch-read metadata`);
+          }
+        } catch {
+          console.warn(`Meeting explorer: voice-note row ${id} has invalid metadata JSON; its pipeline will batch-read metadata`);
+        }
+      }
+    }
+    meetings.push(item);
   }
   return { status: "ok", meetings };
 }

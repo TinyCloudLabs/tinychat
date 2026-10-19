@@ -415,6 +415,15 @@ html[data-platform="android"] .pr-colon {
   white-space: normal;
   overflow-wrap: anywhere;
 }
+.pr-capline-wrap {
+  white-space: normal;
+}
+.pr-caplink {
+  font: inherit;
+  font-weight: 600;
+  color: inherit;
+  text-decoration: underline;
+}
 
 .pr-src-wrap {
   position: relative;

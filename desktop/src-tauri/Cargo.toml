@@ -1,11 +1,11 @@
 [package]
 name = "exo-desktop"
-version = "0.6.0-beta.25"
+version = "0.6.0-beta.31"
 description = "Exo — TinyCloud chat desktop app (exo.tinycloud.xyz)"
 edition = "2021"
 publish = false
 
-# Standalone package: the tinychat repo has no root Cargo workspace.
+# Tauri keeps its own lockfile, independent of the native evaluation workspace.
 [workspace]
 
 [lib]
@@ -19,13 +19,15 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+exo-local-transcription = { path = "../local-transcription", optional = true }
 
 # --- Transcription (anarlog, MIT layer) -------------------------------------
 # Desktop recording + on-device Whisper, reused from fastrepl/anarlog's
 # MIT-licensed Tauri plugins. This is a first-class desktop feature, included
 # by default despite its large native dependency graph.
-# Plugin permissions are injected at runtime from
-# capabilities-transcription/ (see src/lib.rs and ../README.md).
+# Transcription starts through Exo's guarded staged-note Whisper command,
+# not the plugins' unrestricted start commands; capabilities-transcription/
+# is injected at runtime (see src/lib.rs and ../README.md).
 [dependencies.tauri-plugin-transcription]
 git = "https://github.com/fastrepl/anarlog"
 rev = "864ddc1f692116d128eea2692fd72b0a51007768"
@@ -69,6 +71,28 @@ rev = "864ddc1f692116d128eea2692fd72b0a51007768"
 optional = true
 
 # Recorder and debug smoke runner use tokio for timers and task coordination.
+# Wrapper parameter types and the recorder's exact session lookup come from
+# the same pinned revision as the two plugins.
+[dependencies.anlg-language]
+package = "language"
+git = "https://github.com/fastrepl/anarlog"
+rev = "864ddc1f692116d128eea2692fd72b0a51007768"
+optional = true
+
+[dependencies.anlg-transcription-core]
+package = "transcription-core"
+git = "https://github.com/fastrepl/anarlog"
+rev = "864ddc1f692116d128eea2692fd72b0a51007768"
+optional = true
+
+[dependencies.reqwest]
+version = "0.13.4"
+optional = true
+
+[dependencies.parking_lot]
+version = "0.12"
+optional = true
+
 [dependencies.tokio]
 version = "1"
 features = ["time", "sync"]
@@ -141,6 +165,7 @@ transcription = [
     "dep:tauri-plugin-local-stt",
     "dep:audio-actual",
     "dep:anlg-mp3",
+    "dep:exo-local-transcription",
     "dep:hound",
     "dep:tauri-plugin-settings",
     "dep:tokio",
@@ -149,7 +174,18 @@ transcription = [
     "dep:hex",
     "dep:uuid",
     "dep:futures-util",
+    "dep:anlg-language",
+    "dep:anlg-transcription-core",
+    "dep:reqwest",
+    "dep:parking_lot",
 ]
+ipc-selftest = ["transcription"]
+
+[dev-dependencies]
+ractor = "0.15"
+tokio = { version = "1", features = ["rt", "macros"] }
+tempfile = "3"
+
 
 # macOS 27 dyld rejects some stripped proc-macro dylibs with a misaligned
 # LINKEDIT string pool (rust-lang/rust#157750). Keep build-time crates unstripped

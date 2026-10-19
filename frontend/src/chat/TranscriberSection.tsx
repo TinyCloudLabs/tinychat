@@ -369,9 +369,11 @@ function MeetingRow(props: {
   const active = ACTIVE_STATUSES.has(meeting.status);
   const stoppable = active && meeting.status !== "processing";
   const when = formatWhen(meeting.metadata?.scheduled_start ?? meeting.created_at);
+  const shared = meeting.metadata?.shared === true;
   const meta = [
     statusLabel(meeting.status),
     when,
+    shared ? "Shared recording" : null,
     meeting.bot?.name,
     props.saveState === "saved" ? "Saved to your space" : null,
     props.saveState === "saving" ? "Saving to your space…" : null,
@@ -441,7 +443,7 @@ function MeetingRow(props: {
               onClick={() => props.onRemove(meeting.id)}
               className="text-muted-foreground"
             >
-              Remove
+              {shared ? "Remove from my list" : "Remove"}
             </Button>
           )}
         </div>
@@ -586,6 +588,10 @@ export function describeFailure<T>(result: TranscriberResult<T>): string {
     case "not-found":
       return "That meeting is no longer stored.";
     case "retryable":
+      // TC-907: every notetaker is in a meeting; the backend relays ptx's "All N … are busy" text.
+      if (result.code === "capacity_exhausted") {
+        return result.message ?? "All TinyCloud notetakers are busy right now. Try again when one of the current meetings ends.";
+      }
       return "The transcriber is temporarily unavailable. Try again in a moment.";
     case "rejected":
       switch (result.code) {

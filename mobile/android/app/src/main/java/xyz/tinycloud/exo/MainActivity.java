@@ -26,6 +26,7 @@ public class MainActivity extends BridgeActivity implements CaptureEngine.Listen
     private LaunchCommandStore commands;
     private String consumedCommandId;
     private boolean askingPermission;
+    private WebViewRecovery webViewRecovery;
     private final Handler main = new Handler(Looper.getMainLooper());
     private final ActivityResultLauncher<String> requestNotifications = registerForActivityResult(
         new ActivityResultContracts.RequestPermission(), granted -> main.post(this::handlePending));
@@ -54,6 +55,14 @@ public class MainActivity extends BridgeActivity implements CaptureEngine.Listen
         consumeIntent(getIntent());
         super.onCreate(savedInstanceState);
         applySystemTextZoom();
+        webViewRecovery = new WebViewRecovery(this, getBridge().getAppUrl());
+        getBridge().addWebViewListener(webViewRecovery);
+        if (WebViewRecovery.takeHoldNextPage()) {
+            webViewRecovery.holdForReload(getBridge().getWebView());
+        } else {
+            String recoveredUrl = WebViewRecovery.takePendingUrl();
+            if (recoveredUrl != null) getBridge().getWebView().post(() -> getBridge().getWebView().loadUrl(recoveredUrl));
+        }
         CaptureEngine.get(this).addListener(this);
     }
     @Override protected void onNewIntent(Intent intent) {
@@ -137,6 +146,7 @@ public class MainActivity extends BridgeActivity implements CaptureEngine.Listen
         super.onSaveInstanceState(out);
     }
     @Override public void onDestroy() {
+        if (webViewRecovery != null) webViewRecovery.dismissPrompt();
         CaptureEngine.get(this).removeListener(this);
         super.onDestroy();
     }

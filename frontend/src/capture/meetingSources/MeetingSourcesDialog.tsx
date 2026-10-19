@@ -344,6 +344,7 @@ function FirefliesManagePanel({
         connectorName={descriptor.name}
         state={state}
         consentVariant={sync.consentVariant}
+        transcriptConsent={sync.transcriptConsent}
         ingestConsentChecked={sync.ingestConsentChecked}
         consentOpen={consentOpen}
         onIngestConsentChange={sync.setIngestConsentChecked}

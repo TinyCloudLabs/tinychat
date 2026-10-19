@@ -55,7 +55,7 @@ export type PipelineModelState = "absent" | "queued" | "downloading" | "verifyin
 export type PipelineDownloadState = "idle" | "running" | "waiting_for_network" | "low_data_mode" | "failed";
 
 /** `OnDeviceTranscriptSyncState` (P2): the local transcript's write onto the space row. */
-export type PipelineTranscriptSync = { state: "syncing" } | { state: "synced" } | { state: "failed"; message: string };
+export type PipelineTranscriptSync = { state: "syncing" } | { state: "synced" } | { state: "failed"; message: string } | { state: "unrecorded"; message: string };
 
 export interface PipelineOnDevice {
   /** This note's native queue job; null when native has no job for it. */
@@ -65,6 +65,8 @@ export interface PipelineOnDevice {
   /** The model this phone needs, as `onDeviceSttStore` reports it; null when not known. */
   model: { state: PipelineModelState; bytes: number; totalBytes: number; error: string | null } | null;
   download: PipelineDownloadState;
+  /** iOS's built-in speech (`OnDeviceSttStatus["appleSpeech"]`): there is no model to fetch, only assets the OS installs. Absent where a model is. */
+  appleSpeech?: "unsupported" | "locale_unsupported" | "asset_missing" | "ready";
   sync: PipelineTranscriptSync | null;
 }
 
@@ -117,6 +119,10 @@ export interface NotePipelineInput {
      * read's own error. The route and the transcript are unknown then, never "absent" or "ready".
      */
     readError?: string | null;
+    /** The space row has not been read yet (it queues behind uploads on the write lane): what only it can say is not known. */
+    spaceReading?: boolean;
+    /** With `spaceReading`: uploads are ahead of that read in the write lane. */
+    afterUploads?: boolean;
   };
   notes: PipelineNotesSync;
 }
@@ -169,6 +175,7 @@ export function pipelineActionPriority(kind: PipelineActionKind | undefined): nu
 
 type Result = Omit<PipelineStep, "key" | "label">;
 
+const checking = (transcript: NotePipelineInput["transcript"]): string => (transcript.afterUploads === true ? LOCAL_COPY.checkingSpaceAfterUploads : LOCAL_COPY.checkingSpace);
 const block = (cause: string, kind?: PipelineActionKind): PipelineBlocker =>
   kind === undefined ? { cause } : { cause, action: { kind, label: ACTION_LABEL[kind] } };
 const blocked = (cause: string, kind?: PipelineActionKind): Result => ({ state: "blocked", blocker: block(cause, kind) });
@@ -231,6 +238,13 @@ function spaceStep(input: NotePipelineInput): Result {
 /** The model a Local note waits on: null once nothing about the model stands in the way. */
 function modelStep(od: PipelineOnDevice, device: PipelineDevice): Result | null {
   const { model, download } = od;
+  switch (od.appleSpeech) {
+    case "unsupported": return blocked(LOCAL_COPY.speechUnsupported(device));
+    case "locale_unsupported": return blocked(LOCAL_COPY.speechLocaleUnsupported);
+    case "asset_missing": return download === "failed" ? failed(LOCAL_COPY.speechFailed, "retry") : { state: "active", caption: LOCAL_COPY.gettingSpeech };
+    case "ready": return null;
+    case undefined: break;
+  }
   if (download === "failed" || model?.state === "failed") return failed(LOCAL_COPY.modelFailed(model?.error), "retry");
   if (download === "waiting_for_network") return { state: "waiting", caption: LOCAL_COPY.waitingForWifi };
   if (download === "low_data_mode") return { state: "waiting", caption: LOCAL_COPY.lowDataMode };
@@ -255,7 +269,7 @@ function onDeviceStep(input: NotePipelineInput, od: PipelineOnDevice): Result {
   const { sync, stt, queue } = od;
   if (sync?.state === "failed") return failed(LOCAL_COPY.syncFailed(sync.message), "retry");
   if (sync?.state === "syncing") return { state: "active", caption: LOCAL_COPY.adding };
-  if (sync?.state === "synced") return { state: "done" };
+  if (sync?.state === "synced" || sync?.state === "unrecorded") return { state: "done" };
   if (stt === null) {
     const model = modelStep(od, input.device);
     if (model !== null) return model;
@@ -263,9 +277,9 @@ function onDeviceStep(input: NotePipelineInput, od: PipelineOnDevice): Result {
   }
   switch (stt.state) {
     case "done":
-      return saved
-        ? { state: "active", caption: LOCAL_COPY.adding }
-        : { state: "done", sublabel: LOCAL_COPY.readyOnDevice(input.device) };
+      if (!saved) return { state: "done", sublabel: LOCAL_COPY.readyOnDevice(input.device) };
+      // Nothing is adding it (`sync` is null) and the space has no transcript: an attempt that never ran is a blocker, never "adding".
+      return input.transcript.spaceReading === true ? { state: "waiting", caption: checking(input.transcript) } : blocked(LOCAL_COPY.notAdded, "retry");
     case "failed": return failed(LOCAL_COPY.failed(stt.error, input.device), "retry");
     case "cancelled": return blocked(LOCAL_COPY.cancelled(input.device), "retry");
     case "running": {
@@ -287,9 +301,9 @@ function cloudBlockedStep(reason: PipelineBlockedReason): Result {
   }
 }
 
-function cloudStep(cloud: PipelineCloud | null, spaceSaved: boolean): Result {
+function cloudStep(cloud: PipelineCloud | null, spaceSaved: boolean, checkingCaption: string | null): Result {
   if (!spaceSaved) return { state: "upcoming" };
-  if (cloud === null) return { state: "waiting", caption: PRIVATE_COPY.notStarted };
+  if (cloud === null) return { state: "waiting", caption: checkingCaption ?? PRIVATE_COPY.notStarted };
   switch (cloud.kind) {
     case "done": return cloud.outcome === "no_speech" ? { state: "done", caption: PRIVATE_COPY.noSpeech } : { state: "done" };
     case "held": return blocked(cloud.message.trim() || PRIVATE_COPY.notStarted);
@@ -317,8 +331,8 @@ function transcriptStep(input: NotePipelineInput): Result {
   const { inSpace, onDevice, cloud } = input.transcript;
   if (input.route === "private-cloud" && !input.space.saved) return { state: "upcoming" };
   if (inSpace !== null) return inSpace === "no_speech" ? { state: "done", caption: LOCAL_COPY.noSpeech } : { state: "done" };
-  if (input.route === "private-cloud") return cloudStep(cloud, input.space.saved);
-  if (onDevice === null) return input.space.saved ? { state: "waiting", caption: LOCAL_COPY.notStarted } : { state: "upcoming" };
+  if (input.route === "private-cloud") return cloudStep(cloud, input.space.saved, input.transcript.spaceReading === true ? checking(input.transcript) : null);
+  if (onDevice === null) return input.space.saved ? { state: "waiting", caption: input.transcript.spaceReading === true ? checking(input.transcript) : LOCAL_COPY.notStarted } : { state: "upcoming" };
   return onDeviceStep(input, onDevice);
 }
 
@@ -332,7 +346,7 @@ function notesStep(input: NotePipelineInput, transcript: StepState): Result {
     case "failed": return failed(NOTES_COPY.failed, "retry");
     case "skipped": return sync.reason === "no-note" ? { state: "skipped" } : { state: "waiting", caption: NOTES_COPY.waitingForRow };
     // Nothing has started the sync. Behind a transcript that is still running or needs you, it is not its turn: that step owns the blocker.
-    case "idle": return transcript === "done" || transcript === "skipped" ? blocked(NOTES_COPY.notSynced, "retry") : { state: "upcoming" };
+    case "idle": return (transcript === "done" || transcript === "skipped") && input.transcript.spaceReading !== true ? blocked(NOTES_COPY.notSynced, "retry") : { state: "upcoming" };
   }
 }
 
@@ -391,10 +405,19 @@ export function notePipeline(input: NotePipelineInput): NotePipeline {
   ].filter((cause): cause is string => cause !== null);
   const unread = failedReads.length > 0;
   const notices = input.capture.issue === "partial_audio" ? [PHONE_COPY.partialAudio] : [];
+  // The transcript is in the space but the phone could not record that: the step is done, the failure is not dropped, and it has its own repair.
+  const od = input.transcript.onDevice;
+  const unrecorded = od?.sync?.state === "unrecorded" ? LOCAL_COPY.unrecorded(od.sync.message) : null;
+  if (unrecorded !== null) {
+    if (blocker === undefined) {
+      blocker = block(unrecorded, "retry");
+      current = "transcript";
+    } else notices.push(unrecorded);
+  }
   if (unread && blocker === undefined) blocker = block(failedReads.join(" "), "reread");
   else if (unread) notices.push(...failedReads);
 
-  const pipeline: NotePipeline = { steps, current, done: done && !unread };
+  const pipeline: NotePipeline = { steps, current, done: done && !unread && unrecorded === null };
   if (blocker !== undefined) pipeline.blocker = blocker;
   if (notices.length > 0) pipeline.notice = notices.join(" ");
   return pipeline;

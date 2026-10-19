@@ -7,6 +7,7 @@ import { MemoryRouter } from "react-router-dom";
 
 import { SoftHomeProvider } from "../home/softHome";
 import { LibraryRow, libraryRowAsideDuration, libraryRowBadge, libraryRowMeta, libraryRowTitle, type LibraryItem } from "./LibraryRow";
+import type { NotePipeline } from "@/lib/voiceNotes/notePipeline";
 
 const NOW = new Date(2026, 9, 10, 19, 30);
 const voice = (patch: Partial<LibraryItem> = {}): LibraryItem => ({
@@ -17,8 +18,8 @@ const meeting: LibraryItem = {
   id: "row-2", source: "fireflies", sourceId: "mtg-2", title: "Weekly sync", startedAt: new Date(2026, 9, 10, 14, 0).toISOString(), durationSecs: 1880,
 };
 
-function render(item: LibraryItem, options: { grouped?: boolean; soft?: boolean } = {}) {
-  const row = <LibraryRow item={item} now={NOW} grouped={options.grouped ?? false} />;
+function render(item: LibraryItem, options: { grouped?: boolean; soft?: boolean; pipeline?: NotePipeline } = {}) {
+  const row = <LibraryRow item={item} now={NOW} grouped={options.grouped ?? false} pipeline={options.pipeline} />;
   return renderToStaticMarkup(
     <MemoryRouter>
       {options.soft === false ? <ul>{row}</ul> : <SoftHomeProvider enabled issues={{}} onDismissIssue={() => true}>{row}</SoftHomeProvider>}
@@ -77,16 +78,27 @@ describe("a note not yet settled in the space", () => {
     expect(libraryRowBadge(meeting)).toBeNull();
   });
 
-  test("shows its badge on both lists, and a settled row shows none", () => {
+  test("uses the Halo on Soft rows and keeps the old badge in the plain list", () => {
     const onPhone = voice({ id: "on-phone:rec-1", onPhone: true, title: null });
-    for (const soft of [true, false]) {
-      const html = render(onPhone, { soft });
-      expect(html).toContain('data-testid="row-badge"');
-      expect(html).toContain(">On this phone<");
-      expect(html).toContain('href="/chat/capture/library/on-phone%3Arec-1"');
-    }
-    expect(render(onPhone)).toContain('aria-label="Voice note. On this phone. Today 7:16 PM · 0:14"');
-    expect(render(voice({ saving: true }))).toContain(">Saving…<");
+    const active: NotePipeline = { steps: [
+      { key: "phone", label: "On this phone", state: "done" },
+      { key: "space", label: "In your space", state: "waiting", caption: "Waiting to upload" },
+      { key: "transcript", label: "Transcript", state: "upcoming" },
+      { key: "notes", label: "Notes", state: "skipped" },
+    ], current: "space", done: false };
+    const html = render(onPhone, { pipeline: active });
+    expect(html).toContain('data-pipeline-halo=""');
+    expect(html).toContain('aria-label="Voice note. Waiting to upload. Today 7:16 PM · 0:14"');
+    expect(html).not.toContain("row-badge");
+    const done: NotePipeline = { steps: [
+      { key: "phone", label: "On this phone", state: "done" },
+      { key: "space", label: "In your space", state: "done" },
+      { key: "transcript", label: "Transcript", state: "skipped" },
+      { key: "notes", label: "Notes", state: "skipped" },
+    ], current: null, done: true };
+    expect(render(voice(), { pipeline: done })).not.toContain("data-pipeline-halo");
+    expect(render(onPhone, { soft: false })).toContain('data-testid="row-badge"');
+    expect(render(voice({ saving: true }))).not.toContain("Saving…");
     expect(render(voice())).not.toContain("row-badge");
   });
 });

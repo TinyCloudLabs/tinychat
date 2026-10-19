@@ -141,6 +141,19 @@ describe("TranscriberView", () => {
     expect(failed).toContain(">Remove<");
   });
 
+  test("TC-581: a recording shared from another account says so and only removes it from this list", () => {
+    const shared = render({ meetings: [meeting({ status: "completed", metadata: { source: "google-calendar-autojoin",
+      calendar_title: "Team sync", scheduled_start: "2026-09-25T12:00:00.000Z", shared: true } })] });
+    expect(shared).toContain("Shared recording");
+    expect(shared).toContain(">Remove from my list<");
+    expect(shared).toContain(">Transcript<");
+    expect(shared).toContain("Team sync");
+    const own = render({ meetings: [meeting({ status: "completed" })] });
+    expect(own).not.toContain("Shared recording");
+    expect(own).toContain(">Remove<");
+    expect(own).not.toContain("Remove from my list");
+  });
+
   test("ending a meeting shows immediate finalization feedback", () => {
     const html = render({
       meetings: [meeting({ status: "in_progress" })],
@@ -264,6 +277,13 @@ describe("TranscriberView", () => {
       "temporarily unavailable",
     );
     expect(describeFailure({ status: "feature-dark" })).toContain("configured");
+  });
+
+  test("TC-907: a capacity refusal shows ptx's busy message, not the generic outage copy", () => {
+    const message = "All 2 meeting notetakers are busy right now. Try again when one of the current meetings ends.";
+    expect(describeFailure({ status: "retryable", httpStatus: 429, code: "capacity_exhausted", message })).toBe(message);
+    expect(describeFailure({ status: "retryable", httpStatus: 429, code: "capacity_exhausted" })).toContain("notetakers are busy");
+    expect(describeFailure({ status: "retryable", httpStatus: 429, code: "upstream_rate_limited" })).toContain("temporarily unavailable");
   });
 });
 

@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "ExoCapture",
-    platforms: [.iOS(.v18)],
+    platforms: [.iOS("26.0")],
     products: [.library(name: "ExoCapture", targets: ["ExoCapture"])],
     dependencies: [.package(path: "../CaptureCore")],
     targets: [

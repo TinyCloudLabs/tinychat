@@ -1,8 +1,5 @@
 import type { TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
-import {
-  isOnDeviceReady,
-  type OnDeviceSttStatus,
-} from "@/lib/voiceNotes/onDeviceStt";
+import { isAppleSpeech, type OnDeviceSttStatus } from "@/lib/voiceNotes/onDeviceStt";
 import { FINAL_COPY } from "./finalCopy";
 
 export const SKIP_ENABLED = true;
@@ -159,7 +156,12 @@ export function modeAvailability(
       : { available: false, reason: FINAL_COPY.whisperUnavailable };
   }
 
-  return model && isOnDeviceReady(model)
+  if (model && isAppleSpeech(model)) {
+    if (model.appleSpeech === "unsupported") return { available: false, reason: FINAL_COPY.speechUnsupported };
+    if (model.appleSpeech === "locale_unsupported") return { available: false, reason: FINAL_COPY.speechLocaleUnsupported };
+  }
+  // Local is always choosable once the phone's model status is known: a missing model downloads on its own and notes wait for it.
+  return model
     ? { available: true }
     : { available: false, reason: FINAL_COPY.modelUnavailable };
 }

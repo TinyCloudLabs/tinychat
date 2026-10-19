@@ -441,6 +441,8 @@ jobs:
           GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}
           GOOGLE_OAUTH_REDIRECT_URI: ${{ secrets.GOOGLE_OAUTH_REDIRECT_URI }}
           GOOGLE_MEET_OAUTH_ENABLED: ${{ secrets.GOOGLE_MEET_OAUTH_ENABLED }}
+          # TC-581 calendar auto-join transcript sharing (repo variable). Unset = off.
+          CALENDAR_AUTOJOIN_SHARING: ${{ vars.CALENDAR_AUTOJOIN_SHARING }}
           # Tunables (repo variables). Unset = the code defaults; a non-positive value is a
           # hard boot error, never a silent revert to the default.
           CONNECTOR_DRAIN_INTERVAL_MS: ${{ vars.CONNECTOR_DRAIN_INTERVAL_MS }}
@@ -453,6 +455,16 @@ jobs:
           TRANSCRIPTION_API_URL: ${{ vars.TRANSCRIPTION_API_URL }}
           TRANSCRIPTION_API_KEY: ${{ secrets.TRANSCRIPTION_API_KEY }}
           TRANSCRIPTION_BOT_NAME: ${{ vars.TRANSCRIPTION_BOT_NAME }}
+          # TC-641 transcript writer remains dark until node TC-825 is deployed.
+          # Whsec_ is optional during unsigned-wake dev testing; no value is
+          # provisioned here. Declare keys now so a later CVM env update can
+          # reach the process through Phala's frozen allowed_envs whitelist.
+          TRANSCRIPT_SERVER_DELIVERY_ENABLED: ${{ vars.TRANSCRIPT_SERVER_DELIVERY_ENABLED || 'false' }}
+          TRANSCRIPT_SERVER_DELIVERY_ADDRESSES: ${{ vars.TRANSCRIPT_SERVER_DELIVERY_ADDRESSES }}
+          TRANSCRIPTION_WEBHOOK_URL: ${{ vars.TRANSCRIPTION_WEBHOOK_URL }}
+          TRANSCRIPTION_WEBHOOK_SECRET: ${{ secrets.TRANSCRIPTION_WEBHOOK_SECRET }}
+          TRANSCRIPT_DELIVERY_SWEEP_MS: ${{ vars.TRANSCRIPT_DELIVERY_SWEEP_MS }}
+          TRANSCRIPT_DELIVERY_MAX_WRITES_PER_MIN: ${{ vars.TRANSCRIPT_DELIVERY_MAX_WRITES_PER_MIN }}
           # Exo private cloud transcription (backend/src/routes/private-cloud-transcription.ts).
           # Ships DARK: ENABLED defaults 'false', so /api/transcriber/private-cloud/* is never
           # mounted (404). ACCOUNTS: empty = nobody, `*` alone = everyone. The URL is the ptx-batch
@@ -532,12 +544,19 @@ jobs:
             printf '%s\n' "GOOGLE_OAUTH_CLIENT_SECRET=$GOOGLE_OAUTH_CLIENT_SECRET"
             printf '%s\n' "GOOGLE_OAUTH_REDIRECT_URI=$GOOGLE_OAUTH_REDIRECT_URI"
             printf '%s\n' "GOOGLE_MEET_OAUTH_ENABLED=${GOOGLE_MEET_OAUTH_ENABLED:-false}"
+            printf '%s\n' "CALENDAR_AUTOJOIN_SHARING=${CALENDAR_AUTOJOIN_SHARING:-false}"
             printf '%s\n' "CONNECTOR_DRAIN_INTERVAL_MS=$CONNECTOR_DRAIN_INTERVAL_MS"
             printf '%s\n' "CONNECTOR_A_FETCH_CEILING_PER_HOUR=$CONNECTOR_A_FETCH_CEILING_PER_HOUR"
             printf '%s\n' "CONNECTOR_A_SECRET_READ_CEILING_PER_HOUR=$CONNECTOR_A_SECRET_READ_CEILING_PER_HOUR"
             printf '%s\n' "TRANSCRIPTION_API_URL=$TRANSCRIPTION_API_URL"
             printf '%s\n' "TRANSCRIPTION_API_KEY=$TRANSCRIPTION_API_KEY"
             printf '%s\n' "TRANSCRIPTION_BOT_NAME=$TRANSCRIPTION_BOT_NAME"
+            printf '%s\n' "TRANSCRIPT_SERVER_DELIVERY_ENABLED=${TRANSCRIPT_SERVER_DELIVERY_ENABLED:-false}"
+            printf '%s\n' "TRANSCRIPT_SERVER_DELIVERY_ADDRESSES=${TRANSCRIPT_SERVER_DELIVERY_ADDRESSES:-}"
+            printf '%s\n' "TRANSCRIPTION_WEBHOOK_URL=${TRANSCRIPTION_WEBHOOK_URL:-}"
+            printf '%s\n' "TRANSCRIPTION_WEBHOOK_SECRET=${TRANSCRIPTION_WEBHOOK_SECRET:-}"
+            printf '%s\n' "TRANSCRIPT_DELIVERY_SWEEP_MS=${TRANSCRIPT_DELIVERY_SWEEP_MS:-}"
+            printf '%s\n' "TRANSCRIPT_DELIVERY_MAX_WRITES_PER_MIN=${TRANSCRIPT_DELIVERY_MAX_WRITES_PER_MIN:-}"
             printf '%s\n' "PRIVATE_CLOUD_TRANSCRIPTION_ENABLED=${PRIVATE_CLOUD_TRANSCRIPTION_ENABLED:-false}"
             printf '%s\n' "PRIVATE_CLOUD_TRANSCRIPTION_ACCOUNTS=${PRIVATE_CLOUD_TRANSCRIPTION_ACCOUNTS:-}"
             printf '%s\n' "PRIVATE_CLOUD_TRANSCRIPTION_API_URL=$PRIVATE_CLOUD_TRANSCRIPTION_API_URL"

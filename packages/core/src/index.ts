@@ -1,4 +1,28 @@
 // ── Delegation ───────────────────────────────────────────────────────
+export {
+  APP_ID,
+  CONNECTORS_SQL_DB_NAME,
+  CONNECTORS_KV_PREFIX,
+  CONNECTOR_SCHEMA,
+  TRANSCRIBER_MEETING_SOURCE,
+  TRANSCRIPT_WRITER_POLICY,
+  TRANSCRIPT_WRITER_PERMISSIONS,
+  transcriptKvKey,
+  connectorMeetingId,
+  transcriberMeetingTitle,
+  normalizeTranscriberTranscript,
+  ensureConnectorSchema,
+  writeTranscriberMeeting,
+  transcriberMeetingInSpace,
+  type NormalizedMeeting,
+  type TranscriptSentence,
+  type TranscriberMeetingJson,
+  type TranscriberTranscriptJson,
+  type PortResult,
+  type ConnectorStorePort,
+  type NormalizedTranscriberMeeting,
+  type WrittenTranscriberMeeting,
+} from "./connector-meeting.js";
 
 export type DelegationStatus = "active" | "expired" | "none" | "stale";
 
@@ -88,6 +112,8 @@ export interface DelegatingServerInfo extends ServerInfo {
 export interface DelegationResponse {
   status: DelegationStatus;
   expiresAt: string | null;
+  verified: boolean;
+  delivery: "enabled" | "disabled" | "schema_missing";
 }
 
 export interface ApiError {
@@ -117,7 +143,7 @@ export const DEFAULT_DELEGATION_EXPIRY_MS = 365 * 24 * 60 * 60 * 1000;
  * sessions, and the isolated sessions that mint agent delegations (a delegation cannot
  * outlive its parent session). Also the maximum lifetime of newly issued backend bearer
  * tokens, further capped by the signed SIWE expiration time. Existing bearers retain their
- * embedded expiry. 30 days, set explicitly until the SDK default matches.
+ * embedded expiry. 30 days.
  */
 export const SESSION_EXPIRATION_MS = 30 * 24 * 60 * 60 * 1000;
 

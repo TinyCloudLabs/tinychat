@@ -4,7 +4,7 @@
 // out and offline, so its text (or "Couldn't transcribe on this phone" plus
 // Retry) comes from the native STT queue directly, not from the space's
 // transcript, which may still be unsaved or unsynced here.
-import { TRANSCRIBER_NAME } from "@/capture/recorder/final/finalCopy";
+import { FINAL_COPY, TRANSCRIBER_NAME } from "@/capture/recorder/final/finalCopy";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Capacitor } from "@capacitor/core";
 import { Loader2Icon, RefreshCwIcon } from "lucide-react";
@@ -14,11 +14,11 @@ import { MeetingAudioPlayer } from "@/chat/MeetingAudioPlayer";
 import { cn } from "@/lib/utils";
 import { useResolvedTheme } from "@/lib/theme";
 import { PipelineStepper } from "@/capture/pipeline/PipelineStepper";
-import type { NotePipelineView } from "@/lib/voiceNotes/useNotePipeline";
+import { type NotePipelineView } from "@/lib/voiceNotes/useNotePipeline";
 import "./final/soft.css";
 import { VoiceNotes, type LocalTranscript, type NoteSttState, type TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { localTranscriptionUnavailable } from "@/lib/voiceNotes/captureEngine";
-import { OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
+import { isOnDeviceReady, isOnDeviceStatusLoaded, OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
 import { downloadOnDeviceModel, onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
 import { onDeviceQueuePlace } from "@/lib/voiceNotes/onDeviceQueue";
 import { localModelGuide, modelActionLabel } from "./final/localModelGuide";
@@ -147,9 +147,11 @@ export function onDeviceOffer(args: {
   canUsePrivate: boolean;
   /** The receipt shows an Open button for the note. */
   canOpen: boolean;
+  /** The on-device model is on the phone. A note's `waiting_for_model` is only its starting state until the queue picks it up. */
+  modelReady: boolean;
 }) {
   const { onDevice, movedToPrivate } = args;
-  const needsModel = !movedToPrivate && onDevice.kind === "pending" && onDevice.state === "waiting_for_model";
+  const needsModel = !movedToPrivate && !args.modelReady && onDevice.kind === "pending" && onDevice.state === "waiting_for_model";
   const usePrivate = needsModel && args.saved && args.canUsePrivate;
   const actionable = args.canOpen || (needsModel && (args.guide.action !== undefined || usePrivate)) || (!movedToPrivate && onDevice.kind === "failed" && args.hasNote);
   return { needsModel, usePrivate, actionable };
@@ -177,7 +179,7 @@ export function NeedsOnDeviceModel(props: { guide: ReturnType<typeof localModelG
   }
   return (
     <div className="flex flex-col gap-2" data-testid="voice-note-on-device-needs-model">
-      <p role="status" className="text-callout text-muted-foreground">{action ? "Needs the on-device model" : props.guide.reason}</p>
+      <p role="status" className="text-callout text-muted-foreground">{action?.label === FINAL_COPY.modelUnavailable ? "Needs the on-device model" : props.guide.reason}</p>
       {(action || props.onUsePrivate) && (
         <div className="flex flex-wrap gap-2">
           {action && (
@@ -232,18 +234,16 @@ export function SavedReceipt(props: SavedReceiptProps) {
   }, [props.saved?.id]);
   const onDevice = useOnDeviceReceipt(props.saved?.id, props.transcriber === "on-device", props.sttHint);
   const sttStatus = useSyncExternalStore(onDeviceSttStore.subscribe, onDeviceSttStore.snapshot, onDeviceSttStore.snapshot);
+  const downloadError = useSyncExternalStore(onDeviceSttStore.subscribe, onDeviceSttStore.downloadError, onDeviceSttStore.downloadError);
   const [modelError, setModelError] = useState<string | null>(null);
   const [switching, setSwitching] = useState(false);
-  const guide = localModelGuide(sttStatus.models.length > 0 ? sttStatus : null, {
-    start: () => {
-      setModelError(null);
-      void downloadOnDeviceModel().then(setModelError);
-    },
-    error: null,
+  const guide = localModelGuide(isOnDeviceStatusLoaded(sttStatus) ? sttStatus : null, {
+    start: () => void downloadOnDeviceModel(),
+    error: downloadError,
   });
   // A Local note moved to private cloud: that line below says so, and the on-device ones step aside.
   const movedToPrivate = props.movedToPrivate === true;
-  const offer = onDeviceOffer({ onDevice, guide, saved, hasNote: !!props.saved, movedToPrivate, canUsePrivate: props.onUsePrivate !== undefined, canOpen: (saved || props.outcome === "local") && props.onOpen !== undefined });
+  const offer = onDeviceOffer({ onDevice, guide, modelReady: isOnDeviceReady(sttStatus), saved, hasNote: !!props.saved, movedToPrivate, canUsePrivate: props.onUsePrivate !== undefined, canOpen: (saved || props.outcome === "local") && props.onOpen !== undefined });
   const { needsModel } = offer;
   const actionable = offer.actionable || (stepperShown && pipelineView.pipeline.blocker?.action !== undefined);
   const usePrivate = offer.usePrivate ? props.onUsePrivate : undefined;

@@ -11,7 +11,7 @@ import { Loader2Icon, RefreshCwIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { captureCapabilities } from "@/lib/voiceNotes/captureEngine";
 import { VoiceNotes, type NoteSttState } from "@/lib/voiceNotes/nativeVoiceNotes";
-import { OnDeviceStt, type OnDeviceSttStatus } from "@/lib/voiceNotes/onDeviceStt";
+import { isOnDeviceStatusLoaded, OnDeviceStt, type OnDeviceSttStatus } from "@/lib/voiceNotes/onDeviceStt";
 import {
   downloadOnDeviceModel,
   onDeviceSttStore,
@@ -180,15 +180,9 @@ const SHEET_BUTTON = "w-full border-transparent bg-[color:var(--glass,transparen
 /** A note waiting for the model: one sentence, then the way forward as full-width buttons. Nothing is running, so no spinner. */
 function WaitingForModel(props: { onUsePrivate?: () => Promise<string | null> }) {
   const status = useSyncExternalStore(onDeviceSttStore.subscribe, onDeviceSttStore.snapshot, onDeviceSttStore.snapshot);
-  const [error, setError] = useState<string | null>(null);
-  const model = status.models.length > 0 ? status : null;
-  const guide = localModelGuide(model, {
-    start: () => {
-      setError(null);
-      void downloadOnDeviceModel().then(setError);
-    },
-    error: null,
-  });
+  const downloadError = useSyncExternalStore(onDeviceSttStore.subscribe, onDeviceSttStore.downloadError, onDeviceSttStore.downloadError);
+  const model = isOnDeviceStatusLoaded(status) ? status : null;
+  const guide = localModelGuide(model, { start: () => void downloadOnDeviceModel(), error: downloadError });
   return (
     <div className="flex flex-col gap-3" data-testid="voice-note-on-device-waiting">
       <p role="status" className="text-callout text-muted-foreground">{waitingForModelSentence(model, guide)}</p>
@@ -198,7 +192,6 @@ function WaitingForModel(props: { onUsePrivate?: () => Promise<string | null> })
         </Button>
       )}
       <PrivateInstead onUse={props.onUsePrivate} />
-      {error && <p role="alert" className="text-callout text-destructive">{error}</p>}
     </div>
   );
 }

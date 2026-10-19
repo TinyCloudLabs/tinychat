@@ -8,6 +8,7 @@ import type { VoiceNoteTranscriptionProps } from "@/capture/recorder/transcripti
 import { notePipeline, type NotePipeline } from "./notePipeline";
 import type { OnDeviceSttStatus, OnDeviceSttPlugin, SttModelId } from "./onDeviceStt";
 import { __setOnDeviceSttForTests } from "./onDeviceStt";
+import { __resetOnDeviceSttStoreForTests } from "./onDeviceSttStore";
 import {
   buildNotePipelineInput,
   combinedModel,
@@ -388,6 +389,7 @@ describe("actions", () => {
     const calls: string[] = [];
     let refuse = false;
     __setOnDeviceSttForTests({
+      status: async () => ({ ...BOTH_READY, engine: "parakeet" as const }),
       downloadNow: async () => { calls.push("downloadNow"); if (refuse) throw new Error("no network"); },
       enqueue: async ({ id }: { id: string }) => { calls.push(`enqueue:${id}`); },
     } as unknown as OnDeviceSttPlugin);
@@ -398,7 +400,8 @@ describe("actions", () => {
     expect(await runPipelineAction("retry", failed)).toBeNull();
     expect(calls).toEqual(["downloadNow", "downloadNow", `enqueue:${ID}`]);
     refuse = true;
-    expect(await runPipelineAction("get-model", waiting)).toBe("Could not start the download: no network");
+    expect(await runPipelineAction("get-model", waiting)).toBe("Couldn't download the on-device model: no network");
+    __resetOnDeviceSttStoreForTests();
   });
 
   test("retry on the notes step with no account says so instead of doing nothing", async () => {

@@ -33,31 +33,31 @@ describe("localModelGuide", () => {
       status({ download: { policy: "wifi", state: "running" } }, { state: "downloading", bytes: 301 * MB }),
       download().download,
     );
-    expect(guide.reason).toBe("Downloading the model: 50% of 602 MB");
+    expect(guide.reason).toBe("Downloading on-device model · 50%");
     expect(guide.action).toBeUndefined();
   });
 
   test("a model the phone is still verifying says so and offers nothing to press", () => {
     const guide = localModelGuide(status({}, { state: "checking" }), download().download);
-    expect(guide).toEqual({ reason: "Checking the downloaded model…" });
+    expect(guide).toEqual({ reason: "Checking the on-device model…" });
   });
 
   test("a failed model says why and offers the download again", () => {
     const guide = localModelGuide(status({}, { state: "failed", error: "disk full" }), download().download);
-    expect(guide.reason).toBe("Couldn't download the model: disk full");
-    expect(guide.action?.label).toBe("Try the download again");
+    expect(guide.reason).toBe("Couldn't download the on-device model: disk full");
+    expect(guide.action?.label).toBe("Try again");
   });
 
   test("a failed download state is not 'not downloaded'", () => {
     const guide = localModelGuide(status({ download: { policy: "wifi", state: "failed" } }), download().download);
-    expect(guide.reason).toBe("Couldn't download the model");
+    expect(guide.reason).toBe("Couldn't download the on-device model");
     expect(guide.action).toBeDefined();
   });
 
   test("a download that could not start shows that reason, with Try again", () => {
     const guide = localModelGuide(status(), download("Could not start the download: no network plugin").download);
     expect(guide.reason).toBe("Could not start the download: no network plugin");
-    expect(guide.action?.label).toBe("Try the download again");
+    expect(guide.action?.label).toBe("Try again");
   });
 
   test("waiting for Wi-Fi and Low Data Mode say so", () => {
@@ -91,11 +91,41 @@ describe("the waiting-for-model copy", () => {
 
   test("a download underway, a failure or a pause is the guide's own line, and a retry keeps its label", () => {
     const running = status({ download: { policy: "wifi", state: "running" } }, { state: "downloading", bytes: 301 * MB });
-    expect(waitingForModelSentence(running, localModelGuide(running, download().download))).toBe("Downloading the model: 50% of 602 MB");
+    expect(waitingForModelSentence(running, localModelGuide(running, download().download))).toBe("Downloading on-device model · 50%");
     const failed = localModelGuide(status(), download("No space left").download);
     expect(waitingForModelSentence(status(), failed)).toBe("No space left");
-    expect(modelActionLabel(failed.action!)).toBe("Try the download again");
+    expect(modelActionLabel(failed.action!)).toBe("Try again");
     const checking = status({}, { state: "checking" });
-    expect(waitingForModelSentence(checking, localModelGuide(checking, download().download))).toBe("Checking the downloaded model…");
+    expect(waitingForModelSentence(checking, localModelGuide(checking, download().download))).toBe("Checking the on-device model…");
+  });
+});
+
+describe("localModelGuide on iOS's built-in speech", () => {
+  const apple = (appleSpeech: OnDeviceSttStatus["appleSpeech"], state: OnDeviceSttStatus["download"]["state"] = "idle"): OnDeviceSttStatus =>
+    status({ engine: "apple-speech", appleSpeech, models: [], download: { policy: "system", state } });
+
+  test("missing speech assets offer Get speech from iOS with no size, and it starts the install", () => {
+    const { calls, download: d } = download();
+    const guide = localModelGuide(apple("asset_missing"), d);
+    expect(guide.reason).toBe("Speech from iOS isn't on this phone yet");
+    expect(guide.reason).not.toContain("MB");
+    expect(guide.action?.label).toBe("Get speech from iOS");
+    guide.action!.run();
+    expect(calls.start).toBe(1);
+  });
+
+  test("an install underway says so and offers nothing to press", () => {
+    expect(localModelGuide(apple("asset_missing", "running"), download().download)).toEqual({ reason: "Getting speech from iOS…" });
+  });
+
+  test("a failed install says so and offers Try again", () => {
+    const guide = localModelGuide(apple("asset_missing", "failed"), download().download);
+    expect(guide.reason).toBe("Couldn't get speech from iOS");
+    expect(guide.action?.label).toBe("Try again");
+  });
+
+  test("an iPhone or language iOS cannot do is a calm reason with nothing to press", () => {
+    expect(localModelGuide(apple("unsupported"), download().download)).toEqual({ reason: "On-device transcription isn't available on this iPhone" });
+    expect(localModelGuide(apple("locale_unsupported"), download().download)).toEqual({ reason: "On-device transcription doesn't support this language yet" });
   });
 });

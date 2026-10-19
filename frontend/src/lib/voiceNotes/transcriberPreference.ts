@@ -7,20 +7,6 @@ const TRANSCRIBER_KEY = "exo.voiceNotes.transcriber";
 const SPEAKERS_KEY = "exo.voiceNotes.identifySpeakers";
 const listeners = new Set<() => void>();
 let memoryPreference: CaptureOptions = { transcriber: "on-device", identifySpeakers: false };
-let memoryExplicit = false;
-
-/** What the recorder knows about the phone right now. `localModelReady` is null until the model's state has been read. */
-export interface EffectiveContext {
-  localModelReady: boolean | null;
-  privateOffered: boolean;
-}
-let contextSource: (() => EffectiveContext) | null = null;
-
-/** The recorder controller registers what it can see (model state, private-cloud offer) so every default write agrees with the knob. */
-export function setEffectiveContextSource(source: () => EffectiveContext): () => void {
-  contextSource = source;
-  return () => { if (contextSource === source) contextSource = null; };
-}
 
 export function subscribeTranscriberPreference(listener: () => void): () => void {
   listeners.add(listener);
@@ -42,33 +28,8 @@ export function readTranscriberPreference(): CaptureOptions {
   } catch { return memoryPreference; }
 }
 
-/** True once the user has picked a mode themselves; the untouched default is not a choice. */
-export function transcriberChoiceIsExplicit(): boolean {
-  const store = storage();
-  if (!store) return memoryExplicit;
-  try { return store.getItem(TRANSCRIBER_KEY) !== null; } catch { return memoryExplicit; }
-}
-
-/**
- * A signed-in phone that never chose a mode, with on-device transcription supported but its model known to be
- * absent, would wait forever on Local: its default is Private when that is offered, else Audio only. A mode the
- * user chose is never replaced; the recorder shows what it needs instead.
- */
-function modelAbsentDefault(pref: TranscriberId, signedIn: boolean, context: EffectiveContext | null, explicit: boolean): "private-cloud" | "off" | null {
-  if (!signedIn || pref !== "on-device" || !context || context.localModelReady !== false) return null;
-  if (!captureCapabilities().localTranscription || !onDeviceTranscriptionAvailable() || explicit) return null;
-  return context.privateOffered ? "private-cloud" : "off";
-}
-
-/** The default stands in for Local because the on-device model is missing. */
-export function localModelSubstituted(pref: TranscriberId, signedIn: boolean): boolean {
-  return modelAbsentDefault(pref, signedIn, contextSource?.() ?? null, transcriberChoiceIsExplicit()) !== null;
-}
-
 /** An installed engine without an on-device route maps the choice to private cloud; the stored preference is untouched. */
-export function effectiveTranscriber(pref: TranscriberId, signedIn: boolean, explicit = transcriberChoiceIsExplicit()): TranscriberId {
-  const substitute = modelAbsentDefault(pref, signedIn, contextSource?.() ?? null, explicit);
-  if (substitute) return substitute;
+export function effectiveTranscriber(pref: TranscriberId, signedIn: boolean): TranscriberId {
   const transcriber = signedIn ? pref : "on-device";
   if (transcriber === "on-device" && captureEngineAvailable() && !onDeviceTranscriptionAvailable())
     return !signedIn && captureEngineKind() === "tauri" ? "off" : "private-cloud";
@@ -76,8 +37,8 @@ export function effectiveTranscriber(pref: TranscriberId, signedIn: boolean, exp
 }
 
 /** Disabled speaker modes keep the preference but send false to native capture. */
-export function effectiveCaptureOptions(pref: CaptureOptions, signedIn: boolean, explicit = transcriberChoiceIsExplicit()): CaptureOptions {
-  const transcriber = effectiveTranscriber(pref.transcriber, signedIn, explicit);
+export function effectiveCaptureOptions(pref: CaptureOptions, signedIn: boolean): CaptureOptions {
+  const transcriber = effectiveTranscriber(pref.transcriber, signedIn);
   return { transcriber, identifySpeakers: transcriber === "assemblyai"
     || transcriber === "on-device" && captureCapabilities().localTranscription ? pref.identifySpeakers : false };
 }
@@ -89,8 +50,8 @@ export async function readDefaultTranscriber(): Promise<TranscriberId> {
 
 type EngineDefaults = Awaited<ReturnType<typeof VoiceNotes.getCaptureDefaults>>;
 
-// Default writes run one at a time: each reads the preference and the choice's explicitness when it runs, so a
-// model or offer refresh can never overwrite a choice that is still being written.
+// Default writes run one at a time: each reads the preference when it runs, so a refresh can never overwrite a
+// choice that is still being written.
 let writeLane: Promise<unknown> = Promise.resolve();
 function inOrder<T>(write: () => Promise<T>): Promise<T> {
   const run = writeLane.then(write);
@@ -99,9 +60,9 @@ function inOrder<T>(write: () => Promise<T>): Promise<T> {
 }
 
 /** Writes the effective default for the current account to the engine and returns what it replaced, or null when nothing changed. Never during a sign-in or sign-out transition. */
-async function writeEffectiveDefaults(pref: CaptureOptions, explicit: boolean, attempting?: (before: EngineDefaults) => void): Promise<EngineDefaults | null> {
+async function writeEffectiveDefaults(pref: CaptureOptions, attempting?: (before: EngineDefaults) => void): Promise<EngineDefaults | null> {
   const current = await withCaptureDeadline(VoiceNotes.getCaptureDefaults());
-  const effective = effectiveCaptureOptions(pref, current.accountDid !== null, explicit);
+  const effective = effectiveCaptureOptions(pref, current.accountDid !== null);
   // A preference write must not re-assign the previous DID during sign-out.
   if (current.status === "transitioning" || (current.transcriber === effective.transcriber && current.identifySpeakers === effective.identifySpeakers)) return null;
   attempting?.(current);
@@ -139,7 +100,7 @@ async function restoreAfterFailure(
     }
   }
   if (before) {
-    const shown = effectiveCaptureOptions(readTranscriberPreference(), before.accountDid !== null, transcriberChoiceIsExplicit());
+    const shown = effectiveCaptureOptions(readTranscriberPreference(), before.accountDid !== null);
     const unchanged = shown.transcriber === before.transcriber && shown.identifySpeakers === before.identifySpeakers;
     const target = unchanged ? before : {
       ...before,
@@ -164,7 +125,7 @@ export function settleDefaults(): Promise<void> {
   return inOrder(async () => {
     if (unreconciled === null) return;
     try {
-      await writeEffectiveDefaults(readTranscriberPreference(), transcriberChoiceIsExplicit());
+      await writeEffectiveDefaults(readTranscriberPreference());
     } catch (caught) {
       console.error("[VoiceNotes] The default transcription mode is still not put right; recording is held", caught);
       throw new Error(`${caught instanceof Error ? caught.message : String(caught)} (the default transcription mode could not be put right, so recording is held)`, { cause: caught });
@@ -186,7 +147,7 @@ export function writeAccountDefaults(
     const native = await withCaptureDeadline(VoiceNotes.getCaptureDefaults());
     const account = plan(native);
     if (!account) return null;
-    const effective = effectiveCaptureOptions(readTranscriberPreference(), account.accountDid !== null, transcriberChoiceIsExplicit());
+    const effective = effectiveCaptureOptions(readTranscriberPreference(), account.accountDid !== null);
     await withCaptureDeadline(VoiceNotes.setCaptureDefaults({ ...native, ...effective, ...account }));
     unreconciled = null;
     return account;
@@ -207,7 +168,7 @@ async function commitPreference(change: Partial<CaptureOptions>): Promise<void> 
     const chosenTranscriber = change.transcriber !== undefined;
     let before: EngineDefaults | null = null;
     try {
-      await writeEffectiveDefaults(pref, chosenTranscriber || transcriberChoiceIsExplicit(), (current) => { before = current; });
+      await writeEffectiveDefaults(pref, (current) => { before = current; });
       if (store) {
         if (chosenTranscriber) store.setItem(TRANSCRIBER_KEY, pref.transcriber);
         store.setItem(SPEAKERS_KEY, pref.identifySpeakers ? "1" : "0");
@@ -216,16 +177,15 @@ async function commitPreference(change: Partial<CaptureOptions>): Promise<void> 
       throw await restoreAfterFailure(caught, store, prior, before);
     }
     memoryPreference = pref;
-    if (chosenTranscriber) memoryExplicit = true;
     unreconciled = null;
   });
   for (const listener of listeners) listener();
 }
 
-/** The effective choice changed under an unchanged preference (the Mac's Whisper became ready, or the on-device model or private-cloud offer changed): rewrite the engine's default and tell the listeners. */
+/** The effective choice changed under an unchanged preference (the Mac's Whisper became ready): rewrite the engine's default and tell the listeners. */
 export async function refreshEffectiveTranscriber(): Promise<void> {
   await inOrder(async () => {
-    await writeEffectiveDefaults(readTranscriberPreference(), transcriberChoiceIsExplicit());
+    await writeEffectiveDefaults(readTranscriberPreference());
     unreconciled = null;
   });
   for (const listener of listeners) listener();

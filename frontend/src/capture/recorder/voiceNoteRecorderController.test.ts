@@ -7,33 +7,51 @@
 // a failed save lands the receipt; a discarded recording is deleted and never
 // saved, even when the limit races it or the phone keeps its copy.
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import { createElement, act } from "react";
+import { createRoot } from "react-dom/client";
 
+import { captureEvents } from "@/capture/captureEvents";
+import { RecorderProvider, useRecorder, type RecorderValue } from "./RecorderProvider";
+import type { VoiceNoteRecorder } from "./useVoiceNoteRecorder";
 import { createFakeVoiceNotes, type FakeVoiceNotes } from "@/harness/fakeVoiceNotes";
 import { fakeVoiceNoteStore } from "@/harness/fakeVoiceNoteStore";
 import { memoryHoldStore } from "@/harness/memoryHoldStore";
 import { __setVoiceNotesForTests, type CaptureSource, type VoiceNoteRecording, type VoiceNotesPlugin } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { readDefaultTranscriber, refreshEffectiveTranscriber, setDefaultIdentifySpeakers as setDefaultIdentifySpeakersForTest, setDefaultTranscriber, writeAccountDefaults } from "@/lib/voiceNotes/transcriberPreference";
 import { createVoiceNoteTranscriber, HELD_NOTE_MESSAGE, type VoiceNoteTranscriber } from "@/lib/voiceNotes/voiceNoteTranscription";
-import { VoiceNoteSaveDeferred, type VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
+import { createVoiceNotePipeline, VoiceNoteSaveDeferred, type VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
 import { advanceAccountGeneration } from "@/lib/voiceNotes/accountContext";
+import { CONNECTORS_SQL_DB_NAME } from "@/lib/connectors/connectorStore";
 import { consentToRecordingPrivateCloud, setRecordingRoute } from "./TranscriptionRouteControl";
 import { loadNote } from "@/lib/voiceNotes/recordingNotes";
 import { reportRecordingNoteSyncError } from "@/lib/voiceNotes/voiceNoteStore";
 import { runOnSpaceLane, setSpaceLaneAbortGraceForTests, setSpaceLaneQueueWaitForTests } from "@/lib/spaceWriteLane";
 import { setVoiceNoteSaveDeadlineForTests } from "@/lib/voiceNotes/saveDeadline";
+import { createFakeOnDeviceStt } from "@/lib/voiceNotes/fakeOnDeviceStt";
+import { __setOnDeviceSttForTests, isOnDeviceReady, type OnDeviceSttPlugin } from "@/lib/voiceNotes/onDeviceStt";
+import { __resetOnDeviceSttStoreForTests, onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
 
 const realStore = { ...(await import("@/lib/voiceNotes/voiceNoteStore")) };
 mock.module("@/lib/voiceNotes/voiceNoteStore", () => ({
   ...realStore,
   saveVoiceNote: (...args: Parameters<typeof realStore.saveVoiceNote>) => (fakeVoiceNoteStore.save ?? realStore.saveVoiceNote)(...args),
 }));
+// Import after mock.module: both controller and hook must see the fake save path.
 const { createVoiceNoteRecorderController } = await import("./voiceNoteRecorderController");
 const { micRecoveryMode, readMicRecoveryMode } = await import("./MicDeniedRecovery");
 const { isDiscarded, pendingStore, saveRecording } = await import("@/lib/voiceNotes/recorderSaves");
+const { useVoiceNoteRecorder } = await import("./useVoiceNoteRecorder");
 
 const tcw = { did: "did:example:alice", spaceId: "tinycloud:space" } as TinyCloudWeb;
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+/** Waits for a save to settle without assuming how many macrotasks it takes (CI and local runs differ). */
+async function settled(done: () => boolean, what: string) {
+  for (let attempt = 0; attempt < 400 && !done(); attempt++) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); });
+  if (!done()) throw new Error(`Timed out waiting for ${what}`);
+}
 
 let fake: FakeVoiceNotes;
 /** Stopped recordings still on the phone, as the shells keep them until a save is confirmed. */
@@ -157,6 +175,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   fakeVoiceNoteStore.save = null;
+  __setVoiceNotesForTests(plugin, { available: null });
 });
 
 async function attached() {
@@ -483,7 +502,7 @@ describe("voice-note recorder controller", () => {
     remove();
   });
 
-  test("private cloud needs consent; unavailable model and AssemblyAI report unavailable", async () => {
+  test("private cloud needs consent; AssemblyAI reports unavailable; Local is allowed without its model", async () => {
     await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1,
       transcriber: "on-device", identifySpeakers: false });
     const recorder = controller({ onDeviceReady: false });
@@ -491,8 +510,7 @@ describe("voice-note recorder controller", () => {
     await tick();
     await recorder.record();
     expect(await recorder.setTranscriber("private-cloud", { scope: "recording" })).toBe("needs_consent");
-    expect(await recorder.setTranscriber("on-device", { scope: "recording" })).toBe("unavailable");
-    expect(await recorder.setTranscriber("on-device", { scope: "recording", waitForModel: true })).toBe("ok");
+    expect(await recorder.setTranscriber("on-device", { scope: "recording" })).toBe("ok");
     expect(await recorder.setTranscriber("assemblyai", { scope: "recording" })).toBe("unavailable");
     detach();
   });
@@ -1278,6 +1296,231 @@ describe("voice-note recorder controller", () => {
     detach();
   });
 
+// RecorderProvider renders an announcer; give React the same inert host DOM as its engine tests.
+const hostNode = (): unknown => new Proxy(function () {}, {
+  get: (_target, key) => key === "nodeType" ? 1 : key === "ownerDocument" ? hostDocument
+    : key === "style" ? {} : key === "firstChild" || key === "parentNode" ? null : () => hostNode(),
+  set: () => true,
+});
+const hostDocument = { createElement: () => hostNode(), createTextNode: () => hostNode(),
+  nodeType: 9, activeElement: null, addEventListener() {}, removeEventListener() {} };
+const hostContainer = () => ({ nodeType: 1, nodeName: "DIV", tagName: "DIV", ownerDocument: hostDocument,
+  textContent: "", addEventListener() {}, removeEventListener() {}, appendChild() {}, removeChild() {}, insertBefore() {} }) as unknown as HTMLElement;
+const hostWindow = () => ({ HTMLIFrameElement: class {}, document: hostDocument,
+  addEventListener() {}, removeEventListener() {}, setTimeout, clearTimeout });
+
+  test("RecorderProvider with the App pipeline emits once for Save now and once for a new Stop", async () => {
+    const previousWindow = globalThis.window;
+    const previousAct = Reflect.get(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+    Reflect.set(globalThis, "window", hostWindow());
+    Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
+    const sqlite = new Database(":memory:");
+    const values = new Map<string, string>();
+    const account = { did: tcw.did, spaceId: tcw.spaceId,
+      sql: { db(name: string) {
+        expect(name).toBe(CONNECTORS_SQL_DB_NAME);
+        return {
+          async query(statement: string, params: unknown[] = []) {
+            try { return { ok: true, data: { rows: sqlite.query(statement).values(...params as never[]) } }; }
+            catch (error) { return { ok: false, error: { code: "SQL_ERROR", message: String(error) } }; }
+          },
+          async execute(statement: string, params: unknown[] = []) {
+            try { return { ok: true, data: { changes: sqlite.query(statement).run(...params as never[]).changes } }; }
+            catch (error) { return { ok: false, error: { code: "SQL_ERROR", message: String(error) } }; }
+          },
+        };
+      } },
+      kv: {
+        async put(key: string, value: string) { values.set(key, value); return { ok: true, data: {} }; },
+        async get(key: string) { return values.has(key) ? { ok: true, data: { data: values.get(key) } }
+          : { ok: false, error: { code: "KV_NOT_FOUND", message: "missing" } }; },
+        async list({ path }: { path: string }) {
+          return { ok: true, data: { keys: [...values.keys()].filter((key) => key.startsWith(path)), truncated: false } };
+        },
+      },
+    } as unknown as TinyCloudWeb;
+    const base = plugin;
+    __setVoiceNotesForTests({ ...base, async updateLedger({ id, patch }) {
+      const note = onPhone.find((item) => item.id === id)!;
+      note.ledger = { ...note.ledger, ...patch } as VoiceNoteRecording["ledger"];
+      note.rev = (note.rev ?? 0) + 1;
+      return { rev: note.rev };
+    } }, { available: true });
+    const pipeline = createVoiceNotePipeline(account);
+    const root = createRoot(hostContainer());
+    const changed: Array<{ source: string; sourceId: string } | undefined> = [];
+    const unsubscribe = captureEvents.on("library-changed", (detail) => changed.push(detail));
+    let recorder: RecorderValue | null = null;
+    function Probe() { recorder = useRecorder(); return null; }
+    try {
+      fakeVoiceNoteStore.save = fails;
+      await act(async () => root.render(createElement(RecorderProvider, { tcw: account, pipeline }, createElement(Probe))));
+      await act(async () => { await tick(); await tick(); });
+      await act(async () => recorder!.record());
+      await act(async () => { await tick(); });
+      await act(async () => recorder!.stop());
+      await settled(() => recorder!.outcome === "failed", "the failed Stop to settle");
+      expect(recorder!.outcome).toBe("failed");
+      expect(changed).toEqual([]);
+      const failedId = onPhone[0]!.id;
+
+      fakeVoiceNoteStore.save = ok;
+      await act(async () => { recorder!.retryPending(); await tick(); await tick(); });
+      await settled(() => onPhone[0]?.ledger?.audio.state === "saved", "Save now to save the note");
+      expect(onPhone[0]?.ledger?.audio.state).toBe("saved");
+      expect(changed).toEqual([{ source: "exo-voice-note", sourceId: failedId }]);
+      await act(async () => { recorder!.retryPending(); await tick(); await tick(); });
+      expect(changed).toHaveLength(1);
+
+      await act(async () => recorder!.dismissOutcome());
+      await act(async () => recorder!.record());
+      await act(async () => { await tick(); });
+      await act(async () => recorder!.stop());
+      await settled(() => onPhone[1] !== undefined && recorder!.lastSaved?.id === onPhone[1].id, "the new Stop to save");
+      expect(recorder!.lastSaved?.id).toBe(onPhone[1]?.id);
+      expect(changed).toEqual([{ source: "exo-voice-note", sourceId: failedId },
+        { source: "exo-voice-note", sourceId: onPhone[1]!.id }]);
+    } finally {
+      await act(async () => root.unmount());
+      unsubscribe();
+      sqlite.close();
+      Reflect.set(globalThis, "window", previousWindow);
+      Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", previousAct);
+    }
+  });
+
+  test("RecorderProvider defaults to one identified Library event after a successful save, including a retry", async () => {
+    const previousWindow = globalThis.window;
+    const previousAct = Reflect.get(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+    Reflect.set(globalThis, "window", hostWindow());
+    Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
+    const container = hostContainer();
+    const root = createRoot(container);
+    const changed: Array<{ source: string; sourceId: string } | undefined> = [];
+    const unsubscribe = captureEvents.on("library-changed", (detail) => changed.push(detail));
+    let recorder: RecorderValue | null = null;
+    const overridden: string[] = [];
+    function Probe() {
+      recorder = useRecorder();
+      return null;
+    }
+    try {
+      fakeVoiceNoteStore.save = fails;
+      await act(async () => root.render(createElement(RecorderProvider, { tcw }, createElement(Probe))));
+      await act(async () => { await tick(); await tick(); });
+      await act(async () => recorder!.record());
+      await tick();
+      await act(async () => recorder!.stop());
+      await tick();
+      expect(changed).toEqual([]);
+
+      fakeVoiceNoteStore.save = ok;
+      await act(async () => recorder!.retryPending());
+      await tick();
+      expect(recorder!.lastSaved).toBeTruthy();
+      expect(changed).toEqual([{ source: "exo-voice-note", sourceId: recorder!.lastSaved!.id }]);
+      await act(async () => root.render(createElement(RecorderProvider, {
+        tcw, onSaved: (recording: VoiceNoteRecording) => overridden.push(recording.id),
+      }, createElement(Probe))));
+      await act(async () => recorder!.dismissOutcome());
+      await act(async () => recorder!.record());
+      await tick();
+      await act(async () => recorder!.stop());
+      await tick();
+      expect(overridden).toEqual([recorder!.lastSaved!.id]);
+      expect(changed).toHaveLength(1);
+    } finally {
+      await act(async () => root.unmount());
+      await tick();
+      unsubscribe();
+      Reflect.set(globalThis, "window", previousWindow);
+      Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", previousAct);
+    }
+  });
+
+  test("the app and harness default recorder callback fires for a save, but not after unmount", async () => {
+    const previousWindow = globalThis.window;
+    const previousAct = Reflect.get(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+    Reflect.set(globalThis, "window", hostWindow());
+    Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
+    const container = hostContainer();
+    const root = createRoot(container);
+    const changed: Array<{ source: string; sourceId: string } | undefined> = [];
+    const unsubscribe = captureEvents.on("library-changed", (detail) => changed.push(detail));
+    let recorder: VoiceNoteRecorder | null = null;
+    function Probe() {
+      recorder = useVoiceNoteRecorder({ tcw });
+      return null;
+    }
+    let unmounted = false;
+    try {
+      await act(async () => root.render(createElement(Probe)));
+      await act(async () => { recorder!.record(); });
+      await tick();
+      await act(async () => { recorder!.stop(); });
+      await tick();
+      expect(changed).toEqual([{ source: "exo-voice-note", sourceId: recorder!.state.lastSaved!.id }]);
+      await act(async () => recorder!.dismissOutcome());
+      const pending = Promise.withResolvers<{ ok: true; data: { inserted: true } }>();
+      const started = Promise.withResolvers<void>();
+      fakeVoiceNoteStore.save = async () => { started.resolve(); return pending.promise as never; };
+      await act(async () => { recorder!.record(); });
+      await tick();
+      await act(async () => { recorder!.stop(); });
+      await started.promise;
+      await act(async () => root.unmount());
+      unmounted = true;
+      pending.resolve({ ok: true, data: { inserted: true } });
+      await tick();
+      expect(changed).toHaveLength(1);
+    } finally {
+      if (!unmounted) await act(async () => root.unmount());
+      await tick();
+      unsubscribe();
+      Reflect.set(globalThis, "window", previousWindow);
+      Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", previousAct);
+    }
+  });
+
+  test("changing accounts detaches the previous recorder callback before its save finishes", async () => {
+    const previousWindow = globalThis.window;
+    const previousAct = Reflect.get(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+    Reflect.set(globalThis, "window", hostWindow());
+    Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
+    const container = hostContainer();
+    const root = createRoot(container);
+    const changed: Array<{ source: string; sourceId: string } | undefined> = [];
+    const unsubscribe = captureEvents.on("library-changed", (detail) => changed.push(detail));
+    let recorder: VoiceNoteRecorder | null = null;
+    function Probe({ account }: { account: TinyCloudWeb }) {
+      recorder = useVoiceNoteRecorder({ tcw: account });
+      return null;
+    }
+    const pending = Promise.withResolvers<{ ok: true; data: { inserted: true } }>();
+    const started = Promise.withResolvers<void>();
+    fakeVoiceNoteStore.save = async () => { started.resolve(); return pending.promise as never; };
+    try {
+      await act(async () => root.render(createElement(Probe, { account: tcw })));
+      await tick();
+      await act(async () => recorder!.record());
+      await tick();
+      await act(async () => recorder!.stop());
+      await started.promise;
+      await act(async () => root.render(createElement(Probe, {
+        account: { ...tcw, did: "did:example:bob" } as TinyCloudWeb,
+      })));
+      pending.resolve({ ok: true, data: { inserted: true } });
+      await tick();
+      expect(changed).toEqual([]);
+    } finally {
+      await act(async () => root.unmount());
+      await tick();
+      unsubscribe();
+      Reflect.set(globalThis, "window", previousWindow);
+      Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", previousAct);
+    }
+  });
+
   test("discard stops the recording and deletes it; nothing is saved", async () => {
     const { recorder } = await attached();
     await recorder.record();
@@ -1698,7 +1941,7 @@ describe("voice-note recorder controller", () => {
     }
   });
 
-  describe("no Local default without the on-device model", () => {
+  describe("Local without the on-device model", () => {
     let values: Map<string, string>;
     let previousStorage: PropertyDescriptor | undefined;
     beforeEach(() => {
@@ -1728,58 +1971,6 @@ describe("voice-note recorder controller", () => {
     const nativeDefault = async () => (await fake.plugin.getCaptureDefaults()).transcriber;
     const seedNative = () => fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1, transcriber: "on-device", identifySpeakers: false });
 
-    test("signed in, untouched, model absent, Private offered: the default is Private, says why, and the note is recorded as Private", async () => {
-      await seedNative();
-      const recorder = controller({ transcriber: offer({ availability: "available", consented: true }).stub, onDeviceReady: false });
-      const detach = recorder.attach();
-      await tick();
-      expect(recorder.getTranscriber()).toEqual({ id: "private-cloud", identifySpeakers: false, source: "default", localModelNeeded: true });
-      expect(await nativeDefault()).toBe("private-cloud");
-      expect(values.has("exo.voiceNotes.transcriber")).toBe(false);
-
-      await recorder.record();
-      expect((await fake.plugin.status()).options?.transcriber).toBe("private-cloud");
-      expect(recorder.getTranscriber()).toMatchObject({ id: "private-cloud", localModelNeeded: true });
-      detach();
-    });
-
-    test("Private not offered or not consented: Audio only, with the needs-download note", async () => {
-      for (const unoffered of [{ availability: "unavailable", consented: true }, { availability: "available", consented: false }] as const) {
-        await seedNative();
-        const recorder = controller({ transcriber: offer(unoffered).stub, onDeviceReady: false });
-        const detach = recorder.attach();
-        await tick();
-        expect(recorder.getTranscriber()).toEqual({ id: "off", identifySpeakers: false, source: "default", localModelNeeded: true });
-        expect(await nativeDefault()).toBe("off");
-        detach();
-      }
-    });
-
-    test("the default follows the model and the offer when they change", async () => {
-      await seedNative();
-      const route = offer({ availability: "unavailable", consented: false });
-      let modelReady = false;
-      const recorder = createVoiceNoteRecorderController({ tcw, available: true, transcriber: route.stub, onDeviceReady: () => modelReady,
-        appleInterim: () => false });
-      const detach = recorder.attach();
-      await tick();
-      expect(recorder.getTranscriber()).toMatchObject({ id: "off", localModelNeeded: true });
-
-      route.change({ availability: "available", consented: true });
-      await tick();
-      expect(recorder.getTranscriber()).toMatchObject({ id: "private-cloud", localModelNeeded: true });
-      expect(await nativeDefault()).toBe("private-cloud");
-
-      modelReady = true;
-      route.change({ availability: "available", consented: true });
-      await tick();
-      route.change({ availability: "available", consented: false });
-      await tick();
-      expect(recorder.getTranscriber()).toEqual({ id: "on-device", identifySpeakers: false, source: "default" });
-      expect(await nativeDefault()).toBe("on-device");
-      detach();
-    });
-
     test("an explicit Local stays Local without the model: nothing is changed silently", async () => {
       await seedNative();
       await setDefaultTranscriber("on-device");
@@ -1793,63 +1984,128 @@ describe("voice-note recorder controller", () => {
       detach();
     });
 
+    /** A phone whose model is absent and whose download is one pending promise, as the native one is. */
+    async function phoneDownloading() {
+      const sttFake = createFakeOnDeviceStt();
+      const calls = { downloadNow: 0 };
+      const stt = { ...sttFake.plugin, downloadNow: async () => { calls.downloadNow++; await new Promise<void>(() => {}); } } as OnDeviceSttPlugin;
+      __setOnDeviceSttForTests(stt);
+      __resetOnDeviceSttStoreForTests();
+      await onDeviceSttStore.refresh();
+      return calls;
+    }
+    afterEach(() => {
+      __setOnDeviceSttForTests(createFakeOnDeviceStt().plugin);
+      __resetOnDeviceSttStoreForTests();
+    });
+
+    test("choosing Local starts the on-device model download", async () => {
+      const calls = await phoneDownloading();
+      await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1, transcriber: "off", identifySpeakers: false });
+      await setDefaultTranscriber("off");
+      const recorder = controller({ transcriber: offer({ availability: "available", consented: true }).stub, onDeviceReady: false });
+      const detach = recorder.attach();
+      await tick();
+      expect(recorder.getTranscriber().id).toBe("off");
+      expect(calls.downloadNow).toBe(0);
+      expect(await recorder.setTranscriber("private-cloud", { scope: "default" })).toBe("ok");
+      expect(calls.downloadNow).toBe(0);
+      expect(await recorder.setTranscriber("on-device", { scope: "default" })).toBe("ok");
+      expect(calls.downloadNow).toBe(1);
+      detach();
+    });
+
+    test("on iOS, a Local default fetches the OS-managed speech assets at launch; Android's model download still waits", async () => {
+      const sttFake = createFakeOnDeviceStt();
+      sttFake.controls.useAppleSpeech("asset_missing");
+      const installs = { count: 0 };
+      const stt = { ...sttFake.plugin, installSpeechAssets: async () => { installs.count++; await sttFake.plugin.installSpeechAssets(); } } as OnDeviceSttPlugin;
+      __setOnDeviceSttForTests(stt);
+      __resetOnDeviceSttStoreForTests();
+      await seedNative();
+      const recorder = controller({ tcw: null, onDeviceReady: false });
+      const detach = recorder.attach();
+      try {
+        await tick();
+        await tick();
+        expect(recorder.getTranscriber().id).toBe("on-device");
+        expect(installs.count).toBe(1);
+        expect(isOnDeviceReady(onDeviceSttStore.snapshot())).toBe(true);
+      } finally { detach(); }
+    });
+
+    test("review r4: a speaker preference write on untouched Local does not request a model download", async () => {
+      const calls = await phoneDownloading();
+      await seedNative();
+      const recorder = controller({ tcw: null, onDeviceReady: false });
+      const detach = recorder.attach();
+      try {
+        await tick();
+        expect(calls.downloadNow).toBe(0);
+        await setDefaultIdentifySpeakersForTest(false);
+        await tick();
+        expect(calls.downloadNow).toBe(0);
+      } finally { detach(); }
+    });
+
+    test("review r4: a failed Private preference write does not request a Local model download", async () => {
+      const calls = await phoneDownloading();
+      await seedNative();
+      const recorder = controller({ transcriber: offer({ availability: "available", consented: true }).stub, onDeviceReady: false });
+      const detach = recorder.attach();
+      try {
+        await tick();
+        expect(calls.downloadNow).toBe(0);
+        Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
+          getItem: (key: string) => values.get(key) ?? null,
+          setItem: (key: string, value: string) => {
+            if (key === "exo.voiceNotes.transcriber" && value === "private-cloud") throw new Error("storage write failed");
+            values.set(key, value);
+          },
+          removeItem: (key: string) => { values.delete(key); },
+        } });
+        await expect(recorder.setTranscriber("private-cloud", { scope: "default" })).rejects.toThrow("storage write failed");
+        await tick();
+        expect(recorder.getTranscriber().id).toBe("on-device");
+        expect(calls.downloadNow).toBe(0);
+      } finally { detach(); }
+    });
+
+    test("being on Local by default, without a choice or a recording, downloads nothing", async () => {
+      const calls = await phoneDownloading();
+      await seedNative();
+      await setDefaultTranscriber("on-device");
+      const recorder = controller({ transcriber: offer({ availability: "available", consented: true }).stub, onDeviceReady: false });
+      const detach = recorder.attach();
+      await tick();
+      await onDeviceSttStore.refresh();
+      await tick();
+      expect(recorder.getTranscriber().id).toBe("on-device");
+      expect(calls.downloadNow).toBe(0);
+      detach();
+    });
+
+    test("recording on Local is allowed while the model downloads, and the note stays on Local", async () => {
+      const calls = await phoneDownloading();
+      await seedNative();
+      await setDefaultTranscriber("on-device");
+      const recorder = controller({ transcriber: offer({ availability: "available", consented: true }).stub, onDeviceReady: false });
+      const detach = recorder.attach();
+      await tick();
+      expect(calls.downloadNow).toBe(0);
+      await recorder.record();
+      await tick();
+      expect(calls.downloadNow).toBe(1);
+      expect((await fake.plugin.status()).state).toBe("recording");
+      expect((await fake.plugin.status()).options?.transcriber).toBe("on-device");
+      detach();
+    });
+
     /** The mode on screen and the mode the engine will start the next recording with are one and the same. */
     const agree = async (recorder: { getTranscriber(): { id: string } }) =>
       expect(recorder.getTranscriber().id).toBe(await nativeDefault());
 
-    describe("the first explicit choice, made after the controller is attached, reaches the engine as that choice", () => {
-      const fallbacks = [
-        ["Private", { availability: "available", consented: true }, "private-cloud"],
-        ["Audio only", { availability: "unavailable", consented: false }, "off"],
-      ] as const;
-      for (const [name, offered, fallback] of fallbacks) {
-        test(`Local over a ${name} fallback: the engine and the next note both say Local`, async () => {
-          await seedNative();
-          const route = offer(offered);
-          const recorder = controller({ transcriber: route.stub, onDeviceReady: false });
-          const detach = recorder.attach();
-          await tick();
-          expect(await nativeDefault()).toBe(fallback);
-          await agree(recorder);
-
-          expect(await recorder.setTranscriber("on-device", { scope: "default", waitForModel: true })).toBe("ok");
-          expect(recorder.getTranscriber()).toMatchObject({ id: "on-device", source: "default" });
-          expect(await nativeDefault()).toBe("on-device");
-          expect(values.get("exo.voiceNotes.transcriber")).toBe("on-device");
-
-          await recorder.record();
-          expect((await fake.plugin.status()).options?.transcriber).toBe("on-device");
-          await recorder.stop();
-          await tick();
-          expect(onPhone[0]!.options?.transcriber).toBe("on-device");
-          detach();
-        });
-      }
-
-      for (const target of ["private-cloud", "off"] as const) {
-        test(`${target} over the fallback: the engine follows, and a later model or offer change leaves the choice alone`, async () => {
-          await seedNative();
-          const route = offer({ availability: "available", consented: true });
-          let modelReady = false;
-          const recorder = createVoiceNoteRecorderController({ tcw, available: true, transcriber: route.stub,
-            onDeviceReady: () => modelReady, appleInterim: () => false });
-          const detach = recorder.attach();
-          await tick();
-          expect(await recorder.setTranscriber(target, { scope: "default" })).toBe("ok");
-          expect(await nativeDefault()).toBe(target);
-          await agree(recorder);
-
-          modelReady = true;
-          route.change({ availability: "unavailable", consented: false });
-          await tick();
-          route.change({ availability: "available", consented: true });
-          await tick();
-          expect(await nativeDefault()).toBe(target);
-          await agree(recorder);
-          detach();
-        });
-      }
-
+    describe("an explicit choice made after the controller is attached reaches the engine as that choice", () => {
       test("a refresh landing while the choice is being written cannot put the fallback back over it", async () => {
         await seedNative();
         const recorder = controller({ transcriber: offer({ availability: "available", consented: true }).stub, onDeviceReady: false });
@@ -1863,7 +2119,7 @@ describe("voice-note recorder controller", () => {
           if (defaults.transcriber === "on-device") await held;
           return result;
         } }, { available: true });
-        const choosing = recorder.setTranscriber("on-device", { scope: "default", waitForModel: true });
+        const choosing = recorder.setTranscriber("on-device", { scope: "default" });
         await tick();
         const refreshing = refreshEffectiveTranscriber();
         await tick();
@@ -1883,7 +2139,7 @@ describe("voice-note recorder controller", () => {
         await tick();
         await agree(recorder);
         for (const id of ["on-device", "private-cloud", "off", "on-device", "off", "private-cloud"] as const) {
-          expect(await recorder.setTranscriber(id, { scope: "default", waitForModel: true })).toBe("ok");
+          expect(await recorder.setTranscriber(id, { scope: "default" })).toBe("ok");
           expect(recorder.getTranscriber()).toMatchObject({ id, source: "default" });
           expect(await nativeDefault()).toBe(id);
           expect(await readDefaultTranscriber()).toBe(id);
@@ -1891,16 +2147,16 @@ describe("voice-note recorder controller", () => {
         detach();
       });
 
-      test("Identify speakers on an untouched fallback keeps the fallback in the engine and the choice untouched", async () => {
+      test("Identify speakers on the untouched Local default leaves the engine and the choice on Local", async () => {
         await seedNative();
         const recorder = controller({ transcriber: offer({ availability: "available", consented: true }).stub, onDeviceReady: false });
         const detach = recorder.attach();
         await tick();
         await setDefaultIdentifySpeakersForTest(true);
         await tick();
-        expect(await nativeDefault()).toBe("private-cloud");
+        expect(await nativeDefault()).toBe("on-device");
         expect(values.has("exo.voiceNotes.transcriber")).toBe(false);
-        expect(recorder.getTranscriber()).toMatchObject({ id: "private-cloud", localModelNeeded: true });
+        expect(recorder.getTranscriber()).toMatchObject({ id: "on-device" });
         detach();
       });
     });
@@ -2353,7 +2609,7 @@ describe("voice-note recorder controller", () => {
         detach();
       });
 
-      test("an in-app note on the untouched default (no model, Private offered) is still sent", async () => {
+      test("an in-app note on the untouched default (no model, Private offered) is recorded as Local and not sent to private cloud", async () => {
         await seedNative();
         const { real, jobs } = jobsOf();
         await real.check();
@@ -2363,8 +2619,8 @@ describe("voice-note recorder controller", () => {
         await recorder.record();
         await recorder.stop();
         await tick();
-        expect(onPhone[0]!.options?.transcriber).toBe("private-cloud");
-        expect(jobs).toEqual([onPhone[0]!.id]);
+        expect(onPhone[0]!.options?.transcriber).toBe("on-device");
+        expect(jobs).toEqual([]);
         detach();
       });
     });
@@ -2376,10 +2632,10 @@ describe("voice-note recorder controller", () => {
         const detach = recorder.attach();
         await tick();
         __setVoiceNotesForTests({ ...plugin, setCaptureDefaults: async () => { throw new Error("engine is busy"); } }, { available: true });
-        await expect(recorder.setTranscriber("on-device", { scope: "default", waitForModel: true })).rejects.toThrow("engine is busy");
+        await expect(recorder.setTranscriber("off", { scope: "default" })).rejects.toThrow("engine is busy");
         __setVoiceNotesForTests(plugin, { available: true });
         expect(values.has("exo.voiceNotes.transcriber")).toBe(false);
-        expect(recorder.getTranscriber()).toMatchObject({ id: "private-cloud", localModelNeeded: true });
+        expect(recorder.getTranscriber()).toMatchObject({ id: "on-device" });
         await agree(recorder);
         detach();
       });
@@ -2394,9 +2650,9 @@ describe("voice-note recorder controller", () => {
           setItem: () => { throw new Error("storage is full"); },
           removeItem: (key: string) => { values.delete(key); },
         } });
-        await expect(recorder.setTranscriber("on-device", { scope: "default", waitForModel: true })).rejects.toThrow("storage is full");
-        expect(await nativeDefault()).toBe("private-cloud");
-        expect(recorder.getTranscriber()).toMatchObject({ id: "private-cloud", localModelNeeded: true });
+        await expect(recorder.setTranscriber("on-device", { scope: "default" })).rejects.toThrow("storage is full");
+        expect(await nativeDefault()).toBe("on-device");
+        expect(recorder.getTranscriber()).toMatchObject({ id: "on-device" });
         await agree(recorder);
         detach();
       });
@@ -2418,7 +2674,7 @@ describe("voice-note recorder controller", () => {
             },
             removeItem: (key: string) => { values.delete(key); },
           } });
-          await expect(recorder.setTranscriber("on-device", { scope: "default", waitForModel: true })).rejects.toThrow("storage is full");
+          await expect(recorder.setTranscriber("on-device", { scope: "default" })).rejects.toThrow("storage is full");
           expect(values.get("exo.voiceNotes.transcriber") ?? null).toBe(prior);
           expect(await nativeDefault()).toBe(before.transcriber);
           expect(recorder.getTranscriber()).toEqual(before.shown);

@@ -17,6 +17,8 @@ export const HOME_COPY = {
   /** A note kept on this device with no row in the space yet; read as "On this phone" in a badge. */
   onThisPhone: "on this phone",
   savingBadge: "Saving…",
+  inProgressCount: (count: number) => `${count} in progress`,
+  onPhoneCount: (count: number) => `${count} on this phone`,
   onPhoneOne: "1 voice note on this phone",
   onPhoneMany: (count: number) => `${count} voice notes on this phone`,
   notInSpace: "Not in your space yet",

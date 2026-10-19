@@ -97,6 +97,9 @@
   font-weight: 600;
   overflow-wrap: anywhere;
 }
+.soft-card-text b[data-testid="voice-note-summary"] {
+  white-space: nowrap;
+}
 .soft-card-text span {
   color: var(--dim);
   font-size: 0.75rem;
@@ -145,6 +148,65 @@
   margin: 0;
   padding: 0;
   list-style: none;
+}
+.soft-progress-card {
+  align-items: flex-start;
+}
+.soft-progress-rows {
+  display: flex;
+  flex: 1 0 100%;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.soft-progress-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 44px;
+  padding: 3px 0;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.soft-progress-row .soft-tile {
+  width: 30px;
+  height: 30px;
+  border-radius: 10px;
+}
+.soft-progress-row .soft-ico {
+  width: 15px;
+  height: 15px;
+}
+.soft-progress-row:focus-visible,
+.soft-progress-more:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+  border-radius: 10px;
+}
+.soft-progress-more {
+  min-height: 36px;
+  padding: 0 0 0 40px;
+  border: 0;
+  background: none;
+  color: var(--dim);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.soft-model-progress {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 0 0 40px;
+  color: var(--dim);
+  font-size: 12.5px;
 }
 /* An In progress row that opens a sheet: the whole text side is the button; the pill sits beside it, wrapping below at large text. */
 .soft-card {

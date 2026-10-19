@@ -339,10 +339,13 @@ function screen(name: string, setup: Setup): HarnessScreen {
             harness.releaseModelStatus = publishStatus;
           } else {
             publishStatus();
+            // The native call stays pending while the download waits for Wi-Fi.
+            await new Promise<void>(() => {});
           }
         },
         cancelDownload: async () => {},
         deleteModels: async () => {},
+        installSpeechAssets: async () => {},
         enqueue: async () => {},
         cancel: async () => {},
         addListener: async (event, listener) => {
@@ -424,6 +427,7 @@ const routeControlScreen: HarnessScreen = {
       downloadNow: async () => {},
       cancelDownload: async () => {},
       deleteModels: async () => {},
+      installSpeechAssets: async () => {},
       enqueue: async () => {},
       cancel: async () => {},
       addListener: async () => ({ remove: async () => {} }),
@@ -485,6 +489,7 @@ const notesScreen: HarnessScreen = {
       downloadNow: async () => {},
       cancelDownload: async () => {},
       deleteModels: async () => {},
+      installSpeechAssets: async () => {},
       enqueue: async () => {},
       cancel: async () => {},
       addListener: async () => ({ remove: async () => {} }),
@@ -508,6 +513,7 @@ const nativeScreen: HarnessScreen = {
       downloadNow: async () => {},
       cancelDownload: async () => {},
       deleteModels: async () => {},
+      installSpeechAssets: async () => {},
       enqueue: async () => {},
       cancel: async () => {},
       addListener: async () => ({ remove: async () => {} }),

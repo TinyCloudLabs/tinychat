@@ -1,6 +1,6 @@
 {
   "name": "@tinychat/frontend",
-  "version": "0.6.0-beta.25",
+  "version": "0.6.0-beta.31",
   "private": true,
   "type": "module",
   "scripts": {
@@ -19,7 +19,7 @@
     "@franken-suite/franken-markdown": "0.5.0",
     "@noble/curves": "1.9.7",
     "@openkey/sdk": "0.12.0-beta.1",
-    "@openkey/sdk-capacitor": "0.1.0-beta.1",
+    "@openkey/sdk-capacitor": "0.1.0-beta.2",
     "@peculiar/x509": "^2.0.0",
     "@radix-ui/react-alert-dialog": "^1.1.4",
     "@radix-ui/react-dialog": "^1.1.4",
@@ -29,8 +29,8 @@
     "@tauri-apps/api": "^2.9.0",
     "@tinyboilerplate/client": "workspace:*",
     "@tinyboilerplate/core": "workspace:*",
-    "@tinycloud/sdk-core": "2.11.0",
-    "@tinycloud/web-sdk": "2.11.0",
+    "@tinycloud/sdk-core": "3.1.0",
+    "@tinycloud/web-sdk": "3.1.0",
     "@xyflow/react": "^12.8.5",
     "assistant-stream": "0.3.19",
     "class-variance-authority": "^0.7.1",

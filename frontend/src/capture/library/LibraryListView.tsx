@@ -16,6 +16,7 @@ import { useSoftHome } from "../home/softHome";
 import { groupByDay } from "./formatters";
 import { LIBRARY_FILTERS, emptyFilterText, matchesFilter, type LibraryFilter } from "./libraryKinds";
 import { LibraryRow, type LibraryItem } from "./LibraryRow";
+import type { NotePipeline } from "@/lib/voiceNotes/notePipeline";
 
 export type LibraryStatus = "loading" | "ready" | "failed";
 
@@ -28,6 +29,7 @@ export interface LibraryListViewProps {
   now: Date;
   /** The note open beside the list (wide screens). */
   selectedId?: string | null;
+  pipelines?: ReadonlyMap<string, NotePipeline>;
 }
 
 /**
@@ -131,7 +133,7 @@ export function LibraryListView(props: LibraryListViewProps) {
               <h3 className="sticky top-13 z-[5] bg-background py-1.5 text-meta font-semibold text-muted-foreground">{group.label}</h3>
               <ul className="flex flex-col">
                 {group.items.map((item) => (
-                  <LibraryRow key={item.id} item={item} now={now} grouped selected={props.selectedId === item.id} />
+                  <LibraryRow key={item.id} item={item} now={now} grouped selected={props.selectedId === item.id} pipeline={props.pipelines?.get(item.sourceId)} />
                 ))}
               </ul>
             </section>

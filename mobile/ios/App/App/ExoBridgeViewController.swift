@@ -10,7 +10,12 @@ import os
 /// Registers Exo's app-local plugins with the Capacitor bridge.
 /// SceneDelegate makes this the window's root (Main.storyboard names it too).
 class ExoBridgeViewController: CAPBridgeViewController {
+    private var webViewRecovery: WebViewRecovery?
+
     override open func capacitorDidLoad() {
+        if let webView = webView, let start = bridge?.config.appStartServerURL, let original = webView.navigationDelegate {
+            webViewRecovery = WebViewRecovery(webView: webView, startURL: start, original: original)
+        }
         bridge?.registerPluginInstance(VoiceNotesPlugin())
         bridge?.registerPluginInstance(OnDeviceSttPlugin())
         #if EXO_HEALTH

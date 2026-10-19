@@ -2890,13 +2890,18 @@ dependencies = [
 
 [[package]]
 name = "exo-desktop"
-version = "0.6.0-beta.25"
+version = "0.6.0-beta.31"
 dependencies = [
  "audio-actual",
+ "exo-local-transcription",
  "futures-util",
  "hex",
  "hound",
+ "language",
  "mp3",
+ "parking_lot",
+ "ractor",
+ "reqwest 0.13.4",
  "rustix 1.1.4",
  "serde",
  "serde_json",
@@ -2906,8 +2911,21 @@ dependencies = [
  "tauri-plugin-local-stt",
  "tauri-plugin-settings",
  "tauri-plugin-transcription",
+ "tempfile",
  "tokio",
+ "transcription-core",
  "uuid",
+]
+
+[[package]]
+name = "exo-local-transcription"
+version = "0.1.0"
+dependencies = [
+ "hound",
+ "mp3",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

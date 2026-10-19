@@ -80,6 +80,14 @@ graph) for `statvfs`. The dev-dependencies add tokio's
 `macros`/`rt-multi-thread`, which upstream gets from workspace feature
 unification, so the crate's tests compile on their own.
 
+The model-backed `test_service` is ignored by default; run it with
+`EXO_WHISPER_TEST_MODEL=<path> cargo test -p transcribe-whisper-local
+test_service -- --ignored`. This is a test-only A2 change. The existing
+`batch_sse_invalid_model_path_returns_http_500_json_error` test fails
+identically on `origin/main`: the SSE response opens with HTTP 200 before
+model loading and delivers errors as events (as documented above). The A2
+model-free gate skips only this stale assertion pending an upstream test fix.
+
 Removal trigger: upstream reports progress throughout a batch job (or its
 clients stop treating a quiet batch stream as a stall) and bounds decoded
 storage.

@@ -40,8 +40,7 @@ final class InputRouter {
     }
 
     private func configureForEnumeration() throws {
-        var options: AVAudioSession.CategoryOptions = [.mixWithOthers, .allowBluetoothHFP, .defaultToSpeaker]
-        if #available(iOS 26.0, *) { options.insert(.bluetoothHighQualityRecording) }
+        let options: AVAudioSession.CategoryOptions = [.mixWithOthers, .allowBluetoothHFP, .defaultToSpeaker, .bluetoothHighQualityRecording]
         try session.setCategory(.playAndRecord, mode: .default, options: options)
     }
 
