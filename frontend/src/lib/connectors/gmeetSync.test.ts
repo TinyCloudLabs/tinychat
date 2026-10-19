@@ -20,6 +20,10 @@ import type {
 import { GmeetClient } from "./gmeetClient";
 import {
   GMEET_LAG_BUFFER_MS,
+  getGmeetLiveStatus,
+  getGmeetRunLog,
+  onGmeetLiveStatus,
+  onGmeetRunLog,
   GMEET_MAX_BACKFILL_MS,
   _resetGmeetSyncSingleFlightForTests,
   gmeetSyncWindowStartIso,
@@ -32,6 +36,7 @@ import {
   isPersistableTranscriptState,
   isTerminalGmeetError,
   stopGmeetNotesSync,
+  stopGmeetSyncForAccount,
   syncGoogleMeet,
   type GmeetNotesSettled,
   type GmeetSyncClient,
@@ -45,6 +50,7 @@ import { runDisconnect, type DisconnectDeps } from "./connectorLifecycle";
 const ok = <T>(data: T): StoreResult<T> => ({ ok: true, data });
 
 const TCW = {
+  did: "did:pkh:eip155:1:0xaaaa",
   sql: { db: () => ({ query: async () => ({ ok: true, data: { rows: [] } }) }) },
 } as unknown as TinyCloudWeb;
 
@@ -322,7 +328,7 @@ const DIAGNOSTIC_KEYS = [
   "phase_state_write_ms", "finishing_timed_out", "finishing_stalled_phase", "finishing_recovery_write",
   "drive_sql_calls", "drive_sql_ms", "drive_http_calls", "drive_http_ms", "drive_assoc_preloaded_rows",
   "drive_prefilter_skipped", "drive_candidates", "drive_resumed_skipped", "drive_checkpoint_writes",
-  "drive_call_timeouts",
+  "drive_call_timeouts", "drive_storage_retries", "drive_items_failed",
 ].sort();
 
 const TERMINAL_KEYS = [
@@ -2391,5 +2397,276 @@ describe("Notes reconcile at scale", () => {
     expect(isGmeetNotesSyncInFlight()).toBe(false);
     await drain();
     expect(f.store.rows.some((row) => row.meeting.sourceId.startsWith("notes-"))).toBe(false);
+  });
+
+  // ── TC-1481 stage 3: one Note's storage failure no longer costs the run ──
+
+  /** Makes one Note's row write fail `failures` times (Infinity = until healed), counting every attempt. */
+  function failNoteWrites(f: ReturnType<typeof scaleFixture>, sourceId: string, failures: number) {
+    const attempts = { count: 0 };
+    const upsert = f.store.upsertMeeting.bind(f.store);
+    let left = failures;
+    f.store.upsertMeeting = async (tcw, meeting, sentences) => {
+      if (meeting.sourceId !== sourceId) return upsert(tcw, meeting, sentences);
+      attempts.count++;
+      if (left > 0) { left--; return { ok: false, error: { code: "STORE", message: "node busy" } }; }
+      return upsert(tcw, meeting, sentences);
+    };
+    return { attempts, heal: () => { left = 0; } };
+  }
+
+  /** Drains microtasks and moves the fake clock until the condition holds (retry backoffs are timers). */
+  async function untilWithTimers(predicate: () => boolean) {
+    for (let i = 0; i < 200 && !predicate(); i++) { await drain(); vi.advanceTimersByTime(1000); }
+    return predicate();
+  }
+
+  const notesRows = (f: ReturnType<typeof scaleFixture>) => f.store.rows.filter((row) => row.meeting.sourceId.startsWith("notes-")).map((row) => row.meeting.sourceId).sort();
+
+  test("a Note write that fails once is retried: the run is ok, with no terminal error", async () => {
+    vi.useFakeTimers();
+    const f = scaleFixture({ docs: 0, notes: 3, preload: true });
+    const flaky = failNoteWrites(f, "notes-1", 1);
+    const diagnostics: GmeetSyncDiagnostics[] = [];
+    let result: Awaited<ReturnType<typeof run>> | undefined;
+    void run(f.client, f.store, { driveMode: "snapshot", onDiagnostics: (d) => diagnostics.push(d as never) }).then((value) => { result = value; });
+    expect(await untilWithTimers(() => result !== undefined)).toBe(true);
+    expect(result?.ok).toBe(true);
+    expect(notesRows(f)).toEqual(["notes-0", "notes-1", "notes-2"]);
+    expect(flaky.attempts.count).toBe(2);
+    expect(f.store.state).toMatchObject({ lastSyncStatus: "ok", lastSyncError: null });
+    expect(f.store.cursor).toBe("next-cursor");
+    expect(diagnostics.at(-1)).toMatchObject({ drive_storage_retries: 1, drive_items_failed: 0, drive_cursor_committed: 1 });
+  });
+
+  test("a Note write that keeps failing leaves the other Notes saved, a correct count, and the next run retries only that Note", async () => {
+    vi.useFakeTimers();
+    const f = scaleFixture({ docs: 0, notes: 5, preload: true, progress: true });
+    const broken = failNoteWrites(f, "notes-2", Infinity);
+    const settled: GmeetNotesSettled[] = [];
+    const off = onGmeetNotesSettled((s) => settled.push(s));
+    try {
+      expect((await run(f.client, f.store, { driveMode: "snapshot", deferNotes: true })).ok).toBe(true);
+      expect(await untilWithTimers(() => settled.length === 1)).toBe(true);
+      expect(broken.attempts.count).toBe(3); // The first try and two retries.
+      expect(notesRows(f)).toEqual(["notes-0", "notes-1", "notes-3", "notes-4"]);
+      expect(settled[0]).toMatchObject({ ok: false, errorKind: null, partial: { saved: 4, total: 5 } });
+      expect(settled[0]!.diagnostics).toMatchObject({ drive_items_failed: 1, drive_storage_retries: 2 });
+      // The row says what happened and counts every stored meeting (the Meet record and four Notes).
+      expect(f.store.state).toMatchObject({
+        status: "connected", lastSyncStatus: "partial", itemCount: f.store.rows.length,
+        lastSyncError: "4 of 5 Notes saved. Sync now or Full rescan finishes the rest.",
+      });
+      expect(f.store.rows).toHaveLength(5);
+      // The checkpoint keeps the saved Notes and leaves the failed one out; the cursor waits for it.
+      expect(f.progress()?.doneIds.sort()).toEqual(["notes-0", "notes-1", "notes-3", "notes-4"]);
+      expect(f.store.cursor).toBe("old-cursor");
+
+      broken.heal();
+      f.counts.reads.length = 0;
+      expect((await run(f.client, f.store, { driveMode: "snapshot", deferNotes: true })).ok).toBe(true);
+      expect(await untilWithTimers(() => settled.length === 2)).toBe(true);
+      expect(f.counts.reads).toEqual(["notes-2"]);
+      expect(settled[1]).toMatchObject({ ok: true, errorKind: null, partial: null });
+      expect(notesRows(f)).toHaveLength(5);
+      expect(f.store.state).toMatchObject({ lastSyncStatus: "ok", lastSyncError: null, itemCount: 6 });
+      expect(f.progress()).toBeNull();
+      expect(f.store.cursor).toBe("next-cursor");
+    } finally { off(); }
+  });
+
+  test("a foreground run with one Note that cannot be saved also completes as a partial result, not an error", async () => {
+    vi.useFakeTimers();
+    const f = scaleFixture({ docs: 0, notes: 3, preload: true, progress: true });
+    failNoteWrites(f, "notes-0", Infinity);
+    let result: Awaited<ReturnType<typeof run>> | undefined;
+    void run(f.client, f.store, { driveMode: "snapshot" }).then((value) => { result = value; });
+    expect(await untilWithTimers(() => result !== undefined)).toBe(true);
+    expect(result?.ok).toBe(true);
+    expect(f.store.state).toMatchObject({ lastSyncStatus: "partial", lastSyncError: "2 of 3 Notes saved. Sync now or Full rescan finishes the rest." });
+    expect(f.store.cursor).toBe("old-cursor");
+  });
+
+  test("the row rewritten after a partial background run is recounted even when the recount itself fails", async () => {
+    vi.useFakeTimers();
+    const f = scaleFixture({ docs: 0, notes: 4, preload: true });
+    failNoteWrites(f, "notes-1", Infinity);
+    const count = f.store.countMeetings.bind(f.store);
+    let counts = 0;
+    // The foreground count (before any Note exists) succeeds; the background recount does not.
+    f.store.countMeetings = async (tcw, source) => (++counts === 1 ? count(tcw, source) : { ok: false, error: { code: "STORE", message: "node busy" } });
+    const settled: GmeetNotesSettled[] = [];
+    const off = onGmeetNotesSettled((s) => settled.push(s));
+    try {
+      expect((await run(f.client, f.store, { driveMode: "snapshot", deferNotes: true })).ok).toBe(true);
+      expect(f.store.state?.itemCount).toBe(1);
+      expect(await untilWithTimers(() => settled.length === 1)).toBe(true);
+      // One Meet record plus the three Notes that were saved: never the figure from before the reconcile.
+      expect(f.store.state).toMatchObject({ lastSyncStatus: "partial", itemCount: 4 });
+      expect(f.store.rows).toHaveLength(4);
+    } finally { off(); }
+  });
+
+  test("a background run reports its live progress, and marks a resumed checkpoint, to a surface that did not start it", async () => {
+    const f = scaleFixture({ docs: 0, notes: 4, preload: true, progress: true });
+    await f.store.putDriveProgress({} as TinyCloudWeb, "google-meet", {
+      startToken: "earlier-token", doneIds: ["notes-0", "notes-1"], savedAt: new Date(NOW_MS).toISOString(),
+    });
+    const hold = Promise.withResolvers<void>();
+    f.ctl.hold = hold.promise;
+    const settled: GmeetNotesSettled[] = [];
+    const off = onGmeetNotesSettled((s) => settled.push(s));
+    const seen: boolean[] = [];
+    const offLive = onGmeetLiveStatus(() => seen.push(getGmeetLiveStatus(TCW).running));
+    try {
+      expect(getGmeetLiveStatus(TCW)).toMatchObject({ running: false, progress: null, resumed: false });
+      expect((await run(f.client, f.store, { driveMode: "snapshot", deferNotes: true })).ok).toBe(true);
+      expect(await drain(() => getGmeetLiveStatus(TCW).progress?.stage === "notes")).toBe(true);
+      expect(getGmeetLiveStatus(TCW)).toMatchObject({
+        running: true, resumed: true, progress: { stage: "notes", notesTotal: 4 },
+      });
+      hold.resolve();
+      expect(await drain(() => settled.length === 1)).toBe(true);
+      expect(getGmeetLiveStatus(TCW)).toMatchObject({ running: false, progress: null, resumed: false });
+      expect(seen.at(-1)).toBe(false);
+    } finally { hold.resolve(); off(); offLive(); }
+  });
+
+  test("a fresh run is not reported as resumed", async () => {
+    const f = scaleFixture({ docs: 0, notes: 2, preload: true, progress: true });
+    const hold = Promise.withResolvers<void>();
+    f.ctl.hold = hold.promise;
+    const settled: GmeetNotesSettled[] = [];
+    const off = onGmeetNotesSettled((s) => settled.push(s));
+    try {
+      await run(f.client, f.store, { driveMode: "snapshot", deferNotes: true });
+      expect(await drain(() => getGmeetLiveStatus(TCW).progress?.stage === "notes")).toBe(true);
+      expect(getGmeetLiveStatus(TCW).resumed).toBe(false);
+    } finally { hold.resolve(); await drain(() => settled.length === 1); off(); }
+  });
+
+  test("every run keeps a counters-only log for its account, finished by the background reconcile", async () => {
+    const f = scaleFixture({ docs: 0, notes: 3, preload: true });
+    const events: Array<{ final: boolean }> = [];
+    const offLog = onGmeetRunLog((event) => events.push({ final: event.final }));
+    const settled: GmeetNotesSettled[] = [];
+    const off = onGmeetNotesSettled((s) => settled.push(s));
+    try {
+      expect(getGmeetRunLog(TCW)).toBeNull();
+      await run(f.client, f.store, { driveMode: "snapshot", deferNotes: true });
+      // Handed off to the background: the log is not final yet.
+      expect(events.some((event) => event.final)).toBe(false);
+      expect(getGmeetRunLog(TCW)?.result).toMatchObject({ kind: "ok", notesDeferred: true });
+      expect(await drain(() => settled.length === 1)).toBe(true);
+      expect(events.at(-1)).toEqual({ final: true });
+      const log = getGmeetRunLog(TCW, "test-build")!;
+      expect(log.build).toBe("test-build");
+      expect(log.notesOutcome).toEqual({ ok: true, errorKind: null });
+      expect(log.timeline.some((entry) => entry.stage === "notes" && entry.notesTotal === 3)).toBe(true);
+      expect(log.diagnostics).toMatchObject({ drive_items_failed: 0, drive_cursor_committed: 1 });
+      // Another account's `tcw` never sees this run's log.
+      expect(getGmeetRunLog({ sql: TCW.sql } as unknown as TinyCloudWeb)).toBeNull();
+    } finally { off(); offLog(); }
+  });
+
+  test("an incremental run's partial total counts Notes changes, not every Drive change", async () => {
+    vi.useFakeTimers();
+    const f = scaleFixture({ docs: 0, notes: 0, preload: true });
+    const changes = [
+      ...Array.from({ length: 40 }, (_, i) => ({ fileId: `doc-${i}`, file: { id: `doc-${i}`, name: `Budget ${i}`, mimeType: "application/vnd.google-apps.document" } })),
+      ...Array.from({ length: 3 }, (_, i) => ({ fileId: `notes-${i}`, file: { id: `notes-${i}`, name: "Notes by Gemini", mimeType: "application/vnd.google-apps.document", modifiedTime: "2026-10-01T00:00:00.000Z" } })),
+    ];
+    f.client.listDriveChangesPage = async () => ({ ok: true as const, data: { changes, nextPageToken: null, newStartPageToken: "next-cursor" } });
+    failNoteWrites(f, "notes-1", Infinity);
+    let result: Awaited<ReturnType<typeof run>> | undefined;
+    void run(f.client, f.store, {}).then((value) => { result = value; });
+    expect(await untilWithTimers(() => result !== undefined)).toBe(true);
+    expect(f.store.state).toMatchObject({ lastSyncStatus: "partial", lastSyncError: "2 of 3 Notes saved. Sync now or Full rescan finishes the rest." });
+    expect(f.store.cursor).toBe("old-cursor");
+  });
+
+  test("once one Note has exhausted its retries, later Notes fail fast instead of burning the backoff again", async () => {
+    vi.useFakeTimers();
+    const f = scaleFixture({ docs: 0, notes: 3, preload: true });
+    const a = failNoteWrites(f, "notes-0", Infinity);
+    const upsert = f.store.upsertMeeting.bind(f.store);
+    let second = 0;
+    f.store.upsertMeeting = async (tcw, meeting, sentences) => {
+      if (meeting.sourceId !== "notes-1") return upsert(tcw, meeting, sentences);
+      second++;
+      return { ok: false, error: { code: "STORE", message: "node busy" } };
+    };
+    let result: Awaited<ReturnType<typeof run>> | undefined;
+    void run(f.client, f.store, { driveMode: "snapshot" }).then((value) => { result = value; });
+    expect(await untilWithTimers(() => result !== undefined)).toBe(true);
+    expect(a.attempts.count).toBe(3);
+    expect(second).toBe(1);
+    expect(f.store.state).toMatchObject({ lastSyncStatus: "partial", lastSyncError: "1 of 3 Notes saved. Sync now or Full rescan finishes the rest." });
+  });
+
+  // ── Cross-account isolation (TC-1376) ──
+  const ACCOUNT_B = { did: "did:pkh:eip155:1:0xbbbb", sql: TCW.sql } as unknown as TinyCloudWeb;
+
+  test("account A's running sync, progress and log never show for account B in the same tab", async () => {
+    const f = scaleFixture({ docs: 0, notes: 4, preload: true });
+    const hold = Promise.withResolvers<void>();
+    f.ctl.hold = hold.promise;
+    const settled: GmeetNotesSettled[] = [];
+    const off = onGmeetNotesSettled((s) => settled.push(s));
+    try {
+      await run(f.client, f.store, { driveMode: "snapshot", deferNotes: true });
+      expect(await drain(() => getGmeetLiveStatus(TCW).progress?.stage === "notes")).toBe(true);
+      expect(getGmeetLiveStatus(TCW).running).toBe(true);
+      // Signed in as B (a different DID): nothing of A's run is visible.
+      expect(getGmeetLiveStatus(ACCOUNT_B)).toEqual({ running: false, progress: null, resumed: false });
+      expect(getGmeetLiveStatus(null).running).toBe(false);
+      expect(getGmeetRunLog(ACCOUNT_B)).toBeNull();
+      hold.resolve();
+      expect(await drain(() => settled.length === 1)).toBe(true);
+    } finally { hold.resolve(); off(); }
+  });
+
+  test("sign-out of account A stops its background reconcile and its writes; account B's sign-in stops nothing of A's", async () => {
+    const f = scaleFixture({ docs: 0, notes: 6, preload: true });
+    const hold = Promise.withResolvers<void>();
+    f.ctl.hold = hold.promise;
+    const settled: GmeetNotesSettled[] = [];
+    const off = onGmeetNotesSettled((s) => settled.push(s));
+    try {
+      await run(f.client, f.store, { driveMode: "snapshot", deferNotes: true });
+      await drain(() => f.counts.concurrent === 5);
+      // Another account's teardown does not touch A's run.
+      await stopGmeetSyncForAccount(ACCOUNT_B);
+      expect(isGmeetNotesSyncInFlight()).toBe(true);
+      const stateWrites = f.store.stateWrites;
+      const rows = f.store.rows.length;
+      const stopped = stopGmeetSyncForAccount(TCW); // A signs out.
+      hold.resolve();
+      await stopped;
+      expect(isGmeetNotesSyncInFlight()).toBe(false);
+      await drain();
+      expect(f.store.stateWrites).toBe(stateWrites);
+      expect(f.store.rows).toHaveLength(rows);
+      expect(f.store.cursor).toBe("old-cursor");
+      expect(getGmeetLiveStatus(TCW)).toEqual({ running: false, progress: null, resumed: false });
+      // B can now sync: the slot is free and A's reconcile writes nothing under B's session.
+      expect(isGmeetSyncInFlight()).toBe(false);
+    } finally { hold.resolve(); off(); }
+  });
+
+  test("per-Note progress reaches observers throttled, and the stage change and the end still arrive", async () => {
+    vi.useFakeTimers();
+    const f = scaleFixture({ docs: 0, notes: 12, preload: true });
+    const settled: GmeetNotesSettled[] = [];
+    const off = onGmeetNotesSettled((s) => settled.push(s));
+    let notifications = 0;
+    const offLive = onGmeetLiveStatus(() => { notifications++; });
+    try {
+      await run(f.client, f.store, { driveMode: "snapshot", deferNotes: true });
+      expect(await untilWithTimers(() => settled.length === 1)).toBe(true);
+      // 12 Notes would otherwise be 12+ notifications on their own.
+      expect(notifications).toBeLessThan(12);
+      expect(getGmeetLiveStatus(TCW).running).toBe(false);
+    } finally { off(); offLive(); }
   });
 });

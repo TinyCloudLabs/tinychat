@@ -9,7 +9,7 @@
 // sync stepper, and a Radix AlertDialog wraps the disconnect confirm with an
 // "also delete N meetings" checkbox.
 
-import { useCallback, useEffect, useMemo, useRef, useState, type FC } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type FC } from "react";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { Loader2Icon, PlugIcon, PlugZapIcon } from "lucide-react";
@@ -32,13 +32,28 @@ import { readBackgroundDrainGeneration } from "./useBackgroundDrain";
 import { isFirefliesStale } from "@/lib/connectors/firefliesFreshness";
 import { GmeetClient } from "@/lib/connectors/gmeetClient";
 import {
+  GMEET_NOTES_BUSY_MESSAGE,
+  getGmeetLiveStatus,
+  isGmeetNotesSyncInFlight,
   isGmeetSyncInFlight,
+  onGmeetLiveStatus,
   onGmeetNotesSettled,
+  type GmeetLiveStatus,
   syncGoogleMeet,
   type GmeetSyncDiagnostics,
   type GmeetSyncProgress,
   type GmeetSyncStore,
 } from "@/lib/connectors/gmeetSync";
+import type { GmeetSyncLog } from "@/lib/connectors/gmeetSyncLog";
+import { loadGmeetSyncLog } from "@/lib/connectors/gmeetSyncLogStore";
+import { resolveBuildInfo } from "@/lib/buildInfo";
+import { appPlatform } from "@/lib/platform";
+import {
+  CopyGmeetSyncLogButton,
+  GmeetBusyOffer,
+  GmeetLiveLine,
+  type GmeetPressMode,
+} from "./GmeetCardStatus";
 import {
   getConnectorKey,
   isSecretsUnlocked,
@@ -94,6 +109,13 @@ interface RowState {
   // persisted (see the store — only the message string round-trips).
   actionError: string | null;
   actionRetryAfterMs: number | null;
+  /**
+   * A press (Sync now / Full rescan) that a running Google Meet sync refused. The row shows
+   * that sync's live progress and offers to wait; `queuedSync` is the accepted offer, run once
+   * the other sync finishes.
+   */
+  busyOffer: GmeetPressMode | null;
+  queuedSync: GmeetPressMode | null;
 }
 
 const DEFAULT_ROW_STATE: RowState = {
@@ -104,6 +126,8 @@ const DEFAULT_ROW_STATE: RowState = {
   progress: null,
   actionError: null,
   actionRetryAfterMs: null,
+  busyOffer: null,
+  queuedSync: null,
 };
 
 type RowStateMap = Record<ConnectorId, RowState>;
@@ -191,6 +215,9 @@ export async function runFirefliesSyncNow(opts: {
   }
 }
 
+/** Shown when a Full rescan lands on a running sync (the engine's single-flight slot is taken). */
+export const GMEET_SYNC_BUSY_MESSAGE = "Another Google Meet sync is already running. Try Full rescan again when it finishes.";
+
 /**
  * "Sync now" for Google Meet.
  *
@@ -220,7 +247,7 @@ export async function runGmeetSyncNow(opts: {
   if (opts.driveMode === "snapshot" && isGmeetSyncInFlight()) {
     return {
       ok: false,
-      message: "Another Google Meet sync is already running. Try Full rescan again when it finishes.",
+      message: GMEET_SYNC_BUSY_MESSAGE,
       retryAfterMs: null,
     };
   }
@@ -262,6 +289,18 @@ export function ConnectorsCard({
   const [rows, setRows] = useState<RowStateMap>(INITIAL_ROW_STATE_MAP);
   const [autojoinRevision, setAutojoinRevision] = useState(0);
   const [gmeetDiagnostics, setGmeetDiagnostics] = useState<GmeetSyncDiagnostics | null>(null);
+  // What the engine is doing right now, including runs this card did not start (the
+  // session-start lane, the connect dialog's background Notes).
+  const live = useSyncExternalStore(onGmeetLiveStatus, () => getGmeetLiveStatus(tcw), () => getGmeetLiveStatus(tcw));
+  const [buildLabel, setBuildLabel] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    resolveBuildInfo(appPlatform()).then(
+      (label) => { if (!cancelled) setBuildLabel(label); },
+      () => {},
+    );
+    return () => { cancelled = true; };
+  }, []);
   // The companion router's mount-time verdict, established ONCE by the
   // background-notifications section's `GET /config` probe. The teardown needs
   // it to tell a dark deployment from a 404 that means something else — see
@@ -373,13 +412,18 @@ export function ConnectorsCard({
         });
         return;
       }
-      if (driveMode === "snapshot" && isGmeetSyncInFlight()) {
+      // A sync is running that this press cannot join (a Full rescan must not lose its snapshot
+      // intent; Sync now cannot join a background Notes reconcile): show its progress and offer
+      // to wait rather than a bare error.
+      if (d.id === GMEET_CONNECTOR_ID && isGmeetSyncInFlight() && (driveMode === "snapshot" || isGmeetNotesSyncInFlight())) {
         patchRow(d.id, {
           syncing: false,
           joinedBackgroundSync: false,
           progress: null,
-          actionError: "Another Google Meet sync is already running. Try Full rescan again when it finishes.",
+          actionError: null,
           actionRetryAfterMs: null,
+          busyOffer: driveMode,
+          queuedSync: null,
         });
         return;
       }
@@ -396,6 +440,8 @@ export function ConnectorsCard({
         progress: null,
         actionError: null,
         actionRetryAfterMs: null,
+        busyOffer: null,
+        queuedSync: null,
       });
       try {
       if (!isSecretsUnlocked(tcw)) {
@@ -467,6 +513,19 @@ export function ConnectorsCard({
       // engine and is the source of truth for itemCount / lastSyncedAt.
       const connRes = await connectorStore.getConnection(tcw, d.id);
       const conn = connRes.ok ? connRes.data : null;
+      if (!syncRes.ok && (syncRes.message === GMEET_SYNC_BUSY_MESSAGE || syncRes.message === GMEET_NOTES_BUSY_MESSAGE)) {
+        patchRow(d.id, {
+          syncing: false,
+          joinedBackgroundSync: false,
+          progress: null,
+          connection: conn,
+          actionError: null,
+          actionRetryAfterMs: null,
+          busyOffer: driveMode,
+          queuedSync: null,
+        });
+        return;
+      }
       if (!syncRes.ok) {
         patchRow(d.id, {
           syncing: false,
@@ -501,6 +560,22 @@ export function ConnectorsCard({
   const handleStopSync = useCallback((id: ConnectorId) => {
     syncAbortRefs.current[id]?.abort();
   }, []);
+
+  const gmeetQueued = rows[GMEET_CONNECTOR_ID].queuedSync;
+  // The accepted offer to wait: once nothing is running, start the press that was refused.
+  useEffect(() => {
+    if (gmeetQueued === null || live.running) return;
+    patchRow(GMEET_CONNECTOR_ID, { queuedSync: null, busyOffer: null });
+    const descriptor = CONNECTORS.find((c) => c.id === GMEET_CONNECTOR_ID);
+    if (descriptor) void handleSyncNow(descriptor, gmeetQueued);
+  }, [gmeetQueued, live.running, patchRow, handleSyncNow]);
+
+  const gmeetConnectedAt = rows[GMEET_CONNECTOR_ID].connection?.lastSyncedAt ?? null;
+  const gmeetHasLog = useMemo(
+    () => loadGmeetSyncLog(tcw) !== null,
+    // A finished run (or a freshly written row) is when a new log can have appeared.
+    [tcw, live.running, gmeetConnectedAt],
+  );
 
   const handleDisconnect = useCallback(
     (d: ConnectorDescriptor) => {
@@ -537,6 +612,13 @@ export function ConnectorsCard({
                 onFullRescan={() => handleSyncNow(d, "snapshot")}
                 onStopSync={() => handleStopSync(d.id)}
                 onDisconnect={() => handleDisconnect(d)}
+                gmeet={d.id === GMEET_CONNECTOR_ID ? {
+                  live,
+                  hasLog: gmeetHasLog,
+                  getLog: () => loadGmeetSyncLog(tcw, buildLabel),
+                  onWait: () => patchRow(d.id, { queuedSync: rows[d.id].busyOffer }),
+                  onCancelWait: () => patchRow(d.id, { queuedSync: null, busyOffer: null }),
+                } : undefined}
               >
                 {d.id === GMEET_CONNECTOR_ID && d.status === "available" && (
                   <CalendarAutojoinSection backendUrl={backendUrl} sessionStore={sessionStore} revision={autojoinRevision}
@@ -608,6 +690,14 @@ export function ConnectorsCard({
 
 // ── Row ────────────────────────────────────────────────────────────────
 
+interface GmeetRowExtras {
+  live: GmeetLiveStatus;
+  hasLog: boolean;
+  getLog: () => GmeetSyncLog | null;
+  onWait: () => void;
+  onCancelWait: () => void;
+}
+
 const ConnectorRow: FC<{
   descriptor: ConnectorDescriptor;
   state: RowState;
@@ -616,6 +706,8 @@ const ConnectorRow: FC<{
   onFullRescan?: () => void;
   onStopSync: () => void;
   onDisconnect: () => void;
+  /** Google Meet's live status, wait offer and sync log; absent for every other row. */
+  gmeet?: GmeetRowExtras;
   /** The optional background-notifications surface, when this row offers one. */
   children?: React.ReactNode;
 }> = ({
@@ -626,6 +718,7 @@ const ConnectorRow: FC<{
   onFullRescan,
   onStopSync,
   onDisconnect,
+  gmeet,
   children,
 }) => {
   const comingSoon = d.status === "coming-soon";
@@ -746,6 +839,22 @@ const ConnectorRow: FC<{
           connection={state.connection}
           stale={d.id === "fireflies" && isFirefliesStale(state.connection.lastSyncedAt)}
         />
+      )}
+      {!comingSoon && gmeet && connected && (
+        <>
+          {state.busyOffer !== null ? (
+            <GmeetBusyOffer
+              mode={state.busyOffer}
+              status={gmeet.live}
+              queued={state.queuedSync !== null}
+              onWait={gmeet.onWait}
+              onCancel={gmeet.onCancelWait}
+            />
+          ) : !state.syncing ? (
+            <GmeetLiveLine status={gmeet.live} />
+          ) : null}
+          {gmeet.hasLog && <CopyGmeetSyncLogButton getLog={gmeet.getLog} />}
+        </>
       )}
       {!comingSoon && state.syncing && state.joinedBackgroundSync && (
         <p className="text-xs text-muted-foreground">

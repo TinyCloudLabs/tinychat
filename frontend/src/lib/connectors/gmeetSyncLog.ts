@@ -49,6 +49,9 @@ export interface GmeetSyncLogResult {
 export interface GmeetSyncLogNotesOutcome {
   ok: boolean;
   errorKind: GmeetSyncErrorKind | null;
+  /** Notes saved / Notes the run had to reconcile, present only when some could not be saved. */
+  notesSaved?: number;
+  notesTotal?: number;
 }
 
 export interface GmeetSyncLog {
@@ -119,7 +122,7 @@ export interface GmeetSyncLogRecorder {
   record(progress: GmeetSyncProgress): void;
   setDiagnostics(diagnostics: GmeetSyncDiagnostics): void;
   setResult(result: GmeetSyncLogResult): void;
-  setNotesOutcome(outcome: { ok: boolean; errorKind: GmeetSyncErrorKind | null }): void;
+  setNotesOutcome(outcome: { ok: boolean; errorKind: GmeetSyncErrorKind | null; partial?: { saved: number; total: number } | null }): void;
   /** The run's start clock reading, for the elapsed counter. */
   readonly startedAt: number;
   build(input: { generatedAt: Date; build?: string | null }): GmeetSyncLog;
@@ -149,6 +152,9 @@ export function createGmeetSyncLogRecorder(now: () => number = Date.now): GmeetS
     setResult(next) { result = next; },
     setNotesOutcome(next) {
       notesOutcome = { ok: next.ok === true, errorKind: ERROR_KINDS.includes(next.errorKind as GmeetSyncErrorKind) ? next.errorKind : null };
+      const saved = count(next.partial?.saved);
+      const total = count(next.partial?.total);
+      if (saved !== null && total !== null) { notesOutcome.notesSaved = saved; notesOutcome.notesTotal = total; }
     },
     build({ generatedAt, build }) {
       const clean = diagnostics ? sanitizeDiagnostics(diagnostics) : null;
