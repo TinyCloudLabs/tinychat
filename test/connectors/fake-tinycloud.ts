@@ -131,8 +131,49 @@ export class FakeSqlDb {
    * Scoped to meeting writes so `connector_state` bookkeeping still behaves normally.
    */
   nextMeetingWriteError: { code: string; message: string } | null = null;
+  /** Every statement issued, in order (query, execute and each batch member). */
+  readonly log: { sql: string; params: unknown[] }[] = [];
+  /** Runs before a statement is applied; tests use it to land a racing write between two statements. */
+  beforeStatement: ((sql: string, params: unknown[]) => void) | null = null;
+  /** Voice-note transcript commits (source_id -> committed body key), answered for `voice_note_transcript` lookups. */
+  voiceNoteCommits = new Map<string, string>();
 
   async query(sql: string, params: unknown[] = []): Promise<SqlResult> {
+    this.log.push({ sql: sql.trim(), params });
+    this.beforeStatement?.(sql, params);
+    if (/FROM\s+sqlite_schema/i.test(sql)) return ok(this.voiceNoteCommits.size > 0 ? [[1]] : []);
+    if (/FROM\s+voice_note_transcript\s+WHERE\s+source_id\s*=\s*\?/i.test(sql)) {
+      const bodyKey = this.voiceNoteCommits.get(String(params[0]));
+      return ok(bodyKey === undefined ? [] : [[String(params[0]), 1, "hash", bodyKey, "transcribed", null, null, null, null, null, null, null, null, null]]);
+    }
+
+    // Combined-meeting (exo-merged) statements, matched before the generic shapes below.
+    {
+      const t = sql.trim();
+      if (/^SELECT\s+title,\s*started_at,\s*duration_secs,\s*participants,\s*metadata\s+FROM\s+connector_meeting/i.test(t)) {
+        const ids = [...this.meetings.values()]
+          .filter((r) => r.source === String(params[0]) && r.source_id === String(params[1]))
+          .sort((a, b) => (a.id < b.id ? -1 : 1));
+        const r = ids[0];
+        return ok(r ? [[r.title, r.started_at, r.duration_secs, r.participants, r.metadata]] : []);
+      }
+      if (/^SELECT\s+id\s+FROM\s+connector_meeting\s+WHERE\s+source\s*=\s*'exo-merged'\s+AND\s+source_id\s*=\s*\?\s+ORDER\s+BY\s+id/i.test(t)) {
+        return ok([...this.meetings.values()]
+          .filter((r) => r.source === "exo-merged" && r.source_id === String(params[0]))
+          .map((r) => r.id).sort().map((id) => [id]));
+      }
+      if (/^SELECT\s+id,\s*source_id,\s*metadata\s+FROM\s+connector_meeting\s+WHERE\s+source\s*=\s*'exo-merged'/i.test(t)) {
+        return ok([...this.meetings.values()].filter((r) => r.source === "exo-merged").map((r) => [r.id, r.source_id, r.metadata]));
+      }
+      if (/^SELECT\s+source_id,\s*metadata\s+FROM\s+connector_meeting\s+WHERE\s+id\s*=\s*\?\s+AND\s+source\s*=\s*'exo-merged'/i.test(t)) {
+        const r = this.meetings.get(String(params[0]));
+        return ok(r && r.source === "exo-merged" ? [[r.source_id, r.metadata]] : []);
+      }
+      if (/^SELECT\s+source_id\s+FROM\s+connector_meeting\s+WHERE\s+id\s*=\s*\?\s+AND\s+source\s*=\s*'exo-merged'/i.test(t)) {
+        const r = this.meetings.get(String(params[0]));
+        return ok(r && r.source === "exo-merged" ? [[r.source_id]] : []);
+      }
+    }
     const s = sql.trim();
 
     // Schema-probe fallback used by ensureSchema when CREATE TABLE errors.
@@ -242,6 +283,25 @@ export class FakeSqlDb {
 
   private applyOne(sql: string, params: unknown[] = []): SqlResult | null {
     const s = sql.trim();
+    this.log.push({ sql: s, params });
+    this.beforeStatement?.(sql, params);
+
+    // Combined-meeting (exo-merged) writes, matched before the generic shapes below.
+    if (/^UPDATE\s+connector_meeting\s+SET\s+title\s*=\s*\?,\s*started_at\s*=\s*\?,\s*duration_secs\s*=\s*\?,\s*participants\s*=\s*\?,\s*metadata\s*=\s*\?,\s*updated_at\s*=\s*\?\s+WHERE\s+id\s*=\s*\?\s+AND\s+source\s*=\s*'exo-merged'/i.test(s)) {
+      const injected = this.takeMeetingWriteError();
+      if (injected) return injected;
+      const [title, started_at, duration_secs, participants, metadata, updated_at, id] = params as [string | null, string | null, number | null, string, string, string, string];
+      const existing = this.meetings.get(id);
+      if (existing && existing.source === "exo-merged") {
+        this.meetings.set(id, { ...existing, title, started_at, duration_secs, participants, metadata, updated_at });
+      }
+      return ok([]);
+    }
+    if (/^DELETE\s+FROM\s+connector_meeting\s+WHERE\s+id\s*=\s*\?\s+AND\s+source\s*=\s*'exo-merged'/i.test(s)) {
+      const existing = this.meetings.get(String(params[0]));
+      if (existing && existing.source === "exo-merged") this.meetings.delete(existing.id);
+      return ok([]);
+    }
 
     const create = s.match(/^CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+(\w+)/i);
     if (create) {
@@ -422,6 +482,10 @@ export class FakeSqlDb {
 // ── KV fake ─────────────────────────────────────────────────────────────
 
 export class FakeKv {
+  /** Every KV call issued, in order. */
+  readonly log: { method: "get" | "put" | "list" | "delete" | "head"; key: string }[] = [];
+  /** Reads of a key fail with the given error (a read that did not land, as opposed to a missing key). */
+  getErrors = new Map<string, KvErr>();
   entries = new Map<string, string>();
   /** Every key rejected by the authorizer — drivers can assert on the shape. */
   readonly unauthorized: string[] = [];
@@ -440,6 +504,9 @@ export class FakeKv {
   async get(
     key: string,
   ): Promise<OkErr<{ data: unknown; headers: Record<string, string> }, KvErr>> {
+    this.log.push({ method: "get", key });
+    const getError = this.getErrors.get(key);
+    if (getError) return { ok: false, error: getError };
     const denied = this.deny(key, "get");
     if (denied) return { ok: false, error: denied };
     if (!this.entries.has(key)) {
@@ -452,6 +519,7 @@ export class FakeKv {
   }
 
   async head(key: string): Promise<OkErr<{ data: void; headers: Record<string, string> }, KvErr>> {
+    this.log.push({ method: "head", key });
     const denied = this.deny(key, "metadata");
     if (denied) return { ok: false, error: denied };
     if (!this.entries.has(key)) {
@@ -464,6 +532,7 @@ export class FakeKv {
     key: string,
     value: unknown,
   ): Promise<OkErr<{ data: void; headers: Record<string, string> }, KvErr>> {
+    this.log.push({ method: "put", key });
     const denied = this.deny(key, "put");
     if (denied) return { ok: false, error: denied };
     for (const [prefix, error] of this.putErrors) {
@@ -486,6 +555,7 @@ export class FakeKv {
   async list(
     options: { path: string; cursor?: string },
   ): Promise<OkErr<{ keys: string[]; cursor?: string }, KvErr>> {
+    this.log.push({ method: "list", key: options.path });
     const denied = this.deny(options.path, "list");
     if (denied) return { ok: false, error: denied };
     return {
@@ -499,6 +569,7 @@ export class FakeKv {
   }
 
   async delete(key: string): Promise<OkErr<void, KvErr>> {
+    this.log.push({ method: "delete", key });
     const forcedError = this.deleteErrors.get(key);
     if (forcedError) return { ok: false, error: forcedError };
     const denied = this.deny(key, "del");

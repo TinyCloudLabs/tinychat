@@ -39,6 +39,7 @@ import type {
   FirefliesSentence,
   FirefliesTranscript,
 } from "./firefliesClient";
+import { deleteCombinedReferencing } from "./combinedMeetingStore";
 import type { ConnectorConnection, ConnectorId } from "./types";
 
 
@@ -1250,6 +1251,12 @@ export async function purgeConnector(
   if (!meetingKeys.ok) return meetingKeys;
   const transcriptKeys = await listKvPrefix(tcw, `${CONNECTORS_KV_PREFIX}/${source}/transcript/`);
   if (!transcriptKeys.ok) return transcriptKeys;
+
+  // TC-1152: a combined (exo-merged) meeting quotes the text of the originals it lists, so it
+  // must not outlive them. Runs BEFORE any original is touched and FAILS CLOSED: if the cascade
+  // fails the purge stops here with the originals intact, and a retry finds the same combined rows.
+  const cascade = await deleteCombinedReferencing(tcw, source);
+  if (!cascade.ok) return fail(cascade.error, "purgeConnector(combined)", storageScopeFor(tcw));
 
   for (const key of [...meetingKeys.data, ...transcriptKeys.data]) {
     const del = await tcw.kv.delete(key);
