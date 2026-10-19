@@ -135,16 +135,18 @@ export class FakeSqlDb {
   readonly log: { sql: string; params: unknown[] }[] = [];
   /** Runs before a statement is applied; tests use it to land a racing write between two statements. */
   beforeStatement: ((sql: string, params: unknown[]) => void) | null = null;
-  /** Voice-note transcript commits (source_id -> committed body key), answered for `voice_note_transcript` lookups. */
-  voiceNoteCommits = new Map<string, string>();
+  /** Voice-note transcript commits (source_id -> committed body key, or an explicit body_key/outcome), answered for `voice_note_transcript` lookups. */
+  voiceNoteCommits = new Map<string, string | { bodyKey: string | null; outcome: string }>();
 
   async query(sql: string, params: unknown[] = []): Promise<SqlResult> {
     this.log.push({ sql: sql.trim(), params });
     this.beforeStatement?.(sql, params);
     if (/FROM\s+sqlite_schema/i.test(sql)) return ok(this.voiceNoteCommits.size > 0 ? [[1]] : []);
     if (/FROM\s+voice_note_transcript\s+WHERE\s+source_id\s*=\s*\?/i.test(sql)) {
-      const bodyKey = this.voiceNoteCommits.get(String(params[0]));
-      return ok(bodyKey === undefined ? [] : [[String(params[0]), 1, "hash", bodyKey, "transcribed", null, null, null, null, null, null, null, null, null]]);
+      const commit = this.voiceNoteCommits.get(String(params[0]));
+      if (commit === undefined) return ok([]);
+      const { bodyKey, outcome } = typeof commit === "string" ? { bodyKey: commit, outcome: "transcribed" } : commit;
+      return ok([[String(params[0]), 1, "hash", bodyKey, outcome, null, null, null, null, null, null, null, null, null]]);
     }
 
     // Combined-meeting (exo-merged) statements, matched before the generic shapes below.
@@ -350,6 +352,8 @@ export class FakeSqlDb {
         string,
         string,
       ];
+      // `id TEXT PRIMARY KEY`: SQLite rejects a second row with the same id, it never replaces.
+      if (this.meetings.has(id)) return { ok: false, error: { code: "SQL_CONSTRAINT", message: "UNIQUE constraint failed: connector_meeting.id" } };
       this.meetings.set(id, {
         id,
         source,

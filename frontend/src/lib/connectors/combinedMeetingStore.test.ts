@@ -241,7 +241,7 @@ describe("voice-note members", () => {
     const [a, b] = pair("v", "exo-voice-note", "fireflies");
     seed(f, a);
     seed(f, b);
-    const revKey = `${CONNECTORS_KV_PREFIX}/exo-voice-note/transcript-rev/${a.ref.sourceId}/hash`;
+    const revKey = `${CONNECTORS_KV_PREFIX}/exo-voice-note/transcript-rev/${a.ref.sourceId}/${"a1".repeat(16)}`;
     f.kv.entries.set(revKey, a.body);
     f.kv.entries.set(transcriptKvKey("exo-voice-note", a.ref.sourceId), "[]"); // legacy mirror: empty
     f.sql.voiceNoteCommits.set(a.ref.sourceId, revKey);
@@ -289,12 +289,114 @@ describe("purgeConnector cascade", () => {
     expect(mergedRows()).toHaveLength(0);
   });
 
-  test("an exo-merged row with unreadable metadata is derived data of unknown provenance and is removed", async () => {
+  test("a row whose metadata is not a v1 merge record reads its members from the body's sources[]", async () => {
+    const c1 = await combineOk(ff[0], ff[1]);
+    mergedRows()[0]!.metadata = JSON.stringify({ merge: { v: 2, parts: [] } });
+    // Purging an unrelated source leaves it alone; purging one of ITS members deletes it.
+    expect(await deleteCombinedReferencing(f.tcw, "google-meet")).toEqual({ ok: true, data: { deletedIds: [], unverifiedIds: [] } });
+    expect(mergedRows()).toHaveLength(1);
+    expect(await deleteCombinedReferencing(f.tcw, "fireflies")).toEqual({ ok: true, data: { deletedIds: [c1.id], unverifiedIds: [] } });
+    expect(mergedRows()).toHaveLength(0);
+    expect(f.kv.entries.has(mergedKey(c1.sourceId))).toBe(false);
+  });
+
+  test("a row whose members cannot be determined is kept and reported, and it fails the purge closed", async () => {
     const c1 = await combineOk(ff[0], ff[1]);
     mergedRows()[0]!.metadata = "not json";
-    const res = await deleteCombinedReferencing(f.tcw, "fireflies");
-    expect(res).toEqual({ ok: true, data: { deletedIds: [c1.id] } });
+    f.kv.entries.set(mergedKey(c1.sourceId), "<html>not a transcript</html>"); // no sources[] to read
+    expect(await deleteCombinedReferencing(f.tcw, "fireflies")).toEqual({ ok: true, data: { deletedIds: [], unverifiedIds: [c1.id] } });
+    expect(mergedRows()).toHaveLength(1);
+
+    const before = originals() + originalKv();
+    const res = await purgeConnector(f.tcw, "fireflies");
+    expect(res.ok).toBe(false);
+    expect(!res.ok && res.error.code).toBe("COMBINED_MEMBERS_UNKNOWN");
+    expect(originals() + originalKv()).toBe(before);
+    expect(mergedRows()).toHaveLength(1);
+
+    // Deleting the unreadable combined meeting explicitly clears the block.
+    expect(await deleteCombined(f.tcw, EXO_MERGED_SOURCE, c1.id)).toEqual({ ok: true, data: { deleted: true } });
+    expect((await purgeConnector(f.tcw, "fireflies")).ok).toBe(true);
+  });
+
+  test("a combined row with a '/' in its source_id does not block the purge", async () => {
+    const c1 = await combineOk(ff[0], ff[1]);
+    const row = mergedRows()[0]!;
+    row.source_id = "bad/id";
+    f.kv.entries.set(mergedKey(c1.sourceId), f.kv.entries.get(mergedKey(c1.sourceId))!);
+    // v1 metadata still lists the Fireflies member, so the row is a hit whose body key is not ours to build.
+    const res = await purgeConnector(f.tcw, "fireflies");
+    expect(res.ok).toBe(true);
     expect(mergedRows()).toHaveLength(0);
+  });
+
+  test("a combine that lands between the cascade and the end of the purge is removed by the second pass", async () => {
+    let landed = false;
+    f.sql.beforeStatement = (sql) => {
+      if (landed || !/^DELETE FROM connector_meeting WHERE source = \?/i.test(sql.trim())) return;
+      landed = true;
+      // What a combine in another tab writes after reading its members before the purge.
+      const source = [...f.sql.meetings.values()][0]!;
+      f.sql.meetings.set("late-combine", {
+        ...source, id: "late-combine", source: EXO_MERGED_SOURCE, source_id: "late-id",
+        metadata: JSON.stringify({ merge: { v: 1, members: [{ source: "fireflies", source_id: "p-a", body_sha256: "x" }] } }),
+      });
+      f.kv.entries.set(mergedKey("late-id"), "[]");
+    };
+    const res = await purgeConnector(f.tcw, "fireflies");
+    expect(landed).toBe(true);
+    expect(res.ok).toBe(true);
+    expect(mergedRows()).toHaveLength(0);
+    expect(f.kv.entries.has(mergedKey("late-id"))).toBe(false);
+  });
+});
+
+// ── members that cannot be verified are never "absent" ─────────────────
+describe("member reads that do not settle", () => {
+  test("an un-hosted space (KV_NOT_FOUND 'Space not found') is a failed read, not an absent one", async () => {
+    const w = await combineOk(ff[0], ff[1]);
+    f.kv.getErrors.set(transcriptKvKey("tinycloud-transcriber", "p-b"), { code: "KV_NOT_FOUND", message: "Space not found" });
+    expect(await sweepCombinedMeeting(f.tcw, w.id)).toEqual({ ok: true, data: { status: "unverified" } });
+    expect(mergedRows()).toHaveLength(1);
+    expect(f.kv.log.filter((c) => c.method === "delete")).toEqual([]);
+  });
+
+  test.each([
+    ["a null body_key", { bodyKey: null, outcome: "transcribed" }],
+    ["a no_speech outcome", { bodyKey: `${CONNECTORS_KV_PREFIX}/exo-voice-note/transcript-rev/v-a/${"a1".repeat(16)}`, outcome: "no_speech" }],
+    ["a body_key outside the note's transcript-rev prefix", { bodyKey: `${CONNECTORS_KV_PREFIX}/exo-voice-note/transcript-rev/other/${"a1".repeat(16)}`, outcome: "transcribed" }],
+    ["a body_key whose hash is not 32 hex", { bodyKey: `${CONNECTORS_KV_PREFIX}/exo-voice-note/transcript-rev/v-a/hash`, outcome: "transcribed" }],
+  ])("a voice-note commit with %s is unverified and deletes nothing", async (_name, commit) => {
+    const [a, b] = pair("v", "exo-voice-note", "fireflies");
+    seed(f, a);
+    seed(f, b);
+    const goodKey = `${CONNECTORS_KV_PREFIX}/exo-voice-note/transcript-rev/v-a/${"b2".repeat(16)}`;
+    f.kv.entries.set(goodKey, a.body);
+    f.sql.voiceNoteCommits.set("v-a", goodKey);
+    const w = await combineOk(a, b);
+    f.sql.voiceNoteCommits.set("v-a", commit);
+    expect(await sweepCombinedMeeting(f.tcw, w.id)).toEqual({ ok: true, data: { status: "unverified" } });
+    expect(mergedRows()).toHaveLength(1);
+    expect(f.kv.log.filter((c) => c.method === "delete")).toEqual([]);
+  });
+});
+
+describe("fake store fidelity", () => {
+  test("an INSERT with an existing id fails like SQLite; combine treats it as a lost race and leaves the rival's summary alone", async () => {
+    let insertedId = "";
+    f.sql.beforeStatement = (sql, params) => {
+      if (!/^INSERT INTO connector_meeting/i.test(sql.trim())) return;
+      f.sql.beforeStatement = null;
+      insertedId = String(params[0]);
+      // Same id as the row being inserted: the deterministic-id race between two writers.
+      f.sql.meetings.set(insertedId, { ...f.sql.meetings.get("row-p-a")!, id: insertedId, source: EXO_MERGED_SOURCE, source_id: String(params[2]), metadata: "{}", summary_overview: "rival summary" });
+    };
+    const w = await combineOk(ff[0], ff[1]);
+    expect(w.id).toBe(insertedId);
+    expect(w.created).toBe(false);
+    expect(mergedRows()).toHaveLength(1);
+    expect(mergedRows()[0]!.summary_overview).toBe("rival summary");
+    expect(JSON.parse(mergedRows()[0]!.metadata).merge.members).toHaveLength(2);
   });
 });
 
@@ -340,5 +442,38 @@ describe("read-time sweep", () => {
     expect(await sweepOnMemberRead(f.tcw, ff[0].ref, { status: "absent" })).toEqual({ ok: true, data: { status: "deleted" } });
     expect(mergedRows()).toHaveLength(0);
     expect(f.kv.entries.has(mergedKey(w.sourceId))).toBe(false);
+  });
+
+  test("an unrelated member's absent read leaves a row whose metadata is not a v1 merge record alone", async () => {
+    const w = await combineOk(ff[0], ff[1]);
+    mergedRows()[0]!.metadata = JSON.stringify({ merge: { v: 2, parts: [] } });
+    expect(await sweepOnMemberRead(f.tcw, { source: "exo-voice-note", sourceId: "unrelated" }, { status: "absent" })).toEqual({ ok: true, data: { status: "kept" } });
+    expect(mergedRows()).toHaveLength(1);
+    expect(f.kv.entries.has(mergedKey(w.sourceId))).toBe(true);
+  });
+
+  test("a non-v1 row whose members cannot be read is kept and reported unverified, whatever member was absent", async () => {
+    const w = await combineOk(ff[0], ff[1]);
+    mergedRows()[0]!.metadata = JSON.stringify({ merge: { v: 2, parts: [] } });
+    f.kv.entries.delete(mergedKey(w.sourceId)); // no body, no sources[]
+    expect(await sweepOnMemberRead(f.tcw, { source: "exo-voice-note", sourceId: "unrelated" }, { status: "absent" })).toEqual({ ok: true, data: { status: "unverified" } });
+    expect(await sweepCombinedMeeting(f.tcw, w.id)).toEqual({ ok: true, data: { status: "unverified" } });
+    expect(mergedRows()).toHaveLength(1);
+  });
+
+  test("a non-v1 row whose members come from sources[] is deleted when ITS member is absent", async () => {
+    const w = await combineOk(ff[0], ff[1]);
+    mergedRows()[0]!.metadata = JSON.stringify({ merge: { v: 2, parts: [] } });
+    expect(await sweepOnMemberRead(f.tcw, ff[1].ref, { status: "absent" })).toEqual({ ok: true, data: { status: "deleted" } });
+    expect(mergedRows()).toHaveLength(0);
+    expect(f.kv.entries.has(mergedKey(w.sourceId))).toBe(false);
+  });
+
+  test("sweepCombinedMeeting reads a non-v1 row's members from sources[] and deletes it when one is absent", async () => {
+    const w = await combineOk(ff[0], ff[1]);
+    mergedRows()[0]!.metadata = "{}";
+    f.kv.entries.delete(transcriptKvKey("fireflies", "p-a"));
+    expect(await sweepCombinedMeeting(f.tcw, w.id)).toEqual({ ok: true, data: { status: "deleted" } });
+    expect(mergedRows()).toHaveLength(0);
   });
 });

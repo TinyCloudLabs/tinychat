@@ -1255,8 +1255,16 @@ export async function purgeConnector(
   // TC-1152: a combined (exo-merged) meeting quotes the text of the originals it lists, so it
   // must not outlive them. Runs BEFORE any original is touched and FAILS CLOSED: if the cascade
   // fails the purge stops here with the originals intact, and a retry finds the same combined rows.
+  // A combined row whose members cannot be determined might quote this source, so it also stops
+  // the purge (COMBINED_MEMBERS_UNKNOWN); the user clears it by deleting that combined meeting.
   const cascade = await deleteCombinedReferencing(tcw, source);
   if (!cascade.ok) return fail(cascade.error, "purgeConnector(combined)", storageScopeFor(tcw));
+  if (cascade.data.unverifiedIds.length > 0) {
+    return fail({
+      code: "COMBINED_MEMBERS_UNKNOWN",
+      message: `a combined meeting's members cannot be determined, so it may quote this source; delete it, then purge again (ids: ${cascade.data.unverifiedIds.join(", ")})`,
+    }, "purgeConnector(combined)", storageScopeFor(tcw));
+  }
 
   for (const key of [...meetingKeys.data, ...transcriptKeys.data]) {
     const del = await tcw.kv.delete(key);
@@ -1284,6 +1292,16 @@ export async function purgeConnector(
     { sql: "DELETE FROM connector_state WHERE connector_id = ?", params: [source] },
   ]);
   if (!res.ok) return fail(res.error, "purgeConnector(sql)", storageScopeFor(tcw));
+  // A combine in another tab or device may have read a member before the purge and written after
+  // the first cascade. Its members are now gone, so a second (idempotent) pass removes it.
+  const late = await deleteCombinedReferencing(tcw, source);
+  if (!late.ok) return fail(late.error, "purgeConnector(combined-late)", storageScopeFor(tcw));
+  if (late.data.unverifiedIds.length > 0) {
+    return fail({
+      code: "COMBINED_MEMBERS_UNKNOWN",
+      message: `a combined meeting written during the purge has unknown members; delete it, then purge again (ids: ${late.data.unverifiedIds.join(", ")})`,
+    }, "purgeConnector(combined-late)", storageScopeFor(tcw));
+  }
   return { ok: true, data: undefined };
 }
 

@@ -92,7 +92,11 @@ async function kv(call: () => Promise<unknown>): Promise<KvOutcome> {
     if (field(res, "ok") === true) return { ok: true, data: field(field(res, "data"), "data") };
     const raw = field(field(res, "error"), "code");
     const code = typeof raw === "string" ? raw : "KV_ERROR";
-    return { ok: false, notFound: /NOT_FOUND/i.test(code), error: { code, message: "connector store kv call failed", cause: field(res, "error") } };
+    // An un-hosted space also answers KV_NOT_FOUND ("Space not found"): the key's absence is not
+    // established, so it is a failed read, never a settled "nothing stored".
+    const message = field(field(res, "error"), "message");
+    const spaceMissing = typeof message === "string" && /space not found/i.test(message);
+    return { ok: false, notFound: /NOT_FOUND/i.test(code) && !spaceMissing, error: { code, message: "connector store kv call failed", cause: field(res, "error") } };
   } catch (e) {
     return { ok: false, notFound: false, error: { code: "KV_TRANSPORT", message: "connector store kv call threw", cause: e } };
   }
@@ -128,6 +132,36 @@ function mergeMembers(rawMetadata: unknown): MergeMember[] | null {
   return out;
 }
 
+/**
+ * Members of a combined row, or null when they cannot be determined. A v1 `metadata.merge.members`
+ * record is used when present; otherwise the members are every distinct (source, source_id) in the
+ * body's per-segment `sources[]` (chosen or not: an unchosen source's text is carried in `alternate`).
+ * A read failure, an unparseable body or a segment without a `sources` list is null, never a guess.
+ */
+async function membersOf(tcw: TinyCloudWeb, sourceId: string, rawMetadata: unknown): Promise<MeetingRef[] | null> {
+  const fromMeta = mergeMembers(rawMetadata);
+  if (fromMeta !== null) return fromMeta.map((m) => ({ source: m.source, sourceId: m.sourceId }));
+  const key = mergedBodyKey(sourceId);
+  if (key === null) return null;
+  const res = await kv(() => tcw.kv.get(key));
+  if (!res.ok) return null;
+  let body: unknown = res.data;
+  if (typeof body === "string") {
+    try { body = JSON.parse(body); } catch { return null; }
+  }
+  if (!Array.isArray(body) || body.length === 0) return null;
+  const seen = new Map<string, MeetingRef>();
+  for (const seg of body) {
+    const sources = isRecord(seg) ? seg.sources : null;
+    if (!Array.isArray(sources) || sources.length === 0) return null;
+    for (const s of sources) {
+      if (!isRecord(s) || typeof s.source !== "string" || typeof s.source_id !== "string" || !s.source || !s.source_id) return null;
+      seen.set(`${s.source}\u0000${s.source_id}`, { source: s.source, sourceId: s.source_id });
+    }
+  }
+  return seen.size === 0 ? null : [...seen.values()];
+}
+
 // ═══ 2. Reading members (read-only, I1) ══════════════════════════════════════════════════════
 
 /**
@@ -146,8 +180,12 @@ async function memberBodyKey(tcw: TinyCloudWeb, ref: MeetingRef): Promise<{ key:
   if (ref.source !== "exo-voice-note") return { key: transcriptKvKey(ref.source, ref.sourceId) };
   try {
     const commit = await readTranscriptCommit(tcw, ref.sourceId);
-    // A note with no commit record predates the commit format; its legacy key is its only body.
-    return { key: commit ? commit.bodyKey : transcriptKvKey(ref.source, ref.sourceId) };
+    if (!commit) return { key: transcriptKvKey(ref.source, ref.sourceId) };
+    // Mirrors retrieval.mjs voiceNoteBodyKey: a commit without a usable committed body is unverified
+    // (the key would otherwise read "null", look absent, and get a combined meeting deleted).
+    const prefix = `${CONNECTORS_KV_PREFIX}/exo-voice-note/transcript-rev/${ref.sourceId}/`;
+    if (commit.outcome !== "transcribed" || !commit.bodyKey.startsWith(prefix) || !/^[a-f0-9]{32}$/.test(commit.bodyKey.slice(prefix.length))) return { failed: true };
+    return { key: commit.bodyKey };
   } catch {
     return { failed: true };
   }
@@ -313,11 +351,14 @@ export async function deleteCombined(tcw: TinyCloudWeb, source: string, id: stri
   return { ok: true, data: { deleted: true } };
 }
 
-/** Body first (a retry still finds the row), then the rows. `bodySourceId = null` keeps the body. */
+/**
+ * Body first (a retry still finds the row), then the rows. `bodySourceId = null` keeps the body. A
+ * source_id that is not a valid key segment has no body this module could have written (the writer
+ * refuses it), so only the row is deleted: one malformed row must not block a purge forever.
+ */
 async function removeMerged(tcw: TinyCloudWeb, bodySourceId: string | null, rowIds: string[]): Promise<StoreResult<void>> {
-  if (bodySourceId !== null) {
-    const key = mergedBodyKey(bodySourceId);
-    if (key === null) return failure("COMBINED_ID_INVALID", "combined source id is not a valid key segment");
+  const key = bodySourceId === null ? null : mergedBodyKey(bodySourceId);
+  if (key !== null) {
     const del = await kv(() => tcw.kv.delete(key));
     if (!del.ok && !del.notFound) return { ok: false, error: del.error };
   }
@@ -332,27 +373,29 @@ async function removeMerged(tcw: TinyCloudWeb, bodySourceId: string | null, rowI
 
 /**
  * Delete every exo-merged meeting that lists a member from `source` (and, when given, that exact
- * `sourceId`). FAIL CLOSED: any error is returned and the caller MUST abort its own deletion, so
- * a combined meeting quoting an original's text is never left behind.
- *
- * An exo-merged row whose metadata cannot be read as a merge record has no knowable members. It is
- * derived data of unknown provenance, so it is deleted rather than kept.
+ * `sourceId`). Members come from `metadata.merge.members` (v1) or, failing that, the body's
+ * `sources[]`. FAIL CLOSED two ways:
+ *   - any error is returned and the caller MUST abort its own deletion;
+ *   - a row whose members cannot be determined is NEVER deleted on a guess (it may list an unrelated
+ *     member): its id is returned in `unverifiedIds`. The caller decides: `purgeConnector` fails the
+ *     purge (the row might quote the purged source), the read-time sweep just reports it.
  */
 export async function deleteCombinedReferencing(
   tcw: TinyCloudWeb,
   source: string,
   sourceId?: string,
-): Promise<StoreResult<{ deletedIds: string[] }>> {
+): Promise<StoreResult<{ deletedIds: string[]; unverifiedIds: string[] }>> {
   const rows = await sql(tcw, "query", "SELECT id, source_id, metadata FROM connector_meeting WHERE source = 'exo-merged'", []);
   if (!rows.ok) return rows;
   const hits: { id: string; sourceId: string }[] = [];
+  const unverifiedIds: string[] = [];
   for (const r of rows.rows) {
     const id = asString(r[0]);
     const sid = asString(r[1]);
     if (id === null || sid === null) continue;
-    const members = mergeMembers(r[2]);
-    const lists = members === null || members.some((m) => m.source === source && (sourceId === undefined || m.sourceId === sourceId));
-    if (lists) hits.push({ id, sourceId: sid });
+    const members = await membersOf(tcw, sid, r[2]);
+    if (members === null) unverifiedIds.push(id);
+    else if (members.some((m) => m.source === source && (sourceId === undefined || m.sourceId === sourceId))) hits.push({ id, sourceId: sid });
   }
   // One body per source_id (duplicates share it), then every matching row.
   const bodies = new Set(hits.map((h) => h.sourceId));
@@ -360,7 +403,7 @@ export async function deleteCombinedReferencing(
     const removed = await removeMerged(tcw, sid, hits.filter((h) => h.sourceId === sid).map((h) => h.id));
     if (!removed.ok) return removed;
   }
-  return { ok: true, data: { deletedIds: hits.map((h) => h.id) } };
+  return { ok: true, data: { deletedIds: hits.map((h) => h.id), unverifiedIds } };
 }
 
 // ═══ 6. SWEEP (read-time repair for deletes made outside this client) ════════════════════════
@@ -384,7 +427,8 @@ export async function sweepOnMemberRead(
   if (read.status === "ok") return { ok: true, data: { status: "kept" } };
   const cascade = await deleteCombinedReferencing(tcw, member.source, member.sourceId);
   if (!cascade.ok) return cascade;
-  return { ok: true, data: { status: cascade.data.deletedIds.length > 0 ? "deleted" : "kept" } };
+  const { deletedIds, unverifiedIds } = cascade.data;
+  return { ok: true, data: { status: deletedIds.length > 0 ? "deleted" : unverifiedIds.length > 0 ? "unverified" : "kept" } };
 }
 
 /** Read every member of one combined meeting; delete it if any member is `absent`. */
@@ -392,7 +436,7 @@ export async function sweepCombinedMeeting(tcw: TinyCloudWeb, id: string): Promi
   const found = await sql(tcw, "query", "SELECT source_id, metadata FROM connector_meeting WHERE id = ? AND source = 'exo-merged'", [id]);
   if (!found.ok) return found;
   if (found.rows.length === 0) return { ok: true, data: { status: "kept" } };
-  const members = mergeMembers(found.rows[0]![1]);
+  const members = await membersOf(tcw, String(found.rows[0]![0]), found.rows[0]![1]);
   if (members === null) return { ok: true, data: { status: "unverified" } };
   let unverified = false;
   for (const m of members) {
