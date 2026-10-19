@@ -469,6 +469,8 @@ export function isGmeetNotesSyncInFlight(): boolean {
 }
 
 let notesStop: AbortController | null = null;
+// True while the foreground run of a `deferNotes` sync has not yet handed off to the background.
+let foregroundDeferred = false;
 
 /**
  * Stop a running deferred Notes reconcile and wait until it has written nothing
@@ -476,6 +478,10 @@ let notesStop: AbortController | null = null;
  * otherwise recreate the connection row it just removed.
  */
 export async function stopGmeetNotesSync(): Promise<void> {
+  // A deferred foreground run hands off to the background as it returns: wait for that
+  // hand-off, or the reconcile would start after the caller's teardown.
+  const foreground = inFlight;
+  if (foreground !== null && foregroundDeferred) await foreground.catch(() => {});
   const running = notesInFlight;
   if (running === null) return;
   notesStop?.abort();
@@ -527,6 +533,8 @@ export function isGmeetSyncInFlight(): boolean {
 export function _resetGmeetSyncSingleFlightForTests(): void {
   inFlight = null;
   notesInFlight = null;
+  notesStop = null;
+  foregroundDeferred = false;
 }
 
 /**
@@ -558,8 +566,10 @@ export function syncGoogleMeet(opts: GmeetSyncOptions): Promise<GmeetSyncResult>
       data: null,
     });
   }
+  foregroundDeferred = opts.deferNotes === true;
   const run = runGoogleMeetSync(opts).finally(() => {
     inFlight = null;
+    foregroundDeferred = false;
   });
   inFlight = run;
   return run;
@@ -888,7 +898,8 @@ async function runGoogleMeetSync(opts: GmeetSyncOptions): Promise<GmeetSyncResul
     await writeState();
     if (terminal === null) {
       await step(async () => { await emit("complete"); });
-      if (!opts.deferNotes) return { ok: true, data: summary() };
+      // A stopped run (Stop between Meet records) keeps its old watermark and starts no background work.
+      if (!opts.deferNotes || aborted) return { ok: true, data: summary() };
       const meetings = { current, total, synced: created + updated, failed, skipped };
       const stop = new AbortController();
       const background: Promise<void> = runNotesInBackground({ opts, startedAtIso, itemCount, diagnostics, meetings, stop })
@@ -1168,7 +1179,7 @@ async function runNotesInBackground(input: NotesBackgroundInput): Promise<void> 
     diagnostics.finishing_recovery_write = "skipped_pending_storage";
   }
   // Released before observers run: they re-read the row and expect "Sync now" to be usable again.
-  notesInFlight = null;
+  if (notesStop === input.stop) notesInFlight = null;
   const settledOutcome: GmeetNotesSettled = {
     ok: terminal === null, errorKind: terminal?.kind ?? null, diagnostics: { ...diagnostics },
   };
@@ -1362,10 +1373,12 @@ async function snapshotDriveNotes(
   let lookup: ((fileId: string) => GmeetNotesAssociation | null) | null = null;
   if (store.loadGmeetNotesIndex) {
     const loaded = await opts.step(() => store.loadGmeetNotesIndex!(tcw, SOURCE), true);
-    if (!loaded.ok) return { terminal: fromStore(loaded.error, "loadGmeetNotesIndex") };
-    lookup = loaded.data.find;
-    diagnostics.drive_assoc_preloaded_rows = loaded.data.size;
-    if (ctx) ctx.lookup = lookup;
+    // Only an optimisation: if the preload cannot be read, keep the per-Doc lookups.
+    if (loaded.ok) {
+      lookup = loaded.data.find;
+      diagnostics.drive_assoc_preloaded_rows = loaded.data.size;
+      if (ctx) ctx.lookup = lookup;
+    }
   }
   // Only files that can need storage or Docs work are candidates: trashed (removal),
   // Notes-by-Gemini by metadata, or already associated. Everything else is a

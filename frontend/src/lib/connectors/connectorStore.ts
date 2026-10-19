@@ -1018,17 +1018,20 @@ export async function loadGmeetNotesIndex(
 ): Promise<StoreResult<GmeetNotesIndex>> {
   const schema = await ensureSchema(tcw);
   if (!schema.ok) return schema;
+  // Identity and metadata only: a hit is re-read by findGmeetNotesAssociation before any
+  // write, so the (large) summary columns never need to travel.
   const res = await store(tcw).query(
-    `SELECT id, source_id, title, started_at, summary_overview, summary_action_items, metadata FROM connector_meeting
+    `SELECT id, source_id, metadata FROM connector_meeting
      WHERE source = ?`,
     [source],
   );
   if (!res.ok) return fail(res.error, "loadGmeetNotesIndex", storageScopeFor(tcw));
-  const rows = res.data.rows.map((row) => ({
-    id: cellStr(row, 0, null), sourceId: cellStr(row, 1, null), title: cellStr(row, 2, null),
-    startedAt: cellStr(row, 3, null), summaryOverview: cellStr(row, 4, null),
-    summaryActionItems: cellStr(row, 5, null), metadata: parseJsonObject(row[6]),
-  })).filter((row): row is GmeetNotesAssociation => row.id !== null && row.sourceId !== null);
+  const rows = res.data.rows.flatMap((row): GmeetNotesAssociation[] => {
+    const id = cellStr(row, 0, null);
+    const sourceId = cellStr(row, 1, null);
+    if (id === null || sourceId === null) return [];
+    return [{ id, sourceId, title: null, startedAt: null, summaryOverview: null, summaryActionItems: null, metadata: parseJsonObject(row[2]) }];
+  });
   return { ok: true, data: { size: rows.length, find: buildGmeetNotesIndex(rows) } };
 }
 

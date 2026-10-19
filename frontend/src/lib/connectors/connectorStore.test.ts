@@ -202,6 +202,14 @@ class FakeSqlDb {
       }
       return { ok: true, data: { rows } };
     }
+    if (/^SELECT\s+id,\s*source_id,\s*metadata\s+FROM\s+connector_meeting/i.test(s)) {
+      const source = String(params[0]);
+      const rows: unknown[][] = [];
+      for (const row of this.meetings.values()) {
+        if (row.source === source) rows.push([row.id, row.source_id, this.metadataCell(row.metadata)]);
+      }
+      return { ok: true, data: { rows } };
+    }
     if (/^SELECT\s+id\s+FROM\s+connector_meeting/i.test(s)) {
       const source = String(params[0]);
       const sourceId = String(params[1]);

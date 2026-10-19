@@ -40,6 +40,7 @@ import {
   type GmeetSyncStore,
 } from "./gmeetSync";
 import type { ConnectorConnection, ConnectorId } from "./types";
+import { runDisconnect, type DisconnectDeps } from "./connectorLifecycle";
 
 const ok = <T>(data: T): StoreResult<T> => ({ ok: true, data });
 
@@ -2091,7 +2092,7 @@ describe("Notes reconcile at scale", () => {
   }
 
   /** A Drive of `docs` unrelated Docs plus `notes` Notes by Gemini, counting every node and Docs call. */
-  function scaleFixture(config: { docs: number; notes: number; preload: boolean; progress?: boolean }) {
+  function scaleFixture(config: { docs: number; notes: number; preload: boolean; progress?: boolean; records?: number }) {
     const files = Array.from({ length: config.docs + config.notes }, (_, i) => i < config.notes
       ? { id: `notes-${i}`, name: "Notes by Gemini", mimeType: DOC_MIME, modifiedTime: MODIFIED }
       : { id: `doc-${i}`, name: `Quarterly budget ${i}`, mimeType: DOC_MIME, modifiedTime: MODIFIED });
@@ -2113,7 +2114,8 @@ describe("Notes reconcile at scale", () => {
         async putDriveProgress(_: TinyCloudWeb, _source: string, progress: typeof saved) { saved = progress; return ok(undefined); },
       } : {}),
     });
-    const client = Object.assign(new FakeClient([fixture("rec-0", { entryTexts: ["Saved synthetic transcript"] })]), {
+    const client = Object.assign(new FakeClient(Array.from({ length: config.records ?? 1 }, (_, i) =>
+      fixture(`rec-${i}`, { entryTexts: ["Saved synthetic transcript"] }))), {
       async getDriveStartPageToken() { return { ok: true as const, data: "next-cursor" }; },
       async listDriveFiles() { return { ok: true as const, data: files }; },
       async listDriveChangesPage() {
@@ -2315,5 +2317,79 @@ describe("Notes reconcile at scale", () => {
       expect(settled).toHaveLength(1);
       expect(settled[0]?.ok).toBe(false);
     } finally { hold.resolve(); off(); }
+  });
+
+  test("a Google Meet disconnect stops the running background reconcile before it tears anything down", async () => {
+    const f = scaleFixture({ docs: 0, notes: 6, preload: true });
+    const hold = Promise.withResolvers<void>();
+    f.ctl.hold = hold.promise;
+    try {
+      expect((await run(f.client, f.store, { driveMode: "snapshot", deferNotes: true })).ok).toBe(true);
+      await drain(() => f.counts.concurrent === 5);
+      expect(isGmeetNotesSyncInFlight()).toBe(true);
+      // Every teardown step records whether the reconcile was still running when it started.
+      const steps: string[] = [];
+      const step = <T>(name: string, value: T) => async () => { steps.push(`${name}:${isGmeetNotesSyncInFlight()}`); return value; };
+      const deps = {
+        connectorId: "google-meet", source: "google-meet", mode: "keep-data",
+        webhooks: {
+          disable: step("disable", { status: "ok", value: { status: "disabled", queueDropped: 0 } }),
+          recordPurge: step("record-purge", { status: "ok", value: null }),
+          clearPurgeLedger: step("clear-ledger", { status: "ok", value: null }),
+        },
+        secrets: { isUnlocked: () => true, unlock: step("unlock", { ok: true }), deleteKey: step("delete-key", { ok: true }) },
+        store: {
+          listKnownSourceIds: step("collect-ids", ok<string[]>([])),
+          purgeConnector: step("purge-local", ok(undefined)),
+          clearFirefliesAttempt: step("clear-attempt", ok(undefined)),
+          getConnection: step("get-connection", ok(null)),
+          countMeetings: step("count", ok(0)),
+          updateSyncState: step("update-state", ok(undefined)),
+        },
+      } as unknown as DisconnectDeps; // Only the steps the keep-data plan reaches are exercised.
+      const done = runDisconnect(deps, () => {});
+      hold.resolve();
+      expect((await done).done).toBe(true);
+      expect(steps.length).toBeGreaterThan(0);
+      expect(steps.filter((entry) => entry.endsWith(":true"))).toEqual([]);
+    } finally { hold.resolve(); }
+  });
+
+  test("a stopped deferred run keeps its old watermark and starts no background reconcile", async () => {
+    const f = scaleFixture({ docs: 0, notes: 4, preload: true, records: 2 });
+    const watermark = "2026-10-10T00:00:00.000Z";
+    f.store.connection = {
+      connectorId: "google-meet", status: "connected", lastSyncedAt: watermark,
+      lastSyncStatus: "ok", lastSyncError: null, itemCount: 0,
+    };
+    const stop = new AbortController();
+    f.store.afterUpsert = () => stop.abort(); // Stop lands between the two Meet records.
+    const dialogSees: GmeetSyncProgress[] = [];
+    const result = await run(f.client, f.store, {
+      driveMode: "snapshot", deferNotes: true, signal: stop.signal, onProgress: (p) => dialogSees.push(p),
+    });
+    expect(result.ok && result.data.aborted).toBe(true);
+    expect(result.ok && result.data.notesDeferred).toBeUndefined();
+    expect(f.store.state?.lastSyncedAt).toBe(watermark);
+    expect(isGmeetNotesSyncInFlight()).toBe(false);
+    await drain();
+    expect(f.counts.reads).toEqual([]);
+    expect(f.store.rows.some((row) => row.meeting.sourceId.startsWith("notes-"))).toBe(false);
+  });
+
+  test("a disconnect during the foreground part of a deferred run still stops the reconcile it is about to start", async () => {
+    const f = scaleFixture({ docs: 0, notes: 4, preload: true });
+    const countGate = Promise.withResolvers<void>();
+    const count = f.store.countMeetings.bind(f.store);
+    f.store.countMeetings = async (tcw, source) => { await countGate.promise; return count(tcw, source); };
+    const pending = run(f.client, f.store, { driveMode: "snapshot", deferNotes: true });
+    await drain();
+    const stopped = stopGmeetNotesSync();
+    countGate.resolve();
+    await stopped;
+    await pending;
+    expect(isGmeetNotesSyncInFlight()).toBe(false);
+    await drain();
+    expect(f.store.rows.some((row) => row.meeting.sourceId.startsWith("notes-"))).toBe(false);
   });
 });
