@@ -316,13 +316,13 @@ export const GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY: BackgroundSyncConsentCopy = 
   changesHeading: "What you authorize",
   bullets: [
     "TinyChat reads events on your primary Google calendar in the background. The Calendar permission can read events on calendars you own; primary-calendar-only is TinyChat’s policy. Confirmed timed Meet events qualify when you organize them or have accepted. Declined, tentative, unanswered and all-day events are skipped.",
-    "Our server stores your Google refresh token encrypted and uses it without your browser. This token retains your existing Meet, Drive metadata and Docs permissions and adds read access to Calendar events and a stable Google account identifier. We do not request your profile or email.",
+    "Our server stores your Google refresh token encrypted and uses it without your browser. The token lets TinyChat read your Google Calendar events and see your Google account identifier and email address. The email is used to match you against event invitations.",
     "The bot may be sent from one minute before start until the earlier of five minutes after start or the event end. It requests admission; the host decides whether to admit it. Meeting title, scheduled start and recording remain available for your return.",
     "Your browser saves completed recordings into your own space after you return and unlock it. Enabling grants the server no new permission to write to your space.",
-    "Turning off stops new sends, requests stops for active autojoined bots and deletes the server’s token. Your browser importer and Google’s existing grant remain. Turning on again requires this consent again. Reconnecting the browser importer turns autojoin off until you explicitly re-enable it.",
+    "Turning off stops new sends, requests stops for active autojoined bots and deletes the server’s token. Google’s grant remains until you disconnect or remove TinyChat in your Google account. Turning on again requires this consent again. Connecting a different Google account in the Google Meet importer turns autojoin off until you explicitly re-enable it.",
   ],
   consentCheckbox: "I authorize unattended Calendar reading and encrypted server storage of my Google refresh token to autojoin eligible meetings.",
-  disconnectNote: "Disconnecting also asks Google to revoke access and removes the browser token. A failed revoke is reported; local token copies are still removed. Your recordings remain available.",
+  disconnectNote: "Disconnecting asks Google to revoke the access Calendar autojoin holds and removes the server’s token. A failed revoke is reported. Your recordings remain available.",
 };
 
 /**

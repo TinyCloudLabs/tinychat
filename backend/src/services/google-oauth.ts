@@ -24,8 +24,12 @@ export const GOOGLE_MEET_SCOPES = [
 ].join(" ");
 
 export const GOOGLE_CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.events.owned.readonly";
-/** `email` (TC-581) lets a shared calendar capture match this account against the owner's invite. */
-export const GOOGLE_AUTOJOIN_SCOPES = `${GOOGLE_MEET_SCOPES} ${GOOGLE_CALENDAR_SCOPE} openid email`;
+/**
+ * Calendar autojoin asks for Calendar events and identity only. `email` (TC-581) lets a shared
+ * calendar capture match this account against the owner's invite. Autojoin's only Google call is
+ * Calendar events; the Meet connector is a separate consent with its own scopes.
+ */
+export const GOOGLE_AUTOJOIN_SCOPES = `${GOOGLE_CALENDAR_SCOPE} openid email`;
 
 /** The arming flag. Mirrors `connectorWebhooksEnabled()` (index.ts :140-142) exactly. */
 export const GOOGLE_MEET_OAUTH_ENABLED_ENV = "GOOGLE_MEET_OAUTH_ENABLED";
@@ -278,8 +282,9 @@ export class GoogleOAuthClient implements GoogleOAuthPort {
       : [...new Set(`${this.config.scope} openid`.split(/\s+/).filter(Boolean))].join(" "));
     if (input.purpose === "autojoin") {
       if (!input.nonce) throw new Error("autojoin requires an OIDC nonce");
+      // No include_granted_scopes: Google would return the union of everything already granted
+      // (Meet, Drive, Docs), so the token held in server custody would carry those scopes too.
       url.searchParams.set("nonce", input.nonce);
-      url.searchParams.set("include_granted_scopes", "true");
     }
     url.searchParams.set("state", input.state);
     url.searchParams.set("code_challenge", input.challenge);

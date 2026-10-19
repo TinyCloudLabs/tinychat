@@ -102,7 +102,10 @@ describe("TC-1100 connector reconnect and off reasons", () => {
           expect(await f.credentials.status(source, TENANT)).toBeNull();
           expect(await f.store.getOccurrence(TENANT, "old-attempt")).toMatchObject({ stopRequested: true });
         } else {
-          expect(await f.store.getConnection(TENANT)).toEqual(before);
+          // Only the Meet token's grant bookkeeping is added (and only with a verified identity);
+          // policy and credential are untouched.
+          expect(await f.store.getConnection(TENANT)).toEqual(subject === undefined ? before
+            : { ...before, googleBrowserBinding: expect.anything() });
           expect(await f.credentials.status(source, TENANT)).not.toBeNull();
           expect(f.connection.getLastGoodStatus(TENANT)?.body.enabled).toBe(true);
         }
@@ -226,6 +229,19 @@ describe("Calendar OAuth custody lifecycle", () => {
       outcomes: [{ id: "old-attempt", reason: "missed_window" }] });
     expect(await f.connection.enable(TENANT, setup.setupId)).toMatchObject({ state: "on", enabled: true,
       outcomes: [{ id: "old-attempt", reason: "missed_window" }] });
+  });
+
+  test("enable finishes from the pending setup and server credential alone and records no browser-held token", async () => {
+    const f = fixture();
+    f.setTokens({ scope: "openid email https://www.googleapis.com/auth/calendar.events.owned.readonly" });
+    const setup = await f.exchange();
+    // Nothing reaches the connection from the browser except the setupId.
+    expect(await f.connection.enable(TENANT, setup.setupId)).toMatchObject({ state: "on", enabled: true });
+    const row = (await f.store.getConnection(TENANT))!;
+    expect(row.scopes.sort()).toEqual(["email", "https://www.googleapis.com/auth/calendar.events.owned.readonly", "openid"]);
+    expect(f.probes).toEqual(["access-token"]);
+    // The browser holds none of this token, so no browser binding may describe it.
+    expect(row.googleBrowserBinding).toBeUndefined();
   });
 
   for (const operation of ["exchange", "enable", "disable", "disconnect", "browserReconnect"] as const) {

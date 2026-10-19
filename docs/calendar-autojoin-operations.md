@@ -7,7 +7,8 @@ and a successful primary-calendar probe. The browser importer remains independen
 
 - Enable `GOOGLE_MEET_OAUTH_ENABLED` and configure the existing Google client and callback.
 - Enable Calendar API in that Google project. Register `calendar.events.owned.readonly`,
-  `openid` and `email` alongside the existing Meet, Drive, and Docs scopes. Complete applicable Google
+  `openid` and `email` alongside the existing Meet, Drive, and Docs scopes. Autojoin requests only
+  those three; the Meet, Drive, and Docs scopes belong to the separate Google Meet connect. Complete applicable Google
   publishing and verification requirements; Testing refresh tokens commonly last seven days.
   See Google's [Calendar authorization scopes](https://developers.google.com/workspace/calendar/api/auth)
   and [refresh-token expiration rules](https://developers.google.com/identity/protocols/oauth2#expiration).
@@ -19,6 +20,15 @@ and a successful primary-calendar probe. The browser importer remains independen
   service's `ENABLED_PLATFORMS`.
 - Backend KV must persist across restarts and support prefix listing. Startup verifies listing.
   Store credentials and the encryption master durably. Do not rotate away the only decrypting key.
+
+## Existing users after the narrow-scope change
+
+Nothing is revoked or migrated. A user who enabled autojoin earlier keeps the server credential
+issued under the old broad grant (Meet, Drive, Docs plus Calendar) until they disconnect or
+reconnect; re-enabling issues a Calendar, `openid`, `email` token only. Enabling autojoin no longer
+writes the browser's Meet secret or runs a Meet sync, and Meet remains a separate connect. The
+disconnect revoke guard is keyed by Google subject and token digests, not by scope, so it applies
+to the autojoin and Meet tokens as it did when they were one grant.
 
 ## Single writer and replacement
 
