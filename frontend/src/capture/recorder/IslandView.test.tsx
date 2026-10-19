@@ -83,6 +83,18 @@ describe("IslandView", () => {
     expect(renderToStaticMarkup(<IslandView recorder={landed} />)).not.toContain("island-open");
   });
 
+  test("stopped at a 1-hour limit while minimised: the island and the sidebar card name the limit while saving and once saved", () => {
+    const notice = "Stopped at the 1-hour limit.";
+    for (const patch of [{ phase: "saving" as const }, { phase: "idle" as const, outcome: "saved" as const, lastSaved: { id: "rec-1", durationMs: 1, at: 1 } }]) {
+      const recorder = value({ ...patch, limitNotice: notice });
+      expect(renderToStaticMarkup(<IslandView recorder={recorder} />)).toMatch(/data-testid="island-limit"[^>]*>Stopped at the 1-hour limit\.</);
+      expect(renderToStaticMarkup(<SidebarLiveCardView recorder={recorder} />)).toMatch(/data-testid="sidebar-live-limit"[^>]*>Stopped at the 1-hour limit\.</);
+    }
+    // A manual Stop has no notice.
+    expect(renderToStaticMarkup(<SidebarLiveCardView recorder={value({ phase: "saving" })} />)).not.toContain("sidebar-live-limit");
+    expect(renderToStaticMarkup(<IslandView recorder={value({ phase: "saving" })} />)).not.toContain("island-limit");
+  });
+
   test("failed: Kept on this browser, with Save now", () => {
     const html = renderToStaticMarkup(<IslandView recorder={value({ phase: "idle", outcome: "failed" })} />);
     expect(html).toContain("Kept on this browser");

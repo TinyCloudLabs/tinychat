@@ -34,6 +34,7 @@ import type { TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
 import type { VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
 import { useVoiceNoteRecorder } from "./useVoiceNoteRecorder";
 import { shouldScheduleReceiptDismissal } from "./receiptBehavior";
+import { useLimitNotifications } from "./limitNotifications";
 
 /** How long a saved receipt stays, once its content is actually visible, before the sheet closes
  * and the island lets go. */
@@ -68,6 +69,7 @@ export interface RecorderValue {
   captureIssues: Record<string, RecorderCaptureIssue>;
   dismissCaptureIssue(id: string): boolean;
   recoveryScanFailure: string | null;
+  captureSourceUnconfirmed: boolean;
   controlPending: RecorderState["controlPending"];
   maxDurationMs: number;
   limitNotice: string | null;
@@ -368,6 +370,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
     dismissOutcome();
   }, [dismissOutcome]);
   const openSheet = useCallback(() => setSheetOpen(true), []);
+  useLimitNotifications(state, openSheet);
   const minimiseSheet = useCallback(async () => {
     if (state.permissionDenied) await recorder.dismissShortcutRecovery();
     setMomentFieldFocused(false);
@@ -398,6 +401,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       dismissCaptureIssue: recorder.dismissCaptureIssue,
       recoveryScanFailure: state.recoveryScanFailure,
       controlPending: state.controlPending,
+      captureSourceUnconfirmed: state.captureSourceUnconfirmed,
       maxDurationMs: state.maxDurationMs,
       limitNotice: state.limitNotice,
       savePercent: state.savePercent,
@@ -542,6 +546,7 @@ export function StaticRecorderProvider(props: { value?: Partial<RecorderValue>; 
       captureIssues: {},
       dismissCaptureIssue: () => false,
       recoveryScanFailure: null,
+      captureSourceUnconfirmed: false,
       controlPending: null,
       maxDurationMs: VOICE_NOTE_MAX_DURATION_MS,
       limitNotice: null,

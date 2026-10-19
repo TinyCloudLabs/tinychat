@@ -7,6 +7,8 @@ members = [
     "local-transcription",
     "eval/transcript-quality/runner",
     "eval/transcript-quality/fixture-build",
+    "recorder-state",
+    "wav-snapshot",
 ]
 exclude = [
     "src-tauri",

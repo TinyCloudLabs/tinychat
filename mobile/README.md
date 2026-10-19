@@ -481,10 +481,51 @@ Xcode 26.6.
   The app must also still be running 10 s later, with no crash report. The
   `exo-ios-smoke-<sha>` artifact has `screenshot.png`, a sanitized `console.log`,
   allowlisted `unified.log` and `app-unified-stream.log` (started before launch),
-  `launch-timeline.log` (request and PID observation times), `liveness.log`
-  (roughly 2-second checks through the 120-second deadline), and `summary.md`.
+  `launch-timeline.log` (request, verified PID observation, and start-time source),
+  `liveness.log` (roughly 2-second actual observations through the original
+  120-second deadline), `stage-timings.log` (fixed stage names, UTC wall epochs
+  and elapsed durations), `clock-diagnostic.log` (an independent bare-clock
+  scheduling sample), and `summary.md`.
+  The timeline records a simulator PID only when `simctl launch` reports one
+  and its identity-checked publication finishes before the probe deadline;
+  otherwise it says `simctl launch pid not reported`. The separate launchctl
+  PID has the same completed-publication deadline. A staged PID record is not
+  accepted until its completion marker records the actual publication epoch;
+  both publishers retain the earliest source even if kernel telemetry changes.
+  PID parsing runs independently of the liveness sampler. Before the earliest
+  verified in-window PID publication, gaps over five seconds are fixed
+  `pre-PID observation gap` diagnostics. At publication, the watcher binds the
+  PID to its process start time: Darwin kernel `kinfo_proc.p_starttime` seconds
+  plus microseconds when available, otherwise labelled coarse `ps lstart`
+  with `etime` present. The selected source is recorded per run; missing start
+  time at publication or observation fails, and a later source cannot reset
+  the pair. The accepted coarse fallback cannot distinguish same-PID reuse
+  within one second.
+  Every genuine alive observation, including the terminal check at the
+  deadline, must retain that PID/start-time pair. An exit, pair change,
+  missing in-window alive proof or post-publication gap above 30 seconds fails
+  smoke. Gaps above five seconds remain truthful diagnostic entries, not a
+  failure by themselves; pending records do not replace actual alive proof.
+  This establishes process identity **at observations**, not responsiveness
+  between them. The mounted app-page probe must separately arrive within the
+  original deadline to prove app responsiveness. Stage and bare-clock rows
+  contain only fixed labels, wall start/end epochs and durations, never app
+  content.
   If a crash report is detected, `crash-reports.txt` contains only the report
   count; raw diagnostic reports are not copied into the artifact.
+  The completion marker is written to a temporary file and renamed, so readers
+  never see a partial one. SIGINT or SIGTERM terminates the app, the launcher
+  and every background job (with its child processes), releases the publication
+  lock and removes the private logs. The kernel start time is read from
+  `sysctl -b kern.proc.pid.<pid>` as an 8-byte `tv_sec` plus a 32-bit `tv_usec`
+  (the 4 bytes after it are padding); when that call is unavailable the run
+  records `ps-lstart-etime-coarse`, as the macOS CI run does.
+  The script's own cases run against fake `xcrun`, `ps` and `sysctl` binaries on
+  Linux (`Mobile (Exo)` → *iOS smoke script tests (fakes)*):
+  `node --test mobile/scripts/ios-simulator-smoke.test.mjs`. Run it locally the
+  same way. `SMOKE_GAP_FAIL_S` (default 30) overrides the hard
+  post-publication gap limit so the tests can exercise it quickly.
+  To run the smoke against a local build:
   `mobile/scripts/ios-simulator-smoke.sh run <path/to/App.app> /tmp/exo-smoke`.
 - **Release dry run** (`Mobile (Exo)` → *iOS release*): the TestFlight build
   (`.github/workflows/ios-build.yml`) without signing. Its archive job produces

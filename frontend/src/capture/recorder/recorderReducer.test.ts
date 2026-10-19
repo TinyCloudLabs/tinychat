@@ -106,6 +106,21 @@ describe("recorderReducer", () => {
     expect(recorderReducer(paused, { type: "DISCARD_REQUESTED", id: "rec-1" }).phase).toBe("discarding");
   });
 
+  test("source-release warning persists after Stop and clears only on a native false status", () => {
+    const unconfirmed = recorderReducer(initialRecorderState, {
+      type: "MIC_STATE",
+      mic: { state: "idle", reason: null },
+      captureSourceUnconfirmed: true,
+    });
+    expect(unconfirmed.captureSourceUnconfirmed).toBe(true);
+    const cleared = recorderReducer(unconfirmed, {
+      type: "MIC_STATE",
+      mic: { state: "idle", reason: null },
+      captureSourceUnconfirmed: false,
+    });
+    expect(cleared.captureSourceUnconfirmed).toBe(false);
+  });
+
   test("stop: recording → stopping → saving with progress → idle with the saved receipt", () => {
     const stopping = recorderReducer(recording(), { type: "STOP_REQUESTED", at: 0 });
     expect(stopping.phase).toBe("stopping");
