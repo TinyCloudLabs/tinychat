@@ -648,29 +648,29 @@ interface Run {
 }
 
 interface Cut {
-  x: number; // earlier run's source keeps sentences that end by x
+  x: number; // earlier run's source keeps sentences that start before x
   y: number; // later run's source keeps sentences that start at or after y
 }
 
 /**
- * Seam between two runs of different sources. Pass 1: a sentence end of the earlier source within
- * the window and within 20 s of an anchor, whose nearest sentence boundary in the later source is
+ * Seam between two runs of different sources, as start-time thresholds (overlapping speakers make
+ * sentence ends non-monotonic, starts are what the sorted order follows). A cut falls just before a
+ * sentence of the earlier source, so no sentence is ever split. Pass 1: such a sentence start within
+ * the window and within 20 s of an anchor, whose nearest sentence start in the later source is
  * closest (so little is dropped or repeated). Pass 2: the same without the anchor condition. Pass 3:
  * split by sentence midpoint at the nominal time.
  */
 function pickCut(early: Sent[], late: Sent[], nominal: number, win: [number, number], anchors: number[], floor: number): Cut {
-  const bounds: number[] = [];
-  for (const s of late) bounds.push(s.t0, s.t1);
-  bounds.sort((p, q) => p - q);
+  const starts = late.map((s) => s.t0);
   const nearest = (t: number): number => {
-    let best = bounds[0]!;
-    for (const b of bounds) if (Math.abs(b - t) < Math.abs(best - t)) best = b;
+    let best = starts[0]!;
+    for (const b of starts) if (Math.abs(b - t) < Math.abs(best - t)) best = b;
     return best;
   };
-  const ends = early.map((s) => s.t1).filter((t) => t >= Math.max(win[0], floor) - EPS && t <= win[1] + EPS);
+  const cands = early.map((s) => s.t0).filter((t) => t >= Math.max(win[0], floor) - EPS && t <= win[1] + EPS);
   for (const needAnchor of [true, false]) {
     let best: (Cut & { score: number }) | null = null;
-    for (const x of ends) {
+    for (const x of cands) {
       if (needAnchor && !anchors.some((a) => Math.abs(a - x) <= 20)) continue;
       const y = nearest(x);
       const score = Math.abs(x - y) + 0.01 * Math.abs(x - nominal);
@@ -678,11 +678,11 @@ function pickCut(early: Sent[], late: Sent[], nominal: number, win: [number, num
     }
     if (best !== null) return { x: best.x, y: best.y };
   }
-  const before = early.filter((s) => (s.t0 + s.t1) / 2 < nominal && s.t1 >= floor - EPS);
-  const after = late.filter((s) => (s.t0 + s.t1) / 2 >= nominal);
+  const after = early.filter((s) => (s.t0 + s.t1) / 2 >= nominal && s.t0 >= floor - EPS);
+  const lateAfter = late.filter((s) => (s.t0 + s.t1) / 2 >= nominal);
   return {
-    x: before.length > 0 ? Math.max(...before.map((s) => s.t1)) : Math.max(floor, nominal),
-    y: after.length > 0 ? Math.min(...after.map((s) => s.t0)) : nominal,
+    x: after.length > 0 ? Math.min(...after.map((s) => s.t0)) : Math.max(floor, nominal),
+    y: lateAfter.length > 0 ? Math.min(...lateAfter.map((s) => s.t0)) : nominal,
   };
 }
 
@@ -698,26 +698,45 @@ interface Composed {
   forcedSeamRun: number | null;
 }
 
-function cutRuns(tracks: [Track, Track], sents: [Sent[], Sent[]], runs: Run[], anchorTimes: number[], lo: number, hi: number, headEnd: boolean): { picked: Picked[]; cuts: Cut[] } {
-  const cuts: Cut[] = [];
-  let floor = -Infinity;
-  for (let i = 0; i + 1 < runs.length; i++) {
-    const nominal = runs[i]!.t1;
-    const isHead = headEnd && i === 0;
-    const isTail = i + 2 === runs.length && nominal >= hi - EPS;
-    const win: [number, number] = isHead ? [nominal, nominal + 60] : isTail ? [nominal - 60, nominal] : [nominal - 10, nominal + 10];
-    const cut = pickCut(sents[runs[i]!.src], sents[runs[i + 1]!.src], nominal, win, anchorTimes, floor);
-    cuts.push(cut);
-    floor = Math.max(floor, cut.x);
+function cutRuns(sents: [Sent[], Sent[]], input: Run[], anchorTimes: number[], hi: number, headEnd: boolean): { picked: Picked[]; cuts: Cut[]; runs: Run[] } {
+  let runs = input.map((r) => ({ ...r }));
+  for (;;) {
+    const cuts: Cut[] = [];
+    let floor = -Infinity;
+    for (let i = 0; i + 1 < runs.length; i++) {
+      const nominal = runs[i]!.t1;
+      const isHead = headEnd && i === 0;
+      const isTail = i + 2 === runs.length && nominal >= hi - EPS;
+      // Windows stay inside the two runs they join, so a short fallback run is not jumped over.
+      const win: [number, number] = isHead
+        ? [nominal, Math.min(nominal + 60, runs[i + 1]!.t1)]
+        : isTail
+          ? [Math.max(nominal - 60, runs[i]!.t0), nominal]
+          : [nominal - 10, nominal + 10];
+      const cut = pickCut(sents[runs[i]!.src], sents[runs[i + 1]!.src], nominal, win, anchorTimes, floor);
+      cuts.push(cut);
+      floor = Math.max(floor, cut.x);
+    }
+    // A middle run whose two cuts cross holds nothing: drop it and let its neighbours join.
+    const empty = runs.findIndex((_, r) => r > 0 && r < runs.length - 1 && cuts[r]!.x <= cuts[r - 1]!.y + EPS);
+    if (empty < 0) {
+      const picked: Picked[] = [];
+      runs.forEach((run, r) => {
+        const from = r === 0 ? -Infinity : cuts[r - 1]!.y;
+        const to = r === runs.length - 1 ? Infinity : cuts[r]!.x;
+        for (const s of sents[run.src]) if (s.t0 >= from - EPS && s.t0 < to - EPS) picked.push({ run: r, sent: s });
+      });
+      return { picked, cuts, runs };
+    }
+    const next: Run[] = [];
+    runs.forEach((run, r) => {
+      if (r === empty) return;
+      const last = next[next.length - 1];
+      if (last !== undefined && last.src === run.src) last.t1 = run.t1;
+      else next.push(run);
+    });
+    runs = next;
   }
-  void tracks; void lo;
-  const picked: Picked[] = [];
-  runs.forEach((run, r) => {
-    const from = r === 0 ? -Infinity : cuts[r - 1]!.y;
-    const to = r === runs.length - 1 ? Infinity : cuts[r]!.x;
-    for (const s of sents[run.src]) if (s.t0 >= from - EPS && s.t1 <= to + EPS) picked.push({ run: r, sent: s });
-  });
-  return { picked, cuts };
 }
 
 function composeAligned(tracks: [Track, Track], al: Alignment): Composed {
@@ -756,8 +775,8 @@ function composeAligned(tracks: [Track, Track], al: Alignment): Composed {
     else runs.push({ ...r });
   }
   const anchorTimes = al.anchors.map((a) => a.ta);
-  const { picked, cuts } = cutRuns(tracks, sents, runs, anchorTimes, lo, hi, lo > start + EPS);
-  return { picked, runs, cuts, forcedSeamRun: null };
+  const cut = cutRuns(sents, runs, anchorTimes, hi, lo > start + EPS);
+  return { picked: cut.picked, runs: cut.runs, cuts: cut.cuts, forcedSeamRun: null };
 }
 
 function composeForced(tracks: [Track, Track]): Composed {
@@ -850,12 +869,18 @@ function relationOf(cover: [number, number][]): StitchRelation {
 function emit(tracks: [Track, Track], composed: Composed, naming: Naming, shift: number): StitchedSegment[] {
   const sents: [Sent[], Sent[]] = [buildSentences(tracks[0], 0), buildSentences(tracks[1], 1)];
   const out: StitchedSegment[] = [];
+  // One output segment per source segment per run, even when other speakers' sentences interleave.
   const groups: { run: number; sents: Sent[] }[] = [];
+  const byKey = new Map<string, { run: number; sents: Sent[] }>();
   for (const p of composed.picked) {
-    const g = groups[groups.length - 1];
-    const prev = g?.sents[g.sents.length - 1];
-    if (g !== undefined && prev !== undefined && g.run === p.run && prev.track === p.sent.track && prev.seg === p.sent.seg && prev.k + 1 === p.sent.k) g.sents.push(p.sent);
-    else groups.push({ run: p.run, sents: [p.sent] });
+    const key = `${p.run}:${p.sent.track}:${p.sent.seg}`;
+    const g = byKey.get(key);
+    if (g !== undefined) g.sents.push(p.sent);
+    else {
+      const created = { run: p.run, sents: [p.sent] };
+      byKey.set(key, created);
+      groups.push(created);
+    }
   }
   for (const g of groups) {
     const first = g.sents[0]!;
