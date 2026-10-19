@@ -617,6 +617,7 @@ const { createTranscriberWebhookRouter } = load("./routes/transcriber-webhook.ts
 const { createGoogleOAuthRouter, normalizeAppOrigin } = load("./routes/google-oauth.ts");
 const { createServerInfoRouter } = load("./routes/server-info.ts");
 const { ASSEMBLYAI_HOSTED_MOUNT, createAssemblyAiHostedRouter } = load("./routes/assemblyai-hosted.ts");
+const { createPrivateCloudTranscriptionRouter } = load("./routes/private-cloud-transcription.ts");
 
 interface Boot {
   url: string | null;
@@ -637,6 +638,8 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
   stop?: Record<string, () => Promise<void>>;
   billingEvent?: (body: Buffer) => void | Promise<void>;
   onExit?: (code: number) => void;
+  requestHandler?: express.RequestHandler;
+  processLogSink?: boolean;
 } = {}): Promise<Boot> {
   const env: Record<string, string | undefined> = { ...envBase, ...patch };
   const logs: string[] = [];
@@ -658,7 +661,10 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
   }, express);
   const noop = () => {};
   const auth = () => (req: express.Request, res: express.Response, next: express.NextFunction) => {
-    if (req.headers.authorization === "Bearer test-session") next();
+    if (req.headers.authorization === "Bearer test-session") {
+      req.user = { address: "0x" + "a".repeat(40) };
+      next();
+    }
     else res.sendStatus(401);
   };
   const known: Record<string, unknown> = {
@@ -675,6 +681,12 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
     "./startup.js": { createTinychatBackendIdentity: async () => ({ node: {}, did: "did:test:backend" }) },
     "./build-info.js": { readBackendBuildInfo: () => ({ backendRevision: "test-revision", backendVersion: "0.5.6" }) },
     "./body-parsing.js": { createApiBodyParser },
+    "./request-context.js": {
+      ...load("./request-context.ts"),
+      createRequestContextMiddleware: () => load("./request-context.ts").createRequestContextMiddleware(
+        options.processLogSink ? undefined : (event: unknown) => logs.push(JSON.stringify(event)),
+      ),
+    },
     "./services/ingest-mode.js": { backendIngestEnabled: () => false, IngestModeService: class {} },
     "./services/transcription-api.js": {
       transcriptDeliveryConfigFromEnv: (e: object) => transcription.transcriptDeliveryConfigFromEnv(e),
@@ -682,6 +694,7 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
       createTranscriptionApiClient: () => ({}),
     },
     "./services/private-cloud-transcription.js": privateCloud,
+    "./routes/private-cloud-transcription.js": { createPrivateCloudTranscriptionRouter },
     "./services/assemblyai-hosted.js": { ...hosted, HostedUploadStore: class {
       init() { return Promise.resolve(); }
       shutdown() { return stop.hosted?.() ?? Promise.resolve(); }
@@ -731,6 +744,11 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
     },
     "./services/webhook-tokens.js": { assertStrongSecret: () => {}, WebhookTokenService: class {} },
     "./routes/delegations.js": { createDelegationRouter: () => router() },
+    "./routes/manifest.js": { createManifestRouter: () => {
+      const result = express.Router();
+      if (options.requestHandler) result.get("/canary/:id", options.requestHandler);
+      return result;
+    } },
     "./routes/server-info.js": { createServerInfoRouter },
     "./middleware/auth.js": { createAuthMiddleware: auth },
     "./services/ingest-nudge.js": { createIngestOnDelivery: noop },
@@ -997,5 +1015,271 @@ describe("backend entry-point HTTP and lifecycle guards", () => {
     expect((await request).status).toBe(202);
     await exitObserved.promise;
     expect(boot.exits).toEqual([1]);
+  });
+});
+
+describe("TC-959 backend request contract", () => {
+  const id = "12345678-abcd-4abc-8abc-123456789abc";
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+  const events = (boot: Boot) => boot.logs.filter(line => line.startsWith("{")).map(line => JSON.parse(line));
+
+  test("normalizes a valid client UUID and emits one typed completion event", async () => {
+    const boot = await bootIndex();
+    const response = await fetch(boot.url! + "/health?capability=private-query", { headers: { "x-request-id": id.toUpperCase() } });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-request-id")).toBe(id);
+    const requests = events(boot).filter(event => event.event === "tinychat_request");
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toEqual({
+      event: "tinychat_request", request_id: id, method: "GET", route: "/health",
+      status: 200, duration_ms: expect.any(Number), request_id_replaced: false,
+    });
+    expect(requests[0].duration_ms).toBeGreaterThanOrEqual(0);
+    expect(Number.isFinite(requests[0].duration_ms)).toBe(true);
+  });
+
+  test("replaces malformed, duplicate and missing UUIDs without reflecting their bytes", async () => {
+    const boot = await bootIndex();
+    const ids = new Set<string>();
+    for (const incoming of [undefined, "wallet-secret-not-a-uuid", `${id}, ${id}`, id + "-extra", "00000000"]) {
+      const response = await fetch(boot.url! + "/health", { headers: incoming ? { "x-request-id": incoming } : {} });
+      const assigned = response.headers.get("x-request-id");
+      expect(assigned).toMatch(uuid);
+      expect(assigned).not.toBe(incoming);
+      ids.add(assigned!);
+    }
+    expect(ids.size).toBe(5);
+    expect(boot.logs.join("\n")).not.toContain("wallet-secret-not-a-uuid");
+  });
+
+  test("auth rejection, parser error and unmatched route retain IDs and typed status", async () => {
+    const boot = await bootIndex();
+    const responses = [
+      await fetch(boot.url! + "/api/nras-proxy", { method: "POST", headers: { "x-request-id": id } }),
+      await post(boot.url!, "/api/manifest", "{", { "x-request-id": id }),
+      await fetch(boot.url! + "/private-wallet-path?token=private-capability", { headers: { "x-request-id": id } }),
+    ];
+    expect(responses.map(response => response.status)).toEqual([401, 400, 404]);
+    for (const response of responses) expect(response.headers.get("x-request-id")).toBe(id);
+    const requests = events(boot).filter(event => event.event === "tinychat_request");
+    expect(requests.map(event => event.status)).toEqual([401, 400, 404]);
+    expect(requests.every(event => event.request_id === id && event.route === "unmatched")).toBe(true);
+    expect(boot.logs.join("\n")).not.toMatch(/private-wallet-path|private-capability/);
+  });
+
+  test("propagates the entry ID to actual ptx-dev HTTP, including concurrent requests", async () => {
+    const seen: string[] = [];
+    const upstream = express();
+    const fastFinished = Promise.withResolvers<void>();
+    upstream.get("/v1/meetings/:id", async (req, res) => {
+      if (req.params.id === "slow") await fastFinished.promise;
+      seen.push(req.get("x-request-id") ?? "missing");
+      res.json({ id: req.params.id, status: "queued" });
+      if (req.params.id === "fast") fastFinished.resolve();
+    });
+    const server = upstream.listen(0, "127.0.0.1");
+    const listening = Promise.withResolvers<void>();
+    server.once("listening", listening.resolve);
+    await listening.promise;
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Synthetic upstream did not listen");
+    const api = transcription.createTranscriptionApiClient({
+      baseUrl: `http://127.0.0.1:${address.port}`, apiKey: "synthetic-ptx-key",
+      requestIdFirstPartyOrigins: new Set([`http://127.0.0.1:${address.port}`]),
+    });
+    const boot = await bootIndex({}, { requestHandler: (req, res, next) => {
+      api.getMeeting(req.params.id).then((meeting: unknown) => res.json(meeting), next);
+    } });
+    const other = "87654321-abcd-4abc-8abc-123456789abc";
+    try {
+      const responses = await Promise.all([
+        fetch(boot.url! + "/api/manifest/canary/slow", { headers: { "x-request-id": id } }),
+        fetch(boot.url! + "/api/manifest/canary/fast", { headers: { "x-request-id": other } }),
+      ]);
+      expect(responses.map(response => response.status)).toEqual([200, 200]);
+      expect(seen).toEqual([other, id]);
+      const replaced = await fetch(boot.url! + "/api/manifest/canary/minted", {
+        headers: { "x-request-id": "not-a-uuid-private-wallet" },
+      });
+      const minted = replaced.headers.get("x-request-id");
+      expect(replaced.status).toBe(200);
+      expect(minted).toMatch(uuid);
+      expect(seen[2]).toBe(minted);
+    } finally {
+      server.closeAllConnections();
+      const closed = Promise.withResolvers<void>();
+      server.close(() => closed.resolve());
+      await closed.promise;
+    }
+  });
+
+  test("keeps distinct Private correlation IDs and ptx-batch forwarding alongside request IDs", async () => {
+    const seen: Array<{ request: string | undefined; correlation: string | undefined }> = [];
+    const upstream = express();
+    upstream.get("/v1/transcriptions/capabilities", (req, res) => {
+      seen.push({ request: req.get("x-request-id"), correlation: req.get("x-correlation-id") });
+      res.status(503).json({ error: { code: "service_unavailable" } });
+    });
+    const listening = Promise.withResolvers<void>();
+    const server = upstream.listen(0, "127.0.0.1", listening.resolve);
+    await listening.promise;
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Synthetic batch did not listen");
+    const boot = await bootIndex({
+      ...ptxEnv, PRIVATE_CLOUD_TRANSCRIPTION_API_URL: `http://127.0.0.1:${address.port}`,
+      REQUEST_ID_FIRST_PARTY_ORIGINS: `http://127.0.0.1:${address.port}`,
+    });
+    const correlation = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+    try {
+      const response = await fetch(boot.url! + "/api/transcriber/private-cloud/capabilities", {
+        headers: { authorization: "Bearer test-session", "x-request-id": id.toUpperCase(), "x-correlation-id": correlation.toUpperCase() },
+      });
+      expect(response.status).toBe(503);
+      expect(response.headers.get("x-correlation-id")).toBe(correlation);
+      expect((await response.json()).error.correlation_id).toBe(correlation);
+      expect(seen).toEqual([{ request: id, correlation }]);
+      expect(response.headers.get("x-request-id")).toBe(id);
+      expect(events(boot).find(event => event.event === "tinychat_request")).toMatchObject({
+        request_id: id, correlation_id: correlation, status: 503,
+      });
+    } finally {
+      server.closeAllConnections();
+      const closed = Promise.withResolvers<void>();
+      server.close(() => closed.resolve());
+      await closed.promise;
+    }
+  });
+
+  test("terminal error logs never include raw wallet, tenant, capability or transcript", async () => {
+    const forbidden = ["0x" + "a".repeat(40), "tenant-private-canary", "capability-private-canary", "transcript-private-canary"];
+    const boot = await bootIndex({}, { requestHandler: () => { throw new Error(forbidden.join(" ")); } });
+    const response = await fetch(boot.url! + "/api/manifest/canary/native-meeting-id", { headers: { "x-request-id": id } });
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ error: "internal_error" });
+    for (const value of [...forbidden, "native-meeting-id"]) expect(boot.logs.join("\n")).not.toContain(value);
+    const request = events(boot).find(event => event.event === "tinychat_request");
+    expect(request).toMatchObject({ request_id: id, route: "/canary/:id", status: 500 });
+  });
+
+  test("TC-959 process log canary", async () => {
+    const canary = "TC959_FORBIDDEN_wallet_tenant_capability_transcript";
+    const boot = await bootIndex({}, { processLogSink: true, requestHandler: (_req, res) => {
+      console.log(canary);
+      console.info({ payload: canary });
+      console.warn(new Error(canary));
+      console.error(canary);
+      process.stdout.write(`dependency stdout ${canary}\n`);
+      process.stderr.write(`dependency stderr ${canary}\n`);
+      res.sendStatus(204);
+    } });
+    console.log("TC959_CAPTURE_POSITIVE_CONTROL");
+    const response = await fetch(boot.url! + "/api/manifest/canary/meeting", { headers: { "x-request-id": id } });
+    expect(response.status).toBe(204);
+  });
+
+  test.each([302, 307])("rejects ptx-dev %i cross-origin redirects without exposing IDs or credentials", async status => {
+    const received: Array<{ id: string | undefined; authorization: string | undefined }> = [];
+    const untrusted = express();
+    untrusted.use((req, res) => {
+      received.push({ id: req.get("x-request-id"), authorization: req.get("authorization") });
+      res.json({ id: "untrusted-meeting", status: "queued" });
+    });
+    const untrustedReady = Promise.withResolvers<void>();
+    const untrustedServer = untrusted.listen(0, "127.0.0.1", untrustedReady.resolve);
+    await untrustedReady.promise;
+    const untrustedAddress = untrustedServer.address();
+    if (!untrustedAddress || typeof untrustedAddress === "string") throw new Error("Untrusted receiver did not listen");
+    const untrustedUrl = `http://127.0.0.1:${untrustedAddress.port}`;
+    const firstPartySeen: string[] = [];
+    const firstParty = express();
+    firstParty.use((req, res) => {
+      firstPartySeen.push(req.get("x-request-id") ?? "missing");
+      res.redirect(status, untrustedUrl + "/redirect-target");
+    });
+    const firstPartyReady = Promise.withResolvers<void>();
+    const firstPartyServer = firstParty.listen(0, "127.0.0.1", firstPartyReady.resolve);
+    await firstPartyReady.promise;
+    const firstPartyAddress = firstPartyServer.address();
+    if (!firstPartyAddress || typeof firstPartyAddress === "string") throw new Error("First-party PTX did not listen");
+    const api = transcription.createTranscriptionApiClient({
+      baseUrl: `http://127.0.0.1:${firstPartyAddress.port}`, apiKey: "synthetic-first-party-ptx-key",
+      requestIdFirstPartyOrigins: new Set([`http://127.0.0.1:${firstPartyAddress.port}`]),
+    });
+    const boot = await bootIndex({}, { requestHandler: (req, res) => {
+      const result = req.params.id === "create"
+        ? api.createMeeting({ meeting_url: "https://meeting.invalid/synthetic" })
+        : api.getMeeting("synthetic-meeting");
+      result.then(meeting => res.json(meeting), () => res.status(502).json({ error: "upstream_rejected" }));
+    } });
+    try {
+      for (const operation of ["get", "create"]) {
+        const response = await fetch(boot.url! + "/api/manifest/canary/" + operation, {
+          headers: { "x-request-id": id },
+        });
+        expect(received).toEqual([]);
+        expect(response.status).toBe(502);
+        expect(response.headers.get("x-request-id")).toBe(id);
+      }
+      expect(firstPartySeen).toEqual([id, id]);
+      const thirdParty = await bootIndex({}, { requestHandler: (_req, res, next) => {
+        fetch(untrustedUrl + "/direct-third-party").then(response => response.json()).then(body => res.json(body), next);
+      } });
+      const direct = await fetch(thirdParty.url! + "/api/manifest/canary/direct", { headers: { "x-request-id": id } });
+      expect(direct.status).toBe(200);
+      expect(received).toEqual([{ id: undefined, authorization: undefined }]);
+    } finally {
+      for (const server of [firstPartyServer, untrustedServer]) {
+        const closed = Promise.withResolvers<void>();
+        server.closeAllConnections();
+        server.close(() => closed.resolve());
+        await closed.promise;
+      }
+    }
+  });
+
+  test.each([302, 307])("keeps legacy Private IDs while rejecting ptx-batch %i redirects", async status => {
+    const received: string[] = [];
+    const untrusted = express();
+    untrusted.use((req, res) => { received.push(req.get("x-request-id") ?? "missing"); res.sendStatus(200); });
+    const untrustedReady = Promise.withResolvers<void>();
+    const untrustedServer = untrusted.listen(0, "127.0.0.1", untrustedReady.resolve);
+    await untrustedReady.promise;
+    const untrustedAddress = untrustedServer.address();
+    if (!untrustedAddress || typeof untrustedAddress === "string") throw new Error("Untrusted receiver did not listen");
+    const seen: Array<{ request: string | undefined; correlation: string | undefined }> = [];
+    const firstParty = express();
+    firstParty.use((req, res) => {
+      seen.push({ request: req.get("x-request-id"), correlation: req.get("x-correlation-id") });
+      res.redirect(status, `http://127.0.0.1:${untrustedAddress.port}/redirect-target`);
+    });
+    const firstPartyReady = Promise.withResolvers<void>();
+    const firstPartyServer = firstParty.listen(0, "127.0.0.1", firstPartyReady.resolve);
+    await firstPartyReady.promise;
+    const firstPartyAddress = firstPartyServer.address();
+    if (!firstPartyAddress || typeof firstPartyAddress === "string") throw new Error("First-party PTX did not listen");
+    const boot = await bootIndex({
+      ...ptxEnv, PRIVATE_CLOUD_TRANSCRIPTION_API_URL: `http://127.0.0.1:${firstPartyAddress.port}`,
+      REQUEST_ID_FIRST_PARTY_ORIGINS: `http://127.0.0.1:${firstPartyAddress.port}`,
+    });
+    // Private accepts this legacy correlation UUID; the stricter request-ID policy must not replace it.
+    const legacyCorrelation = "00000000-0000-0000-0000-000000000000";
+    try {
+      const response = await fetch(boot.url! + "/api/transcriber/private-cloud/capabilities", {
+        headers: { authorization: "Bearer test-session", "x-request-id": id, "x-correlation-id": legacyCorrelation },
+      });
+      expect(received).toEqual([]);
+      expect(response.status).toBe(503);
+      expect(response.headers.get("x-request-id")).toBe(id);
+      expect(response.headers.get("x-correlation-id")).toBe(legacyCorrelation);
+      expect((await response.json()).error.correlation_id).toBe(legacyCorrelation);
+      expect(seen).toEqual([{ request: id, correlation: legacyCorrelation }]);
+    } finally {
+      for (const server of [firstPartyServer, untrustedServer]) {
+        const closed = Promise.withResolvers<void>();
+        server.closeAllConnections();
+        server.close(() => closed.resolve());
+        await closed.promise;
+      }
+    }
   });
 });
