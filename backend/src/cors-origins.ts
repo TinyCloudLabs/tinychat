@@ -54,6 +54,6 @@ export function appCorsOrigins(frontendOrigin: string): Array<string | RegExp> {
 export function appCorsOptions(frontendOrigin: string) {
   return {
     origin: appCorsOrigins(frontendOrigin),
-    exposedHeaders: ["Retry-After", "RateLimit", "RateLimit-Policy"],
+    exposedHeaders: ["Retry-After", "RateLimit", "RateLimit-Policy", "X-Request-Id", "X-Correlation-Id"],
   };
 }

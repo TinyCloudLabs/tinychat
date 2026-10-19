@@ -36,6 +36,9 @@
 // flight rather than racing it over the same upserts.
 
 import { useEffect } from "react";
+import { startPersistingGmeetRunLog } from "@/lib/connectors/gmeetSyncLogStore";
+import { resolveBuildInfo } from "@/lib/buildInfo";
+import { appPlatform } from "@/lib/platform";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
@@ -66,6 +69,7 @@ import {
 import { GmeetClient } from "@/lib/connectors/gmeetClient";
 import { googleRefreshGrant } from "@/lib/connectors/googleOAuthDesktop";
 import {
+  stopGmeetSyncForAccount,
   syncGoogleMeet,
   type GmeetSyncClient,
   type GmeetSyncOptions,
@@ -352,20 +356,35 @@ async function runGmeetSessionSync(
     return "token-unavailable";
   }
 
+  // The Notes reconcile outlives this run (and the mount that started it), so the client it
+  // runs on must not be cut by the mount's abort once the engine has handed the Notes off.
+  // Until then an unmount still reaches the client, as before.
+  const clientAc = new AbortController();
+  let notesHandedOff = false;
+  const forwardAbort = () => { if (!notesHandedOff) clientAc.abort(); };
+  signal?.addEventListener("abort", forwardAbort, { once: true });
+  if (signal?.aborted) clientAc.abort();
+
   // The client re-mints ONCE on a 401 through the same proxy — the refresh
   // token never leaves this scope.
   const client = (hooks.createClient ?? defaultCreateClient)(
     accessToken,
-    () => mint(refreshToken, signal),
-    signal,
+    () => mint(refreshToken, clientAc.signal),
+    clientAc.signal,
   );
 
+  // Deferred, like the connect dialog: the foreground slot is held for the Meet records
+  // only, and the Notes reconcile (parallel, checkpointed) runs in the background where the
+  // Connectors card shows its progress and a Full rescan can wait for it.
   const result = await (hooks.runSync ?? syncGoogleMeet)({
     client,
     store: hooks.store ?? DEFAULT_STORE,
     tcw,
     signal,
+    deferNotes: true,
   });
+  notesHandedOff = result.ok && result.data.notesDeferred === true;
+  signal?.removeEventListener("abort", forwardAbort);
 
   if (!result.ok) {
     // The KIND only. Google's message can be long and is not ours to narrate
@@ -403,15 +422,28 @@ export function useGmeetSessionSync(options: Omit<GmeetSessionSyncOptions, "sign
       hooks,
       signal: controller.signal,
     };
+    // Every run's log (this lane's, the dialog's, a card press) is kept for this account so
+    // it can be copied after a reload. Mounted here because this shell outlives the card.
+    let build: string | null = null;
+    void resolveBuildInfo(appPlatform()).then((label) => { build = label; }, () => {});
+    const stopLog = startPersistingGmeetRunLog(tcw, { build: () => build });
     void maybeStartGmeetSessionSync(current);
     const off = onSecretsUnlocked(() => {
       void maybeStartGmeetSessionSync(current);
     });
     return () => {
       off();
+      stopLog();
       controller.abort();
     };
   }, [tcw, sessionStore, backendUrl, hooks]);
+
+  // Sign-out or an account change ends this account's background Notes reconcile: it must not keep
+  // writing under A's client, nor into B's session. (A dialog closing or a card unmounting does not.)
+  useEffect(() => {
+    if (!tcw) return;
+    return () => { void stopGmeetSyncForAccount(tcw); };
+  }, [tcw]);
 }
 
 /**

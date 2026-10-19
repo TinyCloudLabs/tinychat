@@ -1760,7 +1760,9 @@ const GmeetNotesLine: FC<{ notes: GmeetNotesStatus }> = ({ notes }) => {
       <p className="text-xs text-muted-foreground" role="status">
         {settled.ok
           ? "Notes by Gemini finished syncing."
-          : "Notes by Gemini could not finish syncing. The Connectors card shows what happened; Sync now retries."}
+          : settled.partial
+            ? `${settled.partial.saved} of ${settled.partial.total} Notes saved. Sync now or Full rescan on the Connectors card finishes the rest.`
+            : "Notes by Gemini could not finish syncing. The Connectors card shows what happened; Sync now retries."}
       </p>
     );
   }
