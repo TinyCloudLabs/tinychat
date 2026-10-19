@@ -1462,6 +1462,8 @@ describe("connectorStore Drive Notes lifecycle", () => {
         expect(events).toContainEqual(expect.objectContaining({ type: "status", message: "finishing", current: 2, total: 2 }));
         vi.advanceTimersByTime(120_001);
         await flush();
+        vi.advanceTimersByTime(10_001); // The row-recovery wait for the held Notes write.
+        await flush();
         expect(rejection).toBeUndefined();
         expect(result?.ok).toBe(false);
         expect(events.filter((event) => event.type === "error" || event.type === "complete").map((event) => event.type)).toEqual(["error"]);

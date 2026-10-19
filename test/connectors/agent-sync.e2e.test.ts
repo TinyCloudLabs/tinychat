@@ -174,6 +174,34 @@ describe("Fireflies agent runner", () => {
     expect(report.result).toBe("storage_full");
   });
 
+  test("transcript writes failing with storage_full keep the watermark, report an error, and the next run retries", async () => {
+    const watermark = "2026-06-01T00:00:00.000Z";
+    await seedConnected(watermark);
+    const full = { code: "STORAGE_LIMIT_REACHED", message: "storage limit reached" };
+    fake.kv.putErrors.set(connectorStore.transcriptKvKey("fireflies", ""), full);
+    fake.kv.putErrors.set(firefliesAttemptKvKey(), full);
+
+    const failed = await runFirefliesAgentSync(deps({ mode: "now" }));
+    expect(failed.result).toBe("storage_full");
+    expect(failed.status).toBe("error");
+    expect(failed.errors).toBeGreaterThan(0);
+    expect(failed.lastSyncedAt).toBe(watermark);
+    const state = fake.sql.states.get("fireflies");
+    expect(state?.last_synced_at).toBe(watermark);
+    expect(state?.last_sync_status).not.toBe("ok");
+    expect(state?.last_sync_error).toBeTruthy();
+
+    // Storage recovers: the same meetings are fetched and stored, then the watermark moves.
+    fake.kv.putErrors.clear();
+    const retry = await runFirefliesAgentSync(deps({ mode: "now", now: later(31 * 60 * 1000) }));
+    expect(retry.result).toBe("synced");
+    expect(retry.status).toBe("ok");
+    expect(fake.sql.meetings.size).toBe(seed.length);
+    const bodies = [...fake.kv.entries.keys()].filter((key) => key.includes("/transcript/"));
+    expect(bodies.length).toBe(seed.length);
+    expect(retry.lastSyncedAt).not.toBe(watermark);
+  });
+
   test("a recent attempt record from another writer makes the run busy without reading the key", async () => {
     await seedConnected(null);
     fake.kv.entries.set(firefliesAttemptKvKey(), JSON.stringify({

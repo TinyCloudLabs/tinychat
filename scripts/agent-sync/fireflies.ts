@@ -359,6 +359,9 @@ async function runLocked(
     const finalConnection = await connectorStore.getConnection(tcw, SOURCE);
     if (finalConnection.ok) report.lastSyncedAt = finalConnection.data?.lastSyncedAt ?? null;
 
+    // The attempt record is itself a KV write: when it fails, `status` is the previous run's, so it
+    // cannot vouch for this one. Any failed write or engine error makes the run an error.
+    if (storageFull || !sync.ok || report.errors > 0) report.status = "error";
     const capped = counter.used() >= budget;
     if (storageFull) {
       report.result = "storage_full";

@@ -718,6 +718,8 @@ interface OAuthErrorState {
     | "no-access"
     | "slow-down"
     | "no-refresh-token"
+    /** Sync finished without any connector_state row: the card cannot show it connected. */
+    | "connection-not-saved"
     | "storage"
     | "network"
     | "unknown";
@@ -928,6 +930,13 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
       await notifyOnce();
       if (abortRef.current !== ac) return;
       if (!res.ok) {
+        if (res.connectionSaved === false) {
+          // No connector_state row exists, so the card will not show Google Meet as
+          // connected: never claim the connection is kept, offer to connect again.
+          setCanRetrySync(false);
+          failWith({ kind: "connection-not-saved", message: "" });
+          return;
+        }
         failWith(fromGmeetSyncError(res.error));
         return;
       }
@@ -2432,6 +2441,8 @@ function formatOAuthError(error: OAuthErrorState): string {
     }
     case "no-refresh-token":
       return `Google didn’t return the long-lived permission we need to keep syncing. Remove TinyChat at ${GOOGLE_THIRD_PARTY_ACCESS_URL} and connect again.`;
+    case "connection-not-saved":
+      return "Google Meet couldn’t save this connection, so it isn’t connected yet. Connect again to finish setting it up.";
     case "storage":
       return error.message.length > 0
         ? error.message

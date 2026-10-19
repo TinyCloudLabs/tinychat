@@ -192,7 +192,13 @@ export interface GmeetSyncSummary {
 
 export type GmeetSyncResult =
   | { ok: true; data: GmeetSyncSummary }
-  | { ok: false; error: GmeetSyncError; data: GmeetSyncSummary | null };
+  | {
+    ok: false;
+    error: GmeetSyncError;
+    data: GmeetSyncSummary | null;
+    /** False when Finishing ended without a connector_state row marking the connection saved. */
+    connectionSaved?: boolean;
+  };
 
 /** §4.2 progress vocabulary. Counters are cumulative and always present so a UI
  *  can render one row from any event. */
@@ -270,6 +276,15 @@ export interface GmeetSyncDiagnostics {
   datetime_rows_unchanged: number;
   datetime_invalid_ambiguous: number;
   datetime_duplicates: number;
+  /** Wall time per Finishing phase (Drive vs node SQL), in ms. Count-only. */
+  phase_drive_ms: number;
+  phase_count_ms: number;
+  phase_diagnostics_ms: number;
+  phase_state_write_ms: number;
+  finishing_timed_out: 0 | 1;
+  /** Phase that was running when a Finishing deadline fired. */
+  finishing_stalled_phase: "none" | "drive" | "count" | "diagnostics" | "state_write";
+  finishing_recovery_write: "none" | "written" | "failed" | "skipped_pending_storage" | "timed_out";
 }
 
 function emptyDiagnostics(): GmeetSyncDiagnostics {
@@ -294,6 +309,8 @@ function emptyDiagnostics(): GmeetSyncDiagnostics {
     datetime_source_drive_created_approx: 0, datetime_source_unavailable: 0,
     datetime_rows_backfilled: 0, datetime_rows_unchanged: 0,
     datetime_invalid_ambiguous: 0, datetime_duplicates: 0,
+    phase_drive_ms: 0, phase_count_ms: 0, phase_diagnostics_ms: 0, phase_state_write_ms: 0,
+    finishing_timed_out: 0, finishing_stalled_phase: "none", finishing_recovery_write: "none",
   };
 }
 
@@ -391,6 +408,29 @@ let inFlight: Promise<GmeetSyncResult> | null = null;
 // do not start another writer on that space until the outstanding call settles.
 const pendingFinishingStorage = new WeakMap<TinyCloudWeb, Set<Promise<unknown>>>();
 const FINISHING_TIMEOUT_MS = 120_000;
+const FINISHING_TIMEOUT_MESSAGE = "Finishing Google Meet sync timed out. Saved meetings are kept. Retry to finish syncing.";
+// Drive Notes get a budget of their own, so the count and state write keep time.
+const DRIVE_NOTES_TIMEOUT_MS = 60_000;
+const DRIVE_NOTES_TIMEOUT_MESSAGE = "Syncing Google Meet notes from Drive timed out. Saved meetings are kept. Retry to finish syncing.";
+// Wait-and-write budget for the connection row after a Finishing timeout.
+const STATE_RECOVERY_TIMEOUT_MS = 10_000;
+
+function trackFinishingStorage(tcw: TinyCloudWeb, pending: Promise<unknown>): void {
+  const calls = pendingFinishingStorage.get(tcw) ?? new Set<Promise<unknown>>();
+  pendingFinishingStorage.set(tcw, calls);
+  calls.add(pending);
+  const settled = () => {
+    calls.delete(pending);
+    if (calls.size === 0 && pendingFinishingStorage.get(tcw) === calls) pendingFinishingStorage.delete(tcw);
+  };
+  void pending.then(settled, settled);
+}
+
+async function settlePendingStorage(tcw: TinyCloudWeb): Promise<void> {
+  for (let calls = pendingFinishingStorage.get(tcw); calls?.size; calls = pendingFinishingStorage.get(tcw)) {
+    await Promise.allSettled([...calls]);
+  }
+}
 type FinishingStep = <T>(work: () => Promise<T>, storage?: boolean) => Promise<T>;
 type FinishingOptions = GmeetSyncOptions & { step: FinishingStep };
 
@@ -598,22 +638,45 @@ async function runGoogleMeetSync(opts: GmeetSyncOptions): Promise<GmeetSyncResul
   // One deadline covers the whole post-record phase, not a fresh allowance per
   // page/call. Every await in Drive reconciliation uses step: timing out cannot
   // leave an abandoned continuation writing a cursor or publishing success.
+  // Drive Notes fetching has its own, shorter budget inside that deadline so the
+  // count and the connector_state write always keep time of their own.
   finishing = true;
+  type Phase = "drive" | "count" | "diagnostics" | "state_write";
+  let phaseName: Phase | null = null;
+  let phaseStartedAt = 0;
+  const leavePhase = () => {
+    if (phaseName === null) return;
+    diagnostics[`phase_${phaseName}_ms`] += Math.max(0, Date.now() - phaseStartedAt);
+    phaseName = null;
+  };
+  const enterPhase = (next: Phase) => {
+    leavePhase();
+    phaseName = next;
+    phaseStartedAt = Date.now();
+  };
   const controller = new AbortController();
   let stopped: GmeetSyncError | null = null;
+  let timedOut = false;
+  let stateWritten = false;
   let rejectStop!: (reason: Error) => void;
   const stopPromise = new Promise<never>((_, reject) => { rejectStop = reject; });
   // A synchronous progress consumer can fail before the first raced await.
   void stopPromise.catch(() => {});
-  const stop = (message: string) => {
+  const stop = (message: string, byTimeout = false) => {
     if (stopped !== null) return;
     stopped = { kind: "network", message };
+    if (byTimeout) {
+      timedOut = true;
+      diagnostics.finishing_timed_out = 1;
+      diagnostics.finishing_stalled_phase = phaseName ?? "none";
+    }
+    leavePhase();
     const error = new Error(message);
     controller.abort(error);
     rejectStop(error);
   };
   const onAbort = () => stop("Google Meet sync was stopped. Saved meetings are kept. Retry to finish syncing.");
-  const timer = setTimeout(() => stop("Finishing Google Meet sync timed out. Saved meetings are kept. Retry to finish syncing."), FINISHING_TIMEOUT_MS);
+  const timer = setTimeout(() => stop(FINISHING_TIMEOUT_MESSAGE, true), FINISHING_TIMEOUT_MS);
   // Preserve the pre-record cancellation result; cancellation during Finishing
   // is an error, never a completed import.
   if (!aborted) {
@@ -623,16 +686,7 @@ async function runGoogleMeetSync(opts: GmeetSyncOptions): Promise<GmeetSyncResul
   step = async <T>(work: () => Promise<T>, storage = false): Promise<T> => {
     if (stopped) throw new Error(stopped.message);
     const pending = work();
-    if (storage) {
-      const calls = pendingFinishingStorage.get(tcw) ?? new Set<Promise<unknown>>();
-      pendingFinishingStorage.set(tcw, calls);
-      calls.add(pending);
-      const settled = () => {
-        calls.delete(pending);
-        if (calls.size === 0 && pendingFinishingStorage.get(tcw) === calls) pendingFinishingStorage.delete(tcw);
-      };
-      void pending.then(settled, settled);
-    }
+    if (storage) trackFinishingStorage(tcw, pending);
     const result = await Promise.race([pending, stopPromise]);
     if (controller.signal.aborted) throw controller.signal.reason;
     return result;
@@ -640,45 +694,134 @@ async function runGoogleMeetSync(opts: GmeetSyncOptions): Promise<GmeetSyncResul
   let itemCount = connRes.data?.itemCount ?? 0;
   const writeState = async () => {
     const completed = terminal === null && !aborted;
-    const update = await step(() => store.updateSyncState(tcw, {
-      connectorId: SOURCE,
-      status: "connected",
-      lastSyncedAt: completed ? startedAtIso : watermarkIso,
-      lastSyncStatus: terminal ? "error" : reconnectRequired ? "partial" : "ok",
-      lastSyncError: terminal?.message ?? (reconnectRequired ? "Reconnect Google Meet to sync Notes by Gemini" : null),
-      itemCount,
-    }), true);
-    if (!update.ok) terminal ??= fromStore(update.error, "updateSyncState");
+    enterPhase("state_write");
+    let update;
+    try {
+      update = await step(() => store.updateSyncState(tcw, {
+        connectorId: SOURCE,
+        status: "connected",
+        lastSyncedAt: completed ? startedAtIso : watermarkIso,
+        lastSyncStatus: terminal ? "error" : reconnectRequired ? "partial" : "ok",
+        lastSyncError: terminal?.message ?? (reconnectRequired ? "Reconnect Google Meet to sync Notes by Gemini" : null),
+        itemCount,
+      }), true);
+    } finally {
+      leavePhase();
+    }
+    if (update.ok) stateWritten = true;
+    else terminal ??= fromStore(update.error, "updateSyncState");
+  };
+  // After a Finishing timeout `step` is closed, so the connection row gets its own
+  // short deadline. The secret already exists; without this row the card never
+  // shows Google Meet as connected. Outstanding storage calls settle first (the
+  // single-writer guard), and a late continuation can never write after we give up.
+  const persistConnectionAfterTimeout = async (message: string) => {
+    enterPhase("state_write");
+    let abandoned = false;
+    let started = false;
+    let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<"timeout">((resolve) => {
+      deadlineTimer = setTimeout(() => { abandoned = true; resolve("timeout"); }, STATE_RECOVERY_TIMEOUT_MS);
+    });
+    const attempt = (async (): Promise<"written" | "failed"> => {
+      await settlePendingStorage(tcw);
+      if (abandoned) return "failed";
+      started = true;
+      const pending = store.updateSyncState(tcw, {
+        connectorId: SOURCE,
+        status: "connected",
+        lastSyncedAt: watermarkIso,
+        lastSyncStatus: "error",
+        lastSyncError: message,
+        itemCount,
+      });
+      trackFinishingStorage(tcw, pending);
+      return (await pending).ok ? "written" : "failed";
+    })();
+    void attempt.catch(() => {});
+    let outcome: "written" | "failed" | "timeout";
+    try {
+      outcome = await Promise.race([attempt, deadline]);
+    } catch {
+      outcome = "failed";
+    } finally {
+      clearTimeout(deadlineTimer);
+      leavePhase();
+    }
+    if (outcome === "written") stateWritten = true;
+    diagnostics.finishing_recovery_write = outcome === "written" ? "written"
+      : outcome === "timeout" ? (started ? "timed_out" : "skipped_pending_storage") : "failed";
   };
   try {
     await step(async () => { await emit("status", "finishing"); });
     if (terminal === null && !aborted) {
       const failuresBeforeNotes = failed;
-      const drive = await syncDriveNotes({ ...opts, signal: controller.signal, step }, record, diagnostics);
-      if (drive.terminal) terminal = drive.terminal;
-      if (drive.aborted) {
-        aborted = true;
-        terminal ??= { kind: "network", message: "Google Meet sync was stopped. Saved meetings are kept. Retry to finish syncing." };
+      const driveController = new AbortController();
+      const forwardAbort = () => driveController.abort(controller.signal.reason);
+      controller.signal.addEventListener("abort", forwardAbort, { once: true });
+      let driveTimedOut = false;
+      let rejectDrive!: (reason: Error) => void;
+      const drivePromise = new Promise<never>((_, reject) => { rejectDrive = reject; });
+      void drivePromise.catch(() => {});
+      const driveTimer = setTimeout(() => {
+        driveTimedOut = true;
+        diagnostics.finishing_timed_out = 1;
+        diagnostics.finishing_stalled_phase = "drive";
+        const error = new Error(DRIVE_NOTES_TIMEOUT_MESSAGE);
+        driveController.abort(error);
+        rejectDrive(error);
+      }, DRIVE_NOTES_TIMEOUT_MS);
+      const driveStep: FinishingStep = (work, storage) => {
+        if (driveTimedOut) return Promise.reject(new Error(DRIVE_NOTES_TIMEOUT_MESSAGE));
+        const inner = step(work, storage);
+        void inner.catch(() => {});
+        return Promise.race([inner, drivePromise]);
+      };
+      enterPhase("drive");
+      let drive: DriveOutcome = {};
+      try {
+        drive = await syncDriveNotes({ ...opts, signal: driveController.signal, step: driveStep }, record, diagnostics);
+      } catch (error) {
+        if (!driveTimedOut) throw error;
+      } finally {
+        clearTimeout(driveTimer);
+        controller.signal.removeEventListener("abort", forwardAbort);
+        leavePhase();
       }
-      if (drive.reconnectRequired) reconnectRequired = true;
-      if (terminal === null && (drive.failed || failed > failuresBeforeNotes)) {
-        let reason = "Google Meet Notes could not finish syncing. Retry to finish syncing.";
-        for (let i = items.length - 1; i >= 0; i--) {
-          if (items[i]!.outcome !== "error") continue;
-          reason = items[i]!.reason ?? reason;
-          break;
+      if (driveTimedOut) {
+        terminal = { kind: "network", message: DRIVE_NOTES_TIMEOUT_MESSAGE };
+        // An abandoned Notes write must settle before the next writer starts.
+        await step(() => settlePendingStorage(tcw));
+      } else {
+        if (drive.terminal) terminal = drive.terminal;
+        if (drive.aborted) {
+          aborted = true;
+          terminal ??= { kind: "network", message: "Google Meet sync was stopped. Saved meetings are kept. Retry to finish syncing." };
         }
-        terminal = {
-          kind: diagnostics.drive_storage_failed > 0 ? "storage" : "network",
-          message: reason,
-        };
+        if (drive.reconnectRequired) reconnectRequired = true;
+        if (terminal === null && (drive.failed || failed > failuresBeforeNotes)) {
+          let reason = "Google Meet Notes could not finish syncing. Retry to finish syncing.";
+          for (let i = items.length - 1; i >= 0; i--) {
+            if (items[i]!.outcome !== "error") continue;
+            reason = items[i]!.reason ?? reason;
+            break;
+          }
+          terminal = {
+            kind: diagnostics.drive_storage_failed > 0 ? "storage" : "network",
+            message: reason,
+          };
+        }
       }
     }
+    enterPhase("count");
     const count = await step(() => store.countMeetings(tcw, SOURCE), true);
+    leavePhase();
     if (count.ok) itemCount = count.data;
     else terminal ??= fromStore(count.error, "countMeetings");
     diagnostics.persisted_item_count_after = itemCount;
+    enterPhase("diagnostics");
     await emitDiagnostics();
+    leavePhase();
     await writeState();
     if (terminal === null) {
       await step(async () => { await emit("complete"); });
@@ -691,6 +834,11 @@ async function runGoogleMeetSync(opts: GmeetSyncOptions): Promise<GmeetSyncResul
     if (stopped === null) {
       try { await writeState(); } catch { /* The error result remains authoritative when state cannot be written. */ }
     }
+    if (timedOut && !stateWritten) {
+      await persistConnectionAfterTimeout(FINISHING_TIMEOUT_MESSAGE);
+      // Count-only phase timings; step is closed, so no storage is read here.
+      try { onDiagnostics?.({ ...diagnostics }); } catch { /* Diagnostics are best effort. */ }
+    }
   } finally {
     clearTimeout(timer);
     signal?.removeEventListener("abort", onAbort);
@@ -699,7 +847,13 @@ async function runGoogleMeetSync(opts: GmeetSyncOptions): Promise<GmeetSyncResul
   try {
     void Promise.resolve(emit("error", error.message)).catch(() => {});
   } catch { /* A broken progress consumer must not turn the terminal result into a rejection. */ }
-  return { ok: false, error, data: summary() };
+  return {
+    ok: false,
+    error,
+    data: summary(),
+    // False only when no connector_state row marks the card connected.
+    connectionSaved: stateWritten || connRes.data?.status === "connected",
+  };
 }
 
 /** A narrow metadata gate. Non-candidates must never reach Docs documents.get. */
