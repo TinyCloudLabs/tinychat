@@ -291,7 +291,7 @@ export function ConnectorsCard({
   const [gmeetDiagnostics, setGmeetDiagnostics] = useState<GmeetSyncDiagnostics | null>(null);
   // What the engine is doing right now, including runs this card did not start (the
   // session-start lane, the connect dialog's background Notes).
-  const live = useSyncExternalStore(onGmeetLiveStatus, getGmeetLiveStatus, getGmeetLiveStatus);
+  const live = useSyncExternalStore(onGmeetLiveStatus, () => getGmeetLiveStatus(tcw), () => getGmeetLiveStatus(tcw));
   const [buildLabel, setBuildLabel] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;

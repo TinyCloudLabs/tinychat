@@ -69,6 +69,7 @@ import {
 import { GmeetClient } from "@/lib/connectors/gmeetClient";
 import { googleRefreshGrant } from "@/lib/connectors/googleOAuthDesktop";
 import {
+  stopGmeetSyncForAccount,
   syncGoogleMeet,
   type GmeetSyncClient,
   type GmeetSyncOptions,
@@ -436,6 +437,13 @@ export function useGmeetSessionSync(options: Omit<GmeetSessionSyncOptions, "sign
       controller.abort();
     };
   }, [tcw, sessionStore, backendUrl, hooks]);
+
+  // Sign-out or an account change ends this account's background Notes reconcile: it must not keep
+  // writing under A's client, nor into B's session. (A dialog closing or a card unmounting does not.)
+  useEffect(() => {
+    if (!tcw) return;
+    return () => { void stopGmeetSyncForAccount(tcw); };
+  }, [tcw]);
 }
 
 /**

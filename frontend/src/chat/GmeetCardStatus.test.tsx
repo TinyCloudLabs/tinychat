@@ -74,7 +74,7 @@ describe("card wiring", () => {
   const card = readFileSync(join(import.meta.dir, "ConnectorsCard.tsx"), "utf8");
 
   test("the card subscribes to the engine's live status and shows it for the Google Meet row only", () => {
-    expect(card).toContain("useSyncExternalStore(onGmeetLiveStatus, getGmeetLiveStatus");
+    expect(card).toContain("useSyncExternalStore(onGmeetLiveStatus, () => getGmeetLiveStatus(tcw)");
     expect(card).toContain("gmeet={d.id === GMEET_CONNECTOR_ID ?");
     expect(card).toContain("<GmeetLiveLine status={gmeet.live} />");
   });

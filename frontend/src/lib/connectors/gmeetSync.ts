@@ -512,6 +512,16 @@ export async function stopGmeetNotesSync(): Promise<void> {
   await running;
 }
 
+/**
+ * Sign-out or an account change: stop the run in flight if it belongs to this account. The Notes
+ * reconcile outlives a closed dialog or an unmounted card, but never its account's session.
+ */
+export async function stopGmeetSyncForAccount(tcw: TinyCloudWeb): Promise<void> {
+  const did = tcw.did;
+  if (!did || activeDid !== did) return;
+  await stopGmeetNotesSync();
+}
+
 /** Subscribe to deferred-Notes outcomes (the card re-reads its row on each). */
 export function onGmeetNotesSettled(listener: (settled: GmeetNotesSettled) => void): () => void {
   notesSettledListeners.add(listener);
@@ -537,11 +547,17 @@ export interface GmeetLiveStatus {
 
 const IDLE_LIVE: GmeetLiveStatus = { running: false, progress: null, resumed: false };
 let liveStatus: GmeetLiveStatus = IDLE_LIVE;
+/** DID of the account whose run is in flight; null when idle. */
+let activeDid: string | null = null;
 const liveListeners = new Set<() => void>();
 
-/** Snapshot for `useSyncExternalStore`: the same object until something changes. */
-export function getGmeetLiveStatus(): GmeetLiveStatus {
-  return liveStatus;
+/**
+ * Snapshot for `useSyncExternalStore`: the same object until something changes. Keyed by account:
+ * a run belongs to the DID of the `tcw` that started it, and any other account sees nothing of it.
+ */
+export function getGmeetLiveStatus(tcw: TinyCloudWeb | null): GmeetLiveStatus {
+  const did = tcw?.did;
+  return did && did === activeDid ? liveStatus : IDLE_LIVE;
 }
 
 export function onGmeetLiveStatus(listener: () => void): () => void {
@@ -551,6 +567,11 @@ export function onGmeetLiveStatus(listener: () => void): () => void {
 
 function publishLive(next: { progress?: GmeetSyncProgress | null; resumed?: boolean } = {}): void {
   if (inFlight === null && notesInFlight === null) {
+    livePending = null;
+    clearTimeout(liveTimer);
+    liveTimer = undefined;
+    liveStage = "none";
+    activeDid = null;
     if (liveStatus === IDLE_LIVE) return;
     liveStatus = IDLE_LIVE;
   } else {
@@ -595,10 +616,35 @@ function beginRunLog(tcw: TinyCloudWeb): GmeetSyncLogRecorder {
   return recorder;
 }
 
-function trackProgress(tcw: TinyCloudWeb, recorder: GmeetSyncLogRecorder, progress: GmeetSyncProgress): void {
-  recorder.record(progress);
+/** Per-Note progress reaches observers at most this often; a stage change always goes through at once. */
+const LIVE_THROTTLE_MS = 250;
+let liveStage: GmeetSyncProgress["stage"] | "none" = "none";
+let liveLastAt = 0;
+let livePending: { tcw: TinyCloudWeb; recorder: GmeetSyncLogRecorder; progress: GmeetSyncProgress } | null = null;
+let liveTimer: ReturnType<typeof setTimeout> | undefined;
+
+function deliverProgress(tcw: TinyCloudWeb, recorder: GmeetSyncLogRecorder, progress: GmeetSyncProgress): void {
+  livePending = null;
+  liveStage = progress.stage ?? "none";
+  liveLastAt = Date.now();
   publishLive({ progress, resumed: progress.resumed });
   publishRunLog(tcw, recorder, false);
+}
+
+function trackProgress(tcw: TinyCloudWeb, recorder: GmeetSyncLogRecorder, progress: GmeetSyncProgress): void {
+  recorder.record(progress);
+  const elapsed = Date.now() - liveLastAt;
+  if (progress.type !== "progress" || (progress.stage ?? "none") !== liveStage || elapsed >= LIVE_THROTTLE_MS) {
+    clearTimeout(liveTimer);
+    liveTimer = undefined;
+    deliverProgress(tcw, recorder, progress);
+    return;
+  }
+  livePending = { tcw, recorder, progress };
+  liveTimer ??= setTimeout(() => {
+    liveTimer = undefined;
+    if (livePending !== null) deliverProgress(livePending.tcw, livePending.recorder, livePending.progress);
+  }, LIVE_THROTTLE_MS - elapsed);
 }
 
 // Storage has no AbortSignal contract. A timed-out transport may still commit;
@@ -643,6 +689,10 @@ export function _resetGmeetSyncSingleFlightForTests(): void {
   notesStop = null;
   foregroundDeferred = false;
   liveStatus = IDLE_LIVE;
+  activeDid = null;
+  livePending = null;
+  clearTimeout(liveTimer);
+  liveTimer = undefined;
   lastRun = null;
 }
 
@@ -677,12 +727,17 @@ export function syncGoogleMeet(opts: GmeetSyncOptions): Promise<GmeetSyncResult>
   }
   foregroundDeferred = opts.deferNotes === true;
   const recorder = beginRunLog(opts.tcw);
+  activeDid = opts.tcw.did ?? null;
   const run = runGoogleMeetSync(opts, recorder)
     .then((result) => {
       recorder.setResult(summarizeGmeetSyncResult(result));
       // A deferred hand-off keeps recording: the background reconcile finishes the log.
       publishRunLog(opts.tcw, recorder, !(result.ok && result.data.notesDeferred === true));
       return result;
+    }, (error: unknown) => {
+      recorder.setResult({ kind: "unknown", connectionSaved: null, notesDeferred: false });
+      publishRunLog(opts.tcw, recorder, true);
+      throw error;
     })
     .finally(() => {
       inFlight = null;
@@ -690,6 +745,8 @@ export function syncGoogleMeet(opts: GmeetSyncOptions): Promise<GmeetSyncResult>
       publishLive();
     });
   inFlight = run;
+  // The run's first progress event fires before the slot is taken and reads as idle: re-assert the owner.
+  activeDid = opts.tcw.did ?? null;
   publishLive({ progress: null, resumed: false });
   return run;
 }
@@ -1026,7 +1083,11 @@ async function runGoogleMeetSync(opts: GmeetSyncOptions, recorder: GmeetSyncLogR
       const meetings = { current, total, synced: created + updated, failed, skipped };
       const stop = new AbortController();
       const background: Promise<void> = runNotesInBackground({ opts, startedAtIso, itemCount, diagnostics, meetings, stop, recorder })
-        .catch(() => {})
+        .catch(() => {
+          // An unexpected rejection must not leave the log unfinished.
+          recorder.setNotesOutcome({ ok: false, errorKind: "storage" });
+          publishRunLog(tcw, recorder, true);
+        })
         .finally(() => { if (notesInFlight === background) notesInFlight = null; publishLive(); });
       notesInFlight = background;
       notesStop = stop;

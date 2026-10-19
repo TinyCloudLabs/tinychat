@@ -36,6 +36,7 @@ import {
   isPersistableTranscriptState,
   isTerminalGmeetError,
   stopGmeetNotesSync,
+  stopGmeetSyncForAccount,
   syncGoogleMeet,
   type GmeetNotesSettled,
   type GmeetSyncClient,
@@ -49,6 +50,7 @@ import { runDisconnect, type DisconnectDeps } from "./connectorLifecycle";
 const ok = <T>(data: T): StoreResult<T> => ({ ok: true, data });
 
 const TCW = {
+  did: "did:pkh:eip155:1:0xaaaa",
   sql: { db: () => ({ query: async () => ({ ok: true, data: { rows: [] } }) }) },
 } as unknown as TinyCloudWeb;
 
@@ -2515,17 +2517,17 @@ describe("Notes reconcile at scale", () => {
     const settled: GmeetNotesSettled[] = [];
     const off = onGmeetNotesSettled((s) => settled.push(s));
     const seen: boolean[] = [];
-    const offLive = onGmeetLiveStatus(() => seen.push(getGmeetLiveStatus().running));
+    const offLive = onGmeetLiveStatus(() => seen.push(getGmeetLiveStatus(TCW).running));
     try {
-      expect(getGmeetLiveStatus()).toMatchObject({ running: false, progress: null, resumed: false });
+      expect(getGmeetLiveStatus(TCW)).toMatchObject({ running: false, progress: null, resumed: false });
       expect((await run(f.client, f.store, { driveMode: "snapshot", deferNotes: true })).ok).toBe(true);
-      expect(await drain(() => getGmeetLiveStatus().progress?.stage === "notes")).toBe(true);
-      expect(getGmeetLiveStatus()).toMatchObject({
-        running: true, resumed: true, progress: { stage: "notes", notesDone: 2, notesTotal: 4 },
+      expect(await drain(() => getGmeetLiveStatus(TCW).progress?.stage === "notes")).toBe(true);
+      expect(getGmeetLiveStatus(TCW)).toMatchObject({
+        running: true, resumed: true, progress: { stage: "notes", notesTotal: 4 },
       });
       hold.resolve();
       expect(await drain(() => settled.length === 1)).toBe(true);
-      expect(getGmeetLiveStatus()).toMatchObject({ running: false, progress: null, resumed: false });
+      expect(getGmeetLiveStatus(TCW)).toMatchObject({ running: false, progress: null, resumed: false });
       expect(seen.at(-1)).toBe(false);
     } finally { hold.resolve(); off(); offLive(); }
   });
@@ -2538,8 +2540,8 @@ describe("Notes reconcile at scale", () => {
     const off = onGmeetNotesSettled((s) => settled.push(s));
     try {
       await run(f.client, f.store, { driveMode: "snapshot", deferNotes: true });
-      expect(await drain(() => getGmeetLiveStatus().progress?.stage === "notes")).toBe(true);
-      expect(getGmeetLiveStatus().resumed).toBe(false);
+      expect(await drain(() => getGmeetLiveStatus(TCW).progress?.stage === "notes")).toBe(true);
+      expect(getGmeetLiveStatus(TCW).resumed).toBe(false);
     } finally { hold.resolve(); await drain(() => settled.length === 1); off(); }
   });
 
@@ -2600,5 +2602,71 @@ describe("Notes reconcile at scale", () => {
     expect(a.attempts.count).toBe(3);
     expect(second).toBe(1);
     expect(f.store.state).toMatchObject({ lastSyncStatus: "partial", lastSyncError: "1 of 3 Notes saved. Sync now or Full rescan finishes the rest." });
+  });
+
+  // ── Cross-account isolation (TC-1376) ──
+  const ACCOUNT_B = { did: "did:pkh:eip155:1:0xbbbb", sql: TCW.sql } as unknown as TinyCloudWeb;
+
+  test("account A's running sync, progress and log never show for account B in the same tab", async () => {
+    const f = scaleFixture({ docs: 0, notes: 4, preload: true });
+    const hold = Promise.withResolvers<void>();
+    f.ctl.hold = hold.promise;
+    const settled: GmeetNotesSettled[] = [];
+    const off = onGmeetNotesSettled((s) => settled.push(s));
+    try {
+      await run(f.client, f.store, { driveMode: "snapshot", deferNotes: true });
+      expect(await drain(() => getGmeetLiveStatus(TCW).progress?.stage === "notes")).toBe(true);
+      expect(getGmeetLiveStatus(TCW).running).toBe(true);
+      // Signed in as B (a different DID): nothing of A's run is visible.
+      expect(getGmeetLiveStatus(ACCOUNT_B)).toEqual({ running: false, progress: null, resumed: false });
+      expect(getGmeetLiveStatus(null).running).toBe(false);
+      expect(getGmeetRunLog(ACCOUNT_B)).toBeNull();
+      hold.resolve();
+      expect(await drain(() => settled.length === 1)).toBe(true);
+    } finally { hold.resolve(); off(); }
+  });
+
+  test("sign-out of account A stops its background reconcile and its writes; account B's sign-in stops nothing of A's", async () => {
+    const f = scaleFixture({ docs: 0, notes: 6, preload: true });
+    const hold = Promise.withResolvers<void>();
+    f.ctl.hold = hold.promise;
+    const settled: GmeetNotesSettled[] = [];
+    const off = onGmeetNotesSettled((s) => settled.push(s));
+    try {
+      await run(f.client, f.store, { driveMode: "snapshot", deferNotes: true });
+      await drain(() => f.counts.concurrent === 5);
+      // Another account's teardown does not touch A's run.
+      await stopGmeetSyncForAccount(ACCOUNT_B);
+      expect(isGmeetNotesSyncInFlight()).toBe(true);
+      const stateWrites = f.store.stateWrites;
+      const rows = f.store.rows.length;
+      const stopped = stopGmeetSyncForAccount(TCW); // A signs out.
+      hold.resolve();
+      await stopped;
+      expect(isGmeetNotesSyncInFlight()).toBe(false);
+      await drain();
+      expect(f.store.stateWrites).toBe(stateWrites);
+      expect(f.store.rows).toHaveLength(rows);
+      expect(f.store.cursor).toBe("old-cursor");
+      expect(getGmeetLiveStatus(TCW)).toEqual({ running: false, progress: null, resumed: false });
+      // B can now sync: the slot is free and A's reconcile writes nothing under B's session.
+      expect(isGmeetSyncInFlight()).toBe(false);
+    } finally { hold.resolve(); off(); }
+  });
+
+  test("per-Note progress reaches observers throttled, and the stage change and the end still arrive", async () => {
+    vi.useFakeTimers();
+    const f = scaleFixture({ docs: 0, notes: 12, preload: true });
+    const settled: GmeetNotesSettled[] = [];
+    const off = onGmeetNotesSettled((s) => settled.push(s));
+    let notifications = 0;
+    const offLive = onGmeetLiveStatus(() => { notifications++; });
+    try {
+      await run(f.client, f.store, { driveMode: "snapshot", deferNotes: true });
+      expect(await untilWithTimers(() => settled.length === 1)).toBe(true);
+      // 12 Notes would otherwise be 12+ notifications on their own.
+      expect(notifications).toBeLessThan(12);
+      expect(getGmeetLiveStatus(TCW).running).toBe(false);
+    } finally { off(); offLive(); }
   });
 });

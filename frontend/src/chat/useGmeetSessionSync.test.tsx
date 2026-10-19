@@ -588,6 +588,12 @@ describe("quiet by contract", () => {
     expect(at).toBeGreaterThan(0);
     expect(source.slice(at, at + 120)).toContain("controller.abort()");
   });
+
+  test("sign-out and an account change (a tcw-keyed cleanup) stop that account's background reconcile", () => {
+    const at = source.indexOf("stopGmeetSyncForAccount(tcw)");
+    expect(at).toBeGreaterThan(0);
+    expect(source.slice(at, at + 80)).toContain("}, [tcw]);");
+  });
 });
 
 describe("app wiring", () => {
