@@ -123,7 +123,7 @@ function mergeMembers(rawMetadata: unknown): MergeMember[] | null {
   }
   const merge = isRecord(meta) ? meta.merge : null;
   const members = isRecord(merge) ? merge.members : null;
-  if (!Array.isArray(members)) return null;
+  if (!Array.isArray(members) || members.length === 0) return null;
   const out: MergeMember[] = [];
   for (const m of members) {
     if (!isRecord(m) || typeof m.source !== "string" || typeof m.source_id !== "string" || !m.source || !m.source_id) return null;
@@ -133,31 +133,35 @@ function mergeMembers(rawMetadata: unknown): MergeMember[] | null {
 }
 
 /**
- * Members of a combined row, or null when they cannot be determined. A v1 `metadata.merge.members`
- * record is used when present; otherwise the members are every distinct (source, source_id) in the
- * body's per-segment `sources[]` (chosen or not: an unchosen source's text is carried in `alternate`).
- * A read failure, an unparseable body or a segment without a `sources` list is null, never a guess.
+ * Members of a combined row, or null when they cannot be determined. The union of the v1
+ * `metadata.merge.members` record and every distinct (source, source_id) in the body's per-segment
+ * `sources[]` (chosen or not: an unchosen source's text is carried in `alternate`), so a source that
+ * only one of them names is still found. Either alone is enough; with neither (read failure,
+ * unparseable body, a segment without `sources`, empty `members`) it is null, never a guess.
  */
 async function membersOf(tcw: TinyCloudWeb, sourceId: string, rawMetadata: unknown): Promise<MeetingRef[] | null> {
-  const fromMeta = mergeMembers(rawMetadata);
-  if (fromMeta !== null) return fromMeta.map((m) => ({ source: m.source, sourceId: m.sourceId }));
-  const key = mergedBodyKey(sourceId);
-  if (key === null) return null;
-  const res = await kv(() => tcw.kv.get(key));
-  if (!res.ok) return null;
-  let body: unknown = res.data;
-  if (typeof body === "string") {
-    try { body = JSON.parse(body); } catch { return null; }
-  }
-  if (!Array.isArray(body) || body.length === 0) return null;
   const seen = new Map<string, MeetingRef>();
-  for (const seg of body) {
-    const sources = isRecord(seg) ? seg.sources : null;
-    if (!Array.isArray(sources) || sources.length === 0) return null;
-    for (const s of sources) {
-      if (!isRecord(s) || typeof s.source !== "string" || typeof s.source_id !== "string" || !s.source || !s.source_id) return null;
-      seen.set(`${s.source}\u0000${s.source_id}`, { source: s.source, sourceId: s.source_id });
+  const add = (source: string, sid: string) => seen.set(`${source}\u0000${sid}`, { source, sourceId: sid });
+  for (const m of mergeMembers(rawMetadata) ?? []) add(m.source, m.sourceId);
+  const key = mergedBodyKey(sourceId);
+  const res = key === null ? null : await kv(() => tcw.kv.get(key));
+  if (res?.ok) {
+    let body: unknown = res.data;
+    if (typeof body === "string") {
+      try { body = JSON.parse(body); } catch { body = null; }
     }
+    let valid = Array.isArray(body) && body.length > 0;
+    const fromBody: [string, string][] = [];
+    for (const seg of valid ? (body as unknown[]) : []) {
+      const sources = isRecord(seg) ? seg.sources : null;
+      if (!Array.isArray(sources) || sources.length === 0) { valid = false; break; }
+      for (const s of sources) {
+        if (!isRecord(s) || typeof s.source !== "string" || typeof s.source_id !== "string" || !s.source || !s.source_id) { valid = false; break; }
+        fromBody.push([s.source, s.source_id]);
+      }
+      if (!valid) break;
+    }
+    if (valid) for (const [s, i] of fromBody) add(s, i);
   }
   return seen.size === 0 ? null : [...seen.values()];
 }

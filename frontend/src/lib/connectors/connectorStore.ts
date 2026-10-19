@@ -25,6 +25,7 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import {
   CONNECTORS_SQL_DB_NAME,
   CONNECTORS_KV_PREFIX,
+  EXO_MERGED_SOURCE,
   CONNECTOR_SCHEMA,
   transcriptKvKey,
   type NormalizedMeeting,
@@ -1257,9 +1258,11 @@ export async function purgeConnector(
   // fails the purge stops here with the originals intact, and a retry finds the same combined rows.
   // A combined row whose members cannot be determined might quote this source, so it also stops
   // the purge (COMBINED_MEMBERS_UNKNOWN); the user clears it by deleting that combined meeting.
-  const cascade = await deleteCombinedReferencing(tcw, source);
-  if (!cascade.ok) return fail(cascade.error, "purgeConnector(combined)", storageScopeFor(tcw));
-  if (cascade.data.unverifiedIds.length > 0) {
+  // Purging exo-merged itself needs no cascade (a combined meeting is never a member) and deletes
+  // every combined row below anyway, so an unreadable one must not block it.
+  const cascade = source === EXO_MERGED_SOURCE ? null : await deleteCombinedReferencing(tcw, source);
+  if (cascade && !cascade.ok) return fail(cascade.error, "purgeConnector(combined)", storageScopeFor(tcw));
+  if (cascade?.ok && cascade.data.unverifiedIds.length > 0) {
     return fail({
       code: "COMBINED_MEMBERS_UNKNOWN",
       message: `a combined meeting's members cannot be determined, so it may quote this source; delete it, then purge again (ids: ${cascade.data.unverifiedIds.join(", ")})`,
@@ -1294,9 +1297,9 @@ export async function purgeConnector(
   if (!res.ok) return fail(res.error, "purgeConnector(sql)", storageScopeFor(tcw));
   // A combine in another tab or device may have read a member before the purge and written after
   // the first cascade. Its members are now gone, so a second (idempotent) pass removes it.
-  const late = await deleteCombinedReferencing(tcw, source);
-  if (!late.ok) return fail(late.error, "purgeConnector(combined-late)", storageScopeFor(tcw));
-  if (late.data.unverifiedIds.length > 0) {
+  const late = source === EXO_MERGED_SOURCE ? null : await deleteCombinedReferencing(tcw, source);
+  if (late && !late.ok) return fail(late.error, "purgeConnector(combined-late)", storageScopeFor(tcw));
+  if (late?.ok && late.data.unverifiedIds.length > 0) {
     return fail({
       code: "COMBINED_MEMBERS_UNKNOWN",
       message: `a combined meeting written during the purge has unknown members; delete it, then purge again (ids: ${late.data.unverifiedIds.join(", ")})`,

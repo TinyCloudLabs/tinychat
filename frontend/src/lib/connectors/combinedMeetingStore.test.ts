@@ -319,15 +319,36 @@ describe("purgeConnector cascade", () => {
     expect((await purgeConnector(f.tcw, "fireflies")).ok).toBe(true);
   });
 
-  test("a combined row with a '/' in its source_id does not block the purge", async () => {
-    const c1 = await combineOk(ff[0], ff[1]);
-    const row = mergedRows()[0]!;
-    row.source_id = "bad/id";
-    f.kv.entries.set(mergedKey(c1.sourceId), f.kv.entries.get(mergedKey(c1.sourceId))!);
+  test("a combined row with a '/' in its source_id does not block the purge, and no exo-merged KV key is guessed for it", async () => {
+    await combineOk(ff[0], ff[1]);
+    mergedRows()[0]!.source_id = "bad/id";
     // v1 metadata still lists the Fireflies member, so the row is a hit whose body key is not ours to build.
+    f.kv.log.length = 0;
     const res = await purgeConnector(f.tcw, "fireflies");
     expect(res.ok).toBe(true);
     expect(mergedRows()).toHaveLength(0);
+    expect(f.kv.log.filter((c) => c.method === "delete" && (c.key.includes("bad") || c.key.includes(`/${EXO_MERGED_SOURCE}/`)))).toEqual([]);
+  });
+
+  test("metadata with an empty members list is not 'determined': the body's sources[] decide", async () => {
+    const c1 = await combineOk(ff[0], ff[1]);
+    mergedRows()[0]!.metadata = JSON.stringify({ merge: { v: 1, members: [] } });
+    expect(await deleteCombinedReferencing(f.tcw, "fireflies")).toEqual({ ok: true, data: { deletedIds: [c1.id], unverifiedIds: [] } });
+  });
+
+  test("a source named only by the body's sources[] still cascades when v1 metadata omits it", async () => {
+    const c1 = await combineOk(ff[0], ff[1]);
+    mergedRows()[0]!.metadata = JSON.stringify({ merge: { v: 1, members: [{ source: "tinycloud-transcriber", source_id: "p-b", body_sha256: "x" }] } });
+    expect(await deleteCombinedReferencing(f.tcw, "fireflies")).toEqual({ ok: true, data: { deletedIds: [c1.id], unverifiedIds: [] } });
+  });
+
+  test("purging exo-merged itself is not blocked by an unreadable combined row", async () => {
+    const c1 = await combineOk(ff[0], ff[1]);
+    mergedRows()[0]!.metadata = "not json";
+    f.kv.entries.set(mergedKey(c1.sourceId), "<html>x</html>");
+    expect((await purgeConnector(f.tcw, EXO_MERGED_SOURCE)).ok).toBe(true);
+    expect(mergedRows()).toHaveLength(0);
+    expect(f.sql.meetings.has("row-p-a")).toBe(true);
   });
 
   test("a combine that lands between the cascade and the end of the purge is removed by the second pass", async () => {
