@@ -427,6 +427,8 @@ export class FakeKv {
   readonly unauthorized: string[] = [];
   putHook: ((key: string, value: unknown) => Promise<void>) | null = null;
   deleteErrors = new Map<string, KvErr>();
+  /** Puts to a key (or "prefix/") fail with the given error until the entry is removed. */
+  putErrors = new Map<string, KvErr>();
 
   /** Authorization runs before any storage effect, exactly like the node. */
   private deny(key: string, action: string): KvErr | null {
@@ -464,6 +466,9 @@ export class FakeKv {
   ): Promise<OkErr<{ data: void; headers: Record<string, string> }, KvErr>> {
     const denied = this.deny(key, "put");
     if (denied) return { ok: false, error: denied };
+    for (const [prefix, error] of this.putErrors) {
+      if (key === prefix || (prefix.endsWith("/") && key.startsWith(prefix))) return { ok: false, error };
+    }
     await this.putHook?.(key, value);
     const stored = typeof value === "string" ? value : JSON.stringify(value);
     this.entries.set(key, stored);
