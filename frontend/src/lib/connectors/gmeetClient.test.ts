@@ -704,6 +704,12 @@ describe("GmeetClient — error preservation", () => {
     expect(h.calls[1]?.url.searchParams.get("pageToken")).toBe("next");
   });
 
+  test("lists only Google Docs, never the whole Drive", async () => {
+    const h = harness([() => jsonResponse({ files: [] })]);
+    await client(h).listDriveFiles();
+    expect(h.calls[0]?.url.searchParams.get("q")).toBe("mimeType = 'application/vnd.google-apps.document'");
+  });
+
   test("requests Drive creation provenance separately from modification provenance", async () => {
     const h = harness([
       () => jsonResponse({ files: [] }),

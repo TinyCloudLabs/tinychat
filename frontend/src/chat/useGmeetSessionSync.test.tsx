@@ -310,6 +310,12 @@ describe("locked vault", () => {
     const source = readFileSync(join(import.meta.dir, "useGmeetSessionSync.ts"), "utf8");
     expect(source).not.toContain("unlockSecrets");
   });
+
+  test("the session-start store gives the engine the preloaded association index and the snapshot checkpoint", () => {
+    const source = readFileSync(join(import.meta.dir, "useGmeetSessionSync.ts"), "utf8");
+    const store = source.slice(source.indexOf("const DEFAULT_STORE"), source.indexOf("};", source.indexOf("const DEFAULT_STORE")));
+    for (const method of ["loadGmeetNotesIndex", "getDriveProgress", "putDriveProgress"]) expect(store).toContain(`  ${method},`);
+  });
 });
 
 // ── 4. Abort ─────────────────────────────────────────────────────────

@@ -33,6 +33,7 @@ import { isFirefliesStale } from "@/lib/connectors/firefliesFreshness";
 import { GmeetClient } from "@/lib/connectors/gmeetClient";
 import {
   isGmeetSyncInFlight,
+  onGmeetNotesSettled,
   syncGoogleMeet,
   type GmeetSyncDiagnostics,
   type GmeetSyncProgress,
@@ -140,6 +141,9 @@ const GMEET_STORE: GmeetSyncStore = {
   findGmeetNotesAssociation: connectorStore.findGmeetNotesAssociation,
   attachGmeetNotes: connectorStore.attachGmeetNotes,
   removeGmeetNotes: connectorStore.removeGmeetNotes,
+  loadGmeetNotesIndex: connectorStore.loadGmeetNotesIndex,
+  getDriveProgress: connectorStore.getDriveProgress,
+  putDriveProgress: connectorStore.putDriveProgress,
 };
 
 /** Meet's progress vocabulary → the row's. Counts only; no titles, no text. */
@@ -344,6 +348,11 @@ export function ConnectorsCard({
       window.removeEventListener("tinychat:connector-state-updated", onConnectorStateUpdated);
     };
   }, [refreshRow]);
+
+  // A dialog that finished with `deferNotes` can already be closed when the
+  // Notes reconcile settles. The engine has rewritten the row by then (ok,
+  // partial or error with its saved message), so re-reading it is enough.
+  useEffect(() => onGmeetNotesSettled(() => { void refreshRow(GMEET_CONNECTOR_ID); }), [refreshRow]);
 
   const handleSyncNow = useCallback(
     async (d: ConnectorDescriptor, driveMode: "auto" | "snapshot" = "auto") => {
