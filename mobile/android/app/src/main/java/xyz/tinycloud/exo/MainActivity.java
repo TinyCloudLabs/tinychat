@@ -46,6 +46,7 @@ public class MainActivity extends BridgeActivity implements CaptureEngine.Listen
         registerPlugin(ThemeBarsPlugin.class);
         registerPlugin(OnDeviceSttPlugin.class);
         registerPlugin(HealthPlugin.class);
+        registerPlugin(AndroidDynamicTypePlugin.class);
         // TC-524 location spike. Registered in every build, but only the debug manifest declares
         // location permissions and the location foreground service; release cannot capture location.
         registerPlugin(LocationPlugin.class);
@@ -53,6 +54,7 @@ public class MainActivity extends BridgeActivity implements CaptureEngine.Listen
         if (savedInstanceState != null) consumedCommandId = savedInstanceState.getString("consumedCommandId");
         consumeIntent(getIntent());
         super.onCreate(savedInstanceState);
+        applySystemTextZoom();
         webViewRecovery = new WebViewRecovery(this, getBridge().getAppUrl());
         getBridge().addWebViewListener(webViewRecovery);
         if (WebViewRecovery.takeHoldNextPage()) {
@@ -79,6 +81,7 @@ public class MainActivity extends BridgeActivity implements CaptureEngine.Listen
     }
     @Override public void onResume() {
         super.onResume();
+        applySystemTextZoom();
         // Lifecycle reaches RESUMED after onResume returns.
         main.post(() -> {
             if (MicShortcutRecovery.denied(this)) {
@@ -92,6 +95,14 @@ public class MainActivity extends BridgeActivity implements CaptureEngine.Listen
             CaptureEngine.get(this).onAppActive();
             handlePending();
         });
+    }
+    /** Let WebView scale every font unit as Android does; CSS uses the same scale for timer slots. */
+    private void applySystemTextZoom() {
+        if (bridge != null && bridge.getWebView() != null) {
+            float fontScale = getResources().getConfiguration().fontScale;
+            int textZoom = Math.round(Math.max(1f, Math.min(2f, fontScale)) * 100);
+            bridge.getWebView().getSettings().setTextZoom(textZoom);
+        }
     }
     private void handlePending() {
         if (!getLifecycle().getCurrentState().isAtLeast(Lifecycle.State.RESUMED)) return;

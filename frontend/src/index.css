@@ -11,9 +11,12 @@
   font-style: normal;
   font-display: swap;
   font-weight: 200 900;
-  src: url("/fonts/literata/literata-5.3.0-latin-ext-opsz.woff2") format("woff2");
-  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329,
-    U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+  src: url("/fonts/literata/literata-5.3.0-latin-ext-opsz.woff2")
+    format("woff2");
+  unicode-range:
+    U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304,
+    U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB,
+    U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
 }
 @font-face {
   font-family: "Literata Variable";
@@ -21,8 +24,10 @@
   font-display: swap;
   font-weight: 200 900;
   src: url("/fonts/literata/literata-5.3.0-latin-opsz.woff2") format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
-    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
 }
 
 @layer base {
@@ -165,6 +170,39 @@
        2×: even at the cap, a 56px tab bar is 112px and a 64px ribbon is 128px. */
     font-size: clamp(16px, calc(16px * var(--ios-body-scale, 1)), 32px);
   }
+  html[data-platform="android"] {
+    line-height: 1.5;
+    /* Android WebView applies the clamped system scale to every font via textZoom. */
+    font-size: 16px;
+  }
+  .exo-tab-label.text-label {
+    font-size: min(0.6875rem, 12px);
+    line-height: min(0.875rem, 14px);
+  }
+  html[data-platform="android"][data-large-text] .exo-tab-label {
+    font-size: min(0.6875rem, calc(20px / var(--android-body-scale, 1)));
+    line-height: 1.1;
+  }
+  html[data-platform="android"][data-large-text] [data-testid="sidebar"] {
+    width: clamp(232px, calc(14.5rem * var(--android-body-scale, 1)), 320px);
+  }
+  @media (max-width: 360px) {
+    html[data-platform="android"][data-large-text] .exo-tab-label {
+      font-size: min(0.6875rem, calc(16px / var(--android-body-scale, 1)));
+    }
+  }
+  .dynamic-type-warning {
+    position: fixed;
+    z-index: 10000;
+    inset: max(8px, env(safe-area-inset-top)) 12px auto;
+    padding: 10px 14px;
+    border-radius: 12px;
+    background: hsl(var(--destructive));
+    color: hsl(var(--destructive-foreground));
+    box-shadow: 0 8px 24px rgb(0 0 0 / 20%);
+    font-size: 0.875rem;
+    line-height: 1.4;
+  }
   body {
     @apply bg-background text-foreground antialiased;
     caret-color: hsl(var(--primary));
@@ -253,11 +291,13 @@ html [data-vaul-overlay][data-state="closed"] {
 }
 /* vaul ships no reduced-motion rule: fade with its own keyframes instead of sliding. */
 @media (prefers-reduced-motion: reduce) {
-  html [data-vaul-drawer][data-vaul-snap-points][data-vaul-drawer-direction][data-state="open"] {
+  html
+    [data-vaul-drawer][data-vaul-snap-points][data-vaul-drawer-direction][data-state="open"] {
     animation-name: fadeIn;
     animation-duration: var(--dur-quick);
   }
-  html [data-vaul-drawer][data-vaul-snap-points][data-vaul-drawer-direction][data-state="closed"] {
+  html
+    [data-vaul-drawer][data-vaul-snap-points][data-vaul-drawer-direction][data-state="closed"] {
     animation-name: fadeOut;
     animation-duration: var(--dur-quick);
   }

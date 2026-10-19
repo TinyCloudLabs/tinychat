@@ -1086,7 +1086,7 @@ export function App() {
       onSignIn={authAction}
     >
     <div
-      className="flex flex-col bg-background text-foreground"
+      className="flex flex-col overflow-hidden bg-background text-foreground"
       style={{ height: "var(--tc-app-height, 100dvh)" }}
     >
       {LOCAL_VALIDATION && (

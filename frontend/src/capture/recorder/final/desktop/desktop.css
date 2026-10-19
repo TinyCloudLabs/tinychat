@@ -84,6 +84,7 @@
   align-self: center;
 }
 .dr .pr-modes {
+  position: absolute;
   left: 50%;
   right: auto;
   bottom: calc(100% + 14px);

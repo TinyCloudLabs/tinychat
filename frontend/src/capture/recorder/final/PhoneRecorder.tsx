@@ -383,9 +383,46 @@ export function PhoneRecorder({
   const noteSyncFailed = recorder.noteSyncError !== null;
   const notesOpen = ui.open;
   const keyboardInset = useKeyboardInset();
+  const recorderRoot = useRef<HTMLDivElement>(null);
   const markButton = useRef<HTMLButtonElement>(null);
   const viewNotesButton = useRef<HTMLButtonElement>(null);
   const recordingNow = phase === "recording";
+  useEffect(() => {
+    const root = recorderRoot.current;
+    const dock = root?.querySelector<HTMLElement>(".pr-dock");
+    if (!root || !dock) return;
+
+    let frame = 0;
+    const measureDock = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const gap = 8;
+        const reserve = window.innerHeight - dock.getBoundingClientRect().top + gap;
+        root.style.setProperty(
+          "--pr-dock-reserve",
+          `${Math.max(gap, Math.ceil(reserve))}px`,
+        );
+      });
+    };
+    const observer =
+      typeof ResizeObserver === "undefined"
+        ? null
+        : new ResizeObserver(measureDock);
+    observer?.observe(root);
+    observer?.observe(dock);
+    window.addEventListener("resize", measureDock);
+    window.addEventListener("orientationchange", measureDock);
+    window.addEventListener("scroll", measureDock, true);
+    measureDock();
+
+    return () => {
+      cancelAnimationFrame(frame);
+      observer?.disconnect();
+      window.removeEventListener("resize", measureDock);
+      window.removeEventListener("orientationchange", measureDock);
+      window.removeEventListener("scroll", measureDock, true);
+    };
+  }, []);
   useEffect(() => {
     if (!recordingNow) return;
     const timer = setTimeout(warmRenderer, WARM_RENDERER_MS);
@@ -639,6 +676,7 @@ export function PhoneRecorder({
 
   return (
     <div
+      ref={recorderRoot}
       className={`soft-skin soft-${theme === "night" ? "night" : "day"} pr`}
       data-layout="phone"
       data-testid="phone-recorder"
