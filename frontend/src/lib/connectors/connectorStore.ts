@@ -947,6 +947,119 @@ export async function putDriveCursor(
   return { ok: true, data: undefined };
 }
 
+/** Resumable Drive snapshot checkpoint: the start token and the files already reconciled. */
+export interface GmeetDriveProgress {
+  startToken: string;
+  doneIds: string[];
+  /** ISO time of the last checkpoint; a stale one is ignored rather than resumed. */
+  savedAt: string;
+}
+
+export function driveProgressKvKey(source: string): string {
+  return `${CONNECTORS_KV_PREFIX}/${source}/drive-snapshot-progress`;
+}
+
+export async function getDriveProgress(
+  tcw: TinyCloudWeb,
+  source: string,
+): Promise<StoreResult<GmeetDriveProgress | null>> {
+  const res = await tcw.kv.get(driveProgressKvKey(source));
+  if (!res.ok) {
+    if (res.error?.code === "KV_NOT_FOUND") return { ok: true, data: null };
+    return fail(res.error, "getDriveProgress", storageScopeFor(tcw));
+  }
+  const raw = res.data.data;
+  let parsed: unknown = raw;
+  if (typeof raw === "string") {
+    try { parsed = JSON.parse(raw); } catch { parsed = null; }
+  }
+  const value = parsed as Partial<GmeetDriveProgress> | null;
+  // A checkpoint is only an optimisation: anything unreadable restarts the snapshot.
+  if (!value || typeof value.startToken !== "string" || value.startToken.length === 0
+    || !Array.isArray(value.doneIds) || typeof value.savedAt !== "string") {
+    return { ok: true, data: null };
+  }
+  return {
+    ok: true,
+    data: { startToken: value.startToken, savedAt: value.savedAt, doneIds: value.doneIds.filter((id): id is string => typeof id === "string") },
+  };
+}
+
+/** `null` clears the checkpoint (a snapshot that committed its cursor). */
+export async function putDriveProgress(
+  tcw: TinyCloudWeb,
+  source: string,
+  progress: GmeetDriveProgress | null,
+): Promise<StoreResult<void>> {
+  if (progress === null) {
+    const del = await tcw.kv.delete(driveProgressKvKey(source));
+    if (!del.ok && del.error?.code !== "KV_NOT_FOUND") return fail(del.error, "putDriveProgress(clear)", storageScopeFor(tcw));
+    return { ok: true, data: undefined };
+  }
+  const res = await tcw.kv.put(driveProgressKvKey(source), JSON.stringify(progress));
+  if (!res.ok) return fail(res.error, "putDriveProgress", storageScopeFor(tcw));
+  reportStorageWriteSucceeded(storageScopeFor(tcw));
+  return { ok: true, data: undefined };
+}
+
+/** Id-only Notes association lookup over rows read once; `size` is the row count. */
+export interface GmeetNotesIndex {
+  size: number;
+  find(fileId: string): GmeetNotesAssociation | null;
+}
+
+/**
+ * Every stored row of a source, read with ONE query, for in-memory Notes
+ * association matching. Replaces a LIKE scan per Drive document.
+ */
+export async function loadGmeetNotesIndex(
+  tcw: TinyCloudWeb,
+  source: string,
+): Promise<StoreResult<GmeetNotesIndex>> {
+  const schema = await ensureSchema(tcw);
+  if (!schema.ok) return schema;
+  const res = await store(tcw).query(
+    `SELECT id, source_id, title, started_at, summary_overview, summary_action_items, metadata FROM connector_meeting
+     WHERE source = ?`,
+    [source],
+  );
+  if (!res.ok) return fail(res.error, "loadGmeetNotesIndex", storageScopeFor(tcw));
+  const rows = res.data.rows.map((row) => ({
+    id: cellStr(row, 0, null), sourceId: cellStr(row, 1, null), title: cellStr(row, 2, null),
+    startedAt: cellStr(row, 3, null), summaryOverview: cellStr(row, 4, null),
+    summaryActionItems: cellStr(row, 5, null), metadata: parseJsonObject(row[6]),
+  })).filter((row): row is GmeetNotesAssociation => row.id !== null && row.sourceId !== null);
+  return { ok: true, data: { size: rows.length, find: buildGmeetNotesIndex(rows) } };
+}
+
+/**
+ * Id-only association lookup over preloaded rows, with exactly the precedence of
+ * `findGmeetNotesAssociation(…, title = null, startedAt = null)`: the standalone
+ * source id, then `drive_file_id`, then a unique export-URI match.
+ */
+export function buildGmeetNotesIndex(rows: readonly GmeetNotesAssociation[]): (fileId: string) => GmeetNotesAssociation | null {
+  const bySource = new Map<string, GmeetNotesAssociation>();
+  const byDriveId = new Map<string, GmeetNotesAssociation>();
+  const byExport = new Map<string, GmeetNotesAssociation[]>();
+  for (const row of rows) {
+    if (!bySource.has(row.sourceId)) bySource.set(row.sourceId, row);
+    const driveId = row.metadata.drive_file_id;
+    if (typeof driveId === "string" && !byDriveId.has(driveId)) byDriveId.set(driveId, row);
+    if (!Array.isArray(row.metadata.docs_export_uris)) continue;
+    for (const uri of row.metadata.docs_export_uris) {
+      const id = typeof uri === "string" ? extractDriveFileId(uri) : null;
+      if (id === null) continue;
+      const list = byExport.get(id) ?? [];
+      if (!list.includes(row)) list.push(row);
+      byExport.set(id, list);
+    }
+  }
+  return (fileId) => {
+    const exportMatches = byExport.get(fileId);
+    return bySource.get(fileId) ?? byDriveId.get(fileId) ?? (exportMatches?.length === 1 ? exportMatches[0]! : null);
+  };
+}
+
 export interface GmeetNotesAssociation {
   id: string;
   sourceId: string;
@@ -1148,6 +1261,8 @@ export async function purgeConnector(
   }
   const cursor = await tcw.kv.delete(driveCursorKvKey(source));
   if (!cursor.ok && cursor.error?.code !== "KV_NOT_FOUND") return fail(cursor.error, "purgeConnector(cursor)", storageScopeFor(tcw));
+  const progress = await tcw.kv.delete(driveProgressKvKey(source));
+  if (!progress.ok && progress.error?.code !== "KV_NOT_FOUND") return fail(progress.error, "purgeConnector(progress)", storageScopeFor(tcw));
   if (source === "fireflies") {
     const attempt = await tcw.kv.delete(firefliesAttemptKvKey());
     if (!attempt.ok && attempt.error?.code !== "KV_NOT_FOUND") {

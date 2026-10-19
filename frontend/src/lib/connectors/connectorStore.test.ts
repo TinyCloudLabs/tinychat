@@ -12,6 +12,10 @@ import {
   countMeetings,
   driveCursorKvKey,
   ensureSchema,
+  driveProgressKvKey,
+  getDriveProgress,
+  loadGmeetNotesIndex,
+  putDriveProgress,
   findGmeetNotesAssociation,
   getConnection,
   getFirefliesAttempt,
@@ -972,6 +976,45 @@ describe("connectorStore Drive Notes lifecycle", () => {
     const found = await findGmeetNotesAssociation(f.tcw, "google-meet", "notes-1", null, null);
 
     expect(found.ok && found.data?.sourceId).toBe("conference-1");
+  });
+
+  test("the preloaded Notes index answers exactly like the per-file SQL lookup", async () => {
+    const f = makeFake();
+    const row = (sourceId: string, metadata: Record<string, unknown>): NormalizedMeeting => ({
+      id: `row-${sourceId}`, source: "google-meet", sourceId, title: null, startedAt: null, durationSecs: null,
+      organizerEmail: null, participants: [], summaryOverview: null, summaryActionItems: null, keywords: null,
+      meetingType: null, metadata,
+    });
+    const rows = [
+      row("conference-1", { drive_file_id: "notes-1" }),
+      row("notes-2", { notes_association: "standalone" }),
+      row("conference-3", { docs_export_uris: ["https://docs.google.com/document/d/notes-3/export?format=txt"] }),
+      row("conference-4a", { docs_export_uris: ["https://docs.google.com/document/d/notes-4/export?format=txt"] }),
+      row("conference-4b", { docs_export_uris: ["https://docs.google.com/document/d/notes-4/export?format=txt"] }),
+      // Mentions the id as text only: the SQL LIKE matches it, the ownership checks must not.
+      row("conference-5", { note: "see notes-5 for details" }),
+    ];
+    for (const meeting of rows) expect((await insertMeeting(f.tcw, meeting)).ok).toBe(true);
+
+    const index = await loadGmeetNotesIndex(f.tcw, "google-meet");
+    expect(index.ok && index.data.size).toBe(rows.length);
+    for (const fileId of ["notes-1", "notes-2", "notes-3", "notes-4", "notes-5", "absent"]) {
+      const sql = await findGmeetNotesAssociation(f.tcw, "google-meet", fileId, null, null);
+      expect(sql.ok && index.ok && (index.data.find(fileId)?.sourceId ?? null)).toBe(sql.ok ? (sql.data?.sourceId ?? null) : "sql-failed");
+    }
+  });
+
+  test("the snapshot checkpoint round-trips, clears, and treats unreadable data as no checkpoint", async () => {
+    const f = makeFake();
+    const progress = { startToken: "token-1", doneIds: ["a", "b"], savedAt: "2026-10-19T12:00:00.000Z" };
+    expect(await getDriveProgress(f.tcw, "google-meet")).toEqual({ ok: true, data: null });
+    expect((await putDriveProgress(f.tcw, "google-meet", progress)).ok).toBe(true);
+    expect(await getDriveProgress(f.tcw, "google-meet")).toEqual({ ok: true, data: progress });
+    await f.tcw.kv.put(driveProgressKvKey("google-meet"), "{not json");
+    expect(await getDriveProgress(f.tcw, "google-meet")).toEqual({ ok: true, data: null });
+    expect((await putDriveProgress(f.tcw, "google-meet", progress)).ok).toBe(true);
+    expect((await putDriveProgress(f.tcw, "google-meet", null)).ok).toBe(true);
+    expect(await getDriveProgress(f.tcw, "google-meet")).toEqual({ ok: true, data: null });
   });
 
   test("associates, removes, and purges Drive Notes using the real SQL and KV primitives", async () => {
