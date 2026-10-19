@@ -1227,8 +1227,8 @@ paths:
         and requires Calendar/openid scopes from Google's actual exchange response plus a refresh
         token. Browser-supplied scopes and tenant are never authoritative. Persists disabled old
         scheduling and stop intent, then an enabling record before encrypted custody. Returns
-        the token payload and setupId; never an ID token or Google subject. The browser does not
-        store this token: enable needs only setupId and the server-held credential. Interrupted
+        only setupId, never an ID token or Google subject, and no Google token. Enable needs only
+        setupId and the server-held credential. Interrupted
         setup remains off and its credential is cleaned after ten minutes.
       requestBody:
         required: true
@@ -1250,17 +1250,15 @@ paths:
                   maxLength: 128
       responses:
         "200":
-          description: Whitelisted browser token fields and the pending setup identifier.
+          description: The pending setup identifier. No Google token is returned.
           content:
             application/json:
               schema:
-                allOf:
-                  - $ref: "#/components/schemas/GoogleTokenResponse"
-                  - type: object
-                    required: [setupId]
-                    properties:
-                      setupId:
-                        type: string
+                type: object
+                required: [setupId]
+                properties:
+                  setupId:
+                    type: string
         "400":
           description: Invalid transaction, identity or missing refresh token.
         "401":

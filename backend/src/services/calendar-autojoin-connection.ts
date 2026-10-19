@@ -190,7 +190,8 @@ export class CalendarAutojoinConnection {
         this.holdGrant(enabling, secret);
       });
     });
-    return { ...browserTokenPayload(tokens), setupId };
+    // The browser holds no autojoin token, so none is returned.
+    return { setupId };
   }
 
   /**

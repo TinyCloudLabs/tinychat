@@ -871,7 +871,6 @@ test("a background Notes failure after the dialog closed surfaces on the card as
   expect(message.length).toBeGreaterThan(0);
   expect(row.querySelector('[role="alert"]')?.textContent).toBe(message);
 });
-||||||| parent of e4a3ab00 (fix(autojoin): request Calendar-only Google scopes and stop saving a Meet token)
 
 
 test("Calendar autojoin enables from the server credential: no Meet secret write, no Meet sync, Meet connection untouched", async () => {

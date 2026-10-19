@@ -433,7 +433,7 @@ describe("Calendar autojoin API contract", () => {
     expect(exchange).toMatch(/actual exchange response/);
     expect(exchange).toMatch(/enabling record before encrypted custody/);
     expect(exchange).toMatch(/never an ID token or Google subject/i);
-    expect(exchange).toMatch(/enable needs only setupId and the server-held credential/i);
+    expect(exchange).toMatch(/and no Google token/i);
     expect(paths()[`${prefix}/enable`].post.description).toMatch(/Probes primary Calendar access before enabling/i);
     expect(paths()[`${prefix}/disable`].post.description).toMatch(/Keeps the browser importer and recordings/i);
     expect(paths()[`${prefix}/disconnect`].post.responses["502"]).toBeTruthy();

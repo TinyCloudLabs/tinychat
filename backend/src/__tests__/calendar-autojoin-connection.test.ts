@@ -105,7 +105,8 @@ describe("TC-1100 connector reconnect and off reasons", () => {
           // Only the Meet token's grant bookkeeping is added (and only with a verified identity);
           // policy and credential are untouched.
           expect(await f.store.getConnection(TENANT)).toEqual(subject === undefined ? before
-            : { ...before, googleBrowserBinding: expect.anything() });
+            : { ...before,
+              googleBrowserBinding: { version: 1, subjectHash: expect.stringMatching(/^[a-f0-9]{64}$/), tokenHashes: [expect.any(String), expect.any(String)] } });
           expect(await f.credentials.status(source, TENANT)).not.toBeNull();
           expect(f.connection.getLastGoodStatus(TENANT)?.body.enabled).toBe(true);
         }
@@ -227,6 +228,7 @@ describe("Calendar OAuth custody lifecycle", () => {
     const setup = await f.exchange();
     expect(await f.connection.getStatus(TENANT)).toMatchObject({ state: "off", enabled: false,
       outcomes: [{ id: "old-attempt", reason: "missed_window" }] });
+    expect(Object.keys(setup)).toEqual(["setupId"]); // No Google token reaches the browser.
     expect(await f.connection.enable(TENANT, setup.setupId)).toMatchObject({ state: "on", enabled: true,
       outcomes: [{ id: "old-attempt", reason: "missed_window" }] });
   });

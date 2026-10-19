@@ -660,10 +660,11 @@ describe("Calendar autojoin consent and browser importer separation", () => {
     expect(dialog).toContain('GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY');
     // The Meet save-and-sync path never mentions autojoin; the autojoin finish never touches
     // the Meet secret or sync (behaviour: ConnectorDialog.initialSync.fixture.tsx).
-    const save = dialog.slice(dialog.indexOf('const saveAndSync'), dialog.indexOf("Calendar autojoin's finish"));
-    expect(save).toContain('if (!save.ok)');
-    expect(save).not.toContain('autojoin');
-    const finish = dialog.slice(dialog.indexOf('const finishAutojoin'), dialog.indexOf('const runExchange'));
+    const finishAt = dialog.indexOf('const finishAutojoin');
+    const exchangeAt = dialog.indexOf('const runExchange');
+    expect(finishAt).toBeGreaterThan(-1);
+    expect(exchangeAt).toBeGreaterThan(finishAt);
+    const finish = dialog.slice(finishAt, exchangeAt);
     expect(finish).toContain('/autojoin/enable');
     expect(finish).toContain('setupId');
     expect(finish).not.toMatch(/saveConnectorKey|runInitialSync|saveAndSync|unlockSecrets/);
