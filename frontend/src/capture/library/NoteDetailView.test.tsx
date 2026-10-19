@@ -57,6 +57,18 @@ function render(patch: Partial<NoteDetailViewProps> = {}) {
 }
 
 describe("NoteDetailView", () => {
+  test("a combined meeting (exo-merged) opens like any meeting: title, label and its transcript", () => {
+    const merged: LibraryItem = { id: "row-m", source: "exo-merged", sourceId: "merged-1", title: "Planning", startedAt: "2026-10-05T14:00:00.000Z", durationSecs: 3600 };
+    const html = render({
+      item: merged,
+      audio: null,
+      metadata: { status: "ok", metadata: {} },
+      transcript: { status: "ok", sentences: [{ index: 0, speaker_name: "Ada", text: "Hello from the combined meeting.", start_time: 0, end_time: 3 }] },
+    });
+    expect(html).toContain("Planning");
+    expect(html).toContain("Combined meeting");
+    expect(html).toContain("Hello from the combined meeting.");
+  });
   test("another device names the holding device and offers no broken player or Transcribe button", () => {
     const html = render({ audio: null, transcript: { status: "absent" }, transcription: transcription(),
       metadata: { status: "ok", metadata: { capture: { platform: "ios" }, audio: { stored: false, reason: "local_only", device: { platform: "ios" } } } } });

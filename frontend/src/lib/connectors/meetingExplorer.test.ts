@@ -215,8 +215,8 @@ describe("listMeetings", () => {
   it("defaults to fireflies, google-meet, the transcriber, exo local AND exo voice notes", async () => {
     const { tcw, sqlCalls } = fakeTcw({ sql: { ok: true, data: { rows: [] } } });
     await listMeetings(tcw);
-    expect(sqlCalls.at(-1)?.params).toEqual(["fireflies", "google-meet", "tinycloud-transcriber", "exo-local", "exo-voice-note", "exo-upload"]);
-    expect(EXPLORER_MEETING_SOURCES).toEqual(["fireflies", "google-meet", "tinycloud-transcriber", "exo-local", "exo-voice-note", "exo-upload"]);
+    expect(sqlCalls.at(-1)?.params).toEqual(["fireflies", "google-meet", "tinycloud-transcriber", "exo-local", "exo-voice-note", "exo-upload", "exo-merged"]);
+    expect(EXPLORER_MEETING_SOURCES).toEqual(["fireflies", "google-meet", "tinycloud-transcriber", "exo-local", "exo-voice-note", "exo-upload", "exo-merged"]);
   });
 
   it("runs no query at all for an empty source list", async () => {
@@ -716,6 +716,7 @@ describe("meetingSourceLabel", () => {
   it("names each browsable source the way Settings does", () => {
     expect(meetingSourceLabel("fireflies")).toBe("Fireflies");
     expect(meetingSourceLabel("google-meet")).toBe("Google Meet");
+    expect(meetingSourceLabel("exo-merged")).toBe("Combined meeting");
   });
 
   it("labels every source the explorer browses", () => {
