@@ -555,17 +555,18 @@ describe("Sync now — engine dispatch", () => {
     expect(gmeetEngine).toContain("driveMode: opts.driveMode");
   });
 
-  test("Full rescan refuses an existing engine run before dispatch and disables both card-owned actions", () => {
-    const guardStart = handler.indexOf('driveMode === "snapshot"');
+  test("a press that a running sync refuses shows its progress and offers to wait, never a bare error, and disables both card-owned actions", () => {
+    const guardStart = handler.indexOf("isGmeetSyncInFlight() && (driveMode");
     const guard = handler.slice(
       guardStart,
       handler.indexOf("syncing: true", guardStart),
     );
-    expect(guard).toContain("isGmeetSyncInFlight()");
-    expect(guard).toContain("Another Google Meet sync is already running. Try Full rescan again when it finishes.");
+    expect(guard).toContain("busyOffer: driveMode");
+    expect(guard).toContain("actionError: null");
+    expect(guard).not.toContain("Another Google Meet sync");
     expect(guard).toContain("return;");
     expect(guard).not.toContain("runGmeetSyncNow(");
-    expect(handler.indexOf('driveMode === "snapshot"')).toBeLessThan(handler.indexOf("runGmeetSyncNow("));
+    expect(guardStart).toBeLessThan(handler.indexOf("runGmeetSyncNow("));
     expect(card.match(/disabled=\{state\.syncing\}/g)).toHaveLength(2);
   });
 
@@ -579,6 +580,7 @@ describe("Sync now — engine dispatch", () => {
       "GMEET_STORE",
       "isGmeetSyncInFlight",
       "gmeetRowProgress",
+      "GMEET_SYNC_BUSY_MESSAGE",
       `${executable}\nreturn runGmeetSyncNow;`,
     ) as (...dependencies: unknown[]) => (opts: Record<string, unknown>) => Promise<{
       ok: boolean;
@@ -601,6 +603,7 @@ describe("Sync now — engine dispatch", () => {
       {},
       () => inFlight,
       (progress: unknown) => progress,
+      "Another Google Meet sync is already running. Try Full rescan again when it finishes.",
     );
 
     const result = await runGmeetSyncNow({
