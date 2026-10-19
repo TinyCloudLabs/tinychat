@@ -615,6 +615,8 @@ const google = load("./services/google-oauth.ts");
 const { createApiBodyParser } = load("./body-parsing.ts");
 const { createTranscriberWebhookRouter } = load("./routes/transcriber-webhook.ts");
 const { createGoogleOAuthRouter, normalizeAppOrigin } = load("./routes/google-oauth.ts");
+const { createServerInfoRouter } = load("./routes/server-info.ts");
+const { ASSEMBLYAI_HOSTED_MOUNT, createAssemblyAiHostedRouter } = load("./routes/assemblyai-hosted.ts");
 
 interface Boot {
   url: string | null;
@@ -671,7 +673,7 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
     },
     "@tinyboilerplate/core": { APP_ID: "test-backend" },
     "./startup.js": { createTinychatBackendIdentity: async () => ({ node: {}, did: "did:test:backend" }) },
-    "./build-info.js": { readBackendBuildInfo: () => ({}) },
+    "./build-info.js": { readBackendBuildInfo: () => ({ backendRevision: "test-revision", backendVersion: "0.5.6" }) },
     "./body-parsing.js": { createApiBodyParser },
     "./services/ingest-mode.js": { backendIngestEnabled: () => false, IngestModeService: class {} },
     "./services/transcription-api.js": {
@@ -683,6 +685,8 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
     "./services/assemblyai-hosted.js": { ...hosted, HostedUploadStore: class {
       init() { return Promise.resolve(); }
       shutdown() { return stop.hosted?.() ?? Promise.resolve(); }
+      dailyBytesRemaining() { return hosted.DEFAULT_DAILY_BYTES; }
+      onExpireDelete() {}
     } },
     "./services/google-oauth.js": {
       googleMeetOAuthEnabled: () => google.googleMeetOAuthEnabled(env),
@@ -727,12 +731,13 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
     },
     "./services/webhook-tokens.js": { assertStrongSecret: () => {}, WebhookTokenService: class {} },
     "./routes/delegations.js": { createDelegationRouter: () => router() },
+    "./routes/server-info.js": { createServerInfoRouter },
     "./middleware/auth.js": { createAuthMiddleware: auth },
     "./services/ingest-nudge.js": { createIngestOnDelivery: noop },
     "./rate-limits.js": { applyRateLimiters: () => ({ globalRoutes: { top: () => ({}) }, paidChatLimiter: noop }), logGlobalBucketRoutes: noop },
     "./security.js": { applySecurityDefaults: noop },
     "./routes/nras-proxy.js": { createNrasProxyRouter: router },
-    "./routes/assemblyai-hosted.js": { ASSEMBLYAI_HOSTED_MOUNT: "/api/assemblyai", createAssemblyAiHostedRouter: router, reconcileHostedJobs: async () => {} },
+    "./routes/assemblyai-hosted.js": { ASSEMBLYAI_HOSTED_MOUNT, createAssemblyAiHostedRouter, reconcileHostedJobs: async () => {} },
     "./routes/assemblyai-delete.js": { ASSEMBLYAI_DELETE_MOUNT: "/api/assemblyai/delete", createAssemblyAiDeleteRouter: router },
     "./billing/ledger-flusher.js": { LedgerFlusher: class { start() {} stop() {} } },
     "./billing/ledger-rehydrate.js": { LedgerRehydrator: class {} },
@@ -910,6 +915,32 @@ describe("backend entry-point HTTP and lifecycle guards", () => {
     expect(await response.json()).toEqual({ error: "internal_error" });
     expect(boot.logs.join(" ")).not.toContain(marker);
     expect(boot.logs.join(" ")).not.toContain("body");
+  });
+
+  test("API-key-only startup keeps hosted unavailable while full hosted configuration remains enabled", async () => {
+    const off = await bootIndex({ ASSEMBLYAI_API_KEY: "test-assemblyai-api-key" });
+    expect(off.exits).toEqual([]);
+    const info = await (await fetch(off.url! + "/api/server-info")).json() as Record<string, unknown>;
+    expect(info).not.toHaveProperty("hosted");
+    expect(info).not.toHaveProperty("assemblyAiHosted");
+    const offCapabilities = await fetch(off.url! + `${ASSEMBLYAI_HOSTED_MOUNT}/capabilities`, {
+      headers: { authorization: "Bearer test-session" },
+    });
+    expect(offCapabilities.status).toBe(200);
+    expect(await offCapabilities.json()).toMatchObject({ hosted: false, daily_bytes_remaining: null });
+
+    const on = await bootIndex({
+      ASSEMBLYAI_API_KEY: "test-assemblyai-api-key",
+      ASSEMBLYAI_HOSTED_HANDLE_KEY: randomBytes(32).toString("hex"),
+      ASSEMBLYAI_HOSTED_SPOOL_DIR: "/test-hosted-spool",
+      ASSEMBLYAI_HOSTED_FRESH_INSTALL: "test-hosted-install",
+    });
+    expect(on.exits).toEqual([]);
+    const onCapabilities = await fetch(on.url! + `${ASSEMBLYAI_HOSTED_MOUNT}/capabilities`, {
+      headers: { authorization: "Bearer test-session" },
+    });
+    expect(onCapabilities.status).toBe(200);
+    expect(await onCapabilities.json()).toMatchObject({ hosted: true });
   });
 
   test("invalid PTX and hosted AssemblyAI configuration refuses boot without exposing credentials", async () => {

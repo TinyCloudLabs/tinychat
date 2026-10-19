@@ -10,6 +10,8 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { fakeVoiceNoteStore } from "@/harness/fakeVoiceNoteStore";
 import { __setVoiceNotesForTests, VoiceNotes, type VoiceNoteRecording, type VoiceNotesPlugin } from "./nativeVoiceNotes";
 import { currentAccountGeneration } from "./accountContext";
+import { __resetStorageStatusForTests } from "../storageStatus";
+import { __resetOnDeviceTranscriberForTests } from "./onDeviceTranscriber";
 
 const originalVoiceNotes = VoiceNotes;
 
@@ -217,7 +219,9 @@ beforeEach(() => {
   saveCalls = 0;
   fakeVoiceNoteStore.save = ok;
 });
-afterEach(() => {
+afterEach(async () => {
+  await __resetOnDeviceTranscriberForTests();
+  __resetStorageStatusForTests();
   __setVoiceNotesForTests(originalVoiceNotes, { available: null });
   fakeVoiceNoteStore.save = null;
   delete (globalThis as { localStorage?: unknown }).localStorage;
@@ -729,5 +733,16 @@ describe("discard guard", () => {
     expect(saves.isDiscarded(note.id)).toBe(true);
     expect((await saves.saveRecording(tcw, note)).kind).toBe("discarded");
     expect(saveCalls).toBe(0);
+  });
+});
+
+describe("storage-full failure classification", () => {
+  test.each<[string, unknown]>([
+    ["code on the error", { code: "STORAGE_QUOTA_EXCEEDED", message: "full" }],
+    ["message-only error with the code", new Error("STORAGE_QUOTA_EXCEEDED: full")],
+    ["message-only error with the phrase", new Error("storage quota exceeded")],
+    ["wrapped too-large message", new Error("save failed", { cause: new Error("write exceeds remaining storage") })],
+  ])("%s classifies as quota", (_label, error) => {
+    expect(saves.classifyNoteFailure(error)).toBe("quota");
   });
 });

@@ -32,7 +32,7 @@ function existingRecordText(value: unknown): string | null {
   return null;
 }
 
-/** Call only for an explicit rerun, immediately before replacement; refuses a changed expected commit. */
+/** Preserve a verified committed revision before a held replacement or explicit rerun. */
 export async function preserveVoiceNoteTranscriptHistory(tcw: TinyCloudWeb, expected: TranscriptCommit,
   checkpoint: () => void): Promise<void> {
   checkpoint();
@@ -56,7 +56,7 @@ export async function preserveVoiceNoteTranscriptHistory(tcw: TinyCloudWeb, expe
   const result = await tcw.kv.put(key, JSON.stringify(record), { ifNoneMatch: "*", contentType: "application/json" });
   if (result.ok) return;
   if (!/PRECONDITION|412/i.test(`${result.error.code} ${result.error.message}`))
-    throw new Error("Could not preserve the current transcript revision");
+    throw new Error("Could not preserve the current transcript revision", { cause: result.error });
 
   const existing = await tcw.kv.get(key);
   if (!existing.ok) throw new Error("Could not verify the existing transcript history record");

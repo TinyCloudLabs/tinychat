@@ -13,7 +13,10 @@ import { VoiceNotes, type LocalTranscript, type NoteSttState, type VoiceNoteReco
 import { readTranscriptCommit } from "./voiceNoteCommits";
 import { withVoiceNoteSaveDeadline } from "./saveDeadline";
 import { LOCAL_COPY } from "./notePipelineCopy";
-import { assertAccountContext, captureAccountContext, isAccountContextCurrent, isAccountWorkAllowed, StaleAccountContext, type AccountContext } from "./accountContext";
+import { isStorageFullError, registerStorageRecoveryWork, reportStorageError, storageScopeFor, storageWritableEdgeCount,
+  subscribeStorageScopeRetired, type StorageAccountScope, STORAGE_FULL_TRANSCRIPT_LINE } from "@/lib/storageStatus";
+import { assertAccountContext, captureAccountContext, isAccountContextCurrent, isAccountWorkAllowed, StaleAccountContext,
+  type AccountContext } from "./accountContext";
 import { preserveVoiceNoteTranscriptHistory } from "./voiceNoteTranscriptHistory";
 import { patchDeviceTranscriptSyncError, publishDeviceTranscriptArtifact, resolveVoiceNoteRow, transcriptHash } from "./voiceNoteRows";
 import { runOnSpaceLane } from "../spaceWriteLane";
@@ -24,8 +27,10 @@ export type OnDeviceTranscriptSyncState =
   | { state: "syncing"; rev?: number }
   | { state: "synced"; rev?: number }
   | { state: "failed"; message: string; rev?: number; retryable?: boolean }
-  /** The transcript is committed, but the native receipt still needs repair. */
-  | { state: "unrecorded"; message: string; rev?: number; retryable?: boolean };
+  /** The transcript is committed, but the native receipt still needs repair (`message` is the cause). */
+  | { state: "unrecorded"; message: string; rev?: number; retryable?: boolean }
+  /** Storage is full: the transcript is held and re-syncs once storage writes succeed. Not a failure. */
+  | { state: "held"; message: string; rev?: number };
 
 export type TranscriptSyncOutcome = { state: "committed" | "receipt-pending" | "retryable" | "deferred" | "terminal" | "abandoned"; rev?: number };
 const coordinators = new WeakMap<TinyCloudWeb, (recording: Parameters<typeof syncOnDeviceTranscript>[1],
@@ -91,12 +96,18 @@ export function syncOnDeviceTranscript(
   requestedAccount: AccountContext = captureAccountContext(tcw),
 ): Promise<boolean> {
   if (recording.ledger?.audio.state !== "saved" && !recording.ledger?.audio.rowId) return Promise.resolve(false);
-  const key = syncKey(tcw, recording.id);
-  const expected = recording.stt?.state === "done";
-  const failed = recording.stt?.state === "failed";
+  return runSync(tcw, recording.id, recording.stt?.state === "done", recording.stt?.state === "failed", requestedAccount);
+}
+
+// A storage-full refusal is not a failure: nothing is recorded as failed. Held notes re-sync on the next foreground pass.
+const storageHeld = new Map<string, { tcw: TinyCloudWeb; id: string; ctx: AccountContext; scope: StorageAccountScope }>();
+const heldRecoveryUnregister = new Map<StorageAccountScope, () => void>();
+
+function runSync(tcw: TinyCloudWeb, id: string, expected: boolean, failed: boolean, ctx: AccountContext): Promise<boolean> {
+  const key = syncKey(tcw, id);
   return enqueue(key, async () => {
-    const abandoned = await syncOnce(tcw, key, recording.id, expected, failed, requestedAccount);
-    if (abandoned) abandonSync(key, recording.id, tcw);
+    const abandoned = await syncSettled(tcw, key, id, expected, failed, ctx);
+    if (abandoned) abandonSync(key, id, tcw);
     return abandoned;
   });
 }
@@ -113,6 +124,8 @@ export async function syncOnDeviceTranscriptAttempt(tcw: TinyCloudWeb,
   if (result?.state === "synced") return { state: "committed", ...revision };
   if (result?.state === "unrecorded" && result.retryable) return { state: "receipt-pending", ...revision };
   if (result?.state === "failed" && result.retryable) return { state: "retryable", ...revision };
+  // Held for full storage is not a failure: it re-syncs on the next storage recovery pass, so it is deferred.
+  if (result?.state === "held") return { state: "deferred", ...revision };
   return { state: result?.state === "failed" || result?.state === "unrecorded" ? "terminal" : "deferred", ...revision };
 }
 /** Automatic callers share the foreground pipeline's retry budget; explicit user actions keep the direct helper. */
@@ -132,7 +145,55 @@ export function recordOnDeviceTranscriptAutomatically(tcw: TinyCloudWeb, id: str
 }
 
 
-function enqueue(key: string, attempt: () => Promise<boolean>): Promise<boolean> {
+/**
+ * One attempt, plus one probe if storage became writable while it was in flight: a full refusal that raced a recovery is
+ * stale, so the note is probed now rather than held until the next foreground pass. Bounded to that single probe.
+ */
+async function syncSettled(tcw: TinyCloudWeb, key: string, id: string, expected: boolean, failed: boolean, ctx: AccountContext): Promise<boolean> {
+  const scope = storageScopeFor(tcw);
+  const edges = storageWritableEdgeCount(scope);
+  storageHeld.delete(key);
+  const abandoned = await syncOnce(tcw, key, id, expected, failed, ctx);
+  if (abandoned || !storageHeld.has(key) || storageWritableEdgeCount(scope) === edges) return abandoned;
+  storageHeld.delete(key);
+  return syncOnce(tcw, key, id, true, false, ctx);
+}
+
+function holdForStorage(tcw: TinyCloudWeb, key: string, id: string, ctx: AccountContext): void {
+  const scope = storageScopeFor(tcw);
+  if (!scope) return;
+  publish(key, { state: "held", message: STORAGE_FULL_TRANSCRIPT_LINE });
+  storageHeld.set(key, { tcw, id, ctx, scope });
+  if (!heldRecoveryUnregister.has(scope)) {
+    heldRecoveryUnregister.set(scope, registerStorageRecoveryWork(() => retryStorageHeld(scope), scope));
+  }
+}
+
+/**
+ * A held note is re-offered under the current generation only when it is the same account and the same client may still
+ * work (a cancelled sign-out resumes the client). Otherwise the held state is dropped, as an abandoned attempt would be.
+ */
+function reofferContext(tcw: TinyCloudWeb, held: AccountContext): AccountContext | null {
+  const current = captureAccountContext(tcw);
+  if (current.did !== held.did || current.spaceId !== held.spaceId || !isAccountWorkAllowed(tcw)) return null;
+  return current;
+}
+
+/** One foreground pass: each held note for this session probes once. */
+async function retryStorageHeld(scope: StorageAccountScope): Promise<void> {
+  const unregister = heldRecoveryUnregister.get(scope);
+  heldRecoveryUnregister.delete(scope);
+  unregister?.();
+  const held = [...storageHeld.entries()].filter(([, item]) => item.scope === scope);
+  for (const [key] of held) storageHeld.delete(key);
+  await Promise.all(held.map(([, item]) => {
+    const ctx = reofferContext(item.tcw, item.ctx);
+    if (!ctx) { abandonSync(syncKey(item.tcw, item.id), item.id, item.tcw); return undefined; }
+    return runSync(item.tcw, item.id, true, false, ctx);
+  }));
+}
+
+function enqueue<T>(key: string, attempt: () => Promise<T>): Promise<T> {
   const run = (chains.get(key) ?? Promise.resolve()).then(attempt);
   const tail = run.then(() => undefined, () => undefined).then(() => {
     if (chains.get(key) === tail) chains.delete(key);
@@ -183,6 +244,33 @@ async function verifiedLocalCommit(tcw: TinyCloudWeb, id: string, transcript: Lo
     ? "matching" : "conflict";
 }
 
+/** Clear account-scoped held sync state after its test has settled all in-flight attempts. */
+export async function __resetOnDeviceTranscriberForTests(): Promise<void> {
+  storageHeld.clear();
+  for (const unregister of heldRecoveryUnregister.values()) unregister();
+  heldRecoveryUnregister.clear();
+  await Promise.all([...chains.values()]);
+  storageHeld.clear();
+  chains.clear();
+  syncStates.clear();
+  syncRevisions.clear();
+}
+
+subscribeStorageScopeRetired((scope) => {
+  for (const [key, item] of storageHeld) {
+    if (item.scope !== scope) continue;
+    storageHeld.delete(key);
+    abandonSync(key, item.id, item.tcw);
+  }
+  heldRecoveryUnregister.get(scope)?.();
+  heldRecoveryUnregister.delete(scope);
+});
+
+/**
+ * The phone's ledger was never told the space has this note's transcript (`transcriptSync` is not "saved"): verify the space copy
+ * and tell the ledger, without overwriting what is there (it may be newer than the local copy); a missing copy is written once.
+ * Publishes `synced`, or `unrecorded` with the cause.
+ */
 export function recordOnDeviceTranscript(
   tcw: TinyCloudWeb,
   id: string,
@@ -331,6 +419,7 @@ async function syncOnce(tcw: TinyCloudWeb, key: string, id: string, expected: bo
     await publishDeviceTranscriptArtifact(tcw, id, transcript, checkpoint(tcw, ctx));
   } catch (err) {
     if (!isCurrent(tcw, ctx)) return true;
+    if (isStorageFullError(err)) { reportStorageError(err, storageScopeFor(tcw)); holdForStorage(tcw, key, id, ctx); return false; }
     publish(key, { state: "failed", message: LOCAL_COPY.transcriptSyncFailed, retryable: transientSyncError(err) });
     return false;
   }
@@ -380,12 +469,15 @@ async function syncOnce(tcw: TinyCloudWeb, key: string, id: string, expected: bo
       }
       return await recordAndPublish(tcw, key, id, transcript, ctx);
     }
+    if (isStorageFullError(result.error)) { reportStorageError(result.error, storageScopeFor(tcw)); holdForStorage(tcw, key, id, ctx); return false; }
     console.warn("[OnDeviceStt] Could not save the on-device transcript to the space", result.error);
     publish(key, { state: "failed", message: LOCAL_COPY.transcriptSyncFailed, retryable: transientSyncError(result.error) });
-    await persistOnDeviceFailure(tcw, id, "transcript_save_failed", ctx, transcript);
+    await persistOnDeviceFailure(tcw, id,
+      result.error.code === "VOICE_NOTE_OPERATION_TIMEOUT" ? "transcript_save_timed_out" : "transcript_save_failed", ctx, transcript);
     return false;
   } catch (err) {
     if (!isCurrent(tcw, ctx) || err instanceof StaleAccountContext) return true;
+    if (isStorageFullError(err)) { reportStorageError(err, storageScopeFor(tcw)); holdForStorage(tcw, key, id, ctx); return false; }
     console.warn("[OnDeviceStt] Could not save the on-device transcript to the space", err);
     publish(key, { state: "failed", message: LOCAL_COPY.transcriptSyncFailed, retryable: transientSyncError(err) });
     await persistOnDeviceFailure(tcw, id, "transcript_save_failed", ctx, transcript);

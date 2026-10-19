@@ -19,8 +19,7 @@
 //
 // All exported functions return Result-style objects (spec §4). Callers
 // branch on `.ok`; nothing throws across the module boundary.
-
-import { reportStorageError, reportStorageWriteSucceeded, storageSaveMessage, trackStorageWrites } from "../storageStatus";
+import { reportStorageError, reportStorageWriteSucceeded, storageScopeFor, storageSaveMessage, trackStorageWrites } from "../storageStatus";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import {
@@ -79,7 +78,7 @@ export async function getFirefliesAttempt(
   tcw: TinyCloudWeb,
 ): Promise<StoreResult<FirefliesAttempt | null>> {
   const res = await tcw.kv.get(firefliesAttemptKvKey());
-  if (!res.ok) return fail(res.error, "getFirefliesAttempt");
+  if (!res.ok) return fail(res.error, "getFirefliesAttempt", storageScopeFor(tcw));
   const raw = res.data.data;
   let value: unknown = raw;
   if (typeof raw === "string") {
@@ -293,7 +292,7 @@ export async function recordFirefliesAttempt(
       ? {}
       : { suspect_proof_at_by_id: proofAtByIdForRecord }),
   }));
-  if (!res.ok) return fail(res.error, "recordFirefliesAttempt");
+  if (!res.ok) return fail(res.error, "recordFirefliesAttempt", storageScopeFor(tcw));
   return { ok: true, data: undefined };
 }
 
@@ -330,15 +329,15 @@ export type StoreResult<T> =
 
 type UnderlyingError = { code?: string; message?: string };
 
-function fail(err: UnderlyingError, context: string): { ok: false; error: StoreError } {
+function fail(err: UnderlyingError, context: string, scope: ReturnType<typeof storageScopeFor>): { ok: false; error: StoreError } {
   const code = typeof err.code === "string" && err.code.length > 0 ? err.code : "STORE_ERROR";
   const msg = typeof err.message === "string" && err.message.length > 0 ? err.message : "unknown";
-  reportStorageError(err);
+  reportStorageError(err, scope);
   return { ok: false, error: { code, message: storageSaveMessage(err) ?? `${context}: [${code}] ${msg}` } };
 }
 
 function store(tcw: TinyCloudWeb) {
-  return trackStorageWrites(tcw.sql.db(CONNECTORS_SQL_DB_NAME));
+  return trackStorageWrites(tcw.sql.db(CONNECTORS_SQL_DB_NAME), storageScopeFor(tcw));
 }
 
 function cellStr(row: unknown[], idx: number, fallback: string | null): string | null {
@@ -399,14 +398,14 @@ export async function ensureSchema(tcw: TinyCloudWeb, checkpoint: () => void = (
       `SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (${tables.map(() => "?").join(", ")})`,
       tables,
     );
-    if (!existingResult.ok) return fail(existingResult.error, "ensureSchema probe");
+    if (!existingResult.ok) return fail(existingResult.error, "ensureSchema probe", storageScopeFor(tcw));
     const existingRows = existingResult.data.rows as unknown as unknown[][];
     const existing = new Set(existingRows.map((row) => row[0]).filter((name): name is string => typeof name === "string"));
     for (const { sql, table } of CONNECTOR_SCHEMA) {
       if (existing.has(table)) continue;
       checkCallers();
       const created = await db.execute(sql);
-      if (!created.ok) return fail(created.error, `ensureSchema(${table})`);
+      if (!created.ok) return fail(created.error, `ensureSchema(${table})`, storageScopeFor(tcw));
     }
     checkCallers();
     if (memoKey) schemaReadySpaces.add(memoKey);
@@ -452,7 +451,7 @@ export async function getConnection(
       || msg.includes("not authorized")
       || msg.includes("no such table");
     if (notReadable) return { ok: true, data: null };
-    return fail(res.error, "getConnection");
+    return fail(res.error, "getConnection", storageScopeFor(tcw));
   }
   if (res.data.rows.length === 0) return { ok: true, data: null };
   const row = res.data.rows[0];
@@ -509,7 +508,7 @@ export async function updateSyncState(
       preserve ? 1 : 0,
     ],
   );
-  if (!res.ok) return fail(res.error, "updateSyncState");
+  if (!res.ok) return fail(res.error, "updateSyncState", storageScopeFor(tcw));
   return { ok: true, data: undefined };
 }
 
@@ -526,7 +525,7 @@ export async function listKnownSourceIds(
     "SELECT source_id FROM connector_meeting WHERE source = ?",
     [source],
   );
-  if (!res.ok) return fail(res.error, "listKnownSourceIds");
+  if (!res.ok) return fail(res.error, "listKnownSourceIds", storageScopeFor(tcw));
   const ids: string[] = [];
   for (const row of res.data.rows) {
     const v = row[0];
@@ -545,7 +544,7 @@ export async function countMeetings(
     "SELECT COUNT(*) FROM connector_meeting WHERE source = ?",
     [source],
   );
-  if (!res.ok) return fail(res.error, "countMeetings");
+  if (!res.ok) return fail(res.error, "countMeetings", storageScopeFor(tcw));
   const row = res.data.rows[0];
   if (!row) return { ok: true, data: 0 };
   const n = row[0];
@@ -569,7 +568,7 @@ export async function insertMeeting(
     "SELECT id FROM connector_meeting WHERE source = ? AND source_id = ? LIMIT 1",
     [meeting.source, meeting.sourceId],
   );
-  if (!existing.ok) return fail(existing.error, "insertMeeting(dedupSelect)");
+  if (!existing.ok) return fail(existing.error, "insertMeeting(dedupSelect)", storageScopeFor(tcw));
   if (existing.data.rows.length > 0) return { ok: true, data: false };
 
   const now = new Date().toISOString();
@@ -609,7 +608,7 @@ async function insertMeetingRow(
       now,
     ],
   );
-  if (!res.ok) return fail(res.error, context);
+  if (!res.ok) return fail(res.error, context, storageScopeFor(tcw));
   return { ok: true, data: undefined };
 }
 
@@ -645,7 +644,7 @@ export async function getMeetingDatetimeStats(
     "SELECT source_id, started_at, metadata FROM connector_meeting WHERE source = ?",
     [source],
   );
-  if (!res.ok) return fail(res.error, "getMeetingDatetimeStats");
+  if (!res.ok) return fail(res.error, "getMeetingDatetimeStats", storageScopeFor(tcw));
   const stats: MeetingDatetimeStats = {
     rows: res.data.rows.length, dated: 0, sourceMeet: 0, sourceDocs: 0,
     sourceDriveCreatedApprox: 0, sourceUnavailable: 0,
@@ -747,7 +746,7 @@ export async function upsertMeeting(
      WHERE source = ? AND source_id = ? LIMIT 1`,
     [meeting.source, meeting.sourceId],
   );
-  if (!existing.ok) return fail(existing.error, "upsertMeeting(lookup)");
+  if (!existing.ok) return fail(existing.error, "upsertMeeting(lookup)", storageScopeFor(tcw));
 
   const now = new Date().toISOString();
   const row = existing.data.rows[0];
@@ -836,7 +835,7 @@ export async function upsertMeeting(
        WHERE id = ?`,
       [...updateValues, now, existingId],
     );
-    if (!upd.ok) return fail(upd.error, "upsertMeeting(update)");
+    if (!upd.ok) return fail(upd.error, "upsertMeeting(update)", storageScopeFor(tcw));
   }
 
   if (sentences.length > 0 || options.preserveTranscriptBody) {
@@ -855,7 +854,7 @@ async function putMissingTranscriptBody(
 ): Promise<StoreResult<void>> {
   const existing = await tcw.kv.get(transcriptKvKey(source, sourceId));
   if (existing.ok) return { ok: true, data: undefined };
-  if (!/NOT_FOUND/i.test(existing.error.code ?? "")) return fail(existing.error, "putMissingTranscriptBody");
+  if (!/NOT_FOUND/i.test(existing.error.code ?? "")) return fail(existing.error, "putMissingTranscriptBody", storageScopeFor(tcw));
   return putTranscriptBody(tcw, source, sourceId, sentences);
 }
 export async function listTranscriptBodyIds(
@@ -869,13 +868,13 @@ export async function listTranscriptBodyIds(
   try {
     for (;;) {
       const page = await tcw.kv.list({ path: prefix, ...(cursor === undefined ? {} : { cursor }) });
-      if (!page.ok) return fail(page.error, "listTranscriptBodyIds");
+      if (!page.ok) return fail(page.error, "listTranscriptBodyIds", storageScopeFor(tcw));
       if (!page.data || !Array.isArray(page.data.keys)) {
-        return fail({ code: "KV_LIST_MALFORMED", message: "invalid transcript listing" }, "listTranscriptBodyIds");
+        return fail({ code: "KV_LIST_MALFORMED", message: "invalid transcript listing" }, "listTranscriptBodyIds", storageScopeFor(tcw));
       }
       for (const key of page.data.keys) {
         if (typeof key !== "string" || !key.startsWith(prefix)) {
-          return fail({ code: "KV_LIST_MALFORMED", message: "unexpected transcript key" }, "listTranscriptBodyIds");
+          return fail({ code: "KV_LIST_MALFORMED", message: "unexpected transcript key" }, "listTranscriptBodyIds", storageScopeFor(tcw));
         }
         ids.add(key.slice(prefix.length));
       }
@@ -888,13 +887,13 @@ export async function listTranscriptBodyIds(
       const more = metadata.truncated === true || typeof next === "string";
       if (!more) return { ok: true, data: ids };
       if (typeof next !== "string" || next.length === 0 || cursors.has(next)) {
-        return fail({ code: "KV_LIST_MALFORMED", message: "invalid transcript listing cursor" }, "listTranscriptBodyIds");
+        return fail({ code: "KV_LIST_MALFORMED", message: "invalid transcript listing cursor" }, "listTranscriptBodyIds", storageScopeFor(tcw));
       }
       cursors.add(next);
       cursor = next;
     }
   } catch {
-    return fail({ code: "KV_LIST_TRANSPORT", message: "listing rejected" }, "listTranscriptBodyIds");
+    return fail({ code: "KV_LIST_TRANSPORT", message: "listing rejected" }, "listTranscriptBodyIds", storageScopeFor(tcw));
   }
 }
 
@@ -902,7 +901,7 @@ export async function listTranscriptBodyIds(
 export async function clearFirefliesAttempt(tcw: TinyCloudWeb): Promise<StoreResult<void>> {
   const res = await tcw.kv.delete(firefliesAttemptKvKey());
   if (!res.ok && !/NOT_FOUND/i.test(res.error.code ?? "")) {
-    return fail(res.error, "clearFirefliesAttempt");
+    return fail(res.error, "clearFirefliesAttempt", storageScopeFor(tcw));
   }
   return { ok: true, data: undefined };
 }
@@ -915,8 +914,8 @@ export async function putTranscriptBody(
 ): Promise<StoreResult<void>> {
   const key = transcriptKvKey(source, sourceId);
   const res = await tcw.kv.put(key, JSON.stringify(sentences));
-  if (!res.ok) return fail(res.error, "putTranscriptBody");
-  reportStorageWriteSucceeded();
+  if (!res.ok) return fail(res.error, "putTranscriptBody", storageScopeFor(tcw));
+  reportStorageWriteSucceeded(storageScopeFor(tcw));
   return { ok: true, data: undefined };
 }
 
@@ -927,7 +926,7 @@ export async function getDriveCursor(
   const res = await tcw.kv.get(driveCursorKvKey(source));
   if (!res.ok) {
     if (res.error?.code === "KV_NOT_FOUND") return { ok: true, data: null };
-    return fail(res.error, "getDriveCursor");
+    return fail(res.error, "getDriveCursor", storageScopeFor(tcw));
   }
   const value = res.data.data;
   if (typeof value !== "string" || value.length === 0) {
@@ -943,8 +942,8 @@ export async function putDriveCursor(
 ): Promise<StoreResult<void>> {
   if (!cursor) return { ok: false, error: { code: "STORE_INVALID_CURSOR", message: "putDriveCursor: cursor is required" } };
   const res = await tcw.kv.put(driveCursorKvKey(source), cursor);
-  if (!res.ok) return fail(res.error, "putDriveCursor");
-  reportStorageWriteSucceeded();
+  if (!res.ok) return fail(res.error, "putDriveCursor", storageScopeFor(tcw));
+  reportStorageWriteSucceeded(storageScopeFor(tcw));
   return { ok: true, data: undefined };
 }
 
@@ -983,7 +982,7 @@ export async function findGmeetNotesAssociation(
      WHERE source = ? AND (${terms.join(" OR ")})`,
     params,
   );
-  if (!res.ok) return fail(res.error, "findGmeetNotesAssociation");
+  if (!res.ok) return fail(res.error, "findGmeetNotesAssociation", storageScopeFor(tcw));
   const rows = res.data.rows.map((row) => ({
     id: cellStr(row, 0, null), sourceId: cellStr(row, 1, null), title: cellStr(row, 2, null),
     startedAt: cellStr(row, 3, null), summaryOverview: cellStr(row, 4, null),
@@ -1034,7 +1033,7 @@ export async function attachGmeetNotes(
       acceptsIncomingDatetime ? notes.startedAt : row.startedAt,
       JSON.stringify(metadata), new Date().toISOString(), row.id],
   );
-  if (!res.ok) return fail(res.error, "attachGmeetNotes");
+  if (!res.ok) return fail(res.error, "attachGmeetNotes", storageScopeFor(tcw));
   return { ok: true, data: undefined };
 }
 
@@ -1050,9 +1049,9 @@ export async function removeGmeetNotes(
   const row = found.data;
   if (row.sourceId === fileId) {
     const kv = await tcw.kv.delete(transcriptKvKey(source, fileId));
-    if (!kv.ok && kv.error?.code !== "KV_NOT_FOUND") return fail(kv.error, "removeGmeetNotes(kv)");
+    if (!kv.ok && kv.error?.code !== "KV_NOT_FOUND") return fail(kv.error, "removeGmeetNotes(kv)", storageScopeFor(tcw));
     const del = await store(tcw).execute("DELETE FROM connector_meeting WHERE id = ?", [row.id]);
-    if (!del.ok) return fail(del.error, "removeGmeetNotes(row)");
+    if (!del.ok) return fail(del.error, "removeGmeetNotes(row)", storageScopeFor(tcw));
     return { ok: true, data: "deleted" };
   }
   const owned = row.metadata.notes_owned_fields;
@@ -1070,7 +1069,7 @@ export async function removeGmeetNotes(
     "UPDATE connector_meeting SET summary_overview = NULL, summary_action_items = NULL, metadata = ?, updated_at = ? WHERE id = ?",
     [JSON.stringify(metadata), new Date().toISOString(), row.id],
   );
-  if (!clear.ok) return fail(clear.error, "removeGmeetNotes(clear)");
+  if (!clear.ok) return fail(clear.error, "removeGmeetNotes(clear)", storageScopeFor(tcw));
   return { ok: true, data: "cleared" };
 }
 
@@ -1089,15 +1088,15 @@ async function listKvPrefix(
     try {
       page = await tcw.kv.list({ path, ...(cursor ? { cursor } : {}) });
     } catch {
-      return fail({ code: "KV_LIST_TRANSPORT", message: "listing rejected" }, `purgeConnector(list:${path})`);
+      return fail({ code: "KV_LIST_TRANSPORT", message: "listing rejected" }, `purgeConnector(list:${path})`, storageScopeFor(tcw));
     }
-    if (!page || page.ok !== true) return fail(page?.error, `purgeConnector(list:${path})`);
+    if (!page || page.ok !== true) return fail(page?.error, `purgeConnector(list:${path})`, storageScopeFor(tcw));
     if (!page.data || typeof page.data !== "object" || Array.isArray(page.data) || !Array.isArray(page.data.keys)) {
-      return fail({ code: "KV_LIST_MALFORMED", message: "invalid list envelope" }, `purgeConnector(list:${path})`);
+      return fail({ code: "KV_LIST_MALFORMED", message: "invalid list envelope" }, `purgeConnector(list:${path})`, storageScopeFor(tcw));
     }
     for (const key of page.data.keys) {
       if (typeof key !== "string" || !key.startsWith(path)) {
-        return fail({ code: "KV_LIST_MALFORMED", message: "unexpected listed key" }, `purgeConnector(list:${path})`);
+        return fail({ code: "KV_LIST_MALFORMED", message: "unexpected listed key" }, `purgeConnector(list:${path})`, storageScopeFor(tcw));
       }
       keys.push(key);
     }
@@ -1106,7 +1105,7 @@ async function listKvPrefix(
     const more = metadata.truncated === true || typeof next === "string";
     if (!more) return { ok: true, data: keys };
     if (typeof next !== "string" || next.length === 0 || seenCursors.has(next)) {
-      return fail({ code: "KV_LIST_MALFORMED", message: "invalid list cursor" }, `purgeConnector(list:${path})`);
+      return fail({ code: "KV_LIST_MALFORMED", message: "invalid list cursor" }, `purgeConnector(list:${path})`, storageScopeFor(tcw));
     }
     seenCursors.add(next);
     cursor = next;
@@ -1123,7 +1122,7 @@ export async function purgeConnector(
   source: string,
 ): Promise<StoreResult<void>> {
   if (source.length === 0 || source.includes("/")) {
-    return fail({ code: "KV_LIST_MALFORMED", message: "invalid connector source" }, "purgeConnector(source)");
+    return fail({ code: "KV_LIST_MALFORMED", message: "invalid connector source" }, "purgeConnector(source)", storageScopeFor(tcw));
   }
   const schema = await ensureSchema(tcw);
   if (!schema.ok) return schema;
@@ -1143,23 +1142,23 @@ export async function purgeConnector(
       // failure and must surface.
       const code = del.error?.code ?? "";
       if (code !== "KV_NOT_FOUND") {
-        return fail(del.error, `purgeConnector(kv:${key})`);
+        return fail(del.error, `purgeConnector(kv:${key})`, storageScopeFor(tcw));
       }
     }
   }
   const cursor = await tcw.kv.delete(driveCursorKvKey(source));
-  if (!cursor.ok && cursor.error?.code !== "KV_NOT_FOUND") return fail(cursor.error, "purgeConnector(cursor)");
+  if (!cursor.ok && cursor.error?.code !== "KV_NOT_FOUND") return fail(cursor.error, "purgeConnector(cursor)", storageScopeFor(tcw));
   if (source === "fireflies") {
     const attempt = await tcw.kv.delete(firefliesAttemptKvKey());
     if (!attempt.ok && attempt.error?.code !== "KV_NOT_FOUND") {
-      return fail(attempt.error, "purgeConnector(firefliesAttempt)");
+      return fail(attempt.error, "purgeConnector(firefliesAttempt)", storageScopeFor(tcw));
     }
   }
   const res = await store(tcw).batch([
     { sql: "DELETE FROM connector_meeting WHERE source = ?", params: [source] },
     { sql: "DELETE FROM connector_state WHERE connector_id = ?", params: [source] },
   ]);
-  if (!res.ok) return fail(res.error, "purgeConnector(sql)");
+  if (!res.ok) return fail(res.error, "purgeConnector(sql)", storageScopeFor(tcw));
   return { ok: true, data: undefined };
 }
 

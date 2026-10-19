@@ -50,6 +50,12 @@ Integration branch: `dev/0.8.0`
 | `origin/main` | 6f63a5e7 | a22bb386 | Yes (`bun.lock`) | Refreshed through corrected TC-1201 #423 after #417 was reverted by #421. The lock/package resolution retains dev's beta pre-mode release plan, all main changeset files are present, and `auth.ts`, `native-siwe-audience.ts`, and `cors-origins.ts` match main exactly. |
 | #412 | bd049fd7 | 46f59002 | No | Clean merge of the approved TC-985 persistent agent-status fix after exact-head CI and Clarissa's branch-preview QA passed; focused status and route tests passed 41/41. |
 | #416 | 603e6792 | c743a29a | No | Clean merge of the approved TC-1182 no-local-source-eviction interim after all required checks passed; focused source-pin, cache, receipt, transcription, and web-store tests passed 506/506. |
+| #424 | dcc7c468 | 1e67e03f | No | Clean merge of the approved TC-1183 web sign-in prefetch after all required checks passed; nonce and manifest prefetch retain freshness gating, and focused prefetch/encryption/boot tests passed 22/22. |
+| #427 | 272e4022 | 4bfad174 | No | Clean test-only merge of the approved TC-1140 Retry-After clock stabilization after every required check passed; the focused transcription suite passed 228/228. |
+| #401 | fcbab307 | 10d68fbe | No | Clean merge of the approved storage-full handling after #427: storage state is scoped to the active session, quota-blocked work pauses for recovery, and Manage storage actions are available on supported surfaces. The current-main TC-1201 auth files remain unchanged. |
+| #426 | ecb4506a | 2d49064c | No | Clean merge of the refreshed approved TC-1206 fail-closed Private-choice persistence fix after Astra's exact-head approval and every required check passed; the head already merged current dev and retained #401 storage-full behavior. Focused choice, pipeline, transcription, cache-pin, and detail-view tests passed 554/554. |
+| #428 | f7a12ac9 | 0d2410da | No | Clean merge of the approved TC-1214 iOS smoke instrumentation after Astra's exact-head approval and all six required checks passed, including simulator, archive, signing, and Cloudflare. The smoke harness passed 7/7 post-merge, covering launch/liveness evidence, deadline and exit failures, and public-safe sanitization. |
+| #418 | fd0fc7b8 | 96ed36e3 | No | Clean merge of approved TC-1143 PR-A durable held-result storage after exact-head Astra approval and all required checks passed; the acceptance and review evidence ledger is recorded in TC-1143. PR-A covers WEB only: Capacitor and Tauri remain on WebView IndexedDB until PR-C. |
 
 ## Test Fixes (2026-10-14)
 
@@ -95,14 +101,19 @@ After merging origin/main (TC-1128, #387, #392, 45d16e58) and PR #386 (TC-1108 p
 
 ## Current Status
 
-- **Verified code head**: `c743a29a` (#416 merged after #412)
-- **Frontend unit suite**: 5284 pass, 4 skip, 0 fail (5288 tests, 348 files)
+- **Verified code head**: `96ed36e3` (#418 merged after #428; TC-1143 PR-A, WEB only)
+- **Frontend unit suite**: 5439 pass, 4 skip, 0 fail (5443 tests, 357 files)
 - **#415 scoped tests**: 54 pass, 0 fail across `useLibrary.retry.test.tsx` and `useLibrary.test.tsx`
 - **#413 scoped tests**: 198 pass, 0 fail across `useLibrary.test.tsx` and `notePipeline.test.ts`
 - **#414 scoped tests**: 17 pass, 0 fail in `test/connectors/agent-sync.e2e.test.ts`
 - **TC-1201 auth tests**: 37 pass, 0 fail across six backend/server files
 - **#412 scoped tests**: 41 pass, 0 fail across status-indicator/enablement units and the rendered route harness
 - **#416 scoped tests**: 506 pass, 0 fail across nine source-pin, cache, receipt, transcription, and web-store files
+- **#424 scoped tests**: 22 pass, 0 fail across web sign-in prefetch, encryption-grant, and boot-surface files
+- **#427 scoped tests**: 228 pass, 0 fail in `voiceNoteTranscription.test.ts`
+- **#401 scoped tests**: 67 pass, 0 fail across nine storage-status, recovery, thread-store, and UI files
+- **#426 scoped tests**: 554 pass, 0 fail across five Private-choice, pipeline, transcription, cache-pin, and detail-view files
+- **#428 smoke harness**: 7 pass, 0 fail in `mobile/scripts/ios-simulator-smoke.test.mjs`
 - **Recorded `origin/main` `b9c538ee` baseline**: 4735 pass, 4 skip, 0 fail (4739 tests, 326 files)
 - **TypeScript**: pinned TypeScript 5.9.3, `frontend/node_modules/.bin/tsc --noEmit -p frontend/tsconfig.json`, 0 errors
 - **CI frontend lint**: `bunx eslint frontend test`, 0 errors

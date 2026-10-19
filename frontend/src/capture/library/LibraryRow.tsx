@@ -29,6 +29,8 @@ export type LibraryItem = MeetingListItem & {
   saving?: true;
   /** The recording remains on this device after its space row has synced. */
   hasLocalAudio?: true;
+  /** The recording's audio is verified ready on this device (native ledger), so the storage-full copy may claim it. */
+  localAudioReady?: true;
   /** A voice note's own words (its first moment, else its transcript), which title its row. */
   snippet?: string | null;
 };

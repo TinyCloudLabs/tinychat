@@ -28,6 +28,7 @@ export const HOME_COPY = {
   notInSpace: "Not in your space yet",
   savingToSpace: "Saving to your TinyCloud space…",
   saveNow: "Save now",
+  manageStorage: "Manage storage",
   get willFinish() { return `Kept on ${captureDeviceName()}. Exo will finish it automatically.`; },
   willRetry: "Exo will retry when it next opens",
   /** Native has used up its automatic retries on a quarantined recording: no promise to try again. */

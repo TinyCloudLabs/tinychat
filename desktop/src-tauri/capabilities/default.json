@@ -16,6 +16,7 @@
     "allow-google-oauth-wait",
     "allow-google-oauth-cancel",
     "allow-google-oauth-open-browser",
+    "allow-open-manage-storage",
     "core:image:deny-from-path",
     "core:event:deny-emit",
     "core:event:deny-emit-to"
