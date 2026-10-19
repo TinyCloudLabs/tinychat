@@ -479,6 +479,8 @@ jobs:
           TRANSCRIPTION_API_URL: ${{ vars.TRANSCRIPTION_API_URL }}
           TRANSCRIPTION_API_KEY: ${{ secrets.TRANSCRIPTION_API_KEY }}
           TRANSCRIPTION_BOT_NAME: ${{ vars.TRANSCRIPTION_BOT_NAME }}
+          # Separate, explicit origin classification; configuring a PTX URL alone does not opt in.
+          REQUEST_ID_FIRST_PARTY_ORIGINS: ${{ vars.REQUEST_ID_FIRST_PARTY_ORIGINS }}
           # TC-641 transcript writer remains dark until node TC-825 is deployed.
           # Whsec_ is optional during unsigned-wake dev testing; no value is
           # provisioned here. Declare keys now so a later CVM env update can
@@ -573,6 +575,7 @@ jobs:
             printf '%s\n' "TRANSCRIPTION_API_URL=$TRANSCRIPTION_API_URL"
             printf '%s\n' "TRANSCRIPTION_API_KEY=$TRANSCRIPTION_API_KEY"
             printf '%s\n' "TRANSCRIPTION_BOT_NAME=$TRANSCRIPTION_BOT_NAME"
+            printf '%s\n' "REQUEST_ID_FIRST_PARTY_ORIGINS=${REQUEST_ID_FIRST_PARTY_ORIGINS:-}"
             printf '%s\n' "TRANSCRIPT_SERVER_DELIVERY_ENABLED=${TRANSCRIPT_SERVER_DELIVERY_ENABLED:-false}"
             printf '%s\n' "TRANSCRIPT_SERVER_DELIVERY_ADDRESSES=${TRANSCRIPT_SERVER_DELIVERY_ADDRESSES:-}"
             printf '%s\n' "TRANSCRIPTION_WEBHOOK_URL=${TRANSCRIPTION_WEBHOOK_URL:-}"

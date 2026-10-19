@@ -2,6 +2,7 @@ import { createHmac } from "node:crypto";
 
 import { TRANSCRIPTION_ID_RE } from "./private-cloud-transcription-dto.js";
 import { assertStrongSecret } from "./webhook-tokens.js";
+import { currentRequestId } from "../request-context.js";
 
 /**
  * Private cloud transcription for Exo desktop (plan: exo-private-cloud-transcription v2, §4.4 P4).
@@ -297,17 +298,21 @@ async function readCapped(response: Response, maxBytes: number): Promise<Uint8Ar
 export function createPtxClient(config: {
   baseUrl: string;
   apiKey: string;
+  requestIdFirstPartyOrigins?: ReadonlySet<string>;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
 }): PtxClient {
   const fetchImpl = config.fetchImpl ?? fetch.bind(globalThis);
   const timeoutMs = config.timeoutMs ?? 15_000;
+  const forwardRequestId = config.requestIdFirstPartyOrigins?.has(new URL(config.baseUrl).origin) ?? false;
   return {
     async request({ method, path, correlationId, maxBytes, tenantRef, idempotencyKey, body }) {
+      const requestId = forwardRequestId ? currentRequestId() : undefined;
       const headers: Record<string, string> = {
         Authorization: `Bearer ${config.apiKey}`,
         Accept: "application/json",
         "X-Correlation-Id": correlationId,
+        ...(requestId === undefined ? {} : { "X-Request-Id": requestId }),
       };
       if (tenantRef !== undefined) headers["X-Tenant-Ref"] = tenantRef;
       if (idempotencyKey !== undefined) headers["Idempotency-Key"] = idempotencyKey;
