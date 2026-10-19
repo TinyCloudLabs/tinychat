@@ -1,5 +1,9 @@
 # exo-desktop
 
+## 0.9.1-beta.0
+
+No changes in this release.
+
 ## 0.9.0
 
 ### Minor Changes
