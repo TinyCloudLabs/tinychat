@@ -139,7 +139,7 @@ function StorageFullActions(props: Pick<TranscribeActionProps, "noteId" | "trans
 /** Where a voice note's transcription stands, when it has no transcript; null when there is nothing to say or offer. */
 export function VoiceNoteTranscriptionStatus(props: {
   item: LibraryItem;
-  outcome: "none" | "pending" | "failed" | "skipped" | "transcribed" | "no_speech";
+  outcome: "none" | "pending" | "pending_device_sync" | "failed" | "skipped" | "transcribed" | "no_speech";
   errorCode?: string | null;
   transcription: VoiceNoteTranscriptionProps | undefined;
   privateAudioSource?: PrivateAudioSource;
@@ -182,6 +182,11 @@ export function VoiceNoteTranscriptionStatus(props: {
         <TranscribeAction noteId={item.sourceId} transcription={transcription} durationSecs={item.durationSecs} privateAudioSource={privateAudioSource} />
       </div>
     );
+  }
+  if (props.outcome === "pending_device_sync") {
+    return <p role="status" data-testid="voice-note-pending-device-sync" className="text-callout text-muted-foreground">
+      Transcribed on the original device. Waiting for its transcript to reach this space.
+    </p>;
   }
   if (job?.kind === "failed") {
     const code = storageFullPrecedesChoiceFailure(props.outcome, props.errorCode, job.code)
@@ -301,6 +306,9 @@ function NoTranscript(props: { item: LibraryItem; metadata: MeetingMetadataRead;
   const capture = props.metadata.status === "ok" ? props.metadata.metadata.capture : null;
   const options = capture && typeof capture === "object" ? (capture as { options?: { transcriber?: string } }).options : null;
   const provider = view?.provider === "powerful" || options?.transcriber === "assemblyai" ? "powerful" : view?.provider === "private" || options?.transcriber === "private-cloud" ? "private" : "unknown";
+  if (outcome === "pending_device_sync") return VoiceNoteTranscriptionStatus({
+    item: props.item, outcome, errorCode, transcription: props.transcription, privateAudioSource, provider,
+  });
   const stepperShown = view !== null && !view.pipeline.done;
   const line = !stepperShown || outcome === "no_speech" ? null : transcriptStepLine(view.pipeline);
   // The phone is making this note's transcript and the stepper says where that stands. The private route's "Not transcribed"
@@ -467,6 +475,8 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
             <p className="text-callout text-muted-foreground">Couldn’t load this note’s full transcript.</p>
             <Button type="button" variant="outline" onClick={props.onRetry}>Try again</Button>
           </div>
+        ) : metadata.status === "ok" && voiceNoteTranscriptState(metadata.metadata).status === "pending_device_sync" ? (
+          <NoTranscript item={item} metadata={metadata} transcription={props.transcription} hasCommittedTranscript={props.transcriptProvenance != null} />
         ) : metadata.status === "ok" && (metadata.metadata.audio as { stored?: unknown } | undefined)?.stored === false && !props.audio ? (
           <p className="text-callout text-muted-foreground" data-testid="voice-note-transcribe-on-device">
             Transcribe on your {((metadata.metadata.capture as { platform?: string } | undefined)?.platform === "ios") ? "iPhone"

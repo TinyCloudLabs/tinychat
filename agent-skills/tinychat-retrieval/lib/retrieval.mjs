@@ -381,7 +381,15 @@ export function createRetrieval({ profile, host, space, owner, tc, runTc = creat
     const outcome = legacyMetadata.transcription_outcome;
     const transcriptProvenance = { engine: provenanceValue(legacyMetadata.transcription_engine), provider: provenanceValue(legacyMetadata.transcript_provider), model: provenanceValue(legacyMetadata.model) };
     if (metadataOnly) return { transcriptProvenance };
-    if (outcome !== 'transcribed') omitTranscript(row, outcome === 'no_speech' ? 'no_speech' : ['pending', 'failed', 'skipped'].includes(outcome) ? outcome : 'not_transcribed');
+    if (outcome !== 'transcribed') {
+      const device = legacyMetadata.device_transcript;
+      const pendingDevice = outcome === 'pending' && legacyMetadata.transcript_location === 'device'
+        && object(device) && device.state === 'done' && Number.isSafeInteger(device.rev) && device.rev > 0
+        && typeof device.transcribed_at === 'string';
+      omitTranscript(row, pendingDevice ? 'pending_device_sync'
+        : outcome === 'no_speech' ? 'no_speech'
+          : ['pending', 'failed', 'skipped'].includes(outcome) ? outcome : 'not_transcribed');
+    }
     const expectedText = legacyMetadata.transcript_text;
     if (typeof expectedText !== 'string' || !expectedText.trim()) omitTranscript(row, 'not_transcribed');
     const legacyWinner = {

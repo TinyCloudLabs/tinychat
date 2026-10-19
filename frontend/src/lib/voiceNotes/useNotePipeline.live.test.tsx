@@ -10,6 +10,7 @@ import { listPipelineEntries } from "@/capture/listPipelineEntries";
 import { StaticRecorderProvider, type RecorderValue } from "@/capture/recorder/RecorderProvider";
 import type { VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import { transcriptKvKey } from "../connectors/connectorStore";
 import { createFakeOnDeviceStt } from "./fakeOnDeviceStt";
 import type { NotePipeline, StepKey } from "./notePipeline";
 import { __setOnDeviceSttForTests, OnDeviceStt, type OnDeviceSttStatus } from "./onDeviceStt";
@@ -27,7 +28,8 @@ import {
 import { setVoiceNoteSaveDeadlineForTests } from "./saveDeadline";
 import { pendingStore, type PendingUploadTicket } from "./recorderSaves";
 import { resetSpaceLaneForTests, runOnSpaceLane, setSpaceLaneQueueWaitForTests, spaceLaneSnapshot } from "../spaceWriteLane";
-import { recordingNoteSyncError } from "./voiceNoteStore";
+import { localTranscriptToSave, recordingNoteSyncError } from "./voiceNoteStore";
+import { transcriptHash, transcriptRevKvKey } from "./voiceNoteRows";
 import { createVoiceNotePipeline } from "./voiceNotePipeline";
 import { onDeviceTranscriptSyncState } from "./onDeviceTranscriber";
 import { __resetAutoNoteSyncForTests, useNotePipeline, useNotePipelines, type NotePipelineSource, type NotePipelineView } from "./useNotePipeline";
@@ -550,7 +552,8 @@ describe("a failed read that other evidence outranks is still shown", () => {
 
 // --- A space of fake rows ------------------------------------------------------------------------------------------
 
-function fakeSpace(did: string, rowOf: (id: string) => Record<string, unknown> | null, gate: Promise<void> | null = null, stallSchema: boolean | number = false) {
+function fakeSpace(did: string, rowOf: (id: string) => Record<string, unknown> | null, gate: Promise<void> | null = null,
+  stallSchema: boolean | number = false, verified?: { id: string; hash: string; body: string; key: string; rev: number; outcome: string }) {
   const log = { rowQueries: [] as string[][], schemaChecks: 0 };
   const tcw = {
     did,
@@ -559,7 +562,14 @@ function fakeSpace(did: string, rowOf: (id: string) => Record<string, unknown> |
       db: () => ({
         query: async (sql: string, params: string[]) => {
           if (gate !== null) await gate;
-          if (sql.includes("sqlite_schema")) { log.schemaChecks += 1; if (stallSchema === true || (typeof stallSchema === "number" && log.schemaChecks <= stallSchema)) await new Promise(() => {}); return { ok: true, data: { rows: [] } }; }
+          if (sql.includes("sqlite_schema")) { log.schemaChecks += 1; if (stallSchema === true || (typeof stallSchema === "number" && log.schemaChecks <= stallSchema)) await new Promise(() => {}); return { ok: true, data: { rows: verified ? [[1]] : [] } }; }
+          if (verified && sql.includes("FROM voice_note_transcript WHERE source_id"))
+            return { ok: true, data: { rows: [[params[0], verified.rev, verified.hash, verified.key, verified.outcome,
+              null, null, null, null, null, null, null, null, null]] } };
+          if (verified && sql.startsWith("SELECT id, source_id, metadata, created_at FROM connector_meeting")) {
+            const metadata = rowOf(params[0]!);
+            return { ok: true, data: { rows: metadata ? [[`row-${params[0]}`, params[0], JSON.stringify(metadata), "2026-01-01"]] : [] } };
+          }
           if (sql.includes("FROM connector_meeting")) {
             log.rowQueries.push([...params]);
             return { ok: true, data: { rows: params.flatMap((id) => { const metadata = rowOf(id); return metadata === null ? [] : [[`row-${id}`, id, "exo-voice-note", JSON.stringify(metadata), "2026-01-01"]]; }) } };
@@ -568,8 +578,19 @@ function fakeSpace(did: string, rowOf: (id: string) => Record<string, unknown> |
         },
       }),
     },
+    ...(verified ? { kv: { get: async (key: string) => key === verified.key || key === transcriptKvKey("exo-voice-note", verified.id)
+      ? { ok: true, data: { data: verified.body } } : { ok: false, error: { code: "KV_NOT_FOUND" } } } } : {}),
   } as unknown as TinyCloudWeb;
   return { tcw, log };
+}
+
+async function verifiedSpace(did: string, transcript: LocalTranscript) {
+  const prepared = localTranscriptToSave(transcript);
+  const hash = await transcriptHash(prepared.sentences);
+  return fakeSpace(did, () => prepared.metadata, null, false, {
+    id: transcript.noteId, rev: transcript.rev, hash, key: transcriptRevKvKey("exo-voice-note", transcript.noteId, hash),
+    body: JSON.stringify(prepared.sentences), outcome: transcript.outcome,
+  });
 }
 
 describe("the space row is evidence for one account and space only", () => {
@@ -721,7 +742,7 @@ describe("a saved Local note whose transcript is done on the phone but not in th
   });
 
   test("an abandoned automatic sync waits for pipeline resume, then retries", async () => {
-    const space = fakeSpace("did:p6-resume-sync", () => null);
+    const space = fakeSpace("did:p6-resume-sync", rowWithoutTranscript);
     const pipeline = createVoiceNotePipeline(space.tcw);
     phone.recordings = [{
       ...withSpaceRow(recording(ID, "on-device", stt("done")), space.tcw.did, "saved"),
@@ -939,13 +960,13 @@ describe("a transcript in the space that the phone's ledger never recorded (P6 r
     owner: did, rev: 3,
     ledger: { audio: { state: "saved" }, transcript: { state: "done", outcome: "none" }, transcriptSync: { state: "pending", rev: 0, at: null } },
   }) as unknown as VoiceNoteRecording;
-  const inSpace = () => ({ transcription_outcome: "no_speech" });
+  const inSpace = (did: string) => verifiedSpace(did, LOCAL);
 
   test("a failed ledger write stays visible beside the finished transcript, with a repair that works", async () => {
     phone.recordings = [pendingLedger("did:p6-r1-ledger-a")];
     phone.transcript = LOCAL;
     phone.ledgerError = new Error("disk full");
-    const space = fakeSpace("did:p6-r1-ledger-a", inSpace);
+    const space = await inSpace("did:p6-r1-ledger-a");
     const { seen } = await mountOne({ tcw: space.tcw, rowExists: true, audioSaved: true });
     await settleUntil(() => seen.view !== null && seen.view.pipeline.blocker !== undefined);
     const pipeline = seen.view!.pipeline;
@@ -967,7 +988,7 @@ describe("a transcript in the space that the phone's ledger never recorded (P6 r
   test("on a later launch (a fresh session) a pending ledger is repaired once, without writing the space", async () => {
     phone.recordings = [pendingLedger("did:p6-r1-ledger-b")];
     phone.transcript = LOCAL;
-    const space = fakeSpace("did:p6-r1-ledger-b", inSpace);
+    const space = await inSpace("did:p6-r1-ledger-b");
     const { seen } = await mountOne({ tcw: space.tcw, rowExists: true, audioSaved: true });
     await settleUntil(() => phone.ledgerWrites.length > 0);
     await settle();

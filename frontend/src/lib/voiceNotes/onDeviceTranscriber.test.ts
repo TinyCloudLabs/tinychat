@@ -7,24 +7,50 @@ import { setVoiceNoteSaveDeadlineForTests } from "./saveDeadline";
 import { advanceAccountGeneration } from "./accountContext";
 import { resetSpaceLaneForTests, runOnSpaceLane } from "../spaceWriteLane";
 import { __resetStorageStatusForTests, reportStorageError, reportStorageWriteSucceeded, runStorageRecoveryWork } from "@/lib/storageStatus";
+import type { FirefliesSentence } from "../connectors/firefliesClient";
+const realRows = { ...(await import("./voiceNoteRows")) };
+const { transcriptHash } = realRows;
 const realCommits = { ...(await import("./voiceNoteCommits")) };
-let spaceCommitPresent = true;
+const realStore = { ...(await import("./voiceNoteStore")) };
+let spaceCommitPresent = false;
+let spaceRev = 1;
+let spaceOutcome: "transcribed" | "no_speech" = "transcribed";
+let spaceSentences: FirefliesSentence[] = [];
+let spaceText: string | null = "hi";
 mock.module("./voiceNoteCommits", () => ({ ...realCommits,
   readTranscriptCommit: async () => spaceCommitPresent
-    ? { rev: 1, outcome: "transcribed" } : null,
+    ? { rev: spaceRev, hash: await transcriptHash(spaceSentences), bodyKey: "body", outcome: spaceOutcome } : null,
 }));
 
 type SaveResult = { ok: true; data: unknown } | { ok: false; error: { code: string; message: string } };
 let save: (saved: { rev: number }, checkpoint?: () => void) => Promise<SaveResult> = async () => ({ ok: true, data: {} });
 let failures: string[] = [];
-const realStore = { ...(await import("./voiceNoteStore")) };
+mock.module("./voiceNoteRows", () => ({ ...realRows,
+  resolveVoiceNoteRow: async () => ({ id: "vn-rec-1", metadata: {
+    transcription_outcome: spaceOutcome, transcript_text: spaceOutcome === "no_speech" ? null : spaceText,
+  } }),
+  publishDeviceTranscriptArtifact: async () => {},
+  patchDeviceTranscriptSyncError: async (_tcw: unknown, _id: string, _rev: number, code: string) => { failures.push(code); },
+}));
 mock.module("./voiceNoteStore", () => ({ ...realStore,
-  saveVoiceNoteTranscript: (_tcw: unknown, _id: string, saved: { rev: number }, _account?: unknown, checkpoint?: () => void) => save(saved, checkpoint),
+  saveVoiceNoteTranscript: async (_tcw: unknown, _id: string, saved: { rev: number; sentences: typeof spaceSentences;
+    metadata: { transcription_outcome: string; transcript_text?: unknown } }, _account?: unknown, checkpoint?: () => void) => {
+    const result = await save(saved, checkpoint);
+    if (result.ok) {
+      spaceCommitPresent = true;
+      spaceRev = saved.rev;
+      spaceSentences = saved.sentences;
+      spaceOutcome = saved.metadata.transcription_outcome === "no_speech" ? "no_speech" : "transcribed";
+      spaceText = typeof saved.metadata.transcript_text === "string" ? saved.metadata.transcript_text : null;
+    }
+    return result;
+  },
   patchVoiceNoteTranscriptionFailure: async (_tcw: unknown, _id: string, code: string, checkpoint?: () => void) => {
     checkpoint?.();
     failures.push(code);
   } }));
-const { __resetOnDeviceTranscriberForTests, onDeviceTranscriptSyncState, recordOnDeviceTranscript, subscribeOnDeviceTranscriptSync, syncOnDeviceTranscript } = await import("./onDeviceTranscriber");
+const { __resetOnDeviceTranscriberForTests, onDeviceTranscriptSyncState, recordOnDeviceTranscript, subscribeOnDeviceTranscriptSync,
+  syncOnDeviceTranscript, syncOnDeviceTranscriptAttempt } = await import("./onDeviceTranscriber");
 
 const SAVED = { id: "rec-1", ledger: { audio: { state: "saved" } } };
 const transcript: LocalTranscript = {
@@ -33,7 +59,9 @@ const transcript: LocalTranscript = {
 } as LocalTranscript;
 let seq = 0;
 let currentDid = "";
-const account = () => ({ did: (currentDid = `did:test:${++seq}`), spaceId: "space" }) as unknown as TinyCloudWeb;
+const account = () => ({ did: (currentDid = `did:test:${++seq}`), spaceId: "space",
+  kv: { get: async () => ({ ok: true, data: { data: JSON.stringify(spaceSentences) } }) },
+}) as unknown as TinyCloudWeb;
 // The phone's ledger for rec-1 as the fake sidecar keeps it; updateLedger merges per top-level key under the rev check.
 type FakeLedger = { audio?: { state: string; rowId?: string | null }; transcript: Record<string, unknown>; transcriptSync: { state: string; rev?: number; at?: number } };
 let phone: { rev: number; ledger: FakeLedger };
@@ -46,7 +74,11 @@ const warn = console.warn;
 const realPlugin = VoiceNotes;
 
 beforeEach(() => {
-  spaceCommitPresent = true;
+  spaceCommitPresent = false;
+  spaceRev = 1;
+  spaceOutcome = "transcribed";
+  spaceSentences = realStore.localTranscriptToSave(transcript).sentences;
+  spaceText = "hi";
   failures = [];
   save = async () => ({ ok: true, data: {} });
   pendingOwner = undefined;
@@ -77,6 +109,7 @@ afterAll(() => {
   mock.restore();
   mock.module("./voiceNoteStore", () => realStore);
   mock.module("./voiceNoteCommits", () => realCommits);
+  mock.module("./voiceNoteRows", () => realRows);
 });
 
 describe("syncOnDeviceTranscript publishes the result", () => {
@@ -102,16 +135,26 @@ describe("syncOnDeviceTranscript publishes the result", () => {
     expect(ledgerWrites[0]?.patch).toHaveProperty("transcriptSync.state", "saved");
   });
 
-  test("persists done-without-transcript, read, and save failures", async () => {
+  test("persists missing-artifact and save failures, but not a transient native read", async () => {
     const tcw = account();
     getTranscript = async () => ({ transcript: null });
     await syncOnDeviceTranscript(tcw, { ...SAVED, owner: tcw.did, stt: { state: "done" } });
     getTranscript = async () => { throw new Error("offline"); };
     await syncOnDeviceTranscript(tcw, { ...SAVED, owner: tcw.did, stt: { state: "done" } });
+    expect(onDeviceTranscriptSyncState(tcw, "rec-1")).toMatchObject({ state: "failed", retryable: true });
     getTranscript = async () => ({ transcript });
     save = async () => ({ ok: false, error: { code: "SQL", message: "offline" } });
     await syncOnDeviceTranscript(tcw, { ...SAVED, owner: tcw.did, stt: { state: "done" } });
-    expect(failures).toEqual(["on_device_transcript_missing", "transcript_read_failed", "transcript_save_failed"]);
+    expect(failures).toEqual(["on_device_transcript_missing", "transcript_save_failed"]);
+  });
+  test("typed retry distinguishes a transient publication failure from a missing artifact", async () => {
+    const tcw = account();
+    save = async () => ({ ok: false, error: { code: "NETWORK_ERROR", message: "offline" } });
+    expect(await syncOnDeviceTranscriptAttempt(tcw, { ...SAVED, owner: tcw.did, stt: { state: "done" } }))
+      .toEqual({ state: "retryable", rev: 1 });
+    getTranscript = async () => ({ transcript: null });
+    expect(await syncOnDeviceTranscriptAttempt(tcw, { ...SAVED, owner: tcw.did, stt: { state: "done" } }))
+      .toEqual({ state: "terminal" });
   });
   test("a timed-out transcript save is shown as failed and passes the transient code to the shared failure boundary", async () => {
     const tcw = account();
@@ -174,6 +217,7 @@ describe("syncOnDeviceTranscript publishes the result", () => {
   });
   test("audio-first and transcript-first completion retain both ledger results", async () => {
     for (const audioFirst of [false, true]) {
+      spaceCommitPresent = false;
       const tcw = account();
       phone.ledger.audio = { state: "pending", rowId: "vn-rec-1" };
       phone.ledger.transcriptSync = { state: "pending" };
@@ -356,7 +400,7 @@ describe("syncOnDeviceTranscript publishes the result", () => {
     await tick();
     finishes[1]!({ ok: false, error: { code: "OFFLINE", message: "revision 2 failed" } });
     await latest;
-    expect(onDeviceTranscriptSyncState(tcw, "rec-1")).toEqual({ state: "failed", message: "Couldn't add the transcript to this note." });
+    expect(onDeviceTranscriptSyncState(tcw, "rec-1")).toEqual({ state: "failed", message: "Couldn't add the transcript to this note.", retryable: true });
   });
 
   test("r2: an older delayed native-read failure does not replace a newer successful sync", async () => {
@@ -388,7 +432,7 @@ describe("syncOnDeviceTranscript publishes the result", () => {
     resolveOld({ transcript });
     await Promise.all([old, latest]);
     expect(written).toEqual([1, 2]);
-    expect(onDeviceTranscriptSyncState(tcw, "rec-1")).toEqual({ state: "failed", message: "Couldn't add the transcript to this note." });
+    expect(onDeviceTranscriptSyncState(tcw, "rec-1")).toEqual({ state: "failed", message: "Couldn't add the transcript to this note.", retryable: true });
   });
 
   test("r3: a newer read failure does not cancel an older usable transcript's space write", async () => {
@@ -404,7 +448,7 @@ describe("syncOnDeviceTranscript publishes the result", () => {
     resolveOld({ transcript });
     await Promise.all([old, latest]);
     expect(writes).toBe(1);
-    expect(onDeviceTranscriptSyncState(tcw, "rec-1")).toEqual({ state: "failed", message: "Couldn't read the transcript on this browser." });
+    expect(onDeviceTranscriptSyncState(tcw, "rec-1")).toEqual({ state: "failed", message: "Couldn't read the transcript on this browser.", retryable: false });
   });
 
   test("a native-read failure after an older write is the result, and does not undo the write", async () => {
@@ -419,7 +463,7 @@ describe("syncOnDeviceTranscript publishes the result", () => {
     finish({ ok: true, data: {} });
     await Promise.all([old, latest]);
     expect(writes).toBe(1);
-    expect(onDeviceTranscriptSyncState(tcw, "rec-1")).toEqual({ state: "failed", message: "Couldn't read the transcript on this browser." });
+    expect(onDeviceTranscriptSyncState(tcw, "rec-1")).toEqual({ state: "failed", message: "Couldn't read the transcript on this browser.", retryable: false });
   });
 
   test("a later attempt with no local transcript publishes nothing, so an earlier result stands", async () => {
@@ -476,7 +520,7 @@ describe("syncOnDeviceTranscript publishes the result", () => {
     console.warn = (...args: unknown[]) => { warned.push(args); };
     save = async () => ({ ok: false, error: { code: "VOICE_NOTE_NOT_FOUND", message: "the voice note no longer exists" } });
     await syncOnDeviceTranscript(tcw, SAVED);
-    expect(onDeviceTranscriptSyncState(tcw, "rec-1")).toEqual({ state: "failed", message: "Couldn't add the transcript to this note." });
+    expect(onDeviceTranscriptSyncState(tcw, "rec-1")).toEqual({ state: "failed", message: "Couldn't add the transcript to this note.", retryable: false });
     expect(warned.some((args) => String(args[0]).includes("Could not save the on-device transcript") && JSON.stringify(args).includes("the voice note no longer exists"))).toBe(true);
   });
 
@@ -484,14 +528,14 @@ describe("syncOnDeviceTranscript publishes the result", () => {
     const tcw = account();
     save = async () => { throw new Error("space offline"); };
     await syncOnDeviceTranscript(tcw, SAVED);
-    expect(onDeviceTranscriptSyncState(tcw, "rec-1")).toEqual({ state: "failed", message: "Couldn't add the transcript to this note." });
+    expect(onDeviceTranscriptSyncState(tcw, "rec-1")).toEqual({ state: "failed", message: "Couldn't add the transcript to this note.", retryable: true });
   });
 
   test("a failed read of the local transcript is failed too, and a retry that works ends in synced", async () => {
     const tcw = account();
     getTranscript = async () => { throw new Error("sidecar busy"); };
     await syncOnDeviceTranscript(tcw, SAVED);
-    expect(onDeviceTranscriptSyncState(tcw, "rec-1")).toEqual({ state: "failed", message: "Couldn't read the transcript on this browser." });
+    expect(onDeviceTranscriptSyncState(tcw, "rec-1")).toEqual({ state: "failed", message: "Couldn't read the transcript on this browser.", retryable: false });
     getTranscript = async () => ({ transcript });
     await syncOnDeviceTranscript(tcw, SAVED);
     expect(onDeviceTranscriptSyncState(tcw, "rec-1")).toEqual({ state: "synced" });
@@ -544,6 +588,7 @@ describe("syncOnDeviceTranscript publishes the result", () => {
   test("a ledger already recording this transcript is not written again", async () => {
     const tcw = account();
     phone.ledger.transcriptSync = { state: "saved", rev: 1, at: 1 };
+    spaceCommitPresent = true;
     await syncOnDeviceTranscript(tcw, SAVED);
     expect(ledgerWrites).toEqual([]);
     expect(onDeviceTranscriptSyncState(tcw, "rec-1")).toEqual({ state: "synced" });
@@ -579,11 +624,12 @@ describe("syncOnDeviceTranscript publishes the result", () => {
     const tcw = account();
     updateLedger = async () => { throw Object.assign(new Error("disk full"), { code: "io" }); };
     await syncOnDeviceTranscript(tcw, SAVED);
-    expect(onDeviceTranscriptSyncState(tcw, "rec-1")).toEqual({ state: "unrecorded", message: "Couldn't add the transcript to this note." });
+    expect(onDeviceTranscriptSyncState(tcw, "rec-1")).toEqual({ state: "unrecorded", message: "Couldn't add the transcript to this note.", retryable: true });
   });
 
   test("recordOnDeviceTranscript tells the ledger without writing the space, and publishes synced", async () => {
     const tcw = account();
+    spaceCommitPresent = true;
     let spaceWrites = 0;
     save = async () => { spaceWrites += 1; return { ok: true, data: {} }; };
     await recordOnDeviceTranscript(tcw, "rec-1");
@@ -596,8 +642,9 @@ describe("syncOnDeviceTranscript publishes the result", () => {
   test("recordOnDeviceTranscript failure is mapped, and a later success clears it", async () => {
     const tcw = account();
     updateLedger = async () => { throw Object.assign(new Error("disk full"), { code: "io" }); };
+    spaceCommitPresent = true;
     await recordOnDeviceTranscript(tcw, "rec-1");
-    expect(onDeviceTranscriptSyncState(tcw, "rec-1")).toEqual({ state: "unrecorded", message: "Couldn't add the transcript to this note." });
+    expect(onDeviceTranscriptSyncState(tcw, "rec-1")).toEqual({ state: "unrecorded", message: "Couldn't add the transcript to this note.", retryable: true });
     updateLedger = async ({ rev, patch }) => { ledgerWrites.push({ rev, patch }); return {}; };
     await recordOnDeviceTranscript(tcw, "rec-1");
     expect(onDeviceTranscriptSyncState(tcw, "rec-1")).toEqual({ state: "synced" });
