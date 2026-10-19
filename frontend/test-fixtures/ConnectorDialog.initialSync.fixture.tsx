@@ -418,6 +418,8 @@ for (const point of ["drive-fetch", "drive-body", "refresh", "cursor-read", "cur
     expectFinishing();
     await act(async () => { vi.advanceTimersByTime(120_001); await tick(); });
     await settle();
+    await act(async () => { vi.advanceTimersByTime(10_001); await tick(); }); // Row recovery wait for a held storage call.
+    await settle();
     expectErrorAndRetry();
     expect(connectedCalls).toBeLessThanOrEqual(1);
     const notificationsAtTimeout = connectedCalls;
@@ -444,7 +446,48 @@ test("one finishing deadline spans multiple final awaits rather than resetting p
   expectFinishing();
   await act(async () => { vi.advanceTimersByTime(60_001); await tick(); });
   await settle();
+  await act(async () => { vi.advanceTimersByTime(10_001); await tick(); }); // Row recovery wait for the held count.
+  await settle();
   expectErrorAndRetry();
+});
+
+test("a first connect whose Drive Notes stall still leaves the card connected with an error, and Retry finishes without reconnecting", async () => {
+  memory.db.run("DELETE FROM connector_state"); // First connect: the secret is saved, no connection row exists yet.
+  memory.hold("drive-fetch");
+  await authorize(true);
+  await until(() => memory.entered.has("drive-fetch"), "expected held Drive listing");
+  expectFinishing();
+  await act(async () => { vi.advanceTimersByTime(60_001); await tick(); }); // Inside the 120 s Finishing deadline.
+  await settle();
+  expectErrorAndRetry();
+  expect(dialog().textContent).toContain("already-saved meetings are kept");
+  expect(await store.getConnection(memory.tcw, "google-meet")).toMatchObject({
+    ok: true,
+    data: { status: "connected", lastSyncStatus: "error", lastSyncError: expect.stringContaining("timed out") },
+  });
+  expect(memory.savedMeeting()).toHaveLength(1);
+  await click("Retry");
+  await expectDone();
+  expect(await store.getConnection(memory.tcw, "google-meet")).toMatchObject({ ok: true, data: { status: "connected", lastSyncStatus: "ok" } });
+  expect(memory.secretWrites).toBe(1);
+  expect(memory.popupCalls).toBe(1);
+  expect(memory.exchangeCalls).toBe(1);
+});
+
+test("when no connection row can be written the dialog says the connection was not saved and offers reconnecting, not Retry", async () => {
+  memory.db.run("DELETE FROM connector_state");
+  memory.failures.set("state", "result");
+  await authorize();
+  await until(() => memory.entered.has("state"), "expected the connection row write");
+  await settle();
+  expect(await store.getConnection(memory.tcw, "google-meet")).toMatchObject({ ok: true, data: null });
+  const text = dialog().textContent!;
+  expect(text).toContain("couldn’t save this connection");
+  expect(text).toContain("Connect again");
+  expect(text).not.toContain("are kept");
+  expect(button("Retry")).toBeUndefined();
+  expect(button("Close")).toBeTruthy();
+  expect(text).not.toContain("Google Meet connected ·");
 });
 
 test("a throwing onConnected completion callback becomes visible Error with Retry, not a stranded initial-sync", async () => {
