@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test, vi } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test, vi } from "bun:test";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import type { FirefliesSentence } from "./firefliesClient";
@@ -30,6 +30,7 @@ import {
   isTerminalGmeetError,
   syncGoogleMeet,
   type GmeetSyncClient,
+  type GmeetSyncDiagnostics,
   type GmeetSyncProgress,
   type GmeetSyncStore,
 } from "./gmeetSync";
@@ -310,7 +311,8 @@ const DIAGNOSTIC_KEYS = [
   "datetime_dated_rows_before", "datetime_dated_rows_after", "datetime_source_meet",
   "datetime_source_docs", "datetime_source_drive_created_approx", "datetime_source_unavailable",
   "datetime_rows_backfilled", "datetime_rows_unchanged", "datetime_invalid_ambiguous",
-  "datetime_duplicates",
+  "datetime_duplicates", "phase_drive_ms", "phase_count_ms", "phase_diagnostics_ms",
+  "phase_state_write_ms", "finishing_timed_out", "finishing_stalled_phase", "finishing_recovery_write",
 ].sort();
 
 const TERMINAL_KEYS = [
@@ -1770,6 +1772,8 @@ describe("post-loop finishing (TC-1270 synthetic 64-record controls)", () => {
       await f.entered;
       vi.advanceTimersByTime(120_001);
       await flush();
+      vi.advanceTimersByTime(10_001); // The row-recovery wait for an outstanding storage call.
+      await flush();
       expect(settled).toBe(true);
       const result = await pending;
       expect(result.ok).toBe(false);
@@ -1803,6 +1807,8 @@ describe("post-loop finishing (TC-1270 synthetic 64-record controls)", () => {
       await f.entered;
       vi.advanceTimersByTime(120_001);
       await flush();
+      vi.advanceTimersByTime(10_001); // The row-recovery wait for the outstanding write.
+      await flush();
       expect(result?.ok).toBe(false);
       const callsAtTimeout = [...f.store.calls];
       const retryWhileWriting = await run(f.client, f.store, { driveMode: "snapshot" });
@@ -1819,6 +1825,90 @@ describe("post-loop finishing (TC-1270 synthetic 64-record controls)", () => {
       vi.clearAllTimers();
       vi.useRealTimers();
     }
+  });
+
+  describe("a Finishing timeout still persists the connection", () => {
+    // A diagnostics consumer that never settles stalls Finishing without holding
+    // any storage call, so the recovery write has nothing to wait for.
+    const stalledDiagnostics = () => {
+      const seen: GmeetSyncDiagnostics[] = [];
+      const reached = Promise.withResolvers<void>();
+      return {
+        seen,
+        reached: reached.promise,
+        onDiagnostics: (d: GmeetSyncDiagnostics) => {
+          seen.push(d);
+          if (seen.length > 1) return;
+          reached.resolve();
+          return new Promise<void>(() => {});
+        },
+      };
+    };
+
+    afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); });
+
+    test("leaves one connected row carrying the timeout error, and Retry finishes without reconnecting", async () => {
+      vi.useFakeTimers();
+      const f = finishingFixture(null);
+      f.store.connection = null; // First connect: the secret exists, no connector_state row yet.
+      const diag = stalledDiagnostics();
+      const pending = run(f.client, f.store, { driveMode: "snapshot", onDiagnostics: diag.onDiagnostics as never });
+      await diag.reached;
+      vi.advanceTimersByTime(120_001);
+      await flush();
+      const result = await pending;
+      expect(result.ok).toBe(false);
+      expect(result.ok === false && result.connectionSaved).toBe(true);
+      expect(f.store.stateWrites).toBe(1);
+      expect(f.store.state).toMatchObject({
+        connectorId: "google-meet", status: "connected", lastSyncStatus: "error",
+        lastSyncError: expect.stringContaining("timed out"),
+      });
+      const timing = diag.seen.at(-1)!;
+      expect(timing).toMatchObject({ finishing_timed_out: 1, finishing_stalled_phase: "diagnostics", finishing_recovery_write: "written" });
+      for (const key of ["phase_drive_ms", "phase_count_ms", "phase_diagnostics_ms", "phase_state_write_ms"] as const) {
+        expect(typeof timing[key]).toBe("number");
+      }
+      f.store.connection = f.store.state as never; // What getConnection reads back.
+      const retry = await run(f.client, f.store, { driveMode: "snapshot" });
+      expect(retry.ok).toBe(true);
+      expect(f.store.state).toMatchObject({ status: "connected", lastSyncStatus: "ok", lastSyncError: null });
+    });
+
+    test("reports the connection as not saved when that row write also fails", async () => {
+      vi.useFakeTimers();
+      const f = finishingFixture(null);
+      f.store.connection = null;
+      f.store.updateSyncState = async () => ({ ok: false as const, error: { code: "STORE", message: "synthetic row write refused" } });
+      const diag = stalledDiagnostics();
+      const pending = run(f.client, f.store, { driveMode: "snapshot", onDiagnostics: diag.onDiagnostics as never });
+      await diag.reached;
+      vi.advanceTimersByTime(120_001);
+      await flush();
+      const result = await pending;
+      expect(result.ok).toBe(false);
+      expect(result.ok === false && result.connectionSaved).toBe(false);
+      expect(diag.seen.at(-1)).toMatchObject({ finishing_recovery_write: "failed" });
+    });
+
+    test("Drive Notes have their own budget, so the state row lands before the Finishing deadline", async () => {
+      vi.useFakeTimers();
+      const f = finishingFixture("docs");
+      f.store.connection = null;
+      const pending = run(f.client, f.store, { driveMode: "snapshot" });
+      await f.entered;
+      vi.advanceTimersByTime(60_001); // Well inside the 120 s Finishing deadline.
+      await flush();
+      const result = await pending;
+      expect(result.ok).toBe(false);
+      expect(result.ok === false && result.error.message).toContain("Drive timed out");
+      expect(f.store.state).toMatchObject({ status: "connected", lastSyncStatus: "error" });
+      expect(f.store.cursor).toBe("old-cursor");
+      f.resume();
+      await flush();
+      f.store.connection = f.store.state as never;
+      expect((await run(f.client, f.store, { driveMode: "snapshot" })).ok).toBe(true);
+    });
   });
 
   test.each(["countMeetings", "updateSyncState"] as const)("a rejected final %s yields an error result and terminal progress", async (point) => {
