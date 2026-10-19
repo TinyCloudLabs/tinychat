@@ -205,7 +205,7 @@ function sequentialWriteProbe(fake: FakeTinyCloud): { max: number } {
   const tcw = fake.tcw as unknown as {
     kv: {
       get(key: string): Promise<unknown>;
-      put(key: string, value: unknown): Promise<unknown>;
+      put(key: string, value: unknown, options?: { ifNoneMatch?: "*"; ifMatch?: string }): Promise<unknown>;
       delete(key: string): Promise<unknown>;
     };
     sql: {
@@ -222,7 +222,7 @@ function sequentialWriteProbe(fake: FakeTinyCloud): { max: number } {
   const kvPut = kv.put.bind(kv);
   const kvDelete = kv.delete.bind(kv);
   kv.get = (key) => track(() => kvGet(key));
-  kv.put = (key, value) => track(() => kvPut(key, value));
+  kv.put = (key, value, options) => track(() => kvPut(key, value, options));
   kv.delete = (key) => track(() => kvDelete(key));
 
   const openDb = tcw.sql.db.bind(tcw.sql);

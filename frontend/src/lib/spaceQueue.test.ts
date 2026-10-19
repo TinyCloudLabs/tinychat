@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import type { SessionStore } from "@tinyboilerplate/client";
 
@@ -147,21 +148,36 @@ describe("scheduledSpace", () => {
   test("managed-session upload saver reports quota and later success through its scheduled-space scope", async () => {
     const owner = "did:example:upload";
     const inserted: { value: boolean } = { value: false };
+    const sqlite = new Database(":memory:");
+    const kv = new Map<string, string>();
     const tcw = {
       did: owner,
       spaceId: "space-upload",
       sql: { db: () => ({
         query: async (sql: string, params: unknown[] = []) => ({
           ok: true,
-          data: { rows: sql.includes("sqlite_master") ? params.map((name) => [name]) : [] },
+          data: { rows: sqlite.query(sql).values(...(params as never[])) },
         }),
-        execute: async (sql: string) => {
-          if (!sql.startsWith("INSERT INTO connector_meeting")) return { ok: true, data: { rows: [] } };
-          if (!inserted.value) return { ok: false, error: { code: "STORAGE_QUOTA_EXCEEDED", message: "full" } };
-          return { ok: true, data: { rows: [] } };
+        execute: async (sql: string, params: unknown[] = []) => {
+          if (sql.startsWith("INSERT INTO connector_meeting") && !inserted.value) {
+            return { ok: false, error: { code: "STORAGE_QUOTA_EXCEEDED", message: "full" } };
+          }
+          const result = sqlite.query(sql).run(...(params as never[]));
+          return { ok: true, data: { changes: result.changes } };
         },
       }) },
-      kv: { put: async () => ({ ok: true, data: null }) },
+      kv: {
+        get: async (key: string) => kv.has(key)
+          ? { ok: true, data: { data: kv.get(key), headers: {} } }
+          : { ok: false, error: { code: "KV_NOT_FOUND", message: "missing" } },
+        put: async (key: string, value: string, options?: { ifNoneMatch?: "*" }) => {
+          if (options?.ifNoneMatch === "*" && kv.has(key)) {
+            return { ok: false, error: { code: "KV_PRECONDITION_FAILED", message: "exists" } };
+          }
+          kv.set(key, value);
+          return { ok: true, data: null };
+        },
+      },
     } as unknown as TinyCloudWeb;
     beginStorageAccountSession(tcw, owner, tcw.spaceId);
     const scope = storageScopeFor(tcw)!;
@@ -188,5 +204,6 @@ describe("scheduledSpace", () => {
       expect(wakes.length).toBeGreaterThan(0);
     } finally {
       unsubscribe();
+      sqlite.close();
     }
   });

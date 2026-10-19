@@ -173,8 +173,8 @@ function sqliteStore() {
         },
         execute: async (sql: string, params: unknown[] = []) => {
           try {
-            sqlite.query(sql).run(...(params as never[]));
-            return { ok: true, data: { rows: [] } };
+            const result = sqlite.query(sql).run(...(params as never[]));
+            return { ok: true, data: { changes: result.changes } };
           } catch (error) {
             return { ok: false, error: { code: "SQL", message: String(error) } };
           }
@@ -182,10 +182,16 @@ function sqliteStore() {
       }),
     },
     kv: {
-      put: async (key: string, value: string) => {
+      get: async (key: string) => kv.has(key)
+        ? { ok: true, data: { data: kv.get(key), headers: {} } }
+        : { ok: false, error: { code: "KV_NOT_FOUND", message: "missing" } },
+      put: async (key: string, value: string, options?: { ifNoneMatch?: "*" }) => {
         if (failingKvPuts > 0) {
           failingKvPuts--;
           return { ok: false, error: { code: "KV_UNAVAILABLE", message: "kv write failed" } };
+        }
+        if (options?.ifNoneMatch === "*" && kv.has(key)) {
+          return { ok: false, error: { code: "KV_PRECONDITION_FAILED", message: "exists" } };
         }
         kv.set(key, value);
         return { ok: true, data: null };
@@ -238,43 +244,6 @@ describe("saveLocalTranscript", () => {
     const rows = store.sqlite.query("SELECT id, source, source_id FROM connector_meeting").values();
     expect(rows).toEqual([[prepared.meeting.id, LOCAL_MEETING_SOURCE, "local:sess-1"]]);
     expect(JSON.parse(store.kv.get(transcriptKvKey(LOCAL_MEETING_SOURCE, "local:sess-1"))!)).toEqual(prepared.sentences);
-  });
-
-  test("delegates to upsertMeeting with the prepared meeting and sentences", async () => {
-    // upsertMeeting is module-bound; drive the real store contract with a tcw
-    // fake that captures the SQL INSERT row and KV put.
-    const writes: { sql: string; params: unknown[] }[] = [];
-    const kvPuts: string[] = [];
-    const tcw = {
-      sql: {
-        db: () => ({
-          query: async (sql: string, params: unknown[] = []) => {
-            writes.push({ sql, params });
-            if (sql.startsWith("SELECT source_id")) return { ok: true, data: { rows: [] } };
-            if (sql.startsWith("SELECT id, created_at")) return { ok: true, data: { rows: [] } };
-            return { ok: true, data: { rows: [] } };
-          },
-          execute: async (sql: string, params: unknown[] = []) => {
-            writes.push({ sql, params });
-            return { ok: true, data: { rows: [] } };
-          },
-        }),
-      },
-      kv: {
-        put: async (key: string) => {
-          kvPuts.push(key);
-          return { ok: true, data: null };
-        },
-      },
-    } as never;
-
-    const r = await saveLocalTranscript(tcw, prepareLocalTranscript(resultWith([{ word: "hi", start: 0, end: 1, channel: 0 }])));
-    expect(r.ok).toBe(true);
-    const insert = writes.find((w) => w.sql.startsWith("INSERT INTO connector_meeting"));
-    expect(insert).toBeTruthy();
-    expect(insert!.params[1]).toBe(LOCAL_MEETING_SOURCE);
-    expect(insert!.params[2]).toBe("local:sess-1");
-    expect(kvPuts.some((k) => k.includes("exo-local/transcript/local:sess-1"))).toBe(true);
   });
 
   test("a timed-out save keeps the transcript; its retry waits for the first write instead of writing beside it", async () => {

@@ -14,6 +14,7 @@ export {
   normalizeTranscriberTranscript,
   ensureConnectorSchema,
   writeTranscriberMeeting,
+  writeConnectorMeeting,
   transcriberMeetingInSpace,
   type NormalizedMeeting,
   type TranscriptSentence,
@@ -21,6 +22,7 @@ export {
   type TranscriberTranscriptJson,
   type PortResult,
   type ConnectorStorePort,
+  type ConnectorMeetingPort,
   type NormalizedTranscriberMeeting,
   type WrittenTranscriberMeeting,
 } from "./connector-meeting.js";

@@ -959,19 +959,8 @@ async function syncOneRecord(
     return { sourceId, outcome: "skipped", reason: "transcript entries carried no text" };
   }
 
-  // ORDER MATTERS — blob first, row last. Storage calls are sequential:
-  // TinyCloud drops concurrent responses on one space.
-  const kvRes = await store.putTranscriptBody(tcw, SOURCE, meeting.sourceId, sentences);
-  if (!kvRes.ok) {
-    return { sourceId, outcome: "error", reason: fromStore(kvRes.error, "putTranscriptBody").message };
-  }
-
-  // upsertMeeting, never insertMeeting: the re-sweep overlap re-visits records
-  // that are already stored, and the merge semantics (keep-existing-on-null +
-  // metadata merge) make that a repair instead of a duplicate. `sentences` is
-  // passed through even though the blob is already written — upsertMeeting
-  // writes the identical body again on the insert path, and handing it an empty
-  // array would clobber the blob we just wrote.
+  // The shared writer owns the row and create-only transcript body; standalone
+  // Notes documents retain their separate revision-aware KV write above.
   const upsertRes = await store.upsertMeeting(tcw, meeting, sentences);
   if (!upsertRes.ok) {
     return { sourceId, outcome: "error", reason: fromStore(upsertRes.error, "upsertMeeting").message };
