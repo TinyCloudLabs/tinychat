@@ -72,7 +72,7 @@ export async function listSavedTranscriberMeetingIds(
     // Don't queue more old-account reads after the pass has been cancelled.
     if (!isCurrent()) { scanned = false; break; }
     try {
-      const body = await scheduleRead(() => tcw.kv.get(transcriptKvKey(TRANSCRIBER_MEETING_SOURCE, id)));
+      const body = await scheduleRead(() => tcw.kv.get(transcriptKvKey(TRANSCRIBER_MEETING_SOURCE, id), { source: "network" }));
       if (body === null || !isCurrent()) { scanned = false; break; }
       if (body.ok) {
         saved.push(id);
@@ -160,7 +160,7 @@ export async function refreshTranscriberMeeting(
     const metadata = JSON.parse(old[4] as string || "{}") as Record<string, unknown>;
     const oldVersion = Number.isInteger(metadata.ptx_transcript_version) ? metadata.ptx_transcript_version as number : 1;
     if (transcript.version! <= oldVersion) return { ok: true, data: undefined };
-    const oldBody = await tcw.kv.get(transcriptKvKey(TRANSCRIBER_MEETING_SOURCE, row.id));
+    const oldBody = await tcw.kv.get(transcriptKvKey(TRANSCRIBER_MEETING_SOURCE, row.id), { source: "network" });
     if (!oldBody.ok) return storageFailure(oldBody.error, tcw);
     const archive: TranscriberArchive = {
       version: oldVersion, archived_at: new Date().toISOString(),

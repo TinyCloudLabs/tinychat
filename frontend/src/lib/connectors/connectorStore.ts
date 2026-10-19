@@ -852,7 +852,7 @@ export async function upsertMeeting(
 async function putMissingTranscriptBody(
   tcw: TinyCloudWeb, source: string, sourceId: string, sentences: FirefliesSentence[],
 ): Promise<StoreResult<void>> {
-  const existing = await tcw.kv.get(transcriptKvKey(source, sourceId));
+  const existing = await tcw.kv.get(transcriptKvKey(source, sourceId), { source: "network" });
   if (existing.ok) return { ok: true, data: undefined };
   if (!/NOT_FOUND/i.test(existing.error.code ?? "")) return fail(existing.error, "putMissingTranscriptBody", storageScopeFor(tcw));
   return putTranscriptBody(tcw, source, sourceId, sentences);

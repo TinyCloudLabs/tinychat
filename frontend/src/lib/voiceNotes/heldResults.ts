@@ -174,7 +174,7 @@ export function createHeldResultStore(did: string, options: HeldResultStoreOptio
     await assertStoreIdentity(tcw, row);
     assertIdentity(tcw, did, row);
     try {
-      const history = await tcw.kv.get(transcriptHistoryKvKey(row.sourceId, row.transcript.rev, row.hash));
+      const history = await tcw.kv.get(transcriptHistoryKvKey(row.sourceId, row.transcript.rev, row.hash), { source: "network" });
       return history.ok && historyConfirmsHeldResult(history.data.data, row);
     } catch { return false; } // A failed history read is absent, never proof of commit.
   };
@@ -381,7 +381,7 @@ export function createHeldResultStore(did: string, options: HeldResultStoreOptio
           if (!provesHeldCommit && winner.rev > row.transcript.rev) {
             assertIdentity(tcw, did, row);
             try {
-              const history = await tcw.kv.get(transcriptHistoryKvKey(sourceId, row.transcript.rev, row.hash));
+              const history = await tcw.kv.get(transcriptHistoryKvKey(sourceId, row.transcript.rev, row.hash), { source: "network" });
               provesHeldCommit = history.ok && historyConfirmsHeldResult(history.data.data, row);
             } catch { /* A failed history read is not proof that the held result committed. */ }
             assertIdentity(tcw, did, row);
