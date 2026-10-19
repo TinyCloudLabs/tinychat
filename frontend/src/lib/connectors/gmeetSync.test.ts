@@ -31,6 +31,7 @@ import {
   isLikelyGmeetNotesFile,
   isPersistableTranscriptState,
   isTerminalGmeetError,
+  stopGmeetNotesSync,
   syncGoogleMeet,
   type GmeetNotesSettled,
   type GmeetSyncClient,
@@ -2266,6 +2267,53 @@ describe("Notes reconcile at scale", () => {
       expect(settled[0]).toMatchObject({ ok: false, errorKind: "network" });
       expect(settled[0]!.diagnostics).toMatchObject({ drive_call_timeouts: 1, finishing_recovery_write: "skipped_pending_storage" });
       expect(isGmeetNotesSyncInFlight()).toBe(false);
-    } finally { off(); }
+    } finally {
+      off();
+      never.resolve(ok({ id: "late", inserted: true, createdAt: new Date(NOW_MS).toISOString() }));
+      await drain();
+    }
+  });
+
+  test("a stuck storage call does not hold the single-flight slot (and so Disconnect) for the whole Finishing deadline", async () => {
+    vi.useFakeTimers();
+    const f = scaleFixture({ docs: 0, notes: 3, preload: true });
+    const never = Promise.withResolvers<StoreResult<UpsertMeetingOutcome>>();
+    f.store.upsertMeeting = (tcw, meeting, sentences) => meeting.sourceId.startsWith("notes-")
+      ? never.promise
+      : FakeStore.prototype.upsertMeeting.call(f.store, tcw, meeting, sentences);
+    let result: Awaited<ReturnType<typeof run>> | undefined;
+    void run(f.client, f.store, { driveMode: "snapshot" }).then((value) => { result = value; });
+    await drain();
+    vi.advanceTimersByTime(30_001); // The per-call storage limit, far inside the 120 s deadline.
+    await drain();
+    vi.advanceTimersByTime(10_001); // The bounded wait for the stuck write before the connection row.
+    await drain(() => result !== undefined);
+    expect(result?.ok).toBe(false);
+    expect(isGmeetSyncInFlight()).toBe(false);
+    never.resolve(ok({ id: "late", inserted: true, createdAt: new Date(NOW_MS).toISOString() }));
+    await drain();
+  });
+
+  test("stopping the background reconcile (a disconnect) writes nothing more", async () => {
+    const f = scaleFixture({ docs: 0, notes: 6, preload: true });
+    const hold = Promise.withResolvers<void>();
+    f.ctl.hold = hold.promise;
+    const settled: GmeetNotesSettled[] = [];
+    const off = onGmeetNotesSettled((s) => settled.push(s));
+    try {
+      expect((await run(f.client, f.store, { driveMode: "snapshot", deferNotes: true })).ok).toBe(true);
+      await drain(() => f.counts.concurrent === 5);
+      const stateWrites = f.store.stateWrites;
+      const rows = f.store.rows.length;
+      const stopped = stopGmeetNotesSync();
+      hold.resolve();
+      await stopped;
+      expect(isGmeetNotesSyncInFlight()).toBe(false);
+      expect(f.store.stateWrites).toBe(stateWrites);
+      expect(f.store.rows).toHaveLength(rows);
+      expect(f.store.cursor).toBe("old-cursor");
+      expect(settled).toHaveLength(1);
+      expect(settled[0]?.ok).toBe(false);
+    } finally { hold.resolve(); off(); }
   });
 });

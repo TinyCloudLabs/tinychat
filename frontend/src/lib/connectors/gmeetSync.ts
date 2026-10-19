@@ -468,6 +468,20 @@ export function isGmeetNotesSyncInFlight(): boolean {
   return notesInFlight !== null;
 }
 
+let notesStop: AbortController | null = null;
+
+/**
+ * Stop a running deferred Notes reconcile and wait until it has written nothing
+ * more. A disconnect calls this first: the reconcile's final write would
+ * otherwise recreate the connection row it just removed.
+ */
+export async function stopGmeetNotesSync(): Promise<void> {
+  const running = notesInFlight;
+  if (running === null) return;
+  notesStop?.abort();
+  await running;
+}
+
 /** Subscribe to deferred-Notes outcomes (the card re-reads its row on each). */
 export function onGmeetNotesSettled(listener: (settled: GmeetNotesSettled) => void): () => void {
   notesSettledListeners.add(listener);
@@ -843,6 +857,13 @@ async function runGoogleMeetSync(opts: GmeetSyncOptions): Promise<GmeetSyncResul
       leavePhase();
       if (run.timeoutMessage !== null) {
         terminal = { kind: "network", message: run.timeoutMessage };
+        if (pendingFinishingStorage.get(tcw)?.size) {
+          // A storage call is stuck: waiting for it inside Finishing would hold the
+          // single-flight slot (and Disconnect) until the whole deadline. Give up now;
+          // the connection row is written once it settles, within its own short deadline.
+          timedOut = true;
+          throw new Error(run.timeoutMessage);
+        }
         // An abandoned Notes write must settle before the next writer starts.
         await step(() => settlePendingStorage(tcw));
       } else {
@@ -869,21 +890,24 @@ async function runGoogleMeetSync(opts: GmeetSyncOptions): Promise<GmeetSyncResul
       await step(async () => { await emit("complete"); });
       if (!opts.deferNotes) return { ok: true, data: summary() };
       const meetings = { current, total, synced: created + updated, failed, skipped };
-      const background: Promise<void> = runNotesInBackground({ opts, startedAtIso, itemCount, diagnostics, meetings })
+      const stop = new AbortController();
+      const background: Promise<void> = runNotesInBackground({ opts, startedAtIso, itemCount, diagnostics, meetings, stop })
         .catch(() => {})
         .finally(() => { if (notesInFlight === background) notesInFlight = null; });
       notesInFlight = background;
+      notesStop = stop;
       return { ok: true, data: { ...summary(), notesDeferred: true } };
     }
   } catch (error) {
     terminal ??= stopped ?? { kind: "storage", message: errorMessage(error) };
     // Report a failure when storage is usable, under the SAME deadline. Once
-    // stopped, no new store operation or diagnostic continuation is started.
-    if (stopped === null) {
+    // stopped, no new store operation or diagnostic continuation is started; a
+    // stuck storage call (timedOut) is never overlapped by another writer.
+    if (stopped === null && !timedOut) {
       try { await writeState(); } catch { /* The error result remains authoritative when state cannot be written. */ }
     }
     if (timedOut && !stateWritten) {
-      await persistConnectionAfterTimeout(FINISHING_TIMEOUT_MESSAGE);
+      await persistConnectionAfterTimeout(terminal.message);
       // Count-only phase timings; step is closed, so no storage is read here.
       try { onDiagnostics?.({ ...diagnostics }); } catch { /* Diagnostics are best effort. */ }
     }
@@ -966,6 +990,7 @@ async function runBudgetedDrive(input: DriveRunInput): Promise<{ drive: DriveOut
   const budgetTimer = setTimeout(() => failDrive(DRIVE_NOTES_TIMEOUT_MESSAGE), input.budgetMs);
   const timedStep: FinishingStep = (work, storage = false) => {
     if (timeoutMessage !== null) return Promise.reject(new Error(timeoutMessage));
+    if (input.parentSignal.aborted) return Promise.reject(new Error(STOPPED_MESSAGE));
     const began = Date.now();
     const inner = parentStep(work, storage);
     void inner.catch(() => {});
@@ -1058,6 +1083,8 @@ interface NotesBackgroundInput {
   itemCount: number;
   diagnostics: GmeetSyncDiagnostics;
   meetings: Pick<GmeetSyncProgress, "current" | "total" | "synced" | "failed" | "skipped">;
+  /** Aborted by `stopGmeetNotesSync`; the reconcile then writes nothing further. */
+  stop: AbortController;
 }
 
 /**
@@ -1072,7 +1099,6 @@ async function runNotesInBackground(input: NotesBackgroundInput): Promise<void> 
     const progress: GmeetSyncProgress = { type: "progress", ...input.meetings, message: "notes", ...extra };
     for (const listener of notesProgressListeners) guarded(() => listener(progress));
   };
-  const neverAborted = new AbortController();
   const items: GmeetSyncItem[] = [];
   let failedInDrive = false;
   const record = (sourceId: string, outcome: GmeetItemOutcome, reason?: string) => {
@@ -1090,7 +1116,7 @@ async function runNotesInBackground(input: NotesBackgroundInput): Promise<void> 
   const began = Date.now();
   try {
     const run = await runBudgetedDrive({
-      opts: { ...opts, signal: undefined }, parentStep: trackedStep, parentSignal: neverAborted.signal,
+      opts: { ...opts, signal: undefined }, parentStep: trackedStep, parentSignal: input.stop.signal,
       record, diagnostics, budgetMs: NOTES_BACKGROUND_BUDGET_MS, parallel: true, emitNotes: publish,
     });
     diagnostics.phase_drive_ms += Date.now() - began;
@@ -1111,7 +1137,10 @@ async function runNotesInBackground(input: NotesBackgroundInput): Promise<void> 
     new Promise<boolean>((resolve) => { settleTimer = setTimeout(() => resolve(false), STATE_RECOVERY_TIMEOUT_MS); }),
   ]);
   clearTimeout(settleTimer);
-  if (settled) {
+  if (input.stop.signal.aborted) {
+    // Stopped (a disconnect): the data is being removed, so nothing more may be written.
+    terminal ??= { kind: "network", message: STOPPED_MESSAGE };
+  } else if (settled) {
     const boundedStorage = async <T>(work: () => Promise<T>): Promise<T | null> => {
       let timer: ReturnType<typeof setTimeout> | undefined;
       const pending = work();
