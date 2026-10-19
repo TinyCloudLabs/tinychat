@@ -1,5 +1,6 @@
 // TC-1152 S1. Public data only: AMI ES2004a/b manual words (CC BY 4.0), see fixtures/meeting-stitch/build.ts.
 import { describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -196,6 +197,65 @@ describe("stitchMeetings: refusals", () => {
   test("Gemini notes are refused as a member", () => {
     const gem: MeetingSnapshot = { ...notetaker("google-meet"), row: { started_at: iso(0), metadata: { notes_kind: "gemini", notes_association: "standalone" } } };
     expect(() => stitchMeetings(fireflies(), gem)).toThrow(StitchInputError);
+  });
+});
+
+describe("stitchMeetings: short clips and bad inputs", () => {
+  // Two boilerplate sentences (each one yields several 4-word anchors) shared with a long meeting.
+  const long = JSON.parse(FF) as { index: number; speaker_name: string; text: string; start_time: number; end_time: number }[];
+  const boiler = long.filter((s) => s.text.split(/\s+/).length >= 8 && s.end_time - s.start_time < 12).slice(40, 42);
+  const clip = JSON.stringify([
+    { index: 0, speaker_name: "Me", text: boiler[0]!.text, start_time: 1, end_time: 6 },
+    { index: 1, speaker_name: "Me", text: boiler[1]!.text, start_time: 8, end_time: 14 },
+    { index: 2, speaker_name: "Me", text: "Completely unrelated closing remark about lunch.", start_time: 15, end_time: 19 },
+  ]);
+  const short = (): MeetingSnapshot => ({
+    source: "exo-voice-note", source_id: "vn-clip", body: clip,
+    row: { started_at: iso(boiler[0]!.start_time - 1), duration_secs: 19, metadata: {} },
+  });
+
+  test("a 19 s clip sharing two sentences with a meeting is not the same meeting", () => {
+    const r = stitchMeetings(fireflies(), short());
+    expect(r.evidence.shared_phrases).toBeGreaterThanOrEqual(6);
+    expect(r.verdict).toBe("not-same-meeting");
+    expect(r.reason).toBe("anchor-rule");
+    expect(r.evidence.shorter_capture_s).toBeLessThan(120);
+    expect(r.combined).toBeNull();
+  });
+
+  test("anchors from fewer than 3 segments per side are not enough, whatever the capture length", () => {
+    // a 3-minute capture that repeats only two sentences of the meeting
+    const padded = JSON.stringify([
+      { index: 0, speaker_name: "Me", text: boiler[0]!.text, start_time: 1, end_time: 6 },
+      { index: 1, speaker_name: "Me", text: boiler[1]!.text, start_time: 8, end_time: 14 },
+      { index: 2, speaker_name: "Me", text: "Completely unrelated closing remark about lunch.", start_time: 170, end_time: 180 },
+    ]);
+    const r = stitchMeetings(fireflies(), { ...short(), body: padded });
+    expect(r.evidence.shorter_capture_s).toBeGreaterThan(120);
+    expect(r.verdict).toBe("not-same-meeting");
+  });
+
+  test("a clock without a zone is untrusted and the result does not depend on TZ", () => {
+    const script = `
+      import { readFileSync } from "node:fs";
+      import { stitchMeetings } from ${JSON.stringify(join(import.meta.dir, "../src/meeting-stitch"))};
+      const d = ${JSON.stringify(join(import.meta.dir, "fixtures/meeting-stitch"))};
+      const mk = (source, id, file, started_at) => ({ source, source_id: id, body: readFileSync(d + "/" + file, "utf8"), row: { started_at, duration_secs: 800 } });
+      const r = stitchMeetings(mk("fireflies", "a", "es2004a-fireflies.json", "2026-10-19 10:00:00"), mk("tinycloud-transcriber", "b", "es2004a-notetaker.json", "2026-10-19 10:03:30"));
+      process.stdout.write(JSON.stringify(r));`;
+    const run = (tz: string) => spawnSync(process.execPath, ["-e", script], { env: { ...process.env, TZ: tz }, encoding: "utf8", maxBuffer: 64 << 20 });
+    const utc = run("UTC");
+    const la = run("America/Los_Angeles");
+    expect(utc.status).toBe(0);
+    expect(la.stdout).toBe(utc.stdout);
+    const parsed = JSON.parse(utc.stdout) as StitchResult;
+    expect(parsed.evidence.time_window).toBe("untrusted");
+    expect(parsed.combined!.row.started_at).toBeNull();
+  });
+
+  test("a combined meeting cannot be a member", () => {
+    const merged: MeetingSnapshot = { ...fireflies(), source: "exo-merged", source_id: "m-1" };
+    expect(() => stitchMeetings(merged, notetaker())).toThrow(StitchInputError);
   });
 });
 

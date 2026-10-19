@@ -181,6 +181,10 @@ const RUN_SPAN_S = 30;
 const RUN_SPAN_MIN_TAIL_S = 15;
 const SWITCH_SHARE = 0.5;
 const EPS = 1e-6;
+const MIN_CAPTURE_S = 120;
+const MIN_ANCHOR_SEGMENTS = 3;
+/** ISO-8601 with an explicit zone; anything else would be read in local time. */
+const ISO_WITH_ZONE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})$/i;
 
 const round3 = (x: number): number => Math.round(x * 1000) / 1000;
 
@@ -390,6 +394,7 @@ function readMember(snap: MeetingSnapshot, which: string): Member {
   if ((snap.row === undefined) === (snap.kv_record === undefined)) {
     throw new StitchInputError(`member ${which}: pass exactly one of row or kv_record`);
   }
+  if (snap.source === MERGED_SOURCE) throw new StitchInputError(`member ${which}: a combined meeting cannot be combined again`);
   // A standalone Gemini "notes" row (gmeetNotes.ts) is a summary document, not a transcript.
   const noteMeta = asRecord(jsonField(snap.row?.metadata));
   if (snap.source === "google-meet" && noteMeta.notes_kind === "gemini" && noteMeta.notes_association === "standalone") {
@@ -401,7 +406,7 @@ function readMember(snap: MeetingSnapshot, which: string): Member {
   const kv = snap.kv_record;
   const title = str(row?.title ?? kv?.title);
   const startedAt = str(row?.started_at ?? kv?.startedAt);
-  const parsedStart = startedAt === null ? NaN : Date.parse(startedAt);
+  const parsedStart = startedAt !== null && ISO_WITH_ZONE.test(startedAt) ? Date.parse(startedAt) : NaN; // no zone: local time, so untrusted
   const meta = asRecord(jsonField(row?.metadata));
   const firstS = Math.min(...segs.map((s) => s.start));
   const lastS = Math.max(...segs.map((s) => s.end));
@@ -455,29 +460,30 @@ function normTokens(word: string): string[] {
 interface Tok {
   w: string;
   t: number;
+  s: number; // segment index
 }
 
 /** Word tokens with times interpolated by character position inside the segment. */
 function memberTokens(m: Member): Tok[] {
   const out: Tok[] = [];
-  for (const s of m.segs) {
+  m.segs.forEach((s, seg) => {
     const len = Math.max(1, s.text.length);
     for (const match of s.text.matchAll(/\S+/g)) {
       const t = s.start + ((s.end - s.start) * match.index!) / len;
-      for (const w of normTokens(match[0])) if (!FILLERS.has(w)) out.push({ w, t });
+      for (const w of normTokens(match[0])) if (!FILLERS.has(w)) out.push({ w, t, s: seg });
     }
-  }
+  });
   return out;
 }
 
-/** 4-word runs that occur exactly once in the transcript -> time of the run. */
-function uniqueGrams(toks: Tok[]): Map<string, number> {
+/** 4-word runs that occur exactly once in the transcript -> time and segment of the run. */
+function uniqueGrams(toks: Tok[]): Map<string, { t: number; s: number }> {
   const count = new Map<string, number>();
-  const at = new Map<string, number>();
+  const at = new Map<string, { t: number; s: number }>();
   for (let i = 0; i + 4 <= toks.length; i++) {
     const g = `${toks[i]!.w} ${toks[i + 1]!.w} ${toks[i + 2]!.w} ${toks[i + 3]!.w}`;
     count.set(g, (count.get(g) ?? 0) + 1);
-    if (!at.has(g)) at.set(g, toks[i]!.t);
+    if (!at.has(g)) at.set(g, { t: toks[i]!.t, s: toks[i]!.s });
   }
   for (const [g, n] of count) if (n !== 1) at.delete(g);
   return at;
@@ -487,6 +493,8 @@ interface Anchor {
   ta: number; // time on members[0]'s clock
   tb: number; // time on members[1]'s clock
   o: number; // ta - tb
+  sa: number; // segment of the run in members[0]
+  sb: number; // segment of the run in members[1]
 }
 
 interface Alignment {
@@ -516,12 +524,12 @@ function align(a: Member, b: Member): Alignment {
   const window = timeWindow(a, b);
   const expected = a.trustedStart && b.trustedStart ? (b.startMs! - a.startMs!) / 1000 : null;
   const pairs: Anchor[] = [];
-  for (const [g, ta] of ga) {
-    const tb = gb.get(g);
-    if (tb === undefined) continue;
-    const o = ta - tb;
+  for (const [g, ia] of ga) {
+    const ib = gb.get(g);
+    if (ib === undefined) continue;
+    const o = ia.t - ib.t;
     if (expected !== null && Math.abs(o - expected) > PAD_S) continue; // started_at gap is only a search prior
-    pairs.push({ ta, tb, o });
+    pairs.push({ ta: ia.t, tb: ib.t, o, sa: ia.s, sb: ib.s });
   }
   const shorterS = Math.min(a.lastS - a.firstS, b.lastS - b.firstS);
   const none: Alignment = {
@@ -547,7 +555,12 @@ function align(a: Member, b: Member): Alignment {
   const offset = median(anchors.map((p) => p.o));
   const spanS = anchors[anchors.length - 1]!.ta - anchors[0]!.ta;
   const perMin = anchors.length / (Math.max(30, shorterS) / 60);
-  const passed = perMin >= MIN_ANCHORS_PER_MIN && spanS >= Math.min(SPAN_CAP_S, SPAN_FRACTION * shorterS);
+  // A short clip can share a few boilerplate sentences with a long meeting, and one n-word sentence
+  // gives n-3 anchors. Require a real capture length and anchors from 3+ distinct segments per side.
+  const distinctA = new Set(anchors.map((p) => p.sa)).size;
+  const distinctB = new Set(anchors.map((p) => p.sb)).size;
+  const passed = perMin >= MIN_ANCHORS_PER_MIN && spanS >= Math.min(SPAN_CAP_S, SPAN_FRACTION * shorterS)
+    && shorterS >= MIN_CAPTURE_S && distinctA >= MIN_ANCHOR_SEGMENTS && distinctB >= MIN_ANCHOR_SEGMENTS;
   return { shared: pairs.length, anchors, offset, perMin, spanS, shorterS, passed, timeWindow: window, map: driftMap(anchors, offset) };
 }
 

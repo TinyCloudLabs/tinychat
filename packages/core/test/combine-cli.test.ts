@@ -16,13 +16,15 @@ const iso = (s: number) => new Date(START + s * 1000).toISOString();
 const PREFIX = "xyz.tinycloud.tinychat/connectors";
 
 /** A fake `tc`: serves two SQL rows and bodies, and records every call. */
-function fakeTc(opts: { voiceNote?: boolean } = {}) {
+function fakeTc(opts: { voiceKeyTail?: string; voiceOutcome?: string } = {}) {
+  const voiceKeyTail = opts.voiceKeyTail ?? "vn-1/0123456789abcdef0123456789abcdef";
+  const voiceOutcome = opts.voiceOutcome ?? "transcribed";
   const calls: string[][] = [];
   const kv: Record<string, string> = {
     [`${PREFIX}/fireflies/transcript/ff-1`]: FF,
     [`${PREFIX}/tinycloud-transcriber/transcript/nt-1`]: NT,
     [`${PREFIX}/exo-voice-note/transcript/vn-1`]: "[]", // the legacy mirror must never be read
-    [`${PREFIX}/exo-voice-note/transcript-rev/vn-1/abc`]: NT,
+    [`${PREFIX}/exo-voice-note/transcript-rev/vn-1/0123456789abcdef0123456789abcdef`]: NT,
   };
   const tc: Tc = {
     run(args) {
@@ -30,7 +32,7 @@ function fakeTc(opts: { voiceNote?: boolean } = {}) {
       if (args.includes("sql")) {
         const sql = args[args.indexOf("query") + 1]!;
         const [, id] = JSON.parse(args[args.indexOf("--params") + 1]!) as string[] & [string, string];
-        if (sql.includes("voice_note_transcript")) return JSON.stringify({ rows: [[`${PREFIX}/exo-voice-note/transcript-rev/vn-1/abc`]] });
+        if (sql.includes("voice_note_transcript")) return JSON.stringify({ rows: [[`${PREFIX}/exo-voice-note/transcript-rev/${voiceKeyTail}`, voiceOutcome]] });
         if (id === "ff-1") return JSON.stringify({ rows: [["Kick-off", iso(0), 0.9 * T, "[]", "{}"]] });
         if (id === "nt-1" || id === "vn-1") return JSON.stringify({ rows: [[null, iso(0.2 * T), 0.8 * T, null, JSON.stringify({ platform: "google_meet" })]] });
         return JSON.stringify({ rows: [] });
@@ -40,7 +42,6 @@ function fakeTc(opts: { voiceNote?: boolean } = {}) {
       return kv[key]!;
     },
   };
-  void opts;
   return { tc, calls };
 }
 
@@ -85,8 +86,17 @@ describe("combine.ts", () => {
     const r = runCombine(["--a", "fireflies:ff-1", "--b", "exo-voice-note:vn-1", "--out", join(dir, "vn.json")], { tc });
     expect(r.code).toBe(0);
     const keys = calls.filter((c) => c.includes("kv")).map((c) => c[c.indexOf("get") + 2]);
-    expect(keys).toContain(`${PREFIX}/exo-voice-note/transcript-rev/vn-1/abc`);
+    expect(keys).toContain(`${PREFIX}/exo-voice-note/transcript-rev/vn-1/0123456789abcdef0123456789abcdef`);
     expect(keys).not.toContain(`${PREFIX}/exo-voice-note/transcript/vn-1`);
+  });
+
+  test("a voice note commit that is not transcribed, or points at another note's key, is refused", () => {
+    for (const opts of [{ voiceOutcome: "no_speech" }, { voiceKeyTail: "vn-2/0123456789abcdef0123456789abcdef" }, { voiceKeyTail: "vn-1/abc" }]) {
+      const { tc } = fakeTc(opts);
+      const r = runCombine(["--a", "fireflies:ff-1", "--b", "exo-voice-note:vn-1", "--out", join(dir, "bad.json")], { tc });
+      expect(r.code).toBe(1);
+      expect(r.stderr).toContain("no committed transcript-rev body");
+    }
   });
 
   test("a refused pair writes nothing, errors never carry content", () => {

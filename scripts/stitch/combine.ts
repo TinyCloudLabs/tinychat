@@ -61,9 +61,11 @@ function kvGet(tc: Tc, space: string, key: string): string {
 
 function bodyKey(tc: Tc, space: string, source: string, sourceId: string): string {
   if (source !== "exo-voice-note") return transcriptKvKey(source, sourceId);
-  const rows = query(tc, space, "SELECT body_key FROM voice_note_transcript WHERE source_id = ? LIMIT 1", [sourceId]);
-  const key = rows[0]?.[0];
-  if (typeof key !== "string" || !key.startsWith(`${CONNECTORS_KV_PREFIX}/exo-voice-note/transcript-rev/`)) {
+  const rows = query(tc, space, "SELECT body_key, outcome FROM voice_note_transcript WHERE source_id = ? LIMIT 1", [sourceId]);
+  const [key, outcome] = rows[0] ?? [];
+  // Same checks as agent-skills/tinychat-retrieval: a transcribed commit, and the immutable rev key of THIS note.
+  const prefix = `${CONNECTORS_KV_PREFIX}/exo-voice-note/transcript-rev/${sourceId}/`;
+  if (outcome !== "transcribed" || typeof key !== "string" || !key.startsWith(prefix) || !/^[a-f0-9]{32}$/.test(key.slice(prefix.length))) {
     throw new CliError("voice note has no committed transcript-rev body");
   }
   return key;
