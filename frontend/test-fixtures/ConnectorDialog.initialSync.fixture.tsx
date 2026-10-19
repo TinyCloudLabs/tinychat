@@ -10,7 +10,7 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { installDom } from "@/test/dom";
 import * as store from "@/lib/connectors/connectorStore";
 import { CONNECTORS } from "@/lib/connectors/registry";
-import { _resetGmeetSyncSingleFlightForTests, syncGoogleMeet } from "@/lib/connectors/gmeetSync";
+import { _resetGmeetSyncSingleFlightForTests, isGmeetNotesSyncInFlight, syncGoogleMeet } from "@/lib/connectors/gmeetSync";
 import { GmeetClient } from "@/lib/connectors/gmeetClient";
 import { __resetStorageStatusForTests } from "@/lib/storageStatus";
 
@@ -38,7 +38,36 @@ const tick = () => new Promise<void>((resolve) => {
   channel.port2.postMessage(null);
 });
 
-type Point = "drive-fetch" | "drive-body" | "refresh" | "cursor-read" | "cursor-write" | "count" | "state";
+const NOTES_DOC_IDS = ["notes-1", "notes-2", "notes-3"];
+const DOC_MIME = "application/vnd.google-apps.document";
+/** 200 ordinary Docs and 3 Notes by Gemini Docs: the Drive of a user with a lot of Docs. */
+function driveDocs() {
+  const ordinary = Array.from({ length: 200 }, (_, i) => ({
+    id: `budget-${i}`, name: `Budget review ${i}`, mimeType: DOC_MIME,
+    createdTime: "2026-08-01T09:00:00.000Z", modifiedTime: "2026-08-01T09:00:00.000Z",
+  }));
+  const notes = NOTES_DOC_IDS.map((id, i) => ({
+    id, name: `Atlas ${i + 1} - Notes by Gemini`, mimeType: DOC_MIME,
+    createdTime: `2026-09-0${i + 1}T13:00:00.000Z`, modifiedTime: `2026-09-0${i + 1}T14:00:00.000Z`,
+  }));
+  return [...ordinary, ...notes];
+}
+function notesDocument(index: number) {
+  const text = (content: string, style?: string) => ({ paragraph: {
+    ...(style ? { paragraphStyle: { namedStyleType: style } } : {}), elements: [{ textRun: { content } }] } });
+  return {
+    documentId: NOTES_DOC_IDS[index], title: `Atlas ${index + 1} - Notes by Gemini`,
+    body: { content: [
+      text("Notes by Gemini\n", "TITLE"),
+      text(`Atlas ${index + 1}\n`, "HEADING_1"),
+      text(`September ${index + 1}, 2026, 9:00 AM -04:00 – 9:30 AM\n`),
+      text("Summary\n", "HEADING_1"),
+      text(`Synthetic summary ${index + 1}.\n`),
+    ] },
+  };
+}
+
+type Point = "drive-fetch" | "drive-body" | "docs-fetch" | "meet-entries" | "refresh" | "cursor-read" | "cursor-write" | "count" | "state";
 type Failure = "reject" | "result";
 type SdkError = { code: string; message: string };
 type SdkResult<T> = { ok: true; data: T } | { ok: false; error: SdkError };
@@ -70,6 +99,9 @@ class MemoryBoundaries {
   popupCalls = 0;
   popupUrl = "";
   requireRefresh = false;
+  /** Drive holds 200 non-notes Docs and 3 Notes by Gemini Docs (default: no Docs at all). */
+  manyDocs = false;
+  readonly docRequests: string[] = [];
   private refreshed = false;
 
   hold(point: Point) {
@@ -181,6 +213,7 @@ class MemoryBoundaries {
         case `/v2/${recordName}/transcripts`:
           return Response.json({ transcripts: [{ name: transcriptName, state: "ENDED" }] });
         case `/v2/${transcriptName}/entries`:
+          await this.reach("meet-entries");
           return Response.json({ transcriptEntries: [{ name: `${transcriptName}/entries/1`, participant: participantName,
             text: "Synthetic saved transcript", startTime: "2026-10-15T12:00:00Z", endTime: "2026-10-15T12:00:05Z" }] });
       }
@@ -192,7 +225,7 @@ class MemoryBoundaries {
         case "/drive/v3/files": {
           if (this.requireRefresh && !this.refreshed) return Response.json({ error: { message: "Synthetic expired access" } }, { status: 401 });
           await this.reach("drive-fetch");
-          const response = Response.json({ files: [] });
+          const response = Response.json({ files: this.manyDocs ? driveDocs() : [] });
           const read = response.json.bind(response);
           response.json = async () => { await this.reach("drive-body"); return read(); };
           return response;
@@ -200,6 +233,13 @@ class MemoryBoundaries {
         case "/drive/v3/changes":
           return Response.json({ changes: [], newStartPageToken: "synthetic-cursor" });
       }
+    }
+    if (url.origin === "https://docs.googleapis.com" && url.pathname.startsWith("/v1/documents/")) {
+      const id = decodeURIComponent(url.pathname.slice("/v1/documents/".length));
+      this.docRequests.push(id);
+      await this.reach("docs-fetch");
+      const index = NOTES_DOC_IDS.indexOf(id);
+      if (index >= 0) return Response.json(notesDocument(index));
     }
     return this.deny(url, method);
   }) as typeof fetch;
@@ -333,6 +373,8 @@ afterEach(async () => {
   heldCompletion?.resolve();
   memory.dispose();
   await settle();
+  // A deferred Notes reconcile outlives its dialog: let it finish before the DB closes.
+  for (let attempt = 0; attempt < 40 && isGmeetNotesSyncInFlight(); attempt++) await settle();
   host?.remove();
   host = undefined;
   if (fakeClockActive) {
@@ -353,21 +395,15 @@ afterEach(async () => {
 });
 afterAll(() => restoreImportDom());
 
-test("N/N remains visibly Finishing through Drive, cursor, count and final state awaits before Done", async () => {
+test("N/N remains visibly Finishing through the final count and state awaits before Done, and a stalled Drive never gates Done", async () => {
   const drive = memory.hold("drive-fetch");
-  const cursor = memory.hold("cursor-write");
   const count = memory.hold("count");
   const state = memory.hold("state");
   await authorize();
-  await until(() => memory.entered.has("drive-fetch"), "expected post-loop Drive work");
-  expectFinishing();
-  expect(memory.savedMeeting()).toHaveLength(1);
-  drive.resolve();
-  await until(() => memory.entered.has("cursor-write"), "expected cursor persistence");
-  expectFinishing();
-  cursor.resolve();
   await until(() => memory.entered.has("count"), "expected final count");
   expectFinishing();
+  expect(memory.savedMeeting()).toHaveLength(1);
+  expect(memory.entered.has("drive-fetch")).toBe(false);
   count.resolve();
   await until(() => memory.entered.has("state"), "expected final state write");
   expectFinishing();
@@ -375,6 +411,9 @@ test("N/N remains visibly Finishing through Drive, cursor, count and final state
   await expectDone();
   expect(connectedCalls).toBe(1);
   expect((await store.getConnection(memory.tcw, "google-meet"))).toMatchObject({ ok: true, data: { lastSyncStatus: "ok", itemCount: 1 } });
+  await until(() => memory.entered.has("drive-fetch"), "expected the background Notes reconcile to start after Done");
+  expect(dialog().textContent).toContain("Notes by Gemini are still syncing in the background");
+  drive.resolve();
 });
 
 for (const point of ["count", "state"] as const) {
@@ -409,7 +448,7 @@ for (const point of ["count", "state"] as const) {
   }
 }
 
-for (const point of ["drive-fetch", "drive-body", "refresh", "cursor-read", "cursor-write", "count", "state"] as const) {
+for (const point of ["count", "state"] as const) {
   test(`${point} timeout offers Retry; late completion cannot turn Error into Done`, async () => {
     const held = memory.hold(point);
     memory.requireRefresh = point === "refresh";
@@ -437,42 +476,40 @@ for (const point of ["drive-fetch", "drive-body", "refresh", "cursor-read", "cur
 }
 
 test("one finishing deadline spans multiple final awaits rather than resetting per operation", async () => {
-  const drive = memory.hold("drive-body");
-  memory.hold("count");
+  const count = memory.hold("count");
+  memory.hold("state");
   await authorize(true);
-  await until(() => memory.entered.has("drive-body"), "expected held Drive response body");
-  await act(async () => { vi.advanceTimersByTime(60_000); drive.resolve(); await tick(); });
   await until(() => memory.entered.has("count"), "expected held final count");
+  await act(async () => { vi.advanceTimersByTime(60_000); count.resolve(); await tick(); });
+  await until(() => memory.entered.has("state"), "expected held final state write");
   expectFinishing();
   await act(async () => { vi.advanceTimersByTime(60_001); await tick(); });
   await settle();
-  await act(async () => { vi.advanceTimersByTime(10_001); await tick(); }); // Row recovery wait for the held count.
+  await act(async () => { vi.advanceTimersByTime(10_001); await tick(); }); // Row recovery wait for the held state write.
   await settle();
   expectErrorAndRetry();
 });
 
-test("a first connect whose Drive Notes stall still leaves the card connected with an error, and Retry finishes without reconnecting", async () => {
-  memory.db.run("DELETE FROM connector_state"); // First connect: the secret is saved, no connection row exists yet.
-  memory.hold("drive-fetch");
-  await authorize(true);
-  await until(() => memory.entered.has("drive-fetch"), "expected held Drive listing");
-  expectFinishing();
-  await act(async () => { vi.advanceTimersByTime(60_001); await tick(); }); // Inside the 120 s Finishing deadline.
-  await settle();
-  expectErrorAndRetry();
-  expect(dialog().textContent).toContain("already-saved meetings are kept");
-  expect(await store.getConnection(memory.tcw, "google-meet")).toMatchObject({
-    ok: true,
-    data: { status: "connected", lastSyncStatus: "error", lastSyncError: expect.stringContaining("timed out") },
-  });
-  expect(memory.savedMeeting()).toHaveLength(1);
-  await click("Retry");
-  await expectDone();
-  expect(await store.getConnection(memory.tcw, "google-meet")).toMatchObject({ ok: true, data: { status: "connected", lastSyncStatus: "ok" } });
-  expect(memory.secretWrites).toBe(1);
-  expect(memory.popupCalls).toBe(1);
-  expect(memory.exchangeCalls).toBe(1);
-});
+for (const point of ["drive-fetch", "drive-body", "cursor-read", "cursor-write", "refresh"] as const) {
+  for (const firstConnect of [false, true]) {
+    test(`a stalled ${point} (${firstConnect ? "first connect" : "reconnect"}) leaves the connection saved and reaches Done without advancing the clock`, async () => {
+      if (firstConnect) memory.db.run("DELETE FROM connector_state"); // The secret is saved, no connection row exists yet.
+      memory.manyDocs = true;
+      memory.requireRefresh = point === "refresh";
+      memory.hold(point);
+      await authorize(true);
+      await expectDone();
+      expect(dialog().textContent).toContain("Notes by Gemini are still syncing in the background");
+      expect(button("Retry")).toBeUndefined();
+      expect(connectedCalls).toBe(1);
+      expect(await store.getConnection(memory.tcw, "google-meet")).toMatchObject({
+        ok: true, data: { status: "connected", lastSyncStatus: "ok" },
+      });
+      expect(memory.secretWrites).toBe(1);
+      expect(memory.popupCalls).toBe(1);
+    });
+  }
+}
 
 test("when no connection row can be written the dialog says the connection was not saved and offers reconnecting, not Retry", async () => {
   memory.db.run("DELETE FROM connector_state");
@@ -506,9 +543,9 @@ test("a throwing onConnected completion callback becomes visible Error with Retr
 
 for (const stop of ["unmount", "Stop sync"] as const) {
   test(`${stop} while Finishing prevents a late successful completion`, async () => {
-    const held = memory.hold("drive-fetch");
+    const held = memory.hold("count");
     await authorize();
-    await until(() => memory.entered.has("drive-fetch"), "expected post-loop work");
+    await until(() => memory.entered.has("count"), "expected post-loop work");
     expectFinishing();
     if (stop === "unmount") {
       await act(async () => root!.unmount());
@@ -584,12 +621,14 @@ for (const caller of ["owner", "joiner"] as const) {
     vi.useFakeTimers();
     fakeClockActive = true;
     heldCompletion = deferred();
+    // A joined flight is the only path whose Drive phase still gates the shared result
+    // (the first caller did not defer Notes); the owner's Drive runs after Done.
     const drive = memory.hold("drive-fetch");
     const first = caller === "joiner" ? startFirstFlight() : undefined;
     try {
       if (first) await until(() => memory.entered.has("drive-fetch"), "expected an existing flight");
       await authorize();
-      await until(() => memory.entered.has("drive-fetch") && memory.secretWrites === 1, "expected authorized dialog");
+      await until(() => (first ? memory.entered.has("drive-fetch") : true) && memory.secretWrites === 1, "expected authorized dialog");
       await act(async () => {
         drive.resolve();
         if (first) expect((await first).ok).toBe(true);
@@ -637,4 +676,182 @@ test("a joined flight with a throwing parent notification settles to Error and n
     drive.resolve();
     await first;
   }
+});
+
+// ── Deferred Notes by Gemini: progress, log, background reconcile ──────────
+
+function progressValue() {
+  const bar = dialog().querySelector('[role="progressbar"]');
+  expect(bar, `missing progressbar; DOM=${dialog().innerHTML}`).toBeTruthy();
+  expect(bar!.getAttribute("aria-valuemin")).toBe("0");
+  expect(bar!.getAttribute("aria-valuemax")).toBe("100");
+  return Number(bar!.getAttribute("aria-valuenow"));
+}
+function stubClipboard() {
+  const copied: string[] = [];
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value: {
+    writeText: async (text: string) => { copied.push(text); },
+  } });
+  return copied;
+}
+type CopiedLog = {
+  generatedAt: string;
+  timeline: { tMs: number; stage: string; meetingsChecked: number; meetingsTotal: number | null; notesDone: number | null;
+    notesTotal: number | null; docsListed: number | null; docsMatched: number | null }[];
+  diagnostics: Record<string, number | string> | null;
+  phaseTimingsMs: Record<string, number> | null;
+  result: { kind: string; connectionSaved: boolean | null; notesDeferred: boolean } | null;
+  notesOutcome: { ok: boolean; errorKind: string | null } | null;
+};
+async function copyLog(copied: string[]): Promise<{ text: string; log: CopiedLog }> {
+  const before = copied.length;
+  await click("Copy sync log");
+  await until(() => copied.length === before + 1, "expected the sync log on the clipboard");
+  return { text: copied[before]!, log: JSON.parse(copied[before]!) as CopiedLog };
+}
+const NEVER_IN_LOG = ["synthetic-access", "synthetic-refresh", "synthetic-session", "Synthetic person", "Synthetic saved transcript",
+  "synthetic-record", "Atlas", "Budget review", "Synthetic summary", "Bearer"];
+
+async function mountCardAndConnect() {
+  await act(async () => root!.unmount());
+  memory.db.run("UPDATE connector_state SET status = 'disconnected' WHERE connector_id = 'google-meet'");
+  root = createRoot(host!);
+  await act(async () => root!.render(<MemoryRouter><ConnectorsCard tcw={memory.tcw} backendUrl={backend}
+    sessionStore={{ getToken: () => "synthetic-session", isExpired: () => false } as unknown as SessionStore} /></MemoryRouter>));
+  await until(() => Boolean(host!.querySelector('button[aria-label="Connect Google Meet"]')), "expected disconnected parent row");
+  const row = [...host!.querySelectorAll<HTMLElement>('[data-testid="connector-row"]')]
+    .find((entry) => entry.textContent?.includes("Google Meet"))!;
+  const status = () => row.querySelector("[data-row-status]")?.textContent;
+  await act(async () => host!.querySelector<HTMLButtonElement>('button[aria-label="Connect Google Meet"]')!.click());
+  return { row, status };
+}
+
+test("with 200 Docs in Drive the dialog reaches Done in a few ticks without advancing the clock, and Notes carry on in the background", async () => {
+  memory.manyDocs = true;
+  const docs = memory.hold("docs-fetch");
+  await authorize(true);
+  await expectDone(); // Polls microtask ticks only: no 60 s / 120 s fake-timer advance.
+  expect(dialog().textContent).toContain("Meetings are saved. Notes by Gemini are still syncing in the background; you can close this.");
+  expect(connectedCalls).toBe(1);
+  expect(button("Retry")).toBeUndefined();
+  await until(() => memory.entered.has("docs-fetch"), "expected the background reconcile to read a Notes Doc");
+  // Live counts reach the open Done panel from the background reconcile.
+  await until(() => /203 Docs listed/.test(dialog().textContent!) && /3 matched/.test(dialog().textContent!),
+    "expected the Done panel to show Docs listed / matched");
+  docs.resolve();
+  await until(() => /finished syncing/.test(dialog().textContent!), "expected the Done panel to report the settled reconcile");
+  expect(dialog().textContent).not.toContain("still syncing");
+  expect(memory.savedMeeting()).toHaveLength(4);
+  expect(memory.docRequests.sort()).toEqual(["notes-1", "notes-2", "notes-3"]); // None of the 200 ordinary Docs is read.
+});
+
+test("the bar and counts follow the sync: the meeting total shows at once, the bar rises per stage, and elapsed seconds tick", async () => {
+  const entries = memory.hold("meet-entries");
+  const state = memory.hold("state");
+  await authorize(true);
+  await until(() => memory.entered.has("meet-entries"), "expected the record loop to be checking a meeting");
+  expect(dialog().textContent).toContain("1 meeting found");
+  expect(dialog().textContent).toContain("Checking 0/1 meetings…");
+  const checking = progressValue();
+  await act(async () => { entries.resolve(); await tick(); });
+  await until(() => memory.entered.has("state"), "expected the final state write");
+  expectFinishing();
+  expect(dialog().textContent).toContain("Step: Saving sync state");
+  const saving = progressValue();
+  expect(saving).toBeGreaterThan(checking);
+  expect(saving).not.toBe(33);
+  expect(checking).toBeLessThan(40);
+  await act(async () => { vi.advanceTimersByTime(3_000); await tick(); });
+  expect(dialog().textContent).toMatch(/Elapsed [3-9]s/);
+  state.resolve();
+  await expectDone();
+});
+
+test("Copy sync log copies the stage timeline, counters and result as JSON, while Finishing and after Done, with no secret or title text", async () => {
+  memory.manyDocs = true;
+  const copied = stubClipboard();
+  const state = memory.hold("state");
+  memory.hold("docs-fetch");
+  await authorize(true);
+  await until(() => memory.entered.has("state"), "expected the final state write");
+  expectFinishing();
+  const finishing = await copyLog(copied);
+  expect(finishing.log.result).toBeNull();
+  expect(finishing.log.timeline.map((entry) => entry.stage)).toContain("meetings");
+  expect(finishing.log.timeline.at(-1)).toMatchObject({ meetingsChecked: 1, meetingsTotal: 1 });
+  expect(dialog().textContent).toContain("Sync log copied.");
+  state.resolve();
+  await expectDone();
+  await until(() => memory.entered.has("docs-fetch"), "expected the background reconcile");
+  await until(() => /Notes 0\/3/.test(dialog().textContent!), "expected Notes counts from the background reconcile");
+  const done = await copyLog(copied);
+  expect(Date.parse(done.log.generatedAt)).not.toBeNaN();
+  expect(done.log.result).toEqual({ kind: "ok", connectionSaved: true, notesDeferred: true });
+  expect(done.log.timeline.map((entry) => entry.stage)).toEqual(expect.arrayContaining(["meetings", "saving", "notes"]));
+  expect(done.log.timeline.find((entry) => entry.stage === "notes")).toMatchObject({ notesTotal: 3, docsListed: 203, docsMatched: 3 });
+  expect(done.log.timeline.map((entry) => entry.tMs)).toEqual([...done.log.timeline.map((entry) => entry.tMs)].sort((a, b) => a - b));
+  expect(done.log.diagnostics).toBeTruthy();
+  expect(Object.keys(done.log.phaseTimingsMs ?? {}).length).toBeGreaterThan(0);
+  for (const { text } of [finishing, done]) for (const secret of NEVER_IN_LOG) expect(text).not.toContain(secret);
+});
+
+test("Copy sync log says so inline when the browser has no clipboard", async () => {
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
+  memory.hold("state");
+  await authorize(true);
+  await until(() => memory.entered.has("state"), "expected the final state write");
+  await click("Copy sync log");
+  expect(dialog().textContent).toContain("Clipboard isn’t available");
+});
+
+test("Copy sync log is offered on error and carries the error kind, not its message", async () => {
+  const copied = stubClipboard();
+  memory.failures.set("state", "result");
+  await authorize();
+  await until(() => memory.entered.has("state"), "expected the state write");
+  await settle();
+  expectErrorAndRetry();
+  const { text, log } = await copyLog(copied);
+  expect(log.result).toMatchObject({ kind: "storage", notesDeferred: false });
+  expect(text).not.toContain("failed synthetically");
+});
+
+test("closing the dialog right after Done does not stop the Notes reconcile, and the card row re-reads when it settles", async () => {
+  memory.manyDocs = true;
+  const docs = memory.hold("docs-fetch");
+  const { row, status } = await mountCardAndConnect();
+  await authorize();
+  await expectDone();
+  await until(() => status() === "Connected" && row.textContent!.includes("1 meeting"), "expected the dialog's onConnected to refresh the row");
+  await until(() => memory.entered.has("docs-fetch"), "expected the background reconcile");
+  await click("Close");
+  await settle();
+  expect(document.querySelector('[role="dialog"]')).toBeNull();
+  expect(isGmeetNotesSyncInFlight()).toBe(true);
+  expect(row.textContent).toContain("1 meeting"); // Still the pre-Notes count.
+  docs.resolve();
+  await until(() => row.textContent!.includes("4 meetings"), "expected the card row to re-read the settled reconcile");
+  expect(memory.savedMeeting()).toHaveLength(4);
+  expect(status()).toBe("Connected");
+});
+
+test("a background Notes failure after the dialog closed surfaces on the card as Last sync failed with the saved message", async () => {
+  memory.manyDocs = true;
+  const docs = memory.hold("docs-fetch");
+  const { row, status } = await mountCardAndConnect();
+  await authorize();
+  await expectDone();
+  await until(() => status() === "Connected", "expected the dialog's onConnected to refresh the row");
+  await until(() => memory.entered.has("docs-fetch"), "expected the background reconcile");
+  await click("Close");
+  await settle();
+  expect(row.querySelector('[role="alert"]')).toBeNull();
+  memory.failures.set("docs-fetch", "reject");
+  docs.resolve();
+  await until(() => status() === "Last sync failed", "expected the card row to show the background failure");
+  const saved = await store.getConnection(memory.tcw, "google-meet");
+  expect(saved).toMatchObject({ ok: true, data: { status: "connected", lastSyncStatus: "error" } });
+  const message = (saved as { data: { lastSyncError: string } }).data.lastSyncError;
+  expect(message.length).toBeGreaterThan(0);
+  expect(row.querySelector('[role="alert"]')?.textContent).toBe(message);
 });

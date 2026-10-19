@@ -57,6 +57,7 @@ import type {
 import type { StoreResult, UpdateSyncStateInput } from "./connectorStore";
 import type { ConnectorConnection, ConnectorId } from "./types";
 import { beginFirefliesDisconnect } from "./firefliesSync";
+import { stopGmeetNotesSync } from "./gmeetSync";
 
 // ── The plans ────────────────────────────────────────────────────────
 
@@ -253,6 +254,9 @@ export async function runDisconnect(
   emit: DisconnectEmit,
   from?: DisconnectProgress,
 ): Promise<DisconnectProgress> {
+  // A deferred Notes reconcile writes rows and its final state row after its caller
+  // returned; it must be stopped before the teardown or it would undo the disconnect.
+  if (deps.connectorId === "google-meet") await stopGmeetNotesSync();
   const release = deps.connectorId === "fireflies"
     ? await beginFirefliesDisconnect()
     : () => undefined;

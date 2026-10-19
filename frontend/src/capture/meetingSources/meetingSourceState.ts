@@ -98,9 +98,11 @@ export function sourceRowDisplay(input: {
 }): { state: MeetingSourceState; status: MeetingSourceStatus | null; error: string | null } {
   const { connection } = input;
   const connected = connection?.status === "connected";
+  // "Connecting" only until the connection row exists: once it is written (even with a
+  // sync error) the row is connected, whatever the open connect dialog still shows.
   const state: MeetingSourceState = input.syncing
     ? "syncing"
-    : input.connecting
+    : input.connecting && !connected
       ? "connecting"
       : connected
         ? "connected"
