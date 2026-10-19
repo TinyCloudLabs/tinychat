@@ -2566,4 +2566,39 @@ describe("Notes reconcile at scale", () => {
       expect(getGmeetRunLog({ sql: TCW.sql } as unknown as TinyCloudWeb)).toBeNull();
     } finally { off(); offLog(); }
   });
+
+  test("an incremental run's partial total counts Notes changes, not every Drive change", async () => {
+    vi.useFakeTimers();
+    const f = scaleFixture({ docs: 0, notes: 0, preload: true });
+    const changes = [
+      ...Array.from({ length: 40 }, (_, i) => ({ fileId: `doc-${i}`, file: { id: `doc-${i}`, name: `Budget ${i}`, mimeType: "application/vnd.google-apps.document" } })),
+      ...Array.from({ length: 3 }, (_, i) => ({ fileId: `notes-${i}`, file: { id: `notes-${i}`, name: "Notes by Gemini", mimeType: "application/vnd.google-apps.document", modifiedTime: "2026-10-01T00:00:00.000Z" } })),
+    ];
+    f.client.listDriveChangesPage = async () => ({ ok: true as const, data: { changes, nextPageToken: null, newStartPageToken: "next-cursor" } });
+    failNoteWrites(f, "notes-1", Infinity);
+    let result: Awaited<ReturnType<typeof run>> | undefined;
+    void run(f.client, f.store, {}).then((value) => { result = value; });
+    expect(await untilWithTimers(() => result !== undefined)).toBe(true);
+    expect(f.store.state).toMatchObject({ lastSyncStatus: "partial", lastSyncError: "2 of 3 Notes saved. Sync now or Full rescan finishes the rest." });
+    expect(f.store.cursor).toBe("old-cursor");
+  });
+
+  test("once one Note has exhausted its retries, later Notes fail fast instead of burning the backoff again", async () => {
+    vi.useFakeTimers();
+    const f = scaleFixture({ docs: 0, notes: 3, preload: true });
+    const a = failNoteWrites(f, "notes-0", Infinity);
+    const upsert = f.store.upsertMeeting.bind(f.store);
+    let second = 0;
+    f.store.upsertMeeting = async (tcw, meeting, sentences) => {
+      if (meeting.sourceId !== "notes-1") return upsert(tcw, meeting, sentences);
+      second++;
+      return { ok: false, error: { code: "STORE", message: "node busy" } };
+    };
+    let result: Awaited<ReturnType<typeof run>> | undefined;
+    void run(f.client, f.store, { driveMode: "snapshot" }).then((value) => { result = value; });
+    expect(await untilWithTimers(() => result !== undefined)).toBe(true);
+    expect(a.attempts.count).toBe(3);
+    expect(second).toBe(1);
+    expect(f.store.state).toMatchObject({ lastSyncStatus: "partial", lastSyncError: "1 of 3 Notes saved. Sync now or Full rescan finishes the rest." });
+  });
 });

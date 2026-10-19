@@ -1395,7 +1395,7 @@ async function syncDriveNotes(
     }
     let pageFailed = false;
     diagnostics.drive_input_items += page.data.changes.length;
-    changesSeen += page.data.changes.length;
+    changesSeen += page.data.changes.filter(isNotesRelevantChange).length;
     for (let index = 0; index < page.data.changes.length; index++) {
       const storageFailedBefore = diagnostics.drive_storage_failed;
       const outcome = await syncDriveChange(page.data.changes[index]!, opts, record, diagnostics);
@@ -1425,7 +1425,7 @@ async function syncDriveNotes(
     diagnostics.drive_items_failed = changesFailed;
     // Only storage failures are a partial result; a failed Docs read keeps the run's error.
     return changesFailedOther === 0
-      ? { failed: true, partial: { saved: Math.max(0, changesSeen - changesFailed), total: changesSeen } }
+      ? { failed: true, partial: { saved: Math.max(0, Math.max(changesSeen, changesFailed) - changesFailed), total: Math.max(changesSeen, changesFailed) } }
       : { failed: true };
   }
   if (!finalCursor) return { terminal: { kind: "network", message: "Google Drive changes page had no new start token" } };
@@ -1612,6 +1612,11 @@ async function snapshotDriveNotes(
     notes();
     if (sinceCheckpoint >= CHECKPOINT_EVERY) await checkpoint();
   }
+  // Without the preloaded index every Drive file is a candidate; count only those that can be Notes.
+  const notesTotal = Math.max(
+    failedCount,
+    lookup === null ? candidates.filter((file) => file.trashed === true || isLikelyGmeetNotesFile(file)).length : candidates.length,
+  );
   if (failed) {
     // The Notes that failed stay out of doneIds: the next run resumes this checkpoint and
     // reconciles only them. The cursor is not committed until every Note is saved.
@@ -1619,7 +1624,7 @@ async function snapshotDriveNotes(
     diagnostics.drive_items_failed = failedCount;
     // Only storage failures are a partial result; a failed Docs read keeps the run's error.
     return failedOther === 0
-      ? { failed: true, partial: { saved: Math.max(0, candidates.length - failedCount), total: candidates.length } }
+      ? { failed: true, partial: { saved: Math.max(0, notesTotal - failedCount), total: notesTotal } }
       : { failed: true };
   }
   if (store.putDriveProgress && (resumed !== null || diagnostics.drive_checkpoint_writes > 0)) {
@@ -1649,22 +1654,30 @@ function abortableDelay(ms: number, signal: AbortSignal | undefined): Promise<vo
  * twice with backoff, so a transient node error does not cost the Note. Every such call is an
  * idempotent read or an upsert keyed on (source, source_id).
  */
+/** Runs in which a Note already exhausted its retries: the node is down, so later Notes fail fast instead of each burning the backoff. */
+const retriesExhausted = new WeakSet<GmeetSyncDiagnostics>();
+
 function withStorageRetry(opts: FinishingOptions, diagnostics: GmeetSyncDiagnostics): FinishingOptions {
+  const isFailed = (value: unknown) => typeof value === "object" && value !== null && "ok" in value && value.ok === false;
   const step: FinishingStep = async (work, storage = false) => {
     let result = await opts.step(work, storage);
     if (!storage) return result;
     for (const wait of NOTE_STORAGE_RETRY_BACKOFF_MS) {
-      const failedResult = typeof result === "object" && result !== null && "ok" in result && result.ok === false;
-      if (!failedResult || opts.signal?.aborted) return result;
+      if (!isFailed(result) || opts.signal?.aborted || retriesExhausted.has(diagnostics)) return result;
       diagnostics.drive_storage_retries++;
       await abortableDelay(wait, opts.signal);
       if (opts.signal?.aborted) return result;
       result = await opts.step(work, true);
     }
+    if (isFailed(result)) retriesExhausted.add(diagnostics);
     return result;
   };
   return { ...opts, step };
 }
+
+/** Drive changes that reach Notes handling: removals and Notes candidates (never every unrelated file change). */
+const isNotesRelevantChange = (change: GoogleDriveChange): boolean =>
+  change.removed === true || change.file?.trashed === true || (change.file !== undefined && isLikelyGmeetNotesFile(change.file));
 
 async function syncDriveChange(change: GoogleDriveChange, opts: FinishingOptions, record: (sourceId: string, outcome: GmeetItemOutcome, reason?: string) => void, diagnostics: GmeetSyncDiagnostics): Promise<DriveOutcome & { failed?: boolean }> {
   const fileId = change.fileId ?? change.file?.id;
