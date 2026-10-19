@@ -19,6 +19,7 @@ import xyz.tinycloud.exo.stt.core.CapturePauseGate
 import xyz.tinycloud.exo.stt.core.CaptureYieldingLoop
 import xyz.tinycloud.exo.stt.core.Admission
 import xyz.tinycloud.exo.stt.core.ResumableWork
+import xyz.tinycloud.exo.stt.core.ProgressThrottle
 import xyz.tinycloud.exo.stt.core.SherpaVadSource
 import xyz.tinycloud.exo.stt.core.TimedWord
 import xyz.tinycloud.exo.stt.core.TokenWordAlignment
@@ -81,10 +82,32 @@ class TranscriptionQueue(private val context: Context, private val store: ModelS
         }
     }
 
-    /** Scans every committed note for unfinished on-device work (native work inventory, plan
-     * §2.5) and adds it to the queue. Called (deferred until the UI is up; see `SttBootstrap`) at
-     * process start, on every `committed`/`recovered` event, and when a model finishes
-     * downloading. */
+
+    /** Clears interrupted explicit reruns before the launch reconciliation scan runs. */
+    fun recoverInterruptedReruns() {
+        executor.execute {
+            val notes = try { capture.library.list() } catch (e: Exception) {
+                Log.e("ExoStt", "rerun recovery list failed", e)
+                return@execute
+            }
+            for (note in notes) {
+                val stt = note.optJSONObject("stt") ?: continue
+                val state = stt.optString("state")
+                if (stt.isNull("rerunRev") || !stt.has("rerunRev") ||
+                    state != "queued" && state != "running" && state != "waiting_for_model") continue
+                val id = note.optString("id", "")
+                if (id.isEmpty()) continue
+                try {
+                    capture.library.mutate(id, "stt.write") { current ->
+                        ResumableWork.cancelInterruptedRerun(current.getJSONObject("stt"))
+                        Unit
+                    }
+                } catch (e: Exception) { Log.e("ExoStt", "rerun recovery failed for $id", e) }
+            }
+        }
+    }
+    /** Scans committed notes for unfinished resumable work. Called after launch recovery and
+     * on every `committed`/`recovered` event or model download. */
     fun reconcile() {
         executor.execute {
             val notes = try { capture.library.list() } catch (e: Exception) { Log.e("ExoStt", "reconcile list failed", e); emptyList() }
@@ -116,6 +139,23 @@ class TranscriptionQueue(private val context: Context, private val store: ModelS
             wake = { executor.execute { pump() } },
         )
     }
+    /** A user-confirmed rerun of a committed transcript; `rerunRev` prevents launch-time resumption. */
+    fun enqueueAgain(id: String, rev: Int, baseRev: Int, baseHash: String, accepted: (Boolean) -> Unit, failed: (Exception) -> Unit) {
+        if (rev <= 0 || baseRev <= 0 || baseHash.isBlank()) {
+            failed(IllegalArgumentException("positive rev/baseRev and baseHash are required"))
+            return
+        }
+        admission.enqueue(
+            id,
+            finished = { false },
+            persist = { capture.library.mutate(id, "stt.write") { note -> ResumableWork.rerun(note.getJSONObject("stt"), rev, baseRev, baseHash) } },
+            accepted = accepted,
+            failed = { e -> Log.w("ExoStt", "rerun enqueue failed for $id", e); failed(e) },
+            changed = { onQueueChanged?.invoke() },
+            wake = { executor.execute { pump() } },
+        )
+    }
+
 
     /** A waiting note is taken out of line and marked cancelled at once; the note being decoded is
      * stopped at the decode's next window. */
@@ -250,6 +290,12 @@ class TranscriptionQueue(private val context: Context, private val store: ModelS
         var decodedAny = false
         var segmentsDone = 0
         var windowsDone = 0
+        val throttle = ProgressThrottle()
+        fun checkpoint() {
+            try { capture.library.mutate(id, "stt.write") {
+                it.getJSONObject("stt").put("windowsDone", windowsDone).put("segmentsDone", segmentsDone)
+            } } catch (e: Exception) { Log.w("ExoStt", "progress checkpoint failed for $id", e) }
+        }
         engine.transcribe(
             file = file,
             checkCapturing = {
@@ -258,9 +304,10 @@ class TranscriptionQueue(private val context: Context, private val store: ModelS
             },
             onWindow = {
                 windowsDone += 1
-                try { capture.library.mutate(id, "stt.write") { it.getJSONObject("stt").put("windowsDone", windowsDone) } } catch (_: Exception) {}
+                val now = System.nanoTime()
+                if (throttle.checkpoint(now)) checkpoint()
                 val percent = totalWindows?.let { total -> minOf(99, (windowsDone.toDouble() / total * 100).toInt()) } ?: 0
-                onProgress?.invoke(id, percent)
+                if (throttle.event(percent, now)) onProgress?.invoke(id, percent)
             },
             onSegment = { chunk, words ->
                 if (words.isNotEmpty()) {
@@ -269,22 +316,31 @@ class TranscriptionQueue(private val context: Context, private val store: ModelS
                     // (TC-836 — the only type every other timestamp in this schema already uses).
                     segments.put(JSONObject().put("start", chunk.start.toLong() * 1000 / 16_000)
                         .put("end", chunk.end.toLong() * 1000 / 16_000)
-                        .put("text", words.joinToString(" ") { it.text }).put("speaker", JSONObject.NULL))
+                        .put("text", words.joinToString(" ") { it.text }).put("speaker", JSONObject.NULL)
+                        .put("timing", "engine"))
                 }
                 segmentsDone += 1
-                try { capture.library.mutate(id, "stt.write") { it.getJSONObject("stt").put("segmentsDone", segmentsDone) } } catch (_: Exception) {}
             },
         )
+        checkpoint()
         val outcome = if (decodedAny) "transcribed" else "no_speech"
         val isoNow = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US)
             .apply { timeZone = TimeZone.getTimeZone("UTC") }.format(Date())
+        val stt = capture.library.read(id)?.optJSONObject("stt")
+        val rerunRev = stt?.takeIf { !it.isNull("rerunRev") }?.optInt("rerunRev", 1)
+        val revision = rerunRev ?: 1
         val transcript = JSONObject()
-            .put("version", 1).put("noteId", id).put("transcriber", "on-device").put("rev", 1)
+            .put("version", 2).put("noteId", id).put("transcriber", "on-device").put("rev", revision)
             .put("engine", if (modelId == ModelManifest.PARAKEET_FULL) "parakeet-tdt-0.6b-v3" else "parakeet-tdt-110m-en")
             .put("model", modelId).put("language", "en").put("outcome", outcome).put("diarized", false)
             .put("segments", segments).put("createdAt", isoNow)
+        if (rerunRev != null && stt != null && !stt.isNull("rerunBaseRev") && !stt.isNull("rerunBaseHash")) {
+            transcript.put("rerunBase", JSONObject().put("rev", stt.optInt("rerunBaseRev")).put("hash", stt.optString("rerunBaseHash")))
+        }
         capture.library.putTranscript(id, transcript)
         try { capture.library.mutate(id, "stt.write") { it.getJSONObject("stt").put("state", "done").put("error", JSONObject.NULL) } } catch (_: Exception) {}
+        val completionDelay = throttle.completionDelayMillis(System.nanoTime())
+        if (completionDelay > 0) Thread.sleep(completionDelay)
         onProgress?.invoke(id, 100)
         onTranscribed?.invoke(id, outcome)
         onQueueChanged?.invoke()

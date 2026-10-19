@@ -73,6 +73,15 @@ When trusted local certs exist, both switch to HTTPS on the same ports. Leave
 `frontend/.env` without `VITE_BACKEND_URL` unless you need an explicit backend
 override; the frontend derives `http` or `https` from the page protocol.
 
+Web sign-in starts an unbound SIWE nonce request and manifest load while the
+OpenKey connection is in progress. The nonce is scoped to that sign-in attempt:
+if it is four minutes old when signing begins, the app requests a new
+address-bound nonce; it refuses to sign if SDK setup lets the nonce age out.
+After backend verification succeeds, the SDK-retained provider can sign later
+user-approved operations; abandoned sign-in attempts remain blocked.
+The backend must enforce the signed SIWE domain and URI (TC-1201) before
+previewing this flow. Native sign-in is unchanged.
+
 ## Verification
 
 Use build and root tests as unauthenticated smoke checks:
@@ -163,7 +172,7 @@ changeset.
 - **Beta.** After each merge that adds changesets, the `Release` workflow
   versions betas (for example `0.3.0-beta.2`), commits them to main with
   `[skip ci]`, and tags each bumped unit `<name>@<version>`. Betas do not
-  deploy web or backend. A major web/desktop bump is refused until someone
+  deploy web or backend, and build no desktop release (run `desktop-release.yml` by hand, see Desktop releases). A major web/desktop bump is refused until someone
   runs the `Release` workflow with `confirm=major-beta`.
 - **Stable.** The workflow keeps a **chore(release): release stable** PR open
   that only flips `.changeset/pre.json` to `"exit"` and records the plan in
@@ -198,15 +207,64 @@ run's final "Production state" table says what changed, including when a later
 check failed. See [docs/deployment.md](docs/deployment.md) for the deploy key,
 the rulesets and their residual risk.
 
+**Cutting a stable release.** Merging the Release stable PR is the whole
+release: the `Release` run tags the stable versions, then its dispatch step
+runs `desktop-release.yml` (for a new stable `exo-desktop` tag) and then
+`deploy-production.yml` (for new stable backend or web tags). GitHub refuses
+to dispatch a disabled workflow (HTTP 422). The first refused dispatch fails
+the step, and every later dispatch and the Release stable PR refresh are
+skipped. Both 0.8.0 (#420) and 0.8.1 (#439) disabled both workflows, so
+neither deployed production or built desktop (TC-1324). **Never disable
+`release.yml`, `desktop-release.yml` or `deploy-production.yml` for a cut.**
+Only these holds are needed:
+
+1. **Freeze `main`** (no merges, coordination only) from the exact-SHA checks
+   until the stable `Release` run has pushed its tags. QA and CI cover one
+   SHA; a merge in between makes the stable PR stale, so the release is
+   refused, or puts code nobody checked into the release.
+2. **No manual `deploy-production.yml` or `desktop-release.yml` runs** while the
+   `Release` run and the runs it dispatches are in progress. `Deploy production`
+   has one fixed concurrency group that keeps only one pending run, so a manual
+   run queued behind the dispatched one replaces (cancels) it; a manual
+   `Desktop release (Exo)` run for the same tag races the dispatched one.
+3. **Only if the go excludes desktop** (for example a web-only hotfix; the
+   fixed group still tags `exo-desktop`): let the dispatch happen, then cancel
+   the `Desktop release (Exo)` run it started (`gh run cancel <id>`) before its
+   publish job. Never block it by disabling the workflow.
+
+Immediately before the merge, every dispatched workflow must read `active`, and
+`EXO_DESKTOP_SIGNING` must be set (`unsigned` or `required`; unset fails the
+desktop plan job):
+
+```bash
+for w in release desktop-release deploy-production; do
+  gh api repos/TinyCloudLabs/tinychat/actions/workflows/$w.yml --jq '"\(.path) \(.state)"'
+done
+gh variable get EXO_DESKTOP_SIGNING -R TinyCloudLabs/tinychat
+```
+
+After the merge, watch `Release`, `Deploy production` and `Desktop release (Exo)`
+to the end, then check that `gh release view exo-desktop@<version>` shows a
+published, latest release with the DMG, `.app.zip` and `SHA256SUMS.txt`. If the
+dispatch step failed anyway, start what it didn't, with the same inputs:
+`gh workflow run desktop-release.yml --ref main -f tag=exo-desktop@<version>`
+and `gh workflow run deploy-production.yml --ref main -f tag=<backend tag, else
+web tag> -f backend=<true|false> -f web=<true|false>`. The skipped Release
+stable PR refresh comes back with the next push to main, or now with
+`gh workflow run release.yml --ref main` (the tags exist, so it dispatches
+nothing).
+
 `desktop/package.json` is the single source of the desktop version:
 `tauri.conf.json` reads it (`"version": "../package.json"`), and the release
 workflow copies it into `desktop/src-tauri/Cargo.toml` and `Cargo.lock`.
 `bun run release:check` fails if they drift.
 
-**Desktop releases.** For every new `exo-desktop@<version>` tag the `Release`
-workflow runs `Desktop release (Exo)` **from main** with the tag as an input
-(`gh workflow run desktop-release.yml --ref main -f tag=exo-desktop@<version>`,
-which is also how to retry). It refuses any other ref, requires the tag to point
+**Desktop releases.** For every new stable `exo-desktop@<version>` tag the
+`Release` workflow runs `Desktop release (Exo)` **from main** with the tag as an
+input. Betas are manual: a merge that versions a beta builds no desktop release,
+so a release coordinator runs
+`gh workflow run desktop-release.yml --ref main -f tag=exo-desktop@<version>`
+(for example `exo-desktop@0.2.0-beta.3`), which is also how to retry any release. It refuses any other ref, requires the tag to point
 at a commit of `main`, builds exactly that commit with the same job as desktop
 CI (`.github/workflows/desktop-build.yml`) and publishes a GitHub Release with
 no manual step:

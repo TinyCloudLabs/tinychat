@@ -3,6 +3,7 @@
 // A voice note is titled by its own words ("Voice note" when it has none) and its line is "7:16 PM · 0:14",
 // so notes recorded minutes apart tell apart. It keeps the smoke script's `voice-note-item` and `data-source-id`.
 import { ChevronRightIcon } from "lucide-react";
+import { memo } from "react";
 
 import { ListRow } from "@/components/ui/list-row";
 import type { MeetingListItem } from "@/lib/connectors/meetingExplorer";
@@ -16,6 +17,9 @@ import { formatClockDuration, rowWhen } from "./formatters";
 import { RowBadge } from "./RowBadge";
 import { KIND_ICON, libraryKind, librarySourceLabel } from "./libraryKinds";
 import type { NotePipeline } from "@/lib/voiceNotes/notePipeline";
+import type { NotePipelineView } from "@/lib/voiceNotes/useNotePipeline";
+import type { AppPlatform } from "@/lib/platform";
+import { activityForNote, noteStatus } from "../activity/activitySelector";
 import { pipelineTranscriptStatus } from "../pipeline/PipelineTrackSummary";
 
 export type LibraryItem = MeetingListItem & {
@@ -23,6 +27,10 @@ export type LibraryItem = MeetingListItem & {
   onPhone?: true;
   /** A voice note whose row is in the space while this device still holds its copy. */
   saving?: true;
+  /** The recording remains on this device after its space row has synced. */
+  hasLocalAudio?: true;
+  /** The recording's audio is verified ready on this device (native ledger), so the storage-full copy may claim it. */
+  localAudioReady?: true;
   /** A voice note's own words (its first moment, else its transcript), which title its row. */
   snippet?: string | null;
 };
@@ -44,10 +52,15 @@ export function libraryRowMeta(item: LibraryItem, now: Date, grouped: boolean): 
   return parts.filter((part): part is string => !!part).join(" · ");
 }
 
-/** What a note not yet settled in the space says beside its line: "On this phone" or "Saving…"; null once it is. */
+/** A local note names its device; pending work is described by the shared Activity selector. */
 export function libraryRowBadge(item: LibraryItem, where: string = HOME_COPY.onThisPhone): string | null {
   if (item.onPhone) return where.charAt(0).toUpperCase() + where.slice(1);
-  return item.saving ? HOME_COPY.savingBadge : null;
+  if (item.metadata?.audio_stored === 0) {
+    const platform = item.metadata.audio_device_platform;
+    if (item.hasLocalAudio || item.saving) return `Audio stays on this ${platform === "tauri" || platform === "mac" ? "Mac" : platform === "web" ? "browser" : "phone"}`;
+    return `Audio is on your ${platform === "ios" ? "iPhone" : platform === "tauri" || platform === "mac" ? "Mac" : platform === "android" ? "phone" : "browser"}`;
+  }
+  return null;
 }
 
 /** The length on the row's right: a voice note's is in its line, unless something replaced the line. */
@@ -55,12 +68,15 @@ export function libraryRowAsideDuration(item: LibraryItem, lineReplaced: boolean
   return isVoiceNote(item) && !lineReplaced ? null : item.durationSecs;
 }
 
-export function LibraryRow(props: { item: LibraryItem; now: Date; grouped: boolean; selected?: boolean; testId?: string; onRecentOpen?: (id: string) => void; pipeline?: NotePipeline }) {
+export interface LibraryRowProps { item: LibraryItem; now: Date; grouped: boolean; selected?: boolean; testId?: string; onRecentOpen?: (id: string) => void; pipeline?: NotePipeline; activityView?: NotePipelineView; platform?: AppPlatform }
+
+function LibraryRowContent(props: LibraryRowProps & { activityStatus: string | null }) {
   const { item } = props;
   const Icon = KIND_ICON[libraryKind(item.source)];
   const voiceNote = libraryKind(item.source) === "note";
   const soft = useSoftHome();
-  const badge = libraryRowBadge(item);
+  const status = props.activityStatus;
+  const badge = status ? null : libraryRowBadge(item);
   const transcriptStatus = props.pipeline ? pipelineTranscriptStatus(props.pipeline) : null;
   if (soft) {
     const issue = issueForItem(item, soft.issues);
@@ -70,8 +86,9 @@ export function LibraryRow(props: { item: LibraryItem; now: Date; grouped: boole
         icon={Icon}
         title={libraryRowTitle(item)}
         meta={libraryRowMeta(item, props.now, props.grouped)}
-        badge={lineReplaced || isVoiceNote(item) ? undefined : (badge ?? undefined)}
-        pipeline={isVoiceNote(item) ? props.pipeline : undefined}
+        badge={lineReplaced || (isVoiceNote(item) && item.metadata?.audio_stored !== 0) ? undefined : (badge ?? undefined)}
+        pipeline={status ? undefined : isVoiceNote(item) ? props.pipeline : undefined}
+        activityStatus={status}
         durationSecs={libraryRowAsideDuration(item, lineReplaced)}
         issue={issue}
         onDetails={issue && issueIsInformational(issue) ? (opener: HTMLElement) => soft.openIssue(item.sourceId, opener) : undefined}
@@ -96,11 +113,12 @@ export function LibraryRow(props: { item: LibraryItem; now: Date; grouped: boole
         <>
           {badge && <RowBadge>{badge}</RowBadge>}
           {libraryRowMeta(item, props.now, props.grouped)}
-          {transcriptStatus && ` · ${transcriptStatus}`}
+          {!status && transcriptStatus && ` · ${transcriptStatus}`}
         </>
       }
       aside={
         <span className="flex shrink-0 items-center gap-1 text-meta text-muted-foreground">
+          {status && <span className={status.startsWith("Needs attention") ? "max-w-40 text-right text-amber-700 [overflow-wrap:anywhere] dark:text-amber-300" : "max-w-40 text-right [overflow-wrap:anywhere]"} data-testid="library-note-status">{status}</span>}
           {item.durationSecs !== null && !isVoiceNote(item) && <span className="tnum">{formatClockDuration(item.durationSecs)}</span>}
           <ChevronRightIcon aria-hidden="true" className="size-4" />
         </span>
@@ -109,4 +127,17 @@ export function LibraryRow(props: { item: LibraryItem; now: Date; grouped: boole
       data-source-id={voiceNote ? item.sourceId : undefined}
     />
   );
+}
+
+const MemoLibraryRowContent = memo(LibraryRowContent, (before, after) => before.item === after.item &&
+  Math.floor(before.now.getTime() / 60_000) === Math.floor(after.now.getTime() / 60_000) &&
+  before.grouped === after.grouped && before.selected === after.selected && before.testId === after.testId &&
+  before.onRecentOpen === after.onRecentOpen && before.platform === after.platform && before.activityStatus === after.activityStatus &&
+  (before.activityStatus !== null || after.activityStatus !== null || before.pipeline === after.pipeline));
+
+export function LibraryRow(props: LibraryRowProps) {
+  const activityStatus = props.activityView && props.platform
+    ? noteStatus(activityForNote(props.activityView, props.platform), props.activityView.pipeline)
+    : null;
+  return <MemoLibraryRowContent {...props} activityStatus={activityStatus} />;
 }

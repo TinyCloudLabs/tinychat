@@ -78,7 +78,7 @@ export interface TranscriptionTranscript {
   created_at?: string;
   provider?: string | null;
   partial?: boolean;
-  gaps?: unknown[];
+  gaps?: { start: number; end: number; speaker_name: string | null }[];
 }
 
 export interface CreateMeetingInput {

@@ -29,6 +29,7 @@ pub fn import_segment(
     segment_id: &str,
     path: &Path,
     system_audio: bool,
+    layout: super::journal::Layout,
 ) -> Result<(), String> {
     normalize_and_import_at(
         &root(app)?,
@@ -37,6 +38,7 @@ pub fn import_segment(
         segment_id,
         path,
         system_audio,
+        layout.channels(),
     )
 }
 
@@ -253,6 +255,21 @@ pub async fn recorder_whisper_stage_audio(
     tauri::async_runtime::spawn_blocking(move || stage_whisper_at(&dir, &sessions, &id, &stage_id))
         .await
         .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub async fn recorder_audio_envelope(
+    app: tauri::AppHandle,
+    id: String,
+) -> Result<Vec<[f32; 2]>, String> {
+    super::ensure(&app);
+    let dir = root(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let file = open_read(&dir, &id)?;
+        exo_local_transcription::audio_import::channel_envelope(file)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 fn whisper_stage_id(id: &str) -> Result<String, String> {
@@ -630,12 +647,21 @@ pub async fn delete_audio_file(app: tauri::AppHandle, id: String) -> Result<(), 
             let sessions = sessions_root(&app)?;
             let note_cleanup = delete_note_at(&root, &sessions, &id);
             let segment_cleanup = (|| {
+                if let Some(stopped) = super::journal::load_stopped(&app, &id)? {
+                    if let Some(segment_id) = stopped.segment_id {
+                        remove_source_session(&sessions, &segment_id)?;
+                        super::journal::remove_failed_source(&app, &segment_id)?;
+                    }
+                    super::journal::clear_stopped(&app, &id)?;
+                    super::refresh_finishing_quit(&app)?;
+                }
                 if let Some(pending) = super::journal::load(&app)? {
                     if pending.id == id {
                         if let Some(segment_id) = pending.segment_id {
                             remove_source_session(&sessions, &segment_id)?;
                             super::journal::remove_failed_source(&app, &segment_id)?;
                         }
+                        super::journal::clear(&app)?;
                     }
                 }
                 super::journal::delete_failed_for_note(&app, &id)
@@ -1058,11 +1084,13 @@ mod tests {
         assert!(delete_note_at(&root, &sessions, "../outside").is_err());
         assert_eq!(fs::read(&outside).unwrap(), b"sentinel");
         fs::remove_file(root.join("note.mp3")).unwrap();
-        assert!(std::process::Command::new("mkfifo")
-            .arg(root.join("note.mp3"))
-            .status()
-            .unwrap()
-            .success());
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(root.join("note.mp3"))
+                .status()
+                .unwrap()
+                .success()
+        );
         assert!(read(&root, "note", 0, 8).is_err());
         assert!(append(&root, "note", b"tamper").is_err());
         fs::remove_dir_all(base).unwrap();

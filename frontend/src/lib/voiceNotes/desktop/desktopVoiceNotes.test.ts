@@ -5,42 +5,69 @@ import { memoryLocks, openWebStore, type WebStoreOptions } from "../web/webStore
 import type { IdbEnv } from "../web/idb";
 import { createFileAudioBlobStore } from "./fileAudioBlobStore";
 import { openDesktopVoiceNotes, refreshDesktopWhisperCapability, type DesktopBridge } from "./desktopVoiceNotes";
-import type { DesktopWhisperBridge } from "./desktopWhisper";
+import { selectRecorderView } from "@/capture/recorder/final/recorderView";
+import { createVoiceNoteRecorderController } from "@/capture/recorder/voiceNoteRecorderController";
 import type { TranscriptionEvent } from "@/lib/anarlog/transcription.gen";
 import { subscribeCaptureCapabilities } from "../captureEngine";
-import type { MissingAudioSpan } from "../nativeVoiceNotes";
+import { __setVoiceNotesForTests, VoiceNotes, type MissingAudioSpan } from "../nativeVoiceNotes";
 import { leaseWhisperServer } from "@/lib/whisperServerLease";
+const originalVoiceNotes = VoiceNotes;
 
 type Callback = (payload: never) => void;
 
 class FakeBridge implements DesktopBridge {
   files = new Map<string, Uint8Array>();
   calls: string[] = [];
+  discardTargets: string[] = [];
+  discardResults: ("retired" | "not_current")[] = [];
+  statusGate: Promise<void> | null = null;
+  delayedStatusObserved = 0;
   stageCalls: Record<string, unknown>[] = [];
   listeners = new Map<string, Set<Callback>>();
   recover: { id: string; startedAt: number; recordedMs: number; pausedMs: number; maxDurationMs: number;
-    spans?: MissingAudioSpan[] } | null = null;
+    spans?: MissingAudioSpan[]; layout?: "mono" | "stereo" } | null = null;
+  stopped: NonNullable<FakeBridge["recover"]>[] = [];
+  emptyFinal = false;
+  priorAudioMs = 0;
   failed: { id: string; segmentId: string; reason: string; error: string; journal: NonNullable<FakeBridge["recover"]> }[] = [];
   elapsed = 0;
   paused = 0;
   current: string | null = null;
-  state: "idle" | "recording" | "paused" = "idle";
+  channels: 1 | 2 = 1;
+  state: "idle" | "recording" | "paused" | "needs_user" = "idle";
+  reason: "writer_stalled" | "source_still_running" | "source_unusable" | "snapshot_unavailable" | "snapshot_empty" | null = null;
+  lastStopReason: string | null = null;
+  captureSourceUnconfirmed = false;
+  unconfirmedStop = false;
+  snapshotFailureCount = 0;
+  emptySnapshotCount = 0;
+  discardNeverStops = false;
+  discardRejectCount = 0;
+  discardCleanupPending = false;
+  pendingDiscardIds = new Set<string>();
   selectedId: string | null = null;
   selectedModel: string | null = null;
   downloadedModels = new Set<string>();
   spans: MissingAudioSpan[] = [];
   stopError: Error | null = null;
+  stopDurableGate: Promise<void> | null = null;
+  finishGate: Promise<void> | null = null;
+  failPause = false;
   stageError: unknown = null;
+  deleteGate: Promise<void> | null = null;
+  deleteStarted = false;
   now = 1_000_000;
 
   emit(event: string, payload: unknown) {
     for (const callback of this.listeners.get(event) ?? []) callback(payload as never);
   }
   status() {
-    return { state: this.state, reason: this.state === "paused" ? "user" : null, id: this.current,
-      startedAt: this.current ? this.now : null, elapsedMs: this.elapsed, audioMs: this.elapsed,
+    return { state: this.state, reason: this.reason ?? (this.state === "paused" ? "user" : this.lastStopReason), id: this.current,
+      startedAt: this.current ? this.now : null, elapsedMs: this.elapsed, audioMs: this.elapsed, channels: this.channels,
       pausedMs: this.paused, maxDurationMs: 10_000, intent: this.state === "idle" ? "stopped" : this.state,
-      availability: "available", at: this.now, elapsedAt: this.now, spans: this.spans };
+      availability: "available", at: this.now, elapsedAt: this.now, spans: this.spans,
+      captureSourceUnconfirmed: this.captureSourceUnconfirmed,
+      discardCleanupPending: this.discardCleanupPending };
   }
   async listen<T>(event: string, callback: (payload: T) => void): Promise<() => void> {
     const set = this.listeners.get(event) ?? new Set<Callback>();
@@ -51,26 +78,112 @@ class FakeBridge implements DesktopBridge {
   async invoke<T>(command: string, args: Record<string, unknown> = {}): Promise<T> {
     this.calls.push(command);
     const id = String(args.id ?? "");
+    const recordingId = String(args.recordingId ?? "");
     let result: unknown;
     switch (command) {
       case "recorder_models_get": result = this.selectedModel; break;
       case "recorder_models_list": result = [...this.downloadedModels].map((model) => ({ id: model, downloaded: true })); break;
       case "recorder_models_select": this.selectedModel = id;
         this.emit("exo://recorder-model-selection", id); result = null; break;
-      case "recorder_recover": result = { journal: this.recover, quarantined: this.failed }; break;
-      case "recorder_acknowledge": this.recover = null; result = null; break;
+      case "recorder_recover":
+        if (!this.captureSourceUnconfirmed) {
+          for (const pendingId of this.pendingDiscardIds) {
+            this.files.delete(pendingId);
+            this.stopped = this.stopped.filter((entry) => entry.id !== pendingId);
+          }
+          this.pendingDiscardIds.clear();
+          this.discardCleanupPending = false;
+        }
+        result = { journal: this.recover, stopped: this.stopped.filter((entry) =>
+          !this.pendingDiscardIds.has(entry.id)), quarantined: this.failed };
+        break;
+      case "recorder_stopped_list": result = this.stopped.map((entry) => entry.id); break;
+      case "recorder_acknowledge": this.recover = null; this.stopped = this.stopped.filter((entry) => entry.id !== id); result = null; break;
       case "recorder_failed_list": result = this.failed; break;
       case "recorder_failed_retry": this.failed = this.failed.filter((item) => item.id !== id); result = []; break;
       case "recorder_failed_delete": this.failed = this.failed.filter((item) => item.id !== id); result = null; break;
       case "recorder_start": if (this.recover) throw new Error("recovery_pending");
-        this.current = id; this.state = "recording"; result = this.status(); this.emit("exo://recorder-mic-state", result); break;
-      case "recorder_pause": this.state = "paused"; result = this.status(); this.emit("exo://recorder-mic-state", result); break;
-      case "recorder_resume": this.state = "recording"; result = this.status(); this.emit("exo://recorder-mic-state", result); break;
+        this.current = id; this.state = "recording"; this.reason = null; this.lastStopReason = null; result = this.status(); this.emit("exo://recorder-mic-state", result); break;
+      case "recorder_pause":
+        if (this.failPause) {
+          this.state = "needs_user";
+          this.reason = "writer_stalled";
+          throw Object.assign(new Error("capture stop timed out"), { code: "capture_stop_timeout" });
+        }
+        this.state = "paused"; this.reason = null; result = this.status(); this.emit("exo://recorder-mic-state", result); break;
+      case "recorder_resume": if (this.failResume) throw Object.assign(new Error("audio session busy"), { code: "resume_failed" });
+        this.state = "recording"; this.reason = null; result = this.status(); this.emit("exo://recorder-mic-state", result); break;
+      case "recorder_stop_durable":
+        if (this.stopDurableGate) await this.stopDurableGate;
+        if (this.snapshotFailureCount > 0) {
+          this.snapshotFailureCount--;
+          this.captureSourceUnconfirmed = true;
+          this.state = "needs_user";
+          this.reason = "snapshot_unavailable";
+          this.emit("exo://recorder-mic-state", this.status());
+          throw Object.assign(new Error("capture_snapshot_unavailable"), { code: "capture_snapshot_unavailable" });
+        }
+        if (this.emptySnapshotCount > 0) {
+          this.emptySnapshotCount--;
+          this.captureSourceUnconfirmed = true;
+          this.state = "needs_user";
+          this.reason = "snapshot_empty";
+          this.emit("exo://recorder-mic-state", this.status());
+          throw Object.assign(new Error("no_audio_captured"), { code: "no_audio_captured" });
+        }
+        if (this.unconfirmedStop) this.captureSourceUnconfirmed = true;
+        if (this.current) this.stopped.push({ id: this.current, startedAt: this.now,
+          recordedMs: this.emptyFinal ? this.priorAudioMs : this.elapsed, pausedMs: this.paused,
+          maxDurationMs: 3 * 60 * 60_000 });
+        // falls through
       case "recorder_stop": if (this.stopError) throw this.stopError;
-        result = { ...this.status(), state: "idle", intent: "stopped" };
-        this.state = "idle"; this.current = null; this.elapsed = 0; this.paused = 0;
+        result = { ...this.status(), state: "idle",
+          intent: this.unconfirmedStop ? "recording" : "stopped",
+          reason: null };
+        if (command === "recorder_stop_durable" && this.emptyFinal) {
+          result = { ...(result as object), audioMs: this.priorAudioMs, elapsedMs: this.priorAudioMs };
+        }
+        this.state = "idle"; this.reason = null; this.current = null; this.elapsed = 0; this.paused = 0; this.channels = 1;
         this.emit("exo://recorder-mic-state", this.status()); break;
-      case "recorder_status": result = this.status(); break;
+      case "recorder_discard_durable":
+        this.discardTargets.push(recordingId);
+        if (recordingId !== this.current) {
+          this.discardResults.push("not_current");
+          result = { result: "not_current" };
+          break;
+        }
+        if (this.discardRejectCount > 0) {
+          this.discardRejectCount--;
+          throw new Error("journal write refused");
+        }
+        if (this.current && this.discardNeverStops) this.stopped.push({ id: this.current, startedAt: this.now,
+          recordedMs: this.elapsed, pausedMs: this.paused, maxDurationMs: 3 * 60 * 60_000 });
+        if (this.discardNeverStops) {
+          if (this.current) this.pendingDiscardIds.add(this.current);
+          this.captureSourceUnconfirmed = true;
+          this.discardCleanupPending = true;
+        } else {
+          if (this.current) this.files.delete(this.current);
+          this.stopped = this.stopped.filter(({ id: stoppedId }) => stoppedId !== this.current);
+          this.captureSourceUnconfirmed = false;
+          this.discardCleanupPending = false;
+        }
+        this.state = "idle"; this.reason = null; this.current = null; this.elapsed = 0; this.paused = 0;
+        this.discardResults.push("retired");
+        result = { result: "retired", status: this.status() };
+        this.emit("exo://recorder-mic-state", this.status()); break;
+      case "recorder_finish": if (this.finishGate) await this.finishGate;
+        if (this.finishError) throw this.finishError;
+        result = this.files.get(id)?.length ?? 0; break;
+      case "recorder_status":
+        result = this.status();
+        if (this.statusGate) {
+          const gate = this.statusGate;
+          this.statusGate = null;
+          this.delayedStatusObserved++;
+          await gate;
+        }
+        break;
       case "recorder_list_inputs": result = { inputs: [{ id: "mic-1", name: "Fixture microphone", kind: "built_in" }],
         selectedId: this.selectedId, activeId: "mic-1", selectedMissing: null }; break;
       case "recorder_select_input": this.selectedId = args.id as string | null; result = null; break;
@@ -109,9 +222,13 @@ class FakeBridge implements DesktopBridge {
         result = removed;
         break;
       }
-      case "delete_audio_file": this.files.delete(id);
+      case "delete_audio_file":
+        if (this.deleteGate) { this.deleteStarted = true; await this.deleteGate; }
+        this.files.delete(id);
         this.failed = this.failed.filter((item) => item.id !== id);
+        this.stopped = this.stopped.filter((item) => item.id !== id);
         result = null; break;
+      case "recorder_quit_anyway": result = null; break;
       default: throw new Error(`Unexpected command ${command}`);
     }
     return result as T;
@@ -153,16 +270,468 @@ async function waitFor(check: () => boolean): Promise<void> {
   while (Date.now() < deadline) { if (check()) return; await Bun.sleep(10); }
   throw new Error("Timed out waiting for fixture Whisper");
 }
+async function waitForAsync(check: () => Promise<boolean>): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) { if (await check()) return; await Bun.sleep(10); }
+  throw new Error("Timed out waiting for asynchronous fixture state");
+}
 
 const slow = (name: string, run: () => Promise<void>) => test(name, run, 30_000);
 
 function rig(bridge = new FakeBridge(), dbName = crypto.randomUUID(), env: IdbEnv = newIdbEnv(),
-  storeOptions: Partial<WebStoreOptions> = {}, id = "note-1") {
-  return openDesktopVoiceNotes({ bridge, now: () => bridge.now, newId: () => id,
+  storeOptions: Partial<WebStoreOptions> = {}, id: string | (() => string) = "note-1") {
+  return openDesktopVoiceNotes({ bridge, now: () => bridge.now, newId: typeof id === "function" ? id : () => id,
     storeOptions: { env, dbName, locks: memoryLocks(), decodeCheck: null, now: () => bridge.now, ...storeOptions } });
+}
+async function waitUntilRecorderReady(recorder: ReturnType<typeof createVoiceNoteRecorderController>): Promise<void> {
+  if (recorder.getState().ready) return;
+  await new Promise<void>((resolve) => {
+    let unsubscribe = () => {};
+    const check = () => {
+      if (recorder.getState().ready) {
+        unsubscribe();
+        resolve();
+      }
+    };
+    unsubscribe = recorder.subscribe(check);
+    check();
+  });
+}
+
+async function rejectedDiscardFixture() {
+  const bridge = new FakeBridge();
+  bridge.discardRejectCount = 1;
+  const ids = ["discarded-session", "new-session"];
+  const engine = await rig(bridge, crypto.randomUUID(), newIdbEnv(), {}, () => ids.shift()!);
+  __setVoiceNotesForTests(engine.plugin, { available: true });
+  const makeController = () => createVoiceNoteRecorderController({
+    tcw: null,
+    available: true,
+    transcriber: { check: async () => {}, noteSaved: () => {} },
+    onDeviceReady: () => true,
+  });
+  const recorder = makeController();
+  const detach = recorder.attach();
+  await waitUntilRecorderReady(recorder);
+  await recorder.record();
+  const id = bridge.current!;
+  bridge.files.set(id, Uint8Array.of(21, 22, 23));
+  await recorder.discard();
+  return {
+    bridge, engine, id, makeController, recorder, detach,
+    dispose: () => {
+      detach();
+      engine.dispose();
+      __setVoiceNotesForTests(originalVoiceNotes, { available: null });
+    },
+  };
 }
 
 describe("desktop recorder adapter", () => {
+  test("a failed Resume reaches recorder_resume through the real controller and desktop adapter", async () => {
+    const bridge = new FakeBridge();
+    const engine = await rig(bridge);
+    __setVoiceNotesForTests(engine.plugin, { available: true });
+    const recorder = createVoiceNoteRecorderController({
+      tcw: null,
+      available: true,
+      transcriber: { check: async () => {}, noteSaved: () => {} },
+      onDeviceReady: () => true,
+    });
+    const detach = recorder.attach();
+    try {
+      await waitUntilRecorderReady(recorder);
+      await recorder.record();
+      await recorder.pause();
+      bridge.failResume = true;
+      await recorder.resume();
+      expect(bridge.calls.filter((command) => command === "recorder_resume")).toHaveLength(1);
+      expect(recorder.getState()).toMatchObject({
+        controlPending: null,
+        mic: { state: "paused", reason: "user" },
+        error: "Could not resume: audio session busy",
+      });
+      expect((await engine.plugin.status()).state).toBe("paused");
+    } finally {
+      detach();
+      engine.dispose();
+      __setVoiceNotesForTests(originalVoiceNotes, { available: null });
+    }
+  });
+  test("a stalled Resume retries through recorder_resume and recovers the real adapter intent", async () => {
+    const bridge = new FakeBridge();
+    const engine = await rig(bridge);
+    __setVoiceNotesForTests(engine.plugin, { available: true });
+    const recorder = createVoiceNoteRecorderController({
+      tcw: null,
+      available: true,
+      transcriber: { check: async () => {}, noteSaved: () => {} },
+      onDeviceReady: () => true,
+    });
+    const detach = recorder.attach();
+    try {
+      await waitUntilRecorderReady(recorder);
+      await recorder.record();
+      bridge.failPause = true;
+      await recorder.pause();
+      expect(recorder.getState().mic).toMatchObject({ state: "needs_user", reason: "writer_stalled" });
+      expect(bridge.calls).not.toContain("recorder_resume");
+
+      bridge.failPause = false;
+      await recorder.resume();
+      expect(bridge.calls.filter((command) => command === "recorder_resume")).toHaveLength(1);
+      expect((await engine.plugin.status()).state).toBe("recording");
+      expect(recorder.getState()).toMatchObject({
+        controlPending: null,
+        mic: { state: "recording" },
+      });
+    } finally {
+      detach();
+      engine.dispose();
+      __setVoiceNotesForTests(originalVoiceNotes, { available: null });
+    }
+  });
+
+  test("snapshot failure stays unsaved and Try again retries native snapshot through the real controller and adapter", async () => {
+    const bridge = new FakeBridge();
+    bridge.unconfirmedStop = true;
+    bridge.snapshotFailureCount = 1;
+    const engine = await rig(bridge);
+    __setVoiceNotesForTests(engine.plugin, { available: true });
+    const recorder = createVoiceNoteRecorderController({
+      tcw: null,
+      available: true,
+      transcriber: { check: async () => {}, noteSaved: () => {} },
+      onDeviceReady: () => true,
+    });
+    const detach = recorder.attach();
+    try {
+      await waitUntilRecorderReady(recorder);
+      await recorder.record();
+      const id = (await engine.plugin.status()).id!;
+      const captured = Uint8Array.of(11, 22, 33, 44);
+      bridge.files.set(id, captured);
+      bridge.elapsed = 10_000;
+
+      await recorder.stop();
+      expect((await engine.plugin.listPending()).recordings).toHaveLength(0);
+      expect(recorder.getState().captureSourceUnconfirmed).toBe(true);
+      const failedView = selectRecorderView(recorder.getState(), {
+        nowMs: bridge.now, elapsedMs: recorder.getState().elapsedMs, inputName: null,
+        silencedSinceMs: null, device: "mac", isDevelopmentOrTest: true,
+      });
+      expect(failedView).toMatchObject({
+        statusLine: "The recording isn't saved yet. Try again, or use Done to finish saving it.",
+        tapRingAction: "stop",
+        controls: { stop: true, resume: false },
+      });
+      expect(bridge.calls).not.toContain("recorder_finish");
+
+      await recorder.stop();
+      await waitForAsync(async () => (await engine.plugin.listPending()).recordings[0]?.ledger?.localAudio?.state === "ready");
+      const note = (await engine.plugin.listPending()).recordings.find(({ id: noteId }) => noteId === id);
+      expect(note).toMatchObject({ id, sizeBytes: captured.length, ledger: { localAudio: { state: "ready" } } });
+      expect(recorder.getState().captureSourceUnconfirmed).toBe(true);
+      expect(selectRecorderView(recorder.getState(), {
+        nowMs: bridge.now, elapsedMs: recorder.getState().elapsedMs, inputName: null,
+        silencedSinceMs: null, device: "mac", isDevelopmentOrTest: true,
+      })).toMatchObject({ ring: "idle" });
+      expect(bridge.calls.filter((command) => command === "recorder_stop_durable")).toHaveLength(2);
+      expect(bridge.calls.filter((command) => command === "recorder_finish")).toHaveLength(1);
+      expect(base64ToBytes((await engine.plugin.readAudioChunk({
+        id, offset: 0, length: captured.length,
+      })).base64)).toEqual(captured);
+    } finally {
+      detach();
+      engine.dispose();
+      __setVoiceNotesForTests(originalVoiceNotes, { available: null });
+    }
+  });
+
+  test("zero-frame Try again retries; Done closes without saving and defers safe cleanup", async () => {
+    const bridge = new FakeBridge();
+    bridge.emptySnapshotCount = 2;
+    bridge.discardNeverStops = true;
+    const engine = await rig(bridge);
+    __setVoiceNotesForTests(engine.plugin, { available: true });
+    const recorder = createVoiceNoteRecorderController({
+      tcw: null,
+      available: true,
+      transcriber: { check: async () => {}, noteSaved: () => {} },
+      onDeviceReady: () => true,
+    });
+    const detach = recorder.attach();
+    try {
+      await waitUntilRecorderReady(recorder);
+      await recorder.record();
+      const id = (await engine.plugin.status()).id!;
+      bridge.files.set(id, Uint8Array.of(7, 8, 9));
+      bridge.elapsed = 10_000;
+      const selectView = () => selectRecorderView(recorder.getState(), {
+        nowMs: bridge.now, elapsedMs: recorder.getState().elapsedMs, inputName: null,
+        silencedSinceMs: null, device: "mac", isDevelopmentOrTest: true,
+      });
+
+      await recorder.stop();
+      expect(selectView()).toMatchObject({
+        statusLine: "Nothing was recorded. Try again to check, or use Done to close without saving.",
+        tapRingAction: "stop",
+        doneAction: "discard",
+        controls: { stop: true, resume: false },
+      });
+      await recorder.stop();
+      expect(recorder.getState().phase).toBe("recording");
+      expect(bridge.calls.filter((command) => command === "recorder_stop_durable")).toHaveLength(2);
+      expect((await engine.plugin.listPending()).recordings).toHaveLength(0);
+
+      await recorder.discard();
+      expect(recorder.getState()).toMatchObject({ phase: "idle", captureSourceUnconfirmed: true });
+      expect(selectView()).toMatchObject({ ring: "idle" });
+      expect(bridge.calls.filter((command) => command === "recorder_discard_durable")).toHaveLength(1);
+      expect(bridge.calls).not.toContain("recorder_stop");
+      expect(bridge.files.has(id)).toBe(true);
+      expect(bridge.stopped.some((entry) => entry.id === id)).toBe(true);
+      expect((await engine.plugin.listPending()).recordings).toHaveLength(0);
+
+      await expect(engine.plugin.start()).rejects.toThrow("tombstoned");
+      bridge.captureSourceUnconfirmed = false;
+      bridge.discardCleanupPending = false;
+      await engine.recoverInterrupted();
+      expect(bridge.files.has(id)).toBe(false);
+      expect(bridge.stopped.some((entry) => entry.id === id)).toBe(false);
+      expect((await engine.plugin.listPending()).recordings).toHaveLength(0);
+    } finally {
+      detach();
+      engine.dispose();
+      __setVoiceNotesForTests(originalVoiceNotes, { available: null });
+    }
+  });
+
+  test("discard after snapshot failure is terminal, tombstoned, and retried after release", async () => {
+    const bridge = new FakeBridge();
+    bridge.snapshotFailureCount = 1;
+    bridge.discardNeverStops = true;
+    const engine = await rig(bridge);
+    __setVoiceNotesForTests(engine.plugin, { available: true });
+    const recorder = createVoiceNoteRecorderController({
+      tcw: null,
+      available: true,
+      transcriber: { check: async () => {}, noteSaved: () => {} },
+      onDeviceReady: () => true,
+    });
+    const detach = recorder.attach();
+    try {
+      await waitUntilRecorderReady(recorder);
+      await recorder.record();
+      const id = (await engine.plugin.status()).id!;
+      bridge.files.set(id, Uint8Array.of(12, 13, 14));
+      await recorder.stop();
+      expect(selectRecorderView(recorder.getState(), {
+        nowMs: bridge.now, elapsedMs: recorder.getState().elapsedMs, inputName: null,
+        silencedSinceMs: null, device: "mac", isDevelopmentOrTest: true,
+      }).statusLine).toContain("isn't saved yet");
+
+      await recorder.discard();
+      expect(recorder.getState()).toMatchObject({ phase: "idle", captureSourceUnconfirmed: true });
+      expect(bridge.calls).not.toContain("recorder_stop");
+      expect(bridge.calls.filter((command) => command === "recorder_discard_durable")).toHaveLength(1);
+      expect(bridge.files.has(id)).toBe(true);
+      expect(bridge.stopped.some((entry) => entry.id === id)).toBe(true);
+      expect((await engine.plugin.listPending()).recordings).toHaveLength(0);
+      await expect(engine.plugin.start()).rejects.toThrow("tombstoned");
+
+      const deferred = await engine.recoverInterrupted();
+      expect(deferred.failed).toHaveLength(0);
+      expect(bridge.files.has(id)).toBe(true);
+      expect(bridge.stopped.some((entry) => entry.id === id)).toBe(true);
+      expect((await engine.plugin.listPending()).recordings).toHaveLength(0);
+      bridge.captureSourceUnconfirmed = false;
+      bridge.discardCleanupPending = false;
+      await engine.recoverInterrupted();
+      expect(bridge.files.has(id)).toBe(false);
+      expect(bridge.stopped.some((entry) => entry.id === id)).toBe(false);
+      expect((await engine.plugin.listPending()).recordings).toHaveLength(0);
+    } finally {
+      detach();
+      engine.dispose();
+      __setVoiceNotesForTests(originalVoiceNotes, { available: null });
+    }
+  });
+
+  test("recoverInterrupted alone retries a rejected discard before admitting Record", async () => {
+    const fixture = await rejectedDiscardFixture();
+    try {
+      expect(fixture.bridge.calls.filter((command) => command === "recorder_discard_durable")).toHaveLength(1);
+      const recovered = await fixture.engine.recoverInterrupted();
+      expect(recovered.failed).toHaveLength(0);
+      expect(fixture.bridge.calls.filter((command) => command === "recorder_discard_durable")).toHaveLength(2);
+      expect(fixture.bridge.current).toBeNull();
+      expect(fixture.bridge.files.has(fixture.id)).toBe(false);
+      expect(fixture.bridge.stopped.some((entry) => entry.id === fixture.id)).toBe(false);
+      expect(fixture.recorder.getState()).toMatchObject({ phase: "idle", outcome: null });
+      expect((await fixture.engine.plugin.listPending()).recordings).toHaveLength(0);
+
+      await fixture.recorder.record();
+      expect(fixture.bridge.current).toBe("new-session");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  test("same-adapter controller remount retries a rejected discard before exposing status", async () => {
+    const fixture = await rejectedDiscardFixture();
+    fixture.detach();
+    const remounted = fixture.makeController();
+    const detachRemounted = remounted.attach();
+    try {
+      await waitUntilRecorderReady(remounted);
+      expect(fixture.bridge.calls.filter((command) => command === "recorder_discard_durable")).toHaveLength(2);
+      expect(fixture.bridge.current).toBeNull();
+      expect(fixture.bridge.files.has(fixture.id)).toBe(false);
+      expect(fixture.bridge.stopped.some((entry) => entry.id === fixture.id)).toBe(false);
+      expect(remounted.getState()).toMatchObject({ phase: "idle", outcome: null, mic: { state: "idle", reason: null } });
+      expect((await fixture.engine.plugin.listPending()).recordings).toHaveLength(0);
+
+      await remounted.record();
+      expect(fixture.bridge.current).toBe("new-session");
+    } finally {
+      detachRemounted();
+      fixture.dispose();
+    }
+  });
+
+  test("the next Record retries a rejected discard before starting a new native session", async () => {
+    const fixture = await rejectedDiscardFixture();
+    try {
+      expect(fixture.bridge.calls.filter((command) => command === "recorder_discard_durable")).toHaveLength(1);
+      await fixture.recorder.record();
+      expect(fixture.bridge.calls.filter((command) => command === "recorder_discard_durable")).toHaveLength(2);
+      expect(fixture.bridge.current).toBe("new-session");
+      expect(fixture.bridge.files.has(fixture.id)).toBe(false);
+      expect(fixture.bridge.stopped.some((entry) => entry.id === fixture.id)).toBe(false);
+      expect((await fixture.engine.plugin.listPending()).recordings).toHaveLength(0);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  test("a failed remount retry masks a tombstoned native id as idle until the next retry", async () => {
+    const fixture = await rejectedDiscardFixture();
+    fixture.bridge.discardRejectCount = 1;
+    fixture.detach();
+    const remounted = fixture.makeController();
+    const detachRemounted = remounted.attach();
+    try {
+      await waitUntilRecorderReady(remounted);
+      expect(fixture.bridge.calls.filter((command) => command === "recorder_discard_durable")).toHaveLength(2);
+      expect(fixture.bridge.current).toBe(fixture.id);
+      expect(remounted.getState()).toMatchObject({
+        phase: "idle", outcome: null, recordingId: null, captureSourceUnconfirmed: true,
+        mic: { state: "idle", reason: null },
+      });
+      expect((await fixture.engine.plugin.listPending()).recordings).toHaveLength(0);
+
+      await remounted.record();
+      expect(fixture.bridge.calls.filter((command) => command === "recorder_discard_durable")).toHaveLength(3);
+      expect(fixture.bridge.current).toBe("new-session");
+      expect(fixture.bridge.files.has(fixture.id)).toBe(false);
+    } finally {
+      detachRemounted();
+      fixture.dispose();
+    }
+  });
+
+  test("a delayed old status cannot discard a new Record and the new capture still saves", async () => {
+    const fixture = await rejectedDiscardFixture();
+    let releaseStatus!: () => void;
+    fixture.bridge.statusGate = new Promise<void>((resolve) => { releaseStatus = resolve; });
+    try {
+      const staleStatus = fixture.engine.plugin.status();
+      await waitFor(() => fixture.bridge.delayedStatusObserved === 1);
+      await fixture.recorder.record();
+      expect(fixture.bridge.current).toBe("new-session");
+      fixture.bridge.files.set("new-session", Uint8Array.of(31, 32, 33));
+
+      releaseStatus();
+      const reconciled = await staleStatus;
+      expect(reconciled).toMatchObject({ id: "new-session", state: "recording" });
+      expect(fixture.bridge.current).toBe("new-session");
+      expect(fixture.bridge.discardTargets).toEqual([fixture.id, fixture.id, fixture.id]);
+      expect(fixture.bridge.discardResults).toEqual(["retired", "not_current"]);
+      expect(fixture.bridge.files.has("new-session")).toBe(true);
+
+      fixture.bridge.elapsed = 60_000;
+      await fixture.recorder.stop();
+      const saved = (await fixture.engine.plugin.listPending()).recordings;
+      expect(saved).toHaveLength(1);
+      expect(saved[0]).toMatchObject({ id: "new-session", sizeBytes: 3, ledger: { localAudio: { state: "ready" } } });
+    } finally {
+      releaseStatus?.();
+      fixture.dispose();
+    }
+  });
+
+  test("retryRecovery and Record serialize tombstone retirement before starting new capture", async () => {
+    const bridge = new FakeBridge();
+    const id = "discarded-old";
+    const env = newIdbEnv();
+    const dbName = crypto.randomUUID();
+    const store = await openWebStore({ env, dbName, locks: memoryLocks(), decodeCheck: null,
+      now: () => bridge.now, audio: () => createFileAudioBlobStore(bridge) });
+    const defaults = await store.getCaptureDefaults();
+    await store.beginSession({ id, startedAt: bridge.now, source: "in_app", owner: null,
+      transitionGen: defaults.transitionGen,
+      options: { transcriber: "off", identifySpeakers: false, uploadAudio: false },
+      mimeType: "audio/mpeg", input: null, maxDurationMs: 10_000 });
+    await store.quarantineInterrupted(id, "source_unusable", "fixture failure");
+    await store.tombstoneSession(id);
+    bridge.failed = [{ id, segmentId: "old-segment", reason: "source_unusable", error: "fixture failure",
+      journal: { id, startedAt: bridge.now, recordedMs: 0, pausedMs: 0, maxDurationMs: 10_000 } }];
+    const ids = ["new-live"];
+    const engine = await openDesktopVoiceNotes({ bridge, store, now: () => bridge.now, newId: () => ids.shift()! });
+    __setVoiceNotesForTests(engine.plugin, { available: true });
+    const recorder = createVoiceNoteRecorderController({
+      tcw: null,
+      available: true,
+      transcriber: { check: async () => {}, noteSaved: () => {} },
+      onDeviceReady: () => true,
+    });
+    const detach = recorder.attach();
+    let releaseStatus!: () => void;
+    try {
+      await waitUntilRecorderReady(recorder);
+      bridge.current = id;
+      bridge.state = "recording";
+      bridge.statusGate = new Promise<void>((resolve) => { releaseStatus = resolve; });
+
+      const retrying = engine.plugin.retryRecovery({ id });
+      await waitFor(() => bridge.delayedStatusObserved === 1);
+      const recording = recorder.record();
+      releaseStatus();
+      await Promise.all([retrying, recording]);
+      expect(bridge.current).toBe("new-live");
+      expect(bridge.discardTargets).toEqual([id]);
+      expect(bridge.discardResults).toEqual(["retired"]);
+      expect(bridge.calls.indexOf("recorder_discard_durable")).toBeLessThan(bridge.calls.indexOf("recorder_start"));
+      expect((await engine.plugin.listPending()).recordings).toHaveLength(0);
+
+      bridge.files.set("new-live", Uint8Array.of(41, 42, 43));
+      bridge.elapsed = 60_000;
+      await recorder.stop();
+      expect(bridge.current).toBeNull();
+      expect(await store.hasTombstone(id)).toBe(true);
+      const saved = (await engine.plugin.listPending()).recordings;
+      expect(saved).toHaveLength(1);
+      expect(saved[0]).toMatchObject({ id: "new-live", sizeBytes: 3, ledger: { localAudio: { state: "ready" } } });
+    } finally {
+      releaseStatus?.();
+      detach();
+      engine.dispose();
+      store.close();
+      __setVoiceNotesForTests(originalVoiceNotes, { available: null });
+    }
+  });
+
   slow("Whisper timeout stops native work before staged audio cleanup", async () => {
     const originalSetTimeout = globalThis.setTimeout;
     let fireTimeout: (() => void) | null = null;
@@ -255,6 +824,250 @@ describe("desktop recorder adapter", () => {
     }
   });
 
+  test("1 minute, 30 minute and 3 hour fixtures commit before background finishing", async () => {
+    for (const minutes of [1, 30, 180]) {
+      const bridge = new FakeBridge();
+      bridge.finishGate = new Promise<void>(() => {});
+      const engine = await rig(bridge);
+      await engine.plugin.start();
+      bridge.elapsed = minutes * 60_000;
+      bridge.files.set("note-1", Uint8Array.of(1, 2, 3));
+      const started = performance.now();
+      const receipt = await engine.plugin.stop();
+      const elapsedMs = performance.now() - started;
+      expect(receipt.durationMs).toBe(minutes * 60_000);
+      expect(receipt.ledger?.localAudio?.state).toBe("preparing");
+      expect(elapsedMs).toBeLessThanOrEqual(1_000);
+      console.info(`[U2 fixture] duration=${minutes}m stop_to_local_commit_ms=${elapsedMs.toFixed(1)}`);
+      engine.dispose();
+    }
+  });
+
+  test("stop does not publish a note until native source and journal are durable", async () => {
+    const bridge = new FakeBridge();
+    let release!: () => void;
+    bridge.stopDurableGate = new Promise<void>((resolve) => { release = resolve; });
+    const engine = await rig(bridge);
+    await engine.plugin.start();
+    bridge.files.set("note-1", Uint8Array.of(1, 2, 3));
+    bridge.elapsed = 60_000;
+    const stopping = engine.plugin.stop();
+    await Bun.sleep(0);
+    expect((await engine.plugin.listPending()).recordings).toHaveLength(0);
+    release();
+    const receipt = await stopping;
+    expect(receipt.ledger?.localAudio?.state).toBe("preparing");
+    await engine.plugin.awaitAudioReady?.(receipt.id);
+    engine.dispose();
+  });
+
+  test("a killed finishing job recovers one complete note", async () => {
+    const bridge = new FakeBridge();
+    bridge.finishGate = new Promise<void>(() => {});
+    const env = newIdbEnv();
+    const dbName = crypto.randomUUID();
+    let sequence = 0;
+    const first = await openDesktopVoiceNotes({ bridge, now: () => bridge.now,
+      newId: () => `note-${++sequence}`,
+      storeOptions: { env, dbName, locks: memoryLocks(), decodeCheck: null } });
+    await first.plugin.start();
+    bridge.files.set("note-1", Uint8Array.of(1, 2, 3, 4));
+    bridge.elapsed = 30 * 60_000;
+    const receipt = await first.plugin.stop();
+    expect(receipt.ledger?.localAudio?.state).toBe("preparing");
+    // Finishing does not hold the capture command lane or microphone.
+    const another = await first.plugin.start();
+    expect(another.id).toBe("note-2");
+    await first.plugin.discard();
+    // The old process has stopped after showing the receipt. The native source
+    // remains under its stop journal; the next process imports that same note.
+    bridge.recover = { id: receipt.id, startedAt: bridge.now, recordedMs: receipt.durationMs,
+      pausedMs: 0, maxDurationMs: 3 * 60 * 60_000 };
+    first.dispose();
+    bridge.finishGate = null;
+    const reopened = await rig(bridge, dbName, env);
+    const result = await reopened.recoverInterrupted();
+    expect(result.recovered).toHaveLength(1);
+    expect((await reopened.plugin.listPending()).recordings.filter((note) => note.id === receipt.id))
+      .toMatchObject([{ id: receipt.id, sizeBytes: 4, durationMs: receipt.durationMs,
+        ledger: { localAudio: { state: "ready", error: null } } }]);
+    expect(base64ToBytes((await reopened.plugin.readAudioChunk({ id: receipt.id, offset: 0, length: 4 })).base64))
+      .toEqual(Uint8Array.of(1, 2, 3, 4));
+    reopened.dispose();
+  });
+
+  test("playback, chunk reads, metadata and upload wait while audio is preparing", async () => {
+    const bridge = new FakeBridge();
+    let release!: () => void;
+    bridge.finishGate = new Promise<void>((resolve) => { release = resolve; });
+    const engine = await rig(bridge);
+    await engine.plugin.start();
+    bridge.files.set("note-1", Uint8Array.of(1, 2, 3, 4));
+    bridge.elapsed = 60_000;
+    const receipt = await engine.plugin.stop();
+    const settled: string[] = [];
+    const playback = engine.plugin.localAudioUrl({ id: receipt.id }).then(() => settled.push("playback"));
+    const chunk = engine.plugin.readAudioChunk({ id: receipt.id, offset: 0, length: 1 }).then(() => settled.push("chunk"));
+    const metadata = engine.plugin.audioMetadata!({ id: receipt.id }).then(() => settled.push("metadata"));
+    const upload = engine.plugin.uploadAudio!({ id: receipt.id, uploadId: "fixture", url: "https://example.test",
+      capability: "fixture", contentType: "audio/mpeg", contentLength: 4, correlationId: "fixture" })
+      .then(() => settled.push("upload"));
+    await Bun.sleep(0);
+    expect(settled).toEqual([]);
+    expect(bridge.calls).not.toContain("ptx_upload_audio");
+    release();
+    await Promise.all([playback, chunk, metadata, upload]);
+    expect(settled.sort()).toEqual(["chunk", "metadata", "playback", "upload"]);
+    engine.dispose();
+  });
+
+  test("an empty final interval keeps earlier audio playable and uploadable", async () => {
+    const bridge = new FakeBridge();
+    const engine = await rig(bridge);
+    await engine.plugin.start();
+    bridge.files.set("note-1", Uint8Array.of(1, 2, 3, 4));
+    bridge.elapsed = 60_000;
+    await engine.plugin.pause();
+    await engine.plugin.resume();
+    bridge.emptyFinal = true;
+    bridge.priorAudioMs = 60_000;
+    bridge.elapsed = 60_800;
+    const note = await engine.plugin.stop();
+    expect(note.durationMs).toBe(60_000);
+    await engine.plugin.awaitAudioReady?.(note.id);
+    expect(base64ToBytes((await engine.plugin.readAudioChunk({ id: note.id, offset: 0, length: 4 })).base64))
+      .toEqual(Uint8Array.of(1, 2, 3, 4));
+    await engine.plugin.uploadAudio!({ id: note.id, uploadId: "fixture", url: "https://example.test",
+      capability: "fixture", contentType: "audio/mpeg", contentLength: 4, correlationId: "fixture" });
+    expect(bridge.calls).toContain("ptx_upload_audio");
+    engine.dispose();
+  });
+
+  test("one durable Stop commits readable audio when the source never confirms release", async () => {
+    const bridge = new FakeBridge();
+    bridge.unconfirmedStop = true;
+    const engine = await rig(bridge);
+    const started = await engine.plugin.start();
+    const captured = Uint8Array.of(3, 1, 4, 1, 5);
+    bridge.files.set(started.id, captured);
+    bridge.elapsed = 10_000;
+
+    const recording = await engine.plugin.stop();
+    expect(bridge.calls.filter((command) => command === "recorder_stop_durable")).toHaveLength(1);
+    expect(recording.id).toBe(started.id);
+    expect((await engine.plugin.status()).captureSourceUnconfirmed).toBe(true);
+    await engine.plugin.awaitAudioReady?.(recording.id);
+    const note = (await engine.plugin.listPending()).recordings.find(({ id }) => id === recording.id);
+    expect(note).toMatchObject({
+      id: recording.id,
+      sizeBytes: captured.length,
+      ledger: { localAudio: { state: "ready", error: null } },
+    });
+    expect(base64ToBytes((await engine.plugin.readAudioChunk({
+      id: recording.id, offset: 0, length: captured.length,
+    })).base64)).toEqual(captured);
+    engine.dispose();
+  });
+
+  test("an empty first interval does not publish a saved receipt", async () => {
+    const bridge = new FakeBridge();
+    bridge.emptyFinal = true;
+    const engine = await rig(bridge);
+    await engine.plugin.start();
+    await expect(engine.plugin.stop()).rejects.toThrow("no_audio_captured");
+    expect((await engine.plugin.listPending()).recordings).toHaveLength(0);
+    expect(bridge.stopped).toHaveLength(0);
+    engine.dispose();
+  });
+
+  test("deleting during finishing clears the stopped source and cannot restore audio", async () => {
+    const bridge = new FakeBridge();
+    let release!: () => void;
+    bridge.finishGate = new Promise<void>((resolve) => { release = resolve; });
+    const engine = await rig(bridge);
+    await engine.plugin.start();
+    bridge.files.set("note-1", Uint8Array.of(1, 2, 3));
+    bridge.elapsed = 60_000;
+    const note = await engine.plugin.stop();
+    await engine.plugin.deleteAudio({ id: note.id });
+    release();
+    await Bun.sleep(0);
+    expect(bridge.stopped).toHaveLength(0);
+    expect(bridge.files.has(note.id)).toBe(false);
+    expect((await engine.plugin.listPending()).recordings).toHaveLength(0);
+    engine.dispose();
+  });
+
+  test("relaunch deletes a tombstoned source before native recovery can import it", async () => {
+    const bridge = new FakeBridge();
+    bridge.finishGate = new Promise<void>(() => {});
+    const env = newIdbEnv();
+    const dbName = crypto.randomUUID();
+    const first = await rig(bridge, dbName, env, { hooks: { beforeOp(op) {
+      if (op === "audio:delete") throw new Error("simulated kill after tombstone");
+    } } });
+    await first.plugin.start();
+    bridge.files.set("note-1", Uint8Array.of(1, 2, 3));
+    bridge.elapsed = 60_000;
+    const note = await first.plugin.stop();
+    await expect(first.plugin.deleteAudio({ id: note.id })).rejects.toThrow("simulated kill");
+    expect(bridge.stopped).toHaveLength(1);
+    first.dispose();
+    bridge.finishGate = null;
+    const second = await rig(bridge, dbName, env);
+    const recovered = await second.recoverInterrupted();
+    expect(recovered.recovered).toHaveLength(0);
+    expect(bridge.stopped).toHaveLength(0);
+    expect(bridge.files.has(note.id)).toBe(false);
+    const listed = bridge.calls.lastIndexOf("recorder_stopped_list");
+    const recoveredAt = bridge.calls.lastIndexOf("recorder_recover");
+    expect(bridge.calls.slice(listed + 1, recoveredAt)).toContain("delete_audio_file");
+    second.dispose();
+  });
+
+  test("Whisper resume skips preparing audio until finishing publishes ready", async () => {
+    const bridge = new FakeBridge();
+    bridge.selectedModel = "QuantizedTinyEn";
+    bridge.downloadedModels.add("QuantizedTinyEn");
+    let release!: () => void;
+    bridge.finishGate = new Promise<void>((resolve) => { release = resolve; });
+    const whisper = new FakeWhisper();
+    const engine = await openDesktopVoiceNotes({ bridge, whisper, newId: () => "note-1",
+      storeOptions: { env: newIdbEnv(), dbName: crypto.randomUUID(), locks: memoryLocks(), decodeCheck: null } });
+    await engine.plugin.start();
+    bridge.files.set("note-1", Uint8Array.of(1, 2, 3));
+    bridge.elapsed = 60_000;
+    await engine.plugin.stop();
+    await engine.whisper?.resume();
+    expect(whisper.calls).toHaveLength(0);
+    expect(engine.whisper?.snapshot().get("note-1")?.state).not.toBe("failed");
+    release();
+    await waitFor(() => whisper.calls.length === 1);
+    engine.dispose();
+  });
+
+  test("preparation failure keeps sources and exposes a typed retry", async () => {
+    const bridge = new FakeBridge();
+    bridge.finishError = new Error("fixture encode failed");
+    const engine = await rig(bridge);
+    await engine.plugin.start();
+    bridge.files.set("note-1", Uint8Array.of(7, 8, 9));
+    bridge.elapsed = 60_000;
+    const receipt = await engine.plugin.stop();
+    let state: string | undefined;
+    for (let attempt = 0; attempt < 100; attempt++) {
+      state = (await engine.plugin.listPending()).recordings[0]?.ledger?.localAudio?.state;
+      if (state === "failed") break;
+      await Bun.sleep(10);
+    }
+    expect(state).toBe("failed");
+    expect(bridge.files.get(receipt.id)).toEqual(Uint8Array.of(7, 8, 9));
+    bridge.finishError = null;
+    await engine.plugin.retryRecovery({ id: receipt.id });
+    expect((await engine.plugin.listPending()).recordings[0]?.ledger?.localAudio?.state).toBe("ready");
+    engine.dispose();
+  });
+
   slow("stop queues Whisper and commits a local transcript once", async () => {
     const bridge = new FakeBridge();
     bridge.selectedModel = "QuantizedTinyEn";
@@ -305,6 +1118,77 @@ describe("desktop recorder adapter", () => {
     db.close();
     await engine.whisper!.resume();
     expect(engine.whisper!.snapshot().get(id)).toMatchObject({ state: "failed" });
+    engine.dispose();
+  });
+  slow("explicit desktop Whisper rerun replaces an existing local transcript at the requested revision", async () => {
+    const bridge = new FakeBridge();
+    bridge.selectedModel = "QuantizedTinyEn";
+    bridge.downloadedModels.add("QuantizedTinyEn");
+    const whisper = new FakeWhisper();
+    const engine = await openDesktopVoiceNotes({ bridge, whisper,
+      storeOptions: { env: newIdbEnv(), dbName: crypto.randomUUID(), locks: memoryLocks(), decodeCheck: null } });
+    const id = (await engine.plugin.start()).id;
+    bridge.files.set(id, Uint8Array.of(1, 2, 3));
+    await engine.plugin.stop();
+    await waitFor(() => engine.whisper?.snapshot().get(id)?.state === "done");
+    const original = (await engine.plugin.getTranscript({ id })).transcript;
+    expect(original?.rev).toBe(1);
+    await engine.whisper!.rerun({ id, rev: 2, baseRev: 1, baseHash: "a".repeat(32) });
+    await waitFor(() => engine.whisper?.snapshot().get(id)?.state === "done" && whisper.calls.length === 2);
+    const replacement = (await engine.plugin.getTranscript({ id })).transcript;
+    expect(replacement).toMatchObject({ rev: 2, rerunBase: { rev: 1, hash: "a".repeat(32) } });
+    expect(whisper.calls).toHaveLength(2);
+    await engine.whisper!.resume();
+    expect(whisper.calls).toHaveLength(2);
+    engine.dispose();
+  });
+  slow("explicit desktop Whisper reruns decode Private and Powerful notes", async () => {
+    const bridge = new FakeBridge();
+    bridge.selectedModel = "QuantizedTinyEn";
+    bridge.downloadedModels.add("QuantizedTinyEn");
+    const whisper = new FakeWhisper();
+    const env = newIdbEnv();
+    const dbName = crypto.randomUUID();
+    const store = await openWebStore({ env, dbName, locks: memoryLocks(), decodeCheck: null,
+      audio: () => createFileAudioBlobStore(bridge) });
+    const engine = await openDesktopVoiceNotes({ bridge, whisper, now: () => bridge.now, store });
+    await engine.plugin.setAccountState({ status: "signed_in", accountDid: "did:owner", transitionGen: 1 });
+    for (const [index, transcriber] of (["private-cloud", "assemblyai"] as const).entries()) {
+      await engine.plugin.setCaptureDefaults({ accountDid: "did:owner", transitionGen: index + 2,
+        transcriber, identifySpeakers: false });
+      const id = (await engine.plugin.start({ transcriber })).id;
+      bridge.files.set(id, Uint8Array.of(1, 2, 3));
+      bridge.elapsed = 1000;
+      await engine.plugin.stop();
+      await engine.whisper!.rerun({ id, rev: 2, baseRev: 1, baseHash: "a".repeat(32) });
+      await waitFor(() => engine.whisper?.snapshot().get(id)?.state === "done");
+      expect(whisper.calls[index]?.id).toBe(id);
+    }
+    expect(whisper.calls).toHaveLength(2);
+    engine.dispose();
+    store.close();
+  });
+  slow("Whisper subscribers observe queued, transcribing and completed status", async () => {
+    const bridge = new FakeBridge();
+    bridge.selectedModel = "QuantizedTinyEn";
+    bridge.downloadedModels.add("QuantizedTinyEn");
+    const whisper = new FakeWhisper();
+    const engine = await openDesktopVoiceNotes({ bridge, whisper,
+      storeOptions: { env: newIdbEnv(), dbName: crypto.randomUUID(), locks: memoryLocks(), decodeCheck: null } });
+    const states: string[] = [];
+    const unsubscribe = engine.whisper!.subscribe(() => {
+      const job = engine.whisper!.snapshot().values().next().value;
+      if (job) states.push(job.state);
+    });
+    const id = (await engine.plugin.start()).id;
+    bridge.files.set(id, Uint8Array.of(1, 2, 3));
+    bridge.elapsed = 1000;
+    await engine.plugin.stop();
+    await waitFor(() => engine.whisper?.snapshot().get(id)?.state === "done");
+    expect(states).toContain("queued");
+    expect(states).toContain("transcribing");
+    expect(states.at(-1)).toBe("done");
+    unsubscribe();
     engine.dispose();
   });
 
@@ -374,6 +1258,160 @@ describe("desktop recorder adapter", () => {
     whisper.onStopServer = null;
     await engine.plugin.discard();
     engine.dispose();
+  });
+  slow("capture preemption resumes a desktop rerun instead of completing the old transcript", async () => {
+    const bridge = new FakeBridge();
+    bridge.selectedModel = "QuantizedTinyEn";
+    bridge.downloadedModels.add("QuantizedTinyEn");
+    const whisper = new FakeWhisper();
+    const env = newIdbEnv();
+    const dbName = crypto.randomUUID();
+    const store = await openWebStore({ env, dbName, locks: memoryLocks(), decodeCheck: null,
+      audio: () => createFileAudioBlobStore(bridge) });
+    const engine = await openDesktopVoiceNotes({ bridge, whisper, now: () => bridge.now, store });
+    const id = (await engine.plugin.start()).id;
+    bridge.files.set(id, Uint8Array.of(1, 2, 3));
+    bridge.elapsed = 1000;
+    await engine.plugin.stop();
+    await waitFor(() => engine.whisper?.snapshot().get(id)?.state === "done");
+    const original = (await store.getTranscript({ id })).transcript;
+    expect(original?.rev).toBe(1);
+
+    whisper.pending = true;
+    await engine.whisper!.rerun({ id, rev: 2, baseRev: 1, baseHash: "a".repeat(32) });
+    await waitFor(() => whisper.calls.length === 2);
+    const recording = (await engine.plugin.start()).id;
+    expect(recording).not.toBe(id);
+    await waitFor(() => engine.whisper?.snapshot().get(id)?.state === "queued");
+    expect((await store.listPending()).recordings.find((note) => note.id === id)?.stt)
+      .toMatchObject({ state: "queued", rerunRev: 2, rerunBaseRev: 1, rerunBaseHash: "a".repeat(32) });
+
+    whisper.pending = false;
+    bridge.files.set(recording, Uint8Array.of(4, 5, 6));
+    bridge.elapsed = 1000;
+    await engine.plugin.stop();
+    await waitFor(() => whisper.calls.filter((call) => call.id === id).length === 3
+      && engine.whisper?.snapshot().get(id)?.state === "done");
+    expect(whisper.calls.filter((call) => call.id === id)).toHaveLength(3);
+    expect((await store.getTranscript({ id })).transcript).toMatchObject({
+      rev: 2, rerunBase: { rev: 1, hash: "a".repeat(32) },
+    });
+    engine.dispose();
+    store.close();
+  });
+
+  slow("desktop resume preserves a failed rerun base so it can be retried", async () => {
+    const bridge = new FakeBridge();
+    bridge.selectedModel = "QuantizedTinyEn";
+    bridge.downloadedModels.add("QuantizedTinyEn");
+    const whisper = new FakeWhisper();
+    const env = newIdbEnv();
+    const dbName = crypto.randomUUID();
+    const store = await openWebStore({ env, dbName, locks: memoryLocks(), decodeCheck: null,
+      audio: () => createFileAudioBlobStore(bridge) });
+    const engine = await openDesktopVoiceNotes({ bridge, whisper, now: () => bridge.now, store });
+    const completions: string[] = [];
+    engine.whisper!.onDone((completedId) => completions.push(completedId));
+    const id = (await engine.plugin.start()).id;
+    bridge.files.set(id, Uint8Array.of(1, 2, 3));
+    bridge.elapsed = 1000;
+    await engine.plugin.stop();
+    await waitFor(() => engine.whisper?.snapshot().get(id)?.state === "done");
+    const completedBeforeFailure = completions.length;
+    bridge.downloadedModels.clear();
+
+    whisper.fail = true;
+    await engine.whisper!.rerun({ id, rev: 2, baseRev: 1, baseHash: "a".repeat(32) });
+    await waitFor(() => engine.whisper?.snapshot().get(id)?.state === "failed");
+    await engine.whisper!.resume();
+    bridge.downloadedModels.add("QuantizedTinyEn");
+    await engine.whisper!.modelAvailable();
+    expect(engine.whisper!.snapshot().get(id)).toMatchObject({ state: "failed", explicitRerun: true });
+    expect(whisper.calls).toHaveLength(1);
+    expect(completions).toHaveLength(completedBeforeFailure);
+    expect((await store.getTranscript({ id })).transcript).toMatchObject({ rev: 1 });
+    expect((await store.listPending()).recordings.find((note) => note.id === id)?.stt)
+      .toMatchObject({ state: "failed", rerunRev: 2, rerunBaseRev: 1, rerunBaseHash: "a".repeat(32) });
+
+    whisper.fail = false;
+    await engine.whisper!.retry(id);
+    await waitFor(() => engine.whisper?.snapshot().get(id)?.state === "done");
+    expect(whisper.calls).toHaveLength(2);
+    expect((await store.getTranscript({ id })).transcript).toMatchObject({ rev: 2 });
+    engine.dispose();
+    store.close();
+  });
+
+  slow("resume restores failed explicit rerun identity for every original provider without restarting it", async () => {
+    for (const transcriber of ["on-device", "private-cloud", "assemblyai"] as const) {
+      const bridge = new FakeBridge();
+      bridge.selectedModel = "QuantizedTinyEn";
+      bridge.downloadedModels.add("QuantizedTinyEn");
+      const whisper = new FakeWhisper();
+      const env = newIdbEnv();
+      const dbName = crypto.randomUUID();
+      let store = await openWebStore({ env, dbName, locks: memoryLocks(), decodeCheck: null,
+        audio: () => createFileAudioBlobStore(bridge) });
+      let engine = await openDesktopVoiceNotes({ bridge, whisper, now: () => bridge.now, store });
+      const id = (await engine.plugin.start({ transcriber })).id;
+      bridge.files.set(id, Uint8Array.of(1, 2, 3));
+      bridge.elapsed = 1000;
+      await engine.plugin.stop();
+      await engine.plugin.putTranscript({ id, transcript: {
+        version: 2, noteId: id, transcriber: "private-cloud", rev: 1, engine: "tinycloud-private-transcription",
+        model: null, language: "en", outcome: "transcribed", diarized: false,
+        segments: [{ start: 0, end: 1000, text: "old transcript", speaker: null, timing: "coarse" }],
+        createdAt: "2025-01-01T00:00:00.000Z",
+      } });
+      await store.updateStt(id, { state: "failed", pack: null, engine: "whisper", segmentsDone: 0, windowsDone: 0,
+        error: "rerun failed", rerunRev: 2, rerunBaseRev: 1, rerunBaseHash: "a".repeat(32) });
+      engine.dispose();
+      store.close();
+
+      store = await openWebStore({ env, dbName, locks: memoryLocks(), decodeCheck: null,
+        audio: () => createFileAudioBlobStore(bridge) });
+      engine = await openDesktopVoiceNotes({ bridge, whisper, now: () => bridge.now, store });
+      await engine.whisper!.resume();
+      expect(engine.whisper!.snapshot().get(id)).toMatchObject({ state: "failed", explicitRerun: true });
+      expect(whisper.calls).toHaveLength(0);
+      expect((await store.getTranscript({ id })).transcript).toMatchObject({ rev: 1 });
+      await engine.whisper!.retry(id);
+      await waitFor(() => engine.whisper?.snapshot().get(id)?.state === "done");
+      expect(whisper.calls).toHaveLength(1);
+      expect((await store.getTranscript({ id })).transcript).toMatchObject({
+        rev: 2, rerunBase: { rev: 1, hash: "a".repeat(32) },
+      });
+
+      engine.dispose();
+      store.close();
+    }
+  });
+
+  slow("completed Whisper is not stopped while its audio cleanup is pending", async () => {
+    const bridge = new FakeBridge();
+    bridge.selectedModel = "QuantizedTinyEn";
+    bridge.downloadedModels.add("QuantizedTinyEn");
+    let release!: () => void;
+    bridge.deleteGate = new Promise<void>((resolve) => { release = resolve; });
+    const whisper = new FakeWhisper();
+    const env = newIdbEnv();
+    const dbName = crypto.randomUUID();
+    const store = await openWebStore({ env, dbName, locks: memoryLocks(), decodeCheck: null,
+      audio: () => createFileAudioBlobStore(bridge) });
+    const engine = await openDesktopVoiceNotes({ bridge, whisper, now: () => bridge.now, store });
+    try {
+      const id = (await engine.plugin.start()).id;
+      bridge.files.set(id, Uint8Array.of(1, 2, 3));
+      bridge.elapsed = 1000;
+      await engine.plugin.stop();
+      await waitFor(() => bridge.deleteStarted && engine.whisper?.snapshot().get(id)?.state === "done");
+      await engine.whisper!.beforeCapture();
+      expect(whisper.stops).toEqual([]);
+    } finally {
+      release();
+      engine.dispose();
+      store.close();
+    }
   });
 
   slow("a server failure during Record requeues the interrupted note", async () => {
@@ -618,12 +1656,16 @@ describe("desktop recorder adapter", () => {
     expect((await third.plugin.getTranscript({ id })).transcript?.noteId).toBe(id);
     third.dispose();
   });
-  test("reopens a live native capture after WebView reload and can stop it", async () => {
+  test("reopens a live native stereo capture after WebView reload and commits its native channels", async () => {
     const bridge = new FakeBridge();
+    bridge.channels = 2;
     const env = newIdbEnv();
     const dbName = crypto.randomUUID();
     const first = await rig(bridge, dbName, env);
-    await first.plugin.start();
+    const started = await first.plugin.start();
+    const interruptedPersist = await openWebStore({ env, dbName, locks: memoryLocks(), decodeCheck: null });
+    await interruptedPersist.updateSession(started.id, { channels: undefined });
+    interruptedPersist.close();
     bridge.elapsed = 1_500;
     bridge.files.set("note-1", Uint8Array.of(1, 2, 3));
     first.dispose();
@@ -633,9 +1675,22 @@ describe("desktop recorder adapter", () => {
     expect(bridge.calls).not.toContain("recorder_recover");
     expect((await reopened.plugin.status()).elapsedMs).toBe(1_500);
     const note = await reopened.plugin.stop();
-    expect(note.id).toBe("note-1");
-    expect(note.durationMs).toBe(1_500);
+    expect(note).toMatchObject({ id: "note-1", durationMs: 1_500, channels: 2 });
     reopened.dispose();
+  });
+
+  test("adopts a native-started Mac session with the durable upload preference", async () => {
+    const bridge = new FakeBridge();
+    bridge.current = "native-note";
+    bridge.state = "recording";
+    const env = newIdbEnv();
+    const dbName = crypto.randomUUID();
+    const store = await openWebStore({ env, dbName, locks: memoryLocks(), decodeCheck: null });
+    await store.setCaptureDefaults({ accountDid: null, transitionGen: 0, transcriber: "on-device",
+      identifySpeakers: false, uploadAudio: true });
+    const engine = await rig(bridge, dbName, env);
+    expect((await engine.plugin.status()).options?.uploadAudio).toBe(true);
+    engine.dispose();
   });
 
   test("native import failure enters quarantine and can be discarded", async () => {
@@ -651,20 +1706,39 @@ describe("desktop recorder adapter", () => {
     engine.dispose();
   });
 
-  test("discard writes its tombstone before native stop can fail", async () => {
+  test("a first stereo segment keeps its journal layout through quarantine and retry", async () => {
+    const bridge = new FakeBridge();
+    bridge.channels = 2;
+    const engine = await rig(bridge);
+    await engine.plugin.start();
+    const journal = { id: "note-1", startedAt: bridge.now, recordedMs: 1_000, pausedMs: 0,
+      maxDurationMs: 10_000, layout: "stereo" as const };
+    bridge.failed = [{ id: "note-1", segmentId: "rec-broken", reason: "write_failed", error: "bad MP3", journal }];
+    await expect(engine.plugin.stop()).rejects.toThrow("bad MP3");
+    bridge.files.set("note-1", Uint8Array.of(1, 2, 3));
+    await engine.plugin.retryRecovery({ id: "note-1" });
+    expect((await engine.plugin.listPending()).recordings[0]?.channels).toBe(2);
+    engine.dispose();
+  });
+
+  test("discard stays terminal when native source stop exhausts its budget", async () => {
     const bridge = new FakeBridge();
     const env = newIdbEnv();
     const dbName = crypto.randomUUID();
     const engine = await rig(bridge, dbName, env);
     await engine.plugin.start();
     bridge.files.set("note-1", Uint8Array.of(1, 2, 3));
-    bridge.stopError = new Error("writer stopped responding");
-    await expect(engine.plugin.discard()).rejects.toThrow("writer stopped responding");
+    bridge.discardNeverStops = true;
+    await engine.plugin.discard();
     expect((await engine.plugin.listPending()).recordings).toHaveLength(0);
+    expect(bridge.calls).not.toContain("recorder_stop");
+    expect(bridge.calls).toContain("recorder_discard_durable");
+    expect(bridge.files.has("note-1")).toBe(true);
+    expect(bridge.stopped.some((entry) => entry.id === "note-1")).toBe(true);
     engine.dispose();
-    bridge.stopError = null;
+    bridge.captureSourceUnconfirmed = false;
+    bridge.discardCleanupPending = false;
     const reopened = await rig(bridge, dbName, env);
-    expect(bridge.state).toBe("idle");
     await reopened.recoverInterrupted();
     expect(bridge.files.has("note-1")).toBe(false);
     reopened.dispose();
@@ -677,10 +1751,11 @@ describe("desktop recorder adapter", () => {
     const first = await rig(bridge, dbName, env);
     await first.plugin.start();
     bridge.files.set("note-1", Uint8Array.of(1, 2, 3));
-    bridge.stopError = new Error("interrupted stop");
-    await expect(first.plugin.discard()).rejects.toThrow("interrupted stop");
+    bridge.discardNeverStops = true;
+    await first.plugin.discard();
     first.dispose();
-    bridge.stopError = null;
+    bridge.captureSourceUnconfirmed = false;
+    bridge.discardCleanupPending = false;
     bridge.state = "idle"; bridge.current = null;
     const journal = { id: "note-1", startedAt: bridge.now, recordedMs: 500,
       pausedMs: 0, maxDurationMs: 10_000 };
@@ -695,6 +1770,7 @@ describe("desktop recorder adapter", () => {
     expect(bridge.files.has("note-1")).toBe(false);
     reopened.dispose();
   });
+
   test("capabilities do not enable the mobile OnDeviceStt plugin", async () => {
     const engine = await rig();
     expect(engine.plugin.capabilities).toMatchObject({ localTranscription: false, background: true,
@@ -817,6 +1893,7 @@ describe("desktop recorder adapter", () => {
 
   test("start, pause and resume keep elapsed time and committed bytes", async () => {
     const bridge = new FakeBridge();
+    bridge.channels = 2;
     const engine = await rig(bridge);
     const seen: string[] = [];
     const levels: { level: number; peak?: number }[] = [];
@@ -840,7 +1917,11 @@ describe("desktop recorder adapter", () => {
     const recording = await engine.plugin.stop();
     expect(recording.durationMs).toBe(1800);
     expect(recording.pausedMs).toBe(5000);
-    expect(recording.sizeBytes).toBe(4);
+    expect(recording.sizeBytes).toBe(0);
+    expect(recording.channels).toBe(2);
+    expect(recording.ledger?.localAudio?.state).toBe("preparing");
+    await engine.plugin.awaitAudioReady?.(started.id);
+    expect((await engine.plugin.listPending()).recordings[0]?.sizeBytes).toBe(4);
     expect((await engine.plugin.listPending()).recordings).toHaveLength(1);
     expect(base64ToBytes((await engine.plugin.readAudioChunk({ id: started.id, offset: 1, length: 2 })).base64))
       .toEqual(Uint8Array.of(20, 30));
@@ -869,6 +1950,7 @@ describe("desktop recorder adapter", () => {
 
   test("native auto-stop commits once with the terminal elapsed time", async () => {
     const bridge = new FakeBridge();
+    bridge.channels = 2;
     const engine = await rig(bridge);
     const committed: unknown[] = [];
     const auto: unknown[] = [];
@@ -879,14 +1961,75 @@ describe("desktop recorder adapter", () => {
     bridge.elapsed = 1500;
     await bridge.invoke("recorder_stop");
     bridge.emit("exo://recorder-auto-stopped", { id: "note-1", reason: "max_duration", maxDurationMs: 1500,
-      at: bridge.now, elapsedMs: 1500, pausedMs: 0 });
+      at: bridge.now, elapsedMs: 1500, pausedMs: 0, channels: 2 });
     await engine.plugin.status();
     // Let the serialized native event finish its async commit.
     for (let n = 0; n < 20 && auto.length === 0; n++) await new Promise((resolve) => setTimeout(resolve, 1));
     expect(committed).toHaveLength(1);
     expect(auto).toHaveLength(1);
-    expect((auto[0] as { recording: { durationMs: number } }).recording.durationMs).toBe(1500);
+    expect((auto[0] as { recording: { durationMs: number; channels: number } }).recording).toMatchObject({ durationMs: 1500, channels: 2 });
     engine.dispose();
+  });
+
+  test("a new recording clears the prior max-duration reason through pause, resume, and remount", async () => {
+    const bridge = new FakeBridge();
+    const ids = ["note-auto", "note-next"];
+    const engine = await rig(bridge, crypto.randomUUID(), newIdbEnv(), {}, () => ids.shift()!);
+    __setVoiceNotesForTests(engine.plugin, { available: true });
+    const makeController = () => createVoiceNoteRecorderController({
+      tcw: null,
+      available: true,
+      transcriber: { check: async () => {}, noteSaved: () => {} },
+      onDeviceReady: () => true,
+    });
+    const recorder = makeController();
+    const detach = recorder.attach();
+    try {
+      await waitUntilRecorderReady(recorder);
+      await recorder.record();
+      bridge.files.set("note-auto", Uint8Array.of(1, 2, 3));
+      bridge.current = null;
+      bridge.state = "idle";
+      bridge.lastStopReason = "max_duration";
+      bridge.emit("exo://recorder-auto-stopped", { id: "note-auto", reason: "max_duration",
+        maxDurationMs: 10_000, at: bridge.now, elapsedMs: 1_500, pausedMs: 0, channels: 1 });
+      await waitFor(async () => (await engine.plugin.listPending()).recordings.some((item) =>
+        item.id === "note-auto" && item.ledger.localAudio.state === "ready"));
+      await waitFor(() => recorder.getState().phase === "idle");
+      await waitFor(() => recorder.getState().outcome !== null);
+      recorder.dismissOutcome();
+
+      await recorder.record();
+      expect(bridge.current).toBe("note-next");
+      expect(bridge.lastStopReason).toBeNull();
+      await recorder.pause();
+      expect(recorder.getState().mic).toMatchObject({ state: "paused", reason: "user" });
+      await recorder.resume();
+      expect(recorder.getState().mic).toMatchObject({ state: "recording", reason: null });
+      const view = () => selectRecorderView(recorder.getState(), {
+        nowMs: bridge.now, elapsedMs: recorder.getState().elapsedMs, inputName: null,
+        silencedSinceMs: null, device: "mac", isDevelopmentOrTest: true,
+      });
+      expect(view()).toMatchObject({ ring: "live", statusLine: null });
+
+      detach();
+      const remounted = makeController();
+      const detachRemounted = remounted.attach();
+      try {
+        await waitUntilRecorderReady(remounted);
+        expect(remounted.getState().mic).toMatchObject({ state: "recording", reason: null });
+        expect(selectRecorderView(remounted.getState(), {
+          nowMs: bridge.now, elapsedMs: remounted.getState().elapsedMs, inputName: null,
+          silencedSinceMs: null, device: "mac", isDevelopmentOrTest: true,
+        })).toMatchObject({ ring: "live", statusLine: null });
+      } finally {
+        detachRemounted();
+      }
+    } finally {
+      detach();
+      engine.dispose();
+      __setVoiceNotesForTests(originalVoiceNotes, { available: null });
+    }
   });
 
   test("native interrupted segment imports before shared store recovery", async () => {
@@ -1056,5 +2199,59 @@ describe("desktop recorder adapter", () => {
     expect(result.recovered[0]).toMatchObject({ id: "note-1", sizeBytes: 3, durationMs: 1200 });
     expect(bridge.files.get("note-1")).toEqual(Uint8Array.of(8, 9, 10));
     second.dispose();
+  });
+
+  test("recovery with uploadAudio preference OFF creates session with uploadAudio: false", async () => {
+    const bridge = new FakeBridge();
+    const env = newIdbEnv();
+    const dbName = crypto.randomUUID();
+    const store = await openWebStore({ env, dbName, locks: memoryLocks(), decodeCheck: null });
+    await store.setCaptureDefaults({ accountDid: null, transitionGen: 0, transcriber: "on-device",
+      identifySpeakers: false, uploadAudio: false });
+    store.close();
+    bridge.recover = { id: "note-1", startedAt: bridge.now, recordedMs: 5000, pausedMs: 0, maxDurationMs: 3600000 };
+    bridge.files.set("note-1", Uint8Array.of(1, 2, 3, 4));
+    const engine = await rig(bridge, dbName, env);
+    const result = await engine.recoverInterrupted();
+    expect(result.recovered).toHaveLength(1);
+    const recordings = (await engine.plugin.listPending()).recordings;
+    expect(recordings.find((r) => r.id === "note-1")?.options?.uploadAudio).toBe(false);
+    engine.dispose();
+  });
+
+  test("recovery with uploadAudio preference ON creates session with uploadAudio: true", async () => {
+    const bridge = new FakeBridge();
+    const env = newIdbEnv();
+    const dbName = crypto.randomUUID();
+    const store = await openWebStore({ env, dbName, locks: memoryLocks(), decodeCheck: null });
+    await store.setCaptureDefaults({ accountDid: null, transitionGen: 0, transcriber: "on-device",
+      identifySpeakers: false, uploadAudio: true });
+    store.close();
+    bridge.recover = { id: "note-1", startedAt: bridge.now, recordedMs: 5000, pausedMs: 0, maxDurationMs: 3600000 };
+    bridge.files.set("note-1", Uint8Array.of(1, 2, 3, 4));
+    const engine = await rig(bridge, dbName, env);
+    const result = await engine.recoverInterrupted();
+    expect(result.recovered).toHaveLength(1);
+    const recordings = (await engine.plugin.listPending()).recordings;
+    expect(recordings.find((r) => r.id === "note-1")?.options?.uploadAudio).toBe(true);
+    engine.dispose();
+  });
+
+  test("recovery with no uploadAudio preference creates session with uploadAudio: false", async () => {
+    const bridge = new FakeBridge();
+    const env = newIdbEnv();
+    const dbName = crypto.randomUUID();
+    const store = await openWebStore({ env, dbName, locks: memoryLocks(), decodeCheck: null });
+    await store.setCaptureDefaults({ accountDid: null, transitionGen: 0, transcriber: "on-device",
+      identifySpeakers: false });
+    store.close();
+    bridge.recover = { id: "note-1", startedAt: bridge.now, recordedMs: 5000, pausedMs: 0, maxDurationMs: 3600000 };
+    bridge.files.set("note-1", Uint8Array.of(1, 2, 3, 4));
+    const engine = await rig(bridge, dbName, env);
+    const result = await engine.recoverInterrupted();
+    expect(result.recovered).toHaveLength(1);
+    const recordings = (await engine.plugin.listPending()).recordings;
+    expect(recordings.find((r) => r.id === "note-1")?.options?.uploadAudio).toBe(false);
+    engine.dispose();
   });
 });

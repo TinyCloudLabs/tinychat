@@ -10,7 +10,6 @@ import {
 } from "react";
 import { HowItWorksLink } from "@/components/ui/how-it-works-link";
 import { hapticLight } from "@/lib/haptics";
-import { getDesktopCaptureExtras } from "@/lib/voiceNotes/desktopCaptureExtras";
 import { ModesCard } from "../ModesCard";
 import { PrivacyScale } from "../PrivacyScale";
 import { recorderSizing, type RecorderLayout } from "../shellCapabilities";
@@ -168,24 +167,13 @@ export function DesktopRecorder({
   useEffect(() => root.current?.focus({ preventScroll: true }), []);
   const hasNotes = (recorder.note?.md ?? "").length > 0;
   const [systemAudioCaptured, setSystemAudioCaptured] = useState(false);
-  const [systemAudioError, setSystemAudioError] = useState<Error | null>(null);
   useEffect(() => {
     if (view.ring !== "live") {
       setSystemAudioCaptured(false);
       return;
     }
-    const extras = getDesktopCaptureExtras();
-    if (!extras) {
-      setSystemAudioError(Object.assign(new Error("Could not read system audio status."), { code: "system_audio_status_unavailable" as const }));
-      return;
-    }
-    let active = true;
-    void Promise.all([extras.systemAudio.get(), extras.systemAudioConsent.get()]).then(
-      ([enabled, consented]) => { if (active) { setSystemAudioCaptured(enabled && consented); setSystemAudioError(null); } },
-      (error: unknown) => { if (active) setSystemAudioError(Object.assign(new Error("Could not read system audio status.", { cause: error }), { code: "system_audio_status_read_failed" as const })); },
-    );
-    return () => { active = false; };
-  }, [view.ring]);
+    return recorder.subscribeLevels((levels) => setSystemAudioCaptured(levels.sources?.system != null));
+  }, [recorder.subscribeLevels, view.ring]);
   // Local with no model: the toast says why, and ⚙︎ Capture settings opens behind the minimised recorder.
   const chooseMode = (id: Parameters<typeof choose>[0]) => {
     const reason = choose(id);
@@ -233,7 +221,6 @@ export function DesktopRecorder({
         {said}
       </p>
       <Toasts />
-      {systemAudioError && <p role="alert" data-error-code={(systemAudioError as Error & { code: string }).code}>{systemAudioError.message}</p>}
 
       <div className="pr-main dr-main" inert={dialogOpen}>
         <div className="pr-top">
@@ -275,9 +262,6 @@ export function DesktopRecorder({
         >
           {view.statusLine}
         </div>
-        {view.ring === "live" && systemAudioCaptured && (
-          <p className="dr-system-audio" data-testid="desktop-system-audio-label">+ this Mac's audio</p>
-        )}
         {onOpenNotes && (
           <button
             type="button"
@@ -301,11 +285,13 @@ export function DesktopRecorder({
             theme={theme}
             size={ringPx}
             subscribeLevel={recorder.subscribeLevel}
+            subscribeLevels={recorder.subscribeLevels}
+            systemAudioCaptured={systemAudioCaptured}
             action={ringAction}
             glyph={
               ringKind === "pause"
                 ? "pause"
-                : ringKind === "resume"
+                : ringKind === "resume" || ringKind === "stop"
                   ? "play"
                   : null
             }
@@ -370,7 +356,7 @@ export function DesktopRecorder({
             <span>more private</span>
             <span>more capable</span>
           </div>
-          <div className="pr-capline">{choice.caption ?? stop.captions[shell]}</div>
+          <div className={stop.id === "skip" ? "pr-capline pr-capline-wrap" : "pr-capline"}>{choice.caption ?? stop.captions[shell]}</div>
           {!idleDenied && !audio.unsupported && (
             <ViaMenu
               inputs={audio.inputs}
@@ -380,6 +366,7 @@ export function DesktopRecorder({
               recording={view.ring === "live"}
               theme={theme}
               subscribeLevel={recorder.subscribeLevel}
+              systemAudioCaptured={systemAudioCaptured}
               emphasis={view.emphasis === "input"}
               disabled={view.controls.busy}
               defaultOpen={defaultOpen === "via"}
@@ -454,9 +441,11 @@ export function DesktopRecorder({
                 data-emphasis={mustSave}
                 data-secondary={view.controls.openSettings}
                 disabled={!(view.controls.stop || stopUnknown)}
-                onClick={() =>
-                  onDone ? onDone(() => control("stop")) : control("stop")
-                }
+                onClick={() => {
+                  const action = view.doneAction ?? "stop";
+                  if (action === "discard" || !onDone) control(action);
+                  else onDone(() => control(action));
+                }}
               >
                 <CheckIcon />
                 Done

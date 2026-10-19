@@ -201,14 +201,14 @@ describe("SavedNoteBody's player", () => {
     expect(row?.key).toBe(standIn?.key ?? "");
   });
 
-  test("a note still on the phone gives the player a local URL to resolve, not a load, and its moments seek", () => {
-    const localUrl = async () => "capacitor://localhost/_capacitor_file_/rec-1.m4a";
+  test("a note still on the phone gives the player its load, flagged as on the phone, and its moments seek", () => {
+    const load = async () => "capacitor://localhost/_capacitor_file_/rec-1.m4a";
     const seek = { seconds: 12, nonce: 1 };
-    const view = props({ ...screenOf({ md: "hi" }), seek }, { audio: { localUrl } });
+    const view = props({ ...screenOf({ md: "hi" }), seek }, { audio: { load, onPhone: true } });
     const refs = { editButton: { current: null }, cancelButton: { current: null } };
     const found = playerIn(SavedNoteBody({ ...view, ...refs, toolbarHost: undefined }));
-    expect(found?.props).toMatchObject({ resolveUrl: localUrl, seek });
-    expect((found?.props as { load?: unknown }).load).toBeUndefined();
+    expect(found?.props).toMatchObject({ load, seek });
+    expect((found?.props as { resolveUrl?: unknown }).resolveUrl).toBeUndefined();
   });
 
   test("is a new player for another recording", () => {
@@ -221,7 +221,7 @@ describe("the pipeline under the meta line", () => {
   const cases: [string, NotePipeline, string][] = [
     ["uploading", uploading(40), "Uploading"],
     ["signed out", signedOut(), "Sign in"],
-    ["waiting for the model", waitingForModel(), "Get the model"],
+    ["waiting for the model", waitingForModel(), "Get model"],
   ];
 
   for (const [name, pipeline, text] of cases) {

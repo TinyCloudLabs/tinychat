@@ -418,11 +418,18 @@ export class GmeetClient {
     return this.listAllPages<GmeetTranscriptEntry>(url, "transcriptEntries", opts);
   }
 
-  /** Fully paginate Drive metadata. This endpoint never requests Docs content. */
+  /**
+   * Fully paginate Drive metadata for Google Docs only. This endpoint never
+   * requests Docs content. The sync ignores every other mime type, so the filter
+   * only saves pages. A name/description/folder filter would NOT be equivalent:
+   * the Notes gate also reads `description` and `appProperties` (not queryable)
+   * and accepts already-associated Docs whose name no longer carries the marker.
+   */
   async listDriveFiles(opts: GmeetCallOptions = {}): Promise<GmeetResult<GoogleDriveFile[]>> {
     const url = this.driveUrl("files", {
       pageSize: "100",
       orderBy: "modifiedTime",
+      q: "mimeType = 'application/vnd.google-apps.document'",
       fields: "nextPageToken,files(id,name,mimeType,createdTime,modifiedTime,trashed,description,appProperties)",
     });
     return this.listAllPages<GoogleDriveFile>(url, "files", opts);

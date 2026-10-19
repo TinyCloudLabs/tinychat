@@ -58,6 +58,10 @@ on:
         description: Developer ID sign, notarize and verify (release builds from main only)
         type: boolean
         default: false
+      smoke:
+        description: Build an isolated recorder-failpoints smoke artifact (CI only)
+        type: boolean
+        default: false
       ipc-selftest:
         description: Include and execute the release-profile IPC capability self-test (CI only)
         type: boolean
@@ -143,6 +147,7 @@ jobs:
       version: ${{ steps.bundle.outputs.version }}
       short-version: ${{ steps.bundle.outputs.short-version }}
       bundle-version: ${{ steps.bundle.outputs.bundle-version }}
+      product-name: ${{ steps.bundle.outputs.product-name }}
       app-sha256: ${{ steps.package.outputs.sha256 }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -235,7 +240,12 @@ jobs:
       # commit's script reads the version from the built tree (--root).
       - name: Bundle versions
         id: bundle
-        run: node .release-tooling/scripts/release/desktop-bundle-config.mjs --root "$GITHUB_WORKSPACE" --out "$RUNNER_TEMP/exo-bundle" --ad-hoc-sign
+        env:
+          SMOKE: ${{ inputs.smoke }}
+        run: |
+          smoke_args=()
+          if [ "$SMOKE" = true ]; then smoke_args+=(--smoke); fi
+          node .release-tooling/scripts/release/desktop-bundle-config.mjs --root "$GITHUB_WORKSPACE" --out "$RUNNER_TEMP/exo-bundle" --ad-hoc-sign "${smoke_args[@]}"
 
       - name: Test Rust confinement and desktop library
         working-directory: desktop/src-tauri
@@ -253,10 +263,13 @@ jobs:
           VITE_EXO_BUILD_NUMBER: ${{ steps.bundle.outputs.bundle-version }}
           VITE_EXO_CHANNEL: ${{ steps.bundle.outputs.prerelease == 'true' && 'beta' || 'stable' }}
           IPC_SELFTEST: ${{ inputs.ipc-selftest }}
+          SMOKE: ${{ inputs.smoke }}
         run: |
           features=()
-          if [ "$IPC_SELFTEST" = true ]; then features=(--features ipc-selftest); fi
-          bun run --cwd desktop tauri build --no-bundle --config "$TAURI_BUNDLE_CONFIG" "${features[@]}"
+          if [ "$IPC_SELFTEST" = true ]; then features+=(ipc-selftest); fi
+          if [ "$SMOKE" = true ]; then features+=(recorder-failpoints); fi
+          if [ "${#features[@]}" -gt 0 ]; then feature_args=(--features "$(IFS=,; echo "${features[*]}")"); fi
+          bun run --cwd desktop tauri build --no-bundle --config "$TAURI_BUNDLE_CONFIG" "${feature_args[@]}"
 
       - name: Exercise release webview permissions
         if: inputs.ipc-selftest
@@ -299,8 +312,10 @@ jobs:
         env:
           SHORT_VERSION: ${{ steps.bundle.outputs.short-version }}
           BUNDLE_VERSION: ${{ steps.bundle.outputs.bundle-version }}
+          PRODUCT_NAME: ${{ steps.bundle.outputs.product-name }}
+          BUNDLE_IDENTIFIER: ${{ steps.bundle.outputs.bundle-identifier }}
         run: |
-          plist=desktop/src-tauri/target/release/bundle/macos/Exo.app/Contents/Info.plist
+          plist="desktop/src-tauri/target/release/bundle/macos/$PRODUCT_NAME.app/Contents/Info.plist"
           check() {
             actual=$(plutil -extract "$1" raw "$plist")
             if [ "$actual" != "$2" ]; then
@@ -311,7 +326,7 @@ jobs:
           }
           check CFBundleShortVersionString "$SHORT_VERSION"
           check CFBundleVersion "$BUNDLE_VERSION"
-          check CFBundleIdentifier xyz.tinycloud.exo
+          check CFBundleIdentifier "$BUNDLE_IDENTIFIER"
           check LSMinimumSystemVersion 14.2
           # The overlay must add to src-tauri/Info.plist, not replace it.
           plutil -extract NSMicrophoneUsageDescription raw "$plist" >/dev/null
@@ -325,7 +340,7 @@ jobs:
           mnt="$RUNNER_TEMP/exo-dmg"
           hdiutil attach -nobrowse -readonly -mountpoint "$mnt" "$dmg"
           trap 'hdiutil detach "$mnt"' EXIT
-          for bundle in desktop/src-tauri/target/release/bundle/macos/Exo.app "$mnt/Exo.app"; do
+          for bundle in "desktop/src-tauri/target/release/bundle/macos/${{ steps.bundle.outputs.product-name }}.app" "$mnt/${{ steps.bundle.outputs.product-name }}.app"; do
             codesign --verify --deep --strict --verbose=2 "$bundle"
             codesign -dv --verbose=2 "$bundle"
           done
@@ -336,8 +351,9 @@ jobs:
         id: package
         run: |
           cd desktop/src-tauri/target/release/bundle/macos
-          ditto -c -k --sequesterRsrc --keepParent Exo.app Exo-macos-arm64.app.zip
-          echo "sha256=$(shasum -a 256 Exo-macos-arm64.app.zip | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          app_name="${{ steps.bundle.outputs.product-name }}"
+          ditto -c -k --sequesterRsrc --keepParent "$app_name.app" "$app_name-macos-arm64.app.zip"
+          echo "sha256=$(shasum -a 256 "$app_name-macos-arm64.app.zip" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
       # Ad-hoc sealed, built by this public repository's code, so nothing in it is secret.
       - name: Upload dmg + app
@@ -347,7 +363,7 @@ jobs:
           if-no-files-found: error
           path: |
             desktop/src-tauri/target/release/bundle/dmg/*.dmg
-            desktop/src-tauri/target/release/bundle/macos/Exo-macos-arm64.app.zip
+            desktop/src-tauri/target/release/bundle/macos/*.app.zip
 
       - name: Save SwiftPM repository cache
         if: env.SAVE_CACHE == 'true' && steps.swiftpm.outputs.cache-hit != 'true'
@@ -376,7 +392,7 @@ jobs:
     name: ${{ inputs.sign && 'Sign and notarize (desktop-release)' || 'Sign (dry run, ad-hoc, no secrets)' }}
     needs: build
     # Explicit: a skipped preflight would otherwise skip this job too.
-    if: ${{ !cancelled() && needs.build.result == 'success' }}
+    if: ${{ !inputs.smoke && !cancelled() && needs.build.result == 'success' }}
     runs-on: macos-26
     # Signing secrets live only in this environment (deployment branches: main; no required reviewer). This job checks
     # out nothing but scripts/release and the entitlements at the workflow commit and runs no project code: no bun, no
@@ -447,9 +463,9 @@ jobs:
           SHORT_VERSION: ${{ needs.build.outputs.short-version }}
           BUNDLE_VERSION: ${{ needs.build.outputs.bundle-version }}
         run: |
-          zip="$RUNNER_TEMP/exo-build/macos/Exo-macos-arm64.app.zip"
+          zip="$RUNNER_TEMP/exo-build/macos/${{ needs.build.outputs.product-name }}-macos-arm64.app.zip"
           if [ "$(shasum -a 256 "$zip" | cut -d' ' -f1)" != "$SHA256" ]; then
-            echo "::error::Exo-macos-arm64.app.zip is not the archive the build job packaged"
+            echo "::error::${{ needs.build.outputs.product-name }}-macos-arm64.app.zip is not the archive the build job packaged"
             exit 1
           fi
           app=$(scripts/release/desktop-signing.sh unpack "$zip" "$RUNNER_TEMP/exo-app" "$VERSION" "$SHORT_VERSION" "$BUNDLE_VERSION")

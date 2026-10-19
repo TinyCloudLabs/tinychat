@@ -87,6 +87,21 @@ jobs:
           if-no-files-found: error
           path: mobile/android/app/build/outputs/apk/debug/app-debug.apk
 
+  # The smoke script's own tests drive it with fake xcrun/ps/sysctl binaries, so they run on Linux.
+  ios-smoke-script:
+    name: iOS smoke script tests (fakes)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+      - name: Test ios-simulator-smoke.sh
+        run: node --test mobile/scripts/ios-simulator-smoke.test.mjs
+
   ios:
     name: iOS (simulator build and smoke test)
     # Same pin as the iOS release build (ios-build.yml) and desktop: macos-26 runner, Xcode 26.6.
@@ -122,6 +137,12 @@ jobs:
           cd mobile/ios/Packages/ExoCapture
           xcodebuild -scheme ExoCapture -destination "platform=iOS Simulator,id=$simulator_id" \
             -derivedDataPath "$RUNNER_TEMP/capture-tests" CODE_SIGNING_ALLOWED=NO test
+      - name: Test ExoStt
+        run: |
+          simulator_id=$(awk '{print $2}' "$RUNNER_TEMP/ios-smoke/device.txt")
+          cd mobile/ios/Packages/ExoStt
+          xcodebuild -scheme ExoStt -destination "platform=iOS Simulator,id=$simulator_id" \
+            -derivedDataPath "$RUNNER_TEMP/exostt-tests" CODE_SIGNING_ALLOWED=NO test
 
       - name: Install JS deps
         run: bun install --frozen-lockfile

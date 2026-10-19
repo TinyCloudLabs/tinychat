@@ -633,6 +633,21 @@ describe("Sync now — engine dispatch", () => {
     expect(card).not.toContain("localStorage");
     expect(card).not.toContain("sessionStorage");
   });
+
+  test("the card re-reads the Google Meet row when a deferred Notes reconcile settles", () => {
+    const subscription = card.slice(card.indexOf("onGmeetNotesSettled(() =>"));
+    expect(card).toContain("onGmeetNotesSettled");
+    expect(subscription.slice(0, subscription.indexOf("\n"))).toContain("refreshRow(GMEET_CONNECTOR_ID)");
+  });
+
+  test("the card and the dialog both hand the engine the store methods the Notes reconcile needs", () => {
+    for (const source of [card, read("ConnectorDialog.tsx")]) {
+      const store = source.slice(source.indexOf("const GMEET_STORE"), source.indexOf("};", source.indexOf("const GMEET_STORE")));
+      for (const method of ["loadGmeetNotesIndex", "getDriveProgress", "putDriveProgress"]) {
+        expect(store).toContain(`${method}: connectorStore.${method}`);
+      }
+    }
+  });
 });
 
 

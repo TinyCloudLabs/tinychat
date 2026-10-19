@@ -161,29 +161,29 @@ describe("the card names where the recordings are kept", () => {
   test("a Mac, a browser or a phone or tablet app", () => {
     expect(homePlace("tauri")).toBe("mac");
     expect(homePlace("web")).toBe("browser");
-    expect(homePlace("ios")).toBe("device");
-    expect(homePlace("android")).toBe("device");
+    expect(homePlace("ios")).toBe("ios");
+    expect(homePlace("android")).toBe("android");
     expect(pendingTitle(2, "browser")).toBe("2 voice notes in this browser");
-    expect(pendingTitle(1, "device")).toBe("1 voice note on this device");
+    expect(pendingTitle(1, "ios")).toBe("1 voice note on this iPhone");
     expect(pendingNote({ a: { kind: "finalization_timed_out" } }, null, "browser")).toBe(
       "Kept in this browser. Exo will finish it automatically.",
     );
-    expect(pendingNote({}, FINALIZATION_PENDING, "device")).toBe(
-      "Kept on this device. Exo will finish it automatically.",
+    expect(pendingNote({}, FINALIZATION_PENDING, "ios")).toBe(
+      "Kept on this iPhone. Exo will finish it automatically.",
     );
-    expect(desktopIssueMeta({ kind: "finalization_timed_out" }, "device")).toBe("Saving… · kept on this device");
+    expect(desktopIssueMeta({ kind: "finalization_timed_out" }, "ios")).toBe("Saving… · kept on this iPhone");
   });
 
   test("the failed-recording sheet's copy follows, never saying Mac or phone off the Mac", () => {
     const body = HOME_COPY.deleteConfirm.body;
-    expect(forPlace("device")(body)).toBe("The audio will be deleted from this device. This can't be undone.");
+    expect(forPlace("ios")(body)).toBe("The audio will be deleted from this iPhone. This can't be undone.");
     expect(forPlace("browser")(HOME_COPY.timedOutSheet.body)).toBe(
       "Kept in this browser. Exo will finish it automatically.",
     );
     for (const line of [body, HOME_COPY.partialAudioSheet.body, HOME_COPY.tryAgainFailed])
-      for (const place of ["device", "browser"] as const) {
+      for (const place of ["ios", "browser"] as const) {
         expect(forPlace(place)(line)).not.toContain("Mac");
-        expect(forPlace(place)(line)).not.toContain("phone");
+        expect(forPlace(place)(line)).not.toContain("this Mac");
       }
   });
 });

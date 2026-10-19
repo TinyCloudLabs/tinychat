@@ -5,6 +5,8 @@
 // Continue and Save now sit beside the row, never inside it. What has landed
 // is under Recent and in the Library.
 import { AlertCircleIcon, FileAudioIcon, Loader2Icon, MicIcon, VideoIcon } from "lucide-react";
+import { useContext } from "react";
+import { PlatformContext, deviceName } from "@/lib/platform";
 
 import { uploadStatusText } from "@/chat/AudioUploadPanel";
 import { ACTIVE_STATUSES, meetingTitle, statusLabel } from "@/chat/TranscriberSection";
@@ -29,6 +31,8 @@ export interface VoiceInProgress {
   /** The last recording stopped itself at the limit. */
   limitNotice: string | null;
   onSaveNow: () => void;
+  /** Storage is full: the button adds storage instead of retrying the save. */
+  storageFull?: boolean;
 }
 
 export interface InProgressRowsViewProps {
@@ -89,6 +93,7 @@ export function inProgressShown(props: Pick<InProgressRowsViewProps, "upload" | 
 }
 
 export function InProgressRowsView(props: InProgressRowsViewProps) {
+  const localDevice = deviceName(useContext(PlatformContext));
   const { upload, paused, meetings, voice } = props;
   const showPaused = upload === null && paused !== null;
   const voiceCount = voice?.listing.state === "ok" ? voice.listing.count : 0;
@@ -126,19 +131,19 @@ export function InProgressRowsView(props: InProgressRowsViewProps) {
             <span className="soft-card-main">
               <MicIcon className="soft-ico soft-card-icon" aria-hidden="true" />
               <RowText
-                title={voiceCount === 1 ? "1 voice note on this phone" : `${voiceCount} voice notes on this phone`}
+                title={voiceCount === 1 ? `1 voice note on ${localDevice}` : `${voiceCount} voice notes on ${localDevice}`}
                 meta={voice.lastError ?? (voice.saving ? HOME_COPY.savingToSpace : HOME_COPY.notInSpace)}
                 spinning={voice.saving}
               />
             </span>
-            <Pill label="Save now" onClick={voice.onSaveNow} disabled={voice.saving} testId="voice-note-retry" />
+            <Pill label={voice.storageFull ? HOME_COPY.manageStorage : "Save now"} onClick={voice.onSaveNow} disabled={voice.saving} testId="voice-note-retry" />
           </li>
         )}
         {voice && voiceListFailed && (
           <li className="soft-card" data-testid="voice-note-list-failed">
             <span className="soft-card-main">
               <AlertCircleIcon className="soft-ico soft-card-icon" aria-hidden="true" />
-              <RowText title="Couldn't check this phone for unsaved notes" meta={voiceListFailed} spinning={voice.saving} />
+              <RowText title={`Couldn't check ${localDevice} for unsaved notes`} meta={voiceListFailed} spinning={voice.saving} />
             </span>
             <Pill label="Try again" quiet onClick={voice.onSaveNow} disabled={voice.saving} testId="voice-note-list-retry" />
           </li>

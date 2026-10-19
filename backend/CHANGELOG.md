@@ -1,5 +1,62 @@
 # @tinychat/backend
 
+## 0.5.6
+
+### Patch Changes
+
+- fa85621: Fix the Private transcription length boundary. Eligibility compares the unrounded note length with PTX's limit from `/capabilities`: `accepted_max_duration_seconds` (PTX's inclusive ceiling on measured duration) when present, otherwise `max_duration_seconds` plus the optional `duration_grace_seconds`. The client keeps a 0.25 s margin below the ceiling. Client-built WAVs are rechecked against the greater of the precise saved duration and exact decoded payload duration, and the latest byte cap is checked against the actual payload. Legacy integer durations use a conservative +0.5 s estimate. No Private limit is hard-coded; without a complete duration and byte advertisement Private is not offered. The backend relays the optional duration fields when PTX sends them; a client-only deploy is safe. Clock-style media durations floor fractional seconds consistently for the total and current position, and a refused Private start returns its refusal to the caller.
+- a436537: Hosted AssemblyAI transcription is not available in 0.8.0. This release includes dedupe and durable-spool groundwork only; it takes effect in a future, separately approved rollout.
+- 7a024fb: Relay validated optional PTX quiet-mode VAD diagnostics in transcription results.
+- ada6d55: Keep calendar autojoin enabled when reconnecting the same Google account and explain why it is off in connector settings and Meeting sources.
+- 42fbd33: Keep a shared Google grant when another live calendar autojoin account still uses it, while removing the disconnecting account's local credentials. Explain that Google access can be revoked from another TinyChat account or Google settings.
+- 04a9e32: Replace the earlier auth audience check with signed SIWE audience validation.
+- 2bfec5b: Validate the signed SIWE audience before issuing sessions and bound pending nonces.
+
+## 0.5.6-beta.3
+
+### Patch Changes
+
+- fa85621: Fix the Private transcription length boundary. Eligibility compares the unrounded note length with PTX's limit from `/capabilities`: `accepted_max_duration_seconds` (PTX's inclusive ceiling on measured duration) when present, otherwise `max_duration_seconds` plus the optional `duration_grace_seconds`. The client keeps a 0.25 s margin below the ceiling. Client-built WAVs are rechecked against the greater of the precise saved duration and exact decoded payload duration, and the latest byte cap is checked against the actual payload. Legacy integer durations use a conservative +0.5 s estimate. No Private limit is hard-coded; without a complete duration and byte advertisement Private is not offered. The backend relays the optional duration fields when PTX sends them; a client-only deploy is safe. Clock-style media durations floor fractional seconds consistently for the total and current position, and a refused Private start returns its refusal to the caller.
+- a436537: Hosted AssemblyAI transcription is not available in 0.8.0. This release includes dedupe and durable-spool groundwork only; it takes effect in a future, separately approved rollout.
+
+## 0.5.6-beta.2
+
+### Patch Changes
+
+- 91a7981: Validate the signed SIWE audience before issuing sessions and bound pending nonces.
+
+## 0.5.6-beta.1
+
+### Patch Changes
+
+- 04a9e32: Revert the auth verify audience check.
+
+## 0.5.6-beta.0
+
+### Patch Changes
+
+- 2bfec5b: Validate the signed SIWE audience before issuing sessions and bound pending nonces.
+
+## 0.5.5
+
+### Patch Changes
+
+- 7a024fb: Relay validated optional PTX quiet-mode VAD diagnostics in transcription results.
+- ada6d55: Keep calendar autojoin enabled when reconnecting the same Google account and explain why it is off in connector settings and Meeting sources.
+- 42fbd33: Keep a shared Google grant when another live calendar autojoin account still uses it, while removing the disconnecting account's local credentials. Explain that Google access can be revoked from another TinyChat account or Google settings.
+
+## 0.5.5-beta.2
+
+### Patch Changes
+
+- 42fbd33: Keep a shared Google grant when another live calendar autojoin account still uses it, while removing the disconnecting account's local credentials. Explain that Google access can be revoked from another TinyChat account or Google settings.
+
+## 0.5.5-beta.1
+
+### Patch Changes
+
+- ada6d55: Keep calendar autojoin enabled when reconnecting the same Google account and explain why it is off in connector settings and Meeting sources.
+
 ## 0.5.5-beta.0
 
 ### Patch Changes

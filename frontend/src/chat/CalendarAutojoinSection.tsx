@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { HowItWorksLink } from "@/components/ui/how-it-works-link";
 import { InfoTip } from "@/components/ui/info-tip";
 import { StatusDot, type StatusTone } from "@/components/ui/status-dot";
-import { calendarOutcomeLabel, createCalendarAutojoinClient, type CalendarAutojoinStatus } from "@/lib/connectors/calendarAutojoinApi";
+import { calendarAutojoinOffLabel, calendarOutcomeLabel, createCalendarAutojoinClient, type CalendarAutojoinStatus } from "@/lib/connectors/calendarAutojoinApi";
 
 type CalendarAutojoinUpdate = Partial<{
   status: CalendarAutojoinStatus; error: string | null; busy: boolean;
@@ -100,9 +100,14 @@ export function CalendarAutojoinSection(props: {
       </Button>
     </div>
     <p className="mt-2 text-muted-foreground">Last successful scan: {status?.lastScanAt ? new Date(status.lastScanAt).toLocaleString() : "None yet"}</p>
-    {status?.state === "needs_reconnect" && <p className="mt-1 text-muted-foreground">Reconnect Google with renewed consent to resume unattended joining.</p>}
+    <CalendarAutojoinOffReason status={status} />
     {status?.state === "error" && <p className="mt-1 text-destructive">{status.errorCode ? calendarOutcomeLabel(status.errorCode) : "Calendar scanning is paused. It will retry automatically."}</p>}
     {error && <p role="alert" className="mt-1 text-destructive">{error}</p>}
     <HowItWorksLink section="connectors" />
   </div>;
+}
+
+export function CalendarAutojoinOffReason({ status }: { status: CalendarAutojoinStatus | null }) {
+  const detail = calendarAutojoinOffLabel(status);
+  return detail ? <p className="mt-1 text-muted-foreground">{detail}</p> : null;
 }

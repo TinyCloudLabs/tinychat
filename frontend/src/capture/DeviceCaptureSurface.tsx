@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Capacitor } from "@capacitor/core";
 import { Link, useNavigate } from "react-router-dom";
 import { MicIcon, UserIcon } from "lucide-react";
@@ -7,6 +7,11 @@ import { SectionCard } from "@/components/ui/section-card";
 import { PageHeader } from "@/shell/PageHeader";
 import { PATHS, type Screen } from "@/shell/routes";
 import { useSizeClass } from "@/lib/sizeClass";
+import { PlatformContext, deviceName } from "@/lib/platform";
+import { notePipeline, type NotePipelineInput, type PipelinePending } from "@/lib/voiceNotes/notePipeline";
+import { combinedModel, type NotePipelineView } from "@/lib/voiceNotes/useNotePipeline";
+import { onDeviceQueuePlace } from "@/lib/voiceNotes/onDeviceQueue";
+import { downloadOnDeviceModel, retryOnDeviceNote } from "@/lib/voiceNotes/onDeviceSttStore";
 import { VoiceNotes, type LocalTranscript } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { isAppleSpeech, isOnDeviceReady, OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
 import { onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
@@ -19,9 +24,21 @@ import type { LibraryFilter } from "./library/libraryKinds";
 import { NoteDetailView } from "./library/NoteDetailView";
 import { transcriptWithTimestamps } from "./library/transcriptSegments";
 import { VoiceNotesTranscriberSettings } from "@/chat/VoiceNotesTranscriberSettings";
+import { AudioCacheSettings } from "./AudioCacheSettings";
 import { useRecorder } from "./recorder/RecorderProvider";
 import { SoftHomeProvider } from "./home/softHome";
 import { SystemAudioStart } from "./home/desktop/SystemAudioStart";
+import { ActivityPanel } from "./activity/ActivityPanel";
+import { openManageStorage } from "@/lib/openManageStorage";
+
+/** A missing pending-store entry does not prove that a known account is signed out. */
+export function devicePendingForNote(pending: PipelinePending | undefined, ownerUnknown: boolean, did: string | null, offline: boolean, error: string | null): PipelinePending {
+  if (pending) return pending;
+  if (ownerUnknown) return { held: "unowned" };
+  if (did === null) return { held: "signed-out" };
+  if (!offline && error !== null) return { failed: { kind: "other", message: error } };
+  return {};
+}
 
 /** The regular Capture and Library visual language, backed by the phone while no space is available. */
 export function DeviceCaptureSurface({ did, offline, error, onSignIn, onRetry, screen }: {
@@ -30,6 +47,7 @@ export function DeviceCaptureSurface({ did, offline, error, onSignIn, onRetry, s
 }) {
   const recorder = useRecorder();
   const compact = useSizeClass().size === "compact";
+  const platform = useContext(PlatformContext);
   const navigate = useNavigate();
   const { notes, error: notesError, refresh, remove } = useLocalNotes(did, offline || error !== null);
   const [filter, setFilter] = useState<LibraryFilter>("all");
@@ -57,38 +75,61 @@ export function DeviceCaptureSurface({ did, offline, error, onSignIn, onRetry, s
   const currentNotes = useMemo(() => notes.filter((note) => !note.ownerUnknown), [notes]);
   const earlierNotes = useMemo(() => notes.filter((note) => note.ownerUnknown), [notes]);
   const items = useMemo(() => currentNotes.map((note) => onPhoneItem(note)), [currentNotes]);
+  const activityItems = useMemo(() => notes.map((note) => onPhoneItem(note)), [notes]);
+  const activityViews = useMemo(() => new Map(notes.map((note): [string, NotePipelineView] => {
+    const pending = recorder.pending.notes?.find((entry) => entry.id === note.id);
+    const sessionReadFailed = !pending && did !== null && !offline && error !== null;
+    const queue = onDeviceQueuePlace(status, note.id);
+    const route = note.options?.transcriber === "on-device" ? "on-device" : note.options?.transcriber === "off" ? "off" : "private-cloud";
+    const input: NotePipelineInput = {
+      device: platform === "android" ? "android" : "iphone", route, transcriptProvider: note.options?.transcriber === "assemblyai" ? "powerful" : "private",
+      audioUploadIntent: (note.options as { uploadAudio?: boolean } | undefined)?.uploadAudio ?? true,
+      hasNotesOrMoments: false, online: !offline,
+      capture: { finalizing: recorder.finalizationPendingId === note.id, issue: null },
+      space: { saved: !note.ownerUnknown && note.ledger?.audio?.state === "saved", pending: devicePendingForNote(pending, note.ownerUnknown === true, did, offline, error), lane: { busy: false, depth: 0 } },
+      transcript: { inSpace: null, cloud: route === "private-cloud" ? recorder.transcription?.jobs.get(note.id) ?? null : null,
+        onDevice: route === "on-device" ? { stt: queue ? { state: queue.entry.state, error: queue.entry.error } : note.stt ? { state: note.stt.state, error: note.stt.error } : null,
+          queue: queue ? { position: queue.position, inLine: queue.inLine, percent: queue.percent } : null, model: combinedModel(status), download: status.download.state, sync: null } : null },
+      notes: { state: "idle" },
+    };
+    const pipeline = notePipeline(input);
+    return [note.id, { input, pipeline, provider: route === "on-device" ? "local" : note.options?.transcriber === "assemblyai" ? "powerful" : "private",
+      onAction: (kind) => { if (kind === "sign-in") onSignIn(); else if (kind === "get-model") void downloadOnDeviceModel(); else if (kind === "retry") { if (pipeline.current === "transcript") void retryOnDeviceNote(note.id); else if (sessionReadFailed) onRetry(); else void recorder.retryPending(); } else if (kind === "check-again") void recorder.transcription?.onRecheck(); else if (kind === "review-consent") recorder.reviewPrivateConsent?.(); else if (kind === "manage-storage") void openManageStorage(); },
+      onRetryStep: (key) => { if (key === "transcript") void retryOnDeviceNote(note.id); else if (sessionReadFailed) onRetry(); else void recorder.retryPending(); }, actionError: null }];
+  })), [notes, recorder, status, platform, offline, onSignIn, onRetry, did, error]);
   const selected = notes.find((note) => onPhoneItem(note).id === screen.noteId);
   const noteItem = selected ? onPhoneItem(selected) : null;
   const library = screen.id === "library";
   const detail = screen.id === "note";
   const soft = compact;
+  const activity = <ActivityPanel items={activityItems} views={activityViews} platform={platform} onOpenNote={(id) => navigate(PATHS.library + "/" + id)} />;
   const notice = <div className="rounded-xl border border-border bg-surface-2 px-4 py-3 text-callout">
-    <p>{offline ? "You're offline. Recordings stay on this phone until Exo reconnects." : "Recordings stay on this phone until you sign in."}</p>
-    {error && !offline && <p role="alert" className="mt-1 text-destructive">{error}</p>}
+    <p>{offline ? `You're offline. Recordings stay on ${deviceName(platform)} until Exo reconnects.` : did === null ? `Recordings stay on ${deviceName(platform)} until you sign in.` : `Recordings stay on ${deviceName(platform)} while Exo checks your TinyCloud connection.`}</p>
+    {error && !offline && <p role="alert" className="mt-1 text-destructive">{did === null ? "Couldn't sign in. Try again." : "Couldn't check your TinyCloud connection. Try again."}</p>}
     <div className="mt-2 flex flex-wrap gap-2">
-      {offline && <Button size="sm" variant="outline" onClick={onRetry}>Try again</Button>}
-      {!offline && <Button size="sm" onClick={onSignIn}>Sign in</Button>}
+      {(offline || did !== null) && <Button size="sm" variant="outline" onClick={onRetry}>Try again</Button>}
+      {!offline && did === null && <Button size="sm" onClick={onSignIn}>Sign in</Button>}
     </div>
   </div>;
   return <SoftHomeProvider enabled={soft} issues={recorder.captureIssues} onDismissIssue={recorder.dismissCaptureIssue}>
     <div className={`h-full min-h-0 ${soft ? "soft-skin soft-home" : ""}`} data-testid="capture-surface">
-      {detail ? <DeviceNoteDetail id={selected?.id ?? null} item={noteItem} onBack={() => navigate(PATHS.library)} /> : library ?
+      {detail ? <DeviceNoteDetail id={selected?.id ?? null} item={noteItem} activityView={selected ? activityViews.get(selected.id) : undefined} platform={platform} activity={activity} onBack={() => navigate(PATHS.library)} /> : library ?
         <div className="h-full overflow-y-auto" data-scroll-root>
-          <PageHeader title="Library" back={() => navigate(PATHS.capture)} className="mx-auto w-full max-w-2xl px-4" />
+          <PageHeader title="Library" back={() => navigate(PATHS.capture)} className="mx-auto w-full max-w-2xl px-4" trailing={activity} />
           <div className="mx-auto w-full max-w-2xl space-y-4 px-4 pb-[max(1.5rem,env(safe-area-inset-bottom))] pt-2">
             {notice}
-            <LibraryListView status="ready" items={items} filter={filter} onFilterChange={setFilter} onRetry={() => void refresh()} now={new Date()} />
+            <LibraryListView status="ready" items={items} filter={filter} onFilterChange={setFilter} onRetry={() => void refresh()} now={new Date()} activityViews={activityViews} platform={platform} />
           </div>
         </div> : <div className="flex h-full flex-col">
           <div className="min-h-0 flex-1 overflow-y-auto" data-scroll-root>
-            <PageHeader title="Capture" className="mx-auto w-full max-w-2xl px-4" trailing={<Link to={PATHS.library} className="soft-header-link">Library</Link>} />
+            <PageHeader title="Capture" className="mx-auto w-full max-w-2xl px-4" trailing={<div className="flex flex-wrap items-center gap-2">{activity}<Link to={PATHS.library} className="soft-header-link">Library</Link></div>} />
             <div className="mx-auto w-full max-w-2xl space-y-6 px-4 pb-6 pt-2">
               {notice}
               {notesError && <p role="alert" className="text-callout text-destructive">{notesError}</p>}
               <section aria-labelledby="device-recent-title" className="soft-recent">
                 <div className="soft-sect-row"><h2 id="device-recent-title" className="soft-sect">Recent</h2><Link to={PATHS.library} className="soft-link">See all</Link></div>
                 {items.length ? <ul className="soft-list">{items.slice(0, 5).map((item) =>
-                  <LibraryRow key={item.id} item={item} now={new Date()} grouped={false} />)}</ul>
+                  <LibraryRow key={item.id} item={item} now={new Date()} grouped={false} activityView={activityViews.get(item.sourceId)} platform={platform} />)}</ul>
                   : <p className="soft-empty">Your recordings will appear here.</p>}
               </section>
               <EarlierVersionNotes notes={earlierNotes} did={did} onChange={refresh} onDelete={remove} />
@@ -103,7 +144,7 @@ export function DeviceCaptureSurface({ did, offline, error, onSignIn, onRetry, s
   </SoftHomeProvider>;
 }
 
-function DeviceNoteDetail({ id, item, onBack }: { id: string | null; item: ReturnType<typeof onPhoneItem> | null; onBack: () => void }) {
+function DeviceNoteDetail({ id, item, onBack, activityView, platform, activity }: { id: string | null; item: ReturnType<typeof onPhoneItem> | null; onBack: () => void; activityView?: NotePipelineView; platform: "ios" | "android" | "tauri" | "web"; activity: React.ReactNode }) {
   const [transcript, setTranscript] = useState<LocalTranscript | null | undefined>(undefined);
   useEffect(() => {
     if (!id) return;
@@ -124,6 +165,7 @@ function DeviceNoteDetail({ id, item, onBack }: { id: string | null; item: Retur
       copyState="idle" onCopy={() => { if (sentences) void navigator.clipboard.writeText(sentences.map((part) => part.text).join("\n")); }}
       onCopyWithTimestamps={() => { if (sentences) void navigator.clipboard.writeText(transcriptWithTimestamps(sentences)); }}
       onRetry={() => { if (id) void VoiceNotes.getTranscript({ id }).then((result) => setTranscript(result.transcript)); }}
+      activityView={activityView} platform={platform} activityControl={activity}
       pushed onBack={onBack} />
   </div>;
 }
@@ -134,6 +176,7 @@ export function DeviceCaptureSettings({ onBack, onSignIn, offline = false }: { o
     <div className="mx-auto w-full max-w-2xl space-y-4 px-4 pb-8 pt-2">
       <SectionCard icon={UserIcon} title="Account"><p className="text-callout text-muted-foreground">{offline ? "Exo will sync when it reconnects." : "Sign in to sync your recordings."}</p><Button className="mt-3" onClick={onSignIn}>{offline ? "Try again" : "Sign in"}</Button></SectionCard>
       <SectionCard icon={MicIcon} title="Voice notes"><VoiceNotesTranscriberSettings /></SectionCard>
+      <SectionCard icon={MicIcon} title="Storage"><AudioCacheSettings /></SectionCard>
     </div>
   </div>;
 }

@@ -52,6 +52,20 @@ export const steadyLevel: RecorderValue["subscribeLevel"] = (listener) => {
   return () => clearInterval(timer);
 };
 
+const steadySystemLevels: RecorderValue["subscribeLevels"] = (listener) => {
+  const sample = {
+    level: 0.22,
+    peak: 0.31,
+    sources: {
+      mic: { level: 0.15, peak: 0.25 },
+      system: { level: 0.22, peak: 0.31 },
+    },
+  };
+  listener(sample);
+  const timer = setInterval(() => listener(sample), 100);
+  return () => clearInterval(timer);
+};
+
 const PRIVATE_CLOUD_ON: VoiceNoteTranscriptionProps = {
   availability: "available",
   consented: true,
@@ -126,6 +140,7 @@ export const ON_DEVICE_STT: OnDeviceSttPlugin = {
   deleteModels: async () => {},
   installSpeechAssets: async () => {},
   enqueue: async () => {},
+  enqueueAgain: async () => {},
   cancel: async () => {},
   addListener: async () => ({ remove: async () => {} }),
 };
@@ -208,7 +223,6 @@ function macWhisper(model: "ready" | "none", systemAudio = false): HarnessScreen
       },
       systemAudio: { get: async () => systemAudio, set: async () => {} },
       systemAudioConsent: { get: async () => true, set: async () => {} },
-      autoSaveToSpace: { get: async () => true, set: async () => {} },
     } as unknown as DesktopCaptureExtras);
     return null;
   };
@@ -221,7 +235,7 @@ function whisperScreen(
   seed: DesktopRecorderSeed = {},
   systemAudio = false,
 ): HarnessScreen {
-  const base = screen(id, value, seed);
+  const base = screen(id, { ...value, ...(systemAudio ? { subscribeLevels: steadySystemLevels } : {}) }, seed);
   const setUp = macWhisper(model, systemAudio);
   return { ...base, render: () => { setUp(); return base.render(); } };
 }

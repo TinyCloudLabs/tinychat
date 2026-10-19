@@ -1,7 +1,11 @@
 // The minimised recorder: the island in each state, and the rail, sidebar and
 // header controls that stand in for it.
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
+import { act } from "react";
+import { createRoot } from "react-dom/client";
+import { installDom } from "@/test/dom";
+import { __resetStorageStatusForTests, reportStorageError } from "@/lib/storageStatus";
 
 import { MinimizedProvider } from "./final/MinimizedProvider";
 import { HeaderLiveChipView } from "./HeaderLiveChip";
@@ -12,6 +16,9 @@ import { islandShown, StaticRecorderProvider, type RecorderValue } from "./Recor
 import { SidebarLiveCardView } from "./SidebarLiveCard";
 
 const noop = () => {};
+afterEach(async () => {
+  await __resetStorageStatusForTests();
+});
 
 function value(patch: Partial<RecorderValue> = {}): RecorderValue {
   return {
@@ -68,18 +75,46 @@ describe("IslandView", () => {
     expect(html).not.toContain("island-stop");
   });
 
-  test("landed: Saved on this phone, with Open when a note can be opened", () => {
+  test("landed: Saved on this browser, with Open when a note can be opened", () => {
     const landed = value({ phase: "idle", outcome: "saved", lastSaved: { id: "rec-1", durationMs: 1, at: 1 } });
     const html = renderToStaticMarkup(<IslandView recorder={landed} onOpenNote={noop} />);
-    expect(html).toContain("Saved on this phone");
+    expect(html).toContain("Saved on this browser");
     expect(html).toContain('data-testid="island-open"');
     expect(renderToStaticMarkup(<IslandView recorder={landed} />)).not.toContain("island-open");
   });
 
-  test("failed: Kept on this phone, with Save now", () => {
+  test("stopped at a 1-hour limit while minimised: the island and the sidebar card name the limit while saving and once saved", () => {
+    const notice = "Stopped at the 1-hour limit.";
+    for (const patch of [{ phase: "saving" as const }, { phase: "idle" as const, outcome: "saved" as const, lastSaved: { id: "rec-1", durationMs: 1, at: 1 } }]) {
+      const recorder = value({ ...patch, limitNotice: notice });
+      expect(renderToStaticMarkup(<IslandView recorder={recorder} />)).toMatch(/data-testid="island-limit"[^>]*>Stopped at the 1-hour limit\.</);
+      expect(renderToStaticMarkup(<SidebarLiveCardView recorder={recorder} />)).toMatch(/data-testid="sidebar-live-limit"[^>]*>Stopped at the 1-hour limit\.</);
+    }
+    // A manual Stop has no notice.
+    expect(renderToStaticMarkup(<SidebarLiveCardView recorder={value({ phase: "saving" })} />)).not.toContain("sidebar-live-limit");
+    expect(renderToStaticMarkup(<IslandView recorder={value({ phase: "saving" })} />)).not.toContain("island-limit");
+  });
+
+  test("failed: Kept on this browser, with Save now", () => {
     const html = renderToStaticMarkup(<IslandView recorder={value({ phase: "idle", outcome: "failed" })} />);
-    expect(html).toContain("Kept on this phone");
+    expect(html).toContain("Kept on this browser");
     expect(html).toContain('data-testid="island-save-now"');
+  });
+
+  test("failed while TinyCloud storage is full: Manage storage, never Save now", async () => {
+    const restoreDom = installDom();
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    reportStorageError({ code: "STORAGE_QUOTA_EXCEEDED", message: "storage is full" });
+    try {
+      await act(async () => root.render(<IslandView recorder={value({ phase: "idle", outcome: "failed" })} />));
+      expect(container.textContent).toContain("Manage storage");
+      expect(container.textContent).not.toContain("Save now");
+    } finally {
+      await act(async () => root.unmount());
+      restoreDom();
+    }
   });
 
   test("shown while minimised and under way or just ended; never over the open sheet or when idle", () => {

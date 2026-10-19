@@ -1,4 +1,4 @@
-import { useContext } from "react";
+import { useContext, useId } from "react";
 import { PlatformContext } from "@/lib/platform";
 import { useResolvedTheme } from "@/lib/theme";
 import { cn } from "@/lib/utils";
@@ -40,6 +40,7 @@ export function SidebarDockView({
   const view = minimizedView(recorder, elapsedMs, silencedSinceMs, device);
   const live = view.ring === "live";
   const canToggle = view.controls.resume || view.controls.pause;
+  const stopsId = useId();
   return (
     <div
       data-testid="sidebar-dock"
@@ -58,6 +59,7 @@ export function SidebarDockView({
           className="dock-open"
           onClick={recorder.openSheet}
           aria-label={`${view.status}. Open recorder`}
+          aria-describedby={view.timer.countdown ? stopsId : undefined}
           data-testid="dock-open"
         />
         <div className="dock-row">
@@ -95,6 +97,11 @@ export function SidebarDockView({
             </span>
           </button>
         </div>
+        {view.timer.countdown && (
+          <div id={stopsId} className="dock-stops" aria-hidden="true" data-testid="dock-stops">
+            {view.timer.countdown.text}
+          </div>
+        )}
         <div className="dock-bars">
           <MinimizedBars
             recorder={recorder}

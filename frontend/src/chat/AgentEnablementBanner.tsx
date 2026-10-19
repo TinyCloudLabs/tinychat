@@ -12,7 +12,7 @@
 
 import type { FC } from "react";
 import { useLocation } from "react-router-dom";
-import { useAgentAccess, type AgentCapability, type UseAgentEnablementResult } from "./useAgentEnablement";
+import { agentAccessStatusLabel, useAgentAccess, type AgentCapability, type UseAgentEnablementResult } from "./useAgentEnablement";
 import type { AgentDelegationErrorCode } from "../lib/agentChatApi";
 import { isChatViewPath } from "./chatViewPath";
 import { openkeyPasskeysSupported } from "../lib/openkeyPasskeys";
@@ -164,8 +164,7 @@ export function AgentAccessControls(props: UseAgentEnablementResult) {
   return (
     <div className="space-y-3">
       <p role="status" className="text-xs font-medium">
-        {props.disconnecting ? "Disconnecting…" : connected ? "Connected"
-          : unverified ? "Access could not be verified" : unknown ? "Access status unknown" : "Disconnected"}
+        {agentAccessStatusLabel(props)}
       </p>
       <div className="flex flex-wrap gap-2">
         <Button type="button" size="sm" onClick={() => void props.onEnable()}

@@ -229,6 +229,7 @@ describe("transcribed voice notes in meeting chat and Library", () => {
       silencedMs: 0,
       silencedEvents: 0,
       noSignalMs: 0,
+      options: { transcriber: "private-cloud" as const, identifySpeakers: false, uploadAudio: true },
     };
     expect((await saveVoiceNote(space as never, recording, voiceNoteAudioSourceFromBase64({ mimeType: "audio/mp4", base64: "AAAA" }), "android")).ok).toBe(true);
     // Saved, not yet transcribed: an empty transcript, and nothing for chat to ground on.
@@ -255,10 +256,20 @@ describe("transcribed voice notes in meeting chat and Library", () => {
       status: "ok",
       sentences: [{
         index: 0,
-        speaker_name: "You",
-        text: "VOICE_NOTE_CANARY remember to book the venue. And send the budget to Avery.",
+        speaker_name: null,
+        text: "VOICE_NOTE_CANARY remember to book the venue.",
         start_time: 0.5,
+        end_time: 6,
+        channel: 0,
+        timing: "engine",
+      }, {
+        index: 1,
+        speaker_name: null,
+        text: "And send the budget to Avery.",
+        start_time: 7,
         end_time: 12,
+        channel: 0,
+        timing: "engine",
       }],
     });
     const listed = await listVoiceNotes(space as never);
@@ -266,7 +277,7 @@ describe("transcribed voice notes in meeting chat and Library", () => {
       sourceId: "rec-voice-1",
       title: expect.stringContaining("Voice note"),
       durationSecs: 42,
-      transcript: { status: "transcribed", preview: "VOICE_NOTE_CANARY remember to book the venue. And send the budget to Avery." },
+      transcript: { status: "transcribed", preview: "VOICE_NOTE_CANARY remember to book the venue.\nAnd send the budget to Avery." },
     })]);
 
     const retriever = createBrowserMeetingTurnRetriever({
@@ -274,7 +285,7 @@ describe("transcribed voice notes in meeting chat and Library", () => {
       // Voice notes have no server copy.
       meetings: { list: async () => ({ status: "feature-dark" }), read: async () => ({ status: "not-found" }) },
     } as never);
-    const outcome = await retriever.retrieve({ threadId: "voice-thread", question: "What did you say in the latest meeting?" });
+    const outcome = await retriever.retrieve({ threadId: "voice-thread", question: "Summarize my latest meeting." });
     expect(outcome).toEqual(expect.objectContaining({
       status: "grounded",
       meeting: expect.objectContaining({ source: VOICE_NOTE_SOURCE, sourceId: "rec-voice-1" }),
@@ -292,7 +303,7 @@ describe("transcribed voice notes in meeting chat and Library", () => {
     expect((await readTranscript(space as never, VOICE_NOTE_SOURCE, "rec-voice-1", locator.bodyKey!)).status).toBe("ok");
     const afterLegacy = await listVoiceNotes(space as never);
     expect(afterLegacy.ok && afterLegacy.data[0]?.transcript.status).toBe("transcribed");
-    const again = await retriever.retrieve({ threadId: "voice-late", question: "What did you say in the latest meeting?" });
+    const again = await retriever.retrieve({ threadId: "voice-late", question: "Summarize my latest meeting." });
     expect(again.status).toBe("grounded");
     expect(again.status === "grounded" && again.systemMessage).toContain("VOICE_NOTE_CANARY");
     expect(again.status === "grounded" && again.systemMessage).not.toContain("STALE_WORDS");
@@ -309,6 +320,7 @@ describe("untranscribed voice notes are not meetings", () => {
     silencedMs: 0,
     silencedEvents: 0,
     noSignalMs: 0,
+    options: { transcriber: "on-device" as const, identifySpeakers: false, uploadAudio: true },
   });
   const localMeeting = async (space: ReturnType<typeof sqliteSpace>) =>
     saveLocalTranscript(space as never, prepareLocalTranscript({

@@ -242,6 +242,7 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
             val optionEvent = history.lastOrNull { it.optString("e") == "options" } ?: first.optJSONObject("options") ?: defaultOptions()
             val finalOptions = JSONObject().put("transcriber", optionEvent.optString("transcriber", "on-device"))
                 .put("identifySpeakers", optionEvent.optBoolean("identifySpeakers"))
+            if (optionEvent.has("uploadAudio")) finalOptions.put("uploadAudio", optionEvent.optBoolean("uploadAudio"))
             val inputEvent = history.lastOrNull { it.optString("e") == "input" }
             val inputValue = inputEvent?.let { JSONObject().put("id", it.getString("id"))
                 .put("name", it.getString("name")).put("kind", it.getString("kind")) } ?: JSONObject.NULL
@@ -428,14 +429,42 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
                 url != null -> Triple("own_upload_lookup", url, "lookup")
                 else -> Triple("unknown", null, "unknown")
             }
-            else -> Triple("ptx_job", job ?: direct, if (job != null || direct != null) "pending" else "unknown")
+            "ptx_create" -> Triple("ptx_job", job ?: direct, if (job != null || direct != null) "pending" else "unknown")
+            else -> Triple("unknown", null, "unknown")
         }
         return JSONObject().put("entryId", receiptEntry(id, receipt.getString("opId"))).put("did", did)
             .put("provider", receipt.getString("provider")).put("mode", receipt.opt("mode") ?: JSONObject.NULL)
             .put("kind", outKind).put("handle", handle ?: JSONObject.NULL)
             .put("handleExpiresAt", result?.opt("handleExpiresAt") ?: receipt.opt("handleExpiresAt") ?: JSONObject.NULL)
             .put("state", state).put("createdAt", receipt.optLong("startedAt", System.currentTimeMillis()))
-            .put("attempts", 0)
+            .put("attempts", 0).put("receiptKind", kind)
+    }
+
+    /** Stored receiptKind, or null. optString would return the string "null" for a JSON null, so read it with opt. */
+    private fun storedReceiptKind(row: JSONObject): String? = (row.opt("receiptKind") as? String)?.takeIf { it.isNotEmpty() }
+
+    /** Outbox rows written before receiptKind existed. Only these outbox kinds name exactly one receipt kind;
+     *  own_upload_lookup and transcript are ambiguous and stay null. ptx_job also came from the old writer default for
+     *  unknown receipts, so it names ptx_create only when the provider is ptx. */
+    private fun legacyReceiptKind(previous: JSONObject): String? = when (previous.optString("kind")) {
+        "hosted_upload" -> "hosted_create"
+        "hosted_submit" -> "hosted_submit"
+        "ptx_job" -> if (previous.optString("provider") == "ptx") "ptx_create" else null
+        else -> null
+    }
+    /** Legacy row with no receiptKind: route from what the result proves. Job beats URL, and provider gates ptx. */
+    private fun legacyResultKind(previous: JSONObject, result: JSONObject): String? {
+        val outKind = previous.optString("kind")
+        val provider = previous.optString("provider")
+        val job = stringValue(result, "jobId") != null
+        return when {
+            provider == "ptx" && job -> "ptx_create"
+            provider == "assemblyai" && job -> "hosted_submit"
+            provider == "assemblyai" && stringValue(result, "uploadUrl") != null && outKind != "transcript" -> "own_upload"
+            outKind == "own_upload_lookup" -> "own_upload"
+            outKind == "transcript" -> "hosted_submit"
+            else -> null
+        }
     }
     private fun saveOutbox(entry: JSONObject, point: String) {
         val file = File(outbox, "${entry.getString("entryId")}.json")
@@ -476,6 +505,8 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
                 if (prior.optString("did") != receipt.optString("did") ||
                     prior.optString("provider") != receipt.optString("provider"))
                     throw IllegalStateException("receipt_conflict")
+                // Rows written before receiptKind existed take the kind of the first repeated receipt that names them.
+                if (storedReceiptKind(prior) == null) saveOutbox(prior.put("receiptKind", receipt.getString("kind")), "receipt.begin")
             } else saveOutbox(outboxReceipt(id, receipt.getString("did"), receipt), "receipt.begin")
         }
     }
@@ -506,7 +537,12 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
                         item.put(key, handle)
                     }
                 }
+                if (outcome == "created" && entries.getJSONObject(index).optString("kind") == "own_create") {
+                    for (i in entries.length() - 1 downTo 0)
+                        if (entries.getJSONObject(i).optString("kind") == "own_upload") entries.remove(i)
+                }
             }
+            if (outcome == "created" && remote!!.getJSONObject(index).optString("kind") == "own_create") retireOwnUploadOutbox(id)
             "ledger"
         } else {
             val file = receiptFile(id, opId)
@@ -517,18 +553,13 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
                 ops.unlink(file, "receipt.result"); ops.syncDir(outbox)
                 return@withLock "outbox"
             }
-            val originalKind = when (previous.optString("kind")) {
-                "hosted_upload" -> "hosted_create"
-                "hosted_submit" -> "hosted_submit"
-                // The table's begin row gives own_upload_lookup for own_upload,
-                // while an own_create with no job starts as unknown.
-                "own_upload_lookup" -> "own_upload"
-                "ptx_job" -> "ptx_create"
-                "unknown" -> if (previous.optString("mode") == "hosted") "hosted_submit" else "own_create"
-                else -> "own_create"
-            }
+            // Rows written before receiptKind existed carry only the outbox kind. Route them from what the result proves.
+            // A row with no provable kind keeps its raw outbox kind, which outboxReceipt maps to unknown (inert). Such a
+            // row keeps receiptKind null and is never retired as an own_upload.
+            val receiptKind = storedReceiptKind(previous) ?: legacyReceiptKind(previous)
+            val rebuildKind = receiptKind ?: legacyResultKind(previous, result) ?: previous.optString("kind")
             val receipt = JSONObject().put("opId", opId).put("provider", previous.getString("provider"))
-                .put("mode", previous.opt("mode") ?: JSONObject.NULL).put("kind", originalKind)
+                .put("mode", previous.opt("mode") ?: JSONObject.NULL).put("kind", rebuildKind)
                 .put("startedAt", previous.optLong("createdAt"))
                 .put("handleExpiresAt", previous.opt("handleExpiresAt") ?: JSONObject.NULL)
             val oldHandle = stringValue(previous, "handle")
@@ -539,8 +570,10 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
             }, oldHandle)
             val next = outboxReceipt(id, did, receipt, result)
             next.put("attempts", previous.optInt("attempts"))
+            next.put("receiptKind", receiptKind ?: JSONObject.NULL)
             if (previous.optString("handle") == next.optString("handle") &&
                 previous.optString("state") == "authority_expired") next.put("state", "authority_expired")
+            if (receiptKind == "own_create" && outcome == "created") retireOwnUploadOutbox(id)
             if (previous.toString() != next.toString()) saveOutbox(next, "receipt.result")
             "outbox"
         }
@@ -554,6 +587,41 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
         enqueueOutbox(id)
         gcArtifacts(id)
         retire(id)
+    }
+
+    /** Once own_create has created its job, a sibling own_upload for the same note has no upload left to look up.
+     *  Retire only entries whose original receipt kind is own_upload: an own_create with a known upload URL also stores
+     *  an own_upload_lookup and keeps its own lookup. Its outbox lookup must not keep pinning the note's audio.
+     *  Receipt entries are named `<id>:<opId>.json`. */
+    private fun retireOwnUploadOutbox(id: String) {
+        outbox.listFiles().orEmpty().filter { it.isFile && it.name.startsWith("$id:") }.forEach { file ->
+            if (JSONObject(file.readText()).optString("receiptKind") == "own_upload") ops.unlink(file, "receipt.result")
+        }
+        ops.syncDir(outbox)
+    }
+    /** Mirrors `hasLocalWorkInProgress` in frontend/src/lib/voiceNotes/localWork.ts. Keep the two in sync. */
+    private fun hasLocalWorkInProgress(note: JSONObject): Boolean {
+        val ledger = note.optJSONObject("ledger") ?: return true
+        val transcriber = note.optJSONObject("options")?.optString("transcriber")
+        val localAudio = ledger.optJSONObject("localAudio")
+        val localAudioUnready = localAudio != null && localAudio.optString("state") != "ready"
+        val stt = note.optJSONObject("stt")
+        val sttState = stt?.optString("state").orEmpty()
+        val sttRequested = stt?.optBoolean("requested") == true
+        // Mobile: a cancelled job's retry rewrites it to queued and re-reads staged bytes. Desktop releases cancelled.
+        val sttPinned = (transcriber == "on-device" || sttRequested) && sttState in setOf("waiting_for_model", "queued", "running", "failed", "cancelled")
+        val remotes = ledger.optJSONArray("remote")
+        val remoteOpen = remotes != null && (0 until remotes.length()).any { index ->
+            val op = remotes.getJSONObject(index)
+            val stage = op.optString("stage")
+            stage != "done" && (op.optString("mode") != "own" || stage != "submitted")
+        }
+        return localAudioUnready || sttPinned || remoteOpen
+    }
+    /** Cache trimming never removes local recording originals; callers may clear playback copies only. */
+    fun evictCachedAudio(id: String): Unit = lock.withLock {
+        requireId(id)
+        throw IllegalStateException("audio_in_use")
     }
     /** Discard applies only to an unpublished session; saved notes use explicit deleteAudio. */
     fun discardUncommitted(id: String) = lock.withLock {

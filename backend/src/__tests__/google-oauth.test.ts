@@ -116,15 +116,15 @@ describe("authorizeUrl", () => {
     expect(url.searchParams.get("code_challenge_method")).toBe("S256");
   });
 
-  test("requests the Meet, Drive metadata, and Docs read scopes", () => {
+  test("requests Meet/Drive/Docs scopes and OpenID account identity", () => {
     const scope = url.searchParams.get("scope") ?? "";
     expect(scope).toBe(
       "https://www.googleapis.com/auth/meetings.space.readonly " +
         "https://www.googleapis.com/auth/meetings.space.settings " +
         "https://www.googleapis.com/auth/drive.metadata.readonly " +
-        "https://www.googleapis.com/auth/documents.readonly",
+        "https://www.googleapis.com/auth/documents.readonly openid",
     );
-    expect(scope.split(" ")).toHaveLength(4);
+    expect(scope.split(" ")).toHaveLength(5);
     expect(scope).not.toContain("calendar");
   });
 
@@ -180,12 +180,37 @@ describe("exchangeCode", () => {
         id_token: "fake.id.token",
       }),
     );
-    const client = new GoogleOAuthClient(TEST_CONFIG, { fetchImpl: impl });
+    const client = new GoogleOAuthClient(TEST_CONFIG, { fetchImpl: impl, verifyIdToken: async () => ({ sub: "verified-subject" }) });
     const payload = await client.exchangeCode({
       code: "fake-auth-code",
       verifier: VERIFIER,
     });
-    expect(Object.keys(payload)).toEqual(["access_token"]);
+    expect(payload).toEqual({ access_token: "fake-access-token", subject: "verified-subject" });
+    expect(payload).not.toHaveProperty("id_token");
+  });
+});
+
+describe("TC-1100 verified connector identity", () => {
+  test("a non-autojoin exchange verifies OIDC identity with its client audience", async () => {
+    const upstream = recordingFetch(() => jsonResponse(200, { access_token: "synthetic-access", id_token: "synthetic-id-token" }));
+    const calls: string[][] = [];
+    const client = new GoogleOAuthClient(TEST_CONFIG, { fetchImpl: upstream.impl, verifyIdToken: async (...args) => {
+      calls.push(args); return { sub: "verified-google-subject" };
+    } });
+    expect(await client.exchangeCode({ code: "code", verifier: VERIFIER })).toEqual({ access_token: "synthetic-access", subject: "verified-google-subject" });
+    expect(calls).toEqual([["synthetic-id-token", CLIENT_ID]]);
+  });
+
+  test("a legacy exchange without an ID token cannot invent a subject", async () => {
+    const upstream = recordingFetch(() => jsonResponse(200, { access_token: "synthetic-access", subject: "unverified-subject" }));
+    const client = new GoogleOAuthClient(TEST_CONFIG, { fetchImpl: upstream.impl });
+    expect(await client.exchangeCode({ code: "code", verifier: VERIFIER })).toEqual({ access_token: "synthetic-access" });
+  });
+
+  test("an unverifiable connector ID token succeeds with an unknown subject", async () => {
+    const upstream = recordingFetch(() => jsonResponse(200, { access_token: "synthetic-access", id_token: "synthetic-id-token" }));
+    const client = new GoogleOAuthClient(TEST_CONFIG, { fetchImpl: upstream.impl, verifyIdToken: async () => { throw new Error("Synthetic verification failure"); } });
+    expect(await client.exchangeCode({ code: "code", verifier: VERIFIER })).toEqual({ access_token: "synthetic-access" });
   });
 });
 
@@ -1222,7 +1247,7 @@ afterAll(() => {
 
 
 describe("autojoin OIDC exchange", () => {
-  test("only autojoin adds Calendar, openid, incremental authorization and transaction nonce", () => {
+  test("only autojoin adds Calendar, email, incremental authorization and transaction nonce", () => {
     const client = new GoogleOAuthClient(TEST_CONFIG);
     const url = new URL(client.authorizeUrl({ state: STATE, challenge: CHALLENGE, purpose: "autojoin", nonce: "transaction-nonce" }));
     expect(url.searchParams.get("scope")).toBe(GOOGLE_AUTOJOIN_SCOPES);

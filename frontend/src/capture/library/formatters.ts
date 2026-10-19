@@ -3,7 +3,7 @@
 
 /** "0:42", "31:20", "1:02:05". */
 export function formatClockDuration(totalSeconds: number): string {
-  const total = Math.max(0, Math.round(totalSeconds));
+  const total = Math.max(0, Math.floor(totalSeconds));
   const hours = Math.floor(total / 3600);
   const minutes = Math.floor((total % 3600) / 60);
   const seconds = String(total % 60).padStart(2, "0");
@@ -17,6 +17,20 @@ export function formatSpokenDuration(totalSeconds: number): string {
   if (minutes < 60) return `${minutes} min`;
   const rest = minutes % 60;
   return rest === 0 ? `${Math.floor(minutes / 60)} h` : `${Math.floor(minutes / 60)} h ${rest} min`;
+}
+
+/** "2 h 0 min 18 s": whole seconds, every nonzero unit shown. `floor` for a limit, `ceil` for a note's length, so a rejected note never reads the same as its limit. */
+export function formatExactDuration(totalSeconds: number, rounding: "floor" | "ceil"): string {
+  const whole = rounding === "floor" ? Math.floor(totalSeconds) : Math.ceil(totalSeconds);
+  const hours = Math.floor(whole / 3600);
+  const minutes = Math.floor((whole % 3600) / 60);
+  const seconds = whole % 60;
+  if (hours === 0) {
+    if (minutes === 0) return `${seconds} s`;
+    return seconds === 0 ? `${minutes} min` : `${minutes} min ${seconds} s`;
+  }
+  if (minutes === 0 && seconds === 0) return `${hours} h`;
+  return seconds === 0 ? `${hours} h ${minutes} min` : `${hours} h ${minutes} min ${seconds} s`;
 }
 
 function parse(iso: string | null): Date | null {

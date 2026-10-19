@@ -61,6 +61,9 @@ jobs:
       - name: Frontend tests
         run: bun run --cwd frontend test
 
+      - name: Audio hash worker tests (Node DOM)
+        run: bun run --cwd frontend test:audio-hash-dom
+
       - name: Lint (frontend and test)
         run: bunx eslint frontend test
 
@@ -112,7 +115,11 @@ jobs:
       - name: Recorder-final interaction suites (Chromium)
         if: ${{ !cancelled() }}
         working-directory: test
-        run: EXO_UI_ENGINE=chromium SOFT_HOME_ENGINE=chromium bun test capture-home-soft.e2e.test.ts recorder-final-phone.e2e.test.ts recorder-final-ribbon.e2e.test.ts recorder-final-small-screen.e2e.test.ts
+        run: |
+          SOFT_HOME_ENGINE=chromium bun test capture-home-soft.e2e.test.ts
+          EXO_UI_ENGINE=chromium bun test recorder-final-phone.e2e.test.ts
+          EXO_UI_ENGINE=chromium bun test recorder-final-ribbon.e2e.test.ts
+          EXO_UI_ENGINE=chromium bun test recorder-final-small-screen.e2e.test.ts
 
       - name: Recorder halo forced Canvas 2D checks (Linux Chromium)
         if: ${{ !cancelled() }}

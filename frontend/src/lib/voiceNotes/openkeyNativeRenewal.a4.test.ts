@@ -36,6 +36,7 @@ test("forced swap aborts an outstanding part and schedules pending manifest and 
   const note: VoiceNoteRecording = {
     id: "a4-forced-swap", startedAt: 1_000_000, durationMs: 1000, mimeType: "audio/mp4",
     sizeBytes: 4, silencedMs: 0, silencedEvents: 0, noSignalMs: 0,
+    options: { transcriber: "private-cloud", identifySpeakers: false, uploadAudio: true },
   };
   let pending = true;
   __setVoiceNotesForTests({
@@ -57,6 +58,9 @@ test("forced swap aborts an outstanding part and schedules pending manifest and 
       retire: () => controller.abort(),
       kv: {
         list: async () => ({ ok: true, data: { keys: [...manifestAndParts.keys()], truncated: false } }),
+        get: async (key: string) => manifestAndParts.has(key)
+          ? { ok: true, data: { data: manifestAndParts.get(key) } }
+          : { ok: false, error: { code: "KV_NOT_FOUND", message: "missing", service: "kv" } },
         put: async (key: string, value: unknown) => {
           if (key.endsWith("/p/000001") && !controller.signal.aborted && live?.kv === old.kv) {
             partInFlight();

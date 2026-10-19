@@ -8,12 +8,24 @@ mod silence_sender;
 // Serialize imports and deletion of the same note's audio and failed-segment
 // manifests. The command handlers run on separate blocking workers.
 static IMPORT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static FINISHING_QUIT_REFRESH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 pub(crate) fn with_import_lock<T>(operation: impl FnOnce() -> T) -> T {
     let _guard = IMPORT_LOCK
         .lock()
         .unwrap_or_else(|error| error.into_inner());
     operation()
+}
+
+pub(crate) fn refresh_finishing_quit(app: &tauri::AppHandle) -> Result<(), String> {
+    let _guard = FINISHING_QUIT_REFRESH_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    crate::FINISHING_QUIT.store(
+        !journal::list_stopped(app)?.is_empty(),
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    Ok(())
 }
 
 pub struct RecorderRuntime(std::sync::Once);

@@ -12,9 +12,10 @@ import {
 } from "@tinyboilerplate/core";
 import type { WrittenTranscriberMeeting } from "@tinyboilerplate/core";
 import { listKnownSourceIds } from "./connectors/connectorStore";
+import { SQL_CHUNK } from "./voiceNotes/voiceNoteCommits";
 import type { StoreResult } from "./connectors/connectorStore";
 import { webConnectorPort } from "./connectors/connectorPort";
-import { reportStorageError, reportStorageWriteSucceeded, storageSaveMessage } from "./storageStatus";
+import { reportStorageError, reportStorageWriteSucceeded, storageScopeFor, storageSaveMessage } from "./storageStatus";
 import { captureEvents } from "../capture/captureEvents";
 import type { TranscriberMeeting, TranscriberTranscript } from "./transcriberApi";
 export { normalizeTranscriberTranscript, transcriberMeetingTitle, TRANSCRIBER_MEETING_SOURCE };
@@ -36,32 +37,47 @@ export async function saveTranscriberMeeting(
     webConnectorPort(tcw), await normalizeTranscriberTranscript(meeting, transcript), { ensureSchema: true },
   );
   if (!saved.ok) {
-    reportStorageError(saved);
+    reportStorageError(saved, storageScopeFor(tcw));
     return { ok: false, error: { code: saved.code, message: storageSaveMessage(saved) ?? saved.message } };
   }
-  if (saved.data.row === "inserted" || saved.data.body === "written") reportStorageWriteSucceeded();
+  if (saved.data.row === "inserted" || saved.data.body === "written") reportStorageWriteSucceeded(storageScopeFor(tcw));
   return { ok: true, data: saved.data };
 }
 
-/** Saved IDs separated from rows whose saved-body completeness is unknown. */
+/**
+ * Saved IDs separated from rows whose saved-body completeness is unknown. Ids in
+ * `confirmed` already had their body confirmed this session and skip the KV check;
+ * `onConfirmed` hears each body this scan confirms, as soon as it is read. A body
+ * that could not be read is never reported. `scanned` is true only when every row
+ * was classified (a stale pass stops early).
+ */
 export async function listSavedTranscriberMeetingIds(
   tcw: TinyCloudWeb,
   scheduleRead: TranscriberSpaceReadScheduler = (read) => read(),
   isCurrent: () => boolean = () => true,
-): Promise<StoreResult<{ saved: string[]; unknown: string[] }>> {
+  confirmed: ReadonlySet<string> = new Set(),
+  onConfirmed: (id: string) => void = () => {},
+): Promise<StoreResult<{ saved: string[]; unknown: string[]; scanned: boolean }>> {
   const rows = await scheduleRead(() => listKnownSourceIds(tcw, TRANSCRIBER_MEETING_SOURCE));
-  if (rows === null) return { ok: true, data: { saved: [], unknown: [] } };
+  if (rows === null) return { ok: true, data: { saved: [], unknown: [], scanned: false } };
   if (!rows.ok) return rows;
   const saved: string[] = [];
   const unknown: string[] = [];
+  let scanned = true;
   for (const id of rows.data) {
+    if (confirmed.has(id)) {
+      saved.push(id);
+      continue;
+    }
     // Don't queue more old-account reads after the pass has been cancelled.
-    if (!isCurrent()) break;
+    if (!isCurrent()) { scanned = false; break; }
     try {
       const body = await scheduleRead(() => tcw.kv.get(transcriptKvKey(TRANSCRIBER_MEETING_SOURCE, id)));
-      if (body === null || !isCurrent()) break;
-      if (body.ok) saved.push(id);
-      else {
+      if (body === null || !isCurrent()) { scanned = false; break; }
+      if (body.ok) {
+        saved.push(id);
+        onConfirmed(id);
+      } else {
         unknown.push(id);
         console.debug("[transcriberSave] incomplete meeting", id, "kv-read-failed");
       }
@@ -72,28 +88,44 @@ export async function listSavedTranscriberMeetingIds(
       console.debug("[transcriberSave] incomplete meeting", id, "kv-read-threw");
     }
   }
-  return { ok: true, data: { saved, unknown } };
+  return { ok: true, data: { saved, unknown, scanned } };
 }
 
-/** Read only publication numbers: full metadata also contains transcript text. */
+/**
+ * Publication numbers for `sourceIds` only (TC-1274). Metadata embeds the full
+ * transcript text, so json_extract parses every byte of each row it reads: look
+ * rows up by their derived primary key instead of scanning the source. A row
+ * saved under a legacy id falls back to (source, source_id).
+ */
 export async function listSavedTranscriberVersions(
   tcw: TinyCloudWeb,
+  sourceIds: readonly string[],
   scheduleRead: TranscriberSpaceReadScheduler = (read) => read(),
 ): Promise<StoreResult<Map<string, number>>> {
+  const versions = new Map<string, number>();
   try {
-    const result = await scheduleRead(() => tcw.sql.db(CONNECTORS_SQL_DB_NAME).query(
-      "SELECT source_id, json_extract(metadata, '$.ptx_transcript_version') FROM connector_meeting WHERE source = ?",
-      [TRANSCRIBER_MEETING_SOURCE],
-    ));
-    if (result === null) return { ok: true, data: new Map() };
-    if (!result.ok) return storageFailure(result.error);
-    const rows = result.data.rows as unknown[][];
-    return { ok: true, data: new Map(rows.map((row) => [String(row[0]), row[1] == null ? 1 : Number(row[1])])) };
-  } catch { return storageFailure({ code: "SQL_ERROR" }); }
+    const rowIds = await Promise.all(sourceIds.map((sourceId) => connectorMeetingId(TRANSCRIBER_MEETING_SOURCE, sourceId)));
+    // `+source` only filters, so the primary key drives the lookup even if a source index is added later.
+    for (const [match, keys] of [["+source = ? AND id", rowIds], ["source = ? AND source_id", null]] as const) {
+      const wanted = keys ?? sourceIds.filter((sourceId) => !versions.has(sourceId));
+      for (let from = 0; from < wanted.length; from += SQL_CHUNK) {
+        const chunk = wanted.slice(from, from + SQL_CHUNK);
+        const result = await scheduleRead(() => tcw.sql.db(CONNECTORS_SQL_DB_NAME).query(
+          `SELECT source_id, json_extract(metadata, '$.ptx_transcript_version') FROM connector_meeting
+           WHERE ${match} IN (${chunk.map(() => "?").join(", ")})`,
+          [TRANSCRIBER_MEETING_SOURCE, ...chunk],
+        ));
+        if (result === null) return { ok: true, data: new Map() };
+        if (!result.ok) return storageFailure(result.error, tcw);
+        for (const row of result.data.rows as unknown[][]) versions.set(String(row[0]), row[1] == null ? 1 : Number(row[1]));
+      }
+    }
+    return { ok: true, data: versions };
+  } catch { return storageFailure({ code: "SQL_ERROR" }, tcw); }
 }
 
-function storageFailure(error: { code?: string }): StoreResult<never> {
-  reportStorageError(error);
+function storageFailure(error: { code?: string }, tcw: TinyCloudWeb): StoreResult<never> {
+  reportStorageError(error, storageScopeFor(tcw));
   return { ok: false, error: { code: error.code ?? "STORE_ERROR", message: "Transcriber storage operation failed" } };
 }
 
@@ -119,7 +151,7 @@ export async function refreshTranscriberMeeting(
     const current = await db.query(
       "SELECT id, title, participants, duration_secs, metadata FROM connector_meeting WHERE id = ?", [id],
     );
-    if (!current.ok) return storageFailure(current.error);
+    if (!current.ok) return storageFailure(current.error, tcw);
     const old = (current.data.rows as unknown[][])[0];
     if (!old) {
       const saved = await saveTranscriberMeeting(tcw, row, transcript);
@@ -129,7 +161,7 @@ export async function refreshTranscriberMeeting(
     const oldVersion = Number.isInteger(metadata.ptx_transcript_version) ? metadata.ptx_transcript_version as number : 1;
     if (transcript.version! <= oldVersion) return { ok: true, data: undefined };
     const oldBody = await tcw.kv.get(transcriptKvKey(TRANSCRIBER_MEETING_SOURCE, row.id));
-    if (!oldBody.ok) return storageFailure(oldBody.error);
+    if (!oldBody.ok) return storageFailure(oldBody.error, tcw);
     const archive: TranscriberArchive = {
       version: oldVersion, archived_at: new Date().toISOString(),
       row: { title: old[1] as string | null, participants: old[2] as string | null,
@@ -137,10 +169,10 @@ export async function refreshTranscriberMeeting(
       body: oldBody.data.data as string,
     };
     const archived = await tcw.kv.put(archiveKvKey(row.id, oldVersion), JSON.stringify(archive), { ifNoneMatch: "*" });
-    if (!archived.ok && archived.error.code !== "KV_PRECONDITION_FAILED") return storageFailure(archived.error);
+    if (!archived.ok && archived.error.code !== "KV_PRECONDITION_FAILED") return storageFailure(archived.error, tcw);
     const normalized = await normalizeTranscriberTranscript(row, transcript);
     const body = await tcw.kv.put(transcriptKvKey(TRANSCRIBER_MEETING_SOURCE, row.id), normalized.body);
-    if (!body.ok) return storageFailure(body.error);
+    if (!body.ok) return storageFailure(body.error, tcw);
     // Transcriber metadata is publication-owned; user edits live in separate columns.
     const updated = await db.execute(
       "UPDATE connector_meeting SET participants = ?, duration_secs = ?, metadata = ?, updated_at = ? WHERE id = ? AND COALESCE(json_extract(metadata, '$.ptx_transcript_version'), 1) = ?",
@@ -150,11 +182,11 @@ export async function refreshTranscriberMeeting(
         previous_transcript_versions: [...(metadata.previous_transcript_versions as number[] ?? []), oldVersion],
       }), new Date().toISOString(), id, oldVersion],
     );
-    if (!updated.ok) return storageFailure(updated.error);
+    if (!updated.ok) return storageFailure(updated.error, tcw);
     const committed = await db.query(
       "SELECT COALESCE(json_extract(metadata, '$.ptx_transcript_version'), 1) FROM connector_meeting WHERE id = ?", [id],
     );
-    if (!committed.ok) return storageFailure(committed.error);
+    if (!committed.ok) return storageFailure(committed.error, tcw);
     const vNow = Number((committed.data.rows as unknown[][])[0]?.[0]);
     if (vNow !== transcript.version) {
       if (vNow >= transcript.version!) {
@@ -162,13 +194,13 @@ export async function refreshTranscriberMeeting(
         if (latest?.version === vNow) {
           const repaired = await normalizeTranscriberTranscript(row, latest);
           const repair = await tcw.kv.put(transcriptKvKey(TRANSCRIBER_MEETING_SOURCE, row.id), repaired.body);
-          if (!repair.ok) return storageFailure(repair.error);
+          if (!repair.ok) return storageFailure(repair.error, tcw);
         }
       }
       return { ok: true, data: undefined };
     }
-    reportStorageWriteSucceeded();
+    reportStorageWriteSucceeded(storageScopeFor(tcw));
     captureEvents.emit("library-changed", { source: TRANSCRIBER_MEETING_SOURCE, sourceId: row.id });
     return { ok: true, data: undefined };
-  } catch { return storageFailure({ code: "STORE_ERROR" }); }
+  } catch { return storageFailure({ code: "STORE_ERROR" }, tcw); }
 }

@@ -1,11 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { changelogSection, classifyPagesCheckRuns, desktopBundleVersions, planDispatches, setCargoLockVersion, setCargoTomlVersion } from '../release/lib.mjs';
+
+const require = createRequire(import.meta.url);
+const eslintAjv = createRequire(realpathSync(require.resolve('eslint/package.json')))('ajv');
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), '../..');
 const MANIFESTS = [
@@ -397,7 +401,8 @@ test('release cycle: betas with one web/desktop version, the Release stable PR, 
   assert.equal(tagCommit(root, '@tinychat/backend@0.1.1-beta.0'), betaCommit);
   const betaDispatch = step('dispatch.mjs', ['--channel', 'beta', '--tags', 'exo-desktop@0.2.0-beta.0 @tinychat/frontend@0.2.0-beta.0 @tinychat/backend@0.1.1-beta.0', '--dry-run']);
   assert.doesNotMatch(betaDispatch, /deploy-production/);
-  assert.match(betaDispatch, /^gh workflow run desktop-release\.yml --repo \S+ --ref main -f tag=exo-desktop@0\.2\.0-beta\.0$/m);
+  assert.doesNotMatch(betaDispatch, /gh workflow run/); // beta desktop releases are manual
+  assert.match(betaDispatch, /^Nothing to dispatch for channel beta/);
 
   write(root, '.changeset/web-fix.md', changesetFile({ '@tinychat/frontend': 'patch' }, 'Web fix'));
   commitAll(root, 'fix: web (#2)');
@@ -665,9 +670,10 @@ test('deploy-target.mjs refuses unreleased commits unless allow_unreleased and t
 });
 
 // Desktop releases: one build per new exo-desktop tag, numeric Apple bundle versions, release plan and notes.
-test('planDispatches builds a desktop release from main for each new beta or stable exo-desktop tag, never for baselines', () => {
+test('planDispatches builds a desktop release from main for each new stable exo-desktop tag, never for betas or baselines', () => {
   const desktop = (channel, tags) => planDispatches({ channel, tags }).filter(({ workflow }) => workflow === 'desktop-release.yml').map(({ ref, inputs }) => `${ref} ${inputs.tag}`);
-  assert.deepEqual(desktop('beta', ['exo-desktop@0.2.0-beta.3', '@tinychat/frontend@0.2.0-beta.3']), ['main exo-desktop@0.2.0-beta.3']);
+  // Beta desktop releases are manual (gh workflow run desktop-release.yml --ref main -f tag=...).
+  assert.deepEqual(planDispatches({ channel: 'beta', tags: ['exo-desktop@0.2.0-beta.3', '@tinychat/frontend@0.2.0-beta.3'] }), []);
   assert.deepEqual(desktop('stable', ['exo-desktop@0.2.0', '@tinychat/frontend@0.2.0', '@tinychat/backend@0.1.1']), ['main exo-desktop@0.2.0']);
   assert.deepEqual(desktop('beta', ['@tinychat/backend@0.1.2-beta.0']), []);
   assert.deepEqual(desktop('none', ['exo-desktop@0.1.0', '@tinychat/frontend@0.1.0', '@tinychat/backend@0.1.0']), []);
@@ -704,10 +710,37 @@ test('desktop-bundle-config.mjs writes the Info.plist overlay for tauri build --
   assert.match(result.stdout, /^short-version=0\.3\.0$/m);
   assert.match(result.stdout, /^bundle-version=300004$/m);
   assert.match(result.stdout, /^prerelease=true$/m);
-  const config = JSON.parse(read(out, 'tauri.bundle.conf.json'));
-  assert.deepEqual(Object.keys(config), ['bundle']);
-  assert.equal(config.bundle.macOS.infoPlist, join(out, 'Info.bundle-version.plist'));
-  assert.equal(config.bundle.macOS.signingIdentity, undefined);
+  const schema = JSON.parse(readFileSync(join(repo, 'desktop/node_modules/@tauri-apps/cli/config.schema.json'), 'utf8'));
+  const base = JSON.parse(read(repo, 'desktop/src-tauri/tauri.conf.json'));
+  const validate = new eslintAjv({ allErrors: true, unknownFormats: 'ignore', logger: false }).compile(schema);
+  const merged = overlay => ({
+    ...base,
+    ...overlay,
+    bundle: { ...base.bundle, ...overlay.bundle, macOS: { ...base.bundle.macOS, ...overlay.bundle.macOS } },
+  });
+  const validateConfig = config => {
+    assert.ok(validate(config), JSON.stringify(validate.errors, null, 2));
+  };
+
+  const normal = JSON.parse(read(out, 'tauri.bundle.conf.json'));
+  assert.deepEqual(Object.keys(normal), ['bundle']);
+  assert.equal(normal.bundle.macOS.infoPlist, join(out, 'Info.bundle-version.plist'));
+  assert.equal(normal.bundle.macOS.signingIdentity, undefined);
+  const normalEffective = merged(normal);
+  assert.equal(normalEffective.identifier, 'xyz.tinycloud.exo');
+  assert.equal(normalEffective.productName, 'Exo');
+  validateConfig(normalEffective);
+  const smokeResult = run('desktop-bundle-config.mjs', ['--root', root, '--out', out, '--smoke']);
+  assert.equal(smokeResult.status, 0, smokeResult.stderr);
+  const smoke = JSON.parse(read(out, 'tauri.bundle.conf.json'));
+  assert.equal(smoke.identifier, 'xyz.tinycloud.exo.smoke');
+  assert.equal(smoke.productName, 'Exo Smoke');
+  assert.equal(smoke.bundle.identifier, undefined);
+  assert.equal(smoke.bundle.productName, undefined);
+  const smokeEffective = merged(smoke);
+  assert.equal(smokeEffective.identifier, 'xyz.tinycloud.exo.smoke');
+  assert.equal(smokeEffective.productName, 'Exo Smoke');
+  validateConfig(smokeEffective);
   // Unsigned builds: tauri bundle ad-hoc signs (identity "-"), sealing the app's resources before the DMG is built.
   const adHoc = run('desktop-bundle-config.mjs', ['--root', root, '--out', out, '--ad-hoc-sign']);
   assert.equal(adHoc.status, 0, adHoc.stderr);
@@ -715,6 +748,50 @@ test('desktop-bundle-config.mjs writes the Info.plist overlay for tauri build --
   const plist = read(out, 'Info.bundle-version.plist');
   assert.match(plist, /<key>CFBundleShortVersionString<\/key>\n\t<string>0\.3\.0<\/string>/);
   assert.match(plist, /<key>CFBundleVersion<\/key>\n\t<string>300004<\/string>/);
+});
+
+test('desktop-bundle-config emits a usable config path for normal and smoke builds', t => {
+  const root = manifests(t);
+  for (const dir of ['desktop', 'frontend']) editJson(root, `${dir}/package.json`, pkg => { pkg.version = '0.3.0-beta.4'; });
+  const base = JSON.parse(read(repo, 'desktop/src-tauri/tauri.conf.json'));
+  const expectedOutputs = ['version', 'short-version', 'bundle-version', 'prerelease', 'product-name', 'bundle-identifier', 'config'];
+
+  for (const { smoke, identifier, productName } of [
+    { smoke: false, identifier: 'xyz.tinycloud.exo', productName: 'Exo' },
+    { smoke: true, identifier: 'xyz.tinycloud.exo.smoke', productName: 'Exo Smoke' },
+  ]) {
+    const temp = tempDir(t);
+    const out = join(temp, 'bundle');
+    const githubOutput = join(temp, 'github-output');
+    const args = ['--root', root, '--out', out, ...(smoke ? ['--smoke'] : [])];
+    const result = run('desktop-bundle-config.mjs', args, { GITHUB_OUTPUT: githubOutput });
+    assert.equal(result.status, 0, result.stderr);
+
+    const lines = readFileSync(githubOutput, 'utf8').trimEnd().split('\n');
+    const outputs = Object.fromEntries(lines.map(line => {
+      const separator = line.indexOf('=');
+      assert.ok(separator > 0, `malformed workflow output: ${line}`);
+      return [line.slice(0, separator), line.slice(separator + 1)];
+    }));
+    assert.deepEqual(Object.keys(outputs).sort(), [...expectedOutputs].sort());
+    for (const value of Object.values(outputs)) {
+      assert.equal(typeof value, 'string');
+      assert.ok(!value.includes('[object Object]'), 'outputs must not stringify an object');
+    }
+
+    assert.ok(isAbsolute(outputs.config));
+    assert.ok(outputs.config.endsWith('tauri.bundle.conf.json'));
+    assert.equal(outputs.config, join(out, 'tauri.bundle.conf.json'));
+    assert.ok(existsSync(outputs.config));
+    const overlay = JSON.parse(readFileSync(outputs.config, 'utf8'));
+    const effective = {
+      ...base,
+      ...overlay,
+      bundle: { ...base.bundle, ...overlay.bundle, macOS: { ...base.bundle.macOS, ...overlay.bundle.macOS } },
+    };
+    assert.equal(effective.identifier, identifier);
+    assert.equal(effective.productName, productName);
+  }
 });
 
 // A repo whose main has a release commit at `version`, tagged `exo-desktop@<version>`.
@@ -1035,7 +1112,8 @@ test('desktop builds and releases run release tooling from the workflow commit, 
   const temp = tempDir(t);
   const output = join(temp, 'github-output');
   writeFileSync(output, '');
-  const result = spawnSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', '-c', stepScript(build, 'Bundle versions')], {
+  const bundleStep = stepScript(build, 'Bundle versions').replace(/\s+\$\{\{ inputs\.smoke && '--smoke' \|\| '' \}\}/, '');
+  const result = spawnSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', '-c', bundleStep], {
     cwd: workspace,
     encoding: 'utf8',
     env: { PATH: process.env.PATH, GITHUB_WORKSPACE: workspace, RUNNER_TEMP: temp, GITHUB_OUTPUT: output },
@@ -1125,6 +1203,35 @@ const stepNamed = (job, name) => {
   assert.ok(found, `no step ${name}`);
   return found;
 };
+
+function assertStepOutputsAreDeclared(job, generatedOutputs = {}) {
+  const steps = jobSteps(job);
+  const byId = new Map(steps.flatMap(step => {
+    const id = step.match(/^\s+id: ([\w-]+)\s*$/m)?.[1];
+    return id ? [[id, step]] : [];
+  }));
+  for (const [, id, output] of job.matchAll(/steps\.([\w-]+)\.outputs\.([\w-]+)/g)) {
+    const step = byId.get(id);
+    assert.ok(step, `workflow references missing step id '${id}'`);
+    const declared = generatedOutputs[id] ?? new Set([
+      ...[...step.matchAll(/echo\s+["']?([\w-]+)=/g)].map(match => match[1]),
+    ]);
+    if (/uses: actions\/cache\/restore@/.test(step)) {
+      declared.add('cache-hit');
+      declared.add('cache-primary-key');
+    }
+    assert.ok(declared.has(output), `step '${id}' does not produce output '${output}'`);
+  }
+}
+
+function assertJobOutputsAreDeclared(build, consumer) {
+  const outputSection = build.match(/\n    outputs:\n([\s\S]*?)\n    steps:/)?.[1];
+  assert.ok(outputSection, 'build job declares reusable outputs');
+  const declared = new Set([...outputSection.matchAll(/^ {6}([\w-]+):/gm)].map(match => match[1]));
+  for (const [, output] of consumer.matchAll(/(?:needs|jobs)\.build\.outputs\.([\w-]+)/g)) {
+    assert.ok(declared.has(output), `build job does not expose output '${output}'`);
+  }
+}
 const withoutComments = text => text.split('\n').filter(line => !/^\s*#/.test(line)).join('\n');
 // Anything that would run project or third-party build code on the runner.
 const PROJECT_CODE = /\bbunx?\b|setup-bun|setup-node|\bnpm\b|\bnpx\b|gradlew|\bcap (sync|copy|run)\b|xcodebuild (archive|build)|\bpod install\b|swift build|ios-bundle-versions/;
@@ -1416,7 +1523,26 @@ test('desktop signing: keys only in tooling-only jobs, the app built with none, 
   const refs = withoutComments(workflow).match(/\$\{\{[^}]*\bsecrets\.[^}]*\}\}/g) ?? [];
   assert.ok(refs.length >= 15, refs.join('\n'));
   for (const ref of refs) assert.match(ref, /^\$\{\{ inputs\.sign && secrets\.APPLE_[A-Z_]+ \|\| '' \}\}$/, ref);
-  assert.match(workflow, /\n {2}BUILD_ARTIFACT: \$\{\{ inputs\.sign && format\('\{0\}-unsigned', inputs\.artifact-name\) \|\| inputs\.artifact-name \}\}\n/);
+  const desktopCi = read(repo, '.github/workflows/desktop.yml');
+  const artifactExpression = desktopCi.match(/artifact-name: \$\{\{ (.+) \}\}/)?.[1];
+  assert.ok(artifactExpression, 'desktop dispatch provides a workflow artifact name');
+  const artifactTemplate = artifactExpression.match(/format\('([^']+)', github\.sha\)/g);
+  assert.equal(artifactTemplate?.length, 2, 'normal and isolated smoke builds have separate artifact names');
+  const template = artifactExpression.match(/inputs\.smoke && format\('([^']+)', github\.sha\) \|\| format\('([^']+)', github\.sha\)/);
+  assert.ok(template, 'workflow artifact name supports both smoke and normal dispatch');
+  const artifactName = smoke => (smoke ? template[1] : template[2]).replace('{0}', 'abc123');
+  assert.equal(artifactName(false), 'exo-macos-arm64-abc123');
+  assert.equal(artifactName(true), 'exo-smoke-macos-arm64-abc123');
+  const signJob = jobText(workflow, 'sign');
+  const build = jobText(workflow, 'build');
+  const bundleScript = read(repo, 'scripts/release/desktop-bundle-config.mjs');
+  const bundleOutputs = new Set([...bundleScript.matchAll(/setOutput\('([\w-]+)'/g)].map(match => match[1]));
+  assertStepOutputsAreDeclared(build, { bundle: bundleOutputs });
+  assertJobOutputsAreDeclared(build, `${signJob}\n${workflow}`);
+  assert.match(signJob, /\n {4}if: \$\{\{ !inputs\.smoke && !cancelled\(\) && needs\.build\.result == 'success' \}\}\n/);
+  const smokePackage = stepNamed(build, 'Package .app');
+  assert.match(smokePackage, /"\$app_name-macos-arm64\.app\.zip"/);
+  assert.match(stepNamed(signJob, 'Unpack the app'), /needs\.build\.outputs\.product-name.*-macos-arm64\.app\.zip/);
   assert.match(workflow, /signed:\n\s+description: .*\n\s+value: \$\{\{ jobs\.sign\.outputs\.signed \}\}/);
   const tooling = (job, paths) => {
     assert.equal((job.match(/uses: actions\/checkout@/g) ?? []).length, 1, 'one checkout: the release tooling');
@@ -1441,7 +1567,6 @@ test('desktop signing: keys only in tooling-only jobs, the app built with none, 
   assert.ok(preflight.indexOf('secrets.') > preflight.indexOf('- name: Verify signing provenance\n'), 'no secret before the provenance check');
 
   // build: every build script, never an environment or a secret; ad-hoc sealed in every mode.
-  const build = jobText(workflow, 'build');
   assert.match(build, /\n {4}needs: preflight\n/);
   assert.match(build, /\n {4}if: \$\{\{ !cancelled\(\) && \(needs\.preflight\.result == 'success' \|\| \(!inputs\.sign && needs\.preflight\.result == 'skipped'\)\) \}\}\n/);
   assert.doesNotMatch(withoutComments(build), /environment:|secrets\.|vars\.|APPLE_|security import|notarytool|--sign |keychain/);
@@ -1449,17 +1574,21 @@ test('desktop signing: keys only in tooling-only jobs, the app built with none, 
     'Verify the ad-hoc seal', 'Package .app', 'Upload dmg + app'].map(name => build.indexOf(`- name: ${name}\n`));
   assert.ok(buildOrder.every(index => index !== -1), `build steps: ${buildOrder}`);
   assert.deepEqual([...buildOrder].sort((a, b) => a - b), buildOrder, 'the seal is verified before the app is handed over');
-  assert.match(stepNamed(build, 'Bundle versions'), /desktop-bundle-config\.mjs --root "\$GITHUB_WORKSPACE" --out "\$RUNNER_TEMP\/exo-bundle" --ad-hoc-sign\n/);
+  const bundleStep = stepNamed(build, 'Bundle versions');
+  assert.ok(bundleStep.includes('desktop-bundle-config.mjs'), 'bundle step invokes the version/identity generator');
+  assert.ok(bundleStep.includes('SMOKE: ${{ inputs.smoke }}'), 'bundle step receives the smoke input');
   const seal = stepNamed(build, 'Verify the ad-hoc seal');
   assert.doesNotMatch(seal, /\n\s+if:|\|\| true/);
-  assert.match(seal, /for bundle in desktop\/src-tauri\/target\/release\/bundle\/macos\/Exo\.app "\$mnt\/Exo\.app"; do\n\s+codesign --verify --deep --strict --verbose=2 "\$bundle"\n/);
-  assert.match(stepNamed(build, 'Package .app'), /ditto -c -k --sequesterRsrc --keepParent Exo\.app Exo-macos-arm64\.app\.zip\n/);
+  assert.match(seal, /for bundle in "desktop\/src-tauri\/target\/release\/bundle\/macos\/\$\{\{ steps\.bundle\.outputs\.product-name \}\}\.app" "\$mnt\/\$\{\{ steps\.bundle\.outputs\.product-name \}\}\.app"; do\n\s+codesign --verify --deep --strict --verbose=2 "\$bundle"\n/);
+  assert.match(stepNamed(build, 'Package .app'), /"\$app_name\.app" "\$app_name-macos-arm64\.app\.zip"/);
   assert.match(stepNamed(build, 'Upload dmg + app'), /name: \$\{\{ env\.BUILD_ARTIFACT \}\}\n/);
 
   // sign: desktop-release only when signing, its one checkout is the tooling and the entitlements, no project code.
   const sign = jobText(workflow, 'sign');
   assert.match(sign, /\n {4}needs: build\n/);
-  assert.match(sign, /\n {4}if: \$\{\{ !cancelled\(\) && needs\.build\.result == 'success' \}\}\n/);
+  const signCondition = sign.match(/^\s+if: \$\{\{\s*([^\n]+?)\s*\}\}\s*$/m)?.[1] ?? '';
+  assert.ok(signCondition.includes('!inputs.smoke'), 'smoke artifacts bypass signing');
+  assert.ok(signCondition.includes("needs.build.result == 'success'"), 'signing only follows a successful build');
   assert.match(sign, /\n {4}environment: \$\{\{ inputs\.sign && 'desktop-release' \|\| '' \}\}\n/);
   tooling(sign, ['/scripts/release/', '/desktop/src-tauri/Entitlements.plist']);
   assert.deepEqual(scriptsIn(sign), ['scripts/release/desktop-signing.sh', 'scripts/release/verify-desktop-signing.sh']);
@@ -1697,4 +1826,52 @@ test('the desktop sign step re-seals ad-hoc in the dry run and never signs ad-ho
   assert.equal(missing.status, 1);
   assert.match(missing.stdout, /::error::APPLE_SIGNING_IDENTITY is empty/);
   assert.equal(read(dir, 'codesign.log'), '', 'nothing was signed');
+});
+
+test('every recorder invoke is registered, manifested, and granted to recorder capabilities', () => {
+  const rustCommands = text => new Set([...text.matchAll(/\b(recorder_[a-z0-9_]+)\b/g)].map(match => match[1]));
+  const lib = read(repo, 'desktop/src-tauri/src/lib.rs');
+  const handlers = [...lib.matchAll(/generate_handler!\s*\[([\s\S]*?)\]/g)];
+  assert.ok(handlers.length >= 2, 'debug and release transcription handlers are present');
+  const registered = new Set(handlers.flatMap(([, body]) => [...rustCommands(withoutComments(body))]));
+  const buildManifest = read(repo, 'desktop/src-tauri/build.rs');
+  const manifestBlock = /AppManifest::new\(\)\.commands\(&\[([\s\S]*?)\]\)/.exec(buildManifest)?.[1];
+  assert.ok(manifestBlock, 'Tauri app manifest command allowlist exists');
+  const manifested = rustCommands(manifestBlock);
+  const permissionName = command => `allow-${command.replaceAll('_', '-')}`;
+
+  for (const command of registered) {
+    assert.ok(manifested.has(command), `${command} is in build.rs app manifest`);
+    const permissionFile = join(repo, `desktop/src-tauri/permissions/autogenerated/${command}.toml`);
+    assert.ok(existsSync(permissionFile), `${command} has an autogenerated permission file`);
+    assert.match(readFileSync(permissionFile, 'utf8'), new RegExp(`commands\\.allow = \\["${command}"\\]`));
+  }
+
+  const capabilityRoot = join(repo, 'desktop/src-tauri');
+  const walk = dir => readdirSync(dir, { withFileTypes: true }).flatMap(entry => {
+    const path = join(dir, entry.name);
+    return entry.isDirectory() ? walk(path) : [path];
+  });
+  const capabilities = walk(capabilityRoot)
+    .filter(path => /\/capabilities(?:-[^/]+)?\/[^/]+\.json$/.test(path))
+    .map(path => ({ path, value: JSON.parse(readFileSync(path, 'utf8')) }));
+  const recorderCapabilities = capabilities.filter(({ value }) =>
+    value.permissions.some(permission => permission.startsWith('allow-recorder-')));
+  assert.ok(recorderCapabilities.length > 0, 'recorder command grants are declared in a capability');
+  for (const { path, value } of recorderCapabilities) {
+    const granted = new Set(value.permissions);
+    for (const command of registered) {
+      assert.ok(granted.has(permissionName(command)), `${path} grants ${command}`);
+    }
+  }
+
+  const sourceFiles = walk(join(repo, 'frontend/src')).filter(path => /\.(?:ts|tsx)$/.test(path));
+  const invoked = new Set(sourceFiles.flatMap(path => {
+    const source = readFileSync(path, 'utf8');
+    return [...source.matchAll(/\binvoke(?:<[^>]*>)?\s*\(\s*["'](recorder_[a-z0-9_]+)["']/g)]
+      .map(match => match[1]);
+  }));
+  for (const command of invoked) {
+    assert.ok(registered.has(command), `frontend invoke ${command} is in a Tauri handler`);
+  }
 });

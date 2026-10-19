@@ -32,6 +32,8 @@ export const UNDECODABLE_REASON = "undecodable_audio";
 export const DECODER_UNAVAILABLE_REASON = "decoder_unavailable";
 export const RECORDING_LOCK = "exo-voice-note-recording";
 export const sessionLock = (id: string) => `exo-voice-note-session:${id}`;
+/** Per-note mutex for file-backed audio writers that add local work. */
+export const noteWorkLock = (id: string) => `exo-voice-note-work:${id}`;
 
 /** A named persistence step; `hooks.beforeOp` lets tests kill the "tab" at that exact boundary. */
 export type StoreOp =
@@ -40,6 +42,7 @@ export type StoreOp =
 
 export interface SessionRecord {
   id: string;
+  channels?: 1 | 2;
   startedAt: number;
   source: CaptureSource;
   owner: string | null;
@@ -75,6 +78,8 @@ export type SessionInit = Omit<SessionRecord, "audioMs" | "bytes" | "pausedMs" |
 export interface SessionLocks {
   /** Resolves a release function, or null when another holder already has `name`. */
   hold(name: string): Promise<(() => void) | null>;
+  /** Waits until `name` is free, then holds it. Only for short sections that never await another holder of `name`. */
+  wait(name: string): Promise<() => void>;
 }
 
 export function webLocks(): SessionLocks {
@@ -87,19 +92,51 @@ export function webLocks(): SessionLocks {
         await new Promise<void>((release) => resolve(() => release()));
       }).catch(reject);
     }),
+    wait: (name) => new Promise((resolve, reject) => {
+      locks.request(name, () => new Promise<void>((release) => resolve(() => release()))).catch(reject);
+    }),
   };
 }
 
-/** In-memory locks for tests; `releaseAll` models every holder (a tab) dying. */
+/** In-memory locks for tests; `releaseAll` models every holder (a tab) dying. Waiters are served in arrival order. */
 export function memoryLocks(): SessionLocks & { releaseAll(): void } {
   const held = new Set<string>();
+  const waiting = new Map<string, ((release: () => void) => void)[]>();
+  const releaserFor = (name: string): (() => void) => {
+    let done = false;
+    return () => {
+      if (done) return;
+      done = true;
+      const next = waiting.get(name)?.shift();
+      if (next) next(releaserFor(name));
+      else held.delete(name);
+    };
+  };
   return {
     async hold(name) {
       if (held.has(name)) return null;
       held.add(name);
-      return () => void held.delete(name);
+      return releaserFor(name);
     },
-    releaseAll: () => held.clear(),
+    wait(name) {
+      if (!held.has(name)) {
+        held.add(name);
+        return Promise.resolve(releaserFor(name));
+      }
+      let resolve!: (release: () => void) => void;
+      const promise = new Promise<() => void>((done) => { resolve = done; });
+      const line = waiting.get(name) ?? [];
+      line.push(resolve);
+      waiting.set(name, line);
+      return promise;
+    },
+    releaseAll() {
+      held.clear();
+      for (const [name, line] of waiting) {
+        const next = line.shift();
+        if (next) { held.add(name); next(releaserFor(name)); }
+      }
+    },
   };
 }
 
@@ -125,11 +162,12 @@ type CaptureRow = KvRow & { key: "capture"; defaults: CaptureDefaults; status: A
 type TombstoneRow = { id: string; at: number; audioPending: boolean };
 type ReceiptResult = { destination: "ledger" | "outbox"; handle: string | null; handleExpiresAt: number | null;
   outcome: "created" | "failed" | "unknown" };
-type ReceiptRow = { key: string; receipt: RemoteOpReceipt; result: ReceiptResult | null };
+/** Set when an own_create that created its job retires this own_upload; deletion then skips it. */
+type ReceiptRow = { key: string; receipt: RemoteOpReceipt; result: ReceiptResult | null; retired?: true };
 type QuarantineRow = { id: string; reason: string; error: string; sizeBytes: number; session: SessionRecord };
 
 type PluginProtocol = Pick<VoiceNotesPlugin,
-  "readAudioChunk" | "deleteAudio" | "listPending" | "getCaptureDefaults" | "setCaptureDefaults" | "setAccountState"
+  "readAudioChunk" | "deleteAudio" | "evictCachedAudio" | "listPending" | "getCaptureDefaults" | "setCaptureDefaults" | "setAccountState"
   | "beginRemoteOp" | "recordRemoteResult" | "claim" | "updateLedger" | "putTranscript" | "getTranscript"
   | "listQuarantine" | "discardFailedRecording" | "deleteQuarantined" | "listOutbox" | "completeOutbox">;
 
@@ -156,6 +194,11 @@ export interface WebStore extends PluginProtocol {
    */
   commitSession(id: string, build: (session: SessionRecord, sizeBytes: number) => VoiceNoteRecording,
     progress?: Pick<SessionRecord, "audioMs" | "bytes" | "firstAudioAt">): Promise<VoiceNoteRecording | null>;
+  /** Desktop only: the native stop journal owns durable sources while audio is preparing. */
+  commitPreparingSession(id: string, build: (session: SessionRecord) => VoiceNoteRecording): Promise<VoiceNoteRecording | null>;
+  completePreparingAudio(id: string): Promise<VoiceNoteRecording>;
+  failPreparingAudio(id: string, error: string): Promise<void>;
+  retryPreparingAudio(id: string): Promise<void>;
   /** The whole audio of a pending recording, for playback. */
   readNoteAudio(id: string): Promise<{ bytes: Uint8Array; mimeType: string }>;
   /** Drops a session that captured nothing (no tombstone: there is nothing to protect). Rejects `audio_not_empty` rather than delete durable bytes. */
@@ -204,6 +247,7 @@ export function recordingFromSession(
   const silenced = spans.filter((span) => span.kind === "silenced");
   return {
     id: s.id, startedAt: s.startedAt, durationMs: o.durationMs, mimeType: s.mimeType, sizeBytes,
+    ...(s.channels ? { channels: s.channels } : {}),
     silencedMs: silenced.reduce((total, span) => total + span.audioMs, 0), silencedEvents: silenced.length, noSignalMs: 0,
     version: 2, rev: 1, wallMs: Math.max(0, o.endedAt - s.startedAt),
     pausedMs: s.pausedMs + (s.pauseStartedAt === null ? 0 : Math.max(0, o.endedAt - s.pauseStartedAt)),
@@ -289,6 +333,14 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
   const db = await openWebDb(env, options.dbName ?? "exo-voice-notes");
   const audio = options.audio ? options.audio(db, env) : createIdbAudioBlobStore(db, env);
   const locks = options.locks ?? webLocks();
+  // File-backed audio is deleted under noteWorkLock(id). Writers that add local work hold it for their metadata write,
+  // so evict's "no work" check and its delete cannot interleave with a new job's first read. It is a separate mutex
+  // from sessionLock: the commit path holds sessionLock while it awaits updateStt. IDB audio is covered by its transaction.
+  const withNoteWork = async <T>(id: string, run: () => Promise<T>): Promise<T> => {
+    if (audio.transactional) return run();
+    const release = await locks.wait(noteWorkLock(id));
+    try { return await run(); } finally { release(); }
+  };
   const decodeCheck = options.decodeCheck === undefined ? browserDecodeCheck() : options.decodeCheck;
 
   const get = async <T>(tx: IDBTransaction, store: string, key: IDBValidKey): Promise<T | undefined> =>
@@ -297,6 +349,25 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
   const del = (tx: IDBTransaction, store: string, key: IDBValidKey) => request(tx.objectStore(store).delete(key));
   const all = async <T>(tx: IDBTransaction, store: string): Promise<T[]> =>
     (await request(tx.objectStore(store).getAll())) as T[];
+
+
+  // Once own_create has created its job, a sibling own_upload for the same note has no upload left to look up.
+  // Its outbox entry must not keep pinning the note's audio.
+  const retireOwnUploadOutbox = async (tx: IDBTransaction, id: string): Promise<void> => {
+    for (const entry of await all<OutboxEntry>(tx, STORES.outbox)) {
+      if (entry.receiptKind === "own_upload" && entry.entryId.startsWith(`${id}:`)) await del(tx, STORES.outbox, entry.entryId);
+    }
+  };
+
+  // Retires the note's own_upload receipts that exist now, so deletion never re-enqueues their lookups.
+  // A receipt begun after this own_create is not retired and keeps its lookup.
+  const retireOwnUploadReceipts = async (tx: IDBTransaction, id: string): Promise<void> => {
+    for (const row of await all<ReceiptRow>(tx, STORES.receipts)) {
+      if (row.receipt.id === id && row.receipt.kind === "own_upload" && !row.retired) {
+        await put(tx, STORES.receipts, { ...row, retired: true } satisfies ReceiptRow);
+      }
+    }
+  };
 
   const capture = async (tx: IDBTransaction): Promise<CaptureRow> =>
     (await get<CaptureRow>(tx, STORES.kv, "capture")) ?? { key: "capture", ...clone(INITIAL_CAPTURE) };
@@ -426,9 +497,57 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
       return recording ? clone(recording) : null;
     },
 
+    async commitPreparingSession(id, build) {
+      await before("note:commit", id);
+      const recording = await transact(db, [STORES.sessions, STORES.notes, STORES.tombstones], "readwrite", async (tx) => {
+        const session = await get<SessionRecord>(tx, STORES.sessions, id);
+        if (!session) return null;
+        if (await get(tx, STORES.tombstones, id)) return null;
+        const built = build(clone(session));
+        built.ledger = { ...(built.ledger ?? emptyLedger()), localAudio: { state: "preparing", error: null } };
+        await put(tx, STORES.notes, built);
+        await del(tx, STORES.sessions, id);
+        return built;
+      });
+      return recording ? clone(recording) : null;
+    },
+
+    async completePreparingAudio(id) {
+      const sizeBytes = await audio.finalize(id);
+      return transact(db, [STORES.notes, STORES.tombstones], "readwrite", async (tx) => {
+        const note = await checkedNote(tx, id);
+        const ready: VoiceNoteRecording = { ...note, sizeBytes,
+          ledger: { ...(note.ledger ?? emptyLedger()), localAudio: { state: "ready", error: null } } };
+        await put(tx, STORES.notes, ready);
+        return clone(ready);
+      });
+    },
+
+    async failPreparingAudio(id, error) {
+      await transact(db, [STORES.notes, STORES.tombstones], "readwrite", async (tx) => {
+        const note = await checkedNote(tx, id);
+        await put(tx, STORES.notes, { ...note,
+          ledger: { ...(note.ledger ?? emptyLedger()), localAudio: { state: "failed", error } } });
+      });
+    },
+
+    async retryPreparingAudio(id) {
+      await transact(db, [STORES.notes, STORES.tombstones], "readwrite", async (tx) => {
+        const note = await checkedNote(tx, id);
+        if (note.ledger?.localAudio?.state !== "failed") throw failure("not_failed_recording");
+        await put(tx, STORES.notes, { ...note,
+          ledger: { ...note.ledger, localAudio: { state: "preparing", error: null } } });
+      });
+    },
+
     async readNoteAudio(id) {
       const note = await transact(db, [STORES.notes, STORES.tombstones], "readonly", (tx) => checkedNote(tx, id));
-      return { bytes: await audio.read(id, 0, await audio.size(id)), mimeType: note.mimeType };
+      if (note.ledger?.localAudio?.state !== undefined && note.ledger.localAudio.state !== "ready") {
+        throw failure(note.ledger.localAudio.state === "failed" ? "audio_preparation_failed" : "audio_preparing");
+      }
+      const size = await audio.size(id);
+      if (size === 0) throw failure("not_found");
+      return { bytes: await audio.read(id, 0, size), mimeType: note.mimeType };
     },
 
     async dropEmptySession(id) {
@@ -505,7 +624,10 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
 
     async readAudioChunk({ id, offset, length }): Promise<VoiceNoteAudioChunk> {
       if (!Number.isInteger(offset) || offset < 0 || !Number.isInteger(length) || length <= 0) throw failure("invalid_argument");
-      await transact(db, [STORES.notes, STORES.tombstones], "readonly", (tx) => checkedNote(tx, id));
+      const note = await transact(db, [STORES.notes, STORES.tombstones], "readonly", (tx) => checkedNote(tx, id));
+      if (note.ledger?.localAudio?.state !== undefined && note.ledger.localAudio.state !== "ready") {
+        throw failure(note.ledger.localAudio.state === "failed" ? "audio_preparation_failed" : "audio_preparing");
+      }
       const size = await audio.size(id);
       const bytes = await audio.read(id, offset, Math.min(length, MAX_READ_CHUNK_BYTES));
       return { id, offset, base64: bytesToBase64(bytes), bytesRead: bytes.byteLength, size, eof: offset + bytes.byteLength >= size };
@@ -543,9 +665,12 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
           await del(tx, STORES.notes, id);
           await del(tx, STORES.transcripts, id);
           const outboxNow = [...outbox];
+          // An own_create that created its job retired the own_upload receipts that existed then (see
+          // recordRemoteResult). A retired receipt must not re-enqueue a lookup for an upload nothing will read again.
           for (const row of receipts) {
             const { receipt, result } = row;
             if (receipt.id !== id) continue;
+            if (row.retired) continue;
             if (outboxNow.some((entry) => entry.entryId === `${id}:${receipt.opId}`)) continue;
             if (result?.outcome === "failed") continue;
             if (result?.handle && outboxNow.some((entry) => entry.did === receipt.did && entry.handle === result.handle)) continue;
@@ -557,6 +682,11 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
           }
         });
       await finishAudioDelete(id);
+    },
+
+    async evictCachedAudio({ id }) {
+      await transact(db, [STORES.notes, STORES.tombstones], "readonly", (tx) => checkedNote(tx, id));
+      throw failure("audio_in_use");
     },
 
     async listPending() {
@@ -619,11 +749,15 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
     },
 
     async beginRemoteOp(receipt) {
-      await transact(db, [STORES.kv, STORES.notes, STORES.tombstones, STORES.receipts, STORES.outbox], "readwrite", async (tx) => {
+      await withNoteWork(receipt.id, () => transact(db, [STORES.kv, STORES.notes, STORES.tombstones, STORES.receipts, STORES.outbox], "readwrite", async (tx) => {
         const key = `${receipt.id}:${receipt.opId}`;
         const existing = await get<ReceiptRow>(tx, STORES.receipts, key);
         if (existing && !sameReceipt(existing.receipt, receipt)) throw failure("receipt_conflict");
-        await put(tx, STORES.receipts, { key, receipt: clone(receipt), result: existing?.result ?? null } satisfies ReceiptRow);
+        // Re-beginning a receipt keeps its retirement marker. A retired own_upload is never read again, so re-beginning
+        // it must not re-enqueue its lookup or pin the note with a ledger entry.
+        await put(tx, STORES.receipts, { key, receipt: clone(receipt), result: existing?.result ?? null,
+          ...(existing?.retired ? { retired: true as const } : {}) } satisfies ReceiptRow);
+        if (existing?.retired) return;
         const row = await capture(tx);
         const note = await get<VoiceNoteRecording>(tx, STORES.notes, receipt.id);
         const tombstoned = await get(tx, STORES.tombstones, receipt.id);
@@ -641,7 +775,7 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
           note.rev = (note.rev ?? 0) + 1;
           await put(tx, STORES.notes, note);
         }
-      });
+      }));
     },
 
     async recordRemoteResult({ id, did, opId, result }) {
@@ -653,6 +787,10 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
         const tombstoned = !!(await get(tx, STORES.tombstones, id));
         const handle = result.handle ?? result.jobId ?? result.uploadId ?? result.uploadUrl ?? null;
         const previous = row.result;
+        // Only the first created result of an own_create retires the own_uploads that exist then. An expiry rewrite
+        // of that same create keeps outcome "created" and must not retire receipts begun after it.
+        const completesOwnCreate = receipt.kind === "own_create" && result.outcome === "created"
+          && previous?.outcome !== "created";
         if (previous?.outcome === result.outcome && previous.handle === handle &&
             previous.handleExpiresAt === (result.handleExpiresAt ?? null)) {
           return { destination: (tombstoned ? "outbox" : previous.destination) as "ledger" | "outbox" };
@@ -660,8 +798,13 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
         const note = await get<VoiceNoteRecording>(tx, STORES.notes, id);
         if (!note || tombstoned || note.owner !== did) {
           const old = await get<OutboxEntry>(tx, STORES.outbox, key);
-          const entry = outboxEntryFor(receipt, result, old);
+          // A retired own_upload's late result must not enqueue a lookup for an upload nothing will read again.
+          const entry = row.retired ? null : outboxEntryFor(receipt, result, old);
           if (entry) await enqueueOutbox(tx, entry); else await del(tx, STORES.outbox, key);
+          if (completesOwnCreate) {
+            await retireOwnUploadOutbox(tx, id);
+            await retireOwnUploadReceipts(tx, id);
+          }
           await put(tx, STORES.receipts, { ...row, result: { destination: "outbox", handle: handle ?? previous?.handle ?? null,
             handleExpiresAt: result.handleExpiresAt ?? null, outcome: result.outcome } } satisfies ReceiptRow);
           return { destination: "outbox" as const };
@@ -680,6 +823,11 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
             entry.handleExpiresAt = result.handleExpiresAt ?? entry.handleExpiresAt ?? null;
           }
         }
+        if (completesOwnCreate) {
+          note.ledger.remote = note.ledger.remote.filter((remote) => remote.kind !== "own_upload");
+          await retireOwnUploadOutbox(tx, id);
+          await retireOwnUploadReceipts(tx, id);
+        }
         note.rev = (note.rev ?? 0) + 1;
         await put(tx, STORES.notes, note);
         await put(tx, STORES.receipts, { ...row, result: { destination: "ledger", handle: handle ?? previous?.handle ?? null,
@@ -691,7 +839,7 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
     claim: (opts) => transact(db, [STORES.notes, STORES.tombstones], "readwrite", (tx) => claimInTx(tx, opts)),
 
     updateLedger: ({ id, did, rev, patch }) =>
-      transact(db, [STORES.notes, STORES.tombstones], "readwrite", async (tx) => {
+      withNoteWork(id, () => transact(db, [STORES.notes, STORES.tombstones], "readwrite", async (tx) => {
         const note = await checkedNote(tx, id);
         if (note.owner !== did) throw failure("owner_mismatch");
         if (note.rev !== rev) throw failure("rev_conflict");
@@ -699,7 +847,7 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
         note.rev = rev + 1;
         await put(tx, STORES.notes, note);
         return { rev: note.rev };
-      }),
+      })),
 
     putTranscript: ({ id, transcript }) =>
       transact(db, [STORES.notes, STORES.tombstones, STORES.transcripts], "readwrite", async (tx) => {
@@ -716,11 +864,11 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
       }),
 
     updateStt: (id, stt) =>
-      transact(db, [STORES.notes, STORES.tombstones], "readwrite", async (tx) => {
+      withNoteWork(id, () => transact(db, [STORES.notes, STORES.tombstones], "readwrite", async (tx) => {
         const note = await checkedNote(tx, id);
         note.stt = clone(stt);
         await put(tx, STORES.notes, note);
-      }),
+      })),
 
     listQuarantine: () =>
       transact(db, [STORES.quarantine], "readonly", async (tx) => ({

@@ -23,6 +23,7 @@ public enum ExoSttBootstrap {
             CaptureEngine.shared.captureSessionStarted = { TranscriptionQueue.shared.captureStarted() }
             CaptureEngine.shared.captureSessionEnded = { TranscriptionQueue.shared.captureEnded() }
         }
+        TranscriptionQueue.shared.recoverInterruptedReruns()
         removeDownloadedModels()
         // Picks up notes committed in an earlier process run (app killed mid-transcription, or
         // committed before the speech assets were installed): re-queued here instead of resumed

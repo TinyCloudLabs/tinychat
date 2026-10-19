@@ -1,20 +1,32 @@
 import { createVoiceNoteSaveTimeout, voiceNoteCallDeadlineMs } from "./voiceNotes/saveDeadline";
 
-/** Small voice-note storage jobs and the existing background drain share this queue. */
-let lane: Promise<void> = Promise.resolve();
+/** Keep bulk audio off the short text/row lane. Each track admits one request at a time. */
+const lanes: Record<"text" | "audio" | "background", { tail: Promise<void>; active: { id: number; operation: string } | null; queued: Set<number> }> = {
+  text: { tail: Promise.resolve(), active: null, queued: new Set() },
+  audio: { tail: Promise.resolve(), active: null, queued: new Set() },
+  background: { tail: Promise.resolve(), active: null, queued: new Set() },
+};
 const ABORT_SETTLE_GRACE_MS = 30_000;
 /** Allow legitimate multi-minute syncs to finish before failing a queued save. */
 const QUEUE_WAIT_LIMIT_MS = 10 * 60_000;
 let testAbortSettleGraceMs: number | null = null;
 let testQueueWaitLimitMs: number | null = null;
 let nextLaneJobId = 0;
-let activeLaneJob: { id: number; operation: string } | null = null;
-const queuedLaneJobs = new Set<number>();
+let abandonedSqlCalls = 0;
+/**
+ * Started connectors-SQL calls aborted at their deadline (TC-1274). Aborting stops only
+ * the client; the node keeps each one queued or running in the database's FIFO, so
+ * retries must not assume it is gone. KV calls are not counted: the node orders them
+ * separately, so an SQL probe says nothing about them.
+ */
+export function spaceLaneAbandonedSqlCalls(): number { return abandonedSqlCalls; }
 const laneListeners = new Set<() => void>();
 function publishLane(): void { for (const listener of laneListeners) listener(); }
 export interface SpaceLaneSnapshot { busy: boolean; depth: number }
-export function spaceLaneSnapshot(): SpaceLaneSnapshot {
-  return { busy: activeLaneJob !== null || queuedLaneJobs.size > 0, depth: queuedLaneJobs.size };
+export function spaceLaneSnapshot(track?: keyof typeof lanes): SpaceLaneSnapshot {
+  const selected = track ? [lanes[track]] : Object.values(lanes);
+  return { busy: selected.some((lane) => lane.active !== null || lane.queued.size > 0),
+    depth: selected.reduce((depth, lane) => depth + lane.queued.size, 0) };
 }
 export function subscribeSpaceLane(listener: () => void): () => void {
   laneListeners.add(listener);
@@ -23,9 +35,12 @@ export function subscribeSpaceLane(listener: () => void): () => void {
 
 export interface SpaceLaneCallDeadline {
   operation: string;
+  track?: "text" | "audio" | "background";
   /** Payload size for uploads; establishes 8 KB/s minimum throughput headroom. */
   payloadBytes?: number;
   timeoutMs?: number;
+  /** The call is one request to the connectors SQL database (see spaceLaneAbandonedSqlCalls). */
+  sql?: boolean;
 }
 
 export class SpaceLaneQueueWaitTimeout extends Error {
@@ -39,13 +54,15 @@ export class SpaceLaneQueueWaitTimeout extends Error {
 type CallerSettlement<T> = { kind: "resolve"; value: T } | { kind: "reject"; error: unknown };
 
 /** Only call sites for one TinyCloud request pass a deadline; composite lane jobs remain serialized. */
-export function runOnSpaceLane<T>(job: (signal?: AbortSignal) => Promise<T>, deadline?: SpaceLaneCallDeadline): Promise<T> {
-  const previous = lane;
+export function runOnSpaceLane<T>(job: (signal?: AbortSignal) => Promise<T>, deadline?: SpaceLaneCallDeadline,
+  track: "text" | "audio" | "background" = deadline?.track ?? "text"): Promise<T> {
+  const lane = lanes[track];
+  const previous = lane.tail;
   const jobId = ++nextLaneJobId;
-  queuedLaneJobs.add(jobId);
+  lane.queued.add(jobId);
   publishLane();
   let release!: () => void;
-  lane = new Promise<void>((resolve) => { release = resolve; });
+  lane.tail = new Promise<void>((resolve) => { release = resolve; });
   let started = false;
   let timedOut = false;
   let released = false;
@@ -60,8 +77,8 @@ export function runOnSpaceLane<T>(job: (signal?: AbortSignal) => Promise<T>, dea
     if (released) return;
     released = true;
     if (abortGraceTimer !== undefined) clearTimeout(abortGraceTimer);
-    if (activeLaneJob?.id === jobId) activeLaneJob = null;
-    queuedLaneJobs.delete(jobId);
+    if (lane.active?.id === jobId) lane.active = null;
+    lane.queued.delete(jobId);
     publishLane();
     release();
   };
@@ -85,7 +102,7 @@ export function runOnSpaceLane<T>(job: (signal?: AbortSignal) => Promise<T>, dea
       if (callerSettled || started) return;
       timedOut = true;
       controller.abort();
-      const waitingOn = activeLaneJob?.operation ?? "background drain";
+      const waitingOn = lane.active?.operation ?? "background drain";
       const error = new SpaceLaneQueueWaitTimeout(deadline.operation, waitingOn, queueWaitMs);
       console.error(`[VoiceNotes] Space lane queue wait timed out for ${deadline.operation} after ${queueWaitMs}ms; waiting on ${waitingOn}`);
       settleCaller({ kind: "reject", error });
@@ -98,10 +115,10 @@ export function runOnSpaceLane<T>(job: (signal?: AbortSignal) => Promise<T>, dea
       return;
     }
     started = true;
-    queuedLaneJobs.delete(jobId);
+    lane.queued.delete(jobId);
     if (queueWaitTimer !== undefined) clearTimeout(queueWaitTimer);
     const operation = deadline?.operation ?? "background drain";
-    activeLaneJob = { id: jobId, operation };
+    lane.active = { id: jobId, operation };
     publishLane();
 
     // The operation budget begins now, after the prior lane job has finished.
@@ -112,6 +129,7 @@ export function runOnSpaceLane<T>(job: (signal?: AbortSignal) => Promise<T>, dea
       callDeadlineTimer = setTimeout(() => {
         if (callerSettled) return;
         timedOut = true;
+        if (deadline.sql) abandonedSqlCalls++;
         controller.abort();
         settleCaller({ kind: "reject", error: createVoiceNoteSaveTimeout(deadline.operation, timeoutMs) });
         if (!released) {
@@ -148,7 +166,11 @@ export function runOnSpaceLane<T>(job: (signal?: AbortSignal) => Promise<T>, dea
 }
 
 /** Tests only: discard a completed lane from the previous case. */
-export function resetSpaceLaneForTests(): void { lane = Promise.resolve(); activeLaneJob = null; queuedLaneJobs.clear(); publishLane(); }
+export function resetSpaceLaneForTests(): void {
+  for (const lane of Object.values(lanes)) { lane.tail = Promise.resolve(); lane.active = null; lane.queued.clear(); }
+  abandonedSqlCalls = 0;
+  publishLane();
+}
 /** Tests only: shorten the post-abort lane grace period. */
 export function setSpaceLaneAbortGraceForTests(timeoutMs: number | null): void { testAbortSettleGraceMs = timeoutMs; }
 /** Tests only: shorten the queue wait ceiling without changing call deadlines. */

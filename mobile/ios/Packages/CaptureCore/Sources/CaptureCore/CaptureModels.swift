@@ -6,7 +6,7 @@ public enum CaptureError: Error, Equatable, LocalizedError {
     case staleTransition, ownerMismatch, revConflict, recordingInProgress
     case insufficientStorage, noAudio, cancelled, pauseFailed, resumeFailed, io(String)
     case finalizationTimedOut(String)
-    case rowIDRequired, claimEvidenceRequired, claimEvidenceInvalid
+    case rowIDRequired, claimEvidenceRequired, claimEvidenceInvalid, audioInUse
 
     public var code: String {
         switch self {
@@ -30,6 +30,7 @@ public enum CaptureError: Error, Equatable, LocalizedError {
         case .rowIDRequired: "row_id_required"
         case .claimEvidenceRequired: "claim_evidence_required"
         case .claimEvidenceInvalid: "claim_evidence_invalid"
+        case .audioInUse: "audio_in_use"
         }
     }
 
@@ -43,10 +44,12 @@ public enum CaptureError: Error, Equatable, LocalizedError {
 public struct CaptureOptions: Codable, Equatable {
     public var transcriber: String
     public var identifySpeakers: Bool
+    public var uploadAudio: Bool?
 
-    public init(transcriber: String = "on-device", identifySpeakers: Bool = false) {
+    public init(transcriber: String = "on-device", identifySpeakers: Bool = false, uploadAudio: Bool? = nil) {
         self.transcriber = transcriber
         self.identifySpeakers = identifySpeakers
+        self.uploadAudio = uploadAudio
     }
 }
 
@@ -55,18 +58,20 @@ public struct CaptureDefaults: Codable, Equatable {
     public var transitionGen: Int64
     public var transcriber: String
     public var identifySpeakers: Bool
+    public var uploadAudio: Bool?
 
     public init(accountDid: String? = nil, transitionGen: Int64 = 0,
-                transcriber: String = "on-device", identifySpeakers: Bool = false) {
+                transcriber: String = "on-device", identifySpeakers: Bool = false, uploadAudio: Bool? = nil) {
         self.accountDid = accountDid
         self.transitionGen = transitionGen
         self.transcriber = transcriber
         self.identifySpeakers = identifySpeakers
+        self.uploadAudio = uploadAudio
     }
 
     public var options: CaptureOptions {
         CaptureOptions(transcriber: accountDid == nil ? "on-device" : transcriber,
-                       identifySpeakers: identifySpeakers)
+                       identifySpeakers: identifySpeakers, uploadAudio: uploadAudio ?? false)
     }
 
     public func validateTransition(from stored: CaptureDefaults) throws {
@@ -91,7 +96,7 @@ public struct CaptureAccountState: Codable, Equatable {
     public var defaults: CaptureDefaults {
         CaptureDefaults(accountDid: status == "signed_in" ? accountDid : nil,
                         transitionGen: transitionGen, transcriber: options.transcriber,
-                        identifySpeakers: options.identifySpeakers)
+                        identifySpeakers: options.identifySpeakers, uploadAudio: options.uploadAudio)
     }
 }
 

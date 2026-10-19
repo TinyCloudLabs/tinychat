@@ -10,8 +10,8 @@ const labels = (source: string, metadata: Record<string, unknown> | null) => cap
 
 describe("captureRoute", () => {
   test("a voice note: the phone, private cloud only when it made the text, then the space", () => {
-    expect(labels("exo-voice-note", { capture: { platform: "ios" }, audio: { stored: true } })).toEqual(["This phone", "Your space"]);
-    expect(labels("exo-voice-note", { capture: { platform: "android" } })).toEqual(["This phone", "Your space"]);
+    expect(labels("exo-voice-note", { capture: { platform: "ios" }, audio: { stored: true } })).toEqual(["This iPhone", "Your space"]);
+    expect(labels("exo-voice-note", { capture: { platform: "android" } })).toEqual(["This Android phone", "Your space"]);
     expect(labels("exo-voice-note", { capture: { platform: "tauri" } })).toEqual(["This Mac", "Your space"]);
     expect(labels("exo-voice-note", { capture: { platform: "web" } })).toEqual(["This browser", "Your space"]);
     const transcribed = captureRoute("exo-voice-note", {
@@ -22,7 +22,7 @@ describe("captureRoute", () => {
       transcript_provider: "tinycloud-private-transcription",
       inference_provider: "tinfoil",
     });
-    expect(transcribed.nodes.map((n) => n.label)).toEqual(["This phone", "Private", "Your space"]);
+    expect(transcribed.nodes.map((n) => n.label)).toEqual(["This iPhone", "Private", "Your space"]);
     expect(transcribed.sentence).toBe(
       "Audio saved to your TinyCloud space. A copy was transcribed by TinyCloud Private Transcription; speech-to-text by Tinfoil.",
     );
@@ -38,7 +38,7 @@ describe("captureRoute", () => {
     };
     for (const outcome of [undefined, "none", "no_speech"]) {
       const route = captureRoute("exo-voice-note", { ...engine, ...(outcome ? { transcription_outcome: outcome } : {}) });
-      expect(route.nodes.map((n) => n.label)).toEqual(["This phone", "Your space"]);
+      expect(route.nodes.map((n) => n.label)).toEqual(["This iPhone", "Your space"]);
       expect(route.sentence).toBe("Audio saved to your TinyCloud space.");
       expect(route.privateCloud).toBe(false);
     }
@@ -74,7 +74,7 @@ describe("captureRoute", () => {
   test("never more nodes than the metadata supports", () => {
     // Not read yet, or unreadable: the source column alone.
     expect(labels("exo-upload", null)).toEqual(["Upload", "Your space"]);
-    expect(labels("exo-voice-note", null)).toEqual(["This phone", "Your space"]);
+    expect(labels("exo-voice-note", null)).toEqual(["This iPhone", "Your space"]);
     // A provider the Library does not know draws no middle node.
     expect(labels("exo-upload", { transcript_provider: "someone-else" })).toEqual(["Upload", "Your space"]);
     expect(labels("granola", { transcript_provider: "assemblyai" })).toEqual(["granola", "Your space"]);

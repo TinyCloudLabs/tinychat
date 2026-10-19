@@ -5,14 +5,15 @@
  * version (see desktopBundleVersions). Tauri merges bundle.macOS.infoPlist over src-tauri/Info.plist and over the
  * keys it generates, so only these two keys change; the app's own version stays the semver. --ad-hoc-sign (unsigned
  * builds) also sets bundle.macOS.signingIdentity "-", so tauri bundle ad-hoc signs the app (sealing its resources)
- * before it builds the DMG. Writes version, short-version, bundle-version, prerelease and config to $GITHUB_OUTPUT.
+ * before it builds the DMG. --smoke assigns an isolated bundle identifier and product name for recorder-failpoints artifacts.
+ * Writes version, short-version, bundle-version, prerelease, product-name, bundle-identifier and config to $GITHUB_OUTPUT.
  */
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { DESKTOP, desktopBundleVersions, readJson, repoRoot, setOutput } from './lib.mjs';
 
-const { values } = parseArgs({ options: { root: { type: 'string' }, out: { type: 'string' }, 'ad-hoc-sign': { type: 'boolean', default: false } } });
+const { values } = parseArgs({ options: { root: { type: 'string' }, out: { type: 'string' }, 'ad-hoc-sign': { type: 'boolean', default: false }, smoke: { type: 'boolean', default: false } } });
 const root = resolve(values.root ?? repoRoot);
 if (!values.out) throw new Error('--out <dir> is required');
 const out = resolve(values.out);
@@ -33,13 +34,22 @@ writeFileSync(plist, `<?xml version="1.0" encoding="UTF-8"?>
 </dict>
 </plist>
 `);
-const config = join(out, 'tauri.bundle.conf.json');
-const macOS = { infoPlist: plist, ...(values['ad-hoc-sign'] ? { signingIdentity: '-' } : {}) };
-writeFileSync(config, `${JSON.stringify({ bundle: { macOS } }, null, 2)}\n`);
+const configPath = join(out, 'tauri.bundle.conf.json');
+const macOS = {
+  infoPlist: plist,
+  ...(values['ad-hoc-sign'] ? { signingIdentity: '-' } : {}),
+};
+const config = {
+  ...(values.smoke ? { identifier: 'xyz.tinycloud.exo.smoke', productName: 'Exo Smoke' } : {}),
+  bundle: { macOS },
+};
+writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
 
 console.log(`Exo ${version}: CFBundleShortVersionString ${shortVersion}, CFBundleVersion ${bundleVersion}`);
 setOutput('version', version);
 setOutput('short-version', shortVersion);
 setOutput('bundle-version', bundleVersion);
 setOutput('prerelease', String(prerelease));
-setOutput('config', config);
+setOutput('product-name', values.smoke ? 'Exo Smoke' : 'Exo');
+setOutput('bundle-identifier', values.smoke ? 'xyz.tinycloud.exo.smoke' : 'xyz.tinycloud.exo');
+setOutput('config', configPath);

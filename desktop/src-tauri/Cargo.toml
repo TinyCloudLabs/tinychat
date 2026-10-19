@@ -1,6 +1,6 @@
 [package]
 name = "exo-desktop"
-version = "0.7.4-beta.1"
+version = "0.9.1-beta.1"
 description = "Exo — TinyCloud chat desktop app (exo.tinycloud.xyz)"
 edition = "2021"
 publish = false
@@ -19,6 +19,8 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 url = "2"
+recorder-state = { path = "../recorder-state" }
+wav-snapshot = { path = "../wav-snapshot" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"
@@ -157,6 +159,7 @@ model-downloader = { path = "../vendor/anarlog-model-downloader" }
 local-model = { path = "../vendor/anarlog-local-model" }
 file = { path = "../vendor/anarlog-file" }
 audio-chunking = { path = "../vendor/anarlog-audio-chunking" }
+listener-core = { path = "../vendor/anarlog-listener-core" }
 
 # The yujonglee swift-rs fork runs `swift build` with SwiftPM's default build
 # system. Xcode 27's default (`swiftbuild`) prelinks targets and hides the
@@ -187,6 +190,7 @@ transcription = [
     "dep:parking_lot",
 ]
 ipc-selftest = ["transcription"]
+recorder-failpoints = []
 
 [dev-dependencies]
 ractor = "0.15"

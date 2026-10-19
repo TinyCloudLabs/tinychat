@@ -194,7 +194,7 @@ const activeCatchUps = new Set<{
  * only its SQL/KV calls enter here through the sync engine.
  */
 export function enqueueDrainWork<T>(work: () => Promise<T>): Promise<T> {
-  return runOnSpaceLane(work);
+  return runOnSpaceLane(work, undefined, "background");
 }
 
 /** The clock, seam-first. Read exactly once per decision, so a tick can never

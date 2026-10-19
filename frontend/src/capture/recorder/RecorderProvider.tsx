@@ -12,7 +12,7 @@ import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { Button } from "@/components/ui/button";
-import { PlatformContext } from "@/lib/platform";
+import { PlatformContext, deviceName } from "@/lib/platform";
 import { getDesktopCaptureExtras, type DesktopCaptureExtras } from "@/lib/voiceNotes/desktopCaptureExtras";
 import { chooseSystemAudio, needsSystemAudioDisclosure, SYSTEM_AUDIO_BODY, SYSTEM_AUDIO_MIC_ONLY, SYSTEM_AUDIO_RECORD, SYSTEM_AUDIO_TITLE } from "@/capture/home/desktop/systemAudioDisclosure";
 import { SheetDialog } from "./final/SheetDialog";
@@ -28,12 +28,13 @@ import type { PendingSnapshot } from "@/lib/voiceNotes/recorderSaves";
 import { DISCARDED, micWarning, recorderStatusText, RECEIPT_KEPT } from "./recorderCopy";
 import type { RecorderCaptureIssue, RecorderMic, RecorderPhase, RecorderState } from "./recorderReducer";
 import type { VoiceNoteTranscriptionProps } from "./transcriptionProps";
-import type { RecorderTranscriberChoice, TranscriberChoiceResult, TranscriberChoiceScope } from "./voiceNoteRecorderController";
+import type { RecorderTranscriberChoice, TranscriberChoiceResult, TranscriberChoiceScope, VoiceNoteRecorderController } from "./voiceNoteRecorderController";
 import type { RecorderNote, RecorderNoteStatus } from "./voiceNoteRecorderController";
 import type { TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
 import type { VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
 import { useVoiceNoteRecorder } from "./useVoiceNoteRecorder";
 import { shouldScheduleReceiptDismissal } from "./receiptBehavior";
+import { useLimitNotifications } from "./limitNotifications";
 
 /** How long a saved receipt stays, once its content is actually visible, before the sheet closes
  * and the island lets go. */
@@ -68,6 +69,7 @@ export interface RecorderValue {
   captureIssues: Record<string, RecorderCaptureIssue>;
   dismissCaptureIssue(id: string): boolean;
   recoveryScanFailure: string | null;
+  captureSourceUnconfirmed: boolean;
   controlPending: RecorderState["controlPending"];
   maxDurationMs: number;
   limitNotice: string | null;
@@ -76,6 +78,7 @@ export interface RecorderValue {
   /** How the last recording ended; drives the receipt. */
   outcome: "local" | "saved" | "failed" | null;
   localUpload: RecorderState["localUpload"];
+  localUploadHeldReason?: RecorderState["localUploadHeldReason"];
   lastSaved: RecorderState["lastSaved"];
   /** The recording in progress, or stopping: its capture issue and error belong to it. */
   recordingId: RecorderState["recordingId"];
@@ -127,6 +130,7 @@ export interface RecorderValue {
    * display clock, so it can never close the sheet before there is anything to show. */
   setReceiptReady(): void;
   subscribeLevel(listener: (level: number) => void): () => void;
+  subscribeLevels: VoiceNoteRecorderController["subscribeLevels"];
 }
 
 const RecorderContext = createContext<RecorderValue | null>(null);
@@ -173,7 +177,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
   const platform = useContext(PlatformContext);
   const disclosureTitleId = useId();
   const disclosureDescriptionId = useId();
-  const device = platform === "tauri" ? "Mac" : "phone";
+  const device = deviceName(platform);
   const [configured, setConfigured] = useState<{ tcw: TinyCloudWeb; did: string | null } | null>(null);
   const [defaultsError, setDefaultsError] = useState<string | null>(null);
   const [defaultsAttempt, setDefaultsAttempt] = useState(0);
@@ -200,13 +204,13 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
         globalThis.localStorage?.setItem(key, String(written.transitionGen));
         if (active) { setDefaultsError(null); setConfigured({ tcw, did: tcw.did ?? null }); if (tcw.did) onAccountReady?.(tcw); }
       } catch (caught) {
-        if (active) setDefaultsError(`Could not set this phone's recording account: ${readableError(caught)}`);
+        if (active) setDefaultsError(`Could not set ${device}'s recording account: ${readableError(caught)}`);
       }
     })();
     return () => { active = false; };
   }, [enabled, tcw, defaultsAttempt, onAccountReady]);
   const recorder = useVoiceNoteRecorder({ tcw, enabled: enabled !== false && defaultsReady, backendUrl, sessionStore, onSaved, pipeline });
-  const { state, dismissOutcome, subscribeLevel, record: startRecording } = recorder;
+  const { state, dismissOutcome, subscribeLevel, subscribeLevels, record: startRecording } = recorder;
   const [sheetOpen, setSheetOpen] = useState(false);
   const [receiptPlaying, setReceiptPlaying] = useState(false);
   const [receiptActionable, setReceiptActionable] = useState(false);
@@ -242,7 +246,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       setAnnouncement(recorderStatusText(state.phase, state.mic, null));
     } else if (before.outcome !== state.outcome && state.outcome === "local") {
       hapticSaved();
-      setAnnouncement(`Saved on this ${device}`);
+      setAnnouncement(`Saved on ${device}`);
     } else if (before.outcome !== state.outcome && state.outcome === "failed") {
       hapticWarning();
       setAnnouncement(RECEIPT_KEPT);
@@ -366,6 +370,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
     dismissOutcome();
   }, [dismissOutcome]);
   const openSheet = useCallback(() => setSheetOpen(true), []);
+  useLimitNotifications(state, openSheet);
   const minimiseSheet = useCallback(async () => {
     if (state.permissionDenied) await recorder.dismissShortcutRecovery();
     setMomentFieldFocused(false);
@@ -396,12 +401,14 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       dismissCaptureIssue: recorder.dismissCaptureIssue,
       recoveryScanFailure: state.recoveryScanFailure,
       controlPending: state.controlPending,
+      captureSourceUnconfirmed: state.captureSourceUnconfirmed,
       maxDurationMs: state.maxDurationMs,
       limitNotice: state.limitNotice,
       savePercent: state.savePercent,
       error: state.error ?? defaultsError,
       outcome: state.outcome,
       localUpload: state.localUpload,
+      localUploadHeldReason: state.localUploadHeldReason,
       lastSaved: state.lastSaved,
       ...recordingIdentity(state),
       pending: recorder.pending,
@@ -434,6 +441,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       setReceiptActionable,
       setReceiptReady,
       subscribeLevel,
+      subscribeLevels,
     }),
     [
       dismiss,
@@ -467,6 +475,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       sheetOpen,
       state,
       subscribeLevel,
+      subscribeLevels,
       tcw?.did,
     ],
   );
@@ -537,6 +546,7 @@ export function StaticRecorderProvider(props: { value?: Partial<RecorderValue>; 
       captureIssues: {},
       dismissCaptureIssue: () => false,
       recoveryScanFailure: null,
+      captureSourceUnconfirmed: false,
       controlPending: null,
       maxDurationMs: VOICE_NOTE_MAX_DURATION_MS,
       limitNotice: null,
@@ -581,6 +591,7 @@ export function StaticRecorderProvider(props: { value?: Partial<RecorderValue>; 
         for (const level of levels ?? []) listener(level);
         return noop;
       },
+      subscribeLevels: () => noop,
       ...patch,
     }),
     [levels, patch],

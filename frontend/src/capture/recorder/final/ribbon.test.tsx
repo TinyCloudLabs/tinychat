@@ -9,7 +9,7 @@ import {
   type RecorderValue,
 } from "../RecorderProvider";
 import { CaptureDot } from "./CaptureDot";
-import { MinimizedAlert } from "./MinimizedAlert";
+import { MinimizedAlert, MinimizedLimitNotice } from "./MinimizedAlert";
 import { MinimizedProvider } from "./MinimizedProvider";
 import { RibbonView } from "./Ribbon";
 import { SidebarDockView } from "./SidebarDock";
@@ -83,6 +83,11 @@ const SILENCED: Partial<RecorderValue> = {
   mic: { state: "silenced", reason: "os_silenced" },
 };
 const bars = (html: string) => (html.match(/data-bar="/g) ?? []).length;
+/** The text the first aria-describedby (the open control's) points at, in order. */
+function describedBy(html: string): string {
+  const ids = /aria-describedby="([^"]+)"/.exec(html)![1]!.split(" ");
+  return ids.map((id) => /^[^<]*/.exec(html.slice(html.indexOf(">", html.indexOf(`id="${id}"`)) + 1))![0]).join(" ");
+}
 
 describe("RibbonView", () => {
   test("recording: one labelled control for the timer and bars, Pause, and a Stop that saves", () => {
@@ -90,6 +95,7 @@ describe("RibbonView", () => {
     expect(html).toContain('data-state="live"');
     expect(html).toContain(">0:06</span>");
     expect(html).toContain('aria-label="Recording. Open recorder"');
+    expect(describedBy(html)).toMatch(/^0:06 Stops at .+/);
     expect(html).toContain('aria-label="Pause recording"');
     expect(html).toContain('aria-label="Stop and save"');
     expect(html).toContain('data-testid="ribbon-open"');
@@ -119,6 +125,7 @@ describe("RibbonView", () => {
     expect(html).toContain('aria-label="Resume recording"');
     expect(html).not.toContain('aria-label="Pause recording"');
     expect(html).toContain('aria-label="Paused. Open recorder"');
+    expect(describedBy(html)).toMatch(/^0:15 Stops at .+/);
     expect(html).toContain(">0:15</span>");
   });
 
@@ -217,6 +224,22 @@ describe("MinimizedAlert", () => {
   });
 });
 
+describe("MinimizedLimitNotice (the rail's floating row after an automatic stop)", () => {
+  const notice = "Stopped at the 1-hour limit.";
+  test("names the limit while the note saves and once it is saved, with a way to open the recorder", () => {
+    for (const patch of [{ phase: "saving" as const }, { phase: "idle" as const, outcome: "saved" as const }]) {
+      const html = withProvider({ ...patch, limitNotice: notice }, <MinimizedLimitNotice />);
+      expect(html).toMatch(/role="status"[^>]*>Stopped at the 1-hour limit\.</);
+      expect(html).toContain('aria-label="Open recorder"');
+    }
+  });
+
+  test("nothing after a manual Stop, or while a recording is live", () => {
+    expect(withProvider({ phase: "saving" }, <MinimizedLimitNotice />)).toBe("");
+    expect(withProvider({ ...LIVE, limitNotice: notice }, <MinimizedLimitNotice />)).toBe("");
+  });
+});
+
 describe("SidebarDockView", () => {
   test("22 bars", () => {
     expect(bars(dock(LIVE))).toBe(22);
@@ -227,6 +250,7 @@ describe("SidebarDockView", () => {
     expect(html).toContain('data-testid="sidebar-dock"');
     expect(html).toContain(">0:06</span>");
     expect(html).toContain('aria-label="Recording. Open recorder"');
+    expect(describedBy(html)).toMatch(/^Stops at .+/);
     expect(html).toContain('aria-label="Pause recording"');
     expect(html).toContain('aria-label="Stop and save"');
     expect(html).toContain(">Listening</span>");

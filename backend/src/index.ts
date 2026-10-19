@@ -52,7 +52,7 @@ import { createConnectorMeetingsRouter } from "./routes/connector-meetings.js";
 import { createGoogleOAuthRouter, normalizeAppOrigin } from "./routes/google-oauth.js";
 import { createTranscriberRouter } from "./routes/transcriber.js";
 import { createTranscriberWebhookRouter } from "./routes/transcriber-webhook.js";
-import { ASSEMBLYAI_HOSTED_MOUNT, createAssemblyAiHostedRouter } from "./routes/assemblyai-hosted.js";
+import { ASSEMBLYAI_HOSTED_MOUNT, createAssemblyAiHostedRouter, reconcileHostedJobs } from "./routes/assemblyai-hosted.js";
 import {
   DEFAULT_MAX_CONCURRENT_UPLOADS,
   HostedUploadStore,
@@ -70,7 +70,7 @@ import {
   transcriptionApiConfigFromEnv,
   transcriptDeliveryConfigFromEnv,
 } from "./services/transcription-api.js";
-import { KvTranscriberIndexStore } from "./services/transcriber-index.js";
+import { KvJsonKv, KvTranscriberIndexStore } from "./services/transcriber-index.js";
 import { TranscriptDeliveryWorker, WriteGovernor } from "./services/transcript-delivery.js";
 import {
   PRIVATE_CLOUD_TRANSCRIPTION_MOUNT,
@@ -649,6 +649,8 @@ async function main() {
     createAuthRouter({
       nonceStore,
       privateKey: backendPrivateKey,
+      frontendUrl: FRONTEND_URL,
+      nativeSiweDomain: process.env.OPENKEY_SIWE_DOMAIN,
     }),
   );
   app.use(
@@ -836,11 +838,9 @@ async function main() {
       fetchImpl: ((...args: Parameters<typeof fetch>) => limiter.run(() => fetch(...args))) as typeof fetch,
     });
     const calendar = new GoogleCalendarClient({ limiter });
-    const credentials = new CredentialStore(new KvCredentialRowStore(node, transcriberStorageLane), {
-      upstreamRevoker: async secret => {
-        if (secret.kind === "oauth") await google.revoke(secret.refreshToken ?? secret.accessToken);
-      },
-    });
+    // Google revocation is exclusively through the connection service's shared-grant guard.
+    const credentials = new CredentialStore(new KvCredentialRowStore(node, transcriberStorageLane));
+    const backfillCredentials = new CredentialStore(new KvCredentialRowStore(node, transcriberStorageLane, { priority: "background" }));
     // Same lane; see kvCalendarAutojoinStores for the priorities. The worker shares the one
     // connection service (it single-flights token refreshes), so its few calls through it
     // (cleanupEnabling, accessToken) run foreground under the request budget.
@@ -849,7 +849,7 @@ async function main() {
     await stores.worker.listConnections();
     const coordinator = new TenantCoordinator();
     calendarAutojoin = new CalendarAutojoinConnection({
-      store: stores.request, credentials, oauth: google, coordinator, calendar,
+      store: stores.request, credentials, backfillCredentials, oauth: google, coordinator, calendar,
       // TC-1047: disable, disconnect and needs_reconnect cancel the tenant's due-time timers.
       onDisabled: tenant => calendarAutojoinWorker?.cancelTenant(tenant),
     });
@@ -1004,11 +1004,13 @@ async function main() {
 
   // Hosted AssemblyAI (routes/assemblyai-hosted.ts): the same mount, always, so the frontend can
   // tell "off" (capabilities `hosted: false`) from "dark". Uploads live in this process only: the
-  // spool is emptied at start and a minute sweep drops uploads past their hour.
+  // The persistent spool admits one writer under flock. Startup recovery completes before mount.
   let hostedUploads: HostedUploadStore | null = null;
   if (assemblyAiHosted.hosted) {
-    hostedUploads = new HostedUploadStore(assemblyAiHosted.spoolDir, assemblyAiHosted.dailyBytes, DEFAULT_MAX_CONCURRENT_UPLOADS);
+    hostedUploads = new HostedUploadStore(assemblyAiHosted.spoolDir, assemblyAiHosted.dailyBytes, DEFAULT_MAX_CONCURRENT_UPLOADS,
+      undefined, undefined, undefined, new KvJsonKv(node));
     await hostedUploads.init();
+    await reconcileHostedJobs(assemblyAiHosted, hostedUploads);
     const sweeper = hostedUploads;
     setInterval(() => {
       sweeper.sweep(Date.now()).catch(() => console.error("[assemblyai-hosted] sweep failed alert=true"));

@@ -13,10 +13,13 @@ import { createElement, act } from "react";
 import { createRoot } from "react-dom/client";
 
 import { captureEvents } from "@/capture/captureEvents";
+import { failureNotificationStorageKey, readFailureNotificationKeys, writeFailureNotificationKeys } from "@/capture/activity/failureNotifications";
 import { registerPlayback } from "@/lib/audio/playback";
 import { installDom } from "@/test/dom";
 import { RecorderProvider, useRecorder, type RecorderValue } from "./RecorderProvider";
+import { CaptureSourceUnconfirmedIndicator } from "./CaptureSourceUnconfirmedIndicator";
 import type { VoiceNoteRecorder } from "./useVoiceNoteRecorder";
+import { selectRecorderView } from "./final/recorderView";
 import { createFakeVoiceNotes, type FakeVoiceNotes } from "@/harness/fakeVoiceNotes";
 import { fakeVoiceNoteStore } from "@/harness/fakeVoiceNoteStore";
 import { memoryHoldStore } from "@/harness/memoryHoldStore";
@@ -47,6 +50,7 @@ const { isDiscarded, pendingStore, saveRecording } = await import("@/lib/voiceNo
 const { useVoiceNoteRecorder } = await import("./useVoiceNoteRecorder");
 
 const tcw = { did: "did:example:alice", spaceId: "tinycloud:space" } as TinyCloudWeb;
+const PRIVATE_MAX_DURATION_SECONDS = 7_777;
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 /** Waits for a save to settle without assuming how many macrotasks it takes (CI and local runs differ). */
@@ -67,7 +71,11 @@ let paused = false;
 let plugin: VoiceNotesPlugin;
 
 async function stopNatively(): Promise<VoiceNoteRecording> {
-  const recording = { ...(await fake.plugin.stop()), id: currentId!, version: 2 as const, owner: tcw.did, rev: 1 };
+  const stopped = await fake.plugin.stop();
+  const recording = { ...stopped, id: currentId!, version: 2 as const, owner: tcw.did,
+    options: { ...stopped.options, transcriber: stopped.options?.transcriber ?? "on-device",
+      identifySpeakers: stopped.options?.identifySpeakers ?? false,
+      uploadAudio: stopped.options?.uploadAudio ?? true }, rev: 1 };
   currentId = null;
   paused = false;
   onPhone.push(recording);
@@ -76,10 +84,13 @@ async function stopNatively(): Promise<VoiceNoteRecording> {
 
 /** A recording made before this one, stopped at its limit, still on the phone. */
 function earlier(): VoiceNoteRecording {
-  const recording = { id: `old-${++serial}`, startedAt: 1, durationMs: 60_000, mimeType: "audio/mp4", sizeBytes: 4, silencedMs: 0, silencedEvents: 0, noSignalMs: 0, version: 2 as const, owner: tcw.did, rev: 1 };
+  const recording = { id: `old-${++serial}`, startedAt: 1, durationMs: 60_000, mimeType: "audio/mp4",
+    sizeBytes: 4, silencedMs: 0, silencedEvents: 0, noSignalMs: 0, version: 2 as const,
+    owner: tcw.did, rev: 1, options: { transcriber: "private-cloud" as const, identifySpeakers: false, uploadAudio: true } };
   onPhone.push(recording);
   return recording;
 }
+
 
 /** deleteAudio calls that fail before the phone lets a copy go. */
 let deleteFailures: number;
@@ -110,6 +121,18 @@ function controller(options: { tcw?: TinyCloudWeb | null; pipeline?: VoiceNotePi
   });
 }
 
+function selectedView(recorder: VoiceNoteRecorder) {
+  const state = recorder.getState();
+  return selectRecorderView(state, {
+    nowMs: Date.now(),
+    elapsedMs: state.elapsedMs,
+    inputName: null,
+    silencedSinceMs: null,
+    device: "mac",
+    isDevelopmentOrTest: true,
+  });
+}
+
 const ok = async (_tcw: unknown, recording: VoiceNoteRecording) => {
   saves.push(recording.id);
   return { ok: true, data: { inserted: true } } as never;
@@ -125,6 +148,7 @@ beforeEach(() => {
   saves = [];
   noted = [];
   currentId = null;
+  paused = false;
   deleteFailures = 0;
   deleteCalls = 0;
   nativeDiscards = 0;
@@ -145,7 +169,7 @@ beforeEach(() => {
     stop: stopNatively,
     async status() {
       const status = await fake.plugin.status();
-      return { ...status, state: paused ? "paused" as const : status.state, id: status.id === null ? null : currentId,
+      return { ...status, state: paused ? "paused" as const : status.state, reason: paused ? "user" as const : status.reason, id: status.id === null ? null : currentId,
         audioMs: 42_000, micDeniedPresentation: micDenied, shortcutRecordPending: shortcutPending,
         microphonePermissionGranted: microphoneGranted };
     },
@@ -189,6 +213,85 @@ async function attached() {
 }
 
 describe("voice-note recorder controller", () => {
+  test("Record stays disabled until a native Stop drain completes", async () => {
+    const base = plugin;
+    let starts = 0;
+    let release!: () => void;
+    const drain = new Promise<void>((resolve) => { release = resolve; });
+    __setVoiceNotesForTests({ ...base,
+      async start(options) { starts++; return base.start(options); },
+      async stop() { await drain; return base.stop(); },
+    }, { available: true });
+    const { recorder, detach } = await attached();
+    await recorder.record();
+    const stopping = recorder.stop();
+    expect(recorder.getState().phase).toBe("stopping");
+    await recorder.record();
+    expect(starts).toBe(1);
+    expect(recorder.getState().error).toBeNull();
+    release();
+    await stopping;
+    detach();
+  });
+  test("a second Done while Stop is pending does not call native Stop or invalidate controls", async () => {
+    const base = plugin;
+    let release!: (recording: VoiceNoteRecording) => void;
+    let stopCalls = 0;
+    __setVoiceNotesForTests({ ...base,
+      async stop() {
+        stopCalls++;
+        if (stopCalls > 1) throw new Error("native Stop called twice");
+        return new Promise<VoiceNoteRecording>((resolve) => { release = resolve; });
+      },
+    }, { available: true });
+    const { recorder, detach } = await attached();
+    await recorder.record();
+    const first = recorder.stop();
+    const second = recorder.stop();
+    expect(stopCalls).toBe(1);
+    expect(recorder.getState()).toMatchObject({ phase: "stopping", error: null });
+    release({ id: currentId!, startedAt: Date.now(), durationMs: 1, mimeType: "audio/mp4",
+      sizeBytes: 1, silencedMs: 0, silencedEvents: 0, noSignalMs: 0, version: 2, owner: tcw.did, rev: 1 });
+    await Promise.all([first, second]);
+    expect(stopCalls).toBe(1);
+    expect(recorder.getState().error).toBeNull();
+    detach();
+  });
+  test("idle native status hydrates and clears the capture-source-unconfirmed indicator", async () => {
+    const base = plugin;
+    let unconfirmed = true;
+    __setVoiceNotesForTests({ ...base, async status() {
+      return { ...(await base.status()), captureSourceUnconfirmed: unconfirmed };
+    } }, { available: true });
+    const recorder = controller();
+    const detach = recorder.attach();
+    await tick();
+    expect(recorder.getState()).toMatchObject({ phase: "idle", captureSourceUnconfirmed: true });
+    unconfirmed = false;
+    fake.emit("micState", { state: "idle", reason: null, id: null, audioMs: 0,
+      captureSourceUnconfirmed: false });
+    expect(recorder.getState().captureSourceUnconfirmed).toBe(false);
+    detach();
+  });
+
+
+
+  test("a stereo Stop carries its channels through the final saved receipt state", async () => {
+    const base = plugin;
+    __setVoiceNotesForTests({
+      ...base,
+      async stop() {
+        return { ...(await base.stop()), channels: 2 };
+      },
+    }, { available: true });
+    const { recorder, detach } = await attached();
+    await recorder.record();
+    await recorder.stop();
+    await settled(() => recorder.getState().outcome === "saved", "the stereo Stop to save");
+    expect(recorder.getState().lastSaved).toMatchObject({ channels: 2 });
+    detach();
+  });
+
   test("starting and resuming silence a playing note before native capture", async () => {
     const cleanupDom = installDom();
     const { recorder, detach } = await attached();
@@ -235,11 +338,26 @@ describe("voice-note recorder controller", () => {
     const { recorder, detach } = await attached();
     const received: number[] = [];
     const unsubscribe = recorder.subscribeLevel((level) => received.push(level));
-    fake.emit("level", { level: 10 ** (-25 / 20), peak: 10 ** (-10 / 20) });
+    fake.emit("level", { level: 10 ** (-25 / 20) });
     expect(received.at(-1)).toBeCloseTo(0.623, 2);
     fake.emit("level", { level: 0, peak: 0 });
     expect(received.at(-1)).toBe(0);
     unsubscribe();
+    detach();
+  });
+
+  test("Mac source levels keep system audio out of the mic subscriber", async () => {
+    const { recorder, detach } = await attached();
+    const mic: number[] = [];
+    const sources: unknown[] = [];
+    const stopMic = recorder.subscribeLevel((level) => mic.push(level));
+    const stopSources = recorder.subscribeLevels((levels) => sources.push(levels.sources));
+    const event = { level: 1, peak: 1, sources: { mic: { level: 0, peak: 0 }, system: { level: 1, peak: 1 } } };
+    fake.emit("level", event);
+    expect(mic).toEqual([0]);
+    expect(sources).toEqual([event.sources]);
+    stopMic();
+    stopSources();
     detach();
   });
 
@@ -333,7 +451,7 @@ describe("voice-note recorder controller", () => {
     await expect(reopened.setNoteText("x")).rejects.toBe(readFailure);
     expect((await loadNote(id))?.md).toBe("Do not overwrite");
     expect(timers.map((timer) => timer.ms)).toEqual([1_000]);
-    fake.emit("micState", { id, state: "recording", reason: null, elapsedMs: 2_000 });
+    fake.emit("micState", { id, state: "recording", reason: null, elapsedMs: 2_000, at: Date.now() });
     await tick();
     expect(reads).toBe(1);
     expect(timers).toHaveLength(1);
@@ -399,11 +517,14 @@ describe("voice-note recorder controller", () => {
     const { recorder, detach } = await attached();
     await recorder.record();
     const id = currentId!;
+    const notificationKey = failureNotificationStorageKey(tcw.did);
+    writeFailureNotificationKeys(notificationKey, [JSON.stringify([id, "finish", "storage"])]);
     await tick();
     await recorder.setNoteText("To discard");
     await recorder.discard();
     expect(await loadNote(id)).toBeNull();
     expect(recorder.getNote()).toBeNull();
+    expect(readFailureNotificationKeys(notificationKey)).toEqual([]);
     detach();
   });
 
@@ -415,13 +536,13 @@ describe("voice-note recorder controller", () => {
       const { recorder, detach } = await attached();
       await recorder.record();
       const id = currentId!;
-      fake.emit("micState", { id, state: "recording", reason: null, elapsedMs: 20_000 });
+      fake.emit("micState", { id, state: "recording", reason: null, elapsedMs: 20_000, at: Date.now() });
       now += 5_000;
       expect(recorder.markMoment()).toBe(25_000);
-      fake.emit("micState", { id, state: "paused", reason: "user", elapsedMs: 25_000 });
+      fake.emit("micState", { id, state: "paused", reason: "user", elapsedMs: 25_000, at: Date.now() });
       now += 40_000;
       expect(recorder.markMoment()).toBe(25_000);
-      fake.emit("micState", { id, state: "recording", reason: null, elapsedMs: 25_000 });
+      fake.emit("micState", { id, state: "recording", reason: null, elapsedMs: 25_000, at: Date.now() });
       expect(recorder.markMoment()).toBe(25_000);
       expect(await loadNote(id)).toBeNull();
       detach();
@@ -433,13 +554,14 @@ describe("voice-note recorder controller", () => {
       transcriber: "on-device", identifySpeakers: false });
     let consented = false;
     const recorder = controller({ consented: () => consented });
+    const route = { get transcriber() { return recorder.getTranscriber(); }, setTranscriber: recorder.setTranscriber.bind(recorder) };
     const detach = recorder.attach();
     await tick();
     await recorder.record();
-    expect(await setRecordingRoute(recorder, "private-cloud")).toBe("needs_consent");
+    expect(await setRecordingRoute(route, "private-cloud")).toBe("needs_consent");
     expect((await fake.plugin.status()).options?.transcriber).toBe("on-device");
 
-    expect(await consentToRecordingPrivateCloud(recorder, () => { consented = true; })).toBe("ok");
+    expect(await consentToRecordingPrivateCloud(route, () => { consented = true; })).toBe("ok");
     expect((await fake.plugin.status()).options?.transcriber).toBe("private-cloud");
     expect(recorder.getTranscriber()).toEqual({ id: "private-cloud", identifySpeakers: true, source: "recording" });
     expect((await fake.plugin.getCaptureDefaults()).transcriber).toBe("on-device");
@@ -454,8 +576,11 @@ describe("voice-note recorder controller", () => {
     const started: string[] = [];
     const transcriber = createVoiceNoteTranscriber({
       cloud: {
-        capabilities: async () => ({ max_bytes: 120_960_000, max_duration_seconds: 7_200, content_types: ["audio/mp4"] }),
+        capabilities: async () => ({ max_bytes: 120_960_000, max_duration_seconds: PRIVATE_MAX_DURATION_SECONDS, content_types: ["audio/mp4"], admission: "open" }),
         pendingSourceIds: () => [],
+        hasRemoteJob: () => false,
+        holdTranscript: () => {},
+        heldTranscript: () => null,
         transcribe: async () => { throw new Error("runNote is injected"); },
         finish: async () => {},
         releaseUnsent: async () => {},
@@ -687,7 +812,7 @@ describe("voice-note recorder controller", () => {
       await recorder.record();
       await recorder.stop();
       await tick();
-      const friendly = "Couldn't reach your TinyCloud space. This note is still on your phone — try again.";
+      const friendly = "Waiting for a connection · syncs by itself";
       expect(recorder.getState().error).toBe(friendly);
       expect(warnings.filter(([message]) => String(message).includes("TinyCloud network failure"))).toHaveLength(1);
     } finally {
@@ -912,11 +1037,11 @@ describe("voice-note recorder controller", () => {
     await recorder.record();
     await recorder.stop();
     await tick();
-    expect(["local", "saved"]).toContain(recorder.getState().outcome);
-    const emit = fake.emit as unknown as (event: string, payload: { id: null; reason: string }) => void;
+    const outcome = recorder.getState().outcome;
+    expect(outcome === "local" || outcome === "saved").toBe(true);
     micDenied = true;
     microphoneGranted = false;
-    emit("presentRecorder", { id: null, reason: "permission_denied" });
+    fake.emit("presentRecorder", { id: null, reason: "permission_denied" });
     await tick();
     expect(recorder.getState().permissionDenied).toBe(true);
     expect(presented).toBe(1);
@@ -1006,7 +1131,16 @@ describe("voice-note recorder controller", () => {
     expect(recorder.getState().lastSaved?.id).toBe(old.id);
   });
 
-  test("a failed save keeps the note; Save now lands it and the receipt says so", async () => {
+  test("a failed stereo save keeps the note; Save now lands it with channels in the receipt", async () => {
+    const base = plugin;
+    __setVoiceNotesForTests({
+      ...base,
+      async stop() {
+        const recording = { ...(await base.stop()), channels: 2 as const };
+        onPhone = onPhone.map((pending) => pending.id === recording.id ? recording : pending);
+        return recording;
+      },
+    }, { available: true });
     fakeVoiceNoteStore.save = fails;
     const { recorder } = await attached();
     await recorder.record();
@@ -1022,7 +1156,7 @@ describe("voice-note recorder controller", () => {
     fakeVoiceNoteStore.save = ok;
     await recorder.retryPending();
     expect(recorder.getState()).toMatchObject({ outcome: "saved", error: null, failedRecording: null });
-    expect(recorder.getState().lastSaved?.id).toBe(failed.failedRecording!.id);
+    expect(recorder.getState().lastSaved).toMatchObject({ id: failed.failedRecording!.id, channels: 2 });
     expect(noted).toEqual([failed.failedRecording!.id]);
     expect(onPhone.map((recording) => recording.id)).toEqual([failed.failedRecording!.id]);
   });
@@ -1098,6 +1232,34 @@ describe("voice-note recorder controller", () => {
     expect(recorder.getState()).toMatchObject({ outcome: "saved", error: null });
     expect(pendingStore.snapshot().running).toBe(false);
     detach();
+  });
+
+  test("Private starts at the row boundary while audio remains stalled", async () => {
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1,
+      transcriber: "private-cloud", identifySpeakers: false });
+    let release!: () => void;
+    const audioWaiting = new Promise<void>((resolve) => { release = resolve; });
+    const pipeline: VoiceNotePipeline = {
+      process: async (_ctx, _id, _trigger, onRowCreated) => {
+        onRowCreated?.();
+        await audioWaiting;
+      },
+      reconcileAll: async () => {}, cancelAll: () => {}, resume: () => {},
+      isAccepting: () => true, quiescent: async () => true,
+    };
+    const recorder = controller({ pipeline });
+    const detach = recorder.attach();
+    try {
+      await tick();
+      await recorder.record();
+      await recorder.stop();
+      await tick();
+      expect(noted).toEqual([onPhone[0]!.id]);
+      expect(recorder.getState()).toMatchObject({ outcome: "local", localUpload: "uploading" });
+      release();
+      await tick();
+      expect(noted).toEqual([onPhone[0]!.id]);
+    } finally { release(); detach(); }
   });
 
   test("Save now reports an unavailable fresh sign-in client instead of silently refreshing", async () => {
@@ -1182,7 +1344,7 @@ describe("voice-note recorder controller", () => {
     await Promise.all([first, doubleTap]);
     expect(reconcileRuns).toBe(1);
     expect(pendingStore.snapshot()).toMatchObject({ running: false, listing: { state: "ok", count: 1 } });
-    expect(pendingStore.snapshot().lastError).toContain("saving it is taking too long");
+    expect(pendingStore.snapshot().lastError).toContain("Saving to your TinyCloud space is slow");
     setVoiceNoteSaveDeadlineForTests(null);
     pendingStore.setAccount(null);
     detach();
@@ -1301,7 +1463,7 @@ describe("voice-note recorder controller", () => {
     outcomes.shift()!.reject(new Error("space timed out"));
     await saving;
     expect(pendingStore.snapshot()).toMatchObject({ accountDid: tcw.did,
-      lastError: "Could not save notes on this phone: space timed out" });
+      lastError: "Saving to your TinyCloud space is slow. The note is safe on this browser. Try again." });
     pendingStore.setAccount(null);
     detach();
   });
@@ -1340,6 +1502,39 @@ const hostContainer = () => ({ nodeType: 1, nodeName: "DIV", tagName: "DIV", own
   textContent: "", addEventListener() {}, removeEventListener() {}, appendChild() {}, removeChild() {}, insertBefore() {} }) as unknown as HTMLElement;
 const hostWindow = () => ({ HTMLIFrameElement: class {}, document: hostDocument,
   addEventListener() {}, removeEventListener() {}, setTimeout, clearTimeout });
+  test("RecorderProvider keeps the idle native unconfirmed indicator mounted across navigation until native false", async () => {
+    const restoreDom = installDom();
+    const base = plugin;
+    let unconfirmed = true;
+    __setVoiceNotesForTests({ ...base, async status() {
+      return { ...(await base.status()), captureSourceUnconfirmed: unconfirmed };
+    } }, { available: true });
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    let recorder: RecorderValue | null = null;
+    function Probe({ route }: { route: string }) { recorder = useRecorder(); return createElement("div", { "data-route": route }); }
+    try {
+      await act(async () => root.render(createElement(RecorderProvider, { tcw },
+        createElement(Probe, { route: "capture" }), createElement(CaptureSourceUnconfirmedIndicator))));
+      await act(async () => { await tick(); await tick(); });
+      expect(container.querySelector('[data-testid="capture-source-unconfirmed"]')).not.toBeNull();
+      await act(async () => root.render(createElement(RecorderProvider, { tcw },
+        createElement(Probe, { route: "library" }), createElement(CaptureSourceUnconfirmedIndicator))));
+      expect(container.querySelector('[data-route="library"]')).not.toBeNull();
+      expect(container.querySelector('[data-testid="capture-source-unconfirmed"]')).not.toBeNull();
+      unconfirmed = false;
+      fake.emit("micState", { state: "idle", reason: null, id: null, audioMs: 0,
+        captureSourceUnconfirmed: false });
+      await act(async () => { await tick(); });
+      expect(container.querySelector('[data-testid="capture-source-unconfirmed"]')).toBeNull();
+      expect(recorder?.captureSourceUnconfirmed).toBe(false);
+    } finally {
+      await act(async () => root.unmount());
+      restoreDom();
+    }
+  });
+
 
   test("RecorderProvider with the App pipeline emits once for Save now and once for a new Stop", async () => {
     const previousWindow = globalThis.window;
@@ -1386,7 +1581,7 @@ const hostWindow = () => ({ HTMLIFrameElement: class {}, document: hostDocument,
     function Probe() { recorder = useRecorder(); return null; }
     try {
       fakeVoiceNoteStore.save = fails;
-      await act(async () => root.render(createElement(RecorderProvider, { tcw: account, pipeline }, createElement(Probe))));
+      await act(async () => root.render(createElement(RecorderProvider, { tcw: account, pipeline, children: createElement(Probe) })));
       await act(async () => { await tick(); await tick(); });
       await act(async () => recorder!.record());
       await act(async () => { await tick(); });
@@ -1438,7 +1633,7 @@ const hostWindow = () => ({ HTMLIFrameElement: class {}, document: hostDocument,
     }
     try {
       fakeVoiceNoteStore.save = fails;
-      await act(async () => root.render(createElement(RecorderProvider, { tcw }, createElement(Probe))));
+      await act(async () => root.render(createElement(RecorderProvider, { tcw, children: createElement(Probe) })));
       await act(async () => { await tick(); await tick(); });
       await act(async () => recorder!.record());
       await tick();
@@ -1452,8 +1647,8 @@ const hostWindow = () => ({ HTMLIFrameElement: class {}, document: hostDocument,
       expect(recorder!.lastSaved).toBeTruthy();
       expect(changed).toEqual([{ source: "exo-voice-note", sourceId: recorder!.lastSaved!.id }]);
       await act(async () => root.render(createElement(RecorderProvider, {
-        tcw, onSaved: (recording: VoiceNoteRecording) => overridden.push(recording.id),
-      }, createElement(Probe))));
+        tcw, onSaved: (recording: VoiceNoteRecording) => overridden.push(recording.id), children: createElement(Probe),
+      })));
       await act(async () => recorder!.dismissOutcome());
       await act(async () => recorder!.record());
       await tick();
@@ -1632,7 +1827,7 @@ const hostWindow = () => ({ HTMLIFrameElement: class {}, document: hostDocument,
     await recorder.record();
     await recorder.stop();
     expect(recorder.getState()).toMatchObject({
-      phase: "idle", error: "Kept on this phone. Exo will finish it automatically.",
+      phase: "idle", error: "Kept on this browser. Exo will finish it automatically.",
     });
     expect(recorder.getState().captureIssues[currentId ?? onPhone[0].id]).toEqual({ kind: "finalization_timed_out" });
     expect(onPhone).toHaveLength(1);
@@ -1788,7 +1983,7 @@ const hostWindow = () => ({ HTMLIFrameElement: class {}, document: hostDocument,
       expect(first.recorder.getState().captureIssues[recording.id]?.kind).toBe("write_failed");
       first.detach();
       const second = await attached();
-      fake.emit("recovered", { id: recording.id, recording });
+      fake.emit("recovered", { id: recording.id });
       expect(second.recorder.getState().captureIssues[recording.id]?.kind).toBe("partial_audio");
       second.detach();
       onPhone = []; // Upload removed the native sidecar; the notice is still local.
@@ -1822,7 +2017,7 @@ const hostWindow = () => ({ HTMLIFrameElement: class {}, document: hostDocument,
       recording: null, error: "finalization_timed_out",
     });
     expect(recorder.getState()).toMatchObject({
-      phase: "idle", error: "Kept on this phone. Exo will finish it automatically.",
+      phase: "idle", error: "Kept on this browser. Exo will finish it automatically.",
     });
     expect(saves).toEqual([]);
   });
@@ -1856,15 +2051,353 @@ const hostWindow = () => ({ HTMLIFrameElement: class {}, document: hostDocument,
   test("a mic event cannot hide a failed Resume", async () => {
     const base = plugin;
     __setVoiceNotesForTests({ ...base, async resume() {
-      fake.emit("micState", { id: currentId, state: "needs_user", reason: "resume_blocked" });
+      fake.emit("micState", { id: currentId, state: "needs_user", reason: "resume_blocked", at: Date.now() });
       throw Object.assign(new Error("microphone busy"), { code: "resume_failed" });
     } }, { available: true });
     const { recorder } = await attached();
     await recorder.record();
     await recorder.pause();
     await recorder.resume();
-    fake.emit("micState", { id: currentId, state: "needs_user", reason: "resume_blocked" });
+    fake.emit("micState", { id: currentId, state: "needs_user", reason: "resume_blocked", at: Date.now() });
     expect(recorder.getState()).toMatchObject({ mic: { state: "needs_user" }, error: "Could not resume: microphone busy" });
+  });
+
+  test("a no-op Pause with unreadable status stays uncertain and Stop still saves", async () => {
+    const base = plugin;
+    let rejectStatus = false;
+    __setVoiceNotesForTests({ ...base,
+      async pause() {},
+      async status() {
+        if (rejectStatus) throw new Error("status unavailable");
+        return base.status();
+      },
+    }, { available: true });
+    const { recorder } = await attached();
+    await recorder.record();
+    rejectStatus = true;
+    await recorder.pause();
+    expect(recorder.getState()).toMatchObject({
+      controlPending: null,
+      error: "Could not confirm that recording paused. Recording may still be running. Try again or stop.",
+      mic: { state: "needs_user", reason: "status_unknown" },
+    });
+    expect(selectedView(recorder)).toMatchObject({
+      statusLine: "Could not read the microphone state.",
+      tapRingAction: "resume",
+      controls: { resume: true, stop: true },
+    });
+    expect(recorder.getState().error).not.toContain("Paused");
+    rejectStatus = false;
+    await recorder.stop();
+    expect(recorder.getState().phase).toBe("idle");
+    expect(onPhone).toHaveLength(1);
+    expect(saves).toEqual([onPhone[0]!.id]);
+  });
+
+  test("writer_stalled after failed Resume offers Try again and Done; retry recovers then Stop saves", async () => {
+    const base = plugin;
+    let stalled = false;
+    let resumeCalls = 0;
+    __setVoiceNotesForTests({ ...base,
+      async pause() { paused = true; },
+      async resume() {
+        resumeCalls++;
+        if (resumeCalls === 1) {
+          stalled = true;
+          throw Object.assign(new Error("capture stop timed out"), { code: "capture_stop_timeout" });
+        }
+        stalled = false;
+        paused = false;
+      },
+      async status() {
+        const status = await base.status();
+        return stalled ? { ...status, state: "needs_user" as const, reason: "writer_stalled" as const } : status;
+      },
+    }, { available: true });
+    const { recorder } = await attached();
+    await recorder.record();
+    await recorder.pause();
+    await recorder.resume();
+    expect(recorder.getState()).toMatchObject({
+      error: "Could not resume: capture stop timed out",
+      mic: { state: "needs_user", reason: "writer_stalled" },
+      controlPending: null,
+    });
+    expect(selectedView(recorder)).toMatchObject({
+      statusLine: "The recording stopped responding. Try again, or use Done to save what was captured.",
+      tapRingAction: "resume",
+      emphasis: "stop",
+      controls: { resume: true, stop: true },
+    });
+    await recorder.resume();
+    expect(resumeCalls).toBe(2);
+    expect(recorder.getState().mic).toMatchObject({ state: "recording" });
+    await recorder.stop();
+    expect(recorder.getState().phase).toBe("idle");
+    expect(onPhone).toHaveLength(1);
+    expect(saves).toHaveLength(1);
+  });
+
+  test.each(["pause", "resume"] as const)("a rejected %s status read clears pending and exposes recovery", async (control) => {
+    const base = plugin;
+    let rejectStatus = false;
+    __setVoiceNotesForTests({ ...base,
+      async pause() { paused = true; },
+      async resume() { paused = false; },
+      async status() {
+        if (rejectStatus) throw new Error("status unavailable");
+        return base.status();
+      },
+    }, { available: true });
+    const { recorder } = await attached();
+    await recorder.record();
+    if (control === "resume") await recorder.pause();
+    rejectStatus = true;
+    await (control === "pause" ? recorder.pause() : recorder.resume());
+    expect(recorder.getState()).toMatchObject({
+      controlPending: null,
+      error: control === "pause"
+        ? "Could not confirm that recording paused. Recording may still be running. Try again or stop."
+        : "Could not confirm that recording resumed. Try again or stop.",
+      mic: { state: "needs_user", reason: "status_unknown" },
+    });
+    expect(selectedView(recorder)).toMatchObject({
+      statusLine: "Could not read the microphone state.",
+      tapRingAction: "resume",
+      controls: { resume: true, stop: true },
+    });
+  });
+
+  test.each(["pause", "resume"] as const)("a hung %s status read clears pending at the deadline", async (control) => {
+    const base = plugin;
+    let hangStatus = false;
+    let statusCalls = 0;
+    __setVoiceNotesForTests({ ...base,
+      async pause() { paused = true; },
+      async resume() { paused = false; },
+      async status() {
+        statusCalls++;
+        if (hangStatus) return new Promise<never>(() => {});
+        return base.status();
+      },
+    }, { available: true });
+    const { recorder } = await attached();
+    await recorder.record();
+    if (control === "resume") await recorder.pause();
+    statusCalls = 0;
+    hangStatus = true;
+    const originalSetTimeout = globalThis.setTimeout;
+    let deadline: (() => void) | undefined;
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    globalThis.setTimeout = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
+      if (timeout === 45_000 && typeof handler === "function") {
+        timeoutHandle = originalSetTimeout(() => {}, 60_000);
+        deadline = () => handler(...args);
+        return timeoutHandle;
+      }
+      return originalSetTimeout(handler, timeout, ...args);
+    }) as typeof setTimeout;
+    const action = control === "pause" ? recorder.pause() : recorder.resume();
+    try {
+      for (let attempt = 0; attempt < 20 && statusCalls === 0; attempt++) await Promise.resolve();
+      expect(statusCalls).toBe(1);
+      expect(deadline).toBeDefined();
+      deadline!();
+      await action;
+    } finally {
+      globalThis.setTimeout = originalSetTimeout;
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+    }
+    expect(recorder.getState()).toMatchObject({
+      controlPending: null,
+      error: control === "pause"
+        ? "Could not confirm that recording paused. Recording may still be running. Try again or stop."
+        : "Could not confirm that recording resumed. Try again or stop.",
+      mic: { state: "needs_user", reason: "status_unknown" },
+    });
+    expect(selectedView(recorder)).toMatchObject({
+      statusLine: "Could not read the microphone state.",
+      tapRingAction: "resume",
+      controls: { resume: true, stop: true },
+    });
+  });
+
+  test.each(["pause", "resume"] as const)("a hung native %s clears pending at the deadline", async (control) => {
+    const base = plugin;
+    __setVoiceNotesForTests({ ...base,
+      async pause() { if (control === "pause") return new Promise<void>(() => {}); paused = true; },
+      async resume() { if (control === "resume") return new Promise<void>(() => {}); paused = false; },
+    }, { available: true });
+    const { recorder } = await attached();
+    await recorder.record();
+    if (control === "resume") await recorder.pause();
+    const originalSetTimeout = globalThis.setTimeout;
+    let deadline: (() => void) | undefined;
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    globalThis.setTimeout = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
+      if (timeout === 45_000 && typeof handler === "function") {
+        timeoutHandle = originalSetTimeout(() => {}, 60_000);
+        deadline = () => handler(...args);
+        return timeoutHandle;
+      }
+      return originalSetTimeout(handler, timeout, ...args);
+    }) as typeof setTimeout;
+    const action = control === "pause" ? recorder.pause() : recorder.resume();
+    try {
+      expect(recorder.getState().controlPending).toBe(control);
+      expect(deadline).toBeDefined();
+      deadline!();
+      await action;
+    } finally {
+      globalThis.setTimeout = originalSetTimeout;
+      clearTimeout(timeoutHandle);
+    }
+    expect(recorder.getState()).toMatchObject({ controlPending: null, mic: { state: "needs_user", reason: "status_unknown" } });
+  });
+
+  test("a status result arriving after the deadline cannot overwrite uncertain state", async () => {
+    const base = plugin;
+    let releaseStatus!: (status: Awaited<ReturnType<typeof base.status>>) => void;
+    let hangStatus = false;
+    __setVoiceNotesForTests({ ...base,
+      async pause() { paused = true; },
+      async status() {
+        if (hangStatus) return new Promise<Awaited<ReturnType<typeof base.status>>>((resolve) => { releaseStatus = resolve; });
+        return base.status();
+      },
+    }, { available: true });
+    const { recorder } = await attached();
+    await recorder.record();
+    hangStatus = true;
+    const originalSetTimeout = globalThis.setTimeout;
+    let deadline: (() => void) | undefined;
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    globalThis.setTimeout = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
+      if (timeout === 45_000 && typeof handler === "function") {
+        timeoutHandle = originalSetTimeout(() => {}, 60_000);
+        deadline = () => handler(...args);
+        return timeoutHandle;
+      }
+      return originalSetTimeout(handler, timeout, ...args);
+    }) as typeof setTimeout;
+    const action = recorder.pause();
+    try {
+      for (let attempt = 0; attempt < 20 && !releaseStatus; attempt++) await Promise.resolve();
+      expect(deadline).toBeDefined();
+      deadline!();
+      await action;
+      releaseStatus(await base.status());
+      for (let attempt = 0; attempt < 10; attempt++) await Promise.resolve();
+    } finally {
+      globalThis.setTimeout = originalSetTimeout;
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+    }
+    expect(recorder.getState()).toMatchObject({
+      controlPending: null,
+      mic: { state: "needs_user", reason: "status_unknown" },
+      error: "Could not confirm that recording paused. Recording may still be running. Try again or stop.",
+    });
+  });
+
+  test("a late status from an older control cannot overwrite a newer operation", async () => {
+    const base = plugin;
+    let hangOld = false;
+    let releaseOld!: (status: Awaited<ReturnType<typeof base.status>>) => void;
+    __setVoiceNotesForTests({ ...base,
+      async pause() { paused = true; },
+      async resume() { paused = false; },
+      async status() {
+        if (hangOld) {
+          hangOld = false;
+          return new Promise<Awaited<ReturnType<typeof base.status>>>((resolve) => { releaseOld = resolve; });
+        }
+        return base.status();
+      },
+    }, { available: true });
+    const { recorder } = await attached();
+    await recorder.record();
+    const originalSetTimeout = globalThis.setTimeout;
+    let deadline: (() => void) | undefined;
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    globalThis.setTimeout = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
+      if (timeout === 45_000 && typeof handler === "function") {
+        timeoutHandle = originalSetTimeout(() => {}, 60_000);
+        deadline = () => handler(...args);
+        return timeoutHandle;
+      }
+      return originalSetTimeout(handler, timeout, ...args);
+    }) as typeof setTimeout;
+    try {
+      hangOld = true;
+      const oldPause = recorder.pause();
+      for (let attempt = 0; attempt < 20 && !releaseOld; attempt++) await Promise.resolve();
+      deadline!();
+      await oldPause;
+      await recorder.resume();
+      expect(recorder.getState()).toMatchObject({ controlPending: null, mic: { state: "recording" } });
+      releaseOld({ ...(await base.status()), state: "paused", reason: "user" });
+      for (let attempt = 0; attempt < 10; attempt++) await Promise.resolve();
+      expect(recorder.getState()).toMatchObject({ mic: { state: "recording" } });
+    } finally {
+      globalThis.setTimeout = originalSetTimeout;
+      clearTimeout(timeoutHandle);
+    }
+  });
+
+  test("when Pause fails, Stop succeeds and commits captured audio", async () => {
+    const base = plugin;
+    let failedPause = true;
+    __setVoiceNotesForTests({ ...base,
+      async pause() {
+        if (failedPause) throw Object.assign(new Error("capture stop timed out"), { code: "capture_stop_timeout" });
+        paused = true;
+      },
+      async stop() {
+        failedPause = false;
+        return stopNatively();
+      },
+      async status() {
+        const status = await base.status();
+        return failedPause ? { ...status, state: "needs_user" as const, reason: "writer_stalled" as const } : status;
+      },
+    }, { available: true });
+    const { recorder } = await attached();
+    await recorder.record();
+    await recorder.pause();
+    expect(recorder.getState().mic).toMatchObject({ state: "needs_user", reason: "writer_stalled" });
+    await recorder.stop();
+    expect(recorder.getState().phase).toBe("idle");
+    expect(onPhone).toHaveLength(1);
+    expect(saves).toHaveLength(1);
+  });
+
+  test("a Pause that throws after the native capture paused reconciles to paused", async () => {
+    const base = plugin;
+    __setVoiceNotesForTests({ ...base,
+      async pause() {
+        paused = true;
+        throw Object.assign(new Error("capture stop timed out"), { code: "capture_stop_timeout" });
+      },
+    }, { available: true });
+    const { recorder } = await attached();
+    await recorder.record();
+    await recorder.pause();
+    expect(recorder.getState()).toMatchObject({ error: "Could not pause: capture stop timed out", mic: { state: "paused" } });
+    expect(recorder.getState().controlPending).toBeFalsy();
+  });
+
+  test("a failed Resume reconciles to the native paused state instead of sticking", async () => {
+    const base = plugin;
+    __setVoiceNotesForTests({ ...base,
+      async pause() { paused = true; },
+      async resume() { throw Object.assign(new Error("audio session busy"), { code: "resume_failed" }); },
+    }, { available: true });
+    const { recorder } = await attached();
+    await recorder.record();
+    await recorder.pause();
+    await recorder.resume();
+    expect(recorder.getState()).toMatchObject({ error: "Could not resume: audio session busy", mic: { state: "paused" } });
+    expect(recorder.getState().controlPending).toBeFalsy();
   });
 
   test("discard racing the limit's auto-stop: discard first deletes it, the limit first saves it", async () => {
@@ -1904,7 +2437,7 @@ const hostWindow = () => ({ HTMLIFrameElement: class {}, document: hostDocument,
     await recorder.record();
     await stopNatively();
     await recorder.discard();
-    expect(recorder.getState()).toMatchObject({ phase: "idle", outcome: null, error: "Discarded, but this phone kept its copy: the file is busy" });
+    expect(recorder.getState()).toMatchObject({ phase: "idle", outcome: null, error: "Discarded, but this browser kept its copy: the file is busy" });
     const kept = onPhone[0]!;
     expect(isDiscarded(kept.id)).toBe(true);
 
@@ -1930,8 +2463,11 @@ const hostWindow = () => ({ HTMLIFrameElement: class {}, document: hostDocument,
         const enclaveJobs: string[] = [];
         const transcriber = createVoiceNoteTranscriber({
           cloud: {
-            capabilities: async () => ({ max_bytes: 120_960_000, max_duration_seconds: 7_200, content_types: ["audio/mp4"] }),
+            capabilities: async () => ({ max_bytes: 120_960_000, max_duration_seconds: PRIVATE_MAX_DURATION_SECONDS, content_types: ["audio/mp4"], admission: "open" }),
             pendingSourceIds: () => [],
+            hasRemoteJob: () => false,
+            holdTranscript: () => {},
+            heldTranscript: () => null,
             transcribe: async () => { throw new Error("runNote is injected"); },
             finish: async () => {},
             releaseUnsent: async () => {},
@@ -2200,8 +2736,11 @@ const hostWindow = () => ({ HTMLIFrameElement: class {}, document: hostDocument,
           const enclaveJobs: string[] = [];
           const transcriber = createVoiceNoteTranscriber({
             cloud: {
-              capabilities: async () => ({ max_bytes: 120_960_000, max_duration_seconds: 7_200, content_types: ["audio/mp4"] }),
+              capabilities: async () => ({ max_bytes: 120_960_000, max_duration_seconds: PRIVATE_MAX_DURATION_SECONDS, content_types: ["audio/mp4"], admission: "open" }),
               pendingSourceIds: () => [],
+              hasRemoteJob: () => false,
+              holdTranscript: () => {},
+              heldTranscript: () => null,
               transcribe: async () => { throw new Error("runNote is injected"); },
               finish: async () => {},
               releaseUnsent: async () => {},
@@ -2256,7 +2795,7 @@ const hostWindow = () => ({ HTMLIFrameElement: class {}, document: hostDocument,
       await tick();
       expect(await recorder.setTranscriber("private-cloud", { scope: "default" })).toBe("ok");
 
-      // The engine takes On this phone, then holds the reply while the sign-in default write arrives.
+      // The engine takes On this browser, then holds the reply while the sign-in default write arrives.
       let release!: () => void;
       const held = new Promise<void>((resolve) => { release = resolve; });
       __setVoiceNotesForTests({ ...plugin, async setCaptureDefaults(defaults) {
@@ -2352,8 +2891,11 @@ const hostWindow = () => ({ HTMLIFrameElement: class {}, document: hostDocument,
         const jobs: string[] = [];
         const real = createVoiceNoteTranscriber({
           cloud: {
-            capabilities: async () => ({ max_bytes: 120_960_000, max_duration_seconds: 7_200, content_types: ["audio/mp4"] }),
+            capabilities: async () => ({ max_bytes: 120_960_000, max_duration_seconds: PRIVATE_MAX_DURATION_SECONDS, content_types: ["audio/mp4"], admission: "open" }),
             pendingSourceIds: () => [],
+            hasRemoteJob: () => false,
+            holdTranscript: () => {},
+            heldTranscript: () => null,
             transcribe: async () => { throw new Error("runNote is injected"); },
             finish: async () => {},
             releaseUnsent: async () => {},
@@ -2468,8 +3010,11 @@ const hostWindow = () => ({ HTMLIFrameElement: class {}, document: hostDocument,
         const jobs: string[] = [];
         const real = createVoiceNoteTranscriber({
           cloud: {
-            capabilities: async () => ({ max_bytes: 120_960_000, max_duration_seconds: 7_200, content_types: ["audio/mp4"] }),
+            capabilities: async () => ({ max_bytes: 120_960_000, max_duration_seconds: PRIVATE_MAX_DURATION_SECONDS, content_types: ["audio/mp4"], admission: "open" }),
             pendingSourceIds: () => [],
+            hasRemoteJob: () => false,
+            holdTranscript: () => {},
+            heldTranscript: () => null,
             transcribe: async () => { throw new Error("runNote is injected"); },
             finish: async () => {},
             releaseUnsent: async () => {},
@@ -2737,5 +3282,78 @@ const hostWindow = () => ({ HTMLIFrameElement: class {}, document: hostDocument,
       expect(ready.getTranscriber()).toEqual({ id: "on-device", identifySpeakers: false, source: "default" });
       detachReady();
     });
+  });
+});
+
+describe("Settings → Stop recording after reaches VoiceNotes.start", () => {
+  const HOUR = 60 * 60_000;
+  let previous: PropertyDescriptor | undefined;
+  let values: Map<string, string>;
+  let requested: (number | undefined)[];
+
+  beforeEach(() => {
+    previous = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+    values = new Map();
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, value); },
+      removeItem: (key: string) => { values.delete(key); },
+    } });
+    requested = [];
+    const base = plugin;
+    __setVoiceNotesForTests({ ...base, async start(options) { requested.push(options?.maxDurationMs); return base.start(options); } }, { available: true });
+  });
+  afterEach(() => {
+    if (previous) Object.defineProperty(globalThis, "localStorage", previous);
+    else Reflect.deleteProperty(globalThis, "localStorage");
+  });
+
+  async function recordOnce(): Promise<number> {
+    const { recorder, detach } = await attached();
+    await recorder.record();
+    const shown = recorder.getState().maxDurationMs;
+    await recorder.stop();
+    await settled(() => recorder.getState().phase === "idle", "the stop");
+    detach();
+    return shown;
+  }
+
+  test("the 1-hour default, each choice, Off as the 3-hour limit, and an unknown value as the default", async () => {
+    expect(await recordOnce()).toBe(HOUR);
+    for (const [stored, ms] of [["15", 15 * 60_000], ["30", 30 * 60_000], ["60", HOUR], ["120", 2 * HOUR], ["off", 3 * HOUR], ["45", HOUR], ["", HOUR]] as const) {
+      values.set("exo.voiceNotes.stopAfter", stored);
+      expect(await recordOnce()).toBe(ms);
+    }
+    expect(requested).toEqual([HOUR, 15 * 60_000, 30 * 60_000, HOUR, 2 * HOUR, 3 * HOUR, HOUR, HOUR]);
+  });
+
+  test("the test override can only lower the limit", async () => {
+    values.set("exo.voiceNotes.stopAfter", "off");
+    values.set("exo.voiceNotes.maxDurationMs", "90000");
+    await recordOnce();
+    values.set("exo.voiceNotes.stopAfter", "15");
+    values.set("exo.voiceNotes.maxDurationMs", String(5 * HOUR));
+    await recordOnce();
+    expect(requested).toEqual([90_000, 15 * 60_000]);
+  });
+
+  test("stopped at a 1-hour limit: the notice names it and the state keeps the limit for the notification", async () => {
+    const { recorder, detach } = await attached();
+    await recorder.record();
+    const recording = await stopNatively();
+    fake.emit("autoStopped", { reason: "max_duration", maxDurationMs: HOUR, at: Date.now(), recording });
+    await settled(() => recorder.getState().phase === "idle", "the save");
+    expect(recorder.getState()).toMatchObject({ limitNotice: "Stopped at the 1-hour limit.", limitStopMs: HOUR });
+    detach();
+  });
+
+  test("another reason for an automatic stop is not the limit", async () => {
+    const { recorder, detach } = await attached();
+    await recorder.record();
+    const recording = await stopNatively();
+    fake.emit("autoStopped", { reason: "disk_full", maxDurationMs: HOUR, at: Date.now(), recording });
+    await settled(() => recorder.getState().phase === "idle", "the save");
+    expect(recorder.getState()).toMatchObject({ limitNotice: "Recording stopped because device storage is full.", limitStopMs: null });
+    detach();
   });
 });

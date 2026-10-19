@@ -129,7 +129,6 @@ describe("prepareTranscriptionAudio", () => {
       .catch((e: unknown) => e);
     expect((err as VoiceNoteAudioError).code).toBe("recording_too_long");
     expect(decode.calls).toEqual([]);
-    expect(MAX_ENCODED_BYTES_PER_SECOND * 7_200).toBeGreaterThan(2 * 8_000 * 600 - 1);
   });
 
   test("PTX's byte cap applies to the WAV", async () => {

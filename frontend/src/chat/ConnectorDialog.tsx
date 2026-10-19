@@ -102,12 +102,24 @@ import { appPlatform } from "@/lib/platform";
 import { cancelDesktopGoogleOAuth, encodeDesktopRefreshToken, googleRefreshGrant, startDesktopGoogleOAuth } from "@/lib/connectors/googleOAuthDesktop";
 import { clearSameTabReturn, pendingSameTabReturn, sameTabState, saveSameTabVerifier } from "@/lib/connectors/googleOAuthSameTab";
 import {
+  isGmeetNotesSyncInFlight,
+  onGmeetNotesProgress,
+  onGmeetNotesSettled,
   syncGoogleMeet,
+  type GmeetNotesSettled,
   type GmeetSyncError,
   type GmeetSyncProgress,
   type GmeetSyncStore,
   type GmeetSyncSummary,
 } from "@/lib/connectors/gmeetSync";
+import {
+  createGmeetSyncLogRecorder,
+  gmeetSyncProgressPercent,
+  summarizeGmeetSyncResult,
+  type GmeetSyncLogRecorder,
+  type GmeetSyncStage,
+} from "@/lib/connectors/gmeetSyncLog";
+import { resolveBuildInfo } from "@/lib/buildInfo";
 import {
   GOOGLE_MEET_CONSENT_COPY,
   GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY,
@@ -688,6 +700,7 @@ type OAuthConnectPhase =
   | "exchange"
   | "save-token"
   | "initial-sync"
+  | "finishing"
   | "done"
   | "error";
 
@@ -717,6 +730,8 @@ interface OAuthErrorState {
     | "no-access"
     | "slow-down"
     | "no-refresh-token"
+    /** Sync finished without any connector_state row: the card cannot show it connected. */
+    | "connection-not-saved"
     | "storage"
     | "network"
     | "unknown";
@@ -744,6 +759,9 @@ const GMEET_STORE: GmeetSyncStore = {
   findGmeetNotesAssociation: connectorStore.findGmeetNotesAssociation,
   attachGmeetNotes: connectorStore.attachGmeetNotes,
   removeGmeetNotes: connectorStore.removeGmeetNotes,
+  loadGmeetNotesIndex: connectorStore.loadGmeetNotesIndex,
+  getDriveProgress: connectorStore.getDriveProgress,
+  putDriveProgress: connectorStore.putDriveProgress,
 };
 
 const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
@@ -765,6 +783,14 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
   const [error, setError] = useState<OAuthErrorState | null>(null);
   const [progress, setProgress] = useState<GmeetSyncProgress | null>(null);
   const [summary, setSummary] = useState<GmeetSyncSummary | null>(null);
+  // The run's client-side log (counters only, see gmeetSyncLog.ts) and the
+  // bar's running-maximum percentage. Both reset with the dialog.
+  const [syncLog, setSyncLog] = useState<GmeetSyncLogRecorder | null>(null);
+  const [syncPercent, setSyncPercent] = useState(0);
+  const [buildLabel, setBuildLabel] = useState<string | null>(null);
+  const [notesProgress, setNotesProgress] = useState<GmeetSyncProgress | null>(null);
+  const [notesSettled, setNotesSettled] = useState<GmeetNotesSettled | null>(null);
+  const [canRetrySync, setCanRetrySync] = useState(false);
   const [autoTranscription, setAutoTranscription] = useState<AutoTranscriptionState>({
     status: "idle",
   });
@@ -781,6 +807,8 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
   const accessTokenRef = useRef<string | null>(null);
   const refreshTokenRef = useRef<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  // Unsubscribes from the deferred Notes reconcile's live progress and outcome.
+  const stopNotesWatchRef = useRef<(() => void) | null>(null);
   // Native app only: the system-browser attempt in flight (the popup's twin).
   const nativeAttemptRef = useRef<NativeOAuthAttempt | null>(null);
   // Native app only: bumped by every new click, cancel, reset and unmount. An
@@ -813,6 +841,11 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
     setError(null);
     setProgress(null);
     setSummary(null);
+    setSyncLog(null);
+    setSyncPercent(0);
+    setNotesProgress(null);
+    setNotesSettled(null);
+    setCanRetrySync(false);
     setAutoTranscription({ status: "idle" });
     setCustodyConsent(false);
     setMeetingCode("");
@@ -823,6 +856,8 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
     refreshTokenRef.current = null;
     codeHandledRef.current = false;
     abortRef.current = null;
+    stopNotesWatchRef.current?.();
+    stopNotesWatchRef.current = null;
   }, [cancelNativeAttempt, closePopup]);
 
   // Same contract as the API-key machine: a closed dialog holds no state, and
@@ -831,14 +866,30 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
     if (!open) reset();
   }, [open, reset]);
 
+  // Build provenance for the copied sync log, resolved ahead of the click so
+  // the clipboard write stays inside the user gesture.
+  useEffect(() => {
+    let cancelled = false;
+    resolveBuildInfo(appPlatform()).then(
+      (label) => { if (!cancelled) setBuildLabel(label); },
+      () => {},
+    );
+    return () => { cancelled = true; };
+  }, []);
+
   // An unmount mid-attempt must not leave native listeners behind.
   useEffect(() => () => {
+    stopNotesWatchRef.current?.();
+    stopNotesWatchRef.current = null;
+    const sync = abortRef.current;
+    abortRef.current = null;
+    sync?.abort();
     cancelNativeAttempt();
     if (appPlatform() === "tauri") cancelDesktopGoogleOAuth();
   }, [cancelNativeAttempt]);
 
   const busy =
-    phase === "exchange" || phase === "save-token" || phase === "initial-sync";
+    phase === "exchange" || phase === "save-token" || phase === "initial-sync" || phase === "finishing";
   // Inside the Exo app: the system browser, or (while this build keeps it off) an
   // explanation in place of "Continue with Google". Never a popup there. Native
   // OpenKey sessions have no vault to hold the refresh token, so the surface is
@@ -869,6 +920,126 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
     setError(next);
     setPhase("error");
   }, []);
+
+  const runInitialSync = useCallback(async (accessToken: string, refreshToken: string) => {
+    setPhase("initial-sync");
+    setError(null);
+    setProgress(null);
+    setSummary(null);
+    const recorder = createGmeetSyncLogRecorder();
+    setSyncLog(recorder);
+    // Subscribed now, not in an effect: a fast engine can start the background
+    // reconcile before React flushes a passive effect, and its first counts would be lost.
+    stopNotesWatchRef.current?.();
+    const stopProgress = onGmeetNotesProgress((next) => {
+      recorder.record(next);
+      setNotesProgress(next);
+    });
+    const stopSettled = onGmeetNotesSettled((outcome) => {
+      recorder.setDiagnostics(outcome.diagnostics);
+      recorder.setNotesOutcome(outcome);
+      setNotesSettled(outcome);
+    });
+    stopNotesWatchRef.current = () => { stopProgress(); stopSettled(); };
+    setSyncPercent(0);
+    setNotesProgress(null);
+    setNotesSettled(null);
+    const ac = new AbortController();
+    abortRef.current = ac;
+    // Notes by Gemini keep reconciling after this dialog is done and closed, so
+    // the client they run on must not be cut by the dialog's own abort. Until the
+    // engine hands the Notes off, Stop / close reach the client as before.
+    const clientAc = new AbortController();
+    let notesHandedOff = false;
+    const forwardAbort = () => { if (!notesHandedOff) clientAc.abort(); };
+    ac.signal.addEventListener("abort", forwardAbort, { once: true });
+    let notification: Promise<void> | undefined;
+    const notifyOnce = () => {
+      if (notification) return notification;
+      let cleanup: (() => void) | undefined;
+      notification = new Promise<void>((resolve, reject) => {
+        const stop = () => reject(new Error("Google Meet completion was stopped."));
+        const timer = setTimeout(() => reject(new Error("Google Meet completion timed out.")), 10_000);
+        ac.signal.addEventListener("abort", stop, { once: true });
+        cleanup = () => {
+          clearTimeout(timer);
+          ac.signal.removeEventListener("abort", stop);
+        };
+        Promise.resolve().then(() => {
+          if (abortRef.current !== ac || ac.signal.aborted) throw new Error("Google Meet completion was stopped.");
+          return onConnected();
+        }).then(resolve, reject);
+      }).finally(() => cleanup?.());
+      return notification;
+    };
+    try {
+      const client = new GmeetClient({
+        accessToken,
+        refreshAccessToken: () => mintGmeetAccessToken({
+          backendUrl, sessionStore, refreshToken, signal: clientAc.signal,
+        }),
+        signal: clientAc.signal,
+      });
+      const res = await syncGoogleMeet({
+        client, store: GMEET_STORE, tcw, signal: ac.signal,
+        deferNotes: true,
+        onDiagnostics: (diagnostics) => recorder.setDiagnostics(diagnostics),
+        onProgress: (next) => {
+          if (abortRef.current !== ac || ac.signal.aborted) return;
+          recorder.record(next);
+          setSyncPercent((previous) => Math.max(previous, gmeetSyncProgressPercent(next)));
+          setProgress(next);
+          if (next.type === "status" && next.message === "finishing") setPhase("finishing");
+          // Owners notify inside the engine deadline; joiners use the same
+          // bounded notification after receiving the shared flight's result.
+          if (next.type === "complete" || next.type === "error") {
+            return notifyOnce();
+          }
+        },
+      });
+      notesHandedOff = res.ok && res.data.notesDeferred === true;
+      if (abortRef.current !== ac) return;
+      recorder.setResult(summarizeGmeetSyncResult(res));
+      setPhase("finishing");
+      await notifyOnce();
+      if (abortRef.current !== ac) return;
+      if (!res.ok) {
+        if (res.connectionSaved === false) {
+          // No connector_state row exists, so the card will not show Google Meet as
+          // connected: never claim the connection is kept, offer to connect again.
+          setCanRetrySync(false);
+          failWith({ kind: "connection-not-saved", message: "" });
+          return;
+        }
+        failWith(fromGmeetSyncError(res.error));
+        return;
+      }
+      if (res.data.aborted || ac.signal.aborted) {
+        failWith({ kind: "network", message: "Sync was stopped. Saved meetings are kept. Retry to finish syncing." });
+        return;
+      }
+      setSummary(res.data);
+      setPhase("done");
+    } catch {
+      if (abortRef.current === ac) {
+        recorder.setResult({ kind: "unknown", connectionSaved: null, notesDeferred: false });
+        await notifyOnce().catch(() => {});
+      }
+      if (abortRef.current === ac) {
+        failWith({ kind: "unknown", message: "Saved meetings are kept. Retry to finish syncing." });
+      }
+    } finally {
+      if (abortRef.current === ac) abortRef.current = null;
+      ac.abort();
+    }
+  }, [backendUrl, failWith, onConnected, sessionStore, tcw]);
+
+  const handleRetrySync = useCallback(() => {
+    const accessToken = accessTokenRef.current;
+    const refreshToken = refreshTokenRef.current;
+    if (!canRetrySync || accessToken === null || refreshToken === null || abortRef.current !== null) return;
+    void runInitialSync(accessToken, refreshToken);
+  }, [canRetrySync, runInitialSync]);
 
   /** save-token → initial-sync. Reached only with both tokens in hand. */
   const saveAndSync = useCallback(
@@ -911,41 +1082,10 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
         } catch { failWith({ kind: "network", message: "" }); return; }
       }
 
-      setPhase("initial-sync");
-      setProgress(null);
-      const ac = new AbortController();
-      abortRef.current = ac;
-      const client = new GmeetClient({
-        accessToken,
-        // One 401 re-mints through the authenticated proxy — the refresh token
-        // never leaves this scope, and the new access token stays in the client.
-        refreshAccessToken: () =>
-          mintGmeetAccessToken({
-            backendUrl,
-            sessionStore,
-            refreshToken: storedRefreshToken,
-            signal: ac.signal,
-          }),
-        signal: ac.signal,
-      });
-      const res = await syncGoogleMeet({
-        client,
-        store: GMEET_STORE,
-        tcw,
-        onProgress: setProgress,
-        signal: ac.signal,
-      });
-      abortRef.current = null;
-      // The engine wrote the connector row either way — refresh the card.
-      onConnected();
-      if (!res.ok) {
-        failWith(fromGmeetSyncError(res.error));
-        return;
-      }
-      setSummary(res.data);
-      setPhase("done");
+      setCanRetrySync(true);
+      await runInitialSync(accessToken, storedRefreshToken);
     },
-    [autojoin, backendUrl, descriptor, failWith, onConnected, sessionStore, tcw],
+    [autojoin, backendUrl, descriptor, failWith, onConnected, runInitialSync, sessionStore, tcw],
   );
 
   /**
@@ -1372,10 +1512,22 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
         {phase === "save-token" && (
           <OAuthStepPanel label="Saving your Google connection to encrypted secrets…" />
         )}
-        {phase === "initial-sync" && <GmeetSyncingPanel progress={progress} />}
+        {(phase === "initial-sync" || phase === "finishing") && (
+          <GmeetSyncingPanel
+            progress={progress}
+            finishing={phase === "finishing"}
+            percent={syncPercent}
+            startedAt={syncLog?.startedAt ?? null}
+          />
+        )}
         {phase === "done" && summary && (
           <GmeetDonePanel
             summary={summary}
+            notes={{
+              running: notesSettled === null && isGmeetNotesSyncInFlight(),
+              progress: notesProgress,
+              settled: notesSettled,
+            }}
             autoTranscription={autoTranscription}
             meetingCode={meetingCode}
             onMeetingCodeChange={setMeetingCode}
@@ -1383,7 +1535,10 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
             onDecline={() => setAutoTranscription({ status: "declined" })}
           />
         )}
-        {phase === "error" && error && <OAuthFailedPanel error={error} />}
+        {phase === "error" && error && <OAuthFailedPanel error={error} canRetrySync={canRetrySync} />}
+        {syncLog && (phase === "initial-sync" || phase === "finishing" || phase === "done" || phase === "error") && (
+          <CopySyncLogButton log={syncLog} build={buildLabel} />
+        )}
 
         <OAuthConnectFooter
           phase={phase}
@@ -1394,6 +1549,7 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
           onCancelAuthorize={handleCancelAuthorize}
           onClose={handleClose}
           onStopSync={handleStopSync}
+          onRetrySync={canRetrySync ? handleRetrySync : undefined}
         />
       </DialogContent>
     </Dialog>
@@ -1469,41 +1625,163 @@ const OAuthStepPanel: FC<{ label: string }> = ({ label }) => (
   </div>
 );
 
-const GmeetSyncingPanel: FC<{ progress: GmeetSyncProgress | null }> = ({
-  progress,
-}) => {
+const GMEET_STAGE_LABEL: Record<GmeetSyncStage, string> = {
+  meetings: "Checking meetings",
+  "notes-listing": "Listing Docs in Drive",
+  notes: "Reconciling Notes by Gemini",
+  saving: "Saving sync state",
+};
+
+/** Whole seconds since `startedAt`, re-read every second. Reads Date.now() on
+ *  each tick, so it follows the clock whatever the timer implementation. */
+function useElapsedSeconds(startedAt: number | null): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (startedAt === null) return;
+    setNow(Date.now());
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [startedAt]);
+  return startedAt === null ? 0 : Math.max(0, Math.floor((now - startedAt) / 1000));
+}
+
+const GmeetSyncingPanel: FC<{
+  progress: GmeetSyncProgress | null;
+  finishing?: boolean;
+  /** Running-maximum percentage (gmeetSyncProgressPercent), so the bar never steps back. */
+  percent: number;
+  startedAt: number | null;
+}> = ({ progress, finishing = false, percent, startedAt }) => {
+  const elapsedSeconds = useElapsedSeconds(startedAt);
   const total = progress?.total ?? null;
   const current = progress?.current ?? 0;
-  const label =
-    progress === null || progress.type === "status"
+  const stage: GmeetSyncStage = progress?.stage ?? "meetings";
+  const label = finishing
+    ? "Finishing…"
+    : progress === null || progress.type === "status"
       ? "Looking for Google Meet recordings…"
       : total !== null && total > 0
         ? `Checking ${current}/${total} meetings…`
         : total === 0
           ? "No Google Meet recordings in the last 30 days."
           : "Syncing meetings…";
-  const pct = total !== null && total > 0 ? Math.round((current / total) * 100) : null;
+  const showBar = finishing || (total !== null && total > 0);
+  const notesTotal = progress?.notesTotal;
   return (
     <div className="flex flex-col gap-2 py-2">
       <p className="flex items-center gap-2 text-sm text-muted-foreground">
         <Loader2Icon className="size-4 animate-spin" aria-hidden />
         {label}
       </p>
-      {pct !== null && (
+      {total !== null && total > 0 && (
+        <p className="text-xs text-muted-foreground">
+          {total} meeting{total === 1 ? "" : "s"} found
+        </p>
+      )}
+      {finishing && (
+        <div className="flex flex-col gap-0.5 text-xs text-muted-foreground" role="status">
+          {progress === null ? (
+            <p>Refreshing your connection…</p>
+          ) : (
+            <>
+              <p>Step: {GMEET_STAGE_LABEL[stage]}</p>
+              <p>{current}/{total ?? current} meetings checked</p>
+              {progress.docsListed !== undefined && (
+                <p>
+                  {progress.docsListed} Docs listed
+                  {progress.docsMatched !== undefined && ` · ${progress.docsMatched} matched`}
+                </p>
+              )}
+              {notesTotal !== undefined && <p>Notes {progress.notesDone ?? 0}/{notesTotal}</p>}
+            </>
+          )}
+          <p>Elapsed {elapsedSeconds}s</p>
+        </div>
+      )}
+      {showBar && (
         <div
           role="progressbar"
           aria-valuemin={0}
-          aria-valuemax={total ?? 0}
-          aria-valuenow={current}
-          aria-label="Initial sync progress"
+          aria-valuemax={100}
+          aria-valuenow={percent}
+          aria-valuetext={`${GMEET_STAGE_LABEL[stage]}, ${percent}%`}
+          aria-label={finishing ? "Finishing Google Meet sync" : "Initial sync progress"}
           className="h-2 w-full overflow-hidden rounded-full bg-muted"
         >
           <div
-            className="h-full bg-primary transition-[width] duration-200"
-            style={{ width: `${pct}%` }}
+            className={`h-full bg-primary transition-[width] duration-200${stage === "notes-listing" ? " animate-pulse" : ""}`}
+            style={{ width: `${percent}%` }}
           />
         </div>
       )}
+    </div>
+  );
+};
+
+/**
+ * Copies the run's client log (counters, step names, error kinds; see
+ * gmeetSyncLog.ts) as JSON. Without a clipboard it says so, inline.
+ */
+const CopySyncLogButton: FC<{ log: GmeetSyncLogRecorder; build: string | null }> = ({ log, build }) => {
+  const [note, setNote] = useState<string | null>(null);
+  const copy = () => {
+    const clipboard = typeof navigator === "undefined" ? undefined : navigator.clipboard;
+    if (!clipboard || typeof clipboard.writeText !== "function") {
+      setNote("Clipboard isn’t available in this browser.");
+      return;
+    }
+    const text = JSON.stringify(log.build({ generatedAt: new Date(), build }), null, 2);
+    clipboard.writeText(text).then(
+      () => setNote("Sync log copied."),
+      () => setNote("Couldn’t copy the sync log."),
+    );
+  };
+  return (
+    <div className="flex items-center gap-2">
+      <Button type="button" variant="outline" size="sm" onClick={copy}>
+        Copy sync log
+      </Button>
+      {note && <span role="status" className="text-xs text-muted-foreground">{note}</span>}
+    </div>
+  );
+};
+
+/** Where the deferred Notes by Gemini reconcile stands while the Done panel is open. */
+interface GmeetNotesStatus {
+  running: boolean;
+  progress: GmeetSyncProgress | null;
+  settled: GmeetNotesSettled | null;
+}
+
+const GmeetNotesLine: FC<{ notes: GmeetNotesStatus }> = ({ notes }) => {
+  const { running, progress, settled } = notes;
+  if (settled !== null) {
+    return (
+      <p className="text-xs text-muted-foreground" role="status">
+        {settled.ok
+          ? "Notes by Gemini finished syncing."
+          : "Notes by Gemini could not finish syncing. The Connectors card shows what happened; Sync now retries."}
+      </p>
+    );
+  }
+  if (!running) {
+    return (
+      <p className="text-xs text-muted-foreground">
+        Meetings are saved. Notes by Gemini are no longer syncing in the background; the Connectors card shows how it ended.
+      </p>
+    );
+  }
+  return (
+    <div className="flex flex-col gap-0.5 text-xs text-muted-foreground" role="status">
+      <p>Meetings are saved. Notes by Gemini are still syncing in the background; you can close this.</p>
+      {progress?.stage && <p>Step: {GMEET_STAGE_LABEL[progress.stage]}</p>}
+      {progress?.docsListed !== undefined && (
+        <p>
+          {progress.docsListed} Docs listed
+          {progress.docsMatched !== undefined && ` · ${progress.docsMatched} matched`}
+        </p>
+      )}
+      {progress?.notesTotal !== undefined && <p>Notes {progress.notesDone ?? 0}/{progress.notesTotal}</p>}
     </div>
   );
 };
@@ -1515,6 +1793,7 @@ const GmeetSyncingPanel: FC<{ progress: GmeetSyncProgress | null }> = ({
  */
 const GmeetDonePanel: FC<{
   summary: GmeetSyncSummary;
+  notes: GmeetNotesStatus;
   autoTranscription: AutoTranscriptionState;
   meetingCode: string;
   onMeetingCodeChange: (value: string) => void;
@@ -1522,6 +1801,7 @@ const GmeetDonePanel: FC<{
   onDecline: () => void;
 }> = ({
   summary,
+  notes,
   autoTranscription,
   meetingCode,
   onMeetingCodeChange,
@@ -1535,6 +1815,7 @@ const GmeetDonePanel: FC<{
         <CheckCircle2Icon className="size-4 text-primary" aria-hidden />
         Google Meet connected · {synced} meeting{synced === 1 ? "" : "s"} synced.
       </p>
+      {summary.notesDeferred && <GmeetNotesLine notes={notes} />}
       {summary.skipped > 0 && (
         <p className="text-xs text-muted-foreground">
           {summary.skipped} recent meeting{summary.skipped === 1 ? "" : "s"} had no
@@ -1623,14 +1904,18 @@ const GmeetDonePanel: FC<{
   );
 };
 
-const OAuthFailedPanel: FC<{ error: OAuthErrorState }> = ({ error }) => (
+const OAuthFailedPanel: FC<{ error: OAuthErrorState; canRetrySync: boolean }> = ({ error, canRetrySync }) => (
   <div className="flex flex-col gap-2 py-2 text-sm">
-    <p className="flex items-start gap-2 text-destructive">
+    <p role="alert" className="flex items-start gap-2 text-destructive">
       <AlertTriangleIcon className="mt-0.5 size-4 shrink-0" aria-hidden />
-      <span>{formatOAuthError(error)}</span>
+      <span>{canRetrySync && (error.kind === "network" || error.kind === "unknown")
+        ? `Sync could not finish. ${error.message}`
+        : formatOAuthError(error)}</span>
     </p>
     <p className="text-xs text-muted-foreground">
-      You can close this and try again — nothing was left half-connected.
+      {canRetrySync
+        ? "Your Google connection and already-saved meetings are kept. Retry to finish syncing without reconnecting."
+        : "You can close this and try connecting again."}
     </p>
   </div>
 );
@@ -1645,7 +1930,8 @@ const OAuthConnectFooter: FC<{
   onCancelAuthorize: () => void;
   onClose: () => void;
   onStopSync: () => void;
-}> = ({ phase, canAuthorize, authorizeDisabled, onAuthorize, onSameTabAuthorize, onCancelAuthorize, onClose, onStopSync }) => (
+  onRetrySync?: () => void;
+}> = ({ phase, canAuthorize, authorizeDisabled, onAuthorize, onSameTabAuthorize, onCancelAuthorize, onClose, onStopSync, onRetrySync }) => (
   <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
     {phase === "authorize" && !canAuthorize && (
       <Button size="sm" onClick={onClose}>
@@ -1675,10 +1961,13 @@ const OAuthConnectFooter: FC<{
         Working…
       </Button>
     )}
-    {phase === "initial-sync" && (
+    {(phase === "initial-sync" || phase === "finishing") && (
       <Button variant="outline" size="sm" onClick={onStopSync}>
         Stop sync
       </Button>
+    )}
+    {phase === "error" && onRetrySync && (
+      <Button size="sm" onClick={onRetrySync}>Retry</Button>
     )}
     {(phase === "done" || phase === "error") && (
       <Button size="sm" onClick={onClose}>
@@ -2359,6 +2648,8 @@ function formatOAuthError(error: OAuthErrorState): string {
     }
     case "no-refresh-token":
       return `Google didn’t return the long-lived permission we need to keep syncing. Remove TinyChat at ${GOOGLE_THIRD_PARTY_ACCESS_URL} and connect again.`;
+    case "connection-not-saved":
+      return "Google Meet couldn’t save this connection, so it isn’t connected yet. Connect again to finish setting it up.";
     case "storage":
       return error.message.length > 0
         ? error.message

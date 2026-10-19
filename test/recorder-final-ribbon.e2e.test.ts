@@ -6,6 +6,7 @@
 //   EXO_UI_ENGINE=chromium   webkit (default: Exo's WKWebView) or chromium
 import {
   afterAll,
+  afterEach,
   beforeAll,
   describe,
   expect,
@@ -16,6 +17,7 @@ import {
   chromium,
   webkit,
   type Browser,
+  type BrowserContext,
   type Locator,
   type Page,
 } from "playwright";
@@ -28,6 +30,7 @@ setDefaultTimeout(30_000);
 
 let browser: Browser;
 let server: ReturnType<typeof serveHarness>;
+const contexts: BrowserContext[] = [];
 
 type Harness = {
   exoMinimized: { calls: string[]; patch: (patch: object) => void };
@@ -53,6 +56,10 @@ afterAll(async () => {
   server?.stop(true);
 });
 
+afterEach(async () => {
+  await Promise.all(contexts.splice(0).map((context) => context.close()));
+});
+
 interface Opened {
   page: Page;
   calls: () => Promise<string[]>;
@@ -66,9 +73,9 @@ async function open(
   name: "recording" | "paused" | "interrupted" | "silenced" | "native",
   size: { width: number; height: number } = PHONE,
 ): Promise<Opened> {
-  const page = await (
-    await browser.newContext({ viewport: size, reducedMotion: "reduce" })
-  ).newPage();
+  const context = await browser.newContext({ viewport: size, reducedMotion: "reduce" });
+  contexts.push(context);
+  const page = await context.newPage();
   const errors: string[] = [];
   page.on("console", (message) => {
     if (
@@ -269,6 +276,23 @@ describe.serial(`minimised recorder interactions (${engineName})`, () => {
     const box = (await ribbon(page).boundingBox())!;
     expect(box.y + box.height).toBeLessThanOrEqual(RAIL.height);
     expect(box.y + box.height).toBeGreaterThan(RAIL.height - 40);
+  });
+
+  test("stopped at the limit with the recorder minimised on the rail: the floating row names the limit until the note is let go", async () => {
+    const { page, calls, patch } = await open("recording", RAIL);
+    await shown(ribbon(page));
+    const notice = page.getByTestId("minimized-limit");
+    await patch({ phase: "saving", limitNotice: "Stopped at the 1-hour limit." });
+    await gone(ribbon(page));
+    await shown(notice);
+    expect(await notice.getByRole("status").textContent()).toBe("Stopped at the 1-hour limit.");
+    await patch({ phase: "idle", outcome: "saved", lastSaved: { id: "rec-1", durationMs: 3_600_000, at: Date.now() } });
+    await shown(notice);
+    await notice.getByRole("button", { name: "Open recorder" }).click();
+    await until("openSheet", async () => (await calls()).includes("openSheet"));
+    // A Stop of the user's own has no notice.
+    await patch({ sheetOpen: false, limitNotice: null });
+    await gone(notice);
   });
 
   test("the sidebar dock: pause, stop and a click anywhere else restore the recorder", async () => {
