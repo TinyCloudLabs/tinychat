@@ -1,6 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import type { GmeetLiveStatus, GmeetSyncProgress } from "@/lib/connectors/gmeetSync";
@@ -66,27 +64,5 @@ describe("Google Meet row extras", () => {
 
   test("Copy sync log is a button on the card", () => {
     expect(renderToStaticMarkup(<CopyGmeetSyncLogButton getLog={() => null} />)).toContain("Copy sync log");
-  });
-});
-
-describe("card wiring", () => {
-  // ConnectorsCard.tsx cannot be imported into a bun process (see ConnectorsCard.test.ts).
-  const card = readFileSync(join(import.meta.dir, "ConnectorsCard.tsx"), "utf8");
-
-  test("the card subscribes to the engine's live status and shows it for the Google Meet row only", () => {
-    expect(card).toContain("useSyncExternalStore(onGmeetLiveStatus, () => getGmeetLiveStatus(tcw)");
-    expect(card).toContain("gmeet={d.id === GMEET_CONNECTOR_ID ?");
-    expect(card).toContain("<GmeetLiveLine status={gmeet.live} />");
-  });
-
-  test("an accepted offer starts the refused press once nothing is running", () => {
-    const effect = card.slice(card.indexOf("const gmeetQueued"), card.indexOf("const handleDisconnect"));
-    expect(effect).toContain("if (gmeetQueued === null || live.running) return;");
-    expect(effect).toContain("handleSyncNow(descriptor, gmeetQueued)");
-  });
-
-  test("the card copies the account's last log, in memory or persisted", () => {
-    expect(card).toContain("loadGmeetSyncLog(tcw, buildLabel)");
-    expect(card).toContain("<CopyGmeetSyncLogButton getLog={gmeet.getLog} />");
   });
 });

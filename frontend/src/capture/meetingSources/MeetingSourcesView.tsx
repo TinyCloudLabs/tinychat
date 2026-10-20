@@ -3,7 +3,7 @@
 // state comes in through props, intent goes out through callbacks.
 import * as Dialog from "@radix-ui/react-dialog";
 import { ChevronDownIcon, ChevronRightIcon, CircleAlertIcon, PlugIcon, XIcon } from "lucide-react";
-import { useRef, type ComponentType, type ReactNode } from "react";
+import { useRef, useState, type ComponentType, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 
 import { aboutHref } from "@/lib/about";
@@ -62,6 +62,66 @@ export function MeetingSourcesWindow({
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>
+  );
+}
+
+export interface GmeetNoticesProps {
+  /** One line of what the running sync is doing (any run, including one this window did not start). */
+  liveLine: string | null;
+  /** A press the running sync refused: its progress and the choice to wait. */
+  busy: { label: string; queued: boolean; onWait: () => void; onCancel: () => void } | null;
+  /** "A Notes sync was interrupted at x/26. Sync now resumes it." */
+  interrupted: string | null;
+  /** Present when a sync log exists for this account. */
+  getLog: (() => string | null) | null;
+}
+
+/** Google Meet's engine state under its row. Counters and step names only; no titles or text. */
+export function GmeetNotices({ liveLine, busy, interrupted, getLog }: GmeetNoticesProps) {
+  const [note, setNote] = useState<string | null>(null);
+  const copy = () => {
+    const clipboard = typeof navigator === "undefined" ? undefined : navigator.clipboard;
+    if (!clipboard || typeof clipboard.writeText !== "function") {
+      setNote("Clipboard isn’t available in this browser.");
+      return;
+    }
+    const text = getLog?.() ?? null;
+    if (text === null) {
+      setNote("No sync log yet.");
+      return;
+    }
+    clipboard.writeText(text).then(
+      () => setNote("Sync log copied."),
+      () => setNote("Couldn’t copy the sync log."),
+    );
+  };
+  return (
+    <>
+      {busy ? (
+        <div className="ms-desc" role="status" data-testid="gmeet-busy-offer">
+          <p>Another Google Meet sync is running{liveLine === null ? "." : ` — ${liveLine}.`}</p>
+          {busy.queued ? (
+            <p>
+              {busy.label} will start when it finishes.{" "}
+              <button type="button" className="ms-link" onClick={busy.onCancel}>Cancel</button>
+            </p>
+          ) : (
+            <button type="button" className="ms-btn2" onClick={busy.onWait}>Wait, then run {busy.label}</button>
+          )}
+        </div>
+      ) : (
+        liveLine !== null && <p className="ms-desc" role="status" data-testid="gmeet-live-status">{liveLine}</p>
+      )}
+      {interrupted !== null && !busy && liveLine === null && (
+        <p className="ms-desc" role="status" data-testid="gmeet-interrupted">{interrupted}</p>
+      )}
+      {getLog && (
+        <p className="ms-desc">
+          <button type="button" className="ms-link" onClick={copy}>Copy sync log</button>
+          {note && <span role="status"> {note}</span>}
+        </p>
+      )}
+    </>
   );
 }
 
@@ -150,6 +210,8 @@ export interface SourceRowProps {
   manage?: ReactNode;
   /** Always-visible extra block under the row (Calendar autojoin). */
   extra?: ReactNode;
+  /** What the sync engine knows about this source right now (Google Meet: live run, wait offer, interrupted Notes, log). */
+  notices?: ReactNode;
 }
 
 export function SourceRow(props: SourceRowProps) {
@@ -192,6 +254,7 @@ export function SourceRow(props: SourceRowProps) {
           </span>
         )}
         {props.error && <InlineError>{props.error}</InlineError>}
+        {props.notices}
       </div>
       <div className="ms-actions">
         {props.comingSoon ? (

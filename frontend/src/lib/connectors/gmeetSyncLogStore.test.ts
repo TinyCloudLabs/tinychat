@@ -118,12 +118,12 @@ describe("persisted Google Meet sync log", () => {
     const slowClient: GmeetSyncClient = { ...client, listConferenceRecords: async () => { await gate.promise; return { ok: true, data: [] }; } };
     const run = syncGoogleMeet({ client: slowClient, store, tcw: ALICE });
     for (let i = 0; i < 20; i++) await Promise.resolve();
-    expect(storage.writes).toBe(0); // Progress so far is held back by the throttle.
+    expect(storage.writes).toBe(1); // The run's start is written at once; its progress is held back by the throttle.
     vi.advanceTimersByTime(2_000);
-    expect(storage.writes).toBe(1);
+    expect(storage.writes).toBe(2);
     gate.resolve();
     await run;
-    expect(storage.writes).toBe(2); // The final log is written without waiting for the window.
+    expect(storage.writes).toBe(3); // The final log is written without waiting for the window.
     expect(JSON.parse(storage.items.get(gmeetSyncLogStorageKey("did:pkh:eip155:1:0xalice"))!).log.result).toMatchObject({ kind: "ok" });
     stop();
   });
