@@ -15,7 +15,7 @@ describe("libraryKinds", () => {
   test("Notes are voice notes, Uploads are uploads, Meetings are every meeting source", () => {
     expect(libraryKind("exo-voice-note")).toBe("note");
     expect(libraryKind("exo-upload")).toBe("upload");
-    for (const source of ["fireflies", "google-meet", "tinycloud-transcriber", "exo-local"]) expect(libraryKind(source)).toBe("meeting");
+    for (const source of ["fireflies", "google-meet", "tinycloud-transcriber", "exo-local", "exo-merged"]) expect(libraryKind(source)).toBe("meeting");
     expect(libraryKind("granola")).toBe("meeting");
   });
 
@@ -32,5 +32,6 @@ describe("libraryKinds", () => {
     expect(librarySourceLabel("exo-upload")).toBe("Upload");
     expect(librarySourceLabel("fireflies")).toBe("Fireflies");
     expect(librarySourceLabel("exo-voice-note")).toBe("Voice note");
+    expect(librarySourceLabel("exo-merged")).toBe("Combined meeting");
   });
 });
