@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.10.0-beta.10
+
+### Patch Changes
+
+- 1029746: Combined meetings get their own summary, made once per combine from the combined text (TC-1152).
+
 ## 0.10.0-beta.9
 
 ### Patch Changes
