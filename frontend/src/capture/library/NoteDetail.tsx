@@ -27,6 +27,8 @@ import { useCombinedMeeting } from "./combine/useCombinedMeeting";
 import { hasPrivateCloudTimingProvenance, hasSegmentTimes, transcriptWithTimestamps } from "./transcriptSegments";
 import type { Library } from "./useLibrary";
 import { notePath } from "@/shell/routes";
+import { EXO_MERGED_SOURCE } from "@tinyboilerplate/core";
+import { captureEvents } from "../captureEvents";
 
 /** Matches markdown-text's copy button: the tick reverts on its own. */
 const COPIED_DURATION = 1500;
@@ -57,8 +59,14 @@ export function NoteDetail(props: {
   const { library } = props;
   const { item, reads, audio } = library.note;
   const navigate = useNavigate();
-  const flow = useCombineFlow({ tcw: props.tcw, onCombined: (id) => { library.refresh(); navigate(notePath(id)); } });
   const combined = useCombinedMeeting({ tcw: props.tcw, item, onChanged: library.refresh, onDeleted: props.onBack });
+  const flow = useCombineFlow({ tcw: props.tcw, onCombined: ({ id, sourceId }) => {
+    // A Re-combine rewrites the open row in place: drop its cached reads and check its members again.
+    captureEvents.emit("library-changed", { source: EXO_MERGED_SOURCE, sourceId });
+    combined.recheck();
+    library.refresh();
+    navigate(notePath(id));
+  } });
   const combine = useMemo<CombineDetail | undefined>(() => {
     if (item === null) return undefined;
     if (isCombined(item)) {

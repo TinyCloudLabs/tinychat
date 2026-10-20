@@ -26,6 +26,7 @@ mock.module("../../../components/ui/responsive-sheet", () => ({
 const { LibraryScreen } = await import("../LibraryScreen");
 const { NoteDetail } = await import("../NoteDetail");
 const { useLibrary } = await import("../useLibrary");
+const { useCombineFlow } = await import("./useCombineFlow");
 import { COMBINE_MAX_SEGMENTS_PER_MEMBER } from "./bodySegments";
 
 let cleanup: (() => void) | undefined;
@@ -333,10 +334,82 @@ describe("The combined meeting's page", () => {
     const id = await combineViaStore();
     await open(id, rowsToSeed, async (s) => {
       await seedKv(s);
-      s.kv.set(transcriptKvKey("fireflies", "p-a"), body("p", 0, 30, () => "Someone Else"));
+      s.kv.set(transcriptKvKey("fireflies", "p-a"), body("p", 0, 30, (i) => (i % 2 ? "Zed" : "Yuri")));
     });
     await settle(() => has("combined-stale"), "stale notice");
     expect(q("combined-stale")!.textContent).toContain("A source changed");
     expect(has("combined-recombine")).toBe(true);
+  });
+});
+
+describe("Re-combine", () => {
+  test("re-combining a drifted pair rewrites the open meeting in place, shows the new text and drops the stale notice", async () => {
+    const id = await combineViaStore();
+    await open(id, rowsToSeed, async (s) => {
+      await seedKv(s);
+      s.kv.set(transcriptKvKey("fireflies", "p-a"), body("p", 0, 30, (i) => (i % 2 ? "Zed" : "Yuri")));
+    });
+    await settle(() => has("combined-recombine"), "re-combine offered");
+    expect(text()).not.toContain("Yuri");
+    await click("combined-recombine");
+    await settle(() => has("combine-confirm"), "confirm sheet");
+    await click("combine-confirm-button");
+    await settle(() => text().includes("Yuri"), "new transcript shown");
+    await settle(() => !has("combined-stale"), "stale notice gone");
+    expect(mergedRows()).toHaveLength(1);
+    expect(mergedRows()[0]!.id).toBe(id);
+  });
+});
+
+describe("useCombineFlow", () => {
+  interface Seen { flow: ReturnType<typeof useCombineFlow> | null }
+  function Probe(props: { tcw: CombineSpace["tcw"]; seen: Seen }) {
+    props.seen.flow = useCombineFlow({ tcw: props.tcw, onCombined: () => {} });
+    return null;
+  }
+  const item = (row: SpaceRow) => ({ id: row.id, source: row.source, sourceId: row.sourceId, title: row.title, startedAt: row.startedAt, durationSecs: row.durationSecs });
+  async function mountProbe(rows: SpaceRow[]) {
+    space = combineSpace(rows);
+    const seen: Seen = { flow: null };
+    const host = document.createElement("div");
+    document.body.append(host);
+    root = createRoot(host);
+    await act(async () => root!.render(<Probe tcw={space.tcw} seen={seen} />));
+    return seen;
+  }
+
+  test("confirm(false) on a pair the check refused writes nothing and stays on the confirm step", async () => {
+    const seen = await mountProbe([FF, OTHER]);
+    await act(async () => seen.flow!.open(item(FF), item(OTHER)));
+    await settle(() => seen.flow!.state.step === "confirm", "confirm step");
+    await act(async () => seen.flow!.confirm(false));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 100)); });
+    expect(seen.flow!.state.step).toBe("confirm");
+    expect(writes()).toEqual([]);
+  });
+
+  test("a change of account cancels a check in progress and clears the flow; the old space is never written", async () => {
+    const seen = await mountProbe([FF, NT]);
+    const first = space;
+    first.getDelayMs = 80;
+    await act(async () => seen.flow!.open(item(FF), item(NT)));
+    expect(seen.flow!.state.step).toBe("analyzing");
+    const other = combineSpace([FF, NT], { did: "did:test:another-account" });
+    await act(async () => root!.render(<Probe tcw={other.tcw} seen={seen} />));
+    expect(seen.flow!.state.step).toBe("idle");
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 400)); });
+    expect(seen.flow!.state.step).toBe("idle");
+    expect(first.log.filter((c) => c.write)).toEqual([]);
+    expect(other.log.filter((c) => c.write)).toEqual([]);
+  });
+
+  test("a write that throws ends in the error state with Try again, never stuck saving", async () => {
+    const seen = await mountProbe([FF, NT]);
+    await act(async () => seen.flow!.open(item(FF), item(NT)));
+    await settle(() => seen.flow!.state.step === "confirm", "confirm step");
+    space.tcw.kv.put = (async () => { throw new Error("boom"); }) as never;
+    await act(async () => seen.flow!.confirm(false));
+    await settle(() => seen.flow!.state.step === "error", "error state");
+    expect(mergedRows()).toHaveLength(0);
   });
 });

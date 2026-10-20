@@ -253,7 +253,7 @@ const ID_SELECT = "SELECT id FROM connector_meeting WHERE source = 'exo-merged' 
  * Read both members, read-only (I1). The UI reads, stitches off the UI thread to show the evidence,
  * and only after an explicit tap calls `writeCombined`; `combineMeetings` is the same three steps in one call.
  */
-export async function readCombinePair(tcw: TinyCloudWeb, memberA: MeetingRef, memberB: MeetingRef): Promise<StoreResult<MeetingSnapshot[]>> {
+export async function readCombinePair(tcw: TinyCloudWeb, memberA: MeetingRef, memberB: MeetingRef): Promise<StoreResult<readonly [MeetingSnapshot, MeetingSnapshot]>> {
   for (const m of [memberA, memberB]) {
     if (m.source === EXO_MERGED_SOURCE) return failure("COMBINE_MEMBER_INVALID", "a combined meeting cannot be a member");
   }
@@ -265,7 +265,7 @@ export async function readCombinePair(tcw: TinyCloudWeb, memberA: MeetingRef, me
     if (read.status === "failed") return failure("COMBINE_MEMBER_UNREADABLE", "a member meeting could not be read");
     snaps.push(read.snapshot);
   }
-  return { ok: true, data: snaps };
+  return { ok: true, data: [snaps[0]!, snaps[1]!] };
 }
 
 export async function combineMeetings(

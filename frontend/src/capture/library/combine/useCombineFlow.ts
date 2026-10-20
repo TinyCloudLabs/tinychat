@@ -50,8 +50,8 @@ export interface CombineFlow {
 
 export interface CombineFlowOptions {
   tcw: TinyCloudWeb;
-  /** A combined meeting was written; `id` is its Library row id. */
-  onCombined: (id: string) => void;
+  /** A combined meeting was written: its Library row id and its source_id. */
+  onCombined: (written: { id: string; sourceId: string }) => void;
   /** The stitcher's runner (tests inject one). */
   stitch?: StitchStarter;
   now?: () => Date;
@@ -77,6 +77,8 @@ export function useCombineFlow(options: CombineFlowOptions): CombineFlow {
   const token = useRef(0);
   const running = useRef<StitchRun | null>(null);
   // What the confirm step stitched, kept off React state (it is large) and only for the open confirm step.
+  // A save is in flight: a second call must not start another write.
+  const saving = useRef(false);
   const held = useRef<{ result: StitchResult; a: LibraryItem; b: LibraryItem; snapshots: SnapshotPair } | null>(null);
   const latest = useRef({ onCombined, now: options.now });
   latest.current = { onCombined, now: options.now };
@@ -100,7 +102,7 @@ export function useCombineFlow(options: CombineFlowOptions): CombineFlow {
     if (!pair.ok) return setState({ step: "error", source, other, message: READ_FAILED, retry: "analyze", forced: false });
     const segments = Math.max(...pair.data.map((snap) => bodySegments(snap.body)?.length ?? 0));
     if (segments > COMBINE_MAX_SEGMENTS_PER_MEMBER) return setState({ step: "tooLarge", source, other, segments });
-    const pairOf: SnapshotPair = [pair.data[0]!, pair.data[1]!];
+    const pairOf: SnapshotPair = pair.data;
     const run = stitch(pairOf[0], pairOf[1], {});
     running.current = run;
     let result: StitchResult;
@@ -118,7 +120,7 @@ export function useCombineFlow(options: CombineFlowOptions): CombineFlow {
 
   const write = useCallback(async (source: LibraryItem, other: LibraryItem, force: boolean) => {
     const prior = held.current;
-    if (prior === null) return;
+    if (prior === null || saving.current) return;
     const mine = ++token.current;
     const live = () => token.current === mine;
     let result = prior.result;
@@ -137,12 +139,20 @@ export function useCombineFlow(options: CombineFlowOptions): CombineFlow {
       running.current = null;
     }
     setState({ step: "writing", source, other, stage: "saving" });
-    const written = await writeCombined(space, result, { now: latest.current.now });
+    saving.current = true;
+    let written: Awaited<ReturnType<typeof writeCombined>>;
+    try {
+      written = await writeCombined(space, result, { now: latest.current.now });
+    } catch {
+      written = { ok: false, error: { code: "COMBINE_WRITE_THREW", message: "the combined meeting could not be written" } };
+    } finally {
+      saving.current = false;
+    }
     if (!live()) return;
     if (!written.ok) return setState({ step: "error", source, other, message: WRITE_FAILED, retry: "confirm", forced: force });
     held.current = null;
     setState({ step: "idle" });
-    latest.current.onCombined(written.data.id);
+    latest.current.onCombined({ id: written.data.id, sourceId: written.data.sourceId });
   }, [space, stitch]);
 
   const confirm = useCallback((force: boolean) => {

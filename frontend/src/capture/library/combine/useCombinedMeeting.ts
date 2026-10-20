@@ -6,7 +6,7 @@
 //    member's text changed since combining ("a source changed · Re-combine").
 //  - DELETE: `deleteCombined(tcw, 'exo-merged', row id)`. By row id and source only: it never reads
 //    `metadata.merge`, so a row with garbage metadata is deletable. Originals are not touched.
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { EXO_MERGED_SOURCE } from "@tinyboilerplate/core";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
@@ -17,6 +17,8 @@ import type { LibraryItem } from "../LibraryRow";
 export interface CombinedMeetingController {
   /** A source's text changed since this was combined. */
   stale: boolean;
+  /** The combined meeting was just rewritten (Re-combine): check its members again. */
+  recheck: () => void;
   remove: {
     open: boolean;
     busy: boolean;
@@ -42,6 +44,10 @@ export function useCombinedMeeting(options: {
   const [stale, setStale] = useState(false);
   const [asking, setAsking] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [revision, setRevision] = useState(0);
+  // The space a delete started in: a result that lands after an account change is ignored.
+  const current = useRef(space);
+  current.current = space;
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -58,7 +64,7 @@ export function useCombinedMeeting(options: {
     })();
     return () => { live = false; };
     // onChanged is the Library's refresh; a new identity must not repeat the sweep.
-  }, [space, id]);
+  }, [space, id, revision]);
 
   const confirm = useCallback(() => {
     if (id === null || busy) return;
@@ -67,6 +73,7 @@ export function useCombinedMeeting(options: {
     void (async () => {
       try {
         const res = await deleteCombined(space, EXO_MERGED_SOURCE, id);
+        if (current.current !== space) return;
         if (!res.ok) {
           setError("Couldn’t delete the combined meeting. Try again; your original captures weren’t changed.");
           return;
@@ -84,6 +91,7 @@ export function useCombinedMeeting(options: {
 
   return {
     stale,
+    recheck: () => setRevision((n) => n + 1),
     remove: {
       open: asking && id !== null,
       busy,

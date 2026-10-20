@@ -135,7 +135,7 @@ export function CombineSheet(props: { flow: CombineFlow; items: readonly Library
     body = (
       <div className="flex flex-col gap-3" data-testid="combine-too-large">
         <Pair source={state.source} other={state.other} now={now} />
-        <p role="alert" className="text-callout">This recording is too long to combine here: one transcript has {state.segments.toLocaleString()} segments, and the limit is {COMBINE_MAX_SEGMENTS_PER_MEMBER.toLocaleString()} each. Nothing was changed.</p>
+        <p role="alert" className="text-callout">This recording is too long to combine here. One transcript has {state.segments.toLocaleString()} passages; the limit is {COMBINE_MAX_SEGMENTS_PER_MEMBER.toLocaleString()} each. Nothing was changed.</p>
       </div>
     );
     footer = <Button type="button" onClick={flow.cancel}>Close</Button>;
