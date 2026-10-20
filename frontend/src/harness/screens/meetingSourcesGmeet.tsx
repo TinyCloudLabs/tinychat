@@ -195,6 +195,8 @@ function screen(name: Phase): HarnessScreen {
     layout: "pane",
     path: "/chat/connectors",
     platform: "web",
+    // The window is desktop-only (the Connectors page renders it only when the nav is not the tab bar).
+    minViewportWidth: 900,
     readyWhen: `[data-gmeet-harness="ready"] [data-source="google-meet"] .ms-status`,
     render: () => <GmeetSyncNowFixture phase={name} />,
   };
