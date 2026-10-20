@@ -46,6 +46,10 @@ import { NoteDetail } from "./library/NoteDetail";
 import { RecentNotePendingSheet } from "./library/RecentNotePendingSheet";
 import { VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
 import { useLibrary } from "./library/useLibrary";
+import { chatComplete } from "@/lib/meetingSummary/summaryChat";
+import { createSummaryRunner } from "@/lib/meetingSummary/summaryRunner";
+import type { GenerateDeps } from "@/lib/meetingSummary/generateSummary";
+import { scheduledSpace } from "@/lib/spaceQueue";
 import { combinedModel, useNotePipelines, type NotePipelineView } from "@/lib/voiceNotes/useNotePipeline";
 import { listPipelineEntries } from "./listPipelineEntries";
 import { pipelineActionPriority, type PipelineActionKind } from "@/lib/voiceNotes/notePipeline";
@@ -70,6 +74,8 @@ export interface CaptureSurfaceProps {
   screen: Screen;
   /** The cohort meetings section App owns (MeetingsSection), shown in the Library. */
   meetingsSlot?: React.ReactNode;
+  /** The model call a combined meeting's summary uses; the chat route unless a harness or test replaces it. */
+  summaryComplete?: GenerateDeps["complete"];
 }
 
 const SCROLLER = "relative h-full overflow-y-auto";
@@ -104,8 +110,14 @@ export function CaptureSurface(props: CaptureSurfaceProps) {
   );
 }
 
-function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, meetingsSlot, soft, desktopHome }: CaptureSurfaceProps & { soft: boolean; desktopHome: boolean }) {
+function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, meetingsSlot, summaryComplete, soft, desktopHome }: CaptureSurfaceProps & { soft: boolean; desktopHome: boolean }) {
   const navigate = useNavigate();
+  // One summary runner per signed-in space: another account (tcw) or unmount stops every run.
+  const summaries = useMemo(
+    () => createSummaryRunner({ space: scheduledSpace(tcw), complete: summaryComplete ?? chatComplete(backendUrl, sessionStore) }),
+    [tcw, backendUrl, sessionStore, summaryComplete],
+  );
+  useEffect(() => () => summaries.cancelAll(), [summaries]);
   const openActivityNote = useCallback((id: string) => navigate(PATHS.library + "/" + id), [navigate]);
   const location = useLocation();
   const nav = useNavKind();
@@ -347,6 +359,7 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
             platform={platform}
             activityControl={!sidebarActivity && noteScreen ? activityControl : undefined}
             savedNote={notePage || noteSheet ? { tcw, layout: notePage ? "page" : "sheet" } : undefined}
+            summaries={summaries}
           />
         ) : wide ? (
           empty ? (

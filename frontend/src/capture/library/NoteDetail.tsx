@@ -24,6 +24,8 @@ import { displayMembers, isCombined, memberLines, type CombineDetail } from "./c
 import { DeleteCombinedSheet } from "./combine/DeleteCombinedSheet";
 import { useCombineFlow } from "./combine/useCombineFlow";
 import { useCombinedMeeting } from "./combine/useCombinedMeeting";
+import { useCombinedSummary } from "./combine/useCombinedSummary";
+import type { SummaryRunner } from "@/lib/meetingSummary/summaryRunner";
 import { hasPrivateCloudTimingProvenance, hasSegmentTimes, transcriptWithTimestamps } from "./transcriptSegments";
 import type { Library } from "./useLibrary";
 import { notePath } from "@/shell/routes";
@@ -55,12 +57,17 @@ export function NoteDetail(props: {
   platform?: AppPlatform;
   savedNote?: NoteDetailViewProps["savedNote"];
   activityControl?: ReactNode;
+  /** Makes a combined meeting's summary (CaptureSurface owns it); without one no summary is shown. */
+  summaries?: SummaryRunner;
 }) {
   const { library } = props;
   const { item, reads, audio } = library.note;
   const navigate = useNavigate();
   const combined = useCombinedMeeting({ tcw: props.tcw, item, onChanged: library.refresh, onDeleted: props.onBack });
-  const flow = useCombineFlow({ tcw: props.tcw, onCombined: ({ id, sourceId }) => {
+  const summary = useCombinedSummary({ tcw: props.tcw, runner: props.summaries, item });
+  const flow = useCombineFlow({ tcw: props.tcw, onCombined: ({ id, sourceId, created }) => {
+    // The combined text is new: make its summary (a Re-combine replaces the old one).
+    props.summaries?.start(id, { replacing: !created });
     // A Re-combine rewrites the open row in place: drop its cached reads and check its members again.
     captureEvents.emit("library-changed", { source: EXO_MERGED_SOURCE, sourceId });
     combined.recheck();
@@ -72,10 +79,10 @@ export function NoteDetail(props: {
     if (isCombined(item)) {
       const members = memberLines(displayMembers(reads.metadata?.status === "ok" ? reads.metadata.metadata : null), library.items);
       const [a, b] = members.map((m) => library.items.find((entry) => entry.source === m.source && entry.sourceId === m.sourceId));
-      return { combined: { members, stale: combined.stale, onRecombine: members.length === 2 && a && b ? () => flow.open(a, b) : undefined, onDelete: combined.remove.request } };
+      return { combined: { members, stale: combined.stale, onRecombine: members.length === 2 && a && b ? () => flow.open(a, b) : undefined, onDelete: combined.remove.request, summary: summary.view, onRetrySummary: summary.retry } };
     }
     return canCombine(item) ? { onCombine: () => flow.open(item) } : undefined;
-  }, [item, reads.metadata, library.items, combined.stale, combined.remove.request, flow.open]);
+  }, [item, reads.metadata, library.items, combined.stale, combined.remove.request, summary.view, summary.retry, flow.open]);
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [local, setLocal] = useState<{ id: string; transcript: LocalTranscript | null; readError: "timeout" | "failed" | null } | null>(null);

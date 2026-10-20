@@ -6,6 +6,7 @@
 // Notetaker", links to the originals); unreadable metadata just shows a plainer sentence.
 import { EXO_MERGED_SOURCE } from "@tinyboilerplate/core";
 
+import type { SummaryView } from "@/lib/meetingSummary/summaryRunner";
 import { notePath } from "@/shell/routes";
 import { librarySourceLabel } from "../libraryKinds";
 import type { LibraryItem } from "../LibraryRow";
@@ -56,5 +57,8 @@ export interface CombineDetail {
     /** Absent when a member is no longer in the Library. */
     onRecombine?: () => void;
     onDelete: () => void;
+    /** The combined meeting's own summary (absent where there is no model route to make one). */
+    summary?: SummaryView;
+    onRetrySummary?: () => void;
   };
 }

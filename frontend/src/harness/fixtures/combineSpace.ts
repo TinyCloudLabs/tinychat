@@ -22,6 +22,9 @@ export interface SpaceRow {
   metadata?: string;
   /** The stored transcript body, verbatim (JSON text). */
   body?: string;
+  /** The stored `summary_overview` / `summary_action_items` columns of a combined meeting. */
+  summaryOverview?: string | null;
+  summaryActionItems?: string | null;
 }
 
 export interface SpaceCall { kind: "sql" | "kv"; method: string; text: string; write: boolean }
@@ -84,6 +87,16 @@ export function combineSpace(seed: readonly SpaceRow[], options: { did?: string 
     }
     if (s === "SELECT id, source_id, metadata FROM connector_meeting WHERE source = 'exo-merged'") {
       return ok({ rows: [...rows.values()].filter((r) => r.source === "exo-merged").map((r) => [r.id, r.sourceId, r.metadata ?? null]) });
+    }
+    if (s === "SELECT source_id, summary_overview, summary_action_items FROM connector_meeting WHERE id = ? AND source = 'exo-merged'") {
+      const r = rows.get(String(params[0]));
+      return ok({ rows: r && r.source === "exo-merged" ? [[r.sourceId, r.summaryOverview ?? null, r.summaryActionItems ?? null]] : [] });
+    }
+    if (s === "UPDATE connector_meeting SET summary_overview = ?, summary_action_items = ? WHERE id = ? AND source = 'exo-merged'") {
+      const [overview, actionItems, id] = params as (string | null)[];
+      const r = rows.get(String(id));
+      if (r && r.source === "exo-merged") rows.set(r.id, { ...r, summaryOverview: overview, summaryActionItems: actionItems });
+      return ok({ rows: [] });
     }
     if (s.startsWith("INSERT INTO connector_meeting")) {
       const [id, source, sourceId, title, startedAt, durationSecs, , participants, , , , , metadata] = params as (string | number | null)[];

@@ -171,6 +171,10 @@ export class FakeSqlDb {
         const r = this.meetings.get(String(params[0]));
         return ok(r && r.source === "exo-merged" ? [[r.source_id, r.metadata]] : []);
       }
+      if (/^SELECT\s+source_id,\s*summary_overview,\s*summary_action_items\s+FROM\s+connector_meeting\s+WHERE\s+id\s*=\s*\?\s+AND\s+source\s*=\s*'exo-merged'/i.test(t)) {
+        const r = this.meetings.get(String(params[0]));
+        return ok(r && r.source === "exo-merged" ? [[r.source_id, r.summary_overview, r.summary_action_items]] : []);
+      }
       if (/^SELECT\s+source_id\s+FROM\s+connector_meeting\s+WHERE\s+id\s*=\s*\?\s+AND\s+source\s*=\s*'exo-merged'/i.test(t)) {
         const r = this.meetings.get(String(params[0]));
         return ok(r && r.source === "exo-merged" ? [[r.source_id]] : []);
@@ -297,6 +301,14 @@ export class FakeSqlDb {
       if (existing && existing.source === "exo-merged") {
         this.meetings.set(id, { ...existing, title, started_at, duration_secs, participants, metadata, updated_at });
       }
+      return ok([]);
+    }
+    if (/^UPDATE\s+connector_meeting\s+SET\s+summary_overview\s*=\s*\?,\s*summary_action_items\s*=\s*\?\s+WHERE\s+id\s*=\s*\?\s+AND\s+source\s*=\s*'exo-merged'/i.test(s)) {
+      const injected = this.takeMeetingWriteError();
+      if (injected) return injected;
+      const [summary_overview, summary_action_items, id] = params as [string | null, string | null, string];
+      const existing = this.meetings.get(id);
+      if (existing && existing.source === "exo-merged") this.meetings.set(id, { ...existing, summary_overview, summary_action_items });
       return ok([]);
     }
     if (/^DELETE\s+FROM\s+connector_meeting\s+WHERE\s+id\s*=\s*\?\s+AND\s+source\s*=\s*'exo-merged'/i.test(s)) {
