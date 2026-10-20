@@ -4,7 +4,7 @@
 // note's `transcription_engine`) adds the stop that made its text. Nothing
 // the row does not record is drawn: no provider, no middle node.
 import { RefreshCwIcon } from "lucide-react";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { EXO_MERGED_SOURCE } from "@tinyboilerplate/core";
 
 import { Button } from "@/components/ui/button";
@@ -135,6 +135,8 @@ export function captureRoute(source: string, metadata: Record<string, unknown> |
  */
 export function HowThisGotHere(props: { source: string; read: MeetingMetadataRead | undefined; onRetry: () => void; /** A combined meeting's originals, with a link where they still exist. */ members?: readonly CombinedMemberLine[] }) {
   const { read } = props;
+  // A source opened from here goes Back to here, not to the Library list.
+  const here = useLocation().pathname;
   const route = read !== undefined && read.status !== "failed" ? captureRoute(props.source, read.status === "ok" ? read.metadata : null) : null;
   return (
     <section aria-labelledby="how-this-got-here" data-testid="how-this-got-here" data-state={read === undefined ? "loading" : read.status}>
@@ -163,7 +165,7 @@ export function HowThisGotHere(props: { source: string; read: MeetingMetadataRea
               {props.members.map((m) => (
                 <li key={`${m.source}:${m.sourceId}`} className="text-callout" data-testid="combined-member">
                   <span className="text-muted-foreground">{m.sourceLabel} · </span>
-                  {m.href !== null ? <Link to={m.href} className="inline-flex min-h-11 items-center text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [overflow-wrap:anywhere]">{m.title}</Link>
+                  {m.href !== null ? <Link to={m.href} state={{ backTo: here }} className="inline-flex min-h-11 items-center text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [overflow-wrap:anywhere]">{m.title}</Link>
                     : <span className="text-muted-foreground">no longer in your Library</span>}
                 </li>
               ))}

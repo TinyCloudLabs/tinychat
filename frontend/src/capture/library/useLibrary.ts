@@ -33,7 +33,9 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { PHONE_AUDIO_UNAVAILABLE } from "@/chat/audioPlayback";
 import { getAudio, getAudioManifest, manifestReceipt, type StoredAudioManifest } from "@/lib/audio/audioStore";
 import {
+  hiddenMemberKeys,
   listMeetingsRead,
+  memberKey,
   meetingAudioFrom,
   readMeetingMetadata,
   readTranscript,
@@ -78,7 +80,12 @@ const isOfflineRead = (error: unknown) => {
 
 export interface Library {
   status: LibraryStatus;
+  /** What the Library lists: every row except the captures a combined meeting stands in for (TC-1152). */
   items: LibraryItem[];
+  /** Every row, hidden members included: a combined page resolves its sources here, and a hidden source still opens. */
+  all: LibraryItem[];
+  /** The capture is a member of a combined meeting: hidden from the list, and not combinable again. */
+  isCombinedMember: (item: Pick<LibraryItem, "source" | "sourceId">) => boolean;
   /** A list read is out (Refresh shows it; a note not listed yet waits for it). */
   listing: boolean;
   filter: LibraryFilter;
@@ -315,7 +322,7 @@ export function useLibrary(
       .concat((onPhoneNotes ?? []).map((note) => note.id)),
     [list.items, onPhoneNotes],
   );
-  const items = useMemo(() => {
+  const everyItem = useMemo(() => {
     const merged = withOnPhone(
       list.items,
       onPhoneNotes ?? [],
@@ -330,14 +337,27 @@ export function useLibrary(
     });
   }, [list.items, list.previews, moments, onPhoneNotes, currentHandoff.lingering, localAudioIds, localAudioReadyIds]);
 
-  // The open note by its id; a stand-in's sheet stays open when its row replaces it.
+  // Captures a combined meeting stands in for, derived from the combined rows of this list read.
+  const hiddenKeys = useMemo(() => hiddenMemberKeys(list.items), [list.items]);
+  const isCombinedMember = useCallback(
+    (entry: Pick<LibraryItem, "source" | "sourceId">) => hiddenKeys.has(memberKey(entry.source, entry.sourceId)),
+    [hiddenKeys],
+  );
+  // With no combined rows this is `everyItem` itself: the list renders exactly as before.
+  const items = useMemo(
+    () => (hiddenKeys.size === 0 ? everyItem : everyItem.filter((entry) => !hiddenKeys.has(memberKey(entry.source, entry.sourceId)))),
+    [everyItem, hiddenKeys],
+  );
+
+  // The open note by its id, from EVERY row: a hidden source still opens (stale link, or from its combined page).
+  // A stand-in's sheet stays open when its row replaces it.
   const item = useMemo(() => {
     if (options.noteId === null) return null;
-    const exact = items.find((entry) => entry.id === options.noteId);
+    const exact = everyItem.find((entry) => entry.id === options.noteId);
     if (exact) return exact;
     const recordingId = recordingIdOfOnPhoneId(options.noteId);
-    return recordingId === null ? null : (items.find((entry) => entry.source === VOICE_NOTE_SOURCE && entry.sourceId === recordingId) ?? null);
-  }, [items, options.noteId]);
+    return recordingId === null ? null : (everyItem.find((entry) => entry.source === VOICE_NOTE_SOURCE && entry.sourceId === recordingId) ?? null);
+  }, [everyItem, options.noteId]);
   openItemId.current = item?.id ?? null;
 
   // The open voice note, by recording: a stand-in and its row are one note.
@@ -589,6 +609,8 @@ export function useLibrary(
   return {
     status: list.status,
     items,
+    all: everyItem,
+    isCombinedMember,
     listing,
     filter,
     setFilter,
