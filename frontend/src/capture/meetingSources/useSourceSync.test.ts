@@ -14,7 +14,6 @@ import { buildSeed, startMockFireflies } from "../../../../test/connectors/mock-
 import type { ConnectorDescriptor } from "@/lib/connectors/types";
 import { CONNECTORS } from "@/lib/connectors/registry";
 import {
-  FULL_RESCAN_BUSY_MESSAGE,
   SOURCE_SYNC_FAILED_MESSAGE,
   runSourceSync,
   syncProgressLabel,
@@ -34,6 +33,8 @@ function deps(patch: Partial<SourceSyncDeps> = {}): SourceSyncDeps {
     unlockSecrets: (async () => ({ ok: true, data: undefined })) as SourceSyncDeps["unlockSecrets"],
     getConnectorKey: (async () => ({ ok: true, data: "key" })) as SourceSyncDeps["getConnectorKey"],
     isGmeetSyncInFlight: () => false,
+    isGmeetNotesSyncInFlight: () => false,
+    awaitSessionSync: async () => {},
     runGmeetSyncNow: async () => ({ ok: true }),
     runFirefliesSyncNow: async () => ({ ok: true }),
     ...patch,
@@ -110,7 +111,7 @@ describe("Full rescan and Stop reach the engine", () => {
     expect(seen).toEqual(["snapshot"]);
   });
 
-  test("Full rescan is refused, without reading the vault, while another Meet sync owns the slot", async () => {
+  test("Full rescan is offered a wait, without reading the vault, while another Meet sync owns the slot", async () => {
     let keyReads = 0;
     let ran = 0;
     const message = await runSourceSync(
@@ -122,7 +123,7 @@ describe("Full rescan and Stop reach the engine", () => {
         runGmeetSyncNow: async () => (ran++, { ok: true }),
       }),
     );
-    expect(message).toBe(FULL_RESCAN_BUSY_MESSAGE);
+    expect(message).toEqual({ busy: "offer" });
     expect([keyReads, ran]).toEqual([0, 0]);
   });
 
@@ -290,6 +291,8 @@ function depsForSourceSync(
     unlockSecrets: (async () => ({ ok: true, data: undefined })) as SourceSyncDeps["unlockSecrets"],
     getConnectorKey: (async () => ({ ok: true, data: "test-source-sync-key" })) as SourceSyncDeps["getConnectorKey"],
     isGmeetSyncInFlight: () => false,
+    isGmeetNotesSyncInFlight: () => false,
+    awaitSessionSync: async () => {},
     runGmeetSyncNow: async () => ({ ok: true }),
     runFirefliesSyncNow: async (input) => {
       const result = await syncFireflies({

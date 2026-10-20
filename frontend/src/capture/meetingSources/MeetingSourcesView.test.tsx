@@ -9,8 +9,8 @@ import { join } from "node:path";
 
 import { CONNECTORS } from "@/lib/connectors/registry";
 import { MeetingSourcesFeature } from "./MeetingSourcesDialog";
-import { meetingSourceStatus } from "./meetingSourceState";
-import { CalendarAutojoinRow, DisconnectDataChoice, SourceRow, type SourceRowProps } from "./MeetingSourcesView";
+import { meetingSourceStatus, meetingSourcesSummary } from "./meetingSourceState";
+import { CalendarAutojoinRow, DisconnectDataChoice, GmeetNotices, SourceRow, type SourceRowProps } from "./MeetingSourcesView";
 import { DISCONNECT_WHILE_SYNCING, DisconnectRow } from "./ManagePanel";
 import { sourceRowDisplay } from "./meetingSourceState";
 
@@ -194,5 +194,51 @@ describe("one Meeting sources view", () => {
     expect(phone).toContain("grid-template-columns: 40px minmax(0, 1fr)");
     expect(phone).toMatch(/\.ms-actions \{\s*grid-column: 2;\s*flex-wrap: wrap;/);
     expect(phone).toContain("grid-column: 2 / -1");
+  });
+});
+
+describe("Google Meet engine state under its row", () => {
+  const base = { liveLine: null, busy: null, interrupted: null, getLog: null };
+
+  test("an interrupted Notes sync is said once nothing is running, with the way to resume it", () => {
+    const text = "A Notes sync was interrupted at 11/26. Sync now resumes it.";
+    expect(renderToStaticMarkup(<GmeetNotices {...base} interrupted={text} />)).toContain(text);
+    // A run in flight is the sync; an interrupted note beside its progress would contradict it.
+    expect(renderToStaticMarkup(<GmeetNotices {...base} interrupted={text} liveLine="Google Meet is syncing · Notes 12/26" />)).not.toContain("interrupted");
+  });
+
+  test("Copy sync log is offered only when a log exists", () => {
+    expect(renderToStaticMarkup(<GmeetNotices {...base} getLog={() => "{}"} />)).toContain("Copy sync log");
+    expect(renderToStaticMarkup(<GmeetNotices {...base} />)).not.toContain("Copy sync log");
+  });
+
+  test("a refused press shows the running sync's progress and the wait offer, then the queued state", () => {
+    const busy = { label: "Full rescan", queued: false, onWait: noop, onCancel: noop };
+    const offer = renderToStaticMarkup(<GmeetNotices {...base} liveLine="Google Meet is syncing · Notes 14/26" busy={busy} />);
+    expect(offer).toContain("Another Google Meet sync is running — Google Meet is syncing · Notes 14/26.");
+    expect(offer).toContain("Wait, then run Full rescan");
+    const queued = renderToStaticMarkup(<GmeetNotices {...base} liveLine="Google Meet is syncing · Notes 14/26" busy={{ ...busy, queued: true }} />);
+    expect(queued).toContain("Full rescan will start when it finishes.");
+    expect(queued).not.toContain("Wait, then run");
+  });
+});
+
+describe("the Google Meet row's meeting count", () => {
+  const stored = { status: "connected", lastSyncedAt: "2026-10-19T22:00:00.000Z", lastSyncStatus: "ok", lastSyncError: null, itemCount: 0 };
+  const display = (itemCount?: number | null) =>
+    sourceRowDisplay({ comingSoon: false, connection: stored, itemCount, syncing: false, connecting: false, syncError: null, rowNote: null });
+
+  test("the live count replaces the value cached when a sync last settled", () => {
+    expect(display(26).status?.text).toContain("26 meetings");
+    expect(display(26).status?.text).not.toContain("0 meetings");
+  });
+
+  test("a count not read yet is left out, not shown as 0", () => {
+    expect(display(null).status?.text).not.toContain("meeting");
+  });
+
+  test("the Capture entry leaves out a count that has not been read", () => {
+    expect(meetingSourcesSummary([{ name: "Google Meet", connected: true, count: null }])).toBe("Google Meet connected");
+    expect(meetingSourcesSummary([{ name: "Google Meet", connected: true, count: 26 }])).toBe("Google Meet connected · 26 meetings");
   });
 });

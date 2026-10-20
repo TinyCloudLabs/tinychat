@@ -67,6 +67,7 @@ import {
   type GmeetSyncLog,
   type GmeetSyncLogRecorder,
 } from "./gmeetSyncLog";
+import { publishGmeetMeetingCount } from "./gmeetLiveCount";
 import type { ConnectorConnection, ConnectorId } from "./types";
 
 /** SQL `source` column value and connector id — one string, one meaning. */
@@ -589,6 +590,8 @@ export interface GmeetRunLogEvent {
   tcw: TinyCloudWeb;
   recorder: GmeetSyncLogRecorder;
   final: boolean;
+  /** A run's start or a checkpoint: a persister writes it now, because a reload can end the run before the next one. */
+  urgent: boolean;
 }
 
 let lastRun: { tcw: TinyCloudWeb; recorder: GmeetSyncLogRecorder } | null = null;
@@ -605,14 +608,14 @@ export function getGmeetRunLog(tcw: TinyCloudWeb, build?: string | null): GmeetS
   return lastRun.recorder.build({ generatedAt: new Date(), build });
 }
 
-function publishRunLog(tcw: TinyCloudWeb, recorder: GmeetSyncLogRecorder, final: boolean): void {
-  for (const listener of runLogListeners) guarded(() => listener({ tcw, recorder, final }));
+function publishRunLog(tcw: TinyCloudWeb, recorder: GmeetSyncLogRecorder, final: boolean, urgent = false): void {
+  for (const listener of runLogListeners) guarded(() => listener({ tcw, recorder, final, urgent }));
 }
 
 function beginRunLog(tcw: TinyCloudWeb): GmeetSyncLogRecorder {
   const recorder = createGmeetSyncLogRecorder();
   lastRun = { tcw, recorder };
-  publishRunLog(tcw, recorder, false);
+  publishRunLog(tcw, recorder, false, true);
   return recorder;
 }
 
@@ -1042,6 +1045,7 @@ async function runGoogleMeetSync(opts: GmeetSyncOptions, recorder: GmeetSyncLogR
       const run = await runBudgetedDrive({
         opts, parentStep: step, parentSignal: controller.signal, record, diagnostics,
         budgetMs: DRIVE_NOTES_TIMEOUT_MS, parallel: false,
+        onCheckpoint: checkpointObserver(opts, recorder, diagnostics),
       });
       leavePhase();
       if (run.timeoutMessage !== null) {
@@ -1067,7 +1071,7 @@ async function runGoogleMeetSync(opts: GmeetSyncOptions, recorder: GmeetSyncLogR
     enterPhase("count");
     const count = await step(() => store.countMeetings(tcw, SOURCE), true);
     leavePhase();
-    if (count.ok) itemCount = count.data;
+    if (count.ok) { itemCount = count.data; publishGmeetMeetingCount(tcw, itemCount); }
     else terminal ??= fromStore(count.error, "countMeetings");
     diagnostics.persisted_item_count_after = itemCount;
     enterPhase("diagnostics");
@@ -1135,13 +1139,16 @@ const DOC_CALL_TIMEOUT_MS = 30_000;
 const DOCS_CONCURRENCY = 5;
 const DOCS_READ_AHEAD = DOCS_CONCURRENCY * 2;
 const CHECKPOINT_EVERY = 10;
-const CHECKPOINT_MAX_AGE_MS = 24 * 60 * 60_000;
+/** A checkpoint older than this is ignored rather than resumed (and is not reported as interrupted). */
+export const CHECKPOINT_MAX_AGE_MS = 24 * 60 * 60_000;
 
 /** Per-run state the Drive reconcile shares with `syncDriveFile`. */
 interface DriveCtx {
   /** Bounded parallel Docs reads (background reconcile only). */
   parallel: boolean;
   emitNotes?: (extra: Partial<GmeetSyncProgress>) => void;
+  /** Called after each checkpoint write, with the reconcile's own timed step. Observational: never throws. */
+  onCheckpoint?: (step: FinishingStep) => Promise<void>;
   /** Id-only association lookup over rows read once; null when the store cannot preload. */
   lookup: ((fileId: string) => GmeetNotesAssociation | null) | null;
   /** A Docs read already started ahead for this file, if any. */
@@ -1157,6 +1164,7 @@ interface DriveRunInput {
   budgetMs: number;
   parallel: boolean;
   emitNotes?: (extra: Partial<GmeetSyncProgress>) => void;
+  onCheckpoint?: (step: FinishingStep) => Promise<void>;
 }
 
 /**
@@ -1208,7 +1216,7 @@ async function runBudgetedDrive(input: DriveRunInput): Promise<{ drive: DriveOut
       else { diagnostics.drive_http_calls++; diagnostics.drive_http_ms += Date.now() - began; }
     });
   };
-  const ctx: DriveCtx = { parallel: input.parallel, emitNotes: input.emitNotes, lookup: null, takeDoc: null };
+  const ctx: DriveCtx = { parallel: input.parallel, emitNotes: input.emitNotes, onCheckpoint: input.onCheckpoint, lookup: null, takeDoc: null };
   try {
     const drive = await syncDriveNotes(
       { ...input.opts, signal: driveController.signal, step: timedStep, ctx }, input.record, diagnostics,
@@ -1324,6 +1332,7 @@ async function runNotesInBackground(input: NotesBackgroundInput): Promise<void> 
     const run = await runBudgetedDrive({
       opts: { ...opts, signal: undefined }, parentStep: trackedStep, parentSignal: input.stop.signal,
       record, diagnostics, budgetMs: NOTES_BACKGROUND_BUDGET_MS, parallel: true, emitNotes: publish,
+      onCheckpoint: checkpointObserver(opts, recorder, diagnostics),
     });
     diagnostics.phase_drive_ms += Date.now() - began;
     if (run.timeoutMessage !== null) terminal = { kind: "network", message: run.timeoutMessage };
@@ -1365,7 +1374,7 @@ async function runNotesInBackground(input: NotesBackgroundInput): Promise<void> 
     // card shows. A count that cannot be read must not leave the pre-reconcile figure standing,
     // so it falls back to that figure plus the rows this run is known to have added or removed.
     const count = await boundedStorage(() => store.countMeetings(tcw, SOURCE));
-    if (count?.ok) itemCount = count.data;
+    if (count?.ok) { itemCount = count.data; publishGmeetMeetingCount(tcw, itemCount); }
     else itemCount = Math.max(0, input.itemCount + diagnostics.drive_rows_inserted - diagnostics.drive_rows_deleted);
     diagnostics.persisted_item_count_after = itemCount;
     const write = await boundedStorage(() => store.updateSyncState(tcw, syncStateInput(input.startedAtIso, itemCount, terminal, reconnectRequired, partial)));
@@ -1636,10 +1645,12 @@ async function snapshotDriveNotes(
     if (!checkpointUsable || sinceCheckpoint === 0) return;
     sinceCheckpoint = 0;
     const written = await opts.step(() => store.putDriveProgress!(tcw, SOURCE, {
-      startToken, doneIds: [...doneIds], savedAt: isoAt((opts.now ?? Date.now)()),
+      startToken, doneIds: [...doneIds], savedAt: isoAt((opts.now ?? Date.now)()), total: candidates.length,
     }), true);
-    if (written.ok) diagnostics.drive_checkpoint_writes++;
-    else checkpointUsable = false; // Only an optimisation: keep reconciling without it.
+    if (written.ok) {
+      diagnostics.drive_checkpoint_writes++;
+      await ctx?.onCheckpoint?.(opts.step);
+    } else checkpointUsable = false; // Only an optimisation: keep reconciling without it.
   };
   for (let index = 0; index < files.data.length; index++) {
     const file = files.data[index]!;
@@ -1696,6 +1707,21 @@ async function snapshotDriveNotes(
   const write = await opts.step(() => store.putDriveCursor!(tcw, SOURCE, startToken), true);
   if (write.ok) diagnostics.drive_cursor_committed = 1;
   return write.ok ? {} : { terminal: fromStore(write.error, "putDriveCursor") };
+}
+
+/**
+ * What a checkpoint makes visible: the run's log (with the counters so far) is persisted now, and
+ * the saved-meeting count is re-read, so a reload that ends the run leaves both behind.
+ */
+function checkpointObserver(opts: GmeetSyncOptions, recorder: GmeetSyncLogRecorder, diagnostics: GmeetSyncDiagnostics) {
+  return async (step: FinishingStep): Promise<void> => {
+    try {
+      recorder.setDiagnostics({ ...diagnostics });
+      publishRunLog(opts.tcw, recorder, false, true);
+      const count = await step(() => opts.store.countMeetings(opts.tcw, SOURCE), true);
+      if (count.ok) publishGmeetMeetingCount(opts.tcw, count.data);
+    } catch { /* Observing a checkpoint must not fail the reconcile. */ }
+  };
 }
 
 /** Backoff before each retry of one Note's storage call: two retries, then the Note is left for the next run. */

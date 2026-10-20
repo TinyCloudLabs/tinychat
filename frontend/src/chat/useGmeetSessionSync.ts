@@ -191,6 +191,15 @@ let attempted = false;
  */
 let inFlight: Promise<GmeetSessionSyncOutcome> | null = null;
 
+/**
+ * Resolves when the session-start run in flight has finished its foreground part (immediately when none
+ * is running). A press whose own unlock re-armed that run waits here, so it sees the run the unlock
+ * started instead of racing it for the engine's slot. Never rejects.
+ */
+export async function awaitGmeetSessionSync(): Promise<void> {
+  await inFlight?.catch(() => {});
+}
+
 /** True once a real attempt has been made this page load. */
 export function hasGmeetSessionSyncRun(): boolean {
   return attempted;

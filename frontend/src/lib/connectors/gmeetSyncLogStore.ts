@@ -15,7 +15,7 @@ import type { GmeetSyncLog } from "./gmeetSyncLog";
 
 export const gmeetSyncLogStorageKey = (accountDid: string): string => `exo-gmeet-sync-log-v1:${accountDid}`;
 
-/** Live runs persist at most this often; a run's end persists at once. */
+/** Live runs persist at most this often; a run's start, its checkpoints and its end persist at once. */
 const PERSIST_THROTTLE_MS = 2_000;
 
 function defaultStorage(): Storage | undefined {
@@ -69,7 +69,7 @@ export function startPersistingGmeetRunLog(
   const off = onGmeetRunLog((event) => {
     if (event.tcw !== tcw) return;
     latest = event;
-    if (event.final) flush();
+    if (event.final || event.urgent) flush();
     else timer ??= setTimeout(flush, throttleMs);
   });
   return () => {

@@ -953,6 +953,8 @@ export interface GmeetDriveProgress {
   doneIds: string[];
   /** ISO time of the last checkpoint; a stale one is ignored rather than resumed. */
   savedAt: string;
+  /** Notes the reconcile had to go through; absent on a checkpoint an earlier build wrote. */
+  total?: number;
 }
 
 export function driveProgressKvKey(source: string): string {
@@ -981,7 +983,12 @@ export async function getDriveProgress(
   }
   return {
     ok: true,
-    data: { startToken: value.startToken, savedAt: value.savedAt, doneIds: value.doneIds.filter((id): id is string => typeof id === "string") },
+    data: {
+      startToken: value.startToken,
+      savedAt: value.savedAt,
+      doneIds: value.doneIds.filter((id): id is string => typeof id === "string"),
+      ...(typeof value.total === "number" && Number.isFinite(value.total) ? { total: value.total } : {}),
+    },
   };
 }
 
