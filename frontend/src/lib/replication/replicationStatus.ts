@@ -14,10 +14,13 @@ export interface ReplicationStatus {
   purgePending: boolean;
   /** A sign-out whose replica deny/erase did not complete. Set by replicationSignOut. */
   purgeFailed: boolean;
+  /** Code of an OFF-time removal that did not finish (retried next load); null when none. */
+  offPurgeCode: string | null;
 }
 
 const INITIAL: ReplicationStatus = {
   state: "idle", lastSyncAt: null, errorCode: null, bytes: 0, keys: 0, purgePending: false, purgeFailed: false,
+  offPurgeCode: null,
 };
 
 let current: ReplicationStatus = INITIAL;
@@ -36,6 +39,10 @@ export function subscribeReplicationStatus(listener: () => void): () => void {
 export function resetReplicationStatus(): void { publish(INITIAL); }
 export function markReplicationPurgeFailed(code: string): void {
   publish({ ...current, purgeFailed: true, errorCode: code });
+}
+
+export function setReplicationOffPurgeCode(code: string | null): void {
+  publish({ ...current, offPurgeCode: code });
 }
 
 /** Subset of the SDK `replication.sync` / `replication.state` events this view reads. */

@@ -10,6 +10,7 @@ import { getReplicationStatus, refreshReplicationStatus, subscribeReplicationSta
 const REFRESH_MS = 15_000;
 
 export function formatReplicationStatus(status: ReplicationStatus, maxBytes = REPLICATION_MAX_BYTES): string {
+  if (status.offPurgeCode) return `Local copy: removal failed (${status.offPurgeCode}) · will retry on next load`;
   const used = `${(status.bytes / (1024 * 1024)).toFixed(1)} of ${Math.round(maxBytes / (1024 * 1024))} MB`;
   const parts = [`state ${status.state}`, `last sync ${status.lastSyncAt ?? "never"}`, `${status.keys} items`, used];
   if (status.errorCode) parts.push(`error ${status.errorCode}`);
@@ -27,7 +28,7 @@ export function ReplicationStatusLine({ tcw }: { tcw: TinyCloudWeb }) {
     const timer = window.setInterval(() => void refreshReplicationStatus(tcw), REFRESH_MS);
     return () => window.clearInterval(timer);
   }, [enabled, tcw]);
-  if (!enabled) return null;
+  if (!enabled && !status.offPurgeCode) return null;
   return <p className="text-xs text-muted-foreground" role="status" data-testid="replication-status">
     {formatReplicationStatus(status)}
   </p>;

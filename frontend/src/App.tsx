@@ -30,6 +30,8 @@ import {
 } from "@tinyboilerplate/core";
 import { withEncryptionDecryptGrant } from "./lib/connectors/encryptionGrant";
 import { replicationConfigPatch } from "./lib/replication/replicationClient";
+import { rememberReplicationPrincipal } from "./lib/replication/replicationCopyMarker";
+import { purgeReplicaCopyWhenOffOnce } from "./lib/replication/replicationOffPurge";
 import { clientHasReplication, signOutReplicaAware } from "./lib/replication/replicationSignOut";
 import { uploadRunner } from "./lib/audioUpload";
 import { openkeyPasskeysSupported } from "./lib/openkeyPasskeys";
@@ -460,6 +462,9 @@ export function App() {
   // signal used to sign the user out here.
   const restoreSession = useCallback(async () => {
     if (restoreInFlightRef.current) return;
+    // Replication OFF + a leftover local copy: shred its keys, then erase it (once per page load,
+    // not awaited, no-op without a marker). See lib/replication/replicationOffPurge.ts.
+    void purgeReplicaCopyWhenOffOnce();
     logSession("restore", "start");
     restoreInFlightRef.current = true;
     setError(null);
@@ -571,6 +576,7 @@ export function App() {
       switch (restored.kind) {
         case "restored": {
           logSession("restore", "done");
+          rememberReplicationPrincipal(restored.tcw);
           const restoredTcw = LOCAL_VALIDATION ? useLocalCanvasStorage(useLocalThreadStorage(restored.tcw)) : restored.tcw;
           const accountDid = restored.tcw.did ?? `did:pkh:eip155:1:${restored.address}`;
           beginStorageAccountSession(restoredTcw, accountDid, restored.tcw.spaceId ?? null);
@@ -934,6 +940,7 @@ export function App() {
           })()
         : await createAndSignIn(prefetch.guardSigning(web3Provider), signInConfig);
 
+      rememberReplicationPrincipal(signedTcw);
       // Exchange the SIWE message for a backend Bearer token (for /api/chat).
       const verified = await verifySession(BACKEND_URL, session.siwe, session.signature);
       sessionStoreRef.current.setSession(verified.token, verified.expiresIn, connectedAddress);

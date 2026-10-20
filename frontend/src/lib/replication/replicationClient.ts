@@ -11,6 +11,7 @@
 // already covers them (augmentSignInEntriesWithReplication in node-sdk). Flag OFF: no sync entry,
 // so existing sessions get exactly what they got before.
 import type { TinyCloudWebConfig } from "@tinyboilerplate/client";
+import { noteReplicationCopyPossible } from "./replicationCopyMarker";
 import { isReplicationEnabled } from "./replicationFlag";
 import { replicationPrefixes } from "./replicationPrefixes";
 import { recordReplicationEvent } from "./replicationStatus";
@@ -33,7 +34,8 @@ export interface ReplicationPluginLoader {
 
 let pluginRegistered = false;
 
-const dynamicLoader: ReplicationPluginLoader = {
+/** Production loader; also used by replicationOffPurge.ts (lazily, only when a copy may exist). */
+export const defaultReplicationLoader: ReplicationPluginLoader = {
   async registerPlugin() {
     if (pluginRegistered) return; // registerBrowserReplica throws on duplicate registration
     // Dynamic on purpose: the optional plugin (and the web-sdk root, which is already in the main
@@ -54,9 +56,11 @@ const dynamicLoader: ReplicationPluginLoader = {
 
 /** The `replication` option for sign-in/restore, or undefined when the flag is OFF. */
 export async function buildReplicationConfig(
-  loader: ReplicationPluginLoader = dynamicLoader,
+  loader: ReplicationPluginLoader = defaultReplicationLoader,
 ): Promise<ReplicationClientConfig | undefined> {
   if (!isReplicationEnabled()) return undefined;
+  // Before any copy can exist: lets a later OFF load find it (replicationOffPurge.ts).
+  noteReplicationCopyPossible();
   await loader.registerPlugin();
   return {
     enabled: true,
