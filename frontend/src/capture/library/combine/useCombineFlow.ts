@@ -50,8 +50,8 @@ export interface CombineFlow {
 
 export interface CombineFlowOptions {
   tcw: TinyCloudWeb;
-  /** A combined meeting was written: its Library row id and its source_id. */
-  onCombined: (written: { id: string; sourceId: string }) => void;
+  /** A combined meeting was written: its Library row id, its source_id, and whether it is new (false: a Re-combine). */
+  onCombined: (written: { id: string; sourceId: string; created: boolean }) => void;
   /** The stitcher's runner (tests inject one). */
   stitch?: StitchStarter;
   now?: () => Date;
@@ -152,7 +152,7 @@ export function useCombineFlow(options: CombineFlowOptions): CombineFlow {
     if (!written.ok) return setState({ step: "error", source, other, message: WRITE_FAILED, retry: "confirm", forced: force });
     held.current = null;
     setState({ step: "idle" });
-    latest.current.onCombined({ id: written.data.id, sourceId: written.data.sourceId });
+    latest.current.onCombined({ id: written.data.id, sourceId: written.data.sourceId, created: written.data.created });
   }, [space, stitch]);
 
   const confirm = useCallback((force: boolean) => {

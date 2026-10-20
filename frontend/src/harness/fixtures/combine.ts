@@ -54,7 +54,12 @@ const snapshot = (row: SpaceRow): MeetingSnapshot => ({
 
 /** The combined meeting of the Weekly planning pair, as combine would have stored it (row id fixed for the screens). */
 export const COMBINED_ROW_ID = "combined-weekly";
-export function combinedWeekly(): SpaceRow[] {
+export const COMBINED_SUMMARY = {
+  overview: "The team agreed to ship the beta on Monday and to freeze the iOS build first. Pricing page copy still needs a review before the release notes go out.",
+  actionItems: ["Ana: freeze the iOS build before Monday", "Ben: write the release notes", "Mira: review the pricing page copy"],
+};
+
+export function combinedWeekly(withSummary = false): SpaceRow[] {
   const result = stitchMeetings(snapshot(FIREFLIES_WEEKLY), snapshot(NOTETAKER_WEEKLY));
   if (result.combined === null) throw new Error("harness: the Weekly planning pair must pass the check");
   const { row, body: stitched } = result.combined;
@@ -63,10 +68,11 @@ export function combinedWeekly(): SpaceRow[] {
     participants: JSON.stringify(row.participants),
     metadata: JSON.stringify({ ...row.metadata, merge: { ...row.metadata.merge, decided_at: new Date(2026, 9, 6, 9, 30).toISOString() } }),
     body: JSON.stringify(stitched),
+    ...(withSummary ? { summaryOverview: COMBINED_SUMMARY.overview, summaryActionItems: COMBINED_SUMMARY.actionItems.join("\n") } : {}),
   }];
 }
 
 /** A fresh stateful space for one screen. */
-export function combineScreenSpace(options: { combined?: boolean; rows?: readonly SpaceRow[] } = {}): CombineSpace {
-  return combineSpace([...(options.rows ?? COMBINE_ROWS), ...(options.combined ? combinedWeekly() : [])], { did: "did:test:combine-screens" });
+export function combineScreenSpace(options: { combined?: boolean; summary?: boolean; rows?: readonly SpaceRow[] } = {}): CombineSpace {
+  return combineSpace([...(options.rows ?? COMBINE_ROWS), ...(options.combined ? combinedWeekly(options.summary === true) : [])], { did: "did:test:combine-screens" });
 }

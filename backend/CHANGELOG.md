@@ -1,5 +1,11 @@
 # @tinychat/backend
 
+## 0.5.7-beta.2
+
+### Patch Changes
+
+- 38b2c37: Meeting chat tools accept `exo-merged` (combined meetings) as a source filter.
+
 ## 0.5.7-beta.1
 
 ### Patch Changes
