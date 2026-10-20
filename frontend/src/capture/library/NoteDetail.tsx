@@ -2,6 +2,8 @@
 // transcript's Copy. Remounted per note (keyed by its id), so a copy's tick
 // never carries over to the next note.
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useNavigate } from "react-router-dom";
+import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import type { VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
 import { copyText } from "@/lib/copyText";
@@ -16,8 +18,17 @@ import type { NotePipelineView } from "@/lib/voiceNotes/useNotePipeline";
 import { VoiceNoteSaveTimeout, withVoiceNoteSaveDeadline } from "@/lib/voiceNotes/saveDeadline";
 import { localTranscriptToSave, VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
 import { NoteDetailView, type NoteDetailViewProps } from "./NoteDetailView";
+import { CombineSheet } from "./combine/CombineSheet";
+import { canCombine } from "./combine/candidates";
+import { displayMembers, isCombined, memberLines, type CombineDetail } from "./combine/combinedView";
+import { DeleteCombinedSheet } from "./combine/DeleteCombinedSheet";
+import { useCombineFlow } from "./combine/useCombineFlow";
+import { useCombinedMeeting } from "./combine/useCombinedMeeting";
 import { hasPrivateCloudTimingProvenance, hasSegmentTimes, transcriptWithTimestamps } from "./transcriptSegments";
 import type { Library } from "./useLibrary";
+import { notePath } from "@/shell/routes";
+import { EXO_MERGED_SOURCE } from "@tinyboilerplate/core";
+import { captureEvents } from "../captureEvents";
 
 /** Matches markdown-text's copy button: the tick reverts on its own. */
 const COPIED_DURATION = 1500;
@@ -35,6 +46,8 @@ export async function readLocalTranscript(id: string, read: (id: string) => Prom
 
 export function NoteDetail(props: {
   library: Library;
+  /** The signed-in account's space: where Combine reads the two captures and writes the combined meeting. */
+  tcw: TinyCloudWeb;
   pushed: boolean;
   onBack: () => void;
   transcription: VoiceNoteTranscriptionProps | undefined;
@@ -45,6 +58,24 @@ export function NoteDetail(props: {
 }) {
   const { library } = props;
   const { item, reads, audio } = library.note;
+  const navigate = useNavigate();
+  const combined = useCombinedMeeting({ tcw: props.tcw, item, onChanged: library.refresh, onDeleted: props.onBack });
+  const flow = useCombineFlow({ tcw: props.tcw, onCombined: ({ id, sourceId }) => {
+    // A Re-combine rewrites the open row in place: drop its cached reads and check its members again.
+    captureEvents.emit("library-changed", { source: EXO_MERGED_SOURCE, sourceId });
+    combined.recheck();
+    library.refresh();
+    navigate(notePath(id));
+  } });
+  const combine = useMemo<CombineDetail | undefined>(() => {
+    if (item === null) return undefined;
+    if (isCombined(item)) {
+      const members = memberLines(displayMembers(reads.metadata?.status === "ok" ? reads.metadata.metadata : null), library.items);
+      const [a, b] = members.map((m) => library.items.find((entry) => entry.source === m.source && entry.sourceId === m.sourceId));
+      return { combined: { members, stale: combined.stale, onRecombine: members.length === 2 && a && b ? () => flow.open(a, b) : undefined, onDelete: combined.remove.request } };
+    }
+    return canCombine(item) ? { onCombine: () => flow.open(item) } : undefined;
+  }, [item, reads.metadata, library.items, combined.stale, combined.remove.request, flow.open]);
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [local, setLocal] = useState<{ id: string; transcript: LocalTranscript | null; readError: "timeout" | "failed" | null } | null>(null);
@@ -109,29 +140,34 @@ export function NoteDetail(props: {
   }, [sentences, isPrivateCloud, item, reads.metadata]);
 
   return (
-    <NoteDetailView
-      item={item}
-      // Not listed yet while a list read is out (a note saved a moment ago): it waits for that read.
-      listStatus={item === null && library.listing ? "loading" : library.status}
-      metadata={reads.metadata}
-      transcriptProvenance={selectedTranscript?.provenance}
-      transcript={remoteTranscript}
-      localTranscript={local?.id === localId ? local.transcript : undefined}
-      localTranscriptRead={local?.id === localId ? local.readError : null}
-      onLocalTranscriptRetry={() => { setLocal(null); setLocalAttempt((attempt) => attempt + 1); }}
-      audio={audio}
-      // A note only on this phone is not in the space to transcribe from.
-      transcription={item?.source === VOICE_NOTE_SOURCE && item.metadata?.capture !== "pasted" && !item.onPhone ? props.transcription : undefined}
-      activityView={props.activityView}
-      platform={props.platform}
-      copyState={copyState}
-      onCopy={() => void onCopy()}
-      onCopyWithTimestamps={() => void onCopy(true)}
-      onRetry={library.retry}
-      pushed={props.pushed}
-      onBack={props.onBack}
-      savedNote={props.savedNote}
-      activityControl={props.activityControl}
-    />
+    <>
+      <NoteDetailView
+        item={item}
+        // Not listed yet while a list read is out (a note saved a moment ago): it waits for that read.
+        listStatus={item === null && library.listing ? "loading" : library.status}
+        metadata={reads.metadata}
+        transcriptProvenance={selectedTranscript?.provenance}
+        transcript={remoteTranscript}
+        localTranscript={local?.id === localId ? local.transcript : undefined}
+        localTranscriptRead={local?.id === localId ? local.readError : null}
+        onLocalTranscriptRetry={() => { setLocal(null); setLocalAttempt((attempt) => attempt + 1); }}
+        audio={audio}
+        // A note only on this phone is not in the space to transcribe from.
+        transcription={item?.source === VOICE_NOTE_SOURCE && item.metadata?.capture !== "pasted" && !item.onPhone ? props.transcription : undefined}
+        activityView={props.activityView}
+        platform={props.platform}
+        copyState={copyState}
+        onCopy={() => void onCopy()}
+        onCopyWithTimestamps={() => void onCopy(true)}
+        onRetry={library.retry}
+        pushed={props.pushed}
+        onBack={props.onBack}
+        savedNote={props.savedNote}
+        activityControl={props.activityControl}
+        combine={combine}
+      />
+      <CombineSheet flow={flow} items={library.items} now={new Date()} />
+      {combined.remove.open && <DeleteCombinedSheet remove={combined.remove} title={item?.title ?? "Combined meeting"} />}
+    </>
   );
 }

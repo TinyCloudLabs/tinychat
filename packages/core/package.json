@@ -15,7 +15,7 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "test": "bun run test:type",
+    "test": "bun run test:type && bun test",
     "test:type": "tsc -p tsconfig.type-tests.json --noEmit"
   },
   "devDependencies": {
