@@ -446,7 +446,7 @@ describe('operation-local verified acquisition', () => {
 test('diagnostics probes supported-source body access independently of unsupported catalog rows', async () => {
   const f = fixture(); f.add('supported', { date: '2026-09-18T00:00:00Z' }); f.add('unsupported', { source: 'future-source', date: '2026-09-20T00:00:00Z' });
   const result = await invoke(f, 'diagnostics'); expect(result.ok).toBe(true); expect(result.access.bodyRead).toBe(true);
-  expect(result.coverage.supportedSources).toEqual(['fireflies', 'google-meet', 'tinycloud-transcriber', 'exo-local', 'exo-voice-note', 'exo-upload']);
+  expect(result.coverage.supportedSources).toEqual(['fireflies', 'google-meet', 'tinycloud-transcriber', 'exo-local', 'exo-voice-note', 'exo-upload', 'exo-merged']);
   expect(bodyGets(f)[0].find(arg => arg.endsWith('/supported'))).toBeTruthy();
 });
 
@@ -482,7 +482,7 @@ test('mixed-source catalog pages report consistent coverage for find, latest and
   f.add('voice', { source: 'exo-voice-note', date: '2026-09-19T00:00:00Z', sourceId: 'voice-recording' });
   f.add('upload', { source: 'exo-upload', date: '2026-09-18T00:00:00Z' });
   f.add('unknown', { source: 'future-source', date: '2026-09-17T00:00:00Z' });
-  const expectedSupported = ['fireflies', 'google-meet', 'tinycloud-transcriber', 'exo-local', 'exo-voice-note', 'exo-upload'];
+  const expectedSupported = ['fireflies', 'google-meet', 'tinycloud-transcriber', 'exo-local', 'exo-voice-note', 'exo-upload', 'exo-merged'];
   for (const [command, input] of [['find', { limit: 10 }], ['latest', {}], ['search', { term: 'Hello', scanLimit: 10 }]]) {
     const result = await invoke(f, command, input);
     expect(result.ok, `${command} should succeed on mixed-source catalog`).toBe(true);
@@ -491,6 +491,68 @@ test('mixed-source catalog pages report consistent coverage for find, latest and
     expect(result.coverage.omissions).toEqual([{ id: 'unknown', source: 'future-source', started_at: '2026-09-17T00:00:00Z' }]);
     expect(result.coverage.catalogRecordsExamined).toBe(5);
   }
+});
+const mergeMeta = members => ({ merge: { v: 1, members } });
+const combinedBody = [
+  { index: 0, speaker_name: 'Avery', text: 'Combined needle: ship Friday.', start_time: 5, end_time: 9, sources: [{ source: 'fireflies', source_id: 'cap-a', index: 0 }, { source: 'google-meet', source_id: 'cap-b', index: 3 }] },
+  { index: 1, speaker_name: 'Sam', text: 'Budget moves Monday.', start_time: 12, end_time: 15, sources: [{ source: 'google-meet', source_id: 'cap-b', index: 4 }], alternate: { text: 'Budget Monday' } },
+];
+function combinedFixture(extra = {}) {
+  const f = fixture();
+  f.add('cap-a', { source: 'fireflies', date: '2026-09-21T10:00:00Z', body: [{ text: 'Capture A needle', speaker_name: 'A' }] });
+  f.add('cap-b', { source: 'google-meet', date: '2026-09-21T10:01:00Z', body: [{ text: 'Capture B needle', speaker_name: 'B' }] });
+  f.add('other', { source: 'fireflies', date: '2026-09-20T10:00:00Z', body: [{ text: 'Other needle', speaker_name: 'C' }] });
+  f.add('merged', { source: 'exo-merged', date: '2026-09-21T10:00:00Z', body: combinedBody, metadata: mergeMeta([{ source: 'fireflies', source_id: 'cap-a' }, { source: 'google-meet', source_id: 'cap-b' }]), ...extra });
+  return f;
+}
+test('combined meeting is listed, searched and read once; the captures it combines are not returned', async () => {
+  const f = combinedFixture();
+  for (const [command, input] of [['find', { limit: 10 }], ['latest', {}]]) {
+    const result = await invoke(f, command, input); expect(result.ok, command).toBe(true);
+    const ids = result.records.map(r => r.id);
+    expect(ids, command).toContain('merged'); expect(ids, command).not.toContain('cap-a'); expect(ids, command).not.toContain('cap-b');
+  }
+  expect((await invoke(f, 'find', { limit: 10 })).records.map(r => r.id).sort()).toEqual(['merged', 'other']);
+  expect((await invoke(f, 'latest', {})).records.map(r => r.id)).toEqual(['merged']);
+  expect((await invoke(f, 'find', { source: 'exo-merged' })).records.map(r => r.id)).toEqual(['merged']);
+  const searched = await invoke(f, 'search', { term: 'needle', scanLimit: 10 });
+  expect(searched.ok).toBe(true); expect(searched.matches.map(m => m.record.id).sort()).toEqual(['merged', 'other']);
+  expect(searched.coverage.unsupportedSources).toEqual([]);
+  const read = await invoke(f, 'read', { ref: await ref(f, 'merged') });
+  expect(read.ok).toBe(true); expect(read.record).toMatchObject({ id: 'merged', source: 'exo-merged' });
+  // Citation fields are the usual ones: original record, UTF-16 offsets, speaker, time. The sources[] label is not part of a span.
+  expect(read.spans[0]).toMatchObject({ text: 'Combined needle: ship Friday.', recordIndex: 0, start: 0, end: 29, speaker: 'Avery', startSecs: 5 });
+  expect(read.spans[1]).toMatchObject({ recordIndex: 1, speaker: 'Sam' });
+  expect(bodyGets(f).at(-1)).toContain('xyz.tinycloud.tinychat/connectors/exo-merged/transcript/merged');
+});
+test('membership is by source and source_id, not id alone', async () => {
+  const f = fixture();
+  f.add('a', { source: 'fireflies', sourceId: 'shared' }); f.add('b', { source: 'google-meet', sourceId: 'shared' });
+  f.add('merged', { source: 'exo-merged', metadata: mergeMeta([{ source: 'fireflies', source_id: 'shared' }]) });
+  expect((await invoke(f, 'find', {})).records.map(r => r.id).sort()).toEqual(['b', 'merged']);
+});
+for (const [name, metadata] of [
+  ['metadata is not JSON', '{oops'], ['metadata has no merge record', {}], ['merge.members is empty', mergeMeta([])], ['merge.members is not an array', { merge: { members: 'cap-a' } }],
+  ['a member lacks source_id', mergeMeta([{ source: 'fireflies', source_id: 'cap-a' }, { source: 'google-meet' }])],
+  ['a member is not an object', mergeMeta([{ source: 'fireflies', source_id: 'cap-a' }, 5])],
+]) {
+  test(`fail closed: a combined row whose ${name} is itself left out and hides nothing`, async () => {
+    const f = combinedFixture();
+    f.db.query('UPDATE connector_meeting SET metadata = ? WHERE id = ?').run(typeof metadata === 'string' ? metadata : JSON.stringify(metadata), 'merged');
+    for (const [command, input] of [['find', { limit: 10 }], ['search', { term: 'needle', scanLimit: 10 }]]) {
+      const result = await invoke(f, command, input); expect(result.ok, command).toBe(true);
+      const ids = (result.records ?? result.matches.map(m => m.record)).map(r => r.id).sort();
+      expect(ids, command).toEqual(['cap-a', 'cap-b', 'other']);
+    }
+    expect((await invoke(f, 'latest', {})).records.map(r => r.id)).toEqual(['cap-b']);
+  });
+}
+test('a reference obtained before combining still reads that exact capture', async () => {
+  const f = combinedFixture(); f.db.query('UPDATE connector_meeting SET metadata = ? WHERE id = ?').run('{oops', 'merged');
+  const selected = await ref(f, 'cap-a');
+  f.db.query('UPDATE connector_meeting SET metadata = ? WHERE id = ?').run(JSON.stringify(mergeMeta([{ source: 'fireflies', source_id: 'cap-a' }, { source: 'google-meet', source_id: 'cap-b' }])), 'merged');
+  expect((await invoke(f, 'find', {})).records.map(r => r.id)).not.toContain('cap-a');
+  expect((await invoke(f, 'read', { ref: selected })).record.id).toBe('cap-a');
 });
 test('archived voice-note duplicates are filtered, not reported as unsupported', async () => {
   const f = fixture();
@@ -777,15 +839,13 @@ test('pack, explorer and Eliza executor source registries agree with explicit fo
   const explorerList = explorerBlock.match(/"[^"]+"|[A-Z_]+/g).map(value => value.startsWith('"') ? value.slice(1, -1) : resolved[value]);
   // Eliza's parser/reader remains a supported subset until TC-995 adds these sources.
   const backendExcludedForTc995 = ['exo-voice-note', 'exo-upload'];
-  // TC-1152: combined meetings are Library-only. Including them in the pack would need a pack
-  // version bump and would show agents every combined meeting alongside both of its members.
-  // The same holds for the backend executor and the in-app chat corpus.
-  const libraryOnly = ['exo-merged'];
-  expect(explorerList).toEqual(expect.arrayContaining(libraryOnly));
-  expect(packList).toEqual(explorerList.filter(source => !libraryOnly.includes(source)));
+  // TC-1152 v1-b: combined meetings (exo-merged) are one searchable meeting in the pack, the in-app chat corpus
+  // and the backend executor; the captures they combine are excluded in the queries, not in these lists.
+  expect(explorerList).toContain('exo-merged');
+  expect(packList).toEqual(explorerList);
   const corpusList = corpus.match(/SUPPORTED_MEETING_SOURCES = \[([^\]]+)\]/)?.[1].match(/"[^"]+"/g).map(value => value.slice(1, -1));
-  expect(corpusList).toEqual(explorerList.filter(source => !libraryOnly.includes(source)));
-  expect(backendList).toEqual(explorerList.filter(source => !backendExcludedForTc995.includes(source) && !libraryOnly.includes(source)));
+  expect(corpusList).toEqual(explorerList);
+  expect(backendList).toEqual(explorerList.filter(source => !backendExcludedForTc995.includes(source)));
 });
 const pendingSnapshotKey = source => `xyz.tinycloud.tinychat/connectors/pending-reconcile-snapshot/${source}`;
 function pendingSnapshot(source, checkedAt, meetings, version = 1) {
