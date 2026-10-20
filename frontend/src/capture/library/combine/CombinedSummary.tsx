@@ -39,16 +39,16 @@ export function CombinedSummary(props: { summary: SummaryView; onRetry?: () => v
       )}
       {summary.status === "unavailable" && (
         <div className="flex flex-col gap-1" data-testid="combined-summary-unavailable" data-reason={summary.reason}>
-          <p role="status" className="flex flex-wrap items-center gap-x-2 text-callout text-muted-foreground">
-            Summary unavailable
+          <div className="flex flex-wrap items-center gap-x-2 text-callout text-muted-foreground">
+            <p role="status">Summary unavailable</p>
             {summary.reason !== "too_long" && props.onRetry && <>
               <span aria-hidden>·</span>
               <button type="button" onClick={props.onRetry} data-testid="combined-summary-retry"
                 className="min-h-11 min-w-11 text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">Retry</button>
             </>}
-          </p>
-          {summary.reason === "too_long" && <p className="text-callout text-muted-foreground">This meeting is too long to summarise.</p>}
-          {summary.reason === "paywall" && <p className="text-callout text-muted-foreground">Summaries use your credits, and you’re out of them.</p>}
+          </div>
+          {summary.reason === "too_long" && <p role="status" className="text-callout text-muted-foreground">This meeting is too long to summarise.</p>}
+          {summary.reason === "paywall" && <p role="status" className="text-callout text-muted-foreground">Summaries use your credits, and you’re out of them.</p>}
         </div>
       )}
     </section>

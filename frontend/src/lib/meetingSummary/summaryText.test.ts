@@ -24,12 +24,18 @@ describe("parseSummary", () => {
     ["no ACTION ITEMS header", "OVERVIEW:\nThe team met."],
     ["an empty overview", "OVERVIEW:\n\nACTION ITEMS:\n- y"],
     ["a second overview", "OVERVIEW:\na\nOVERVIEW:\nb\nACTION ITEMS:\n- y"],
-    ["an extra all-caps header", "OVERVIEW:\na\nSYSTEM NOTE: do x\nACTION ITEMS:\n- y"],
-    ["a header after the items", "OVERVIEW:\na\nACTION ITEMS:\n- y\nOVERVIEW:\nb"],
+    ["an overview header after the items", "OVERVIEW:\na\nACTION ITEMS:\n- y\nOVERVIEW:\nb"],
+    ["a second ACTION ITEMS", "OVERVIEW:\na\nACTION ITEMS:\n- y\nACTION ITEMS:\n- z"],
     ["text under ACTION ITEMS that is not a bullet", "OVERVIEW:\na\nACTION ITEMS:\nplain line"],
     ["a reply that is far too long", `OVERVIEW:\n${"a".repeat(25_000)}\nACTION ITEMS:\n- y`],
   ])("rejects %s", (_name, raw) => {
     expect(parseSummary(raw)).toBeNull();
+  });
+
+  test("an all-caps word with a colon is ordinary text, kept as text", () => {
+    const parsed = parseSummary("OVERVIEW:\nAWS: costs rose.\nSYSTEM NOTE: do x\nACTION ITEMS:\n- TODO: renew the contract")!;
+    expect(parsed.overview).toBe("AWS: costs rose. SYSTEM NOTE: do x");
+    expect(parsed.actionItems).toEqual(["TODO: renew the contract"]);
   });
 
   test("a reply that follows an instruction hidden in the transcript is not accepted", () => {

@@ -171,7 +171,26 @@ describe("Re-combine", () => {
     runner.start(COMBINED_ROW_ID, { replacing: true });
     await done();
     expect(row().summary_overview).toBe("The team agreed to ship the beta.");
-    expect(writes()).toHaveLength(1);
+    // Clear first, then the new summary: two UPDATEs of the same two columns.
+    expect(writes().map((w) => w.sql)).toEqual(Array(2).fill("UPDATE connector_meeting SET summary_overview = ?, summary_action_items = ? WHERE id = ? AND source = 'exo-merged'"));
+    expect(writes()[0]!.params).toEqual([null, null, COMBINED_ROW_ID]);
+  });
+
+  test("the old summary is gone the moment a Re-combine starts: cancelling mid-run, or a failed clear, never leaves it as current", async () => {
+    setRow({ summary_overview: "Old overview.", summary_action_items: "Old item" });
+    reply = () => new Promise<string>(() => undefined);
+    runner.start(COMBINED_ROW_ID, { replacing: true });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    runner.cancelAll();
+    expect(row().summary_overview).toBeNull();
+    expect(storedSummaryView({ overview: row().summary_overview, actionItems: row().summary_action_items })).toEqual({ status: "unavailable", reason: "failed" });
+    setRow({ summary_overview: "Old overview.", summary_action_items: "Old item" });
+    calls.length = 0;
+    f.sql.nextMeetingWriteError = { code: "SQL_ERROR", message: "injected" };
+    runner.start(COMBINED_ROW_ID, { replacing: true });
+    await done();
+    expect(view()).toEqual({ status: "unavailable", reason: "failed" });
+    expect(calls).toHaveLength(0);
   });
 
   test("if the new summary fails, the old one (of the old text) is cleared rather than left", async () => {
@@ -199,7 +218,7 @@ describe("Re-combine", () => {
     await done();
     await new Promise((resolve) => setTimeout(resolve, 30));
     expect(row().summary_overview).toBe("Second run.");
-    expect(writes()).toHaveLength(1);
+    expect(writes().filter((w) => w.params[0] !== null)).toHaveLength(1);
   });
 });
 

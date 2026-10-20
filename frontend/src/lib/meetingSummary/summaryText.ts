@@ -33,8 +33,6 @@ const CONTROL = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u200B-\u20
 const OVERVIEW_HEADER = /^OVERVIEW:[ \t]*(.*)$/i;
 const ACTIONS_HEADER = /^ACTION ITEMS:[ \t]*(.*)$/i;
 const BULLET = /^(?:[-*•])[ \t]+(.*)$/;
-/** Any other all-caps "HEADER:" line: the reply is not the shape asked for. */
-const OTHER_HEADER = /^[A-Z][A-Z -]{2,}:/;
 const NONE = /^(?:none|n\/a|no action items?|nothing)\.?$/i;
 
 /** Plain text only: tags and link/image syntax go, whitespace collapses, length is capped. */
@@ -64,7 +62,7 @@ export function parseSummary(raw: unknown, limits: SummaryLimits = SUMMARY_LIMIT
     const line = lines[i]!;
     inActions = ACTIONS_HEADER.exec(line);
     if (inActions) break;
-    if (OVERVIEW_HEADER.test(line) || OTHER_HEADER.test(line)) return null;
+    if (OVERVIEW_HEADER.test(line)) return null;
     overviewLines.push(line);
   }
   if (inActions === null) return null;
@@ -74,7 +72,7 @@ export function parseSummary(raw: unknown, limits: SummaryLimits = SUMMARY_LIMIT
   const actionLines = [...(rest ? [rest] : []), ...lines.slice(i)];
   for (const line of actionLines) {
     if (line === "") continue;
-    if (ACTIONS_HEADER.test(line) || OVERVIEW_HEADER.test(line) || OTHER_HEADER.test(line)) return null;
+    if (ACTIONS_HEADER.test(line) || OVERVIEW_HEADER.test(line)) return null;
     const bullet = BULLET.exec(line);
     if (bullet) items.push(bullet[1]!);
     // A bullet that wrapped onto the next line.

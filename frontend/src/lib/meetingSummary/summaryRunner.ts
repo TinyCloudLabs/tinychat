@@ -77,27 +77,29 @@ export function createSummaryRunner(deps: SummaryRunnerDeps): SummaryRunner {
   };
 
   const run = async (id: string, replacing: boolean, controller: AbortController): Promise<void> => {
-    const unavailable = async (reason: SummaryUnavailableReason, clear: boolean) => {
-      // A Re-combine whose new summary failed must not leave the old text (of the old combined text) in place.
-      if (clear) await writeCombinedSummary(deps.space, id, { overview: null, actionItems: null }).catch(() => undefined);
+    const unavailable = (reason: SummaryUnavailableReason) => {
       if (current(id, controller)) set(id, { view: { status: "unavailable", reason }, controller, pending: null });
     };
     try {
+      // A Re-combine's old summary is of the old text: clear it FIRST, so however this run ends (a failure, a
+      // cancel, the app closing) the page never shows it as the summary of the new text.
+      if (replacing) {
+        const cleared = await writeCombinedSummary(deps.space, id, { overview: null, actionItems: null });
+        if (!current(id, controller)) return;
+        if (!cleared.ok) return unavailable("failed");
+      }
       const row = await readCombinedSummary(deps.space, id);
       if (!current(id, controller)) return;
-      if (!row.ok || row.data === null) return await unavailable("failed", false);
+      if (!row.ok || row.data === null) return unavailable("failed");
       const body = await readCombinedBody(deps.space, row.data.sourceId);
       if (!current(id, controller)) return;
-      if (!body.ok) return await unavailable("failed", false);
+      if (!body.ok) return unavailable("failed");
       const result = await generateSummary(transcriptLines(body.data), { complete: deps.complete, classify, signal: controller.signal });
       if (!current(id, controller)) return;
-      if (!result.ok) {
-        if (result.kind === "cancelled") { jobs.delete(id); notify(); return; }
-        return await unavailable(REASON[result.kind] ?? "failed", replacing);
-      }
+      if (!result.ok) return unavailable(REASON[result.kind] ?? "failed");
       await save(id, result.summary, controller);
     } catch {
-      if (current(id, controller)) await unavailable("failed", false);
+      unavailable("failed");
     }
   };
 

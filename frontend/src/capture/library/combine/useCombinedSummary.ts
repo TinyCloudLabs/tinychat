@@ -3,7 +3,7 @@
 // What the page shows is the run's state when this session has one (generating, just finished, failed),
 // else the stored summary columns (one SELECT per open). Opening the page never starts a run: a meeting
 // with no stored summary shows "Summary unavailable · Retry", and only Retry (or a combine) calls the model.
-import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { readCombinedSummary } from "@/lib/connectors/combinedMeetingStore";
@@ -31,7 +31,8 @@ export function useCombinedSummary(options: { tcw: TinyCloudWeb; runner: Summary
     });
     return () => { live = false; };
   }, [space, id]);
-  if (id === null || runner === undefined) return { view: undefined, retry: () => undefined };
+  const retry = useCallback(() => { if (runner !== undefined && id !== null) runner.retry(id); }, [runner, id]);
+  if (id === null || runner === undefined) return { view: undefined, retry };
   const view: SummaryView = job ?? (stored?.id === id ? stored.view : { status: "loading" });
-  return { view, retry: () => runner.retry(id) };
+  return { view, retry };
 }
