@@ -750,10 +750,11 @@ test('rejects foreign or malformed committed body_key pointers before KV access'
 
 test('pack, explorer and Eliza executor source registries agree with explicit follow-up exclusions', async () => {
   const root = process.cwd();
-  const [pack, explorer, backend] = await Promise.all([
+  const [pack, explorer, backend, corpus] = await Promise.all([
     readFile(join(root, 'agent-skills/tinychat-retrieval/lib/retrieval.mjs'), 'utf8'),
     readFile(join(root, 'frontend/src/lib/connectors/meetingExplorer.ts'), 'utf8'),
     readFile(join(root, 'backend/src/transcripts/tool-contract.ts'), 'utf8'),
+    readFile(join(root, 'frontend/src/lib/meetingChat/corpus.ts'), 'utf8'),
   ]);
   const readSourceConstant = async (file, name) => {
     const source = await readFile(join(root, file), 'utf8');
@@ -770,13 +771,21 @@ test('pack, explorer and Eliza executor source registries agree with explicit fo
     LOCAL_MEETING_SOURCE: ['frontend/src/lib/localTranscriber.ts', 'LOCAL_MEETING_SOURCE'],
     VOICE_NOTE_SOURCE: ['frontend/src/lib/voiceNotes/voiceNoteStore.ts', 'VOICE_NOTE_SOURCE'],
     UPLOAD_MEETING_SOURCE: ['frontend/src/lib/audioUpload.ts', 'UPLOAD_MEETING_SOURCE'],
+    EXO_MERGED_SOURCE: ['packages/core/src/connector-meeting.ts', 'EXO_MERGED_SOURCE'],
   };
   const resolved = Object.fromEntries(await Promise.all(Object.entries(constants).map(async ([alias, [file, name]]) => [alias, await readSourceConstant(file, name)])));
   const explorerList = explorerBlock.match(/"[^"]+"|[A-Z_]+/g).map(value => value.startsWith('"') ? value.slice(1, -1) : resolved[value]);
   // Eliza's parser/reader remains a supported subset until TC-995 adds these sources.
   const backendExcludedForTc995 = ['exo-voice-note', 'exo-upload'];
-  expect(packList).toEqual(explorerList);
-  expect(backendList).toEqual(explorerList.filter(source => !backendExcludedForTc995.includes(source)));
+  // TC-1152: combined meetings are Library-only. Including them in the pack would need a pack
+  // version bump and would show agents every combined meeting alongside both of its members.
+  // The same holds for the backend executor and the in-app chat corpus.
+  const libraryOnly = ['exo-merged'];
+  expect(explorerList).toEqual(expect.arrayContaining(libraryOnly));
+  expect(packList).toEqual(explorerList.filter(source => !libraryOnly.includes(source)));
+  const corpusList = corpus.match(/SUPPORTED_MEETING_SOURCES = \[([^\]]+)\]/)?.[1].match(/"[^"]+"/g).map(value => value.slice(1, -1));
+  expect(corpusList).toEqual(explorerList.filter(source => !libraryOnly.includes(source)));
+  expect(backendList).toEqual(explorerList.filter(source => !backendExcludedForTc995.includes(source) && !libraryOnly.includes(source)));
 });
 const pendingSnapshotKey = source => `xyz.tinycloud.tinychat/connectors/pending-reconcile-snapshot/${source}`;
 function pendingSnapshot(source, checkedAt, meetings, version = 1) {
