@@ -247,12 +247,12 @@ export async function runGmeetSyncNow(opts: {
   };
 }): Promise<RowSyncOutcome> {
   const { tcw, backendUrl, sessionStore, refreshToken, signal, deps } = opts;
-  const mint = () =>
+  const mint = (mintSignal: AbortSignal) =>
     mintGmeetAccessToken({
-      backendUrl, sessionStore, refreshToken, signal,
+      backendUrl, sessionStore, refreshToken, signal: mintSignal,
       fetchImpl: deps?.fetchImpl, retryDelayMs: deps?.mintRetryDelayMs,
     });
-  const accessToken = await mint();
+  const accessToken = await mint(signal);
   // Token mint is the final await before engine dispatch. Re-check here so a
   // session-start run that claimed the shared slot during vault/key/token work
   // cannot make Full rescan join it and silently lose snapshot intent.
@@ -275,9 +275,10 @@ export async function runGmeetSyncNow(opts: {
   if (signal.aborted) clientAbort.abort();
   // One 401 re-mints through the same proxy — the refresh token never leaves
   // this scope, and the new access token stays in the client.
+  const refreshAccessToken = () => mint(clientAbort.signal);
   const client = deps?.createClient
-    ? deps.createClient(accessToken, mint, clientAbort.signal)
-    : new GmeetClient({ accessToken, refreshAccessToken: mint, signal: clientAbort.signal });
+    ? deps.createClient(accessToken, refreshAccessToken, clientAbort.signal)
+    : new GmeetClient({ accessToken, refreshAccessToken, signal: clientAbort.signal });
   try {
     const res = await syncGoogleMeet({
       client,

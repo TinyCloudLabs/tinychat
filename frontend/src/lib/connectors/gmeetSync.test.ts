@@ -1,7 +1,7 @@
 import type { SessionStore } from "@tinyboilerplate/client";
 import { sourceRowDisplay } from "@/capture/meetingSources/meetingSourceState";
 import { runGmeetSyncNow } from "@/chat/ConnectorsCard";
-import { getGmeetLastRun, resetGmeetLastRunsForTests } from "./gmeetLastRun";
+import { clearGmeetLastRun, getGmeetLastRun, resetGmeetLastRunsForTests } from "./gmeetLastRun";
 import { getGmeetMeetingCount, onGmeetMeetingCount, resetGmeetMeetingCountsForTests } from "./gmeetLiveCount";
 import { afterEach, beforeEach, describe, expect, test, vi } from "bun:test";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
@@ -2843,5 +2843,54 @@ describe("Notes reconcile at scale", () => {
       // One Meet record plus six Notes, counted up as they were saved (no checkpoint store, so no checkpoints).
       expect(seen).toEqual([1, 2, 3, 4, 5, 6, 7]);
     } finally { off(); offCount(); }
+  });
+
+  test("Stop reaches the client until the Notes are handed off, and never afterwards", async () => {
+    const f = scaleFixture({ docs: 0, notes: 3, preload: true });
+    const hold = Promise.withResolvers<void>();
+    f.ctl.hold = hold.promise;
+    const settled: GmeetNotesSettled[] = [];
+    const off = onGmeetNotesSettled((s) => settled.push(s));
+    let clientSignal: AbortSignal | undefined;
+    const stop = new AbortController();
+    try {
+      await runGmeetSyncNow({
+        tcw: TCW, backendUrl: "https://backend.test", sessionStore: SESSION_STORE, refreshToken: "refresh",
+        driveMode: "snapshot", signal: stop.signal, onProgress: () => {},
+        deps: { store: f.store, fetchImpl: mintFetch, createClient: (_token, _refresh, signal) => { clientSignal = signal; return f.client; }, mintRetryDelayMs: 0 },
+      });
+      expect(isGmeetNotesSyncInFlight()).toBe(true);
+      stop.abort(); // The press is over; the background Notes keep their client.
+      expect(clientSignal?.aborted).toBe(false);
+      hold.resolve();
+      expect(await drain(() => settled.length === 1)).toBe(true);
+      expect(settled[0]).toMatchObject({ ok: true });
+
+      const stopped = new AbortController();
+      stopped.abort(); // Stop before the engine takes over.
+      await runGmeetSyncNow({
+        tcw: TCW, backendUrl: "https://backend.test", sessionStore: SESSION_STORE, refreshToken: "refresh",
+        driveMode: "snapshot", signal: stopped.signal, onProgress: () => {},
+        deps: { store: f.store, fetchImpl: mintFetch, createClient: (_token, _refresh, signal) => { clientSignal = signal; return f.client; }, mintRetryDelayMs: 0 },
+      });
+      expect(clientSignal?.aborted).toBe(true);
+    } finally { hold.resolve(); off(); }
+  });
+
+  test("a Notes run stopped by a disconnect leaves the last run as the foreground wrote it, and a disconnect forgets it", async () => {
+    const f = scaleFixture({ docs: 0, notes: 4, preload: true });
+    resetGmeetLastRunsForTests();
+    const hold = Promise.withResolvers<void>();
+    f.ctl.hold = hold.promise;
+    try {
+      await run(f.client, f.store, { driveMode: "snapshot", deferNotes: true });
+      expect(getGmeetLastRun(TCW)).toMatchObject({ status: "ok", error: null });
+      const stopped = stopGmeetNotesSync();
+      hold.resolve();
+      await stopped;
+      expect(getGmeetLastRun(TCW)).toMatchObject({ status: "ok", error: null }); // Not "stopped" as a failure.
+      clearGmeetLastRun(TCW);
+      expect(getGmeetLastRun(TCW)).toBeNull();
+    } finally { hold.resolve(); }
   });
 });
