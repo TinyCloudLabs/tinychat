@@ -39,6 +39,7 @@ import {
   type GmeetLiveStatus,
   syncGoogleMeet,
   type GmeetSyncDiagnostics,
+  type GmeetSyncClient,
   type GmeetSyncProgress,
   type GmeetSyncStore,
 } from "@/lib/connectors/gmeetSync";
@@ -222,6 +223,11 @@ export async function runFirefliesSyncNow(opts: {
  * run only. `syncGoogleMeet`'s module-level single-flight is shared with the
  * session-start lane, so a button press while that run is in flight JOINS it
  * rather than racing it over the same upserts.
+ *
+ * The press returns once the Meet records are saved and the connection is written. The Notes
+ * reconcile (Full rescan keeps its snapshot listing) continues in the background under its own
+ * budget, with checkpoints, exactly as after connecting: a slow node must not turn a press into a
+ * 60 s foreground limit that needs another press to continue.
  */
 export async function runGmeetSyncNow(opts: {
   tcw: TinyCloudWeb;
@@ -232,11 +238,21 @@ export async function runGmeetSyncNow(opts: {
   signal: AbortSignal;
   onProgress: (p: SyncProgress) => void;
   onDiagnostics?: (diagnostics: GmeetSyncDiagnostics) => void;
+  /** Test seams: the real store, transport and client are used when omitted. */
+  deps?: {
+    store?: GmeetSyncStore;
+    fetchImpl?: typeof fetch;
+    createClient?: (accessToken: string, refreshAccessToken: () => Promise<string | null>, signal: AbortSignal) => GmeetSyncClient;
+    mintRetryDelayMs?: number;
+  };
 }): Promise<RowSyncOutcome> {
-  const { tcw, backendUrl, sessionStore, refreshToken, signal } = opts;
-  const mint = () =>
-    mintGmeetAccessToken({ backendUrl, sessionStore, refreshToken, signal });
-  const accessToken = await mint();
+  const { tcw, backendUrl, sessionStore, refreshToken, signal, deps } = opts;
+  const mint = (mintSignal: AbortSignal) =>
+    mintGmeetAccessToken({
+      backendUrl, sessionStore, refreshToken, signal: mintSignal,
+      fetchImpl: deps?.fetchImpl, retryDelayMs: deps?.mintRetryDelayMs,
+    });
+  const accessToken = await mint(signal);
   // Token mint is the final await before engine dispatch. Re-check here so a
   // session-start run that claimed the shared slot during vault/key/token work
   // cannot make Full rescan join it and silently lose snapshot intent.
@@ -250,25 +266,37 @@ export async function runGmeetSyncNow(opts: {
       retryAfterMs: null,
     };
   }
-  const client = new GmeetClient({
-    accessToken,
-    // One 401 re-mints through the same proxy — the refresh token never leaves
-    // this scope, and the new access token stays in the client.
-    refreshAccessToken: mint,
-    signal,
-  });
-  const res = await syncGoogleMeet({
-    client,
-    store: GMEET_STORE,
-    tcw,
-    driveMode: opts.driveMode,
-    onProgress: (p) => opts.onProgress(gmeetRowProgress(p)),
-    onDiagnostics: opts.onDiagnostics,
-    signal,
-  });
-  if (res.ok) return { ok: true };
-  if (res.error.message === GMEET_NOTES_BUSY_MESSAGE) return { ok: false, busy: true };
-  return { ok: false, message: res.error.message, retryAfterMs: res.error.retryAfterMs ?? null };
+  // The Notes reconcile outlives this press, so the client it runs on must not be cut by the press's
+  // abort (Stop) once the engine has handed the Notes off. Until then Stop still reaches the client.
+  const clientAbort = new AbortController();
+  let notesHandedOff = false;
+  const forwardAbort = () => { if (!notesHandedOff) clientAbort.abort(); };
+  signal.addEventListener("abort", forwardAbort, { once: true });
+  if (signal.aborted) clientAbort.abort();
+  // One 401 re-mints through the same proxy — the refresh token never leaves
+  // this scope, and the new access token stays in the client.
+  const refreshAccessToken = () => mint(clientAbort.signal);
+  const client = deps?.createClient
+    ? deps.createClient(accessToken, refreshAccessToken, clientAbort.signal)
+    : new GmeetClient({ accessToken, refreshAccessToken, signal: clientAbort.signal });
+  try {
+    const res = await syncGoogleMeet({
+      client,
+      store: deps?.store ?? GMEET_STORE,
+      tcw,
+      driveMode: opts.driveMode,
+      deferNotes: true,
+      onProgress: (p) => opts.onProgress(gmeetRowProgress(p)),
+      onDiagnostics: opts.onDiagnostics,
+      signal,
+    });
+    notesHandedOff = res.ok && res.data.notesDeferred === true;
+    if (res.ok) return { ok: true };
+    if (res.error.message === GMEET_NOTES_BUSY_MESSAGE) return { ok: false, busy: true };
+    return { ok: false, message: res.error.message, retryAfterMs: res.error.retryAfterMs ?? null };
+  } finally {
+    signal.removeEventListener("abort", forwardAbort);
+  }
 }
 
 /**

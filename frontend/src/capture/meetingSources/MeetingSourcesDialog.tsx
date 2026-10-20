@@ -23,6 +23,7 @@ import { describeGmeetLive, gmeetPressLabel } from "@/chat/GmeetCardStatus";
 import { useBackgroundSync } from "@/chat/useBackgroundSync";
 import { useGmeetRowStatus } from "@/chat/useGmeetRowStatus";
 import * as connectorStore from "@/lib/connectors/connectorStore";
+import { clearGmeetLastRun } from "@/lib/connectors/gmeetLastRun";
 import { getGmeetMeetingCount, onGmeetMeetingCount, refreshGmeetMeetingCount } from "@/lib/connectors/gmeetLiveCount";
 import { onGmeetNotesSettled } from "@/lib/connectors/gmeetSync";
 import { createConnectorMeetingsClient } from "@/lib/connectors/meetingsApi";
@@ -199,7 +200,7 @@ export function MeetingSourcesDialog({
             syncError: sourceSync.error?.id === d.id ? sourceSync.error.message : null,
             rowNote: rowNotes[d.id] ?? null,
             // Meet's count is the saved meetings the Library shows, not the figure cached when a sync last settled.
-            ...(d.id === "google-meet" ? { itemCount: gmeetStatus.count } : {}),
+            ...(d.id === "google-meet" ? { itemCount: gmeetStatus.count, lastRun: gmeetStatus.lastRun } : {}),
           });
           const busy = sourceSync.busy?.id === d.id ? sourceSync.busy : null;
           return (
@@ -301,6 +302,7 @@ export function MeetingSourcesDialog({
           open
           onFinished={(warning) => {
             const id = disconnectDescriptor.id;
+            if (id === "google-meet") clearGmeetLastRun(tcw);
             setManageOpen((old) => ({ ...old, [id]: false }));
             setRowNotes((old) => {
               const next = { ...old };
