@@ -31,6 +31,7 @@ import { legacyScreens } from "./screens/legacy";
 import { libraryScreens } from "./screens/library";
 import { localScreens } from "./screens/local";
 import { meetingSourcesScreens } from "./screens/meetingSources";
+import { meetingSourcesGmeetScreens } from "./screens/meetingSourcesGmeet";
 import { micRecoveryScreens } from "./screens/micRecovery";
 import { nativeSignInScreens } from "./screens/nativeSignIn";
 import { pipelineScreens } from "./screens/pipeline";
@@ -80,6 +81,7 @@ const SCREENS: HarnessScreen[] = [
   ...savedNoteScreens,
   ...localScreens,
   ...meetingSourcesScreens,
+  ...meetingSourcesGmeetScreens,
   ...micRecoveryScreens,
   ...nativeSignInScreens,
   ...pipelineScreens,

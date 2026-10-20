@@ -211,6 +211,9 @@ export function resetGmeetSessionSyncForTests(): void {
   inFlight = null;
 }
 
+/** Wait before the one retry of a mint whose request never got an answer (a connection the network closed). */
+const MINT_RETRY_DELAY_MS = 750;
+
 /**
  * Mint a Google access token through the authenticated backend proxy.
  *
@@ -220,6 +223,9 @@ export function resetGmeetSessionSyncForTests(): void {
  * (400/401), a 5xx, a transport error, malformed JSON — resolves to null. The
  * session is deliberately NOT cleared on a 401: this is a background lane, and
  * the app shell owns auth state.
+ *
+ * A request that got no answer at all (the network closed the connection) is sent ONCE more after a
+ * short wait; an answer, whatever its status, is final. Stop (the signal) cancels the wait.
  */
 export async function mintGmeetAccessToken(opts: {
   backendUrl: string;
@@ -227,29 +233,42 @@ export async function mintGmeetAccessToken(opts: {
   refreshToken: string;
   signal?: AbortSignal;
   fetchImpl?: typeof fetch;
+  retryDelayMs?: number;
 }): Promise<string | null> {
   const { backendUrl, sessionStore, refreshToken, signal } = opts;
   const bearer = sessionStore.getToken();
   if (!bearer || sessionStore.isExpired()) return null;
   // `fetch` MUST stay bound to the global (see gmeetClient.ts's note).
   const fetchImpl = opts.fetchImpl ?? fetch.bind(globalThis);
+  const send = () => fetchImpl(`${backendUrl}${GOOGLE_OAUTH_REFRESH_PATH}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${bearer}`,
+      [REQUEST_HEADER_NAME]: REQUEST_HEADER_VALUE,
+    },
+    body: JSON.stringify(googleRefreshGrant(refreshToken)),
+    signal,
+  });
 
   let response: Response;
   try {
-    response = await fetchImpl(`${backendUrl}${GOOGLE_OAUTH_REFRESH_PATH}`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${bearer}`,
-        [REQUEST_HEADER_NAME]: REQUEST_HEADER_VALUE,
-      },
-      body: JSON.stringify(googleRefreshGrant(refreshToken)),
-      signal,
-    });
+    response = await send();
   } catch {
     // Not narrated: a transport error can echo the request, and no credential
     // material reaches a log from this module.
-    return null;
+    if (signal?.aborted) return null;
+    await new Promise<void>((resolve) => {
+      const finish = () => { clearTimeout(timer); signal?.removeEventListener("abort", finish); resolve(); };
+      const timer = setTimeout(finish, opts.retryDelayMs ?? MINT_RETRY_DELAY_MS);
+      signal?.addEventListener("abort", finish, { once: true });
+    });
+    if (signal?.aborted) return null;
+    try {
+      response = await send();
+    } catch {
+      return null;
+    }
   }
 
   if (!response.ok) return null;

@@ -94,6 +94,12 @@ export function sourceRowDisplay(input: {
   } | null;
   /** Overrides the stored count: Google Meet's is the live count of saved meetings, null until read. */
   itemCount?: number | null;
+  /**
+   * How this page load's latest run ended (Google Meet). It wins over the stored row, which holds the
+   * sync watermark and is re-read only after a run settles: until then it can still carry an earlier
+   * failure, or the time the run began.
+   */
+  lastRun?: { syncedAt: string | null; status: "ok" | "partial" | "error"; error: string | null } | null;
   syncing: boolean;
   connecting: boolean;
   /** This window's own sync failure for the row, if the last attempt failed. */
@@ -112,12 +118,15 @@ export function sourceRowDisplay(input: {
       : connected
         ? "connected"
         : "disconnected";
-  const problem = persistedSyncProblem(connection);
+  const run = connected ? (input.lastRun ?? null) : null;
+  const problem = run
+    ? run.status === "ok" ? null : { kind: run.status, message: run.error }
+    : persistedSyncProblem(connection);
   const status = input.comingSoon
     ? null
     : meetingSourceStatus(
         state,
-        syncedAgo(connection?.lastSyncedAt),
+        syncedAgo(run?.syncedAt ?? connection?.lastSyncedAt),
         input.itemCount !== undefined ? input.itemCount : (connection?.itemCount ?? 0),
         problem?.kind ?? null,
       );
