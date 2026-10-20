@@ -1,5 +1,29 @@
 # @tinychat/frontend
 
+## 0.10.0-beta.5
+
+### Patch Changes
+
+- 1c140c0: Calendar autojoin now asks Google for Calendar events, openid and email only, and no longer asks for the Meet, Drive and Docs scopes or for previously granted scopes. Enabling it no longer saves a Google Meet token or runs a Meet sync; Google Meet stays a separate connect. Existing autojoin connections are not changed until the user reconnects.
+
+## 0.10.0-beta.4
+
+### Patch Changes
+
+- 104c54e: Google Meet in Meeting sources: a Full rescan or Sync now that another Meet sync refuses (including the run its own vault unlock started) shows that sync's progress and starts by itself when it ends, instead of "Another Google Meet sync is already running". The meeting count is the live count of saved meetings, refreshed at every checkpoint and when a sync settles. The connect dialog says how many Meet recordings synced and how many meetings are saved. The sync log is saved when a run starts and at each checkpoint, so a run a reload cuts short leaves one, and "Copy sync log" is on the row. After a reload the row says "A Notes sync was interrupted at x/y. Sync now resumes it."
+
+## 0.10.0-beta.3
+
+### Patch Changes
+
+- 54a136e: Google Meet Notes: one Note's storage write is retried twice with backoff, and a Note that still fails no longer fails the run: the rest are saved, the card reports "N of M Notes saved", and Sync now or Full rescan finishes the rest (a snapshot resumes only the unsaved Notes; an incremental run replays changes since its cursor). The row is recounted after every background run. The session-start sync now reconciles Notes in the background like the connect dialog, so Full rescan and Sync now show the running sync's live progress (including a Notes sync resumed from an earlier page load) and offer to wait instead of failing. "Copy sync log" is on the Connectors card, kept per account across reloads.
+
+## 0.10.0-beta.2
+
+### Minor Changes
+
+- 723c72a: Add transcript paste as an Upload choice. Pasted text is committed as a transcript-only note and appears in the Library and meeting chat.
+
 ## 0.9.1-beta.1
 
 ### Patch Changes

@@ -1,5 +1,23 @@
 # exo-desktop
 
+## 0.10.0-beta.5
+
+No changes in this release.
+
+## 0.10.0-beta.4
+
+No changes in this release.
+
+## 0.10.0-beta.3
+
+No changes in this release.
+
+## 0.10.0-beta.2
+
+### Minor Changes
+
+- 723c72a: Add transcript paste as an Upload choice. Pasted text is committed as a transcript-only note and appears in the Library and meeting chat.
+
 ## 0.9.1-beta.1
 
 No changes in this release.

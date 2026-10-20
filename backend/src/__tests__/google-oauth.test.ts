@@ -1247,13 +1247,23 @@ afterAll(() => {
 
 
 describe("autojoin OIDC exchange", () => {
-  test("only autojoin adds Calendar, email, incremental authorization and transaction nonce", () => {
+  test("autojoin asks for exactly Calendar events, openid and email, and never include_granted_scopes", () => {
     const client = new GoogleOAuthClient(TEST_CONFIG);
     const url = new URL(client.authorizeUrl({ state: STATE, challenge: CHALLENGE, purpose: "autojoin", nonce: "transaction-nonce" }));
-    expect(url.searchParams.get("scope")).toBe(GOOGLE_AUTOJOIN_SCOPES);
-    expect(url.searchParams.get("include_granted_scopes")).toBe("true");
+    expect(url.searchParams.get("scope")!.split(" ").sort()).toEqual([
+      "email", "https://www.googleapis.com/auth/calendar.events.owned.readonly", "openid",
+    ]);
+    // With it Google returns the union of every earlier grant, so the held token would carry Meet/Drive/Docs.
+    expect(url.searchParams.has("include_granted_scopes")).toBe(false);
     expect(url.searchParams.get("nonce")).toBe("transaction-nonce");
-    expect(new URL(client.authorizeUrl({ state: STATE, challenge: CHALLENGE })).searchParams.has("nonce")).toBe(false);
+  });
+
+  test("the Meet authorize URL is unchanged: Meet scopes plus openid, no nonce, no incremental authorization", () => {
+    const client = new GoogleOAuthClient(TEST_CONFIG);
+    const url = new URL(client.authorizeUrl({ state: STATE, challenge: CHALLENGE }));
+    expect(url.searchParams.get("scope")).toBe(`${GOOGLE_MEET_SCOPES} openid`);
+    expect(url.searchParams.has("nonce")).toBe(false);
+    expect(url.searchParams.has("include_granted_scopes")).toBe(false);
   });
 
   test("validates identity against configured audience and returns only the verified subject internally", async () => {

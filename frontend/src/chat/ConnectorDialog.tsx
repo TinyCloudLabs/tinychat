@@ -112,6 +112,7 @@ import {
   type GmeetSyncStore,
   type GmeetSyncSummary,
 } from "@/lib/connectors/gmeetSync";
+import { getGmeetMeetingCount, onGmeetMeetingCount } from "@/lib/connectors/gmeetLiveCount";
 import {
   createGmeetSyncLogRecorder,
   gmeetSyncProgressPercent,
@@ -786,6 +787,8 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
   // The run's client-side log (counters only, see gmeetSyncLog.ts) and the
   // bar's running-maximum percentage. Both reset with the dialog.
   const [syncLog, setSyncLog] = useState<GmeetSyncLogRecorder | null>(null);
+  // Saved meetings (what the Library shows), live while the background Notes reconcile keeps saving.
+  const savedMeetings = useSyncExternalStore(onGmeetMeetingCount, () => getGmeetMeetingCount(tcw), () => getGmeetMeetingCount(tcw));
   const [syncPercent, setSyncPercent] = useState(0);
   const [buildLabel, setBuildLabel] = useState<string | null>(null);
   const [notesProgress, setNotesProgress] = useState<GmeetSyncProgress | null>(null);
@@ -1043,7 +1046,7 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
 
   /** save-token → initial-sync. Reached only with both tokens in hand. */
   const saveAndSync = useCallback(
-    async (accessToken: string, refreshToken: string, setupId?: string) => {
+    async (accessToken: string, refreshToken: string) => {
       setPhase("save-token");
       if (!isSecretsUnlocked(tcw)) {
         const unlock = await unlockSecrets<SecretsErr>(tcw);
@@ -1068,25 +1071,31 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
         return;
       }
 
-      if (autojoin) {
-        if (!setupId) { failWith({ kind: "unknown", message: "Calendar setup did not complete." }); return; }
-        try {
-          const enabled = await fetch(`${backendUrl}/api/connectors/google/autojoin/enable`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json", Authorization: `Bearer ${sessionStore.getToken()}`,
-              [REQUEST_HEADER_NAME]: REQUEST_HEADER_VALUE },
-            body: JSON.stringify({ setupId }),
-          });
-          if (!enabled.ok) { failWith(await readGoogleProxyError(enabled)); return; }
-          onConnected();
-        } catch { failWith({ kind: "network", message: "" }); return; }
-      }
-
       setCanRetrySync(true);
       await runInitialSync(accessToken, storedRefreshToken);
     },
-    [autojoin, backendUrl, descriptor, failWith, onConnected, runInitialSync, sessionStore, tcw],
+    [descriptor, failWith, runInitialSync, tcw],
   );
+
+  /**
+   * Calendar autojoin's finish. The server already holds the Calendar-only credential, so this
+   * only confirms setup. The browser keeps no autojoin token: nothing here writes the Google
+   * Meet secret or syncs Meet, and the Meet connection is left exactly as it was.
+   */
+  const finishAutojoin = useCallback(async (setupId: string | undefined) => {
+    if (!setupId) { failWith({ kind: "unknown", message: "Calendar setup did not complete." }); return; }
+    try {
+      const enabled = await fetch(`${backendUrl}/api/connectors/google/autojoin/enable`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${sessionStore.getToken()}`,
+          [REQUEST_HEADER_NAME]: REQUEST_HEADER_VALUE },
+        body: JSON.stringify({ setupId }),
+      });
+      if (!enabled.ok) { failWith(await readGoogleProxyError(enabled)); return; }
+    } catch { failWith({ kind: "network", message: "" }); return; }
+    onConnected();
+    onOpenChange(false);
+  }, [backendUrl, failWith, onConnected, onOpenChange, sessionStore]);
 
   /**
    * The exchange. Tokens arrive HERE and nowhere else — an authenticated XHR
@@ -1145,6 +1154,11 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
         failWith({ kind: "unknown", message: "" });
         return;
       }
+      if (autojoin) {
+        // The autojoin token stays on the server. Do not read, keep or save it here.
+        await finishAutojoin(typeof payload.setupId === "string" ? payload.setupId : undefined);
+        return;
+      }
       const accessToken =
         typeof payload.access_token === "string" ? payload.access_token : "";
       const refreshToken =
@@ -1158,9 +1172,9 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
       accessTokenRef.current = accessToken;
       refreshTokenRef.current = desktopRedirectUriRef.current
         ? encodeDesktopRefreshToken(refreshToken) : refreshToken;
-      await saveAndSync(accessToken, refreshToken, typeof payload.setupId === "string" ? payload.setupId : undefined);
+      await saveAndSync(accessToken, refreshToken);
     },
-    [autojoin, backendUrl, failWith, saveAndSync, sessionStore],
+    [autojoin, backendUrl, failWith, finishAutojoin, saveAndSync, sessionStore],
   );
   // The native return arrives after an app round trip; it reads the latest exchange.
   const runExchangeRef = useRef(runExchange);
@@ -1484,8 +1498,8 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
         <DialogHeader>
           <DialogTitle>{autojoin ? "Enable Calendar autojoin" : `Connect ${descriptor.name}`}</DialogTitle>
           <DialogDescription>
-            {autojoin ? "Authorize background Calendar access and encrypted server custody of your Google token."
-              : "Sign in with Google to sync your Meet transcripts. Your Google connection is stored in TinyCloud’s encrypted secrets. Reconnecting turns Calendar autojoin off until you explicitly enable it again."}
+            {autojoin ? "Authorize background read access to your Google Calendar events and encrypted server custody of your Google token."
+              : "Sign in with Google to sync your Meet transcripts. Your Google connection is stored in TinyCloud’s encrypted secrets. Connecting a different Google account turns Calendar autojoin off until you explicitly enable it again."}
           </DialogDescription>
         </DialogHeader>
 
@@ -1523,6 +1537,7 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
         {phase === "done" && summary && (
           <GmeetDonePanel
             summary={summary}
+            savedMeetings={savedMeetings}
             notes={{
               running: notesSettled === null && isGmeetNotesSyncInFlight(),
               progress: notesProgress,
@@ -1760,7 +1775,9 @@ const GmeetNotesLine: FC<{ notes: GmeetNotesStatus }> = ({ notes }) => {
       <p className="text-xs text-muted-foreground" role="status">
         {settled.ok
           ? "Notes by Gemini finished syncing."
-          : "Notes by Gemini could not finish syncing. The Connectors card shows what happened; Sync now retries."}
+          : settled.partial
+            ? `${settled.partial.saved} of ${settled.partial.total} Notes saved. Sync now or Full rescan on the Connectors card finishes the rest.`
+            : "Notes by Gemini could not finish syncing. The Connectors card shows what happened; Sync now retries."}
       </p>
     );
   }
@@ -1793,6 +1810,8 @@ const GmeetNotesLine: FC<{ notes: GmeetNotesStatus }> = ({ notes }) => {
  */
 const GmeetDonePanel: FC<{
   summary: GmeetSyncSummary;
+  /** Saved meetings in the space (Meet recordings and Notes by Gemini); null until counted. */
+  savedMeetings: number | null;
   notes: GmeetNotesStatus;
   autoTranscription: AutoTranscriptionState;
   meetingCode: string;
@@ -1801,6 +1820,7 @@ const GmeetDonePanel: FC<{
   onDecline: () => void;
 }> = ({
   summary,
+  savedMeetings,
   notes,
   autoTranscription,
   meetingCode,
@@ -1808,13 +1828,21 @@ const GmeetDonePanel: FC<{
   onEnable,
   onDecline,
 }) => {
+  // `synced` counts Meet recordings this run saved. Notes by Gemini are saved after it, so the line
+  // that reads like a total says what it counts and the saved total (live) sits beside it.
   const synced = summary.created + summary.updated;
+  const saved = savedMeetings ?? 0;
   return (
     <div className="flex flex-col gap-3 py-2 text-sm">
       <p className="flex items-center gap-2 text-foreground">
         <CheckCircle2Icon className="size-4 text-primary" aria-hidden />
-        Google Meet connected · {synced} meeting{synced === 1 ? "" : "s"} synced.
+        Google Meet connected · {synced} Meet recording{synced === 1 ? "" : "s"} synced.
       </p>
+      {savedMeetings !== null && (
+        <p className="text-xs text-muted-foreground" data-testid="gmeet-saved-meetings">
+          {saved} meeting{saved === 1 ? "" : "s"} saved in your space so far, including Notes by Gemini.
+        </p>
+      )}
       {summary.notesDeferred && <GmeetNotesLine notes={notes} />}
       {summary.skipped > 0 && (
         <p className="text-xs text-muted-foreground">
@@ -1823,7 +1851,7 @@ const GmeetDonePanel: FC<{
           call ends, and the next sync picks it up.
         </p>
       )}
-      {synced === 0 && (
+      {synced === 0 && saved === 0 && !(summary.notesDeferred && notes.running) && (
         <p className="text-xs text-muted-foreground">
           Nothing synced yet. Google only produces a transcript when the meeting’s
           host is on a paid Workspace edition and transcription was on for that
