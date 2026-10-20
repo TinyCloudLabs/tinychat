@@ -1200,9 +1200,10 @@ paths:
       summary: Begin explicit unattended Calendar and encrypted refresh-token custody consent
       description: >-
         Binds a ten-minute single-use transaction to the authenticated tenant, autojoin purpose,
-        consent, PKCE challenge and a server-generated OIDC nonce. Adds owned Calendar events
-        readonly and openid scopes while preserving Meet, Drive and Docs scopes. The browser
-        opens authorizationUrl in its existing OAuth popup and retains the PKCE verifier.
+        consent, PKCE challenge and a server-generated OIDC nonce. Requests only the owned
+        Calendar events readonly, openid and email scopes, and not include_granted_scopes, so
+        the token carries no scopes granted earlier for other connectors. The browser opens
+        authorizationUrl in its existing OAuth popup and retains the PKCE verifier.
       requestBody:
         required: true
         content:
@@ -1250,9 +1251,9 @@ paths:
         and requires Calendar/openid scopes from Google's actual exchange response plus a refresh
         token. Browser-supplied scopes and tenant are never authoritative. Persists disabled old
         scheduling and stop intent, then an enabling record before encrypted custody. Returns
-        browser importer tokens and setupId; never an ID token or Google subject. The browser
-        must store its importer secret before calling enable. Interrupted setup remains off
-        and its credential is cleaned after ten minutes.
+        only setupId, never an ID token or Google subject, and no Google token. Enable needs only
+        setupId and the server-held credential. Interrupted
+        setup remains off and its credential is cleaned after ten minutes.
       requestBody:
         required: true
         content:
@@ -1273,17 +1274,15 @@ paths:
                   maxLength: 128
       responses:
         "200":
-          description: Whitelisted browser token fields and the pending setup identifier.
+          description: The pending setup identifier. No Google token is returned.
           content:
             application/json:
               schema:
-                allOf:
-                  - $ref: "#/components/schemas/GoogleTokenResponse"
-                  - type: object
-                    required: [setupId]
-                    properties:
-                      setupId:
-                        type: string
+                type: object
+                required: [setupId]
+                properties:
+                  setupId:
+                    type: string
         "400":
           description: Invalid transaction, identity or missing refresh token.
         "401":
@@ -1298,9 +1297,10 @@ paths:
   /api/connectors/google/autojoin/enable:
     post:
       operationId: enableCalendarAutojoin
-      summary: Finalize setup after the browser has saved the same Google importer secret
+      summary: Finalize setup from the pending setupId and the server-held Google credential
       description: >-
-        Uses only the authenticated tenant's pending setup. Probes primary Calendar access
+        Uses only the authenticated tenant's pending setup; no browser-side secret is required.
+        Probes primary Calendar access
         before enabling and rechecks setup expiry and connection generation after the probe.
         Enabling cannot revive an old dispatch or clear its persisted stop intent.
       requestBody:

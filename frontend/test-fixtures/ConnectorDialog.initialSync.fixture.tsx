@@ -98,6 +98,8 @@ class MemoryBoundaries {
   refreshCalls = 0;
   popupCalls = 0;
   popupUrl = "";
+  autojoinBeginState = "";
+  readonly autojoinEnables: unknown[] = [];
   requireRefresh = false;
   /** Drive holds 200 non-notes Docs and 3 Notes by Gemini Docs (default: no Docs at all). */
   manyDocs = false;
@@ -198,6 +200,20 @@ class MemoryBoundaries {
       await this.reach("refresh");
       this.refreshed = true;
       return Response.json({ access_token: "synthetic-refreshed-access" });
+    }
+    if (url.origin === backend && url.pathname === "/api/connectors/google/autojoin/begin" && method === "POST") {
+      const body = JSON.parse(String(init?.body));
+      this.autojoinBeginState = body.state;
+      return Response.json({ authorizationUrl: `https://accounts.example.invalid/authorize?state=${body.state}` });
+    }
+    if (url.origin === backend && url.pathname === "/api/connectors/google/autojoin/exchange" && method === "POST") {
+      this.exchangeCalls++;
+      return Response.json({ access_token: "synthetic-autojoin-access", refresh_token: "synthetic-autojoin-refresh",
+        setupId: "s".repeat(43) });
+    }
+    if (url.origin === backend && url.pathname === "/api/connectors/google/autojoin/enable" && method === "POST") {
+      this.autojoinEnables.push(JSON.parse(String(init?.body)));
+      return Response.json({ state: "on", enabled: true });
     }
     if (method !== "GET") return this.deny(url, method);
     if (url.origin === backend && url.pathname === "/api/connectors/google/autojoin/status") {
@@ -854,4 +870,38 @@ test("a background Notes failure after the dialog closed surfaces on the card as
   const message = (saved as { data: { lastSyncError: string } }).data.lastSyncError;
   expect(message.length).toBeGreaterThan(0);
   expect(row.querySelector('[role="alert"]')?.textContent).toBe(message);
+});
+
+
+test("Calendar autojoin enables from the server credential: no Meet secret write, no Meet sync, Meet connection untouched", async () => {
+  let closed = 0;
+  await act(async () => root!.render(<ConnectorConnectDialog tcw={memory.tcw} descriptor={descriptor} backendUrl={backend}
+    purpose="autojoin"
+    sessionStore={{ getToken: () => "synthetic-session", isExpired: () => false } as unknown as SessionStore}
+    open onOpenChange={(next) => { if (!next) closed++; }} onConnected={() => { connectedCalls++; }} />));
+  await settle();
+  const consent = dialog().querySelector<HTMLInputElement>('input[type="checkbox"]');
+  expect(consent).toBeTruthy();
+  await act(async () => { consent!.click(); await tick(); });
+  await click("Continue with Google");
+  await until(() => memory.popupUrl.length > 0 && memory.autojoinBeginState.length > 0, "expected the autojoin authorization URL");
+  expect(memory.popupUrl).toContain("accounts.example.invalid");
+  await act(async () => {
+    window.dispatchEvent(new window.MessageEvent("message", {
+      origin: backend,
+      data: { code: "synthetic-authorization-code", state: memory.autojoinBeginState },
+    }));
+    await tick();
+  });
+  await until(() => closed === 1, "expected the dialog to close once autojoin is enabled");
+  expect(memory.autojoinEnables).toEqual([{ setupId: "s".repeat(43) }]);
+  expect(connectedCalls).toBe(1);
+  expect(memory.secretWrites).toBe(0);
+  expect(memory.secretUnlocks).toBe(0);
+  expect(memory.tokens.size).toBe(0);
+  expect(memory.recordListings).toBe(0);
+  expect(memory.requests.some((request) => /googleapis\.com/.test(request.url))).toBe(false);
+  expect(await store.getConnection(memory.tcw, "google-meet")).toMatchObject({
+    ok: true, data: { status: "connected", lastSyncedAt: oldWatermark, itemCount: 0 },
+  });
 });

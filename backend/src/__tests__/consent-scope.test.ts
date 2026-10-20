@@ -15,7 +15,7 @@ import { activateVerifiedDelegation } from "../portable-delegation.js";
 import { createDelegationRouter } from "../routes/delegations.js";
 import { transcriptDeliveryConfigFromEnv } from "../services/transcription-api.js";
 import { RETENTION_WINDOW_DAYS } from "../services/content-store.js";
-import { GOOGLE_MEET_SCOPES } from "../services/google-oauth.js";
+import { GOOGLE_AUTOJOIN_SCOPES, GOOGLE_MEET_SCOPES } from "../services/google-oauth.js";
 import { makeSignedTranscriptGrant, type SignedTranscriptGrant } from "./helpers/transcript-grant.js";
 import * as consentCopyModule from "../../../frontend/src/lib/connectors/consentCopy";
 import {
@@ -920,6 +920,24 @@ describe("the cohort consent copy tells the new truth (plan §11 requirements 1-
 
 /** The transcript-writer notice as the frontend renders it (normalized). */
 const TRANSCRIPT_WRITER_NOTICE_TEXT = "our server can read, add, change or delete those records";
+
+describe("the Calendar autojoin consent copy, claim by claim against the scopes it requests", () => {
+  it("requests Calendar events, openid and email only", () => {
+    expect(GOOGLE_AUTOJOIN_SCOPES.split(" ").sort()).toEqual([
+      "email", "https://www.googleapis.com/auth/calendar.events.owned.readonly", "openid",
+    ]);
+  });
+
+  it("claims Calendar and identity access, and nothing about Meet transcripts, Drive or Docs", () => {
+    for (const { text } of renderedVariants([GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY]).filter(v => v.state === "inactive")) {
+      expect(text).toMatch(/read your google calendar events/);
+      expect(text).toMatch(/google account identifier and email address/);
+      // The transcript-writer notice is a separate Notetaker grant and only appears in the other delivery states.
+      expect(text).not.toMatch(/\bdrive\b|\bdocs\b|transcripts? (?:from|of) google|meet permissions|existing meet/);
+      expect(text).not.toMatch(/do not request your profile or email/);
+    }
+  });
+});
 
 describe("the Google Meet consent copy (connector plan §4.1/§4.3, WP-C), in every delivery state and surface", () => {
   const scopes = GOOGLE_MEET_SCOPES.split(" ");
