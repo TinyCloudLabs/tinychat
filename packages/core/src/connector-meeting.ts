@@ -5,6 +5,8 @@ export const APP_ID = "xyz.tinycloud.tinychat";
 export const CONNECTORS_SQL_DB_NAME = `${APP_ID}/connectors`;
 export const CONNECTORS_KV_PREFIX = `${APP_ID}/connectors`;
 export const TRANSCRIBER_MEETING_SOURCE = "tinycloud-transcriber";
+/** A meeting combined from two partial captures of the same meeting. */
+export const EXO_MERGED_SOURCE = "exo-merged";
 
 export function transcriptKvKey(source: string, sourceId: string): string {
   return `${CONNECTORS_KV_PREFIX}/${source}/transcript/${sourceId}`;

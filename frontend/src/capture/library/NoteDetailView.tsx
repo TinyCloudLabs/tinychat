@@ -39,6 +39,8 @@ import { privateRefusalCopy } from "@/capture/recorder/privateInstead";
 import { TranscribeAction } from "./TranscribeAction";
 import type { TranscribeActionProps } from "./TranscribeAction";
 import { HowThisGotHere } from "./HowThisGotHere";
+import { CombineActions } from "./combine/CombineActions";
+import type { CombineDetail } from "./combine/combinedView";
 import { librarySourceLabel } from "./libraryKinds";
 import { TimestampedTranscript, type TranscriptGap } from "./TimestampedTranscript";
 import { hasPrivateCloudTimingProvenance, hasSegmentTimes, transcriptMarkdown } from "./transcriptSegments";
@@ -90,6 +92,8 @@ export interface NoteDetailViewProps {
   /** A voice note opens as its editable note (a page, or a sheet on a phone) instead of this view. */
   savedNote?: { tcw: TinyCloudWeb; layout: "page" | "sheet"; store?: SavedNoteStore };
   activityControl?: ReactNode;
+  /** Combine two captures of one meeting (TC-1152): the entry on a meeting, the actions on a combined one. */
+  combine?: CombineDetail;
 }
 
 /** Consecutive sentences of one speaker as one block. */
@@ -599,6 +603,7 @@ function NoteDetailViewContent(props: NoteDetailViewProps) {
         {!props.pushed && <h2 className="font-display text-title-1 [overflow-wrap:anywhere]">{title}</h2>}
         <p className="tnum text-meta text-muted-foreground">{noteMeta(item)}</p>
         {activityStatus && <div className="flex flex-wrap items-center gap-3" data-testid="note-detail-status"><p className={activityStatus.startsWith("Needs attention") ? "text-callout text-amber-700 dark:text-amber-300" : "text-callout text-muted-foreground"}>{activityStatus}</p>{activityJobs.flatMap((job) => job.action ? [job.action] : []).map((action, index) => <button key={`${action.label}:${index}`} type="button" className="min-h-11 text-callout text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={action.run}>{action.label}</button>)}{!activityJobs.some((job) => job.action) && activityRetry && <button type="button" className="min-h-11 text-callout text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={activityRetry}>Try again</button>}</div>}
+        <CombineActions combine={props.combine} />
       </header>
       {props.audio ? (
         <MeetingAudioPlayer key={`${item.source}:${item.sourceId}`} {...noteAudioPlayerProps(props.audio)} durationSecs={item.durationSecs}
@@ -618,7 +623,7 @@ function NoteDetailViewContent(props: NoteDetailViewProps) {
           Only the transcript was saved; the audio wasn’t stored.
         </p>
       ) : null}
-      {!item.onPhone && <HowThisGotHere source={item.source} read={metadata} onRetry={props.onRetry} />}
+      {!item.onPhone && <HowThisGotHere source={item.source} read={metadata} onRetry={props.onRetry} members={props.combine?.combined?.members} />}
       <Transcript {...props} item={item} />
     </Frame>
   );

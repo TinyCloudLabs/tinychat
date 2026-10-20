@@ -1,5 +1,14 @@
 # @tinychat/frontend
 
+## 0.10.0-beta.6
+
+### Patch Changes
+
+- c0e2116: Register the `exo-merged` meeting source in the Library (source list, labels and kind).
+- 311fe89: Add the meeting stitcher core (TC-1152 S1); nothing user-visible ships.
+- 833e658: Add the combined-meeting data layer (TC-1152 S2b): write, delete, cascade and read-time sweep for `exo-merged` meetings. Purging a connector now also removes combined meetings that list it. Nothing user-visible ships.
+- 984d884: Add "Combine with another capture…" to a meeting in the Library: pick an overlapping capture, see why the two look like the same meeting (or don't), and tap Combine to save one combined meeting. A combined meeting opens like any meeting, lists the captures it was made from, and can be deleted without touching them.
+
 ## 0.10.0-beta.5
 
 ### Patch Changes
