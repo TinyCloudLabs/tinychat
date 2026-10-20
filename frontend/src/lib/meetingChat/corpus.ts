@@ -85,7 +85,7 @@ FROM connector_meeting c, json_each(${mergedMembersJson("c")}) k
 WHERE c.source = ${MERGED_SOURCE_SQL} AND CASE WHEN ${readableMergedRowSql("c")} THEN 1 ELSE 0 END = 1`;
 
 /** Admission for outer row alias `m`: a combined row must be readable, and no row may be a member of one. */
-const COMBINED_MEETING_PREDICATE_SQL = `AND (m.source <> ${MERGED_SOURCE_SQL} OR ${readableMergedRowSql("m")})
+const COMBINED_MEETING_PREDICATE_SQL = `AND (m.source IS NULL OR m.source <> ${MERGED_SOURCE_SQL} OR ${readableMergedRowSql("m")})
   AND (coalesce(m.source, '') || '/' || coalesce(m.source_id, '')) NOT IN (${SQL_COMBINED_MEMBER_KEYS_QUERY})`;
 
 /**
@@ -396,6 +396,8 @@ export async function discoverMeetingCorpus(
   selected?: MeetingRef | null,
 ): Promise<MeetingCorpus> {
   const sql = await discoverSqlMeetings(tcw, signal);
+  // Known limit: if the combined row is past SQL_DISCOVERY_MAX_MEETINGS it is not in the SQL lane, so its
+  // members' server/KV records stay visible (a duplicate, never a hidden meeting).
   // The SQL lane already excludes combined members. The server and KV lanes know nothing of
   // combining, so a member's own server record or KV key would bring it back: drop those by
   // identity. The extra read runs only when a combined meeting is in the corpus.
