@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { currentRequestId } from "../request-context.js";
 
 /**
  * Client for the TinyCloud Private Transcription API
@@ -131,6 +132,8 @@ export interface IdempotencyLookup {
 export interface TranscriptionApiConfig {
   baseUrl: string;
   apiKey: string;
+  /** Explicit canonical first-party origins; merely configuring baseUrl does not opt in. */
+  requestIdFirstPartyOrigins?: ReadonlySet<string>;
   fetchImpl?: typeof fetch;
   /** Injectable for tests. */
   sleep?: (ms: number) => Promise<void>;
@@ -251,6 +254,7 @@ export function isTransientTransportError(error: unknown): boolean {
 
 export function createTranscriptionApiClient(config: TranscriptionApiConfig): TranscriptionApiClient {
   const base = config.baseUrl.replace(/\/+$/, "");
+  const forwardRequestId = config.requestIdFirstPartyOrigins?.has(new URL(config.baseUrl).origin) ?? false;
   const fetchImpl = config.fetchImpl ?? fetch.bind(globalThis);
   const sleep = config.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const newIdempotencyKey = config.idempotencyKey ?? (() => crypto.randomUUID());
@@ -267,11 +271,16 @@ export function createTranscriptionApiClient(config: TranscriptionApiConfig): Tr
     retryTransport = true,
     onAttempt?: () => void,
   ): Promise<{ status: number; json: unknown }> {
+    const requestId = forwardRequestId ? currentRequestId() : undefined;
     const init: RequestInit = {
       method,
+      // This configured first-party PTX origin is the only destination for its key and request ID.
+      // Do not follow redirects, including same-host/different-port or method-preserving 307s.
+      redirect: "manual",
       headers: {
         Authorization: `Bearer ${config.apiKey}`,
         Accept: "application/json",
+        ...(requestId === undefined ? {} : { "X-Request-Id": requestId }),
         ...(body === undefined ? {} : { "content-type": "application/json" }),
         ...extraHeaders,
       },

@@ -14,11 +14,16 @@
 // the immutable `transcript-rev` key named by the `voice_note_transcript` commit row's `body_key`, never
 // the legacy mirror (voiceNoteStore.ts).
 //
+// Body bytes: `tc kv get --raw` fetches the value as binary and writes it with `process.stdout.write(data)`
+// (checked in @tinycloud/cli 1.2.1 dist/legacy-entry.js, `kv get`): no trailing newline, no JSON wrapping,
+// so `body_sha256` is the hash of the stored bytes. Not run against any space.
+//
 // stdout is one JSON line of verdict and numbers. It never carries titles, names, ids or transcript
 // text; tc's own stderr is not forwarded.
 
 import { spawnSync } from "node:child_process";
-import { chmodSync, renameSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { parseArgs } from "node:util";
 
@@ -95,11 +100,16 @@ export function readSnapshot(tc: Tc, space: string, ref: string): MeetingSnapsho
   return { source, source_id: sourceId, kv_record: record, body };
 }
 
+/** Create-exclusive temp file at 0600 (random name, so it cannot pre-exist), then rename; never left behind. */
 function writeOut(path: string, text: string): void {
-  const tmp = join(dirname(path), `.stitch-${process.pid}.tmp`);
-  writeFileSync(tmp, text, { mode: 0o600 });
-  chmodSync(tmp, 0o600);
-  renameSync(tmp, path);
+  const tmp = join(dirname(path), `.stitch-${randomBytes(8).toString("hex")}.tmp`);
+  try {
+    writeFileSync(tmp, text, { mode: 0o600, flag: "wx" });
+    renameSync(tmp, path);
+  } catch (e) {
+    rmSync(tmp, { force: true });
+    throw e;
+  }
 }
 
 export function runCombine(argv: string[], deps: { tc?: Tc; env?: Record<string, string | undefined> } = {}): { code: number; stdout: string; stderr: string } {

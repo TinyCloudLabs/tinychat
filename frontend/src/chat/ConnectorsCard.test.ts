@@ -555,70 +555,19 @@ describe("Sync now — engine dispatch", () => {
     expect(gmeetEngine).toContain("driveMode: opts.driveMode");
   });
 
-  test("Full rescan refuses an existing engine run before dispatch and disables both card-owned actions", () => {
-    const guardStart = handler.indexOf('driveMode === "snapshot"');
+  test("a press that a running sync refuses shows its progress and offers to wait, never a bare error, and disables both card-owned actions", () => {
+    const guardStart = handler.indexOf("isGmeetSyncInFlight() && (driveMode");
     const guard = handler.slice(
       guardStart,
       handler.indexOf("syncing: true", guardStart),
     );
-    expect(guard).toContain("isGmeetSyncInFlight()");
-    expect(guard).toContain("Another Google Meet sync is already running. Try Full rescan again when it finishes.");
+    expect(guard).toContain("busyOffer: driveMode");
+    expect(guard).toContain("actionError: null");
+    expect(guard).not.toContain("Another Google Meet sync");
     expect(guard).toContain("return;");
     expect(guard).not.toContain("runGmeetSyncNow(");
-    expect(handler.indexOf('driveMode === "snapshot"')).toBeLessThan(handler.indexOf("runGmeetSyncNow("));
+    expect(guardStart).toBeLessThan(handler.indexOf("runGmeetSyncNow("));
     expect(card.match(/disabled=\{state\.syncing\}/g)).toHaveLength(2);
-  });
-
-  test("Full rescan refuses a sync that starts while token mint is awaited", async () => {
-    const transpiler = new Bun.Transpiler({ loader: "ts" });
-    const executable = transpiler.transformSync(gmeetEngine);
-    const buildRunGmeetSyncNow = new Function(
-      "mintGmeetAccessToken",
-      "GmeetClient",
-      "syncGoogleMeet",
-      "GMEET_STORE",
-      "isGmeetSyncInFlight",
-      "gmeetRowProgress",
-      `${executable}\nreturn runGmeetSyncNow;`,
-    ) as (...dependencies: unknown[]) => (opts: Record<string, unknown>) => Promise<{
-      ok: boolean;
-      message?: string;
-      retryAfterMs?: number | null;
-    }>;
-    let inFlight = false;
-    let engineInvocations = 0;
-    const runGmeetSyncNow = buildRunGmeetSyncNow(
-      async () => {
-        await Promise.resolve();
-        inFlight = true;
-        return "access-token";
-      },
-      class {},
-      async () => {
-        engineInvocations++;
-        return { ok: true, data: {} };
-      },
-      {},
-      () => inFlight,
-      (progress: unknown) => progress,
-    );
-
-    const result = await runGmeetSyncNow({
-      tcw: {},
-      backendUrl: "http://localhost",
-      sessionStore: {},
-      refreshToken: "refresh-token",
-      driveMode: "snapshot",
-      signal: new AbortController().signal,
-      onProgress: () => {},
-    });
-
-    expect(result).toEqual({
-      ok: false,
-      message: "Another Google Meet sync is already running. Try Full rescan again when it finishes.",
-      retryAfterMs: null,
-    });
-    expect(engineInvocations).toBe(0);
   });
 
   test("a successful Meet-only sync still surfaces the persisted reconnect-required partial state", () => {

@@ -206,7 +206,8 @@ export async function listMeetingsRead(
                   'note_edited_at',        json_extract(c.metadata, '$.note_edited_at'),
                   'audio_kv_key',          json_extract(c.metadata, '$.audio_kv_key'),
                   'audio_stored',          json_extract(c.metadata, '$.audio.stored'),
-                  'audio_device_platform', json_extract(c.metadata, '$.audio.device.platform'))
+                  'audio_device_platform', json_extract(c.metadata, '$.audio.device.platform'),
+                  'capture',               json_extract(c.metadata, '$.capture'))
                 ELSE 'invalid' END
               END AS pipeline_metadata,
               CASE WHEN c.source = 'exo-voice-note' AND json_valid(COALESCE(c.metadata, '{}'))
