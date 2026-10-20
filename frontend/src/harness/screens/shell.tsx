@@ -301,6 +301,17 @@ export const shellScreens: HarnessScreen[] = [
     scrollTo: "section:has(> div > svg.lucide-sun)",
     render: () => <Shell />,
   },
+  // Settings -> Voice notes (TC-1618) as each platform shows it: the web and desktop app (no native
+  // transcriber control) and the phone app (with it).
+  ...(["web", "tauri", "ios"] as const).map((platform) => ({
+    ...SHELL,
+    displayTitle: false,
+    id: `shell-settings-voice-notes-${platform}`,
+    path: "/chat/settings",
+    platform,
+    scrollTo: "section:has(> div > svg.lucide-mic)",
+    render: () => <Shell />,
+  })),
   // How it works, from the top and opened at a section (a HowItWorksLink's anchor).
   {
     ...SHELL,
