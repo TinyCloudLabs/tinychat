@@ -76,8 +76,7 @@ test("web shows the upload switch, card explanation, browser warning and InfoTip
     await tick();
   });
   expect(host.querySelector<HTMLInputElement>("#upload-audio-to-tinycloud")?.checked).toBe(false);
-  expect(host.textContent).toContain("Audio stays on this browser. Transcripts and notes still sync to your TinyCloud space.");
-  expect(host.textContent).toContain("Browsers can delete it. Turn on Upload audio to keep a copy in TinyCloud.");
+  expect(host.textContent).toContain("Audio stays in this browser, and browsers can delete it. Turn this on to keep a copy in TinyCloud. Transcripts and notes still sync to your TinyCloud space.");
   expect(host.querySelector('button[aria-label="About audio storage"]')).not.toBeNull();
 });
 
