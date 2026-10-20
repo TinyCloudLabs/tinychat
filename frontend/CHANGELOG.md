@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.10.0-beta.8
+
+### Patch Changes
+
+- 2e51461: Settings → Voice notes: Stop recording after is one compact select, the upload checkbox is aligned with its (i), and one help line follows the checkbox (TC-1618).
+
 ## 0.10.0-beta.7
 
 ### Patch Changes
