@@ -455,7 +455,8 @@ const BASELINE_LIST_SQL = `SELECT id, source, source_id, title, started_at, dura
                   'note_edited_at',        json_extract(metadata, '$.note_edited_at'),
                   'audio_kv_key',          json_extract(metadata, '$.audio_kv_key'),
                   'audio_stored',          json_extract(metadata, '$.audio.stored'),
-                  'audio_device_platform', json_extract(metadata, '$.audio.device.platform'))
+                  'audio_device_platform', json_extract(metadata, '$.audio.device.platform'),
+                  'capture',               json_extract(metadata, '$.capture'))
                 ELSE 'invalid' END
               END AS pipeline_metadata,
               CASE WHEN source = 'exo-voice-note' AND json_valid(COALESCE(metadata, '{}'))
