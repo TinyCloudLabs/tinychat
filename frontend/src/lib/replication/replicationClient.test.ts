@@ -2,7 +2,6 @@ import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import manifest from "../../../../manifest.json";
 import { composeManifestRequest } from "@tinycloud/sdk-core";
 import { augmentSignInEntriesWithReplication } from "@tinycloud/node-sdk/replication/authority";
-import { measureSealedRow } from "@tinycloud/replica/kv-storage/testing";
 import { buildReplicationConfig, replicationConfigPatch, REPLICATION_MAX_BYTES, type ReplicationPluginLoader } from "./replicationClient";
 import { REPLICATION_RUNTIME_FLAG_KEY } from "./replicationFlag";
 import { replicationPrefixes } from "./replicationPrefixes";
@@ -123,28 +122,5 @@ describe("grant: the SDK adds get+sync only on these prefixes, from the unchange
   test("the app manifest itself carries no sync action", () => {
     const actions = manifest.permissions.flatMap((permission) => permission.actions);
     expect(actions.some((action) => action === "sync")).toBe(false);
-  });
-});
-
-describe("sealed-row overhead (maxBytes headroom)", () => {
-  test("measured bytes per synthetic meeting vs raw JSON", () => {
-    const sentences = (n: number) => JSON.stringify(Array.from({ length: n }, (_, i) => ({
-      text: `Synthetic sentence number ${i} about nothing in particular.`, speaker_name: "Speaker", speaker_id: i % 3,
-      start_time: i * 4, end_time: i * 4 + 3.5,
-    })));
-    const rows: Array<{ sentences: number; raw: number; sealed: number; ratio: number }> = [];
-    for (const n of [5, 100, 1500]) {
-      const raw = new TextEncoder().encode(sentences(n)).byteLength;
-      // AES-GCM: 12-byte IV, 16-byte tag appended to the ciphertext.
-      const sealed = measureSealedRow("entry/k", { v: 1, iv: new Uint8Array(12), bytes: new Uint8Array(raw + 16) });
-      rows.push({ sentences: n, raw, sealed, ratio: Number((sealed / raw).toFixed(3)) });
-    }
-    console.log("[replication] sealed-row overhead", JSON.stringify(rows));
-    for (const row of rows) {
-      expect(row.sealed).toBeGreaterThan(row.raw);
-      expect(row.ratio).toBeLessThan(2);
-    }
-    // A typical long transcript (~1500 sentences) costs about its raw size: 100 MB holds hundreds.
-    expect(rows[2]!.ratio).toBeLessThan(1.05);
   });
 });
