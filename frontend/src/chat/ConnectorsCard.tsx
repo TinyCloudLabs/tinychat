@@ -9,7 +9,7 @@
 // sync stepper, and a Radix AlertDialog wraps the disconnect confirm with an
 // "also delete N meetings" checkbox.
 
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type FC } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FC } from "react";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { Loader2Icon, PlugIcon, PlugZapIcon } from "lucide-react";
@@ -33,10 +33,8 @@ import { isFirefliesStale } from "@/lib/connectors/firefliesFreshness";
 import { GmeetClient } from "@/lib/connectors/gmeetClient";
 import {
   GMEET_NOTES_BUSY_MESSAGE,
-  getGmeetLiveStatus,
   isGmeetNotesSyncInFlight,
   isGmeetSyncInFlight,
-  onGmeetLiveStatus,
   onGmeetNotesSettled,
   type GmeetLiveStatus,
   syncGoogleMeet,
@@ -45,15 +43,14 @@ import {
   type GmeetSyncStore,
 } from "@/lib/connectors/gmeetSync";
 import type { GmeetSyncLog } from "@/lib/connectors/gmeetSyncLog";
-import { loadGmeetSyncLog } from "@/lib/connectors/gmeetSyncLogStore";
-import { resolveBuildInfo } from "@/lib/buildInfo";
-import { appPlatform } from "@/lib/platform";
 import {
   CopyGmeetSyncLogButton,
   GmeetBusyOffer,
   GmeetLiveLine,
   type GmeetPressMode,
 } from "./GmeetCardStatus";
+import { awaitGmeetSessionSync } from "./useGmeetSessionSync";
+import { useGmeetRowStatus } from "./useGmeetRowStatus";
 import {
   getConnectorKey,
   isSecretsUnlocked,
@@ -150,7 +147,9 @@ type RowSyncEngine = "fireflies" | "gmeet";
 /** The two engines' results, flattened to what the row actually renders. */
 type RowSyncOutcome =
   | { ok: true }
-  | { ok: false; message: string; retryAfterMs: number | null };
+  /** Another Google Meet sync holds the engine: the press waits for it instead of failing. */
+  | { ok: false; busy: true }
+  | { ok: false; busy?: undefined; message: string; retryAfterMs: number | null };
 
 /** The real store for the Meet engine, assembled explicitly so a signature
  *  drift in connectorStore fails at compile time rather than at the first sync. */
@@ -215,9 +214,6 @@ export async function runFirefliesSyncNow(opts: {
   }
 }
 
-/** Shown when a Full rescan lands on a running sync (the engine's single-flight slot is taken). */
-export const GMEET_SYNC_BUSY_MESSAGE = "Another Google Meet sync is already running. Try Full rescan again when it finishes.";
-
 /**
  * "Sync now" for Google Meet.
  *
@@ -244,13 +240,7 @@ export async function runGmeetSyncNow(opts: {
   // Token mint is the final await before engine dispatch. Re-check here so a
   // session-start run that claimed the shared slot during vault/key/token work
   // cannot make Full rescan join it and silently lose snapshot intent.
-  if (opts.driveMode === "snapshot" && isGmeetSyncInFlight()) {
-    return {
-      ok: false,
-      message: GMEET_SYNC_BUSY_MESSAGE,
-      retryAfterMs: null,
-    };
-  }
+  if (gmeetPressRefused(opts.driveMode)) return { ok: false, busy: true };
   if (!accessToken) {
     // Every mint failure — signed out, a dark route, a revoked grant — resolves
     // to null rather than a message, so this is the one string the card owns.
@@ -277,7 +267,16 @@ export async function runGmeetSyncNow(opts: {
     signal,
   });
   if (res.ok) return { ok: true };
+  if (res.error.message === GMEET_NOTES_BUSY_MESSAGE) return { ok: false, busy: true };
   return { ok: false, message: res.error.message, retryAfterMs: res.error.retryAfterMs ?? null };
+}
+
+/**
+ * A press the engine cannot take now: a Full rescan cannot join a running sync (it would lose its
+ * snapshot intent) and Sync now cannot join the background Notes reconcile.
+ */
+function gmeetPressRefused(driveMode: "auto" | "snapshot" | undefined): boolean {
+  return driveMode === "snapshot" ? isGmeetSyncInFlight() : isGmeetNotesSyncInFlight();
 }
 
 export function ConnectorsCard({
@@ -291,16 +290,8 @@ export function ConnectorsCard({
   const [gmeetDiagnostics, setGmeetDiagnostics] = useState<GmeetSyncDiagnostics | null>(null);
   // What the engine is doing right now, including runs this card did not start (the
   // session-start lane, the connect dialog's background Notes).
-  const live = useSyncExternalStore(onGmeetLiveStatus, () => getGmeetLiveStatus(tcw), () => getGmeetLiveStatus(tcw));
-  const [buildLabel, setBuildLabel] = useState<string | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    resolveBuildInfo(appPlatform()).then(
-      (label) => { if (!cancelled) setBuildLabel(label); },
-      () => {},
-    );
-    return () => { cancelled = true; };
-  }, []);
+  const gmeetStatus = useGmeetRowStatus(tcw, { connected: rows[GMEET_CONNECTOR_ID].connection?.status === "connected" });
+  const live = gmeetStatus.live;
   // The companion router's mount-time verdict, established ONCE by the
   // background-notifications section's `GET /config` probe. The teardown needs
   // it to tell a dark deployment from a 404 that means something else — see
@@ -453,6 +444,9 @@ export function ConnectorsCard({
           });
           return;
         }
+        // The unlock re-arms the session-start sync, which takes the engine's slot. That run is this
+        // press's own: wait for its foreground part, then queue behind its Notes (below) rather than refuse.
+        if (engine === "gmeet") await awaitGmeetSessionSync();
       }
       // The registry row names the secret — API key for Fireflies, refresh
       // token for Google Meet. This file spells neither, which is what lets the
@@ -467,6 +461,10 @@ export function ConnectorsCard({
               ? "Could not read the saved Google connection"
               : "Could not read API key"),
         });
+        return;
+      }
+      if (engine === "gmeet" && gmeetPressRefused(driveMode)) {
+        patchRow(d.id, { syncing: false, progress: null, busyOffer: driveMode, queuedSync: driveMode });
         return;
       }
       if (engine === "gmeet") setGmeetDiagnostics(null);
@@ -513,7 +511,7 @@ export function ConnectorsCard({
       // engine and is the source of truth for itemCount / lastSyncedAt.
       const connRes = await connectorStore.getConnection(tcw, d.id);
       const conn = connRes.ok ? connRes.data : null;
-      if (!syncRes.ok && (syncRes.message === GMEET_SYNC_BUSY_MESSAGE || syncRes.message === GMEET_NOTES_BUSY_MESSAGE)) {
+      if (!syncRes.ok && syncRes.busy) {
         patchRow(d.id, {
           syncing: false,
           joinedBackgroundSync: false,
@@ -522,7 +520,7 @@ export function ConnectorsCard({
           actionError: null,
           actionRetryAfterMs: null,
           busyOffer: driveMode,
-          queuedSync: null,
+          queuedSync: driveMode,
         });
         return;
       }
@@ -570,13 +568,6 @@ export function ConnectorsCard({
     if (descriptor) void handleSyncNow(descriptor, gmeetQueued);
   }, [gmeetQueued, live.running, patchRow, handleSyncNow]);
 
-  const gmeetConnectedAt = rows[GMEET_CONNECTOR_ID].connection?.lastSyncedAt ?? null;
-  const gmeetHasLog = useMemo(
-    () => loadGmeetSyncLog(tcw) !== null,
-    // A finished run (or a freshly written row) is when a new log can have appeared.
-    [tcw, live.running, gmeetConnectedAt],
-  );
-
   const handleDisconnect = useCallback(
     (d: ConnectorDescriptor) => {
       patchRow(d.id, { actionError: null, actionRetryAfterMs: null });
@@ -614,8 +605,10 @@ export function ConnectorsCard({
                 onDisconnect={() => handleDisconnect(d)}
                 gmeet={d.id === GMEET_CONNECTOR_ID ? {
                   live,
-                  hasLog: gmeetHasLog,
-                  getLog: () => loadGmeetSyncLog(tcw, buildLabel),
+                  count: gmeetStatus.count,
+                  interrupted: gmeetStatus.interrupted,
+                  hasLog: gmeetStatus.hasLog,
+                  getLog: gmeetStatus.getLog,
                   onWait: () => patchRow(d.id, { queuedSync: rows[d.id].busyOffer }),
                   onCancelWait: () => patchRow(d.id, { queuedSync: null, busyOffer: null }),
                 } : undefined}
@@ -674,7 +667,7 @@ export function ConnectorsCard({
           backendUrl={backendUrl}
           sessionStore={sessionStore}
           featureDark={featureDark}
-          itemCount={rows[dialogDescriptor.id].connection?.itemCount ?? 0}
+          itemCount={dialogDescriptor.id === GMEET_CONNECTOR_ID ? (gmeetStatus.count ?? 0) : (rows[dialogDescriptor.id].connection?.itemCount ?? 0)}
           open
           onOpenChange={(next) => {
             if (!next) { setDialog(null); setAutojoinRevision((n) => n + 1); }
@@ -692,6 +685,9 @@ export function ConnectorsCard({
 
 interface GmeetRowExtras {
   live: GmeetLiveStatus;
+  /** Saved meetings (what the Library shows); null until read. The row's stored count is never shown for Meet. */
+  count: number | null;
+  interrupted: string | null;
   hasLog: boolean;
   getLog: () => GmeetSyncLog | null;
   onWait: () => void;
@@ -837,6 +833,7 @@ const ConnectorRow: FC<{
       {!comingSoon && connected && state.connection && (
         <ConnectedStatusLine
           connection={state.connection}
+          count={gmeet ? gmeet.count : state.connection.itemCount}
           stale={d.id === "fireflies" && isFirefliesStale(state.connection.lastSyncedAt)}
         />
       )}
@@ -853,6 +850,9 @@ const ConnectorRow: FC<{
           ) : !state.syncing ? (
             <GmeetLiveLine status={gmeet.live} />
           ) : null}
+          {gmeet.interrupted !== null && state.busyOffer === null && !state.syncing && (
+            <p className="text-xs text-muted-foreground" role="status" data-testid="gmeet-interrupted">{gmeet.interrupted}</p>
+          )}
           {gmeet.hasLog && <CopyGmeetSyncLogButton getLog={gmeet.getLog} />}
         </>
       )}
@@ -889,23 +889,23 @@ const ConnectorRow: FC<{
   );
 };
 
-const ConnectedStatusLine: FC<{ connection: ConnectorConnection; stale: boolean }> = ({
+const ConnectedStatusLine: FC<{ connection: ConnectorConnection; count: number | null; stale: boolean }> = ({
   connection,
+  count,
   stale,
 }) => {
-  const count = connection.itemCount;
-  const meetings = `${count} meeting${count === 1 ? "" : "s"}`;
+  const meetings = count === null ? null : `${count} meeting${count === 1 ? "" : "s"}`;
   if (!connection.lastSyncedAt) {
     return (
       <p className="text-xs text-muted-foreground">
-        Not synced yet · {meetings}
+        {meetings === null ? "Not synced yet" : `Not synced yet · ${meetings}`}
       </p>
     );
   }
   const { relative, absolute } = formatRelativeTime(connection.lastSyncedAt);
   return (
     <p className="text-xs text-muted-foreground" title={absolute}>
-      {stale ? `Stale since ${absolute}` : `Last synced ${relative}`} · {meetings}
+      {stale ? `Stale since ${absolute}` : `Last synced ${relative}`}{meetings === null ? "" : ` · ${meetings}`}
     </p>
   );
 };

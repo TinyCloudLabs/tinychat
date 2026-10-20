@@ -5,7 +5,7 @@
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { PlugIcon } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import {
   HISTORICAL_RESYNC_CONFIRM_COPY,
@@ -19,8 +19,12 @@ import {
   supportsBackgroundNotifications,
 } from "@/chat/backgroundSyncState";
 import { ConnectorConnectDialog } from "@/chat/ConnectorDialog";
+import { describeGmeetLive, gmeetPressLabel } from "@/chat/GmeetCardStatus";
 import { useBackgroundSync } from "@/chat/useBackgroundSync";
+import { useGmeetRowStatus } from "@/chat/useGmeetRowStatus";
 import * as connectorStore from "@/lib/connectors/connectorStore";
+import { getGmeetMeetingCount, onGmeetMeetingCount, refreshGmeetMeetingCount } from "@/lib/connectors/gmeetLiveCount";
+import { onGmeetNotesSettled } from "@/lib/connectors/gmeetSync";
 import { createConnectorMeetingsClient } from "@/lib/connectors/meetingsApi";
 import { CONNECTORS } from "@/lib/connectors/registry";
 import type { ConnectorConnection, ConnectorDescriptor, ConnectorId } from "@/lib/connectors/types";
@@ -31,6 +35,7 @@ import { DISCONNECT_WHILE_SYNCING, DisconnectRow, FirefliesManage } from "./Mana
 import {
   CalendarAutojoinRow,
   DisconnectDataChoice,
+  GmeetNotices,
   MeetingSourcesEntry,
   MeetingSourcesWindow,
   SourceRow,
@@ -149,6 +154,12 @@ export function MeetingSourcesDialog({
   }, [readConnection, revision, open]);
 
   const sourceSync = useSourceSync({ tcw, backendUrl, sessionStore, onSettled: refresh });
+  // The background Notes reconcile settles after the press that started it (or with no press at all).
+  useEffect(() => onGmeetNotesSettled(() => { void refresh("google-meet"); }), [refresh]);
+  const gmeetStatus = useGmeetRowStatus(tcw, {
+    connected: connectionOf(connections["google-meet"])?.status === "connected",
+    revision,
+  });
   const descriptors = SOURCE_IDS.map((id) => CONNECTORS.find((d) => d.id === id)).filter(
     (d): d is ConnectorDescriptor => d !== undefined,
   );
@@ -187,7 +198,10 @@ export function MeetingSourcesDialog({
             connecting,
             syncError: sourceSync.error?.id === d.id ? sourceSync.error.message : null,
             rowNote: rowNotes[d.id] ?? null,
+            // Meet's count is the saved meetings the Library shows, not the figure cached when a sync last settled.
+            ...(d.id === "google-meet" ? { itemCount: gmeetStatus.count } : {}),
           });
+          const busy = sourceSync.busy?.id === d.id ? sourceSync.busy : null;
           return (
             <SourceRow
               key={d.id}
@@ -214,6 +228,24 @@ export function MeetingSourcesDialog({
               onFullRescan={d.id === "google-meet" ? () => void sourceSync.sync(d, "snapshot") : undefined}
               onStop={sourceSync.stop}
               onToggleManage={() => setManageOpen((old) => ({ ...old, [d.id]: !old[d.id] }))}
+              notices={
+                d.id === "google-meet" && connected ? (
+                  <GmeetNotices
+                    liveLine={describeGmeetLive(gmeetStatus.live)}
+                    busy={busy && {
+                      label: gmeetPressLabel(busy.mode),
+                      queued: busy.queued,
+                      onWait: sourceSync.wait,
+                      onCancel: sourceSync.cancelWait,
+                    }}
+                    interrupted={syncing ? null : gmeetStatus.interrupted}
+                    getLog={gmeetStatus.hasLog ? () => {
+                      const log = gmeetStatus.getLog();
+                      return log === null ? null : JSON.stringify(log, null, 2);
+                    } : null}
+                  />
+                ) : undefined
+              }
               manage={
                 d.id === "fireflies" ? (
                   <FirefliesManagePanel
@@ -260,7 +292,11 @@ export function MeetingSourcesDialog({
           backendUrl={backendUrl}
           sessionStore={sessionStore}
           featureDark={featureDark}
-          itemCount={connectionOf(connections[disconnectDescriptor.id])?.itemCount ?? 0}
+          itemCount={
+            disconnectDescriptor.id === "google-meet"
+              ? (gmeetStatus.count ?? 0)
+              : (connectionOf(connections[disconnectDescriptor.id])?.itemCount ?? 0)
+          }
           syncing={sourceSync.syncingId === disconnectDescriptor.id}
           open
           onFinished={(warning) => {
@@ -495,42 +531,49 @@ export function MeetingSourcesFeature(
   },
 ) {
   const [open, setOpen] = useState(props.initialOpen ?? false);
-  const [summary, setSummary] = useState<{ text: string; connected: boolean }>({
-    text: "Meeting sources",
-    connected: false,
-  });
+  const [sources, setSources] = useState<{ id: ConnectorId; name: string; connected: boolean; count: number }[] | "failed" | null>(null);
   const entryRef = useRef<HTMLButtonElement>(null);
   const { tcw } = props;
+  // Meet's count is the live count of saved meetings, so the entry follows a running sync.
+  const gmeetCount = useSyncExternalStore(onGmeetMeetingCount, () => getGmeetMeetingCount(tcw), () => getGmeetMeetingCount(tcw));
   useEffect(() => {
     let active = true;
     void (async () => {
-      const found: { name: string; connected: boolean; count: number }[] = [];
+      const found: { id: ConnectorId; name: string; connected: boolean; count: number }[] = [];
       for (const id of SOURCE_IDS) {
         const d = CONNECTORS.find((item) => item.id === id);
         if (!d || d.status !== "available") continue;
         const result = await connectorStore.getConnection(tcw, id);
         if (!result.ok) {
           console.error("Meeting sources connection status failed", result.error);
-          if (active) setSummary({ text: "Connection status unavailable", connected: false });
+          if (active) setSources("failed");
           return;
         }
-        found.push({
-          name: d.name,
-          connected: result.data?.status === "connected",
-          count: result.data?.itemCount ?? 0,
-        });
+        const connected = result.data?.status === "connected";
+        if (id === "google-meet" && connected) await refreshGmeetMeetingCount(tcw, connectorStore.countMeetings);
+        found.push({ id, name: d.name, connected, count: result.data?.itemCount ?? 0 });
       }
-      if (active) {
-        setSummary({
-          text: meetingSourcesSummary(found),
-          connected: found.some((source) => source.connected),
-        });
-      }
+      if (active) setSources(found);
     })();
     return () => {
       active = false;
     };
   }, [tcw, open]);
+  const summary =
+    sources === "failed"
+      ? { text: "Connection status unavailable", connected: false }
+      : sources === null
+        ? { text: "Meeting sources", connected: false }
+        : {
+            text: meetingSourcesSummary(
+              sources.map((source) => ({
+                name: source.name,
+                connected: source.connected,
+                count: source.id === "google-meet" ? gmeetCount : source.count,
+              })),
+            ),
+            connected: sources.some((source) => source.connected),
+          };
   return (
     <>
       <MeetingSourcesEntry
