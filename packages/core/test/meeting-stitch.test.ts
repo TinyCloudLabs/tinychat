@@ -253,9 +253,61 @@ describe("stitchMeetings: short clips and bad inputs", () => {
     expect(parsed.combined!.row.started_at).toBeNull();
   });
 
+  test.each([["empty string", ""], ["array", []], ["boolean", true]])("a segment time that is a %s is rejected, not read as 0 or 1", (_name, bad) => {
+    const body = JSON.stringify([{ index: 0, speaker_name: "Me", text: "Hello there everyone.", start_time: bad, end_time: 3 }]);
+    expect(() => stitchMeetings(fireflies(), { ...notetaker(), body })).toThrow(StitchInputError);
+  });
+
+  test("a numeric string time is accepted", () => {
+    const body = JSON.stringify([{ index: 0, speaker_name: "Me", text: "Hello there everyone.", start_time: "1.5", end_time: "3" }]);
+    expect(stitchMeetings(fireflies(), { ...notetaker(), body }).verdict).toBe("not-same-meeting");
+  });
+
+  test("a trusted clock on the other member still dates the combined meeting", () => {
+    const noClock: MeetingSnapshot = { ...fireflies(), row: { title: "Kick-off", duration_secs: 0.9 * T } };
+    const r = stitchMeetings(noClock, notetaker());
+    expect(r.verdict).toBe("same-meeting");
+    // the Notetaker's capture starts offset_s after the Fireflies capture, which is the combined start
+    const expected = START + (0.2 * T - r.offset_s!) * 1000;
+    expect(Math.abs(Date.parse(r.combined!.row.started_at!) - expected)).toBeLessThan(1500);
+  });
+
   test("a combined meeting cannot be a member", () => {
     const merged: MeetingSnapshot = { ...fireflies(), source: "exo-merged", source_id: "m-1" };
     expect(() => stitchMeetings(merged, notetaker())).toThrow(StitchInputError);
+  });
+});
+
+describe("stitchMeetings: seams on offset sentence starts (synthetic)", () => {
+  // 80 sentences of 8 unique tokens, 5 s apart. A holds the first 300 s as one sentence per segment; B holds
+  // 100-400 s as two sentences per segment, with starts 1.3 s off A's and its own clock (skew 7.5 s).
+  const words8 = (i: number) => Array.from({ length: 8 }, (_, k) => `s${i}w${k}`);
+  const sentence = (i: number) => `${words8(i).join(" ")}.`;
+  const A = JSON.stringify(Array.from({ length: 60 }, (_, i) => ({ index: i, speaker_name: "Ana", text: sentence(i), start_time: i * 5, end_time: i * 5 + 4.5 })));
+  const B = JSON.stringify(Array.from({ length: 30 }, (_, j) => {
+    const i = 20 + 2 * j;
+    return { index: j, speaker_name: "speaker_0", text: `${sentence(i)} ${sentence(i + 1)}`, start_time: i * 5 + 1.3 - 100 + 7.5, end_time: (i + 1) * 5 + 4.8 - 100 + 7.5 };
+  }));
+  const mk = (source: string, id: string, body: string, startS: number): MeetingSnapshot => ({ source, source_id: id, body, row: { started_at: iso(startS), duration_secs: 400, metadata: {} } });
+
+  test("no sentence is lost or repeated by more than a couple of words per seam", () => {
+    const r = stitchMeetings(mk("fireflies", "syn-a", A, 0), mk("tinycloud-transcriber", "syn-b", B, 100));
+    expect(r.verdict).toBe("same-meeting");
+    expect(r.seams.length).toBeGreaterThan(0);
+    expect(r.seams.every((x) => Math.abs(x.gap_s) <= 2)).toBe(true);
+    const seen = new Map<string, number>();
+    for (const seg of body(r)) for (const w of words(seg.text)) seen.set(w, (seen.get(w) ?? 0) + 1);
+    let missing = 0;
+    let repeated = 0;
+    for (let i = 0; i < 80; i++) for (const w of words8(i)) {
+      const n = seen.get(w) ?? 0;
+      if (n === 0) missing++;
+      if (n > 1) repeated += n - 1;
+    }
+    // every sentence is whole or absent, so the loss at a seam is a whole sentence (8 words) at most
+    expect(missing).toBeLessThanOrEqual(8 * r.seams.length);
+    expect(repeated).toBeLessThanOrEqual(8 * r.seams.length);
+    expect(missing + repeated).toBeLessThan(0.02 * 640);
   });
 });
 

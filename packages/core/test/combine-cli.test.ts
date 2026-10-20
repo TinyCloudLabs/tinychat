@@ -1,14 +1,15 @@
 // scripts/stitch/combine.ts end to end on the public AMI fixture, with a fake `tc` (no profile, no space).
 import { afterAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, statSync, existsSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { runCombine, parseRef, type Tc } from "../../../scripts/stitch/combine";
+import { CliError, runCombine, parseRef, type Tc } from "../../../scripts/stitch/combine";
 
 const fx = (n: string) => readFileSync(join(import.meta.dir, "fixtures/meeting-stitch", n), "utf8");
 const FF = fx("es2004a-fireflies.json");
+const FF_B = fx("es2004b-fireflies.json");
 const NT = fx("es2004a-notetaker.json");
 const T = (JSON.parse(fx("es2004a-truth.json")) as { duration_s: number }).duration_s;
 const START = Date.parse("2020-03-02T10:00:00Z");
@@ -22,6 +23,7 @@ function fakeTc(opts: { voiceKeyTail?: string; voiceOutcome?: string } = {}) {
   const calls: string[][] = [];
   const kv: Record<string, string> = {
     [`${PREFIX}/fireflies/transcript/ff-1`]: FF,
+    [`${PREFIX}/fireflies/transcript/ff-b`]: FF_B, // ES2004b: the same people's next meeting
     [`${PREFIX}/tinycloud-transcriber/transcript/nt-1`]: NT,
     [`${PREFIX}/exo-voice-note/transcript/vn-1`]: "[]", // the legacy mirror must never be read
     [`${PREFIX}/exo-voice-note/transcript-rev/vn-1/0123456789abcdef0123456789abcdef`]: NT,
@@ -33,12 +35,13 @@ function fakeTc(opts: { voiceKeyTail?: string; voiceOutcome?: string } = {}) {
         const sql = args[args.indexOf("query") + 1]!;
         const [, id] = JSON.parse(args[args.indexOf("--params") + 1]!) as string[] & [string, string];
         if (sql.includes("voice_note_transcript")) return JSON.stringify({ rows: [[`${PREFIX}/exo-voice-note/transcript-rev/${voiceKeyTail}`, voiceOutcome]] });
+        if (id === "ff-b") return JSON.stringify({ rows: [["Next", iso(0), 0.9 * T, "[]", "{}"]] });
         if (id === "ff-1") return JSON.stringify({ rows: [["Kick-off", iso(0), 0.9 * T, "[]", "{}"]] });
         if (id === "nt-1" || id === "vn-1") return JSON.stringify({ rows: [[null, iso(0.2 * T), 0.8 * T, null, JSON.stringify({ platform: "google_meet" })]] });
         return JSON.stringify({ rows: [] });
       }
       const key = args[args.indexOf("get") + 2]!;
-      if (kv[key] === undefined) throw new Error("missing");
+      if (kv[key] === undefined) throw new CliError("tc kv get failed (exit 1)"); // what spawnTc throws
       return kv[key]!;
     },
   };
@@ -99,12 +102,55 @@ describe("combine.ts", () => {
     }
   });
 
-  test("a refused pair writes nothing, errors never carry content", () => {
+  test("a pair that is not the same meeting exits 3, writes no file and leaks no content", () => {
+    const { tc } = fakeTc();
+    const out = join(dir, "refused.json");
+    const r = runCombine(["--a", "fireflies:ff-1", "--b", "fireflies:ff-b", "--out", out], { tc });
+    expect(r.code).toBe(3);
+    expect(existsSync(out)).toBe(false);
+    expect(r.stderr).toBe("");
+    const summary = JSON.parse(r.stdout) as Record<string, unknown>;
+    expect(summary).toMatchObject({ verdict: "not-same-meeting", reason: "anchor-rule", forced: false, segments: 0, wrote: false });
+    expect(r.stdout).not.toMatch(/Kick-off|Next|Ava Chen/);
+  });
+
+  test("--force lays a refused pair end to end and writes it", () => {
+    const { tc } = fakeTc();
+    const out = join(dir, "forced.json");
+    const r = runCombine(["--a", "fireflies:ff-1", "--b", "fireflies:ff-b", "--out", out, "--force"], { tc });
+    expect(r.code).toBe(0);
+    expect(r.stderr).toBe("");
+    expect(JSON.parse(r.stdout)).toMatchObject({ verdict: "not-same-meeting", forced: true, relation: "none", wrote: true });
+    expect(statSync(out).mode & 0o777).toBe(0o600);
+    const written = JSON.parse(readFileSync(out, "utf8")) as { combined: { body: { seam?: string }[] } };
+    expect(written.combined.body.filter((s) => s.seam === "forced").length).toBe(1);
+  });
+
+  test("a missing member fails with a content-free error and no file", () => {
     const { tc } = fakeTc();
     const out = join(dir, "none.json");
     const r = runCombine(["--a", "fireflies:ff-1", "--b", "fireflies:missing", "--out", out], { tc });
     expect(r.code).toBe(1);
+    expect(r.stdout).toBe("");
+    expect(r.stderr).toBe("error: tc kv get failed (exit 1)\n");
     expect(existsSync(out)).toBe(false);
     expect(parseRef("fireflies:a:b")).toEqual({ source: "fireflies", sourceId: "a:b" });
+  });
+
+  test("an existing output file ends up 0600 and no temp file is left, also when the write fails", () => {
+    const { tc } = fakeTc();
+    const d = join(dir, "outdir");
+    mkdirSync(d);
+    const out = join(d, "existing.json");
+    writeFileSync(out, "old", { mode: 0o644 });
+    chmodSync(out, 0o644);
+    expect(runCombine(["--a", "fireflies:ff-1", "--b", "tinycloud-transcriber:nt-1", "--out", out], { tc }).code).toBe(0);
+    expect(statSync(out).mode & 0o777).toBe(0o600);
+    // --out is a directory: the rename fails, and the transcript temp file must not remain
+    mkdirSync(join(d, "isdir"));
+    const bad = runCombine(["--a", "fireflies:ff-1", "--b", "tinycloud-transcriber:nt-1", "--out", join(d, "isdir")], { tc });
+    expect(bad.code).toBe(1);
+    expect(bad.stderr).toBe("error: unexpected error\n");
+    expect(readdirSync(d).sort()).toEqual(["existing.json", "isdir"]);
   });
 });

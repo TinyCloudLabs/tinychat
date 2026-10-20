@@ -182,9 +182,15 @@ const RUN_SPAN_MIN_TAIL_S = 15;
 const SWITCH_SHARE = 0.5;
 const EPS = 1e-6;
 const MIN_CAPTURE_S = 120;
+/** A seam is "tight" when the two sources' nearest sentence starts are this close. */
+const SEAM_TIGHT_S = 2;
 const MIN_ANCHOR_SEGMENTS = 3;
 /** ISO-8601 with an explicit zone; anything else would be read in local time. */
 const ISO_WITH_ZONE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})$/i;
+
+/** min/max by loop: `Math.min(...arr)` throws RangeError on very large arrays. Callers pass non-empty arrays. */
+const minOf = (v: number[]): number => v.reduce((a, b) => (b < a ? b : a), Infinity);
+const maxOf = (v: number[]): number => v.reduce((a, b) => (b > a ? b : a), -Infinity);
 
 const round3 = (x: number): number => Math.round(x * 1000) / 1000;
 
@@ -349,6 +355,12 @@ function readParticipants(value: unknown): { name: string; email: string | null 
   return out;
 }
 
+/** A finite number, or a non-empty numeric string; `Number("")`, `Number([])` and `Number(true)` must not become 0/1. */
+function strictTime(v: unknown): number {
+  if (typeof v === "number") return v;
+  return typeof v === "string" && v.trim() !== "" ? Number(v) : NaN;
+}
+
 function readBody(body: unknown, which: string): { segs: Seg[]; sha: string } {
   const sha = sha256Hex(typeof body === "string" ? body : JSON.stringify(body ?? null));
   let parsed: unknown = body;
@@ -366,8 +378,8 @@ function readBody(body: unknown, which: string): { segs: Seg[]; sha: string } {
   list.forEach((item, position) => {
     const r = asRecord(item);
     const text = typeof r.text === "string" ? r.text : null;
-    const start = Number(r.start_time ?? r.start);
-    const end = Number(r.end_time ?? r.end);
+    const start = strictTime(r.start_time ?? r.start);
+    const end = strictTime(r.end_time ?? r.end);
     if (text === null || !Number.isFinite(start) || !Number.isFinite(end)) {
       throw new StitchInputError(`member ${which}: segment ${position} is malformed`);
     }
@@ -408,8 +420,8 @@ function readMember(snap: MeetingSnapshot, which: string): Member {
   const startedAt = str(row?.started_at ?? kv?.startedAt);
   const parsedStart = startedAt !== null && ISO_WITH_ZONE.test(startedAt) ? Date.parse(startedAt) : NaN; // no zone: local time, so untrusted
   const meta = asRecord(jsonField(row?.metadata));
-  const firstS = Math.min(...segs.map((s) => s.start));
-  const lastS = Math.max(...segs.map((s) => s.end));
+  const firstS = minOf(segs.map((s) => s.start));
+  const lastS = maxOf(segs.map((s) => s.end));
   const rowDur = Number(row?.duration_secs);
   const hasNames = segs.some((s) => isRealName(s.speaker));
   const platform = str(meta.platform);
@@ -670,8 +682,9 @@ interface Cut {
  * sentence ends non-monotonic, starts are what the sorted order follows). A cut falls just before a
  * sentence of the earlier source, so no sentence is ever split. Pass 1: such a sentence start within
  * the window and within 20 s of an anchor, whose nearest sentence start in the later source is
- * closest (so little is dropped or repeated). Pass 2: the same without the anchor condition. Pass 3:
- * split by sentence midpoint at the nominal time.
+ * within SEAM_TIGHT_S (so little is dropped or repeated). Pass 2: the same without the anchor condition.
+ * Passes 3-4: as 1-2 but accepting the closest pair however far apart. Last resort: split by sentence
+ * midpoint at the nominal time. The distance left at each seam is reported as `seams[].gap_s`.
  */
 function pickCut(early: Sent[], late: Sent[], nominal: number, win: [number, number], anchors: number[], floor: number): Cut {
   const starts = late.map((s) => s.t0);
@@ -681,11 +694,14 @@ function pickCut(early: Sent[], late: Sent[], nominal: number, win: [number, num
     return best;
   };
   const cands = early.map((s) => s.t0).filter((t) => t >= Math.max(win[0], floor) - EPS && t <= win[1] + EPS);
-  for (const needAnchor of [true, false]) {
+  // Tight passes first: a cut whose two sides start within SEAM_TIGHT_S of each other drops or repeats
+  // almost nothing. Only when no such cut exists do the loose passes take the least-bad one.
+  for (const [needAnchor, tightOnly] of [[true, true], [false, true], [true, false], [false, false]] as const) {
     let best: (Cut & { score: number }) | null = null;
     for (const x of cands) {
       if (needAnchor && !anchors.some((a) => Math.abs(a - x) <= 20)) continue;
       const y = nearest(x);
+      if (tightOnly && Math.abs(x - y) > SEAM_TIGHT_S) continue;
       const score = Math.abs(x - y) + 0.01 * Math.abs(x - nominal);
       if (best === null || score < best.score - EPS) best = { x, y, score };
     }
@@ -694,8 +710,8 @@ function pickCut(early: Sent[], late: Sent[], nominal: number, win: [number, num
   const after = early.filter((s) => (s.t0 + s.t1) / 2 >= nominal && s.t0 >= floor - EPS);
   const lateAfter = late.filter((s) => (s.t0 + s.t1) / 2 >= nominal);
   return {
-    x: after.length > 0 ? Math.min(...after.map((s) => s.t0)) : Math.max(floor, nominal),
-    y: lateAfter.length > 0 ? Math.min(...lateAfter.map((s) => s.t0)) : nominal,
+    x: after.length > 0 ? minOf(after.map((s) => s.t0)) : Math.max(floor, nominal),
+    y: lateAfter.length > 0 ? minOf(lateAfter.map((s) => s.t0)) : nominal,
   };
 }
 
@@ -756,7 +772,7 @@ function composeAligned(tracks: [Track, Track], al: Alignment): Composed {
   const sents: [Sent[], Sent[]] = [buildSentences(tracks[0], 0), buildSentences(tracks[1], 1)];
   const cover = tracks.map((t) => {
     const times = t.m.segs.map((s) => segTimes(t, s));
-    return [Math.min(...times.map((x) => x[0])), Math.max(...times.map((x) => x[1]))] as [number, number];
+    return [minOf(times.map((x) => x[0])), maxOf(times.map((x) => x[1]))] as [number, number];
   });
   const lo = Math.max(cover[0]![0], cover[1]![0]);
   const hi = Math.min(cover[0]![1], cover[1]![1]);
@@ -795,8 +811,8 @@ function composeAligned(tracks: [Track, Track], al: Alignment): Composed {
 function composeForced(tracks: [Track, Track]): Composed {
   const sents: [Sent[], Sent[]] = [buildSentences(tracks[0], 0), buildSentences(tracks[1], 1)];
   const runs: Run[] = [
-    { src: 0, t0: sents[0][0]!.t0, t1: Math.max(...sents[0].map((s) => s.t1)) },
-    { src: 1, t0: Math.min(...sents[1].map((s) => s.t0)), t1: Math.max(...sents[1].map((s) => s.t1)) },
+    { src: 0, t0: sents[0][0]!.t0, t1: maxOf(sents[0].map((s) => s.t1)) },
+    { src: 1, t0: minOf(sents[1].map((s) => s.t0)), t1: maxOf(sents[1].map((s) => s.t1)) },
   ];
   const picked: Picked[] = [];
   runs.forEach((_, r) => { for (const s of sents[r]) picked.push({ run: r, sent: s }); });
@@ -993,7 +1009,7 @@ export function stitchMeetings(snapA: MeetingSnapshot, snapB: MeetingSnapshot, o
     shift = Math.min(0, al.map(0));
     const cover = tracks.map((t) => {
       const times = t.m.segs.map((s) => segTimes(t, s));
-      return [Math.min(...times.map((x) => x[0])), Math.max(...times.map((x) => x[1]))] as [number, number];
+      return [minOf(times.map((x) => x[0])), maxOf(times.map((x) => x[1]))] as [number, number];
     });
     relation = relationOf(cover);
   } else {
@@ -1035,6 +1051,10 @@ export function stitchMeetings(snapA: MeetingSnapshot, snapB: MeetingSnapshot, o
   }));
 
   const firstMember = tracks[0].map(0) - 0 <= tracks[1].map(0) ? tracks[0].m : tracks[1].m;
+  // The earlier member's clock; when it is untrusted or missing, the other member's trusted clock.
+  const otherMember = firstMember === tracks[0].m ? tracks[1].m : tracks[0].m;
+  const otherPosS = (tracks[0].m === otherMember ? tracks[0] : tracks[1]).map(0) - shift;
+  const startedAtMs = firstMember.trustedStart ? firstMember.startMs : otherMember.trustedStart ? otherMember.startMs! - otherPosS * 1000 : firstMember.startMs;
   const bestTitle = [m0, m1].sort((x, y) => x.titleRank - y.titleRank || (x.ref < y.ref ? -1 : 1)).find((m) => m.title !== null)?.title ?? null;
   const names: { name: string; email: string | null }[] = [];
   const seen = new Set<string>();
@@ -1046,7 +1066,7 @@ export function stitchMeetings(snapA: MeetingSnapshot, snapB: MeetingSnapshot, o
   };
   for (const m of [m0, m1]) for (const p of m.participants) addName(p.name, p.email);
   for (const s of body) if (isRealName(s.speaker_name)) addName(s.speaker_name!, null);
-  const endS = body.length > 0 ? Math.max(...body.map((s) => s.end_time)) : 0;
+  const endS = body.length > 0 ? maxOf(body.map((s) => s.end_time)) : 0;
 
   const combined: StitchedMeeting = {
     row: {
@@ -1054,7 +1074,7 @@ export function stitchMeetings(snapA: MeetingSnapshot, snapB: MeetingSnapshot, o
       source: MERGED_SOURCE,
       source_id: sourceId,
       title: bestTitle,
-      started_at: firstMember.startMs === null ? null : new Date(firstMember.startMs).toISOString(),
+      started_at: startedAtMs === null ? null : new Date(startedAtMs).toISOString(),
       duration_secs: Math.round(endS),
       organizer_email: null,
       participants: names,
