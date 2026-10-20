@@ -57,6 +57,19 @@ function render(patch: Partial<NoteDetailViewProps> = {}) {
 }
 
 describe("NoteDetailView", () => {
+  test("pasted transcript shows exact line breaks and no audio player", () => {
+    const pasted = { ...VOICE, title: "Interview", durationSecs: null, metadata: { capture: "pasted" } };
+    const html = render({ item: pasted, audio: null, metadata: { status: "ok", metadata: {
+      capture: "pasted", transcription_outcome: "transcribed", transcript_text: "[01:02] Alice: Hello\n\nBob: Hi",
+    } }, transcript: { status: "ok", sentences: [
+      { index: 0, speaker_name: "Alice", text: "Hello", start_time: 62, end_time: 62 },
+      { index: 1, speaker_name: "Bob", text: "Hi", start_time: 0, end_time: 0 },
+    ] } });
+    expect(html).toContain("[01:02] Alice: Hello\n\nBob: Hi");
+    expect(html).toContain("Pasted transcript saved to your TinyCloud space.");
+    expect(html).not.toContain("Play audio");
+    expect(html).not.toContain("Saving from your phone");
+  });
   test("another device names the holding device and offers no broken player or Transcribe button", () => {
     const html = render({ audio: null, transcript: { status: "absent" }, transcription: transcription(),
       metadata: { status: "ok", metadata: { capture: { platform: "ios" }, audio: { stored: false, reason: "local_only", device: { platform: "ios" } } } } });

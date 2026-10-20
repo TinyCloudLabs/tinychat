@@ -86,6 +86,8 @@ const syncDeps = (engine: SourceSyncDeps["runFirefliesSyncNow"]): SourceSyncDeps
   unlockSecrets: (async () => ({ ok: true, data: undefined })) as SourceSyncDeps["unlockSecrets"],
   getConnectorKey: (async () => ({ ok: true, data: "key" })) as SourceSyncDeps["getConnectorKey"],
   isGmeetSyncInFlight: () => false,
+  isGmeetNotesSyncInFlight: () => false,
+  awaitSessionSync: async () => {},
   runGmeetSyncNow: async () => ({ ok: true }),
   runFirefliesSyncNow: engine,
 });

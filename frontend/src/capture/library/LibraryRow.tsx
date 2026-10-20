@@ -36,16 +36,17 @@ export type LibraryItem = MeetingListItem & {
 };
 
 const isVoiceNote = (item: LibraryItem): boolean => item.source === VOICE_NOTE_SOURCE;
+const isPasted = (item: LibraryItem): boolean => item.metadata?.capture === "pasted";
 
 /** A voice note: its own words, else "Voice note" (never the date: a day's group or the line below has it). */
 export function libraryRowTitle(item: LibraryItem): string {
-  return isVoiceNote(item) ? (item.snippet ?? HOME_COPY.voiceNoteTitle) : (item.title ?? "Untitled");
+  return isVoiceNote(item) && !isPasted(item) ? (item.snippet ?? HOME_COPY.voiceNoteTitle) : (item.title ?? "Untitled");
 }
 
 /** "Fireflies · 2:00 PM"; a voice note's is "7:16 PM · 0:14" (the mic says what it is). */
 export function libraryRowMeta(item: LibraryItem, now: Date, grouped: boolean): string {
   const when = rowWhen(item.startedAt, now, grouped);
-  const parts = isVoiceNote(item)
+  const parts = isPasted(item) ? ["Pasted transcript", when] : isVoiceNote(item)
     ? [when, item.durationSecs !== null ? formatClockDuration(item.durationSecs) : null]
     : [librarySourceLabel(item.source), when];
   return parts.filter((part): part is string => !!part).join(" · ");
