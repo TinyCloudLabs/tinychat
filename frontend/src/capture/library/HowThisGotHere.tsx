@@ -128,6 +128,12 @@ export function captureRoute(source: string, metadata: Record<string, unknown> |
   };
 }
 
+/** A source of this combined meeting: opens its page, and Back from there returns here, not to the Library list. */
+function MemberLink(props: { href: string; title: string }) {
+  const here = useLocation().pathname;
+  return <Link to={props.href} state={{ backTo: here }} className="inline-flex min-h-11 items-center text-primary underline underline-offset-4 hover:no-underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [overflow-wrap:anywhere]">{props.title}</Link>;
+}
+
 /**
  * The route, once the row's metadata has been read: a skeleton while it is
  * read, and no route at all when the read failed (a route drawn from the
@@ -135,8 +141,6 @@ export function captureRoute(source: string, metadata: Record<string, unknown> |
  */
 export function HowThisGotHere(props: { source: string; read: MeetingMetadataRead | undefined; onRetry: () => void; /** A combined meeting's originals, with a link where they still exist. */ members?: readonly CombinedMemberLine[] }) {
   const { read } = props;
-  // A source opened from here goes Back to here, not to the Library list.
-  const here = useLocation().pathname;
   const route = read !== undefined && read.status !== "failed" ? captureRoute(props.source, read.status === "ok" ? read.metadata : null) : null;
   return (
     <section aria-labelledby="how-this-got-here" data-testid="how-this-got-here" data-state={read === undefined ? "loading" : read.status}>
@@ -165,7 +169,7 @@ export function HowThisGotHere(props: { source: string; read: MeetingMetadataRea
               {props.members.map((m) => (
                 <li key={`${m.source}:${m.sourceId}`} className="text-callout" data-testid="combined-member">
                   <span className="text-muted-foreground">{m.sourceLabel} · </span>
-                  {m.href !== null ? <Link to={m.href} state={{ backTo: here }} className="inline-flex min-h-11 items-center text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [overflow-wrap:anywhere]">{m.title}</Link>
+                  {m.href !== null ? <MemberLink href={m.href} title={m.title ?? "Untitled"} />
                     : <span className="text-muted-foreground">no longer in your Library</span>}
                 </li>
               ))}

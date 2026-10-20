@@ -41,6 +41,7 @@ import { LazyDesktopCaptureHome } from "./home/desktop/LazyDesktopCaptureHome";
 import { SoftHomeProvider } from "./home/softHome";
 import { useSoftTheme } from "./home/softTheme";
 import { inProgressShown, type InProgressRowsViewProps } from "./InProgressRows";
+import { noteBackTarget } from "./library/combine/combinedView";
 import { LibraryScreen } from "./library/LibraryScreen";
 import { NoteDetail } from "./library/NoteDetail";
 import { RecentNotePendingSheet } from "./library/RecentNotePendingSheet";
@@ -87,16 +88,6 @@ const LIST_COLUMN = "w-full px-4";
 type Sheet = "upload" | "meeting";
 
 /** Keep progress subscriptions below the surface so capture chrome updates at most four times a second. */
-/**
- * Where a note's Back goes. A source opened from its combined meeting's page (`state.backTo`, set by that
- * page's link) goes back to that page; anything else goes up to the Library (or Capture on the desktop page).
- */
-function openedFrom(state: unknown, notePage: boolean): string {
-  const backTo = (state as { backTo?: unknown } | null)?.backTo;
-  if (typeof backTo === "string" && backTo.startsWith(`${PATHS.library}/`)) return backTo;
-  return notePage ? PATHS.capture : PATHS.library;
-}
-
 function PipelineBridge({ entries, onViews }: { entries: readonly { id: string; source: NotePipelineSource }[]; onViews: (views: ReadonlyMap<string, NotePipelineView>) => void }) {
   const views = useNotePipelines(entries);
   const latest = useRef(views);
@@ -367,7 +358,7 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
             pushed={!wide}
             onBack={() => {
               if (recentNoteId !== null) closeRecentNote();
-              else goUp(navigate, openedFrom(location.state, notePage));
+              else goUp(navigate, noteBackTarget(location.state, notePage));
             }}
             transcription={recorder.transcription}
             activityView={openNote ? activityViews.get(openNote.sourceId) : undefined}

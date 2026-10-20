@@ -28,6 +28,7 @@ const { NoteDetail } = await import("../NoteDetail");
 const { useLibrary } = await import("../useLibrary");
 const { useCombineFlow } = await import("./useCombineFlow");
 import { COMBINE_MAX_SEGMENTS_PER_MEMBER } from "./bodySegments";
+import { noteBackTarget } from "./combinedView";
 
 let cleanup: (() => void) | undefined;
 let root: Root | null = null;
@@ -179,8 +180,8 @@ describe("Combine confirm and write", () => {
     // Originals untouched.
     expect(originals() + originalKv()).toBe(before);
     for (const w of writes()) expect(w.kind === "kv" ? w.text.includes("/exo-merged/") : w.text.includes("'exo-merged'") || w.text.startsWith("INSERT")).toBe(true);
-    // Listed in the Library as a combined meeting, with both originals still listed.
-    await settle(() => all("library-item").length === 3, "three rows listed");
+    // The Library lists the combined meeting alone: both originals are hidden from the list.
+    await settle(() => all("library-item").length === 1, "one row listed");
     expect(all("library-item").map((r) => r.textContent).join("|")).toContain("Combined meeting");
     // The combined meeting's page names its members and never the raw source string.
     await settle(() => has("combined-members"), "members");
@@ -339,6 +340,100 @@ describe("The combined meeting's page", () => {
     await settle(() => has("combined-stale"), "stale notice");
     expect(q("combined-stale")!.textContent).toContain("A source changed");
     expect(has("combined-recombine")).toBe(true);
+  });
+});
+
+describe("A combined meeting hides its sources (TC-1152 v1b-a)", () => {
+  const hrefs = () => all("library-item").map((r) => r.querySelector("a")?.getAttribute("href") ?? r.getAttribute("href"));
+
+  test("the list shows only the combined meeting; its sources are hidden, other captures are not", async () => {
+    const id = await combineViaStore([FF, NT, OTHER, NEXT_DAY]);
+    await open(id, rowsToSeed, seedKv);
+    await settle(() => all("library-item").length === 3, "combined + two uncombined rows");
+    const listedHrefs = hrefs().join("|");
+    expect(listedHrefs).toContain(id);
+    expect(listedHrefs).toContain("row-x");
+    expect(listedHrefs).toContain("row-d");
+    expect(listedHrefs).not.toContain("row-a");
+    expect(listedHrefs).not.toContain("row-b");
+  });
+
+  test("the filter chips use the visible list: Meetings holds the combined row and not its sources", async () => {
+    const id = await combineViaStore([FF, NT, VOICE]);
+    await open(id, rowsToSeed, seedKv);
+    await settle(() => all("library-item").length + all("voice-note-item").length === 2, "combined + voice note");
+    const meetings = [...document.querySelectorAll('[role="radio"]')].find((el) => el.textContent === "Meetings") as HTMLElement;
+    await act(async () => { meetings.click(); });
+    await settle(() => all("voice-note-item").length === 0, "voice note filtered out");
+    expect(all("library-item")).toHaveLength(1);
+    expect(hrefs().join("|")).toContain(id);
+  });
+
+  test("the combined page lists its sources, each a link that opens the source's own page", async () => {
+    const id = await combineViaStore();
+    await open(id, rowsToSeed, seedKv);
+    await settle(() => all("combined-member").length === 2, "two sources");
+    const links = all("combined-member").map((m) => m.querySelector("a")!);
+    expect(links.map((a) => a.getAttribute("href")).sort()).toEqual(["/chat/capture/library/row-a", "/chat/capture/library/row-b"]);
+    // The list hides them, but they resolve and open.
+    await act(async () => { links.find((a) => a.getAttribute("href")!.endsWith("row-a"))!.click(); });
+    await settle(() => q("note-detail")?.getAttribute("data-note-id") === "row-a", "source opened");
+    expect(window.location.pathname).toBe("/chat/capture/library/row-a");
+    // The link remembers the combined page, so Back from the source returns there and not to the list.
+    expect(noteBackTarget(window.history.state?.usr, false)).toBe(`/chat/capture/library/${id}`);
+    // Opening a hidden source does not bring it back into the list.
+    expect(hrefs().join("|")).not.toContain("row-a");
+  });
+
+  test("Back goes to the combined page only when the source was opened from it", () => {
+    expect(noteBackTarget({ backTo: "/chat/capture/library/c1" }, false)).toBe("/chat/capture/library/c1");
+    expect(noteBackTarget({ backTo: "/chat/capture/library/c1" }, true)).toBe("/chat/capture/library/c1");
+    expect(noteBackTarget(null, false)).toBe("/chat/capture/library");
+    expect(noteBackTarget(undefined, true)).toBe("/chat/capture");
+    // Never an off-Library address from history state.
+    expect(noteBackTarget({ backTo: "https://evil.example/x" }, false)).toBe("/chat/capture/library");
+    expect(noteBackTarget({ backTo: "/chat/settings" }, false)).toBe("/chat/capture/library");
+  });
+
+  test("a hidden source opened by address (a stale link) still opens", async () => {
+    const id = await combineViaStore();
+    await open("row-b", rowsToSeed, seedKv);
+    expect(q("note-detail")!.getAttribute("data-note-id")).toBe("row-b");
+    expect(hrefs().join("|")).toContain(id);
+    expect(hrefs().join("|")).not.toContain("row-b");
+  });
+
+  test("a source already inside a combined meeting is not combinable again", async () => {
+    await combineViaStore();
+    await open("row-a", rowsToSeed, seedKv);
+    expect(has("combine-entry")).toBe(false);
+  });
+
+  test("a hidden member is never offered as the other capture of a NEW combine", async () => {
+    // FF+NT are combined; OTHER (same window) is uncombined and must not be offered NT, only the combined row's members are hidden.
+    await combineViaStore([FF, NT, OTHER, { ...NEXT_DAY, startedAt: "2026-10-19T10:03:00.000Z" }]);
+    await open("row-x", rowsToSeed, seedKv);
+    await click("combine-entry");
+    await settle(() => has("combine-sheet"), "picker");
+    expect(all("combine-candidate").map((el) => el.getAttribute("data-item-id"))).toEqual(["row-d"]);
+  });
+
+  test("Delete combined brings the sources back into the list", async () => {
+    const id = await combineViaStore();
+    await open(id, rowsToSeed, seedKv);
+    await settle(() => all("library-item").length === 1, "one row");
+    await click("combined-delete");
+    await settle(() => has("delete-combined-sheet"), "confirm dialog");
+    await click("delete-combined-confirm");
+    await settle(() => all("library-item").length === 2, "sources back");
+    expect(hrefs().join("|")).toContain("row-a");
+    expect(hrefs().join("|")).toContain("row-b");
+  });
+
+  test("a combined row with unreadable metadata hides nothing and is still listed", async () => {
+    const garbage: SpaceRow = { id: "row-m", source: EXO_MERGED_SOURCE, sourceId: "merged-garbage", title: "Planning", startedAt: "2026-10-19T10:00:00.000Z", durationSecs: 600, metadata: "{{{not json", body: "[]" };
+    await open("row-m", [FF, NT, garbage]);
+    await settle(() => all("library-item").length === 3, "everything listed");
   });
 });
 
