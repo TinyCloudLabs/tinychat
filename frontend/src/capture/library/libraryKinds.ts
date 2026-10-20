@@ -2,6 +2,7 @@
 // each row's icon and label. Client-side, from `connector_meeting.source`.
 import { FileAudioIcon, MicIcon, VideoIcon, type LucideIcon } from "lucide-react";
 
+import { EXO_MERGED_SOURCE } from "@tinyboilerplate/core";
 import { meetingSourceLabel } from "@/lib/connectors/meetingExplorer";
 import { GMEET_MEETING_SOURCE } from "@/lib/connectors/gmeetNormalize";
 import { UPLOAD_MEETING_SOURCE } from "@/lib/audioUpload";
@@ -27,6 +28,7 @@ const KIND_BY_SOURCE: Readonly<Record<string, LibraryKind>> = {
   [GMEET_MEETING_SOURCE]: "meeting",
   [TRANSCRIBER_MEETING_SOURCE]: "meeting",
   [LOCAL_MEETING_SOURCE]: "meeting",
+  [EXO_MERGED_SOURCE]: "meeting",
 };
 
 /** A source nobody registered here is a meeting (every connector so far syncs meetings). */
@@ -48,6 +50,7 @@ export const KIND_ICON: Readonly<Record<LibraryKind, LucideIcon>> = {
 export function librarySourceLabel(source: string): string {
   if (source === TRANSCRIBER_MEETING_SOURCE) return "Notetaker";
   if (source === UPLOAD_MEETING_SOURCE) return "Upload";
+  if (source === EXO_MERGED_SOURCE) return "Combined meeting";
   return meetingSourceLabel(source);
 }
 

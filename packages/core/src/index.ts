@@ -5,6 +5,7 @@ export {
   CONNECTORS_KV_PREFIX,
   CONNECTOR_SCHEMA,
   TRANSCRIBER_MEETING_SOURCE,
+  EXO_MERGED_SOURCE,
   TRANSCRIPT_WRITER_POLICY,
   TRANSCRIPT_WRITER_PERMISSIONS,
   transcriptKvKey,
@@ -173,3 +174,31 @@ export function deriveApiHost(host: string): string {
     return host;
   }
 }
+
+export {
+  STITCH_ALGORITHM,
+  MERGED_SOURCE,
+  StitchInputError,
+  stitchMeetings,
+  stitchedSourceId,
+  memberRef,
+  STITCH_TIME_PAD_S,
+  STITCH_MIN_ANCHORS_PER_MIN,
+  STITCH_SPAN_CAP_S,
+  STITCH_SPAN_FRACTION,
+  STITCH_MIN_CAPTURE_S,
+  type MeetingSnapshot,
+  type SqlMeetingRow,
+  type KvMeetingRecord,
+  type StitchSegment,
+  type StitchedSegment,
+  type StitchedMeeting,
+  type StitchResult,
+  type StitchOptions,
+  type StitchEvidence,
+  type StitchRelation,
+  type StitchMemberResult,
+  type StitchSpeakerMapEntry,
+  type StitchSeam,
+  type SourceRef,
+} from "./meeting-stitch.js";

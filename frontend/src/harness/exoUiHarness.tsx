@@ -22,6 +22,7 @@ import { __setOnDeviceSttForTests, type OnDeviceSttPlugin } from "@/lib/voiceNot
 import { createFakeVoiceNotes as createCaptureFakeVoiceNotes } from "@/lib/voiceNotes/fakeVoiceNotes";
 import type { HarnessScreen } from "./screen";
 import { captureScreens, captureSoftScreens } from "./screens/capture";
+import { combineScreens } from "./screens/combine";
 import { capturePipelineScreens } from "./screens/capturePipeline";
 import { activityScreens } from "./screens/activity";
 import { captureHomeDesktopScreens } from "./screens/captureHomeDesktop";
@@ -76,6 +77,7 @@ const SCREENS: HarnessScreen[] = [
   ...captureHomeDesktopScreens,
   ...captureSettingsScreens,
   ...libraryScreens,
+  ...combineScreens,
   ...savedNoteScreens,
   ...localScreens,
   ...meetingSourcesScreens,
