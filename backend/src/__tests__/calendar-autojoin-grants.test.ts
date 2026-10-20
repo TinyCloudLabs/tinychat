@@ -252,6 +252,21 @@ describe("TC-1101 shared Google grant custody", () => {
     expect(f.calls).toHaveLength(2);
   });
 
+  test("re-enabling autojoin keeps the Meet token's browser binding, so Meet disconnect still honors a shared holder", async () => {
+    const f = fixture(); await f.connect(A, SUBJECT); await f.connect(B, SUBJECT); await f.backfill();
+    // The Meet connector's token is a different grant from autojoin's server token.
+    const meet = f.mint(A, SUBJECT);
+    await f.connection.browserReconnect(A, SUBJECT, [meet.accessToken, meet.refreshToken]);
+    const bound = (await f.stores.request.getConnection(A))!.googleBrowserBinding!;
+    await f.connection.disable(A);
+    await f.connect(A, SUBJECT); // Re-enable issues a new server token; the browser holds none of it.
+    expect((await f.stores.request.getConnection(A))!.googleBrowserBinding).toEqual(bound);
+    await f.connection.disconnect(A);
+    await f.connection.disconnect(A, meet.refreshToken);
+    expect(f.calls).toHaveLength(0); // B still holds this Google account.
+    expect(lines.some(line => line.includes("reason=token_unindexed"))).toBe(false);
+  });
+
   test("a deleted connection is removed by the background pass and never counts", async () => {
     const f = fixture(); const a = await f.seed(); await f.seed(B); await f.backfill();
     const bKey = [...f.values].find(([key, value]) => key.includes("connections/") && (value as CalendarConnection).tenant === B)?.[0];

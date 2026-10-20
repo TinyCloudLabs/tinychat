@@ -607,10 +607,16 @@ describe("Calendar autojoin consent and browser importer separation", () => {
     expect(dialog).toContain('authorizeDisabled={autojoin && !custodyConsent}');
     expect(dialog).toContain('JSON.stringify({ state, challenge, consent: true })');
     expect(dialog).toContain('GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY');
-    const save = dialog.slice(dialog.indexOf('const saveAndSync'), dialog.indexOf('const runExchange'));
-    expect(save.indexOf('saveConnectorKey')).toBeLessThan(save.indexOf('/autojoin/enable'));
-    expect(save).toContain('if (!save.ok)');
-    expect(save).toContain('setupId');
+    // The Meet save-and-sync path never mentions autojoin; the autojoin finish never touches
+    // the Meet secret or sync (behaviour: ConnectorDialog.initialSync.fixture.tsx).
+    const finishAt = dialog.indexOf('const finishAutojoin');
+    const exchangeAt = dialog.indexOf('const runExchange');
+    expect(finishAt).toBeGreaterThan(-1);
+    expect(exchangeAt).toBeGreaterThan(finishAt);
+    const finish = dialog.slice(finishAt, exchangeAt);
+    expect(finish).toContain('/autojoin/enable');
+    expect(finish).toContain('setupId');
+    expect(finish).not.toMatch(/saveConnectorKey|runInitialSync|saveAndSync|unlockSecrets/);
   });
   test("disconnect removes server custody before browser vault access and keeps revoke failures visible", () => {
     const revoke = dialog.slice(dialog.indexOf('async function revokeGoogleUpstream'));

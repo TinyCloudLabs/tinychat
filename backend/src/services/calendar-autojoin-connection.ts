@@ -190,10 +190,17 @@ export class CalendarAutojoinConnection {
         this.holdGrant(enabling, secret);
       });
     });
-    return { ...browserTokenPayload(tokens), setupId };
+    // The browser holds no autojoin token, so none is returned.
+    return { setupId };
   }
 
-  /** Called only after the browser confirms it persisted the matching importer secret. */
+  /**
+   * Finishes setup from the server-held credential alone; it needs no browser-side secret. The
+   * browser holds no autojoin token, so this must not record a browser binding: the row's
+   * `googleBrowserBinding` written by the Meet exchange describes the Meet connector's token. (Backfill
+   * may still register an unbound enabled row's server digests as browser digests; that is harmless,
+   * since the Meet token's digest differs and is then treated as unindexed.)
+   */
   async enable(tenant: string, setupId: string) {
     const connection = await this.readConnection(tenant);
     this.assertSetup(connection, setupId);
@@ -210,12 +217,11 @@ export class CalendarAutojoinConnection {
       this.assertSetup(latest, setupId);
       if (latest!.generation !== connection!.generation) throw new CalendarAutojoinError("connection_changed");
       const enabled: CalendarConnection = { ...latest!, state: "enabled", setupId: undefined,
-        setupExpiresAt: undefined, nextScanAt: this.now(), errorCode: undefined, offReason: undefined, scanComplete: false,
-        googleBrowserBinding: this.grantIndex.browserBinding(latest!.subject!, distinctTokens(secret.accessToken, secret.refreshToken)) };
+        setupExpiresAt: undefined, nextScanAt: this.now(), errorCode: undefined, offReason: undefined, scanComplete: false };
       await this.grantWriter.run("grants", async () => {
         try { await this.options.store.putConnection(enabled); }
         catch (error) { this.grantIndex.invalidate(); throw error; }
-        this.holdGrant(enabled, secret, true);
+        this.holdGrant(enabled, secret);
       });
     });
     // A setup persisted by the previous backend can survive an upgrade without a summary.

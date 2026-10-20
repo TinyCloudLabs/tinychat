@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.10.0-beta.5
+
+### Patch Changes
+
+- 1c140c0: Calendar autojoin now asks Google for Calendar events, openid and email only, and no longer asks for the Meet, Drive and Docs scopes or for previously granted scopes. Enabling it no longer saves a Google Meet token or runs a Meet sync; Google Meet stays a separate connect. Existing autojoin connections are not changed until the user reconnects.
+
 ## 0.10.0-beta.4
 
 ### Patch Changes
