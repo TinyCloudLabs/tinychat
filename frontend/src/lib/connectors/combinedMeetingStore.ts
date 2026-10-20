@@ -249,12 +249,11 @@ export type CombineOutcome =
 
 const ID_SELECT = "SELECT id FROM connector_meeting WHERE source = 'exo-merged' AND source_id = ? ORDER BY id";
 
-export async function combineMeetings(
-  tcw: TinyCloudWeb,
-  memberA: MeetingRef,
-  memberB: MeetingRef,
-  options: CombineOptions = {},
-): Promise<StoreResult<CombineOutcome>> {
+/**
+ * Read both members, read-only (I1). The UI reads, stitches off the UI thread to show the evidence,
+ * and only after an explicit tap calls `writeCombined`; `combineMeetings` is the same three steps in one call.
+ */
+export async function readCombinePair(tcw: TinyCloudWeb, memberA: MeetingRef, memberB: MeetingRef): Promise<StoreResult<MeetingSnapshot[]>> {
   for (const m of [memberA, memberB]) {
     if (m.source === EXO_MERGED_SOURCE) return failure("COMBINE_MEMBER_INVALID", "a combined meeting cannot be a member");
   }
@@ -266,7 +265,18 @@ export async function combineMeetings(
     if (read.status === "failed") return failure("COMBINE_MEMBER_UNREADABLE", "a member meeting could not be read");
     snaps.push(read.snapshot);
   }
+  return { ok: true, data: snaps };
+}
 
+export async function combineMeetings(
+  tcw: TinyCloudWeb,
+  memberA: MeetingRef,
+  memberB: MeetingRef,
+  options: CombineOptions = {},
+): Promise<StoreResult<CombineOutcome>> {
+  const pair = await readCombinePair(tcw, memberA, memberB);
+  if (!pair.ok) return pair;
+  const snaps = pair.data;
   let result: StitchResult;
   try {
     result = stitchMeetings(snaps[0]!, snaps[1]!, { force: options.force === true });
@@ -276,7 +286,16 @@ export async function combineMeetings(
   }
   // A refused pair writes nothing unless the caller forced it.
   if (result.combined === null) return { ok: true, data: { status: "refused", result } };
+  return writeCombined(tcw, result, options);
+}
 
+/** Write a stitched pair (`result.combined` non-null: a passing pair, or one stitched with `force`). */
+export async function writeCombined(
+  tcw: TinyCloudWeb,
+  result: StitchResult,
+  options: Pick<CombineOptions, "now"> = {},
+): Promise<StoreResult<Extract<CombineOutcome, { status: "written" }>>> {
+  if (result.combined === null) return failure("COMBINE_NOTHING_TO_WRITE", "the pair was refused and not forced");
   const now = (options.now ?? (() => new Date()))().toISOString();
   const { row, body } = result.combined;
   const sourceId = row.source_id;

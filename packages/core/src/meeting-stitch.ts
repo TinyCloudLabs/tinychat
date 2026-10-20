@@ -174,6 +174,12 @@ const ANCHOR_TOL_S = 8;
 const MIN_ANCHORS_PER_MIN = 1.25;
 const SPAN_CAP_S = 120;
 const SPAN_FRACTION = 0.3;
+
+/** The detection rule's numbers, for a UI that explains a verdict (one source of truth). */
+export const STITCH_TIME_PAD_S = PAD_S;
+export const STITCH_MIN_ANCHORS_PER_MIN = MIN_ANCHORS_PER_MIN;
+export const STITCH_SPAN_CAP_S = SPAN_CAP_S;
+export const STITCH_SPAN_FRACTION = SPAN_FRACTION;
 const DRIFT_WINDOW_S = 120;
 const DRIFT_STEP_S = 60;
 const DRIFT_MIN_ANCHORS = 3;
@@ -185,6 +191,7 @@ const MIN_CAPTURE_S = 120;
 /** A seam is "tight" when the two sources' nearest sentence starts are this close. */
 const SEAM_TIGHT_S = 2;
 const MIN_ANCHOR_SEGMENTS = 3;
+export const STITCH_MIN_CAPTURE_S = MIN_CAPTURE_S;
 /** ISO-8601 with an explicit zone; anything else would be read in local time. */
 const ISO_WITH_ZONE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})$/i;
 

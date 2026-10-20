@@ -112,4 +112,16 @@ describe("HowThisGotHere", () => {
     expect(html).not.toContain('aria-label="Where your audio goes"');
     expect(html).not.toContain("Saved to your TinyCloud space");
   });
+
+  test("a combined meeting names its members and never shows the raw source string, even with unreadable metadata", () => {
+    const merge = { members: [{ source: "fireflies", source_id: "a" }, { source: "tinycloud-transcriber", source_id: "b" }] };
+    const named = captureRoute("exo-merged", { merge });
+    expect(named.nodes.map((n) => n.label)).toEqual(["Fireflies + Notetaker", "Combined", "Your space"]);
+    expect(named.sentence).toContain("Combined from Fireflies + Notetaker");
+    for (const metadata of [null, {}, { merge: "garbage" }, { merge: { members: [null, 3, { source: 1 }] } }]) {
+      const route = captureRoute("exo-merged", metadata);
+      expect(JSON.stringify(route)).not.toContain("exo-merged");
+      expect(route.sentence).toContain("Combined from two of your captures");
+    }
+  });
 });

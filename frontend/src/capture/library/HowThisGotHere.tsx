@@ -4,6 +4,8 @@
 // note's `transcription_engine`) adds the stop that made its text. Nothing
 // the row does not record is drawn: no provider, no middle node.
 import { RefreshCwIcon } from "lucide-react";
+import { Link } from "react-router-dom";
+import { EXO_MERGED_SOURCE } from "@tinyboilerplate/core";
 
 import { Button } from "@/components/ui/button";
 import { HowItWorksLink } from "@/components/ui/how-it-works-link";
@@ -16,6 +18,8 @@ import { UPLOAD_MEETING_SOURCE } from "@/lib/audioUpload";
 import { LOCAL_MEETING_SOURCE } from "@/lib/localTranscriber";
 import { TRANSCRIBER_MEETING_SOURCE } from "@/lib/transcriberSave";
 import { VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
+import { displayMembers, type CombinedMemberLine } from "./combine/combinedView";
+import { librarySourceLabel } from "./libraryKinds";
 
 export interface CaptureRoute {
   nodes: RouteNode[];
@@ -60,6 +64,16 @@ export function captureRoute(source: string, metadata: Record<string, unknown> |
     nodes: [{ label: "Pasted transcript", kind: "source" }, SPACE],
     sentence: "Pasted transcript saved to your TinyCloud space.", privateCloud: false,
   };
+  if (source === EXO_MERGED_SOURCE) {
+    // Display only: a combined row with unreadable metadata still gets this, without the member names.
+    const from = displayMembers(metadata).map((m) => librarySourceLabel(m.source));
+    const named = from.length > 0 ? `Combined from ${from.join(" + ")}` : "Combined from two of your captures";
+    return {
+      nodes: [{ label: from.length > 0 ? from.join(" + ") : "Two captures", kind: "source" }, { label: "Combined", kind: "processing" }, SPACE],
+      sentence: `${named}, saved to your TinyCloud space. The original captures weren’t changed.`,
+      privateCloud: false,
+    };
+  }
   if (source === "fireflies" || source === GMEET_MEETING_SOURCE) {
     const name = source === "fireflies" ? "Fireflies" : "Google Meet";
     return { nodes: [{ label: name, kind: "source" }, SPACE], sentence: `Synced from ${name} into your TinyCloud space.`, privateCloud: false };
@@ -119,7 +133,7 @@ export function captureRoute(source: string, metadata: Record<string, unknown> |
  * read, and no route at all when the read failed (a route drawn from the
  * source alone would claim a path with no stop in it), with Try again.
  */
-export function HowThisGotHere(props: { source: string; read: MeetingMetadataRead | undefined; onRetry: () => void }) {
+export function HowThisGotHere(props: { source: string; read: MeetingMetadataRead | undefined; onRetry: () => void; /** A combined meeting's originals, with a link where they still exist. */ members?: readonly CombinedMemberLine[] }) {
   const { read } = props;
   const route = read !== undefined && read.status !== "failed" ? captureRoute(props.source, read.status === "ok" ? read.metadata : null) : null;
   return (
@@ -144,6 +158,17 @@ export function HowThisGotHere(props: { source: string; read: MeetingMetadataRea
           <RouteLine nodes={route.nodes} landed className="mt-3" />
           <p className="mt-3 max-w-[68ch] text-callout text-muted-foreground">{route.sentence}</p>
           {route.privateCloud && <HowItWorksLink section="transcription">How private cloud works</HowItWorksLink>}
+          {props.members && props.members.length > 0 && (
+            <ul className="mt-3 flex flex-col gap-1" aria-label="Combined from" data-testid="combined-members">
+              {props.members.map((m) => (
+                <li key={`${m.source}:${m.sourceId}`} className="text-callout" data-testid="combined-member">
+                  <span className="text-muted-foreground">{m.sourceLabel} · </span>
+                  {m.href !== null ? <Link to={m.href} className="inline-flex min-h-11 items-center text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [overflow-wrap:anywhere]">{m.title}</Link>
+                    : <span className="text-muted-foreground">no longer in your Library</span>}
+                </li>
+              ))}
+            </ul>
+          )}
         </>
       )}
     </section>

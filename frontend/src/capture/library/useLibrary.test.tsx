@@ -348,6 +348,7 @@ describe("useLibrary, mounted", () => {
     });
     const html = renderToStaticMarkup(<MemoryRouter><NoteDetail
       library={seen.at(-1)!}
+      tcw={space.tcw}
       pushed
       onBack={() => {}}
       transcription={undefined}
@@ -414,6 +415,7 @@ describe("useLibrary, mounted", () => {
         const privateCloud = hasPrivateCloudTimingProvenance(metadata, transcript?.provenance);
         const html = renderToStaticMarkup(<MemoryRouter><NoteDetail
           library={library}
+          tcw={space.tcw}
           pushed
           onBack={() => {}}
           transcription={undefined}
@@ -916,6 +918,7 @@ describe("useLibrary, which audio a note on the phone plays", () => {
         })]] } });
         const html = renderToStaticMarkup(<MemoryRouter><NoteDetail
           library={seen.at(-1)!}
+          tcw={space.tcw}
           pushed
           onBack={() => {}}
           transcription={storageFullTranscription}

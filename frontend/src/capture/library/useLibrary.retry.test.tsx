@@ -41,7 +41,7 @@ const originalVoiceNotes = VoiceNotes;
 
 function Detail({ tcw }: { tcw: TinyCloudWeb }) {
   const library = useLibrary(tcw, { visible: true, noteId: NOTE_ID });
-  return <MemoryRouter><NoteDetail library={library} pushed={false} onBack={noop} transcription={undefined} platform="web" /></MemoryRouter>;
+  return <MemoryRouter><NoteDetail library={library} tcw={tcw} pushed={false} onBack={noop} transcription={undefined} platform="web" /></MemoryRouter>;
 }
 
 beforeAll(() => {
