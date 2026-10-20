@@ -94,7 +94,7 @@ test("decisions and action overview uses overview evidence while transcript foll
   expect(guidance).toContain("Multiple requested parts alone do not require body");
 });
 
-test.each(["fireflies", "google-meet", "tinycloud-transcriber", "exo-local"])("interpreter schema and validator agree on source %s", source => {
+test.each(["fireflies", "google-meet", "tinycloud-transcriber", "exo-local", "exo-merged"])("interpreter schema and validator agree on source %s", source => {
   const plan = { kind: "meeting_metadata", scope: "single", source };
   expect(schemaAccepts(plan)).toBe(true);
   expect(validateMeetingPlan(plan, context)).toMatchObject({ ok: true, plan: { filters: { source } } });
@@ -105,5 +105,5 @@ test("an unknown source is rejected by both, and the correction names every supp
   expect(schemaAccepts(plan)).toBe(false);
   const result = validateMeetingPlan(plan, context);
   expect(result.ok).toBe(false);
-  expect(JSON.stringify(result)).toContain("fireflies, google-meet, tinycloud-transcriber or exo-local");
+  expect(JSON.stringify(result)).toContain("fireflies, google-meet, tinycloud-transcriber, exo-local or exo-merged");
 });
