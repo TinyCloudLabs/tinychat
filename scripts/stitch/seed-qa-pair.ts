@@ -6,6 +6,10 @@
 //        --write --i-know-this-is-a-qa-space              writes the three captures
 //        --delete                                         dry run of the clean-up
 //        --delete --write --i-know-this-is-a-qa-space     removes exactly the `qa-1152-` rows and bodies
+//        --mutate-body ID                                 (ID = qa-1152-ff | qa-1152-meet | qa-1152-decoy) dry run; with
+//                                                         --write --i-know-this-is-a-qa-space appends the sentence "QA 1152 edit."
+//                                                         to that body only, so a combined meeting listing it reads "a source changed"
+//        --remove ID                                      same ids and guards: removes that one row, then its body
 //
 // WHAT IT WRITES (all text is the public AMI Meeting Corpus ES2004a/ES2004b words, CC BY 4.0; the speaker
 // names are invented; see packages/core/test/fixtures/meeting-stitch/build.ts):
@@ -30,6 +34,10 @@
 //     match id AND source AND source_id exactly.
 //   * stdout carries ids, sources, times and counts, never transcript text.
 //
+// --mutate-body touches the KV body only (never the row), and a body already ending in the marker sentence is left
+// alone. A later plain `--write` restores the seeded body (it differs from the seed). --remove deletes the one row
+// and its body, nothing else; both refuse any id that is not one of the three seeded ids.
+//
 // ORDER: body first, then the row (the Google Meet connector's order: a body without a row is invisible, a
 // row without a body is a broken Library entry). Re-running changes nothing: a body whose stored bytes are
 // identical is not rewritten, and a row is only inserted when absent or updated when a column differs.
@@ -49,6 +57,8 @@ export const QA_ID_PREFIX = "qa-1152-";
 export const QA_SOURCES = ["fireflies", "google-meet"] as const;
 /** Profiles that point at real users' spaces: never usable here. */
 const REFUSED_PROFILES = ["meeting-digest", "connector-sync"];
+/** The one sentence `--mutate-body` appends; its presence marks a body as already mutated. */
+export const MUTATION_MARKER = "QA 1152 edit.";
 const DEFAULT_START = "2026-10-20T08:00:00.000Z";
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), "../../packages/core/test/fixtures/meeting-stitch");
 
@@ -218,6 +228,17 @@ function matchingRows(tc: Tc, space: string): { id: string; source: string; sour
   return out;
 }
 
+/** Appends the marker sentence to a seeded body. Returns null when the body already ends with it. */
+function mutatedBody(raw: string): string | null {
+  let sentences: unknown;
+  try { sentences = JSON.parse(raw); } catch { throw new CliError("the stored body is not JSON; nothing changed"); }
+  if (!Array.isArray(sentences) || sentences.length === 0) throw new CliError("the stored body is not a non-empty sentence array; nothing changed");
+  const last = sentences[sentences.length - 1] as Partial<Sentence & { text: unknown }> | null;
+  if (last?.text === MUTATION_MARKER) return null;
+  const end = typeof last?.end_time === "number" ? last.end_time : 0;
+  return JSON.stringify([...sentences, { index: sentences.length, speaker_name: last?.speaker_name ?? null, text: MUTATION_MARKER, start_time: end, end_time: end + 1 }]);
+}
+
 export interface Result { code: number; stdout: string; stderr: string }
 
 function context(tc: Tc, space: string): { spaceId: string; ownerDid: string; host: string } {
@@ -226,7 +247,7 @@ function context(tc: Tc, space: string): { spaceId: string; ownerDid: string; ho
   return { spaceId: raw.spaceId, ownerDid: typeof raw.ownerDid === "string" ? raw.ownerDid : "unknown", host: typeof raw.host === "string" ? raw.host : "unknown" };
 }
 
-const USAGE = "usage: seed-qa-pair.ts --profile NAME [--write] [--delete] [--i-know-this-is-a-qa-space] [--dry-run] [--space applications] [--tc PATH] [--start ISO]\n";
+const USAGE = "usage: seed-qa-pair.ts --profile NAME [--write] [--delete | --mutate-body ID | --remove ID] [--i-know-this-is-a-qa-space] [--dry-run] [--space applications] [--tc PATH] [--start ISO]\n";
 
 export function runSeed(argv: string[], deps: { tc?: Tc; env?: Record<string, string | undefined> } = {}): Result {
   let a;
@@ -234,6 +255,7 @@ export function runSeed(argv: string[], deps: { tc?: Tc; env?: Record<string, st
     a = parseArgs({
       args: argv,
       options: {
+        "mutate-body": { type: "string" }, remove: { type: "string" },
         profile: { type: "string" }, write: { type: "boolean" }, delete: { type: "boolean" }, "dry-run": { type: "boolean" },
         "i-know-this-is-a-qa-space": { type: "boolean" }, space: { type: "string" }, tc: { type: "string" }, start: { type: "string" },
       },
@@ -246,8 +268,14 @@ export function runSeed(argv: string[], deps: { tc?: Tc; env?: Record<string, st
   if (a.write && a["dry-run"]) return { code: 2, stdout: "", stderr: "error: --write and --dry-run contradict each other\n" };
   if (REFUSED_PROFILES.includes(a.profile.toLowerCase())) return { code: 2, stdout: "", stderr: "error: that profile points at real data; use the QA account's own profile\n" };
 
+  const target1 = a["mutate-body"] ?? a.remove;
+  if ([a.delete, a["mutate-body"] !== undefined, a.remove !== undefined].filter(Boolean).length > 1) return { code: 2, stdout: "", stderr: "error: --delete, --mutate-body and --remove are mutually exclusive\n" };
+  const seededIds = buildSeed().map((i) => i.id);
+  if (target1 !== undefined && !(target1.startsWith(QA_ID_PREFIX) && seededIds.includes(target1))) {
+    return { code: 2, stdout: "", stderr: `error: id must be one of ${seededIds.join(", ")}\n` };
+  }
   const space = a.space ?? "applications";
-  const mode = a.delete ? "delete" : "write";
+  const mode = a.delete ? "delete" : a["mutate-body"] !== undefined ? "mutate" : a.remove !== undefined ? "remove" : "write";
   const live = a.write === true;
   let out = "";
   const say = (line: string) => { out += `${line}\n`; };
@@ -264,6 +292,31 @@ export function runSeed(argv: string[], deps: { tc?: Tc; env?: Record<string, st
 
     if (live && a["i-know-this-is-a-qa-space"] !== true) {
       return { code: 2, stdout: out, stderr: "error: refusing to touch the space without --i-know-this-is-a-qa-space (confirm the space above is the QA account's); nothing written\n" };
+    }
+
+    if (mode === "mutate" || mode === "remove") {
+      const it = items.find((i) => i.id === target1)!;
+      const key = transcriptKvKey(it.source, it.id);
+      say(`${live ? mode.toUpperCase() : `DRY RUN (${mode})`}: ${it.id}  source=${it.source}  kv ${key}`);
+      if (!live) {
+        say(mode === "mutate" ? "  would append one sentence to this body (row untouched); add --write --i-know-this-is-a-qa-space to do it" : "  would remove this row, then its body; add --write --i-know-this-is-a-qa-space to do it");
+        return { code: 0, stdout: out, stderr: "" };
+      }
+      if (mode === "mutate") {
+        const raw = kvRead(tc, space, key);
+        if (raw === null) throw new CliError("the body is absent; seed it first");
+        const next = mutatedBody(raw);
+        if (next === null) { say("  body already mutated: unchanged"); return { code: 0, stdout: out, stderr: "" }; }
+        tc.run(["kv", "put", key, next, "--space", space]);
+        if (kvRead(tc, space, key) !== next) throw new CliError("body read back differs from what was written");
+        say(`  body mutated (+1 sentence, body_bytes=${Buffer.byteLength(next)}); row untouched`);
+        return { code: 0, stdout: out, stderr: "" };
+      }
+      sqlExec(tc, space, "DELETE FROM connector_meeting WHERE id = ? AND source = ? AND source_id = ?", [it.id, it.source, it.id]);
+      say(`  removed row ${it.id}`);
+      if (kvRead(tc, space, key) === null) say("  body: absent");
+      else { tc.run(["kv", "delete", key, "--space", space]); say(`  removed body ${it.id}`); }
+      return { code: 0, stdout: out, stderr: "" };
     }
 
     if (mode === "write") {

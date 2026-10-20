@@ -6,7 +6,8 @@ import { describe, expect, test } from "bun:test";
 import { CONNECTOR_SCHEMA, CONNECTORS_KV_PREFIX, transcriptKvKey } from "../src/connector-meeting";
 import { stitchMeetings } from "../src/meeting-stitch";
 import { CliError, readSnapshot } from "../../../scripts/stitch/combine";
-import { QA_ID_PREFIX, buildSeed, runSeed, type Tc } from "../../../scripts/stitch/seed-qa-pair";
+import { deleteCombinedReferencing, staleMembers, sweepCombinedMeeting, combineMeetings } from "../../../frontend/src/lib/connectors/combinedMeetingStore";
+import { MUTATION_MARKER, QA_ID_PREFIX, buildSeed, runSeed, type Tc } from "../../../scripts/stitch/seed-qa-pair";
 
 function fakeTc(opts: { schema?: boolean } = {}) {
   const db = new Database(":memory:");
@@ -39,6 +40,25 @@ function fakeTc(opts: { schema?: boolean } = {}) {
   const snapshot = () => JSON.stringify([db.query("SELECT * FROM connector_meeting ORDER BY id").values(), [...kv.entries()].sort()]);
   return { tc, db, kv, calls, writes, snapshot };
 }
+
+/** The real combined-meeting store, over the same in-memory SQLite and Map KV the fake `tc` uses. */
+function storeOver(f: ReturnType<typeof fakeTc>) {
+  const ok = (data: unknown) => ({ ok: true, data });
+  const tcw = {
+    sql: { db: () => ({
+      query: async (sql: string, params: never[]) => ok({ rows: f.db.query(sql).values(...params) }),
+      execute: async (sql: string, params: never[]) => ok({ changes: f.db.query(sql).run(...params).changes }),
+    }) },
+    kv: {
+      get: async (k: string) => (f.kv.has(k) ? ok({ data: JSON.parse(f.kv.get(k)!) }) : { ok: false, error: { code: "KV_NOT_FOUND", message: "not found" } }),
+      put: async (k: string, v: string) => { f.kv.set(k, v); return ok({}); },
+      delete: async (k: string) => { f.kv.delete(k); return ok({}); },
+    },
+  };
+  return tcw as never;
+}
+const FF = { source: "fireflies", sourceId: "qa-1152-ff" };
+const MEET = { source: "google-meet", sourceId: "qa-1152-meet" };
 
 const QA = ["--profile", "qa-throwaway", "--i-know-this-is-a-qa-space"];
 const WRITE = [...QA, "--write"];
@@ -236,5 +256,115 @@ describe("seed-qa-pair", () => {
       const [b0, b1] = win(other);
       expect(a0 < b1 && b0 < a1).toBe(true);
     }
+  });
+
+  describe("--mutate-body / --remove", () => {
+    const MUTATE = (id: string) => [...QA, "--mutate-body", id, "--write"];
+    const REMOVE = (id: string) => [...QA, "--remove", id, "--write"];
+    const combined = async (f: ReturnType<typeof fakeTc>) => {
+      const tcw = storeOver(f);
+      const res = await combineMeetings(tcw, FF, MEET);
+      if (!res.ok || res.data.status !== "written") throw new Error("combine failed");
+      return { tcw, id: res.data.id };
+    };
+
+    test("mutate flips the stale check for that member only, changes only that KV body, and is idempotent", async () => {
+      const f = fakeTc();
+      runSeed(WRITE, { tc: f.tc });
+      const { tcw, id } = await combined(f);
+      expect(await staleMembers(tcw, id)).toEqual({ ok: true, data: [] });
+      const rows = JSON.stringify(f.db.query("SELECT * FROM connector_meeting ORDER BY id").values());
+      const others = JSON.stringify([...f.kv.entries()].filter(([k]) => !k.endsWith("/qa-1152-meet")).sort());
+      const r = runSeed(MUTATE("qa-1152-meet"), { tc: f.tc });
+      expect(r.code).toBe(0);
+      expect(r.stdout).toContain("target space:");
+      expect(await staleMembers(tcw, id)).toEqual({ ok: true, data: [{ ...MEET, state: "changed" }] });
+      expect(JSON.stringify(f.db.query("SELECT * FROM connector_meeting ORDER BY id").values())).toBe(rows);
+      expect(JSON.stringify([...f.kv.entries()].filter(([k]) => !k.endsWith("/qa-1152-meet")).sort())).toBe(others);
+      const body = JSON.parse(f.kv.get(transcriptKvKey("google-meet", "qa-1152-meet"))!) as { text: string }[];
+      expect(body.length).toBe(buildSeed()[1]!.segments + 1);
+      expect(body[body.length - 1]!.text).toBe(MUTATION_MARKER);
+      // second run: no write at all
+      const before = f.snapshot();
+      const writes = f.writes().length;
+      const again = runSeed(MUTATE("qa-1152-meet"), { tc: f.tc });
+      expect(again.code).toBe(0);
+      expect(again.stdout).toContain("already mutated");
+      expect(f.writes().length).toBe(writes);
+      expect(f.snapshot()).toBe(before);
+    });
+
+    test("mutate and remove refuse non-seeded ids and a missing QA flag, and make no tc call that writes", () => {
+      const f = fakeTc();
+      runSeed(WRITE, { tc: f.tc });
+      const before = f.snapshot();
+      const writes = f.writes().length;
+      for (const flag of ["--mutate-body", "--remove"]) {
+        for (const id of ["qa-1152-other", "keep-1", "qa-1152-", "QA-1152-ff", "x-qa-1152-ff", ""]) {
+          expect(runSeed([...WRITE, flag, id], { tc: f.tc }).code).toBe(2);
+        }
+        const noFlag = runSeed(["--profile", "qa-throwaway", flag, "qa-1152-ff", "--write"], { tc: f.tc });
+        expect(noFlag.code).toBe(2);
+        expect(noFlag.stdout).toContain("target space:");
+        expect(noFlag.stderr).toContain("--i-know-this-is-a-qa-space");
+        expect(runSeed([...QA, flag, "qa-1152-ff"], { tc: f.tc }).stdout).toContain("DRY RUN");
+      }
+      expect(runSeed([...WRITE, "--mutate-body", "qa-1152-ff", "--remove", "qa-1152-meet"], { tc: f.tc }).code).toBe(2);
+      expect(runSeed([...WRITE, "--mutate-body", "qa-1152-ff", "--delete"], { tc: f.tc }).code).toBe(2);
+      expect(runSeed(["--profile", "meeting-digest", "--i-know-this-is-a-qa-space", "--write", "--remove", "qa-1152-ff"], { tc: f.tc }).code).toBe(2);
+      expect(f.writes().length).toBe(writes);
+      expect(f.snapshot()).toBe(before);
+    });
+
+    test("mutate on an absent body fails without writing", () => {
+      const f = fakeTc();
+      const r = runSeed(MUTATE("qa-1152-ff"), { tc: f.tc });
+      expect(r.code).toBe(1);
+      expect(f.writes()).toEqual([]);
+    });
+
+    test("remove deletes exactly one row and its body, row first, and leaves the other two", () => {
+      const f = fakeTc();
+      runSeed(WRITE, { tc: f.tc });
+      const start = f.calls.length;
+      const r = runSeed(REMOVE("qa-1152-ff"), { tc: f.tc });
+      expect(r.code).toBe(0);
+      expect(ids(f.db)).toEqual(["qa-1152-decoy", "qa-1152-meet"]);
+      expect([...f.kv.keys()].sort()).toEqual([transcriptKvKey("fireflies", "qa-1152-decoy"), transcriptKvKey("google-meet", "qa-1152-meet")].sort());
+      const w = f.calls.slice(start).filter((c) => c.includes("put") || c.includes("delete") || c.includes("execute"));
+      expect(w.map((c) => (c.includes("execute") ? "row" : "body"))).toEqual(["row", "body"]);
+      expect(runSeed(REMOVE("qa-1152-ff"), { tc: f.tc }).code).toBe(0); // idempotent
+      expect(ids(f.db).length).toBe(2);
+      // --delete still removes whatever is left
+      expect(runSeed(DELETE, { tc: f.tc }).code).toBe(0);
+      expect(ids(f.db)).toEqual([]);
+      expect(f.kv.size).toBe(0);
+    });
+
+    test("the sweep sees a removed member as absent (combined row deleted) and a mutated one as stale, not deleted", async () => {
+      const mutated = fakeTc();
+      runSeed(WRITE, { tc: mutated.tc });
+      const m = await combined(mutated);
+      runSeed(MUTATE("qa-1152-ff"), { tc: mutated.tc });
+      expect(await sweepCombinedMeeting(m.tcw, m.id)).toEqual({ ok: true, data: { status: "kept" } });
+      expect(await staleMembers(m.tcw, m.id)).toEqual({ ok: true, data: [{ ...FF, state: "changed" }] });
+      expect(mutated.db.query("SELECT id FROM connector_meeting WHERE source = 'exo-merged'").all().length).toBe(1);
+
+      const removed = fakeTc();
+      runSeed(WRITE, { tc: removed.tc });
+      const r = await combined(removed);
+      runSeed(REMOVE("qa-1152-meet"), { tc: removed.tc });
+      expect(await staleMembers(r.tcw, r.id)).toEqual({ ok: true, data: [{ ...MEET, state: "absent" }] });
+      expect(await sweepCombinedMeeting(r.tcw, r.id)).toEqual({ ok: true, data: { status: "deleted" } });
+      expect(removed.db.query("SELECT id FROM connector_meeting WHERE source = 'exo-merged'").all().length).toBe(0);
+      expect(ids(removed.db).filter((x) => x.startsWith(QA_ID_PREFIX))).toEqual(["qa-1152-decoy", "qa-1152-ff"]);
+      // the cascade entry point agrees: a second combined meeting listing the removed member is deleted too
+      const again = fakeTc();
+      runSeed(WRITE, { tc: again.tc });
+      const c2 = await combined(again);
+      runSeed(REMOVE("qa-1152-ff"), { tc: again.tc });
+      const cascade = await deleteCombinedReferencing(c2.tcw, FF.source, FF.sourceId);
+      expect(cascade).toMatchObject({ ok: true, data: { deletedIds: [c2.id] } });
+    });
   });
 });
