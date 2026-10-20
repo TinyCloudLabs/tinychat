@@ -29,7 +29,7 @@ index f114a81..068b62b 100644
      const jwkString = this.sessionManager.jwk(keyId);
      if (!jwkString) {
 diff --git a/dist/index.cjs b/dist/index.cjs
-index 2dcb776..d338995 100644
+index bc42dc8..8018872 100644
 --- a/dist/index.cjs
 +++ b/dist/index.cjs
 @@ -19717,8 +19717,8 @@ var NodeUserAuthorization = class {
@@ -44,7 +44,7 @@ index 2dcb776..d338995 100644
      const jwkString = this.sessionManager.jwk(keyId);
      if (!jwkString) {
 diff --git a/dist/index.js b/dist/index.js
-index a466311..e6bdcb3 100644
+index 00e29c1..506e6ba 100644
 --- a/dist/index.js
 +++ b/dist/index.js
 @@ -19702,8 +19702,8 @@ var NodeUserAuthorization = class {

@@ -20,7 +20,7 @@
   },
   "dependencies": {
     "@tinyboilerplate/core": "workspace:*",
-    "@tinycloud/sdk-core": "3.3.0-beta.25"
+    "@tinycloud/sdk-core": "3.3.0-beta.28"
   },
   "peerDependencies": {
     "@openkey/sdk": ">=0.11.0",
@@ -28,7 +28,7 @@
   },
   "devDependencies": {
     "@openkey/sdk": "0.12.0",
-    "@tinycloud/web-sdk": "3.3.0-beta.25",
+    "@tinycloud/web-sdk": "3.3.0-beta.29",
     "typescript": "^5.7.0"
   }
 }

@@ -145,6 +145,9 @@ export default defineConfig(({ command, mode }) => {
   ],
   resolve: {
     alias: {
+      // @tinycloud/replica/profile-gate (pulled in by web-sdk/replica) imports Node's fs/promises at
+      // top level; the polyfill plugin only shims `fs`, which breaks the build. See the stub.
+      "fs/promises": path.resolve(rootDir, "./src/lib/replication/nodeFsPromisesStub.ts"),
       // Redirect @tinycloud/node-sdk/core → @tinycloud/web-sdk in the browser
       // bundle. agentDelegation.ts imports serializeDelegation from node-sdk/core
       // (to avoid web-sdk's HTMLElement at test load time), but node-sdk/core
