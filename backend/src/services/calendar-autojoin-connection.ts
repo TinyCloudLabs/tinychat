@@ -197,7 +197,9 @@ export class CalendarAutojoinConnection {
   /**
    * Finishes setup from the server-held credential alone; it needs no browser-side secret. The
    * browser holds no autojoin token, so this must not record a browser binding: the row's
-   * `googleBrowserBinding` and the index's browser digests describe the Meet connector's token.
+   * `googleBrowserBinding` written by the Meet exchange describes the Meet connector's token. (Backfill
+   * may still register an unbound enabled row's server digests as browser digests; that is harmless,
+   * since the Meet token's digest differs and is then treated as unindexed.)
    */
   async enable(tenant: string, setupId: string) {
     const connection = await this.readConnection(tenant);
