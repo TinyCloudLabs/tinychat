@@ -1046,7 +1046,7 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
 
   /** save-token → initial-sync. Reached only with both tokens in hand. */
   const saveAndSync = useCallback(
-    async (accessToken: string, refreshToken: string, setupId?: string) => {
+    async (accessToken: string, refreshToken: string) => {
       setPhase("save-token");
       if (!isSecretsUnlocked(tcw)) {
         const unlock = await unlockSecrets<SecretsErr>(tcw);
@@ -1071,25 +1071,31 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
         return;
       }
 
-      if (autojoin) {
-        if (!setupId) { failWith({ kind: "unknown", message: "Calendar setup did not complete." }); return; }
-        try {
-          const enabled = await fetch(`${backendUrl}/api/connectors/google/autojoin/enable`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json", Authorization: `Bearer ${sessionStore.getToken()}`,
-              [REQUEST_HEADER_NAME]: REQUEST_HEADER_VALUE },
-            body: JSON.stringify({ setupId }),
-          });
-          if (!enabled.ok) { failWith(await readGoogleProxyError(enabled)); return; }
-          onConnected();
-        } catch { failWith({ kind: "network", message: "" }); return; }
-      }
-
       setCanRetrySync(true);
       await runInitialSync(accessToken, storedRefreshToken);
     },
-    [autojoin, backendUrl, descriptor, failWith, onConnected, runInitialSync, sessionStore, tcw],
+    [descriptor, failWith, runInitialSync, tcw],
   );
+
+  /**
+   * Calendar autojoin's finish. The server already holds the Calendar-only credential, so this
+   * only confirms setup. The browser keeps no autojoin token: nothing here writes the Google
+   * Meet secret or syncs Meet, and the Meet connection is left exactly as it was.
+   */
+  const finishAutojoin = useCallback(async (setupId: string | undefined) => {
+    if (!setupId) { failWith({ kind: "unknown", message: "Calendar setup did not complete." }); return; }
+    try {
+      const enabled = await fetch(`${backendUrl}/api/connectors/google/autojoin/enable`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${sessionStore.getToken()}`,
+          [REQUEST_HEADER_NAME]: REQUEST_HEADER_VALUE },
+        body: JSON.stringify({ setupId }),
+      });
+      if (!enabled.ok) { failWith(await readGoogleProxyError(enabled)); return; }
+    } catch { failWith({ kind: "network", message: "" }); return; }
+    onConnected();
+    onOpenChange(false);
+  }, [backendUrl, failWith, onConnected, onOpenChange, sessionStore]);
 
   /**
    * The exchange. Tokens arrive HERE and nowhere else — an authenticated XHR
@@ -1148,6 +1154,11 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
         failWith({ kind: "unknown", message: "" });
         return;
       }
+      if (autojoin) {
+        // The autojoin token stays on the server. Do not read, keep or save it here.
+        await finishAutojoin(typeof payload.setupId === "string" ? payload.setupId : undefined);
+        return;
+      }
       const accessToken =
         typeof payload.access_token === "string" ? payload.access_token : "";
       const refreshToken =
@@ -1161,9 +1172,9 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
       accessTokenRef.current = accessToken;
       refreshTokenRef.current = desktopRedirectUriRef.current
         ? encodeDesktopRefreshToken(refreshToken) : refreshToken;
-      await saveAndSync(accessToken, refreshToken, typeof payload.setupId === "string" ? payload.setupId : undefined);
+      await saveAndSync(accessToken, refreshToken);
     },
-    [autojoin, backendUrl, failWith, saveAndSync, sessionStore],
+    [autojoin, backendUrl, failWith, finishAutojoin, saveAndSync, sessionStore],
   );
   // The native return arrives after an app round trip; it reads the latest exchange.
   const runExchangeRef = useRef(runExchange);
@@ -1487,8 +1498,8 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
         <DialogHeader>
           <DialogTitle>{autojoin ? "Enable Calendar autojoin" : `Connect ${descriptor.name}`}</DialogTitle>
           <DialogDescription>
-            {autojoin ? "Authorize background Calendar access and encrypted server custody of your Google token."
-              : "Sign in with Google to sync your Meet transcripts. Your Google connection is stored in TinyCloud’s encrypted secrets. Reconnecting turns Calendar autojoin off until you explicitly enable it again."}
+            {autojoin ? "Authorize background read access to your Google Calendar events and encrypted server custody of your Google token."
+              : "Sign in with Google to sync your Meet transcripts. Your Google connection is stored in TinyCloud’s encrypted secrets. Connecting a different Google account turns Calendar autojoin off until you explicitly enable it again."}
           </DialogDescription>
         </DialogHeader>
 
