@@ -9,7 +9,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { OFFERED_CHAT_MODELS } from "@tinyboilerplate/core";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
-import { CaptureSurface } from "@/capture/CaptureSurface";
+import { CaptureSurface, type CaptureSurfaceProps } from "@/capture/CaptureSurface";
 import { HeaderLiveChip } from "@/capture/recorder/HeaderLiveChip";
 import { RecordButton } from "@/capture/recorder/RecordButton";
 import { RecorderProvider, StaticRecorderProvider, type RecorderValue } from "@/capture/recorder/RecorderProvider";
@@ -68,9 +68,11 @@ export interface ShellAppProps {
   recorder?: Partial<RecorderValue>;
   /** Rendered inside the real recorder provider, beside the shell (a harness driver). */
   inside?: ReactNode;
+  /** The model call a combined meeting's summary makes (a fake: the harness never calls a model). */
+  summaryComplete?: CaptureSurfaceProps["summaryComplete"];
 }
 
-export function ShellApp({ platform, shim, state, probe = (_id, node) => node, captureTcw = harnessTcw, recorder, inside }: ShellAppProps) {
+export function ShellApp({ platform, shim, state, probe = (_id, node) => node, captureTcw = harnessTcw, recorder, inside, summaryComplete }: ShellAppProps) {
   useVisualViewportFit();
   const location = useLocation();
   const navigate = useNavigate();
@@ -138,6 +140,7 @@ export function ShellApp({ platform, shim, state, probe = (_id, node) => node, c
         "capture",
         <CaptureSurface
           tcw={captureTcw}
+          summaryComplete={summaryComplete}
           backendUrl={backendUrl}
           sessionStore={harnessSessionStore}
           active={screen.destination === "capture"}

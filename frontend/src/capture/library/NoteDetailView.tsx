@@ -40,6 +40,7 @@ import { TranscribeAction } from "./TranscribeAction";
 import type { TranscribeActionProps } from "./TranscribeAction";
 import { HowThisGotHere } from "./HowThisGotHere";
 import { CombineActions } from "./combine/CombineActions";
+import { CombinedSummary } from "./combine/CombinedSummary";
 import type { CombineDetail } from "./combine/combinedView";
 import { librarySourceLabel } from "./libraryKinds";
 import { TimestampedTranscript, type TranscriptGap } from "./TimestampedTranscript";
@@ -623,6 +624,7 @@ function NoteDetailViewContent(props: NoteDetailViewProps) {
           Only the transcript was saved; the audio wasn’t stored.
         </p>
       ) : null}
+      {props.combine?.combined?.summary && <CombinedSummary summary={props.combine.combined.summary} onRetry={props.combine.combined.onRetrySummary} />}
       {!item.onPhone && <HowThisGotHere source={item.source} read={metadata} onRetry={props.onRetry} members={props.combine?.combined?.members} />}
       <Transcript {...props} item={item} />
     </Frame>
