@@ -81,11 +81,11 @@ beforeEach(() => {
 });
 
 describe("a Notes sync that has not settled", () => {
-  test("the saved-meeting count follows the rows at every checkpoint, without waiting for the run to settle", async () => {
+  test("the saved-meeting count follows every saved Note, without waiting for a checkpoint or for the run to settle", async () => {
     const a = space(25);
     const foreground = syncGoogleMeet({ client: a.client, store: a.store, tcw: ALICE, driveMode: "snapshot", deferNotes: true, now: () => NOW_MS });
-    await until(() => a.rows() >= 12);
-    expect(getGmeetMeetingCount(ALICE)).toBe(10); // The checkpoint at 10 re-read the rows; the run has not settled.
+    await until(() => (getGmeetMeetingCount(ALICE) ?? 0) >= 12);
+    expect(getGmeetMeetingCount(ALICE)).toBe(12); // 12 Notes are saved (10 of them checkpointed); the run has not settled.
     a.gate.resolve();
     await foreground;
     await until(() => !isGmeetSyncInFlight());
@@ -128,9 +128,9 @@ describe("one account's run is nothing to another account (TC-1376)", () => {
     const a = space(25);
     const b = space(0);
     void syncGoogleMeet({ client: a.client, store: a.store, tcw: ALICE, driveMode: "snapshot", deferNotes: true, now: () => NOW_MS });
-    await until(() => a.rows() >= 12);
+    await until(() => (getGmeetMeetingCount(ALICE) ?? 0) >= 12);
 
-    expect(getGmeetMeetingCount(ALICE)).toBe(10);
+    expect(getGmeetMeetingCount(ALICE)).toBe(12);
     expect(getGmeetMeetingCount(BOB)).toBeNull();
     expect(readStoredGmeetSyncLog(ALICE.did, asStorage(storage))).not.toBeNull();
     expect(readStoredGmeetSyncLog(BOB.did, asStorage(storage))).toBeNull();
