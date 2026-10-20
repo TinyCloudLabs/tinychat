@@ -32,13 +32,22 @@ export function compareSemver(left, right) {
   return Math.sign(a.prerelease.length - b.prerelease.length);
 }
 export const DATABASE = 'xyz.tinycloud.tinychat/connectors';
-const SOURCES = ['fireflies', 'google-meet', 'tinycloud-transcriber', 'exo-local', 'exo-voice-note', 'exo-upload'];
+const SOURCES = ['fireflies', 'google-meet', 'tinycloud-transcriber', 'exo-local', 'exo-voice-note', 'exo-upload', 'exo-merged'];
 const PENDING_SNAPSHOT_KEY = `${DATABASE}/pending-reconcile-snapshot`;
 const PENDING_SNAPSHOT_MAX_BYTES = 1024 * 1024;
 const PENDING_SNAPSHOT_FIELDS = new Set(['version', 'changed_at', 'checked_at', 'count', 'meetings']);
 const PENDING_MEETING_FIELDS = new Set(['id', 'source', 'ts', 'storedAt', 'updatedAt', 'createdAt', 'startedAt', 'endedAt', 'completedAt', 'status', 'reconciled']);
 const PENDING_TIMESTAMP_FIELDS = ['ts', 'storedAt', 'updatedAt', 'createdAt', 'startedAt', 'endedAt', 'completedAt'];
 const COLUMNS = ['id', 'source', 'source_id', 'title', 'started_at', 'organizer_email', 'participants', 'summary_overview', 'summary_action_items', 'metadata', 'updated_at', 'sort_time'];
+// Combined meetings (TC-1152): an `exo-merged` row is one searchable meeting and the captures it lists in
+// metadata.merge.members are not (membership is source + source_id, never row id). A combined row whose metadata
+// is not readable as one (invalid JSON, no non-empty merge.members array, a member without text source and
+// source_id) is itself left out and hides nothing: a capture shown twice is recoverable, a hidden one is not.
+// Mirrors frontend/src/lib/meetingChat/corpus.ts; CASE nests because json_type/json_each raise on malformed JSON.
+const mergedMembersJson = a => `CASE WHEN json_valid(${a}.metadata) THEN CASE WHEN json_type(${a}.metadata, '$.merge.members') = 'array' THEN json_extract(${a}.metadata, '$.merge.members') ELSE '[]' END ELSE '[]' END`;
+const readableMergedRowSql = a => `(json_array_length(${mergedMembersJson(a)}) > 0 AND NOT EXISTS (SELECT 1 FROM json_each(${mergedMembersJson(a)}) b WHERE CASE WHEN b.type = 'object' THEN CASE WHEN coalesce(json_type(b.value, '$.source') = 'text' AND json_type(b.value, '$.source_id') = 'text' AND json_extract(b.value, '$.source') <> '' AND json_extract(b.value, '$.source_id') <> '', 0) THEN 0 ELSE 1 END ELSE 1 END = 1))`;
+const COMBINED_MEMBER_KEYS_SQL = `SELECT json_extract(k.value, '$.source') || '/' || json_extract(k.value, '$.source_id') FROM connector_meeting c, json_each(${mergedMembersJson('c')}) k WHERE c.source = 'exo-merged' AND CASE WHEN ${readableMergedRowSql('c')} THEN 1 ELSE 0 END = 1`;
+const COMBINED_MEETING_SQL = `(connector_meeting.source IS NULL OR connector_meeting.source != 'exo-merged' OR ${readableMergedRowSql('connector_meeting')}) AND (coalesce(connector_meeting.source, '') || '/' || coalesce(connector_meeting.source_id, '')) NOT IN (${COMBINED_MEMBER_KEYS_SQL})`;
 const LEGACY_WINNER_FILTER_SQL = "g.source IN ('exo-voice-note', 'exo-voice-note-dup') AND json_valid(g.metadata) AND json_extract(g.metadata, '$.transcription_outcome') IS NOT NULL";
 const LEGACY_WINNER_ORDER_SQL = "ORDER BY COALESCE(json_extract(g.metadata, '$.transcribed_at'), '') DESC, g.id ASC LIMIT 1";
 // sqlparser-rs rejects SQLite's two-argument TRIM; use this ECMAScript WhiteSpace ∪ LineTerminator set with nested LTRIM/RTRIM (https://tc39.es/ecma262/multipage/text-processing.html#sec-trimstring).
@@ -141,7 +150,7 @@ function filters(input, search = false) {
 }
 function validateAfter(after) { if (after !== null && (!object(after) || !safeId(after.id) || !(after.time === null || typeof after.time === 'number' && Number.isFinite(after.time)))) fail('INVALID_INPUT'); }
 function makeQuery(scope, after, limit, bodySearch = false, supportedOnly = false, transcriptOnly = false, voiceNoteCommitTableAvailable = false) {
-  const terms = ["(source IS NULL OR source != 'exo-voice-note-dup')"], params = [];
+  const terms = ["(source IS NULL OR source != 'exo-voice-note-dup')", COMBINED_MEETING_SQL], params = [];
   if (supportedOnly) { terms.push(`source IN (${SOURCES.map(() => '?').join(',')})`); params.push(...SOURCES); }
   if (transcriptOnly) {
     const legacyWinnerId = `(SELECT g.id FROM connector_meeting g WHERE g.source_id = connector_meeting.source_id AND ${LEGACY_WINNER_FILTER_SQL} ${LEGACY_WINNER_ORDER_SQL})`;

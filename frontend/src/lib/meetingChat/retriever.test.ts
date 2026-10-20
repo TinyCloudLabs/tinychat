@@ -8,6 +8,8 @@ import {
   selectMeeting,
   SQL_MEETING_SUMMARY_QUERY,
 } from "./retriever";
+import { transcriptKvKey } from "../connectors/connectorStore";
+import { rankMeetingExcerpts } from "./context";
 import type { MeetingCandidate, MeetingCorpus } from "./types";
 
 const NOW = new Date("2026-03-01T00:05:00.000Z");
@@ -558,6 +560,31 @@ describe("readMeetingEvidence", () => {
       }),
     });
     expect(h.calls).toHaveLength(1);
+  });
+
+  test("reads a combined (exo-merged) body from its own KV key and cites lines of the combined text", async () => {
+    // The body shape combinedMeetingStore writes: per-segment `sources` and `alternate` ride along.
+    const body = [
+      { index: 0, speaker_name: "Avery", text: "We agreed to ship the combined meeting on Friday.", start_time: 5, end_time: 9,
+        sources: [{ source: "fireflies", source_id: "ff-1", index: 0 }, { source: "google-meet", source_id: "gm-1", index: 3 }] },
+      { index: 1, speaker_name: "Sam", text: "Budget review moves to Monday.", start_time: 12, end_time: 15,
+        sources: [{ source: "google-meet", source_id: "gm-1", index: 4 }], alternate: { text: "Budget moves Monday" } },
+    ];
+    const h = evidenceHarness({
+      kv: async () => ({ ok: true, data: { data: JSON.stringify(body) } }),
+    });
+    const selected = candidate({ source: "exo-merged", sourceId: "merged-1", hasLocalTranscript: true });
+
+    const outcome = await readMeetingEvidence(selected, h.options as never);
+
+    expect(h.calls).toEqual([`kv:${transcriptKvKey("exo-merged", "merged-1")}`]);
+    expect(outcome.status).toBe("evidence");
+    if (outcome.status !== "evidence") return;
+    expect(outcome.evidence.transcriptLocator).toEqual({ kind: "local-kv-transcript", source: "exo-merged", sourceId: "merged-1" });
+    const cited = rankMeetingExcerpts("when does the budget review move", outcome.evidence.transcriptChunks!);
+    // The citation format is unchanged: position, speaker and time within the combined body.
+    expect(cited.map((e) => e.citation)).toEqual(expect.arrayContaining([expect.stringMatching(/^\[M1:E\d+, (Avery|Sam), 00:00:\d\d\]$/)]));
+    expect(cited.some((e) => e.text.includes("Budget review moves to Monday"))).toBe(true);
   });
 
   test("parses the exported reconciled V1 record only after selection", async () => {

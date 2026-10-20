@@ -1,8 +1,10 @@
 /**
  * Sources supported by the Eliza executor. This is intentionally narrower than the frontend
  * explorer and standalone pack. Excluded until TC-995: exo-voice-note, exo-upload.
+ * `exo-merged` is a combined meeting (TC-1152): the model may filter by and cite it; the captures it
+ * combines are not offered as separate meetings by the executor.
  */
-export const MEETING_SOURCES = ["fireflies", "google-meet", "tinycloud-transcriber", "exo-local"] as const;
+export const MEETING_SOURCES = ["fireflies", "google-meet", "tinycloud-transcriber", "exo-local", "exo-merged"] as const;
 
 const SOURCE_SCHEMA = {
   type: "string",
