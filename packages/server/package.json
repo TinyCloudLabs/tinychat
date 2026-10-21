@@ -21,7 +21,7 @@
   },
   "dependencies": {
     "@tinyboilerplate/core": "workspace:*",
-    "@tinycloud/node-sdk": "3.3.0-beta.29",
+    "@tinycloud/node-sdk": "3.3.0-beta.35",
     "jose": "^5.0.0",
     "siwe": "^2.3.2"
   },
