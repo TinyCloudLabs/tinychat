@@ -33,8 +33,8 @@ export function clientHasReplication(tcw: TinyCloudWeb): boolean {
 const inFlight = new WeakMap<TinyCloudWeb, Promise<ReplicaSignOutResult>>();
 
 /**
- * `tcw.signOut()`, once per client. Resolves `{ ok: false }` only for the replica-deny failure;
- * every other sign-out error is rethrown for the caller's existing handling.
+ * `tcw.signOut()`, once per client. On a replica client, any failure resolves `{ ok: false }`
+ * so the caller shows the purge warning; clients without replication rethrow.
  */
 export function signOutReplicaAware(tcw: TinyCloudWeb): Promise<ReplicaSignOutResult> {
   const existing = inFlight.get(tcw);
@@ -44,10 +44,10 @@ export function signOutReplicaAware(tcw: TinyCloudWeb): Promise<ReplicaSignOutRe
       await tcw.signOut?.();
       return { ok: true };
     } catch (caught) {
+      if (!clientHasReplication(tcw)) throw caught;
       const text = caught instanceof Error ? caught.message : String(caught);
       const match = GATE_NOT_DENIED.exec(text);
-      if (!match) throw caught;
-      const code = match[1]?.trim() || "REPLICA_GATE_NOT_DENIED";
+      const code = match ? match[1]?.trim() || "REPLICA_GATE_NOT_DENIED" : "REPLICA_SIGNOUT_FAILED";
       markReplicationPurgeFailed(code);
       return { ok: false, message: REPLICA_PURGE_FAILED_WARNING, code };
     }

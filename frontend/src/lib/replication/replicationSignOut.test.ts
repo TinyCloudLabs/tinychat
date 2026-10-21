@@ -34,8 +34,14 @@ describe("sign-out with replication", () => {
     expect(formatReplicationStatus(getReplicationStatus())).toContain("sign-out erase failed");
   });
 
-  test("any other sign-out error is rethrown for the caller's existing handling", async () => {
-    await expect(signOutReplicaAware(fakeClient(async () => { throw new Error("network down"); }))).rejects.toThrow("network down");
+  test("any sign-out error on a replica client is a failed purge with a visible code", async () => {
+    const result = await signOutReplicaAware(fakeClient(async () => { throw new Error("network down"); }));
+    expect(result).toEqual({ ok: false, message: REPLICA_PURGE_FAILED_WARNING, code: "REPLICA_SIGNOUT_FAILED" });
+  });
+
+  test("a sign-out error on a client without replication is rethrown for the caller's existing handling", async () => {
+    const offClient = { signOut: async () => { throw new Error("network down"); } } as unknown as TinyCloudWeb;
+    await expect(signOutReplicaAware(offClient)).rejects.toThrow("network down");
   });
 
   test("runs signOut once per client even when the button and the signed-out hook both ask", async () => {
