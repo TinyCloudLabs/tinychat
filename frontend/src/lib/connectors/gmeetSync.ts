@@ -68,6 +68,7 @@ import {
   type GmeetSyncLogRecorder,
 } from "./gmeetSyncLog";
 import { publishGmeetMeetingCount } from "./gmeetLiveCount";
+import { publishGmeetLastRun } from "./gmeetLastRun";
 import type { ConnectorConnection, ConnectorId } from "./types";
 
 /** SQL `source` column value and connector id — one string, one meaning. */
@@ -993,7 +994,14 @@ async function runGoogleMeetSync(opts: GmeetSyncOptions, recorder: GmeetSyncLogR
     } finally {
       leavePhase();
     }
-    if (update.ok) stateWritten = true;
+    if (update.ok) {
+      stateWritten = true;
+      publishGmeetLastRun(tcw, {
+        syncedAt: completed ? isoAt((opts.now ?? Date.now)()) : null,
+        status: terminal ? "error" : reconnectRequired || partialNotes ? "partial" : "ok",
+        error: terminal?.message ?? (partialNotes ? gmeetNotesPartialMessage(partialNotes) : reconnectRequired ? "Reconnect Google Meet to sync Notes by Gemini" : null),
+      });
+    }
     else terminal ??= fromStore(update.error, "updateSyncState");
   };
   // After a Finishing timeout `step` is closed, so the connection row gets its own
@@ -1033,7 +1041,10 @@ async function runGoogleMeetSync(opts: GmeetSyncOptions, recorder: GmeetSyncLogR
       clearTimeout(deadlineTimer);
       leavePhase();
     }
-    if (outcome === "written") stateWritten = true;
+    if (outcome === "written") {
+      stateWritten = true;
+      publishGmeetLastRun(tcw, { syncedAt: null, status: "error", error: message });
+    }
     diagnostics.finishing_recovery_write = outcome === "written" ? "written"
       : outcome === "timeout" ? (started ? "timed_out" : "skipped_pending_storage") : "failed";
   };
@@ -1310,6 +1321,10 @@ async function runNotesInBackground(input: NotesBackgroundInput): Promise<void> 
   const publish = (extra: Partial<GmeetSyncProgress>) => {
     const progress: GmeetSyncProgress = { type: "progress", ...input.meetings, message: "notes", ...extra };
     trackProgress(tcw, recorder, progress);
+    // The Library gains a row with every saved Note: the count follows it, not only the checkpoints.
+    if (extra.stage === "notes") {
+      publishGmeetMeetingCount(tcw, Math.max(0, input.itemCount + diagnostics.drive_rows_inserted - diagnostics.drive_rows_deleted));
+    }
     for (const listener of notesProgressListeners) guarded(() => listener(progress));
   };
   const items: GmeetSyncItem[] = [];
@@ -1386,6 +1401,15 @@ async function runNotesInBackground(input: NotesBackgroundInput): Promise<void> 
   } else {
     terminal ??= { kind: "storage", message: STORAGE_CALL_TIMEOUT_MESSAGE };
     diagnostics.finishing_recovery_write = "skipped_pending_storage";
+  }
+  if (!input.stop.signal.aborted) {
+    // What the run ended with, ahead of the row re-read: the window shows this, never the failure of an earlier run.
+    const state = syncStateInput(input.startedAtIso, itemCount, terminal, reconnectRequired, partial);
+    publishGmeetLastRun(tcw, {
+      syncedAt: terminal === null ? isoAt((opts.now ?? Date.now)()) : null,
+      status: terminal ? "error" : reconnectRequired || partial ? "partial" : "ok",
+      error: state.lastSyncError,
+    });
   }
   // Released before observers run: they re-read the row and expect "Sync now" to be usable again.
   if (notesStop === input.stop) notesInFlight = null;

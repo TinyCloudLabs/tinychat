@@ -12,6 +12,7 @@ import { AgentAccessProvider } from "./useAgentEnablement";
 import { appPlatform, PlatformContext } from "@/lib/platform";
 import { installDom } from "@/test/dom";
 import { __setVoiceNotesForTests } from "@/lib/voiceNotes/nativeVoiceNotes";
+import { setUploadAudioPreference } from "@/lib/voiceNotes/transcriberPreference";
 
 let cleanDom: (() => void) | undefined;
 let previousCustomElements: PropertyDescriptor | undefined;
@@ -32,6 +33,7 @@ test("signed-in web Settings shows the audio upload switch and browser storage w
   // Web has no native capture plugin. The setting must still be reachable through Settings.
   __setVoiceNotesForTests(null, { available: false });
   expect(appPlatform()).toBe("web");
+  await setUploadAudioPreference(false);
   const { SettingsPage } = await import("./SettingsPage");
   const tcw = {
     did: "did:example:account",
@@ -63,7 +65,7 @@ test("signed-in web Settings shows the audio upload switch and browser storage w
   expect(page.textContent).toContain("Voice notes");
   expect(page.querySelector('input[type="checkbox"]#upload-audio-to-tinycloud')).not.toBeNull();
   expect([...page.querySelectorAll('label[for="upload-audio-to-tinycloud"]')].some((label) => label.textContent === "Upload audio to TinyCloud")).toBe(true);
-  expect(page.textContent).toContain("Browsers can delete it. Turn on Upload audio to keep a copy in TinyCloud.");
+  expect(page.textContent).toContain("Audio stays in this browser, and browsers can delete it. Turn this on to keep a copy in TinyCloud.");
 });
 
 test("Mac Settings shows the Voice notes card with Stop recording after and the upload switch, without the default transcriber", async () => {
@@ -96,9 +98,9 @@ test("Mac Settings shows the Voice notes card with Stop recording after and the 
     );
     const stopAfter = page.querySelector('[data-testid="voice-notes-stop-after"]');
     expect(stopAfter?.textContent).toContain("Stop recording after");
-    expect([...stopAfter!.querySelectorAll("button")].map((option) => option.textContent))
+    expect([...stopAfter!.querySelectorAll("option")].map((option) => option.textContent))
       .toEqual(["15 min", "30 min", "1 h", "2 h", "Off (3-hour limit)"]);
-    expect(stopAfter!.querySelector('[aria-checked="true"], [data-state="on"]')?.textContent).toBe("1 h");
+    expect(stopAfter!.querySelector("option[selected]")?.textContent).toBe("1 h");
     expect(page.querySelectorAll('[data-testid="voice-notes-stop-after"]')).toHaveLength(1);
     expect(page.querySelector('input[type="checkbox"]#upload-audio-to-tinycloud')).not.toBeNull();
     expect(page.querySelector('[aria-label="Default transcriber"]')).toBeNull();

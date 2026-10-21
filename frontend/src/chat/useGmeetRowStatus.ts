@@ -11,6 +11,7 @@ import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 
 import * as connectorStore from "@/lib/connectors/connectorStore";
 import { describeGmeetInterrupted, readGmeetInterrupted } from "@/lib/connectors/gmeetInterrupted";
+import { getGmeetLastRun, onGmeetLastRun, type GmeetLastRun } from "@/lib/connectors/gmeetLastRun";
 import { getGmeetMeetingCount, onGmeetMeetingCount, refreshGmeetMeetingCount } from "@/lib/connectors/gmeetLiveCount";
 import { getGmeetLiveStatus, onGmeetLiveStatus, type GmeetLiveStatus } from "@/lib/connectors/gmeetSync";
 import type { GmeetSyncLog } from "@/lib/connectors/gmeetSyncLog";
@@ -22,6 +23,8 @@ export interface GmeetRowStatus {
   live: GmeetLiveStatus;
   /** Saved Google Meet meetings (the rows the Library shows); null until the first read. */
   count: number | null;
+  /** How the latest run of this page load ended and when: what the status line shows over the stored row. */
+  lastRun: GmeetLastRun | null;
   /** "A Notes sync was interrupted at x/26. Sync now resumes it." while no run is live, else null. */
   interrupted: string | null;
   hasLog: boolean;
@@ -40,6 +43,7 @@ export function useGmeetRowStatus(
   const { connected, revision = 0 } = options;
   const live = useSyncExternalStore(onGmeetLiveStatus, () => getGmeetLiveStatus(tcw), () => getGmeetLiveStatus(tcw));
   const count = useSyncExternalStore(onGmeetMeetingCount, () => getGmeetMeetingCount(tcw), () => getGmeetMeetingCount(tcw));
+  const lastRun = useSyncExternalStore(onGmeetLastRun, () => getGmeetLastRun(tcw), () => getGmeetLastRun(tcw));
   const [buildLabel, setBuildLabel] = useState<string | null>(null);
   const [checkpoint, setCheckpoint] = useState<{ did: string | undefined; text: string | null } | null>(null);
   const running = live.running;
@@ -81,6 +85,7 @@ export function useGmeetRowStatus(
   return {
     live,
     count,
+    lastRun,
     interrupted: !running && checkpoint !== null && checkpoint.did === tcw.did ? checkpoint.text : null,
     hasLog,
     getLog: () => loadGmeetSyncLog(tcw, buildLabel),

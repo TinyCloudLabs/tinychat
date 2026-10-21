@@ -1,5 +1,29 @@
 # @tinychat/frontend
 
+## 0.10.0-beta.10
+
+### Patch Changes
+
+- 1029746: Combined meetings get their own summary, made once per combine from the combined text (TC-1152).
+
+## 0.10.0-beta.9
+
+### Patch Changes
+
+- 38b2c37: Combined meetings: in-app meeting chat and the agent retrieval pack (now 0.1.1-onboarding.24) search and cite the combined meeting as one meeting, and no longer return the captures it was combined from. A combined row whose record can't be read hides nothing and is itself left out.
+
+## 0.10.0-beta.8
+
+### Patch Changes
+
+- 2e51461: Settings → Voice notes: Stop recording after is one compact select, the upload checkbox is aligned with its (i), and one help line follows the checkbox (TC-1618).
+
+## 0.10.0-beta.7
+
+### Patch Changes
+
+- 287a93a: Google Meet in Meeting sources: Sync now and Full rescan return once the Meet records are saved and the Notes finish in the background (own time budget, checkpoints, progress on the row), so a slow storage node no longer hits the 60 s foreground limit and needs several presses. The status line follows the latest run: a finished run clears an earlier "Last sync failed", and "synced" shows when the run ended. The meeting count rises with every saved Note. A request for the Google access token that the network closes is sent once more before the row says it couldn't reach Google.
+
 ## 0.10.0-beta.6
 
 ### Patch Changes

@@ -16,10 +16,12 @@
 //   I5  Cascade and sweep delete only exo-merged data. The cascade fails closed: any error is
 //       returned to the caller, which must abort the purge it was part of.
 //   I6  Sequential node calls only (TinyCloud drops concurrent responses on one space).
+//   I7  The summary step (3b) writes the two `summary_*` columns of one exo-merged row and nothing else,
+//       and never writes `metadata` (the combine record is written once, by `writeCombined`).
 //
 // No local (browser) state lives here, so there is nothing to key by account (TC-1376).
 //
-// Sections: 1 guards and low-level I/O · 2 reading members · 3 WRITE · 4 DELETE · 5 CASCADE ·
+// Sections: 1 guards and low-level I/O · 2 reading members · 3 WRITE · 3b SUMMARY · 4 DELETE · 5 CASCADE ·
 // 6 SWEEP · 7 stale detection.
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import {
@@ -340,7 +342,7 @@ export async function writeCombined(
     if (!del.ok) return del;
   }
   // Re-combine, or a collapse onto another writer's row: replace the keeper's content in place.
-  // Summary columns are untouched (a later summary step owns them); created_at is preserved.
+  // Summary columns are untouched (section 3b owns them); created_at is preserved.
   if (!created || keeper !== row.id) {
     const upd = await sql(tcw, "execute",
       "UPDATE connector_meeting SET title = ?, started_at = ?, duration_secs = ?, participants = ?, metadata = ?, updated_at = ? WHERE id = ? AND source = 'exo-merged'",
@@ -348,6 +350,47 @@ export async function writeCombined(
     if (!upd.ok) return upd;
   }
   return { ok: true, data: { status: "written", id: keeper, sourceId, created: created && keeper === row.id, passed: row.metadata.merge.detection.passed } };
+}
+
+// ═══ 3b. SUMMARY (the two summary columns of one combined row, I7) ══════════════════════════
+
+export interface CombinedSummaryRead {
+  sourceId: string;
+  overview: string | null;
+  actionItems: string | null;
+}
+
+/** The row's summary columns and its source_id; null when there is no such combined row. Reads no metadata. */
+export async function readCombinedSummary(tcw: TinyCloudWeb, id: string): Promise<StoreResult<CombinedSummaryRead | null>> {
+  const res = await sql(tcw, "query", "SELECT source_id, summary_overview, summary_action_items FROM connector_meeting WHERE id = ? AND source = 'exo-merged'", [id]);
+  if (!res.ok) return res;
+  const row = res.rows[0];
+  const sourceId = row === undefined ? null : asString(row[0]);
+  if (row === undefined || sourceId === null) return { ok: true, data: null };
+  return { ok: true, data: { sourceId, overview: asString(row[1]), actionItems: asString(row[2]) } };
+}
+
+/** The stored body of a combined meeting (a JSON string or parsed value, as the space returns it). */
+export async function readCombinedBody(tcw: TinyCloudWeb, sourceId: string): Promise<StoreResult<unknown>> {
+  const key = mergedBodyKey(sourceId);
+  if (key === null) return failure("COMBINE_ID_INVALID", "combined source id is not a valid key segment");
+  const res = await kv(() => tcw.kv.get(key));
+  return res.ok ? { ok: true, data: res.data } : { ok: false, error: res.error };
+}
+
+/**
+ * ONE UPDATE of `summary_overview` and `summary_action_items` on one exo-merged row. No other column
+ * (not `metadata`, not `updated_at`) is touched. `null`s clear a summary that no longer matches the text.
+ */
+export async function writeCombinedSummary(
+  tcw: TinyCloudWeb,
+  id: string,
+  summary: { overview: string | null; actionItems: string | null },
+): Promise<StoreResult<void>> {
+  const res = await sql(tcw, "execute",
+    "UPDATE connector_meeting SET summary_overview = ?, summary_action_items = ? WHERE id = ? AND source = 'exo-merged'",
+    [summary.overview, summary.actionItems, id]);
+  return res.ok ? { ok: true, data: undefined } : res;
 }
 
 // ═══ 4. DELETE (exo-merged only, I2/I3) ══════════════════════════════════════════════════════

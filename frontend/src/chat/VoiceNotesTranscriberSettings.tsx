@@ -3,6 +3,7 @@ import { readableError } from "@/lib/readableError";
 // surface. Native transcription controls remain available only when their engine is present.
 import { useContext, useEffect, useState, useSyncExternalStore } from "react";
 
+import { homePlace, placeWhere } from "@/capture/home/desktop/desktopCopy";
 import { CHECK_AGAIN, FINAL_COPY, privateNotOffered, TRANSCRIBER_NAME } from "@/capture/recorder/final/finalCopy";
 import { SIGNED_OUT } from "@/capture/recorder/final/useTranscriptionChoice";
 import { useRecorder } from "@/capture/recorder/RecorderProvider";
@@ -108,32 +109,44 @@ export function VoiceNotesTranscriberSettings() {
     if (platform === "web") void navigator.storage?.persist?.().catch(() => undefined);
   }, [platform]);
 
+  const where = platform === "ios" || platform === "android" ? "on this phone" : placeWhere(homePlace(platform));
+  const uploadHelp = uploadAudio
+    ? "A copy of the audio is kept in your TinyCloud space. Transcripts and notes sync too. Private transcription still sends audio to be transcribed, then deletes it."
+    : `Audio stays ${where}${platform === "web" ? ", and browsers can delete it" : ""}. Turn this on to keep a copy in TinyCloud. Transcripts and notes still sync to your TinyCloud space. Private transcription still sends audio to be transcribed, then deletes it.`;
+
   const stopAfterSetting = (
-    <div className="flex flex-col gap-2" data-testid="voice-notes-stop-after">
-      <div className="flex flex-col gap-1 text-sm">
-        <p>Stop recording after</p>
-        <p className="text-xs text-muted-foreground">New recordings stop by themselves after this long. Recordings never run longer than 3 hours.</p>
+    <div className="flex flex-col gap-1" data-testid="voice-notes-stop-after">
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+        <label htmlFor="stop-recording-after" className="text-sm">Stop recording after</label>
+        <select
+          id="stop-recording-after"
+          value={stopAfter}
+          onChange={(event) => setStopAfterPreference(event.target.value as StopAfter)}
+          className="min-h-11 max-w-full rounded-md border border-border bg-background px-2 text-base focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring fine:min-h-9 fine:text-sm"
+        >
+          {STOP_AFTER_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+        </select>
       </div>
-      <SegmentedControl<StopAfter> aria-label="Stop recording after" value={stopAfter} onValueChange={setStopAfterPreference} options={STOP_AFTER_OPTIONS} />
+      <p className="text-xs text-muted-foreground">New recordings stop by themselves after this long. Recordings never run longer than 3 hours.</p>
     </div>
   );
   const uploadSetting = (
     <>
-      <div className="flex items-start gap-3">
-        <label htmlFor="upload-audio-to-tinycloud" className="flex size-11 shrink-0 cursor-pointer items-center justify-center">
-          <input id="upload-audio-to-tinycloud" type="checkbox" checked={uploadAudio}
-            onChange={(event) => {
-              setUploadError(null);
-              void setUploadAudioPreference(event.target.checked).catch((caught: unknown) => setUploadError(readableError(caught)));
-            }} />
-        </label>
-        <div className="flex flex-col gap-1 text-sm">
-          <label htmlFor="upload-audio-to-tinycloud">Upload audio to TinyCloud</label>
-          <p className="text-xs text-muted-foreground">Audio stays on this {platform === "tauri" ? "Mac" : platform === "web" ? "browser" : "phone"}. Transcripts and notes still sync to your TinyCloud space. Private transcription still sends audio to be transcribed, then deletes it.</p>
-          {storageFull && <p role="status" className="text-xs text-muted-foreground">{UPLOAD_PAUSED}</p>}
-          {platform === "web" && <p className="text-xs text-muted-foreground">Audio stays in this browser. Browsers can delete it. Turn on Upload audio to keep a copy in TinyCloud.</p>}
-          <InfoTip label="About audio storage">Other devices cannot play or transcribe local-only audio. This device holds the only copy. Local transcription, chat and quota still work. You can upload an individual note later.</InfoTip>
+      <div className="flex flex-col gap-1">
+        <div className="flex min-h-11 items-center">
+          {/* A 44 px touch target around the 16 px box; the negative margins pull the visible box to the card's text edge. */}
+          <label htmlFor="upload-audio-to-tinycloud" className="-ml-3.5 flex size-11 shrink-0 cursor-pointer items-center justify-center">
+            <input id="upload-audio-to-tinycloud" type="checkbox" className="size-4 accent-primary" checked={uploadAudio}
+              onChange={(event) => {
+                setUploadError(null);
+                void setUploadAudioPreference(event.target.checked).catch((caught: unknown) => setUploadError(readableError(caught)));
+              }} />
+          </label>
+          <label htmlFor="upload-audio-to-tinycloud" className="-ml-1.5 cursor-pointer text-sm">Upload audio to TinyCloud</label>
+          <InfoTip label="About audio storage" className="-my-3 fine:-my-1">Other devices cannot play or transcribe local-only audio. This device holds the only copy. Local transcription, chat and quota still work. You can upload an individual note later.</InfoTip>
         </div>
+        <p className="pl-6 text-xs text-muted-foreground" data-testid="voice-notes-upload-help">{uploadHelp}</p>
+        {storageFull && <p role="status" className="pl-6 text-xs text-muted-foreground">{UPLOAD_PAUSED}</p>}
       </div>
       {uploadError && <p role="alert" className="text-xs text-destructive">{uploadError}</p>}
     </>

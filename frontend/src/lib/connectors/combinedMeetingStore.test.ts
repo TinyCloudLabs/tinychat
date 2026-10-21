@@ -8,6 +8,9 @@ import { makeFakeTinyCloud, type FakeTinyCloud } from "../../../../test/connecto
 import {
   combineMeetings,
   deleteCombined,
+  readCombinedBody,
+  readCombinedSummary,
+  writeCombinedSummary,
   deleteCombinedReferencing,
   staleMembers,
   sweepCombinedMeeting,
@@ -496,5 +499,51 @@ describe("read-time sweep", () => {
     f.kv.entries.delete(transcriptKvKey("fireflies", "p-a"));
     expect(await sweepCombinedMeeting(f.tcw, w.id)).toEqual({ ok: true, data: { status: "deleted" } });
     expect(mergedRows()).toHaveLength(0);
+  });
+});
+
+describe("summary columns", () => {
+  test("a combine leaves the summary columns null; writeCombinedSummary changes those two columns of that row and nothing else", async () => {
+    const w = await combineOk(ff[0], ff[1]);
+    expect(await readCombinedSummary(f.tcw, w.id)).toEqual({ ok: true, data: { sourceId: w.sourceId, overview: null, actionItems: null } });
+    const before = { ...mergedRows()[0]! };
+    const outside = originals() + originalKv();
+    f.sql.log.length = 0;
+    f.kv.log.length = 0;
+    expect(await writeCombinedSummary(f.tcw, w.id, { overview: "An overview.", actionItems: "One\nTwo" })).toEqual({ ok: true, data: undefined });
+    // One statement, naming only the two columns; no KV call.
+    expect(f.sql.log).toHaveLength(1);
+    expect(f.sql.log[0]!.sql).toMatch(/^UPDATE connector_meeting SET summary_overview = \?, summary_action_items = \? WHERE id = \? AND source = 'exo-merged'$/);
+    expect(f.kv.log).toEqual([]);
+    const after = mergedRows()[0]!;
+    expect({ ...after, summary_overview: null, summary_action_items: null }).toEqual({ ...before, summary_overview: null, summary_action_items: null });
+    expect(after.metadata).toBe(before.metadata);
+    expect(after.updated_at).toBe(before.updated_at);
+    expect(after.summary_overview).toBe("An overview.");
+    expect(originals() + originalKv()).toBe(outside);
+    expect(await readCombinedSummary(f.tcw, w.id)).toEqual({ ok: true, data: { sourceId: w.sourceId, overview: "An overview.", actionItems: "One\nTwo" } });
+  });
+
+  test("it never reaches an original's row: an original's id changes nothing", async () => {
+    await combineOk(ff[0], ff[1]);
+    const before = originals();
+    expect(await writeCombinedSummary(f.tcw, "row-p-a", { overview: "x", actionItems: null })).toEqual({ ok: true, data: undefined });
+    expect(originals()).toBe(before);
+    expect(await readCombinedSummary(f.tcw, "row-p-a")).toEqual({ ok: true, data: null });
+  });
+
+  test("re-combining keeps a stored summary until the summary step replaces it (the combine itself never writes the columns)", async () => {
+    const w = await combineOk(ff[0], ff[1]);
+    await writeCombinedSummary(f.tcw, w.id, { overview: "Kept.", actionItems: null });
+    await combineOk(ff[0], ff[1]);
+    expect(mergedRows()[0]!.summary_overview).toBe("Kept.");
+  });
+
+  test("the combined body is read back by its source_id; a failed or invalid read is an error, never an empty body", async () => {
+    const w = await combineOk(ff[0], ff[1]);
+    const body = await readCombinedBody(f.tcw, w.sourceId);
+    expect(body.ok).toBe(true);
+    expect((await readCombinedBody(f.tcw, "../escape")).ok).toBe(false);
+    expect((await readCombinedBody(f.tcw, "no-such-meeting")).ok).toBe(false);
   });
 });
