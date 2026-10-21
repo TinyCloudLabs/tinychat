@@ -9,6 +9,38 @@
 
 const RING_KEY = Symbol.for("tc1420.ring");
 const RING_SIZE = 20;
+const ORIGIN_KEY = Symbol.for("tc1420.origin");
+const ORIGIN_FRAMES = 12;
+
+interface Origin {
+  tag: string;
+  frames: string[];
+}
+
+/** Any frames (node_modules included), file:line only, first ORIGIN_FRAMES. */
+function anyFrames(): string[] {
+  const out: string[] = [];
+  for (const line of (new Error().stack ?? "").split("\n")) {
+    if (!line.trimStart().startsWith("at ") || line.includes("tc1420WindowTrap")) continue;
+    const match = /([^\s(]+:\d+):\d+\)?$/.exec(line.trim());
+    if (match) out.push(match[1]);
+    if (out.length === ORIGIN_FRAMES) break;
+  }
+  return out;
+}
+
+/** Keeps the FIRST origin of each kind; the ring cap never evicts these. */
+function noteOrigin(slot: string, tag: string) {
+  const origins = Reflect.get(globalThis, ORIGIN_KEY) as Record<string, Origin> | undefined;
+  if (!origins || origins[slot]) return;
+  origins[slot] = { tag, frames: anyFrames() };
+}
+
+/** True for globalThis itself or any object with an unusually large own-key set (the leaked shape). */
+function selfLike(value: unknown): boolean {
+  if (value === globalThis) return true;
+  return typeof value === "object" && value !== null && Object.getOwnPropertyNames(value).length > 150;
+}
 
 interface TrapEntry {
   tag: string;
@@ -50,6 +82,7 @@ function testFrames(): string[] {
 if (process.env.CI === "true" && !Reflect.get(globalThis, RING_KEY)) {
   const ring: TrapEntry[] = [];
   Reflect.set(globalThis, RING_KEY, ring);
+  Reflect.set(globalThis, ORIGIN_KEY, {});
 
   const originalDefine = Object.defineProperty;
   const originalObjectGetOwn = Object.getOwnPropertyDescriptor;
@@ -68,6 +101,7 @@ if (process.env.CI === "true" && !Reflect.get(globalThis, RING_KEY)) {
 
   const getter = () => stored;
   const setter = (value: unknown) => {
+    if (selfLike(value)) noteOrigin("set-self", "set");
     if (!hasLocation(value)) record("set-no-location", value);
     else if (!hasLocation(stored)) record("set-with-location(after-no-location)", value);
     stored = value;
@@ -110,11 +144,13 @@ if (process.env.CI === "true" && !Reflect.get(globalThis, RING_KEY)) {
     return originalDelete(target, key);
   };
 
-  Object.defineProperty = <T>(target: T, key: PropertyKey, descriptor: PropertyDescriptor & ThisType<any>): T => {
+  Object.defineProperty = <T>(target: T, key: PropertyKey, descriptor: PropertyDescriptor): T => {
+    if (target === globalThis && key === "window" && !("value" in descriptor)) noteOrigin("defineProperty-accessor", "defineProperty");
     if (target !== globalThis || key !== "window" || !("value" in descriptor)) {
       return originalDefine(target, key, descriptor);
     }
     const value: unknown = descriptor.value;
+    if (selfLike(value)) noteOrigin("defineProperty-self", "defineProperty");
     if (!hasLocation(value)) record("defineProperty-no-location", value);
     else if (!hasLocation(stored)) record("defineProperty-with-location(after-no-location)", value);
     stored = value;
