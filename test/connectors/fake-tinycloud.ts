@@ -499,7 +499,7 @@ export class FakeSqlDb {
 
 export class FakeKv {
   /** Every KV call issued, in order. */
-  readonly log: { method: "get" | "put" | "list" | "delete" | "head"; key: string }[] = [];
+  readonly log: { method: "get" | "put" | "list" | "delete" | "head"; key: string; source?: string }[] = [];
   /** Reads of a key fail with the given error (a read that did not land, as opposed to a missing key). */
   getErrors = new Map<string, KvErr>();
   entries = new Map<string, string>();
@@ -519,8 +519,9 @@ export class FakeKv {
 
   async get(
     key: string,
+    options?: { source?: string },
   ): Promise<OkErr<{ data: unknown; headers: Record<string, string> }, KvErr>> {
-    this.log.push({ method: "get", key });
+    this.log.push({ method: "get", key, source: options?.source });
     const getError = this.getErrors.get(key);
     if (getError) return { ok: false, error: getError };
     const denied = this.deny(key, "get");
