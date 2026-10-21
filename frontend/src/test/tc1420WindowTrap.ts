@@ -110,7 +110,7 @@ if (process.env.CI === "true" && !Reflect.get(globalThis, RING_KEY)) {
     return originalDelete(target, key);
   };
 
-  Object.defineProperty = (target: object, key: PropertyKey, descriptor: PropertyDescriptor) => {
+  Object.defineProperty = <T>(target: T, key: PropertyKey, descriptor: PropertyDescriptor & ThisType<any>): T => {
     if (target !== globalThis || key !== "window" || !("value" in descriptor)) {
       return originalDefine(target, key, descriptor);
     }
