@@ -24,5 +24,5 @@ export function rememberReplicationPrincipal(tcw: TinyCloudWeb, store: MarkerSto
   try {
     const principal = clientHasReplication(tcw) ? tcw.did : undefined;
     if (store && principal?.startsWith("did:pkh:")) store.setItem(REPLICATION_COPY_KEY, principal);
-  } catch { /* best effort: the "1" marker still triggers recovery */ }
+  } catch { /* best effort: the "1" marker still triggers the OFF purge */ }
 }

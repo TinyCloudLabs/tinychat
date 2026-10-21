@@ -1,50 +1,42 @@
-// SECURITY: purge-on-OFF. Review with replicationClient.ts and replicationSignOut.ts.
+// Purge-on-OFF: when replication is OFF (flag unset, kill switch engaged, platform refused) and this
+// origin may still hold a local replica copy from an earlier ON session, erase that copy on the next
+// load. The erase is origin-wide: the replica database is shared by every account in the origin, so
+// the whole `tinycloud-replica-kv` database is deleted. Nothing else is touched.
 //
-// When replication is OFF (flag unset, kill switch engaged, platform refused) and this browser may
-// still hold a local copy from an earlier ON session, remove it on the next load: shred the keys
-// FIRST, then delete the stores. The copy is an encrypted cache of node data, so nothing is lost.
+// Order:
+//  1. If the last ON session recorded a principal, deny it through the SDK lifecycle gate. This
+//     shreds that account's keys and writes the deny tombstone (localStorage, kept). It runs BEFORE
+//     the delete and OUTSIDE the gate lock, because the SDK takes that lock itself and it is not
+//     reentrant. An "unguarded" deny stops here: no delete, marker kept.
+//  2. Under the origin gate lock, delete the replica database.
+//  3. On success, clear our marker and the SDK pending-logout marker. A blocked or failed delete
+//     keeps (or writes) the marker so the next load retries.
 //
-// Why a dedicated path (read from @tinycloud/replica 0.3.0-beta.8 kv-storage and node-sdk beta.29):
-//  - `TinyCloudWeb.signOut()` only denies the replica when `config.replication.enabled`, and an OFF
-//    client has none, so signing out OFF never shreds anything;
-//  - lifecycle recovery (erase of already-denied rows) only runs when the plugin is built or a
-//    replica opens, i.e. never while OFF;
-//  - `replication.purge()` needs a signed-in identity with a live gate and cannot address another
-//    identity's partition.
-// The SDK's own entry point for this is the browser lifecycle gate (`storage.lifecycle`), the same
-// object signOut uses: `deny({ reason: "sign_out", principal })` commits, in ONE IndexedDB
-// transaction, the deny marker, the erase intents and the deletion of the AES-GCM/HMAC keys (the
-// shred), and `recover()` then erases the rows the intents name. Calling them in that order is the
-// "key first, stores second" contract; we never delete rows ourselves.
-//
-// Which identity: the origin has ONE replica gate, so at most one account holds a live copy; an
-// account switch while ON already denied the previous one (its rows are erased by `recover()`,
-// which is identity-independent). `deny` only acts when `principal` equals the gate's principal
-// (anything else is a no-op "stale"), so the principal we name is the one recorded by the last ON
-// session (`rememberReplicationPrincipal`), never the currently signed-in account unless it is that
-// one, and never another origin. A copy whose principal we cannot name is left for `recover()`
-// only (known limit: there is no SDK call that denies an unnamed live gate).
-//
-// Detecting "a copy may exist" costs two localStorage reads and no import, network call or sign-in
-// change: our own marker (written when an ON config is built, upgraded to the principal after
-// sign-in) or the SDK's pending-logout marker. Only then is the replica chunk lazily loaded. The
-// marker is removed only after deny AND recovery report clean, so a failure retries next load.
+// Detection: our localStorage marker (written when an ON config is built) or the SDK's pending-logout
+// marker. With neither, nothing is loaded and no IndexedDB is opened. Only when a principal is
+// recorded is the replica chunk loaded lazily, for the deny step.
 import { isReplicationEnabled } from "./replicationFlag";
 import { defaultReplicationLoader, type ReplicationPluginLoader } from "./replicationClient";
 import { browserMarkerStore, REPLICATION_COPY_KEY, SDK_LOGOUT_MARKER_KEY, type MarkerStore } from "./replicationCopyMarker";
 import { setReplicationOffPurgeCode } from "./replicationStatus";
 
-const RECOVER_TIMEOUT_MS = 10_000;
+/** The origin-wide replica database name (SDK kv-storage KV_DATABASE, @tinycloud/replica 0.3.0-beta.8). */
+export const REPLICA_DATABASE_NAME = "tinycloud-replica-kv";
+/** The origin Web Lock the SDK holds for gate operations (kv-storage GATE_LOCK, same version). */
+export const REPLICA_GATE_LOCK = "tinycloud-replica-kv:gate";
 
 export type ReplicationOffPurgeOutcome =
   | { status: "skipped"; reason: "replication-on" | "no-copy" }
   | { status: "purged" }
   | { status: "failed"; code: string };
 
+export type ReplicaDeleteResult = { ok: true } | { ok: false; code: string };
+
 export interface ReplicationOffPurgeDeps {
   loader?: ReplicationPluginLoader;
   store?: MarkerStore | undefined;
   isEnabled?: () => boolean;
+  deleteDatabase?: () => Promise<ReplicaDeleteResult>;
 }
 
 function codeOf(caught: unknown): string {
@@ -52,7 +44,33 @@ function codeOf(caught: unknown): string {
   return "OFF_PURGE_ERROR";
 }
 
-/** Remove a leftover local copy while replication is OFF. Never throws; reports codes only. */
+/** Delete the origin replica database while holding the origin gate lock. Codes only, never content. */
+function removeReplicaDatabase(): Promise<ReplicaDeleteResult> {
+  return new Promise((resolve) => {
+    let request: IDBOpenDBRequest;
+    try {
+      request = indexedDB.deleteDatabase(REPLICA_DATABASE_NAME);
+    } catch {
+      resolve({ ok: false, code: "STORAGE_ERROR" });
+      return;
+    }
+    request.onsuccess = () => resolve({ ok: true });
+    request.onerror = () => resolve({ ok: false, code: "STORAGE_ERROR" });
+    // Another connection (e.g. another tab) still has the database open: report and retry next load.
+    request.onblocked = () => resolve({ ok: false, code: "DELETE_BLOCKED" });
+  });
+}
+
+export async function deleteReplicaDatabase(): Promise<ReplicaDeleteResult> {
+  const locks = typeof navigator === "undefined" ? undefined : navigator.locks;
+  if (typeof indexedDB === "undefined" || typeof locks?.request !== "function") {
+    return { ok: false, code: "gate_unavailable" };
+  }
+  const outcome: ReplicaDeleteResult = await locks.request(REPLICA_GATE_LOCK, removeReplicaDatabase);
+  return outcome;
+}
+
+/** Remove the origin's leftover replica copy while replication is OFF. Never throws; reports codes only. */
 export async function purgeReplicaCopyWhenOff(deps: ReplicationOffPurgeDeps = {}): Promise<ReplicationOffPurgeOutcome> {
   if ((deps.isEnabled ?? isReplicationEnabled)()) return { status: "skipped", reason: "replication-on" };
   const store = "store" in deps ? deps.store : browserMarkerStore();
@@ -68,29 +86,43 @@ export async function purgeReplicaCopyWhenOff(deps: ReplicationOffPurgeDeps = {}
     setReplicationOffPurgeCode(code);
     return { status: "failed", code };
   };
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), RECOVER_TIMEOUT_MS);
-  try {
-    const lifecycle = (await (deps.loader ?? defaultReplicationLoader).createStorage())?.lifecycle;
-    if (lifecycle?.kind !== "indexeddb") return fail("gate_unavailable");
-    // 1. Shred: deny the recorded principal. "unguarded" = the keys may still be there, so STOP:
-    //    no erase, no success, marker kept for the next load. "stale" = nothing live for it.
-    if (hint?.startsWith("did:pkh:")) {
-      const denied = await lifecycle.deny({ reason: "sign_out", principal: hint });
-      if (denied.status === "unguarded") return fail(denied.code ?? "unguarded");
+  // Keep (or write) the retry marker so the next load runs the purge again; report both failures.
+  const failAndRetry = (code: string): ReplicationOffPurgeOutcome => {
+    try {
+      store?.setItem(REPLICATION_COPY_KEY, hint ?? "1");
+    } catch {
+      return fail(`${code}+MARKER_WRITE_FAILED`);
     }
-    // 2. Erase: recovery deletes the rows the deny (or an earlier sign-out) queued.
-    const report = await lifecycle.recover({ signal: controller.signal });
-    if (report.failed.length > 0) return fail(report.failed[0]?.code ?? "STORAGE_ERROR");
-    if (report.remaining > 0) return fail("purge_pending");
-    try { store?.removeItem(REPLICATION_COPY_KEY); } catch { return fail("STORAGE_ERROR"); }
-    setReplicationOffPurgeCode(null);
-    return { status: "purged" };
-  } catch (caught) {
-    return fail(codeOf(caught));
-  } finally {
-    clearTimeout(timer);
+    return fail(code);
+  };
+
+  // 1. Deny the recorded principal (shred its keys). Skipped when no principal is known: the SDK is
+  //    then not loaded at all.
+  if (hint?.startsWith("did:pkh:")) {
+    try {
+      const lifecycle = (await (deps.loader ?? defaultReplicationLoader).createStorage())?.lifecycle;
+      if (lifecycle?.kind !== "indexeddb") return failAndRetry("gate_unavailable");
+      const denied = await lifecycle.deny({ reason: "sign_out", principal: hint });
+      if (denied.status === "unguarded") return failAndRetry(denied.code ?? "unguarded");
+    } catch (caught) {
+      return failAndRetry(codeOf(caught));
+    }
   }
+
+  // 2. Origin-wide erase.
+  const deleted = await (deps.deleteDatabase ?? deleteReplicaDatabase)();
+  if (!deleted.ok) return failAndRetry(deleted.code);
+
+  // 3. Success: clear the markers. A failed clear leaves a marker, so the next load deletes again
+  //    (a no-op on a missing database) and clears it then.
+  try {
+    store?.removeItem(SDK_LOGOUT_MARKER_KEY);
+    store?.removeItem(REPLICATION_COPY_KEY);
+  } catch {
+    return fail("STORAGE_ERROR");
+  }
+  setReplicationOffPurgeCode(null);
+  return { status: "purged" };
 }
 
 let startup: Promise<ReplicationOffPurgeOutcome> | undefined;
