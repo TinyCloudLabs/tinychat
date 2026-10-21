@@ -17,13 +17,13 @@ import { CaptureSurface } from "../capture/CaptureSurface";
 import { StaticRecorderProvider } from "../capture/recorder/RecorderProvider";
 import { screenFor } from "../shell/routes";
 import { ConnectorsPage } from "./ConnectorsPage";
-import { installDom } from "@/test/dom";
+import { installDom, reportWindowShape } from "@/test/dom";
 
 
 // Each test gets its own happy-dom window (with `location`), restored afterwards,
 // so this file never reads a `window` another test file left behind.
 let restoreDom: (() => void) | undefined;
-beforeEach(() => { restoreDom = installDom(); });
+beforeEach(() => { reportWindowShape("pageScrollers beforeEach"); restoreDom = installDom(); });
 afterEach(() => { restoreDom?.(); restoreDom = undefined; });
 const tcw = { did: "did:pkh:eip155:1:0x00000000000000000000000000000000000000a1" } as unknown as TinyCloudWeb;
 const sessionStore = {} as unknown as SessionStore;
@@ -40,6 +40,7 @@ function scrollers(markup: string): string[][] {
 
 describe("page scroller layout", () => {
   test("Connectors: the scroller is the containing block for absolutely positioned content", () => {
+    reportWindowShape("pageScrollers Connectors test body");
     const markup = renderToStaticMarkup(
       <MemoryRouter>
         <ConnectorsPage tcw={tcw} backendUrl="http://127.0.0.1" sessionStore={sessionStore} />
@@ -51,6 +52,7 @@ describe("page scroller layout", () => {
   // Home, the Library (LibraryScreen) and a note (NoteDetail): one scroller each on a phone.
   for (const path of ["/chat/capture", "/chat/capture/library", "/chat/capture/library/row-1"]) {
     test(`Capture at ${path}: each pane is its own relative scroller`, () => {
+      reportWindowShape("pageScrollers Capture test body");
       const markup = renderToStaticMarkup(
         <MemoryRouter initialEntries={[path]}>
           {/* Capture's Record and list read the one recorder; on the web there is none. */}
@@ -74,6 +76,7 @@ describe("page scroller layout", () => {
   // server-rendered here; assert its root scroller in source, like
   // ConnectorsCard.test.ts does for the IA. The e2e test renders it for real.
   test("Settings: the scroller is the containing block for absolutely positioned content", () => {
+    reportWindowShape("pageScrollers Settings test body");
     const source = readFileSync(new URL("./SettingsPage.tsx", import.meta.url), "utf8");
     expect(source).toContain('<div className="relative h-full overflow-y-auto" data-scroll-root>');
     expect(source).not.toContain('<div className="h-full overflow-y-auto"');

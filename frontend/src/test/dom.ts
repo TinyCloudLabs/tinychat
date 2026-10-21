@@ -21,3 +21,13 @@ export function installDom() {
     Reflect.deleteProperty(target, "IS_REACT_ACT_ENVIRONMENT");
   };
 }
+
+/** Reports the shape (own keys only, no values) of an unexpected global `window` lacking `location`. */
+export function reportWindowShape(where: string): void {
+  const current: unknown = Reflect.get(globalThis, "window");
+  const isObject = typeof current === "object" && current !== null;
+  if (!isObject || (isObject && "location" in current && typeof current.location !== "undefined")) return;
+  const keys = isObject ? `{${Object.getOwnPropertyNames(current).sort().join(",")}}` : String(current);
+  const location = isObject && "location" in current ? typeof current.location : "missing";
+  console.warn(`[TC-1420] ${where}: unexpected global window ${keys}, window.location=${location}`);
+}

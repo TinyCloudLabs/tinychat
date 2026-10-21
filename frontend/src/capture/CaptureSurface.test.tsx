@@ -15,7 +15,7 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { PlatformContext } from "@/lib/platform";
 import { initSizeClass } from "@/lib/sizeClass";
-import { installDom } from "@/test/dom";
+import { installDom, reportWindowShape } from "@/test/dom";
 import { screenFor } from "../shell/routes";
 import { CaptureSurface } from "./CaptureSurface";
 import { StaticRecorderProvider } from "./recorder/RecorderProvider";
@@ -25,7 +25,7 @@ let cleanupDom: (() => void) | undefined;
 // Each test gets its own happy-dom window (with `location`), restored after the
 // test, so this file never reads a `window` another test file left behind.
 let restoreDom: (() => void) | undefined;
-beforeEach(() => { restoreDom = installDom(); });
+beforeEach(() => { reportWindowShape("CaptureSurface beforeEach"); restoreDom = installDom(); });
 let mountedRoot: Root | null = null;
 afterEach(async () => {
   if (mountedRoot) await act(async () => mountedRoot!.unmount());
@@ -37,6 +37,7 @@ afterEach(async () => {
 });
 
 function render(path: string, active: boolean) {
+  reportWindowShape("CaptureSurface render");
   return renderToStaticMarkup(
     <MemoryRouter initialEntries={[path]}>
       <StaticRecorderProvider value={{ available: false }}>
