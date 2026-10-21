@@ -2,8 +2,8 @@
 //
 // ON requires ALL of:
 //   1. the product kill switch below is not engaged;
-//   2. the build flag (`VITE_EXO_REPLICATION=true`) or the per-browser runtime flag
-//      (`localStorage["tinychat:replication:enabled"] === "true"`) is set;
+//   2. the build flag (`VITE_EXO_REPLICATION=true`) is set or, in dev/test builds only, the
+//      per-browser runtime flag (`localStorage["tinychat:replication:enabled"] === "true"`);
 //   3. the platform is qualified: a Chromium browser on a desktop or Android web page. Tauri,
 //      Capacitor, iOS (every iOS browser is WebKit), Safari and Firefox are refused, as is a
 //      browser missing IndexedDB, Workers, Web Locks or WebCrypto (the replica needs all four).
@@ -65,6 +65,8 @@ export function replicationPlatformRefusal(env: ReplicationEnv): string | null {
 }
 
 function runtimeFlagSet(): boolean {
+  // Production builds never read the runtime opt-in; `import.meta.env.PROD` folds this out.
+  if (import.meta.env.PROD) return false;
   try { return window.localStorage.getItem(REPLICATION_RUNTIME_FLAG_KEY) === "true"; } catch { return false; }
 }
 
