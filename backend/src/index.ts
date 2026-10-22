@@ -11,6 +11,8 @@ import { load as loadYaml } from "js-yaml";
 import {
   DelegationCache,
   DelegationStore,
+  EXO_SYNC_GRANT_KIND,
+  TRANSCRIPT_WRITER_GRANT_KIND,
   createCsrfMiddleware,
   createNonceStore,
 } from "@tinyboilerplate/server";
@@ -20,6 +22,7 @@ import { applyRateLimiters, logGlobalBucketRoutes } from "./rate-limits.js";
 import { createAuthMiddleware } from "./middleware/auth.js";
 import { createAuthRouter } from "./routes/auth.js";
 import { createDelegationRouter } from "./routes/delegations.js";
+import { createExoGrantRouter } from "./routes/exo-grant.js";
 import { createAgentRouter } from "./routes/agent.js";
 import { meetingRolloutFromEnv } from "./transcripts/meeting-rollout.js";
 import { createManifestRouter } from "./routes/manifest.js";
@@ -455,7 +458,8 @@ async function main() {
         "ledger shadow-push + rehydration disabled.",
     );
   }
-  const delegationStore = new DelegationStore(node);
+  const delegationStore = new DelegationStore(node, TRANSCRIPT_WRITER_GRANT_KIND);
+  const exoGrantStore = new DelegationStore(node, EXO_SYNC_GRANT_KIND);
   const delegationCache = new DelegationCache();
   const nonceStore = createNonceStore();
   const authMiddleware = createAuthMiddleware(backendPrivateKey);
@@ -679,6 +683,18 @@ async function main() {
       onGrantChanged: (address, previousEnvelope) => transcriptWorker?.invalidateGrant(address, previousEnvelope),
     }),
   );
+
+  // TC-1013 S4a: exo sync grant. Session auth and CSRF match the connector grant. Mounted only
+  // when the exo flag is exactly "true"; otherwise the path falls through to 404.
+  if (exoCapabilitiesEnabled(process.env)) {
+    app.use("/api/exo/v1/grant", createExoGrantRouter({
+      node,
+      backendDid: did,
+      configuredHost: TINYCLOUD_HOST,
+      store: exoGrantStore,
+      authMiddleware,
+    }));
+  }
 
   // The AUTHENTICATED companions (§2.2 consequence 2): the normal window, behind the global
   // JSON parser, CSRF, `applyRateLimiters`' dedicated companion bucket and `authMiddleware`.

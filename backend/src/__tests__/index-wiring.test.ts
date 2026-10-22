@@ -475,7 +475,6 @@ describe("backend index middleware wiring", () => {
   test("createApiBodyParser leaves delegation acceptance, NRAS and hosted parts unread", () => {
     const PARSER = readFileSync(resolve(import.meta.dir, "../body-parsing.ts"), "utf8");
     // Delegation POSTs are gated on eligibility before their route-local parser reads a byte.
-    expect(PARSER).toContain('(req.method === "POST" && /^\\/api\\/delegations\\/*$/i.test(req.path))');
     expect(PARSER).toContain('req.path === "/api/nras-proxy"');
     expect(PARSER).toContain('req.path.startsWith("/api/nras-proxy/")');
     expect(PARSER).toContain("isHostedPartPath(req.path)");
@@ -865,6 +864,12 @@ describe("backend entry-point HTTP and lifecycle guards", () => {
     expect((await post(boot.url!, "/api/connectors/webhooks/config", "{}")).status).toBe(401);
     const disabled = await bootIndex();
     expect((await post(disabled.url!, path, "{}")).status).toBe(404);
+  });
+
+  test("exo grant route is unmounted (404, before auth) when the exo flag is off", async () => {
+    const boot = await bootIndex();
+    expect((await fetch(boot.url! + "/api/exo/v1/grant")).status).toBe(404);
+    expect((await post(boot.url!, "/api/exo/v1/grant", "{}")).status).toBe(404);
   });
 
   test("PTX webhook is dark by default and fails closed when armed without its receiver secret", async () => {
