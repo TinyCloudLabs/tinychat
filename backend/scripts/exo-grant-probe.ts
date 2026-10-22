@@ -75,6 +75,18 @@ function unwrap<T>(result: ResultLike<T>): T {
   return result.data;
 }
 
+// Logs status of each SDK fetch to a decrypt route: method, path, status. No body, headers, or keys.
+function traceDecryptRoutes(): () => void {
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    const response = await original(input, init);
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+    if (url.pathname.endsWith("/decrypt")) console.log(`TRACE ${init?.method ?? "GET"} ${url.pathname} -> ${response.status}`);
+    return response;
+  }) as typeof fetch;
+  return () => { globalThis.fetch = original; };
+}
+
 async function main(): Promise<void> {
   const ownerKey = generatePrivateKey();
   const ownerNetworkId = `urn:tinycloud:encryption:did:pkh:eip155:1:${privateKeyToAccount(ownerKey).address}:default`;
@@ -195,13 +207,29 @@ async function main(): Promise<void> {
     const plaintext = new TextEncoder().encode("tc1013-probe-plaintext");
     const envelope = unwrap(await owner.encryption.encryptToNetwork(ownerNetworkId, plaintext));
     console.log("PROBE owner encrypt for decrypt rows: ok -> envelope");
-    await probe("node encryption decrypt under exo grant", "REFUSED", async () =>
-      unwrap(await backend.encryption.decryptEnvelope(envelope, { proofs: [verdict.verified.cid] })));
-    await probe("node encryption decrypt control (owner)", "ALLOWED", async () => {
-      const data = unwrap(await owner.encryption.decryptEnvelope(envelope, { proofs: [] }));
+    const restoreFetch = traceDecryptRoutes();
+    const ownerSecretName = `TC1013_PROBE_OWNER_${randomUUID().replace(/-/g, "").slice(0, 12).toUpperCase()}`;
+    await probe("node encryption decrypt control (owner via secrets.get)", "ALLOWED", async () => {
+      unwrap(await owner.secrets.put(ownerSecretName, "tc1013-probe-secret"));
+      try {
+        const value = unwrap(await owner.secrets.get(ownerSecretName));
+        if (value !== "tc1013-probe-secret") throw new Error("secret mismatch");
+        return value;
+      } finally {
+        unwrap(await owner.secrets.delete(ownerSecretName));
+      }
+    });
+    await probe("node encryption decrypt control (owner grant + decryptEnvelope)", "ALLOWED", async () => {
+      const [grant] = await owner.grantRuntimePermissions([{ service: "tinycloud.encryption", path: ownerNetworkId, actions: ["decrypt"], skipPrefix: true }]);
+      if (!grant) throw new Error("grantRuntimePermissions returned no delegation");
+      const data = unwrap(await owner.encryption.decryptEnvelope(envelope, { proofs: [grant.cid] }));
       if (new TextDecoder().decode(data) !== "tc1013-probe-plaintext") throw new Error("plaintext mismatch");
       return data;
     });
+    await probe("node encryption decrypt under exo grant", "REFUSED", async () =>
+      unwrap(await backend.encryption.decryptEnvelope(envelope, { proofs: [verdict.verified.cid] })));
+    console.log(`PROBE delegate high-level secrets surface: ${"secrets" in access ? "present" : "absent"}`);
+    restoreFetch();
     await probe("node secrets vault kv.get under exo grant", "REFUSED", async () =>
       (await accessFor(mainPortable, "vault/secrets/probe-secret", ["tinycloud.kv/get"], otherSpace("secrets"))).kv.get("probe-secret"));
 
