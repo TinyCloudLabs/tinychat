@@ -79,7 +79,7 @@ mock.module("@/lib/openkeySignOut", () => ({
     return { status: "cancelled" };
   },
 }));
-mock.module("@/lib/connectors/encryptionGrant", () => ({ ...grantApi, withEncryptionDecryptGrant: (manifest: unknown) => manifest }));
+mock.module("@/lib/connectors/encryptionGrant", () => ({ ...grantApi, withEncryptionNetworkCreateGrant: (manifest: unknown) => manifest }));
 mock.module("@/lib/voiceNotes/voiceNotePipeline", () => ({ ...pipelineApi, createVoiceNotePipeline: () => null }));
 mock.module("@/lib/voiceNotes/captureEngine", () => ({
   ...captureApi,

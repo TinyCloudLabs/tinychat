@@ -28,7 +28,7 @@ import {
   OFFERED_CHAT_MODELS,
   offeredChatModelContextTokens,
 } from "@tinyboilerplate/core";
-import { withEncryptionDecryptGrant } from "./lib/connectors/encryptionGrant";
+import { withEncryptionNetworkCreateGrant } from "./lib/connectors/encryptionGrant";
 import { replicationConfigPatch } from "./lib/replication/replicationClient";
 import { rememberReplicationPrincipal } from "./lib/replication/replicationCopyMarker";
 import { purgeReplicaCopyWhenOffOnce } from "./lib/replication/replicationOffPurge";
@@ -914,19 +914,16 @@ export function App() {
       // setupSpaceSession + ensureSpaceExists happen inside the SDK when
       // autoCreateSpace is true; the manifest grants tinycloud.kv on the space.
       //
-      // withEncryptionDecryptGrant is a WORKAROUND that hardcodes an SDK-internal
-      // URN format — see docs/connectors-spec.md §7 "KNOWN BLOCKER" and the header
-      // of lib/connectors/encryptionGrant.ts. Secrets reads are refused without
-      // it, and the grant cannot be declared in the static manifest because its
-      // network id embeds this user's DID. Capabilities are minted from the
-      // manifest passed here, so sign-in is the only moment it can be added.
-      // Delete this call when the SDK carries the capability itself.
+      // Sign-in requests network.create on the owner's default encryption network,
+      // so the network can be created on the first secret save. Decrypt is not
+      // requested here; reads request it separately (ensureDecryptStepUp).
+      // The network id embeds the owner's DID, so the entry is composed here.
       const signInConfig = {
         address: connectedAddress,
         nonce,
         autoCreateSpace: !LOCAL_VALIDATION,
         tinycloudHosts: TINYCLOUD_HOSTS,
-        manifest: withEncryptionDecryptGrant(manifest, connectedAddress),
+        manifest: withEncryptionNetworkCreateGrant(manifest, connectedAddress),
         // Flag OFF: {} (config unchanged). ON: the SDK adds kv/sync beside kv/get for the
         // replica prefixes at this sign-in; see lib/replication/replicationClient.ts.
         ...(LOCAL_VALIDATION ? {} : await replicationConfigPatch()),
