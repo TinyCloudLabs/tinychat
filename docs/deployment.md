@@ -173,8 +173,8 @@ make sure the `profile` matches your local `phala` CLI auth profile.
 
 ### One-time: DNS for `api.tinycloud.chat`
 
-The GitHub Actions deploy verifies these before probing the public API; the
-manual `deploy:backend:phala` path does **not**, so confirm them yourself first.
+The GitHub Actions deploy verifies these before probing the public API; make
+sure they are in place before the first deploy.
 In the `tinycloud.chat` Cloudflare zone:
 
 - `CNAME  api.tinycloud.chat  →  <gateway.cname from `phala cvms get`>`  (DNS only / grey cloud)
@@ -208,15 +208,8 @@ CI never changes the OS; if the check fails, set it by hand and re-run:
 `phala api -X PATCH /cvms/<id>/os-image -F os_image_name=dstack-0.5.12`.
 `phala deploy --image/--no-dev-os` is ignored for an existing CVM.
 
-**Manually from your machine:**
-
-```bash
-# .env.prod holds the production secrets (never commit it):
-#   BACKEND_PRIVATE_KEY, REDPILL_API_KEY, CLOUDFLARE_API_TOKEN, CERTBOT_EMAIL,
-#   FRONTEND_URL=https://tinycloud.chat
-#   (REDPILL_BASE_URL / REDPILL_DEFAULT_MODEL are optional — compose defaults apply)
-TINYCHAT_CVM_ID=<id> PHALA_GATEWAY_CNAME=<gateway.cname> bun run deploy:backend:phala
-```
+Production deploys go only through this workflow; the repository has no local
+`phala deploy` script.
 
 ---
 
