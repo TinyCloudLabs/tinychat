@@ -75,7 +75,7 @@ const THREAD_ROWS = [
 ];
 
 const MESSAGE_ROWS: Record<string, string[]> = {
-  "thread-a": [JSON.stringify({ message: { id: "a1", role: "user", content: [{ type: "text", text: THREAD_A_TEXT }] } })],
+  "thread-a": [JSON.stringify({ message: { id: "a1", role: "user", createdAt: "2026-01-02T03:04:05.000Z", content: [{ type: "text", text: THREAD_A_TEXT }] } })],
   "thread-b": [JSON.stringify({ message: { id: "b1", role: "user", content: [{ type: "text", text: THREAD_B_TEXT }] } })],
   "thread-big": [JSON.stringify({ message: { id: "big1", role: "user", content: [{ type: "text", text: OVERSIZED_TEXT }] } })],
 };
@@ -180,7 +180,7 @@ describe("tinychat share links", () => {
     expect(result.payload.key).toBe(chat.grants[0].path);
   });
 
-  it("a snapshot contains only the shared thread's title and messages", async () => {
+  it("a snapshot contains only the shared thread's title and message text", async () => {
     const { createTinychatShareLink } = await loadShareModule();
     installStorage();
     const chat = fakeChatTcw();
@@ -191,8 +191,76 @@ describe("tinychat share links", () => {
       format: "tinychat.share.snapshot",
       version: 1,
       title: "Thread A",
-      messages: [{ message: { id: "a1", role: "user", content: [{ type: "text", text: THREAD_A_TEXT }] } }],
+      createdAt: expect.any(String),
+      messages: [{ role: "user", text: THREAD_A_TEXT, timestamp: "2026-01-02T03:04:05.000Z" }],
     });
+  });
+
+  it("a snapshot keeps only the text parts of each message", async () => {
+    const { buildShareSnapshot } = await loadShareModule();
+    const snapshot = buildShareSnapshot(
+      {
+        id: "thread-x",
+        title: "X",
+        model: "model-x",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        messages: [
+          {
+            message: {
+              id: "u1",
+              role: "user",
+              createdAt: new Date("2026-01-02T03:04:05.000Z"),
+              content: [
+                { type: "text", text: "hello" },
+                { type: "image", image: "data:image/png;base64,AAAA" },
+              ],
+              attachments: [{ id: "file-1" }],
+            },
+            parentId: null,
+          },
+        ],
+      } as never,
+      "2026-01-05T00:00:00.000Z",
+    );
+
+    expect(snapshot.messages).toEqual([{ role: "user", text: "hello", timestamp: "2026-01-02T03:04:05.000Z" }]);
+  });
+
+  it("a snapshot rebuilds into a linear thread for the viewer", async () => {
+    const { buildShareSnapshot, snapshotItems } = await loadShareModule();
+    const snapshot = JSON.parse(
+      JSON.stringify(
+        buildShareSnapshot(
+          {
+            id: "thread-x",
+            title: "X",
+            model: "model-x",
+            createdAt: "2026-01-01T00:00:00.000Z",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+            messages: [
+              {
+                message: { id: "u1", role: "user", createdAt: new Date("2026-01-02T03:04:05.000Z"), content: [{ type: "text", text: "question" }] },
+                parentId: null,
+              },
+              {
+                message: { id: "a1", role: "assistant", createdAt: new Date("2026-01-02T03:04:09.000Z"), content: [{ type: "text", text: "answer" }] },
+                parentId: "u1",
+              },
+            ],
+          } as never,
+          "2026-01-05T00:00:00.000Z",
+        ),
+      ),
+    );
+
+    const items = snapshotItems("share-1", snapshot.messages);
+
+    expect(items.map((item) => [item.message.id, item.parentId, item.message.role])).toEqual([
+      ["share-1-0", null, "user"],
+      ["share-1-1", "share-1-0", "assistant"],
+    ]);
+    expect(items[1].message.content).toEqual([{ type: "text", text: "answer" }]);
   });
 
   it("a snapshot of one thread never includes another thread's messages", async () => {

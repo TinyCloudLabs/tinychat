@@ -78,11 +78,20 @@ interface OwnedShareIndexEntry {
   expiresAt: string;
 }
 
+export type TinychatShareSnapshotRole = "user" | "assistant" | "system";
+
+export interface TinychatShareSnapshotMessage {
+  role: TinychatShareSnapshotRole;
+  text: string;
+  timestamp: string;
+}
+
 export interface TinychatShareSnapshot {
   format: typeof SNAPSHOT_FORMAT;
   version: typeof SNAPSHOT_VERSION;
   title: string;
-  messages: ThreadDoc["messages"];
+  createdAt: string;
+  messages: TinychatShareSnapshotMessage[];
 }
 
 export interface CreateTinychatShareOptions {
@@ -245,12 +254,34 @@ function minIsoDate(values: string[]): string {
   return new Date(min).toISOString();
 }
 
-export function buildShareSnapshot(thread: ThreadDoc): TinychatShareSnapshot {
+function snapshotTextOf(item: ThreadDoc["messages"][number]): string {
+  const parts = item.message?.content ?? [];
+  return parts
+    .map((part) => (part && (part as { type?: string }).type === "text" ? (part as { text?: unknown }).text : undefined))
+    .filter((text): text is string => typeof text === "string" && text.trim().length > 0)
+    .map((text) => text.trim())
+    .join("\n\n");
+}
+
+function snapshotTimestampOf(item: ThreadDoc["messages"][number], fallback: string): string {
+  const raw = (item.message as { createdAt?: unknown }).createdAt;
+  const time = raw instanceof Date ? raw.getTime() : typeof raw === "string" ? Date.parse(raw) : Number.NaN;
+  return Number.isFinite(time) ? new Date(time).toISOString() : fallback;
+}
+
+export function buildShareSnapshot(thread: ThreadDoc, createdAt: string): TinychatShareSnapshot {
   return {
     format: SNAPSHOT_FORMAT,
     version: SNAPSHOT_VERSION,
     title: thread.title || DEFAULT_TITLE,
-    messages: thread.messages,
+    createdAt,
+    messages: thread.messages
+      .map((item) => ({
+        role: item.message.role,
+        text: snapshotTextOf(item),
+        timestamp: snapshotTimestampOf(item, createdAt),
+      }))
+      .filter((entry) => entry.text.length > 0),
   };
 }
 
@@ -310,7 +341,8 @@ export async function createTinychatShareLink(
   const key = `${SNAPSHOT_KEY_PREFIX}${shareId}`;
   const indexKey = `${SHARE_INDEX_KEY_PREFIX}${shareId}`;
 
-  const stored = await tcw.kv.put(key, serializeSnapshot(buildShareSnapshot(thread)));
+  const createdAt = new Date().toISOString();
+  const stored = await tcw.kv.put(key, serializeSnapshot(buildShareSnapshot(thread, createdAt)));
   if (!stored.ok) throw new Error(stored.error.message);
 
   const grant = await tcw.sharing.generate({
@@ -325,7 +357,6 @@ export async function createTinychatShareLink(
   }
 
   const kv = tcw.sharing.decodeLink(grant.data.token) as EncodedShareData;
-  const createdAt = new Date().toISOString();
   const grantExpiresAt = minIsoDate([grant.data.expiresAt?.toISOString() ?? expiresAt.toISOString()]);
   const indexEntry: OwnedShareIndexEntry = {
     shareId,
@@ -482,6 +513,16 @@ async function createSharedKv(share: TinychatSnapshotSharePayload): Promise<KVSe
   return kv;
 }
 
+function isSnapshotMessage(value: unknown): value is TinychatShareSnapshotMessage {
+  if (!value || typeof value !== "object") return false;
+  const entry = value as Partial<TinychatShareSnapshotMessage>;
+  return (
+    (entry.role === "user" || entry.role === "assistant" || entry.role === "system") &&
+    typeof entry.text === "string" &&
+    typeof entry.timestamp === "string"
+  );
+}
+
 function parseSnapshot(raw: unknown): TinychatShareSnapshot {
   const value = parseKvValue(raw);
   if (!value || typeof value !== "object") {
@@ -492,11 +533,34 @@ function parseSnapshot(raw: unknown): TinychatShareSnapshot {
     snapshot.format !== SNAPSHOT_FORMAT ||
     snapshot.version !== SNAPSHOT_VERSION ||
     typeof snapshot.title !== "string" ||
-    !Array.isArray(snapshot.messages)
+    !Array.isArray(snapshot.messages) ||
+    !snapshot.messages.every(isSnapshotMessage) ||
+    typeof snapshot.createdAt !== "string"
   ) {
     throw new Error("This shared chat could not be read");
   }
   return snapshot as TinychatShareSnapshot;
+}
+
+export function snapshotItems(shareId: string, messages: TinychatShareSnapshotMessage[]): ExportedMessageRepositoryItem[] {
+  return messages.map((entry, index) => {
+    const id = `${shareId}-${index}`;
+    const createdAt = new Date(entry.timestamp);
+    const content = [{ type: "text" as const, text: entry.text }];
+    const message =
+      entry.role === "assistant"
+        ? {
+            id,
+            role: "assistant" as const,
+            content,
+            createdAt,
+            status: { type: "complete" as const, reason: "stop" as const },
+            attachments: [],
+            metadata: { unstable_state: null, unstable_annotations: [], unstable_data: [], steps: [], custom: {} },
+          }
+        : { id, role: entry.role, content, createdAt, attachments: [], metadata: { custom: {} } };
+    return { message, parentId: index === 0 ? null : `${shareId}-${index - 1}` } as ExportedMessageRepositoryItem;
+  });
 }
 
 async function loadSnapshotThread(share: TinychatSnapshotSharePayload): Promise<ThreadDoc> {
@@ -510,7 +574,7 @@ async function loadSnapshotThread(share: TinychatSnapshotSharePayload): Promise<
     model: DEFAULT_MODEL,
     createdAt: share.createdAt,
     updatedAt: share.createdAt,
-    messages: snapshot.messages,
+    messages: snapshotItems(share.id, snapshot.messages),
   };
 }
 
