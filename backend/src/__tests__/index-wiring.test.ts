@@ -78,6 +78,10 @@ async function runIsolatedStartup(env: Record<string, string | undefined>) {
     "./rate-limits.js": { applyRateLimiters: () => ({ globalRoutes: {}, paidChatLimiter: middleware() }), logGlobalBucketRoutes: () => {} },
     // TC-1013: the Exo mailbox is off in this harness; the flag is read at startup.
     "./exo/mailbox.js": { exoCapabilitiesEnabled: () => false },
+    // TC-1013 S4b: owner teardown wiring builds the grant opener at startup, outside the flag.
+    "./exo/stores.js": { createOwnerGrantOpener: () => async () => null },
+    // TC-1013 S4b: startup wires the grant-holder index and tracked grant store outside the flag.
+    "./exo/grant-holders.js": { GrantHolderIndex: function GrantHolderIndex() {}, createTrackedGrantStore: (store: unknown) => store },
     "./services/google-oauth.js": { googleMeetOAuthEnabled: () => false },
     // TC-641: the real default-off parser, so `transcriptDeliveryConfig` is a config, not undefined.
     "./services/transcription-api.js": {
@@ -806,6 +810,10 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
     "./rate-limits.js": { applyRateLimiters: () => ({ globalRoutes: { top: () => ({}) }, paidChatLimiter: noop }), logGlobalBucketRoutes: noop },
     // TC-1013: the Exo mailbox is off in this harness; the flag is read at startup.
     "./exo/mailbox.js": { exoCapabilitiesEnabled: () => false },
+    // TC-1013 S4b: owner teardown wiring builds the grant opener at startup, outside the flag.
+    "./exo/stores.js": { createOwnerGrantOpener: () => async () => null },
+    // TC-1013 S4b: startup wires the grant-holder index and tracked grant store outside the flag.
+    "./exo/grant-holders.js": { GrantHolderIndex: function GrantHolderIndex() {}, createTrackedGrantStore: (store: unknown) => store },
     "./security.js": { applySecurityDefaults: noop },
     "./routes/nras-proxy.js": { createNrasProxyRouter: router },
     "./routes/assemblyai-hosted.js": { ASSEMBLYAI_HOSTED_MOUNT, createAssemblyAiHostedRouter, reconcileHostedJobs: async () => {} },

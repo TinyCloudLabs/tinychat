@@ -60,6 +60,7 @@ import { WakeQueue } from "./exo/wake-intake.js";
 import { createTrackedGrantStore, GrantHolderIndex } from "./exo/grant-holders.js";
 import { createExoStorePorts, createOwnerGrantOpener, type ExoBackendKv } from "./exo/stores.js";
 import { startExoRetentionSweepTimer, type ExoRetentionSweepTimer } from "./exo/retention-sweep.js";
+import { clearExoOwnerState, clearExoSourceState } from "./exo/teardown.js";
 import { exoCapabilitiesEnabled } from "./exo/mailbox.js";
 import { ASSEMBLYAI_HOSTED_MOUNT, createAssemblyAiHostedRouter, reconcileHostedJobs } from "./routes/assemblyai-hosted.js";
 import {
@@ -495,6 +496,27 @@ async function main() {
   // on one space, so cross-component writes MUST funnel through the same lane; two lanes are no lane.
   const backendStorageLane = new BackendStorageLane();
 
+  // TC-1013 S4b: owner teardown runs whether or not the exo flag is on (DELETE routes and connector
+  // disconnect are mounted unconditionally), so the backend accessor and grant opener are built here.
+  const exoBackendKv: ExoBackendKv = {
+    get: (key, options) => node.kv.get(key, options),
+    put: (key, value, options) => backendStorageLane.run(() => node.kv.put(key, value, options)),
+    delete: (key) => backendStorageLane.run(() => node.kv.delete(key)),
+    list: (prefix) => node.kv.list({ prefix }),
+  };
+  const openOwnerGrant = createOwnerGrantOpener({
+    node,
+    backendDid: did,
+    configuredHost: TINYCLOUD_HOST,
+    grantStore: exoGrantStore,
+  });
+  const exoGrantTracked = createTrackedGrantStore(exoGrantStore, exoGrantHolders);
+  // Clear first, then remove the grant: a failed clear keeps the grant, so the retry still has it.
+  const teardownExoOwner = async (owner: string): Promise<void> => {
+    await clearExoOwnerState({ kv: exoBackendKv, grantStore: exoGrantStore, openOwnerGrant }, owner);
+    await exoGrantTracked.remove(owner);
+  };
+
   // ONE set of instances shared by BOTH connector mounts, the public one below and the
   // authenticated companions further down (§3.6/§4.4): the companions' teardown must evict the
   // very token cache the public route reads, and `GET …/webhooks/pending` must see the queue
@@ -574,20 +596,9 @@ async function main() {
   let exoRetentionSweep: ExoRetentionSweepTimer | null = null;
   if (exoCapabilitiesEnabled(process.env)) {
     exoWakeQueue = new WakeQueue();
-    const exoBackendKv: ExoBackendKv = {
-      get: (key, options) => node.kv.get(key, options),
-      put: (key, value, options) => backendStorageLane.run(() => node.kv.put(key, value, options)),
-      delete: (key) => backendStorageLane.run(() => node.kv.delete(key)),
-      list: (prefix) => node.kv.list({ prefix }),
-    };
     const exoPorts = createExoStorePorts({
       backendKv: exoBackendKv,
-      openOwnerGrant: createOwnerGrantOpener({
-        node,
-        backendDid: did,
-        configuredHost: TINYCLOUD_HOST,
-        grantStore: exoGrantStore,
-      }),
+      openOwnerGrant,
       webhooks: new WebhookTokenService(node),
       controls: new ConnectorControlStore(node),
       grantHolders: exoGrantHolders,
@@ -708,6 +719,7 @@ async function main() {
       authMiddleware,
       configuredHost: TINYCLOUD_HOST,
       eligibility: transcriptEligibility,
+      teardownExoOwner,
       schemaMissing: (address) => transcriptWorker?.hasSchemaMissing(address) ?? false,
       coordinator: transcriptCoordinator,
       onGrantChanged: (address, previousEnvelope) => transcriptWorker?.invalidateGrant(address, previousEnvelope),
@@ -722,6 +734,7 @@ async function main() {
       backendDid: did,
       configuredHost: TINYCLOUD_HOST,
       store: createTrackedGrantStore(exoGrantStore, exoGrantHolders),
+      teardownExoOwner,
       authMiddleware,
     }));
   }
@@ -797,6 +810,7 @@ async function main() {
             content: contentStore,
             queue: connectorWebhooks.queue,
             control: connectorWebhooks.control,
+            exo: { clearSource: (source, address) => clearExoSourceState(exoBackendKv, address, source) },
           }),
           oauth: {
             authorizeUrl: ({ state, challenge }) =>
@@ -908,6 +922,7 @@ async function main() {
     const coordinator = new TenantCoordinator();
     calendarAutojoin = new CalendarAutojoinConnection({
       store: stores.request, credentials, backfillCredentials, oauth: google, coordinator, calendar,
+      teardownExoOwner,
       // TC-1047: disable, disconnect and needs_reconnect cancel the tenant's due-time timers.
       onDisabled: tenant => calendarAutojoinWorker?.cancelTenant(tenant),
     });

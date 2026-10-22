@@ -27,7 +27,7 @@ const MAX_RECORD_RESPONSE_BYTES = 16 * 1024;
 /** Compare-and-set attempts per mutation. Exhausting them throws, so the mailbox settles the job unavailable. */
 const MAX_ATTEMPTS = 8;
 
-function ledgerKey(owner: string, capability: ExoCapability): string {
+export function ledgerKey(owner: string, capability: ExoCapability): string {
   return `${EXO_NAMESPACE}/ledger/${owner}/${capability}`;
 }
 

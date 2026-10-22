@@ -149,3 +149,64 @@ describe("delegation app parser ordering", () => {
     expect(fixture.calls).toEqual({ verify: 0, activate: 0, store: 0, load: DELEGATION_LIMIT });
   });
 });
+
+const MIXED_ADDRESS = "0x7D033300000000000000000000000000000073F2";
+
+function appForRevoke(teardown: (address: string) => Promise<void>) {
+  const app = express();
+  const calls = { order: [] as string[], removed: [] as string[] };
+  app.use(createApiBodyParser());
+  app.use(createCsrfMiddleware());
+  applyRateLimiters(app, { sessionKey: SESSION_KEY });
+  app.use("/api/delegations", createDelegationRouter({
+    backendDid: `did:pkh:eip155:1:${ADDRESS}`,
+    configuredHost: "https://node.tinycloud.xyz",
+    eligibility: () => true,
+    store: {
+      load: async () => null,
+      store: async () => {},
+      remove: async (address: string) => { calls.order.push("remove"); calls.removed.push(address); },
+    },
+    cache: { get: () => null, set: () => {}, evict: () => {} },
+    node: {
+      computeDelegationCid: () => { throw new Error("verification must not run on revoke"); },
+      useDelegation: async () => { throw new Error("activation must not run on revoke"); },
+    } as unknown as TinyCloudNode,
+    authMiddleware: (req: Request, _res: Response, next: NextFunction) => {
+      req.user = { address: MIXED_ADDRESS };
+      next();
+    },
+    teardownExoOwner: async (address: string) => {
+      calls.order.push("teardown");
+      await teardown(address);
+    },
+  }));
+  return { app, calls };
+}
+
+describe("delegation revoke clears owner Exo state", () => {
+  it("tears down owner Exo state before removing the delegation, using the normalized address", async () => {
+    const fixture = appForRevoke(async () => {});
+    await withServer(fixture.app, async (base) => {
+      const response = await fetch(`${base}/api/delegations`, {
+        method: "DELETE", headers: { "x-requested-with": "XMLHttpRequest" },
+      });
+      expect(response.status).toBe(200);
+    });
+    expect(fixture.calls.order).toEqual(["teardown", "remove"]);
+    expect(fixture.calls.removed).toEqual([ADDRESS]);
+  });
+
+  it("keeps the delegation and returns 503 when owner Exo teardown fails", async () => {
+    const fixture = appForRevoke(async () => { throw new Error("teardown failed"); });
+    await withServer(fixture.app, async (base) => {
+      const response = await fetch(`${base}/api/delegations`, {
+        method: "DELETE", headers: { "x-requested-with": "XMLHttpRequest" },
+      });
+      expect(response.status).toBe(503);
+      expect(await response.json()).toEqual({ error: "unavailable" });
+    });
+    expect(fixture.calls.order).toEqual(["teardown"]);
+    expect(fixture.calls.removed).toEqual([]);
+  });
+});

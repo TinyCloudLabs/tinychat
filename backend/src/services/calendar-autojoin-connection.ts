@@ -38,6 +38,8 @@ export interface CalendarAutojoinConnectionOptions {
   grantIndex?: CalendarAutojoinGrantIndex;
   /** Background-priority credential reader for restart backfill; never enumerates credential rows. */
   backfillCredentials?: CredentialStore;
+  /** TC-1013 S4b: removes the tenant's Exo state. Runs before disconnect mutates anything, so a failure leaves the connection unchanged. */
+  teardownExoOwner?: (owner: string) => Promise<unknown>;
 }
 
 /** One-account custody lifecycle. Tenant policy coordination is separate from the global KV lane. */
@@ -264,6 +266,7 @@ export class CalendarAutojoinConnection {
   }
 
   async disconnect(tenant: string, browserToken?: string) {
+    if (this.options.teardownExoOwner) await this.options.teardownExoOwner(tenant);
     let serverToken: string | undefined;
     let failed = false;
     let invoked = false;

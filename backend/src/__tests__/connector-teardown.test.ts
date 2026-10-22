@@ -218,6 +218,7 @@ class CountingFetcher implements MeetingFetcher {
 }
 
 interface Harness {
+  exoCleared: Array<{ source: string; address: string }>;
   clock: () => number;
   advance: (ms: number) => void;
   node: FakeNode;
@@ -250,8 +251,19 @@ function harness(): Harness {
     now,
     upstreamRevoker: (secret) => oauth.revoke(secret),
   });
+  const exoCleared: Array<{ source: string; address: string }> = [];
   const teardown = new ConnectorTeardownService(
-    { credentials, content, queue, control },
+    {
+      credentials,
+      content,
+      queue,
+      control,
+      exo: {
+        clearSource: async (source, address) => {
+          exoCleared.push({ source, address });
+        },
+      },
+    },
     { now },
   );
 
@@ -269,6 +281,7 @@ function harness(): Harness {
     control,
     oauth,
     teardown,
+    exoCleared,
   };
 }
 
@@ -335,6 +348,16 @@ describe("W7 teardown — full per-user teardown (delta 12, AP 8)", () => {
     // Nothing of the meeting survives in the substrate, sealed or otherwise.
     expect(h.blobs.dump()).not.toContain("mtgA1");
     expect(h.blobs.dump()).not.toContain(TRANSCRIPT_TEXT);
+  });
+
+  test("disconnect clears this source's Exo ledger rows for the normalized address", async () => {
+    const h = harness();
+    await seedTenant(h, ADDRESS_A, { kind: "oauth", accessToken: SECRET_A }, ["mtgA1"]);
+
+    await h.teardown.run(SOURCE, ADDRESS_A);
+
+    expect(h.exoCleared).toEqual([{ source: SOURCE, address: ADDRESS_A.toLowerCase() }]);
+    expect(await h.credentials.status(SOURCE, ADDRESS_A)).toBeNull();
   });
 
   test("[delta-12] the purge ledger covers content AND credential — a tombstone is present after the teardown", async () => {

@@ -570,6 +570,26 @@ describe("Calendar OAuth custody lifecycle", () => {
     expect((await f.connection.getStatus(TENANT)).enabled).toBe(false);
   });
 
+  test("disconnect with failed owner Exo teardown leaves custody, enablement and upstream grants unchanged", async () => {
+    const f = fixture(); await f.enable();
+    f.options.teardownExoOwner = async () => { throw new Error("Synthetic Exo teardown failure"); };
+    await expect(f.connection.disconnect(TENANT)).rejects.toThrow("Synthetic Exo teardown failure");
+    expect(await f.credentials.status(source, TENANT)).not.toBeNull();
+    expect((await f.connection.getStatus(TENANT)).enabled).toBe(true);
+    expect(f.revokes).toEqual([]);
+  });
+
+  test("disconnect runs owner Exo teardown before any custody or settings change", async () => {
+    const f = fixture(); await f.enable();
+    const seen: { custody: boolean; enabled: boolean }[] = [];
+    f.options.teardownExoOwner = async () => {
+      seen.push({ custody: (await f.credentials.status(source, TENANT)) !== null, enabled: (await f.connection.getStatus(TENANT)).enabled });
+    };
+    await f.connection.disconnect(TENANT);
+    expect(seen).toEqual([{ custody: true, enabled: true }]);
+    expect(await f.credentials.status(source, TENANT)).toBeNull();
+  });
+
   for (const step of ["onDisabled", "listOccurrences", "updateOccurrence", "credentialDelete"] as const) {
     test(`disconnect revokes its captured token even if post-commit ${step} fails`, async () => {
       const f = fixture(); await f.enable(); await f.store.putOccurrence(attempt());

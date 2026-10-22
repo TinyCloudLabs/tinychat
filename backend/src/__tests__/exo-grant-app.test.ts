@@ -37,6 +37,8 @@ interface Fixture {
     load: string[];
     store: Array<{ address: string; envelope: string; meta: { resources: unknown[]; expiresAt: string } }>;
     remove: string[];
+    teardown: string[];
+    order: string[];
     useDelegation: number;
   };
   setRecord: (record: Record<string, unknown> | null) => void;
@@ -44,8 +46,12 @@ interface Fixture {
 
 // The session address is what `authMiddleware` puts on `req.user`; the route scopes every
 // read and write to it.
-function fixtureFor(grant: SignedTranscriptGrant, sessionAddress: string = grant.address): Fixture {
-  const calls: Fixture["calls"] = { load: [], store: [], remove: [], useDelegation: 0 };
+function fixtureFor(
+  grant: SignedTranscriptGrant,
+  sessionAddress: string = grant.address,
+  teardown: (address: string) => Promise<void> = async () => {},
+): Fixture {
+  const calls: Fixture["calls"] = { load: [], store: [], remove: [], teardown: [], order: [], useDelegation: 0 };
   let record: Record<string, unknown> | null = null;
   const node = {
     computeDelegationCid: grant.computeDelegationCid,
@@ -57,7 +63,7 @@ function fixtureFor(grant: SignedTranscriptGrant, sessionAddress: string = grant
       calls.store.push({ address, envelope, meta });
       record = { serialized: envelope, expiresAt: meta.expiresAt, policyHash: backendDelegationPolicyHash(grant.backendDid), delegateDid: grant.backendDid };
     },
-    remove: async (address: string) => { calls.remove.push(address); record = null; },
+    remove: async (address: string) => { calls.order.push("remove"); calls.remove.push(address); record = null; },
   };
   const authMiddleware = (req: Request, _res: Response, next: NextFunction) => {
     req.user = { address: sessionAddress };
@@ -73,6 +79,11 @@ function fixtureFor(grant: SignedTranscriptGrant, sessionAddress: string = grant
     store: store as never,
     authMiddleware,
     node,
+    teardownExoOwner: async (address: string) => {
+      calls.order.push("teardown");
+      calls.teardown.push(address);
+      await teardown(address);
+    },
   }));
   return { app, calls, setRecord: (next) => { record = next; } };
 }
@@ -236,5 +247,30 @@ describe("exo grant route: GET and DELETE", () => {
       expect(await response.json()).toEqual({ status: "none", expiresAt: null });
     });
     expect(fixture.calls.remove).toEqual([grant.address.toLowerCase()]);
+  });
+
+  it("clears owner Exo state before removing the record on DELETE", async () => {
+    const grant = await makeSignedTranscriptGrant();
+    const fixture = fixtureFor(grant);
+    await withServer(fixture.app, async (url) => {
+      const response = await send(url, "DELETE");
+      expect(response.status).toBe(200);
+    });
+    expect(fixture.calls.teardown).toEqual([grant.address.toLowerCase()]);
+    expect(fixture.calls.order).toEqual(["teardown", "remove"]);
+  });
+
+  it("keeps the record and returns 503 when owner Exo teardown fails", async () => {
+    const grant = await makeSignedTranscriptGrant();
+    const fixture = fixtureFor(grant, grant.address, async () => { throw new Error("kv unavailable"); });
+    fixture.setRecord({
+      serialized: "stored", expiresAt: new Date(Date.now() + 60_000).toISOString(), policyHash: backendDelegationPolicyHash(grant.backendDid), delegateDid: grant.backendDid,
+    });
+    await withServer(fixture.app, async (url) => {
+      const response = await send(url, "DELETE");
+      expect(response.status).toBe(503);
+      expect(await response.json()).toEqual({ error: "unavailable" });
+    });
+    expect(fixture.calls.remove).toEqual([]);
   });
 });

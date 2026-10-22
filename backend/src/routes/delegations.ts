@@ -21,6 +21,8 @@ interface DelegationRoutesConfig {
   node: TinyCloudNode;
   coordinator?: TenantCoordinator;
   onGrantChanged?: (address: string, previousEnvelope?: string) => void;
+  /** Clears the owner's Exo rows and removes the owner's exo grant record before this delegation is removed (index.ts teardownExoOwner). */
+  teardownExoOwner?: (owner: string) => Promise<unknown>;
 }
 
 export function createDelegationRouter(config: DelegationRoutesConfig) {
@@ -157,6 +159,7 @@ export function createDelegationRouter(config: DelegationRoutesConfig) {
     try {
       await coordinator.run(address, async () => {
         const stored = await config.store.load(address);
+        if (config.teardownExoOwner) await config.teardownExoOwner(address);
         await config.store.remove(address);
         invalidateGrant(address, stored?.serialized);
       });
