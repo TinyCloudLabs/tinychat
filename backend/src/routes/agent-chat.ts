@@ -40,6 +40,7 @@ import {
   hasMissingWeeklyLedgerAnchor,
   logCreditGateDeny,
 } from "../billing/ledger-gate.js";
+import { createTurnBudgetMonitor, MIN_TURN_CREDITS, parseBudgetPreflightMode, parseBudgetStopMode } from "../billing/turn-budget.js";
 
 // Conservative default rates for the post-stream recording fallback (mirrors chat.ts §7).
 const FALLBACK_RECORDING_RATES: ModelRates = {
@@ -983,7 +984,7 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
   return { promptTokens: totalPromptTokens, completionTokens: totalCompletionTokens, completionId: finalCompletionId, ...(errorCode ? { errorCode } : {}) };
 }
 
-export type StreamErrorCode = "turn_timeout" | "upstream_incomplete" | "upstream_failed" | "agent_failed" | "routing_mismatch" | "interpretation_failed" | "interpretation_timeout" | "meeting_feature_unavailable" | "result_size_limit";
+export type StreamErrorCode = "turn_timeout" | "upstream_incomplete" | "upstream_failed" | "agent_failed" | "routing_mismatch" | "interpretation_failed" | "interpretation_timeout" | "meeting_feature_unavailable" | "result_size_limit" | "budget_exhausted";
 type StreamPhase = "model" | "tool" | "synthesis" | "repair" | "terminal";
 
 class StreamFailure extends Error {
@@ -1246,6 +1247,8 @@ class AgentStreamOwner {
 export function createAgentChatHandler(config: AgentChatConfig, accessControl = config.access): RequestHandler {
   const policy = validateAgentStreamPolicy(config.streamPolicy);
   const taskClient = createAgentTaskClient({ baseUrl: config.elizaServiceUrl, apiKey: config.elizaServiceSecret, fetch: config.fetchImpl });
+  const budgetStopMode = parseBudgetStopMode(process.env.AGENT_CHAT_BUDGET_STOP_MODE);
+  const budgetPreflightMode = parseBudgetPreflightMode(process.env.AGENT_CHAT_BUDGET_PREFLIGHT);
   return async (req: Request, res: Response) => {
     if (!req.user) {
       res.status(401).json({ error: "unauthenticated", message: "Authentication required" });
@@ -1312,6 +1315,7 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
     let gatedTier: TierId = "free";
     let anchor: number | null = null;
     let rates: ModelRates | null = null;
+    let budgetRemaining: number | null = null;
     if (paywallEnabled()) {
       let resolution;
       try {
@@ -1402,6 +1406,9 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
           });
           return;
         }
+        budgetRemaining = entitlement && !entitlement.isOutage && entitlement.credit_limit !== null && entitlement.committed_credits !== null
+          ? entitlement.credit_limit - entitlement.committed_credits
+          : (() => { const localUsage = getUsage(address, tierConfig, anchor); return localUsage.limit - localUsage.used; })();
       } else {
         if (isOverBudget(address, tierConfig, anchor)) {
           const usage = getUsage(address, tierConfig, anchor);
@@ -1421,6 +1428,8 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
           });
           return;
         }
+        const localUsage = getUsage(address, tierConfig, anchor);
+        budgetRemaining = localUsage.limit - localUsage.used;
       }
 
       try {
@@ -1430,6 +1439,13 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
         console.error("[agent-chat] failed to resolve model rates:", error);
         res.status(500).json({ error: "internal_error", message: "Failed to resolve model rates" });
         return;
+      }
+      if (budgetRemaining !== null && budgetPreflightMode !== "off" && budgetRemaining < MIN_TURN_CREDITS) {
+        console.info("[agent-chat] turn budget", { event: "preflight", mode: budgetPreflightMode, remaining: budgetRemaining, minimum: MIN_TURN_CREDITS });
+        if (budgetPreflightMode === "enforce") {
+          res.status(402).json({ error: "credit_budget_exceeded", message: `Credit budget for the ${TIERS[gatedTier].name} tier is below the minimum for a turn.`, tier: gatedTier });
+          return;
+        }
       }
     }
 
@@ -1478,6 +1494,9 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
       };
       if (accessFrame && !enqueue(accessFrame)) return;
       const executionId = crypto.randomUUID();
+      const budgetMonitor = budgetRemaining !== null && budgetStopMode !== "off"
+        ? createTurnBudgetMonitor({ mode: budgetStopMode, remaining: budgetRemaining, rates: rates ?? FALLBACK_RECORDING_RATES })
+        : undefined;
       const result = await taskClient.run({
         version: 1, executionId, entityId,
         ...(roomId !== undefined ? { roomId: roomId as string } : {}),
@@ -1497,6 +1516,7 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
         onContent: (text: string) => { streamedContent ||= text.length > 0; return enqueue(contentFrame(text)); },
         onActivity: (event: { tool: string; status: "running" | "done" | "error"; callId: string }) => enqueue(toolActivityFrame(event.tool, event.status, event.callId), true),
         onDelegationError: (code: string) => { enqueue(delegationErrorFrame(code)); },
+        onUsage: budgetMonitor,
       });
       // Accounting has settled even if the browser failed or cancelled. Never
       // erase it because a subsequent content/write/end/enqueue operation fails.
@@ -1534,7 +1554,7 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
           completionId: final.answerIsProviderVerbatim && !compositeAnswer ? final.finalProviderCompletionId ?? "" : "" });
       } else {
         const code = result.errorCode ?? final?.code;
-        const safeCodes: StreamErrorCode[] = ["upstream_failed", "upstream_incomplete", "agent_failed", "routing_mismatch", "result_size_limit", "turn_timeout"];
+        const safeCodes: StreamErrorCode[] = ["upstream_failed", "upstream_incomplete", "agent_failed", "routing_mismatch", "result_size_limit", "turn_timeout", "budget_exhausted"];
         await streamOwner.fail(new StreamFailure(safeCodes.includes(code as StreamErrorCode) ? code as StreamErrorCode : "agent_failed"));
       }
       return;

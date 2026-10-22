@@ -451,7 +451,7 @@ class FakeKv {
   putValues: unknown[] = [];
   tracker = new OpTracker();
   headCalls: string[] = [];
-  listCalls: { path: string; cursor?: string }[] = [];
+  listCalls: { path: string; cursor?: string; source?: "network" }[] = [];
   /** Split each matching prefix listing into deterministic pages when set. */
   listPageSize: number | null = null;
   /** When set, the NEXT put() fails with the given error. Consumed on use. */
@@ -494,7 +494,7 @@ class FakeKv {
     });
   }
 
-  async list(options: { path: string; cursor?: string }): Promise<
+  async list(options: { path: string; cursor?: string; source?: "network" }): Promise<
     | { ok: true; data: { keys: string[]; nextCursor?: string; truncated?: boolean } }
     | { ok: false; error: KvErr }
   > {
@@ -715,8 +715,8 @@ describe("connectorStore.purgeConnector", () => {
     const afterConn = await getConnection(f.tcw, "fireflies");
     expect(afterConn.ok && afterConn.data === null).toBe(true);
     expect(f.kv.listCalls).toEqual([
-      { path: `${CONNECTORS_KV_PREFIX}/fireflies/meeting/` },
-      { path: `${CONNECTORS_KV_PREFIX}/fireflies/transcript/` },
+      { path: `${CONNECTORS_KV_PREFIX}/fireflies/meeting/`, source: "network" },
+      { path: `${CONNECTORS_KV_PREFIX}/fireflies/transcript/`, source: "network" },
     ]);
     expect(f.tracker.maxInFlight).toBe(1);
   });
@@ -1927,8 +1927,8 @@ describe("connectorStore.listTranscriptBodyIds", () => {
 
     expect(listed).toEqual({ ok: true, data: new Set(["has-body", "second"]) });
     expect(f.kv.listCalls).toEqual([
-      { path: prefix },
-      { path: prefix, cursor: "1" },
+      { path: prefix, source: "network" },
+      { path: prefix, source: "network", cursor: "1" },
     ]);
     expect(f.kv.headCalls).toEqual([]);
   });

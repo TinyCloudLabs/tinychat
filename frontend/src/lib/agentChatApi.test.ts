@@ -118,6 +118,7 @@ describe("agent stream lifecycle", () => {
     ["upstream_failed", "The model service could not complete this request. Please try again later."],
     ["interpretation_timeout", "Understanding this request took too long. Please try again."],
     ["result_size_limit", "The response was too large to process safely. Try a smaller request or fewer meetings."],
+    ["budget_exhausted", "You've reached today's credit limit, so this reply stopped early. What's below is what was produced before the limit."],
     ["agent_failed", interruptionMessage],
   ] as const) {
     it(`handles ${code} before legacy text or any callbacks, after malformed data`, async () => {
