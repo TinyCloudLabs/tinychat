@@ -1,5 +1,19 @@
 # @tinychat/backend
 
+## 0.5.7-beta.4
+
+### Patch Changes
+
+- 6e64051: Combined-meeting summaries now use a faster model and a per-call output cap. The chat route accepts an optional `max_output_tokens` integer (1 to 4096), forwarded upstream as `max_tokens`. Details: TC-1686
+
+## 0.5.7-beta.3
+
+### Patch Changes
+
+- fde135c: Update the TinyCloud SDK family to the stable 3.3.0 line (web-sdk, node-sdk, sdk-core, sdk-services 3.3.0; node-sdk-wasm 1.7.8; web-sdk-wasm 1.7.7) and regenerate the node-sdk sign-in patch for 3.3.0.
+
+  Details: TC-1152
+
 ## 0.5.7-beta.2
 
 ### Patch Changes

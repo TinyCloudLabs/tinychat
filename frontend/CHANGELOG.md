@@ -1,5 +1,25 @@
 # @tinychat/frontend
 
+## 0.10.0-beta.13
+
+### Patch Changes
+
+- 0ccf29d: Combined-meeting summaries use z-ai/glm-5.2 with output caps of 2500 (whole meeting) and 1500 (per chunk), which leave room for the model's reasoning tokens. A reply with no content is reported as a failed summary and nothing is saved (TC-1686).
+
+## 0.10.0-beta.12
+
+### Patch Changes
+
+- 6e64051: Combined-meeting summaries now use a faster model and a per-call output cap. The chat route accepts an optional `max_output_tokens` integer (1 to 4096), forwarded upstream as `max_tokens`. Details: TC-1686
+
+## 0.10.0-beta.11
+
+### Patch Changes
+
+- fde135c: Update the TinyCloud SDK family to the stable 3.3.0 line (web-sdk, node-sdk, sdk-core, sdk-services 3.3.0; node-sdk-wasm 1.7.8; web-sdk-wasm 1.7.7) and regenerate the node-sdk sign-in patch for 3.3.0.
+
+  Details: TC-1152
+
 ## 0.10.0-beta.10
 
 ### Patch Changes

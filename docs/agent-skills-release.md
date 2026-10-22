@@ -1,6 +1,6 @@
 # Releasing TinyChat's retrieval skill
 
-The current setup pins CLI 0.10.0, retrieval 0.1.1-onboarding.24 and skills installer 1.7.0. Automatic first-install activation is scoped to stock OpenCode 1.18.31, a local macOS direct TUI, Node >=22.20, one active conversation and no background agents. Public URLs are not considered available until anonymously verified after deployment.
+The current setup pins CLI 1.3.0, retrieval 0.1.1-onboarding.24 and skills installer 1.7.0. Automatic first-install activation is scoped to stock OpenCode 1.18.31, a local macOS direct TUI, Node >=22.20, one active conversation and no background agents. Public URLs are not considered available until anonymously verified after deployment.
 
 ## Build and check
 
