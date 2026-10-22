@@ -200,6 +200,14 @@ backend afterwards: `unchanged` (failed before `phala deploy`),
 `changed-verified`, or `changed-unverified` (the CVM may run the new image but a
 later check failed; web is not deployed).
 
+The workflow also refuses to run unless the backend CVM is on the production OS
+image pinned in `PHALA_OS_IMAGE` / `PHALA_OS_IMAGE_HASH` (`dstack-0.5.12`, not a
+`dstack-dev-*` image): it checks `phala cvms get` before building anything and again
+after `phala deploy`. The Phala KMS only releases app keys to the production image.
+CI never changes the OS; if the check fails, set it by hand and re-run:
+`phala api -X PATCH /cvms/<id>/os-image -F os_image_name=dstack-0.5.12`.
+`phala deploy --image/--no-dev-os` is ignored for an existing CVM.
+
 **Manually from your machine:**
 
 ```bash
