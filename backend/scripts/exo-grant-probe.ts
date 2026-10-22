@@ -5,6 +5,9 @@
  * throwaway backend DID. The real verifier and activateVerifiedDelegation run on the backend
  * side. Each check prints one `PROBE <name>: <expected> -> <observed>` line. Keys stay in
  * process memory; nothing is written to disk. Every key written is deleted at the end.
+ *
+ * Only loopback nodes (127.0.0.1, [::1], localhost) are accepted. EXO_PROBE_ALLOW_REMOTE_NODE=yes-i-know
+ * admits another host. The guard runs before any network call.
  */
 import { randomUUID } from "node:crypto";
 import { APP_ID, CONNECTORS_SQL_DB_NAME } from "@tinyboilerplate/core";
@@ -13,13 +16,20 @@ import { serializeDelegation, TinyCloudNode, type Manifest, type PermissionEntry
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { EXO_JOBS_PREFIX, EXO_REQUESTS_PREFIX, EXO_SYNC_RESOURCES, verifyTranscriptWriterGrant } from "../src/delegation-verify.js";
 import { activateVerifiedDelegation } from "../src/portable-delegation.js";
+import { checkProbeNodeUrl } from "./exo-probe-host-guard.js";
 import { createExoActivatedGrant, ownerApplicationsSpaceUri } from "../src/exo/activated-grant.js";
 
-const host = process.env.EXO_PROBE_NODE_URL;
-if (!host) {
+const rawHost = process.env.EXO_PROBE_NODE_URL;
+if (!rawHost) {
   console.log("SKIP: EXO_PROBE_NODE_URL not set");
   process.exit(0);
 }
+const hostCheck = checkProbeNodeUrl(rawHost, process.env.EXO_PROBE_ALLOW_REMOTE_NODE);
+if (!hostCheck.ok) {
+  console.log(`REFUSED: ${hostCheck.reason}`);
+  process.exit(2);
+}
+const host = rawHost;
 
 type Resource = { path: string; actions: readonly string[] };
 
