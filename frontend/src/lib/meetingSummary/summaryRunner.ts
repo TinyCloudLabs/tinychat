@@ -134,11 +134,12 @@ export function createSummaryRunner(deps: SummaryRunnerDeps): SummaryRunner {
     },
     clear: (id) => {
       jobs.get(id)?.controller.abort();
-      jobs.delete(id);
-      notify();
+      // The page shows "No summary yet · Generate" at once: the stored summary is never shown as current.
+      const cleared: Job = { view: { status: "idle" }, controller: new AbortController(), pending: null };
+      set(id, cleared);
       void writeCombinedSummary(deps.space, id, { overview: null, actionItems: null }).then((written) => {
         // A failed clear must not leave the old summary showing: the page shows Retry instead of the stale text.
-        if (!written.ok) set(id, { view: { status: "unavailable", reason: "failed" }, controller: new AbortController(), pending: null });
+        if (!written.ok && jobs.get(id) === cleared) set(id, { view: { status: "unavailable", reason: "failed" }, controller: new AbortController(), pending: null });
       });
     },
     view: (id) => jobs.get(id)?.view,

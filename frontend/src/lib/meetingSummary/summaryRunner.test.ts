@@ -287,9 +287,24 @@ describe("clear and settle", () => {
     await new Promise((resolve) => setTimeout(resolve, 30));
     expect(row().summary_overview).toBeNull();
     expect(row().summary_action_items).toBeNull();
-    expect(view()).toBeUndefined();
+    expect(view()).toEqual({ status: "idle" });
     expect(storedSummaryView({ overview: row().summary_overview, actionItems: row().summary_action_items })).toEqual({ status: "idle" });
     expect(calls).toHaveLength(0);
+  });
+
+  test("clear shows idle before its write lands, so the stored summary is never shown as current", () => {
+    setRow({ summary_overview: "Old overview.", summary_action_items: "Old item" });
+    runner.clear(COMBINED_ROW_ID);
+    expect(view()).toEqual({ status: "idle" });
+  });
+
+  test("a clear whose write fails shows Retry, not the old summary", async () => {
+    setRow({ summary_overview: "Old overview.", summary_action_items: "Old item" });
+    f.sql.nextMeetingWriteError = { code: "SQL_ERROR", message: "write failed" };
+    runner.clear(COMBINED_ROW_ID);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(view()).toEqual({ status: "unavailable", reason: "failed" });
+    expect(row().summary_overview).toBe("Old overview.");
   });
 
   test("onSettled fires once when a run ends with a summary, and again when it ends in failure", async () => {

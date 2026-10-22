@@ -17,7 +17,7 @@ import type { AppPlatform } from "@/lib/platform";
 import type { NotePipelineView } from "@/lib/voiceNotes/useNotePipeline";
 import { VoiceNoteSaveTimeout, withVoiceNoteSaveDeadline } from "@/lib/voiceNotes/saveDeadline";
 import { localTranscriptToSave, VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
-import { readAutomaticSummaries } from "@/lib/meetingSummary/automaticSummaries";
+import { gateCombinedSummary, readAutomaticSummaries } from "@/lib/meetingSummary/automaticSummaries";
 import { NoteDetailView, type NoteDetailViewProps } from "./NoteDetailView";
 import { CombineSheet } from "./combine/CombineSheet";
 import { canCombine } from "./combine/candidates";
@@ -67,12 +67,8 @@ export function NoteDetail(props: {
   const combined = useCombinedMeeting({ tcw: props.tcw, item, onChanged: library.refresh, onDeleted: props.onBack });
   const summary = useCombinedSummary({ tcw: props.tcw, runner: props.summaries, item });
   const flow = useCombineFlow({ tcw: props.tcw, onCombined: ({ id, sourceId, created }) => {
-    // The combined text is new. Automatic summaries on: make its summary (a Re-combine replaces the old one).
-    // Off, or the setting cannot be read: a Re-combine drops the old summary, and Generate makes a new one.
-    void readAutomaticSummaries(props.tcw).catch(() => false).then((on) => {
-      if (on) props.summaries?.start(id, { replacing: !created });
-      else if (!created) props.summaries?.clear(id);
-    });
+    // The combined text is new: the summary gate decides (setting on or unreadable: a run; off: none).
+    void gateCombinedSummary(() => readAutomaticSummaries(props.tcw), props.summaries, { id, created });
     // A Re-combine rewrites the open row in place: drop its cached reads and check its members again.
     captureEvents.emit("library-changed", { source: EXO_MERGED_SOURCE, sourceId });
     combined.recheck();
