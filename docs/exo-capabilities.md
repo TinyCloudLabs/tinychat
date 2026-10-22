@@ -83,6 +83,8 @@ Cooldown and daily-count state is held in process memory. It resets on restart. 
 
 Default wiring supplies no concrete grant, record, job, or executor stores. With the flag set to `true` and no stores wired, every well-formed wake returns 202 `accepted` and writes no record. Concrete stores and the sync executor are supplied separately.
 
+The grant route `GET | POST | DELETE /api/exo/v1/grant` is mounted only while the flag is exactly `true`, after session auth and CSRF. It stores grants through the exo store and is separate from the wake route.
+
 Grant activation (`backend/src/portable-delegation.ts`) branches on the verified grant's `policy`. An exo sync grant (`policy: "exo-sync"`) activates only the exact two KV prefixes above with their abilities: exactly two resources, no SQL, no extra ability, no widened prefix. Any other exo shape is refused before any governed write (`beforeNodeWrite`) or node call. Transcript-writer grants keep the existing rules (1 to 4 resources, at most one `sql`/`duckdb`/`hooks`, `MAX_ACTIVATABLE_RESOURCES`), and this change does not alter them.
 
 ## Activated grant reach
@@ -92,5 +94,11 @@ An activated exo grant reaches the owner's `applications` space through two KV p
 The typed accessor (`backend/src/exo/activated-grant.ts`) exposes `requestsGet`, `requestsList`, `requestsRemove`, `jobsGet`, `jobsPut`, and `jobsRemove`. Paths are full keys under the shared prefixes. A path is refused before any KV call when it is not a literal path under its prefix: `..` or encoded traversal, empty or `.` segments, a trailing slash on a key, a bare prefix, or a sibling such as `requestsX` or `jobs-evil`. `requestsList` takes a directory and requires a trailing `/`. Stored values may be raw JSON bytes, a JSON string, or an already-parsed value; `*Get` returns the parsed value, or `undefined` when the key is absent.
 
 Exo sync grants are stored under `delegations/exo-sync/` with `kind: "exo-sync"` and envelope format `tinychat.exo-sync-grant`. Connector grants are stored under `delegations/` with `kind: "transcript-writer"` and envelope format `tinychat.transcript-writer-grant`. On load, the exo store returns null, and logs a warning, for a record with no `kind` (it does not accept unkinded records; only the connector store does, as legacy records) and for a record of another kind. On store, an envelope that parses as JSON with a `format` other than `tinychat.exo-sync-grant` throws before any write. An envelope with no `format` key, or one that is not JSON, is not classified by the store; the route verifies the grant before it reaches the store.
+
+## Onward delegation (follow-up gate)
+
+The grant verifier does not require `remainingRedelegationDepth: 0`, and this change does not make an exo grant non-transferable. A holder of an activated exo grant MAY delegate it onward. Any onward grant reaches only the two prefixes above with their abilities; it carries no meeting content, no encryption keys, and no decrypt capability.
+
+This is a follow-up gate, not a closed control. The SDK cannot yet make a grant non-transferable for a `did:pkh` recipient. Until the SDK supports that, this document makes no claim that onward re-delegation is prevented. Closing the gate is required before exo grants are treated as non-transferable.
 
 `backend/scripts/exo-grant-probe.ts` checks these boundaries against a live node. It runs only when `EXO_PROBE_NODE_URL` is set, is not run in CI, and prints one `PROBE` line per check. It uses an in-memory throwaway owner key, delegates the exo grant to a throwaway backend DID, and removes every key it wrote.
