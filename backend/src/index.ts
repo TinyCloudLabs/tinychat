@@ -16,7 +16,7 @@ import {
 } from "@tinyboilerplate/server";
 import { APP_ID } from "@tinyboilerplate/core";
 import { applySecurityDefaults } from "./security.js";
-import { applyRateLimiters, createExoWakeLimiters, logGlobalBucketRoutes } from "./rate-limits.js";
+import { applyRateLimiters, logGlobalBucketRoutes } from "./rate-limits.js";
 import { createAuthMiddleware } from "./middleware/auth.js";
 import { createAuthRouter } from "./routes/auth.js";
 import { createDelegationRouter } from "./routes/delegations.js";
@@ -560,10 +560,7 @@ async function main() {
   // TC-1013 S3: Exo capability mailbox. Mounted only when the flag is exactly "true".
   // Default ports fail closed until S4 supplies concrete stores and an executor.
   if (exoCapabilitiesEnabled(process.env)) {
-    app.use("/api/exo/v1", createExoMailboxRouter(
-      createUnwiredExoPorts(process.env.FRONTEND_URL ?? "https://localhost:5186"),
-      createExoWakeLimiters(),
-    ));
+    app.use("/api/exo/v1", createExoMailboxRouter(createUnwiredExoPorts(process.env.FRONTEND_URL ?? "https://localhost:5186")));
   }
 
   // W9 / D4 — the process that actually CONSUMES the cohort queues, or nothing at all. Assigned

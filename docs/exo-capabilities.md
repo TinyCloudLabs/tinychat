@@ -11,10 +11,20 @@ Body: exactly `{"owner": "did:pkh:eip155:<chain>:0x<40 hex>", "requestId": "<low
 | Outcome | Status | Body |
 | --- | --- | --- |
 | Malformed: body the parser rejects, oversized or extra properties, or owner or request id in the wrong form | 409 | `{"error":"exo_sync_unavailable"}` (identical for all of these) |
-| Any outcome after the body parses: unknown owner, no grant, verified, accepted, replayed, coalesced, rate limited, budget, connector off, unavailable; or an internal error at any step, including a limiter | 202 | `{"status":"accepted"}` (identical for all of these) |
-| Per-IP limit (120/min), checked before any lookup | 429 | `{"error":"rate_limited"}` with `Retry-After: 60` |
+| Any outcome after the body parses: unknown owner, no grant, verified, accepted, replayed, coalesced, rate limited, budget, connector off, unavailable; or an internal error at any step | 202 | `{"status":"accepted"}` (identical for all of these) |
 
 The wake reply is intentionally identical for all outcomes, so the reply carries no information about stored requests; the job record holds every state.
+
+## Wake intake
+
+The route answers 202 once the body parses, before any store read. It never answers 429. Verification, the owner budget, and the job write run afterwards in an in-process queue.
+
+- Pending work is capped globally (256) and per owner (16). Work is deduped on (owner, request id).
+- Owners are served round-robin, with one verification in flight per owner, so one owner's wakes do not delay another's.
+- When a cap is full, a random pending entry is dropped and the newcomer is kept. A dropped wake gets no job record; its sender still sees the same 202.
+- The queue is in-process. A restart drops pending wakes. A sender that needs the wake handled re-sends it; a re-sent id creates a job only if none exists.
+
+Owner budget: a wake that creates a new job record spends one unit of a fixed-window budget keyed on the verified owner (30 per minute). A replay returns before the spend. A refused wake records a job coded `rate_limited` with `retryAfterSec: 60`.
 
 ## Request records
 
@@ -59,7 +69,7 @@ Per capability, from the D9 limits:
 
 - `sync-fireflies`: 1 h between starts; 6 h when a Fireflies webhook is present; cap 150 starts per UTC day.
 - `sync-google`: 30 min between starts; cap 300 per UTC day.
-- `sync-meetings`: no cooldown and no cap.
+- `sync-meetings`: no cooldown and no daily cap. Its wakes still spend the per-owner wake budget (see Wake intake).
 
 Cooldown and daily-count state is held in process memory. It resets on restart. A durable ledger is not part of this change.
 
@@ -71,4 +81,4 @@ Cooldown and daily-count state is held in process memory. It resets on restart. 
 
 Default wiring supplies no concrete grant, record, job, or executor stores. With the flag set to `true` and no stores wired, every well-formed wake returns 202 `accepted` and writes no record. Concrete stores and the sync executor are supplied separately.
 
-Grant activation (`backend/src/portable-delegation.ts`) rejects multi-resource grants today. This change does not alter activation.
+Grant activation (`backend/src/portable-delegation.ts`) accepts 1 to 4 resources in the supported multi-resource shapes (`MAX_ACTIVATABLE_RESOURCES`). This change does not alter activation.

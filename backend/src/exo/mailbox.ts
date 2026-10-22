@@ -7,6 +7,7 @@
  * space. Every dependency is an injected port. The default wiring fails closed.
  */
 import { APP_ID } from "@tinyboilerplate/core";
+import type { FixedWindowBudget } from "./wake-intake.js";
 
 export const EXO_CAPABILITIES = ["sync-meetings", "sync-fireflies", "sync-google"] as const;
 export type ExoCapability = (typeof EXO_CAPABILITIES)[number];
@@ -150,8 +151,14 @@ function hasExactKeys(value: object, keys: readonly string[]): boolean {
   return actual.length === keys.length && keys.every((key) => actual.includes(key));
 }
 
+/** A parsed wake body. The owner is lowercased by the parser. */
+export interface ExoWakeRequest {
+  owner: string;
+  requestId: string;
+}
+
 /** Strict wake body: exactly `{owner, requestId}`; owner is a `did:pkh:eip155` DID. Anything else is `undefined`. */
-export function parseWakeBody(body: unknown): { owner: string; requestId: string } | undefined {
+export function parseWakeBody(body: unknown): ExoWakeRequest | undefined {
   if (typeof body !== "object" || body === null || Array.isArray(body)) return undefined;
   if (!hasExactKeys(body, ["owner", "requestId"])) return undefined;
   const { owner, requestId } = body as { owner: unknown; requestId: unknown };
@@ -363,10 +370,10 @@ async function createJob(ports: ExoMailboxPorts, owner: string, record: ExoJobRe
  * Records a verified wake's outcome in the job record and returns nothing. The route answers EXO_ACCEPTED_BODY for every
  * outcome, so all state lives in the record. Runs in the owner lane so two wakes cannot both see "no active run".
  */
-export function startWake(ports: ExoMailboxPorts, wake: VerifiedWake, ownerLimited: boolean): Promise<void> {
+export function startWake(ports: ExoMailboxPorts, wake: VerifiedWake, budget: FixedWindowBudget): Promise<void> {
   return withOwnerLane(wake.owner, async () => {
     try {
-      await runWake(ports, wake, ownerLimited);
+      await runWake(ports, wake, budget);
     } catch {
       console.error("[exo] wake not recorded");
       await createJob(ports, wake.owner, newJob(wake, new Date(ports.now()).toISOString(), "error", "unavailable"));
@@ -374,7 +381,7 @@ export function startWake(ports: ExoMailboxPorts, wake: VerifiedWake, ownerLimit
   });
 }
 
-async function runWake(ports: ExoMailboxPorts, wake: VerifiedWake, ownerLimited: boolean): Promise<void> {
+async function runWake(ports: ExoMailboxPorts, wake: VerifiedWake, budget: FixedWindowBudget): Promise<void> {
   const { owner, requestId, capability } = wake;
   const now = ports.now();
   const timestamp = new Date(now).toISOString();
@@ -394,7 +401,8 @@ async function runWake(ports: ExoMailboxPorts, wake: VerifiedWake, ownerLimited:
     return;
   }
 
-  if (ownerLimited) {
+  // The owner budget counts new job records only. Replays returned above, so they spend nothing.
+  if (!budget.spend(owner.toLowerCase(), now)) {
     await createJob(ports, owner, newJob(wake, timestamp, "error", "rate_limited", { retryAfterSec: RETRY_AFTER_SEC }));
     return;
   }
@@ -562,7 +570,7 @@ export function createMemoryExoLedger(): ExoLedger {
 
 /** Flag parse: exactly "true" enables. Empty or unset is off. Any other value is off with a warning. */
 export function exoCapabilitiesEnabled(env: Record<string, string | undefined>, warn: (message: string) => void = console.warn): boolean {
-  const raw = (env.EXO_CAPABILITIES_ENABLED ?? "").trim();
+  const raw = env.EXO_CAPABILITIES_ENABLED ?? "";
   if (raw === "" || raw === "false") return false;
   if (raw === "true") return true;
   warn("[exo] EXO_CAPABILITIES_ENABLED must be 'true' or 'false'; capability mailbox stays off");

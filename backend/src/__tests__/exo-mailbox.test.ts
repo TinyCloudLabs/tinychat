@@ -13,6 +13,7 @@ import {
   type ExoJobRecord,
   type ExoMailboxPorts,
 } from "../exo/mailbox.js";
+import { FixedWindowBudget } from "../exo/wake-intake.js";
 
 const OWNER = `0x${"a".repeat(40)}`;
 const OWNER_DID = `did:pkh:eip155:1:${OWNER}`;
@@ -99,7 +100,7 @@ function harness(options: { grant?: boolean; connectorOn?: boolean; webhook?: bo
     if (!parsed) return undefined;
     const verified = await verifyWake(ports, parsed);
     if (!verified) return undefined;
-    await startWake(ports, verified, false);
+    await startWake(ports, verified, new FixedWindowBudget(1000, MINUTE));
     return job(requestId);
   };
 
@@ -391,7 +392,7 @@ describe("Exo per-source cooldowns (TC-1013 D9)", () => {
     h.seed(REQ1, "sync-google");
     const verified = await verifyWake(h.ports, { owner: OWNER, requestId: REQ1 });
     if (!verified) throw new Error("fixture did not verify");
-    await startWake(h.ports, verified, true);
+    await startWake(h.ports, verified, new FixedWindowBudget(0, MINUTE));
     expect(h.job(REQ1)).toMatchObject({ state: "error", code: "rate_limited", retryAfterSec: 60 });
     expect(h.runs).toHaveLength(0);
   });
@@ -585,6 +586,7 @@ describe("Exo flag parsing", () => {
     expect(warnings).toHaveLength(0);
     expect(exoCapabilitiesEnabled({ EXO_CAPABILITIES_ENABLED: "TRUE" }, warn)).toBe(false);
     expect(exoCapabilitiesEnabled({ EXO_CAPABILITIES_ENABLED: "1" }, warn)).toBe(false);
-    expect(warnings).toHaveLength(2);
+    expect(exoCapabilitiesEnabled({ EXO_CAPABILITIES_ENABLED: " true " }, warn)).toBe(false);
+    expect(warnings).toHaveLength(3);
   });
 });

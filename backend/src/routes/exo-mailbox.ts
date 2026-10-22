@@ -1,40 +1,42 @@
 import { Router, json, type NextFunction, type Request, type RequestHandler, type Response } from "express";
-import { EXO_ACCEPTED_BODY, EXO_UNAVAILABLE_BODY, parseWakeBody, startWake, verifyWake, type ExoMailboxPorts, type VerifiedWake } from "../exo/mailbox.js";
+import {
+  EXO_ACCEPTED_BODY,
+  EXO_UNAVAILABLE_BODY,
+  parseWakeBody,
+  startWake,
+  verifyWake,
+  type ExoMailboxPorts,
+  type ExoWakeRequest,
+} from "../exo/mailbox.js";
+import {
+  EXO_WAKE_OWNER_LIMIT_PER_MIN,
+  EXO_WAKE_OWNER_WINDOW_MS,
+  FixedWindowBudget,
+  WakeQueue,
+} from "../exo/wake-intake.js";
 
-/** Drops the limiters' draft-7 RateLimit headers so every wake answer carries the same header set. */
-function stripRateLimitHeaders(res: Response): void {
-  for (const name of res.getHeaderNames()) {
-    if (/^(x-)?ratelimit/i.test(name)) res.removeHeader(name);
-  }
+/** Test seams. Production passes neither. */
+export interface ExoWakeOptions {
+  queue?: WakeQueue;
+  ownerBudget?: FixedWindowBudget;
 }
 
 /** Sends one answer. A second send after headers are out is dropped. */
 function answer(res: Response, status: number, body: object): void {
   if (res.headersSent) return;
-  stripRateLimitHeaders(res);
   res.status(status).json(body);
 }
 
-/** Wake starts still running after their reply went out. `drainExoWakes` waits on these. */
-const detachedWakes = new Set<Promise<void>>();
-
-/** Resolves once every wake started so far has written its outcome, or has failed and been logged. */
-export async function drainExoWakes(): Promise<void> {
-  while (detachedWakes.size > 0) await Promise.all([...detachedWakes]);
-}
-
 /**
- * `POST /api/exo/v1/requests`. Order: IP limiter, strict JSON (1 KB) and wake shape, verification, owner limiter, start.
- * A malformed request (body the parser rejects, wrong shape, bad DID or request id) is the uniform 409 before any
- * lookup. Every other answer is the same 202 `{"status":"accepted"}`: found, started, replayed, coalesced, refused,
- * rate limited, unknown owner, or an internal error at any step, limiter errors included. The reply is sent before
- * the job record is written; the outcome lives in the job record.
+ * `POST /api/exo/v1/requests`. A body the strict parser rejects gets the uniform 409 before any lookup. Every other
+ * request gets the same 202 `{"status":"accepted"}`, sent before any store read. Verification, the owner budget, and the
+ * job write run afterwards in the wake queue, so the reply cannot depend on store latency or on whether the owner has a
+ * grant. The outcome lives in the job record.
  */
-export function createExoMailboxRouter(
-  ports: ExoMailboxPorts,
-  limiters: { ip: RequestHandler; owner: RequestHandler },
-): Router {
+export function createExoMailboxRouter(ports: ExoMailboxPorts, options: ExoWakeOptions = {}): Router {
   const router = Router();
+  const queue = options.queue ?? new WakeQueue();
+  const ownerBudget = options.ownerBudget ?? new FixedWindowBudget(EXO_WAKE_OWNER_LIMIT_PER_MIN, EXO_WAKE_OWNER_WINDOW_MS);
   const parseBody = json({ limit: "1kb", strict: true });
   const strictBody: RequestHandler = (req, res, next) => {
     parseBody(req, res, (err?: unknown) => {
@@ -47,30 +49,16 @@ export function createExoMailboxRouter(
       next();
     });
   };
-  // Verification runs before the owner limiter, so only verified wakes spend an owner's budget. A refusal is accepted too.
-  const verify: RequestHandler = async (_req, res, next) => {
-    try {
-      const wake = await verifyWake(ports, res.locals.exoRequest);
-      if (!wake) {
-        answer(res, 202, EXO_ACCEPTED_BODY);
-        return;
-      }
-      res.locals.exoWake = wake;
-      next();
-    } catch {
-      console.error("[exo] wake verification unavailable");
-      answer(res, 202, EXO_ACCEPTED_BODY);
-    }
-  };
-  router.post("/requests", limiters.ip, strictBody, verify, limiters.owner, (_req, res) => {
+  router.post("/requests", strictBody, (_req, res) => {
+    const request: ExoWakeRequest = res.locals.exoRequest;
     answer(res, 202, EXO_ACCEPTED_BODY);
-    const started = startWake(ports, res.locals.exoWake as VerifiedWake, res.locals.exoOwnerLimited === true).catch(() => {
-      console.error("[exo] wake not recorded");
+    // The parser lowercases the owner, so case variants share one lane. verifyWake and startWake are total.
+    queue.offer(request.owner, request.requestId, async () => {
+      const wake = await verifyWake(ports, request);
+      if (wake) await startWake(ports, wake, ownerBudget);
     });
-    detachedWakes.add(started);
-    void started.then(() => detachedWakes.delete(started));
   });
-  // Errors reach here from a limiter or a handler. They get the same 202; the failure is logged without detail.
+  // A handler error gets the same 202; the failure is logged without detail.
   router.use((_err: unknown, _req: Request, res: Response, _next: NextFunction) => {
     console.error("[exo] wake route error");
     answer(res, 202, EXO_ACCEPTED_BODY);
