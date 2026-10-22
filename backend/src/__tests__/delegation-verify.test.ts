@@ -1,6 +1,6 @@
 import { describe, expect, it, mock } from "bun:test";
 import type { TinyCloudNode } from "@tinycloud/node-sdk";
-import { DelegationStore, verifySIWE } from "@tinyboilerplate/server";
+import { DelegationStore, TRANSCRIPT_WRITER_GRANT_KIND, verifySIWE } from "@tinyboilerplate/server";
 import { APP_ID } from "@tinyboilerplate/core";
 import { makePkhSpaceId } from "@tinycloud/sdk-core";
 import { activateVerifiedDelegation } from "../portable-delegation.js";
@@ -224,9 +224,9 @@ describe("signed transcript grant verifier", () => {
       get: async (key: string) => records.has(key) ? { ok: true, data: { data: records.get(key) } } : { ok: false, error: { code: "KV_NOT_FOUND", service: "kv", message: `Key not found: ${key}` } },
       delete: async (key: string) => { records.delete(key); return { ok: true }; },
     } } as unknown as TinyCloudNode;
-    const first = new DelegationStore(fakeNode);
+    const first = new DelegationStore(fakeNode, TRANSCRIPT_WRITER_GRANT_KIND);
     await first.store(grant.address, grant.envelope, { expiresAt: grant.expiresAt.toISOString(), actions: ["read", "write"], path: SQL });
-    const restarted = new DelegationStore(fakeNode);
+    const restarted = new DelegationStore(fakeNode, TRANSCRIPT_WRITER_GRANT_KIND);
     const stored = await restarted.load(grant.address);
     if (!stored) throw new Error("Expected persisted record");
     const options = { backendDid: grant.backendDid, configuredHost: grant.configuredHost };

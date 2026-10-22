@@ -18,16 +18,50 @@ export interface DelegationMetadata {
   resources?: StoredDelegation["resources"];
 }
 
+/**
+ * Binds a {@link DelegationStore} to one grant kind. Every record carries its `kind`, lives under
+ * the kind's own `keyPrefix`, and is refused when it is read or written as a different kind.
+ */
+export interface DelegationGrantKind {
+  /** Grant kind stored on every record and checked on every load. */
+  kind: string;
+  /** Envelope `format` this kind's serialized grants carry. Envelopes of another format are refused on store. */
+  envelopeFormat: string;
+  /** KV key prefix. Distinct per kind so one kind never reads or overwrites another kind's record. */
+  keyPrefix: string;
+  /** True only for the store whose records were written before `kind` existed. Those records read as this kind. */
+  acceptsUnkindedRecords: boolean;
+}
+
+/** Connector (transcript-writer) grants. Records written before `kind` existed live under this prefix. */
+export const TRANSCRIPT_WRITER_GRANT_KIND: DelegationGrantKind = {
+  kind: "transcript-writer",
+  envelopeFormat: "tinychat.transcript-writer-grant",
+  keyPrefix: "delegations/",
+  acceptsUnkindedRecords: true,
+};
+
+/** Exo sync grants. Own key prefix so they never overwrite or read connector records. */
+export const EXO_SYNC_GRANT_KIND: DelegationGrantKind = {
+  kind: "exo-sync",
+  envelopeFormat: "tinychat.exo-sync-grant",
+  keyPrefix: "delegations/exo-sync/",
+  acceptsUnkindedRecords: false,
+};
+
 // ── Delegation Store ─────────────────────────────────────────────────
 
 /**
  * Persists and retrieves user delegations using the backend's own
  * TinyCloud KV store.
  *
- * Key format: `delegations/{identifier}` in the backend's KV space.
+ * Key format: `{grant.keyPrefix}{identifier}` in the backend's KV space.
  */
 export class DelegationStore {
-  constructor(private readonly node: TinyCloudNode) {}
+  constructor(
+    private readonly node: TinyCloudNode,
+    private readonly grant: DelegationGrantKind,
+  ) {}
 
   /**
    * Store a serialized delegation for a user identifier.
@@ -38,7 +72,11 @@ export class DelegationStore {
     metadata: DelegationMetadata,
   ): Promise<void> {
     const key = this.keyFor(identifier);
+    if (this.isOtherKindEnvelope(serialized)) {
+      throw new Error(`Delegation envelope is not a ${this.grant.kind} grant`);
+    }
     const record: StoredDelegation = {
+      kind: this.grant.kind,
       serialized,
       grantedAt: metadata.grantedAt ?? new Date().toISOString(),
       expiresAt: metadata.expiresAt,
@@ -57,7 +95,7 @@ export class DelegationStore {
 
   /**
    * Load the stored delegation for a user identifier.
-   * Returns null if no delegation exists.
+   * Returns null if no delegation exists, or if the record is not of this store's kind.
    */
   async load(identifier: string): Promise<StoredDelegation | null> {
     const key = this.keyFor(identifier);
@@ -87,6 +125,15 @@ export class DelegationStore {
         console.warn(
           `[DelegationStore] Invalid delegation shape for ${identifier}:`,
           Object.keys(raw ?? {}),
+        );
+        return null;
+      }
+
+      const recordKind =
+        raw.kind ?? (this.grant.acceptsUnkindedRecords ? this.grant.kind : undefined);
+      if (recordKind !== this.grant.kind) {
+        console.warn(
+          `[DelegationStore] Delegation for ${identifier} is not a ${this.grant.kind} grant`,
         );
         return null;
       }
@@ -123,6 +170,23 @@ export class DelegationStore {
     return new Date(stored.expiresAt).getTime() > Date.now();
   }
 
+  // Envelopes that declare a format must declare this kind's format. Opaque strings are not
+  // classified here; the route verifies the grant before it reaches the store.
+  private isOtherKindEnvelope(serialized: string): boolean {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(serialized);
+    } catch {
+      return false;
+    }
+    return (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      "format" in parsed &&
+      parsed.format !== this.grant.envelopeFormat
+    );
+  }
+
   private keyFor(identifier: string): string {
     if (
       !identifier ||
@@ -132,6 +196,6 @@ export class DelegationStore {
     ) {
       throw new Error("Invalid delegation identifier");
     }
-    return `delegations/${identifier}`;
+    return `${this.grant.keyPrefix}${identifier}`;
   }
 }

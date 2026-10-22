@@ -11,6 +11,7 @@ import { load as loadYaml } from "js-yaml";
 import {
   DelegationCache,
   DelegationStore,
+  TRANSCRIPT_WRITER_GRANT_KIND,
   createCsrfMiddleware,
   createNonceStore,
 } from "@tinyboilerplate/server";
@@ -455,7 +456,7 @@ async function main() {
         "ledger shadow-push + rehydration disabled.",
     );
   }
-  const delegationStore = new DelegationStore(node);
+  const delegationStore = new DelegationStore(node, TRANSCRIPT_WRITER_GRANT_KIND);
   const delegationCache = new DelegationCache();
   const nonceStore = createNonceStore();
   const authMiddleware = createAuthMiddleware(backendPrivateKey);

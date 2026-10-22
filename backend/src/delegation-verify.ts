@@ -1,5 +1,5 @@
+import { EXO_SYNC_GRANT_KIND, TRANSCRIPT_WRITER_GRANT_KIND, verifySiweSession, type VerifiedSiweSession } from "@tinyboilerplate/server";
 import { createHash } from "node:crypto";
-import { verifySiweSession, type VerifiedSiweSession } from "@tinyboilerplate/server";
 import { makePkhSpaceId } from "@tinycloud/node-sdk/core";
 import { verifyDidKeyEd25519Signature } from "@tinycloud/sdk-core";
 import { siweToDelegationHeaders } from "@tinycloud/node-sdk-wasm";
@@ -51,8 +51,8 @@ export const EXO_SYNC_RESOURCES = [
 export type GrantPolicy = "transcript-writer" | "exo-sync";
 // Each policy admits only its own resources. A grant that mixes policies fails the other policy's table.
 const policies: Record<GrantPolicy, { envelopeFormat: string; expected: typeof expected }> = {
-  "transcript-writer": { envelopeFormat: "tinychat.transcript-writer-grant", expected },
-  "exo-sync": { envelopeFormat: "tinychat.exo-sync-grant", expected: EXO_SYNC_RESOURCES },
+  "transcript-writer": { envelopeFormat: TRANSCRIPT_WRITER_GRANT_KIND.envelopeFormat, expected },
+  "exo-sync": { envelopeFormat: EXO_SYNC_GRANT_KIND.envelopeFormat, expected: EXO_SYNC_RESOURCES },
 };
 const verificationCache = new Map<string, { verified: VerifiedTranscriptWriter; until: number }>();
 

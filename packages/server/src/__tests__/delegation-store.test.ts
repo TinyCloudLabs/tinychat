@@ -1,6 +1,8 @@
 import { describe, test, expect, mock, beforeEach } from "bun:test";
 import {
   DelegationStore,
+  EXO_SYNC_GRANT_KIND,
+  TRANSCRIPT_WRITER_GRANT_KIND,
   type DelegationMetadata,
 } from "../delegation-store.js";
 
@@ -55,7 +57,7 @@ describe("DelegationStore", () => {
 
   beforeEach(() => {
     mockNode = createMockNode();
-    store = new DelegationStore(mockNode as any);
+    store = new DelegationStore(mockNode as any, TRANSCRIPT_WRITER_GRANT_KIND);
   });
 
   describe("store", () => {
@@ -458,5 +460,65 @@ describe("DelegationStore", () => {
       expect(mockNode.kv.delete).toHaveBeenCalledTimes(1);
       expect(mockNode.signIn).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe("DelegationStore grant kind binding", () => {
+  const meta = { expiresAt: new Date(Date.now() + 60_000).toISOString(), actions: ["get"], path: "p" };
+  const transcriptEnvelope = JSON.stringify({ format: "tinychat.transcript-writer-grant", v: 1 });
+  const exoEnvelope = JSON.stringify({ format: "tinychat.exo-sync-grant", v: 1 });
+
+  test("exo-sync records are written under their own prefix and tagged with their kind", async () => {
+    const node = createMockNode();
+    const exo = new DelegationStore(node as any, EXO_SYNC_GRANT_KIND);
+    await exo.store("0xABC", exoEnvelope, meta);
+    const [key, value] = node.kv.put.mock.calls[0];
+    expect(key).toBe("delegations/exo-sync/0xABC");
+    const parsed = typeof value === "string" ? JSON.parse(value) : value;
+    expect(parsed.kind).toBe("exo-sync");
+  });
+
+  test("exo-sync store refuses a transcript-writer envelope before any write", async () => {
+    const node = createMockNode();
+    const exo = new DelegationStore(node as any, EXO_SYNC_GRANT_KIND);
+    await expect(exo.store("0xABC", transcriptEnvelope, meta)).rejects.toThrow(/not a exo-sync grant/);
+    expect(node.kv.put).not.toHaveBeenCalled();
+  });
+
+  test("transcript-writer store refuses an exo-sync envelope before any write", async () => {
+    const node = createMockNode();
+    const connector = new DelegationStore(node as any, TRANSCRIPT_WRITER_GRANT_KIND);
+    await expect(connector.store("0xABC", exoEnvelope, meta)).rejects.toThrow(/not a transcript-writer grant/);
+    expect(node.kv.put).not.toHaveBeenCalled();
+  });
+
+  test("transcript-writer store returns null for a record tagged exo-sync", async () => {
+    const node = createMockNode();
+    node.kv.get = mock(() => Promise.resolve({ data: JSON.stringify({ ...makeDelegation(), kind: "exo-sync" }) }));
+    const connector = new DelegationStore(node as any, TRANSCRIPT_WRITER_GRANT_KIND);
+    expect(await connector.load("0xABC")).toBeNull();
+  });
+
+  test("exo-sync store returns null for an unkinded legacy connector record", async () => {
+    const node = createMockNode();
+    node.kv.get = mock(() => Promise.resolve({ data: JSON.stringify(makeDelegation()) }));
+    const exo = new DelegationStore(node as any, EXO_SYNC_GRANT_KIND);
+    expect(await exo.load("0xABC")).toBeNull();
+  });
+
+  test("transcript-writer store still reads an unkinded legacy record", async () => {
+    const node = createMockNode();
+    const legacy = makeDelegation();
+    node.kv.get = mock(() => Promise.resolve({ data: JSON.stringify(legacy) }));
+    const connector = new DelegationStore(node as any, TRANSCRIPT_WRITER_GRANT_KIND);
+    expect(await connector.load("0xABC")).toEqual(legacy);
+  });
+
+  test("exo-sync store reads back its own kinded record", async () => {
+    const node = createMockNode();
+    const record = { ...makeDelegation(), kind: "exo-sync" };
+    node.kv.get = mock(() => Promise.resolve({ data: JSON.stringify(record) }));
+    const exo = new DelegationStore(node as any, EXO_SYNC_GRANT_KIND);
+    expect(await exo.load("0xABC")).toEqual(record);
   });
 });
