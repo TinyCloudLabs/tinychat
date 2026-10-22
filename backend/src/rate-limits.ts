@@ -12,7 +12,7 @@
  * full server.
  */
 import rateLimit from "express-rate-limit";
-import type { Express, Request, RequestHandler } from "express";
+import type { Express, Request, RequestHandler, Response } from "express";
 import { verifySessionToken } from "@tinyboilerplate/server";
 
 const WINDOW_MS = 15 * 60 * 1000;
@@ -470,4 +470,41 @@ export function applyRateLimiters(app: Express, { sessionKey }: RateLimitOptions
   };
   app.use((req, res, next) => (bucketFor(req.method, req.path) === "paidChat" ? paidChatLimiter(req, res, next) : next()));
   return { globalRoutes, paidChatLimiter };
+}
+
+/** TC-1013 S3: Exo wake limits. Per client IP and per owner, each per minute. */
+export const EXO_WAKE_IP_LIMIT_PER_MIN = 120;
+export const EXO_WAKE_OWNER_LIMIT_PER_MIN = 30;
+
+/**
+ * Limiters for `POST /api/exo/v1/requests`. The owner limiter keys on the lowercased `owner`
+ * field of the body; a body without a usable owner shares one bucket. Both answer 429
+ * `{"error":"rate_limited"}` with `Retry-After` in seconds.
+ */
+export function createExoWakeLimiters(): { ip: RequestHandler; owner: RequestHandler } {
+  const respond = (_req: Request, res: Response) => {
+    // Fixed 60 s window, so 60 is the longest possible wait.
+    res.setHeader("Retry-After", "60");
+    res.status(429).json({ error: "rate_limited" });
+  };
+  return {
+    ip: rateLimit({
+      windowMs: 60_000,
+      limit: EXO_WAKE_IP_LIMIT_PER_MIN,
+      standardHeaders: "draft-7",
+      legacyHeaders: false,
+      handler: respond,
+    }),
+    owner: rateLimit({
+      windowMs: 60_000,
+      limit: EXO_WAKE_OWNER_LIMIT_PER_MIN,
+      standardHeaders: "draft-7",
+      legacyHeaders: false,
+      keyGenerator: (req) => {
+        const owner = (req.body as { owner?: unknown } | undefined)?.owner;
+        return typeof owner === "string" ? owner.toLowerCase() : "invalid-owner";
+      },
+      handler: respond,
+    }),
+  };
 }

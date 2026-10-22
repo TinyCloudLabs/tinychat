@@ -75,7 +75,9 @@ async function runIsolatedStartup(env: Record<string, string | undefined>) {
       },
     },
     "./services/ingest-mode.js": { backendIngestEnabled: () => false },
-    "./rate-limits.js": { applyRateLimiters: () => ({ globalRoutes: {}, paidChatLimiter: middleware() }), logGlobalBucketRoutes: () => {} },
+    "./rate-limits.js": { applyRateLimiters: () => ({ globalRoutes: {}, paidChatLimiter: middleware() }), logGlobalBucketRoutes: () => {}, createExoWakeLimiters: () => ({}) },
+    // TC-1013: the Exo mailbox is off in this harness; the flag is read at startup.
+    "./exo/mailbox.js": { exoCapabilitiesEnabled: () => false },
     "./services/google-oauth.js": { googleMeetOAuthEnabled: () => false },
     // TC-641: the real default-off parser, so `transcriptDeliveryConfig` is a config, not undefined.
     "./services/transcription-api.js": {
@@ -752,7 +754,9 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
     "./routes/server-info.js": { createServerInfoRouter },
     "./middleware/auth.js": { createAuthMiddleware: auth },
     "./services/ingest-nudge.js": { createIngestOnDelivery: noop },
-    "./rate-limits.js": { applyRateLimiters: () => ({ globalRoutes: { top: () => ({}) }, paidChatLimiter: noop }), logGlobalBucketRoutes: noop },
+    "./rate-limits.js": { applyRateLimiters: () => ({ globalRoutes: { top: () => ({}) }, paidChatLimiter: noop }), logGlobalBucketRoutes: noop, createExoWakeLimiters: noop },
+    // TC-1013: the Exo mailbox is off in this harness; the flag is read at startup.
+    "./exo/mailbox.js": { exoCapabilitiesEnabled: () => false },
     "./security.js": { applySecurityDefaults: noop },
     "./routes/nras-proxy.js": { createNrasProxyRouter: router },
     "./routes/assemblyai-hosted.js": { ASSEMBLYAI_HOSTED_MOUNT, createAssemblyAiHostedRouter, reconcileHostedJobs: async () => {} },

@@ -16,7 +16,7 @@ import {
 } from "@tinyboilerplate/server";
 import { APP_ID } from "@tinyboilerplate/core";
 import { applySecurityDefaults } from "./security.js";
-import { applyRateLimiters, logGlobalBucketRoutes } from "./rate-limits.js";
+import { applyRateLimiters, createExoWakeLimiters, logGlobalBucketRoutes } from "./rate-limits.js";
 import { createAuthMiddleware } from "./middleware/auth.js";
 import { createAuthRouter } from "./routes/auth.js";
 import { createDelegationRouter } from "./routes/delegations.js";
@@ -52,6 +52,9 @@ import { createConnectorMeetingsRouter } from "./routes/connector-meetings.js";
 import { createGoogleOAuthRouter, normalizeAppOrigin } from "./routes/google-oauth.js";
 import { createTranscriberRouter } from "./routes/transcriber.js";
 import { createTranscriberWebhookRouter } from "./routes/transcriber-webhook.js";
+import { createExoMailboxRouter } from "./routes/exo-mailbox.js";
+import { createUnwiredExoPorts } from "./exo/default-ports.js";
+import { exoCapabilitiesEnabled } from "./exo/mailbox.js";
 import { ASSEMBLYAI_HOSTED_MOUNT, createAssemblyAiHostedRouter, reconcileHostedJobs } from "./routes/assemblyai-hosted.js";
 import {
   DEFAULT_MAX_CONCURRENT_UPLOADS,
@@ -553,6 +556,14 @@ async function main() {
   } else {
     // An unmounted webhook must remain 404 even before the global CSRF gate.
     app.post("/api/transcriber/webhooks/ptx", (_req, res) => res.sendStatus(404));
+  }
+  // TC-1013 S3: Exo capability mailbox. Mounted only when the flag is exactly "true".
+  // Default ports fail closed until S4 supplies concrete stores and an executor.
+  if (exoCapabilitiesEnabled(process.env)) {
+    app.use("/api/exo/v1", createExoMailboxRouter(
+      createUnwiredExoPorts(process.env.FRONTEND_URL ?? "https://localhost:5186"),
+      createExoWakeLimiters(),
+    ));
   }
 
   // W9 / D4 — the process that actually CONSUMES the cohort queues, or nothing at all. Assigned
