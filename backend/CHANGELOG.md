@@ -1,5 +1,11 @@
 # @tinychat/backend
 
+## 0.5.7-beta.9
+
+### Patch Changes
+
+- eb888dd: Add a backend mailbox for Exo sync requests behind `EXO_CAPABILITIES_ENABLED`, which is off by default. The grant verifier now also accepts one exactly scoped Exo grant shape; connector grants are unchanged.
+
 ## 0.5.7-beta.8
 
 ### Patch Changes
