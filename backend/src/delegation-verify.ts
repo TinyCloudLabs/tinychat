@@ -44,9 +44,11 @@ const expected = [
   { service: "kv", path: `${APP_ID}/connectors/tinycloud-transcriber/`, actions: ["tinycloud.kv/get", "tinycloud.kv/put"] },
 ];
 // Exo mailbox grant: exactly these two KV prefixes and abilities. No SQL, no other path, no wildcard.
+export const EXO_REQUESTS_PREFIX = `${APP_ID}/exo/v1/requests/`;
+export const EXO_JOBS_PREFIX = `${APP_ID}/exo/v1/jobs/`;
 export const EXO_SYNC_RESOURCES = [
-  { service: "kv", path: `${APP_ID}/exo/v1/requests/`, actions: ["tinycloud.kv/get", "tinycloud.kv/list", "tinycloud.kv/del"] },
-  { service: "kv", path: `${APP_ID}/exo/v1/jobs/`, actions: ["tinycloud.kv/get", "tinycloud.kv/put", "tinycloud.kv/del"] },
+  { service: "kv", path: EXO_REQUESTS_PREFIX, actions: ["tinycloud.kv/get", "tinycloud.kv/list", "tinycloud.kv/del"] },
+  { service: "kv", path: EXO_JOBS_PREFIX, actions: ["tinycloud.kv/get", "tinycloud.kv/put", "tinycloud.kv/del"] },
 ];
 export type GrantPolicy = "transcript-writer" | "exo-sync";
 // Each policy admits only its own resources. A grant that mixes policies fails the other policy's table.
