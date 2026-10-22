@@ -36,6 +36,12 @@ export interface TinyCloudWebConfig {
   sessionStorage?: ISessionStorage;
   /** SIWE nonce override. If set, `siweConfig.nonce` still wins inside the SDK. */
   nonce?: string;
+  /**
+   * Optional local KV replication. Omit it (the default) and the SDK config is
+   * exactly what it was before replication existed: the key is not present.
+   * Only the web flag in frontend/src/lib/replication sets it.
+   */
+  replication?: TinyCloudWebSdkConfig["replication"];
 }
 
 export interface RestoreTinyCloudWebSessionResult {
@@ -68,6 +74,7 @@ export function createTinyCloudWeb(
     manifest,
     capabilityRequest: config?.capabilityRequest,
     includeAccountRegistryPermissions: config?.includeAccountRegistryPermissions,
+    ...(config?.replication ? { replication: config.replication } : {}),
     autoBootstrapAccount: false,
   };
 
@@ -211,6 +218,7 @@ export async function restoreTinyCloudWebSession(
     manifest,
     capabilityRequest: config?.capabilityRequest,
     includeAccountRegistryPermissions: config?.includeAccountRegistryPermissions,
+    ...(config?.replication ? { replication: config.replication } : {}),
   };
 
   if (config?.provider) {

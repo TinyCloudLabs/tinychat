@@ -31,6 +31,7 @@
     "@tauri-apps/api": "^2.9.0",
     "@tinyboilerplate/client": "workspace:*",
     "@tinyboilerplate/core": "workspace:*",
+    "@tinycloud/replica": "0.3.0",
     "@tinycloud/sdk-core": "3.3.0",
     "@tinycloud/web-sdk": "3.3.0",
     "@xyflow/react": "^12.8.5",

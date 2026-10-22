@@ -39,6 +39,7 @@ import { TranscriptionSettings } from "./TranscriptionSettings";
 import { VoiceNotesTranscriberSettings } from "./VoiceNotesTranscriberSettings";
 import { DebugLogRow } from "./DebugLogRow";
 import { AudioCacheSettings } from "@/capture/AudioCacheSettings";
+import { ReplicationStatusLine } from "../lib/replication/ReplicationStatusLine";
 import { nativeVoiceNotesAvailable } from "../lib/voiceNotes/nativeVoiceNotes";
 import { appPlatform } from "../lib/platform";
 import { useSizeClass } from "../lib/sizeClass";
@@ -210,6 +211,7 @@ export function SettingsPage({
           <DebugLogRow />
           <SectionCard icon={DatabaseIcon} title="Audio storage">
             <AudioCacheSettings />
+            <ReplicationStatusLine tcw={tcw} />
           </SectionCard>
           <SectionCard icon={DatabaseIcon} title="Data">
             <p className="text-xs text-muted-foreground">

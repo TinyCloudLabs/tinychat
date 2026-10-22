@@ -381,8 +381,12 @@ export async function patchVoiceNoteMarkdown(tcw: TinyCloudWeb, sourceId: string
   [JSON.stringify({ note_kv_key: key, note_edited_at: editedAt }), new Date().toISOString(), row.id], checkpoint);
 }
 
+/** Folder holding every immutable audio-free transcript revision of `source`; the replica prefix derives from it. */
+export function transcriptRevKvPrefix(source: string): string {
+  return `${CONNECTORS_KV_PREFIX}/${source}/transcript-rev/`;
+}
 export function transcriptRevKvKey(source: string, id: string, hash: string): string {
-  return `${CONNECTORS_KV_PREFIX}/${source}/transcript-rev/${id}/${hash}`;
+  return `${transcriptRevKvPrefix(source)}${id}/${hash}`;
 }
 function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
@@ -408,7 +412,7 @@ function decodeSentences(raw: unknown): FirefliesSentence[] {
 }
 async function prefersCandidate(tcw: TinyCloudWeb, previous: TranscriptCommit, sentences: FirefliesSentence[],
   hash: string, checkpoint: () => void): Promise<boolean> {
-  const stored = await runOnSpaceLane((signal) => { checkpoint(); return tcw.kv.get(previous.bodyKey, { signal }); },
+  const stored = await runOnSpaceLane((signal) => { checkpoint(); return tcw.kv.get(previous.bodyKey, { signal, source: "network" }); },
     { operation: `KV get ${previous.bodyKey}` });
   if (!stored.ok) throw errorOf(stored);
   const detail = transcriptDetail(sentences) - transcriptDetail(decodeSentences(stored.data.data));
@@ -495,7 +499,7 @@ export async function verifyVoiceNoteTranscript(tcw: TinyCloudWeb, sourceId: str
   checkpoint();
   if (!committed || committed.rev < rev)
     throw new Error("Transcript commit was not durable");
-  const body = await runOnSpaceLane((signal) => { checkpoint(); return tcw.kv.get(committed.bodyKey, { signal }); }, { operation: `KV get ${committed.bodyKey}` });
+  const body = await runOnSpaceLane((signal) => { checkpoint(); return tcw.kv.get(committed.bodyKey, { signal, source: "network" }); }, { operation: `KV get ${committed.bodyKey}` });
   if (!body.ok) throw errorOf(body);
   checkpoint();
   return committed;

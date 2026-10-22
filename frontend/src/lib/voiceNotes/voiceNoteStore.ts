@@ -209,7 +209,7 @@ export function syncRecordingNote(tcw: TinyCloudWeb, id: string,
 
 export async function readRecordingNoteFromSpace(tcw: TinyCloudWeb, id: string): Promise<RecordingNote | null> {
   const key = voiceNoteMarkdownKvKey(id);
-  const result = await withVoiceNoteReadDeadline(`KV get recording note ${key}`, (signal) => tcw.kv.get(key, { signal }));
+  const result = await withVoiceNoteReadDeadline(`KV get recording note ${key}`, (signal) => tcw.kv.get(key, { signal, source: "network" }));
   if (!result.ok) {
     if (/NOT_FOUND|404/i.test(`${result.error.code ?? ""} ${result.error.message}`)) return null;
     throw new Error(`Could not load recording note: ${result.error.message}`);
