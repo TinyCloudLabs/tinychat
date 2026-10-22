@@ -92,4 +92,10 @@ describe("turn budget config parsing", () => {
     expect(parseBudgetPreflightMode("nope")).toBe("log");
     expect(warn.mock.calls[0]?.[0]).toContain("AGENT_CHAT_BUDGET_PREFLIGHT");
   });
+
+  test("empty budget settings are unset: defaults apply without any warning", () => {
+    expect(parseBudgetStopMode("")).toBe("finish_answer");
+    expect(parseBudgetPreflightMode("")).toBe("log");
+    expect(warn).not.toHaveBeenCalled();
+  });
 });
