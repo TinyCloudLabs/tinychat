@@ -99,7 +99,7 @@ function refusedByLedgerPorts(snapshot: ExoLedgerSnapshot): ExoMailboxPorts {
     jobs: { get: async () => undefined, putIfAbsent: unexpected, put: unexpected, list: async () => [], remove: unexpected },
     connectors: { isOn: async () => true, hasFirefliesWebhook: async () => false },
     executor: { start: unexpected },
-    ledger: { snapshot: async () => snapshot, recordStart: unexpected, clearActive: unexpected },
+    ledger: { snapshot: async () => snapshot, recordStart: unexpected, attach: unexpected, clearActive: unexpected },
     now: () => T0,
     frontendOrigin: "https://app.example.test",
   };

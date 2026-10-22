@@ -20,9 +20,24 @@ export const EXO_NAMESPACE = `${APP_ID}/exo/v1`;
 export const EXO_JOB_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 export const EXO_UNAVAILABLE_BODY = { error: "exo_sync_unavailable" } as const;
 
+/** Fixed text per job code. A job record carries one code and its matching message, nothing free-form. */
+export const JOB_MESSAGE = {
+  accepted: "Request accepted.",
+  running: "Sync running.",
+  done: "Sync complete.",
+  unavailable: "Sync unavailable.",
+} as const;
+export type ExoJobCode = keyof typeof JOB_MESSAGE;
+export type ExoJobMessage = (typeof JOB_MESSAGE)[ExoJobCode];
+const EXO_JOB_CODES = Object.keys(JOB_MESSAGE) as ExoJobCode[];
+
 const MINUTE_MS = 60 * 1000;
 const HOUR_MS = 60 * MINUTE_MS;
 const DAY_MS = 24 * HOUR_MS;
+/** A run that has not reported within this window is settled as unavailable so it cannot hold the capability. */
+export const EXO_ACTIVE_JOB_TTL_MS = 30 * MINUTE_MS;
+/** Wakes that may coalesce onto one active run. */
+const ATTACH_LIMIT = 20;
 
 const OWNER_DID_RE = /^did:pkh:eip155:[0-9]+:(0x[0-9a-fA-F]{40})$/;
 const REQUEST_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -46,8 +61,8 @@ export interface ExoJobRecord {
   jobId: string;
   capability: ExoCapability;
   state: ExoJobState;
-  code?: string;
-  message?: string;
+  code: ExoJobCode;
+  message: ExoJobMessage;
   createdAt: string;
   updatedAt: string;
 }
@@ -61,8 +76,8 @@ export interface ConnectorSwitch {
 
 export interface ExecutorUpdate {
   state: "running" | "done" | "error";
-  code?: string;
-  message?: string;
+  /** Fixed-vocabulary code only. The record's message is derived from it. */
+  code: Exclude<ExoJobCode, "accepted">;
 }
 
 export interface SyncExecutor {
@@ -84,13 +99,20 @@ export interface ExoLedgerSnapshot {
   lastStartedAt?: number;
   startsToday: number;
   activeJobId?: string;
+  /** When the active run started. Present only with `activeJobId`. */
+  activeSince?: number;
+  /** Wakes coalesced onto the active run. Present only with `activeJobId`. */
+  attachedJobIds?: string[];
 }
 
-/** Cooldown, daily-cap and coalescing state per owner and capability. */
+/** Cooldown, daily-cap, and coalescing state per owner and capability. */
 export interface ExoLedger {
   snapshot(owner: string, capability: ExoCapability, now: number): Promise<ExoLedgerSnapshot>;
   recordStart(owner: string, capability: ExoCapability, jobId: string, now: number): Promise<void>;
-  clearActive(owner: string, capability: ExoCapability, jobId: string): Promise<void>;
+  /** Adds a coalesced wake to the active run. */
+  attach(owner: string, capability: ExoCapability, jobId: string): Promise<void>;
+  /** Clears the active run only when it is `jobId`. Returns the wakes attached to it. */
+  clearActive(owner: string, capability: ExoCapability, jobId: string): Promise<string[]>;
 }
 
 export interface ExoMailboxPorts {
@@ -108,7 +130,7 @@ export interface ExoMailboxPorts {
 }
 
 export type WakeResult =
-  | { status: 202; body: { jobId: string; state: ExoJobState; code: string; statusKey: string } }
+  | { status: 202; body: { jobId: string; state: ExoJobState; code: ExoJobCode; statusKey: string } }
   | { status: 409; body: Record<string, string> }
   | { status: 429; body: { error: "rate_limited" | "budget_exhausted"; retryAfterSec: number } };
 
@@ -136,23 +158,20 @@ export function parseRequestRecord(value: unknown, capability: ExoCapability): b
   return record.v === 1 && record.capability === capability;
 }
 
-const JOB_REQUIRED_KEYS = ["v", "jobId", "capability", "state", "createdAt", "updatedAt"] as const;
-const JOB_OPTIONAL_KEYS = ["code", "message"] as const;
+const JOB_KEYS = ["v", "jobId", "capability", "state", "code", "message", "createdAt", "updatedAt"] as const;
 
-/** Strict job record. Unknown keys, wrong types, or a bad state make the record unusable. */
+/** Strict job record: exactly these keys, a known capability, state, and code, and the fixed message for that code. */
 export function parseJobRecord(value: unknown): ExoJobRecord | undefined {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
   const keys = Object.keys(value);
-  const allowed = [...JOB_REQUIRED_KEYS, ...JOB_OPTIONAL_KEYS] as readonly string[];
-  if (!JOB_REQUIRED_KEYS.every((key) => keys.includes(key))) return undefined;
-  if (!keys.every((key) => allowed.includes(key))) return undefined;
+  if (keys.length !== JOB_KEYS.length || !JOB_KEYS.every((key) => keys.includes(key))) return undefined;
   const record = value as Record<string, unknown>;
   if (record.v !== 1 || typeof record.jobId !== "string") return undefined;
   if (typeof record.capability !== "string" || !(EXO_CAPABILITIES as readonly string[]).includes(record.capability)) return undefined;
   if (typeof record.state !== "string" || !(EXO_JOB_STATES as readonly string[]).includes(record.state)) return undefined;
+  if (typeof record.code !== "string" || !(EXO_JOB_CODES as readonly string[]).includes(record.code)) return undefined;
+  if (record.message !== JOB_MESSAGE[record.code as ExoJobCode]) return undefined;
   if (typeof record.createdAt !== "string" || typeof record.updatedAt !== "string") return undefined;
-  if (record.code !== undefined && typeof record.code !== "string") return undefined;
-  if (record.message !== undefined && typeof record.message !== "string") return undefined;
   return record as unknown as ExoJobRecord;
 }
 
@@ -175,12 +194,61 @@ async function findRequestCapability(
 function acceptedBody(job: ExoJobRecord): WakeResult {
   return {
     status: 202,
-    body: { jobId: job.jobId, state: job.state, code: job.code ?? "accepted", statusKey: `${EXO_NAMESPACE}/jobs/${job.jobId}` },
+    body: { jobId: job.jobId, state: job.state, code: job.code, statusKey: `${EXO_NAMESPACE}/jobs/${job.jobId}` },
   };
 }
 
 function unavailable(): WakeResult {
   return { status: 409, body: { ...EXO_UNAVAILABLE_BODY } };
+}
+
+/**
+ * Per-owner serialization of wake check-and-start and of run reports. Covers this process only. A
+ * multi-instance deployment needs a durable ledger with an atomic compare-and-set (S4).
+ */
+const ownerLanes = new Map<string, Promise<unknown>>();
+
+function withOwnerLane<T>(owner: string, task: () => Promise<T>): Promise<T> {
+  const run = (ownerLanes.get(owner) ?? Promise.resolve()).then(task);
+  const tail = run.catch(() => undefined);
+  ownerLanes.set(owner, tail);
+  void tail.then(() => {
+    if (ownerLanes.get(owner) === tail) ownerLanes.delete(owner);
+  });
+  return run;
+}
+
+/** Moves a non-terminal job to the update's state and code. Terminal records are never overwritten. */
+async function settle(ports: ExoMailboxPorts, owner: string, jobId: string, update: ExecutorUpdate): Promise<void> {
+  const current = parseJobRecord(await ports.jobs.get(owner, jobId));
+  if (!current || current.state === "done" || current.state === "error") return;
+  const updatedAt = new Date(ports.now()).toISOString();
+  await ports.jobs.put(owner, jobId, {
+    ...current,
+    state: update.state,
+    code: update.code,
+    message: JOB_MESSAGE[update.code],
+    updatedAt,
+  });
+}
+
+/** A run's report updates the run and every wake attached to it. A terminal report releases the run. */
+async function reportRun(
+  ports: ExoMailboxPorts,
+  owner: string,
+  capability: ExoCapability,
+  runId: string,
+  update: ExecutorUpdate,
+): Promise<void> {
+  await withOwnerLane(owner, async () => {
+    const snapshot = await ports.ledger.snapshot(owner, capability, ports.now());
+    const attached = snapshot.activeJobId === runId ? (snapshot.attachedJobIds ?? []) : [];
+    await settle(ports, owner, runId, update);
+    for (const jobId of attached) await settle(ports, owner, jobId, update);
+    if (update.state === "done" || update.state === "error") {
+      await ports.ledger.clearActive(owner, capability, runId);
+    }
+  });
 }
 
 /** Handles a wake. Pre-verification refusals are one uniform 409 and reveal nothing. */
@@ -193,78 +261,94 @@ export async function handleWake(ports: ExoMailboxPorts, body: unknown): Promise
   const capability = await findRequestCapability(ports.requests, owner, requestId);
   if (!capability) return unavailable();
 
-  // Replay: the job id is the request id. A replay returns the existing job, not an error.
-  const existingRaw = await ports.jobs.get(owner, requestId);
-  if (existingRaw !== undefined) {
-    const existing = parseJobRecord(existingRaw);
-    return existing ? acceptedBody(existing) : unavailable();
-  }
-
-  const executor = ports.executor;
-  if (!executor) return unavailable();
-
-  let anyOn = false;
-  for (const source of SOURCES_BY_CAPABILITY[capability]) {
-    if (await ports.connectors.isOn(owner, source)) {
-      anyOn = true;
-      break;
+  // Everything from here to the executor start runs in the owner lane, so two wakes cannot both see "no active run".
+  return withOwnerLane(owner, async () => {
+    // Replay: the job id is the request id. A replay returns the existing job, not an error.
+    const existingRaw = await ports.jobs.get(owner, requestId);
+    if (existingRaw !== undefined) {
+      const existing = parseJobRecord(existingRaw);
+      return existing ? acceptedBody(existing) : unavailable();
     }
-  }
-  if (!anyOn) {
-    if (capability === "sync-meetings") {
-      return { status: 409, body: { error: "connector_off", link: ports.frontendOrigin } };
-    }
-    return { status: 409, body: { error: "connector_off", source: SOURCES_BY_CAPABILITY[capability][0], link: ports.frontendOrigin } };
-  }
 
-  const now = ports.now();
-  const snapshot = await ports.ledger.snapshot(owner, capability, now);
+    const executor = ports.executor;
+    if (!executor) return unavailable();
 
-  if (snapshot.activeJobId !== undefined) {
-    const active = parseJobRecord(await ports.jobs.get(owner, snapshot.activeJobId));
-    if (active) return acceptedBody(active);
-  }
-
-  const rule = COOLDOWN_RULES[capability];
-  if (rule) {
-    if (snapshot.startsToday >= rule.dailyCap) {
-      const nextDay = (Math.floor(now / DAY_MS) + 1) * DAY_MS;
-      return { status: 429, body: { error: "budget_exhausted", retryAfterSec: Math.ceil((nextDay - now) / 1000) } };
-    }
-    if (snapshot.lastStartedAt !== undefined) {
-      const hasWebhook = capability === "sync-fireflies" && (await ports.connectors.hasFirefliesWebhook(owner));
-      const readyAt = snapshot.lastStartedAt + rule.minIntervalMs(hasWebhook);
-      if (now < readyAt) {
-        return { status: 429, body: { error: "rate_limited", retryAfterSec: Math.ceil((readyAt - now) / 1000) } };
+    let anyOn = false;
+    for (const source of SOURCES_BY_CAPABILITY[capability]) {
+      if (await ports.connectors.isOn(owner, source)) {
+        anyOn = true;
+        break;
       }
     }
-  }
-
-  const timestamp = new Date(now).toISOString();
-  const job: ExoJobRecord = { v: 1, jobId: requestId, capability, state: "pending", createdAt: timestamp, updatedAt: timestamp };
-  if (!(await ports.jobs.putIfAbsent(owner, requestId, job))) {
-    const raced = parseJobRecord(await ports.jobs.get(owner, requestId));
-    return raced ? acceptedBody(raced) : unavailable();
-  }
-  await ports.ledger.recordStart(owner, capability, requestId, now);
-
-  const report = async (update: ExecutorUpdate): Promise<void> => {
-    const current = parseJobRecord(await ports.jobs.get(owner, requestId));
-    if (!current) return;
-    const next: ExoJobRecord = { ...current, state: update.state, updatedAt: new Date(ports.now()).toISOString() };
-    if (update.code !== undefined) next.code = update.code;
-    if (update.message !== undefined) next.message = update.message;
-    await ports.jobs.put(owner, requestId, next);
-    if (update.state === "done" || update.state === "error") {
-      await ports.ledger.clearActive(owner, capability, requestId);
+    if (!anyOn) {
+      if (capability === "sync-meetings") {
+        return { status: 409, body: { error: "connector_off", link: ports.frontendOrigin } };
+      }
+      return { status: 409, body: { error: "connector_off", source: SOURCES_BY_CAPABILITY[capability][0], link: ports.frontendOrigin } };
     }
-  };
 
-  void executor.start(job, report).catch(async () => {
-    await report({ state: "error", code: "unavailable" });
+    const now = ports.now();
+    const timestamp = new Date(now).toISOString();
+    const snapshot = await ports.ledger.snapshot(owner, capability, now);
+
+    if (snapshot.activeJobId !== undefined) {
+      if (snapshot.activeSince !== undefined && now - snapshot.activeSince > EXO_ACTIVE_JOB_TTL_MS) {
+        // A run that never reports is settled as unavailable so it cannot hold the capability.
+        const released = await ports.ledger.clearActive(owner, capability, snapshot.activeJobId);
+        for (const jobId of [snapshot.activeJobId, ...released]) {
+          await settle(ports, owner, jobId, { state: "error", code: "unavailable" });
+        }
+      } else {
+        const active = parseJobRecord(await ports.jobs.get(owner, snapshot.activeJobId));
+        if (active) {
+          if ((snapshot.attachedJobIds?.length ?? 0) >= ATTACH_LIMIT) {
+            return { status: 429, body: { error: "rate_limited", retryAfterSec: 60 } };
+          }
+          // The coalesced wake keeps its own record and mirrors the run's state, code, and message.
+          const attached: ExoJobRecord = { ...active, jobId: requestId, createdAt: timestamp, updatedAt: timestamp };
+          if (!(await ports.jobs.putIfAbsent(owner, requestId, attached))) return unavailable();
+          await ports.ledger.attach(owner, capability, requestId);
+          return acceptedBody(attached);
+        }
+      }
+    }
+
+    const rule = COOLDOWN_RULES[capability];
+    if (rule) {
+      if (snapshot.startsToday >= rule.dailyCap) {
+        const nextDay = (Math.floor(now / DAY_MS) + 1) * DAY_MS;
+        return { status: 429, body: { error: "budget_exhausted", retryAfterSec: Math.ceil((nextDay - now) / 1000) } };
+      }
+      if (snapshot.lastStartedAt !== undefined) {
+        const hasWebhook = capability === "sync-fireflies" && (await ports.connectors.hasFirefliesWebhook(owner));
+        const readyAt = snapshot.lastStartedAt + rule.minIntervalMs(hasWebhook);
+        if (now < readyAt) {
+          return { status: 429, body: { error: "rate_limited", retryAfterSec: Math.ceil((readyAt - now) / 1000) } };
+        }
+      }
+    }
+
+    const job: ExoJobRecord = {
+      v: 1,
+      jobId: requestId,
+      capability,
+      state: "pending",
+      code: "accepted",
+      message: JOB_MESSAGE.accepted,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    if (!(await ports.jobs.putIfAbsent(owner, requestId, job))) return unavailable();
+    await ports.ledger.recordStart(owner, capability, requestId, now);
+
+    // Not awaited, and started after the lane task returns. A throw or rejection settles the run as unavailable.
+    void Promise.resolve()
+      .then(() => executor.start(job, (update) => reportRun(ports, owner, capability, requestId, update)))
+      .catch(() => reportRun(ports, owner, capability, requestId, { state: "error", code: "unavailable" }))
+      .catch(() => console.error("[exo] job state update failed"));
+
+    return acceptedBody(job);
   });
-
-  return acceptedBody(job);
 }
 
 /**
@@ -290,9 +374,17 @@ export async function sweepExpiredJobs(
   return removed;
 }
 
-/** In-process ledger. Not durable: a restart resets cooldowns and coalescing. Durable ledger is S4. */
+/** In-process ledger. Not durable: a restart resets cooldowns, coalescing, and active runs. Durable ledger is S4. */
 export function createMemoryExoLedger(): ExoLedger {
-  const entries = new Map<string, { day: number; startsToday: number; lastStartedAt: number; activeJobId?: string }>();
+  type Entry = {
+    day: number;
+    startsToday: number;
+    lastStartedAt: number;
+    activeJobId?: string;
+    activeSince?: number;
+    attachedJobIds: string[];
+  };
+  const entries = new Map<string, Entry>();
   return {
     async snapshot(owner, capability, now) {
       const entry = entries.get(`${owner}|${capability}`);
@@ -302,7 +394,11 @@ export function createMemoryExoLedger(): ExoLedger {
         startsToday: entry.day === today ? entry.startsToday : 0,
         lastStartedAt: entry.lastStartedAt,
       };
-      if (entry.activeJobId !== undefined) snapshot.activeJobId = entry.activeJobId;
+      if (entry.activeJobId !== undefined) {
+        snapshot.activeJobId = entry.activeJobId;
+        snapshot.activeSince = entry.activeSince;
+        snapshot.attachedJobIds = [...entry.attachedJobIds];
+      }
       return snapshot;
     },
     async recordStart(owner, capability, jobId, now) {
@@ -310,11 +406,27 @@ export function createMemoryExoLedger(): ExoLedger {
       const today = Math.floor(now / DAY_MS);
       const previous = entries.get(key);
       const startsToday = previous && previous.day === today ? previous.startsToday : 0;
-      entries.set(key, { day: today, startsToday: startsToday + 1, lastStartedAt: now, activeJobId: jobId });
+      entries.set(key, {
+        day: today,
+        startsToday: startsToday + 1,
+        lastStartedAt: now,
+        activeJobId: jobId,
+        activeSince: now,
+        attachedJobIds: [],
+      });
+    },
+    async attach(owner, capability, jobId) {
+      const entry = entries.get(`${owner}|${capability}`);
+      if (entry?.activeJobId !== undefined) entry.attachedJobIds.push(jobId);
     },
     async clearActive(owner, capability, jobId) {
       const entry = entries.get(`${owner}|${capability}`);
-      if (entry && entry.activeJobId === jobId) entry.activeJobId = undefined;
+      if (!entry || entry.activeJobId !== jobId) return [];
+      const released = entry.attachedJobIds;
+      entry.activeJobId = undefined;
+      entry.activeSince = undefined;
+      entry.attachedJobIds = [];
+      return released;
     },
   };
 }

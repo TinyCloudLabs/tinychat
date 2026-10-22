@@ -188,6 +188,8 @@ describe("Exo wake accepts an exact grant and request", () => {
       jobId: REQ1,
       capability: "sync-google",
       state: "pending",
+      code: "accepted",
+      message: "Request accepted.",
       createdAt: new Date(T0).toISOString(),
       updatedAt: new Date(T0).toISOString(),
     });
@@ -204,15 +206,53 @@ describe("Exo wake accepts an exact grant and request", () => {
     expect(h.runs).toHaveLength(1);
   });
 
-  test("a second request while one job is active returns the active job", async () => {
+  test("a second request while one job is active attaches to it with its own job record", async () => {
     const h = harness();
     h.seed(REQ1, "sync-google");
     h.seed(REQ2, "sync-google");
     await h.wake(REQ1);
-    h.state.now = T0 + 31 * MINUTE;
-    const second = await h.wake(REQ2);
-    expect(second).toMatchObject({ status: 202, body: { jobId: REQ1 } });
+    h.state.now = T0 + 10 * MINUTE;
+    expect(await h.wake(REQ2)).toMatchObject({ status: 202, body: { jobId: REQ2, state: "pending" } });
+    expect(h.job(REQ2)).toMatchObject({ jobId: REQ2, capability: "sync-google", state: "pending" });
     expect(h.runs).toHaveLength(1);
+  });
+});
+
+describe("Exo coalesced wakes share one run", () => {
+  test("two wakes that race for the same owner and capability start one run", async () => {
+    const h = harness();
+    h.seed(REQ1, "sync-google");
+    h.seed(REQ2, "sync-google");
+    const [first, second] = await Promise.all([h.wake(REQ1), h.wake(REQ2)]);
+    expect(first).toMatchObject({ status: 202, body: { jobId: REQ1 } });
+    expect(second).toMatchObject({ status: 202, body: { jobId: REQ2 } });
+    expect(h.runs).toHaveLength(1);
+    expect(h.job(REQ2)).toMatchObject({ jobId: REQ2, capability: "sync-google" });
+  });
+
+  test("a coalesced wake's record follows the run and settles with it", async () => {
+    const h = harness();
+    h.seed(REQ1, "sync-google");
+    h.seed(REQ2, "sync-google");
+    await h.wake(REQ1);
+    await h.wake(REQ2);
+    await h.runs[0].report({ state: "running", code: "running" });
+    expect(h.job(REQ2)).toMatchObject({ state: "running", code: "running" });
+    await h.runs[0].report({ state: "done", code: "done" });
+    expect(h.job(REQ1)).toMatchObject({ state: "done" });
+    expect(h.job(REQ2)).toMatchObject({ state: "done" });
+  });
+
+  test("a run takes at most twenty attached wakes; the next is refused with rate_limited", async () => {
+    const h = harness();
+    const ids = Array.from({ length: 22 }, () => crypto.randomUUID());
+    for (const id of ids) h.seed(id, "sync-google");
+    await h.wake(ids[0]);
+    for (const id of ids.slice(1, 21)) {
+      expect(await h.wake(id)).toMatchObject({ status: 202, body: { jobId: id } });
+    }
+    expect(await h.wake(ids[21])).toEqual({ status: 429, body: { error: "rate_limited", retryAfterSec: 60 } });
+    expect(h.job(ids[21])).toBeUndefined();
   });
 });
 
@@ -234,7 +274,7 @@ describe("Exo per-source cooldowns (TC-1013 D9)", () => {
     h.seed(REQ1, "sync-fireflies");
     h.seed(REQ2, "sync-fireflies");
     await h.wake(REQ1);
-    await h.runs[0].report({ state: "done" });
+    await h.runs[0].report({ state: "done", code: "done" });
     h.state.now = T0 + 30 * MINUTE;
     expect(await h.wake(REQ2)).toEqual({ status: 429, body: { error: "rate_limited", retryAfterSec: 1800 } });
     h.state.now = T0 + HOUR;
@@ -246,7 +286,7 @@ describe("Exo per-source cooldowns (TC-1013 D9)", () => {
     h.seed(REQ1, "sync-fireflies");
     h.seed(REQ2, "sync-fireflies");
     await h.wake(REQ1);
-    await h.runs[0].report({ state: "done" });
+    await h.runs[0].report({ state: "done", code: "done" });
     h.state.now = T0 + HOUR;
     expect(await h.wake(REQ2)).toEqual({ status: 429, body: { error: "rate_limited", retryAfterSec: 5 * 3600 } });
     h.state.now = T0 + 6 * HOUR;
@@ -258,7 +298,7 @@ describe("Exo per-source cooldowns (TC-1013 D9)", () => {
     h.seed(REQ1, "sync-google");
     h.seed(REQ2, "sync-google");
     await h.wake(REQ1);
-    await h.runs[0].report({ state: "done" });
+    await h.runs[0].report({ state: "done", code: "done" });
     h.state.now = T0 + 29 * MINUTE;
     expect(await h.wake(REQ2)).toEqual({ status: 429, body: { error: "rate_limited", retryAfterSec: 60 } });
     h.state.now = T0 + 30 * MINUTE;
@@ -270,7 +310,7 @@ describe("Exo per-source cooldowns (TC-1013 D9)", () => {
     h.seed(REQ1, "sync-google");
     h.seed(REQ2, "sync-google");
     await h.wake(REQ1);
-    await h.runs[0].report({ state: "done" });
+    await h.runs[0].report({ state: "done", code: "done" });
     h.state.now = T0 + MINUTE;
     expect(await h.wake(REQ2)).toEqual({ status: 429, body: { error: "rate_limited", retryAfterSec: 29 * 60 } });
   });
@@ -312,21 +352,31 @@ describe("Exo executor wiring", () => {
     const h = harness();
     h.seed(REQ1, "sync-google");
     await h.wake(REQ1);
-    await h.runs[0].report({ state: "running" });
-    expect(h.job(REQ1)).toMatchObject({ state: "running" });
-    await h.runs[0].report({ state: "error", code: "source_failed", message: "upstream rejected" });
-    expect(h.job(REQ1)).toMatchObject({ state: "error", code: "source_failed", message: "upstream rejected" });
+    await h.runs[0].report({ state: "running", code: "running" });
+    expect(h.job(REQ1)).toMatchObject({ state: "running", code: "running", message: "Sync running." });
+    await h.runs[0].report({ state: "error", code: "unavailable" });
+    expect(h.job(REQ1)).toMatchObject({ state: "error", code: "unavailable", message: "Sync unavailable." });
   });
 
-  test("a put-if-absent race returns the record that won and starts nothing", async () => {
+  test("a lost put-if-absent race fails closed and starts nothing", async () => {
     const h = harness();
     h.seed(REQ1, "sync-google");
-    h.ports.jobs.putIfAbsent = async (owner, jobId, record) => {
-      h.jobs.set(`${owner}|${jobId}`, { ...record, state: "running" });
-      return false;
-    };
-    expect(await h.wake(REQ1)).toMatchObject({ status: 202, body: { jobId: REQ1, state: "running" } });
+    h.ports.jobs.putIfAbsent = async () => false;
+    expect(await h.wake(REQ1)).toEqual(UNIFORM);
     expect(h.runs).toHaveLength(0);
+  });
+});
+
+describe("Exo active run TTL", () => {
+  test("a run that never reports is settled as unavailable after the TTL, and the next wake starts", async () => {
+    const h = harness();
+    h.seed(REQ1, "sync-google");
+    h.seed(REQ2, "sync-google");
+    await h.wake(REQ1);
+    h.state.now = T0 + 31 * MINUTE;
+    expect((await h.wake(REQ2)).status).toBe(202);
+    expect(h.job(REQ1)).toMatchObject({ state: "error", code: "unavailable", message: "Sync unavailable." });
+    expect(h.runs).toHaveLength(2);
   });
 });
 
@@ -336,6 +386,8 @@ describe("Exo job retention sweep", () => {
     jobId,
     capability: "sync-google",
     state: "done",
+    code: "done",
+    message: "Sync complete.",
     createdAt: new Date(updatedAt).toISOString(),
     updatedAt: new Date(updatedAt).toISOString(),
   });
