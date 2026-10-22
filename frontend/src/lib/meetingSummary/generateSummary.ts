@@ -40,8 +40,10 @@ export interface GenerateDeps {
   signal: AbortSignal;
 }
 
-const WHOLE_MAX_TOKENS = 1500;
-const CHUNK_MAX_TOKENS = 800;
+// Output caps (max_output_tokens). The cap covers the model's reasoning tokens as well as the reply's `content`,
+// so each cap leaves room for thinking before the reply. The chat route accepts up to 4096 (backend chat.ts).
+const WHOLE_MAX_TOKENS = 2500;
+const CHUNK_MAX_TOKENS = 1500;
 
 export async function generateSummary(lines: readonly string[], deps: GenerateDeps): Promise<SummaryResult> {
   let calls = 0;
