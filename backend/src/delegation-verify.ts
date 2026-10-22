@@ -27,6 +27,7 @@ export interface GrantInput {
   backendDid: string;
   configuredHost: string;
   now?: number;
+  policy?: GrantPolicy;
 }
 export interface GrantDependencies {
   computeDelegationCid: TinyCloudNode["computeDelegationCid"];
@@ -41,18 +42,30 @@ const expected = [
   { service: "sql", path: `${APP_ID}/connectors`, actions: ["tinycloud.sql/read", "tinycloud.sql/write"] },
   { service: "kv", path: `${APP_ID}/connectors/tinycloud-transcriber/`, actions: ["tinycloud.kv/get", "tinycloud.kv/put"] },
 ];
+// Exo mailbox grant: exactly these two KV prefixes and abilities. No SQL, no other path, no wildcard.
+const exoSyncExpected = [
+  { service: "kv", path: `${APP_ID}/exo/v1/requests/`, actions: ["tinycloud.kv/get", "tinycloud.kv/list", "tinycloud.kv/del"] },
+  { service: "kv", path: `${APP_ID}/exo/v1/jobs/`, actions: ["tinycloud.kv/get", "tinycloud.kv/put", "tinycloud.kv/del"] },
+];
+export type GrantPolicy = "transcript-writer" | "exo-sync";
+// Each policy admits only its own resources. A grant that mixes policies fails the other policy's table.
+const policies: Record<GrantPolicy, { envelopeFormat: string; expected: typeof expected }> = {
+  "transcript-writer": { envelopeFormat: "tinychat.transcript-writer-grant", expected },
+  "exo-sync": { envelopeFormat: "tinychat.exo-sync-grant", expected: exoSyncExpected },
+};
 const verificationCache = new Map<string, { verified: VerifiedTranscriptWriter; until: number }>();
 
-export function verificationCacheKey(address: string, envelope: string, backendDid: string, configuredHost: string): string {
-  return sha256(JSON.stringify({ address: address.toLowerCase(), envelopeSha256: sha256(envelope), backendDid, configuredHost, policyHash: backendDelegationPolicyHash(backendDid) }));
+export function verificationCacheKey(address: string, envelope: string, backendDid: string, configuredHost: string, policy: GrantPolicy = "transcript-writer"): string {
+  return sha256(JSON.stringify({ address: address.toLowerCase(), envelopeSha256: sha256(envelope), backendDid, configuredHost, policy, policyHash: backendDelegationPolicyHash(backendDid) }));
 }
 /** Invalidate a previously verified stored envelope when its grant is replaced or revoked. */
-export function evictStoredGrantVerification(address: string, envelope: string, backendDid: string, configuredHost: string): void {
-  verificationCache.delete(verificationCacheKey(address, envelope, backendDid, configuredHost));
+export function evictStoredGrantVerification(address: string, envelope: string, backendDid: string, configuredHost: string, policy?: GrantPolicy): void {
+  verificationCache.delete(verificationCacheKey(address, envelope, backendDid, configuredHost, policy));
 }
 
 export async function verifyTranscriptWriterGrant(input: GrantInput, deps: GrantDependencies): Promise<GrantResult> {
   const now = input.now ?? Date.now();
+  const policyExpected = policies[input.policy ?? "transcript-writer"].expected;
   let bundle: unknown;
   try { bundle = JSON.parse(input.serialized); } catch { return failure("unsupported_bundle_shape"); }
   if (!isRecord(bundle) || bundle.format === "tinycloud.delegation-bundle" || Array.isArray(bundle.delegations)) return failure("unsupported_bundle_shape");
@@ -96,7 +109,7 @@ export async function verifyTranscriptWriterGrant(input: GrantInput, deps: Grant
     // The URI's space is signed and must match the SIWE-derived user space exactly.
     if (!uri.startsWith(`${spaceId}/`)) return failure("foreign_space_delegation");
     const suffix = uri.slice(spaceId.length + 1);
-    const target = expected.find((entry) => suffix === `${entry.service}/${entry.path}`);
+    const target = policyExpected.find((entry) => suffix === `${entry.service}/${entry.path}`);
     if (!target) return failure("overbroad_delegation");
     if (!isRecord(abilities)) return failure("overbroad_delegation");
     const granted = Object.keys(abilities);
@@ -111,18 +124,18 @@ export async function verifyTranscriptWriterGrant(input: GrantInput, deps: Grant
     })) return failure("overbroad_delegation");
     resources.push({ service: target.service, space: spaceId, path: target.path, actions: [...target.actions] });
   }
-  if (resources.length !== expected.length) return failure("insufficient_delegation");
+  if (resources.length !== policyExpected.length) return failure("insufficient_delegation");
   if (typeof payload.exp !== "number" || payload.exp * 1000 <= now + 60_000) return failure("expired");
   if (payload.exp * 1000 > Math.min(sessionExpiry, now + 30 * 86_400_000 + 300_000)) return failure("expiry_too_long");
   if (payload.nbf !== undefined && (typeof payload.nbf !== "number" || payload.nbf * 1000 > now + 60_000)) return failure("not_yet_valid");
   return { ok: true, verified: { cid: bundle.cid, authorization, ownerAddress: session.address.toLowerCase(), chainId: session.chainId, spaceId, sessionDid, backendDid: input.backendDid, resources, expiresAt: new Date(payload.exp * 1000) } };
 }
 
-export async function parseStoredGrant(address: string, envelope: string, options: { backendDid: string; configuredHost: string; now?: number }, deps: GrantDependencies): Promise<GrantResult> {
+export async function parseStoredGrant(address: string, envelope: string, options: { backendDid: string; configuredHost: string; now?: number; policy?: GrantPolicy }, deps: GrantDependencies): Promise<GrantResult> {
   let parsed: unknown;
   try { parsed = JSON.parse(envelope); } catch { return failure("unsupported_bundle_shape"); }
-  if (!isRecord(parsed) || parsed.format !== "tinychat.transcript-writer-grant" || parsed.v !== 1 || typeof parsed.delegation !== "string" || typeof parsed.siwe !== "string" || typeof parsed.signature !== "string") return failure("unsupported_bundle_shape");
-  const key = verificationCacheKey(address, envelope, options.backendDid, options.configuredHost);
+  if (!isRecord(parsed) || parsed.format !== policies[options.policy ?? "transcript-writer"].envelopeFormat || parsed.v !== 1 || typeof parsed.delegation !== "string" || typeof parsed.siwe !== "string" || typeof parsed.signature !== "string") return failure("unsupported_bundle_shape");
+  const key = verificationCacheKey(address, envelope, options.backendDid, options.configuredHost, options.policy);
   const now = options.now ?? Date.now();
   const cached = verificationCache.get(key);
   if (cached && cached.until > now) {
@@ -134,7 +147,7 @@ export async function parseStoredGrant(address: string, envelope: string, option
     if (verified.expiresAt.getTime() > now) return { ok: true, verified };
     verificationCache.delete(key);
   }
-  const result = await verifyTranscriptWriterGrant({ serialized: parsed.delegation, siwe: parsed.siwe, signature: parsed.signature, address, backendDid: options.backendDid, configuredHost: options.configuredHost, now }, deps);
+  const result = await verifyTranscriptWriterGrant({ serialized: parsed.delegation, siwe: parsed.siwe, signature: parsed.signature, address, backendDid: options.backendDid, configuredHost: options.configuredHost, now, policy: options.policy }, deps);
   if (result.ok) verificationCache.set(key, { verified: result.verified, until: Math.min(result.verified.expiresAt.getTime(), now + 600_000) });
   return result;
 }
