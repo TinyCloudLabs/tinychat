@@ -263,6 +263,8 @@ Repository **variables** (all optional — defaults shown):
 | `PAYWALL_ENABLED` | `false`. This and every Stripe/credit/ledger row below may live as a repo **secret** or **variable** — secrets win (`docs/stripe-setup.md`). |
 | `STRIPE_PRICE_PLUS_MONTHLY` / `STRIPE_PRICE_PLUS_YEARLY` / `STRIPE_PRICE_PRO_MONTHLY` / `STRIPE_PRICE_PRO_YEARLY` | _(empty — Stripe price ids `price_…`; see `docs/stripe-setup.md`)_ |
 | `CREDIT_BUDGET_FREE` / `CREDIT_BUDGET_PLUS_WEEKLY` / `CREDIT_BUDGET_PRO_WEEKLY` | _(empty — code defaults in `backend/src/billing/tiers.ts`)_ |
+| `AGENT_CHAT_BUDGET_STOP_MODE` | `finish_answer` (values: `finish_answer`, `hard_stop`, `predict_next_round`, `off`; invalid values warn and use the default; see `docs/credits.md`) |
+| `AGENT_CHAT_BUDGET_PREFLIGHT` | `log` (values: `log`, `enforce`, `off`; `enforce` returns 402 `credit_budget_exceeded` before a turn starts; see `docs/credits.md`) |
 | `LEDGER_SERVICE_URL` | _(empty — the ledger client is disabled when unset)_ |
 | `LEDGER_AUTHORITATIVE` | `false` (workflow default — flipping ledger authority is a deliberate cutover action, not part of a routine deploy) |
 | `LEDGER_OUTAGE_POLICY` | `bounded_k` |

@@ -1,5 +1,11 @@
 # @tinychat/backend
 
+## 0.5.7-beta.5
+
+### Patch Changes
+
+- fa7f6d8: Agent chat turns now stay within the remaining daily credit budget. A pre-flight check compares remaining credits against the minimum turn cost (log-only by default, `AGENT_CHAT_BUDGET_PREFLIGHT=enforce` returns 402). An in-turn check on Eliza usage frames stops the turn according to `AGENT_CHAT_BUDGET_STOP_MODE`: `finish_answer` (default) finishes the answer in progress, bounded to one extra step; `hard_stop`, `predict_next_round`, and `off` are also available.
+
 ## 0.5.7-beta.4
 
 ### Patch Changes

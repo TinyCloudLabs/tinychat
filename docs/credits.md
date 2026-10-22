@@ -62,6 +62,17 @@ mean per-month) are intentionally **not read** — a stale monthly value left in
 deploy config must never silently apply to the weekly window. Old envs are
 ignored → defaults apply; call this out in deploy notes when rolling out.
 
+## Per-turn budget checks
+
+An agent chat turn is kept within the remaining credit budget. Two env vars control this:
+
+| Env var | Values | Default | Effect |
+|---|---|---|---|
+| `AGENT_CHAT_BUDGET_STOP_MODE` | `finish_answer`, `hard_stop`, `predict_next_round`, `off` | `finish_answer` | In-turn check on usage frames. `finish_answer` finishes the answer in progress, bounded to one extra step. `hard_stop` stops at the first crossing. `predict_next_round` stops when accrued cost plus the last round's cost reaches the remaining budget. `off` disables the in-turn check. |
+| `AGENT_CHAT_BUDGET_PREFLIGHT` | `log`, `enforce`, `off` | `log` | Check before a turn starts. `log` records the result only. `enforce` returns HTTP 402 `credit_budget_exceeded`. `off` skips the check. |
+
+Invalid values log a warning and fall back to the default. A turn stopped by the in-turn check ends with the stream error code `budget_exhausted`; text produced before the stop remains visible.
+
 ## Paid windows are anchored, not calendar
 
 Paid tiers use a **rolling 7-day window anchored to the subscription's Stripe

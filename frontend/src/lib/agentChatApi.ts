@@ -85,6 +85,7 @@ export type AgentStreamErrorCode =
   | "interpretation_failed"
   | "interpretation_timeout"
   | "result_size_limit"
+  | "budget_exhausted"
   | "agent_failed";
 
 /** Expected stream failures carry only bounded codes and safe display copy. */
@@ -102,7 +103,9 @@ export class AgentStreamError extends Error {
               ? "The model service returned an incomplete reply. Please try again."
               : code === "result_size_limit"
                 ? "The response was too large to process safely. Try a smaller request or fewer meetings."
-                : "The connection ended before the reply finished. You can try again.");
+                : code === "budget_exhausted"
+                  ? "You've reached today's credit limit, so this reply stopped early. What's below is what was produced before the limit."
+                  : "The connection ended before the reply finished. You can try again.");
     this.name = "AgentStreamError";
   }
 }
@@ -294,7 +297,7 @@ export async function* streamAgentChat(
             const code = json.stream_error.code;
             throw new AgentStreamError(
               code === "turn_timeout" || code === "upstream_incomplete" || code === "upstream_failed" || code === "interpretation_failed"
-                || code === "interpretation_timeout" || code === "result_size_limit"
+                || code === "interpretation_timeout" || code === "result_size_limit" || code === "budget_exhausted"
                 ? code : "agent_failed",
             );
           }

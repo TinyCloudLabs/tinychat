@@ -42,7 +42,7 @@ export interface AgentTaskFinal extends AgentTaskUsage {
   answerIsProviderVerbatim: boolean;
 }
 
-export type AgentTaskErrorCode = "task_unavailable" | "agent_failed" | "upstream_incomplete" | "routing_mismatch" | "result_size_limit" | "turn_timeout";
+export type AgentTaskErrorCode = "task_unavailable" | "agent_failed" | "upstream_incomplete" | "routing_mismatch" | "result_size_limit" | "turn_timeout" | "budget_exhausted";
 export type AgentTaskCancelReason = "client_cancelled" | "turn_timeout" | "transport_failed";
 export interface AgentTaskResult {
   accepted: boolean;
@@ -61,6 +61,8 @@ export interface AgentTaskCallbacks {
   /** Optional activity may be dropped by returning false without failing the turn. */
   onActivity?: (event: AgentTaskActivity) => void | boolean;
   onDelegationError?: (code: string) => void | boolean;
+  /** Called after each usage checkpoint; returning "budget_exhausted" cancels the turn and reports that error code. */
+  onUsage?: (usage: AgentTaskUsage) => "budget_exhausted" | void;
 }
 
 const MAX_FRAME_BYTES = 128 * 1024;
@@ -141,10 +143,10 @@ export function createAgentTaskClient(config: { baseUrl: string; apiKey: string;
     let answerCharacters = 0;
     let streamedNonempty = false;
 
-    const cancel = (reason: AgentTaskCancelReason) => {
+    const cancel = (reason: AgentTaskCancelReason, code?: AgentTaskErrorCode) => {
       if (settled || result.cancelled) return;
       result.cancelled = true;
-      result.errorCode ??= reason === "turn_timeout" ? "turn_timeout" : "agent_failed";
+      result.errorCode ??= code ?? (reason === "turn_timeout" ? "turn_timeout" : "agent_failed");
       if (!submitted) { transport.abort(); return; }
       graceTimer = setTimeout(() => { cancellation.abort(); transport.abort(); }, ACCOUNTING_GRACE_MS);
       // The cancel request shares the independent grace; it does not inherit the browser signal.
@@ -239,6 +241,12 @@ export function createAgentTaskClient(config: { baseUrl: string; apiKey: string;
         default: invalid();
       }
       if (nextUsage) result.usage = nextUsage;
+      if (value.type === "usage" && callbacks.onUsage) {
+        try {
+          const stop = callbacks.onUsage(nextUsage!);
+          if (stop) cancel("client_cancelled", stop);
+        } catch { cancel("transport_failed"); }
+      }
       lastSeq = value.seq as number;
       lastData = data;
     }
