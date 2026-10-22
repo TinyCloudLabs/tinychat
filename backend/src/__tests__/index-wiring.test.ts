@@ -671,6 +671,8 @@ const { createApiBodyParser } = load("./body-parsing.ts");
 const { createTranscriberWebhookRouter } = load("./routes/transcriber-webhook.ts");
 const { createGoogleOAuthRouter, normalizeAppOrigin } = load("./routes/google-oauth.ts");
 const { createServerInfoRouter } = load("./routes/server-info.ts");
+const exoMailbox = load("./exo/mailbox.ts");
+const exoGrant = load("./routes/exo-grant.ts");
 const { ASSEMBLYAI_HOSTED_MOUNT, createAssemblyAiHostedRouter } = load("./routes/assemblyai-hosted.ts");
 const { createPrivateCloudTranscriptionRouter } = load("./routes/private-cloud-transcription.ts");
 
@@ -808,10 +810,16 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
     "./middleware/auth.js": { createAuthMiddleware: auth },
     "./services/ingest-nudge.js": { createIngestOnDelivery: noop },
     "./rate-limits.js": { applyRateLimiters: () => ({ globalRoutes: { top: () => ({}) }, paidChatLimiter: noop }), logGlobalBucketRoutes: noop },
-    // TC-1013: the Exo mailbox is off in this harness; the flag is read at startup.
-    "./exo/mailbox.js": { exoCapabilitiesEnabled: () => false },
+    // TC-1013 S4b: the real flag parser reads the harness env, so the flag is tested, not stubbed.
+    "./exo/mailbox.js": { exoCapabilitiesEnabled: (env: Record<string, string | undefined>) => exoMailbox.exoCapabilitiesEnabled(env, () => {}) },
+    // TC-1013 S4b: the real grant router, so a flag-on request reaches auth instead of 404.
+    "./routes/exo-grant.js": { createExoGrantRouter: (config: Record<string, unknown>) => exoGrant.createExoGrantRouter({ ...config, node: { computeDelegationCid: () => {} } } as never) },
     // TC-1013 S4b: owner teardown wiring builds the grant opener at startup, outside the flag.
-    "./exo/stores.js": { createOwnerGrantOpener: () => async () => null },
+    "./exo/stores.js": { createOwnerGrantOpener: () => async () => null, createExoStorePorts: () => ({}) },
+    // TC-1013 S4b: flag-on startup builds these; this test only checks the grant mount.
+    "./exo/wake-intake.js": { WakeQueue: class WakeQueue { async drain() {} } },
+    "./exo/retention-sweep.js": { startExoRetentionSweepTimer: () => ({ stop: async () => {} }) },
+    "./routes/exo-mailbox.js": { createExoMailboxRouter: router },
     // TC-1013 S4b: startup wires the grant-holder index and tracked grant store outside the flag.
     "./exo/grant-holders.js": { GrantHolderIndex: function GrantHolderIndex() {}, createTrackedGrantStore: (store: unknown) => store },
     "./security.js": { applySecurityDefaults: noop },
@@ -928,6 +936,15 @@ describe("backend entry-point HTTP and lifecycle guards", () => {
     const boot = await bootIndex();
     expect((await fetch(boot.url! + "/api/exo/v1/grant")).status).toBe(404);
     expect((await post(boot.url!, "/api/exo/v1/grant", "{}")).status).toBe(404);
+  });
+
+  test("exo grant route mounts only for the exact flag value 'true' (real parser)", async () => {
+    for (const value of ["TRUE", "1", " true", "false", ""]) {
+      const off = await bootIndex({ EXO_CAPABILITIES_ENABLED: value });
+      expect((await post(off.url!, "/api/exo/v1/grant", "{}")).status).toBe(404);
+    }
+    const on = await bootIndex({ EXO_CAPABILITIES_ENABLED: "true" });
+    expect((await post(on.url!, "/api/exo/v1/grant", "{}")).status).toBe(401);
   });
 
   test("PTX webhook is dark by default and fails closed when armed without its receiver secret", async () => {
