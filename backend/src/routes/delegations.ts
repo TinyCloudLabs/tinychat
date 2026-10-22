@@ -8,8 +8,8 @@ import { activateVerifiedDelegation, DelegationActivationError, normalizeDid } f
 import { TenantCoordinator } from "../services/calendar-autojoin-store.js";
 
 export const MAX_SERIALIZED_DELEGATION_BYTES = 64 * 1024;
-const MAX_SIWE_BYTES = 16 * 1024;
-const MAX_SIGNATURE_BYTES = 1024;
+export const MAX_SIWE_BYTES = 16 * 1024;
+export const MAX_SIGNATURE_BYTES = 1024;
 
 interface DelegationRoutesConfig {
   backendDid: string;
@@ -166,7 +166,7 @@ export function createDelegationRouter(config: DelegationRoutesConfig) {
   return router;
 }
 
-function storedDelegationMatchesBackend(
+export function storedDelegationMatchesBackend(
   stored: { policyHash?: string; delegateDid?: string },
   backendDid: string,
 ): boolean {
@@ -178,7 +178,7 @@ function storedDelegationMatchesBackend(
 }
 
 
-function requireUser(req: Request, res: Response): { address: string } | null {
+export function requireUser(req: Request, res: Response): { address: string } | null {
   if (!req.user) {
     res
       .status(401)
