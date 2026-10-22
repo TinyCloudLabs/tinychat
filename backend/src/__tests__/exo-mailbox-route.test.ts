@@ -65,6 +65,41 @@ describe("Exo wake route refusals are the uniform 409", () => {
   });
 });
 
+/** Ports that verify a wake for REQ1, then fail the first store write in startWake. */
+function verifiedPorts(): ExoMailboxPorts {
+  const base = createUnwiredExoPorts("https://app.example.test");
+  return {
+    ...base,
+    grants: { isActive: async () => true },
+    requests: {
+      get: async (_owner, path) => (path.endsWith(`/requests/sync-google/${REQ1}`) ? { v: 1, capability: "sync-google" } : undefined),
+    },
+    connectors: { isOn: async () => true, hasFirefliesWebhook: async () => false },
+    executor: { start: async () => undefined },
+    jobs: {
+      ...base.jobs,
+      get: async () => undefined,
+      putIfAbsent: async () => {
+        throw new Error("store offline at /internal/db");
+      },
+    },
+  };
+}
+
+describe("Exo wake route store failure", () => {
+  test("a store failure while starting returns the uniform 409 with no stack or error text", async () => {
+    await withWakeServer(async (base) => {
+      const response = await post(base, JSON.stringify({ owner: OWNER_DID, requestId: REQ1 }));
+      const text = await response.text();
+      expect(response.status).toBe(409);
+      expect(JSON.parse(text)).toEqual(UNIFORM);
+      expect(text).not.toContain("Error");
+      expect(text).not.toContain("store offline");
+      expect(text).not.toContain("<");
+    }, verifiedPorts());
+  });
+});
+
 describe("Exo wake route per-owner limit", () => {
   test("the 31st verified wake for one owner in a minute is 429 with Retry-After", async () => {
     // Each verified wake is refused by the 30-min cooldown, a 429 that carries retryAfterSec.

@@ -44,15 +44,18 @@ export function createExoMailboxRouter(
       next(error);
     }
   };
-  router.post("/requests", limiters.ip, strictBody, verify, limiters.owner, async (_req, res, next) => {
+  router.post("/requests", limiters.ip, strictBody, verify, limiters.owner, async (_req, res) => {
     try {
       const result = await startWake(ports, res.locals.exoWake as VerifiedWake);
       // Every 429 carries Retry-After in seconds: the same value as the body's retryAfterSec.
       if (result.status === 429) res.setHeader("Retry-After", String(result.body.retryAfterSec));
       else stripRateLimitHeaders(res);
       res.status(result.status).json(result.body);
-    } catch (error) {
-      next(error);
+    } catch {
+      // A store failure while starting is the uniform unavailable answer: no status, stack, or error text.
+      console.error("[exo] wake unavailable");
+      stripRateLimitHeaders(res);
+      res.status(409).json({ ...EXO_UNAVAILABLE_BODY });
     }
   });
   return router;
