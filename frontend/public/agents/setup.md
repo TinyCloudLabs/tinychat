@@ -11,8 +11,8 @@ For **OpenCode 1.18.31**, start the direct terminal UI with `opencode` or `openc
 Install the CLI and both skills in this order. Run sequentially, with no background or parallel commands. Inspect any existing same-named skill before replacing it.
 
 ```sh
-npm install --global @tinycloud/cli@0.10.0
-npx --yes skills@1.7.0 add https://registry.npmjs.org/@tinycloud/cli/-/cli-0.10.0.tgz --skill tc-cli --global --copy --agent opencode --yes
+npm install --global @tinycloud/cli@1.3.0
+npx --yes skills@1.7.0 add https://registry.npmjs.org/@tinycloud/cli/-/cli-1.3.0.tgz --skill tc-cli --global --copy --agent opencode --yes
 npx --yes skills@1.7.0 add https://tinycloud.chat/agents/tinychat-retrieval/0.1.1-onboarding.24/tinychat-retrieval-0.1.1-onboarding.24.tgz --skill tinychat-retrieval --global --copy --agent opencode --yes
 ```
 
@@ -29,8 +29,8 @@ The adapter adds a local plugin loader without changing model/provider settings.
 For **Codex or Claude Code**, replace `CLIENT` below with `codex` or `claude-code`. These clients use the private-file sign-in path in the installed setup reference; they do not use OpenCode's chat-paste adapter.
 
 ```sh
-npm install --global @tinycloud/cli@0.10.0
-npx --yes skills@1.7.0 add https://registry.npmjs.org/@tinycloud/cli/-/cli-0.10.0.tgz --skill tc-cli --global --copy --agent CLIENT --yes
+npm install --global @tinycloud/cli@1.3.0
+npx --yes skills@1.7.0 add https://registry.npmjs.org/@tinycloud/cli/-/cli-1.3.0.tgz --skill tc-cli --global --copy --agent CLIENT --yes
 npx --yes skills@1.7.0 add https://tinycloud.chat/agents/tinychat-retrieval/0.1.1-onboarding.24/tinychat-retrieval-0.1.1-onboarding.24.tgz --skill tinychat-retrieval --global --copy --agent CLIENT --yes
 ```
 
