@@ -18,7 +18,6 @@ import { THREADS_SQL_DB_NAME } from "./threadKeys";
 import {
   type OwnedShareIndexEntry,
   isShareId,
-  isSnapshotPath,
   listShareIndexKeys,
   parseKvValue,
   parseOwnedShareIndexEntry,
@@ -32,6 +31,8 @@ const SNAPSHOT_SHARE_VERSION = 2;
 const SNAPSHOT_FORMAT = "tinychat.share.snapshot";
 const SNAPSHOT_VERSION = 1;
 const SNAPSHOT_MAX_BYTES = 256 * 1024;
+// Node-side cap on the viewer read: the snapshot cap plus headroom for the response envelope.
+const SNAPSHOT_RESPONSE_MAX_BYTES = SNAPSHOT_MAX_BYTES + 64 * 1024;
 const SHARE_TOKEN_PREFIX = "tcchat1:";
 const STORAGE_KEY = "tinychat:shared-with-me:v1";
 const DEFAULT_SHARE_DURATION_DAYS = 7;
@@ -145,11 +146,11 @@ export function decodeTinychatShareToken(token: string): AnyTinychatSharePayload
     common &&
     candidate.version === SNAPSHOT_SHARE_VERSION &&
     isShareId(candidate.id) &&
-    isSnapshotPath(candidate.key) &&
     typeof candidate.kv === "object" &&
     candidate.kv !== null &&
-    // The viewer reads `kv.path` (the path the grant covers), so that path must be a snapshot.
-    isSnapshotPath((candidate.kv as { path?: unknown }).path);
+    // The viewer reads `kv.path`, so the grant path must be exactly this share's snapshot key.
+    candidate.key === snapshotKeyFor(candidate.id) &&
+    (candidate.kv as { path?: unknown }).path === candidate.key;
   if (!legacy && !snapshot) {
     throw new Error("Unsupported TinyCloud Chat share link");
   }
@@ -400,35 +401,47 @@ export async function listOwnedTinychatShares(tcw: TinyCloudWeb): Promise<OwnedT
   return shares.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
-export async function revokeOwnedTinychatShare(tcw: TinyCloudWeb, shareId: string): Promise<void> {
-  const indexKey = shareIndexKeyFor(shareId);
-  const res = await tcw.kv.get(indexKey, { source: "network" });
-  if (!res.ok) throw new Error(res.error.message);
-  const entry = parseOwnedShareIndexEntry(res.data.data);
-  if (!entry) throw new Error("This share could not be read");
+// Stage a stop failed in. Selects the owner-facing message.
+// "revoke": nothing was deleted; the link still works and the owner can retry.
+// "cleanup": the grant was revoked; the owner's copy or index entry could not be removed.
+export type ShareStopStage = "revoke" | "cleanup";
 
-  // Revoke first: if it fails, nothing is deleted and the owner can retry.
-  const revoked = await tcw.revokeDelegation(entry.cid);
-  if (!revoked.ok) throw new Error(revoked.error.message);
-  const deleted = await tcw.kv.delete(entry.key);
-  if (!deleted.ok) throw new Error(deleted.error.message);
-  const removedIndex = await tcw.kv.delete(indexKey);
-  if (!removedIndex.ok) throw new Error(removedIndex.error.message);
-  writeStoredTinychatShares(listStoredTinychatShares().filter((share) => share.id !== shareId));
+export type ShareStopResult = { ok: true } | { ok: false; stage: ShareStopStage };
+
+const SHARE_STOP_MESSAGES: Record<ShareStopStage, string> = {
+  revoke: "Could not stop this share. It is still active. Try again.",
+  cleanup: "Could not finish stopping this share. Try again.",
+};
+
+// Owner-facing text for a failed stop. SDK error text is never shown.
+export function shareStopFailureMessage(stage: ShareStopStage): string {
+  return SHARE_STOP_MESSAGES[stage];
 }
 
-export const SHARE_STOP_FAILED_MESSAGE = "Could not stop this share. Try again.";
-
-// Owner UI entry point. Returns a fixed message so SDK error text is never shown to the owner.
+// Owner UI entry point. Revoke runs first, so a failed revoke deletes nothing.
 export async function stopOwnedTinychatShare(
   tcw: TinyCloudWeb,
   shareId: string,
-): Promise<{ ok: true } | { ok: false; message: string }> {
+): Promise<ShareStopResult> {
+  let stage: ShareStopStage = "revoke";
   try {
-    await revokeOwnedTinychatShare(tcw, shareId);
+    const indexKey = shareIndexKeyFor(shareId);
+    const res = await tcw.kv.get(indexKey, { source: "network" });
+    if (!res.ok) return { ok: false, stage };
+    const entry = parseOwnedShareIndexEntry(res.data.data);
+    if (!entry) return { ok: false, stage };
+
+    const revoked = await tcw.revokeDelegation(entry.cid);
+    if (!revoked.ok) return { ok: false, stage };
+    stage = "cleanup";
+    const deleted = await tcw.kv.delete(entry.key);
+    if (!deleted.ok) return { ok: false, stage };
+    const removedIndex = await tcw.kv.delete(indexKey);
+    if (!removedIndex.ok) return { ok: false, stage };
+    writeStoredTinychatShares(listStoredTinychatShares().filter((share) => share.id !== shareId));
     return { ok: true };
   } catch {
-    return { ok: false, message: SHARE_STOP_FAILED_MESSAGE };
+    return { ok: false, stage };
   }
 }
 
@@ -549,12 +562,19 @@ function serializedBytes(raw: unknown): number {
   return new TextEncoder().encode(text).byteLength;
 }
 
-// Reads the path named by `share.kv.path`. `openKv` is injectable for tests.
-async function loadSnapshotThread(share: TinychatSnapshotSharePayload, openKv: SnapshotKvOpener): Promise<ThreadDoc> {
+// Reads `share.kv.path`. Decode has already bound that path to this share id.
+// `openKv` is injectable for tests.
+export async function readSnapshotFromShare(
+  share: TinychatSnapshotSharePayload,
+  openKv: SnapshotKvOpener,
+): Promise<ThreadDoc> {
   const kv = await openKv(share);
-  const res = await kv.get(share.kv.path, { source: "network" });
+  const res = await kv.get(share.kv.path, {
+    source: "network",
+    maxResponseBytes: SNAPSHOT_RESPONSE_MAX_BYTES,
+  });
   if (!res.ok) throw new Error("This shared chat was not found");
-  // The SDK download takes no size option, so check the size before parsing.
+  // Second size check on the parsed value, after the node-side cap.
   if (serializedBytes(res.data.data) > SNAPSHOT_MAX_BYTES) {
     throw new Error("This shared chat could not be read");
   }
@@ -617,7 +637,7 @@ export async function loadSharedThreadFromToken(
 ): Promise<ThreadDoc> {
   const share = saveTinychatShareToken(token);
   if (share.version === SNAPSHOT_SHARE_VERSION) {
-    return loadSnapshotThread(share, openKv);
+    return readSnapshotFromShare(share, openKv);
   }
   const sql = await createSharedSql(share);
   const thread = await loadThreadFromSql(sql, share.threadId);

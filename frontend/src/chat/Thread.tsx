@@ -61,6 +61,7 @@ import {
   createTinychatShareLink,
   findStoredTinychatShareForThread,
   listOwnedTinychatShares,
+  shareStopFailureMessage,
   stopOwnedTinychatShare,
   type OwnedTinychatShare,
   type StoredTinychatShare,
@@ -331,7 +332,7 @@ const ShareThreadProvider: FC<{ tcw: TinyCloudWeb; children: React.ReactNode }> 
     try {
       const stopped = await stopOwnedTinychatShare(tcw, shareId);
       if (!stopped.ok) {
-        setError(stopped.message);
+        setError(shareStopFailureMessage(stopped.stage));
         return;
       }
       setShare((current) => (current?.id === shareId ? null : current));

@@ -21,11 +21,6 @@ export function isShareId(value: unknown): value is string {
   return typeof value === "string" && UUID_PATTERN.test(value);
 }
 
-// True only for `<SNAPSHOT_KEY_PREFIX><uuid>`: no traversal, extra segments, or other folders.
-export function isSnapshotPath(path: unknown): path is string {
-  return typeof path === "string" && path.startsWith(SNAPSHOT_KEY_PREFIX) && isShareId(path.slice(SNAPSHOT_KEY_PREFIX.length));
-}
-
 export function snapshotKeyFor(shareId: string): string {
   return `${SNAPSHOT_KEY_PREFIX}${shareId}`;
 }
