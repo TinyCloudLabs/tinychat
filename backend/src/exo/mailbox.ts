@@ -24,8 +24,8 @@ const MINUTE_MS = 60 * 1000;
 const HOUR_MS = 60 * MINUTE_MS;
 const DAY_MS = 24 * HOUR_MS;
 
-const OWNER_RE = /^0x[0-9a-fA-F]{40}$/;
-const REQUEST_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+const OWNER_DID_RE = /^did:pkh:eip155:[0-9]+:(0x[0-9a-fA-F]{40})$/;
+const REQUEST_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 const SOURCES_BY_CAPABILITY: Record<ExoCapability, readonly ConnectorSource[]> = {
   "sync-meetings": ["fireflies", "google"],
@@ -117,14 +117,15 @@ function hasExactKeys(value: object, keys: readonly string[]): boolean {
   return actual.length === keys.length && keys.every((key) => actual.includes(key));
 }
 
-/** Strict wake body: exactly `{owner, requestId}`. Anything else is `undefined`. */
+/** Strict wake body: exactly `{owner, requestId}`; owner is a `did:pkh:eip155` DID. Anything else is `undefined`. */
 export function parseWakeBody(body: unknown): { owner: string; requestId: string } | undefined {
   if (typeof body !== "object" || body === null || Array.isArray(body)) return undefined;
   if (!hasExactKeys(body, ["owner", "requestId"])) return undefined;
   const { owner, requestId } = body as { owner: unknown; requestId: unknown };
-  if (typeof owner !== "string" || !OWNER_RE.test(owner)) return undefined;
+  const ownerMatch = typeof owner === "string" ? OWNER_DID_RE.exec(owner) : null;
+  if (!ownerMatch) return undefined;
   if (typeof requestId !== "string" || !REQUEST_ID_RE.test(requestId)) return undefined;
-  return { owner: owner.toLowerCase(), requestId };
+  return { owner: ownerMatch[1].toLowerCase(), requestId };
 }
 
 /** Strict request record `{"v":1,"capability":"<cap>"}` at the path for `capability`. */

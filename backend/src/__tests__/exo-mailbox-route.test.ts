@@ -7,7 +7,8 @@ import { EXO_NAMESPACE, type ExoLedgerSnapshot, type ExoMailboxPorts } from "../
 import { createExoWakeLimiters } from "../rate-limits.js";
 import { createExoMailboxRouter } from "../routes/exo-mailbox.js";
 
-const OWNER = `0x${"b".repeat(40)}`;
+const OWNER_DID = `did:pkh:eip155:1:0x${"b".repeat(40)}`;
+const REQ1 = "6f1c2a4e-8b3d-4c5e-9f70-1a2b3c4d5e6f";
 const UNIFORM = { error: "exo_sync_unavailable" };
 
 async function withWakeServer<T>(
@@ -49,7 +50,7 @@ describe("Exo wake route refusals are the uniform 409", () => {
 
   test("a body above 1 KB returns the uniform 409", async () => {
     await withWakeServer(async (base) => {
-      const response = await post(base, JSON.stringify({ owner: OWNER, requestId: "x".repeat(2048) }));
+      const response = await post(base, JSON.stringify({ owner: OWNER_DID, requestId: "x".repeat(2048) }));
       expect(response.status).toBe(409);
       expect(await response.json()).toEqual(UNIFORM);
     });
@@ -57,7 +58,7 @@ describe("Exo wake route refusals are the uniform 409", () => {
 
   test("a non-JSON content type returns the uniform 409", async () => {
     await withWakeServer(async (base) => {
-      const response = await post(base, `{"owner":"${OWNER}","requestId":"req-1"}`, "text/plain");
+      const response = await post(base, `{"owner":"${OWNER_DID}","requestId":"${REQ1}"}`, "text/plain");
       expect(response.status).toBe(409);
       expect(await response.json()).toEqual(UNIFORM);
     });
@@ -67,7 +68,7 @@ describe("Exo wake route refusals are the uniform 409", () => {
 describe("Exo wake route per-owner limit", () => {
   test("the 31st wake for one owner in a minute is 429 with Retry-After", async () => {
     await withWakeServer(async (base) => {
-      const body = JSON.stringify({ owner: OWNER, requestId: "req-1" });
+      const body = JSON.stringify({ owner: OWNER_DID, requestId: REQ1 });
       for (let i = 0; i < 30; i += 1) {
         expect((await post(base, body)).status).toBe(409);
       }
@@ -83,7 +84,7 @@ describe("Exo wake route per-owner limit", () => {
 
 const T0 = Date.UTC(2026, 0, 1, 12);
 const MINUTE_MS = 60_000;
-const GOOGLE_REQUEST_PATH = `${EXO_NAMESPACE}/requests/sync-google/req-1`;
+const GOOGLE_REQUEST_PATH = `${EXO_NAMESPACE}/requests/sync-google/${REQ1}`;
 
 /** Ports for a wake that the ledger refuses before any job is written. */
 function refusedByLedgerPorts(snapshot: ExoLedgerSnapshot): ExoMailboxPorts {
@@ -109,7 +110,7 @@ describe("Exo wake 429 responses carry Retry-After", () => {
     // Google cooldown is 30 min; the last run started 1 min ago, so 29 min (1740 s) remain.
     const ports = refusedByLedgerPorts({ startsToday: 1, lastStartedAt: T0 - MINUTE_MS });
     await withWakeServer(async (base) => {
-      const response = await post(base, JSON.stringify({ owner: OWNER, requestId: "req-1" }));
+      const response = await post(base, JSON.stringify({ owner: OWNER_DID, requestId: REQ1 }));
       expect(response.status).toBe(429);
       expect(await response.json()).toEqual({ error: "rate_limited", retryAfterSec: 1740 });
       expect(response.headers.get("retry-after")).toBe("1740");
@@ -120,7 +121,7 @@ describe("Exo wake 429 responses carry Retry-After", () => {
     // The Google daily cap of 300 is reached; it resets at UTC midnight, 12 h after T0 (43200 s).
     const ports = refusedByLedgerPorts({ startsToday: 300 });
     await withWakeServer(async (base) => {
-      const response = await post(base, JSON.stringify({ owner: OWNER, requestId: "req-1" }));
+      const response = await post(base, JSON.stringify({ owner: OWNER_DID, requestId: REQ1 }));
       expect(response.status).toBe(429);
       expect(await response.json()).toEqual({ error: "budget_exhausted", retryAfterSec: 43200 });
       expect(response.headers.get("retry-after")).toBe("43200");
