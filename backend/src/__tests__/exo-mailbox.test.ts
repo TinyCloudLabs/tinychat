@@ -384,6 +384,27 @@ describe("Exo executor wiring", () => {
     };
     await expect(h.runs[0].report({ state: "running", code: "running" })).resolves.toBeUndefined();
   });
+
+  test("a ledger write that fails at start settles the job as unavailable and frees the request id", async () => {
+    const h = harness();
+    h.seed(REQ1, "sync-google");
+    h.seed(REQ2, "sync-google");
+    const ledger = h.ports.ledger;
+    h.ports.ledger = {
+      ...ledger,
+      recordStart: async () => {
+        throw new Error("store down");
+      },
+    };
+    expect(await h.wake(REQ1)).toMatchObject({ status: 202, body: { jobId: REQ1, state: "error", code: "unavailable" } });
+    expect(h.job(REQ1)).toMatchObject({ state: "error", code: "unavailable", message: "Sync unavailable." });
+    expect(h.runs).toHaveLength(0);
+    expect(await h.wake(REQ1)).toMatchObject({ status: 202, body: { jobId: REQ1, state: "error", code: "unavailable" } });
+
+    h.ports.ledger = ledger;
+    expect(await h.wake(REQ2)).toMatchObject({ status: 202, body: { jobId: REQ2, state: "pending" } });
+    expect(h.runs).toHaveLength(1);
+  });
 });
 
 describe("Exo active run TTL", () => {

@@ -360,7 +360,14 @@ export function startWake(ports: ExoMailboxPorts, wake: VerifiedWake): Promise<W
       updatedAt: timestamp,
     };
     if (!(await ports.jobs.putIfAbsent(owner, requestId, job))) return unavailable();
-    await ports.ledger.recordStart(owner, capability, requestId, now);
+    try {
+      await ports.ledger.recordStart(owner, capability, requestId, now);
+    } catch {
+      // The job is stored pending before the ledger write. Settle it so replays and this request id do not stay pending.
+      await settle(ports, owner, requestId, { state: "error", code: "unavailable" });
+      await ports.ledger.clearActive(owner, capability, requestId);
+      return acceptedBody({ ...job, state: "error", code: "unavailable", message: EXECUTOR_MESSAGE.unavailable });
+    }
 
     // Not awaited, and started after the lane task returns. Each report settles or logs; none rejects into the executor.
     const reportSafely = (update: ExecutorUpdate) =>
