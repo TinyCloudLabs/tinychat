@@ -192,10 +192,8 @@ export interface StreamChatOptions {
   sessionStore: SessionStore;
   model: string;
   messages: ChatMessage[];
-  /** Optional output cap, forwarded as max_tokens. */
+  /** Optional API-level output cap (forwarded as max_tokens). */
   maxTokens?: number;
-  /** Optional output cap, forwarded as max_output_tokens. */
-  maxOutputTokens?: number;
   abortSignal?: AbortSignal;
   /**
    * Called once when the SSE usage chunk (final frame with empty `choices` and
@@ -225,7 +223,7 @@ export interface StreamChatOptions {
  * surfaced via the `onUsage` option, not the yield stream.
  */
 export async function* streamChat(options: StreamChatOptions): AsyncGenerator<string, void, unknown> {
-  const { backendUrl, sessionStore, model, messages, maxTokens, maxOutputTokens, abortSignal, onUsage, onCompletionId } = options;
+  const { backendUrl, sessionStore, model, messages, maxTokens, abortSignal, onUsage, onCompletionId } = options;
 
   const token = sessionStore.getToken();
   if (!token) {
@@ -243,12 +241,11 @@ export async function* streamChat(options: StreamChatOptions): AsyncGenerator<st
       "Content-Type": "application/json",
       [DEFAULT_REQUEST_HEADER_NAME]: DEFAULT_REQUEST_HEADER_VALUE,
     },
-    body: JSON.stringify({
-      model,
-      messages,
-      ...(typeof maxTokens === "number" && maxTokens > 0 ? { max_tokens: maxTokens } : {}),
-      ...(typeof maxOutputTokens === "number" && maxOutputTokens > 0 ? { max_output_tokens: maxOutputTokens } : {}),
-    }),
+    body: JSON.stringify(
+      typeof maxTokens === "number" && maxTokens > 0
+        ? { model, messages, max_tokens: maxTokens }
+        : { model, messages },
+    ),
     signal: abortSignal,
   });
 

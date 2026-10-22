@@ -5,7 +5,6 @@ import {
   ModelSelectionError,
   PaywallError,
   onModelSelectionError,
-  completeChat,
   streamChat,
   type ModelSelectionErrorPayload,
 } from "./chatApi";
@@ -112,50 +111,5 @@ describe("streamChat context-overflow classification (§C.12)", () => {
     );
     expect(paywall).toBeInstanceOf(PaywallError);
     expect(paywall).not.toBeInstanceOf(ContextOverflowError);
-  });
-});
-
-describe("completeChat output caps", () => {
-  afterEach(() => {
-    globalThis.fetch = realFetch;
-  });
-
-  async function capturedBody(options: { maxTokens?: number; maxOutputTokens?: number }): Promise<Record<string, unknown>> {
-    const bodies: Record<string, unknown>[] = [];
-    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
-      bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
-      return new Response("data: [DONE]\n\n", { status: 200, headers: { "content-type": "text/event-stream" } });
-    }) as typeof fetch;
-    await completeChat({
-      backendUrl: "http://backend.test",
-      sessionStore,
-      model: "z-ai/glm-5.2",
-      messages: [{ role: "user", content: "hi" }],
-      ...options,
-    });
-    return bodies[0] ?? {};
-  }
-
-  test("maxOutputTokens is sent as max_output_tokens and not as max_tokens", async () => {
-    expect(await capturedBody({ maxOutputTokens: 1500 })).toEqual({
-      model: "z-ai/glm-5.2",
-      messages: [{ role: "user", content: "hi" }],
-      max_output_tokens: 1500,
-    });
-  });
-
-  test("the legacy maxTokens option still sends max_tokens and no max_output_tokens", async () => {
-    expect(await capturedBody({ maxTokens: 2000 })).toEqual({
-      model: "z-ai/glm-5.2",
-      messages: [{ role: "user", content: "hi" }],
-      max_tokens: 2000,
-    });
-  });
-
-  test("with neither option the body is unchanged", async () => {
-    expect(await capturedBody({})).toEqual({
-      model: "z-ai/glm-5.2",
-      messages: [{ role: "user", content: "hi" }],
-    });
   });
 });

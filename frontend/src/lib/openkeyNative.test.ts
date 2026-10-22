@@ -1,4 +1,3 @@
-import { stubSdkDomGlobals } from "../test/sdkDomGlobals";
 // TC-775 E1 — the Exo native OpenKey sign-in.
 //
 // The SDK and the node are mocked (O3/O4 are not deployed): OpenKeyNative and
@@ -900,11 +899,15 @@ describe("persisted widget session on a native cold boot", () => {
       setItem: (key: string, value: string) => { values.set(key, value); },
       removeItem: (key: string) => { values.delete(key); },
     };
-    const restoreSdkGlobals = stubSdkDomGlobals();
     try {
-      // @tinyboilerplate/client evaluates @tinycloud/web-sdk at module load and
-      // reads DOM globals then (see billingApi.test.ts). restoreSdkGlobals above
-      // stubs them and restores each exact prior descriptor in the finally.
+      // @tinyboilerplate/client transitively evaluates @tinycloud/web-sdk at
+      // module load, which references DOM globals (see billingApi.test.ts for
+      // the same gotcha). Stub them before the dynamic import; idempotent if
+      // another test in this run already did it.
+      const g = globalThis as unknown as Record<string, unknown>;
+      if (typeof g.HTMLElement === "undefined") g.HTMLElement = class {};
+      if (typeof g.customElements === "undefined") g.customElements = { define() {}, get() {} };
+      if (typeof g.window === "undefined") g.window = g;
       const { SessionStore, clearPersistedSession, loadPersistedSession } = await import("@tinyboilerplate/client");
       // A widget sign-in before this build: a bearer session plus the SDK's
       // own persisted TinyCloud session for that address.
@@ -938,7 +941,6 @@ describe("persisted widget session on a native cold boot", () => {
     } finally {
       if (prior === undefined) delete (globalThis as { localStorage?: unknown }).localStorage;
       else (globalThis as { localStorage?: unknown }).localStorage = prior;
-      restoreSdkGlobals();
     }
   });
 });

@@ -1,4 +1,3 @@
-import { stubSdkDomGlobals } from "../test/sdkDomGlobals";
 import { describe, expect, test } from "bun:test";
 import type { BackgroundUsage, ModelRates } from "./billingApi";
 
@@ -7,12 +6,16 @@ import type { BackgroundUsage, ModelRates } from "./billingApi";
 // credit math under test needs none of it, so stub the referenced globals
 // BEFORE the (dynamic, so it runs after these assignments) import, letting this
 // colocated test load standalone as well as inside the full `bun test` run.
-const restoreSdkGlobals = stubSdkDomGlobals();
+const g = globalThis as unknown as Record<string, unknown>;
+if (typeof g.HTMLElement === "undefined") g.HTMLElement = class {};
+if (typeof g.customElements === "undefined") {
+  g.customElements = { define() {}, get() {} };
+}
+if (typeof g.window === "undefined") g.window = g;
 
 const { aggregateTurnCredits, creditsFor, splitCredits } = await import(
   "./billingApi"
 );
-restoreSdkGlobals();
 
 // A representative rates row. Only creditsPerKInput/Output feed the math; the
 // id/multiplier ride along to match the on-the-wire ModelRates shape.

@@ -3,7 +3,7 @@
 // the server (as the web app on a phone-sized screen, where there is no
 // recorder); test/shell-invariants.e2e.test.ts resizes a live one across the
 // size classes and counts the recorder's listeners with the fake plugin.
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { readFileSync } from "node:fs";
@@ -22,18 +22,12 @@ import { StaticRecorderProvider } from "./recorder/RecorderProvider";
 
 const tcw = { did: "did:pkh:eip155:1:0x00000000000000000000000000000000000000a1" } as unknown as TinyCloudWeb;
 let cleanupDom: (() => void) | undefined;
-// Each test gets its own happy-dom window (with `location`), restored after the
-// test, so this file never reads a `window` another test file left behind.
-let restoreDom: (() => void) | undefined;
-beforeEach(() => { restoreDom = installDom(); });
 let mountedRoot: Root | null = null;
 afterEach(async () => {
   if (mountedRoot) await act(async () => mountedRoot!.unmount());
   mountedRoot = null;
   cleanupDom?.();
   cleanupDom = undefined;
-  restoreDom?.();
-  restoreDom = undefined;
 });
 
 function render(path: string, active: boolean) {
