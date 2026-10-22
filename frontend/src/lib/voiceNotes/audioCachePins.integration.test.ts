@@ -34,11 +34,14 @@ const TRANSCRIPT = {
 };
 const originalVoiceNotes = VoiceNotes;
 const originalStorage = (globalThis as typeof globalThis & { localStorage?: Storage }).localStorage;
+const originalIndexedDb = Object.getOwnPropertyDescriptor(globalThis, "indexedDB");
 const cleanups: (() => void)[] = [];
 
 afterEach(() => {
   for (const cleanup of cleanups.splice(0)) cleanup();
   __setVoiceNotesForTests(originalVoiceNotes, { available: null });
+  if (originalIndexedDb) Object.defineProperty(globalThis, "indexedDB", originalIndexedDb);
+  else Reflect.deleteProperty(globalThis, "indexedDB");
   if (originalStorage === undefined) Reflect.deleteProperty(globalThis, "localStorage");
   else Object.defineProperty(globalThis, "localStorage", { configurable: true, value: originalStorage });
   __resetCaptureEngineForTests();

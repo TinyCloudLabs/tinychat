@@ -230,9 +230,10 @@ export function createChatRouter(options?: ChatRouterOptions) {
       return;
     }
 
-    const { model, messages } = req.body as {
+    const { model, messages, max_output_tokens } = req.body as {
       model?: unknown;
       messages?: unknown;
+      max_output_tokens?: unknown;
     };
 
     // Validate messages
@@ -240,6 +241,22 @@ export function createChatRouter(options?: ChatRouterOptions) {
       res.status(400).json({
         error: "invalid_body",
         message: "messages must be a non-empty array of {role, content} objects.",
+      });
+      return;
+    }
+
+    // Optional output cap, forwarded upstream as max_tokens. Absent or null = uncapped.
+    const maxOutputTokens = max_output_tokens ?? undefined;
+    if (
+      maxOutputTokens !== undefined &&
+      (typeof maxOutputTokens !== "number" ||
+        !Number.isInteger(maxOutputTokens) ||
+        maxOutputTokens < 1 ||
+        maxOutputTokens > 4096)
+    ) {
+      res.status(400).json({
+        error: "invalid_body",
+        message: "max_output_tokens must be an integer from 1 to 4096.",
       });
       return;
     }
@@ -423,6 +440,7 @@ export function createChatRouter(options?: ChatRouterOptions) {
           messages,
           stream: true,
           stream_options: { include_usage: true },
+          ...(maxOutputTokens === undefined ? {} : { max_tokens: maxOutputTokens }),
         }),
         signal: controller.signal,
       });
