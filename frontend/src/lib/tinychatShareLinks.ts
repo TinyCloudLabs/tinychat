@@ -3,7 +3,7 @@ import {
   type EncodedShareData,
   type TinyCloudWeb,
 } from "@tinycloud/web-sdk";
-import { ServiceContext, SQLService, type ServiceSession } from "@tinycloud/sdk-core";
+import { KVService, ServiceContext, SQLService, type ServiceSession } from "@tinycloud/sdk-core";
 import type { ExportedMessageRepositoryItem } from "@assistant-ui/react";
 
 import {
@@ -18,10 +18,17 @@ import { CHAT_SHARING_PAUSED, ChatSharingPausedError } from "./chatSharing";
 
 const SHARE_FORMAT = "tinychat.share";
 const SHARE_VERSION = 1;
+const SNAPSHOT_SHARE_VERSION = 2;
+const SNAPSHOT_FORMAT = "tinychat.share.snapshot";
+const SNAPSHOT_VERSION = 1;
+const SNAPSHOT_MAX_BYTES = 256 * 1024;
 const SHARE_TOKEN_PREFIX = "tcchat1:";
 const STORAGE_KEY = "tinychat:shared-with-me:v1";
 const DEFAULT_SHARE_DURATION_DAYS = 7;
+const SNAPSHOT_KEY_PREFIX = `${THREADS_SQL_DB_NAME}/shares/`;
+const SHARE_INDEX_KEY_PREFIX = `${THREADS_SQL_DB_NAME}/share-index/`;
 
+// Version 1: SQL share created before snapshots. Still accepted so existing links open.
 export interface TinychatSharePayload {
   format: typeof SHARE_FORMAT;
   version: typeof SHARE_VERSION;
@@ -33,9 +40,49 @@ export interface TinychatSharePayload {
   sql: EncodedShareData;
 }
 
-export interface StoredTinychatShare extends TinychatSharePayload {
+// Version 2: a snapshot of one thread at its own KV key, granted read-only.
+export interface TinychatSnapshotSharePayload {
+  format: typeof SHARE_FORMAT;
+  version: typeof SNAPSHOT_SHARE_VERSION;
+  id: string;
+  threadId: string;
+  title: string;
+  createdAt: string;
+  expiresAt: string;
+  key: string;
+  kv: EncodedShareData;
+}
+
+export type AnyTinychatSharePayload = TinychatSharePayload | TinychatSnapshotSharePayload;
+
+export type StoredTinychatShare = AnyTinychatSharePayload & {
   acceptedAt: string;
   token: string;
+};
+
+export interface OwnedTinychatShare {
+  shareId: string;
+  threadId: string;
+  title: string;
+  createdAt: string;
+  expiresAt: string;
+}
+
+interface OwnedShareIndexEntry {
+  shareId: string;
+  threadId: string;
+  title: string;
+  key: string;
+  cid: string;
+  createdAt: string;
+  expiresAt: string;
+}
+
+export interface TinychatShareSnapshot {
+  format: typeof SNAPSHOT_FORMAT;
+  version: typeof SNAPSHOT_VERSION;
+  title: string;
+  messages: ThreadDoc["messages"];
 }
 
 export interface CreateTinychatShareOptions {
@@ -67,30 +114,37 @@ function base64UrlDecode(value: string): string {
   return new TextDecoder().decode(bytes);
 }
 
-function encodePayload(payload: TinychatSharePayload): string {
+function encodePayload(payload: AnyTinychatSharePayload): string {
   return `${SHARE_TOKEN_PREFIX}${base64UrlEncode(JSON.stringify(payload))}`;
 }
 
-export function decodeTinychatShareToken(token: string): TinychatSharePayload {
+export function decodeTinychatShareToken(token: string): AnyTinychatSharePayload {
   const value = token.trim();
   if (!value.startsWith(SHARE_TOKEN_PREFIX)) {
     throw new Error("Invalid TinyCloud Chat share link");
   }
 
   const parsed = JSON.parse(base64UrlDecode(value.slice(SHARE_TOKEN_PREFIX.length))) as unknown;
-  if (
-    !parsed ||
-    typeof parsed !== "object" ||
-    (parsed as TinychatSharePayload).format !== SHARE_FORMAT ||
-    (parsed as TinychatSharePayload).version !== SHARE_VERSION ||
-    typeof (parsed as TinychatSharePayload).threadId !== "string" ||
-    typeof (parsed as TinychatSharePayload).id !== "string" ||
-    typeof (parsed as TinychatSharePayload).sql !== "object"
-  ) {
+  if (!parsed || typeof parsed !== "object") {
+    throw new Error("Unsupported TinyCloud Chat share link");
+  }
+  const candidate = parsed as Record<string, unknown>;
+  const common =
+    candidate.format === SHARE_FORMAT &&
+    typeof candidate.threadId === "string" &&
+    typeof candidate.id === "string";
+  const legacy = common && candidate.version === SHARE_VERSION && typeof candidate.sql === "object";
+  const snapshot =
+    common &&
+    candidate.version === SNAPSHOT_SHARE_VERSION &&
+    typeof candidate.key === "string" &&
+    candidate.key.startsWith(SNAPSHOT_KEY_PREFIX) &&
+    typeof candidate.kv === "object";
+  if (!legacy && !snapshot) {
     throw new Error("Unsupported TinyCloud Chat share link");
   }
 
-  return parsed as TinychatSharePayload;
+  return parsed as AnyTinychatSharePayload;
 }
 
 export function readShareTokenFromLocation(): string | null {
@@ -148,7 +202,7 @@ function writeStoredTinychatShares(shares: StoredTinychatShare[]): void {
 
 function storeTinychatShare(
   token: string,
-  payload: TinychatSharePayload,
+  payload: AnyTinychatSharePayload,
   storedAt: string,
 ): StoredTinychatShare {
   if (new Date(payload.expiresAt).getTime() <= Date.now()) {
@@ -172,7 +226,7 @@ export function saveTinychatShareToken(token: string): StoredTinychatShare {
 
 export function saveCreatedTinychatShare(
   token: string,
-  payload: TinychatSharePayload,
+  payload: AnyTinychatSharePayload,
 ): StoredTinychatShare {
   return storeTinychatShare(token, payload, payload.createdAt);
 }
@@ -181,7 +235,7 @@ export function findStoredTinychatShareForThread(threadId: string): StoredTinych
   return listStoredTinychatShares().find((share) => share.threadId === threadId) ?? null;
 }
 
-function normalizeDurationDays(value?: number): number {
+export function normalizeDurationDays(value?: number): number {
   if (value == null || !Number.isFinite(value) || value <= 0) return DEFAULT_SHARE_DURATION_DAYS;
   return Math.min(365, Math.max(1, Math.round(value)));
 }
@@ -191,11 +245,53 @@ function minIsoDate(values: string[]): string {
   return new Date(min).toISOString();
 }
 
+export function buildShareSnapshot(thread: ThreadDoc): TinychatShareSnapshot {
+  return {
+    format: SNAPSHOT_FORMAT,
+    version: SNAPSHOT_VERSION,
+    title: thread.title || DEFAULT_TITLE,
+    messages: thread.messages,
+  };
+}
+
+function serializeSnapshot(snapshot: TinychatShareSnapshot): string {
+  const json = JSON.stringify(snapshot);
+  if (new TextEncoder().encode(json).byteLength > SNAPSHOT_MAX_BYTES) {
+    throw new Error("This chat is too large to share");
+  }
+  return json;
+}
+
+function parseKvValue(raw: unknown): unknown {
+  if (typeof raw !== "string") return raw;
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
+function parseOwnedShareIndexEntry(raw: unknown): OwnedShareIndexEntry | null {
+  const value = parseKvValue(raw);
+  if (!value || typeof value !== "object") return null;
+  const entry = value as Record<string, unknown>;
+  const valid =
+    typeof entry.shareId === "string" &&
+    typeof entry.threadId === "string" &&
+    typeof entry.title === "string" &&
+    typeof entry.key === "string" &&
+    entry.key.startsWith(SNAPSHOT_KEY_PREFIX) &&
+    typeof entry.cid === "string" &&
+    typeof entry.createdAt === "string" &&
+    typeof entry.expiresAt === "string";
+  return valid ? (entry as unknown as OwnedShareIndexEntry) : null;
+}
+
 export async function createTinychatShareLink(
   tcw: TinyCloudWeb,
   threadId: string,
   options: CreateTinychatShareOptions = {},
-): Promise<{ link: string; payload: TinychatSharePayload; token: string }> {
+): Promise<{ link: string; payload: TinychatSnapshotSharePayload; token: string }> {
   if (isLocalThreadStorage(tcw)) {
     throw new Error("Sharing is disabled during local validation");
   }
@@ -209,28 +305,54 @@ export async function createTinychatShareLink(
 
   const durationDays = normalizeDurationDays(options.durationDays);
   const expiresAt = new Date(Date.now() + durationDays * 24 * 60 * 60 * 1000);
-  const sqlShare = await tcw.sharing.generate({
-    path: THREADS_SQL_DB_NAME,
-    actions: ["tinycloud.sql/read"],
-    expiry: expiresAt,
-    description: `TinyCloud Chat: ${thread.title || DEFAULT_TITLE}`,
-  });
+  const title = thread.title || DEFAULT_TITLE;
+  const shareId = crypto.randomUUID();
+  const key = `${SNAPSHOT_KEY_PREFIX}${shareId}`;
+  const indexKey = `${SHARE_INDEX_KEY_PREFIX}${shareId}`;
 
-  if (!sqlShare.ok) {
-    throw new Error(sqlShare.error.message);
+  const stored = await tcw.kv.put(key, serializeSnapshot(buildShareSnapshot(thread)));
+  if (!stored.ok) throw new Error(stored.error.message);
+
+  const grant = await tcw.sharing.generate({
+    path: key,
+    actions: ["tinycloud.kv/get"],
+    expiry: expiresAt,
+    description: `TinyCloud Chat: ${title}`,
+  });
+  if (!grant.ok) {
+    await tcw.kv.delete(key);
+    throw new Error(grant.error.message);
   }
 
-  const sql = tcw.sharing.decodeLink(sqlShare.data.token) as EncodedShareData;
-  const sqlExpiresAt = sqlShare.data.expiresAt?.toISOString() ?? expiresAt.toISOString();
-  const payload: TinychatSharePayload = {
-    format: SHARE_FORMAT,
-    version: SHARE_VERSION,
-    id: `${threadId}:${Date.now().toString(36)}`,
+  const kv = tcw.sharing.decodeLink(grant.data.token) as EncodedShareData;
+  const createdAt = new Date().toISOString();
+  const grantExpiresAt = minIsoDate([grant.data.expiresAt?.toISOString() ?? expiresAt.toISOString()]);
+  const indexEntry: OwnedShareIndexEntry = {
+    shareId,
     threadId,
-    title: thread.title || DEFAULT_TITLE,
-    createdAt: new Date().toISOString(),
-    expiresAt: minIsoDate([sqlExpiresAt]),
-    sql,
+    title,
+    key,
+    cid: kv.delegation.cid,
+    createdAt,
+    expiresAt: grantExpiresAt,
+  };
+  const indexed = await tcw.kv.put(indexKey, JSON.stringify(indexEntry));
+  if (!indexed.ok) {
+    await tcw.revokeDelegation(kv.delegation.cid);
+    await tcw.kv.delete(key);
+    throw new Error(indexed.error.message);
+  }
+
+  const payload: TinychatSnapshotSharePayload = {
+    format: SHARE_FORMAT,
+    version: SNAPSHOT_SHARE_VERSION,
+    id: shareId,
+    threadId,
+    title,
+    createdAt,
+    expiresAt: grantExpiresAt,
+    key,
+    kv,
   };
   const token = encodePayload(payload);
   saveCreatedTinychatShare(token, payload);
@@ -240,6 +362,64 @@ export async function createTinychatShareLink(
     payload,
     token,
   };
+}
+
+export async function listOwnedTinychatShares(tcw: TinyCloudWeb): Promise<OwnedTinychatShare[]> {
+  const indexKeys: string[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await tcw.kv.list({
+      path: SHARE_INDEX_KEY_PREFIX,
+      source: "network",
+      ...(cursor ? { cursor } : {}),
+    });
+    if (!page.ok) throw new Error(page.error.message);
+    for (const key of page.data.keys) {
+      if (typeof key === "string" && key.startsWith(SHARE_INDEX_KEY_PREFIX)) indexKeys.push(key);
+    }
+    const metadata = page.data as typeof page.data & { cursor?: unknown; nextCursor?: unknown };
+    const next = metadata.nextCursor ?? metadata.cursor;
+    cursor = typeof next === "string" && next ? next : undefined;
+  } while (cursor);
+
+  const now = Date.now();
+  const shares: OwnedTinychatShare[] = [];
+  for (const indexKey of indexKeys) {
+    const res = await tcw.kv.get(indexKey, { source: "network" });
+    if (!res.ok) continue;
+    const entry = parseOwnedShareIndexEntry(res.data.data);
+    if (!entry) continue;
+    if (Date.parse(entry.expiresAt) <= now) {
+      // Grant has lapsed; remove the owner's copy of the snapshot and its index entry.
+      await tcw.kv.delete(entry.key);
+      await tcw.kv.delete(indexKey);
+      continue;
+    }
+    shares.push({
+      shareId: entry.shareId,
+      threadId: entry.threadId,
+      title: entry.title,
+      createdAt: entry.createdAt,
+      expiresAt: entry.expiresAt,
+    });
+  }
+  return shares.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+export async function revokeOwnedTinychatShare(tcw: TinyCloudWeb, shareId: string): Promise<void> {
+  const indexKey = `${SHARE_INDEX_KEY_PREFIX}${shareId}`;
+  const res = await tcw.kv.get(indexKey, { source: "network" });
+  if (!res.ok) throw new Error(res.error.message);
+  const entry = parseOwnedShareIndexEntry(res.data.data);
+  if (!entry) throw new Error("This share could not be read");
+
+  const revoked = await tcw.revokeDelegation(entry.cid);
+  if (!revoked.ok) throw new Error(revoked.error.message);
+  const deleted = await tcw.kv.delete(entry.key);
+  if (!deleted.ok) throw new Error(deleted.error.message);
+  const removedIndex = await tcw.kv.delete(indexKey);
+  if (!removedIndex.ok) throw new Error(removedIndex.error.message);
+  writeStoredTinychatShares(listStoredTinychatShares().filter((share) => share.id !== shareId));
 }
 
 let wasmPromise: Promise<BrowserWasmBindings> | null = null;
@@ -275,7 +455,7 @@ function sessionFromEncodedShare(data: EncodedShareData): ServiceSession {
   } as ServiceSession;
 }
 
-async function createSharedSql(share: StoredTinychatShare): Promise<TinychatSqlDb> {
+async function createSharedSql(share: TinychatSharePayload): Promise<TinychatSqlDb> {
   const wasm = await browserWasm();
   const context = new ServiceContext({
     invoke: wasm.invoke,
@@ -287,6 +467,51 @@ async function createSharedSql(share: StoredTinychatShare): Promise<TinychatSqlD
   sql.initialize(context);
   const scoped = sql as SQLService & { db?: (name: string) => TinychatSqlDb };
   return typeof scoped.db === "function" ? scoped.db(THREADS_SQL_DB_NAME) : (sql as TinychatSqlDb);
+}
+
+async function createSharedKv(share: TinychatSnapshotSharePayload): Promise<KVService> {
+  const wasm = await browserWasm();
+  const context = new ServiceContext({
+    invoke: wasm.invoke,
+    fetch: globalThis.fetch.bind(globalThis),
+    hosts: [share.kv.host],
+  });
+  context.setSession(sessionFromEncodedShare(share.kv));
+  const kv = new KVService({});
+  kv.initialize(context);
+  return kv;
+}
+
+function parseSnapshot(raw: unknown): TinychatShareSnapshot {
+  const value = parseKvValue(raw);
+  if (!value || typeof value !== "object") {
+    throw new Error("This shared chat could not be read");
+  }
+  const snapshot = value as Partial<TinychatShareSnapshot>;
+  if (
+    snapshot.format !== SNAPSHOT_FORMAT ||
+    snapshot.version !== SNAPSHOT_VERSION ||
+    typeof snapshot.title !== "string" ||
+    !Array.isArray(snapshot.messages)
+  ) {
+    throw new Error("This shared chat could not be read");
+  }
+  return snapshot as TinychatShareSnapshot;
+}
+
+async function loadSnapshotThread(share: TinychatSnapshotSharePayload): Promise<ThreadDoc> {
+  const kv = await createSharedKv(share);
+  const res = await kv.get(share.key, { source: "network" });
+  if (!res.ok) throw new Error("This shared chat was not found");
+  const snapshot = parseSnapshot(res.data.data);
+  return {
+    id: share.threadId,
+    title: snapshot.title,
+    model: DEFAULT_MODEL,
+    createdAt: share.createdAt,
+    updatedAt: share.createdAt,
+    messages: snapshot.messages,
+  };
 }
 
 function cellStr(row: unknown[], idx: number, fallback: string): string {
@@ -333,6 +558,9 @@ async function loadThreadFromSql(db: TinychatSqlDb, id: string): Promise<ThreadD
 
 export async function loadSharedThreadFromToken(token: string): Promise<ThreadDoc> {
   const share = saveTinychatShareToken(token);
+  if (share.version === SNAPSHOT_SHARE_VERSION) {
+    return loadSnapshotThread(share);
+  }
   const sql = await createSharedSql(share);
   const thread = await loadThreadFromSql(sql, share.threadId);
   if (!thread) throw new Error("This shared chat was not found");
