@@ -6,7 +6,7 @@ Status: behind `EXO_CAPABILITIES_ENABLED`. Off by default. Only the exact value 
 
 `POST /api/exo/v1/requests`
 
-Body: exactly `{"owner": "<0x address>", "requestId": "<id>"}`. Extra properties are refused.
+Body: exactly `{"owner": "did:pkh:eip155:<chain>:0x<40 hex>", "requestId": "<lowercase UUIDv4>"}`. Extra properties are refused. The owner address is compared and stored in lowercase. Any other owner or request id form is refused with the uniform 409.
 
 | Outcome | Status | Body |
 | --- | --- | --- |
