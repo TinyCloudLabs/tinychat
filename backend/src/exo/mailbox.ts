@@ -322,9 +322,10 @@ export interface VerifiedWake {
 /** Verifies a wake: active grant and one valid request record under the owner's path. Total: a refusal or a throw is `undefined`. */
 export async function verifyWake(ports: ExoMailboxPorts, wake: { owner: string; requestId: string }): Promise<VerifiedWake | undefined> {
   try {
-    if (!(await ports.grants.isActive(wake.owner))) return undefined;
+    // Both reads run for every wake, so a refused wake costs the same store reads, in the same order, as a verified one.
+    const active = await ports.grants.isActive(wake.owner);
     const capability = await findRequestCapability(ports.requests, wake.owner, wake.requestId);
-    return capability ? { owner: wake.owner, requestId: wake.requestId, capability } : undefined;
+    return active && capability ? { owner: wake.owner, requestId: wake.requestId, capability } : undefined;
   } catch {
     console.error("[exo] wake verification unavailable");
     return undefined;

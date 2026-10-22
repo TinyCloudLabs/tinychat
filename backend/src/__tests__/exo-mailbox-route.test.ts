@@ -11,7 +11,7 @@ import {
   type ExoMailboxPorts,
 } from "../exo/mailbox.js";
 import { createExoWakeLimiters } from "../rate-limits.js";
-import { createExoMailboxRouter } from "../routes/exo-mailbox.js";
+import { createExoMailboxRouter, drainExoWakes } from "../routes/exo-mailbox.js";
 
 const OWNER = `0x${"b".repeat(40)}`;
 const OWNER_DID = `did:pkh:eip155:1:${OWNER}`;
@@ -75,9 +75,13 @@ function fixture(options: { snapshot?: ExoLedgerSnapshot; storeFails?: boolean }
   return fixture;
 }
 
-async function withWakeServer<T>(run: (base: string) => Promise<T>, ports: ExoMailboxPorts): Promise<T> {
+async function withWakeServer<T>(
+  run: (base: string) => Promise<T>,
+  ports: ExoMailboxPorts,
+  limiters: Parameters<typeof createExoMailboxRouter>[1] = createExoWakeLimiters(),
+): Promise<T> {
   const app = express();
-  app.use("/api/exo/v1", createExoMailboxRouter(ports, createExoWakeLimiters()));
+  app.use("/api/exo/v1", createExoMailboxRouter(ports, limiters));
   const listening = Promise.withResolvers<Server>();
   const server = app.listen(0, "127.0.0.1", () => listening.resolve(server));
   const bound = await listening.promise;
@@ -92,12 +96,15 @@ async function withWakeServer<T>(run: (base: string) => Promise<T>, ports: ExoMa
   }
 }
 
-function post(base: string, body: string, contentType = "application/json") {
-  return fetch(`${base}/api/exo/v1/requests`, {
+async function post(base: string, body: string, contentType = "application/json") {
+  const response = await fetch(`${base}/api/exo/v1/requests`, {
     method: "POST",
     headers: { "content-type": contentType },
     body,
   });
+  // The reply is sent before the wake is recorded. Wait so callers can read the job record.
+  await drainExoWakes();
+  return response;
 }
 
 describe("Exo wake route: malformed requests are the uniform 409 and touch no store", () => {
@@ -193,6 +200,29 @@ describe("Exo wake route: the outcome is in the job record, not the response", (
       expect(text).not.toContain("at ");
     }, f.ports);
     expect(f.runs).toBe(0);
+  });
+
+  test("the reply is sent before the job record is written", async () => {
+    const f = fixture();
+    f.seed(REQ1, "sync-google");
+    const writeJob = f.ports.jobs.putIfAbsent;
+    const gate = Promise.withResolvers<void>();
+    f.ports.jobs.putIfAbsent = async (owner, jobId, record) => {
+      await gate.promise;
+      return writeJob(owner, jobId, record);
+    };
+    await withWakeServer(async (base) => {
+      const response = await fetch(`${base}/api/exo/v1/requests`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ owner: OWNER_DID, requestId: REQ1 }),
+      });
+      expect(response.status).toBe(202);
+      expect(f.jobs.size).toBe(0);
+      gate.resolve();
+      await drainExoWakes();
+      expect(f.jobs.size).toBe(1);
+    }, f.ports);
   });
 });
 
@@ -400,5 +430,54 @@ describe("Exo wake route: every state-dependent outcome is the same response", (
       // Each case must reach the branch it names, so an identical answer is not a coincidence.
       expect([r.label, r.records.includes(r.record)]).toEqual([r.label, true]);
     }
+  });
+
+  test("every well-formed wake reads the grant and all three request paths, in the same order, whatever the state", async () => {
+    const paths = ["grant", "request sync-meetings", "request sync-fireflies", "request sync-google"];
+    const states: Array<{ label: string; active: boolean; seeded: boolean }> = [
+      { label: "unknown owner", active: false, seeded: false },
+      { label: "no grant", active: false, seeded: true },
+      { label: "no record", active: true, seeded: false },
+      { label: "verified", active: true, seeded: true },
+    ];
+    for (const state of states) {
+      const f = fixture();
+      if (state.seeded) f.seed(REQ1, "sync-google");
+      const reads: string[] = [];
+      const ports: ExoMailboxPorts = {
+        ...f.ports,
+        grants: {
+          isActive: async () => {
+            reads.push("grant");
+            return state.active;
+          },
+        },
+        requests: {
+          get: async (owner, path) => {
+            reads.push(`request ${path.split("/").at(-2)}`);
+            return f.ports.requests.get(owner, path);
+          },
+        },
+      };
+      await withWakeServer(async (base) => {
+        expect((await post(base, bodyFor(REQ1))).status).toBe(202);
+      }, ports);
+      expect([state.label, reads]).toEqual([state.label, paths]);
+    }
+  });
+
+  test("a limiter error answers the same 202 wire as an unverified request, and starts nothing", async () => {
+    const f = fixture();
+    f.seed(REQ1, "sync-google");
+    const failing = (_req: unknown, _res: unknown, next: (err?: unknown) => void) => next(new Error("limiter failed"));
+    const reference = await withWakeServer(async (base) => wireOf(await post(base, bodyFor(MISSING))), fixture().ports);
+    const failed = await withWakeServer(
+      async (base) => wireOf(await post(base, bodyFor(REQ1))),
+      f.ports,
+      { ...createExoWakeLimiters(), ip: failing },
+    );
+    expect(failed).toBe(reference);
+    expect(f.jobs.size).toBe(0);
+    expect(f.runs).toBe(0);
   });
 });

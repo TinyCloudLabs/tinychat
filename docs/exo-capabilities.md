@@ -11,14 +11,14 @@ Body: exactly `{"owner": "did:pkh:eip155:<chain>:0x<40 hex>", "requestId": "<low
 | Outcome | Status | Body |
 | --- | --- | --- |
 | Malformed: body the parser rejects, oversized or extra properties, or owner or request id in the wrong form | 409 | `{"error":"exo_sync_unavailable"}` (identical for all of these) |
-| Any outcome after the body parses: unknown owner, no grant, verified, accepted, replayed, coalesced, rate limited, budget, connector off, unavailable | 202 | `{"status":"accepted"}` (identical for all of these) |
+| Any outcome after the body parses: unknown owner, no grant, verified, accepted, replayed, coalesced, rate limited, budget, connector off, unavailable; or an internal error at any step, including a limiter | 202 | `{"status":"accepted"}` (identical for all of these) |
 | Per-IP limit (120/min), checked before any lookup | 429 | `{"error":"rate_limited"}` with `Retry-After: 60` |
 
 The wake reply is intentionally identical for all outcomes, so the reply carries no information about stored requests; the job record holds every state.
 
 ## Request records
 
-Stored at `xyz.tinycloud.tinychat/exo/v1/requests/<capability>/<requestId>`. The record is strict: `{"v":1,"capability":"<capability>"}`. The wake body has no capability, so the route looks up the three capability subpaths and requires exactly one valid match.
+Stored at `xyz.tinycloud.tinychat/exo/v1/requests/<capability>/<requestId>`. The record is strict: `{"v":1,"capability":"<capability>"}`. The wake body has no capability, so the route reads the three capability subpaths and requires exactly one valid match.
 
 Capabilities: `sync-meetings`, `sync-fireflies`, `sync-google`.
 

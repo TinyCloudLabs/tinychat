@@ -15,11 +15,20 @@ function answer(res: Response, status: number, body: object): void {
   res.status(status).json(body);
 }
 
+/** Wake starts still running after their reply went out. `drainExoWakes` waits on these. */
+const detachedWakes = new Set<Promise<void>>();
+
+/** Resolves once every wake started so far has written its outcome, or has failed and been logged. */
+export async function drainExoWakes(): Promise<void> {
+  while (detachedWakes.size > 0) await Promise.all([...detachedWakes]);
+}
+
 /**
  * `POST /api/exo/v1/requests`. Order: IP limiter, strict JSON (1 KB) and wake shape, verification, owner limiter, start.
  * A malformed request (body the parser rejects, wrong shape, bad DID or request id) is the uniform 409 before any
- * lookup. Every outcome after that is the same 202 `{"status":"accepted"}`: found, started, replayed, coalesced,
- * refused, rate limited, unknown owner, or a failure at any step. The outcome lives in the job record.
+ * lookup. Every other answer is the same 202 `{"status":"accepted"}`: found, started, replayed, coalesced, refused,
+ * rate limited, unknown owner, or an internal error at any step, limiter errors included. The reply is sent before
+ * the job record is written; the outcome lives in the job record.
  */
 export function createExoMailboxRouter(
   ports: ExoMailboxPorts,
@@ -53,19 +62,18 @@ export function createExoMailboxRouter(
       answer(res, 202, EXO_ACCEPTED_BODY);
     }
   };
-  router.post("/requests", limiters.ip, strictBody, verify, limiters.owner, async (_req, res) => {
-    try {
-      await startWake(ports, res.locals.exoWake as VerifiedWake, res.locals.exoOwnerLimited === true);
-    } catch {
-      console.error("[exo] wake not recorded");
-    }
+  router.post("/requests", limiters.ip, strictBody, verify, limiters.owner, (_req, res) => {
     answer(res, 202, EXO_ACCEPTED_BODY);
+    const started = startWake(ports, res.locals.exoWake as VerifiedWake, res.locals.exoOwnerLimited === true).catch(() => {
+      console.error("[exo] wake not recorded");
+    });
+    detachedWakes.add(started);
+    void started.then(() => detachedWakes.delete(started));
   });
-  // Any error not caught above keeps the same answers: 202 once the wake is verified, the uniform 409 before that.
+  // Errors reach here from a limiter or a handler. They get the same 202; the failure is logged without detail.
   router.use((_err: unknown, _req: Request, res: Response, _next: NextFunction) => {
     console.error("[exo] wake route error");
-    if (res.locals.exoWake) answer(res, 202, EXO_ACCEPTED_BODY);
-    else answer(res, 409, EXO_UNAVAILABLE_BODY);
+    answer(res, 202, EXO_ACCEPTED_BODY);
   });
   return router;
 }
