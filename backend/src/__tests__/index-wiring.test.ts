@@ -508,7 +508,7 @@ describe("backend index middleware wiring", () => {
 
   test("shutdown drains HTTP and every worker in one allSettled", () => {
     expect(INDEX).toContain(
-      "Promise.allSettled([httpDrained, wakesDrained, transcriptWorker?.stop(), calendarAutojoinWorker?.stop(), ingestSupervisor?.stop(), hostedUploads?.shutdown()])",
+      "Promise.allSettled([httpDrained, wakesDrained, exoRetentionSweep?.stop(), transcriptWorker?.stop(), calendarAutojoinWorker?.stop(), ingestSupervisor?.stop(), hostedUploads?.shutdown()])",
     );
   });
 });
@@ -592,7 +592,7 @@ test("shutdown waits for other cleanups after a worker rejects", async () => {
     console: { log: () => {} },
     process: { exit: (code: number) => exits.push(code) },
     setTimeout: () => ({ unref() {} }),
-    ledgerFlusher: null, connectorWebhooks: null, connectorQueueMaintenance: null, exoWakeQueue: null,
+    ledgerFlusher: null, connectorWebhooks: null, connectorQueueMaintenance: null, exoWakeQueue: null, exoRetentionSweep: null,
     server: { close: (done: () => void) => done(), closeIdleConnections() {} },
     transcriptWorker: { stop: () => { attempts.push("transcript"); return Promise.reject(new Error("synthetic")); } },
     calendarAutojoinWorker: { stop: () => { attempts.push("calendar"); return Promise.reject(new Error("synthetic")); } },
@@ -624,13 +624,37 @@ test("shutdown holds the exit until queued exo wakes drain", async () => {
     process: { exit: (code: number) => { exits.push(code); exited.resolve(code); } },
     setTimeout: () => ({ unref() {} }),
     ledgerFlusher: null, connectorWebhooks: null, connectorQueueMaintenance: null,
-    exoWakeQueue: queue,
+    exoWakeQueue: queue, exoRetentionSweep: null,
     server: { close: (done: () => void) => done(), closeIdleConnections() {} },
     transcriptWorker: null, calendarAutojoinWorker: null, ingestSupervisor: null, hostedUploads: null,
   });
   for (let tick = 0; tick < 10; tick += 1) await Promise.resolve();
   expect(exits).toEqual([]);
   release.resolve();
+  expect(await exited.promise).toBe(0);
+});
+
+test("shutdown holds the exit until an in-flight retention pass stops", async () => {
+  const start = INDEX.indexOf("  let shuttingDown = false;");
+  const end = INDEX.indexOf('\n  process.on("SIGTERM"', start);
+  const source = new Bun.Transpiler({ loader: "ts" }).transformSync(INDEX.slice(start, end) + '\nshutdown("SIGTERM");');
+  const pass = Promise.withResolvers<void>();
+  const exited = Promise.withResolvers<number>();
+  const exits: number[] = [];
+  runInNewContext(source, {
+    Promise,
+    console: { log: () => {} },
+    process: { exit: (code: number) => { exits.push(code); exited.resolve(code); } },
+    setTimeout: () => ({ unref() {} }),
+    ledgerFlusher: null, connectorWebhooks: null, connectorQueueMaintenance: null,
+    exoWakeQueue: null,
+    exoRetentionSweep: { stop: () => pass.promise },
+    server: { close: (done: () => void) => done(), closeIdleConnections() {} },
+    transcriptWorker: null, calendarAutojoinWorker: null, ingestSupervisor: null, hostedUploads: null,
+  });
+  for (let tick = 0; tick < 10; tick += 1) await Promise.resolve();
+  expect(exits).toEqual([]);
+  pass.resolve();
   expect(await exited.promise).toBe(0);
 });
 

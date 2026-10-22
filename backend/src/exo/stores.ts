@@ -19,11 +19,12 @@ import {
 } from "./mailbox.js";
 import { createDurableExoLedger } from "./durable-ledger.js";
 
-/** Backend-space KV used only for job mirrors. The owner space stays authoritative. */
+/** Backend-space KV for job mirrors and the durable ledger. The owner space stays authoritative. */
 export interface ExoBackendKv {
   get(key: string, options: ExoKvGetOptions): Promise<unknown>;
   put(key: string, value: unknown, options?: ExoKvPutOptions): Promise<unknown>;
   delete(key: string): Promise<unknown>;
+  list(prefix: string): Promise<unknown>;
 }
 
 export interface ExoStoreDeps {
@@ -50,8 +51,11 @@ function ownerJobPath(jobId: string): string {
   return `${EXO_JOBS_PREFIX}${jobId}`;
 }
 
-function mirrorJobKey(owner: string, jobId: string): string {
-  return `${EXO_NAMESPACE}/mirror/jobs/${owner}/${jobId}`;
+/** Backend-space prefix for job mirrors. The retention sweep lists under it. */
+export const EXO_MIRROR_JOBS_PREFIX = `${EXO_NAMESPACE}/mirror/jobs/`;
+
+export function mirrorJobKey(owner: string, jobId: string): string {
+  return `${EXO_MIRROR_JOBS_PREFIX}${owner}/${jobId}`;
 }
 
 function assertJobId(jobId: string): string {

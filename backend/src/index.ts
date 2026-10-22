@@ -57,7 +57,8 @@ import { createTranscriberRouter } from "./routes/transcriber.js";
 import { createTranscriberWebhookRouter } from "./routes/transcriber-webhook.js";
 import { createExoMailboxRouter } from "./routes/exo-mailbox.js";
 import { WakeQueue } from "./exo/wake-intake.js";
-import { createExoStorePorts, createOwnerGrantOpener } from "./exo/stores.js";
+import { createExoStorePorts, createOwnerGrantOpener, type ExoBackendKv } from "./exo/stores.js";
+import { startExoRetentionSweepTimer, type ExoRetentionSweepTimer } from "./exo/retention-sweep.js";
 import { exoCapabilitiesEnabled } from "./exo/mailbox.js";
 import { ASSEMBLYAI_HOSTED_MOUNT, createAssemblyAiHostedRouter, reconcileHostedJobs } from "./routes/assemblyai-hosted.js";
 import {
@@ -568,14 +569,17 @@ async function main() {
   // storage lane. No executor is registered yet, so a verified wake settles `unavailable`.
   // The wake queue is owned here so shutdown can drain it after HTTP has closed.
   let exoWakeQueue: WakeQueue | null = null;
+  let exoRetentionSweep: ExoRetentionSweepTimer | null = null;
   if (exoCapabilitiesEnabled(process.env)) {
     exoWakeQueue = new WakeQueue();
-    app.use("/api/exo/v1", createExoMailboxRouter(createExoStorePorts({
-      backendKv: {
-        get: (key, options) => node.kv.get(key, options),
-        put: (key, value, options) => backendStorageLane.run(() => node.kv.put(key, value, options)),
-        delete: (key) => backendStorageLane.run(() => node.kv.delete(key)),
-      },
+    const exoBackendKv: ExoBackendKv = {
+      get: (key, options) => node.kv.get(key, options),
+      put: (key, value, options) => backendStorageLane.run(() => node.kv.put(key, value, options)),
+      delete: (key) => backendStorageLane.run(() => node.kv.delete(key)),
+      list: (prefix) => node.kv.list({ prefix }),
+    };
+    const exoPorts = createExoStorePorts({
+      backendKv: exoBackendKv,
       openOwnerGrant: createOwnerGrantOpener({
         node,
         backendDid: did,
@@ -585,7 +589,9 @@ async function main() {
       webhooks: new WebhookTokenService(node),
       controls: new ConnectorControlStore(node),
       frontendOrigin: process.env.FRONTEND_URL ?? "https://localhost:5186",
-    }), { queue: exoWakeQueue }));
+    });
+    app.use("/api/exo/v1", createExoMailboxRouter(exoPorts, { queue: exoWakeQueue }));
+    exoRetentionSweep = startExoRetentionSweepTimer({ kv: exoBackendKv, ports: exoPorts });
   }
 
   // W9 / D4 — the process that actually CONSUMES the cohort queues, or nothing at all. Assigned
@@ -1152,7 +1158,7 @@ async function main() {
     // Wakes are acknowledged with 202 before their job record is written. Drain them only after HTTP has closed,
     // so no new wake can enqueue; past the bound, the drain rejects and the process exits non-zero.
     const wakesDrained = httpDrained.then(() => exoWakeQueue?.drain());
-    void Promise.allSettled([httpDrained, wakesDrained, transcriptWorker?.stop(), calendarAutojoinWorker?.stop(), ingestSupervisor?.stop(), hostedUploads?.shutdown()])
+    void Promise.allSettled([httpDrained, wakesDrained, exoRetentionSweep?.stop(), transcriptWorker?.stop(), calendarAutojoinWorker?.stop(), ingestSupervisor?.stop(), hostedUploads?.shutdown()])
       .then((results) => process.exit(results.some((result) => result.status === "rejected") ? 1 : 0));
     setTimeout(() => process.exit(1), 120_000).unref();
   };

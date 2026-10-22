@@ -58,6 +58,15 @@ function backendKv(): BackendKv {
   const kv: BackendKv = {
     entries,
     failPutKeys: new Set(),
+    async get(key) {
+      if (!entries.has(key)) {
+        return { ok: false, error: { code: "KV_NOT_FOUND", service: "kv", message: `Key not found: ${key}` } };
+      }
+      return { ok: true, data: { data: entries.get(key), headers: { etag: "\"etag\"" } } };
+    },
+    async list(prefix) {
+      return { ok: true, data: { keys: [...entries.keys()].filter((key) => key.startsWith(prefix)) } };
+    },
     async put(key, value, options) {
       if (kv.failPutKeys.has(key)) return { ok: false, error: { code: "KV_UNAVAILABLE", message: "down" } };
       if (options?.ifNoneMatch === "*" && entries.has(key)) return PRECONDITION;
