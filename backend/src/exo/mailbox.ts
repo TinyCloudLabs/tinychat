@@ -51,7 +51,7 @@ const ATTACH_LIMIT = 20;
 const RETRY_AFTER_SEC = 60;
 
 const OWNER_DID_RE = /^did:pkh:eip155:[0-9]+:(0x[0-9a-fA-F]{40})$/;
-const REQUEST_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+export const REQUEST_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 const SOURCES_BY_CAPABILITY: Record<ExoCapability, readonly ConnectorSource[]> = {
   "sync-meetings": ["fireflies", "google"],

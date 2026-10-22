@@ -56,7 +56,7 @@ import { createGoogleOAuthRouter, normalizeAppOrigin } from "./routes/google-oau
 import { createTranscriberRouter } from "./routes/transcriber.js";
 import { createTranscriberWebhookRouter } from "./routes/transcriber-webhook.js";
 import { createExoMailboxRouter } from "./routes/exo-mailbox.js";
-import { createUnwiredExoPorts } from "./exo/default-ports.js";
+import { createExoStorePorts, createOwnerGrantOpener } from "./exo/stores.js";
 import { exoCapabilitiesEnabled } from "./exo/mailbox.js";
 import { ASSEMBLYAI_HOSTED_MOUNT, createAssemblyAiHostedRouter, reconcileHostedJobs } from "./routes/assemblyai-hosted.js";
 import {
@@ -486,6 +486,11 @@ async function main() {
     createBillingWebhookHandler(),
   );
 
+  // §9.3 — one shared lane for every component that writes to the backend space (connector
+  // queue, content store, credential store, exo job mirror). TinyCloud drops concurrent responses
+  // on one space, so cross-component writes MUST funnel through the same lane; two lanes are no lane.
+  const backendStorageLane = new BackendStorageLane();
+
   // ONE set of instances shared by BOTH connector mounts, the public one below and the
   // authenticated companions further down (§3.6/§4.4): the companions' teardown must evict the
   // very token cache the public route reads, and `GET …/webhooks/pending` must see the queue
@@ -493,10 +498,6 @@ async function main() {
   const connectorWebhooks = connectorWebhooksEnabled()
     ? (() => {
         const tokens = new WebhookTokenService(node);
-        // §9.3 — one shared lane for every component that writes to the backend space (queue,
-        // content store, credential store). TinyCloud drops concurrent responses on one space,
-        // so cross-component writes MUST funnel through the same lane; two lanes are no lane.
-        const backendStorageLane = new BackendStorageLane();
         const queue = new ConnectorQueue(node, { storageLane: backendStorageLane });
         const control = new ConnectorControlStore(node);
         // W1 — ONE ingest-mode service for both mounts, for the same reason the token cache and
@@ -561,10 +562,25 @@ async function main() {
     // An unmounted webhook must remain 404 even before the global CSRF gate.
     app.post("/api/transcriber/webhooks/ptx", (_req, res) => res.sendStatus(404));
   }
-  // TC-1013 S3: Exo capability mailbox. Mounted only when the flag is exactly "true".
-  // Default ports fail closed until S4 supplies concrete stores and an executor.
+  // TC-1013 S4b: Exo capability mailbox. Mounted only when the flag is exactly "true".
+  // Stores are the owner's activated grant (S4a) plus a backend-space job mirror on the shared
+  // storage lane. No executor is registered yet, so a verified wake settles `unavailable`.
   if (exoCapabilitiesEnabled(process.env)) {
-    app.use("/api/exo/v1", createExoMailboxRouter(createUnwiredExoPorts(process.env.FRONTEND_URL ?? "https://localhost:5186")));
+    app.use("/api/exo/v1", createExoMailboxRouter(createExoStorePorts({
+      backendKv: {
+        put: (key, value, options) => backendStorageLane.run(() => node.kv.put(key, value, options)),
+        delete: (key) => backendStorageLane.run(() => node.kv.delete(key)),
+      },
+      openOwnerGrant: createOwnerGrantOpener({
+        node,
+        backendDid: did,
+        configuredHost: TINYCLOUD_HOST,
+        grantStore: exoGrantStore,
+      }),
+      webhooks: new WebhookTokenService(node),
+      controls: new ConnectorControlStore(node),
+      frontendOrigin: process.env.FRONTEND_URL ?? "https://localhost:5186",
+    })));
   }
 
   // W9 / D4 — the process that actually CONSUMES the cohort queues, or nothing at all. Assigned

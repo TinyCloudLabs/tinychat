@@ -240,3 +240,60 @@ describe("ownerApplicationsSpaceUri chain id", () => {
     expect(ownerApplicationsSpaceUri(OWNER, 8453)).toBe(`tinycloud:pkh:eip155:8453:${OWNER}:applications`);
   });
 });
+
+describe("createExoActivatedGrant jobs conditional create and list", () => {
+  test("jobsPutIfAbsent sends ifNoneMatch and returns false once the key exists", async () => {
+    const seen: unknown[] = [];
+    let present = false;
+    const kv: ExoKvAccess = {
+      get: async () => ({ ok: true, data: { data: undefined } }),
+      list: async () => ({ ok: true, data: { keys: [] } }),
+      put: async (_key, _value, options) => {
+        seen.push(options);
+        if (options?.ifNoneMatch === "*" && present) {
+          return { ok: false, error: { code: "KV_PRECONDITION_FAILED", message: "exists" } };
+        }
+        present = true;
+        return { ok: true };
+      },
+      delete: async () => ({ ok: true }),
+    };
+    const grant = createExoActivatedGrant({ kv }, GRANT);
+    expect(await grant.jobsPutIfAbsent(`${EXO_JOBS_PREFIX}job-1`, { state: "pending" })).toBe(true);
+    expect(await grant.jobsPutIfAbsent(`${EXO_JOBS_PREFIX}job-1`, { state: "pending" })).toBe(false);
+    expect(seen).toEqual([{ ifNoneMatch: "*" }, { ifNoneMatch: "*" }]);
+  });
+
+  test("jobsPutIfAbsent rejects a failure that is not a precondition failure", async () => {
+    const kv: ExoKvAccess = {
+      get: async () => ({ ok: true, data: { data: undefined } }),
+      list: async () => ({ ok: true, data: { keys: [] } }),
+      put: async () => ({ ok: false, error: { code: "KV_UNAVAILABLE", message: "down" } }),
+      delete: async () => ({ ok: true }),
+    };
+    const grant = createExoActivatedGrant({ kv }, GRANT);
+    await expect(grant.jobsPutIfAbsent(`${EXO_JOBS_PREFIX}job-1`, {})).rejects.toThrow();
+  });
+
+  test("jobsList lists under the jobs prefix and returns the keys", async () => {
+    const calls: string[] = [];
+    const kv: ExoKvAccess = {
+      get: async () => ({ ok: true, data: { data: undefined } }),
+      list: async (options) => {
+        calls.push(options.prefix);
+        return { ok: true, data: { keys: [`${EXO_JOBS_PREFIX}job-1`, `${EXO_JOBS_PREFIX}job-2`] } };
+      },
+      put: async () => ({ ok: true }),
+      delete: async () => ({ ok: true }),
+    };
+    const grant = createExoActivatedGrant({ kv }, GRANT);
+    expect(await grant.jobsList(EXO_JOBS_PREFIX)).toEqual([`${EXO_JOBS_PREFIX}job-1`, `${EXO_JOBS_PREFIX}job-2`]);
+    expect(calls).toEqual([EXO_JOBS_PREFIX]);
+  });
+
+  test("jobsList refuses a directory outside the jobs prefix or without a trailing slash", async () => {
+    const grant = createExoActivatedGrant({ kv: fakeKv() }, GRANT);
+    await expect(grant.jobsList(EXO_REQUESTS_PREFIX)).rejects.toThrow();
+    await expect(grant.jobsList(`${EXO_JOBS_PREFIX}job-1`)).rejects.toThrow();
+  });
+});
