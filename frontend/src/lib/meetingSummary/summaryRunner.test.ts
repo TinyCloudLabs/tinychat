@@ -204,7 +204,7 @@ describe("Re-combine", () => {
     await new Promise((resolve) => setTimeout(resolve, 30));
     runner.cancelAll();
     expect(row().summary_overview).toBeNull();
-    expect(storedSummaryView({ overview: row().summary_overview, actionItems: row().summary_action_items })).toEqual({ status: "unavailable", reason: "failed" });
+    expect(storedSummaryView({ overview: row().summary_overview, actionItems: row().summary_action_items })).toEqual({ status: "idle" });
     setRow({ summary_overview: "Old overview.", summary_action_items: "Old item" });
     calls.length = 0;
     f.sql.nextMeetingWriteError = { code: "SQL_ERROR", message: "injected" };
@@ -275,7 +275,53 @@ describe("cancel and reopen", () => {
     setRow({ summary_overview: "Stored overview.", summary_action_items: "One\nTwo" });
     expect(view()).toBeUndefined();
     expect(storedSummaryView({ overview: "Stored overview.", actionItems: "One\nTwo" })).toEqual({ status: "ready", overview: "Stored overview.", actionItems: ["One", "Two"] });
-    expect(storedSummaryView({ overview: null, actionItems: null })).toEqual({ status: "unavailable", reason: "failed" });
+    expect(storedSummaryView({ overview: null, actionItems: null })).toEqual({ status: "idle" });
     expect(calls).toHaveLength(0);
+  });
+});
+
+describe("clear and settle", () => {
+  test("clear drops a combine's old summary with no model call, and reads back as idle", async () => {
+    setRow({ summary_overview: "Old overview.", summary_action_items: "Old item" });
+    runner.clear(COMBINED_ROW_ID);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(row().summary_overview).toBeNull();
+    expect(row().summary_action_items).toBeNull();
+    expect(view()).toEqual({ status: "idle" });
+    expect(storedSummaryView({ overview: row().summary_overview, actionItems: row().summary_action_items })).toEqual({ status: "idle" });
+    expect(calls).toHaveLength(0);
+  });
+
+  test("clear shows idle before its write lands, so the stored summary is never shown as current", () => {
+    setRow({ summary_overview: "Old overview.", summary_action_items: "Old item" });
+    runner.clear(COMBINED_ROW_ID);
+    expect(view()).toEqual({ status: "idle" });
+  });
+
+  test("a clear whose write fails shows Retry, not the old summary", async () => {
+    setRow({ summary_overview: "Old overview.", summary_action_items: "Old item" });
+    f.sql.nextMeetingWriteError = { code: "SQL_ERROR", message: "write failed" };
+    runner.clear(COMBINED_ROW_ID);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(view()).toEqual({ status: "unavailable", reason: "failed" });
+    expect(row().summary_overview).toBe("Old overview.");
+  });
+
+  test("onSettled fires once when a run ends with a summary, and again when it ends in failure", async () => {
+    let settledCount = 0;
+    const counted = createSummaryRunner({ space: f.tcw, classify, complete: async (messages) => {
+      calls.push(messages.map((m) => m.content));
+      const out = await reply(calls.length);
+      if (out instanceof Error) throw out;
+      return out;
+    }, onSettled: () => { settledCount++; } });
+    counted.start(COMBINED_ROW_ID, { replacing: false });
+    for (let i = 0; i < 200 && counted.view(COMBINED_ROW_ID)?.status !== "ready"; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(settledCount).toBe(1);
+    reply = () => new Error("boom");
+    counted.retry(COMBINED_ROW_ID);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(settledCount).toBe(2);
   });
 });
