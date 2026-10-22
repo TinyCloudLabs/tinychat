@@ -400,6 +400,9 @@ jobs:
           CREDIT_BUDGET_FREE: ${{ secrets.CREDIT_BUDGET_FREE || vars.CREDIT_BUDGET_FREE }}
           CREDIT_BUDGET_PLUS_WEEKLY: ${{ secrets.CREDIT_BUDGET_PLUS_WEEKLY || vars.CREDIT_BUDGET_PLUS_WEEKLY }}
           CREDIT_BUDGET_PRO_WEEKLY: ${{ secrets.CREDIT_BUDGET_PRO_WEEKLY || vars.CREDIT_BUDGET_PRO_WEEKLY }}
+          # Empty means the backend default applies (finish_answer / log); see docs/credits.md.
+          AGENT_CHAT_BUDGET_STOP_MODE: ${{ secrets.AGENT_CHAT_BUDGET_STOP_MODE || vars.AGENT_CHAT_BUDGET_STOP_MODE }}
+          AGENT_CHAT_BUDGET_PREFLIGHT: ${{ secrets.AGENT_CHAT_BUDGET_PREFLIGHT || vars.AGENT_CHAT_BUDGET_PREFLIGHT }}
           # Ledger authority defaults OFF until the staged cutover is explicitly enabled.
           LEDGER_SERVICE_URL: ${{ secrets.LEDGER_SERVICE_URL || vars.LEDGER_SERVICE_URL }}
           LEDGER_SERVICE_SECRET: ${{ secrets.LEDGER_SERVICE_SECRET }}
@@ -546,6 +549,8 @@ jobs:
             printf '%s\n' "CREDIT_BUDGET_FREE=$CREDIT_BUDGET_FREE"
             printf '%s\n' "CREDIT_BUDGET_PLUS_WEEKLY=$CREDIT_BUDGET_PLUS_WEEKLY"
             printf '%s\n' "CREDIT_BUDGET_PRO_WEEKLY=$CREDIT_BUDGET_PRO_WEEKLY"
+            printf '%s\n' "AGENT_CHAT_BUDGET_STOP_MODE=$AGENT_CHAT_BUDGET_STOP_MODE"
+            printf '%s\n' "AGENT_CHAT_BUDGET_PREFLIGHT=$AGENT_CHAT_BUDGET_PREFLIGHT"
             printf '%s\n' "LEDGER_SERVICE_URL=$LEDGER_SERVICE_URL"
             printf '%s\n' "LEDGER_SERVICE_SECRET=$LEDGER_SERVICE_SECRET"
             printf '%s\n' "LEDGER_AUTHORITATIVE=${LEDGER_AUTHORITATIVE:-false}"
