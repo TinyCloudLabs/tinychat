@@ -617,6 +617,14 @@ describe("Exo wake route: many unknown owners do not displace a held owner's wak
 
       const f = fixture();
       f.seed(REQ1, "sync-google");
+      // Every request-store read takes 20 ms and records its owner. Unknown owners must never reach the store.
+      const readOwners: string[] = [];
+      const readRequest = f.ports.requests.get;
+      f.ports.requests.get = async (owner, path) => {
+        readOwners.push(owner);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        return readRequest(owner, path);
+      };
       let release!: () => void;
       const gate = new Promise<void>((resolve) => {
         release = resolve;
@@ -648,6 +656,8 @@ describe("Exo wake route: many unknown owners do not displace a held owner's wak
           release();
           await idleAt(base);
           expect(f.runs).toBe(1);
+          expect(readOwners.length).toBeGreaterThan(0);
+          expect(readOwners.every((owner) => owner === OWNER)).toBe(true);
         },
         f.ports,
         {},
