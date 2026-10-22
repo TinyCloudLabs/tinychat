@@ -31,6 +31,7 @@ function harness(options: { grant?: boolean; connectorOn?: boolean; webhook?: bo
     grant: options.grant ?? true,
     connectorOn: options.connectorOn ?? true,
     webhook: options.webhook ?? false,
+    putFailures: 0,
   };
   const requests = new Map<string, unknown>();
   const jobs = new Map<string, unknown>();
@@ -50,6 +51,10 @@ function harness(options: { grant?: boolean; connectorOn?: boolean; webhook?: bo
         return true;
       },
       put: async (owner, jobId, record) => {
+        if (state.putFailures > 0) {
+          state.putFailures -= 1;
+          throw new Error("store write failed");
+        }
         jobs.set(`${owner}|${jobId}`, record);
         if (record.state === "error") errorWritten.resolve();
       },
@@ -329,6 +334,72 @@ describe("Exo per-source cooldowns (TC-1013 D9)", () => {
       body: { error: "budget_exhausted", retryAfterSec: Math.ceil((nextDay - T0) / 1000) },
     });
     expect(h.jobs.size).toBe(0);
+  });
+});
+
+describe("Exo terminal report survives a failed store write", () => {
+  test("one failed write on a terminal report releases the run; a new wake starts and the old id replays done", async () => {
+    const h = harness();
+    h.seed(REQ1, "sync-google");
+    h.seed(REQ2, "sync-google");
+    await h.wake(REQ1);
+    h.state.putFailures = 1;
+    await h.runs[0].report({ state: "done", code: "done" });
+    h.state.now = T0 + 31 * MINUTE;
+    expect(await h.wake(REQ2)).toMatchObject({ status: 202, body: { jobId: REQ2, state: "pending" } });
+    expect(h.runs).toHaveLength(2);
+    expect(await h.wake(REQ1)).toMatchObject({ status: 202, body: { jobId: REQ1, state: "done" } });
+    expect(h.runs).toHaveLength(2);
+  });
+
+  test("every store write failing on a terminal report still releases the run without rejecting", async () => {
+    const h = harness();
+    h.seed(REQ1, "sync-google");
+    h.seed(REQ2, "sync-google");
+    await h.wake(REQ1);
+    h.state.putFailures = Number.POSITIVE_INFINITY;
+    await expect(h.runs[0].report({ state: "done", code: "done" })).resolves.toBeUndefined();
+    h.state.now = T0 + 31 * MINUTE;
+    expect(await h.wake(REQ2)).toMatchObject({ status: 202, body: { jobId: REQ2, state: "pending" } });
+    expect(h.runs).toHaveLength(2);
+    expect(await h.wake(REQ1)).toMatchObject({ status: 202, body: { jobId: REQ1, state: "done" } });
+  });
+
+  test("a store write that fails while a wake starts settles the job as unavailable, and replays keep that state", async () => {
+    const h = harness();
+    const ledger = createMemoryExoLedger();
+    h.ports.ledger = {
+      ...ledger,
+      recordStart: async () => {
+        throw new Error("ledger down");
+      },
+    };
+    h.seed(REQ1, "sync-google");
+    h.state.putFailures = Number.POSITIVE_INFINITY;
+    expect(await h.wake(REQ1)).toMatchObject({ status: 202, body: { jobId: REQ1, state: "error", code: "unavailable" } });
+    expect(await h.wake(REQ1)).toMatchObject({ status: 202, body: { jobId: REQ1, state: "error", code: "unavailable" } });
+    expect(h.runs).toHaveLength(0);
+  });
+
+  test("a pending job that no live run accounts for settles unavailable once older than the active-run TTL", async () => {
+    const h = harness();
+    h.seed(REQ1, "sync-google");
+    h.jobs.set(`${OWNER}|${REQ1}`, {
+      v: 1,
+      jobId: REQ1,
+      capability: "sync-google",
+      state: "pending",
+      code: "accepted",
+      message: "Request accepted.",
+      createdAt: new Date(T0).toISOString(),
+      updatedAt: new Date(T0).toISOString(),
+    });
+    h.state.now = T0 + 10 * MINUTE;
+    expect(await h.wake(REQ1)).toMatchObject({ status: 202, body: { jobId: REQ1, state: "pending" } });
+    h.state.now = T0 + 31 * MINUTE;
+    expect(await h.wake(REQ1)).toMatchObject({ status: 202, body: { jobId: REQ1, state: "error", code: "unavailable" } });
+    expect(await h.wake(REQ1)).toMatchObject({ status: 202, body: { jobId: REQ1, state: "error", code: "unavailable" } });
+    expect(h.runs).toHaveLength(0);
   });
 });
 

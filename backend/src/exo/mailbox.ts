@@ -226,14 +226,55 @@ const EXECUTOR_MESSAGE: Record<ExecutorUpdate["code"], ExoJobMessage> = {
   unavailable: JOB_MESSAGE.unavailable,
 };
 
+/** The update as stored. An out-of-vocabulary state or code settles as error with code unavailable. */
+function normalizeUpdate(update: ExecutorUpdate): ExecutorUpdate {
+  const valid = Object.hasOwn(EXECUTOR_STATES, update.state) && Object.hasOwn(EXECUTOR_MESSAGE, update.code);
+  return valid ? update : { state: "error", code: "unavailable" };
+}
+
+/**
+ * Records whose store write failed, held in process so replays still see the outcome. A later successful
+ * write retires the entry. Not durable: after a restart the stored record stands and the replay TTL settles it.
+ */
+const heldByStore = new WeakMap<ExoJobStore, Map<string, ExoJobRecord>>();
+
+function heldRecords(jobs: ExoJobStore): Map<string, ExoJobRecord> {
+  let held = heldByStore.get(jobs);
+  if (!held) {
+    held = new Map();
+    heldByStore.set(jobs, held);
+  }
+  return held;
+}
+
+/** Reads a job, preferring a record held after a failed write. */
+async function readJob(ports: ExoMailboxPorts, owner: string, jobId: string): Promise<unknown> {
+  return heldRecords(ports.jobs).get(`${owner}|${jobId}`) ?? (await ports.jobs.get(owner, jobId));
+}
+
+/**
+ * Writes a job. A failed write does not throw: the record is held in process and the failure is logged without
+ * its payload. A successful write retires any held copy.
+ */
+async function writeJob(ports: ExoMailboxPorts, owner: string, jobId: string, record: ExoJobRecord): Promise<void> {
+  const held = heldRecords(ports.jobs);
+  const key = `${owner}|${jobId}`;
+  try {
+    await ports.jobs.put(owner, jobId, record);
+    held.delete(key);
+  } catch {
+    held.set(key, record);
+    console.error("[exo] job write failed; record held in process");
+  }
+}
+
 /** Moves a non-terminal job to the update's state and code. Terminal records are never overwritten. */
 async function settle(ports: ExoMailboxPorts, owner: string, jobId: string, update: ExecutorUpdate): Promise<void> {
-  const current = parseJobRecord(await ports.jobs.get(owner, jobId));
+  const current = parseJobRecord(await readJob(ports, owner, jobId));
   if (!current || current.state === "done" || current.state === "error") return;
-  const valid = Object.hasOwn(EXECUTOR_STATES, update.state) && Object.hasOwn(EXECUTOR_MESSAGE, update.code);
-  const next: ExecutorUpdate = valid ? update : { state: "error", code: "unavailable" };
+  const next = normalizeUpdate(update);
   const updatedAt = new Date(ports.now()).toISOString();
-  await ports.jobs.put(owner, jobId, {
+  await writeJob(ports, owner, jobId, {
     ...current,
     state: next.state,
     code: next.code,
@@ -253,10 +294,12 @@ async function reportRun(
   await withOwnerLane(owner, async () => {
     const snapshot = await ports.ledger.snapshot(owner, capability, ports.now());
     const attached = snapshot.activeJobId === runId ? (snapshot.attachedJobIds ?? []) : [];
-    await settle(ports, owner, runId, update);
-    for (const jobId of attached) await settle(ports, owner, jobId, update);
-    if (update.state === "done" || update.state === "error") {
-      await ports.ledger.clearActive(owner, capability, runId);
+    try {
+      await settle(ports, owner, runId, update);
+      for (const jobId of attached) await settle(ports, owner, jobId, update);
+    } finally {
+      // Released even when a read in settle failed. A job left unsettled is settled by the replay TTL.
+      if (normalizeUpdate(update).state !== "running") await ports.ledger.clearActive(owner, capability, runId);
     }
   });
 }
@@ -283,12 +326,25 @@ export async function verifyWake(ports: ExoMailboxPorts, body: unknown): Promise
 /** Starts or replays a verified wake. Everything runs in the owner lane, so two wakes cannot both see "no active run". */
 export function startWake(ports: ExoMailboxPorts, wake: VerifiedWake): Promise<WakeResult> {
   const { owner, requestId, capability } = wake;
+  const now = ports.now();
+  const timestamp = new Date(now).toISOString();
   return withOwnerLane(owner, async () => {
     // Replay: the job id is the request id. A replay returns the existing job, not an error.
-    const existingRaw = await ports.jobs.get(owner, requestId);
+    const existingRaw = await readJob(ports, owner, requestId);
     if (existingRaw !== undefined) {
       const existing = parseJobRecord(existingRaw);
-      return existing ? acceptedBody(existing) : unavailable();
+      if (!existing) return unavailable();
+      // A pending job past the active-run TTL that no live run accounts for has no run behind it. Settle it so replays do not stay pending.
+      if (existing.state === "pending" && now - Date.parse(existing.createdAt) > EXO_ACTIVE_JOB_TTL_MS) {
+        const ledgerState = await ports.ledger.snapshot(owner, capability, now);
+        const live = ledgerState.activeJobId === requestId || (ledgerState.attachedJobIds ?? []).includes(requestId);
+        if (!live) {
+          const settled: ExoJobRecord = { ...existing, state: "error", code: "unavailable", message: EXECUTOR_MESSAGE.unavailable, updatedAt: timestamp };
+          await writeJob(ports, owner, requestId, settled);
+          return acceptedBody(settled);
+        }
+      }
+      return acceptedBody(existing);
     }
 
     const executor = ports.executor;
@@ -308,8 +364,6 @@ export function startWake(ports: ExoMailboxPorts, wake: VerifiedWake): Promise<W
       return { status: 409, body: { error: "connector_off", source: SOURCES_BY_CAPABILITY[capability][0], link: ports.frontendOrigin } };
     }
 
-    const now = ports.now();
-    const timestamp = new Date(now).toISOString();
     const snapshot = await ports.ledger.snapshot(owner, capability, now);
 
     if (snapshot.activeJobId !== undefined) {
@@ -320,7 +374,7 @@ export function startWake(ports: ExoMailboxPorts, wake: VerifiedWake): Promise<W
           await settle(ports, owner, jobId, { state: "error", code: "unavailable" });
         }
       } else {
-        const active = parseJobRecord(await ports.jobs.get(owner, snapshot.activeJobId));
+        const active = parseJobRecord(await readJob(ports, owner, snapshot.activeJobId));
         if (active) {
           if ((snapshot.attachedJobIds?.length ?? 0) >= ATTACH_LIMIT) {
             return { status: 429, body: { error: "rate_limited", retryAfterSec: 60 } };
@@ -363,10 +417,11 @@ export function startWake(ports: ExoMailboxPorts, wake: VerifiedWake): Promise<W
     try {
       await ports.ledger.recordStart(owner, capability, requestId, now);
     } catch {
-      // The job is stored pending before the ledger write. Settle it so replays and this request id do not stay pending.
-      await settle(ports, owner, requestId, { state: "error", code: "unavailable" });
+      // The job is stored pending before the ledger write. Settle it in process so replays and this request id do not stay pending.
+      const failed: ExoJobRecord = { ...job, state: "error", code: "unavailable", message: EXECUTOR_MESSAGE.unavailable, updatedAt: timestamp };
+      await writeJob(ports, owner, requestId, failed);
       await ports.ledger.clearActive(owner, capability, requestId);
-      return acceptedBody({ ...job, state: "error", code: "unavailable", message: EXECUTOR_MESSAGE.unavailable });
+      return acceptedBody(failed);
     }
 
     // Not awaited, and started after the lane task returns. Each report settles or logs; none rejects into the executor.
