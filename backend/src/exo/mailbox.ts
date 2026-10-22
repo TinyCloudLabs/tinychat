@@ -529,23 +529,38 @@ async function runWake(ports: ExoMailboxPorts, wake: VerifiedWake, budget: Fixed
 }
 
 /**
- * Deletes one owner's job records whose `updatedAt` is older than the retention window.
+ * Removes one expired job and its request record. The request goes first: if that removal throws, the job stays, so a
+ * later replay of the request id finds the job and starts nothing. Removing the job first could leave a surviving request
+ * with no job, and a replay would start the run again.
+ */
+export async function removeExpiredJob(
+  ports: Pick<ExoMailboxPorts, "requests"> & { jobs: Pick<ExoJobStore, "remove"> },
+  owner: string,
+  jobId: string,
+  capability: ExoCapability,
+): Promise<void> {
+  await ports.requests.remove(owner, requestPath(capability, jobId));
+  await ports.jobs.remove(owner, jobId);
+}
+
+/**
+ * Deletes one owner's job records whose `updatedAt` is older than the retention window, with their request records.
  * Records that do not parse are kept. The scheduler that calls this is S4's.
  */
 export async function sweepExpiredJobs(
-  jobs: Pick<ExoJobStore, "list" | "remove">,
+  ports: Pick<ExoMailboxPorts, "requests"> & { jobs: Pick<ExoJobStore, "list" | "remove"> },
   owner: string,
   now: number,
   retentionMs: number = EXO_JOB_RETENTION_MS,
 ): Promise<number> {
   const cutoff = now - retentionMs;
   let removed = 0;
-  for (const entry of await jobs.list(owner)) {
+  for (const entry of await ports.jobs.list(owner)) {
     const job = parseJobRecord(entry.value);
     if (!job) continue;
     const updated = Date.parse(job.updatedAt);
     if (!Number.isFinite(updated) || updated > cutoff) continue;
-    await jobs.remove(owner, entry.jobId);
+    await removeExpiredJob(ports, owner, entry.jobId, job.capability);
     removed += 1;
   }
   return removed;

@@ -591,7 +591,7 @@ describe("Exo job retention sweep", () => {
     h.jobs.set(`${OWNER}|old`, record("old", now - EXO_JOB_RETENTION_MS - DAY));
     h.jobs.set(`${OWNER}|fresh`, record("fresh", now - DAY));
     h.jobs.set(`${OWNER}|junk`, { v: 1, jobId: "junk" });
-    const removed = await sweepExpiredJobs(h.ports.jobs, OWNER, now);
+    const removed = await sweepExpiredJobs(h.ports, OWNER, now);
     expect(removed).toBe(1);
     expect([...h.jobs.keys()].sort()).toEqual([`${OWNER}|fresh`, `${OWNER}|junk`]);
   });
@@ -634,9 +634,43 @@ describe("Exo request consume", () => {
     await h.wake(REQ1);
     await h.runs[0].report({ state: "done", code: "done" });
     h.state.now = T0 + EXO_JOB_RETENTION_MS + DAY;
-    expect(await sweepExpiredJobs(h.ports.jobs, OWNER, h.state.now)).toBe(1);
+    expect(await sweepExpiredJobs(h.ports, OWNER, h.state.now)).toBe(1);
     expect(await h.wake(REQ1)).toBeUndefined();
     expect(h.jobs.size).toBe(0);
+    expect(h.runs).toHaveLength(1);
+  });
+
+  test("a sweep whose request removal fails keeps the job, and a replay of the request starts nothing", async () => {
+    const h = harness();
+    h.seed(REQ1, "sync-google");
+    h.state.removeFails = true;
+    expect(await h.wake(REQ1)).toMatchObject({ state: "pending" });
+    await h.runs[0].report({ state: "done", code: "done" });
+    h.state.now = T0 + EXO_JOB_RETENTION_MS + DAY;
+    await expect(sweepExpiredJobs(h.ports, OWNER, h.state.now)).rejects.toThrow();
+    expect(h.jobs.size).toBe(1);
+    expect(h.requests.has(key(REQ1))).toBe(true);
+    h.state.removeFails = false;
+    await h.wake(REQ1);
+    expect(h.runs).toHaveLength(1);
+    expect(h.jobs.size).toBe(1);
+  });
+
+  test("a sweep whose job removal fails after the request is removed leaves a job that a replay does not start", async () => {
+    const h = harness();
+    h.seed(REQ1, "sync-google");
+    await h.wake(REQ1);
+    await h.runs[0].report({ state: "done", code: "done" });
+    h.state.now = T0 + EXO_JOB_RETENTION_MS + DAY;
+    const realRemove = h.ports.jobs.remove;
+    h.ports.jobs.remove = async () => {
+      throw new Error("job remove failed");
+    };
+    await expect(sweepExpiredJobs(h.ports, OWNER, h.state.now)).rejects.toThrow("job remove failed");
+    h.ports.jobs.remove = realRemove;
+    expect(h.requests.has(key(REQ1))).toBe(false);
+    expect(h.jobs.size).toBe(1);
+    await h.wake(REQ1);
     expect(h.runs).toHaveLength(1);
   });
 });

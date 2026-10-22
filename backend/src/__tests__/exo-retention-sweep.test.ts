@@ -1,6 +1,6 @@
 import { describe, expect, spyOn, test, vi } from "bun:test";
 import { runExoRetentionSweep, startExoRetentionSweepTimer } from "../exo/retention-sweep.js";
-import { JOB_MESSAGE, type ExoJobRecord } from "../exo/mailbox.js";
+import { EXO_NAMESPACE, JOB_MESSAGE, type ExoJobRecord } from "../exo/mailbox.js";
 import { EXO_MIRROR_JOBS_PREFIX, mirrorJobKey } from "../exo/stores.js";
 
 const OWNER = `0x${"a".repeat(40)}`;
@@ -54,18 +54,33 @@ function fakeKv(initial: Record<string, unknown> = {}) {
   };
 }
 
-function fakePorts(options: { active?: string[]; removeFails?: string[] } = {}) {
+function fakePorts(options: { active?: string[]; removeFails?: string[]; requestRemoveFails?: string[] } = {}) {
   const active = new Set(options.active ?? []);
   const removeFails = new Set(options.removeFails ?? []);
+  const requestRemoveFails = new Set(options.requestRemoveFails ?? []);
   const removed: Array<[string, string]> = [];
+  const requestsRemoved: Array<[string, string]> = [];
+  const order: string[] = [];
   return {
     removed,
+    requestsRemoved,
+    order,
     ports: {
       grants: { isActive: async (owner: string) => active.has(owner) },
+      requests: {
+        get: async () => ({ ok: false, error: { code: "KV_NOT_FOUND", service: "kv", message: "not found" } }),
+        remove: async (owner: string, path: string) => {
+          const jobId = path.slice(path.lastIndexOf("/") + 1);
+          if (requestRemoveFails.has(jobId)) throw new Error("request remove failed");
+          requestsRemoved.push([owner, path]);
+          order.push(`request:${jobId}`);
+        },
+      },
       jobs: {
         remove: async (owner: string, jobId: string) => {
           if (removeFails.has(jobId)) throw new Error("remove failed");
           removed.push([owner, jobId]);
+          order.push(`job:${jobId}`);
         },
       },
     },
@@ -147,6 +162,29 @@ describe("exo retention sweep: expiry", () => {
 
     expect(pass).toEqual({ removed: 1, skipped: 0, failed: 1 });
     expect(removed).toEqual([[OWNER, OTHER_JOB_ID]]);
+  });
+
+  test("an active owner's expired job: the request record is removed before the job record", async () => {
+    const kv = fakeKv(mirrorEntries([OWNER, JOB_ID, EXPIRED_AT]));
+    const { ports, order, requestsRemoved, removed } = fakePorts({ active: [OWNER] });
+
+    const pass = await runExoRetentionSweep({ kv, ports, now: () => NOW });
+
+    expect(pass).toEqual({ removed: 1, skipped: 0, failed: 0 });
+    expect(order).toEqual([`request:${JOB_ID}`, `job:${JOB_ID}`]);
+    expect(requestsRemoved).toEqual([[OWNER, `${EXO_NAMESPACE}/requests/sync-google/${JOB_ID}`]]);
+    expect(removed).toEqual([[OWNER, JOB_ID]]);
+  });
+
+  test("when the request record cannot be removed, the job record is kept so a replay still finds it", async () => {
+    const kv = fakeKv(mirrorEntries([OWNER, JOB_ID, EXPIRED_AT]));
+    const { ports, removed, order } = fakePorts({ active: [OWNER], requestRemoveFails: [JOB_ID] });
+
+    const pass = await runExoRetentionSweep({ kv, ports, now: () => NOW });
+
+    expect(pass).toEqual({ removed: 0, skipped: 0, failed: 1 });
+    expect(removed).toEqual([]);
+    expect(order).toEqual([]);
   });
 
   test("a second pass after removal finds nothing left to remove", async () => {

@@ -1,7 +1,7 @@
 import { assertKvResult, isKvMissingKeyResult } from "@tinyboilerplate/server";
 import { extractKeys } from "../services/connector-drain.js";
 import { readVersionedKv } from "./activated-grant.js";
-import { EXO_JOB_RETENTION_MS, parseJobRecord, REQUEST_ID_RE, type ExoJobStore, type ExoMailboxPorts } from "./mailbox.js";
+import { EXO_JOB_RETENTION_MS, parseJobRecord, REQUEST_ID_RE, removeExpiredJob, type ExoJobStore, type ExoMailboxPorts } from "./mailbox.js";
 import { EXO_MIRROR_JOBS_PREFIX, mirrorJobKey, type ExoBackendKv } from "./stores.js";
 
 /** Interval between passes. The retention window is 30 days, so hourly passes are accurate enough. */
@@ -14,7 +14,7 @@ const MAX_MIRROR_RESPONSE_BYTES = 16 * 1024;
 
 export interface ExoRetentionSweepDeps {
   kv: Pick<ExoBackendKv, "get" | "list" | "delete">;
-  ports: { grants: ExoMailboxPorts["grants"]; jobs: Pick<ExoJobStore, "remove"> };
+  ports: Pick<ExoMailboxPorts, "grants" | "requests"> & { jobs: Pick<ExoJobStore, "remove"> };
   now?: () => number;
   retentionMs?: number;
 }
@@ -54,12 +54,12 @@ export async function runExoRetentionSweep(deps: ExoRetentionSweepDeps): Promise
       );
       const job = read === undefined ? undefined : parseJobRecord(read.value);
       const updated = job ? Date.parse(job.updatedAt) : Number.NaN;
-      if (!Number.isFinite(updated) || updated > cutoff) {
+      if (!job || !Number.isFinite(updated) || updated > cutoff) {
         pass.skipped += 1;
         continue;
       }
       if (await deps.ports.grants.isActive(owner)) {
-        await deps.ports.jobs.remove(owner, jobId);
+        await removeExpiredJob(deps.ports, owner, jobId, job.capability);
       } else {
         const deleted = await deps.kv.delete(mirror);
         if (!isKvMissingKeyResult(deleted, mirror)) assertKvResult(deleted);
