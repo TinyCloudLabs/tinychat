@@ -7,7 +7,7 @@ import type { Server } from "node:http";
 import express from "express";
 import type { TinyCloudNode } from "@tinycloud/node-sdk";
 import { activateSessionWithHost } from "@tinycloud/sdk-core";
-import type { VerifiedTranscriptWriter } from "../delegation-verify.js";
+import { EXO_SYNC_RESOURCES, type VerifiedTranscriptWriter } from "../delegation-verify.js";
 import { activateVerifiedDelegation, DelegationActivationError, MAX_ACTIVATABLE_RESOURCES } from "../portable-delegation.js";
 
 const ADDRESS = "0x7d033300000000000000000000000000000073f2";
@@ -167,6 +167,8 @@ describe("activateVerifiedDelegation", () => {
       [{ ...EXO_REQUESTS, path: "xyz.tinycloud.tinychat/exo/v1/" }, EXO_JOBS],
       [{ ...EXO_REQUESTS, actions: [...EXO_REQUESTS.actions, "tinycloud.kv/put"] }, EXO_JOBS],
       [EXO_REQUESTS, { ...EXO_JOBS, actions: ["tinycloud.kv/get", "tinycloud.kv/put"] }],
+      [{ ...EXO_REQUESTS, actions: ["tinycloud.kv/get", "tinycloud.kv/put", "tinycloud.kv/del"] }, EXO_JOBS],
+      [EXO_REQUESTS, { ...EXO_JOBS, actions: ["tinycloud.kv/get", "tinycloud.kv/list", "tinycloud.kv/del"] }],
       [EXO_REQUESTS, EXO_JOBS, connector[0]],
       connector,
     ]) {
@@ -175,6 +177,20 @@ describe("activateVerifiedDelegation", () => {
       }, { host: HOST, beforeNodeWrite: async () => { calls.push("govern"); } })).rejects.toThrow("Exo sync delegation");
     }
     expect(calls).toEqual([]);
+  });
+
+  it("pins the shared exo table to the literal grant, and activation accepts exactly that table", async () => {
+    expect(EXO_SYNC_RESOURCES).toEqual([
+      { service: "kv", path: EXO_REQUESTS.path, actions: EXO_REQUESTS.actions },
+      { service: "kv", path: EXO_JOBS.path, actions: EXO_JOBS.actions },
+    ]);
+    const calls: string[] = [];
+    const node = { useDelegation: async (dto: DelegationDto) => { calls.push(`activate:${dto.path}`); return { kv: {} }; } };
+    await activateVerifiedDelegation(node as unknown as TinyCloudNode, {
+      ...verifiedGrant(), policy: "exo-sync",
+      resources: EXO_SYNC_RESOURCES.map((resource) => ({ ...resource, space: SPACE, actions: [...resource.actions] })),
+    }, { host: HOST, beforeNodeWrite: async () => { calls.push("govern"); } });
+    expect(calls).toEqual(["govern", `activate:${EXO_REQUESTS.path}`, "govern", `activate:${EXO_JOBS.path}`]);
   });
 });
 
