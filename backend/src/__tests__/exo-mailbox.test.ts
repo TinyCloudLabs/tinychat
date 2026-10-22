@@ -450,6 +450,18 @@ describe("Exo terminal report survives a failed store write", () => {
     expect(h.runs).toHaveLength(0);
   });
 
+  test("a ledger that refuses the start settles the request rate_limited and never calls the executor", async () => {
+    const h = harness();
+    const ledger = createMemoryExoLedger();
+    h.ports.ledger = {
+      ...ledger,
+      recordStart: async () => ({ started: false, reason: "active", retryAfterMs: 0 }),
+    };
+    h.seed(REQ1, "sync-google");
+    expect(await h.wake(REQ1)).toMatchObject({ state: "error", code: "rate_limited" });
+    expect(h.runs).toHaveLength(0);
+  });
+
   test("a pending job that no live run accounts for settles unavailable once older than the active-run TTL", async () => {
     const h = harness();
     h.seed(REQ1, "sync-google");

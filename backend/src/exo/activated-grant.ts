@@ -101,11 +101,27 @@ function isString(value: unknown): value is string {
 /** Read bound for one request or job record. Stored JSON is separately capped at 4 KiB. */
 const MAX_RECORD_RESPONSE_BYTES = 16 * 1024;
 
-function isKvPreconditionFailed(result: unknown): boolean {
+export function isKvPreconditionFailed(result: unknown): boolean {
   if (result === null || typeof result !== "object") return false;
   const candidate = result as { ok?: unknown; error?: unknown };
   if (candidate.ok !== false || candidate.error === null || typeof candidate.error !== "object") return false;
   return (candidate.error as { code?: unknown }).code === "KV_PRECONDITION_FAILED";
+}
+
+/**
+ * Reads a KV get result with its strong etag, for a conditional write. Undefined when the key is absent.
+ * Throws when the etag or the value is missing, so a later write is never silently unconditional.
+ */
+export function readVersionedKv(result: unknown, key: string): { value: unknown; etag: string } | undefined {
+  if (isKvMissingKeyResult(result, key)) return undefined;
+  const outer = dataOf(assertKvResult(result));
+  if (outer === null || typeof outer !== "object") throw new Error("Exo ledger read invalid");
+  const headers = "headers" in outer ? outer.headers : undefined;
+  const etag = headers !== null && typeof headers === "object" && "etag" in headers ? headers.etag : undefined;
+  if (typeof etag !== "string" || etag === "") throw new Error("Exo ledger read without an etag");
+  const raw = "data" in outer ? outer.data : undefined;
+  if (raw === null || raw === undefined) throw new Error("Exo ledger value missing");
+  return { value: decodeStoredJson(raw), etag };
 }
 
 /**

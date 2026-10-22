@@ -568,6 +568,7 @@ async function main() {
   if (exoCapabilitiesEnabled(process.env)) {
     app.use("/api/exo/v1", createExoMailboxRouter(createExoStorePorts({
       backendKv: {
+        get: (key, options) => node.kv.get(key, options),
         put: (key, value, options) => backendStorageLane.run(() => node.kv.put(key, value, options)),
         delete: (key) => backendStorageLane.run(() => node.kv.delete(key)),
       },

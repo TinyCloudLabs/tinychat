@@ -6,9 +6,10 @@ import { storedDelegationMatchesBackend } from "../routes/delegations.js";
 import {
   createExoActivatedGrant,
   type ExoActivatedGrant,
+  type ExoKvGetOptions,
+  type ExoKvPutOptions,
 } from "./activated-grant.js";
 import {
-  createMemoryExoLedger,
   EXO_NAMESPACE,
   parseJobRecord,
   REQUEST_ID_RE,
@@ -16,10 +17,12 @@ import {
   type ExoJobRecord,
   type ExoMailboxPorts,
 } from "./mailbox.js";
+import { createDurableExoLedger } from "./durable-ledger.js";
 
 /** Backend-space KV used only for job mirrors. The owner space stays authoritative. */
 export interface ExoBackendKv {
-  put(key: string, value: unknown, options?: { ifNoneMatch?: "*" }): Promise<unknown>;
+  get(key: string, options: ExoKvGetOptions): Promise<unknown>;
+  put(key: string, value: unknown, options?: ExoKvPutOptions): Promise<unknown>;
   delete(key: string): Promise<unknown>;
 }
 
@@ -153,7 +156,7 @@ export function createExoStorePorts(deps: ExoStoreDeps): Omit<ExoMailboxPorts, "
         }
       },
     },
-    ledger: createMemoryExoLedger(),
+    ledger: createDurableExoLedger(deps.backendKv),
     now,
     frontendOrigin: deps.frontendOrigin,
   };

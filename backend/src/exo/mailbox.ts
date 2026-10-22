@@ -8,6 +8,7 @@
  */
 import { APP_ID } from "@tinyboilerplate/core";
 import type { FixedWindowBudget } from "./wake-intake.js";
+import { attachEntry, clearEntry, evaluateStart, snapshotOf, type ExoLedgerEntry, type ExoStartGate, type ExoStartResult } from "./ledger-model.js";
 
 export const EXO_CAPABILITIES = ["sync-meetings", "sync-fireflies", "sync-google"] as const;
 export type ExoCapability = (typeof EXO_CAPABILITIES)[number];
@@ -125,7 +126,8 @@ export interface ExoLedgerSnapshot {
 /** Cooldown, daily-cap, and coalescing state per owner and capability. */
 export interface ExoLedger {
   snapshot(owner: string, capability: ExoCapability, now: number): Promise<ExoLedgerSnapshot>;
-  recordStart(owner: string, capability: ExoCapability, jobId: string, now: number): Promise<void>;
+  /** Starts a run only when the gate admits it. A refusal is returned and nothing is written for it. */
+  recordStart(owner: string, capability: ExoCapability, jobId: string, now: number, gate: ExoStartGate): Promise<ExoStartResult>;
   /** Adds a coalesced wake to the active run. */
   attach(owner: string, capability: ExoCapability, jobId: string): Promise<void>;
   /** Clears the active run only when it is `jobId`. Returns the wakes attached to it. */
@@ -472,7 +474,10 @@ async function runWake(ports: ExoMailboxPorts, wake: VerifiedWake, budget: Fixed
     }
   }
 
+  // One lookup per wake: the Fireflies webhook changes the minimum interval.
   const rule = COOLDOWN_RULES[capability];
+  const hasWebhook = capability === "sync-fireflies" && (await ports.connectors.hasFirefliesWebhook(owner));
+  const gate: ExoStartGate = rule ? { dailyCap: rule.dailyCap, minIntervalMs: rule.minIntervalMs(hasWebhook) } : {};
   if (rule) {
     if (snapshot.startsToday >= rule.dailyCap) {
       const nextDay = (Math.floor(now / DAY_MS) + 1) * DAY_MS;
@@ -480,7 +485,6 @@ async function runWake(ports: ExoMailboxPorts, wake: VerifiedWake, budget: Fixed
       return;
     }
     if (snapshot.lastStartedAt !== undefined) {
-      const hasWebhook = capability === "sync-fireflies" && (await ports.connectors.hasFirefliesWebhook(owner));
       const readyAt = snapshot.lastStartedAt + rule.minIntervalMs(hasWebhook);
       if (now < readyAt) {
         await createJob(ports, wake, newJob(wake, timestamp, "error", "rate_limited", { retryAfterSec: Math.ceil((readyAt - now) / 1000) }));
@@ -491,13 +495,23 @@ async function runWake(ports: ExoMailboxPorts, wake: VerifiedWake, budget: Fixed
 
   const job = newJob(wake, timestamp, "pending", "accepted");
   if (!(await createJob(ports, wake, job))) return;
-  try {
-    await ports.ledger.recordStart(owner, capability, requestId, now);
-  } catch {
+  // The gate runs inside the ledger's conditional write. A refusal is a lost race or a limit reached since the snapshot.
+  const decision = await ports.ledger.recordStart(owner, capability, requestId, now, gate).catch((): undefined => undefined);
+  if (decision === undefined) {
     // The job is stored pending before the ledger write. Settle it in process so replays and this request id do not stay pending.
     const failed: ExoJobRecord = { ...job, state: "error", code: "unavailable", message: JOB_MESSAGE.unavailable, updatedAt: timestamp };
     await writeJob(ports, owner, requestId, failed);
     await ports.ledger.clearActive(owner, capability, requestId);
+    return;
+  }
+  if (!decision.started) {
+    const refused: ExoJobRecord =
+      decision.reason === "budget"
+        ? { ...job, state: "error", code: "budget_exhausted", message: JOB_MESSAGE.budget_exhausted, updatedAt: timestamp, retryAfterSec: Math.ceil(decision.retryAfterMs / 1000) }
+        : decision.reason === "cooldown"
+          ? { ...job, state: "error", code: "rate_limited", message: JOB_MESSAGE.rate_limited, updatedAt: timestamp, retryAfterSec: Math.ceil(decision.retryAfterMs / 1000) }
+          : { ...job, state: "error", code: "rate_limited", message: JOB_MESSAGE.rate_limited, updatedAt: timestamp, retryAfterSec: RETRY_AFTER_SEC };
+    await writeJob(ports, owner, requestId, refused);
     return;
   }
 
@@ -532,59 +546,30 @@ export async function sweepExpiredJobs(
   return removed;
 }
 
-/** In-process ledger. Not durable: a restart resets cooldowns, coalescing, and active runs. Durable ledger is S4. */
+/** In-process ledger over the same gate as the durable ledger. Not restart-durable. Used by tests only. */
 export function createMemoryExoLedger(): ExoLedger {
-  type Entry = {
-    day: number;
-    startsToday: number;
-    lastStartedAt: number;
-    activeJobId?: string;
-    activeSince?: number;
-    attachedJobIds: string[];
-  };
-  const entries = new Map<string, Entry>();
+  const entries = new Map<string, ExoLedgerEntry>();
+  const keyOf = (owner: string, capability: ExoCapability) => `${owner}|${capability}`;
   return {
     async snapshot(owner, capability, now) {
-      const entry = entries.get(`${owner}|${capability}`);
-      if (!entry) return { startsToday: 0 };
-      const today = Math.floor(now / DAY_MS);
-      const snapshot: ExoLedgerSnapshot = {
-        startsToday: entry.day === today ? entry.startsToday : 0,
-        lastStartedAt: entry.lastStartedAt,
-      };
-      if (entry.activeJobId !== undefined) {
-        snapshot.activeJobId = entry.activeJobId;
-        snapshot.activeSince = entry.activeSince;
-        snapshot.attachedJobIds = [...entry.attachedJobIds];
-      }
-      return snapshot;
+      return snapshotOf(entries.get(keyOf(owner, capability)), now);
     },
-    async recordStart(owner, capability, jobId, now) {
-      const key = `${owner}|${capability}`;
-      const today = Math.floor(now / DAY_MS);
-      const previous = entries.get(key);
-      const startsToday = previous && previous.day === today ? previous.startsToday : 0;
-      entries.set(key, {
-        day: today,
-        startsToday: startsToday + 1,
-        lastStartedAt: now,
-        activeJobId: jobId,
-        activeSince: now,
-        attachedJobIds: [],
-      });
+    async recordStart(owner, capability, jobId, now, gate) {
+      const key = keyOf(owner, capability);
+      const decided = evaluateStart(entries.get(key), jobId, now, gate);
+      if (decided.next) entries.set(key, decided.next);
+      return decided.result;
     },
     async attach(owner, capability, jobId) {
-      const entry = entries.get(`${owner}|${capability}`);
-      if (entry?.activeJobId !== undefined) entry.attachedJobIds.push(jobId);
+      const key = keyOf(owner, capability);
+      const next = attachEntry(entries.get(key), jobId);
+      if (next) entries.set(key, next);
     },
     async clearActive(owner, capability, jobId) {
-      const entry = entries.get(`${owner}|${capability}`);
-      if (!entry || entry.activeJobId !== jobId) return [];
-      const released = entry.attachedJobIds;
-      entry.activeJobId = undefined;
-      entry.activeSince = undefined;
-      entry.attachedJobIds = [];
-      return released;
+      const key = keyOf(owner, capability);
+      const cleared = clearEntry(entries.get(key), jobId);
+      if (cleared.next) entries.set(key, cleared.next);
+      return cleared.released;
     },
   };
 }
