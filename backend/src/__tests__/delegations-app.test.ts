@@ -152,7 +152,7 @@ describe("delegation app parser ordering", () => {
 
 const MIXED_ADDRESS = "0x7D033300000000000000000000000000000073F2";
 
-function appForRevoke(teardown: (address: string) => Promise<void>) {
+function appForRevoke(teardown?: (address: string) => Promise<void>) {
   const app = express();
   const calls = { order: [] as string[], removed: [] as string[] };
   app.use(createApiBodyParser());
@@ -176,10 +176,12 @@ function appForRevoke(teardown: (address: string) => Promise<void>) {
       req.user = { address: MIXED_ADDRESS };
       next();
     },
-    teardownExoOwner: async (address: string) => {
-      calls.order.push("teardown");
-      await teardown(address);
-    },
+    ...(teardown ? {
+      teardownExoOwner: async (address: string) => {
+        calls.order.push("teardown");
+        await teardown(address);
+      },
+    } : {}),
   }));
   return { app, calls };
 }
@@ -194,6 +196,18 @@ describe("delegation revoke clears owner Exo state", () => {
       expect(response.status).toBe(200);
     });
     expect(fixture.calls.order).toEqual(["remove", "teardown"]);
+    expect(fixture.calls.removed).toEqual([ADDRESS]);
+  });
+
+  it("with the exo flag off (no teardown wired) removes the delegation and makes no exo call", async () => {
+    const fixture = appForRevoke();
+    await withServer(fixture.app, async (base) => {
+      const response = await fetch(`${base}/api/delegations`, {
+        method: "DELETE", headers: { "x-requested-with": "XMLHttpRequest" },
+      });
+      expect(response.status).toBe(200);
+    });
+    expect(fixture.calls.order).toEqual(["remove"]);
     expect(fixture.calls.removed).toEqual([ADDRESS]);
   });
 
