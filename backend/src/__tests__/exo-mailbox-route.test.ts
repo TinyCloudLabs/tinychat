@@ -128,3 +128,39 @@ describe("Exo wake 429 responses carry Retry-After", () => {
     }, ports);
   });
 });
+
+const FORM_HEADERS = { "content-type": "application/json" };
+
+/** The status, headers (minus the clock-driven Date), and body of one wake response. */
+async function refusalOf(base: string, body: string, headers: Record<string, string>) {
+  const response = await fetch(`${base}/api/exo/v1/requests`, { method: "POST", headers, body });
+  return {
+    status: response.status,
+    headers: [...response.headers].filter(([name]) => name !== "date").sort(([a], [b]) => a.localeCompare(b)),
+    body: await response.text(),
+  };
+}
+
+describe("Exo wake refusals before verification are byte-identical", () => {
+  const WELL_FORMED = JSON.stringify({ owner: OWNER_DID, requestId: REQ1 });
+
+  test("every refusal has the same status, headers, and body as an unknown request", async () => {
+    await withWakeServer(async (base) => {
+      const reference = await refusalOf(base, WELL_FORMED, FORM_HEADERS);
+      expect(reference.status).toBe(409);
+      expect(JSON.parse(reference.body)).toEqual(UNIFORM);
+      const cases: Array<[string, Record<string, string>]> = [
+        [JSON.stringify({ owner: OWNER_DID, requestId: "x".repeat(2048) }), FORM_HEADERS],
+        ["{not json", FORM_HEADERS],
+        [WELL_FORMED, { "content-type": "text/plain" }],
+        [WELL_FORMED, { "content-type": "application/json; charset=klingon" }],
+        [WELL_FORMED, { ...FORM_HEADERS, "content-encoding": "br" }],
+        [JSON.stringify({ owner: `0x${"b".repeat(40)}`, requestId: REQ1 }), FORM_HEADERS],
+        [JSON.stringify({ owner: OWNER_DID, requestId: "Some_Title-Meeting_Q3_Budget" }), FORM_HEADERS],
+      ];
+      for (const [body, headers] of cases) {
+        expect(await refusalOf(base, body, headers)).toEqual(reference);
+      }
+    });
+  });
+});
