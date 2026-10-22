@@ -17,6 +17,8 @@ import { initSizeClass } from "@/lib/sizeClass";
 import { PATHS, screenFor } from "@/shell/routes";
 import { combineSpace, type CombineSpace, type SpaceRow } from "@/harness/fixtures/combineSpace";
 import { installDom } from "@/test/dom";
+import { writeAutomaticSummaries } from "@/lib/meetingSummary/automaticSummaries";
+import { useLocalThreadStorage } from "@/lib/threadStore";
 
 // Radix portals do not attach in this DOM, so the sheet chrome is an inline stand-in (as in CombineFlow.test.tsx).
 mock.module("../../../components/ui/responsive-sheet", () => ({
@@ -97,6 +99,7 @@ const summaryState = () => q("combined-summary")?.getAttribute("data-state") ?? 
 
 async function open(rowId: string, rows: SpaceRow[], seed?: (s: CombineSpace) => void) {
   space = combineSpace(rows, { did: "did:test:combined-summary" });
+  useLocalThreadStorage(space.tcw);
   seed?.(space);
   runner = createSummaryRunner({
     space: scheduledSpace(space.tcw),
@@ -203,16 +206,25 @@ describe("opening a combined meeting", () => {
     expect(writes()).toEqual([]);
   });
 
-  test("with no stored summary (older combine, or an earlier failure) shows Retry and calls nothing until Retry is tapped", async () => {
+  test("with no stored summary (older combine, or a combine with automatic summaries off) shows Generate and calls nothing until Generate is tapped", async () => {
     const seeded = await seededCombined();
     await open(seeded.id, seeded.rows, seedKv(seeded.kv));
-    await settle(() => summaryState() === "unavailable", "unavailable state");
+    await settle(() => summaryState() === "idle", "idle state");
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 100)); });
     expect(modelCalls).toHaveLength(0);
-    expect(has("combined-summary-retry")).toBe(true);
-    await click("combined-summary-retry");
-    await settle(() => summaryState() === "ready", "summary after Retry");
+    expect(has("combined-summary-retry")).toBe(false);
+    expect(has("combined-summary-generate")).toBe(true);
+    await click("combined-summary-generate");
+    await settle(() => summaryState() === "ready", "summary after Generate");
     expect(modelCalls).toHaveLength(1);
+  });
+
+  test("a failed Retry-able run still shows Retry with the failed reason (not Generate)", async () => {
+    reply = () => new Error("boom");
+    await combineThroughTheFlow();
+    await settle(() => summaryState() === "unavailable", "unavailable state");
+    expect(has("combined-summary-retry")).toBe(true);
+    expect(has("combined-summary-generate")).toBe(false);
   });
 
   test("a stored summary is shown as plain text: markup in it is never rendered", async () => {
@@ -246,5 +258,27 @@ describe("Re-combine", () => {
     expect(modelCalls).toHaveLength(1);
     expect(mergedRow()!.summaryOverview).toBe("A new overview of the new text.");
     expect(mergedRow()!.id).toBe(seeded.id);
+  });
+});
+
+describe("automatic summaries off", () => {
+  test("a combine saves the meeting with no model call and no summary; Generate makes exactly one run", async () => {
+    await open("row-a", [FF, NT]);
+    await writeAutomaticSummaries(space.tcw, false);
+    await click("combine-entry");
+    await settle(() => has("combine-candidate"), "candidates");
+    await click("combine-candidate");
+    await settle(() => has("combine-confirm"), "confirm sheet");
+    await click("combine-confirm-button");
+    await settle(() => mergedRow() !== undefined && q("note-detail")?.getAttribute("data-note-id") === mergedRow()!.id, "combined page");
+    await settle(() => summaryState() === "idle", "idle state");
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 100)); });
+    expect(modelCalls).toHaveLength(0);
+    expect(summaryWrites()).toEqual([]);
+    expect(mergedRow()!.summaryOverview ?? null).toBeNull();
+    await click("combined-summary-generate");
+    await settle(() => summaryState() === "ready", "summary after Generate");
+    expect(modelCalls).toHaveLength(1);
+    expect(mergedRow()!.summaryOverview).toBe("The team agreed to ship the beta on Monday.");
   });
 });

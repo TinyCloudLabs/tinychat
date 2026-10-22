@@ -1242,6 +1242,7 @@ export function App() {
                 backendUrl={BACKEND_URL}
                 sessionStore={sessionStoreRef.current}
                 active={screen.destination === "capture"}
+                onSummarySettled={refreshBillingStatus}
                 screen={screen}
                 meetingsSlot={
                   <MeetingsSection

@@ -37,6 +37,7 @@ import { BackendAttestationDetails } from "./BackendAttestationDetails";
 import { useConversationCanvasFeature } from "./useExperimentalFeatures";
 import { TranscriptionSettings } from "./TranscriptionSettings";
 import { VoiceNotesTranscriberSettings } from "./VoiceNotesTranscriberSettings";
+import { AutomaticSummariesSettings } from "./AutomaticSummariesSettings";
 import { DebugLogRow } from "./DebugLogRow";
 import { AudioCacheSettings } from "@/capture/AudioCacheSettings";
 import { nativeVoiceNotesAvailable } from "../lib/voiceNotes/nativeVoiceNotes";
@@ -196,6 +197,9 @@ export function SettingsPage({
             />
           </SectionCard>
           <TranscriptionSettings tcw={tcw} />
+          <SectionCard icon={BookOpenIcon} title="Meeting summaries">
+            <AutomaticSummariesSettings tcw={tcw} />
+          </SectionCard>
           {(nativeVoiceNotesAvailable() || appPlatform() === "web" || appPlatform() === "tauri") && (
             <SectionCard icon={MicIcon} title="Voice notes">
               <VoiceNotesTranscriberSettings />

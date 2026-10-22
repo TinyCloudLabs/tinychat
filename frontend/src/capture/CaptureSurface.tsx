@@ -76,6 +76,8 @@ export interface CaptureSurfaceProps {
   meetingsSlot?: React.ReactNode;
   /** The model call a combined meeting's summary uses; the chat route unless a harness or test replaces it. */
   summaryComplete?: GenerateDeps["complete"];
+  /** Runs after a summary run ends, so the parent can re-read billing (a run spends credits). */
+  onSummarySettled?: () => void;
 }
 
 const SCROLLER = "relative h-full overflow-y-auto";
@@ -110,11 +112,14 @@ export function CaptureSurface(props: CaptureSurfaceProps) {
   );
 }
 
-function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, meetingsSlot, summaryComplete, soft, desktopHome }: CaptureSurfaceProps & { soft: boolean; desktopHome: boolean }) {
+function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, meetingsSlot, summaryComplete, onSummarySettled, soft, desktopHome }: CaptureSurfaceProps & { soft: boolean; desktopHome: boolean }) {
   const navigate = useNavigate();
   // One summary runner per signed-in space: another account (tcw) or unmount stops every run.
+  // The settle hook is read through a ref so a new parent callback identity does not rebuild the runner.
+  const settledRef = useRef(onSummarySettled);
+  settledRef.current = onSummarySettled;
   const summaries = useMemo(
-    () => createSummaryRunner({ space: scheduledSpace(tcw), complete: summaryComplete ?? chatComplete(backendUrl, sessionStore) }),
+    () => createSummaryRunner({ space: scheduledSpace(tcw), complete: summaryComplete ?? chatComplete(backendUrl, sessionStore), onSettled: () => settledRef.current?.() }),
     [tcw, backendUrl, sessionStore, summaryComplete],
   );
   useEffect(() => () => summaries.cancelAll(), [summaries]);

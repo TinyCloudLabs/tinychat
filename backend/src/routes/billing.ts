@@ -5,9 +5,12 @@ import {
   creditBudgetFor,
   type Interval,
   type PaidTierId,
+  type TierConfig,
   type TierId,
 } from "../billing/tiers.js";
-import { getUsage } from "../billing/usage.js";
+import { getUsage, isOverBudget, type UsageSnapshot } from "../billing/usage.js";
+import { evaluateLedgerGate, hasMissingWeeklyLedgerAnchor } from "../billing/ledger-gate.js";
+import type { LedgerRehydrator } from "../billing/ledger-rehydrate.js";
 import {
   BillingNotConfiguredError,
   createCheckoutSession,
@@ -20,6 +23,37 @@ import { multiplierFor, ratesForModel } from "../billing/credits.js";
 
 interface BillingRoutesConfig {
   authMiddleware: RequestHandler;
+  /** Present only when the ledger is configured; /status reads the same authority the chat gate does. */
+  rehydrator?: LedgerRehydrator;
+}
+
+/**
+ * Usage as the admission gate reports it. When the ledger is authoritative this is its committed credits and
+ * limit (the same rehydrate-then-entitlement read chat uses); otherwise, or when the ledger gives no valid
+ * reading, it is the local in-memory counter.
+ */
+async function gateUsage(
+  address: string,
+  tier: TierConfig,
+  anchor: number | null,
+  rehydrator: LedgerRehydrator | undefined,
+): Promise<UsageSnapshot> {
+  const local = getUsage(address, tier, anchor);
+  if (process.env.LEDGER_AUTHORITATIVE !== "true" || !rehydrator) return local;
+  const missingAnchor = hasMissingWeeklyLedgerAnchor(tier, anchor);
+  if (!missingAnchor) await rehydrator.rehydrateIfNeeded(address, tier, anchor);
+  const entitlement = missingAnchor ? undefined : await rehydrator.getEntitlement(address, tier, anchor);
+  const gate = evaluateLedgerGate({
+    tier,
+    anchor,
+    entitlement,
+    outagePolicy: process.env.LEDGER_OUTAGE_POLICY ?? "bounded_k",
+    isLocalOverBudget: () => isOverBudget(address, tier, anchor),
+  });
+  if (gate.source !== "ledger" || !entitlement || entitlement.committed_credits === null || entitlement.credit_limit === null) {
+    return local;
+  }
+  return { ...local, used: entitlement.committed_credits, limit: entitlement.credit_limit };
 }
 
 const ACCOUNT_APP_URL = "https://account.tinycloud.xyz";
@@ -137,7 +171,7 @@ export function createBillingRouter(config: BillingRoutesConfig) {
       const anchor = resolution.subscription?.anchor
         ? Date.parse(resolution.subscription.anchor)
         : null;
-      const usage = getUsage(user.address, TIERS[resolution.tier], anchor);
+      const usage = await gateUsage(user.address, TIERS[resolution.tier], anchor, config.rehydrator);
       res.json({
         tier: resolution.tier,
         usage,

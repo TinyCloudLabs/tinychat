@@ -1,15 +1,14 @@
 // ── Usage tracking ────────────────────────────────────────────────────────────
 // In-memory credit accounting keyed by user address.
 //
-// LIMITATION: usage lives only in process memory and resets on redeploy. This
-// errs in the user's favour (a redeploy effectively forgives consumption inside
-// the current window). The durable follow-up is Stripe Billing Meters — see
-// docs/stripe-setup.md. We intentionally keep this stateless to honour the "no
-// SQLite, no volumes" decision.
+// In-memory credit counter. When the ledger is configured, the counter is seeded
+// from the ledger on first touch (ledger-rehydrate.ts); the chat gate and
+// GET /api/billing/status read the ledger's committed credits when it is
+// authoritative and this counter otherwise. The durable follow-up is Stripe
+// Billing Meters — see docs/stripe-setup.md.
 //
 // Windows: free tier = UTC day; paid tiers = rolling 7-day anchored to the
-// subscription's billing-cycle anchor. The anchor lives in Stripe (durable) so
-// window identity survives redeploys even though the in-window counts do not.
+// subscription's billing-cycle anchor, which lives in Stripe.
 
 import { creditBudgetFor, type BudgetWindow, type TierConfig } from "./tiers.js";
 

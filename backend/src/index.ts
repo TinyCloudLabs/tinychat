@@ -976,7 +976,7 @@ async function main() {
       did,
     }),
   );
-  app.use("/api/billing", createBillingRouter({ authMiddleware }));
+  app.use("/api/billing", createBillingRouter({ authMiddleware, rehydrator: ledgerRehydrator }));
 
   // The TRANSCRIBER surface (routes/transcriber.ts): send a bot to a meeting URL through the
   // TinyCloud Private Transcription API and read the speaker-attributed transcript back. Mounted

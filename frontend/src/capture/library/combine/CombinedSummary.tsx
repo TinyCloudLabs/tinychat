@@ -37,6 +37,17 @@ export function CombinedSummary(props: { summary: SummaryView; onRetry?: () => v
           )}
         </div>
       )}
+      {summary.status === "idle" && props.onRetry && (
+        <div className="flex flex-col gap-1" data-testid="combined-summary-idle">
+          <div className="flex flex-wrap items-center gap-x-2 text-callout text-muted-foreground">
+            <p role="status">No summary yet</p>
+            <span aria-hidden>·</span>
+            <button type="button" onClick={props.onRetry} data-testid="combined-summary-generate"
+              className="min-h-11 min-w-11 text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">Generate</button>
+          </div>
+          <p className="text-callout text-muted-foreground">A summary uses credits like a chat message.</p>
+        </div>
+      )}
       {summary.status === "unavailable" && (
         <div className="flex flex-col gap-1" data-testid="combined-summary-unavailable" data-reason={summary.reason}>
           <div className="flex flex-wrap items-center gap-x-2 text-callout text-muted-foreground">
