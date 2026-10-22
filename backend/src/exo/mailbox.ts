@@ -135,7 +135,11 @@ export interface ExoLedger {
 export interface ExoMailboxPorts {
   grants: { isActive(owner: string): Promise<boolean> };
   /** Returns the raw stored value at a kv path, or undefined when absent. */
-  requests: { get(owner: string, path: string): Promise<unknown> };
+  requests: {
+    get(owner: string, path: string): Promise<unknown>;
+    /** Deletes the record at a kv path. Called best-effort once the wake's job record exists; a failure never fails the job. */
+    remove(owner: string, path: string): Promise<void>;
+  };
   jobs: ExoJobStore;
   connectors: ConnectorSwitch;
   /** Absent means nothing can run. A verified wake then records `unavailable`. */
@@ -205,6 +209,11 @@ export function parseJobRecord(value: unknown): ExoJobRecord | undefined {
   return record as unknown as ExoJobRecord;
 }
 
+/** The kv path of a request record. */
+function requestPath(capability: ExoCapability, requestId: string): string {
+  return `${EXO_NAMESPACE}/requests/${capability}/${requestId}`;
+}
+
 /** The wake's request id exists under exactly one capability path, and that record is valid. */
 async function findRequestCapability(
   requests: ExoMailboxPorts["requests"],
@@ -213,7 +222,7 @@ async function findRequestCapability(
 ): Promise<ExoCapability | undefined> {
   const found: Array<{ capability: ExoCapability; value: unknown }> = [];
   for (const capability of EXO_CAPABILITIES) {
-    const value = await requests.get(owner, `${EXO_NAMESPACE}/requests/${capability}/${requestId}`);
+    const value = await requests.get(owner, requestPath(capability, requestId));
     if (value !== undefined) found.push({ capability, value });
   }
   if (found.length !== 1) return undefined;
@@ -356,14 +365,26 @@ function newJob(wake: VerifiedWake, timestamp: string, state: ExoJobState, code:
   };
 }
 
-/** Creates a job record only when none exists. A failed write is logged without its payload and returns false. */
-async function createJob(ports: ExoMailboxPorts, owner: string, record: ExoJobRecord): Promise<boolean> {
+/**
+ * Creates a job record only when none exists. Once the record exists, the wake's request record is consumed best-effort:
+ * a failed delete is logged and never fails the job. A failed write is logged without its payload and returns false.
+ */
+async function createJob(ports: ExoMailboxPorts, wake: VerifiedWake, record: ExoJobRecord): Promise<boolean> {
+  let created: boolean;
   try {
-    return await ports.jobs.putIfAbsent(owner, record.jobId, record);
+    created = await ports.jobs.putIfAbsent(wake.owner, record.jobId, record);
   } catch {
     console.error("[exo] job record not written");
     return false;
   }
+  if (created) {
+    try {
+      await ports.requests.remove(wake.owner, requestPath(wake.capability, wake.requestId));
+    } catch {
+      console.error("[exo] request record not consumed");
+    }
+  }
+  return created;
 }
 
 /**
@@ -376,7 +397,7 @@ export function startWake(ports: ExoMailboxPorts, wake: VerifiedWake, budget: Fi
       await runWake(ports, wake, budget);
     } catch {
       console.error("[exo] wake not recorded");
-      await createJob(ports, wake.owner, newJob(wake, new Date(ports.now()).toISOString(), "error", "unavailable"));
+      await createJob(ports, wake, newJob(wake, new Date(ports.now()).toISOString(), "error", "unavailable"));
     }
   });
 }
@@ -403,13 +424,13 @@ async function runWake(ports: ExoMailboxPorts, wake: VerifiedWake, budget: Fixed
 
   // The owner budget counts new job records only. Replays returned above, so they spend nothing.
   if (!budget.spend(owner.toLowerCase(), now)) {
-    await createJob(ports, owner, newJob(wake, timestamp, "error", "rate_limited", { retryAfterSec: RETRY_AFTER_SEC }));
+    await createJob(ports, wake, newJob(wake, timestamp, "error", "rate_limited", { retryAfterSec: RETRY_AFTER_SEC }));
     return;
   }
 
   const executor = ports.executor;
   if (!executor) {
-    await createJob(ports, owner, newJob(wake, timestamp, "error", "unavailable"));
+    await createJob(ports, wake, newJob(wake, timestamp, "error", "unavailable"));
     return;
   }
 
@@ -423,7 +444,7 @@ async function runWake(ports: ExoMailboxPorts, wake: VerifiedWake, budget: Fixed
   if (!anyOn) {
     // sync-meetings has no single source, so its refusal names none.
     const single = capability === "sync-meetings" ? {} : { source: SOURCES_BY_CAPABILITY[capability][0] };
-    await createJob(ports, owner, newJob(wake, timestamp, "error", "connector_off", { link: ports.frontendOrigin, ...single }));
+    await createJob(ports, wake, newJob(wake, timestamp, "error", "connector_off", { link: ports.frontendOrigin, ...single }));
     return;
   }
 
@@ -440,12 +461,12 @@ async function runWake(ports: ExoMailboxPorts, wake: VerifiedWake, budget: Fixed
       const active = parseJobRecord(await readJob(ports, owner, snapshot.activeJobId));
       if (active) {
         if ((snapshot.attachedJobIds?.length ?? 0) >= ATTACH_LIMIT) {
-          await createJob(ports, owner, newJob(wake, timestamp, "error", "rate_limited", { retryAfterSec: RETRY_AFTER_SEC }));
+          await createJob(ports, wake, newJob(wake, timestamp, "error", "rate_limited", { retryAfterSec: RETRY_AFTER_SEC }));
           return;
         }
         // The coalesced wake keeps its own record and mirrors the run's state, code, and message.
         const attached: ExoJobRecord = { ...active, jobId: requestId, createdAt: timestamp, updatedAt: timestamp };
-        if (await createJob(ports, owner, attached)) await ports.ledger.attach(owner, capability, requestId);
+        if (await createJob(ports, wake, attached)) await ports.ledger.attach(owner, capability, requestId);
         return;
       }
     }
@@ -455,21 +476,21 @@ async function runWake(ports: ExoMailboxPorts, wake: VerifiedWake, budget: Fixed
   if (rule) {
     if (snapshot.startsToday >= rule.dailyCap) {
       const nextDay = (Math.floor(now / DAY_MS) + 1) * DAY_MS;
-      await createJob(ports, owner, newJob(wake, timestamp, "error", "budget_exhausted", { retryAfterSec: Math.ceil((nextDay - now) / 1000) }));
+      await createJob(ports, wake, newJob(wake, timestamp, "error", "budget_exhausted", { retryAfterSec: Math.ceil((nextDay - now) / 1000) }));
       return;
     }
     if (snapshot.lastStartedAt !== undefined) {
       const hasWebhook = capability === "sync-fireflies" && (await ports.connectors.hasFirefliesWebhook(owner));
       const readyAt = snapshot.lastStartedAt + rule.minIntervalMs(hasWebhook);
       if (now < readyAt) {
-        await createJob(ports, owner, newJob(wake, timestamp, "error", "rate_limited", { retryAfterSec: Math.ceil((readyAt - now) / 1000) }));
+        await createJob(ports, wake, newJob(wake, timestamp, "error", "rate_limited", { retryAfterSec: Math.ceil((readyAt - now) / 1000) }));
         return;
       }
     }
   }
 
   const job = newJob(wake, timestamp, "pending", "accepted");
-  if (!(await createJob(ports, owner, job))) return;
+  if (!(await createJob(ports, wake, job))) return;
   try {
     await ports.ledger.recordStart(owner, capability, requestId, now);
   } catch {

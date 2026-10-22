@@ -34,13 +34,14 @@ type Run = { job: ExoJobRecord; report: (update: ExecutorUpdate) => Promise<void
  * The wake as the route runs it: parse, verify, then start. Undefined when the wake is refused before any
  * job exists. Every other outcome is a job record in the store, which is what the tests read.
  */
-function harness(options: { grant?: boolean; connectorOn?: boolean; webhook?: boolean; executor?: "ok" | "absent" | "fails" } = {}) {
+function harness(options: { grant?: boolean; connectorOn?: boolean; webhook?: boolean; executor?: "ok" | "absent" | "fails"; removeFails?: boolean } = {}) {
   const state = {
     now: T0,
     grant: options.grant ?? true,
     connectorOn: options.connectorOn ?? true,
     webhook: options.webhook ?? false,
     putFailures: 0,
+    removeFails: options.removeFails ?? false,
   };
   const requests = new Map<string, unknown>();
   const jobs = new Map<string, unknown>();
@@ -50,7 +51,13 @@ function harness(options: { grant?: boolean; connectorOn?: boolean; webhook?: bo
 
   const ports: ExoMailboxPorts = {
     grants: { isActive: async () => state.grant },
-    requests: { get: async (owner, path) => requests.get(`${owner}|${path}`) },
+    requests: {
+      get: async (owner, path) => requests.get(`${owner}|${path}`),
+      remove: async (owner, path) => {
+        if (state.removeFails) throw new Error("request delete failed");
+        requests.delete(`${owner}|${path}`);
+      },
+    },
     jobs: {
       get: async (owner, jobId) => jobs.get(`${owner}|${jobId}`),
       putIfAbsent: async (owner, jobId, record) => {
@@ -105,6 +112,7 @@ function harness(options: { grant?: boolean; connectorOn?: boolean; webhook?: bo
   };
 
   return {
+    requests,
     state,
     errorWritten,
     jobs,
@@ -222,12 +230,13 @@ describe("Exo wake creates one job and one run", () => {
     expect(h.runs).toHaveLength(1);
   });
 
-  test("replaying a request id returns the existing job without a second start", async () => {
+  test("replaying a consumed request id starts nothing and leaves the job as it was", async () => {
     const h = harness();
     h.seed(REQ1, "sync-google");
     await h.wake(REQ1);
     h.state.now = T0 + 10 * MINUTE;
-    expect(await h.wake(REQ1)).toMatchObject({ jobId: REQ1, state: "pending" });
+    expect(await h.wake(REQ1)).toBeUndefined();
+    expect(h.job(REQ1)).toMatchObject({ jobId: REQ1, state: "pending" });
     expect(h.runs).toHaveLength(1);
   });
 
@@ -530,7 +539,8 @@ describe("Exo executor wiring", () => {
     };
     expect(await h.wake(REQ1)).toMatchObject({ state: "error", code: "unavailable" });
     expect(h.runs).toHaveLength(0);
-    expect(await h.wake(REQ1)).toMatchObject({ state: "error", code: "unavailable" });
+    expect(await h.wake(REQ1)).toBeUndefined();
+    expect(h.job(REQ1)).toMatchObject({ state: "error", code: "unavailable" });
 
     h.ports.ledger = ledger;
     expect(await h.wake(REQ2)).toMatchObject({ state: "pending" });
@@ -572,6 +582,50 @@ describe("Exo job retention sweep", () => {
     const removed = await sweepExpiredJobs(h.ports.jobs, OWNER, now);
     expect(removed).toBe(1);
     expect([...h.jobs.keys()].sort()).toEqual([`${OWNER}|fresh`, `${OWNER}|junk`]);
+  });
+});
+
+describe("Exo request consume", () => {
+  const key = (requestId: string, capability = "sync-google") => `${OWNER}|${EXO_NAMESPACE}/requests/${capability}/${requestId}`;
+
+  test("a started wake consumes its own request record and no other", async () => {
+    const h = harness();
+    h.seed(REQ1, "sync-google");
+    h.seed(REQ2, "sync-google");
+    await h.wake(REQ1);
+    expect(h.requests.has(key(REQ1))).toBe(false);
+    expect(h.requests.has(key(REQ2))).toBe(true);
+  });
+
+  test("a refused wake consumes its request record too, since its job record now exists", async () => {
+    const h = harness();
+    h.seed(REQ1, "sync-google");
+    h.seed(REQ2, "sync-google");
+    await h.wake(REQ1);
+    await h.runs[0].report({ state: "done", code: "done" });
+    h.state.now = T0 + MINUTE;
+    expect(await h.wake(REQ2)).toMatchObject({ state: "error", code: "rate_limited" });
+    expect(h.requests.has(key(REQ2))).toBe(false);
+  });
+
+  test("a failed consume leaves the started job pending and the request record in place", async () => {
+    const h = harness({ removeFails: true });
+    h.seed(REQ1, "sync-google");
+    expect(await h.wake(REQ1)).toMatchObject({ state: "pending" });
+    expect(h.runs).toHaveLength(1);
+    expect(h.requests.has(key(REQ1))).toBe(true);
+  });
+
+  test("after the job is swept, a replay of its request id starts nothing", async () => {
+    const h = harness();
+    h.seed(REQ1, "sync-google");
+    await h.wake(REQ1);
+    await h.runs[0].report({ state: "done", code: "done" });
+    h.state.now = T0 + EXO_JOB_RETENTION_MS + DAY;
+    expect(await sweepExpiredJobs(h.ports.jobs, OWNER, h.state.now)).toBe(1);
+    expect(await h.wake(REQ1)).toBeUndefined();
+    expect(h.jobs.size).toBe(0);
+    expect(h.runs).toHaveLength(1);
   });
 });
 

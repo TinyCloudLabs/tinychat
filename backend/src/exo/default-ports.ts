@@ -10,7 +10,10 @@ const NOT_WIRED = "exo job store is not wired; S4 supplies the concrete store";
 export function createUnwiredExoPorts(frontendOrigin: string): ExoMailboxPorts {
   return {
     grants: { isActive: async () => false },
-    requests: { get: async () => undefined },
+    requests: {
+      get: async () => undefined,
+      remove: async () => { throw new Error(NOT_WIRED); },
+    },
     jobs: {
       get: async () => { throw new Error(NOT_WIRED); },
       putIfAbsent: async () => { throw new Error(NOT_WIRED); },

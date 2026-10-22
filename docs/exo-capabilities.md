@@ -24,17 +24,19 @@ The route answers 202 once the body parses, before any store read. It never answ
 - When a cap is full, a random pending entry is dropped and the newcomer is kept. A dropped wake gets no job record; its sender still sees the same 202.
 - The queue is in-process. A restart drops pending wakes. A sender that needs the wake handled re-sends it; a re-sent id creates a job only if none exists.
 
-Owner budget: a wake that creates a new job record spends one unit of a fixed-window budget keyed on the verified owner (30 per minute). A replay returns before the spend. A refused wake records a job coded `rate_limited` with `retryAfterSec: 60`.
+Owner budget: a wake that creates a new job record spends one unit of a fixed-window budget keyed on the verified owner (30 per minute). A replay spends nothing. A refused wake records a job coded `rate_limited` with `retryAfterSec: 60`; it is consumed like any other first job, so a retry needs a new request id.
 
 ## Request records
 
 Stored at `xyz.tinycloud.tinychat/exo/v1/requests/<capability>/<requestId>`. The record is strict: `{"v":1,"capability":"<capability>"}`. The wake body has no capability, so the route reads the three capability subpaths and requires exactly one valid match.
 
+After the job record is created, the request record is deleted through the `requests.remove` port, best effort. The default port fails closed, so the delete fails there and is logged. A failed delete does not fail the job; the request record stays, and a replay reaches the replay branch, which spends nothing and starts nothing.
+
 Capabilities: `sync-meetings`, `sync-fireflies`, `sync-google`.
 
 ## Job records
 
-Stored at `xyz.tinycloud.tinychat/exo/v1/jobs/<requestId>`, created put-if-absent (`ifNoneMatch: "*"`). A replayed `requestId` returns the existing job.
+Stored at `xyz.tinycloud.tinychat/exo/v1/jobs/<requestId>`, created put-if-absent (`ifNoneMatch: "*"`). A replayed `requestId` does not return the job: once its request record is consumed, the replay fails verification and the existing job is left as it was.
 
 ```
 {v:1, jobId, capability, state: pending|running|done|error, code, message, createdAt, updatedAt}

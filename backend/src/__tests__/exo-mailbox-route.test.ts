@@ -36,7 +36,7 @@ type Fixture = {
  * Verifiable owners with one request record per seeded id. Jobs and runs are recorded so tests can read the
  * outcome the route no longer returns.
  */
-function fixture(options: { snapshot?: ExoLedgerSnapshot; storeFails?: boolean } = {}): Fixture {
+function fixture(options: { snapshot?: ExoLedgerSnapshot; storeFails?: boolean; removeFails?: boolean } = {}): Fixture {
   const requests = new Map<string, unknown>();
   const jobs = new Map<string, ExoJobRecord>();
   const fixture: Fixture = {
@@ -50,7 +50,13 @@ function fixture(options: { snapshot?: ExoLedgerSnapshot; storeFails?: boolean }
   const ledger = createMemoryExoLedger();
   fixture.ports = {
     grants: { isActive: async () => true },
-    requests: { get: async (owner, path) => requests.get(`${owner}|${path}`) },
+    requests: {
+      get: async (owner, path) => requests.get(`${owner}|${path}`),
+      remove: async (owner, path) => {
+        if (options.removeFails) throw new Error("request delete failed");
+        requests.delete(`${owner}|${path}`);
+      },
+    },
     jobs: {
       get: async (owner, jobId) => jobs.get(`${owner}|${jobId}`),
       putIfAbsent: async (owner, jobId, record) => {
@@ -292,7 +298,9 @@ describe("Exo wake route: owner budget and no-429 contract", () => {
   });
 
   test("(e) N replays of one id, then the owner's own new wake, is still accepted", async () => {
-    const f = fixture();
+    // With a failed consume the request record survives, so each replay reaches the replay branch.
+    // With a working consume, replays fail verification and never reach it.
+    const f = fixture({ removeFails: true });
     f.seed(REQ1, "sync-fireflies");
     f.seed(REQ2, "sync-fireflies");
     const ports = { ...f.ports, connectors: { isOn: async () => true, hasFirefliesWebhook: async () => true } };
@@ -302,6 +310,16 @@ describe("Exo wake route: owner budget and no-429 contract", () => {
     }, ports);
     expect(f.jobs.get(`${OWNER}|${REQ2}`)).toMatchObject({ state: "pending" });
     // REQ1's fireflies run stays active (the fake executor never finishes), so REQ2 attaches to it: one run.
+    expect(f.runs).toBe(1);
+  });
+
+  test("a failed request consume still answers 202 and leaves the started job pending", async () => {
+    const f = fixture({ removeFails: true });
+    f.seed(REQ1, "sync-google");
+    await withWakeServer(async (base) => {
+      expect((await post(base, bodyFor(REQ1))).status).toBe(202);
+    }, f.ports);
+    expect(f.jobs.get(`${OWNER}|${REQ1}`)).toMatchObject({ state: "pending" });
     expect(f.runs).toBe(1);
   });
 
@@ -596,6 +614,7 @@ describe("Exo wake route: every state-dependent outcome is the same response", (
             reads.push(`request ${path.split("/").at(-2)}`);
             return f.ports.requests.get(owner, path);
           },
+          remove: async (owner, path) => f.ports.requests.remove(owner, path),
         },
       };
       await withWakeServer(async (base) => {
