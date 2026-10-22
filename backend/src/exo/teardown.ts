@@ -9,7 +9,6 @@ import { EXO_MIRROR_JOBS_PREFIX, type ExoBackendKv } from "./stores.js";
 
 export interface ExoTeardownDeps {
   kv: Pick<ExoBackendKv, "list" | "delete">;
-  grantStore: { load(owner: string): Promise<{ expiresAt: string } | null> };
   openOwnerGrant(owner: string): Promise<ExoActivatedGrant | null>;
 }
 
@@ -18,10 +17,10 @@ export interface ExoTeardownDeps {
  * durable ledger rows. Idempotent: missing keys are not errors, so a retry after a partial failure
  * finishes the work. Does not remove the grant record; the caller removes it last.
  *
- * Owner-space rows are reachable only through an activated grant. A stored grant that has expired
- * cannot be activated by anyone, so its owner-space rows are left alone and the teardown proceeds.
- * A stored grant that is still live but cannot be activated refuses the teardown before any delete:
- * the caller retries until the grant expires, so owner-space rows are never orphaned.
+ * Owner-space rows are reachable only through an activated grant. When no grant can be activated
+ * (expired, or live but unopenable), those rows are left in place and the backend-space rows are
+ * still removed; the owner can remove them from their own space. A KV failure throws before the
+ * caller removes the grant, so a retry still reaches the owner-space rows.
  */
 export async function clearExoOwnerState(
   deps: ExoTeardownDeps,
@@ -29,14 +28,10 @@ export async function clearExoOwnerState(
 ): Promise<{ ownerSpace: boolean }> {
   // Store keys are built from the lowercased owner (stores.ts ownerKey); normalize here so any caller matches.
   const owner = rawOwner.toLowerCase();
-  const stored = await deps.grantStore.load(owner);
-  const live = stored !== null && Date.parse(stored.expiresAt) > Date.now();
   const grant = await deps.openOwnerGrant(owner);
   if (grant) {
     for (const path of await grant.requestsList(EXO_REQUESTS_PREFIX)) await grant.requestsRemove(path);
     for (const path of await grant.jobsList(EXO_JOBS_PREFIX)) await grant.jobsRemove(path);
-  } else if (live) {
-    throw new Error("Exo owner grant is live but cannot be activated; teardown refused until it expires");
   }
   await deleteUnder(deps.kv, `${EXO_MIRROR_JOBS_PREFIX}${owner}/`);
   await deleteUnder(deps.kv, `${EXO_NAMESPACE}/ledger/${owner}/`);

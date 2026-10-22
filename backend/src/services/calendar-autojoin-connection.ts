@@ -38,7 +38,7 @@ export interface CalendarAutojoinConnectionOptions {
   grantIndex?: CalendarAutojoinGrantIndex;
   /** Background-priority credential reader for restart backfill; never enumerates credential rows. */
   backfillCredentials?: CredentialStore;
-  /** TC-1013 S4b: removes the tenant's Exo state. Runs before disconnect mutates anything, so a failure leaves the connection unchanged. */
+  /** TC-1013 S4b: removes the tenant's Exo state. Runs after custody, enablement and revocation; a failure is logged and does not block disconnect. */
   teardownExoOwner?: (owner: string) => Promise<unknown>;
 }
 
@@ -266,7 +266,6 @@ export class CalendarAutojoinConnection {
   }
 
   async disconnect(tenant: string, browserToken?: string) {
-    if (this.options.teardownExoOwner) await this.options.teardownExoOwner(tenant);
     let serverToken: string | undefined;
     let failed = false;
     let invoked = false;
@@ -299,6 +298,13 @@ export class CalendarAutojoinConnection {
         try { await this.options.oauth.revoke(token); } catch (error) {
           // Revoking a refresh token also revokes its sibling access tokens in the same grant.
           if (!(error instanceof GoogleOAuthError && error.error === "invalid_token")) failed = true;
+        }
+      }
+      // Exo owner cleanup after revocation, outside tenant coordination. Best-effort: a failure is logged
+      // and the exo grant stays for the owner's DELETE retry.
+      if (this.options.teardownExoOwner) {
+        try { await this.options.teardownExoOwner(tenant); } catch (error) {
+          console.log(`[calendar-autojoin] code=exo_teardown outcome=failed error=${error instanceof Error ? error.message : "unknown"}`);
         }
       }
     }

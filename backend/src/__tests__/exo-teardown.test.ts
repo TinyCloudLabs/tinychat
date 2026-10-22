@@ -10,8 +10,6 @@ const OWNER = "0x1111111111111111111111111111111111111111";
 const OTHER = "0x2222222222222222222222222222222222222222";
 // Checksum-style owner; its lowercase form is the key-layout owner.
 const MIXED_OWNER = "0xAbCdEf0123456789aBcDeF0123456789AbCdEf01";
-const PAST = "2020-01-01T00:00:00.000Z";
-const FUTURE = "2999-01-01T00:00:00.000Z";
 
 function fakeKv(initial: string[]) {
   const entries = new Set(initial);
@@ -48,16 +46,8 @@ function fakeGrant(requests: string[], jobs: string[]) {
   return { grant, removed };
 }
 
-function teardownDeps(
-  kv: Pick<ExoBackendKv, "list" | "delete">,
-  stored: { expiresAt: string } | null,
-  grant: ExoActivatedGrant | null,
-): ExoTeardownDeps {
-  return {
-    kv,
-    grantStore: { load: async () => stored },
-    openOwnerGrant: async () => grant,
-  };
+function teardownDeps(kv: Pick<ExoBackendKv, "list" | "delete">, grant: ExoActivatedGrant | null): ExoTeardownDeps {
+  return { kv, openOwnerGrant: async () => grant };
 }
 
 describe("clearExoOwnerState", () => {
@@ -71,7 +61,7 @@ describe("clearExoOwnerState", () => {
     const { kv, entries } = fakeKv([mirrorKey, otherMirror, ledger, otherLedger]);
     const { grant, removed } = fakeGrant([requestKey], [jobKey]);
 
-    const result = await clearExoOwnerState(teardownDeps(kv, { expiresAt: FUTURE }, grant), OWNER);
+    const result = await clearExoOwnerState(teardownDeps(kv, grant), OWNER);
 
     expect(result).toEqual({ ownerSpace: true });
     expect(removed.sort()).toEqual([jobKey, requestKey].sort());
@@ -82,29 +72,34 @@ describe("clearExoOwnerState", () => {
     const ledger = ledgerKey(MIXED_OWNER.toLowerCase(), "sync-google");
     const { kv, entries } = fakeKv([ledger]);
 
-    await clearExoOwnerState(teardownDeps(kv, null, null), MIXED_OWNER);
+    await clearExoOwnerState(teardownDeps(kv, null), MIXED_OWNER);
 
     expect(entries.has(ledger)).toBe(false);
   });
 
-  test("an expired stored grant proceeds: backend rows are cleared, owner-space rows are left alone", async () => {
+  test("a grant that cannot be opened (expired, or live but unopenable) does not block teardown", async () => {
     const mirrorKey = `${EXO_MIRROR_JOBS_PREFIX}${OWNER}/job-1`;
     const ledger = ledgerKey(OWNER, "sync-fireflies");
     const { kv, entries } = fakeKv([mirrorKey, ledger]);
 
-    const result = await clearExoOwnerState(teardownDeps(kv, { expiresAt: PAST }, null), OWNER);
+    const result = await clearExoOwnerState(teardownDeps(kv, null), OWNER);
 
     expect(result).toEqual({ ownerSpace: false });
     expect(entries.size).toBe(0);
   });
 
-  test("a live stored grant that cannot be activated refuses teardown before any delete", async () => {
+  test("a failed owner-space removal throws before backend rows are touched, so the retry still reaches them", async () => {
     const mirrorKey = `${EXO_MIRROR_JOBS_PREFIX}${OWNER}/job-1`;
     const { kv, entries } = fakeKv([mirrorKey]);
+    const { grant } = fakeGrant([`${EXO_REQUESTS_PREFIX}sync-meetings/req-1`], []);
+    const failing: ExoActivatedGrant = {
+      ...grant,
+      requestsRemove: async () => {
+        throw new Error("kv unavailable");
+      },
+    };
 
-    await expect(clearExoOwnerState(teardownDeps(kv, { expiresAt: FUTURE }, null), OWNER)).rejects.toThrow(
-      "teardown refused until it expires",
-    );
+    await expect(clearExoOwnerState(teardownDeps(kv, failing), OWNER)).rejects.toThrow("kv unavailable");
     expect(entries.has(mirrorKey)).toBe(true);
   });
 
@@ -115,7 +110,7 @@ describe("clearExoOwnerState", () => {
       delete: async (key: string) => ({ ok: false, error: { code: "KV_NOT_FOUND", service: "kv", message: `Key not found: ${key}` } }),
     };
 
-    await expect(clearExoOwnerState(teardownDeps(kv, null, null), OWNER)).resolves.toEqual({ ownerSpace: false });
+    await expect(clearExoOwnerState(teardownDeps(kv, null), OWNER)).resolves.toEqual({ ownerSpace: false });
   });
 
   test("a listed key outside its prefix stops the teardown before anything is deleted", async () => {
@@ -128,7 +123,7 @@ describe("clearExoOwnerState", () => {
       },
     };
 
-    await expect(clearExoOwnerState(teardownDeps(kv, null, null), OWNER)).rejects.toThrow("outside its prefix");
+    await expect(clearExoOwnerState(teardownDeps(kv, null), OWNER)).rejects.toThrow("outside its prefix");
     expect(deleted).toEqual([]);
   });
 });

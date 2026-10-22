@@ -185,7 +185,7 @@ function appForRevoke(teardown: (address: string) => Promise<void>) {
 }
 
 describe("delegation revoke clears owner Exo state", () => {
-  it("tears down owner Exo state before removing the delegation, using the normalized address", async () => {
+  it("removes the delegation first, then tears down owner Exo state, using the normalized address", async () => {
     const fixture = appForRevoke(async () => {});
     await withServer(fixture.app, async (base) => {
       const response = await fetch(`${base}/api/delegations`, {
@@ -193,20 +193,20 @@ describe("delegation revoke clears owner Exo state", () => {
       });
       expect(response.status).toBe(200);
     });
-    expect(fixture.calls.order).toEqual(["teardown", "remove"]);
+    expect(fixture.calls.order).toEqual(["remove", "teardown"]);
     expect(fixture.calls.removed).toEqual([ADDRESS]);
   });
 
-  it("keeps the delegation and returns 503 when owner Exo teardown fails", async () => {
+  it("returns 200 and keeps the removal when owner Exo teardown fails", async () => {
     const fixture = appForRevoke(async () => { throw new Error("teardown failed"); });
     await withServer(fixture.app, async (base) => {
       const response = await fetch(`${base}/api/delegations`, {
         method: "DELETE", headers: { "x-requested-with": "XMLHttpRequest" },
       });
-      expect(response.status).toBe(503);
-      expect(await response.json()).toEqual({ error: "unavailable" });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ status: "none", expiresAt: null });
     });
-    expect(fixture.calls.order).toEqual(["teardown"]);
-    expect(fixture.calls.removed).toEqual([]);
+    expect(fixture.calls.order).toEqual(["remove", "teardown"]);
+    expect(fixture.calls.removed).toEqual([ADDRESS]);
   });
 });

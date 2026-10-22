@@ -94,7 +94,7 @@ With the flag on, two kinds of record live in the backend KV space, keyed by low
 - `ledger/<owner>/<capability>`: cooldown, daily count, and the active run for one capability.
 - `source-lock/<owner>/<source>`: one lock per connector source.
 
-Ledger writes are compare-and-set: a create uses `ifNoneMatch`, an update uses `ifMatch` on the version it read. A start that loses a race is refused with `rate_limited`. Ledger entries are never deleted.
+Ledger writes are compare-and-set: a create uses `ifNoneMatch`, an update uses `ifMatch` on the version it read. A start that loses a race is refused with `rate_limited`. Ledger rows are deleted only by teardown: owner teardown removes the owner's rows, and source teardown removes the rows of capabilities that read only that source.
 
 A start takes the locks for its capability's sources in `SOURCES_BY_CAPABILITY` order. If any lock is refused, the locks already taken are released. A lock held for more than 30 minutes (`ACTIVE_RUN_TTL_MS`) can be taken over, so a crashed run cannot block a source forever.
 
@@ -134,7 +134,7 @@ Owner teardown (`clearExoOwnerState`, `backend/src/exo/teardown.ts`) runs in thi
 2. Backend-space mirror jobs and the owner's ledger rows.
 3. The grant record, removed by the caller last.
 
-Every step is idempotent, so a retry after a partial failure finishes the work. A live grant that cannot be activated refuses the teardown until it expires: the routes return 503, and calendar autojoin disconnect fails without changes. After expiry, owner-space rows are left in place, because nothing can reach them.
+Every step is idempotent, so a retry after a partial failure finishes the work. A live grant that cannot be activated does not block teardown: owner-space rows are left in place, because nothing can reach them, and the backend-space rows and the grant record are removed. Teardown is wired only when the exo flag is on. The connector disconnect and the delegation DELETE run it after revoking, outside the tenant lock; a failure is logged and the grant stays, so the owner's exo DELETE can retry.
 
 Source teardown (`clearExoSourceState`) deletes the ledger rows of capabilities that read only that source. It does not touch the grant, which is account-level, or the source locks, which expire on their TTL.
 

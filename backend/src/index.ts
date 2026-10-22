@@ -496,8 +496,8 @@ async function main() {
   // on one space, so cross-component writes MUST funnel through the same lane; two lanes are no lane.
   const backendStorageLane = new BackendStorageLane();
 
-  // TC-1013 S4b: owner teardown runs whether or not the exo flag is on (DELETE routes and connector
-  // disconnect are mounted unconditionally), so the backend accessor and grant opener are built here.
+  // TC-1013 S4b: owner teardown exists only when the exo flag is on. With the flag off, the DELETE
+  // routes and connector disconnect make no exo calls; they behave as before this stage.
   const exoBackendKv: ExoBackendKv = {
     get: (key, options) => node.kv.get(key, options),
     put: (key, value, options) => backendStorageLane.run(() => node.kv.put(key, value, options)),
@@ -511,11 +511,13 @@ async function main() {
     grantStore: exoGrantStore,
   });
   const exoGrantTracked = createTrackedGrantStore(exoGrantStore, exoGrantHolders);
-  // Clear first, then remove the grant: a failed clear keeps the grant, so the retry still has it.
-  const teardownExoOwner = async (owner: string): Promise<void> => {
-    await clearExoOwnerState({ kv: exoBackendKv, grantStore: exoGrantStore, openOwnerGrant }, owner);
-    await exoGrantTracked.remove(owner);
-  };
+  const teardownExoOwner: ((owner: string) => Promise<void>) | undefined = exoCapabilitiesEnabled(process.env)
+    ? async (owner: string): Promise<void> => {
+        // Clear owner rows first, then remove the grant: a failed clear keeps the grant so the retry still has it.
+        await clearExoOwnerState({ kv: exoBackendKv, openOwnerGrant }, owner);
+        await exoGrantTracked.remove(owner);
+      }
+    : undefined;
 
   // ONE set of instances shared by BOTH connector mounts, the public one below and the
   // authenticated companions further down (§3.6/§4.4): the companions' teardown must evict the
