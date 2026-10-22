@@ -1,8 +1,8 @@
 /**
- * Row types for the three meeting databases, plus validators for the details
- * database. The validators accept only the declared scalar fields, so content
- * such as transcript or summary text cannot be written into details by
- * accident: unknown keys, objects, arrays and over-long strings are rejected.
+ * Row types for the three meeting databases, plus validators for each table.
+ * The validators accept only the declared scalar fields, so content such as
+ * transcript or summary text cannot be written into details by accident:
+ * unknown keys, objects, arrays and over-long strings are rejected.
  */
 
 export class MeetingDbRowError extends Error {
@@ -96,7 +96,7 @@ export interface TranscriptSegmentRow {
   text: string;
 }
 
-// ── Details validation ───────────────────────────────────────────────
+// ── Field validation ─────────────────────────────────────────────────
 
 type FieldSpec =
   | { kind: "text"; max: number; nullable: boolean; nonBlank: boolean }
@@ -123,9 +123,9 @@ const MEETING_FIELDS: Record<keyof MeetingDetailsRow, FieldSpec> = {
   transcript_start_secs: real(),
   transcript_end_secs: real(),
   coverage_status: text(100),
-  parent_meeting_id: text(200),
-  created_at: text(100, false),
-  updated_at: text(100, false),
+  parent_meeting_id: text(200, true, true),
+  created_at: text(100, false, true),
+  updated_at: text(100, false, true),
   schema_version: integer(false),
 };
 
@@ -144,14 +144,47 @@ const KEYWORD_FIELDS: Record<keyof MeetingKeywordRow, FieldSpec> = {
 
 const SOURCE_REF_FIELDS: Record<keyof MeetingSourceRefRow, FieldSpec> = {
   meeting_id: text(200, false, true),
-  source: text(100, false),
-  source_id: text(500, false),
+  source: text(100, false, true),
+  source_id: text(500, false, true),
 };
 
 const CONNECTOR_STATE_FIELDS: Record<keyof ConnectorStateRow, FieldSpec> = {
   connector_id: text(200, false, true),
   last_synced_at: text(100),
   status: text(100),
+};
+
+const SUMMARY_FIELDS: Record<keyof MeetingSummaryRow, FieldSpec> = {
+  meeting_id: text(200, false, true),
+  summary: text(20_000),
+  updated_at: text(100, false, true),
+  revision: text(100),
+};
+
+const ACTION_ITEM_FIELDS: Record<keyof MeetingActionItemRow, FieldSpec> = {
+  meeting_id: text(200, false, true),
+  ordinal: integer(false),
+  text: text(2_000, false),
+  assignee: text(200),
+  due_at: text(100),
+  status: text(100),
+};
+
+const TRANSCRIPT_FIELDS: Record<keyof MeetingTranscriptRow, FieldSpec> = {
+  meeting_id: text(200, false, true),
+  format: text(100),
+  language: text(100),
+  revision: text(100),
+  updated_at: text(100, false, true),
+};
+
+const SEGMENT_FIELDS: Record<keyof TranscriptSegmentRow, FieldSpec> = {
+  meeting_id: text(200, false, true),
+  ordinal: integer(false),
+  speaker: text(200),
+  start_secs: real(),
+  end_secs: real(),
+  text: text(10_000, false),
 };
 
 /**
@@ -206,16 +239,17 @@ function parseRecord<T>(table: string, input: unknown, spec: Record<string, Fiel
   return out as T;
 }
 
+/** Rejects an end time before its start time when both are present. */
+function assertOrderedSpan(table: string, start: number | null, end: number | null, label: string): void {
+  if (start !== null && end !== null && end < start) {
+    throw new MeetingDbRowError(table, `${label}_end_secs is before ${label}_start_secs`);
+  }
+}
+
 /** Validates one `meeting` row for the details database. */
 export function parseDetailsRow(input: unknown): MeetingDetailsRow {
   const row = parseRecord<MeetingDetailsRow>("meeting", input, MEETING_FIELDS);
-  if (
-    row.transcript_start_secs !== null &&
-    row.transcript_end_secs !== null &&
-    row.transcript_end_secs < row.transcript_start_secs
-  ) {
-    throw new MeetingDbRowError("meeting", "transcript_end_secs is before transcript_start_secs");
-  }
+  assertOrderedSpan("meeting", row.transcript_start_secs, row.transcript_end_secs, "transcript");
   return row;
 }
 
@@ -237,4 +271,26 @@ export function parseSourceRefRow(input: unknown): MeetingSourceRefRow {
 /** Validates one `connector_state` row for the details database. */
 export function parseConnectorStateRow(input: unknown): ConnectorStateRow {
   return parseRecord<ConnectorStateRow>("connector_state", input, CONNECTOR_STATE_FIELDS);
+}
+
+/** Validates one `meeting_summary` row for the summaries database. */
+export function parseSummaryRow(input: unknown): MeetingSummaryRow {
+  return parseRecord<MeetingSummaryRow>("meeting_summary", input, SUMMARY_FIELDS);
+}
+
+/** Validates one `meeting_action_item` row for the summaries database. */
+export function parseActionItemRow(input: unknown): MeetingActionItemRow {
+  return parseRecord<MeetingActionItemRow>("meeting_action_item", input, ACTION_ITEM_FIELDS);
+}
+
+/** Validates one `meeting_transcript` row for the transcripts database. */
+export function parseTranscriptRow(input: unknown): MeetingTranscriptRow {
+  return parseRecord<MeetingTranscriptRow>("meeting_transcript", input, TRANSCRIPT_FIELDS);
+}
+
+/** Validates one `transcript_segment` row for the transcripts database. */
+export function parseTranscriptSegmentRow(input: unknown): TranscriptSegmentRow {
+  const row = parseRecord<TranscriptSegmentRow>("transcript_segment", input, SEGMENT_FIELDS);
+  assertOrderedSpan("transcript_segment", row.start_secs, row.end_secs, "segment");
+  return row;
 }

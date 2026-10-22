@@ -15,6 +15,10 @@ import {
   parseKeywordRow,
   parseParticipantRow,
   parseSourceRefRow,
+  parseActionItemRow,
+  parseSummaryRow,
+  parseTranscriptRow,
+  parseTranscriptSegmentRow,
 } from "../src/index";
 
 const SCHEMAS: Record<string, readonly string[]> = {
@@ -321,5 +325,64 @@ describe("exact path assertion", () => {
     expect(() => assertExactMeetingDbPath("xyz.tinycloud.tinychat/threads")).toThrow(/not an exact/);
     expect(() => assertExactMeetingDbPath("xyz.tinycloud.tinychat/details ")).toThrow(/not an exact/);
     expect(() => assertExactMeetingDbPath("xyz.tinycloud.tinychat/Details")).toThrow(/not an exact/);
+  });
+});
+
+describe("blank-value rules for details references", () => {
+  test("rejects blank source-ref source and source_id", () => {
+    expect(() => parseSourceRefRow({ meeting_id: "m-1", source: " ", source_id: "x" })).toThrow(/"source" must not be blank/);
+    expect(() => parseSourceRefRow({ meeting_id: "m-1", source: "s", source_id: "  " })).toThrow(/"source_id" must not be blank/);
+  });
+
+  test("rejects a blank parent_meeting_id but accepts null", () => {
+    expect(() => parseDetailsRow({ ...VALID_MEETING, parent_meeting_id: "  " })).toThrow(/"parent_meeting_id" must not be blank/);
+    expect(parseDetailsRow({ ...VALID_MEETING, parent_meeting_id: null }).parent_meeting_id).toBeNull();
+  });
+});
+
+describe("summaries and transcripts row validation", () => {
+  const SUMMARY = { meeting_id: "m-1", summary: "Short recap.", updated_at: "2025-01-02T10:00:00Z", revision: null };
+  const ACTION = { meeting_id: "m-1", ordinal: 0, text: "Follow up", assignee: null, due_at: null, status: "open" };
+  const TRANSCRIPT = { meeting_id: "m-1", format: "vtt", language: "en", revision: null, updated_at: "2025-01-02T10:00:00Z" };
+  const SEGMENT = { meeting_id: "m-1", ordinal: 0, speaker: "A", start_secs: 0, end_secs: 5, text: "hello" };
+
+  test("summary: accepts a valid row and rejects blank ids, blank updated_at, oversize text and unknown keys", () => {
+    expect(parseSummaryRow(SUMMARY)).toEqual(SUMMARY);
+    expect(() => parseSummaryRow({ ...SUMMARY, meeting_id: " " })).toThrow(/"meeting_id" must not be blank/);
+    expect(() => parseSummaryRow({ ...SUMMARY, updated_at: "" })).toThrow(/"updated_at" must not be blank/);
+    expect(() => parseSummaryRow({ ...SUMMARY, summary: "x".repeat(20_001) })).toThrow(/exceeds 20000/);
+    expect(parseSummaryRow({ ...SUMMARY, summary: "x".repeat(20_000) }).summary).toHaveLength(20_000);
+    expect(() => parseSummaryRow({ ...SUMMARY, transcript: "x" })).toThrow(/unknown field/);
+  });
+
+  test("summary: rejects object and array text", () => {
+    expect(() => parseSummaryRow({ ...SUMMARY, summary: { text: "x" } })).toThrow(/must be a string/);
+    expect(() => parseSummaryRow({ ...SUMMARY, summary: ["x"] })).toThrow(/must be a string/);
+  });
+
+  test("action item: accepts a valid row and rejects oversize text, negative ordinal and blank meeting id", () => {
+    expect(parseActionItemRow(ACTION)).toEqual(ACTION);
+    expect(() => parseActionItemRow({ ...ACTION, text: "x".repeat(2_001) })).toThrow(/exceeds 2000/);
+    expect(() => parseActionItemRow({ ...ACTION, ordinal: -1 })).toThrow(/non-negative integer/);
+    expect(() => parseActionItemRow({ ...ACTION, meeting_id: "" })).toThrow(/must not be blank/);
+  });
+
+  test("transcript: accepts a valid row and rejects blank updated_at and unknown keys", () => {
+    expect(parseTranscriptRow(TRANSCRIPT)).toEqual(TRANSCRIPT);
+    expect(() => parseTranscriptRow({ ...TRANSCRIPT, updated_at: "  " })).toThrow(/"updated_at" must not be blank/);
+    expect(() => parseTranscriptRow({ ...TRANSCRIPT, segments: [] })).toThrow(/unknown field/);
+  });
+
+  test("segment: accepts a valid row and equal start and end", () => {
+    expect(parseTranscriptSegmentRow(SEGMENT)).toEqual(SEGMENT);
+    expect(parseTranscriptSegmentRow({ ...SEGMENT, start_secs: 3, end_secs: 3 }).end_secs).toBe(3);
+  });
+
+  test("segment: rejects oversize text, missing text, negative or non-finite times, and end before start", () => {
+    expect(() => parseTranscriptSegmentRow({ ...SEGMENT, text: "x".repeat(10_001) })).toThrow(/exceeds 10000/);
+    expect(() => parseTranscriptSegmentRow({ ...SEGMENT, text: null })).toThrow(/"text" is required/);
+    expect(() => parseTranscriptSegmentRow({ ...SEGMENT, start_secs: -1 })).toThrow(/finite, non-negative/);
+    expect(() => parseTranscriptSegmentRow({ ...SEGMENT, end_secs: Infinity })).toThrow(/finite, non-negative/);
+    expect(() => parseTranscriptSegmentRow({ ...SEGMENT, start_secs: 9, end_secs: 2 })).toThrow(/before segment_start_secs/);
   });
 });
