@@ -75,6 +75,7 @@ describe("signed transcript grant verifier", () => {
       ownerAddress: original.address.toLowerCase(), chainId: 1,
       spaceId: makePkhSpaceId(original.address, 1, "applications"), sessionDid: original.sessionDid,
       backendDid: original.backendDid, expiresAt: original.expiresAt,
+      policy: "transcript-writer",
       resources: [
         { service: "sql", space: original.spaceId, path: SQL, actions: ["tinycloud.sql/read", "tinycloud.sql/write"] },
         { service: "kv", space: original.spaceId, path: KV, actions: ["tinycloud.kv/get", "tinycloud.kv/put"] },

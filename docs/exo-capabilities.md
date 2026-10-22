@@ -83,4 +83,4 @@ Cooldown and daily-count state is held in process memory. It resets on restart. 
 
 Default wiring supplies no concrete grant, record, job, or executor stores. With the flag set to `true` and no stores wired, every well-formed wake returns 202 `accepted` and writes no record. Concrete stores and the sync executor are supplied separately.
 
-Grant activation (`backend/src/portable-delegation.ts`) accepts 1 to 4 resources in the supported multi-resource shapes (`MAX_ACTIVATABLE_RESOURCES`). This change does not alter activation.
+Grant activation (`backend/src/portable-delegation.ts`) branches on the verified grant's `policy`. An exo sync grant (`policy: "exo-sync"`) activates only the exact two KV prefixes above with their abilities: exactly two resources, no SQL, no extra ability, no widened prefix. Any other exo shape is refused before any governed write (`beforeNodeWrite`) or node call. Transcript-writer grants keep the existing rules (1 to 4 resources, at most one `sql`/`duckdb`/`hooks`, `MAX_ACTIVATABLE_RESOURCES`), and this change does not alter them.

@@ -15,6 +15,7 @@ export interface VerifiedTranscriptWriter {
   spaceId: string;
   sessionDid: string;
   backendDid: string;
+  policy: GrantPolicy;
   resources: Array<{ service: string; space: string; path: string; actions: string[] }>;
   expiresAt: Date;
 }
@@ -43,7 +44,7 @@ const expected = [
   { service: "kv", path: `${APP_ID}/connectors/tinycloud-transcriber/`, actions: ["tinycloud.kv/get", "tinycloud.kv/put"] },
 ];
 // Exo mailbox grant: exactly these two KV prefixes and abilities. No SQL, no other path, no wildcard.
-const exoSyncExpected = [
+export const EXO_SYNC_RESOURCES = [
   { service: "kv", path: `${APP_ID}/exo/v1/requests/`, actions: ["tinycloud.kv/get", "tinycloud.kv/list", "tinycloud.kv/del"] },
   { service: "kv", path: `${APP_ID}/exo/v1/jobs/`, actions: ["tinycloud.kv/get", "tinycloud.kv/put", "tinycloud.kv/del"] },
 ];
@@ -51,7 +52,7 @@ export type GrantPolicy = "transcript-writer" | "exo-sync";
 // Each policy admits only its own resources. A grant that mixes policies fails the other policy's table.
 const policies: Record<GrantPolicy, { envelopeFormat: string; expected: typeof expected }> = {
   "transcript-writer": { envelopeFormat: "tinychat.transcript-writer-grant", expected },
-  "exo-sync": { envelopeFormat: "tinychat.exo-sync-grant", expected: exoSyncExpected },
+  "exo-sync": { envelopeFormat: "tinychat.exo-sync-grant", expected: EXO_SYNC_RESOURCES },
 };
 const verificationCache = new Map<string, { verified: VerifiedTranscriptWriter; until: number }>();
 
@@ -65,7 +66,8 @@ export function evictStoredGrantVerification(address: string, envelope: string, 
 
 export async function verifyTranscriptWriterGrant(input: GrantInput, deps: GrantDependencies): Promise<GrantResult> {
   const now = input.now ?? Date.now();
-  const policyExpected = policies[input.policy ?? "transcript-writer"].expected;
+  const policy = input.policy ?? "transcript-writer";
+  const policyExpected = policies[policy].expected;
   let bundle: unknown;
   try { bundle = JSON.parse(input.serialized); } catch { return failure("unsupported_bundle_shape"); }
   if (!isRecord(bundle) || bundle.format === "tinycloud.delegation-bundle" || Array.isArray(bundle.delegations)) return failure("unsupported_bundle_shape");
@@ -128,7 +130,7 @@ export async function verifyTranscriptWriterGrant(input: GrantInput, deps: Grant
   if (typeof payload.exp !== "number" || payload.exp * 1000 <= now + 60_000) return failure("expired");
   if (payload.exp * 1000 > Math.min(sessionExpiry, now + 30 * 86_400_000 + 300_000)) return failure("expiry_too_long");
   if (payload.nbf !== undefined && (typeof payload.nbf !== "number" || payload.nbf * 1000 > now + 60_000)) return failure("not_yet_valid");
-  return { ok: true, verified: { cid: bundle.cid, authorization, ownerAddress: session.address.toLowerCase(), chainId: session.chainId, spaceId, sessionDid, backendDid: input.backendDid, resources, expiresAt: new Date(payload.exp * 1000) } };
+  return { ok: true, verified: { cid: bundle.cid, authorization, ownerAddress: session.address.toLowerCase(), chainId: session.chainId, spaceId, sessionDid, backendDid: input.backendDid, policy, resources, expiresAt: new Date(payload.exp * 1000) } };
 }
 
 export async function parseStoredGrant(address: string, envelope: string, options: { backendDid: string; configuredHost: string; now?: number; policy?: GrantPolicy }, deps: GrantDependencies): Promise<GrantResult> {

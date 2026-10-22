@@ -52,6 +52,7 @@ describe("exo sync grant verifier policy", () => {
       { service: "kv", space: grant.spaceId, path: REQUESTS, actions: ["tinycloud.kv/get", "tinycloud.kv/list", "tinycloud.kv/del"] },
       { service: "kv", space: grant.spaceId, path: JOBS, actions: ["tinycloud.kv/get", "tinycloud.kv/put", "tinycloud.kv/del"] },
     ]);
+    expect(result.verified.policy).toBe("exo-sync");
   });
 
   it("rejects an exo grant whose prefix is widened to the whole app namespace", async () => {
