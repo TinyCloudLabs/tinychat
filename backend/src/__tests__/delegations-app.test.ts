@@ -206,6 +206,7 @@ describe("delegation revoke clears owner Exo state", () => {
         method: "DELETE", headers: { "x-requested-with": "XMLHttpRequest" },
       });
       expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ status: "none", expiresAt: null });
     });
     expect(fixture.calls.order).toEqual(["remove"]);
     expect(fixture.calls.removed).toEqual([ADDRESS]);
