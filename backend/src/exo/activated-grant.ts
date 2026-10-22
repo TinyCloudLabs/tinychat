@@ -23,13 +23,21 @@ export interface ExoActivatedGrant {
 
 /** Owner applications space with the EIP-55 checksummed address. Callers compare it case-insensitively. */
 export function ownerApplicationsSpaceUri(ownerAddress: string, chainId: number): string {
+  if (!Number.isSafeInteger(chainId) || chainId <= 0) throw new Error(`Owner chain id refused: ${String(chainId)}`);
   if (!isAddress(ownerAddress)) throw new Error(`Owner address refused: ${ownerAddress}`);
   return `tinycloud:pkh:eip155:${chainId}:${getAddress(ownerAddress)}:applications`;
 }
 
-/** Literal paths only: under `prefix`, no percent-encoding, no backslash, no empty, `.` or `..` segment, no trailing slash. */
+const MAX_KEY_LENGTH = 512;
+const KEY_CHARACTERS = /^[A-Za-z0-9._/-]+$/;
+
+/**
+ * Literal paths only: under `prefix`, ASCII key characters only (no NUL, control, non-ASCII, or
+ * lookalike characters, no percent-encoding, no backslash), at most 512 characters, no empty, `.`
+ * or `..` segment, no trailing slash.
+ */
 function assertLiteralPathUnder(prefix: string, path: string): string {
-  if (typeof path !== "string" || !path.startsWith(prefix) || /[%\\]/.test(path)) {
+  if (typeof path !== "string" || path.length > MAX_KEY_LENGTH || !KEY_CHARACTERS.test(path) || !path.startsWith(prefix)) {
     throw new Error(`Exo grant path refused: ${String(path)}`);
   }
   const rest = path.slice(prefix.length);
@@ -49,12 +57,29 @@ function keysOf(listed: unknown): unknown {
   return listed !== null && typeof listed === "object" && "keys" in listed ? listed.keys : undefined;
 }
 
-/** KV values may be raw JSON bytes, a JSON string, or an already-parsed value. */
+const MAX_STORED_BYTES = 4 * 1024;
+
+/**
+ * KV values may be raw JSON bytes, a JSON string, or an already-parsed value. Raw bytes and strings
+ * are capped at 4 KiB, must not start with a byte order mark, and must be valid UTF-8. A JSON `null`
+ * reads as absent.
+ */
 function decodeStoredJson(raw: unknown): unknown {
-  if (raw instanceof ArrayBuffer) return JSON.parse(new TextDecoder().decode(new Uint8Array(raw)));
-  if (raw instanceof Uint8Array) return JSON.parse(new TextDecoder().decode(raw));
-  if (typeof raw === "string") return JSON.parse(raw);
-  return raw;
+  let text: string;
+  if (raw instanceof ArrayBuffer || raw instanceof Uint8Array) {
+    const bytes = raw instanceof ArrayBuffer ? new Uint8Array(raw) : raw;
+    if (bytes.byteLength > MAX_STORED_BYTES) throw new Error("Exo stored value exceeds 4 KiB");
+    if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) throw new Error("Exo stored value has a byte order mark");
+    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } else if (typeof raw === "string") {
+    if (new TextEncoder().encode(raw).byteLength > MAX_STORED_BYTES) throw new Error("Exo stored value exceeds 4 KiB");
+    if (raw.charCodeAt(0) === 0xfeff) throw new Error("Exo stored value has a byte order mark");
+    text = raw;
+  } else {
+    return raw;
+  }
+  const parsed: unknown = JSON.parse(text);
+  return parsed === null ? undefined : parsed;
 }
 
 function isString(value: unknown): value is string {
@@ -75,7 +100,7 @@ export function createExoActivatedGrant(access: { kv: ExoKvAccess }, grant: ExoG
     const result = await kv.get(path);
     if (isKvMissingKeyResult(result, path)) return undefined;
     const outer = dataOf(assertKvResult(result));
-    const raw = dataOf(outer) ?? outer;
+    const raw = outer !== null && typeof outer === "object" && "data" in outer ? outer.data : outer;
     if (raw === null || raw === undefined) return undefined;
     return decodeStoredJson(raw);
   };

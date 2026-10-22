@@ -163,3 +163,81 @@ describe("createExoActivatedGrant list and put", () => {
     expect(kv.calls).toEqual([`put ${EXO_JOBS_PREFIX}abc`]);
   });
 });
+
+describe("exo accessor key hardening", () => {
+  const requests = `${EXO_REQUESTS_PREFIX}sync-meetings/`;
+  const path = `${requests}abc`;
+  const badKeys = [
+    `${requests}abc\u0000`,
+    `${requests}ab\u0007c`,
+    `${requests}ab\u200bc`,
+    `${requests}ab c`,
+    `${requests}ab\u0441c`,
+    `${requests}abc\n`,
+    `${requests}ab\uff0fc`,
+  ];
+
+  test.each(badKeys)("refuses a key with a control, space, or lookalike character before any node call", async (key) => {
+    const kv = fakeKv();
+    await expect(createExoActivatedGrant({ kv }, GRANT).requestsGet(key)).rejects.toThrow();
+    expect(kv.calls).toEqual([]);
+  });
+
+  test("accepts a key of exactly 512 characters and refuses 513", async () => {
+    const pad = 512 - requests.length;
+    const kv = fakeKv();
+    const grant = createExoActivatedGrant({ kv }, GRANT);
+    await grant.requestsGet(`${requests}${"a".repeat(pad)}`);
+    await expect(grant.requestsGet(`${requests}${"a".repeat(pad + 1)}`)).rejects.toThrow();
+    expect(kv.calls).toEqual([`get ${requests}${"a".repeat(pad)}`]);
+  });
+});
+
+describe("exo accessor stored value hardening", () => {
+  const path = `${EXO_REQUESTS_PREFIX}sync-meetings/abc`;
+
+  test("accepts a stored value of exactly 4 KiB and refuses one byte more", async () => {
+    const kv = fakeKv();
+    const atLimit = JSON.stringify({ s: "a".repeat(4096 - 8) });
+    kv.getResult = { ok: true, data: { data: new TextEncoder().encode(atLimit) } };
+    expect(await createExoActivatedGrant({ kv }, GRANT).requestsGet(path)).toEqual({ s: "a".repeat(4096 - 8) });
+    const overLimit = JSON.stringify({ s: "a".repeat(4096 - 7) });
+    kv.getResult = { ok: true, data: { data: new TextEncoder().encode(overLimit) } };
+    await expect(createExoActivatedGrant({ kv }, GRANT).requestsGet(path)).rejects.toThrow();
+    kv.getResult = { ok: true, data: { data: overLimit } };
+    await expect(createExoActivatedGrant({ kv }, GRANT).requestsGet(path)).rejects.toThrow();
+  });
+
+  test("refuses a stored value with a byte order mark, as bytes or as a string", async () => {
+    const kv = fakeKv();
+    kv.getResult = { ok: true, data: { data: new Uint8Array([0xef, 0xbb, 0xbf, ...new TextEncoder().encode("{}")]) } };
+    await expect(createExoActivatedGrant({ kv }, GRANT).requestsGet(path)).rejects.toThrow();
+    kv.getResult = { ok: true, data: { data: "\ufeff{}" } };
+    await expect(createExoActivatedGrant({ kv }, GRANT).requestsGet(path)).rejects.toThrow();
+  });
+
+  test("refuses stored bytes that are not valid UTF-8", async () => {
+    const kv = fakeKv();
+    kv.getResult = { ok: true, data: { data: new Uint8Array([0x7b, 0xff, 0x7d]) } };
+    await expect(createExoActivatedGrant({ kv }, GRANT).requestsGet(path)).rejects.toThrow();
+  });
+
+  test("maps a stored JSON null to absent in every encoding", async () => {
+    const kv = fakeKv();
+    const grant = createExoActivatedGrant({ kv }, GRANT);
+    for (const data of [new TextEncoder().encode("null"), "null", null]) {
+      kv.getResult = { ok: true, data: { data } };
+      expect(await grant.requestsGet(path)).toBeUndefined();
+    }
+  });
+});
+
+describe("ownerApplicationsSpaceUri chain id", () => {
+  test.each([0, -1, 1.5, Number.NaN, Number.MAX_SAFE_INTEGER + 1])("refuses chain id %p", (chainId) => {
+    expect(() => ownerApplicationsSpaceUri(OWNER, chainId)).toThrow();
+  });
+
+  test("accepts a positive safe integer chain id", () => {
+    expect(ownerApplicationsSpaceUri(OWNER, 8453)).toBe(`tinycloud:pkh:eip155:8453:${OWNER}:applications`);
+  });
+});
