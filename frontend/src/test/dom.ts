@@ -21,26 +21,3 @@ export function installDom() {
     Reflect.deleteProperty(target, "IS_REACT_ACT_ENVIRONMENT");
   };
 }
-
-/** Reports the shape (own keys only, no values) of an unexpected global `window` lacking `location`. */
-export function reportWindowShape(where: string): void {
-  const current: unknown = Reflect.get(globalThis, "window");
-  const isObject = typeof current === "object" && current !== null;
-  if (!isObject || (isObject && "location" in current && typeof current.location !== "undefined")) return;
-  const keys = isObject ? `{${Object.getOwnPropertyNames(current).sort().join(",")}}` : String(current);
-  const location = isObject && "location" in current ? typeof current.location : "missing";
-  console.warn(`[TC-1420] ${where}: unexpected global window ${keys}, window.location=${location}`);
-  const origins: unknown = Reflect.get(globalThis, Symbol.for("tc1420.origin"));
-  if (origins && typeof origins === "object") {
-    for (const [slot, origin] of Object.entries(origins)) {
-      const frames = Reflect.get(origin, "frames");
-      const framesText = Array.isArray(frames) ? frames.join(" <- ") : "";
-      console.warn(`[TC-1420] first-origin ${slot} (${Reflect.get(origin, "tag")}) at ${framesText}`);
-    }
-  }
-  const ring: unknown = Reflect.get(globalThis, Symbol.for("tc1420.ring"));
-  if (!Array.isArray(ring)) return;
-  ring.forEach((entry: { tag: string; keys: string; location: string; frames: string[] }, index: number) => {
-    console.warn(`[TC-1420] ring ${index}: ${entry.tag} ${entry.keys} location=${entry.location} at ${entry.frames.join(" <- ")}`);
-  });
-}

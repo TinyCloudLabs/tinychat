@@ -1,3 +1,0 @@
-[test]
-# TC-1420 diagnostic: CI-only trap for location-less `window` assignments (no-op unless CI=true).
-preload = ["./src/test/tc1420WindowTrap.ts"]
