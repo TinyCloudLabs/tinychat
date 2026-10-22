@@ -9,6 +9,7 @@ import {
   type ExoKvGetOptions,
   type ExoKvPutOptions,
 } from "./activated-grant.js";
+import { type GrantHolderIndex, OWNER_ADDRESS_RE } from "./grant-holders.js";
 import {
   EXO_NAMESPACE,
   parseJobRecord,
@@ -34,13 +35,14 @@ export interface ExoStoreDeps {
   webhooks: { config(address: string): Promise<{ source: string } | null> };
   /** Only presence matters: a non-null result means the connector is disabled for this owner. */
   controls: { readDisabled(address: string): Promise<unknown> };
+  /** Only "may hold" and "remove" are used. Owners outside the index are refused without any grant read. */
+  grantHolders: Pick<GrantHolderIndex, "mayHold" | "remove">;
   frontendOrigin: string;
   now?: () => number;
 }
 
 /** Registry source id for each connector source the wake can name. */
 const REGISTRY_SOURCE: Record<ConnectorSource, string> = { fireflies: "fireflies", google: "google-meet" };
-const OWNER_ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
 
 function normalizeOwner(owner: string): string {
   if (!OWNER_ADDRESS_RE.test(owner)) throw new Error("Exo owner address refused");
@@ -86,7 +88,11 @@ export function createExoStorePorts(deps: ExoStoreDeps): Omit<ExoMailboxPorts, "
     grants: {
       isActive: async (owner) => {
         if (!OWNER_ADDRESS_RE.test(owner)) return false;
-        return (await deps.openOwnerGrant(owner.toLowerCase())) !== null;
+        const address = owner.toLowerCase();
+        if (!(await deps.grantHolders.mayHold(address))) return false;
+        if ((await deps.openOwnerGrant(address)) !== null) return true;
+        deps.grantHolders.remove(address);
+        return false;
       },
     },
     requests: {

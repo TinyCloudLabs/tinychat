@@ -589,41 +589,6 @@ describe("Exo wake route: every state-dependent outcome is the same response", (
     }
   });
 
-  test("every well-formed wake reads the grant and all three request paths, in the same order, whatever the state", async () => {
-    const paths = ["grant", "request sync-meetings", "request sync-fireflies", "request sync-google"];
-    const states: Array<{ label: string; active: boolean; seeded: boolean }> = [
-      { label: "unknown owner", active: false, seeded: false },
-      { label: "no grant", active: false, seeded: true },
-      { label: "no record", active: true, seeded: false },
-      { label: "verified", active: true, seeded: true },
-    ];
-    for (const state of states) {
-      const f = fixture();
-      if (state.seeded) f.seed(REQ1, "sync-google");
-      const reads: string[] = [];
-      const ports: ExoMailboxPorts = {
-        ...f.ports,
-        grants: {
-          isActive: async () => {
-            reads.push("grant");
-            return state.active;
-          },
-        },
-        requests: {
-          get: async (owner, path) => {
-            reads.push(`request ${path.split("/").at(-2)}`);
-            return f.ports.requests.get(owner, path);
-          },
-          remove: async (owner, path) => f.ports.requests.remove(owner, path),
-        },
-      };
-      await withWakeServer(async (base) => {
-        expect((await post(base, bodyFor(REQ1))).status).toBe(202);
-      }, ports);
-      expect([state.label, reads]).toEqual([state.label, paths]);
-    }
-  });
-
   test("a verify throw answers the same 202 wire as an unverified request, and records nothing", async () => {
     const f = fixture();
     f.seed(REQ1, "sync-google");

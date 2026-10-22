@@ -3,6 +3,8 @@ import { createExoActivatedGrant, type ExoActivatedGrant, type ExoKvAccess } fro
 import { createOwnerGrantOpener, createExoStorePorts, type ExoBackendKv } from "../exo/stores.js";
 import { EXO_NAMESPACE, JOB_MESSAGE, type ExoJobRecord } from "../exo/mailbox.js";
 import { EXO_JOBS_PREFIX, EXO_REQUESTS_PREFIX } from "../delegation-verify.js";
+import { EXO_SYNC_GRANT_KIND } from "@tinyboilerplate/server";
+import { GrantHolderIndex } from "../exo/grant-holders.js";
 
 // EIP-55 reference address (checksum case is part of the value).
 const OWNER = "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed";
@@ -90,6 +92,10 @@ interface HarnessOptions {
   configs?: Record<string, { source: string }>;
   disabled?: Set<string>;
   configThrows?: boolean;
+  /** Holder index for the test; default lists the test owner as holding a grant. */
+  holders?: Pick<GrantHolderIndex, "mayHold" | "remove">;
+  /** Owner addresses the opener was asked for. */
+  opened?: string[];
 }
 
 function harness(options: HarnessOptions = {}) {
@@ -98,7 +104,10 @@ function harness(options: HarnessOptions = {}) {
   const backend = backendKv();
   const ports = createExoStorePorts({
     backendKv: backend,
-    openOwnerGrant: async () => (options.grant === undefined ? grant : options.grant),
+    openOwnerGrant: async (address) => {
+      options.opened?.push(address);
+      return options.grant === undefined ? grant : options.grant;
+    },
     webhooks: {
       config: async (address) => {
         if (options.configThrows) throw new Error("webhook store down");
@@ -109,6 +118,9 @@ function harness(options: HarnessOptions = {}) {
       readDisabled: async (address) =>
         options.disabled?.has(address) ? { revokedAt: "2026-01-01T00:00:00.000Z", source: "fireflies" } : null,
     },
+    grantHolders:
+      options.holders ??
+      new GrantHolderIndex({ list: async () => ({ ok: true, data: { keys: [`${EXO_SYNC_GRANT_KIND.keyPrefix}${OWNER_LC}`] } }) }),
     frontendOrigin: "https://app.example",
     now: () => NOW,
   });
@@ -286,6 +298,44 @@ describe("exo store ports: grants", () => {
   test("reports no active grant when the opener yields none", async () => {
     const { ports } = harness({ grant: null });
     expect(await ports.grants.isActive(OWNER_LC)).toBe(false);
+  });
+
+  test("refuses an owner the holder index does not list, without opening a grant", async () => {
+    const opened: string[] = [];
+    const holders = new GrantHolderIndex({ list: async () => ({ ok: true, data: { keys: [] } }) });
+    const { ports } = harness({ holders, opened });
+    expect(await ports.grants.isActive(OWNER_LC)).toBe(false);
+    expect(opened).toEqual([]);
+  });
+
+  test("drops an owner from the index when its grant does not open", async () => {
+    const removed: string[] = [];
+    const holders = { mayHold: async () => true, remove: (address: string) => removed.push(address) };
+    const { ports } = harness({ holders, grant: null });
+    expect(await ports.grants.isActive(OWNER_LC)).toBe(false);
+    expect(removed).toEqual([OWNER_LC]);
+  });
+
+  test("keeps an owner in the index when its grant opens", async () => {
+    const removed: string[] = [];
+    const holders = { mayHold: async () => true, remove: (address: string) => removed.push(address) };
+    const { ports } = harness({ holders });
+    expect(await ports.grants.isActive(OWNER_LC)).toBe(true);
+    expect(removed).toEqual([]);
+  });
+
+  test("refuses a non-address owner without consulting the index", async () => {
+    const consulted: string[] = [];
+    const holders = {
+      mayHold: async (address: string) => {
+        consulted.push(address);
+        return true;
+      },
+      remove: () => {},
+    };
+    const { ports } = harness({ holders });
+    expect(await ports.grants.isActive("not-an-address")).toBe(false);
+    expect(consulted).toEqual([]);
   });
 });
 

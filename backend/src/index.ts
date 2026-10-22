@@ -57,6 +57,7 @@ import { createTranscriberRouter } from "./routes/transcriber.js";
 import { createTranscriberWebhookRouter } from "./routes/transcriber-webhook.js";
 import { createExoMailboxRouter } from "./routes/exo-mailbox.js";
 import { WakeQueue } from "./exo/wake-intake.js";
+import { createTrackedGrantStore, GrantHolderIndex } from "./exo/grant-holders.js";
 import { createExoStorePorts, createOwnerGrantOpener, type ExoBackendKv } from "./exo/stores.js";
 import { startExoRetentionSweepTimer, type ExoRetentionSweepTimer } from "./exo/retention-sweep.js";
 import { exoCapabilitiesEnabled } from "./exo/mailbox.js";
@@ -462,6 +463,7 @@ async function main() {
   }
   const delegationStore = new DelegationStore(node, TRANSCRIPT_WRITER_GRANT_KIND);
   const exoGrantStore = new DelegationStore(node, EXO_SYNC_GRANT_KIND);
+  const exoGrantHolders = new GrantHolderIndex({ list: (prefix) => node.kv.list({ prefix }) });
   const delegationCache = new DelegationCache();
   const nonceStore = createNonceStore();
   const authMiddleware = createAuthMiddleware(backendPrivateKey);
@@ -588,6 +590,7 @@ async function main() {
       }),
       webhooks: new WebhookTokenService(node),
       controls: new ConnectorControlStore(node),
+      grantHolders: exoGrantHolders,
       frontendOrigin: process.env.FRONTEND_URL ?? "https://localhost:5186",
     });
     app.use("/api/exo/v1", createExoMailboxRouter(exoPorts, { queue: exoWakeQueue }));
@@ -718,7 +721,7 @@ async function main() {
       node,
       backendDid: did,
       configuredHost: TINYCLOUD_HOST,
-      store: exoGrantStore,
+      store: createTrackedGrantStore(exoGrantStore, exoGrantHolders),
       authMiddleware,
     }));
   }
