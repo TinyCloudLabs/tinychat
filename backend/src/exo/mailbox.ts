@@ -261,17 +261,28 @@ async function reportRun(
   });
 }
 
-/** Handles a wake. Pre-verification refusals are one uniform 409 and reveal nothing. */
-export async function handleWake(ports: ExoMailboxPorts, body: unknown): Promise<WakeResult> {
+/** A wake whose grant is active and whose request record verifies. */
+export interface VerifiedWake {
+  owner: string;
+  requestId: string;
+  capability: ExoCapability;
+}
+
+/** Verifies a wake: strict body, active grant, one valid request record. Any refusal is `undefined`. */
+export async function verifyWake(ports: ExoMailboxPorts, body: unknown): Promise<VerifiedWake | undefined> {
   const wake = parseWakeBody(body);
-  if (!wake) return unavailable();
+  if (!wake) return undefined;
   const { owner, requestId } = wake;
 
-  if (!(await ports.grants.isActive(owner))) return unavailable();
+  if (!(await ports.grants.isActive(owner))) return undefined;
   const capability = await findRequestCapability(ports.requests, owner, requestId);
-  if (!capability) return unavailable();
+  if (!capability) return undefined;
+  return { owner, requestId, capability };
+}
 
-  // Everything from here to the executor start runs in the owner lane, so two wakes cannot both see "no active run".
+/** Starts or replays a verified wake. Everything runs in the owner lane, so two wakes cannot both see "no active run". */
+export function startWake(ports: ExoMailboxPorts, wake: VerifiedWake): Promise<WakeResult> {
+  const { owner, requestId, capability } = wake;
   return withOwnerLane(owner, async () => {
     // Replay: the job id is the request id. A replay returns the existing job, not an error.
     const existingRaw = await ports.jobs.get(owner, requestId);
@@ -360,6 +371,12 @@ export async function handleWake(ports: ExoMailboxPorts, body: unknown): Promise
 
     return acceptedBody(job);
   });
+}
+
+/** Handles a wake. Pre-verification refusals are one uniform 409 and reveal nothing. */
+export async function handleWake(ports: ExoMailboxPorts, body: unknown): Promise<WakeResult> {
+  const wake = await verifyWake(ports, body);
+  return wake ? startWake(ports, wake) : unavailable();
 }
 
 /**

@@ -13,6 +13,7 @@
  */
 import rateLimit from "express-rate-limit";
 import type { Express, Request, RequestHandler, Response } from "express";
+import type { VerifiedWake } from "./exo/mailbox.js";
 import { verifySessionToken } from "@tinyboilerplate/server";
 
 const WINDOW_MS = 15 * 60 * 1000;
@@ -477,9 +478,9 @@ export const EXO_WAKE_IP_LIMIT_PER_MIN = 120;
 export const EXO_WAKE_OWNER_LIMIT_PER_MIN = 30;
 
 /**
- * Limiters for `POST /api/exo/v1/requests`. The owner limiter keys on the lowercased `owner`
- * field of the body; a body without a usable owner shares one bucket. Both answer 429
- * `{"error":"rate_limited"}` with `Retry-After` in seconds.
+ * Limiters for `POST /api/exo/v1/requests`. The owner limiter runs after verification and keys on the
+ * verified owner (`res.locals.exoWake`), so refused wakes cannot spend an owner's budget. Both answer
+ * 429 `{"error":"rate_limited"}` with `Retry-After` in seconds.
  */
 export function createExoWakeLimiters(): { ip: RequestHandler; owner: RequestHandler } {
   const respond = (_req: Request, res: Response) => {
@@ -500,9 +501,10 @@ export function createExoWakeLimiters(): { ip: RequestHandler; owner: RequestHan
       limit: EXO_WAKE_OWNER_LIMIT_PER_MIN,
       standardHeaders: "draft-7",
       legacyHeaders: false,
-      keyGenerator: (req) => {
-        const owner = (req.body as { owner?: unknown } | undefined)?.owner;
-        return typeof owner === "string" ? owner.toLowerCase() : "invalid-owner";
+      keyGenerator: (_req, res) => {
+        // Set by verification in the wake route, which runs before this limiter; unverified requests never reach it.
+        const wake: VerifiedWake | undefined = res.locals.exoWake;
+        return wake?.owner.toLowerCase() ?? "";
       },
       handler: respond,
     }),

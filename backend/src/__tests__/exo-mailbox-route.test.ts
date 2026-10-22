@@ -66,19 +66,38 @@ describe("Exo wake route refusals are the uniform 409", () => {
 });
 
 describe("Exo wake route per-owner limit", () => {
-  test("the 31st wake for one owner in a minute is 429 with Retry-After", async () => {
+  test("the 31st verified wake for one owner in a minute is 429 with Retry-After", async () => {
+    // Each verified wake is refused by the 30-min cooldown, a 429 that carries retryAfterSec.
+    const ports = refusedByLedgerPorts({ startsToday: 1, lastStartedAt: T0 - MINUTE_MS });
     await withWakeServer(async (base) => {
       const body = JSON.stringify({ owner: OWNER_DID, requestId: REQ1 });
       for (let i = 0; i < 30; i += 1) {
-        expect((await post(base, body)).status).toBe(409);
+        const refused = await post(base, body);
+        expect(refused.status).toBe(429);
+        expect(await refused.json()).toEqual({ error: "rate_limited", retryAfterSec: 1740 });
       }
       const limited = await post(base, body);
       expect(limited.status).toBe(429);
       expect(await limited.json()).toEqual({ error: "rate_limited" });
-      const retryAfter = Number(limited.headers.get("retry-after"));
-      expect(Number.isInteger(retryAfter)).toBe(true);
-      expect(retryAfter).toBeGreaterThanOrEqual(1);
-    });
+      expect(limited.headers.get("retry-after")).toBe("60");
+    }, ports);
+  });
+});
+
+describe("Exo wake per-owner limit counts verified wakes only", () => {
+  test("refused unverified wakes naming an owner do not spend that owner's budget", async () => {
+    const ports = refusedByLedgerPorts({ startsToday: 1, lastStartedAt: T0 - MINUTE_MS });
+    await withWakeServer(async (base) => {
+      const unknown = JSON.stringify({ owner: OWNER_DID, requestId: "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d" });
+      for (let i = 0; i < 31; i += 1) {
+        const refused = await post(base, unknown);
+        expect(refused.status).toBe(409);
+        expect(await refused.json()).toEqual(UNIFORM);
+      }
+      const verified = await post(base, JSON.stringify({ owner: OWNER_DID, requestId: REQ1 }));
+      expect(verified.status).toBe(429);
+      expect(await verified.json()).toEqual({ error: "rate_limited", retryAfterSec: 1740 });
+    }, ports);
   });
 });
 
