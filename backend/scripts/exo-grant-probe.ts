@@ -25,7 +25,7 @@ type Resource = { path: string; actions: readonly string[] };
 
 // The owner's sign-in recap must cover every KV path the probe sub-delegates. Without it the SDK
 // takes the wallet-CACAO path (no session-key JWT), and the verifier refuses with session_mismatch.
-const OWNER_MANIFEST: Manifest = {
+const ownerManifest = (encryptionNetworkId: string): Manifest => ({
   manifest_version: 1,
   app_id: "xyz.tinycloud.tinychat.exo-probe",
   name: "TinyCloud exo grant probe",
@@ -39,8 +39,9 @@ const OWNER_MANIFEST: Manifest = {
     { service: "tinycloud.kv", space: "applications", path: EXO_REQUESTS_PREFIX, actions: ["get", "list", "del", "put"], skipPrefix: true },
     { service: "tinycloud.kv", space: "applications", path: EXO_JOBS_PREFIX, actions: ["get", "put", "del"], skipPrefix: true },
     { service: "tinycloud.kv", space: "applications", path: `${APP_ID}/`, actions: ["get", "put", "del"], skipPrefix: true },
+    { service: "tinycloud.encryption", path: encryptionNetworkId, actions: ["network.create"] },
   ],
-};
+});
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -67,7 +68,9 @@ async function probe(name: string, expected: string, run: () => Promise<unknown>
 }
 
 async function main(): Promise<void> {
-  const owner = new TinyCloudNode({ privateKey: generatePrivateKey(), host, prefix: "probe.owner", autoCreateSpace: true, manifest: OWNER_MANIFEST });
+  const ownerKey = generatePrivateKey();
+  const ownerNetworkId = `urn:tinycloud:encryption:did:pkh:eip155:1:${privateKeyToAccount(ownerKey).address}:default`;
+  const owner = new TinyCloudNode({ privateKey: ownerKey, host, prefix: "probe.owner", autoCreateSpace: true, manifest: ownerManifest(ownerNetworkId) });
   const backendKey = generatePrivateKey();
   const backendDid = `did:pkh:eip155:1:${privateKeyToAccount(backendKey).address.toLowerCase()}`;
   const backend = new TinyCloudNode({ privateKey: backendKey, host, prefix: "probe.backend", autoCreateSpace: false });
@@ -87,6 +90,8 @@ async function main(): Promise<void> {
     const chainId = session?.chainId;
     if (!session || !ownerAddress || chainId === undefined) throw new Error("owner session has no address or chain");
     spaceId = await owner.ensureOwnedSpaceHosted("applications");
+    await owner.ensureEncryptionNetwork("default");
+    console.log(`PROBE owner encryption network create: ok -> networkId=${ownerNetworkId}`);
     const space = owner.space(spaceId);
 
     const toPermissions = (resources: readonly Resource[]): PermissionEntry[] =>
@@ -168,6 +173,10 @@ async function main(): Promise<void> {
     await probe("node requests kv.get prefix requestsX", "REFUSED", () => requestsRaw.kv.get("../requestsX/a"));
     await probe("node jobs kv.put prefix jobs-evil", "REFUSED", () => jobsRaw.kv.put("../jobs-evil/a", {}));
     await probe("node jobs kv.get prefix requests", "REFUSED", () => jobsRaw.kv.get(`../requests/${randomUUID()}`));
+    await probe("node requests kv.get pct-encoded threads seed", "REFUSED", () => requestsRaw.kv.get("%2e%2e/threads/probe-seed"));
+    await probe("node requests kv.get double-slash threads seed", "REFUSED", () => requestsRaw.kv.get("/../threads/probe-seed"));
+    await probe("node jobs kv.get traversal connectors seed", "REFUSED", () => jobsRaw.kv.get("../connectors/probe-seed"));
+    await probe("node jobs kv.get pct-encoded connectors seed", "REFUSED", () => jobsRaw.kv.get("%2e%2e/connectors/probe-seed"));
 
     const otherSpace = (name: string) => spaceId.replace(/applications$/, name);
     await probe("node default-space kv.get", "REFUSED", async () =>
@@ -175,7 +184,18 @@ async function main(): Promise<void> {
     await probe("node secrets-space kv.get", "REFUSED", async () =>
       (await accessFor(mainPortable, EXO_REQUESTS_PREFIX, ["tinycloud.kv/get"], otherSpace("secrets"))).kv.get("probe-x"));
     await probe("node sql db query under exo grant", "REFUSED", () => access.sql.db(CONNECTORS_SQL_DB_NAME).query("SELECT 1", []));
-    console.log("PROBE node encryption: NOT RUN -> no encryption probe written");
+    const decryptUrl = `${host}/encryption/networks/${encodeURIComponent(ownerNetworkId)}/decrypt`;
+    await probe("node encryption decrypt under exo grant", "REFUSED", async () => {
+      const response = await fetch(decryptUrl, {
+        method: "POST",
+        headers: { Authorization: verdict.verified.authorization, "Content-Type": "application/json" },
+        body: "{}",
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status} ${(await response.text()).slice(0, 80)}`);
+      return response.json();
+    });
+    await probe("node secrets vault kv.get under exo grant", "REFUSED", async () =>
+      (await accessFor(mainPortable, "vault/secrets/probe-secret", ["tinycloud.kv/get"], otherSpace("secrets"))).kv.get("probe-secret"));
 
     const jobsGetOnly = await accessFor(await mint([{ path: EXO_JOBS_PREFIX, actions: ["tinycloud.kv/get"] }]), EXO_JOBS_PREFIX, ["tinycloud.kv/get"]);
     await probe("node jobs-get-only kv.get seeded job", "ALLOWED", () => jobsGetOnly.kv.get(JOB.slice(EXO_JOBS_PREFIX.length)));
