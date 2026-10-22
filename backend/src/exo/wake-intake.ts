@@ -151,9 +151,9 @@ export class WakeQueue {
       const [next] = this.pendingByOwner.get(owner)!.values();
       this.unlink(owner, next.requestId);
       this.busyOwners.add(owner);
-      const started: Promise<void> = (async () => {
-        await next.run();
-      })()
+      // The run starts on a macrotask so `offer` returns, and the route answers 202, before any port work runs.
+      const started: Promise<void> = new Promise<void>((resolve) => setImmediate(resolve))
+        .then(() => next.run())
         .catch(() => console.error("[exo] wake not recorded"))
         .then(() => {
           this.busyOwners.delete(owner);

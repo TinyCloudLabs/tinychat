@@ -25,6 +25,17 @@ describe("WakeQueue", () => {
     expect(order).toEqual(["a1", "b1", "a2", "a3"]);
   });
 
+  test("offer returns before the port runs: the run starts on a later macrotask, not inside offer", async () => {
+    const queue = new WakeQueue({ concurrency: 1 });
+    let started = false;
+    queue.offer("a", "a1", async () => {
+      started = true;
+    });
+    expect(started).toBe(false);
+    await queue.idle();
+    expect(started).toBe(true);
+  });
+
   test("dedupes on (owner, request id): repeated offers of one pair occupy one slot", async () => {
     const queue = new WakeQueue({ concurrency: 1 });
     const blocker = gated();
