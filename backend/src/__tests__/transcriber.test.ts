@@ -184,6 +184,23 @@ describe("POST /api/transcriber/meetings", () => {
     expect(h.calls).toEqual([]);
   });
 
+  test("reads pasted link forms and sends ptx the meeting link it recognises", async () => {
+    const cases: Array<[string, string]> = [
+      ["https://google.com/meet/ofj-ahew-paa", "https://meet.google.com/ofj-ahew-paa"],
+      ["meet.google.com/wmq-jkvr-rmi", "https://meet.google.com/wmq-jkvr-rmi"],
+      ["abc-defg-hij", "https://meet.google.com/abc-defg-hij"],
+      ["https://www.google.com/url?q=https://meet.google.com/kmn-pqrs-tuv&sa=D", "https://meet.google.com/kmn-pqrs-tuv"],
+    ];
+    const h = harness();
+    await withServer(h.app, async (base) => {
+      for (const [pasted] of cases) {
+        expect((await call(base, "/api/transcriber/meetings", "POST", { meeting_url: pasted })).status).toBe(201);
+      }
+    });
+    const created = h.calls.filter(c => c.method === "createMeeting");
+    expect(created.map(c => (c.args[0] as { meeting_url: string }).meeting_url)).toEqual(cases.map(([, sent]) => sent));
+  });
+
   test("creates upstream with the address in metadata, indexes it, returns 201", async () => {
     const h = harness();
     await withServer(h.app, async (base) => {

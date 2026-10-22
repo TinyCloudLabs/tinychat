@@ -202,3 +202,6 @@ export {
   type StitchSeam,
   type SourceRef,
 } from "./meeting-stitch.js";
+
+// ── Notetaker meeting links ──────────────────────────────────────────
+export { meetingLinkFromInput } from "./meeting-link.js";

@@ -22,6 +22,7 @@ import {
   describeFailure,
   getOrCreateSendIntent,
   meetingTitle,
+  normalizeMeetingUrl,
   statusLabel,
   type TranscriberViewProps,
 } from "./TranscriberSection";
@@ -406,6 +407,17 @@ describe("TranscriberView", () => {
     expect(describeFailure({ status: "retryable", httpStatus: 429, code: "capacity_exhausted", message })).toBe(message);
     expect(describeFailure({ status: "retryable", httpStatus: 429, code: "capacity_exhausted" })).toContain("notetakers are busy");
     expect(describeFailure({ status: "retryable", httpStatus: 429, code: "upstream_rate_limited" })).toContain("temporarily unavailable");
+  });
+});
+
+describe("pasted meeting links", () => {
+  test("loosely pasted forms of one Meet link share the dedupe key of the link ptx joins", () => {
+    const key = normalizeMeetingUrl("https://meet.google.com/ofj-ahew-paa");
+    expect(key).toBe("https://meet.google.com/ofj-ahew-paa");
+    for (const pasted of ["https://google.com/meet/ofj-ahew-paa", "meet.google.com/ofj-ahew-paa", "ofj-ahew-paa", "Join: meet.google.com/ofj-ahew-paa"]) {
+      expect(normalizeMeetingUrl(pasted)).toBe(key);
+    }
+    expect(normalizeMeetingUrl("not a meeting link")).toBeNull();
   });
 });
 
