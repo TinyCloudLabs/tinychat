@@ -67,6 +67,14 @@ async function probe(name: string, expected: string, run: () => Promise<unknown>
   console.log(`PROBE ${name}: ${expected} -> ${await observe(run)}`);
 }
 
+type ResultLike<T> = { ok: true; data: T } | { ok: false; error: { code: string; message: string } };
+
+// Throws the SDK Result error with its message, so the probe line shows the refusal reason, not only the code.
+function unwrap<T>(result: ResultLike<T>): T {
+  if (!result.ok) throw new Error(`${result.error.code}: ${result.error.message}`);
+  return result.data;
+}
+
 async function main(): Promise<void> {
   const ownerKey = generatePrivateKey();
   const ownerNetworkId = `urn:tinycloud:encryption:did:pkh:eip155:1:${privateKeyToAccount(ownerKey).address}:default`;
@@ -184,15 +192,15 @@ async function main(): Promise<void> {
     await probe("node secrets-space kv.get", "REFUSED", async () =>
       (await accessFor(mainPortable, EXO_REQUESTS_PREFIX, ["tinycloud.kv/get"], otherSpace("secrets"))).kv.get("probe-x"));
     await probe("node sql db query under exo grant", "REFUSED", () => access.sql.db(CONNECTORS_SQL_DB_NAME).query("SELECT 1", []));
-    const decryptUrl = `${host}/encryption/networks/${encodeURIComponent(ownerNetworkId)}/decrypt`;
-    await probe("node encryption decrypt under exo grant", "REFUSED", async () => {
-      const response = await fetch(decryptUrl, {
-        method: "POST",
-        headers: { Authorization: verdict.verified.authorization, "Content-Type": "application/json" },
-        body: "{}",
-      });
-      if (!response.ok) throw new Error(`HTTP ${response.status} ${(await response.text()).slice(0, 80)}`);
-      return response.json();
+    const plaintext = new TextEncoder().encode("tc1013-probe-plaintext");
+    const envelope = unwrap(await owner.encryption.encryptToNetwork(ownerNetworkId, plaintext));
+    console.log("PROBE owner encrypt for decrypt rows: ok -> envelope");
+    await probe("node encryption decrypt under exo grant", "REFUSED", async () =>
+      unwrap(await backend.encryption.decryptEnvelope(envelope, { proofs: [verdict.verified.cid] })));
+    await probe("node encryption decrypt control (owner)", "ALLOWED", async () => {
+      const data = unwrap(await owner.encryption.decryptEnvelope(envelope, { proofs: [] }));
+      if (new TextDecoder().decode(data) !== "tc1013-probe-plaintext") throw new Error("plaintext mismatch");
+      return data;
     });
     await probe("node secrets vault kv.get under exo grant", "REFUSED", async () =>
       (await accessFor(mainPortable, "vault/secrets/probe-secret", ["tinycloud.kv/get"], otherSpace("secrets"))).kv.get("probe-secret"));
