@@ -12,9 +12,9 @@ Body: exactly `{"owner": "<0x address>", "requestId": "<id>"}`. Extra properties
 | --- | --- | --- |
 | Accepted (new or replayed job) | 202 | `{"jobId","state","code","statusKey"}` |
 | Any refusal before verification: malformed or oversized body, unknown owner, no or expired grant, missing or invalid request record | 409 | `{"error":"exo_sync_unavailable"}` (identical for all of these) |
-| Per-IP limit (120/min) or per-owner limit (30/min) | 429 | `{"error":"rate_limited"}` with `Retry-After` |
+| Per-IP limit (120/min), per-owner limit (30/min), or attach limit (more than 20 wakes on one active run) | 429 | `{"error":"rate_limited"}` with `Retry-After` (60 s for the attach limit) |
 
-Every 409 is the same response by design, so the route does not reveal which check failed.
+Every pre-verification refusal returns the same 409, so the route does not reveal which check failed. The connector gate under "Connector gate" is the only exception, and it runs after verification.
 
 ## Request records
 
@@ -27,10 +27,22 @@ Capabilities: `sync-meetings`, `sync-fireflies`, `sync-google`.
 Stored at `xyz.tinycloud.tinychat/exo/v1/jobs/<requestId>`, created put-if-absent (`ifNoneMatch: "*"`). A replayed `requestId` returns the existing job.
 
 ```
-{v:1, jobId, capability, state: pending|running|done|error, message?, code?, createdAt, updatedAt}
+{v:1, jobId, capability, state: pending|running|done|error, code, message, createdAt, updatedAt}
 ```
 
+`code` is one of `accepted`, `running`, `done`, `unavailable`. `message` is the fixed text for that code. `jobId` equals the request id.
+
 Job records hold no titles, meeting ids, or transcript text. Records older than 30 days are removed by a sweep. The sweep is injectable; scheduling it is not part of this change.
+
+## Coalescing and active runs
+
+Starts for one owner and capability are checked and recorded in a per-owner, in-process lane. At most one run is active per owner and capability.
+
+- A wake that arrives while a run is active attaches. It gets its own job record, mirroring the run's `state`, `code`, and `message`, and returns 202. A run takes at most 20 attached wakes. The 21st gets 429 `rate_limited` with `Retry-After: 60`.
+- Attached wakes do not consume the cooldown or the daily cap.
+- A run that has not reported within 30 minutes is settled as `error` with code `unavailable` and released, so it cannot hold the capability.
+- Coalescing is per capability. `sync-meetings` and `sync-fireflies` wakes for the same source do not coalesce with each other.
+- The lane holds for a single server process only. Multiple instances need the durable ledger with compare-and-set (S4).
 
 ## Grant shape
 
@@ -53,7 +65,7 @@ Cooldown and daily-count state is held in process memory. It resets on restart. 
 
 ## Connector gate
 
-`sync-fireflies` and `sync-google` require their connector to be on for the owner. `sync-meetings` has no connector gate.
+`sync-fireflies` requires the Fireflies connector on for the owner. `sync-google` requires the Google connector on. `sync-meetings` requires either one on. A refusal returns 409 `connector_off` with the source and frontend link. This gate runs after grant and request verification, so it is the one 409 that differs from the uniform pre-verification 409.
 
 ## Current wiring
 
