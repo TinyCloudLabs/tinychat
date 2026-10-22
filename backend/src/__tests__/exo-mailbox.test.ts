@@ -338,3 +338,20 @@ describe("Exo flag parsing", () => {
     expect(warnings).toHaveLength(2);
   });
 });
+
+describe("Exo sync-meetings gate", () => {
+  test("sync-meetings is refused with connector_off when no source is on", async () => {
+    const h = harness({ connectorOn: false });
+    h.seed("req-1", "sync-meetings");
+    expect(await h.wake("req-1")).toEqual({ status: 409, body: { error: "connector_off", link: ORIGIN } });
+    expect(h.jobs.size).toBe(0);
+    expect(h.runs.length).toBe(0);
+  });
+
+  test("sync-meetings starts one job when a source is on", async () => {
+    const h = harness({ connectorOn: true });
+    h.seed("req-1", "sync-meetings");
+    expect((await h.wake("req-1")).status).toBe(202);
+    expect(h.runs.length).toBe(1);
+  });
+});

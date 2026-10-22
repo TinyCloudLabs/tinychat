@@ -18,6 +18,8 @@ export function createExoMailboxRouter(
     async (req, res, next) => {
       try {
         const result = await handleWake(ports, req.body);
+        // Every 429 carries Retry-After in seconds: the same value as the body's retryAfterSec.
+        if (result.status === 429) res.setHeader("Retry-After", String(result.body.retryAfterSec));
         res.status(result.status).json(result.body);
       } catch (error) {
         next(error);

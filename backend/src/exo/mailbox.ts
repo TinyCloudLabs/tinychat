@@ -27,15 +27,15 @@ const DAY_MS = 24 * HOUR_MS;
 const OWNER_RE = /^0x[0-9a-fA-F]{40}$/;
 const REQUEST_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 
-const SOURCE_BY_CAPABILITY: Record<ExoCapability, ConnectorSource | undefined> = {
-  "sync-meetings": undefined,
-  "sync-fireflies": "fireflies",
-  "sync-google": "google",
+const SOURCES_BY_CAPABILITY: Record<ExoCapability, readonly ConnectorSource[]> = {
+  "sync-meetings": ["fireflies", "google"],
+  "sync-fireflies": ["fireflies"],
+  "sync-google": ["google"],
 };
 
 type CooldownRule = { minIntervalMs: (hasFirefliesWebhook: boolean) => number; dailyCap: number };
 
-/** TC-1013 D9. `sync-meetings` has no D9 entry, so no cooldown or cap is applied to it here. */
+/** TC-1013 D9, per source. `sync-meetings` has no entry: each source a meetings run uses is limited on its own. */
 const COOLDOWN_RULES: Partial<Record<ExoCapability, CooldownRule>> = {
   "sync-fireflies": { minIntervalMs: (webhook) => (webhook ? 6 * HOUR_MS : HOUR_MS), dailyCap: 150 },
   "sync-google": { minIntervalMs: () => 30 * MINUTE_MS, dailyCap: 300 },
@@ -202,9 +202,18 @@ export async function handleWake(ports: ExoMailboxPorts, body: unknown): Promise
   const executor = ports.executor;
   if (!executor) return unavailable();
 
-  const source = SOURCE_BY_CAPABILITY[capability];
-  if (source && !(await ports.connectors.isOn(owner, source))) {
-    return { status: 409, body: { error: "connector_off", source, link: ports.frontendOrigin } };
+  let anyOn = false;
+  for (const source of SOURCES_BY_CAPABILITY[capability]) {
+    if (await ports.connectors.isOn(owner, source)) {
+      anyOn = true;
+      break;
+    }
+  }
+  if (!anyOn) {
+    if (capability === "sync-meetings") {
+      return { status: 409, body: { error: "connector_off", link: ports.frontendOrigin } };
+    }
+    return { status: 409, body: { error: "connector_off", source: SOURCES_BY_CAPABILITY[capability][0], link: ports.frontendOrigin } };
   }
 
   const now = ports.now();
