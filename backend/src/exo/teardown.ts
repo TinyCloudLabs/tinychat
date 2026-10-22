@@ -13,8 +13,8 @@ export interface ExoTeardownDeps {
 }
 
 /**
- * Removes one owner's Exo rows: owner-space requests and jobs, backend-space mirror jobs, and
- * durable ledger rows. Idempotent: missing keys are not errors, so a retry after a partial failure
+ * Removes one owner's Exo rows: owner-space requests and jobs, backend-space mirror jobs, durable
+ * ledger rows, and source locks. Idempotent: missing keys are not errors, so a retry after a partial failure
  * finishes the work. Does not remove the grant record; the caller removes it last.
  *
  * Owner-space rows are reachable only through an activated grant. When no grant can be activated
@@ -35,6 +35,7 @@ export async function clearExoOwnerState(
   }
   await deleteUnder(deps.kv, `${EXO_MIRROR_JOBS_PREFIX}${owner}/`);
   await deleteUnder(deps.kv, `${EXO_NAMESPACE}/ledger/${owner}/`);
+  await deleteUnder(deps.kv, `${EXO_NAMESPACE}/source-lock/${owner}/`);
   return { ownerSpace: grant !== null };
 }
 

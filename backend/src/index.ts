@@ -769,6 +769,11 @@ async function main() {
         ...(process.env.CONNECTOR_WEBHOOK_PUBLIC_ORIGIN
           ? { publicOrigin: process.env.CONNECTOR_WEBHOOK_PUBLIC_ORIGIN }
           : {}),
+        // DELETE /config disconnects every source, so each source's exo ledger rows are cleared
+        // best-effort. Wired only with the exo flag on: a flag-off disconnect makes no exo call.
+        ...(exoCapabilitiesEnabled(process.env)
+          ? { exo: { clearSource: (source: string, address: string) => clearExoSourceState(exoBackendKv, address, source) } }
+          : {}),
         // OPTION C — no `delegations` collaborator: `DELETE /config` tears down the connector's
         // own state only. It must not remove or evict the app's unrelated backend delegation.
         // §5.4 trigger 3 (user visit) — the path that works when the STORED delegation is dead

@@ -667,6 +667,7 @@ const privateCloud = load("./services/private-cloud-transcription.ts");
 const hosted = load("./services/assemblyai-hosted.ts");
 const transcription = load("./services/transcription-api.ts");
 const google = load("./services/google-oauth.ts");
+const credentialStore = load("./services/credential-store.ts");
 const { createApiBodyParser } = load("./body-parsing.ts");
 const { createTranscriberWebhookRouter } = load("./routes/transcriber-webhook.ts");
 const { createGoogleOAuthRouter, normalizeAppOrigin } = load("./routes/google-oauth.ts");
@@ -696,6 +697,7 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
   billingEvent?: (body: Buffer) => void | Promise<void>;
   onExit?: (code: number) => void;
   requestHandler?: express.RequestHandler;
+  capture?: (name: string, config: Record<string, unknown>) => void;
   processLogSink?: boolean;
 } = {}): Promise<Boot> {
   const env: Record<string, string | undefined> = { ...envBase, ...patch };
@@ -780,7 +782,18 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
       },
       WriteGovernor: class {},
     },
-    "./services/calendar-autojoin-store.js": { TenantCoordinator: class {} },
+    "./services/calendar-autojoin-store.js": {
+      TenantCoordinator: class {},
+      kvCalendarAutojoinStores: () => ({ request: {}, worker: { listConnections: async () => [] } }),
+    },
+    "./services/credential-store.js": {
+      validateCredentialCustodyConfig: (env: Record<string, string | undefined>) => credentialStore.validateCredentialCustodyConfig(env),
+      CredentialStore: class {},
+      KvCredentialRowStore: class {},
+    },
+    "./services/calendar-autojoin-connection.js": { CalendarAutojoinConnection: class {
+      constructor(config: Record<string, unknown>) { options.capture?.("calendar", config); }
+    } },
     "./routes/billing-webhook.js": { createBillingWebhookHandler: () => async (req: express.Request, res: express.Response) => {
       if (!Buffer.isBuffer(req.body)) return res.sendStatus(415);
       const signature = createHmac("sha256", "isolated-stripe-key").update(req.body).digest("hex");
@@ -800,7 +813,10 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
       },
     },
     "./services/webhook-tokens.js": { assertStrongSecret: () => {}, WebhookTokenService: class {} },
-    "./routes/delegations.js": { createDelegationRouter: () => router() },
+    "./routes/delegations.js": { createDelegationRouter: (config: Record<string, unknown>) => {
+      options.capture?.("delegation", config);
+      return router();
+    } },
     "./routes/manifest.js": { createManifestRouter: () => {
       const result = express.Router();
       if (options.requestHandler) result.get("/canary/:id", options.requestHandler);
@@ -813,7 +829,10 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
     // TC-1013 S4b: the real flag parser reads the harness env, so the flag is tested, not stubbed.
     "./exo/mailbox.js": { exoCapabilitiesEnabled: (env: Record<string, string | undefined>) => exoMailbox.exoCapabilitiesEnabled(env, () => {}) },
     // TC-1013 S4b: the real grant router, so a flag-on request reaches auth instead of 404.
-    "./routes/exo-grant.js": { createExoGrantRouter: (config: Record<string, unknown>) => exoGrant.createExoGrantRouter({ ...config, node: { computeDelegationCid: () => {} } } as never) },
+    "./routes/exo-grant.js": { createExoGrantRouter: (config: Record<string, unknown>) => {
+      options.capture?.("exoGrant", config);
+      return exoGrant.createExoGrantRouter({ ...config, node: { computeDelegationCid: () => {} } } as never);
+    } },
     // TC-1013 S4b: owner teardown wiring builds the grant opener at startup, outside the flag.
     "./exo/stores.js": { createOwnerGrantOpener: () => async () => null, createExoStorePorts: () => ({}) },
     // TC-1013 S4b: flag-on startup builds these; this test only checks the grant mount.
@@ -832,7 +851,7 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
     "./services/connector-queue.js": { ConnectorQueue: class {} },
     "./services/backend-storage-lane.js": { BackendStorageLane: class {} },
     "./services/transcriber-index.js": { KvJsonKv: class {}, KvTranscriberIndexStore: class {} },
-    "./services/google-calendar.js": { ExternalOperationLimiter: class {} },
+    "./services/google-calendar.js": { ExternalOperationLimiter: class {}, GoogleCalendarClient: class {} },
     "./services/calendar-autojoin-worker.js": { CalendarAutojoinWorker: class { start() {} stop() { return stop.calendar?.() ?? Promise.resolve(); } } },
     "./services/ingest-instance.js": { IngestInstanceSupervisor: class { start() {} stop() { return stop.ingest?.() ?? Promise.resolve(); } } },
     "./routes/chat.js": { createChatRouter: router, defaultModel: "test-model" },
@@ -945,6 +964,27 @@ describe("backend entry-point HTTP and lifecycle guards", () => {
     }
     const on = await bootIndex({ EXO_CAPABILITIES_ENABLED: "true" });
     expect((await post(on.url!, "/api/exo/v1/grant", "{}")).status).toBe(401);
+  });
+
+  test("owner Exo teardown is wired to the delegation, grant and calendar routers only with the exo flag on", async () => {
+    const captured: Record<string, Record<string, unknown>> = {};
+    const capture = (name: string, config: Record<string, unknown>) => { captured[name] = config; };
+    const googleEnv = {
+      GOOGLE_MEET_OAUTH_ENABLED: "true", GOOGLE_OAUTH_CLIENT_ID: "test-client-id",
+      GOOGLE_OAUTH_CLIENT_SECRET: "test-client-secret", GOOGLE_OAUTH_REDIRECT_URI: "https://app.invalid/callback",
+      TRANSCRIPTION_API_URL: "https://transcriber.invalid", TRANSCRIPTION_API_KEY: "test-api-key",
+      CONNECTOR_CREDENTIAL_MASTER: randomBytes(32).toString("hex"),
+    };
+    const on = await bootIndex({ ...googleEnv, EXO_CAPABILITIES_ENABLED: "true" }, { capture });
+    expect(on.exits).toEqual([]);
+    expect(typeof captured.delegation?.teardownExoOwner).toBe("function");
+    expect(typeof captured.exoGrant?.teardownExoOwner).toBe("function");
+    expect(typeof captured.calendar?.teardownExoOwner).toBe("function");
+    for (const key of Object.keys(captured)) delete captured[key];
+    const off = await bootIndex(googleEnv, { capture });
+    expect(off.exits).toEqual([]);
+    expect(captured.delegation?.teardownExoOwner).toBeUndefined();
+    expect(captured.calendar?.teardownExoOwner).toBeUndefined();
   });
 
   test("PTX webhook is dark by default and fails closed when armed without its receiver secret", async () => {
