@@ -6,7 +6,8 @@ import { historyPrefetch } from "./historyPrefetch";
 import { MEMORY_TEMPLATE } from "./memory";
 import type { CompactionCheckpoint } from "../chat/compaction";
 import { THREADS_SQL_DB_NAME } from "./threadKeys";
-import { deleteShareRecordsForThread } from "./shareRecords";
+import { CHAT_SHARING_PAUSED } from "./chatSharing";
+import { cleanupShareRecordsAfterDelete } from "./shareRecords";
 
 // ── Storage layout ───────────────────────────────────────────────────
 //
@@ -1499,7 +1500,8 @@ export async function deleteThread(tcw: TinyCloudWeb, id: string): Promise<void>
     { sql: "DELETE FROM threads WHERE id = ?", params: [id] },
   ]);
   if (!res.ok) throw new SqlOpError(res.error, "deleteThread", scope);
-  await deleteShareRecordsForThread(tcw, id);
+  // Share records exist only once sharing is enabled; while paused, a delete makes no share call.
+  if (!CHAT_SHARING_PAUSED) cleanupShareRecordsAfterDelete(tcw, id);
   removeCacheEntry(tcw, id);
   // Evict from the cache AND drop it from the prefetch queue (no point fetching
   // a deleted thread). Converge the sidebar.

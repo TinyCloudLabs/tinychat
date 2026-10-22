@@ -83,7 +83,9 @@ const MESSAGE_ROWS: Record<string, string[]> = {
 // Fake SDK surface: KV is an in-memory map, sharing records each grant request.
 // Rows for settings, memory and compactions exist in the fake database, so a
 // snapshot that read them would contain the markers.
-function fakeChatTcw(options: { failGrant?: boolean; failRevoke?: boolean; failDelete?: boolean } = {}) {
+function fakeChatTcw(
+  options: { failGrant?: boolean; failRevoke?: boolean; failDelete?: boolean; listFails?: boolean; listHangs?: boolean } = {},
+) {
   const kv = new Map<string, string>();
   const grants: Array<{ path: string; actions: string[]; expiry: Date }> = [];
   const revoked: string[] = [];
@@ -119,10 +121,11 @@ function fakeChatTcw(options: { failGrant?: boolean; failRevoke?: boolean; failD
         kv.delete(key);
         return { ok: true, data: {} };
       },
-      list: async ({ path }: { path: string }) => ({
-        ok: true,
-        data: { keys: [...kv.keys()].filter((key) => key.startsWith(path)) },
-      }),
+      list: async ({ path }: { path: string }) => {
+        if (options.listHangs) return new Promise<never>(() => {});
+        if (options.listFails) return { ok: false, error: { message: "Controlled list failure" } };
+        return { ok: true, data: { keys: [...kv.keys()].filter((key) => key.startsWith(path)) } };
+      },
     },
     sharing: {
       generate: async (args: { path: string; actions: string[]; expiry: Date }) => {
@@ -608,4 +611,54 @@ describe("tinychat share links", () => {
     expect(await listOwnedTinychatShares(chat.tcw)).toEqual([]);
     expect(listStoredTinychatShares()).toEqual([]);
   });
+
+  it("deleting a chat removes that chat's share records and leaves other shares alone", async () => {
+    const { createTinychatShareLink } = await loadShareModule();
+    const { deleteThread } = await import("./threadStore");
+    installStorage();
+    const chat = fakeChatTcw();
+    const mine = await createTinychatShareLink(chat.tcw, "thread-a");
+    const other = await createTinychatShareLink(chat.tcw, "thread-b");
+
+    await deleteThread(chat.tcw, "thread-a");
+    await flushCleanup();
+
+    expect(chat.revoked).toEqual(["cid-sdk-token-1"]);
+    expect(chat.deleted).toContain(mine.payload.key);
+    expect(chat.deleted).not.toContain(other.payload.key);
+    expect(chat.kv.has(other.payload.key)).toBe(true);
+  });
+
+  it("a hanging share cleanup does not hold up deleting the chat", async () => {
+    const { createTinychatShareLink } = await loadShareModule();
+    const { deleteThread } = await import("./threadStore");
+    installStorage();
+    const flags = { listHangs: false };
+    const chat = fakeChatTcw(flags);
+    await createTinychatShareLink(chat.tcw, "thread-a");
+
+    flags.listHangs = true;
+    await expect(deleteThread(chat.tcw, "thread-a")).resolves.toBeUndefined();
+    expect(chat.revoked).toEqual([]);
+  });
+
+  it("a failing share cleanup does not fail the chat delete", async () => {
+    const { createTinychatShareLink } = await loadShareModule();
+    const { deleteThread } = await import("./threadStore");
+    installStorage();
+    const flags = { listFails: false };
+    const chat = fakeChatTcw(flags);
+    await createTinychatShareLink(chat.tcw, "thread-a");
+
+    flags.listFails = true;
+    await expect(deleteThread(chat.tcw, "thread-a")).resolves.toBeUndefined();
+    await flushCleanup();
+    expect(chat.revoked).toEqual([]);
+    expect(chat.deleted).toEqual([]);
+  });
 });
+
+// Lets the background share cleanup finish; its fakes resolve within microtasks.
+function flushCleanup(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}

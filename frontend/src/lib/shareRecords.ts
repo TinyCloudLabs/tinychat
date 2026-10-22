@@ -99,3 +99,24 @@ export async function deleteShareRecordsForThread(tcw: TinyCloudWeb, threadId: s
     }
   }
 }
+
+// Upper bound on one chat delete's share cleanup before it is abandoned.
+const SHARE_CLEANUP_TIMEOUT_MS = 5_000;
+
+// Starts share cleanup for a deleted chat without waiting on it, so the delete never waits on it.
+// Abandoned after SHARE_CLEANUP_TIMEOUT_MS. A failure or timeout is logged without thread or share detail.
+export function cleanupShareRecordsAfterDelete(tcw: TinyCloudWeb, threadId: string): void {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<false>((resolve) => {
+    timer = setTimeout(() => resolve(false), SHARE_CLEANUP_TIMEOUT_MS);
+  });
+  const finished = deleteShareRecordsForThread(tcw, threadId).then(() => true);
+  void Promise.race([finished, timedOut])
+    .then(
+      (done) => {
+        if (!done) console.warn("Share cleanup after a chat delete did not finish in time.");
+      },
+      () => console.warn("Share cleanup after a chat delete failed."),
+    )
+    .finally(() => clearTimeout(timer));
+}
