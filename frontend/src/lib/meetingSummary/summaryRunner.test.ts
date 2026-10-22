@@ -6,6 +6,7 @@ import { makeFakeTinyCloud, type FakeTinyCloud } from "../../../../test/connecto
 import { combineMeetings } from "@/lib/connectors/combinedMeetingStore";
 import { _resetConnectorSchemaMemoForTests } from "@/lib/connectors/connectorStore";
 import type { CallFailure } from "./generateSummary";
+import { chatComplete } from "./summaryChat";
 import { createSummaryRunner, storedSummaryView, type SummaryRunner, type SummaryView } from "./summaryRunner";
 
 const GOOD = "OVERVIEW:\nThe team agreed to ship the beta.\nACTION ITEMS:\n- Ana: freeze the build\n- Ben: write the notes";
@@ -112,6 +113,26 @@ describe("a combine's summary", () => {
     reply = () => "HACKED";
     runner.start(COMBINED_ROW_ID, { replacing: false });
     await done();
+    expect(view()).toEqual({ status: "unavailable", reason: "failed" });
+    expect(writes()).toEqual([]);
+  });
+
+  test("a model reply with no content (finish_reason length, reasoning only) is unavailable and writes nothing", async () => {
+    const realFetch = globalThis.fetch;
+    const sessionStore = { getToken: () => "token", isExpired: () => false, clear: () => {} } as never;
+    globalThis.fetch = (async () => new Response(
+      'data: {"choices":[{"delta":{"reasoning":"still thinking"},"finish_reason":null}]}\n\n' +
+        'data: {"choices":[{"delta":{},"finish_reason":"length"}]}\n\n' +
+        "data: [DONE]\n\n",
+      { status: 200, headers: { "content-type": "text/event-stream" } },
+    )) as typeof fetch;
+    try {
+      runner = createSummaryRunner({ space: f.tcw, classify, complete: chatComplete("http://backend.test", sessionStore) });
+      runner.start(COMBINED_ROW_ID, { replacing: false });
+      await done();
+    } finally {
+      globalThis.fetch = realFetch;
+    }
     expect(view()).toEqual({ status: "unavailable", reason: "failed" });
     expect(writes()).toEqual([]);
   });

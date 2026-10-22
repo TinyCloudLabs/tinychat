@@ -8,8 +8,8 @@ import { completeChat, emitReceipt } from "@/lib/chatApi";
 
 import type { GenerateDeps } from "./generateSummary";
 
-/** The model that writes combined-meeting summaries. Provisional: confirmed by measurement, see TC-1686. */
-export const SUMMARY_MODEL = "qwen/qwen3.6-35b-a3b";
+/** The model that writes combined-meeting summaries. Chosen for a complete `content` reply within the output cap: thinking tokens count against that cap, so a model that thinks at length can finish with no content. */
+export const SUMMARY_MODEL = "z-ai/glm-5.2";
 
 export function chatComplete(backendUrl: string, sessionStore: SessionStore): GenerateDeps["complete"] {
   return (messages, { maxTokens, signal }) => {
