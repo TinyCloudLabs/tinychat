@@ -99,18 +99,18 @@ export interface TranscriptSegmentRow {
 // ── Details validation ───────────────────────────────────────────────
 
 type FieldSpec =
-  | { kind: "text"; max: number; nullable: boolean }
+  | { kind: "text"; max: number; nullable: boolean; nonBlank: boolean }
   | { kind: "integer"; nullable: boolean }
   | { kind: "real"; nullable: boolean }
   | { kind: "flag" };
 
-const text = (max: number, nullable = true): FieldSpec => ({ kind: "text", max, nullable });
+const text = (max: number, nullable = true, nonBlank = false): FieldSpec => ({ kind: "text", max, nullable, nonBlank });
 const integer = (nullable = true): FieldSpec => ({ kind: "integer", nullable });
 const real = (nullable = true): FieldSpec => ({ kind: "real", nullable });
 const flag: FieldSpec = { kind: "flag" };
 
 const MEETING_FIELDS: Record<keyof MeetingDetailsRow, FieldSpec> = {
-  id: text(200, false),
+  id: text(200, false, true),
   source: text(100, false),
   source_id: text(500),
   title: text(500),
@@ -130,7 +130,7 @@ const MEETING_FIELDS: Record<keyof MeetingDetailsRow, FieldSpec> = {
 };
 
 const PARTICIPANT_FIELDS: Record<keyof MeetingParticipantRow, FieldSpec> = {
-  meeting_id: text(200, false),
+  meeting_id: text(200, false, true),
   ordinal: integer(false),
   display_name: text(200),
   email: text(320),
@@ -138,18 +138,18 @@ const PARTICIPANT_FIELDS: Record<keyof MeetingParticipantRow, FieldSpec> = {
 };
 
 const KEYWORD_FIELDS: Record<keyof MeetingKeywordRow, FieldSpec> = {
-  meeting_id: text(200, false),
+  meeting_id: text(200, false, true),
   keyword: text(100, false),
 };
 
 const SOURCE_REF_FIELDS: Record<keyof MeetingSourceRefRow, FieldSpec> = {
-  meeting_id: text(200, false),
+  meeting_id: text(200, false, true),
   source: text(100, false),
   source_id: text(500, false),
 };
 
 const CONNECTOR_STATE_FIELDS: Record<keyof ConnectorStateRow, FieldSpec> = {
-  connector_id: text(200, false),
+  connector_id: text(200, false, true),
   last_synced_at: text(100),
   status: text(100),
 };
@@ -183,13 +183,18 @@ function parseRecord<T>(table: string, input: unknown, spec: Record<string, Fiel
         if (value.length > field.max) {
           throw new MeetingDbRowError(table, `field "${name}" exceeds ${field.max} characters`);
         }
+        if (field.nonBlank && value.trim() === "") {
+          throw new MeetingDbRowError(table, `field "${name}" must not be blank`);
+        }
         break;
       case "integer":
-        if (!Number.isSafeInteger(value)) throw new MeetingDbRowError(table, `field "${name}" must be an integer`);
+        if (!Number.isSafeInteger(value) || (value as number) < 0) {
+          throw new MeetingDbRowError(table, `field "${name}" must be a non-negative integer`);
+        }
         break;
       case "real":
-        if (typeof value !== "number" || !Number.isFinite(value)) {
-          throw new MeetingDbRowError(table, `field "${name}" must be a finite number`);
+        if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+          throw new MeetingDbRowError(table, `field "${name}" must be a finite, non-negative number`);
         }
         break;
       case "flag":
@@ -203,7 +208,15 @@ function parseRecord<T>(table: string, input: unknown, spec: Record<string, Fiel
 
 /** Validates one `meeting` row for the details database. */
 export function parseDetailsRow(input: unknown): MeetingDetailsRow {
-  return parseRecord<MeetingDetailsRow>("meeting", input, MEETING_FIELDS);
+  const row = parseRecord<MeetingDetailsRow>("meeting", input, MEETING_FIELDS);
+  if (
+    row.transcript_start_secs !== null &&
+    row.transcript_end_secs !== null &&
+    row.transcript_end_secs < row.transcript_start_secs
+  ) {
+    throw new MeetingDbRowError("meeting", "transcript_end_secs is before transcript_start_secs");
+  }
+  return row;
 }
 
 /** Validates one `meeting_participant` row for the details database. */

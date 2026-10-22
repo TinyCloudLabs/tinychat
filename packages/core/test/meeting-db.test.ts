@@ -130,17 +130,54 @@ describe("schema DDL", () => {
     ).toThrow(/NOT NULL constraint failed/);
   });
 
-  test("details database has no column that could hold content text", () => {
+  // Allowlists: a new column in any table fails here until the design is
+  // changed on purpose. Column order follows the DDL declaration order.
+  test("details database columns match the allowlist exactly", () => {
     const db = openWithSchema(DETAILS_SCHEMA);
-    // Scalar flags and coverage bounds that mention summary/transcript are allowed.
-    const scalarAllowed: Record<string, true> = { has_summary: true, has_transcript: true, transcript_start_secs: true, transcript_end_secs: true };
-    const contentLike = /summary|body|payload|metadata|^text$|^transcript/i;
-    for (const table of tableNames(db)) {
-      for (const column of columnNames(db, table)) {
-        if (scalarAllowed[column]) continue;
-        expect(contentLike.test(column)).toBe(false);
-      }
-    }
+    expect(Object.fromEntries(tableNames(db).map((t) => [t, columnNames(db, t)]))).toEqual({
+      connector_state: ["connector_id", "last_synced_at", "status"],
+      meeting: [
+        "id",
+        "source",
+        "source_id",
+        "title",
+        "started_at",
+        "duration_secs",
+        "meeting_type",
+        "content_kind",
+        "has_summary",
+        "has_transcript",
+        "transcript_start_secs",
+        "transcript_end_secs",
+        "coverage_status",
+        "parent_meeting_id",
+        "created_at",
+        "updated_at",
+        "schema_version",
+      ],
+      meeting_keyword: ["meeting_id", "keyword"],
+      meeting_participant: ["meeting_id", "ordinal", "display_name", "email", "role"],
+      meeting_source_ref: ["meeting_id", "source", "source_id"],
+    });
+    db.close();
+  });
+
+  test("summaries database columns match the allowlist exactly", () => {
+    const db = openWithSchema(SUMMARIES_SCHEMA);
+    expect(Object.fromEntries(tableNames(db).map((t) => [t, columnNames(db, t)]))).toEqual({
+      meeting_action_item: ["meeting_id", "ordinal", "text", "assignee", "due_at", "status"],
+      meeting_summary: ["meeting_id", "summary", "updated_at", "revision"],
+    });
+    db.close();
+  });
+
+  test("transcripts database columns match the allowlist exactly", () => {
+    const db = openWithSchema(TRANSCRIPTS_SCHEMA);
+    expect(Object.fromEntries(tableNames(db).map((t) => [t, columnNames(db, t)]))).toEqual({
+      meeting_transcript: ["meeting_id", "format", "language", "revision", "updated_at"],
+      transcript_segment: ["meeting_id", "ordinal", "speaker", "start_secs", "end_secs", "text"],
+    });
+    db.close();
   });
 });
 
@@ -191,6 +228,45 @@ describe("details row validation", () => {
   test("non-object input is rejected", () => {
     expect(() => parseDetailsRow(null)).toThrow(/expected a plain object/);
     expect(() => parseDetailsRow([VALID_MEETING])).toThrow(/expected a plain object/);
+  });
+
+  test("rejects a negative duration", () => {
+    expect(() => parseDetailsRow({ ...VALID_MEETING, duration_secs: -1 })).toThrow(/non-negative integer/);
+  });
+
+  test("rejects negative transcript bounds", () => {
+    expect(() => parseDetailsRow({ ...VALID_MEETING, transcript_start_secs: -0.5, transcript_end_secs: 10 })).toThrow(
+      /finite, non-negative/,
+    );
+    expect(() => parseDetailsRow({ ...VALID_MEETING, transcript_start_secs: 0, transcript_end_secs: -1 })).toThrow(
+      /finite, non-negative/,
+    );
+  });
+
+  test("rejects non-finite transcript bounds", () => {
+    expect(() => parseDetailsRow({ ...VALID_MEETING, transcript_end_secs: Infinity })).toThrow(/finite, non-negative/);
+    expect(() => parseDetailsRow({ ...VALID_MEETING, transcript_end_secs: Number.NaN })).toThrow(/finite, non-negative/);
+  });
+
+  test("rejects a transcript end before its start", () => {
+    expect(() => parseDetailsRow({ ...VALID_MEETING, transcript_start_secs: 100, transcript_end_secs: 50 })).toThrow(
+      /before transcript_start_secs/,
+    );
+  });
+
+  test("accepts equal transcript bounds and a bound left null", () => {
+    expect(parseDetailsRow({ ...VALID_MEETING, transcript_start_secs: 5, transcript_end_secs: 5 }).transcript_end_secs).toBe(5);
+    expect(parseDetailsRow({ ...VALID_MEETING, transcript_start_secs: 5, transcript_end_secs: null }).transcript_end_secs).toBeNull();
+  });
+
+  test("rejects an empty or whitespace-only id", () => {
+    expect(() => parseDetailsRow({ ...VALID_MEETING, id: "" })).toThrow(/"id" must not be blank/);
+    expect(() => parseDetailsRow({ ...VALID_MEETING, id: "   " })).toThrow(/"id" must not be blank/);
+  });
+
+  test("rejects a negative participant ordinal and a blank meeting id", () => {
+    expect(() => parseParticipantRow({ meeting_id: "m-1", ordinal: -1 })).toThrow(/non-negative integer/);
+    expect(() => parseParticipantRow({ meeting_id: " ", ordinal: 0 })).toThrow(/must not be blank/);
   });
 });
 
