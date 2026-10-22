@@ -56,6 +56,7 @@ import { createGoogleOAuthRouter, normalizeAppOrigin } from "./routes/google-oau
 import { createTranscriberRouter } from "./routes/transcriber.js";
 import { createTranscriberWebhookRouter } from "./routes/transcriber-webhook.js";
 import { createExoMailboxRouter } from "./routes/exo-mailbox.js";
+import { WakeQueue } from "./exo/wake-intake.js";
 import { createExoStorePorts, createOwnerGrantOpener } from "./exo/stores.js";
 import { exoCapabilitiesEnabled } from "./exo/mailbox.js";
 import { ASSEMBLYAI_HOSTED_MOUNT, createAssemblyAiHostedRouter, reconcileHostedJobs } from "./routes/assemblyai-hosted.js";
@@ -565,7 +566,10 @@ async function main() {
   // TC-1013 S4b: Exo capability mailbox. Mounted only when the flag is exactly "true".
   // Stores are the owner's activated grant (S4a) plus a backend-space job mirror on the shared
   // storage lane. No executor is registered yet, so a verified wake settles `unavailable`.
+  // The wake queue is owned here so shutdown can drain it after HTTP has closed.
+  let exoWakeQueue: WakeQueue | null = null;
   if (exoCapabilitiesEnabled(process.env)) {
+    exoWakeQueue = new WakeQueue();
     app.use("/api/exo/v1", createExoMailboxRouter(createExoStorePorts({
       backendKv: {
         get: (key, options) => node.kv.get(key, options),
@@ -581,7 +585,7 @@ async function main() {
       webhooks: new WebhookTokenService(node),
       controls: new ConnectorControlStore(node),
       frontendOrigin: process.env.FRONTEND_URL ?? "https://localhost:5186",
-    })));
+    }), { queue: exoWakeQueue }));
   }
 
   // W9 / D4 — the process that actually CONSUMES the cohort queues, or nothing at all. Assigned
@@ -1145,7 +1149,10 @@ async function main() {
     const httpDrained = new Promise<void>(resolve => server.close(() => resolve()));
     server.closeIdleConnections();
     // Hosted AssemblyAI submits in flight are aborted; each deletes its own spool as it settles.
-    void Promise.allSettled([httpDrained, transcriptWorker?.stop(), calendarAutojoinWorker?.stop(), ingestSupervisor?.stop(), hostedUploads?.shutdown()])
+    // Wakes are acknowledged with 202 before their job record is written. Drain them only after HTTP has closed,
+    // so no new wake can enqueue; past the bound, the drain rejects and the process exits non-zero.
+    const wakesDrained = httpDrained.then(() => exoWakeQueue?.drain());
+    void Promise.allSettled([httpDrained, wakesDrained, transcriptWorker?.stop(), calendarAutojoinWorker?.stop(), ingestSupervisor?.stop(), hostedUploads?.shutdown()])
       .then((results) => process.exit(results.some((result) => result.status === "rejected") ? 1 : 0));
     setTimeout(() => process.exit(1), 120_000).unref();
   };

@@ -508,7 +508,7 @@ describe("backend index middleware wiring", () => {
 
   test("shutdown drains HTTP and every worker in one allSettled", () => {
     expect(INDEX).toContain(
-      "Promise.allSettled([httpDrained, transcriptWorker?.stop(), calendarAutojoinWorker?.stop(), ingestSupervisor?.stop(), hostedUploads?.shutdown()])",
+      "Promise.allSettled([httpDrained, wakesDrained, transcriptWorker?.stop(), calendarAutojoinWorker?.stop(), ingestSupervisor?.stop(), hostedUploads?.shutdown()])",
     );
   });
 });
@@ -592,7 +592,7 @@ test("shutdown waits for other cleanups after a worker rejects", async () => {
     console: { log: () => {} },
     process: { exit: (code: number) => exits.push(code) },
     setTimeout: () => ({ unref() {} }),
-    ledgerFlusher: null, connectorWebhooks: null, connectorQueueMaintenance: null,
+    ledgerFlusher: null, connectorWebhooks: null, connectorQueueMaintenance: null, exoWakeQueue: null,
     server: { close: (done: () => void) => done(), closeIdleConnections() {} },
     transcriptWorker: { stop: () => { attempts.push("transcript"); return Promise.reject(new Error("synthetic")); } },
     calendarAutojoinWorker: { stop: () => { attempts.push("calendar"); return Promise.reject(new Error("synthetic")); } },
@@ -606,6 +606,32 @@ test("shutdown waits for other cleanups after a worker rejects", async () => {
   expect(attempts).toEqual(["transcript", "calendar", "ingest", "hosted"]);
   expect(exitedEarly).toEqual([]);
   expect(exits).toEqual([1]);
+});
+
+test("shutdown holds the exit until queued exo wakes drain", async () => {
+  const start = INDEX.indexOf("  let shuttingDown = false;");
+  const end = INDEX.indexOf('\n  process.on("SIGTERM"', start);
+  const source = new Bun.Transpiler({ loader: "ts" }).transformSync(INDEX.slice(start, end) + '\nshutdown("SIGTERM");');
+  const { WakeQueue } = load("./exo/wake-intake.ts");
+  const queue = new WakeQueue({ concurrency: 1 });
+  const release = Promise.withResolvers<void>();
+  queue.offer(`0x${"a".repeat(40)}`, "req-1", () => release.promise);
+  const exited = Promise.withResolvers<number>();
+  const exits: number[] = [];
+  runInNewContext(source, {
+    Promise,
+    console: { log: () => {} },
+    process: { exit: (code: number) => { exits.push(code); exited.resolve(code); } },
+    setTimeout: () => ({ unref() {} }),
+    ledgerFlusher: null, connectorWebhooks: null, connectorQueueMaintenance: null,
+    exoWakeQueue: queue,
+    server: { close: (done: () => void) => done(), closeIdleConnections() {} },
+    transcriptWorker: null, calendarAutojoinWorker: null, ingestSupervisor: null, hostedUploads: null,
+  });
+  for (let tick = 0; tick < 10; tick += 1) await Promise.resolve();
+  expect(exits).toEqual([]);
+  release.resolve();
+  expect(await exited.promise).toBe(0);
 });
 
 const envBase = { BACKEND_PRIVATE_KEY: "test-only-private-key", PORT: "0" };
