@@ -19,6 +19,8 @@ export type ConnectorSource = "fireflies" | "google";
 export const EXO_NAMESPACE = `${APP_ID}/exo/v1`;
 export const EXO_JOB_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 export const EXO_UNAVAILABLE_BODY = { error: "exo_sync_unavailable" } as const;
+/** The one reply for every owner- or record-dependent wake outcome. It carries nothing about stored requests. */
+export const EXO_ACCEPTED_BODY = { status: "accepted" } as const;
 
 /** Fixed text per job code. A job record carries one code and its matching message, nothing free-form. */
 export const JOB_MESSAGE = {
@@ -26,6 +28,12 @@ export const JOB_MESSAGE = {
   running: "Sync running.",
   done: "Sync complete.",
   unavailable: "Sync unavailable.",
+  connector_off: "Connector is off.",
+  needs_renewal: "Access needs renewal.",
+  needs_reconnect: "Connector needs reconnecting.",
+  storage_full: "Storage is full.",
+  rate_limited: "Rate limited. Retry later.",
+  budget_exhausted: "Daily limit reached. Retry later.",
 } as const;
 export type ExoJobCode = keyof typeof JOB_MESSAGE;
 export type ExoJobMessage = (typeof JOB_MESSAGE)[ExoJobCode];
@@ -38,6 +46,8 @@ const DAY_MS = 24 * HOUR_MS;
 export const EXO_ACTIVE_JOB_TTL_MS = 30 * MINUTE_MS;
 /** Wakes that may coalesce onto one active run. */
 const ATTACH_LIMIT = 20;
+/** Seconds quoted as `retryAfterSec` on a rate-limited or budget-exhausted record. */
+const RETRY_AFTER_SEC = 60;
 
 const OWNER_DID_RE = /^did:pkh:eip155:[0-9]+:(0x[0-9a-fA-F]{40})$/;
 const REQUEST_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -65,6 +75,12 @@ export interface ExoJobRecord {
   message: ExoJobMessage;
   createdAt: string;
   updatedAt: string;
+  /** Present with `connector_off`: the frontend origin where the connector is switched on. */
+  link?: string;
+  /** Present with `connector_off` on a single-source capability. */
+  source?: ConnectorSource;
+  /** Present with `rate_limited` and `budget_exhausted`: seconds until a retry can succeed. */
+  retryAfterSec?: number;
 }
 
 export interface ConnectorSwitch {
@@ -121,18 +137,13 @@ export interface ExoMailboxPorts {
   requests: { get(owner: string, path: string): Promise<unknown> };
   jobs: ExoJobStore;
   connectors: ConnectorSwitch;
-  /** Absent means nothing can run. Wake is refused before any job is created. */
+  /** Absent means nothing can run. A verified wake then records `unavailable`. */
   executor?: SyncExecutor;
   ledger: ExoLedger;
   now(): number;
-  /** Origin used for the `link` of connector-gate responses. */
+  /** Origin written as the `link` of `connector_off` records. */
   frontendOrigin: string;
 }
-
-export type WakeResult =
-  | { status: 202; body: { jobId: string; state: ExoJobState; code: ExoJobCode; statusKey: string } }
-  | { status: 409; body: Record<string, string> }
-  | { status: 429; body: { error: "rate_limited" | "budget_exhausted"; retryAfterSec: number } };
 
 function hasExactKeys(value: object, keys: readonly string[]): boolean {
   const actual = Object.keys(value);
@@ -159,12 +170,19 @@ export function parseRequestRecord(value: unknown, capability: ExoCapability): b
 }
 
 const JOB_KEYS = ["v", "jobId", "capability", "state", "code", "message", "createdAt", "updatedAt"] as const;
+const JOB_OPTIONAL_KEYS = ["link", "source", "retryAfterSec"] as const;
 
-/** Strict job record: exactly these keys, a known capability, state, and code, and the fixed message for that code. */
+/**
+ * Strict job record: the fixed keys plus any optional keys, a known capability, state, and code, the fixed message for
+ * that code, and well-typed optional fields.
+ */
 export function parseJobRecord(value: unknown): ExoJobRecord | undefined {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
   const keys = Object.keys(value);
-  if (keys.length !== JOB_KEYS.length || !JOB_KEYS.every((key) => keys.includes(key))) return undefined;
+  if (!JOB_KEYS.every((key) => keys.includes(key))) return undefined;
+  if (!keys.every((key) => (JOB_KEYS as readonly string[]).includes(key) || (JOB_OPTIONAL_KEYS as readonly string[]).includes(key))) {
+    return undefined;
+  }
   const record = value as Record<string, unknown>;
   if (record.v !== 1 || typeof record.jobId !== "string") return undefined;
   if (typeof record.capability !== "string" || !(EXO_CAPABILITIES as readonly string[]).includes(record.capability)) return undefined;
@@ -172,6 +190,11 @@ export function parseJobRecord(value: unknown): ExoJobRecord | undefined {
   if (typeof record.code !== "string" || !(EXO_JOB_CODES as readonly string[]).includes(record.code)) return undefined;
   if (record.message !== JOB_MESSAGE[record.code as ExoJobCode]) return undefined;
   if (typeof record.createdAt !== "string" || typeof record.updatedAt !== "string") return undefined;
+  if (record.link !== undefined && typeof record.link !== "string") return undefined;
+  if (record.source !== undefined && record.source !== "fireflies" && record.source !== "google") return undefined;
+  if (record.retryAfterSec !== undefined && !(Number.isInteger(record.retryAfterSec) && (record.retryAfterSec as number) > 0)) {
+    return undefined;
+  }
   return record as unknown as ExoJobRecord;
 }
 
@@ -189,17 +212,6 @@ async function findRequestCapability(
   if (found.length !== 1) return undefined;
   const [only] = found;
   return parseRequestRecord(only.value, only.capability) ? only.capability : undefined;
-}
-
-function acceptedBody(job: ExoJobRecord): WakeResult {
-  return {
-    status: 202,
-    body: { jobId: job.jobId, state: job.state, code: job.code, statusKey: `${EXO_NAMESPACE}/jobs/${job.jobId}` },
-  };
-}
-
-function unavailable(): WakeResult {
-  return { status: 409, body: { ...EXO_UNAVAILABLE_BODY } };
 }
 
 /**
@@ -220,15 +232,11 @@ function withOwnerLane<T>(owner: string, task: () => Promise<T>): Promise<T> {
 
 /** States and codes an executor may report. Anything else settles the job as an error with code unavailable. */
 const EXECUTOR_STATES: Record<ExecutorUpdate["state"], true> = { running: true, done: true, error: true };
-const EXECUTOR_MESSAGE: Record<ExecutorUpdate["code"], ExoJobMessage> = {
-  running: JOB_MESSAGE.running,
-  done: JOB_MESSAGE.done,
-  unavailable: JOB_MESSAGE.unavailable,
-};
+const EXECUTOR_CODES: ReadonlySet<string> = new Set(EXO_JOB_CODES.filter((code) => code !== "accepted"));
 
 /** The update as stored. An out-of-vocabulary state or code settles as error with code unavailable. */
 function normalizeUpdate(update: ExecutorUpdate): ExecutorUpdate {
-  const valid = Object.hasOwn(EXECUTOR_STATES, update.state) && Object.hasOwn(EXECUTOR_MESSAGE, update.code);
+  const valid = Object.hasOwn(EXECUTOR_STATES, update.state) && EXECUTOR_CODES.has(update.code);
   return valid ? update : { state: "error", code: "unavailable" };
 }
 
@@ -278,7 +286,7 @@ async function settle(ports: ExoMailboxPorts, owner: string, jobId: string, upda
     ...current,
     state: next.state,
     code: next.code,
-    message: EXECUTOR_MESSAGE[next.code],
+    message: JOB_MESSAGE[next.code],
     updatedAt,
   });
 }
@@ -311,134 +319,164 @@ export interface VerifiedWake {
   capability: ExoCapability;
 }
 
-/** Verifies a wake: strict body, active grant, one valid request record. Any refusal is `undefined`. */
-export async function verifyWake(ports: ExoMailboxPorts, body: unknown): Promise<VerifiedWake | undefined> {
-  const wake = parseWakeBody(body);
-  if (!wake) return undefined;
-  const { owner, requestId } = wake;
-
-  if (!(await ports.grants.isActive(owner))) return undefined;
-  const capability = await findRequestCapability(ports.requests, owner, requestId);
-  if (!capability) return undefined;
-  return { owner, requestId, capability };
+/** Verifies a wake: active grant and one valid request record under the owner's path. Total: a refusal or a throw is `undefined`. */
+export async function verifyWake(ports: ExoMailboxPorts, wake: { owner: string; requestId: string }): Promise<VerifiedWake | undefined> {
+  try {
+    if (!(await ports.grants.isActive(wake.owner))) return undefined;
+    const capability = await findRequestCapability(ports.requests, wake.owner, wake.requestId);
+    return capability ? { owner: wake.owner, requestId: wake.requestId, capability } : undefined;
+  } catch {
+    console.error("[exo] wake verification unavailable");
+    return undefined;
+  }
 }
 
-/** Starts or replays a verified wake. Everything runs in the owner lane, so two wakes cannot both see "no active run". */
-export function startWake(ports: ExoMailboxPorts, wake: VerifiedWake): Promise<WakeResult> {
-  const { owner, requestId, capability } = wake;
-  const now = ports.now();
-  const timestamp = new Date(now).toISOString();
-  return withOwnerLane(owner, async () => {
-    // Replay: the job id is the request id. A replay returns the existing job, not an error.
-    const existingRaw = await readJob(ports, owner, requestId);
-    if (existingRaw !== undefined) {
-      const existing = parseJobRecord(existingRaw);
-      if (!existing) return unavailable();
-      // A pending job past the active-run TTL that no live run accounts for has no run behind it. Settle it so replays do not stay pending.
-      if (existing.state === "pending" && now - Date.parse(existing.createdAt) > EXO_ACTIVE_JOB_TTL_MS) {
-        const ledgerState = await ports.ledger.snapshot(owner, capability, now);
-        const live = ledgerState.activeJobId === requestId || (ledgerState.attachedJobIds ?? []).includes(requestId);
-        if (!live) {
-          const settled: ExoJobRecord = { ...existing, state: "error", code: "unavailable", message: EXECUTOR_MESSAGE.unavailable, updatedAt: timestamp };
-          await writeJob(ports, owner, requestId, settled);
-          return acceptedBody(settled);
-        }
-      }
-      return acceptedBody(existing);
-    }
+type JobExtras = Partial<Pick<ExoJobRecord, "link" | "source" | "retryAfterSec">>;
 
-    const executor = ports.executor;
-    if (!executor) return unavailable();
+/** A job record for a verified wake. The message is fixed per code. */
+function newJob(wake: VerifiedWake, timestamp: string, state: ExoJobState, code: ExoJobCode, extra: JobExtras = {}): ExoJobRecord {
+  return {
+    v: 1,
+    jobId: wake.requestId,
+    capability: wake.capability,
+    state,
+    code,
+    message: JOB_MESSAGE[code],
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    ...extra,
+  };
+}
 
-    let anyOn = false;
-    for (const source of SOURCES_BY_CAPABILITY[capability]) {
-      if (await ports.connectors.isOn(owner, source)) {
-        anyOn = true;
-        break;
-      }
-    }
-    if (!anyOn) {
-      if (capability === "sync-meetings") {
-        return { status: 409, body: { error: "connector_off", link: ports.frontendOrigin } };
-      }
-      return { status: 409, body: { error: "connector_off", source: SOURCES_BY_CAPABILITY[capability][0], link: ports.frontendOrigin } };
-    }
+/** Creates a job record only when none exists. A failed write is logged without its payload and returns false. */
+async function createJob(ports: ExoMailboxPorts, owner: string, record: ExoJobRecord): Promise<boolean> {
+  try {
+    return await ports.jobs.putIfAbsent(owner, record.jobId, record);
+  } catch {
+    console.error("[exo] job record not written");
+    return false;
+  }
+}
 
-    const snapshot = await ports.ledger.snapshot(owner, capability, now);
-
-    if (snapshot.activeJobId !== undefined) {
-      if (snapshot.activeSince !== undefined && now - snapshot.activeSince > EXO_ACTIVE_JOB_TTL_MS) {
-        // A run that never reports is settled as unavailable so it cannot hold the capability.
-        const released = await ports.ledger.clearActive(owner, capability, snapshot.activeJobId);
-        for (const jobId of [snapshot.activeJobId, ...released]) {
-          await settle(ports, owner, jobId, { state: "error", code: "unavailable" });
-        }
-      } else {
-        const active = parseJobRecord(await readJob(ports, owner, snapshot.activeJobId));
-        if (active) {
-          if ((snapshot.attachedJobIds?.length ?? 0) >= ATTACH_LIMIT) {
-            return { status: 429, body: { error: "rate_limited", retryAfterSec: 60 } };
-          }
-          // The coalesced wake keeps its own record and mirrors the run's state, code, and message.
-          const attached: ExoJobRecord = { ...active, jobId: requestId, createdAt: timestamp, updatedAt: timestamp };
-          if (!(await ports.jobs.putIfAbsent(owner, requestId, attached))) return unavailable();
-          await ports.ledger.attach(owner, capability, requestId);
-          return acceptedBody(attached);
-        }
-      }
-    }
-
-    const rule = COOLDOWN_RULES[capability];
-    if (rule) {
-      if (snapshot.startsToday >= rule.dailyCap) {
-        const nextDay = (Math.floor(now / DAY_MS) + 1) * DAY_MS;
-        return { status: 429, body: { error: "budget_exhausted", retryAfterSec: Math.ceil((nextDay - now) / 1000) } };
-      }
-      if (snapshot.lastStartedAt !== undefined) {
-        const hasWebhook = capability === "sync-fireflies" && (await ports.connectors.hasFirefliesWebhook(owner));
-        const readyAt = snapshot.lastStartedAt + rule.minIntervalMs(hasWebhook);
-        if (now < readyAt) {
-          return { status: 429, body: { error: "rate_limited", retryAfterSec: Math.ceil((readyAt - now) / 1000) } };
-        }
-      }
-    }
-
-    const job: ExoJobRecord = {
-      v: 1,
-      jobId: requestId,
-      capability,
-      state: "pending",
-      code: "accepted",
-      message: JOB_MESSAGE.accepted,
-      createdAt: timestamp,
-      updatedAt: timestamp,
-    };
-    if (!(await ports.jobs.putIfAbsent(owner, requestId, job))) return unavailable();
+/**
+ * Records a verified wake's outcome in the job record and returns nothing. The route answers EXO_ACCEPTED_BODY for every
+ * outcome, so all state lives in the record. Runs in the owner lane so two wakes cannot both see "no active run".
+ */
+export function startWake(ports: ExoMailboxPorts, wake: VerifiedWake, ownerLimited: boolean): Promise<void> {
+  return withOwnerLane(wake.owner, async () => {
     try {
-      await ports.ledger.recordStart(owner, capability, requestId, now);
+      await runWake(ports, wake, ownerLimited);
     } catch {
-      // The job is stored pending before the ledger write. Settle it in process so replays and this request id do not stay pending.
-      const failed: ExoJobRecord = { ...job, state: "error", code: "unavailable", message: EXECUTOR_MESSAGE.unavailable, updatedAt: timestamp };
-      await writeJob(ports, owner, requestId, failed);
-      await ports.ledger.clearActive(owner, capability, requestId);
-      return acceptedBody(failed);
+      console.error("[exo] wake not recorded");
+      await createJob(ports, wake.owner, newJob(wake, new Date(ports.now()).toISOString(), "error", "unavailable"));
     }
-
-    // Not awaited, and started after the lane task returns. Each report settles or logs; none rejects into the executor.
-    const reportSafely = (update: ExecutorUpdate) =>
-      reportRun(ports, owner, capability, requestId, update).catch(() => console.error("[exo] job state update failed"));
-    void Promise.resolve()
-      .then(() => executor.start(job, reportSafely))
-      .catch(() => reportSafely({ state: "error", code: "unavailable" }));
-
-    return acceptedBody(job);
   });
 }
 
-/** Handles a wake. Pre-verification refusals are one uniform 409 and reveal nothing. */
-export async function handleWake(ports: ExoMailboxPorts, body: unknown): Promise<WakeResult> {
-  const wake = await verifyWake(ports, body);
-  return wake ? startWake(ports, wake) : unavailable();
+async function runWake(ports: ExoMailboxPorts, wake: VerifiedWake, ownerLimited: boolean): Promise<void> {
+  const { owner, requestId, capability } = wake;
+  const now = ports.now();
+  const timestamp = new Date(now).toISOString();
+
+  // Replay: the job id is the request id. A replay changes nothing except settling a stale pending job.
+  const existingRaw = await readJob(ports, owner, requestId);
+  if (existingRaw !== undefined) {
+    const existing = parseJobRecord(existingRaw);
+    // A pending job past the active-run TTL that no live run accounts for has no run behind it. Settle it so replays do not stay pending.
+    if (existing?.state === "pending" && now - Date.parse(existing.createdAt) > EXO_ACTIVE_JOB_TTL_MS) {
+      const ledgerState = await ports.ledger.snapshot(owner, capability, now);
+      const live = ledgerState.activeJobId === requestId || (ledgerState.attachedJobIds ?? []).includes(requestId);
+      if (!live) {
+        await writeJob(ports, owner, requestId, { ...existing, state: "error", code: "unavailable", message: JOB_MESSAGE.unavailable, updatedAt: timestamp });
+      }
+    }
+    return;
+  }
+
+  if (ownerLimited) {
+    await createJob(ports, owner, newJob(wake, timestamp, "error", "rate_limited", { retryAfterSec: RETRY_AFTER_SEC }));
+    return;
+  }
+
+  const executor = ports.executor;
+  if (!executor) {
+    await createJob(ports, owner, newJob(wake, timestamp, "error", "unavailable"));
+    return;
+  }
+
+  let anyOn = false;
+  for (const source of SOURCES_BY_CAPABILITY[capability]) {
+    if (await ports.connectors.isOn(owner, source)) {
+      anyOn = true;
+      break;
+    }
+  }
+  if (!anyOn) {
+    // sync-meetings has no single source, so its refusal names none.
+    const single = capability === "sync-meetings" ? {} : { source: SOURCES_BY_CAPABILITY[capability][0] };
+    await createJob(ports, owner, newJob(wake, timestamp, "error", "connector_off", { link: ports.frontendOrigin, ...single }));
+    return;
+  }
+
+  const snapshot = await ports.ledger.snapshot(owner, capability, now);
+
+  if (snapshot.activeJobId !== undefined) {
+    if (snapshot.activeSince !== undefined && now - snapshot.activeSince > EXO_ACTIVE_JOB_TTL_MS) {
+      // A run that never reports is settled as unavailable so it cannot hold the capability.
+      const released = await ports.ledger.clearActive(owner, capability, snapshot.activeJobId);
+      for (const jobId of [snapshot.activeJobId, ...released]) {
+        await settle(ports, owner, jobId, { state: "error", code: "unavailable" });
+      }
+    } else {
+      const active = parseJobRecord(await readJob(ports, owner, snapshot.activeJobId));
+      if (active) {
+        if ((snapshot.attachedJobIds?.length ?? 0) >= ATTACH_LIMIT) {
+          await createJob(ports, owner, newJob(wake, timestamp, "error", "rate_limited", { retryAfterSec: RETRY_AFTER_SEC }));
+          return;
+        }
+        // The coalesced wake keeps its own record and mirrors the run's state, code, and message.
+        const attached: ExoJobRecord = { ...active, jobId: requestId, createdAt: timestamp, updatedAt: timestamp };
+        if (await createJob(ports, owner, attached)) await ports.ledger.attach(owner, capability, requestId);
+        return;
+      }
+    }
+  }
+
+  const rule = COOLDOWN_RULES[capability];
+  if (rule) {
+    if (snapshot.startsToday >= rule.dailyCap) {
+      const nextDay = (Math.floor(now / DAY_MS) + 1) * DAY_MS;
+      await createJob(ports, owner, newJob(wake, timestamp, "error", "budget_exhausted", { retryAfterSec: Math.ceil((nextDay - now) / 1000) }));
+      return;
+    }
+    if (snapshot.lastStartedAt !== undefined) {
+      const hasWebhook = capability === "sync-fireflies" && (await ports.connectors.hasFirefliesWebhook(owner));
+      const readyAt = snapshot.lastStartedAt + rule.minIntervalMs(hasWebhook);
+      if (now < readyAt) {
+        await createJob(ports, owner, newJob(wake, timestamp, "error", "rate_limited", { retryAfterSec: Math.ceil((readyAt - now) / 1000) }));
+        return;
+      }
+    }
+  }
+
+  const job = newJob(wake, timestamp, "pending", "accepted");
+  if (!(await createJob(ports, owner, job))) return;
+  try {
+    await ports.ledger.recordStart(owner, capability, requestId, now);
+  } catch {
+    // The job is stored pending before the ledger write. Settle it in process so replays and this request id do not stay pending.
+    const failed: ExoJobRecord = { ...job, state: "error", code: "unavailable", message: JOB_MESSAGE.unavailable, updatedAt: timestamp };
+    await writeJob(ports, owner, requestId, failed);
+    await ports.ledger.clearActive(owner, capability, requestId);
+    return;
+  }
+
+  // Not awaited, and started after the lane task returns. Each report settles or logs; none rejects into the executor.
+  const reportSafely = (update: ExecutorUpdate) =>
+    reportRun(ports, owner, capability, requestId, update).catch(() => console.error("[exo] job state update failed"));
+  void Promise.resolve()
+    .then(() => executor.start(job, reportSafely))
+    .catch(() => reportSafely({ state: "error", code: "unavailable" }));
 }
 
 /**

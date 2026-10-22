@@ -12,7 +12,7 @@
  * full server.
  */
 import rateLimit from "express-rate-limit";
-import type { Express, Request, RequestHandler, Response } from "express";
+import type { Express, NextFunction, Request, RequestHandler, Response } from "express";
 import type { VerifiedWake } from "./exo/mailbox.js";
 import { verifySessionToken } from "@tinyboilerplate/server";
 
@@ -479,8 +479,10 @@ export const EXO_WAKE_OWNER_LIMIT_PER_MIN = 30;
 
 /**
  * Limiters for `POST /api/exo/v1/requests`. The owner limiter runs after verification and keys on the
- * verified owner (`res.locals.exoWake`), so refused wakes cannot spend an owner's budget. Both answer
- * 429 `{"error":"rate_limited"}` with `Retry-After` in seconds.
+ * verified owner (`res.locals.exoWake`), so refused wakes cannot spend an owner's budget. Exceeding the
+ * owner limit does not change the reply: it sets `res.locals.exoOwnerLimited` and the route answers the
+ * same fixed 202, with `rate_limited` written to the job record. The IP limiter answers 429 with `Retry-After`
+ * in seconds; it depends only on the client IP.
  */
 export function createExoWakeLimiters(): { ip: RequestHandler; owner: RequestHandler } {
   const respond = (_req: Request, res: Response) => {
@@ -506,7 +508,10 @@ export function createExoWakeLimiters(): { ip: RequestHandler; owner: RequestHan
         const wake: VerifiedWake | undefined = res.locals.exoWake;
         return wake?.owner.toLowerCase() ?? "";
       },
-      handler: respond,
+      handler: (_req: Request, res: Response, next: NextFunction) => {
+        res.locals.exoOwnerLimited = true;
+        next();
+      },
     }),
   };
 }

@@ -1,17 +1,25 @@
-import { Router, json, type RequestHandler, type Response } from "express";
-import { EXO_UNAVAILABLE_BODY, startWake, verifyWake, type ExoMailboxPorts, type VerifiedWake } from "../exo/mailbox.js";
+import { Router, json, type NextFunction, type Request, type RequestHandler, type Response } from "express";
+import { EXO_ACCEPTED_BODY, EXO_UNAVAILABLE_BODY, parseWakeBody, startWake, verifyWake, type ExoMailboxPorts, type VerifiedWake } from "../exo/mailbox.js";
 
-/** Drops the limiters' draft-7 RateLimit headers so every non-429 wake response has one header set. */
+/** Drops the limiters' draft-7 RateLimit headers so every wake answer carries the same header set. */
 function stripRateLimitHeaders(res: Response): void {
   for (const name of res.getHeaderNames()) {
     if (/^(x-)?ratelimit/i.test(name)) res.removeHeader(name);
   }
 }
 
+/** Sends one answer. A second send after headers are out is dropped. */
+function answer(res: Response, status: number, body: object): void {
+  if (res.headersSent) return;
+  stripRateLimitHeaders(res);
+  res.status(status).json(body);
+}
+
 /**
- * `POST /api/exo/v1/requests`. Order: IP limiter, strict JSON (1 KB), verification, owner limiter, start.
- * Every refusal before verification, including a body the parser rejects (size, charset,
- * encoding, syntax), is the same 409 with the same headers and body.
+ * `POST /api/exo/v1/requests`. Order: IP limiter, strict JSON (1 KB) and wake shape, verification, owner limiter, start.
+ * A malformed request (body the parser rejects, wrong shape, bad DID or request id) is the uniform 409 before any
+ * lookup. Every outcome after that is the same 202 `{"status":"accepted"}`: found, started, replayed, coalesced,
+ * refused, rate limited, unknown owner, or a failure at any step. The outcome lives in the job record.
  */
 export function createExoMailboxRouter(
   ports: ExoMailboxPorts,
@@ -21,42 +29,43 @@ export function createExoMailboxRouter(
   const parseBody = json({ limit: "1kb", strict: true });
   const strictBody: RequestHandler = (req, res, next) => {
     parseBody(req, res, (err?: unknown) => {
-      if (err) {
-        stripRateLimitHeaders(res);
-        res.status(409).json({ ...EXO_UNAVAILABLE_BODY });
+      const request = err ? undefined : parseWakeBody(req.body);
+      if (!request) {
+        answer(res, 409, EXO_UNAVAILABLE_BODY);
         return;
       }
+      res.locals.exoRequest = request;
       next();
     });
   };
-  // Verification runs before the owner limiter, so only verified wakes spend an owner's budget.
-  const verify: RequestHandler = async (req, res, next) => {
+  // Verification runs before the owner limiter, so only verified wakes spend an owner's budget. A refusal is accepted too.
+  const verify: RequestHandler = async (_req, res, next) => {
     try {
-      const wake = await verifyWake(ports, req.body);
+      const wake = await verifyWake(ports, res.locals.exoRequest);
       if (!wake) {
-        stripRateLimitHeaders(res);
-        res.status(409).json({ ...EXO_UNAVAILABLE_BODY });
+        answer(res, 202, EXO_ACCEPTED_BODY);
         return;
       }
       res.locals.exoWake = wake;
       next();
-    } catch (error) {
-      next(error);
+    } catch {
+      console.error("[exo] wake verification unavailable");
+      answer(res, 202, EXO_ACCEPTED_BODY);
     }
   };
   router.post("/requests", limiters.ip, strictBody, verify, limiters.owner, async (_req, res) => {
     try {
-      const result = await startWake(ports, res.locals.exoWake as VerifiedWake);
-      // Every 429 carries Retry-After in seconds: the same value as the body's retryAfterSec.
-      if (result.status === 429) res.setHeader("Retry-After", String(result.body.retryAfterSec));
-      else stripRateLimitHeaders(res);
-      res.status(result.status).json(result.body);
+      await startWake(ports, res.locals.exoWake as VerifiedWake, res.locals.exoOwnerLimited === true);
     } catch {
-      // A store failure while starting is the uniform unavailable answer: no status, stack, or error text.
-      console.error("[exo] wake unavailable");
-      stripRateLimitHeaders(res);
-      res.status(409).json({ ...EXO_UNAVAILABLE_BODY });
+      console.error("[exo] wake not recorded");
     }
+    answer(res, 202, EXO_ACCEPTED_BODY);
+  });
+  // Any error not caught above keeps the same answers: 202 once the wake is verified, the uniform 409 before that.
+  router.use((_err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+    console.error("[exo] wake route error");
+    if (res.locals.exoWake) answer(res, 202, EXO_ACCEPTED_BODY);
+    else answer(res, 409, EXO_UNAVAILABLE_BODY);
   });
   return router;
 }

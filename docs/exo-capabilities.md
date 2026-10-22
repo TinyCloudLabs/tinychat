@@ -10,11 +10,11 @@ Body: exactly `{"owner": "did:pkh:eip155:<chain>:0x<40 hex>", "requestId": "<low
 
 | Outcome | Status | Body |
 | --- | --- | --- |
-| Accepted (new or replayed job) | 202 | `{"jobId","state","code","statusKey"}` |
-| Any refusal before verification: malformed or oversized body, unknown owner, no or expired grant, missing or invalid request record | 409 | `{"error":"exo_sync_unavailable"}` (identical for all of these) |
-| Per-IP limit (120/min), per-owner limit (30/min), or attach limit (more than 20 wakes on one active run) | 429 | `{"error":"rate_limited"}` with `Retry-After` (60 s for the attach limit) |
+| Malformed: body the parser rejects, oversized or extra properties, or owner or request id in the wrong form | 409 | `{"error":"exo_sync_unavailable"}` (identical for all of these) |
+| Any outcome after the body parses: unknown owner, no grant, verified, accepted, replayed, coalesced, rate limited, budget, connector off, unavailable | 202 | `{"status":"accepted"}` (identical for all of these) |
+| Per-IP limit (120/min), checked before any lookup | 429 | `{"error":"rate_limited"}` with `Retry-After: 60` |
 
-Every pre-verification refusal returns the same 409, so the route does not reveal which check failed. The connector gate under "Connector gate" is the only exception, and it runs after verification.
+Every outcome after the body parses returns the same 202. The outcome is written to the job record, not the response, so the route does not reveal which check ran or what state the owner is in.
 
 ## Request records
 
@@ -30,7 +30,7 @@ Stored at `xyz.tinycloud.tinychat/exo/v1/jobs/<requestId>`, created put-if-absen
 {v:1, jobId, capability, state: pending|running|done|error, code, message, createdAt, updatedAt}
 ```
 
-`code` is one of `accepted`, `running`, `done`, `unavailable`. `message` is the fixed text for that code. `jobId` equals the request id.
+`code` is one of `accepted`, `running`, `done`, `unavailable`, `connector_off`, `needs_renewal`, `needs_reconnect`, `storage_full`, `rate_limited`, `budget_exhausted`. `message` is the fixed text for that code. `jobId` equals the request id. `link` (`connector_off`), `source` (`connector_off` on a single-source capability), and `retryAfterSec` (`rate_limited`, `budget_exhausted`) are optional.
 
 Job records hold no titles, meeting ids, or transcript text. Records older than 30 days are removed by a sweep. The sweep is injectable; scheduling it is not part of this change.
 
@@ -38,7 +38,7 @@ Job records hold no titles, meeting ids, or transcript text. Records older than 
 
 Starts for one owner and capability are checked and recorded in a per-owner, in-process lane. At most one run is active per owner and capability.
 
-- A wake that arrives while a run is active attaches. It gets its own job record, mirroring the run's `state`, `code`, and `message`, and returns 202. A run takes at most 20 attached wakes. The 21st gets 429 `rate_limited` with `Retry-After: 60`.
+- A wake that arrives while a run is active attaches. It gets its own job record, mirroring the run's `state`, `code`, and `message`, and returns 202. A run takes at most 20 attached wakes. The 21st gets a 202 with a job record coded `rate_limited` and `retryAfterSec: 60`, and starts nothing.
 - Attached wakes do not consume the cooldown or the daily cap.
 - A run that has not reported within 30 minutes is settled as `error` with code `unavailable` and released, so it cannot hold the capability.
 - Coalescing is per capability. `sync-meetings` and `sync-fireflies` wakes for the same source do not coalesce with each other.
@@ -65,10 +65,10 @@ Cooldown and daily-count state is held in process memory. It resets on restart. 
 
 ## Connector gate
 
-`sync-fireflies` requires the Fireflies connector on for the owner. `sync-google` requires the Google connector on. `sync-meetings` requires either one on. A refusal returns 409 `connector_off` with the source and frontend link. This gate runs after grant and request verification, so it is the one 409 that differs from the uniform pre-verification 409.
+`sync-fireflies` requires the Fireflies connector on for the owner. `sync-google` requires the Google connector on. `sync-meetings` requires either one on. When the gate refuses, the job record is coded `connector_off`, with `link` set to the frontend origin and, for a single-source capability, `source`. The route answers 202 like every other verified outcome. The gate runs after grant and request verification.
 
 ## Current wiring
 
-Default wiring supplies no concrete grant, record, job, or executor stores. With the flag set to `true` and no stores wired, every wake returns the uniform 409. Concrete stores and the sync executor are supplied separately.
+Default wiring supplies no concrete grant, record, job, or executor stores. With the flag set to `true` and no stores wired, every well-formed wake returns 202 `accepted` and writes no record. Concrete stores and the sync executor are supplied separately.
 
 Grant activation (`backend/src/portable-delegation.ts`) rejects multi-resource grants today. This change does not alter activation.

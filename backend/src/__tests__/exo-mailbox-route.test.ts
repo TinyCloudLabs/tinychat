@@ -3,18 +3,79 @@ import express from "express";
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
 import { createUnwiredExoPorts } from "../exo/default-ports.js";
-import { EXO_NAMESPACE, type ExoLedgerSnapshot, type ExoMailboxPorts } from "../exo/mailbox.js";
+import {
+  createMemoryExoLedger,
+  EXO_NAMESPACE,
+  type ExoJobRecord,
+  type ExoLedgerSnapshot,
+  type ExoMailboxPorts,
+} from "../exo/mailbox.js";
 import { createExoWakeLimiters } from "../rate-limits.js";
 import { createExoMailboxRouter } from "../routes/exo-mailbox.js";
 
-const OWNER_DID = `did:pkh:eip155:1:0x${"b".repeat(40)}`;
+const OWNER = `0x${"b".repeat(40)}`;
+const OWNER_DID = `did:pkh:eip155:1:${OWNER}`;
 const REQ1 = "6f1c2a4e-8b3d-4c5e-9f70-1a2b3c4d5e6f";
+const MISSING = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
 const UNIFORM = { error: "exo_sync_unavailable" };
+const ACCEPTED = { status: "accepted" };
+const T0 = Date.UTC(2026, 0, 1, 12);
+const MINUTE_MS = 60_000;
 
-async function withWakeServer<T>(
-  run: (base: string) => Promise<T>,
-  ports: ExoMailboxPorts = createUnwiredExoPorts("https://app.example.test"),
-): Promise<T> {
+type Fixture = {
+  ports: ExoMailboxPorts;
+  jobs: Map<string, ExoJobRecord>;
+  runs: number;
+  seed(requestId: string, capability: "sync-google" | "sync-fireflies"): void;
+};
+
+/**
+ * A verifiable owner with one request record per seeded id. Jobs and runs are recorded so tests can read
+ * the outcome the route no longer returns.
+ */
+function fixture(options: { snapshot?: ExoLedgerSnapshot; storeFails?: boolean } = {}): Fixture {
+  const requests = new Map<string, unknown>();
+  const jobs = new Map<string, ExoJobRecord>();
+  const fixture: Fixture = {
+    jobs,
+    runs: 0,
+    seed(requestId, capability) {
+      requests.set(`${OWNER}|${EXO_NAMESPACE}/requests/${capability}/${requestId}`, { v: 1, capability });
+    },
+    ports: undefined as unknown as ExoMailboxPorts,
+  };
+  const ledger = createMemoryExoLedger();
+  fixture.ports = {
+    grants: { isActive: async () => true },
+    requests: { get: async (owner, path) => requests.get(`${owner}|${path}`) },
+    jobs: {
+      get: async (owner, jobId) => jobs.get(`${owner}|${jobId}`),
+      putIfAbsent: async (owner, jobId, record) => {
+        if (options.storeFails) throw new Error("store write failed");
+        if (jobs.has(`${owner}|${jobId}`)) return false;
+        jobs.set(`${owner}|${jobId}`, record);
+        return true;
+      },
+      put: async (owner, jobId, record) => {
+        jobs.set(`${owner}|${jobId}`, record);
+      },
+      list: async () => [],
+      remove: async () => {},
+    },
+    connectors: { isOn: async () => true, hasFirefliesWebhook: async () => false },
+    executor: {
+      start: async () => {
+        fixture.runs += 1;
+      },
+    },
+    ledger: options.snapshot ? { ...ledger, snapshot: async () => options.snapshot! } : ledger,
+    now: () => T0,
+    frontendOrigin: "https://app.example.test",
+  };
+  return fixture;
+}
+
+async function withWakeServer<T>(run: (base: string) => Promise<T>, ports: ExoMailboxPorts): Promise<T> {
   const app = express();
   app.use("/api/exo/v1", createExoMailboxRouter(ports, createExoWakeLimiters()));
   const listening = Promise.withResolvers<Server>();
@@ -39,182 +100,301 @@ function post(base: string, body: string, contentType = "application/json") {
   });
 }
 
-describe("Exo wake route refusals are the uniform 409", () => {
-  test("a malformed JSON body returns exactly the uniform 409", async () => {
-    await withWakeServer(async (base) => {
-      const response = await post(base, "{not json");
-      expect(response.status).toBe(409);
-      expect(await response.json()).toEqual(UNIFORM);
-    });
-  });
+describe("Exo wake route: malformed requests are the uniform 409 and touch no store", () => {
+  const malformed: Array<[string, string, string]> = [
+    ["malformed JSON", "{not json", "application/json"],
+    ["an extra key", JSON.stringify({ owner: OWNER_DID, requestId: REQ1, capability: "sync-google" }), "application/json"],
+    ["a bare 0x owner", JSON.stringify({ owner: OWNER, requestId: REQ1 }), "application/json"],
+    ["a non-UUIDv4 request id", JSON.stringify({ owner: OWNER_DID, requestId: "not-a-uuid" }), "application/json"],
+    ["a wrong content type", JSON.stringify({ owner: OWNER_DID, requestId: REQ1 }), "text/plain"],
+    ["a body over 1 KB", JSON.stringify({ owner: OWNER_DID, requestId: REQ1, pad: "x".repeat(2000) }), "application/json"],
+  ];
 
-  test("a body above 1 KB returns the uniform 409", async () => {
+  test.each(malformed)("%s returns 409 with exactly the uniform body", async (_label, body, contentType) => {
+    const f = fixture();
+    f.seed(REQ1, "sync-google");
     await withWakeServer(async (base) => {
-      const response = await post(base, JSON.stringify({ owner: OWNER_DID, requestId: "x".repeat(2048) }));
+      const response = await post(base, body, contentType);
       expect(response.status).toBe(409);
       expect(await response.json()).toEqual(UNIFORM);
-    });
-  });
-
-  test("a non-JSON content type returns the uniform 409", async () => {
-    await withWakeServer(async (base) => {
-      const response = await post(base, `{"owner":"${OWNER_DID}","requestId":"${REQ1}"}`, "text/plain");
-      expect(response.status).toBe(409);
-      expect(await response.json()).toEqual(UNIFORM);
-    });
+    }, f.ports);
+    expect(f.jobs.size).toBe(0);
+    expect(f.runs).toBe(0);
   });
 });
 
-/** Ports that verify a wake for REQ1, then fail the first store write in startWake. */
-function verifiedPorts(): ExoMailboxPorts {
-  const base = createUnwiredExoPorts("https://app.example.test");
-  return {
-    ...base,
-    grants: { isActive: async () => true },
-    requests: {
-      get: async (_owner, path) => (path.endsWith(`/requests/sync-google/${REQ1}`) ? { v: 1, capability: "sync-google" } : undefined),
-    },
-    connectors: { isOn: async () => true, hasFirefliesWebhook: async () => false },
-    executor: { start: async () => undefined },
-    jobs: {
-      ...base.jobs,
-      get: async () => undefined,
-      putIfAbsent: async () => {
-        throw new Error("store offline at /internal/db");
-      },
-    },
-  };
-}
+describe("Exo wake route: every answer after the shape check is 202 accepted", () => {
+  test("an unverified request (no grant or no record) is accepted with no job", async () => {
+    const f = fixture();
+    await withWakeServer(async (base) => {
+      const unknown = await post(base, JSON.stringify({ owner: OWNER_DID, requestId: MISSING }));
+      expect(unknown.status).toBe(202);
+      expect(await unknown.json()).toEqual(ACCEPTED);
+    }, f.ports);
+    expect(f.jobs.size).toBe(0);
+    expect(f.runs).toBe(0);
+  });
 
-describe("Exo wake route store failure", () => {
-  test("a store failure while starting returns the uniform 409 with no stack or error text", async () => {
+  test("a verified wake starts one run and is accepted", async () => {
+    const f = fixture();
+    f.seed(REQ1, "sync-google");
+    await withWakeServer(async (base) => {
+      const response = await post(base, JSON.stringify({ owner: OWNER_DID, requestId: REQ1 }));
+      expect(response.status).toBe(202);
+      expect(await response.json()).toEqual(ACCEPTED);
+    }, f.ports);
+    expect(f.jobs.get(`${OWNER}|${REQ1}`)).toMatchObject({ state: "pending", capability: "sync-google" });
+    expect(f.runs).toBe(1);
+  });
+});
+
+describe("Exo wake route: the outcome is in the job record, not the response", () => {
+  test("a Google cooldown is recorded rate_limited with the seconds remaining", async () => {
+    const f = fixture({ snapshot: { startsToday: 1, lastStartedAt: T0 - MINUTE_MS } });
+    f.seed(REQ1, "sync-google");
+    await withWakeServer(async (base) => {
+      const response = await post(base, JSON.stringify({ owner: OWNER_DID, requestId: REQ1 }));
+      expect(response.status).toBe(202);
+    }, f.ports);
+    // Google cooldown is 30 min; the last start was 1 min ago, so 29 min (1740 s) remain.
+    expect(f.jobs.get(`${OWNER}|${REQ1}`)).toMatchObject({
+      state: "error",
+      code: "rate_limited",
+      retryAfterSec: 1740,
+    });
+    expect(f.runs).toBe(0);
+  });
+
+  test("the Google daily cap is recorded budget_exhausted with seconds to UTC midnight", async () => {
+    const f = fixture({ snapshot: { startsToday: 300 } });
+    f.seed(REQ1, "sync-google");
+    await withWakeServer(async (base) => {
+      const response = await post(base, JSON.stringify({ owner: OWNER_DID, requestId: REQ1 }));
+      expect(response.status).toBe(202);
+    }, f.ports);
+    // T0 is 12:00 UTC, so 12 h (43200 s) remain until the next UTC day.
+    expect(f.jobs.get(`${OWNER}|${REQ1}`)).toMatchObject({
+      state: "error",
+      code: "budget_exhausted",
+      retryAfterSec: 43200,
+    });
+    expect(f.runs).toBe(0);
+  });
+
+  test("a store failure while the job is written is still accepted, with the uniform body and no detail", async () => {
+    const f = fixture({ storeFails: true });
+    f.seed(REQ1, "sync-google");
     await withWakeServer(async (base) => {
       const response = await post(base, JSON.stringify({ owner: OWNER_DID, requestId: REQ1 }));
       const text = await response.text();
-      expect(response.status).toBe(409);
-      expect(JSON.parse(text)).toEqual(UNIFORM);
-      expect(text).not.toContain("Error");
-      expect(text).not.toContain("store offline");
-      expect(text).not.toContain("<");
-    }, verifiedPorts());
+      expect(response.status).toBe(202);
+      expect(JSON.parse(text)).toEqual(ACCEPTED);
+      expect(text).not.toContain("store");
+      expect(text).not.toContain("at ");
+    }, f.ports);
+    expect(f.runs).toBe(0);
   });
 });
 
-describe("Exo wake route per-owner limit", () => {
-  test("the 31st verified wake for one owner in a minute is 429 with Retry-After", async () => {
-    // Each verified wake is refused by the 30-min cooldown, a 429 that carries retryAfterSec.
-    const ports = refusedByLedgerPorts({ startsToday: 1, lastStartedAt: T0 - MINUTE_MS });
+describe("Exo wake route: rate limits", () => {
+  test("the 121st request from one IP in a minute is 429 with Retry-After 60", async () => {
+    const f = fixture();
     await withWakeServer(async (base) => {
-      const body = JSON.stringify({ owner: OWNER_DID, requestId: REQ1 });
-      for (let i = 0; i < 30; i += 1) {
-        const refused = await post(base, body);
-        expect(refused.status).toBe(429);
-        expect(await refused.json()).toEqual({ error: "rate_limited", retryAfterSec: 1740 });
+      const body = JSON.stringify({ owner: OWNER_DID, requestId: MISSING });
+      for (let i = 0; i < 120; i += 1) {
+        expect((await post(base, body)).status).toBe(202);
       }
       const limited = await post(base, body);
       expect(limited.status).toBe(429);
-      expect(await limited.json()).toEqual({ error: "rate_limited" });
       expect(limited.headers.get("retry-after")).toBe("60");
-    }, ports);
+      expect(await limited.json()).toEqual({ error: "rate_limited" });
+    }, f.ports);
   });
-});
 
-describe("Exo wake per-owner limit counts verified wakes only", () => {
-  test("refused unverified wakes naming an owner do not spend that owner's budget", async () => {
-    const ports = refusedByLedgerPorts({ startsToday: 1, lastStartedAt: T0 - MINUTE_MS });
+  test("the 31st verified wake for one owner in a minute is recorded rate_limited with retryAfterSec 60 and starts nothing", async () => {
+    const f = fixture();
+    const ids = Array.from({ length: 31 }, () => crypto.randomUUID());
+    for (const id of ids) f.seed(id, "sync-fireflies");
     await withWakeServer(async (base) => {
-      const unknown = JSON.stringify({ owner: OWNER_DID, requestId: "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d" });
-      for (let i = 0; i < 31; i += 1) {
-        const refused = await post(base, unknown);
-        expect(refused.status).toBe(409);
-        expect(await refused.json()).toEqual(UNIFORM);
+      for (const id of ids) {
+        const response = await post(base, JSON.stringify({ owner: OWNER_DID, requestId: id }));
+        expect(response.status).toBe(202);
       }
-      const verified = await post(base, JSON.stringify({ owner: OWNER_DID, requestId: REQ1 }));
-      expect(verified.status).toBe(429);
-      expect(await verified.json()).toEqual({ error: "rate_limited", retryAfterSec: 1740 });
-    }, ports);
-  });
-});
-
-const T0 = Date.UTC(2026, 0, 1, 12);
-const MINUTE_MS = 60_000;
-const GOOGLE_REQUEST_PATH = `${EXO_NAMESPACE}/requests/sync-google/${REQ1}`;
-
-/** Ports for a wake that the ledger refuses before any job is written. */
-function refusedByLedgerPorts(snapshot: ExoLedgerSnapshot): ExoMailboxPorts {
-  const unexpected = async (): Promise<never> => {
-    throw new Error("a refused wake must not write a job or start a run");
-  };
-  return {
-    grants: { isActive: async () => true },
-    requests: {
-      get: async (_owner, path) => (path === GOOGLE_REQUEST_PATH ? { v: 1, capability: "sync-google" } : undefined),
-    },
-    jobs: { get: async () => undefined, putIfAbsent: unexpected, put: unexpected, list: async () => [], remove: unexpected },
-    connectors: { isOn: async () => true, hasFirefliesWebhook: async () => false },
-    executor: { start: unexpected },
-    ledger: { snapshot: async () => snapshot, recordStart: unexpected, attach: unexpected, clearActive: unexpected },
-    now: () => T0,
-    frontendOrigin: "https://app.example.test",
-  };
-}
-
-describe("Exo wake 429 responses carry Retry-After", () => {
-  test("a cooldown 429 sends Retry-After equal to retryAfterSec", async () => {
-    // Google cooldown is 30 min; the last run started 1 min ago, so 29 min (1740 s) remain.
-    const ports = refusedByLedgerPorts({ startsToday: 1, lastStartedAt: T0 - MINUTE_MS });
-    await withWakeServer(async (base) => {
-      const response = await post(base, JSON.stringify({ owner: OWNER_DID, requestId: REQ1 }));
-      expect(response.status).toBe(429);
-      expect(await response.json()).toEqual({ error: "rate_limited", retryAfterSec: 1740 });
-      expect(response.headers.get("retry-after")).toBe("1740");
-    }, ports);
-  });
-
-  test("a daily-cap 429 sends Retry-After equal to retryAfterSec", async () => {
-    // The Google daily cap of 300 is reached; it resets at UTC midnight, 12 h after T0 (43200 s).
-    const ports = refusedByLedgerPorts({ startsToday: 300 });
-    await withWakeServer(async (base) => {
-      const response = await post(base, JSON.stringify({ owner: OWNER_DID, requestId: REQ1 }));
-      expect(response.status).toBe(429);
-      expect(await response.json()).toEqual({ error: "budget_exhausted", retryAfterSec: 43200 });
-      expect(response.headers.get("retry-after")).toBe("43200");
-    }, ports);
-  });
-});
-
-const FORM_HEADERS = { "content-type": "application/json" };
-
-/** The status, headers (minus the clock-driven Date), and body of one wake response. */
-async function refusalOf(base: string, body: string, headers: Record<string, string>) {
-  const response = await fetch(`${base}/api/exo/v1/requests`, { method: "POST", headers, body });
-  return {
-    status: response.status,
-    headers: [...response.headers].filter(([name]) => name !== "date").sort(([a], [b]) => a.localeCompare(b)),
-    body: await response.text(),
-  };
-}
-
-describe("Exo wake refusals before verification are byte-identical", () => {
-  const WELL_FORMED = JSON.stringify({ owner: OWNER_DID, requestId: REQ1 });
-
-  test("every refusal has the same status, headers, and body as an unknown request", async () => {
-    await withWakeServer(async (base) => {
-      const reference = await refusalOf(base, WELL_FORMED, FORM_HEADERS);
-      expect(reference.status).toBe(409);
-      expect(JSON.parse(reference.body)).toEqual(UNIFORM);
-      const cases: Array<[string, Record<string, string>]> = [
-        [JSON.stringify({ owner: OWNER_DID, requestId: "x".repeat(2048) }), FORM_HEADERS],
-        ["{not json", FORM_HEADERS],
-        [WELL_FORMED, { "content-type": "text/plain" }],
-        [WELL_FORMED, { "content-type": "application/json; charset=klingon" }],
-        [WELL_FORMED, { ...FORM_HEADERS, "content-encoding": "br" }],
-        [JSON.stringify({ owner: `0x${"b".repeat(40)}`, requestId: REQ1 }), FORM_HEADERS],
-        [JSON.stringify({ owner: OWNER_DID, requestId: "Some_Title-Meeting_Q3_Budget" }), FORM_HEADERS],
-      ];
-      for (const [body, headers] of cases) {
-        expect(await refusalOf(base, body, headers)).toEqual(reference);
-      }
+    }, f.ports);
+    expect(f.jobs.get(`${OWNER}|${ids[30]}`)).toMatchObject({
+      state: "error",
+      code: "rate_limited",
+      retryAfterSec: 60,
     });
+  });
+
+  test("refused unverified wakes naming an owner do not spend that owner's budget", async () => {
+    const f = fixture();
+    f.seed(REQ1, "sync-google");
+    await withWakeServer(async (base) => {
+      for (let i = 0; i < 40; i += 1) {
+        const id = crypto.randomUUID();
+        expect((await post(base, JSON.stringify({ owner: OWNER_DID, requestId: id }))).status).toBe(202);
+      }
+      expect((await post(base, JSON.stringify({ owner: OWNER_DID, requestId: REQ1 }))).status).toBe(202);
+    }, f.ports);
+    expect(f.jobs.get(`${OWNER}|${REQ1}`)).toMatchObject({ state: "pending" });
+    expect(f.runs).toBe(1);
+  });
+});
+
+describe("Exo wake route: unwired ports fail closed", () => {
+  test("with no executor and no grant store, a verified-shaped wake is accepted and nothing is recorded", async () => {
+    await withWakeServer(async (base) => {
+      const response = await post(base, JSON.stringify({ owner: OWNER_DID, requestId: REQ1 }));
+      expect(response.status).toBe(202);
+      expect(await response.json()).toEqual(ACCEPTED);
+    }, createUnwiredExoPorts("https://app.example.test"));
+  });
+});
+
+describe("Exo wake route: every state-dependent outcome is the same response", () => {
+  const bodyFor = (requestId: string) => JSON.stringify({ owner: OWNER_DID, requestId });
+  const throwing = async (): Promise<never> => {
+    throw new Error("port failed");
+  };
+
+  type Built = { f: Fixture; ids: string[] };
+  type Case = {
+    label: string;
+    build: () => Built;
+    // Job codes the last request may be recorded with. undefined means no job record is written.
+    records: Array<string | undefined>;
+  };
+
+  function seeded(f: Fixture, ids: string[], capability: "sync-google" | "sync-fireflies"): Built {
+    for (const id of ids) f.seed(id, capability);
+    return { f, ids };
+  }
+  const newIds = (count: number) => Array.from({ length: count }, () => crypto.randomUUID());
+
+  const cases: Case[] = [
+    { label: "unverified", build: () => ({ f: fixture(), ids: [MISSING] }), records: [undefined] },
+    { label: "verified start", build: () => seeded(fixture(), [REQ1], "sync-google"), records: ["accepted"] },
+    { label: "replay", build: () => seeded(fixture(), [REQ1, REQ1], "sync-google"), records: ["accepted"] },
+    { label: "owner limited", build: () => seeded(fixture(), newIds(31), "sync-fireflies"), records: ["rate_limited"] },
+    { label: "attach limited", build: () => seeded(fixture(), newIds(22), "sync-fireflies"), records: ["rate_limited"] },
+    {
+      label: "cooldown",
+      build: () => seeded(fixture({ snapshot: { startsToday: 1, lastStartedAt: T0 - MINUTE_MS } }), [REQ1], "sync-google"),
+      records: ["rate_limited"],
+    },
+    {
+      label: "daily budget",
+      build: () => seeded(fixture({ snapshot: { startsToday: 300 } }), [REQ1], "sync-google"),
+      records: ["budget_exhausted"],
+    },
+    {
+      label: "connector off",
+      build: () => {
+        const built = seeded(fixture(), [REQ1], "sync-google");
+        built.f.ports.connectors = { isOn: async () => false, hasFirefliesWebhook: async () => false };
+        return built;
+      },
+      records: ["connector_off"],
+    },
+    {
+      label: "no executor",
+      build: () => {
+        const built = seeded(fixture(), [REQ1], "sync-google");
+        built.f.ports.executor = undefined;
+        return built;
+      },
+      records: ["unavailable"],
+    },
+    { label: "job store write fails", build: () => seeded(fixture({ storeFails: true }), [REQ1], "sync-google"), records: [undefined] },
+    {
+      label: "grant check throws",
+      build: () => {
+        const built = seeded(fixture(), [REQ1], "sync-google");
+        built.f.ports.grants = { isActive: throwing };
+        return built;
+      },
+      records: [undefined],
+    },
+    {
+      label: "request read throws",
+      build: () => {
+        const built = seeded(fixture(), [REQ1], "sync-google");
+        built.f.ports.requests = { get: throwing };
+        return built;
+      },
+      records: [undefined],
+    },
+    {
+      label: "connector check throws",
+      build: () => {
+        const built = seeded(fixture(), [REQ1], "sync-google");
+        built.f.ports.connectors = { isOn: throwing, hasFirefliesWebhook: async () => false };
+        return built;
+      },
+      records: ["unavailable"],
+    },
+    {
+      label: "ledger snapshot throws",
+      build: () => {
+        const built = seeded(fixture(), [REQ1], "sync-google");
+        built.f.ports.ledger = { ...createMemoryExoLedger(), snapshot: throwing };
+        return built;
+      },
+      records: ["unavailable"],
+    },
+    {
+      label: "ledger start write throws",
+      build: () => {
+        const built = seeded(fixture(), [REQ1], "sync-google");
+        built.f.ports.ledger = { ...createMemoryExoLedger(), recordStart: throwing };
+        return built;
+      },
+      records: ["unavailable"],
+    },
+    {
+      label: "executor start throws",
+      build: () => {
+        const built = seeded(fixture(), [REQ1], "sync-google");
+        built.f.ports.executor = { start: throwing };
+        return built;
+      },
+      // The pending record is written before the executor runs, and the failure settles it asynchronously.
+      records: ["accepted", "unavailable"],
+    },
+  ];
+
+  async function answerTo(f: Fixture, ids: string[]) {
+    const answer = await withWakeServer(async (base) => {
+      let status = 0;
+      let contentType: string | null = null;
+      let text = "";
+      for (const id of ids) {
+        const response = await post(base, bodyFor(id));
+        text = await response.text();
+        status = response.status;
+        contentType = response.headers.get("content-type");
+      }
+      return { status, contentType, text };
+    }, f.ports);
+    return { answer, record: f.jobs.get(`${OWNER}|${ids[ids.length - 1]}`)?.code };
+  }
+
+  test("every state-dependent outcome returns the same status, content type, and body", async () => {
+    const results: Array<{ label: string; answer: { status: number; contentType: string | null; text: string }; record: string | undefined; records: Array<string | undefined> }> = [];
+    for (const c of cases) {
+      const { f, ids } = c.build();
+      const { answer, record } = await answerTo(f, ids);
+      results.push({ label: c.label, answer, record, records: c.records });
+    }
+    const reference = results[0].answer;
+    expect(reference.status).toBe(202);
+    expect(JSON.parse(reference.text)).toEqual(ACCEPTED);
+    for (const r of results) {
+      expect([r.label, r.answer]).toEqual([r.label, reference]);
+      // Each case must reach the branch it names, so an identical answer is not a coincidence.
+      expect([r.label, r.records.includes(r.record)]).toEqual([r.label, true]);
+    }
   });
 });
