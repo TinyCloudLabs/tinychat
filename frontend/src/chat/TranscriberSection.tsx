@@ -11,6 +11,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type FC, type FormEvent } from "react";
 import type { SessionStore } from "@tinyboilerplate/client";
+import { meetingLinkFromInput } from "@tinyboilerplate/core";
 import { Loader2Icon, RefreshCwIcon } from "lucide-react";
 
 import { RouteLine } from "@/capture/recorder/RouteLine";
@@ -50,8 +51,10 @@ const AMBIGUOUS_CHECK_ATTEMPTS = 4;
 
 /** Keep equivalent pasted links on one client/server dedupe key. */
 export function normalizeMeetingUrl(raw: string): string | null {
+  const link = meetingLinkFromInput(raw);
+  if (link === null) return null;
   try {
-    const url = new URL(raw.trim());
+    const url = new URL(link);
     if (url.protocol !== "https:" && url.protocol !== "http:") return null;
     url.hash = "";
     if (url.pathname !== "/") url.pathname = url.pathname.replace(/\/+$/, "") || "/";
@@ -958,15 +961,17 @@ export function useMeetingBot({ backendUrl, sessionStore, client, calendar: cale
 
   const submit = useCallback(() => {
     const trimmed = url.trim();
-    const normalized = normalizeMeetingUrl(trimmed);
+    // Pasted forms (no https://, google.com/meet/<code>, a Calendar redirect) become the link ptx joins.
+    const link = meetingLinkFromInput(trimmed);
+    const normalized = link === null ? null : normalizeMeetingUrl(link);
     const checkingForUrl = checkingIntent?.normalizedUrl === normalized;
     if (trimmed.length === 0 || submitLatch.current || submitting || checkingForUrl || activeForForm) return;
-    if (normalized === null) {
+    if (link === null || normalized === null) {
       setFormError("That doesn't look like a meeting link.");
       return;
     }
     const input = {
-      meeting_url: trimmed,
+      meeting_url: link,
       ...(botName.trim() ? { bot_name: botName.trim() } : {}),
     };
     const intent = intentFor(normalized, input, terminalMeetingForUrl(meetings, normalized) ?? undefined);
