@@ -3,7 +3,6 @@ import { createExoActivatedGrant, type ExoActivatedGrant, type ExoKvAccess } fro
 import { createOwnerGrantOpener, createExoStorePorts, type ExoBackendKv } from "../exo/stores.js";
 import { EXO_NAMESPACE, JOB_MESSAGE, type ExoJobRecord } from "../exo/mailbox.js";
 import { EXO_JOBS_PREFIX, EXO_REQUESTS_PREFIX } from "../delegation-verify.js";
-import { EXO_SYNC_GRANT_KIND } from "@tinyboilerplate/server";
 import { GrantHolderIndex } from "../exo/grant-holders.js";
 
 // EIP-55 reference address (checksum case is part of the value).
@@ -118,9 +117,7 @@ function harness(options: HarnessOptions = {}) {
       readDisabled: async (address) =>
         options.disabled?.has(address) ? { revokedAt: "2026-01-01T00:00:00.000Z", source: "fireflies" } : null,
     },
-    grantHolders:
-      options.holders ??
-      new GrantHolderIndex({ list: async () => ({ ok: true, data: { keys: [`${EXO_SYNC_GRANT_KIND.keyPrefix}${OWNER_LC}`] } }) }),
+    grantHolders: options.holders ?? { mayHold: (address) => address === OWNER_LC, remove: () => {} },
     frontendOrigin: "https://app.example",
     now: () => NOW,
   });
@@ -303,6 +300,7 @@ describe("exo store ports: grants", () => {
   test("refuses an owner the holder index does not list, without opening a grant", async () => {
     const opened: string[] = [];
     const holders = new GrantHolderIndex({ list: async () => ({ ok: true, data: { keys: [] } }) });
+    await holders.refresh();
     const { ports } = harness({ holders, opened });
     expect(await ports.grants.isActive(OWNER_LC)).toBe(false);
     expect(opened).toEqual([]);
@@ -310,7 +308,7 @@ describe("exo store ports: grants", () => {
 
   test("drops an owner from the index when its grant does not open", async () => {
     const removed: string[] = [];
-    const holders = { mayHold: async () => true, remove: (address: string) => removed.push(address) };
+    const holders = { mayHold: () => true, remove: (address: string) => removed.push(address) };
     const { ports } = harness({ holders, grant: null });
     expect(await ports.grants.isActive(OWNER_LC)).toBe(false);
     expect(removed).toEqual([OWNER_LC]);
@@ -318,7 +316,7 @@ describe("exo store ports: grants", () => {
 
   test("keeps an owner in the index when its grant opens", async () => {
     const removed: string[] = [];
-    const holders = { mayHold: async () => true, remove: (address: string) => removed.push(address) };
+    const holders = { mayHold: () => true, remove: (address: string) => removed.push(address) };
     const { ports } = harness({ holders });
     expect(await ports.grants.isActive(OWNER_LC)).toBe(true);
     expect(removed).toEqual([]);
@@ -327,7 +325,7 @@ describe("exo store ports: grants", () => {
   test("refuses a non-address owner without consulting the index", async () => {
     const consulted: string[] = [];
     const holders = {
-      mayHold: async (address: string) => {
+      mayHold: (address: string) => {
         consulted.push(address);
         return true;
       },

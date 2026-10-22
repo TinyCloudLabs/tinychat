@@ -145,7 +145,7 @@ interface StackOptions {
 }
 
 /** Builds the flag-on mailbox from the durable state in `world`. Calling it again simulates a restart. */
-function buildStack(world: World, options: StackOptions = {}): Stack {
+async function buildStack(world: World, options: StackOptions = {}): Promise<Stack> {
   const grantHolders = new GrantHolderIndex(
     {
       list: async () => ({
@@ -155,6 +155,7 @@ function buildStack(world: World, options: StackOptions = {}): Stack {
     },
     () => world.clock.now,
   );
+  await grantHolders.refresh();
   const ports = createExoStorePorts({
     backendKv: world.backend,
     openOwnerGrant: async (address) => {
@@ -177,7 +178,7 @@ function buildStack(world: World, options: StackOptions = {}): Stack {
   };
   const queue = new WakeQueue();
   const app = express();
-  app.use("/api/exo/v1", createExoMailboxRouter({ ...ports, connectors, executor }, { queue }));
+  app.use("/api/exo/v1", createExoMailboxRouter({ ...ports, connectors, executor }, grantHolders, { queue }));
   return { app, queue };
 }
 
@@ -241,7 +242,7 @@ describe("exo flag-on end to end (real stores, real router, recording executor)"
     const world = newWorld([OWNER_A]);
     world.configs.set(OWNER_A, { source: "google-meet" });
     seedRequest(world, OWNER_A, "sync-google", R1);
-    const stack = buildStack(world);
+    const stack = await buildStack(world);
     await withServer(stack, async (base) => {
       const found = await post(base, OWNER_A, R1);
       const missing = await post(base, OWNER_A, R2);
@@ -258,7 +259,7 @@ describe("exo flag-on end to end (real stores, real router, recording executor)"
     const world = newWorld([OWNER_A]);
     world.configs.set(OWNER_A, { source: "google-meet" });
     seedRequest(world, OWNER_A, "sync-google", R1);
-    const stack = buildStack(world);
+    const stack = await buildStack(world);
     await withServer(stack, async (base) => {
       await post(base, OWNER_A, R1);
       await settle(stack);
@@ -274,7 +275,7 @@ describe("exo flag-on end to end (real stores, real router, recording executor)"
     const world = newWorld([OWNER_A, OWNER_B]);
     world.configs.set(OWNER_B, { source: "google-meet" });
     seedRequest(world, OWNER_A, "sync-google", R1);
-    const stack = buildStack(world);
+    const stack = await buildStack(world);
     await withServer(stack, async (base) => {
       const spaceA = world.spaces.get(OWNER_A)!;
       spaceA.reads.length = 0;
@@ -291,7 +292,7 @@ describe("exo flag-on end to end (real stores, real router, recording executor)"
     const world = newWorld([OWNER_A]);
     seedRequest(world, OWNER_A, "sync-meetings", R1);
     seedRequest(world, OWNER_A, "sync-meetings", R2);
-    const stack = buildStack(world, { connectorsAllOn: true });
+    const stack = await buildStack(world, { connectorsAllOn: true });
     await withServer(stack, async (base) => {
       await post(base, OWNER_A, R1);
       await settle(stack);
@@ -311,7 +312,7 @@ describe("exo flag-on end to end (real stores, real router, recording executor)"
     const world = newWorld([OWNER_A]);
     seedRequest(world, OWNER_A, "sync-fireflies", R1);
     seedRequest(world, OWNER_A, "sync-meetings", R2);
-    const stack = buildStack(world, { connectorsAllOn: true });
+    const stack = await buildStack(world, { connectorsAllOn: true });
     await withServer(stack, async (base) => {
       await post(base, OWNER_A, R1);
       await settle(stack);
@@ -328,7 +329,7 @@ describe("exo flag-on end to end (real stores, real router, recording executor)"
     const world = newWorld([OWNER_A]);
     seedRequest(world, OWNER_A, "sync-meetings", R1);
     seedRequest(world, OWNER_A, "sync-meetings", R2);
-    const stack = buildStack(world, { connectorsAllOn: true });
+    const stack = await buildStack(world, { connectorsAllOn: true });
     await withServer(stack, async (base) => {
       await post(base, OWNER_A, R1);
       await settle(stack);
@@ -349,7 +350,7 @@ describe("exo flag-on end to end (real stores, real router, recording executor)"
     seedRequest(world, OWNER_A, "sync-google", R2);
     seedRequest(world, OWNER_A, "sync-google", R3);
 
-    const before = buildStack(world);
+    const before = await buildStack(world);
     await withServer(before, async (base) => {
       await post(base, OWNER_A, R1);
       await settle(before);
@@ -359,7 +360,7 @@ describe("exo flag-on end to end (real stores, real router, recording executor)"
 
     // Restart: rebuild every in-memory piece over the same durable KV state.
     world.clock.now = NOW + MINUTE;
-    const after = buildStack(world);
+    const after = await buildStack(world);
     await withServer(after, async (base) => {
       await post(base, OWNER_A, R2);
       await settle(after);

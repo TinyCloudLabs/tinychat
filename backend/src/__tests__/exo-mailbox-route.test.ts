@@ -12,6 +12,8 @@ import {
 } from "../exo/mailbox.js";
 import { WakeQueue } from "../exo/wake-intake.js";
 import { createExoMailboxRouter, type ExoWakeOptions } from "../routes/exo-mailbox.js";
+import { EXO_SYNC_GRANT_KIND } from "@tinyboilerplate/server";
+import { GRANT_HOLDER_REFRESH_MS, GrantHolderIndex } from "../exo/grant-holders.js";
 
 const OWNER = `0x${"b".repeat(40)}`;
 const OWNER_DID = `did:pkh:eip155:1:${OWNER}`;
@@ -91,10 +93,11 @@ async function withWakeServer<T>(
   run: (base: string) => Promise<T>,
   ports: ExoMailboxPorts,
   options: ExoWakeOptions = {},
+  holders: Pick<GrantHolderIndex, "mayHold" | "refreshIfStale"> = { mayHold: () => true, refreshIfStale: () => {} },
 ): Promise<T> {
   const queue = options.queue ?? new WakeQueue();
   const app = express();
-  app.use("/api/exo/v1", createExoMailboxRouter(ports, { ...options, queue }));
+  app.use("/api/exo/v1", createExoMailboxRouter(ports, holders, { ...options, queue }));
   const listening = Promise.withResolvers<Server>();
   const server = app.listen(0, "127.0.0.1", () => listening.resolve(server));
   const bound = await listening.promise;
@@ -599,4 +602,57 @@ describe("Exo wake route: every state-dependent outcome is the same response", (
     expect(f.jobs.size).toBe(0);
     expect(f.runs).toBe(0);
   });
+});
+
+describe("Exo wake route: many unknown owners do not displace a held owner's wake", () => {
+  // Unknown owners are answered 202 and never queued, so a held owner's wake is queued and runs.
+  // The executor is gated so the queue would saturate if unknown owners were offered to it.
+  for (const flood of [1024, 4096]) {
+    test(`${flood} unknown owners leave a held owner's wake running`, async () => {
+      let t = 0;
+      const keys = [`${EXO_SYNC_GRANT_KIND.keyPrefix}${OWNER}`];
+      const index = new GrantHolderIndex({ async list() { return { ok: true, data: { keys } }; } }, () => t);
+      await index.refresh();
+      t = GRANT_HOLDER_REFRESH_MS;
+
+      const f = fixture();
+      f.seed(REQ1, "sync-google");
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      f.ports.executor = {
+        start: async () => {
+          await gate;
+          f.runs += 1;
+        },
+      };
+      const unknownAddress = (i: number) => `0x${i.toString(16).padStart(40, "0")}`;
+      const unknownDid = (i: number) => `did:pkh:eip155:1:${unknownAddress(i)}`;
+      // Each unknown owner has a verifiable request, so an offered wake would hold a queue slot.
+      for (let i = 1; i <= flood; i++) f.seed(REQ1, "sync-google", unknownAddress(i));
+      const statusOf = async (base: string, body: string): Promise<number> => {
+        const response = await send(base, body);
+        await response.arrayBuffer();
+        return response.status;
+      };
+
+      await withWakeServer(
+        async (base) => {
+          for (let start = 1; start <= flood; start += 256) {
+            const batch: Promise<number>[] = [];
+            for (let i = start; i < Math.min(start + 256, flood + 1); i++) batch.push(statusOf(base, bodyFor(REQ1, unknownDid(i))));
+            for (const status of await Promise.all(batch)) expect(status).toBe(202);
+          }
+          expect(await statusOf(base, bodyFor(REQ1, OWNER_DID))).toBe(202);
+          release();
+          await idleAt(base);
+          expect(f.runs).toBe(1);
+        },
+        f.ports,
+        {},
+        index,
+      );
+    });
+  }
 });

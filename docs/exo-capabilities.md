@@ -142,7 +142,7 @@ Client-side sign-out does not call these routes.
 
 ## Grant holder index
 
-Before a wake opens an owner's grant, the grant-holder index is checked (`backend/src/exo/stores.ts`, `backend/src/exo/grant-holders.ts`). An owner in the index is confirmed by opening the stored grant. An owner not in the index triggers at most one store listing per 5 seconds (`GRANT_HOLDER_REFRESH_MS`); concurrent checks share that listing, and a check inside the window reports no grant without reading the store. So a grant written by another process is seen by the first wake for that owner at least 5 seconds after the last listing. If the listing fails, the owner is reported as holding no grant.
+Before a wake opens an owner's grant, the grant-holder index is checked (`backend/src/exo/stores.ts`, `backend/src/exo/grant-holders.ts`). The check is memory-only and never reads the store. The index is seeded from one store listing at boot, before the exo router mounts. A wake for an owner not in the index is answered 202 and is not queued; the router then starts at most one background store listing per 5 seconds (`GRANT_HOLDER_REFRESH_MS`), and concurrent triggers share it. So a grant written by another process is seen once the next listing completes, and wakes for that owner until then are answered 202 and not run. If a listing fails, membership is kept and the failure is logged.
 
 ## Activated grant reach
 

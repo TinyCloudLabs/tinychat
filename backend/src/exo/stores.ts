@@ -89,7 +89,7 @@ export function createExoStorePorts(deps: ExoStoreDeps): Omit<ExoMailboxPorts, "
       isActive: async (owner) => {
         if (!OWNER_ADDRESS_RE.test(owner)) return false;
         const address = owner.toLowerCase();
-        if (!(await deps.grantHolders.mayHold(address))) return false;
+        if (!deps.grantHolders.mayHold(address)) return false;
         if ((await deps.openOwnerGrant(address)) !== null) return true;
         deps.grantHolders.remove(address);
         return false;

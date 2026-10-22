@@ -81,7 +81,7 @@ async function runIsolatedStartup(env: Record<string, string | undefined>) {
     // TC-1013 S4b: owner teardown wiring builds the grant opener at startup, outside the flag.
     "./exo/stores.js": { createOwnerGrantOpener: () => async () => null },
     // TC-1013 S4b: startup wires the grant-holder index and tracked grant store outside the flag.
-    "./exo/grant-holders.js": { GrantHolderIndex: function GrantHolderIndex() {}, createTrackedGrantStore: (store: unknown) => store },
+    "./exo/grant-holders.js": { GrantHolderIndex: class GrantHolderIndex { async refresh() {} }, createTrackedGrantStore: (store: unknown) => store },
     "./services/google-oauth.js": { googleMeetOAuthEnabled: () => false },
     // TC-641: the real default-off parser, so `transcriptDeliveryConfig` is a config, not undefined.
     "./services/transcription-api.js": {
@@ -821,7 +821,7 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
     "./exo/retention-sweep.js": { startExoRetentionSweepTimer: () => ({ stop: async () => {} }) },
     "./routes/exo-mailbox.js": { createExoMailboxRouter: router },
     // TC-1013 S4b: startup wires the grant-holder index and tracked grant store outside the flag.
-    "./exo/grant-holders.js": { GrantHolderIndex: function GrantHolderIndex() {}, createTrackedGrantStore: (store: unknown) => store },
+    "./exo/grant-holders.js": { GrantHolderIndex: class GrantHolderIndex { async refresh() {} }, createTrackedGrantStore: (store: unknown) => store },
     "./security.js": { applySecurityDefaults: noop },
     "./routes/nras-proxy.js": { createNrasProxyRouter: router },
     "./routes/assemblyai-hosted.js": { ASSEMBLYAI_HOSTED_MOUNT, createAssemblyAiHostedRouter, reconcileHostedJobs: async () => {} },

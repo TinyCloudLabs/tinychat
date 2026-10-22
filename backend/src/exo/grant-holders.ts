@@ -4,8 +4,8 @@ import { extractKeys } from "../services/connector-drain.js";
 export const OWNER_ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
 
 /**
- * The longest an owner missing from the index waits before the grant prefix is listed again. A
- * flood of unknown owners therefore costs one listing per window, not one read per request.
+ * The longest a grant written by another process stays unseen. One background listing runs per
+ * window, however many owners outside the index arrive.
  */
 export const GRANT_HOLDER_REFRESH_MS = 5_000;
 
@@ -15,12 +15,12 @@ export interface GrantHolderSource {
 }
 
 /**
- * In-memory over-approximation of the owners that may hold an exo sync grant.
+ * In-memory over-approximation of the owners that may hold an exo sync grant. The request path reads
+ * memory only; a listing runs in the background and is never awaited by a caller.
  *
- * Membership comes from this process's grant writes, from a listing of the grant prefix, and from
- * a load that finds a record. It is removed when a grant is deleted or does not open. A grant
- * written by another process is seen at the next listing, so for up to one window it reads as
- * inactive. A failed listing also fails closed for one window.
+ * Membership comes from this process's grant writes, from a listing of the grant prefix, and from a
+ * load that finds a record. It is removed when a grant is deleted or does not open. A grant written
+ * by another process appears at the next listing. A failed listing leaves membership unchanged.
  */
 export class GrantHolderIndex {
   private readonly holders = new Set<string>();
@@ -40,22 +40,33 @@ export class GrantHolderIndex {
     this.holders.delete(address.toLowerCase());
   }
 
+  /** True only for an owner in the set. Reads no store. */
+  mayHold(address: string): boolean {
+    return this.holders.has(address.toLowerCase());
+  }
+
   /**
-   * True only when the owner may hold a grant. An owner in the set returns without store reads.
-   * Otherwise at most one listing runs per window, and concurrent callers share it.
+   * Starts one background listing when the last one is older than the window. Returns nothing, so a
+   * request path cannot wait on the store.
    */
-  async mayHold(address: string): Promise<boolean> {
-    const owner = address.toLowerCase();
-    if (this.holders.has(owner)) return true;
-    if (this.refreshing === null) {
-      if (this.now() - this.lastRefreshAt < GRANT_HOLDER_REFRESH_MS) return false;
-      this.lastRefreshAt = this.now();
-      this.refreshing = this.load().finally(() => {
-        this.refreshing = null;
-      });
-    }
-    await this.refreshing;
-    return this.holders.has(owner);
+  refreshIfStale(): void {
+    if (this.refreshing !== null) return;
+    if (this.now() - this.lastRefreshAt < GRANT_HOLDER_REFRESH_MS) return;
+    this.start();
+  }
+
+  /** Lists now, joining a listing already in progress. Called at boot, before the router mounts. */
+  refresh(): Promise<void> {
+    return this.refreshing ?? this.start();
+  }
+
+  private start(): Promise<void> {
+    this.lastRefreshAt = this.now();
+    const listing = this.load().finally(() => {
+      this.refreshing = null;
+    });
+    this.refreshing = listing;
+    return listing;
   }
 
   private async load(): Promise<void> {

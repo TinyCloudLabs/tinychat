@@ -11,7 +11,7 @@ function addressFor(i: number): string {
   return `0x${i.toString(16).padStart(40, "0")}`;
 }
 
-/** A listing over fixed keys that records each prefix it was asked for. */
+/** A listing over the given keys array, which the test may mutate. Records each prefix it was asked for. */
 function listing(keys: string[]) {
   const calls: string[] = [];
   const source = {
@@ -35,31 +35,42 @@ function backingStore(loaded: unknown) {
 }
 
 describe("GrantHolderIndex", () => {
-  test("seeds from the grant prefix, so an existing holder is found after restart", async () => {
+  test("refresh seeds from the grant prefix, so an existing holder is held after restart", async () => {
     const { calls, source } = listing([`${PREFIX}${HELD}`]);
     const index = new GrantHolderIndex(source, () => 0);
-    expect(await index.mayHold(HELD)).toBe(true);
-    expect(await index.mayHold(OTHER)).toBe(false);
+    await index.refresh();
+    expect(index.mayHold(HELD)).toBe(true);
+    expect(index.mayHold(OTHER)).toBe(false);
     expect(calls).toEqual([PREFIX]);
   });
 
-  test("an owner outside the set costs one listing per refresh window, however many arrive", async () => {
+  test("mayHold reads memory only, so an unknown owner costs no listing", () => {
+    const { calls, source } = listing([]);
+    const index = new GrantHolderIndex(source, () => 0);
+    for (let i = 0; i < 1000; i++) expect(index.mayHold(addressFor(i))).toBe(false);
+    expect(calls).toEqual([]);
+  });
+
+  test("refreshIfStale lists at most once per window, however many unknown owners arrive", async () => {
     let t = 0;
     const { calls, source } = listing([]);
     const index = new GrantHolderIndex(source, () => t);
-    await Promise.all(Array.from({ length: 1000 }, (_, i) => index.mayHold(addressFor(i))));
+    for (let i = 0; i < 1000; i++) index.refreshIfStale();
+    expect(calls.length).toBe(1);
+    await index.refresh();
     expect(calls.length).toBe(1);
 
     t = GRANT_HOLDER_REFRESH_MS - 1;
-    expect(await index.mayHold(OTHER)).toBe(false);
+    index.refreshIfStale();
     expect(calls.length).toBe(1);
 
     t = GRANT_HOLDER_REFRESH_MS;
-    expect(await index.mayHold(OTHER)).toBe(false);
+    index.refreshIfStale();
     expect(calls.length).toBe(2);
+    await index.refresh();
   });
 
-  test("a genuine owner is not held behind a listing that is still in progress", async () => {
+  test("a held owner is answered while a background listing is in progress", async () => {
     let t = 0;
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {
@@ -76,21 +87,22 @@ describe("GrantHolderIndex", () => {
       },
       () => t,
     );
-    expect(await index.mayHold(HELD)).toBe(true);
+    await index.refresh();
 
     t = GRANT_HOLDER_REFRESH_MS;
-    const stalled = index.mayHold(addressFor(1));
-    expect(await index.mayHold(HELD)).toBe(true);
+    index.refreshIfStale();
+    expect(index.mayHold(HELD)).toBe(true);
 
     release();
-    expect(await stalled).toBe(false);
+    await index.refresh();
+    expect(index.mayHold(HELD)).toBe(true);
   });
 
-  test("a failed listing fails closed for one window and is logged", async () => {
+  test("a failed listing is logged once and leaves membership unchanged", async () => {
     let t = 0;
-    let fail = true;
+    let fail = false;
     const { source } = listing([`${PREFIX}${HELD}`]);
-    const failing = {
+    const flaky = {
       async list(prefix: string) {
         if (fail) throw new Error("kv down");
         return source.list(prefix);
@@ -102,17 +114,33 @@ describe("GrantHolderIndex", () => {
       logged.push(args);
     };
     try {
-      const index = new GrantHolderIndex(failing, () => t);
-      expect(await index.mayHold(HELD)).toBe(false);
-      fail = false;
-      t = GRANT_HOLDER_REFRESH_MS - 1;
-      expect(await index.mayHold(HELD)).toBe(false);
+      const index = new GrantHolderIndex(flaky, () => t);
+      await index.refresh();
+      fail = true;
       t = GRANT_HOLDER_REFRESH_MS;
-      expect(await index.mayHold(HELD)).toBe(true);
+      index.refreshIfStale();
+      await index.refresh();
+      expect(index.mayHold(HELD)).toBe(true);
     } finally {
       console.error = original;
     }
     expect(logged.length).toBe(1);
+  });
+
+  test("an owner granted by another process is held after the next window's listing", async () => {
+    let t = 0;
+    const keys: string[] = [];
+    const { source } = listing(keys);
+    const index = new GrantHolderIndex(source, () => t);
+    await index.refresh();
+
+    keys.push(`${PREFIX}${OTHER}`);
+    expect(index.mayHold(OTHER)).toBe(false);
+
+    t = GRANT_HOLDER_REFRESH_MS;
+    index.refreshIfStale();
+    await index.refresh();
+    expect(index.mayHold(OTHER)).toBe(true);
   });
 });
 
@@ -122,7 +150,7 @@ describe("createTrackedGrantStore", () => {
     const index = new GrantHolderIndex(source, () => 0);
     const tracked = createTrackedGrantStore(backingStore(null), index);
     await tracked.store(HELD_MIXED, "serialized", {} as never);
-    expect(await index.mayHold(HELD)).toBe(true);
+    expect(index.mayHold(HELD)).toBe(true);
     expect(calls).toEqual([]);
   });
 
@@ -132,8 +160,8 @@ describe("createTrackedGrantStore", () => {
     const tracked = createTrackedGrantStore(backingStore(null), index);
     await tracked.store(HELD, "serialized", {} as never);
     await tracked.remove(HELD);
-    expect(await index.mayHold(HELD)).toBe(false);
-    expect(calls).toEqual([PREFIX]);
+    expect(index.mayHold(HELD)).toBe(false);
+    expect(calls).toEqual([]);
   });
 
   test("a load that finds a record adds the owner; a load that finds none drops it", async () => {
@@ -141,12 +169,11 @@ describe("createTrackedGrantStore", () => {
     const index = new GrantHolderIndex(source, () => 0);
     const found = createTrackedGrantStore(backingStore({ serialized: "x" }), index);
     expect(await found.load(HELD)).toEqual({ serialized: "x" });
-    expect(await index.mayHold(HELD)).toBe(true);
-    expect(calls).toEqual([]);
+    expect(index.mayHold(HELD)).toBe(true);
 
     const missing = createTrackedGrantStore(backingStore(null), index);
     expect(await missing.load(HELD)).toBeNull();
-    expect(await index.mayHold(HELD)).toBe(false);
-    expect(calls).toEqual([PREFIX]);
+    expect(index.mayHold(HELD)).toBe(false);
+    expect(calls).toEqual([]);
   });
 });

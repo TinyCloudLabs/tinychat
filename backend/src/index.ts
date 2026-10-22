@@ -596,6 +596,9 @@ async function main() {
   let exoRetentionSweep: ExoRetentionSweepTimer | null = null;
   if (exoCapabilitiesEnabled(process.env)) {
     exoWakeQueue = new WakeQueue();
+    // The index starts empty. Load it before the router mounts, so a wake for an existing holder is not
+    // answered as an unknown owner after a restart.
+    await exoGrantHolders.refresh();
     const exoPorts = createExoStorePorts({
       backendKv: exoBackendKv,
       openOwnerGrant,
@@ -604,7 +607,7 @@ async function main() {
       grantHolders: exoGrantHolders,
       frontendOrigin: process.env.FRONTEND_URL ?? "https://localhost:5186",
     });
-    app.use("/api/exo/v1", createExoMailboxRouter(exoPorts, { queue: exoWakeQueue }));
+    app.use("/api/exo/v1", createExoMailboxRouter(exoPorts, exoGrantHolders, { queue: exoWakeQueue }));
     exoRetentionSweep = startExoRetentionSweepTimer({ kv: exoBackendKv, ports: exoPorts });
   }
 
