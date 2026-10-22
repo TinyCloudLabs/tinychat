@@ -866,6 +866,12 @@ describe("backend entry-point HTTP and lifecycle guards", () => {
     expect((await post(disabled.url!, path, "{}")).status).toBe(404);
   });
 
+  test("exo grant route is unmounted (404, before auth) when the exo flag is off", async () => {
+    const boot = await bootIndex();
+    expect((await fetch(boot.url! + "/api/exo/v1/grant")).status).toBe(404);
+    expect((await post(boot.url!, "/api/exo/v1/grant", "{}")).status).toBe(404);
+  });
+
   test("PTX webhook is dark by default and fails closed when armed without its receiver secret", async () => {
     const off = await bootIndex();
     const event = JSON.stringify({ type: "meeting.completed", data: { meeting_id: "meeting_1", metadata: { tinychat_address: "0x" + "a".repeat(40) } } });
