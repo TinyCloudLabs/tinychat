@@ -61,7 +61,7 @@ import {
   createTinychatShareLink,
   findStoredTinychatShareForThread,
   listOwnedTinychatShares,
-  revokeOwnedTinychatShare,
+  stopOwnedTinychatShare,
   type OwnedTinychatShare,
   type StoredTinychatShare,
 } from "@/lib/tinychatShareLinks";
@@ -329,11 +329,13 @@ const ShareThreadProvider: FC<{ tcw: TinyCloudWeb; children: React.ReactNode }> 
     setRevokingId(shareId);
     setError(null);
     try {
-      await revokeOwnedTinychatShare(tcw, shareId);
+      const stopped = await stopOwnedTinychatShare(tcw, shareId);
+      if (!stopped.ok) {
+        setError(stopped.message);
+        return;
+      }
       setShare((current) => (current?.id === shareId ? null : current));
       await refreshOwnedShares();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setRevokingId(null);
     }

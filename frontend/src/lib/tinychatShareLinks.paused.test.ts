@@ -97,4 +97,24 @@ describe("chat sharing paused", () => {
     expect(canOfferChatShare(false)).toBe(false);
     expect(canOfferChatShare(true)).toBe(true);
   });
+
+  it("lists no owned shares and reads no KV while paused", async () => {
+    const { listOwnedTinychatShares } = await loadShareModule();
+    let kvCalls = 0;
+    const tcw = {
+      kv: {
+        list: async () => {
+          kvCalls++;
+          throw new Error("KV list must not be reached");
+        },
+        get: async () => {
+          kvCalls++;
+          throw new Error("KV get must not be reached");
+        },
+      },
+    } as never;
+
+    expect(await listOwnedTinychatShares(tcw)).toEqual([]);
+    expect(kvCalls).toBe(0);
+  });
 });

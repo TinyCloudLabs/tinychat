@@ -83,7 +83,7 @@ const MESSAGE_ROWS: Record<string, string[]> = {
 // Fake SDK surface: KV is an in-memory map, sharing records each grant request.
 // Rows for settings, memory and compactions exist in the fake database, so a
 // snapshot that read them would contain the markers.
-function fakeChatTcw(options: { failGrant?: boolean } = {}) {
+function fakeChatTcw(options: { failGrant?: boolean; failRevoke?: boolean } = {}) {
   const kv = new Map<string, string>();
   const grants: Array<{ path: string; actions: string[]; expiry: Date }> = [];
   const revoked: string[] = [];
@@ -127,15 +127,20 @@ function fakeChatTcw(options: { failGrant?: boolean } = {}) {
         if (options.failGrant) return { ok: false, error: { message: "Controlled grant failure" } };
         return { ok: true, data: { token: `sdk-token-${grants.length}`, expiresAt: args.expiry } };
       },
-      decodeLink: (sdkToken: string) => ({
-        host: "https://node.example",
-        spaceId: "space",
-        keyDid: "did:key:z6MkKey#key-1",
-        key: { kty: "OKP" },
-        delegation: { cid: `cid-${sdkToken}` },
-      }),
+      decodeLink: (sdkToken: string) => {
+        const grant = grants[Number(sdkToken.replace("sdk-token-", "")) - 1];
+        return {
+          host: "https://node.example",
+          spaceId: "space",
+          keyDid: "did:key:z6MkKey#key-1",
+          key: { kty: "OKP" },
+          delegation: { cid: `cid-${sdkToken}` },
+          path: grant?.path,
+        };
+      },
     },
     revokeDelegation: async (cid: string) => {
+      if (options.failRevoke) return { ok: false, error: { message: "Controlled revoke failure" } };
       revoked.push(cid);
       return { ok: true, data: {} };
     },
@@ -148,6 +153,42 @@ afterEach(() => {
   (globalThis as { HTMLElement?: unknown }).HTMLElement = originalHTMLElement;
   (globalThis as { customElements?: unknown }).customElements = originalCustomElements;
 });
+
+function encodeShareToken(payload: object): string {
+  return `tcchat1:${btoa(JSON.stringify(payload)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")}`;
+}
+
+function snapshotJson(text: string): string {
+  return JSON.stringify({
+    format: "tinychat.share.snapshot",
+    version: 1,
+    title: "Stored",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    messages: [{ role: "user", text, timestamp: "2026-01-01T00:00:00.000Z" }],
+  });
+}
+
+// Viewer-side KV fake: records every path the viewer asks for.
+function viewerKv(kv: Map<string, string>, opened: string[]) {
+  return {
+    get: async (path: string) => {
+      opened.push(path);
+      return kv.has(path)
+        ? { ok: true, data: { data: kv.get(path) } }
+        : { ok: false, error: { message: "not found" } };
+    },
+  } as never;
+}
+
+// The decoder must refuse the token before any KV is opened: the opener throws if it runs.
+async function expectViewerRefuses(payload: object, name: string): Promise<void> {
+  const { loadSharedThreadFromToken } = await loadShareModule();
+  await expect(
+    loadSharedThreadFromToken(encodeShareToken(payload), async () => {
+      throw new Error(`${name}: opener must not be called`);
+    }),
+  ).rejects.toThrow("Unsupported TinyCloud Chat share link");
+}
 
 describe("tinychat share links", () => {
   it("rejects sharing a local validation thread before invoking the SDK", async () => {
@@ -168,7 +209,7 @@ describe("tinychat share links", () => {
 
   it("creates the share grant on the snapshot key with only the get action", async () => {
     const { createTinychatShareLink } = await loadShareModule();
-    const { THREADS_SQL_DB_NAME } = await import("./threadStore");
+    const { THREADS_SQL_DB_NAME } = await import("./threadKeys");
     installStorage();
     const chat = fakeChatTcw();
 
@@ -198,7 +239,7 @@ describe("tinychat share links", () => {
 
   it("the snapshot writer creates keys only directly under the shares prefix", async () => {
     const { createTinychatShareLink } = await loadShareModule();
-    const { THREADS_SQL_DB_NAME } = await import("./threadStore");
+    const { THREADS_SQL_DB_NAME } = await import("./threadKeys");
     installStorage();
     const chat = fakeChatTcw();
 
@@ -415,5 +456,78 @@ describe("tinychat share links", () => {
 
     expect(stored.acceptedAt).toBe("2026-01-01T00:00:00.000Z");
     expect(findStoredTinychatShareForThread("thread-1")?.id).toBe("created-share");
+  });
+
+  it("a viewer reads only the granted path, never the payload key", async () => {
+    const { createTinychatShareLink, loadSharedThreadFromToken } = await loadShareModule();
+    installStorage();
+    const chat = fakeChatTcw();
+    const a = await createTinychatShareLink(chat.tcw, "thread-a");
+    const b = await createTinychatShareLink(chat.tcw, "thread-b");
+    // The payload key stays on share A; the grant covers share B's snapshot path.
+    const crossed = { ...a.payload, kv: { ...a.payload.kv, path: b.payload.key } };
+    const opened: string[] = [];
+
+    const thread = await loadSharedThreadFromToken(encodeShareToken(crossed), async () => viewerKv(chat.kv, opened));
+
+    expect(opened).toEqual([b.payload.key]);
+    expect(JSON.stringify(thread)).toContain(THREAD_B_TEXT);
+    expect(JSON.stringify(thread)).not.toContain(THREAD_A_TEXT);
+  });
+
+  it("a viewer refuses a token whose paths or id are not snapshot records", async () => {
+    const { createTinychatShareLink } = await loadShareModule();
+    const { SNAPSHOT_KEY_PREFIX, shareIndexKeyFor } = await import("./shareRecords");
+    installStorage();
+    const chat = fakeChatTcw();
+    const { payload } = await createTinychatShareLink(chat.tcw, "thread-a");
+    const id = payload.id;
+    const refused: Array<[string, object]> = [
+      ["traversal out of the shares folder", { ...payload, kv: { ...payload.kv, path: `${SNAPSHOT_KEY_PREFIX}../share-index/${id}` } }],
+      ["owner index key as the granted path", { ...payload, kv: { ...payload.kv, path: shareIndexKeyFor(id) } }],
+      ["extra path segment", { ...payload, kv: { ...payload.kv, path: `${payload.key}/extra` } }],
+      ["owner index key as the payload key", { ...payload, key: shareIndexKeyFor(id) }],
+      ["non-UUID share id", { ...payload, id: "not-a-uuid" }],
+    ];
+    for (const [name, candidate] of refused) {
+      await expectViewerRefuses(candidate, name);
+    }
+  });
+
+  it("a viewer refuses a stored snapshot over 256 KiB before parsing it", async () => {
+    const { createTinychatShareLink, loadSharedThreadFromToken } = await loadShareModule();
+    installStorage();
+    const chat = fakeChatTcw();
+    const { token, payload } = await createTinychatShareLink(chat.tcw, "thread-a");
+    // Valid snapshot JSON: only the size bound can reject it.
+    chat.kv.set(payload.key, snapshotJson(OVERSIZED_TEXT));
+    const opened: string[] = [];
+
+    await expect(loadSharedThreadFromToken(token, async () => viewerKv(chat.kv, opened))).rejects.toThrow(
+      "This shared chat could not be read",
+    );
+    expect(opened).toEqual([payload.key]);
+  });
+
+  it("a failed stop keeps the share listed, deletes nothing, and returns only the fixed message", async () => {
+    const {
+      createTinychatShareLink,
+      listOwnedTinychatShares,
+      listStoredTinychatShares,
+      stopOwnedTinychatShare,
+      SHARE_STOP_FAILED_MESSAGE,
+    } = await loadShareModule();
+    installStorage();
+    const chat = fakeChatTcw({ failRevoke: true });
+    const result = await createTinychatShareLink(chat.tcw, "thread-a");
+    const before = new Map(chat.kv);
+
+    const outcome = await stopOwnedTinychatShare(chat.tcw, result.payload.id);
+
+    expect(outcome).toEqual({ ok: false, message: SHARE_STOP_FAILED_MESSAGE });
+    expect(JSON.stringify(outcome)).not.toContain("Controlled revoke failure");
+    expect(chat.kv).toEqual(before);
+    expect(await listOwnedTinychatShares(chat.tcw)).toMatchObject([{ shareId: result.payload.id }]);
+    expect(listStoredTinychatShares()).toHaveLength(1);
   });
 });
