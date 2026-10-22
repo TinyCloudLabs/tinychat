@@ -196,6 +196,20 @@ describe("tinychat share links", () => {
     });
   });
 
+  it("the snapshot writer creates keys only directly under the shares prefix", async () => {
+    const { createTinychatShareLink } = await loadShareModule();
+    const { THREADS_SQL_DB_NAME } = await import("./threadStore");
+    installStorage();
+    const chat = fakeChatTcw();
+
+    const result = await createTinychatShareLink(chat.tcw, "thread-a");
+
+    const sharesPrefix = `${THREADS_SQL_DB_NAME}/shares/`;
+    const shareKeys = [...chat.kv.keys()].filter((key) => key.startsWith(sharesPrefix));
+    expect(shareKeys).toEqual([result.payload.key]);
+    expect(result.payload.key.slice(sharesPrefix.length)).not.toContain("/");
+  });
+
   it("a snapshot keeps only the text parts of each message", async () => {
     const { buildShareSnapshot } = await loadShareModule();
     const snapshot = buildShareSnapshot(
