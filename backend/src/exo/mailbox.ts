@@ -351,11 +351,12 @@ export async function handleWake(ports: ExoMailboxPorts, body: unknown): Promise
     if (!(await ports.jobs.putIfAbsent(owner, requestId, job))) return unavailable();
     await ports.ledger.recordStart(owner, capability, requestId, now);
 
-    // Not awaited, and started after the lane task returns. A throw or rejection settles the run as unavailable.
+    // Not awaited, and started after the lane task returns. Each report settles or logs; none rejects into the executor.
+    const reportSafely = (update: ExecutorUpdate) =>
+      reportRun(ports, owner, capability, requestId, update).catch(() => console.error("[exo] job state update failed"));
     void Promise.resolve()
-      .then(() => executor.start(job, (update) => reportRun(ports, owner, capability, requestId, update)))
-      .catch(() => reportRun(ports, owner, capability, requestId, { state: "error", code: "unavailable" }))
-      .catch(() => console.error("[exo] job state update failed"));
+      .then(() => executor.start(job, reportSafely))
+      .catch(() => reportSafely({ state: "error", code: "unavailable" }));
 
     return acceptedBody(job);
   });

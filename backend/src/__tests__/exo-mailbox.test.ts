@@ -374,6 +374,16 @@ describe("Exo executor wiring", () => {
     expect(h.job(REQ1)).toMatchObject({ state: "error", code: "unavailable", message: "Sync unavailable." });
     expect(await h.wake(REQ1)).toMatchObject({ status: 202, body: { jobId: REQ1, state: "error", code: "unavailable" } });
   });
+
+  test("a report whose store write fails resolves instead of rejecting into the executor", async () => {
+    const h = harness();
+    h.seed(REQ1, "sync-google");
+    await h.wake(REQ1);
+    h.ports.jobs.put = async () => {
+      throw new Error("store down");
+    };
+    await expect(h.runs[0].report({ state: "running", code: "running" })).resolves.toBeUndefined();
+  });
 });
 
 describe("Exo active run TTL", () => {
