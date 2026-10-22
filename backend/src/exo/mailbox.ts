@@ -218,16 +218,26 @@ function withOwnerLane<T>(owner: string, task: () => Promise<T>): Promise<T> {
   return run;
 }
 
+/** States and codes an executor may report. Anything else settles the job as an error with code unavailable. */
+const EXECUTOR_STATES: Record<ExecutorUpdate["state"], true> = { running: true, done: true, error: true };
+const EXECUTOR_MESSAGE: Record<ExecutorUpdate["code"], ExoJobMessage> = {
+  running: JOB_MESSAGE.running,
+  done: JOB_MESSAGE.done,
+  unavailable: JOB_MESSAGE.unavailable,
+};
+
 /** Moves a non-terminal job to the update's state and code. Terminal records are never overwritten. */
 async function settle(ports: ExoMailboxPorts, owner: string, jobId: string, update: ExecutorUpdate): Promise<void> {
   const current = parseJobRecord(await ports.jobs.get(owner, jobId));
   if (!current || current.state === "done" || current.state === "error") return;
+  const valid = Object.hasOwn(EXECUTOR_STATES, update.state) && Object.hasOwn(EXECUTOR_MESSAGE, update.code);
+  const next: ExecutorUpdate = valid ? update : { state: "error", code: "unavailable" };
   const updatedAt = new Date(ports.now()).toISOString();
   await ports.jobs.put(owner, jobId, {
     ...current,
-    state: update.state,
-    code: update.code,
-    message: JOB_MESSAGE[update.code],
+    state: next.state,
+    code: next.code,
+    message: EXECUTOR_MESSAGE[next.code],
     updatedAt,
   });
 }

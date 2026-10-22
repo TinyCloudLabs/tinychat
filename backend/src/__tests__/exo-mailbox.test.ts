@@ -365,6 +365,15 @@ describe("Exo executor wiring", () => {
     expect(await h.wake(REQ1)).toEqual(UNIFORM);
     expect(h.runs).toHaveLength(0);
   });
+
+  test("an executor code outside the vocabulary settles the job as unavailable and replays as 202", async () => {
+    const h = harness();
+    h.seed(REQ1, "sync-google");
+    await h.wake(REQ1);
+    await h.runs[0].report({ state: "running", code: "Some Title" } as unknown as ExecutorUpdate);
+    expect(h.job(REQ1)).toMatchObject({ state: "error", code: "unavailable", message: "Sync unavailable." });
+    expect(await h.wake(REQ1)).toMatchObject({ status: 202, body: { jobId: REQ1, state: "error", code: "unavailable" } });
+  });
 });
 
 describe("Exo active run TTL", () => {
