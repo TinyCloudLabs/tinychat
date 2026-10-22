@@ -31,6 +31,11 @@ export interface DelegationGrantKind {
   keyPrefix: string;
   /** True only for the store whose records were written before `kind` existed. Those records read as this kind. */
   acceptsUnkindedRecords: boolean;
+  /**
+   * True when store() accepts only a JSON envelope whose `format` is exactly `envelopeFormat`.
+   * False keeps the connector behavior: opaque strings are accepted and the route verifies them.
+   */
+  strictEnvelope: boolean;
 }
 
 /** Connector (transcript-writer) grants. Records written before `kind` existed live under this prefix. */
@@ -39,6 +44,7 @@ export const TRANSCRIPT_WRITER_GRANT_KIND: DelegationGrantKind = {
   envelopeFormat: "tinychat.transcript-writer-grant",
   keyPrefix: "delegations/",
   acceptsUnkindedRecords: true,
+  strictEnvelope: false,
 };
 
 /** Exo sync grants. Own key prefix so they never overwrite or read connector records. */
@@ -47,6 +53,7 @@ export const EXO_SYNC_GRANT_KIND: DelegationGrantKind = {
   envelopeFormat: "tinychat.exo-sync-grant",
   keyPrefix: "delegations/exo-sync/",
   acceptsUnkindedRecords: false,
+  strictEnvelope: true,
 };
 
 // ── Delegation Store ─────────────────────────────────────────────────
@@ -72,7 +79,7 @@ export class DelegationStore {
     metadata: DelegationMetadata,
   ): Promise<void> {
     const key = this.keyFor(identifier);
-    if (this.isOtherKindEnvelope(serialized)) {
+    if (!this.isAcceptableEnvelope(serialized)) {
       throw new Error(`Delegation envelope is not a ${this.grant.kind} grant`);
     }
     const record: StoredDelegation = {
@@ -170,21 +177,23 @@ export class DelegationStore {
     return new Date(stored.expiresAt).getTime() > Date.now();
   }
 
-  // Envelopes that declare a format must declare this kind's format. Opaque strings are not
-  // classified here; the route verifies the grant before it reaches the store.
-  private isOtherKindEnvelope(serialized: string): boolean {
+  // Strict kinds accept only a JSON object whose format is this kind's format. Other kinds refuse
+  // only envelopes that declare a different format; opaque strings pass to the route's verifier.
+  private isAcceptableEnvelope(serialized: string): boolean {
     let parsed: unknown;
     try {
       parsed = JSON.parse(serialized);
     } catch {
-      return false;
+      return !this.grant.strictEnvelope;
     }
-    return (
-      typeof parsed === "object" &&
-      parsed !== null &&
-      "format" in parsed &&
-      parsed.format !== this.grant.envelopeFormat
-    );
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      return !this.grant.strictEnvelope;
+    }
+    const declared = (parsed as { format?: unknown }).format;
+    if (this.grant.strictEnvelope) {
+      return declared === this.grant.envelopeFormat;
+    }
+    return !("format" in parsed) || declared === this.grant.envelopeFormat;
   }
 
   private keyFor(identifier: string): string {

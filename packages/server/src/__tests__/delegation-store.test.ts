@@ -492,6 +492,30 @@ describe("DelegationStore grant kind binding", () => {
     expect(node.kv.put).not.toHaveBeenCalled();
   });
 
+  // B3: the exo store is the only place the exo grant lands. It must not accept anything but a
+  // JSON envelope carrying this kind's exact format; opaque strings and format-less JSON are refused.
+  test("exo-sync store refuses an opaque serialized value before any write", async () => {
+    const node = createMockNode();
+    const exo = new DelegationStore(node as any, EXO_SYNC_GRANT_KIND);
+    await expect(exo.store("0xABC", "base64-encoded-delegation", meta)).rejects.toThrow(/not a exo-sync grant/);
+    expect(node.kv.put).not.toHaveBeenCalled();
+  });
+
+  test("exo-sync store refuses JSON that declares no format before any write", async () => {
+    const node = createMockNode();
+    const exo = new DelegationStore(node as any, EXO_SYNC_GRANT_KIND);
+    await expect(exo.store("0xABC", JSON.stringify({ v: 1, delegation: "x" }), meta)).rejects.toThrow(/not a exo-sync grant/);
+    expect(node.kv.put).not.toHaveBeenCalled();
+  });
+
+  test("exo-sync store refuses non-object JSON before any write", async () => {
+    const node = createMockNode();
+    const exo = new DelegationStore(node as any, EXO_SYNC_GRANT_KIND);
+    await expect(exo.store("0xABC", JSON.stringify(["tinychat.exo-sync-grant"]), meta)).rejects.toThrow(/not a exo-sync grant/);
+    expect(node.kv.put).not.toHaveBeenCalled();
+  });
+
+
   test("transcript-writer store returns null for a record tagged exo-sync", async () => {
     const node = createMockNode();
     node.kv.get = mock(() => Promise.resolve({ data: JSON.stringify({ ...makeDelegation(), kind: "exo-sync" }) }));
