@@ -166,7 +166,6 @@ describe("createExoActivatedGrant list and put", () => {
 
 describe("exo accessor key hardening", () => {
   const requests = `${EXO_REQUESTS_PREFIX}sync-meetings/`;
-  const path = `${requests}abc`;
   const badKeys = [
     `${requests}abc\u0000`,
     `${requests}ab\u0007c`,
