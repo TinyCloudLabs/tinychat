@@ -143,7 +143,7 @@ function fakeChatTcw(options: { failGrant?: boolean; failRevoke?: boolean; failD
       },
     },
     revokeDelegation: async (cid: string) => {
-      if (options.failRevoke) return { ok: false, error: { message: "Controlled revoke failure" } };
+      if (options.failRevoke) return { ok: false, error: { code: "REVOCATION_FAILED", message: "Controlled revoke failure" } };
       revoked.push(cid);
       return { ok: true, data: {} };
     },
@@ -583,5 +583,29 @@ describe("tinychat share links", () => {
     expect(chat.revoked).toEqual(["cid-sdk-token-1"]);
     expect(chat.deleted).toEqual([result.payload.key]);
     expect(await listOwnedTinychatShares(chat.tcw)).toMatchObject([{ shareId: result.payload.id }]);
+  });
+
+  it("a retry after a cleanup failure completes the cleanup with no error", async () => {
+    const {
+      createTinychatShareLink,
+      listOwnedTinychatShares,
+      listStoredTinychatShares,
+      stopOwnedTinychatShare,
+    } = await loadShareModule();
+    installStorage();
+    const flags = { failDelete: true };
+    const chat = fakeChatTcw(flags);
+    const result = await createTinychatShareLink(chat.tcw, "thread-a");
+    expect(await stopOwnedTinychatShare(chat.tcw, result.payload.id)).toEqual({ ok: false, stage: "cleanup" });
+
+    flags.failDelete = false;
+    const retry = await stopOwnedTinychatShare(chat.tcw, result.payload.id);
+
+    expect(retry).toEqual({ ok: true });
+    // The retry revokes the same CID again; the node answers success, so the stop proceeds.
+    expect(chat.revoked).toEqual(["cid-sdk-token-1", "cid-sdk-token-1"]);
+    expect(chat.kv.has(result.payload.key)).toBe(false);
+    expect(await listOwnedTinychatShares(chat.tcw)).toEqual([]);
+    expect(listStoredTinychatShares()).toEqual([]);
   });
 });

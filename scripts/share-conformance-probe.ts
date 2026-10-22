@@ -264,6 +264,7 @@ async function main(): Promise<void> {
   await probe("revokeShareFromLaterOwnerSession", "REPORT", () => laterOwner.revokeDelegation(delegation.cid));
   await probe("viewerReadAAfterLaterRevokeAttempt", "REPORT", () => viewerKv.get(keyA, { source: "network" }));
   await probe("revokeShareAsOwnerPrimary", "ALLOWED", () => owner.revokeDelegation(delegation.cid));
+  await probe("revokeShareTwice", "REPORT", () => owner.revokeDelegation(delegation.cid));
   await probe("ownerReadAAfterRevoke control", "ALLOWED", () => owner.kv.get(keyA, { source: "network" }));
   await probe("viewerReadAAfterRevoke", "REFUSED", () => viewerKv.get(keyA, { source: "network" }));
   print("IDENTIFIER revocation receives the delegation CID only; the share key is not supplied");
