@@ -1,0 +1,159 @@
+import { afterEach, describe, expect, it, mock } from "bun:test";
+
+// Runs only inside a child `bun test` process (see tinychatShareLinks.test.ts),
+// so the chatSharing mock cannot reach the paused-behaviour tests.
+mock.module("./chatSharing", () => ({
+  CHAT_SHARING_PAUSED: false,
+  ChatSharingPausedError: class ChatSharingPausedError extends Error {},
+  canOfferChatShare: () => true,
+}));
+
+const originalWindow = globalThis.window;
+const originalHTMLElement = (globalThis as { HTMLElement?: unknown }).HTMLElement;
+const originalCustomElements = (globalThis as { customElements?: unknown }).customElements;
+
+type ShareModule = typeof import("./tinychatShareLinks");
+
+async function loadShareModule(): Promise<ShareModule> {
+  (globalThis as { HTMLElement?: unknown }).HTMLElement ??= class HTMLElement {};
+  (globalThis as { customElements?: unknown }).customElements ??= {
+    define: () => {},
+    get: () => undefined,
+  };
+  return import("./tinychatShareLinks");
+}
+
+function installStorage() {
+  const storage = new Map<string, string>();
+  const localStorage = {
+    getItem: (key: string) => storage.get(key) ?? null,
+    setItem: (key: string, value: string) => {
+      storage.set(key, value);
+    },
+    removeItem: (key: string) => {
+      storage.delete(key);
+    },
+    clear: () => storage.clear(),
+    key: () => null,
+    length: 0,
+  } as Storage;
+  (globalThis as { window?: unknown }).window = { localStorage };
+  return storage;
+}
+
+function token(expiresAt: string, id = "share-1"): string {
+  const payload = {
+    format: "tinychat.share",
+    version: 1,
+    id,
+    threadId: "thread-1",
+    title: "Shared chat",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    expiresAt,
+    sql: {
+      host: "https://node.example",
+      spaceId: "space",
+      keyDid: "did:key:z6MkKey#key-1",
+      key: { kty: "OKP" },
+      delegation: { cid: "bafydelegation" },
+    },
+  };
+  return `tcchat1:${btoa(JSON.stringify(payload)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")}`;
+}
+
+afterEach(() => {
+  (globalThis as { window?: unknown }).window = originalWindow;
+  (globalThis as { HTMLElement?: unknown }).HTMLElement = originalHTMLElement;
+  (globalThis as { customElements?: unknown }).customElements = originalCustomElements;
+});
+
+describe("tinychat share links", () => {
+  it("rejects sharing a local validation thread before invoking the SDK", async () => {
+    const { createTinychatShareLink } = await loadShareModule();
+    const { useLocalThreadStorage, appendMessage } = await import("./threadStore");
+    let sdkCalls = 0;
+    const tcw = useLocalThreadStorage({
+      sql: { db: () => { throw new Error("Production SQL must not be reached"); } },
+      sharing: { generate: async () => { sdkCalls++; throw new Error("SDK sharing must not be reached"); } },
+    } as never);
+    await appendMessage(tcw, "local-share", {
+      message: { id: "local-user", role: "user", content: [{ type: "text", text: "Controlled local chat" }] },
+    } as never);
+
+    await expect(createTinychatShareLink(tcw, "local-share")).rejects.toThrow("Sharing is disabled during local validation");
+    expect(sdkCalls).toBe(0);
+  });
+
+  it("preserves SDK share generation for a normal client", async () => {
+    const { createTinychatShareLink } = await loadShareModule();
+    const { DEFAULT_MODEL, THREADS_SQL_DB_NAME } = await import("./threadStore");
+    const generated: unknown[] = [];
+    const item = { message: { id: "normal-user", role: "user", content: [{ type: "text", text: "Controlled normal chat" }] } };
+    const db = {
+      batch: async () => ({ ok: true, data: { rows: [] } }),
+      query: async (sql: string) => ({ ok: true, data: { rows: sql.includes("FROM threads")
+        ? [["normal-share", "Controlled chat", DEFAULT_MODEL, "2026-09-15", "2026-09-15"]]
+        : [[JSON.stringify(item)]] } }),
+    };
+    const tcw = {
+      sql: { db: () => db },
+      sharing: { generate: async (args: unknown) => {
+        generated.push(args);
+        return { ok: false, error: { message: "Controlled SDK generation reached" } };
+      } },
+    } as never;
+    await expect(createTinychatShareLink(tcw, "normal-share")).rejects.toThrow("Controlled SDK generation reached");
+    expect(generated).toHaveLength(1);
+    expect(generated[0]).toMatchObject({ path: THREADS_SQL_DB_NAME, actions: ["tinycloud.sql/read"] });
+  });
+
+  it("decodes a tinychat share token", async () => {
+    const { decodeTinychatShareToken } = await loadShareModule();
+    const decoded = decodeTinychatShareToken(token("2999-01-01T00:00:00.000Z"));
+
+    expect(decoded.threadId).toBe("thread-1");
+    expect(decoded.title).toBe("Shared chat");
+  });
+
+  it("stores non-expired shares newest first and de-dupes by id", async () => {
+    const { findStoredTinychatShareForThread, listStoredTinychatShares, saveTinychatShareToken } =
+      await loadShareModule();
+    installStorage();
+
+    const first = saveTinychatShareToken(token("2999-01-01T00:00:00.000Z", "same"));
+    const second = saveTinychatShareToken(token("2999-01-01T00:00:00.000Z", "same"));
+    const shares = listStoredTinychatShares();
+
+    expect(first.id).toBe("same");
+    expect(second.id).toBe("same");
+    expect(shares).toHaveLength(1);
+    expect(shares[0].token).toBe(second.token);
+    expect(findStoredTinychatShareForThread("thread-1")?.token).toBe(second.token);
+  });
+
+  it("rejects expired shares", async () => {
+    const { saveTinychatShareToken } = await loadShareModule();
+    installStorage();
+
+    expect(() => saveTinychatShareToken(token("2000-01-01T00:00:00.000Z"))).toThrow(
+      "expired",
+    );
+  });
+
+  it("stores created shares at their createdAt timestamp", async () => {
+    const { findStoredTinychatShareForThread, saveCreatedTinychatShare } =
+      await loadShareModule();
+    installStorage();
+    const expiresAt = "2999-01-01T00:00:00.000Z";
+    const shareToken = token(expiresAt, "created-share");
+    const payload = {
+      ...JSON.parse(atob(shareToken.slice("tcchat1:".length))),
+      expiresAt,
+    };
+
+    const stored = saveCreatedTinychatShare(shareToken, payload);
+
+    expect(stored.acceptedAt).toBe("2026-01-01T00:00:00.000Z");
+    expect(findStoredTinychatShareForThread("thread-1")?.id).toBe("created-share");
+  });
+});
