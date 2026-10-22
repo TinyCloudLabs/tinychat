@@ -365,34 +365,38 @@ describe("Exo wake route: every state-dependent outcome is the same response", (
     },
   ];
 
-  async function answerTo(f: Fixture, ids: string[]) {
-    const answer = await withWakeServer(async (base) => {
-      let status = 0;
-      let contentType: string | null = null;
-      let text = "";
-      for (const id of ids) {
-        const response = await post(base, bodyFor(id));
-        text = await response.text();
-        status = response.status;
-        contentType = response.headers.get("content-type");
-      }
-      return { status, contentType, text };
-    }, f.ports);
-    return { answer, record: f.jobs.get(`${OWNER}|${ids[ids.length - 1]}`)?.code };
+  // Everything a caller can see: status, every header except Date (sorted by name), and the body bytes.
+  async function wireOf(response: Response): Promise<string> {
+    const headers = [...response.headers.entries()]
+      .filter(([name]) => name !== "date")
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    const body = Buffer.from(await response.arrayBuffer()).toString("hex");
+    return JSON.stringify({ status: response.status, headers, body });
   }
 
-  test("every state-dependent outcome returns the same status, content type, and body", async () => {
-    const results: Array<{ label: string; answer: { status: number; contentType: string | null; text: string }; record: string | undefined; records: Array<string | undefined> }> = [];
+  async function answerTo(f: Fixture, ids: string[]) {
+    const wire = await withWakeServer(async (base) => {
+      let last = "";
+      for (const id of ids) last = await wireOf(await post(base, bodyFor(id)));
+      return last;
+    }, f.ports);
+    return { wire, record: f.jobs.get(`${OWNER}|${ids[ids.length - 1]}`)?.code };
+  }
+
+  test("every state-dependent outcome returns the same status, headers, and body", async () => {
+    const results: Array<{ label: string; wire: string; record: string | undefined; records: Array<string | undefined> }> = [];
     for (const c of cases) {
       const { f, ids } = c.build();
-      const { answer, record } = await answerTo(f, ids);
-      results.push({ label: c.label, answer, record, records: c.records });
+      const { wire, record } = await answerTo(f, ids);
+      results.push({ label: c.label, wire, record, records: c.records });
     }
-    const reference = results[0].answer;
-    expect(reference.status).toBe(202);
-    expect(JSON.parse(reference.text)).toEqual(ACCEPTED);
+    const reference = results[0].wire;
+    const pinned = JSON.parse(reference);
+    expect(pinned.status).toBe(202);
+    expect(Buffer.from(pinned.body, "hex").toString()).toBe(JSON.stringify(ACCEPTED));
     for (const r of results) {
-      expect([r.label, r.answer]).toEqual([r.label, reference]);
+      // Whole wire form, so a header added in one branch fails that case by label.
+      expect([r.label, r.wire]).toEqual([r.label, reference]);
       // Each case must reach the branch it names, so an identical answer is not a coincidence.
       expect([r.label, r.records.includes(r.record)]).toEqual([r.label, true]);
     }

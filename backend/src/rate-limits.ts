@@ -501,7 +501,8 @@ export function createExoWakeLimiters(): { ip: RequestHandler; owner: RequestHan
     owner: rateLimit({
       windowMs: 60_000,
       limit: EXO_WAKE_OWNER_LIMIT_PER_MIN,
-      standardHeaders: "draft-7",
+      // No rate-limit headers: the library adds Retry-After when over limit, and the reply must match every other outcome.
+      standardHeaders: false,
       legacyHeaders: false,
       keyGenerator: (_req, res) => {
         // Set by verification in the wake route, which runs before this limiter; unverified requests never reach it.

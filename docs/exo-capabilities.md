@@ -14,11 +14,11 @@ Body: exactly `{"owner": "did:pkh:eip155:<chain>:0x<40 hex>", "requestId": "<low
 | Any outcome after the body parses: unknown owner, no grant, verified, accepted, replayed, coalesced, rate limited, budget, connector off, unavailable | 202 | `{"status":"accepted"}` (identical for all of these) |
 | Per-IP limit (120/min), checked before any lookup | 429 | `{"error":"rate_limited"}` with `Retry-After: 60` |
 
-Every outcome after the body parses returns the same 202. The outcome is written to the job record, not the response, so the route does not reveal which check ran or what state the owner is in.
+The wake reply is intentionally identical for all outcomes, so the reply carries no information about stored requests; the job record holds every state.
 
 ## Request records
 
-Stored at `xyz.tinycloud.tinychat/exo/v1/requests/<capability>/<requestId>`. The record is strict: `{"v":1,"capability":"<capability>"}`. The wake body has no capability, so the route probes the three capability subpaths and requires exactly one valid match.
+Stored at `xyz.tinycloud.tinychat/exo/v1/requests/<capability>/<requestId>`. The record is strict: `{"v":1,"capability":"<capability>"}`. The wake body has no capability, so the route looks up the three capability subpaths and requires exactly one valid match.
 
 Capabilities: `sync-meetings`, `sync-fireflies`, `sync-google`.
 
