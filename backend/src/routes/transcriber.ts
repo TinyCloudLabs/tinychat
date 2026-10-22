@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
 import type { Request, Response } from "express";
+import { meetingLinkFromInput } from "@tinyboilerplate/core";
 
 import {
   TERMINAL_MEETING_STATUSES,
@@ -256,11 +257,13 @@ export function createTranscriberRouter(options: TranscriberRouterOptions): Rout
     const address = addressOf(req, res);
     if (address === null) return;
     const body = (req.body ?? {}) as Record<string, unknown>;
-    if (!isValidMeetingUrl(body.meeting_url)) {
+    // Older clients send links as pasted (google.com/meet/<code>, Calendar redirects); ptx only knows canonical hosts.
+    const link = typeof body.meeting_url === "string" ? meetingLinkFromInput(body.meeting_url) : null;
+    if (!isValidMeetingUrl(link)) {
       res.status(400).json({ error: "invalid_meeting_url" });
       return;
     }
-    const meetingUrl = normalizeMeetingUrl(body.meeting_url);
+    const meetingUrl = normalizeMeetingUrl(link);
     const suppliedKey = req.get("Idempotency-Key");
     if (suppliedKey !== undefined && !IDEMPOTENCY_KEY_RE.test(suppliedKey)) {
       res.status(400).json({ error: "invalid_idempotency_key" });
@@ -277,7 +280,7 @@ export function createTranscriberRouter(options: TranscriberRouterOptions): Rout
     const createBody = {
       // Fragments and the exact query remain intact: Signal and signed meeting links may carry
       // capabilities there. Canonicalization is only an identity used by TinyChat dedupe.
-      meeting_url: body.meeting_url.trim(),
+      meeting_url: link,
       bot_name: botName,
       ...(language ? { language } : {}),
       ...(options.webhookUrl ? { webhook_url: options.webhookUrl } : {}),
