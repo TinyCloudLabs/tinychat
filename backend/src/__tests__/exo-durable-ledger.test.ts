@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { createDurableExoLedger } from "../exo/durable-ledger.js";
 import { EXO_NAMESPACE, type ExoCapability } from "../exo/mailbox.js";
-import type { ExoStartGate } from "../exo/ledger-model.js";
+import { ACTIVE_RUN_TTL_MS, type ExoStartGate } from "../exo/ledger-model.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
@@ -96,7 +96,7 @@ describe("durable exo ledger", () => {
     const kv = fakeLedgerKv();
     const winner = createDurableExoLedger(kv);
     const loser = createDurableExoLedger(kv);
-    // The competing writer commits between the loser's read and the loser's conditional put.
+    // The first put is the loser's source-lock write. The competing writer commits between that read and its conditional put.
     kv.beforePut = async () => {
       expect(await winner.recordStart(OWNER, CAPABILITY, "job-winner", T0, GATE)).toEqual({ started: true });
     };
@@ -106,8 +106,8 @@ describe("durable exo ledger", () => {
       reason: "active",
       retryAfterMs: 0,
     });
-    // One loser put that failed its condition, one winner put that committed. The refusal writes nothing.
-    expect(kv.puts.filter((put) => put.key === KEY)).toHaveLength(2);
+    // The loser's lock put lost the race and it re-read the winner's hold. Only the winner writes the ledger.
+    expect(kv.puts.filter((put) => put.key === KEY)).toHaveLength(1);
     expect(JSON.parse(kv.rows.get(KEY)?.value ?? "null")).toMatchObject({ activeJobId: "job-winner" });
   });
 
@@ -141,7 +141,11 @@ describe("durable exo ledger", () => {
     const ledger = createDurableExoLedger(kv);
     await expect(ledger.snapshot(OWNER, CAPABILITY, T0)).rejects.toThrow();
     await expect(ledger.recordStart(OWNER, CAPABILITY, "job-1", T0, GATE)).rejects.toThrow();
-    expect(kv.puts).toHaveLength(0);
+    // No ledger write, and every source lock taken before the throw is released.
+    expect(kv.puts.filter((put) => put.key === KEY)).toHaveLength(0);
+    const lockRows = [...kv.rows].filter(([key]) => key.includes("/source-lock/"));
+    expect(lockRows.length).toBeGreaterThan(0);
+    for (const [, row] of lockRows) expect(JSON.parse(row.value).holder).toBeUndefined();
   });
 
   test("attach and clear without an active run write nothing", async () => {
@@ -161,5 +165,74 @@ describe("durable exo ledger", () => {
     expect(await ledger.clearActive(OWNER, CAPABILITY, "job-run")).toEqual(["job-w1", "job-w2"]);
     expect(await ledger.clearActive(OWNER, CAPABILITY, "job-run")).toEqual([]);
     expect(await ledger.snapshot(OWNER, CAPABILITY, T0 + 1)).toEqual({ startsToday: 1, lastStartedAt: T0 });
+  });
+
+  test("sync-meetings and a single-source capability on one source are serialized in both orders", async () => {
+    const meetingsFirst = createDurableExoLedger(fakeLedgerKv());
+    expect(await meetingsFirst.recordStart(OWNER, "sync-meetings", "job-m", T0, GATE)).toEqual({ started: true });
+    expect(await meetingsFirst.recordStart(OWNER, "sync-fireflies", "job-f", T0 + 1000, GATE)).toEqual({
+      started: false,
+      reason: "source",
+      retryAfterMs: ACTIVE_RUN_TTL_MS - 1000,
+    });
+    expect(await meetingsFirst.recordStart(OWNER, "sync-google", "job-g", T0 + 1000, GATE)).toEqual({
+      started: false,
+      reason: "source",
+      retryAfterMs: ACTIVE_RUN_TTL_MS - 1000,
+    });
+
+    const singleFirst = createDurableExoLedger(fakeLedgerKv());
+    expect(await singleFirst.recordStart(OWNER, "sync-fireflies", "job-f", T0, GATE)).toEqual({ started: true });
+    expect(await singleFirst.recordStart(OWNER, "sync-meetings", "job-m", T0 + 1000, GATE)).toEqual({
+      started: false,
+      reason: "source",
+      retryAfterMs: ACTIVE_RUN_TTL_MS - 1000,
+    });
+  });
+
+  test("a second start of the same capability is refused as active and leaves the first run's source locks held", async () => {
+    const ledger = createDurableExoLedger(fakeLedgerKv());
+    expect(await ledger.recordStart(OWNER, "sync-meetings", "job-m1", T0, GATE)).toEqual({ started: true });
+    expect(await ledger.recordStart(OWNER, "sync-meetings", "job-m2", T0 + 1000, GATE)).toEqual({
+      started: false,
+      reason: "active",
+      retryAfterMs: 0,
+    });
+    expect(await ledger.recordStart(OWNER, "sync-fireflies", "job-f", T0 + 2000, GATE)).toEqual({
+      started: false,
+      reason: "source",
+      retryAfterMs: ACTIVE_RUN_TTL_MS - 2000,
+    });
+  });
+
+  test("a refused multi-source start frees the sources it already took", async () => {
+    const ledger = createDurableExoLedger(fakeLedgerKv());
+    // sync-google holds the google source. sync-meetings takes fireflies, is refused on google, and must free fireflies.
+    expect(await ledger.recordStart(OWNER, "sync-google", "job-g", T0, GATE)).toEqual({ started: true });
+    expect(await ledger.recordStart(OWNER, "sync-meetings", "job-m", T0 + 1000, GATE)).toEqual({
+      started: false,
+      reason: "source",
+      retryAfterMs: ACTIVE_RUN_TTL_MS - 1000,
+    });
+    expect(await ledger.recordStart(OWNER, "sync-fireflies", "job-f", T0 + 1000, GATE)).toEqual({ started: true });
+  });
+
+  test("a source lock is taken over only after the active-run TTL", async () => {
+    const ledger = createDurableExoLedger(fakeLedgerKv());
+    expect(await ledger.recordStart(OWNER, "sync-meetings", "job-m", T0, GATE)).toEqual({ started: true });
+    expect(await ledger.recordStart(OWNER, "sync-fireflies", "job-f", T0 + ACTIVE_RUN_TTL_MS - 1, GATE)).toEqual({
+      started: false,
+      reason: "source",
+      retryAfterMs: 1,
+    });
+    expect(await ledger.recordStart(OWNER, "sync-fireflies", "job-f", T0 + ACTIVE_RUN_TTL_MS, GATE)).toEqual({ started: true });
+  });
+
+  test("clearActive on the holder releases every source lock it held", async () => {
+    const ledger = createDurableExoLedger(fakeLedgerKv());
+    expect(await ledger.recordStart(OWNER, "sync-meetings", "job-m", T0, GATE)).toEqual({ started: true });
+    await ledger.clearActive(OWNER, "sync-meetings", "job-m");
+    expect(await ledger.recordStart(OWNER, "sync-fireflies", "job-f", T0 + 1000, GATE)).toEqual({ started: true });
+    expect(await ledger.recordStart(OWNER, "sync-google", "job-g", T0 + 1000, GATE)).toEqual({ started: true });
   });
 });

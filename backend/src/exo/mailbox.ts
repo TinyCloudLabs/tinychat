@@ -8,7 +8,20 @@
  */
 import { APP_ID } from "@tinyboilerplate/core";
 import type { FixedWindowBudget } from "./wake-intake.js";
-import { attachEntry, clearEntry, evaluateStart, snapshotOf, type ExoLedgerEntry, type ExoStartGate, type ExoStartResult } from "./ledger-model.js";
+import {
+  ACTIVE_RUN_TTL_MS,
+  SOURCES_BY_CAPABILITY,
+  acquireSourceLock,
+  attachEntry,
+  clearEntry,
+  evaluateStart,
+  releaseSourceLock,
+  snapshotOf,
+  type ExoLedgerEntry,
+  type ExoStartGate,
+  type ExoStartResult,
+  type SourceLock,
+} from "./ledger-model.js";
 
 export const EXO_CAPABILITIES = ["sync-meetings", "sync-fireflies", "sync-google"] as const;
 export type ExoCapability = (typeof EXO_CAPABILITIES)[number];
@@ -44,8 +57,6 @@ const EXO_JOB_CODES = Object.keys(JOB_MESSAGE) as ExoJobCode[];
 const MINUTE_MS = 60 * 1000;
 const HOUR_MS = 60 * MINUTE_MS;
 const DAY_MS = 24 * HOUR_MS;
-/** A run that has not reported within this window is settled as unavailable so it cannot hold the capability. */
-export const EXO_ACTIVE_JOB_TTL_MS = 30 * MINUTE_MS;
 /** Wakes that may coalesce onto one active run. */
 const ATTACH_LIMIT = 20;
 /** Seconds quoted as `retryAfterSec` on a rate-limited or budget-exhausted record. */
@@ -53,12 +64,6 @@ const RETRY_AFTER_SEC = 60;
 
 const OWNER_DID_RE = /^did:pkh:eip155:[0-9]+:(0x[0-9a-fA-F]{40})$/;
 export const REQUEST_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-
-const SOURCES_BY_CAPABILITY: Record<ExoCapability, readonly ConnectorSource[]> = {
-  "sync-meetings": ["fireflies", "google"],
-  "sync-fireflies": ["fireflies"],
-  "sync-google": ["google"],
-};
 
 type CooldownRule = { minIntervalMs: (hasFirefliesWebhook: boolean) => number; dailyCap: number };
 
@@ -126,7 +131,7 @@ export interface ExoLedgerSnapshot {
 /** Cooldown, daily-cap, and coalescing state per owner and capability. */
 export interface ExoLedger {
   snapshot(owner: string, capability: ExoCapability, now: number): Promise<ExoLedgerSnapshot>;
-  /** Starts a run only when the gate admits it. A refusal is returned and nothing is written for it. */
+  /** Starts a run only when the gate admits it. Takes the capability's source locks first. A refusal frees them and writes nothing for the run. */
   recordStart(owner: string, capability: ExoCapability, jobId: string, now: number, gate: ExoStartGate): Promise<ExoStartResult>;
   /** Adds a coalesced wake to the active run. */
   attach(owner: string, capability: ExoCapability, jobId: string): Promise<void>;
@@ -414,7 +419,7 @@ async function runWake(ports: ExoMailboxPorts, wake: VerifiedWake, budget: Fixed
   if (existingRaw !== undefined) {
     const existing = parseJobRecord(existingRaw);
     // A pending job past the active-run TTL that no live run accounts for has no run behind it. Settle it so replays do not stay pending.
-    if (existing?.state === "pending" && now - Date.parse(existing.createdAt) > EXO_ACTIVE_JOB_TTL_MS) {
+    if (existing?.state === "pending" && now - Date.parse(existing.createdAt) > ACTIVE_RUN_TTL_MS) {
       const ledgerState = await ports.ledger.snapshot(owner, capability, now);
       const live = ledgerState.activeJobId === requestId || (ledgerState.attachedJobIds ?? []).includes(requestId);
       if (!live) {
@@ -453,7 +458,7 @@ async function runWake(ports: ExoMailboxPorts, wake: VerifiedWake, budget: Fixed
   const snapshot = await ports.ledger.snapshot(owner, capability, now);
 
   if (snapshot.activeJobId !== undefined) {
-    if (snapshot.activeSince !== undefined && now - snapshot.activeSince > EXO_ACTIVE_JOB_TTL_MS) {
+    if (snapshot.activeSince !== undefined && now - snapshot.activeSince > ACTIVE_RUN_TTL_MS) {
       // A run that never reports is settled as unavailable so it cannot hold the capability.
       const released = await ports.ledger.clearActive(owner, capability, snapshot.activeJobId);
       for (const jobId of [snapshot.activeJobId, ...released]) {
@@ -508,7 +513,7 @@ async function runWake(ports: ExoMailboxPorts, wake: VerifiedWake, budget: Fixed
     const refused: ExoJobRecord =
       decision.reason === "budget"
         ? { ...job, state: "error", code: "budget_exhausted", message: JOB_MESSAGE.budget_exhausted, updatedAt: timestamp, retryAfterSec: Math.ceil(decision.retryAfterMs / 1000) }
-        : decision.reason === "cooldown"
+        : decision.reason === "cooldown" || decision.reason === "source"
           ? { ...job, state: "error", code: "rate_limited", message: JOB_MESSAGE.rate_limited, updatedAt: timestamp, retryAfterSec: Math.ceil(decision.retryAfterMs / 1000) }
           : { ...job, state: "error", code: "rate_limited", message: JOB_MESSAGE.rate_limited, updatedAt: timestamp, retryAfterSec: RETRY_AFTER_SEC };
     await writeJob(ports, owner, requestId, refused);
@@ -546,18 +551,38 @@ export async function sweepExpiredJobs(
   return removed;
 }
 
-/** In-process ledger over the same gate as the durable ledger. Not restart-durable. Used by tests only. */
+/** In-process ledger over the same gate and source-lock rules as the durable ledger. Not restart-durable. Used by tests only. */
 export function createMemoryExoLedger(): ExoLedger {
   const entries = new Map<string, ExoLedgerEntry>();
+  const locks = new Map<string, SourceLock>();
   const keyOf = (owner: string, capability: ExoCapability) => `${owner}|${capability}`;
+  const lockKeyOf = (owner: string, source: ConnectorSource) => `${owner}|source|${source}`;
+  const freeSourceLocks = (owner: string, sources: readonly ConnectorSource[], jobId: string) => {
+    for (const source of sources) {
+      const next = releaseSourceLock(locks.get(lockKeyOf(owner, source)), jobId);
+      if (next) locks.set(lockKeyOf(owner, source), next);
+    }
+  };
   return {
     async snapshot(owner, capability, now) {
       return snapshotOf(entries.get(keyOf(owner, capability)), now);
     },
     async recordStart(owner, capability, jobId, now, gate) {
+      const sources = SOURCES_BY_CAPABILITY[capability];
+      const taken: ConnectorSource[] = [];
+      for (const source of sources) {
+        const step = acquireSourceLock(locks.get(lockKeyOf(owner, source)), jobId, capability, now);
+        if (!step.acquired) {
+          freeSourceLocks(owner, taken, jobId);
+          return { started: false, reason: step.reason, retryAfterMs: step.retryAfterMs };
+        }
+        locks.set(lockKeyOf(owner, source), step.next);
+        taken.push(source);
+      }
       const key = keyOf(owner, capability);
       const decided = evaluateStart(entries.get(key), jobId, now, gate);
       if (decided.next) entries.set(key, decided.next);
+      if (!decided.result.started) freeSourceLocks(owner, sources, jobId);
       return decided.result;
     },
     async attach(owner, capability, jobId) {
@@ -566,6 +591,7 @@ export function createMemoryExoLedger(): ExoLedger {
       if (next) entries.set(key, next);
     },
     async clearActive(owner, capability, jobId) {
+      freeSourceLocks(owner, SOURCES_BY_CAPABILITY[capability], jobId);
       const key = keyOf(owner, capability);
       const cleared = clearEntry(entries.get(key), jobId);
       if (cleared.next) entries.set(key, cleared.next);

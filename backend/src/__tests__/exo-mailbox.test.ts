@@ -656,3 +656,48 @@ describe("Exo flag parsing", () => {
     expect(warnings).toHaveLength(3);
   });
 });
+
+describe("Exo per-source locks (TC-1013 D9)", () => {
+  test("a meetings run refuses a fireflies start on the same source until its terminal report", async () => {
+    const h = harness();
+    h.seed(REQ1, "sync-meetings");
+    h.seed(REQ2, "sync-fireflies");
+    h.seed(REQ3, "sync-fireflies");
+    expect(await h.wake(REQ1)).toMatchObject({ state: "pending" });
+    expect(await h.wake(REQ2)).toMatchObject({ state: "error", code: "rate_limited", retryAfterSec: 1800 });
+    await h.runs[0].report({ state: "done", code: "done" });
+    expect(await h.wake(REQ3)).toMatchObject({ state: "pending" });
+    expect(h.runs).toHaveLength(2);
+  });
+
+  test("a fireflies run refuses a meetings start on the same source", async () => {
+    const h = harness();
+    h.seed(REQ1, "sync-fireflies");
+    h.seed(REQ2, "sync-meetings");
+    expect(await h.wake(REQ1)).toMatchObject({ state: "pending" });
+    expect(await h.wake(REQ2)).toMatchObject({ state: "error", code: "rate_limited" });
+    expect(h.runs).toHaveLength(1);
+  });
+
+  test("an error terminal report also releases the meetings run's source locks", async () => {
+    const h = harness();
+    h.seed(REQ1, "sync-meetings");
+    h.seed(REQ2, "sync-google");
+    expect(await h.wake(REQ1)).toMatchObject({ state: "pending" });
+    await h.runs[0].report({ state: "error", code: "unavailable" });
+    expect(await h.wake(REQ2)).toMatchObject({ state: "pending" });
+  });
+
+  test("a meetings run that never reports releases its source locks after the active-run TTL", async () => {
+    const h = harness();
+    h.seed(REQ1, "sync-meetings");
+    h.seed(REQ2, "sync-fireflies");
+    h.seed(REQ3, "sync-fireflies");
+    expect(await h.wake(REQ1)).toMatchObject({ state: "pending" });
+    h.state.now = T0 + 30 * MINUTE - 1;
+    expect(await h.wake(REQ2)).toMatchObject({ state: "error", code: "rate_limited" });
+    h.state.now = T0 + 30 * MINUTE;
+    expect(await h.wake(REQ3)).toMatchObject({ state: "pending" });
+    expect(h.runs).toHaveLength(2);
+  });
+});
