@@ -931,7 +931,7 @@ export function App() {
       //
       // Sign-in requests network.create on the owner's default encryption network,
       // so the network can be created on the first secret save. Decrypt is not
-      // requested here; reads request it separately (ensureDecryptStepUp).
+      // requested here; reads request it separately, and only from an explicit user action.
       // The network id embeds the owner's DID, so the entry is composed here.
       const signInConfig = {
         address: connectedAddress,

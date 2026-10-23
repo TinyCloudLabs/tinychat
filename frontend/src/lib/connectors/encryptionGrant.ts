@@ -2,8 +2,8 @@
 //
 // Sign-in requests `network.create` on the network, so the network can be created
 // on the first secret save (see ensureEncryptionNetwork in connectorSecrets.ts).
-// Sign-in does not request `decrypt`; reads request it separately (see
-// ensureDecryptStepUp in connectorSecrets.ts).
+// Sign-in does not request `decrypt`; reads request it separately, only from an
+// explicit user action (see readConnectorKey and ensureDecryptStepUp in connectorSecrets.ts).
 //
 // The network id embeds the owner's DID, so the entry cannot be declared in the
 // static manifest. It is composed once the address is known and appended to the

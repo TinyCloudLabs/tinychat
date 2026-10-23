@@ -263,17 +263,34 @@ function walletUnavailable<E>(): SecretsResult<void, E> {
   };
 }
 
+/** Neutral state for a background read that has no decrypt grant yet. */
+export const NEEDS_UNLOCK_MESSAGE =
+  "Saved keys are locked. Use Sync now on the connector to unlock them.";
+
+function needsUnlock<E>(): SecretsResult<void, E> {
+  return {
+    ok: false,
+    error: { code: "needs-unlock", message: NEEDS_UNLOCK_MESSAGE } as E,
+  };
+}
+
 /**
- * Requests the decrypt step-up before a read. Skips the prompt when the grant
- * is already held. A client without a wallet signer is refused before any
- * prompt. A decline yields a neutral error and is not retried. A thrown error
- * from the SDK is returned untouched. Never throws.
+ * Ensures the decrypt grant before a read. A held grant passes with no prompt.
+ * Without one:
+ *  - `interactive: false` (background): returns `needs-unlock` and makes no
+ *    SDK permission call at all, so no modal and no wallet signature.
+ *  - `interactive: true` (explicit user action): a client without a wallet
+ *    signer is refused before any prompt; otherwise requests the entry. A
+ *    decline is neutral and not retried; a thrown SDK error is returned untouched.
+ * Never throws.
  */
-export async function ensureDecryptStepUp<E>(
+async function ensureDecryptStepUp<E>(
   tcw: SecretsTcw,
+  interactive: boolean,
 ): Promise<SecretsResult<void, E>> {
   const entry = decryptStepUpEntry(tcw.did);
   if (tcw.hasPermissions([entry])) return { ok: true, data: undefined };
+  if (!interactive) return needsUnlock<E>();
   if (!tcw.isWalletConnected) return walletUnavailable<E>();
   let approved: boolean;
   try {
@@ -290,18 +307,24 @@ export async function ensureDecryptStepUp<E>(
   };
 }
 
-export async function getConnectorKey<E>(
+/**
+ * Reads a saved connector key. `interactive` is REQUIRED with no default:
+ * `true` only from an explicit user action (button press), `false` from every
+ * background job. Background reads never prompt; see `ensureDecryptStepUp`.
+ */
+export async function readConnectorKey<E>(
   tcw: SecretsTcw,
   descriptor: SecretLocation,
+  options: { interactive: boolean },
 ): Promise<SecretsResult<string, E>> {
-  const stepUp = await ensureDecryptStepUp<E>(tcw);
+  const stepUp = await ensureDecryptStepUp<E>(tcw, options.interactive);
   if (!stepUp.ok) return stepUp;
-  const options = descriptor.secretScope
+  const scope = descriptor.secretScope
     ? { scope: descriptor.secretScope }
     : undefined;
   return (await tcw.secrets.get(
     descriptor.secretName,
-    options,
+    scope,
   )) as SecretsResult<string, E>;
 }
 

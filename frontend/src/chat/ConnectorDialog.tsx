@@ -74,7 +74,7 @@ import {
 import * as connectorStore from "@/lib/connectors/connectorStore";
 import {
   deleteConnectorKey,
-  getConnectorKey,
+  readConnectorKey,
   isSecretsUnlocked,
   saveConnectorKey,
   unlockSecrets,
@@ -2427,7 +2427,7 @@ export async function revokeGoogleUpstream(input: {
     if (!unlock.ok) localFailure = { status: "locked", message: unlock.error?.message ?? "unlock was not completed" };
   }
   if (!localFailure) {
-    const stored = await getConnectorKey<SecretsErr>(tcw, descriptor);
+    const stored = await readConnectorKey<SecretsErr>(tcw, descriptor, { interactive: true });
     if (stored.ok && typeof stored.data === "string" && stored.data.length > 0) browserToken = stored.data;
     else localFailure = { status: "no-token" };
   }

@@ -10,7 +10,7 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "
 import { formatRowError, runFirefliesSyncNow, runGmeetSyncNow } from "@/chat/ConnectorsCard";
 import { awaitGmeetSessionSync } from "@/chat/useGmeetSessionSync";
 import {
-  getConnectorKey,
+  readConnectorKey,
   isSecretsUnlocked,
   unlockSecrets,
   type SecretsErr,
@@ -54,7 +54,7 @@ export interface SourceSyncDeps {
   secretsAvailable: () => boolean;
   isSecretsUnlocked: (tcw: TinyCloudWeb) => boolean;
   unlockSecrets: typeof unlockSecrets;
-  getConnectorKey: typeof getConnectorKey;
+  readConnectorKey: typeof readConnectorKey;
   isGmeetSyncInFlight: () => boolean;
   isGmeetNotesSyncInFlight: () => boolean;
   /** Resolves once the session-start run's foreground part has finished (at once when none is running). */
@@ -74,7 +74,7 @@ const DEFAULT_DEPS: SourceSyncDeps = {
   secretsAvailable,
   isSecretsUnlocked,
   unlockSecrets,
-  getConnectorKey,
+  readConnectorKey,
   isGmeetSyncInFlight,
   isGmeetNotesSyncInFlight,
   awaitSessionSync: awaitGmeetSessionSync,
@@ -122,7 +122,7 @@ export async function runSourceSync(
       if (d.id === "google-meet") await deps.awaitSessionSync();
     }
     if (input.isCurrent?.() === false) return null;
-    const key = await deps.getConnectorKey<SecretsErr>(tcw, d);
+    const key = await deps.readConnectorKey<SecretsErr>(tcw, d, { interactive: true });
     if (!key.ok) {
       return (
         key.error?.message ??

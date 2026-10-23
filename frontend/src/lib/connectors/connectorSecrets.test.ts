@@ -6,12 +6,13 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import {
   DECRYPT_DECLINED_MESSAGE,
   DECRYPT_STEP_UP_EXPIRY_MS,
+  NEEDS_UNLOCK_MESSAGE,
   UNLOCK_NEEDS_SIGN_IN_MESSAGE,
   deleteConnectorKey,
-  getConnectorKey,
   isSecretsUnlocked,
   notifySecretsUnlockedForTests,
   onSecretsUnlocked,
+  readConnectorKey,
   resetSecretsUnlockedListenersForTests,
   saveConnectorKey,
   unlockSecrets,
@@ -269,7 +270,7 @@ describe("connectorSecrets happy path", () => {
     const stored = f.entries.get(keyFor(FIREFLIES.secretName, ""));
     expect(stored?.value).toBe("sk-fire-1");
 
-    const got = await getConnectorKey(f.tcw, FIREFLIES);
+    const got = await readConnectorKey(f.tcw, FIREFLIES, { interactive: true });
     expect(got).toEqual({ ok: true, data: "sk-fire-1" });
 
     const del = await deleteConnectorKey(f.tcw, FIREFLIES);
@@ -291,7 +292,7 @@ describe("connectorSecrets locked vault", () => {
         message: "Vault is locked",
       });
 
-    const get = await getConnectorKey(f.tcw, FIREFLIES);
+    const get = await readConnectorKey(f.tcw, FIREFLIES, { interactive: true });
     expect(get.ok).toBe(false);
     if (!get.ok) expect(get.error.code).toBe("VAULT_LOCKED");
 
@@ -627,7 +628,7 @@ describe("connectorSecrets encryption network before first write", () => {
 describe("connectorSecrets decrypt step-up", () => {
   test("a read requests exactly one decrypt entry on the default network, capped at one hour", async () => {
     const f = makeFake({ stepUpHeld: false });
-    await getConnectorKey(f.tcw, FIREFLIES);
+    await readConnectorKey(f.tcw, FIREFLIES, { interactive: true });
     expect(f.calls.permissionRequests).toHaveLength(1);
     const { entries, options } = f.calls.permissionRequests[0]!;
     expect(entries).toHaveLength(1);
@@ -643,7 +644,7 @@ describe("connectorSecrets decrypt step-up", () => {
 
   test("the step-up never requests a KV entry: a KV grant would fail this", async () => {
     const f = makeFake({ stepUpHeld: false });
-    await getConnectorKey(f.tcw, FIREFLIES);
+    await readConnectorKey(f.tcw, FIREFLIES, { interactive: true });
     const entries = f.calls.permissionRequests.flatMap((r) => r.entries);
     expect(entries.some((e) => e.service === "tinycloud.kv")).toBe(false);
     expect(entries.every((e) => e.service === "tinycloud.encryption")).toBe(true);
@@ -652,7 +653,7 @@ describe("connectorSecrets decrypt step-up", () => {
   test("no prompt when the decrypt grant is already held", async () => {
     const f = makeFake({ stepUpHeld: true });
     await saveConnectorKey(f.tcw, FIREFLIES, "k");
-    const r = await getConnectorKey(f.tcw, FIREFLIES);
+    const r = await readConnectorKey(f.tcw, FIREFLIES, { interactive: true });
     expect(r).toEqual({ ok: true, data: "k" });
     expect(f.calls.permissionChecks).toHaveLength(1);
     expect(f.calls.permissionRequests).toHaveLength(0);
@@ -661,7 +662,7 @@ describe("connectorSecrets decrypt step-up", () => {
   test("the step-up precedes the vault read", async () => {
     const f = makeFake({ stepUpHeld: false });
     await saveConnectorKey(f.tcw, FIREFLIES, "k");
-    await getConnectorKey(f.tcw, FIREFLIES);
+    await readConnectorKey(f.tcw, FIREFLIES, { interactive: true });
     expect(f.calls.order).toEqual([
       "ensure",
       `put:${FIREFLIES.secretName}`,
@@ -673,7 +674,7 @@ describe("connectorSecrets decrypt step-up", () => {
   test("a decline returns the neutral error, reads nothing, and is not retried", async () => {
     const f = makeFake({ stepUpHeld: false, stepUpApprove: false });
     await saveConnectorKey(f.tcw, FIREFLIES, "k");
-    const r = await getConnectorKey(f.tcw, FIREFLIES);
+    const r = await readConnectorKey(f.tcw, FIREFLIES, { interactive: true });
     expect(r.ok).toBe(false);
     if (!r.ok) {
       expect(r.error).toEqual({ code: "decrypt-declined", message: DECRYPT_DECLINED_MESSAGE });
@@ -686,7 +687,7 @@ describe("connectorSecrets decrypt step-up", () => {
     const f = makeFake({ stepUpHeld: false });
     const boom = new Error("prompt dismissed");
     f.grant.throwWith = boom;
-    const r = await getConnectorKey(f.tcw, FIREFLIES);
+    const r = await readConnectorKey(f.tcw, FIREFLIES, { interactive: true });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error).toBe(boom);
     expect(f.calls.getCount).toBe(0);
@@ -698,9 +699,40 @@ describe("connectorSecrets decrypt step-up", () => {
     const f = makeFake({ stepUpHeld: false, stepUpApprove: true });
     await saveConnectorKey(f.tcw, FIREFLIES, "k");
     expect(f.calls.signerCalls).toBe(0);
-    expect(await getConnectorKey(f.tcw, FIREFLIES)).toEqual({ ok: true, data: "k" });
+    expect(await readConnectorKey(f.tcw, FIREFLIES, { interactive: true })).toEqual({ ok: true, data: "k" });
     expect(f.calls.signerCalls).toBe(1);
-    expect(await getConnectorKey(f.tcw, FIREFLIES)).toEqual({ ok: true, data: "k" });
+    expect(await readConnectorKey(f.tcw, FIREFLIES, { interactive: true })).toEqual({ ok: true, data: "k" });
+    expect(f.calls.signerCalls).toBe(1);
+  });
+
+  test("a background read with no decrypt grant returns needs-unlock and makes no permission call", async () => {
+    const f = makeFake({ stepUpHeld: false, stepUpApprove: true });
+    await saveConnectorKey(f.tcw, FIREFLIES, "k");
+    expect(await readConnectorKey(f.tcw, FIREFLIES, { interactive: false })).toEqual({
+      ok: false,
+      error: { code: "needs-unlock", message: NEEDS_UNLOCK_MESSAGE },
+    });
+    expect(f.calls.permissionRequests).toHaveLength(0);
+    expect(f.calls.signerCalls).toBe(0);
+    expect(f.calls.getCount).toBe(0);
+  });
+
+  test("a background read on a signer-less client still defers as needs-unlock, never the wallet message", async () => {
+    const f = makeFake({ stepUpHeld: false, signerConnected: false });
+    await saveConnectorKey(f.tcw, FIREFLIES, "k");
+    expect(await readConnectorKey(f.tcw, FIREFLIES, { interactive: false })).toEqual({
+      ok: false,
+      error: { code: "needs-unlock", message: NEEDS_UNLOCK_MESSAGE },
+    });
+    expect(f.calls.permissionRequests).toHaveLength(0);
+  });
+
+  test("a background read after an interactive grant reads without prompting again", async () => {
+    const f = makeFake({ stepUpHeld: false, stepUpApprove: true });
+    await saveConnectorKey(f.tcw, FIREFLIES, "k");
+    expect(await readConnectorKey(f.tcw, FIREFLIES, { interactive: true })).toEqual({ ok: true, data: "k" });
+    expect(await readConnectorKey(f.tcw, FIREFLIES, { interactive: false })).toEqual({ ok: true, data: "k" });
+    expect(f.calls.permissionRequests).toHaveLength(1);
     expect(f.calls.signerCalls).toBe(1);
   });
 
@@ -714,12 +746,25 @@ describe("connectorSecrets decrypt step-up", () => {
     }
     expect(offenders).toEqual([]);
   });
+
+  test("every readConnectorKey call site passes an explicit interactive flag", () => {
+    const srcRoot = join(import.meta.dir, "..", "..");
+    const offenders: string[] = [];
+    for (const rel of readdirSync(srcRoot, { recursive: true }) as string[]) {
+      if (!/\.(ts|tsx)$/.test(rel) || /\.test\.(ts|tsx)$/.test(rel)) continue;
+      const text = readFileSync(join(srcRoot, rel), "utf8");
+      for (const m of text.matchAll(/readConnectorKey(?:<[^>]*>)?\(([^()]*)\)/g)) {
+        if (!/\binteractive\b/.test(m[1] ?? "")) offenders.push(`${rel}: ${m[0]}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
 });
 
 describe("connectorSecrets reveal after reload", () => {
   test("a signer-less client is refused before any prompt, with the neutral message", async () => {
     const f = makeFake({ stepUpHeld: false, signerConnected: false });
-    expect(await getConnectorKey(f.tcw, FIREFLIES)).toEqual({
+    expect(await readConnectorKey(f.tcw, FIREFLIES, { interactive: true })).toEqual({
       ok: false,
       error: { code: "wallet-unavailable", message: WALLET_UNAVAILABLE_MESSAGE },
     });
@@ -730,15 +775,15 @@ describe("connectorSecrets reveal after reload", () => {
   test("a signer-less client that already holds the grant still reads", async () => {
     const f = makeFake({ stepUpHeld: true, signerConnected: false });
     await saveConnectorKey(f.tcw, FIREFLIES, "k");
-    expect(await getConnectorKey(f.tcw, FIREFLIES)).toEqual({ ok: true, data: "k" });
+    expect(await readConnectorKey(f.tcw, FIREFLIES, { interactive: true })).toEqual({ ok: true, data: "k" });
     expect(f.calls.permissionRequests).toHaveLength(0);
   });
 
   test("a signer-connected restored client prompts on the first reveal only", async () => {
     const f = makeFake({ stepUpHeld: false, stepUpApprove: true });
     await saveConnectorKey(f.tcw, FIREFLIES, "k");
-    expect(await getConnectorKey(f.tcw, FIREFLIES)).toEqual({ ok: true, data: "k" });
-    expect(await getConnectorKey(f.tcw, FIREFLIES)).toEqual({ ok: true, data: "k" });
+    expect(await readConnectorKey(f.tcw, FIREFLIES, { interactive: true })).toEqual({ ok: true, data: "k" });
+    expect(await readConnectorKey(f.tcw, FIREFLIES, { interactive: true })).toEqual({ ok: true, data: "k" });
     expect(f.calls.permissionRequests).toHaveLength(1);
     expect(f.calls.signerCalls).toBe(1);
   });
@@ -746,7 +791,7 @@ describe("connectorSecrets reveal after reload", () => {
   test("a declined prompt on a signer-connected client is not retried", async () => {
     const f = makeFake({ stepUpHeld: false, stepUpApprove: false });
     await saveConnectorKey(f.tcw, FIREFLIES, "k");
-    expect(await getConnectorKey(f.tcw, FIREFLIES)).toEqual({
+    expect(await readConnectorKey(f.tcw, FIREFLIES, { interactive: true })).toEqual({
       ok: false,
       error: { code: "decrypt-declined", message: DECRYPT_DECLINED_MESSAGE },
     });
