@@ -4,9 +4,10 @@ const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "
 const MAX_TITLE_LENGTH = 120;
 const MAX_NAMES = 3;
 const MAX_NAME_LENGTH = 40;
-/** Generic speaker labels from recorded notes and diarization; they are not names. */
-const GENERIC_NAMES = new Set(["me", "them", "unknown", "speaker"]);
-const SPEAKER_N = /^speaker\s*\d*$/i;
+/** Generic speaker and placeholder labels from recorded notes and diarization; they are not names. */
+const GENERIC_NAMES = new Set(["me", "them", "unknown", "unknown speaker", "speaker", "guest", "host"]);
+const SPEAKER_LABEL = /^speaker(\s*\d+|\s*[a-z])?$/i;
+const PARTICIPANT_LABEL = /^participant\s*\d*$/i;
 
 export interface AutoMeetingTitleInput {
   startedAt: unknown;
@@ -37,7 +38,7 @@ function cleanText(value: unknown): string {
   if (typeof value !== "string") return "";
   const printable = [...value].map((ch) => {
     const code = ch.codePointAt(0) ?? 0;
-    return code <= 0x1f || (code >= 0x7f && code <= 0x9f) ? " " : ch;
+    return code <= 0x1f || (code >= 0x7f && code <= 0x9f) || ch === "<" || ch === ">" ? " " : ch;
   }).join("");
   return printable.replace(/\s+/g, " ").trim();
 }
@@ -49,7 +50,10 @@ function participantSummary(value: unknown): string | null {
   for (const raw of value) {
     const name = cleanText(raw);
     const key = name.toLowerCase();
-    if (!name || GENERIC_NAMES.has(key) || SPEAKER_N.test(name) || seen.has(key)) continue;
+    if (!name || GENERIC_NAMES.has(key) || SPEAKER_LABEL.test(name) || PARTICIPANT_LABEL.test(name) || seen.has(key)) continue;
+    // Contact details are not names: an email address, or a phone number (7+ digits and no letters).
+    const digits = name.replace(/\D/g, "").length;
+    if (name.includes("@") || (digits >= 7 && !/\p{L}/u.test(name))) continue;
     seen.add(key);
     names.push(truncate(name, MAX_NAME_LENGTH));
   }

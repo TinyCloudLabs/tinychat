@@ -104,4 +104,37 @@ describe("voice-note titles at commit", () => {
       model: "universal-2", participants: ["Alice Chen"] });
     expect(stored(sqlite, "pasted-kept").title).toBe("Pasted notes");
   });
+
+  test("a note whose title was changed before the commit keeps the changed title", async () => {
+    const { tcw, sqlite } = fakeTcw();
+    await ensureSchema(tcw);
+    await createVoiceNoteRow(tcw, recording("rec-edited"), DEFAULT_TITLE);
+    // No app code writes titles yet; a direct write stands in for an edit that leaves the marker in place.
+    sqlite.run("UPDATE connector_meeting SET title = ? WHERE source_id = ?", ["Board prep", "rec-edited"]);
+    await commitVoiceNoteTranscript(tcw, "rec-edited", { rev: 1, outcome: "transcribed", text: "Hello.", sentences: SENTENCES,
+      model: "universal-2", participants: ["Alice Chen"] });
+    expect(stored(sqlite, "rec-edited").title).toBe("Board prep");
+  });
+
+  test("a note whose marker is false keeps its title through a commit", async () => {
+    const { tcw, sqlite } = fakeTcw();
+    await ensureSchema(tcw);
+    await createVoiceNoteRow(tcw, recording("rec-unmarked"), DEFAULT_TITLE);
+    sqlite.run("UPDATE connector_meeting SET metadata = json_set(metadata, '$.title_auto', json('false')) WHERE source_id = ?", ["rec-unmarked"]);
+    await commitVoiceNoteTranscript(tcw, "rec-unmarked", { rev: 1, outcome: "transcribed", text: "Hello.", sentences: SENTENCES,
+      model: "universal-2", participants: ["Alice Chen"] });
+    expect(stored(sqlite, "rec-unmarked").title).toBe(DEFAULT_TITLE);
+  });
+
+  test("two commits of the same transcript at the same time set the title once", async () => {
+    const { tcw, sqlite } = fakeTcw();
+    await ensureSchema(tcw);
+    await createVoiceNoteRow(tcw, recording("rec-race"), DEFAULT_TITLE);
+    sqlite.exec("CREATE TABLE title_writes (n INTEGER NOT NULL); CREATE TRIGGER count_title_writes AFTER UPDATE OF title ON connector_meeting BEGIN INSERT INTO title_writes VALUES (1); END;");
+    const transcript = { rev: 1, outcome: "transcribed" as const, text: "Hello.", sentences: SENTENCES,
+      model: "universal-2", participants: ["Alice Chen"] };
+    await Promise.all([commitVoiceNoteTranscript(tcw, "rec-race", transcript), commitVoiceNoteTranscript(tcw, "rec-race", transcript)]);
+    expect(stored(sqlite, "rec-race").title).toBe("Oct 9 · AssemblyAI Universal-2 · Alice Chen");
+    expect(sqlite.query("SELECT COUNT(*) AS n FROM title_writes").get()).toEqual({ n: 1 });
+  });
 });

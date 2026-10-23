@@ -82,4 +82,21 @@ describe("autoMeetingTitle", () => {
   test("ignores a non-string model label", () => {
     expect(autoMeetingTitle({ startedAt: OCT_9, modelLabel: 42, participantNames: [] })).toBe("Oct 9");
   });
+
+  test("drops email addresses and phone numbers, keeping the other names", () => {
+    expect(autoMeetingTitle({ startedAt: OCT_9, modelLabel: null,
+      participantNames: ["dana@example.com", "+1 (555) 123-4567", "555-1234", "Carol"] }))
+      .toBe("Oct 9 · Carol");
+  });
+
+  test("strips angle brackets from names", () => {
+    expect(autoMeetingTitle({ startedAt: OCT_9, modelLabel: null, participantNames: ["Dana <CEO>"] }))
+      .toBe("Oct 9 · Dana CEO");
+  });
+
+  test("drops guest, host, participant-numbered and lettered speaker labels", () => {
+    expect(autoMeetingTitle({ startedAt: OCT_9, modelLabel: null,
+      participantNames: ["Speaker A", "speaker b", "Guest", "HOST", "Participant 3", "Participant", "Unknown speaker", "Carol"] }))
+      .toBe("Oct 9 · Carol");
+  });
 });
