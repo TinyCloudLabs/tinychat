@@ -14,6 +14,7 @@ import {
   FixedWindowBudget,
   WakeQueue,
 } from "../exo/wake-intake.js";
+import type { GrantHolderIndex } from "../exo/grant-holders.js";
 
 /** Test seams. Production passes neither. */
 export interface ExoWakeOptions {
@@ -29,11 +30,16 @@ function answer(res: Response, status: number, body: object): void {
 
 /**
  * `POST /api/exo/v1/requests`. A body the strict parser rejects gets the uniform 409 before any lookup. Every other
- * request gets the same 202 `{"status":"accepted"}`, sent before any store read. Verification, the owner budget, and the
- * job write run afterwards in the wake queue, so the reply cannot depend on store latency or on whether the owner has a
- * grant. The outcome lives in the job record.
+ * request gets the same 202 `{"status":"accepted"}`, sent before any store read. An owner the holder index does not
+ * hold is not queued, so a flood of unknown owners cannot evict a held owner's wake; the index refreshes in the
+ * background. Verification, the owner budget, and the job write run afterwards in the wake queue, so the reply cannot
+ * depend on store latency or on whether the owner has a grant. The outcome lives in the job record.
  */
-export function createExoMailboxRouter(ports: ExoMailboxPorts, options: ExoWakeOptions = {}): Router {
+export function createExoMailboxRouter(
+  ports: ExoMailboxPorts,
+  holders: Pick<GrantHolderIndex, "mayHold" | "refreshIfStale">,
+  options: ExoWakeOptions = {},
+): Router {
   const router = Router();
   const queue = options.queue ?? new WakeQueue();
   const ownerBudget = options.ownerBudget ?? new FixedWindowBudget(EXO_WAKE_OWNER_LIMIT_PER_MIN, EXO_WAKE_OWNER_WINDOW_MS);
@@ -52,6 +58,10 @@ export function createExoMailboxRouter(ports: ExoMailboxPorts, options: ExoWakeO
   router.post("/requests", strictBody, (_req, res) => {
     const request: ExoWakeRequest = res.locals.exoRequest;
     answer(res, 202, EXO_ACCEPTED_BODY);
+    if (!holders.mayHold(request.owner)) {
+      holders.refreshIfStale();
+      return;
+    }
     // The parser lowercases the owner, so case variants share one lane. verifyWake and startWake are total.
     queue.offer(request.owner, request.requestId, async () => {
       const wake = await verifyWake(ports, request);

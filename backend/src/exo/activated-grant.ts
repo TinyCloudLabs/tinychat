@@ -2,11 +2,21 @@ import { assertKvResult, isKvMissingKeyResult } from "@tinyboilerplate/server";
 import { getAddress, isAddress } from "viem";
 import { EXO_JOBS_PREFIX, EXO_REQUESTS_PREFIX, type VerifiedTranscriptWriter } from "../delegation-verify.js";
 
+export interface ExoKvGetOptions {
+  source?: "network";
+  maxResponseBytes?: number;
+}
+
+export interface ExoKvPutOptions {
+  ifMatch?: string;
+  ifNoneMatch?: "*";
+}
+
 /** The KV methods an activated exo grant provides. An activated `DelegatedAccess` satisfies this shape. */
 export interface ExoKvAccess {
-  get(key: string): Promise<unknown>;
+  get(key: string, options?: ExoKvGetOptions): Promise<unknown>;
   list(options: { prefix: string }): Promise<unknown>;
-  put(key: string, value: unknown): Promise<unknown>;
+  put(key: string, value: unknown, options?: ExoKvPutOptions): Promise<unknown>;
   delete(key: string): Promise<unknown>;
 }
 
@@ -18,6 +28,8 @@ export interface ExoActivatedGrant {
   requestsRemove(path: string): Promise<void>;
   jobsGet(path: string): Promise<unknown | undefined>;
   jobsPut(path: string, value: unknown): Promise<void>;
+  jobsPutIfAbsent(path: string, value: unknown): Promise<boolean>;
+  jobsList(directory: string): Promise<string[]>;
   jobsRemove(path: string): Promise<void>;
 }
 
@@ -86,6 +98,32 @@ function isString(value: unknown): value is string {
   return typeof value === "string";
 }
 
+/** Read bound for one request or job record. Stored JSON is separately capped at 4 KiB. */
+const MAX_RECORD_RESPONSE_BYTES = 16 * 1024;
+
+export function isKvPreconditionFailed(result: unknown): boolean {
+  if (result === null || typeof result !== "object") return false;
+  const candidate = result as { ok?: unknown; error?: unknown };
+  if (candidate.ok !== false || candidate.error === null || typeof candidate.error !== "object") return false;
+  return (candidate.error as { code?: unknown }).code === "KV_PRECONDITION_FAILED";
+}
+
+/**
+ * Reads a KV get result with its strong etag, for a conditional write. Undefined when the key is absent.
+ * Throws when the etag is missing or weak (`W/`), or the value is missing, so a later write is never silently unconditional.
+ */
+export function readVersionedKv(result: unknown, key: string): { value: unknown; etag: string } | undefined {
+  if (isKvMissingKeyResult(result, key)) return undefined;
+  const outer = dataOf(assertKvResult(result));
+  if (outer === null || typeof outer !== "object") throw new Error("Exo ledger read invalid");
+  const headers = "headers" in outer ? outer.headers : undefined;
+  const etag = headers !== null && typeof headers === "object" && "etag" in headers ? headers.etag : undefined;
+  if (typeof etag !== "string" || etag === "" || etag.startsWith("W/")) throw new Error("Exo ledger read without a strong etag");
+  const raw = "data" in outer ? outer.data : undefined;
+  if (raw === null || raw === undefined) throw new Error("Exo ledger value missing");
+  return { value: decodeStoredJson(raw), etag };
+}
+
 /**
  * Typed access to an activated exo-sync grant. Every path is checked against the shared prefixes
  * before the node is called. Only the six methods below are exposed.
@@ -97,34 +135,46 @@ export function createExoActivatedGrant(access: { kv: ExoKvAccess }, grant: ExoG
   }
   const kv = access.kv;
   const readJson = async (path: string): Promise<unknown | undefined> => {
-    const result = await kv.get(path);
+    const result = await kv.get(path, { source: "network", maxResponseBytes: MAX_RECORD_RESPONSE_BYTES });
     if (isKvMissingKeyResult(result, path)) return undefined;
     const outer = dataOf(assertKvResult(result));
     const raw = outer !== null && typeof outer === "object" && "data" in outer ? outer.data : outer;
     if (raw === null || raw === undefined) return undefined;
     return decodeStoredJson(raw);
   };
+  const listUnder = async (prefix: string, directory: string): Promise<string[]> => {
+    if (typeof directory !== "string" || !directory.endsWith("/")) {
+      throw new Error(`Exo grant directory refused: ${String(directory)}`);
+    }
+    if (directory !== prefix) assertLiteralPathUnder(prefix, directory.slice(0, -1));
+    const listed = dataOf(assertKvResult(await kv.list({ prefix: directory })));
+    const keys = keysOf(listed);
+    if (!Array.isArray(keys) || !keys.every((key) => isString(key) && key.startsWith(directory))) {
+      throw new Error("Exo grant listing invalid");
+    }
+    return keys;
+  };
   return {
     requestsGet: async (path) => readJson(assertLiteralPathUnder(EXO_REQUESTS_PREFIX, path)),
-    requestsList: async (directory) => {
-      if (typeof directory !== "string" || !directory.endsWith("/")) {
-        throw new Error(`Exo grant directory refused: ${String(directory)}`);
-      }
-      assertLiteralPathUnder(EXO_REQUESTS_PREFIX, directory.slice(0, -1));
-      const listed = dataOf(assertKvResult(await kv.list({ prefix: directory })));
-      const keys = keysOf(listed);
-      if (!Array.isArray(keys) || !keys.every(isString)) throw new Error("Exo grant listing invalid");
-      return keys;
-    },
+    requestsList: async (directory) => listUnder(EXO_REQUESTS_PREFIX, directory),
     requestsRemove: async (path) => {
-      assertKvResult(await kv.delete(assertLiteralPathUnder(EXO_REQUESTS_PREFIX, path)));
+      const result = await kv.delete(assertLiteralPathUnder(EXO_REQUESTS_PREFIX, path));
+      if (!isKvMissingKeyResult(result, path)) assertKvResult(result);
     },
     jobsGet: async (path) => readJson(assertLiteralPathUnder(EXO_JOBS_PREFIX, path)),
     jobsPut: async (path, value) => {
       assertKvResult(await kv.put(assertLiteralPathUnder(EXO_JOBS_PREFIX, path), value));
     },
+    jobsPutIfAbsent: async (path, value) => {
+      const result = await kv.put(assertLiteralPathUnder(EXO_JOBS_PREFIX, path), value, { ifNoneMatch: "*" });
+      if (isKvPreconditionFailed(result)) return false;
+      assertKvResult(result);
+      return true;
+    },
+    jobsList: async (directory) => listUnder(EXO_JOBS_PREFIX, directory),
     jobsRemove: async (path) => {
-      assertKvResult(await kv.delete(assertLiteralPathUnder(EXO_JOBS_PREFIX, path)));
+      const result = await kv.delete(assertLiteralPathUnder(EXO_JOBS_PREFIX, path));
+      if (!isKvMissingKeyResult(result, path)) assertKvResult(result);
     },
   };
 }

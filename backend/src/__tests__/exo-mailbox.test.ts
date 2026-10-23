@@ -372,6 +372,28 @@ describe("Exo per-source cooldowns (TC-1013 D9)", () => {
     expect(h.runs).toHaveLength(1);
   });
 
+  test("a meetings run stamps google, so a google start inside its cooldown is rate_limited", async () => {
+    const h = harness();
+    h.seed(REQ1, "sync-meetings");
+    h.seed(REQ2, "sync-google");
+    expect(await h.wake(REQ1)).toMatchObject({ state: "pending" });
+    await h.runs[0].report({ state: "done", code: "done" });
+    h.state.now = T0 + 10 * MINUTE;
+    expect(await h.wake(REQ2)).toMatchObject({ state: "error", code: "rate_limited", retryAfterSec: 20 * 60 });
+    expect(h.runs).toHaveLength(1);
+  });
+
+  test("a fireflies start stamps fireflies, so a meetings start inside its cooldown is rate_limited", async () => {
+    const h = harness();
+    h.seed(REQ1, "sync-fireflies");
+    h.seed(REQ2, "sync-meetings");
+    expect(await h.wake(REQ1)).toMatchObject({ state: "pending" });
+    await h.runs[0].report({ state: "done", code: "done" });
+    h.state.now = T0 + 10 * MINUTE;
+    expect(await h.wake(REQ2)).toMatchObject({ state: "error", code: "rate_limited", retryAfterSec: 50 * 60 });
+    expect(h.runs).toHaveLength(1);
+  });
+
   test("the daily cap records budget_exhausted with the seconds to the next UTC day", async () => {
     const h = harness();
     const ledger = createMemoryExoLedger();
@@ -447,6 +469,18 @@ describe("Exo terminal report survives a failed store write", () => {
     h.state.putFailures = Number.POSITIVE_INFINITY;
     await h.wake(REQ1);
     await h.wake(REQ1);
+    expect(h.runs).toHaveLength(0);
+  });
+
+  test("a ledger that refuses the start settles the request rate_limited and never calls the executor", async () => {
+    const h = harness();
+    const ledger = createMemoryExoLedger();
+    h.ports.ledger = {
+      ...ledger,
+      recordStart: async () => ({ started: false, reason: "active", retryAfterMs: 0 }),
+    };
+    h.seed(REQ1, "sync-google");
+    expect(await h.wake(REQ1)).toMatchObject({ state: "error", code: "rate_limited" });
     expect(h.runs).toHaveLength(0);
   });
 
@@ -579,7 +613,7 @@ describe("Exo job retention sweep", () => {
     h.jobs.set(`${OWNER}|old`, record("old", now - EXO_JOB_RETENTION_MS - DAY));
     h.jobs.set(`${OWNER}|fresh`, record("fresh", now - DAY));
     h.jobs.set(`${OWNER}|junk`, { v: 1, jobId: "junk" });
-    const removed = await sweepExpiredJobs(h.ports.jobs, OWNER, now);
+    const removed = await sweepExpiredJobs(h.ports, OWNER, now);
     expect(removed).toBe(1);
     expect([...h.jobs.keys()].sort()).toEqual([`${OWNER}|fresh`, `${OWNER}|junk`]);
   });
@@ -622,9 +656,43 @@ describe("Exo request consume", () => {
     await h.wake(REQ1);
     await h.runs[0].report({ state: "done", code: "done" });
     h.state.now = T0 + EXO_JOB_RETENTION_MS + DAY;
-    expect(await sweepExpiredJobs(h.ports.jobs, OWNER, h.state.now)).toBe(1);
+    expect(await sweepExpiredJobs(h.ports, OWNER, h.state.now)).toBe(1);
     expect(await h.wake(REQ1)).toBeUndefined();
     expect(h.jobs.size).toBe(0);
+    expect(h.runs).toHaveLength(1);
+  });
+
+  test("a sweep whose request removal fails keeps the job, and a replay of the request starts nothing", async () => {
+    const h = harness();
+    h.seed(REQ1, "sync-google");
+    h.state.removeFails = true;
+    expect(await h.wake(REQ1)).toMatchObject({ state: "pending" });
+    await h.runs[0].report({ state: "done", code: "done" });
+    h.state.now = T0 + EXO_JOB_RETENTION_MS + DAY;
+    await expect(sweepExpiredJobs(h.ports, OWNER, h.state.now)).rejects.toThrow();
+    expect(h.jobs.size).toBe(1);
+    expect(h.requests.has(key(REQ1))).toBe(true);
+    h.state.removeFails = false;
+    await h.wake(REQ1);
+    expect(h.runs).toHaveLength(1);
+    expect(h.jobs.size).toBe(1);
+  });
+
+  test("a sweep whose job removal fails after the request is removed leaves a job that a replay does not start", async () => {
+    const h = harness();
+    h.seed(REQ1, "sync-google");
+    await h.wake(REQ1);
+    await h.runs[0].report({ state: "done", code: "done" });
+    h.state.now = T0 + EXO_JOB_RETENTION_MS + DAY;
+    const realRemove = h.ports.jobs.remove;
+    h.ports.jobs.remove = async () => {
+      throw new Error("job remove failed");
+    };
+    await expect(sweepExpiredJobs(h.ports, OWNER, h.state.now)).rejects.toThrow("job remove failed");
+    h.ports.jobs.remove = realRemove;
+    expect(h.requests.has(key(REQ1))).toBe(false);
+    expect(h.jobs.size).toBe(1);
+    await h.wake(REQ1);
     expect(h.runs).toHaveLength(1);
   });
 });
@@ -642,5 +710,52 @@ describe("Exo flag parsing", () => {
     expect(exoCapabilitiesEnabled({ EXO_CAPABILITIES_ENABLED: "1" }, warn)).toBe(false);
     expect(exoCapabilitiesEnabled({ EXO_CAPABILITIES_ENABLED: " true " }, warn)).toBe(false);
     expect(warnings).toHaveLength(3);
+  });
+});
+
+describe("Exo per-source locks (TC-1013 D9)", () => {
+  test("a meetings run refuses a fireflies start on the same source until its terminal report", async () => {
+    const h = harness();
+    h.seed(REQ1, "sync-meetings");
+    h.seed(REQ2, "sync-fireflies");
+    h.seed(REQ3, "sync-fireflies");
+    expect(await h.wake(REQ1)).toMatchObject({ state: "pending" });
+    expect(await h.wake(REQ2)).toMatchObject({ state: "error", code: "rate_limited", retryAfterSec: 3600 });
+    await h.runs[0].report({ state: "done", code: "done" });
+    h.state.now = T0 + HOUR;
+    expect(await h.wake(REQ3)).toMatchObject({ state: "pending" });
+    expect(h.runs).toHaveLength(2);
+  });
+
+  test("a fireflies run refuses a meetings start on the same source", async () => {
+    const h = harness();
+    h.seed(REQ1, "sync-fireflies");
+    h.seed(REQ2, "sync-meetings");
+    expect(await h.wake(REQ1)).toMatchObject({ state: "pending" });
+    expect(await h.wake(REQ2)).toMatchObject({ state: "error", code: "rate_limited" });
+    expect(h.runs).toHaveLength(1);
+  });
+
+  test("an error terminal report also releases the meetings run's source locks", async () => {
+    const h = harness();
+    h.seed(REQ1, "sync-meetings");
+    h.seed(REQ2, "sync-google");
+    expect(await h.wake(REQ1)).toMatchObject({ state: "pending" });
+    await h.runs[0].report({ state: "error", code: "unavailable" });
+    h.state.now = T0 + 30 * MINUTE;
+    expect(await h.wake(REQ2)).toMatchObject({ state: "pending" });
+  });
+
+  test("a meetings run that never reports releases its source locks after the active-run TTL", async () => {
+    const h = harness();
+    h.seed(REQ1, "sync-meetings");
+    h.seed(REQ2, "sync-google");
+    h.seed(REQ3, "sync-google");
+    expect(await h.wake(REQ1)).toMatchObject({ state: "pending" });
+    h.state.now = T0 + 30 * MINUTE - 1;
+    expect(await h.wake(REQ2)).toMatchObject({ state: "error", code: "rate_limited" });
+    h.state.now = T0 + 30 * MINUTE;
+    expect(await h.wake(REQ3)).toMatchObject({ state: "pending" });
+    expect(h.runs).toHaveLength(2);
   });
 });

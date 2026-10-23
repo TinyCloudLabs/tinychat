@@ -24,6 +24,8 @@ export interface ExoGrantRoutesConfig {
   authMiddleware: RequestHandler;
   node: TinyCloudNode;
   coordinator?: TenantCoordinator;
+  /** Clears the owner's Exo rows and removes the owner's exo grant record (index.ts teardownExoOwner). */
+  teardownExoOwner?: (owner: string) => Promise<unknown>;
 }
 
 /**
@@ -31,8 +33,9 @@ export interface ExoGrantRoutesConfig {
  * exactly "true". Each route acts on the session owner's record only. The grant reaches the two
  * exo KV prefixes and nothing else; the verifier enforces that under the "exo-sync" policy.
  *
- * DELETE removes the stored record. It does not revoke the delegation on the node: a removed
- * grant stays valid there until it expires, so the owner revokes it at the node.
+ * DELETE clears the owner's Exo rows, then removes the stored record. Removing the record does
+ * not revoke the delegation on the node: the grant stays valid there until it expires, so the
+ * owner revokes it at the node. A failed clear returns 503 and keeps the record, so retry is safe.
  */
 export function createExoGrantRouter(config: ExoGrantRoutesConfig) {
   const router = Router();
@@ -153,6 +156,7 @@ export function createExoGrantRouter(config: ExoGrantRoutesConfig) {
     try {
       await coordinator.run(address, async () => {
         const stored = await config.store.load(address);
+        if (config.teardownExoOwner) await config.teardownExoOwner(address);
         await config.store.remove(address);
         invalidateGrant(address, stored?.serialized);
       });
