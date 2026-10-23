@@ -756,28 +756,47 @@ describe("connectorSecrets decrypt step-up", () => {
     expect(f.calls.signerCalls).toBe(1);
   });
 
-  const INJECTED_SECRETS_RECEIVERS: Record<string, true> = { deps: true, opts: true, options: true };
-  function secretsAccessOffenders(text: string): string[] {
+  // Receivers that may carry an injected `secrets` bag, per file (paths relative
+  // to src/). Any other `.secrets` access outside connectorSecrets.ts is flagged,
+  // whatever the receiver is called.
+  const INJECTED_SECRETS_RECEIVERS: Record<string, Record<string, true>> = {
+    "chat/BackendReconciler.tsx": { options: true },
+    "chat/backgroundSyncState.ts": { deps: true },
+    "lib/connectors/backendReconcile.ts": { opts: true },
+    "lib/connectors/connectorLifecycle.ts": { deps: true },
+    "lib/connectors/targetedSync.ts": { opts: true },
+  };
+  function secretsAccessOffenders(rel: string, text: string): string[] {
+    const allowed = INJECTED_SECRETS_RECEIVERS[rel] ?? {};
     const hits: string[] = [];
     for (const line of text.split("\n")) {
       const code = line.trim();
       if (code.startsWith("//") || code.startsWith("*") || code.startsWith("/*")) continue;
       for (const m of code.matchAll(/(\w+)\??\.secrets\b/g)) {
-        if (INJECTED_SECRETS_RECEIVERS[m[1] ?? ""] !== true) hits.push(code);
+        if (allowed[m[1] ?? ""] !== true) hits.push(code);
       }
       for (const m of code.matchAll(/\{[^}]*\bsecrets\b[^}]*\}\s*=\s*(\w+)/g)) {
-        if (INJECTED_SECRETS_RECEIVERS[m[1] ?? ""] !== true) hits.push(code);
+        if (allowed[m[1] ?? ""] !== true) hits.push(code);
       }
     }
     return hits;
   }
 
   test("the secrets-access guard flags aliases and destructuring, not injected bags", () => {
-    expect(secretsAccessOffenders("const vault = tcw.secrets;")).toEqual(["const vault = tcw.secrets;"]);
-    expect(secretsAccessOffenders("const { secrets } = tcw;")).toEqual(["const { secrets } = tcw;"]);
-    expect(secretsAccessOffenders("await deps.secrets.isUnlocked();")).toEqual([]);
-    expect(secretsAccessOffenders("const { tcw, secrets } = options;")).toEqual([]);
-    expect(secretsAccessOffenders("// tcw.secrets.get is not called here")).toEqual([]);
+    expect(secretsAccessOffenders("chat/x.ts", "const vault = tcw.secrets;")).toEqual(["const vault = tcw.secrets;"]);
+    expect(secretsAccessOffenders("chat/x.ts", "const { secrets } = tcw;")).toEqual(["const { secrets } = tcw;"]);
+    expect(secretsAccessOffenders("chat/x.ts", "await deps.secrets.isUnlocked();")).toEqual([
+      "await deps.secrets.isUnlocked();",
+    ]);
+    expect(secretsAccessOffenders("chat/backgroundSyncState.ts", "await deps.secrets.isUnlocked();")).toEqual([]);
+    expect(secretsAccessOffenders("chat/x.ts", "const opts = tcw;\nopts.secrets.get(a);")).toEqual([
+      "opts.secrets.get(a);",
+    ]);
+    expect(secretsAccessOffenders("chat/BackendReconciler.tsx", "const { tcw, secrets } = options;")).toEqual([]);
+    expect(secretsAccessOffenders("chat/x.ts", "const { tcw, secrets } = options;")).toEqual([
+      "const { tcw, secrets } = options;",
+    ]);
+    expect(secretsAccessOffenders("chat/x.ts", "// tcw.secrets.get is not called here")).toEqual([]);
   });
 
   test("no file outside connectorSecrets.ts reaches the TinyCloud secrets service", () => {
@@ -786,7 +805,7 @@ describe("connectorSecrets decrypt step-up", () => {
     for (const rel of readdirSync(srcRoot, { recursive: true }) as string[]) {
       if (!/\.(ts|tsx)$/.test(rel) || /\.test\.(ts|tsx)$/.test(rel)) continue;
       if (rel.endsWith(join("lib", "connectors", "connectorSecrets.ts"))) continue;
-      for (const hit of secretsAccessOffenders(readFileSync(join(srcRoot, rel), "utf8"))) offenders.push(`${rel}: ${hit}`);
+      for (const hit of secretsAccessOffenders(rel, readFileSync(join(srcRoot, rel), "utf8"))) offenders.push(`${rel}: ${hit}`);
     }
     expect(offenders).toEqual([]);
   });
