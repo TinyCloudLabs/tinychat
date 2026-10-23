@@ -4,13 +4,14 @@
 // because the owned `secrets` space was never registered with the node. In that one case
 // we call `tcw.ensureOwnedSpaceHosted?.("secrets")` (if the SDK exposes it) and retry
 // ONCE. If the method doesn't exist we surface the original error — no silent fallback.
+// Before the first write in a session, saveConnectorKey creates the encryption network once.
 
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { secretsAvailable, SECRETS_UNAVAILABLE_IN_APP_MESSAGE } from "../openkeyNative";
 import type { ConnectorDescriptor } from "./types";
 
-/** Same Result shape the SDK uses. Errors propagate untouched. */
+/** Same Result shape the SDK uses. Known failures carry a neutral user message; the SDK error stays on `cause` for logs. */
 export type SecretsResult<T, E> =
   | { ok: true; data: T }
   | { ok: false; error: E };
@@ -21,7 +22,11 @@ export type SecretsResult<T, E> =
 export type SecretsErr = { code?: string; message?: string };
 
 /** Minimum surface we invoke on tcw. Kept structural so tests can supply a fake. */
-type SecretsTcw = Pick<TinyCloudWeb, "secrets"> & {
+type SecretsTcw = Pick<
+  TinyCloudWeb,
+  "secrets" | "ensureEncryptionNetwork" | "did" | "hasPermissions" | "requestPermissions"
+  | "isWalletConnected"
+> & {
   ensureOwnedSpaceHosted?: TinyCloudWeb["ensureOwnedSpaceHosted"];
 };
 
@@ -158,11 +163,50 @@ export async function unlockSecrets<E>(
 /** Where a key lives in the vault: a connector's descriptor, or another source key's name. */
 export type SecretLocation = Pick<ConnectorDescriptor, "secretName" | "secretScope">;
 
+/** Name of the encryption network every connector secret is sealed under. */
+const ENCRYPTION_NETWORK_NAME = "default";
+
+/**
+ * Per-session memo of the in-flight or completed network ensure, keyed by the
+ * tcw instance. A failed ensure is dropped so the next save retries it.
+ */
+const encryptionNetworkEnsured = new WeakMap<object, Promise<void>>();
+
+/** Creates the encryption network once per session. Resolves to a Result; never throws. */
+async function ensureEncryptionNetworkForSave<E>(
+  tcw: SecretsTcw,
+): Promise<SecretsResult<void, E>> {
+  let pending = encryptionNetworkEnsured.get(tcw);
+  if (!pending) {
+    const created = (async () => {
+      await tcw.ensureEncryptionNetwork(ENCRYPTION_NETWORK_NAME);
+    })();
+    pending = created;
+    encryptionNetworkEnsured.set(tcw, created);
+    created.catch(() => {
+      if (encryptionNetworkEnsured.get(tcw) === created) {
+        encryptionNetworkEnsured.delete(tcw);
+      }
+    });
+  }
+  try {
+    await pending;
+    return { ok: true, data: undefined };
+  } catch (error) {
+    return {
+      ok: false,
+      error: { code: "encryption-network-failed", message: ENCRYPTION_NETWORK_FAILED_MESSAGE, cause: error } as E,
+    };
+  }
+}
+
 export async function saveConnectorKey<E>(
   tcw: SecretsTcw,
   descriptor: SecretLocation,
   key: string,
 ): Promise<SecretsResult<void, E>> {
+  const ensured = await ensureEncryptionNetworkForSave<E>(tcw);
+  if (!ensured.ok) return ensured;
   const options = descriptor.secretScope
     ? { scope: descriptor.secretScope }
     : undefined;
@@ -182,16 +226,119 @@ export async function saveConnectorKey<E>(
   )) as SecretsResult<void, E>;
 }
 
-export async function getConnectorKey<E>(
+/** Lifetime of the decrypt step-up. Just under the one-hour cap. */
+export const DECRYPT_STEP_UP_EXPIRY_MS = 3_540_000;
+
+/** Neutral message for a declined decrypt step-up. */
+export const DECRYPT_DECLINED_MESSAGE =
+  "Decryption was not approved, so the saved key could not be read.";
+
+/** Neutral message when the encryption network cannot be prepared before a save. */
+export const ENCRYPTION_NETWORK_FAILED_MESSAGE =
+  "Your encrypted vault could not be prepared, so the key was not saved. Try again.";
+
+/** Neutral message when the decrypt step-up throws (wallet or network error). */
+export const DECRYPT_STEP_UP_FAILED_MESSAGE =
+  "Approving decryption failed, so the saved key could not be read. Try again.";
+
+/**
+ * The one permission entry a secrets read needs beyond the sign-in session:
+ * `decrypt` on the owner's default encryption network. The network id embeds
+ * `did`, the same value the SDK derives for its own `get`.
+ */
+export function decryptStepUpEntry(did: string) {
+  return {
+    service: "tinycloud.encryption",
+    path: `urn:tinycloud:encryption:${did}:${ENCRYPTION_NETWORK_NAME}`,
+    actions: ["decrypt"],
+    skipPrefix: true as const,
+    description: "Decrypt secrets stored in your encrypted vault.",
+  };
+}
+
+// ── Reveal after reload: signer required ─────────────────────────────
+//
+// A boot-time restore builds the client with the lazy wallet provider
+// (lib/lazyWalletProvider.ts), so the client has a signer. A client without one
+// cannot sign, and `requestPermissions` would throw before any prompt, so it is
+// refused here with a neutral error instead.
+
+/** Neutral message when a restored client has no wallet signer. */
+export const WALLET_UNAVAILABLE_MESSAGE =
+  "The wallet for this session is not connected, so the saved key could not be read. Sign in again.";
+
+function walletUnavailable<E>(): SecretsResult<void, E> {
+  return {
+    ok: false,
+    error: { code: "wallet-unavailable", message: WALLET_UNAVAILABLE_MESSAGE } as E,
+  };
+}
+
+/** Neutral state for a background read that has no decrypt grant yet. */
+export const NEEDS_UNLOCK_MESSAGE =
+  "Saved keys are locked. Use Sync now on the connector to unlock them.";
+
+function needsUnlock<E>(): SecretsResult<void, E> {
+  return {
+    ok: false,
+    error: { code: "needs-unlock", message: NEEDS_UNLOCK_MESSAGE } as E,
+  };
+}
+
+/**
+ * Ensures the decrypt grant before a read. A held grant passes with no prompt.
+ * Without one:
+ *  - `interactive: false` (background): returns `needs-unlock` and makes no
+ *    SDK permission call at all, so no modal and no wallet signature.
+ *  - `interactive: true` (explicit user action): a client without a wallet
+ *    signer is refused before any prompt; otherwise requests the entry. A
+ *    decline is neutral and not retried; a thrown error becomes the neutral step-up failure, with the SDK error as `cause`.
+ * Never throws.
+ */
+async function ensureDecryptStepUp<E>(
+  tcw: SecretsTcw,
+  interactive: boolean,
+): Promise<SecretsResult<void, E>> {
+  const entry = decryptStepUpEntry(tcw.did);
+  if (tcw.hasPermissions([entry])) return { ok: true, data: undefined };
+  if (!interactive) return needsUnlock<E>();
+  if (!tcw.isWalletConnected) return walletUnavailable<E>();
+  let approved: boolean;
+  try {
+    approved = (
+      await tcw.requestPermissions([entry], { expiryMs: DECRYPT_STEP_UP_EXPIRY_MS })
+    ).approved;
+  } catch (error) {
+    return {
+      ok: false,
+      error: { code: "step-up-failed", message: DECRYPT_STEP_UP_FAILED_MESSAGE, cause: error } as E,
+    };
+  }
+  if (approved) return { ok: true, data: undefined };
+  return {
+    ok: false,
+    error: { code: "decrypt-declined", message: DECRYPT_DECLINED_MESSAGE } as E,
+  };
+}
+
+/**
+ * Reads a saved connector key. `interactive` is REQUIRED with no default:
+ * `true` only from an explicit user action (button press), `false` from every
+ * background job. Background reads never prompt; see `ensureDecryptStepUp`.
+ */
+export async function readConnectorKey<E>(
   tcw: SecretsTcw,
   descriptor: SecretLocation,
+  options: { interactive: boolean },
 ): Promise<SecretsResult<string, E>> {
-  const options = descriptor.secretScope
+  const stepUp = await ensureDecryptStepUp<E>(tcw, options.interactive);
+  if (!stepUp.ok) return stepUp;
+  const scope = descriptor.secretScope
     ? { scope: descriptor.secretScope }
     : undefined;
   return (await tcw.secrets.get(
     descriptor.secretName,
-    options,
+    scope,
   )) as SecretsResult<string, E>;
 }
 

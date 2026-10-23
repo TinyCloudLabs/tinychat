@@ -51,7 +51,7 @@ import {
   type UpsertMeetingOutcome,
 } from "./connectorStore";
 import { fromFireflies, isTerminal, type SyncError } from "./firefliesSync";
-import { getConnectorKey, isSecretsUnlocked } from "./connectorSecrets";
+import { isSecretsUnlocked, readConnectorKey } from "./connectorSecrets";
 import type {
   ConnectorAckItem,
   ConnectorAckRequest,
@@ -96,6 +96,7 @@ export interface TargetedIngestSecrets {
   getKey(
     tcw: TinyCloudWeb,
     descriptor: ConnectorDescriptor,
+    interactive: boolean,
   ): Promise<{ ok: true; data: string } | { ok: false; error: unknown }>;
 }
 
@@ -157,6 +158,8 @@ export interface IngestQueuedMeetingsOptions {
   /** The surfaced queue, in the order the backend handed it over. */
   items: readonly TargetedQueueItem[];
   webhooks: TargetedAckClient;
+  /** Explicit, no default. `true` only from a user action (may request the decrypt step-up); background callers pass `false`. */
+  interactive: boolean;
   store?: TargetedIngestStore;
   secrets?: TargetedIngestSecrets;
   /** Built per run from the browser-held key; injectable for tests. */
@@ -175,7 +178,8 @@ const defaultStore: TargetedIngestStore = {
 
 const defaultSecrets: TargetedIngestSecrets = {
   isUnlocked: isSecretsUnlocked,
-  getKey: (tcw, descriptor) => getConnectorKey<unknown>(tcw, descriptor),
+  getKey: (tcw, descriptor, interactive) =>
+    readConnectorKey<unknown>(tcw, descriptor, { interactive }),
 };
 
 function defaultSleep(ms: number): Promise<void> {
@@ -205,6 +209,8 @@ function classifySecretsError(err: unknown): TargetedIngestBlockedReason | null 
   const code = typeof e.code === "string" ? e.code : "";
   const message = typeof e.message === "string" ? e.message : "";
   if (/VAULT_LOCKED/i.test(code)) return "secrets-locked";
+  // A background read with no decrypt grant defers: the same surface as a locked vault.
+  if (code === "needs-unlock") return "secrets-locked";
   if (/NOT_FOUND/i.test(code)) return "key-missing";
   if (/not found|404/i.test(message)) return "key-missing";
   return null;
@@ -278,7 +284,7 @@ export async function ingestQueuedMeetings(
   if (!secrets.isUnlocked(tcw)) {
     return { ok: true, data: emptyOutcome({ blocked: "secrets-locked" }) };
   }
-  const keyRes = await secrets.getKey(tcw, descriptor);
+  const keyRes = await secrets.getKey(tcw, descriptor, opts.interactive);
   if (!keyRes.ok) {
     const blocked = classifySecretsError(keyRes.error);
     if (blocked) return { ok: true, data: emptyOutcome({ blocked }) };

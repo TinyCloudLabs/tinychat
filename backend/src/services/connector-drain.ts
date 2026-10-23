@@ -1249,7 +1249,7 @@ const CONFIG_KEY_PREFIX = "webhooks/config/";
 const ADDRESS_KEY_PATTERN = /^0x[0-9a-f]{40}$/;
 
 /** KV `list` responses have been seen wrapped, doubly wrapped, and as bare arrays. */
-function extractKeys(response: unknown): string[] {
+export function extractKeys(response: unknown): string[] {
   if (
     response !== null &&
     typeof response === "object" &&

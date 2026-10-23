@@ -115,6 +115,33 @@ function explodingVaultTcw(unlocked: boolean): TinyCloudWeb {
   } as unknown as TinyCloudWeb;
 }
 
+/** A tcw with real grant semantics: the decrypt grant is absent until a prompt grants it. */
+function grantTcw(options: { held: boolean }) {
+  const counts = { gets: 0, prompts: 0 };
+  let held = options.held;
+  const tcw = {
+    did: "did:pkh:eip155:1:0x00000000000000000000000000000000000000aa",
+    isWalletConnected: true,
+    hasPermissions: () => held,
+    requestPermissions: async () => {
+      counts.prompts += 1;
+      held = true;
+      return { approved: true };
+    },
+    secrets: {
+      isUnlocked: true,
+      get: async () => {
+        counts.gets += 1;
+        return { ok: true, data: "api-key" };
+      },
+      unlock: () => {
+        throw new Error("the headless drain must never trigger an unlock prompt");
+      },
+    },
+  } as unknown as TinyCloudWeb;
+  return { tcw, counts };
+}
+
 function deferred<T = void>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((r) => {
@@ -473,6 +500,42 @@ describe("stale Fireflies catch-up", () => {
       },
     }, "unlock");
     expect(limits).toEqual([50]);
+  });
+});
+
+describe("decrypt grant on background drains", () => {
+  test("mount catch-up with no decrypt grant reads nothing and prompts nothing", async () => {
+    const b = backend();
+    const grant = grantTcw({ held: false });
+    const { promise } = start(b, {
+      tcw: grant.tcw,
+      connection: connection({ lastSyncedAt: "2026-10-11T11:59:59.000Z" }),
+      now: () => Date.parse("2026-10-13T12:00:00.000Z"),
+    });
+    await promise;
+    expect(grant.counts).toEqual({ gets: 0, prompts: 0 });
+  });
+
+  test("a focus drain with no decrypt grant defers and acknowledges nothing", async () => {
+    const b = backend({ pending: [item("m1")] });
+    const grant = grantTcw({ held: false });
+    await resumeBackgroundDrain(
+      {
+        tcw: grant.tcw,
+        sessionStore: SESSION,
+        backendUrl: BACKEND,
+        hooks: {
+          webhooks: b.webhooks,
+          getConnection: countingConnection(connection()).getConnection,
+          connectors: [fireflies],
+          now: () => Date.parse("2026-10-13T12:00:00.000Z"),
+        },
+      },
+      "focus",
+    );
+    expect(grant.counts).toEqual({ gets: 0, prompts: 0 });
+    expect(b.queue().length).toBe(1);
+    expect(b.events).not.toContain("ack:m1");
   });
 });
 

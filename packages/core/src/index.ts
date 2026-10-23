@@ -66,6 +66,8 @@ export {
 export type DelegationStatus = "active" | "expired" | "none" | "stale";
 
 export interface StoredDelegation {
+  /** Grant kind this record was written for. Absent on records written before kinds existed. */
+  kind?: string;
   serialized: string;
   grantedAt: string;
   expiresAt: string;
@@ -239,3 +241,6 @@ export {
   type StitchSeam,
   type SourceRef,
 } from "./meeting-stitch.js";
+
+// ── Notetaker meeting links ──────────────────────────────────────────
+export { meetingLinkFromInput } from "./meeting-link.js";

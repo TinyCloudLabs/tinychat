@@ -1,5 +1,25 @@
 # exo-desktop
 
+## 0.10.0-beta.20
+
+No changes in this release.
+
+## 0.10.0-beta.19
+
+No changes in this release.
+
+## 0.10.0-beta.18
+
+No changes in this release.
+
+## 0.10.0-beta.17
+
+No changes in this release.
+
+## 0.10.0-beta.16
+
+No changes in this release.
+
 ## 0.10.0-beta.15
 
 No changes in this release.

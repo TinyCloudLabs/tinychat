@@ -1,5 +1,29 @@
 # @tinychat/backend
 
+## 0.5.7-beta.11
+
+### Patch Changes
+
+- 87993a3: With `EXO_CAPABILITIES_ENABLED` set to `true`, the Exo mailbox now runs on real stores. Cooldown, daily-count, and active-run state is kept in the backend KV with compare-and-set writes. Queued wakes drain on shutdown, expired job mirrors are swept hourly, and owner and source Exo state is cleared on grant revoke, transcript delegation revoke, calendar autojoin disconnect, and connector teardown. The flag remains off by default.
+
+## 0.5.7-beta.10
+
+### Patch Changes
+
+- 73b3241: Activate exactly scoped Exo sync grants: KV get, list, and del on the `requests/` prefix, and get, put, and del on the `jobs/` prefix. A flag-gated grant route, `GET|POST|DELETE /api/exo/v1/grant`, mounts only when `EXO_CAPABILITIES_ENABLED` is exactly `true`. A typed accessor refuses traversal, encoded, sibling, and lookalike paths, keys over 512 characters, stored values over 4 KiB, and invalid UTF-8 or byte-order-marked values before any KV call. Exo and connector grant records are bound to their own kind and key prefix, and connector records written before this change still load. `EXO_CAPABILITIES_ENABLED` stays off by default.
+
+## 0.5.7-beta.9
+
+### Patch Changes
+
+- eb888dd: Add a backend mailbox for Exo sync requests behind `EXO_CAPABILITIES_ENABLED`, which is off by default. The grant verifier now also accepts one exactly scoped Exo grant shape; connector grants are unchanged.
+
+## 0.5.7-beta.8
+
+### Patch Changes
+
+- 57fb986: Send a notetaker accepts meeting links as people paste them. A link without `https://`, Google's `google.com/meet/<code>` form, a bare Meet code, a Gmail/Calendar or Outlook redirect, or a whole "Join with Google Meet" line now becomes the canonical meeting link before it goes to ptx. These used to fail with "That doesn't look like a meeting link" or "That meeting platform isn't supported yet". Any other link still goes upstream exactly as pasted, so capability links keep their query and fragment. The backend applies the same reading, so links from older clients work too.
+
 ## 0.5.7-beta.7
 
 ### Patch Changes

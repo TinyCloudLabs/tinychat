@@ -6,8 +6,9 @@
 //    voiceNoteStore.ts voiceNoteMarkdownKvKey), never `vault/` or secrets;
 //  - never mutable control state (sync-attempt, Drive cursor/progress, pending-reconcile snapshot,
 //    transcript-history): a stale local copy of those could drive a wrong write;
-//  - thread KV is NOT listed: tinychat keeps threads in SQL (threadStore.ts), no KV key is built
-//    under `threads/`.
+//  - thread SQL is NOT listed: thread data lives in SQL (threadStore.ts). The KV records under
+//    `threads/shares/` (snapshot bodies) and `threads/share-index/` (owner share records) are
+//    owner-side state and are not listed here either.
 //
 // Every prefix is built by the same key builders the app writes with, so a key-layout change
 // cannot silently drift from what is mirrored. Prefixes are full in-space paths

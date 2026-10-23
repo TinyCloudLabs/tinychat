@@ -1,38 +1,15 @@
-// WORKAROUND for an SDK gap — see docs/connectors-spec.md §7 "KNOWN BLOCKER".
+// Sign-in manifest entry for the owner's default encryption network.
 //
-// Reading a secret back is impossible on web-sdk 2.5.1 without this. The secrets
-// vault is always network-encrypted (node-sdk's createVaultService passes an
-// `encryption` config unconditionally, and `usesNetworkEncryption` is just
-// `encryption !== undefined`), and NodeSecretsService.ensurePermission adds, for
-// `get` ALONE, a `tinycloud.encryption` / `decrypt` entry on the vault's network
-// id. Nothing grants it: no manifest `defaults` tier includes encryption, and the
-// SDK's only other route is runtime escalation, which needs a wallet signer a
-// restored session does not have.
+// Sign-in requests `network.create` on the network, so the network can be created
+// on the first secret save (see ensureEncryptionNetwork in connectorSecrets.ts).
+// Sign-in does not request `decrypt`; reads request it separately, only from an
+// explicit user action (see readConnectorKey and ensureDecryptStepUp in connectorSecrets.ts).
 //
-// The manifest cannot declare it statically either, because the network id embeds
-// the signed-in user's DID and `expandEncryptionPermissionEntry` rejects any path
-// that is not a concrete networkId URN (no wildcards). So the entry has to be
-// composed once the address is known and appended to the manifest we hand to
-// signIn — capabilities are minted from that manifest, so this is the only moment
-// it can be added.
-//
-// This hardcodes an SDK-INTERNAL URN format. It is a one-line removal (drop the
-// withEncryptionDecryptGrant call in App.tsx) the moment the SDK carries the
-// capability itself. The format is mirrored from node-sdk:
-//
-//   getEncryptionNetworkIdForSpace(spaceId, name = DEFAULT_ENCRYPTION_NETWORK_NAME) {
-//     const ownerDid = this.ownerDidFromSpaceId(spaceId) ?? this.did;
-//     return `urn:tinycloud:encryption:${ownerDid}:${name}`;
-//   }
-//   ownerDidFromSpaceId(spaceId) {           // "tinycloud:pkh:eip155:1:0xAbC…:secrets"
-//     const body = spaceId.slice("tinycloud:".length);
-//     const owner = body.slice(0, body.lastIndexOf(":"));   // "pkh:eip155:1:0xAbC…"
-//     return owner.startsWith("did:") ? owner : `did:${owner}`;
-//   }
-//
-// with `DEFAULT_ENCRYPTION_NETWORK_NAME = "default"`. Note the owner DID is read
-// out of the SPACE ID, whose address is EIP-55 checksummed — so the address is
-// normalized here rather than used as the wallet happened to spell it.
+// The network id embeds the owner's DID, so the entry cannot be declared in the
+// static manifest. It is composed once the address is known and appended to the
+// manifest passed to signIn. The URN format mirrors node-sdk's network id
+// derivation. The owner DID is built from the address, so the address is
+// normalized (EIP-55) here.
 
 import { getAddress } from "viem";
 import type { Manifest } from "@tinycloud/web-sdk";
@@ -41,8 +18,7 @@ import type { Manifest } from "@tinycloud/web-sdk";
 const DEFAULT_ENCRYPTION_NETWORK_NAME = "default";
 
 /**
- * The network id the secrets vault will decrypt against, for `address` on
- * `chainId`. Mirrors node-sdk's getEncryptionNetworkIdForSpace.
+ * The default encryption network id for `address` on `chainId`.
  *
  * @throws if `address` is not a valid EVM address (viem's getAddress).
  */
@@ -51,36 +27,35 @@ export function encryptionNetworkId(address: string, chainId = 1): string {
   return `urn:tinycloud:encryption:${ownerDid}:${DEFAULT_ENCRYPTION_NETWORK_NAME}`;
 }
 
-/** The permission entry NodeSecretsService demands for a secrets read. */
-export function encryptionDecryptGrant(
+/** The sign-in permission entry that lets the owner create their encryption network. */
+export function encryptionNetworkCreateGrant(
   address: string,
   chainId = 1,
 ): { service: string; path: string; actions: string[]; skipPrefix: true; description: string } {
   return {
     service: "tinycloud.encryption",
     path: encryptionNetworkId(address, chainId),
-    actions: ["decrypt"],
-    // Encryption resources are top-level and owner-scoped; the app-id prefix
-    // would corrupt the URN. (sdk-core forces this anyway for this service.)
+    actions: ["network.create"],
+    // Encryption resources are top-level and owner-scoped, so the app-id prefix
+    // is not applied. sdk-core forces this for this service.
     skipPrefix: true,
-    description: "Decrypt secrets stored in your encrypted vault.",
+    description: "Create your encrypted vault network.",
   };
 }
 
 /**
- * `manifest` plus the decrypt grant. Returns a new object — the fetched manifest
- * is left untouched — and is a no-op when an equivalent grant is already present,
- * so it stays safe if the backend ever starts declaring one.
+ * `manifest` plus the network-create entry. Returns a new object; the fetched
+ * manifest is left untouched. It is a no-op when an entry for the same service
+ * and path is already present.
  *
- * Sign-in only. A restored session cannot acquire capabilities, so adding this on
- * the restore path would be misleading noise.
+ * Used at sign-in only.
  */
-export function withEncryptionDecryptGrant(
+export function withEncryptionNetworkCreateGrant(
   manifest: Manifest,
   address: string,
   chainId = 1,
 ): Manifest {
-  const grant = encryptionDecryptGrant(address, chainId);
+  const grant = encryptionNetworkCreateGrant(address, chainId);
   const existing = manifest.permissions ?? [];
   const alreadyGranted = existing.some(
     (entry) => entry.service === grant.service && entry.path === grant.path,

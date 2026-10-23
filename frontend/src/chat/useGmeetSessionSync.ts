@@ -60,7 +60,7 @@ import {
   type StoreResult,
 } from "@/lib/connectors/connectorStore";
 import {
-  getConnectorKey,
+  readConnectorKey,
   isSecretsUnlocked,
   onSecretsUnlocked,
   type SecretsErr,
@@ -357,8 +357,15 @@ async function runGmeetSessionSync(
 
   const readSecret =
     hooks.readRefreshToken ??
-    ((t: TinyCloudWeb, d: ConnectorDescriptor) => getConnectorKey<SecretsErr>(t, d));
+    ((t: TinyCloudWeb, d: ConnectorDescriptor) =>
+      readConnectorKey<SecretsErr>(t, d, { interactive: false }));
   const secretRes = await readSecret(tcw, descriptor);
+  // No decrypt grant yet (background read): defer without burning the attempt.
+  // A later call (focus, or the next explicit press) retries.
+  if (!secretRes.ok && secretRes.error?.code === "needs-unlock") {
+    attempted = false;
+    return "vault-locked";
+  }
   if (!secretRes.ok || typeof secretRes.data !== "string" || secretRes.data.length === 0) {
     breadcrumb("no usable refresh token in the vault");
     return "no-refresh-token";
