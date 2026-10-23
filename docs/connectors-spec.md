@@ -342,13 +342,12 @@ key, descriptor.secretScope ? { scope: descriptor.secretScope } : undefined)`.
   method exists, then retry once. If the method doesn't exist on web-sdk, surface the
   error honestly (no silent fallback — debugging rule).
 - **Every action the connector needs is granted at sign-in consent, except decrypt.**
-  Decrypt is requested at read time (see below). On web-sdk 3.3.0, a restored session has
-  no signer, so escalation through
+  Decrypt is requested at read time (see below). A restored session has no signer unless a
+  provider is passed (see the lazy provider below). Without one, escalation through
   `grantRuntimePermissions` fails with "grantRuntimePermissions requires wallet mode with
   a signer or privateKey". The `secrets` shorthand therefore grants `delete` at sign-in
-  (rationale in `backend/src/__tests__/manifest.test.ts`). Whether the decrypt
-  `requestPermissions` succeeds for a restored session on the pinned SDK is unverified
-  until the live QA run.
+  (rationale in `backend/src/__tests__/manifest.test.ts`). The decrypt `requestPermissions`
+  on a restored session with the lazy provider has not been run against a live node.
 
 **Secrets reads request decrypt separately.** Sign-in requests only
 `tinycloud.encryption` / `network.create` on the owner's default encryption network
@@ -360,7 +359,7 @@ takes an explicit `interactive` flag. Only explicit user actions (Sync now, Disc
 sources sync, and the queued-meetings sync) pass `interactive: true`, and only that path may request
 the grant through `ensureDecryptStepUp`. The grant is exactly one `tinycloud.encryption` / `decrypt`
 entry on the default network, with an expiry of `DECRYPT_STEP_UP_EXPIRY_MS` (3,540,000 ms, under one
-hour). A background read (mount drain, focus catch-up, Google Meet session sync, Fireflies catch-up)
+hour). A background read (the background drain and Google Meet session sync)
 passes `interactive: false` and never prompts. Without a held grant it returns `needs-unlock`
 (`NEEDS_UNLOCK_MESSAGE`) before any SDK call. The connector shows its locked state, and the next
 explicit action retries. A declined request returns `decrypt-declined` and reads nothing. The request
@@ -370,10 +369,11 @@ A restored session gets a lazy EIP-1193 provider (`createLazyWalletProvider` in
 `frontend/src/lib/lazyWalletProvider.ts`, passed in the restore config at
 `frontend/src/App.tsx`). `restoreTinyCloudWebSession` (`packages/client/src/tinycloud.ts`) sets
 the provider only when one is passed, so the restored client has a signer. The provider answers
-`eth_accounts` and `eth_requestAccounts` with the stored address without opening the wallet. The
-first other request (the signature for the decrypt step-up, or `eth_chainId`) opens OpenKey once.
-A wallet for a different address rejects with `WALLET_ACCOUNT_MISMATCH_MESSAGE`. A failed open is
-not cached, so the next request retries it.
+`eth_chainId` from the configured chain, and `eth_accounts` and `eth_requestAccounts` with the
+stored address, all without opening the wallet. `personal_sign` is the only method that opens
+OpenKey, and a successful open is reused. Every other method is refused with code 4200. A wallet
+for a different address rejects with `WALLET_ACCOUNT_MISMATCH_MESSAGE`. A failed open is not
+cached, so the next request retries it.
 
 `ensureDecryptStepUp` checks `hasPermissions` first and returns with no prompt when the grant is
 held. With no grant and `interactive: false`, it returns `needs-unlock` and makes no SDK call. With
@@ -382,8 +382,10 @@ held. With no grant and `interactive: false`, it returns `needs-unlock` and make
 throws on such a client. After a reload, the first explicit reveal shows the SDK permission prompt,
 then the OpenKey signature. A later explicit reveal within the hour shows neither.
 
-`readConnectorKey` is the only read path. A lint test fails if any other source file calls
-`secrets.get` directly. A second guard fails if any `readConnectorKey` call site omits the
+`readConnectorKey` is the only read path. A lint test fails if any source file outside
+`connectorSecrets.ts` accesses `.secrets` directly, unless the receiver is an injected dependency
+bag named `deps`, `opts`, or `options`. The check is line-based and keyed on receiver name, not a
+full AST. A second guard fails if any `readConnectorKey` call site omits the
 `interactive` flag. It checks that the flag is present, not its value, so each caller's value is
 reviewed where it is written. KV reads come from the sign-in session's manifest, which grants
 `tinycloud.kv` `get` on the vault paths. The step-up never adds KV entries; a regression test
@@ -392,7 +394,10 @@ enforces this.
 Sessions created before this change may still hold the older decrypt grant. This change
 does not revoke it.
 
-**SDK pin.** This PR builds against `@tinycloud/web-sdk` 3.5.0.
+**SDK pin.** The root `overrides` pin the 3.5.0 SDK family (`@tinycloud/sdk-core`,
+`@tinycloud/sdk-services`, `@tinycloud/node-sdk`, `@tinycloud/web-sdk`). The frontend declares
+`@tinycloud/sdk-core` 3.5.0 directly. The `packages/client` and `packages/server` manifests still
+declare 3.3.0, which the overrides supersede.
 
 ## 8. Sync engine (`firefliesSync.ts`)
 
