@@ -956,8 +956,10 @@ function usePipelineStates(entries: readonly { id: string; source: NotePipelineS
   return { states, natives, nativeReady: nativeRead.ready, reread };
 }
 
+/** Whether a note's audio is in the space. A pasted transcript never had audio, so its row counts as saved. */
 export function rowHasCommittedAudio(metadata: Record<string, unknown> | null | undefined): boolean {
   if (metadata === null || metadata === undefined) return false;
+  if (metadata.capture === "pasted") return true;
   const audio = metadata.audio;
   return metadata.audio_stored === true || metadata.audio_stored === 1
     || (typeof audio === "object" && audio !== null && "stored" in audio && audio.stored === true)
