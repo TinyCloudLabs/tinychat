@@ -142,7 +142,7 @@ export function createDesktopWhisperQueue(args: {
       try { listener(id); } catch (error) { console.error("[desktopWhisper] Completion listener failed", error); }
     }
   };
-  const mark = async (id: string, state: NoteSttState["state"], error: string | null = null, progress = 0,
+  const mark = async (id: string, state: Exclude<NoteSttState["state"], "yielded_by_os">, error: string | null = null, progress = 0,
     rerun: DesktopWhisperRerun | null = reruns.get(id) ?? failedReruns.get(id) ?? null) => {
     await store.updateStt(id, stt(state, error, rerun));
     publish(id, state === "running" ? "transcribing" : state === "waiting_for_model" ? "failed"

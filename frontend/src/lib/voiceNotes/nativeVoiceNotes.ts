@@ -75,10 +75,12 @@ export interface NoteLedger {
     cleanup: "none" | "pending" | "done" }[];
 }
 export interface NoteSttState {
-  state: "waiting_for_model" | "queued" | "running" | "done" | "failed" | "cancelled";
+  state: "waiting_for_model" | "queued" | "running" | "yielded_by_os" | "done" | "failed" | "cancelled";
   pack: "full" | "small" | null; engine: "parakeet" | "apple-speech" | "whisper" | null;
   segmentsDone: number; windowsDone: number; error: string | null; rerunRev?: number | null;
   rerunBaseRev?: number | null; rerunBaseHash?: string | null;
+  /** iOS attempt generation; a yielded generation cannot publish a late recognition result. */
+  yieldGeneration?: number;
   /** Set by the native enqueue (`ResumableWork.requested`, TranscriptionCore.swift:44, ResumableWork.kt:20-21) when the user chose Local for this note. */
   requested?: boolean;
 }

@@ -115,6 +115,14 @@ describe("a saved note's on-device state, gated by the note's committed mode", (
     expect(html).not.toContain("No transcript.");
   });
 
+  test("an OS-yielded Local note remains waiting, not done or failed", async () => {
+    await iosStt();
+    fakeVoiceNotes({ recordings: () => [recording("n1", "on-device", stt("yielded_by_os"))] });
+    const { latest } = await mount("n1");
+    expect(latest().note).toEqual({ kind: "queued" });
+    expect(view(latest().note)).toContain("Queued to transcribe");
+  });
+
   test("waiting for the model is one sentence and a full-width button, with no spinner and no Private offer unless given", async () => {
     await iosStt();
     fakeVoiceNotes({ recordings: () => [recording("n1", "on-device", stt("waiting_for_model"))] });

@@ -408,10 +408,13 @@ public final class CaptureEngine {
         var selected = override ?? settings.options
         if settings.accountDid == nil { selected.transcriber = "on-device" }
         let now = wallClock.nowMilliseconds()
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
         let session = SessionInfo(id: UUID().uuidString.lowercased(), maxDurationMs: limit,
                                   source: source, owner: settings.accountDid,
                                   transitionGen: settings.transitionGen, options: selected,
-                                  startedAt: now)
+                                  startedAt: now, recordedAppVersion: version?.isEmpty == false ? version : nil,
+                                  recordedAppBuild: build?.isEmpty == false ? build : nil)
         try library.startSession(session)
         info = session; options = selected; intent = "recording"; availability = "available"
         // Capture priority (plan §2.5, round-2 finding 3 override): this never waits for STT.
@@ -1611,7 +1614,9 @@ public final class CaptureEngine {
                                   options: CaptureOptions(transcriber: option["transcriber"] as? String ?? "on-device",
                                                           identifySpeakers: option["identifySpeakers"] as? Bool ?? false,
                                                           uploadAudio: option["uploadAudio"] as? Bool),
-                                  startedAt: startedAt)
+                                  startedAt: startedAt,
+                                  recordedAppVersion: first["recorded_app_version"] as? String,
+                                  recordedAppBuild: first["recorded_app_build"] as? String)
         var sidecar = makeSidecar(session, duration: Int64(frames) * 1024 * 1000 / 48_000,
                                   wallMs: recovered.wallMs, pausedMs: recovered.pausedMs,
                                   spans: recovered.spans, recovered: true,
@@ -1661,7 +1666,9 @@ public final class CaptureEngine {
                                   options: CaptureOptions(transcriber: choice["transcriber"] as? String ?? "on-device",
                                                           identifySpeakers: choice["identifySpeakers"] as? Bool ?? false,
                                                           uploadAudio: choice["uploadAudio"] as? Bool),
-                                  startedAt: startedAt)
+                                  startedAt: startedAt,
+                                  recordedAppVersion: first["recorded_app_version"] as? String,
+                                  recordedAppBuild: first["recorded_app_build"] as? String)
         let lastSegment = events.compactMap { $0["e"] as? String == "segment" ? $0["index"] as? Int : nil }.last ?? 0
         try DispatchQueue.main.sync {
             guard info == nil else {

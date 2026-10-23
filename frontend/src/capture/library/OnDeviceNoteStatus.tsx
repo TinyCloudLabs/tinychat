@@ -158,6 +158,7 @@ export function onDeviceNote(scan: Scan | null, live: Live | null, jobEntry: Que
     case "waiting_for_model":
       return { kind: "waiting_for_model" };
     case "queued":
+    case "yielded_by_os":
       return { kind: "queued" };
     case "running":
       return { kind: "running", percent: job?.percent ?? (live?.kind === "running" ? live.percent : null) };

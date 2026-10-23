@@ -27,7 +27,7 @@ final class TranscriptionStateTests: XCTestCase {
                 guard let id = next else { return }
                 defer { state.finishCurrent() }
                 if id == blockedId {
-                    state.setProgress(37)
+                    state.setProgress(37, for: id)
                     entered.fulfill()
                     release.wait()
                 }
@@ -93,7 +93,7 @@ final class TranscriptionStateTests: XCTestCase {
         let state = TranscriptionState()
         _ = add(state, "a"); _ = add(state, "b")
         XCTAssertEqual(state.takeNext(), "a")
-        state.setProgress(50)
+        state.setProgress(50, for: "a")
         XCTAssertEqual(state.yieldCurrent(), .requeued)
         XCTAssertEqual(state.snapshot().map { $0["id"] as? String }, ["a", "b"])
         XCTAssertEqual(state.snapshot().map { $0["state"] as? String }, ["queued", "queued"])

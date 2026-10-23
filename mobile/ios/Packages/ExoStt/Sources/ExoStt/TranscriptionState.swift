@@ -195,9 +195,15 @@ final class TranscriptionState {
         return current?.id == id && current?.cancelRequested == true
     }
 
-    func setProgress(_ percent: Int) {
+    /// A retained callback from an earlier decode cannot update another note or a cancelled one.
+    @discardableResult
+    func setProgress(_ percent: Int, for id: String) -> Bool {
         lock.lock(); defer { lock.unlock() }
-        current?.percent = percent
+        guard var running = current, running.id == id, !running.cancelRequested,
+              !running.committing else { return false }
+        running.percent = percent
+        current = running
+        return true
     }
 
     /// The running note first (state `running`, last reported percent), then the pending ones in order.
