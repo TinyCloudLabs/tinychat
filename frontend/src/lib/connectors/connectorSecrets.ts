@@ -25,6 +25,7 @@ export type SecretsErr = { code?: string; message?: string };
 type SecretsTcw = Pick<
   TinyCloudWeb,
   "secrets" | "ensureEncryptionNetwork" | "did" | "hasPermissions" | "requestPermissions"
+  | "isWalletConnected"
 > & {
   ensureOwnedSpaceHosted?: TinyCloudWeb["ensureOwnedSpaceHosted"];
 };
@@ -244,16 +245,36 @@ export function decryptStepUpEntry(did: string) {
   };
 }
 
+// ── Reveal after reload: signer required ─────────────────────────────
+//
+// A boot-time restore builds the client with the lazy wallet provider
+// (lib/lazyWalletProvider.ts), so the client has a signer. A client without one
+// cannot sign, and `requestPermissions` would throw before any prompt, so it is
+// refused here with a neutral error instead.
+
+/** Neutral message when a restored client has no wallet signer. */
+export const WALLET_UNAVAILABLE_MESSAGE =
+  "The wallet for this session is not connected, so the saved key could not be read. Sign in again.";
+
+function walletUnavailable<E>(): SecretsResult<void, E> {
+  return {
+    ok: false,
+    error: { code: "wallet-unavailable", message: WALLET_UNAVAILABLE_MESSAGE } as E,
+  };
+}
+
 /**
  * Requests the decrypt step-up before a read. Skips the prompt when the grant
- * is already held. A decline yields a neutral error and is not retried. A
- * thrown error from the SDK is returned untouched. Never throws.
+ * is already held. A client without a wallet signer is refused before any
+ * prompt. A decline yields a neutral error and is not retried. A thrown error
+ * from the SDK is returned untouched. Never throws.
  */
 export async function ensureDecryptStepUp<E>(
   tcw: SecretsTcw,
 ): Promise<SecretsResult<void, E>> {
   const entry = decryptStepUpEntry(tcw.did);
   if (tcw.hasPermissions([entry])) return { ok: true, data: undefined };
+  if (!tcw.isWalletConnected) return walletUnavailable<E>();
   let approved: boolean;
   try {
     approved = (

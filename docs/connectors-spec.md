@@ -362,6 +362,20 @@ one hour), before any `secrets.get`. It skips the prompt when `hasPermissions` a
 holds the grant. A declined request returns `decrypt-declined` and reads nothing. The
 request is not retried.
 
+A restored session gets a lazy EIP-1193 provider (`createLazyWalletProvider` in
+`frontend/src/lib/lazyWalletProvider.ts`, passed in the restore config at
+`frontend/src/App.tsx`). `restoreTinyCloudWebSession` (`packages/client/src/tinycloud.ts`) sets
+the provider only when one is passed, so the restored client has a signer. The provider answers
+`eth_accounts` and `eth_requestAccounts` with the stored address without opening the wallet. The
+first other request (the signature for the decrypt step-up, or `eth_chainId`) opens OpenKey once.
+A wallet for a different address rejects with `WALLET_ACCOUNT_MISMATCH_MESSAGE`. A failed open is
+not cached, so the next request retries it.
+
+`ensureDecryptStepUp` checks `hasPermissions` first, then `isWalletConnected`. A client without a
+signer returns `wallet-unavailable` (`WALLET_UNAVAILABLE_MESSAGE`) before any prompt, because
+`requestPermissions` throws on such a client. After a reload, the first reveal shows the SDK
+permission prompt, then the OpenKey signature. A second reveal within the hour shows neither.
+
 `getConnectorKey` is the only read path. A lint test fails if any other source file calls
 `secrets.get` directly. KV reads come from the sign-in session's manifest, which grants
 `tinycloud.kv` `get` on the vault paths. The step-up never adds KV entries; a regression

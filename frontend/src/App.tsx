@@ -35,6 +35,7 @@ import { purgeReplicaCopyWhenOffOnce } from "./lib/replication/replicationOffPur
 import { clientHasReplication, signOutReplicaAware } from "./lib/replication/replicationSignOut";
 import { uploadRunner } from "./lib/audioUpload";
 import { openkeyPasskeysSupported } from "./lib/openkeyPasskeys";
+import { createLazyWalletProvider } from "./lib/lazyWalletProvider";
 import { useVisualViewportFit } from "./lib/useVisualViewport";
 import { createWebSignInPrefetch, type WebSignInPrefetch } from "./lib/webSignInPrefetch";
 import { ChatWorkspace } from "./chat/ChatWorkspace";
@@ -570,6 +571,20 @@ export function App() {
             autoCreateSpace: false,
             tinycloudHosts: TINYCLOUD_HOSTS,
             manifest,
+            // The wallet opens only on the first signing-path request; account requests
+            // answer with the stored address. See lib/lazyWalletProvider.ts.
+            provider: createLazyWalletProvider({
+              address: storedAddress,
+              openWallet: async () => {
+                const { address: walletAddress, openkey, web3Provider } = await connectWallet({
+                  appName: APP_NAME,
+                  host: OPENKEY_HOST,
+                  passkeysSupported: openkeyPasskeysSupported(),
+                });
+                openkeyRef.current = openkey;
+                return { address: walletAddress, provider: web3Provider };
+              },
+            }),
             ...(LOCAL_VALIDATION ? {} : await replicationConfigPatch()),
           }),
       });

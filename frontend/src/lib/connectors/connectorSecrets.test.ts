@@ -15,6 +15,7 @@ import {
   resetSecretsUnlockedListenersForTests,
   saveConnectorKey,
   unlockSecrets,
+  WALLET_UNAVAILABLE_MESSAGE,
 } from "./connectorSecrets";
 import { CONNECTORS } from "./registry";
 import type { ConnectorDescriptor } from "./types";
@@ -75,6 +76,7 @@ function makeFake(
     omitEnsureOwnedSpaceHosted?: boolean;
     stepUpHeld?: boolean;
     stepUpApprove?: boolean;
+    signerConnected?: boolean;
   } = {},
 ): Fake {
   const entries = new Map<string, StoredKey>();
@@ -97,6 +99,7 @@ function makeFake(
     omitEnsureOwnedSpaceHosted: opts.omitEnsureOwnedSpaceHosted === true,
     ensureErrorOnce: null as Error | null,
     grant: { held: opts.stepUpHeld !== false, approve: opts.stepUpApprove !== false, throwWith: null as Error | null },
+    signer: { connected: opts.signerConnected !== false },
   };
 
   const secrets = {
@@ -210,6 +213,7 @@ function makeFake(
     calls.signerCalls++;
     return { approved: true };
   };
+  Object.defineProperty(raw, "isWalletConnected", { get: () => state.signer.connected, enumerable: true });
   if (!state.omitEnsureOwnedSpaceHosted) {
     raw.ensureOwnedSpaceHosted = async (name: string) => {
       calls.ensureOwnedSpaceHostedCalls.push(name);
@@ -709,5 +713,43 @@ describe("connectorSecrets decrypt step-up", () => {
       if (/\.secrets\.get\(/.test(readFileSync(join(srcRoot, rel), "utf8"))) offenders.push(rel);
     }
     expect(offenders).toEqual([]);
+  });
+});
+
+describe("connectorSecrets reveal after reload", () => {
+  test("a signer-less client is refused before any prompt, with the neutral message", async () => {
+    const f = makeFake({ stepUpHeld: false, signerConnected: false });
+    expect(await getConnectorKey(f.tcw, FIREFLIES)).toEqual({
+      ok: false,
+      error: { code: "wallet-unavailable", message: WALLET_UNAVAILABLE_MESSAGE },
+    });
+    expect(f.calls.permissionRequests).toHaveLength(0);
+    expect(f.calls.getCount).toBe(0);
+  });
+
+  test("a signer-less client that already holds the grant still reads", async () => {
+    const f = makeFake({ stepUpHeld: true, signerConnected: false });
+    await saveConnectorKey(f.tcw, FIREFLIES, "k");
+    expect(await getConnectorKey(f.tcw, FIREFLIES)).toEqual({ ok: true, data: "k" });
+    expect(f.calls.permissionRequests).toHaveLength(0);
+  });
+
+  test("a signer-connected restored client prompts on the first reveal only", async () => {
+    const f = makeFake({ stepUpHeld: false, stepUpApprove: true });
+    await saveConnectorKey(f.tcw, FIREFLIES, "k");
+    expect(await getConnectorKey(f.tcw, FIREFLIES)).toEqual({ ok: true, data: "k" });
+    expect(await getConnectorKey(f.tcw, FIREFLIES)).toEqual({ ok: true, data: "k" });
+    expect(f.calls.permissionRequests).toHaveLength(1);
+    expect(f.calls.signerCalls).toBe(1);
+  });
+
+  test("a declined prompt on a signer-connected client is not retried", async () => {
+    const f = makeFake({ stepUpHeld: false, stepUpApprove: false });
+    await saveConnectorKey(f.tcw, FIREFLIES, "k");
+    expect(await getConnectorKey(f.tcw, FIREFLIES)).toEqual({
+      ok: false,
+      error: { code: "decrypt-declined", message: DECRYPT_DECLINED_MESSAGE },
+    });
+    expect(f.calls.permissionRequests).toHaveLength(1);
   });
 });
