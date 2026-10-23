@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.10.0-beta.17
+
+### Patch Changes
+
+- 740150e: Pause chat sharing: the Share chat action is offered only for chats that already have a link, and creating a new chat share link is refused. Opening received share links and managing existing links are unchanged.
+
 ## 0.10.0-beta.16
 
 ### Patch Changes
