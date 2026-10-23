@@ -11,7 +11,7 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { secretsAvailable, SECRETS_UNAVAILABLE_IN_APP_MESSAGE } from "../openkeyNative";
 import type { ConnectorDescriptor } from "./types";
 
-/** Same Result shape the SDK uses. Errors propagate untouched. */
+/** Same Result shape the SDK uses. Known failures carry a neutral user message; the SDK error stays on `cause` for logs. */
 export type SecretsResult<T, E> =
   | { ok: true; data: T }
   | { ok: false; error: E };
@@ -193,7 +193,10 @@ async function ensureEncryptionNetworkForSave<E>(
     await pending;
     return { ok: true, data: undefined };
   } catch (error) {
-    return { ok: false, error: error as E };
+    return {
+      ok: false,
+      error: { code: "encryption-network-failed", message: ENCRYPTION_NETWORK_FAILED_MESSAGE, cause: error } as E,
+    };
   }
 }
 
@@ -229,6 +232,14 @@ export const DECRYPT_STEP_UP_EXPIRY_MS = 3_540_000;
 /** Neutral message for a declined decrypt step-up. */
 export const DECRYPT_DECLINED_MESSAGE =
   "Decryption was not approved, so the saved key could not be read.";
+
+/** Neutral message when the encryption network cannot be prepared before a save. */
+export const ENCRYPTION_NETWORK_FAILED_MESSAGE =
+  "Your encrypted vault could not be prepared, so the key was not saved. Try again.";
+
+/** Neutral message when the decrypt step-up throws (wallet or network error). */
+export const DECRYPT_STEP_UP_FAILED_MESSAGE =
+  "Approving decryption failed, so the saved key could not be read. Try again.";
 
 /**
  * The one permission entry a secrets read needs beyond the sign-in session:
@@ -281,7 +292,7 @@ function needsUnlock<E>(): SecretsResult<void, E> {
  *    SDK permission call at all, so no modal and no wallet signature.
  *  - `interactive: true` (explicit user action): a client without a wallet
  *    signer is refused before any prompt; otherwise requests the entry. A
- *    decline is neutral and not retried; a thrown SDK error is returned untouched.
+ *    decline is neutral and not retried; a thrown error becomes the neutral step-up failure, with the SDK error as `cause`.
  * Never throws.
  */
 async function ensureDecryptStepUp<E>(
@@ -298,7 +309,10 @@ async function ensureDecryptStepUp<E>(
       await tcw.requestPermissions([entry], { expiryMs: DECRYPT_STEP_UP_EXPIRY_MS })
     ).approved;
   } catch (error) {
-    return { ok: false, error: error as E };
+    return {
+      ok: false,
+      error: { code: "step-up-failed", message: DECRYPT_STEP_UP_FAILED_MESSAGE, cause: error } as E,
+    };
   }
   if (approved) return { ok: true, data: undefined };
   return {

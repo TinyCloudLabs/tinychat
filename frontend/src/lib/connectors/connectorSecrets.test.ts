@@ -6,6 +6,8 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import {
   DECRYPT_DECLINED_MESSAGE,
   DECRYPT_STEP_UP_EXPIRY_MS,
+  DECRYPT_STEP_UP_FAILED_MESSAGE,
+  ENCRYPTION_NETWORK_FAILED_MESSAGE,
   NEEDS_UNLOCK_MESSAGE,
   UNLOCK_NEEDS_SIGN_IN_MESSAGE,
   deleteConnectorKey,
@@ -608,13 +610,15 @@ describe("connectorSecrets encryption network before first write", () => {
     expect(f.calls.ensureNetworkCalls).toEqual(["default"]);
   });
 
-  test("a failed ensure blocks the write, surfaces the same error, and the next save retries", async () => {
+  test("a failed ensure blocks the write, returns the neutral message with the SDK error as cause, and the next save retries", async () => {
     const f = makeFake();
     const boom = new Error("HTTP 401 Unauthorized Action: network.create");
     f.ensureErrorOnce = boom;
     const failed = await saveConnectorKey(f.tcw, FIREFLIES, "k");
-    expect(failed.ok).toBe(false);
-    if (!failed.ok) expect(failed.error).toBe(boom);
+    expect(failed).toEqual({
+      ok: false,
+      error: { code: "encryption-network-failed", message: ENCRYPTION_NETWORK_FAILED_MESSAGE, cause: boom },
+    });
     expect(f.calls.putCount).toBe(0);
     expect(f.entries.size).toBe(0);
 
@@ -683,13 +687,29 @@ describe("connectorSecrets decrypt step-up", () => {
     expect(f.calls.permissionRequests).toHaveLength(1);
   });
 
-  test("an SDK error from the step-up is returned untouched and nothing is read", async () => {
+  test("an SDK error from the step-up is returned as the neutral message, with the error as cause, and nothing is read", async () => {
     const f = makeFake({ stepUpHeld: false });
     const boom = new Error("prompt dismissed");
     f.grant.throwWith = boom;
     const r = await readConnectorKey(f.tcw, FIREFLIES, { interactive: true });
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.error).toBe(boom);
+    expect(r).toEqual({
+      ok: false,
+      error: { code: "step-up-failed", message: DECRYPT_STEP_UP_FAILED_MESSAGE, cause: boom },
+    });
+    expect(f.calls.getCount).toBe(0);
+  });
+
+  test.each([
+    "OpenKey: wallet request rejected by the user",
+    "HTTP 500 Internal Server Error during requestPermissions",
+  ])("a wallet error during the step-up (%s) never reaches the user as raw text", async (raw) => {
+    const f = makeFake({ stepUpHeld: false });
+    f.grant.throwWith = new Error(raw);
+    const r = await readConnectorKey(f.tcw, FIREFLIES, { interactive: true });
+    expect(r).toMatchObject({
+      ok: false,
+      error: { code: "step-up-failed", message: DECRYPT_STEP_UP_FAILED_MESSAGE },
+    });
     expect(f.calls.getCount).toBe(0);
   });
 
