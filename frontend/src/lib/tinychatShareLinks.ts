@@ -14,6 +14,7 @@ import {
   isLocalThreadStorage,
   type ThreadDoc,
 } from "./threadStore";
+import { CHAT_SHARING_PAUSED, ChatSharingPausedError } from "./chatSharing";
 
 const SHARE_FORMAT = "tinychat.share";
 const SHARE_VERSION = 1;
@@ -197,6 +198,9 @@ export async function createTinychatShareLink(
 ): Promise<{ link: string; payload: TinychatSharePayload; token: string }> {
   if (isLocalThreadStorage(tcw)) {
     throw new Error("Sharing is disabled during local validation");
+  }
+  if (CHAT_SHARING_PAUSED) {
+    throw new ChatSharingPausedError();
   }
   const thread = await getThread(tcw, threadId);
   if (!thread || thread.messages.length === 0) {
