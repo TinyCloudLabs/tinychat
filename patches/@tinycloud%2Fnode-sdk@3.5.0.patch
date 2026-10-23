@@ -28,11 +28,11 @@ index ad32e4a..4587481 100644
      this.activeSessionKeyId = keyId;
      const jwkString = this.sessionManager.jwk(keyId);
      if (!jwkString) {
-diff --git a/dist/index.cjs b/dist/index.cjs
-index 4fd1be9..c960ba3 100644
---- a/dist/index.cjs
-+++ b/dist/index.cjs
-@@ -19710,8 +19710,8 @@ var NodeUserAuthorization = class {
+diff --git a/dist/index.js b/dist/index.js
+index 8e5f9ad..6cc2123 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -19862,8 +19862,8 @@ var NodeUserAuthorization = class {
      this._chainId = chainId;
      await this.resolveTinyCloudHostsForSignIn(address, chainId);
      this.assertSignInCurrent(generation);
@@ -43,11 +43,11 @@ index 4fd1be9..c960ba3 100644
      this.activeSessionKeyId = keyId;
      const jwkString = this.sessionManager.jwk(keyId);
      if (!jwkString) {
-diff --git a/dist/index.js b/dist/index.js
-index e22987e..ad80413 100644
---- a/dist/index.js
-+++ b/dist/index.js
-@@ -19695,8 +19695,8 @@ var NodeUserAuthorization = class {
+diff --git a/dist/index.cjs b/dist/index.cjs
+index 3bccbe5..ea8f712 100644
+--- a/dist/index.cjs
++++ b/dist/index.cjs
+@@ -19872,8 +19872,8 @@ var NodeUserAuthorization = class {
      this._chainId = chainId;
      await this.resolveTinyCloudHostsForSignIn(address, chainId);
      this.assertSignInCurrent(generation);

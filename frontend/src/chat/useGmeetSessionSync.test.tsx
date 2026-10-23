@@ -114,12 +114,23 @@ function syncOk(patch: Partial<GmeetSyncSummary> = {}) {
 
 /**
  * A vault whose reads are COUNTED. `secrets.isUnlocked` is the property the
- * production gate reads; `get` is what a real `getConnectorKey` calls, so a
+ * production gate reads; `get` is what a real `readConnectorKey` calls, so a
  * test that expects "zero secret reads" is checking the real path.
  */
-function vault(options: { unlocked: boolean; token?: string | null }) {
+function vault(options: { unlocked: boolean; token?: string | null; held?: boolean }) {
   let getCalls = 0;
+  let prompts = 0;
+  let held = options.held !== false;
   const tcw = {
+    // A held decrypt grant (the default) lets reads run without a prompt. `held:
+    // false` models a background read before any step-up; see the locked-vault tests.
+    did: "did:pkh:eip155:1:0x00000000000000000000000000000000000000aa",
+    hasPermissions: () => held,
+    requestPermissions: async () => {
+      held = true;
+      prompts++;
+      return { approved: true };
+    },
     secrets: {
       isUnlocked: options.unlocked,
       get: async () => {
@@ -131,7 +142,7 @@ function vault(options: { unlocked: boolean; token?: string | null }) {
       },
     },
   } as unknown as TinyCloudWeb;
-  return { tcw, getCalls: () => getCalls };
+  return { tcw, getCalls: () => getCalls, prompts: () => prompts };
 }
 
 interface Harness {
@@ -141,6 +152,7 @@ interface Harness {
   connectionReads: () => number;
   mints: () => number;
   syncs: () => GmeetSyncOptions[];
+  prompts: () => number;
 }
 
 /** The connected, unlocked, available happy path — every seam counted. */
@@ -148,6 +160,7 @@ function harness(
   overrides: {
     unlocked?: boolean;
     token?: string | null;
+    held?: boolean;
     connection?: ConnectorConnection | null;
     connectors?: readonly ConnectorDescriptor[];
     accessToken?: string | null;
@@ -156,7 +169,7 @@ function harness(
     hooks?: Partial<GmeetSessionSyncHooks>;
   } = {},
 ): Harness {
-  const v = vault({ unlocked: overrides.unlocked ?? true, token: overrides.token });
+  const v = vault({ unlocked: overrides.unlocked ?? true, token: overrides.token, held: overrides.held });
   let connectionReads = 0;
   let mints = 0;
   const syncs: GmeetSyncOptions[] = [];
@@ -192,6 +205,7 @@ function harness(
     },
     tcw: v.tcw,
     secretReads: v.getCalls,
+    prompts: v.prompts,
     connectionReads: () => connectionReads,
     mints: () => mints,
     syncs: () => syncs,
@@ -292,8 +306,23 @@ describe("locked vault", () => {
     expect(outcome).toBe("vault-locked");
     expect(h.secretReads()).toBe(0);
     expect(h.mints()).toBe(0);
+    expect(h.prompts()).toBe(0);
     expect(h.syncs()).toHaveLength(0);
     expect(hasGmeetSessionSyncRun()).toBe(false);
+  });
+
+  test("a background read with no decrypt grant defers as vault-locked and keeps the attempt retriable", async () => {
+    const ungranted = harness({ unlocked: true, held: false });
+    expect(await maybeStartGmeetSessionSync(ungranted.options)).toBe("vault-locked");
+    expect(ungranted.secretReads()).toBe(0);
+    expect(ungranted.prompts()).toBe(0);
+    expect(ungranted.syncs()).toHaveLength(0);
+    expect(hasGmeetSessionSyncRun()).toBe(false);
+
+    // Once a step-up is held, the next trigger in the same session runs the sync.
+    const granted = harness({ unlocked: true });
+    expect(await maybeStartGmeetSessionSync(granted.options)).toBe("synced");
+    expect(granted.syncs()).toHaveLength(1);
   });
 
   test("the deferral is retriable — the next unlock runs the sync", async () => {

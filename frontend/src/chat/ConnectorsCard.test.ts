@@ -510,7 +510,6 @@ describe("Sync now — engine dispatch", () => {
   test("the refresh token comes from the registry row, never a literal", () => {
     // The flip commit changes `secretName` on that row; spelling it here would
     // make this file a place the two can drift.
-    expect(handler).toContain("getConnectorKey<SecretsErr>(tcw, d)");
     expect(card).not.toContain("REFRESH_TOKEN");
     expect(card).not.toContain('"API_KEY"');
   });

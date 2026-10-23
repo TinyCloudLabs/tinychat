@@ -163,6 +163,10 @@ class MemoryBoundaries {
       delete: async (key: string) => { this.kv.delete(key); return ok(undefined); },
       list: async ({ path }: { path: string }) => ok({ keys: [...this.kv.keys()].filter((key) => key.startsWith(path)), truncated: false }),
     },
+    // Step-up coverage lives in connectorSecrets.test.ts; here the decrypt grant is already held.
+    ensureEncryptionNetwork: async () => ok(undefined),
+    hasPermissions: () => true,
+    requestPermissions: async () => ({ approved: true }),
     secrets: {
       isUnlocked: true,
       unlock: async () => { this.secretUnlocks++; return ok(undefined); },

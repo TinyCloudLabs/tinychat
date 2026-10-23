@@ -31,7 +31,7 @@ function deps(patch: Partial<SourceSyncDeps> = {}): SourceSyncDeps {
     secretsAvailable: () => true,
     isSecretsUnlocked: () => true,
     unlockSecrets: (async () => ({ ok: true, data: undefined })) as SourceSyncDeps["unlockSecrets"],
-    getConnectorKey: (async () => ({ ok: true, data: "key" })) as SourceSyncDeps["getConnectorKey"],
+    readConnectorKey: (async () => ({ ok: true, data: "key" })) as SourceSyncDeps["readConnectorKey"],
     isGmeetSyncInFlight: () => false,
     isGmeetNotesSyncInFlight: () => false,
     awaitSessionSync: async () => {},
@@ -82,7 +82,7 @@ describe("runSourceSync", () => {
         fireflies,
         input,
         deps({
-          getConnectorKey: async () => {
+          readConnectorKey: async () => {
             throw new Error("vault down");
           },
         }),
@@ -119,7 +119,7 @@ describe("Full rescan and Stop reach the engine", () => {
       { ...input, driveMode: "snapshot" },
       deps({
         isGmeetSyncInFlight: () => true,
-        getConnectorKey: (async () => (keyReads++, { ok: true, data: "key" })) as SourceSyncDeps["getConnectorKey"],
+        readConnectorKey: (async () => (keyReads++, { ok: true, data: "key" })) as SourceSyncDeps["readConnectorKey"],
         runGmeetSyncNow: async () => (ran++, { ok: true }),
       }),
     );
@@ -289,7 +289,7 @@ function depsForSourceSync(
     secretsAvailable: () => true,
     isSecretsUnlocked: () => true,
     unlockSecrets: (async () => ({ ok: true, data: undefined })) as SourceSyncDeps["unlockSecrets"],
-    getConnectorKey: (async () => ({ ok: true, data: "test-source-sync-key" })) as SourceSyncDeps["getConnectorKey"],
+    readConnectorKey: (async () => ({ ok: true, data: "test-source-sync-key" })) as SourceSyncDeps["readConnectorKey"],
     isGmeetSyncInFlight: () => false,
     isGmeetNotesSyncInFlight: () => false,
     awaitSessionSync: async () => {},
