@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { IDBFactory } from "fake-indexeddb";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
-import type { ReplicationPluginLoader } from "./replicationClient";
+import { buildReplicationConfig, type ReplicationPluginLoader } from "./replicationClient";
 import { REPLICATION_COPY_KEY, REPLICATION_WIPE_PENDING_KEY, replicationCopyMayExist, replicationWipePending, SDK_LOGOUT_MARKER_KEY } from "./replicationCopyMarker";
 import { purgeReplicaCopyWhenOff, REPLICA_DATABASE_NAME } from "./replicationOffPurge";
+import { REPLICATION_RUNTIME_FLAG_KEY } from "./replicationFlag";
 import { readReplicationOptIn, replicationOptInKey, replicationPrincipalFor, writeReplicationOptIn } from "./replicationOptIn";
 import { formatReplicationStatus } from "./ReplicationStatusLine";
 import { getReplicationStatus, resetReplicationStatus } from "./replicationStatus";
@@ -231,5 +232,82 @@ describe("the wipe button", () => {
     expect(await removeLocalCopyNow(liveClient([]), ALICE, { store, loader: fakeLoader([], [ALICE]) })).toEqual({ status: "purged" });
     expect(readReplicationOptIn(ALICE, store)).toBe(true);
     expect(await purgeReplicaCopyWhenOff({ store, principal: ALICE, isEnabled: () => true })).toEqual({ status: "skipped", reason: "replication-on" });
+  });
+});
+
+describe("a removal that is interrupted or overlapped", () => {
+  test("tab closed mid-removal: the pending marker is written BEFORE the purge starts, so the next load finishes it even if the user is still ON", async () => {
+    (await seedReplica()).close();
+    const store = memoryStore({ [REPLICATION_COPY_KEY]: ALICE, [replicationOptInKey(ALICE)]: "true" });
+    let pendingWhenDeleteStarted: boolean | undefined;
+
+    // The page dies inside the delete: nothing after this point (no failure markers) ever runs.
+    await removeLocalCopyNow(undefined, ALICE, {
+      store,
+      loader: fakeLoader([], [ALICE]),
+      deleteDatabase: async () => {
+        pendingWhenDeleteStarted = replicationWipePending(store);
+        throw new Error("tab closed");
+      },
+    }).catch(() => undefined);
+
+    expect(pendingWhenDeleteStarted).toBe(true);
+    expect(await replicaExists()).toBe(true);
+
+    // Next load, opted in: only the pending marker makes the purge run (ON alone is skipped).
+    expect(await purgeReplicaCopyWhenOff({ store, loader: fakeLoader([], [ALICE]), principal: ALICE, isEnabled: () => true })).toEqual({ status: "purged" });
+    expect(await replicaExists()).toBe(false);
+    expect(replicationWipePending(store)).toBe(false);
+  });
+
+  test("OFF then ON then sign-in on the same page: the replica is not built until the removal has finished", async () => {
+    (await seedReplica()).close();
+    const store = memoryStore({ [REPLICATION_RUNTIME_FLAG_KEY]: "true", [replicationOptInKey(ALICE)]: "true", [REPLICATION_COPY_KEY]: ALICE });
+    const savedWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+    const savedWorker = Object.getOwnPropertyDescriptor(globalThis, "Worker");
+    const savedNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+    try {
+      define("window", { localStorage: store });
+      define("Worker", class {});
+      define("navigator", {
+        userAgent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+        userAgentData: { brands: [{ brand: "Chromium" }] },
+        maxTouchPoints: 0,
+        locks: { request: async (_name: string, callback: () => unknown) => callback() },
+      });
+      const events: string[] = [];
+      const deleting = Promise.withResolvers<void>();
+      const entered = Promise.withResolvers<void>();
+
+      const off = setReplicationSwitch(false, undefined, ALICE, {
+        store,
+        loader: fakeLoader(events, [ALICE]),
+        deleteDatabase: async () => {
+          events.push("delete-start");
+          entered.resolve();
+          await deleting.promise;
+          events.push("delete-end");
+          return { ok: true };
+        },
+      });
+      await entered.promise;
+      writeReplicationOptIn(ALICE, true, store); // the user turns it straight back ON
+      const sdk: ReplicationPluginLoader = {
+        registerPlugin: async () => { events.push("register"); },
+        createStorage: async () => { events.push("storage"); return {} as never; },
+      };
+      const building = buildReplicationConfig(ALICE, sdk);
+      for (let turn = 0; turn < 20; turn += 1) await Promise.resolve();
+      expect(events).toEqual([`deny:${ALICE}`, "delete-start"]); // nothing built while the delete runs
+
+      deleting.resolve();
+      expect((await off).status).toBe("off");
+      expect((await building)?.enabled).toBe(true);
+      expect(events).toEqual([`deny:${ALICE}`, "delete-start", "delete-end", "register", "storage"]);
+    } finally {
+      for (const [name, descriptor] of [["window", savedWindow], ["Worker", savedWorker], ["navigator", savedNavigator]] as const) {
+        if (descriptor) Object.defineProperty(globalThis, name, descriptor); else Reflect.deleteProperty(globalThis, name);
+      }
+    }
   });
 });

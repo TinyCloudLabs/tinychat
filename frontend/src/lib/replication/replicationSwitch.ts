@@ -15,6 +15,7 @@
 // Sign-out purge (replicationSignOut.ts) is unchanged.
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { purgeReplicaCopyWhenOff, type ReplicationOffPurgeDeps, type ReplicationOffPurgeOutcome } from "./replicationOffPurge";
+import { trackStartupPurge } from "./replicationStartupPurge";
 import { browserMarkerStore, REPLICATION_WIPE_PENDING_KEY, type MarkerStore } from "./replicationCopyMarker";
 import { writeReplicationOptIn } from "./replicationOptIn";
 import { clientHasReplication } from "./replicationSignOut";
@@ -35,17 +36,22 @@ async function stopLiveReplica(tcw: TinyCloudWeb | undefined): Promise<void> {
   try { await control?.close(); } catch { /* handles are closed by the delete or the next load */ }
 }
 
-/** Removes the local copy now, whatever the switch or the build flag say. Never throws. */
-export async function removeLocalCopyNow(
+/**
+ * Removes the local copy now, whatever the switch or the build flag say. Never throws. Tracked as
+ * in flight from the moment it is called, so an ON sign-in/restore on this page (OFF -> ON ->
+ * sign-in) waits for it instead of building a replica over a database being deleted.
+ */
+export function removeLocalCopyNow(
   tcw: TinyCloudWeb | undefined,
   principal: string | undefined,
   deps: ReplicationOffPurgeDeps = {},
 ): Promise<ReplicationOffPurgeOutcome> {
   const store: MarkerStore | undefined = "store" in deps ? deps.store : browserMarkerStore();
-  // Written first: if the page dies mid-removal, the next load finishes it.
+  // Written first, synchronously: if the page dies mid-removal, the next load finishes it.
   try { store?.setItem(REPLICATION_WIPE_PENDING_KEY, "1"); } catch { /* the purge reports its own failures */ }
-  await stopLiveReplica(tcw);
-  return purgeReplicaCopyWhenOff({ ...deps, store, principal, isEnabled: () => false });
+  return trackStartupPurge(
+    stopLiveReplica(tcw).then(() => purgeReplicaCopyWhenOff({ ...deps, store, principal, isEnabled: () => false })),
+  );
 }
 
 /** Records the user's choice. OFF also removes the local copy now; ON waits for the next sign-in. */

@@ -215,8 +215,8 @@ export function SettingsPage({
           <DebugLogRow />
           <SectionCard icon={DatabaseIcon} title="Audio storage">
             <AudioCacheSettings />
-            <ReplicationSettings tcw={tcw} />
           </SectionCard>
+          <ReplicationSettings tcw={tcw} />
           <SectionCard icon={DatabaseIcon} title="Data">
             <p className="text-xs text-muted-foreground">
               Bring your Claude conversation history into this space.

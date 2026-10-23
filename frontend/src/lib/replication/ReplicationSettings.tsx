@@ -6,6 +6,7 @@
 // renders: no DOM, no timers.
 import { useState, useSyncExternalStore } from "react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import { DatabaseIcon } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -16,6 +17,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import { SectionCard } from "@/components/ui/section-card";
 import { replicationCopyMayExist } from "./replicationCopyMarker";
 import { isReplicationAvailable } from "./replicationFlag";
 import { readReplicationOptIn } from "./replicationOptIn";
@@ -25,10 +27,11 @@ import { removeLocalCopyNow, setReplicationSwitch } from "./replicationSwitch";
 import { ReplicationStatusLine } from "./ReplicationStatusLine";
 
 export const REPLICATION_COPY = {
-  switchLabel: "Keep a local copy on this device",
+  cardTitle: "Local copy of transcripts",
+  switchLabel: "Keep a local copy of my transcripts on this device",
   switchHelp: "Takes effect the next time you sign in.",
   wipeButton: "Delete local copy",
-  confirm: "Delete the local copy on this device? It is downloaded again if you turn this back on.",
+  confirm: "Delete the local copies of transcripts on this device (for every account signed in here)? They are downloaded again if you turn this back on.",
   notSaved: "Could not save this setting. Try again.",
 } as const;
 
@@ -83,6 +86,7 @@ export function ReplicationSettings({ tcw }: { tcw: TinyCloudWeb }) {
 
   const live = clientHasReplication(tcw) && !stopped;
   return (
+    <SectionCard icon={DatabaseIcon} title={REPLICATION_COPY.cardTitle}>
     <div className="flex flex-col gap-2 text-callout" data-testid="replication-settings">
       {showSwitch && (
         <>
@@ -137,5 +141,6 @@ export function ReplicationSettings({ tcw }: { tcw: TinyCloudWeb }) {
         </AlertDialogContent>
       </AlertDialog>
     </div>
+    </SectionCard>
   );
 }
