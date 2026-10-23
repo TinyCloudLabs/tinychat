@@ -32,7 +32,7 @@
     "@tinyboilerplate/client": "workspace:*",
     "@tinyboilerplate/core": "workspace:*",
     "@tinycloud/replica": "0.3.0",
-    "@tinycloud/sdk-core": "3.4.0",
+    "@tinycloud/sdk-core": "3.5.0",
     "@tinycloud/web-sdk": "3.5.0",
     "@xyflow/react": "^12.8.5",
     "assistant-stream": "0.3.19",
