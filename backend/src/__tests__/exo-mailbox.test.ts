@@ -372,6 +372,28 @@ describe("Exo per-source cooldowns (TC-1013 D9)", () => {
     expect(h.runs).toHaveLength(1);
   });
 
+  test("a meetings run stamps google, so a google start inside its cooldown is rate_limited", async () => {
+    const h = harness();
+    h.seed(REQ1, "sync-meetings");
+    h.seed(REQ2, "sync-google");
+    expect(await h.wake(REQ1)).toMatchObject({ state: "pending" });
+    await h.runs[0].report({ state: "done", code: "done" });
+    h.state.now = T0 + 10 * MINUTE;
+    expect(await h.wake(REQ2)).toMatchObject({ state: "error", code: "rate_limited", retryAfterSec: 20 * 60 });
+    expect(h.runs).toHaveLength(1);
+  });
+
+  test("a fireflies start stamps fireflies, so a meetings start inside its cooldown is rate_limited", async () => {
+    const h = harness();
+    h.seed(REQ1, "sync-fireflies");
+    h.seed(REQ2, "sync-meetings");
+    expect(await h.wake(REQ1)).toMatchObject({ state: "pending" });
+    await h.runs[0].report({ state: "done", code: "done" });
+    h.state.now = T0 + 10 * MINUTE;
+    expect(await h.wake(REQ2)).toMatchObject({ state: "error", code: "rate_limited", retryAfterSec: 50 * 60 });
+    expect(h.runs).toHaveLength(1);
+  });
+
   test("the daily cap records budget_exhausted with the seconds to the next UTC day", async () => {
     const h = harness();
     const ledger = createMemoryExoLedger();
@@ -698,8 +720,9 @@ describe("Exo per-source locks (TC-1013 D9)", () => {
     h.seed(REQ2, "sync-fireflies");
     h.seed(REQ3, "sync-fireflies");
     expect(await h.wake(REQ1)).toMatchObject({ state: "pending" });
-    expect(await h.wake(REQ2)).toMatchObject({ state: "error", code: "rate_limited", retryAfterSec: 1800 });
+    expect(await h.wake(REQ2)).toMatchObject({ state: "error", code: "rate_limited", retryAfterSec: 3600 });
     await h.runs[0].report({ state: "done", code: "done" });
+    h.state.now = T0 + HOUR;
     expect(await h.wake(REQ3)).toMatchObject({ state: "pending" });
     expect(h.runs).toHaveLength(2);
   });
@@ -719,14 +742,15 @@ describe("Exo per-source locks (TC-1013 D9)", () => {
     h.seed(REQ2, "sync-google");
     expect(await h.wake(REQ1)).toMatchObject({ state: "pending" });
     await h.runs[0].report({ state: "error", code: "unavailable" });
+    h.state.now = T0 + 30 * MINUTE;
     expect(await h.wake(REQ2)).toMatchObject({ state: "pending" });
   });
 
   test("a meetings run that never reports releases its source locks after the active-run TTL", async () => {
     const h = harness();
     h.seed(REQ1, "sync-meetings");
-    h.seed(REQ2, "sync-fireflies");
-    h.seed(REQ3, "sync-fireflies");
+    h.seed(REQ2, "sync-google");
+    h.seed(REQ3, "sync-google");
     expect(await h.wake(REQ1)).toMatchObject({ state: "pending" });
     h.state.now = T0 + 30 * MINUTE - 1;
     expect(await h.wake(REQ2)).toMatchObject({ state: "error", code: "rate_limited" });

@@ -15,10 +15,13 @@ import {
   attachEntry,
   clearEntry,
   evaluateStart,
+  limitRefusal,
   releaseSourceLock,
   snapshotOf,
+  stampEntry,
   type ExoLedgerEntry,
   type ExoStartGate,
+  type ExoSourceGate,
   type ExoStartResult,
   type SourceLock,
 } from "./ledger-model.js";
@@ -67,11 +70,30 @@ export const REQUEST_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-
 
 type CooldownRule = { minIntervalMs: (hasFirefliesWebhook: boolean) => number; dailyCap: number };
 
-/** TC-1013 D9, per source. `sync-meetings` has no entry: each source a meetings run uses is limited on its own. */
+/** TC-1013 D9, per source. `sync-meetings` has no rule of its own: `runWake` limits a meetings run by each source's rule. */
 const COOLDOWN_RULES: Partial<Record<ExoCapability, CooldownRule>> = {
   "sync-fireflies": { minIntervalMs: (webhook) => (webhook ? 6 * HOUR_MS : HOUR_MS), dailyCap: 150 },
   "sync-google": { minIntervalMs: () => 30 * MINUTE_MS, dailyCap: 300 },
 };
+
+/** The start gate for one capability: its own rule, or none. */
+function gateFor(capability: ExoCapability, hasWebhook: boolean): ExoStartGate {
+  const rule = COOLDOWN_RULES[capability];
+  return rule ? { dailyCap: rule.dailyCap, minIntervalMs: rule.minIntervalMs(hasWebhook) } : {};
+}
+
+/** The pre-check refusal from a read-only snapshot. `recordStart` repeats the check atomically before the start. */
+function startRefusalOf(snapshot: ExoLedgerSnapshot, gate: ExoStartGate, now: number): { code: "budget_exhausted" | "rate_limited"; retryAfterSec: number } | undefined {
+  if (gate.dailyCap !== undefined && snapshot.startsToday >= gate.dailyCap) {
+    const nextDay = (Math.floor(now / DAY_MS) + 1) * DAY_MS;
+    return { code: "budget_exhausted", retryAfterSec: Math.ceil((nextDay - now) / 1000) };
+  }
+  if (gate.minIntervalMs !== undefined && snapshot.lastStartedAt !== undefined) {
+    const readyAt = snapshot.lastStartedAt + gate.minIntervalMs;
+    if (now < readyAt) return { code: "rate_limited", retryAfterSec: Math.ceil((readyAt - now) / 1000) };
+  }
+  return undefined;
+}
 
 export interface ExoJobRecord {
   v: 1;
@@ -131,8 +153,11 @@ export interface ExoLedgerSnapshot {
 /** Cooldown, daily-cap, and coalescing state per owner and capability. */
 export interface ExoLedger {
   snapshot(owner: string, capability: ExoCapability, now: number): Promise<ExoLedgerSnapshot>;
-  /** Starts a run only when the gate admits it. Takes the capability's source locks first. A refusal frees them and writes nothing for the run. */
-  recordStart(owner: string, capability: ExoCapability, jobId: string, now: number, gate: ExoStartGate): Promise<ExoStartResult>;
+  /**
+   * Starts a run only when the gate admits it. Takes the capability's source locks first. Each `sourceGates` entry is
+   * checked against its own entry before any write, then stamped on admission. A refusal frees the locks and writes nothing.
+   */
+  recordStart(owner: string, capability: ExoCapability, jobId: string, now: number, gate: ExoStartGate, sourceGates?: readonly ExoSourceGate[]): Promise<ExoStartResult>;
   /** Adds a coalesced wake to the active run. */
   attach(owner: string, capability: ExoCapability, jobId: string): Promise<void>;
   /** Clears the active run only when it is `jobId`. Returns the wakes attached to it. */
@@ -539,28 +564,28 @@ async function runWake(ports: ExoMailboxPorts, wake: VerifiedWake, budget: Fixed
   }
 
   // One lookup per wake: the Fireflies webhook changes the minimum interval.
-  const rule = COOLDOWN_RULES[capability];
-  const hasWebhook = capability === "sync-fireflies" && (await ports.connectors.hasFirefliesWebhook(owner));
-  const gate: ExoStartGate = rule ? { dailyCap: rule.dailyCap, minIntervalMs: rule.minIntervalMs(hasWebhook) } : {};
-  if (rule) {
-    if (snapshot.startsToday >= rule.dailyCap) {
-      const nextDay = (Math.floor(now / DAY_MS) + 1) * DAY_MS;
-      await createJob(ports, wake, newJob(wake, timestamp, "error", "budget_exhausted", { retryAfterSec: Math.ceil((nextDay - now) / 1000) }));
+  const hasWebhook = (capability === "sync-fireflies" || capability === "sync-meetings") && (await ports.connectors.hasFirefliesWebhook(owner));
+  const gate = gateFor(capability, hasWebhook);
+  // A meetings run reads both sources, so each source's own rule limits it. The ledger checks and stamps them with the start.
+  const sourceGates: ExoSourceGate[] =
+    capability === "sync-meetings" ? (["sync-fireflies", "sync-google"] as const).map((source) => ({ capability: source, gate: gateFor(source, hasWebhook) })) : [];
+  const checks: Array<{ capability: ExoCapability; gate: ExoStartGate }> = [
+    ...(COOLDOWN_RULES[capability] ? [{ capability, gate }] : []),
+    ...sourceGates,
+  ];
+  for (const check of checks) {
+    const checked = check.capability === capability ? snapshot : await ports.ledger.snapshot(owner, check.capability, now);
+    const refusal = startRefusalOf(checked, check.gate, now);
+    if (refusal) {
+      await createJob(ports, wake, newJob(wake, timestamp, "error", refusal.code, { retryAfterSec: refusal.retryAfterSec }));
       return;
-    }
-    if (snapshot.lastStartedAt !== undefined) {
-      const readyAt = snapshot.lastStartedAt + rule.minIntervalMs(hasWebhook);
-      if (now < readyAt) {
-        await createJob(ports, wake, newJob(wake, timestamp, "error", "rate_limited", { retryAfterSec: Math.ceil((readyAt - now) / 1000) }));
-        return;
-      }
     }
   }
 
   const job = newJob(wake, timestamp, "pending", "accepted");
   if (!(await createJob(ports, wake, job))) return;
   // The gate runs inside the ledger's conditional write. A refusal is a lost race or a limit reached since the snapshot.
-  const decision = await ports.ledger.recordStart(owner, capability, requestId, now, gate).catch((): undefined => undefined);
+  const decision = await ports.ledger.recordStart(owner, capability, requestId, now, gate, sourceGates).catch((): undefined => undefined);
   if (decision === undefined) {
     // The job is stored pending before the ledger write. Settle it in process so replays and this request id do not stay pending.
     const failed: ExoJobRecord = { ...job, state: "error", code: "unavailable", message: JOB_MESSAGE.unavailable, updatedAt: timestamp };
@@ -644,7 +669,7 @@ export function createMemoryExoLedger(): ExoLedger {
     async snapshot(owner, capability, now) {
       return snapshotOf(entries.get(keyOf(owner, capability)), now);
     },
-    async recordStart(owner, capability, jobId, now, gate) {
+    async recordStart(owner, capability, jobId, now, gate, sourceGates = []) {
       const sources = SOURCES_BY_CAPABILITY[capability];
       const taken: ConnectorSource[] = [];
       for (const source of sources) {
@@ -656,10 +681,25 @@ export function createMemoryExoLedger(): ExoLedger {
         locks.set(lockKeyOf(owner, source), step.next);
         taken.push(source);
       }
+      // Source limits are read before any write, as in the durable ledger.
+      for (const source of sourceGates) {
+        const refused = limitRefusal(entries.get(keyOf(owner, source.capability)), now, source.gate);
+        if (refused) {
+          freeSourceLocks(owner, sources, jobId);
+          return refused;
+        }
+      }
       const key = keyOf(owner, capability);
       const decided = evaluateStart(entries.get(key), jobId, now, gate);
       if (decided.next) entries.set(key, decided.next);
-      if (!decided.result.started) freeSourceLocks(owner, sources, jobId);
+      if (!decided.result.started) {
+        freeSourceLocks(owner, sources, jobId);
+        return decided.result;
+      }
+      for (const source of sourceGates) {
+        const sourceKey = keyOf(owner, source.capability);
+        entries.set(sourceKey, stampEntry(entries.get(sourceKey), now));
+      }
       return decided.result;
     },
     async attach(owner, capability, jobId) {

@@ -41,6 +41,26 @@ export function snapshotOf(entry: ExoLedgerEntry | undefined, now: number): ExoL
   return snapshot;
 }
 
+/** One source a run reads, with the limits that apply to it. Checked and stamped; no active run is set on it. */
+export interface ExoSourceGate {
+  capability: ExoCapability;
+  gate: ExoStartGate;
+}
+
+/** The daily-cap or cooldown refusal for an entry, or undefined when the gate admits a start. Pure. */
+export function limitRefusal(entry: ExoLedgerEntry | undefined, now: number, gate: ExoStartGate): Extract<ExoStartResult, { started: false }> | undefined {
+  const today = Math.floor(now / DAY_MS);
+  const startsToday = entry !== undefined && entry.day === today ? entry.startsToday : 0;
+  if (gate.dailyCap !== undefined && startsToday >= gate.dailyCap) {
+    return { started: false, reason: "budget", retryAfterMs: (today + 1) * DAY_MS - now };
+  }
+  if (gate.minIntervalMs !== undefined && entry !== undefined) {
+    const readyAt = entry.lastStartedAt + gate.minIntervalMs;
+    if (now < readyAt) return { started: false, reason: "cooldown", retryAfterMs: readyAt - now };
+  }
+  return undefined;
+}
+
 /**
  * The start gate. Refuses while a run is active, past the daily cap, or inside the cooldown. The caller writes
  * `next` only when the result is `started`, in the same conditional write that read `entry`.
@@ -52,15 +72,10 @@ export function evaluateStart(
   gate: ExoStartGate,
 ): { result: ExoStartResult; next?: ExoLedgerEntry } {
   if (entry?.activeJobId !== undefined) return { result: { started: false, reason: "active", retryAfterMs: 0 } };
+  const refused = limitRefusal(entry, now, gate);
+  if (refused) return { result: refused };
   const today = Math.floor(now / DAY_MS);
   const startsToday = entry !== undefined && entry.day === today ? entry.startsToday : 0;
-  if (gate.dailyCap !== undefined && startsToday >= gate.dailyCap) {
-    return { result: { started: false, reason: "budget", retryAfterMs: (today + 1) * DAY_MS - now } };
-  }
-  if (gate.minIntervalMs !== undefined && entry !== undefined) {
-    const readyAt = entry.lastStartedAt + gate.minIntervalMs;
-    if (now < readyAt) return { result: { started: false, reason: "cooldown", retryAfterMs: readyAt - now } };
-  }
   return {
     result: { started: true },
     next: {
@@ -72,6 +87,17 @@ export function evaluateStart(
       attachedJobIds: [],
     },
   };
+}
+
+/**
+ * Records a start against a source's entry: the daily count and the cooldown stamp. No active run is set, because the
+ * source locks held by the starting run exclude every other run on that source.
+ */
+export function stampEntry(entry: ExoLedgerEntry | undefined, now: number): ExoLedgerEntry {
+  const today = Math.floor(now / DAY_MS);
+  if (entry === undefined) return { day: today, startsToday: 1, lastStartedAt: now, attachedJobIds: [] };
+  const startsToday = entry.day === today ? entry.startsToday : 0;
+  return { ...entry, day: today, startsToday: startsToday + 1, lastStartedAt: now };
 }
 
 /** Adds a coalesced wake to the active run. Undefined when no run is active, so nothing is written. */

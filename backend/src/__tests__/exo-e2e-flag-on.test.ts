@@ -307,6 +307,8 @@ describe("exo flag-on end to end (real stores, real router, recording executor)"
       expect(ownerJob(world, OWNER_A, R1)).toMatchObject({ state: "done", code: "done" });
       expect(mirrorJob(world, OWNER_A, R1)).toMatchObject({ state: "done", code: "done" });
 
+      // The first meetings run stamped each source's cooldown (fireflies: 1 h). Move past it so the second start is admitted.
+      world.clock.now = NOW + 61 * MINUTE;
       await post(base, OWNER_A, R2);
       await settle(stack);
       expect(world.runs.length).toBe(2);

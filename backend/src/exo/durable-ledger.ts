@@ -6,10 +6,13 @@ import {
   attachEntry,
   clearEntry,
   evaluateStart,
+  limitRefusal,
   parseLedgerEntry,
   parseSourceLock,
   releaseSourceLock,
   snapshotOf,
+  stampEntry,
+  type ExoSourceGate,
   type ExoStartGate,
   type ExoStartResult,
   type SourceLock,
@@ -122,16 +125,34 @@ export function createDurableExoLedger(kv: ExoLedgerKv): ExoLedger {
       const current = await readRecord(kv, ledgerKey(owner, capability), parseLedgerEntry);
       return snapshotOf(current?.value, now);
     },
-    async recordStart(owner, capability, jobId, now, gate: ExoStartGate): Promise<ExoStartResult> {
+    async recordStart(owner, capability, jobId, now, gate: ExoStartGate, sourceGates: readonly ExoSourceGate[] = []): Promise<ExoStartResult> {
+      const sources = SOURCES_BY_CAPABILITY[capability];
       const refused = await takeSourceLocks(kv, owner, capability, jobId, now);
       if (refused) return refused;
       try {
+        // Source limits are read before any write. The source locks taken above keep those entries unchanged until the stamp.
+        for (const source of sourceGates) {
+          const current = await readRecord(kv, ledgerKey(owner, source.capability), parseLedgerEntry);
+          const sourceRefusal = limitRefusal(current?.value, now, source.gate);
+          if (sourceRefusal) {
+            await freeSourceLocks(kv, owner, sources, jobId);
+            return sourceRefusal;
+          }
+        }
         const result = await mutate(kv, ledgerKey(owner, capability), parseLedgerEntry, (entry) => evaluateStart(entry, jobId, now, gate));
-        if (!result.started) await freeSourceLocks(kv, owner, SOURCES_BY_CAPABILITY[capability], jobId);
+        if (!result.started) {
+          await freeSourceLocks(kv, owner, sources, jobId);
+          return result;
+        }
+        // Stamped after admission. A failed stamp takes the catch path. Sources stamped before it stay counted: over-counting is the safe direction.
+        for (const source of sourceGates) {
+          await mutate(kv, ledgerKey(owner, source.capability), parseLedgerEntry, (entry) => ({ result: undefined, next: stampEntry(entry, now) }));
+        }
         return result;
       } catch (error) {
-        // The original error reaches the caller. A lock that cannot be freed here expires at its TTL.
-        await freeSourceLocks(kv, owner, SOURCES_BY_CAPABILITY[capability], jobId).catch((): undefined => undefined);
+        // The original error reaches the caller. Best effort: free the locks and clear the own active run, so a failed start does not hold the capability until its TTL.
+        await freeSourceLocks(kv, owner, sources, jobId).catch((): undefined => undefined);
+        await mutate(kv, ledgerKey(owner, capability), parseLedgerEntry, (entry) => ({ result: undefined, next: clearEntry(entry, jobId).next })).catch((): undefined => undefined);
         throw error;
       }
     },

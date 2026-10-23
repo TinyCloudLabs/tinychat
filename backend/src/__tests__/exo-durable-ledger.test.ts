@@ -5,6 +5,7 @@ import { ACTIVE_RUN_TTL_MS, type ExoStartGate } from "../exo/ledger-model.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
+const MINUTE_MS = 60 * 1000;
 const T0 = Date.UTC(2026, 0, 10, 12, 0, 0);
 const OWNER = "0xowner";
 const CAPABILITY: ExoCapability = "sync-google";
@@ -203,6 +204,60 @@ describe("durable exo ledger", () => {
       reason: "source",
       retryAfterMs: ACTIVE_RUN_TTL_MS - 2000,
     });
+  });
+
+  test("a meetings start stamps each source, so that source's own cooldown refuses a later single-source start", async () => {
+    const ledger = createDurableExoLedger(fakeLedgerKv());
+    const firefliesGate = { dailyCap: 150, minIntervalMs: HOUR_MS };
+    const googleGate = { dailyCap: 300, minIntervalMs: 30 * MINUTE_MS };
+    expect(
+      await ledger.recordStart(OWNER, "sync-meetings", "job-m", T0, {}, [
+        { capability: "sync-fireflies", gate: firefliesGate },
+        { capability: "sync-google", gate: googleGate },
+      ]),
+    ).toEqual({ started: true });
+    await ledger.clearActive(OWNER, "sync-meetings", "job-m");
+    expect(await ledger.recordStart(OWNER, "sync-fireflies", "job-f", T0 + 10 * MINUTE_MS, firefliesGate)).toEqual({
+      started: false,
+      reason: "cooldown",
+      retryAfterMs: 50 * MINUTE_MS,
+    });
+    expect(await ledger.recordStart(OWNER, "sync-google", "job-g", T0 + 10 * MINUTE_MS, googleGate)).toEqual({
+      started: false,
+      reason: "cooldown",
+      retryAfterMs: 20 * MINUTE_MS,
+    });
+  });
+
+  test("a single-source start stamps its source, so a meetings start is refused by that source's cooldown and frees its locks", async () => {
+    const ledger = createDurableExoLedger(fakeLedgerKv());
+    const firefliesGate = { dailyCap: 150, minIntervalMs: HOUR_MS };
+    expect(await ledger.recordStart(OWNER, "sync-fireflies", "job-f", T0, firefliesGate)).toEqual({ started: true });
+    await ledger.clearActive(OWNER, "sync-fireflies", "job-f");
+    expect(
+      await ledger.recordStart(OWNER, "sync-meetings", "job-m", T0 + 10 * MINUTE_MS, {}, [
+        { capability: "sync-fireflies", gate: firefliesGate },
+        { capability: "sync-google", gate: { dailyCap: 300, minIntervalMs: 30 * MINUTE_MS } },
+      ]),
+    ).toEqual({ started: false, reason: "cooldown", retryAfterMs: 50 * MINUTE_MS });
+    expect(await ledger.snapshot(OWNER, "sync-meetings", T0 + 10 * MINUTE_MS)).toEqual({ startsToday: 0 });
+    // The refused meetings run freed the fireflies lock it took first: a fireflies start after its cooldown is admitted.
+    expect(await ledger.recordStart(OWNER, "sync-fireflies", "job-f2", T0 + 2 * HOUR_MS, firefliesGate)).toEqual({ started: true });
+  });
+
+  test("a meetings start is refused by a source's daily cap and writes no meetings entry", async () => {
+    const ledger = createDurableExoLedger(fakeLedgerKv());
+    const sourceGates = [{ capability: "sync-google" as const, gate: { dailyCap: 2 } }];
+    for (const jobId of ["job-m1", "job-m2"]) {
+      expect(await ledger.recordStart(OWNER, "sync-meetings", jobId, T0, {}, sourceGates)).toEqual({ started: true });
+      await ledger.clearActive(OWNER, "sync-meetings", jobId);
+    }
+    expect(await ledger.recordStart(OWNER, "sync-meetings", "job-m3", T0, {}, sourceGates)).toEqual({
+      started: false,
+      reason: "budget",
+      retryAfterMs: 12 * HOUR_MS,
+    });
+    expect(await ledger.snapshot(OWNER, "sync-meetings", T0)).toEqual({ startsToday: 2, lastStartedAt: T0 });
   });
 
   test("a refused multi-source start frees the sources it already took", async () => {
