@@ -37,6 +37,26 @@ export function needsManifestResign(store: RevisionStore | null, address: string
   return readRevision(store, address) !== EXO_MANIFEST_REVISION;
 }
 
+export type ManifestRevisionGate = "current" | "cleared" | "handoff_failed";
+
+/**
+ * Restore-time gate used by App. A stale session for `address` gets one capture
+ * handoff, then is cleared so the user signs in again. A failed handoff keeps the
+ * session and reports "handoff_failed"; the caller stops without clearing.
+ */
+export async function applyManifestRevisionGate(input: {
+  store: RevisionStore | null;
+  address: string | null;
+  handoff: () => Promise<boolean>;
+  clearSession: (address: string) => void;
+}): Promise<ManifestRevisionGate> {
+  const { store, address, handoff, clearSession } = input;
+  if (!address || !needsManifestResign(store, address)) return "current";
+  if (!await handoff()) return "handoff_failed";
+  clearSession(address);
+  return "cleared";
+}
+
 /**
  * Record the current revision after a successful sign-in. Unwritable storage
  * leaves the revision stale, so the next restore re-signs once more.

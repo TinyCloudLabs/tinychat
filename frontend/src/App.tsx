@@ -155,7 +155,7 @@ import { NativeRenewal, guardNativeTinyCloudCalls, NATIVE_SESSION_ENDED_MESSAGE,
 import { isAuthSettledSignedOut } from "./lib/authRouting";
 import { clearSendIntentsForOwner } from "./chat/TranscriberSection";
 import { browserIsOffline, restorePersistedSession } from "./lib/sessionRestore";
-import { browserRevisionStore, needsManifestResign, recordManifestRevision } from "./lib/manifestRevision";
+import { applyManifestRevisionGate, browserRevisionStore, recordManifestRevision } from "./lib/manifestRevision";
 import { clearTranscriptDelegationSchedule, ensureTranscriptWriterDelegation } from "./lib/transcriptDelegation";
 import { onAgentPaywallError, onAgentModelSelectionError } from "./lib/agentChatApi";
 import type { ThreadDoc, StoredMessageItem } from "./lib/threadStore";
@@ -545,15 +545,20 @@ export function App() {
         setState("unauthenticated");
         return;
       }
-      const revisionStore = browserRevisionStore();
-      const storedAddressAtRestore = sessionStoreRef.current.getAddress();
-      if (storedAddressAtRestore && needsManifestResign(revisionStore, storedAddressAtRestore)) {
-        // Sessions signed under an older manifest revision are cleared once, so the
-        // user signs in again under the current grants (see lib/manifestRevision.ts).
-        if (!await captureHandoff()) { setState("recoverableError"); return; }
-        clearPersistedSession(storedAddressAtRestore);
-        sessionStoreRef.current.clear();
-        endStorageAccountSession();
+      // Sessions signed under an older manifest revision are cleared once, so the
+      // user signs in again under the current grants (see lib/manifestRevision.ts).
+      const revisionGate = await applyManifestRevisionGate({
+        store: browserRevisionStore(),
+        address: sessionStoreRef.current.getAddress(),
+        handoff: captureHandoff,
+        clearSession: (address) => {
+          clearPersistedSession(address);
+          sessionStoreRef.current.clear();
+          endStorageAccountSession();
+        },
+      });
+      if (revisionGate === "handoff_failed") { setState("recoverableError"); return; }
+      if (revisionGate === "cleared") {
         setState("unauthenticated");
         logSession("restore", "manifest_revision");
         return;

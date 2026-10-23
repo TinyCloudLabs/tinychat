@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  applyManifestRevisionGate,
   EXO_MANIFEST_REVISION,
   needsManifestResign,
   recordManifestRevision,
@@ -116,5 +117,100 @@ describe("unavailable storage", () => {
   test("no storage at all re-signs, and recording is a no-op", () => {
     expect(needsManifestResign(null, ADDRESS)).toBe(true);
     expect(() => recordManifestRevision(null, ADDRESS)).not.toThrow();
+  });
+});
+
+describe("restore gate", () => {
+  const revisionKey = `xyz.tinycloud.tinychat:manifest-revision:${ADDRESS.toLowerCase()}`;
+
+  test("a stale session gets one handoff, then is cleared for that address", async () => {
+    const { store } = memoryStore();
+    const calls: string[] = [];
+    const outcome = await applyManifestRevisionGate({
+      store,
+      address: ADDRESS,
+      handoff: async () => { calls.push("handoff"); return true; },
+      clearSession: (address) => { calls.push(`clear:${address}`); },
+    });
+    expect(outcome).toBe("cleared");
+    expect(calls).toEqual(["handoff", `clear:${ADDRESS}`]);
+  });
+
+  test("an older recorded revision is stale too", async () => {
+    const { store } = memoryStore({ [revisionKey]: "0" });
+    const clears: string[] = [];
+    const outcome = await applyManifestRevisionGate({
+      store,
+      address: ADDRESS,
+      handoff: async () => true,
+      clearSession: (address) => { clears.push(address); },
+    });
+    expect(outcome).toBe("cleared");
+    expect(clears).toEqual([ADDRESS]);
+  });
+
+  test("a session on the current revision is kept: no handoff, no clear", async () => {
+    const { store } = memoryStore();
+    recordManifestRevision(store, ADDRESS);
+    let handoffs = 0;
+    const clears: string[] = [];
+    const outcome = await applyManifestRevisionGate({
+      store,
+      address: ADDRESS,
+      handoff: async () => { handoffs += 1; return true; },
+      clearSession: (address) => { clears.push(address); },
+    });
+    expect(outcome).toBe("current");
+    expect(handoffs).toBe(0);
+    expect(clears).toEqual([]);
+  });
+
+  test("no stored address means nothing to re-sign: no handoff, no clear", async () => {
+    const { store } = memoryStore();
+    let handoffs = 0;
+    const clears: string[] = [];
+    const outcome = await applyManifestRevisionGate({
+      store,
+      address: null,
+      handoff: async () => { handoffs += 1; return true; },
+      clearSession: (address) => { clears.push(address); },
+    });
+    expect(outcome).toBe("current");
+    expect(handoffs).toBe(0);
+    expect(clears).toEqual([]);
+  });
+
+  test("a failed handoff keeps the stale session: it is not cleared and reports handoff_failed", async () => {
+    const { store } = memoryStore();
+    const clears: string[] = [];
+    const outcome = await applyManifestRevisionGate({
+      store,
+      address: ADDRESS,
+      handoff: async () => false,
+      clearSession: (address) => { clears.push(address); },
+    });
+    expect(outcome).toBe("handoff_failed");
+    expect(clears).toEqual([]);
+  });
+
+  test("after a successful sign-in records the revision, the next restore leaves the session alone", async () => {
+    const { store } = memoryStore();
+    const first = await applyManifestRevisionGate({
+      store,
+      address: ADDRESS,
+      handoff: async () => true,
+      clearSession: () => {},
+    });
+    expect(first).toBe("cleared");
+    recordManifestRevision(store, ADDRESS);
+    let handoffs = 0;
+    const second = await applyManifestRevisionGate({
+      store,
+      address: ADDRESS,
+      handoff: async () => { handoffs += 1; return true; },
+      clearSession: () => {},
+    });
+    expect(second).toBe("current");
+    expect(handoffs).toBe(0);
   });
 });
