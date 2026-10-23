@@ -208,6 +208,8 @@ export async function listMeetingsRead(
                   'transcription_error_code', json_extract(c.metadata, '$.transcription_error_code'),
                   'legacy_transcript_outcome', ${listsVoiceNotes ? "w.outcome" : "NULL"},
                   'transcript_commit_outcome', ${commitOutcome},
+                  'has_transcript_text',   (typeof(json_extract(c.metadata, '$.transcript_text')) = 'text'
+                    AND length(trim(json_extract(c.metadata, '$.transcript_text'))) > 0),
                   'note_kv_key',           json_extract(c.metadata, '$.note_kv_key'),
                   'note_edited_at',        json_extract(c.metadata, '$.note_edited_at'),
                   'audio_kv_key',          json_extract(c.metadata, '$.audio_kv_key'),

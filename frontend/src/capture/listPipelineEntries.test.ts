@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { notePipeline, type StepState } from "@/lib/voiceNotes/notePipeline";
-import { buildNotePipelineInput, type NotePipelineSource } from "@/lib/voiceNotes/useNotePipeline";
+import { buildNotePipelineInput, rowHasCommittedAudio, type NotePipelineSource } from "@/lib/voiceNotes/useNotePipeline";
 import { voiceNoteMarkdownKvKey } from "@/lib/voiceNotes/voiceNoteStore";
 import type { LibraryItem } from "./library/LibraryRow";
 import { listPipelineEntries } from "./listPipelineEntries";
@@ -64,7 +64,7 @@ describe("listPipelineEntries", () => {
   test("a pasted transcript with text has its space step done, not waiting to upload", () => {
     const item: LibraryItem = {
       id: "row-pasted", source: "exo-voice-note", sourceId: "pasted-with-text", title: "Pasted", startedAt: null, durationSecs: null,
-      metadata: { source: "pasted", capture: "pasted", transcription_outcome: "transcribed", transcript_text: "Hello" },
+      metadata: { source: "pasted", capture: "pasted", transcription_outcome: "transcribed", has_transcript_text: 1 },
     };
     const entry = listPipelineEntries([item], {} as TinyCloudWeb)[0]!;
 
@@ -75,12 +75,19 @@ describe("listPipelineEntries", () => {
   test("a pasted transcript without text is not counted as saved", () => {
     const item: LibraryItem = {
       id: "row-pasted-empty", source: "exo-voice-note", sourceId: "pasted-empty", title: "Pasted", startedAt: null, durationSecs: null,
-      metadata: { source: "pasted", capture: "pasted", transcription_outcome: "pending" },
+      metadata: { source: "pasted", capture: "pasted", transcription_outcome: "pending", has_transcript_text: 0 },
     };
     const entry = listPipelineEntries([item], {} as TinyCloudWeb)[0]!;
 
     expect(entry.source.audioSaved).toBe(false);
     expect(spaceState(entry)).toBe("waiting");
+  });
+
+  test("a pasted detail row is saved only when its transcript text is non-blank", () => {
+    const withText = { source: "pasted", capture: "pasted", transcription_outcome: "transcribed", transcript_text: "Hello" };
+    const blank = { source: "pasted", capture: "pasted", transcription_outcome: "transcribed", transcript_text: "  \n" };
+    expect(rowHasCommittedAudio(withText)).toBe(true);
+    expect(rowHasCommittedAudio(blank)).toBe(false);
   });
 
   test("a recorded note with no stored audio is still waiting to upload", () => {
