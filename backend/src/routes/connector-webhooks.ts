@@ -1546,6 +1546,11 @@ export interface ConnectorCompanionOptions {
     source: string;
     address: string;
   }) => Promise<CompanionDrainOutcome | unknown>;
+  /**
+   * The exo ledger rows of each disconnected source. ABSENT when the exo flag is off, so a flag-off
+   * disconnect makes no exo call. Best-effort: a failure is logged and never becomes a 503.
+   */
+  exo?: { clearSource: (source: string, address: string) => Promise<void> };
 }
 
 /**
@@ -1728,7 +1733,7 @@ function pendingView(item: PendingItem) {
 export function createConnectorWebhookCompanionRouter(
   options: ConnectorCompanionOptions,
 ): Router {
-  const { tokens, queue, control, limiters } = options;
+  const { tokens, queue, control, limiters, exo } = options;
   const registry = options.registry ?? CONNECTOR_REGISTRY;
   const abort = options.abort ?? connectorDrainAbort;
   const now = options.now ?? (() => Date.now());
@@ -2020,7 +2025,7 @@ export function createConnectorWebhookCompanionRouter(
    * The SINGLE idempotent teardown (§3.6 rule 1), in the NORMATIVE ORDER:
    *
    *   (1) durable disabled marker → (2) config delete (+ token delete, token-cache evict)
-   *   → (3) queue drop.
+   *   → (3) queue drop → (4) exo ledger rows, best-effort.
    *
    * The marker goes first so every crash point below it leaves a state the drain classifies as
    * REVOKED; the reverse order leaves an enabled config over torn-down state, which §3.7's
@@ -2067,6 +2072,19 @@ export function createConnectorWebhookCompanionRouter(
       for (const source of sources) {
         const { cleared } = await queue.clear(source, user.address);
         dropped += cleared;
+      }
+      // (4) The exo ledger rows of each source. Best-effort: the marker, config, token and queue are
+      // already torn down, so a failure is logged rather than answered with a 503 that the client would
+      // retry into a second, different call. The owner's exo DELETE clears what remains.
+      if (exo) {
+        for (const source of sources) {
+          try {
+            await exo.clearSource(source, user.address);
+          } catch (error) {
+            logWebhookWarn(`op=disable result=exo_failed aid=${hashedField(user.address)} source=${source}`);
+            console.warn("[connector-webhook] exo clear failed:", redactedErrorMessage(error));
+          }
+        }
       }
 
       logWebhook(

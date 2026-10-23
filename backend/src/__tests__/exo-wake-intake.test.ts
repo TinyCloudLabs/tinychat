@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test, vi } from "bun:test";
 import { FixedWindowBudget, WakeQueue } from "../exo/wake-intake.js";
 
 /** A run that stays pending until released, so the test controls when the owner's slot frees. */
@@ -23,6 +23,17 @@ describe("WakeQueue", () => {
     queue.offer("b", "b1", record("b1"));
     await queue.idle();
     expect(order).toEqual(["a1", "b1", "a2", "a3"]);
+  });
+
+  test("offer returns before the port runs: the run starts on a later macrotask, not inside offer", async () => {
+    const queue = new WakeQueue({ concurrency: 1 });
+    let started = false;
+    queue.offer("a", "a1", async () => {
+      started = true;
+    });
+    expect(started).toBe(false);
+    await queue.idle();
+    expect(started).toBe(true);
   });
 
   test("dedupes on (owner, request id): repeated offers of one pair occupy one slot", async () => {
@@ -98,6 +109,38 @@ describe("WakeQueue", () => {
     await queue.idle();
     expect(order).toEqual(["a1", "b1"]);
     expect(queue.stats()).toEqual({ pending: 0, running: 0 });
+  });
+
+  test("drain resolves only after queued and running wakes settle", async () => {
+    const queue = new WakeQueue({ concurrency: 1 });
+    const blocker = gated();
+    const ran: string[] = [];
+    queue.offer("a", "a1", () => blocker.run().then(() => { ran.push("a1"); }));
+    queue.offer("b", "b1", async () => { ran.push("b1"); });
+    let drained = false;
+    const drain = queue.drain().then(() => { drained = true; });
+    await Promise.resolve();
+    expect(drained).toBe(false);
+    blocker.release();
+    await drain;
+    expect(ran).toEqual(["a1", "b1"]);
+    expect(queue.stats()).toEqual({ pending: 0, running: 0 });
+  });
+
+  test("drain rejects when a wake outlives its bound", async () => {
+    vi.useFakeTimers();
+    const queue = new WakeQueue({ concurrency: 1 });
+    const blocker = gated();
+    queue.offer("a", "stuck", () => blocker.run());
+    const drain = queue.drain(20);
+    vi.advanceTimersByTime(20);
+    try {
+      await expect(drain).rejects.toThrow("exo wake drain timed out");
+    } finally {
+      vi.useRealTimers();
+      blocker.release();
+    }
+    await queue.idle();
   });
 });
 

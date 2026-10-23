@@ -14,6 +14,9 @@ export const WAKE_QUEUE_CONCURRENCY = 4;
 export const EXO_WAKE_OWNER_LIMIT_PER_MIN = 30;
 export const EXO_WAKE_OWNER_WINDOW_MS = 60_000;
 
+/** Bound on the shutdown wait for queued and running wakes. Past it, shutdown exits non-zero. */
+export const WAKE_DRAIN_TIMEOUT_MS = 30_000;
+
 const BUDGET_SWEEP_AT = 1024;
 
 export interface WakeQueueOptions {
@@ -89,6 +92,26 @@ export class WakeQueue {
     while (this.running.size > 0) await Promise.all([...this.running]);
   }
 
+  /**
+   * Resolves once nothing is queued or running. Rejects if work is still pending after `timeoutMs`, so shutdown can
+   * exit non-zero rather than drop job records that were already acknowledged with 202.
+   */
+  drain(timeoutMs: number = WAKE_DRAIN_TIMEOUT_MS): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("exo wake drain timed out")), timeoutMs);
+      this.idle().then(
+        () => {
+          clearTimeout(timer);
+          resolve();
+        },
+        (error: unknown) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      );
+    });
+  }
+
   stats(): { pending: number; running: number } {
     return { pending: this.pendingCount, running: this.busyOwners.size };
   }
@@ -128,9 +151,9 @@ export class WakeQueue {
       const [next] = this.pendingByOwner.get(owner)!.values();
       this.unlink(owner, next.requestId);
       this.busyOwners.add(owner);
-      const started: Promise<void> = (async () => {
-        await next.run();
-      })()
+      // The run starts on a microtask so `offer` returns before any port work runs.
+      const started: Promise<void> = Promise.resolve()
+        .then(() => next.run())
         .catch(() => console.error("[exo] wake not recorded"))
         .then(() => {
           this.busyOwners.delete(owner);

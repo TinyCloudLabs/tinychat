@@ -331,6 +331,8 @@ function createHarness(
     sources?: readonly string[];
     /** The pinned public callback origin (`CONNECTOR_WEBHOOK_PUBLIC_ORIGIN`). */
     publicOrigin?: string;
+    /** The exo ledger hook `DELETE /config` calls per source (`index.ts` wires it behind the flag). */
+    exoClearSource?: (source: string, address: string) => Promise<void>;
   } = {},
 ): Harness {
   const ops: string[] = [];
@@ -378,6 +380,9 @@ function createHarness(
       ...(options.publicOrigin === undefined
         ? {}
         : { publicOrigin: options.publicOrigin }),
+      ...(options.exoClearSource
+        ? { exo: { clearSource: options.exoClearSource } }
+        : {}),
       ...(options.drain
         ? {
             // Shaped like `ConnectorDrainWorker`'s `DrainResult`, because the routes now read
@@ -628,6 +633,54 @@ describe("DELETE /config teardown", () => {
       `clear:${SOURCE}/${ADDRESS}`,
     ]);
     expect(h.control.markers.has(ADDRESS)).toBe(true);
+    expect(h.tokens.configs.has(ADDRESS)).toBe(false);
+    expect(h.queue.items.size).toBe(0);
+  });
+
+  test("clears the exo ledger rows of every registered source", async () => {
+    const cleared: Array<{ source: string; address: string }> = [];
+    const h = createHarness({
+      sources: [SOURCE, SECOND_SOURCE],
+      exoClearSource: async (source, address) => {
+        cleared.push({ source, address });
+      },
+    });
+    h.tokens.configs.set(ADDRESS, {
+      token: generateWebhookToken(),
+      source: SOURCE,
+      createdAt: new Date().toISOString(),
+    });
+
+    await withServer(h.app, async (base) => {
+      const res = await call(base, "/config", "DELETE");
+      expect(res.status).toBe(200);
+    });
+
+    expect(cleared).toEqual([
+      { source: SOURCE, address: ADDRESS },
+      { source: SECOND_SOURCE, address: ADDRESS },
+    ]);
+  });
+
+  test("a failing exo clear does not turn the disconnect into an error", async () => {
+    const h = createHarness({
+      exoClearSource: async () => {
+        throw new Error("exo ledger unavailable");
+      },
+    });
+    h.tokens.configs.set(ADDRESS, {
+      token: generateWebhookToken(),
+      source: SOURCE,
+      createdAt: new Date().toISOString(),
+    });
+    h.queue.seed(SOURCE, ADDRESS, 2);
+
+    await withServer(h.app, async (base) => {
+      const res = await call(base, "/config", "DELETE");
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ status: "disabled", queueDropped: 2 });
+    });
+
     expect(h.tokens.configs.has(ADDRESS)).toBe(false);
     expect(h.queue.items.size).toBe(0);
   });
