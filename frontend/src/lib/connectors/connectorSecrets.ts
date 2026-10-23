@@ -4,6 +4,7 @@
 // because the owned `secrets` space was never registered with the node. In that one case
 // we call `tcw.ensureOwnedSpaceHosted?.("secrets")` (if the SDK exposes it) and retry
 // ONCE. If the method doesn't exist we surface the original error — no silent fallback.
+// Before the first write in a session, saveConnectorKey creates the encryption network once.
 
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
@@ -21,7 +22,10 @@ export type SecretsResult<T, E> =
 export type SecretsErr = { code?: string; message?: string };
 
 /** Minimum surface we invoke on tcw. Kept structural so tests can supply a fake. */
-type SecretsTcw = Pick<TinyCloudWeb, "secrets"> & {
+type SecretsTcw = Pick<
+  TinyCloudWeb,
+  "secrets" | "ensureEncryptionNetwork" | "did" | "hasPermissions" | "requestPermissions"
+> & {
   ensureOwnedSpaceHosted?: TinyCloudWeb["ensureOwnedSpaceHosted"];
 };
 
@@ -158,11 +162,47 @@ export async function unlockSecrets<E>(
 /** Where a key lives in the vault: a connector's descriptor, or another source key's name. */
 export type SecretLocation = Pick<ConnectorDescriptor, "secretName" | "secretScope">;
 
+/** Name of the encryption network every connector secret is sealed under. */
+const ENCRYPTION_NETWORK_NAME = "default";
+
+/**
+ * Per-session memo of the in-flight or completed network ensure, keyed by the
+ * tcw instance. A failed ensure is dropped so the next save retries it.
+ */
+const encryptionNetworkEnsured = new WeakMap<object, Promise<void>>();
+
+/** Creates the encryption network once per session. Resolves to a Result; never throws. */
+async function ensureEncryptionNetworkForSave<E>(
+  tcw: SecretsTcw,
+): Promise<SecretsResult<void, E>> {
+  let pending = encryptionNetworkEnsured.get(tcw);
+  if (!pending) {
+    const created = (async () => {
+      await tcw.ensureEncryptionNetwork(ENCRYPTION_NETWORK_NAME);
+    })();
+    pending = created;
+    encryptionNetworkEnsured.set(tcw, created);
+    created.catch(() => {
+      if (encryptionNetworkEnsured.get(tcw) === created) {
+        encryptionNetworkEnsured.delete(tcw);
+      }
+    });
+  }
+  try {
+    await pending;
+    return { ok: true, data: undefined };
+  } catch (error) {
+    return { ok: false, error: error as E };
+  }
+}
+
 export async function saveConnectorKey<E>(
   tcw: SecretsTcw,
   descriptor: SecretLocation,
   key: string,
 ): Promise<SecretsResult<void, E>> {
+  const ensured = await ensureEncryptionNetworkForSave<E>(tcw);
+  if (!ensured.ok) return ensured;
   const options = descriptor.secretScope
     ? { scope: descriptor.secretScope }
     : undefined;
@@ -182,10 +222,59 @@ export async function saveConnectorKey<E>(
   )) as SecretsResult<void, E>;
 }
 
+/** Lifetime of the decrypt step-up. Just under the one-hour cap. */
+export const DECRYPT_STEP_UP_EXPIRY_MS = 3_540_000;
+
+/** Neutral message for a declined decrypt step-up. */
+export const DECRYPT_DECLINED_MESSAGE =
+  "Decryption was not approved, so the saved key could not be read.";
+
+/**
+ * The one permission entry a secrets read needs beyond the sign-in session:
+ * `decrypt` on the owner's default encryption network. The network id embeds
+ * `did`, the same value the SDK derives for its own `get`.
+ */
+export function decryptStepUpEntry(did: string) {
+  return {
+    service: "tinycloud.encryption",
+    path: `urn:tinycloud:encryption:${did}:${ENCRYPTION_NETWORK_NAME}`,
+    actions: ["decrypt"],
+    skipPrefix: true as const,
+    description: "Decrypt secrets stored in your encrypted vault.",
+  };
+}
+
+/**
+ * Requests the decrypt step-up before a read. Skips the prompt when the grant
+ * is already held. A decline yields a neutral error and is not retried. A
+ * thrown error from the SDK is returned untouched. Never throws.
+ */
+export async function ensureDecryptStepUp<E>(
+  tcw: SecretsTcw,
+): Promise<SecretsResult<void, E>> {
+  const entry = decryptStepUpEntry(tcw.did);
+  if (tcw.hasPermissions([entry])) return { ok: true, data: undefined };
+  let approved: boolean;
+  try {
+    approved = (
+      await tcw.requestPermissions([entry], { expiryMs: DECRYPT_STEP_UP_EXPIRY_MS })
+    ).approved;
+  } catch (error) {
+    return { ok: false, error: error as E };
+  }
+  if (approved) return { ok: true, data: undefined };
+  return {
+    ok: false,
+    error: { code: "decrypt-declined", message: DECRYPT_DECLINED_MESSAGE } as E,
+  };
+}
+
 export async function getConnectorKey<E>(
   tcw: SecretsTcw,
   descriptor: SecretLocation,
 ): Promise<SecretsResult<string, E>> {
+  const stepUp = await ensureDecryptStepUp<E>(tcw);
+  if (!stepUp.ok) return stepUp;
   const options = descriptor.secretScope
     ? { scope: descriptor.secretScope }
     : undefined;

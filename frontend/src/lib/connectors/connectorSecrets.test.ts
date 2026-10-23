@@ -1,7 +1,11 @@
 import { beforeEach, describe, expect, test } from "bun:test";
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import {
+  DECRYPT_DECLINED_MESSAGE,
+  DECRYPT_STEP_UP_EXPIRY_MS,
   UNLOCK_NEEDS_SIGN_IN_MESSAGE,
   deleteConnectorKey,
   getConnectorKey,
@@ -19,6 +23,8 @@ const FIREFLIES: ConnectorDescriptor = CONNECTORS.find(
   (c) => c.id === "fireflies",
 )!;
 
+const FAKE_DID = "did:pkh:eip155:1:0x00000000000000000000000000000000000000aa";
+
 type Result<T, E> = { ok: true; data: T } | { ok: false; error: E };
 type SecretErr = { code: string; message: string };
 
@@ -34,6 +40,12 @@ interface FakeCalls {
   getCount: number;
   deleteCount: number;
   ensureOwnedSpaceHostedCalls: string[];
+  ensureNetworkCalls: string[];
+  order: string[];
+  permissionChecks: Record<string, unknown>[][];
+  permissionRequests: { entries: Record<string, unknown>[]; options: unknown }[];
+  /** Wallet signatures / runtime-grant creations: incremented only when a grant is approved. */
+  signerCalls: number;
 }
 
 interface Fake {
@@ -47,6 +59,10 @@ interface Fake {
   /** When true, secrets is locked and every op reports VAULT_LOCKED. */
   locked: boolean;
   omitEnsureOwnedSpaceHosted?: boolean;
+  /** When set, the next ensureEncryptionNetwork rejects with this once. */
+  ensureErrorOnce: Error | null;
+  /** Decrypt step-up grant. Shared with the fake's permission methods. */
+  grant: { held: boolean; approve: boolean; throwWith: Error | null };
 }
 
 function keyFor(name: string, scope: string): string {
@@ -57,6 +73,8 @@ function makeFake(
   opts: {
     locked?: boolean;
     omitEnsureOwnedSpaceHosted?: boolean;
+    stepUpHeld?: boolean;
+    stepUpApprove?: boolean;
   } = {},
 ): Fake {
   const entries = new Map<string, StoredKey>();
@@ -66,12 +84,19 @@ function makeFake(
     getCount: 0,
     deleteCount: 0,
     ensureOwnedSpaceHostedCalls: [],
+    ensureNetworkCalls: [],
+    order: [],
+    permissionChecks: [],
+    permissionRequests: [],
+    signerCalls: 0,
   };
   const state = {
     locked: opts.locked === true,
     putErrorOnce: null as SecretErr | null,
     putErrorSticky: null as SecretErr | null,
     omitEnsureOwnedSpaceHosted: opts.omitEnsureOwnedSpaceHosted === true,
+    ensureErrorOnce: null as Error | null,
+    grant: { held: opts.stepUpHeld !== false, approve: opts.stepUpApprove !== false, throwWith: null as Error | null },
   };
 
   const secrets = {
@@ -92,6 +117,7 @@ function makeFake(
       options?: { scope?: string },
     ): Promise<Result<void, SecretErr>> {
       calls.putCount++;
+      calls.order.push(`put:${name}`);
       if (state.locked) {
         return {
           ok: false,
@@ -115,6 +141,7 @@ function makeFake(
       options?: { scope?: string },
     ): Promise<Result<string, SecretErr>> {
       calls.getCount++;
+      calls.order.push(`get:${name}`);
       if (state.locked) {
         return {
           ok: false,
@@ -156,6 +183,33 @@ function makeFake(
   };
 
   const raw: Record<string, unknown> = { secrets };
+  raw.ensureEncryptionNetwork = async (name: string) => {
+    calls.order.push("ensure");
+    calls.ensureNetworkCalls.push(name);
+    if (state.ensureErrorOnce) {
+      const e = state.ensureErrorOnce;
+      state.ensureErrorOnce = null;
+      throw e;
+    }
+    return { name };
+  };
+  raw.did = FAKE_DID;
+  raw.hasPermissions = (entries: Record<string, unknown>[]): boolean => {
+    calls.permissionChecks.push(entries);
+    return state.grant.held;
+  };
+  raw.requestPermissions = async (
+    entries: Record<string, unknown>[],
+    options: unknown,
+  ): Promise<{ approved: boolean }> => {
+    calls.permissionRequests.push({ entries, options });
+    calls.order.push("stepUp");
+    if (state.grant.throwWith) throw state.grant.throwWith;
+    if (!state.grant.approve) return { approved: false };
+    state.grant.held = true;
+    calls.signerCalls++;
+    return { approved: true };
+  };
   if (!state.omitEnsureOwnedSpaceHosted) {
     raw.ensureOwnedSpaceHosted = async (name: string) => {
       calls.ensureOwnedSpaceHostedCalls.push(name);
@@ -185,7 +239,14 @@ function makeFake(
     set locked(v: boolean) {
       state.locked = v;
     },
+    get ensureErrorOnce() {
+      return state.ensureErrorOnce;
+    },
+    set ensureErrorOnce(v: Error | null) {
+      state.ensureErrorOnce = v;
+    },
     omitEnsureOwnedSpaceHosted: state.omitEnsureOwnedSpaceHosted,
+    grant: state.grant,
   };
   return fake;
 }
@@ -516,5 +577,137 @@ describe("I2 unlock events — notify re-entrancy guard", () => {
     const res = await unlockSecrets<SecretErr>(f.tcw);
     expect(res.ok).toBe(true);
     expect(calls).toEqual(["a", "b", "a", "b"]);
+  });
+});
+
+describe("connectorSecrets encryption network before first write", () => {
+  test("creates the default network before the first put, and not again in the session", async () => {
+    const f = makeFake();
+    await saveConnectorKey(f.tcw, FIREFLIES, "k1");
+    await saveConnectorKey(f.tcw, FIREFLIES, "k2");
+    expect(f.calls.ensureNetworkCalls).toEqual(["default"]);
+    expect(f.calls.order).toEqual([
+      "ensure",
+      `put:${FIREFLIES.secretName}`,
+      `put:${FIREFLIES.secretName}`,
+    ]);
+  });
+
+  test("concurrent first saves share one network ensure", async () => {
+    const f = makeFake();
+    const [a, b] = await Promise.all([
+      saveConnectorKey(f.tcw, FIREFLIES, "k1"),
+      saveConnectorKey(f.tcw, FIREFLIES, "k2"),
+    ]);
+    expect(a.ok && b.ok).toBe(true);
+    expect(f.calls.ensureNetworkCalls).toEqual(["default"]);
+  });
+
+  test("a failed ensure blocks the write, surfaces the same error, and the next save retries", async () => {
+    const f = makeFake();
+    const boom = new Error("HTTP 401 Unauthorized Action: network.create");
+    f.ensureErrorOnce = boom;
+    const failed = await saveConnectorKey(f.tcw, FIREFLIES, "k");
+    expect(failed.ok).toBe(false);
+    if (!failed.ok) expect(failed.error).toBe(boom);
+    expect(f.calls.putCount).toBe(0);
+    expect(f.entries.size).toBe(0);
+
+    const retried = await saveConnectorKey(f.tcw, FIREFLIES, "k");
+    expect(retried.ok).toBe(true);
+    expect(f.calls.ensureNetworkCalls).toEqual(["default", "default"]);
+    expect(f.calls.putCount).toBe(1);
+  });
+});
+
+describe("connectorSecrets decrypt step-up", () => {
+  test("a read requests exactly one decrypt entry on the default network, capped at one hour", async () => {
+    const f = makeFake({ stepUpHeld: false });
+    await getConnectorKey(f.tcw, FIREFLIES);
+    expect(f.calls.permissionRequests).toHaveLength(1);
+    const { entries, options } = f.calls.permissionRequests[0]!;
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      service: "tinycloud.encryption",
+      path: `urn:tinycloud:encryption:${FAKE_DID}:default`,
+      actions: ["decrypt"],
+      skipPrefix: true,
+    });
+    expect(options).toEqual({ expiryMs: DECRYPT_STEP_UP_EXPIRY_MS });
+    expect(DECRYPT_STEP_UP_EXPIRY_MS).toBeLessThanOrEqual(60 * 60 * 1000);
+  });
+
+  test("the step-up never requests a KV entry: a KV grant would fail this", async () => {
+    const f = makeFake({ stepUpHeld: false });
+    await getConnectorKey(f.tcw, FIREFLIES);
+    const entries = f.calls.permissionRequests.flatMap((r) => r.entries);
+    expect(entries.some((e) => e.service === "tinycloud.kv")).toBe(false);
+    expect(entries.every((e) => e.service === "tinycloud.encryption")).toBe(true);
+  });
+
+  test("no prompt when the decrypt grant is already held", async () => {
+    const f = makeFake({ stepUpHeld: true });
+    await saveConnectorKey(f.tcw, FIREFLIES, "k");
+    const r = await getConnectorKey(f.tcw, FIREFLIES);
+    expect(r).toEqual({ ok: true, data: "k" });
+    expect(f.calls.permissionChecks).toHaveLength(1);
+    expect(f.calls.permissionRequests).toHaveLength(0);
+  });
+
+  test("the step-up precedes the vault read", async () => {
+    const f = makeFake({ stepUpHeld: false });
+    await saveConnectorKey(f.tcw, FIREFLIES, "k");
+    await getConnectorKey(f.tcw, FIREFLIES);
+    expect(f.calls.order).toEqual([
+      "ensure",
+      `put:${FIREFLIES.secretName}`,
+      "stepUp",
+      `get:${FIREFLIES.secretName}`,
+    ]);
+  });
+
+  test("a decline returns the neutral error, reads nothing, and is not retried", async () => {
+    const f = makeFake({ stepUpHeld: false, stepUpApprove: false });
+    await saveConnectorKey(f.tcw, FIREFLIES, "k");
+    const r = await getConnectorKey(f.tcw, FIREFLIES);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error).toEqual({ code: "decrypt-declined", message: DECRYPT_DECLINED_MESSAGE });
+    }
+    expect(f.calls.getCount).toBe(0);
+    expect(f.calls.permissionRequests).toHaveLength(1);
+  });
+
+  test("an SDK error from the step-up is returned untouched and nothing is read", async () => {
+    const f = makeFake({ stepUpHeld: false });
+    const boom = new Error("prompt dismissed");
+    f.grant.throwWith = boom;
+    const r = await getConnectorKey(f.tcw, FIREFLIES);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toBe(boom);
+    expect(f.calls.getCount).toBe(0);
+  });
+
+  test("signer calls: one on the first reveal, zero on a second reveal within the hour", async () => {
+    // Fake model: the granted decrypt entry stays held until its ≤1h expiry (asserted above),
+    // so the second reveal must not sign. Real-node signature counts are checked separately.
+    const f = makeFake({ stepUpHeld: false, stepUpApprove: true });
+    await saveConnectorKey(f.tcw, FIREFLIES, "k");
+    expect(f.calls.signerCalls).toBe(0);
+    expect(await getConnectorKey(f.tcw, FIREFLIES)).toEqual({ ok: true, data: "k" });
+    expect(f.calls.signerCalls).toBe(1);
+    expect(await getConnectorKey(f.tcw, FIREFLIES)).toEqual({ ok: true, data: "k" });
+    expect(f.calls.signerCalls).toBe(1);
+  });
+
+  test("no file outside connectorSecrets.ts calls tcw.secrets.get directly", () => {
+    const srcRoot = join(import.meta.dir, "..", "..");
+    const offenders: string[] = [];
+    for (const rel of readdirSync(srcRoot, { recursive: true }) as string[]) {
+      if (!/\.(ts|tsx)$/.test(rel) || /\.test\.(ts|tsx)$/.test(rel)) continue;
+      if (rel.endsWith(join("lib", "connectors", "connectorSecrets.ts"))) continue;
+      if (/\.secrets\.get\(/.test(readFileSync(join(srcRoot, rel), "utf8"))) offenders.push(rel);
+    }
+    expect(offenders).toEqual([]);
   });
 });

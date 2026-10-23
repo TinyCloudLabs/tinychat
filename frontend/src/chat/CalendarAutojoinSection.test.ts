@@ -68,15 +68,18 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+// Sign-in grants reads of the stored key; the decrypt step-up is already held in these fakes.
+const heldDecryptGrant = { did: "did:example:calendar-autojoin", hasPermissions: () => true, requestPermissions: async () => ({ approved: true }) };
+
 function unlockedBrowser() {
-  return { secrets: { isUnlocked: true, get: async () => ({ ok: true, data: "old-account-browser-token" }) } } as unknown as TinyCloudWeb;
+  return { ...heldDecryptGrant, secrets: { isUnlocked: true, get: async () => ({ ok: true, data: "old-account-browser-token" }) } } as unknown as TinyCloudWeb;
 }
 
 describe("Google disconnect across interrupted account replacement", () => {
   test("shared-grant skips still finish both browser requests and delete the vault key", async () => {
     let stored: string | null = "synthetic-shared-refresh-token";
     const paths: string[] = [];
-    const tcw = { secrets: { isUnlocked: true,
+    const tcw = { ...heldDecryptGrant, secrets: { isUnlocked: true,
       get: async () => ({ ok: true, data: stored }),
       delete: async () => { stored = null; return { ok: true }; },
     } } as unknown as TinyCloudWeb;
@@ -129,7 +132,7 @@ describe("Google disconnect across interrupted account replacement", () => {
   });
   test("unconfirmed server disable stops before reading browser credentials", async () => {
     let reads = 0;
-    const tcw = { secrets: { isUnlocked: true, get: async () => { reads++; return { ok: true, data: "token" }; } } } as unknown as TinyCloudWeb;
+    const tcw = { ...heldDecryptGrant, secrets: { isUnlocked: true, get: async () => { reads++; return { ok: true, data: "token" }; } } } as unknown as TinyCloudWeb;
     expect((await revokeGoogleUpstream({ tcw, descriptor: google, backendUrl: "https://backend.example", sessionStore: session,
       fetchImpl: (async () => { throw new Error("offline"); }) as typeof fetch,
     })).status).toBe("server-unavailable");

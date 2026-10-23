@@ -341,44 +341,41 @@ key, descriptor.secretScope ? { scope: descriptor.secretScope } : undefined)`.
   with a not-found-shaped error, call `tcw.ensureOwnedSpaceHosted?.("secrets")` if the
   method exists, then retry once. If the method doesn't exist on web-sdk, surface the
   error honestly (no silent fallback — debugging rule).
-- **Every action the connector needs must be granted at sign-in consent — do NOT
-  rely on the SDK's permission-escalation modal.** This spec used to say the modal
-  was expected UX; that position was wrong and the browser lane disproved it.
-  Escalation routes through `grantRuntimePermissions`, which requires a wallet
-  signer. A restored session has none, so the modal renders, the user clicks
-  Approve, and it fails with "grantRuntimePermissions requires wallet mode with a
-  signer or privateKey" — a dead end the user cannot get past. Hence the `secrets`
-  shorthand declares `["read","write","delete"]`: `delete` is for disconnect, which
-  would otherwise hit exactly that wall. (SDK issue: runtime escalation is
-  structurally unusable for restored sessions, which is the normal state of any
-  returning user.)
+- **Every action the connector needs is granted at sign-in consent, except decrypt.**
+  Decrypt is requested at read time (see below). On web-sdk 3.3.0, a restored session has
+  no signer, so escalation through
+  `grantRuntimePermissions` fails with "grantRuntimePermissions requires wallet mode with
+  a signer or privateKey". The `secrets` shorthand therefore grants `delete` at sign-in
+  (rationale in `backend/src/__tests__/manifest.test.ts`). Whether the decrypt
+  `requestPermissions` succeeds for a restored session on the pinned SDK is unverified
+  until the live QA run.
 
-**KNOWN BLOCKER (worked around app-side, pending an SDK fix) — secrets reads on
-web-sdk 2.5.1.** Reading a secret back is refused with `PERMISSION_DENIED`
-("grantRuntimePermissions requires wallet mode with a signer or privateKey"), and
-no _static_ manifest change can fix it. The write path works, so connect + sync
-were never affected; only re-reading the stored key was blocked (which "Sync now"
-needs once the in-memory key is gone).
+**Secrets reads request decrypt separately (web-sdk 3.4.0).** Sign-in requests only
+`tinycloud.encryption` / `network.create` on the owner's default encryption network
+(`lib/connectors/encryptionGrant.ts`). The network is created on the first save by
+`ensureEncryptionNetwork` in `connectorSecrets.ts`, once per session.
 
-The workaround: `lib/connectors/encryptionGrant.ts` composes the missing
-`tinycloud.encryption` / `decrypt` entry once the address is known, and `App.tsx`
-appends it to the manifest handed to `createAndSignIn` — sign-in only, since
-capabilities are minted from that manifest and a restored session can never
-acquire them. It hardcodes the SDK-internal networkId URN format, so it is
-sanctioned product surgery, not a design: delete the single
-`withEncryptionDecryptGrant(...)` call when the SDK carries the capability itself.
-Existing sessions need one sign-out/sign-in to pick the grant up.
+Reading a stored key needs a separate decrypt grant. `ensureDecryptStepUp` in
+`connectorSecrets.ts` requests exactly one `tinycloud.encryption` / `decrypt` entry on
+the default network, with an expiry of `DECRYPT_STEP_UP_EXPIRY_MS` (3,540,000 ms, under
+one hour), before any `secrets.get`. It skips the prompt when `hasPermissions` already
+holds the grant. A declined request returns `decrypt-declined` and reads nothing. The
+request is not retried.
 
-Why: node-sdk's `createVaultService` always passes an `encryption` config, and
-`usesNetworkEncryption` is just `encryption !== undefined`, so the secrets vault is
-always network-encrypted. `NodeSecretsService.ensurePermission` adds, for `get`
-only, a `tinycloud.encryption` / `decrypt` entry on the network id
-`urn:tinycloud:encryption:<ownerDid>:default`. Nothing grants it: no default tier
-includes encryption, and the manifest cannot name it because the URN embeds the
-signed-in user's DID, while `expandEncryptionPermissionEntry` rejects any path that
-is not a networkId URN (so no wildcard). Escalation is the SDK's only route and it
-needs a wallet signer a restored session does not have. Fix belongs in the SDK —
-do not work around it in product code.
+`getConnectorKey` is the only read path. A lint test fails if any other source file calls
+`secrets.get` directly. KV reads come from the sign-in session's manifest, which grants
+`tinycloud.kv` `get` on the vault paths. The step-up never adds KV entries; a regression
+test enforces this.
+
+Sessions created before this change may still hold the older decrypt grant. This change
+does not revoke it.
+
+**SDK pin (pending).** This PR builds against `@tinycloud/web-sdk` 3.4.0. On 3.4.0, a
+decrypt-only grant does not satisfy `secrets.get`'s own check, so the first read signs a
+second 30-day [KV get + decrypt] grant (one extra signature per reveal, observed in an SDK
+probe; not re-run on a live node in this PR). The
+pin moves to exact 3.4.1 before merge, which adds per-entry coverage and the one-hour
+bound. The PR stays draft until then.
 
 ## 8. Sync engine (`firefliesSync.ts`)
 

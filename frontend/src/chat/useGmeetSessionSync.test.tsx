@@ -120,6 +120,11 @@ function syncOk(patch: Partial<GmeetSyncSummary> = {}) {
 function vault(options: { unlocked: boolean; token?: string | null }) {
   let getCalls = 0;
   const tcw = {
+    // The decrypt step-up is already held, so reads here do not prompt. The
+    // step-up itself is covered in connectorSecrets.test.ts.
+    did: "did:pkh:eip155:1:0x00000000000000000000000000000000000000aa",
+    hasPermissions: () => true,
+    requestPermissions: async () => ({ approved: true }),
     secrets: {
       isUnlocked: options.unlocked,
       get: async () => {
