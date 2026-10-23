@@ -122,6 +122,8 @@ describe("unavailable storage", () => {
 
 describe("restore gate", () => {
   const revisionKey = `xyz.tinycloud.tinychat:manifest-revision:${ADDRESS.toLowerCase()}`;
+  const online = () => false;
+  const offline = () => true;
 
   test("a stale session gets one handoff, then is cleared for that address", async () => {
     const { store } = memoryStore();
@@ -129,6 +131,7 @@ describe("restore gate", () => {
     const outcome = await applyManifestRevisionGate({
       store,
       address: ADDRESS,
+      isOffline: online,
       handoff: async () => { calls.push("handoff"); return true; },
       clearSession: (address) => { calls.push(`clear:${address}`); },
     });
@@ -142,6 +145,7 @@ describe("restore gate", () => {
     const outcome = await applyManifestRevisionGate({
       store,
       address: ADDRESS,
+      isOffline: online,
       handoff: async () => true,
       clearSession: (address) => { clears.push(address); },
     });
@@ -157,12 +161,26 @@ describe("restore gate", () => {
     const outcome = await applyManifestRevisionGate({
       store,
       address: ADDRESS,
+      isOffline: online,
       handoff: async () => { handoffs += 1; return true; },
       clearSession: (address) => { clears.push(address); },
     });
     expect(outcome).toBe("current");
     expect(handoffs).toBe(0);
     expect(clears).toEqual([]);
+  });
+
+  test("a current session stays current while offline", async () => {
+    const { store } = memoryStore();
+    recordManifestRevision(store, ADDRESS);
+    const outcome = await applyManifestRevisionGate({
+      store,
+      address: ADDRESS,
+      isOffline: offline,
+      handoff: async () => true,
+      clearSession: () => {},
+    });
+    expect(outcome).toBe("current");
   });
 
   test("no stored address means nothing to re-sign: no handoff, no clear", async () => {
@@ -172,6 +190,7 @@ describe("restore gate", () => {
     const outcome = await applyManifestRevisionGate({
       store,
       address: null,
+      isOffline: online,
       handoff: async () => { handoffs += 1; return true; },
       clearSession: (address) => { clears.push(address); },
     });
@@ -186,6 +205,7 @@ describe("restore gate", () => {
     const outcome = await applyManifestRevisionGate({
       store,
       address: ADDRESS,
+      isOffline: online,
       handoff: async () => false,
       clearSession: (address) => { clears.push(address); },
     });
@@ -193,11 +213,47 @@ describe("restore gate", () => {
     expect(clears).toEqual([]);
   });
 
+  test("a stale session is deferred while offline: no handoff, no clear, still stale", async () => {
+    const { store } = memoryStore();
+    let handoffs = 0;
+    const clears: string[] = [];
+    const outcome = await applyManifestRevisionGate({
+      store,
+      address: ADDRESS,
+      isOffline: offline,
+      handoff: async () => { handoffs += 1; return true; },
+      clearSession: (address) => { clears.push(address); },
+    });
+    expect(outcome).toBe("deferred");
+    expect(handoffs).toBe(0);
+    expect(clears).toEqual([]);
+    expect(needsManifestResign(store, ADDRESS)).toBe(true);
+  });
+
+  test("a deferred stale session is cleared on the first online load", async () => {
+    const { store } = memoryStore();
+    let offlineNow = true;
+    const clears: string[] = [];
+    const input = {
+      store,
+      address: ADDRESS,
+      isOffline: () => offlineNow,
+      handoff: async () => true,
+      clearSession: (address: string) => { clears.push(address); },
+    };
+    expect(await applyManifestRevisionGate(input)).toBe("deferred");
+    expect(clears).toEqual([]);
+    offlineNow = false;
+    expect(await applyManifestRevisionGate(input)).toBe("cleared");
+    expect(clears).toEqual([ADDRESS]);
+  });
+
   test("after a successful sign-in records the revision, the next restore leaves the session alone", async () => {
     const { store } = memoryStore();
     const first = await applyManifestRevisionGate({
       store,
       address: ADDRESS,
+      isOffline: online,
       handoff: async () => true,
       clearSession: () => {},
     });
@@ -207,6 +263,7 @@ describe("restore gate", () => {
     const second = await applyManifestRevisionGate({
       store,
       address: ADDRESS,
+      isOffline: online,
       handoff: async () => { handoffs += 1; return true; },
       clearSession: () => {},
     });

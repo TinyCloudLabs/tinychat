@@ -550,6 +550,7 @@ export function App() {
       const revisionGate = await applyManifestRevisionGate({
         store: browserRevisionStore(),
         address: sessionStoreRef.current.getAddress(),
+        isOffline: browserIsOffline,
         handoff: captureHandoff,
         clearSession: (address) => {
           clearPersistedSession(address);
