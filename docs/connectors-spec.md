@@ -370,12 +370,8 @@ test enforces this.
 Sessions created before this change may still hold the older decrypt grant. This change
 does not revoke it.
 
-**SDK pin (pending).** This PR builds against `@tinycloud/web-sdk` 3.4.0. On 3.4.0, a
-decrypt-only grant does not satisfy `secrets.get`'s own check, so the first read signs a
-second 30-day [KV get + decrypt] grant (one extra signature per reveal, observed in an SDK
-probe; not re-run on a live node in this PR). The
-pin moves to exact 3.4.1 before merge, which adds per-entry coverage and the one-hour
-bound. The PR stays draft until then.
+**SDK pin (pending).** This PR builds against `@tinycloud/web-sdk` 3.4.0. The pin moves to
+exact 3.4.1 before merge. The PR stays draft until then.
 
 ## 8. Sync engine (`firefliesSync.ts`)
 

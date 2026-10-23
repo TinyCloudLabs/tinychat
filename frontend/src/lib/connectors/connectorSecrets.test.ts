@@ -688,9 +688,9 @@ describe("connectorSecrets decrypt step-up", () => {
     expect(f.calls.getCount).toBe(0);
   });
 
-  test("signer calls: one on the first reveal, zero on a second reveal within the hour", async () => {
-    // Fake model: the granted decrypt entry stays held until its ≤1h expiry (asserted above),
-    // so the second reveal must not sign. Real-node signature counts are checked separately.
+  test("one signature on the first reveal, none on a second within the hour", async () => {
+    // The granted decrypt entry stays held until its ≤1h expiry (asserted above),
+    // so the second reveal reuses it and does not sign.
     const f = makeFake({ stepUpHeld: false, stepUpApprove: true });
     await saveConnectorKey(f.tcw, FIREFLIES, "k");
     expect(f.calls.signerCalls).toBe(0);
