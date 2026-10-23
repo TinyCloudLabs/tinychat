@@ -155,6 +155,7 @@ import { NativeRenewal, guardNativeTinyCloudCalls, NATIVE_SESSION_ENDED_MESSAGE,
 import { isAuthSettledSignedOut } from "./lib/authRouting";
 import { clearSendIntentsForOwner } from "./chat/TranscriberSection";
 import { browserIsOffline, restorePersistedSession } from "./lib/sessionRestore";
+import { browserRevisionStore, needsManifestResign, recordManifestRevision } from "./lib/manifestRevision";
 import { clearTranscriptDelegationSchedule, ensureTranscriptWriterDelegation } from "./lib/transcriptDelegation";
 import { onAgentPaywallError, onAgentModelSelectionError } from "./lib/agentChatApi";
 import type { ThreadDoc, StoredMessageItem } from "./lib/threadStore";
@@ -542,6 +543,19 @@ export function App() {
         setNativeSessionActive(false);
         if (boot.kind === "terminal") setError(NATIVE_SESSION_ENDED_MESSAGE);
         setState("unauthenticated");
+        return;
+      }
+      const revisionStore = browserRevisionStore();
+      const storedAddressAtRestore = sessionStoreRef.current.getAddress();
+      if (storedAddressAtRestore && needsManifestResign(revisionStore, storedAddressAtRestore)) {
+        // Sessions signed under an older manifest revision are cleared once, so the
+        // user signs in again under the current grants (see lib/manifestRevision.ts).
+        if (!await captureHandoff()) { setState("recoverableError"); return; }
+        clearPersistedSession(storedAddressAtRestore);
+        sessionStoreRef.current.clear();
+        endStorageAccountSession();
+        setState("unauthenticated");
+        logSession("restore", "manifest_revision");
         return;
       }
       const restored = await restorePersistedSession(sessionStoreRef.current, {
@@ -962,6 +976,7 @@ export function App() {
       // Exchange the SIWE message for a backend Bearer token (for /api/chat).
       const verified = await verifySession(BACKEND_URL, session.siwe, session.signature);
       sessionStoreRef.current.setSession(verified.token, verified.expiresIn, connectedAddress);
+      recordManifestRevision(browserRevisionStore(), connectedAddress);
       // The SDK keeps this provider for later user-authorized operations;
       // only the verified login's signatures use the prefetched nonce guard.
       prefetch.complete();
