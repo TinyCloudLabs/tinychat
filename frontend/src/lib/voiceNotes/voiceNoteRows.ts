@@ -2,6 +2,8 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { readableError } from "@/lib/readableError";
 import { storageScopeFor, trackStorageWrites } from "@/lib/storageStatus";
 import { deviceName } from "@/lib/platform";
+import { autoMeetingTitle } from "@/lib/meetingTitle";
+import { transcriptionModelLabel } from "@/lib/transcriptionModelLabel";
 import type { FirefliesSentence } from "../connectors/firefliesClient";
 import { CONNECTORS_KV_PREFIX, CONNECTORS_SQL_DB_NAME, ensureSchema, transcriptKvKey } from "../connectors/connectorStore";
 import { runOnSpaceLane, SpaceLaneQueueWaitTimeout, spaceLaneAbandonedSqlCalls, spaceLaneSnapshot, subscribeSpaceLane } from "../spaceWriteLane";
@@ -258,7 +260,7 @@ export async function createVoiceNoteRow(tcw: TinyCloudWeb, recording: VoiceNote
      summary_action_items, keywords, meeting_type, metadata, created_at, updated_at)
     VALUES (?, 'exo-voice-note', ?, ?, ?, ?, NULL, '[]', NULL, NULL, NULL, NULL, ?, ?, ?)
     ON CONFLICT DO NOTHING`, [`vn-${recording.id}`, recording.id, title, new Date(recording.startedAt).toISOString(),
-    recording.durationMs / 1000, JSON.stringify({ transcription_outcome: outcome,
+    recording.durationMs / 1000, JSON.stringify({ transcription_outcome: outcome, title_auto: true,
       capture: captureMetadata(recording, platform) }), now, now], checkpoint);
   const row = await resolveVoiceNoteRow(tcw, recording.id, checkpoint);
   if (!row) throw new Error("The voice-note identity index was established but its row is missing");
@@ -485,6 +487,13 @@ export async function commitVoiceNoteTranscript(
     if (live) await execute(tcw, "UPDATE connector_meeting SET metadata = json_patch(COALESCE(metadata,'{}'), ?), participants = ?, updated_at = ? WHERE id = ? AND source = 'exo-voice-note'",
       [JSON.stringify(mirror), JSON.stringify((input.participants ?? []).map((name) => ({ name, email: null }))),
         new Date().toISOString(), live.id], checkpoint);
+    if (live) {
+      const [startedRow] = await query(tcw, "SELECT started_at FROM connector_meeting WHERE id = ?", [live.id], checkpoint);
+      const title = autoMeetingTitle({ startedAt: startedRow?.[0], modelLabel: transcriptionModelLabel(input.model),
+        participantNames: input.participants });
+      if (title) await execute(tcw, "UPDATE connector_meeting SET title = ?, metadata = json_remove(metadata, '$.title_auto') WHERE id = ? AND source = 'exo-voice-note' AND json_extract(metadata, '$.title_auto') = 1",
+        [title, live.id], checkpoint);
+    }
     const key = transcriptKvKey("exo-voice-note", sourceId);
     const fixed = await runOnSpaceLane((signal) => { checkpoint(); return tcw.kv.put(key, body,
       { contentType: "application/json", signal }); }, { operation: `KV put ${key}`, payloadBytes: new TextEncoder().encode(body).byteLength });
