@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.10.0-beta.20
+
+### Patch Changes
+
+- 084b0f4: Reading encrypted data now asks for decryption when needed, for about an hour.
+
 ## 0.10.0-beta.19
 
 ### Patch Changes
