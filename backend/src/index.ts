@@ -820,7 +820,9 @@ async function main() {
             content: contentStore,
             queue: connectorWebhooks.queue,
             control: connectorWebhooks.control,
-            exo: { clearSource: (source, address) => clearExoSourceState(exoBackendKv, address, source) },
+            ...(exoCapabilitiesEnabled(process.env)
+              ? { exo: { clearSource: (source: string, address: string) => clearExoSourceState(exoBackendKv, address, source) } }
+              : {}),
           }),
           oauth: {
             authorizeUrl: ({ state, challenge }) =>

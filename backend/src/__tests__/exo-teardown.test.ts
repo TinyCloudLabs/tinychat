@@ -68,6 +68,17 @@ describe("clearExoOwnerState", () => {
     expect([...entries].sort()).toEqual([otherLedger, otherMirror].sort());
   });
 
+  test("removes this owner's source locks and keeps other owners' locks", async () => {
+    const lock = `${EXO_NAMESPACE}/source-lock/${OWNER}/google`;
+    const otherLock = `${EXO_NAMESPACE}/source-lock/${OTHER}/google`;
+    const { kv, entries } = fakeKv([lock, otherLock]);
+    const { grant } = fakeGrant([], []);
+
+    await clearExoOwnerState(teardownDeps(kv, grant), OWNER);
+
+    expect([...entries]).toEqual([otherLock]);
+  });
+
   test("normalizes a checksum-cased owner to the lowercased key layout", async () => {
     const ledger = ledgerKey(MIXED_OWNER.toLowerCase(), "sync-google");
     const { kv, entries } = fakeKv([ledger]);

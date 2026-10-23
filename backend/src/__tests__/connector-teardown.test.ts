@@ -360,6 +360,22 @@ describe("W7 teardown — full per-user teardown (delta 12, AP 8)", () => {
     expect(await h.credentials.status(SOURCE, ADDRESS_A)).toBeNull();
   });
 
+  test("with the exo flag off the teardown has no exo step and still completes", async () => {
+    const h = harness();
+    await seedTenant(h, ADDRESS_A, { kind: "oauth", accessToken: SECRET_A }, ["mtgA1"]);
+    const teardown = new ConnectorTeardownService(
+      { credentials: h.credentials, content: h.content, queue: h.queue, control: h.control },
+      { now: h.clock },
+    );
+
+    const result = await teardown.run(SOURCE, ADDRESS_A);
+
+    expect(result.deleted).toBe(true);
+    expect(result.contentRemoved).toBe(1);
+    expect(h.exoCleared).toEqual([]);
+    expect(await h.credentials.status(SOURCE, ADDRESS_A)).toBeNull();
+  });
+
   test("[delta-12] the purge ledger covers content AND credential — a tombstone is present after the teardown", async () => {
     const h = harness();
     await seedTenant(h, ADDRESS_A, { kind: "oauth", accessToken: SECRET_A }, [
