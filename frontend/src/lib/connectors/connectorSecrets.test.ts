@@ -791,14 +791,39 @@ describe("connectorSecrets decrypt step-up", () => {
     expect(offenders).toEqual([]);
   });
 
-  test("every readConnectorKey call site passes an explicit interactive flag", () => {
+  test("every readConnectorKey call site is classified by its literal interactive flag", () => {
+    // Closed inventory: a caller may only pass a literal that matches its file's role.
+    // Flipping a background caller to `interactive: true` fails here.
+    const USER_PRESS_CALLERS: Record<string, true> = {
+      "capture/meetingSources/useSourceSync.ts": true,
+      "chat/ConnectorDialog.tsx": true,
+      "chat/ConnectorsCard.tsx": true,
+    };
+    const BACKGROUND_CALLERS: Record<string, true> = {
+      "chat/useBackgroundDrain.ts": true,
+      "chat/useGmeetSessionSync.ts": true,
+    };
+    // Forward a caller-supplied flag; the definition and the queue adapter.
+    const FLAG_PASS_THROUGH: Record<string, true> = {
+      "lib/connectors/connectorSecrets.ts": true,
+      "lib/connectors/targetedSync.ts": true,
+    };
     const srcRoot = join(import.meta.dir, "..", "..");
     const offenders: string[] = [];
     for (const rel of readdirSync(srcRoot, { recursive: true }) as string[]) {
       if (!/\.(ts|tsx)$/.test(rel) || /\.test\.(ts|tsx)$/.test(rel)) continue;
       const text = readFileSync(join(srcRoot, rel), "utf8");
       for (const m of text.matchAll(/readConnectorKey(?:<[^>]*>)?\(([^()]*)\)/g)) {
-        if (!/\binteractive\b/.test(m[1] ?? "")) offenders.push(`${rel}: ${m[0]}`);
+        const args = m[1] ?? "";
+        const literal = /\binteractive:\s*(true|false)\b/.exec(args)?.[1];
+        const where = `${rel}: ${m[0]}`;
+        if (literal === "true") {
+          if (!Object.hasOwn(USER_PRESS_CALLERS, rel)) offenders.push(where);
+        } else if (literal === "false") {
+          if (!Object.hasOwn(BACKGROUND_CALLERS, rel)) offenders.push(where);
+        } else if (!/\binteractive\b/.test(args) || !Object.hasOwn(FLAG_PASS_THROUGH, rel)) {
+          offenders.push(where);
+        }
       }
     }
     expect(offenders).toEqual([]);
