@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.10.0-beta.18
+
+### Patch Changes
+
+- 6fd545d: Share chats as snapshots: a share holds one chat's title and messages at its own link. Owners can list and revoke their shares from the share dialog. Links created before this change still open.
+
 ## 0.10.0-beta.17
 
 ### Patch Changes
