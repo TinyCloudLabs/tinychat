@@ -68,15 +68,16 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-// Held decrypt grant: hasPermissions is true. `prompts` counts requestPermissions calls,
-// so a test can assert that a path never asks the user again.
-function heldDecryptGrant() {
+// Decrypt grant with real semantics: `hasPermissions` reflects whether a prompt granted it.
+// `prompts` counts requestPermissions calls, so a test can assert that a path never asks again.
+function heldDecryptGrant(options: { held?: boolean } = {}) {
+  let held = options.held ?? true;
   let prompts = 0;
   return {
     fields: {
       did: "did:example:calendar-autojoin",
-      hasPermissions: () => true,
-      requestPermissions: async () => { prompts++; return { approved: true }; },
+      hasPermissions: () => held,
+      requestPermissions: async () => { prompts++; held = true; return { approved: true }; },
     },
     prompts: () => prompts,
   };
