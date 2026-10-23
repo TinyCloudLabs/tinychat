@@ -147,14 +147,8 @@ export function useBackgroundSync({
         // Reachable ONLY from the user-initiated sync action — never on mount.
         unlock: () => unlockSecrets<SecretsErr>(tcw),
       },
-      ingest: (items, options) =>
-        ingestQueuedMeetings({
-          tcw,
-          descriptor,
-          items,
-          webhooks,
-          interactive: options.interactive,
-        }),
+      ingest: (items) =>
+        ingestQueuedMeetings({ tcw, descriptor, items, webhooks }),
     }),
     [tcw, descriptor, webhooks],
   );
