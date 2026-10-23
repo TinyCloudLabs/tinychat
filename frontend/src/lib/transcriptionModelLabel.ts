@@ -13,6 +13,9 @@ const LABELS: Record<string, string> = {
   "parakeet-tdt-110m-en-int8": "Parakeet TDT 110M (English)",
   "speech-transcriber": "Apple SpeechTranscriber",
   "dictation-transcriber": "Apple Dictation",
+  "whisper-large-v3-turbo": "Whisper Large v3 Turbo (Tinfoil)",
+  "universal-3-5-pro": "AssemblyAI Universal-3.5 Pro",
+  "universal-2": "AssemblyAI Universal-2",
 };
 
 /** Ids we do not map are shown only when they are short plain tokens; anything else is not displayed. */
