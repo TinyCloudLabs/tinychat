@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createExoActivatedGrant, ownerApplicationsSpaceUri, type ExoKvAccess } from "../exo/activated-grant.js";
+import { createExoActivatedGrant, ownerApplicationsSpaceUri, readVersionedKv, type ExoKvAccess } from "../exo/activated-grant.js";
 import { EXO_JOBS_PREFIX, EXO_REQUESTS_PREFIX } from "../delegation-verify.js";
 
 // EIP-55 reference address (checksum case is part of the value).
@@ -295,5 +295,18 @@ describe("createExoActivatedGrant jobs conditional create and list", () => {
     const grant = createExoActivatedGrant({ kv: fakeKv() }, GRANT);
     await expect(grant.jobsList(EXO_REQUESTS_PREFIX)).rejects.toThrow();
     await expect(grant.jobsList(`${EXO_JOBS_PREFIX}job-1`)).rejects.toThrow();
+  });
+});
+
+describe("readVersionedKv etag strength", () => {
+  const KEY = "tinycloud/ledger/x";
+  const envelope = (etag: string) => ({ ok: true, data: { data: '{"n":1}', headers: { etag } } });
+
+  test("accepts a strong etag and returns it with the decoded value", () => {
+    expect(readVersionedKv(envelope('"3"'), KEY)).toEqual({ value: { n: 1 }, etag: '"3"' });
+  });
+
+  test("refuses a weak etag, since it cannot back an ifMatch precondition", () => {
+    expect(() => readVersionedKv(envelope('W/"3"'), KEY)).toThrow();
   });
 });

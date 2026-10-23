@@ -110,7 +110,7 @@ export function isKvPreconditionFailed(result: unknown): boolean {
 
 /**
  * Reads a KV get result with its strong etag, for a conditional write. Undefined when the key is absent.
- * Throws when the etag or the value is missing, so a later write is never silently unconditional.
+ * Throws when the etag is missing or weak (`W/`), or the value is missing, so a later write is never silently unconditional.
  */
 export function readVersionedKv(result: unknown, key: string): { value: unknown; etag: string } | undefined {
   if (isKvMissingKeyResult(result, key)) return undefined;
@@ -118,7 +118,7 @@ export function readVersionedKv(result: unknown, key: string): { value: unknown;
   if (outer === null || typeof outer !== "object") throw new Error("Exo ledger read invalid");
   const headers = "headers" in outer ? outer.headers : undefined;
   const etag = headers !== null && typeof headers === "object" && "etag" in headers ? headers.etag : undefined;
-  if (typeof etag !== "string" || etag === "") throw new Error("Exo ledger read without an etag");
+  if (typeof etag !== "string" || etag === "" || etag.startsWith("W/")) throw new Error("Exo ledger read without a strong etag");
   const raw = "data" in outer ? outer.data : undefined;
   if (raw === null || raw === undefined) throw new Error("Exo ledger value missing");
   return { value: decodeStoredJson(raw), etag };
