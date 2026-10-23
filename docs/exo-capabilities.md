@@ -125,8 +125,9 @@ Revoking the exo grant, revoking a transcript delegation, and disconnecting cale
 
 - `DELETE /api/exo/v1/grant`: `backend/src/routes/exo-grant.ts`.
 - Transcript delegation `DELETE`: `backend/src/routes/delegations.ts`.
-- Calendar autojoin disconnect: `backend/src/services/calendar-autojoin-connection.ts`. It clears before any other change.
+- Calendar autojoin disconnect: `backend/src/services/calendar-autojoin-connection.ts`, after custody, enablement, and revocation.
 - Connector teardown for one source: `backend/src/services/connector-teardown.ts`, step 5.
+- Webhook config `DELETE /webhooks/config`: `backend/src/routes/connector-webhooks.ts`. Clears each source's ledger rows after the disabled marker, config, token, and queue are removed. A failure is logged and the request still succeeds.
 
 Owner teardown (`clearExoOwnerState`, `backend/src/exo/teardown.ts`) runs in this order:
 
@@ -134,7 +135,14 @@ Owner teardown (`clearExoOwnerState`, `backend/src/exo/teardown.ts`) runs in thi
 2. Backend-space mirror jobs and the owner's ledger rows.
 3. The grant record, removed by the caller last.
 
-Every step is idempotent, so a retry after a partial failure finishes the work. A live grant that cannot be activated does not block teardown: owner-space rows are left in place, because nothing can reach them, and the backend-space rows and the grant record are removed. Teardown is wired only when the exo flag is on. The connector disconnect and the delegation DELETE run it after revoking, outside the tenant lock; a failure is logged and the grant stays, so the owner's exo DELETE can retry.
+Every step is idempotent, so a retry after a partial failure finishes the work. A live grant that cannot be activated does not block teardown: owner-space rows are left in place, because nothing can reach them, and the backend-space rows and the grant record are removed.
+
+Teardown is wired only when the exo flag is on. The callers differ in order and failure handling:
+- Exo grant `DELETE` runs teardown, then removes the record. A failure returns 503 and keeps the record.
+- Transcript delegation `DELETE` removes the delegation, then runs teardown outside the coordinator lock. A failure is logged and the response is still 200.
+- Calendar autojoin disconnect runs teardown last, outside tenant coordination. A failure is logged and the disconnect still completes.
+
+In the last two, a failure leaves the grant record in place, so the owner's exo `DELETE` can retry.
 
 Source teardown (`clearExoSourceState`) deletes the ledger rows of capabilities that read only that source. It does not touch the grant, which is account-level, or the source locks, which expire on their TTL.
 
