@@ -1,4 +1,5 @@
-// Purge-on-OFF: when replication is OFF (flag unset, kill switch engaged, platform refused) and this
+// Purge-on-OFF: when replication is OFF for the signed-in user (build flag unset, kill switch
+// engaged, platform refused, or the user's own switch OFF) and this
 // origin may still hold a local replica copy from an earlier ON session, erase that copy on the next
 // load. The erase is origin-wide: the replica database is shared by every account in the origin, so
 // the whole `tinycloud-replica-kv` database is deleted. Nothing else is touched.
@@ -12,13 +13,20 @@
 //  3. On success, clear our marker and the SDK pending-logout marker. A blocked or failed delete
 //     keeps (or writes) the marker so the next load retries.
 //
-// Detection: our localStorage marker (written when an ON config is built) or the SDK's pending-logout
-// marker. With neither, nothing is loaded and no IndexedDB is opened. Only when a principal is
-// recorded is the replica chunk loaded lazily, for the deny step.
+// Detection: our localStorage marker (written when an ON config is built), a pending user-requested
+// wipe, or the SDK's pending-logout marker. With none, nothing is loaded and no IndexedDB is opened.
+// Only when a principal is recorded is the replica chunk loaded lazily, for the deny step.
+//
+// A pending wipe (REPLICATION_WIPE_PENDING_KEY: set by the wipe button and by any failed purge) is
+// retried at the next load even when replication is ON for that user, so a failed removal is never
+// forgotten. The same purge backs "turn OFF" and "wipe" at click time (replicationSwitch.ts).
 import { isReplicationEnabled } from "./replicationFlag";
 import { defaultReplicationLoader, type ReplicationPluginLoader } from "./replicationClient";
-import { browserMarkerStore, REPLICATION_COPY_KEY, SDK_LOGOUT_MARKER_KEY, type MarkerStore } from "./replicationCopyMarker";
-import { setReplicationOffPurgeCode } from "./replicationStatus";
+import {
+  browserMarkerStore, REPLICATION_COPY_KEY, REPLICATION_WIPE_PENDING_KEY, SDK_LOGOUT_MARKER_KEY, type MarkerStore,
+} from "./replicationCopyMarker";
+import { trackStartupPurge } from "./replicationStartupPurge";
+import { setReplicationOffPurgeCode, setReplicationPurging } from "./replicationStatus";
 
 /** The origin-wide replica database name (SDK kv-storage KV_DATABASE, @tinycloud/replica 0.3.0-beta.8). */
 export const REPLICA_DATABASE_NAME = "tinycloud-replica-kv";
@@ -35,6 +43,8 @@ export type ReplicaDeleteResult = { ok: true } | { ok: false; code: string };
 export interface ReplicationOffPurgeDeps {
   loader?: ReplicationPluginLoader;
   store?: MarkerStore | undefined;
+  /** The signed-in principal whose user setting decides ON/OFF; none = OFF. */
+  principal?: string | undefined;
   isEnabled?: () => boolean;
   deleteDatabase?: () => Promise<ReplicaDeleteResult>;
 }
@@ -70,26 +80,46 @@ export async function deleteReplicaDatabase(): Promise<ReplicaDeleteResult> {
   return outcome;
 }
 
-/** Remove the origin's leftover replica copy while replication is OFF. Never throws; reports codes only. */
+/** Remove the origin's leftover replica copy while replication is OFF (or a wipe is pending). Never throws; reports codes only. */
 export async function purgeReplicaCopyWhenOff(deps: ReplicationOffPurgeDeps = {}): Promise<ReplicationOffPurgeOutcome> {
-  if ((deps.isEnabled ?? isReplicationEnabled)()) return { status: "skipped", reason: "replication-on" };
   const store = "store" in deps ? deps.store : browserMarkerStore();
   let hint: string | null = null;
   let logoutPending = false;
+  let wipePending = false;
   try {
     hint = store?.getItem(REPLICATION_COPY_KEY) ?? null;
     logoutPending = (store?.getItem(SDK_LOGOUT_MARKER_KEY) ?? null) !== null;
+    wipePending = (store?.getItem(REPLICATION_WIPE_PENDING_KEY) ?? null) !== null;
   } catch { /* no readable storage: no marker, nothing to address */ }
-  if (hint === null && !logoutPending) return { status: "skipped", reason: "no-copy" };
+  if (!wipePending && (deps.isEnabled ?? (() => isReplicationEnabled({ principal: deps.principal })))()) {
+    return { status: "skipped", reason: "replication-on" };
+  }
+  if (hint === null && !logoutPending && !wipePending) return { status: "skipped", reason: "no-copy" };
+
+  setReplicationPurging(true);
+  try {
+    return await removeCopy(deps, store, hint);
+  } finally {
+    setReplicationPurging(false);
+  }
+}
+
+async function removeCopy(
+  deps: ReplicationOffPurgeDeps,
+  store: MarkerStore | undefined,
+  hint: string | null,
+): Promise<ReplicationOffPurgeOutcome> {
 
   const fail = (code: string): ReplicationOffPurgeOutcome => {
     setReplicationOffPurgeCode(code);
     return { status: "failed", code };
   };
-  // Keep (or write) the retry marker so the next load runs the purge again; report both failures.
+  // Keep (or write) the retry markers so the next load runs the purge again, whatever the user
+  // setting is by then; report both failures.
   const failAndRetry = (code: string): ReplicationOffPurgeOutcome => {
     try {
       store?.setItem(REPLICATION_COPY_KEY, hint ?? "1");
+      store?.setItem(REPLICATION_WIPE_PENDING_KEY, "1");
     } catch {
       return fail(`${code}+MARKER_WRITE_FAILED`);
     }
@@ -118,6 +148,7 @@ export async function purgeReplicaCopyWhenOff(deps: ReplicationOffPurgeDeps = {}
   try {
     store?.removeItem(SDK_LOGOUT_MARKER_KEY);
     store?.removeItem(REPLICATION_COPY_KEY);
+    store?.removeItem(REPLICATION_WIPE_PENDING_KEY);
   } catch {
     return fail("STORAGE_ERROR");
   }
@@ -127,8 +158,8 @@ export async function purgeReplicaCopyWhenOff(deps: ReplicationOffPurgeDeps = {}
 
 let startup: Promise<ReplicationOffPurgeOutcome> | undefined;
 
-/** App start: runs the OFF purge once per page load (restore retries must not repeat it). */
-export function purgeReplicaCopyWhenOffOnce(): Promise<ReplicationOffPurgeOutcome> {
-  startup ??= purgeReplicaCopyWhenOff();
+/** App start: runs the purge once per page load (restore retries must not repeat it). */
+export function purgeReplicaCopyWhenOffOnce(principal?: string): Promise<ReplicationOffPurgeOutcome> {
+  startup ??= trackStartupPurge(purgeReplicaCopyWhenOff({ principal }));
   return startup;
 }

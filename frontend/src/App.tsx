@@ -32,6 +32,7 @@ import { withEncryptionNetworkCreateGrant } from "./lib/connectors/encryptionGra
 import { replicationConfigPatch } from "./lib/replication/replicationClient";
 import { rememberReplicationPrincipal } from "./lib/replication/replicationCopyMarker";
 import { purgeReplicaCopyWhenOffOnce } from "./lib/replication/replicationOffPurge";
+import { replicationPrincipalFor } from "./lib/replication/replicationOptIn";
 import { clientHasReplication, signOutReplicaAware } from "./lib/replication/replicationSignOut";
 import { uploadRunner } from "./lib/audioUpload";
 import { openkeyPasskeysSupported } from "./lib/openkeyPasskeys";
@@ -464,9 +465,11 @@ export function App() {
   // signal used to sign the user out here.
   const restoreSession = useCallback(async () => {
     if (restoreInFlightRef.current) return;
-    // Replication OFF + a leftover local copy: shred its keys, then erase it (once per page load,
-    // not awaited, no-op without a marker). See lib/replication/replicationOffPurge.ts.
-    void purgeReplicaCopyWhenOffOnce();
+    // Replication OFF for the stored account + a leftover local copy (or a pending wipe): shred its
+    // keys, then erase it (once per page load, not awaited, no-op without a marker). An ON sign-in or
+    // restore waits for it before building a replica. See lib/replication/replicationOffPurge.ts.
+    const storedAccount = sessionStoreRef.current.getAddress();
+    void purgeReplicaCopyWhenOffOnce(storedAccount ? replicationPrincipalFor(storedAccount) : undefined);
     logSession("restore", "start");
     restoreInFlightRef.current = true;
     setError(null);
@@ -611,7 +614,7 @@ export function App() {
                 openkeyRef.current = opened.openkey;
               },
             }),
-            ...(LOCAL_VALIDATION ? {} : await replicationConfigPatch()),
+            ...(LOCAL_VALIDATION ? {} : await replicationConfigPatch(replicationPrincipalFor(storedAddress))),
           }),
       });
       switch (restored.kind) {
@@ -967,7 +970,7 @@ export function App() {
         manifest: withEncryptionNetworkCreateGrant(manifest, connectedAddress),
         // Flag OFF: {} (config unchanged). ON: the SDK adds kv/sync beside kv/get for the
         // replica prefixes at this sign-in; see lib/replication/replicationClient.ts.
-        ...(LOCAL_VALIDATION ? {} : await replicationConfigPatch()),
+        ...(LOCAL_VALIDATION ? {} : await replicationConfigPatch(replicationPrincipalFor(connectedAddress))),
       };
       const { tcw: signedTcw, session } = LOCAL_VALIDATION
         ? await (async () => {

@@ -7,6 +7,11 @@ import { clientHasReplication } from "./replicationSignOut";
 export const REPLICATION_COPY_KEY = "tinychat:replication:copy";
 /** The SDK's own pending-logout marker (kv-storage REPLICA_LOGOUT_MARKER). */
 export const SDK_LOGOUT_MARKER_KEY = "tinycloud-replica:logout-pending";
+/**
+ * Set when the user asked to remove the local copy and the removal has not finished. Unlike the
+ * copy marker it forces the next load to retry even while replication is ON for that user.
+ */
+export const REPLICATION_WIPE_PENDING_KEY = "tinychat:replication:wipe-pending";
 
 export type MarkerStore = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 
@@ -25,4 +30,15 @@ export function rememberReplicationPrincipal(tcw: TinyCloudWeb, store: MarkerSto
     const principal = clientHasReplication(tcw) ? tcw.did : undefined;
     if (store && principal?.startsWith("did:pkh:")) store.setItem(REPLICATION_COPY_KEY, principal);
   } catch { /* best effort: the "1" marker still triggers the OFF purge */ }
+}
+
+/** True when a local copy may exist: our marker, a pending wipe, or the SDK's pending-logout marker. */
+export function replicationCopyMayExist(store: MarkerStore | undefined = browserMarkerStore()): boolean {
+  try {
+    return [REPLICATION_COPY_KEY, REPLICATION_WIPE_PENDING_KEY, SDK_LOGOUT_MARKER_KEY].some((key) => store?.getItem(key) != null);
+  } catch { return false; }
+}
+
+export function replicationWipePending(store: MarkerStore | undefined = browserMarkerStore()): boolean {
+  try { return store?.getItem(REPLICATION_WIPE_PENDING_KEY) != null; } catch { return false; }
 }

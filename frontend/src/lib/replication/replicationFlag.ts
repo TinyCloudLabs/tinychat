@@ -1,14 +1,18 @@
 // Web-only local-replication flag. Default OFF.
 //
-// ON requires ALL of:
+// "Available" (the switch is offered to the user) requires ALL of:
 //   1. the product kill switch below is not engaged;
 //   2. the build flag (`VITE_EXO_REPLICATION=true`) is set or, in dev/test builds only, the
 //      per-browser runtime flag (`localStorage["tinychat:replication:enabled"] === "true"`);
 //   3. the platform is qualified: a Chromium browser on a desktop or Android web page. Tauri,
 //      Capacitor, iOS (every iOS browser is WebKit), Safari and Firefox are refused, as is a
 //      browser missing IndexedDB, Workers, Web Locks or WebCrypto (the replica needs all four).
+// "Enabled" (a replica is built) additionally requires
+//   4. the user's own opt-in for the signed-in principal (replicationOptIn.ts; default OFF).
+// The build flag stays the master: an OFF build can never replicate, whatever the user setting says.
 // Pattern: chat/useExperimentalFeatures.ts (hard-coded kill switch + opt-in cache).
 import { appPlatform, type AppPlatform } from "../platform";
+import { readReplicationOptIn } from "./replicationOptIn";
 
 /** Product kill switch. Set to false to force replication off for every build and browser. */
 export const REPLICATION_AVAILABLE = true;
@@ -75,13 +79,23 @@ export interface ReplicationFlagInputs {
   buildFlag?: string | undefined;
   runtimeFlag?: boolean;
   env?: ReplicationEnv;
+  /** The signed-in principal whose opt-in is read; with none, the user setting is OFF. */
+  principal?: string | undefined;
+  /** Overrides the stored opt-in (tests). */
+  userOptIn?: boolean;
 }
 
-/** True only when the flag is on AND the platform is qualified. Default (nothing set) is false. */
-export function isReplicationEnabled(inputs: ReplicationFlagInputs = {}): boolean {
+/** Kill switch AND (build flag or dev runtime flag) AND qualified platform. The user setting is NOT consulted. */
+export function isReplicationAvailable(inputs: ReplicationFlagInputs = {}): boolean {
   if (!(inputs.killSwitchOpen ?? REPLICATION_AVAILABLE)) return false;
   const requested = (inputs.buildFlag ?? import.meta.env.VITE_EXO_REPLICATION) === "true"
     || (inputs.runtimeFlag ?? runtimeFlagSet());
   if (!requested) return false;
   return replicationPlatformRefusal(inputs.env ?? readReplicationEnv()) === null;
+}
+
+/** True only when replication is available AND this principal opted in. Default (nothing set) is false. */
+export function isReplicationEnabled(inputs: ReplicationFlagInputs = {}): boolean {
+  if (!isReplicationAvailable(inputs)) return false;
+  return inputs.userOptIn ?? readReplicationOptIn(inputs.principal);
 }

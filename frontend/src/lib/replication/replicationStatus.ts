@@ -16,11 +16,13 @@ export interface ReplicationStatus {
   purgeFailed: boolean;
   /** Code of an OFF-time removal that did not finish (retried next load); null when none. */
   offPurgeCode: string | null;
+  /** The local copy is being removed right now (switch turned OFF or the wipe button). */
+  purging: boolean;
 }
 
 const INITIAL: ReplicationStatus = {
   state: "idle", lastSyncAt: null, errorCode: null, bytes: 0, keys: 0, purgePending: false, purgeFailed: false,
-  offPurgeCode: null,
+  offPurgeCode: null, purging: false,
 };
 
 let current: ReplicationStatus = INITIAL;
@@ -43,6 +45,10 @@ export function markReplicationPurgeFailed(code: string): void {
 
 export function setReplicationOffPurgeCode(code: string | null): void {
   publish({ ...current, offPurgeCode: code });
+}
+
+export function setReplicationPurging(purging: boolean): void {
+  publish({ ...current, purging });
 }
 
 /** Subset of the SDK `replication.sync` / `replication.state` events this view reads. */
