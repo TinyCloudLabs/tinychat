@@ -756,13 +756,37 @@ describe("connectorSecrets decrypt step-up", () => {
     expect(f.calls.signerCalls).toBe(1);
   });
 
-  test("no file outside connectorSecrets.ts calls tcw.secrets.get directly", () => {
+  const INJECTED_SECRETS_RECEIVERS: Record<string, true> = { deps: true, opts: true, options: true };
+  function secretsAccessOffenders(text: string): string[] {
+    const hits: string[] = [];
+    for (const line of text.split("\n")) {
+      const code = line.trim();
+      if (code.startsWith("//") || code.startsWith("*") || code.startsWith("/*")) continue;
+      for (const m of code.matchAll(/(\w+)\??\.secrets\b/g)) {
+        if (INJECTED_SECRETS_RECEIVERS[m[1] ?? ""] !== true) hits.push(code);
+      }
+      for (const m of code.matchAll(/\{[^}]*\bsecrets\b[^}]*\}\s*=\s*(\w+)/g)) {
+        if (INJECTED_SECRETS_RECEIVERS[m[1] ?? ""] !== true) hits.push(code);
+      }
+    }
+    return hits;
+  }
+
+  test("the secrets-access guard flags aliases and destructuring, not injected bags", () => {
+    expect(secretsAccessOffenders("const vault = tcw.secrets;")).toEqual(["const vault = tcw.secrets;"]);
+    expect(secretsAccessOffenders("const { secrets } = tcw;")).toEqual(["const { secrets } = tcw;"]);
+    expect(secretsAccessOffenders("await deps.secrets.isUnlocked();")).toEqual([]);
+    expect(secretsAccessOffenders("const { tcw, secrets } = options;")).toEqual([]);
+    expect(secretsAccessOffenders("// tcw.secrets.get is not called here")).toEqual([]);
+  });
+
+  test("no file outside connectorSecrets.ts reaches the TinyCloud secrets service", () => {
     const srcRoot = join(import.meta.dir, "..", "..");
     const offenders: string[] = [];
     for (const rel of readdirSync(srcRoot, { recursive: true }) as string[]) {
       if (!/\.(ts|tsx)$/.test(rel) || /\.test\.(ts|tsx)$/.test(rel)) continue;
       if (rel.endsWith(join("lib", "connectors", "connectorSecrets.ts"))) continue;
-      if (/\.secrets\.get\(/.test(readFileSync(join(srcRoot, rel), "utf8"))) offenders.push(rel);
+      for (const hit of secretsAccessOffenders(readFileSync(join(srcRoot, rel), "utf8"))) offenders.push(`${rel}: ${hit}`);
     }
     expect(offenders).toEqual([]);
   });
