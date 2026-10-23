@@ -205,7 +205,8 @@ image pinned in `PHALA_OS_IMAGE` / `PHALA_OS_IMAGE_HASH` (`dstack-0.5.12`), or o
 a dev image whose hash is listed in `.github/scripts/phala-dev-os-allowlist.txt`
 (today only `dstack-dev-0.5.12`) and that passes a fresh check in the same job:
 `download.dstack.org` serves `mr_<hash>.tar.gz`, and `sha256sum sha256sum.txt` of
-the extracted archive equals `<hash>`. An unknown dev hash, a missing field, a
+the extracted archive equals `<hash>`, and every file it lists matches
+(`sha256sum -c`). An unknown dev hash, a missing field, a
 failed fetch or a hash mismatch fails closed. The allowlist is changed only by a
 reviewed PR. The logic is `.github/scripts/phala-os-guard.sh`, tested by
 `.github/scripts/test-phala-os-guard.sh` (which the deploy runs first). The check
