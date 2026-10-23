@@ -383,16 +383,22 @@ throws on such a client. After a reload, the first explicit reveal shows the SDK
 then the OpenKey signature. A later explicit reveal within the hour shows neither.
 
 `readConnectorKey` is the only read path. A lint test fails if any source file outside
-`connectorSecrets.ts` accesses `.secrets` directly, unless the receiver is an injected dependency
-bag named `deps`, `opts`, or `options`. The check is line-based and keyed on receiver name, not a
-full AST. A second guard fails if any `readConnectorKey` call site omits the
-`interactive` flag. It checks that the flag is present, not its value, so each caller's value is
-reviewed where it is written. KV reads come from the sign-in session's manifest, which grants
+`connectorSecrets.ts` accesses `.secrets` directly. The only exemption is an injected dependency
+bag, and it is allowlisted per file by path and receiver name, so the same name elsewhere is still
+flagged. The check is line-based, not a full AST. A second guard checks the `interactive` value at
+each `readConnectorKey` call site: a literal `true` must be a user-press caller, a literal `false`
+must be a background caller, and a non-literal value must be a listed pass-through. Each caller's
+value is therefore reviewed where it is written. KV reads come from the sign-in session's manifest,
+which grants
 `tinycloud.kv` `get` on the vault paths. The step-up never adds KV entries; a regression test
 enforces this.
 
 Sessions created before this change may still hold the older decrypt grant. This change
 does not revoke it.
+
+Sessions created before this change are asked to sign in once more by the revision gate
+(`lib/manifestRevision.ts`). Native sessions are unchanged. `EXO_MANIFEST_REVISION` MUST be
+bumped whenever sign-in grants change.
 
 **SDK pin.** The root `overrides` pin the 3.5.0 SDK family (`@tinycloud/sdk-core`,
 `@tinycloud/sdk-services`, `@tinycloud/node-sdk`, `@tinycloud/web-sdk`). The frontend declares
