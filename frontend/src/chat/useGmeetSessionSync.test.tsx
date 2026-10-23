@@ -119,6 +119,7 @@ function syncOk(patch: Partial<GmeetSyncSummary> = {}) {
  */
 function vault(options: { unlocked: boolean; token?: string | null; held?: boolean }) {
   let getCalls = 0;
+  let prompts = 0;
   let held = options.held !== false;
   const tcw = {
     // A held decrypt grant (the default) lets reads run without a prompt. `held:
@@ -127,6 +128,7 @@ function vault(options: { unlocked: boolean; token?: string | null; held?: boole
     hasPermissions: () => held,
     requestPermissions: async () => {
       held = true;
+      prompts++;
       return { approved: true };
     },
     secrets: {
@@ -140,7 +142,7 @@ function vault(options: { unlocked: boolean; token?: string | null; held?: boole
       },
     },
   } as unknown as TinyCloudWeb;
-  return { tcw, getCalls: () => getCalls };
+  return { tcw, getCalls: () => getCalls, prompts: () => prompts };
 }
 
 interface Harness {
@@ -150,6 +152,7 @@ interface Harness {
   connectionReads: () => number;
   mints: () => number;
   syncs: () => GmeetSyncOptions[];
+  prompts: () => number;
 }
 
 /** The connected, unlocked, available happy path — every seam counted. */
@@ -202,6 +205,7 @@ function harness(
     },
     tcw: v.tcw,
     secretReads: v.getCalls,
+    prompts: v.prompts,
     connectionReads: () => connectionReads,
     mints: () => mints,
     syncs: () => syncs,
@@ -302,6 +306,7 @@ describe("locked vault", () => {
     expect(outcome).toBe("vault-locked");
     expect(h.secretReads()).toBe(0);
     expect(h.mints()).toBe(0);
+    expect(h.prompts()).toBe(0);
     expect(h.syncs()).toHaveLength(0);
     expect(hasGmeetSessionSyncRun()).toBe(false);
   });
@@ -310,6 +315,7 @@ describe("locked vault", () => {
     const ungranted = harness({ unlocked: true, held: false });
     expect(await maybeStartGmeetSessionSync(ungranted.options)).toBe("vault-locked");
     expect(ungranted.secretReads()).toBe(0);
+    expect(ungranted.prompts()).toBe(0);
     expect(ungranted.syncs()).toHaveLength(0);
     expect(hasGmeetSessionSyncRun()).toBe(false);
 
