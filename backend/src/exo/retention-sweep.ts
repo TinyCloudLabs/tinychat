@@ -14,7 +14,7 @@ const MAX_MIRROR_RESPONSE_BYTES = 16 * 1024;
 
 export interface ExoRetentionSweepDeps {
   kv: Pick<ExoBackendKv, "get" | "list" | "delete">;
-  ports: Pick<ExoMailboxPorts, "grants" | "requests"> & { jobs: Pick<ExoJobStore, "remove"> };
+  ports: Pick<ExoMailboxPorts, "grants" | "ledger" | "requests"> & { jobs: Pick<ExoJobStore, "remove"> };
   now?: () => number;
   retentionMs?: number;
 }

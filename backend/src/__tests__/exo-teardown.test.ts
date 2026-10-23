@@ -79,6 +79,17 @@ describe("clearExoOwnerState", () => {
     expect([...entries]).toEqual([otherLock]);
   });
 
+  test("removes this owner's held job records and keeps other owners' held records", async () => {
+    const held = `${EXO_NAMESPACE}/held/${OWNER}/job-1`;
+    const otherHeld = `${EXO_NAMESPACE}/held/${OTHER}/job-1`;
+    const { kv, entries } = fakeKv([held, otherHeld]);
+    const { grant } = fakeGrant([], []);
+
+    await clearExoOwnerState(teardownDeps(kv, grant), OWNER);
+
+    expect([...entries]).toEqual([otherHeld]);
+  });
+
   test("normalizes a checksum-cased owner to the lowercased key layout", async () => {
     const ledger = ledgerKey(MIXED_OWNER.toLowerCase(), "sync-google");
     const { kv, entries } = fakeKv([ledger]);

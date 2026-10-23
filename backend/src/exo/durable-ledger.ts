@@ -16,11 +16,13 @@ import {
   type SourceLockStep,
 } from "./ledger-model.js";
 import { EXO_NAMESPACE, type ConnectorSource, type ExoCapability, type ExoLedger } from "./mailbox.js";
+import { extractKeys } from "../services/connector-drain.js";
 
 /** Backend-space KV. Writes are conditional. Callers route writes through the shared backend storage lane. */
 export interface ExoLedgerKv {
   get(key: string, options: ExoKvGetOptions): Promise<unknown>;
   put(key: string, value: unknown, options: ExoKvPutOptions): Promise<unknown>;
+  list(prefix: string): Promise<unknown>;
 }
 
 const MAX_RECORD_RESPONSE_BYTES = 16 * 1024;
@@ -33,6 +35,15 @@ export function ledgerKey(owner: string, capability: ExoCapability): string {
 
 function sourceLockKey(owner: string, source: ConnectorSource): string {
   return `${EXO_NAMESPACE}/source-lock/${owner}/${source}`;
+}
+
+function heldKey(owner: string, jobId: string): string {
+  return `${EXO_NAMESPACE}/held/${owner}/${jobId}`;
+}
+
+/** The held job record, or null once released. The mailbox validates the record before use. */
+function heldValue(raw: unknown): unknown {
+  return typeof raw === "object" && raw !== null && "held" in raw ? raw.held : undefined;
 }
 
 async function readRecord<V>(kv: ExoLedgerKv, key: string, parse: (raw: unknown) => V): Promise<{ value: V; etag: string } | undefined> {
@@ -133,6 +144,23 @@ export function createDurableExoLedger(kv: ExoLedgerKv): ExoLedger {
         const cleared = clearEntry(entry, jobId);
         return { result: cleared.released, next: cleared.next };
       });
+    },
+    async holdJob(owner, jobId, record) {
+      await mutate(kv, heldKey(owner, jobId), heldValue, () => ({ result: undefined, next: { held: record } }));
+    },
+    async heldJob(owner, jobId) {
+      return (await readRecord(kv, heldKey(owner, jobId), heldValue))?.value;
+    },
+    async releaseJob(owner, jobId) {
+      await mutate(kv, heldKey(owner, jobId), heldValue, (current) => ({
+        result: undefined,
+        next: current === undefined || current === null ? undefined : { held: null },
+      }));
+    },
+    async heldJobIds(owner) {
+      const prefix = `${EXO_NAMESPACE}/held/${owner}/`;
+      const keys = extractKeys(assertKvResult(await kv.list(prefix)));
+      return keys.filter((key) => key.startsWith(prefix)).map((key) => key.slice(prefix.length));
     },
   };
 }

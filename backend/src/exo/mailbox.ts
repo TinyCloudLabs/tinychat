@@ -137,6 +137,14 @@ export interface ExoLedger {
   attach(owner: string, capability: ExoCapability, jobId: string): Promise<void>;
   /** Clears the active run only when it is `jobId`. Returns the wakes attached to it. */
   clearActive(owner: string, capability: ExoCapability, jobId: string): Promise<string[]>;
+  /** Holds a job record whose store write failed, so a restart still sees the outcome. */
+  holdJob(owner: string, jobId: string, record: ExoJobRecord): Promise<void>;
+  /** The record held for a job, or undefined. */
+  heldJob(owner: string, jobId: string): Promise<unknown>;
+  /** Clears the held record for a job once its store write succeeds. */
+  releaseJob(owner: string, jobId: string): Promise<void>;
+  /** Job ids with a held record for the owner. */
+  heldJobIds(owner: string): Promise<string[]>;
 }
 
 export interface ExoMailboxPorts {
@@ -264,8 +272,8 @@ function normalizeUpdate(update: ExecutorUpdate): ExecutorUpdate {
 }
 
 /**
- * Records whose store write failed, held in process so replays still see the outcome. A later successful
- * write retires the entry. Not durable: after a restart the stored record stands and the replay TTL settles it.
+ * Records whose store write failed and whose ledger hold failed too. Process-only: lost on restart. Read like a ledger
+ * hold and retired by a later successful write.
  */
 const heldByStore = new WeakMap<ExoJobStore, Map<string, ExoJobRecord>>();
 
@@ -278,25 +286,73 @@ function heldRecords(jobs: ExoJobStore): Map<string, ExoJobRecord> {
   return held;
 }
 
-/** Reads a job, preferring a record held after a failed write. */
+/** The held copy for a job: the process copy when the ledger refused the hold, else the ledger copy. */
+async function heldJobOf(ports: ExoMailboxPorts, owner: string, jobId: string): Promise<ExoJobRecord | undefined> {
+  return parseJobRecord(heldRecords(ports.jobs).get(`${owner}|${jobId}`) ?? (await ports.ledger.heldJob(owner, jobId)));
+}
+
+/** The held copy when it is at least as new as the stored copy. A stale held copy never overrides a newer stored one. */
+function newerRecord(held: ExoJobRecord | undefined, stored: ExoJobRecord | undefined): ExoJobRecord | undefined {
+  if (!held) return stored;
+  if (!stored) return held;
+  return Date.parse(held.updatedAt) >= Date.parse(stored.updatedAt) ? held : stored;
+}
+
+/** Reads a job. A held copy wins when it is at least as new as the stored one. */
 async function readJob(ports: ExoMailboxPorts, owner: string, jobId: string): Promise<unknown> {
-  return heldRecords(ports.jobs).get(`${owner}|${jobId}`) ?? (await ports.jobs.get(owner, jobId));
+  const stored = await ports.jobs.get(owner, jobId);
+  return newerRecord(await heldJobOf(ports, owner, jobId), parseJobRecord(stored)) ?? stored;
 }
 
 /**
- * Writes a job. A failed write does not throw: the record is held in process and the failure is logged without
- * its payload. A successful write retires any held copy.
+ * Writes a held copy that is newer than the stored copy back to the store. Replays call this first, so a terminal
+ * state held before a restart reaches the store. A copy the store still refuses stays held.
+ */
+async function repairJob(ports: ExoMailboxPorts, owner: string, jobId: string): Promise<void> {
+  const held = await heldJobOf(ports, owner, jobId);
+  if (!held) return;
+  const stored = parseJobRecord(await ports.jobs.get(owner, jobId));
+  if (newerRecord(held, stored) === held) await writeJob(ports, owner, jobId, held);
+}
+
+/**
+ * Writes back every held copy for an owner, not only the replayed job. A restarted process does not know which jobs
+ * were held, so any verified wake for the owner repairs all of them.
+ */
+async function repairHeldJobs(ports: ExoMailboxPorts, owner: string): Promise<void> {
+  const prefix = `${owner}|`;
+  const ids = new Set(await ports.ledger.heldJobIds(owner));
+  for (const key of heldRecords(ports.jobs).keys()) {
+    if (key.startsWith(prefix)) ids.add(key.slice(prefix.length));
+  }
+  for (const jobId of ids) await repairJob(ports, owner, jobId);
+}
+
+/**
+ * Writes a job. A failed store write is held in the ledger, so a restart still sees the outcome. If the hold also
+ * fails, the record is kept in process. Neither path throws; failures are logged without the payload. A successful
+ * store write retires any held copy.
  */
 async function writeJob(ports: ExoMailboxPorts, owner: string, jobId: string, record: ExoJobRecord): Promise<void> {
   const held = heldRecords(ports.jobs);
   const key = `${owner}|${jobId}`;
   try {
     await ports.jobs.put(owner, jobId, record);
-    held.delete(key);
   } catch {
-    held.set(key, record);
-    console.error("[exo] job write failed; record held in process");
+    console.error("[exo] job write failed; record held");
+    try {
+      await ports.ledger.holdJob(owner, jobId, record);
+      held.delete(key);
+    } catch {
+      console.error("[exo] held record write failed; record kept in process");
+      held.set(key, record);
+    }
+    return;
   }
+  held.delete(key);
+  await ports.ledger.releaseJob(owner, jobId).catch(() => {
+    console.error("[exo] held record release failed; a stale copy is shadowed by newer stored records");
+  });
 }
 
 /** Moves a non-terminal job to the update's state and code. Terminal records are never overwritten. */
@@ -415,7 +471,9 @@ async function runWake(ports: ExoMailboxPorts, wake: VerifiedWake, budget: Fixed
   const now = ports.now();
   const timestamp = new Date(now).toISOString();
 
-  // Replay: the job id is the request id. A replay changes nothing except settling a stale pending job.
+  // Replay: the job id is the request id. Any verified wake first writes back the owner's held copies, so a terminal
+  // state held before a restart reaches the store. A replay then changes nothing except settling a stale pending job.
+  await repairHeldJobs(ports, owner);
   const existingRaw = await readJob(ports, owner, requestId);
   if (existingRaw !== undefined) {
     const existing = parseJobRecord(existingRaw);
@@ -535,13 +593,15 @@ async function runWake(ports: ExoMailboxPorts, wake: VerifiedWake, budget: Fixed
  * with no job, and a replay would start the run again.
  */
 export async function removeExpiredJob(
-  ports: Pick<ExoMailboxPorts, "requests"> & { jobs: Pick<ExoJobStore, "remove"> },
+  ports: Pick<ExoMailboxPorts, "requests" | "ledger"> & { jobs: Pick<ExoJobStore, "remove"> },
   owner: string,
   jobId: string,
   capability: ExoCapability,
 ): Promise<void> {
   await ports.requests.remove(owner, requestPath(capability, jobId));
   await ports.jobs.remove(owner, jobId);
+  // A held copy left behind has no request to replay, so a failed release here is harmless.
+  await ports.ledger.releaseJob(owner, jobId).catch((): undefined => undefined);
 }
 
 /**
@@ -549,7 +609,7 @@ export async function removeExpiredJob(
  * Records that do not parse are kept. The scheduler that calls this is S4's.
  */
 export async function sweepExpiredJobs(
-  ports: Pick<ExoMailboxPorts, "requests"> & { jobs: Pick<ExoJobStore, "list" | "remove"> },
+  ports: Pick<ExoMailboxPorts, "requests" | "ledger"> & { jobs: Pick<ExoJobStore, "list" | "remove"> },
   owner: string,
   now: number,
   retentionMs: number = EXO_JOB_RETENTION_MS,
@@ -571,6 +631,7 @@ export async function sweepExpiredJobs(
 export function createMemoryExoLedger(): ExoLedger {
   const entries = new Map<string, ExoLedgerEntry>();
   const locks = new Map<string, SourceLock>();
+  const held = new Map<string, unknown>();
   const keyOf = (owner: string, capability: ExoCapability) => `${owner}|${capability}`;
   const lockKeyOf = (owner: string, source: ConnectorSource) => `${owner}|source|${source}`;
   const freeSourceLocks = (owner: string, sources: readonly ConnectorSource[], jobId: string) => {
@@ -612,6 +673,19 @@ export function createMemoryExoLedger(): ExoLedger {
       const cleared = clearEntry(entries.get(key), jobId);
       if (cleared.next) entries.set(key, cleared.next);
       return cleared.released;
+    },
+    async holdJob(owner, jobId, record) {
+      held.set(`${owner}|${jobId}`, record);
+    },
+    async heldJob(owner, jobId) {
+      return held.get(`${owner}|${jobId}`);
+    },
+    async releaseJob(owner, jobId) {
+      held.delete(`${owner}|${jobId}`);
+    },
+    async heldJobIds(owner) {
+      const prefix = `${owner}|`;
+      return [...held.keys()].filter((key) => key.startsWith(prefix)).map((key) => key.slice(prefix.length));
     },
   };
 }

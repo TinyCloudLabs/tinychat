@@ -40,6 +40,8 @@ const PRECONDITION = {
 interface OwnerSpace extends ExoKvAccess {
   entries: Map<string, unknown>;
   reads: string[];
+  /** Every job-record write fails while this is true. */
+  failJobWrites: boolean;
 }
 
 /** One owner's KV space. Values are stored as given; `ifNoneMatch` is create-only. */
@@ -48,6 +50,7 @@ function ownerSpace(): OwnerSpace {
   const space: OwnerSpace = {
     entries,
     reads: [],
+    failJobWrites: false,
     async get(key) {
       space.reads.push(key);
       return { ok: true, data: { data: entries.get(key) } };
@@ -56,6 +59,9 @@ function ownerSpace(): OwnerSpace {
       return { ok: true, data: { keys: [...entries.keys()].filter((key) => key.startsWith(prefix)) } };
     },
     async put(key, value, options) {
+      if (space.failJobWrites && key.startsWith(EXO_JOBS_PREFIX)) {
+        return { ok: false, error: { code: "KV_UNAVAILABLE", service: "kv", message: "injected job write failure" } };
+      }
       if (options?.ifNoneMatch === "*" && entries.has(key)) return PRECONDITION;
       entries.set(key, value);
       return { ok: true };
@@ -378,5 +384,36 @@ describe("exo flag-on end to end (real stores, real router, recording executor)"
       expect(world.runs.length).toBe(2);
       expect(world.runs[1]!.job.jobId).toBe(R3);
     });
+  });
+
+  test("a terminal state whose owner write failed survives a restart and is written back on the next wake", async () => {
+    const world = newWorld([OWNER_A]);
+    world.configs.set(OWNER_A, { source: "google-meet" });
+    seedRequest(world, OWNER_A, "sync-google", R1);
+    seedRequest(world, OWNER_A, "sync-google", R2);
+
+    const before = await buildStack(world);
+    await withServer(before, async (base) => {
+      await post(base, OWNER_A, R1);
+      await settle(before);
+    });
+    expect(world.runs.length).toBe(1);
+
+    // The terminal write fails while the owner store rejects job writes, then the process restarts.
+    world.spaces.get(OWNER_A)!.failJobWrites = true;
+    await world.runs[0]!.report({ state: "done", code: "done" });
+    expect(ownerJob(world, OWNER_A, R1)).toMatchObject({ state: "pending" });
+    world.spaces.get(OWNER_A)!.failJobWrites = false;
+
+    world.clock.now = NOW + MINUTE;
+    const after = await buildStack(world);
+    await withServer(after, async (base) => {
+      // Only a verified wake repairs held records. R2 is refused by the cooldown, but it still repairs R1's held
+      // terminal state before the gate runs. R1 is not posted again: its request row was consumed when it started.
+      await post(base, OWNER_A, R2);
+      await settle(after);
+    });
+    expect(world.runs.length).toBe(1);
+    expect(ownerJob(world, OWNER_A, R1)).toMatchObject({ state: "done", code: "done" });
   });
 });

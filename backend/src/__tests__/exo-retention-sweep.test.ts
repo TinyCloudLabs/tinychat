@@ -1,6 +1,6 @@
 import { describe, expect, spyOn, test, vi } from "bun:test";
 import { runExoRetentionSweep, startExoRetentionSweepTimer } from "../exo/retention-sweep.js";
-import { EXO_NAMESPACE, JOB_MESSAGE, type ExoJobRecord } from "../exo/mailbox.js";
+import { EXO_NAMESPACE, JOB_MESSAGE, createMemoryExoLedger, type ExoJobRecord } from "../exo/mailbox.js";
 import { EXO_MIRROR_JOBS_PREFIX, mirrorJobKey } from "../exo/stores.js";
 
 const OWNER = `0x${"a".repeat(40)}`;
@@ -67,6 +67,7 @@ function fakePorts(options: { active?: string[]; removeFails?: string[]; request
     order,
     ports: {
       grants: { isActive: async (owner: string) => active.has(owner) },
+      ledger: createMemoryExoLedger(),
       requests: {
         get: async () => ({ ok: false, error: { code: "KV_NOT_FOUND", service: "kv", message: "not found" } }),
         remove: async (owner: string, path: string) => {
