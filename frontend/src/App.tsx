@@ -583,8 +583,12 @@ export function App() {
                   host: OPENKEY_HOST,
                   passkeysSupported: openkeyPasskeysSupported(),
                 });
-                openkeyRef.current = openkey;
-                return { address: walletAddress, provider: web3Provider };
+                return { address: walletAddress, provider: web3Provider, openkey };
+              },
+              // Runs only after the account check passes, so a mismatched wallet never
+              // replaces the client used for later OpenKey calls.
+              onOpened: (opened) => {
+                openkeyRef.current = opened.openkey;
               },
             }),
             ...(LOCAL_VALIDATION ? {} : await replicationConfigPatch()),

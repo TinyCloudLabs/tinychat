@@ -106,6 +106,32 @@ describe("createLazyWalletProvider", () => {
     expect(fake.requests).toEqual([]);
   });
 
+  test("onOpened runs only after the account check passes", async () => {
+    const seen: string[] = [];
+    const mismatched = makeWallet("0x0000000000000000000000000000000000000099");
+    const bad = createLazyWalletProvider({
+      address: STORED,
+      chainId: CHAIN_ID,
+      openWallet: async () => mismatched.wallet,
+      onOpened: (opened) => seen.push(opened.address),
+    });
+    await expect(bad.request({ method: "personal_sign", params: [] })).rejects.toThrow(
+      WALLET_ACCOUNT_MISMATCH_MESSAGE,
+    );
+    expect(seen).toEqual([]);
+
+    const matched = makeWallet(STORED);
+    const good = createLazyWalletProvider({
+      address: STORED,
+      chainId: CHAIN_ID,
+      openWallet: async () => matched.wallet,
+      onOpened: (opened) => seen.push(opened.address),
+    });
+    await good.request({ method: "personal_sign", params: [] });
+    await good.request({ method: "personal_sign", params: [] });
+    expect(seen).toEqual([STORED]);
+  });
+
   test("a failed open is not cached, so the next request retries it", async () => {
     const fake = makeWallet(STORED);
     let attempts = 0;

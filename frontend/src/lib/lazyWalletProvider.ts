@@ -24,13 +24,18 @@ export type LazyWallet = {
   provider: LazyWalletProvider;
 };
 
-export type LazyWalletProviderOptions = {
+export type LazyWalletProviderOptions<W extends LazyWallet = LazyWallet> = {
   /** Address of the restored session. Account requests answer exactly this value. */
   address: string;
   /** Chain the session is on. `eth_chainId` answers this value without opening the wallet. */
   chainId: number;
   /** Opens the wallet. Called again only after a failed open. */
-  openWallet: () => Promise<LazyWallet>;
+  openWallet: () => Promise<W>;
+  /**
+   * Runs once per successful open, after the account check passes and before the
+   * wallet serves its first request. Not called for a wallet that fails the check.
+   */
+  onOpened?: (wallet: W) => void;
 };
 
 /** EIP-1193 error code for an unsupported method. */
@@ -57,7 +62,9 @@ const OPENING_METHODS: Record<string, true> = {
   personal_sign: true,
 };
 
-export function createLazyWalletProvider(options: LazyWalletProviderOptions): LazyWalletProvider {
+export function createLazyWalletProvider<W extends LazyWallet>(
+  options: LazyWalletProviderOptions<W>,
+): LazyWalletProvider {
   const { address, chainId } = options;
   let wallet: LazyWalletProvider | null = null;
   let opening: Promise<LazyWalletProvider> | null = null;
@@ -71,6 +78,7 @@ export function createLazyWalletProvider(options: LazyWalletProviderOptions): La
           if (opened.address.toLowerCase() !== address.toLowerCase()) {
             throw new Error(WALLET_ACCOUNT_MISMATCH_MESSAGE);
           }
+          options.onOpened?.(opened);
           for (const [event, set] of listeners) {
             for (const listener of set) opened.provider.on(event, listener);
           }
