@@ -575,6 +575,8 @@ export function App() {
             // answer with the stored address. See lib/lazyWalletProvider.ts.
             provider: createLazyWalletProvider({
               address: storedAddress,
+              // The app signs in on chain 1 (the `did:pkh:eip155:1` DID); keep this in step.
+              chainId: 1,
               openWallet: async () => {
                 const { address: walletAddress, openkey, web3Provider } = await connectWallet({
                   appName: APP_NAME,

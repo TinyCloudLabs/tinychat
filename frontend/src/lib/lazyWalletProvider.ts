@@ -1,8 +1,10 @@
 /**
- * EIP-1193 provider for a restored session. Account requests answer silently
- * with the stored address, so restoring a session never opens the wallet. The
- * wallet opens on the first request that needs it (signing, chain id), once per
- * successful open. A failed open is not cached, so the next request retries it.
+ * EIP-1193 provider for a restored session. Only the methods the wallet signer
+ * uses are served: account requests answer silently with the stored address,
+ * `eth_chainId` answers from the configured chain, and `personal_sign` opens the
+ * wallet on first use (once per successful open; a failed open is not cached, so
+ * the next request retries it). Every other method is refused with EIP-1193
+ * error 4200 and never reaches the wallet.
  */
 
 export type Listener = (...args: unknown[]) => void;
@@ -25,9 +27,23 @@ export type LazyWallet = {
 export type LazyWalletProviderOptions = {
   /** Address of the restored session. Account requests answer exactly this value. */
   address: string;
+  /** Chain the session is on. `eth_chainId` answers this value without opening the wallet. */
+  chainId: number;
   /** Opens the wallet. Called again only after a failed open. */
   openWallet: () => Promise<LazyWallet>;
 };
+
+/** EIP-1193 error code for an unsupported method. */
+export const UNSUPPORTED_METHOD_CODE = 4200;
+
+export class UnsupportedMethodError extends Error {
+  readonly code = UNSUPPORTED_METHOD_CODE;
+
+  constructor(method: string) {
+    super(`Unsupported wallet method: ${method}`);
+    this.name = "UnsupportedMethodError";
+  }
+}
 
 /** Neutral message when the opened wallet is a different account. */
 export const WALLET_ACCOUNT_MISMATCH_MESSAGE = "Wallet does not match the signed-in account";
@@ -37,8 +53,12 @@ const SILENT_ACCOUNT_METHODS: Record<string, true> = {
   eth_requestAccounts: true,
 };
 
+const OPENING_METHODS: Record<string, true> = {
+  personal_sign: true,
+};
+
 export function createLazyWalletProvider(options: LazyWalletProviderOptions): LazyWalletProvider {
-  const { address } = options;
+  const { address, chainId } = options;
   let wallet: LazyWalletProvider | null = null;
   let opening: Promise<LazyWalletProvider> | null = null;
   const listeners = new Map<string, Set<Listener>>();
@@ -67,7 +87,9 @@ export function createLazyWalletProvider(options: LazyWalletProviderOptions): La
 
   return {
     async request(args: LazyWalletRequest): Promise<unknown> {
+      if (args.method === "eth_chainId") return `0x${chainId.toString(16)}`;
       if (SILENT_ACCOUNT_METHODS[args.method] === true) return [address];
+      if (OPENING_METHODS[args.method] !== true) throw new UnsupportedMethodError(args.method);
       const target = await ensureOpen();
       return target.request(args);
     },
