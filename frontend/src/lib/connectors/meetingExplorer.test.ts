@@ -5,7 +5,7 @@ import { describe, expect, it } from "bun:test";
 import { CONNECTOR_SCHEMA } from "@tinyboilerplate/core";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { PipelineTrackSummary } from "@/capture/pipeline/PipelineTrackSummary";
-import { buildNotePipelineInput, type NotePipelineFacts } from "../voiceNotes/useNotePipeline";
+import { buildNotePipelineInput, rowHasCommittedAudio, type NotePipelineFacts } from "../voiceNotes/useNotePipeline";
 import { spaceLaneSnapshot } from "../spaceWriteLane";
 
 import { CONNECTORS_SQL_DB_NAME, transcriptKvKey } from "./connectorStore.js";
@@ -500,6 +500,17 @@ function seedLegacyWinnerSpace(sqlite: Database, seed: number): void {
   for (let n = 0; n < 300; n += 3) commit.run(`note-${n}`, pick(["transcribed", "no_speech"]));
 }
 
+// The text signal is the only projection addition since the baseline; strip it so the order and every other field are still compared exactly.
+function withoutTextSignal(rows: unknown[][]): unknown[][] {
+  return rows.map((row) => {
+    const metadata = row[6];
+    if (typeof metadata !== "string" || !metadata.includes("\"has_transcript_text\"")) return row;
+    const rest = JSON.parse(metadata) as Record<string, unknown>;
+    delete rest.has_transcript_text;
+    return row.map((cell, index) => (index === 6 ? JSON.stringify(rest) : cell));
+  });
+}
+
 describe("listMeetingsRead legacy-winner rewrite (TC-1274)", () => {
   // The baseline runs on the schema spaces have today. One variant adds a (source, source_id)
   // index afterwards, as a later provisioning step might: the Library order must not change.
@@ -538,12 +549,46 @@ describe("listMeetingsRead legacy-winner rewrite (TC-1274)", () => {
         expect(baselines[1]!.length).toBeGreaterThan(0);
         for (const [index, sources] of lists.entries()) {
           expect((await listMeetingsRead(tcw, sources)).status).toBe("ok");
-          expect(listed).toEqual(baselines[index]!);
+          expect(withoutTextSignal(listed!)).toEqual(baselines[index]!);
         }
         sqlite.close();
       }
     });
   }
+});
+
+describe("listMeetingsRead pasted and recorded rows (TC-1815)", () => {
+  it("reads a pasted row as saved only when its mirrored transcript text is present, through the real listing SQL", async () => {
+    const { sqlite, tcw } = realListingSpace();
+    const insert = sqlite.query("INSERT INTO connector_meeting VALUES (?, ?, ?, ?, ?, ?, ?)");
+    const created = { source: "pasted", capture: "pasted", transcription_outcome: "pending" };
+    insert.run("pasted-mirrored", "exo-voice-note", "pasted-mirrored-note", "Pasted", "2026-10-12T00:00:00Z", 0,
+      JSON.stringify({ ...created, transcription_outcome: "transcribed", transcript_text: "Hello from the paste",
+        transcription_error_code: null, speaker_labels: false, transcribed_at: "2026-10-12T00:00:00.000Z",
+        transcription_engine: "pasted", transcript_provider: "pasted" }));
+    insert.run("pasted-unmirrored", "exo-voice-note", "pasted-unmirrored-note", "Pasted", "2026-10-11T00:00:00Z", 0,
+      JSON.stringify(created));
+    insert.run("pasted-empty", "exo-voice-note", "pasted-empty-note", "Pasted", "2026-10-10T00:00:00Z", 0,
+      JSON.stringify({ ...created, transcript_text: "" }));
+    insert.run("recorded-stored", "exo-voice-note", "recorded-stored-note", "Voice note", "2026-10-09T00:00:00Z", 30,
+      JSON.stringify({ transcription_outcome: "transcribed", audio_stored: 1, audio: { stored: true }, audio_kv_key: "voice/audio" }));
+    insert.run("recorded-unstored", "exo-voice-note", "recorded-unstored-note", "Voice note", "2026-10-08T00:00:00Z", 30,
+      JSON.stringify({ transcription_outcome: "transcribed", transcript_text: "Hello" }));
+    sqlite.query("INSERT INTO voice_note_transcript VALUES (?, ?)").run("pasted-mirrored-note", "transcribed");
+
+    const read = await listMeetingsRead(tcw, ["exo-voice-note"]);
+    expect(read.status).toBe("ok");
+    if (read.status !== "ok") return;
+    const savedBySource = new Map(read.meetings.map((meeting) => [meeting.sourceId, rowHasCommittedAudio(meeting.metadata ?? null)]));
+    expect(savedBySource.get("pasted-mirrored-note")).toBe(true);
+    expect(savedBySource.get("pasted-unmirrored-note")).toBe(false);
+    expect(savedBySource.get("pasted-empty-note")).toBe(false);
+    expect(savedBySource.get("recorded-stored-note")).toBe(true);
+    expect(savedBySource.get("recorded-unstored-note")).toBe(false);
+    expect(read.meetings.find((meeting) => meeting.sourceId === "pasted-mirrored-note")?.metadata)
+      .not.toHaveProperty("transcript_text");
+    sqlite.close();
+  });
 });
 
 describe("findMeetingId", () => {

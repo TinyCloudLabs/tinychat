@@ -956,8 +956,13 @@ function usePipelineStates(entries: readonly { id: string; source: NotePipelineS
   return { states, natives, nativeReady: nativeRead.ready, reread };
 }
 
+/** Whether a note's audio is in the space. A pasted row counts as saved once its transcript text is in the space; an empty one does not. */
 export function rowHasCommittedAudio(metadata: Record<string, unknown> | null | undefined): boolean {
   if (metadata === null || metadata === undefined) return false;
+  if (metadata.capture === "pasted") {
+    // The list projects has_transcript_text (1/0) and never the text; the detail reads the text itself.
+    return metadata.has_transcript_text === 1 || (typeof metadata.transcript_text === "string" && metadata.transcript_text.trim().length > 0);
+  }
   const audio = metadata.audio;
   return metadata.audio_stored === true || metadata.audio_stored === 1
     || (typeof audio === "object" && audio !== null && "stored" in audio && audio.stored === true)
