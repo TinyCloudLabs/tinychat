@@ -1104,6 +1104,17 @@ describe("TC-581 shared capture across tenants", () => {
     expect(await f.index.list(B)).toEqual([]);
   });
 
+  test("a stuck-joining owner still holds the call: B makes zero POSTs and keeps waiting as shared_capture_pending", async () => {
+    const f = await twoTenants();
+    await f.attach();
+    f.meeting().status = "needs_help";
+    f.afterWindow();
+    await f.worker().tick();
+    expect(f.posts.map(p => p.tenant)).toEqual([A]);
+    expect(await f.rowB()).toMatchObject({ phase: "pending", errorCode: "shared_capture_pending" });
+    expect(await f.index.list(B)).toEqual([]);
+  });
+
   test("A completes with B accepted: B's index gets A's id and provenance, disposition shared, marker written, rescan keeps it", async () => {
     const f = await twoTenants();
     await f.attach();

@@ -17,10 +17,12 @@ import { MemoryRouter } from "react-router-dom";
 
 import {
   TranscriberView,
+  activeMeetingForUrl,
   clearSendIntentKey,
   clearSendIntentsForOwner,
   describeFailure,
   getOrCreateSendIntent,
+  isActiveStatus,
   meetingTitle,
   normalizeMeetingUrl,
   statusLabel,
@@ -250,6 +252,30 @@ describe("TranscriberView", () => {
     expect(stuck).toContain('aria-label="End meeting and transcribe now"');
     expect(stuck).not.toContain(">Remove<");
     expect(stuck).not.toContain(">Transcript<");
+  });
+
+  test("an unrecognised status is labelled Working and stays active, so it can still be ended", () => {
+    const unknownStatus = "some_future_state" as string as TranscriberMeetingStatus;
+    const future = meeting({ status: unknownStatus });
+    expect(statusLabel(unknownStatus)).toBe("Working");
+    expect(isActiveStatus(unknownStatus)).toBe(true);
+    const html = render({ meetings: [future] });
+    expect(html).toContain("Working");
+    expect(html).toContain('aria-label="End meeting and transcribe now"');
+    expect(activeMeetingForUrl([future], normalizeMeetingUrl(future.meeting_url)!)).toBe(future);
+  });
+
+  test("only completed, failed and cancelled end a meeting", () => {
+    expect(["completed", "failed", "cancelled"].map(status => isActiveStatus(status))).toEqual([false, false, false]);
+    expect(["queued", "joining", "waiting_for_admission", "needs_help", "in_progress", "processing"]
+      .every(status => isActiveStatus(status))).toBe(true);
+  });
+
+  test("a stuck-joining meeting blocks a repeat send to its link like a joining one", () => {
+    for (const status of ["joining", "needs_help"] as const) {
+      const row = meeting({ status });
+      expect(activeMeetingForUrl([row], normalizeMeetingUrl(row.meeting_url)!)).toBe(row);
+    }
   });
 
   test("TC-581: a recording shared from another account says so and only removes it from this list", () => {

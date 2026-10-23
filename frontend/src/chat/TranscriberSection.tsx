@@ -32,14 +32,12 @@ import { useTranscriberSavedState } from "./useTranscriberLibrarySync";
 import { createCalendarAutojoinClient, calendarOutcomeLabel, type CalendarAutojoinOutcome } from "@/lib/connectors/calendarAutojoinApi";
 import { transcriberMeetingTitle } from "@/lib/transcriberSave";
 
-export const ACTIVE_STATUSES: ReadonlySet<TranscriberMeetingStatus> = new Set([
-  "queued",
-  "joining",
-  "waiting_for_admission",
-  "needs_help",
-  "in_progress",
-  "processing",
-]);
+/** Only these end a meeting. Any other status, including one this build does not know yet, is still moving. */
+const TERMINAL_STATUSES: ReadonlySet<string> = new Set(["completed", "failed", "cancelled"]);
+
+export function isActiveStatus(status: string): boolean {
+  return !TERMINAL_STATUSES.has(status);
+}
 
 /** How often the list is re-read while at least one meeting is still moving. */
 export const POLL_INTERVAL_MS = 5000;
@@ -186,7 +184,7 @@ export function SendNotetakerButton(props: { form: TranscriberViewProps["form"];
   );
 }
 
-export function statusLabel(status: TranscriberMeetingStatus): string {
+export function statusLabel(status: string): string {
   switch (status) {
     case "queued":
       return "Queued";
@@ -206,6 +204,8 @@ export function statusLabel(status: TranscriberMeetingStatus): string {
       return "Failed";
     case "cancelled":
       return "Cancelled";
+    default:
+      return "Working";
   }
 }
 
@@ -460,7 +460,7 @@ function MeetingRow(props: {
   onRemove: (id: string) => void;
 }) {
   const { meeting, busy, open } = props;
-  const active = ACTIVE_STATUSES.has(meeting.status);
+  const active = isActiveStatus(meeting.status);
   const stoppable = active && meeting.status !== "processing";
   const when = formatWhen(meeting.metadata?.scheduled_start ?? meeting.created_at);
   const shared = meeting.metadata?.shared === true;
@@ -751,7 +751,7 @@ export function meetingBotTimers(input: { active: boolean; anyActive: boolean; l
 
 /** The meetings that are still moving (the In progress rows). */
 export function activeMeetings(meetings: readonly TranscriberListRow[]): TranscriberMeeting[] {
-  return meetings.filter((m): m is TranscriberMeeting => !("unavailable" in m) && ACTIVE_STATUSES.has(m.status));
+  return meetings.filter((m): m is TranscriberMeeting => !("unavailable" in m) && isActiveStatus(m.status));
 }
 
 export function activeMeetingForUrl(meetings: readonly TranscriberListRow[], normalizedUrl: string): TranscriberMeeting | null {
@@ -760,7 +760,7 @@ export function activeMeetingForUrl(meetings: readonly TranscriberListRow[], nor
 
 function terminalMeetingForUrl(meetings: readonly TranscriberListRow[], normalizedUrl: string): TranscriberMeeting | null {
   return meetings.find((meeting): meeting is TranscriberMeeting => !("unavailable" in meeting)
-    && !ACTIVE_STATUSES.has(meeting.status) && normalizeMeetingUrl(meeting.meeting_url) === normalizedUrl) ?? null;
+    && !isActiveStatus(meeting.status) && normalizeMeetingUrl(meeting.meeting_url) === normalizedUrl) ?? null;
 }
 
 function terminalMeetingForIntent(
@@ -770,7 +770,7 @@ function terminalMeetingForIntent(
 ): TranscriberMeeting | null {
   return meetings.find((meeting): meeting is TranscriberMeeting => !(
     "unavailable" in meeting
-  ) && !ACTIVE_STATUSES.has(meeting.status)
+  ) && !isActiveStatus(meeting.status)
     && meeting.id !== intent.afterMeetingId
     && normalizeMeetingUrl(meeting.meeting_url) === normalizedUrl
     && intent.createdAt > 0
@@ -994,7 +994,7 @@ export function useMeetingBot({ backendUrl, sessionStore, client, calendar: cale
           setFormError(describeFailure(result));
           return;
         }
-        if (!ACTIVE_STATUSES.has(result.value.status)) clearIntent(normalized);
+        if (!isActiveStatus(result.value.status)) clearIntent(normalized);
         setUrl("");
         setMeetings((current) => [result.value, ...current.filter((m) => m.id !== result.value.id)]);
         setListStatus("ready");
