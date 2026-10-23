@@ -1,0 +1,30 @@
+diff --git a/dist/core.cjs b/dist/core.cjs
+index a4758b9..3851370 100644
+--- a/dist/core.cjs
++++ b/dist/core.cjs
+@@ -1399,8 +1399,8 @@ var NodeUserAuthorization = class {
+     this._chainId = chainId;
+     await this.resolveTinyCloudHostsForSignIn(address, chainId);
+     this.assertSignInCurrent(generation);
+-    const keyId = `session-${Date.now()}`;
+-    this.sessionManager.renameSessionKeyId(this.activeSessionKeyId, keyId);
++    const keyId = `session-${Date.now()}-${Math.random().toString(36).slice(2)}`;
++    this.sessionManager.createSessionKey(keyId);
+     this.activeSessionKeyId = keyId;
+     const jwkString = this.sessionManager.jwk(keyId);
+     if (!jwkString) {
+diff --git a/dist/core.js b/dist/core.js
+index ad32e4a..4587481 100644
+--- a/dist/core.js
++++ b/dist/core.js
+@@ -1331,8 +1331,8 @@ var NodeUserAuthorization = class {
+     this._chainId = chainId;
+     await this.resolveTinyCloudHostsForSignIn(address, chainId);
+     this.assertSignInCurrent(generation);
+-    const keyId = `session-${Date.now()}`;
+-    this.sessionManager.renameSessionKeyId(this.activeSessionKeyId, keyId);
++    const keyId = `session-${Date.now()}-${Math.random().toString(36).slice(2)}`;
++    this.sessionManager.createSessionKey(keyId);
+     this.activeSessionKeyId = keyId;
+     const jwkString = this.sessionManager.jwk(keyId);
+     if (!jwkString) {
