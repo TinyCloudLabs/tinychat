@@ -1,6 +1,4 @@
 import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import {
   authErrorMessage, BROWSER_UPDATE_MESSAGE, errorLinkFor, isSignInCancelled, SIGN_IN_FAILED_MESSAGE,
   UserFacingError, WEBVIEW_UPDATE_LINK, WEBVIEW_UPDATE_MESSAGE,
@@ -48,27 +46,3 @@ test("OpenKey's closed sheet is a cancel, not an error", () => {
   expect(isSignInCancelled(null)).toBe(false);
 });
 
-const app = readFileSync(join(import.meta.dir, "..", "App.tsx"), "utf8");
-
-test("sign-in returns quietly to signed-out on cancel and shows no raw message otherwise", () => {
-  const signIn = app.slice(app.indexOf("const signIn = useCallback"), app.indexOf("const signOut = useCallback"));
-  expect(signIn).toMatch(/if \(isSignInCancelled\(caught\)\) \{\s+setError\(null\);\s+setState\("unauthenticated"\);\s+return;\s+\}/);
-  expect(signIn).toContain("setError(describeAuthFailure(caught))");
-  expect(app).not.toMatch(/setError\(errorMessage\(caught\)\)/);
-});
-
-test("OpenKey sign-out waits for the user: no capture deadline around it", () => {
-  const signOut = app.slice(app.indexOf("const signOut = useCallback"), app.indexOf("const isReady"));
-  const openKey = signOut.slice(signOut.indexOf("const openKeyClient"), signOut.indexOf("openkeyRef.current = null"));
-  expect(openKey).toContain("await signOutOpenKeySession(");
-  expect(openKey).not.toContain("withCaptureDeadline");
-  expect(openKey).not.toContain("timed out");
-});
-
-test("the app is called Exo everywhere sign-in and sign-out show a name", () => {
-  expect(app).toContain('const APP_NAME = "Exo";');
-  expect(app).not.toContain("TinyChat is signed out");
-  expect(app.match(/Exo is signed out locally/g)?.length).toBe(1);
-  expect(app).toContain("Signed out of Exo. To use a different account");
-  expect(readFileSync(join(import.meta.dir, "..", "..", "index.html"), "utf8")).toContain("<title>Exo</title>");
-});

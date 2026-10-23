@@ -277,3 +277,138 @@ describe("signed transcript grant verifier", () => {
     expect(assertSuccess(await parseStoredGrant(a.address, a.envelope, options, deps)).spaceId).toBe(a.spaceId);
   });
 });
+
+describe("trusted transcript grant hosts", () => {
+  const now = Date.UTC(2025, 0, 1);
+  const productionOrigins = ["https://tee.node.tinycloud.xyz", "https://node.tinycloud.xyz"];
+  const customOrigins = [
+    "http://127.0.0.1:9137",
+    "http://localhost:9137",
+    "https://tinycloud.example:9443",
+    "https://private.node.tinycloud.xyz",
+    "http://node.tinycloud.xyz",
+    "https://node.tinycloud.xyz:8443",
+  ];
+
+  it.each(productionOrigins)("accepts both exact production origins when configured for %s", async (configuredHost) => {
+    const original = await makeSignedTranscriptGrant({ now });
+    for (const origin of productionOrigins) {
+      for (const host of [origin, `${origin}/`, `${origin}:443/`]) {
+        const grant = { ...withBundle(original, (value) => { value.host = host; }), configuredHost };
+        const verified = assertSuccess(await verify(grant, grant.address, now));
+        expect(verified.cid).toBe(original.cid);
+        expect(verified.ownerAddress).toBe(original.address.toLowerCase());
+        expect(verified.spaceId).toBe(original.spaceId);
+      }
+    }
+    const withoutHost = { ...withBundle(original, (value) => { delete value.host; }), configuredHost };
+    expect(assertSuccess(await verify(withoutHost, withoutHost.address, now)).cid).toBe(original.cid);
+  });
+
+  it.each([
+    "https://evil.example",
+    "https://other.node.tinycloud.xyz",
+    "https://node.tinycloud.xyz.evil.example",
+    "https://tee.node.tinycloud.xyz.evil.example",
+    "https://evilnode.tinycloud.xyz",
+    "https://node.tinycloud.xyz.",
+    "https://node.tinycloud.xyz@evil.example",
+    "https://evil.example@node.tinycloud.xyz",
+    "https://untrusted:untrusted@tee.node.tinycloud.xyz",
+    "http://node.tinycloud.xyz",
+    "http://tee.node.tinycloud.xyz",
+    "https://node.tinycloud.xyz:8443",
+    "https://tee.node.tinycloud.xyz:8443",
+    "https://node.tinycloud.xyz/delegations",
+    "https://tee.node.tinycloud.xyz/delegations",
+    "https://node.tinycloud.xyz?host=evil.example",
+    "https://tee.node.tinycloud.xyz?host=evil.example",
+    "https://node.tinycloud.xyz#evil.example",
+    "https://tee.node.tinycloud.xyz#evil.example",
+    "//node.tinycloud.xyz",
+    "not-a-url",
+  ])("rejects non-origin or untrusted production bundle host %s", async (host) => {
+    const original = await makeSignedTranscriptGrant({ now, host });
+    for (const configuredHost of productionOrigins) {
+      await expectCode({ ...original, configuredHost }, "untrusted_host", original.address, now);
+    }
+  });
+
+  it.each(customOrigins)("preserves explicit custom origin %s without enabling production aliases", async (configuredHost) => {
+    const original = await makeSignedTranscriptGrant({ now, host: configuredHost });
+    const grant = { ...original, configuredHost };
+    expect(assertSuccess(await verify(grant, grant.address, now)).cid).toBe(original.cid);
+    const rootSlash = { ...withBundle(grant, (value) => { value.host = `${configuredHost}/`; }) };
+    expect(assertSuccess(await verify(rootSlash, rootSlash.address, now)).cid).toBe(original.cid);
+    for (const host of [...productionOrigins, "https://unconfigured.example"]) {
+      await expectCode(withBundle(grant, (value) => { value.host = host; }), "untrusted_host", grant.address, now);
+    }
+    const withoutHost = withBundle(grant, (value) => { delete value.host; });
+    expect(assertSuccess(await verify(withoutHost, withoutHost.address, now)).cid).toBe(original.cid);
+  });
+
+  it("does not treat a configured production-looking hostname as a production alias", async () => {
+    const original = await makeSignedTranscriptGrant({ now, host: productionOrigins[1] });
+    for (const configuredHost of [
+      "https://other.node.tinycloud.xyz",
+      "https://node.tinycloud.xyz.evil.example",
+      "http://tee.node.tinycloud.xyz",
+      "https://tee.node.tinycloud.xyz:8443",
+    ]) {
+      await expectCode({ ...original, configuredHost }, "untrusted_host", original.address, now);
+    }
+  });
+
+  it.each(productionOrigins)("enforces stored-grant host policy with cold and warm caches for %s", async (host) => {
+    const grant = await makeSignedTranscriptGrant({ now, host });
+    const deps = { computeDelegationCid: grant.computeDelegationCid };
+    for (const configuredHost of productionOrigins) {
+      const options = { backendDid: grant.backendDid, configuredHost, now };
+      const cold = assertSuccess(await parseStoredGrant(grant.address, grant.envelope, options, deps));
+      const warm = assertSuccess(await parseStoredGrant(grant.address, grant.envelope, options, deps));
+      expect(cold.cid).toBe(grant.cid);
+      expect(warm.cid).toBe(grant.cid);
+      const changedHost = withBundle(grant, (value) => { value.host = "https://untrusted.example"; });
+      assertFailure(await parseStoredGrant(grant.address, changedHost.envelope, options, deps), "untrusted_host");
+    }
+    for (const configuredHost of customOrigins) {
+      assertFailure(await parseStoredGrant(grant.address, grant.envelope, {
+        backendDid: grant.backendDid, configuredHost, now,
+      }, deps), "untrusted_host");
+    }
+  });
+
+  it("does not reuse a custom-host cache entry under production configuration", async () => {
+    const grant = await makeSignedTranscriptGrant({ now });
+    const deps = { computeDelegationCid: grant.computeDelegationCid };
+    const options = { backendDid: grant.backendDid, configuredHost: grant.configuredHost, now };
+    expect(assertSuccess(await parseStoredGrant(grant.address, grant.envelope, options, deps)).cid).toBe(grant.cid);
+    expect(assertSuccess(await parseStoredGrant(grant.address, grant.envelope, options, deps)).cid).toBe(grant.cid);
+    for (const configuredHost of productionOrigins) {
+      assertFailure(await parseStoredGrant(grant.address, grant.envelope, { ...options, configuredHost }, deps), "untrusted_host");
+    }
+  });
+
+  it("still verifies signed grants when the bundle uses the alternate production origin", async () => {
+    const original = await makeSignedTranscriptGrant({ now, host: productionOrigins[1] });
+    const grant = { ...original, configuredHost: productionOrigins[0] };
+    const tampered = withBundle(grant, (value) => {
+      const header = value.delegationHeader;
+      if (!header || typeof header !== "object" || !("Authorization" in header) || typeof header.Authorization !== "string") throw new Error("Fixture has no authorization");
+      const parts = header.Authorization.replace(/^Bearer /, "").split(".");
+      parts[2] = `${parts[2][0] === "A" ? "B" : "A"}${parts[2].slice(1)}`;
+      header.Authorization = `Bearer ${parts.join(".")}`;
+      value.cid = grant.computeDelegationCid(header.Authorization);
+    });
+    await expectCode(tampered, "bad_signature", grant.address, now);
+    await expectCode(withBundle(grant, (value) => { value.cid = "wrong-cid"; }), "cid_mismatch", grant.address, now);
+    const other = await makeSignedTranscriptGrant({ now });
+    await expectCode({ ...grant, signature: other.signature }, "bad_session_signature", grant.address, now);
+    const wrongProof = await makeSignedTranscriptGrant({ now, host: productionOrigins[1], proof: [other.cid] });
+    await expectCode({ ...wrongProof, configuredHost: productionOrigins[0] }, "proof_mismatch", wrongProof.address, now);
+    const wrongAudience = await makeSignedTranscriptGrant({ now, host: productionOrigins[1], audience: "did:pkh:eip155:1:0x0000000000000000000000000000000000000001" });
+    await expectCode({ ...wrongAudience, configuredHost: productionOrigins[0] }, "wrong_delegatee", wrongAudience.address, now);
+    const overbroad = await makeSignedTranscriptGrant({ now, host: productionOrigins[1], att: withAtt(grant, (att) => { att[`${grant.spaceId}/sql/${SQL}`]["tinycloud.sql/admin"] = []; }) });
+    await expectCode({ ...overbroad, configuredHost: productionOrigins[0] }, "overbroad_delegation", overbroad.address, now);
+  });
+});

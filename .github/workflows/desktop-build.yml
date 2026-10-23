@@ -264,28 +264,13 @@ jobs:
           VITE_EXO_CHANNEL: ${{ steps.bundle.outputs.prerelease == 'true' && 'beta' || 'stable' }}
           IPC_SELFTEST: ${{ inputs.ipc-selftest }}
           SMOKE: ${{ inputs.smoke }}
+          VITE_EXO_IPC_SELFTEST: ${{ inputs.ipc-selftest && '1' || '' }}
         run: |
           features=()
           if [ "$IPC_SELFTEST" = true ]; then features+=(ipc-selftest); fi
           if [ "$SMOKE" = true ]; then features+=(recorder-failpoints); fi
           if [ "${#features[@]}" -gt 0 ]; then feature_args=(--features "$(IFS=,; echo "${features[*]}")"); fi
           bun run --cwd desktop tauri build --no-bundle --config "$TAURI_BUNDLE_CONFIG" "${feature_args[@]}"
-
-      - name: Exercise release webview permissions
-        if: inputs.ipc-selftest
-        timeout-minutes: 5
-        working-directory: desktop/src-tauri
-        run: |
-          log="$RUNNER_TEMP/exo-ipc-selftest.log"
-          CHAR_VAULT_BASE="$RUNNER_TEMP/st-vault" EXO_IPC_SELFTEST=1 target/release/exo-desktop 2>&1 | tee "$log"
-          if ! grep -Fqx '[EXO_IPC_SELFTEST] ALL PASSED' "$log" ||
-             grep -Eq '^\[EXO_IPC_SELFTEST\] (FAIL|TIMEOUT)' "$log"; then
-            echo "::error::IPC self-test did not report all probes passing"
-            exit 1
-          fi
-          if [ -d "$RUNNER_TEMP/st-vault/sessions" ]; then
-            test -z "$(find "$RUNNER_TEMP/st-vault/sessions" -mindepth 1 -print -quit)"
-          fi
 
       - name: Ensure shipped release excludes the IPC self-test
         if: ${{ !inputs.ipc-selftest }}
@@ -307,6 +292,25 @@ jobs:
         env:
           TAURI_BUNDLE_CONFIG: ${{ steps.bundle.outputs.config }}
         run: bun run --cwd desktop tauri bundle --config "$TAURI_BUNDLE_CONFIG"
+
+      - name: Exercise packaged Tauri webview and host policy
+        if: inputs.ipc-selftest
+        timeout-minutes: 5
+        working-directory: desktop/src-tauri
+        run: |
+          log="$RUNNER_TEMP/exo-ipc-selftest.log"
+          app="$PWD/target/release/bundle/macos/Exo.app"
+          executable=$(plutil -extract CFBundleExecutable raw "$app/Contents/Info.plist")
+          echo "Packaged smoke: $app/Contents/MacOS/$executable"
+          CHAR_VAULT_BASE="$RUNNER_TEMP/st-vault" EXO_IPC_SELFTEST=1 "$app/Contents/MacOS/$executable" 2>&1 | tee "$log"
+          if ! grep -Fqx '[EXO_IPC_SELFTEST] ALL PASSED' "$log" ||
+             grep -Eq '^\[EXO_IPC_SELFTEST\] (FAIL|TIMEOUT)' "$log"; then
+            echo "::error::IPC self-test did not report all probes passing"
+            exit 1
+          fi
+          if [ -d "$RUNNER_TEMP/st-vault/sessions" ]; then
+            test -z "$(find "$RUNNER_TEMP/st-vault/sessions" -mindepth 1 -print -quit)"
+          fi
 
       - name: Check Info.plist
         env:

@@ -159,7 +159,6 @@ function makeFlow(): Flow {
 const config = {
   backendUrl: "https://api.tinycloud.chat",
   tinycloudHost: HOST,
-  tinycloudHosts: [HOST],
   env: { VITE_OPENKEY_NATIVE_CLIENT_ID: "exo-native" },
 };
 
