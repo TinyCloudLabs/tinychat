@@ -201,9 +201,17 @@ backend afterwards: `unchanged` (failed before `phala deploy`),
 later check failed; web is not deployed).
 
 The workflow also refuses to run unless the backend CVM is on the production OS
-image pinned in `PHALA_OS_IMAGE` / `PHALA_OS_IMAGE_HASH` (`dstack-0.5.12`, not a
-`dstack-dev-*` image): it checks `phala cvms get` before building anything and again
-after `phala deploy`. The Phala KMS only releases app keys to the production image.
+image pinned in `PHALA_OS_IMAGE` / `PHALA_OS_IMAGE_HASH` (`dstack-0.5.12`), or on
+a dev image whose hash is listed in `.github/scripts/phala-dev-os-allowlist.txt`
+(today only `dstack-dev-0.5.12`) and that passes a fresh check in the same job:
+`download.dstack.org` serves `mr_<hash>.tar.gz`, and `sha256sum sha256sum.txt` of
+the extracted archive equals `<hash>`. An unknown dev hash, a missing field, a
+failed fetch or a hash mismatch fails closed. The allowlist is changed only by a
+reviewed PR. The logic is `.github/scripts/phala-os-guard.sh`, tested by
+`.github/scripts/test-phala-os-guard.sh` (which the deploy runs first). The check
+runs on `phala cvms get` before building anything and again after `phala deploy`.
+It reads the script from the deployed ref's checkout, so a rollback to a ref that
+predates it fails closed.
 CI never changes the OS; if the check fails, set it by hand and re-run:
 `phala api -X PATCH /cvms/<id>/os-image -F os_image_name=dstack-0.5.12`.
 `phala deploy --image/--no-dev-os` is ignored for an existing CVM.
