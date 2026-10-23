@@ -72,14 +72,15 @@ describe("listPipelineEntries", () => {
     expect(spaceState(entry)).toBe("done");
   });
 
-  test("a pasted transcript without text still has its space step done", () => {
+  test("a pasted transcript without text is not counted as saved", () => {
     const item: LibraryItem = {
       id: "row-pasted-empty", source: "exo-voice-note", sourceId: "pasted-empty", title: "Pasted", startedAt: null, durationSecs: null,
       metadata: { source: "pasted", capture: "pasted", transcription_outcome: "pending" },
     };
     const entry = listPipelineEntries([item], {} as TinyCloudWeb)[0]!;
 
-    expect(spaceState(entry)).toBe("done");
+    expect(entry.source.audioSaved).toBe(false);
+    expect(spaceState(entry)).toBe("waiting");
   });
 
   test("a recorded note with no stored audio is still waiting to upload", () => {
