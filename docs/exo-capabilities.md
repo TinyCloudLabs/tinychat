@@ -71,7 +71,7 @@ Per capability, from the D9 limits:
 
 - `sync-fireflies`: 1 h between starts; 6 h when a Fireflies webhook is present; cap 150 starts per UTC day.
 - `sync-google`: 30 min between starts; cap 300 per UTC day.
-- `sync-meetings`: no cooldown and no daily cap. Its wakes still spend the per-owner wake budget (see Wake intake).
+- `sync-meetings`: no cooldown or daily cap of its own. A start must pass each source's cooldown and daily cap (`sync-fireflies`, `sync-google`), and on admission it records the start against both sources. A refused start is `budget_exhausted` when a source's daily cap is reached, and `rate_limited` when its cooldown is active. A refused start writes no `sync-meetings` entry. Its wakes still spend the per-owner wake budget (see Wake intake).
 
 Cooldown and daily-count state is stored in the durable ledger (see Durable state), so it survives a restart.
 
@@ -94,7 +94,7 @@ With the flag on, two kinds of record live in the backend KV space, keyed by low
 - `ledger/<owner>/<capability>`: cooldown, daily count, and the active run for one capability.
 - `source-lock/<owner>/<source>`: one lock per connector source.
 
-Ledger writes are compare-and-set: a create uses `ifNoneMatch`, an update uses `ifMatch` on the version it read. A start that loses a race is refused with `rate_limited`. Ledger rows are deleted only by teardown: owner teardown removes the owner's rows, and source teardown removes the rows of capabilities that read only that source.
+Ledger writes are compare-and-set: a create uses `ifNoneMatch`, an update uses `ifMatch` on the version it read. A start that loses a race is refused with `rate_limited`. Ledger rows are deleted only by teardown: owner teardown removes the owner's ledger rows, held-job records, and source locks, and source teardown removes the rows of capabilities that read only that source.
 
 A start takes the locks for its capability's sources in `SOURCES_BY_CAPABILITY` order. If any lock is refused, the locks already taken are released. A lock held for more than 30 minutes (`ACTIVE_RUN_TTL_MS`) can be taken over, so a crashed run cannot block a source forever.
 
