@@ -5,7 +5,7 @@ export const OWNER_ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
 
 /**
  * The longest a grant written by another process stays unseen. One background listing runs per
- * window, however many owners outside the index arrive.
+ * window, regardless of how many owners are not yet in the index.
  */
 export const GRANT_HOLDER_REFRESH_MS = 5_000;
 
