@@ -188,7 +188,7 @@ export async function sweepArchived(tcw: TinyCloudWeb, checkpoint: () => void = 
     const dirty = archived.filter((r) => r.metadata.merged_at !== r.updatedAt);
     for (const row of dirty) {
       checkpoint();
-      const removed = ["dup_of", "archived_at", "merged_at", ...LEGACY_TRANSCRIPT_KEYS]
+      const removed = ["dup_of", "archived_at", "merged_at", "title_auto", ...LEGACY_TRANSCRIPT_KEYS]
         .map((key) => `'$.${key}'`).join(", ");
       await execute(tcw, `UPDATE connector_meeting SET
         metadata = json_patch(json_remove(COALESCE((SELECT metadata FROM connector_meeting WHERE id = ?),'{}'), ${removed}), COALESCE(metadata,'{}')),
