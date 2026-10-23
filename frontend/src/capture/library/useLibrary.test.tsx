@@ -366,7 +366,7 @@ describe("useLibrary, mounted", () => {
     })]] } });
     await space.answer("transcript", { ok: true, data: { data: JSON.stringify([{ text: "Committed local body" }]) } });
     expect(seen.at(-1)!.note.reads.transcript?.provenance).toEqual({
-      engine: "whispercpp", provider: "whispercpp",
+      engine: "whispercpp", provider: "whispercpp", model: null,
     });
     expect(seen.at(-1)!.note.reads.metadata).toMatchObject({
       status: "ok",
