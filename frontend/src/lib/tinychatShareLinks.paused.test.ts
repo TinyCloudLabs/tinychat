@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { CHAT_SHARING_PAUSED, ChatSharingPausedError, canOfferChatShare } from "./chatSharing";
+import { deleteThread } from "./threadStore";
 
 const originalWindow = globalThis.window;
 const originalHTMLElement = (globalThis as { HTMLElement?: unknown }).HTMLElement;
@@ -96,5 +97,60 @@ describe("chat sharing paused", () => {
   it("offers the share action only for a chat that already has a link", () => {
     expect(canOfferChatShare(false)).toBe(false);
     expect(canOfferChatShare(true)).toBe(true);
+  });
+
+  it("lists no owned shares and reads no KV while paused", async () => {
+    const { listOwnedTinychatShares } = await loadShareModule();
+    let kvCalls = 0;
+    const tcw = {
+      kv: {
+        list: async () => {
+          kvCalls++;
+          throw new Error("KV list must not be reached");
+        },
+        get: async () => {
+          kvCalls++;
+          throw new Error("KV get must not be reached");
+        },
+      },
+    } as never;
+
+    expect(await listOwnedTinychatShares(tcw)).toEqual([]);
+    expect(kvCalls).toBe(0);
+  });
+
+  it("deleting a chat makes no share-index, KV, or revoke call while paused", async () => {
+    const shareCalls: string[] = [];
+    const sqlStatements: string[] = [];
+    const shareCall = (name: string) => async () => {
+      shareCalls.push(name);
+      return { ok: false, error: { message: "unexpected share call" } };
+    };
+    const db = {
+      batch: async (statements: Array<{ sql: string }>) => {
+        sqlStatements.push(...statements.map((statement) => statement.sql));
+        return { ok: true, data: { rows: [] } };
+      },
+      query: async (sql: string) => {
+        sqlStatements.push(sql);
+        return { ok: true, data: { rows: [] } };
+      },
+    };
+    const tcw = {
+      did: "did:pkh:eip155:1:paused",
+      sql: { db: () => db },
+      kv: {
+        get: shareCall("kv.get"),
+        list: shareCall("kv.list"),
+        put: shareCall("kv.put"),
+        delete: shareCall("kv.delete"),
+      },
+      revokeDelegation: shareCall("revokeDelegation"),
+    } as never;
+
+    await deleteThread(tcw, "thread-a");
+
+    expect(shareCalls).toEqual([]);
+    expect(sqlStatements.some((sql) => sql.includes("DELETE FROM"))).toBe(true);
   });
 });
