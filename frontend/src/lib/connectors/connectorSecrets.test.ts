@@ -772,7 +772,7 @@ describe("connectorSecrets decrypt step-up", () => {
     for (const line of text.split("\n")) {
       const code = line.trim();
       if (code.startsWith("//") || code.startsWith("*") || code.startsWith("/*")) continue;
-      for (const m of code.matchAll(/(\w+)\??\.secrets\b/g)) {
+      for (const m of code.matchAll(/(\w+)\??\.(?:secrets|getSecret)\b/g)) {
         if (allowed[m[1] ?? ""] !== true) hits.push(code);
       }
       for (const m of code.matchAll(/\{[^}]*\bsecrets\b[^}]*\}\s*=\s*(\w+)/g)) {
@@ -782,7 +782,8 @@ describe("connectorSecrets decrypt step-up", () => {
     return hits;
   }
 
-  test("the secrets-access guard flags aliases and destructuring, not injected bags", () => {
+  test("the secrets-access guard flags aliases, destructuring and getSecret receivers", () => {
+    expect(secretsAccessOffenders("chat/x.ts", "await tcw.getSecret(key);")).toEqual(["await tcw.getSecret(key);"]);
     expect(secretsAccessOffenders("chat/x.ts", "const vault = tcw.secrets;")).toEqual(["const vault = tcw.secrets;"]);
     expect(secretsAccessOffenders("chat/x.ts", "const { secrets } = tcw;")).toEqual(["const { secrets } = tcw;"]);
     expect(secretsAccessOffenders("chat/x.ts", "await deps.secrets.isUnlocked();")).toEqual([
