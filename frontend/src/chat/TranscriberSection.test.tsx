@@ -244,6 +244,14 @@ describe("TranscriberView", () => {
     expect(failed).toContain(">Remove<");
   });
 
+  test("a stuck-joining notetaker is still active, labelled, and ends the same way as a joining one", () => {
+    const stuck = render({ meetings: [meeting({ status: "needs_help" })] });
+    expect(stuck).toContain("Stuck joining");
+    expect(stuck).toContain('aria-label="End meeting and transcribe now"');
+    expect(stuck).not.toContain(">Remove<");
+    expect(stuck).not.toContain(">Transcript<");
+  });
+
   test("TC-581: a recording shared from another account says so and only removes it from this list", () => {
     const shared = render({ meetings: [meeting({ status: "completed", metadata: { source: "google-calendar-autojoin",
       calendar_title: "Team sync", scheduled_start: "2026-09-25T12:00:00.000Z", shared: true } })] });
@@ -380,6 +388,7 @@ describe("TranscriberView", () => {
       "queued",
       "joining",
       "waiting_for_admission",
+      "needs_help",
       "in_progress",
       "processing",
       "completed",

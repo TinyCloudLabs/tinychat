@@ -582,6 +582,18 @@ describe("GET /api/transcriber/meetings", () => {
     });
   });
 
+  test("a stuck-joining meeting is listed with its needs_help status", async () => {
+    const h = harness();
+    await withServer(h.app, async (base) => {
+      await call(base, "/api/transcriber/meetings", "POST", { meeting_url: "https://meet.jit.si/one" });
+      h.store.get("mtg_1")!.status = "needs_help";
+
+      const r = await call(base, "/api/transcriber/meetings");
+      expect(r.status).toBe(200);
+      expect(r.body.meetings[0].status).toBe("needs_help");
+    });
+  });
+
   test("a meeting deleted upstream out of band drops out of the list and the index", async () => {
     const h = harness();
     await withServer(h.app, async (base) => {

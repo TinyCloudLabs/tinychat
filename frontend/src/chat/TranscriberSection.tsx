@@ -36,6 +36,7 @@ export const ACTIVE_STATUSES: ReadonlySet<TranscriberMeetingStatus> = new Set([
   "queued",
   "joining",
   "waiting_for_admission",
+  "needs_help",
   "in_progress",
   "processing",
 ]);
@@ -193,6 +194,8 @@ export function statusLabel(status: TranscriberMeetingStatus): string {
       return "Joining";
     case "waiting_for_admission":
       return "Waiting to be admitted";
+    case "needs_help":
+      return "Stuck joining";
     case "in_progress":
       return "In meeting";
     case "processing":
