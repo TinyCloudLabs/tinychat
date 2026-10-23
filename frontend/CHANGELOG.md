@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.10.0-beta.19
+
+### Patch Changes
+
+- 34720ec: A pasted transcript is shown as saved in the Library.
+
 ## 0.10.0-beta.18
 
 ### Patch Changes
