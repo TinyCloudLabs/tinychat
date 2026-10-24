@@ -2,4 +2,4 @@
 "@tinychat/frontend": patch
 ---
 
-Lets owners see and revoke their existing share links while creating new ones stays paused.
+Lets owners see their existing share links and when they expire while creating new ones stays paused.
