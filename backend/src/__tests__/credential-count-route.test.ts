@@ -1,5 +1,5 @@
 // TC-1964: the optional authenticated credential row count. Off unless a long-enough admin key is
-// set; bare 401 otherwise; number-or-fixed-code only; hard limiter in front of the key compare.
+// set; bare 401 otherwise; number-or-fixed-code only; the key is compared first, then a hard failure bucket or a hard success bucket.
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
@@ -10,7 +10,8 @@ import { issueSessionToken } from "@tinyboilerplate/server";
 import {
   applyRateLimiters,
   bucketFor,
-  CREDENTIAL_COUNT_LIMIT,
+  CREDENTIAL_COUNT_FAILURE_LIMIT,
+  CREDENTIAL_COUNT_SUCCESS_LIMIT,
   CREDENTIAL_COUNT_PATHS,
   CREDENTIAL_COUNT_WINDOW_MS,
 } from "../rate-limits.js";
@@ -47,7 +48,7 @@ const ADDRESS = "0x" + "ab".repeat(20);
 const CURSOR = "cursor-secret-token-xyz";
 const realFetch = globalThis.fetch;
 
-/** index.ts's order: limiters first, then the optional mount. */
+/** index.ts's order: app limiters first, then the optional mount. */
 function makeApp(env: Record<string, string | undefined>, makeStore: () => CredentialRowCounter) {
   const app = express();
   applyRateLimiters(app, { sessionKey: SESSION_KEY });
@@ -138,12 +139,13 @@ describe("mount rule", () => {
     const index = readFileSync(resolve(import.meta.dir, "../index.ts"), "utf8");
     const mount = /if \(process\.env\[CREDENTIAL_COUNT_ADMIN_KEY_ENV\]\?\.trim\(\)\) \{\s*mountCredentialCountRoute\(\s*app,\s*process\.env,\s*\(\) => new KvCredentialRowStore\(node, transcriberStorageLane, \{ priority: "background" \}\),\s*\);\s*\}/;
     expect(index).toMatch(mount);
-    // after the limiters, so the hard bucket sees every request
+    // after the app limiters, so the path is already classified out of the global bucket
     expect(index.indexOf("applyRateLimiters(app")).toBeLessThan(index.indexOf("mountCredentialCountRoute(\n"));
   });
 
   test("the route path matches the limiter's path", () => {
     expect(CREDENTIAL_COUNT_PATHS[0]).toBe(CREDENTIAL_COUNT_ROUTE_PATH);
+    expect(CREDENTIAL_COUNT_ROUTE_PATH).toBe("/api/internal/credential-row-count");
     for (const path of [CREDENTIAL_COUNT_ROUTE_PATH, `${CREDENTIAL_COUNT_ROUTE_PATH}/`, CREDENTIAL_COUNT_ROUTE_PATH.toUpperCase()]) {
       expect(bucketFor("GET", path)).toBe("credentialCount");
     }
@@ -161,8 +163,8 @@ describe("authentication", () => {
     });
     await withServer(app, async (base) => {
       const attempts: Array<string | undefined> = [undefined, "", "x".repeat(32), KEY.slice(0, -1), `${KEY}x`, KEY.toUpperCase(), "x".repeat(4096)];
-      // Each attempt counts against the 5/hour bucket; stay under the cap in this test.
-      for (const key of attempts.slice(0, CREDENTIAL_COUNT_LIMIT)) {
+      // Each failed attempt counts against the 5/hour failure bucket; stay under the cap in this test.
+      for (const key of attempts.slice(0, CREDENTIAL_COUNT_FAILURE_LIMIT)) {
         const response = await get(base, URL_PATH, key);
         expect(response.status).toBe(401);
         expect(response.headers.get("cache-control")).toBe("no-store");
@@ -376,57 +378,110 @@ describe("the count", () => {
   });
 });
 
-describe("hard rate limit", () => {
-  test("the cap is 5 per hour", () => {
-    expect(CREDENTIAL_COUNT_LIMIT).toBe(5);
+describe("hard rate limits: a failure bucket and a success bucket", () => {
+  const WRONG = "x".repeat(32);
+
+  test("caps: 5 failures and 10 correct-key requests per hour", () => {
+    expect(CREDENTIAL_COUNT_FAILURE_LIMIT).toBe(5);
+    expect(CREDENTIAL_COUNT_SUCCESS_LIMIT).toBe(10);
     expect(CREDENTIAL_COUNT_WINDOW_MS).toBe(60 * 60 * 1000);
   });
 
-  test("the 6th request is 429 with no-store, wrong keys included, before any key compare", async () => {
+  test("wrong keys cannot lock out the right key: 5+ wrong requests, then the right key is 200", async () => {
+    const { app } = makeApp({ [CREDENTIAL_COUNT_ADMIN_KEY_ENV]: KEY }, () => fakeCounter(11));
+    await withServer(app, async (base) => {
+      for (let i = 0; i < CREDENTIAL_COUNT_FAILURE_LIMIT + 5; i += 1) await get(base, URL_PATH, WRONG);
+      const response = await get(base, URL_PATH, KEY);
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ source: "fireflies", count: 11 });
+    });
+  });
+
+  test("the 6th wrong or missing key is a bare 429 with no-store, and it stays 429", async () => {
     let built = 0;
     const { app } = makeApp({ [CREDENTIAL_COUNT_ADMIN_KEY_ENV]: KEY }, () => {
       built += 1;
       return fakeCounter(1);
     });
     await withServer(app, async (base) => {
-      for (let i = 0; i < CREDENTIAL_COUNT_LIMIT; i += 1) expect((await get(base, URL_PATH, "x".repeat(32))).status).toBe(401);
-      for (const key of ["x".repeat(32), KEY, undefined]) {
+      for (let i = 0; i < CREDENTIAL_COUNT_FAILURE_LIMIT; i += 1) {
+        const response = await get(base, URL_PATH, i % 2 === 0 ? WRONG : undefined);
+        expect(response.status).toBe(401);
+        expect(response.headers.get("cache-control")).toBe("no-store");
+      }
+      for (const key of [WRONG, undefined, "", `${KEY}x`, KEY.slice(1), WRONG]) {
         const response = await get(base, URL_PATH, key);
         expect(response.status).toBe(429);
         expect(response.headers.get("cache-control")).toBe("no-store");
+        expect(response.headers.get("ratelimit")).toBeNull();
+        expect(response.headers.get("retry-after")).toBeNull();
+        expect(await response.text()).toBe("");
       }
     });
     expect(built).toBe(0);
   });
 
-  test("right-key requests count too: 5 succeed, the 6th is 429", async () => {
-    const { app } = makeApp({ [CREDENTIAL_COUNT_ADMIN_KEY_ENV]: KEY }, () => fakeCounter(1));
+  test("the correct key is still 200 after the failure bucket is exhausted, and never spends it", async () => {
+    const { app } = makeApp({ [CREDENTIAL_COUNT_ADMIN_KEY_ENV]: KEY }, () => fakeCounter(4));
     await withServer(app, async (base) => {
-      const statuses: number[] = [];
-      for (let i = 0; i < CREDENTIAL_COUNT_LIMIT + 1; i += 1) statuses.push((await get(base, URL_PATH, KEY)).status);
-      expect(statuses).toEqual([200, 200, 200, 200, 200, 429]);
+      for (let i = 0; i < CREDENTIAL_COUNT_FAILURE_LIMIT + 1; i += 1) await get(base, URL_PATH, WRONG);
+      expect((await get(base, URL_PATH, WRONG)).status).toBe(429);
+      for (let i = 0; i < 3; i += 1) {
+        const response = await get(base, URL_PATH, KEY);
+        expect(response.status).toBe(200);
+        expect(response.headers.get("cache-control")).toBe("no-store");
+        expect(await response.json()).toEqual({ source: "fireflies", count: 4 });
+      }
+      // right-key traffic did not move the failure bucket: it is still exhausted for wrong keys
+      expect((await get(base, URL_PATH, WRONG)).status).toBe(429);
     });
   });
 
-  test("one shared bucket: neither a bearer session nor a forged X-Forwarded-For buys more tries", async () => {
+  test("the correct-key bucket caps at 10: the 11th is a bare 429 with no-store, wrong keys unaffected", async () => {
+    const { app } = makeApp({ [CREDENTIAL_COUNT_ADMIN_KEY_ENV]: KEY }, () => fakeCounter(1));
+    await withServer(app, async (base) => {
+      const statuses: number[] = [];
+      for (let i = 0; i < CREDENTIAL_COUNT_SUCCESS_LIMIT; i += 1) statuses.push((await get(base, URL_PATH, KEY)).status);
+      expect(statuses).toEqual(Array(CREDENTIAL_COUNT_SUCCESS_LIMIT).fill(200));
+      for (let i = 0; i < 2; i += 1) {
+        const response = await get(base, URL_PATH, KEY);
+        expect(response.status).toBe(429);
+        expect(response.headers.get("cache-control")).toBe("no-store");
+        expect(response.headers.get("ratelimit")).toBeNull();
+        expect(await response.text()).toBe("");
+      }
+      // the failure bucket is separate: a wrong key is still a plain 401
+      expect((await get(base, URL_PATH, WRONG)).status).toBe(401);
+    });
+  });
+
+  test("one shared bucket each: neither a bearer session nor a forged X-Forwarded-For buys more tries", async () => {
     const { token } = await issueSessionToken(ADDRESS, SESSION_KEY);
     const { app } = makeApp({ [CREDENTIAL_COUNT_ADMIN_KEY_ENV]: KEY }, () => fakeCounter(1));
     await withServer(app, async (base) => {
       const statuses: number[] = [];
-      for (let i = 0; i < CREDENTIAL_COUNT_LIMIT + 2; i += 1) {
+      for (let i = 0; i < CREDENTIAL_COUNT_FAILURE_LIMIT + 2; i += 1) {
         const extra: Record<string, string> = i % 2 === 0 ? { authorization: `Bearer ${token}` } : { "x-forwarded-for": `203.0.113.${i}` };
-        statuses.push((await get(base, URL_PATH, "x".repeat(32), extra)).status);
+        statuses.push((await get(base, URL_PATH, WRONG, extra)).status);
       }
       expect(statuses).toEqual([401, 401, 401, 401, 401, 429, 429]);
     });
   });
 
-  test("the credential-count bucket is separate from the global bucket", async () => {
+  test("the count route is outside the global bucket and does not spend it", async () => {
     const { app } = makeApp({ [CREDENTIAL_COUNT_ADMIN_KEY_ENV]: KEY }, () => fakeCounter(1));
     app.get("/api/server-info", (_req, res) => res.json({ ok: true }));
     await withServer(app, async (base) => {
-      for (let i = 0; i < CREDENTIAL_COUNT_LIMIT + 1; i += 1) await get(base, URL_PATH, "x".repeat(32));
+      for (let i = 0; i < CREDENTIAL_COUNT_FAILURE_LIMIT + 1; i += 1) await get(base, URL_PATH, WRONG);
       expect((await realFetch(`${base}/api/server-info`)).status).toBe(200);
     });
+  });
+
+  test("the key is compared before any bucket is charged (source pin)", () => {
+    const source = readFileSync(resolve(import.meta.dir, "../routes/credential-count.ts"), "utf8");
+    const compare = source.indexOf("adminKeyMatches(req.get(");
+    expect(compare).toBeGreaterThan(0);
+    expect(source.indexOf("limiters.failure(")).toBeGreaterThan(compare);
+    expect(source.indexOf("limiters.success(")).toBeGreaterThan(compare);
   });
 });

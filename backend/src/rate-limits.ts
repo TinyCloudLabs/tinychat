@@ -12,7 +12,7 @@
  * full server.
  */
 import rateLimit from "express-rate-limit";
-import type { Express, Request, RequestHandler } from "express";
+import type { Express, Request, RequestHandler, Response } from "express";
 import { verifySessionToken } from "@tinyboilerplate/server";
 
 const WINDOW_MS = 15 * 60 * 1000;
@@ -161,12 +161,21 @@ export const AUTH_PATHS = ["/api/auth"] as const;
 
 /**
  * The optional authenticated credential count (routes/credential-count.ts) is a one-time, read-only
- * operator read behind a shared admin key, so its bucket is hard and blind to everything the client
- * sends: no session bearer, no IP (behind the gateway every client shares one address, and an
- * `X-Forwarded-For` key is attacker-chosen). One whole-service key, counted BEFORE the key compare
- * and for 401s too, so wrong-key guessing is throttled to this many tries per window.
+ * operator read behind a shared admin key. Two hard buckets, both blind to everything the client
+ * sends (no session bearer, no IP: behind the gateway every client shares one address, and an
+ * `X-Forwarded-For` key is attacker-chosen), so each is ONE whole-service counter per window:
+ *
+ *  - FAILURE: counts only requests whose key did not match (wrong or missing). Exhausted, those
+ *    get 429. The route path is public in the repo, so this bucket must not be able to lock the
+ *    operator out: it is charged AFTER the key compare, and a correct key never touches it.
+ *  - SUCCESS: counts only requests with the correct key. Exhausted, those get 429.
+ *
+ * The 429 is bare (no body, no RateLimit headers); the route sets `Cache-Control: no-store`.
+ * The limiters are built by `createCredentialCountLimiters` and invoked by the route handler, not
+ * mounted app-wide; `CREDENTIAL_COUNT_PATHS` only keeps the path out of the shared global bucket.
  */
-export const CREDENTIAL_COUNT_LIMIT = 5;
+export const CREDENTIAL_COUNT_FAILURE_LIMIT = 5;
+export const CREDENTIAL_COUNT_SUCCESS_LIMIT = 10;
 export const CREDENTIAL_COUNT_WINDOW_MS = 60 * 60 * 1000;
 export const CREDENTIAL_COUNT_PATHS = ["/api/internal/credential-row-count"] as const;
 
@@ -408,6 +417,42 @@ function sessionAddress(req: Request, sessionKey: string): Promise<string | null
   return address;
 }
 
+export interface CredentialCountLimiters {
+  /** Charge one failed (wrong or missing key) attempt. Resolves false after answering 429. */
+  failure: (req: Request, res: Response) => Promise<boolean>;
+  /** Charge one correct-key request. Resolves false after answering 429. */
+  success: (req: Request, res: Response) => Promise<boolean>;
+}
+
+/** The credential count's two buckets (see `CREDENTIAL_COUNT_FAILURE_LIMIT`), fresh stores per call. */
+export function createCredentialCountLimiters(): CredentialCountLimiters {
+  const make = (limit: number) => {
+    const limiter = rateLimit({
+      windowMs: CREDENTIAL_COUNT_WINDOW_MS,
+      limit,
+      keyGenerator: () => "credential-count",
+      standardHeaders: false,
+      legacyHeaders: false,
+      handler: (_req, res) => {
+        res.status(429).end();
+      },
+    });
+    return async (req: Request, res: Response): Promise<boolean> => {
+      let passed = false;
+      try {
+        await limiter(req, res, (error?: unknown) => {
+          passed = error === undefined;
+        });
+      } catch {
+        passed = false;
+      }
+      if (!passed && !res.headersSent) res.status(429).end();
+      return passed;
+    };
+  };
+  return { failure: make(CREDENTIAL_COUNT_FAILURE_LIMIT), success: make(CREDENTIAL_COUNT_SUCCESS_LIMIT) };
+}
+
 export interface RateLimitOptions {
   /** The key the backend signs session JWTs with (`BACKEND_PRIVATE_KEY`). */
   sessionKey: string;
@@ -420,16 +465,14 @@ export function applyRateLimiters(app: Express, { sessionKey }: RateLimitOptions
 } {
   // No limiter reads req.ip any more; other code (the connector webhook pre-limiter) still does.
   app.set("trust proxy", 1);
-  const bucket = (kind: Exclude<Bucket, "none">, anonymous: number, skip?: (req: Request) => boolean) =>
+  const bucket = (kind: Exclude<Bucket, "none" | "credentialCount">, anonymous: number, skip?: (req: Request) => boolean) =>
     rateLimit({
-      windowMs: kind === "credentialCount" ? CREDENTIAL_COUNT_WINDOW_MS : WINDOW_MS,
-      // `auth` and `credentialCount` never look at the bearer: see `AUTH_LIMIT`, `CREDENTIAL_COUNT_LIMIT`.
+      windowMs: WINDOW_MS,
+      // `auth` never looks at the bearer: see `AUTH_LIMIT`.
       limit: async (req) =>
-        kind !== "auth" && kind !== "credentialCount" && (await sessionAddress(req, sessionKey))
-          ? SESSION_LIMITS[kind]
-          : anonymous,
+        kind !== "auth" && (await sessionAddress(req, sessionKey)) ? SESSION_LIMITS[kind] : anonymous,
       keyGenerator: async (req) => {
-        const address = kind === "auth" || kind === "credentialCount" ? null : await sessionAddress(req, sessionKey);
+        const address = kind === "auth" ? null : await sessionAddress(req, sessionKey);
         return address ? `session:${address}` : ANONYMOUS_KEY;
       },
       standardHeaders: "draft-7",
@@ -447,16 +490,11 @@ export function applyRateLimiters(app: Express, { sessionKey }: RateLimitOptions
       skip: async (req) => (skip?.(req) ?? false) || !(await sessionAddress(req, sessionKey)),
     });
   const globalRoutes = new GlobalBucketRouteCounter();
-  // Set ahead of the limiter so a 429 from this path is never cacheable either.
-  app.use(CREDENTIAL_COUNT_PATHS[0], (_req, res, next) => {
-    res.setHeader("Cache-Control", "no-store");
-    next();
-  });
   app.use((req, _res, next) => {
     if (bucketFor(req.method, req.path) === "global") globalRoutes.record(req.method, req.path);
     next();
   });
-  const limits: Record<Exclude<Bucket, "none" | "paidChat">, number> = {
+  const limits: Record<Exclude<Bucket, "none" | "paidChat" | "credentialCount">, number> = {
     verification: VERIFICATION_LIMIT,
     connectorCompanion: CONNECTOR_COMPANION_LIMIT,
     connectorMeetings: CONNECTOR_MEETINGS_LIMIT,
@@ -469,14 +507,13 @@ export function applyRateLimiters(app: Express, { sessionKey }: RateLimitOptions
     privateCloudTranscriptionMutation: PRIVATE_CLOUD_TRANSCRIPTION_MUTATION_LIMIT,
     hostedUpload: ASSEMBLYAI_HOSTED_UPLOAD_LIMIT,
     auth: AUTH_LIMIT,
-    credentialCount: CREDENTIAL_COUNT_LIMIT,
     global: GLOBAL_LIMIT,
   };
   for (const [kind, anonymous] of Object.entries(limits) as [keyof typeof limits, number][]) {
     // Mounted at the app root, so req.path is the full path.
     const skip = (req: Request) => bucketFor(req.method, req.path) !== kind;
     app.use(bucket(kind, anonymous, skip));
-    if (kind !== "auth" && kind !== "credentialCount" && kind in AGGREGATE_LIMITS) app.use(aggregate(kind, skip));
+    if (kind !== "auth" && kind in AGGREGATE_LIMITS) app.use(aggregate(kind, skip));
   }
   // Paid chat is charged ONCE per request: at the root when the classifier recognises the path
   // (so the global bucket skips it), otherwise at the handler. A spelling the classifier misses

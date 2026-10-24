@@ -7,8 +7,10 @@
  * the route is not registered at all (404), and a too-short key logs ONE fixed line without the
  * value. The request must carry the key in `x-admin-key`; a missing or wrong key is a bare 401
  * with no body. The compare is constant-time over sha256 digests, so a length mismatch is safe.
- * The hard per-window limiter lives in rate-limits.ts and runs before this router, so wrong-key
- * guessing is throttled. Every response carries `Cache-Control: no-store`.
+ * The key is compared FIRST, then one of two hard hourly buckets (rate-limits.ts) is charged: a
+ * failure bucket (5/h) for wrong or missing keys, a success bucket (10/h) for the correct key.
+ * Exhausted buckets answer a bare 429. A wrong key can never spend the correct key's bucket, so
+ * guessing cannot lock the operator out. Every response carries `Cache-Control: no-store`.
  *
  * The count itself is `countCredentialRows` (credential-row-count.ts): only a number or a fixed
  * code is ever returned — never a key, address, cursor, row value or error message — and nothing
@@ -17,6 +19,11 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { Router, type Express } from "express";
 import {
+  CREDENTIAL_COUNT_PATHS,
+  createCredentialCountLimiters,
+  type CredentialCountLimiters,
+} from "../rate-limits.js";
+import {
   countCredentialRows,
   type CredentialRowCounter,
 } from "../services/credential-row-count.js";
@@ -24,9 +31,7 @@ import {
 export const CREDENTIAL_COUNT_ADMIN_KEY_ENV = "CREDENTIAL_COUNT_ADMIN_KEY";
 export const CREDENTIAL_COUNT_ADMIN_KEY_MIN_LENGTH = 32;
 export const CREDENTIAL_COUNT_ADMIN_KEY_HEADER = "x-admin-key";
-// Must equal `CREDENTIAL_COUNT_PATHS[0]` in rate-limits.ts (pinned by a test); not imported, so the
-// route module adds no edge to the limiter module.
-export const CREDENTIAL_COUNT_ROUTE_PATH = "/api/internal/credential-row-count";
+export const CREDENTIAL_COUNT_ROUTE_PATH = CREDENTIAL_COUNT_PATHS[0];
 export const CREDENTIAL_COUNT_SHORT_KEY_LOG =
   "credential_count_route disabled: CREDENTIAL_COUNT_ADMIN_KEY is shorter than the minimum length";
 
@@ -56,6 +61,7 @@ export function adminKeyMatches(presented: string | undefined, expected: string)
 export function createCredentialCountRouter(
   adminKey: string,
   makeStore: () => CredentialRowCounter,
+  limiters: CredentialCountLimiters = createCredentialCountLimiters(),
 ): Router {
   const router = Router();
   let store: CredentialRowCounter | null = null;
@@ -66,10 +72,13 @@ export function createCredentialCountRouter(
     next();
   });
   router.get("/", async (req, res) => {
+    // The key is compared FIRST and each outcome charges its own bucket: a wrong key can only
+    // spend the failure bucket, so guessing cannot lock out the holder of the correct key.
     if (!adminKeyMatches(req.get(CREDENTIAL_COUNT_ADMIN_KEY_HEADER), adminKey)) {
-      res.status(401).end();
+      if (await limiters.failure(req, res)) res.status(401).end();
       return;
     }
+    if (!(await limiters.success(req, res))) return;
     res.status(200).json(await countCredentialRows(getStore, req.query.source));
   });
   return router;
