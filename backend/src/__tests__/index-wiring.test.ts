@@ -74,7 +74,6 @@ async function runIsolatedStartup(env: Record<string, string | undefined>) {
         return { node: {}, did: "synthetic-backend-did" };
       },
     },
-    "./services/ingest-mode.js": { backendIngestEnabled: () => false },
     "./rate-limits.js": { applyRateLimiters: () => ({ globalRoutes: {}, paidChatLimiter: middleware() }), logGlobalBucketRoutes: () => {} },
     // TC-1013: the Exo mailbox is off in this harness; the flag is read at startup.
     "./exo/mailbox.js": { exoCapabilitiesEnabled: () => false },
@@ -512,7 +511,7 @@ describe("backend index middleware wiring", () => {
 
   test("shutdown drains HTTP and every worker in one allSettled", () => {
     expect(INDEX).toContain(
-      "Promise.allSettled([httpDrained, wakesDrained, exoRetentionSweep?.stop(), transcriptWorker?.stop(), calendarAutojoinWorker?.stop(), ingestSupervisor?.stop(), hostedUploads?.shutdown()])",
+      "Promise.allSettled([httpDrained, wakesDrained, exoRetentionSweep?.stop(), transcriptWorker?.stop(), calendarAutojoinWorker?.stop(), hostedUploads?.shutdown()])",
     );
   });
 });
@@ -600,14 +599,13 @@ test("shutdown waits for other cleanups after a worker rejects", async () => {
     server: { close: (done: () => void) => done(), closeIdleConnections() {} },
     transcriptWorker: { stop: () => { attempts.push("transcript"); return Promise.reject(new Error("synthetic")); } },
     calendarAutojoinWorker: { stop: () => { attempts.push("calendar"); return Promise.reject(new Error("synthetic")); } },
-    ingestSupervisor: { stop: () => { attempts.push("ingest"); return pending.promise; } },
-    hostedUploads: { shutdown: () => { attempts.push("hosted"); return Promise.resolve(); } },
+    hostedUploads: { shutdown: () => { attempts.push("hosted"); return pending.promise; } },
   });
   await new Promise((resolve) => setTimeout(resolve, 0));
   const exitedEarly = [...exits];
   pending.resolve();
   await new Promise((resolve) => setTimeout(resolve, 0));
-  expect(attempts).toEqual(["transcript", "calendar", "ingest", "hosted"]);
+  expect(attempts).toEqual(["transcript", "calendar", "hosted"]);
   expect(exitedEarly).toEqual([]);
   expect(exits).toEqual([1]);
 });
@@ -630,7 +628,7 @@ test("shutdown holds the exit until queued exo wakes drain", async () => {
     ledgerFlusher: null, connectorWebhooks: null, connectorQueueMaintenance: null,
     exoWakeQueue: queue, exoRetentionSweep: null,
     server: { close: (done: () => void) => done(), closeIdleConnections() {} },
-    transcriptWorker: null, calendarAutojoinWorker: null, ingestSupervisor: null, hostedUploads: null,
+    transcriptWorker: null, calendarAutojoinWorker: null, hostedUploads: null,
   });
   for (let tick = 0; tick < 10; tick += 1) await Promise.resolve();
   expect(exits).toEqual([]);
@@ -654,7 +652,7 @@ test("shutdown holds the exit until an in-flight retention pass stops", async ()
     exoWakeQueue: null,
     exoRetentionSweep: { stop: () => pass.promise },
     server: { close: (done: () => void) => done(), closeIdleConnections() {} },
-    transcriptWorker: null, calendarAutojoinWorker: null, ingestSupervisor: null, hostedUploads: null,
+    transcriptWorker: null, calendarAutojoinWorker: null, hostedUploads: null,
   });
   for (let tick = 0; tick < 10; tick += 1) await Promise.resolve();
   expect(exits).toEqual([]);
@@ -668,9 +666,6 @@ const hosted = load("./services/assemblyai-hosted.ts");
 const transcription = load("./services/transcription-api.ts");
 const google = load("./services/google-oauth.ts");
 const credentialStore = load("./services/credential-store.ts");
-const contentStore = load("./services/content-store.ts");
-const firefliesOAuthModule = load("./services/fireflies-oauth.ts");
-const ingestInstanceModule = load("./services/ingest-instance.ts");
 const { createApiBodyParser } = load("./body-parsing.ts");
 const { createTranscriberWebhookRouter } = load("./routes/transcriber-webhook.ts");
 const { createGoogleOAuthRouter, normalizeAppOrigin } = load("./routes/google-oauth.ts");
@@ -749,7 +744,6 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
         options.processLogSink ? undefined : (event: unknown) => logs.push(JSON.stringify(event)),
       ),
     },
-    "./services/ingest-mode.js": { backendIngestEnabled: () => env.CONNECTOR_BACKEND_INGEST_ENABLED === "true", IngestModeService: class {} },
     "./services/transcription-api.js": {
       transcriptDeliveryConfigFromEnv: (e: object) => transcription.transcriptDeliveryConfigFromEnv(e),
       transcriptionApiConfigFromEnv: () => transcription.transcriptionApiConfigFromEnv(env),
@@ -794,8 +788,6 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
       CredentialStore: class {},
       KvCredentialRowStore: class {},
     },
-    "./services/content-store.js": { ...contentStore },
-    "./services/fireflies-oauth.js": { ...firefliesOAuthModule },
     "./services/calendar-autojoin-connection.js": { CalendarAutojoinConnection: class {
       constructor(config: Record<string, unknown>) { options.capture?.("calendar", config); }
     } },
@@ -814,18 +806,9 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
       ConnectorControlStore: class {}, ConnectorWebhookLimiters: class {
         ipPreLimiter(_req: express.Request, _res: express.Response, next: express.NextFunction) { next(); }
       },
-      createConnectorWebhookHostGuard: () => (_req: express.Request, _res: express.Response, next: express.NextFunction) => next(),
-      resolveWebhookHostAllowlist: () => (env.CONNECTOR_WEBHOOK_PUBLIC_ORIGIN ? new Set(["app.invalid"]) : null),
       createConnectorWebhookParserErrorHandler: () => (error: unknown, _req: express.Request, _res: express.Response, next: express.NextFunction) => next(error),
       createConnectorWebhookHandler: () => (req: express.Request, res: express.Response) => {
         res.sendStatus(Buffer.isBuffer(req.body) ? 202 : 415);
-      },
-    },
-    // TC-1013 S4b: the credential router's teardown is built at startup; capture what it receives.
-    "./routes/connector-credentials.js": {
-      createConnectorCredentialRouter: (config: Record<string, unknown>) => {
-        options.capture?.("connectorCredentials", config);
-        return express.Router();
       },
     },
     "./services/webhook-tokens.js": { assertStrongSecret: () => {}, WebhookTokenService: class {} },
@@ -840,7 +823,6 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
     } },
     "./routes/server-info.js": { createServerInfoRouter },
     "./middleware/auth.js": { createAuthMiddleware: auth },
-    "./services/ingest-nudge.js": { createIngestOnDelivery: noop },
     "./rate-limits.js": { applyRateLimiters: () => ({ globalRoutes: { top: () => ({}) }, paidChatLimiter: noop }), logGlobalBucketRoutes: noop },
     // TC-1013 S4b: the real flag parser reads the harness env, so the flag is tested, not stubbed.
     "./exo/mailbox.js": { exoCapabilitiesEnabled: (env: Record<string, string | undefined>) => exoMailbox.exoCapabilitiesEnabled(env, () => {}) },
@@ -869,8 +851,6 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
     "./services/transcriber-index.js": { KvJsonKv: class {}, KvTranscriberIndexStore: class {} },
     "./services/google-calendar.js": { ExternalOperationLimiter: class {}, GoogleCalendarClient: class {} },
     "./services/calendar-autojoin-worker.js": { CalendarAutojoinWorker: class { start() {} stop() { return stop.calendar?.() ?? Promise.resolve(); } } },
-    "./services/ingest-instance.js": { ...ingestInstanceModule, IngestInstanceSupervisor: class { start() {} stop() { return stop.ingest?.() ?? Promise.resolve(); } } },
-    "./services/connector-teardown.js": load("./services/connector-teardown.ts"),
     "./routes/chat.js": { createChatRouter: router, defaultModel: "test-model" },
     "./agent-stream-policy.js": load("./agent-stream-policy.ts"),
     "./transcripts/meeting-rollout.js": load("./transcripts/meeting-rollout.ts"),
@@ -984,17 +964,13 @@ describe("backend entry-point HTTP and lifecycle guards", () => {
   });
 
   test("owner Exo teardown and the exo ledger clear are wired only with the exo flag on", async () => {
-    // index.ts builds the ConnectorTeardownService and hands it to the credential router as `teardown`.
-    const credentialTeardownExo = (c: Record<string, Record<string, unknown>>) =>
-      (c.connectorCredentials?.teardown as { deps?: { exo?: { clearSource?: unknown } } } | undefined)?.deps?.exo;
     const captured: Record<string, Record<string, unknown>> = {};
     const capture = (name: string, config: Record<string, unknown>) => { captured[name] = config; };
     const googleEnv = {
       GOOGLE_MEET_OAUTH_ENABLED: "true", GOOGLE_OAUTH_CLIENT_ID: "test-client-id",
       GOOGLE_OAUTH_CLIENT_SECRET: "test-client-secret", GOOGLE_OAUTH_REDIRECT_URI: "https://app.invalid/callback",
       TRANSCRIPTION_API_URL: "https://transcriber.invalid", TRANSCRIPTION_API_KEY: "test-api-key",
-      CONNECTOR_CREDENTIAL_MASTER: randomBytes(32).toString("hex"), CONNECTOR_CONTENT_MASTER: randomBytes(32).toString("hex"), CONNECTOR_WEBHOOKS_ENABLED: "true", CONNECTOR_BACKEND_INGEST_ENABLED: "true",
-      FIREFLIES_OAUTH_CLIENT_ID: "test-fireflies-client", FIREFLIES_OAUTH_CLIENT_SECRET: "test-fireflies-secret", FIREFLIES_OAUTH_REDIRECT_URI: "https://app.invalid/fireflies-callback",
+      CONNECTOR_CREDENTIAL_MASTER: randomBytes(32).toString("hex"), CONNECTOR_WEBHOOKS_ENABLED: "true",
       CONNECTOR_WEBHOOK_PUBLIC_ORIGIN: "https://app.invalid",
     };
     const on = await bootIndex({ ...googleEnv, EXO_CAPABILITIES_ENABLED: "true" }, { capture });
@@ -1003,14 +979,12 @@ describe("backend entry-point HTTP and lifecycle guards", () => {
     expect(typeof captured.exoGrant?.teardownExoOwner).toBe("function");
     expect(typeof captured.calendar?.teardownExoOwner).toBe("function");
     expect(typeof (captured.connectorWebhooks?.exo as { clearSource?: unknown } | undefined)?.clearSource).toBe("function");
-    expect(typeof credentialTeardownExo(captured)?.clearSource).toBe("function");
     for (const key of Object.keys(captured)) delete captured[key];
     const off = await bootIndex(googleEnv, { capture });
     expect(off.exits).toEqual([]);
     expect(captured.delegation?.teardownExoOwner).toBeUndefined();
     expect(captured.calendar?.teardownExoOwner).toBeUndefined();
     expect(captured.connectorWebhooks?.exo).toBeUndefined();
-    expect(credentialTeardownExo(captured)).toBeUndefined();
   });
 
   test("PTX webhook is dark by default and fails closed when armed without its receiver secret", async () => {

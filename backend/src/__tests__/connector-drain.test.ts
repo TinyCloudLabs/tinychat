@@ -1396,14 +1396,11 @@ describe("index.ts wiring", () => {
   // connected response consumer that is cost and surfacing risk for no product behaviour; the
   // delivery's own enqueue is the whole server-side job.
   //
-  // W1 (backend-ingest plan §8.1) wires the `onDelivery` SEAM for the first time — to the
-  // cohort-gated ingest nudge, which tells the fetch worker an item landed and does nothing at
-  // all for a non-cohort address or with the flag dark. So the assertion is rewritten to the new
-  // truth per plan §11's disposition rule (no assertion keeps a stale rationale): what must never
-  // come back is a drain pass on the delivery path, not the seam itself.
-  test("trigger 1's drain kick is retired — the delivery seam nudges the fetch worker instead", () => {
+  // The post-ack `onDelivery` seam is gone with backend ingestion: nothing is wired after the
+  // 202 and no drain pass runs on the delivery path.
+  test("trigger 1's drain kick is retired — no post-ack hook is wired on the delivery path", () => {
     expect(source).not.toMatch(/onDelivery[\s\S]{0,200}drain\.kick/);
-    expect(source).toContain("onDelivery: createIngestOnDelivery(");
+    expect(source).not.toContain("onDelivery");
   });
 
   // OPTION C re-scopes trigger 2 to bounded queue maintenance: the TTL / dead-letter sweep,

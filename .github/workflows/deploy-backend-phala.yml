@@ -450,34 +450,12 @@ jobs:
           # from the request's Host header. `https://host[:port]`, no path — a malformed value
           # refuses to build the companion router instead of minting dead webhooks.
           CONNECTOR_WEBHOOK_PUBLIC_ORIGIN: ${{ vars.CONNECTOR_WEBHOOK_PUBLIC_ORIGIN }}
-          # W9 host-header allowlist on the public delivery route. Unset = derived from the
-          # pinned origin above, so the host we ANSWER on cannot drift from the URL we hand the
-          # provider. Set it only for an ingress that rewrites Host (`*` disables, loudly).
-          CONNECTOR_WEBHOOK_HOST_ALLOWLIST: ${{ vars.CONNECTOR_WEBHOOK_HOST_ALLOWLIST }}
-          # W9 / D4 single-instance seat. Unset = a random per-process id, which is correct for a
-          # single CVM; pin it when the SAME logical instance redeploys and should reclaim its own
-          # ingest lease instead of waiting out the 90 s TTL.
-          CONNECTOR_INGEST_INSTANCE_ID: ${{ vars.CONNECTOR_INGEST_INSTANCE_ID }}
-          # Backend-owned ingestion (W1). Ships DARK and stays dark until the operator enables
-          # it deliberately: true only ARMS it — deliveries still route by a per-address cohort
-          # allowlist held in the backend's own config KV, so a non-cohort address is untouched
-          # Option C. Declared here now because allowed_envs is frozen at CVM creation.
-          CONNECTOR_BACKEND_INGEST_ENABLED: ${{ vars.CONNECTOR_BACKEND_INGEST_ENABLED || 'false' }}
-          # W2 credential custody (backend-ingest plan §6.2). Wraps every stored per-user
-          # Fireflies credential; its OWN `openssl rand -base64 32` value — reusing
-          # WEBHOOK_HMAC_MASTER is a hard boot error. Declared now because allowed_envs is frozen
-          # at CVM creation, and it must SURVIVE redeploys: stripping it orphans every stored
-          # credential (cf. the tee-node ingress-secret-strip incident).
+          # Calendar autojoin credential custody (§6.2). Wraps every stored per-user Google
+          # credential; its OWN `openssl rand -base64 32` value — reusing WEBHOOK_HMAC_MASTER is
+          # a hard boot error. Declared now because allowed_envs is frozen at CVM creation, and it
+          # must SURVIVE redeploys: stripping it orphans every stored credential (cf. the
+          # tee-node ingress-secret-strip incident).
           CONNECTOR_CREDENTIAL_MASTER: ${{ secrets.CONNECTOR_CREDENTIAL_MASTER }}
-          # W4 content custody (backend-ingest plan §8.1 W4 / DECISIONS D3). Wraps every stored
-          # meeting; its OWN `openssl rand -base64 32` value — reusing either master above is a
-          # hard boot error. Declared now for the same allowed_envs freeze reason, and stripping
-          # it on a redeploy orphans every stored meeting rather than just failing loudly.
-          CONNECTOR_CONTENT_MASTER: ${{ secrets.CONNECTOR_CONTENT_MASTER }}
-          # The registered Fireflies OAuth app (custody branch b1 — DECISIONS V-a-branch).
-          FIREFLIES_OAUTH_CLIENT_ID: ${{ secrets.FIREFLIES_OAUTH_CLIENT_ID }}
-          FIREFLIES_OAUTH_CLIENT_SECRET: ${{ secrets.FIREFLIES_OAUTH_CLIENT_SECRET }}
-          FIREFLIES_OAUTH_REDIRECT_URI: ${{ vars.FIREFLIES_OAUTH_REDIRECT_URI }}
           # WP-A — the Google Meet OAuth proxy (gmeet plan §6 WP-A / §11). Ships DARK, and the
           # dark state is the ABSENCE of these repo secrets rather than a deliberate 'false':
           # unset ⇒ empty string ⇒ GOOGLE_MEET_OAUTH_ENABLED != 'true' ⇒ the five
@@ -584,14 +562,7 @@ jobs:
             printf '%s\n' "WEBHOOK_HMAC_MASTER_PREV=$WEBHOOK_HMAC_MASTER_PREV"
             printf '%s\n' "LOG_HASH_SALT=$LOG_HASH_SALT"
             printf '%s\n' "CONNECTOR_WEBHOOK_PUBLIC_ORIGIN=$CONNECTOR_WEBHOOK_PUBLIC_ORIGIN"
-            printf '%s\n' "CONNECTOR_WEBHOOK_HOST_ALLOWLIST=$CONNECTOR_WEBHOOK_HOST_ALLOWLIST"
-            printf '%s\n' "CONNECTOR_INGEST_INSTANCE_ID=$CONNECTOR_INGEST_INSTANCE_ID"
-            printf '%s\n' "CONNECTOR_BACKEND_INGEST_ENABLED=${CONNECTOR_BACKEND_INGEST_ENABLED:-false}"
             printf '%s\n' "CONNECTOR_CREDENTIAL_MASTER=$CONNECTOR_CREDENTIAL_MASTER"
-            printf '%s\n' "CONNECTOR_CONTENT_MASTER=$CONNECTOR_CONTENT_MASTER"
-            printf '%s\n' "FIREFLIES_OAUTH_CLIENT_ID=$FIREFLIES_OAUTH_CLIENT_ID"
-            printf '%s\n' "FIREFLIES_OAUTH_CLIENT_SECRET=$FIREFLIES_OAUTH_CLIENT_SECRET"
-            printf '%s\n' "FIREFLIES_OAUTH_REDIRECT_URI=$FIREFLIES_OAUTH_REDIRECT_URI"
             printf '%s\n' "GOOGLE_OAUTH_CLIENT_ID=$GOOGLE_OAUTH_CLIENT_ID"
             printf '%s\n' "GOOGLE_OAUTH_DESKTOP_CLIENT_ID=$GOOGLE_OAUTH_DESKTOP_CLIENT_ID"
             printf '%s\n' "GOOGLE_OAUTH_CLIENT_SECRET=$GOOGLE_OAUTH_CLIENT_SECRET"

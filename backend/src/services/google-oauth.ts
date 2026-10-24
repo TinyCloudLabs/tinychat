@@ -97,7 +97,7 @@ const DISABLED_CONFIG: GoogleOAuthConfig = {
 };
 
 /**
- * Env → config, with the `fireflies-oauth.ts:48-58` posture: armed-but-unregistered is a BOOT
+ * Env → config, with the same posture as the other boot checks: armed-but-unregistered is a BOOT
  * failure, not a first-request failure. An operator who sets the flag and forgets a var learns it
  * from a refused start, never from a user's half-finished consent screen.
  *
@@ -368,8 +368,8 @@ export class GoogleOAuthClient implements GoogleOAuthPort {
   }
 
   /**
-   * The refresh grant — the half `fireflies-oauth.ts` shapes differently, because there the
-   * server holds the credential and rotates it in a store. Here the browser holds the refresh
+   * The refresh grant — shaped differently from a server-held credential that is rotated in a
+   * store. Here the browser holds the refresh
    * token and hands it in per sync; nothing is written on this side of the call.
    *
    * Google usually omits `refresh_token` on a rotation, so the caller keeps the one it sent.
