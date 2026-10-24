@@ -213,9 +213,13 @@ jobs:
           fi
           echo "$RAW" | jq '{success, username, workspace, profile}'
 
-      # Fail closed before any image is built or the CVM is touched if it is not on the pinned production OS.
+      # Fail closed before any image is built or the CVM is touched unless it runs the pinned production OS, or the one
+      # pinned dev OS in .github/scripts/phala-dev-os-allowlist.txt after a fresh integrity check.
       # To fix it, set the OS by hand: `phala api -X PATCH /cvms/<id>/os-image -F os_image_name=dstack-0.5.12`.
-      - name: Require production OS image on the CVM
+      - name: Test the OS image guard
+        run: bash .github/scripts/test-phala-os-guard.sh
+
+      - name: Require a permitted OS image on the CVM
         env:
           PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
         run: |
@@ -225,13 +229,7 @@ jobs:
             echo "$RAW" | jq '{success, error, details}'
             exit 1
           fi
-          OS="$(echo "$RAW" | jq -c '.os')"
-          if ! echo "$OS" | jq -e --arg name "$PHALA_OS_IMAGE" --arg hash "$PHALA_OS_IMAGE_HASH" \
-            '.is_dev == false and .name == $name and .os_image_hash == $hash' >/dev/null; then
-            echo "::error title=CVM is not on the production OS image::${PHALA_CVM_ID} must run ${PHALA_OS_IMAGE} (${PHALA_OS_IMAGE_HASH}). Found: ${OS}"
-            echo "Set the OS first with PATCH /cvms/<id>/os-image (os_image_name=${PHALA_OS_IMAGE}), then re-run. CI does not change the OS." >&2
-            exit 1
-          fi
+          bash .github/scripts/phala-os-guard.sh <<<"$RAW"
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
@@ -636,8 +634,8 @@ jobs:
             --no-dev-os \
             --image "$PHALA_OS_IMAGE"
 
-      # Fail closed if the deploy left the CVM on a different OS image.
-      - name: Verify production OS image after deploy
+      # Fail closed if the deploy left the CVM on a different OS image (same rule as the check before the deploy).
+      - name: Verify the OS image after deploy
         env:
           PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
         run: |
@@ -647,12 +645,7 @@ jobs:
             echo "$RAW" | jq '{success, error, details}'
             exit 1
           fi
-          OS="$(echo "$RAW" | jq -c '.os')"
-          if ! echo "$OS" | jq -e --arg name "$PHALA_OS_IMAGE" --arg hash "$PHALA_OS_IMAGE_HASH" \
-            '.is_dev == false and .name == $name and .os_image_hash == $hash' >/dev/null; then
-            echo "::error title=CVM is not on the production OS image::${PHALA_CVM_ID} must run ${PHALA_OS_IMAGE} (${PHALA_OS_IMAGE_HASH}) after deploy. Found: ${OS}"
-            exit 1
-          fi
+          bash .github/scripts/phala-os-guard.sh <<<"$RAW"
 
       # `phala deploy` updates the encrypted env but NOT the CVM's registered
       # allowed_envs whitelist (frozen at CVM creation), so env vars added after
