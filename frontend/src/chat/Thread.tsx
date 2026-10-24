@@ -64,7 +64,7 @@ import {
 } from "@/lib/tinychatShareLinks";
 import { CHAT_SHARING_PAUSED, canOfferChatShare } from "@/lib/chatSharing";
 import { SHARE_LINK_COPY } from "@/lib/shareLinkCopy";
-import { OwnedShareLinkList, ShareLinksLoadFailed, formatShareDate, useOwnedShares } from "./OwnedShareLinks";
+import { OwnedShareLinksSection, ShareLinksLoadFailed, formatShareDate, useOwnedShares } from "./OwnedShareLinks";
 import { getThreadCompaction, subscribeThreadCompaction } from "./chatModelAdapter";
 import { ModelVerificationBadge } from "./ModelVerificationBadge";
 import { ToolActivityChip } from "./ToolActivityChip";
@@ -389,12 +389,7 @@ const ShareThreadProvider: FC<{ tcw: TinyCloudWeb; children: React.ReactNode }> 
           {loadFailed ? (
             <ShareLinksLoadFailed onRetry={() => void refreshOwnedShares()} />
           ) : (
-            owned.length > 0 && (
-              <div className="flex flex-col gap-2">
-                <div className="text-xs font-medium text-foreground">{SHARE_LINK_COPY.listTitle}</div>
-                <OwnedShareLinkList shares={owned} />
-              </div>
-            )
+            owned.length > 0 && <OwnedShareLinksSection shares={owned} />
           )}
 
           <DialogFooter>

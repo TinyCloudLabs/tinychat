@@ -23,16 +23,28 @@ export function formatShareDate(value: string): string {
 export const OwnedShareLinkList: FC<{ shares: readonly OwnedTinychatShare[] }> = ({ shares }) => {
   const now = Date.now();
   return (
-    <ul className="flex flex-col gap-2">
+    <ul className="flex flex-col gap-2" data-testid="owned-share-links">
       {shares.map((item) => (
-        <li key={item.shareId} className="flex items-center justify-between gap-3 text-sm">
-          <span className="min-w-0 truncate">{item.title}</span>
-          <span className="shrink-0 text-xs text-muted-foreground">{formatShareExpiry(item.expiresAt, now)}</span>
+        <li
+          key={item.shareId}
+          className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 text-sm"
+          data-testid="owned-share-link"
+        >
+          <span className="min-w-0 max-w-full break-words">{item.title}</span>
+          <span className="min-w-0 max-w-full text-xs text-muted-foreground">{formatShareExpiry(item.expiresAt, now)}</span>
         </li>
       ))}
     </ul>
   );
 };
+
+/** The list under its heading, as the Share dialog shows it. */
+export const OwnedShareLinksSection: FC<{ shares: readonly OwnedTinychatShare[] }> = ({ shares }) => (
+  <div className="flex flex-col gap-2">
+    <div className="text-xs font-medium text-foreground">{SHARE_LINK_COPY.listTitle}</div>
+    <OwnedShareLinkList shares={shares} />
+  </div>
+);
 
 /** Shown instead of a list when the owner's links could not be loaded. Never carries the error text. */
 export const ShareLinksLoadFailed: FC<{ onRetry: () => void }> = ({ onRetry }) => (
@@ -82,7 +94,7 @@ export const OwnedShareLinksCard: FC<{ tcw: TinyCloudWeb }> = ({ tcw }) => {
         ) : shares?.length ? (
           <OwnedShareLinkList shares={shares} />
         ) : shares ? (
-          <p className="text-sm text-muted-foreground">{SHARE_LINK_COPY.listEmpty}</p>
+          <p className="text-sm text-muted-foreground" data-testid="owned-share-links-empty">{SHARE_LINK_COPY.listEmpty}</p>
         ) : null}
       </div>
     </SectionCard>
