@@ -1,0 +1,82 @@
+name: Log shipper
+
+# TC-1978: the Vector config embedded in docker-compose.phala.yml is generated from log-shipper/. This lane runs it
+# with the real, checksum-pinned Vector binary: the config cases (`vector test`), a UDP-to-HTTP and local-only delivery check,
+# the per-window cap check, the volume limit cases and the daily budget check, and `vector validate` for both sidecar modes. The contract test for the compose and the deploy workflow runs in
+# backend.yml (backend/src/__tests__/logship-contract.test.ts).
+
+on:
+  pull_request:
+    paths:
+      - "log-shipper/**"
+      - "docker-compose.phala.yml"
+      - ".github/workflows/logship.yml"
+  push:
+    branches: [main]
+    paths:
+      - "log-shipper/**"
+      - "docker-compose.phala.yml"
+      - ".github/workflows/logship.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: logship-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  vector:
+    name: Vector config cases
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: Install checksum-pinned native Vector
+        run: |
+          work="$(mktemp -d -p /var/tmp tc1978.XXXXXX)"
+          echo "TC1978_WORK=$work" >> "$GITHUB_ENV"
+          curl --fail --location --silent --show-error https://github.com/vectordotdev/vector/releases/download/v0.59.0/vector-0.59.0-x86_64-unknown-linux-gnu.tar.gz --output "$work/vector.tar.gz"
+          printf '%s  %s\n' 'fb15878d1cd68445e0658792a8fa7ccf02ae8a353c6cc5d6fe867b171993e19f' "$work/vector.tar.gz" | sha256sum --check
+          tar -xzf "$work/vector.tar.gz" -C "$work"
+      - name: Config cases (real Vector, full boundary)
+        run: |
+          export HOME="$TC1978_WORK"
+          node log-shipper/build.mjs render-tests "$TC1978_WORK/tests.json"
+          "$TC1978_WORK/vector-x86_64-unknown-linux-gnu/bin/vector" test "$TC1978_WORK/tests.json"
+      - name: Volume limit cases (whole-stream cap, daily budget)
+        run: |
+          export HOME="$TC1978_WORK"
+          node log-shipper/build.mjs render-tests "$TC1978_WORK/limited.json" limited
+          "$TC1978_WORK/vector-x86_64-unknown-linux-gnu/bin/vector" test "$TC1978_WORK/limited.json"
+      - name: UDP-to-HTTP delivery and leak canaries
+        run: TMPDIR="$TC1978_WORK" node log-shipper/native-check.mjs "$TC1978_WORK/vector-x86_64-unknown-linux-gnu/bin/vector"
+      - name: Per-window caps and dropped counts
+        run: TMPDIR="$TC1978_WORK" node log-shipper/cap-check.mjs "$TC1978_WORK/vector-x86_64-unknown-linux-gnu/bin/vector"
+      - name: Daily budget with a shortened day (stops shipping, local copy continues, resets at the day boundary)
+        timeout-minutes: 5
+        run: TMPDIR="$TC1978_WORK" node log-shipper/budget-check.mjs "$TC1978_WORK/vector-x86_64-unknown-linux-gnu/bin/vector"
+      - name: Validate both sidecar modes (base alone, and base plus ship config) without contacting the sink
+        run: |
+          export HOME="$TC1978_WORK"
+          node --input-type=module -e "
+            const { buildParts } = await import('./log-shipper/build.mjs');
+            const { writeFileSync } = await import('node:fs');
+            const parts = buildParts({ dataDir: process.env.TC1978_WORK });
+            writeFileSync(process.env.TC1978_WORK + '/base.json', JSON.stringify(parts.base));
+            writeFileSync(process.env.TC1978_WORK + '/ship.json', JSON.stringify(parts.ship));
+          "
+          mkdir -p "$TC1978_WORK/secrets"
+          printf '%s' synthetic > "$TC1978_WORK/secrets/bs_token"
+          vector="$TC1978_WORK/vector-x86_64-unknown-linux-gnu/bin/vector"
+          "$vector" validate --skip-healthchecks "$TC1978_WORK/base.json"
+          sed "s/__INGEST_HOST__/s2795438.us-west-2a.betterstackdata.com/" "$TC1978_WORK/ship.json" > "$TC1978_WORK/ship-host.json"
+          "$vector" validate --skip-healthchecks "$TC1978_WORK/base.json" "$TC1978_WORK/ship-host.json"
+      - name: Clean up
+        if: always()
+        run: rm -rf "$TC1978_WORK"

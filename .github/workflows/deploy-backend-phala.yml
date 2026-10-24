@@ -535,9 +535,41 @@ jobs:
           ASSEMBLYAI_API_KEY: ${{ secrets.ASSEMBLYAI_API_KEY }}
           ASSEMBLYAI_HOSTED_ADMIN_KEY: ${{ secrets.ASSEMBLYAI_HOSTED_ADMIN_KEY }}
           ASSEMBLYAI_HOSTED_FRESH_INSTALL: ${{ vars.ASSEMBLYAI_HOSTED_FRESH_INSTALL }}
+          # TC-1978 log shipping for the `vector` sidecar in docker-compose.phala.yml. The source token is the
+          # production-api environment secret BETTERSTACK_SOURCE_TOKEN; the ingest host is the repo variable
+          # TINYCHAT_BETTERSTACK_INGEST_HOST (a hostname, not a secret). Both are optional by design: unset, the sidecar
+          # keeps only its local filtered log and ships nothing. Both keys are always written below, so allowed_envs
+          # (derived from this file's keys by the sync step) carries them; setting either later is a plain redeploy.
+          PHALA_ENV_BETTERSTACK_SOURCE_TOKEN: ${{ secrets.BETTERSTACK_SOURCE_TOKEN }}
+          PHALA_ENV_BETTERSTACK_INGEST_HOST: ${{ vars.TINYCHAT_BETTERSTACK_INGEST_HOST }}
+          # Volume limits (repo variables, optional positive integers; a bad value is ignored and the sidecar's default
+          # applies). The budget is a HARD daily cap: at it the shipper drops logs until 00:00Z and never exceeds it.
+          PHALA_ENV_BETTERSTACK_DAILY_BYTE_BUDGET: ${{ vars.TINYCHAT_BETTERSTACK_DAILY_BYTE_BUDGET }}
+          PHALA_ENV_BETTERSTACK_MAX_LINES_PER_MINUTE: ${{ vars.TINYCHAT_BETTERSTACK_MAX_LINES_PER_MINUTE }}
         run: |
           ENV_FILE="$RUNNER_TEMP/phala-prod.env"
           DEPLOY_RUN_URL="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          # A multi-line token would corrupt the KEY=VALUE env file; fail before anything is written, without printing it.
+          if [[ "${PHALA_ENV_BETTERSTACK_SOURCE_TOKEN:-}" == *$'\n'* || "${PHALA_ENV_BETTERSTACK_SOURCE_TOKEN:-}" == *$'\r'* ]]; then
+            echo "::error title=Invalid log shipping token::BETTERSTACK_SOURCE_TOKEN must be a single-line value"
+            exit 1
+          fi
+          if [ -n "${PHALA_ENV_BETTERSTACK_INGEST_HOST:-}" ] && { [[ "$PHALA_ENV_BETTERSTACK_INGEST_HOST" == *$'\n'* ]] || ! [[ "$PHALA_ENV_BETTERSTACK_INGEST_HOST" =~ ^[a-z0-9][a-z0-9.-]*\.betterstackdata\.com$ ]]; }; then
+            echo "::error title=Invalid log shipping host::TINYCHAT_BETTERSTACK_INGEST_HOST must be a *.betterstackdata.com hostname"
+            exit 1
+          fi
+          log_budget="${PHALA_ENV_BETTERSTACK_DAILY_BYTE_BUDGET:-}"
+          log_lines="${PHALA_ENV_BETTERSTACK_MAX_LINES_PER_MINUTE:-}"
+          # 200000000 is MAX_DAILY_BYTE_BUDGET in log-shipper/limits.mjs (a test pins them together). Above it the value is
+          # ignored (never clamped) and the default applies; lifting the ceiling is a code change.
+          if [ -n "$log_budget" ] && { [[ "$log_budget" == *$'\n'* ]] || ! [[ "$log_budget" =~ ^[1-9][0-9]{0,11}$ ]] || [ "$log_budget" -gt 200000000 ]; }; then
+            echo "::warning title=Ignored log shipping limit::TINYCHAT_BETTERSTACK_DAILY_BYTE_BUDGET is not a positive integer of at most 200000000; the default applies"
+            log_budget=""
+          fi
+          if [ -n "$log_lines" ] && { [[ "$log_lines" == *$'\n'* ]] || ! [[ "$log_lines" =~ ^[1-9][0-9]{0,8}$ ]]; }; then
+            echo "::warning title=Ignored log shipping limit::TINYCHAT_BETTERSTACK_MAX_LINES_PER_MINUTE is not a positive integer; the default applies"
+            log_lines=""
+          fi
           {
             printf '%s\n' "BACKEND_PRIVATE_KEY=$BACKEND_PRIVATE_KEY"
             printf '%s\n' "TINYCLOUD_HOST=https://tee.node.tinycloud.xyz"
@@ -623,6 +655,10 @@ jobs:
             printf '%s\n' "ASSEMBLYAI_API_KEY=$ASSEMBLYAI_API_KEY"
             printf '%s\n' "ASSEMBLYAI_HOSTED_ADMIN_KEY=$ASSEMBLYAI_HOSTED_ADMIN_KEY"
             printf '%s\n' "ASSEMBLYAI_HOSTED_FRESH_INSTALL=$ASSEMBLYAI_HOSTED_FRESH_INSTALL"
+            printf '%s\n' "BETTERSTACK_SOURCE_TOKEN=${PHALA_ENV_BETTERSTACK_SOURCE_TOKEN:-}"
+            printf '%s\n' "BETTERSTACK_INGEST_HOST=${PHALA_ENV_BETTERSTACK_INGEST_HOST:-}"
+            printf '%s\n' "BETTERSTACK_DAILY_BYTE_BUDGET=$log_budget"
+            printf '%s\n' "BETTERSTACK_MAX_LINES_PER_MINUTE=$log_lines"
           } > "$ENV_FILE"
 
           echo "::group::Deploy environment keys"

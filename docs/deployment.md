@@ -244,6 +244,7 @@ Repository **secrets**:
 | `CONNECTOR_CONTENT_MASTER` | W4 content-custody master (backend ingest). Same rules — its own value, survives redeploys; wraps every stored meeting. |
 | `FIREFLIES_OAUTH_CLIENT_ID` | Registered Fireflies OAuth app (custody branch b1). Required with the ingest flag armed. |
 | `FIREFLIES_OAUTH_CLIENT_SECRET` | Fireflies OAuth app secret. Required with the ingest flag armed. |
+| `BETTERSTACK_SOURCE_TOKEN` | Ingest token of the log service source for the backend (`production-api` environment secret). Optional: unset deploys exactly as before and the log sidecar ships nothing (it keeps only its local filtered log). The deploy maps it to `PHALA_ENV_BETTERSTACK_SOURCE_TOKEN`, which is sealed as env `BETTERSTACK_SOURCE_TOKEN` (added to `allowed_envs` by the sync step). Never printed. See *Log shipping* below. |
 
 Repository **variables** (all optional — defaults shown):
 
@@ -292,6 +293,45 @@ Repository **variables** (all optional — defaults shown):
 | `TRANSCRIPTION_WEBHOOK_SECRET` | _(empty = unsigned-wake mode; when set, a `whsec_` plus 48 lowercase hex chars requiring raw-body HMAC)_ |
 | `TRANSCRIPT_DELIVERY_SWEEP_MS` | `600000` (minimum `60000`; first pass after 30 s, at most 200 upstream calls per pass) |
 | `TRANSCRIPT_DELIVERY_MAX_WRITES_PER_MIN` | `6` (minimum 1; one shared governor for each activation, SQL INSERT, KV PUT, state write, grant removal and recovered intent write) |
+| `TINYCHAT_BETTERSTACK_INGEST_HOST` | _(empty — repo **variable**; the log service source's ingest hostname, `*.betterstackdata.com`, not a secret. Sealed as env `BETTERSTACK_INGEST_HOST`. Without it, or without the token, the sidecar ships nothing.)_ |
+| `TINYCHAT_BETTERSTACK_DAILY_BYTE_BUDGET` | `20000000` (20 MB/day; repo **variable**, optional positive integer, at most `200000000` (200 MB/day); a bad value, or one above the ceiling, is ignored and the default applies, never clamped; lifting the ceiling is a code change). **At the daily budget the shipper drops logs until 00:00Z; it never exceeds it.** Nothing raises it automatically. Sealed as env `BETTERSTACK_DAILY_BYTE_BUDGET`. See *Log shipping*. |
+| `TINYCHAT_BETTERSTACK_MAX_LINES_PER_MINUTE` | `120` (whole backend stream; repo **variable**, optional positive integer of at most 9 digits, a bad value is ignored and the default applies). Lines over it are dropped and counted in one `log_stream_dropped` line per 60-second window. Sealed as env `BETTERSTACK_MAX_LINES_PER_MINUTE`. |
+
+### Log shipping (TC-1978)
+
+`docker-compose.phala.yml` runs a `vector` sidecar (the same pinned image as tinycloud-node's) next to the backend. The backend's console
+output goes to it through Docker's `gelf` driver over loopback UDP (nonblocking; the backend does not depend on the sidecar). Only fixed-code,
+typed fields leave the service: `log-shipper/sanitize.vrl` keeps allow-listed keys with strict value shapes, registered fixed messages and
+error classes, and drops everything else (counted per 60-second window as `logship_gate_summary_total`, content-free); `log-shipper/fields.json` is the
+field schema and `log-shipper/diagnostics.json` the registered message list. Per component and event code at most 30 lines per 60-second window are shipped;
+the overflow is reported as one `log_dropped` count.
+
+| Name | Where | Notes |
+| --- | --- | --- |
+| `BETTERSTACK_SOURCE_TOKEN` | `production-api` environment secret | Source token; optional. |
+| `PHALA_ENV_BETTERSTACK_SOURCE_TOKEN` | deploy step env | Mapping of the secret; the deploy writes it as `BETTERSTACK_SOURCE_TOKEN=` in the sealed env file (key always present, so `allowed_envs` carries it). |
+| `TINYCHAT_BETTERSTACK_INGEST_HOST` | repo variable | Ingest hostname of the source; optional. A new source needs only a new variable value. |
+| `PHALA_ENV_BETTERSTACK_INGEST_HOST` | deploy step env | Mapping of the variable; written as `BETTERSTACK_INGEST_HOST=`. |
+| `BETTERSTACK_SOURCE_TOKEN`, `BETTERSTACK_INGEST_HOST` | sealed CVM env | Read only by the `vector` service. The token is written to a `0600` file and unset before Vector starts; the host must be a `*.betterstackdata.com` hostname or shipping stays off. |
+
+**Volume limits (hard caps; the shipper drops logs, it never pays or overflows).** The log service's free tier is shared by every source, so the backend is bounded three ways, all in front of the sinks:
+- per component, event code, op and result: at most 30 lines per 60-second window; the overflow is reported as `log_dropped` lines, at most 10 per window (the keys with the most drops);
+- the whole stream: at most `BETTERSTACK_MAX_LINES_PER_MINUTE` (default 120) lines per 60-second window pass; the overflow, plus the drops of every key that did not get its own `log_dropped` line, is ONE `log_stream_dropped` line per window carrying only a count. So a sink sees at most 120 + 10 + 1 lines per 60-second window, plus at most 8 gate-summary lines (one per gate reason): 139 at the default. The window is a fixed 60 seconds (it starts at the first line), not a rolling minute, so a rolling minute that spans a window boundary can carry more;
+- a daily byte budget, `BETTERSTACK_DAILY_BYTE_BUDGET` (default 20 MB/day of estimated JSON bytes sent): **at the daily budget the shipper drops logs until 00:00Z; it never exceeds it.** It stops sending to the log service for the rest of the UTC day, writes ONE fixed `daily_budget_reached` line to the local copy only, and nothing more; the local copy continues. Nothing raises the budget automatically, and it resets at 00:00Z.
+
+The counter is kept in memory, so a sidecar restart can re-spend it: three restarts in a day still stay under about 60 MB/day. Sizing: the free tier is 3 GB retained with 3-day retention (unconfirmed), about 1 GB/day for all sources together; 20 MB/day is about 60 MB retained, about 2% of the tier, against a measured node volume of about 0.06 GB/day (an estimate). Raising the budget up to the 200 MB/day ceiling (about 20% of the tier) needs only the repo variable. The default numbers live in `log-shipper/limits.mjs`, and only there.
+
+**Local copy.** The same filtered stream (never the raw lines) is also printed by the sidecar to its own stdout, which Docker keeps in a rotating
+`json-file` log of about 10 MB (2 files of 5 MB). Read it with `docker logs` on the `vector` service. With the token or the host unset, the
+sidecar runs local-only and prints one fixed line. The backend container itself has no local copy (the gelf driver keeps none), so `docker logs` on
+the backend is empty after the first deploy that carries these changes.
+
+**allowed_envs.** The sync step (`.github/scripts/phala-sync-allowed-envs.mjs`) is add-only: it sends the union of the CVM's existing
+`allowed_envs` and the keys of the deploy's env file, and does nothing if no key is missing. The first deploy adds `BETTERSTACK_SOURCE_TOKEN` and
+`BETTERSTACK_INGEST_HOST`; no existing name is removed.
+
+Changing the log config means regenerating the embedded `VECTOR_CONFIG_JSON` and `VECTOR_SHIP_JSON`: `node log-shipper/build.mjs sync-compose docker-compose.phala.yml`.
+Checks: `.github/workflows/logship.yml` runs `vector test` (config cases), `vector validate`, a UDP-to-HTTP and local-only check and the cap check.
 
 ### Private Transcription server delivery (TC-641) — dark rollout runbook
 

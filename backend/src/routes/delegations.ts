@@ -166,8 +166,8 @@ export function createDelegationRouter(config: DelegationRoutesConfig) {
     // Exo owner cleanup after the delegation is revoked, outside the coordinator lock. Best-effort: a failure
     // is logged and the exo grant stays for the owner's DELETE retry.
     if (config.teardownExoOwner) {
-      try { await config.teardownExoOwner(address); } catch (error) {
-        console.log(`[delegations] code=exo_teardown outcome=failed error=${error instanceof Error ? error.message : "unknown"}`);
+      try { await config.teardownExoOwner(address); } catch {
+        console.log("[delegations] code=exo_teardown outcome=failed");
       }
     }
     res.json({ status: "none", expiresAt: null });
