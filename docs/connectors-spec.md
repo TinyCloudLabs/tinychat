@@ -334,76 +334,51 @@ key, descriptor.secretScope ? { scope: descriptor.secretScope } : undefined)`.
   `GRANOLA_API_KEY`; OAuth/session credentials such as Google Meet's
   `REFRESH_TOKEN` remain connector-scoped. Secret names MUST match
   `/^[A-Z][A-Z0-9_]*$/`.
-- `readConnectorKey(tcw, descriptor, { interactive })`, `deleteConnectorKey` — same pattern via `.get`/`.delete`. The `interactive` flag has no default.
+- `getConnectorKey`, `deleteConnectorKey` — same pattern via `.get`/`.delete`.
 - All SDK calls return `Result<T, E>` objects (`{ok, data|error}`) — propagate, never throw.
 - **First-put 404 defense**: the node-sdk docs note a valid session can still 404 on the
   first `secrets.put` if the dedicated `secrets` space was never hosted. If `put` fails
   with a not-found-shaped error, call `tcw.ensureOwnedSpaceHosted?.("secrets")` if the
   method exists, then retry once. If the method doesn't exist on web-sdk, surface the
   error honestly (no silent fallback — debugging rule).
-- **Every action the connector needs is granted at sign-in consent, except decrypt.**
-  Decrypt is requested at read time (see below). A restored session has no signer unless a
-  provider is passed (see the lazy provider below). Without one, escalation through
-  `grantRuntimePermissions` fails with "grantRuntimePermissions requires wallet mode with
-  a signer or privateKey". The `secrets` shorthand therefore grants `delete` at sign-in
-  (rationale in `backend/src/__tests__/manifest.test.ts`). The decrypt `requestPermissions`
-  on a restored session with the lazy provider has not been run against a live node.
+- **Every action the connector needs must be granted at sign-in consent — do NOT
+  rely on the SDK's permission-escalation modal.** This spec used to say the modal
+  was expected UX; that position was wrong and the browser lane disproved it.
+  Escalation routes through `grantRuntimePermissions`, which requires a wallet
+  signer. A restored session has none, so the modal renders, the user clicks
+  Approve, and it fails with "grantRuntimePermissions requires wallet mode with a
+  signer or privateKey" — a dead end the user cannot get past. Hence the `secrets`
+  shorthand declares `["read","write","delete"]`: `delete` is for disconnect, which
+  would otherwise hit exactly that wall. (SDK issue: runtime escalation is
+  structurally unusable for restored sessions, which is the normal state of any
+  returning user.)
 
-**Secrets reads request decrypt separately.** Sign-in requests only
-`tinycloud.encryption` / `network.create` on the owner's default encryption network
-(`lib/connectors/encryptionGrant.ts`). The network is created on the first save by
-`ensureEncryptionNetwork` in `connectorSecrets.ts`, once per session.
+**KNOWN BLOCKER (worked around app-side, pending an SDK fix) — secrets reads on
+web-sdk 2.5.1.** Reading a secret back is refused with `PERMISSION_DENIED`
+("grantRuntimePermissions requires wallet mode with a signer or privateKey"), and
+no _static_ manifest change can fix it. The write path works, so connect + sync
+were never affected; only re-reading the stored key was blocked (which "Sync now"
+needs once the in-memory key is gone).
 
-Reading a stored key needs a separate decrypt grant. `readConnectorKey` in `connectorSecrets.ts`
-takes an explicit `interactive` flag. Only explicit user actions (Sync now, Disconnect, Meeting
-sources sync, and the queued-meetings sync) pass `interactive: true`, and only that path may request
-the grant through `ensureDecryptStepUp`. The grant is exactly one `tinycloud.encryption` / `decrypt`
-entry on the default network, with an expiry of `DECRYPT_STEP_UP_EXPIRY_MS` (3,540,000 ms, under one
-hour). A background read (the background drain and Google Meet session sync)
-passes `interactive: false` and never prompts. Without a held grant it returns `needs-unlock`
-(`NEEDS_UNLOCK_MESSAGE`) before any SDK call. The connector shows its locked state, and the next
-explicit action retries. A declined request returns `decrypt-declined` and reads nothing. The request
-is not retried.
+The workaround: `lib/connectors/encryptionGrant.ts` composes the missing
+`tinycloud.encryption` / `decrypt` entry once the address is known, and `App.tsx`
+appends it to the manifest handed to `createAndSignIn` — sign-in only, since
+capabilities are minted from that manifest and a restored session can never
+acquire them. It hardcodes the SDK-internal networkId URN format, so it is
+sanctioned product surgery, not a design: delete the single
+`withEncryptionDecryptGrant(...)` call when the SDK carries the capability itself.
+Existing sessions need one sign-out/sign-in to pick the grant up.
 
-A restored session gets a lazy EIP-1193 provider (`createLazyWalletProvider` in
-`frontend/src/lib/lazyWalletProvider.ts`, passed in the restore config at
-`frontend/src/App.tsx`). `restoreTinyCloudWebSession` (`packages/client/src/tinycloud.ts`) sets
-the provider only when one is passed, so the restored client has a signer. The provider answers
-`eth_chainId` from the configured chain, and `eth_accounts` and `eth_requestAccounts` with the
-stored address, all without opening the wallet. `personal_sign` is the only method that opens
-OpenKey, and a successful open is reused. Every other method is refused with code 4200. A wallet
-for a different address rejects with `WALLET_ACCOUNT_MISMATCH_MESSAGE`. A failed open is not
-cached, so the next request retries it.
-
-`ensureDecryptStepUp` checks `hasPermissions` first and returns with no prompt when the grant is
-held. With no grant and `interactive: false`, it returns `needs-unlock` and makes no SDK call. With
-`interactive: true` it checks `isWalletConnected` next. A client without a signer returns
-`wallet-unavailable` (`WALLET_UNAVAILABLE_MESSAGE`) before any prompt, because `requestPermissions`
-throws on such a client. After a reload, the first explicit reveal shows the SDK permission prompt,
-then the OpenKey signature. A later explicit reveal within the hour shows neither.
-
-`readConnectorKey` is the only read path. A lint test fails if any source file outside
-`connectorSecrets.ts` accesses `.secrets` directly. The only exemption is an injected dependency
-bag, and it is allowlisted per file by path and receiver name, so the same name elsewhere is still
-flagged. The check is line-based, not a full AST. A second guard checks the `interactive` value at
-each `readConnectorKey` call site: a literal `true` must be a user-press caller, a literal `false`
-must be a background caller, and a non-literal value must be a listed pass-through. Each caller's
-value is therefore reviewed where it is written. KV reads come from the sign-in session's manifest,
-which grants
-`tinycloud.kv` `get` on the vault paths. The step-up never adds KV entries; a regression test
-enforces this.
-
-Sessions created before this change may still hold the older decrypt grant. This change
-does not revoke it.
-
-Sessions created before this change are asked to sign in once more by the revision gate
-(`lib/manifestRevision.ts`). Native sessions are unchanged. `EXO_MANIFEST_REVISION` MUST be
-bumped whenever sign-in grants change.
-
-**SDK pin.** The root `overrides` pin the 3.5.0 SDK family (`@tinycloud/sdk-core`,
-`@tinycloud/sdk-services`, `@tinycloud/node-sdk`, `@tinycloud/web-sdk`). The frontend declares
-`@tinycloud/sdk-core` 3.5.0 directly. The `packages/client` and `packages/server` manifests still
-declare 3.3.0, which the overrides supersede.
+Why: node-sdk's `createVaultService` always passes an `encryption` config, and
+`usesNetworkEncryption` is just `encryption !== undefined`, so the secrets vault is
+always network-encrypted. `NodeSecretsService.ensurePermission` adds, for `get`
+only, a `tinycloud.encryption` / `decrypt` entry on the network id
+`urn:tinycloud:encryption:<ownerDid>:default`. Nothing grants it: no default tier
+includes encryption, and the manifest cannot name it because the URN embeds the
+signed-in user's DID, while `expandEncryptionPermissionEntry` rejects any path that
+is not a networkId URN (so no wildcard). Escalation is the SDK's only route and it
+needs a wallet signer a restored session does not have. Fix belongs in the SDK —
+do not work around it in product code.
 
 ## 8. Sync engine (`firefliesSync.ts`)
 
