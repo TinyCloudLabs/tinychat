@@ -1,4 +1,28 @@
-import { resolveMeetingRelativeDates, type CalendarContext } from "./meeting-turn.js";
+export interface CalendarContext { localDate: string; timeZone: string }
+
+const relativeDates = ["today", "yesterday", "last_week", "this_week", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
+
+function validCalendarDate(value: unknown): value is string {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const date = new Date(`${value}T12:00:00Z`);
+  return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value;
+}
+function validTimeZone(value: unknown): value is string {
+  if (typeof value !== "string" || !value || value.length > 100) return false;
+  try { new Intl.DateTimeFormat("en", { timeZone: value }).format(0); return true; } catch { return false; }
+}
+
+/** Calendar arithmetic uses the supplied local day, independent of DST offsets. */
+export function resolveMeetingRelativeDates(relativeDate: string, context?: CalendarContext): { from: string; to: string } | undefined {
+  if (!relativeDates.includes(relativeDate) || !validCalendarDate(context?.localDate) || !validTimeZone(context?.timeZone)) return undefined;
+  const day = new Date(`${context!.localDate}T12:00:00Z`);
+  const shift = (n: number) => new Date(day.getTime() + n * 86400000).toISOString().slice(0, 10);
+  const weekday = (day.getUTCDay() + 6) % 7;
+  if (relativeDate === "last_week") return { from: shift(-weekday - 7), to: shift(-weekday - 1) };
+  if (relativeDate === "this_week") return { from: shift(-weekday), to: shift(6 - weekday) };
+  const offset = relativeDate === "today" ? 0 : relativeDate === "yesterday" ? -1 : -((weekday - (relativeDates.indexOf(relativeDate) - 4) + 7) % 7);
+  return { from: shift(offset), to: shift(offset) };
+}
 
 export interface LegacyMeetingDateScope { from: string; to: string; timeZone: string }
 

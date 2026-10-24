@@ -65,7 +65,7 @@ async function setup(overrides: Partial<AgentChatConfig> = {}, session: SessionF
 
 describe("admitted Eliza task route", () => {
   it("submits one trusted task and preserves the existing browser content/ID/usage/DONE contract", async () => {
-    const run = await setup({ meetingContentRetrievalEnabled: true });
+    const run = await setup();
     try {
       const response = await fetch(run.url, { method: "POST", headers: run.headers, body: JSON.stringify({ model, roomId: "thread-local", messages: [{ role: "system", content: "Existing account context" }, { role: "user", content: "Hello" }], clientContext: { localDate: "2026-09-15", timeZone: "Europe/Lisbon" }, entityId: "forged" }) });
       const body = await response.text();
