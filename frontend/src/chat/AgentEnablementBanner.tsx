@@ -18,6 +18,7 @@ import { isChatViewPath } from "./chatViewPath";
 import { openkeyPasskeysSupported } from "../lib/openkeyPasskeys";
 import { Button } from "@/components/ui/button";
 import { HowItWorksLink } from "@/components/ui/how-it-works-link";
+import { LocalNodeNotice, useLocalNode } from "./LocalNodeNotice";
 
 interface AgentEnablementBannerProps {
   capability: AgentCapability;
@@ -158,6 +159,7 @@ export function ChatViewAgentEnablementBanner() {
  * the agent-access section of How it works.
  */
 export function AgentAccessControls(props: UseAgentEnablementResult) {
+  const localNode = useLocalNode();
   const connected = props.capability === "enabled";
   const unknown = props.status === null;
   const unverified = unknown && props.reconnectReason === "delegation_unverified";
@@ -168,16 +170,17 @@ export function AgentAccessControls(props: UseAgentEnablementResult) {
       </p>
       <div className="flex flex-wrap gap-2">
         <Button type="button" size="sm" onClick={() => void props.onEnable()}
-          disabled={props.enabling || props.disconnecting || props.capability === "probing"}
+          disabled={localNode || props.enabling || props.disconnecting || props.capability === "probing"}
           className="font-semibold">
           {props.enabling ? "Connecting…" : connected || props.reconnectReason ? "Reconnect agent" : "Connect agent"}
         </Button>
-        {(connected || props.disconnecting || unknown) && <Button type="button" size="sm" variant="outline" onClick={() => void props.onDisconnect()}
+        {!localNode && (connected || props.disconnecting || unknown) && <Button type="button" size="sm" variant="outline" onClick={() => void props.onDisconnect()}
           disabled={props.disconnecting || props.capability === "probing"}
           className="font-semibold">
           {props.disconnecting ? "Disconnecting…" : unknown && !unverified ? "Retry disconnect" : "Disconnect agent"}
         </Button>}
       </div>
+      {localNode && <LocalNodeNotice />}
       {props.enableError && <p role="alert" className="text-xs text-destructive">{props.enableError}</p>}
       <HowItWorksLink section="agent-access" />
     </div>

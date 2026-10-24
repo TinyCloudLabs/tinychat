@@ -9,6 +9,7 @@ import {
   MeetingSourcesDialog,
   SOURCE_IDS,
 } from "../../meetingSources/MeetingSourcesDialog";
+import { LocalNodeNotice, useLocalNode } from "../../../chat/LocalNodeNotice";
 import { DESKTOP_HOME_COPY as COPY } from "./desktopCopy";
 
 export type ConnectedRead =
@@ -79,7 +80,7 @@ export function ConnectMeetingsButton(props: {
   );
 }
 
-export function ConnectMeetingsLink(props: {
+function ConnectMeetingsControl(props: {
   tcw: TinyCloudWeb;
   backendUrl: string;
   sessionStore: SessionStore;
@@ -104,4 +105,13 @@ export function ConnectMeetingsLink(props: {
       />
     </>
   );
+}
+
+/** Connect meetings; off while the app uses a node on this computer (the sources need Exo's online service). */
+export function ConnectMeetingsLink(props: {
+  tcw: TinyCloudWeb;
+  backendUrl: string;
+  sessionStore: SessionStore;
+}) {
+  return useLocalNode() ? <LocalNodeNotice /> : <ConnectMeetingsControl {...props} />;
 }

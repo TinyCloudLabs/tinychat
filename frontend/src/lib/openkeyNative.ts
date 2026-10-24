@@ -25,6 +25,7 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { authErrorMessage, UserFacingError } from "./authErrors";
 import { nativeRenewAt, renewalLeadMs, terminalRenewalError, nativeCode } from "./openkeyNativeRenewal";
 import { withAbortTimeout } from "./abortTimeout";
+import { HOSTED_DEFAULT_HOST, resolveNodeHosts } from "./nodeHost";
 
 // ── Gate ──────────────────────────────────────────────────────────────
 
@@ -642,7 +643,7 @@ export async function signOutNative(deps?: {
   const env = deps?.env ?? import.meta.env;
   const create = deps?.createOpenKeyNative ?? (await defaultDeps()).createOpenKeyNative;
   const openkey = nativeClient(
-    nativeClientOptions(env, env.VITE_TINYCLOUD_HOST ?? "https://tee.node.tinycloud.xyz"),
+    nativeClientOptions(env, resolveNodeHosts({ env }).hosts[0] ?? HOSTED_DEFAULT_HOST),
     create,
   );
   await withNativeDeadline(openkey.signOut());

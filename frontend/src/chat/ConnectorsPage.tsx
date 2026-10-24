@@ -4,6 +4,7 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { useNavKind } from "@/shell/navItems";
 import { PAGE_COLUMN, PageHeader, SettingsGear } from "@/shell/PageHeader";
+import { LocalNodeNotice, useLocalNode } from "./LocalNodeNotice";
 
 const MeetingSourcesFeature = lazy(() => import("@/capture/meetingSources/MeetingSourcesDialog").then((m) => ({ default: m.MeetingSourcesFeature })));
 
@@ -35,6 +36,8 @@ interface ConnectorsPageProps {
  */
 export function ConnectorsPage({ tcw, backendUrl, sessionStore }: ConnectorsPageProps) {
   const nav = useNavKind();
+  // The meeting sources (Fireflies, Google Meet) need Exo's online service: off while the app uses a node on this computer.
+  const localNode = useLocalNode();
   return (
     // `relative` makes this scroller the containing block for absolutely
     // positioned descendants (the `sr-only` form labels). Without it they
@@ -54,9 +57,13 @@ export function ConnectorsPage({ tcw, backendUrl, sessionStore }: ConnectorsPage
               <LocationSpikeSection tcw={tcw} />
             </Suspense>
           )}
-          <Suspense fallback={null}>
-            <MeetingSourcesFeature tcw={tcw} backendUrl={backendUrl} sessionStore={sessionStore} />
-          </Suspense>
+          {localNode ? (
+            <LocalNodeNotice />
+          ) : (
+            <Suspense fallback={null}>
+              <MeetingSourcesFeature tcw={tcw} backendUrl={backendUrl} sessionStore={sessionStore} />
+            </Suspense>
+          )}
         </div>
       </div>
     </div>

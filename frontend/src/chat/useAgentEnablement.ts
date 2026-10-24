@@ -8,6 +8,7 @@ import {
   type AgentSessionStatus, type AgentSessionEnvelope, type AgentSessionSnapshot,
 } from "../lib/agentDelegation";
 import type { AgentDelegationErrorCode } from "../lib/agentChatApi";
+import { isLocalNodeHost } from "../lib/nodeHost";
 
 /** Connect failure copy. Shows the server's stable error code, never its free-text detail. */
 export function connectErrorMessage(error: unknown): string {
@@ -144,7 +145,13 @@ export function createAgentAccessController(opts: UseAgentEnablementOptions) {
     update({ ...result, reconnectReason: result.status === "expired" ? "delegation_expired"
       : result.status === "stale" ? "delegation_stale" : null });
   };
+  // A node on this computer: the agent service cannot reach it, so access stays unavailable and nothing is probed or minted.
+  const localNode = isLocalNodeHost(opts.tinycloudHosts?.[0] ?? opts.tcw.hosts?.[0]);
   const refresh = async () => {
+    if (localNode) {
+      apply({ capability: "unavailable", status: null, revision: null, probeFailed: false });
+      return;
+    }
     if (replacementPending || stopping) { scheduleProbe(); return; }
     if (!isOnline()) { markOffline(); return; }
     const currentOperation = operation;
@@ -164,6 +171,7 @@ export function createAgentAccessController(opts: UseAgentEnablementOptions) {
     access(false, null);
   };
   const onEnable = (): Promise<void> => {
+    if (localNode) return Promise.resolve();
     if (ceremony) return ceremony;
     if (stopping || disposed) return stopping ?? Promise.resolve();
     const currentOperation = ++operation;

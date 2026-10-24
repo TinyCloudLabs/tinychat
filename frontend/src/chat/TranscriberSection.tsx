@@ -31,6 +31,7 @@ import {
 import { useTranscriberSavedState } from "./useTranscriberLibrarySync";
 import { createCalendarAutojoinClient, calendarOutcomeLabel, type CalendarAutojoinOutcome } from "@/lib/connectors/calendarAutojoinApi";
 import { transcriberMeetingTitle } from "@/lib/transcriberSave";
+import { useLocalNode } from "./LocalNodeNotice";
 
 export const ACTIVE_STATUSES: ReadonlySet<TranscriberMeetingStatus> = new Set([
   "queued",
@@ -846,7 +847,10 @@ export function useMeetingBot({ backendUrl, sessionStore, client, calendar: cale
   const anyActive = activeMeetings(meetings).length > 0;
   const normalizedFormUrl = normalizeMeetingUrl(url);
   const activeForForm = normalizedFormUrl === null ? null : activeMeetingForUrl(meetings, normalizedFormUrl);
-  const timers = meetingBotTimers({ active, anyActive, listStatus });
+  // The notetaker needs Exo's online service: on a node on this computer it reads as "dark" (the Meeting action is
+  // hidden, as when the backend has no notetaker) and nothing polls.
+  const localNode = useLocalNode();
+  const timers = meetingBotTimers({ active: active && !localNode, anyActive, listStatus: localNode ? "dark" : listStatus });
 
   // The calendar refresh: the next one is scheduled once the last has
   // settled, so a slow read never overlaps another; one that lands after the
@@ -1067,7 +1071,7 @@ export function useMeetingBot({ backendUrl, sessionStore, client, calendar: cale
   );
 
   return {
-    listStatus,
+    listStatus: localNode ? "dark" : listStatus,
     meetings,
     saved,
     form: {
