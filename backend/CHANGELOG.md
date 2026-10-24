@@ -1,5 +1,23 @@
 # @tinychat/backend
 
+## 0.5.7-beta.14
+
+### Patch Changes
+
+- 333a8f1: Show the notetaker stuck-joining state.
+
+## 0.5.7-beta.13
+
+### Patch Changes
+
+- 813e839: Add an optional authenticated count of stored connector credentials, off unless a key is configured.
+
+## 0.5.7-beta.12
+
+### Patch Changes
+
+- 648edff: Add an optional one-time row count for stored connector credentials, off by default.
+
 ## 0.5.7-beta.11
 
 ### Patch Changes

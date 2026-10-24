@@ -1,5 +1,29 @@
 # @tinychat/frontend
 
+## 0.10.0-beta.29
+
+### Patch Changes
+
+- 333a8f1: Show the notetaker stuck-joining state.
+
+## 0.10.0-beta.28
+
+### Patch Changes
+
+- 5c1d6d4: Turn the Conversation Canvas back on. It stays off for each user until they turn it on under Settings > Experimental.
+
+## 0.10.0-beta.27
+
+### Patch Changes
+
+- b083512: Update the web frontend to `@openkey/sdk` 0.12.1 for OpenKey embedded widget layout negotiation (TC-1183).
+
+## 0.10.0-beta.26
+
+### Patch Changes
+
+- 05cac77: Library: a combined meeting replaces its source captures in the list; the combined page lists its sources, each opens its own page (TC-1152)
+
 ## 0.10.0-beta.25
 
 ### Patch Changes

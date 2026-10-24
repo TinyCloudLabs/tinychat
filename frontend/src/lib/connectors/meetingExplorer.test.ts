@@ -13,6 +13,7 @@ import type { FirefliesSentence } from "./firefliesClient.js";
 import {
   EXPLORER_MEETING_SOURCES,
   findMeetingId,
+  hiddenMemberKeys,
   listMeetings,
   listMeetingsRead,
   meetingSourceLabel,
@@ -293,6 +294,84 @@ describe("listMeetings", () => {
   });
 });
 
+describe("combined meetings hide their members (TC-1152)", () => {
+  const merged = (id: string, metadata: unknown) => ["exo-merged", `m-${id}`, id, metadata] as const;
+  function seeded(rows: (readonly [string, string, string, unknown])[]) {
+    const { sqlite, tcw } = realListingSpace();
+    const insert = sqlite.prepare("INSERT INTO connector_meeting (id, source, source_id, title, started_at, duration_secs, metadata) VALUES (?, ?, ?, 'T', '2026-10-19T10:00:00.000Z', 60, ?)");
+    for (const [source, sourceId, id, metadata] of rows) insert.run(id, source, sourceId, metadata === null ? null : typeof metadata === "string" ? metadata : JSON.stringify(metadata));
+    return tcw;
+  }
+  const members = (...m: [string, string][]) => ({ merge: { members: m.map(([source, source_id]) => ({ source, source_id, body_sha256: "x" })) } });
+  const visible = async (tcw: TinyCloudWeb) => {
+    const read = await listMeetingsRead(tcw);
+    if (read.status !== "ok") throw new Error("list failed");
+    const hidden = hiddenMemberKeys(read.meetings);
+    return { all: read.meetings, shown: read.meetings.filter((r) => !hidden.has(JSON.stringify([r.source, r.sourceId]))).map((r) => r.id).sort(), hidden };
+  };
+
+  it("hides exactly the named members, matching (source, source_id) exactly", async () => {
+    const tcw = seeded([
+      ["fireflies", "shared", "ff", "{}"],
+      ["tinycloud-transcriber", "shared", "nt-shared-id", "{}"], // same source_id, other source: not a member
+      ["tinycloud-transcriber", "n1", "nt", "{}"],
+      ["fireflies", "other", "other", "{}"],
+      ["fireflies", "Shared", "case", "{}"], // not normalised
+      merged("c", members(["fireflies", "shared"], ["tinycloud-transcriber", "n1"])),
+    ]);
+    const { shown } = await visible(tcw);
+    expect(shown).toEqual(["c", "case", "nt-shared-id", "other"]);
+  });
+
+  it("reads the members in the same single list query", async () => {
+    const { tcw, sqlCalls } = fakeTcw({ sql: { ok: true, data: { rows: [["c", "exo-merged", "m-c", "T", "2026-10-19T10:00:00.000Z", 60, null, null, JSON.stringify([{ source: "fireflies", source_id: "a" }])]] } } });
+    const read = await listMeetingsRead(tcw);
+    expect(read.status === "ok" && read.meetings[0]?.mergeMembers).toEqual([{ source: "fireflies", sourceId: "a" }]);
+    expect(sqlCalls.filter((c) => c.sql.includes("FROM connector_meeting"))).toHaveLength(1);
+  });
+
+  it("a combined row with unreadable or malformed members hides nothing and is still listed", async () => {
+    for (const metadata of ["{{{not json", null, "{}", { merge: {} }, { merge: { members: [] } }, { merge: { members: "x" } },
+      { merge: { members: [{ source: "fireflies", source_id: "a" }, { source: "fireflies" }] } }]) {
+      const tcw = seeded([["fireflies", "a", "ff", "{}"], merged("c", metadata)]);
+      const { shown, hidden } = await visible(tcw);
+      expect(hidden.size).toBe(0);
+      expect(shown).toEqual(["c", "ff"]);
+    }
+  });
+
+  it("a combined row naming itself or another combined meeting hides nothing extra", async () => {
+    const tcw = seeded([
+      ["fireflies", "a", "ff", "{}"],
+      merged("c1", members(["exo-merged", "m-c1"], ["exo-merged", "m-c2"], ["fireflies", "a"])),
+      merged("c2", members(["fireflies", "zzz"])),
+    ]);
+    const { shown } = await visible(tcw);
+    expect(shown).toEqual(["c1", "c2"]);
+  });
+
+  it("a combined row's members are not read from any other row's metadata", async () => {
+    const tcw = seeded([["fireflies", "a", "ff", members(["fireflies", "b"])], ["fireflies", "b", "ffb", "{}"]]);
+    const { all, shown } = await visible(tcw);
+    expect(all.every((r) => r.mergeMembers === undefined)).toBe(true);
+    expect(shown).toEqual(["ff", "ffb"]);
+  });
+
+  it("with no combined rows nothing is hidden and no row carries members", async () => {
+    const tcw = seeded([["fireflies", "a", "ff", "{}"], ["tinycloud-transcriber", "b", "nt", "{}"]]);
+    const { all, hidden } = await visible(tcw);
+    expect(hidden.size).toBe(0);
+    expect(all.every((r) => !("mergeMembers" in r))).toBe(true);
+  });
+
+  it("deleting the combined row brings its members back (nothing is stored)", async () => {
+    const tcw = seeded([["fireflies", "a", "ff", "{}"], merged("c", members(["fireflies", "a"]))]);
+    expect((await visible(tcw)).shown).toEqual(["c"]);
+    const again = seeded([["fireflies", "a", "ff", "{}"]]);
+    expect((await visible(again)).shown).toEqual(["ff"]);
+  });
+});
+
 describe("listMeetingsRead", () => {
   it("reads duration_secs, and only a number counts", async () => {
     const { tcw, sqlCalls } = fakeTcw({
@@ -549,7 +628,10 @@ describe("listMeetingsRead legacy-winner rewrite (TC-1274)", () => {
         expect(baselines[1]!.length).toBeGreaterThan(0);
         for (const [index, sources] of lists.entries()) {
           expect((await listMeetingsRead(tcw, sources)).status).toBe("ok");
-          expect(withoutTextSignal(listed!)).toEqual(baselines[index]!);
+          // TC-1152 appends one column (a combined row's members); with no combined row in the space it is NULL on
+          // every row, and everything before it is the baseline, row for row (less the text signal added since).
+          expect(listed!.every((row) => row.length === 9 && row[8] === null)).toBe(true);
+          expect(withoutTextSignal(listed!.map((row) => row.slice(0, 8)))).toEqual(baselines[index]!);
         }
         sqlite.close();
       }
