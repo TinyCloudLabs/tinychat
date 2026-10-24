@@ -277,7 +277,7 @@ Repository **variables** (all optional — defaults shown):
 | `AGENT_CHAT_BUDGET_PREFLIGHT` | `log` (values: `log`, `enforce`, `off`; `enforce` returns 402 `credit_budget_exceeded` before a turn starts; see `docs/credits.md`) |
 | `EXO_CAPABILITIES_ENABLED` | _(empty — off; only exactly `true` mounts `/api/exo/v1`; see `docs/exo-capabilities.md`)_ |
 | `LEDGER_SERVICE_URL` | _(empty — the ledger client is disabled when unset)_ |
-| `LEDGER_AUTHORITATIVE` | `false` (workflow default — flipping ledger authority is a deliberate cutover action, not part of a routine deploy) |
+| `LEDGER_AUTHORITATIVE` | `false` when neither the repo secret nor the repo variable is set. The deploy passes the configured value through, so check the repo setting rather than assuming the default. Turning it on is a deliberate cutover, not part of a routine deploy. |
 | `LEDGER_OUTAGE_POLICY` | `bounded_k` |
 | `CONNECTOR_BACKEND_INGEST_ENABLED` | `false` (**dark**; `true` only ARMS backend ingestion — addresses come from the cohort allowlist in the backend's own config KV. See §4 and the operator pre-rollout gates before ever setting this.) |
 | `FIREFLIES_OAUTH_REDIRECT_URI` | _(empty — the registered OAuth redirect URI; required with the ingest flag armed)_ |
@@ -352,7 +352,7 @@ written into the encrypted deployment env file, including their off/empty defaul
 forwarded by compose and included by `Sync CVM allowed_envs`. Verify the actual
 existing CVM's allowed names and resolved container settings. Changing a repository
 variable alone does not change a running process: these settings require a backend
-deploy/restart. Never enable a canary with an empty account list.
+deploy/restart. An empty list is not a canary: with tasks enabled it admits all authenticated accounts, so set the list before enabling.
 
 The allowed-name sync retains existing allowed names, but it encrypts the values
 from the complete deployment env file. Keeping an allowed name does not preserve
