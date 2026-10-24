@@ -28,6 +28,7 @@ import {
   formatModelSize,
   newlyDownloaded,
   partitionModels,
+  pickerModels,
   progressPercent,
   progressText,
   type Downloads,
@@ -528,11 +529,12 @@ export function CaptureSettings({
       const mine = ++request.current;
       if (showLoading) setLoad({ status: "loading" });
       try {
-        const [models, selected, systemAudio] = await Promise.all([
+        const [catalog, selected, systemAudio] = await Promise.all([
           extras.models.list(),
           extras.models.get(),
           extras.systemAudio.get(),
         ]);
+        const models = pickerModels(catalog, selected);
         if (mine === request.current) {
           focusTarget.current =
             focusAfterSync(focusedProgress(), models) ?? focusTarget.current;

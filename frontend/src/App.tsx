@@ -28,14 +28,15 @@ import {
   OFFERED_CHAT_MODELS,
   offeredChatModelContextTokens,
 } from "@tinyboilerplate/core";
-import { withEncryptionNetworkCreateGrant } from "./lib/connectors/encryptionGrant";
-import { replicationConfigPatch } from "./lib/replication/replicationClient";
+import { withEncryptionDecryptGrant } from "./lib/connectors/encryptionGrant";
+import { replicationConfigPatch, startReplicationFill } from "./lib/replication/replicationClient";
 import { rememberReplicationPrincipal } from "./lib/replication/replicationCopyMarker";
 import { purgeReplicaCopyWhenOffOnce } from "./lib/replication/replicationOffPurge";
+import { replicationRestorePatch } from "./lib/replication/replicationRestore";
+import { replicationPrincipalFor } from "./lib/replication/replicationOptIn";
 import { clientHasReplication, signOutReplicaAware } from "./lib/replication/replicationSignOut";
 import { uploadRunner } from "./lib/audioUpload";
 import { openkeyPasskeysSupported } from "./lib/openkeyPasskeys";
-import { createLazyWalletProvider } from "./lib/lazyWalletProvider";
 import { useVisualViewportFit } from "./lib/useVisualViewport";
 import { createWebSignInPrefetch, type WebSignInPrefetch } from "./lib/webSignInPrefetch";
 import { ChatWorkspace } from "./chat/ChatWorkspace";
@@ -155,7 +156,6 @@ import { NativeRenewal, guardNativeTinyCloudCalls, NATIVE_SESSION_ENDED_MESSAGE,
 import { isAuthSettledSignedOut } from "./lib/authRouting";
 import { clearSendIntentsForOwner } from "./chat/TranscriberSection";
 import { browserIsOffline, restorePersistedSession } from "./lib/sessionRestore";
-import { applyManifestRevisionGate, browserRevisionStore, recordManifestRevision } from "./lib/manifestRevision";
 import { clearTranscriptDelegationSchedule, ensureTranscriptWriterDelegation } from "./lib/transcriptDelegation";
 import { onAgentPaywallError, onAgentModelSelectionError } from "./lib/agentChatApi";
 import type { ThreadDoc, StoredMessageItem } from "./lib/threadStore";
@@ -464,9 +464,11 @@ export function App() {
   // signal used to sign the user out here.
   const restoreSession = useCallback(async () => {
     if (restoreInFlightRef.current) return;
-    // Replication OFF + a leftover local copy: shred its keys, then erase it (once per page load,
-    // not awaited, no-op without a marker). See lib/replication/replicationOffPurge.ts.
-    void purgeReplicaCopyWhenOffOnce();
+    // Replication OFF for the stored account + a leftover local copy (or a pending wipe): shred its
+    // keys, then erase it (once per page load, not awaited, no-op without a marker). An ON sign-in or
+    // restore waits for it before building a replica. See lib/replication/replicationOffPurge.ts.
+    const storedAccount = sessionStoreRef.current.getAddress();
+    void purgeReplicaCopyWhenOffOnce(storedAccount ? replicationPrincipalFor(storedAccount) : undefined);
     logSession("restore", "start");
     restoreInFlightRef.current = true;
     setError(null);
@@ -545,25 +547,6 @@ export function App() {
         setState("unauthenticated");
         return;
       }
-      // Sessions signed under an older manifest revision are cleared once, so the
-      // user signs in again under the current grants (see lib/manifestRevision.ts).
-      const revisionGate = await applyManifestRevisionGate({
-        store: browserRevisionStore(),
-        address: sessionStoreRef.current.getAddress(),
-        isOffline: browserIsOffline,
-        handoff: captureHandoff,
-        clearSession: (address) => {
-          clearPersistedSession(address);
-          sessionStoreRef.current.clear();
-          endStorageAccountSession();
-        },
-      });
-      if (revisionGate === "handoff_failed") { setState("recoverableError"); return; }
-      if (revisionGate === "cleared") {
-        setState("unauthenticated");
-        logSession("restore", "manifest_revision");
-        return;
-      }
       const restored = await restorePersistedSession(sessionStoreRef.current, {
         beforeClear: async () => {
           if (!await captureHandoff()) throw new Error("Couldn't update this phone's recording settings. Try again.");
@@ -591,33 +574,17 @@ export function App() {
             autoCreateSpace: false,
             tinycloudHosts: TINYCLOUD_HOSTS,
             manifest,
-            // The wallet opens only on the first signing-path request; account requests
-            // answer with the stored address. See lib/lazyWalletProvider.ts.
-            provider: createLazyWalletProvider({
-              address: storedAddress,
-              // The app signs in on chain 1 (the `did:pkh:eip155:1` DID); keep this in step.
-              chainId: 1,
-              openWallet: async () => {
-                const { address: walletAddress, openkey, web3Provider } = await connectWallet({
-                  appName: APP_NAME,
-                  host: OPENKEY_HOST,
-                  passkeysSupported: openkeyPasskeysSupported(),
-                });
-                return { address: walletAddress, provider: web3Provider, openkey };
-              },
-              // Runs only after the account check passes, so a mismatched wallet never
-              // replaces the client used for later OpenKey calls.
-              onOpened: (opened) => {
-                openkeyRef.current = opened.openkey;
-              },
-            }),
-            ...(LOCAL_VALIDATION ? {} : await replicationConfigPatch()),
+            // ON: the replication option plus a read-only account provider (so the restore has a signer
+            // to ask); OFF: {} (no provider, exactly as without replication). See replicationRestore.ts.
+            ...(LOCAL_VALIDATION ? {} : await replicationRestorePatch(storedAddress)),
           }),
       });
       switch (restored.kind) {
         case "restored": {
           logSession("restore", "done");
           rememberReplicationPrincipal(restored.tcw);
+          // Nothing else starts the first sync (our transcript reads are network reads); ON only.
+          startReplicationFill(restored.tcw);
           const restoredTcw = LOCAL_VALIDATION ? useLocalCanvasStorage(useLocalThreadStorage(restored.tcw)) : restored.tcw;
           const accountDid = restored.tcw.did ?? `did:pkh:eip155:1:${restored.address}`;
           beginStorageAccountSession(restoredTcw, accountDid, restored.tcw.spaceId ?? null);
@@ -955,19 +922,22 @@ export function App() {
       // setupSpaceSession + ensureSpaceExists happen inside the SDK when
       // autoCreateSpace is true; the manifest grants tinycloud.kv on the space.
       //
-      // Sign-in requests network.create on the owner's default encryption network,
-      // so the network can be created on the first secret save. Decrypt is not
-      // requested here; reads request it separately, and only from an explicit user action.
-      // The network id embeds the owner's DID, so the entry is composed here.
+      // withEncryptionDecryptGrant is a WORKAROUND that hardcodes an SDK-internal
+      // URN format — see docs/connectors-spec.md §7 "KNOWN BLOCKER" and the header
+      // of lib/connectors/encryptionGrant.ts. Secrets reads are refused without
+      // it, and the grant cannot be declared in the static manifest because its
+      // network id embeds this user's DID. Capabilities are minted from the
+      // manifest passed here, so sign-in is the only moment it can be added.
+      // Delete this call when the SDK carries the capability itself.
       const signInConfig = {
         address: connectedAddress,
         nonce,
         autoCreateSpace: !LOCAL_VALIDATION,
         tinycloudHosts: TINYCLOUD_HOSTS,
-        manifest: withEncryptionNetworkCreateGrant(manifest, connectedAddress),
+        manifest: withEncryptionDecryptGrant(manifest, connectedAddress),
         // Flag OFF: {} (config unchanged). ON: the SDK adds kv/sync beside kv/get for the
         // replica prefixes at this sign-in; see lib/replication/replicationClient.ts.
-        ...(LOCAL_VALIDATION ? {} : await replicationConfigPatch()),
+        ...(LOCAL_VALIDATION ? {} : await replicationConfigPatch(replicationPrincipalFor(connectedAddress))),
       };
       const { tcw: signedTcw, session } = LOCAL_VALIDATION
         ? await (async () => {
@@ -982,10 +952,11 @@ export function App() {
       // Exchange the SIWE message for a backend Bearer token (for /api/chat).
       const verified = await verifySession(BACKEND_URL, session.siwe, session.signature);
       sessionStoreRef.current.setSession(verified.token, verified.expiresIn, connectedAddress);
-      recordManifestRevision(browserRevisionStore(), connectedAddress);
       // The SDK keeps this provider for later user-authorized operations;
       // only the verified login's signatures use the prefetched nonce guard.
       prefetch.complete();
+      // The sign-in is verified: start the first sync (ON only; nothing else starts it).
+      startReplicationFill(signedTcw);
 
       const signedInTcw = LOCAL_VALIDATION ? useLocalCanvasStorage(useLocalThreadStorage(signedTcw)) : signedTcw;
       beginStorageAccountSession(signedInTcw, signedTcw.did ?? null, signedTcw.spaceId ?? null);

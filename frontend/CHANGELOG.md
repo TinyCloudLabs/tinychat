@@ -1,5 +1,35 @@
 # @tinychat/frontend
 
+## 0.10.0-beta.25
+
+### Patch Changes
+
+- 549dcc1: Add an opt-in switch and a wipe button for local copies.
+
+## 0.10.0-beta.24
+
+### Patch Changes
+
+- 1a839fb: Name new voice notes with the date, transcription model and participants.
+
+## 0.10.0-beta.23
+
+### Patch Changes
+
+- abde4ac: Show which transcription model produced a transcript.
+
+## 0.10.0-beta.22
+
+### Patch Changes
+
+- 2561378: Hide the Whisper Large Turbo model from the model picker. Models already selected or downloaded stay available.
+
+## 0.10.0-beta.21
+
+### Patch Changes
+
+- 8feaa2d: Restores the previous sign-in permissions.
+
 ## 0.10.0-beta.20
 
 ### Patch Changes

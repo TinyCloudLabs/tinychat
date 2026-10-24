@@ -4,24 +4,35 @@ import { composeManifestRequest } from "@tinycloud/sdk-core";
 import { augmentSignInEntriesWithReplication } from "@tinycloud/node-sdk/replication/authority";
 import { buildReplicationConfig, replicationConfigPatch, REPLICATION_MAX_BYTES, type ReplicationPluginLoader } from "./replicationClient";
 import { REPLICATION_RUNTIME_FLAG_KEY } from "./replicationFlag";
+import { replicationOptInKey } from "./replicationOptIn";
+import { trackStartupPurge } from "./replicationStartupPurge";
 import { replicationPrefixes } from "./replicationPrefixes";
 import { voiceNoteAudioKvKey, voiceNoteMarkdownKvKey } from "../voiceNotes/voiceNoteStore";
 import { transcriptRevKvKey } from "../voiceNotes/voiceNoteRows";
 import { transcriptKvKey } from "@tinyboilerplate/core";
 
 const CHROME = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
+const ALICE = "did:pkh:eip155:1:0xaaaa";
+const BOB = "did:pkh:eip155:1:0xbbbb";
 
-function installBrowser(opts: { flag: boolean; tauri?: boolean }): void {
+/** `flag`: the dev runtime flag (stands in for the build flag). `optIn`: principals whose own switch is ON. */
+function installBrowser(opts: { flag: boolean; tauri?: boolean; optIn?: string[] }): Map<string, string> {
   const store = new Map<string, string>();
   if (opts.flag) store.set(REPLICATION_RUNTIME_FLAG_KEY, "true");
+  for (const principal of opts.optIn ?? []) store.set(replicationOptInKey(principal), "true");
   const define = (name: string, value: unknown) => Object.defineProperty(globalThis, name, { configurable: true, writable: true, value });
   define("window", {
-    localStorage: { getItem: (k: string) => store.get(k) ?? null, setItem: () => undefined, removeItem: () => undefined },
+    localStorage: {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => { store.set(k, v); },
+      removeItem: (k: string) => { store.delete(k); },
+    },
     ...(opts.tauri ? { __TAURI_INTERNALS__: {} } : {}),
   });
   define("navigator", { userAgent: CHROME, userAgentData: { brands: [{ brand: "Chromium" }] }, maxTouchPoints: 0, locks: { request: () => undefined } });
   define("indexedDB", {});
   define("Worker", class {});
+  return store;
 }
 
 function spyLoader(): ReplicationPluginLoader & { calls: string[]; storage: object } {
@@ -53,32 +64,65 @@ describe("replicationClient", () => {
   describe("flag OFF changes nothing", () => {
     test("no plugin or storage is loaded and the client config gets no replication key", async () => {
       const loader = spyLoader();
-      expect(await buildReplicationConfig(loader)).toBeUndefined();
-      const patch = await replicationConfigPatch(loader);
+      expect(await buildReplicationConfig(ALICE, loader)).toBeUndefined();
+      const patch = await replicationConfigPatch(ALICE, loader);
       expect(Object.keys(patch)).toEqual([]);
       expect({ address: "0x1", manifest: 1, ...patch }).toEqual({ address: "0x1", manifest: 1 });
       expect(loader.calls).toEqual([]);
     });
 
-    test("a flag set in Tauri is refused: still nothing loaded", async () => {
-      installBrowser({ flag: true, tauri: true });
+    test("a flag set in Tauri is refused: still nothing loaded, even with the user's switch ON", async () => {
+      installBrowser({ flag: true, tauri: true, optIn: [ALICE] });
       const loader = spyLoader();
-      expect(await replicationConfigPatch(loader)).toEqual({});
+      expect(await replicationConfigPatch(ALICE, loader)).toEqual({});
       expect(loader.calls).toEqual([]);
+    });
+  });
+
+  describe("the user's switch is OFF: the build flag alone builds nothing", () => {
+    test("a new profile (no stored choice): no config key, no marker, nothing imported", async () => {
+      const store = installBrowser({ flag: true });
+      const loader = spyLoader();
+      expect(await replicationConfigPatch(ALICE, loader)).toEqual({});
+      expect(await replicationConfigPatch(undefined, loader)).toEqual({});
+      expect(loader.calls).toEqual([]);
+      expect([...store.keys()]).toEqual([REPLICATION_RUNTIME_FLAG_KEY]);
+    });
+
+    test("two accounts in one browser: only the one that opted in gets a replica", async () => {
+      installBrowser({ flag: true, optIn: [ALICE] });
+      const loader = spyLoader();
+      expect(await replicationConfigPatch(BOB, loader)).toEqual({});
+      expect(loader.calls).toEqual([]);
+      expect((await replicationConfigPatch(ALICE, loader)).replication?.enabled).toBe(true);
+      expect(loader.calls).toEqual(["register", "storage"]);
     });
   });
 
   describe("flag ON", () => {
     test("registers the plugin once and passes enabled, per-folder prefixes, the budget and encrypted storage", async () => {
-      installBrowser({ flag: true });
+      installBrowser({ flag: true, optIn: [ALICE] });
       const loader = spyLoader();
-      const config = await buildReplicationConfig(loader);
+      const config = await buildReplicationConfig(ALICE, loader);
       expect(loader.calls).toEqual(["register", "storage"]);
       expect(config?.enabled).toBe(true);
       expect(config?.prefixes).toEqual(replicationPrefixes());
       expect(config?.maxBytes).toBe(REPLICATION_MAX_BYTES);
       expect(REPLICATION_MAX_BYTES).toBe(100 * 1024 * 1024);
       expect(config?.storage).toBe(loader.storage as never);
+    });
+
+    test("waits for a page-load purge that is still deleting the copy before it builds anything", async () => {
+      installBrowser({ flag: true, optIn: [ALICE] });
+      const loader = spyLoader();
+      const purge = Promise.withResolvers<void>();
+      void trackStartupPurge(purge.promise);
+      const building = buildReplicationConfig(ALICE, loader);
+      for (let turn = 0; turn < 20; turn += 1) await Promise.resolve(); // let anything that is not blocked run
+      expect(loader.calls).toEqual([]);
+      purge.resolve();
+      expect((await building)?.enabled).toBe(true);
+      expect(loader.calls).toEqual(["register", "storage"]);
     });
   });
 
