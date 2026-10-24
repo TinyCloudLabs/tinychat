@@ -1,6 +1,7 @@
-// Builds the `replication` client option, only when the flag is ON.
+// Builds the `replication` client option, only when replication is ON for the signed-in user
+// (build flag + platform + the user's own switch; replicationFlag.ts).
 //
-// Flag OFF: returns undefined and imports NOTHING. The optional plugin
+// OFF (any gate): returns undefined and imports NOTHING. The optional plugin
 // (`@tinycloud/web-sdk/replica`, which in turn lazily loads the encrypted IndexedDB storage
 // `@tinycloud/replica/kv-storage` and its worker) is behind dynamic imports, so it stays out of the
 // root bundle, and the client config is byte-for-byte what it was without replication.
@@ -11,9 +12,12 @@
 // already covers them (augmentSignInEntriesWithReplication in node-sdk). Flag OFF: no sync entry,
 // so existing sessions get exactly what they got before.
 import type { TinyCloudWebConfig } from "@tinyboilerplate/client";
+import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { noteReplicationCopyPossible } from "./replicationCopyMarker";
 import { isReplicationEnabled } from "./replicationFlag";
+import { startupPurgeSettled } from "./replicationStartupPurge";
 import { replicationPrefixes } from "./replicationPrefixes";
+import { clientHasReplication } from "./replicationSignOut";
 import { recordReplicationEvent } from "./replicationStatus";
 
 /**
@@ -54,11 +58,14 @@ export const defaultReplicationLoader: ReplicationPluginLoader = {
   },
 };
 
-/** The `replication` option for sign-in/restore, or undefined when the flag is OFF. */
+/** The `replication` option for sign-in/restore of `principal`, or undefined when replication is OFF for them. */
 export async function buildReplicationConfig(
+  principal: string | undefined,
   loader: ReplicationPluginLoader = defaultReplicationLoader,
 ): Promise<ReplicationClientConfig | undefined> {
-  if (!isReplicationEnabled()) return undefined;
+  if (!isReplicationEnabled({ principal })) return undefined;
+  // A page-load purge may still be deleting the origin copy (a pending wipe): never build over it.
+  await startupPurgeSettled();
   // Before any copy can exist: lets a later OFF load find it (replicationOffPurge.ts).
   noteReplicationCopyPossible();
   await loader.registerPlugin();
@@ -73,8 +80,30 @@ export async function buildReplicationConfig(
 
 /** Spread into a client config: `{}` when OFF so the config object is unchanged. */
 export async function replicationConfigPatch(
+  principal: string | undefined,
   loader?: ReplicationPluginLoader,
 ): Promise<{ replication?: ReplicationClientConfig }> {
-  const replication = await buildReplicationConfig(loader);
+  const replication = await buildReplicationConfig(principal, loader);
   return replication ? { replication } : {};
+}
+
+/**
+ * Starts the first sync of a freshly signed-in/restored replica client. Nothing in the SDK does:
+ * a prefix is opened (first-synced, put on the interval timer) only by a read-through read or by
+ * `replication.sync()`, and the app's transcript reads are `source: "network"`.
+ * Only when this client HAS a replication controller and the user's opt-in is ON (re-checked after
+ * waiting), and never while a removal of the copy is in flight. A failing sync (for example a gated
+ * restore) is reported through the SDK's events and the status line, never thrown into sign-in.
+ */
+export function startReplicationFill(
+  tcw: TinyCloudWeb,
+  isEnabled: () => boolean = () => isReplicationEnabled({ principal: tcw.did }),
+): void {
+  if (!clientHasReplication(tcw) || !isEnabled()) return;
+  void startupPurgeSettled()
+    .then(() => {
+      if (!clientHasReplication(tcw) || !isEnabled()) return undefined;
+      return tcw.replication?.sync();
+    })
+    .catch(() => undefined);
 }
