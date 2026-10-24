@@ -1294,6 +1294,7 @@ export function App() {
                   })(); }}
                   onMemoryUpdated={onMemoryUpdated}
                   contextTokensFor={contextTokensFor}
+                  onBackgroundUsageSettled={refreshBillingStatus}
                   composerToolbar={composerToolbar}
                   // Record (phone app), and the live chip while the keyboard is up.
                   headerRecorder={

@@ -79,6 +79,36 @@ export function isBlocklistedModel(id: string): boolean {
  */
 export const PICKER_MODELS = OFFERED_CHAT_MODELS.map(({ id }) => id);
 
+export type BackgroundReasoningPreference = "off" | "minimal";
+
+export type BackgroundReasoningControl =
+  | { kind: "parameter"; effort: "none" | "low" }
+  | { kind: "qwen_no_think" };
+
+/**
+ * RedPill's catalog advertises the standard reasoning parameter for Kimi K3
+ * and GLM 5.x. Qwen 3.6's current NEAR entry does not, so it uses Qwen's
+ * prompt-level hybrid-mode control instead.
+ */
+export function backgroundReasoningControlFor(
+  modelId: string,
+  preference: BackgroundReasoningPreference,
+): BackgroundReasoningControl | undefined {
+  if (modelId === "z-ai/glm-5.2" && preference === "off") {
+    return { kind: "parameter", effort: "none" };
+  }
+  if (
+    (modelId === "z-ai/glm-5.3" || modelId === "moonshotai/kimi-k3") &&
+    preference === "minimal"
+  ) {
+    return { kind: "parameter", effort: "low" };
+  }
+  if (modelId === "qwen/qwen3.6-35b-a3b" && preference === "off") {
+    return { kind: "qwen_no_think" };
+  }
+  return undefined;
+}
+
 /**
  * Static, in-code context-window map (tokens) used by the chat-compaction path.
  *

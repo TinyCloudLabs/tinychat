@@ -16,11 +16,11 @@ import type { SessionStore } from "@tinyboilerplate/client";
 import type { AgentDelegationErrorCode } from "../lib/agentChatApi";
 import type { MeetingTurnRetriever } from "../lib/meetingChat/retriever";
 import {
-  completeChat,
   emitReceipt,
   type ChatMessage,
   type UsageInfo,
 } from "../lib/chatApi";
+import { completeExtractionChat } from "../lib/extractionChat";
 import { createChatModelAdapter } from "./chatModelAdapter";
 import type { CompactionCheckpoint } from "./compaction";
 import {
@@ -103,6 +103,8 @@ export interface ChatRuntimeDeps {
    * `null` represents a cleared doc; a string carries the latest content.
    */
   onMemoryUpdated?: (doc: string | null) => void;
+  /** Reconcile the status chip after a background extraction charge settles. */
+  onBackgroundUsageSettled?: () => void | Promise<void>;
   /**
    * Written by the per-thread Provider during render so the adapter's run()
    * can read the active thread id as roomId without prop-drilling.
@@ -167,51 +169,52 @@ function getCachedRates(deps: ChatRuntimeDeps): Promise<RatesResponse> {
  *
  * Never throws into the stream: rates/lookup failures silently skip (UI sugar).
  */
-function foldBackgroundCredits(
+export async function foldBackgroundCredits(
   deps: ChatRuntimeDeps,
   modelId: string,
   usage: UsageInfo,
   turn: { assistantMessageId?: string; userMessageId?: string },
-): void {
+  ratesOverride?: RatesResponse,
+): Promise<void> {
   // 0-token usage bills nothing (creditsFor → 0); ignore before touching rates.
   if (usage.promptTokens <= 0 && usage.completionTokens <= 0) return;
-  void getCachedRates(deps)
-    .then((rates) => {
-      const m = rates.models.find((r) => r.id === modelId);
-      if (!m) return; // unknown model in catalog — skip (never the source of truth)
-      // Visible reply total = the two footers already set by computeReceipt.
-      const inputEntry = turn.userMessageId ? getReceipt(turn.userMessageId) : undefined;
-      const outputEntry = turn.assistantMessageId
-        ? getReceipt(turn.assistantMessageId)
-        : undefined;
-      const visibleTotal = (inputEntry?.credits ?? 0) + (outputEntry?.credits ?? 0);
-      const { backgroundCredits } = aggregateTurnCredits(visibleTotal, [
-        {
-          rates: m,
-          promptTokens: usage.promptTokens,
-          completionTokens: usage.completionTokens,
-        },
-      ]);
-      if (backgroundCredits <= 0) return;
-      // (4) Meter: emit a receipt event carrying ONLY the background credits so
-      // App.tsx's optimistic usage bump tracks the ledger (the visible reply
-      // already emitted its own total). App ignores the messageId.
-      emitReceipt(turn.assistantMessageId ?? modelId, backgroundCredits, modelId);
-      // (3) Badge: fold the background credits into the reply's output-side
-      // total so the footer shows the full turn cost. Skip when there's no
-      // pending visible reply (edge case a) — meter bump above already landed.
-      if (turn.assistantMessageId && outputEntry) {
-        setReceipt(
-          turn.assistantMessageId,
-          outputEntry.credits + backgroundCredits,
-          "output",
-          true, // includesUpkeep — labels the extra neutrally in the footer
-        );
-      }
-    })
-    .catch(() => {
-      // receipts are UI sugar; a rates failure must never surface to chat
-    });
+  try {
+    const rates = ratesOverride ?? await getCachedRates(deps);
+    const m = rates.models.find((r) => r.id === modelId);
+    if (!m) return; // unknown model in catalog — skip (never the source of truth)
+    // Visible reply total = the two footers already set by computeReceipt.
+    const inputEntry = turn.userMessageId ? getReceipt(turn.userMessageId) : undefined;
+    const outputEntry = turn.assistantMessageId
+      ? getReceipt(turn.assistantMessageId)
+      : undefined;
+    const visibleTotal = (inputEntry?.credits ?? 0) + (outputEntry?.credits ?? 0);
+    const { backgroundCredits } = aggregateTurnCredits(visibleTotal, [
+      {
+        rates: m,
+        promptTokens: usage.promptTokens,
+        completionTokens: usage.completionTokens,
+      },
+    ]);
+    if (backgroundCredits <= 0) return;
+    // (4) Meter: emit a receipt event carrying ONLY the background credits so
+    // App.tsx's optimistic usage bump tracks the ledger (the visible reply
+    // already emitted its own total). App ignores the messageId.
+    emitReceipt(turn.assistantMessageId ?? modelId, backgroundCredits, modelId);
+    // (3) Badge: fold the background credits into the reply's output-side
+    // total so the footer shows the full turn cost. Skip when there's no
+    // pending visible reply (edge case a) — meter bump above already landed.
+    if (turn.assistantMessageId && outputEntry) {
+      setReceipt(
+        turn.assistantMessageId,
+        outputEntry.credits + backgroundCredits,
+        "output",
+        true, // includesUpkeep — labels the extra neutrally in the footer
+      );
+    }
+    await deps.onBackgroundUsageSettled?.();
+  } catch {
+    // receipts are UI sugar; a rates/status failure must never surface to chat
+  }
 }
 
 // ── ChatModelAdapter (transport to the backend SSE proxy) ────────────
@@ -590,7 +593,7 @@ function useThreadListAdapter(
       let folded = false;
       void runPrivateMemoryExtraction(d.privateAccessRef, exchange, {
         complete: (messages, opts) =>
-          completeChat({
+          completeExtractionChat({
             backendUrl: d.backendUrl,
             sessionStore: d.sessionStore,
             model: extractionModel,
@@ -600,7 +603,7 @@ function useThreadListAdapter(
             onUsage: (usage) => {
               if (folded) return;
               folded = true;
-              foldBackgroundCredits(d, extractionModel, usage, turn);
+              void foldBackgroundCredits(d, extractionModel, usage, turn);
             },
           }),
         getDoc: async () => {
