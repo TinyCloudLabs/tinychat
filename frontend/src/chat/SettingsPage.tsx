@@ -30,6 +30,7 @@ import { SectionCard } from "@/components/ui/section-card";
 import { MemoryPanel } from "@/components/MemoryPanel";
 import { AppearanceControl } from "./AppearanceControl";
 import { ImportDialog } from "./ImportDialog";
+import { OwnedShareLinksCard } from "./OwnedShareLinks";
 import { stateLabel, type AppState } from "../lib/appState";
 import { formatCredits, type BillingStatus } from "../lib/billingApi";
 import { useBackendAttestation } from "../lib/useBackendAttestation";
@@ -217,6 +218,7 @@ export function SettingsPage({
             <AudioCacheSettings />
           </SectionCard>
           <ReplicationSettings tcw={tcw} />
+          <OwnedShareLinksCard tcw={tcw} />
           <SectionCard icon={DatabaseIcon} title="Data">
             <p className="text-xs text-muted-foreground">
               Bring your Claude conversation history into this space.

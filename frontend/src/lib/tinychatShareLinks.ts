@@ -373,8 +373,6 @@ export async function createTinychatShareLink(
 }
 
 export async function listOwnedTinychatShares(tcw: TinyCloudWeb): Promise<OwnedTinychatShare[]> {
-  // While paused the owner list is empty: no index listing and no lapsed-share cleanup.
-  if (CHAT_SHARING_PAUSED) return [];
   const indexKeys = await listShareIndexKeys(tcw);
 
   const now = Date.now();

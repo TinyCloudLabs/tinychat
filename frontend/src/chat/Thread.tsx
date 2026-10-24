@@ -66,7 +66,9 @@ import {
   type OwnedTinychatShare,
   type StoredTinychatShare,
 } from "@/lib/tinychatShareLinks";
-import { canOfferChatShare } from "@/lib/chatSharing";
+import { CHAT_SHARING_PAUSED, canOfferChatShare } from "@/lib/chatSharing";
+import { SHARE_LINK_COPY } from "@/lib/shareLinkCopy";
+import { OwnedShareLinkList, formatShareDate } from "./OwnedShareLinks";
 import { getThreadCompaction, subscribeThreadCompaction } from "./chatModelAdapter";
 import { ModelVerificationBadge } from "./ModelVerificationBadge";
 import { ToolActivityChip } from "./ToolActivityChip";
@@ -251,17 +253,6 @@ function shareLinkForStoredShare(share: StoredTinychatShare): string {
   return url.toString();
 }
 
-function formatShareDate(value: string): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  });
-}
-
 const ShareThreadProvider: FC<{ tcw: TinyCloudWeb; children: React.ReactNode }> = ({
   tcw,
   children,
@@ -360,6 +351,8 @@ const ShareThreadProvider: FC<{ tcw: TinyCloudWeb; children: React.ReactNode }> 
   );
 
   const link = share ? shareLinkForStoredShare(share) : null;
+  // While creation is paused a chat without a link gets no create form, only its existing links.
+  const creationPaused = CHAT_SHARING_PAUSED && !share;
 
   return (
     <ShareThreadContext.Provider value={value}>
@@ -371,11 +364,13 @@ const ShareThreadProvider: FC<{ tcw: TinyCloudWeb; children: React.ReactNode }> 
             <DialogDescription>
               {share
                 ? "Copy the existing read-only link for this chat."
-                : "Create a read-only link that expires automatically."}
+                : creationPaused
+                  ? SHARE_LINK_COPY.creationPaused
+                  : "Create a read-only link that expires automatically."}
             </DialogDescription>
           </DialogHeader>
 
-          {!share && (
+          {!share && !creationPaused && (
             <label className="flex items-center gap-2 text-sm">
               <span className="text-muted-foreground">Duration</span>
               <input
@@ -421,26 +416,12 @@ const ShareThreadProvider: FC<{ tcw: TinyCloudWeb; children: React.ReactNode }> 
 
           {owned.length > 0 && (
             <div className="flex flex-col gap-2">
-              <div className="text-xs font-medium text-foreground">Your shares</div>
-              <ul className="flex flex-col gap-2">
-                {owned.map((item) => (
-                  <li key={item.shareId} className="flex items-center justify-between gap-3 text-sm">
-                    <span className="min-w-0 truncate">{item.title}</span>
-                    <span className="shrink-0 text-xs text-muted-foreground">
-                      Expires {formatShareDate(item.expiresAt)}
-                    </span>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      disabled={revokingId !== null}
-                      onClick={() => void revokeShare(item.shareId)}
-                    >
-                      {revokingId === item.shareId ? "Revoking..." : "Revoke"}
-                    </Button>
-                  </li>
-                ))}
-              </ul>
+              <div className="text-xs font-medium text-foreground">{SHARE_LINK_COPY.listTitle}</div>
+              <OwnedShareLinkList
+                shares={owned}
+                revokingId={revokingId}
+                onRevoke={(shareId) => void revokeShare(shareId)}
+              />
             </div>
           )}
 
@@ -453,9 +434,11 @@ const ShareThreadProvider: FC<{ tcw: TinyCloudWeb; children: React.ReactNode }> 
                 {copyState === "copied" ? "Copied" : "Copy link"}
               </Button>
             ) : (
-              <Button type="button" onClick={() => void createShare()} disabled={!canShare}>
-                {creating ? "Creating..." : "Create link"}
-              </Button>
+              !creationPaused && (
+                <Button type="button" onClick={() => void createShare()} disabled={!canShare}>
+                  {creating ? "Creating..." : "Create link"}
+                </Button>
+              )
             )}
           </DialogFooter>
         </DialogContent>
