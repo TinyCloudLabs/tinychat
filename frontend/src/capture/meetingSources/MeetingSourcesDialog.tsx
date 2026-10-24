@@ -26,7 +26,6 @@ import * as connectorStore from "@/lib/connectors/connectorStore";
 import { clearGmeetLastRun } from "@/lib/connectors/gmeetLastRun";
 import { getGmeetMeetingCount, onGmeetMeetingCount, refreshGmeetMeetingCount } from "@/lib/connectors/gmeetLiveCount";
 import { onGmeetNotesSettled } from "@/lib/connectors/gmeetSync";
-import { createConnectorMeetingsClient } from "@/lib/connectors/meetingsApi";
 import { CONNECTORS } from "@/lib/connectors/registry";
 import type { ConnectorConnection, ConnectorDescriptor, ConnectorId } from "@/lib/connectors/types";
 import { createConnectorWebhooksClient } from "@/lib/connectors/webhooksApi";
@@ -110,10 +109,6 @@ export function MeetingSourcesDialog({
 
   const webhooks = useMemo(
     () => createConnectorWebhooksClient(backendUrl, { sessionStore }),
-    [backendUrl, sessionStore],
-  );
-  const meetings = useMemo(
-    () => createConnectorMeetingsClient(backendUrl, { sessionStore }),
     [backendUrl, sessionStore],
   );
 
@@ -254,7 +249,6 @@ export function MeetingSourcesDialog({
                     descriptor={d}
                     connection={connection ?? null}
                     webhooks={webhooks}
-                    meetings={meetings}
                     onIngested={() => void refresh(d.id)}
                     onFeatureDark={setFeatureDark}
                     syncing={syncing}
@@ -350,7 +344,6 @@ function FirefliesManagePanel({
   descriptor,
   connection,
   webhooks,
-  meetings,
   onIngested,
   onFeatureDark,
   syncing,
@@ -360,13 +353,12 @@ function FirefliesManagePanel({
   descriptor: ConnectorDescriptor;
   connection: ConnectorConnection | null;
   webhooks: ReturnType<typeof createConnectorWebhooksClient>;
-  meetings: ReturnType<typeof createConnectorMeetingsClient>;
   onIngested: () => void;
   onFeatureDark: (dark: boolean) => void;
   syncing: boolean;
   onDisconnect: () => void;
 }) {
-  const sync = useBackgroundSync({ tcw, descriptor, webhooks, meetings, onIngested, onFeatureDark });
+  const sync = useBackgroundSync({ tcw, descriptor, webhooks, onIngested, onFeatureDark });
   const { state, deps, emit } = sync;
   const [consentOpen, setConsentOpen] = useState(false);
   const [rotateOpen, setRotateOpen] = useState(false);
@@ -382,11 +374,8 @@ function FirefliesManagePanel({
       <FirefliesManage
         connectorName={descriptor.name}
         state={state}
-        consentVariant={sync.consentVariant}
         transcriptConsent={sync.transcriptConsent}
-        ingestConsentChecked={sync.ingestConsentChecked}
         consentOpen={consentOpen}
-        onIngestConsentChange={sync.setIngestConsentChecked}
         onToggleInstant={() => {
           if (state.phase === "enabled") void disableBackgroundSync(deps, emit);
           else setConsentOpen((was) => !was);

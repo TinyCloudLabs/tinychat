@@ -1,33 +1,18 @@
 # Gate 5 — provider + surface hardening: the checklist
 
-Gate 5's exit artifact (backend-ingest plan §4, §10; work package W9). Plan §4 requires every
+Gate 5's exit artifact (work package W9). Plan §4 requires every
 gate to exit with a *written artifact, not a feeling*, so each §10 item below carries a verdict
 and a citation. Every path cited here is asserted to exist by
 `backend/src/__tests__/connector-gate5-hardening.test.ts` — a checklist pointing at a deleted test
 is worse than no checklist.
 
-Scope note: this gate is about the **provider-facing surface**. The multi-tenant/durability delta
-is Gate 4's (`§8.2` items 1–12); the consent rewrite is Gate 6's.
+Scope note: this gate is about the **provider-facing surface**. The items that belonged to backend-owned
+Fireflies ingestion (the slow-upstream 2xx proof, the Host-header allowlist and the single-instance
+constraint) were removed with that feature.
 
 ---
 
-## 1. 2xx < 10 s proven under a stubbed slow upstream — **DONE**
-
-Fireflies drops a delivery that does not get a 2xx quickly; Listen's live bug is a sync-before-ack
-that blocked the response for minutes on 429 retries (§9 anti-pattern 2). Two tests, deliberately
-at different layers:
-
-- `backend/src/__tests__/connector-backend-ingest.test.ts` — `[delta-07]`: a 30 s **nudge** does
-  not delay the 202. The seam itself cannot couple.
-- `backend/src/__tests__/connector-gate5-hardening.test.ts` — end to end with the **real fetch
-  worker** registered and the Fireflies fetcher stubbed at 30 s: the 202 lands in well under 10 s,
-  the item is already durably queued when it does, and the upstream fetch is provably still open.
-
-The 202 waits on the durable enqueue and on nothing to its right (plan §5.2). The burst half of
-the same window — a same-address 50-delivery burst still acking < 10 s each — is `[delta-08]` in
-`backend/src/__tests__/connector-backend-ingest.test.ts`.
-
-## 2. `X-Hub-Signature` HMAC-SHA256 over the RAW body — **DONE (regression held)**
+## 1. `X-Hub-Signature` HMAC-SHA256 over the RAW body — **DONE (regression held)**
 
 Shipped in `backend/src/services/webhook-verify.ts`; the regression suite stays green in this
 build: `backend/src/__tests__/webhook-verify.test.ts`. `JSON.parse` runs strictly **after** verify
@@ -36,14 +21,13 @@ never handed to a parser. The `index.ts` mount precedes the shared JSON parser w
 `inflate:false` and a 64 kb cap; signed raw ingress is exercised in
 `backend/src/__tests__/connector-gate5-hardening.test.ts`.
 
-## 3. V-b — the 16–32 character webhook secret — **CLOSED by amendment**
+## 2. V-b — the 16–32 character webhook secret — **CLOSED by amendment**
 
 Recorded verdict in the decision record: **`V-b: risk-deferred`**, docs-grounded, with the
 amendment named as real pre-launch work. The finding: Fireflies' dashboard webhook-secret field
 accepts **16–32** characters, and the shipped derivation emitted `base64url` of a 32-byte HKDF
 output = **43** characters, which cannot be registered at all — a correctness bug in the **shipped
-Option-C** registration path as much as a pre-requisite for anything backend ingest registers,
-since both call the same `deriveWebhookSecret`.
+Option-C** registration path.
 
 What was done (`backend/src/services/webhook-tokens.ts`, one scheme, documented at the derivation
 site): take **24 bytes** of the same HKDF stream → exactly **32** base64url characters, no
@@ -59,11 +43,11 @@ be driven to zero. Nothing mints the legacy form.
 Evidence: `backend/src/__tests__/webhook-secret-length.test.ts`.
 
 **Still open for the operator (not code):** V-b is documentation-grounded, never live-tested. Before
-cohort enable, register a hook with the 32-char secret in a real Fireflies dashboard, send a test
+enabling the flag for a real account, register a hook with the 32-char secret in a real Fireflies dashboard, send a test
 delivery, and record the live verdict in the decision record. If any hook was registered earlier
 with a 43-char value, re-register it and watch the legacy cohort counter reach zero.
 
-## 4. Owns-only webhooks documented — **DONE**
+## 3. Owns-only webhooks documented — **DONE**
 
 Normal Fireflies webhooks fire only for meetings the user **owns**; team-wide capture requires
 **Enterprise**. This bounds what "always there" can honestly promise: a meeting a user was merely
@@ -72,32 +56,7 @@ otherwise. The shipped consent copy
 (`frontend/src/lib/connectors/consentCopy.ts`) is checked negatively against team-wide phrasing in
 `backend/src/__tests__/connector-gate5-hardening.test.ts`; Gate 6 owns the positive rewrite.
 
-## 5. Host-header allowlist live on the public routes — **DONE**
-
-Findings §6 control 6, load-bearing the moment the server fetches on webhooks: under Option C an
-off-target delivery cost one enqueue; for a cohort address it would cost a credentialed upstream
-fetch and an encrypted server-side content row.
-
-`createConnectorWebhookHostGuard` runs **first** on the public delivery mount — ahead of the
-pre-limiter, ahead of `express.raw` — so a delivery that did not arrive at the hostname we minted
-into the provider's dashboard is refused before a byte of its body is read. Rejection is the same
-generic `401 invalid_signature` every other pre-verify path returns (a host-shaped oracle is still
-an oracle) and lands in the same scanner buckets. The offending host is never echoed to the
-`public_logs=true` stream.
-
-Configuration: `CONNECTOR_WEBHOOK_HOST_ALLOWLIST`, defaulting to the host of the pinned
-`CONNECTOR_WEBHOOK_PUBLIC_ORIGIN` so the host we answer on cannot drift from the URL we hand out;
-`*` disables it, loudly, for an ingress that rewrites Host. Both ride the four-place `allowed_envs`
-dance (`backend/src/__tests__/webhook-deploy-env.test.ts`).
-
-**This is not an authentication boundary — the HMAC is.** The ingress hop count is UNDETERMINED
-(`docs/connector-webhooks-trust-proxy.md`), so a forwarded host is worth exactly what the proxy in
-front of it is worth. The control removes untargeted surface: raw-IP probing, a stale domain still
-pointed at the CVM, a rebinding attempt. Nothing here claims more.
-
-Evidence: `backend/src/__tests__/connector-host-allowlist.test.ts`.
-
-## 6. Accept-path defense-in-depth carried, unchanged — **VERIFIED, not modified**
+## 4. Accept-path defense-in-depth carried, unchanged — **VERIFIED, not modified**
 
 W9 changed nothing on the accept path; these are re-verified as regression guards (findings §1,
 plan §9 row 3):
@@ -121,19 +80,8 @@ plan §9 row 3):
 
 ---
 
-## Also landed under W9 (Gate 4's delta item 11, listed here because it is startup surface)
-
-**D4 = single-instance**, guarded and documented: one backend instance consumes the cohort queues,
-enforced in-process by W3's worker seat and cross-process by a durable lease
-(`webhooks/ingest/instance-lease`). A second instance refuses the seat and stays provably inert; an
-unreadable lease refuses too. Constraint, its blast radius, and the four things that must change to
-lift it: `docs/connector-webhooks-single-instance.md`. Evidence:
-`backend/src/__tests__/connector-serialization-guard.test.ts`.
-
----
-
 ## Gate 5 verdict
 
-**Green on the code items (1, 2, 3-amendment, 4, 5, 6).** One operator action remains before
-cohort enable and it is not a build item: the **live** V-b confirmation in a real Fireflies
-dashboard (§3 above), recorded in the decision record.
+**Green on the code items (1, 2-amendment, 3, 4).** One operator action remains before the
+flag is enabled for a real account and it is not a build item: the **live** V-b confirmation in a
+real Fireflies dashboard (§2 above), recorded in the decision record.

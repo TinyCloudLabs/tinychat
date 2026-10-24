@@ -18,7 +18,6 @@ import { useOpenSavedNote } from "@/capture/library/useOpenSavedNote";
 import { ChatWorkspace } from "@/chat/ChatWorkspace";
 import { DEFAULT_CONTEXT_TOKENS } from "@/chat/compaction";
 import { ConnectorsPage } from "@/chat/ConnectorsPage";
-import { MeetingsSection } from "@/chat/MeetingsSection";
 import { ModelPicker, type ModelOption } from "@/chat/ModelPicker";
 import type { ModelSelectionController, SelectionView } from "@/chat/modelSelection";
 import { DeviceCaptureSurface } from "@/capture/DeviceCaptureSurface";
@@ -145,7 +144,6 @@ export function ShellApp({ platform, shim, state, probe = (_id, node) => node, c
           sessionStore={harnessSessionStore}
           active={screen.destination === "capture"}
           screen={screen}
-          meetingsSlot={<MeetingsSection backendUrl={backendUrl} sessionStore={harnessSessionStore} />}
         />,
       )}
       connectors={probe(

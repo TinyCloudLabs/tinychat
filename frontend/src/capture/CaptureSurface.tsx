@@ -73,8 +73,6 @@ export interface CaptureSurfaceProps {
   active: boolean;
   /** Which Capture screen: home, the Library, or a note. */
   screen: Screen;
-  /** The cohort meetings section App owns (MeetingsSection), shown in the Library. */
-  meetingsSlot?: React.ReactNode;
   /** The model call a combined meeting's summary uses; the chat route unless a harness or test replaces it. */
   summaryComplete?: GenerateDeps["complete"];
   /** Runs after a summary run ends, so the parent can re-read billing (a run spends credits). */
@@ -113,7 +111,7 @@ export function CaptureSurface(props: CaptureSurfaceProps) {
   );
 }
 
-function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, meetingsSlot, summaryComplete, onSummarySettled, soft, desktopHome }: CaptureSurfaceProps & { soft: boolean; desktopHome: boolean }) {
+function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, summaryComplete, onSummarySettled, soft, desktopHome }: CaptureSurfaceProps & { soft: boolean; desktopHome: boolean }) {
   const navigate = useNavigate();
   // One summary runner per signed-in space: another account (tcw) or unmount stops every run.
   // The settle hook is read through a ref so a new parent callback identity does not rebuild the runner.
@@ -332,7 +330,6 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
         >
           <LibraryScreen
             library={library}
-            meetingsSlot={meetingsSlot}
             pushed={!wide || desktopHome}
             onBack={() => goUp(navigate, PATHS.capture)}
             selectedId={wide ? screen.noteId : null}

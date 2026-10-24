@@ -8,9 +8,9 @@ import {
   MAX_EXCERPTS,
   MEETING_CONTEXT_MAX_CHARS,
   type LocalKvRecordLocator,
+  type LocalKvTranscriptLocator,
   type MeetingCandidate,
   type MeetingRetrievalOutcome,
-  type ServerMeetingLocator,
   type SqlSummaryLocator,
   type MeetingThreadState,
 } from "./types";
@@ -26,8 +26,6 @@ const candidate: MeetingCandidate = {
   hasSqlSummary: true,
   hasLocalRecord: false,
   hasLocalTranscript: false,
-  hasServerSummary: true,
-  hasServerTranscript: true,
   localRowId: "row-1",
   createdAt: "2026-08-24T09:00:00.000Z",
   updatedAt: "2026-08-24T09:05:00.000Z",
@@ -57,8 +55,6 @@ describe("meeting-chat shared contracts", () => {
       "createdAt",
       "hasLocalRecord",
       "hasLocalTranscript",
-      "hasServerSummary",
-      "hasServerTranscript",
       "hasSqlSummary",
       "localRowId",
       "organizerEmail",
@@ -97,8 +93,8 @@ describe("meeting-chat shared contracts", () => {
       source: candidate.source,
       sourceId: candidate.sourceId,
     };
-    const server: ServerMeetingLocator = {
-      kind: "server-meeting",
+    const transcript: LocalKvTranscriptLocator = {
+      kind: "local-kv-transcript",
       source: candidate.source,
       sourceId: candidate.sourceId,
     };
@@ -119,7 +115,7 @@ describe("meeting-chat shared contracts", () => {
           transcriptLocator: null,
           reads: 1,
           partial: false,
-          unavailableLocators: [local.kind, server.kind],
+          unavailableLocators: [local.kind, transcript.kind],
         },
         systemMessage: "untrusted meeting evidence",
         partial: false,

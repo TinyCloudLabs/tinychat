@@ -50,9 +50,9 @@ describe("resumeOnLaunch", () => {
 
 describe("UploadResumer in App", () => {
   const app = readFileSync(join(import.meta.dir, "../../App.tsx"), "utf8");
-  test("is mounted once after BackendReconciler", () => {
+  test("is mounted once after GmeetSessionSync", () => {
     const at = app.indexOf("<UploadResumer");
-    expect(at).toBeGreaterThan(app.indexOf("<BackendReconciler"));
+    expect(at).toBeGreaterThan(app.indexOf("<GmeetSessionSync"));
     expect(app.match(/<UploadResumer/g)).toHaveLength(1);
   });
 });

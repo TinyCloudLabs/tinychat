@@ -1,11 +1,7 @@
-// The Library (TC-761): its heading with Refresh, the list, and the cohort
-// meeting archive App hands it (`meetingsSlot`, MeetingsSection). On a phone
-// it is a screen of its own with Back; beside Capture (wide) it is the lower
-// half of the list pane.
-//
-// BOTH meeting data paths live here: the list reads the user's OWN space
-// (useLibrary → listMeetingsRead, through the per-space queue), and
-// `meetingsSlot` is the cohort read API's section.
+// The Library (TC-761): its heading with Refresh and the list, which reads the
+// user's OWN space (useLibrary → listMeetingsRead, through the per-space
+// queue). On a phone it is a screen of its own with Back; beside Capture
+// (wide) it is the lower half of the list pane.
 import type { ReactNode } from "react";
 import { RefreshCwIcon } from "lucide-react";
 
@@ -34,7 +30,6 @@ function RefreshButton(props: { onClick: () => void; busy: boolean }) {
 
 export function LibraryScreen(props: {
   library: Library;
-  meetingsSlot?: ReactNode;
   /** A screen of its own (compact), with Back. */
   pushed: boolean;
   onBack: () => void;
@@ -73,7 +68,6 @@ export function LibraryScreen(props: {
           activityViews={props.activityViews}
           platform={props.platform}
         />
-        {props.meetingsSlot}
       </div>
     </>
   );

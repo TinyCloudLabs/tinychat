@@ -84,8 +84,8 @@ describe("LibraryListView", () => {
   });
 });
 
-describe("the Library keeps BOTH meeting data paths", () => {
-  test("LibraryScreen renders the list and the cohort slot; the list reads the user's own space", () => {
+describe("the Library reads the user's own space", () => {
+  test("LibraryScreen renders the list; the list reads the user's own space", () => {
     const library: Library = {
       status: "ready",
       items: ITEMS,
@@ -97,11 +97,10 @@ describe("the Library keeps BOTH meeting data paths", () => {
     };
     const html = renderToStaticMarkup(
       <MemoryRouter>
-        <LibraryScreen library={library} meetingsSlot={<p>cohort-meetings</p>} pushed onBack={noop} selectedId={null} now={NOW} column="" />
+        <LibraryScreen library={library} pushed onBack={noop} selectedId={null} now={NOW} column="" />
       </MemoryRouter>,
     );
     expect(html).toContain('data-testid="library-list"');
-    expect(html).toContain("cohort-meetings");
     const source = readFileSync(join(import.meta.dir, "useLibrary.ts"), "utf8");
     expect(source).toContain("listMeetingsRead(space)");
   });

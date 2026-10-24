@@ -25,8 +25,6 @@ export interface MeetingCandidate extends MeetingRef {
   hasSqlSummary: boolean;
   hasLocalRecord: boolean;
   hasLocalTranscript: boolean;
-  hasServerSummary: boolean;
-  hasServerTranscript: boolean;
   localRowId: string | null;
   createdAt: string | null;
   updatedAt: string | null;
@@ -48,17 +46,11 @@ export interface LocalKvTranscriptLocator extends MeetingRef {
   kind: "local-kv-transcript";
 }
 
-/** The server's selected-meeting read location. */
-export interface ServerMeetingLocator extends MeetingRef {
-  kind: "server-meeting";
-}
-
 /** A local or remote location which may be read only after selection. */
 export type MeetingEvidenceLocator =
   | SqlSummaryLocator
   | LocalKvRecordLocator
-  | LocalKvTranscriptLocator
-  | ServerMeetingLocator;
+  | LocalKvTranscriptLocator;
 
 export type MeetingEvidenceLocatorKind = MeetingEvidenceLocator["kind"];
 
@@ -91,19 +83,13 @@ export type MeetingLaneHealth =
   | { state: "unused"; reason: "missing-table" }
   | { state: "healthy" }
   | { state: "partial"; malformedRows: number; truncated?: boolean }
-  | { state: "feature-dark" }
-  | { state: "signed-out" }
-  | { state: "offline" }
-  | { state: "retryable"; httpStatus: number | null }
-  | { state: "rejected"; httpStatus: number | null }
   | { state: "failed"; reason: "storage" | "transport" | "malformed-response" };
 
-/** Content-free discovery result assembled from SQL, server, and KV lanes. */
+/** Content-free discovery result assembled from SQL and KV lanes. */
 export interface MeetingCorpus {
   candidates: readonly MeetingCandidate[];
   lanes: {
     sql: MeetingLaneHealth;
-    server: MeetingLaneHealth;
     kv: MeetingLaneHealth;
   };
   partial: boolean;

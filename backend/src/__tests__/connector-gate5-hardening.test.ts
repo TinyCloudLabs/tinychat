@@ -284,11 +284,9 @@ describe("W9 / Gate 5 — the checklist artifact", () => {
     const doc = readFileSync(CHECKLIST, "utf8");
 
     for (const item of [
-      "2xx < 10 s",
       "X-Hub-Signature",
       "V-b",
       "Owns-only",
-      "Host-header allowlist",
       "Accept-path defense-in-depth",
     ]) {
       expect({ item, present: doc.includes(item) }).toEqual({
@@ -350,14 +348,5 @@ describe("W9 / Gate 5 — the checklist artifact", () => {
         found: false,
       });
     }
-  });
-
-  test("it does not claim the host allowlist is an authentication boundary", () => {
-    const doc = readFileSync(CHECKLIST, "utf8");
-    // The HMAC is the boundary; the ingress hop count is UNDETERMINED
-    // (docs/connector-webhooks-trust-proxy.md). Overclaiming here is how a control gets trusted
-    // for something it cannot do.
-    expect(doc).toMatch(/not an authentication boundary/i);
-    expect(doc).toContain("docs/connector-webhooks-trust-proxy.md");
   });
 });

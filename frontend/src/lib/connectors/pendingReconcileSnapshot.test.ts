@@ -1,13 +1,45 @@
 import { describe, expect, test } from "bun:test";
-import type { ConnectorMeetingMeta } from "./meetingsApi";
 import type { TranscriberListRow } from "../transcriberApi";
 import {
   PENDING_RECONCILE_SNAPSHOT_KEY,
-  backendPendingRows,
   transcriberPendingRows,
   writePendingReconcileSnapshot,
   type PendingReconcileMeeting,
 } from "./pendingReconcileSnapshot";
+
+// Fixtures for the writer's `backend-ingest` source tests below. The backend-ingest
+// pass that produced these rows is removed; the row shape and projection live here only.
+interface ConnectorMeetingMeta {
+  sourceId: string;
+  title?: string;
+  /** The provider's own meeting timestamp, when it gave one. */
+  ts?: string;
+  participantNames?: string[];
+  participantEmails?: string[];
+  organizerEmail?: string;
+  transcriptStoredAt?: string;
+  summaryStoredAt?: string;
+  /** Set once the browser copied this meeting into the user's OWN space (W6). */
+  reconciledAt?: string;
+  sizeBytes: number;
+  storedAt: string;
+  updatedAt: string;
+  /** A partial row is legal: a summary can arrive before — or without — a transcript. */
+  hasTranscript: boolean;
+  hasSummary: boolean;
+}
+
+function backendPendingRows(source: string, rows: readonly ConnectorMeetingMeta[]): PendingReconcileMeeting[] {
+  return rows.map<PendingReconcileMeeting>((row) => ({
+    id: row.sourceId,
+    source,
+    ...(row.ts === undefined ? {} : { ts: row.ts }),
+    ...(row.storedAt === undefined ? {} : { storedAt: row.storedAt }),
+    ...(row.updatedAt === undefined ? {} : { updatedAt: row.updatedAt }),
+    status: "unreconciled",
+    reconciled: false,
+  })).sort((a, b) => a.id.localeCompare(b.id));
+}
 
 const backendRow = (over: Partial<ConnectorMeetingMeta> & { sourceId: string }): ConnectorMeetingMeta => ({
   sizeBytes: 123,
@@ -55,25 +87,6 @@ function kvFixture() {
 }
 
 describe("backend-only metadata snapshot", () => {
-  test("projects unreconciled connector rows without content or identifying extras", () => {
-    const projected = backendPendingRows("fireflies", [backendRow({
-      sourceId: "ff-1",
-      ts: "2026-10-12T12:00:00Z",
-      title: "PRIVATE_TITLE",
-      participantNames: ["PRIVATE_PERSON"],
-      organizerEmail: "private@example.test",
-    })]);
-    expect(projected).toEqual([{
-      id: "ff-1",
-      source: "fireflies",
-      ts: "2026-10-12T12:00:00Z",
-      storedAt: "2026-10-13T08:00:00.000Z",
-      updatedAt: "2026-10-13T08:01:00.000Z",
-      status: "unreconciled",
-      reconciled: false,
-    }]);
-  });
-
   test("lists only completed, unsaved transcriber rows", () => {
     const rows = [
       { id: "saved", status: "completed", created_at: "2026-10-01T00:00:00Z", meeting_url: "PRIVATE_URL" },

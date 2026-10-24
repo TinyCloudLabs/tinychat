@@ -96,26 +96,13 @@ describe("Connectors page composition", () => {
     expect(shell).toContain('const surface = (name: Shown) => (shown === name ? "h-full" : "hidden");');
   });
 
-  test("the card builds BOTH typed clients from those props — no new globals", () => {
-    // Two companion clients now — the webhooks write/config surface and the
-    // cohort-gated meetings read surface (F011's consent probe) — and both
-    // come from the same two props ConnectorsPage hands down. Still no
-    // module-level singletons, still no other transport.
+  test("the card builds the typed client from those props — no new globals", () => {
+    // The webhooks write/config client comes from the two props ConnectorsPage
+    // hands down. Still no module-level singletons, still no other transport.
     const card = read("ConnectorsCard.tsx");
     expect(card).toContain("createConnectorWebhooksClient(backendUrl, { sessionStore })");
-    expect(card).toContain("createConnectorMeetingsClient(backendUrl, { sessionStore })");
     expect(card).toContain("supportsBackgroundNotifications(d, rows[d.id].connection)");
     expect(card).toContain("<BackgroundSyncSection");
-  });
-
-  test("the card hands the background-sync section the meetings client", () => {
-    // The section's mount probe is what selects the consent variant (F011);
-    // the card only builds the client and passes it down — constructing it
-    // performs no I/O, so opening Connectors still makes no extra request
-    // by itself.
-    const card = read("ConnectorsCard.tsx");
-    const usage = card.slice(card.indexOf("<BackgroundSyncSection"));
-    expect(usage).toContain("meetings={meetings}");
   });
 
   test("the surface never hand-rolls a request or persists anything", () => {
@@ -134,21 +121,13 @@ describe("Connectors page composition", () => {
     }
   });
 
-  test("the consent checkbox exists only for the B-ingest cohort variant", () => {
-    // How this assertion evolved: Option B's checkbox died with Option B —
-    // under C nothing is granted, so there was nothing to attest to, and this
-    // test used to pin the source at ZERO checkboxes. B-ingest (residual
-    // F011) legitimately changes that: for a cohort address the server DOES
-    // hold a credential and meeting copies, so its checkbox is a live consent
-    // mechanic gating the enable action — not a resurrected dead control.
-    // The spirit survives precisely: the C path is intact, the cohort path
-    // exists, and EXACTLY ONE checkbox is in the source, so no dormant
-    // C-side twin can creep back. That the C-rendered MARKUP still carries no
-    // checkbox is asserted in BackgroundSyncSection.test.tsx.
+  test("the Connectors section has no consent checkbox", () => {
+    // Option C grants nothing, so there is nothing to attest to: the source
+    // carries ZERO checkboxes. That the C-rendered MARKUP carries none either is
+    // asserted in BackgroundSyncSection.test.tsx.
     const source = read("BackgroundSyncSection.tsx");
     expect(source).toContain("BACKGROUND_SYNC_CONSENT_COPY");
-    expect(source).toContain("BACKEND_INGEST_CONSENT_COPY");
-    expect(source.match(/type="checkbox"/g)).toHaveLength(1);
+    expect(source.match(/type="checkbox"/g)).toBeNull();
   });
 });
 

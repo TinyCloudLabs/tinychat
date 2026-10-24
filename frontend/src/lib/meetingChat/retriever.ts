@@ -9,10 +9,13 @@
 
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
-import { meetingKvKey, transcriptKvKey } from "../connectors/connectorStore";
-import type { ConnectorMeetingContent, ConnectorMeetingsClient } from "../connectors/meetingsApi";
-import { CONNECTORS_SQL_DB_NAME } from "../connectors/connectorStore";
-import { USER_SPACE_MEETING_VERSION, type ReconciledMeetingKvRecordV1 } from "../connectors/backendReconcile";
+import {
+  CONNECTORS_SQL_DB_NAME,
+  USER_SPACE_MEETING_VERSION,
+  meetingKvKey,
+  transcriptKvKey,
+  type ReconciledMeetingKvRecordV1,
+} from "../connectors/connectorStore";
 import { normalizeTranscriptText, voiceNoteTranscriptLocator } from "../voiceNotes/voiceNoteCommits";
 import {
   buildMeetingContext,
@@ -67,8 +70,6 @@ export type MeetingEvidenceReadOutcome =
 export interface MeetingEvidenceReadOptions {
   /** Browser-local SQL and KV, read only after a meeting has been selected. */
   tcw: Pick<TinyCloudWeb, "kv" | "sql">;
-  /** The authenticated browser client used only as the final server fallback. */
-  meetings: Pick<ConnectorMeetingsClient, "read">;
   signal?: AbortSignal;
   /** Transcript-specific requests cannot be grounded by a summary alone. */
   requireTranscript?: boolean;
@@ -81,7 +82,6 @@ export interface MeetingEvidenceReadOptions {
  */
 export interface BrowserMeetingTurnRetrieverOptions {
   tcw: Pick<TinyCloudWeb, "kv" | "sql">;
-  meetings: Pick<ConnectorMeetingsClient, "list" | "read">;
 }
 
 interface ResultError {
@@ -268,7 +268,6 @@ export function createBrowserMeetingTurnRetriever(
         try {
           corpus = await discoverMeetingCorpus(
             options.tcw,
-            options.meetings,
             undefined,
             signal,
             state.getThreadState(threadId).selected,
@@ -289,7 +288,6 @@ export function createBrowserMeetingTurnRetriever(
 
       const evidenceOutcome = await readMeetingEvidence(meeting, {
         tcw: options.tcw,
-        meetings: options.meetings,
         signal,
         requireTranscript: requiresTranscript(question),
       });
@@ -344,8 +342,6 @@ function locator(kind: MeetingEvidenceLocatorKind, meeting: MeetingCandidate): M
     case "local-kv-record":
       return { kind, source: meeting.source, sourceId: meeting.sourceId };
     case "local-kv-transcript":
-      return { kind, source: meeting.source, sourceId: meeting.sourceId };
-    case "server-meeting":
       return { kind, source: meeting.source, sourceId: meeting.sourceId };
   }
 }
@@ -482,17 +478,6 @@ function isSufficient(evidence: MeetingEvidence, requireTranscript = false): boo
 
 function aborted(signal: AbortSignal | undefined): boolean {
   return signal?.aborted === true;
-}
-
-function validatedServerContent(value: unknown, meeting: MeetingCandidate): ConnectorMeetingContent["content"] | null {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
-  const envelope = value as Partial<ConnectorMeetingContent>;
-  if (envelope.source !== meeting.source || envelope.sourceId !== meeting.sourceId) return null;
-  if (typeof envelope.meta !== "object" || envelope.meta === null || Array.isArray(envelope.meta)) return null;
-  const meta = envelope.meta as Partial<ConnectorMeetingContent["meta"]>;
-  if (meta.sourceId !== meeting.sourceId) return null;
-  if (typeof envelope.content !== "object" || envelope.content === null || Array.isArray(envelope.content)) return null;
-  return envelope.content as ConnectorMeetingContent["content"];
 }
 
 /**
@@ -633,84 +618,6 @@ export async function readMeetingEvidence(
       }
       }
     }
-  }
-
-  // 3. The authenticated server is a final fallback. A server problem makes
-  // source completeness partial, but never turns a local no-content result
-  // into a critical local-storage failure.
-  if ((meeting.hasServerSummary || meeting.hasServerTranscript) && canRead()) {
-    readStarted();
-    let result: Awaited<ReturnType<ConnectorMeetingsClient["read"]>>;
-    try {
-      result = await options.meetings.read(meeting.source, meeting.sourceId, { signal: options.signal });
-    } catch {
-      if (aborted(options.signal)) return { status: "aborted" };
-      return isSufficient(evidence, options.requireTranscript)
-        ? { status: "evidence", evidence: { ...withUnavailable(evidence, "server-meeting"), partial: true } }
-        : { status: "storage-error", partial: true };
-    }
-    if (aborted(options.signal)) return { status: "aborted" };
-    if (result.status !== "ok") {
-      markPartial();
-      evidence = withUnavailable(evidence, "server-meeting");
-      if (result.status !== "not-found" && !isSufficient(evidence, options.requireTranscript)) {
-        return { status: "storage-error", partial: true };
-      }
-    } else {
-      const content = validatedServerContent(result.value, meeting);
-      if (content === null) {
-        markPartial();
-        evidence = withUnavailable(evidence, "server-meeting");
-        return isSufficient(evidence, options.requireTranscript)
-          ? { status: "evidence", evidence }
-          : { status: "no-content", partial: true, summaryAvailable: evidence.summary !== null };
-      }
-      const summary = summaryText(content.summary);
-      const normalizedTranscriptContent = content.transcript === undefined ? null : normalizedTranscript(content.transcript);
-      const transcriptState = normalizedTranscriptContent?.readability ?? null;
-      const transcript = transcriptState === "readable" ? content.transcript : null;
-      if ((content.summary !== undefined && summary === null)
-        || (meeting.hasServerSummary && content.summary === undefined)
-        || normalizedTranscriptContent?.partial === true
-        || transcriptState === "malformed"
-        || (meeting.hasServerTranscript && transcriptState === null)) {
-        markPartial();
-      }
-      if (summary === null && transcript === null) {
-        evidence = withUnavailable(evidence, "server-meeting");
-      } else {
-        const serverLocator = locator("server-meeting", meeting);
-        evidence = {
-          ...evidence,
-          summary: summary ?? evidence.summary,
-          summaryLocator: summary === null ? evidence.summaryLocator : serverLocator,
-          transcript: transcript ?? evidence.transcript,
-          transcriptChunks: transcript === null ? evidence.transcriptChunks : normalizedTranscriptContent?.chunks,
-          transcriptLocator: transcript === null ? evidence.transcriptLocator : serverLocator,
-        };
-      }
-    }
-  }
-
-  // Every known locator that could still contribute evidence must be accounted
-  // for when the fixed read budget prevented its attempt. A valid-but-empty
-  // earlier read is not proof that later advertised evidence is absent.
-  const skippedRelevant = [
-    meeting.hasSqlSummary && meeting.localRowId !== null ? "sql-summary" : null,
-    meeting.hasLocalRecord ? "local-kv-record" : null,
-    meeting.hasLocalTranscript ? "local-kv-transcript" : null,
-    meeting.hasServerSummary || meeting.hasServerTranscript ? "server-meeting" : null,
-  ].filter((kind): kind is MeetingEvidenceLocatorKind => kind !== null)
-    .filter((kind) => !evidence.unavailableLocators.includes(kind))
-    .filter((kind) => {
-      if (kind === "sql-summary") return evidence.summaryLocator?.kind !== kind;
-      if (kind === "local-kv-record") return evidence.summaryLocator?.kind !== kind;
-      if (kind === "local-kv-transcript") return evidence.transcriptLocator?.kind !== kind;
-      return evidence.summaryLocator?.kind !== kind && evidence.transcriptLocator?.kind !== kind;
-    });
-  if (evidence.reads >= MAX_EVIDENCE_READS && skippedRelevant.length > 0 && !isSufficient(evidence, options.requireTranscript)) {
-    evidence = { ...evidence, partial: true };
-    for (const kind of skippedRelevant) evidence = withUnavailable(evidence, kind);
   }
 
   return isSufficient(evidence, options.requireTranscript)
@@ -929,9 +836,7 @@ function isOpaqueKvOnly(candidate: MeetingCandidate): boolean {
     && candidate.participantNames.length === 0
     && candidate.participantEmails.length === 0
     && candidate.organizerEmail === null
-    && candidate.localRowId === null
-    && !candidate.hasServerSummary
-    && !candidate.hasServerTranscript;
+    && candidate.localRowId === null;
 }
 
 function recency(candidate: MeetingCandidate): number {

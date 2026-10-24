@@ -484,20 +484,9 @@
   flex-direction: column;
   gap: 6px;
 }
-.ms-consent strong,
-.ms-consent-note strong {
+.ms-consent strong {
   color: var(--ink);
   font-weight: 700;
-}
-.ms-check {
-  display: flex;
-  gap: 8px;
-  align-items: flex-start;
-  cursor: pointer;
-}
-.ms-check input {
-  margin-top: 2px;
-  accent-color: var(--ink);
 }
 .ms-subpanel-actions {
   display: flex;
