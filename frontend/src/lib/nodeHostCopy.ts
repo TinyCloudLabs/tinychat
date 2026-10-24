@@ -4,7 +4,8 @@
 // at an address; the copy says no more than that.
 //
 // {address} is the saved address (e.g. http://127.0.0.1:8000); {id} is the
-// node's full ID; {short} is its first and last 4 characters.
+// node's full ID; {short} is the 4 characters after the `did:key:z6Mk` prefix and
+// the last 4 characters (e.g. `Ab3d…wXN1`).
 
 export const NODE_SETTING_SECTION_LABEL = "Your own node";
 export const NODE_SETTING_FIELD_LABEL = "Node address";
@@ -57,7 +58,10 @@ export const nodeSignInFailed = (address: string) =>
 /** The one line by a control that is off while the node address is set; it links to the "Your own node" section of Settings. */
 export const NODE_DISABLED_LINE = "Not available while Exo uses your own node.";
 
-/** {short}: the first and last 4 characters of the node's full ID. */
+const NODE_ID_PREFIX = "did:key:z6Mk";
+
+/** {short}: the 4 characters after the `did:key:z6Mk` prefix, then the last 4. An ID too short for that is shown in full. */
 export function shortNodeId(id: string): string {
-  return id.length <= 8 ? id : `${id.slice(0, 4)}…${id.slice(-4)}`;
+  if (!id.startsWith(NODE_ID_PREFIX) || id.length < NODE_ID_PREFIX.length + 8) return id;
+  return `${id.slice(NODE_ID_PREFIX.length, NODE_ID_PREFIX.length + 4)}…${id.slice(-4)}`;
 }
