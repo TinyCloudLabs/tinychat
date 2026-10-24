@@ -1,5 +1,11 @@
 # @tinychat/backend
 
+## 0.5.7-beta.14
+
+### Patch Changes
+
+- 333a8f1: Show the notetaker stuck-joining state.
+
 ## 0.5.7-beta.13
 
 ### Patch Changes

@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.10.0-beta.29
+
+### Patch Changes
+
+- 333a8f1: Show the notetaker stuck-joining state.
+
 ## 0.10.0-beta.28
 
 ### Patch Changes
