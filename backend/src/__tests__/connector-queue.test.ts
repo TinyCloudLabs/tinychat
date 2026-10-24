@@ -630,6 +630,31 @@ describe("error classes", () => {
     );
   });
 
+  test("a failure code is sanitized before it is stored: only [A-Za-z0-9_-], so no space, newline or punctuation, at most 64 characters", async () => {
+    // Carried over from the removed fetch-worker suite ('a dead-lettered item's error code never
+    // carries payload or credential text'). `lastError` is also interpolated into public logs, so
+    // a newline in it would forge a log line.
+    const { queue } = createQueue();
+    for (const id of ["M-SECRET", "M-LONG"]) {
+      await queue.enqueue(SOURCE, ADDRESS, { meetingId: id, kind: "transcript" });
+    }
+
+    await queue.fail(SOURCE, ADDRESS, "M-SECRET", "transcript", "boom: token ff-access-token-AAAA\nforged");
+    await queue.fail(SOURCE, ADDRESS, "M-LONG", "transcript", "x".repeat(200));
+
+    const items = await queue.list(SOURCE, ADDRESS);
+    const secret = items.find((item) => item.meetingId === "M-SECRET")!;
+    const long = items.find((item) => item.meetingId === "M-LONG")!;
+    expect(secret.lastError).toBe("boomtokenff-access-token-AAAAforged".slice(0, 64));
+    expect(secret.lastError).toMatch(/^[A-Za-z0-9_-]+$/);
+    expect(long.lastError).toBe("x".repeat(64));
+    // A code with nothing usable left collapses to a fixed code rather than an empty string.
+    await queue.enqueue(SOURCE, ADDRESS, { meetingId: "M-EMPTY", kind: "transcript" });
+    await queue.fail(SOURCE, ADDRESS, "M-EMPTY", "transcript", " \n:: ");
+    const empty = (await queue.list(SOURCE, ADDRESS)).find((item) => item.meetingId === "M-EMPTY")!;
+    expect(empty.lastError).toBe("unknown_error");
+  });
+
   test("a second-write failure during settle preserves pending and dead, emits no success log, and retries without duplication", async () => {
     const { node, queue } = createQueue();
     await queue.enqueue(SOURCE, ADDRESS, {
