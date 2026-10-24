@@ -148,7 +148,7 @@ export function legacyTranscriptMetadata(row: LegacyTranscriptRow | null): Recor
   return row ? metadata(row.metadata) : {};
 }
 
-export interface TranscriptProvenance { engine: string | null; provider: string | null }
+export interface TranscriptProvenance { engine: string | null; provider: string | null; model: string | null }
 export interface VoiceNoteTranscriptLocator {
   bodyKey: string | null;
   outcome: "transcribed" | "no_speech" | "none";
@@ -163,7 +163,7 @@ export async function voiceNoteTranscriptLocator(tcw: Pick<TinyCloudWeb, "sql">,
   const commit = await readTranscriptCommit(tcw, sourceId);
   if (commit) return { bodyKey: commit.outcome === "transcribed" ? commit.bodyKey : null,
     outcome: commit.outcome, expectedText: null, preview: commit.preview, committed: true,
-    provenance: { engine: commit.engine, provider: commit.provider } };
+    provenance: { engine: commit.engine, provider: commit.provider, model: commit.model } };
   const winner = legacyTranscriptMetadata(await readLegacyTranscriptWinner(tcw, sourceId));
   const outcome = winner.transcription_outcome === "transcribed" ? "transcribed"
     : winner.transcription_outcome === "no_speech" ? "no_speech" : "none";
