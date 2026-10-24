@@ -125,3 +125,61 @@ test("public-only mode streams ordinary deltas before the answer model finishes"
   } finally { release(); }
   const result = await run; expect(result.errorCode).toBeUndefined(); expect(output(frames)).toBe("Hello now. Finished."); expect(models).toBe(1);
 });
+
+function webSearchCall(deltas: unknown[]) {
+  return new Response(deltas.map(delta => `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [delta] }, finish_reason: null }] })}\n\n`).join("")
+    + `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }], usage: { prompt_tokens: 5, completion_tokens: 2 } })}\n\ndata: [DONE]\n\n`);
+}
+const searchDelta = { index: 0, id: "web", function: { name: "web_search", arguments: '{"query":"public fact"}' } };
+const searchResult = () => Response.json({ result: { text: "One public result.", data: { results: [{ title: "Public page", url: "https://public.example/fact", snippet: "PUBLIC-FACT-SNIPPET" }] } } });
+
+test("public-only mode synthesizes after web_search with no tools and the public-web instruction", async () => {
+  const requests: Array<{ messages: Array<{ role: string; content: string }>; tools?: unknown; tool_choice?: unknown }> = [];
+  const searches: string[] = [];
+  const fetchImpl = (async (input, init) => {
+    const url = String(input);
+    if (url.endsWith("/tools/web_search")) { searches.push(url); return searchResult(); }
+    requests.push(JSON.parse(String(init?.body)));
+    return requests.length === 1 ? webSearchCall([searchDelta]) : response("Public fact.");
+  }) as typeof fetch;
+  const frames: string[] = [];
+  const result = await orchestrateToolCalling({ config: { ...publicOnly(config(fetchImpl)), maxRounds: 2 }, model: kimi,
+    messages: [{ role: "user", content: "What is the public fact?" }], entityId: "entity", write: frame => { frames.push(frame); } });
+  expect(result.errorCode).toBeUndefined(); expect(output(frames)).toBe("Public fact."); expect(searches).toHaveLength(1);
+  expect(requests).toHaveLength(2);
+  expect(requests[0].tools).toHaveLength(1);
+  expect(requests[1].tools).toBeUndefined(); expect(requests[1].tool_choice).toBeUndefined();
+  expect(requests[1].messages[0].content).toContain("public-web results");
+  expect(requests[1].messages[1].content).toContain("Question: What is the public fact?");
+  expect(requests[1].messages[1].content).toContain("PUBLIC-FACT-SNIPPET");
+});
+
+test("public-only mode caps the loop at three requests even when more rounds are allowed", async () => {
+  const requests: Array<{ tools?: unknown }> = [];
+  const fetchImpl = (async (input, init) => {
+    if (String(input).endsWith("/tools/web_search")) return searchResult();
+    requests.push(JSON.parse(String(init?.body)));
+    return webSearchCall([searchDelta]);
+  }) as typeof fetch;
+  const result = await orchestrateToolCalling({ config: { ...publicOnly(config(fetchImpl)), maxRounds: 10 }, model: kimi,
+    messages: [{ role: "user", content: "Keep searching" }], entityId: "entity", write: () => {} });
+  expect(requests).toHaveLength(3);
+  expect(requests[0].tools).toHaveLength(1); expect(requests[1].tools).toHaveLength(1); expect(requests[2].tools).toBeUndefined();
+  expect(result.errorCode).toBeUndefined();
+});
+
+test("public-only mode dispatches a web_search whose streamed fields arrive with nullable continuations", async () => {
+  let models = 0, searches = 0; const frames: string[] = [];
+  const fetchImpl = (async (input) => {
+    if (String(input).endsWith("/tools/web_search")) { searches++; return searchResult(); }
+    models++;
+    if (models === 1) return webSearchCall([
+      { index: 0, id: "search", function: { name: "web_search", arguments: "" } },
+      { index: 0, id: null, function: { name: null, arguments: '{"query":"capital of Portugal"}' } },
+    ]);
+    return response("Lisbon is the capital.");
+  }) as typeof fetch;
+  const result = await orchestrateToolCalling({ config: publicOnly(config(fetchImpl)), model: kimi,
+    messages: [{ role: "user", content: "Search for the capital of Portugal" }], entityId: "entity", write: frame => { frames.push(frame); } });
+  expect(searches).toBe(1); expect(models).toBe(2); expect(result.errorCode).toBeUndefined(); expect(output(frames)).toContain("Lisbon");
+});
