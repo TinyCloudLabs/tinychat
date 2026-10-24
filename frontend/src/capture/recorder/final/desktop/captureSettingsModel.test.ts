@@ -1,3 +1,4 @@
+import { LOCAL_WHISPER_MODELS } from "@/lib/localTranscriber";
 import { describe, expect, test } from "bun:test";
 import type { WhisperModelInfo } from "@/lib/voiceNotes/desktopCaptureExtras";
 import {
@@ -10,6 +11,7 @@ import {
   formatModelSize,
   newlyDownloaded,
   partitionModels,
+  pickerModels,
   progressPercent,
   progressText,
   type Downloads,
@@ -241,5 +243,46 @@ describe("the model picker's keyboard model", () => {
     expect(downloadedAnnouncement(["Whisper Base (English)"])).toBe("Whisper Base (English) downloaded");
     expect(downloadedAnnouncement(["A", "B"])).toBe("A and B downloaded");
     expect(progressText(0.4)).toBe("Downloading, 40%");
+  });
+});
+
+describe("pickerModels", () => {
+  const LARGE = "QuantizedLargeTurbo";
+  const catalog = (over: Partial<Record<string, Partial<WhisperModelInfo>>> = {}): WhisperModelInfo[] =>
+    LOCAL_WHISPER_MODELS.map((m) => ({
+      id: m.id,
+      label: m.label,
+      sizeBytes: m.approxSizeMb * 1_000_000,
+      downloaded: false,
+      selected: false,
+      downloading: false,
+      progress: null,
+      ...over[m.id],
+    }));
+  const ids = (models: readonly WhisperModelInfo[]) => models.map((m) => m.id);
+
+  test("leaves out the hidden model when it is neither selected, downloading, nor on disk", () => {
+    const offered = ids(pickerModels(catalog(), null));
+    expect(offered).not.toContain(LARGE);
+    expect(offered).toEqual(LOCAL_WHISPER_MODELS.map((m) => m.id).filter((id) => id !== LARGE));
+  });
+
+  test("keeps the hidden model while the user has it selected", () => {
+    expect(ids(pickerModels(catalog(), LARGE))).toContain(LARGE);
+    expect(ids(pickerModels(catalog({ [LARGE]: { selected: true } }), null))).toContain(LARGE);
+  });
+
+  test("keeps the hidden model while it is on disk", () => {
+    expect(ids(pickerModels(catalog({ [LARGE]: { downloaded: true } }), null))).toContain(LARGE);
+  });
+
+  test("keeps the hidden model while its download is in flight", () => {
+    expect(ids(pickerModels(catalog({ [LARGE]: { downloading: true, progress: 0.2 } }), null))).toContain(LARGE);
+  });
+
+  test("never removes other models, whatever the selection", () => {
+    const offered = ids(pickerModels(catalog(), "QuantizedSmall"));
+    expect(offered).toContain("QuantizedSmall");
+    expect(offered).toContain("QuantizedTiny");
   });
 });

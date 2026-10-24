@@ -1,24 +1,16 @@
 import { beforeEach, describe, expect, test } from "bun:test";
-import { readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import {
-  DECRYPT_DECLINED_MESSAGE,
-  DECRYPT_STEP_UP_EXPIRY_MS,
-  DECRYPT_STEP_UP_FAILED_MESSAGE,
-  ENCRYPTION_NETWORK_FAILED_MESSAGE,
-  NEEDS_UNLOCK_MESSAGE,
   UNLOCK_NEEDS_SIGN_IN_MESSAGE,
   deleteConnectorKey,
+  getConnectorKey,
   isSecretsUnlocked,
   notifySecretsUnlockedForTests,
   onSecretsUnlocked,
-  readConnectorKey,
   resetSecretsUnlockedListenersForTests,
   saveConnectorKey,
   unlockSecrets,
-  WALLET_UNAVAILABLE_MESSAGE,
 } from "./connectorSecrets";
 import { CONNECTORS } from "./registry";
 import type { ConnectorDescriptor } from "./types";
@@ -26,8 +18,6 @@ import type { ConnectorDescriptor } from "./types";
 const FIREFLIES: ConnectorDescriptor = CONNECTORS.find(
   (c) => c.id === "fireflies",
 )!;
-
-const FAKE_DID = "did:pkh:eip155:1:0x00000000000000000000000000000000000000aa";
 
 type Result<T, E> = { ok: true; data: T } | { ok: false; error: E };
 type SecretErr = { code: string; message: string };
@@ -44,12 +34,6 @@ interface FakeCalls {
   getCount: number;
   deleteCount: number;
   ensureOwnedSpaceHostedCalls: string[];
-  ensureNetworkCalls: string[];
-  order: string[];
-  permissionChecks: Record<string, unknown>[][];
-  permissionRequests: { entries: Record<string, unknown>[]; options: unknown }[];
-  /** Wallet signatures / runtime-grant creations: incremented only when a grant is approved. */
-  signerCalls: number;
 }
 
 interface Fake {
@@ -63,10 +47,6 @@ interface Fake {
   /** When true, secrets is locked and every op reports VAULT_LOCKED. */
   locked: boolean;
   omitEnsureOwnedSpaceHosted?: boolean;
-  /** When set, the next ensureEncryptionNetwork rejects with this once. */
-  ensureErrorOnce: Error | null;
-  /** Decrypt step-up grant. Shared with the fake's permission methods. */
-  grant: { held: boolean; approve: boolean; throwWith: Error | null };
 }
 
 function keyFor(name: string, scope: string): string {
@@ -77,9 +57,6 @@ function makeFake(
   opts: {
     locked?: boolean;
     omitEnsureOwnedSpaceHosted?: boolean;
-    stepUpHeld?: boolean;
-    stepUpApprove?: boolean;
-    signerConnected?: boolean;
   } = {},
 ): Fake {
   const entries = new Map<string, StoredKey>();
@@ -89,20 +66,12 @@ function makeFake(
     getCount: 0,
     deleteCount: 0,
     ensureOwnedSpaceHostedCalls: [],
-    ensureNetworkCalls: [],
-    order: [],
-    permissionChecks: [],
-    permissionRequests: [],
-    signerCalls: 0,
   };
   const state = {
     locked: opts.locked === true,
     putErrorOnce: null as SecretErr | null,
     putErrorSticky: null as SecretErr | null,
     omitEnsureOwnedSpaceHosted: opts.omitEnsureOwnedSpaceHosted === true,
-    ensureErrorOnce: null as Error | null,
-    grant: { held: opts.stepUpHeld !== false, approve: opts.stepUpApprove !== false, throwWith: null as Error | null },
-    signer: { connected: opts.signerConnected !== false },
   };
 
   const secrets = {
@@ -123,7 +92,6 @@ function makeFake(
       options?: { scope?: string },
     ): Promise<Result<void, SecretErr>> {
       calls.putCount++;
-      calls.order.push(`put:${name}`);
       if (state.locked) {
         return {
           ok: false,
@@ -147,7 +115,6 @@ function makeFake(
       options?: { scope?: string },
     ): Promise<Result<string, SecretErr>> {
       calls.getCount++;
-      calls.order.push(`get:${name}`);
       if (state.locked) {
         return {
           ok: false,
@@ -189,34 +156,6 @@ function makeFake(
   };
 
   const raw: Record<string, unknown> = { secrets };
-  raw.ensureEncryptionNetwork = async (name: string) => {
-    calls.order.push("ensure");
-    calls.ensureNetworkCalls.push(name);
-    if (state.ensureErrorOnce) {
-      const e = state.ensureErrorOnce;
-      state.ensureErrorOnce = null;
-      throw e;
-    }
-    return { name };
-  };
-  raw.did = FAKE_DID;
-  raw.hasPermissions = (entries: Record<string, unknown>[]): boolean => {
-    calls.permissionChecks.push(entries);
-    return state.grant.held;
-  };
-  raw.requestPermissions = async (
-    entries: Record<string, unknown>[],
-    options: unknown,
-  ): Promise<{ approved: boolean }> => {
-    calls.permissionRequests.push({ entries, options });
-    calls.order.push("stepUp");
-    if (state.grant.throwWith) throw state.grant.throwWith;
-    if (!state.grant.approve) return { approved: false };
-    state.grant.held = true;
-    calls.signerCalls++;
-    return { approved: true };
-  };
-  Object.defineProperty(raw, "isWalletConnected", { get: () => state.signer.connected, enumerable: true });
   if (!state.omitEnsureOwnedSpaceHosted) {
     raw.ensureOwnedSpaceHosted = async (name: string) => {
       calls.ensureOwnedSpaceHostedCalls.push(name);
@@ -246,14 +185,7 @@ function makeFake(
     set locked(v: boolean) {
       state.locked = v;
     },
-    get ensureErrorOnce() {
-      return state.ensureErrorOnce;
-    },
-    set ensureErrorOnce(v: Error | null) {
-      state.ensureErrorOnce = v;
-    },
     omitEnsureOwnedSpaceHosted: state.omitEnsureOwnedSpaceHosted,
-    grant: state.grant,
   };
   return fake;
 }
@@ -272,7 +204,7 @@ describe("connectorSecrets happy path", () => {
     const stored = f.entries.get(keyFor(FIREFLIES.secretName, ""));
     expect(stored?.value).toBe("sk-fire-1");
 
-    const got = await readConnectorKey(f.tcw, FIREFLIES, { interactive: true });
+    const got = await getConnectorKey(f.tcw, FIREFLIES);
     expect(got).toEqual({ ok: true, data: "sk-fire-1" });
 
     const del = await deleteConnectorKey(f.tcw, FIREFLIES);
@@ -294,7 +226,7 @@ describe("connectorSecrets locked vault", () => {
         message: "Vault is locked",
       });
 
-    const get = await readConnectorKey(f.tcw, FIREFLIES, { interactive: true });
+    const get = await getConnectorKey(f.tcw, FIREFLIES);
     expect(get.ok).toBe(false);
     if (!get.ok) expect(get.error.code).toBe("VAULT_LOCKED");
 
@@ -584,306 +516,5 @@ describe("I2 unlock events — notify re-entrancy guard", () => {
     const res = await unlockSecrets<SecretErr>(f.tcw);
     expect(res.ok).toBe(true);
     expect(calls).toEqual(["a", "b", "a", "b"]);
-  });
-});
-
-describe("connectorSecrets encryption network before first write", () => {
-  test("creates the default network before the first put, and not again in the session", async () => {
-    const f = makeFake();
-    await saveConnectorKey(f.tcw, FIREFLIES, "k1");
-    await saveConnectorKey(f.tcw, FIREFLIES, "k2");
-    expect(f.calls.ensureNetworkCalls).toEqual(["default"]);
-    expect(f.calls.order).toEqual([
-      "ensure",
-      `put:${FIREFLIES.secretName}`,
-      `put:${FIREFLIES.secretName}`,
-    ]);
-  });
-
-  test("concurrent first saves share one network ensure", async () => {
-    const f = makeFake();
-    const [a, b] = await Promise.all([
-      saveConnectorKey(f.tcw, FIREFLIES, "k1"),
-      saveConnectorKey(f.tcw, FIREFLIES, "k2"),
-    ]);
-    expect(a.ok && b.ok).toBe(true);
-    expect(f.calls.ensureNetworkCalls).toEqual(["default"]);
-  });
-
-  test("a failed ensure blocks the write, returns the neutral message with the SDK error as cause, and the next save retries", async () => {
-    const f = makeFake();
-    const boom = new Error("HTTP 401 Unauthorized Action: network.create");
-    f.ensureErrorOnce = boom;
-    const failed = await saveConnectorKey(f.tcw, FIREFLIES, "k");
-    expect(failed).toEqual({
-      ok: false,
-      error: { code: "encryption-network-failed", message: ENCRYPTION_NETWORK_FAILED_MESSAGE, cause: boom },
-    });
-    expect(f.calls.putCount).toBe(0);
-    expect(f.entries.size).toBe(0);
-
-    const retried = await saveConnectorKey(f.tcw, FIREFLIES, "k");
-    expect(retried.ok).toBe(true);
-    expect(f.calls.ensureNetworkCalls).toEqual(["default", "default"]);
-    expect(f.calls.putCount).toBe(1);
-  });
-});
-
-describe("connectorSecrets decrypt step-up", () => {
-  test("a read requests exactly one decrypt entry on the default network, capped at one hour", async () => {
-    const f = makeFake({ stepUpHeld: false });
-    await readConnectorKey(f.tcw, FIREFLIES, { interactive: true });
-    expect(f.calls.permissionRequests).toHaveLength(1);
-    const { entries, options } = f.calls.permissionRequests[0]!;
-    expect(entries).toHaveLength(1);
-    expect(entries[0]).toMatchObject({
-      service: "tinycloud.encryption",
-      path: `urn:tinycloud:encryption:${FAKE_DID}:default`,
-      actions: ["decrypt"],
-      skipPrefix: true,
-    });
-    expect(options).toEqual({ expiryMs: DECRYPT_STEP_UP_EXPIRY_MS });
-    expect(DECRYPT_STEP_UP_EXPIRY_MS).toBeLessThanOrEqual(60 * 60 * 1000);
-  });
-
-  test("the step-up never requests a KV entry: a KV grant would fail this", async () => {
-    const f = makeFake({ stepUpHeld: false });
-    await readConnectorKey(f.tcw, FIREFLIES, { interactive: true });
-    const entries = f.calls.permissionRequests.flatMap((r) => r.entries);
-    expect(entries.some((e) => e.service === "tinycloud.kv")).toBe(false);
-    expect(entries.every((e) => e.service === "tinycloud.encryption")).toBe(true);
-  });
-
-  test("no prompt when the decrypt grant is already held", async () => {
-    const f = makeFake({ stepUpHeld: true });
-    await saveConnectorKey(f.tcw, FIREFLIES, "k");
-    const r = await readConnectorKey(f.tcw, FIREFLIES, { interactive: true });
-    expect(r).toEqual({ ok: true, data: "k" });
-    expect(f.calls.permissionChecks).toHaveLength(1);
-    expect(f.calls.permissionRequests).toHaveLength(0);
-  });
-
-  test("the step-up precedes the vault read", async () => {
-    const f = makeFake({ stepUpHeld: false });
-    await saveConnectorKey(f.tcw, FIREFLIES, "k");
-    await readConnectorKey(f.tcw, FIREFLIES, { interactive: true });
-    expect(f.calls.order).toEqual([
-      "ensure",
-      `put:${FIREFLIES.secretName}`,
-      "stepUp",
-      `get:${FIREFLIES.secretName}`,
-    ]);
-  });
-
-  test("a decline returns the neutral error, reads nothing, and is not retried", async () => {
-    const f = makeFake({ stepUpHeld: false, stepUpApprove: false });
-    await saveConnectorKey(f.tcw, FIREFLIES, "k");
-    const r = await readConnectorKey(f.tcw, FIREFLIES, { interactive: true });
-    expect(r.ok).toBe(false);
-    if (!r.ok) {
-      expect(r.error).toEqual({ code: "decrypt-declined", message: DECRYPT_DECLINED_MESSAGE });
-    }
-    expect(f.calls.getCount).toBe(0);
-    expect(f.calls.permissionRequests).toHaveLength(1);
-  });
-
-  test("an SDK error from the step-up is returned as the neutral message, with the error as cause, and nothing is read", async () => {
-    const f = makeFake({ stepUpHeld: false });
-    const boom = new Error("prompt dismissed");
-    f.grant.throwWith = boom;
-    const r = await readConnectorKey(f.tcw, FIREFLIES, { interactive: true });
-    expect(r).toEqual({
-      ok: false,
-      error: { code: "step-up-failed", message: DECRYPT_STEP_UP_FAILED_MESSAGE, cause: boom },
-    });
-    expect(f.calls.getCount).toBe(0);
-  });
-
-  test.each([
-    "OpenKey: wallet request rejected by the user",
-    "HTTP 500 Internal Server Error during requestPermissions",
-  ])("a wallet error during the step-up (%s) never reaches the user as raw text", async (raw) => {
-    const f = makeFake({ stepUpHeld: false });
-    f.grant.throwWith = new Error(raw);
-    const r = await readConnectorKey(f.tcw, FIREFLIES, { interactive: true });
-    expect(r).toMatchObject({
-      ok: false,
-      error: { code: "step-up-failed", message: DECRYPT_STEP_UP_FAILED_MESSAGE },
-    });
-    expect(f.calls.getCount).toBe(0);
-  });
-
-  test("one signature on the first reveal, none on a second within the hour", async () => {
-    // The granted decrypt entry stays held until its ≤1h expiry (asserted above),
-    // so the second reveal reuses it and does not sign.
-    const f = makeFake({ stepUpHeld: false, stepUpApprove: true });
-    await saveConnectorKey(f.tcw, FIREFLIES, "k");
-    expect(f.calls.signerCalls).toBe(0);
-    expect(await readConnectorKey(f.tcw, FIREFLIES, { interactive: true })).toEqual({ ok: true, data: "k" });
-    expect(f.calls.signerCalls).toBe(1);
-    expect(await readConnectorKey(f.tcw, FIREFLIES, { interactive: true })).toEqual({ ok: true, data: "k" });
-    expect(f.calls.signerCalls).toBe(1);
-  });
-
-  test("a background read with no decrypt grant returns needs-unlock and makes no permission call", async () => {
-    const f = makeFake({ stepUpHeld: false, stepUpApprove: true });
-    await saveConnectorKey(f.tcw, FIREFLIES, "k");
-    expect(await readConnectorKey(f.tcw, FIREFLIES, { interactive: false })).toEqual({
-      ok: false,
-      error: { code: "needs-unlock", message: NEEDS_UNLOCK_MESSAGE },
-    });
-    expect(f.calls.permissionRequests).toHaveLength(0);
-    expect(f.calls.signerCalls).toBe(0);
-    expect(f.calls.getCount).toBe(0);
-  });
-
-  test("a background read on a signer-less client still defers as needs-unlock, never the wallet message", async () => {
-    const f = makeFake({ stepUpHeld: false, signerConnected: false });
-    await saveConnectorKey(f.tcw, FIREFLIES, "k");
-    expect(await readConnectorKey(f.tcw, FIREFLIES, { interactive: false })).toEqual({
-      ok: false,
-      error: { code: "needs-unlock", message: NEEDS_UNLOCK_MESSAGE },
-    });
-    expect(f.calls.permissionRequests).toHaveLength(0);
-  });
-
-  test("a background read after an interactive grant reads without prompting again", async () => {
-    const f = makeFake({ stepUpHeld: false, stepUpApprove: true });
-    await saveConnectorKey(f.tcw, FIREFLIES, "k");
-    expect(await readConnectorKey(f.tcw, FIREFLIES, { interactive: true })).toEqual({ ok: true, data: "k" });
-    expect(await readConnectorKey(f.tcw, FIREFLIES, { interactive: false })).toEqual({ ok: true, data: "k" });
-    expect(f.calls.permissionRequests).toHaveLength(1);
-    expect(f.calls.signerCalls).toBe(1);
-  });
-
-  // Receivers that may carry an injected `secrets` bag, per file (paths relative
-  // to src/). Any other `.secrets` access outside connectorSecrets.ts is flagged,
-  // whatever the receiver is called.
-  const INJECTED_SECRETS_RECEIVERS: Record<string, Record<string, true>> = {
-    "chat/BackendReconciler.tsx": { options: true },
-    "chat/backgroundSyncState.ts": { deps: true },
-    "lib/connectors/backendReconcile.ts": { opts: true },
-    "lib/connectors/connectorLifecycle.ts": { deps: true },
-    "lib/connectors/targetedSync.ts": { opts: true },
-  };
-  function secretsAccessOffenders(rel: string, text: string): string[] {
-    const allowed = INJECTED_SECRETS_RECEIVERS[rel] ?? {};
-    const hits: string[] = [];
-    for (const line of text.split("\n")) {
-      const code = line.trim();
-      if (code.startsWith("//") || code.startsWith("*") || code.startsWith("/*")) continue;
-      for (const m of code.matchAll(/(\w+)\??\.(?:secrets|getSecret)\b/g)) {
-        if (allowed[m[1] ?? ""] !== true) hits.push(code);
-      }
-      for (const m of code.matchAll(/\{[^}]*\bsecrets\b[^}]*\}\s*=\s*(\w+)/g)) {
-        if (allowed[m[1] ?? ""] !== true) hits.push(code);
-      }
-    }
-    return hits;
-  }
-
-  test("the secrets-access guard flags aliases, destructuring and getSecret receivers", () => {
-    expect(secretsAccessOffenders("chat/x.ts", "await tcw.getSecret(key);")).toEqual(["await tcw.getSecret(key);"]);
-    expect(secretsAccessOffenders("chat/x.ts", "const vault = tcw.secrets;")).toEqual(["const vault = tcw.secrets;"]);
-    expect(secretsAccessOffenders("chat/x.ts", "const { secrets } = tcw;")).toEqual(["const { secrets } = tcw;"]);
-    expect(secretsAccessOffenders("chat/x.ts", "await deps.secrets.isUnlocked();")).toEqual([
-      "await deps.secrets.isUnlocked();",
-    ]);
-    expect(secretsAccessOffenders("chat/backgroundSyncState.ts", "await deps.secrets.isUnlocked();")).toEqual([]);
-    expect(secretsAccessOffenders("chat/x.ts", "const opts = tcw;\nopts.secrets.get(a);")).toEqual([
-      "opts.secrets.get(a);",
-    ]);
-    expect(secretsAccessOffenders("chat/BackendReconciler.tsx", "const { tcw, secrets } = options;")).toEqual([]);
-    expect(secretsAccessOffenders("chat/x.ts", "const { tcw, secrets } = options;")).toEqual([
-      "const { tcw, secrets } = options;",
-    ]);
-    expect(secretsAccessOffenders("chat/x.ts", "// tcw.secrets.get is not called here")).toEqual([]);
-  });
-
-  test("no file outside connectorSecrets.ts reaches the TinyCloud secrets service", () => {
-    const srcRoot = join(import.meta.dir, "..", "..");
-    const offenders: string[] = [];
-    for (const rel of readdirSync(srcRoot, { recursive: true }) as string[]) {
-      if (!/\.(ts|tsx)$/.test(rel) || /\.test\.(ts|tsx)$/.test(rel)) continue;
-      if (rel.endsWith(join("lib", "connectors", "connectorSecrets.ts"))) continue;
-      for (const hit of secretsAccessOffenders(rel, readFileSync(join(srcRoot, rel), "utf8"))) offenders.push(`${rel}: ${hit}`);
-    }
-    expect(offenders).toEqual([]);
-  });
-
-  test("every readConnectorKey call site is classified by its literal interactive flag", () => {
-    // Closed inventory: a caller may only pass a literal that matches its file's role.
-    // Flipping a background caller to `interactive: true` fails here.
-    const USER_PRESS_CALLERS: Record<string, true> = {
-      "capture/meetingSources/useSourceSync.ts": true,
-      "chat/ConnectorDialog.tsx": true,
-      "chat/ConnectorsCard.tsx": true,
-    };
-    const BACKGROUND_CALLERS: Record<string, true> = {
-      "chat/useBackgroundDrain.ts": true,
-      "chat/useGmeetSessionSync.ts": true,
-    };
-    // Forward a caller-supplied flag; the definition and the queue adapter.
-    const FLAG_PASS_THROUGH: Record<string, true> = {
-      "lib/connectors/connectorSecrets.ts": true,
-      "lib/connectors/targetedSync.ts": true,
-    };
-    const srcRoot = join(import.meta.dir, "..", "..");
-    const offenders: string[] = [];
-    for (const rel of readdirSync(srcRoot, { recursive: true }) as string[]) {
-      if (!/\.(ts|tsx)$/.test(rel) || /\.test\.(ts|tsx)$/.test(rel)) continue;
-      const text = readFileSync(join(srcRoot, rel), "utf8");
-      for (const m of text.matchAll(/readConnectorKey(?:<[^>]*>)?\(([^()]*)\)/g)) {
-        const args = m[1] ?? "";
-        const literal = /\binteractive:\s*(true|false)\b/.exec(args)?.[1];
-        const where = `${rel}: ${m[0]}`;
-        if (literal === "true") {
-          if (!Object.hasOwn(USER_PRESS_CALLERS, rel)) offenders.push(where);
-        } else if (literal === "false") {
-          if (!Object.hasOwn(BACKGROUND_CALLERS, rel)) offenders.push(where);
-        } else if (!/\binteractive\b/.test(args) || !Object.hasOwn(FLAG_PASS_THROUGH, rel)) {
-          offenders.push(where);
-        }
-      }
-    }
-    expect(offenders).toEqual([]);
-  });
-});
-
-describe("connectorSecrets reveal after reload", () => {
-  test("a signer-less client is refused before any prompt, with the neutral message", async () => {
-    const f = makeFake({ stepUpHeld: false, signerConnected: false });
-    expect(await readConnectorKey(f.tcw, FIREFLIES, { interactive: true })).toEqual({
-      ok: false,
-      error: { code: "wallet-unavailable", message: WALLET_UNAVAILABLE_MESSAGE },
-    });
-    expect(f.calls.permissionRequests).toHaveLength(0);
-    expect(f.calls.getCount).toBe(0);
-  });
-
-  test("a signer-less client that already holds the grant still reads", async () => {
-    const f = makeFake({ stepUpHeld: true, signerConnected: false });
-    await saveConnectorKey(f.tcw, FIREFLIES, "k");
-    expect(await readConnectorKey(f.tcw, FIREFLIES, { interactive: true })).toEqual({ ok: true, data: "k" });
-    expect(f.calls.permissionRequests).toHaveLength(0);
-  });
-
-  test("a signer-connected restored client prompts on the first reveal only", async () => {
-    const f = makeFake({ stepUpHeld: false, stepUpApprove: true });
-    await saveConnectorKey(f.tcw, FIREFLIES, "k");
-    expect(await readConnectorKey(f.tcw, FIREFLIES, { interactive: true })).toEqual({ ok: true, data: "k" });
-    expect(await readConnectorKey(f.tcw, FIREFLIES, { interactive: true })).toEqual({ ok: true, data: "k" });
-    expect(f.calls.permissionRequests).toHaveLength(1);
-    expect(f.calls.signerCalls).toBe(1);
-  });
-
-  test("a declined prompt on a signer-connected client is not retried", async () => {
-    const f = makeFake({ stepUpHeld: false, stepUpApprove: false });
-    await saveConnectorKey(f.tcw, FIREFLIES, "k");
-    expect(await readConnectorKey(f.tcw, FIREFLIES, { interactive: true })).toEqual({
-      ok: false,
-      error: { code: "decrypt-declined", message: DECRYPT_DECLINED_MESSAGE },
-    });
-    expect(f.calls.permissionRequests).toHaveLength(1);
   });
 });

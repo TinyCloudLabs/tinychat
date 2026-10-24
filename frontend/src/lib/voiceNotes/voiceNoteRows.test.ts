@@ -605,6 +605,18 @@ test("a full space leaves the note local with a specific identity state", async 
     expect(sqlite.query("SELECT id FROM connector_meeting WHERE source = 'exo-voice-note-dup'").all()).toEqual([{ id: "b" }]);
     expect(() => insert(sqlite, "late", "rec")).toThrow();
   });
+  test("merging an archived duplicate does not copy its title marker onto the keeper", async () => {
+    const { tcw, sqlite } = space();
+    expect((await ensureSchema(tcw)).ok).toBe(true);
+    insert(sqlite, "b", "rec", { title_auto: "Voice note · Oct 9" }); insert(sqlite, "a", "rec");
+    expect((await ensureVoiceNoteIdentity(tcw)).status).toBe("established");
+    expect(row(sqlite, "a").metadata.title_auto).toBeUndefined();
+    sqlite.run("UPDATE connector_meeting SET title = ? WHERE id = 'a'", ["Voice note · Oct 9"]);
+    await commitVoiceNoteTranscript(tcw, "rec", { rev: 1, outcome: "transcribed", text: "Hello.",
+      sentences: [{ index: 0, speaker_name: "You", text: "Hello.", start_time: 0, end_time: 5 }],
+      model: "universal-2", participants: ["Alice Chen"] });
+    expect(sqlite.query("SELECT title FROM connector_meeting WHERE id = 'a'").get()).toEqual({ title: "Voice note · Oct 9" });
+  });
   test("two reconcilers leave a live keeper and preserve every archived sibling", async () => {
     const { tcw, sqlite } = space();
     await ensureSchema(tcw);
@@ -735,7 +747,7 @@ test("a full space leaves the note local with a specific identity state", async 
       transcription_outcome: "transcribed", transcript_text: "PTX",
     }));
     const locator = await voiceNoteTranscriptLocator(tcw, "rec");
-    expect(locator.provenance).toEqual({ engine: "private-cloud", provider: "tinycloud-private-transcription" });
+    expect(locator.provenance).toEqual({ engine: "private-cloud", provider: "tinycloud-private-transcription", model: null });
     const savedSentences = JSON.parse(values.get(locator.bodyKey!)!) as typeof sentences;
     const privateCloud = hasPrivateCloudTimingProvenance(null, locator.provenance);
     const html = renderToStaticMarkup(createElement(MemoryRouter, null, createElement(NoteDetailView, {
@@ -756,6 +768,17 @@ test("a full space leaves the note local with a specific identity state", async 
     expect(html).toContain("Copy with timestamps");
     expect(transcriptWithTimestamps(savedSentences, privateCloud)).toContain("[01:00]");
     expect(transcriptMarkdown("Synthetic", "2026-01-01T00:00:00Z", savedSentences, privateCloud)).toContain("[01:00]");
+  });
+  test("the committed transcription model is carried on the transcript locator", async () => {
+    const { tcw, sqlite } = space();
+    await ensureSchema(tcw);
+    insert(sqlite, "vn-rec", "rec");
+    await ensureVoiceNoteIdentity(tcw);
+    await commitVoiceNoteTranscript(tcw, "rec", { rev: 4, outcome: "transcribed", text: "Local",
+      sentences: [{ index: 0, speaker_name: "You", text: "Local sentence.", start_time: 0, end_time: 5 }],
+      engine: "whispercpp", provider: "whispercpp", model: "QuantizedTinyEn" });
+    const locator = await voiceNoteTranscriptLocator(tcw, "rec");
+    expect(locator.provenance).toEqual({ engine: "whispercpp", provider: "whispercpp", model: "QuantizedTinyEn" });
   });
   test("upgrade, downgrade, upgrade restores richer same-revision transcript", async () => {
     const { tcw, sqlite, values } = space();

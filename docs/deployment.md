@@ -201,9 +201,18 @@ backend afterwards: `unchanged` (failed before `phala deploy`),
 later check failed; web is not deployed).
 
 The workflow also refuses to run unless the backend CVM is on the production OS
-image pinned in `PHALA_OS_IMAGE` / `PHALA_OS_IMAGE_HASH` (`dstack-0.5.12`, not a
-`dstack-dev-*` image): it checks `phala cvms get` before building anything and again
-after `phala deploy`. The Phala KMS only releases app keys to the production image.
+image pinned in `PHALA_OS_IMAGE` / `PHALA_OS_IMAGE_HASH` (`dstack-0.5.12`), or on
+a dev image whose hash is listed in `.github/scripts/phala-dev-os-allowlist.txt`
+(today only `dstack-dev-0.5.12`) and that passes a fresh check in the same job:
+`download.dstack.org` serves `mr_<hash>.tar.gz`, and `sha256sum sha256sum.txt` of
+the extracted archive equals `<hash>`, and every file it lists matches
+(`sha256sum -c`). An unknown dev hash, a missing field, a
+failed fetch or a hash mismatch fails closed. The allowlist is changed only by a
+reviewed PR. The logic is `.github/scripts/phala-os-guard.sh`, tested by
+`.github/scripts/test-phala-os-guard.sh` (which the deploy runs first). The check
+runs on `phala cvms get` before building anything and again after `phala deploy`.
+It reads the script from the deployed ref's checkout, so a rollback to a ref that
+predates it fails closed.
 CI never changes the OS; if the check fails, set it by hand and re-run:
 `phala api -X PATCH /cvms/<id>/os-image -F os_image_name=dstack-0.5.12`.
 `phala deploy --image/--no-dev-os` is ignored for an existing CVM.
@@ -261,6 +270,7 @@ Repository **variables** (all optional — defaults shown):
 | `MEETING_CONTENT_RETRIEVAL_ENABLED` | `false` (optional; only literal `true` enables controller routing for admitted accounts) |
 | `MEETING_CONTENT_TEST_ACCOUNTS` | _(empty — optional comma-separated account allowlist; entries are trimmed and lowercased)_ |
 | `MEETING_CONTENT_MODELS` | _(empty — optional comma-separated evaluated-model allowlist; entries are trimmed and matched exactly)_ |
+| `CREDENTIAL_ROW_COUNT_SOURCES` | _(empty — optional comma-separated source names; when set to a source name, logs a single `credential_row_count source=<name> count=<N>` line at startup; read-only)_ |
 | `PAYWALL_ENABLED` | `false`. This and every Stripe/credit/ledger row below may live as a repo **secret** or **variable** — secrets win (`docs/stripe-setup.md`). |
 | `STRIPE_PRICE_PLUS_MONTHLY` / `STRIPE_PRICE_PLUS_YEARLY` / `STRIPE_PRICE_PRO_MONTHLY` / `STRIPE_PRICE_PRO_YEARLY` | _(empty — Stripe price ids `price_…`; see `docs/stripe-setup.md`)_ |
 | `CREDIT_BUDGET_FREE` / `CREDIT_BUDGET_PLUS_WEEKLY` / `CREDIT_BUDGET_PRO_WEEKLY` | _(empty — code defaults in `backend/src/billing/tiers.ts`)_ |
@@ -268,7 +278,7 @@ Repository **variables** (all optional — defaults shown):
 | `AGENT_CHAT_BUDGET_PREFLIGHT` | `log` (values: `log`, `enforce`, `off`; `enforce` returns 402 `credit_budget_exceeded` before a turn starts; see `docs/credits.md`) |
 | `EXO_CAPABILITIES_ENABLED` | _(empty — off; only exactly `true` mounts `/api/exo/v1`; see `docs/exo-capabilities.md`)_ |
 | `LEDGER_SERVICE_URL` | _(empty — the ledger client is disabled when unset)_ |
-| `LEDGER_AUTHORITATIVE` | `false` (workflow default — flipping ledger authority is a deliberate cutover action, not part of a routine deploy) |
+| `LEDGER_AUTHORITATIVE` | `false` when neither the repo secret nor the repo variable is set. The deploy passes the configured value through, so check the repo setting rather than assuming the default. Turning it on is a deliberate cutover, not part of a routine deploy. |
 | `LEDGER_OUTAGE_POLICY` | `bounded_k` |
 | `CONNECTOR_BACKEND_INGEST_ENABLED` | `false` (**dark**; `true` only ARMS backend ingestion — addresses come from the cohort allowlist in the backend's own config KV. See §4 and the operator pre-rollout gates before ever setting this.) |
 | `FIREFLIES_OAUTH_REDIRECT_URI` | _(empty — the registered OAuth redirect URI; required with the ingest flag armed)_ |
@@ -343,7 +353,7 @@ written into the encrypted deployment env file, including their off/empty defaul
 forwarded by compose and included by `Sync CVM allowed_envs`. Verify the actual
 existing CVM's allowed names and resolved container settings. Changing a repository
 variable alone does not change a running process: these settings require a backend
-deploy/restart. Never enable a canary with an empty account list.
+deploy/restart. An empty list is not a canary: with tasks enabled it admits all authenticated accounts, so set the list before enabling.
 
 The allowed-name sync retains existing allowed names, but it encrypts the values
 from the complete deployment env file. Keeping an allowed name does not preserve

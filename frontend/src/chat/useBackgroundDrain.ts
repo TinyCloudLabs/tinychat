@@ -58,7 +58,7 @@ import {
 } from "@/lib/connectors/firefliesSync";
 import { isFirefliesStale } from "@/lib/connectors/firefliesFreshness";
 import {
-  readConnectorKey,
+  getConnectorKey,
   isSecretsUnlocked,
   onSecretsUnlocked,
 } from "@/lib/connectors/connectorSecrets";
@@ -676,10 +676,10 @@ export function buildHeadlessDrainDeps(
         error: { message: "The headless drain never unlocks. Open Connectors to unlock and sync." },
       }),
     },
-    ingest: (items, options) =>
+    ingest: (items) =>
       ingest
         ? ingest(descriptor, items)
-        : ingestQueuedMeetings({ tcw, descriptor, items, webhooks, interactive: options.interactive }),
+        : ingestQueuedMeetings({ tcw, descriptor, items, webhooks }),
   };
 }
 
@@ -696,7 +696,7 @@ async function runFirefliesCatchUp(
     options.isCurrent() && !options.signal.aborted && isSecretsUnlocked(tcw);
   try {
     if (!isCurrent()) return;
-    const key = await readConnectorKey<unknown>(tcw, descriptor, { interactive: false });
+    const key = await getConnectorKey<unknown>(tcw, descriptor);
     if (!isCurrent() || !key.ok || !key.data) return;
 
     const client = new FirefliesClient({
