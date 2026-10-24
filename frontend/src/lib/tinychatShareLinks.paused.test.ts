@@ -208,9 +208,10 @@ describe("chat sharing paused", () => {
 
   it("deleting a chat removes that chat's link records and revokes its delegation while paused", async () => {
     const { tcw, kv, revoked, whenDeleted } = fakeOwnerTcw();
-    seedShare(kv, MINE, "thread-a", "2999-01-01T00:00:00.000Z");
+    // The other chat's link is listed first, so the cleanup reaches it before this chat's link.
+    // The cleanup's last step removes this chat's index record: waiting for it means every record was visited.
     seedShare(kv, OTHER, "thread-b", "2999-01-01T00:00:00.000Z");
-    // Share cleanup runs after the delete returns; its last step removes the index record.
+    seedShare(kv, MINE, "thread-a", "2999-01-01T00:00:00.000Z");
     const cleanedUp = whenDeleted(shareIndexKeyFor(MINE));
 
     await deleteThread(tcw, "thread-a");

@@ -96,8 +96,8 @@ export const OwnedShareLinksCard: FC<{ tcw: TinyCloudWeb }> = ({ tcw }) => {
   const refresh = useCallback(async () => {
     try {
       setShares(await listOwnedTinychatShares(tcw));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+    } catch {
+      // No list to show; the card stays on its title and description. The error text is never shown.
     }
   }, [tcw]);
 
