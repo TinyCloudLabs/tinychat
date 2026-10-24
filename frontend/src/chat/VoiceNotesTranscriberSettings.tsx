@@ -134,8 +134,8 @@ export function VoiceNotesTranscriberSettings() {
       </div>
       <p className="text-xs text-muted-foreground">
         {signedIn
-          ? "New recordings stop by themselves after this long, on all your devices. Recordings never run longer than 3 hours."
-          : "New recordings stop by themselves after this long. Recordings never run longer than 3 hours."}
+          ? "Recordings you start with Exo's record button stop by themselves after this long. The setting follows your account to all your devices. No recording runs longer than 3 hours."
+          : "Recordings you start with Exo's record button stop by themselves after this long. No recording runs longer than 3 hours."}
       </p>
     </div>
   );
