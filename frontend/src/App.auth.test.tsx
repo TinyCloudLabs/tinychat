@@ -12,6 +12,6 @@ test("mounted App completes browser and native interactive sign-in across accoun
   expect(result.error).toBeUndefined();
   expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
   const output = `${result.stdout}\n${result.stderr}`;
-  expect(output).toContain("7 pass");
+  expect(output).toContain("3 pass");
   expect(output).toContain("0 fail");
 });

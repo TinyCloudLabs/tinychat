@@ -199,14 +199,8 @@ export interface BackgroundSyncDeps {
   source: string;
   webhooks: BackgroundSyncWebhooks;
   secrets: BackgroundSyncSecrets;
-  /**
-   * FE2's `ingestQueuedMeetings`, bound to this connector. The only writer.
-   * `options.interactive` is required: only `syncQueuedMeetings` passes `true`.
-   */
-  ingest(
-    items: readonly TargetedQueueItem[],
-    options: { interactive: boolean },
-  ): Promise<TargetedIngestResult>;
+  /** FE2's `ingestQueuedMeetings`, bound to this connector. The only writer. */
+  ingest(items: readonly TargetedQueueItem[]): Promise<TargetedIngestResult>;
 }
 
 export type BackgroundSyncEmit = (
@@ -536,7 +530,7 @@ export async function loadOnMount(
     return;
   }
   if (deps.secrets.isUnlocked()) {
-    await processQueue(deps, emit, { interactive: false });
+    await processQueue(deps, emit);
   } else {
     await readQueue(deps, emit);
   }
@@ -777,7 +771,7 @@ export async function syncQueuedMeetings(
       return;
     }
   }
-  await processQueue(deps, emit, { interactive: true });
+  await processQueue(deps, emit);
   emit((s) => ({ ...s, busy: null }));
 }
 
@@ -789,7 +783,6 @@ export async function syncQueuedMeetings(
 async function processQueue(
   deps: BackgroundSyncDeps,
   emit: BackgroundSyncEmit,
-  options: { interactive: boolean },
 ): Promise<void> {
   const drained = await deps.webhooks.drain();
   if (drained.status !== "ok") {
@@ -813,7 +806,7 @@ async function processQueue(
     kind: item.kind,
   }));
   if (items.length === 0) return;
-  const ingested = await deps.ingest(items, options);
+  const ingested = await deps.ingest(items);
   if (!ingested.ok) {
     // A terminal error still leaves work done: FE2 acknowledges everything it
     // stored before it gives up, because those meetings ARE in the space. The
