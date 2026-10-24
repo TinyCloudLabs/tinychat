@@ -533,9 +533,19 @@ jobs:
           ASSEMBLYAI_API_KEY: ${{ secrets.ASSEMBLYAI_API_KEY }}
           ASSEMBLYAI_HOSTED_ADMIN_KEY: ${{ secrets.ASSEMBLYAI_HOSTED_ADMIN_KEY }}
           ASSEMBLYAI_HOSTED_FRESH_INSTALL: ${{ vars.ASSEMBLYAI_HOSTED_FRESH_INSTALL }}
+          # TC-1978 log shipping: the Better Stack source token for the `vector` sidecar in docker-compose.phala.yml.
+          # Optional by design: an unset secret is an empty value, and the sidecar then idles and ships nothing while the
+          # backend serves as before. The key is always written below so allowed_envs (derived from this file's keys by
+          # the sync step) carries it; setting the secret later is then a plain redeploy.
+          PHALA_ENV_BETTERSTACK_SOURCE_TOKEN: ${{ secrets.PROD_TINYCHAT_BETTERSTACK_SOURCE_TOKEN }}
         run: |
           ENV_FILE="$RUNNER_TEMP/phala-prod.env"
           DEPLOY_RUN_URL="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          # A multi-line token would corrupt the KEY=VALUE env file; fail before anything is written, without printing it.
+          if [[ "${PHALA_ENV_BETTERSTACK_SOURCE_TOKEN:-}" == *$'\n'* || "${PHALA_ENV_BETTERSTACK_SOURCE_TOKEN:-}" == *$'\r'* ]]; then
+            echo "::error title=Invalid log shipping token::PROD_TINYCHAT_BETTERSTACK_SOURCE_TOKEN must be a single-line value"
+            exit 1
+          fi
           {
             printf '%s\n' "BACKEND_PRIVATE_KEY=$BACKEND_PRIVATE_KEY"
             printf '%s\n' "TINYCLOUD_HOST=https://tee.node.tinycloud.xyz"
@@ -620,6 +630,7 @@ jobs:
             printf '%s\n' "ASSEMBLYAI_API_KEY=$ASSEMBLYAI_API_KEY"
             printf '%s\n' "ASSEMBLYAI_HOSTED_ADMIN_KEY=$ASSEMBLYAI_HOSTED_ADMIN_KEY"
             printf '%s\n' "ASSEMBLYAI_HOSTED_FRESH_INSTALL=$ASSEMBLYAI_HOSTED_FRESH_INSTALL"
+            printf '%s\n' "BETTERSTACK_SOURCE_TOKEN=${PHALA_ENV_BETTERSTACK_SOURCE_TOKEN:-}"
           } > "$ENV_FILE"
 
           echo "::group::Deploy environment keys"

@@ -1,0 +1,719 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "text": "BACKEND_PRIVATE_KEY is required. Generate one from the repo root with `bun run generate-key`.",
+      "code": "process_private_key_missing",
+      "component": "process",
+      "level": "error"
+    },
+    {
+      "text": "CONNECTOR_WEBHOOK_HOST_ALLOWLIST or CONNECTOR_WEBHOOK_PUBLIC_ORIGIN must be set",
+      "code": "process_webhook_origin_missing",
+      "component": "process",
+      "level": "error"
+    },
+    {
+      "text": "Failed to start TinyChat backend:",
+      "code": "process_start_failed",
+      "component": "process",
+      "level": "error"
+    },
+    {
+      "text": "Invalid meeting diagnostic foreground configuration: set both endpoint and API key, or neither",
+      "code": "process_meeting_diagnostic_config_invalid",
+      "component": "process",
+      "level": "error"
+    },
+    {
+      "text": "SIGINT received.",
+      "code": "process_shutdown_sigint",
+      "component": "process",
+      "level": "info"
+    },
+    {
+      "text": "SIGTERM received.",
+      "code": "process_shutdown_sigterm",
+      "component": "process",
+      "level": "info"
+    },
+    {
+      "text": "TinyChat backend ready: http://localhost:",
+      "code": "process_ready_http",
+      "component": "process",
+      "level": "info"
+    },
+    {
+      "text": "TinyChat backend ready: https://localhost:",
+      "code": "process_ready_https",
+      "component": "process",
+      "level": "info"
+    },
+    {
+      "text": "[agent-chat] failed to resolve model rates:",
+      "code": "agent_chat_failed_to_resolve_model_rates",
+      "component": "agent-chat",
+      "level": "error"
+    },
+    {
+      "text": "[agent-chat] failed to resolve subscription tier:",
+      "code": "agent_chat_failed_to_resolve_subscription_tier",
+      "component": "agent-chat",
+      "level": "error"
+    },
+    {
+      "text": "[agent-chat] fallback usage recording failed",
+      "code": "agent_chat_fallback_usage_recording_failed",
+      "component": "agent-chat",
+      "level": "error"
+    },
+    {
+      "text": "[agent-chat] invalid AGENT_CHAT_BUDGET_PREFLIGHT=",
+      "code": "agent_chat_invalid_agent_chat_budget_preflight",
+      "component": "agent-chat",
+      "level": "warn"
+    },
+    {
+      "text": "[agent-chat] invalid AGENT_CHAT_BUDGET_STOP_MODE=",
+      "code": "agent_chat_invalid_agent_chat_budget_stop_mode",
+      "component": "agent-chat",
+      "level": "warn"
+    },
+    {
+      "text": "[agent-chat] meeting retrieval",
+      "code": "agent_chat_meeting_retrieval",
+      "component": "agent-chat",
+      "level": "info"
+    },
+    {
+      "text": "[agent-chat] post-stream usage recording failed",
+      "code": "agent_chat_post_stream_usage_recording_failed",
+      "component": "agent-chat",
+      "level": "error"
+    },
+    {
+      "text": "[agent-chat] stream lifecycle",
+      "code": "agent_chat_stream_lifecycle",
+      "component": "agent-chat",
+      "level": "info"
+    },
+    {
+      "text": "[agent-chat] task accounting",
+      "code": "agent_chat_task_accounting",
+      "component": "agent-chat",
+      "level": "info"
+    },
+    {
+      "text": "[agent-chat] task local usage recording failed",
+      "code": "agent_chat_task_local_usage_recording_failed",
+      "component": "agent-chat",
+      "level": "error"
+    },
+    {
+      "text": "[agent-chat] task usage enqueue failed",
+      "code": "agent_chat_task_usage_enqueue_failed",
+      "component": "agent-chat",
+      "level": "error"
+    },
+    {
+      "text": "[agent-chat] turn budget",
+      "code": "agent_chat_turn_budget",
+      "component": "agent-chat",
+      "level": "info"
+    },
+    {
+      "text": "[agent] eliza-service /sessions unreachable:",
+      "code": "agent_eliza_service_sessions_unreachable",
+      "component": "agent",
+      "level": "error"
+    },
+    {
+      "text": "[agent] eliza-service GET /sessions unreachable:",
+      "code": "agent_eliza_service_get_sessions_unreachable",
+      "component": "agent",
+      "level": "error"
+    },
+    {
+      "text": "[agent] failed to deserialize delegation:",
+      "code": "agent_failed_to_deserialize_delegation",
+      "component": "agent",
+      "level": "error"
+    },
+    {
+      "text": "[assemblyai-hosted] initializing fresh hosted spool at",
+      "code": "assemblyai_hosted_initializing_fresh_hosted_spool_at",
+      "component": "assemblyai-hosted",
+      "level": "error"
+    },
+    {
+      "text": "[assemblyai-hosted] paid outcome unresolved journal=note-",
+      "code": "assemblyai_hosted_paid_outcome_unresolved_journal_note",
+      "component": "assemblyai-hosted",
+      "level": "error"
+    },
+    {
+      "text": "[assemblyai-hosted] provider reconciliation failed; note remains blocked alert=true",
+      "code": "assemblyai_hosted_provider_reconciliation_failed_note_remain",
+      "component": "assemblyai-hosted",
+      "level": "error"
+    },
+    {
+      "text": "[assemblyai-hosted] quarantined invalid spool record",
+      "code": "assemblyai_hosted_quarantined_invalid_spool_record",
+      "component": "assemblyai-hosted",
+      "level": "error"
+    },
+    {
+      "text": "[assemblyai-hosted] sweep failed alert=true",
+      "code": "assemblyai_hosted_sweep_failed_alert_true",
+      "component": "assemblyai-hosted",
+      "level": "error"
+    },
+    {
+      "text": "[assemblyai-hosted] unresolved quarantined journal=note-",
+      "code": "assemblyai_hosted_unresolved_quarantined_journal_note",
+      "component": "assemblyai-hosted",
+      "level": "error"
+    },
+    {
+      "text": "[attestation] self-attestation failed",
+      "code": "attestation_self_attestation_failed",
+      "component": "attestation",
+      "level": "error"
+    },
+    {
+      "text": "[auth] verification failed:",
+      "code": "auth_verification_failed",
+      "component": "auth",
+      "level": "error"
+    },
+    {
+      "text": "[billing] failed to create checkout session:",
+      "code": "billing_failed_to_create_checkout_session",
+      "component": "billing",
+      "level": "error"
+    },
+    {
+      "text": "[billing] failed to invalidate cache for webhook event:",
+      "code": "billing_failed_to_invalidate_cache_for_webhook",
+      "component": "billing",
+      "level": "error"
+    },
+    {
+      "text": "[billing] failed to load rates:",
+      "code": "billing_failed_to_load_rates",
+      "component": "billing",
+      "level": "error"
+    },
+    {
+      "text": "[billing] failed to load status:",
+      "code": "billing_failed_to_load_status",
+      "component": "billing",
+      "level": "error"
+    },
+    {
+      "text": "[billing] invalid",
+      "code": "billing_invalid",
+      "component": "billing",
+      "level": "warn"
+    },
+    {
+      "text": "[billing] paid tier resolved without a billing anchor; defaulting window to now",
+      "code": "billing_paid_tier_resolved_without_a_billing",
+      "component": "billing",
+      "level": "warn"
+    },
+    {
+      "text": "[billing] webhook signature verification failed:",
+      "code": "billing_webhook_signature_verification_failed",
+      "component": "billing",
+      "level": "warn"
+    },
+    {
+      "text": "[chat] /models degraded to PICKER_MODELS (catalog unavailable):",
+      "code": "chat_models_degraded_to_picker_models_catalog_unavailable",
+      "component": "chat",
+      "level": "warn"
+    },
+    {
+      "text": "[chat] /models degraded: tier resolution also failed; allowing all:",
+      "code": "chat_models_degraded_tier_resolution_also_failed",
+      "component": "chat",
+      "level": "warn"
+    },
+    {
+      "text": "[chat] REDPILL_API_KEY is not set. POST /api/chat will return 500 until it is configured.",
+      "code": "chat_redpill_api_key_is_not_set_post_api",
+      "component": "chat",
+      "level": "warn"
+    },
+    {
+      "text": "[chat] REDPILL_DEFAULT_MODEL=\"",
+      "code": "chat_redpill_default_model",
+      "component": "chat",
+      "level": "warn"
+    },
+    {
+      "text": "[chat] failed to",
+      "code": "chat_failed_to",
+      "component": "chat",
+      "level": "error"
+    },
+    {
+      "text": "[chat] failed to record post-stream usage:",
+      "code": "chat_failed_to_record_post_stream_usage",
+      "component": "chat",
+      "level": "error"
+    },
+    {
+      "text": "[chat] fallback usage recording also failed:",
+      "code": "chat_fallback_usage_recording_also_failed",
+      "component": "chat",
+      "level": "error"
+    },
+    {
+      "text": "[chat] stream error:",
+      "code": "chat_stream_error",
+      "component": "chat",
+      "level": "error"
+    },
+    {
+      "text": "[connector-drain] delegation validation failed:",
+      "code": "connector_drain_delegation_validation_failed",
+      "component": "connector-drain",
+      "level": "warn"
+    },
+    {
+      "text": "[connector-drain] forced-floor revocation re-check failed:",
+      "code": "connector_drain_forced_floor_revocation_re_check_failed",
+      "component": "connector-drain",
+      "level": "warn"
+    },
+    {
+      "text": "[connector-drain] purge ledger read failed:",
+      "code": "connector_drain_purge_ledger_read_failed",
+      "component": "connector-drain",
+      "level": "warn"
+    },
+    {
+      "text": "[connector-drain] queue maintenance scan failed:",
+      "code": "connector_drain_queue_maintenance_scan_failed",
+      "component": "connector-drain",
+      "level": "warn"
+    },
+    {
+      "text": "[connector-drain] queue maintenance sweep failed:",
+      "code": "connector_drain_queue_maintenance_sweep_failed",
+      "component": "connector-drain",
+      "level": "warn"
+    },
+    {
+      "text": "[connector-drain] revocation re-check failed:",
+      "code": "connector_drain_revocation_re_check_failed",
+      "component": "connector-drain",
+      "level": "warn"
+    },
+    {
+      "text": "[connector-ingest] fetch worker refused to start:",
+      "code": "connector_ingest_fetch_worker_refused_to_start",
+      "component": "connector-ingest",
+      "level": "warn"
+    },
+    {
+      "text": "[connector-ingest] fetch-worker nudge failed:",
+      "code": "connector_ingest_fetch_worker_nudge_failed",
+      "component": "connector-ingest",
+      "level": "warn"
+    },
+    {
+      "text": "[connector-ingest] ingest-mode read failed:",
+      "code": "connector_ingest_ingest_mode_read_failed",
+      "component": "connector-ingest",
+      "level": "warn"
+    },
+    {
+      "text": "[connector-ingest] instance lease release failed:",
+      "code": "connector_ingest_instance_lease_release_failed",
+      "component": "connector-ingest",
+      "level": "warn"
+    },
+    {
+      "text": "[connector-ingest] instance lease renew failed:",
+      "code": "connector_ingest_instance_lease_renew_failed",
+      "component": "connector-ingest",
+      "level": "warn"
+    },
+    {
+      "text": "[connector-ingest] instance lease unavailable:",
+      "code": "connector_ingest_instance_lease_unavailable",
+      "component": "connector-ingest",
+      "level": "warn"
+    },
+    {
+      "text": "[connector-teardown] content index read failed:",
+      "code": "connector_teardown_content_index_read_failed",
+      "component": "connector-teardown",
+      "level": "warn"
+    },
+    {
+      "text": "[connector-webhook] acknowledgement failed:",
+      "code": "connector_webhook_acknowledgement_failed",
+      "component": "connector-webhook",
+      "level": "warn"
+    },
+    {
+      "text": "[connector-webhook] config read failed:",
+      "code": "connector_webhook_config_read_failed",
+      "component": "connector-webhook",
+      "level": "warn"
+    },
+    {
+      "text": "[connector-webhook] drain kick failed:",
+      "code": "connector_webhook_drain_kick_failed",
+      "component": "connector-webhook",
+      "level": "warn"
+    },
+    {
+      "text": "[connector-webhook] enable failed:",
+      "code": "connector_webhook_enable_failed",
+      "component": "connector-webhook",
+      "level": "warn"
+    },
+    {
+      "text": "[connector-webhook] enqueue failed:",
+      "code": "connector_webhook_enqueue_failed",
+      "component": "connector-webhook",
+      "level": "warn"
+    },
+    {
+      "text": "[connector-webhook] exo clear failed:",
+      "code": "connector_webhook_exo_clear_failed",
+      "component": "connector-webhook",
+      "level": "warn"
+    },
+    {
+      "text": "[connector-webhook] handler error:",
+      "code": "connector_webhook_handler_error",
+      "component": "connector-webhook",
+      "level": "warn"
+    },
+    {
+      "text": "[connector-webhook] orphan token delete failed:",
+      "code": "connector_webhook_orphan_token_delete_failed",
+      "component": "connector-webhook",
+      "level": "warn"
+    },
+    {
+      "text": "[connector-webhook] pending read failed:",
+      "code": "connector_webhook_pending_read_failed",
+      "component": "connector-webhook",
+      "level": "warn"
+    },
+    {
+      "text": "[connector-webhook] purge ledger clear failed:",
+      "code": "connector_webhook_purge_ledger_clear_failed",
+      "component": "connector-webhook",
+      "level": "warn"
+    },
+    {
+      "text": "[connector-webhook] purge ledger read failed:",
+      "code": "connector_webhook_purge_ledger_read_failed",
+      "component": "connector-webhook",
+      "level": "warn"
+    },
+    {
+      "text": "[connector-webhook] purge ledger write failed:",
+      "code": "connector_webhook_purge_ledger_write_failed",
+      "component": "connector-webhook",
+      "level": "warn"
+    },
+    {
+      "text": "[connector-webhook] signature verification failed to run:",
+      "code": "connector_webhook_signature_verification_failed_to_run",
+      "component": "connector-webhook",
+      "level": "warn"
+    },
+    {
+      "text": "[connector-webhook] teardown failed:",
+      "code": "connector_webhook_teardown_failed",
+      "component": "connector-webhook",
+      "level": "warn"
+    },
+    {
+      "text": "[connector-webhook] token lookup failed:",
+      "code": "connector_webhook_token_lookup_failed",
+      "component": "connector-webhook",
+      "level": "warn"
+    },
+    {
+      "text": "[credits] missing pricing for model \"",
+      "code": "credits_missing_pricing_for_model",
+      "component": "credits",
+      "level": "warn"
+    },
+    {
+      "text": "[delegation] activation failed:",
+      "code": "delegation_activation_failed",
+      "component": "delegation",
+      "level": "error"
+    },
+    {
+      "text": "[exo] grant holder listing failed",
+      "code": "exo_grant_holder_listing_failed",
+      "component": "exo",
+      "level": "error"
+    },
+    {
+      "text": "[exo] held record release failed; a stale copy is shadowed by newer stored records",
+      "code": "exo_held_record_release_failed_a_stale",
+      "component": "exo",
+      "level": "error"
+    },
+    {
+      "text": "[exo] held record write failed; record kept in process",
+      "code": "exo_held_record_write_failed_record_kept",
+      "component": "exo",
+      "level": "error"
+    },
+    {
+      "text": "[exo] job record not written",
+      "code": "exo_job_record_not_written",
+      "component": "exo",
+      "level": "error"
+    },
+    {
+      "text": "[exo] job state update failed",
+      "code": "exo_job_state_update_failed",
+      "component": "exo",
+      "level": "error"
+    },
+    {
+      "text": "[exo] job write failed; record held",
+      "code": "exo_job_write_failed_record_held",
+      "component": "exo",
+      "level": "error"
+    },
+    {
+      "text": "[exo] request record not consumed",
+      "code": "exo_request_record_not_consumed",
+      "component": "exo",
+      "level": "error"
+    },
+    {
+      "text": "[exo] retention sweep pass failed:",
+      "code": "exo_retention_sweep_pass_failed",
+      "component": "exo",
+      "level": "warn"
+    },
+    {
+      "text": "[exo] retention sweep removed=",
+      "code": "exo_retention_sweep_removed",
+      "component": "exo",
+      "level": "info"
+    },
+    {
+      "text": "[exo] wake not recorded",
+      "code": "exo_wake_not_recorded",
+      "component": "exo",
+      "level": "error"
+    },
+    {
+      "text": "[exo] wake route error",
+      "code": "exo_wake_route_error",
+      "component": "exo",
+      "level": "error"
+    },
+    {
+      "text": "[exo] wake verification unavailable",
+      "code": "exo_wake_verification_unavailable",
+      "component": "exo",
+      "level": "error"
+    },
+    {
+      "text": "[express] route error",
+      "code": "express_route_error",
+      "component": "express",
+      "level": "error"
+    },
+    {
+      "text": "[ledger-flusher] flush failed (HTTP",
+      "code": "ledger_flusher_flush_failed_http",
+      "component": "ledger-flusher",
+      "level": "warn"
+    },
+    {
+      "text": "[ledger-flusher] flush failed (network):",
+      "code": "ledger_flusher_flush_failed_network",
+      "component": "ledger-flusher",
+      "level": "warn"
+    },
+    {
+      "text": "[ledger-flusher] interval flush error:",
+      "code": "ledger_flusher_interval_flush_error",
+      "component": "ledger-flusher",
+      "level": "error"
+    },
+    {
+      "text": "[ledger-flusher] outbox at cap (",
+      "code": "ledger_flusher_outbox_at_cap",
+      "component": "ledger-flusher",
+      "level": "warn"
+    },
+    {
+      "text": "[ledger-flusher] size-trigger flush error:",
+      "code": "ledger_flusher_size_trigger_flush_error",
+      "component": "ledger-flusher",
+      "level": "error"
+    },
+    {
+      "text": "[ledger-gate] source=ledger configuration_outage=non_positive_credit_limit",
+      "code": "ledger_gate_non_positive_credit_limit",
+      "component": "ledger-gate",
+      "level": "error"
+    },
+    {
+      "text": "[ledger-gate] source=ledger configuration_outage=window_authority_mismatch",
+      "code": "ledger_gate_window_authority_mismatch",
+      "component": "ledger-gate",
+      "level": "error"
+    },
+    {
+      "text": "[ledger-gate] source=local configuration_outage=missing_week_anchor",
+      "code": "ledger_gate_missing_week_anchor",
+      "component": "ledger-gate",
+      "level": "error"
+    },
+    {
+      "text": "[ledger-gate] source=outage_policy policy=bounded_k:",
+      "code": "ledger_gate_bounded_k_local",
+      "component": "ledger-gate",
+      "level": "warn"
+    },
+    {
+      "text": "[ledger-gate] source=outage_policy policy=fail_open: bypassing",
+      "code": "ledger_gate_failopen_bypass_denial",
+      "component": "ledger-gate",
+      "level": "warn"
+    },
+    {
+      "text": "[ledger-gate] source=outage_policy policy=fail_open: serving",
+      "code": "ledger_gate_failopen_serving",
+      "component": "ledger-gate",
+      "level": "warn"
+    },
+    {
+      "text": "[ledger-rehydrate] failed to rehydrate",
+      "code": "ledger_rehydrate_failed_to_rehydrate",
+      "component": "ledger-rehydrate",
+      "level": "warn"
+    },
+    {
+      "text": "[ledger-rehydrate] getEntitlement failed",
+      "code": "ledger_rehydrate_getentitlement_failed",
+      "component": "ledger-rehydrate",
+      "level": "warn"
+    },
+    {
+      "text": "[relay] failed to reach",
+      "code": "relay_failed_to_reach",
+      "component": "relay",
+      "level": "error"
+    },
+    {
+      "text": "[relay] failed to read",
+      "code": "relay_failed_to_read",
+      "component": "relay",
+      "level": "error"
+    },
+    {
+      "text": "[startup] AGENT_DID / ELIZA_SERVICE_URL / ELIZA_SERVICE_SECRET not all set \u2014",
+      "code": "startup_agent_did_eliza_service_url_eliza_service_secret_not",
+      "component": "startup",
+      "level": "warn"
+    },
+    {
+      "text": "[startup] FATAL LEDGER CONFIGURATION ERROR:",
+      "code": "startup_fatal_ledger_configuration_error",
+      "component": "startup",
+      "level": "error"
+    },
+    {
+      "text": "[startup] LEDGER_SERVICE_URL / LEDGER_SERVICE_SECRET not set \u2014",
+      "code": "startup_ledger_service_url_ledger_service_secret_not_set",
+      "component": "startup",
+      "level": "warn"
+    },
+    {
+      "text": "[startup] TRANSCRIPTION_API_URL / TRANSCRIPTION_API_KEY not set \u2014 /api/transcriber is disabled.",
+      "code": "startup_transcription_api_url_transcription_api_key_not_set_",
+      "component": "startup",
+      "level": "warn"
+    },
+    {
+      "text": "[startup] calendar-autojoin enabled; deployment requires one backend writer, with stop-and-drain replacement.",
+      "code": "startup_calendar_autojoin_enabled_deployment_requires_one",
+      "component": "startup",
+      "level": "info"
+    },
+    {
+      "text": "[startup] hosted AssemblyAI enabled.",
+      "code": "startup_hosted_assemblyai_enabled",
+      "component": "startup",
+      "level": "info"
+    },
+    {
+      "text": "[startup] hosted AssemblyAI is off (",
+      "code": "startup_hosted_assemblyai_is_off",
+      "component": "startup",
+      "level": "warn"
+    },
+    {
+      "text": "[startup] ledger shadow-push + rehydration enabled.",
+      "code": "startup_ledger_shadow_push_rehydration_enabled",
+      "component": "startup",
+      "level": "info"
+    },
+    {
+      "text": "[transcriber] completion wake failed",
+      "code": "transcriber_completion_wake_failed",
+      "component": "transcriber",
+      "level": "warn"
+    },
+    {
+      "text": "[transcriber] create returned an unusable id",
+      "code": "transcriber_create_returned_an_unusable_id",
+      "component": "transcriber",
+      "level": "warn"
+    },
+    {
+      "text": "[transcriber] index read failed err=",
+      "code": "transcriber_index_read_failed_err",
+      "component": "transcriber",
+      "level": "warn"
+    },
+    {
+      "text": "[transcriber] index recovery failed err=",
+      "code": "transcriber_index_recovery_failed_err",
+      "component": "transcriber",
+      "level": "warn"
+    },
+    {
+      "text": "[transcriber] index remove failed err=",
+      "code": "transcriber_index_remove_failed_err",
+      "component": "transcriber",
+      "level": "warn"
+    },
+    {
+      "text": "[transcriber] index write failed err=",
+      "code": "transcriber_index_write_failed_err",
+      "component": "transcriber",
+      "level": "warn"
+    },
+    {
+      "text": "[transcriber] lookup_identity_mismatch",
+      "code": "transcriber_lookup_identity_mismatch",
+      "component": "transcriber",
+      "level": "warn"
+    }
+  ]
+}

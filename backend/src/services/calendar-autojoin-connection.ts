@@ -303,8 +303,8 @@ export class CalendarAutojoinConnection {
       // Exo owner cleanup after revocation, outside tenant coordination. Best-effort: a failure is logged
       // and the exo grant stays for the owner's DELETE retry.
       if (this.options.teardownExoOwner) {
-        try { await this.options.teardownExoOwner(tenant); } catch (error) {
-          console.log(`[calendar-autojoin] code=exo_teardown outcome=failed error=${error instanceof Error ? error.message : "unknown"}`);
+        try { await this.options.teardownExoOwner(tenant); } catch {
+          console.log("[calendar-autojoin] code=exo_teardown outcome=failed");
         }
       }
     }

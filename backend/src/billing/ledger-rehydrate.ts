@@ -85,10 +85,10 @@ export class LedgerRehydrator {
         throw new Error(`HTTP ${res.status}`);
       }
     } catch (err) {
-      console.warn("[ledger-rehydrate] failed to rehydrate", address, ":", err);
+      console.warn("[ledger-rehydrate] failed to rehydrate:", err instanceof Error ? err.name : "non-error");
       this.unrehydratedServes++;
       console.warn(
-        `[ledger-rehydrate] source=k_degrade address=${address} ` +
+        `[ledger-rehydrate] source=k_degrade ` +
           `unrehydrated_serves=${this.unrehydratedServes} k=${K}`,
       );
       if (this.unrehydratedServes === K / 2 || this.unrehydratedServes === K) {
@@ -154,7 +154,7 @@ export class LedgerRehydrator {
       // committed_credits===null while we asked for a window → DO soft-fail → outage
       if (body.committed_credits === null) {
         console.warn(
-          `[ledger-rehydrate] source=outage_policy null_committed_credits address=${address} ` +
+          `[ledger-rehydrate] source=outage_policy null_committed_credits ` +
             `window_start=${ws}`,
         );
         return {
@@ -171,7 +171,7 @@ export class LedgerRehydrator {
         isOutage: false,
       };
     } catch (err) {
-      console.warn("[ledger-rehydrate] getEntitlement failed", address, ":", err);
+      console.warn("[ledger-rehydrate] getEntitlement failed:", err instanceof Error ? err.name : "non-error");
       return {
         credit_limit: null,
         committed_credits: null,

@@ -1,0 +1,95 @@
+# Only the fresh object built below can leave the process boundary. The raw line, the GELF envelope and every
+# key or value that did not pass its typed check are never copied into it.
+#
+# Input: .line (one console line, 1..4096 bytes) and .gl (GELF level: 3 = stderr, 6 = stdout).
+# A line ships only if it matches one of four shapes; anything else aborts and is counted by the gate, content-free.
+#   1. a registered fixed message (diagnostics.json): shipped as its fixed event_code, the rest of the line dropped
+#   2. `[tag] key=value ...` (or the bare `credential_row_count key=value ...`): allow-listed keys with typed values
+#   3. an indented object field line from a multi-line object print, for the few fields declared below
+#   4. an error line `<Name>Error: ...`: shipped as the error class only
+line = string!(.line)
+gl = int(.gl) ?? 6
+level = if gl <= 3 { "warn" } else { "info" }
+out = {}
+
+event_code = ""
+component = ""
+reg_level = "info"
+__REGISTRY__
+
+if event_code != "" {
+  out = {"event": "backend_log", "svc": "backend", "level": reg_level, "component": component, "event_code": event_code}
+} else {
+  kvm = parse_regex(line, r'^(?:\[(?P<tag>[a-z][a-z0-9-]{0,31})\]|(?P<bare>credential_row_count)) (?P<rest>[^\n]{1,4096})$') ?? null
+  objm = parse_regex(line, r'^  (?P<k>event|mode|status): (?P<v>"[a-z_]{1,24}"|[0-9]{1,3}),$') ?? null
+  errm = parse_regex(line, r'^(?P<cls>(?:[A-Z][A-Za-z]{0,30})?Error|DOMException|error): ') ?? null
+  if kvm != null {
+    comp = if is_string(kvm.bare) { "credential-row-count" } else { string(kvm.tag) ?? "" }
+    if !is_string(kvm.bare) && !includes(__COMPONENTS__, comp) { abort }
+    code_keys = __CODE_KEYS__
+    int_keys = __INT_KEYS__
+    bool_keys = __BOOL_KEYS__
+    enum_keys = __ENUM_KEYS__
+    renames = __RENAMES__
+    attrs = {}
+    seen = {}
+    bad = false
+    tokens = split(string!(kvm.rest), " ")
+    for_each(tokens) -> |index, token| {
+      kv = parse_regex(token, r'^(?P<k>[A-Za-z_][A-Za-z0-9_]{0,31})=(?P<v>.{0,300})$') ?? null
+      if kv == null {
+        # Free text, an empty token or a bare word: the whole line is unclassified. The one bare word is the
+        # webhook receive marker, which is shipped as a fixed op.
+        if index == 0 && token == "recv" { attrs.op = "recv" } else { bad = true }
+      } else {
+        raw_key = string!(kv.k)
+        mapped = get(renames, [raw_key]) ?? null
+        key = if is_string(mapped) { string!(mapped) } else { raw_key }
+        value = string!(kv.v)
+        enum_values = get(enum_keys, [key]) ?? null
+        known = includes(code_keys, key) || includes(int_keys, key) || includes(bool_keys, key) || is_array(enum_values)
+        if known && is_boolean(get(seen, [key]) ?? null) { bad = true }
+        if known { seen = set!(seen, [key], true) }
+        if includes(code_keys, key) {
+          # Strict fixed-code shape; a long hex run is an identifier or hash, never a code.
+          if match(value, r'^[a-z][a-z0-9_-]{0,47}$') && !match(value, r'[0-9a-f]{12,}') { attrs = set!(attrs, [key], value) }
+        } else if key == "count" && value == "unavailable" {
+          attrs.count_unavailable = true
+        } else if includes(int_keys, key) {
+          if match(value, r'^[0-9]{1,15}$') {
+            number = to_int!(value)
+            if key == "status" { if number >= 100 && number <= 599 { attrs = set!(attrs, [key], number) } } else { attrs = set!(attrs, [key], number) }
+          }
+        } else if includes(bool_keys, key) {
+          if value == "true" { attrs = set!(attrs, [key], true) } else if value == "false" { attrs = set!(attrs, [key], false) }
+        } else if is_array(enum_values) {
+          if includes(array!(enum_values), value) { attrs = set!(attrs, [key], value) }
+        }
+      }
+    }
+    if bad || length(attrs) == 0 { abort }
+    if attrs.alert == true { level = "error" }
+    out = merge({"event": "backend_log", "svc": "backend", "level": level, "component": comp, "event_code": "structured"}, attrs)
+  } else if objm != null {
+    key = string!(objm.k)
+    value = string!(objm.v)
+    out = {"event": "backend_log", "svc": "backend", "level": level, "component": "object", "event_code": "object_field"}
+    if key == "event" && includes(__BUDGET_EVENTS__, replace(value, "\"", "")) {
+      out.budget_event = replace(value, "\"", "")
+    } else if key == "mode" && includes(__BUDGET_MODES__, replace(value, "\"", "")) {
+      out.budget_mode = replace(value, "\"", "")
+    } else if key == "status" && match(value, r'^[1-5][0-9]{2}$') {
+      out.status = to_int!(value)
+    } else {
+      abort
+    }
+  } else if errm != null {
+    cls = string!(errm.cls)
+    if !includes(__ERROR_CLASSES__, cls) { cls = "other" }
+    out = {"event": "backend_log", "svc": "backend", "level": "error", "component": "process", "event_code": "error_line", "error_class": cls}
+  } else {
+    abort
+  }
+}
+out.ts = format_timestamp!(now(), format: "%Y-%m-%dT%H:%M:%S%.3fZ")
+. = out

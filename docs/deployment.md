@@ -244,6 +244,7 @@ Repository **secrets**:
 | `CONNECTOR_CONTENT_MASTER` | W4 content-custody master (backend ingest). Same rules — its own value, survives redeploys; wraps every stored meeting. |
 | `FIREFLIES_OAUTH_CLIENT_ID` | Registered Fireflies OAuth app (custody branch b1). Required with the ingest flag armed. |
 | `FIREFLIES_OAUTH_CLIENT_SECRET` | Fireflies OAuth app secret. Required with the ingest flag armed. |
+| `PROD_TINYCHAT_BETTERSTACK_SOURCE_TOKEN` | Ingest token of the log service source for the backend. Optional: unset deploys exactly as before and the log sidecar ships nothing. The deploy maps it to `PHALA_ENV_BETTERSTACK_SOURCE_TOKEN`, which is sealed as env `BETTERSTACK_SOURCE_TOKEN` (added to `allowed_envs` by the sync step). Never printed. See *Log shipping* below. |
 
 Repository **variables** (all optional — defaults shown):
 
@@ -291,6 +292,25 @@ Repository **variables** (all optional — defaults shown):
 | `TRANSCRIPTION_WEBHOOK_SECRET` | _(empty = unsigned-wake mode; when set, a `whsec_` plus 48 lowercase hex chars requiring raw-body HMAC)_ |
 | `TRANSCRIPT_DELIVERY_SWEEP_MS` | `600000` (minimum `60000`; first pass after 30 s, at most 200 upstream calls per pass) |
 | `TRANSCRIPT_DELIVERY_MAX_WRITES_PER_MIN` | `6` (minimum 1; one shared governor for each activation, SQL INSERT, KV PUT, state write, grant removal and recovered intent write) |
+
+### Log shipping (TC-1978)
+
+`docker-compose.phala.yml` runs a `vector` sidecar (the same pinned image as tinycloud-node's) next to the backend. The backend's console
+output goes to it through Docker's `gelf` driver over loopback UDP (nonblocking; the backend does not depend on the sidecar). Only fixed-code,
+typed fields leave the service: `log-shipper/sanitize.vrl` keeps allow-listed keys with strict value shapes, registered fixed messages and
+error classes, and drops everything else (counted per minute as `logship_gate_summary_total`, content-free); `log-shipper/fields.json` is the
+field schema and `log-shipper/diagnostics.json` the registered message list. Per component and event code at most 30 lines per minute are shipped;
+the overflow is reported as one `log_dropped` count.
+
+| Name | Where | Notes |
+| --- | --- | --- |
+| `PROD_TINYCHAT_BETTERSTACK_SOURCE_TOKEN` | repo secret | Source token; optional. Absent = the sidecar prints one fixed line and idles. |
+| `PHALA_ENV_BETTERSTACK_SOURCE_TOKEN` | deploy step env | Mapping of the secret; the deploy writes it as `BETTERSTACK_SOURCE_TOKEN=` in the sealed env file (key always present, so `allowed_envs` carries it). |
+| `BETTERSTACK_SOURCE_TOKEN` | sealed CVM env | Read only by the `vector` service; written to a `0600` file and unset before Vector starts. |
+
+After the first deploy that carries these changes, `docker logs` for the backend container is empty (the gelf driver keeps no local copy).
+Changing the log config means regenerating the embedded `VECTOR_CONFIG_JSON`: `node log-shipper/build.mjs sync-compose docker-compose.phala.yml`.
+Checks: `.github/workflows/logship.yml` runs `vector test` (config cases), `vector validate`, a UDP-to-HTTP check and the cap check.
 
 ### Private Transcription server delivery (TC-641) — dark rollout runbook
 

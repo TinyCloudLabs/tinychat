@@ -48,9 +48,9 @@ export function logCreditGateDeny(args: {
   limit: number | null;
   windowKind: TierConfig["budgetWindow"];
 }): void {
-  const { source, address, committed, limit, windowKind } = args;
+  const { source, committed, limit, windowKind } = args;
   console.warn(
-    `[credit-gate] source=${source} address=${address} committed=${committed ?? "null"} ` +
+    `[credit-gate] source=${source} committed=${committed ?? "null"} ` +
       `limit=${limit ?? "null"} window_kind=${windowKind}`,
   );
 }

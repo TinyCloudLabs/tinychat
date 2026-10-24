@@ -22,6 +22,7 @@ on:
       - "bun.lock"
       - "turbo.json"
       - "docker-compose*.yml"
+      - "log-shipper/**"
       - ".github/scripts/**"
       - ".github/deploy-tools/**"
       - ".github/workflows/deploy-backend-phala.yml"
