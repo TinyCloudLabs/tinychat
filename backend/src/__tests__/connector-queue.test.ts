@@ -25,6 +25,8 @@ import {
   pendingQueueKey,
 } from "../services/connector-queue.js";
 import { _resetWebhookTokenState } from "../services/webhook-tokens.js";
+import { BackendStorageLane } from "../services/backend-storage-lane.js";
+import { KvCredentialRowStore } from "../services/credential-store.js";
 
 const ORIGINAL_ENV = { ...process.env };
 const SALT = Buffer.from("queue-salt-queue-salt-queue-1234").toString("base64");
@@ -288,6 +290,44 @@ describe("enqueue under concurrency", () => {
     );
 
     expect(node.maxConcurrent).toBe(1);
+  });
+
+  test("an injected storageLane serializes the queue against another backend writer on ONE lane", async () => {
+    // Carried over from the removed fetch-worker suite, which proved this against the (removed)
+    // content store: a queue settle for one user and another component's write for a second user
+    // must not hit the shared backend space concurrently — TinyCloud drops the second response.
+    const node = new FakeNode();
+    const shared = new BackendStorageLane();
+    const asNode = node as unknown as TinyCloudNode;
+    const queue = new ConnectorQueue(asNode, { jitter: () => 0, flushWindowMs: 1, storageLane: shared });
+    const rows = new KvCredentialRowStore(asNode, shared);
+    const stamp = new Date(T0).toISOString();
+    const row = (address: string) => ({
+      source: SOURCE, address, kind: "oauth" as const, ciphertext: "ct", wrappedDEK: "dek",
+      createdAt: stamp, rotatedAt: stamp, lastUsedAt: stamp,
+    });
+    const other = "0xb1b1b10000000000000000000000000000001111";
+
+    await Promise.all([
+      queue.enqueue(SOURCE, LOWER, { meetingId: "mA1", kind: "transcript" }),
+      rows.write(row(LOWER)),
+      queue.enqueue(SOURCE, other, { meetingId: "mB1", kind: "transcript" }),
+      rows.write(row(other)),
+    ]);
+
+    expect(node.maxConcurrent).toBe(1);
+
+    // Control: the same interleaving on two private lanes does overlap, so the assertion above
+    // is about the shared lane and not about the fake node.
+    const split = new FakeNode();
+    const splitNode = split as unknown as TinyCloudNode;
+    const q2 = new ConnectorQueue(splitNode, { jitter: () => 0, flushWindowMs: 1, storageLane: new BackendStorageLane() });
+    const r2 = new KvCredentialRowStore(splitNode, new BackendStorageLane());
+    await Promise.all([
+      q2.enqueue(SOURCE, LOWER, { meetingId: "mA1", kind: "transcript" }),
+      r2.write(row(LOWER)),
+    ]);
+    expect(split.maxConcurrent).toBeGreaterThan(1);
   });
 
   test("an invalid meeting id or kind never reaches KV", async () => {

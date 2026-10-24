@@ -437,6 +437,8 @@ describe("CredentialStore", () => {
     expect(joined).toContain("op=credential-store");
     expect(joined).toContain("op=credential-rotate");
     expect(joined).toContain("op=credential-revoke");
+    // The address is still THERE — hashed, so an operator can correlate without holding it.
+    expect(joined).toMatch(/aid=[0-9a-f]{16}/);
   });
 
   test("[delta-03] there is no list-all-credentials API, and no route module retrieves a credential", () => {
@@ -470,5 +472,44 @@ describe("CredentialStore", () => {
         });
       }
     }
+  });
+});
+
+// ── Boot wiring: the custody master is validated at boot, not at first use ──────────────────
+//
+// Carried over from the removed "index wiring" test, which pinned this line together with the
+// credential-router mount that no longer exists. Calendar autojoin still depends on it.
+
+describe("index wiring", () => {
+  test("[delta-03] the custody master is validated at boot, under the Google Meet OAuth gate", () => {
+    const index = readFileSync(resolve(import.meta.dir, "../index.ts"), "utf8");
+    const gate = index.indexOf("if (googleMeetOAuthEnabled()) {");
+    const call = index.indexOf("validateCredentialCustodyConfig(process.env)");
+    expect(gate).toBeGreaterThan(0);
+    expect(call).toBeGreaterThan(gate);
+    expect(index.slice(gate, call)).toContain("process.env.CONNECTOR_CREDENTIAL_MASTER");
+  });
+});
+
+// ── Revoke is idempotent: carried over from the removed teardown suite's second-call test ────
+
+describe("CredentialStore revoke idempotence", () => {
+  test("[delta-12] a second revoke is clean: nothing left, no upstream call, never an error", async () => {
+    const rows = new InMemoryCredentialRowStore();
+    let upstreamCalls = 0;
+    const store = new CredentialStore(rows, {
+      upstreamRevoker: async () => {
+        upstreamCalls += 1;
+      },
+    });
+    await store.store({ source: SOURCE, address: ADDRESS_A, secret: oauthSecret(SECRET_A) });
+
+    const first = await store.revoke(SOURCE, ADDRESS_A);
+    expect(first).toMatchObject({ deleted: true, upstreamRevoked: "ok" });
+    const again = await store.revoke(SOURCE, ADDRESS_A);
+
+    expect(again).toEqual({ deleted: true, upstreamRevoked: "not_applicable", reason: "no_credential" });
+    expect(upstreamCalls).toBe(1);
+    expect(await rows.read(SOURCE, ADDRESS_A)).toBeNull();
   });
 });

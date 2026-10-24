@@ -1099,6 +1099,30 @@ describe("connector webhook — limiter chain (§4.4)", () => {
     expect(h.queue.enqueued[0]!.address).toBe(OTHER_ADDRESS);
   });
 
+  test("an interleaved A/B/A burst is enqueued under each delivery's OWN token-resolved address", async () => {
+    // Carried over from the removed backend-ingest routing suite: tenant resolution is per
+    // delivery from the signed token, never a module-level "current user" or "latest address".
+    const h = createHarness();
+    const tokenA = h.tokens.register(generateWebhookToken(), ADDRESS);
+    const tokenB = h.tokens.register(generateWebhookToken(), OTHER_ADDRESS);
+    await withServer(h.app, async (base) => {
+      for (const [token, meetingId] of [
+        [tokenA, "01JINTERLEAVEA0000001"],
+        [tokenB, "01JINTERLEAVEB0000001"],
+        [tokenA, "01JINTERLEAVEA0000002"],
+      ] as const) {
+        const body = currentBody(meetingId);
+        const res = await deliver(base, path(token), { body, signature: sign(body, token) });
+        expect(res.status).toBe(202);
+      }
+    });
+    expect(h.queue.enqueued.map((e) => e.address)).toEqual([
+      ADDRESS.toLowerCase(),
+      OTHER_ADDRESS.toLowerCase(),
+      ADDRESS.toLowerCase(),
+    ]);
+  });
+
   test("unknown tokens from one IP are stopped by the IP-only bucket and create ZERO token buckets", async () => {
     // The observable that separates a correct chain from either forbidden one (§4.4): a
     // malformed or unregistered token must never create a per-token store entry, so the
