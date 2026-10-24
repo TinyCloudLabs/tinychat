@@ -15,9 +15,9 @@ afterAll(() => cleanDom?.());
 
 const SHARE_ID = "11111111-1111-4111-8111-111111111111";
 
-// KV whose list fails until `failList` is cleared; holds one live share.
-function fakeTcw() {
-  const state = { failList: true, listCalls: 0 };
+// KV whose list fails until `failList` is cleared; holds one share expiring at `expiresAt`.
+function fakeTcw(expiresAt = "2999-01-01T00:00:00.000Z", failList = true) {
+  const state = { failList, listCalls: 0 };
   const entry = JSON.stringify({
     shareId: SHARE_ID,
     threadId: "thread-1",
@@ -25,7 +25,7 @@ function fakeTcw() {
     key: snapshotKeyFor(SHARE_ID),
     cid: "cid-1",
     createdAt: "2026-01-01T00:00:00.000Z",
-    expiresAt: "2999-01-01T00:00:00.000Z",
+    expiresAt,
   });
   const tcw = {
     kv: {
@@ -35,6 +35,7 @@ function fakeTcw() {
         return { ok: true, data: { keys: [shareIndexKeyFor(SHARE_ID)] } };
       },
       get: async () => ({ ok: true, data: { data: entry } }),
+      delete: async () => ({ ok: true, data: {} }),
     },
   } as unknown as TinyCloudWeb;
   return { tcw, state };
@@ -84,4 +85,48 @@ test("Try again reloads the list and shows the links once it succeeds", async ()
   expect(host.textContent).not.toContain(SHARE_LINK_COPY.loadFailed);
   expect(host.textContent).not.toContain(SHARE_LINK_COPY.listEmpty);
   await act(async () => root.unmount());
+});
+
+test("each link shows its title and expiry, with no Revoke or create control", async () => {
+  const { tcw } = fakeTcw("2999-01-01T00:00:00.000Z", false);
+  const { host, root } = await mountCard(tcw);
+
+  expect(host.textContent).toContain("My chat");
+  expect(host.textContent).toContain("Expires ");
+  expect(host.textContent).toContain(SHARE_LINK_COPY.listDescription);
+  expect(host.querySelectorAll("button").length).toBe(0);
+  expect(host.textContent).not.toMatch(/revoke|create/i);
+  await act(async () => root.unmount());
+});
+
+test("a link that has already expired is hidden and the empty state shows", async () => {
+  const { tcw } = fakeTcw("2000-01-01T00:00:00.000Z", false);
+  const { host, root } = await mountCard(tcw);
+
+  expect(host.textContent).not.toContain("My chat");
+  expect(host.textContent).toContain(SHARE_LINK_COPY.listEmpty);
+  await act(async () => root.unmount());
+});
+
+test("a link that lapses while the card is open disappears on the next render", async () => {
+  const realNow = Date.now;
+  let offset = 0;
+  Date.now = () => realNow() + offset;
+  try {
+    const { OwnedShareLinksCard } = await import("./OwnedShareLinks");
+    const { tcw } = fakeTcw(new Date(realNow() + 60_000).toISOString(), false);
+    const { host, root } = await mountCard(tcw);
+    expect(host.textContent).toContain("My chat");
+
+    offset = 120_000;
+    await act(async () => {
+      root.render(<OwnedShareLinksCard tcw={tcw} />);
+    });
+
+    expect(host.textContent).not.toContain("My chat");
+    expect(host.textContent).toContain(SHARE_LINK_COPY.listEmpty);
+    await act(async () => root.unmount());
+  } finally {
+    Date.now = realNow;
+  }
 });

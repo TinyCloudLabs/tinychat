@@ -60,8 +60,6 @@ import { isLocalThreadStorage } from "@/lib/threadStore";
 import {
   createTinychatShareLink,
   findStoredTinychatShareForThread,
-  shareStopFailureMessage,
-  stopOwnedTinychatShare,
   type StoredTinychatShare,
 } from "@/lib/tinychatShareLinks";
 import { CHAT_SHARING_PAUSED, canOfferChatShare } from "@/lib/chatSharing";
@@ -268,7 +266,6 @@ const ShareThreadProvider: FC<{ tcw: TinyCloudWeb; children: React.ReactNode }> 
   const [error, setError] = useState<string | null>(null);
   const { shares: ownedShares, loadFailed, refresh: refreshOwnedShares } = useOwnedShares(tcw);
   const owned = ownedShares ?? [];
-  const [revokingId, setRevokingId] = useState<string | null>(null);
 
   // `visible` gates whether the share button renders at all — only once a
   // chat exchange exists (not empty, history loaded). `canShare` additionally
@@ -305,22 +302,6 @@ const ShareThreadProvider: FC<{ tcw: TinyCloudWeb; children: React.ReactNode }> 
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setCreating(false);
-    }
-  };
-
-  const revokeShare = async (shareId: string) => {
-    setRevokingId(shareId);
-    setError(null);
-    try {
-      const stopped = await stopOwnedTinychatShare(tcw, shareId);
-      if (!stopped.ok) {
-        setError(shareStopFailureMessage(stopped.stage));
-        return;
-      }
-      setShare((current) => (current?.id === shareId ? null : current));
-      await refreshOwnedShares();
-    } finally {
-      setRevokingId(null);
     }
   };
 
@@ -411,11 +392,7 @@ const ShareThreadProvider: FC<{ tcw: TinyCloudWeb; children: React.ReactNode }> 
             owned.length > 0 && (
               <div className="flex flex-col gap-2">
                 <div className="text-xs font-medium text-foreground">{SHARE_LINK_COPY.listTitle}</div>
-                <OwnedShareLinkList
-                  shares={owned}
-                  revokingId={revokingId}
-                  onRevoke={(shareId) => void revokeShare(shareId)}
-                />
+                <OwnedShareLinkList shares={owned} />
               </div>
             )
           )}

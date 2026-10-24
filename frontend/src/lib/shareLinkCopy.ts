@@ -1,15 +1,12 @@
-// User-facing text for managing existing chat share links (Settings row and Share dialog).
+// User-facing text for the owner's existing chat share links (Settings card and Share dialog).
 export const SHARE_LINK_COPY = {
   listTitle: "Your shared links",
-  listDescription: "Links you've shared keep working until they expire. Revoke one to stop it opening.",
+  listDescription: "Links you've shared keep working until they expire.",
   listEmpty: "You have no shared links.",
   loadFailed: "Could not load your shared links.",
   retry: "Try again",
-  revoke: "Revoke",
-  revoking: "Revoking...",
-  confirmTitle: "Revoke this link?",
-  confirmBody: "Anyone with it won't be able to open it.",
-  confirmRevoke: "Revoke",
-  confirmCancel: "Cancel",
   creationPaused: "New share links can't be created right now.",
+  expires: (when: string) => `Expires ${when}`,
+  todayAt: (time: string) => `today at ${time}`,
+  tomorrowAt: (time: string) => `tomorrow at ${time}`,
 } as const;

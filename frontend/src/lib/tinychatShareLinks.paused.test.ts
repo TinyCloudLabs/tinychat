@@ -84,7 +84,7 @@ function seedShare(kv: Map<string, string>, shareId: string, threadId: string, e
 }
 
 // In-memory owner space: KV map, a thread database that accepts deletes, and a delegation-revoke log.
-function fakeOwnerTcw(options: { failRevoke?: boolean } = {}) {
+function fakeOwnerTcw() {
   const kv = new Map<string, string>();
   const revoked: string[] = [];
   const deleteWaiters: Record<string, () => void> = {};
@@ -109,7 +109,6 @@ function fakeOwnerTcw(options: { failRevoke?: boolean } = {}) {
       }),
     },
     revokeDelegation: async (cid: string) => {
-      if (options.failRevoke) return { ok: false, error: { message: "Controlled revoke failure" } };
       revoked.push(cid);
       return { ok: true, data: {} };
     },
@@ -168,31 +167,6 @@ describe("chat sharing paused", () => {
     expect(kv.has(shareIndexKeyFor(LAPSED))).toBe(false);
     expect(kv.has(snapshotKeyFor(LAPSED))).toBe(false);
     expect(kv.has(shareIndexKeyFor(LIVE))).toBe(true);
-  });
-
-  it("revokes an existing share's delegation, then removes its records, while paused", async () => {
-    installStorage();
-    const { stopOwnedTinychatShare, listOwnedTinychatShares } = await loadShareModule();
-    const { tcw, kv, revoked } = fakeOwnerTcw();
-    seedShare(kv, LIVE, "thread-1", "2999-01-01T00:00:00.000Z");
-
-    expect(await stopOwnedTinychatShare(tcw, LIVE)).toEqual({ ok: true });
-
-    expect(revoked).toEqual([`cid-${LIVE}`]);
-    expect(kv.size).toBe(0);
-    expect(await listOwnedTinychatShares(tcw)).toEqual([]);
-  });
-
-  it("a failed revoke while paused leaves the link and its records in place", async () => {
-    installStorage();
-    const { stopOwnedTinychatShare } = await loadShareModule();
-    const { tcw, kv } = fakeOwnerTcw({ failRevoke: true });
-    seedShare(kv, LIVE, "thread-1", "2999-01-01T00:00:00.000Z");
-
-    expect(await stopOwnedTinychatShare(tcw, LIVE)).toEqual({ ok: false, stage: "revoke" });
-
-    expect(kv.has(shareIndexKeyFor(LIVE))).toBe(true);
-    expect(kv.has(snapshotKeyFor(LIVE))).toBe(true);
   });
 
   it("still refuses to create a link when the owner already has links", async () => {
