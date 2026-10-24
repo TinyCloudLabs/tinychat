@@ -301,7 +301,7 @@ if (mode === "local") {
     expect(onlyInfoReads()).toBe(true);
   });
 
-  test("the node changing under a signed-in session is caught when the window returns, before writes go on", async () => {
+  test("the node changing under a signed-in session is caught when the window returns", async () => {
     savePin(ID_A);
     await mount();
     await click("Sign in");
@@ -313,6 +313,22 @@ if (mode === "local") {
     expect(signedIn()).toBe(false);
     expect(document.body.textContent).toContain(copy.nodeRefusal(NODE));
     expect(onlyInfoReads()).toBe(true);
+  });
+
+  test("forgetting the saved node ID from the refusal screen clears the stored session and the SDK's session record", async () => {
+    const sdkRecord = `tinycloud:session:${ADDRESS}`;
+    savePin(ID_A);
+    seedSession();
+    localStorage.setItem(sdkRecord, "{}");
+    info = "B";
+    await mount();
+    expect(document.body.textContent).toContain(copy.nodeRefusal(NODE));
+    expect(localStorage.getItem(sdkRecord)).not.toBeNull();
+    await click(copy.NODE_FORGET_BUTTON);
+    await click(copy.NODE_FORGET_CONFIRM);
+    expect(readPin()).toBeNull();
+    expect(localStorage.getItem(APP_SESSION_KEY)).toBeNull();
+    expect(localStorage.getItem(sdkRecord)).toBeNull();
   });
 
   test("the signed-out screen offers the saved-ID reset, so a refusal can be undone", async () => {

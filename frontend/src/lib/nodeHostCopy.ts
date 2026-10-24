@@ -21,6 +21,7 @@ export const NODE_LIMITS_HEADING = "What doesn't work with a node on your comput
 export const NODE_LIMITS_INTRO = "These need Exo's online service, so they're off while your own node is set:";
 export const NODE_LIMITS_ITEMS = [
   "Connecting meeting services such as Fireflies and Google Meet",
+  "Sending the Notetaker to your meetings",
   "Connecting your agent",
   "Syncing with the Exo mailbox",
 ] as const;

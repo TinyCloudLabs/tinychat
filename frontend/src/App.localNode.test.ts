@@ -22,7 +22,7 @@ function runFixture(mode: "local" | "hosted") {
 
 test("mounted App with a node on this computer: the node ID check, refusal, restore and the reset path", () => {
   const output = runFixture("local");
-  expect(output).toContain("14 pass");
+  expect(output).toContain("15 pass");
   expect(output).toContain("0 fail");
 }, 250_000);
 

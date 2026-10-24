@@ -1177,11 +1177,14 @@ export function App() {
   // Settings changes to the node address or the saved node ID: the local session is cleared first (so a
   // delegation made for one node is never sent to another), then the change is written and the app reloads.
   const applyNodeChange = useCallback(async (apply: () => void): Promise<boolean> => {
+    // Read before the clear: from the signed-out refusal screen only the stored session knows the address.
+    const storedAddress = sessionStoreRef.current.getAddress();
     try {
       await clearSessionAfterHandoff(sessionStoreRef.current);
     } catch {
       return false;
     }
+    if (storedAddress) clearPersistedSession(storedAddress);
     apply();
     window.location.reload();
     return true;
