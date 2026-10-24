@@ -16,11 +16,13 @@ export interface ReplicationStatus {
   purgeFailed: boolean;
   /** Code of an OFF-time removal that did not finish (retried next load); null when none. */
   offPurgeCode: string | null;
+  /** The local copy is being removed right now (switch turned OFF or the wipe button). */
+  purging: boolean;
 }
 
 const INITIAL: ReplicationStatus = {
   state: "idle", lastSyncAt: null, errorCode: null, bytes: 0, keys: 0, purgePending: false, purgeFailed: false,
-  offPurgeCode: null,
+  offPurgeCode: null, purging: false,
 };
 
 let current: ReplicationStatus = INITIAL;
@@ -43,6 +45,10 @@ export function markReplicationPurgeFailed(code: string): void {
 
 export function setReplicationOffPurgeCode(code: string | null): void {
   publish({ ...current, offPurgeCode: code });
+}
+
+export function setReplicationPurging(purging: boolean): void {
+  publish({ ...current, purging });
 }
 
 /** Subset of the SDK `replication.sync` / `replication.state` events this view reads. */
@@ -72,7 +78,8 @@ export async function refreshReplicationStatus(tcw: TinyCloudWeb): Promise<Repli
   if (!control) return current;
   try {
     const entries = await control.status();
-    let state = "ready";
+    // No entries = nothing has been opened yet (no sync started): "idle", not "ready".
+    let state = entries.length === 0 ? "idle" : "ready";
     let lastSyncAt: string | null = null;
     let errorCode: string | null = null;
     let bytes = 0;
@@ -86,7 +93,9 @@ export async function refreshReplicationStatus(tcw: TinyCloudWeb): Promise<Repli
       keys += entry.counts?.keys ?? 0;
       if ("purgePending" in entry && entry.purgePending === true) purgePending = true;
     }
-    publish({ ...current, state, lastSyncAt, errorCode: errorCode ?? current.errorCode, bytes, keys, purgePending });
+    // The error comes from this poll only: a code left by an earlier poll or event (for example
+    // REPLICA_GATED from a session restored before the opt-in) is dropped once the controller reports none.
+    publish({ ...current, state, lastSyncAt, errorCode, bytes, keys, purgePending });
   } catch (caught) {
     publish({ ...current, state: "unavailable", errorCode: caught instanceof Error && "code" in caught && typeof caught.code === "string" ? caught.code : "STATUS_ERROR" });
   }
