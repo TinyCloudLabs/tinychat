@@ -60,6 +60,7 @@ const VIEWPORTS: Viewport[] = [
       "capture-soft-",
       "capture-notetaker-route",
       "saved-note-untranscribed",
+      "share-links-",
     ],
   },
   {
