@@ -47,10 +47,39 @@ function fixedCode(error: unknown): string {
   return CREDENTIAL_ROW_COUNT_LIST_FAILED;
 }
 
+/** Echo a name only when it is trivially safe; anything else (or any invalid source) is "invalid". */
+function shownSource(source: string, code: string): string {
+  return code !== CREDENTIAL_ROW_COUNT_INVALID_SOURCE && /^[a-z0-9-]{1,32}$/.test(source) ? source : "invalid";
+}
+
 function unavailableLine(source: string, code: string): string {
-  // Echo a name only when it is trivially safe; anything else (or any invalid source) is "invalid".
-  const shown = code !== CREDENTIAL_ROW_COUNT_INVALID_SOURCE && /^[a-z0-9-]{1,32}$/.test(source) ? source : "invalid";
-  return `credential_row_count source=${shown} count=unavailable code=${code}`;
+  return `credential_row_count source=${shownSource(source, code)} count=unavailable code=${code}`;
+}
+
+export type CredentialRowCountResult =
+  | { source: string; count: number }
+  | { source: string; count: null; code: string };
+
+/**
+ * One count as a value, for the optional authenticated HTTP read: the same `countRows`, the same
+ * fixed codes and the same source echo rule as the startup line. Never throws; a non-string source
+ * is INVALID_SOURCE without touching the store.
+ */
+export async function countCredentialRows(
+  store: CredentialRowCounter | (() => CredentialRowCounter),
+  source: unknown,
+): Promise<CredentialRowCountResult> {
+  const name = typeof source === "string" ? source : "";
+  try {
+    if (typeof source !== "string") throw new CredentialRowCountError(CREDENTIAL_ROW_COUNT_INVALID_SOURCE);
+    const counter = typeof store === "function" ? store() : store;
+    const count = await counter.countRows(source);
+    if (!Number.isSafeInteger(count) || count < 0) throw new Error("invalid count");
+    return { source: shownSource(name, ""), count };
+  } catch (error) {
+    const code = fixedCode(error);
+    return { source: shownSource(name, code), count: null, code };
+  }
 }
 
 /** Resolves once every listed source has been logged. Never rejects. */

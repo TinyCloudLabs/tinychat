@@ -409,6 +409,8 @@ jobs:
           MEETING_CONTENT_MODELS: ${{ vars.MEETING_CONTENT_MODELS }}
           # Optional one-time, log-only count of stored connector credential rows. Empty = off.
           CREDENTIAL_ROW_COUNT_SOURCES: ${{ vars.CREDENTIAL_ROW_COUNT_SOURCES || '' }}
+          # Optional one-time authenticated read-only count of stored credential rows. Empty = route off.
+          CREDENTIAL_COUNT_ADMIN_KEY: ${{ secrets.CREDENTIAL_COUNT_ADMIN_KEY || '' }}
           # Paywall / billing (docs/stripe-setup.md). Each value may live as a
           # repo SECRET or a repo VARIABLE (secrets win) — all optional until
           # go-live; unset values deploy with the paywall off.
@@ -552,6 +554,7 @@ jobs:
             printf '%s\n' "MEETING_CONTENT_TEST_ACCOUNTS=${MEETING_CONTENT_TEST_ACCOUNTS:-}"
             printf '%s\n' "MEETING_CONTENT_MODELS=${MEETING_CONTENT_MODELS:-}"
             printf '%s\n' "CREDENTIAL_ROW_COUNT_SOURCES=${CREDENTIAL_ROW_COUNT_SOURCES:-}"
+            printf '%s\n' "CREDENTIAL_COUNT_ADMIN_KEY=${CREDENTIAL_COUNT_ADMIN_KEY:-}"
             printf '%s\n' "AGENT_STREAM_HEARTBEAT_MS=$AGENT_STREAM_HEARTBEAT_MS"
             printf '%s\n' "AGENT_STREAM_TURN_TIMEOUT_MS=$AGENT_STREAM_TURN_TIMEOUT_MS"
             printf '%s\n' "AGENT_STREAM_DRAIN_GRACE_MS=$AGENT_STREAM_DRAIN_GRACE_MS"

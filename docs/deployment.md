@@ -271,6 +271,7 @@ Repository **variables** (all optional — defaults shown):
 | `MEETING_CONTENT_TEST_ACCOUNTS` | _(empty — optional comma-separated account allowlist; entries are trimmed and lowercased)_ |
 | `MEETING_CONTENT_MODELS` | _(empty — optional comma-separated evaluated-model allowlist; entries are trimmed and matched exactly)_ |
 | `CREDENTIAL_ROW_COUNT_SOURCES` | _(empty — optional comma-separated source names; when set to a source name, logs a single `credential_row_count source=<name> count=<N>` line at startup; read-only)_ |
+| `CREDENTIAL_COUNT_ADMIN_KEY` | _(empty — optional repo **secret**; off unless set to at least 32 characters; one-time read-only count of stored credential rows at `/api/internal/credential-row-count`, used before a removal)_ |
 | `PAYWALL_ENABLED` | `false`. This and every Stripe/credit/ledger row below may live as a repo **secret** or **variable** — secrets win (`docs/stripe-setup.md`). |
 | `STRIPE_PRICE_PLUS_MONTHLY` / `STRIPE_PRICE_PLUS_YEARLY` / `STRIPE_PRICE_PRO_MONTHLY` / `STRIPE_PRICE_PRO_YEARLY` | _(empty — Stripe price ids `price_…`; see `docs/stripe-setup.md`)_ |
 | `CREDIT_BUDGET_FREE` / `CREDIT_BUDGET_PLUS_WEEKLY` / `CREDIT_BUDGET_PRO_WEEKLY` | _(empty — code defaults in `backend/src/billing/tiers.ts`)_ |

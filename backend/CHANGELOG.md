@@ -1,5 +1,11 @@
 # @tinychat/backend
 
+## 0.5.7-beta.13
+
+### Patch Changes
+
+- 813e839: Add an optional authenticated count of stored connector credentials, off unless a key is configured.
+
 ## 0.5.7-beta.12
 
 ### Patch Changes
