@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.10.0-beta.28
+
+### Patch Changes
+
+- 5c1d6d4: Turn the Conversation Canvas back on. It stays off for each user until they turn it on under Settings > Experimental.
+
 ## 0.10.0-beta.27
 
 ### Patch Changes
