@@ -18,6 +18,7 @@
 // client and the effects. When the feature is dark for this address the section
 // renders NOTHING — a non-cohort user must not learn it exists.
 
+import { LocalNodeNotice, useLocalNode } from "./LocalNodeNotice";
 import { useCallback, useEffect, useRef, useState, type FC } from "react";
 import type { SessionStore } from "@tinyboilerplate/client";
 import { CalendarClockIcon, Loader2Icon, RefreshCwIcon } from "lucide-react";
@@ -295,7 +296,7 @@ export interface MeetingsSectionProps {
  * no key material and no storage handle — a session token is the whole
  * requirement, which is the point of the read API.
  */
-export const MeetingsSection: FC<MeetingsSectionProps> = ({
+const MeetingsSectionContent: FC<MeetingsSectionProps> = ({
   backendUrl,
   sessionStore,
   source = DEFAULT_MEETINGS_SOURCE,
@@ -386,3 +387,7 @@ export const MeetingsSection: FC<MeetingsSectionProps> = ({
     />
   );
 };
+
+/** The meetings section; off while the app uses a node on this computer (the meetings come from Exo's online service). */
+export const MeetingsSection: FC<MeetingsSectionProps> = (props) =>
+  useLocalNode() ? <LocalNodeNotice /> : <MeetingsSectionContent {...props} />;

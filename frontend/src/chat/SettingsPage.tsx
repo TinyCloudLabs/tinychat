@@ -46,6 +46,9 @@ import { appPlatform } from "../lib/platform";
 import { useSizeClass } from "../lib/sizeClass";
 import { PageHeader } from "../shell/PageHeader";
 import { PATHS } from "../shell/routes";
+import { NodeAddressSettings, type ApplyNodeChange } from "./NodeAddressSettings";
+import type { NodeHostConfig } from "../lib/nodeHost";
+import { NODE_SETTINGS_HASH } from "./LocalNodeNotice";
 
 /** An InfoTip beside a card title: a 44 px target on touch that doesn't push the title row taller. */
 const TITLE_TIP = "-my-3 -ml-2 fine:-my-1 fine:-ml-1";
@@ -70,6 +73,9 @@ interface SettingsPageProps {
   onOpenRates: () => void;
   backendUrl: string;
   sessionStore: SessionStore;
+  /** The node address setting (desktop app only); omitted where the setting does not exist. */
+  nodeHostConfig?: NodeHostConfig;
+  applyNodeChange?: ApplyNodeChange;
 }
 
 export function SettingsPage({
@@ -92,6 +98,8 @@ export function SettingsPage({
   onOpenRates,
   backendUrl,
   sessionStore,
+  nodeHostConfig,
+  applyNodeChange,
 }: SettingsPageProps) {
   const { hash } = useLocation();
   const agentAccess = useAgentAccess();
@@ -107,8 +115,9 @@ export function SettingsPage({
   const canUpgrade = useStorageFreePlan() && paywallEnabled;
   const resetsLabel = usage?.resetsAt ? formatResetsAt(usage.resetsAt) : null;
   useEffect(() => {
-    if (hash !== "#agent-access") return;
-    const card = document.getElementById("agent-access");
+    const sectionId = hash === "#agent-access" || hash === NODE_SETTINGS_HASH ? hash.slice(1) : null;
+    if (!sectionId) return;
+    const card = document.getElementById(sectionId);
     const heading = card?.querySelector("h2");
     if (!card || !heading) return;
     card.scrollIntoView({ block: "start" });
@@ -206,6 +215,7 @@ export function SettingsPage({
               <VoiceNotesTranscriberSettings />
             </SectionCard>
           )}
+          {nodeHostConfig && applyNodeChange && <NodeAddressSettings config={nodeHostConfig} applyChange={applyNodeChange} />}
           <SectionCard icon={ShieldCheckIcon} title="Infrastructure">
             <BackendAttestationPanel
               backendUrl={backendUrl}

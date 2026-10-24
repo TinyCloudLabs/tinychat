@@ -164,6 +164,11 @@ import type { AppState } from "./lib/appState";
 import { BootSurface } from "./shell/BootSurface";
 import { NativeSignIn } from "./shell/NativeSignIn";
 import { useNativeSignIn } from "./shell/useNativeSignIn";
+import { checkNode, isNodeFetchFailure, type NodeCheck } from "./lib/nodePin";
+import { HOSTED_DEFAULT_HOST, isLocalNodeHost, resolveNodeHosts, writeNodePin } from "./lib/nodeHost";
+import { nodeRefusal, nodeSignInFailed, nodeUnreachable } from "./lib/nodeHostCopy";
+import { NodeAddressSettings, NodeConfirmDialog, type NodeConfirmRequest } from "./chat/NodeAddressSettings";
+import { LocalNodeContext } from "./chat/LocalNodeNotice";
 
 // AppState and stateLabel live in lib/appState; re-exported for imports from App.
 export { stateLabel, type AppState } from "./lib/appState";
@@ -175,9 +180,21 @@ const APP_NAME = "Exo";
 const BACKEND_URL =
   import.meta.env.VITE_BACKEND_URL ||
   `${globalThis.location?.protocol ?? "http:"}//localhost:3014`;
-const TINYCLOUD_HOSTS = import.meta.env.VITE_TINYCLOUD_HOST
-  ? [import.meta.env.VITE_TINYCLOUD_HOST]
-  : undefined;
+// The node the app talks to, read once at startup (lib/nodeHost.ts). Empty hosts: the SDK's own default.
+const NODE_HOSTS = resolveNodeHosts();
+const TINYCLOUD_HOSTS = NODE_HOSTS.hosts.length > 0 ? NODE_HOSTS.hosts : undefined;
+// A node on this computer: the pin check runs before any SDK object is built, and features that need
+// Exo's online service are off.
+const LOCAL_NODE_ADDRESS = isLocalNodeHost(NODE_HOSTS.hosts[0]) ? NODE_HOSTS.hosts[0] : undefined;
+const LOCAL_NODE = LOCAL_NODE_ADDRESS !== undefined;
+
+/** The message for a node check that must stop the app from reaching the host; null when it may go on. */
+function nodeCheckRefusal(check: NodeCheck): string | null {
+  if (check.kind === "unreachable") return nodeUnreachable(LOCAL_NODE_ADDRESS!);
+  if (check.kind === "blocked") return nodeSignInFailed(LOCAL_NODE_ADDRESS!);
+  if (check.kind === "mismatch") return nodeRefusal(LOCAL_NODE_ADDRESS!);
+  return null;
+}
 
 export function App() {
   // Track the visible viewport so the shell shrinks above the soft keyboard
@@ -193,6 +210,10 @@ export function App() {
   const restoreRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const nativeRenewalRef = useRef<NativeRenewal | null>(null);
   const signOutRef = useRef<(options?: { terminal?: string }) => Promise<void>>(undefined);
+  // "Is this your node?" is asked from inside sign-in; the dialog resolves this promise.
+  const [nodeConfirm, setNodeConfirm] = useState<NodeConfirmRequest | null>(null);
+  const nodeConfirmResolveRef = useRef<((confirmed: boolean) => void) | null>(null);
+  const nodeCheckInFlightRef = useRef(false);
   const selectionControllerRef = useRef<ModelSelectionController | null>(null);
   // Live ref the runtime reads at model-context request time. Initialized to
   // null and reconciled by useChatRuntime + MemoryPanel from the per-space
@@ -419,7 +440,7 @@ export function App() {
 
   const nativeConfig: NativeSignInConfig = {
     backendUrl: BACKEND_URL,
-    tinycloudHost: TINYCLOUD_HOSTS?.[0] ?? "https://tee.node.tinycloud.xyz",
+    tinycloudHost: TINYCLOUD_HOSTS?.[0] ?? HOSTED_DEFAULT_HOST,
     tinycloudHosts: TINYCLOUD_HOSTS,
   };
 
@@ -546,6 +567,28 @@ export function App() {
         if (boot.kind === "terminal") setError(NATIVE_SESSION_ENDED_MESSAGE);
         setState("unauthenticated");
         return;
+      }
+      if (LOCAL_NODE && sessionStoreRef.current.hasSession()) {
+        // Before any SDK object exists for this host: the only request to it is GET /info.
+        const check = await checkNode(LOCAL_NODE_ADDRESS);
+        const refusal = nodeCheckRefusal(check);
+        if (refusal) {
+          logSession("restore", "failed");
+          setError(refusal);
+          setState("recoverableError");
+          return;
+        }
+        if (check.kind === "first-use") {
+          // A session with no saved node ID is never restored against an unconfirmed node.
+          if (!await captureHandoff()) { setState("recoverableError"); return; }
+          const staleAddress = sessionStoreRef.current.getAddress();
+          if (staleAddress) clearPersistedSession(staleAddress);
+          sessionStoreRef.current.clear();
+          endStorageAccountSession();
+          setState("unauthenticated");
+          logSession("restore", "signed_out");
+          return;
+        }
       }
       const restored = await restorePersistedSession(sessionStoreRef.current, {
         beforeClear: async () => {
@@ -683,6 +726,35 @@ export function App() {
     document.addEventListener("visibilitychange", visible);
     return () => {
       window.removeEventListener("focus", recheck);
+      document.removeEventListener("visibilitychange", visible);
+    };
+  }, [state, tcw]);
+
+  // The node can go away and come back (sleep, a restart) without the app noticing. When the window
+  // comes back, check it is still the node that was confirmed before the session goes on writing.
+  // Not run per request.
+  useEffect(() => {
+    if (!LOCAL_NODE || state !== "ready" || !tcw) return;
+    const recheck = async () => {
+      if (nodeCheckInFlightRef.current) return;
+      nodeCheckInFlightRef.current = true;
+      try {
+        const check = await checkNode(LOCAL_NODE_ADDRESS);
+        if (check.kind !== "mismatch") return;
+        setTcw(null);
+        setError(nodeRefusal(LOCAL_NODE_ADDRESS!));
+        setState("recoverableError");
+      } finally {
+        nodeCheckInFlightRef.current = false;
+      }
+    };
+    const visible = () => { if (document.visibilityState === "visible") void recheck(); };
+    window.addEventListener("focus", recheck);
+    window.addEventListener("online", recheck);
+    document.addEventListener("visibilitychange", visible);
+    return () => {
+      window.removeEventListener("focus", recheck);
+      window.removeEventListener("online", recheck);
       document.removeEventListener("visibilitychange", visible);
     };
   }, [state, tcw]);
@@ -882,6 +954,29 @@ export function App() {
     resetNavigationMemory();
     try {
       setState("connecting");
+      let nodeToPin: string | null = null;
+      if (LOCAL_NODE) {
+        // GET /info, then the confirmation, then sign-in; the node ID is saved only once sign-in succeeded.
+        const check = await checkNode(LOCAL_NODE_ADDRESS);
+        const refusal = nodeCheckRefusal(check);
+        if (refusal) {
+          setError(refusal);
+          setState("recoverableError");
+          return;
+        }
+        if (check.kind === "first-use") {
+          // (Promise.withResolvers is not in this project's TypeScript lib.)
+          const confirmed = await new Promise<boolean>((resolve) => {
+            nodeConfirmResolveRef.current = resolve;
+            setNodeConfirm({ address: LOCAL_NODE_ADDRESS!, nodeId: check.nodeId });
+          });
+          if (!confirmed) {
+            setState("unauthenticated");
+            return;
+          }
+          nodeToPin = check.nodeId;
+        }
+      }
       if (isNativeOpenKeySignIn()) {
         // TC-775 E1: OpenKey delegation sign-in in the system browser. The SDK
         // keeps the session key in the device secure store; nothing wallet-shaped
@@ -955,6 +1050,7 @@ export function App() {
       // The SDK keeps this provider for later user-authorized operations;
       // only the verified login's signatures use the prefetched nonce guard.
       prefetch.complete();
+      if (nodeToPin && !writeNodePin(LOCAL_NODE_ADDRESS!, nodeToPin)) throw new Error("Could not save the node ID");
       // The sign-in is verified: start the first sync (ON only; nothing else starts it).
       startReplicationFill(signedTcw);
 
@@ -973,6 +1069,7 @@ export function App() {
         return;
       }
       setError(describeAuthFailure(caught));
+      if (LOCAL_NODE && isNodeFetchFailure(caught)) setError(nodeSignInFailed(LOCAL_NODE_ADDRESS!));
       setState("recoverableError");
     } finally {
       if (prefetch) {
@@ -1068,6 +1165,30 @@ export function App() {
   }, [tcw, captureHandoff, restoreCaptureAfterAuthAbort, completeLocalSignOut]);
 
   useEffect(() => { signOutRef.current = signOut; }, [signOut]);
+
+  const decideNodeConfirm = useCallback((confirmed: boolean) => {
+    const resolve = nodeConfirmResolveRef.current;
+    if (!resolve) return;
+    nodeConfirmResolveRef.current = null;
+    setNodeConfirm(null);
+    resolve(confirmed);
+  }, []);
+
+  // Settings changes to the node address or the saved node ID: the local session is cleared first (so a
+  // delegation made for one node is never sent to another), then the change is written and the app reloads.
+  const applyNodeChange = useCallback(async (apply: () => void): Promise<boolean> => {
+    // Read before the clear: from the signed-out refusal screen only the stored session knows the address.
+    const storedAddress = sessionStoreRef.current.getAddress();
+    try {
+      await clearSessionAfterHandoff(sessionStoreRef.current);
+    } catch {
+      return false;
+    }
+    if (storedAddress) clearPersistedSession(storedAddress);
+    apply();
+    window.location.reload();
+    return true;
+  }, []);
 
   const isReady = state === "ready" && tcw !== null;
   // The offline state still HOLDS a session, so its "Try again" re-runs the
@@ -1199,6 +1320,7 @@ export function App() {
   ) : null;
 
   return (
+    <LocalNodeContext.Provider value={LOCAL_NODE}>
     <RecorderProvider
       tcw={isReady ? tcw : null}
       backendUrl={BACKEND_URL}
@@ -1317,6 +1439,8 @@ export function App() {
                 onOpenRates={openRates}
                 backendUrl={BACKEND_URL}
                 sessionStore={sessionStoreRef.current}
+                nodeHostConfig={NODE_HOSTS}
+                applyNodeChange={applyNodeChange}
               />}
               about={<AboutPage onBack={onBack} />}
             />
@@ -1339,7 +1463,12 @@ export function App() {
             {nativeSignInFlow.screenShown
                 ? <NativeSignIn state={state} error={error} onSignIn={(hints) => void signIn(hints)}
                   onClose={nativeSignInFlow.onClose} />
-                : <BootSurface state={state} error={error} onAction={authAction} />}
+                : <div className={LOCAL_NODE ? "h-[65%] min-h-[22rem]" : "h-full"}><BootSurface state={state} error={error} onAction={authAction} /></div>}
+            {LOCAL_NODE && (
+              <div className="mx-auto w-full max-w-2xl px-4 pb-6">
+                <NodeAddressSettings config={NODE_HOSTS} applyChange={applyNodeChange} />
+              </div>
+            )}
           </main>
         )}
       </div>
@@ -1375,6 +1504,7 @@ export function App() {
         />
       )}
       <StorageFullDialog open={storageDialogOpen} onOpenChange={setStorageDialogOpen} paywallEnabled={paywallEnabled} />
+      <NodeConfirmDialog request={nodeConfirm} onDecide={decideNodeConfirm} />
 
       <RatesDialog
         open={ratesOpen}
@@ -1386,7 +1516,7 @@ export function App() {
           visit"). Same gate as the authenticated surfaces; renders nothing in
           every state, coordinates with Settings on a shared lane, and never
           unlocks — see useBackgroundDrain.ts. */}
-      {!LOCAL_VALIDATION && state === "ready" && tcw && secretsAvailable() && (
+      {!LOCAL_VALIDATION && !LOCAL_NODE && state === "ready" && tcw && secretsAvailable() && (
         <BackgroundDrainer
           tcw={tcw}
           sessionStore={sessionStoreRef.current}
@@ -1410,7 +1540,7 @@ export function App() {
           drainer above (gmeet has no webhook queue). Same ready gate; renders
           nothing, defers silently while the vault is locked, and is a no-op for
           every user while the registry row is coming-soon. */}
-      {!LOCAL_VALIDATION && state === "ready" && tcw && secretsAvailable() && (
+      {!LOCAL_VALIDATION && !LOCAL_NODE && state === "ready" && tcw && secretsAvailable() && (
         <GmeetSessionSync
           tcw={tcw}
           sessionStore={sessionStoreRef.current}
@@ -1423,7 +1553,7 @@ export function App() {
           them. Renders nothing, queues on the drain's lane so the one space has
           a single writer, and is a no-op for every address outside the dark
           cohort — see BackendReconciler.tsx. */}
-      {!LOCAL_VALIDATION && state === "ready" && tcw && secretsAvailable() && (
+      {!LOCAL_VALIDATION && !LOCAL_NODE && state === "ready" && tcw && secretsAvailable() && (
         <BackendReconciler
           tcw={tcw}
           sessionStore={sessionStoreRef.current}
@@ -1458,6 +1588,7 @@ export function App() {
       )}
     </div>
     </RecorderProvider>
+    </LocalNodeContext.Provider>
   );
 }
 

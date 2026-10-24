@@ -22,6 +22,7 @@ import type { ConnectWalletResult } from "@tinyboilerplate/client";
 import { openkeyPasskeysSupported } from "./openkeyPasskeys.js";
 import { SESSION_EXPIRATION_MS } from "@tinyboilerplate/core";
 import { localValidationEnabled, prepareLocalSignIn } from "./localValidation";
+import { isLocalNodeHost } from "./nodeHost";
 
 /** Production agent identity (Layer-1 contract §2). Local E2E may override it. */
 const DEFAULT_AGENT_DID = "did:pkh:eip155:1:0x83cD9777d4128012F878376aCbd6a092DcdDE01c";
@@ -91,6 +92,11 @@ export interface AgentSessionEnvelope {
 const DEFAULT_HOST = "https://tee.node.tinycloud.xyz";
 const CSRF_HEADER = "X-Requested-With";
 const CSRF_VALUE = "XMLHttpRequest";
+
+/** Agent delegations are never made for a node on this computer: the online service that uses them cannot reach it. */
+export function assertNotLocalNode(host: string | undefined | null): void {
+  if (isLocalNodeHost(host)) throw new Error("Agent access is off while a node on this computer is set.");
+}
 
 // Decode a url-safe base64 string (handles `-`/`_` and missing padding).
 // Browser-safe — no node-only crypto.
@@ -197,6 +203,7 @@ export async function mintAgentDelegation(
   const delegateDID = options.delegateDID ?? AGENT_DID;
   const path = options.path ?? AGENT_MEMORY_PATH;
   const host = options.host ?? tcw.hosts?.[0] ?? DEFAULT_HOST;
+  assertNotLocalNode(host);
   const expiryMs = options.expiryMs ?? AGENT_DELEGATION_EXPIRY_MS;
 
   const space = tcw.space(AGENT_MEMORY_SPACE);
@@ -229,6 +236,7 @@ export async function mintTranscriptDelegation(
 ): Promise<string> {
   const delegateDID = options.delegateDID ?? AGENT_DID;
   const host = options.host ?? tcw.hosts?.[0] ?? DEFAULT_HOST;
+  assertNotLocalNode(host);
   const result = await tcw.delegateTo(delegateDID, TRANSCRIPT_PERMISSIONS, {
     expiry: options.expiryMs ?? AGENT_DELEGATION_EXPIRY_MS,
   });
@@ -325,6 +333,7 @@ async function connectSessionOwner(options: FreshSignInMintOptions): Promise<Con
 export async function mintAgentDelegationViaFreshSignIn(
   options: FreshSignInMintOptions,
 ): Promise<string> {
+  assertNotLocalNode(options.tinycloudHosts?.[0]);
   const web3Provider = await connectSessionOwner(options);
   const { TinyCloudWeb, BrowserSessionStorage } = await import("@tinycloud/web-sdk");
 
@@ -388,6 +397,7 @@ export async function mintAgentDelegationViaFreshSignIn(
 export async function mintAgentSessionViaFreshSignIn(
   options: FreshSignInMintOptions & { roomId?: string },
 ): Promise<AgentSessionEnvelope> {
+  assertNotLocalNode(options.tinycloudHosts?.[0]);
   const web3Provider = await connectSessionOwner(options);
   const { TinyCloudWeb, BrowserSessionStorage } = await import("@tinycloud/web-sdk");
   const memory = new Map<string, string>();
@@ -464,6 +474,7 @@ function authHeaders(token: string): Record<string, string> {
 export async function ensureAgentSession(
   deps: EnsureAgentSessionDeps,
 ): Promise<AgentSessionStatus> {
+  assertNotLocalNode(deps.tcw.hosts?.[0]);
   const token = deps.getToken();
   if (!token) throw new Error("Not authenticated. Please sign in.");
 

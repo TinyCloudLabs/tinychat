@@ -7,6 +7,7 @@ import { toPortableDelegation, serializePortableDelegation } from "./agentDelega
 import { webConnectorPort } from "./connectors/connectorPort";
 import { fetchServerInfoDid } from "./backendAttestation";
 import { localValidationEnabled } from "./localValidation";
+import { isLocalNodeHost } from "./nodeHost";
 import {
   beginTranscriptConsentStatus, clearTranscriptConsentStatus, resolveTranscriptConsentStatus,
   serverDeliveryActive, setServerDeliveryActive, transcriptDeliveryEnabled,
@@ -256,6 +257,8 @@ async function attempt(options: Options, address: string, key: string, sessionEx
 /** Headless session-key courier: never opens a wallet prompt, including on restore/focus. */
 export async function ensureTranscriptWriterDelegation(options: Options): Promise<EnsureResult> {
   if (localValidationEnabled()) return "disabled";
+  // A grant for Exo's online service made from a session on a node on this computer is never minted or sent.
+  if (isLocalNodeHost(options.tcw.hosts?.[0])) return "disabled";
   const address = options.tcw.address()?.toLowerCase();
   if (!address) return "unavailable";
   const key = `tinychat.transcriptWriter.${address}`;
