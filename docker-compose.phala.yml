@@ -26,6 +26,8 @@ services:
       # Task routing defaults off; enabled with an empty list admits all accounts.
       ELIZA_TASKS_ENABLED: ${ELIZA_TASKS_ENABLED:-false}
       ELIZA_TASKS_TEST_ACCOUNTS: ${ELIZA_TASKS_TEST_ACCOUNTS:-}
+      # Optional one-time, log-only count of stored connector credential rows. Empty = off.
+      CREDENTIAL_ROW_COUNT_SOURCES: ${CREDENTIAL_ROW_COUNT_SOURCES:-}
       # Explicit stream policy is required when agent chat is enabled. Startup validates
       # these settings; empty values keep agent-disabled deployments possible, with no defaults.
       AGENT_STREAM_HEARTBEAT_MS: ${AGENT_STREAM_HEARTBEAT_MS:-}

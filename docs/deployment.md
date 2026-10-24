@@ -267,6 +267,7 @@ Repository **variables** (all optional — defaults shown):
 | `ELIZA_SERVICE_URL` | _(required — no default; the workflow's config check fails fast if unset)_ — Eliza agent service URL (agent triad) |
 | `ELIZA_TASKS_ENABLED` | `false` (repo variable; only literal `true` routes admitted agent turns through Eliza `/tasks`) |
 | `ELIZA_TASKS_TEST_ACCOUNTS` | _(empty — repo variable; comma-separated account addresses, trimmed and lowercased)_. **When tasks are enabled, an empty list admits all authenticated accounts.** Set an explicit canary list before enabling. |
+| `CREDENTIAL_ROW_COUNT_SOURCES` | _(empty — optional comma-separated source names; when set to a source name, logs a single `credential_row_count source=<name> count=<N>` line at startup; read-only)_ |
 | `PAYWALL_ENABLED` | `false`. This and every Stripe/credit/ledger row below may live as a repo **secret** or **variable** — secrets win (`docs/stripe-setup.md`). |
 | `STRIPE_PRICE_PLUS_MONTHLY` / `STRIPE_PRICE_PLUS_YEARLY` / `STRIPE_PRICE_PRO_MONTHLY` / `STRIPE_PRICE_PRO_YEARLY` | _(empty — Stripe price ids `price_…`; see `docs/stripe-setup.md`)_ |
 | `CREDIT_BUDGET_FREE` / `CREDIT_BUDGET_PLUS_WEEKLY` / `CREDIT_BUDGET_PRO_WEEKLY` | _(empty — code defaults in `backend/src/billing/tiers.ts`)_ |
