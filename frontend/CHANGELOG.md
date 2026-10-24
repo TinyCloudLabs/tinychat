@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.10.0-beta.27
+
+### Patch Changes
+
+- b083512: Update the web frontend to `@openkey/sdk` 0.12.1 for OpenKey embedded widget layout negotiation (TC-1183).
+
 ## 0.10.0-beta.26
 
 ### Patch Changes
