@@ -5,6 +5,7 @@
 // forced sign-in and after a later restore. Run by src/App.manifestRevision.test.ts in its own process
 // (mock.module is process-wide).
 import { afterAll, afterEach, beforeEach, expect, mock, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
@@ -15,6 +16,13 @@ import { replicationOptInKey } from "@/lib/replication/replicationOptIn";
 import { REPLICATION_RUNTIME_FLAG_KEY } from "@/lib/replication/replicationFlag";
 import { SIGN_IN_BUNDLE_ENTRIES } from "@tinyboilerplate/core";
 import realManifest from "../../manifest.json";
+
+// The app code under test must never reach a real home: HOME is a throwaway dir under /var/tmp,
+// set at load and asserted before anything runs.
+const testHome = mkdtempSync("/var/tmp/tc1013.");
+process.env.HOME = testHome;
+if (!process.env.HOME.startsWith("/var/tmp/tc1013.")) throw new Error("HOME is not the throwaway test home");
+afterAll(() => { rmSync(testHome, { recursive: true, force: true }); });
 
 const restoreImportDom = installDom();
 const clientApi = await import("@tinyboilerplate/client");
@@ -40,7 +48,7 @@ const PRINCIPAL = `did:pkh:eip155:1:${ADDRESS}`;
 const CHROME = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
 const APP_SESSION_KEY = "xyz.tinycloud.tinychat:session";
 const REVISION_KEY = `xyz.tinycloud.tinychat:manifest-revision:${ADDRESS}`;
-const NOTICE = "Exo needs you to sign in again to update what it can access. You'll do this once on each of your devices.";
+const NOTICE = "Sign in again to finish updating Exo. You'll do this once on each device.";
 
 /** Every effect the gate must order, in the order it happened. */
 const events: string[] = [];

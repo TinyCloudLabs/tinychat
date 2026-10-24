@@ -1,7 +1,14 @@
-import { describe, expect, it } from "bun:test";
+import { afterAll, describe, expect, it } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
 import { resolveManifest } from "@tinycloud/node-sdk/core";
 import { APP_ID, MEETING_DB_DETAILS, MEETING_DB_SUMMARIES, MEETING_DB_TRANSCRIPTS, SIGN_IN_BUNDLE_ENTRIES, manifestCarriesBundle } from "@tinyboilerplate/core";
 import { runtimeManifest } from "../manifest.js";
+
+// The tests only read manifest.json; HOME is still a throwaway dir under /var/tmp, set at load and asserted.
+const testHome = mkdtempSync("/var/tmp/tc1013.");
+process.env.HOME = testHome;
+if (!process.env.HOME.startsWith("/var/tmp/tc1013.")) throw new Error("HOME is not the throwaway test home");
+afterAll(() => { rmSync(testHome, { recursive: true, force: true }); });
 
 // The served manifest's sign-in bundle beyond the original five entries: the three meeting databases,
 // the migration record folder, the storage info read and the Exo mailbox folders.

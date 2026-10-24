@@ -1,7 +1,13 @@
-import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { afterAll, describe, expect, test } from "bun:test";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { resolveManifest, type Manifest } from "@tinycloud/sdk-core";
 import { APP_ID, CONNECTORS_SQL_DB_NAME, MEETING_DB_DETAILS, MEETING_DB_SUMMARIES, MEETING_DB_TRANSCRIPTS } from "@tinyboilerplate/core";
+
+// The tests only read manifest.json; HOME is still a throwaway dir under /var/tmp, set at load and asserted.
+const testHome = mkdtempSync("/var/tmp/tc1013.");
+process.env.HOME = testHome;
+if (!process.env.HOME.startsWith("/var/tmp/tc1013.")) throw new Error("HOME is not the throwaway test home");
+afterAll(() => { rmSync(testHome, { recursive: true, force: true }); });
 
 // The app's real manifest.json, resolved by the SDK's real resolveManifest: what the
 // sign-in asks the node for. Revision "2" of the sign-in grants (lib/manifestRevision.ts)

@@ -1,5 +1,5 @@
-import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { afterAll, describe, expect, test } from "bun:test";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { manifestCarriesBundle, SIGN_IN_BUNDLE_ENTRIES } from "@tinyboilerplate/core";
 import {
   applyManifestRevisionGate,
@@ -11,6 +11,13 @@ import {
   recordManifestRevisionIfSigned,
   type RevisionStore,
 } from "./manifestRevision";
+
+// No test here writes outside memory, but the app code under test must never reach a real home either:
+// HOME is a throwaway dir under /var/tmp, set at load and asserted before anything runs.
+const testHome = mkdtempSync("/var/tmp/tc1013.");
+process.env.HOME = testHome;
+if (!process.env.HOME.startsWith("/var/tmp/tc1013.")) throw new Error("HOME is not the throwaway test home");
+afterAll(() => { rmSync(testHome, { recursive: true, force: true }); });
 
 interface ManifestEntry { service: string; path: string; actions: string[]; skipPrefix?: boolean }
 
@@ -282,9 +289,9 @@ describe("users without a stored session", () => {
 });
 
 describe("notice", () => {
-  test("the forced-re-sign line is Monica's final wording, verbatim", () => {
+  test("the forced-re-sign line is Monica's revised wording, verbatim", () => {
     expect(MANIFEST_RESIGN_NOTICE).toBe(
-      "Exo needs you to sign in again to update what it can access. You'll do this once on each of your devices.",
+      "Sign in again to finish updating Exo. You'll do this once on each device.",
     );
   });
 });
