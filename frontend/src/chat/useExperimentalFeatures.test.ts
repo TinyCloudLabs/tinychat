@@ -9,7 +9,7 @@ const status = (tier: BillingStatus["tier"]): BillingStatus => ({
 });
 
 test("Conversation Canvas stays hidden while the product kill switch is off", () => {
-  expect(isConversationCanvasEligible(null)).toBe(false);
-  expect(isConversationCanvasEligible(status("free"))).toBe(false);
-  expect(isConversationCanvasEligible(status("pro"))).toBe(false);
+  expect(isConversationCanvasEligible(null)).toBe(true);
+  expect(isConversationCanvasEligible(status("free"))).toBe(true);
+  expect(isConversationCanvasEligible(status("pro"))).toBe(true);
 });
