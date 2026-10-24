@@ -3,6 +3,8 @@ export const SHARE_LINK_COPY = {
   listTitle: "Your shared links",
   listDescription: "Links you've shared keep working until they expire. Revoke one to stop it opening.",
   listEmpty: "You have no shared links.",
+  loadFailed: "Could not load your shared links.",
+  retry: "Try again",
   revoke: "Revoke",
   revoking: "Revoking...",
   confirmTitle: "Revoke this link?",

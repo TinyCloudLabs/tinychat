@@ -60,15 +60,13 @@ import { isLocalThreadStorage } from "@/lib/threadStore";
 import {
   createTinychatShareLink,
   findStoredTinychatShareForThread,
-  listOwnedTinychatShares,
   shareStopFailureMessage,
   stopOwnedTinychatShare,
-  type OwnedTinychatShare,
   type StoredTinychatShare,
 } from "@/lib/tinychatShareLinks";
 import { CHAT_SHARING_PAUSED, canOfferChatShare } from "@/lib/chatSharing";
 import { SHARE_LINK_COPY } from "@/lib/shareLinkCopy";
-import { OwnedShareLinkList, formatShareDate } from "./OwnedShareLinks";
+import { OwnedShareLinkList, ShareLinksLoadFailed, formatShareDate, useOwnedShares } from "./OwnedShareLinks";
 import { getThreadCompaction, subscribeThreadCompaction } from "./chatModelAdapter";
 import { ModelVerificationBadge } from "./ModelVerificationBadge";
 import { ToolActivityChip } from "./ToolActivityChip";
@@ -268,7 +266,8 @@ const ShareThreadProvider: FC<{ tcw: TinyCloudWeb; children: React.ReactNode }> 
   const [share, setShare] = useState<StoredTinychatShare | null>(null);
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
   const [error, setError] = useState<string | null>(null);
-  const [owned, setOwned] = useState<OwnedTinychatShare[]>([]);
+  const { shares: ownedShares, loadFailed, refresh: refreshOwnedShares } = useOwnedShares(tcw);
+  const owned = ownedShares ?? [];
   const [revokingId, setRevokingId] = useState<string | null>(null);
 
   // `visible` gates whether the share button renders at all — only once a
@@ -283,14 +282,6 @@ const ShareThreadProvider: FC<{ tcw: TinyCloudWeb; children: React.ReactNode }> 
       canOfferChatShare(hasExistingShare),
   );
   const canShare = Boolean(visible && !creating);
-
-  const refreshOwnedShares = useCallback(async () => {
-    try {
-      setOwned(await listOwnedTinychatShares(tcw));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  }, [tcw]);
 
   const openShareDialog = useCallback(() => {
     setShare(threadId ? findStoredTinychatShareForThread(threadId) : null);
@@ -414,15 +405,19 @@ const ShareThreadProvider: FC<{ tcw: TinyCloudWeb; children: React.ReactNode }> 
             </div>
           )}
 
-          {owned.length > 0 && (
-            <div className="flex flex-col gap-2">
-              <div className="text-xs font-medium text-foreground">{SHARE_LINK_COPY.listTitle}</div>
-              <OwnedShareLinkList
-                shares={owned}
-                revokingId={revokingId}
-                onRevoke={(shareId) => void revokeShare(shareId)}
-              />
-            </div>
+          {loadFailed ? (
+            <ShareLinksLoadFailed onRetry={() => void refreshOwnedShares()} />
+          ) : (
+            owned.length > 0 && (
+              <div className="flex flex-col gap-2">
+                <div className="text-xs font-medium text-foreground">{SHARE_LINK_COPY.listTitle}</div>
+                <OwnedShareLinkList
+                  shares={owned}
+                  revokingId={revokingId}
+                  onRevoke={(shareId) => void revokeShare(shareId)}
+                />
+              </div>
+            )
           )}
 
           <DialogFooter>

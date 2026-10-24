@@ -86,20 +86,37 @@ export const OwnedShareLinkList: FC<{
   );
 };
 
-/** Settings entry to the same list, so links stay reachable without a chat that has a local copy. */
-export const OwnedShareLinksCard: FC<{ tcw: TinyCloudWeb }> = ({ tcw }) => {
-  const [shares, setShares] = useState<OwnedTinychatShare[] | null>(null);
-  const [revokingId, setRevokingId] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const local = isLocalThreadStorage(tcw);
+/** Shown instead of a list when the owner's links could not be loaded. Never carries the error text. */
+export const ShareLinksLoadFailed: FC<{ onRetry: () => void }> = ({ onRetry }) => (
+  <div className="flex items-center justify-between gap-3 text-sm">
+    <span className="min-w-0 text-muted-foreground">{SHARE_LINK_COPY.loadFailed}</span>
+    <Button type="button" variant="outline" size="sm" onClick={onRetry}>
+      {SHARE_LINK_COPY.retry}
+    </Button>
+  </div>
+);
 
+/** Loads the owner's links. A failed load only sets `loadFailed`; the error text is never kept. */
+export function useOwnedShares(tcw: TinyCloudWeb) {
+  const [shares, setShares] = useState<OwnedTinychatShare[] | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
   const refresh = useCallback(async () => {
     try {
       setShares(await listOwnedTinychatShares(tcw));
+      setLoadFailed(false);
     } catch {
-      // No list to show; the card stays on its title and description. The error text is never shown.
+      setLoadFailed(true);
     }
   }, [tcw]);
+  return { shares, loadFailed, refresh };
+}
+
+/** Settings entry to the same list, so links stay reachable without a chat that has a local copy. */
+export const OwnedShareLinksCard: FC<{ tcw: TinyCloudWeb }> = ({ tcw }) => {
+  const { shares, loadFailed, refresh } = useOwnedShares(tcw);
+  const [revokingId, setRevokingId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const local = isLocalThreadStorage(tcw);
 
   useEffect(() => {
     if (!local) void refresh();
@@ -127,7 +144,9 @@ export const OwnedShareLinksCard: FC<{ tcw: TinyCloudWeb }> = ({ tcw }) => {
         </div>
       )}
       <div className="mt-3">
-        {shares?.length ? (
+        {loadFailed ? (
+          <ShareLinksLoadFailed onRetry={() => void refresh()} />
+        ) : shares?.length ? (
           <OwnedShareLinkList shares={shares} revokingId={revokingId} onRevoke={(id) => void revoke(id)} />
         ) : shares ? (
           <p className="text-sm text-muted-foreground">{SHARE_LINK_COPY.listEmpty}</p>
