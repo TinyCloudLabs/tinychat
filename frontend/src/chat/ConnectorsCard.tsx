@@ -53,7 +53,7 @@ import {
 import { awaitGmeetSessionSync } from "./useGmeetSessionSync";
 import { useGmeetRowStatus } from "./useGmeetRowStatus";
 import {
-  readConnectorKey,
+  getConnectorKey,
   isSecretsUnlocked,
   unlockSecrets,
   type SecretsErr,
@@ -479,7 +479,7 @@ export function ConnectorsCard({
       // The registry row names the secret — API key for Fireflies, refresh
       // token for Google Meet. This file spells neither, which is what lets the
       // flip commit change what is read without touching here.
-      const keyRes = await readConnectorKey<SecretsErr>(tcw, d, { interactive: true });
+      const keyRes = await getConnectorKey<SecretsErr>(tcw, d);
       if (!keyRes.ok) {
         patchRow(d.id, {
           syncing: false,

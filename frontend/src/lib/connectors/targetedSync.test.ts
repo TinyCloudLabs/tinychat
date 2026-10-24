@@ -198,33 +198,6 @@ function fakeTcw(): TinyCloudWeb {
   } as unknown as TinyCloudWeb;
 }
 
-/** A tcw with real grant semantics: the decrypt grant is absent until a prompt grants it. */
-function grantTcw(options: { held: boolean }) {
-  const counts = { gets: 0, prompts: 0 };
-  let held = options.held;
-  const tcw = {
-    did: "did:pkh:eip155:1:0x00000000000000000000000000000000000000aa",
-    isWalletConnected: true,
-    hasPermissions: () => held,
-    requestPermissions: async () => {
-      counts.prompts += 1;
-      held = true;
-      return { approved: true };
-    },
-    secrets: {
-      isUnlocked: true,
-      get: async () => {
-        counts.gets += 1;
-        return { ok: true, data: API_KEY };
-      },
-      unlock: () => {
-        throw new Error("ingest must never trigger an unlock prompt");
-      },
-    },
-  } as unknown as TinyCloudWeb;
-  return { tcw, counts };
-}
-
 function transcript(
   id: string,
   overrides: Partial<FirefliesTranscript> = {},
@@ -654,51 +627,5 @@ describe("ingestQueuedMeetings — targeted queued-id ingest", () => {
     if (!res.ok) return;
     expect(res.data.tombstoned).toBe(1);
     expect(res.data.acknowledged).toBe(0);
-  });
-});
-
-describe("ingestQueuedMeetings — decrypt grant", () => {
-  function grantHarness(grant: ReturnType<typeof grantTcw>) {
-    const log: Log = [];
-    const client = new FakeClient(log);
-    client.transcripts.set("m1", transcript("m1"));
-    const webhooks = new FakeAck(log);
-    const store = new FakeStore(log);
-    // No injected `secrets`: the engine reads the real connector key path.
-    const base = {
-      tcw: grant.tcw,
-      descriptor: DESCRIPTOR,
-      items: [T("m1")],
-      webhooks,
-      store,
-      createClient: () => client,
-      sleepImpl: async () => {},
-    };
-    return { log, webhooks, base };
-  }
-
-  test("a background ingest with no decrypt grant defers: no prompt, no key read, no fetch or ack", async () => {
-    const grant = grantTcw({ held: false });
-    const h = grantHarness(grant);
-
-    const res = await ingestQueuedMeetings({ ...h.base, interactive: false });
-
-    expect(res).toMatchObject({ ok: true, data: { blocked: "secrets-locked", stored: 0 } });
-    expect(grant.counts).toEqual({ gets: 0, prompts: 0 });
-    expect(h.log).toEqual([]);
-    expect(h.webhooks.requests).toEqual([]);
-  });
-
-  test("the explicit Sync queued meetings press grants once; a later background ingest reads without prompting", async () => {
-    const grant = grantTcw({ held: false });
-    const h = grantHarness(grant);
-
-    const pressed = await ingestQueuedMeetings({ ...h.base, interactive: true });
-    expect(pressed).toMatchObject({ ok: true, data: { blocked: null, stored: 1 } });
-    expect(grant.counts).toEqual({ gets: 1, prompts: 1 });
-
-    const background = await ingestQueuedMeetings({ ...h.base, interactive: false });
-    expect(background).toMatchObject({ ok: true, data: { blocked: null } });
-    expect(grant.counts).toEqual({ gets: 2, prompts: 1 });
   });
 });

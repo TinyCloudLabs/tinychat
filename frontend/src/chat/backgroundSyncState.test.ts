@@ -146,8 +146,6 @@ interface Calls {
   isUnlocked: number;
   unlock: number;
   ingest: TargetedQueueItem[][];
-  /** The `interactive` flag each ingest run was handed, in call order. */
-  interactive: boolean[];
   /** The tripwire: `DELETE /purged` may fire ONLY from the confirmed action. */
   clearPurgeLedger: string[];
 }
@@ -182,7 +180,6 @@ function harness(
     isUnlocked: 0,
     unlock: 0,
     ingest: [],
-    interactive: [],
     clearPurgeLedger: [],
   };
   let current = initialBackgroundSyncState();
@@ -229,9 +226,8 @@ function harness(
         return responses.unlock ?? { ok: true };
       },
     },
-    ingest: async (items, options) => {
+    ingest: async (items) => {
       calls.ingest.push([...items]);
-      calls.interactive.push(options.interactive);
       return responses.ingest ?? okIngest();
     },
   };
@@ -323,17 +319,6 @@ describe("loadOnMount", () => {
     // Automatic processing is allowed; an automatic UNLOCK is never allowed.
     expect(h.calls.unlock).toBe(0);
     expect(h.state().lastIngest?.stored).toBe(1);
-  });
-
-  test("a queue processed on mount ingests in the background, never interactively", async () => {
-    const h = harness({
-      config: okConfig({ enabled: true, hasSecret: true }),
-      unlocked: true,
-      drain: okPending({ count: 1, pending: [pendingItem("m1")] }),
-      ingest: okIngest({ stored: 1, acknowledged: 1 }),
-    });
-    await loadOnMount(h.deps, h.emit);
-    expect(h.calls.interactive).toEqual([false]);
   });
 
   test("an unlocked visit with an empty drain does not call the ingest engine", async () => {
@@ -537,15 +522,6 @@ describe("syncQueuedMeetings", () => {
     await syncQueuedMeetings(h.deps, h.emit);
     expect(h.calls.unlock).toBe(0);
     expect(h.calls.ingest.length).toBe(1);
-  });
-
-  test("Sync queued meetings is the one path that ingests interactively", async () => {
-    const h = harness({
-      unlocked: true,
-      drain: okPending({ count: 1, pending: [pendingItem("m1")] }),
-    });
-    await syncQueuedMeetings(h.deps, h.emit);
-    expect(h.calls.interactive).toEqual([true]);
   });
 
   test("a refused unlock stops before the drain and reports it", async () => {
