@@ -9,7 +9,9 @@ import { createFakeOnDeviceStt } from "@/lib/voiceNotes/fakeOnDeviceStt";
 import { __setVoiceNotesForTests } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { __setOnDeviceSttForTests } from "@/lib/voiceNotes/onDeviceStt";
 import { __resetOnDeviceSttStoreForTests } from "@/lib/voiceNotes/onDeviceSttStore";
-import { DEFAULT_STOP_AFTER, readStopAfterPreference, setStopAfterPreference } from "@/lib/voiceNotes/transcriberPreference";
+import { DEFAULT_STOP_AFTER } from "@/lib/voiceNotes/recordingSettings";
+import { readStopAfterPreference, setStopAfterPreference } from "@/lib/voiceNotes/transcriberPreference";
+import { __resetCaptureEngineForTests, __setInstalledEngineForTests, captureCapabilities } from "@/lib/voiceNotes/captureEngine";
 import { installDom } from "@/test/dom";
 import { VoiceNotesTranscriberSettings } from "./VoiceNotesTranscriberSettings";
 
@@ -59,7 +61,7 @@ test("on a phone the Stop recording after row sits above the default transcriber
   const transcriber = host.querySelector('[aria-label="Default transcriber"]')!;
   expect(transcriber).not.toBeNull();
   expect(stopAfter.compareDocumentPosition(transcriber) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  expect(stopAfter.textContent).toContain("New recordings stop by themselves after this long. Recordings never run longer than 3 hours.");
+  expect(stopAfter.textContent).toContain("Recordings you start with Exo's record button stop by themselves after this long. The setting follows your account to all your devices. No recording runs longer than 3 hours.");
   // An unknown stored value shows the 1-hour default.
   const select = stopAfter.querySelector("select")!;
   expect(select.value).toBe("60");
@@ -121,4 +123,37 @@ test("ticking the box swaps the single help line, and the (i) sits in the label 
   expect(values.get("exo.voiceNotes.uploadAudio")).toBe("1");
   await act(async () => { box.click(); });
   expect(values.get("exo.voiceNotes.uploadAudio")).toBe("0");
+});
+
+test("signed out nothing syncs, so the Stop recording after help does not promise it", async () => {
+  await act(async () => root.render(
+    <PlatformContext.Provider value="ios">
+      <StaticRecorderProvider value={{ signedIn: false, available: true }}>
+        <VoiceNotesTranscriberSettings />
+      </StaticRecorderProvider>
+    </PlatformContext.Provider>,
+  ));
+  const text = host.querySelector('[data-testid="voice-notes-stop-after"]')!.textContent!;
+  expect(text).toContain("Recordings you start with Exo's record button stop by themselves after this long. No recording runs longer than 3 hours.");
+  expect(text).not.toContain("follows your account");
+});
+
+test("a chosen Local default on a browser, which runs Private instead, says so; an untouched default says nothing", async () => {
+  __setInstalledEngineForTests("web", captureCapabilities());
+  try {
+    await act(async () => root.render(
+      <PlatformContext.Provider value="web">
+        <StaticRecorderProvider value={{ signedIn: true, available: true }}>
+          <VoiceNotesTranscriberSettings />
+        </StaticRecorderProvider>
+      </PlatformContext.Provider>,
+    ));
+    expect(host.querySelector('[data-testid="voice-notes-default-fallback"]')).toBeNull();
+    values.set("exo.voiceNotes.transcriber", "on-device");
+    await act(async () => { setStopAfterPreference("60"); });
+    expect(host.querySelector('[data-testid="voice-notes-default-fallback"]')?.textContent)
+      .toContain("which this browser can't run, so recordings here use");
+  } finally {
+    __resetCaptureEngineForTests();
+  }
 });

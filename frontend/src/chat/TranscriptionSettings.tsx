@@ -1,17 +1,19 @@
 // Default for audio imported into Exo. Powerful always uses Exo's server account.
-import { useState, type FC } from "react";
+import { useSyncExternalStore, type FC } from "react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { AudioLinesIcon } from "lucide-react";
 import { HowItWorksLink } from "@/components/ui/how-it-works-link";
 import { InfoTip } from "@/components/ui/info-tip";
 import { SectionCard } from "@/components/ui/section-card";
-import { readDefaultUploadEngine, writeDefaultUploadEngine, type UploadEngine } from "@/lib/audioUpload";
+import { readDefaultUploadEngine, writeDefaultUploadEngine } from "@/lib/audioUpload";
+import { subscribeRecordingSettings } from "@/lib/voiceNotes/recordingSettingsLocal";
 import { TRANSCRIBER_NAME } from "@/capture/recorder/final/finalCopy";
 
 const SEGMENT = "min-h-11 rounded px-3 py-1 text-xs fine:min-h-0";
 
 export const TranscriptionSettings: FC<{ tcw: TinyCloudWeb }> = () => {
-  const [engine, setEngine] = useState<UploadEngine>(readDefaultUploadEngine);
+  // The default engine syncs with the account, so a change from another device shows without reopening Settings.
+  const engine = useSyncExternalStore(subscribeRecordingSettings, readDefaultUploadEngine, readDefaultUploadEngine);
   return (
     <SectionCard icon={AudioLinesIcon} title="Transcription">
       <div className="flex flex-col gap-1.5">
@@ -22,7 +24,7 @@ export const TranscriptionSettings: FC<{ tcw: TinyCloudWeb }> = () => {
         <div role="radiogroup" aria-label="Default transcription engine" className="inline-flex w-fit rounded-md border p-0.5">
           {(["private-cloud", "assemblyai"] as const).map((next) => (
             <button key={next} type="button" role="radio" aria-checked={engine === next}
-              onClick={() => { setEngine(next); writeDefaultUploadEngine(next); }}
+              onClick={() => writeDefaultUploadEngine(next)}
               className={`${SEGMENT} ${engine === next ? "bg-primary text-primary-foreground" : "text-muted-foreground"}`}>
               {TRANSCRIBER_NAME[next]}
             </button>

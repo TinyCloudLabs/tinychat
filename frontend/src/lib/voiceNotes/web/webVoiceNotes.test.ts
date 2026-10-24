@@ -232,11 +232,12 @@ describe("recording", () => {
     const rig = await createRig();
     const { plugin } = rig.engine;
     await plugin.start({ transcriber: "assemblyai" });
-    expect((await plugin.status()).options).toEqual({ transcriber: "on-device", identifySpeakers: false, uploadAudio: false });
-    await plugin.setRecordingOptions({ identifySpeakers: true, transcriber: "assemblyai" });
+    // The engine's own default for speakers is on, matching the JS default.
     expect((await plugin.status()).options).toEqual({ transcriber: "on-device", identifySpeakers: true, uploadAudio: false });
+    await plugin.setRecordingOptions({ identifySpeakers: false, transcriber: "assemblyai" });
+    expect((await plugin.status()).options).toEqual({ transcriber: "on-device", identifySpeakers: false, uploadAudio: false });
     await rig.chunk([1]);
-    expect(await plugin.stop()).toMatchObject({ options: { transcriber: "on-device", identifySpeakers: true, uploadAudio: false } });
+    expect(await plugin.stop()).toMatchObject({ options: { transcriber: "on-device", identifySpeakers: false, uploadAudio: false } });
   });
 
   test("signing in during a recording claims it", async () => {

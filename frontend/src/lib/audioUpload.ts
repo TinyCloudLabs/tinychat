@@ -16,6 +16,7 @@
 
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { captureEvents } from "@/capture/captureEvents";
+import { currentScope, notifyRecordingSettings, readStored, writeStored } from "./voiceNotes/recordingSettingsLocal";
 
 import {
   AudioStoreQuotaError,
@@ -61,21 +62,18 @@ export const UPLOAD_MEETING_SOURCE_LABEL = "Uploaded audio";
 
 export type UploadEngine = "private-cloud" | "assemblyai";
 
-export const UPLOAD_ENGINE_STORAGE_KEY = "exo.transcriber.uploadEngine";
 export const UPLOAD_PENDING_STORAGE_KEY = "exo.transcriber.uploadPending";
 
 /** The default engine new uploads start on (Settings → Transcription). Private unless changed. */
 export function readDefaultUploadEngine(): UploadEngine {
-  try {
-    return globalThis.localStorage?.getItem(UPLOAD_ENGINE_STORAGE_KEY) === "assemblyai" ? "assemblyai" : "private-cloud";
-  } catch {
-    return "private-cloud";
-  }
+  return readStored(currentScope()).uploadEngine === "assemblyai" ? "assemblyai" : "private-cloud";
 }
 
 export function writeDefaultUploadEngine(engine: UploadEngine): void {
   try {
-    globalThis.localStorage?.setItem(UPLOAD_ENGINE_STORAGE_KEY, engine);
+    // The cache of the account this tab is signed in as, named once, here.
+    writeStored(currentScope(), { uploadEngine: engine }, { fields: ["uploadEngine"] });
+    notifyRecordingSettings();
   } catch {
     // Best-effort preference.
   }
