@@ -14,8 +14,9 @@ export const CAP_WINDOW_SECONDS = 60;
  *   daily budget 20 MB/day = ~60 MB retained (3 days) = ~2% of the tier.
  * The counter lives in memory, so a sidecar restart may re-spend it: three restarts in a day still stay under
  * ~60 MB/day = ~180 MB retained (~6%). Raising the budget up to ~200 MB/day needs only the env var, no code change.
- * Lines per minute: 120 passed (the whole backend stream, applied before the sinks, so the local copy is capped too); the
- * dropped-count lines add at most 10 + 1 (+ 7 gate summaries), so a sink sees at most 138 lines per minute at the default.
+ * Lines per 60-second window: 120 passed (the whole backend stream, applied before the sinks, so the local copy is capped too); the
+ * dropped-count lines add at most 10 + 1 (+ 8 gate summaries), so a sink sees at most 139 lines per window at the default. The
+ * window is fixed (it starts at the first line), not a rolling minute: a rolling minute across a boundary can carry more.
  * At the daily budget the shipper drops logs until 00:00Z; it never exceeds the budget and nothing raises it.
  */
 export const DEFAULT_DAILY_BYTE_BUDGET = 20_000_000;
@@ -44,11 +45,11 @@ export function estimateBytes(log) {
 export const MAX_DAILY_BYTE_BUDGET = 200_000_000;
 /** At most this many per-key `log_dropped` lines are emitted per window; the rest are folded into the one `log_stream_dropped` count. */
 export const MAX_DROPPED_LINES = 10;
-/** Gate summaries: one `logship_gate_summary_total` line per gate reason per minute (7 reasons in fields.json). */
-export const GATE_SUMMARY_LINES = 7;
+/** Gate summaries: one `logship_gate_summary_total` line per gate reason per window (8 reasons in fields.json; a test pins the count). */
+export const GATE_SUMMARY_LINES = 8;
 /**
- * The exact ceiling on lines reaching a sink in one cap window: the whole-stream cap + the per-key dropped-count lines
+ * The exact ceiling on lines reaching a sink in one 60-second cap window: the whole-stream cap + the per-key dropped-count lines
  * + the one stream dropped-count line + the gate summaries. The dropped-count lines are NOT inside max_lines, so the ceiling
- * is max_lines + MAX_DROPPED_LINES + 1 + GATE_SUMMARY_LINES (138 at the default of 120).
+ * is max_lines + MAX_DROPPED_LINES + 1 + GATE_SUMMARY_LINES (139 at the default of 120).
  */
 export const lineCeiling = maxLines => maxLines + MAX_DROPPED_LINES + 1 + GATE_SUMMARY_LINES;

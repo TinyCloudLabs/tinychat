@@ -294,15 +294,15 @@ Repository **variables** (all optional — defaults shown):
 | `TRANSCRIPT_DELIVERY_MAX_WRITES_PER_MIN` | `6` (minimum 1; one shared governor for each activation, SQL INSERT, KV PUT, state write, grant removal and recovered intent write) |
 | `TINYCHAT_BETTERSTACK_INGEST_HOST` | _(empty — repo **variable**; the log service source's ingest hostname, `*.betterstackdata.com`, not a secret. Sealed as env `BETTERSTACK_INGEST_HOST`. Without it, or without the token, the sidecar ships nothing.)_ |
 | `TINYCHAT_BETTERSTACK_DAILY_BYTE_BUDGET` | `20000000` (20 MB/day; repo **variable**, optional positive integer, at most `200000000` (200 MB/day); a bad value, or one above the ceiling, is ignored and the default applies, never clamped; lifting the ceiling is a code change). **At the daily budget the shipper drops logs until 00:00Z; it never exceeds it.** Nothing raises it automatically. Sealed as env `BETTERSTACK_DAILY_BYTE_BUDGET`. See *Log shipping*. |
-| `TINYCHAT_BETTERSTACK_MAX_LINES_PER_MINUTE` | `120` (whole backend stream; repo **variable**, optional positive integer of at most 9 digits, a bad value is ignored and the default applies). Lines over it are dropped and counted in one `log_stream_dropped` line per minute. Sealed as env `BETTERSTACK_MAX_LINES_PER_MINUTE`. |
+| `TINYCHAT_BETTERSTACK_MAX_LINES_PER_MINUTE` | `120` (whole backend stream; repo **variable**, optional positive integer of at most 9 digits, a bad value is ignored and the default applies). Lines over it are dropped and counted in one `log_stream_dropped` line per 60-second window. Sealed as env `BETTERSTACK_MAX_LINES_PER_MINUTE`. |
 
 ### Log shipping (TC-1978)
 
 `docker-compose.phala.yml` runs a `vector` sidecar (the same pinned image as tinycloud-node's) next to the backend. The backend's console
 output goes to it through Docker's `gelf` driver over loopback UDP (nonblocking; the backend does not depend on the sidecar). Only fixed-code,
 typed fields leave the service: `log-shipper/sanitize.vrl` keeps allow-listed keys with strict value shapes, registered fixed messages and
-error classes, and drops everything else (counted per minute as `logship_gate_summary_total`, content-free); `log-shipper/fields.json` is the
-field schema and `log-shipper/diagnostics.json` the registered message list. Per component and event code at most 30 lines per minute are shipped;
+error classes, and drops everything else (counted per 60-second window as `logship_gate_summary_total`, content-free); `log-shipper/fields.json` is the
+field schema and `log-shipper/diagnostics.json` the registered message list. Per component and event code at most 30 lines per 60-second window are shipped;
 the overflow is reported as one `log_dropped` count.
 
 | Name | Where | Notes |
@@ -314,8 +314,8 @@ the overflow is reported as one `log_dropped` count.
 | `BETTERSTACK_SOURCE_TOKEN`, `BETTERSTACK_INGEST_HOST` | sealed CVM env | Read only by the `vector` service. The token is written to a `0600` file and unset before Vector starts; the host must be a `*.betterstackdata.com` hostname or shipping stays off. |
 
 **Volume limits (hard caps; the shipper drops logs, it never pays or overflows).** The log service's free tier is shared by every source, so the backend is bounded three ways, all in front of the sinks:
-- per component, event code, op and result: at most 30 lines a minute; the overflow is reported as `log_dropped` lines, at most 10 a minute (the keys with the most drops);
-- the whole stream: at most `BETTERSTACK_MAX_LINES_PER_MINUTE` (default 120) lines a minute pass; the overflow, plus the drops of every key that did not get its own `log_dropped` line, is ONE `log_stream_dropped` line a minute carrying only a count. So a sink sees at most 120 + 10 + 1 lines a minute, plus at most 7 gate-summary lines: 138 at the default;
+- per component, event code, op and result: at most 30 lines per 60-second window; the overflow is reported as `log_dropped` lines, at most 10 per window (the keys with the most drops);
+- the whole stream: at most `BETTERSTACK_MAX_LINES_PER_MINUTE` (default 120) lines per 60-second window pass; the overflow, plus the drops of every key that did not get its own `log_dropped` line, is ONE `log_stream_dropped` line per window carrying only a count. So a sink sees at most 120 + 10 + 1 lines per 60-second window, plus at most 8 gate-summary lines (one per gate reason): 139 at the default. The window is a fixed 60 seconds (it starts at the first line), not a rolling minute, so a rolling minute that spans a window boundary can carry more;
 - a daily byte budget, `BETTERSTACK_DAILY_BYTE_BUDGET` (default 20 MB/day of estimated JSON bytes sent): **at the daily budget the shipper drops logs until 00:00Z; it never exceeds it.** It stops sending to the log service for the rest of the UTC day, writes ONE fixed `daily_budget_reached` line to the local copy only, and nothing more; the local copy continues. Nothing raises the budget automatically, and it resets at 00:00Z.
 
 The counter is kept in memory, so a sidecar restart can re-spend it: three restarts in a day still stay under about 60 MB/day. Sizing: the free tier is 3 GB retained with 3-day retention (unconfirmed), about 1 GB/day for all sources together; 20 MB/day is about 60 MB retained, about 2% of the tier, against a measured node volume of about 0.06 GB/day (an estimate). Raising the budget up to the 200 MB/day ceiling (about 20% of the tier) needs only the repo variable. The default numbers live in `log-shipper/limits.mjs`, and only there.

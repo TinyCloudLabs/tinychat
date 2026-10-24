@@ -186,7 +186,7 @@ services:
   #     secret BETTERSTACK_SOURCE_TOKEN) and a valid BETTERSTACK_INGEST_HOST (repo variable
   #     TINYCHAT_BETTERSTACK_INGEST_HOST) are both present; otherwise the sidecar runs local-only and prints one fixed line.
   #   Volume limits (both optional; a bad value keeps the default): BETTERSTACK_MAX_LINES_PER_MINUTE caps the whole
-  #     backend stream per minute; BETTERSTACK_DAILY_BYTE_BUDGET is a HARD daily cap on bytes sent to the log service:
+  #     backend stream per 60-second window; BETTERSTACK_DAILY_BYTE_BUDGET is a HARD daily cap on bytes sent to the log service:
   #     at the budget the shipper stops sending until 00:00Z (the local copy continues) and never exceeds it.
   # Never `exit` here with the restart policy below, and never a dependency of the backend.
   vector:

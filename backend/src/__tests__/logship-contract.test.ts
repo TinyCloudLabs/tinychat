@@ -4,7 +4,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { join, resolve } from "node:path";
 import { load as loadYaml } from "js-yaml";
 import * as build from "../../../log-shipper/build.mjs";
-import { MAX_DAILY_BYTE_BUDGET, MAX_DROPPED_LINES, estimateBytes, lineCeiling } from "../../../log-shipper/limits.mjs";
+import { GATE_SUMMARY_LINES, MAX_DAILY_BYTE_BUDGET, MAX_DROPPED_LINES, estimateBytes, lineCeiling } from "../../../log-shipper/limits.mjs";
 import { reviewedCallSites, scanCallSites } from "../../../log-shipper/scan.mjs";
 
 // TC-1978. Never touch a real home: HOME and the tool homes point at a throwaway directory for the whole file.
@@ -335,9 +335,13 @@ describe("volume limits (TC-1978)", () => {
     expect(deployStep.run).toContain(`-gt ${MAX_DAILY_BYTE_BUDGET}`);
   });
 
-  test("the whole-stream cap is a true ceiling: at most max_lines + 10 per-key lines + 1 stream line (+ 7 gate summaries) per window", () => {
+  test("the whole-stream cap is a true ceiling: at most max_lines + 10 per-key lines + 1 stream line (+ 8 gate summaries) per 60-second window", () => {
     expect(MAX_DROPPED_LINES).toBe(10);
-    expect(lineCeiling(defaults.lines)).toBe(defaults.lines + 10 + 1 + 7);
+    // One gate summary per gate reason per window: the constant must follow the schema.
+    expect(GATE_SUMMARY_LINES).toBe(schema.fields.gate_reason.values.length);
+    expect(GATE_SUMMARY_LINES).toBe(8);
+    expect(lineCeiling(defaults.lines)).toBe(defaults.lines + 10 + 1 + 8);
+    expect(lineCeiling(defaults.lines)).toBe(139);
     const cap = JSON.stringify(build.buildParts().base);
     expect(cap).toContain(`local max_drop_lines = ${MAX_DROPPED_LINES}`);
   });
