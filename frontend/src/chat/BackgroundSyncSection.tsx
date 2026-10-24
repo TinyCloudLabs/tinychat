@@ -17,18 +17,10 @@
 // to storage, never logged, never sent anywhere, and `GET /config` cannot
 // bring them back — losing them means rotating, which the copy says.
 //
-// CONSENT VARIANTS (residual F011). The off state selects Fireflies Option C
-// or B-ingest from the cohort probe, then selects its transcript-writer disclosure
-// from the shared delegation status. Inactive keeps the pinned original bytes;
-// unknown shows the disclosure. The renderer owns only `**bold**`/`*em*` markers.
-// Only an affirmative "ok" (`consentVariantForProbe`) selects B-ingest. Every other answer — the 404
-// that means "not in the cohort", an auth or transport failure, a thrown
-// programmer error, no `meetings` client at all — fails closed to Option C: a
-// non-cohort user must never read the cohort's custody terms, and an error
-// must never hide consent entirely. Under B-ingest the enable action is gated
-// behind a real attestation checkbox — the user is acknowledging actual
-// custody (the token, the 90-day copy), so the button stays inert until the
-// box is checked.
+// CONSENT. The off state shows Fireflies Option C's pinned copy, then selects
+// its transcript-writer disclosure from the shared delegation status. Inactive
+// keeps the pinned original bytes; unknown shows the disclosure. The renderer
+// owns only `**bold**`/`*em*` markers.
 
 import type { FC } from "react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
@@ -38,14 +30,12 @@ import { Button } from "@/components/ui/button";
 import { InfoTip } from "@/components/ui/info-tip";
 import { StatusDot, type StatusTone } from "@/components/ui/status-dot";
 import {
-  BACKEND_INGEST_CONSENT_COPY,
   BACKGROUND_SYNC_CONSENT_COPY,
   transcriptAwareConsentCopy,
   type BackgroundSyncConsentCopy,
 } from "@/lib/connectors/consentCopy";
 import type { TranscriptConsentState } from "@/lib/transcriptDeliveryState";
 import type { ConnectorWebhooksClient } from "@/lib/connectors/webhooksApi";
-import type { ConnectorMeetingsClient } from "@/lib/connectors/meetingsApi";
 import type { ConnectorDescriptor } from "@/lib/connectors/types";
 import {
   HISTORICAL_RESYNC_CONFIRM_COPY,
@@ -70,11 +60,7 @@ const STATUS_TONE: Readonly<Record<BackgroundSyncStatus["tone"], StatusTone>> = 
   off: "neutral",
   muted: "neutral",
 };
-import {
-  consentVariantForProbe,
-  useBackgroundSync,
-  type OffStateConsentVariant,
-} from "./useBackgroundSync";
+import { useBackgroundSync } from "./useBackgroundSync";
 
 // ── Container ────────────────────────────────────────────────────────
 
@@ -83,13 +69,6 @@ export interface BackgroundSyncSectionProps {
   descriptor: ConnectorDescriptor;
   /** FE0's typed client, built once by the card from backendUrl + sessionStore. */
   webhooks: ConnectorWebhooksClient;
-  /**
-   * F011: the cohort-gated READ client, built by the card from the same two
-   * props. Optional ON PURPOSE — an absent client is just one more
-   * non-affirmative answer, so the off state fails closed to Option C instead
-   * of failing open to the cohort text.
-   */
-  meetings?: ConnectorMeetingsClient;
   /** Fired after a processing run wrote meetings, so the row's count refreshes. */
   onIngested?: () => void;
   /**
@@ -101,8 +80,6 @@ export interface BackgroundSyncSectionProps {
   onFeatureDark?: (dark: boolean) => void;
 }
 
-export { consentVariantForProbe, type OffStateConsentVariant };
-
 export function BackgroundSyncSection(props: BackgroundSyncSectionProps) {
   const sync = useBackgroundSync(props);
   const { state, deps, emit } = sync;
@@ -110,10 +87,7 @@ export function BackgroundSyncSection(props: BackgroundSyncSectionProps) {
     <BackgroundSyncView
       state={state}
       connectorName={props.descriptor.name}
-      consentVariant={sync.consentVariant}
       transcriptConsent={sync.transcriptConsent}
-      ingestConsentChecked={sync.ingestConsentChecked}
-      onIngestConsentChange={sync.setIngestConsentChecked}
       onEnable={() => void enableBackgroundSync(deps, emit)}
       onRotate={() => void rotateCredentials(deps, emit)}
       onDisable={() => void disableBackgroundSync(deps, emit)}
@@ -141,16 +115,8 @@ function copyToClipboard(value: string): void {
 export interface BackgroundSyncViewProps {
   state: BackgroundSyncState;
   connectorName: string;
-  /**
-   * F011's cohort choice. C is the default; only an affirmative probe passes
-   * B-ingest. The independent transcript status defaults to the disclosure.
-   */
-  consentVariant?: OffStateConsentVariant;
   /** Unknown status shows the transcript-writer disclosure, not an untrue denial. */
   transcriptConsent?: TranscriptConsentState;
-  /** The B-ingest attestation's checked state. Unrendered (and inert) under C. */
-  ingestConsentChecked?: boolean;
-  onIngestConsentChange?: (checked: boolean) => void;
   onEnable: () => void;
   onRotate: () => void;
   onDisable: () => void;
@@ -168,10 +134,7 @@ export interface BackgroundSyncViewProps {
 export function BackgroundSyncView({
   state,
   connectorName,
-  consentVariant = "C",
   transcriptConsent = "unknown",
-  ingestConsentChecked = false,
-  onIngestConsentChange,
   onEnable,
   onRotate,
   onDisable,
@@ -190,10 +153,7 @@ export function BackgroundSyncView({
   const status = backgroundSyncStatus(state);
   const notices = queueNotices(state);
   const busy = state.busy;
-  const consentCopy = transcriptAwareConsentCopy(
-    consentVariant === "B-ingest" ? BACKEND_INGEST_CONSENT_COPY : BACKGROUND_SYNC_CONSENT_COPY,
-    transcriptConsent,
-  );
+  const consentCopy = transcriptAwareConsentCopy(BACKGROUND_SYNC_CONSENT_COPY, transcriptConsent);
 
   return (
     <div className="mt-2 flex flex-col gap-2 rounded-md border border-border bg-muted/20 p-3">
@@ -253,57 +213,13 @@ export function BackgroundSyncView({
         </div>
       )}
 
-      {/* Without an affirmative cohort verdict, select Option C. Its inactive
-          rendering preserves the original copy byte for byte. */}
-      {state.phase === "off" && consentVariant !== "B-ingest" && (
+      {/* Option C's pinned copy; its inactive rendering preserves the original
+          copy byte for byte. */}
+      {state.phase === "off" && (
         <>
           <ConsentCopyBlock copy={consentCopy} />
           <div>
             <Button size="sm" onClick={onEnable} disabled={busy !== null} className="gap-1.5">
-              {busy === "enabling" && (
-                <Loader2Icon className="size-3.5 animate-spin" aria-hidden />
-              )}
-              <span>Turn on background notifications</span>
-            </Button>
-          </div>
-        </>
-      )}
-
-      {/* The cohort off state (F011). Same shape as C — pinned copy, then the
-          enable action — plus the two fields only B-ingest carries, rendered
-          verbatim like everything else from consentCopy.ts. */}
-      {state.phase === "off" && consentVariant === "B-ingest" && (
-        <>
-          <ConsentCopyBlock copy={consentCopy} />
-          {/* The disconnect note sits BELOW the bullets — the last bullet
-              points forward at it — as its own paragraph, markers resolved by
-              the same Emphasized the bullets use. */}
-          {consentCopy.disconnectNote && (
-            <p className="text-xs text-muted-foreground">
-              <Emphasized text={consentCopy.disconnectNote} />
-            </p>
-          )}
-          {/* A real, controlled checkbox, not decoration: under B-ingest the
-              user is attesting to actual custody (the token, the 90-day
-              copy), so the enable action below is inert until it is checked.
-              The pinned sentence is the label text, verbatim, which also
-              makes it the control's accessible name. */}
-          <label className="flex cursor-pointer items-start gap-2 text-xs text-muted-foreground">
-            <input
-              type="checkbox"
-              className="mt-0.5 size-4 shrink-0 cursor-pointer accent-primary"
-              checked={ingestConsentChecked}
-              onChange={(event) => onIngestConsentChange?.(event.target.checked)}
-            />
-            <span>{consentCopy.consentCheckbox}</span>
-          </label>
-          <div>
-            <Button
-              size="sm"
-              onClick={onEnable}
-              disabled={busy !== null || !ingestConsentChecked}
-              className="gap-1.5"
-            >
               {busy === "enabling" && (
                 <Loader2Icon className="size-3.5 animate-spin" aria-hidden />
               )}
@@ -569,8 +485,7 @@ const LastRunLine: FC<{ state: BackgroundSyncState }> = ({ state }) => {
 };
 
 /**
- * A pinned consent copy, rendered verbatim — Option C for everyone, B-ingest
- * only when the off state selected it on an affirmed cohort probe.
+ * A pinned consent copy, rendered verbatim.
  *
  * `consentCopy.ts` is pinned claim-by-claim against the backend's real
  * delegation scope, so this renderer restates nothing and only resolves the

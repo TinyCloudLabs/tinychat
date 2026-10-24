@@ -306,14 +306,39 @@ export function driveCursorKvKey(source: string): string {
 /**
  * Full KV key for one meeting's record in the user's own space.
  *
- * Written ONLY by the backend-ingest reconcile (`backendReconcile.ts`, plan §8.1 W6), which is
- * KV-only by rule — it holds no SQL handle, so a reconciled meeting needs a key of its own to
- * live at rather than a `connector_meeting` row. Built here for the same reason
+ * No code writes it any more. It was written only by the backend-ingest reconcile, which is
+ * removed; records it already wrote stay in the user's own space and are still read (meeting
+ * chat, combined meetings) and purged. Built here for the same reason
  * {@link transcriptKvKey} is: the granted resource is the `${APP_ID}/connectors/` prefix, and a
  * key assembled by hand somewhere else is the one that 401s.
  */
 export function meetingKvKey(source: string, sourceId: string): string {
   return `${CONNECTORS_KV_PREFIX}/${source}/meeting/${sourceId}`;
+}
+
+/** The user-space record's schema version — a later reader must be able to tell. */
+export const USER_SPACE_MEETING_VERSION = 1;
+
+/**
+ * The V1 record reconciliation writes to the source-scoped meeting KV key.
+ *
+ * This deliberately describes the serialized contract exactly: transcript
+ * sentences live at their own KV key, while the optional summary remains the
+ * opaque server payload it was when reconciliation first shipped.
+ */
+export interface ReconciledMeetingKvRecordV1 {
+  v: typeof USER_SPACE_MEETING_VERSION;
+  source: string;
+  sourceId: string;
+  title: string | null;
+  startedAt: string | null;
+  hasTranscript: boolean;
+  hasSummary: boolean;
+  summary?: unknown;
+  storedAt: string;
+  updatedAt: string;
+  copiedAt: string;
+  origin: "backend-ingest";
 }
 
 export interface StoreError {

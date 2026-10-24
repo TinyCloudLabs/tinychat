@@ -14,12 +14,10 @@ import { verifyTranscriptWriterGrant } from "../delegation-verify.js";
 import { activateVerifiedDelegation } from "../portable-delegation.js";
 import { createDelegationRouter } from "../routes/delegations.js";
 import { transcriptDeliveryConfigFromEnv } from "../services/transcription-api.js";
-import { RETENTION_WINDOW_DAYS } from "../services/content-store.js";
 import { GOOGLE_AUTOJOIN_SCOPES, GOOGLE_MEET_SCOPES } from "../services/google-oauth.js";
 import { makeSignedTranscriptGrant, type SignedTranscriptGrant } from "./helpers/transcript-grant.js";
 import * as consentCopyModule from "../../../frontend/src/lib/connectors/consentCopy";
 import {
-  BACKEND_INGEST_CONSENT_COPY,
   BACKGROUND_SYNC_CONSENT_COPY,
   GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY,
   GOOGLE_MEET_CONSENT_COPY,
@@ -317,7 +315,6 @@ function matched(claims: ReadonlyArray<{ pattern: RegExp; label: string }>, text
 
 const CONNECTOR_COPIES: readonly BackgroundSyncConsentCopy[] = [
   BACKGROUND_SYNC_CONSENT_COPY,
-  BACKEND_INGEST_CONSENT_COPY,
   GOOGLE_MEET_CONSENT_COPY,
   GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY,
 ];
@@ -384,7 +381,7 @@ describe("consent copy deny-lists — every connector, every transcript-delivery
   it("scans every exported consent-copy variant and string", () => {
     const scanned = new Set(renderedVariants().map(({ copy }) => copy.variant));
     const { objects, strings } = exportedCopies();
-    expect(objects.length).toBeGreaterThanOrEqual(8);
+    expect(objects.length).toBeGreaterThanOrEqual(6);
     for (const copy of objects) expect({ variant: copy.variant, scanned: scanned.has(copy.variant) }).toEqual({ variant: copy.variant, scanned: true });
     // Every active variant is reachable from its connector, not merely exported.
     expect([...scanned].sort()).toEqual(objects.map((copy) => copy.variant).sort());
@@ -556,12 +553,11 @@ describe("copy ↔ transcript-writer policy", () => {
     expect(matched(GRANT_FALSIFIED_CLAIMS, normalize(consentCopyText(BACKGROUND_SYNC_CONSENT_COPY)))).toEqual(["never receives the meeting itself"]);
     expect(matched(GRANT_FALSIFIED_CLAIMS, normalize(consentCopyText(GOOGLE_MEET_CONSENT_COPY))))
       .toEqual(["never passes through tinychat's server", "stays unless you delete it"]);
-    expect(matched(GRANT_FALSIFIED_CLAIMS, normalize(consentCopyText(BACKEND_INGEST_CONSENT_COPY)))).toEqual(["disconnecting undoes all of it"]);
     // The overclaim pattern is live, and leaves the Notetaker's own transcripts alone.
     expect(matched(TRANSCRIPT_BODY_OVERCLAIMS, "our server can read, change or delete your google meet transcripts")).toHaveLength(1);
     expect(matched(TRANSCRIPT_BODY_OVERCLAIMS, "it can also read and save notetaker transcripts there")).toEqual([]);
     // The originals' write denials are exactly the sentences an active grant would falsify.
-    for (const base of [BACKGROUND_SYNC_CONSENT_COPY, BACKEND_INGEST_CONSENT_COPY, GOOGLE_MEET_CONSENT_COPY]) {
+    for (const base of [BACKGROUND_SYNC_CONSENT_COPY, GOOGLE_MEET_CONSENT_COPY]) {
       expect(matched(SERVER_WRITE_DENIALS, normalize(consentCopyText(base)))).toContain("nothing is granted");
     }
   });
@@ -637,42 +633,10 @@ function selectable(base: BackgroundSyncConsentCopy, surfaces: "in-app" | "both"
 
 const DELEGATION_GATE_DOC = resolve(__dirname, "../../../docs/connector-webhooks-delegation-gate.md");
 const DEPLOYMENT_DOC = resolve(__dirname, "../../../docs/deployment.md");
-const RESIDUALS_DOC = resolve(__dirname, "../../../docs/connector-webhooks-p1-residuals.md");
-/** The operator-facing mirror of the cohort copy; the fidelity test parses it field by field. */
-const COHORT_COPY_DOC = resolve(__dirname, "../../../docs/connector-webhooks-backend-ingest-consent-copy.md");
-/** The renderer of background-sync consent copy — read as SOURCE. */
-const CONSENT_RENDERER = resolve(__dirname, "../../../frontend/src/chat/BackgroundSyncSection.tsx");
-/** The approval doc's mirror of the one paragraph the transcript-writer variant replaces. */
-const TRANSCRIPT_WRITER_BULLET = "transcript-writer bullet 4";
-const TRANSCRIPT_WRITER_BULLET_INDEX = 3;
-const TRANSCRIPT_WRITER_DISCONNECT = "transcript-writer disconnectNote";
 
 function readDoc(path: string): string {
   if (!existsSync(path)) throw new Error(`Missing record: ${path}`);
   return readFileSync(path, "utf-8");
-}
-
-/**
- * Parse the approval mirror: `## <field>` followed by a single blockquote paragraph. Whitespace is
- * collapsed on both sides; every other character, `**bold**` markers included, must match.
- */
-function parseApprovedCopy(markdown: string): Record<string, string> {
-  const fields: Record<string, string> = {};
-  let current: string | null = null;
-  for (const line of markdown.split("\n")) {
-    const headed = /^## (.+?)\s*$/.exec(line);
-    if (headed) {
-      current = headed[1]!;
-      continue;
-    }
-    if (current === null) continue;
-    if (line.startsWith("> ")) fields[current] = `${fields[current] ?? ""} ${line.slice(2).trim()}`.trim();
-  }
-  return Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, value.replace(/\s+/g, " ").trim()]));
-}
-
-function collapse(text: string): string {
-  return text.replace(/\s+/g, " ").trim();
 }
 
 describe("bulk export (§3.2b)", () => {
@@ -713,7 +677,7 @@ describe("Option C consent copy (§3.8), in every delivery state", () => {
     }
   });
 
-  it("keeps Option C's custody sentences for the non-cohort user", () => {
+  it("keeps Option C's custody sentences", () => {
     // Fireflies custody is unchanged by transcript delivery: the server still never sees the
     // Fireflies key and never receives the Fireflies meeting.
     for (const { state, copy: COPY, text: COPY_TEXT } of selectable(BACKGROUND_SYNC_CONSENT_COPY)) {
@@ -750,176 +714,6 @@ describe("Option C consent copy (§3.8), in every delivery state", () => {
     }
   });
 });
-
-describe("the cohort consent copy tells the new truth (plan §11 requirements 1-4), in every delivery state", () => {
-  it("carries no 'never sees your key' / 'never receives the meeting' formulation", () => {
-    for (const { text: COHORT_TEXT } of selectable(BACKEND_INGEST_CONSENT_COPY)) {
-      expect(COHORT_TEXT).not.toContain("never sees your fireflies key");
-      expect(COHORT_TEXT).not.toContain("never receives the meeting");
-      for (const stale of [
-        /\bnever (?:sees|saw|receives|received|holds|stores) your (?:fireflies )?(?:api )?key\b/,
-        /\bthe key stays where it is today\b/,
-        /\bonly your browser reads it\b/,
-        /\bnever writes? (?:a )?meeting content\b/,
-      ]) {
-        expect({ stale: stale.source, found: stale.test(COHORT_TEXT) }).toEqual({ stale: stale.source, found: false });
-      }
-    }
-  });
-
-  it("says the server holds a Fireflies credential, and what it could do if breached", () => {
-    for (const { text: COHORT_TEXT } of selectable(BACKEND_INGEST_CONSENT_COPY)) {
-      expect(COHORT_TEXT).toContain("fireflies credential");
-      expect(COHORT_TEXT).toContain("oauth token");
-      expect(COHORT_TEXT).toMatch(/no read-only permission/);
-      expect(COHORT_TEXT).toMatch(/\bdelete them\b/);
-      expect(COHORT_TEXT).toMatch(/\breshare\b/);
-      expect(COHORT_TEXT).toMatch(/if our server is breached/);
-      expect(COHORT_TEXT).toMatch(/revoked? or expires/);
-      expect(COHORT_TEXT).toContain("revoke");
-    }
-  });
-
-  it("says the meeting is stored server-side, encrypted, for the D2a window, and deleted", () => {
-    expect(RETENTION_WINDOW_DAYS).toBe(90);
-    for (const { text: COHORT_TEXT } of selectable(BACKEND_INGEST_CONSENT_COPY)) {
-      expect(COHORT_TEXT).toContain("keeps its own copy");
-      expect(COHORT_TEXT).toContain("encrypted at rest");
-      expect(COHORT_TEXT).toContain(`${RETENTION_WINDOW_DAYS} days`);
-      expect(COHORT_TEXT).toMatch(/disconnecting[^.]*deletes the stored meetings/);
-      expect(COHORT_TEXT).toContain("purge");
-    }
-  });
-
-  it("promises only the meetings the user owns", () => {
-    for (const { text: COHORT_TEXT } of selectable(BACKEND_INGEST_CONSENT_COPY)) {
-      expect(COHORT_TEXT).toMatch(/the meetings you own/);
-      expect(COHORT_TEXT).toMatch(/owned by someone else[^.]*is not sent to us/);
-      for (const overclaim of [
-        /every meeting (?:in|on|from) your (?:team|workspace|organi[sz]ation)/,
-        /all (?:your )?team meetings/,
-        /every meeting you (?:attend|are invited to)/,
-        /everyone'?s meetings/,
-      ]) {
-        expect({ overclaim: overclaim.source, found: overclaim.test(COHORT_TEXT) }).toEqual({ overclaim: overclaim.source, found: false });
-      }
-    }
-  });
-
-  it("keeps the credential outside the user's space in both texts", () => {
-    for (const { text: COHORT_TEXT } of selectable(BACKEND_INGEST_CONSENT_COPY)) {
-      expect(COHORT_TEXT).toContain("no new permission");
-      expect(COHORT_TEXT).toContain("outside your space");
-    }
-  });
-
-  it("keeps the disclosures that survive the mode change", () => {
-    for (const { text: COHORT_TEXT } of selectable(BACKEND_INGEST_CONSENT_COPY)) {
-      expect(COHORT_TEXT).toContain("publicly readable");
-      expect(COHORT_TEXT).toContain("scrambled stand-ins");
-      expect(COHORT_TEXT).toContain("like a password");
-    }
-  });
-
-  it("says what happens when the upstream revoke fails, rather than promising it always works", () => {
-    for (const { text: COHORT_TEXT } of selectable(BACKEND_INGEST_CONSENT_COPY)) {
-      expect(COHORT_TEXT).toMatch(/if that upstream revoke fails we tell you so/);
-      expect(COHORT_TEXT).toMatch(/we cannot revoke upstream, we tell you so/);
-      expect(COHORT_TEXT).toMatch(/instead of pretending it worked/);
-      for (const overpromise of [
-        /disconnecting here revokes it too\b/,
-        /\brevokes the credential with fireflies\b/,
-        /\brevocation is (?:immediate|instant)/,
-      ]) {
-        expect({ overpromise: overpromise.source, found: overpromise.test(COHORT_TEXT) }).toEqual({ overpromise: overpromise.source, found: false });
-      }
-    }
-  });
-
-  it("carries the attestation checkbox, naming both disclosures", () => {
-    for (const { copy: COHORT_COPY } of selectable(BACKEND_INGEST_CONSENT_COPY)) {
-      expect(COHORT_COPY.consentCheckbox).toBeDefined();
-      expect(COHORT_COPY.disconnectNote).toBeDefined();
-      const attestation = normalize(COHORT_COPY.consentCheckbox ?? "");
-      expect(attestation).toContain("full-account fireflies token");
-      expect(attestation).toContain(`${RETENTION_WINDOW_DAYS} days`);
-    }
-  });
-
-  it("bounds the 'already there' promise to a signed-in session", () => {
-    for (const { text: COHORT_TEXT } of selectable(BACKEND_INGEST_CONSENT_COPY)) {
-      expect(COHORT_TEXT).toMatch(/signing in is still required/);
-      expect(COHORT_TEXT).toMatch(/not mean your meetings are reachable without signing in/);
-    }
-  });
-
-  /**
-   * The approval artifact and the shipped constant are ONE text. The Gate 6 approval covers the
-   * original cohort copy, which is what renders while delivery is inactive, so that is matched
-   * sentence for sentence. Sam separately approved the transcript-writer variant's two replaced
-   * paragraphs on 2026-10-15: the doc mirrors them under that explicit approval status, outside the
-   * original Gate 6-approved text, and this test holds the mirror to the shipped words and the rest
-   * of the variant to the original approved text.
-   */
-  it("matches the operator approval artifact sentence for sentence", () => {
-    const doc = readDoc(COHORT_COPY_DOC);
-    const approved = parseApprovedCopy(doc);
-    const COHORT_COPY = BACKEND_INGEST_CONSENT_COPY;
-
-    expect(approved.variant).toBe(COHORT_COPY.variant);
-    expect(approved.heading).toBe(collapse(COHORT_COPY.heading));
-    expect(approved.intro).toBe(collapse(COHORT_COPY.intro));
-    expect(approved.changesHeading).toBe(collapse(COHORT_COPY.changesHeading));
-    expect(approved.consentCheckbox).toBe(collapse(COHORT_COPY.consentCheckbox ?? ""));
-    expect(approved.disconnectNote).toBe(collapse(COHORT_COPY.disconnectNote ?? ""));
-    const approvedBullets = Object.keys(approved).filter((key) => key.startsWith("bullet "));
-    expect(approvedBullets.length).toBe(COHORT_COPY.bullets.length);
-    COHORT_COPY.bullets.forEach((bullet, index) => {
-      expect(approved[`bullet ${index + 1}`]).toBe(collapse(bullet));
-    });
-
-    // The transcript-writer variant: the approved text except the two mirrored paragraphs.
-    const active = transcriptAwareConsentCopy(COHORT_COPY, "active");
-    expect({ ...active, variant: COHORT_COPY.variant, bullets: [], disconnectNote: "" })
-      .toEqual({ ...COHORT_COPY, bullets: [], disconnectNote: "" });
-    expect(collapse(active.disconnectNote ?? "")).not.toBe(approved.disconnectNote);
-    expect(approved[TRANSCRIPT_WRITER_DISCONNECT]).toBe(collapse(active.disconnectNote ?? ""));
-    expect(normalize(active.disconnectNote ?? "")).toContain("disconnecting fireflies does not remove the separate notetaker permission");
-    expect(active.bullets.length).toBe(COHORT_COPY.bullets.length);
-    active.bullets.forEach((bullet, index) => {
-      if (index === TRANSCRIPT_WRITER_BULLET_INDEX) expect(collapse(bullet)).not.toBe(approved[`bullet ${index + 1}`]);
-      else expect(collapse(bullet)).toBe(approved[`bullet ${index + 1}`]);
-    });
-    expect(approved[TRANSCRIPT_WRITER_BULLET]).toBe(collapse(active.bullets[TRANSCRIPT_WRITER_BULLET_INDEX]!));
-    // …and the mirror records the separate approval in its own section.
-    const section = doc.slice(doc.indexOf("## Transcript-writer variant"));
-    expect(section.indexOf(`## ${TRANSCRIPT_WRITER_BULLET}`)).toBeGreaterThan(0);
-    expect(section.slice(0, section.indexOf(`## ${TRANSCRIPT_WRITER_BULLET}`))).toContain("**Status: APPROVED 2026-10-15 (Sam).**");
-    const prose = (markdown: string) => normalize(markdown.replace(/^> /gm, ""));
-    expect(prose(doc.slice(0, doc.indexOf("## Transcript-writer variant")))).not.toContain(TRANSCRIPT_WRITER_NOTICE_TEXT);
-    expect(prose(section)).toContain(TRANSCRIPT_WRITER_NOTICE_TEXT);
-  });
-
-  it("records the consent surface's wiring state honestly in both directions", () => {
-    const renderer = readDoc(CONSENT_RENDERER);
-    const deployment = readDoc(DEPLOYMENT_DOC);
-    const residuals = readDoc(RESIDUALS_DOC);
-    const wired = renderer.includes("BACKEND_INGEST_CONSENT_COPY");
-
-    if (!wired) {
-      expect(renderer).toContain("BACKGROUND_SYNC_CONSENT_COPY");
-      expect(deployment).toMatch(/NOT yet wired/);
-      expect(deployment).toMatch(/pre-rollout gate/i);
-      expect(residuals).toMatch(/F011/);
-      expect(residuals).toMatch(/BACKEND_INGEST_CONSENT_COPY/);
-    } else {
-      expect(deployment).not.toMatch(/NOT yet wired/);
-    }
-  });
-});
-
-/** The transcript-writer notice as the frontend renders it (normalized). */
-const TRANSCRIPT_WRITER_NOTICE_TEXT = "our server can read, add, change or delete those records";
 
 describe("the Calendar autojoin consent copy, claim by claim against the scopes it requests", () => {
   it("requests Calendar events, openid and email only", () => {
@@ -1036,13 +830,13 @@ describe("the Google Meet consent copy (connector plan §4.1/§4.3, WP-C), in ev
     }
   });
 
-  it("does not disturb the two background-sync texts", () => {
+  it("does not disturb the background-sync text", () => {
     // The shared transcript-writer notice names both connectors on purpose; nothing else may.
     const notice = "every connector's meetings, fireflies and google included";
     for (const { text: GOOGLE_TEXT } of selectable(GOOGLE_MEET_CONSENT_COPY, "both")) {
       expect(GOOGLE_TEXT.replace(notice, "")).not.toContain("fireflies");
     }
-    for (const base of [BACKGROUND_SYNC_CONSENT_COPY, BACKEND_INGEST_CONSENT_COPY]) {
+    for (const base of [BACKGROUND_SYNC_CONSENT_COPY]) {
       for (const { text } of selectable(base)) expect(text.replace(notice, "")).not.toContain("google");
     }
   });
@@ -1086,17 +880,11 @@ describe("the Option-C truth pass — the records describe the selected product"
     expect(doc).toMatch(/flipping the flag is an operator action/i);
   });
 
-  it("describes BOTH server roles in the deploy doc, each scoped to who gets it", () => {
+  it("describes the server role in the deploy doc", () => {
     const doc = readDoc(DEPLOYMENT_DOC);
     expect(doc).toContain("Option C");
     expect(doc).toContain("/api/connectors/webhooks/ack");
-    expect(doc).toMatch(/(?:outside the cohort|non-cohort)[\s\S]{0,400}never receives .{0,40}Fireflies (?:API )?key/i);
-    expect(doc).toMatch(/holds a per-user Fireflies OAuth credential/i);
-    expect(doc).toMatch(/full-account/i);
-    expect(doc).toMatch(/keeps its own copy/i);
-    expect(doc).toMatch(/encrypted under\s+`CONNECTOR_CONTENT_MASTER`/);
-    expect(doc).toMatch(new RegExp(`\\*\\*${RETENTION_WINDOW_DAYS} days\\*\\*`));
-    expect(doc).toMatch(/deletes the stored\s+meetings and the credential/i);
+    expect(doc).toMatch(/never receives .{0,40}Fireflies (?:API )?key/i);
     expect(doc).toMatch(/no connector delegation/i);
   });
 });

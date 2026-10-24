@@ -26,8 +26,6 @@ function candidate(patch: Partial<MeetingCandidate> = {}): MeetingCandidate {
     hasSqlSummary: false,
     hasLocalRecord: false,
     hasLocalTranscript: false,
-    hasServerSummary: false,
-    hasServerTranscript: false,
     localRowId: null,
     createdAt: "2026-02-28T11:00:00.000Z",
     updatedAt: "2026-02-28T11:00:00.000Z",
@@ -40,7 +38,6 @@ function corpus(candidates: readonly MeetingCandidate[], partial = false): Meeti
     candidates,
     lanes: {
       sql: partial ? { state: "failed", reason: "storage" } : { state: "healthy" },
-      server: { state: "unused", reason: "missing-table" },
       kv: { state: "healthy" },
     },
     partial,
@@ -380,9 +377,14 @@ describe("browser meeting turn retriever", () => {
           db: () => ({
             query: (query: string) => serial(
               "sql",
-              query.includes("FROM connector_meeting")
-                ? { ok: false, error: { message: "no such table: connector_meeting" } }
-                : { ok: true, data: { rows: [] } },
+              query === SQL_MEETING_SUMMARY_QUERY
+                ? { ok: true, data: { rows: [["Private meeting canary", null]] } }
+                : query.includes("FROM connector_meeting")
+                  ? { ok: true, data: { rows: [[
+                    "row-1", "fireflies", "meeting-1", "Planning", "2026-02-28T10:00:00.000Z",
+                    null, "[]", 1, "2026-02-28T11:00:00.000Z", "2026-02-28T11:00:00.000Z",
+                  ]] } }
+                  : { ok: true, data: { rows: [] } },
             ),
           }),
         },
@@ -390,42 +392,6 @@ describe("browser meeting turn retriever", () => {
           list: ({ path }: { path: string }) => serial(`list:${path}`, { ok: true, data: { keys: [] } }),
           get: () => serial("get", { ok: false, error: { code: "KV_NOT_FOUND" } }),
         },
-      },
-      meetings: {
-        list: () => serial("list:server", {
-          status: "ok" as const,
-          value: {
-            source: "fireflies",
-            meetings: [{
-              sourceId: "meeting-1",
-              title: "Planning",
-              ts: "2026-02-28T10:00:00.000Z",
-              storedAt: "2026-02-28T11:00:00.000Z",
-              updatedAt: "2026-02-28T11:00:00.000Z",
-              hasSummary: true,
-              hasTranscript: false,
-              sizeBytes: 1,
-            }],
-            nextCursor: null,
-            hasMore: false,
-          },
-        }),
-        read: () => serial("read:server", {
-          status: "ok" as const,
-          value: {
-            source: "fireflies",
-            sourceId: "meeting-1",
-            meta: {
-              sourceId: "meeting-1",
-              storedAt: "2026-02-28T11:00:00.000Z",
-              updatedAt: "2026-02-28T11:00:00.000Z",
-              hasSummary: true,
-              hasTranscript: false,
-              sizeBytes: 1,
-            },
-            content: { summary: { overview: "Private meeting canary" } },
-          },
-        }),
       },
     } as never);
 
@@ -448,10 +414,9 @@ describe("browser meeting turn retriever", () => {
     expect(calls).toEqual([
       "sql",
       "sql", // per-session transcript table format detection
-      "list:server",
       "list:xyz.tinycloud.tinychat/connectors/fireflies/meeting/",
       "list:xyz.tinycloud.tinychat/connectors/fireflies/transcript/",
-      "read:server",
+      "sql", // the selected meeting's summary read
     ]);
     expect(maximumActive).toBe(1);
     // The retriever exposes only a transient outcome; it has no persisted
@@ -465,7 +430,6 @@ type StoredRead = { ok: true; data: { data: unknown } } | { ok: false; error: { 
 function evidenceHarness(options: {
   sql?: () => Promise<{ ok: boolean; data?: { rows?: unknown } }>;
   kv?: (key: string) => Promise<StoredRead>;
-  server?: () => Promise<unknown>;
 } = {}) {
   const calls: string[] = [];
   let active = 0;
@@ -494,21 +458,6 @@ function evidenceHarness(options: {
           get: (key: string) => enter(`kv:${key}`, options.kv ?? (async () => ({ ok: false, error: { code: "KV_NOT_FOUND" } }))),
         },
       },
-      meetings: {
-        read: () => enter("server", options.server ?? (async () => ({ status: "not-found" }))),
-      },
-    },
-  };
-}
-
-function serverContent(content: Record<string, unknown>, sourceId = "meeting-1") {
-  return {
-    status: "ok" as const,
-    value: {
-      source: "fireflies",
-      sourceId,
-      meta: { sourceId },
-      content,
     },
   };
 }
@@ -523,7 +472,6 @@ describe("readMeetingEvidence", () => {
       localRowId: "local-1",
       hasLocalRecord: true,
       hasLocalTranscript: true,
-      hasServerSummary: true,
     });
 
     const outcome = await readMeetingEvidence(selected, h.options as never);
@@ -604,7 +552,7 @@ describe("readMeetingEvidence", () => {
       }),
     });
 
-    expect(await readMeetingEvidence(candidate({ hasLocalRecord: true, hasServerSummary: true }), h.options as never)).toEqual({
+    expect(await readMeetingEvidence(candidate({ hasLocalRecord: true }), h.options as never)).toEqual({
       status: "evidence",
       evidence: expect.objectContaining({
         summary: "Overview:\nLocal reconcile summary\n\nAction items:\nConfirm launch.",
@@ -629,35 +577,7 @@ describe("readMeetingEvidence", () => {
     expect(brokenOutcome).toEqual({ status: "storage-error", partial: true });
   });
 
-  test("retains an honest partial marker when a malformed local record falls back to server evidence", async () => {
-    const h = evidenceHarness({
-      kv: async () => ({ ok: true, data: { data: "{not json" } }),
-      server: async () => serverContent({ summary: "Server fallback summary" }),
-    });
-
-    expect(await readMeetingEvidence(candidate({ hasLocalRecord: true, hasServerSummary: true }), h.options as never)).toEqual({
-      status: "evidence",
-      evidence: expect.objectContaining({
-        summary: "Server fallback summary",
-        summaryLocator: { kind: "server-meeting", source: "fireflies", sourceId: "meeting-1" },
-        partial: true,
-        reads: 2,
-      }),
-    });
-    expect(h.calls).toEqual([
-      expect.stringContaining("/meeting/meeting-1"),
-      "server",
-    ]);
-  });
-
-  test("continues after an unreadable transcript and returns deterministic no-content when none is readable", async () => {
-    const fallback = evidenceHarness({
-      kv: async () => ({ ok: true, data: { data: "[]" } }),
-      server: async () => serverContent({ transcript: { sentences: [{ text: "Server sentence" }] } }),
-    });
-    expect(await readMeetingEvidence(candidate({ hasLocalTranscript: true, hasServerTranscript: true }), fallback.options as never)).toEqual(
-      expect.objectContaining({ status: "evidence", evidence: expect.objectContaining({ reads: 2, partial: false }) }),
-    );
+  test("returns deterministic no-content when no transcript is readable", async () => {
     const empty = evidenceHarness({ kv: async () => ({ ok: true, data: { data: "[]" } }) });
     expect(await readMeetingEvidence(candidate({ hasLocalTranscript: true }), empty.options as never)).toEqual({
       status: "no-content", partial: false, summaryAvailable: false,
@@ -675,70 +595,39 @@ describe("readMeetingEvidence", () => {
     });
   });
 
-  test("marks an advertised missing server field partial without calling it transport failure", async () => {
-    const h = evidenceHarness({ server: async () => serverContent({}) });
-    expect(await readMeetingEvidence(candidate({ hasServerSummary: true }), h.options as never)).toEqual({
-      status: "no-content", partial: true, summaryAvailable: false,
-    });
-  });
-
-  test("reserves transcript reads after a SQL summary and reaches the server transcript fallback", async () => {
+  test("reserves transcript reads after a SQL summary and reads the transcript", async () => {
     const h = evidenceHarness({
       sql: async () => ({ ok: true, data: { rows: [["Readable SQL summary", null]] } }),
-      kv: async () => ({ ok: true, data: { data: "[]" } }),
-      server: async () => serverContent({ transcript: { sentences: [{ text: "Server transcript evidence" }] } }),
+      kv: async () => ({ ok: true, data: { data: JSON.stringify([{ speaker_name: "Avery", text: "Transcript evidence" }]) } }),
     });
     const selected = candidate({
       hasSqlSummary: true,
       localRowId: "local-1",
       hasLocalRecord: true,
       hasLocalTranscript: true,
-      hasServerTranscript: true,
     });
 
     expect(await readMeetingEvidence(selected, { ...(h.options as never), requireTranscript: true })).toEqual(
       expect.objectContaining({
         status: "evidence",
-        evidence: expect.objectContaining({ summary: "Overview:\nReadable SQL summary", reads: 3 }),
+        evidence: expect.objectContaining({ summary: "Overview:\nReadable SQL summary", reads: 2 }),
       }),
     );
     expect(h.calls).toEqual([
       `sql:${SQL_MEETING_SUMMARY_QUERY}`,
       expect.stringContaining("/transcript/meeting-1"),
-      "server",
     ]);
   });
 
-  test("reports abort without starting a read and preserves server failures as storage errors", async () => {
+  test("reports abort without starting a read", async () => {
     const controller = new AbortController();
     controller.abort();
     const aborted = evidenceHarness();
-    expect(await readMeetingEvidence(candidate({ hasServerSummary: true }), {
+    expect(await readMeetingEvidence(candidate({ hasLocalRecord: true }), {
       ...(aborted.options as never),
       signal: controller.signal,
     })).toEqual({ status: "aborted" });
     expect(aborted.calls).toEqual([]);
-
-    const unavailableServer = evidenceHarness({ server: async () => ({ status: "offline", httpStatus: null }) });
-    expect(await readMeetingEvidence(candidate({ hasServerSummary: true }), unavailableServer.options as never)).toEqual({
-      status: "storage-error",
-      partial: true,
-    });
-  });
-
-  test("rejects malformed or wrong-meeting server evidence without accepting its content", async () => {
-    for (const reply of [
-      { status: "ok", value: { source: "fireflies", sourceId: "other", meta: { sourceId: "other" }, content: { summary: "wrong meeting" } } },
-      { status: "ok", value: { source: "fireflies", sourceId: "meeting-1", meta: {}, content: { summary: "missing identity" } } },
-      { status: "ok", value: { source: "fireflies", sourceId: "meeting-1", meta: { sourceId: "meeting-1" }, content: [] } },
-    ]) {
-      const h = evidenceHarness({ server: async () => reply });
-      expect(await readMeetingEvidence(candidate({ hasServerSummary: true }), h.options as never)).toEqual({
-        status: "no-content",
-        partial: true,
-        summaryAvailable: false,
-      });
-    }
   });
 
   test("returns aborted immediately after resolved SQL or KV failures and starts no later read", async () => {
@@ -757,7 +646,7 @@ describe("readMeetingEvidence", () => {
       kvAbort.abort();
       return { ok: false, error: { code: "AUTH_UNAUTHORIZED" } };
     } });
-    expect(await readMeetingEvidence(candidate({ hasLocalRecord: true, hasServerSummary: true }), {
+    expect(await readMeetingEvidence(candidate({ hasLocalRecord: true }), {
       ...(kv.options as never), signal: kvAbort.signal,
     })).toEqual({ status: "aborted" });
     expect(kv.calls).toHaveLength(1);
@@ -767,14 +656,12 @@ describe("readMeetingEvidence", () => {
     const h = evidenceHarness({
       sql: async () => ({ ok: true, data: { rows: [[null, null]] } }),
       kv: async () => ({ ok: false, error: { code: "KV_NOT_FOUND" } }),
-      server: async () => serverContent({ summary: "would be fourth read" }),
     });
     const selected = candidate({
       hasSqlSummary: true,
       localRowId: "local-1",
       hasLocalRecord: true,
       hasLocalTranscript: true,
-      hasServerSummary: true,
     });
 
     expect(await readMeetingEvidence(selected, h.options as never)).toEqual({ status: "no-content", partial: true, summaryAvailable: false });
@@ -784,28 +671,5 @@ describe("readMeetingEvidence", () => {
       expect.stringContaining("/transcript/meeting-1"),
     ]);
     expect(h.maximumActive).toBe(1);
-  });
-
-  test("marks a known server locator partial when three successful empty reads exhaust the cap", async () => {
-    let kvReads = 0;
-    const h = evidenceHarness({
-      sql: async () => ({ ok: true, data: { rows: [[null, null]] } }),
-      kv: async () => {
-        kvReads += 1;
-        return kvReads === 1
-          ? { ok: true, data: { data: JSON.stringify({ v: 1, source: "fireflies", sourceId: "meeting-1", hasSummary: false, hasTranscript: false }) } }
-          : { ok: true, data: { data: "[]" } };
-      },
-      server: async () => serverContent({ summary: "must remain unread" }),
-    });
-    const outcome = await readMeetingEvidence(candidate({
-      hasSqlSummary: true,
-      localRowId: "local-1",
-      hasLocalRecord: true,
-      hasLocalTranscript: true,
-      hasServerSummary: true,
-    }), h.options as never);
-    expect(outcome).toEqual(expect.objectContaining({ status: "no-content", partial: true }));
-    expect(h.calls).not.toContain("server");
   });
 });

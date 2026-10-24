@@ -19,12 +19,6 @@
  * not to the backend's whole policy. TC-641's independent transcript-writer
  * grant is disclosed when its status is active or cannot be determined.
  *
- * INGEST-CUTOVER(plan §11): this file now carries a SECOND text,
- * `BACKEND_INGEST_CONSENT_COPY`, for the backend-ingest dark cohort. Option C below is unchanged
- * — it is still what a non-cohort user reads, and plan §5.3 requires that path to stay
- * byte-identical. The cohort text is not a softening of C; it is C's two custody sentences
- * replaced by what is actually true once the server holds the credential and the meeting.
- *
  * GMEET(connector plan §4.1/§4.3, WP-C): `GOOGLE_MEET_CONSENT_COPY` is for the
  * Google Meet OAuth connect dialog, not the Fireflies background-sync path.
  * It renders through the same interface, so the text lives here instead of JSX.
@@ -33,8 +27,8 @@
 import type { TranscriptConsentState } from "../transcriptDeliveryState";
 
 export type ConsentCopyVariant =
-  | "A" | "B" | "C" | "B-ingest" | "google-oauth" | "google-calendar-autojoin"
-  | "C-transcript-writer" | "B-ingest-transcript-writer"
+  | "A" | "B" | "C" | "google-oauth" | "google-calendar-autojoin"
+  | "C-transcript-writer"
   | "google-oauth-transcript-writer" | "google-calendar-autojoin-transcript-writer";
 
 export interface BackgroundSyncConsentCopy {
@@ -45,19 +39,12 @@ export interface BackgroundSyncConsentCopy {
   readonly changesHeading: string;
   readonly bullets: readonly string[];
   /**
-   * INGEST-CUTOVER(plan §11): the attestation sentence is present only for
-   * the Fireflies backend-ingest cohort. Option C has no Fireflies grant or
-   * server-held Fireflies credential; the cohort acknowledges both its
-   * credential custody and the 90-day content copy.
+   * The attestation sentence, present only for a copy whose enable action needs the
+   * user's explicit acknowledgement of server-side custody (Calendar autojoin). Option C
+   * has no Fireflies grant or server-held Fireflies credential.
    */
   readonly consentCheckbox?: string;
-  /**
-   * INGEST-CUTOVER(plan §11): what disconnect actually does, cohort variant only — including the
-   * one part a user would be misled by if it were smoothed. `services/connector-teardown.ts`
-   * deletes the credential row unconditionally but carries a FAILED upstream revoke out as a
-   * value (`upstreamRevoked: false` + `reason`), so the provider-side grant may still be live.
-   * The copy says that rather than promising a revoke we cannot guarantee.
-   */
+  /** What disconnect actually does, for a copy that describes custody the server holds. */
   readonly disconnectNote?: string;
 }
 
@@ -99,110 +86,9 @@ export const BACKGROUND_SYNC_CONSENT_COPY: BackgroundSyncConsentCopy = {
 };
 
 /**
- * INGEST-CUTOVER(plan §11) — the COHORT copy, for addresses enrolled in the backend-ingest dark
- * cohort (`CONNECTOR_BACKEND_INGEST_ENABLED` + the per-address allowlist).
- *
- * This is the honest half of a deliberate reversal. Option C above is untouched and stays the
- * shipped text for every non-cohort user, byte for byte. For a cohort user two of Option C's
- * sentences are simply no longer true — the server DOES hold a Fireflies credential and it DOES
- * receive the meeting — so those formulations are absent here rather than softened (plan §11
- * requirement 4). What replaces them is stated plainly:
- *
- *  1. the server holds a Fireflies credential (DECISIONS `V-a-branch: b1` — OAuth, revocable and
- *     expiring), and, because Fireflies publishes no data scopes, what that credential could do
- *     if it were stolen (plan §11 requirement 1; the operator's signed blast-radius acceptance);
- *  2. meeting content is stored server-side, encrypted, for the D2a retention window
- *     (`RETENTION_WINDOW_DAYS = 90`, `backend/src/services/content-store.ts`), and deleted on
- *     disconnect/purge (requirement 2);
- *  3. no confinement claim — the SQL escape recorded in `V3_VERDICT.json` remains
- *     unpatched; this variant also must not promise capture beyond meetings the
- *     user OWNS (plan §10, requirement 3).
- *
- * The Option-C "no new permission on your space" sentence concerns Fireflies ingestion:
- * that path mints no Fireflies connector delegation and holds its credential out of band.
- * TC-641 separately advertises a transcript-writer grant on `connectors` SQL
- * read/write and transcriber KV get/put. The active-grant variant below
- * discloses its distinct custody; the original text remains the inactive copy.
- *
- * **The original words below ARE the Gate 6 approval artifact.**
- * `docs/connector-webhooks-backend-ingest-consent-copy.md` mirrors the inactive
- * Fireflies wording; the transcript-writer variant changes its permission sentence.
- *
- * **RENDERED (residual F011 — CLOSED 2026-08-11, operator-approved unfreeze).** The renderer,
- * `frontend/src/chat/BackgroundSyncSection.tsx`, probes the cohort-gated
- * `GET /api/connectors/meetings` once at mount and selects this variant only on an affirmative
- * cohort answer; every other outcome — the 404 (`feature-dark`), auth, offline, retryable,
- * rejected, a thrown probe, or no meetings client at all — fails closed to Option C, so a
- * non-cohort address can never be shown this text. Under it the enable action stays inert until
- * the attestation checkbox is checked, and the disconnect note renders with it. What remains is
- * the enable-time eyes-on check in operator pre-rollout gate 4 of `docs/deployment.md` (the
- * cohort-enable checklist's smoke step): the enrolled address actually sees this rendered
- * consent before any real credential is seeded. Closure record:
- * `docs/connector-webhooks-p1-residuals.md` §F011.
- */
-export const BACKEND_INGEST_CONSENT_COPY: BackgroundSyncConsentCopy = {
-  variant: "B-ingest",
-  heading: "Background sync (server-side ingestion)",
-  intro:
-    "With this on, our server does the collecting: Fireflies tells it the moment one of your " +
-    "meetings finishes, our server fetches that meeting and holds it for you, and it is already " +
-    "there the next time you sign in — on a phone that has never held your Fireflies key and has " +
-    "never opened TinyChat before. That convenience is bought with real custody, and the rest of " +
-    "this page is what we hold and for how long.",
-  changesHeading: "What this changes",
-  bullets: [
-    "Our server holds a **Fireflies credential of yours** — an OAuth token you authorize, which " +
-      "our server keeps encrypted and uses to fetch your finished meetings. Fireflies offers no " +
-      "read-only permission: the only scopes it publishes are your name and your email, and " +
-      "access to your data rides along with the grant. So the token our server holds reaches your " +
-      "Fireflies account the way you do — it can read your meetings, and it can also delete them, " +
-      "reshare them, and change who has what role. **If our server is breached, that is what the " +
-      "attacker holds**, until the token is revoked or expires. You can revoke it in Fireflies at " +
-      "any time, and disconnecting here asks Fireflies to revoke it too — if that upstream revoke " +
-      "fails we tell you so instead of pretending it worked, and revoking it yourself in Fireflies " +
-      "is what finishes the job.",
-    "Our server **fetches the meeting itself and keeps its own copy** — title, transcript, " +
-      "summary, attendees — encrypted at rest under a key our server holds, for up to **90 days** from the " +
-      "day it arrives. After that the copy is swept, and a later re-delivery of the same meeting " +
-      "does not bring it back. Disconnecting, or asking us to purge, deletes the stored meetings " +
-      "and the credential straight away.",
-    "Fireflies notifies us about the meetings **you own**. A meeting owned by someone else on " +
-      "your Fireflies account is not sent to us and does not appear here.",
-    "Turning this on gives our server **no new permission on your space**. Background sync asks " +
-      "you to grant nothing, and nothing is granted — the credential above is held by our server, " +
-      "outside your space, and our server writes no meeting into your space. Your browser still " +
-      "does that, when you are signed in with your vault unlocked, so your own copy lands where " +
-      "it always did — and it stays yours: it is not deleted when our 90-day window closes. What " +
-      "changed is not what our server is *permitted* to do — it is what our server now *has*: " +
-      "your Fireflies token, and a copy of your meetings.",
-    "**Signing in is still required.** \"Already there\" means you do not have to set the device " +
-      "up — nothing to unlock before your meetings appear, no Fireflies key to type. It does not " +
-      "mean your meetings are reachable without signing in as you.",
-    "You'll copy a web address and a secret into your Fireflies dashboard. Treat that web address " +
-      "**like a password** — anyone holding it can tell our server that one of your meetings is " +
-      "ready.",
-    "Our server keeps a running operational log so we can tell whether sync is working, and " +
-      "**that log is publicly readable**. It records *that* a meeting arrived and when, with your " +
-      "address and the meeting id replaced by scrambled stand-ins — never meeting content, your " +
-      "credential, or your secret.",
-    "Turning this off stops our server accepting notifications immediately, deletes the meetings " +
-      "our server was holding for you, and asks Fireflies to revoke the credential — see below " +
-      "for what happens if Fireflies cannot be reached.",
-  ],
-  consentCheckbox:
-    "I understand that TinyChat's server will hold a full-account Fireflies token for me and a " +
-    "copy of my meetings for up to 90 days.",
-  disconnectNote:
-    "**Disconnecting undoes all of it, in one click.** We revoke the Fireflies token upstream and " +
-    "delete it, delete every meeting we are holding for you, and stop accepting notifications. " +
-    "If Fireflies is down and we cannot revoke upstream, we tell you so instead of pretending it " +
-    "worked — so you can revoke it yourself from your Fireflies account.",
-};
-
-/**
  * GMEET(connector plan §4.1, §4.3, §6 WP-C) — the Google Meet CONNECT consent text.
  *
- * A different lane from the two above and it says so in its own words: nothing about background
+ * A different lane from Option C above and it says so in its own words: nothing about background
  * notifications, no queue, no delivery URL. What it has to be honest about is the trust model the
  * plan settled on, which is unusual in exactly one place — the backend is a stateless
  * code-exchange/refresh proxy, so Google token material passes THROUGH it (Google requires the
@@ -360,25 +246,6 @@ export const BACKGROUND_SYNC_TRANSCRIPT_CONSENT_COPY: BackgroundSyncConsentCopy 
   }),
 };
 
-export const BACKEND_INGEST_TRANSCRIPT_CONSENT_COPY: BackgroundSyncConsentCopy = {
-  ...BACKEND_INGEST_CONSENT_COPY,
-  variant: "B-ingest-transcript-writer",
-  bullets: withBullets(BACKEND_INGEST_CONSENT_COPY, {
-    3: "Turning this on adds **no new permission on your space** of its own. Background sync asks " +
-      "you to grant nothing — the credential above is held by our server, outside your space. " +
-      "Your browser still saves Fireflies meetings into your space when you are signed in with " +
-      "your vault unlocked, so your own copy lands where it always did, and it is not deleted " +
-      `when our 90-day window closes. ${TRANSCRIPT_WRITER_NOTICE} What changed with this Fireflies ` +
-      "toggle is what our server now *has*: your Fireflies token, and a copy of your meetings.",
-  }),
-  disconnectNote:
-    "**Disconnecting undoes all of the Fireflies custody above, in one click.** We revoke the " +
-    "Fireflies token upstream and delete it, delete every meeting we are holding for you, and stop " +
-    "accepting notifications. If Fireflies is down and we cannot revoke upstream, we tell you so " +
-    "instead of pretending it worked — so you can revoke it yourself from your Fireflies account. " +
-    "Disconnecting Fireflies does not remove the separate Notetaker permission described above.",
-};
-
 export const GOOGLE_MEET_TRANSCRIPT_CONSENT_COPY: BackgroundSyncConsentCopy = {
   ...GOOGLE_MEET_CONSENT_COPY,
   variant: "google-oauth-transcript-writer",
@@ -418,7 +285,6 @@ export function transcriptAwareConsentCopy(
   if (state === "inactive") return copy;
   switch (copy.variant) {
     case "C": return BACKGROUND_SYNC_TRANSCRIPT_CONSENT_COPY;
-    case "B-ingest": return BACKEND_INGEST_TRANSCRIPT_CONSENT_COPY;
     case "google-oauth": return GOOGLE_MEET_TRANSCRIPT_CONSENT_COPY;
     case "google-calendar-autojoin": return GOOGLE_CALENDAR_AUTOJOIN_TRANSCRIPT_CONSENT_COPY;
     default: return copy;

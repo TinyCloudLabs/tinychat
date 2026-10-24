@@ -15,7 +15,7 @@ import type { SessionStore } from "@tinyboilerplate/client";
  *   remove()        DELETE /api/transcriber/meetings/:id
  *
  * A 404 on the LIST means the backend has no transcriber configured (`feature-dark`); a 404 on
- * one meeting means that meeting is gone (`not-found`). Same distinction meetingsApi.ts draws.
+ * one meeting means that meeting is gone (`not-found`).
  */
 
 export type TranscriberMeetingStatus =

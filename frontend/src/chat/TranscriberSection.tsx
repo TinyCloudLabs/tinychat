@@ -4,7 +4,7 @@
 // (TranscriberLibrarySyncProvider, at App level).
 //
 // `TranscriberView` is the Meeting sheet's body and a pure function of its
-// props (testable with react-dom/server, like MeetingsSection);
+// props (testable with react-dom/server);
 // `useMeetingBot` owns the client, the polling and the form state. Capture
 // calls it once and hands it to the sheet and to the In progress rows. No
 // vault, no key: a session token and the backend URL are the only inputs.

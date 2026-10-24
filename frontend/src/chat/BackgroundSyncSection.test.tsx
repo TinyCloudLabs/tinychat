@@ -15,7 +15,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import { BackgroundSyncSection, BackgroundSyncView, consentVariantForProbe } from "./BackgroundSyncSection";
+import { BackgroundSyncSection, BackgroundSyncView } from "./BackgroundSyncSection";
 import {
   HISTORICAL_RESYNC_CONFIRM_COPY,
   applyEnableResult,
@@ -98,6 +98,14 @@ describe("feature-dark and loading", () => {
   });
 });
 
+/** The enable button's own tag — attributes only — so a `disabled:` Tailwind
+ *  class or a disabled control elsewhere can never satisfy the assertion. */
+function enableButtonMarkup(html: string): string {
+  const label = html.indexOf(">Turn on background notifications<");
+  expect(label).toBeGreaterThan(-1);
+  return html.slice(html.lastIndexOf("<button", label), label);
+}
+
 describe("the off state", () => {
   const off = render({ ...initialBackgroundSyncState(), phase: "off" });
 
@@ -127,124 +135,13 @@ describe("the off state", () => {
     expect(off).not.toContain(DELIVERY_SECRET);
     expect(text(off)).not.toContain("Enabled in TinyChat");
   });
-});
 
-// ── The cohort off state — residual F011 ─────────────────────────────
-//
-// For an address the backend-ingest probe affirms, Option C's custody
-// sentences are FALSE (the server does hold a credential, does receive the
-// meeting), so the off state renders the pinned B-ingest text instead, with a
-// live attestation checkbox gating the enable action. The view is rendered
-// directly with the new props here; the container's probe → variant mapping is
-// the pure function asserted in its own block below. The `render` helper above
-// stays untouched — it passes none of the consent props, so every frozen
-// Option-C assertion keeps exercising the default (non-cohort) path.
-
-function renderCohort(
-  state: BackgroundSyncState,
-  props: { consentVariant?: "C" | "B-ingest"; ingestConsentChecked?: boolean } = {},
-): string {
-  return renderToStaticMarkup(
-    <BackgroundSyncView
-      state={state}
-      connectorName="Fireflies"
-      consentVariant={props.consentVariant}
-      ingestConsentChecked={props.ingestConsentChecked}
-      onIngestConsentChange={noop}
-      onEnable={noop}
-      onRotate={noop}
-      onDisable={noop}
-      onSync={noop}
-      onRetry={noop}
-      onDismissReveal={noop}
-      onCopy={noop}
-      onRequestHistoricalResync={noop}
-      onCancelHistoricalResync={noop}
-      onConfirmHistoricalResync={noop}
-    />,
-  );
-}
-
-/** The enable button's own tag — attributes only — so a `disabled:` Tailwind
- *  class or a disabled control elsewhere can never satisfy the assertion. */
-function enableButtonMarkup(html: string): string {
-  const label = html.indexOf(">Turn on background notifications<");
-  expect(label).toBeGreaterThan(-1);
-  return html.slice(html.lastIndexOf("<button", label), label);
-}
-
-describe("the cohort off state (B-ingest)", () => {
-  const offState = (): BackgroundSyncState => ({
-    ...initialBackgroundSyncState(),
-    phase: "off",
-  });
-  const cohortOff = renderCohort(offState(), { consentVariant: "B-ingest" });
-
-  test("renders the cohort copy — server-side custody said plainly", () => {
-    const body = text(cohortOff);
-    expect(body).toContain("Background sync (server-side ingestion)");
-    // Bullet 1's breach disclosure, a sentence Option C never needed.
-    expect(body).toContain("If our server is breached");
-    // The attestation sentence is on screen as the checkbox label.
-    expect(body).toContain("full-account Fireflies token");
+  test("has no consent checkbox: Option C grants nothing, so there is nothing to attest to", () => {
+    expect(off).not.toContain('type="checkbox"');
   });
 
-  test("contains NONE of the retired Option-C custody sentences", () => {
-    const body = text(cohortOff).toLowerCase();
-    expect(body).not.toContain("never sees your fireflies key");
-    expect(body).not.toContain("it never receives the meeting itself");
-  });
-
-  test("the disconnect note renders, below the bullets that point at it", () => {
-    const body = text(cohortOff);
-    // Both variants open the note this way; the render here has no observed delivery status, so it
-    // shows the transcript-writer variant, which qualifies "all of it".
-    expect(body).toContain("Disconnecting undoes all of");
-    expect(body.indexOf("Disconnecting undoes all of")).toBeGreaterThan(
-      body.indexOf("see below"),
-    );
-    expect(body).toContain("Disconnecting Fireflies does not remove the separate Notetaker permission");
-  });
-
-  test("a real checkbox exists under B-ingest — and does NOT exist under C", () => {
-    expect(cohortOff).toContain('type="checkbox"');
-    // The default render is the non-cohort path: Option B's checkbox stays
-    // dead there — no permission is granted under C, so nothing to attest to.
-    expect(render(offState())).not.toContain('type="checkbox"');
-  });
-
-  test("the enable action is inert until the attestation is checked", () => {
-    expect(enableButtonMarkup(cohortOff)).toContain('disabled=""');
-    const checked = renderCohort(offState(), {
-      consentVariant: "B-ingest",
-      ingestConsentChecked: true,
-    });
-    expect(enableButtonMarkup(checked)).not.toContain('disabled=""');
-  });
-
-  test("an explicit variant 'C' renders byte-identically to the default", () => {
-    expect(renderCohort(offState(), { consentVariant: "C" })).toBe(render(offState()));
-  });
-});
-
-describe("consentVariantForProbe — the fail-closed matrix", () => {
-  test("only an affirmative ok selects the cohort copy", () => {
-    expect(consentVariantForProbe({ status: "ok" })).toBe("B-ingest");
-  });
-
-  test("every non-ok answer — and no answer at all — is Option C", () => {
-    const nonAffirmative = [
-      { status: "feature-dark" }, // the not-in-cohort 404
-      { status: "unauthenticated" },
-      { status: "offline" },
-      { status: "retryable" },
-      { status: "rejected" },
-      null,
-      undefined,
-    ];
-    for (const answer of nonAffirmative) {
-      expect(consentVariantForProbe(answer)).toBe("C");
-    }
+  test("the enable action is live in the off state (no attestation gates it)", () => {
+    expect(enableButtonMarkup(off)).not.toContain('disabled=""');
   });
 });
 

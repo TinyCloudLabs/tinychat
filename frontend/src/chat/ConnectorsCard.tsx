@@ -63,10 +63,6 @@ import {
   type ConnectorWebhooksClient,
 } from "@/lib/connectors/webhooksApi";
 import {
-  createConnectorMeetingsClient,
-  type ConnectorMeetingsClient,
-} from "@/lib/connectors/meetingsApi";
-import {
   ConnectorConnectDialog,
   ConnectorDisconnectDialog,
 } from "./ConnectorDialog";
@@ -330,14 +326,6 @@ export function ConnectorsCard({
   // the background-notifications section is what decides whether to call it.
   const webhooks: ConnectorWebhooksClient = useMemo(
     () => createConnectorWebhooksClient(backendUrl, { sessionStore }),
-    [backendUrl, sessionStore],
-  );
-  // The second typed companion client — the cohort-gated meetings READ
-  // surface — from the same two props. Constructing it performs no I/O
-  // either: the background-notifications section owns the one mount-time
-  // probe that decides which consent text its off state shows (F011).
-  const meetings: ConnectorMeetingsClient = useMemo(
-    () => createConnectorMeetingsClient(backendUrl, { sessionStore }),
     [backendUrl, sessionStore],
   );
   // Which connector (if any) currently owns a modal. Only one can be open at
@@ -650,7 +638,6 @@ export function ConnectorsCard({
                     tcw={tcw}
                     descriptor={d}
                     webhooks={webhooks}
-                    meetings={meetings}
                     // A processing run writes meetings, so the row's stored
                     // count is stale until it is re-read.
                     onIngested={() => void refreshRow(d.id)}

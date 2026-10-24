@@ -14,7 +14,6 @@
  */
 
 import { CONNECTORS_KV_PREFIX } from "./connectorStore";
-import type { ConnectorMeetingMeta } from "./meetingsApi";
 import type { TranscriberListRow } from "../transcriberApi";
 
 export const PENDING_RECONCILE_SNAPSHOT_KEY = `${CONNECTORS_KV_PREFIX}/pending-reconcile-snapshot`;
@@ -51,18 +50,6 @@ export interface PendingSnapshotKv {
 
 const timestampFields = ["ts", "storedAt", "updatedAt", "createdAt", "startedAt", "endedAt", "completedAt"] as const;
 const TRANSCRIBER_SNAPSHOT_HEARTBEAT_MS = 50 * 60 * 1000;
-
-export function backendPendingRows(source: string, rows: readonly ConnectorMeetingMeta[]): PendingReconcileMeeting[] {
-  return rows.map<PendingReconcileMeeting>((row) => ({
-    id: row.sourceId,
-    source,
-    ...(row.ts === undefined ? {} : { ts: row.ts }),
-    ...(row.storedAt === undefined ? {} : { storedAt: row.storedAt }),
-    ...(row.updatedAt === undefined ? {} : { updatedAt: row.updatedAt }),
-    status: "unreconciled",
-    reconciled: false,
-  })).sort((a, b) => a.id.localeCompare(b.id));
-}
 
 export function transcriberPendingRows(
   rows: readonly TranscriberListRow[],

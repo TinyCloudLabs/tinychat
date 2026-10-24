@@ -6,7 +6,6 @@
 import { CircleAlertIcon, CopyIcon } from "lucide-react";
 
 import {
-  BACKEND_INGEST_CONSENT_COPY,
   BACKGROUND_SYNC_CONSENT_COPY,
   transcriptAwareConsentCopy,
   type BackgroundSyncConsentCopy,
@@ -17,7 +16,6 @@ import {
   queueNotices,
   type BackgroundSyncState,
 } from "@/chat/backgroundSyncState";
-import type { OffStateConsentVariant } from "@/chat/useBackgroundSync";
 import { InlineError, LinkButton, OptionRow, Switch } from "./MeetingSourcesView";
 
 /** The window's own words for the webhook state; "Enabled in TinyChat" is the old product name. */
@@ -61,13 +59,10 @@ function ConsentBlock({ copy }: { copy: BackgroundSyncConsentCopy }) {
 export interface FirefliesManageProps {
   connectorName: string;
   state: BackgroundSyncState;
-  consentVariant: OffStateConsentVariant;
   /** TC-641: unknown shows the transcript-writer disclosure, not an untrue denial. */
   transcriptConsent?: TranscriptConsentState;
-  ingestConsentChecked: boolean;
   /** The user pressed the switch while it was off: the consent is showing, nothing is enabled yet. */
   consentOpen: boolean;
-  onIngestConsentChange: (checked: boolean) => void;
   onToggleInstant: () => void;
   onConfirmEnable: () => void;
   onCancelEnable: () => void;
@@ -90,7 +85,7 @@ export function FirefliesManage(props: FirefliesManageProps) {
   const notices = queueNotices(state);
   const busy = state.busy !== null;
   const consentCopy = transcriptAwareConsentCopy(
-    props.consentVariant === "B-ingest" ? BACKEND_INGEST_CONSENT_COPY : BACKGROUND_SYNC_CONSENT_COPY,
+    BACKGROUND_SYNC_CONSENT_COPY,
     props.transcriptConsent ?? "unknown",
   );
 
@@ -144,30 +139,13 @@ export function FirefliesManage(props: FirefliesManageProps) {
       {state.phase === "off" && props.consentOpen && (
         <div className="ms-subpanel">
           <ConsentBlock copy={consentCopy} />
-          {props.consentVariant === "B-ingest" && (
-            <>
-              {consentCopy.disconnectNote && (
-                <p className="ms-consent-note">
-                  <Marked text={consentCopy.disconnectNote} />
-                </p>
-              )}
-              <label className="ms-check">
-                <input
-                  type="checkbox"
-                  checked={props.ingestConsentChecked}
-                  onChange={(event) => props.onIngestConsentChange(event.target.checked)}
-                />
-                <span>{consentCopy.consentCheckbox}</span>
-              </label>
-            </>
-          )}
           <div className="ms-subpanel-actions">
             <button
               type="button"
               className="ms-btn1"
-              aria-disabled={busy || (props.consentVariant === "B-ingest" && !props.ingestConsentChecked)}
+              aria-disabled={busy}
               onClick={() => {
-                if (!busy && (props.consentVariant !== "B-ingest" || props.ingestConsentChecked)) {
+                if (!busy) {
                   props.onConfirmEnable();
                 }
               }}

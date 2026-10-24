@@ -3,7 +3,7 @@
 // state machine (`backgroundSyncState.ts`) over the same drain lane. Everything
 // the component used to hold lives here unchanged: the ref-mirrored state that
 // publishes to the shared drain record, the load-on-mount read on the drain
-// lane, the fail-closed consent probe and the dark-route report.
+// lane, and the dark-route report.
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
@@ -18,7 +18,6 @@ import {
   subscribeTranscriptConsent, transcriptConsentState, type TranscriptConsentState,
 } from "@/lib/transcriptDeliveryState";
 import type { ConnectorWebhooksClient } from "@/lib/connectors/webhooksApi";
-import type { ConnectorMeetingsClient } from "@/lib/connectors/meetingsApi";
 import type { ConnectorDescriptor } from "@/lib/connectors/types";
 import {
   initialBackgroundSyncState,
@@ -35,35 +34,11 @@ import {
   readBackgroundDrainGeneration,
 } from "./useBackgroundDrain";
 
-/** The only two texts an off state may render — A and B never ship (consentCopy.ts). */
-export type OffStateConsentVariant = "C" | "B-ingest";
-
-/**
- * F011's whole decision, as a pure function so the fail-closed matrix is
- * directly unit-testable: ONLY an affirmative `"ok"` from the cohort-gated
- * meetings list selects the B-ingest copy. `feature-dark` (the not-in-cohort
- * 404), `unauthenticated`, `offline`, `retryable`, `rejected`, a missing
- * result — every one of them is Option C. The parameter is deliberately loose
- * (`{ status: string }`) so no widening of the client's result union can ever
- * make an unconsidered status affirmative.
- */
-export function consentVariantForProbe(
-  result: { status: string } | null | undefined,
-): OffStateConsentVariant {
-  return result?.status === "ok" ? "B-ingest" : "C";
-}
-
 export interface UseBackgroundSyncOptions {
   tcw: TinyCloudWeb;
   descriptor: ConnectorDescriptor;
   /** FE0's typed client, built once by the card from backendUrl + sessionStore. */
   webhooks: ConnectorWebhooksClient;
-  /**
-   * F011: the cohort-gated READ client. Optional ON PURPOSE — an absent client
-   * is just one more non-affirmative answer, so the off state fails closed to
-   * Option C instead of failing open to the cohort text.
-   */
-  meetings?: ConnectorMeetingsClient;
   /** Fired after a processing run wrote meetings, so the row's count refreshes. */
   onIngested?: () => void;
   /**
@@ -78,11 +53,8 @@ export interface BackgroundSyncController {
   state: BackgroundSyncState;
   deps: BackgroundSyncDeps;
   emit: BackgroundSyncEmit;
-  consentVariant: OffStateConsentVariant;
   /** TC-641: whether the off-state consent must also disclose the transcript-writer grant. */
   transcriptConsent: TranscriptConsentState;
-  ingestConsentChecked: boolean;
-  setIngestConsentChecked: (checked: boolean) => void;
   /** Processes the queue on the shared drain lane, then reports the ingest. */
   runSync: () => Promise<void>;
   /** Re-reads the queue (enabled) or the config (anything else). */
@@ -93,7 +65,6 @@ export function useBackgroundSync({
   tcw,
   descriptor,
   webhooks,
-  meetings,
   onIngested,
   onFeatureDark,
 }: UseBackgroundSyncOptions): BackgroundSyncController {
@@ -161,44 +132,10 @@ export function useBackgroundSync({
     void enqueueDrainWork(() => loadOnMount(deps, emit));
   }, [deps, emit]);
 
-  // F011 — which consent text an off state shows, plus the B-ingest
-  // attestation's checked state. Both start C-safe: the variant is Option C
-  // until proven otherwise, and the attestation starts unchecked.
-  const [consentVariant, setConsentVariant] = useState<OffStateConsentVariant>("C");
-  const [ingestConsentChecked, setIngestConsentChecked] = useState(false);
+  // TC-641: whether the off-state consent must also disclose the transcript-writer grant.
   const transcriptConsent = useSyncExternalStore(
     subscribeTranscriptConsent, transcriptConsentState, transcriptConsentState,
   );
-
-  // The cohort probe — deliberately its OWN effect, NOT a rider on the drain
-  // lane above: it is a read of a different API (the cohort-gated meetings
-  // list), and queueing it behind a drain run would delay the consent decision
-  // for no custody reason. It asks once per mount (the card's useMemo keeps
-  // `meetings` stable) and only an affirmative "ok" ever selects B-ingest —
-  // see `consentVariantForProbe` for the full fail-closed matrix. Accepted
-  // transient: until the probe answers, a cohort user's off state briefly
-  // shows Option C, because fail-closed reads "no affirmative signal yet" as
-  // C; the probe starts at mount alongside loadOnMount's own /config
-  // round-trip, so it typically settles in the same network beat.
-  useEffect(() => {
-    // Re-arm the fail-closed default whenever the probe's inputs change.
-    setConsentVariant("C");
-    if (!meetings) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const probe = await meetings.list({ source: descriptor.source, limit: 1 });
-        if (cancelled) return;
-        setConsentVariant(consentVariantForProbe(probe));
-      } catch {
-        // `list()` resolves for every HTTP state — a throw is a programmer
-        // error, and a failed probe is no affirmative signal: stay on C.
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [meetings, descriptor.source]);
 
   // `loading` is "we have not asked yet" and says nothing either way; every
   // other phase is a probe that answered.
@@ -224,10 +161,7 @@ export function useBackgroundSync({
     state,
     deps,
     emit,
-    consentVariant,
     transcriptConsent,
-    ingestConsentChecked,
-    setIngestConsentChecked,
     runSync,
     retry,
   };

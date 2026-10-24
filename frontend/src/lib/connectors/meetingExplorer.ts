@@ -443,8 +443,7 @@ export async function readTranscript(
 
 /**
  * The raw transcript as the user copies it: one speaker-attributed line per
- * sentence. Deliberately unlike `meetingsView.transcriptText`, which drops
- * speakers — a pasted transcript without "who said it" is far less useful.
+ * sentence. A pasted transcript without "who said it" is far less useful.
  */
 export function transcriptCopyText(sentences: FirefliesSentence[]): string {
   return sentences

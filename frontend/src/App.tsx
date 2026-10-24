@@ -106,16 +106,6 @@ import {
 } from "./shell/routes";
 import { PlatformContext } from "./lib/platform";
 import { useSizeClass } from "./lib/sizeClass";
-// W5 — the cohort meetings view. It renders NOTHING unless the backend's read
-// API answers for this address (dark flag / non-cohort = 404 = invisible), and
-// it needs neither the vault nor a connector key: a session is the whole
-// requirement, which is what makes the meetings readable on a device that has
-// never opened the app.
-import { MeetingsSection } from "./chat/MeetingsSection";
-// …and W6's headless counterpart: the same meetings copied into the user's OWN
-// space whenever a session with an unlocked vault happens to be open. Separate
-// from the view on purpose — the view must keep working with no vault at all.
-import { BackendReconciler } from "./chat/BackendReconciler";
 import {
   BackgroundDrainer,
   badgePendingCount,
@@ -1285,12 +1275,6 @@ export function App() {
                 active={screen.destination === "capture"}
                 onSummarySettled={refreshBillingStatus}
                 screen={screen}
-                meetingsSlot={
-                  <MeetingsSection
-                    backendUrl={BACKEND_URL}
-                    sessionStore={sessionStoreRef.current}
-                  />
-                }
               />}
               connectors={LOCAL_VALIDATION ? null : <ConnectorsPage
                 tcw={tcw}
@@ -1412,19 +1396,6 @@ export function App() {
           every user while the registry row is coming-soon. */}
       {!LOCAL_VALIDATION && state === "ready" && tcw && secretsAvailable() && (
         <GmeetSessionSync
-          tcw={tcw}
-          sessionStore={sessionStoreRef.current}
-          backendUrl={BACKEND_URL}
-        />
-      )}
-
-      {/* W6's browser reconcile: with an unlocked vault, copy the meetings the
-          backend already holds into the user's OWN space (KV only), then stamp
-          them. Renders nothing, queues on the drain's lane so the one space has
-          a single writer, and is a no-op for every address outside the dark
-          cohort — see BackendReconciler.tsx. */}
-      {!LOCAL_VALIDATION && state === "ready" && tcw && secretsAvailable() && (
-        <BackendReconciler
           tcw={tcw}
           sessionStore={sessionStoreRef.current}
           backendUrl={BACKEND_URL}
