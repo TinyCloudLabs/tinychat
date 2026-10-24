@@ -28,6 +28,7 @@ import {
   browserMarkerStore, deleteReplicaDatabase, REPLICATION_COPY_KEY, REPLICATION_WIPE_PENDING_KEY, SDK_LOGOUT_MARKER_KEY,
   type MarkerStore, type ReplicaDeleteResult,
 } from "./replicationLocalStore";
+import { trackStartupPurge } from "./replicationStartupPurge";
 import { markReplicationPurgeFailed } from "./replicationStatus";
 
 export const REPLICA_PURGE_FAILED_WARNING =
@@ -95,6 +96,12 @@ const inFlight = new WeakMap<TinyCloudWeb, Promise<ReplicaSignOutResult>>();
  * `tcw.signOut()`, once per client, then the immediate removal of the local copy. On a replica client
  * any failure resolves `{ ok: false }` so the caller shows the warning; clients without replication
  * rethrow their sign-out error and touch nothing.
+ *
+ * On a replica client the WHOLE task (sign-out, delete and its bounded retries) is registered with
+ * trackStartupPurge, so a sign-in or restore that starts on this page waits for it: a delete issued
+ * after the new replica was opened would wipe the new copy. Worst case the chain is 4 deletes of at
+ * most 3 s each plus 4.25 s of waits (about 16 s); the sign-out button stops WAITING after its own
+ * 10 s capture deadline, but the removal keeps running and the next sign-in still waits for it.
  */
 export function signOutReplicaAware(tcw: TinyCloudWeb, deps: ReplicaSignOutDeps = {}): Promise<ReplicaSignOutResult> {
   const existing = inFlight.get(tcw);
@@ -134,6 +141,6 @@ export function signOutReplicaAware(tcw: TinyCloudWeb, deps: ReplicaSignOutDeps 
     const message = keysKept && removal.status === "failed" ? REPLICA_KEYS_KEPT_WARNING : REPLICA_PURGE_FAILED_WARNING;
     return { ok: false, message, code };
   })();
-  inFlight.set(tcw, task);
-  return task;
+  inFlight.set(tcw, clientHasReplication(tcw) ? trackStartupPurge(task) : task);
+  return inFlight.get(tcw)!;
 }

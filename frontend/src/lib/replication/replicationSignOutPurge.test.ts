@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { IDBFactory } from "fake-indexeddb";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
-import type { ReplicationPluginLoader } from "./replicationClient";
+import { buildReplicationConfig, type ReplicationPluginLoader } from "./replicationClient";
 import { REPLICATION_COPY_KEY, REPLICATION_WIPE_PENDING_KEY, replicationWipePending, SDK_LOGOUT_MARKER_KEY } from "./replicationCopyMarker";
-import { purgeReplicaCopyWhenOff, REPLICA_DATABASE_NAME } from "./replicationOffPurge";
+import { REPLICATION_RUNTIME_FLAG_KEY } from "./replicationFlag";
+import { deleteReplicaDatabase, purgeReplicaCopyWhenOff, REPLICA_DATABASE_NAME } from "./replicationOffPurge";
+import { replicationOptInKey } from "./replicationOptIn";
 import { KEYS_KEPT_RETRY_DELAYS_MS, REPLICA_KEYS_KEPT_WARNING, REPLICA_PURGE_FAILED_WARNING, signOutReplicaAware } from "./replicationSignOut";
 import { getReplicationStatus, resetReplicationStatus } from "./replicationStatus";
 
@@ -196,5 +198,52 @@ describe("when the SDK kept the device keys", () => {
     });
     expect(attempts).toBe(4);
     expect(result).toMatchObject({ ok: false, message: REPLICA_KEYS_KEPT_WARNING });
+  });
+});
+
+describe("a sign-in that starts while the sign-out removal is still retrying", () => {
+  test("waits for it: a late retry never wipes the replica the new sign-in created", async () => {
+    (await seedReplica()).close(); // the old account's copy
+    const store = memoryStore({
+      [REPLICATION_RUNTIME_FLAG_KEY]: "true", [replicationOptInKey(ALICE)]: "true", [REPLICATION_COPY_KEY]: ALICE,
+    });
+    const saved = ["window", "Worker", "navigator"].map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)] as const);
+    try {
+      define("window", { localStorage: store });
+      define("Worker", class {});
+      define("navigator", {
+        userAgent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+        userAgentData: { brands: [{ brand: "Chromium" }] },
+        maxTouchPoints: 0,
+        locks: { request: async (_name: string, callback: () => unknown) => callback() },
+      });
+      const events: string[] = [];
+      // The new sign-in's plugin: opening its storage creates the replica database.
+      const loader: ReplicationPluginLoader = {
+        registerPlugin: async () => { events.push("register"); },
+        createStorage: async () => { events.push("open-new-replica"); (await seedReplica()).close(); return {} as never; },
+      };
+      let building: Promise<unknown> | undefined;
+      // The keys were kept: the first delete attempt fails, and the user signs in again during the wait.
+      const { sleep } = sleeper(() => { building = buildReplicationConfig(ALICE, loader); });
+      let attempts = 0;
+      const deleteDatabase = async () => {
+        attempts += 1;
+        events.push(`delete-attempt-${attempts}`);
+        return attempts === 1 ? { ok: false as const, code: "DELETE_BLOCKED" } : deleteReplicaDatabase();
+      };
+      const tcw = { did: ALICE, replication: {}, signOut: async () => { throw KEYS_KEPT(); } } as unknown as TinyCloudWeb;
+
+      expect(await signOutReplicaAware(tcw, { store, sleep, deleteDatabase })).toEqual({ ok: true });
+      expect((await building) as { enabled: boolean }).toMatchObject({ enabled: true });
+
+      // The retry ran BEFORE the new replica was registered/opened, so the new database survives.
+      expect(events).toEqual(["delete-attempt-1", "delete-attempt-2", "register", "open-new-replica"]);
+      expect(await replicaExists()).toBe(true);
+    } finally {
+      for (const [name, descriptor] of saved) {
+        if (descriptor) Object.defineProperty(globalThis, name, descriptor); else Reflect.deleteProperty(globalThis, name);
+      }
+    }
   });
 });
