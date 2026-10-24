@@ -29,9 +29,9 @@ source cards, or persisted provenance.
 
 - Exactly one meeting per question.
 - SQL meetings from Fireflies, Google Meet, and Transcriber.
-- Fireflies cohort/server meetings selected by supported title, participant, e-mail/domain,
+- Fireflies meetings selected by supported title, participant, e-mail/domain,
   date, or a uniquely valid `latest` timestamp from discovered metadata.
-- Reconciled KV meetings identifiable through server metadata or an in-session identity.
+- Reconciled KV meetings identifiable through SQL metadata or an in-session identity.
 - Selection by title, participant, email/domain, explicit date, `today`, `yesterday`, or
   `latest`.
 - In-session referential follow-ups after a meeting has been selected.
@@ -160,7 +160,7 @@ the summarizer.
 - `frontend/src/App.tsx`: construct and inject one retriever instance.
 - `frontend/src/chat/Thread.tsx`: near the composer, disclose: “Meeting questions send selected
   meeting text to the chosen inference provider.”
-- `frontend/src/lib/connectors/backendReconcile.ts`: export the existing V1 KV record type.
+- `frontend/src/lib/connectors/connectorStore.ts` (the V1 KV record type; it lived in the since-removed `backendReconcile.ts`): export the existing V1 KV record type.
 - `frontend/src/lib/connectors/connectorStore.ts`: as a prerequisite/lifecycle repair, enumerate
   and delete reconciled `/meeting/` and `/transcript/` KV keys during delete-data purge. Any KV
   enumeration failure prevents purge from reporting success.

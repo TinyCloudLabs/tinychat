@@ -97,10 +97,7 @@ function MeetingSourcesFixture({
             <FirefliesManage
               connectorName={fireflies.name}
               state={state}
-              consentVariant="C"
-              ingestConsentChecked={false}
               consentOpen={false}
-              onIngestConsentChange={noop}
               onToggleInstant={() => setInstant((was) => !was)}
               onConfirmEnable={noop}
               onCancelEnable={noop}

@@ -35,7 +35,7 @@ It is bounded and visible:
 - it applies only to an address that has purged and not re-synced;
 - each drop is logged `op=drop … reason=purged_no_timestamp` (distinct from `reason=purged`), so
   an operator can tell "this predates the purge" from "this shape carries no stamp";
-- the cohort is operator-only.
+- the rollout is operator-only.
 
 The alternative reading — accept it — puts back a meeting the user deleted, while they are
 offline, which §6.2 calls the exact failure the ledger exists to prevent.
@@ -84,29 +84,3 @@ Darkness is therefore ESTABLISHED, once, and carried as state:
 Pinned by `connectorLifecycle.test.ts` ("an unexplained 404 on the tombstone deletes nothing and
 offers a retry", "…on disable stops the teardown with a retry") and by `ConnectorsCard.test.ts`
 ("the card carries the mount-time dark verdict into the teardown").
-
-## 5. What the server-side content store tombstones — and what it deliberately does not
-
-Backend ingest (backend-ingest plan §8.1 W4) adds a second tombstone surface, and it covers exactly
-two things:
-
-- the **D2a retention sweep** (`ContentStore.sweepRetention`, 90 days) records every swept id as a
-  retention tombstone, so a provider replay cannot silently re-store aged-out content;
-- the **§6.2 purge ledger** covers teardown/disconnect, as above.
-
-The **per-user overflow caps** (500 meetings / 200 MB, oldest-drop) record **no** tombstone, on
-purpose. The two markers above both mean *the user no longer has this*; a cap eviction means only
-*this did not fit today*. The cost, stated plainly: because a delivery carrying no provider
-timestamp is replayable indefinitely (§1 above), a replay of an evicted meeting re-fetches and
-re-stores it, evicting the current oldest row in turn — at the caps, the policy behaves as churn
-rather than as a hard bound. It is bounded and visible: every drop is counted
-(`stats().droppedOverflow`) and logged `op=overflow-drop reason=user_meeting_cap|user_byte_cap` with
-a hashed id.
-
-The alternative — tombstoning evicted ids — would permanently deny a heavy user a meeting they
-could otherwise re-sync after pruning, which is why it is not the default. Pinned by
-`backend/src/__tests__/connector-content-store.test.ts` (`[delta-08] overflow eviction is
-deliberately NON-permanent`).
-
-**Open for an operator decision, NOT decided here:** whether to add an eviction tombstone (a
-`reason`-tagged `RetentionTombstone`) once real cohort volumes show the churn loop actually firing.

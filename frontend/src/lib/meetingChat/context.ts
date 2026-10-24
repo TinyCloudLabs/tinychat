@@ -408,7 +408,6 @@ function unavailableSourceLabels(kinds: readonly MeetingEvidenceLocatorKind[]): 
     ["sql-summary", "SQL summary"],
     ["local-kv-record", "local KV record"],
     ["local-kv-transcript", "local KV transcript"],
-    ["server-meeting", "server meeting"],
   ];
   const present = new Set(kinds);
   return labels.filter(([kind]) => present.has(kind)).map(([, label]) => label);

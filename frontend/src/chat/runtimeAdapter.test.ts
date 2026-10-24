@@ -86,8 +86,6 @@ function meetingCandidate(): MeetingCandidate {
     hasSqlSummary: false,
     hasLocalRecord: false,
     hasLocalTranscript: false,
-    hasServerSummary: false,
-    hasServerTranscript: false,
     localRowId: null,
     createdAt: null,
     updatedAt: null,

@@ -46,7 +46,6 @@ function render(path: string, active: boolean) {
         sessionStore={{} as SessionStore}
         active={active}
         screen={screenFor(path)}
-        meetingsSlot={<p>cohort-meetings</p>}
       />
       </StaticRecorderProvider>
     </MemoryRouter>,
@@ -78,9 +77,8 @@ describe("CaptureSurface", () => {
     // Recent waits for the list (skeleton rows), with See all.
     expect(markup).toContain('data-testid="capture-recent"');
     expect(markup).toContain(">See all</a>");
-    // The Library is there, with both meeting data paths.
+    // The Library is there.
     expect(pane(markup, "capture-library").after).toContain('data-testid="library-list"');
-    expect(markup).toContain("cohort-meetings");
   });
 
   test("on the Library: the Library shows with Back and Refresh, and the home stays mounted", () => {
@@ -128,7 +126,6 @@ describe("CaptureSurface", () => {
     }
     expect(source.indexOf('data-testid="capture-home"')).toBeLessThan(source.indexOf('data-testid="capture-library"'));
     expect(source.indexOf('data-testid="capture-library"')).toBeLessThan(source.indexOf('data-testid="capture-detail"'));
-    expect(source.match(/meetingsSlot=\{meetingsSlot\}/g)).toHaveLength(1);
   });
 
   test("the sheets close when the home is left", () => {

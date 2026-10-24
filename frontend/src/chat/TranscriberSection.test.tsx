@@ -1,6 +1,6 @@
 // The meeting notetaker (Capture's Meeting sheet). `TranscriberView` is a pure function of its
-// props, so every product rule is asserted against real markup via react-dom/server (same call as
-// MeetingsSection.test.tsx: no DOM harness in this workspace). The client is asserted against
+// props, so every product rule is asserted against real markup via react-dom/server (no DOM
+// harness in this workspace). The client is asserted against
 // an injected fetch. Rules:
 //   1. dark (backend has no transcriber) says so and hides the form — never a blank card;
 //   2. an outage/offline/signed-out list is TOLD, never rendered as "no meetings";

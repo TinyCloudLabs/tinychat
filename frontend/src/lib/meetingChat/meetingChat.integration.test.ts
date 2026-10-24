@@ -33,8 +33,6 @@ interface Seed {
   kvKeys?: Readonly<Record<string, readonly string[]>>;
   kvValues?: Readonly<Record<string, unknown>>;
   kvGetError?: { code: string };
-  serverList?: unknown;
-  serverRead?: unknown;
 }
 
 /**
@@ -57,10 +55,6 @@ function seededRetriever(seed: Seed) {
     }
   };
 
-  const serverList = seed.serverList ?? {
-    status: "ok",
-    value: { source: SOURCE, meetings: [], nextCursor: null, hasMore: false },
-  };
   const retriever = createBrowserMeetingTurnRetriever({
     tcw: {
       sql: {
@@ -85,10 +79,6 @@ function seededRetriever(seed: Seed) {
           : { ok: false, error: seed.kvGetError }),
       },
     },
-    meetings: {
-      list: () => serial("server:list", serverList),
-      read: () => serial("server:read", seed.serverRead ?? { status: "not-found" }),
-    },
   } as never);
   return { retriever, calls, get maxActive() { return maxActive; } };
 }
@@ -108,20 +98,6 @@ function sqlRow(sourceId: string, patch: Partial<{ title: string; hasSummary: nu
   ];
 }
 
-function serverMeta(sourceId: string, patch: Record<string, unknown> = {}) {
-  return {
-    sourceId,
-    title: "Seeded planning",
-    ts: NOW,
-    storedAt: NOW,
-    updatedAt: NOW,
-    hasSummary: false,
-    hasTranscript: false,
-    sizeBytes: 1,
-    ...patch,
-  };
-}
-
 function candidate(source: string, sourceId: string): MeetingCandidate {
   return {
     source,
@@ -134,8 +110,6 @@ function candidate(source: string, sourceId: string): MeetingCandidate {
     hasSqlSummary: false,
     hasLocalRecord: false,
     hasLocalTranscript: false,
-    hasServerSummary: false,
-    hasServerTranscript: false,
     localRowId: null,
     createdAt: null,
     updatedAt: null,
@@ -204,8 +178,6 @@ describe("exo-local recordings in meeting chat", () => {
 
     const retriever = createBrowserMeetingTurnRetriever({
       tcw: space,
-      // Local recordings have no server copy.
-      meetings: { list: async () => ({ status: "feature-dark" }), read: async () => ({ status: "not-found" }) },
     } as never);
     const outcome = await retriever.retrieve({ threadId: "exo-thread", question: "What did you say in the latest meeting?" });
 
@@ -281,8 +253,6 @@ describe("transcribed voice notes in meeting chat and Library", () => {
 
     const retriever = createBrowserMeetingTurnRetriever({
       tcw: space,
-      // Voice notes have no server copy.
-      meetings: { list: async () => ({ status: "feature-dark" }), read: async () => ({ status: "not-found" }) },
     } as never);
     const outcome = await retriever.retrieve({ threadId: "voice-thread", question: "Summarize my latest meeting." });
     expect(outcome).toEqual(expect.objectContaining({
@@ -338,7 +308,6 @@ describe("untranscribed voice notes are not meetings", () => {
   const retrieve = (space: ReturnType<typeof sqliteSpace>, question: string) =>
     createBrowserMeetingTurnRetriever({
       tcw: space,
-      meetings: { list: async () => ({ status: "feature-dark" }), read: async () => ({ status: "not-found" }) },
     } as never).retrieve({ threadId: `t-${crypto.randomUUID()}`, question });
 
   test("a real meeting + a newer untranscribed voice note: the meeting is answered", async () => {
@@ -426,7 +395,6 @@ describe("exo-local You/Others turns in meeting chat", () => {
 
     const retriever = createBrowserMeetingTurnRetriever({
       tcw: space,
-      meetings: { list: async () => ({ status: "feature-dark" }), read: async () => ({ status: "not-found" }) },
     } as never);
     const outcome = await retriever.retrieve({ threadId: "exo-mixed-thread", question: "What did you say in the latest meeting?" });
 
@@ -439,7 +407,7 @@ describe("exo-local You/Others turns in meeting chat", () => {
 });
 
 describe("seeded meeting-chat browser integration", () => {
-  test("reads a SQL-only summary and a server-only transcript as transient, bounded evidence", async () => {
+  test("reads a SQL-only summary as transient, bounded evidence", async () => {
     const sqlOnly = seededRetriever({
       sqlRows: [sqlRow("sql-only", { hasSummary: 1 })],
       sqlEvidenceRows: [["SQL_ONLY_CANARY", null]],
@@ -453,35 +421,6 @@ describe("seeded meeting-chat browser integration", () => {
       systemMessage: expect.stringContaining("SQL_ONLY_CANARY"),
     }));
     expect(sqlOnly.calls).toEqual(expect.arrayContaining(["sql:discovery", "sql:evidence"]));
-    expect(sqlOnly.calls).not.toContain("server:read");
-
-    const serverOnly = seededRetriever({
-      sqlError: { message: "no such table: connector_meeting" },
-      serverList: {
-        status: "ok",
-        value: { source: SOURCE, meetings: [serverMeta("server-transcript", { hasTranscript: true, participantNames: ["Avery"] })], nextCursor: null, hasMore: false },
-      },
-      serverRead: {
-        status: "ok",
-        value: {
-          source: SOURCE,
-          sourceId: "server-transcript",
-          meta: serverMeta("server-transcript"),
-          content: {
-            transcript: { sentences: [{ speaker_name: "Avery", text: "SERVER_TRANSCRIPT_CANARY", start_time: 12, end_time: 15 }] },
-            providerMetadata: { private: "PROVIDER_METADATA_MUST_NOT_LEAK" },
-          },
-        },
-      },
-    });
-    const serverOutcome = await serverOnly.retriever.retrieve({ threadId: "server-thread", question: "What did Avery say in the latest meeting?" });
-    expect(serverOutcome).toEqual(expect.objectContaining({
-      status: "grounded",
-      systemMessage: expect.stringContaining("SERVER_TRANSCRIPT_CANARY"),
-    }));
-    expect((serverOutcome as { systemMessage: string }).systemMessage).toContain("[M1:E1, Avery, 00:00:12]");
-    expect(JSON.stringify(serverOutcome)).not.toContain("PROVIDER_METADATA_MUST_NOT_LEAK");
-    expect(serverOnly.maxActive).toBe(1);
   });
 
   test("labels a grounded reply partial when ranking omits transcript excerpts beyond four", async () => {
@@ -492,20 +431,9 @@ describe("seeded meeting-chat browser integration", () => {
       end_time: index * 10 + 2,
     }));
     const seeded = seededRetriever({
-      sqlError: { message: "no such table: connector_meeting" },
-      serverList: {
-        status: "ok",
-        value: { source: SOURCE, meetings: [serverMeta("many-excerpts", { hasTranscript: true })], nextCursor: null, hasMore: false },
-      },
-      serverRead: {
-        status: "ok",
-        value: {
-          source: SOURCE,
-          sourceId: "many-excerpts",
-          meta: serverMeta("many-excerpts", { hasTranscript: true }),
-          content: { transcript: { sentences: transcript } },
-        },
-      },
+      sqlRows: [sqlRow("many-excerpts")],
+      kvKeys: { [`${CONNECTORS_KV_PREFIX}/${SOURCE}/transcript/`]: [transcriptKvKey(SOURCE, "many-excerpts")] },
+      kvValues: { [transcriptKvKey(SOURCE, "many-excerpts")]: JSON.stringify(transcript) },
     });
     const outcome = await seeded.retriever.retrieve({ threadId: "many", question: "latest meeting decision" });
     expect(outcome).toEqual(expect.objectContaining({ status: "grounded", partial: true }));
@@ -541,8 +469,7 @@ describe("seeded meeting-chat browser integration", () => {
     });
 
     const merged = seededRetriever({
-      sqlError: { message: "no such table: connector_meeting" },
-      serverList: { status: "ok", value: { source: SOURCE, meetings: [serverMeta("kv-only")], nextCursor: null, hasMore: false } },
+      sqlRows: [sqlRow("kv-only")],
       kvKeys: { [meetingPrefix]: [recordKey] },
       kvValues: {
         [recordKey]: JSON.stringify({ v: 1, source: SOURCE, sourceId: "kv-only", hasTranscript: false, hasSummary: true, summary: { overview: "RECONCILED_KV_CANARY" } }),
@@ -561,15 +488,7 @@ describe("seeded meeting-chat browser integration", () => {
 
   test("keeps ambiguity, no match, no content, partial discovery failure, critical storage failure, and abort distinct", async () => {
     const ambiguous = seededRetriever({
-      serverList: {
-        status: "ok",
-        value: {
-          source: SOURCE,
-          meetings: [serverMeta("one"), serverMeta("two")],
-          nextCursor: null,
-          hasMore: false,
-        },
-      },
+      sqlRows: [sqlRow("one"), sqlRow("two")],
     });
     expect(await ambiguous.retriever.retrieve({ threadId: "choices", question: "meeting notes" })).toEqual(expect.objectContaining({
       status: "clarification",
@@ -583,10 +502,7 @@ describe("seeded meeting-chat browser integration", () => {
     });
 
     const noContent = seededRetriever({
-      serverList: {
-        status: "ok",
-        value: { source: SOURCE, meetings: [serverMeta("empty", { hasSummary: true })], nextCursor: null, hasMore: false },
-      },
+      sqlRows: [sqlRow("empty", { hasSummary: 1 })],
     });
     expect(await noContent.retriever.retrieve({ threadId: "empty", question: "latest meeting notes" })).toEqual(expect.objectContaining({
       status: "no-content",
@@ -602,8 +518,7 @@ describe("seeded meeting-chat browser integration", () => {
     const localKey = meetingKvKey(SOURCE, "locked-local");
     const localPrefix = `${CONNECTORS_KV_PREFIX}/${SOURCE}/meeting/`;
     const critical = seededRetriever({
-      sqlError: { message: "no such table: connector_meeting" },
-      serverList: { status: "ok", value: { source: SOURCE, meetings: [serverMeta("locked-local")], nextCursor: null, hasMore: false } },
+      sqlRows: [sqlRow("locked-local")],
       kvKeys: { [localPrefix]: [localKey] },
       kvGetError: { code: "AUTH_UNAUTHORIZED" },
     });
@@ -626,8 +541,7 @@ describe("seeded meeting-chat browser integration", () => {
     const beta = candidate("google-meet", "same");
     expect(mergeMeetingCorpus({
       sql: { candidates: [alpha], lane: { state: "healthy" } },
-      server: { candidates: [beta], lane: { state: "healthy" } },
-      kv: { candidates: [], lane: { state: "healthy" } },
+      kv: { candidates: [beta], lane: { state: "healthy" } },
     }).candidates).toHaveLength(2);
 
     const recordKey = meetingKvKey(SOURCE, "three-reads");
@@ -639,12 +553,8 @@ describe("seeded meeting-chat browser integration", () => {
         [`${CONNECTORS_KV_PREFIX}/${SOURCE}/meeting/`]: [recordKey],
         [`${CONNECTORS_KV_PREFIX}/${SOURCE}/transcript/`]: [transcriptKey],
       },
-      serverList: {
-        status: "ok",
-        value: { source: SOURCE, meetings: [serverMeta("three-reads", { hasSummary: true })], nextCursor: null, hasMore: false },
-      },
       // No value for either local key makes both listed local reads harmless
-      // KV_NOT_FOUND results. The server would be a fourth read and is skipped.
+      // KV_NOT_FOUND results.
     });
     expect(await fixture.retriever.retrieve({ threadId: "reads", question: "latest meeting notes" })).toEqual(expect.objectContaining({
       status: "no-content",
@@ -653,8 +563,7 @@ describe("seeded meeting-chat browser integration", () => {
       transcriptRequired: false,
       meeting: expect.any(Object),
     }));
-    expect(fixture.calls.filter((call) => call === "sql:evidence" || call.startsWith("kv:get:") || call === "server:read")).toHaveLength(3);
-    expect(fixture.calls).not.toContain("server:read");
+    expect(fixture.calls.filter((call) => call === "sql:evidence" || call.startsWith("kv:get:"))).toHaveLength(3);
     expect(fixture.maxActive).toBe(1);
   });
 
@@ -662,8 +571,7 @@ describe("seeded meeting-chat browser integration", () => {
     const transcriptKey = transcriptKvKey(SOURCE, "wire-canary");
     const transcriptPrefix = `${CONNECTORS_KV_PREFIX}/${SOURCE}/transcript/`;
     const fixture = seededRetriever({
-      sqlError: { message: "no such table: connector_meeting" },
-      serverList: { status: "ok", value: { source: SOURCE, meetings: [serverMeta("wire-canary")], nextCursor: null, hasMore: false } },
+      sqlRows: [sqlRow("wire-canary")],
       kvKeys: { [transcriptPrefix]: [transcriptKey] },
       kvValues: {
         [transcriptKey]: JSON.stringify([
@@ -751,7 +659,7 @@ describe("seeded meeting-chat browser integration", () => {
         endSecs: index + 1,
       })),
       partial: true,
-      unavailableLocators: ["server-meeting"],
+      unavailableLocators: ["local-kv-transcript"],
     });
     expect(context.length).toBeLessThanOrEqual(MEETING_CONTEXT_MAX_CHARS);
     expect(context).toContain("Evidence status: partial.");

@@ -18,7 +18,6 @@ import {
   type BillingStatus,
 } from "../lib/billingApi";
 import { useSizeClass } from "@/lib/sizeClass";
-import { createConnectorMeetingsClient } from "../lib/connectors/meetingsApi";
 import { createBrowserMeetingTurnRetriever } from "../lib/meetingChat/retriever";
 import { createMeetingMessageRegistry } from "./pendingHandoff";
 import type { ModelSelectionController, SelectionView } from "./modelSelection";
@@ -54,16 +53,10 @@ export function ChatWorkspace(props: {
   const conversationCanvas = useConversationCanvasFeature(props.tcw, props.billingStatus);
   // One instance per mounted workspace: its thread selection state is
   // intentionally in-memory only, survives render churn, and vanishes on a
-  // workspace reload. It receives only browser-local handles and the existing
-  // session-backed metadata/content client.
+  // workspace reload. It receives only browser-local handles.
   const meetingRetriever = useMemo(
-    () => createBrowserMeetingTurnRetriever({
-      tcw: props.tcw,
-      meetings: createConnectorMeetingsClient(props.backendUrl, {
-        sessionStore: props.sessionStore,
-      }),
-    }),
-    [props.tcw, props.sessionStore, props.backendUrl, privateAccessRef.current],
+    () => createBrowserMeetingTurnRetriever({ tcw: props.tcw }),
+    [props.tcw, privateAccessRef.current],
   );
 
   const deps = useMemo(

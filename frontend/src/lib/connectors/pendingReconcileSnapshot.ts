@@ -2,8 +2,8 @@
  * Metadata-only pending-reconcile state stored in the user's connector KV,
  * with one key per source. `changed_at` records projection change time;
  * `checked_at` is the observation time of the last persisted source check.
- * Backend-ingest persists each newer completed pass on the existing mount and
- * unlock triggers only (no timer; it can age indefinitely without a trigger).
+ * The `backend-ingest` source persists every newer completed observation (no
+ * heartbeat), but its producer, the browser reconcile, is removed: nothing writes it now.
  * Transcriber uses its existing 30-second pass while active and unlocked,
  * refreshing unchanged projections every 50 minutes. With successful passes
  * of ≤ 60 seconds and timely timer execution, `checked_at` lag is
@@ -14,7 +14,6 @@
  */
 
 import { CONNECTORS_KV_PREFIX } from "./connectorStore";
-import type { ConnectorMeetingMeta } from "./meetingsApi";
 import type { TranscriberListRow } from "../transcriberApi";
 
 export const PENDING_RECONCILE_SNAPSHOT_KEY = `${CONNECTORS_KV_PREFIX}/pending-reconcile-snapshot`;
@@ -51,18 +50,6 @@ export interface PendingSnapshotKv {
 
 const timestampFields = ["ts", "storedAt", "updatedAt", "createdAt", "startedAt", "endedAt", "completedAt"] as const;
 const TRANSCRIBER_SNAPSHOT_HEARTBEAT_MS = 50 * 60 * 1000;
-
-export function backendPendingRows(source: string, rows: readonly ConnectorMeetingMeta[]): PendingReconcileMeeting[] {
-  return rows.map<PendingReconcileMeeting>((row) => ({
-    id: row.sourceId,
-    source,
-    ...(row.ts === undefined ? {} : { ts: row.ts }),
-    ...(row.storedAt === undefined ? {} : { storedAt: row.storedAt }),
-    ...(row.updatedAt === undefined ? {} : { updatedAt: row.updatedAt }),
-    status: "unreconciled",
-    reconciled: false,
-  })).sort((a, b) => a.id.localeCompare(b.id));
-}
 
 export function transcriberPendingRows(
   rows: readonly TranscriberListRow[],
