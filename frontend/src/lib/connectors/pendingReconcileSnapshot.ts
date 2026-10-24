@@ -2,8 +2,8 @@
  * Metadata-only pending-reconcile state stored in the user's connector KV,
  * with one key per source. `changed_at` records projection change time;
  * `checked_at` is the observation time of the last persisted source check.
- * Backend-ingest persists each newer completed pass on the existing mount and
- * unlock triggers only (no timer; it can age indefinitely without a trigger).
+ * The `backend-ingest` source persists every newer completed observation (no
+ * heartbeat), but its producer, the browser reconcile, is removed: nothing writes it now.
  * Transcriber uses its existing 30-second pass while active and unlocked,
  * refreshing unchanged projections every 50 minutes. With successful passes
  * of ≤ 60 seconds and timely timer execution, `checked_at` lag is

@@ -15,7 +15,7 @@
 // only classes move. On a phone (compact) one of home, Library or the note
 // shows, each its own scroller, so each keeps its scroll. From medium up the
 // list pane (home above the Library) sits beside the detail pane. A resize
-// never re-parents anything: the cohort archive keeps its place.
+// never re-parents anything: the Library keeps its place.
 import { useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import type { SessionStore } from "@tinyboilerplate/client";
