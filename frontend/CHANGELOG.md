@@ -1,5 +1,17 @@
 # @tinychat/frontend
 
+## 0.10.0-beta.23
+
+### Patch Changes
+
+- abde4ac: Show which transcription model produced a transcript.
+
+## 0.10.0-beta.22
+
+### Patch Changes
+
+- 2561378: Hide the Whisper Large Turbo model from the model picker. Models already selected or downloaded stay available.
+
 ## 0.10.0-beta.21
 
 ### Patch Changes
