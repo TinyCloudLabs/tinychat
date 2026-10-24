@@ -29,7 +29,7 @@ import {
   offeredChatModelContextTokens,
 } from "@tinyboilerplate/core";
 import { withEncryptionNetworkCreateGrant } from "./lib/connectors/encryptionGrant";
-import { replicationConfigPatch } from "./lib/replication/replicationClient";
+import { replicationConfigPatch, startReplicationFill } from "./lib/replication/replicationClient";
 import { rememberReplicationPrincipal } from "./lib/replication/replicationCopyMarker";
 import { purgeReplicaCopyWhenOffOnce } from "./lib/replication/replicationOffPurge";
 import { replicationPrincipalFor } from "./lib/replication/replicationOptIn";
@@ -621,6 +621,8 @@ export function App() {
         case "restored": {
           logSession("restore", "done");
           rememberReplicationPrincipal(restored.tcw);
+          // Nothing else starts the first sync (our transcript reads are network reads); ON only.
+          startReplicationFill(restored.tcw);
           const restoredTcw = LOCAL_VALIDATION ? useLocalCanvasStorage(useLocalThreadStorage(restored.tcw)) : restored.tcw;
           const accountDid = restored.tcw.did ?? `did:pkh:eip155:1:${restored.address}`;
           beginStorageAccountSession(restoredTcw, accountDid, restored.tcw.spaceId ?? null);
@@ -989,6 +991,8 @@ export function App() {
       // The SDK keeps this provider for later user-authorized operations;
       // only the verified login's signatures use the prefetched nonce guard.
       prefetch.complete();
+      // The sign-in is verified: start the first sync (ON only; nothing else starts it).
+      startReplicationFill(signedTcw);
 
       const signedInTcw = LOCAL_VALIDATION ? useLocalCanvasStorage(useLocalThreadStorage(signedTcw)) : signedTcw;
       beginStorageAccountSession(signedInTcw, signedTcw.did ?? null, signedTcw.spaceId ?? null);

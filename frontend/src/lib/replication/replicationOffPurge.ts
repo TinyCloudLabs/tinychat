@@ -23,22 +23,20 @@
 import { isReplicationEnabled } from "./replicationFlag";
 import { defaultReplicationLoader, type ReplicationPluginLoader } from "./replicationClient";
 import {
-  browserMarkerStore, REPLICATION_COPY_KEY, REPLICATION_WIPE_PENDING_KEY, SDK_LOGOUT_MARKER_KEY, type MarkerStore,
-} from "./replicationCopyMarker";
+  browserMarkerStore, deleteReplicaDatabase, REPLICATION_COPY_KEY, REPLICATION_WIPE_PENDING_KEY, SDK_LOGOUT_MARKER_KEY,
+  type MarkerStore, type ReplicaDeleteResult,
+} from "./replicationLocalStore";
 import { trackStartupPurge } from "./replicationStartupPurge";
 import { setReplicationOffPurgeCode, setReplicationPurging } from "./replicationStatus";
 
-/** The origin-wide replica database name (SDK kv-storage KV_DATABASE, @tinycloud/replica 0.3.0-beta.8). */
-export const REPLICA_DATABASE_NAME = "tinycloud-replica-kv";
-/** The origin Web Lock the SDK holds for gate operations (kv-storage GATE_LOCK, same version). */
-export const REPLICA_GATE_LOCK = "tinycloud-replica-kv:gate";
+// The database name, gate lock and the delete itself live in replicationLocalStore.ts (shared with
+// the sign-out path); re-exported here so existing imports keep working.
+export { deleteReplicaDatabase, REPLICA_DATABASE_NAME, REPLICA_GATE_LOCK, type ReplicaDeleteResult } from "./replicationLocalStore";
 
 export type ReplicationOffPurgeOutcome =
   | { status: "skipped"; reason: "replication-on" | "no-copy" }
   | { status: "purged" }
   | { status: "failed"; code: string };
-
-export type ReplicaDeleteResult = { ok: true } | { ok: false; code: string };
 
 export interface ReplicationOffPurgeDeps {
   loader?: ReplicationPluginLoader;
@@ -52,32 +50,6 @@ export interface ReplicationOffPurgeDeps {
 function codeOf(caught: unknown): string {
   if (caught && typeof caught === "object" && "code" in caught && typeof caught.code === "string") return caught.code;
   return "OFF_PURGE_ERROR";
-}
-
-/** Delete the origin replica database while holding the origin gate lock. Codes only, never content. */
-function removeReplicaDatabase(): Promise<ReplicaDeleteResult> {
-  return new Promise((resolve) => {
-    let request: IDBOpenDBRequest;
-    try {
-      request = indexedDB.deleteDatabase(REPLICA_DATABASE_NAME);
-    } catch {
-      resolve({ ok: false, code: "STORAGE_ERROR" });
-      return;
-    }
-    request.onsuccess = () => resolve({ ok: true });
-    request.onerror = () => resolve({ ok: false, code: "STORAGE_ERROR" });
-    // Another connection (e.g. another tab) still has the database open: report and retry next load.
-    request.onblocked = () => resolve({ ok: false, code: "DELETE_BLOCKED" });
-  });
-}
-
-export async function deleteReplicaDatabase(): Promise<ReplicaDeleteResult> {
-  const locks = typeof navigator === "undefined" ? undefined : navigator.locks;
-  if (typeof indexedDB === "undefined" || typeof locks?.request !== "function") {
-    return { ok: false, code: "gate_unavailable" };
-  }
-  const outcome: ReplicaDeleteResult = await locks.request(REPLICA_GATE_LOCK, removeReplicaDatabase);
-  return outcome;
 }
 
 /** Remove the origin's leftover replica copy while replication is OFF (or a wipe is pending). Never throws; reports codes only. */

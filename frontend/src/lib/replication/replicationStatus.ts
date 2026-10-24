@@ -78,7 +78,8 @@ export async function refreshReplicationStatus(tcw: TinyCloudWeb): Promise<Repli
   if (!control) return current;
   try {
     const entries = await control.status();
-    let state = "ready";
+    // No entries = nothing has been opened yet (no sync started): "idle", not "ready".
+    let state = entries.length === 0 ? "idle" : "ready";
     let lastSyncAt: string | null = null;
     let errorCode: string | null = null;
     let bytes = 0;
@@ -92,7 +93,9 @@ export async function refreshReplicationStatus(tcw: TinyCloudWeb): Promise<Repli
       keys += entry.counts?.keys ?? 0;
       if ("purgePending" in entry && entry.purgePending === true) purgePending = true;
     }
-    publish({ ...current, state, lastSyncAt, errorCode: errorCode ?? current.errorCode, bytes, keys, purgePending });
+    // The error comes from this poll only: a code left by an earlier poll or event (for example
+    // REPLICA_GATED from a session restored before the opt-in) is dropped once the controller reports none.
+    publish({ ...current, state, lastSyncAt, errorCode, bytes, keys, purgePending });
   } catch (caught) {
     publish({ ...current, state: "unavailable", errorCode: caught instanceof Error && "code" in caught && typeof caught.code === "string" ? caught.code : "STATUS_ERROR" });
   }

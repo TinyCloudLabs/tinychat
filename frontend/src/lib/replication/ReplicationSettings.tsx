@@ -87,19 +87,19 @@ export function ReplicationSettings({ tcw }: { tcw: TinyCloudWeb }) {
   const live = clientHasReplication(tcw) && !stopped;
   return (
     <SectionCard icon={DatabaseIcon} title={REPLICATION_COPY.cardTitle}>
-    <div className="flex flex-col gap-2 text-callout" data-testid="replication-settings">
+    <div className="flex min-w-0 flex-col gap-2 break-words text-callout" data-testid="replication-settings">
       {showSwitch && (
         <>
           <label className="flex min-h-11 items-center gap-3">
             <input
               type="checkbox"
-              className="size-5"
+              className="size-5 shrink-0"
               checked={optedIn}
               disabled={busy}
               onChange={(event) => onSwitch(event.currentTarget.checked)}
               data-testid="replication-switch"
             />
-            <span>{REPLICATION_COPY.switchLabel}</span>
+            <span className="min-w-0">{REPLICATION_COPY.switchLabel}</span>
           </label>
           <p className="text-muted-foreground">{REPLICATION_COPY.switchHelp}</p>
         </>
@@ -110,6 +110,7 @@ export function ReplicationSettings({ tcw }: { tcw: TinyCloudWeb }) {
             type="button"
             size="sm"
             variant="outline"
+            className="h-auto min-h-8 max-w-full whitespace-normal py-1.5 text-left"
             disabled={busy}
             onClick={() => setPending("wipe")}
             data-testid="replication-wipe"

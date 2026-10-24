@@ -2,22 +2,14 @@
 // without loading any replica code. See replicationOffPurge.ts for how it is used.
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { clientHasReplication } from "./replicationSignOut";
+import { browserMarkerStore, type MarkerStore } from "./replicationLocalStore";
 
-/** "1" = a copy may exist (principal unknown yet); otherwise the pkh DID of the last ON session. */
-export const REPLICATION_COPY_KEY = "tinychat:replication:copy";
-/** The SDK's own pending-logout marker (kv-storage REPLICA_LOGOUT_MARKER). */
-export const SDK_LOGOUT_MARKER_KEY = "tinycloud-replica:logout-pending";
-/**
- * Set when the user asked to remove the local copy and the removal has not finished. Unlike the
- * copy marker it forces the next load to retry even while replication is ON for that user.
- */
-export const REPLICATION_WIPE_PENDING_KEY = "tinychat:replication:wipe-pending";
-
-export type MarkerStore = Pick<Storage, "getItem" | "setItem" | "removeItem">;
-
-export function browserMarkerStore(): MarkerStore | undefined {
-  try { return window.localStorage; } catch { return undefined; }
-}
+// The keys and the store live in replicationLocalStore.ts (shared with the sign-out path without an
+// import cycle); re-exported here so existing imports keep working.
+export {
+  browserMarkerStore, REPLICATION_COPY_KEY, REPLICATION_WIPE_PENDING_KEY, SDK_LOGOUT_MARKER_KEY, type MarkerStore,
+} from "./replicationLocalStore";
+import { REPLICATION_COPY_KEY, REPLICATION_WIPE_PENDING_KEY, SDK_LOGOUT_MARKER_KEY } from "./replicationLocalStore";
 
 /** Called when an ON config is built, before sign-in can create any copy. */
 export function noteReplicationCopyPossible(store: MarkerStore | undefined = browserMarkerStore()): void {
