@@ -32,6 +32,8 @@ services:
       MEETING_CONTENT_MODELS: ${MEETING_CONTENT_MODELS:-}
       # Optional one-time, log-only count of stored connector credential rows. Empty = off.
       CREDENTIAL_ROW_COUNT_SOURCES: ${CREDENTIAL_ROW_COUNT_SOURCES:-}
+      # Optional one-time authenticated read-only count of stored credential rows. Empty = route off.
+      CREDENTIAL_COUNT_ADMIN_KEY: ${CREDENTIAL_COUNT_ADMIN_KEY:-}
       # Explicit stream policy is required when agent chat is enabled. Startup validates
       # these settings; empty values keep agent-disabled deployments possible, with no defaults.
       AGENT_STREAM_HEARTBEAT_MS: ${AGENT_STREAM_HEARTBEAT_MS:-}

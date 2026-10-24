@@ -159,6 +159,17 @@ export const PAID_CHAT_PATHS = ["/api/chat", "/api/agent/chat"] as const;
 export const AUTH_LIMIT = 1200;
 export const AUTH_PATHS = ["/api/auth"] as const;
 
+/**
+ * The optional authenticated credential count (routes/credential-count.ts) is a one-time, read-only
+ * operator read behind a shared admin key, so its bucket is hard and blind to everything the client
+ * sends: no session bearer, no IP (behind the gateway every client shares one address, and an
+ * `X-Forwarded-For` key is attacker-chosen). One whole-service key, counted BEFORE the key compare
+ * and for 401s too, so wrong-key guessing is throttled to this many tries per window.
+ */
+export const CREDENTIAL_COUNT_LIMIT = 5;
+export const CREDENTIAL_COUNT_WINDOW_MS = 60 * 60 * 1000;
+export const CREDENTIAL_COUNT_PATHS = ["/api/internal/credential-row-count"] as const;
+
 /** Liveness probes, matched exactly (`/health` or `/health/`). Exempt from every bucket: the
  *  handler only serializes in-memory state, and a drained bucket must never make monitors report
  *  the backend down. */
@@ -178,6 +189,7 @@ export type Bucket =
   | "hostedUpload"
   | "paidChat"
   | "auth"
+  | "credentialCount"
   | "global"
   | "none";
 
@@ -193,6 +205,7 @@ const PREFIX_BUCKETS: ReadonlyArray<readonly [readonly string[], Bucket]> = [
   [GOOGLE_OAUTH_PATHS, "googleOAuth"],
   [CALENDAR_AUTOJOIN_PATHS, "calendarAutojoin"],
   [AUTH_PATHS, "auth"],
+  [CREDENTIAL_COUNT_PATHS, "credentialCount"],
 ];
 
 function matchesMountPath(path: string, mount: string): boolean {
@@ -340,7 +353,7 @@ export function logGlobalBucketRoutes(counter: GlobalBucketRouteCounter, everyMs
  * anonymous ceiling divided by `SHARED_KEY_HEADROOM`; spend, consent and mutation buckets are
  * set on their own.
  */
-export const SESSION_LIMITS: Record<Exclude<Bucket, "none" | "auth">, number> = {
+export const SESSION_LIMITS: Record<Exclude<Bucket, "none" | "auth" | "credentialCount">, number> = {
   global: GLOBAL_LIMIT / SHARED_KEY_HEADROOM,
   verification: VERIFICATION_LIMIT / SHARED_KEY_HEADROOM,
   connectorCompanion: CONNECTOR_COMPANION_LIMIT / SHARED_KEY_HEADROOM,
@@ -367,7 +380,7 @@ export const SESSION_LIMITS: Record<Exclude<Bucket, "none" | "auth">, number> = 
  * never reach a cost, and a tokenless flood must not drain the ceiling every signed-in user
  * shares. Draining it takes real sessions (about five at the per-session limits).
  */
-export const AGGREGATE_LIMITS: Partial<Record<Exclude<Bucket, "none" | "auth">, number>> = {
+export const AGGREGATE_LIMITS: Partial<Record<Exclude<Bucket, "none" | "auth" | "credentialCount">, number>> = {
   paidChat: PAID_CHAT_LIMIT,
   privateCloudTranscriptionMutation: PRIVATE_CLOUD_TRANSCRIPTION_MUTATION_LIMIT,
   hostedUpload: ASSEMBLYAI_HOSTED_UPLOAD_LIMIT,
@@ -409,12 +422,14 @@ export function applyRateLimiters(app: Express, { sessionKey }: RateLimitOptions
   app.set("trust proxy", 1);
   const bucket = (kind: Exclude<Bucket, "none">, anonymous: number, skip?: (req: Request) => boolean) =>
     rateLimit({
-      windowMs: WINDOW_MS,
-      // `auth` never looks at the bearer: see `AUTH_LIMIT`.
+      windowMs: kind === "credentialCount" ? CREDENTIAL_COUNT_WINDOW_MS : WINDOW_MS,
+      // `auth` and `credentialCount` never look at the bearer: see `AUTH_LIMIT`, `CREDENTIAL_COUNT_LIMIT`.
       limit: async (req) =>
-        kind !== "auth" && (await sessionAddress(req, sessionKey)) ? SESSION_LIMITS[kind] : anonymous,
+        kind !== "auth" && kind !== "credentialCount" && (await sessionAddress(req, sessionKey))
+          ? SESSION_LIMITS[kind]
+          : anonymous,
       keyGenerator: async (req) => {
-        const address = kind === "auth" ? null : await sessionAddress(req, sessionKey);
+        const address = kind === "auth" || kind === "credentialCount" ? null : await sessionAddress(req, sessionKey);
         return address ? `session:${address}` : ANONYMOUS_KEY;
       },
       standardHeaders: "draft-7",
@@ -432,6 +447,11 @@ export function applyRateLimiters(app: Express, { sessionKey }: RateLimitOptions
       skip: async (req) => (skip?.(req) ?? false) || !(await sessionAddress(req, sessionKey)),
     });
   const globalRoutes = new GlobalBucketRouteCounter();
+  // Set ahead of the limiter so a 429 from this path is never cacheable either.
+  app.use(CREDENTIAL_COUNT_PATHS[0], (_req, res, next) => {
+    res.setHeader("Cache-Control", "no-store");
+    next();
+  });
   app.use((req, _res, next) => {
     if (bucketFor(req.method, req.path) === "global") globalRoutes.record(req.method, req.path);
     next();
@@ -449,13 +469,14 @@ export function applyRateLimiters(app: Express, { sessionKey }: RateLimitOptions
     privateCloudTranscriptionMutation: PRIVATE_CLOUD_TRANSCRIPTION_MUTATION_LIMIT,
     hostedUpload: ASSEMBLYAI_HOSTED_UPLOAD_LIMIT,
     auth: AUTH_LIMIT,
+    credentialCount: CREDENTIAL_COUNT_LIMIT,
     global: GLOBAL_LIMIT,
   };
   for (const [kind, anonymous] of Object.entries(limits) as [keyof typeof limits, number][]) {
     // Mounted at the app root, so req.path is the full path.
     const skip = (req: Request) => bucketFor(req.method, req.path) !== kind;
     app.use(bucket(kind, anonymous, skip));
-    if (kind !== "auth" && kind in AGGREGATE_LIMITS) app.use(aggregate(kind, skip));
+    if (kind !== "auth" && kind !== "credentialCount" && kind in AGGREGATE_LIMITS) app.use(aggregate(kind, skip));
   }
   // Paid chat is charged ONCE per request: at the root when the classifier recognises the path
   // (so the global bucket skips it), otherwise at the handler. A spelling the classifier misses
