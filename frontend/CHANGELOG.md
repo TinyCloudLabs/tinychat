@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.10.0-beta.21
+
+### Patch Changes
+
+- 8feaa2d: Restores the previous sign-in permissions.
+
 ## 0.10.0-beta.20
 
 ### Patch Changes
