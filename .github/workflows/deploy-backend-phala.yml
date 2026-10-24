@@ -533,17 +533,23 @@ jobs:
           ASSEMBLYAI_API_KEY: ${{ secrets.ASSEMBLYAI_API_KEY }}
           ASSEMBLYAI_HOSTED_ADMIN_KEY: ${{ secrets.ASSEMBLYAI_HOSTED_ADMIN_KEY }}
           ASSEMBLYAI_HOSTED_FRESH_INSTALL: ${{ vars.ASSEMBLYAI_HOSTED_FRESH_INSTALL }}
-          # TC-1978 log shipping: the Better Stack source token for the `vector` sidecar in docker-compose.phala.yml.
-          # Optional by design: an unset secret is an empty value, and the sidecar then idles and ships nothing while the
-          # backend serves as before. The key is always written below so allowed_envs (derived from this file's keys by
-          # the sync step) carries it; setting the secret later is then a plain redeploy.
-          PHALA_ENV_BETTERSTACK_SOURCE_TOKEN: ${{ secrets.PROD_TINYCHAT_BETTERSTACK_SOURCE_TOKEN }}
+          # TC-1978 log shipping for the `vector` sidecar in docker-compose.phala.yml. The source token is the
+          # production-api environment secret BETTERSTACK_SOURCE_TOKEN; the ingest host is the repo variable
+          # TINYCHAT_BETTERSTACK_INGEST_HOST (a hostname, not a secret). Both are optional by design: unset, the sidecar
+          # keeps only its local filtered log and ships nothing. Both keys are always written below, so allowed_envs
+          # (derived from this file's keys by the sync step) carries them; setting either later is a plain redeploy.
+          PHALA_ENV_BETTERSTACK_SOURCE_TOKEN: ${{ secrets.BETTERSTACK_SOURCE_TOKEN }}
+          PHALA_ENV_BETTERSTACK_INGEST_HOST: ${{ vars.TINYCHAT_BETTERSTACK_INGEST_HOST }}
         run: |
           ENV_FILE="$RUNNER_TEMP/phala-prod.env"
           DEPLOY_RUN_URL="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           # A multi-line token would corrupt the KEY=VALUE env file; fail before anything is written, without printing it.
           if [[ "${PHALA_ENV_BETTERSTACK_SOURCE_TOKEN:-}" == *$'\n'* || "${PHALA_ENV_BETTERSTACK_SOURCE_TOKEN:-}" == *$'\r'* ]]; then
-            echo "::error title=Invalid log shipping token::PROD_TINYCHAT_BETTERSTACK_SOURCE_TOKEN must be a single-line value"
+            echo "::error title=Invalid log shipping token::BETTERSTACK_SOURCE_TOKEN must be a single-line value"
+            exit 1
+          fi
+          if [ -n "${PHALA_ENV_BETTERSTACK_INGEST_HOST:-}" ] && { [[ "$PHALA_ENV_BETTERSTACK_INGEST_HOST" == *$'\n'* ]] || ! [[ "$PHALA_ENV_BETTERSTACK_INGEST_HOST" =~ ^[a-z0-9][a-z0-9.-]*\.betterstackdata\.com$ ]]; }; then
+            echo "::error title=Invalid log shipping host::TINYCHAT_BETTERSTACK_INGEST_HOST must be a *.betterstackdata.com hostname"
             exit 1
           fi
           {
@@ -631,6 +637,7 @@ jobs:
             printf '%s\n' "ASSEMBLYAI_HOSTED_ADMIN_KEY=$ASSEMBLYAI_HOSTED_ADMIN_KEY"
             printf '%s\n' "ASSEMBLYAI_HOSTED_FRESH_INSTALL=$ASSEMBLYAI_HOSTED_FRESH_INSTALL"
             printf '%s\n' "BETTERSTACK_SOURCE_TOKEN=${PHALA_ENV_BETTERSTACK_SOURCE_TOKEN:-}"
+            printf '%s\n' "BETTERSTACK_INGEST_HOST=${PHALA_ENV_BETTERSTACK_INGEST_HOST:-}"
           } > "$ENV_FILE"
 
           echo "::group::Deploy environment keys"

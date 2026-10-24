@@ -9,8 +9,13 @@ import { MAX_LINE_BYTES, CAP_PER_WINDOW, CAP_WINDOW_SECONDS } from './limits.mjs
 const root = fileURLToPath(new URL('../', import.meta.url));
 const load = name => JSON.parse(readFileSync(resolve(root, 'log-shipper', name), 'utf8'));
 export const vectorImage = 'timberio/vector:0.59.0-alpine@sha256:0e36bc2a290039e9b6a5e92f04bd2f133223506f72d09682c1df16c015172b7a';
-/** Better Stack source "tinychat-backend" (ops/betterstack/sources.json): an ingest host, not a secret. */
-export const sinkUri = 'https://s2795438.us-west-2a.betterstackdata.com/';
+/**
+ * The ingest host comes from the sealed, non-secret env BETTERSTACK_INGEST_HOST (repo variable TINYCHAT_BETTERSTACK_INGEST_HOST).
+ * Vector 0.59 does not interpolate environment variables by default, so the sidecar's entrypoint substitutes this placeholder
+ * (after checking the host is a plain *.betterstackdata.com name) when it writes the ship config.
+ */
+export const INGEST_HOST_PLACEHOLDER = '__INGEST_HOST__';
+export const sinkUri = `https://${INGEST_HOST_PLACEHOLDER}/`;
 export { MAX_LINE_BYTES, CAP_PER_WINDOW, CAP_WINDOW_SECONDS };
 /** Keys the schema marks as typed attributes. Structural keys are never attributes. */
 export const STRUCTURAL = Object.freeze(['svc', 'component', 'event_code', 'error_class', 'gate_reason', 'window_s', 'budget_event', 'budget_mode']);
@@ -96,10 +101,17 @@ function flush(emit)
 end`,
 };
 
-/** Compile one boundary for native tests, the cap check, validation and the compose. */
-export function buildConfig({ uri = sinkUri, dataDir = '/var/lib/vector', sourceAddress = '0.0.0.0:12201', token } = {}) {
+/** The only inputs any sink may have: the filtered stream and the content-free gate counts. Never a raw stage. */
+export const SINK_INPUTS = Object.freeze(['cap', 'gate_output']);
+
+/**
+ * Two parts, so the sidecar can run without a token. `base` is the whole boundary plus a local sink that prints the SAME
+ * filtered stream as JSON lines to the container's stdout (rotated by Docker's json-file driver). `ship` adds the
+ * Better Stack sink and its secret; the sidecar loads it only when a token and a valid ingest host are present.
+ */
+export function buildParts({ uri = sinkUri, dataDir = '/var/lib/vector', sourceAddress = '0.0.0.0:12201', token } = {}) {
   const gateReasons = schema().fields.gate_reason.values;
-  const config = {
+  const base = {
     data_dir: dataDir,
     sources: { gelf_in: {
       type: 'socket', mode: 'udp', address: sourceAddress, max_length: 262144, receive_buffer_bytes: 8388608,
@@ -154,8 +166,11 @@ if !includes(${JSON.stringify(gateReasons)}, reason) { reason = "malformed_envel
       gate_output: remap(['gate_reduce'], `. = {"ts": format_timestamp!(now(), format: "%Y-%m-%dT%H:%M:%S%.3fZ"), "level": "warn", "event": "logship_gate_summary_total", "svc": "logship", "gate_reason": .gate_reason, "count": .count}`),
       cap: capTransform,
     },
+    sinks: { local: { type: 'console', inputs: [...SINK_INPUTS], target: 'stdout', encoding: { codec: 'json' } } },
+  };
+  const ship = {
     sinks: { betterstack: {
-      type: 'http', inputs: ['cap', 'gate_output'], method: 'post', uri,
+      type: 'http', inputs: [...SINK_INPUTS], method: 'post', uri,
       encoding: { codec: 'json' }, framing: { method: 'newline_delimited' }, compression: 'gzip',
       auth: { strategy: 'bearer', token: token ?? 'SECRET[bs.bs_token]' },
       batch: { max_bytes: 262144, timeout_secs: 1 },
@@ -164,12 +179,18 @@ if !includes(${JSON.stringify(gateReasons)}, reason) { reason = "malformed_envel
       healthcheck: { enabled: false },
     } },
   };
-  if (token === undefined) config.secret = { bs: { type: 'directory', path: `${dataDir}/secrets`, remove_trailing_whitespace: true } };
-  return config;
+  if (token === undefined) ship.secret = { bs: { type: 'directory', path: `${dataDir}/secrets`, remove_trailing_whitespace: true } };
+  return { base, ship };
+}
+
+/** Both parts as one config, for native tests, the cap check and validation. */
+export function buildConfig(options) {
+  const { base, ship } = buildParts(options);
+  return { ...base, ...(ship.secret ? { secret: ship.secret } : {}), sinks: { ...base.sinks, ...ship.sinks } };
 }
 
 /** The compose value: every `$` doubled, because Compose interpolates `$` in environment values. */
-export const composeEmbed = (config = buildConfig()) => JSON.stringify(JSON.stringify(config).replaceAll('$', () => '$$'));
+export const composeEmbed = config => JSON.stringify(JSON.stringify(config).replaceAll('$', () => '$$'));
 /** Undo composeEmbed for a YAML-parsed compose value. */
 export const parseComposeEmbed = value => JSON.parse(value.replaceAll('$$', '$'));
 
@@ -177,7 +198,10 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   const [command, output, option] = process.argv.slice(2);
   if (command === 'sync-compose' && output) {
     const text = readFileSync(output, 'utf8');
-    const next = text.replace(/^(\s+VECTOR_CONFIG_JSON: ).*$/m, (_, prefix) => `${prefix}${composeEmbed()}`);
+    const { base, ship } = buildParts();
+    const next = text
+      .replace(/^(\s+VECTOR_CONFIG_JSON: ).*$/m, (_, prefix) => `${prefix}${composeEmbed(base)}`)
+      .replace(/^(\s+VECTOR_SHIP_JSON: ).*$/m, (_, prefix) => `${prefix}${composeEmbed(ship)}`);
     if (next === text) console.log('compose already in sync'); else { writeFileSync(output, next); console.log('compose updated'); }
     process.exit(0);
   }

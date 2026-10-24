@@ -244,7 +244,7 @@ Repository **secrets**:
 | `CONNECTOR_CONTENT_MASTER` | W4 content-custody master (backend ingest). Same rules — its own value, survives redeploys; wraps every stored meeting. |
 | `FIREFLIES_OAUTH_CLIENT_ID` | Registered Fireflies OAuth app (custody branch b1). Required with the ingest flag armed. |
 | `FIREFLIES_OAUTH_CLIENT_SECRET` | Fireflies OAuth app secret. Required with the ingest flag armed. |
-| `PROD_TINYCHAT_BETTERSTACK_SOURCE_TOKEN` | Ingest token of the log service source for the backend. Optional: unset deploys exactly as before and the log sidecar ships nothing. The deploy maps it to `PHALA_ENV_BETTERSTACK_SOURCE_TOKEN`, which is sealed as env `BETTERSTACK_SOURCE_TOKEN` (added to `allowed_envs` by the sync step). Never printed. See *Log shipping* below. |
+| `BETTERSTACK_SOURCE_TOKEN` | Ingest token of the log service source for the backend (`production-api` environment secret). Optional: unset deploys exactly as before and the log sidecar ships nothing (it keeps only its local filtered log). The deploy maps it to `PHALA_ENV_BETTERSTACK_SOURCE_TOKEN`, which is sealed as env `BETTERSTACK_SOURCE_TOKEN` (added to `allowed_envs` by the sync step). Never printed. See *Log shipping* below. |
 
 Repository **variables** (all optional — defaults shown):
 
@@ -292,6 +292,7 @@ Repository **variables** (all optional — defaults shown):
 | `TRANSCRIPTION_WEBHOOK_SECRET` | _(empty = unsigned-wake mode; when set, a `whsec_` plus 48 lowercase hex chars requiring raw-body HMAC)_ |
 | `TRANSCRIPT_DELIVERY_SWEEP_MS` | `600000` (minimum `60000`; first pass after 30 s, at most 200 upstream calls per pass) |
 | `TRANSCRIPT_DELIVERY_MAX_WRITES_PER_MIN` | `6` (minimum 1; one shared governor for each activation, SQL INSERT, KV PUT, state write, grant removal and recovered intent write) |
+| `TINYCHAT_BETTERSTACK_INGEST_HOST` | _(empty — repo **variable**; the log service source's ingest hostname, `*.betterstackdata.com`, not a secret. Sealed as env `BETTERSTACK_INGEST_HOST`. Without it, or without the token, the sidecar ships nothing.)_ |
 
 ### Log shipping (TC-1978)
 
@@ -304,13 +305,23 @@ the overflow is reported as one `log_dropped` count.
 
 | Name | Where | Notes |
 | --- | --- | --- |
-| `PROD_TINYCHAT_BETTERSTACK_SOURCE_TOKEN` | repo secret | Source token; optional. Absent = the sidecar prints one fixed line and idles. |
+| `BETTERSTACK_SOURCE_TOKEN` | `production-api` environment secret | Source token; optional. |
 | `PHALA_ENV_BETTERSTACK_SOURCE_TOKEN` | deploy step env | Mapping of the secret; the deploy writes it as `BETTERSTACK_SOURCE_TOKEN=` in the sealed env file (key always present, so `allowed_envs` carries it). |
-| `BETTERSTACK_SOURCE_TOKEN` | sealed CVM env | Read only by the `vector` service; written to a `0600` file and unset before Vector starts. |
+| `TINYCHAT_BETTERSTACK_INGEST_HOST` | repo variable | Ingest hostname of the source; optional. A new source needs only a new variable value. |
+| `PHALA_ENV_BETTERSTACK_INGEST_HOST` | deploy step env | Mapping of the variable; written as `BETTERSTACK_INGEST_HOST=`. |
+| `BETTERSTACK_SOURCE_TOKEN`, `BETTERSTACK_INGEST_HOST` | sealed CVM env | Read only by the `vector` service. The token is written to a `0600` file and unset before Vector starts; the host must be a `*.betterstackdata.com` hostname or shipping stays off. |
 
-After the first deploy that carries these changes, `docker logs` for the backend container is empty (the gelf driver keeps no local copy).
-Changing the log config means regenerating the embedded `VECTOR_CONFIG_JSON`: `node log-shipper/build.mjs sync-compose docker-compose.phala.yml`.
-Checks: `.github/workflows/logship.yml` runs `vector test` (config cases), `vector validate`, a UDP-to-HTTP check and the cap check.
+**Local copy.** The same filtered stream (never the raw lines) is also printed by the sidecar to its own stdout, which Docker keeps in a rotating
+`json-file` log of about 10 MB (2 files of 5 MB). Read it with `docker logs` on the `vector` service. With the token or the host unset, the
+sidecar runs local-only and prints one fixed line. The backend container itself has no local copy (the gelf driver keeps none), so `docker logs` on
+the backend is empty after the first deploy that carries these changes.
+
+**allowed_envs.** The sync step (`.github/scripts/phala-sync-allowed-envs.mjs`) is add-only: it sends the union of the CVM's existing
+`allowed_envs` and the keys of the deploy's env file, and does nothing if no key is missing. The first deploy adds `BETTERSTACK_SOURCE_TOKEN` and
+`BETTERSTACK_INGEST_HOST`; no existing name is removed.
+
+Changing the log config means regenerating the embedded `VECTOR_CONFIG_JSON` and `VECTOR_SHIP_JSON`: `node log-shipper/build.mjs sync-compose docker-compose.phala.yml`.
+Checks: `.github/workflows/logship.yml` runs `vector test` (config cases), `vector validate`, a UDP-to-HTTP and local-only check and the cap check.
 
 ### Private Transcription server delivery (TC-641) — dark rollout runbook
 

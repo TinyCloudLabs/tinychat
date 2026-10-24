@@ -73,25 +73,37 @@ describe("log shipping sidecar (TC-1978)", () => {
     expect(compose.services["dstack-ingress"]?.logging).toBeUndefined();
   });
 
-  test("the token reaches only the sidecar, optionally, and never the backend", () => {
+  test("the token and host reach only the sidecar, optionally, and never the backend", () => {
     expect(vector.environment?.BETTERSTACK_SOURCE_TOKEN).toBe("${BETTERSTACK_SOURCE_TOKEN:-}");
+    expect(vector.environment?.BETTERSTACK_INGEST_HOST).toBe("${BETTERSTACK_INGEST_HOST:-}");
     expect(JSON.stringify(backend)).not.toContain("BETTERSTACK");
     expect(JSON.stringify(compose.services["dstack-ingress"])).not.toContain("BETTERSTACK");
-    // The token is written to a 0600 file and unset before vector starts; it never enters the config.
+    // The token is written to a 0600 file and unset before vector starts; it never enters either config.
     const script = vector.entrypoint!.at(-1)!;
     expect(script).toContain("umask 077");
-    expect(script).toContain('> /var/lib/vector/secrets/bs_token');
-    expect(script.indexOf("unset BETTERSTACK_SOURCE_TOKEN VECTOR_CONFIG_JSON\nexec vector")).toBeGreaterThan(script.indexOf("bs_token"));
+    expect(script).toContain("> /var/lib/vector/secrets/bs_token");
+    expect(script.indexOf("unset BETTERSTACK_SOURCE_TOKEN VECTOR_CONFIG_JSON VECTOR_SHIP_JSON\nexec vector")).toBeGreaterThan(script.indexOf("bs_token"));
     expect(vector.environment?.VECTOR_CONFIG_JSON).not.toContain("BETTERSTACK_SOURCE_TOKEN");
+    expect(vector.environment?.VECTOR_SHIP_JSON).not.toContain("BETTERSTACK_SOURCE_TOKEN");
   });
 
-  test("an absent token idles the sidecar: one fixed line, nothing shipped, never an exit that a restart policy would loop on", () => {
+  test("an absent token or host keeps the sidecar running local-only: one fixed line, no ship config, no exit a restart policy would loop on", () => {
     const script = vector.entrypoint!.at(-1)!;
-    const absent = script.slice(script.indexOf('if [ -z "$$BETTERSTACK_SOURCE_TOKEN" ]'), script.indexOf("fi\n"));
-    expect(absent).toContain("log shipping disabled");
-    expect(absent).toContain("exec tail -f /dev/null");
-    expect(absent).not.toMatch(/\bexit\b/);
+    const absent = script.slice(script.indexOf('if [ -z "$$BETTERSTACK_SOURCE_TOKEN" ]'), script.indexOf("else\n"));
+    expect(absent).toContain("local filtered log only");
+    expect(absent).toContain("ingest host absent or invalid");
+    expect(absent).not.toContain("ship.json");
     expect(script).not.toMatch(/\bexit\b/);
+    // The ship config and the token file exist only in the branch where both the token and a valid host are present.
+    const shipping = script.slice(script.indexOf("else\n"), script.indexOf("fi\nunset"));
+    expect(shipping).toContain("bs_token");
+    expect(shipping).toContain('--config /var/lib/vector/ship.json');
+    // The host is substituted only after the charset and suffix check above, so it cannot carry sed syntax or a different authority.
+    expect(shipping).toContain('sed "s/__INGEST_HOST__/$$BETTERSTACK_INGEST_HOST/" > /var/lib/vector/ship.json');
+    expect(script.indexOf("ship.json")).toBeGreaterThan(script.indexOf("else\n"));
+    // The host must be a plain *.betterstackdata.com name before the token is ever written.
+    expect(script).toContain("*.betterstackdata.com) host_ok=1");
+    expect(script).toContain("''|*[!a-z0-9.-]*|.*|-*|*..*) ;;");
   });
 
   test("the sidecar runs with no capabilities, a read-only root and a memory bound", () => {
@@ -101,42 +113,97 @@ describe("log shipping sidecar (TC-1978)", () => {
     expect((vector as { user?: string }).user).toBe("10001:10001");
   });
 
-  test("the embedded config is exactly what the builder produces, with the sink key read from a secret file", () => {
-    const embedded = vector.environment!.VECTOR_CONFIG_JSON!;
-    expect(embedded.replaceAll("$$", "")).not.toContain("$");
-    expect(build.parseComposeEmbed(embedded)).toEqual(build.buildConfig());
-    const config = build.buildConfig();
-    expect(config.sinks.betterstack.auth.token).toBe("SECRET[bs.bs_token]");
-    expect(config.secret.bs).toEqual({ type: "directory", path: "/var/lib/vector/secrets", remove_trailing_whitespace: true });
-    expect(config.sinks.betterstack.uri).toBe("https://s2795438.us-west-2a.betterstackdata.com/");
-    expect(config.sinks.betterstack.inputs).toEqual(["cap", "gate_output"]);
-    expect(JSON.stringify(config)).not.toMatch(/Bearer [A-Za-z0-9]/);
+  test("the local copy is capped at 2 x 5 MB and nothing else is kept", () => {
+    expect(vector.logging).toEqual({ driver: "json-file", options: { "max-size": "5m", "max-file": "2" } });
+    expect(vector.volumes).toBeUndefined();
+    expect(JSON.stringify(vector)).not.toContain("tmpfs:/var/log");
+  });
+
+  test("both embedded configs are exactly what the builder produces; the ship part carries the secret reference and the host variable only", () => {
+    const baseEmbedded = vector.environment!.VECTOR_CONFIG_JSON!;
+    const shipEmbedded = vector.environment!.VECTOR_SHIP_JSON!;
+    for (const embedded of [baseEmbedded, shipEmbedded]) expect(embedded.replaceAll("$$", "")).not.toContain("$");
+    const parts = build.buildParts();
+    expect(build.parseComposeEmbed(baseEmbedded)).toEqual(parts.base);
+    expect(build.parseComposeEmbed(shipEmbedded)).toEqual(parts.ship);
+    const ship = build.parseComposeEmbed(shipEmbedded) as { secret: unknown; sinks: { betterstack: { uri: string; auth: { token: string } } } };
+    expect(ship.sinks.betterstack.auth.token).toBe("SECRET[bs.bs_token]");
+    expect(ship.secret).toEqual({ bs: { type: "directory", path: "/var/lib/vector/secrets", remove_trailing_whitespace: true } });
+    expect(ship.sinks.betterstack.uri).toBe("https://__INGEST_HOST__/");
+    expect(JSON.stringify(parts)).not.toMatch(/Bearer [A-Za-z0-9]|betterstackdata/);
+    // Local-only mode needs no secret and no HTTP sink.
+    const base = parts.base as { secret?: unknown; sinks: Record<string, { type: string }> };
+    expect(base.secret).toBeUndefined();
+    expect(Object.keys(base.sinks)).toEqual(["local"]);
+    expect(base.sinks.local!.type).toBe("console");
+  });
+
+  test("every sink, local or shipped, takes only the filtered stream and the content-free gate counts, never a raw stage", () => {
+    const { base, ship } = build.buildParts() as { base: { transforms: Record<string, { inputs: string[] }>; sinks: Record<string, { inputs: string[] }> }; ship: { sinks: Record<string, { inputs: string[] }> } };
+    const sinks = { ...base.sinks, ...ship.sinks };
+    expect(Object.keys(sinks).sort()).toEqual(["betterstack", "local"]);
+    const ancestors = (name: string, seen = new Set<string>()): Set<string> => {
+      const stage = name.split(".")[0]!;
+      if (seen.has(stage)) return seen;
+      seen.add(stage);
+      for (const input of base.transforms[stage]?.inputs ?? []) ancestors(input, seen);
+      return seen;
+    };
+    for (const [name, sink] of Object.entries(sinks)) {
+      expect(sink.inputs, name).toEqual(["cap", "gate_output"]);
+      expect(sink.inputs, name).toEqual(build.SINK_INPUTS);
+      const reached = new Set(sink.inputs.flatMap((input) => [...ancestors(input)]));
+      // The filtered stream passes the allow-list and the guard; the counts come from the content-free gate counter.
+      expect(reached.has("allowlist"), name).toBe(true);
+      expect(reached.has("guard"), name).toBe(true);
+      expect(reached.has("gate_counts"), name).toBe(true);
+    }
+    expect(base.transforms.cap!.inputs).toEqual(["guard"]);
+    expect(base.transforms.guard!.inputs).toEqual(["allowlist"]);
+    expect(base.transforms.gate_output!.inputs).toEqual(["gate_reduce"]);
+    expect(base.transforms.gate_reduce!.inputs).toEqual(["gate_counts"]);
   });
 });
 
-describe("deploy workflow carries the log shipping token (TC-1978)", () => {
-  test("repo secret -> PHALA_ENV_BETTERSTACK_SOURCE_TOKEN -> sealed env BETTERSTACK_SOURCE_TOKEN", () => {
-    expect(deployStep.env?.PHALA_ENV_BETTERSTACK_SOURCE_TOKEN).toBe("${{ secrets.PROD_TINYCHAT_BETTERSTACK_SOURCE_TOKEN }}");
+describe("deploy workflow carries the log shipping settings (TC-1978)", () => {
+  test("environment secret -> PHALA_ENV_BETTERSTACK_SOURCE_TOKEN -> sealed env BETTERSTACK_SOURCE_TOKEN", () => {
+    expect(deployStep.env?.PHALA_ENV_BETTERSTACK_SOURCE_TOKEN).toBe("${{ secrets.BETTERSTACK_SOURCE_TOKEN }}");
     expect(deployStep.run).toContain(`printf '%s\\n' "BETTERSTACK_SOURCE_TOKEN=\${PHALA_ENV_BETTERSTACK_SOURCE_TOKEN:-}"`);
+    expect(workflow.jobs.deploy.environment).toEqual({ name: "production-api", url: expect.any(String) });
+    expect(workflowText).not.toMatch(/PROD_\w*BETTERSTACK/);
+    expect(read("docker-compose.phala.yml")).not.toMatch(/PROD_\w*BETTERSTACK/);
   });
 
-  test("allowed_envs is derived from the env file's keys, and the token key is always among them, even with the secret unset", () => {
-    // phala-sync-allowed-envs.mjs takes every KEY of the file the deploy step writes; the key is written unconditionally.
+  test("repo variable -> PHALA_ENV_BETTERSTACK_INGEST_HOST -> sealed env BETTERSTACK_INGEST_HOST, validated before it is written", () => {
+    expect(deployStep.env?.PHALA_ENV_BETTERSTACK_INGEST_HOST).toBe("${{ vars.TINYCHAT_BETTERSTACK_INGEST_HOST }}");
+    expect(deployStep.run).toContain(`printf '%s\\n' "BETTERSTACK_INGEST_HOST=\${PHALA_ENV_BETTERSTACK_INGEST_HOST:-}"`);
+    expect(deployStep.run).toContain("must be a *.betterstackdata.com hostname");
+    expect(deployStep.run!.indexOf("must be a *.betterstackdata.com hostname")).toBeLessThan(deployStep.run!.indexOf('} > "$ENV_FILE"'));
+  });
+
+  test("allowed_envs is derived from the env file's keys, and both keys are always among them, even with the secret and variable unset", () => {
+    // phala-sync-allowed-envs.mjs takes every KEY of the file the deploy step writes; the keys are written unconditionally.
     const keys = [...deployStep.run!.matchAll(/printf '%s\\n' "([A-Z0-9_]+)=/g)].map((match) => match[1]);
     expect(keys).toContain("BETTERSTACK_SOURCE_TOKEN");
+    expect(keys).toContain("BETTERSTACK_INGEST_HOST");
     expect(new Set(keys).size).toBe(keys.length);
-    const line = deployStep.run!.split("\n").find((candidate) => candidate.includes('"BETTERSTACK_SOURCE_TOKEN='))!;
-    expect(line).not.toMatch(/\bif\b|&&|\|\|/);
-    expect(read(".github/scripts/phala-sync-allowed-envs.mjs")).toContain("envKeys");
+    for (const name of ["BETTERSTACK_SOURCE_TOKEN=", "BETTERSTACK_INGEST_HOST="]) {
+      const line = deployStep.run!.split("\n").find((candidate) => candidate.includes(`"${name}`))!;
+      expect(line).not.toMatch(/\bif\b|&&|\|\|/);
+    }
+    // The sync is add-only: the union of the CVM's current allowed_envs and the file's keys.
+    const sync = read(".github/scripts/phala-sync-allowed-envs.mjs");
+    expect(sync).toContain("new Set([...allowed, ...envKeys])");
+    expect(sync).not.toMatch(/\ballowed\.delete|filter\(\(k\) => envKeys/);
   });
 
-  test("a missing secret never fails the deploy; a multi-line one does, without printing it", () => {
+  test("a missing secret or variable never fails the deploy; a multi-line token or a bad host does, without printing the token", () => {
     const check = workflow.jobs.deploy.steps.find((step) => step.name === "Check deployment configuration")!;
     expect(check.run).not.toContain("BETTERSTACK");
     expect(deployStep.run).toContain("must be a single-line value");
     const guard = deployStep.run!.split("\n").filter((candidate) => candidate.includes("BETTERSTACK"));
     for (const candidate of guard.filter((entry) => /\becho\b/.test(entry))) {
-      expect(candidate).not.toMatch(/\$\{?PHALA_ENV_BETTERSTACK/);
+      expect(candidate).not.toMatch(/\$\{?PHALA_ENV_BETTERSTACK_SOURCE/);
     }
   });
 
@@ -144,9 +211,9 @@ describe("deploy workflow carries the log shipping token (TC-1978)", () => {
     const lines = workflowText.split("\n").filter((line) => line.includes("BETTERSTACK"));
     expect(lines.length).toBeGreaterThan(0);
     for (const line of lines) {
-      expect(line).not.toMatch(/set -x|\becho\b[^"]*\$\{?PHALA_ENV_BETTERSTACK|\bcat\b/);
+      expect(line).not.toMatch(/set -x|\becho\b[^"]*\$\{?PHALA_ENV_BETTERSTACK_SOURCE|\bcat\b/);
     }
-    expect(workflowText).not.toMatch(/PROD_TINYCHAT_BETTERSTACK_SOURCE_TOKEN[^\n]*(echo|>>)/);
+    expect(workflowText).not.toMatch(/secrets\.BETTERSTACK_SOURCE_TOKEN[^\n]*(echo|>>)/);
   });
 });
 
