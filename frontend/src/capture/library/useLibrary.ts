@@ -449,6 +449,7 @@ export function useLibrary(
               ...(locator.committed ? {
                 transcription_engine: locator.provenance?.engine ?? null,
                 transcript_provider: locator.provenance?.provider ?? null,
+                transcription_model: locator.provenance?.model ?? null,
               } : {}),
               transcription_outcome: locator.outcome === "none"
                 ? metadata.metadata.transcription_outcome ?? "none" : locator.outcome,
@@ -485,7 +486,7 @@ export function useLibrary(
                 ...reads.current.get(note.id),
                 transcript: keepCachedTranscript ? cached.transcript : {
                   transcript,
-                  provenance: locator?.committed ? locator.provenance ?? { engine: null, provider: null } : null,
+                  provenance: locator?.committed ? locator.provenance ?? { engine: null, provider: null, model: null } : null,
                 },
               });
               if (mounted.current) bump();

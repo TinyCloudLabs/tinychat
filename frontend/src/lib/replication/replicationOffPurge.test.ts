@@ -4,6 +4,7 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { buildReplicationConfig, type ReplicationPluginLoader } from "./replicationClient";
 import { REPLICATION_COPY_KEY, rememberReplicationPrincipal, SDK_LOGOUT_MARKER_KEY } from "./replicationCopyMarker";
 import { isReplicationEnabled, REPLICATION_RUNTIME_FLAG_KEY, type ReplicationEnv } from "./replicationFlag";
+import { replicationOptInKey, writeReplicationOptIn } from "./replicationOptIn";
 import { deleteReplicaDatabase, purgeReplicaCopyWhenOff, REPLICA_DATABASE_NAME, REPLICA_GATE_LOCK } from "./replicationOffPurge";
 import { formatReplicationStatus } from "./ReplicationStatusLine";
 import { getReplicationStatus, resetReplicationStatus } from "./replicationStatus";
@@ -262,7 +263,7 @@ describe("origin-wide purge on OFF", () => {
   });
 
   test("flag ON creates the marker; the next OFF load erases the origin copy", async () => {
-    const store = memoryStore({ [REPLICATION_RUNTIME_FLAG_KEY]: "true" });
+    const store = memoryStore({ [REPLICATION_RUNTIME_FLAG_KEY]: "true", [replicationOptInKey(A)]: "true" });
     const savedWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
     const savedWorker = Object.getOwnPropertyDescriptor(globalThis, "Worker");
     try {
@@ -271,13 +272,13 @@ describe("origin-wide purge on OFF", () => {
       define("Worker", class {});
       const gate = fakeGate([A]);
       await seedClosed(REPLICA_DATABASE_NAME, ["a"]);
-      expect(await buildReplicationConfig(gate.loader)).toBeDefined();
+      expect(await buildReplicationConfig(A, gate.loader)).toBeDefined();
       expect(store.map.get(REPLICATION_COPY_KEY)).toBe("1");
       rememberReplicationPrincipal({ replication: {}, did: A } as unknown as TinyCloudWeb, store);
       expect(store.map.get(REPLICATION_COPY_KEY)).toBe(A);
-      store.map.delete(REPLICATION_RUNTIME_FLAG_KEY); // user turns it OFF
-      const off = () => isReplicationEnabled({ env: CHROME, killSwitchOpen: true, buildFlag: undefined, runtimeFlag: false });
-      expect(await purgeReplicaCopyWhenOff({ loader: gate.loader, store, isEnabled: off })).toEqual({ status: "purged" });
+      expect(writeReplicationOptIn(A, false, store)).toBe(true); // the user turns their switch OFF
+      // Same gates as the app: the build flag (runtime flag here) is still ON; only the user's choice changed.
+      expect(await purgeReplicaCopyWhenOff({ loader: gate.loader, store, principal: A })).toEqual({ status: "purged" });
       expect(await names()).not.toContain(REPLICA_DATABASE_NAME);
     } finally {
       for (const [name, descriptor] of [["window", savedWindow], ["Worker", savedWorker]] as const) {
@@ -293,10 +294,11 @@ describe("origin-wide purge on OFF", () => {
   });
 
   describe("what counts as OFF", () => {
-    const requested = { buildFlag: "true", runtimeFlag: true } as const;
+    const requested = { buildFlag: "true", runtimeFlag: true, userOptIn: true } as const;
     const cases: Array<[string, () => boolean]> = [
       ["kill switch engaged", () => isReplicationEnabled({ ...requested, killSwitchOpen: false, env: CHROME })],
-      ["flag unset", () => isReplicationEnabled({ killSwitchOpen: true, buildFlag: undefined, runtimeFlag: false, env: CHROME })],
+      ["flag unset", () => isReplicationEnabled({ killSwitchOpen: true, buildFlag: undefined, runtimeFlag: false, userOptIn: true, env: CHROME })],
+      ["user switch OFF (build flag ON, platform qualified)", () => isReplicationEnabled({ ...requested, userOptIn: false, killSwitchOpen: true, env: CHROME })],
       ["Tauri shell refused", () => isReplicationEnabled({ ...requested, killSwitchOpen: true, env: { ...CHROME, platform: "tauri" } })],
       ["Capacitor (android) shell refused", () => isReplicationEnabled({ ...requested, killSwitchOpen: true, env: { ...CHROME, platform: "android" } })],
       ["iOS refused", () => isReplicationEnabled({ ...requested, killSwitchOpen: true, env: { ...CHROME, userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148" } })],

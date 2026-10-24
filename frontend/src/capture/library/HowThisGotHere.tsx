@@ -18,6 +18,7 @@ import { UPLOAD_MEETING_SOURCE } from "@/lib/audioUpload";
 import { LOCAL_MEETING_SOURCE } from "@/lib/localTranscriber";
 import { TRANSCRIBER_MEETING_SOURCE } from "@/lib/transcriberSave";
 import { VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
+import { transcriptionModelLabel } from "@/lib/transcriptionModelLabel";
 import { displayMembers, type CombinedMemberLine } from "./combine/combinedView";
 import { librarySourceLabel } from "./libraryKinds";
 
@@ -33,6 +34,12 @@ const PRIVATE_CLOUD = "tinycloud-private-transcription";
 
 function str(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+/** " Transcription model: X." when the transcript records its model; empty otherwise. */
+function modelSentence(metadata: Record<string, unknown> | null): string {
+  const label = transcriptionModelLabel(metadata?.transcription_model);
+  return label ? ` Transcription model: ${label}.` : "";
 }
 
 /** Where a voice note started; one with no recorded platform predates the desktop and web recorders, so it came from a phone. */
@@ -108,7 +115,7 @@ export function captureRoute(source: string, metadata: Record<string, unknown> |
     const speech = str(metadata?.inference_provider) === "tinfoil" ? "; speech-to-text by Tinfoil" : "";
     return {
       nodes: [{ label: sourceLabel, kind: "source" }, { label: TRANSCRIBER_NAME["private-cloud"], kind: "processing" }, SPACE],
-      sentence: `${saved} ${audioStored ? "A copy was" : "It was"} transcribed by TinyCloud Private Transcription${speech}.`,
+      sentence: `${saved} ${audioStored ? "A copy was" : "It was"} transcribed by TinyCloud Private Transcription${speech}.${modelSentence(metadata)}`,
       privateCloud: true,
     };
   }
@@ -117,13 +124,13 @@ export function captureRoute(source: string, metadata: Record<string, unknown> |
     const whose = account === "tinycloud" ? " with TinyCloud's account" : account === "own" ? " with your key" : "";
     return {
       nodes: [{ label: sourceLabel, kind: "source" }, { label: TRANSCRIBER_NAME.assemblyai, kind: "processing" }, SPACE],
-      sentence: `${saved} ${audioStored ? "A copy was" : "It was"} transcribed by AssemblyAI${whose}.`,
+      sentence: `${saved} ${audioStored ? "A copy was" : "It was"} transcribed by AssemblyAI${whose}.${modelSentence(metadata)}`,
       privateCloud: false,
     };
   }
   return {
     nodes: [{ label: sourceLabel, kind: "source" }, { label: "Whisper on this Mac", kind: "processing" }, SPACE],
-    sentence: "Transcribed by Whisper on this Mac. The transcript was saved to your TinyCloud space; the audio stayed on this Mac.",
+    sentence: `Transcribed by Whisper on this Mac. The transcript was saved to your TinyCloud space; the audio stayed on this Mac.${modelSentence(metadata)}`,
     privateCloud: false,
   };
 }

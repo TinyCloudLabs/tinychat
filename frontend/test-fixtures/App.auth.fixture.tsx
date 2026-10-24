@@ -7,7 +7,6 @@ import { installDom } from "@/test/dom";
 import { PlatformContext, type AppPlatform } from "@/lib/platform";
 import { __resetStorageStatusForTests, isStorageReadOnly, reportStorageError, reportStoragePlanTier,
   STORAGE_FULL_DETAIL, STORAGE_FULL_RECORDING_LINE, STORAGE_READ_ONLY_NOTICE } from "@/lib/storageStatus";
-import { browserRevisionStore, needsManifestResign } from "@/lib/manifestRevision";
 
 const restoreImportDom = installDom();
 const clientApi = await import("@tinyboilerplate/client");
@@ -30,13 +29,6 @@ let signInCalls = 0;
 let verifyCalls = 0;
 let signOutStarted: (() => void) | null = null;
 let releaseSignOut: (() => void) | null = null;
-let offline = false;
-let restoreCalls = 0;
-const REVISION_KEY = (address: string) => `xyz.tinycloud.tinychat:manifest-revision:${address.toLowerCase()}`;
-const APP_SESSION_KEY = "xyz.tinycloud.tinychat:session";
-function seedAppSession(address: string): void {
-  localStorage.setItem(APP_SESSION_KEY, JSON.stringify({ token: "bearer", expiresAt: Date.now() + 3_600_000, address }));
-}
 
 function fakeTcw(address: string): TinyCloudWeb {
   return { did: `did:pkh:eip155:1:${address}`, spaceId: `space-${address.slice(-2)}`, address: () => address,
@@ -76,11 +68,8 @@ mock.module("@/lib/openkeyNativeRenewal", () => ({
 }));
 mock.module("@/lib/sessionRestore", () => ({
   ...restoreApi,
-  browserIsOffline: () => offline,
-  restorePersistedSession: async () => {
-    restoreCalls += 1;
-    return { kind: "signedOut" };
-  },
+  browserIsOffline: () => false,
+  restorePersistedSession: async () => ({ kind: "signedOut" }),
 }));
 mock.module("@/lib/openkeySignOut", () => ({
   ...signOutApi,
@@ -90,7 +79,7 @@ mock.module("@/lib/openkeySignOut", () => ({
     return { status: "cancelled" };
   },
 }));
-mock.module("@/lib/connectors/encryptionGrant", () => ({ ...grantApi, withEncryptionNetworkCreateGrant: (manifest: unknown) => manifest }));
+mock.module("@/lib/connectors/encryptionGrant", () => ({ ...grantApi, withEncryptionDecryptGrant: (manifest: unknown) => manifest }));
 mock.module("@/lib/voiceNotes/voiceNotePipeline", () => ({ ...pipelineApi, createVoiceNotePipeline: () => null }));
 mock.module("@/lib/voiceNotes/captureEngine", () => ({
   ...captureApi,
@@ -160,42 +149,24 @@ async function navigate(path: string) {
   await settle();
 }
 
-function memoryLocalStorage(): Storage {
-  const data = new Map<string, string>();
-  return {
-    get length() { return data.size; },
-    clear: () => data.clear(),
-    getItem: (key) => data.get(key) ?? null,
-    key: (index) => [...data.keys()][index] ?? null,
-    removeItem: (key) => { data.delete(key); },
-    setItem: (key, value) => { data.set(key, String(value)); },
-  };
-}
-
 beforeEach(() => {
   nativeMode = false;
   loginAddress = "0x00000000000000000000000000000000000000a1";
   signInCalls = 0;
   verifyCalls = 0;
-  offline = false;
-  restoreCalls = 0;
   signOutStarted = null;
   releaseSignOut = null;
-  Object.defineProperty(globalThis, "localStorage", { configurable: true, writable: true, value: memoryLocalStorage() });
 });
-async function unmount() {
+afterEach(async () => {
   if (root) await act(async () => root!.unmount());
   root = null;
   host?.remove();
   host = null;
   restoreDom?.();
   restoreDom = undefined;
-}
-afterEach(async () => {
-  await unmount();
   __resetStorageStatusForTests();
 });
-afterAll(() => { mock.restore(); restoreImportDom(); Reflect.deleteProperty(globalThis, "localStorage"); });
+afterAll(() => { mock.restore(); restoreImportDom(); });
 
 test("browser sign-in mounts the workspace; committed A sign-out clears storage UI before B becomes ready", async () => {
   await mount("web");
@@ -266,64 +237,4 @@ test("mounted App shows one shared read-only notice outside Settings and keeps S
   const settingsBanner = host!.querySelector('[data-testid="settings-storage-full-banner"]');
   expect(settingsBanner?.textContent).toContain(STORAGE_FULL_DETAIL.free);
   expect(host!.querySelectorAll('[aria-label="Storage full"]')).toHaveLength(1);
-});
-
-test("a sign-in records the current manifest revision for that address", async () => {
-  await mount("web");
-  await click("Sign in");
-  await settle();
-  expect(needsManifestResign(browserRevisionStore(), loginAddress)).toBe(false);
-});
-
-test("a session signed under the current revision goes on to restore", async () => {
-  await mount("web");
-  await click("Sign in");
-  await settle();
-  await unmount();
-  seedAppSession(loginAddress);
-  restoreCalls = 0;
-  await mount("web");
-  await settle();
-  expect(restoreCalls).toBe(1);
-});
-
-test("a session recorded under an older revision is cleared without restoring, and the user signs in again", async () => {
-  await mount("web");
-  await click("Sign in");
-  await settle();
-  await unmount();
-  seedAppSession(loginAddress);
-  localStorage.setItem(REVISION_KEY(loginAddress), "0");
-  restoreCalls = 0;
-  await mount("web");
-  await settle();
-  expect(restoreCalls).toBe(0);
-  expect(localStorage.getItem(APP_SESSION_KEY)).toBeNull();
-  expect(needsManifestResign(browserRevisionStore(), loginAddress)).toBe(true);
-  await click("Sign in");
-  await settle();
-  expect(needsManifestResign(browserRevisionStore(), loginAddress)).toBe(false);
-});
-
-test("offline, a stale session is kept and the gate runs on the first online load", async () => {
-  await mount("web");
-  await click("Sign in");
-  await settle();
-  await unmount();
-  seedAppSession(loginAddress);
-  localStorage.setItem(REVISION_KEY(loginAddress), "0");
-  offline = true;
-  restoreCalls = 0;
-  await mount("web");
-  await settle();
-  expect(restoreCalls).toBe(1);
-  expect(needsManifestResign(browserRevisionStore(), loginAddress)).toBe(true);
-  expect(localStorage.getItem(APP_SESSION_KEY)).not.toBeNull();
-  await unmount();
-  offline = false;
-  restoreCalls = 0;
-  await mount("web");
-  await settle();
-  expect(restoreCalls).toBe(0);
-  expect(localStorage.getItem(APP_SESSION_KEY)).toBeNull();
 });

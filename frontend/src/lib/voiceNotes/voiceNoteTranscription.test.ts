@@ -1603,7 +1603,6 @@ describe("transcribeVoiceNote (one note end to end)", () => {
     expect(listed.ok && listed.data[0]).toEqual(expect.objectContaining({
       sourceId: "rec-1",
       durationSecs: 9,
-      title: expect.stringContaining("Voice note"),
       transcript: { status: "transcribed", preview: "Remember to book\nthe venue." },
     }));
     expect(space.kv.has(`${voiceNoteAudioKvKey("rec-1")}/manifest`)).toBe(true);

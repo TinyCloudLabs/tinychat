@@ -58,6 +58,13 @@ describe("savedNoteMeta", () => {
     );
   });
 
+  test("names the transcription model only beside a transcript that names its maker", () => {
+    const transcribed = { transcription_outcome: "transcribed", transcript_provider: "whispercpp", transcription_model: "QuantizedTinyEn" };
+    expect(savedNoteMeta(item, transcribed, "tauri", false)).toContain("Whisper Tiny (English)");
+    expect(savedNoteMeta(item, { ...transcribed, transcription_model: undefined }, "tauri", false)).not.toContain("Whisper");
+    expect(savedNoteMeta(item, { transcription_model: "QuantizedTinyEn" }, "tauri", false)).not.toContain("Whisper");
+  });
+
   test("leaves out what is not known", () => {
     const meta = savedNoteMeta(item, null, "web", false);
     expect(meta).not.toContain("recorded on");
