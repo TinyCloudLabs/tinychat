@@ -53,6 +53,13 @@ describe("TinyChat manifest and backend policy", () => {
         description:
           "Store transcript content synced from connected sources in your space.",
       },
+      { service: "tinycloud.sql", path: "details", actions: ["read", "write", "schema"] },
+      { service: "tinycloud.sql", path: "summaries", actions: ["read", "write", "schema"] },
+      { service: "tinycloud.sql", path: "transcripts", actions: ["read", "write", "schema"] },
+      { service: "tinycloud.kv", path: "migrations/", actions: ["get", "put"] },
+      { service: "tinycloud.space", path: "", actions: ["info"], skipPrefix: true },
+      { service: "tinycloud.kv", path: "exo/v1/requests/", actions: ["get", "list", "del"] },
+      { service: "tinycloud.kv", path: "exo/v1/jobs/", actions: ["get", "put", "del"] },
     ]);
   });
 
