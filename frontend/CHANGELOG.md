@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.10.0-beta.25
+
+### Patch Changes
+
+- 549dcc1: Add an opt-in switch and a wipe button for local copies.
+
 ## 0.10.0-beta.24
 
 ### Patch Changes
