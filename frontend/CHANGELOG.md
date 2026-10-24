@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.10.0-beta.26
+
+### Patch Changes
+
+- 05cac77: Library: a combined meeting replaces its source captures in the list; the combined page lists its sources, each opens its own page (TC-1152)
+
 ## 0.10.0-beta.25
 
 ### Patch Changes
