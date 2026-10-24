@@ -236,13 +236,22 @@ import XCTest
         resumed.debugForeground = true
         resumed.recoverOnce()
         let adopted = expectation(description: "parked session adopted")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+        var timer: Timer?
+        timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { _ in
+            guard
+                resumed.status()["id"] as? String == id,
+                resumed.status()["state"] as? String == "paused"
+            else {
+                return
+            }
+            timer?.invalidate()
             XCTAssertEqual(resumed.status()["id"] as? String, id)
             XCTAssertEqual(resumed.status()["state"] as? String, "paused")
             XCTAssertEqual(resumed.status()["pausedMs"] as? Int64, 5_000)
             adopted.fulfill()
         }
-        wait(for: [adopted], timeout: 5)
+        defer { timer?.invalidate() }
+        wait(for: [adopted], timeout: 10)
         clock.advance(by: 3_600_001)
         let expired = try CaptureEngine(testRoot: root, clock: clock)
         expired.recoverOnce()

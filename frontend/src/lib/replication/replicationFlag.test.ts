@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { isReplicationEnabled, replicationPlatformRefusal, type ReplicationEnv } from "./replicationFlag";
+import { isReplicationAvailable, isReplicationEnabled, replicationPlatformRefusal, type ReplicationEnv } from "./replicationFlag";
 
 const CHROME_DESKTOP: ReplicationEnv = {
   platform: "web",
@@ -11,21 +11,43 @@ const CHROME_DESKTOP: ReplicationEnv = {
   hasLocks: true,
   hasSubtleCrypto: true,
 };
-const ON = { killSwitchOpen: true, buildFlag: "true", runtimeFlag: false } as const;
+const ON = { killSwitchOpen: true, buildFlag: "true", runtimeFlag: false, userOptIn: true } as const;
 
 describe("replication flag", () => {
   test("is OFF by default, even in a qualified browser", () => {
-    expect(isReplicationEnabled({ killSwitchOpen: true, buildFlag: undefined, runtimeFlag: false, env: CHROME_DESKTOP })).toBe(false);
-    expect(isReplicationEnabled({ killSwitchOpen: true, buildFlag: "false", runtimeFlag: false, env: CHROME_DESKTOP })).toBe(false);
+    expect(isReplicationEnabled({ killSwitchOpen: true, buildFlag: undefined, runtimeFlag: false, userOptIn: true, env: CHROME_DESKTOP })).toBe(false);
+    expect(isReplicationEnabled({ killSwitchOpen: true, buildFlag: "false", runtimeFlag: false, userOptIn: true, env: CHROME_DESKTOP })).toBe(false);
   });
 
-  test("turns on from the build flag or the runtime flag in Chromium on the web", () => {
+  test("turns on from the build flag or the runtime flag in Chromium on the web, once the user opted in", () => {
     expect(isReplicationEnabled({ ...ON, env: CHROME_DESKTOP })).toBe(true);
-    expect(isReplicationEnabled({ killSwitchOpen: true, runtimeFlag: true, buildFlag: undefined, env: CHROME_DESKTOP })).toBe(true);
+    expect(isReplicationEnabled({ killSwitchOpen: true, runtimeFlag: true, buildFlag: undefined, userOptIn: true, env: CHROME_DESKTOP })).toBe(true);
   });
 
   test("the hard-coded kill switch beats every flag", () => {
     expect(isReplicationEnabled({ ...ON, killSwitchOpen: false, runtimeFlag: true, env: CHROME_DESKTOP })).toBe(false);
+  });
+
+  test("truth table: ON only when kill switch open AND build flag AND qualified platform AND the user opted in", () => {
+    const tauri: ReplicationEnv = { ...CHROME_DESKTOP, platform: "tauri" };
+    for (const killSwitchOpen of [true, false]) {
+      for (const buildFlag of ["true", undefined]) {
+        for (const env of [CHROME_DESKTOP, tauri]) {
+          for (const userOptIn of [true, false]) {
+            const inputs = { killSwitchOpen, buildFlag, runtimeFlag: false, env, userOptIn };
+            const gates = killSwitchOpen && buildFlag === "true" && env === CHROME_DESKTOP;
+            expect(isReplicationEnabled(inputs)).toBe(gates && userOptIn);
+            // The switch is offered on the gates alone; the user's choice never makes it available.
+            expect(isReplicationAvailable(inputs)).toBe(gates);
+          }
+        }
+      }
+    }
+  });
+
+  test("a qualified build and browser with no stored choice and no principal is OFF", () => {
+    expect(isReplicationEnabled({ killSwitchOpen: true, buildFlag: "true", runtimeFlag: false, env: CHROME_DESKTOP })).toBe(false);
+    expect(isReplicationEnabled({ killSwitchOpen: true, buildFlag: "true", runtimeFlag: false, env: CHROME_DESKTOP, principal: "did:pkh:eip155:1:0xaaaa" })).toBe(false);
   });
 
   test("refuses Tauri, Capacitor (iOS/Android shells)", () => {
