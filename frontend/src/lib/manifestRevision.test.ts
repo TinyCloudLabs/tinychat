@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { manifestCarriesBundle, SIGN_IN_BUNDLE_ENTRIES } from "@tinyboilerplate/core";
 import {
   applyManifestRevisionGate,
   browserRevisionStore,
@@ -6,8 +8,20 @@ import {
   MANIFEST_RESIGN_NOTICE,
   needsManifestResign,
   recordManifestRevision,
+  recordManifestRevisionIfSigned,
   type RevisionStore,
 } from "./manifestRevision";
+
+interface ManifestEntry { service: string; path: string; actions: string[]; skipPrefix?: boolean }
+
+/** The app's real manifest.json, or the same manifest with every bundle entry removed (what an older backend serves). */
+function servedManifest(withBundle: boolean): { permissions: ManifestEntry[] } {
+  const real = JSON.parse(readFileSync(new URL("../../../manifest.json", import.meta.url), "utf8")) as { permissions: ManifestEntry[] };
+  if (withBundle) return real;
+  return {
+    permissions: real.permissions.filter((entry) => !SIGN_IN_BUNDLE_ENTRIES.some((required) => required.service === entry.service && required.path === entry.path)),
+  };
+}
 
 const ADDRESS = "0x00000000000000000000000000000000000000Aa";
 const OTHER = "0x00000000000000000000000000000000000000Bb";
@@ -35,14 +49,20 @@ const blockedStore: RevisionStore = {
   },
 };
 
-/** Runs the gate over `store`, logging every side effect in order. */
-async function runGate(options: { store: RevisionStore | null; address?: string | null; offline?: boolean; handoff?: boolean | "throws" }) {
+/** Runs the gate over `store`, logging every side effect in order. `served`: what the backend's manifest carries. */
+async function runGate(options: { store: RevisionStore | null; address?: string | null; offline?: boolean; handoff?: boolean | "throws"; served?: boolean | "throws" }) {
   const calls: string[] = [];
   const handoff = options.handoff ?? true;
+  const served = options.served ?? true;
   const outcome = await applyManifestRevisionGate({
     store: options.store,
     address: options.address === undefined ? ADDRESS : options.address,
     isOffline: () => options.offline ?? false,
+    servedManifestCarriesBundle: async () => {
+      calls.push("fetch");
+      if (served === "throws") throw new Error("manifest unreachable");
+      return served;
+    },
     handoff: async () => {
       calls.push("handoff");
       if (handoff === "throws") throw new Error("handoff blew up");
@@ -127,14 +147,14 @@ describe("unavailable storage", () => {
 });
 
 describe("restore gate", () => {
-  test("a stale session: handoff first, then clear that address", async () => {
+  test("a stale session: the served manifest is checked, then handoff, then clear that address", async () => {
     const { store } = memoryStore();
-    expect(await runGate({ store })).toEqual({ outcome: "cleared", calls: ["handoff", `clear:${ADDRESS}`] });
+    expect(await runGate({ store })).toEqual({ outcome: "cleared", calls: ["fetch", "handoff", `clear:${ADDRESS}`] });
   });
 
-  test("a stale session whose record is older: handoff, then clear", async () => {
+  test("a stale session whose record is older: check, handoff, then clear", async () => {
     const { store } = memoryStore({ [KEY]: "1" });
-    expect(await runGate({ store })).toEqual({ outcome: "cleared", calls: ["handoff", `clear:${ADDRESS}`] });
+    expect(await runGate({ store })).toEqual({ outcome: "cleared", calls: ["fetch", "handoff", `clear:${ADDRESS}`] });
   });
 
   test("a current session is untouched: no handoff, no clear, online or offline", async () => {
@@ -145,7 +165,7 @@ describe("restore gate", () => {
 
   test("a failed handoff keeps the session: nothing is cleared", async () => {
     const { store } = memoryStore();
-    expect(await runGate({ store, handoff: false })).toEqual({ outcome: "handoff_failed", calls: ["handoff"] });
+    expect(await runGate({ store, handoff: false })).toEqual({ outcome: "handoff_failed", calls: ["fetch", "handoff"] });
   });
 
   test("a handoff that throws keeps the session and surfaces the error", async () => {
@@ -155,6 +175,7 @@ describe("restore gate", () => {
       store,
       address: ADDRESS,
       isOffline: () => false,
+      servedManifestCarriesBundle: async () => true,
       handoff: async () => { throw new Error("handoff blew up"); },
       clearSession: (address) => { calls.push(`clear:${address}`); },
     });
@@ -178,12 +199,36 @@ describe("restore gate", () => {
   test("a deferred session is cleared on the first online load", async () => {
     const { store } = memoryStore();
     expect((await runGate({ store, offline: true })).outcome).toBe("deferred");
-    expect(await runGate({ store })).toEqual({ outcome: "cleared", calls: ["handoff", `clear:${ADDRESS}`] });
+    expect(await runGate({ store })).toEqual({ outcome: "cleared", calls: ["fetch", "handoff", `clear:${ADDRESS}`] });
   });
 
-  test("unreadable storage on a stored session clears it once (handoff first)", async () => {
-    expect(await runGate({ store: blockedStore })).toEqual({ outcome: "cleared", calls: ["handoff", `clear:${ADDRESS}`] });
-    expect(await runGate({ store: null })).toEqual({ outcome: "cleared", calls: ["handoff", `clear:${ADDRESS}`] });
+  test("unreadable storage on a stored session clears it once (check and handoff first)", async () => {
+    expect(await runGate({ store: blockedStore })).toEqual({ outcome: "cleared", calls: ["fetch", "handoff", `clear:${ADDRESS}`] });
+    expect(await runGate({ store: null })).toEqual({ outcome: "cleared", calls: ["fetch", "handoff", `clear:${ADDRESS}`] });
+  });
+
+  test("a served manifest without the bundle defers: no handoff, no clear, still stale", async () => {
+    const { store } = memoryStore();
+    expect(await runGate({ store, served: false })).toEqual({ outcome: "deferred", calls: ["fetch"] });
+    expect(needsManifestResign(store, ADDRESS)).toBe(true);
+  });
+
+  test("an unreachable served manifest defers the same way", async () => {
+    const { store } = memoryStore({ [KEY]: "1" });
+    expect(await runGate({ store, served: "throws" })).toEqual({ outcome: "deferred", calls: ["fetch"] });
+  });
+
+  test("the served manifest is not fetched for a current session, a signed-out user, or while offline", async () => {
+    const { store } = memoryStore({ [KEY]: "2" });
+    expect((await runGate({ store })).calls).toEqual([]);
+    expect((await runGate({ store: memoryStore().store, address: null })).calls).toEqual([]);
+    expect((await runGate({ store: memoryStore().store, offline: true })).calls).toEqual([]);
+  });
+
+  test("a deferred session is cleared once the served manifest carries the bundle", async () => {
+    const { store } = memoryStore();
+    expect((await runGate({ store, served: false })).outcome).toBe("deferred");
+    expect(await runGate({ store })).toEqual({ outcome: "cleared", calls: ["fetch", "handoff", `clear:${ADDRESS}`] });
   });
 });
 
@@ -198,9 +243,32 @@ describe("users without a stored session", () => {
   test("a new user signs in under the new manifest and records \"2\": the next restore is left alone", async () => {
     const { store, data } = memoryStore();
     expect((await runGate({ store, address: null })).outcome).toBe("current");
-    recordManifestRevision(store, ADDRESS);
+    recordManifestRevisionIfSigned(store, ADDRESS, servedManifest(true));
     expect(data[KEY]).toBe("2");
     expect(await runGate({ store })).toEqual({ outcome: "current", calls: [] });
+  });
+
+  test("a sign-in under a manifest without the bundle records nothing, so the user is not marked current", async () => {
+    const { store, data, writes } = memoryStore();
+    recordManifestRevisionIfSigned(store, ADDRESS, servedManifest(false));
+    recordManifestRevisionIfSigned(store, ADDRESS, null);
+    recordManifestRevisionIfSigned(store, ADDRESS, { permissions: "nope" });
+    expect(writes).toEqual([]);
+    expect(data).toEqual({});
+    expect(needsManifestResign(store, ADDRESS)).toBe(true);
+  });
+
+  test("a manifest with an entry missing or narrowed does not count as carrying the bundle", () => {
+    const full = servedManifest(true).permissions;
+    expect(manifestCarriesBundle({ permissions: full })).toBe(true);
+    for (const required of SIGN_IN_BUNDLE_ENTRIES) {
+      const without = full.filter((entry) => !(entry.service === required.service && entry.path === required.path));
+      expect(manifestCarriesBundle({ permissions: without })).toBe(false);
+      const narrowed = full.map((entry) => entry.service === required.service && entry.path === required.path ? { ...entry, actions: entry.actions.slice(1) } : entry);
+      expect(manifestCarriesBundle({ permissions: narrowed })).toBe(false);
+    }
+    const noSkip = full.map((entry) => entry.service === "tinycloud.space" ? { service: entry.service, path: entry.path, actions: entry.actions } : entry);
+    expect(manifestCarriesBundle({ permissions: noSkip })).toBe(false);
   });
 
   test("a forced re-sign asks once: cleared, sign-in records, the next restore is current", async () => {
@@ -208,7 +276,7 @@ describe("users without a stored session", () => {
     expect((await runGate({ store })).outcome).toBe("cleared");
     // A sign-in that failed or was cancelled records nothing: the next restore still re-signs.
     expect(needsManifestResign(store, ADDRESS)).toBe(true);
-    recordManifestRevision(store, ADDRESS);
+    recordManifestRevisionIfSigned(store, ADDRESS, servedManifest(true));
     expect((await runGate({ store })).outcome).toBe("current");
   });
 });

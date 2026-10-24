@@ -1,3 +1,5 @@
+import { manifestCarriesBundle } from "@tinyboilerplate/core";
+
 /**
  * App-owned revision of the sign-in manifest's grants. The manifest's own
  * version cannot signal a grant change, so this constant does. A persisted
@@ -45,21 +47,30 @@ export function needsManifestResign(store: RevisionStore | null, address: string
 export type ManifestRevisionGate = "current" | "deferred" | "cleared" | "handoff_failed";
 
 /**
- * Restore-time gate used by App. A stale session for `address` gets one capture
- * handoff, then is cleared so the user signs in again. Offline, a stale session is
- * kept and reported "deferred", so the next online load runs the gate. A failed
+ * Restore-time gate used by App. A stale session for `address` is cleared only after
+ * the manifest the backend serves is known to carry the current grants: the web app and
+ * the backend image deploy separately, and clearing under an older served manifest would
+ * make the user sign in again for nothing. Then it gets one capture handoff, then is
+ * cleared so the user signs in again.
+ *
+ * "deferred" keeps the session untouched, so the next load runs the gate again: offline,
+ * the served manifest unreachable, or the served manifest lacking the bundle. A failed
  * handoff keeps the session and reports "handoff_failed"; the caller stops without clearing.
  */
 export async function applyManifestRevisionGate(input: {
   store: RevisionStore | null;
   address: string | null;
   isOffline: () => boolean;
+  /** Fetches the served manifest and says whether it carries the bundle; a rejection counts as no. */
+  servedManifestCarriesBundle: () => Promise<boolean>;
   handoff: () => Promise<boolean>;
   clearSession: (address: string) => void;
 }): Promise<ManifestRevisionGate> {
-  const { store, address, isOffline, handoff, clearSession } = input;
+  const { store, address, isOffline, servedManifestCarriesBundle, handoff, clearSession } = input;
   if (!address || !needsManifestResign(store, address)) return "current";
   if (isOffline()) return "deferred";
+  const served = await servedManifestCarriesBundle().catch(() => false);
+  if (!served) return "deferred";
   if (!await handoff()) return "handoff_failed";
   clearSession(address);
   return "cleared";
@@ -76,6 +87,18 @@ export function recordManifestRevision(store: RevisionStore | null, address: str
   } catch {
     // Not recorded: the next restore finds it stale and re-signs.
   }
+}
+
+/**
+ * Record the revision after a sign-in only if the manifest that sign-in used carries the bundle.
+ * A sign-in under an older served manifest holds the older grants and must not be marked current.
+ */
+export function recordManifestRevisionIfSigned(
+  store: RevisionStore | null,
+  address: string,
+  signedManifest: Parameters<typeof manifestCarriesBundle>[0],
+): void {
+  if (manifestCarriesBundle(signedManifest)) recordManifestRevision(store, address);
 }
 
 /** Browser storage, or null when it is absent or blocked (reading the global can throw). */

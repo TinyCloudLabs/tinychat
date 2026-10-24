@@ -13,6 +13,8 @@ import { installDom } from "@/test/dom";
 import { PlatformContext, type AppPlatform } from "@/lib/platform";
 import { replicationOptInKey } from "@/lib/replication/replicationOptIn";
 import { REPLICATION_RUNTIME_FLAG_KEY } from "@/lib/replication/replicationFlag";
+import { SIGN_IN_BUNDLE_ENTRIES } from "@tinyboilerplate/core";
+import realManifest from "../../manifest.json";
 
 const restoreImportDom = installDom();
 const clientApi = await import("@tinyboilerplate/client");
@@ -45,6 +47,12 @@ const events: string[] = [];
 let syncCalls = 0;
 let handoffResult: { ok: boolean; failClosed: boolean; message: string | null } = { ok: true, failClosed: false, message: null };
 let offline = false;
+/** What the backend serves at /api/manifest: this build's manifest.json, the same without the bundle (an older backend), or nothing. */
+let served: "full" | "old" | "unreachable" = "full";
+const oldManifest = {
+  ...realManifest,
+  permissions: realManifest.permissions.filter((entry) => !SIGN_IN_BUNDLE_ENTRIES.some((required) => required.service === entry.service && required.path === entry.path)),
+};
 
 function fakeTcw(): TinyCloudWeb {
   return {
@@ -57,7 +65,11 @@ mock.module("@tinyboilerplate/client", () => ({
   ...clientApi,
   connectWallet: async () => ({ address: ADDRESS, openkey: {}, web3Provider: {} }),
   requestNonce: async () => "nonce",
-  loadAppManifest: async () => { events.push("loadManifest"); return {}; },
+  loadAppManifest: async () => {
+    events.push("loadManifest");
+    if (served === "unreachable") throw new TypeError("Failed to fetch");
+    return served === "old" ? oldManifest : realManifest;
+  },
   createAndSignIn: async () => { events.push("signIn"); return { tcw: fakeTcw(), session: { siwe: "message", signature: "signature" } }; },
   verifySession: async () => ({ token: "bearer", expiresIn: 3600, address: ADDRESS }),
   clearPersistedSession: (address: string) => { events.push(`clearPersisted:${address}`); realClearPersistedSession(address); },
@@ -192,6 +204,7 @@ beforeEach(() => {
   events.length = 0;
   syncCalls = 0;
   offline = false;
+  served = "full";
   handoffResult = { ok: true, failClosed: false, message: null };
   Object.defineProperty(globalThis, "localStorage", { configurable: true, writable: true, value: memoryLocalStorage() });
   // The page's backend calls fail like an unreachable network: a refused (401) call would end the session mid-test.
@@ -200,10 +213,10 @@ beforeEach(() => {
 afterEach(async () => { await unmount(); });
 afterAll(() => { mock.restore(); restoreImportDom(); globalThis.fetch = realFetch; Reflect.deleteProperty(globalThis, "localStorage"); });
 
-test("a session with no revision record: handoff, clear, then the sign-in screen with the notice; no manifest fetch or storage restore ran", async () => {
+test("a session with no revision record: the served manifest is read, then handoff, clear, then the sign-in screen with the notice; nothing restores", async () => {
   seedSession();
   await mount();
-  expect(events).toEqual(["handoff", `clearPersisted:${ADDRESS}`]);
+  expect(events).toEqual(["loadManifest", "handoff", `clearPersisted:${ADDRESS}`]);
   expect(localStorage.getItem(APP_SESSION_KEY)).toBeNull();
   expect(host!.textContent).toContain(NOTICE);
   expect([...host!.querySelectorAll("button")].some((button) => button.textContent?.trim() === "Sign in")).toBe(true);
@@ -214,7 +227,7 @@ test("a session recorded under the withdrawn revision \"1\" is forced the same w
   seedSession();
   localStorage.setItem(REVISION_KEY, "1");
   await mount();
-  expect(events).toEqual(["handoff", `clearPersisted:${ADDRESS}`]);
+  expect(events).toEqual(["loadManifest", "handoff", `clearPersisted:${ADDRESS}`]);
   expect(host!.textContent).toContain(NOTICE);
 });
 
@@ -222,13 +235,13 @@ test("a failed handoff keeps the session: it is not cleared, nothing restores, a
   handoffResult = { ok: false, failClosed: false, message: "Couldn't update this phone's recording settings. Try again." };
   seedSession();
   await mount();
-  expect(events).toEqual(["handoff"]);
+  expect(events).toEqual(["loadManifest", "handoff"]);
   expect(localStorage.getItem(APP_SESSION_KEY)).not.toBeNull();
   expect(host!.textContent).not.toContain(NOTICE);
   expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeNull();
 });
 
-test("offline defers: no handoff, no clear, the session record stays, and the notice is not shown", async () => {
+test("offline defers: no manifest read, no handoff, no clear, the session record stays, and the notice is not shown", async () => {
   offline = true;
   seedSession();
   await mount();
@@ -247,7 +260,43 @@ test("a deferred session is forced on the first online load", async () => {
   events.length = 0;
   offline = false;
   await mount();
-  expect(events).toEqual(["handoff", `clearPersisted:${ADDRESS}`]);
+  expect(events).toEqual(["loadManifest", "handoff", `clearPersisted:${ADDRESS}`]);
+  expect(host!.textContent).toContain(NOTICE);
+});
+
+test("a backend still serving the older manifest: the stale session is kept, not cleared, no notice, and the page restores it as before", async () => {
+  served = "old";
+  seedSession();
+  await mount();
+  expect(events[0]).toBe("loadManifest");
+  expect(events).not.toContain("handoff");
+  expect(events.filter((event) => event.startsWith("clearPersisted"))).toEqual([]);
+  expect(events).toContain("restore");
+  expect(host!.textContent).not.toContain(NOTICE);
+  expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeTruthy();
+});
+
+test("an unreachable manifest defers the same way: nothing cleared, no notice", async () => {
+  served = "unreachable";
+  seedSession();
+  await mount();
+  expect(events[0]).toBe("loadManifest");
+  expect(events).not.toContain("handoff");
+  expect(events.filter((event) => event.startsWith("clearPersisted"))).toEqual([]);
+  expect(host!.textContent).not.toContain(NOTICE);
+});
+
+test("once the backend serves the bundle, the deferred session is forced on the next open", async () => {
+  served = "old";
+  seedSession();
+  await mount();
+  expect(events).not.toContain("handoff");
+  await unmount();
+  events.length = 0;
+  served = "full";
+  seedSession();
+  await mount();
+  expect(events).toEqual(["loadManifest", "handoff", `clearPersisted:${ADDRESS}`]);
   expect(host!.textContent).toContain(NOTICE);
 });
 
@@ -271,16 +320,26 @@ test("a signed-out new user sees no notice, signs in under the new manifest with
   expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeTruthy();
 });
 
+test("a new user who signs in under a manifest without the bundle is not marked current", async () => {
+  served = "old";
+  await mount();
+  await click("Sign in");
+  await settle();
+  expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeTruthy();
+  expect(events).toContain("signIn");
+  expect(localStorage.getItem(REVISION_KEY)).toBeNull();
+});
+
 test("after a forced re-sign the first replication sync runs after the new sign-in and again after a later restore", async () => {
   seedSession();
   await mount();
-  expect(events).toEqual(["handoff", `clearPersisted:${ADDRESS}`]);
+  expect(events).toEqual(["loadManifest", "handoff", `clearPersisted:${ADDRESS}`]);
   await click("Sign in");
   await settle();
   expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeTruthy();
   expect(host!.textContent).not.toContain(NOTICE);
   // Sign-in, then the sync; the stale session was never restored.
-  expect(events).toEqual(["handoff", `clearPersisted:${ADDRESS}`, "loadManifest", "signIn", "sync"]);
+  expect(events).toEqual(["loadManifest", "handoff", `clearPersisted:${ADDRESS}`, "loadManifest", "signIn", "sync"]);
   expect(localStorage.getItem(REVISION_KEY)).toBe("2");
 
   await unmount();

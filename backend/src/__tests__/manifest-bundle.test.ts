@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { resolveManifest } from "@tinycloud/node-sdk/core";
-import { APP_ID, MEETING_DB_DETAILS, MEETING_DB_SUMMARIES, MEETING_DB_TRANSCRIPTS } from "@tinyboilerplate/core";
+import { APP_ID, MEETING_DB_DETAILS, MEETING_DB_SUMMARIES, MEETING_DB_TRANSCRIPTS, SIGN_IN_BUNDLE_ENTRIES, manifestCarriesBundle } from "@tinyboilerplate/core";
 import { runtimeManifest } from "../manifest.js";
 
 // The served manifest's sign-in bundle beyond the original five entries: the three meeting databases,
@@ -16,6 +16,13 @@ const BUNDLE = [
 ];
 
 describe("TinyChat manifest sign-in bundle", () => {
+  // The web app's revision gate reads this same list to decide whether a served or signed manifest carries
+  // the bundle, so the list and the served manifest.json must not drift apart.
+  it("is the list the web app's revision gate checks the served manifest against", () => {
+    expect(SIGN_IN_BUNDLE_ENTRIES).toEqual(BUNDLE);
+    expect(manifestCarriesBundle(runtimeManifest())).toBe(true);
+  });
+
   it("declares the bundle entries exactly, each once", () => {
     const permissions = runtimeManifest().permissions ?? [];
     for (const entry of BUNDLE) {

@@ -26,6 +26,7 @@ import {
 } from "@tinyboilerplate/client";
 import {
   OFFERED_CHAT_MODELS,
+  manifestCarriesBundle,
   offeredChatModelContextTokens,
 } from "@tinyboilerplate/core";
 import { withEncryptionDecryptGrant } from "./lib/connectors/encryptionGrant";
@@ -156,7 +157,7 @@ import { NativeRenewal, guardNativeTinyCloudCalls, NATIVE_SESSION_ENDED_MESSAGE,
 import { isAuthSettledSignedOut } from "./lib/authRouting";
 import { clearSendIntentsForOwner } from "./chat/TranscriberSection";
 import { browserIsOffline, restorePersistedSession } from "./lib/sessionRestore";
-import { applyManifestRevisionGate, browserRevisionStore, MANIFEST_RESIGN_NOTICE, recordManifestRevision } from "./lib/manifestRevision";
+import { applyManifestRevisionGate, browserRevisionStore, MANIFEST_RESIGN_NOTICE, recordManifestRevisionIfSigned } from "./lib/manifestRevision";
 import { clearTranscriptDelegationSchedule, ensureTranscriptWriterDelegation } from "./lib/transcriptDelegation";
 import { onAgentPaywallError, onAgentModelSelectionError } from "./lib/agentChatApi";
 import type { ThreadDoc, StoredMessageItem } from "./lib/threadStore";
@@ -550,11 +551,14 @@ export function App() {
       }
       // Sessions signed under an older manifest revision are cleared once, so the
       // user signs in again under the current grants (see lib/manifestRevision.ts).
-      // This runs before the manifest is fetched or any storage call is made.
+      // The gate first reads the manifest the backend serves and clears only if it carries
+      // those grants (web and backend deploy separately); that is a backend call, not a
+      // storage call, and it runs before any storage call is made.
       const revisionGate = await applyManifestRevisionGate({
         store: browserRevisionStore(),
         address: sessionStoreRef.current.getAddress(),
         isOffline: browserIsOffline,
+        servedManifestCarriesBundle: async () => manifestCarriesBundle(await loadAppManifest(`${BACKEND_URL}/api/manifest`)),
         handoff: captureHandoff,
         clearSession: (address) => {
           clearPersistedSession(address);
@@ -974,7 +978,8 @@ export function App() {
       // Exchange the SIWE message for a backend Bearer token (for /api/chat).
       const verified = await verifySession(BACKEND_URL, session.siwe, session.signature);
       sessionStoreRef.current.setSession(verified.token, verified.expiresIn, connectedAddress);
-      recordManifestRevision(browserRevisionStore(), connectedAddress);
+      // Marked current only if the manifest this sign-in used carries the bundle (an older served manifest does not).
+      recordManifestRevisionIfSigned(browserRevisionStore(), connectedAddress, manifest);
       // The SDK keeps this provider for later user-authorized operations;
       // only the verified login's signatures use the prefetched nonce guard.
       prefetch.complete();
