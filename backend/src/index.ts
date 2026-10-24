@@ -102,6 +102,7 @@ import {
   KvCredentialRowStore,
   validateCredentialCustodyConfig,
 } from "./services/credential-store.js";
+import { CREDENTIAL_COUNT_ADMIN_KEY_ENV, mountCredentialCountRoute } from "./routes/credential-count.js";
 import { CREDENTIAL_ROW_COUNT_ENV, logCredentialRowCounts } from "./services/credential-row-count.js";
 import {
   createRefreshingCredentialLookup,
@@ -707,6 +708,15 @@ async function main() {
   });
   app.use("/api/manifest", createManifestRouter());
   app.use("/api/server-info", createServerInfoRouter(did, readBackendBuildInfo()));
+  // TC-1964: optional authenticated count of stored credential rows. Not registered (404) unless
+  // CREDENTIAL_COUNT_ADMIN_KEY is set; no session, the admin key is the only credential.
+  if (process.env[CREDENTIAL_COUNT_ADMIN_KEY_ENV]?.trim()) {
+    mountCredentialCountRoute(
+      app,
+      process.env,
+      () => new KvCredentialRowStore(node, transcriberStorageLane, { priority: "background" }),
+    );
+  }
   app.use(
     "/api/auth",
     createAuthRouter({
