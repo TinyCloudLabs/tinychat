@@ -3,6 +3,8 @@
 // This scan lists every `key=${expression}` interpolation in backend/src for the shape-checked keys; the reviewed list is
 // log-shipper/call-sites.json. A new (file, key, expression) fails the contract test until a reviewer has looked at it and
 // regenerated the list (`node log-shipper/scan.mjs --write`). Literal values (`op=deliver`) are constants and not listed.
+// Three shapes are recognised: `key=${expression}`, a string that ends in `key=` and is concatenated with `+ expression`, and a
+// dynamic key, `${name}=${expression}` (listed as the key `${name}`).
 import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -25,11 +27,17 @@ export function scanCallSites(base = resolve(root, 'backend/src')) {
   const keys = [...classes.code, ...classes.int, ...classes.bool];
   const renamed = { waited_ms: 'waitedMs', item_count: 'ids' };
   const names = keys.flatMap(key => renamed[key] ? [key, renamed[key]] : [key]);
-  const pattern = new RegExp(String.raw`(?<![A-Za-z0-9_])(${names.join('|')})=\$\{((?:[^{}]|\{[^{}]*\})*)\}`, 'g');
+  const interpolated = new RegExp(String.raw`(?<![A-Za-z0-9_])(${names.join('|')})=\$\{((?:[^{}]|\{[^{}]*\})*)\}`, 'g');
+  const concatenated = new RegExp(String.raw`(?<![A-Za-z0-9_])(${names.join('|')})=["'\x60]\s*\+\s*([^,;)\n"'\x60]+)`, 'g');
+  const dynamicKey = /\$\{([^{}]+)\}=\$\{((?:[^{}]|\{[^{}]*\})*)\}/g;
+  const tidy = text => text.replace(/\s+/g, ' ').trim();
   const found = new Set();
   for (const file of sources(base)) {
     const text = readFileSync(file, 'utf8');
-    for (const match of text.matchAll(pattern)) found.add(`${relative(root, file)}|${match[1]}|${match[2].replace(/\s+/g, ' ').trim()}`);
+    const name = relative(root, file);
+    for (const match of text.matchAll(interpolated)) found.add(`${name}|${match[1]}|${tidy(match[2])}`);
+    for (const match of text.matchAll(concatenated)) found.add(`${name}|${match[1]}|+ ${tidy(match[2]).replace(/\s*\+$/, '')}`);
+    for (const match of text.matchAll(dynamicKey)) found.add(`${name}|\${${tidy(match[1])}}|${tidy(match[2])}`);
   }
   return [...found].sort();
 }

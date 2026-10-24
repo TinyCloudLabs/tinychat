@@ -558,8 +558,10 @@ jobs:
           fi
           log_budget="${PHALA_ENV_BETTERSTACK_DAILY_BYTE_BUDGET:-}"
           log_lines="${PHALA_ENV_BETTERSTACK_MAX_LINES_PER_MINUTE:-}"
-          if [ -n "$log_budget" ] && { [[ "$log_budget" == *$'\n'* ]] || ! [[ "$log_budget" =~ ^[1-9][0-9]{0,11}$ ]]; }; then
-            echo "::warning title=Ignored log shipping limit::TINYCHAT_BETTERSTACK_DAILY_BYTE_BUDGET is not a positive integer; the default applies"
+          # 200000000 is MAX_DAILY_BYTE_BUDGET in log-shipper/limits.mjs (a test pins them together). Above it the value is
+          # ignored (never clamped) and the default applies; lifting the ceiling is a code change.
+          if [ -n "$log_budget" ] && { [[ "$log_budget" == *$'\n'* ]] || ! [[ "$log_budget" =~ ^[1-9][0-9]{0,11}$ ]] || [ "$log_budget" -gt 200000000 ]; }; then
+            echo "::warning title=Ignored log shipping limit::TINYCHAT_BETTERSTACK_DAILY_BYTE_BUDGET is not a positive integer of at most 200000000; the default applies"
             log_budget=""
           fi
           if [ -n "$log_lines" ] && { [[ "$log_lines" == *$'\n'* ]] || ! [[ "$log_lines" =~ ^[1-9][0-9]{0,8}$ ]]; }; then

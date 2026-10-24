@@ -1,6 +1,7 @@
 // Real native Vector, the real compiled boundary and the real cap transform; no sockets. GELF packets go in on stdin (the
 // only source substitution) and every sink input is printed by a console sink. The cap timer is wall-clock, so the check
-// lasts about three cap windows (about 3 minutes): per-key caps in the first two, the whole-stream cap in the third.
+// lasts about four cap windows (about 4 minutes): per-key caps in the first two, the whole-stream cap in the third, and the ceiling on
+// ALL lines reaching the sink (including the dropped-count lines) under 150 flooded keys in the fourth.
 // Usage: node log-shipper/cap-check.mjs VECTOR_BINARY
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
@@ -9,7 +10,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildConfig } from './build.mjs';
-import { CAP_PER_WINDOW, CAP_WINDOW_SECONDS } from './limits.mjs';
+import { CAP_PER_WINDOW, CAP_WINDOW_SECONDS, MAX_DROPPED_LINES, lineCeiling } from './limits.mjs';
 import { packet } from './cases.mjs';
 
 const sleep = ms => new Promise(done => setTimeout(done, ms));
@@ -80,7 +81,30 @@ export async function checkCaps(vector, tmpRoot = process.env.TMPDIR) {
     assert.equal(drops().length, dropsBefore, 'no per-key overflow in the whole-stream window');
     const firstProbe = events.filter(event => event.op === 'probe').map(event => event.component);
     assert.deepEqual(firstProbe, components.flatMap(component => Array(CAP_PER_WINDOW).fill(component)).slice(0, streamCap), 'the first lines in arrival order pass');
-    return { status: 'passed', window_s: CAP_WINDOW_SECONDS, cap: CAP_PER_WINDOW, stream_cap: streamCap, dropped_events: drops().length, stream_dropped_events: streamDrops().length };
+
+    // Window 4: 150 keys x 40 lines. Every key overflows its own cap, so there are 150 per-key overflows, but the sink gets at
+    // most MAX_DROPPED_LINES per-key lines: the rest are folded into the one stream line. The whole-stream cap is a true
+    // ceiling: passed lines + per-key lines + the stream line never exceed streamCap + MAX_DROPPED_LINES + 1.
+    const keysFlooded = 150;
+    const perKey = 40;
+    const flood = Array.from({ length: keysFlooded }, (_, key) => Array.from({ length: perKey }, (_, index) => packet(`[chat] op=k${key} result=ok n=${index}`))).flat();
+    await send(flood);
+    await waitFor(() => streamDrops().length >= 2, CAP_WINDOW_SECONDS + 30, 'the stream dropped-count event of the flood window');
+    await sleep(2000);
+    const floodPassed = events.filter(event => event.event === 'backend_log' && /^k\d+$/.test(event.op ?? ''));
+    const floodKeyLines = events.filter(event => event.event === 'log_dropped' && /^k\d+$/.test(event.op ?? ''));
+    const floodStream = streamDrops()[1];
+    assert.equal(floodPassed.length, streamCap, 'exactly the whole-stream cap passes');
+    assert.equal(floodKeyLines.length, MAX_DROPPED_LINES, 'at most MAX_DROPPED_LINES per-key lines are emitted');
+    assert.equal(new Set(floodKeyLines.map(event => event.op)).size, MAX_DROPPED_LINES);
+    assert.ok(floodKeyLines.every(event => event.dropped === perKey - CAP_PER_WINDOW && event.component === 'chat' && event.result === 'ok'));
+    const streamOverflow = keysFlooded * CAP_PER_WINDOW - streamCap;
+    const folded = (keysFlooded - MAX_DROPPED_LINES) * (perKey - CAP_PER_WINDOW);
+    assert.equal(floodStream.dropped, streamOverflow + folded, 'the stream line carries the stream overflow plus the folded per-key drops');
+    assert.equal(streamDrops().length, 2);
+    const linesAtSink = floodPassed.length + floodKeyLines.length + 1;
+    assert.ok(linesAtSink <= streamCap + MAX_DROPPED_LINES + 1 && linesAtSink <= lineCeiling(streamCap), `lines at the sink in the flood window: ${linesAtSink}`);
+    return { status: 'passed', window_s: CAP_WINDOW_SECONDS, cap: CAP_PER_WINDOW, stream_cap: streamCap, flood_lines_at_sink: linesAtSink, line_ceiling: lineCeiling(streamCap), dropped_events: drops().length, stream_dropped_events: streamDrops().length };
   } finally {
     if (child) { child.stdin.end(); child.kill('SIGTERM'); await closed; }
     await rm(dir, { recursive: true, force: true });

@@ -4,7 +4,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { join, resolve } from "node:path";
 import { load as loadYaml } from "js-yaml";
 import * as build from "../../../log-shipper/build.mjs";
-import { estimateBytes } from "../../../log-shipper/limits.mjs";
+import { MAX_DAILY_BYTE_BUDGET, MAX_DROPPED_LINES, estimateBytes, lineCeiling } from "../../../log-shipper/limits.mjs";
 import { reviewedCallSites, scanCallSites } from "../../../log-shipper/scan.mjs";
 
 // TC-1978. Never touch a real home: HOME and the tool homes point at a throwaway directory for the whole file.
@@ -317,10 +317,29 @@ describe("volume limits (TC-1978)", () => {
     expect(defaults.budget).toBe(20_000_000);
   });
 
-  test("a valid positive integer replaces a limit, up to 12 digits for the budget and 9 for lines", () => {
+  test("a valid positive integer replaces a limit: the budget up to its 200 MB/day ceiling, lines up to 9 digits", () => {
     expect(runEntrypoint({ BETTERSTACK_DAILY_BYTE_BUDGET: "50000000", BETTERSTACK_MAX_LINES_PER_MINUTE: "600" })).toMatchObject({ budget: 50_000_000, lines: 600 });
-    expect(runEntrypoint({ BETTERSTACK_DAILY_BYTE_BUDGET: "999999999999", BETTERSTACK_MAX_LINES_PER_MINUTE: "999999999" })).toMatchObject({ budget: 999_999_999_999, lines: 999_999_999 });
+    expect(runEntrypoint({ BETTERSTACK_DAILY_BYTE_BUDGET: String(MAX_DAILY_BYTE_BUDGET), BETTERSTACK_MAX_LINES_PER_MINUTE: "999999999" })).toMatchObject({ budget: MAX_DAILY_BYTE_BUDGET, lines: 999_999_999 });
     expect(runEntrypoint({ BETTERSTACK_DAILY_BYTE_BUDGET: "1" })).toMatchObject({ budget: 1, lines: defaults.lines });
+  });
+
+  test("the budget variable cannot raise the ceiling: above 200 MB/day the default applies (never clamped to the ceiling)", () => {
+    expect(MAX_DAILY_BYTE_BUDGET).toBe(200_000_000);
+    for (const value of [String(MAX_DAILY_BYTE_BUDGET + 1), "300000000", "1000000000", "999999999999"]) {
+      expect(runEntrypoint({ BETTERSTACK_DAILY_BYTE_BUDGET: value }).budget, value).toBe(defaults.budget);
+    }
+    // The ceiling is baked into the config next to the budget, and is the only place its number lives besides the workflow pin.
+    expect(vector.entrypoint!.at(-1)!).not.toContain(String(MAX_DAILY_BYTE_BUDGET));
+    expect(JSON.stringify(build.buildParts().base)).toContain(`local max_daily_budget = ${MAX_DAILY_BYTE_BUDGET}`);
+    // The workflow validates the same ceiling before the value is written.
+    expect(deployStep.run).toContain(`-gt ${MAX_DAILY_BYTE_BUDGET}`);
+  });
+
+  test("the whole-stream cap is a true ceiling: at most max_lines + 10 per-key lines + 1 stream line (+ 7 gate summaries) per window", () => {
+    expect(MAX_DROPPED_LINES).toBe(10);
+    expect(lineCeiling(defaults.lines)).toBe(defaults.lines + 10 + 1 + 7);
+    const cap = JSON.stringify(build.buildParts().base);
+    expect(cap).toContain(`local max_drop_lines = ${MAX_DROPPED_LINES}`);
   });
 
   test("any bad value falls back to the default: signs, zero, leading zeros, decimals, exponents, text, spaces, newlines, too many digits, sed syntax", () => {
@@ -330,8 +349,8 @@ describe("volume limits (TC-1978)", () => {
       expect(run.status, JSON.stringify(value)).toBe(0);
       expect({ budget: run.budget, lines: run.lines }, JSON.stringify(value)).toEqual({ budget: defaults.budget, lines: defaults.lines });
     }
-    // 10 digits is valid for the budget and too many for lines.
-    expect(runEntrypoint({ BETTERSTACK_DAILY_BYTE_BUDGET: "1234567890", BETTERSTACK_MAX_LINES_PER_MINUTE: "1234567890" })).toMatchObject({ budget: 1_234_567_890, lines: defaults.lines });
+    // 10 digits is too many for lines, while the same call keeps a valid budget.
+    expect(runEntrypoint({ BETTERSTACK_DAILY_BYTE_BUDGET: "150000000", BETTERSTACK_MAX_LINES_PER_MINUTE: "1234567890" })).toMatchObject({ budget: 150_000_000, lines: defaults.lines });
   });
 
   test("limits do not depend on the token or the host: local-only mode still applies them, and ship.json is loaded only with both", () => {
@@ -352,6 +371,20 @@ describe("volume limits (TC-1978)", () => {
       { ts: "2026-10-24T00:00:00.000Z", level: "warn", event: "daily_budget_reached", svc: "logship", budget_bytes: 20000000 },
     ];
     for (const sample of samples) expect(estimateBytes(sample)).toBeGreaterThanOrEqual(Buffer.byteLength(`${JSON.stringify(sample)}\n`));
+  });
+
+  test("the scan recognises all three interpolation shapes: key=${expr}, a concatenated \"key=\" + expr, and a dynamic ${name}=${expr}", () => {
+    const dir = mkdtempSync(join(scratch, "scan-"));
+    writeFileSync(join(dir, "sites.ts"), [
+      "console.log(`[x] op=${userId} result=ok`);",
+      'console.log("[x] result=" + user.name);',
+      "console.log('[x] reason=' + a + ' code=' + b);",
+      "console.log(`[x] ${key}=${value}`);",
+      "console.log(`[x] op=deliver ms=${elapsed}`);",
+    ].join("\n"));
+    const found = (scanCallSites(dir) as string[]).map((entry) => entry.split("|").slice(1).join("|"));
+    expect(found).toEqual(expect.arrayContaining(["op|userId", "result|+ user.name", "reason|+ a", "code|+ b", "${key}|value", "ms|elapsed"]));
+    expect(found).not.toContain("op|deliver");
   });
 
   test("the reviewed list of shape-checked call sites is complete: a new key=${expression} in backend/src fails until it is reviewed", () => {

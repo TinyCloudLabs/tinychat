@@ -4,7 +4,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
-import { MAX_LINE_BYTES, CAP_PER_WINDOW, CAP_WINDOW_SECONDS, DEFAULT_DAILY_BYTE_BUDGET, DEFAULT_MAX_LINES_PER_MINUTE, DAY_SECONDS } from './limits.mjs';
+import { MAX_LINE_BYTES, CAP_PER_WINDOW, CAP_WINDOW_SECONDS, DEFAULT_DAILY_BYTE_BUDGET, DEFAULT_MAX_LINES_PER_MINUTE, DAY_SECONDS, MAX_DAILY_BYTE_BUDGET, MAX_DROPPED_LINES } from './limits.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const load = name => JSON.parse(readFileSync(resolve(root, 'log-shipper', name), 'utf8'));
@@ -16,7 +16,7 @@ export const vectorImage = 'timberio/vector:0.59.0-alpine@sha256:0e36bc2a290039e
  */
 export const INGEST_HOST_PLACEHOLDER = '__INGEST_HOST__';
 export const sinkUri = `https://${INGEST_HOST_PLACEHOLDER}/`;
-export { MAX_LINE_BYTES, CAP_PER_WINDOW, CAP_WINDOW_SECONDS, DEFAULT_DAILY_BYTE_BUDGET, DEFAULT_MAX_LINES_PER_MINUTE, DAY_SECONDS };
+export { MAX_LINE_BYTES, CAP_PER_WINDOW, CAP_WINDOW_SECONDS, DEFAULT_DAILY_BYTE_BUDGET, DEFAULT_MAX_LINES_PER_MINUTE, DAY_SECONDS, MAX_DAILY_BYTE_BUDGET, MAX_DROPPED_LINES };
 /** Keys the schema marks as typed attributes. Structural keys are never attributes. */
 export const STRUCTURAL = Object.freeze(['svc', 'component', 'event_code', 'error_class', 'gate_reason', 'window_s', 'budget_event', 'budget_mode', 'budget_bytes']);
 /** Console keys whose names differ from the schema's snake_case names. */
@@ -72,9 +72,10 @@ const remap = (inputs, source, options = {}) => ({ type: 'remap', inputs, source
  *      another; past 500 distinct keys in a window the key falls back to (component, event_code) to bound memory;
  *   2. the WHOLE stream passes at most `max_lines` events (BETTERSTACK_MAX_LINES_PER_MINUTE; a number baked in from limits.mjs
  *      and replaced by the sidecar's entrypoint only for a valid positive integer).
- * The rest are counted. When the window ends a timer emits one `log_dropped` event per overflowed key and ONE
- * `log_stream_dropped` event for the whole-stream overflow: fixed shapes built from already-validated key parts and
- * integers; nothing from a dropped event is read. Vector fires a Lua timer once at the first event, so `flush` ignores that tick.
+ * The rest are counted. When the window ends a timer emits at most MAX_DROPPED_LINES `log_dropped` events (the keys with the
+ * most drops) and ONE `log_stream_dropped` event whose count is the whole-stream overflow plus the drops of every key that did
+ * not get its own line: fixed shapes built from already-validated key parts and integers; nothing from a dropped event is read.
+ * So the lines reaching a sink in a window are at most max_lines + MAX_DROPPED_LINES + 1 (+ the gate summaries): a true ceiling. Vector fires a Lua timer once at the first event, so `flush` ignores that tick.
  * Both caps sit before every sink, so they bound the shipped stream and the local copy alike.
  */
 const capTransform = ({ maxLines }) => ({
@@ -82,6 +83,7 @@ const capTransform = ({ maxLines }) => ({
   hooks: { process: 'process' }, timers: [{ interval_seconds: CAP_WINDOW_SECONDS, handler: 'flush' }],
   source: `local cap = ${CAP_PER_WINDOW}
 local max_lines = ${maxLines}
+local max_drop_lines = ${MAX_DROPPED_LINES}
 local counts = {}
 local parts = {}
 local dropped = {}
@@ -126,12 +128,26 @@ function flush(emit)
   ticks = ticks + 1
   if ticks == 1 then return end
   local now = os.date("!%Y-%m-%dT%H:%M:%S.000Z")
+  local list = {}
   for key, n in pairs(dropped) do
-    local p = parts[key]
-    emit({log = {ts = now, level = "warn", event = "log_dropped", svc = "backend", component = p.component, event_code = p.event_code, op = p.op, result = p.result, dropped = n, window_s = ${CAP_WINDOW_SECONDS}}})
+    list[#list + 1] = {key = key, n = n}
   end
-  if stream_dropped > 0 then
-    emit({log = {ts = now, level = "warn", event = "log_stream_dropped", svc = "backend", dropped = stream_dropped, window_s = ${CAP_WINDOW_SECONDS}}})
+  table.sort(list, function(a, b)
+    if a.n ~= b.n then return a.n > b.n end
+    return a.key < b.key
+  end)
+  local folded = 0
+  for i, item in ipairs(list) do
+    if i <= max_drop_lines then
+      local p = parts[item.key]
+      emit({log = {ts = now, level = "warn", event = "log_dropped", svc = "backend", component = p.component, event_code = p.event_code, op = p.op, result = p.result, dropped = item.n, window_s = ${CAP_WINDOW_SECONDS}}})
+    else
+      folded = folded + item.n
+    end
+  end
+  local stream_total = stream_dropped + folded
+  if stream_total > 0 then
+    emit({log = {ts = now, level = "warn", event = "log_stream_dropped", svc = "backend", dropped = stream_total, window_s = ${CAP_WINDOW_SECONDS}}})
   end
   counts = {}
   parts = {}
@@ -155,6 +171,7 @@ const budgetTransform = ({ dailyBudget, daySeconds }) => ({
   type: 'lua', version: '2', inputs: ['cap', 'gate_output'],
   hooks: { process: 'process' },
   source: `local daily_budget = ${dailyBudget}
+local max_daily_budget = ${MAX_DAILY_BYTE_BUDGET}
 local day_seconds = ${daySeconds}
 local day = -1
 local spent = 0
