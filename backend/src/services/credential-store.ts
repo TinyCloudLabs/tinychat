@@ -736,6 +736,23 @@ export class KvCredentialRowStore implements CredentialRowStore {
     });
   }
 
+  /**
+   * TC-1964: how many rows are stored under `credentials/<source>/`. Lists keys through the same
+   * lane and node session as every other call here and returns ONLY the number — no key, address
+   * or row value leaves this method, and nothing is read.
+   */
+  countRows(source: string): Promise<number> {
+    const prefix = `credentials/${normalizeSource(source)}/`;
+    return this.run(async () => {
+      const result = await withSessionRefresh(this.node, async () =>
+        assertKvResult(await this.node.kv.list({ prefix })),
+      );
+      const keys = (result as { data?: { keys?: unknown } } | null)?.data?.keys;
+      if (!Array.isArray(keys)) throw new Error("credential row listing is invalid");
+      return keys.length;
+    });
+  }
+
   private async readJson(key: string): Promise<unknown> {
     const result = await withSessionRefresh(this.node, async () => {
       const r = await this.node.kv.get(key);
