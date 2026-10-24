@@ -70,5 +70,11 @@ export const combineScreens: HarnessScreen[] = [
   { ...SCREEN, id: "combine-summary-shown", path: note(COMBINED_ROW_ID), readyWhen: '[data-testid="combined-summary"][data-state="ready"]', render: () => <CombineShell combined summary /> },
   { ...SCREEN, id: "combine-summary-unavailable", path: note(COMBINED_ROW_ID), readyWhen: '[data-testid="combined-summary"][data-state="unavailable"]', render: () => <CombineShell combined model="fail" /> },
   { ...SCREEN, id: "combine-delete-confirm", path: note(COMBINED_ROW_ID), readyWhen: '[data-testid="delete-combined-sheet"]', render: () => <CombineShell combined taps={['[data-testid="combined-delete"]']} /> },
+  // TC-1152 v1b-a: the Library shows the combined meeting alone; the page lists its tappable sources; a source opens
+  // from it; and after Delete combined the sources are back in the list.
+  { ...SCREEN, id: "combine-library-one", path: "/chat/capture/library", readyWhen: '[data-testid="library-list"][data-state="ready"]:has([data-testid="library-item"])', render: () => <CombineShell combined /> },
+  { ...SCREEN, id: "combine-detail-sources", path: note(COMBINED_ROW_ID), readyWhen: '[data-testid="combined-member"] a', render: () => <CombineShell combined /> },
+  { ...SCREEN, id: "combine-source-opened", path: note(COMBINED_ROW_ID), readyWhen: `${READ}:not(:empty):not(:has([data-testid="combined-members"]))`, render: () => <CombineShell combined taps={[`[data-testid="combined-member"] a[href$="/${FIREFLIES_WEEKLY.id}"]`]} /> },
+  { ...SCREEN, id: "combine-library-after-delete", path: note(COMBINED_ROW_ID), readyWhen: `[data-testid="library-list"][data-state="ready"]:has(a[href$="/${FIREFLIES_WEEKLY.id}"])`, render: () => <CombineShell combined taps={['[data-testid="combined-delete"]', '[data-testid="delete-combined-confirm"]']} /> },
   { ...SCREEN, id: "combine-confirm-pass-web", platform: "web", path: note(FIREFLIES_WEEKLY.id), readyWhen: '[data-testid="combine-confirm"][data-passed="true"]', render: () => <CombineShell taps={TO_CONFIRM} /> },
 ];
