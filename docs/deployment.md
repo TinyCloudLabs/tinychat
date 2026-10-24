@@ -267,9 +267,6 @@ Repository **variables** (all optional — defaults shown):
 | `ELIZA_SERVICE_URL` | _(required — no default; the workflow's config check fails fast if unset)_ — Eliza agent service URL (agent triad) |
 | `ELIZA_TASKS_ENABLED` | `false` (repo variable; only literal `true` routes admitted agent turns through Eliza `/tasks`) |
 | `ELIZA_TASKS_TEST_ACCOUNTS` | _(empty — repo variable; comma-separated account addresses, trimmed and lowercased)_. **When tasks are enabled, an empty list admits all authenticated accounts.** Set an explicit canary list before enabling. |
-| `MEETING_CONTENT_RETRIEVAL_ENABLED` | `false` (optional; only literal `true` enables controller routing for admitted accounts) |
-| `MEETING_CONTENT_TEST_ACCOUNTS` | _(empty — optional comma-separated account allowlist; entries are trimmed and lowercased)_ |
-| `MEETING_CONTENT_MODELS` | _(empty — optional comma-separated evaluated-model allowlist; entries are trimmed and matched exactly)_ |
 | `CREDENTIAL_ROW_COUNT_SOURCES` | _(empty — optional comma-separated source names; when set to a source name, logs a single `credential_row_count source=<name> count=<N>` line at startup; read-only)_ |
 | `PAYWALL_ENABLED` | `false`. This and every Stripe/credit/ledger row below may live as a repo **secret** or **variable** — secrets win (`docs/stripe-setup.md`). |
 | `STRIPE_PRICE_PLUS_MONTHLY` / `STRIPE_PRICE_PLUS_YEARLY` / `STRIPE_PRICE_PRO_MONTHLY` / `STRIPE_PRICE_PRO_YEARLY` | _(empty — Stripe price ids `price_…`; see `docs/stripe-setup.md`)_ |
@@ -340,8 +337,7 @@ decision and this new feature's gate.
 Deploy a compatible Eliza service first and verify its authenticated `/capabilities`
 response, build revision, provider profile, offered models and cancellation support.
 Deploy TinyChat initially with `ELIZA_TASKS_ENABLED=false`. Keep `AGENT_DID`,
-`ELIZA_SERVICE_URL`, `ELIZA_SERVICE_SECRET`, backend RedPill credentials and the
-legacy meeting settings intact. `MEETING_CONTENT_MODELS` does not gate Eliza tasks.
+`ELIZA_SERVICE_URL`, `ELIZA_SERVICE_SECRET` and backend RedPill credentials intact.
 The Eliza model map must cover the models offered by TinyChat; unsupported models
 are rejected without automatic model replacement or legacy replay.
 
@@ -363,37 +359,12 @@ false. To roll back task routing, deploy `ELIZA_TASKS_ENABLED=false`, verify new
 requests use the legacy path and keep compatible Eliza endpoints available until
 in-flight tasks finish or cancel. Do not replay uncertain requests.
 
-### Legacy meeting content rollout
-
-Meeting content retrieval stays off for a missing, empty or nonliteral enable flag.
-A literal `true` with no accounts admits nobody. An admitted account with no
-models keeps controller routing but gets content-unavailable responses. Emptying
-the model list later withdraws content; disabling the flag restores legacy routing.
-All three settings are optional deployment inputs. The committed defaults are
-`false`, empty and empty. Comma-separated formats are illustrated only with
-commented synthetic examples; these identify no admitted account or qualified model:
-
-```dotenv
-# MEETING_CONTENT_TEST_ACCOUNTS=0xabc,0xdef
-# MEETING_CONTENT_MODELS=phala/example-model-a,phala/example-model-b
-```
-
-The deploy writes all three keys even when lists are empty. The existing
-`Sync CVM allowed_envs` step reads that same env file and uses
-`.github/scripts/phala-sync-allowed-envs.mjs` to add missing names and verify the
-result. Plain `phala deploy` does not update an existing CVM's registered allowlist.
-Before separately authorized enablement, an operator must verify all three exact
-names above on the actual existing target, the sync outcome and the intended
-deployed defaults. Edited YAML or a successful build does not supply that evidence.
-If names remain absent, keep enablement blocked and investigate the supported target
-update path; never recreate the CVM automatically.
-
 > Any env var added to the deploy must land in **four** places or the CVM silently
 > drops it: the deploy step's `env:` block, the `printf` ENV_FILE block it writes
 > (this is what `allowed_envs` is derived from — there is no static list), the
 > `environment:` map in `docker-compose.phala.yml`, and `backend/.env.example` +
-> these tables. `webhook-deploy-env.test.ts`, `ledger-deploy-env.test.ts`,
-> `meeting-rollout.test.ts` and `eliza-task-deploy-env.test.ts` pin this wiring; missing the second one is what unmounted `/api/agent` in
+> these tables. `webhook-deploy-env.test.ts`, `ledger-deploy-env.test.ts` and
+> `eliza-task-deploy-env.test.ts` pin this wiring; missing the second one is what unmounted `/api/agent` in
 > production on 2026-07-07.
 
 > `PHALA_CVM_ID` is read as a repo **variable** (not a secret) so it can be

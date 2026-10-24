@@ -1465,7 +1465,6 @@ describe("orchestrateToolCalling", () => {
 
 describe("createAgentChatHandler — A4 paywall + A5 recording", () => {
   for (const [failure, code, completed] of [
-    ["invalid-plan", "interpretation_failed", true],
     ["incomplete-finish", "upstream_incomplete", true],
     ["provider-error", "upstream_failed", false],
     ["incomplete-read", "upstream_incomplete", true],
@@ -1477,14 +1476,14 @@ describe("createAgentChatHandler — A4 paywall + A5 recording", () => {
       _setStripeClient(mockStripe(null));
       const restore = stubCatalogFetch();
       let models = 0, dispatches = 0, endCount = 0;
-      const entries: unknown[] = [], logs: unknown[] = [], traces: unknown[] = [];
+      const entries: unknown[] = [], logs: unknown[] = [];
       const fetchImpl = (async (url) => {
         if (String(url).includes("/tools/")) { dispatches++; return new Response(sizedToolJson(65537)); }
         if (String(url).endsWith("/capabilities")) throw new Error("Unexpected capability request");
         models++;
         if (failure === "provider-error") return new Response("PRIVATE PROVIDER SENTINEL", { status: 429 });
-        const name = failure === "tool-overflow" ? "web_search" : "prepare_meeting_turn";
-        const argumentsJson = failure === "invalid-plan" ? "{invalid JSON" : "{}";
+        const name = "web_search";
+        const argumentsJson = "{}";
         const round = dataFrame({ id: "private-completion-id", choices: [{ delta: { tool_calls: [{ index: 0, id: "call", function: { name, arguments: argumentsJson } }] }, finish_reason: failure === "incomplete-finish" ? "length" : "tool_calls" }] })
           + dataFrame({ usage: { prompt_tokens: 17, completion_tokens: 5 } });
         return new Response(round + (failure === "incomplete-read" ? "" : "data: [DONE]\n\n"));
@@ -1494,13 +1493,12 @@ describe("createAgentChatHandler — A4 paywall + A5 recording", () => {
         const end = res.end.bind(res);
         res.end = (() => { endCount++; end(); return res; }) as typeof res.end;
         await createAgentChatHandler({
-          ...baseConfig(fetchImpl), meetingContentRetrievalEnabled: failure !== "tool-overflow",
-          meetingTrace: trace => traces.push(trace),
+          ...baseConfig(fetchImpl),
           streamRuntime: { now: () => performance.now(), setTimeout: (fn, ms) => setTimeout(fn, ms), clearTimeout: handle => clearTimeout(handle as ReturnType<typeof setTimeout>), log: summary => logs.push(summary) },
           flusher: { enqueue: entry => entries.push(entry) } as AgentChatConfig["flusher"],
         })(req, res);
         const text = res.chunks.join("");
-        const rounds = failure === "invalid-plan" ? 2 : 1;
+        const rounds = 1;
         expect(models).toBe(rounds);
         expect(dispatches).toBe(failure === "tool-overflow" ? 1 : 0);
         expect(text.match(/"stream_error":/g)).toHaveLength(1);
@@ -1510,8 +1508,7 @@ describe("createAgentChatHandler — A4 paywall + A5 recording", () => {
         expect(text).not.toMatch(/"usage"|"id"|private-completion-id|PRIVATE PROVIDER|OVERSIZED PRIVATE/);
         expect(logs).toHaveLength(1);
         expect(logs[0]).toMatchObject({ outcome: code });
-        if (failure !== "tool-overflow") expect(traces).toEqual([expect.objectContaining({ terminal: code })]);
-        expect(JSON.stringify({ logs, traces })).not.toMatch(/PRIVATE|invalid JSON|private-completion-id/);
+        expect(JSON.stringify({ logs })).not.toMatch(/PRIVATE|invalid JSON|private-completion-id/);
         expect(entries).toHaveLength(completed ? 1 : 0);
         expect(getUsage(ADDR, TIERS.free, null).used).toBe(completed ? rounds : 0);
         if (completed) expect(entries[0]).toMatchObject({ prompt_tokens: 17 * rounds, completion_tokens: 5 * rounds, credits: rounds });
@@ -2126,22 +2123,6 @@ describe("legacy meeting projection under the tool context cap", () => {
     expect(projected.meetings[0].coverage.contextTruncated).toBe(true);
     expect(projected.meetings[0].summary.text.length).toBeGreaterThan(80);
     expect(projected.meetings[0].coverage.support).toBe("none");
-  });
-
-  it("retains full typed evidence for the structured controller", async () => {
-    const fixture = v2Result(["structured-fixture"], true);
-    const sourceText = fixture.result.data.outcomes[0].evidence[0].text;
-    const upstreamBodies: Array<{ messages: Array<{ role: string; content: string }> }> = [];
-    const fetchImpl = (async (url, init) => {
-      if (String(url).endsWith("/capabilities")) return Response.json({ meetingRetrieval: { contractVersion: 2 }, buildRevision: "synthetic-compatible-reader" });
-      if (String(url).includes("/tools/")) return Response.json(fixture);
-      upstreamBodies.push(JSON.parse(String(init?.body)));
-      const first = upstreamBodies.length === 1;
-      return new Response(dataFrame({ choices: [{ delta: first ? { tool_calls: [{ index: 0, id: "plan", function: { name: "prepare_meeting_turn", arguments: JSON.stringify({ kind: "meeting_content", scope: "exact", meetingRef: "structured-fixture", purpose: "summary", evidenceRequirement: "overview" }) } }] } : { content: JSON.stringify({ claims: [{ text: "Supported finding.", meetingIds: ["M1"], evidenceIds: ["M1:E1"] }] }) }, finish_reason: first ? "tool_calls" : "stop" }] }) + "data: [DONE]\n\n");
-    }) as typeof fetch;
-    await orchestrateToolCalling({ config: { ...baseConfig(fetchImpl), meetingContentRetrievalEnabled: true, meetingTrace: () => {} }, model: "phala/gpt-oss-120b", messages: [{ role: "user", content: "Summarize this synthetic meeting." }], entityId: "fixture", write: () => {} });
-    expect(upstreamBodies).toHaveLength(2);
-    expect(upstreamBodies[1].messages[1].content).toContain(sourceText);
   });
 });
 

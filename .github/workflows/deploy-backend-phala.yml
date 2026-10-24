@@ -403,10 +403,6 @@ jobs:
           # enabled with an empty list routes all authenticated accounts to tasks.
           ELIZA_TASKS_ENABLED: ${{ vars.ELIZA_TASKS_ENABLED || 'false' }}
           ELIZA_TASKS_TEST_ACCOUNTS: ${{ vars.ELIZA_TASKS_TEST_ACCOUNTS }}
-          # Optional meeting rollout; defaults keep controller routing disabled.
-          MEETING_CONTENT_RETRIEVAL_ENABLED: ${{ vars.MEETING_CONTENT_RETRIEVAL_ENABLED || 'false' }}
-          MEETING_CONTENT_TEST_ACCOUNTS: ${{ vars.MEETING_CONTENT_TEST_ACCOUNTS }}
-          MEETING_CONTENT_MODELS: ${{ vars.MEETING_CONTENT_MODELS }}
           # Optional one-time, log-only count of stored connector credential rows. Empty = off.
           CREDENTIAL_ROW_COUNT_SOURCES: ${{ vars.CREDENTIAL_ROW_COUNT_SOURCES || '' }}
           # Paywall / billing (docs/stripe-setup.md). Each value may live as a
@@ -548,9 +544,6 @@ jobs:
             printf '%s\n' "ELIZA_SERVICE_SECRET=$ELIZA_SERVICE_SECRET"
             printf '%s\n' "ELIZA_TASKS_ENABLED=${ELIZA_TASKS_ENABLED:-false}"
             printf '%s\n' "ELIZA_TASKS_TEST_ACCOUNTS=${ELIZA_TASKS_TEST_ACCOUNTS:-}"
-            printf '%s\n' "MEETING_CONTENT_RETRIEVAL_ENABLED=${MEETING_CONTENT_RETRIEVAL_ENABLED:-false}"
-            printf '%s\n' "MEETING_CONTENT_TEST_ACCOUNTS=${MEETING_CONTENT_TEST_ACCOUNTS:-}"
-            printf '%s\n' "MEETING_CONTENT_MODELS=${MEETING_CONTENT_MODELS:-}"
             printf '%s\n' "CREDENTIAL_ROW_COUNT_SOURCES=${CREDENTIAL_ROW_COUNT_SOURCES:-}"
             printf '%s\n' "AGENT_STREAM_HEARTBEAT_MS=$AGENT_STREAM_HEARTBEAT_MS"
             printf '%s\n' "AGENT_STREAM_TURN_TIMEOUT_MS=$AGENT_STREAM_TURN_TIMEOUT_MS"
