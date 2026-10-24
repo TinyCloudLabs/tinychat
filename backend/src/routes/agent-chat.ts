@@ -15,7 +15,6 @@ import type { Request, RequestHandler, Response } from "express";
 import { createAgentTaskClient } from "../agent-task-client.js";
 import { validateAgentStreamPolicy, type AgentStreamPolicy } from "../agent-stream-policy.js";
 import { TINYCLOUD_MEETING_TOOLS } from "../transcripts/tool-contract.js";
-import { runMeetingTurn, type BufferedMeetingModelResult, type MeetingModelRequest, type MeetingToolContext } from "../transcripts/meeting-turn.js";
 import { parseMeetingToolData } from "../transcripts/meeting-evidence.js";
 import { compactLegacyMeetingResult } from "../transcripts/legacy-meeting-projection.js";
 import { resolveLegacyMeetingDateScope, type LegacyMeetingDateScope } from "../transcripts/legacy-meeting-date-scope.js";
@@ -124,15 +123,9 @@ export interface AgentChatConfig {
   fetchImpl?: typeof fetch;
   /** Max tool→result rounds before forcing a final answer (default 3). */
   maxRounds?: number;
-  /** Selected once after admission; task mode takes precedence over legacy controllers. */
+  /** Selected once after admission; task mode takes precedence over the legacy tool loop. */
   elizaTasksEnabled?: boolean;
   elizaTasksAccountAllowed?: (address: string) => boolean;
-  /** Dedicated staged rollout gate; disabled unless explicitly configured. */
-  meetingContentRetrievalEnabled?: boolean;
-  meetingContentAccountAllowed?: (address: string) => boolean;
-  meetingContentModelAllowed?: (model: string) => boolean;
-  backendRevision?: string;
-  meetingTrace?: (trace: Record<string, unknown>) => void;
   /** §E.6 — shadow-push outbox (disabled when absent). */
   flusher?: LedgerFlusher;
   /** §E.7 — lazy rehydrator (disabled when absent). */
@@ -433,7 +426,7 @@ async function dispatchTool(
   call: AccumulatedToolCall,
   entityId: string,
   roomId: string | undefined,
-  turnContext?: AgentTurnContext | MeetingToolContext,
+  turnContext?: AgentTurnContext,
   signal?: AbortSignal,
   allowedTools?: readonly string[],
 ): Promise<ToolDispatchOutcome> {
@@ -457,7 +450,7 @@ async function dispatchTool(
   // Own the JSON reader so cancellation can release a pending body read, even
   // when a supplied fetch implementation does not wire its response to signal.
   const reader = res.body?.getReader();
-  const maxChars = turnContext && "retrievalMode" in turnContext ? 16000 : 65536;
+  const maxChars = 65536;
   let cancelled = false;
   const cancel = () => {
     if (cancelled) return;
@@ -526,10 +519,7 @@ async function dispatchTool(
   if (call.name !== "web_search") {
     const data = body.result?.data ? JSON.stringify(body.result.data) : "";
     const typed = parseMeetingToolData(body.result?.data);
-    // v2 returns uncited typed evidence before its duplicated citation-bearing
-    // legacy fields. Fit one complete cited projection before the 4k tool cap.
-    const compact = typed && !(turnContext && "retrievalMode" in turnContext)
-      ? compactLegacyMeetingResult(body.result!.data!, typed) : null;
+    const compact = typed ? compactLegacyMeetingResult(body.result!.data!, typed) : null;
     return { status: "done", text: compact ?? (summary && data ? `${summary}\n\nTool data:\n${data}` : summary || data), ...(typed ? { data: typed } : {}) };
   }
   const results = (body.result?.data?.results as Array<{ title?: string; url?: string; snippet?: string }> | undefined) ?? [];
@@ -576,81 +566,7 @@ export interface OrchestrateResult {
  * which alone writes terminal metadata and the protocol terminal.
  */
 export async function orchestrateToolCalling(params: OrchestrateParams): Promise<OrchestrateResult> {
-  if (params.config.privateAccessActive === false) return orchestrateExistingLoop(params, true);
-  if (!params.config.meetingContentRetrievalEnabled) return orchestrateExistingLoop(params);
-  // Model admission applies before interpretation: an unqualified interpreter
-  // must not block ordinary chat or gain access to private meeting tools.
-  if (params.config.meetingContentModelAllowed?.(params.model) === false) return orchestrateExistingLoop(params, true);
-  const fetchImpl = params.config.fetchImpl ?? fetch;
-  const observed = { promptTokens: 0, completionTokens: 0 };
-  const checkpoint = () => {
-    let previous = { promptTokens: 0, completionTokens: 0 };
-    return (usage: typeof previous) => {
-      observed.promptTokens += usage.promptTokens - previous.promptTokens;
-      observed.completionTokens += usage.completionTokens - previous.completionTokens;
-      previous = usage;
-      params.onUsage?.({ ...observed });
-    };
-  };
-  const result = await runMeetingTurn({
-    ...params,
-    contextWindowTokens: contextLengthFor(params.model),
-    streamErrorCode: error => error instanceof StreamFailure ? error.code : undefined,
-    modelCall: request => bufferedMeetingModelCall({ ...params, onUsage: checkpoint() }, request),
-    dispatch: (name, args, context, signal, id) => dispatchTool(params.config, fetchImpl, { name, args: JSON.stringify(args), id }, params.entityId, params.roomId, context, signal),
-    capability: async signal => {
-      const response = await fetchForTurn(fetchImpl, `${params.config.elizaServiceUrl}/capabilities`, { headers: { authorization: `Bearer ${params.config.elizaServiceSecret}` } }, signal);
-      if (!response.ok) { if (response.body) ignoreCleanup(() => response.body!.cancel()); return null; }
-      // This content-free response has a small independent transport bound.
-      const reader = response.body?.getReader();
-      if (!reader) return null;
-      let bytes = 0; let text = ""; const decoder = new TextDecoder();
-      try {
-        for (;;) { const chunk = await withAbort(reader.read(), signal); if (chunk.done) break; bytes += chunk.value.byteLength; if (bytes > 4096) return null; text += decoder.decode(chunk.value, { stream: true }); }
-        return JSON.parse(text + decoder.decode());
-      } finally { ignoreCleanup(() => reader.cancel()); try { reader.releaseLock(); } catch { /* Preserve the capability outcome. */ } }
-    },
-    runGeneral: maxRounds => orchestrateExistingLoop({ ...params, onUsage: checkpoint(), config: { ...params.config, maxRounds: Math.min(params.config.maxRounds ?? 3, maxRounds) } }, true),
-    contentFrame, toolActivityFrame, delegationErrorFrame,
-  });
-  return { ...result, promptTokens: Math.max(result.promptTokens, observed.promptTokens),
-    completionTokens: Math.max(result.completionTokens, observed.completionTokens) };
-}
-
-async function bufferedMeetingModelCall(params: OrchestrateParams, request: MeetingModelRequest): Promise<BufferedMeetingModelResult> {
-  const maxChars = request.maxOutputTokens === 1024 ? 12288 : 24576;
-  params.onPhase?.(request.phase);
-  const upstream = await fetchForTurn(params.config.fetchImpl ?? fetch, `${params.config.redpillBaseUrl}/chat/completions`, {
-    method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${params.config.redpillApiKey}` },
-    body: JSON.stringify({ model: params.model, messages: request.messages, ...(request.tool ? { tools: [request.tool], tool_choice: { type: "function", function: { name: "prepare_meeting_turn" } }, reasoning: { enabled: false } } : { reasoning_effort: "low" }), max_tokens: request.maxOutputTokens, stream: true, stream_options: { include_usage: true } }),
-  }, request.signal);
-  if (!upstream.ok || !upstream.body) { if (upstream.body) ignoreCleanup(() => upstream.body!.cancel()); throw new StreamFailure("upstream_failed"); }
-  let content = "", completionId = "", promptTokens = 0, completionTokens = 0, finish: unknown;
-  const calls = new Map<number, AccumulatedToolCall>();
-  for await (const obj of parseSseJson(upstream.body as unknown as AsyncIterable<Uint8Array>, request.signal)) {
-    if (typeof obj.id === "string") completionId = obj.id;
-    const usage = obj.usage as { prompt_tokens?: number; completion_tokens?: number } | undefined;
-    if (typeof usage?.prompt_tokens === "number") promptTokens = usage.prompt_tokens;
-    if (typeof usage?.completion_tokens === "number") completionTokens = usage.completion_tokens;
-    if (usage) params.onUsage?.({ promptTokens, completionTokens });
-    if (obj.choices != null && !Array.isArray(obj.choices)) throw new StreamFailure("upstream_incomplete");
-    const choice = (obj.choices as Array<{ delta?: { content?: string; tool_calls?: Parameters<typeof accumulateToolCalls>[1] }; finish_reason?: unknown }> | undefined)?.[0];
-    if (choice !== undefined && (!choice || typeof choice !== "object" || Array.isArray(choice))) throw new StreamFailure("upstream_incomplete");
-    if (choice?.delta != null && (typeof choice.delta !== "object" || Array.isArray(choice.delta))) throw new StreamFailure("upstream_incomplete");
-    if (choice?.delta?.content != null && typeof choice.delta.content !== "string") throw new StreamFailure("upstream_incomplete");
-    if (typeof choice?.delta?.content === "string") content += choice.delta.content;
-    if (choice?.delta?.tool_calls != null && !Array.isArray(choice.delta.tool_calls)) throw new StreamFailure("upstream_incomplete");
-    if (Array.isArray(choice?.delta?.tool_calls)) {
-      accumulateToolCalls(calls, normalizeToolCallDeltas(choice.delta.tool_calls));
-    }
-    if (content.length + [...calls.values()].reduce((n, call) => n + call.args.length + call.name.length, 0) > maxChars || calls.size > 8) throw new StreamFailure("result_size_limit");
-    if (choice?.finish_reason != null) finish = choice.finish_reason;
-  }
-  let inline = false;
-  if (calls.size === 0 && content.includes("<tool_call>")) {
-    parseInlineToolCalls(content).forEach((call, i) => calls.set(i, { id: `inline_${i}`, ...call })); inline = calls.size > 0;
-  }
-  return { content, calls: [...calls.values()], inline, complete: finish === "stop" || finish === "tool_calls", completionId, promptTokens, completionTokens };
+  return orchestrateExistingLoop(params, params.config.privateAccessActive === false);
 }
 
 async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = false): Promise<OrchestrateResult> {
@@ -659,7 +575,6 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
   const maxRounds = generalOnly ? Math.min(config.maxRounds ?? 3, 3) : config.maxRounds ?? 3;
   // Missing access outranks model admission: changing the model cannot fix it.
   const accessIssue = config.privateAccessActive === false ? config.privateAccessIssue ?? "delegation_required" : undefined;
-  const meetingUnavailable = generalOnly && !accessIssue && config.meetingContentModelAllowed?.(model) === false;
   // Only the current request can establish a new authoritative calendar scope.
   const lastUserQuestion = [...params.messages].reverse().find((m) => m.role === "user")?.content ?? "";
   const dateScope = generalOnly ? undefined : resolveLegacyMeetingDateScope(lastUserQuestion, params.turnContext);
@@ -668,7 +583,6 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
       role: "system",
       content: generalOnly ? "You are a helpful assistant. Use web_search for public web questions when needed. Answer ordinary conversation directly."
         + (accessIssue ? ` ${privateAccessGuidance(accessIssue)}` : "")
-        + (meetingUnavailable ? " Private meeting retrieval is unavailable for this model. For private meeting questions, explain that limitation and ask the user to choose a supported model. Do not infer private meeting facts or use public web search to find private meeting information." : "")
         : buildMeetingAgentGuidance(params.turnContext, dateScope),
     },
     ...params.messages,
@@ -984,7 +898,7 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
   return { promptTokens: totalPromptTokens, completionTokens: totalCompletionTokens, completionId: finalCompletionId, ...(errorCode ? { errorCode } : {}) };
 }
 
-export type StreamErrorCode = "turn_timeout" | "upstream_incomplete" | "upstream_failed" | "agent_failed" | "routing_mismatch" | "interpretation_failed" | "interpretation_timeout" | "meeting_feature_unavailable" | "result_size_limit" | "budget_exhausted";
+export type StreamErrorCode = "turn_timeout" | "upstream_incomplete" | "upstream_failed" | "agent_failed" | "routing_mismatch" | "interpretation_failed" | "interpretation_timeout" | "result_size_limit" | "budget_exhausted";
 type StreamPhase = "model" | "tool" | "synthesis" | "repair" | "terminal";
 
 class StreamFailure extends Error {
@@ -1565,7 +1479,7 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
       try {
         if (accessFrame) await streamOwner.write(accessFrame);
         orchestrateResult = await orchestrateToolCalling({
-          config: { ...turnConfig, meetingContentRetrievalEnabled: config.meetingContentRetrievalEnabled === true && (!config.meetingContentAccountAllowed || config.meetingContentAccountAllowed(req.user.address)) }, model: resolvedModel, messages: messages as ChatMsg[], entityId,
+          config: turnConfig, model: resolvedModel, messages: messages as ChatMsg[], entityId,
           roomId: typeof roomId === "string" ? roomId : undefined, turnContext,
           onUsage: usage => { observedUsage = usage; },
           write: streamOwner.write, signal: streamOwner.signal, onPhase: streamOwner.setPhase, remainingMs: streamOwner.remainingMs,
