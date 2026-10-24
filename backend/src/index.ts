@@ -91,6 +91,7 @@ import {
   KvCredentialRowStore,
   validateCredentialCustodyConfig,
 } from "./services/credential-store.js";
+import { CREDENTIAL_ROW_COUNT_ENV, logCredentialRowCounts } from "./services/credential-row-count.js";
 import {
   GoogleOAuthClient,
   googleMeetOAuthEnabled,
@@ -901,6 +902,14 @@ async function main() {
 
   calendarAutojoinWorker?.start();
   transcriptWorker?.start();
+  // TC-1964: optional one-time, log-only count of stored credential rows. Unset = nothing runs.
+  // Fired after boot, never awaited, and it cannot throw; it lists through the shared KV lane.
+  if (process.env[CREDENTIAL_ROW_COUNT_ENV]?.trim()) {
+    void logCredentialRowCounts(
+      process.env[CREDENTIAL_ROW_COUNT_ENV],
+      () => new KvCredentialRowStore(node, transcriberStorageLane, { priority: "background" }),
+    );
+  }
   let shuttingDown = false;
   const shutdown = (signal: string) => {
     if (shuttingDown) return;

@@ -1,5 +1,11 @@
 # @tinychat/backend
 
+## 0.5.7-beta.12
+
+### Patch Changes
+
+- 648edff: Add an optional one-time row count for stored connector credentials, off by default.
+
 ## 0.5.7-beta.11
 
 ### Patch Changes
