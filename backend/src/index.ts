@@ -11,6 +11,8 @@ import { load as loadYaml } from "js-yaml";
 import {
   DelegationCache,
   DelegationStore,
+  EXO_SYNC_GRANT_KIND,
+  TRANSCRIPT_WRITER_GRANT_KIND,
   createCsrfMiddleware,
   createNonceStore,
 } from "@tinyboilerplate/server";
@@ -20,6 +22,7 @@ import { applyRateLimiters, logGlobalBucketRoutes } from "./rate-limits.js";
 import { createAuthMiddleware } from "./middleware/auth.js";
 import { createAuthRouter } from "./routes/auth.js";
 import { createDelegationRouter } from "./routes/delegations.js";
+import { createExoGrantRouter } from "./routes/exo-grant.js";
 import { createAgentRouter } from "./routes/agent.js";
 import { meetingRolloutFromEnv } from "./transcripts/meeting-rollout.js";
 import { createManifestRouter } from "./routes/manifest.js";
@@ -52,6 +55,13 @@ import { createConnectorMeetingsRouter } from "./routes/connector-meetings.js";
 import { createGoogleOAuthRouter, normalizeAppOrigin } from "./routes/google-oauth.js";
 import { createTranscriberRouter } from "./routes/transcriber.js";
 import { createTranscriberWebhookRouter } from "./routes/transcriber-webhook.js";
+import { createExoMailboxRouter } from "./routes/exo-mailbox.js";
+import { WakeQueue } from "./exo/wake-intake.js";
+import { createTrackedGrantStore, GrantHolderIndex } from "./exo/grant-holders.js";
+import { createExoStorePorts, createOwnerGrantOpener, type ExoBackendKv } from "./exo/stores.js";
+import { startExoRetentionSweepTimer, type ExoRetentionSweepTimer } from "./exo/retention-sweep.js";
+import { clearExoOwnerState, clearExoSourceState } from "./exo/teardown.js";
+import { exoCapabilitiesEnabled } from "./exo/mailbox.js";
 import { ASSEMBLYAI_HOSTED_MOUNT, createAssemblyAiHostedRouter, reconcileHostedJobs } from "./routes/assemblyai-hosted.js";
 import {
   DEFAULT_MAX_CONCURRENT_UPLOADS,
@@ -92,6 +102,8 @@ import {
   KvCredentialRowStore,
   validateCredentialCustodyConfig,
 } from "./services/credential-store.js";
+import { CREDENTIAL_COUNT_ADMIN_KEY_ENV, mountCredentialCountRoute } from "./routes/credential-count.js";
+import { CREDENTIAL_ROW_COUNT_ENV, logCredentialRowCounts } from "./services/credential-row-count.js";
 import {
   createRefreshingCredentialLookup,
   FirefliesOAuthClient,
@@ -452,7 +464,9 @@ async function main() {
         "ledger shadow-push + rehydration disabled.",
     );
   }
-  const delegationStore = new DelegationStore(node);
+  const delegationStore = new DelegationStore(node, TRANSCRIPT_WRITER_GRANT_KIND);
+  const exoGrantStore = new DelegationStore(node, EXO_SYNC_GRANT_KIND);
+  const exoGrantHolders = new GrantHolderIndex({ list: (prefix) => node.kv.list({ prefix }) });
   const delegationCache = new DelegationCache();
   const nonceStore = createNonceStore();
   const authMiddleware = createAuthMiddleware(backendPrivateKey);
@@ -479,6 +493,34 @@ async function main() {
     createBillingWebhookHandler(),
   );
 
+  // §9.3 — one shared lane for every component that writes to the backend space (connector
+  // queue, content store, credential store, exo job mirror). TinyCloud drops concurrent responses
+  // on one space, so cross-component writes MUST funnel through the same lane; two lanes are no lane.
+  const backendStorageLane = new BackendStorageLane();
+
+  // TC-1013 S4b: owner teardown exists only when the exo flag is on. With the flag off, the DELETE
+  // routes and connector disconnect make no exo calls; they behave as before this stage.
+  const exoBackendKv: ExoBackendKv = {
+    get: (key, options) => node.kv.get(key, options),
+    put: (key, value, options) => backendStorageLane.run(() => node.kv.put(key, value, options)),
+    delete: (key) => backendStorageLane.run(() => node.kv.delete(key)),
+    list: (prefix) => node.kv.list({ prefix }),
+  };
+  const openOwnerGrant = createOwnerGrantOpener({
+    node,
+    backendDid: did,
+    configuredHost: TINYCLOUD_HOST,
+    grantStore: exoGrantStore,
+  });
+  const exoGrantTracked = createTrackedGrantStore(exoGrantStore, exoGrantHolders);
+  const teardownExoOwner: ((owner: string) => Promise<void>) | undefined = exoCapabilitiesEnabled(process.env)
+    ? async (owner: string): Promise<void> => {
+        // Clear owner rows first, then remove the grant: a failed clear keeps the grant so the retry still has it.
+        await clearExoOwnerState({ kv: exoBackendKv, openOwnerGrant }, owner);
+        await exoGrantTracked.remove(owner);
+      }
+    : undefined;
+
   // ONE set of instances shared by BOTH connector mounts, the public one below and the
   // authenticated companions further down (§3.6/§4.4): the companions' teardown must evict the
   // very token cache the public route reads, and `GET …/webhooks/pending` must see the queue
@@ -486,10 +528,6 @@ async function main() {
   const connectorWebhooks = connectorWebhooksEnabled()
     ? (() => {
         const tokens = new WebhookTokenService(node);
-        // §9.3 — one shared lane for every component that writes to the backend space (queue,
-        // content store, credential store). TinyCloud drops concurrent responses on one space,
-        // so cross-component writes MUST funnel through the same lane; two lanes are no lane.
-        const backendStorageLane = new BackendStorageLane();
         const queue = new ConnectorQueue(node, { storageLane: backendStorageLane });
         const control = new ConnectorControlStore(node);
         // W1 — ONE ingest-mode service for both mounts, for the same reason the token cache and
@@ -553,6 +591,28 @@ async function main() {
   } else {
     // An unmounted webhook must remain 404 even before the global CSRF gate.
     app.post("/api/transcriber/webhooks/ptx", (_req, res) => res.sendStatus(404));
+  }
+  // TC-1013 S4b: Exo capability mailbox. Mounted only when the flag is exactly "true".
+  // Stores are the owner's activated grant (S4a) plus a backend-space job mirror on the shared
+  // storage lane. No executor is registered yet, so a verified wake settles `unavailable`.
+  // The wake queue is owned here so shutdown can drain it after HTTP has closed.
+  let exoWakeQueue: WakeQueue | null = null;
+  let exoRetentionSweep: ExoRetentionSweepTimer | null = null;
+  if (exoCapabilitiesEnabled(process.env)) {
+    exoWakeQueue = new WakeQueue();
+    // The index starts empty. Load it before the router mounts, so a wake for an existing holder is not
+    // answered as an unknown owner after a restart.
+    await exoGrantHolders.refresh();
+    const exoPorts = createExoStorePorts({
+      backendKv: exoBackendKv,
+      openOwnerGrant,
+      webhooks: new WebhookTokenService(node),
+      controls: new ConnectorControlStore(node),
+      grantHolders: exoGrantHolders,
+      frontendOrigin: process.env.FRONTEND_URL ?? "https://localhost:5186",
+    });
+    app.use("/api/exo/v1", createExoMailboxRouter(exoPorts, exoGrantHolders, { queue: exoWakeQueue }));
+    exoRetentionSweep = startExoRetentionSweepTimer({ kv: exoBackendKv, ports: exoPorts });
   }
 
   // W9 / D4 — the process that actually CONSUMES the cohort queues, or nothing at all. Assigned
@@ -648,6 +708,15 @@ async function main() {
   });
   app.use("/api/manifest", createManifestRouter());
   app.use("/api/server-info", createServerInfoRouter(did, readBackendBuildInfo()));
+  // TC-1964: optional authenticated count of stored credential rows. Not registered (404) unless
+  // CREDENTIAL_COUNT_ADMIN_KEY is set; no session, the admin key is the only credential.
+  if (process.env[CREDENTIAL_COUNT_ADMIN_KEY_ENV]?.trim()) {
+    mountCredentialCountRoute(
+      app,
+      process.env,
+      () => new KvCredentialRowStore(node, transcriberStorageLane, { priority: "background" }),
+    );
+  }
   app.use(
     "/api/auth",
     createAuthRouter({
@@ -666,11 +735,25 @@ async function main() {
       authMiddleware,
       configuredHost: TINYCLOUD_HOST,
       eligibility: transcriptEligibility,
+      teardownExoOwner,
       schemaMissing: (address) => transcriptWorker?.hasSchemaMissing(address) ?? false,
       coordinator: transcriptCoordinator,
       onGrantChanged: (address, previousEnvelope) => transcriptWorker?.invalidateGrant(address, previousEnvelope),
     }),
   );
+
+  // TC-1013 S4a: exo sync grant. Session auth and CSRF match the connector grant. Mounted only
+  // when the exo flag is exactly "true"; otherwise the path falls through to 404.
+  if (exoCapabilitiesEnabled(process.env)) {
+    app.use("/api/exo/v1/grant", createExoGrantRouter({
+      node,
+      backendDid: did,
+      configuredHost: TINYCLOUD_HOST,
+      store: createTrackedGrantStore(exoGrantStore, exoGrantHolders),
+      teardownExoOwner,
+      authMiddleware,
+    }));
+  }
 
   // The AUTHENTICATED companions (§2.2 consequence 2): the normal window, behind the global
   // JSON parser, CSRF, `applyRateLimiters`' dedicated companion bucket and `authMiddleware`.
@@ -696,6 +779,11 @@ async function main() {
         // construction, rather than at the first mint.
         ...(process.env.CONNECTOR_WEBHOOK_PUBLIC_ORIGIN
           ? { publicOrigin: process.env.CONNECTOR_WEBHOOK_PUBLIC_ORIGIN }
+          : {}),
+        // DELETE /config disconnects every source, so each source's exo ledger rows are cleared
+        // best-effort. Wired only with the exo flag on: a flag-off disconnect makes no exo call.
+        ...(exoCapabilitiesEnabled(process.env)
+          ? { exo: { clearSource: (source: string, address: string) => clearExoSourceState(exoBackendKv, address, source) } }
           : {}),
         // OPTION C — no `delegations` collaborator: `DELETE /config` tears down the connector's
         // own state only. It must not remove or evict the app's unrelated backend delegation.
@@ -743,6 +831,9 @@ async function main() {
             content: contentStore,
             queue: connectorWebhooks.queue,
             control: connectorWebhooks.control,
+            ...(exoCapabilitiesEnabled(process.env)
+              ? { exo: { clearSource: (source: string, address: string) => clearExoSourceState(exoBackendKv, address, source) } }
+              : {}),
           }),
           oauth: {
             authorizeUrl: ({ state, challenge }) =>
@@ -854,6 +945,7 @@ async function main() {
     const coordinator = new TenantCoordinator();
     calendarAutojoin = new CalendarAutojoinConnection({
       store: stores.request, credentials, backfillCredentials, oauth: google, coordinator, calendar,
+      teardownExoOwner,
       // TC-1047: disable, disconnect and needs_reconnect cancel the tenant's due-time timers.
       onDisabled: tenant => calendarAutojoinWorker?.cancelTenant(tenant),
     });
@@ -976,7 +1068,7 @@ async function main() {
       did,
     }),
   );
-  app.use("/api/billing", createBillingRouter({ authMiddleware }));
+  app.use("/api/billing", createBillingRouter({ authMiddleware, rehydrator: ledgerRehydrator }));
 
   // The TRANSCRIBER surface (routes/transcriber.ts): send a bot to a meeting URL through the
   // TinyCloud Private Transcription API and read the speaker-attributed transcript back. Mounted
@@ -1090,6 +1182,14 @@ async function main() {
 
   calendarAutojoinWorker?.start();
   transcriptWorker?.start();
+  // TC-1964: optional one-time, log-only count of stored credential rows. Unset = nothing runs.
+  // Fired after boot, never awaited, and it cannot throw; it lists through the shared KV lane.
+  if (process.env[CREDENTIAL_ROW_COUNT_ENV]?.trim()) {
+    void logCredentialRowCounts(
+      process.env[CREDENTIAL_ROW_COUNT_ENV],
+      () => new KvCredentialRowStore(node, transcriberStorageLane, { priority: "background" }),
+    );
+  }
   let shuttingDown = false;
   const shutdown = (signal: string) => {
     if (shuttingDown) return;
@@ -1104,7 +1204,10 @@ async function main() {
     const httpDrained = new Promise<void>(resolve => server.close(() => resolve()));
     server.closeIdleConnections();
     // Hosted AssemblyAI submits in flight are aborted; each deletes its own spool as it settles.
-    void Promise.allSettled([httpDrained, transcriptWorker?.stop(), calendarAutojoinWorker?.stop(), ingestSupervisor?.stop(), hostedUploads?.shutdown()])
+    // Wakes are acknowledged with 202 before their job record is written. Drain them only after HTTP has closed,
+    // so no new wake can enqueue; past the bound, the drain rejects and the process exits non-zero.
+    const wakesDrained = httpDrained.then(() => exoWakeQueue?.drain());
+    void Promise.allSettled([httpDrained, wakesDrained, exoRetentionSweep?.stop(), transcriptWorker?.stop(), calendarAutojoinWorker?.stop(), ingestSupervisor?.stop(), hostedUploads?.shutdown()])
       .then((results) => process.exit(results.some((result) => result.status === "rejected") ? 1 : 0));
     setTimeout(() => process.exit(1), 120_000).unref();
   };

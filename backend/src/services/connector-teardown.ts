@@ -61,6 +61,11 @@ export interface TeardownQueue {
   clear(source: string, address: string): Promise<ClearResult>;
 }
 
+/** Exo state for one connector source: the durable ledger rows that read only that source. */
+export interface TeardownExoState {
+  clearSource(source: string, address: string): Promise<void>;
+}
+
 /** The ledger slice — the same three methods the companions' `ConnectorControl` exposes. */
 export interface TeardownControl {
   readLedger(source: string, address: string): Promise<PurgeLedgerRead>;
@@ -81,6 +86,8 @@ export interface ConnectorTeardownDeps {
   content: TeardownContentStore;
   queue: TeardownQueue;
   control: TeardownControl;
+  /** Absent with the exo flag off: the disconnect then has no exo step, as before S4b. */
+  exo?: TeardownExoState;
 }
 
 export interface ConnectorTeardownOptions {
@@ -151,6 +158,9 @@ export class ConnectorTeardownService implements ConnectorTeardown {
     // earlier (F010): anything enqueued in between would go uncounted and read as "nothing was
     // left behind" when something was.
     const { cleared } = await this.deps.queue.clear(source, addr);
+
+    // (5) Exo state. Last, so an earlier failure leaves the ledger rows in place for the retry.
+    await this.deps.exo?.clearSource(source, addr);
 
     logTeardown(
       `op=teardown result=ok source=${source} aid=${hashed(addr)} ` +

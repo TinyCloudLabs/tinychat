@@ -30,6 +30,10 @@ services:
       MEETING_CONTENT_RETRIEVAL_ENABLED: ${MEETING_CONTENT_RETRIEVAL_ENABLED:-false}
       MEETING_CONTENT_TEST_ACCOUNTS: ${MEETING_CONTENT_TEST_ACCOUNTS:-}
       MEETING_CONTENT_MODELS: ${MEETING_CONTENT_MODELS:-}
+      # Optional one-time, log-only count of stored connector credential rows. Empty = off.
+      CREDENTIAL_ROW_COUNT_SOURCES: ${CREDENTIAL_ROW_COUNT_SOURCES:-}
+      # Optional one-time authenticated read-only count of stored credential rows. Empty = route off.
+      CREDENTIAL_COUNT_ADMIN_KEY: ${CREDENTIAL_COUNT_ADMIN_KEY:-}
       # Explicit stream policy is required when agent chat is enabled. Startup validates
       # these settings; empty values keep agent-disabled deployments possible, with no defaults.
       AGENT_STREAM_HEARTBEAT_MS: ${AGENT_STREAM_HEARTBEAT_MS:-}
@@ -52,6 +56,7 @@ services:
       CREDIT_BUDGET_PRO_WEEKLY: ${CREDIT_BUDGET_PRO_WEEKLY:-}
       AGENT_CHAT_BUDGET_STOP_MODE: ${AGENT_CHAT_BUDGET_STOP_MODE:-}
       AGENT_CHAT_BUDGET_PREFLIGHT: ${AGENT_CHAT_BUDGET_PREFLIGHT:-}
+      EXO_CAPABILITIES_ENABLED: ${EXO_CAPABILITIES_ENABLED:-}
       # Ledger authority defaults OFF (shadow disabled) until rollout values are provided.
       LEDGER_SERVICE_URL: ${LEDGER_SERVICE_URL:-}
       LEDGER_SERVICE_SECRET: ${LEDGER_SERVICE_SECRET:-}

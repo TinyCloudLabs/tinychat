@@ -1,5 +1,101 @@
 # @tinychat/frontend
 
+## 0.10.0-beta.29
+
+### Patch Changes
+
+- 333a8f1: Show the notetaker stuck-joining state.
+
+## 0.10.0-beta.28
+
+### Patch Changes
+
+- 5c1d6d4: Turn the Conversation Canvas back on. It stays off for each user until they turn it on under Settings > Experimental.
+
+## 0.10.0-beta.27
+
+### Patch Changes
+
+- b083512: Update the web frontend to `@openkey/sdk` 0.12.1 for OpenKey embedded widget layout negotiation (TC-1183).
+
+## 0.10.0-beta.26
+
+### Patch Changes
+
+- 05cac77: Library: a combined meeting replaces its source captures in the list; the combined page lists its sources, each opens its own page (TC-1152)
+
+## 0.10.0-beta.25
+
+### Patch Changes
+
+- 549dcc1: Add an opt-in switch and a wipe button for local copies.
+
+## 0.10.0-beta.24
+
+### Patch Changes
+
+- 1a839fb: Name new voice notes with the date, transcription model and participants.
+
+## 0.10.0-beta.23
+
+### Patch Changes
+
+- abde4ac: Show which transcription model produced a transcript.
+
+## 0.10.0-beta.22
+
+### Patch Changes
+
+- 2561378: Hide the Whisper Large Turbo model from the model picker. Models already selected or downloaded stay available.
+
+## 0.10.0-beta.21
+
+### Patch Changes
+
+- 8feaa2d: Restores the previous sign-in permissions.
+
+## 0.10.0-beta.20
+
+### Patch Changes
+
+- 084b0f4: Reading encrypted data now asks for decryption when needed, for about an hour.
+
+## 0.10.0-beta.19
+
+### Patch Changes
+
+- 34720ec: A pasted transcript is shown as saved in the Library.
+
+## 0.10.0-beta.18
+
+### Patch Changes
+
+- 6fd545d: Share chats as snapshots: a share holds one chat's title and messages at its own link. Owners can list and revoke their shares from the share dialog. Links created before this change still open.
+
+## 0.10.0-beta.17
+
+### Patch Changes
+
+- 740150e: Pause chat sharing: the Share chat action is offered only for chats that already have a link, and creating a new chat share link is refused. Opening received share links and managing existing links are unchanged.
+
+## 0.10.0-beta.16
+
+### Patch Changes
+
+- 57fb986: Send a notetaker accepts meeting links as people paste them. A link without `https://`, Google's `google.com/meet/<code>` form, a bare Meet code, a Gmail/Calendar or Outlook redirect, or a whole "Join with Google Meet" line now becomes the canonical meeting link before it goes to ptx. These used to fail with "That doesn't look like a meeting link" or "That meeting platform isn't supported yet". Any other link still goes upstream exactly as pasted, so capability links keep their query and fragment. The backend applies the same reading, so links from older clients work too.
+
+## 0.10.0-beta.15
+
+### Patch Changes
+
+- 6312e16: Add an "Automatic meeting summaries" setting, on by default. When it is off, a combined meeting is saved without a summary and Generate starts one. `GET /api/billing/status` now reports the same usage the chat admission gate uses, and the client refreshes it after a summary run.
+
+## 0.10.0-beta.14
+
+### Patch Changes
+
+- 3e173ce: Move the TinyCloud SDK family to the stable 3.3.0 set (web-sdk, node-sdk, sdk-core, sdk-services 3.3.0; `@tinycloud/replica` 0.3.0; web-sdk-wasm 1.7.7; node-sdk-wasm 1.7.8). Add an optional local read-through copy of transcript text for the web app behind a build-time flag that defaults OFF: nothing changes unless the app is built with `VITE_EXO_REPLICATION=true` (the per-browser runtime opt-in exists only outside production builds), and it refuses to turn on in Tauri, Capacitor, iOS browsers, Safari and Firefox. With the flag OFF, a local copy left by an earlier build is removed at the next load. Mirrors only audio-free transcript folders, within a 100 MB budget; reads that confirm a write use the network. Sign-out erases the local copy (a failed erase is shown and blocks reads), and Settings shows a read-only status line. A built-in kill switch forces replication off for every build and browser.
+
 ## 0.10.0-beta.13
 
 ### Patch Changes

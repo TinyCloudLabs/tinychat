@@ -64,7 +64,15 @@ export function combineSpace(seed: readonly SpaceRow[], options: { did?: string 
     if (s.includes("+c.source IN")) {
       const sources = new Set(params as string[]);
       const listed = [...rows.values()].filter((r) => sources.has(r.source)).sort((a, b) => (b.startedAt ?? "").localeCompare(a.startedAt ?? ""));
-      return ok({ rows: listed.map((r) => [r.id, r.source, r.sourceId, r.title, r.startedAt, r.durationSecs, null, null]) });
+      // Column 8 is the list query's `json_extract(metadata, '$.merge.members')`: JSON text, combined rows only.
+      const members = (r: SpaceRow): string | null => {
+        if (r.source !== "exo-merged") return null;
+        try {
+          const found = (JSON.parse(r.metadata ?? "{}") as { merge?: { members?: unknown } } | null)?.merge?.members;
+          return found === undefined ? null : JSON.stringify(found);
+        } catch { return null; }
+      };
+      return ok({ rows: listed.map((r) => [r.id, r.source, r.sourceId, r.title, r.startedAt, r.durationSecs, null, null, members(r)]) });
     }
     if (s === "SELECT metadata FROM connector_meeting WHERE id = ?") {
       const r = rows.get(String(params[0]));

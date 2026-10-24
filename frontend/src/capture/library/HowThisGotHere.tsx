@@ -4,7 +4,7 @@
 // note's `transcription_engine`) adds the stop that made its text. Nothing
 // the row does not record is drawn: no provider, no middle node.
 import { RefreshCwIcon } from "lucide-react";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { EXO_MERGED_SOURCE } from "@tinyboilerplate/core";
 
 import { Button } from "@/components/ui/button";
@@ -18,6 +18,7 @@ import { UPLOAD_MEETING_SOURCE } from "@/lib/audioUpload";
 import { LOCAL_MEETING_SOURCE } from "@/lib/localTranscriber";
 import { TRANSCRIBER_MEETING_SOURCE } from "@/lib/transcriberSave";
 import { VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
+import { transcriptionModelLabel } from "@/lib/transcriptionModelLabel";
 import { displayMembers, type CombinedMemberLine } from "./combine/combinedView";
 import { librarySourceLabel } from "./libraryKinds";
 
@@ -33,6 +34,12 @@ const PRIVATE_CLOUD = "tinycloud-private-transcription";
 
 function str(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+/** " Transcription model: X." when the transcript records its model; empty otherwise. */
+function modelSentence(metadata: Record<string, unknown> | null): string {
+  const label = transcriptionModelLabel(metadata?.transcription_model);
+  return label ? ` Transcription model: ${label}.` : "";
 }
 
 /** Where a voice note started; one with no recorded platform predates the desktop and web recorders, so it came from a phone. */
@@ -108,7 +115,7 @@ export function captureRoute(source: string, metadata: Record<string, unknown> |
     const speech = str(metadata?.inference_provider) === "tinfoil" ? "; speech-to-text by Tinfoil" : "";
     return {
       nodes: [{ label: sourceLabel, kind: "source" }, { label: TRANSCRIBER_NAME["private-cloud"], kind: "processing" }, SPACE],
-      sentence: `${saved} ${audioStored ? "A copy was" : "It was"} transcribed by TinyCloud Private Transcription${speech}.`,
+      sentence: `${saved} ${audioStored ? "A copy was" : "It was"} transcribed by TinyCloud Private Transcription${speech}.${modelSentence(metadata)}`,
       privateCloud: true,
     };
   }
@@ -117,15 +124,21 @@ export function captureRoute(source: string, metadata: Record<string, unknown> |
     const whose = account === "tinycloud" ? " with TinyCloud's account" : account === "own" ? " with your key" : "";
     return {
       nodes: [{ label: sourceLabel, kind: "source" }, { label: TRANSCRIBER_NAME.assemblyai, kind: "processing" }, SPACE],
-      sentence: `${saved} ${audioStored ? "A copy was" : "It was"} transcribed by AssemblyAI${whose}.`,
+      sentence: `${saved} ${audioStored ? "A copy was" : "It was"} transcribed by AssemblyAI${whose}.${modelSentence(metadata)}`,
       privateCloud: false,
     };
   }
   return {
     nodes: [{ label: sourceLabel, kind: "source" }, { label: "Whisper on this Mac", kind: "processing" }, SPACE],
-    sentence: "Transcribed by Whisper on this Mac. The transcript was saved to your TinyCloud space; the audio stayed on this Mac.",
+    sentence: `Transcribed by Whisper on this Mac. The transcript was saved to your TinyCloud space; the audio stayed on this Mac.${modelSentence(metadata)}`,
     privateCloud: false,
   };
+}
+
+/** A source of this combined meeting: opens its page, and Back from there returns here, not to the Library list. */
+function MemberLink(props: { href: string; title: string }) {
+  const here = useLocation().pathname;
+  return <Link to={props.href} state={{ backTo: here }} className="inline-flex min-h-11 items-center text-primary underline underline-offset-4 hover:no-underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [overflow-wrap:anywhere]">{props.title}</Link>;
 }
 
 /**
@@ -163,7 +176,7 @@ export function HowThisGotHere(props: { source: string; read: MeetingMetadataRea
               {props.members.map((m) => (
                 <li key={`${m.source}:${m.sourceId}`} className="text-callout" data-testid="combined-member">
                   <span className="text-muted-foreground">{m.sourceLabel} · </span>
-                  {m.href !== null ? <Link to={m.href} className="inline-flex min-h-11 items-center text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [overflow-wrap:anywhere]">{m.title}</Link>
+                  {m.href !== null ? <MemberLink href={m.href} title={m.title ?? "Untitled"} />
                     : <span className="text-muted-foreground">no longer in your Library</span>}
                 </li>
               ))}

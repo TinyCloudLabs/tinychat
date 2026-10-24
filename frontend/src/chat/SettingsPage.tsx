@@ -37,8 +37,10 @@ import { BackendAttestationDetails } from "./BackendAttestationDetails";
 import { useConversationCanvasFeature } from "./useExperimentalFeatures";
 import { TranscriptionSettings } from "./TranscriptionSettings";
 import { VoiceNotesTranscriberSettings } from "./VoiceNotesTranscriberSettings";
+import { AutomaticSummariesSettings } from "./AutomaticSummariesSettings";
 import { DebugLogRow } from "./DebugLogRow";
 import { AudioCacheSettings } from "@/capture/AudioCacheSettings";
+import { ReplicationSettings } from "../lib/replication/ReplicationSettings";
 import { nativeVoiceNotesAvailable } from "../lib/voiceNotes/nativeVoiceNotes";
 import { appPlatform } from "../lib/platform";
 import { useSizeClass } from "../lib/sizeClass";
@@ -196,6 +198,9 @@ export function SettingsPage({
             />
           </SectionCard>
           <TranscriptionSettings tcw={tcw} />
+          <SectionCard icon={BookOpenIcon} title="Meeting summaries">
+            <AutomaticSummariesSettings tcw={tcw} />
+          </SectionCard>
           {(nativeVoiceNotesAvailable() || appPlatform() === "web" || appPlatform() === "tauri") && (
             <SectionCard icon={MicIcon} title="Voice notes">
               <VoiceNotesTranscriberSettings />
@@ -211,6 +216,7 @@ export function SettingsPage({
           <SectionCard icon={DatabaseIcon} title="Audio storage">
             <AudioCacheSettings />
           </SectionCard>
+          <ReplicationSettings tcw={tcw} />
           <SectionCard icon={DatabaseIcon} title="Data">
             <p className="text-xs text-muted-foreground">
               Bring your Claude conversation history into this space.

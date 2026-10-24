@@ -7,13 +7,15 @@ import type { Server } from "node:http";
 import express from "express";
 import type { TinyCloudNode } from "@tinycloud/node-sdk";
 import { activateSessionWithHost } from "@tinycloud/sdk-core";
-import type { VerifiedTranscriptWriter } from "../delegation-verify.js";
+import { EXO_SYNC_RESOURCES, type VerifiedTranscriptWriter } from "../delegation-verify.js";
 import { activateVerifiedDelegation, DelegationActivationError, MAX_ACTIVATABLE_RESOURCES } from "../portable-delegation.js";
 
 const ADDRESS = "0x7d033300000000000000000000000000000073f2";
 const SPACE = `tinycloud:pkh:eip155:1:${ADDRESS}:applications`;
 const HOST = "https://node.tinycloud.xyz";
 type DelegationDto = Parameters<TinyCloudNode["useDelegation"]>[0];
+const EXO_REQUESTS = { service: "kv", space: SPACE, path: "xyz.tinycloud.tinychat/exo/v1/requests/", actions: ["tinycloud.kv/get", "tinycloud.kv/list", "tinycloud.kv/del"] };
+const EXO_JOBS = { service: "kv", space: SPACE, path: "xyz.tinycloud.tinychat/exo/v1/jobs/", actions: ["tinycloud.kv/get", "tinycloud.kv/put", "tinycloud.kv/del"] };
 
 function verifiedGrant(): VerifiedTranscriptWriter {
   return {
@@ -24,6 +26,7 @@ function verifiedGrant(): VerifiedTranscriptWriter {
     spaceId: SPACE,
     sessionDid: "did:key:z6MkSession",
     backendDid: `did:pkh:eip155:1:${ADDRESS}`,
+    policy: "transcript-writer",
     expiresAt: new Date(Date.now() + 86_400_000),
     resources: [
       { service: "sql", space: SPACE, path: "xyz.tinycloud.tinychat/connectors", actions: ["tinycloud.sql/read", "tinycloud.sql/write"] },
@@ -142,6 +145,52 @@ describe("activateVerifiedDelegation", () => {
       }, { host: HOST, beforeNodeWrite: async () => { calls.push("govern"); } })).rejects.toThrow();
     }
     expect(calls).toEqual([]);
+  });
+
+  it("activates an exact exo grant on its two KV prefixes, governing each write first", async () => {
+    const calls: string[] = [];
+    const node = { useDelegation: async (dto: DelegationDto) => { calls.push(`activate:${dto.path}`); return { kv: {} }; } };
+    await activateVerifiedDelegation(node as unknown as TinyCloudNode, {
+      ...verifiedGrant(), policy: "exo-sync", resources: [EXO_REQUESTS, EXO_JOBS],
+    }, { host: HOST, beforeNodeWrite: async () => { calls.push("govern"); } });
+    expect(calls).toEqual(["govern", `activate:${EXO_REQUESTS.path}`, "govern", `activate:${EXO_JOBS.path}`]);
+  });
+
+  it("refuses any non-exact exo shape before a governed write or any node call", async () => {
+    const calls: string[] = [];
+    const node = { useDelegation: async () => { calls.push("node"); return { kv: {} }; } };
+    const connector = verifiedGrant().resources;
+    for (const resources of [
+      [],
+      [EXO_REQUESTS],
+      [EXO_REQUESTS, EXO_REQUESTS],
+      [{ ...EXO_REQUESTS, path: "xyz.tinycloud.tinychat/exo/v1/" }, EXO_JOBS],
+      [{ ...EXO_REQUESTS, actions: [...EXO_REQUESTS.actions, "tinycloud.kv/put"] }, EXO_JOBS],
+      [EXO_REQUESTS, { ...EXO_JOBS, actions: ["tinycloud.kv/get", "tinycloud.kv/put"] }],
+      [{ ...EXO_REQUESTS, actions: ["tinycloud.kv/get", "tinycloud.kv/put", "tinycloud.kv/del"] }, EXO_JOBS],
+      [EXO_REQUESTS, { ...EXO_JOBS, actions: ["tinycloud.kv/get", "tinycloud.kv/list", "tinycloud.kv/del"] }],
+      [EXO_REQUESTS, EXO_JOBS, connector[0]],
+      connector,
+    ]) {
+      await expect(activateVerifiedDelegation(node as unknown as TinyCloudNode, {
+        ...verifiedGrant(), policy: "exo-sync", resources,
+      }, { host: HOST, beforeNodeWrite: async () => { calls.push("govern"); } })).rejects.toThrow("Exo sync delegation");
+    }
+    expect(calls).toEqual([]);
+  });
+
+  it("pins the shared exo table to the literal grant, and activation accepts exactly that table", async () => {
+    expect(EXO_SYNC_RESOURCES).toEqual([
+      { service: "kv", path: EXO_REQUESTS.path, actions: EXO_REQUESTS.actions },
+      { service: "kv", path: EXO_JOBS.path, actions: EXO_JOBS.actions },
+    ]);
+    const calls: string[] = [];
+    const node = { useDelegation: async (dto: DelegationDto) => { calls.push(`activate:${dto.path}`); return { kv: {} }; } };
+    await activateVerifiedDelegation(node as unknown as TinyCloudNode, {
+      ...verifiedGrant(), policy: "exo-sync",
+      resources: EXO_SYNC_RESOURCES.map((resource) => ({ ...resource, space: SPACE, actions: [...resource.actions] })),
+    }, { host: HOST, beforeNodeWrite: async () => { calls.push("govern"); } });
+    expect(calls).toEqual(["govern", `activate:${EXO_REQUESTS.path}`, "govern", `activate:${EXO_JOBS.path}`]);
   });
 });
 

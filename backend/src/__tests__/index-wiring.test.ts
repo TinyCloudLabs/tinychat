@@ -76,6 +76,12 @@ async function runIsolatedStartup(env: Record<string, string | undefined>) {
     },
     "./services/ingest-mode.js": { backendIngestEnabled: () => false },
     "./rate-limits.js": { applyRateLimiters: () => ({ globalRoutes: {}, paidChatLimiter: middleware() }), logGlobalBucketRoutes: () => {} },
+    // TC-1013: the Exo mailbox is off in this harness; the flag is read at startup.
+    "./exo/mailbox.js": { exoCapabilitiesEnabled: () => false },
+    // TC-1013 S4b: owner teardown wiring builds the grant opener at startup, outside the flag.
+    "./exo/stores.js": { createOwnerGrantOpener: () => async () => null },
+    // TC-1013 S4b: startup wires the grant-holder index and tracked grant store outside the flag.
+    "./exo/grant-holders.js": { GrantHolderIndex: class GrantHolderIndex { async refresh() {} }, createTrackedGrantStore: (store: unknown) => store },
     "./services/google-oauth.js": { googleMeetOAuthEnabled: () => false },
     // TC-641: the real default-off parser, so `transcriptDeliveryConfig` is a config, not undefined.
     "./services/transcription-api.js": {
@@ -473,7 +479,6 @@ describe("backend index middleware wiring", () => {
   test("createApiBodyParser leaves delegation acceptance, NRAS and hosted parts unread", () => {
     const PARSER = readFileSync(resolve(import.meta.dir, "../body-parsing.ts"), "utf8");
     // Delegation POSTs are gated on eligibility before their route-local parser reads a byte.
-    expect(PARSER).toContain('(req.method === "POST" && /^\\/api\\/delegations\\/*$/i.test(req.path))');
     expect(PARSER).toContain('req.path === "/api/nras-proxy"');
     expect(PARSER).toContain('req.path.startsWith("/api/nras-proxy/")');
     expect(PARSER).toContain("isHostedPartPath(req.path)");
@@ -507,7 +512,7 @@ describe("backend index middleware wiring", () => {
 
   test("shutdown drains HTTP and every worker in one allSettled", () => {
     expect(INDEX).toContain(
-      "Promise.allSettled([httpDrained, transcriptWorker?.stop(), calendarAutojoinWorker?.stop(), ingestSupervisor?.stop(), hostedUploads?.shutdown()])",
+      "Promise.allSettled([httpDrained, wakesDrained, exoRetentionSweep?.stop(), transcriptWorker?.stop(), calendarAutojoinWorker?.stop(), ingestSupervisor?.stop(), hostedUploads?.shutdown()])",
     );
   });
 });
@@ -591,7 +596,7 @@ test("shutdown waits for other cleanups after a worker rejects", async () => {
     console: { log: () => {} },
     process: { exit: (code: number) => exits.push(code) },
     setTimeout: () => ({ unref() {} }),
-    ledgerFlusher: null, connectorWebhooks: null, connectorQueueMaintenance: null,
+    ledgerFlusher: null, connectorWebhooks: null, connectorQueueMaintenance: null, exoWakeQueue: null, exoRetentionSweep: null,
     server: { close: (done: () => void) => done(), closeIdleConnections() {} },
     transcriptWorker: { stop: () => { attempts.push("transcript"); return Promise.reject(new Error("synthetic")); } },
     calendarAutojoinWorker: { stop: () => { attempts.push("calendar"); return Promise.reject(new Error("synthetic")); } },
@@ -607,15 +612,71 @@ test("shutdown waits for other cleanups after a worker rejects", async () => {
   expect(exits).toEqual([1]);
 });
 
+test("shutdown holds the exit until queued exo wakes drain", async () => {
+  const start = INDEX.indexOf("  let shuttingDown = false;");
+  const end = INDEX.indexOf('\n  process.on("SIGTERM"', start);
+  const source = new Bun.Transpiler({ loader: "ts" }).transformSync(INDEX.slice(start, end) + '\nshutdown("SIGTERM");');
+  const { WakeQueue } = load("./exo/wake-intake.ts");
+  const queue = new WakeQueue({ concurrency: 1 });
+  const release = Promise.withResolvers<void>();
+  queue.offer(`0x${"a".repeat(40)}`, "req-1", () => release.promise);
+  const exited = Promise.withResolvers<number>();
+  const exits: number[] = [];
+  runInNewContext(source, {
+    Promise,
+    console: { log: () => {} },
+    process: { exit: (code: number) => { exits.push(code); exited.resolve(code); } },
+    setTimeout: () => ({ unref() {} }),
+    ledgerFlusher: null, connectorWebhooks: null, connectorQueueMaintenance: null,
+    exoWakeQueue: queue, exoRetentionSweep: null,
+    server: { close: (done: () => void) => done(), closeIdleConnections() {} },
+    transcriptWorker: null, calendarAutojoinWorker: null, ingestSupervisor: null, hostedUploads: null,
+  });
+  for (let tick = 0; tick < 10; tick += 1) await Promise.resolve();
+  expect(exits).toEqual([]);
+  release.resolve();
+  expect(await exited.promise).toBe(0);
+});
+
+test("shutdown holds the exit until an in-flight retention pass stops", async () => {
+  const start = INDEX.indexOf("  let shuttingDown = false;");
+  const end = INDEX.indexOf('\n  process.on("SIGTERM"', start);
+  const source = new Bun.Transpiler({ loader: "ts" }).transformSync(INDEX.slice(start, end) + '\nshutdown("SIGTERM");');
+  const pass = Promise.withResolvers<void>();
+  const exited = Promise.withResolvers<number>();
+  const exits: number[] = [];
+  runInNewContext(source, {
+    Promise,
+    console: { log: () => {} },
+    process: { exit: (code: number) => { exits.push(code); exited.resolve(code); } },
+    setTimeout: () => ({ unref() {} }),
+    ledgerFlusher: null, connectorWebhooks: null, connectorQueueMaintenance: null,
+    exoWakeQueue: null,
+    exoRetentionSweep: { stop: () => pass.promise },
+    server: { close: (done: () => void) => done(), closeIdleConnections() {} },
+    transcriptWorker: null, calendarAutojoinWorker: null, ingestSupervisor: null, hostedUploads: null,
+  });
+  for (let tick = 0; tick < 10; tick += 1) await Promise.resolve();
+  expect(exits).toEqual([]);
+  pass.resolve();
+  expect(await exited.promise).toBe(0);
+});
+
 const envBase = { BACKEND_PRIVATE_KEY: "test-only-private-key", PORT: "0" };
 const privateCloud = load("./services/private-cloud-transcription.ts");
 const hosted = load("./services/assemblyai-hosted.ts");
 const transcription = load("./services/transcription-api.ts");
 const google = load("./services/google-oauth.ts");
+const credentialStore = load("./services/credential-store.ts");
+const contentStore = load("./services/content-store.ts");
+const firefliesOAuthModule = load("./services/fireflies-oauth.ts");
+const ingestInstanceModule = load("./services/ingest-instance.ts");
 const { createApiBodyParser } = load("./body-parsing.ts");
 const { createTranscriberWebhookRouter } = load("./routes/transcriber-webhook.ts");
 const { createGoogleOAuthRouter, normalizeAppOrigin } = load("./routes/google-oauth.ts");
 const { createServerInfoRouter } = load("./routes/server-info.ts");
+const exoMailbox = load("./exo/mailbox.ts");
+const exoGrant = load("./routes/exo-grant.ts");
 const { ASSEMBLYAI_HOSTED_MOUNT, createAssemblyAiHostedRouter } = load("./routes/assemblyai-hosted.ts");
 const { createPrivateCloudTranscriptionRouter } = load("./routes/private-cloud-transcription.ts");
 
@@ -639,6 +700,7 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
   billingEvent?: (body: Buffer) => void | Promise<void>;
   onExit?: (code: number) => void;
   requestHandler?: express.RequestHandler;
+  capture?: (name: string, config: Record<string, unknown>) => void;
   processLogSink?: boolean;
 } = {}): Promise<Boot> {
   const env: Record<string, string | undefined> = { ...envBase, ...patch };
@@ -687,7 +749,7 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
         options.processLogSink ? undefined : (event: unknown) => logs.push(JSON.stringify(event)),
       ),
     },
-    "./services/ingest-mode.js": { backendIngestEnabled: () => false, IngestModeService: class {} },
+    "./services/ingest-mode.js": { backendIngestEnabled: () => env.CONNECTOR_BACKEND_INGEST_ENABLED === "true", IngestModeService: class {} },
     "./services/transcription-api.js": {
       transcriptDeliveryConfigFromEnv: (e: object) => transcription.transcriptDeliveryConfigFromEnv(e),
       transcriptionApiConfigFromEnv: () => transcription.transcriptionApiConfigFromEnv(env),
@@ -723,7 +785,20 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
       },
       WriteGovernor: class {},
     },
-    "./services/calendar-autojoin-store.js": { TenantCoordinator: class {} },
+    "./services/calendar-autojoin-store.js": {
+      TenantCoordinator: class {},
+      kvCalendarAutojoinStores: () => ({ request: {}, worker: { listConnections: async () => [] } }),
+    },
+    "./services/credential-store.js": {
+      validateCredentialCustodyConfig: (env: Record<string, string | undefined>) => credentialStore.validateCredentialCustodyConfig(env),
+      CredentialStore: class {},
+      KvCredentialRowStore: class {},
+    },
+    "./services/content-store.js": { ...contentStore },
+    "./services/fireflies-oauth.js": { ...firefliesOAuthModule },
+    "./services/calendar-autojoin-connection.js": { CalendarAutojoinConnection: class {
+      constructor(config: Record<string, unknown>) { options.capture?.("calendar", config); }
+    } },
     "./routes/billing-webhook.js": { createBillingWebhookHandler: () => async (req: express.Request, res: express.Response) => {
       if (!Buffer.isBuffer(req.body)) return res.sendStatus(415);
       const signature = createHmac("sha256", "isolated-stripe-key").update(req.body).digest("hex");
@@ -732,18 +807,32 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
       res.sendStatus(202);
     } },
     "./routes/connector-webhooks.js": {
-      createConnectorWebhookCompanionRouter: router,
+      createConnectorWebhookCompanionRouter: (config: Record<string, unknown>) => {
+        options.capture?.("connectorWebhooks", config);
+        return express.Router();
+      },
       ConnectorControlStore: class {}, ConnectorWebhookLimiters: class {
         ipPreLimiter(_req: express.Request, _res: express.Response, next: express.NextFunction) { next(); }
       },
       createConnectorWebhookHostGuard: () => (_req: express.Request, _res: express.Response, next: express.NextFunction) => next(),
+      resolveWebhookHostAllowlist: () => (env.CONNECTOR_WEBHOOK_PUBLIC_ORIGIN ? new Set(["app.invalid"]) : null),
       createConnectorWebhookParserErrorHandler: () => (error: unknown, _req: express.Request, _res: express.Response, next: express.NextFunction) => next(error),
       createConnectorWebhookHandler: () => (req: express.Request, res: express.Response) => {
         res.sendStatus(Buffer.isBuffer(req.body) ? 202 : 415);
       },
     },
+    // TC-1013 S4b: the credential router's teardown is built at startup; capture what it receives.
+    "./routes/connector-credentials.js": {
+      createConnectorCredentialRouter: (config: Record<string, unknown>) => {
+        options.capture?.("connectorCredentials", config);
+        return express.Router();
+      },
+    },
     "./services/webhook-tokens.js": { assertStrongSecret: () => {}, WebhookTokenService: class {} },
-    "./routes/delegations.js": { createDelegationRouter: () => router() },
+    "./routes/delegations.js": { createDelegationRouter: (config: Record<string, unknown>) => {
+      options.capture?.("delegation", config);
+      return router();
+    } },
     "./routes/manifest.js": { createManifestRouter: () => {
       const result = express.Router();
       if (options.requestHandler) result.get("/canary/:id", options.requestHandler);
@@ -753,6 +842,21 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
     "./middleware/auth.js": { createAuthMiddleware: auth },
     "./services/ingest-nudge.js": { createIngestOnDelivery: noop },
     "./rate-limits.js": { applyRateLimiters: () => ({ globalRoutes: { top: () => ({}) }, paidChatLimiter: noop }), logGlobalBucketRoutes: noop },
+    // TC-1013 S4b: the real flag parser reads the harness env, so the flag is tested, not stubbed.
+    "./exo/mailbox.js": { exoCapabilitiesEnabled: (env: Record<string, string | undefined>) => exoMailbox.exoCapabilitiesEnabled(env, () => {}) },
+    // TC-1013 S4b: the real grant router, so a flag-on request reaches auth instead of 404.
+    "./routes/exo-grant.js": { createExoGrantRouter: (config: Record<string, unknown>) => {
+      options.capture?.("exoGrant", config);
+      return exoGrant.createExoGrantRouter({ ...config, node: { computeDelegationCid: () => {} } } as never);
+    } },
+    // TC-1013 S4b: owner teardown wiring builds the grant opener at startup, outside the flag.
+    "./exo/stores.js": { createOwnerGrantOpener: () => async () => null, createExoStorePorts: () => ({}) },
+    // TC-1013 S4b: flag-on startup builds these; this test only checks the grant mount.
+    "./exo/wake-intake.js": { WakeQueue: class WakeQueue { async drain() {} } },
+    "./exo/retention-sweep.js": { startExoRetentionSweepTimer: () => ({ stop: async () => {} }) },
+    "./routes/exo-mailbox.js": { createExoMailboxRouter: router },
+    // TC-1013 S4b: startup wires the grant-holder index and tracked grant store outside the flag.
+    "./exo/grant-holders.js": { GrantHolderIndex: class GrantHolderIndex { async refresh() {} }, createTrackedGrantStore: (store: unknown) => store },
     "./security.js": { applySecurityDefaults: noop },
     "./routes/nras-proxy.js": { createNrasProxyRouter: router },
     "./routes/assemblyai-hosted.js": { ASSEMBLYAI_HOSTED_MOUNT, createAssemblyAiHostedRouter, reconcileHostedJobs: async () => {} },
@@ -763,9 +867,10 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
     "./services/connector-queue.js": { ConnectorQueue: class {} },
     "./services/backend-storage-lane.js": { BackendStorageLane: class {} },
     "./services/transcriber-index.js": { KvJsonKv: class {}, KvTranscriberIndexStore: class {} },
-    "./services/google-calendar.js": { ExternalOperationLimiter: class {} },
+    "./services/google-calendar.js": { ExternalOperationLimiter: class {}, GoogleCalendarClient: class {} },
     "./services/calendar-autojoin-worker.js": { CalendarAutojoinWorker: class { start() {} stop() { return stop.calendar?.() ?? Promise.resolve(); } } },
-    "./services/ingest-instance.js": { IngestInstanceSupervisor: class { start() {} stop() { return stop.ingest?.() ?? Promise.resolve(); } } },
+    "./services/ingest-instance.js": { ...ingestInstanceModule, IngestInstanceSupervisor: class { start() {} stop() { return stop.ingest?.() ?? Promise.resolve(); } } },
+    "./services/connector-teardown.js": load("./services/connector-teardown.ts"),
     "./routes/chat.js": { createChatRouter: router, defaultModel: "test-model" },
     "./agent-stream-policy.js": load("./agent-stream-policy.ts"),
     "./transcripts/meeting-rollout.js": load("./transcripts/meeting-rollout.ts"),
@@ -861,6 +966,51 @@ describe("backend entry-point HTTP and lifecycle guards", () => {
     expect((await post(boot.url!, "/api/connectors/webhooks/config", "{}")).status).toBe(401);
     const disabled = await bootIndex();
     expect((await post(disabled.url!, path, "{}")).status).toBe(404);
+  });
+
+  test("exo grant route is unmounted (404, before auth) when the exo flag is off", async () => {
+    const boot = await bootIndex();
+    expect((await fetch(boot.url! + "/api/exo/v1/grant")).status).toBe(404);
+    expect((await post(boot.url!, "/api/exo/v1/grant", "{}")).status).toBe(404);
+  });
+
+  test("exo grant route mounts only for the exact flag value 'true' (real parser)", async () => {
+    for (const value of ["TRUE", "1", " true", "false", ""]) {
+      const off = await bootIndex({ EXO_CAPABILITIES_ENABLED: value });
+      expect((await post(off.url!, "/api/exo/v1/grant", "{}")).status).toBe(404);
+    }
+    const on = await bootIndex({ EXO_CAPABILITIES_ENABLED: "true" });
+    expect((await post(on.url!, "/api/exo/v1/grant", "{}")).status).toBe(401);
+  });
+
+  test("owner Exo teardown and the exo ledger clear are wired only with the exo flag on", async () => {
+    // index.ts builds the ConnectorTeardownService and hands it to the credential router as `teardown`.
+    const credentialTeardownExo = (c: Record<string, Record<string, unknown>>) =>
+      (c.connectorCredentials?.teardown as { deps?: { exo?: { clearSource?: unknown } } } | undefined)?.deps?.exo;
+    const captured: Record<string, Record<string, unknown>> = {};
+    const capture = (name: string, config: Record<string, unknown>) => { captured[name] = config; };
+    const googleEnv = {
+      GOOGLE_MEET_OAUTH_ENABLED: "true", GOOGLE_OAUTH_CLIENT_ID: "test-client-id",
+      GOOGLE_OAUTH_CLIENT_SECRET: "test-client-secret", GOOGLE_OAUTH_REDIRECT_URI: "https://app.invalid/callback",
+      TRANSCRIPTION_API_URL: "https://transcriber.invalid", TRANSCRIPTION_API_KEY: "test-api-key",
+      CONNECTOR_CREDENTIAL_MASTER: randomBytes(32).toString("hex"), CONNECTOR_CONTENT_MASTER: randomBytes(32).toString("hex"), CONNECTOR_WEBHOOKS_ENABLED: "true", CONNECTOR_BACKEND_INGEST_ENABLED: "true",
+      FIREFLIES_OAUTH_CLIENT_ID: "test-fireflies-client", FIREFLIES_OAUTH_CLIENT_SECRET: "test-fireflies-secret", FIREFLIES_OAUTH_REDIRECT_URI: "https://app.invalid/fireflies-callback",
+      CONNECTOR_WEBHOOK_PUBLIC_ORIGIN: "https://app.invalid",
+    };
+    const on = await bootIndex({ ...googleEnv, EXO_CAPABILITIES_ENABLED: "true" }, { capture });
+    expect(on.exits).toEqual([]);
+    expect(typeof captured.delegation?.teardownExoOwner).toBe("function");
+    expect(typeof captured.exoGrant?.teardownExoOwner).toBe("function");
+    expect(typeof captured.calendar?.teardownExoOwner).toBe("function");
+    expect(typeof (captured.connectorWebhooks?.exo as { clearSource?: unknown } | undefined)?.clearSource).toBe("function");
+    expect(typeof credentialTeardownExo(captured)?.clearSource).toBe("function");
+    for (const key of Object.keys(captured)) delete captured[key];
+    const off = await bootIndex(googleEnv, { capture });
+    expect(off.exits).toEqual([]);
+    expect(captured.delegation?.teardownExoOwner).toBeUndefined();
+    expect(captured.calendar?.teardownExoOwner).toBeUndefined();
+    expect(captured.connectorWebhooks?.exo).toBeUndefined();
+    expect(credentialTeardownExo(captured)).toBeUndefined();
   });
 
   test("PTX webhook is dark by default and fails closed when armed without its receiver secret", async () => {

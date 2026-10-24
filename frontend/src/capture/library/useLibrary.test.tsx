@@ -48,6 +48,7 @@ function fakeSpace(options: {
   voiceCommit?: boolean;
   previews?: [string, string][];
   commitProvenance?: [string | null, string | null];
+  commitModel?: string | null;
   commitReads?: { rev: number; engine: string | null; provider: string | null }[];
 } = {}) {
   const previews = options.previews ?? [];
@@ -85,7 +86,7 @@ function fakeSpace(options: {
         const rev = selected?.rev ?? 1;
         const bodyKey = selected ? `committed/transcript/${rev}` : "committed/transcript";
         return Promise.resolve({ ok: true, data: { rows: [
-          ["rec-a", rev, "hash", bodyKey, "transcribed", "Preview", engine, provider, null, null, null, null, null],
+          ["rec-a", rev, "hash", bodyKey, "transcribed", "Preview", engine, provider, options.commitModel ?? null, null, null, null, null],
         ] } });
       }
       if (sql.includes("FROM connector_meeting g")) return Promise.resolve({ ok: true, data: { rows: [] } });
@@ -366,11 +367,37 @@ describe("useLibrary, mounted", () => {
     })]] } });
     await space.answer("transcript", { ok: true, data: { data: JSON.stringify([{ text: "Committed local body" }]) } });
     expect(seen.at(-1)!.note.reads.transcript?.provenance).toEqual({
-      engine: "whispercpp", provider: "whispercpp",
+      engine: "whispercpp", provider: "whispercpp", model: null,
     });
     expect(seen.at(-1)!.note.reads.metadata).toMatchObject({
       status: "ok",
       metadata: { transcription_engine: "whispercpp", transcript_provider: "whispercpp" },
+    });
+  });
+
+  test("a committed transcript's recorded model is carried into the note's metadata", async () => {
+    const space = fakeSpace({ voiceCommit: true, commitProvenance: ["whispercpp", "whispercpp"], commitModel: "QuantizedTinyEn" });
+    const seen: Library[] = [];
+    await render({ tcw: space.tcw, visible: true, noteId: "a", now: () => 0, seen });
+    await space.answer("list", listedVoice("a"));
+    await space.answer("metadata", { ok: true, data: { rows: [[JSON.stringify({})]] } });
+    await space.answer("transcript", { ok: true, data: { data: JSON.stringify([{ text: "Committed local body" }]) } });
+    expect(seen.at(-1)!.note.reads.metadata).toMatchObject({
+      status: "ok",
+      metadata: { transcription_model: "QuantizedTinyEn" },
+    });
+  });
+
+  test("a committed transcript with no recorded model carries no model into the note's metadata", async () => {
+    const space = fakeSpace({ voiceCommit: true, commitProvenance: ["whispercpp", "whispercpp"] });
+    const seen: Library[] = [];
+    await render({ tcw: space.tcw, visible: true, noteId: "a", now: () => 0, seen });
+    await space.answer("list", listedVoice("a"));
+    await space.answer("metadata", { ok: true, data: { rows: [[JSON.stringify({})]] } });
+    await space.answer("transcript", { ok: true, data: { data: JSON.stringify([{ text: "Committed local body" }]) } });
+    expect(seen.at(-1)!.note.reads.metadata).toMatchObject({
+      status: "ok",
+      metadata: { transcription_model: null },
     });
   });
   test("cached body provenance survives metadata flip, failed retry, and close/reopen", async () => {

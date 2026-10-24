@@ -58,7 +58,7 @@ export async function preserveVoiceNoteTranscriptHistory(tcw: TinyCloudWeb, expe
   if (!/PRECONDITION|412/i.test(`${result.error.code} ${result.error.message}`))
     throw new Error("Could not preserve the current transcript revision", { cause: result.error });
 
-  const existing = await tcw.kv.get(key);
+  const existing = await tcw.kv.get(key, { source: "network" });
   if (!existing.ok) throw new Error("Could not verify the existing transcript history record");
   const text = existingRecordText(existing.data.data);
   if (text === null) throw new Error("The existing transcript history record is unreadable");

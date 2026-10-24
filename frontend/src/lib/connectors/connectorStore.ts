@@ -854,7 +854,7 @@ export async function upsertMeeting(
 async function putMissingTranscriptBody(
   tcw: TinyCloudWeb, source: string, sourceId: string, sentences: FirefliesSentence[],
 ): Promise<StoreResult<void>> {
-  const existing = await tcw.kv.get(transcriptKvKey(source, sourceId));
+  const existing = await tcw.kv.get(transcriptKvKey(source, sourceId), { source: "network" });
   if (existing.ok) return { ok: true, data: undefined };
   if (!/NOT_FOUND/i.test(existing.error.code ?? "")) return fail(existing.error, "putMissingTranscriptBody", storageScopeFor(tcw));
   return putTranscriptBody(tcw, source, sourceId, sentences);
@@ -869,7 +869,7 @@ export async function listTranscriptBodyIds(
   let cursor: string | undefined;
   try {
     for (;;) {
-      const page = await tcw.kv.list({ path: prefix, ...(cursor === undefined ? {} : { cursor }) });
+      const page = await tcw.kv.list({ path: prefix, source: "network", ...(cursor === undefined ? {} : { cursor }) });
       if (!page.ok) return fail(page.error, "listTranscriptBodyIds", storageScopeFor(tcw));
       if (!page.data || !Array.isArray(page.data.keys)) {
         return fail({ code: "KV_LIST_MALFORMED", message: "invalid transcript listing" }, "listTranscriptBodyIds", storageScopeFor(tcw));
@@ -1211,7 +1211,7 @@ async function listKvPrefix(
   while (true) {
     let page: Awaited<ReturnType<typeof tcw.kv.list>>;
     try {
-      page = await tcw.kv.list({ path, ...(cursor ? { cursor } : {}) });
+      page = await tcw.kv.list({ path, source: "network", ...(cursor ? { cursor } : {}) });
     } catch {
       return fail({ code: "KV_LIST_TRANSPORT", message: "listing rejected" }, `purgeConnector(list:${path})`, storageScopeFor(tcw));
     }

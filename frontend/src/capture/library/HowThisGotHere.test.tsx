@@ -65,6 +65,15 @@ describe("captureRoute", () => {
     ]);
   });
 
+  test("the sentence names the transcription model the row records, and nothing it does not", () => {
+    const upload = { transcript_provider: "assemblyai", assemblyai_account: "own" };
+    expect(captureRoute("exo-upload", { ...upload, transcription_model: "best" }).sentence).toContain(
+      " Transcription model: best.",
+    );
+    expect(captureRoute("exo-upload", upload).sentence).not.toContain("Transcription model");
+    expect(captureRoute("exo-upload", { ...upload, transcription_model: "<b>x</b>" }).sentence).not.toContain("<b>");
+  });
+
   test("the notetaker and the synced sources", () => {
     expect(labels("tinycloud-transcriber", { platform: "google_meet" })).toEqual(["Meeting", "TinyCloud notetaker", "Your space"]);
     expect(labels("fireflies", {})).toEqual(["Fireflies", "Your space"]);

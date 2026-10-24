@@ -15,6 +15,12 @@ import {
   keyedLogHash,
   normalizeWebhookAddress,
 } from "./webhook-tokens.js";
+import {
+  CREDENTIAL_ROW_COUNT_INVALID_SOURCE,
+  CREDENTIAL_ROW_COUNT_LIST_TRUNCATED,
+  CREDENTIAL_ROW_COUNT_MAX_PAGES,
+  CredentialRowCountError,
+} from "./credential-row-count.js";
 import { recordCredentialAudit } from "./ingest-observability.js";
 
 const { assertKvResult, withSessionRefresh } = serverPackage;
@@ -734,6 +740,44 @@ export class KvCredentialRowStore implements CredentialRowStore {
         assertKvResult(result);
       });
     });
+  }
+
+  /**
+   * TC-1964: how many rows are stored under `credentials/<source>/`. Lists keys through the same
+   * lane and node session as every other call here and returns ONLY the number — no key, address,
+   * cursor or row value leaves this method, and nothing is read. Follows `nextCursor` until the
+   * node stops returning one, one lane job per page so other backend KV work interleaves. Fails
+   * closed: a truncated page with no usable cursor, a repeated cursor, or more than `maxPages`
+   * pages rejects with LIST_TRUNCATED instead of returning a partial (falsely low) number.
+   */
+  async countRows(source: string, maxPages: number = CREDENTIAL_ROW_COUNT_MAX_PAGES): Promise<number> {
+    let prefix: string;
+    try {
+      prefix = `credentials/${normalizeSource(source)}/`;
+    } catch {
+      throw new CredentialRowCountError(CREDENTIAL_ROW_COUNT_INVALID_SOURCE);
+    }
+    let total = 0;
+    let cursor: string | undefined;
+    for (let page = 0; page < maxPages; page += 1) {
+      const previous = cursor;
+      const data = await this.run(async () => {
+        const result = await withSessionRefresh(this.node, async () =>
+          assertKvResult(await this.node.kv.list(previous === undefined ? { prefix } : { prefix, cursor: previous })),
+        );
+        return (result as { data?: { keys?: unknown; truncated?: unknown; nextCursor?: unknown } } | null)?.data;
+      });
+      if (!data || !Array.isArray(data.keys)) throw new Error("credential row listing is invalid");
+      total += data.keys.length;
+      const next = typeof data.nextCursor === "string" && data.nextCursor.length > 0 ? data.nextCursor : undefined;
+      if (next === undefined) {
+        if (data.truncated === true) throw new CredentialRowCountError(CREDENTIAL_ROW_COUNT_LIST_TRUNCATED);
+        return total;
+      }
+      if (next === previous) throw new CredentialRowCountError(CREDENTIAL_ROW_COUNT_LIST_TRUNCATED);
+      cursor = next;
+    }
+    throw new CredentialRowCountError(CREDENTIAL_ROW_COUNT_LIST_TRUNCATED);
   }
 
   private async readJson(key: string): Promise<unknown> {

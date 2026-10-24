@@ -184,6 +184,23 @@ describe("POST /api/transcriber/meetings", () => {
     expect(h.calls).toEqual([]);
   });
 
+  test("reads pasted link forms and sends ptx the meeting link it recognises", async () => {
+    const cases: Array<[string, string]> = [
+      ["https://google.com/meet/ofj-ahew-paa", "https://meet.google.com/ofj-ahew-paa"],
+      ["meet.google.com/wmq-jkvr-rmi", "https://meet.google.com/wmq-jkvr-rmi"],
+      ["abc-defg-hij", "https://meet.google.com/abc-defg-hij"],
+      ["https://www.google.com/url?q=https://meet.google.com/kmn-pqrs-tuv&sa=D", "https://meet.google.com/kmn-pqrs-tuv"],
+    ];
+    const h = harness();
+    await withServer(h.app, async (base) => {
+      for (const [pasted] of cases) {
+        expect((await call(base, "/api/transcriber/meetings", "POST", { meeting_url: pasted })).status).toBe(201);
+      }
+    });
+    const created = h.calls.filter(c => c.method === "createMeeting");
+    expect(created.map(c => (c.args[0] as { meeting_url: string }).meeting_url)).toEqual(cases.map(([, sent]) => sent));
+  });
+
   test("creates upstream with the address in metadata, indexes it, returns 201", async () => {
     const h = harness();
     await withServer(h.app, async (base) => {
@@ -386,6 +403,25 @@ describe("POST /api/transcriber/meetings", () => {
     expect(h.calls.filter(call => call.method === "createMeeting")).toEqual([]);
   });
 
+  test("a stuck-joining meeting blocks a repeat send to its link, like a joining one", async () => {
+    for (const status of ["joining", "needs_help"] as const) {
+      const index = new MemoryTranscriberIndexStore();
+      const h = harness(ADDRESS_A, index);
+      const url = "https://meet.jit.si/stuck";
+      h.store.set("mtg_live", meeting("mtg_live", {
+        status, meeting_url: url, metadata: { tinychat_address: ADDRESS_A.toLowerCase() },
+      }));
+      await index.add(ADDRESS_A, "mtg_live");
+      await withServer(h.app, async (base) => {
+        expect((await call(base, "/api/transcriber/meetings")).status).toBe(200);
+        const response = await call(base, "/api/transcriber/meetings", "POST", { meeting_url: url });
+        expect(response.status).toBe(200);
+        expect(response.body.id).toBe("mtg_live");
+      });
+      expect(h.calls.filter(call => call.method === "createMeeting")).toEqual([]);
+    }
+  });
+
   test("an active row attributed to another owner never dedupes this user's send", async () => {
     const index = new MemoryTranscriberIndexStore();
     const h = harness(ADDRESS_A, index);
@@ -562,6 +598,18 @@ describe("GET /api/transcriber/meetings", () => {
       expect(r.status).toBe(200);
       expect(r.body.meetings.map((m: TranscriptionMeeting) => m.id)).toEqual(["mtg_2", "mtg_1"]);
       expect(r.body.meetings[1].status).toBe("in_progress");
+    });
+  });
+
+  test("a stuck-joining meeting is listed with its needs_help status", async () => {
+    const h = harness();
+    await withServer(h.app, async (base) => {
+      await call(base, "/api/transcriber/meetings", "POST", { meeting_url: "https://meet.jit.si/one" });
+      h.store.get("mtg_1")!.status = "needs_help";
+
+      const r = await call(base, "/api/transcriber/meetings");
+      expect(r.status).toBe(200);
+      expect(r.body.meetings[0].status).toBe("needs_help");
     });
   });
 

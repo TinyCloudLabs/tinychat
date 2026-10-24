@@ -36,6 +36,9 @@ env:
   DOCKER_IMAGE: ${{ vars.TINYCHAT_BACKEND_IMAGE || 'ghcr.io/tinycloudlabs/tinychat-backend' }}
   INGRESS_IMAGE: ${{ vars.TINYCHAT_INGRESS_IMAGE || 'ghcr.io/tinycloudlabs/tinychat-backend' }}
   PHALA_CVM_ID: ${{ vars.PHALA_CVM_ID }}
+  # Production dstack OS the backend CVM must run (the Phala KMS only releases app keys to this image).
+  PHALA_OS_IMAGE: dstack-0.5.12
+  PHALA_OS_IMAGE_HASH: 8db40cb23008d6213668b5816702d100b37b859a8a5bfd18d938ae3a1b3715bd
   PHALA_INGRESS_DOMAIN: ${{ vars.PHALA_INGRESS_DOMAIN || 'api.tinycloud.chat' }}
   PRODUCTION_API_URL: ${{ vars.TINYCHAT_BACKEND_URL || 'https://api.tinycloud.chat' }}
   PRODUCTION_FRONTEND_URL: ${{ vars.TINYCHAT_FRONTEND_URL || 'https://tinycloud.chat' }}
@@ -209,6 +212,24 @@ jobs:
             exit 1
           fi
           echo "$RAW" | jq '{success, username, workspace, profile}'
+
+      # Fail closed before any image is built or the CVM is touched unless it runs the pinned production OS, or the one
+      # pinned dev OS in .github/scripts/phala-dev-os-allowlist.txt after a fresh integrity check.
+      # To fix it, set the OS by hand: `phala api -X PATCH /cvms/<id>/os-image -F os_image_name=dstack-0.5.12`.
+      - name: Test the OS image guard
+        run: bash .github/scripts/test-phala-os-guard.sh
+
+      - name: Require a permitted OS image on the CVM
+        env:
+          PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
+        run: |
+          set -euo pipefail
+          if ! RAW="$(phala cvms get "$PHALA_CVM_ID" --json)"; then
+            echo "::error title=Could not resolve Phala CVM::The configured target could not be read"
+            echo "$RAW" | jq '{success, error, details}'
+            exit 1
+          fi
+          bash .github/scripts/phala-os-guard.sh <<<"$RAW"
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
@@ -386,6 +407,10 @@ jobs:
           MEETING_CONTENT_RETRIEVAL_ENABLED: ${{ vars.MEETING_CONTENT_RETRIEVAL_ENABLED || 'false' }}
           MEETING_CONTENT_TEST_ACCOUNTS: ${{ vars.MEETING_CONTENT_TEST_ACCOUNTS }}
           MEETING_CONTENT_MODELS: ${{ vars.MEETING_CONTENT_MODELS }}
+          # Optional one-time, log-only count of stored connector credential rows. Empty = off.
+          CREDENTIAL_ROW_COUNT_SOURCES: ${{ vars.CREDENTIAL_ROW_COUNT_SOURCES || '' }}
+          # Optional one-time authenticated read-only count of stored credential rows. Empty = route off.
+          CREDENTIAL_COUNT_ADMIN_KEY: ${{ secrets.CREDENTIAL_COUNT_ADMIN_KEY || '' }}
           # Paywall / billing (docs/stripe-setup.md). Each value may live as a
           # repo SECRET or a repo VARIABLE (secrets win) — all optional until
           # go-live; unset values deploy with the paywall off.
@@ -403,7 +428,9 @@ jobs:
           # Empty means the backend default applies (finish_answer / log); see docs/credits.md.
           AGENT_CHAT_BUDGET_STOP_MODE: ${{ secrets.AGENT_CHAT_BUDGET_STOP_MODE || vars.AGENT_CHAT_BUDGET_STOP_MODE }}
           AGENT_CHAT_BUDGET_PREFLIGHT: ${{ secrets.AGENT_CHAT_BUDGET_PREFLIGHT || vars.AGENT_CHAT_BUDGET_PREFLIGHT }}
-          # Ledger authority defaults OFF until the staged cutover is explicitly enabled.
+          # Exo capabilities default OFF: only exactly "true" mounts the wake route.
+          EXO_CAPABILITIES_ENABLED: ${{ secrets.EXO_CAPABILITIES_ENABLED || vars.EXO_CAPABILITIES_ENABLED }}
+          # Ledger authority is read from the LEDGER_AUTHORITATIVE secret or variable; with neither set it is false.
           LEDGER_SERVICE_URL: ${{ secrets.LEDGER_SERVICE_URL || vars.LEDGER_SERVICE_URL }}
           LEDGER_SERVICE_SECRET: ${{ secrets.LEDGER_SERVICE_SECRET }}
           LEDGER_AUTHORITATIVE: ${{ secrets.LEDGER_AUTHORITATIVE || vars.LEDGER_AUTHORITATIVE || 'false' }}
@@ -526,6 +553,8 @@ jobs:
             printf '%s\n' "MEETING_CONTENT_RETRIEVAL_ENABLED=${MEETING_CONTENT_RETRIEVAL_ENABLED:-false}"
             printf '%s\n' "MEETING_CONTENT_TEST_ACCOUNTS=${MEETING_CONTENT_TEST_ACCOUNTS:-}"
             printf '%s\n' "MEETING_CONTENT_MODELS=${MEETING_CONTENT_MODELS:-}"
+            printf '%s\n' "CREDENTIAL_ROW_COUNT_SOURCES=${CREDENTIAL_ROW_COUNT_SOURCES:-}"
+            printf '%s\n' "CREDENTIAL_COUNT_ADMIN_KEY=${CREDENTIAL_COUNT_ADMIN_KEY:-}"
             printf '%s\n' "AGENT_STREAM_HEARTBEAT_MS=$AGENT_STREAM_HEARTBEAT_MS"
             printf '%s\n' "AGENT_STREAM_TURN_TIMEOUT_MS=$AGENT_STREAM_TURN_TIMEOUT_MS"
             printf '%s\n' "AGENT_STREAM_DRAIN_GRACE_MS=$AGENT_STREAM_DRAIN_GRACE_MS"
@@ -551,6 +580,7 @@ jobs:
             printf '%s\n' "CREDIT_BUDGET_PRO_WEEKLY=$CREDIT_BUDGET_PRO_WEEKLY"
             printf '%s\n' "AGENT_CHAT_BUDGET_STOP_MODE=$AGENT_CHAT_BUDGET_STOP_MODE"
             printf '%s\n' "AGENT_CHAT_BUDGET_PREFLIGHT=$AGENT_CHAT_BUDGET_PREFLIGHT"
+            printf '%s\n' "EXO_CAPABILITIES_ENABLED=$EXO_CAPABILITIES_ENABLED"
             printf '%s\n' "LEDGER_SERVICE_URL=$LEDGER_SERVICE_URL"
             printf '%s\n' "LEDGER_SERVICE_SECRET=$LEDGER_SERVICE_SECRET"
             printf '%s\n' "LEDGER_AUTHORITATIVE=${LEDGER_AUTHORITATIVE:-false}"
@@ -606,7 +636,22 @@ jobs:
             -e "$ENV_FILE" \
             --wait \
             --no-public-logs \
-            --no-public-sysinfo
+            --no-public-sysinfo \
+            --no-dev-os \
+            --image "$PHALA_OS_IMAGE"
+
+      # Fail closed if the deploy left the CVM on a different OS image (same rule as the check before the deploy).
+      - name: Verify the OS image after deploy
+        env:
+          PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
+        run: |
+          set -euo pipefail
+          if ! RAW="$(phala cvms get "$PHALA_CVM_ID" --json)"; then
+            echo "::error title=Could not resolve Phala CVM::The configured target could not be read after deploy"
+            echo "$RAW" | jq '{success, error, details}'
+            exit 1
+          fi
+          bash .github/scripts/phala-os-guard.sh <<<"$RAW"
 
       # `phala deploy` updates the encrypted env but NOT the CVM's registered
       # allowed_envs whitelist (frozen at CVM creation), so env vars added after

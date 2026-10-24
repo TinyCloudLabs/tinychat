@@ -60,8 +60,13 @@ import { isLocalThreadStorage } from "@/lib/threadStore";
 import {
   createTinychatShareLink,
   findStoredTinychatShareForThread,
+  listOwnedTinychatShares,
+  shareStopFailureMessage,
+  stopOwnedTinychatShare,
+  type OwnedTinychatShare,
   type StoredTinychatShare,
 } from "@/lib/tinychatShareLinks";
+import { canOfferChatShare } from "@/lib/chatSharing";
 import { getThreadCompaction, subscribeThreadCompaction } from "./chatModelAdapter";
 import { ModelVerificationBadge } from "./ModelVerificationBadge";
 import { ToolActivityChip } from "./ToolActivityChip";
@@ -272,19 +277,37 @@ const ShareThreadProvider: FC<{ tcw: TinyCloudWeb; children: React.ReactNode }> 
   const [share, setShare] = useState<StoredTinychatShare | null>(null);
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
   const [error, setError] = useState<string | null>(null);
+  const [owned, setOwned] = useState<OwnedTinychatShare[]>([]);
+  const [revokingId, setRevokingId] = useState<string | null>(null);
 
   // `visible` gates whether the share button renders at all — only once a
   // chat exchange exists (not empty, history loaded). `canShare` additionally
   // pauses actions while a share link is being created.
-  const visible = Boolean(!isLocalThreadStorage(tcw) && threadId && !isEmpty && !isLoading);
+  const hasExistingShare = Boolean(threadId && findStoredTinychatShareForThread(threadId));
+  const visible = Boolean(
+    !isLocalThreadStorage(tcw) &&
+      threadId &&
+      !isEmpty &&
+      !isLoading &&
+      canOfferChatShare(hasExistingShare),
+  );
   const canShare = Boolean(visible && !creating);
+
+  const refreshOwnedShares = useCallback(async () => {
+    try {
+      setOwned(await listOwnedTinychatShares(tcw));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }, [tcw]);
 
   const openShareDialog = useCallback(() => {
     setShare(threadId ? findStoredTinychatShareForThread(threadId) : null);
     setCopyState("idle");
     setError(null);
     setOpen(true);
-  }, [threadId]);
+    void refreshOwnedShares();
+  }, [threadId, refreshOwnedShares]);
 
   const createShare = async () => {
     if (!canShare) return;
@@ -295,10 +318,27 @@ const ShareThreadProvider: FC<{ tcw: TinyCloudWeb; children: React.ReactNode }> 
       const result = await createTinychatShareLink(tcw, threadId, { durationDays });
       const stored = findStoredTinychatShareForThread(threadId);
       setShare(stored ?? { ...result.payload, acceptedAt: result.payload.createdAt, token: result.token });
+      await refreshOwnedShares();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setCreating(false);
+    }
+  };
+
+  const revokeShare = async (shareId: string) => {
+    setRevokingId(shareId);
+    setError(null);
+    try {
+      const stopped = await stopOwnedTinychatShare(tcw, shareId);
+      if (!stopped.ok) {
+        setError(shareStopFailureMessage(stopped.stage));
+        return;
+      }
+      setShare((current) => (current?.id === shareId ? null : current));
+      await refreshOwnedShares();
+    } finally {
+      setRevokingId(null);
     }
   };
 
@@ -376,6 +416,31 @@ const ShareThreadProvider: FC<{ tcw: TinyCloudWeb; children: React.ReactNode }> 
               >
                 {copyState === "copied" ? "Copied" : "Copy link"}
               </Button>
+            </div>
+          )}
+
+          {owned.length > 0 && (
+            <div className="flex flex-col gap-2">
+              <div className="text-xs font-medium text-foreground">Your shares</div>
+              <ul className="flex flex-col gap-2">
+                {owned.map((item) => (
+                  <li key={item.shareId} className="flex items-center justify-between gap-3 text-sm">
+                    <span className="min-w-0 truncate">{item.title}</span>
+                    <span className="shrink-0 text-xs text-muted-foreground">
+                      Expires {formatShareDate(item.expiresAt)}
+                    </span>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={revokingId !== null}
+                      onClick={() => void revokeShare(item.shareId)}
+                    >
+                      {revokingId === item.shareId ? "Revoking..." : "Revoke"}
+                    </Button>
+                  </li>
+                ))}
+              </ul>
             </div>
           )}
 

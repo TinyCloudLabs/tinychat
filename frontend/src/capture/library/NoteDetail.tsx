@@ -17,6 +17,7 @@ import type { AppPlatform } from "@/lib/platform";
 import type { NotePipelineView } from "@/lib/voiceNotes/useNotePipeline";
 import { VoiceNoteSaveTimeout, withVoiceNoteSaveDeadline } from "@/lib/voiceNotes/saveDeadline";
 import { localTranscriptToSave, VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
+import { gateCombinedSummary, readAutomaticSummaries } from "@/lib/meetingSummary/automaticSummaries";
 import { NoteDetailView, type NoteDetailViewProps } from "./NoteDetailView";
 import { CombineSheet } from "./combine/CombineSheet";
 import { canCombine } from "./combine/candidates";
@@ -66,8 +67,8 @@ export function NoteDetail(props: {
   const combined = useCombinedMeeting({ tcw: props.tcw, item, onChanged: library.refresh, onDeleted: props.onBack });
   const summary = useCombinedSummary({ tcw: props.tcw, runner: props.summaries, item });
   const flow = useCombineFlow({ tcw: props.tcw, onCombined: ({ id, sourceId, created }) => {
-    // The combined text is new: make its summary (a Re-combine replaces the old one).
-    props.summaries?.start(id, { replacing: !created });
+    // The combined text is new: the summary gate decides (setting on or unreadable: a run; off: none).
+    void gateCombinedSummary(() => readAutomaticSummaries(props.tcw), props.summaries, { id, created });
     // A Re-combine rewrites the open row in place: drop its cached reads and check its members again.
     captureEvents.emit("library-changed", { source: EXO_MERGED_SOURCE, sourceId });
     combined.recheck();
@@ -77,12 +78,14 @@ export function NoteDetail(props: {
   const combine = useMemo<CombineDetail | undefined>(() => {
     if (item === null) return undefined;
     if (isCombined(item)) {
-      const members = memberLines(displayMembers(reads.metadata?.status === "ok" ? reads.metadata.metadata : null), library.items);
-      const [a, b] = members.map((m) => library.items.find((entry) => entry.source === m.source && entry.sourceId === m.sourceId));
+      // Sources are resolved from EVERY row: the list hides them, but they are still here to open.
+      const members = memberLines(displayMembers(reads.metadata?.status === "ok" ? reads.metadata.metadata : null), library.all);
+      const [a, b] = members.map((m) => library.all.find((entry) => entry.source === m.source && entry.sourceId === m.sourceId));
       return { combined: { members, stale: combined.stale, onRecombine: members.length === 2 && a && b ? () => flow.open(a, b) : undefined, onDelete: combined.remove.request, summary: summary.view, onRetrySummary: summary.retry } };
     }
-    return canCombine(item) ? { onCombine: () => flow.open(item) } : undefined;
-  }, [item, reads.metadata, library.items, combined.stale, combined.remove.request, summary.view, summary.retry, flow.open]);
+    // A source that is already a member of a combined meeting is not combined again.
+    return canCombine(item) && !library.isCombinedMember(item) ? { onCombine: () => flow.open(item) } : undefined;
+  }, [item, reads.metadata, library.all, library.isCombinedMember, combined.stale, combined.remove.request, summary.view, summary.retry, flow.open]);
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [local, setLocal] = useState<{ id: string; transcript: LocalTranscript | null; readError: "timeout" | "failed" | null } | null>(null);
@@ -173,6 +176,7 @@ export function NoteDetail(props: {
         activityControl={props.activityControl}
         combine={combine}
       />
+      {/* The visible list: a capture already inside a combined meeting is never offered for a new combine. */}
       <CombineSheet flow={flow} items={library.items} now={new Date()} />
       {combined.remove.open && <DeleteCombinedSheet remove={combined.remove} title={item?.title ?? "Combined meeting"} />}
     </>

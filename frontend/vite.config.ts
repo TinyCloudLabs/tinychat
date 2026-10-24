@@ -110,7 +110,12 @@ export default defineConfig(({ command, mode }) => {
         // The desktop-only window API chunk (see build.rollupOptions): a web install can never reach it.
         // The notes renderer's WASM (7.7 MB, lazy: first Preview) is cached at runtime below, so a
         // first visit never downloads it.
-        globIgnores: ["agents/**", "assets/tauri-window-*.js", "**/franken_markdown_bg*.wasm"],
+        // The local-replication chunks (kv-storage + its 2.2 MB worker, replica, profile-gate) are only
+        // fetched when the replication flag is ON (lazy import in lib/replication); runtime-cached below.
+        globIgnores: [
+          "agents/**", "assets/tauri-window-*.js", "**/franken_markdown_bg*.wasm",
+          "assets/kv-storage*.js", "assets/replica-*.js", "assets/profile-gate-*.js",
+        ],
         // The main chunk carries the TinyCloud SDK's inlined WASM (~7.4 MB today); Workbox skips
         // anything over its 2 MiB default, which would leave the shell unable to boot offline.
         maximumFileSizeToCacheInBytes: 24 * 1024 * 1024,
@@ -119,11 +124,21 @@ export default defineConfig(({ command, mode }) => {
         // ...except the static /agents docs (and /api, should one ever be same-origin). Precached files
         // still win: their route is registered first. Mirrors public/_redirects.
         navigateFallbackDenylist: [/^\/agents(?:\/|$)/, /^\/api(?:\/|$)/],
-        // The only runtime cache is the notes renderer's own WASM, same-origin and content-hashed.
+        // The runtime caches are the notes renderer's WASM and the replication chunks, same-origin and content-hashed.
         // Everything else outside the precache is not intercepted, so API and cross-origin traffic
         // (api.tinycloud.chat, the TinyCloud nodes, OpenKey, RedPill, Google, Fireflies …) always goes
         // straight to the network, never to a cache.
         runtimeCaching: [
+          {
+            urlPattern: ({ sameOrigin, url }) =>
+              sameOrigin && /\/assets\/(?:kv-storage|replica|profile-gate)[^/]*\.js$/.test(url.pathname),
+            handler: "CacheFirst",
+            options: {
+              cacheName: "exo-replication-chunks",
+              cacheableResponse: { statuses: [200] },
+              expiration: { maxEntries: 8 },
+            },
+          },
           {
             urlPattern: ({ sameOrigin, url }) =>
               sameOrigin && /\/franken_markdown_bg[^/]*\.wasm$/.test(url.pathname),
@@ -145,6 +160,9 @@ export default defineConfig(({ command, mode }) => {
   ],
   resolve: {
     alias: {
+      // @tinycloud/replica/profile-gate (pulled in by web-sdk/replica) imports Node's fs/promises at
+      // top level; the polyfill plugin only shims `fs`, which breaks the build. See the stub.
+      "fs/promises": path.resolve(rootDir, "./src/lib/replication/nodeFsPromisesStub.ts"),
       // Redirect @tinycloud/node-sdk/core → @tinycloud/web-sdk in the browser
       // bundle. agentDelegation.ts imports serializeDelegation from node-sdk/core
       // (to avoid web-sdk's HTMLElement at test load time), but node-sdk/core

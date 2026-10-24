@@ -12,6 +12,7 @@ import {
   readCombinedSummary,
   writeCombinedSummary,
   deleteCombinedReferencing,
+  readMemberBody,
   staleMembers,
   sweepCombinedMeeting,
   sweepOnMemberRead,
@@ -402,6 +403,17 @@ describe("member reads that do not settle", () => {
     expect(await sweepCombinedMeeting(f.tcw, w.id)).toEqual({ ok: true, data: { status: "unverified" } });
     expect(mergedRows()).toHaveLength(1);
     expect(f.kv.log.filter((c) => c.method === "delete")).toEqual([]);
+  });
+});
+
+describe("member body reads are network-only", () => {
+  test("readMemberBody reads the member transcript with source network", async () => {
+    const [a] = pair("n", "fireflies", "tinycloud-transcriber");
+    seed(f, a);
+    const read = await readMemberBody(f.tcw, a.ref);
+    expect(read).toEqual({ status: "ok", raw: a.body });
+    const key = transcriptKvKey(a.ref.source, a.ref.sourceId);
+    expect(f.kv.log.filter((c) => c.method === "get" && c.key === key).map((c) => c.source)).toEqual(["network"]);
   });
 });
 

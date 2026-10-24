@@ -200,7 +200,7 @@ async function memberBodyKey(tcw: TinyCloudWeb, ref: MeetingRef): Promise<{ key:
 export async function readMemberBody(tcw: TinyCloudWeb, ref: MeetingRef): Promise<MemberBodyRead> {
   const target = await memberBodyKey(tcw, ref);
   if ("failed" in target) return { status: "failed" };
-  const res = await kv(() => tcw.kv.get(target.key));
+  const res = await kv(() => tcw.kv.get(target.key, { source: "network" }));
   if (!res.ok) return res.notFound ? { status: "absent" } : { status: "failed" };
   let raw: string;
   if (typeof res.data === "string") raw = res.data;

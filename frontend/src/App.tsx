@@ -29,6 +29,12 @@ import {
   offeredChatModelContextTokens,
 } from "@tinyboilerplate/core";
 import { withEncryptionDecryptGrant } from "./lib/connectors/encryptionGrant";
+import { replicationConfigPatch, startReplicationFill } from "./lib/replication/replicationClient";
+import { rememberReplicationPrincipal } from "./lib/replication/replicationCopyMarker";
+import { purgeReplicaCopyWhenOffOnce } from "./lib/replication/replicationOffPurge";
+import { replicationRestorePatch } from "./lib/replication/replicationRestore";
+import { replicationPrincipalFor } from "./lib/replication/replicationOptIn";
+import { clientHasReplication, signOutReplicaAware } from "./lib/replication/replicationSignOut";
 import { uploadRunner } from "./lib/audioUpload";
 import { openkeyPasskeysSupported } from "./lib/openkeyPasskeys";
 import { useVisualViewportFit } from "./lib/useVisualViewport";
@@ -252,7 +258,19 @@ export function App() {
   const completeLocalSignOut = useCallback((warning: string | null, terminal = false) => {
     nativeRenewalRef.current?.stop();
     nativeRenewalRef.current = null;
-    if (tcw) { try { tcw.cleanup(); } catch { /* Continue local cleanup. */ } }
+    if (tcw) {
+      const cleanup = () => { try { tcw.cleanup(); } catch { /* Continue local cleanup. */ } };
+      if (clientHasReplication(tcw)) {
+        // Every local sign-out (including server-side session loss) must run the replica deny
+        // before the controller is torn down. signOutReplicaAware is once-per-client, so the
+        // button path's earlier call is reused.
+        void signOutReplicaAware(tcw)
+          .then((result) => {
+            if (!result.ok) setError((current) => (current?.includes(result.message) ? current : result.message));
+          }, (caught: unknown) => logNativeOpenKeyError("replica sign-out", caught))
+          .finally(cleanup);
+      } else cleanup();
+    }
     resetNavigationMemory();
     const storedAddress = sessionStoreRef.current.getAddress() ?? address;
     if (storedAddress) clearPersistedSession(storedAddress);
@@ -446,6 +464,11 @@ export function App() {
   // signal used to sign the user out here.
   const restoreSession = useCallback(async () => {
     if (restoreInFlightRef.current) return;
+    // Replication OFF for the stored account + a leftover local copy (or a pending wipe): shred its
+    // keys, then erase it (once per page load, not awaited, no-op without a marker). An ON sign-in or
+    // restore waits for it before building a replica. See lib/replication/replicationOffPurge.ts.
+    const storedAccount = sessionStoreRef.current.getAddress();
+    void purgeReplicaCopyWhenOffOnce(storedAccount ? replicationPrincipalFor(storedAccount) : undefined);
     logSession("restore", "start");
     restoreInFlightRef.current = true;
     setError(null);
@@ -546,16 +569,22 @@ export function App() {
             throw new Error("Could not load the TinyCloud app manifest");
           return manifest;
         },
-        restore: (storedAddress, manifest) =>
+        restore: async (storedAddress, manifest) =>
           restoreTinyCloudWebSession(storedAddress, {
             autoCreateSpace: false,
             tinycloudHosts: TINYCLOUD_HOSTS,
             manifest,
+            // ON: the replication option plus a read-only account provider (so the restore has a signer
+            // to ask); OFF: {} (no provider, exactly as without replication). See replicationRestore.ts.
+            ...(LOCAL_VALIDATION ? {} : await replicationRestorePatch(storedAddress)),
           }),
       });
       switch (restored.kind) {
         case "restored": {
           logSession("restore", "done");
+          rememberReplicationPrincipal(restored.tcw);
+          // Nothing else starts the first sync (our transcript reads are network reads); ON only.
+          startReplicationFill(restored.tcw);
           const restoredTcw = LOCAL_VALIDATION ? useLocalCanvasStorage(useLocalThreadStorage(restored.tcw)) : restored.tcw;
           const accountDid = restored.tcw.did ?? `did:pkh:eip155:1:${restored.address}`;
           beginStorageAccountSession(restoredTcw, accountDid, restored.tcw.spaceId ?? null);
@@ -906,6 +935,9 @@ export function App() {
         autoCreateSpace: !LOCAL_VALIDATION,
         tinycloudHosts: TINYCLOUD_HOSTS,
         manifest: withEncryptionDecryptGrant(manifest, connectedAddress),
+        // Flag OFF: {} (config unchanged). ON: the SDK adds kv/sync beside kv/get for the
+        // replica prefixes at this sign-in; see lib/replication/replicationClient.ts.
+        ...(LOCAL_VALIDATION ? {} : await replicationConfigPatch(replicationPrincipalFor(connectedAddress))),
       };
       const { tcw: signedTcw, session } = LOCAL_VALIDATION
         ? await (async () => {
@@ -916,12 +948,15 @@ export function App() {
           })()
         : await createAndSignIn(prefetch.guardSigning(web3Provider), signInConfig);
 
+      rememberReplicationPrincipal(signedTcw);
       // Exchange the SIWE message for a backend Bearer token (for /api/chat).
       const verified = await verifySession(BACKEND_URL, session.siwe, session.signature);
       sessionStoreRef.current.setSession(verified.token, verified.expiresIn, connectedAddress);
       // The SDK keeps this provider for later user-authorized operations;
       // only the verified login's signatures use the prefetched nonce guard.
       prefetch.complete();
+      // The sign-in is verified: start the first sync (ON only; nothing else starts it).
+      startReplicationFill(signedTcw);
 
       const signedInTcw = LOCAL_VALIDATION ? useLocalCanvasStorage(useLocalThreadStorage(signedTcw)) : signedTcw;
       beginStorageAccountSession(signedInTcw, signedTcw.did ?? null, signedTcw.spaceId ?? null);
@@ -1010,7 +1045,13 @@ export function App() {
 
       if (tcw && !nativeSession && !options.terminal) {
         try {
-          const cleanup = Promise.resolve(tcw.signOut?.());
+          // Replication ON: signOut() also shreds the replica keys first; its "gate not denied"
+          // failure is a pending purge to surface, not a failed sign-out (replicationSignOut.ts).
+          const cleanup = clientHasReplication(tcw)
+            ? signOutReplicaAware(tcw).then((result) => {
+              if (!result.ok) openKeyWarning = openKeyWarning ? `${openKeyWarning} ${result.message}` : result.message;
+            })
+            : Promise.resolve(tcw.signOut?.());
           if (captureEngineAvailable()) await withCaptureDeadline(cleanup);
           else await cleanup;
         } catch (caught) {
@@ -1242,6 +1283,7 @@ export function App() {
                 backendUrl={BACKEND_URL}
                 sessionStore={sessionStoreRef.current}
                 active={screen.destination === "capture"}
+                onSummarySettled={refreshBillingStatus}
                 screen={screen}
                 meetingsSlot={
                   <MeetingsSection
