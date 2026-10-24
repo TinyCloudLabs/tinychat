@@ -1,6 +1,7 @@
 // Synthetic inputs only. Native Vector evaluates every assertion after the full boundary (envelope, gate, allowlist,
 // guard). A case is either "ships exactly this object" or "ships nothing and is counted under this gate reason".
-import { CAP_PER_WINDOW, MAX_LINE_BYTES } from './limits.mjs';
+import { CAP_PER_WINDOW, MAX_LINE_BYTES, estimateBytes } from './limits.mjs';
+import { readFileSync } from 'node:fs';
 
 export const canary = 'TC1978_SYNTHETIC';
 const address = '0xAbCdEf0123456789abcdef0123456789abCDef01';
@@ -148,5 +149,89 @@ export const vectorTests = [
       { type: 'vrl', source: 'assert!(.component == "exo" && .count == 1002)' },
       { type: 'vrl', source: 'assert!(.event_code == "chat_stream_error" && .count == 2002)' },
     ] }],
+  },
+];
+
+// --- R4: the cap key includes op and result, so a flood of one result cannot starve another ----------------------------------
+const stamp = '2026-10-24T00:00:00.000Z';
+const shaped = (attrs, component = 'transcript-delivery') => ({ event: 'backend_log', svc: 'backend', level: 'info', component, event_code: 'structured', ts: stamp, ...attrs });
+const insertAtCap = events => events.map(log_fields => ({ insert_at: 'cap', type: 'log', log_fields }));
+vectorTests.push(
+  {
+    name: 'cap: a flood of one result does not starve another result of the same component and op',
+    inputs: insertAtCap([
+      ...Array.from({ length: CAP_PER_WINDOW + 20 }, (_, index) => shaped({ op: 'deliver', result: 'written', count: index + 1 })),
+      ...Array.from({ length: 5 }, (_, index) => shaped({ op: 'deliver', result: 'error', count: 1000 + index })),
+      ...Array.from({ length: 3 }, (_, index) => shaped({ op: 'sweep', result: 'unreadable_address', count: 2000 + index })),
+    ]),
+    outputs: [{ extract_from: 'cap', expected_event_count: CAP_PER_WINDOW + 8, conditions: [
+      { type: 'vrl', source: 'assert!(.result == "error" && .count == 1004)' },
+      { type: 'vrl', source: 'assert!(.op == "sweep" && .count == 2002)' },
+      { type: 'vrl', source: `assert!(.result == "written" && .count == ${CAP_PER_WINDOW})` },
+      { type: 'vrl', source: `assert!(.result == "written" && .count == 1)` },
+    ] }],
+  },
+  {
+    name: 'cap: lines without op or result are still capped per component and event code',
+    inputs: insertAtCap(Array.from({ length: CAP_PER_WINDOW + 7 }, (_, index) => shaped({ count: index + 1 }, 'chat'))),
+    outputs: [{ extract_from: 'cap', expected_event_count: CAP_PER_WINDOW, conditions: [{ type: 'vrl', source: `assert!(.count == ${CAP_PER_WINDOW})` }] }],
+  },
+);
+
+// --- R3: boot failures are registered fixed messages ------------------------------------------------------------------------
+const registry = JSON.parse(readFileSync(new URL('./diagnostics.json', import.meta.url), 'utf8')).entries;
+for (const entry of registry.filter(candidate => candidate.code.startsWith('startup_'))) {
+  vectorTests.push(ships(`boot failure registered: ${entry.code}`, `${entry.text} ${'x'.repeat(10)} 0xAbCdEf0123456789abcdef0123456789abCDef01`, registered(entry.component, entry.code, entry.level), { level: 3 }));
+}
+
+// --- volume limits: run with `limits` = { maxLines: 5, dailyBudget: 600 } (render-tests limited) ---------------------------------
+const budgetEvent = n => ({ ...shaped({ op: 'o'.repeat(40), count: n }), level: 'info' });
+const budgetSize = estimateBytes(budgetEvent(1));
+const fits = 3;
+// Room for exactly `fits` events plus 70 spare bytes: enough for a tiny event (which proves "stopped" is sticky), too few for the
+// next full event or a gate count.
+const tinyEvent = { event: 'backend_log', ts: stamp };
+export const limitProfile = Object.freeze({ maxLines: 5, dailyBudget: fits * budgetSize + 70 });
+if (estimateBytes(tinyEvent) > 70) throw new Error('limit profile: the tiny event must fit in the spare bytes');
+const insertAtBudget = events => events.map(log_fields => ({ insert_at: 'test_strip', type: 'log', log_fields }));
+const eventCount = (extract_from, expected_event_count, conditions = []) => ({ extract_from, expected_event_count, conditions });
+const gateEvent = { ts: stamp, level: 'warn', event: 'logship_gate_summary_total', svc: 'logship', gate_reason: 'oversized', count: 3 };
+if (limitProfile.dailyBudget - fits * budgetSize >= estimateBytes(gateEvent)) throw new Error('limit profile: the gate event would still fit; adjust the profile');
+const noFlag = { type: 'vrl', source: 'assert!(!exists(._ship))' };
+export const limitTests = [
+  {
+    name: 'stream cap: only the first max_lines events of a window pass, in order',
+    inputs: insertAtCap(Array.from({ length: 8 }, (_, index) => shaped({ count: index + 1 }, ['chat', 'exo', 'billing', 'relay', 'agent', 'auth', 'startup', 'credits'][index]))),
+    outputs: [eventCount('cap', limitProfile.maxLines, Array.from({ length: limitProfile.maxLines }, (_, index) => ({ type: 'vrl', source: `assert!(.count == ${index + 1})` })))],
+  },
+  {
+    name: `daily budget: ${fits} events of ${budgetSize} bytes fit in ${limitProfile.dailyBudget}; both sinks carry them, without the internal flag`,
+    inputs: insertAtBudget(Array.from({ length: fits }, (_, index) => budgetEvent(index + 1))),
+    outputs: [eventCount('ship_clean', fits, [noFlag]), eventCount('local_clean', fits, [noFlag])],
+  },
+  {
+    name: 'daily budget: past the budget the log service stops, the local copy continues, and one fixed line is added locally',
+    inputs: insertAtBudget(Array.from({ length: fits + 3 }, (_, index) => budgetEvent(index + 1))),
+    outputs: [
+      eventCount('ship_clean', fits, [noFlag, { type: 'vrl', source: `assert!(to_int!(.count) <= ${fits})` }]),
+      eventCount('local_clean', fits + 3 + 1, [
+        noFlag,
+        { type: 'vrl', source: `assert!(.count == ${fits + 3})` },
+        { type: 'vrl', source: `assert_eq!(., {"ts": .ts, "level": "warn", "event": "daily_budget_reached", "svc": "logship", "budget_bytes": ${limitProfile.dailyBudget}})` },
+      ]),
+    ],
+  },
+  {
+    name: 'daily budget: after it is reached even a tiny event is not shipped, and the fixed line is not repeated',
+    inputs: insertAtBudget([...Array.from({ length: fits + 1 }, (_, index) => budgetEvent(index + 1)), tinyEvent, tinyEvent]),
+    outputs: [
+      eventCount('ship_clean', fits),
+      eventCount('local_clean', fits + 1 + 2 + 1, [{ type: 'vrl', source: 'assert!(.event == "daily_budget_reached")' }]),
+    ],
+  },
+  {
+    name: 'daily budget: the gate counts are subject to the same budget',
+    inputs: insertAtBudget([...Array.from({ length: fits }, (_, index) => budgetEvent(index + 1)), gateEvent]),
+    outputs: [eventCount('ship_clean', fits), eventCount('local_clean', fits + 1 + 1, [{ type: 'vrl', source: 'assert!(.event == "logship_gate_summary_total" && .count == 3)' }])],
   },
 ];

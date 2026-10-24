@@ -4,7 +4,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
-import { MAX_LINE_BYTES, CAP_PER_WINDOW, CAP_WINDOW_SECONDS } from './limits.mjs';
+import { MAX_LINE_BYTES, CAP_PER_WINDOW, CAP_WINDOW_SECONDS, DEFAULT_DAILY_BYTE_BUDGET, DEFAULT_MAX_LINES_PER_MINUTE, DAY_SECONDS } from './limits.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const load = name => JSON.parse(readFileSync(resolve(root, 'log-shipper', name), 'utf8'));
@@ -16,9 +16,9 @@ export const vectorImage = 'timberio/vector:0.59.0-alpine@sha256:0e36bc2a290039e
  */
 export const INGEST_HOST_PLACEHOLDER = '__INGEST_HOST__';
 export const sinkUri = `https://${INGEST_HOST_PLACEHOLDER}/`;
-export { MAX_LINE_BYTES, CAP_PER_WINDOW, CAP_WINDOW_SECONDS };
+export { MAX_LINE_BYTES, CAP_PER_WINDOW, CAP_WINDOW_SECONDS, DEFAULT_DAILY_BYTE_BUDGET, DEFAULT_MAX_LINES_PER_MINUTE, DAY_SECONDS };
 /** Keys the schema marks as typed attributes. Structural keys are never attributes. */
-export const STRUCTURAL = Object.freeze(['svc', 'component', 'event_code', 'error_class', 'gate_reason', 'window_s', 'budget_event', 'budget_mode']);
+export const STRUCTURAL = Object.freeze(['svc', 'component', 'event_code', 'error_class', 'gate_reason', 'window_s', 'budget_event', 'budget_mode', 'budget_bytes']);
 /** Console keys whose names differ from the schema's snake_case names. */
 export const RENAMES = Object.freeze({ waitedMs: 'waited_ms', ids: 'item_count' });
 const FORBIDDEN = String.raw`0x[0-9a-fA-F]{40}|did:[a-z0-9]+:|eyJ[A-Za-z0-9_-]{5,}\.|[A-Za-z][A-Za-z0-9+.-]*://|[?&][A-Za-z0-9_]+=|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}|[0-9a-fA-F]{32,}`;
@@ -67,49 +67,147 @@ for_each(registry) -> |_index, entry| {
 const remap = (inputs, source, options = {}) => ({ type: 'remap', inputs, source, drop_on_error: true, drop_on_abort: true, ...options });
 
 /**
- * One `lua` transform caps every (component, event_code) at CAP_PER_WINDOW events per window. The first events of a
- * window pass unchanged; the rest are counted, and when the window ends a timer emits one `log_dropped` event per
- * key that overflowed. The dropped event is built from the already-validated key parts and an integer; nothing from a
- * dropped event is read. Vector fires a Lua timer once at the first event, so `flush` ignores that first tick.
+ * One `lua` transform applies two per-window caps (window = CAP_WINDOW_SECONDS, the first tick after the first event):
+ *   1. every (component, event_code, op, result) passes at most CAP_PER_WINDOW events, so a flood of one result cannot starve
+ *      another; past 500 distinct keys in a window the key falls back to (component, event_code) to bound memory;
+ *   2. the WHOLE stream passes at most `max_lines` events (BETTERSTACK_MAX_LINES_PER_MINUTE; a number baked in from limits.mjs
+ *      and replaced by the sidecar's entrypoint only for a valid positive integer).
+ * The rest are counted. When the window ends a timer emits one `log_dropped` event per overflowed key and ONE
+ * `log_stream_dropped` event for the whole-stream overflow: fixed shapes built from already-validated key parts and
+ * integers; nothing from a dropped event is read. Vector fires a Lua timer once at the first event, so `flush` ignores that tick.
+ * Both caps sit before every sink, so they bound the shipped stream and the local copy alike.
  */
-const capTransform = {
+const capTransform = ({ maxLines }) => ({
   type: 'lua', version: '2', inputs: ['guard'],
   hooks: { process: 'process' }, timers: [{ interval_seconds: CAP_WINDOW_SECONDS, handler: 'flush' }],
   source: `local cap = ${CAP_PER_WINDOW}
+local max_lines = ${maxLines}
 local counts = {}
+local parts = {}
 local dropped = {}
+local keys = 0
+local total = 0
+local stream_dropped = 0
 local ticks = 0
 function process(event, emit)
-  local key = event.log.component .. "|" .. event.log.event_code
-  local n = (counts[key] or 0) + 1
-  counts[key] = n
-  if n <= cap then
-    emit(event)
-  else
-    dropped[key] = (dropped[key] or 0) + 1
+  local log = event.log
+  local base = log.component .. "|" .. log.event_code
+  local key = base
+  local op = nil
+  local result = nil
+  if log.op ~= nil or log.result ~= nil then
+    local full = base .. "|" .. (log.op or "") .. "|" .. (log.result or "")
+    if counts[full] ~= nil or keys < 500 then
+      key = full
+      op = log.op
+      result = log.result
+    end
   end
+  local n = counts[key]
+  if n == nil then
+    n = 0
+    keys = keys + 1
+    parts[key] = {component = log.component, event_code = log.event_code, op = op, result = result}
+  end
+  n = n + 1
+  counts[key] = n
+  if n > cap then
+    dropped[key] = (dropped[key] or 0) + 1
+    return
+  end
+  total = total + 1
+  if total > max_lines then
+    stream_dropped = stream_dropped + 1
+    return
+  end
+  emit(event)
 end
 function flush(emit)
   ticks = ticks + 1
   if ticks == 1 then return end
+  local now = os.date("!%Y-%m-%dT%H:%M:%S.000Z")
   for key, n in pairs(dropped) do
-    local sep = string.find(key, "|", 1, true)
-    emit({log = {ts = os.date("!%Y-%m-%dT%H:%M:%S.000Z"), level = "warn", event = "log_dropped", svc = "backend", component = string.sub(key, 1, sep - 1), event_code = string.sub(key, sep + 1), dropped = n, window_s = ${CAP_WINDOW_SECONDS}}})
+    local p = parts[key]
+    emit({log = {ts = now, level = "warn", event = "log_dropped", svc = "backend", component = p.component, event_code = p.event_code, op = p.op, result = p.result, dropped = n, window_s = ${CAP_WINDOW_SECONDS}}})
+  end
+  if stream_dropped > 0 then
+    emit({log = {ts = now, level = "warn", event = "log_stream_dropped", svc = "backend", dropped = stream_dropped, window_s = ${CAP_WINDOW_SECONDS}}})
   end
   counts = {}
+  parts = {}
   dropped = {}
+  keys = 0
+  total = 0
+  stream_dropped = 0
 end`,
-};
+});
 
-/** The only inputs any sink may have: the filtered stream and the content-free gate counts. Never a raw stage. */
-export const SINK_INPUTS = Object.freeze(['cap', 'gate_output']);
+/**
+ * The daily byte budget, in front of the log service sink only. It counts the estimated JSON bytes of every event it
+ * lets through to the sink (the same estimate as estimateBytes in limits.mjs, which never under-counts). The first event that
+ * would exceed `daily_budget` (BETTERSTACK_DAILY_BYTE_BUDGET, baked in from limits.mjs, replaced by the entrypoint only for
+ * a valid positive integer) stops shipping for the rest of the UTC day: every later event is marked _ship=false, and ONE
+ * `daily_budget_reached` event (fixed shape, marked _ship=false, so it reaches the local copy only) is emitted. Nothing
+ * raises the budget; the counter resets when floor(time / day_seconds) changes (epoch-aligned: 00:00Z). The counter is in
+ * memory, so a sidecar restart can re-spend it: the default is sized for a few restarts a day (see limits.mjs).
+ */
+const budgetTransform = ({ dailyBudget, daySeconds }) => ({
+  type: 'lua', version: '2', inputs: ['cap', 'gate_output'],
+  hooks: { process: 'process' },
+  source: `local daily_budget = ${dailyBudget}
+local day_seconds = ${daySeconds}
+local day = -1
+local spent = 0
+local stopped = false
+local function size(log)
+  local n = 3
+  for k, v in pairs(log) do
+    n = n + #k + 6
+    if type(v) == "string" then
+      n = n + #v + 2
+    else
+      n = n + #tostring(v)
+    end
+  end
+  return n
+end
+function process(event, emit)
+  local today = math.floor(os.time() / day_seconds)
+  if today ~= day then
+    day = today
+    spent = 0
+    stopped = false
+  end
+  local n = size(event.log)
+  if not stopped and spent + n <= daily_budget then
+    spent = spent + n
+    event.log._ship = true
+    emit(event)
+  else
+    event.log._ship = false
+    emit(event)
+    if not stopped then
+      stopped = true
+      emit({log = {ts = os.date("!%Y-%m-%dT%H:%M:%S.000Z"), level = "warn", event = "daily_budget_reached", svc = "logship", budget_bytes = daily_budget, _ship = false}})
+    end
+  end
+end`,
+});
+
+/**
+ * The only inputs the sinks have. Both come from the filtered stream and the content-free gate counts (cap, gate_output),
+ * through the daily budget; `ship_clean` is what the budget lets through to the log service, `local_clean` is everything
+ * (the local copy keeps going after the budget is reached). Never a raw stage.
+ */
+export const SINK_INPUTS = Object.freeze({ local: Object.freeze(['local_clean']), betterstack: Object.freeze(['ship_clean']) });
 
 /**
  * Two parts, so the sidecar can run without a token. `base` is the whole boundary plus a local sink that prints the SAME
  * filtered stream as JSON lines to the container's stdout (rotated by Docker's json-file driver). `ship` adds the
  * Better Stack sink and its secret; the sidecar loads it only when a token and a valid ingest host are present.
  */
-export function buildParts({ uri = sinkUri, dataDir = '/var/lib/vector', sourceAddress = '0.0.0.0:12201', token } = {}) {
+export function buildParts({ uri = sinkUri, dataDir = '/var/lib/vector', sourceAddress = '0.0.0.0:12201', token, limits = {} } = {}) {
+  const { maxLines = DEFAULT_MAX_LINES_PER_MINUTE, dailyBudget = DEFAULT_DAILY_BYTE_BUDGET, daySeconds = DAY_SECONDS } = limits;
   const gateReasons = schema().fields.gate_reason.values;
   const base = {
     data_dir: dataDir,
@@ -164,13 +262,17 @@ if !includes(${JSON.stringify(gateReasons)}, reason) { reason = "malformed_envel
 . = {"gate_reason": reason, "count": 1}`),
       gate_reduce: { type: 'reduce', inputs: ['gate_counts'], group_by: ['gate_reason'], end_every_period_ms: 60000, expire_after_ms: 75000, flush_period_ms: 1000, merge_strategies: { count: 'sum' } },
       gate_output: remap(['gate_reduce'], `. = {"ts": format_timestamp!(now(), format: "%Y-%m-%dT%H:%M:%S%.3fZ"), "level": "warn", "event": "logship_gate_summary_total", "svc": "logship", "gate_reason": .gate_reason, "count": .count}`),
-      cap: capTransform,
+      cap: capTransform({ maxLines }),
+      budget: budgetTransform({ dailyBudget, daySeconds }),
+      budget_route: { type: 'route', inputs: ['budget'], route: { ship: '._ship == true' } },
+      ship_clean: remap(['budget_route.ship'], 'del(._ship)'),
+      local_clean: remap(['budget_route.ship', 'budget_route._unmatched'], 'del(._ship)'),
     },
-    sinks: { local: { type: 'console', inputs: [...SINK_INPUTS], target: 'stdout', encoding: { codec: 'json' } } },
+    sinks: { local: { type: 'console', inputs: [...SINK_INPUTS.local], target: 'stdout', encoding: { codec: 'json' } } },
   };
   const ship = {
     sinks: { betterstack: {
-      type: 'http', inputs: [...SINK_INPUTS], method: 'post', uri,
+      type: 'http', inputs: [...SINK_INPUTS.betterstack], method: 'post', uri,
       encoding: { codec: 'json' }, framing: { method: 'newline_delimited' }, compression: 'gzip',
       auth: { strategy: 'bearer', token: token ?? 'SECRET[bs.bs_token]' },
       batch: { max_bytes: 262144, timeout_secs: 1 },
@@ -205,15 +307,22 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     if (next === text) console.log('compose already in sync'); else { writeFileSync(output, next); console.log('compose updated'); }
     process.exit(0);
   }
-  if (!['render-vector', 'render-tests'].includes(command) || !output) throw new Error('usage: build.mjs render-tests OUTPUT | render-vector OUTPUT [LOCAL_SINK_URI] | sync-compose COMPOSE_FILE');
-  const config = buildConfig(command === 'render-vector' && option ? { uri: option, token: 'tc1978-synthetic-only' } : {});
+  if (!['render-vector', 'render-tests'].includes(command) || !output) throw new Error('usage: build.mjs render-tests OUTPUT [limited] | render-vector OUTPUT [LOCAL_SINK_URI] | sync-compose COMPOSE_FILE');
+  const limited = command === 'render-tests' && option === 'limited';
+  const { vectorTests, limitTests, limitProfile } = command === 'render-tests' ? await import('./cases.mjs') : {};
+  const config = buildConfig(command === 'render-vector' && option ? { uri: option, token: 'tc1978-synthetic-only' } : limited ? { limits: limitProfile } : {});
   if (command === 'render-tests') {
     delete config.secret;
     config.sinks.betterstack.auth = { strategy: 'bearer', token: 'tc1978-synthetic-only' };
     // Same inputs as the real sink: dropping a route from the real sink must not stay green here.
-    config.sinks = { discard: { type: 'blackhole', inputs: [...config.sinks.betterstack.inputs] } };
-    const { vectorTests } = await import('./cases.mjs');
-    config.tests = vectorTests;
+    config.sinks = { discard: { type: 'blackhole', inputs: [...config.sinks.betterstack.inputs, ...config.sinks.local.inputs] } };
+    if (limited) {
+      // `vector test` adds `message` and `timestamp` to inserted events; the real pipeline has neither, and the budget counts
+      // bytes, so the limited cases insert at `test_strip`, which removes them in front of the budget.
+      config.transforms.test_strip = remap(['cap', 'gate_output'], 'del(.message)\ndel(.timestamp)');
+      config.transforms.budget.inputs = ['test_strip'];
+    }
+    config.tests = limited ? limitTests : vectorTests;
   }
   writeFileSync(output, JSON.stringify(config, null, 2) + '\n');
 }

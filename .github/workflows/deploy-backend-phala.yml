@@ -540,6 +540,10 @@ jobs:
           # (derived from this file's keys by the sync step) carries them; setting either later is a plain redeploy.
           PHALA_ENV_BETTERSTACK_SOURCE_TOKEN: ${{ secrets.BETTERSTACK_SOURCE_TOKEN }}
           PHALA_ENV_BETTERSTACK_INGEST_HOST: ${{ vars.TINYCHAT_BETTERSTACK_INGEST_HOST }}
+          # Volume limits (repo variables, optional positive integers; a bad value is ignored and the sidecar's default
+          # applies). The budget is a HARD daily cap: at it the shipper drops logs until 00:00Z and never exceeds it.
+          PHALA_ENV_BETTERSTACK_DAILY_BYTE_BUDGET: ${{ vars.TINYCHAT_BETTERSTACK_DAILY_BYTE_BUDGET }}
+          PHALA_ENV_BETTERSTACK_MAX_LINES_PER_MINUTE: ${{ vars.TINYCHAT_BETTERSTACK_MAX_LINES_PER_MINUTE }}
         run: |
           ENV_FILE="$RUNNER_TEMP/phala-prod.env"
           DEPLOY_RUN_URL="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
@@ -551,6 +555,16 @@ jobs:
           if [ -n "${PHALA_ENV_BETTERSTACK_INGEST_HOST:-}" ] && { [[ "$PHALA_ENV_BETTERSTACK_INGEST_HOST" == *$'\n'* ]] || ! [[ "$PHALA_ENV_BETTERSTACK_INGEST_HOST" =~ ^[a-z0-9][a-z0-9.-]*\.betterstackdata\.com$ ]]; }; then
             echo "::error title=Invalid log shipping host::TINYCHAT_BETTERSTACK_INGEST_HOST must be a *.betterstackdata.com hostname"
             exit 1
+          fi
+          log_budget="${PHALA_ENV_BETTERSTACK_DAILY_BYTE_BUDGET:-}"
+          log_lines="${PHALA_ENV_BETTERSTACK_MAX_LINES_PER_MINUTE:-}"
+          if [ -n "$log_budget" ] && { [[ "$log_budget" == *$'\n'* ]] || ! [[ "$log_budget" =~ ^[1-9][0-9]{0,11}$ ]]; }; then
+            echo "::warning title=Ignored log shipping limit::TINYCHAT_BETTERSTACK_DAILY_BYTE_BUDGET is not a positive integer; the default applies"
+            log_budget=""
+          fi
+          if [ -n "$log_lines" ] && { [[ "$log_lines" == *$'\n'* ]] || ! [[ "$log_lines" =~ ^[1-9][0-9]{0,8}$ ]]; }; then
+            echo "::warning title=Ignored log shipping limit::TINYCHAT_BETTERSTACK_MAX_LINES_PER_MINUTE is not a positive integer; the default applies"
+            log_lines=""
           fi
           {
             printf '%s\n' "BACKEND_PRIVATE_KEY=$BACKEND_PRIVATE_KEY"
@@ -638,6 +652,8 @@ jobs:
             printf '%s\n' "ASSEMBLYAI_HOSTED_FRESH_INSTALL=$ASSEMBLYAI_HOSTED_FRESH_INSTALL"
             printf '%s\n' "BETTERSTACK_SOURCE_TOKEN=${PHALA_ENV_BETTERSTACK_SOURCE_TOKEN:-}"
             printf '%s\n' "BETTERSTACK_INGEST_HOST=${PHALA_ENV_BETTERSTACK_INGEST_HOST:-}"
+            printf '%s\n' "BETTERSTACK_DAILY_BYTE_BUDGET=$log_budget"
+            printf '%s\n' "BETTERSTACK_MAX_LINES_PER_MINUTE=$log_lines"
           } > "$ENV_FILE"
 
           echo "::group::Deploy environment keys"

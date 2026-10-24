@@ -8,9 +8,27 @@
       "level": "error"
     },
     {
+      "text": "Both HTTPS_CERT_FILE and HTTPS_KEY_FILE are required",
+      "code": "startup_https_files_required",
+      "component": "startup",
+      "level": "error"
+    },
+    {
+      "text": "CONNECTOR_WEBHOOK_HOST_ALLOWLIST contains no usable host",
+      "code": "startup_webhook_host_allowlist_unusable",
+      "component": "startup",
+      "level": "error"
+    },
+    {
       "text": "CONNECTOR_WEBHOOK_HOST_ALLOWLIST or CONNECTOR_WEBHOOK_PUBLIC_ORIGIN must be set",
       "code": "process_webhook_origin_missing",
       "component": "process",
+      "level": "error"
+    },
+    {
+      "text": "CONNECTOR_WEBHOOK_PUBLIC_ORIGIN must be an https origin",
+      "code": "startup_webhook_public_origin_invalid",
+      "component": "startup",
       "level": "error"
     },
     {
@@ -20,9 +38,63 @@
       "level": "error"
     },
     {
+      "text": "HTTPS certificate files were not found",
+      "code": "startup_https_files_missing",
+      "component": "startup",
+      "level": "error"
+    },
+    {
+      "text": "Invalid TRANSCRIPTION_WEBHOOK_SECRET",
+      "code": "startup_transcription_webhook_secret_invalid",
+      "component": "startup",
+      "level": "error"
+    },
+    {
+      "text": "Invalid TRANSCRIPTION_WEBHOOK_URL",
+      "code": "startup_transcription_webhook_url_invalid",
+      "component": "startup",
+      "level": "error"
+    },
+    {
+      "text": "Invalid TRANSCRIPT_DELIVERY_",
+      "code": "startup_transcript_delivery_setting_invalid",
+      "component": "startup",
+      "level": "error"
+    },
+    {
+      "text": "Invalid TRANSCRIPT_SERVER_DELIVERY_ADDRESSES",
+      "code": "startup_transcript_delivery_addresses_invalid",
+      "component": "startup",
+      "level": "error"
+    },
+    {
+      "text": "Invalid TRANSCRIPT_SERVER_DELIVERY_ENABLED",
+      "code": "startup_transcript_delivery_enabled_invalid",
+      "component": "startup",
+      "level": "error"
+    },
+    {
+      "text": "Invalid agent stream configuration:",
+      "code": "startup_agent_stream_invalid",
+      "component": "startup",
+      "level": "error"
+    },
+    {
       "text": "Invalid meeting diagnostic foreground configuration: set both endpoint and API key, or neither",
       "code": "process_meeting_diagnostic_config_invalid",
       "component": "process",
+      "level": "error"
+    },
+    {
+      "text": "LEDGER_AUTHORITATIVE=true requires both",
+      "code": "startup_ledger_authoritative_needs_service",
+      "component": "startup",
+      "level": "error"
+    },
+    {
+      "text": "LEDGER_OUTAGE_POLICY must be one of",
+      "code": "startup_ledger_outage_policy_invalid",
+      "component": "startup",
       "level": "error"
     },
     {
@@ -48,6 +120,12 @@
       "code": "process_ready_https",
       "component": "process",
       "level": "info"
+    },
+    {
+      "text": "Transcript delivery requires TRANSCRIPTION_API_URL",
+      "code": "startup_transcript_delivery_needs_api",
+      "component": "startup",
+      "level": "error"
     },
     {
       "text": "[agent-chat] failed to resolve model rates:",
@@ -638,6 +716,60 @@
       "level": "error"
     },
     {
+      "text": "[startup] FATAL:",
+      "code": "startup_fatal_config",
+      "component": "startup",
+      "level": "error"
+    },
+    {
+      "text": "[startup] FATAL: ASSEMBLYAI_",
+      "code": "startup_assemblyai_config_invalid",
+      "component": "startup",
+      "level": "error"
+    },
+    {
+      "text": "[startup] FATAL: CONNECTOR_CONTENT_MASTER",
+      "code": "startup_content_master_invalid",
+      "component": "startup",
+      "level": "error"
+    },
+    {
+      "text": "[startup] FATAL: CONNECTOR_CREDENTIAL_MASTER",
+      "code": "startup_credential_master_invalid",
+      "component": "startup",
+      "level": "error"
+    },
+    {
+      "text": "[startup] FATAL: FIREFLIES_OAUTH_",
+      "code": "startup_fireflies_oauth_config_missing",
+      "component": "startup",
+      "level": "error"
+    },
+    {
+      "text": "[startup] FATAL: FRONTEND_URL is required",
+      "code": "startup_frontend_url_required",
+      "component": "startup",
+      "level": "error"
+    },
+    {
+      "text": "[startup] FATAL: LOG_HASH_SALT",
+      "code": "startup_log_hash_salt_weak",
+      "component": "startup",
+      "level": "error"
+    },
+    {
+      "text": "[startup] FATAL: PRIVATE_CLOUD_TRANSCRIPTION_",
+      "code": "startup_private_cloud_config_invalid",
+      "component": "startup",
+      "level": "error"
+    },
+    {
+      "text": "[startup] FATAL: WEBHOOK_HMAC_MASTER",
+      "code": "startup_webhook_master_weak",
+      "component": "startup",
+      "level": "error"
+    },
+    {
       "text": "[startup] LEDGER_SERVICE_URL / LEDGER_SERVICE_SECRET not set \u2014",
       "code": "startup_ledger_service_url_ledger_service_secret_not_set",
       "component": "startup",
@@ -714,6 +846,12 @@
       "code": "transcriber_lookup_identity_mismatch",
       "component": "transcriber",
       "level": "warn"
+    },
+    {
+      "text": "google oauth callback origin",
+      "code": "startup_google_callback_origin_invalid",
+      "component": "startup",
+      "level": "error"
     }
   ]
 }

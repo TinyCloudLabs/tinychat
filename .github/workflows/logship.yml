@@ -2,7 +2,7 @@ name: Log shipper
 
 # TC-1978: the Vector config embedded in docker-compose.phala.yml is generated from log-shipper/. This lane runs it
 # with the real, checksum-pinned Vector binary: the config cases (`vector test`), a UDP-to-HTTP and local-only delivery check,
-# the per-window cap check and `vector validate` for both sidecar modes. The contract test for the compose and the deploy workflow runs in
+# the per-window cap check, the volume limit cases and the daily budget check, and `vector validate` for both sidecar modes. The contract test for the compose and the deploy workflow runs in
 # backend.yml (backend/src/__tests__/logship-contract.test.ts).
 
 on:
@@ -29,7 +29,7 @@ jobs:
   vector:
     name: Vector config cases
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -49,10 +49,18 @@ jobs:
           export HOME="$TC1978_WORK"
           node log-shipper/build.mjs render-tests "$TC1978_WORK/tests.json"
           "$TC1978_WORK/vector-x86_64-unknown-linux-gnu/bin/vector" test "$TC1978_WORK/tests.json"
+      - name: Volume limit cases (whole-stream cap, daily budget)
+        run: |
+          export HOME="$TC1978_WORK"
+          node log-shipper/build.mjs render-tests "$TC1978_WORK/limited.json" limited
+          "$TC1978_WORK/vector-x86_64-unknown-linux-gnu/bin/vector" test "$TC1978_WORK/limited.json"
       - name: UDP-to-HTTP delivery and leak canaries
         run: TMPDIR="$TC1978_WORK" node log-shipper/native-check.mjs "$TC1978_WORK/vector-x86_64-unknown-linux-gnu/bin/vector"
       - name: Per-window caps and dropped counts
         run: TMPDIR="$TC1978_WORK" node log-shipper/cap-check.mjs "$TC1978_WORK/vector-x86_64-unknown-linux-gnu/bin/vector"
+      - name: Daily budget with a shortened day (stops shipping, local copy continues, resets at the day boundary)
+        timeout-minutes: 5
+        run: TMPDIR="$TC1978_WORK" node log-shipper/budget-check.mjs "$TC1978_WORK/vector-x86_64-unknown-linux-gnu/bin/vector"
       - name: Validate both sidecar modes (base alone, and base plus ship config) without contacting the sink
         run: |
           export HOME="$TC1978_WORK"

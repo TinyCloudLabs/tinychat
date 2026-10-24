@@ -1,8 +1,11 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { load as loadYaml } from "js-yaml";
 import * as build from "../../../log-shipper/build.mjs";
+import { estimateBytes } from "../../../log-shipper/limits.mjs";
+import { reviewedCallSites, scanCallSites } from "../../../log-shipper/scan.mjs";
 
 // TC-1978. Never touch a real home: HOME and the tool homes point at a throwaway directory for the whole file.
 const scratch = mkdtempSync("/var/tmp/tc1978.");
@@ -76,6 +79,8 @@ describe("log shipping sidecar (TC-1978)", () => {
   test("the token and host reach only the sidecar, optionally, and never the backend", () => {
     expect(vector.environment?.BETTERSTACK_SOURCE_TOKEN).toBe("${BETTERSTACK_SOURCE_TOKEN:-}");
     expect(vector.environment?.BETTERSTACK_INGEST_HOST).toBe("${BETTERSTACK_INGEST_HOST:-}");
+    expect(vector.environment?.BETTERSTACK_DAILY_BYTE_BUDGET).toBe("${BETTERSTACK_DAILY_BYTE_BUDGET:-}");
+    expect(vector.environment?.BETTERSTACK_MAX_LINES_PER_MINUTE).toBe("${BETTERSTACK_MAX_LINES_PER_MINUTE:-}");
     expect(JSON.stringify(backend)).not.toContain("BETTERSTACK");
     expect(JSON.stringify(compose.services["dstack-ingress"])).not.toContain("BETTERSTACK");
     // The token is written to a 0600 file and unset before vector starts; it never enters either config.
@@ -149,15 +154,19 @@ describe("log shipping sidecar (TC-1978)", () => {
       for (const input of base.transforms[stage]?.inputs ?? []) ancestors(input, seen);
       return seen;
     };
+    expect(sinks.local!.inputs).toEqual(["local_clean"]);
+    expect(sinks.betterstack!.inputs).toEqual(["ship_clean"]);
+    expect(build.SINK_INPUTS).toEqual({ local: ["local_clean"], betterstack: ["ship_clean"] });
     for (const [name, sink] of Object.entries(sinks)) {
-      expect(sink.inputs, name).toEqual(["cap", "gate_output"]);
-      expect(sink.inputs, name).toEqual(build.SINK_INPUTS);
       const reached = new Set(sink.inputs.flatMap((input) => [...ancestors(input)]));
-      // The filtered stream passes the allow-list and the guard; the counts come from the content-free gate counter.
-      expect(reached.has("allowlist"), name).toBe(true);
-      expect(reached.has("guard"), name).toBe(true);
-      expect(reached.has("gate_counts"), name).toBe(true);
+      // Both sinks sit behind the budget, the cap, the guard and the allow-list; the counts come from the content-free gate counter.
+      for (const stage of ["budget", "cap", "guard", "allowlist", "gate_counts"]) expect(reached.has(stage), `${name} <- ${stage}`).toBe(true);
+      for (const raw of ["gelf_in", "gelf_envelope", "logship_gate", "gate_route"]) expect(sink.inputs, name).not.toContain(raw);
     }
+    expect(base.transforms.budget!.inputs).toEqual(["cap", "gate_output"]);
+    expect(base.transforms.ship_clean!.inputs).toEqual(["budget_route.ship"]);
+    expect(base.transforms.local_clean!.inputs).toEqual(["budget_route.ship", "budget_route._unmatched"]);
+    expect((base.transforms.budget_route as unknown as { route: Record<string, string> }).route).toEqual({ ship: "._ship == true" });
     expect(base.transforms.cap!.inputs).toEqual(["guard"]);
     expect(base.transforms.guard!.inputs).toEqual(["allowlist"]);
     expect(base.transforms.gate_output!.inputs).toEqual(["gate_reduce"]);
@@ -179,6 +188,20 @@ describe("deploy workflow carries the log shipping settings (TC-1978)", () => {
     expect(deployStep.run).toContain(`printf '%s\\n' "BETTERSTACK_INGEST_HOST=\${PHALA_ENV_BETTERSTACK_INGEST_HOST:-}"`);
     expect(deployStep.run).toContain("must be a *.betterstackdata.com hostname");
     expect(deployStep.run!.indexOf("must be a *.betterstackdata.com hostname")).toBeLessThan(deployStep.run!.indexOf('} > "$ENV_FILE"'));
+  });
+
+  test("repo variables -> PHALA_ENV_ -> sealed envs for the two volume limits, validated before they are written, bad values ignored", () => {
+    expect(deployStep.env?.PHALA_ENV_BETTERSTACK_DAILY_BYTE_BUDGET).toBe("${{ vars.TINYCHAT_BETTERSTACK_DAILY_BYTE_BUDGET }}");
+    expect(deployStep.env?.PHALA_ENV_BETTERSTACK_MAX_LINES_PER_MINUTE).toBe("${{ vars.TINYCHAT_BETTERSTACK_MAX_LINES_PER_MINUTE }}");
+    expect(deployStep.run).toContain(`printf '%s\\n' "BETTERSTACK_DAILY_BYTE_BUDGET=$log_budget"`);
+    expect(deployStep.run).toContain(`printf '%s\\n' "BETTERSTACK_MAX_LINES_PER_MINUTE=$log_lines"`);
+    expect(deployStep.run).toContain("^[1-9][0-9]{0,11}$");
+    expect(deployStep.run).toContain("^[1-9][0-9]{0,8}$");
+    // A bad value is a warning and the default applies; it never fails the deploy.
+    expect(deployStep.run).toContain('log_budget=""');
+    expect(deployStep.run).toContain('log_lines=""');
+    const ignored = deployStep.run!.indexOf("Ignored log shipping limit");
+    expect(deployStep.run!.slice(ignored, ignored + 200)).not.toContain("exit 1");
   });
 
   test("allowed_envs is derived from the env file's keys, and both keys are always among them, even with the secret and variable unset", () => {
@@ -233,8 +256,8 @@ describe("log shipper schema (TC-1978)", () => {
     expect(new Set(registry.map((entry) => entry.text)).size).toBe(registry.length);
   });
 
-  test("the declared events are exactly the three the shipper can emit, and typed attributes never collide with structural keys", () => {
-    expect(schema.events).toEqual(["backend_log", "logship_gate_summary_total", "log_dropped"]);
+  test("the declared events are exactly the five the shipper can emit, and typed attributes never collide with structural keys", () => {
+    expect(schema.events).toEqual(["backend_log", "logship_gate_summary_total", "log_dropped", "log_stream_dropped", "daily_budget_reached"]);
     for (const key of [...classes.code, ...classes.int, ...classes.bool, ...Object.keys(classes.enum)]) {
       if (structural.has(key)) continue;
       expect(["svc", "level", "ts", "event", "component", "event_code"]).not.toContain(key);
@@ -250,5 +273,93 @@ describe("log shipper schema (TC-1978)", () => {
     const forbidden = /(^|_)(id|ids|address|addr|did|token|secret|key|email|url|uri|message|msg|text|body|name|error|err|path|aid|mid|tid|sig|cid|account|user)(_|$)/;
     const declared = Object.keys(schema.fields).filter((key) => forbidden.test(key) && !["event_code", "error_class"].includes(key));
     expect(declared).toEqual([]);
+  });
+});
+
+describe("volume limits (TC-1978)", () => {
+  const defaults = { budget: build.DEFAULT_DAILY_BYTE_BUDGET as number, lines: build.DEFAULT_MAX_LINES_PER_MINUTE as number };
+
+  // Runs the compose entrypoint for real, with `vector` replaced by a stub that only records its arguments.
+  function runEntrypoint(env: Record<string, string>) {
+    const dir = mkdtempSync(join(scratch, "ep-"));
+    const state = join(dir, "vec");
+    mkdirSync(state);
+    mkdirSync(join(dir, "bin"));
+    writeFileSync(join(dir, "bin", "vector"), '#!/bin/sh\nfor a in "$@"; do printf "%s\\n" "$a"; done\n');
+    chmodSync(join(dir, "bin", "vector"), 0o755);
+    const script = vector.entrypoint!.at(-1)!.replaceAll("$$", "$").replaceAll("/var/lib/vector", state);
+    const result = spawnSync("/bin/sh", ["-ec", script], {
+      env: { PATH: `${join(dir, "bin")}:/usr/bin:/bin`, VECTOR_CONFIG_JSON: vector.environment!.VECTOR_CONFIG_JSON!.replaceAll("$$", "$"), VECTOR_SHIP_JSON: vector.environment!.VECTOR_SHIP_JSON!.replaceAll("$$", "$"), ...env },
+      encoding: "utf8",
+    });
+    const runtime = JSON.parse(readFileSync(join(state, "runtime.json"), "utf8")) as { transforms: { budget: { source: string }; cap: { source: string } } };
+    return {
+      status: result.status,
+      stdout: result.stdout,
+      budget: Number(/local daily_budget = (\d+)/.exec(runtime.transforms.budget.source)![1]),
+      lines: Number(/local max_lines = (\d+)/.exec(runtime.transforms.cap.source)![1]),
+    };
+  }
+
+  test("the shell is pinned to `sh -ec`: no trace flag could echo the environment into the kept local log", () => {
+    expect(vector.entrypoint!.slice(0, 2)).toEqual(["/bin/sh", "-ec"]);
+    const script = vector.entrypoint!.at(-1)!;
+    expect(script).not.toMatch(/\bset\s+-[a-zA-Z]*[xv]|xtrace|\bsh\s+-[a-z]*x/);
+  });
+
+  test("with neither limit set the baked-in defaults apply, and their numbers live only in limits.mjs", () => {
+    const run = runEntrypoint({});
+    expect(run.status).toBe(0);
+    expect({ budget: run.budget, lines: run.lines }).toEqual({ budget: defaults.budget, lines: defaults.lines });
+    const script = vector.entrypoint!.at(-1)!;
+    expect(script).not.toContain(String(defaults.budget));
+    expect(script).not.toMatch(new RegExp(`\\b${defaults.lines}\\b`));
+    expect(defaults.budget).toBe(20_000_000);
+  });
+
+  test("a valid positive integer replaces a limit, up to 12 digits for the budget and 9 for lines", () => {
+    expect(runEntrypoint({ BETTERSTACK_DAILY_BYTE_BUDGET: "50000000", BETTERSTACK_MAX_LINES_PER_MINUTE: "600" })).toMatchObject({ budget: 50_000_000, lines: 600 });
+    expect(runEntrypoint({ BETTERSTACK_DAILY_BYTE_BUDGET: "999999999999", BETTERSTACK_MAX_LINES_PER_MINUTE: "999999999" })).toMatchObject({ budget: 999_999_999_999, lines: 999_999_999 });
+    expect(runEntrypoint({ BETTERSTACK_DAILY_BYTE_BUDGET: "1" })).toMatchObject({ budget: 1, lines: defaults.lines });
+  });
+
+  test("any bad value falls back to the default: signs, zero, leading zeros, decimals, exponents, text, spaces, newlines, too many digits, sed syntax", () => {
+    const bad = ["0", "00", "007", "-5", "+5", "1.5", "1e9", "abc", " 12", "12 ", "5\n6", "", "1234567890123", "1/;s/x/y/", "1;rm", "$(id)", "`id`", "99999999999999999999"];
+    for (const value of bad) {
+      const run = runEntrypoint({ BETTERSTACK_DAILY_BYTE_BUDGET: value, BETTERSTACK_MAX_LINES_PER_MINUTE: value });
+      expect(run.status, JSON.stringify(value)).toBe(0);
+      expect({ budget: run.budget, lines: run.lines }, JSON.stringify(value)).toEqual({ budget: defaults.budget, lines: defaults.lines });
+    }
+    // 10 digits is valid for the budget and too many for lines.
+    expect(runEntrypoint({ BETTERSTACK_DAILY_BYTE_BUDGET: "1234567890", BETTERSTACK_MAX_LINES_PER_MINUTE: "1234567890" })).toMatchObject({ budget: 1_234_567_890, lines: defaults.lines });
+  });
+
+  test("limits do not depend on the token or the host: local-only mode still applies them, and ship.json is loaded only with both", () => {
+    const local = runEntrypoint({ BETTERSTACK_DAILY_BYTE_BUDGET: "7000000" });
+    expect(local.budget).toBe(7_000_000);
+    expect(local.stdout).not.toContain("ship.json");
+    const shipping = runEntrypoint({ BETTERSTACK_SOURCE_TOKEN: "synthetic", BETTERSTACK_INGEST_HOST: "s1.us-west-2a.betterstackdata.com", BETTERSTACK_DAILY_BYTE_BUDGET: "7000000" });
+    expect(shipping.stdout).toContain("ship.json");
+    expect(shipping.budget).toBe(7_000_000);
+  });
+
+  test("the budget estimate never under-counts the JSON the sink sends", () => {
+    const samples: Record<string, string | number | boolean>[] = [
+      { ts: "2026-10-24T00:00:00.000Z", level: "warn", event: "logship_gate_summary_total", svc: "logship", gate_reason: "oversized", count: 3 },
+      { ts: "2026-10-24T00:00:00.000Z", level: "info", event: "backend_log", svc: "backend", component: "transcript-delivery", event_code: "structured", op: "deliver", result: "written", ms: 12, alert: true },
+      { ts: "2026-10-24T00:00:00.000Z", level: "error", event: "backend_log", svc: "backend", component: "process", event_code: "error_line", error_class: "TypeError" },
+      { ts: "2026-10-24T00:00:00.000Z", level: "warn", event: "log_dropped", svc: "backend", component: "chat", event_code: "structured", dropped: 9007199254740991, window_s: 60 },
+      { ts: "2026-10-24T00:00:00.000Z", level: "warn", event: "daily_budget_reached", svc: "logship", budget_bytes: 20000000 },
+    ];
+    for (const sample of samples) expect(estimateBytes(sample)).toBeGreaterThanOrEqual(Buffer.byteLength(`${JSON.stringify(sample)}\n`));
+  });
+
+  test("the reviewed list of shape-checked call sites is complete: a new key=${expression} in backend/src fails until it is reviewed", () => {
+    // The sink checks code and integer values by shape. A call site that interpolates an identifier or a name into one of those
+    // keys would ship it when it has the right shape, so every such interpolation is listed, reviewed and frozen here. To add
+    // one: review the expression, then `node log-shipper/scan.mjs --write`.
+    const reviewed = new Set<string>(reviewedCallSites());
+    const unreviewed = (scanCallSites() as string[]).filter((entry) => !reviewed.has(entry));
+    expect(unreviewed).toEqual([]);
   });
 });
