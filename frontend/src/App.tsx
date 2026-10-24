@@ -32,6 +32,7 @@ import { withEncryptionDecryptGrant } from "./lib/connectors/encryptionGrant";
 import { replicationConfigPatch, startReplicationFill } from "./lib/replication/replicationClient";
 import { rememberReplicationPrincipal } from "./lib/replication/replicationCopyMarker";
 import { purgeReplicaCopyWhenOffOnce } from "./lib/replication/replicationOffPurge";
+import { replicationRestorePatch } from "./lib/replication/replicationRestore";
 import { replicationPrincipalFor } from "./lib/replication/replicationOptIn";
 import { clientHasReplication, signOutReplicaAware } from "./lib/replication/replicationSignOut";
 import { uploadRunner } from "./lib/audioUpload";
@@ -573,7 +574,9 @@ export function App() {
             autoCreateSpace: false,
             tinycloudHosts: TINYCLOUD_HOSTS,
             manifest,
-            ...(LOCAL_VALIDATION ? {} : await replicationConfigPatch(replicationPrincipalFor(storedAddress))),
+            // ON: the replication option plus a read-only account provider (so the restore has a signer
+            // to ask); OFF: {} (no provider, exactly as without replication). See replicationRestore.ts.
+            ...(LOCAL_VALIDATION ? {} : await replicationRestorePatch(storedAddress)),
           }),
       });
       switch (restored.kind) {
