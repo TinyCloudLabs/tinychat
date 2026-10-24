@@ -426,7 +426,7 @@ jobs:
           AGENT_CHAT_BUDGET_PREFLIGHT: ${{ secrets.AGENT_CHAT_BUDGET_PREFLIGHT || vars.AGENT_CHAT_BUDGET_PREFLIGHT }}
           # Exo capabilities default OFF: only exactly "true" mounts the wake route.
           EXO_CAPABILITIES_ENABLED: ${{ secrets.EXO_CAPABILITIES_ENABLED || vars.EXO_CAPABILITIES_ENABLED }}
-          # Ledger authority defaults OFF until the staged cutover is explicitly enabled.
+          # Ledger authority is read from the LEDGER_AUTHORITATIVE secret or variable; with neither set it is false.
           LEDGER_SERVICE_URL: ${{ secrets.LEDGER_SERVICE_URL || vars.LEDGER_SERVICE_URL }}
           LEDGER_SERVICE_SECRET: ${{ secrets.LEDGER_SERVICE_SECRET }}
           LEDGER_AUTHORITATIVE: ${{ secrets.LEDGER_AUTHORITATIVE || vars.LEDGER_AUTHORITATIVE || 'false' }}
