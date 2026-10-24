@@ -87,7 +87,6 @@ interface Harness {
   tokens: FakeTokenStore;
   queue: FakeQueue;
   limiters: ConnectorWebhookLimiters;
-  kicks: Array<{ source: string; address: string }>;
 }
 
 function createHarness(
@@ -96,7 +95,6 @@ function createHarness(
   const tokens = new FakeTokenStore();
   const queue = new FakeQueue();
   const limiters = new ConnectorWebhookLimiters(options.limiter);
-  const kicks: Array<{ source: string; address: string }> = [];
   const app = express();
   // Mirrors index.ts exactly: trust exactly one ingress hop, so req.ip is the last XFF entry.
   app.set("trust proxy", 1);
@@ -110,9 +108,6 @@ function createHarness(
         tokens,
         queue,
         limiters,
-        onDelivery: (input) => {
-          kicks.push(input);
-        },
       }),
     );
   }
@@ -139,7 +134,7 @@ function createHarness(
         .json({ error: "internal_error" });
     },
   );
-  return { app, tokens, queue, limiters, kicks };
+  return { app, tokens, queue, limiters };
 }
 
 async function withServer<T>(
@@ -314,8 +309,6 @@ describe("POST /api/connectors/webhooks/:source/:token", () => {
       meetingId: "01JHAPPY0000000000A",
       kind: "transcript",
     });
-    // Fast-ack: the drain kick is fire-and-forget AFTER the response.
-    expect(h.kicks).toEqual([{ source: SOURCE, address: ADDRESS }]);
   });
 
   test("the legacy body shape is accepted (and skips the freshness check)", async () => {
@@ -814,7 +807,6 @@ describe("connector webhook — payload rows (§4.5/§4.6)", () => {
       capture.restore();
     }
     expect(h.queue.enqueued).toHaveLength(0);
-    expect(h.kicks).toHaveLength(0);
     const lines = capture.lines;
     expect(lines.some((l) => l.includes("result=queued"))).toBe(false);
     expect(lines.some((l) => l.includes("op=enqueue-error"))).toBe(true);
@@ -927,7 +919,6 @@ describe("connector webhook — payload rows (§4.5/§4.6)", () => {
       jitter: () => 0,
     });
     const limiters = new ConnectorWebhookLimiters();
-    const kicks: Array<{ source: string; address: string }> = [];
     const app = express();
     app.set("trust proxy", 1);
     app.post(
@@ -939,9 +930,6 @@ describe("connector webhook — payload rows (§4.5/§4.6)", () => {
         tokens,
         queue,
         limiters,
-        onDelivery: (input) => {
-          kicks.push(input);
-        },
       }),
     );
     // index.ts's terminal error handler, same shape as `createHarness` uses.
@@ -984,10 +972,9 @@ describe("connector webhook — payload rows (§4.5/§4.6)", () => {
       capture.restore();
     }
     // The 202 is gated on a durable write. The write never landed, so the store must be empty,
-    // no `result=queued` line reaches the operator log, the drain kick must not fire, and the
+    // no `result=queued` line reaches the operator log, and the
     // enqueue-error line must be visible.
     expect(store.has(`webhooks/pending/${SOURCE}/${ADDRESS}`)).toBe(false);
-    expect(kicks).toHaveLength(0);
     expect(capture.lines.some((l) => l.includes("result=queued"))).toBe(false);
     expect(capture.lines.some((l) => l.includes("op=enqueue-error"))).toBe(
       true,

@@ -35,32 +35,12 @@ const REQUIRED_KEYS = [
   // The pinned public callback origin. Rides the same dance: dropped at injection it falls
   // back to the request's Host header, which is exactly the derivation it exists to replace.
   "CONNECTOR_WEBHOOK_PUBLIC_ORIGIN",
-  // W9's Host-header allowlist on the public delivery route (backend-ingest plan §10; findings
-  // §6 control 6) and W9/D4's single-instance seat id. Both ride the dance for the same
-  // allowed_envs freeze reason as the ingest vars below: a var first added on the deploy that
-  // means to use it is a var that silently never arrives — and here that would mean either the
-  // host check silently degrading to "derived", or an operator's pinned instance id vanishing so
-  // a redeploy waits out the lease TTL with ingest stopped.
-  "CONNECTOR_WEBHOOK_HOST_ALLOWLIST",
-  "CONNECTOR_INGEST_INSTANCE_ID",
-  // W1's backend-ingest flag (backend-ingest plan §8.1 / §12.1). Dark by default and NOT
-  // enabled anywhere shared — but it has to ride the dance NOW, because `allowed_envs` is
-  // frozen at CVM creation: a var first added on the deploy that means to turn the feature on
-  // is a var that silently never arrives.
-  "CONNECTOR_BACKEND_INGEST_ENABLED",
-  // W2's custody vars (backend-ingest plan §6.2). Same freeze argument as the flag above: they
-  // are only READ when the flag is armed, but a var first added on the deploy that means to arm
-  // it is a var that silently never arrives — and here "never arrives" means the backend refuses
-  // to boot with the flag on, or (worse) that the credential master changes across a redeploy
-  // and every stored credential becomes undecryptable.
+  // Calendar autojoin's credential custody master (backend-ingest plan §6.2). It rides the dance
+  // because `allowed_envs` is frozen at CVM creation: a var first added on the deploy that means
+  // to use it is a var that silently never arrives — and here "never arrives" means the
+  // credential master changes across a redeploy and every stored credential becomes
+  // undecryptable.
   "CONNECTOR_CREDENTIAL_MASTER",
-  // W4's content master (backend-ingest plan §8.1 W4 / DECISIONS D3). Same freeze argument, and
-  // the same orphaning failure one invariant further along: lose this across a redeploy and
-  // every stored MEETING becomes undecryptable, not just every credential.
-  "CONNECTOR_CONTENT_MASTER",
-  "FIREFLIES_OAUTH_CLIENT_ID",
-  "FIREFLIES_OAUTH_CLIENT_SECRET",
-  "FIREFLIES_OAUTH_REDIRECT_URI",
   // WP-A's Google Meet OAuth proxy (gmeet plan §6 WP-A / §11). Same freeze argument as every
   // var above, and here the dark state is the ABSENCE of the repo secrets rather than an
   // explicit 'false': unset ⇒ empty ⇒ flag off ⇒ the routes never mount. That is the intended
@@ -77,18 +57,15 @@ const REQUIRED_KEYS = [
 ] as const;
 
 /**
- * The secrets §7.6 requires a CSPRNG generation line for. `CONNECTOR_CREDENTIAL_MASTER` and
- * `CONNECTOR_CONTENT_MASTER` join them under the same rule (backend-ingest §6.2, §8.1 W4):
- * generated the same way, never reused (each other included), never sampled in this file. The
- * Fireflies OAuth client secret is NOT here — it is issued by the provider, so there is nothing
- * for us to generate.
+ * The secrets §7.6 requires a CSPRNG generation line for. `CONNECTOR_CREDENTIAL_MASTER` joins
+ * them under the same rule (backend-ingest §6.2): generated the same way, never reused, never
+ * sampled in this file.
  */
 const SECRET_KEYS = [
   "WEBHOOK_HMAC_MASTER",
   "WEBHOOK_HMAC_MASTER_PREV",
   "LOG_HASH_SALT",
   "CONNECTOR_CREDENTIAL_MASTER",
-  "CONNECTOR_CONTENT_MASTER",
 ] as const;
 
 function readWorkflow(): DeployWorkflow {
@@ -150,23 +127,6 @@ describe("Phala backend deploy connector-webhook environment", () => {
     expect(String(writer?.env?.CONNECTOR_WEBHOOKS_ENABLED)).toContain("'false'");
     expect(writer?.run).toContain('"CONNECTOR_WEBHOOKS_ENABLED=${CONNECTOR_WEBHOOKS_ENABLED:-false}"');
     expect(backendComposeEnv().CONNECTOR_WEBHOOKS_ENABLED).toBe("${CONNECTOR_WEBHOOKS_ENABLED:-false}");
-  });
-
-  test("the backend-ingest flag ships dark in both the deploy env and the compose file", () => {
-    const writer = deployEnvWriter(readWorkflow());
-
-    // Dark DEFAULT, and dark at every layer: this flag reverses two shipped invariants for the
-    // addresses in its cohort (plan §11), so "unset" must never read as "on" anywhere.
-    expect(String(writer?.env?.CONNECTOR_BACKEND_INGEST_ENABLED)).toContain("'false'");
-    expect(writer?.run).toContain(
-      '"CONNECTOR_BACKEND_INGEST_ENABLED=${CONNECTOR_BACKEND_INGEST_ENABLED:-false}"',
-    );
-    expect(backendComposeEnv().CONNECTOR_BACKEND_INGEST_ENABLED).toBe(
-      "${CONNECTOR_BACKEND_INGEST_ENABLED:-false}",
-    );
-    expect(
-      /^CONNECTOR_BACKEND_INGEST_ENABLED=(.*)$/m.exec(envExample())?.[1],
-    ).toBe("false");
   });
 
   /**
@@ -292,7 +252,7 @@ describe("Phala backend deploy connector-webhook environment", () => {
     // assigns one of these names a value the strength gate would ACCEPT. A sample
     // secret that boots is a sample secret that reaches production.
     for (const match of contents.matchAll(
-      /^#?\s*(WEBHOOK_HMAC_MASTER(?:_PREV)?|LOG_HASH_SALT|CONNECTOR_(?:CREDENTIAL|CONTENT)_MASTER)=(.+)$/gm,
+      /^#?\s*(WEBHOOK_HMAC_MASTER(?:_PREV)?|LOG_HASH_SALT|CONNECTOR_CREDENTIAL_MASTER)=(.+)$/gm,
     )) {
       expect(() => assertStrongSecret(match[1], match[2], { quiet: true })).toThrow();
     }

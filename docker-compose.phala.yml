@@ -71,30 +71,12 @@ services:
       # The public HTTPS origin of every minted callback URL. Pinned, not derived from the
       # request's Host header: a wrong host or scheme mints a webhook that never delivers.
       CONNECTOR_WEBHOOK_PUBLIC_ORIGIN: ${CONNECTOR_WEBHOOK_PUBLIC_ORIGIN:-}
-      # W9 host-header allowlist on the public delivery route (findings §6 control 6). Unset =
-      # derived from the origin above; `*` disables it for an ingress that rewrites Host.
-      CONNECTOR_WEBHOOK_HOST_ALLOWLIST: ${CONNECTOR_WEBHOOK_HOST_ALLOWLIST:-}
-      # W9 / D4: the single-instance ingest seat. Unset = a random per-process id; pin it so a
-      # redeploy of the same logical instance reclaims its own lease without waiting out the TTL.
-      CONNECTOR_INGEST_INSTANCE_ID: ${CONNECTOR_INGEST_INSTANCE_ID:-}
-      # Backend-owned ingestion (W1) — dark by default. true only ARMS the feature; which
-      # addresses it applies to is a separate per-address cohort allowlist in the backend's own
-      # config KV. Every non-cohort address keeps the shipped browser-drain path exactly.
-      CONNECTOR_BACKEND_INGEST_ENABLED: ${CONNECTOR_BACKEND_INGEST_ENABLED:-false}
-      # W2 credential custody. Required when backend ingestion is ARMED and for Calendar autojoin;
-      # it wraps stored Fireflies and Google credentials. An invalid configured key fails boot;
-      # an absent key keeps Calendar autojoin unavailable and does not affect browser-only Google.
+      # Calendar autojoin credential custody; it wraps stored Google credentials.
+      # An invalid configured key fails boot; an absent key keeps Calendar autojoin unavailable
+      # and does not affect browser-only Google.
       # Its own `openssl rand -base64 32` value — reusing WEBHOOK_HMAC_MASTER is a hard error.
       # It MUST survive CVM redeploys: a redeploy that strips it orphans every stored credential.
       CONNECTOR_CREDENTIAL_MASTER: ${CONNECTOR_CREDENTIAL_MASTER:-}
-      # W4 content custody. Same gate, one invariant further: it wraps every stored MEETING.
-      # Its own `openssl rand -base64 32` value — reusing either master above is a hard error.
-      # It MUST survive CVM redeploys: a redeploy that strips it orphans every stored meeting.
-      CONNECTOR_CONTENT_MASTER: ${CONNECTOR_CONTENT_MASTER:-}
-      # The registered Fireflies OAuth app (custody branch b1). Required with the flag armed.
-      FIREFLIES_OAUTH_CLIENT_ID: ${FIREFLIES_OAUTH_CLIENT_ID:-}
-      FIREFLIES_OAUTH_CLIENT_SECRET: ${FIREFLIES_OAUTH_CLIENT_SECRET:-}
-      FIREFLIES_OAUTH_REDIRECT_URI: ${FIREFLIES_OAUTH_REDIRECT_URI:-}
       # Google Meet OAuth proxy (WP-A) — dark by default: unset flag = the five
       # /api/connectors/google/oauth/* routes are never mounted (404). Armed, the three client
       # vars below are mandatory and the backend refuses to build the router without them.

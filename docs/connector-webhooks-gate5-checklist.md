@@ -17,15 +17,15 @@ Fireflies drops a delivery that does not get a 2xx quickly; Listen's live bug is
 that blocked the response for minutes on 429 retries (§9 anti-pattern 2). Two tests, deliberately
 at different layers:
 
-- `backend/src/__tests__/connector-backend-ingest.test.ts` — `[delta-07]`: a 30 s **nudge** does
-  not delay the 202. The seam itself cannot couple.
+- `[delta-07]`: a 30 s **nudge** does not delay the 202 (the nudge seam and its test were
+  removed together with backend ingestion).
 - `backend/src/__tests__/connector-gate5-hardening.test.ts` — end to end with the **real fetch
   worker** registered and the Fireflies fetcher stubbed at 30 s: the 202 lands in well under 10 s,
   the item is already durably queued when it does, and the upstream fetch is provably still open.
 
 The 202 waits on the durable enqueue and on nothing to its right (plan §5.2). The burst half of
 the same window — a same-address 50-delivery burst still acking < 10 s each — is `[delta-08]` in
-`backend/src/__tests__/connector-backend-ingest.test.ts`.
+`backend/src/__tests__/connector-queue-burst.test.ts`.
 
 ## 2. `X-Hub-Signature` HMAC-SHA256 over the RAW body — **DONE (regression held)**
 
@@ -95,7 +95,7 @@ dance (`backend/src/__tests__/webhook-deploy-env.test.ts`).
 front of it is worth. The control removes untargeted surface: raw-IP probing, a stale domain still
 pointed at the CVM, a rebinding attempt. Nothing here claims more.
 
-Evidence: `backend/src/__tests__/connector-host-allowlist.test.ts`.
+Evidence: the host guard and its test were removed together with backend ingestion.
 
 ## 6. Accept-path defense-in-depth carried, unchanged — **VERIFIED, not modified**
 
@@ -127,8 +127,7 @@ plan §9 row 3):
 enforced in-process by W3's worker seat and cross-process by a durable lease
 (`webhooks/ingest/instance-lease`). A second instance refuses the seat and stays provably inert; an
 unreadable lease refuses too. Constraint, its blast radius, and the four things that must change to
-lift it: `docs/connector-webhooks-single-instance.md`. Evidence:
-`backend/src/__tests__/connector-serialization-guard.test.ts`.
+lift it: the document and its guard test were removed together with backend ingestion.
 
 ---
 

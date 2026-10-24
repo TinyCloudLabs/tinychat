@@ -571,8 +571,8 @@ export class ConnectorDrainWorker {
    *   3. user visit — `POST /api/connectors/webhooks/drain` (passes `force`, because the user
    *      is right here and the 2 s anti-tight-loop interval is not aimed at them)
    *
-   * The other three are retired deliberately, not by omission. 1 (the post-ack `onDelivery`
-   * kick) and 2 (the five-minute timer) ran a full pass to hand ids to nobody — under C the
+   * The other three are retired deliberately, not by omission. 1 (a post-ack kick) and 2 (the
+   * five-minute timer) ran a full pass to hand ids to nobody — under C the
    * browser is the writer and nothing is listening between visits, so the background half of
    * the timer is now a bounded queue-maintenance sweep instead
    * ({@link startConnectorQueueMaintenanceTimer}). 4 (the fresh-grant kick from

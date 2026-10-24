@@ -21,7 +21,6 @@ export function localValidationFromEnv(env: NodeJS.ProcessEnv): boolean {
   }
   for (const key of [
     "LEDGER_AUTHORITATIVE", "CONNECTOR_WEBHOOKS_ENABLED", "GOOGLE_MEET_OAUTH_ENABLED",
-    "CONNECTOR_BACKEND_INGEST_ENABLED",
   ]) {
     if (env[key] === "true") throw new Error(`Local validation requires ${key} disabled`);
   }
