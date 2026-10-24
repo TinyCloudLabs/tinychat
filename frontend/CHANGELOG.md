@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.10.0-beta.23
+
+### Patch Changes
+
+- abde4ac: Show which transcription model produced a transcript.
+
 ## 0.10.0-beta.22
 
 ### Patch Changes
