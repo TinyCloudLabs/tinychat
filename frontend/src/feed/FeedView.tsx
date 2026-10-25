@@ -1,7 +1,30 @@
 import { useEffect, useState, type JSX } from "react";
-import { NoteRenderer } from "@/capture/recorder/final/notes/NoteRenderer";
+import "@/capture/recorder/final/notes/notes.css";
 import { parseFeed, safeUrl, type FeedCard } from "./feedData";
+import { renderArticleHtml } from "./articleMarkdown";
 import { FEED_STRINGS } from "./strings";
+
+function ArticleMarkdown({ markdown }: { markdown: string }) {
+  const [html, setHtml] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    let current = true;
+    setHtml(null);
+    setFailed(false);
+    renderArticleHtml(markdown).then(
+      (value) => { if (current) setHtml(value); },
+      () => { if (current) setFailed(true); },
+    );
+    return () => { current = false; };
+  }, [markdown, attempt]);
+  if (failed) return <p className="text-sm text-muted-foreground">
+    {FEED_STRINGS.articleUnavailable}{" "}
+    <button type="button" className="inline-flex min-h-6 items-center underline underline-offset-2" onClick={() => setAttempt((n) => n + 1)}>{FEED_STRINGS.retry}</button>
+  </p>;
+  if (html === null) return null;
+  return <div className="fmd" dangerouslySetInnerHTML={{ __html: html }} />;
+}
 
 function CardImage({ image }: { image?: FeedCard["image"] }) {
   const [failed, setFailed] = useState(false);
@@ -32,7 +55,7 @@ export function FeedCardView({ card }: { card: FeedCard }): JSX.Element {
       {card.render === "article" && <div className="mt-4 min-w-0 border-t border-border pt-4">
         {card.title && <h2 className="font-display text-xl font-semibold leading-tight break-words">{card.title}</h2>}
         {card.summary && <p className="mt-2 break-words text-sm text-muted-foreground">{card.summary}</p>}
-        {card.markdown && <div className="mt-4 min-w-0 overflow-x-auto text-sm"><NoteRenderer md={card.markdown} /></div>}
+        {card.markdown && <div className="mt-4 min-w-0 overflow-x-auto text-sm"><ArticleMarkdown markdown={card.markdown} /></div>}
       </div>}
       {card.render === "link" && <div className="mt-3 min-w-0">
         {card.tldr && <p className="break-words text-sm text-muted-foreground">{card.tldr}</p>}
