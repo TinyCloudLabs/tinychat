@@ -11,7 +11,7 @@ import { AssistantRuntimeProvider, useLocalRuntime, useRemoteThreadListRuntime }
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { installDom } from "@/test/dom";
 import { OFFERED_CHAT_MODELS } from "@tinyboilerplate/core";
-import { appendMessage, isIndexSyncing, listThreads } from "@/lib/threadStore";
+import { appendMessage, getThreadListLoadState, isIndexSyncing, listThreads, setSqlCallTimeoutForTests } from "@/lib/threadStore";
 import { __resetStorageStatusForTests } from "@/lib/storageStatus";
 import { ReplicationFirstLoadSignal } from "@/lib/replication/ReplicationFirstLoadSignal";
 import { appFirstLoadSettled, resetAppFirstLoad } from "@/lib/replication/replicationFirstLoad";
@@ -163,11 +163,21 @@ describe("the real app path fires the first-load signal, not the deadline", () =
     await mounted.unmount();
   });
 
-  test("a load that fails still settles", async () => {
+  test("a timed-out cold read settles on error before the 45 s fill deadline", async () => {
     const service = new SqlService();
-    service.failReads = true;
-    const mounted = await mountAndFill(appTcw(service));
-    expect(mounted.syncCalls()).toBe(1);
-    await mounted.unmount();
+    service.hold = new Promise<void>(() => {}); // each retry times out
+    const restoreTimeout = setSqlCallTimeoutForTests(10);
+    try {
+      const mounted = await mountAndFill(appTcw(service));
+      expect(mounted.syncCalls()).toBe(0);
+      for (let turn = 0; turn < 100 && mounted.syncCalls() === 0; turn += 1) {
+        await act(async () => { jest.advanceTimersByTime(100); await Promise.resolve(); });
+      }
+      expect(getThreadListLoadState().status).toBe("error");
+      expect(mounted.syncCalls()).toBe(1);
+      await mounted.unmount();
+    } finally {
+      restoreTimeout();
+    }
   });
 });
