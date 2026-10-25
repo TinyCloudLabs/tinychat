@@ -16,4 +16,4 @@ export const APPS_OPENS_NEW_TAB = "opens in a new tab";
 export const APPS_EMPTY = "No apps to show yet.";
 
 /** A plain link on the signed-out sign-in surface to the landing page at /about. */
-export const LANDING_LINK_LABEL = "About TinyCloud";
+export const LANDING_LINK_LABEL = "About TinyCloud Home";
