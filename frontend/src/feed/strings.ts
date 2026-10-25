@@ -1,11 +1,11 @@
-// pending Monica
 export const FEED_STRINGS = {
   heading: "Feed",
-  subtitle: "A few sample cards to explore the layout.",
+  subtitle: "Sample cards, so you can see how your feed will look.",
   provenance: "Sample content",
   empty: "Nothing here yet",
   loading: "Loading sample cards…",
-  stale: "Unable to refresh sample cards. Showing the last loaded cards.",
-  unavailable: "Unable to refresh sample cards.",
+  stale: "Couldn't refresh the sample cards. Showing what was loaded before.",
+  unavailable: "Couldn't load the sample cards.",
+  retry: "Try again",
   openLink: "Open link",
 } as const;

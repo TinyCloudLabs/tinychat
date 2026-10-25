@@ -23,7 +23,7 @@ const text = (value: unknown): value is string => typeof value === "string" && v
 const iso = (value: unknown): value is string => text(value) && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z$/.test(value) && !Number.isNaN(Date.parse(value));
 const localImage = (value: unknown): value is string =>
   text(value) && /^\/home-feed-[a-z0-9-]+\.(?:svg|png)$/.test(value);
-const safeUrl = (value: unknown): value is string => {
+export const safeUrl = (value: unknown): value is string => {
   if (!text(value)) return false;
   try {
     const url = new URL(value);
@@ -48,7 +48,7 @@ function parseCard(value: unknown): FeedCard | null {
     .map((reply: RecordValue) => ({ author: reply.author as string, text: reply.text as string, at: reply.at as string }));
   for (const field of ["title", "summary", "markdown", "tldr"] as const)
     if (text(value[field])) card[field] = value[field];
-  if (safeUrl(value.url)) card.url = value.url;
+  if (text(value.url)) card.url = value.url;
   if (record(value.source) && text(value.source.label)) {
     card.source = { label: value.source.label };
     if (safeUrl(value.source.url)) card.source.url = value.source.url;

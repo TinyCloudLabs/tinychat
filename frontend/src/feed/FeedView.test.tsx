@@ -53,9 +53,10 @@ describe("built-in sample cards", () => {
   });
 
   test("unsafe link and absent image leave readable text without a clickable unsafe URL or broken image", () => {
-    const link = renderToStaticMarkup(<FeedCardView card={{ ...base, render: "link", url: undefined, tldr: "Saved for later" }} />);
+    const link = renderToStaticMarkup(<FeedCardView card={{ ...base, render: "link", url: "javascript:alert(1)", tldr: "Saved for later" }} />);
     const image = renderToStaticMarkup(<FeedCardView card={{ ...base, render: "image" }} />);
     expect(link).toContain("Saved for later");
+    expect(link).toContain("javascript:alert(1)");
     expect(link).not.toContain("<a ");
     expect(image).toContain("A little note.");
     expect(image).not.toContain("<img");
@@ -126,7 +127,23 @@ describe("visible sample polling", () => {
     held.reject(new Error("offline"));
     await flush();
     expect(view.host.textContent).toContain("A little note.");
-    expect(view.host.textContent).toContain("Unable to refresh");
+    expect(view.host.textContent).toContain("Couldn't refresh");
+    await view.unmount();
+  });
+
+  test("first-load failure offers one-click retry that shows recovered cards", async () => {
+    let calls = 0;
+    globalThis.fetch = (async () => ++calls === 1 ? new Response("offline", { status: 503 }) : Response.json([base])) as typeof fetch;
+    const view = await mount();
+    await flush();
+    expect(view.host.textContent).toContain("Couldn't load the sample cards.");
+    const retry = [...view.host.querySelectorAll("button")].find((button) => button.textContent === "Try again");
+    expect(retry).toBeDefined();
+    await act(async () => retry!.click());
+    await flush();
+    expect(calls).toBe(2);
+    expect(view.host.textContent).toContain("A little note.");
+    expect(view.host.textContent).not.toContain("Couldn't load");
     await view.unmount();
   });
 

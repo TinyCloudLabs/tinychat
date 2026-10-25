@@ -1,6 +1,6 @@
 import { useEffect, useState, type JSX } from "react";
 import { NoteRenderer } from "@/capture/recorder/final/notes/NoteRenderer";
-import { parseFeed, type FeedCard } from "./feedData";
+import { parseFeed, safeUrl, type FeedCard } from "./feedData";
 import { FEED_STRINGS } from "./strings";
 
 function CardImage({ image }: { image?: FeedCard["image"] }) {
@@ -36,9 +36,11 @@ export function FeedCardView({ card }: { card: FeedCard }): JSX.Element {
       </div>}
       {card.render === "link" && <div className="mt-3 min-w-0">
         {card.tldr && <p className="break-words text-sm text-muted-foreground">{card.tldr}</p>}
-        {card.url && <a className="mt-2 inline-flex min-h-8 max-w-full items-center break-all text-sm font-medium underline underline-offset-4" href={card.url} target="_blank" rel="noopener noreferrer">{FEED_STRINGS.openLink}</a>}
+        {safeUrl(card.url)
+          ? <a className="mt-2 inline-flex min-h-8 max-w-full items-center break-all text-sm font-medium underline underline-offset-4" href={card.url} target="_blank" rel="noopener noreferrer">{FEED_STRINGS.openLink}</a>
+          : card.url && <span className="mt-2 block break-all text-sm text-muted-foreground">{card.url}</span>}
       </div>}
-      {card.source && <p className="mt-4 border-t border-border pt-3 text-xs text-muted-foreground">Source: {card.source.url
+      {card.source && <p className="mt-4 border-t border-border pt-3 text-xs text-muted-foreground">Source: {safeUrl(card.source.url)
         ? <a href={card.source.url} target="_blank" rel="noopener noreferrer" className="inline-block min-h-7 max-w-full break-all underline underline-offset-2">{card.source.label}</a>
         : <span className="break-words">{card.source.label}</span>}</p>}
     </article>
@@ -48,6 +50,7 @@ export function FeedCardView({ card }: { card: FeedCard }): JSX.Element {
 export function FeedView(): JSX.Element {
   const [cards, setCards] = useState<FeedCard[] | null>(null);
   const [error, setError] = useState(false);
+  const [retry, setRetry] = useState(0);
 
   useEffect(() => {
     let controller: AbortController | null = null;
@@ -91,12 +94,15 @@ export function FeedView(): JSX.Element {
       clearInterval(timer);
       controller?.abort();
     };
-  }, []);
+  }, [retry]);
 
   return <main className="h-full min-w-0 overflow-x-hidden overflow-y-auto bg-background text-foreground" aria-label="Feed">
     <div className="mx-auto w-full max-w-2xl min-w-0 px-3 pb-[calc(var(--tc-bottom-chrome)+2rem)] pt-6 sm:px-5">
       <header className="mb-6"><h1 className="font-display text-3xl font-semibold tracking-tight">{FEED_STRINGS.heading}</h1><p className="mt-1 text-sm text-muted-foreground">{FEED_STRINGS.subtitle}</p></header>
-      {error && <p role="status" className="mb-4 rounded-lg bg-muted px-3 py-2 text-sm text-muted-foreground">{cards?.length ? FEED_STRINGS.stale : FEED_STRINGS.unavailable}</p>}
+      {error && <div role="status" className="mb-4 rounded-lg bg-muted px-3 py-2 text-sm text-muted-foreground">
+        <p>{cards?.length ? FEED_STRINGS.stale : FEED_STRINGS.unavailable}</p>
+        {!cards?.length && <button type="button" className="mt-2 min-h-8 rounded-md border border-border px-3 font-medium text-foreground" onClick={() => setRetry((value) => value + 1)}>{FEED_STRINGS.retry}</button>}
+      </div>}
       {cards === null && !error && <p className="text-sm text-muted-foreground">{FEED_STRINGS.loading}</p>}
       {cards?.length === 0 && <p className="rounded-xl border border-border bg-card p-6 text-sm text-muted-foreground">{FEED_STRINGS.empty}</p>}
       {cards && cards.length > 0 && <div className="grid min-w-0 gap-4">{cards.map((card) => <FeedCardView key={card.id} card={card} />)}</div>}

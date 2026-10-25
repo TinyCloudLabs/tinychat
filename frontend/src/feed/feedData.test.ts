@@ -27,7 +27,7 @@ describe("sample feed parser", () => {
       { ...post, render: "link", url: "javascript:alert(1)", source: { label: "Outside", url: "data:text/html,hello" } },
       { ...post, id: "two", render: "image", image: { src: "https://example.org/track.png", alt: "Remote" }, author: { name: "Aster", avatar: "//example.org/avatar" } },
     ]);
-    expect(link?.url).toBeUndefined();
+    expect(link?.url).toBe("javascript:alert(1)");
     expect(link?.source).toEqual({ label: "Outside" });
     expect(image?.image).toBeUndefined();
     expect(image?.author.avatar).toBeUndefined();
