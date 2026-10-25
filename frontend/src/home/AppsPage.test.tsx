@@ -9,18 +9,19 @@ import { SHARE_APPS, shareRunUrl } from "./shareApps";
 const render = (node: React.ReactNode) => renderToStaticMarkup(<MemoryRouter>{node}</MemoryRouter>);
 
 describe("Apps", () => {
-  test("lists Notes, Health Log and Recipes as links that open Share's runner in a new tab, rel noopener", () => {
+  test("lists only Health Log and Recipes (the entries that ship a runnable bundle) as links that open Share's runner in a new tab, rel noopener", () => {
     const markup = render(<AppsPage />);
     const anchors = [...markup.matchAll(/<a [^>]*>/g)].map((m) => m[0]);
-    expect(anchors).toHaveLength(3);
+    expect(anchors).toHaveLength(2);
     for (const tag of anchors) {
       expect(tag).toContain('target="_blank"');
       expect(/rel="([^"]*)"/.exec(tag)?.[1].split(" ")).toContain("noopener");
     }
-    expect(anchors[0]).toContain('href="https://share.tinycloud.xyz/apps/run#com.example.notes"');
-    expect(anchors[1]).toContain('href="https://share.tinycloud.xyz/apps/run#xyz.tinycloud.sample.healthlog"');
-    expect(anchors[2]).toContain('href="https://share.tinycloud.xyz/apps/run#xyz.tinycloud.sample.recipes"');
-    for (const name of ["Notes", "Health Log", "Recipes"]) expect(markup).toContain(name);
+    expect(anchors[0]).toContain('href="https://share.tinycloud.xyz/apps/run#xyz.tinycloud.sample.healthlog"');
+    expect(anchors[1]).toContain('href="https://share.tinycloud.xyz/apps/run#xyz.tinycloud.sample.recipes"');
+    for (const name of ["Health Log", "Recipes"]) expect(markup).toContain(name);
+    expect(markup).not.toContain("Notes");
+    expect(markup).not.toContain("com.example.notes");
   });
 
   test("says it opens Share and makes no embedding or permission claim in the lead", () => {
@@ -39,7 +40,6 @@ describe("Apps", () => {
 
   test("the run URL carries only the app id in the fragment (no user data)", () => {
     expect(SHARE_APPS.map((app) => shareRunUrl(app.appId))).toEqual([
-      "https://share.tinycloud.xyz/apps/run#com.example.notes",
       "https://share.tinycloud.xyz/apps/run#xyz.tinycloud.sample.healthlog",
       "https://share.tinycloud.xyz/apps/run#xyz.tinycloud.sample.recipes",
     ]);
