@@ -9,7 +9,6 @@ export const FEED_STRINGS = {
   loading: "Loading sample cards…",
   stale: "Couldn't refresh the sample cards. Showing what was loaded before.",
   unavailable: "Couldn't load the sample cards.",
-  articleUnavailable: "Couldn't show the article preview.",
   retry: "Try again",
   openLink: "Open link",
   getStartedHeading: "Get started",

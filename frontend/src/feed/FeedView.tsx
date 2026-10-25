@@ -1,7 +1,5 @@
 import { useEffect, useState, type JSX } from "react";
-import "@/capture/recorder/final/notes/notes.css";
 import { safeUrl, selectFeed, type FeedCard } from "./feedData";
-import { renderArticleHtml } from "./articleMarkdown";
 import { FEED_SKILL_URL, FEED_STRINGS } from "./strings";
 
 // These keys belong to the bundled sample only. A real card's media key is never a web URL.
@@ -18,30 +16,28 @@ async function readArticleBody(key: string, signal: AbortSignal): Promise<string
   return response.text();
 }
 
-function ArticleMarkdown({ body, renderArticle, readBody }: {
+function ArticleBody({ body, readBody }: {
   body: string;
-  renderArticle: (markdown: string) => Promise<string>;
   readBody: (key: string, signal: AbortSignal) => Promise<string>;
 }) {
-  const [html, setHtml] = useState<string | null>(null);
-  const [failed, setFailed] = useState(false);
-  const [attempt, setAttempt] = useState(0);
+  const [paragraphs, setParagraphs] = useState<string[] | null>(null);
   useEffect(() => {
     const controller = new AbortController();
-    setHtml(null);
-    setFailed(false);
-    readBody(body, controller.signal).then(renderArticle).then(
-      (value) => { if (!controller.signal.aborted) setHtml(value); },
-      () => { if (!controller.signal.aborted) setFailed(true); },
+    setParagraphs(null);
+    readBody(body, controller.signal).then(
+      (text) => {
+        if (!controller.signal.aborted && text.length <= 20_000) {
+          setParagraphs(text.split(/\r?\n[ \t]*\r?\n/).map((paragraph) => paragraph.trim()).filter(Boolean));
+        }
+      },
+      () => { /* Unreadable body: the title and lead remain. */ },
     );
     return () => controller.abort();
-  }, [body, attempt, renderArticle, readBody]);
-  if (failed) return <p className="text-sm text-muted-foreground">
-    {FEED_STRINGS.articleUnavailable}{" "}
-    <button type="button" className="inline-flex min-h-6 items-center underline underline-offset-2" onClick={() => setAttempt((n) => n + 1)}>{FEED_STRINGS.retry}</button>
-  </p>;
-  if (html === null) return null;
-  return <div className="fmd" dangerouslySetInnerHTML={{ __html: html }} />;
+  }, [body, readBody]);
+  if (!paragraphs?.length) return null;
+  return <div className="article-body mt-4 min-w-0 break-words text-sm">
+    {paragraphs.map((paragraph, index) => <p key={index} className="mt-3 whitespace-pre-wrap leading-relaxed">{paragraph}</p>)}
+  </div>;
 }
 
 function CardImage({ image, alt }: { image?: string; alt: string }) {
@@ -51,10 +47,9 @@ function CardImage({ image, alt }: { image?: string; alt: string }) {
   return <img className="mt-4 max-h-80 w-full rounded-xl border border-border bg-muted object-cover" src={src} alt={alt} onError={() => setFailed(true)} />;
 }
 
-export function FeedCardView({ card, sample = true, renderArticle = renderArticleHtml, readBody = readArticleBody }: {
+export function FeedCardView({ card, sample = true, readBody = readArticleBody }: {
   card: FeedCard;
   sample?: boolean;
-  renderArticle?: (markdown: string) => Promise<string>;
   readBody?: (key: string, signal: AbortSignal) => Promise<string>;
 }): JSX.Element {
   const avatar = card.author.avatar ? sampleAssets[card.author.avatar] : undefined;
@@ -77,7 +72,7 @@ export function FeedCardView({ card, sample = true, renderArticle = renderArticl
       ))}
       {card.render === "article" && <div className="mt-4 min-w-0 border-t border-border pt-4">
         {card.title && <h2 className="font-display text-xl font-semibold leading-tight break-words">{card.title}</h2>}
-        {card.body && <div className="mt-4 min-w-0 overflow-x-auto text-sm"><ArticleMarkdown body={card.body} renderArticle={renderArticle} readBody={readBody} /></div>}
+        {card.body && <ArticleBody body={card.body} readBody={readBody} />}
       </div>}
       {card.render === "link" && card.url && <div className="mt-3 min-w-0">
         {safeUrl(card.url)
