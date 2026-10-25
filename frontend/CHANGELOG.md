@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.10.0-beta.33
+
+### Patch Changes
+
+- 1dcda46: Give the cached chat-list retry link a minimum 24 px hit area without changing its label.
+
 ## 0.10.0-beta.32
 
 ### Patch Changes
