@@ -8,6 +8,7 @@ import type { CompactionCheckpoint } from "../chat/compaction";
 import { THREADS_SQL_DB_NAME } from "./threadKeys";
 import { CHAT_SHARING_PAUSED } from "./chatSharing";
 import { cleanupShareRecordsAfterDelete } from "./shareRecords";
+import { THREAD_LIST_LOAD_FAILED } from "./threadListStrings";
 
 // ── Storage layout ───────────────────────────────────────────────────
 //
@@ -221,7 +222,9 @@ function withDeadline<R>(
   timeoutMs: number,
   call: (signal: AbortSignal) => Promise<R>,
 ): Promise<R | SqlTimeoutResult> {
-  const signal = AbortSignal.timeout(timeoutMs);
+  const controller = new AbortController();
+  const signal = controller.signal;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   let onTimeout = () => {};
   // Register before issuing the call so this listener runs before the SDK's
   // own abort handling: the outcome is always reported as TIMEOUT.
@@ -232,8 +235,12 @@ function withDeadline<R>(
         error: { code: SQL_TIMEOUT_CODE, message: `no response within ${timeoutMs}ms`, service: "sql" },
       });
     signal.addEventListener("abort", onTimeout, { once: true });
+    // A plain timer (not AbortSignal.timeout) so the deadline is controllable
+    // by fake timers in tests; the abort reason matches AbortSignal.timeout's.
+    timer = setTimeout(() => controller.abort(new DOMException("The operation timed out.", "TimeoutError")), timeoutMs);
   });
   return Promise.race([call(signal), deadline]).finally(() => {
+    clearTimeout(timer);
     signal.removeEventListener("abort", onTimeout);
   });
 }
@@ -257,6 +264,120 @@ function store(tcw: TinyCloudWeb, scope: ReturnType<typeof storageScopeFor>, tim
   return trackStorageWrites(bounded(tcw.sql.db(SQL_DB_NAME), timeoutMs), scope);
 }
 
+// ── Bounded retry for READS ──────────────────────────────────────────
+//
+// A read that times out has an unknown outcome but no side effects, so it is
+// re-issued as a FRESH invoke (a new `db.query` call, never the old promise).
+// Writes never go through this path. Worst case for one sign-in list load:
+// 3 attempts x 12s + 1s + 3s backoff = 40s, shared across every read in the
+// load via one budget; after that the caller surfaces an error state.
+const SQL_READ_ATTEMPT_TIMEOUT_MS = 12_000;
+const SQL_READ_RETRY_BACKOFF_MS = [1_000, 3_000] as const;
+const SQL_READ_BUDGET_MS = 40_000;
+
+interface ReadBudget {
+  endsAt: number;
+  /** Reads issued so far under this budget (for the failure log). */
+  attempts: number;
+}
+
+async function retryRead<R extends { ok: true } | { ok: false; error: { code: string } }>(
+  budget: ReadBudget,
+  attempt: (timeoutMs: number) => Promise<R | SqlTimeoutResult>,
+): Promise<R | SqlTimeoutResult> {
+  for (let retry = 0; ; retry++) {
+    const remaining = budget.endsAt - Date.now();
+    if (remaining <= 0) {
+      return { ok: false, error: { code: SQL_TIMEOUT_CODE, message: "read budget exhausted", service: "sql" } };
+    }
+    budget.attempts++;
+    const res = await attempt(Math.min(SQL_READ_ATTEMPT_TIMEOUT_MS, sqlCallTimeoutMs, remaining));
+    if (res.ok || res.error.code !== SQL_TIMEOUT_CODE) return res;
+    const backoff = SQL_READ_RETRY_BACKOFF_MS[retry];
+    if (backoff === undefined || budget.endsAt - Date.now() <= backoff) return res;
+    await new Promise<void>((resolve) => setTimeout(resolve, backoff));
+  }
+}
+
+// ── Thread-list load state ───────────────────────────────────────────
+//
+// A failed list load must never look like "no chats". The state below drives
+// the sidebar's error / non-blocking notice and its retry.
+export type ThreadListLoadState = { status: "ok" } | { status: "error"; hasCache: boolean };
+
+const LOAD_OK: ThreadListLoadState = { status: "ok" };
+const LOAD_ERROR_NO_CACHE: ThreadListLoadState = { status: "error", hasCache: false };
+const LOAD_ERROR_WITH_CACHE: ThreadListLoadState = { status: "error", hasCache: true };
+let threadListLoadState: ThreadListLoadState = LOAD_OK;
+let retryTarget: { tcw: TinyCloudWeb; scope: ReturnType<typeof storageScopeFor> } | null = null;
+const loadStateListeners = new Set<() => void>();
+const settledListeners = new Set<() => void>();
+
+function emit(listeners: Set<() => void>): void {
+  for (const cb of listeners) {
+    try {
+      cb();
+    } catch {
+      // listener errors must never break the load path
+    }
+  }
+}
+
+function setThreadListLoadState(next: ThreadListLoadState): void {
+  if (threadListLoadState === next) return;
+  threadListLoadState = next;
+  emit(loadStateListeners);
+}
+
+/** Subscribe to load-state changes (useSyncExternalStore contract). */
+export function subscribeThreadListLoadState(cb: () => void): () => void {
+  loadStateListeners.add(cb);
+  return () => {
+    loadStateListeners.delete(cb);
+  };
+}
+
+export function getThreadListLoadState(): ThreadListLoadState {
+  return threadListLoadState;
+}
+
+/**
+ * Fires every time a thread-list load attempt finishes, on success AND on
+ * error (after retries). Read `getThreadListLoadState()` for which.
+ */
+export function subscribeThreadListSettled(cb: () => void): () => void {
+  settledListeners.add(cb);
+  return () => {
+    settledListeners.delete(cb);
+  };
+}
+
+/** Thrown by `listThreads` when the cold load failed and there is no cache to show. */
+export class ThreadListLoadError extends Error {
+  constructor(cause: unknown) {
+    super(THREAD_LIST_LOAD_FAILED, { cause });
+    this.name = "ThreadListLoadError";
+  }
+}
+
+/**
+ * Re-run the failed list load (the sidebar's "Try again"). A fresh list lands
+ * in the cache and fires the thread-index listeners, which reload the sidebar.
+ */
+export async function retryThreadListLoad(): Promise<void> {
+  const target = retryTarget;
+  if (!target) return;
+  const { tcw, scope } = target;
+  const startGen = mutationGen;
+  try {
+    const fresh = await coldLoad(tcw, scope);
+    if (mutationGen === startGen) writeCache(tcw, fresh);
+    notifyThreadIndex(fresh);
+  } catch {
+    // coldLoad already logged and set the error state.
+  }
+}
+
 function sortSummaries(summaries: ThreadSummary[]): ThreadSummary[] {
   return [...summaries].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
@@ -276,7 +397,7 @@ const schemaInFlight = new Map<string, Promise<SqlError | null>>();
  */
 async function ensureSchema(
   tcw: TinyCloudWeb,
-  options: { forWrite?: boolean },
+  options: { forWrite?: boolean; readBudget?: ReadBudget },
   scope: ReturnType<typeof storageScopeFor>,
 ): Promise<void> {
   const did = typeof tcw.did === "string" && tcw.did.length > 0 ? tcw.did : null;
@@ -291,10 +412,11 @@ async function ensureSchema(
       const tables = SCHEMA.map((sql) => sql.match(/CREATE TABLE IF NOT EXISTS (\w+)/i)?.[1]).filter(
         (table): table is string => table !== undefined,
       );
-      const existingResult = await db.query(
-        `SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (${tables.map(() => "?").join(", ")})`,
-        tables,
-      );
+      const probeSql = `SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (${tables.map(() => "?").join(", ")})`;
+      const { readBudget } = options;
+      const existingResult = readBudget
+        ? await retryRead(readBudget, (ms) => store(tcw, scope, ms).query(probeSql, tables))
+        : await db.query(probeSql, tables);
       if (!existingResult.ok) throw new SqlOpError(existingResult.error, "ensureSchema probe", scope);
       const existingRows = existingResult.data.rows as unknown as unknown[][];
       const existing = new Set(existingRows.map((row) => row[0]).filter((name): name is string => typeof name === "string"));
@@ -946,10 +1068,14 @@ function notifyThreadIndex(summaries: ThreadSummary[]): void {
 // ── SQL fetch for the sidebar ────────────────────────────────────────
 
 /** Freshest summaries from SQL: one SELECT, rows mapped from cell-arrays. */
-async function fetchFromSql(tcw: TinyCloudWeb, scope: ReturnType<typeof storageScopeFor>): Promise<ThreadSummary[]> {
-  await ensureSchema(tcw, {}, scope);
-  const res = await store(tcw, scope).query(
-    "SELECT id, title, model, updated_at FROM threads ORDER BY updated_at DESC",
+async function fetchFromSql(
+  tcw: TinyCloudWeb,
+  scope: ReturnType<typeof storageScopeFor>,
+  budget: ReadBudget,
+): Promise<ThreadSummary[]> {
+  await ensureSchema(tcw, { readBudget: budget }, scope);
+  const res = await retryRead(budget, (ms) =>
+    store(tcw, scope, ms).query("SELECT id, title, model, updated_at FROM threads ORDER BY updated_at DESC"),
   );
   if (!res.ok) throw new SqlOpError(res.error, "fetchFromSql", scope);
   return res.data.rows.map((row) => ({
@@ -964,9 +1090,11 @@ async function fetchFromSql(tcw: TinyCloudWeb, scope: ReturnType<typeof storageS
  * List thread summaries, newest first.
  *
  * Stale-while-revalidate: if a local cache exists, return it IMMEDIATELY and
- * refresh in the background. Cold (no cache): ensure the schema, read from SQL,
- * then cache. Never throws — any error (including AUTH_UNAUTHORIZED) is logged
- * and the cached value (or `[]`) is returned.
+ * refresh in the background (a failed refresh keeps the cache and sets the
+ * load state to error). Cold (no cache): ensure the schema, read from SQL
+ * (timed-out reads are retried), then cache. If the cold load still fails it
+ * THROWS `ThreadListLoadError` — never an empty list — and the load state is
+ * "error" so the sidebar can offer a retry.
  */
 export async function listThreads(tcw: TinyCloudWeb): Promise<ThreadSummary[]> {
   const scope = storageScopeFor(tcw);
@@ -977,6 +1105,7 @@ export async function listThreads(tcw: TinyCloudWeb): Promise<ThreadSummary[]> {
     return summaries;
   }
   const cached = readCache(tcw);
+  retryTarget = { tcw, scope };
   // Only treat a NON-EMPTY cache as a valid instant paint. An empty cached array
   // (e.g. written transiently before threads loaded, or after a failed read)
   // falls through to the cold path so it self-heals instead of showing a blank
@@ -1016,13 +1145,16 @@ export async function listThreads(tcw: TinyCloudWeb): Promise<ThreadSummary[]> {
 
 /**
  * The cold-path read used by both the first load and the background revalidate.
- * Pure SQL: ensure the schema then read summaries. Never throws — logs and
- * falls back to the cache (or `[]`).
+ * Pure SQL: ensure the schema then read summaries, retrying timed-out reads
+ * within one bounded budget. On failure it logs, sets the error load state and
+ * throws `ThreadListLoadError`; it never returns an empty list for a failure.
  */
 async function coldLoad(tcw: TinyCloudWeb, scope: ReturnType<typeof storageScopeFor>): Promise<ThreadSummary[]> {
+  const budget: ReadBudget = { endsAt: Date.now() + SQL_READ_BUDGET_MS, attempts: 0 };
   try {
-    await ensureSchema(tcw, {}, scope);
-    return await fetchFromSql(tcw, scope);
+    const fresh = await fetchFromSql(tcw, scope, budget);
+    setThreadListLoadState(LOAD_OK);
+    return fresh;
   } catch (err) {
     if (authUnauthorized(err)) {
       console.warn(
@@ -1030,9 +1162,13 @@ async function coldLoad(tcw: TinyCloudWeb, scope: ReturnType<typeof storageScope
         err,
       );
     } else {
-      console.error("[threadStore] listThreads cold load failed:", err);
+      console.error(`[threadStore] listThreads cold load failed (attempts=${budget.attempts}):`, err);
     }
-    return readCache(tcw) ?? [];
+    const hasCache = (readCache(tcw)?.length ?? 0) > 0;
+    setThreadListLoadState(hasCache ? LOAD_ERROR_WITH_CACHE : LOAD_ERROR_NO_CACHE);
+    throw new ThreadListLoadError(err);
+  } finally {
+    emit(settledListeners);
   }
 }
 

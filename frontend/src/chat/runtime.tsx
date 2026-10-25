@@ -37,6 +37,7 @@ import {
   setMemory,
   setThreadModel,
   subscribeThreadIndex,
+  ThreadListLoadError,
   DEFAULT_MODEL,
   DEFAULT_TITLE,
   type ThreadDoc,
@@ -720,7 +721,16 @@ function useThreadListAdapter(
       async list() {
         // The account's Canvas state is read once with the thread list, so a
         // failure surfaces here rather than in a send.
-        const [summaries] = await Promise.all([listThreads(tcw), loadCanvasState(tcw)]);
+        let summaries;
+        try {
+          [summaries] = await Promise.all([listThreads(tcw), loadCanvasState(tcw)]);
+        } catch (err) {
+          // A failed load is shown by the sidebar as an error with a retry
+          // (threadStore's load state), never as "No chats yet". Hand the
+          // adapter nothing, and do not reset the known-thread set.
+          if (err instanceof ThreadListLoadError) return { threads: [] };
+          throw err;
+        }
         selection.setKnownThreadIds(summaries.map((thread) => thread.id));
         return {
           threads: summaries.map((t) => ({
