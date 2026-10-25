@@ -2,4 +2,4 @@
 "@tinychat/frontend": minor
 ---
 
-Web: TinyCloud Home shell with Recording, Chat, Apps and Feed. The web opens on Feed; /chat still opens Chat, and the landing page moves to /about. Apps lists three template apps that open in TinyCloud Share in a new tab. Details: TC-2040
+TinyCloud Home: the app opens on a feed of sample cards, with Recording, Chat, Apps and Feed in the navigation. Apps open in TinyCloud Share. Details: TC-2040
