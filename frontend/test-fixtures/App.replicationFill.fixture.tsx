@@ -54,9 +54,12 @@ mock.module("@tinyboilerplate/client", () => ({
 }));
 // The real plugin and storage are not what is under test: the config patch is empty, while the real
 // startReplicationFill (re-exported from the module) decides whether the first sync starts.
+const realStartReplicationFill = replicationClientApi.startReplicationFill; // captured before the mock replaces the export
 mock.module("@/lib/replication/replicationClient", () => ({
   ...replicationClientApi,
   replicationConfigPatch: async () => ({}),
+  startReplicationFill: (tcw: TinyCloudWeb, isEnabled?: () => boolean) =>
+    realStartReplicationFill(tcw, isEnabled, { firstLoadSettled: async () => {}, prefixes: ["p/"] }),
 }));
 mock.module("@/lib/openkeyNative", () => ({
   ...nativeApi,

@@ -15,6 +15,7 @@ import type { TinyCloudWebConfig } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { noteReplicationCopyPossible } from "./replicationCopyMarker";
 import { isReplicationEnabled } from "./replicationFlag";
+import { appFirstLoadSettled, resetAppFirstLoad } from "./replicationFirstLoad";
 import { startupPurgeSettled } from "./replicationStartupPurge";
 import { replicationPrefixes } from "./replicationPrefixes";
 import { clientHasReplication } from "./replicationSignOut";
@@ -87,23 +88,73 @@ export async function replicationConfigPatch(
   return replication ? { replication } : {};
 }
 
+/** Prefixes brought up at the same time. ONE place; the node allows 3 at most. */
+export const REPLICATION_FILL_POOL_SIZE = 2;
+/** Minimum spacing between two prefix starts (each kv/sync holds a node DB connection while it loads). */
+export const REPLICATION_FILL_START_GAP_MS = 200;
+/** The fill starts anyway this long after sign-in if the app's first load never settles. */
+export const REPLICATION_FILL_FIRST_LOAD_DEADLINE_MS = 20_000;
+
+/** Test seam. Production uses the app's first-load signal and the real prefix list. */
+export interface ReplicationFillDeps {
+  firstLoadSettled?: () => Promise<void>;
+  prefixes?: readonly string[];
+}
+
+function sleep(ms: number): Promise<void> {
+  // Executor form on purpose: this tsconfig's lib has no Promise.withResolvers.
+  return new Promise<void>((resolve) => { setTimeout(resolve, ms); });
+}
+
 /**
  * Starts the first sync of a freshly signed-in/restored replica client. Nothing in the SDK does:
  * a prefix is opened (first-synced, put on the interval timer) only by a read-through read or by
  * `replication.sync()`, and the app's transcript reads are `source: "network"`.
- * Only when this client HAS a replication controller and the user's opt-in is ON (re-checked after
- * waiting), and never while a removal of the copy is in flight. A failing sync (for example a gated
- * restore) is reported through the SDK's events and the status line, never thrown into sign-in.
+ * Only when this client HAS a replication controller and the user's opt-in is ON (re-checked before
+ * EVERY prefix start), and never while a removal of the copy is in flight. The fill waits for the
+ * app's first data load to settle (success or error; at most REPLICATION_FILL_FIRST_LOAD_DEADLINE_MS),
+ * then syncs the prefixes one by one with at most REPLICATION_FILL_POOL_SIZE in flight and starts
+ * spaced REPLICATION_FILL_START_GAP_MS apart, so a burst of kv/sync does not queue the app's reads.
+ * Switch-off / sign-out (controller gone) stops every prefix not yet started; one already started is
+ * left to the SDK's own teardown. A failing sync (for example a gated restore) is reported through the
+ * SDK's events and the status line, never thrown into sign-in, and does not stop the other prefixes.
  */
 export function startReplicationFill(
   tcw: TinyCloudWeb,
   isEnabled: () => boolean = () => isReplicationEnabled({ principal: tcw.did }),
+  deps: ReplicationFillDeps = {},
 ): void {
-  if (!clientHasReplication(tcw) || !isEnabled()) return;
-  void startupPurgeSettled()
-    .then(() => {
-      if (!clientHasReplication(tcw) || !isEnabled()) return undefined;
-      return tcw.replication?.sync();
-    })
-    .catch(() => undefined);
+  const canStart = (): boolean => clientHasReplication(tcw) && isEnabled();
+  if (!canStart()) return;
+  if (!deps.firstLoadSettled) resetAppFirstLoad(); // a new sign-in/restore waits for ITS first load
+  const firstLoadSettled = deps.firstLoadSettled ?? appFirstLoadSettled;
+  const queue = [...(deps.prefixes ?? replicationPrefixes())];
+  void (async () => {
+    await startupPurgeSettled();
+    let cancelDeadline = (): void => {};
+    const deadline = new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, REPLICATION_FILL_FIRST_LOAD_DEADLINE_MS);
+      cancelDeadline = () => clearTimeout(timer);
+    });
+    await Promise.race([firstLoadSettled().catch(() => undefined), deadline]);
+    cancelDeadline();
+    // Starts are taken one at a time, each followed by the gap, so they are ordered and spaced.
+    let turn: Promise<void> = Promise.resolve();
+    const worker = async (): Promise<void> => {
+      while (queue.length > 0) {
+        const prefix = queue.shift()!;
+        let sync: Promise<unknown> | undefined;
+        const slot = turn.then(() => {
+          if (!canStart()) { queue.length = 0; return undefined; }
+          // Caught at once (the gap below must not leave a rejection unhandled); the SDK reports it.
+          try { sync = Promise.resolve(tcw.replication?.sync({ prefix })).catch(() => undefined); } catch { /* reported by the SDK events */ }
+          return sleep(REPLICATION_FILL_START_GAP_MS);
+        });
+        turn = slot;
+        await slot;
+        await sync;
+      }
+    };
+    await Promise.all(Array.from({ length: REPLICATION_FILL_POOL_SIZE }, worker));
+  })().catch(() => undefined);
 }

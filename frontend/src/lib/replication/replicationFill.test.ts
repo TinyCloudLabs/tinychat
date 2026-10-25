@@ -19,7 +19,7 @@ beforeEach(resetReplicationStatus);
 describe("first sync after sign-in / restore", () => {
   test("ON with a controller: sync() is called once", async () => {
     let calls = 0;
-    startReplicationFill(clientWith(async () => { calls += 1; }), () => true);
+    startReplicationFill(clientWith(async () => { calls += 1; }), () => true, { firstLoadSettled: async () => {}, prefixes: ["p/"] });
     await flush();
     expect(calls).toBe(1);
   });
@@ -53,7 +53,7 @@ describe("first sync after sign-in / restore", () => {
     let calls = 0;
     const removal = Promise.withResolvers<void>();
     void trackStartupPurge(removal.promise);
-    startReplicationFill(clientWith(async () => { calls += 1; }), () => true);
+    startReplicationFill(clientWith(async () => { calls += 1; }), () => true, { firstLoadSettled: async () => {}, prefixes: ["p/"] });
     await flush();
     expect(calls).toBe(0);
     removal.resolve();

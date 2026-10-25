@@ -83,9 +83,12 @@ mock.module("@tinyboilerplate/client", () => ({
   clearPersistedSession: (address: string) => { events.push(`clearPersisted:${address}`); realClearPersistedSession(address); },
   restoreTinyCloudWebSession: async () => { events.push("restore"); return { status: "restored", tcw: fakeTcw() }; },
 }));
+const realStartReplicationFill = replicationClientApi.startReplicationFill; // captured before the mock replaces the export
 mock.module("@/lib/replication/replicationClient", () => ({
   ...replicationClientApi,
   replicationConfigPatch: async () => ({}),
+  startReplicationFill: (tcw: TinyCloudWeb, isEnabled?: () => boolean) =>
+    realStartReplicationFill(tcw, isEnabled, { firstLoadSettled: async () => {}, prefixes: ["p/"] }),
 }));
 mock.module("@/lib/openkeyNative", () => ({
   ...nativeApi,

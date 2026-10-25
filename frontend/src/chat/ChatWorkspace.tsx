@@ -3,6 +3,7 @@ import { AssistantRuntimeProvider } from "@assistant-ui/react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import type { SessionStore } from "@tinyboilerplate/client";
 import { useChatRuntime } from "./runtime";
+import { ReplicationFirstLoadSignal } from "../lib/replication/ReplicationFirstLoadSignal";
 import { Thread } from "./Thread";
 import { ThreadList } from "./ThreadList";
 import { useAgentAccess } from "./useAgentEnablement";
@@ -158,6 +159,7 @@ export function ChatWorkspace(props: {
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
+      <ReplicationFirstLoadSignal />
       <div className="grid h-full grid-cols-1 expanded:grid-cols-[272px_minmax(0,1fr)]">
         {/* The Chats column, always on screen from the expanded class. */}
         <aside className="hidden min-h-0 flex-col border-r border-border/70 expanded:flex">
