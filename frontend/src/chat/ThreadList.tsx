@@ -138,7 +138,7 @@ export const ThreadListLoadNotice: FC<{
     return (
       <p role="status" className="px-3 py-1 text-xs text-muted-foreground">
         {THREAD_LIST_REFRESH_FAILED}{" "}
-        <button type="button" onClick={onRetry} disabled={retrying} className="underline underline-offset-2">
+        <button type="button" onClick={onRetry} disabled={retrying} className="inline-flex min-h-6 items-center underline underline-offset-2">
           {THREAD_LIST_TRY_AGAIN}
         </button>
       </p>
