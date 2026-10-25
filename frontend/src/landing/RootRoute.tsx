@@ -16,10 +16,10 @@ export function RootRoute({ nativeShell, homeShell = false }: { nativeShell: boo
   return <LandingPage />;
 }
 
-/** `/` on the web: Feed, carrying any query and fragment across (a `#share=` is never dropped). */
+/** `/` on the web: mark ordinary entry so the signed-in app can read its synced choice. */
 function HomeEntry() {
   const { search, hash } = useLocation();
-  return <Navigate to={{ pathname: PATHS.feed, search, hash }} replace />;
+  return <Navigate to={{ pathname: PATHS.feed, search, hash }} state={{ homeEntry: true }} replace />;
 }
 
 /** `/about`: the marketing landing page, kept reachable now that web `/` opens Feed. */

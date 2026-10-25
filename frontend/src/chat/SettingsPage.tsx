@@ -8,6 +8,7 @@ import {
   ChevronRightIcon,
   CreditCardIcon,
   DatabaseIcon,
+  LayoutGridIcon,
   LogOutIcon,
   MicIcon,
   RefreshCwIcon,
@@ -46,6 +47,7 @@ import { appPlatform } from "../lib/platform";
 import { useSizeClass } from "../lib/sizeClass";
 import { PageHeader } from "../shell/PageHeader";
 import { PATHS } from "../shell/routes";
+import { FirstScreenControl } from "../home/FirstScreenControl";
 
 /** An InfoTip beside a card title: a 44 px target on touch that doesn't push the title row taller. */
 const TITLE_TIP = "-my-3 -ml-2 fine:-my-1 fine:-ml-1";
@@ -175,6 +177,9 @@ export function SettingsPage({
                 <span>{signingOut ? "Signing out…" : "Sign out"}</span>
               </Button>
             </div>
+          </SectionCard>
+          <SectionCard icon={LayoutGridIcon} title="Home">
+            <FirstScreenControl tcw={tcw} />
           </SectionCard>
           <SectionCard
             id="agent-access"
