@@ -1,28 +1,28 @@
 export type FeedCard = {
-  v: 1;
-  id: string;
+  key: string;
   at: string;
   author: { name: string; avatar?: string };
-  render: "post" | "image" | "thread" | "article" | "link";
-  lead: string;
-  body?: string;
-  image?: { src: string; alt: string };
-  replies?: { author: string; text: string; at: string }[];
+  render: "post" | "image" | "thread" | "article" | "link" | "unknown";
+  lead: { text: string; image?: string };
+  replies?: { text: string }[];
   title?: string;
-  summary?: string;
-  markdown?: string;
+  body?: string;
   url?: string;
-  tldr?: string;
-  source?: { label: string; url?: string };
+  source?: { label: string; url?: string; ref?: string };
 };
 
 type RecordValue = Record<string, unknown>;
 const record = (value: unknown): value is RecordValue =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 const text = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0;
-const iso = (value: unknown): value is string => text(value) && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z$/.test(value) && !Number.isNaN(Date.parse(value));
-const localImage = (value: unknown): value is string =>
-  text(value) && /^\/home-feed-[a-z0-9-]+\.(?:svg|png)$/.test(value);
+const utc = (value: unknown): value is string => text(value) && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z$/.test(value) &&
+  !Number.isNaN(Date.parse(value)) && new Date(value).toISOString().slice(0, 19) === value.slice(0, 19);
+const botSlug = /^[a-z0-9-]+$/;
+const cardKey = /^([a-z0-9-]+)\/(\d{4}-\d\d)\/(\d{4}-\d\d-\d\dT\d{6}Z-[a-z0-9-]+)$/;
+const folderKey = (value: unknown, bot: string): value is string =>
+  text(value) && value.startsWith(`${bot}/`) && /^[A-Za-z0-9/\-._~:+@=,]+$/.test(value) &&
+  value.split("/").every((part) => part !== "." && part !== ".." && part.length > 0);
+
 export const safeUrl = (value: unknown): value is string => {
   if (!text(value)) return false;
   try {
@@ -33,32 +33,54 @@ export const safeUrl = (value: unknown): value is string => {
   }
 };
 
-function parseCard(value: unknown): FeedCard | null {
-  if (!record(value) || value.v !== 1 || !text(value.id) || !iso(value.at) ||
-    !record(value.author) || !text(value.author.name) || !text(value.lead) ||
-    !["post", "image", "thread", "article", "link"].includes(String(value.render))) return null;
-  const author: FeedCard["author"] = { name: value.author.name };
-  if (localImage(value.author.avatar)) author.avatar = value.author.avatar;
-  const card: FeedCard = { v: 1, id: value.id, at: value.at, author, render: value.render as FeedCard["render"], lead: value.lead };
-  if (text(value.body)) card.body = value.body;
-  if (record(value.image) && localImage(value.image.src) && text(value.image.alt))
-    card.image = { src: value.image.src, alt: value.image.alt };
-  if (Array.isArray(value.replies)) card.replies = value.replies
-    .filter((reply: unknown) => record(reply) && text(reply.author) && text(reply.text) && iso(reply.at))
-    .map((reply: RecordValue) => ({ author: reply.author as string, text: reply.text as string, at: reply.at as string }));
-  for (const field of ["title", "summary", "markdown", "tldr"] as const)
-    if (text(value[field])) card[field] = value[field];
-  if (text(value.url)) card.url = value.url;
+function parseCard(key: string, value: unknown, profiles: Map<string, FeedCard["author"]>): FeedCard | null {
+  const match = cardKey.exec(key);
+  if (!match || !record(value) || value.v !== 1 || !utc(value.at) || !record(value.lead) || !text(value.lead.text)) return null;
+  const bot = match[1]!;
+  if (match[2] !== value.at.slice(0, 7)) return null;
+  const render = ["post", "image", "thread", "article", "link"].includes(String(value.render))
+    ? value.render as FeedCard["render"] : "unknown";
+  const lead: FeedCard["lead"] = { text: value.lead.text };
+  if (folderKey(value.lead.image, bot)) lead.image = value.lead.image;
+  const card: FeedCard = { key, at: value.at, author: profiles.get(bot) ?? { name: bot }, render, lead };
+  if (Array.isArray(value.replies) && render === "thread") card.replies = value.replies
+    .filter((reply: unknown) => record(reply) && text(reply.text))
+    .map((reply: RecordValue) => ({ text: reply.text as string }));
+  if (render === "article") {
+    if (text(value.title)) card.title = value.title;
+    if (folderKey(value.body, bot) && value.body.endsWith(".md")) card.body = value.body;
+  }
+  if (render === "link" && text(value.url)) card.url = value.url;
   if (record(value.source) && text(value.source.label)) {
     card.source = { label: value.source.label };
     if (safeUrl(value.source.url)) card.source.url = value.source.url;
+    else if (text(value.source.ref) && /^[A-Za-z0-9/\-._~:+@=,]+$/.test(value.source.ref)) card.source.ref = value.source.ref;
   }
   return card;
 }
 
 export function parseFeed(value: unknown): FeedCard[] {
-  return Array.isArray(value) ? value.flatMap((entry) => {
-    const card = parseCard(entry);
-    return card ? [card] : [];
-  }) : [];
+  if (!Array.isArray(value)) return [];
+  const profiles = new Map<string, FeedCard["author"]>();
+  for (const entry of value) {
+    if (!record(entry) || !text(entry.key) || !entry.key.endsWith("/profile") || !record(entry.value)) continue;
+    const bot = entry.key.slice(0, -"/profile".length);
+    const profile = entry.value;
+    if (!botSlug.test(bot) || profile.v !== 1 || !text(profile.name) || !text(profile.client) || !text(profile.about)) continue;
+    const author: FeedCard["author"] = { name: profile.name };
+    if (folderKey(profile.avatar, bot)) author.avatar = profile.avatar;
+    profiles.set(bot, author);
+  }
+  const cards: FeedCard[] = [];
+  for (const entry of value) {
+    if (!record(entry) || !text(entry.key)) continue;
+    const card = parseCard(entry.key, entry.value, profiles);
+    if (card) cards.push(card);
+  }
+  return cards.sort((a, b) => b.at.localeCompare(a.at) || a.key.localeCompare(b.key));
+}
+
+export function selectFeed(realEntries: unknown, sampleEntries: unknown): { cards: FeedCard[]; sample: boolean } {
+  const real = parseFeed(realEntries);
+  return real.length ? { cards: real, sample: false } : { cards: parseFeed(sampleEntries), sample: true };
 }

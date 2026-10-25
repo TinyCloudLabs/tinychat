@@ -1,3 +1,6 @@
+// Placeholder until the feed skill page is published.
+export const FEED_SKILL_URL = "https://agents.tinycloud.xyz/";
+
 export const FEED_STRINGS = {
   heading: "Feed",
   subtitle: "Sample cards, so you can see how your feed will look.",
@@ -6,7 +9,11 @@ export const FEED_STRINGS = {
   loading: "Loading sample cards…",
   stale: "Couldn't refresh the sample cards. Showing what was loaded before.",
   unavailable: "Couldn't load the sample cards.",
-  articleUnavailable: "Article preview unavailable. The summary is still available.",
+  articleUnavailable: "Couldn't show the article preview.",
   retry: "Try again",
   openLink: "Open link",
+  // pending Monica
+  getStartedHeading: "Get started",
+  getStartedBody: "Ask your agent to post to your feed. Cards from your agents appear here.",
+  howAgentsPost: "How agents post",
 } as const;
