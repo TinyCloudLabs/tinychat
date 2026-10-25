@@ -21,17 +21,3 @@ export function appFirstLoadSettled(): Promise<void> {
   if (settled) return Promise.resolve();
   return new Promise<void>((resolve) => { waiters.push(resolve); });
 }
-
-/**
- * Folds the two observable load signals into "settled". Settled once the list was seen ACTIVE (its
- * list() loading, or the warm-path revalidate running) and neither is running any more. A fully
- * cached warm list never shows `listLoading` but always runs the revalidate, so it settles too;
- * an idle first render (nothing started yet) does not.
- */
-export function createFirstLoadTracker(): (listLoading: boolean, revalidating: boolean) => boolean {
-  let active = false;
-  return (listLoading, revalidating) => {
-    if (listLoading || revalidating) active = true;
-    return active && !listLoading && !revalidating;
-  };
-}

@@ -14,6 +14,7 @@ import { OFFERED_CHAT_MODELS } from "@tinyboilerplate/core";
 import { appendMessage, isIndexSyncing, listThreads } from "@/lib/threadStore";
 import { __resetStorageStatusForTests } from "@/lib/storageStatus";
 import { ReplicationFirstLoadSignal } from "@/lib/replication/ReplicationFirstLoadSignal";
+import { appFirstLoadSettled, resetAppFirstLoad } from "@/lib/replication/replicationFirstLoad";
 import { startReplicationFill } from "@/lib/replication/replicationClient";
 
 class SqlService {
@@ -110,7 +111,26 @@ async function mountAndFill(tcw: TinyCloudWeb): Promise<{ syncCalls: () => numbe
   return { syncCalls: () => calls, unmount: () => act(async () => root.unmount()) };
 }
 
+function LocalSignal() {
+  const runtime = useLocalRuntime({ run: async function* () { /* never sends */ } });
+  return <AssistantRuntimeProvider runtime={runtime}><ReplicationFirstLoadSignal /></AssistantRuntimeProvider>;
+}
+
 describe("the real app path fires the first-load signal, not the deadline", () => {
+  test("a completed thread-store list settles without another assistant-ui loading transition", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    await act(async () => { root.render(<LocalSignal />); });
+    resetAppFirstLoad();
+    let settled = false;
+    void appFirstLoadSettled().then(() => { settled = true; });
+    await act(async () => { await listThreads(appTcw(new SqlService())); });
+    expect(settled).toBe(true);
+    await act(async () => root.unmount());
+    host.remove();
+  });
+
   test("cold load (no cache): the list is seen loading, then done", async () => {
     const mounted = await mountAndFill(appTcw(new SqlService()));
     expect(mounted.syncCalls()).toBe(1);
