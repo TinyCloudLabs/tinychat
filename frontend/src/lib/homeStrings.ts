@@ -1,9 +1,6 @@
 // User-facing copy for the TinyCloud Home shell (TC-2040), worded by Monica.
 // One module, so copy changes never touch components.
 
-/** The product name shown in web chrome. */
-export const HOME_NAME = "TinyCloud Home";
-
 /** Navigation labels. */
 export const NAV_LABEL_RECORDING = "Recording";
 export const NAV_LABEL_CHAT = "Chat";
