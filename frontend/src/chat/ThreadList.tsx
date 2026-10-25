@@ -1,6 +1,7 @@
 import {
   createContext,
   useContext,
+  useState,
   useSyncExternalStore,
   type FC,
 } from "react";
@@ -24,7 +25,19 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
-import { isIndexSyncing, subscribeIndexSyncing } from "../lib/threadStore";
+import {
+  getThreadListLoadState,
+  isIndexSyncing,
+  retryThreadListLoad,
+  subscribeIndexSyncing,
+  subscribeThreadListLoadState,
+  type ThreadListLoadState,
+} from "../lib/threadStore";
+import {
+  THREAD_LIST_LOAD_FAILED,
+  THREAD_LIST_REFRESH_FAILED,
+  THREAD_LIST_TRY_AGAIN,
+} from "../lib/threadListStrings";
 
 const ThreadListNavigateContext = createContext<(() => void) | undefined>(
   undefined,
@@ -110,6 +123,42 @@ export const NewChatButton: FC<{ onNavigate?: () => void }> = ({ onNavigate }) =
 // The sidebar list is read sequentially from KV on sign-in, so it can be empty
 // for a moment. Show skeleton rows during the initial load instead of a blank
 // gap, and a quiet hint once we know there are genuinely no chats yet.
+/**
+ * A failed chat-list load. With nothing to show it replaces the list (never
+ * the "No chats yet" empty state); with a cached list it is a small notice
+ * above that list.
+ */
+export const ThreadListLoadNotice: FC<{
+  state: ThreadListLoadState;
+  onRetry: () => void;
+  retrying?: boolean;
+}> = ({ state, onRetry, retrying = false }) => {
+  if (state.status !== "error") return null;
+  if (state.hasCache) {
+    return (
+      <p role="status" className="px-3 py-1 text-xs text-muted-foreground">
+        {THREAD_LIST_REFRESH_FAILED}{" "}
+        <button type="button" onClick={onRetry} disabled={retrying} className="underline underline-offset-2">
+          {THREAD_LIST_TRY_AGAIN}
+        </button>
+      </p>
+    );
+  }
+  return (
+    <div role="alert" className="flex flex-col items-start gap-2 px-3 py-2 text-sm text-foreground">
+      <p>{THREAD_LIST_LOAD_FAILED}</p>
+      <button
+        type="button"
+        onClick={onRetry}
+        disabled={retrying}
+        className="rounded-md border px-3 py-1 text-sm hover:bg-accent disabled:opacity-60"
+      >
+        {THREAD_LIST_TRY_AGAIN}
+      </button>
+    </div>
+  );
+};
+
 const ThreadListContents: FC = () => {
   const isLoading = useAuiState((s) => s.threads.isLoading);
   const count = useAuiState((s) => s.threads.threadIds.length);
@@ -117,8 +166,18 @@ const ThreadListContents: FC = () => {
   // call — the real network work is the background SQL revalidate, which only
   // threadStore knows about. Track it so the shimmer shows while it runs.
   const syncing = useSyncExternalStore(subscribeIndexSyncing, isIndexSyncing);
+  const loadState = useSyncExternalStore(subscribeThreadListLoadState, getThreadListLoadState);
+  const [retrying, setRetrying] = useState(false);
+  const onRetry = () => {
+    setRetrying(true);
+    void retryThreadListLoad().finally(() => setRetrying(false));
+  };
+  const notice = <ThreadListLoadNotice state={loadState} onRetry={onRetry} retrying={retrying} />;
 
   if (isLoading && count === 0) return <ThreadListSkeleton />;
+
+  // A failed load is an error, never an empty list.
+  if (count === 0 && loadState.status === "error") return notice;
 
   if (!isLoading && count === 0) {
     return (
@@ -130,6 +189,7 @@ const ThreadListContents: FC = () => {
 
   return (
     <>
+      {notice}
       <ThreadListPrimitive.Items components={{ ThreadListItem }} />
       {/* The list is still syncing (the boot revalidate or a late list() is
           in flight) — show the loading state HERE, on the list that is
