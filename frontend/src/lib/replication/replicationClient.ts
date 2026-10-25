@@ -92,8 +92,12 @@ export async function replicationConfigPatch(
 export const REPLICATION_FILL_POOL_SIZE = 2;
 /** Minimum spacing between two prefix starts (each kv/sync holds a node DB connection while it loads). */
 export const REPLICATION_FILL_START_GAP_MS = 200;
-/** The fill starts anyway this long after sign-in if the app's first load never settles. */
-export const REPLICATION_FILL_FIRST_LOAD_DEADLINE_MS = 20_000;
+/**
+ * The fill starts anyway this long after sign-in if the app's first load never settles. Longer than
+ * the thread-list read's own retry budget (about 40 s), so the fill never starts its prefixes while
+ * that read is still retrying on a stalled node.
+ */
+export const REPLICATION_FILL_FIRST_LOAD_DEADLINE_MS = 45_000;
 
 /** Test seam. Production uses the app's first-load signal and the real prefix list. */
 export interface ReplicationFillDeps {

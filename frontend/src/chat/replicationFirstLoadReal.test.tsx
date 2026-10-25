@@ -10,7 +10,8 @@ import { createRoot } from "react-dom/client";
 import { AssistantRuntimeProvider, useLocalRuntime, useRemoteThreadListRuntime } from "@assistant-ui/react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { installDom } from "@/test/dom";
-import { createThread, listThreads } from "@/lib/threadStore";
+import { OFFERED_CHAT_MODELS } from "@tinyboilerplate/core";
+import { appendMessage, isIndexSyncing, listThreads } from "@/lib/threadStore";
 import { __resetStorageStatusForTests } from "@/lib/storageStatus";
 import { ReplicationFirstLoadSignal } from "@/lib/replication/ReplicationFirstLoadSignal";
 import { startReplicationFill } from "@/lib/replication/replicationClient";
@@ -18,7 +19,9 @@ import { startReplicationFill } from "@/lib/replication/replicationClient";
 class SqlService {
   readonly sqlite = new Database(":memory:");
   failReads = false;
+  hold: Promise<void> | null = null;
   query = async (sql: string, params: unknown[] = []) => {
+    await this.hold;
     if (this.failReads) return { ok: false as const, error: { code: "SQL", message: "unavailable" } };
     try { return { ok: true as const, data: { rows: this.sqlite.query(sql).values(...params) } }; }
     catch (error) { return { ok: false as const, error: { code: "SQL", message: String(error) } }; }
@@ -35,6 +38,13 @@ class SqlService {
       return { ok: true as const, data: { rows: [] } };
     } catch (error) { return { ok: false as const, error: { code: "SQL", message: String(error) } }; }
   };
+}
+
+/** A saved thread plus a filled list cache: the next list() is a WARM one (an empty cache counts as cold). */
+async function warmCache(tcw: TinyCloudWeb, id: string): Promise<void> {
+  const item = { message: { id: "u1", role: "user", content: [{ type: "text", text: "hi" }] }, parentId: null } as never;
+  await appendMessage(tcw, id, item, OFFERED_CHAT_MODELS[0].id);
+  expect((await listThreads(tcw)).length).toBe(1);
 }
 
 function appTcw(service: SqlService): TinyCloudWeb {
@@ -100,7 +110,7 @@ async function mountAndFill(tcw: TinyCloudWeb): Promise<{ syncCalls: () => numbe
   return { syncCalls: () => calls, unmount: () => act(async () => root.unmount()) };
 }
 
-describe("the real app path fires the first-load signal, not the 20 s deadline", () => {
+describe("the real app path fires the first-load signal, not the deadline", () => {
   test("cold load (no cache): the list is seen loading, then done", async () => {
     const mounted = await mountAndFill(appTcw(new SqlService()));
     expect(mounted.syncCalls()).toBe(1);
@@ -110,9 +120,25 @@ describe("the real app path fires the first-load signal, not the 20 s deadline",
   test("warm cache: the cached list returns at once and the background revalidate runs then ends", async () => {
     const service = new SqlService();
     const tcw = appTcw(service);
-    await createThread(tcw, "warm-1");
-    await listThreads(tcw); // fills the local list cache
+    await warmCache(tcw, "warm-1");
     const mounted = await mountAndFill(tcw);
+    expect(mounted.syncCalls()).toBe(1);
+    await mounted.unmount();
+  });
+
+  test("slow background revalidate: the fill does not start until the revalidate ends", async () => {
+    const service = new SqlService();
+    const tcw = appTcw(service);
+    await warmCache(tcw, "slow-1");
+    const held = Promise.withResolvers<void>();
+    service.hold = held.promise; // the revalidate's SQL now answers slowly
+    const mounted = await mountAndFill(tcw); // flushes 200 turns, never advances time
+    expect(isIndexSyncing()).toBe(true); // the warm path returned the cached list and is revalidating
+    expect(mounted.syncCalls()).toBe(0);
+    held.resolve();
+    for (let turn = 0; turn < 200 && mounted.syncCalls() === 0; turn += 1) {
+      await act(async () => { await Promise.resolve(); jest.advanceTimersByTime(0); });
+    }
     expect(mounted.syncCalls()).toBe(1);
     await mounted.unmount();
   });
