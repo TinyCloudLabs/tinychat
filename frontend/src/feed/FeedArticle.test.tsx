@@ -28,6 +28,17 @@ test("rendered article opens only safe links in an isolated tab", async () => {
   await view.unmount();
 });
 
+test("article body key loads markdown and renders its contents", async () => {
+  let requestedKey = "";
+  const view = await mount(
+    async (markdown) => `<p>${markdown}</p>`,
+    async (key) => { requestedKey = key; return "Readable article body"; },
+  );
+  expect(requestedKey).toBe("aster/articles/note.md");
+  expect(view.host.textContent).toContain("Readable article body");
+  await view.unmount();
+});
+
 test("unreadable body leaves title and summary visible with a reachable retry", async () => {
   const view = await mount(async () => "unused", async () => { throw new Error("missing markdown"); });
   expect(view.host.textContent).toContain("Headline");

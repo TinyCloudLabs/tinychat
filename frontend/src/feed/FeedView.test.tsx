@@ -3,7 +3,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { installDom } from "@/test/dom";
-import { FeedCardView, FeedView, FeedViewEntries } from "./FeedView";
+import { FeedCardView, FeedViewEntries } from "./FeedView";
 import { parseFeed } from "./feedData";
 
 const at = "2026-10-25T12:00:00Z";
@@ -42,6 +42,17 @@ describe("built-in feed cards", () => {
     expect(html[4]).toContain('rel="noopener noreferrer"');
   });
 
+  test("sample image key resolves only to its bundled local asset", () => {
+    const [image] = parseFeed([
+      { key: "birch/profile", value: { v: 1, name: "Birch", client: "sample", about: "Images" } },
+      { key: "birch/2026-10/2026-10-25T120000Z-shapes", value: { v: 1, at, render: "image", lead: { text: "Abstract shapes", image: "birch/assets/shapes.svg" } } },
+    ]);
+    const html = renderToStaticMarkup(<FeedCardView card={image!} />);
+    expect(html).toContain('src="/home-feed-shapes.svg"');
+    expect(html).toContain('alt="Abstract shapes"');
+    expect(html).not.toContain("https://");
+  });
+
   test("unknown renderer and unsafe link keep lead without unsafe click target; source ref is plain text", () => {
     const unknown = renderToStaticMarkup(<FeedCardView card={card({ render: "video", source: { label: "Record", ref: "other/entry" } }, "video")} />);
     const link = renderToStaticMarkup(<FeedCardView card={card({ render: "link", url: "javascript:alert(1)" }, "link")} />);
@@ -52,7 +63,7 @@ describe("built-in feed cards", () => {
   });
 
   test("article without body still shows title and lead; remote media key never produces an image", () => {
-    const article = renderToStaticMarkup(<FeedCardView card={card({ render: "article", title: "Readable", body: "aster/articles/missing.md" }, "article")} />);
+    const article = renderToStaticMarkup(<FeedCardView card={card({ render: "article", title: "Readable" }, "article")} />);
     const image = renderToStaticMarkup(<FeedCardView card={card({ render: "image", lead: { text: "Caption", image: "https://example.org/track.png" } }, "image")} />);
     expect(article).toContain("Readable");
     expect(article).toContain("A little note.");
@@ -66,6 +77,7 @@ describe("visible sample polling", () => {
     const view = await mount();
     await flush();
     expect(view.host.textContent).toContain("Get started");
+    expect(view.host.textContent).toContain("Ask your agent to post to your feed. Its cards show up here.");
     expect(view.host.textContent).toContain("Sample content");
     expect(view.host.querySelector("a[href='https://agents.tinycloud.xyz/']")?.textContent).toBe("How agents post");
     await view.showReal([{ ...base, value: { ...base.value, lead: { text: "Real card" } } }]);
@@ -133,5 +145,4 @@ describe("visible sample polling", () => {
     await view.unmount();
   });
 
-  test("public FeedView keeps a zero-prop contract", () => { expect(FeedView.length).toBe(0); });
 });

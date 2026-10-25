@@ -12,8 +12,7 @@ export const FEED_STRINGS = {
   articleUnavailable: "Couldn't show the article preview.",
   retry: "Try again",
   openLink: "Open link",
-  // pending Monica
   getStartedHeading: "Get started",
-  getStartedBody: "Ask your agent to post to your feed. Cards from your agents appear here.",
+  getStartedBody: "Ask your agent to post to your feed. Its cards show up here.",
   howAgentsPost: "How agents post",
 } as const;
