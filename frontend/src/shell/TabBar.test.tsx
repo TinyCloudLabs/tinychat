@@ -48,13 +48,13 @@ function parentTagOf(markup: string, marker: string): string {
 const classOf = (tag: string) => /class="([^"]*)"/.exec(tag)?.[1].split(" ") ?? [];
 
 describe("TabBar", () => {
-  test("a labelled Primary landmark with the three destinations, in order, as links", () => {
+  test("a labelled Primary landmark with the five destinations, in order, as links", () => {
     const markup = render(<TabBar {...props("chat")} />);
     expect(markup).toContain('<nav aria-label="Primary"');
-    expect(markup.match(/<a /g)).toHaveLength(3);
+    expect(markup.match(/<a /g)).toHaveLength(5);
     expect(markup.indexOf(`href="${PATHS.capture}"`)).toBeLessThan(markup.indexOf(`href="${PATHS.chat}"`));
     expect(markup.indexOf(`href="${PATHS.chat}"`)).toBeLessThan(markup.indexOf(`href="${PATHS.connectors}"`));
-    for (const label of ["Capture", "Chat", "Connectors"]) expect(markup).toContain(`>${label}</span>`);
+    for (const label of ["Recording", "Chat", "Apps", "Feed", "Connectors"]) expect(markup).toContain(`>${label}</span>`);
   });
 
   test("exactly the current item is marked: aria-current, the tinted pill, label weight 600 and a heavier icon", () => {
@@ -65,7 +65,7 @@ describe("TabBar", () => {
     const current = linkBody(markup, PATHS.capture);
     expect(current).toContain("bg-selected");
     expect(current).toContain("[stroke-width:2.25]");
-    expect(current).toMatch(/class="[^"]*text-label[^"]*font-semibold[^"]*text-foreground" style="font-size:min\(0\.6875rem,12px\);line-height:min\(0\.875rem,14px\)">Capture</);
+    expect(current).toMatch(/class="[^"]*text-label[^"]*font-semibold[^"]*text-foreground" style="font-size:min\(0\.6875rem,12px\);line-height:min\(0\.875rem,14px\)">Recording</);
 
     const other = linkBody(markup, PATHS.chat);
     expect(other).not.toContain("bg-selected");
