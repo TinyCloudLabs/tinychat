@@ -1,5 +1,17 @@
 # @tinychat/frontend
 
+## 0.10.0-beta.54
+
+### Patch Changes
+
+- e85c6fa: Ask before sending an uploaded file to Powerful transcription. Powerful now says "Not private: Powerful sends your audio through Exo's server to an outside transcription service. Exo deletes the service's copy once the transcript is saved." in the recorder, the upload sheet and Settings.
+
+## 0.10.0-beta.53
+
+### Patch Changes
+
+- 8b3b819: Hosted transcription refusals are now classified (rejected key, insufficient balance, rate limit) and reported to operators: one alert when AssemblyAI starts refusing, one when it recovers, one after three failed jobs in a row, a heartbeat every minute, and a read-only status for the monitoring probe. Nothing changes for users yet.
+
 ## 0.10.0-beta.52
 
 ### Patch Changes

@@ -1,3 +1,5 @@
+import { POWERFUL_PROVIDER_NAME } from "@/capture/recorder/final/finalCopy";
+
 /** Human label for the transcription model a transcript records (`model` on the transcript). */
 const LABELS: Record<string, string> = {
   QuantizedTinyEn: "Whisper Tiny (English)",
@@ -14,8 +16,8 @@ const LABELS: Record<string, string> = {
   "speech-transcriber": "Apple SpeechTranscriber",
   "dictation-transcriber": "Apple Dictation",
   "whisper-large-v3-turbo": "Whisper Large v3 Turbo (Tinfoil)",
-  "universal-3-5-pro": "AssemblyAI Universal-3.5 Pro",
-  "universal-2": "AssemblyAI Universal-2",
+  "universal-3-5-pro": `${POWERFUL_PROVIDER_NAME} Universal-3.5 Pro`,
+  "universal-2": `${POWERFUL_PROVIDER_NAME} Universal-2`,
 };
 
 /** Ids we do not map are shown only when they are short plain tokens; anything else is not displayed. */
