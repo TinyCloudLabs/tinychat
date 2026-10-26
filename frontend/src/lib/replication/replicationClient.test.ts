@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import manifest from "../../../../manifest.json";
 import { composeManifestRequest } from "@tinycloud/sdk-core";
 import { augmentSignInEntriesWithReplication } from "@tinycloud/node-sdk/replication/authority";
-import { buildReplicationConfig, replicationConfigPatch, REPLICATION_MAX_BYTES, type ReplicationPluginLoader } from "./replicationClient";
+import { buildReplicationConfig, replicationConfigPatch, REPLICATION_MAX_BYTES, REPLICATION_SYNC_SCOPE, type ReplicationPluginLoader } from "./replicationClient";
 import { REPLICATION_RUNTIME_FLAG_KEY } from "./replicationFlag";
 import { replicationOptInKey } from "./replicationOptIn";
 import { trackStartupPurge } from "./replicationStartupPurge";
@@ -117,6 +117,13 @@ describe("replicationClient", () => {
       expect(config?.storage).toBe(loader.storage as never);
     });
 
+    test("production's replication config carries the sync scope constant (prefixes)", async () => {
+      installBrowser({ flag: true, optIn: [ALICE] });
+      const config = await buildReplicationConfig(ALICE, spyLoader());
+      expect(config?.syncScope).toBe(REPLICATION_SYNC_SCOPE);
+      expect(REPLICATION_SYNC_SCOPE).toBe("prefixes");
+    });
+
     test("waits for a page-load purge that is still deleting the copy before it builds anything", async () => {
       installBrowser({ flag: true, optIn: [ALICE] });
       const loader = spyLoader();
@@ -163,7 +170,7 @@ describe("replicationClient", () => {
 
     test("one {kv/get, kv/sync} entry per prefix, nothing else", () => {
       const extra = augmentSignInEntriesWithReplication({
-        entries, primarySpaceId: SPACE, replication: { enabled: true, prefixes: replicationPrefixes() },
+        entries, primarySpaceId: SPACE, replication: { enabled: true, prefixes: replicationPrefixes(), syncScope: REPLICATION_SYNC_SCOPE },
       });
       expect(extra.map((e) => e.path)).toEqual(replicationPrefixes());
       for (const entry of extra) expect([...entry.actions]).toEqual(["tinycloud.kv/get", "tinycloud.kv/sync"]);
