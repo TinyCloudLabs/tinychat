@@ -143,6 +143,16 @@ function requestPath(url: string): string | null {
   } catch { return null; }
 }
 
+/** Read only the machine code from auth failures; never retain the response body. */
+export async function authFailureCode(response: Response, path: string): Promise<string | undefined> {
+  if (!/^backend\/api\/auth\/(nonce|verify)$/.test(path) || response.status < 400 || response.status >= 500) return undefined;
+  try {
+    const payload = await response.clone().json() as { error?: unknown };
+    return typeof payload.error === "string" && /^[a-z][a-z0-9_]{0,63}$/.test(payload.error)
+      ? payload.error : undefined;
+  } catch { return undefined; }
+}
+
 function nativeSourceId(plugin: string, options: unknown): string | null {
   if (plugin !== "VoiceNotes" && plugin !== "OnDeviceStt") return null;
   if (!options || typeof options !== "object") return null;
@@ -200,9 +210,10 @@ export async function installDebugLog(): Promise<void> {
       path, bodyBytes: bodyBytes(init?.body) };
     try {
       const response = await original(input, init);
+      const authCode = await authFailureCode(response, path);
       append({ ...common, status: response.status, durationMs: Math.round(performance.now() - started),
         responseBytes: Number(response.headers.get("content-length")) || undefined,
-        code: response.ok ? undefined : `HTTP_${response.status}` });
+        code: response.ok ? undefined : authCode ?? `HTTP_${response.status}` });
       return response;
     } catch (error) {
       append({ ...common, durationMs: Math.round(performance.now() - started),
