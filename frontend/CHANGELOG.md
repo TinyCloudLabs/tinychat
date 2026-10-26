@@ -1,5 +1,18 @@
 # @tinychat/frontend
 
+## 0.10.0-beta.37
+
+### Minor Changes
+
+- 9affbdb: The local copy of transcripts on this device is now on by default in supported browsers. Turning it off in Settings is remembered per account and removes the local copy. Details: TC-2055
+- bca5df5: TinyCloud Home sign-in manifest: adds the applications-space key-value grant and the two catalog databases (Health Log and Recipes), removes the unused migration record folder, renames the app to TinyCloud Home, and asks for one new sign-in per device. Details: TC-2043
+
+### Patch Changes
+
+- 4bbe96a: Update the TinyCloud SDK packages to 3.8.0-beta.1 (replica 0.3.5-beta.0) and request sign-in sync only on the declared replication prefixes (`replication.syncScope: "prefixes"`).
+
+  Details: TC-2043
+
 ## 0.10.0-beta.36
 
 ### Minor Changes

@@ -59,6 +59,9 @@ export const defaultReplicationLoader: ReplicationPluginLoader = {
   },
 };
 
+/** The SDK sync scope of the production replication config: ONE source of truth (tests import it). */
+export const REPLICATION_SYNC_SCOPE = "prefixes" as const;
+
 /** The `replication` option for sign-in/restore of `principal`, or undefined when replication is OFF for them. */
 export async function buildReplicationConfig(
   principal: string | undefined,
@@ -73,6 +76,7 @@ export async function buildReplicationConfig(
   return {
     enabled: true,
     prefixes: replicationPrefixes(),
+    syncScope: REPLICATION_SYNC_SCOPE,
     maxBytes: REPLICATION_MAX_BYTES,
     storage: await loader.createStorage(),
     onEvent: recordReplicationEvent,

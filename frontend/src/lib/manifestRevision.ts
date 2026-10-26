@@ -9,11 +9,11 @@ import { manifestCarriesBundle } from "@tinyboilerplate/core";
  * Bump this when the grants change. "1" was used by an earlier, withdrawn gate
  * whose records may still sit in browsers, so the current value is never "1".
  */
-export const EXO_MANIFEST_REVISION = "2";
+export const EXO_MANIFEST_REVISION = "3";
 
 /** Shown above the sign-in action only after the gate clears a stale session (final wording). */
 export const MANIFEST_RESIGN_NOTICE =
-  "Sign in again to finish updating Exo. You'll do this once on each device.";
+  "Sign in once more so TinyCloud Home can open your apps and your feed. Your data stays as it is.";
 
 const REVISION_KEY_PREFIX = "xyz.tinycloud.tinychat:manifest-revision:";
 

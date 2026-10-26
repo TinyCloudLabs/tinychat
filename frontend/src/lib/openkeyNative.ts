@@ -96,10 +96,13 @@ const NATIVE_SERVICES = new Set(["tinycloud.kv", "tinycloud.sql"]);
 
 /**
  * The delegation's permission list: every applications-space KV/SQL entry of
- * the app manifest, paths prefixed with the app id and actions expanded to
- * full URNs, plus the mandatory capabilities/read. Nothing else — the OpenKey
- * ceiling refuses secrets, vault and other spaces, so native sessions simply
- * cannot hold them.
+ * the app manifest that lies under the app's own folder, paths prefixed with
+ * the app id and actions expanded to full URNs, plus the mandatory
+ * capabilities/read. Nothing else — the OpenKey ceiling refuses secrets, vault
+ * and other spaces, so native sessions simply cannot hold them. The broad Home
+ * entries (the whole applications space, other apps' databases) are web-only
+ * until the native client policy supports them (TC-1990); requesting them
+ * would make OpenKey refuse the whole native request.
  */
 export function nativePermissions(manifest: Manifest): NativeDelegationPermission[] {
   const permissions: NativeDelegationPermission[] = [CAPABILITIES_READ];
@@ -107,10 +110,12 @@ export function nativePermissions(manifest: Manifest): NativeDelegationPermissio
   for (const entry of manifest.permissions ?? []) {
     const space = entry.space ?? "applications";
     if (space !== "applications" || !NATIVE_SERVICES.has(entry.service)) continue;
+    const path = entry.skipPrefix || prefix === "" ? entry.path : `${prefix}/${entry.path}`;
+    if (prefix !== "" && !path.startsWith(`${prefix}/`)) continue;
     permissions.push({
       service: entry.service,
       space: "applications",
-      path: entry.skipPrefix || prefix === "" ? entry.path : `${prefix}/${entry.path}`,
+      path,
       actions: entry.actions.map((action) =>
         action.includes("/") ? action : `${entry.service}/${action}`,
       ),

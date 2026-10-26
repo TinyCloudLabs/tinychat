@@ -298,6 +298,14 @@ describe("nativePermissions", () => {
     expect(permissions.some((p) => p.service.includes("secrets") || p.service.includes("vault"))).toBe(false);
     expect(permissions.some((p) => p.space !== "applications")).toBe(false);
   });
+
+  test("never requests the broad Home entries natively: only paths under the app's own folder", () => {
+    const permissions = nativePermissions(APP_MANIFEST as unknown as Manifest);
+    const data = permissions.filter((p) => p.service === "tinycloud.kv" || p.service === "tinycloud.sql");
+    expect(data.length).toBeGreaterThan(0);
+    expect(data.every((p) => p.path.startsWith("xyz.tinycloud.tinychat/"))).toBe(true);
+    expect(data.some((p) => p.path === "" || p.path.includes("xyz.tinycloud.sample."))).toBe(false);
+  });
 });
 
 describe("signInNative", () => {
