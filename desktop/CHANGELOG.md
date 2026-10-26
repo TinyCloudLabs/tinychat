@@ -1,5 +1,11 @@
 # exo-desktop
 
+## 0.10.0-beta.49
+
+### Patch Changes
+
+- 253d9d6: Hide Apps and Feed behind a device-local experimental setting, with Chat as the default web entry until enabled.
+
 ## 0.10.0-beta.48
 
 No changes in this release.
