@@ -133,7 +133,7 @@ describe("AudioUploadView", () => {
       expect(html).toContain(">This browser<");
     }
     // TinyCloud's account: the file passes through Exo's server, and the line says so.
-    expect(hosted).toContain("Sent through Exo&#x27;s server to AssemblyAI under TinyCloud&#x27;s account, then deleted there.");
+    expect(hosted).toContain("Not private: Powerful sends your audio through Exo&#x27;s server to AssemblyAI, a third-party service. Exo deletes AssemblyAI&#x27;s copy once the transcript is saved.");
     expect(hosted).toContain("Powerful · TinyCloud&#x27;s account");
     expect(hosted).not.toContain("your key");
     expect(priv).toContain("Transcribed by TinyCloud Private Transcription. A copy of the file stays in your space.");
