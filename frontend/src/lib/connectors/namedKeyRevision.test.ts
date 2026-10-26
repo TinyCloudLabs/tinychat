@@ -31,7 +31,7 @@ describe("connector key sign-in revision", () => {
 
   test("a newly signed session records the grant and restores without another clearance", async () => {
     const memory = store();
-    recordConnectorKeyRevision(memory, address, manifest);
+    recordConnectorKeyRevision(memory, address, manifest, true);
     let fetches = 0;
     const outcome = await applyConnectorKeyRevisionGate({
       store: memory, address, isOffline: () => false,
@@ -40,5 +40,18 @@ describe("connector key sign-in revision", () => {
     });
     expect(outcome).toBe("current");
     expect(fetches).toBe(0);
+  });
+
+  test("a node without the named-key feature leaves the revision pending", async () => {
+    const memory = store();
+    recordConnectorKeyRevision(memory, address, manifest, false);
+    expect(memory.values.size).toBe(0);
+    const cleared: string[] = [];
+    expect(await applyConnectorKeyRevisionGate({
+      store: memory, address, isOffline: () => false,
+      loadManifest: async () => manifest, handoff: async () => true,
+      clearSession: (owner: string) => { cleared.push(owner); },
+    })).toBe("cleared");
+    expect(cleared).toEqual([address]);
   });
 });

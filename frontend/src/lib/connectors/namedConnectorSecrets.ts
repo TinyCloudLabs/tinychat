@@ -1,7 +1,10 @@
 import { CONNECTORS_KV_PREFIX, TINYCHAT_KEY_PREFIX } from "@tinyboilerplate/core";
+import { extractRecapAttenuations, makePkhSpaceId, pkhDid } from "@tinycloud/sdk-core";
+import { resolveSecretPath } from "@tinycloud/web-sdk";
 import type { ConnectorDescriptor } from "./types";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { getConnectorKey as getLegacyConnectorKey, isSecretsUnlocked, unlockSecrets } from "./connectorSecrets";
+import { secretsAvailable } from "../openkeyNative";
 
 type ErrorValue = { code: string; message: string };
 type Result<T> = { ok: true; data: T } | { ok: false; error: ErrorValue };
@@ -11,9 +14,23 @@ export type LegacyConnectorClient = Parameters<typeof getLegacyConnectorKey>[0];
 export type RequestLegacyAccess = () => Promise<LegacyConnectorClient | null>;
 export type SecretsErr = ErrorValue;
 
-/** Named-key reads need a signed session, not an unlocked legacy vault. */
+/** A signed, uncaveated decrypt grant is the authority for the connector prefix. */
 export function isConnectorKeysReady(tcw: TinyCloudWeb): boolean {
-  return typeof tcw.keys?.decrypt === "function";
+  return secretsAvailable() && sessionHasConnectorKeyGrant(tcw);
+}
+
+export function sessionHasConnectorKeyGrant(tcw: TinyCloudWeb): boolean {
+  const session = typeof tcw.session === "function" ? tcw.session() : undefined;
+  if (!session) return false;
+  try {
+    const resource = `urn:tinycloud:encryption:${pkhDid(session.address, session.chainId)}:default/${TINYCHAT_KEY_PREFIX}`;
+    const caveats = extractRecapAttenuations(session.siwe)[resource]?.["tinycloud.encryption/decrypt"];
+    return Array.isArray(caveats) && caveats.some((caveat) => caveat && typeof caveat === "object" && !Array.isArray(caveat) && Object.keys(caveat).length === 0);
+  } catch { return false; }
+}
+
+export function isOpenKeyUserDecline(caught: unknown): boolean {
+  return caught !== null && typeof caught === "object" && "code" in caught && caught.code === "USER_CANCELLED";
 }
 
 export function connectorKeyPath(descriptor: Pick<ConnectorDescriptor, "id">): string {
@@ -101,7 +118,11 @@ export async function readOrMigrateConnectorKey(
   if (current.data !== null) return { ok: true, data: current.data };
 
   let legacy: LegacyConnectorClient | null;
-  try { legacy = await requestLegacyAccess(); } catch (caught) { return failure(caught, descriptor); }
+  try { legacy = await requestLegacyAccess(); } catch (caught) {
+    return isOpenKeyUserDecline(caught)
+      ? { ok: false, error: { code: "CONNECTOR_MIGRATION_DECLINED", message: migrationDeclinedMessage(descriptor) } }
+      : failure(caught, descriptor);
+  }
   if (legacy === null) {
     return { ok: false, error: { code: "CONNECTOR_MIGRATION_DECLINED", message: migrationDeclinedMessage(descriptor) } };
   }
@@ -115,8 +136,13 @@ export async function readOrMigrateConnectorKey(
     const saved = await saveNamedConnectorKey(client, descriptor, old.data);
     if (!saved.ok) return saved;
     const verified = await readNamedConnectorKey(client, descriptor);
-    if (!verified.ok) return verified;
+    if (!verified.ok) {
+      const removed = await deleteNamedConnectorKey(client, descriptor);
+      return removed.ok ? verified : removed;
+    }
     if (verified.data !== old.data) {
+      const removed = await deleteNamedConnectorKey(client, descriptor);
+      if (!removed.ok) return removed;
       return { ok: false, error: { code: "CONNECTOR_MIGRATION_MISMATCH", message: `Couldn't confirm the new copy, so your ${descriptor.name} key stays where it was.` } };
     }
     return { ok: true, data: old.data };
@@ -132,6 +158,24 @@ export async function deleteNamedConnectorKey(
   try {
     const removed = await client.kv.delete(connectorEnvelopeKvPath(descriptor));
     return removed.ok ? { ok: true, data: undefined } : removed;
+  } catch (caught) { return failure(caught, descriptor); }
+}
+
+/** A session's secrets-space KV grant can remove the old record while its vault is locked. */
+export async function deleteConnectorCredentials(
+  client: TinyCloudWeb,
+  descriptor: ConnectorDescriptor,
+): Promise<Result<void>> {
+  try {
+    const session = client.session();
+    if (!session) return { ok: false, error: { code: "SESSION_MISSING", message: "Your session expired. Sign in again to continue." } };
+    const space = makePkhSpaceId(session.address, session.chainId, "secrets");
+    const options = descriptor.secretScope ? { scope: descriptor.secretScope } : undefined;
+    const path = resolveSecretPath(descriptor.secretName, options).permissionPaths.vault;
+    const old = await client.kvForSpace(space).delete(path);
+    if (!old.ok && old.error.code !== "KV_NOT_FOUND") return old;
+    const named = await deleteNamedConnectorKey(client, descriptor);
+    return !named.ok && named.error.code === "KV_NOT_FOUND" ? { ok: true, data: undefined } : named;
   } catch (caught) { return failure(caught, descriptor); }
 }
 

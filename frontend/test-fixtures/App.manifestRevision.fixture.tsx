@@ -10,11 +10,12 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import { pkhDid } from "@tinycloud/sdk-core";
 import { installDom } from "@/test/dom";
 import { PlatformContext, type AppPlatform } from "@/lib/platform";
 import { replicationOptInKey } from "@/lib/replication/replicationOptIn";
 import { REPLICATION_RUNTIME_FLAG_KEY } from "@/lib/replication/replicationFlag";
-import { SIGN_IN_BUNDLE_ENTRIES } from "@tinyboilerplate/core";
+import { SIGN_IN_BUNDLE_ENTRIES, TINYCHAT_KEY_PREFIX } from "@tinyboilerplate/core";
 import realManifest from "../../manifest.json";
 
 // The app code under test must never reach a real home: HOME is a throwaway dir under /var/tmp,
@@ -45,6 +46,8 @@ const replicationClientApi = await import("@/lib/replication/replicationClient")
 
 const ADDRESS = "0x00000000000000000000000000000000000000a1";
 const PRINCIPAL = `did:pkh:eip155:1:${ADDRESS}`;
+const connectorResource = `urn:tinycloud:encryption:${pkhDid(ADDRESS, 1)}:default/${TINYCHAT_KEY_PREFIX}`;
+const connectorSiwe = `Resources:\n- urn:recap:${Buffer.from(JSON.stringify({ att: { [connectorResource]: { "tinycloud.encryption/decrypt": [{}] } } })).toString("base64url")}`;
 const CHROME = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
 const APP_SESSION_KEY = "xyz.tinycloud.tinychat:session";
 const REVISION_KEY = `xyz.tinycloud.tinychat:manifest-revision:${ADDRESS}`;
@@ -66,6 +69,7 @@ const oldManifest = {
 function makeTcw(): TinyCloudWeb {
   return {
     did: PRINCIPAL, spaceId: "space-a1", address: () => ADDRESS, sql: {}, kv: {}, secrets: {},
+    session: () => ({ address: ADDRESS, walletAddress: ADDRESS, chainId: 1, siwe: served === "full" ? connectorSiwe : "" }),
     replication: { sync: () => { events.push("sync"); syncCalls += 1; return Promise.resolve(); } },
   } as unknown as TinyCloudWeb;
 }

@@ -21,12 +21,7 @@ import {
   type UpstreamRevokeState,
 } from "@/chat/ConnectorDialog";
 import { removeBackgroundDrainConnectorRecord } from "@/chat/useBackgroundDrain";
-import {
-  isSecretsUnlocked,
-  unlockSecrets,
-  type SecretsErr,
-} from "@/lib/connectors/connectorSecrets";
-import { deleteConnectorKey, isConnectorKeysReady } from "@/lib/connectors/namedConnectorSecrets";
+import { deleteConnectorCredentials } from "@/lib/connectors/namedConnectorSecrets";
 import {
   type DisconnectMode,
   disconnectRetry,
@@ -112,9 +107,10 @@ export function useConnectorDisconnect(input: {
       webhooks: oauth ? NO_DELIVERY_LANE : webhooks,
       featureDark,
       secrets: {
-        isUnlocked: () => isConnectorKeysReady(tcw) || isSecretsUnlocked(tcw),
-        unlock: () => unlockSecrets<SecretsErr>(tcw),
-        deleteKey: () => deleteConnectorKey<SecretsErr>(tcw, descriptor),
+        // The signed KV delete needs no vault unlock.
+        isUnlocked: () => true,
+        unlock: async () => ({ ok: true }),
+        deleteKey: () => deleteConnectorCredentials(tcw, descriptor),
       },
       store: {
         listKnownSourceIds: () => connectorStore.listKnownSourceIds(tcw, descriptor.source),

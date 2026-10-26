@@ -345,7 +345,7 @@ function expectStoredCredential() {
   expect(written).toBeString();
   expect(JSON.parse(written!)).toMatchObject({ v: 2, keyPath: connectorKeyPath(descriptor) });
   for (const plaintext of ["synthetic-access", "synthetic-refresh", "synthetic-refreshed-access", "synthetic-autojoin-access", "synthetic-autojoin-refresh", "synthetic-first-access", "synthetic-session", "synthetic-authorization-code"]) {
-    expect(written).not.toContain(plaintext);
+    for (const value of memory.kv.values()) expect(value).not.toContain(plaintext);
   }
   expect(memory.secretWrites).toBe(0);
   expect(memory.tokens.size).toBe(0);

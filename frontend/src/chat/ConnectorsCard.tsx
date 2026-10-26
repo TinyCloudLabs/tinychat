@@ -52,7 +52,7 @@ import {
 } from "./GmeetCardStatus";
 import { awaitGmeetSessionSync } from "./useGmeetSessionSync";
 import { useGmeetRowStatus } from "./useGmeetRowStatus";
-import { getConnectorKey, isConnectorKeysReady, migrationDeclinedMessage, readOrMigrateConnectorKey } from "@/lib/connectors/namedConnectorSecrets";
+import { getConnectorKey, isConnectorKeysReady, isOpenKeyUserDecline, migrationDeclinedMessage, readOrMigrateConnectorKey } from "@/lib/connectors/namedConnectorSecrets";
 import {
   AlertDialog, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
   AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
@@ -606,7 +606,8 @@ export function ConnectorsCard({
         openkeyHost: import.meta.env.VITE_OPENKEY_HOST || "https://openkey.so",
       }));
     } catch (caught) {
-      setMigrationError(caught instanceof Error ? caught.message : "Couldn't start the approval. Try again.");
+      setMigrationError(isOpenKeyUserDecline(caught) ? migrationDeclinedMessage(migrationDescriptor)
+        : caught instanceof Error ? caught.message : "Couldn't start the approval. Try again.");
     } finally {
       setMigrationBusy(false);
     }

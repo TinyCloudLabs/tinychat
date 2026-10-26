@@ -72,7 +72,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import * as connectorStore from "@/lib/connectors/connectorStore";
-import { deleteConnectorKey, getConnectorKey, isConnectorKeysReady, saveConnectorKey } from "@/lib/connectors/namedConnectorSecrets";
+import { deleteConnectorCredentials, getConnectorKey, isConnectorKeysReady, saveConnectorKey } from "@/lib/connectors/namedConnectorSecrets";
 import { getConnectorKey as getLegacyConnectorKey, isSecretsUnlocked, unlockSecrets, type SecretsErr } from "@/lib/connectors/connectorSecrets";
 import {
   defaultFirefliesClientOptions,
@@ -2138,9 +2138,10 @@ export const ConnectorDisconnectDialog: FC<ConnectorDisconnectDialogProps> = ({
       webhooks: oauth ? NO_DELIVERY_LANE : webhooks,
       featureDark: featureDark === true,
       secrets: {
-        isUnlocked: () => isConnectorKeysReady(tcw) || isSecretsUnlocked(tcw),
-        unlock: () => unlockSecrets<SecretsErr>(tcw),
-        deleteKey: () => deleteConnectorKey<SecretsErr>(tcw, descriptor),
+        // The signed KV delete needs no vault unlock.
+        isUnlocked: () => true,
+        unlock: async () => ({ ok: true }),
+        deleteKey: () => deleteConnectorCredentials(tcw, descriptor),
       },
       store: {
         listKnownSourceIds: () =>
