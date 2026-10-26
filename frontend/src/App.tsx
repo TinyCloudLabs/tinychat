@@ -602,6 +602,7 @@ export function App() {
         restore: async (storedAddress, manifest) =>
           restoreTinyCloudWebSession(storedAddress, {
             autoCreateSpace: false,
+            includeAccountRegistryPermissions: false,
             tinycloudHosts: TINYCLOUD_HOSTS,
             manifest,
             // ON: the replication option plus a read-only account provider (so the restore has a signer
@@ -963,6 +964,7 @@ export function App() {
         address: connectedAddress,
         nonce,
         autoCreateSpace: !LOCAL_VALIDATION,
+        includeAccountRegistryPermissions: false as const,
         tinycloudHosts: TINYCLOUD_HOSTS,
         manifest: withEncryptionDecryptGrant(manifest, connectedAddress),
         // Flag OFF: {} (config unchanged). ON: the SDK adds kv/sync beside kv/get for the

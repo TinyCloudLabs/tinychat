@@ -623,6 +623,7 @@ export async function installNativeSession(
     return { address, tcw: liveTcw };
   }
   const restored = await d.restoreSession(address, {
+    includeAccountRegistryPermissions: false,
     tinycloudHosts: [delegation.tinycloudHost, ...(config.tinycloudHosts ?? [config.tinycloudHost])].filter((host, index, hosts) => hosts.indexOf(host) === index),
     autoCreateSpace: false,
     sessionStorage: storage,

@@ -176,7 +176,7 @@ async function main(): Promise<void> {
   const kvGrants = manifestFile.permissions.filter((p) => p.service === "tinycloud.kv");
   print(`MANIFEST kv ${JSON.stringify(kvGrants.map((p) => ({ path: p.path, actions: p.actions })))}`);
 
-  const owner = new TinyCloudNode({ privateKey: `0x${randomBytes(32).toString("hex")}`, host, autoCreateSpace: true, manifest });
+  const owner = new TinyCloudNode({ privateKey: `0x${randomBytes(32).toString("hex")}`, host, autoCreateSpace: true, manifest, includeAccountRegistryPermissions: false });
   await owner.signIn();
   await owner.ensureOwnedSpaceHosted("applications");
   print("SETUP owner key generated in memory; synthetic values only");
@@ -246,7 +246,7 @@ async function main(): Promise<void> {
   }
 
   // Child sub-delegation through the SDK. The SDK refuses this in session-only mode.
-  const viewerNode = new TinyCloudNode({ host: link.host, autoCreateSpace: false });
+  const viewerNode = new TinyCloudNode({ host: link.host, autoCreateSpace: false, includeAccountRegistryPermissions: false });
   await viewerNode.restoreSession(viewerSession);
   print(`MODE viewerNode sessionOnly=${String(viewerNode.isSessionOnly)}`);
   // The share link delegation is the encoded form; the cast only lets the call reach the SDK's session-only refusal.
@@ -258,7 +258,7 @@ async function main(): Promise<void> {
   // Revoke from a later owner session that was restored from a saved session.
   const ownerSession = owner.restorableSession;
   if (!ownerSession) throw new Error("owner restorableSession missing");
-  const laterOwner = new TinyCloudNode({ host: link.host, autoCreateSpace: false, manifest });
+  const laterOwner = new TinyCloudNode({ host: link.host, autoCreateSpace: false, manifest, includeAccountRegistryPermissions: false });
   await laterOwner.restoreSession(ownerSession);
   print(`MODE laterOwner sessionOnly=${String(laterOwner.isSessionOnly)}`);
   await probe("revokeShareFromLaterOwnerSession", "REPORT", () => laterOwner.revokeDelegation(delegation.cid));
