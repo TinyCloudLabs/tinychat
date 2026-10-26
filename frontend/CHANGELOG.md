@@ -1,5 +1,13 @@
 # @tinychat/frontend
 
+## 0.10.0-beta.41
+
+### Patch Changes
+
+- e228022: Local copy syncs every five minutes and serves a local read without syncing when the copy is under fifteen minutes old.
+
+  Details: TC-2054
+
 ## 0.10.0-beta.40
 
 ### Patch Changes
