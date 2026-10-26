@@ -28,6 +28,7 @@ function Shell({ path }: { path: string }) {
       screen={screenFor(path)}
       platform="web"
       pendingMeetings={0}
+      experimentalAppsFeedEnabled
       chat={<Probe name="chat" />}
       capture={null}
       connectors={null}

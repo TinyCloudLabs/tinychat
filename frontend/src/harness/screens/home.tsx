@@ -1,14 +1,16 @@
 // TinyCloud Home's navigation (TC-2040): the real shell on the web at its new
 // destinations. Ids start with `shell-chat-` so the 320 px phone viewport (and
 // the text200 rail) capture them with the existing viewport scopes.
-import { useContext, useMemo } from "react";
+import { useContext, useEffect, useMemo } from "react";
 
 import { PlatformContext } from "@/lib/platform";
 import { createRuntimeShim } from "../runtimeShim";
 import type { HarnessScreen } from "../screen";
 import { ShellApp } from "../ShellApp";
+import { setAppsFeedEnabled } from "@/lib/appsFeedFeature";
 
 function Home() {
+  useEffect(() => { setAppsFeedEnabled(true); }, []);
   const platform = useContext(PlatformContext);
   const shim = useMemo(() => createRuntimeShim({}), []);
   return <ShellApp platform={platform} shim={shim} state="ready" />;
