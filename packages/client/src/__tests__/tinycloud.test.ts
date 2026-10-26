@@ -77,6 +77,11 @@ afterEach(() => {
 });
 
 describe("createTinyCloudWeb", () => {
+  test("requests only manifest permissions on fresh sign-in", () => {
+    createTinyCloudWeb({ request: async () => null } as any);
+    expect(lastTinyCloudConfig.includeAccountRegistryPermissions).toBe(false);
+  });
+
   test("uses the current provider option and stores composed request manifests", () => {
     const manifests = [
       {
@@ -167,6 +172,12 @@ describe("createAndSignIn", () => {
 });
 
 describe("restoreTinyCloudWebSession", () => {
+  test("restores with account registry permissions disabled", async () => {
+    restoreResult = { status: "restored", session: { address: "0xabc" } };
+    await restoreTinyCloudWebSession("0xabc");
+    expect(lastTinyCloudConfig.includeAccountRegistryPermissions).toBe(false);
+  });
+
   test("restores a session-only TinyCloudWeb without a provider", async () => {
     restoreResult = { status: "restored", session: { address: "0xabc" } };
     lastRestoreAddress = undefined;

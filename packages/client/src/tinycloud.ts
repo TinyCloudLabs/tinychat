@@ -26,8 +26,8 @@ export interface TinyCloudWebConfig {
   manifest?: Manifest;
   /** Pre-composed manifest request that may include app and delegate manifests. */
   capabilityRequest?: ComposedManifestRequest;
-  /** Include implicit account registry permissions when composing `manifest`. Default true in the SDK. */
-  includeAccountRegistryPermissions?: boolean;
+  /** Account registry permissions are disabled for Home sessions. */
+  includeAccountRegistryPermissions?: false;
   /**
    * Session storage backend. Defaults to BrowserSessionStorage (localStorage);
    * the Exo native app passes the OpenKey secure-store adapter so the session
@@ -73,7 +73,7 @@ export function createTinyCloudWeb(
     siweConfig: config?.siweConfig,
     manifest,
     capabilityRequest: config?.capabilityRequest,
-    includeAccountRegistryPermissions: config?.includeAccountRegistryPermissions,
+    includeAccountRegistryPermissions: false,
     ...(config?.replication ? { replication: config.replication } : {}),
     autoBootstrapAccount: false,
   };
@@ -217,7 +217,7 @@ export async function restoreTinyCloudWebSession(
     siweConfig: config?.siweConfig,
     manifest,
     capabilityRequest: config?.capabilityRequest,
-    includeAccountRegistryPermissions: config?.includeAccountRegistryPermissions,
+    includeAccountRegistryPermissions: false,
     ...(config?.replication ? { replication: config.replication } : {}),
   };
 
