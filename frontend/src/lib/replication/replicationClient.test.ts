@@ -133,6 +133,12 @@ describe("replicationClient", () => {
       expect(config?.maxBytes).toBe(100 * 1024 * 1024);
     });
 
+    test("the local copy syncs names only: content is fetched on demand, not in bulk", async () => {
+      installBrowser({ flag: true, optIn: [ALICE] });
+      const config = await buildReplicationConfig(ALICE, spyLoader());
+      expect(config?.contentFetch).toBe("lazy");
+    });
+
     test("waits for a page-load purge that is still deleting the copy before it builds anything", async () => {
       installBrowser({ flag: true, optIn: [ALICE] });
       const loader = spyLoader();
