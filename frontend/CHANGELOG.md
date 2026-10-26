@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.10.0-beta.56
+
+### Patch Changes
+
+- a6db78c: Keep keyboard focus inside the Powerful consent dialog and let Escape close only the dialog.
+
 ## 0.10.0-beta.55
 
 ### Patch Changes
