@@ -41,28 +41,32 @@ export function connectorEnvelopeKvPath(descriptor: Pick<ConnectorDescriptor, "i
   return `${CONNECTORS_KV_PREFIX}/credentials/${descriptor.id}`;
 }
 
-function failure(caught: unknown): { ok: false; error: ErrorValue } {
+function failure(caught: unknown, descriptor: ConnectorDescriptor): { ok: false; error: ErrorValue } {
   const value = caught as { code?: unknown; message?: unknown } | null;
   return {
     ok: false,
     error: {
       code: typeof value?.code === "string" ? value.code : "CONNECTOR_KEY_ERROR",
-      message: typeof value?.message === "string" ? value.message : "Connector key operation failed",
+      message: typeof value?.message === "string" ? value.message : `Something went wrong with your ${descriptor.name} key. Try again.`,
     },
   };
 }
 
-function parseEnvelope(value: unknown, expectedPath: string): Result<Envelope> {
+function parseEnvelope(value: unknown, expectedPath: string, descriptor: ConnectorDescriptor): Result<Envelope> {
+  const invalid = (): Result<Envelope> => ({ ok: false, error: {
+    code: "CONNECTOR_ENVELOPE_INVALID",
+    message: `This saved ${descriptor.name} key can't be read. To fix it, disconnect ${descriptor.name} and connect it again.`,
+  } });
   let parsed = value;
   if (typeof value === "string") {
-    try { parsed = JSON.parse(value); } catch { return { ok: false, error: { code: "CONNECTOR_ENVELOPE_INVALID", message: "Saved connector key is invalid" } }; }
+    try { parsed = JSON.parse(value); } catch { return invalid(); }
   }
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-    return { ok: false, error: { code: "CONNECTOR_ENVELOPE_INVALID", message: "Saved connector key is invalid" } };
+    return invalid();
   }
   const envelope = parsed as Record<string, unknown>;
   if (envelope.v !== 2 || envelope.keyPath !== expectedPath) {
-    return { ok: false, error: { code: "CONNECTOR_ENVELOPE_INVALID", message: "Saved connector key is invalid" } };
+    return invalid();
   }
   return { ok: true, data: envelope as Envelope };
 }
@@ -78,7 +82,7 @@ export async function saveNamedConnectorKey(
     const envelope = await client.keys.encrypt(path, new TextEncoder().encode(secret));
     const saved = await client.kv.put(connectorEnvelopeKvPath(descriptor), JSON.stringify(envelope));
     return saved.ok ? { ok: true, data: undefined } : saved;
-  } catch (caught) { return failure(caught); }
+  } catch (caught) { return failure(caught, descriptor); }
 }
 
 export async function readNamedConnectorKey(
@@ -91,11 +95,15 @@ export async function readNamedConnectorKey(
       if (stored.error.code === "KV_NOT_FOUND") return { ok: true, data: null };
       return stored;
     }
-    const envelope = parseEnvelope(stored.data.data, connectorKeyPath(descriptor));
+    const envelope = parseEnvelope(stored.data.data, connectorKeyPath(descriptor), descriptor);
     if (!envelope.ok) return envelope;
     const bytes = await client.keys.decrypt(envelope.data);
     return { ok: true, data: new TextDecoder("utf-8", { fatal: true }).decode(bytes) };
-  } catch (caught) { return failure(caught); }
+  } catch (caught) { return failure(caught, descriptor); }
+}
+
+export function migrationDeclinedMessage(descriptor: ConnectorDescriptor): string {
+  return `Not moved. Your ${descriptor.name} key is kept, but ${descriptor.name} won't work until you approve. You'll be asked again next time.`;
 }
 
 /** The old vault copy is retained after a verified migration. */
@@ -109,9 +117,9 @@ export async function readOrMigrateConnectorKey(
   if (current.data !== null) return { ok: true, data: current.data };
 
   let legacy: LegacyConnectorClient | null;
-  try { legacy = await requestLegacyAccess(); } catch (caught) { return failure(caught); }
+  try { legacy = await requestLegacyAccess(); } catch (caught) { return failure(caught, descriptor); }
   if (legacy === null) {
-    return { ok: false, error: { code: "CONNECTOR_MIGRATION_DECLINED", message: "Connector key approval was declined" } };
+    return { ok: false, error: { code: "CONNECTOR_MIGRATION_DECLINED", message: migrationDeclinedMessage(descriptor) } };
   }
   try {
     if (!isSecretsUnlocked(legacy)) {
@@ -125,7 +133,7 @@ export async function readOrMigrateConnectorKey(
     const verified = await readNamedConnectorKey(client, descriptor);
     if (!verified.ok) return verified;
     if (verified.data !== old.data) {
-      return { ok: false, error: { code: "CONNECTOR_MIGRATION_MISMATCH", message: "Connector key could not be verified" } };
+      return { ok: false, error: { code: "CONNECTOR_MIGRATION_MISMATCH", message: `Couldn't confirm the new copy, so your ${descriptor.name} key stays where it was.` } };
     }
     return { ok: true, data: old.data };
   } finally {
@@ -140,7 +148,7 @@ export async function deleteNamedConnectorKey(
   try {
     const removed = await client.kv.delete(connectorEnvelopeKvPath(descriptor));
     return removed.ok ? { ok: true, data: undefined } : removed;
-  } catch (caught) { return failure(caught); }
+  } catch (caught) { return failure(caught, descriptor); }
 }
 
 /** Production connector call sites keep their Result-based interface. */
@@ -159,7 +167,7 @@ export async function getConnectorKey<E>(
   const result = await readNamedConnectorKey(tcw as unknown as NamedConnectorClient, descriptor);
   if (!result.ok) return result as { ok: false; error: E };
   if (result.data === null) {
-    return { ok: false, error: { code: "CONNECTOR_MIGRATION_REQUIRED", message: "Approve access to move this connector key." } as E };
+    return { ok: false, error: { code: "CONNECTOR_MIGRATION_REQUIRED", message: `Approve once to move your saved ${descriptor.name} key.` } as E };
   }
   return { ok: true, data: result.data };
 }

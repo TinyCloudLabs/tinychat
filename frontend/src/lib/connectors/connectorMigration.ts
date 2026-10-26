@@ -5,6 +5,7 @@ import { withEncryptionDecryptGrant } from "./encryptionGrant";
 /** A short-lived OpenKey authorization for the one legacy vault read. */
 export async function prepareLegacyConnectorRead(input: {
   ownerDid: string;
+  connectorName: string;
   backendUrl: string;
   tinycloudHosts: string[];
   openkeyHost: string;
@@ -12,7 +13,7 @@ export async function prepareLegacyConnectorRead(input: {
   const wallet = await connectWallet({ host: input.openkeyHost, appName: "Exo" });
   const ownerAddress = input.ownerDid.split(":").at(-1);
   if (!ownerAddress || wallet.address.toLowerCase() !== ownerAddress.toLowerCase()) {
-    throw new Error("Sign in with the same account to move this connector key.");
+    throw new Error(`Sign in with the same account you used for ${input.connectorName} to move this key.`);
   }
   const manifest = await loadAppManifest(`${input.backendUrl}/api/manifest`);
   const client = createTinyCloudWeb(wallet.web3Provider, {

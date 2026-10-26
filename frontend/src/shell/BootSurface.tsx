@@ -48,7 +48,7 @@ export function BootSurface(props: {
         <div className="flex flex-col gap-1.5">
           <h1 className="font-display text-title-2">Exo</h1>
           <p className="flex items-center justify-center text-callout text-muted-foreground">
-            {props.approvalReady ? "Approve the TinyCloud session in OpenKey." : message}
+            {props.approvalReady ? "Approve your sign-in in OpenKey." : message}
             {/* Where conversations live, as a hint: before sign-in there is no How it works page to link to. */}
             {props.state === "unauthenticated" && (
               <InfoTip label="Where your conversations live" className="-my-3 fine:-my-1">

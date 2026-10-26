@@ -52,7 +52,7 @@ import {
 } from "./GmeetCardStatus";
 import { awaitGmeetSessionSync } from "./useGmeetSessionSync";
 import { useGmeetRowStatus } from "./useGmeetRowStatus";
-import { getConnectorKey, isConnectorKeysReady, readOrMigrateConnectorKey, type NamedConnectorClient } from "@/lib/connectors/namedConnectorSecrets";
+import { getConnectorKey, isConnectorKeysReady, migrationDeclinedMessage, readOrMigrateConnectorKey, type NamedConnectorClient } from "@/lib/connectors/namedConnectorSecrets";
 import {
   AlertDialog, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
   AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
@@ -602,11 +602,11 @@ export function ConnectorsCard({
     try {
       const { prepareLegacyConnectorRead } = await import("@/lib/connectors/connectorMigration");
       setPreparedMigration(await prepareLegacyConnectorRead({
-        ownerDid: tcw.did, backendUrl, tinycloudHosts: tcw.hosts,
+        ownerDid: tcw.did, connectorName: migrationDescriptor.name, backendUrl, tinycloudHosts: tcw.hosts,
         openkeyHost: import.meta.env.VITE_OPENKEY_HOST || "https://openkey.so",
       }));
     } catch (caught) {
-      setMigrationError(caught instanceof Error ? caught.message : "Connector key approval could not start.");
+      setMigrationError(caught instanceof Error ? caught.message : "Couldn't start the approval. Try again.");
     } finally {
       setMigrationBusy(false);
     }
@@ -631,7 +631,7 @@ export function ConnectorsCard({
       setMigrationDescriptor(null);
       void handleSyncNow(descriptor);
     } catch (caught) {
-      setMigrationError(caught instanceof Error ? caught.message : "Connector key approval did not finish.");
+      setMigrationError(caught instanceof Error ? caught.message : "The approval didn't finish. Try again.");
     } finally {
       preparedMigration.cleanup();
       setPreparedMigration(null);
@@ -766,17 +766,18 @@ export function ConnectorsCard({
       }}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Move your saved connector key</AlertDialogTitle>
+            <AlertDialogTitle>Move your saved {migrationDescriptor?.name} key</AlertDialogTitle>
             <AlertDialogDescription>
-              Approve a one-time OpenKey request to read your saved {migrationDescriptor?.name} connection.
-              Exo will encrypt it with its own key and verify the new copy before using it.
+              {`Approve once in OpenKey so Exo can read your saved ${migrationDescriptor?.name} key and store it under its own key. Your old copy stays, and nothing changes until the new copy checks out.`}
             </AlertDialogDescription>
           </AlertDialogHeader>
           {migrationError && <p role="alert" className="text-sm text-destructive">{migrationError}</p>}
           <AlertDialogFooter>
-            <AlertDialogCancel disabled={migrationBusy}>Later</AlertDialogCancel>
+            <AlertDialogCancel disabled={migrationBusy} onClick={() => {
+              if (migrationDescriptor) patchRow(migrationDescriptor.id, { actionError: migrationDeclinedMessage(migrationDescriptor) });
+            }}>Later</AlertDialogCancel>
             <Button type="button" disabled={migrationBusy} onClick={() => void (preparedMigration ? migrateConnector() : prepareConnectorMigration())}>
-              {migrationBusy ? "Moving…" : preparedMigration ? "Continue to OpenKey" : "Prepare approval"}
+              {migrationBusy ? "Moving your key…" : preparedMigration ? "Continue to OpenKey" : "Get ready"}
             </Button>
           </AlertDialogFooter>
         </AlertDialogContent>

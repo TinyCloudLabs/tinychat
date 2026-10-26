@@ -4,6 +4,7 @@ import { TINYCHAT_KEY_PREFIX, CONNECTORS_KV_PREFIX } from "@tinyboilerplate/core
 import {
   connectorEnvelopeKvPath,
   connectorKeyPath,
+  getConnectorKey,
   readNamedConnectorKey,
   readOrMigrateConnectorKey,
   saveNamedConnectorKey,
@@ -79,6 +80,23 @@ describe("TinyChat connector named keys", () => {
     expect(connectorEnvelopeKvPath(connector)).toBe(`${CONNECTORS_KV_PREFIX}/credentials/fireflies`);
   });
 
+  test("an absent envelope requests one approval with the connector name", async () => {
+    const s = stub();
+    expect(await getConnectorKey(s.client as never, connector)).toEqual({
+      ok: false,
+      error: { code: "CONNECTOR_MIGRATION_REQUIRED", message: "Approve once to move your saved Fireflies key." },
+    });
+  });
+
+  test("an invalid envelope gives the disconnect and connect recovery steps", async () => {
+    const s = stub();
+    s.rows.set(connectorEnvelopeKvPath(connector), "not-json");
+    expect(await readNamedConnectorKey(s.client, connector)).toEqual({
+      ok: false,
+      error: { code: "CONNECTOR_ENVELOPE_INVALID", message: "This saved Fireflies key can't be read. To fix it, disconnect Fireflies and connect it again." },
+    });
+  });
+
   test("saves a v2 envelope and reads the same secret through named keys", async () => {
     const s = stub();
     expect(await saveNamedConnectorKey(s.client, connector, "secret-a")).toEqual({ ok: true, data: undefined });
@@ -107,7 +125,7 @@ describe("TinyChat connector named keys", () => {
     const s = stub();
     const old = oldVault("legacy-secret");
     const result = await readOrMigrateConnectorKey(s.client, connector, async () => null);
-    expect(result).toMatchObject({ ok: false, error: { code: "CONNECTOR_MIGRATION_DECLINED" } });
+    expect(result).toEqual({ ok: false, error: { code: "CONNECTOR_MIGRATION_DECLINED", message: "Not moved. Your Fireflies key is kept, but Fireflies won't work until you approve. You'll be asked again next time." } });
     expect(old.calls).toEqual([]);
     expect(s.rows.size).toBe(0);
   });
@@ -117,7 +135,7 @@ describe("TinyChat connector named keys", () => {
     const old = oldVault("legacy-secret");
     s.overrideReadback("different");
     const result = await readOrMigrateConnectorKey(s.client, connector, async () => old.client as never);
-    expect(result).toMatchObject({ ok: false, error: { code: "CONNECTOR_MIGRATION_MISMATCH" } });
+    expect(result).toEqual({ ok: false, error: { code: "CONNECTOR_MIGRATION_MISMATCH", message: "Couldn't confirm the new copy, so your Fireflies key stays where it was." } });
     expect(old.calls).toEqual(["get:FIREFLIES_API_KEY"]);
     expect(s.rows.has(connectorEnvelopeKvPath(connector))).toBe(true);
   });
