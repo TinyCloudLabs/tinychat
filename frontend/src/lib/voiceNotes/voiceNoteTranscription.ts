@@ -50,7 +50,6 @@ import { readTranscriptCommit, requireVoiceNoteTranscriptCommit, type Transcript
 import { preserveVoiceNoteTranscriptHistory } from "./voiceNoteTranscriptHistory";
 import { pendingStore } from "./recorderSaves";
 import {
-  AUTO_RESUBMIT_MAX_IN_FLIGHT,
   AUTO_RESUBMIT_SPACING_MS,
   localStorageAutoResubmitStore,
   selectProviderResubmits,
@@ -2701,8 +2700,9 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
   /**
    * Once per load, after the first check that finds Private available and open: re-submit (the user's own Retry)
    * each note whose job ended on a provider failure while its recording is still on this device. A note at most
-   * once ever (device-local marker, written before the re-submit), none whose failure is over 7 days old, at most
-   * two in line at a time, one second apart. A note that fails again waits for the user's manual Retry.
+   * once ever (device-local marker, written before the re-submit; taken back if the account already had an active
+   * job), none whose failure is over 7 days old, strictly one at a time, one second apart. A note that fails again
+   * waits for the user's manual Retry.
    */
   let providerResubmitStarted = false;
   const resubmitProviderFailed = async (): Promise<void> => {
@@ -2725,11 +2725,18 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
       for (const recording of await config.localRecordings()) {
         if (recording.source === "in_app" && recording.options?.transcriber === "private-cloud") recordings.set(recording.id, recording);
       }
-      const started: string[] = [];
       for (const sourceId of selectProviderResubmits({ failed, recordings, marked: config.marked, now: now() })) {
-        for (;;) {
+        if (!on()) return;
+        // The user may have retried it, or it may have changed, while earlier notes ran.
+        const shown = jobs.get(sourceId);
+        const code = cloud.terminalFailure?.(sourceId);
+        if (!code || cloud.hasRemoteJob(sourceId) || shown?.kind === "active" || shown?.kind === "done") continue;
+        if (!config.marked.mark(sourceId)) continue;
+        transcriber.transcribe(sourceId);
+        // One at a time (PTX allows one active transcription per account): the next note starts only once
+        // this attempt has ended (done, failed, or no longer running), the signal the pipeline itself publishes.
+        while (jobs.get(sourceId)?.kind === "active") {
           if (!on()) return;
-          if (started.filter((id) => jobs.get(id)?.kind === "active").length < AUTO_RESUBMIT_MAX_IN_FLIGHT) break;
           // The frontend's TS lib has no Promise.withResolvers.
           await new Promise<void>((resolve) => {
             const wake = () => {
@@ -2739,13 +2746,14 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
             slotWaiters.add(wake);
           });
         }
-        // The user may have retried it, or it may have changed, while earlier notes ran.
-        const shown = jobs.get(sourceId);
-        const code = cloud.terminalFailure?.(sourceId);
-        if (!code || cloud.hasRemoteJob(sourceId) || shown?.kind === "active" || shown?.kind === "done") continue;
-        if (!config.marked.mark(sourceId)) continue;
-        transcriber.transcribe(sourceId);
-        started.push(sourceId);
+        const ended = jobs.get(sourceId);
+        if (ended?.kind === "failed" && ended.code === "active_transcription_exists") {
+          // The account already had an active job (the user's own Retry): this attempt did not run, so it is
+          // not spent. Give the note its failure record back and the marker, so the next load tries it again.
+          if (!cloud.hasRemoteJob(sourceId)) cloud.rememberTerminalFailure?.(sourceId, code);
+          config.marked.unmark(sourceId);
+          return;
+        }
         await sleep(AUTO_RESUBMIT_SPACING_MS);
       }
     } catch (err) {

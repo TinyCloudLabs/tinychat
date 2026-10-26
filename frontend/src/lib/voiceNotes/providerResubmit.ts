@@ -14,22 +14,22 @@ export const PROVIDER_FAILURE_CODES: Readonly<Record<string, true>> = { provider
 
 /** A failure older than this is left for the user. */
 export const AUTO_RESUBMIT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
-/** Notes in line or running because of this pass at once. */
-export const AUTO_RESUBMIT_MAX_IN_FLIGHT = 2;
-/** Gap between two starts. */
+/** Gap between two attempts: the next note starts this long after the previous one ended. */
 export const AUTO_RESUBMIT_SPACING_MS = 1000;
 
 export interface AutoResubmitStore {
   has(sourceId: string): boolean;
   /** True only when the marker is durably written; the note is not re-submitted otherwise. */
   mark(sourceId: string): boolean;
+  /** Takes the marker back (the attempt never ran: the account already had an active job). True when no marker remains. */
+  unmark(sourceId: string): boolean;
 }
 
 type KeyValueStorage = Pick<Storage, "getItem" | "setItem">;
 
 export function memoryAutoResubmitStore(): AutoResubmitStore {
   const set = new Set<string>();
-  return { has: (id) => set.has(id), mark: (id) => { set.add(id); return true; } };
+  return { has: (id) => set.has(id), mark: (id) => { set.add(id); return true; }, unmark: (id) => { set.delete(id); return true; } };
 }
 
 export function localStorageAutoResubmitStore(
@@ -57,6 +57,19 @@ export function localStorageAutoResubmitStore(
       const all = read();
       if (all === null || !storage) return false;
       const next = JSON.stringify({ ...all, [id]: Date.now() });
+      try {
+        storage.setItem(key, next);
+        return storage.getItem(key) === next;
+      } catch {
+        return false;
+      }
+    },
+    unmark: (id) => {
+      const all = read();
+      if (all === null || !storage) return false;
+      if (!(id in all)) return true;
+      const { [id]: _removed, ...rest } = all;
+      const next = JSON.stringify(rest);
       try {
         storage.setItem(key, next);
         return storage.getItem(key) === next;
