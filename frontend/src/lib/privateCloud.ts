@@ -150,13 +150,16 @@ export function isTransientCloudError(err: unknown): boolean {
   return err instanceof PrivateCloudError && TRANSIENT_CODES.has(err.code);
 }
 
+/** Shown when a recording is too long or large for Private transcription: it is kept, never lost, and there is nothing to retry. */
+export const PRIVATE_TOO_LONG_NOTE = "Your recording is saved, but it's too long for private transcription. The audio is kept, so nothing is lost.";
+
 /** User-facing sentence for a known private-cloud code, without the generic fallback. */
 export function privateCloudCodeMessage(code: string): string | undefined {
   switch (code) {
     case "recording_too_long_for_cloud":
     case "recording_too_long":
     case "recording_too_large":
-      return "Private cloud can't transcribe a recording this long or large.";
+      return PRIVATE_TOO_LONG_NOTE;
     case "no_speech":
       return "No speech was found in the recording.";
     case "invalid_audio":

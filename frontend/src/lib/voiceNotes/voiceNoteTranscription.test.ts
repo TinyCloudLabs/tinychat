@@ -7971,3 +7971,105 @@ describe("C:R3 EP1 real locked held recovery", () => {
     if (failed) throw failure;
   }, 60000);
 });
+
+// TC-2081: the length check precedes every PTX call and every audio read, using PTX's real production numbers.
+describe("TC-2081 a too-long note is refused before audio is read or any PTX job exists", () => {
+  beforeEach(() => _resetConnectorSchemaMemoForTests());
+  const nextChange = (t: { subscribe(listener: () => void): () => void }) => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    const off = t.subscribe(() => { off(); resolve(); });
+    return promise;
+  };
+  const settle = async (t: VoiceNoteTranscriber) => {
+    while ([...t.snapshot().jobs.values()].some((job) => job.kind === "active")) await nextChange(t);
+  };
+  const untilFinished = async (t: VoiceNoteTranscriber, id: string) => {
+    while (!["done", "failed"].includes(t.snapshot().jobs.get(id)?.kind ?? "")) await nextChange(t);
+  };
+  // PTX's real numbers: a 3 h hard limit plus its grace, advertised as the accepted ceiling.
+  const PTX: PrivateCloudCapabilities = {
+    ...CAPS, max_duration_seconds: 10_800, accepted_max_duration_seconds: 11_101, max_bytes: 120_960_000, content_types: ["audio/mp4"],
+  };
+  const TOO_LONG_MS = 11_102_000;
+  const JUST_UNDER_MS = 11_100_000;
+
+  async function build(durationMs: number) {
+    const space = sqliteSpace();
+    expect((await saveVoiceNote(space.tcw, { ...RECORDING, id: "rec-1", durationMs }, AUDIO, "ios")).ok).toBe(true);
+    space.sqlite.query(`UPDATE connector_meeting SET metadata = json_set(metadata, '$.capture.version', 2,
+      '$.capture.options.transcriber', 'private-cloud', '$.capture.source', 'in_app') WHERE source_id = ?`).run("rec-1");
+    VoiceNotes.listPending = async () => ({ recordings: [] });
+    // Every read of the note's audio from the space, counted after the save above.
+    let audioReads = 0;
+    const kv = space.tcw.kv as unknown as { get: (key: string, ...rest: never[]) => Promise<unknown> };
+    const get = kv.get.bind(kv);
+    kv.get = async (key: string, ...rest: never[]) => {
+      if (key.startsWith(voiceNoteAudioKvKey("rec-1"))) audioReads++;
+      return get(key, ...rest);
+    };
+    const storage = memoryStorage();
+    const h = harness({ capabilities: () => PTX });
+    localStorageVoiceNoteConsentStore(DID, storage).set(true);
+    const choices = localStorageVoiceNotePrivateChoiceStore(DID, storage);
+    const t = createVoiceNoteTranscriber({
+      cloud: h.cloud, consent: localStorageVoiceNoteConsentStore(DID, storage), tcw: () => space.tcw,
+      holds: localStorageVoiceNoteHoldStore(DID, storage), choices,
+    });
+    return { h, t, choices, audioReads: () => audioReads };
+  }
+
+  test("the advertised ceiling is 11101 s and the client margin is 0.25 s, so 11102 s is refused and 11100 s is not", () => {
+    const limits = privateCloudLimits(PTX);
+    expect(privateCloudRefusal(11_102, null, limits)).toEqual({ kind: "duration", limitSeconds: 11_101, durationSeconds: 11_102 });
+    expect(privateCloudRefusal(11_100, null, limits)).toBeNull();
+  });
+
+  test("run: a 3 h 5 min 2 s recording is refused with zero audio reads, zero creates and zero puts", async () => {
+    const { h } = await build(TOO_LONG_MS);
+    let loads = 0;
+    const refusal = await h.cloud.transcribe({
+      sourceId: "rec-1", capabilities: PTX, durationSeconds: TOO_LONG_MS / 1000,
+      loadAudio: async () => { loads++; return AUDIO; },
+    }, () => {}).catch((caught: unknown) => caught);
+    expect(refusal).toBeInstanceOf(PrivateCloudRefusedError);
+    expect(refusal).toMatchObject({ refusal: { kind: "duration", limitSeconds: 11_101, durationSeconds: 11_102 } });
+    expect(loads).toBe(0);
+    expect(h.creates).toHaveLength(0);
+    expect(h.puts).toHaveLength(0);
+  });
+
+  test("auto: the saved 11102 s note is dropped at admission, so no job, no choice, no audio read, no create and no put", async () => {
+    const { h, t, choices, audioReads } = await build(TOO_LONG_MS);
+    await t.check();
+    t.noteSaved({ id: "rec-1", durationMs: TOO_LONG_MS, source: "in_app", options: { transcriber: "private-cloud", identifySpeakers: false } });
+    await settle(t);
+    expect(audioReads()).toBe(0);
+    expect(h.creates).toHaveLength(0);
+    expect(h.puts).toHaveLength(0);
+    expect(t.snapshot().jobs.has("rec-1")).toBe(false);
+    expect(choices.ids()).toEqual([]);
+  });
+
+  test("auto: an 11100 s note is under the ceiling less the margin, so it is read, created and uploaded once", async () => {
+    const { h, t, audioReads } = await build(JUST_UNDER_MS);
+    await t.check();
+    t.noteSaved({ id: "rec-1", durationMs: JUST_UNDER_MS, source: "in_app", options: { transcriber: "private-cloud", identifySpeakers: false } });
+    await untilFinished(t, "rec-1");
+    expect(audioReads()).toBeGreaterThan(0);
+    expect(h.creates).toHaveLength(1);
+    expect(h.puts).toHaveLength(1);
+    expect(t.snapshot().jobs.get("rec-1")).toEqual({ kind: "done", outcome: "transcribed" });
+  });
+
+  test("explicit (Use Private): the 11102 s refusal is returned synchronously and the job is blocked limits-exceeded with nothing read or sent", async () => {
+    const { h, t, audioReads } = await build(TOO_LONG_MS);
+    await t.check();
+    expect(t.transcribePrivately("rec-1", TOO_LONG_MS / 1000))
+      .toEqual({ kind: "duration", limitSeconds: 11_101, durationSeconds: 11_102 });
+    await settle(t);
+    expect(audioReads()).toBe(0);
+    expect(h.creates).toHaveLength(0);
+    expect(h.puts).toHaveLength(0);
+    expect(t.snapshot().jobs.get("rec-1")).toEqual({ kind: "blocked", reason: "limits-exceeded" });
+  });
+});

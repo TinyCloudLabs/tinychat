@@ -66,3 +66,14 @@ describe("durable voice-note transcription failure copy", () => {
     });
   });
 });
+
+describe("TC-2081 too-long recordings say the audio is kept", () => {
+  const SENTENCE = "Your recording is saved, but it's too long for private transcription. The audio is kept, so nothing is lost.";
+  test("recording_too_long_for_cloud and recording_too_long_for_phone show the new sentence with no retry wording", () => {
+    for (const code of ["recording_too_long_for_cloud", "recording_too_long_for_phone"]) {
+      const failure = voiceNoteTranscriptionFailureForCode(code);
+      expect(failure.message, code).toBe(SENTENCE);
+      expect(failure.message, code).not.toMatch(/\b(?:Retry|Retrying|try again)\b/i);
+    }
+  });
+});

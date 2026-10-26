@@ -7,6 +7,8 @@ import { homePlace, placeWhere } from "@/capture/home/desktop/desktopCopy";
 import { CHECK_AGAIN, FINAL_COPY, privateNotOffered, TRANSCRIBER_NAME } from "@/capture/recorder/final/finalCopy";
 import { SIGNED_OUT } from "@/capture/recorder/final/useTranscriptionChoice";
 import { useRecorder } from "@/capture/recorder/RecorderProvider";
+import { useRecorderLayout } from "@/capture/recorder/useRecorderLayout";
+import { AUTO_STOP_LABEL, AUTO_STOP_OFF_HINT_PHONE, autoStopOnHint } from "@/capture/recorder/recorderCopy";
 import { SegmentedControl } from "@/components/ui/segmented-control";
 import { Button } from "@/components/ui/button";
 import { InfoTip } from "@/components/ui/info-tip";
@@ -17,7 +19,7 @@ import { isAppleSpeech, isOnDeviceReady, isOnDeviceStatusLoaded } from "@/lib/vo
 import { downloadOnDeviceModel, ensureOnDeviceModel, onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
 import { captureCapabilities } from "@/lib/voiceNotes/captureEngine";
 import { nativeVoiceNotesAvailable, type TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
-import { readDefaultTranscriber, readStopAfterPreference, readUploadAudioPreference, setDefaultTranscriber, setStopAfterPreference, setUploadAudioPreference, subscribeTranscriberPreference, type StopAfter } from "@/lib/voiceNotes/transcriberPreference";
+import { autoStopEnabled, readAutoStopChoice, readDefaultTranscriber, readStopAfterPreference, readUploadAudioPreference, setAutoStopPreference, setDefaultTranscriber, setStopAfterPreference, setUploadAudioPreference, stopAfterMs, subscribeTranscriberPreference, type StopAfter } from "@/lib/voiceNotes/transcriberPreference";
 
 type Transcription = ReturnType<typeof useRecorder>["transcription"];
 
@@ -95,6 +97,8 @@ export function VoiceNotesTranscriberSettings() {
   const platform = useContext(PlatformContext);
   const uploadAudio = useSyncExternalStore(subscribeTranscriberPreference, readUploadAudioPreference, readUploadAudioPreference);
   const stopAfter = useSyncExternalStore(subscribeTranscriberPreference, readStopAfterPreference, readStopAfterPreference);
+  const autoStopChoice = useSyncExternalStore(subscribeTranscriberPreference, readAutoStopChoice, readAutoStopChoice);
+  const autoStop = autoStopEnabled(useRecorderLayout() === "phone", autoStopChoice);
   const storageFull = useStorageReadOnly();
   const [uploadError, setUploadError] = useState<string | null>(null);
   const { transcription, signedIn } = useRecorder();
@@ -114,7 +118,7 @@ export function VoiceNotesTranscriberSettings() {
     ? "A copy of the audio is kept in your TinyCloud space. Transcripts and notes sync too. Private transcription still sends audio to be transcribed, then deletes it."
     : `Audio stays ${where}${platform === "web" ? ", and browsers can delete it" : ""}. Turn this on to keep a copy in TinyCloud. Transcripts and notes still sync to your TinyCloud space. Private transcription still sends audio to be transcribed, then deletes it.`;
 
-  const stopAfterSetting = (
+  const stopAfterSelect = (
     <div className="flex flex-col gap-1" data-testid="voice-notes-stop-after">
       <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
         <label htmlFor="stop-recording-after" className="text-sm">Stop recording after</label>
@@ -129,6 +133,24 @@ export function VoiceNotesTranscriberSettings() {
       </div>
       <p className="text-xs text-muted-foreground">New recordings stop by themselves after this long. Recordings never run longer than 3 hours.</p>
     </div>
+  );
+  // A device that never chose gets the layout's default: on at the desktop layouts, off at the phone layout.
+  const stopAfterSetting = (
+    <>
+      <div className="flex flex-col gap-1" data-testid="voice-notes-auto-stop">
+        <div className="flex min-h-11 items-center">
+          <label htmlFor="stop-recordings-automatically" className="-ml-3.5 flex size-11 shrink-0 cursor-pointer items-center justify-center">
+            <input id="stop-recordings-automatically" type="checkbox" className="size-4 accent-primary" checked={autoStop}
+              onChange={(event) => setAutoStopPreference(event.target.checked)} />
+          </label>
+          <label htmlFor="stop-recordings-automatically" className="-ml-1.5 cursor-pointer text-sm">{AUTO_STOP_LABEL}</label>
+        </div>
+        <p className="pl-6 text-xs text-muted-foreground" data-testid="voice-notes-auto-stop-hint">
+          {autoStop ? autoStopOnHint(stopAfterMs(stopAfter)) : AUTO_STOP_OFF_HINT_PHONE}
+        </p>
+      </div>
+      {autoStop ? stopAfterSelect : null}
+    </>
   );
   const uploadSetting = (
     <>

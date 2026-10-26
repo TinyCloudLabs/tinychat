@@ -1,4 +1,4 @@
-import { privateCloudCodeMessage } from "../privateCloud";
+import { PRIVATE_TOO_LONG_NOTE, privateCloudCodeMessage } from "../privateCloud";
 import { STORAGE_FULL_TRANSCRIPT_NOT_SAVED_LINE, STORAGE_FULL_TRANSCRIPT_NOT_SAVED_LOCAL_AUDIO_LINE } from "../storageStatus";
 
 export const TRANSCRIPT_STORAGE_FULL_CODE = "storage_full";
@@ -26,7 +26,7 @@ const NON_RETRYABLE_CODES: Readonly<Record<string, true>> = {
 };
 
 const TRANSCRIPTION_ERROR_COPY: Readonly<Record<string, string>> = {
-  recording_too_long_for_phone: "Private cloud can't transcribe a recording this long or large.",
+  recording_too_long_for_phone: PRIVATE_TOO_LONG_NOTE,
   recording_too_long: "Private cloud couldn't accept this recording's length or size. Try again.",
   recording_too_large: "Private cloud couldn't accept this recording's length or size. Try again.",
   unsupported_recording: "Private cloud transcription does not accept this recording's format.",

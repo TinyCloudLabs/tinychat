@@ -3,6 +3,10 @@ import type {
   AccountStatus, AudioInput, CaptureDefaults, CaptureOptions, CaptureSource, CaptureStatus, ClaimOptions, LocalTranscript, MicState,
   MicStateReason, MissingAudioSpan, NoteLedger, OutboxEntry, RemoteOpReceipt, VoiceNoteRecording, VoiceNotesPlugin,
 } from "./nativeVoiceNotes";
+import { VOICE_NOTE_MAX_DURATION_MS, VOICE_NOTE_MIN_DURATION_LIMIT_MS, VOICE_NOTE_SAFETY_CAP_MS } from "./nativeVoiceNotes";
+
+const clampLimitMs = (requested: number | undefined): number =>
+  Math.min(VOICE_NOTE_SAFETY_CAP_MS, Math.max(VOICE_NOTE_MIN_DURATION_LIMIT_MS, requested ?? VOICE_NOTE_MAX_DURATION_MS));
 
 type EventName = "micState" | "captureAlert" | "level" | "autoStopped" | "presentRecorder" | "recovered" | "recoveryFailed" | "writeFailure" | "committed" | "inputs" | "audioUploadProgress";
 type Listener = (value: unknown) => void;
@@ -293,10 +297,17 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
         uploadAudio: options?.uploadAudio ?? defaults.uploadAudio ?? false };
       session = { id, startedAt: now(), audioMs: 0, pausedMs: 0, pauseStarted: null, intent: "recording", availability: "available",
         reason: null, gen: ++generation, source: "in_app", owner: signedIn ? defaults.accountDid : null, transitionGen: defaults.transitionGen,
-        options: opts, spans: [], openSpan: null, maxDurationMs: Math.min(10_800_000, Math.max(1000, options?.maxDurationMs ?? 10_800_000)),
+        options: opts, spans: [], openSpan: null, maxDurationMs: clampLimitMs(options?.maxDurationMs),
         backoffAttempt: 0, nextRetryMs: null, osSilenced: false, pendingCapturedMs: 0 };
       stateChanged();
       return { id, startedAt: session.startedAt, maxDurationMs: session.maxDurationMs };
+    },
+    async setMaxDuration({ maxDurationMs }) {
+      const s = session;
+      if (!s) throw failure("no_recording");
+      s.maxDurationMs = clampLimitMs(maxDurationMs);
+      // A limit at or below the recorded time applies at the next tick, like any other limit.
+      return { maxDurationMs: s.maxDurationMs };
     },
     async stop() { return stop("user"); },
     async status() {
