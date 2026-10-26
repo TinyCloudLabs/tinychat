@@ -73,6 +73,7 @@ export async function buildReplicationConfig(
   return {
     enabled: true,
     prefixes: replicationPrefixes(),
+    syncScope: "prefixes",
     maxBytes: REPLICATION_MAX_BYTES,
     storage: await loader.createStorage(),
     onEvent: recordReplicationEvent,
