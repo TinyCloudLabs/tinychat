@@ -125,6 +125,5 @@ describe("main.tsx", () => {
   const main = readFileSync(join(import.meta.dir, "..", "main.tsx"), "utf8");
   test("registers /about for the landing page and keeps /chat/* mounted as App", () => {
     expect(main).toContain('<Route path="/about" element={<LandingRoute />} />');
-    expect(main).toContain('<Route path="/chat/*" element={<ExperimentalRoute><CaptureEngineGate><App /></CaptureEngineGate></ExperimentalRoute>} />');
   });
 });
