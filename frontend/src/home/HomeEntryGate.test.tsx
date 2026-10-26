@@ -1,7 +1,7 @@
 import { afterAll, afterEach, describe, expect, jest, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { act } from "react";
+import { act, StrictMode, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { RootRoute } from "../landing/RootRoute";
@@ -138,5 +138,107 @@ describe("the bounded wait (fake timers)", () => {
     expect(screenAt(host)).toBeNull();
     await tick(FIRST_SCREEN_WAIT_MS);
     expect(screenAt(host)).toBe("/chat/feed");
+  });
+});
+
+describe("one decision per entry (remounts, StrictMode, deep links)", () => {
+  const screenAt = (host: HTMLElement) => host.querySelector('[data-testid="screen"]')?.textContent ?? null;
+  const tick = (ms: number) => act(async () => { jest.advanceTimersByTime(ms); });
+  let remount: () => void = () => {};
+
+  function Remountable({ load }: { load: () => Promise<FirstScreen> }) {
+    const [generation, setGeneration] = useState(0);
+    remount = () => setGeneration((n) => n + 1);
+    return <Screen key={generation} load={load} />;
+  }
+
+  async function mountControlled(entry: string, load: () => Promise<FirstScreen>, strict = false) {
+    restore = installDom();
+    const host = document.createElement("div");
+    document.body.append(host);
+    root = createRoot(host);
+    const tree = (
+      <MemoryRouter initialEntries={[entry]}>
+        <Routes>
+          <Route path="/" element={<RootRoute nativeShell={false} homeShell />} />
+          <Route path="/chat/*" element={<Remountable load={load} />} />
+        </Routes>
+      </MemoryRouter>
+    );
+    await act(async () => root!.render(strict ? <StrictMode>{tree}</StrictMode> : tree));
+    return host;
+  }
+
+  afterEach(() => { jest.useRealTimers(); });
+
+  test("a remount after the deadline shows Feed at once and a late Apps answer never redirects", async () => {
+    jest.useFakeTimers();
+    const { promise, resolve } = Promise.withResolvers<FirstScreen>();
+    const load = jest.fn(() => promise);
+    const host = await mountControlled("/", load);
+    await tick(FIRST_SCREEN_WAIT_MS);
+    expect(screenAt(host)).toBe("/chat/feed");
+    await act(async () => remount());
+    expect(screenAt(host)).toBe("/chat/feed");
+    await act(async () => resolve("apps"));
+    await tick(FIRST_SCREEN_WAIT_MS * 3);
+    expect(screenAt(host)).toBe("/chat/feed");
+    expect(load).toHaveBeenCalledTimes(1);
+  });
+
+  test("a remount after an in-window Apps decision stays on Apps, without a loop or a second read", async () => {
+    jest.useFakeTimers();
+    const load = jest.fn(async (): Promise<FirstScreen> => "apps");
+    const host = await mountControlled("/", load);
+    await act(async () => {});
+    expect(screenAt(host)).toBe("/chat/apps");
+    await act(async () => remount());
+    await tick(FIRST_SCREEN_WAIT_MS * 3);
+    expect(screenAt(host)).toBe("/chat/apps");
+    expect(load).toHaveBeenCalledTimes(1);
+  });
+
+  test("a remount while the read is still pending joins the same read and deadline", async () => {
+    jest.useFakeTimers();
+    const { promise, resolve } = Promise.withResolvers<FirstScreen>();
+    const load = jest.fn(() => promise);
+    const host = await mountControlled("/", load);
+    await tick(500);
+    await act(async () => remount());
+    expect(screenAt(host)).toBeNull();
+    expect(load).toHaveBeenCalledTimes(1);
+    await act(async () => resolve("apps"));
+    expect(screenAt(host)).toBe("/chat/apps");
+  });
+
+  test("StrictMode's double mount makes one read and one decision", async () => {
+    jest.useFakeTimers();
+    const load = jest.fn(async (): Promise<FirstScreen> => "apps");
+    const host = await mountControlled("/", load, true);
+    await act(async () => {});
+    expect(screenAt(host)).toBe("/chat/apps");
+    expect(load).toHaveBeenCalledTimes(1);
+    await tick(FIRST_SCREEN_WAIT_MS * 2);
+    expect(screenAt(host)).toBe("/chat/apps");
+  });
+
+  test("explicit links never read the setting and never redirect, even with Apps saved", async () => {
+    jest.useFakeTimers();
+    const paths = [
+      "/chat", "/chat/some-thread", "/chat/feed", "/chat/apps", "/chat/connectors",
+      "/chat#share=abc", "/chat/feed#share=abc", "/chat/some-thread?x=1#share=abc",
+    ];
+    for (const path of paths) {
+      const load = jest.fn(async (): Promise<FirstScreen> => "apps");
+      const host = await mountControlled(path, load);
+      await act(async () => {});
+      await tick(FIRST_SCREEN_WAIT_MS * 2);
+      expect(screenAt(host)).toBe(path);
+      expect(load).not.toHaveBeenCalled();
+      await act(async () => root!.unmount());
+      root = null;
+      restore?.();
+      restore = null;
+    }
   });
 });
