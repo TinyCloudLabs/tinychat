@@ -44,7 +44,9 @@ export function hasTinyChatNativeAudience(message: string, address: string, chai
     for (const action of entry.actions) {
       if (typeof action !== "string" || !allowedActions.includes(action)) return false;
     }
-    appGrant = true;
+    // Only a grant under this app's own prefix proves the sign-in was meant for TinyChat. The broad
+    // Home entries are tolerated next to it but never count as that proof on their own.
+    if (!homeKvRoot && !catalogDatabase) appGrant = true;
   }
   return appGrant;
 }
