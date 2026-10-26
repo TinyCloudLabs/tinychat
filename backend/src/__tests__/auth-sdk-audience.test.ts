@@ -45,6 +45,9 @@ async function startAuthServer() {
   const nonceStore = createNonceStore();
   const app = express();
   app.use(express.json());
+  app.get("/info", (_request, response) => response.json({
+    protocol: 1, version: "local-test-node", features: ["encryption-named-keys-v1"],
+  }));
   app.use("/api/auth", createAuthRouter({
     nonceStore, privateKey: "isolated-sdk-audience-test-key", frontendUrl: "https://tinycloud.chat",
   }));
@@ -55,6 +58,7 @@ async function startAuthServer() {
   if (!address || typeof address === "string") throw new Error("Expected TCP address");
   const base = `http://127.0.0.1:${address.port}`;
   return {
+    host: base,
     async nonce(bound = true): Promise<string> {
       const query = bound ? `?address=${account.address}` : "";
       const response = await fetch(`${base}/api/auth/nonce${query}`);
@@ -77,7 +81,7 @@ async function startAuthServer() {
 
 /** Capture the exact SIWE bytes the installed browser SDK sends to EIP-1193 personal_sign.
  * Stop there so this test never needs a live OpenKey key or TinyCloud node. */
-async function signWithWebSdk(origin: string, nonce: string, claimedDomain?: string) {
+async function signWithWebSdk(origin: string, nonce: string, host: string, claimedDomain?: string) {
   browser.happyDOM.setURL(origin);
   const captured = { message: "", signature: "" };
   const signed = Symbol("signed by offline wallet");
@@ -97,7 +101,7 @@ async function signWithWebSdk(origin: string, nonce: string, claimedDomain?: str
   };
   const tcw = new TinyCloudWeb({
     provider,
-    tinycloudHosts: ["http://127.0.0.1:9"],
+    tinycloudHosts: [host],
     autoCreateSpace: true,
     autoBootstrapAccount: false,
     persistSession: false,
@@ -154,7 +158,7 @@ describe("real SDK SIWE audience", () => {
       const server = await startAuthServer();
       try {
         const nonce = await server.nonce();
-        const signed = await signWithWebSdk(origin, nonce);
+        const signed = await signWithWebSdk(origin, nonce, server.host);
         const parsed = parseSiweMessage(signed.message);
         expect(parsed.domain).toBe(domain);
         expect(parsed.uri).toMatch(SESSION_URI);
@@ -192,7 +196,7 @@ describe("real SDK SIWE audience", () => {
     const server = await startAuthServer();
     try {
       const nonce = await server.nonce(false);
-      const signed = await signWithWebSdk("https://attacker.example/chat", nonce, "openkey.so");
+      const signed = await signWithWebSdk("https://untrusted.example/chat", nonce, server.host, "openkey.so");
       const parsed = parseSiweMessage(signed.message);
       expect(parsed.domain).toBe("openkey.so");
       expect(parsed.uri).toMatch(SESSION_URI);
@@ -208,7 +212,7 @@ describe("real SDK SIWE audience", () => {
     const server = await startAuthServer();
     try {
       const nonce = await server.nonce();
-      const signed = await signWithWebSdk("https://evil.pages.dev/chat", nonce);
+      const signed = await signWithWebSdk("https://evil.pages.dev/chat", nonce, server.host);
       expect(await server.verify(signed.message, signed.signature)).toEqual({ status: 400, error: "invalid_origin" });
     } finally {
       await server.close();

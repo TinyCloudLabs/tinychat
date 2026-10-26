@@ -25,7 +25,7 @@ export async function prepareLegacyConnectorRead(input: {
     persistSession: false,
   });
   try {
-    await (client as TinyCloudWeb & { prepareSignIn(): Promise<void> }).prepareSignIn();
+    await client.prepareSignIn();
     return {
       signIn: async () => { await client.signIn(); return client; },
       cleanup: () => client.cleanup(),

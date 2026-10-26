@@ -7,7 +7,7 @@
       "devDependencies": {
         "@changesets/cli": "3.0.3",
         "@eslint/js": "^10.0.1",
-        "@tinycloud/node-sdk": "3.3.0",
+        "@tinycloud/node-sdk": "3.8.0-beta.11",
         "eslint": "^10.1.0",
         "husky": "^9.1.7",
         "portless": "^0.13.0",
@@ -23,9 +23,9 @@
         "@scalar/express-api-reference": "^0.4.0",
         "@tinyboilerplate/core": "workspace:*",
         "@tinyboilerplate/server": "workspace:*",
-        "@tinycloud/node-sdk": "3.3.0",
-        "@tinycloud/node-sdk-wasm": "1.7.8",
-        "@tinycloud/sdk-core": "3.3.0",
+        "@tinycloud/node-sdk": "3.8.0-beta.11",
+        "@tinycloud/node-sdk-wasm": "1.7.8-beta.0",
+        "@tinycloud/sdk-core": "3.8.0-beta.9",
         "cors": "^2.8.5",
         "express": "^4.21.0",
         "express-rate-limit": "^8.3.1",
@@ -36,7 +36,7 @@
         "viem": "^2.52.0",
       },
       "devDependencies": {
-        "@tinycloud/web-sdk": "3.3.0",
+        "@tinycloud/web-sdk": "3.8.0-beta.11",
         "@types/cors": "^2.8.17",
         "@types/express": "^4.17.0",
         "@types/js-yaml": "^4.0.0",
@@ -78,9 +78,9 @@
         "@tauri-apps/api": "^2.9.0",
         "@tinyboilerplate/client": "workspace:*",
         "@tinyboilerplate/core": "workspace:*",
-        "@tinycloud/replica": "0.3.0",
-        "@tinycloud/sdk-core": "3.3.0",
-        "@tinycloud/web-sdk": "3.3.0",
+        "@tinycloud/replica": "0.4.0-beta.3",
+        "@tinycloud/sdk-core": "3.8.0-beta.9",
+        "@tinycloud/web-sdk": "3.8.0-beta.11",
         "@xyflow/react": "^12.8.5",
         "assistant-stream": "0.3.19",
         "class-variance-authority": "^0.7.1",
@@ -98,7 +98,7 @@
       },
       "devDependencies": {
         "@tailwindcss/typography": "^0.5.19",
-        "@tinycloud/web-sdk-wasm": "1.7.7",
+        "@tinycloud/web-sdk-wasm": "1.7.7-beta.1",
         "@types/react": "^19.0.0",
         "@types/react-dom": "^19.0.0",
         "@vitejs/plugin-react": "^4.3.0",
@@ -136,16 +136,16 @@
       "version": "0.1.0",
       "dependencies": {
         "@tinyboilerplate/core": "workspace:*",
-        "@tinycloud/sdk-core": "3.3.0",
+        "@tinycloud/sdk-core": "3.8.0-beta.9",
       },
       "devDependencies": {
         "@openkey/sdk": "0.12.2",
-        "@tinycloud/web-sdk": "3.3.0",
+        "@tinycloud/web-sdk": "3.8.0-beta.11",
         "typescript": "^5.7.0",
       },
       "peerDependencies": {
         "@openkey/sdk": "0.12.2",
-        "@tinycloud/web-sdk": ">=3.1.0",
+        "@tinycloud/web-sdk": "3.8.0-beta.11",
       },
     },
     "packages/core": {
@@ -160,7 +160,7 @@
       "version": "0.1.0",
       "dependencies": {
         "@tinyboilerplate/core": "workspace:*",
-        "@tinycloud/node-sdk": "3.3.0",
+        "@tinycloud/node-sdk": "3.8.0-beta.11",
         "jose": "^5.0.0",
         "siwe": "^2.3.2",
       },
@@ -178,15 +178,15 @@
     },
   },
   "patchedDependencies": {
-    "@tinycloud/node-sdk@3.3.0": "patches/@tinycloud%2Fnode-sdk@3.3.0.patch",
+    "@tinycloud/node-sdk@3.8.0-beta.11": "patches/@tinycloud%2Fnode-sdk@3.8.0-beta.11.patch",
   },
   "overrides": {
-    "@tinycloud/node-sdk": "3.3.0",
-    "@tinycloud/node-sdk-wasm": "1.7.8",
-    "@tinycloud/sdk-core": "3.3.0",
-    "@tinycloud/sdk-services": "3.3.0",
-    "@tinycloud/web-sdk": "3.3.0",
-    "@tinycloud/web-sdk-wasm": "1.7.7",
+    "@tinycloud/node-sdk": "3.8.0-beta.11",
+    "@tinycloud/node-sdk-wasm": "1.7.8-beta.0",
+    "@tinycloud/sdk-core": "3.8.0-beta.9",
+    "@tinycloud/sdk-services": "3.8.0-beta.9",
+    "@tinycloud/web-sdk": "3.8.0-beta.11",
+    "@tinycloud/web-sdk-wasm": "1.7.7-beta.1",
     "ethers": "6.16.0",
     "react": "19.2.3",
     "react-dom": "19.2.3",
@@ -871,23 +871,23 @@
 
     "@tinycloud/bootstrap": ["@tinycloud/bootstrap@2.8.0", "", { "dependencies": { "viem": "^2.21.53" } }, "sha512-PZ+yf+c2Brc4tW7lLM1eY3ReuxQoIRZy55ehvA22elDcph+T2P/Mkj7nyy0QP/nfXbfmVZqBwXS1Kl+V2HALCg=="],
 
-    "@tinycloud/node-sdk": ["@tinycloud/node-sdk@3.3.0", "", { "dependencies": { "@tinycloud/node-sdk-wasm": "1.7.8", "@tinycloud/replica": "0.3.0", "@tinycloud/sdk-core": "3.3.0", "@tinycloud/sdk-services": "3.3.0", "siwe": "^3.0.0" } }, "sha512-DlS8NSNEoeKhYEGu2SeYmOSjMSFKUcruCrbVcfDqKXp4A2OMx6wvnWLgi5CBzuo1q17IQaTzt213Zc0BsFwyXA=="],
+    "@tinycloud/node-sdk": ["@tinycloud/node-sdk@3.8.0-beta.11", "", { "dependencies": { "@tinycloud/node-sdk-wasm": "1.7.8", "@tinycloud/replica": "0.4.0-beta.3", "@tinycloud/sdk-core": "3.8.0-beta.9", "@tinycloud/sdk-services": "3.8.0-beta.9", "siwe": "^3.0.0" } }, "sha512-5oDltZJ5cwKdmvzXzk/brRcn2f9kM7kph5eLYWlyw4gxlpsLlG82lLDH8OElbP68BmLWbmD/cgdhOdIpInqLKA=="],
 
-    "@tinycloud/node-sdk-wasm": ["@tinycloud/node-sdk-wasm@1.7.8", "", {}, "sha512-pFiZKcAhtIRpk8LGcgkS+ORsMuDoXeTQ14QesaxWwZY8j8Mqiz///dt0khA7NXzSuhzQf0hEAK/AUJkSBLig/A=="],
+    "@tinycloud/node-sdk-wasm": ["@tinycloud/node-sdk-wasm@1.7.8-beta.0", "", {}, "sha512-kXcRLdi6/Q0Bpjmxy4aJIJlmzB0RdGr5oEu68rkpSY/GntZKcLAC+R1FwY8Cnl+rQC/n7z00RyNvVlGb2xkXmA=="],
 
-    "@tinycloud/replica": ["@tinycloud/replica@0.3.0", "", { "dependencies": { "@noble/curves": "^1.9.2", "@noble/hashes": "^1.8.0", "@tinycloud/sdk-services": "3.3.0" } }, "sha512-3/q8E/mhXQiYH9uUk4tOjlmY+B1mWF445t0TILU0bd3jSn7KtMyDwzQlktGcKNBKoVPh2PAAG9CUS5V7tR5blA=="],
+    "@tinycloud/replica": ["@tinycloud/replica@0.4.0-beta.3", "", { "dependencies": { "@noble/curves": "^1.9.2", "@noble/hashes": "^1.8.0", "@tinycloud/sdk-services": "3.8.0-beta.9" } }, "sha512-SZg9phc4yVJrogS9R1Hpr8twG2dc6iFUxPCKNTiagWIQ24LdqZmRh59s/4Y8BmEXdXAjOSb3FKgxQOU1TZEp7w=="],
 
-    "@tinycloud/sdk-core": ["@tinycloud/sdk-core@3.3.0", "", { "dependencies": { "@multiformats/multiaddr": "^13.0.1", "@multiformats/multiaddr-to-uri": "^12.0.0", "@multiformats/uri-to-multiaddr": "^10.0.0", "@noble/curves": "^1.9.7", "@noble/hashes": "1.8.0", "@tinycloud/bootstrap": "2.8.0", "@tinycloud/sdk-services": "3.3.0", "@tinycloud/share-envelope": "1.2.0", "@tinycloud/share-sdk": "1.2.0", "ms": "^2.1.3", "multiformats": "^13.4.1", "siwe": "^3.0.0", "viem": "^2.21.53", "zod": "^3.22.0", "zod-to-json-schema": "^3.25.2" } }, "sha512-nhkCzhGwE18/mMGrnipw68jfzbhiyKs2lHpVp+HqNcLbrIBq7rd/oHOkMHtrIRFrdosVrvhnurLJ1tZax73s9Q=="],
+    "@tinycloud/sdk-core": ["@tinycloud/sdk-core@3.8.0-beta.9", "", { "dependencies": { "@multiformats/multiaddr": "^13.0.1", "@multiformats/multiaddr-to-uri": "^12.0.0", "@multiformats/uri-to-multiaddr": "^10.0.0", "@noble/curves": "^1.9.7", "@noble/hashes": "1.8.0", "@tinycloud/bootstrap": "2.8.0", "@tinycloud/sdk-services": "3.8.0-beta.9", "@tinycloud/share-envelope": "1.3.1-beta.0", "@tinycloud/share-sdk": "1.4.1-beta.0", "ms": "^2.1.3", "multiformats": "^13.4.1", "siwe": "^3.0.0", "viem": "^2.21.53", "zod": "^3.22.0", "zod-to-json-schema": "^3.25.2" } }, "sha512-vaPmgF/gTVjm/Sv99/ogbJ8unxdtuc4x+bT2htvO1D7OmCHVIsFygkcGK+n/IHj+2tIbdsASMAvAKg90ExNRPA=="],
 
-    "@tinycloud/sdk-services": ["@tinycloud/sdk-services@3.3.0", "", { "dependencies": { "@tinycloud/bootstrap": "2.8.0", "zod": "^3.23.0" } }, "sha512-EXnLTr1mFXxUhIxZ3SmGibYE/3SWmn7ZXLwq+kt+oKIA9+zkI6KVe4JI5hHsaUNWvBFmv69FJOYhbdB7vYU1lQ=="],
+    "@tinycloud/sdk-services": ["@tinycloud/sdk-services@3.8.0-beta.9", "", { "dependencies": { "@tinycloud/bootstrap": "2.8.0", "zod": "^3.23.0" } }, "sha512-7KeDiPQE8Ff5rYWGfHgBefYv4BJRpjvsnVuMIyBqw5H+XvRWGC9/R2Z4KswupwN5d+HEP9h4TM+1IecSxrZgvw=="],
 
-    "@tinycloud/share-envelope": ["@tinycloud/share-envelope@1.2.0", "", { "dependencies": { "@noble/curves": "^1.9.2", "@noble/hashes": "^1.8.0", "multiformats": "^13.3.6", "zod": "^3.25.67" } }, "sha512-nO+BGseQFOiKjPuF85CIX08gKbJyPLi2mdeSCNQpaNsNpDh83wLTD20TyV6ipC+7QNQQK4gOwH4D0qjyeLDXdQ=="],
+    "@tinycloud/share-envelope": ["@tinycloud/share-envelope@1.3.1-beta.0", "", { "dependencies": { "@noble/curves": "^1.9.2", "@noble/hashes": "^1.8.0", "multiformats": "^13.3.6", "zod": "^3.25.67" } }, "sha512-i9tLxorPNl+hFQlwAYzoVWN1pAViJ/bEA+FeNTDBv+kJboUPnIWHPzSOK1XeU6ouIhf6uBO/hL0nJnGyOftyzw=="],
 
-    "@tinycloud/share-sdk": ["@tinycloud/share-sdk@1.2.0", "", { "dependencies": { "@noble/curves": "^1.9.2", "@noble/hashes": "^1.8.0", "@tinycloud/share-envelope": "1.2.0", "multiformats": "^13.3.6" } }, "sha512-FFtRWtoxh94xwyxCKfQQGV6vqvqfLycKIe/HlsRQFk1tZGZPXphRUUZWDky79H6vA64nplFniVInR0qbj0rt0g=="],
+    "@tinycloud/share-sdk": ["@tinycloud/share-sdk@1.4.1-beta.0", "", { "dependencies": { "@noble/curves": "^1.9.2", "@noble/hashes": "^1.8.0", "@tinycloud/share-envelope": "1.3.1-beta.0", "multiformats": "^13.3.6" } }, "sha512-TMvewLP0WHTMIKvXnshGL6q2EGhIAXvd2OMkzhjvZyAZGEpBSyQV1kIPDLfNMXl6VPTHxbcnneeU2rtiyEI9UQ=="],
 
-    "@tinycloud/web-sdk": ["@tinycloud/web-sdk@3.3.0", "", { "dependencies": { "@multiformats/multiaddr": "^13.0.1", "@multiformats/multiaddr-to-uri": "^12.0.0", "@noble/curves": "^1.9.7", "@tinycloud/node-sdk": "3.3.0", "@tinycloud/replica": "0.3.0", "@tinycloud/sdk-core": "3.3.0", "@tinycloud/share-envelope": "1.2.0", "@tinycloud/share-sdk": "1.2.0", "@tinycloud/web-sdk-wasm": "1.7.7", "axios": "^1.7.9", "viem": "^2.45.0", "zod": "^3.22.0" } }, "sha512-6AWuF+vy2e8FmyRYIG7LJfZbqtbEJAFJb2r7BUKyuhXk9kQYmQ9qWk92FaAwV+VzREU62xJzxfKqiIXP32IZKQ=="],
+    "@tinycloud/web-sdk": ["@tinycloud/web-sdk@3.8.0-beta.11", "", { "dependencies": { "@multiformats/multiaddr": "^13.0.1", "@multiformats/multiaddr-to-uri": "^12.0.0", "@noble/curves": "^1.9.7", "@tinycloud/node-sdk": "3.8.0-beta.11", "@tinycloud/replica": "0.4.0-beta.3", "@tinycloud/sdk-core": "3.8.0-beta.9", "@tinycloud/share-envelope": "1.3.1-beta.0", "@tinycloud/share-sdk": "1.4.1-beta.0", "@tinycloud/web-sdk-wasm": "1.7.7", "axios": "^1.7.9", "viem": "^2.45.0", "zod": "^3.22.0" } }, "sha512-M9n5kGPSYpN58THAd8M32S3nniOGFgow5U31D4lbk2/vgAN+bhtyq4GuxITdvT4X13WJa8c0PwrN2FgPklQm+Q=="],
 
-    "@tinycloud/web-sdk-wasm": ["@tinycloud/web-sdk-wasm@1.7.7", "", {}, "sha512-OA3MxxtFfouz/tLOS5/SZOEeEBut/DdmdU1IwhKE97lloYIMHwtPlkgEdtcPBQc/F+xG2M6pWN9+9tz6IZsRVw=="],
+    "@tinycloud/web-sdk-wasm": ["@tinycloud/web-sdk-wasm@1.7.7-beta.1", "", {}, "sha512-eF9qYPencC/p51qSVR6PkPmT/3qNuoSUWosnfwryT/2T3DISbTKTDvVjxLXy5vRlgzHpZ/0qseTai9CSiSujdQ=="],
 
     "@trickfilm400/rollup-plugin-off-main-thread": ["@trickfilm400/rollup-plugin-off-main-thread@3.0.0-pre1", "", { "dependencies": { "ejs": "^3.1.10", "json5": "^2.2.3", "magic-string": "^0.30.21", "string.prototype.matchall": "^4.0.12" } }, "sha512-/67zpWDBLV+oYAEL682s1ktXL0HgqX76f6gaVGkGnVZlBbm1zd0v4Bz8MFF2GGhoX9rvfq3KSQHubFHwa6w6/Q=="],
 

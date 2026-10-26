@@ -987,7 +987,7 @@ export function App() {
       const signedTcw = createTinyCloudWeb(prefetch.guardSigning(web3Provider), { ...signInConfig, siweConfig: { nonce } });
       if (LOCAL_VALIDATION) await prepareLocalSignIn(signedTcw);
       await signedTcw.clearPersistedSession(connectedAddress);
-      await (signedTcw as TinyCloudWeb & { prepareSignIn(): Promise<void> }).prepareSignIn();
+      await signedTcw.prepareSignIn();
       const session = await new Promise<Awaited<ReturnType<TinyCloudWeb["signIn"]>>>((resolve, reject) => {
         setApproveWebSignIn(() => () => {
           setApproveWebSignIn(null);

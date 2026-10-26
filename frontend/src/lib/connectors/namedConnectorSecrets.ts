@@ -5,21 +5,7 @@ import { getConnectorKey as getLegacyConnectorKey, isSecretsUnlocked, unlockSecr
 
 type ErrorValue = { code: string; message: string };
 type Result<T> = { ok: true; data: T } | { ok: false; error: ErrorValue };
-type Envelope = { v: 2; keyPath: string; [field: string]: unknown };
-
-/** The SDK contract is structural until the named-key web beta is published. */
-export interface NamedConnectorClient {
-  keys: {
-    ensureKey(path: string): Promise<unknown>;
-    encrypt(path: string, bytes: Uint8Array): Promise<Envelope>;
-    decrypt(envelope: Envelope): Promise<Uint8Array>;
-  };
-  kv: {
-    get(path: string, options?: { source: "network" }): Promise<{ ok: true; data: { data: unknown } } | { ok: false; error: ErrorValue }>;
-    put(path: string, value: string): Promise<Result<unknown>>;
-    delete(path: string): Promise<Result<unknown>>;
-  };
-}
+type Envelope = Awaited<ReturnType<TinyCloudWeb["keys"]["encrypt"]>>;
 
 export type LegacyConnectorClient = Parameters<typeof getLegacyConnectorKey>[0];
 export type RequestLegacyAccess = () => Promise<LegacyConnectorClient | null>;
@@ -27,9 +13,7 @@ export type SecretsErr = ErrorValue;
 
 /** Named-key reads need a signed session, not an unlocked legacy vault. */
 export function isConnectorKeysReady(tcw: TinyCloudWeb): boolean {
-  const keys = (tcw as unknown as { keys?: unknown }).keys;
-  return keys !== null && typeof keys === "object" &&
-    typeof (keys as { decrypt?: unknown }).decrypt === "function";
+  return typeof tcw.keys?.decrypt === "function";
 }
 
 export function connectorKeyPath(descriptor: Pick<ConnectorDescriptor, "id">): string {
@@ -72,7 +56,7 @@ function parseEnvelope(value: unknown, expectedPath: string, descriptor: Connect
 }
 
 export async function saveNamedConnectorKey(
-  client: NamedConnectorClient,
+  client: TinyCloudWeb,
   descriptor: ConnectorDescriptor,
   secret: string,
 ): Promise<Result<void>> {
@@ -86,7 +70,7 @@ export async function saveNamedConnectorKey(
 }
 
 export async function readNamedConnectorKey(
-  client: NamedConnectorClient,
+  client: TinyCloudWeb,
   descriptor: ConnectorDescriptor,
 ): Promise<Result<string | null>> {
   try {
@@ -108,7 +92,7 @@ export function migrationDeclinedMessage(descriptor: ConnectorDescriptor): strin
 
 /** The old vault copy is retained after a verified migration. */
 export async function readOrMigrateConnectorKey(
-  client: NamedConnectorClient,
+  client: TinyCloudWeb,
   descriptor: ConnectorDescriptor,
   requestLegacyAccess: RequestLegacyAccess,
 ): Promise<Result<string>> {
@@ -142,7 +126,7 @@ export async function readOrMigrateConnectorKey(
 }
 
 export async function deleteNamedConnectorKey(
-  client: NamedConnectorClient,
+  client: TinyCloudWeb,
   descriptor: ConnectorDescriptor,
 ): Promise<Result<void>> {
   try {
@@ -157,14 +141,14 @@ export async function saveConnectorKey<E>(
   descriptor: ConnectorDescriptor,
   secret: string,
 ): Promise<{ ok: true; data: void } | { ok: false; error: E }> {
-  return saveNamedConnectorKey(tcw as unknown as NamedConnectorClient, descriptor, secret) as Promise<{ ok: true; data: void } | { ok: false; error: E }>;
+  return saveNamedConnectorKey(tcw, descriptor, secret) as Promise<{ ok: true; data: void } | { ok: false; error: E }>;
 }
 
 export async function getConnectorKey<E>(
   tcw: TinyCloudWeb,
   descriptor: ConnectorDescriptor,
 ): Promise<{ ok: true; data: string } | { ok: false; error: E }> {
-  const result = await readNamedConnectorKey(tcw as unknown as NamedConnectorClient, descriptor);
+  const result = await readNamedConnectorKey(tcw, descriptor);
   if (!result.ok) return result as { ok: false; error: E };
   if (result.data === null) {
     return { ok: false, error: { code: "CONNECTOR_MIGRATION_REQUIRED", message: `Approve once to move your saved ${descriptor.name} key.` } as E };
@@ -176,5 +160,5 @@ export async function deleteConnectorKey<E>(
   tcw: TinyCloudWeb,
   descriptor: ConnectorDescriptor,
 ): Promise<{ ok: true; data: void } | { ok: false; error: E }> {
-  return deleteNamedConnectorKey(tcw as unknown as NamedConnectorClient, descriptor) as Promise<{ ok: true; data: void } | { ok: false; error: E }>;
+  return deleteNamedConnectorKey(tcw, descriptor) as Promise<{ ok: true; data: void } | { ok: false; error: E }>;
 }

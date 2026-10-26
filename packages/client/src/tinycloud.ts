@@ -81,12 +81,9 @@ export function createTinyCloudWeb(
     capabilityRequest: config?.capabilityRequest,
     includeAccountRegistryPermissions: false,
     ...(config?.replication ? { replication: config.replication } : {}),
+    ...(config?.openkey ? { openkey: config.openkey } : {}),
     autoBootstrapAccount: false,
   };
-
-  if (config?.openkey) {
-    (tcwConfig as TinyCloudWebSdkConfig & { openkey: TinyCloudWebConfig["openkey"] }).openkey = config.openkey;
-  }
 
   return new TinyCloudWeb(tcwConfig);
 }
@@ -111,7 +108,7 @@ export async function createAndSignIn(
     await tcw.clearPersistedSession(config.address);
   }
   if (config?.openkey) {
-    await (tcw as TinyCloudWeb & { prepareSignIn(): Promise<void> }).prepareSignIn();
+    await tcw.prepareSignIn();
   }
   const session = await tcw.signIn(config?.openkey ? undefined : config?.nonce ? { nonce: config.nonce } : undefined);
   return { tcw, session };

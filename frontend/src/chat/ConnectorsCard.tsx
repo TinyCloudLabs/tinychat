@@ -52,7 +52,7 @@ import {
 } from "./GmeetCardStatus";
 import { awaitGmeetSessionSync } from "./useGmeetSessionSync";
 import { useGmeetRowStatus } from "./useGmeetRowStatus";
-import { getConnectorKey, isConnectorKeysReady, migrationDeclinedMessage, readOrMigrateConnectorKey, type NamedConnectorClient } from "@/lib/connectors/namedConnectorSecrets";
+import { getConnectorKey, isConnectorKeysReady, migrationDeclinedMessage, readOrMigrateConnectorKey } from "@/lib/connectors/namedConnectorSecrets";
 import {
   AlertDialog, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
   AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
@@ -620,7 +620,7 @@ export function ConnectorsCard({
     setMigrationError(null);
     try {
       const result = await readOrMigrateConnectorKey(
-        tcw as unknown as NamedConnectorClient,
+        tcw,
         descriptor,
         () => legacySignIn,
       );

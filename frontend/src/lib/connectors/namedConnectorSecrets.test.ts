@@ -8,9 +8,9 @@ import {
   readNamedConnectorKey,
   readOrMigrateConnectorKey,
   saveNamedConnectorKey,
-  type NamedConnectorClient,
 } from "./namedConnectorSecrets";
 import type { ConnectorDescriptor } from "./types";
+import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 const connector: ConnectorDescriptor = {
   id: "fireflies", name: "Fireflies", description: "", status: "available",
@@ -21,30 +21,30 @@ function stub() {
   const rows = new Map<string, string>();
   const calls: string[] = [];
   let readbackOverride: string | undefined;
-  const client: NamedConnectorClient = {
+  const client = {
     keys: {
-      async ensureKey(path) { calls.push(`ensure:${path}`); },
-      async encrypt(path, bytes) {
+      async ensureKey(path: string) { calls.push(`ensure:${path}`); },
+      async encrypt(path: string, bytes: Uint8Array) {
         calls.push(`encrypt:${path}`);
         return { v: 2, keyPath: path, ciphertext: new TextDecoder().decode(bytes) };
       },
-      async decrypt(envelope) {
+      async decrypt(envelope: { keyPath: string; ciphertext?: unknown }) {
         calls.push(`decrypt:${envelope.keyPath}`);
         return new TextEncoder().encode(readbackOverride ?? String(envelope.ciphertext));
       },
     },
     kv: {
-      async get(path) {
+      async get(path: string) {
         calls.push(`get:${path}`);
         const data = rows.get(path);
         return data === undefined
           ? { ok: false as const, error: { code: "KV_NOT_FOUND", message: "missing" } }
           : { ok: true as const, data: { data } };
       },
-      async put(path, value) { calls.push(`put:${path}`); rows.set(path, value); return { ok: true as const, data: undefined }; },
-      async delete(path) { calls.push(`delete:${path}`); rows.delete(path); return { ok: true as const, data: undefined }; },
+      async put(path: string, value: string) { calls.push(`put:${path}`); rows.set(path, value); return { ok: true as const, data: undefined }; },
+      async delete(path: string) { calls.push(`delete:${path}`); rows.delete(path); return { ok: true as const, data: undefined }; },
     },
-  };
+  } as unknown as TinyCloudWeb;
   return { client, rows, calls, overrideReadback: (value: string) => { readbackOverride = value; } };
 }
 
@@ -82,7 +82,7 @@ describe("TinyChat connector named keys", () => {
 
   test("an absent envelope requests one approval with the connector name", async () => {
     const s = stub();
-    expect(await getConnectorKey(s.client as never, connector)).toEqual({
+    expect(await getConnectorKey(s.client, connector)).toEqual({
       ok: false,
       error: { code: "CONNECTOR_MIGRATION_REQUIRED", message: "Approve once to move your saved Fireflies key." },
     });
