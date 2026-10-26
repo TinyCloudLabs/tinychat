@@ -24,6 +24,7 @@ import { allDone, pipelineOf, signedOut, uploading, waitingForModel } from "@/ca
 import type { NotePipeline } from "@/lib/voiceNotes/notePipeline";
 import { SAVED_NOTE_COPY } from "./savedNote/savedNoteCopy";
 import { NoteDetailView, transcriptBlocks, transcriptStepLine, type NoteDetailViewProps } from "./NoteDetailView";
+import { TRANSCRIPT_FALLBACK_NOTE } from "./transcriptProvenanceCopy";
 
 const noop = () => {};
 const VOICE: LibraryItem = { id: "row-1", source: "exo-voice-note", sourceId: "rec-1", title: "Voice note · Oct 6, 9:28 AM", startedAt: "2026-10-06T09:28:00.000Z", durationSecs: 42 };
@@ -683,7 +684,7 @@ describe("the transcript placeholder while the note's pipeline is not done", () 
 });
 
 const gap = { start: 41, end: 52, speaker_name: "Kenny Tucker" };
-test("meeting gaps appear inline in time order with subtle accessible provenance labels", () => {
+test("meeting gaps appear inline in time order, with one backup-transcriber note above the first line", () => {
   const html = render({ item: MEETING, metadata: { status: "ok", metadata: { partial: true, gaps: [gap] } },
     transcript: { status: "ok", sentences: [
       { index: 0, speaker_name: null, text: "Before gap.", start_time: 30, end_time: 40, source: "fallback" },
@@ -692,8 +693,10 @@ test("meeting gaps appear inline in time order with subtle accessible provenance
   expect(html).toContain("0:41–0:52 could not be transcribed — Kenny Tucker");
   expect(html.indexOf("Before gap.")).toBeLessThan(html.indexOf("0:41–0:52"));
   expect(html.indexOf("0:41–0:52")).toBeLessThan(html.indexOf("After gap."));
-  expect(html).toContain("Fallback transcript");
-  expect(html).toContain("Recovered from recording");
+  expect(html.split(TRANSCRIPT_FALLBACK_NOTE).length - 1).toBe(1);
+  expect(html.indexOf(TRANSCRIPT_FALLBACK_NOTE)).toBeLessThan(html.indexOf("Before gap."));
+  expect(html).not.toContain("Fallback transcript");
+  expect(html).not.toContain("Recovered from recording");
 });
 
 test("completed gaps-only meeting shows gaps instead of the empty state, omitting null speakers", () => {
@@ -710,6 +713,6 @@ test("legacy meeting transcript has no gap or provenance additions", () => {
   ] } });
   expect(html).toContain("Legacy words.");
   expect(html).not.toContain('data-testid="transcript-gap"');
-  expect(html).not.toContain("Fallback transcript");
-  expect(html).not.toContain("Recovered from recording");
+  expect(html).not.toContain(TRANSCRIPT_FALLBACK_NOTE);
+  expect(html).not.toContain('data-testid="transcript-provenance-note"');
 });
