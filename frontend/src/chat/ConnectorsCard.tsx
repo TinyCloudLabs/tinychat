@@ -53,7 +53,6 @@ import {
 import { awaitGmeetSessionSync } from "./useGmeetSessionSync";
 import { useGmeetRowStatus } from "./useGmeetRowStatus";
 import { getConnectorKey, isConnectorKeysReady, readOrMigrateConnectorKey, type NamedConnectorClient } from "@/lib/connectors/namedConnectorSecrets";
-import { prepareLegacyConnectorRead } from "@/lib/connectors/connectorMigration";
 import {
   AlertDialog, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
   AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
@@ -320,7 +319,7 @@ export function ConnectorsCard({
   const [migrationDescriptor, setMigrationDescriptor] = useState<ConnectorDescriptor | null>(null);
   const [migrationBusy, setMigrationBusy] = useState(false);
   const [migrationError, setMigrationError] = useState<string | null>(null);
-  const [preparedMigration, setPreparedMigration] = useState<Awaited<ReturnType<typeof prepareLegacyConnectorRead>> | null>(null);
+  const [preparedMigration, setPreparedMigration] = useState<{ signIn(): Promise<TinyCloudWeb>; cleanup(): void } | null>(null);
   // What the engine is doing right now, including runs this card did not start (the
   // session-start lane, the connect dialog's background Notes).
   const gmeetStatus = useGmeetRowStatus(tcw, { connected: rows[GMEET_CONNECTOR_ID].connection?.status === "connected" });
@@ -601,6 +600,7 @@ export function ConnectorsCard({
     setMigrationBusy(true);
     setMigrationError(null);
     try {
+      const { prepareLegacyConnectorRead } = await import("@/lib/connectors/connectorMigration");
       setPreparedMigration(await prepareLegacyConnectorRead({
         ownerDid: tcw.did, backendUrl, tinycloudHosts: tcw.hosts,
         openkeyHost: import.meta.env.VITE_OPENKEY_HOST || "https://openkey.so",
