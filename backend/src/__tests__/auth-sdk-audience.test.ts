@@ -143,6 +143,27 @@ function signWithNativeBuilder(nonce: string) {
   return prepared.siwe as string;
 }
 
+/** Same builder as above, with explicit abilities, to prove what the audience gate refuses. */
+function signNativeWithAbilities(nonce: string, abilities: Record<string, Record<string, string[]>>) {
+  const manager = new TCWSessionManager();
+  manager.createSessionKey("native-test-narrow");
+  const jwk = JSON.parse(manager.jwk("native-test-narrow")!);
+  const issuedAt = new Date();
+  const prepared = prepareSession({
+    address: account.address,
+    chainId: 1,
+    domain: "openkey.so",
+    issuedAt: issuedAt.toISOString(),
+    expirationTime: new Date(issuedAt.getTime() + 60_000).toISOString(),
+    spaceId: makeSpaceId(account.address, 1, "applications"),
+    jwk,
+    nonce,
+    abilities,
+  });
+  manager.free();
+  return prepared.siwe as string;
+}
+
 describe("real SDK SIWE audience", () => {
   for (const [name, origin, domain] of [
     ["production web", "https://tinycloud.chat/chat", "tinycloud.chat"],
@@ -183,6 +204,23 @@ describe("real SDK SIWE audience", () => {
       expect(await server.verify(wrongUri, await account.signMessage({ message: wrongUri }))).toEqual({
         status: 400, error: "invalid_origin",
       });
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("a native grant that names only the broad Home entries is not proof of a TinyChat sign-in", async () => {
+    const server = await startAuthServer();
+    try {
+      for (const abilities of [
+        { sql: { "xyz.tinycloud.sample.healthlog/healthlog": ["tinycloud.sql/read", "tinycloud.sql/write", "tinycloud.sql/schema"] } },
+        { kv: { "": ["tinycloud.kv/get", "tinycloud.kv/put", "tinycloud.kv/del", "tinycloud.kv/list", "tinycloud.kv/metadata"] } },
+      ]) {
+        const message = signNativeWithAbilities(await server.nonce(false), abilities);
+        expect(await server.verify(message, await account.signMessage({ message }))).toEqual({
+          status: 400, error: "invalid_native_audience",
+        });
+      }
     } finally {
       await server.close();
     }

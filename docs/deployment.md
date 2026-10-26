@@ -568,6 +568,14 @@ nothing below may be reported as done on its behalf.
   documented local origins on port `5186`. Production must still set
   `FRONTEND_URL=https://tinycloud.chat`; unrelated Pages projects, localhost
   ports, and lookalike domains remain blocked.
+- **Home manifest (TC-2043):** deploy the backend that serves revision 3's
+  manifest before the frontend revision gate. Existing web sessions re-sign
+  once per device after the served bundle is available; native (mobile)
+  sessions keep their previous grant until their next explicit sign-in. The broad `applications`
+  KV grant covers app folders; SQL covers Home's six databases and the named
+  Health Log and Recipes databases. Notes has no runnable beta bundle.
+  Adding a catalog database requires a manifest bump and another one-time
+  sign-in. The `secrets` grants and backend delegation policy are unchanged.
 - **SIWE audience (TC-1201):** `/api/auth/verify` checks the signed domain
   and URI before consuming the nonce. The web SDK signs the page hostname
   (without the port) and a canonical `did:key` session verification-method
@@ -581,10 +589,15 @@ nothing below may be reported as done on its behalf.
   `backend/src/cors-origins.ts`. Native OpenKey sign-in (iOS and Android)
   signs its configured issuer domain (`openkey.so` by default) and a canonical
   `did:key` session URI, never a web HTTPS URI. Only this native domain
-  requires a strict signed ReCap with at least one KV/SQL grant under
-  `xyz.tinycloud.tinychat/` in the recovered address's applications space,
-  and no foreign app grants. OpenKey's registered native client confines
-  grants issued through its native consent flow to its `appId`. Set
+  requires a strict signed ReCap confined to Home's explicit
+  `applications` scope and carrying at least one `xyz.tinycloud.tinychat/`
+  app-path grant, which is the proof that the sign-in is for TinyChat. The root
+  KV grant and the two named runnable catalog databases are tolerated next to
+  it but never count as that proof on their own; other grants are rejected.
+  Native sign-in cannot request the broad entries until OpenKey's native
+  client policy and ceiling are changed (TC-1990), and the served revision-3
+  manifest lists them, so native sign-in is expected to fail until then. The
+  web sign-in does not use that client ceiling. Set
   `OPENKEY_SIWE_DOMAIN` on the backend if that client's `siweDomain` changes;
   never use the API host as the signed audience.
   Nonces remain single-use for five minutes, with at most 2048 pending per

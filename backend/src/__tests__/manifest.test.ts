@@ -14,7 +14,7 @@ describe("TinyChat manifest and backend policy", () => {
 
     expect(manifest.manifest_version).toBe(1);
     expect(manifest.app_id).toBe(APP_ID);
-    expect(manifest.name).toBe("TinyCloud Chat");
+    expect(manifest.name).toBe("TinyCloud Home");
     expect(manifest.defaults).toBe(false);
     expect("backend" in manifest).toBe(false);
     expect("delegations" in manifest).toBe(false);
@@ -56,10 +56,12 @@ describe("TinyChat manifest and backend policy", () => {
       { service: "tinycloud.sql", path: "details", actions: ["read", "write", "schema"] },
       { service: "tinycloud.sql", path: "summaries", actions: ["read", "write", "schema"] },
       { service: "tinycloud.sql", path: "transcripts", actions: ["read", "write", "schema"] },
-      { service: "tinycloud.kv", path: "migrations/", actions: ["get", "put"] },
+      { service: "tinycloud.kv", space: "applications", path: "", actions: ["get", "put", "del", "list", "metadata"], skipPrefix: true },
       { service: "tinycloud.space", path: "", actions: ["info"], skipPrefix: true },
       { service: "tinycloud.kv", path: "exo/v1/requests/", actions: ["get", "list", "del"] },
       { service: "tinycloud.kv", path: "exo/v1/jobs/", actions: ["get", "put", "del"] },
+      { service: "tinycloud.sql", space: "applications", path: "xyz.tinycloud.sample.healthlog/healthlog", actions: ["read", "write", "schema"], skipPrefix: true },
+      { service: "tinycloud.sql", space: "applications", path: "xyz.tinycloud.sample.recipes/recipes", actions: ["read", "write", "schema"], skipPrefix: true },
     ]);
   });
 
