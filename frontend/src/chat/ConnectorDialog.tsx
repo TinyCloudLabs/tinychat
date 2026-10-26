@@ -72,14 +72,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import * as connectorStore from "@/lib/connectors/connectorStore";
-import {
-  deleteConnectorKey,
-  getConnectorKey,
-  isSecretsUnlocked,
-  saveConnectorKey,
-  unlockSecrets,
-  type SecretsErr,
-} from "@/lib/connectors/connectorSecrets";
+import { deleteConnectorKey, getConnectorKey, isConnectorKeysReady, saveConnectorKey } from "@/lib/connectors/namedConnectorSecrets";
+import { isSecretsUnlocked, unlockSecrets, type SecretsErr } from "@/lib/connectors/connectorSecrets";
 import {
   defaultFirefliesClientOptions,
   FirefliesClient,
@@ -321,7 +315,7 @@ const ApiKeyConnectDialog: FC<ConnectorConnectDialogProps> = ({
     const generation = readBackgroundDrainGeneration();
     setError(null);
     setPhase("saving");
-    if (!isSecretsUnlocked(tcw)) {
+    if (!isConnectorKeysReady(tcw) && !isSecretsUnlocked(tcw)) {
       const unlock = await unlockSecrets<SecretsErr>(tcw);
       if (!unlock.ok) {
         setError({
@@ -1048,7 +1042,7 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
   const saveAndSync = useCallback(
     async (accessToken: string, refreshToken: string) => {
       setPhase("save-token");
-      if (!isSecretsUnlocked(tcw)) {
+      if (!isConnectorKeysReady(tcw) && !isSecretsUnlocked(tcw)) {
         const unlock = await unlockSecrets<SecretsErr>(tcw);
         if (!unlock.ok) {
           failWith({
@@ -2144,7 +2138,7 @@ export const ConnectorDisconnectDialog: FC<ConnectorDisconnectDialogProps> = ({
       webhooks: oauth ? NO_DELIVERY_LANE : webhooks,
       featureDark: featureDark === true,
       secrets: {
-        isUnlocked: () => isSecretsUnlocked(tcw),
+        isUnlocked: () => isConnectorKeysReady(tcw) || isSecretsUnlocked(tcw),
         unlock: () => unlockSecrets<SecretsErr>(tcw),
         deleteKey: () => deleteConnectorKey<SecretsErr>(tcw, descriptor),
       },
@@ -2422,7 +2416,7 @@ export async function revokeGoogleUpstream(input: {
   }
   let browserToken: string | undefined;
   let localFailure: UpstreamRevokeState | undefined;
-  if (!isSecretsUnlocked(tcw)) {
+  if (!isConnectorKeysReady(tcw) && !isSecretsUnlocked(tcw)) {
     const unlock = await unlockSecrets<SecretsErr>(tcw);
     if (!unlock.ok) localFailure = { status: "locked", message: unlock.error?.message ?? "unlock was not completed" };
   }

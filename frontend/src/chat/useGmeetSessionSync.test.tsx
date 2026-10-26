@@ -45,6 +45,7 @@ import type {
   GmeetSyncSummary,
 } from "@/lib/connectors/gmeetSync";
 import type { ConnectorConnection, ConnectorDescriptor } from "@/lib/connectors/types";
+import { connectorKeyPath } from "@/lib/connectors/namedConnectorSecrets";
 
 // ── Fixtures ─────────────────────────────────────────────────────────
 
@@ -122,14 +123,19 @@ function vault(options: { unlocked: boolean; token?: string | null }) {
   const tcw = {
     secrets: {
       isUnlocked: options.unlocked,
+    },
+    kv: {
       get: async () => {
         getCalls++;
         const token = options.token === undefined ? REFRESH_TOKEN : options.token;
         return token === null
-          ? { ok: false, error: { code: "NOT_FOUND", message: "no secret" } }
-          : { ok: true, data: token };
+          ? { ok: false, error: { code: "KV_NOT_FOUND", message: "no secret" } }
+          : { ok: true, data: { data: JSON.stringify({ v: 2, keyPath: connectorKeyPath(availableGmeetRow), ciphertext: token }) } };
       },
     },
+    ...(options.unlocked ? { keys: {
+      decrypt: async (envelope: { ciphertext: string }) => new TextEncoder().encode(envelope.ciphertext),
+    } } : {}),
   } as unknown as TinyCloudWeb;
   return { tcw, getCalls: () => getCalls };
 }

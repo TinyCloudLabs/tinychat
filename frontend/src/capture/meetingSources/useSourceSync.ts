@@ -10,11 +10,11 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "
 import { formatRowError, runFirefliesSyncNow, runGmeetSyncNow } from "@/chat/ConnectorsCard";
 import { awaitGmeetSessionSync } from "@/chat/useGmeetSessionSync";
 import {
-  getConnectorKey,
   isSecretsUnlocked,
   unlockSecrets,
   type SecretsErr,
 } from "@/lib/connectors/connectorSecrets";
+import { getConnectorKey, isConnectorKeysReady } from "@/lib/connectors/namedConnectorSecrets";
 import {
   getGmeetLiveStatus,
   isGmeetNotesSyncInFlight,
@@ -72,7 +72,7 @@ export interface SourceSyncDeps {
 
 const DEFAULT_DEPS: SourceSyncDeps = {
   secretsAvailable,
-  isSecretsUnlocked,
+  isSecretsUnlocked: (tcw) => isConnectorKeysReady(tcw) || isSecretsUnlocked(tcw),
   unlockSecrets,
   getConnectorKey,
   isGmeetSyncInFlight,

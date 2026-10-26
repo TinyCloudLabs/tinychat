@@ -1,0 +1,172 @@
+import { CONNECTORS_KV_PREFIX, TINYCHAT_KEY_PREFIX } from "@tinyboilerplate/core";
+import type { ConnectorDescriptor } from "./types";
+import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import { getConnectorKey as getLegacyConnectorKey, isSecretsUnlocked, unlockSecrets } from "./connectorSecrets";
+
+type ErrorValue = { code: string; message: string };
+type Result<T> = { ok: true; data: T } | { ok: false; error: ErrorValue };
+type Envelope = { v: 2; keyPath: string; [field: string]: unknown };
+
+/** The SDK contract is structural until the named-key web beta is published. */
+export interface NamedConnectorClient {
+  keys: {
+    ensureKey(path: string): Promise<unknown>;
+    encrypt(path: string, bytes: Uint8Array): Promise<Envelope>;
+    decrypt(envelope: Envelope): Promise<Uint8Array>;
+  };
+  kv: {
+    get(path: string, options?: { source: "network" }): Promise<{ ok: true; data: { data: unknown } } | { ok: false; error: ErrorValue }>;
+    put(path: string, value: string): Promise<Result<unknown>>;
+    delete(path: string): Promise<Result<unknown>>;
+  };
+}
+
+export type LegacyConnectorClient = Parameters<typeof getLegacyConnectorKey>[0];
+export type RequestLegacyAccess = () => Promise<LegacyConnectorClient | null>;
+export type SecretsErr = ErrorValue;
+
+/** Named-key reads need a signed session, not an unlocked legacy vault. */
+export function isConnectorKeysReady(tcw: TinyCloudWeb): boolean {
+  const keys = (tcw as unknown as { keys?: unknown }).keys;
+  return keys !== null && typeof keys === "object" &&
+    typeof (keys as { decrypt?: unknown }).decrypt === "function";
+}
+
+export function connectorKeyPath(descriptor: Pick<ConnectorDescriptor, "id">): string {
+  return `${TINYCHAT_KEY_PREFIX}connectors/${descriptor.id}`;
+}
+
+/** The existing connectors KV grant covers this app-owned envelope record. */
+export function connectorEnvelopeKvPath(descriptor: Pick<ConnectorDescriptor, "id">): string {
+  return `${CONNECTORS_KV_PREFIX}/credentials/${descriptor.id}`;
+}
+
+function failure(caught: unknown): { ok: false; error: ErrorValue } {
+  const value = caught as { code?: unknown; message?: unknown } | null;
+  return {
+    ok: false,
+    error: {
+      code: typeof value?.code === "string" ? value.code : "CONNECTOR_KEY_ERROR",
+      message: typeof value?.message === "string" ? value.message : "Connector key operation failed",
+    },
+  };
+}
+
+function parseEnvelope(value: unknown, expectedPath: string): Result<Envelope> {
+  let parsed = value;
+  if (typeof value === "string") {
+    try { parsed = JSON.parse(value); } catch { return { ok: false, error: { code: "CONNECTOR_ENVELOPE_INVALID", message: "Saved connector key is invalid" } }; }
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { ok: false, error: { code: "CONNECTOR_ENVELOPE_INVALID", message: "Saved connector key is invalid" } };
+  }
+  const envelope = parsed as Record<string, unknown>;
+  if (envelope.v !== 2 || envelope.keyPath !== expectedPath) {
+    return { ok: false, error: { code: "CONNECTOR_ENVELOPE_INVALID", message: "Saved connector key is invalid" } };
+  }
+  return { ok: true, data: envelope as Envelope };
+}
+
+export async function saveNamedConnectorKey(
+  client: NamedConnectorClient,
+  descriptor: ConnectorDescriptor,
+  secret: string,
+): Promise<Result<void>> {
+  try {
+    const path = connectorKeyPath(descriptor);
+    await client.keys.ensureKey(path);
+    const envelope = await client.keys.encrypt(path, new TextEncoder().encode(secret));
+    const saved = await client.kv.put(connectorEnvelopeKvPath(descriptor), JSON.stringify(envelope));
+    return saved.ok ? { ok: true, data: undefined } : saved;
+  } catch (caught) { return failure(caught); }
+}
+
+export async function readNamedConnectorKey(
+  client: NamedConnectorClient,
+  descriptor: ConnectorDescriptor,
+): Promise<Result<string | null>> {
+  try {
+    const stored = await client.kv.get(connectorEnvelopeKvPath(descriptor), { source: "network" });
+    if (!stored.ok) {
+      if (stored.error.code === "KV_NOT_FOUND") return { ok: true, data: null };
+      return stored;
+    }
+    const envelope = parseEnvelope(stored.data.data, connectorKeyPath(descriptor));
+    if (!envelope.ok) return envelope;
+    const bytes = await client.keys.decrypt(envelope.data);
+    return { ok: true, data: new TextDecoder("utf-8", { fatal: true }).decode(bytes) };
+  } catch (caught) { return failure(caught); }
+}
+
+/** The old vault copy is retained after a verified migration. */
+export async function readOrMigrateConnectorKey(
+  client: NamedConnectorClient,
+  descriptor: ConnectorDescriptor,
+  requestLegacyAccess: RequestLegacyAccess,
+): Promise<Result<string>> {
+  const current = await readNamedConnectorKey(client, descriptor);
+  if (!current.ok) return current;
+  if (current.data !== null) return { ok: true, data: current.data };
+
+  let legacy: LegacyConnectorClient | null;
+  try { legacy = await requestLegacyAccess(); } catch (caught) { return failure(caught); }
+  if (legacy === null) {
+    return { ok: false, error: { code: "CONNECTOR_MIGRATION_DECLINED", message: "Connector key approval was declined" } };
+  }
+  try {
+    if (!isSecretsUnlocked(legacy)) {
+      const unlocked = await unlockSecrets<ErrorValue>(legacy);
+      if (!unlocked.ok) return unlocked;
+    }
+    const old = await getLegacyConnectorKey<ErrorValue>(legacy, descriptor);
+    if (!old.ok) return old;
+    const saved = await saveNamedConnectorKey(client, descriptor, old.data);
+    if (!saved.ok) return saved;
+    const verified = await readNamedConnectorKey(client, descriptor);
+    if (!verified.ok) return verified;
+    if (verified.data !== old.data) {
+      return { ok: false, error: { code: "CONNECTOR_MIGRATION_MISMATCH", message: "Connector key could not be verified" } };
+    }
+    return { ok: true, data: old.data };
+  } finally {
+    if ("cleanup" in legacy && typeof legacy.cleanup === "function") legacy.cleanup();
+  }
+}
+
+export async function deleteNamedConnectorKey(
+  client: NamedConnectorClient,
+  descriptor: ConnectorDescriptor,
+): Promise<Result<void>> {
+  try {
+    const removed = await client.kv.delete(connectorEnvelopeKvPath(descriptor));
+    return removed.ok ? { ok: true, data: undefined } : removed;
+  } catch (caught) { return failure(caught); }
+}
+
+/** Production connector call sites keep their Result-based interface. */
+export async function saveConnectorKey<E>(
+  tcw: TinyCloudWeb,
+  descriptor: ConnectorDescriptor,
+  secret: string,
+): Promise<{ ok: true; data: void } | { ok: false; error: E }> {
+  return saveNamedConnectorKey(tcw as unknown as NamedConnectorClient, descriptor, secret) as Promise<{ ok: true; data: void } | { ok: false; error: E }>;
+}
+
+export async function getConnectorKey<E>(
+  tcw: TinyCloudWeb,
+  descriptor: ConnectorDescriptor,
+): Promise<{ ok: true; data: string } | { ok: false; error: E }> {
+  const result = await readNamedConnectorKey(tcw as unknown as NamedConnectorClient, descriptor);
+  if (!result.ok) return result as { ok: false; error: E };
+  if (result.data === null) {
+    return { ok: false, error: { code: "CONNECTOR_MIGRATION_REQUIRED", message: "Approve access to move this connector key." } as E };
+  }
+  return { ok: true, data: result.data };
+}
+
+export async function deleteConnectorKey<E>(
+  tcw: TinyCloudWeb,
+  descriptor: ConnectorDescriptor,
+): Promise<{ ok: true; data: void } | { ok: false; error: E }> {
+  return deleteNamedConnectorKey(tcw as unknown as NamedConnectorClient, descriptor) as Promise<{ ok: true; data: void } | { ok: false; error: E }>;
+}

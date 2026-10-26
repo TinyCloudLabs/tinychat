@@ -52,12 +52,13 @@ import {
 } from "./GmeetCardStatus";
 import { awaitGmeetSessionSync } from "./useGmeetSessionSync";
 import { useGmeetRowStatus } from "./useGmeetRowStatus";
+import { getConnectorKey, isConnectorKeysReady, readOrMigrateConnectorKey, type NamedConnectorClient } from "@/lib/connectors/namedConnectorSecrets";
+import { prepareLegacyConnectorRead } from "@/lib/connectors/connectorMigration";
 import {
-  getConnectorKey,
-  isSecretsUnlocked,
-  unlockSecrets,
-  type SecretsErr,
-} from "@/lib/connectors/connectorSecrets";
+  AlertDialog, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
+  AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { isSecretsUnlocked, unlockSecrets, type SecretsErr } from "@/lib/connectors/connectorSecrets";
 import {
   createConnectorWebhooksClient,
   type ConnectorWebhooksClient,
@@ -316,6 +317,10 @@ export function ConnectorsCard({
   const [rows, setRows] = useState<RowStateMap>(INITIAL_ROW_STATE_MAP);
   const [autojoinRevision, setAutojoinRevision] = useState(0);
   const [gmeetDiagnostics, setGmeetDiagnostics] = useState<GmeetSyncDiagnostics | null>(null);
+  const [migrationDescriptor, setMigrationDescriptor] = useState<ConnectorDescriptor | null>(null);
+  const [migrationBusy, setMigrationBusy] = useState(false);
+  const [migrationError, setMigrationError] = useState<string | null>(null);
+  const [preparedMigration, setPreparedMigration] = useState<Awaited<ReturnType<typeof prepareLegacyConnectorRead>> | null>(null);
   // What the engine is doing right now, including runs this card did not start (the
   // session-start lane, the connect dialog's background Notes).
   const gmeetStatus = useGmeetRowStatus(tcw, { connected: rows[GMEET_CONNECTOR_ID].connection?.status === "connected" });
@@ -463,7 +468,7 @@ export function ConnectorsCard({
         queuedSync: null,
       });
       try {
-      if (!isSecretsUnlocked(tcw)) {
+      if (!isConnectorKeysReady(tcw) && !isSecretsUnlocked(tcw)) {
         const unlock = await unlockSecrets<SecretsErr>(tcw);
         if (!unlock.ok) {
           patchRow(d.id, {
@@ -481,6 +486,10 @@ export function ConnectorsCard({
       // flip commit change what is read without touching here.
       const keyRes = await getConnectorKey<SecretsErr>(tcw, d);
       if (!keyRes.ok) {
+        if (keyRes.error?.code === "CONNECTOR_MIGRATION_REQUIRED") {
+          setMigrationError(null);
+          setMigrationDescriptor(d);
+        }
         patchRow(d.id, {
           syncing: false,
           actionError:
@@ -586,6 +595,49 @@ export function ConnectorsCard({
   const handleStopSync = useCallback((id: ConnectorId) => {
     syncAbortRefs.current[id]?.abort();
   }, []);
+
+  const prepareConnectorMigration = useCallback(async () => {
+    if (!migrationDescriptor || migrationBusy || !tcw.did) return;
+    setMigrationBusy(true);
+    setMigrationError(null);
+    try {
+      setPreparedMigration(await prepareLegacyConnectorRead({
+        ownerDid: tcw.did, backendUrl, tinycloudHosts: tcw.hosts,
+        openkeyHost: import.meta.env.VITE_OPENKEY_HOST || "https://openkey.so",
+      }));
+    } catch (caught) {
+      setMigrationError(caught instanceof Error ? caught.message : "Connector key approval could not start.");
+    } finally {
+      setMigrationBusy(false);
+    }
+  }, [migrationDescriptor, migrationBusy, tcw, backendUrl]);
+
+  const migrateConnector = useCallback(async () => {
+    const descriptor = migrationDescriptor;
+    if (!descriptor || migrationBusy || !preparedMigration) return;
+    const legacySignIn = preparedMigration.signIn();
+    setMigrationBusy(true);
+    setMigrationError(null);
+    try {
+      const result = await readOrMigrateConnectorKey(
+        tcw as unknown as NamedConnectorClient,
+        descriptor,
+        () => legacySignIn,
+      );
+      if (!result.ok) {
+        setMigrationError(result.error.message);
+        return;
+      }
+      setMigrationDescriptor(null);
+      void handleSyncNow(descriptor);
+    } catch (caught) {
+      setMigrationError(caught instanceof Error ? caught.message : "Connector key approval did not finish.");
+    } finally {
+      preparedMigration.cleanup();
+      setPreparedMigration(null);
+      setMigrationBusy(false);
+    }
+  }, [migrationDescriptor, migrationBusy, preparedMigration, tcw, handleSyncNow]);
 
   const gmeetQueued = rows[GMEET_CONNECTOR_ID].queuedSync;
   // The accepted offer to wait: once nothing is running, start the press that was refused.
@@ -705,6 +757,30 @@ export function ConnectorsCard({
           }}
         />
       )}
+      <AlertDialog open={migrationDescriptor !== null} onOpenChange={(open) => {
+        if (!open && !migrationBusy) {
+          preparedMigration?.cleanup();
+          setPreparedMigration(null);
+          setMigrationDescriptor(null);
+        }
+      }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Move your saved connector key</AlertDialogTitle>
+            <AlertDialogDescription>
+              Approve a one-time OpenKey request to read your saved {migrationDescriptor?.name} connection.
+              Exo will encrypt it with its own key and verify the new copy before using it.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {migrationError && <p role="alert" className="text-sm text-destructive">{migrationError}</p>}
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={migrationBusy}>Later</AlertDialogCancel>
+            <Button type="button" disabled={migrationBusy} onClick={() => void (preparedMigration ? migrateConnector() : prepareConnectorMigration())}>
+              {migrationBusy ? "Moving…" : preparedMigration ? "Continue to OpenKey" : "Prepare approval"}
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </SectionCard>
   );
 }

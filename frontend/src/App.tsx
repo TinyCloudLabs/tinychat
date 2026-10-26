@@ -16,7 +16,6 @@ import {
   SessionStore,
   clearPersistedSession,
   connectWallet,
-  createAndSignIn,
   createTinyCloudWeb,
   createApiClient,
   loadAppManifest,
@@ -29,7 +28,7 @@ import {
   manifestCarriesBundle,
   offeredChatModelContextTokens,
 } from "@tinyboilerplate/core";
-import { withEncryptionDecryptGrant } from "./lib/connectors/encryptionGrant";
+import { applyConnectorKeyRevisionGate, recordConnectorKeyRevision } from "./lib/connectors/namedKeyRevision";
 import { replicationConfigPatch, startReplicationFill } from "./lib/replication/replicationClient";
 import { rememberReplicationPrincipal } from "./lib/replication/replicationCopyMarker";
 import { purgeReplicaCopyWhenOffOnce } from "./lib/replication/replicationOffPurge";
@@ -207,6 +206,7 @@ export function App() {
   const memoryRef = useRef<string | null>(null);
 
   const [state, setState] = useState<AppState>("booting");
+  const [approveWebSignIn, setApproveWebSignIn] = useState<(() => void) | null>(null);
   const [address, setAddress] = useState<string | null>(null);
   const [did, setDid] = useState<string | null>(null);
   const [spaceId, setSpaceId] = useState<string | null>(null);
@@ -575,6 +575,25 @@ export function App() {
         setError(MANIFEST_RESIGN_NOTICE);
         setState("unauthenticated");
         logSession("restore", "manifest_revision");
+        return;
+      }
+      const namedKeyGate = await applyConnectorKeyRevisionGate({
+        store: browserRevisionStore(),
+        address: sessionStoreRef.current.getAddress(),
+        isOffline: browserIsOffline,
+        loadManifest: () => loadAppManifest(`${BACKEND_URL}/api/manifest`),
+        handoff: captureHandoff,
+        clearSession: (storedAddress) => {
+          clearPersistedSession(storedAddress);
+          sessionStoreRef.current.clear();
+          endStorageAccountSession();
+        },
+      });
+      if (namedKeyGate === "handoff_failed") { setState("recoverableError"); return; }
+      if (namedKeyGate === "cleared") {
+        setError(MANIFEST_RESIGN_NOTICE);
+        setState("unauthenticated");
+        logSession("restore", "named_key_revision");
         return;
       }
       const restored = await restorePersistedSession(sessionStoreRef.current, {
@@ -953,32 +972,28 @@ export function App() {
       // setupSpaceSession + ensureSpaceExists happen inside the SDK when
       // autoCreateSpace is true; the manifest grants tinycloud.kv on the space.
       //
-      // withEncryptionDecryptGrant is a WORKAROUND that hardcodes an SDK-internal
-      // URN format — see docs/connectors-spec.md §7 "KNOWN BLOCKER" and the header
-      // of lib/connectors/encryptionGrant.ts. Secrets reads are refused without
-      // it, and the grant cannot be declared in the static manifest because its
-      // network id embeds this user's DID. Capabilities are minted from the
-      // manifest passed here, so sign-in is the only moment it can be added.
-      // Delete this call when the SDK carries the capability itself.
       const signInConfig = {
         address: connectedAddress,
         nonce,
         autoCreateSpace: !LOCAL_VALIDATION,
         includeAccountRegistryPermissions: false as const,
         tinycloudHosts: TINYCLOUD_HOSTS,
-        manifest: withEncryptionDecryptGrant(manifest, connectedAddress),
+        manifest,
+        openkey: { client: openkey },
         // Flag OFF: {} (config unchanged). ON: the SDK adds kv/sync beside kv/get for the
         // replica prefixes at this sign-in; see lib/replication/replicationClient.ts.
         ...(LOCAL_VALIDATION ? {} : await replicationConfigPatch(replicationPrincipalFor(connectedAddress))),
       };
-      const { tcw: signedTcw, session } = LOCAL_VALIDATION
-        ? await (async () => {
-            const localTcw = createTinyCloudWeb(prefetch.guardSigning(web3Provider), { ...signInConfig, siweConfig: { nonce } });
-            await prepareLocalSignIn(localTcw);
-            await localTcw.clearPersistedSession(connectedAddress);
-            return { tcw: localTcw, session: await localTcw.signIn({ nonce }) };
-          })()
-        : await createAndSignIn(prefetch.guardSigning(web3Provider), signInConfig);
+      const signedTcw = createTinyCloudWeb(prefetch.guardSigning(web3Provider), { ...signInConfig, siweConfig: { nonce } });
+      if (LOCAL_VALIDATION) await prepareLocalSignIn(signedTcw);
+      await signedTcw.clearPersistedSession(connectedAddress);
+      await (signedTcw as TinyCloudWeb & { prepareSignIn(): Promise<void> }).prepareSignIn();
+      const session = await new Promise<Awaited<ReturnType<TinyCloudWeb["signIn"]>>>((resolve, reject) => {
+        setApproveWebSignIn(() => () => {
+          setApproveWebSignIn(null);
+          void signedTcw.signIn().then(resolve, reject);
+        });
+      });
 
       rememberReplicationPrincipal(signedTcw);
       // Exchange the SIWE message for a backend Bearer token (for /api/chat).
@@ -986,6 +1001,7 @@ export function App() {
       sessionStoreRef.current.setSession(verified.token, verified.expiresIn, connectedAddress);
       // Marked current only if the manifest this sign-in used carries the bundle (an older served manifest does not).
       recordManifestRevisionIfSigned(browserRevisionStore(), connectedAddress, manifest);
+      recordConnectorKeyRevision(browserRevisionStore(), connectedAddress, manifest);
       // The SDK keeps this provider for later user-authorized operations;
       // only the verified login's signatures use the prefetched nonce guard.
       prefetch.complete();
@@ -1009,6 +1025,7 @@ export function App() {
       setError(describeAuthFailure(caught));
       setState("recoverableError");
     } finally {
+      setApproveWebSignIn(null);
       if (prefetch) {
         prefetch.cancel();
       }
@@ -1366,7 +1383,7 @@ export function App() {
             screen={screen}
             platform={platform}
             pendingMeetings={0}
-            chat={<BootSurface state={state} error={error} onAction={authAction} />}
+            chat={<BootSurface state={state} error={error} onAction={approveWebSignIn ?? authAction} approvalReady={!!approveWebSignIn} />}
             capture={<DeviceCaptureSurface did={did} offline={state === "offline"} error={error}
               onSignIn={authAction} onRetry={() => void restoreSession()} screen={screen} />}
             connectors={null}
@@ -1378,7 +1395,7 @@ export function App() {
             {nativeSignInFlow.screenShown
                 ? <NativeSignIn state={state} error={error} onSignIn={(hints) => void signIn(hints)}
                   onClose={nativeSignInFlow.onClose} />
-                : <BootSurface state={state} error={error} onAction={authAction} home={platform === "web"} />}
+                : <BootSurface state={state} error={error} onAction={approveWebSignIn ?? authAction} approvalReady={!!approveWebSignIn} home={platform === "web"} />}
           </main>
         )}
       </div>

@@ -22,11 +22,11 @@ import {
 } from "@/chat/ConnectorDialog";
 import { removeBackgroundDrainConnectorRecord } from "@/chat/useBackgroundDrain";
 import {
-  deleteConnectorKey,
   isSecretsUnlocked,
   unlockSecrets,
   type SecretsErr,
 } from "@/lib/connectors/connectorSecrets";
+import { deleteConnectorKey, isConnectorKeysReady } from "@/lib/connectors/namedConnectorSecrets";
 import {
   type DisconnectMode,
   disconnectRetry,
@@ -112,7 +112,7 @@ export function useConnectorDisconnect(input: {
       webhooks: oauth ? NO_DELIVERY_LANE : webhooks,
       featureDark,
       secrets: {
-        isUnlocked: () => isSecretsUnlocked(tcw),
+        isUnlocked: () => isConnectorKeysReady(tcw) || isSecretsUnlocked(tcw),
         unlock: () => unlockSecrets<SecretsErr>(tcw),
         deleteKey: () => deleteConnectorKey<SecretsErr>(tcw, descriptor),
       },
