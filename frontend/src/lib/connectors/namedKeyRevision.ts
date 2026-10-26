@@ -21,8 +21,8 @@ export function manifestCarriesConnectorKey(manifest: unknown): boolean {
       entry.abilities.includes("key.create") && entry.abilities.includes("decrypt"));
 }
 
-export function recordConnectorKeyRevision(store: RevisionStore | null, address: string, manifest: unknown, sessionHasKeyGrant: boolean): void {
-  if (!store || !sessionHasKeyGrant || !manifestCarriesConnectorKey(manifest)) return;
+export function recordConnectorKeyRevision(store: RevisionStore | null, address: string, manifest: unknown): void {
+  if (!store || !manifestCarriesConnectorKey(manifest)) return;
   try { store.setItem(key(address), REVISION); } catch { /* Next restore asks again. */ }
 }
 

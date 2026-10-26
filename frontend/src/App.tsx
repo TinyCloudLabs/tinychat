@@ -29,7 +29,6 @@ import {
   offeredChatModelContextTokens,
 } from "@tinyboilerplate/core";
 import { applyConnectorKeyRevisionGate, recordConnectorKeyRevision } from "./lib/connectors/namedKeyRevision";
-import { sessionHasConnectorKeyGrant } from "./lib/connectors/namedConnectorSecrets";
 import { replicationConfigPatch, startReplicationFill } from "./lib/replication/replicationClient";
 import { rememberReplicationPrincipal } from "./lib/replication/replicationCopyMarker";
 import { purgeReplicaCopyWhenOffOnce } from "./lib/replication/replicationOffPurge";
@@ -1002,7 +1001,7 @@ export function App() {
       sessionStoreRef.current.setSession(verified.token, verified.expiresIn, connectedAddress);
       // Marked current only if the manifest this sign-in used carries the bundle (an older served manifest does not).
       recordManifestRevisionIfSigned(browserRevisionStore(), connectedAddress, manifest);
-      recordConnectorKeyRevision(browserRevisionStore(), connectedAddress, manifest, sessionHasConnectorKeyGrant(signedTcw));
+      recordConnectorKeyRevision(browserRevisionStore(), connectedAddress, manifest);
       // The SDK keeps this provider for later user-authorized operations;
       // only the verified login's signatures use the prefetched nonce guard.
       prefetch.complete();
