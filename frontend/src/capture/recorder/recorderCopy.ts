@@ -35,7 +35,7 @@ export const AUTO_STOP_OFF_HINT_PHONE = "The recording runs until you stop it.";
 export const KEEP_RECORDING_TITLE = "Keep recording?";
 export const keepRecordingBody = (stopAt: string) => `This recording stops at ${stopAt} unless you keep going.`;
 export const KEEP_GOING = "Keep going";
-export const stopAtButton = (stopAt: string) => `Stop at ${stopAt}`;
+export const STOP_NOW = "Stop now";
 export const recordingContinuesUntil = (stopAt: string) => `Recording continues until ${stopAt}.`;
 
 export function limitNoticeText(maxDurationMs: number): string {

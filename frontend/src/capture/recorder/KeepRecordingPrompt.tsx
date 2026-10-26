@@ -1,7 +1,7 @@
 // "Keep recording?": five minutes before a desktop recording's limit, ask whether to go on. Keep going adds one hour (and
-// asks again five minutes before the new limit); Stop at {time}, closing the prompt, or no answer all leave the limit as
-// it is, so a recording never runs past its limit without a yes. It is not shown at the phone layout, under the silent
-// safety cap, while paused, or where the engine cannot change a running recording's limit.
+// asks again five minutes before the new limit); Stop now stops and saves the recording at once; Escape, or no answer,
+// leaves the planned stop at the limit, so a recording never runs past its limit without a yes. It is not shown at the
+// phone layout, under the silent safety cap, while paused, or where the engine cannot change a running recording's limit.
 import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -9,7 +9,7 @@ import { LIMIT_WARNING_LEAD_MS } from "./limitNotifications";
 import { useRecorder } from "./RecorderProvider";
 import { useRecorderLayout } from "./useRecorderLayout";
 import {
-  KEEP_GOING, KEEP_RECORDING_TITLE, clockTime, keepRecordingBody, recordingContinuesUntil, stopAtButton,
+  KEEP_GOING, KEEP_RECORDING_TITLE, STOP_NOW, clockTime, keepRecordingBody, recordingContinuesUntil,
 } from "./recorderCopy";
 
 /** How long "Recording continues until …" stays up. */
@@ -18,11 +18,11 @@ const CONFIRMATION_MS = 6000;
 export function KeepRecordingPrompt() {
   const recorder = useRecorder();
   const layout = useRecorderLayout();
-  const { phase, autoStop, extendLimit, maxDurationMs, elapsedMs, elapsedAt, mic } = recorder;
+  const { phase, autoStop, stop, extendLimit, maxDurationMs, elapsedMs, elapsedAt, mic } = recorder;
   const extend = extendLimit;
   const live = phase === "recording" && autoStop !== false && extend !== undefined && layout !== "phone";
   const [now, setNow] = useState(() => Date.now());
-  // The limit the user answered (Stop at, closed) or extended; each new limit is asked about again.
+  // The limit the user answered (closed with Escape) or extended; each new limit is asked about again.
   const [answeredLimit, setAnsweredLimit] = useState<number | null>(null);
   // The limit a Keep going raised: its confirmation shows while the recording's limit is past it.
   const [extendedFrom, setExtendedFrom] = useState<number | null>(null);
@@ -97,8 +97,8 @@ export function KeepRecordingPrompt() {
         <p id="keep-recording-body" className="text-sm text-muted-foreground">{keepRecordingBody(stopAt)}</p>
       </div>
       <div className="flex flex-wrap justify-end gap-2">
-        <Button type="button" variant="outline" disabled={pending} onClick={() => setAnsweredLimit(maxDurationMs)}>
-          {stopAtButton(stopAt)}
+        <Button type="button" variant="outline" disabled={pending} onClick={() => stop()}>
+          {STOP_NOW}
         </Button>
         <Button type="button" disabled={pending} onClick={() => void keepGoing()}>
           {KEEP_GOING}

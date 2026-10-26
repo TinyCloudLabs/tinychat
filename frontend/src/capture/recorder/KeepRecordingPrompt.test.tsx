@@ -1,5 +1,5 @@
 // "Keep recording?" (TC-2081): five minutes before a desktop recording's limit; Keep going adds one hour and asks again
-// before the new limit; Stop at, or no answer, leaves the limit as it is. Fake clock: no test waits for real minutes.
+// before the new limit; Stop now stops and saves at once; Escape, or no answer, leaves the stop at the limit. Fake clock: no test waits for real minutes.
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { ReactNode } from "react";
 import { act } from "react";
@@ -59,7 +59,8 @@ describe("Keep recording? prompt", () => {
     expect(prompt()!.textContent).toContain("Keep recording?");
     expect(prompt()!.textContent).toContain(`This recording stops at ${at} unless you keep going.`);
     expect(button("Keep going")).toBeDefined();
-    expect(button(`Stop at ${at}`)).toBeDefined();
+    expect(button("Stop now")).toBeDefined();
+    expect(button(`Stop at ${at}`)).toBeUndefined();
   });
 
   test("the clock ticking brings it up without a new checkpoint", async () => {
@@ -91,16 +92,27 @@ describe("Keep recording? prompt", () => {
     expect(extended).toBe(1);
   });
 
-  test("Stop at closes it and nothing extends: the limit is left as it is and it does not come back for that limit", async () => {
+  test("Stop now stops and saves at once through the recorder's stop, and nothing extends", async () => {
     let extended = 0;
-    const patch = (recordedMs: number) => recording(HOUR, recordedMs, { extendLimit: async () => { extended++; } });
+    let stopped = 0;
+    await show(recording(HOUR, 56 * MIN, { extendLimit: async () => { extended++; }, stop: () => { stopped++; } }));
+    await act(async () => button("Stop now")!.click());
+    expect(stopped).toBe(1);
+    expect(extended).toBe(0);
+  });
+
+  test("Escape keeps the planned stop at the limit: it does not stop or extend, and does not come back for that limit", async () => {
+    let extended = 0;
+    let stopped = 0;
+    const patch = (recordedMs: number) => recording(HOUR, recordedMs, { extendLimit: async () => { extended++; }, stop: () => { stopped++; } });
     await show(patch(56 * MIN));
-    await act(async () => button(`Stop at ${stopsAt(HOUR, 56 * MIN)}`)!.click());
+    await act(async () => { prompt()!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
     expect(prompt()).toBeNull();
     await clock.advance(2 * MIN);
     await show(patch(58 * MIN));
     expect(prompt()).toBeNull();
     expect(extended).toBe(0);
+    expect(stopped).toBe(0);
   });
 
   test("Escape closes it the same way: no answer never extends", async () => {
