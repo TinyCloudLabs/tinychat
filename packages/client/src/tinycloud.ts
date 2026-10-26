@@ -19,6 +19,8 @@ export interface TinyCloudWebConfig {
   tinycloudFallbackHosts?: string[] | null;
   autoCreateSpace?: boolean;
   siweConfig?: SiweConfig;
+  /** Explicit SIWE authority when the app is served from a development URL. */
+  domain?: string;
   /**
    * Manifest driving the SIWE recap at sign-in. If `capabilityRequest`
    * is present, it takes precedence and is signed directly.
@@ -71,6 +73,7 @@ export function createTinyCloudWeb(
     sessionExpirationMs: SESSION_EXPIRATION_MS,
     nonce: config?.nonce,
     siweConfig: config?.siweConfig,
+    ...(config?.domain ? { domain: config.domain } : {}),
     manifest,
     capabilityRequest: config?.capabilityRequest,
     includeAccountRegistryPermissions: false,

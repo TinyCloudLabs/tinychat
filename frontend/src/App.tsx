@@ -972,6 +972,9 @@ export function App() {
         includeAccountRegistryPermissions: false as const,
         tinycloudHosts: TINYCLOUD_HOSTS,
         manifest: withEncryptionDecryptGrant(manifest, connectedAddress),
+        // The dev WebView runs at localhost:5186, whose port the SDK signs into
+        // SIWE's domain. Production accepts the fixed Tauri hostname instead.
+        ...(import.meta.env.DEV && "__TAURI_INTERNALS__" in globalThis ? { domain: "localhost" } : {}),
         // Flag OFF: {} (config unchanged). ON: the SDK adds kv/sync beside kv/get for the
         // replica prefixes at this sign-in; see lib/replication/replicationClient.ts.
         ...(LOCAL_VALIDATION ? {} : await replicationConfigPatch(replicationPrincipalFor(connectedAddress))),

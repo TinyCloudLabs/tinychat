@@ -165,17 +165,31 @@ function signNativeWithAbilities(nonce: string, abilities: Record<string, Record
 }
 
 describe("real SDK SIWE audience", () => {
-  for (const [name, origin, domain] of [
+  test("raw Tauri development authority includes the port and is rejected by production", async () => {
+    const server = await startAuthServer();
+    try {
+      const signed = await signWithWebSdk("http://localhost:5186/chat", await server.nonce());
+      const parsed = parseSiweMessage(signed.message);
+      expect(parsed.domain).toBe("localhost:5186");
+      expect(parsed.uri).toMatch(SESSION_URI);
+      expect(await server.verify(signed.message, signed.signature)).toEqual({ status: 400, error: "invalid_origin" });
+    } finally {
+      await server.close();
+    }
+  });
+
+  for (const [name, origin, domain, claimedDomain] of [
     ["production web", "https://tinycloud.chat/chat", "tinycloud.chat"],
     ["Pages preview", "https://feature-12.tinychat-4jq.pages.dev/chat", "feature-12.tinychat-4jq.pages.dev"],
+    ["Tauri development", "http://localhost:5186/chat", "localhost", "localhost"],
     ["macOS Tauri", "tauri://localhost/chat", "localhost"],
     ["Windows Tauri", "http://tauri.localhost/chat", "tauri.localhost"],
-  ]) {
+  ] as const) {
     test(`accepts ${name}'s SDK-generated session DID`, async () => {
       const server = await startAuthServer();
       try {
         const nonce = await server.nonce();
-        const signed = await signWithWebSdk(origin, nonce);
+        const signed = await signWithWebSdk(origin, nonce, claimedDomain);
         const parsed = parseSiweMessage(signed.message);
         expect(parsed.domain).toBe(domain);
         expect(parsed.uri).toMatch(SESSION_URI);
