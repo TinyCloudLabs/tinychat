@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.10.0-beta.39
+
+### Patch Changes
+
+- 7e62bc9: Native sign-in requests only the entries OpenKey's native client currently allows, so a new desktop or phone sign-in is no longer refused. Details: TC-2057
+
 ## 0.10.0-beta.38
 
 ### Patch Changes
