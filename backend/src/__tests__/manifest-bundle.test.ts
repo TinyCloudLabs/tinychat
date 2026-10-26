@@ -10,16 +10,18 @@ process.env.HOME = testHome;
 if (!process.env.HOME.startsWith("/var/tmp/tc1013.")) throw new Error("HOME is not the throwaway test home");
 afterAll(() => { rmSync(testHome, { recursive: true, force: true }); });
 
-// The served manifest's sign-in bundle beyond the original five entries: the three meeting databases,
-// the migration record folder, the storage info read and the Exo mailbox folders.
+// The served manifest's sign-in bundle beyond the original five entries: meeting databases,
+// storage info, the Exo mailbox, applications-space KV and catalog databases.
 const BUNDLE = [
   { service: "tinycloud.sql", path: "details", actions: ["read", "write", "schema"] },
   { service: "tinycloud.sql", path: "summaries", actions: ["read", "write", "schema"] },
   { service: "tinycloud.sql", path: "transcripts", actions: ["read", "write", "schema"] },
-  { service: "tinycloud.kv", path: "migrations/", actions: ["get", "put"] },
+  { service: "tinycloud.kv", space: "applications", path: "", actions: ["get", "put", "del", "list", "metadata"], skipPrefix: true },
   { service: "tinycloud.space", path: "", actions: ["info"], skipPrefix: true },
   { service: "tinycloud.kv", path: "exo/v1/requests/", actions: ["get", "list", "del"] },
   { service: "tinycloud.kv", path: "exo/v1/jobs/", actions: ["get", "put", "del"] },
+  { service: "tinycloud.sql", space: "applications", path: "xyz.tinycloud.sample.healthlog/healthlog", actions: ["read", "write", "schema"], skipPrefix: true },
+  { service: "tinycloud.sql", space: "applications", path: "xyz.tinycloud.sample.recipes/recipes", actions: ["read", "write", "schema"], skipPrefix: true },
 ];
 
 describe("TinyChat manifest sign-in bundle", () => {
@@ -45,7 +47,7 @@ describe("TinyChat manifest sign-in bundle", () => {
         ["tinycloud.sql/read", "tinycloud.sql/write", "tinycloud.sql/schema"],
       ]);
     }
-    expect(grant("tinycloud.kv", `${APP_ID}/migrations/`).map((resource) => resource.actions)).toEqual([["tinycloud.kv/get", "tinycloud.kv/put"]]);
+    expect(grant("tinycloud.kv", "").map((resource) => resource.actions)).toEqual([["tinycloud.kv/get", "tinycloud.kv/put", "tinycloud.kv/del", "tinycloud.kv/list", "tinycloud.kv/metadata"]]);
     expect(grant("tinycloud.kv", `${APP_ID}/exo/v1/requests/`).map((resource) => resource.actions)).toEqual([
       ["tinycloud.kv/get", "tinycloud.kv/list", "tinycloud.kv/del"],
     ]);
@@ -53,5 +55,10 @@ describe("TinyChat manifest sign-in bundle", () => {
       ["tinycloud.kv/get", "tinycloud.kv/put", "tinycloud.kv/del"],
     ]);
     expect(grant("tinycloud.space", "").map((resource) => resource.actions)).toEqual([["tinycloud.space/info"]]);
+    for (const name of ["xyz.tinycloud.sample.healthlog/healthlog", "xyz.tinycloud.sample.recipes/recipes"]) {
+      expect(grant("tinycloud.sql", name).map((resource) => resource.actions)).toEqual([
+        ["tinycloud.sql/read", "tinycloud.sql/write", "tinycloud.sql/schema"],
+      ]);
+    }
   });
 });
