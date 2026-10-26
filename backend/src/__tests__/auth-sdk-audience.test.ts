@@ -14,7 +14,7 @@ import { createAuthRouter } from "../routes/auth.js";
 
 const account = privateKeyToAccount(`0x${"01".repeat(32)}`);
 const SESSION_URI = /^did:key:(z6Mk[1-9A-HJ-NP-Za-km-z]{44})#\1$/;
-const globals = ["window", "document", "navigator", "HTMLElement", "customElements", "localStorage"] as const;
+const globals = ["window", "document", "navigator", "HTMLElement", "customElements", "localStorage", "location"] as const;
 const previous = new Map<string, PropertyDescriptor | undefined>();
 let browser: Window;
 let TinyCloudWeb: typeof TinyCloudWebClass;
