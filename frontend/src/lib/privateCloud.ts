@@ -68,6 +68,8 @@ export interface PrivateCloudJob {
     regions_total?: number | null;
   } | null;
   error?: { type?: string; code: string; message?: string } | null;
+  /** True while PTX holds the job until its speech-to-text provider can take it. Absent (an older PTX) means not delayed. */
+  provider_delayed?: boolean;
 }
 
 export interface PrivateCloudSegment {
