@@ -179,7 +179,7 @@ export function SettingsPage({
             </div>
           </SectionCard>
           <SectionCard icon={LayoutGridIcon} title="Home">
-            <FirstScreenControl tcw={tcw} />
+            <FirstScreenControl tcw={tcw} did={did} />
           </SectionCard>
           <SectionCard
             id="agent-access"
