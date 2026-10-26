@@ -162,7 +162,7 @@ import { NativeRenewal, guardNativeTinyCloudCalls, NATIVE_SESSION_ENDED_MESSAGE,
 import { isAuthSettledSignedOut } from "./lib/authRouting";
 import { clearSendIntentsForOwner } from "./chat/TranscriberSection";
 import { browserIsOffline, restorePersistedSession } from "./lib/sessionRestore";
-import { applyManifestRevisionGate, browserRevisionStore, MANIFEST_RESIGN_NOTICE, recordManifestRevisionIfSigned } from "./lib/manifestRevision";
+import { applyManifestRevisionGate, browserRevisionStore, createResignPromptGuard, MANIFEST_RESIGN_NOTICE, recordManifestRevisionIfSigned } from "./lib/manifestRevision";
 import { clearTranscriptDelegationSchedule, ensureTranscriptWriterDelegation } from "./lib/transcriptDelegation";
 import { onAgentPaywallError, onAgentModelSelectionError } from "./lib/agentChatApi";
 import type { ThreadDoc, StoredMessageItem } from "./lib/threadStore";
@@ -196,6 +196,8 @@ export function App() {
   const signOutInFlightRef = useRef(false);
   const restoredRef = useRef(false);
   const restoreInFlightRef = useRef(false);
+  // One forced re-sign prompt per page session (App mounts once per page), even if the revision record never sticks.
+  const resignPromptGuardRef = useRef(createResignPromptGuard());
   const restoreRetryAfterRef = useRef(0);
   const restoreRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const nativeRenewalRef = useRef<NativeRenewal | null>(null);
@@ -571,6 +573,7 @@ export function App() {
           sessionStoreRef.current.clear();
           endStorageAccountSession();
         },
+        promptGuard: resignPromptGuardRef.current,
       });
       if (revisionGate === "handoff_failed") { setState("recoverableError"); return; }
       if (revisionGate === "cleared") {
@@ -1370,6 +1373,7 @@ export function App() {
             pendingMeetings={0}
             chat={<BootSurface state={state} error={error} onAction={authAction} />}
             capture={<DeviceCaptureSurface did={did} offline={state === "offline"} error={error}
+              resign={state === "unauthenticated" && error === MANIFEST_RESIGN_NOTICE}
               onSignIn={authAction} onRetry={() => void restoreSession()} screen={screen} />}
             connectors={null}
             settings={<DeviceCaptureSettings onBack={onBack} onSignIn={authAction} offline={state === "offline"} />}
