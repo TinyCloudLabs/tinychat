@@ -119,7 +119,7 @@ export function ReplicationSettings({ tcw }: { tcw: TinyCloudWeb }) {
           </Button>
         </div>
       )}
-      <ReplicationStatusLine tcw={tcw} live={live} optedIn={optedIn} />
+      <ReplicationStatusLine tcw={tcw} live={live} optedIn={available && optedIn} />
       {error && <p role="alert" className="text-destructive">{error}</p>}
       <AlertDialog open={pending !== null} onOpenChange={(open) => { if (!open && !busy) setPending(null); }}>
         <AlertDialogContent>
