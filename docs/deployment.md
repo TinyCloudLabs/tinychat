@@ -590,11 +590,14 @@ nothing below may be reported as done on its behalf.
   signs its configured issuer domain (`openkey.so` by default) and a canonical
   `did:key` session URI, never a web HTTPS URI. Only this native domain
   requires a strict signed ReCap confined to Home's explicit
-  `applications` scope: its root KV grant, the two named runnable catalog
-  databases, and `xyz.tinycloud.tinychat/` app paths. Foreign app grants
-  outside those names remain rejected. OpenKey's registered native client
-  must be widened to the same scope before native sign-in can request it;
-  the web sign-in does not use that client ceiling. Set
+  `applications` scope and carrying at least one `xyz.tinycloud.tinychat/`
+  app-path grant, which is the proof that the sign-in is for TinyChat. The root
+  KV grant and the two named runnable catalog databases are tolerated next to
+  it but never count as that proof on their own; other grants are rejected.
+  Native sign-in cannot request the broad entries until OpenKey's native
+  client policy and ceiling are changed (TC-1990), and the served revision-3
+  manifest lists them, so native sign-in is expected to fail until then. The
+  web sign-in does not use that client ceiling. Set
   `OPENKEY_SIWE_DOMAIN` on the backend if that client's `siweDomain` changes;
   never use the API host as the signed audience.
   Nonces remain single-use for five minutes, with at most 2048 pending per
