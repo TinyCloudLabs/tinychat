@@ -95,14 +95,27 @@ const CAPABILITIES_READ: NativeDelegationPermission = {
 const NATIVE_SERVICES = new Set(["tinycloud.kv", "tinycloud.sql"]);
 
 /**
- * The delegation's permission list: every applications-space KV/SQL entry of
- * the app manifest that lies under the app's own folder, paths prefixed with
- * the app id and actions expanded to full URNs, plus the mandatory
+ * The entries OpenKey's native-client ceiling covers today, relative to the app folder as
+ * `service:path`. Widen this list only together with the ceiling (TC-1990).
+ */
+const NATIVE_CEILING = new Set([
+  "tinycloud.kv:threads/",
+  "tinycloud.kv:connectors/",
+  "tinycloud.sql:threads",
+  "tinycloud.sql:canvas",
+  "tinycloud.sql:connectors",
+]);
+
+/**
+ * The delegation's permission list: the manifest's applications-space KV/SQL
+ * entries that OpenKey's native-client ceiling covers today, paths prefixed
+ * with the app id and actions expanded to full URNs, plus the mandatory
  * capabilities/read. Nothing else — the OpenKey ceiling refuses secrets, vault
- * and other spaces, so native sessions simply cannot hold them. The broad Home
- * entries (the whole applications space, other apps' databases) are web-only
- * until the native client policy supports them (TC-1990); requesting them
- * would make OpenKey refuse the whole native request.
+ * and other spaces, so native sessions simply cannot hold them. Entries the
+ * ceiling does not cover (the broad Home entries, the meeting databases, the
+ * Exo mailbox folders) stay web-only until the ceiling is widened (TC-1990):
+ * requesting one makes OpenKey refuse the whole native request, so a feature
+ * that needs one must fail when it is used, not at sign-in.
  */
 export function nativePermissions(manifest: Manifest): NativeDelegationPermission[] {
   const permissions: NativeDelegationPermission[] = [CAPABILITIES_READ];
@@ -111,6 +124,7 @@ export function nativePermissions(manifest: Manifest): NativeDelegationPermissio
     const space = entry.space ?? "applications";
     if (space !== "applications" || !NATIVE_SERVICES.has(entry.service)) continue;
     const path = entry.skipPrefix || prefix === "" ? entry.path : `${prefix}/${entry.path}`;
+    if (prefix !== "" && !NATIVE_CEILING.has(`${entry.service}:${path.slice(prefix.length + 1)}`)) continue;
     if (prefix !== "" && !path.startsWith(`${prefix}/`)) continue;
     permissions.push({
       service: entry.service,
