@@ -124,6 +124,15 @@ describe("replicationClient", () => {
       expect(REPLICATION_SYNC_SCOPE).toBe("prefixes");
     });
 
+    test("syncs in the background every 5 minutes and serves a local read up to 15 minutes old, with the same prefixes and budget", async () => {
+      installBrowser({ flag: true, optIn: [ALICE] });
+      const config = await buildReplicationConfig(ALICE, spyLoader());
+      expect(config?.syncIntervalMs).toBe(300_000);
+      expect(config?.maxStalenessMs).toBe(900_000);
+      expect(config?.prefixes).toEqual(replicationPrefixes());
+      expect(config?.maxBytes).toBe(100 * 1024 * 1024);
+    });
+
     test("waits for a page-load purge that is still deleting the copy before it builds anything", async () => {
       installBrowser({ flag: true, optIn: [ALICE] });
       const loader = spyLoader();

@@ -29,6 +29,12 @@ import { recordReplicationEvent } from "./replicationStatus";
  */
 export const REPLICATION_MAX_BYTES = 100 * 1024 * 1024;
 
+/** Background sync interval: 5 minutes. */
+export const REPLICATION_SYNC_INTERVAL_MS = 300_000;
+
+/** A local read older than this syncs first: 15 minutes. */
+export const REPLICATION_MAX_STALENESS_MS = 900_000;
+
 export type ReplicationClientConfig = NonNullable<TinyCloudWebConfig["replication"]>;
 
 /** Test seam: how the plugin and storage factory are obtained. Production uses dynamic imports. */
@@ -78,6 +84,8 @@ export async function buildReplicationConfig(
     prefixes: replicationPrefixes(),
     syncScope: REPLICATION_SYNC_SCOPE,
     maxBytes: REPLICATION_MAX_BYTES,
+    syncIntervalMs: REPLICATION_SYNC_INTERVAL_MS,
+    maxStalenessMs: REPLICATION_MAX_STALENESS_MS,
     storage: await loader.createStorage(),
     onEvent: recordReplicationEvent,
   };
