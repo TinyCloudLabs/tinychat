@@ -537,6 +537,10 @@ jobs:
           ASSEMBLYAI_HOSTED_HANDLE_KEY: ${{ secrets.ASSEMBLYAI_HOSTED_HANDLE_KEY }}
           ASSEMBLYAI_HOSTED_ADMIN_KEY: ${{ secrets.ASSEMBLYAI_HOSTED_ADMIN_KEY }}
           ASSEMBLYAI_HOSTED_FRESH_INSTALL: ${{ vars.ASSEMBLYAI_HOSTED_FRESH_INSTALL }}
+          # TC-2136 private log shipper (log-shipper/, docker-compose.phala.yml `log-shipper`). Source token for the
+          # private Better Stack source; unset = the sidecar idles and nothing ships. Declared in all four places for
+          # the allowed_envs reason; the sidecar writes it to tmpfs and removes it from its environment.
+          BETTERSTACK_SOURCE_TOKEN: ${{ secrets.BETTERSTACK_SOURCE_TOKEN }}
         run: |
           ENV_FILE="$RUNNER_TEMP/phala-prod.env"
           DEPLOY_RUN_URL="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
@@ -626,6 +630,7 @@ jobs:
             printf '%s\n' "ASSEMBLYAI_HOSTED_HANDLE_KEY=$ASSEMBLYAI_HOSTED_HANDLE_KEY"
             printf '%s\n' "ASSEMBLYAI_HOSTED_ADMIN_KEY=$ASSEMBLYAI_HOSTED_ADMIN_KEY"
             printf '%s\n' "ASSEMBLYAI_HOSTED_FRESH_INSTALL=$ASSEMBLYAI_HOSTED_FRESH_INSTALL"
+            printf '%s\n' "BETTERSTACK_SOURCE_TOKEN=$BETTERSTACK_SOURCE_TOKEN"
           } > "$ENV_FILE"
 
           echo "::group::Deploy environment keys"
