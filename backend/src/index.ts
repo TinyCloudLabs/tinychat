@@ -65,6 +65,8 @@ import { exoCapabilitiesEnabled } from "./exo/mailbox.js";
 import { ASSEMBLYAI_HOSTED_MOUNT, createAssemblyAiHostedRouter, reconcileHostedJobs } from "./routes/assemblyai-hosted.js";
 import {
   DEFAULT_MAX_CONCURRENT_UPLOADS,
+  HEARTBEAT_INTERVAL_MS,
+  HostedProviderMonitor,
   HostedUploadStore,
   assemblyAiHostedConfigFromEnv,
   type AssemblyAiHostedConfig,
@@ -103,6 +105,7 @@ import {
   validateCredentialCustodyConfig,
 } from "./services/credential-store.js";
 import { CREDENTIAL_COUNT_ADMIN_KEY_ENV, mountCredentialCountRoute } from "./routes/credential-count.js";
+import { createAssemblyAiStatusRouter } from "./routes/assemblyai-status.js";
 import { CREDENTIAL_ROW_COUNT_ENV, logCredentialRowCounts } from "./services/credential-row-count.js";
 import {
   createRefreshingCredentialLookup,
@@ -708,6 +711,8 @@ async function main() {
   });
   app.use("/api/manifest", createManifestRouter());
   app.use("/api/server-info", createServerInfoRouter(did, readBackendBuildInfo()));
+  // Operator view of hosted AssemblyAI: the events, the heartbeat and the status route read this one monitor.
+  const assemblyAiMonitor = new HostedProviderMonitor();
   // TC-1964: optional authenticated count of stored credential rows. Not registered (404) unless
   // CREDENTIAL_COUNT_ADMIN_KEY is set; no session, the admin key is the only credential.
   if (process.env[CREDENTIAL_COUNT_ADMIN_KEY_ENV]?.trim()) {
@@ -717,6 +722,8 @@ async function main() {
       () => new KvCredentialRowStore(node, transcriberStorageLane, { priority: "background" }),
     );
   }
+  // Its read-only status for the operator probe: the same key and gating, so no routes (404) unless that key is set.
+  app.use(createAssemblyAiStatusRouter(process.env, assemblyAiMonitor));
   app.use(
     "/api/auth",
     createAuthRouter({
@@ -1107,13 +1114,15 @@ async function main() {
       undefined, undefined, undefined, new KvJsonKv(node));
     await hostedUploads.init();
     await reconcileHostedJobs(assemblyAiHosted, hostedUploads);
+    assemblyAiMonitor.attach(hostedUploads);
     const sweeper = hostedUploads;
     setInterval(() => {
       sweeper.sweep(Date.now()).catch(() => console.error("[assemblyai-hosted] sweep failed alert=true"));
     }, 60_000).unref();
+    setInterval(() => assemblyAiMonitor.heartbeat(), HEARTBEAT_INTERVAL_MS).unref();
     console.log("[startup] hosted AssemblyAI enabled.");
   }
-  app.use(ASSEMBLYAI_HOSTED_MOUNT, authMiddleware, createAssemblyAiHostedRouter({ config: assemblyAiHosted, store: hostedUploads }));
+  app.use(ASSEMBLYAI_HOSTED_MOUNT, authMiddleware, createAssemblyAiHostedRouter({ config: assemblyAiHosted, store: hostedUploads, monitor: assemblyAiMonitor }));
 
   // Exo private cloud transcription (routes/private-cloud-transcription.ts). A different PTX
   // deployment (`ptx-batch`) and key from the meeting transcriber above.
