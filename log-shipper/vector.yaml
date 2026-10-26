@@ -128,6 +128,16 @@ transforms:
         name = string(m.name) ?? ""
         if !match(name, r'^[A-Za-z0-9_.]{1,64}$') { abort }
         out = {"svc": "backend", "event": "backend_uncaught_exception", "level": "error", "ts": gelf_ts, "error_name": name}
+      } else if from_stderr && match(msg, r'^\[storage-lane\] op=(?:slow-wait|wait-timeout) priority=(?:foreground|background) waitedMs=[0-9]{1,9}$') {
+        # backend-storage-lane.ts console.warn lines. Fully anchored: a line that deviates in any way falls through to
+        # backend_log_error below and ships none of these fields.
+        sl = parse_regex(msg, r'^\[storage-lane\] op=(?P<op>slow-wait|wait-timeout) priority=(?P<priority>foreground|background) waitedMs=(?P<ms>[0-9]{1,9})$') ?? {}
+        lane_op = string(sl.op) ?? ""
+        lane_priority = string(sl.priority) ?? ""
+        if lane_op == "" || lane_priority == "" { abort }
+        out = {"svc": "backend", "event": "backend_storage_lane_wait", "level": "warn", "ts": gelf_ts, "op": lane_op, "priority": lane_priority}
+        waited = to_int(sl.ms) ?? -1
+        if waited >= 0 && waited <= 3600000 { out.waited_ms = waited }
       } else if from_stderr || contains(msg, " alert=true") {
         # Plain `[component] key=value ...` lines (e.g. `[assemblyai-hosted] route=... status=... code=... alert=true`):
         # keep only strictly-shaped tokens. Free text is never copied.

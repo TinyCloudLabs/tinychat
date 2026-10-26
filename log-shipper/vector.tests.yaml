@@ -437,3 +437,133 @@ tests:
         source: |
           . = {"message": "{\"msg\":\"user Alice\",\"level\":\"error\"}", "level": 3, "timestamp": now(), "_tc.logship": "tinychat-backend"}
     no_outputs_from: [allowlist]
+  - name: "storage-lane slow-wait on the foreground lane ships its closed fields"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "[storage-lane] op=slow-wait priority=foreground waitedMs=1523", "level": 3, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    outputs:
+      - extract_from: allowlist
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.event, "backend_storage_lane_wait")
+              assert_eq!(.level, "warn")
+              assert_eq!(.svc, "backend")
+              assert_eq!(.op, "slow-wait")
+              assert_eq!(.priority, "foreground")
+              assert_eq!(.waited_ms, 1523)
+              assert_eq!(length(keys(.)), 7)
+  - name: "storage-lane slow-wait on the background lane"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "[storage-lane] op=slow-wait priority=background waitedMs=1000", "level": 3, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    outputs:
+      - extract_from: allowlist
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.event, "backend_storage_lane_wait")
+              assert_eq!(.op, "slow-wait")
+              assert_eq!(.priority, "background")
+              assert_eq!(.waited_ms, 1000)
+  - name: "storage-lane wait-timeout on the foreground lane"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "[storage-lane] op=wait-timeout priority=foreground waitedMs=30012", "level": 3, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    outputs:
+      - extract_from: allowlist
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.event, "backend_storage_lane_wait")
+              assert_eq!(.level, "warn")
+              assert_eq!(.op, "wait-timeout")
+              assert_eq!(.priority, "foreground")
+              assert_eq!(.waited_ms, 30012)
+  - name: "storage-lane wait-timeout on the background lane"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "[storage-lane] op=wait-timeout priority=background waitedMs=120000", "level": 3, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    outputs:
+      - extract_from: allowlist
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.event, "backend_storage_lane_wait")
+              assert_eq!(.op, "wait-timeout")
+              assert_eq!(.priority, "background")
+              assert_eq!(.waited_ms, 120000)
+  - name: "storage-lane waitedMs above the schema cap keeps the event and drops the number"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "[storage-lane] op=slow-wait priority=foreground waitedMs=99999999", "level": 3, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    outputs:
+      - extract_from: allowlist
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.event, "backend_storage_lane_wait")
+              assert!(!exists(.waited_ms))
+              assert_eq!(length(keys(.)), 6)
+  - name: "storage-lane line with an unknown op is not a lane event and ships no lane fields"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "[storage-lane] op=evicted priority=foreground waitedMs=5", "level": 3, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    outputs:
+      - extract_from: allowlist
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.event, "backend_log_error")
+              assert_eq!(.component, "storage-lane")
+              assert!(!exists(.op))
+              assert!(!exists(.priority))
+              assert!(!exists(.waited_ms))
+              assert_eq!(length(keys(.)), 5)
+  - name: "storage-lane line with trailing text is not a lane event and the text is not shipped"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "[storage-lane] op=slow-wait priority=foreground waitedMs=5 tenant=alice", "level": 3, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    outputs:
+      - extract_from: allowlist
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.event, "backend_log_error")
+              assert!(!exists(.waited_ms))
+              assert!(!contains(encode_json(.), "alice"))
+  - name: "storage-lane line with a non-numeric wait is not a lane event"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "[storage-lane] op=slow-wait priority=urgent waitedMs=-5", "level": 3, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    outputs:
+      - extract_from: allowlist
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.event, "backend_log_error")
+              assert!(!exists(.priority))
+              assert!(!exists(.waited_ms))
+  - name: "storage-lane line on stdout is dropped"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "[storage-lane] op=slow-wait priority=foreground waitedMs=1523", "level": 6, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    no_outputs_from: [allowlist]

@@ -114,6 +114,7 @@
         "backend_uncaught_exception",
         "backend_alert",
         "backend_log_error",
+        "backend_storage_lane_wait",
         "assemblyai_provider_blocked",
         "assemblyai_provider_recovered",
         "assemblyai_jobs_failed_in_a_row",
@@ -137,7 +138,10 @@
         "count": { "type": "integer", "min": 0, "max": 1000 },
         "pending_jobs": { "type": "integer", "min": 0, "max": 100000 },
         "consecutive_failed_jobs": { "type": "integer", "min": 0, "max": 100000 },
-        "oldest_pending_age_s": { "type": "number", "min": 0, "max": 31536000 }
+        "oldest_pending_age_s": { "type": "number", "min": 0, "max": 31536000 },
+        "op": { "type": "enum", "values": ["slow-wait", "wait-timeout"] },
+        "priority": { "type": "enum", "values": ["foreground", "background"] },
+        "waited_ms": { "type": "integer", "min": 0, "max": 3600000 }
       }
     },
     "tinycloud-mcp": { "events": [], "fields": {} },
