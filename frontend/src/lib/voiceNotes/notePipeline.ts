@@ -369,8 +369,8 @@ function cloudStep(cloud: PipelineCloud | null, spaceSaved: boolean, checkingCap
         case "waiting": return { state: "waiting", caption: provider === "powerful" ? "Waiting for Powerful to start" : provider === "unknown" ? "Waiting for transcription to start" : PRIVATE_COPY.waiting(status.position) };
         case "preparing": return { state: "active", caption: PRIVATE_COPY.preparing };
         case "uploading": return status.progress === undefined
-          ? { state: "active", caption: provider === "powerful" ? "Sending to Powerful (AssemblyAI)" : provider === "unknown" ? "Sending audio for transcription" : PRIVATE_COPY.sending }
-          : withProgress("active", `${provider === "powerful" ? "Sending to Powerful (AssemblyAI)" : provider === "unknown" ? "Sending audio for transcription" : PRIVATE_COPY.sending} · ${percentText(status.progress)}`, status.progress);
+          ? { state: "active", caption: provider === "powerful" ? "Sending to Powerful" : provider === "unknown" ? "Sending audio for transcription" : PRIVATE_COPY.sending }
+          : withProgress("active", `${provider === "powerful" ? "Sending to Powerful" : provider === "unknown" ? "Sending audio for transcription" : PRIVATE_COPY.sending} · ${percentText(status.progress)}`, status.progress);
         case "queued": return { state: "waiting", caption: PRIVATE_COPY.inQueue(status.position) };
         case "processing": {
           const progress = status.completed === null || status.total === null ? null : fraction(status.completed, status.total);
