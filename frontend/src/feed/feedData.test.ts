@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, test } from "bun:test";
 import * as feedData from "./feedData";
 const { parseFeed } = feedData;
@@ -44,9 +45,52 @@ describe("KV feed entries", () => {
     expect(cross?.lead.image).toBeUndefined();
     expect(cross?.source).toEqual({ label: "Record", ref: "other/entry" });
     expect(remote?.lead.image).toBeUndefined();
-    expect(remote?.source).toEqual({ label: "Outside" });
+    expect(remote?.source).toBeUndefined();
     expect(local?.lead.image).toBeUndefined();
     expect(local?.source?.url).toBe("https://example.org/story");
+  });
+
+  test("label plus an https url keeps a link source; label plus a ref keeps the ref as plain source data", () => {
+    const [linked, referenced] = parseFeed([
+      entry({ ...card, source: { label: "Notebook", url: "https://example.org/notebook" } }, "aster/2026-10/2026-10-25T120000Z-linked"),
+      entry({ ...card, source: { label: "Record", ref: "weight/2026-10/2026-10-25T120000Z-note" } }, "aster/2026-10/2026-10-25T120000Z-referenced"),
+    ]);
+    expect(linked?.source).toEqual({ label: "Notebook", url: "https://example.org/notebook" });
+    expect(referenced?.source).toEqual({ label: "Record", ref: "weight/2026-10/2026-10-25T120000Z-note" });
+  });
+
+  test("a source without a label, or with a label but neither url nor ref, is dropped while the card stays", () => {
+    const sources = Object.fromEntries(parseFeed([
+      entry({ ...card, lead: { text: "label only" }, source: { label: "Record" } }, "aster/2026-10/2026-10-25T115700Z-label-only"),
+      entry({ ...card, lead: { text: "no label" }, source: { url: "https://example.org/page" } }, "aster/2026-10/2026-10-25T115600Z-no-label"),
+      entry({ ...card, lead: { text: "null source" }, source: null }, "aster/2026-10/2026-10-25T115500Z-null"),
+      entry({ ...card, lead: { text: "array source" }, source: [{ label: "Record", ref: "other/entry" }] }, "aster/2026-10/2026-10-25T115400Z-array"),
+      entry({ ...card, lead: { text: "string source" }, source: "Record" }, "aster/2026-10/2026-10-25T115300Z-string"),
+    ]).map((item) => [item.lead.text, item.source]));
+    expect(Object.keys(sources)).toHaveLength(5);
+    for (const source of Object.values(sources)) expect(source).toBeUndefined();
+  });
+
+  test("unsafe urls never become link sources: dropped without a ref, and kept as a plain ref when one is present", () => {
+    const unsafe = ["javascript:alert(1)", "data:text/html,hello", "//example.org/page", "mailto:someone@example.org", "ftp://example.org/file"];
+    const cards = parseFeed([
+      ...unsafe.map((url, index) => entry({ ...card, lead: { text: `plain ${index}` }, source: { label: "Record", url } }, `aster/2026-10/2026-10-25T11${50 - index}00Z-plain`)),
+      entry({ ...card, lead: { text: "with ref" }, source: { label: "Record", url: "javascript:alert(1)", ref: "other/entry" } }, "aster/2026-10/2026-10-25T114000Z-with-ref"),
+    ]);
+    expect(cards).toHaveLength(unsafe.length + 1);
+    for (const item of cards.filter((item) => item.lead.text.startsWith("plain"))) expect(item.source).toBeUndefined();
+    expect(cards.find((item) => item.lead.text === "with ref")?.source).toEqual({ label: "Record", ref: "other/entry" });
+  });
+
+  test("sample cards each carry a label plus exactly one of a neutral https url or a ref", () => {
+    const sample = JSON.parse(readFileSync(new URL("../../public/home-feed-sample.json", import.meta.url), "utf8")) as unknown[];
+    const cards = parseFeed(sample);
+    expect(cards).toHaveLength(8);
+    for (const item of cards) {
+      expect(item.source?.label).toBeTruthy();
+      expect(Boolean(item.source?.url) !== Boolean(item.source?.ref)).toBe(true);
+      if (item.source?.url) expect(item.source.url.startsWith("https://example.org/")).toBe(true);
+    }
   });
 
   test("newest first with stable key tiebreak; rejects malformed keys and invalid UTC timestamps", () => {

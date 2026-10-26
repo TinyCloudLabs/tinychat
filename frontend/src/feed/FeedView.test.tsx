@@ -8,7 +8,7 @@ import { parseFeed } from "./feedData";
 
 const at = "2026-10-25T12:00:00Z";
 const key = "aster/2026-10/2026-10-25T120000Z-note";
-const base = { key, value: { v: 1, at, render: "post", lead: { text: "A little note." }, source: { label: "Notebook" } } };
+const base = { key, value: { v: 1, at, render: "post", lead: { text: "A little note." }, source: { label: "Notebook", url: "https://example.org/notebook" } } };
 const profile = { key: "aster/profile", value: { v: 1, name: "Aster", client: "sample", about: "Notes" } };
 const card = (value: object, suffix: string) => parseFeed([profile, { key: `aster/2026-10/2026-10-25T120000Z-${suffix}`, value: { ...base.value, ...value } }])[0]!;
 let restore: (() => void) | undefined;
@@ -55,7 +55,7 @@ describe("built-in feed cards", () => {
 
   test("unknown renderer and unsafe link keep lead without unsafe click target; source ref is plain text", () => {
     const unknown = renderToStaticMarkup(<FeedCardView card={card({ render: "video", source: { label: "Record", ref: "other/entry" } }, "video")} />);
-    const link = renderToStaticMarkup(<FeedCardView card={card({ render: "link", url: "javascript:alert(1)" }, "link")} />);
+    const link = renderToStaticMarkup(<FeedCardView card={card({ render: "link", url: "javascript:alert(1)", source: undefined }, "link")} />);
     expect(unknown).toContain("A little note.");
     expect(unknown).toContain("other/entry");
     expect(unknown).not.toContain("<a ");
@@ -68,6 +68,23 @@ describe("built-in feed cards", () => {
     expect(article).toContain("Readable");
     expect(article).toContain("A little note.");
     expect(image).not.toContain("<img");
+  });
+
+  test("source url renders as an external link; source ref renders as plain text, never a link", () => {
+    const linked = renderToStaticMarkup(<FeedCardView card={card({ source: { label: "Notebook", url: "https://example.org/notebook" } }, "linked")} />);
+    const referenced = renderToStaticMarkup(<FeedCardView card={card({ source: { label: "Record", ref: "weight/2026-10/2026-10-25T120000Z-note" } }, "referenced")} />);
+    expect(linked).toContain('href="https://example.org/notebook"');
+    expect(linked).toContain('rel="noopener noreferrer"');
+    expect(referenced).toContain("Record");
+    expect(referenced).toContain("weight/2026-10/2026-10-25T120000Z-note");
+    expect(referenced).not.toContain("<a ");
+    expect(referenced).not.toContain("href=");
+  });
+
+  test("card without a valid source shows no source line but keeps the lead", () => {
+    const html = renderToStaticMarkup(<FeedCardView card={card({ source: { label: "Record" } }, "label-only")} />);
+    expect(html).toContain("A little note.");
+    expect(html).not.toContain("Source:");
   });
 });
 

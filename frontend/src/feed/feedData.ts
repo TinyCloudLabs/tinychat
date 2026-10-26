@@ -51,12 +51,16 @@ function parseCard(key: string, value: unknown, profiles: Map<string, FeedCard["
     if (folderKey(value.body, bot) && value.body.endsWith(".md")) card.body = value.body;
   }
   if (render === "link" && text(value.url)) card.url = value.url;
-  if (record(value.source) && text(value.source.label)) {
-    card.source = { label: value.source.label };
-    if (safeUrl(value.source.url)) card.source.url = value.source.url;
-    else if (text(value.source.ref) && /^[A-Za-z0-9/\-._~:+@=,]+$/.test(value.source.ref)) card.source.ref = value.source.ref;
-  }
+  const source = parseSource(value.source);
+  if (source) card.source = source;
   return card;
+}
+
+function parseSource(value: unknown): FeedCard["source"] | undefined {
+  if (!record(value) || !text(value.label)) return undefined;
+  if (safeUrl(value.url)) return { label: value.label, url: value.url };
+  if (text(value.ref) && /^[A-Za-z0-9/\-._~:+@=,]+$/.test(value.ref)) return { label: value.label, ref: value.ref };
+  return undefined;
 }
 
 export function parseFeed(value: unknown): FeedCard[] {
