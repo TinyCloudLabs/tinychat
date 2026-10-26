@@ -127,11 +127,11 @@ describe.each(makers)("VoiceNotes contract parity: %s", (_name, make) => {
     expect((await plugin.listPending()).recordings).toHaveLength(1);
   });
 
-  test("the limit is clamped to [1 s, 3 h]", async () => {
+  test("the limit is clamped to [1 s, 8 h]", async () => {
     const s = await make();
     expect((await s.plugin.start({ maxDurationMs: 5 })).maxDurationMs).toBe(1000);
     await s.plugin.discard();
-    expect((await s.plugin.start({ maxDurationMs: 99 * HOUR })).maxDurationMs).toBe(3 * HOUR);
+    expect((await s.plugin.start({ maxDurationMs: 99 * HOUR })).maxDurationMs).toBe(8 * HOUR);
   });
 
   test("controls with nothing recording reject not_recording; double start and live deletion are refused", async () => {

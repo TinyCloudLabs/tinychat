@@ -26,7 +26,7 @@ describe("durable voice-note transcription failure copy", () => {
     expect(voiceNoteTranscriptionFailureForCode("transcription_error").message).toBe("Transcription failed. Try again.");
     expect(voiceNoteTranscriptionFailureForCode("not_a_known_code").message).toBe("Transcription failed. Try again.");
     expect(voiceNoteTranscriptionFailureForCode("recording_too_large").message)
-      .toBe("Private cloud couldn't accept this recording's length or size. Try again.");
+      .toBe("Your recording is saved, but it's too large for private transcription. The audio is kept, so nothing is lost.");
   });
 
   test("matches live private-cloud copy for every known PTX code, honoring voice-note overrides", () => {

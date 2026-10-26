@@ -174,14 +174,14 @@ describe("recording", () => {
     await plugin.discard();
   });
 
-  test("the requested limit is clamped to [1 s, 3 h] and defaults to 3 h", async () => {
+  test("the requested limit is clamped to [1 s, 8 h] and defaults to 3 h", async () => {
     const rig = await createRig();
     const { plugin } = rig.engine;
     expect((await plugin.start()).maxDurationMs).toBe(3 * HOUR);
     await plugin.discard();
     expect((await plugin.start({ maxDurationMs: 5 })).maxDurationMs).toBe(1000);
     await plugin.discard();
-    expect((await plugin.start({ maxDurationMs: 99 * HOUR })).maxDurationMs).toBe(3 * HOUR);
+    expect((await plugin.start({ maxDurationMs: 99 * HOUR })).maxDurationMs).toBe(8 * HOUR);
   });
 
   test("a stop with no audio rejects with no_audio_captured and leaves nothing behind", async () => {
