@@ -21,6 +21,23 @@ export function formatLimit(ms: number): string {
   return ms >= 60_000 && ms % 60_000 === 0 ? `${ms / 60_000}-minute` : `${Math.round(ms / 1000)}-second`;
 }
 
+/** "3 hours", "1 hour", "15 minutes": a limit as a duration in a sentence ("Recordings stop after 3 hours."). */
+export function formatLimitDuration(ms: number): string {
+  const plural = (count: number, unit: string) => `${count} ${unit}${count === 1 ? "" : "s"}`;
+  if (ms >= 3_600_000 && ms % 3_600_000 === 0) return plural(ms / 3_600_000, "hour");
+  return ms >= 60_000 && ms % 60_000 === 0 ? plural(ms / 60_000, "minute") : plural(Math.round(ms / 1000), "second");
+}
+
+export const AUTO_STOP_LABEL = "Stop recordings automatically";
+export const autoStopOnHint = (limitMs: number) => `Recordings stop after ${formatLimitDuration(limitMs)}.`;
+export const AUTO_STOP_OFF_HINT_PHONE = "The recording runs until you stop it.";
+
+export const KEEP_RECORDING_TITLE = "Keep recording?";
+export const keepRecordingBody = (stopAt: string) => `This recording stops at ${stopAt} unless you keep going.`;
+export const KEEP_GOING = "Keep going";
+export const stopAtButton = (stopAt: string) => `Stop at ${stopAt}`;
+export const recordingContinuesUntil = (stopAt: string) => `Recording continues until ${stopAt}.`;
+
 export function limitNoticeText(maxDurationMs: number): string {
   return `Stopped at the ${formatLimit(maxDurationMs)} limit.`;
 }

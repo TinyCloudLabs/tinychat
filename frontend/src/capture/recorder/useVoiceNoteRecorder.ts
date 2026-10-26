@@ -52,6 +52,8 @@ export interface VoiceNoteRecorder {
   discard(): void;
   retryPending(): void | Promise<void>;
   openSettings(): Promise<void>;
+  /** "Keep going": raise the live recording's limit by one hour. Undefined where the engine cannot change a running limit. */
+  extendLimit: (() => Promise<void>) | undefined;
   dismissShortcutRecovery(): Promise<void>;
   /** The receipt was read. */
   dismissOutcome(): void;
@@ -135,6 +137,7 @@ export function useVoiceNoteRecorder({ tcw, enabled = true, backendUrl, sessionS
       discard: () => void controller.discard(),
       retryPending: () => controller.retryPending(),
       openSettings: () => controller.openSettings(),
+      extendLimit: controller.extendLimit,
       dismissShortcutRecovery: () => controller.dismissShortcutRecovery(),
       dismissOutcome: controller.dismissOutcome,
       dismissCaptureIssue: controller.dismissCaptureIssue,

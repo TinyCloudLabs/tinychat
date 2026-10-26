@@ -72,6 +72,8 @@ export interface RecorderValue {
   captureSourceUnconfirmed: boolean;
   controlPending: RecorderState["controlPending"];
   maxDurationMs: number;
+  /** Whether this recording stops by itself at `maxDurationMs`; false under the silent safety cap (no countdown, warning or prompt). */
+  autoStop: boolean;
   limitNotice: string | null;
   savePercent: number | null;
   error: string | null;
@@ -119,6 +121,8 @@ export interface RecorderValue {
   discard(): void;
   retryPending(): void | Promise<void>;
   openSettings(): Promise<void>;
+  /** "Keep going": raise the live recording's limit by one hour. Undefined where the engine cannot change a running limit. */
+  extendLimit: (() => Promise<void>) | undefined;
   /** The receipt was read (Done, Open): it goes, and the sheet closes. */
   dismissOutcome(): void;
   openSheet(): void;
@@ -403,6 +407,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       controlPending: state.controlPending,
       captureSourceUnconfirmed: state.captureSourceUnconfirmed,
       maxDurationMs: state.maxDurationMs,
+      autoStop: state.autoStop,
       limitNotice: state.limitNotice,
       savePercent: state.savePercent,
       error: state.error ?? defaultsError,
@@ -434,6 +439,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       discard: recorder.discard,
       retryPending: recorder.retryPending,
       openSettings: recorder.openSettings,
+      extendLimit: recorder.extendLimit,
       dismissOutcome: dismiss,
       openSheet,
       minimiseSheet,
@@ -461,6 +467,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       recorder.pending,
       recorder.retryPending,
       recorder.openSettings,
+      recorder.extendLimit,
       recorder.stop,
       recorder.pause,
       recorder.resume,
@@ -549,6 +556,7 @@ export function StaticRecorderProvider(props: { value?: Partial<RecorderValue>; 
       captureSourceUnconfirmed: false,
       controlPending: null,
       maxDurationMs: VOICE_NOTE_MAX_DURATION_MS,
+      autoStop: true,
       limitNotice: null,
       savePercent: null,
       error: null,
@@ -581,6 +589,7 @@ export function StaticRecorderProvider(props: { value?: Partial<RecorderValue>; 
       discard: noop,
       retryPending: noop,
       openSettings: async () => {},
+      extendLimit: undefined,
       dismissOutcome: noop,
       openSheet: noop,
       minimiseSheet: noop,

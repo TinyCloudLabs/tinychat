@@ -14,6 +14,7 @@ import {
   deviceName,
   percentText,
 } from "./notePipelineCopy";
+import { PRIVATE_TOO_LONG_NOTE } from "@/lib/privateCloud";
 import { storageFullPrecedesChoiceFailure, TRANSCRIPT_STORAGE_FULL_CODE } from "./transcriptionErrors";
 import { STORAGE_FULL_TRANSCRIPT_NOT_SAVED_LINE, STORAGE_FULL_TRANSCRIPT_NOT_SAVED_LOCAL_AUDIO_LINE } from "@/lib/storageStatus";
 
@@ -345,7 +346,10 @@ function cloudBlockedStep(reason: PipelineBlockedReason, provider: NotePipelineI
     case "limits-unknown": return blocked(provider === "private" ? PRIVATE_COPY.limitsUnknown : `${name} isn't available right now`, "check-again");
     case "check-failed": return blocked(provider === "private" ? PRIVATE_COPY.checkFailed : `Couldn't check whether ${name} is available`, "check-again");
     case "no-consent": return blocked(provider === "private" ? PRIVATE_COPY.noConsent : `Waiting for your OK to use ${name}`, "review-consent");
-    case "limits-exceeded": return blocked(provider === "private" ? "Private transcription couldn't accept this recording's length or size." : `${name} couldn't accept this recording's length or size.`, "check-again");
+    case "limits-exceeded":
+      return provider === "private"
+        ? blocked(PRIVATE_TOO_LONG_NOTE)
+        : blocked(`${name} couldn't accept this recording's length or size.`, "check-again");
   }
 }
 

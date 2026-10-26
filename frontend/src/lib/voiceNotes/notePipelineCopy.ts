@@ -2,6 +2,7 @@
 // no em dashes. Every blocker line says what is wrong and, where it is true, that the note is safe.
 import type { PipelineActionKind, PipelineDevice, StepKey } from "./notePipeline";
 import { deviceName as platformDeviceName } from "@/lib/platform";
+import { PRIVATE_TOO_LARGE_NOTE, PRIVATE_TOO_LONG_NOTE } from "@/lib/privateCloud";
 import { STORAGE_FULL_RECORDING_LINE, STORAGE_FULL_TRANSCRIPT_LINE } from "@/lib/storageStatus";
 
 export const deviceName = (device: PipelineDevice): string => platformDeviceName(device === "mac" ? "tauri" : device === "iphone" ? "ios" : device === "android" ? "android" : device === "browser" ? "web" : undefined);
@@ -135,7 +136,7 @@ export const PRIVATE_COPY = {
   checkFailed: "Couldn't check whether private transcription is available",
   checking: "Checking private transcription…",
   noConsent: "Waiting for your OK to use Private",
-  failed: (code: string, provider: "private" | "powerful" | "unknown" = "private") => code === "recording_too_long" ? "This recording is too long to transcribe." : provider === "powerful" ? "Powerful transcription didn't finish." : provider === "unknown" ? "Transcription didn't finish." : "Private transcription didn't finish.",
+  failed: (code: string, provider: "private" | "powerful" | "unknown" = "private") => code === "recording_too_long" ? PRIVATE_TOO_LONG_NOTE : code === "recording_too_large" ? PRIVATE_TOO_LARGE_NOTE : provider === "powerful" ? "Powerful transcription didn't finish." : provider === "unknown" ? "Transcription didn't finish." : "Private transcription didn't finish.",
 };
 
 export const NOTES_COPY = {

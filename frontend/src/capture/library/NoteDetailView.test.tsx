@@ -324,7 +324,9 @@ describe("a voice note's transcription", () => {
         transcription: transcription({ maxSeconds: PRIVATE_CAP }),
       });
       expect(html).toContain('data-testid="voice-note-transcription-failed"');
-      expect(html).toContain("Private cloud couldn&#x27;t accept this recording&#x27;s length or size. Try again.");
+      expect(html).toContain(code === "recording_too_large"
+        ? "Your recording is saved, but it&#x27;s too large for private transcription. The audio is kept, so nothing is lost."
+        : "Your recording is saved, but it&#x27;s too long for private transcription. The audio is kept, so nothing is lost.");
       expect(html).toContain("Try again");
       expect(html).toContain('data-testid="transcribe-button"');
     }
