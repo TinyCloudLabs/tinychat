@@ -1,6 +1,6 @@
 // The Powerful consent step for an uploaded file: the recorder's dialog and copy, the same account-scoped
 // consent (`powerfulConsented` / `onPowerfulConsent` on the recorder's transcription props). Declining starts nothing.
-import { useCallback, useId, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 
 import { Button } from "@/components/ui/button";
 import type { UploadEngine } from "@/lib/audioUpload";
@@ -47,7 +47,7 @@ export function usePowerfulUploadConsent({ consented, onConsent }: PowerfulUploa
   }, [onConsent, pending]);
 
   const dialog = pending === null ? null : (
-    <div className="dch-system-audio" data-testid="upload-powerful-consent">
+    <ConsentFrame onCancel={() => close(false)}>
       <SheetDialog role="dialog" titleId={titleId} descriptionId={descriptionId}
         title={POWERFUL_CONSENT_TITLE} description={<PowerfulConsentDescription body={POWERFUL_CONSENT_UPLOAD_BODY} />}
         onCancel={() => close(false)} returnFocus={opener}>
@@ -56,7 +56,57 @@ export function usePowerfulUploadConsent({ consented, onConsent }: PowerfulUploa
           <Button type="button" onClick={() => close(true)}>{POWERFUL_CONSENT_ACTION}</Button>
         </div>
       </SheetDialog>
-    </div>
+    </ConsentFrame>
   );
   return { request, dialog };
+}
+
+/**
+ * The dialog's frame inside the upload sheet, which is itself a modal (Radix Dialog or vaul) and the dialog sits in its
+ * content. Three things the recorder gets for free (its dialog has no modal parent) need doing here:
+ * - the sheet behind is `inert`, as the recorder's views are while its dialog is open (`inert={dialogOpen}`): Back,
+ *   Close, the file field and Transcribe leave the tab order;
+ * - Tab is not passed on to the sheet's focus scope, which would count the dialog's last button as the sheet's last
+ *   control and wrap focus out to the sheet's first one (SheetDialog's own trap already cycles inside the dialog);
+ * - Escape is taken before the sheet's document-level handler, so it closes only this dialog.
+ */
+function ConsentFrame({ onCancel, children }: { onCancel: () => void; children: ReactNode }) {
+  const frame = useRef<HTMLDivElement>(null);
+  const cancel = useRef(onCancel);
+  cancel.current = onCancel;
+
+  // A layout effect: the sheet is live again before SheetDialog's cleanup hands focus back to the opener.
+  useLayoutEffect(() => {
+    const made: Element[] = [];
+    const stop = frame.current?.parentElement?.closest('[role="dialog"]') ?? document.body;
+    for (let node: Element | null = frame.current; node && node !== stop; node = node.parentElement) {
+      for (const sibling of node.parentElement?.children ?? []) {
+        if (sibling === node || sibling.hasAttribute("inert")) continue;
+        sibling.setAttribute("inert", "");
+        made.push(sibling);
+      }
+    }
+    return () => made.forEach((element) => element.removeAttribute("inert"));
+  }, []);
+
+  useEffect(() => {
+    const onKey = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.stopPropagation();
+      event.preventDefault();
+      cancel.current();
+    };
+    // Capture on the window runs before Radix's capture listener on the document.
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, []);
+
+  const keepTab = (event: KeyboardEvent) => {
+    if (event.key === "Tab") event.stopPropagation();
+  };
+  return (
+    <div ref={frame} className="dch-system-audio" data-testid="upload-powerful-consent" onKeyDown={keepTab}>
+      {children}
+    </div>
+  );
 }
