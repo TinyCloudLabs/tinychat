@@ -93,6 +93,8 @@ export const FINAL_COPY = {
     "This recording session already exists. Discard this attempt and start a new recording.",
   stopAndSaveRecorded: "Stop and save what's recorded.",
   stopAt: (text: string) => `Stops at ${text}`,
+  stopsIn: (text: string) => `Stops in ${text}`,
+  recordingStopsAt: (clock: string) => `Recording stops at ${clock}`,
   needsApp: "needs the app",
   get onThisPhone() { return `on ${captureDeviceName()}`; },
   onThisMac: "on this Mac",
