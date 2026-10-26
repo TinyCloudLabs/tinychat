@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.10.0-beta.35
+
+### Minor Changes
+
+- 81211af: TinyCloud Home: the app opens on a feed of sample cards, with Recording, Chat, Apps and Feed in the navigation. Apps open in TinyCloud Share. Details: TC-2040
+
 ## 0.10.0-beta.34
 
 ### Minor Changes
