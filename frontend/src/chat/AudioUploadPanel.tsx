@@ -39,7 +39,8 @@ import {
 } from "@/lib/audioUpload";
 import type { PrivateCloudCapabilities } from "@/lib/privateCloud";
 import { PATHS } from "@/shell/routes";
-import { TRANSCRIBER_NAME } from "@/capture/recorder/final/finalCopy";
+import { POWERFUL_NOT_PRIVATE_LINE, TRANSCRIBER_NAME } from "@/capture/recorder/final/finalCopy";
+import { usePowerfulUploadConsent } from "./PowerfulUploadConsent";
 import { privateConsentBody, privateConsentDevice } from "@/capture/recorder/final/finalCopy";
 import { useRecorder } from "@/capture/recorder/RecorderProvider";
 import { localStorageVoiceNoteConsentStore } from "@/lib/voiceNotes/voiceNoteTranscription";
@@ -98,7 +99,7 @@ export function fileProblem(
 export function routeText(engine: UploadEngine, assemblyAiMode: AssemblyAiKeyMode): string {
   if (engine === "private-cloud") return "Transcribed by TinyCloud Private Transcription. A copy of the file stays in your space.";
   return assemblyAiMode === "hosted"
-    ? "Sent through Exo's server to AssemblyAI under TinyCloud's account, then deleted there."
+    ? POWERFUL_NOT_PRIVATE_LINE
     : "This older upload needs to be chosen again for Powerful.";
 }
 
@@ -531,45 +532,57 @@ export const AudioUploadPanel: FC<AudioUploadPanelProps> = ({ tcw, backendUrl, s
         ? hostedCaps.caps.max_bytes
         : PRIVATE_CLOUD_MAX_BYTES;
 
+  const powerfulConsent = usePowerfulUploadConsent({
+    consented: recorder.transcription?.powerfulConsented === true,
+    onConsent: () => recorder.transcription?.onPowerfulConsent?.(),
+  });
+  const requestPowerful = powerfulConsent.request;
   const onTranscribe = useCallback(() => {
     if (file === null) return;
+    const start = () => {
+      uploadRunner.start(deps, { file, engine, diarize: diarize && diarizeUnavailable === null, assemblyAiMode });
+      setFile(null);
+    };
     // The upload and recorder share one account-scoped, versioned Private consent.
     if (engine === "private-cloud" && !privateConsent) {
       consentStore.set(true);
       recorder.transcription?.onConsent();
       setPrivateConsent(true);
     }
-    uploadRunner.start(deps, { file, engine, diarize: diarize && diarizeUnavailable === null, assemblyAiMode });
-    setFile(null);
-  }, [deps, file, engine, diarize, diarizeUnavailable, assemblyAiMode, privateConsent, consentStore, recorder.transcription]);
+    // Powerful sends the file to a third party: ask first (the recorder's consent), whatever the key mode.
+    requestPowerful(engine, start);
+  }, [deps, file, engine, diarize, diarizeUnavailable, assemblyAiMode, privateConsent, consentStore, recorder.transcription, requestPowerful]);
 
   return (
-    <AudioUploadView
-      job={job}
-      paused={paused}
-      onContinue={onContinue}
-      file={file}
-      engine={engine}
-      engines={{ "private-cloud": privateStatus, assemblyai: assemblyStatus }}
-      assemblyAiMode={assemblyAiMode}
-      privateConsent={privateConsent || recorder.transcription?.consented === true}
-      privateConsentText={privateConsentBody(privateConsentDevice(platform))}
-      diarize={diarize}
-      diarizeUnavailable={diarizeUnavailable}
-      fileProblem={fileProblem(file, engine, maxBytes, assemblyAiMode)}
-      onEngineChange={setEngine}
-      onDiarizeChange={setDiarize}
-      onFile={setFile}
-      onTranscribe={onTranscribe}
-      onRetry={() => uploadRunner.retry(deps)}
-      onDismiss={() => void uploadRunner.dismiss(deps)}
-      onOpenSettings={() => navigate("/chat/settings")}
-      onRecheck={() => setCapsRound((n) => n + 1)}
-      onOpenLibrary={() => {
-        onDone?.();
-        navigate(PATHS.library);
-      }}
-      layout={layout}
-    />
+    <>
+      <AudioUploadView
+        job={job}
+        paused={paused}
+        onContinue={onContinue}
+        file={file}
+        engine={engine}
+        engines={{ "private-cloud": privateStatus, assemblyai: assemblyStatus }}
+        assemblyAiMode={assemblyAiMode}
+        privateConsent={privateConsent || recorder.transcription?.consented === true}
+        privateConsentText={privateConsentBody(privateConsentDevice(platform))}
+        diarize={diarize}
+        diarizeUnavailable={diarizeUnavailable}
+        fileProblem={fileProblem(file, engine, maxBytes, assemblyAiMode)}
+        onEngineChange={setEngine}
+        onDiarizeChange={setDiarize}
+        onFile={setFile}
+        onTranscribe={onTranscribe}
+        onRetry={() => uploadRunner.retry(deps)}
+        onDismiss={() => void uploadRunner.dismiss(deps)}
+        onOpenSettings={() => navigate("/chat/settings")}
+        onRecheck={() => setCapsRound((n) => n + 1)}
+        onOpenLibrary={() => {
+          onDone?.();
+          navigate(PATHS.library);
+        }}
+        layout={layout}
+      />
+      {powerfulConsent.dialog}
+    </>
   );
 };
