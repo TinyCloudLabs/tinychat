@@ -51,7 +51,7 @@ export function NavRail({
                   event.preventDefault();
                   onReselect(item.id);
                 }}
-                className="tap-transparent group flex min-h-14 flex-1 flex-col items-center justify-center gap-1 py-1"
+                className="tap-transparent group flex min-h-14 flex-1 flex-col items-center justify-center gap-1 py-1 land:min-h-11 land:gap-0 land:py-0"
               >
                 <span
                   className={cn(
