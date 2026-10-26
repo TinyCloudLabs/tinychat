@@ -1,6 +1,6 @@
 // One automatic re-submit on load for provider-failed notes (TC-2085): once ever per note (a
 // device-local marker), only provider failures, only with the recording still on the device, only
-// within 7 days, at most two in line and one second apart; a failed re-submit waits for manual Retry.
+// within 7 days, strictly one at a time and one second apart; a failed re-submit waits for manual Retry.
 
 import { afterAll, describe, expect, test } from "bun:test";
 import { appendFileSync, mkdtempSync, rmSync } from "node:fs";
@@ -241,26 +241,67 @@ describe("7-day cutoff", () => {
 });
 
 describe("sequential, not a burst", () => {
-  test("at most two are in line at once, started one second apart, and the rest follow as slots free", async () => {
-    const ids = ["n1", "n2", "n3", "n4"];
+  test("strictly one at a time: the next note starts only after the previous attempt ended, one second later", async () => {
+    const ids = ["n1", "n2", "n3"];
     const s = setup({ failures: Object.fromEntries(ids.map((id) => [id, { code: "provider_unavailable", failedAt: NOW - DAY }])) });
     await s.transcriber.check();
     await s.settle();
     const active = () => ids.filter((id) => s.job(id)?.kind === "active");
-    expect(active()).toEqual(["n1", "n2"]);
-    expect(ids.filter((id) => s.marked.has(id))).toEqual(["n1", "n2"]);
-    expect(s.sleeps).toEqual([1000, 1000]);
+    expect(active()).toEqual(["n1"]);
+    expect(ids.filter((id) => s.marked.has(id))).toEqual(["n1"]);
     expect(s.runs.map((r) => r.sourceId)).toEqual(["n1"]);
+    expect(s.sleeps).toEqual([]);
 
-    s.runs[0]!.resolve();
+    // A failed attempt frees the account; the next note follows.
+    s.runs[0]!.reject(providerError());
     await s.settle();
-    expect(active()).toEqual(["n2", "n3"]);
-    expect(ids.filter((id) => s.marked.has(id))).toEqual(["n1", "n2", "n3"]);
+    expect(active()).toEqual(["n2"]);
+    expect(ids.filter((id) => s.marked.has(id))).toEqual(["n1", "n2"]);
+    expect(s.runs.map((r) => r.sourceId)).toEqual(["n1", "n2"]);
+    expect(s.sleeps).toEqual([1000]);
 
+    // So does a finished one.
     s.runs[1]!.resolve();
     await s.settle();
-    expect(active()).toEqual(["n3", "n4"]);
-    expect(s.sleeps).toEqual([1000, 1000, 1000, 1000]);
+    expect(active()).toEqual(["n3"]);
+    expect(ids.filter((id) => s.marked.has(id))).toEqual(["n1", "n2", "n3"]);
+    expect(s.sleeps).toEqual([1000, 1000]);
+    expect(s.job("n1")).toMatchObject({ kind: "failed", code: "provider_outcome_unknown" });
+    expect(s.job("n2")).toEqual({ kind: "done", outcome: "transcribed" });
+  });
+
+  test("an attempt the account already has an active job for is not spent: marker taken back, the pass stops, a later load tries it again", async () => {
+    const ids = ["n1", "n2"];
+    const failures = Object.fromEntries(ids.map((id) => [id, { code: "provider_unavailable", failedAt: NOW - DAY }]));
+    const marked = memoryAutoResubmitStore();
+    const first = setup({ failures, marked });
+    await first.transcriber.check();
+    await first.settle();
+    expect(marked.has("n1")).toBe(true);
+    first.runs[0]!.reject(new PrivateCloudError("active_transcription_exists", "busy"));
+    await first.settle();
+    expect(first.job("n1")).toMatchObject({ kind: "failed", code: "active_transcription_exists" });
+    expect(marked.has("n1")).toBe(false);
+    // The account is busy: the rest of the pass is not started (or marked).
+    expect(first.runs.map((r) => r.sourceId)).toEqual(["n1"]);
+    expect(marked.has("n2")).toBe(false);
+    // Its provider failure is still on record, so the next load finds it re-submittable.
+    expect(first.failures.get("n1")?.code).toBe("provider_unavailable");
+
+    const second = setup({ failures, marked });
+    await second.transcriber.check();
+    await second.settle();
+    expect(second.runs.map((r) => r.sourceId)).toEqual(["n1"]);
+    expect(marked.has("n1")).toBe(true);
+
+    // This time it is a real failure: the marker stays, and a third load leaves it to the user.
+    second.runs[0]!.reject(providerError());
+    await second.settle();
+    expect(marked.has("n1")).toBe(true);
+    const third = setup({ failures: { n1: failures.n1! }, marked });
+    await third.transcriber.check();
+    await third.settle();
+    expect(third.runs).toEqual([]);
   });
 
   test("turning Private off stops the pass: the waiting notes are never started or marked", async () => {
@@ -292,6 +333,18 @@ describe("the marker store", () => {
     const store = localStorageAutoResubmitStore("did:a", memoryStorage("{not json"));
     expect(store.has("n1")).toBe(true);
     expect(store.mark("n1")).toBe(false);
+  });
+
+  test("unmark removes only that note's marker, per account, and survives a new store", () => {
+    const storage = memoryStorage();
+    const store = localStorageAutoResubmitStore("did:a", storage);
+    store.mark("n1");
+    store.mark("n2");
+    expect(store.unmark("n1")).toBe(true);
+    expect(localStorageAutoResubmitStore("did:a", storage).has("n1")).toBe(false);
+    expect(localStorageAutoResubmitStore("did:a", storage).has("n2")).toBe(true);
+    expect(store.unmark("never-marked")).toBe(true);
+    expect(localStorageAutoResubmitStore("did:a", memoryStorage("{not json")).unmark("n1")).toBe(false);
   });
 
   test("a write that does not stick is not a mark", () => {
