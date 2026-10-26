@@ -92,6 +92,8 @@ import { AboutPage } from "./chat/AboutPage";
 import { ConnectorsPage } from "./chat/ConnectorsPage";
 import { FeedView } from "./feed/FeedView";
 import { AppsPage } from "./home/AppsPage";
+import { HomeEntryGate } from "./home/HomeEntryGate";
+import { readFirstScreen } from "./home/firstScreenStore";
 import { CaptureSurface } from "./capture/CaptureSurface";
 import { HeaderLiveChip } from "./capture/recorder/HeaderLiveChip";
 import { RecordButton } from "./capture/recorder/RecordButton";
@@ -1116,6 +1118,7 @@ export function App() {
   // The recorder's Open: the Library, then the note just saved.
   const openSavedNote = useOpenSavedNote(tcw);
   const platform = useContext(PlatformContext);
+  const loadFirstScreen = useCallback(() => readFirstScreen(tcw!), [tcw]);
   const { size } = useSizeClass();
   // Which screen the address shows (shell/routes.ts). The App stays mounted at
   // /chat/*: the shell toggles surfaces, so the chat runtime, drafts and
@@ -1273,6 +1276,7 @@ export function App() {
                 shown — a visibility toggle (not a <Routes> swap) preserves the
                 assistant runtime, the active thread, and composer state across
                 navigation. */}
+            <HomeEntryGate load={loadFirstScreen}>
             <RecorderShell
               onOpenNote={openSavedNote}
               screen={screen}
@@ -1352,6 +1356,7 @@ export function App() {
               />}
               about={<AboutPage onBack={onBack} />}
             />
+            </HomeEntryGate>
             </TranscriberLibrarySyncProvider>
           </AgentAccessProvider>
         ) : deviceCapture && !nativeSignInFlow.screenShown ? (
