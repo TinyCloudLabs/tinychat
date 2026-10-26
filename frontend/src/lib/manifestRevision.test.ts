@@ -5,7 +5,6 @@ import {
   applyManifestRevisionGate,
   browserRevisionStore,
   EXO_MANIFEST_REVISION,
-  MANIFEST_RESIGN_NOTICE,
   needsManifestResign,
   recordManifestRevision,
   recordManifestRevisionIfSigned,

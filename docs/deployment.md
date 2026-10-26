@@ -569,8 +569,9 @@ nothing below may be reported as done on its behalf.
   `FRONTEND_URL=https://tinycloud.chat`; unrelated Pages projects, localhost
   ports, and lookalike domains remain blocked.
 - **Home manifest (TC-2043):** deploy the backend that serves revision 3's
-  manifest before the frontend revision gate. Existing sessions re-sign once
-  per device after the served bundle is available. The broad `applications`
+  manifest before the frontend revision gate. Existing web sessions re-sign
+  once per device after the served bundle is available; native (mobile)
+  sessions keep their previous grant until their next explicit sign-in. The broad `applications`
   KV grant covers app folders; SQL covers Home's six databases and the named
   Health Log and Recipes databases. Notes has no runnable beta bundle.
   Adding a catalog database requires a manifest bump and another one-time
