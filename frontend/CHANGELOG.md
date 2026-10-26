@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.10.0-beta.34
+
+### Minor Changes
+
+- 69102c7: Add a sample Home Feed with five card layouts and visible-only refresh. Details: TC-2040
+
 ## 0.10.0-beta.33
 
 ### Patch Changes
