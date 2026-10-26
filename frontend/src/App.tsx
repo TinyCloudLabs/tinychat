@@ -147,6 +147,7 @@ import type {
   SelectionView,
 } from "./chat/modelSelection";
 import { clearAgentSessionCache } from "./lib/agentDelegation";
+import { clearVaultSecretCache } from "./lib/connectors/connectorSecrets";
 import { isSignInCancelled } from "./lib/authErrors";
 import { signOutOpenKeySession } from "./lib/openkeySignOut";
 import { clearSessionAfterHandoff, registerSessionSignedOutHook } from "./lib/sessionSignedOut";
@@ -289,6 +290,7 @@ export function App() {
     setNativeSessionActive(false);
     historyPrefetch.clear();
     clearAgentSessionCache();
+    clearVaultSecretCache();
     clearBackgroundDrainRecord();
     uploadRunner.reset();
     selectionControllerRef.current = null;
