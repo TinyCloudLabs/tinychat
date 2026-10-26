@@ -1,4 +1,4 @@
-import { afterAll, afterEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, describe, expect, jest, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { act } from "react";
@@ -6,7 +6,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { RootRoute } from "../landing/RootRoute";
 import { installDom } from "../test/dom";
-import { HomeEntryGate } from "./HomeEntryGate";
+import { FIRST_SCREEN_WAIT_MS, HomeEntryGate } from "./HomeEntryGate";
 import type { FirstScreen } from "./firstScreenStore";
 const testHome = mkdtempSync(join("/var/tmp", "TC-2040."));
 for (const name of ["HOME", "BUN_INSTALL_CACHE_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "TC_PROFILE_DIR"]) process.env[name] = testHome;
@@ -72,5 +72,71 @@ describe("Home ordinary entry", () => {
       restore?.();
       restore = null;
     }
+  });
+});
+
+describe("the bounded wait (fake timers)", () => {
+  const screenAt = (host: HTMLElement) => host.querySelector('[data-testid="screen"]')?.textContent ?? null;
+  const tick = (ms: number) => act(async () => { jest.advanceTimersByTime(ms); });
+
+  afterEach(() => { jest.useRealTimers(); });
+
+  test("the window is about a second and a half", () => {
+    expect(FIRST_SCREEN_WAIT_MS).toBe(1500);
+  });
+
+  test("a rejected read opens Feed at once, without waiting for the deadline", async () => {
+    jest.useFakeTimers();
+    const host = await mount("/", () => Promise.reject(new Error("node down")));
+    await act(async () => {});
+    expect(screenAt(host)).toBe("/chat/feed");
+  });
+
+  test("a read that throws synchronously opens Feed at once", async () => {
+    jest.useFakeTimers();
+    const host = await mount("/", () => { throw new Error("no account"); });
+    await act(async () => {});
+    expect(screenAt(host)).toBe("/chat/feed");
+  });
+
+  test("an unreadable stored value (anything but apps) opens Feed", async () => {
+    jest.useFakeTimers();
+    const host = await mount("/", async () => "garbage" as unknown as FirstScreen);
+    await act(async () => {});
+    expect(screenAt(host)).toBe("/chat/feed");
+  });
+
+  test("a read slower than the window opens Feed at the deadline and stays on Feed after it resolves to Apps", async () => {
+    jest.useFakeTimers();
+    const { promise, resolve } = Promise.withResolvers<FirstScreen>();
+    const host = await mount("/", () => promise);
+    expect(screenAt(host)).toBeNull();
+    await tick(FIRST_SCREEN_WAIT_MS - 1);
+    expect(screenAt(host)).toBeNull();
+    await tick(1);
+    expect(screenAt(host)).toBe("/chat/feed");
+    await act(async () => resolve("apps"));
+    await tick(FIRST_SCREEN_WAIT_MS * 4);
+    expect(screenAt(host)).toBe("/chat/feed");
+  });
+
+  test("a read that resolves to Apps inside the window opens Apps", async () => {
+    jest.useFakeTimers();
+    const { promise, resolve } = Promise.withResolvers<FirstScreen>();
+    const host = await mount("/?x=1#share=abc", () => promise);
+    await tick(FIRST_SCREEN_WAIT_MS - 100);
+    expect(screenAt(host)).toBeNull();
+    await act(async () => resolve("apps"));
+    expect(screenAt(host)).toBe("/chat/apps?x=1#share=abc");
+    await tick(FIRST_SCREEN_WAIT_MS * 2);
+    expect(screenAt(host)).toBe("/chat/apps?x=1#share=abc");
+  });
+
+  test("a read that never resolves opens Feed at the deadline", async () => {
+    jest.useFakeTimers();
+    const host = await mount("/", () => new Promise<FirstScreen>(() => {}));
+    expect(screenAt(host)).toBeNull();
+    await tick(FIRST_SCREEN_WAIT_MS);
+    expect(screenAt(host)).toBe("/chat/feed");
   });
 });
