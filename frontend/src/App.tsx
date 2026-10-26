@@ -101,6 +101,7 @@ import { RecorderProvider } from "./capture/recorder/RecorderProvider";
 import { MicDeniedRecovery } from "./capture/recorder/MicDeniedRecovery";
 import { RecorderShell } from "./capture/recorder/RecorderShell";
 import { UploadResumer } from "./capture/upload/UploadResumer";
+import { TinyCloudButtonSync } from "./chat/TinyCloudButtonSync";
 import { useOpenSavedNote } from "./capture/library/useOpenSavedNote";
 import { resetNavigationMemory } from "./shell/navigation";
 import {
@@ -1491,6 +1492,9 @@ export function App() {
           backendUrl={BACKEND_URL}
         />
       )}
+
+      {/* TC-2130: the SDK's floating button is hidden by default; this applies the Settings > TinyCloud choice. Renders nothing. */}
+      {state === "ready" && tcw && <TinyCloudButtonSync tcw={tcw} />}
 
       {billingNotice && (
         <div

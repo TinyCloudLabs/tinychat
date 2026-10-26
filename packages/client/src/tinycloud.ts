@@ -77,6 +77,8 @@ export function createTinyCloudWeb(
     manifest,
     capabilityRequest: config?.capabilityRequest,
     includeAccountRegistryPermissions: false,
+    // The app owns the floating button (Settings toggle); the SDK default shows it.
+    ui: { button: false },
     ...(config?.replication ? { replication: config.replication } : {}),
     autoBootstrapAccount: false,
   };
@@ -221,6 +223,8 @@ export async function restoreTinyCloudWebSession(
     manifest,
     capabilityRequest: config?.capabilityRequest,
     includeAccountRegistryPermissions: false,
+    // The app owns the floating button (Settings toggle); the SDK default shows it.
+    ui: { button: false },
     ...(config?.replication ? { replication: config.replication } : {}),
   };
 
