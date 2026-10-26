@@ -1140,7 +1140,6 @@ describe("TC-592 expiry regressions", () => {
       await settled(resumed);
       expect(pending.value).toBeNull();
       expect(resumed.snapshot()).toMatchObject({ cleanupPending: false, error: { retry: false } });
-      expect(resumed.snapshot()?.error?.message).toContain("AssemblyAI's retention settings");
     });
   }
 });

@@ -114,8 +114,8 @@ async function hostedError(response: Response): Promise<AssemblyAiError> {
   const retryAfterSeconds = parseRateLimitWaitSeconds(response.headers);
   const retryAfterMs = retryAfterSeconds === null ? null : retryAfterSeconds * 1000;
   if (response.status === 401) return new AssemblyAiError("rejected", "Your session expired. Sign in again, then retry.");
-  if (response.status === 404) return new AssemblyAiError("not-found", "AssemblyAI no longer has this transcript.");
-  if (code === "assemblyai_needs_reconciliation") return new AssemblyAiError("needs-reconciliation", "Powerful couldn't confirm an earlier attempt. Exo is checking with AssemblyAI.");
+  if (response.status === 404) return new AssemblyAiError("not-found", "The transcription service no longer has this transcript.");
+  if (code === "assemblyai_needs_reconciliation") return new AssemblyAiError("needs-reconciliation", "Powerful couldn't confirm an earlier attempt. Exo is checking with the transcription service.");
   if (code === "assemblyai_quota_exceeded") {
     const hours = retryAfterSeconds === null ? null : Math.max(1, Math.ceil(retryAfterSeconds / 3600));
     return new AssemblyAiError(
@@ -132,13 +132,13 @@ async function hostedError(response: Response): Promise<AssemblyAiError> {
     return new AssemblyAiError("rejected", "This recording is too large for Powerful (120 MB maximum).");
   }
   if (response.status === 415 || code === "unsupported_audio") {
-    return new AssemblyAiError("rejected", "TinyCloud's AssemblyAI account takes MP3, WAV, OGG, M4A/MP4, WebM or FLAC audio.");
+    return new AssemblyAiError("rejected", "Powerful takes MP3, WAV, OGG, M4A/MP4, WebM or FLAC audio.");
   }
   if (response.status === 410) return new AssemblyAiError("failed", "The upload expired before it finished. Retry uploads the file again.");
   if (code === "assemblyai_hosted_unavailable") {
     return new AssemblyAiError("failed", "Powerful isn't available right now. Try again later.");
   }
-  if (response.status >= 500) return new AssemblyAiError("network", "AssemblyAI couldn't finish this transcript. Try again.");
+  if (response.status >= 500) return new AssemblyAiError("network", "Powerful transcription couldn't finish this transcript. Try again.");
   return new AssemblyAiError("rejected", `Exo's server refused the request (HTTP ${response.status}).`);
 }
 
@@ -239,7 +239,7 @@ export function createHostedAssemblyAiClient(config: {
       if (typeof created.upload_id !== "string" || typeof created.part_size !== "number" || created.part_size <= 0)
         throw new AssemblyAiError("failed", "Exo's server returned an unexpected upload.");
       if (created.status === "needs_reconciliation")
-        throw new AssemblyAiError("needs-reconciliation", "Powerful couldn't confirm an earlier attempt. Exo is checking with AssemblyAI.");
+        throw new AssemblyAiError("needs-reconciliation", "Powerful couldn't confirm an earlier attempt. Exo is checking with the transcription service.");
       return { uploadId: created.upload_id, partSize: created.part_size, status: created.status, id: created.id };
     },
 
@@ -317,7 +317,7 @@ export function createHostedAssemblyAiClient(config: {
       }
       const deadline = Date.now() + SUBMIT_DEADLINE_MS;
       while (state.status === "submitting" || state.status === "receiving") {
-        if (Date.now() > deadline) throw new AssemblyAiError("network", "Exo's server is still sending the file to AssemblyAI. Retry keeps waiting.");
+        if (Date.now() > deadline) throw new AssemblyAiError("network", "Exo's server is still sending the file to the transcription service. Retry keeps waiting.");
         await sleep(SUBMIT_POLL_MS);
         if (signal?.aborted) throw new AssemblyAiError("failed", "The upload was cancelled.");
         state = await submission(await request(path, { signal, uploadState: true }));
@@ -326,8 +326,8 @@ export function createHostedAssemblyAiClient(config: {
       if (state.status !== "failed") throw new AssemblyAiError("network", "Exo's server returned an unexpected upload state. Retry keeps waiting.");
       const code = state.error?.code;
       throw code === "assemblyai_rate_limited"
-        ? new AssemblyAiError("rate-limited", "AssemblyAI is busy for TinyCloud's account. Retry uploads the file again in a few minutes.", true)
-        : new AssemblyAiError("failed", "Exo's server couldn't send the file to AssemblyAI. Retry uploads it again.", true);
+        ? new AssemblyAiError("rate-limited", "The transcription service is busy for TinyCloud's account. Retry uploads the file again in a few minutes.", true)
+        : new AssemblyAiError("failed", "Exo's server couldn't send the file to the transcription service. Retry uploads it again.", true);
     },
 
     async deleteUpload(uploadId, { signal, uploadSubmitting = false, onSubmitting, onSubmitted } = {}) {
@@ -416,7 +416,7 @@ export async function pollAssemblyAiTranscript(
   let failingSince: number | null = null;
   let throttledMs = 0;
   let throttledAtFailure = 0;
-  const cancelled = () => new AssemblyAiError("failed", "Stopped waiting for AssemblyAI.");
+  const cancelled = () => new AssemblyAiError("failed", "Stopped waiting for the transcription service.");
   const sleepWithSignal = async (ms: number): Promise<void> => {
     const signal = options.signal;
     if (signal === undefined) {
@@ -462,7 +462,7 @@ export async function pollAssemblyAiTranscript(
       }
       if (t.status === "completed") return t;
       if (t.status === "error") {
-        throw new AssemblyAiError("failed", t.error ? `AssemblyAI could not transcribe this file: ${t.error}` : "AssemblyAI could not transcribe this file.");
+        throw new AssemblyAiError("failed", t.error ? `The transcription service could not transcribe this file: ${t.error}` : "The transcription service could not transcribe this file.");
       }
       options.onStatus?.(t.status);
     } catch (err) {
@@ -483,7 +483,7 @@ export async function pollAssemblyAiTranscript(
       }
       const failingFor = Math.max(0, now - failingSince - (throttledMs - throttledAtFailure));
       if (failingFor >= polling.giveUpAfterMs) {
-        throw new AssemblyAiError("network", "Lost contact with AssemblyAI. The transcript may still be running; Retry keeps waiting.");
+        throw new AssemblyAiError("network", "Lost contact with the transcription service. The transcript may still be running; Retry keeps waiting.");
       }
       const retryInterval = failingFor >= polling.slowAfterMs ? polling.slowIntervalMs : polling.intervalMs;
       await sleepWithSignal(Math.round(retryInterval * (0.8 + 0.4 * clock.random())));

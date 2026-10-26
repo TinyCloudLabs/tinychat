@@ -85,7 +85,7 @@ export function fileProblem(
   assemblyAiMode: AssemblyAiKeyMode = "hosted",
 ): string | null {
   if (file === null || !c1Only(engine, assemblyAiMode)) return null;
-  const who = engine === "private-cloud" ? "Private transcription" : "TinyCloud's AssemblyAI account";
+  const who = engine === "private-cloud" ? "Private transcription" : "Powerful";
   if (privateCloudContentType(file) === null) {
     return engine === "private-cloud"
       ? "Private transcription takes MP3, WAV, OGG, M4A/MP4, WebM or FLAC audio. Choose Powerful, or convert the file."
@@ -236,7 +236,7 @@ export const AudioUploadView: FC<AudioUploadViewProps> = ({
           {paused.fileName}
         </p>
         <p className="text-callout text-muted-foreground" role="status">
-          Upload paused. This upload uses your own AssemblyAI key. Continue to unlock it and finish.
+          Upload paused. This upload uses a separate transcription key. Continue to unlock it and finish.
         </p>
         <Button type="button" size="lg" onClick={onContinue} className="w-full">
           Continue
@@ -289,7 +289,7 @@ export const AudioUploadView: FC<AudioUploadViewProps> = ({
         {saved && job.cleanupPending && (
           <p className="text-meta text-muted-foreground">
             {job.engine === "assemblyai"
-              ? "AssemblyAI still has a copy of this transcript and file: deleting it didn't work yet."
+              ? "The outside transcription service still has a copy of this transcript and file: deleting it didn't work yet."
               : "Private transcription still has a copy of this transcript: deleting it didn't work yet."}
           </p>
         )}
@@ -364,7 +364,7 @@ export const AudioUploadView: FC<AudioUploadViewProps> = ({
           {status.state === "checking" && (
             <p className="flex items-center gap-2 text-callout text-muted-foreground">
               <Loader2Icon className="size-3.5 animate-spin" />
-              {engine === "private-cloud" ? "Checking private transcription…" : "Checking TinyCloud's AssemblyAI account…"}
+              {engine === "private-cloud" ? "Checking private transcription…" : "Checking Powerful transcription…"}
             </p>
           )}
           {status.state === "unavailable" && (
@@ -437,7 +437,7 @@ export function assemblyAiStatus(
 ): EngineStatus {
   if (mode === "own") return { state: "unavailable", reason: "Choose this file again to use Powerful through Exo's server." };
   if (hostedCaps.state === "checking") return { state: "checking" };
-  if (hostedCaps.state === "failed") return { state: "unavailable", reason: "Couldn't reach TinyCloud's AssemblyAI account.", action: "recheck" };
+  if (hostedCaps.state === "failed") return { state: "unavailable", reason: "Couldn't reach the Powerful transcription service.", action: "recheck" };
   return hostedCaps.caps.hosted
     ? { state: "available" }
     : {

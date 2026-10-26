@@ -13,13 +13,17 @@ export const PRIVATE_CONSENT_TITLE = "Use Private transcription?";
 export const PRIVATE_CONSENT_ACTION = "Use Private transcription";
 export const POWERFUL_CONSENT_TITLE = "Use Powerful transcription?";
 export const POWERFUL_CONSENT_ACTION = "Use Powerful transcription";
+/** The Powerful provider's name. The ONE place it is written: it appears only in the consent small print and About; change a provider here. */
+export const POWERFUL_PROVIDER_NAME = "AssemblyAI";
 /** The one "not private" line every Powerful explanation uses: recorder mode scale, upload route text, Settings. */
-export const POWERFUL_NOT_PRIVATE_LINE = "Not private: Powerful sends your audio through Exo's server to AssemblyAI, a third-party service. Exo deletes AssemblyAI's copy once the transcript is saved.";
+export const POWERFUL_NOT_PRIVATE_LINE = "Not private: Powerful sends your audio through Exo's server to an outside transcription service. Exo deletes the service's copy once the transcript is saved.";
 function powerfulConsentBody(audio: string): string {
-  return `Powerful sends ${audio} through Exo's server to AssemblyAI, a third-party service, for the most accurate transcript with speaker labels. It isn't private. Exo deletes AssemblyAI's copy as soon as the transcript is saved.`;
+  return `Powerful sends ${audio} through Exo's server to an outside transcription service, for the most accurate transcript with speaker labels. It isn't private. Exo deletes the service's copy as soon as the transcript is saved.`;
 }
 export const POWERFUL_CONSENT_BODY = powerfulConsentBody("this note's audio");
 export const POWERFUL_CONSENT_UPLOAD_BODY = powerfulConsentBody("this audio");
+/** Small print under the Powerful consent body. */
+export const POWERFUL_CONSENT_SMALL_PRINT = `Provided by ${POWERFUL_PROVIDER_NAME}.`;
 export function privateConsentDevice(platform: AppPlatform): string {
   return deviceName(platform).slice("this ".length);
 }

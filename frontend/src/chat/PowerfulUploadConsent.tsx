@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import type { UploadEngine } from "@/lib/audioUpload";
 import { SheetDialog } from "@/capture/recorder/final/SheetDialog";
 import { POWERFUL_CONSENT_ACTION, POWERFUL_CONSENT_TITLE, POWERFUL_CONSENT_UPLOAD_BODY } from "@/capture/recorder/final/finalCopy";
+import { PowerfulConsentDescription } from "@/capture/recorder/final/PowerfulConsentDescription";
 import "@/capture/home/desktop/systemAudioStart.css";
 
 export interface PowerfulUploadConsentOptions {
@@ -48,7 +49,7 @@ export function usePowerfulUploadConsent({ consented, onConsent }: PowerfulUploa
   const dialog = pending === null ? null : (
     <div className="dch-system-audio" data-testid="upload-powerful-consent">
       <SheetDialog role="dialog" titleId={titleId} descriptionId={descriptionId}
-        title={POWERFUL_CONSENT_TITLE} description={POWERFUL_CONSENT_UPLOAD_BODY}
+        title={POWERFUL_CONSENT_TITLE} description={<PowerfulConsentDescription body={POWERFUL_CONSENT_UPLOAD_BODY} />}
         onCancel={() => close(false)} returnFocus={opener}>
         <div className="dch-system-audio-actions">
           <Button type="button" variant="outline" data-initial="" onClick={() => close(false)}>Not now</Button>

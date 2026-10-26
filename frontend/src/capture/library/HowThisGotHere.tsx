@@ -124,7 +124,7 @@ export function captureRoute(source: string, metadata: Record<string, unknown> |
     const whose = account === "tinycloud" ? " with TinyCloud's account" : account === "own" ? " with your key" : "";
     return {
       nodes: [{ label: sourceLabel, kind: "source" }, { label: TRANSCRIBER_NAME.assemblyai, kind: "processing" }, SPACE],
-      sentence: `${saved} ${audioStored ? "A copy was" : "It was"} transcribed by AssemblyAI${whose}.${modelSentence(metadata)}`,
+      sentence: `${saved} ${audioStored ? "A copy was" : "It was"} transcribed by an outside transcription service${whose}.${modelSentence(metadata)}`,
       privateCloud: false,
     };
   }
