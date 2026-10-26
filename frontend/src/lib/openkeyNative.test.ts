@@ -308,6 +308,29 @@ describe("nativePermissions", () => {
   });
 });
 
+describe("nativePermissions ceiling", () => {
+  test("requests exactly the entries the native client ceiling covers today", () => {
+    const permissions = nativePermissions(APP_MANIFEST as unknown as Manifest);
+    const data = permissions
+      .filter((p) => p.service === "tinycloud.kv" || p.service === "tinycloud.sql")
+      .map((p) => `${p.service}:${p.path.replace("xyz.tinycloud.tinychat/", "")}`)
+      .sort();
+    expect(data).toEqual([
+      "tinycloud.kv:connectors/",
+      "tinycloud.kv:threads/",
+      "tinycloud.sql:canvas",
+      "tinycloud.sql:connectors",
+      "tinycloud.sql:threads",
+    ]);
+    expect(permissions[0]).toEqual({
+      service: "tinycloud.capabilities",
+      space: "applications",
+      path: "",
+      actions: ["tinycloud.capabilities/read"],
+    });
+  });
+});
+
 describe("signInNative", () => {
   test("a fresh activation runs nonce → sign-in → handoff → activate → restore → verify", async () => {
     const flow = makeFlow();
