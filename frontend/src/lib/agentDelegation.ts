@@ -357,6 +357,7 @@ export async function mintAgentDelegationViaFreshSignIn(
   // does not cover the transcript resources and delegateTo() fails closed.
   const tcw = new TinyCloudWeb({
     providers: { web3: { driver: web3Provider } },
+    includeAccountRegistryPermissions: false,
     ...(localValidationEnabled() ? { autoCreateSpace: false } : {}),
     ...(options.tinycloudHosts ? { tinycloudHosts: options.tinycloudHosts } : {}),
     manifest: AGENT_CONSENT_MANIFEST,
@@ -392,7 +393,7 @@ export async function mintAgentSessionViaFreshSignIn(
   const { TinyCloudWeb, BrowserSessionStorage } = await import("@tinycloud/web-sdk");
   const memory = new Map<string, string>();
   const storage: Storage = { get length() { return memory.size; }, clear: () => memory.clear(), getItem: (k) => memory.get(k) ?? null, key: (i) => Array.from(memory.keys())[i] ?? null, removeItem: (k) => { memory.delete(k); }, setItem: (k, v) => { memory.set(k, String(v)); } };
-  const tcw = new TinyCloudWeb({ providers: { web3: { driver: web3Provider } }, ...(localValidationEnabled() ? { autoCreateSpace: false } : {}), ...(options.tinycloudHosts ? { tinycloudHosts: options.tinycloudHosts } : {}), manifest: AGENT_CONSENT_MANIFEST, sessionStorage: new BrowserSessionStorage({ storage }), sessionExpirationMs: SESSION_EXPIRATION_MS });
+  const tcw = new TinyCloudWeb({ providers: { web3: { driver: web3Provider } }, includeAccountRegistryPermissions: false, ...(localValidationEnabled() ? { autoCreateSpace: false } : {}), ...(options.tinycloudHosts ? { tinycloudHosts: options.tinycloudHosts } : {}), manifest: AGENT_CONSENT_MANIFEST, sessionStorage: new BrowserSessionStorage({ storage }), sessionExpirationMs: SESSION_EXPIRATION_MS });
   try {
     if (localValidationEnabled()) await prepareLocalSignIn(tcw);
     await tcw.signIn();
