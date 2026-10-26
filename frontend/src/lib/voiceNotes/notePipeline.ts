@@ -87,6 +87,7 @@ export type PipelineCloudStatus =
   | { kind: "uploading"; progress?: number }
   | { kind: "queued"; position: number | null }
   | { kind: "processing"; completed: number | null; total: number | null }
+  | { kind: "delayed" }
   | { kind: "saving" };
 
 /** `NoteTranscriptionState` (`blocked` is P2). */
@@ -371,6 +372,7 @@ function cloudStep(cloud: PipelineCloud | null, spaceSaved: boolean, checkingCap
           const progress = status.completed === null || status.total === null ? null : fraction(status.completed, status.total);
           return withProgress("active", PRIVATE_COPY.transcribing(status.completed, status.total), progress);
         }
+        case "delayed": return { state: "active", caption: PRIVATE_COPY.delayed };
         case "saving": return { state: "active", caption: PRIVATE_COPY.saving };
       }
     }

@@ -6,7 +6,7 @@ import type { NotePipelineView } from "@/lib/voiceNotes/useNotePipeline";
 import type { UploadState } from "@/lib/audioUpload";
 import type { PausedUpload } from "@/capture/upload/pausedUpload";
 import { STORAGE_FULL_SAVE_MESSAGE, isStorageFullError, storageSaveMessage } from "@/lib/storageStatus";
-import { LOCAL_COPY } from "@/lib/voiceNotes/notePipelineCopy";
+import { LOCAL_COPY, PROVIDER_DELAYED_COPY } from "@/lib/voiceNotes/notePipelineCopy";
 
 export type ActivityKind = "finish" | "transcribe" | "sync" | "upload-audio";
 export type ActivityState = "running" | "retrying" | "waiting" | "needs-attention";
@@ -88,6 +88,7 @@ export function activityForNote(view: NotePipelineView | undefined, platform: Ap
       } else if (local) detail = `Transcribing on ${device}${transcribe.progress == null ? "…" : ` · ${percent(transcribe.progress)}`}`;
       else if (phase === "uploading") detail = `Sending to ${destination}${transcribe.progress == null ? "…" : ` · ${percent(transcribe.progress)}`}`;
       else if (phase === "preparing") detail = `Preparing for ${destination}…`;
+      else if (phase === "delayed") detail = PROVIDER_DELAYED_COPY;
       else if (phase === "saving") detail = "Saving the transcript to your TinyCloud space…";
       else detail = provider === "powerful" ? "Transcribing with Powerful…" : provider === "private" ? "Transcribing privately…" : "Transcribing…";
       const diagnostics = cloud?.kind === "failed" ? `${storageSaveMessage(cloud) ?? `${cloud.code}: ${cloud.message}`}${cloud.reference ? ` · ${cloud.reference}` : ""}` : od?.stt?.error ?? undefined;

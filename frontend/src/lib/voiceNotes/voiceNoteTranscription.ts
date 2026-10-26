@@ -49,10 +49,19 @@ import { getDesktopWhisperQueue } from "./desktop/desktopWhisper";
 import { readTranscriptCommit, requireVoiceNoteTranscriptCommit, type TranscriptCommit } from "./voiceNoteCommits";
 import { preserveVoiceNoteTranscriptHistory } from "./voiceNoteTranscriptHistory";
 import { pendingStore } from "./recorderSaves";
+import {
+  AUTO_RESUBMIT_MAX_IN_FLIGHT,
+  AUTO_RESUBMIT_SPACING_MS,
+  localStorageAutoResubmitStore,
+  selectProviderResubmits,
+  type AutoResubmitStore,
+  type ProviderFailedNote,
+  type ResubmitRecording,
+} from "./providerResubmit";
 import { voiceNoteCallDeadlineMs, withVoiceNoteSaveDeadline } from "./saveDeadline";
 import { isStorageFullError, reportStorageError, storageScopeFor, STORAGE_FULL_SAVE_MESSAGE } from "../storageStatus";
 import { TRANSCRIPT_STORAGE_FULL_CODE, transcriptionErrorCopy, voiceNoteTranscriptionFailureForCode } from "./transcriptionErrors";
-import { privatePartsDone } from "./notePipelineCopy";
+import { PROVIDER_DELAYED_COPY, privatePartsDone } from "./notePipelineCopy";
 import type { VoiceNoteTranscriptionFailure } from "./transcriptionErrors";
 export type { VoiceNoteTranscriptionFailure } from "./transcriptionErrors";
 
@@ -243,6 +252,8 @@ export interface PendingVoiceNoteJob {
   held?: VoiceNoteTranscriptSave;
   /** Device-local terminal failure: prevents recovery from silently restarting after relaunch. */
   failure?: string;
+  /** When `failure` was recorded (ms); absent on failures recorded before it was kept. */
+  failedAt?: number;
   /** An explicit replacement run is never restarted automatically after a relaunch. */
   explicitRerun?: boolean;
   /** The committed revision an explicit rerun is replacing. */
@@ -628,6 +639,8 @@ export type VoiceNoteTranscriptionStatus =
   | { kind: "uploading"; progress?: number }
   | { kind: "queued"; position: number | null }
   | { kind: "processing"; completed: number | null; total: number | null }
+  /** PTX holds the job until its speech-to-text provider can take it; the note finishes by itself. Not a failure. */
+  | { kind: "delayed" }
   | { kind: "saving" };
 
 export type CloudPollingOptions = CloudPolling;
@@ -868,6 +881,8 @@ export interface VoiceNoteCloud {
   hasRemoteJob(sourceId: string): boolean;
   /** A non-retryable attempt failure stored on this device, never in the shared row. */
   terminalFailure?(sourceId: string): string | null;
+  /** When the device-local terminal failure was recorded; null when unknown. */
+  terminalFailureAt?(sourceId: string): number | null;
   rerunBase?(sourceId: string): VoiceNoteRerunBase | null;
   rememberTerminalFailure?(sourceId: string, code: string): void;
   clearTerminalFailure?(sourceId: string): void;
@@ -1202,9 +1217,11 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
           throw new PrivateCloudError("upload_interrupted", "PTX has not received the recording", { transcriptionId: id });
         }
         report(
-          job.status === "queued"
-            ? { kind: "queued", position: job.progress?.queue_position ?? null }
-            : { kind: "processing", completed: job.progress?.regions_completed ?? null, total: job.progress?.regions_total ?? null },
+          job.provider_delayed === true
+            ? { kind: "delayed" }
+            : job.status === "queued"
+              ? { kind: "queued", position: job.progress?.queue_position ?? null }
+              : { kind: "processing", completed: job.progress?.regions_completed ?? null, total: job.progress?.regions_total ?? null },
         );
       }
       const elapsed = clock.now() - startedAt;
@@ -1415,6 +1432,7 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
       return job !== null && job.transcriptionId !== null;
     },
     terminalFailure: (sourceId) => pending.read(sourceId)?.failure ?? null,
+    terminalFailureAt: (sourceId) => pending.read(sourceId)?.failedAt ?? null,
     rerunBase: (sourceId) => pending.read(sourceId)?.rerunBase ?? null,
     rememberTerminalFailure: (sourceId, code) => {
       const current = pending.read(sourceId);
@@ -1425,6 +1443,7 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
         ...(current?.explicitRerun ? { explicitRerun: true } : {}),
         ...(current?.rerunBase ? { rerunBase: current.rerunBase } : {}),
         failure: code,
+        failedAt: clock.now(),
       });
     },
     clearTerminalFailure: (sourceId) => {
@@ -1434,7 +1453,7 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
         pending.clear(sourceId);
         return;
       }
-      const { failure: _failure, ...job } = current;
+      const { failure: _failure, failedAt: _failedAt, ...job } = current;
       pending.write(sourceId, job);
     },
     clearExplicitReruns: () => pending.clearExplicitReruns?.(),
@@ -2022,6 +2041,12 @@ export interface VoiceNoteTranscriberDeps {
   recoveryBackoffMs?: readonly number[];
   now?: () => number;
   timer?: VoiceNoteTranscriberTimer;
+  /** Once-only re-submit of provider-failed notes on load. Absent: no automatic re-submit. */
+  autoResubmit?: {
+    marked: AutoResubmitStore;
+    /** The recordings still on this device. */
+    localRecordings: () => Promise<readonly (Pick<VoiceNoteRecording, "id" | "startedAt" | "source" | "options">)[]>;
+  };
 }
 
 export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): VoiceNoteTranscriber {
@@ -2140,6 +2165,8 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
   };
 
 
+  /** Woken by every `emit`; the once-only re-submit pass waits on it for a free slot. */
+  const slotWaiters = new Set<() => void>();
   const emit = (event: VoiceNoteTranscriberEvent = { kind: "changed" }) => {
     refreshBlocked();
     let position = 0;
@@ -2152,6 +2179,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
     }
     snapshot = { ...state, jobs: new Map(jobs) };
     for (const listener of listeners) listener(event);
+    for (const wake of [...slotWaiters]) wake();
   };
   const identityCurrent = () => accountCurrent === null || accountCurrent();
   const on = () => identityCurrent() && state.availability === "available" && state.consented && privateCloudLimits(state.capabilities) !== null;
@@ -2670,6 +2698,61 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
     });
   };
 
+  /**
+   * Once per load, after the first check that finds Private available and open: re-submit (the user's own Retry)
+   * each note whose job ended on a provider failure while its recording is still on this device. A note at most
+   * once ever (device-local marker, written before the re-submit), none whose failure is over 7 days old, at most
+   * two in line at a time, one second apart. A note that fails again waits for the user's manual Retry.
+   */
+  let providerResubmitStarted = false;
+  const resubmitProviderFailed = async (): Promise<void> => {
+    const config = deps.autoResubmit;
+    if (!config || cloud === null || providerResubmitStarted) return;
+    if (!on() || state.capabilities?.admission !== "open") return;
+    providerResubmitStarted = true;
+    try {
+      if (deps.ready) await deps.ready;
+      const failed: ProviderFailedNote[] = [];
+      for (const sourceId of cloud.pendingSourceIds()) {
+        const code = cloud.terminalFailure?.(sourceId);
+        const shown = jobs.get(sourceId);
+        if (!code || cloud.hasRemoteJob(sourceId) || hasHeldHint(sourceId)) continue;
+        if (shown !== undefined && !(shown.kind === "failed" && shown.code === code)) continue;
+        failed.push({ sourceId, code, failedAt: cloud.terminalFailureAt?.(sourceId) ?? null });
+      }
+      if (failed.length === 0) return;
+      const recordings = new Map<string, ResubmitRecording>();
+      for (const recording of await config.localRecordings()) {
+        if (recording.source === "in_app" && recording.options?.transcriber === "private-cloud") recordings.set(recording.id, recording);
+      }
+      const started: string[] = [];
+      for (const sourceId of selectProviderResubmits({ failed, recordings, marked: config.marked, now: now() })) {
+        for (;;) {
+          if (!on()) return;
+          if (started.filter((id) => jobs.get(id)?.kind === "active").length < AUTO_RESUBMIT_MAX_IN_FLIGHT) break;
+          // The frontend's TS lib has no Promise.withResolvers.
+          await new Promise<void>((resolve) => {
+            const wake = () => {
+              slotWaiters.delete(wake);
+              resolve();
+            };
+            slotWaiters.add(wake);
+          });
+        }
+        // The user may have retried it, or it may have changed, while earlier notes ran.
+        const shown = jobs.get(sourceId);
+        const code = cloud.terminalFailure?.(sourceId);
+        if (!code || cloud.hasRemoteJob(sourceId) || shown?.kind === "active" || shown?.kind === "done") continue;
+        if (!config.marked.mark(sourceId)) continue;
+        transcriber.transcribe(sourceId);
+        started.push(sourceId);
+        await sleep(AUTO_RESUBMIT_SPACING_MS);
+      }
+    } catch (err) {
+      logPipelineError("[VoiceNotes] Could not re-submit provider-failed notes automatically", err);
+    }
+  };
+
   const transcriber: VoiceNoteTranscriber = {
     snapshot: () => snapshot,
     subscribe(listener) {
@@ -2752,6 +2835,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
         }
         emit();
         void drainHeldOnly();
+        if (result.availability === "available") void resubmitProviderFailed();
         if (result.availability === "available"
           && (availabilityChanged || admissionChanged || limitsChanged || recoveryNeeded && (now() >= nextRecoveryAt || hasDueAutomaticRetry())))
           resume(availabilityChanged || admissionChanged || limitsChanged);
@@ -2963,6 +3047,10 @@ export function voiceNoteTranscriberFor(
     consent: localStorageVoiceNoteConsentStore(did),
     choices: localStorageVoiceNotePrivateChoiceStore(did),
     holds: localStorageVoiceNoteHoldStore(did),
+    autoResubmit: {
+      marked: localStorageAutoResubmitStore(did),
+      localRecordings: async () => (await VoiceNotes.listPending()).recordings,
+    },
     held,
     ready,
     heldAfterCommit: async (row) => {
@@ -3091,6 +3179,8 @@ export function transcriptionStatusText(status: VoiceNoteTranscriptionStatus): s
       const partsDone = privatePartsDone(status.completed, status.total);
       return partsDone === null ? "Transcribing in private cloud…" : `Transcribing in private cloud… ${partsDone}`;
     }
+    case "delayed":
+      return PROVIDER_DELAYED_COPY;
     case "saving":
       return "Saving the transcript…";
   }

@@ -113,6 +113,9 @@ export const LOCAL_COPY = {
   otherReadFailed: (detail: string | null | undefined) => withDetail("Some details about this note couldn't be read", detail),
 };
 
+/** Shown while PTX holds a note until its speech-to-text provider can take it. Not an error: it finishes by itself. */
+export const PROVIDER_DELAYED_COPY = "Transcription is delayed, it will finish automatically.";
+
 export const PRIVATE_COPY = {
   waiting: (position: number) => `Waiting · ${place(position)}`,
   preparing: "Preparing…",
@@ -122,6 +125,7 @@ export const PRIVATE_COPY = {
     const partsDone = privatePartsDone(completed, total);
     return partsDone === null ? "Transcribing…" : `Transcribing · ${partsDone}`;
   },
+  delayed: PROVIDER_DELAYED_COPY,
   saving: "Saving transcript",
   notStarted: "Waiting for private transcription",
   afterUpload: "After audio uploads",
