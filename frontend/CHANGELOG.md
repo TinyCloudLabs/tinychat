@@ -1,5 +1,17 @@
 # @tinychat/frontend
 
+## 0.10.0-beta.36
+
+### Minor Changes
+
+- c69435b: Let users choose Feed or Apps as TinyCloud Home's first screen in Settings. The choice is saved with their account settings across devices; direct links retain their destinations. Details: TC-2040
+
+## 0.10.0-beta.35
+
+### Minor Changes
+
+- 81211af: TinyCloud Home: the app opens on a feed of sample cards, with Recording, Chat, Apps and Feed in the navigation. Apps open in TinyCloud Share. Details: TC-2040
+
 ## 0.10.0-beta.34
 
 ### Minor Changes

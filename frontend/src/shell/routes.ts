@@ -3,6 +3,8 @@
 //     Capture  /chat/capture → Library /chat/capture/library → a note /chat/capture/library/:id
 //     Chat     /chat
 //     Connectors /chat/connectors
+//     Feed     /chat/feed (TinyCloud Home's default entry from `/`)
+//     Apps     /chat/apps
 //     Settings /chat/settings (global, behind the gear)
 //     How it works /chat/about (global, from Settings and the screens' hints)
 //
@@ -20,14 +22,16 @@ export const PATHS = {
   capture: "/chat/capture",
   library: "/chat/capture/library",
   connectors: "/chat/connectors",
+  feed: "/chat/feed",
+  apps: "/chat/apps",
   settings: "/chat/settings",
   about: ABOUT_PATH,
 } as const;
 
-/** The three places the navigation leads to, at every size. Settings is global, not one of them. */
-export type Destination = "capture" | "chat" | "connectors";
+/** The places the navigation leads to, at every size. Settings is global, not one of them. */
+export type Destination = "capture" | "chat" | "connectors" | "feed" | "apps";
 
-export type ScreenId = "chat" | "capture" | "library" | "note" | "connectors" | "settings" | "about";
+export type ScreenId = "chat" | "capture" | "library" | "note" | "connectors" | "feed" | "apps" | "settings" | "about";
 
 export interface Screen {
   id: ScreenId;
@@ -77,6 +81,8 @@ export function screenFor(pathname: string): Screen {
   const path = legacy ? legacy.to : trim(pathname);
   if (path === PATHS.settings) return { id: "settings", destination: null, noteId: null };
   if (path === PATHS.about) return { id: "about", destination: null, noteId: null };
+  if (path === PATHS.feed || path.startsWith(`${PATHS.feed}/`)) return { id: "feed", destination: "feed", noteId: null };
+  if (path === PATHS.apps || path.startsWith(`${PATHS.apps}/`)) return { id: "apps", destination: "apps", noteId: null };
   if (path === PATHS.connectors || path.startsWith(`${PATHS.connectors}/`)) {
     return { id: "connectors", destination: "connectors", noteId: null };
   }
@@ -106,6 +112,8 @@ export const DESTINATION_ROOTS: Readonly<Record<Destination, string>> = {
   capture: PATHS.capture,
   chat: PATHS.chat,
   connectors: PATHS.connectors,
+  feed: PATHS.feed,
+  apps: PATHS.apps,
 };
 
 /**

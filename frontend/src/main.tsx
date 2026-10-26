@@ -9,7 +9,7 @@ import { installEd25519Polyfill } from "./lib/ed25519Polyfill";
 import { CaptureEngineGate } from "./capture/recorder/CaptureEngineGate";
 import { PwaPrompts } from "./components/pwa-prompts";
 import { RootErrorBoundary } from "./shell/RootErrorBoundary";
-import { RootRoute } from "./landing/RootRoute";
+import { LandingRoute, RootRoute } from "./landing/RootRoute";
 import { registerWebCaptureEngine } from "./lib/voiceNotes/web/registerWebEngine";
 import { appPlatform } from "./lib/platform";
 import { setIOSDynamicTypeScale } from "./lib/dynamicType";
@@ -77,7 +77,8 @@ void installEd25519Polyfill().catch((error: unknown) => {
       <RootErrorBoundary>
         <BrowserRouter>
           <Routes>
-            <Route path="/" element={<RootRoute nativeShell={nativeShell} />} />
+            <Route path="/" element={<RootRoute nativeShell={nativeShell} homeShell={platform === "web"} />} />
+            <Route path="/about" element={<LandingRoute />} />
             <Route path="/chat/*" element={<CaptureEngineGate><App /></CaptureEngineGate>} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
