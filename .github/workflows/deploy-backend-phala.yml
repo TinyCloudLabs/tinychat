@@ -528,11 +528,13 @@ jobs:
           PRIVATE_CLOUD_TRANSCRIPTION_API_URL: ${{ vars.PRIVATE_CLOUD_TRANSCRIPTION_API_URL }}
           PRIVATE_CLOUD_TRANSCRIPTION_API_KEY: ${{ secrets.PRIVATE_CLOUD_TRANSCRIPTION_API_KEY }}
           PRIVATE_CLOUD_TRANSCRIPTION_TENANT_KEY: ${{ secrets.PRIVATE_CLOUD_TRANSCRIPTION_TENANT_KEY }}
-          # Keep the existing AssemblyAI API key available, but leave TinyCloud-hosted uploads off
-          # for 0.8.0: ASSEMBLYAI_HOSTED_HANDLE_KEY is intentionally absent from the effective
-          # backend environment. The persistent volume remains; a separately approved rollout must
-          # restore the workflow and compose mappings.
+          # Hosted AssemblyAI for Exo uploads (backend/src/routes/assemblyai-hosted.ts) is ON:
+          # TinyCloud's AssemblyAI key and the handle HMAC key (>=32 random bytes,
+          # `openssl rand -base64 32`, distinct from every other secret). Both set = hosted mode on;
+          # either empty = off (users can still bring their own key). Declared in all four places for
+          # the allowed_envs reason.
           ASSEMBLYAI_API_KEY: ${{ secrets.ASSEMBLYAI_API_KEY }}
+          ASSEMBLYAI_HOSTED_HANDLE_KEY: ${{ secrets.ASSEMBLYAI_HOSTED_HANDLE_KEY }}
           ASSEMBLYAI_HOSTED_ADMIN_KEY: ${{ secrets.ASSEMBLYAI_HOSTED_ADMIN_KEY }}
           ASSEMBLYAI_HOSTED_FRESH_INSTALL: ${{ vars.ASSEMBLYAI_HOSTED_FRESH_INSTALL }}
         run: |
@@ -621,6 +623,7 @@ jobs:
             printf '%s\n' "PRIVATE_CLOUD_TRANSCRIPTION_API_KEY=$PRIVATE_CLOUD_TRANSCRIPTION_API_KEY"
             printf '%s\n' "PRIVATE_CLOUD_TRANSCRIPTION_TENANT_KEY=$PRIVATE_CLOUD_TRANSCRIPTION_TENANT_KEY"
             printf '%s\n' "ASSEMBLYAI_API_KEY=$ASSEMBLYAI_API_KEY"
+            printf '%s\n' "ASSEMBLYAI_HOSTED_HANDLE_KEY=$ASSEMBLYAI_HOSTED_HANDLE_KEY"
             printf '%s\n' "ASSEMBLYAI_HOSTED_ADMIN_KEY=$ASSEMBLYAI_HOSTED_ADMIN_KEY"
             printf '%s\n' "ASSEMBLYAI_HOSTED_FRESH_INSTALL=$ASSEMBLYAI_HOSTED_FRESH_INSTALL"
           } > "$ENV_FILE"
