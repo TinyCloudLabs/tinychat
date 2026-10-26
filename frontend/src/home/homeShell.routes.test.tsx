@@ -12,6 +12,7 @@ import { LandingRoute, RootRoute } from "@/landing/RootRoute";
 import { BootSurface } from "@/shell/BootSurface";
 import { homePath, legacyRedirectFor, notePath, PATHS, screenFor } from "@/shell/routes";
 import { installDom } from "@/test/dom";
+import { setAppsFeedEnabled } from "@/lib/appsFeedFeature";
 
 describe("addresses", () => {
   test("Feed and Apps are destinations; /chat and /chat/<id> are still Chat", () => {
@@ -56,8 +57,9 @@ function Where() {
   return <p data-testid="where">{pathname + search + hash}</p>;
 }
 
-async function openAt(entry: string, element: React.ReactNode) {
+async function openAt(entry: string, element: React.ReactNode, appsFeed = false) {
   restoreDom = installDom();
+  if (appsFeed) setAppsFeedEnabled(true);
   const host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
@@ -76,8 +78,13 @@ async function openAt(entry: string, element: React.ReactNode) {
 }
 
 describe("`/` on the web", () => {
-  test("opens Feed, keeping the query and a #share= fragment", async () => {
+  test("opens Chat by default, keeping the query and a #share= fragment", async () => {
     const host = await openAt("/?x=1#share=abc", <RootRoute nativeShell={false} homeShell />);
+    expect(host.querySelector('[data-testid="where"]')?.textContent).toBe("/chat?x=1#share=abc");
+  });
+
+  test("opens the chosen Home destination after opting in", async () => {
+    const host = await openAt("/?x=1#share=abc", <RootRoute nativeShell={false} homeShell />, true);
     expect(host.querySelector('[data-testid="where"]')?.textContent).toBe("/chat/feed?x=1#share=abc");
   });
 
@@ -118,6 +125,6 @@ describe("main.tsx", () => {
   const main = readFileSync(join(import.meta.dir, "..", "main.tsx"), "utf8");
   test("registers /about for the landing page and keeps /chat/* mounted as App", () => {
     expect(main).toContain('<Route path="/about" element={<LandingRoute />} />');
-    expect(main).toContain('<Route path="/chat/*" element={<CaptureEngineGate><App /></CaptureEngineGate>} />');
+    expect(main).toContain('<Route path="/chat/*" element={<ExperimentalRoute><CaptureEngineGate><App /></CaptureEngineGate></ExperimentalRoute>} />');
   });
 });

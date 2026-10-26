@@ -9,6 +9,7 @@ import { installEd25519Polyfill } from "./lib/ed25519Polyfill";
 import { CaptureEngineGate } from "./capture/recorder/CaptureEngineGate";
 import { PwaPrompts } from "./components/pwa-prompts";
 import { RootErrorBoundary } from "./shell/RootErrorBoundary";
+import { ExperimentalRoute } from "./shell/ExperimentalRoute";
 import { LandingRoute, RootRoute } from "./landing/RootRoute";
 import { registerWebCaptureEngine } from "./lib/voiceNotes/web/registerWebEngine";
 import { appPlatform } from "./lib/platform";
@@ -79,7 +80,7 @@ void installEd25519Polyfill().catch((error: unknown) => {
           <Routes>
             <Route path="/" element={<RootRoute nativeShell={nativeShell} homeShell={platform === "web"} />} />
             <Route path="/about" element={<LandingRoute />} />
-            <Route path="/chat/*" element={<CaptureEngineGate><App /></CaptureEngineGate>} />
+            <Route path="/chat/*" element={<ExperimentalRoute><CaptureEngineGate><App /></CaptureEngineGate></ExperimentalRoute>} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </BrowserRouter>
