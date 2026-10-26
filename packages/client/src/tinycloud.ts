@@ -36,6 +36,8 @@ export interface TinyCloudWebConfig {
    * key never touches web storage.
    */
   sessionStorage?: ISessionStorage;
+  /** Panel layout: "native" inside the phone and desktop apps. Default "web". */
+  uiPlatform?: "native" | "web";
   /** SIWE nonce override. If set, `siweConfig.nonce` still wins inside the SDK. */
   nonce?: string;
   /**
@@ -77,6 +79,8 @@ export function createTinyCloudWeb(
     manifest,
     capabilityRequest: config?.capabilityRequest,
     includeAccountRegistryPermissions: false,
+    // The app owns the floating button (Settings toggle); the SDK default shows it.
+    ui: { button: false, platform: config?.uiPlatform ?? "web" },
     ...(config?.replication ? { replication: config.replication } : {}),
     autoBootstrapAccount: false,
   };
@@ -221,6 +225,8 @@ export async function restoreTinyCloudWebSession(
     manifest,
     capabilityRequest: config?.capabilityRequest,
     includeAccountRegistryPermissions: false,
+    // The app owns the floating button (Settings toggle); the SDK default shows it.
+    ui: { button: false, platform: config?.uiPlatform ?? "web" },
     ...(config?.replication ? { replication: config.replication } : {}),
   };
 

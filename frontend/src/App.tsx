@@ -101,6 +101,7 @@ import { RecorderProvider } from "./capture/recorder/RecorderProvider";
 import { MicDeniedRecovery } from "./capture/recorder/MicDeniedRecovery";
 import { RecorderShell } from "./capture/recorder/RecorderShell";
 import { UploadResumer } from "./capture/upload/UploadResumer";
+import { TinyCloudButtonSync } from "./chat/TinyCloudButtonSync";
 import { useOpenSavedNote } from "./capture/library/useOpenSavedNote";
 import { resetNavigationMemory } from "./shell/navigation";
 import {
@@ -109,7 +110,7 @@ import {
   redirectsWhenSignedOut,
   screenFor,
 } from "./shell/routes";
-import { PlatformContext } from "./lib/platform";
+import { PlatformContext, sdkUiPlatform } from "./lib/platform";
 import { useSizeClass } from "./lib/sizeClass";
 // W5 — the cohort meetings view. It renders NOTHING unless the backend's read
 // API answers for this address (dark flag / non-cohort = 404 = invisible), and
@@ -609,6 +610,7 @@ export function App() {
             autoCreateSpace: false,
             includeAccountRegistryPermissions: false,
             tinycloudHosts: TINYCLOUD_HOSTS,
+            uiPlatform: sdkUiPlatform(),
             manifest,
             // ON: the replication option plus a read-only account provider (so the restore has a signer
             // to ask); OFF: {} (no provider, exactly as without replication). See replicationRestore.ts.
@@ -971,6 +973,7 @@ export function App() {
         autoCreateSpace: !LOCAL_VALIDATION,
         includeAccountRegistryPermissions: false as const,
         tinycloudHosts: TINYCLOUD_HOSTS,
+        uiPlatform: sdkUiPlatform(),
         manifest: withEncryptionDecryptGrant(manifest, connectedAddress),
         // The dev WebView runs at localhost:5186, whose port the SDK signs into
         // SIWE's domain. Production accepts the fixed Tauri hostname instead.
@@ -1491,6 +1494,9 @@ export function App() {
           backendUrl={BACKEND_URL}
         />
       )}
+
+      {/* TC-2130: the SDK's floating button is hidden by default; this applies the Settings > TinyCloud choice. Renders nothing. */}
+      {state === "ready" && tcw && <TinyCloudButtonSync tcw={tcw} />}
 
       {billingNotice && (
         <div
