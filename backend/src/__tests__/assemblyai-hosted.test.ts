@@ -933,10 +933,6 @@ describe("allowance and concurrency", () => {
 describe("upstream failures", () => {
   // [name, answer for the upload call, the failed outcome's code, alert]
   const UPLOAD_FAILURES: [string, Answer, string, boolean][] = [
-    ["server key refused (401)", () => json(401, { error: UPSTREAM_DETAIL }), "assemblyai_unavailable", true],
-    ["server key refused (403)", () => json(403, { error: UPSTREAM_DETAIL }), "assemblyai_unavailable", true],
-    ["rate limited", () => json(429, { error: UPSTREAM_DETAIL }, { "Retry-After": "17" }), "assemblyai_rate_limited", false],
-    ["server error", () => json(500, { error: UPSTREAM_DETAIL }), "assemblyai_unavailable", false],
     ["off-contract success", () => json(200, { upload_url: "http://plain.example/x" }), "assemblyai_unavailable", false],
     ["network error", () => Promise.reject(new TypeError(`fetch failed ${UPSTREAM_DETAIL}`)), "assemblyai_unavailable", false],
   ];
@@ -993,8 +989,6 @@ describe("upstream failures", () => {
   test("a refused transcript create settles failed (an AssemblyAI 400 is our drift: alert) and the spool is still gone", async () => {
     for (const [answer, code, alert] of [
       [json(400, { error: UPSTREAM_DETAIL }), "assemblyai_unavailable", true],
-      [json(401, { error: UPSTREAM_DETAIL }), "assemblyai_unavailable", true],
-      [json(429, { error: UPSTREAM_DETAIL }), "assemblyai_rate_limited", false],
       [json(200, { id: "../x", status: "queued" }), "assemblyai_unavailable", false],
     ] as const) {
       const h = await setup({ answer: (call) => (call.url.endsWith("/v2/transcript") ? answer.clone() : assemblyAi(call)) });

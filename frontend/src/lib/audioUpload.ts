@@ -38,6 +38,7 @@ import type { NormalizedMeeting } from "./connectors/connectorStore";
 import type { FirefliesSentence } from "./connectors/firefliesClient";
 import { NO_SPEECH_MESSAGE, type LocalTranscriptSaver, type PreparedLocalTranscript } from "./localTranscriber";
 import { accountStorageKey } from "./voiceNotes/sourcePins";
+import { HOSTED_DELAYED_ROW } from "./voiceNotes/notePipelineCopy";
 import {
   createCloudJobPoller,
   privateCloudMessage,
@@ -388,6 +389,8 @@ export interface UploadState {
   uploadPct: number | null;
   /** Queue position / progress while the engine works, already worded. */
   detail: string | null;
+  /** Powerful's provider is holding the transcription back and the server keeps retrying it: in progress, not a failure. */
+  delayed?: boolean;
   audio: { stage: AudioStage; pct: number | null };
   /** Set when stage is "failed". `retry`: whether Retry can continue without the file being picked again. */
   error: { message: string; reference: string | null; retry: boolean } | null;
@@ -771,7 +774,8 @@ export function createUploadRunner(): UploadRunner {
         // Persist before sending: a lost response or reload cannot prove the POST wasn't accepted.
         if (job.assemblyAiMode === "hosted") job = runPersist(r, deps, { ...job, uploadSubmitting: true });
         try {
-          created = await client.createTranscript(uploadRef, { speakerLabels: job.diarize, signal: r.signal });
+          created = await client.createTranscript(uploadRef, { speakerLabels: job.diarize, signal: r.signal,
+            onDelayed: (delayed) => runSet(r, { delayed, detail: delayed ? HOSTED_DELAYED_ROW : "Sending the file to AssemblyAI…" }) });
         } catch (err) {
           // Hosted references survive all ambiguous failures, including rate limits and session expiry.
           const ended = err instanceof AssemblyAiError && err.uploadEnded && !(err.kind === "not-found" && job.uploadSubmitting);

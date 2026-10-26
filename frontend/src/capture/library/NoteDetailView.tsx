@@ -28,6 +28,7 @@ import type { AppPlatform } from "@/lib/platform";
 import { activityForNote, deviceName, noteStatus } from "../activity/activitySelector";
 import type { LocalTranscript } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { transcriptionStatusText } from "@/lib/voiceNotes/voiceNoteTranscription";
+import { HOSTED_DELAYED_ROW } from "@/lib/voiceNotes/notePipelineCopy";
 import { storageFullPrecedesChoiceFailure, storageFullTranscriptCopy, TRANSCRIPT_STORAGE_FULL_CODE, transcriptionErrorCopy, voiceNoteTranscriptionFailureForCode } from "@/lib/voiceNotes/transcriptionErrors";
 import { localTranscriptToSave, voiceNoteTitle, voiceNoteTranscriptState, VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
 import { PAGE_COLUMN, PageHeader } from "@/shell/PageHeader";
@@ -172,7 +173,7 @@ export function VoiceNoteTranscriptionStatus(props: {
     );
   }
   if (job?.kind === "active") {
-    const status = transcriptionStatusText(job.status);
+    const status = job.status.kind === "delayed" && provider === "powerful" ? HOSTED_DELAYED_ROW : transcriptionStatusText(job.status);
     const providerStatus = provider === "powerful" ? status.replaceAll("Private transcription", "Powerful (AssemblyAI)").replaceAll("private cloud", "Powerful")
       : provider === "unknown" ? status.replaceAll("Private transcription", "transcription").replaceAll("private cloud", "the transcription service") : status;
     return (

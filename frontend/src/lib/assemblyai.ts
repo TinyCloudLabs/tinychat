@@ -71,7 +71,7 @@ export interface AssemblyAiClient {
    * Starts the transcript of an uploaded file (`upload`'s answer). Safe to call again with the same
    * reference after a reload: TinyCloud's account re-joins its submission instead of starting another.
    */
-  createTranscript(uploadRef: string, options: { speakerLabels: boolean; multichannel?: boolean; signal?: AbortSignal }): Promise<AssemblyAiTranscript>;
+  createTranscript(uploadRef: string, options: { speakerLabels: boolean; multichannel?: boolean; signal?: AbortSignal; onDelayed?: (delayed: boolean) => void }): Promise<AssemblyAiTranscript>;
   getTranscript(id: string, signal?: AbortSignal): Promise<AssemblyAiTranscript>;
   getSentences(id: string): Promise<AssemblyAiSentence[]>;
   /** Deletes the transcript and its uploaded audio. A transcript already gone counts as deleted. */
@@ -143,10 +143,12 @@ async function hostedError(response: Response): Promise<AssemblyAiError> {
 }
 
 interface HostedSubmission {
-  status: "missing" | "receiving" | "submitting" | "submitted" | "failed" | "needs_reconciliation" | "unresolved" | "deleted";
+  /** `delayed`: AssemblyAI is refusing the submission and the server retries it by itself; not a failure. */
+  status: "missing" | "receiving" | "submitting" | "delayed" | "submitted" | "failed" | "needs_reconciliation" | "unresolved" | "deleted";
   id?: string;
   upload_id?: string;
   error?: { code?: string } | null;
+  retry_after_seconds?: number;
 }
 
 async function submission(response: Response): Promise<HostedSubmission> {
@@ -158,6 +160,9 @@ async function submission(response: Response): Promise<HostedSubmission> {
 /** How often the submission is checked, and for how long (the backend gives up after 15 minutes). */
 const SUBMIT_POLL_MS = 2_000;
 const SUBMIT_DEADLINE_MS = 16 * 60_000;
+/** A delayed submission is retried by the server for up to 24 hours: it is polled slowly and given a little longer than that. */
+const DELAYED_POLL_MS = 15_000;
+const DELAYED_DEADLINE_MS = 25 * 60 * 60_000;
 
 /** Retries of one part after a network failure or a 5xx; a re-PUT of the same part is idempotent. */
 const PART_RETRY_DELAYS_MS = [1_000, 3_000];
@@ -174,7 +179,7 @@ export function createHostedAssemblyAiClient(config: {
   fetchImpl?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
 }): Omit<AssemblyAiClient, "createTranscript"> & {
-  createTranscript(uploadId: string, options: { speakerLabels: boolean; multichannel?: boolean; signal?: AbortSignal; sourceId?: string }): Promise<AssemblyAiTranscript>;
+  createTranscript(uploadId: string, options: { speakerLabels: boolean; multichannel?: boolean; signal?: AbortSignal; sourceId?: string; onDelayed?: (delayed: boolean) => void }): Promise<AssemblyAiTranscript>;
   capabilities(): Promise<HostedAssemblyAiCapabilities>;
   createUpload(size: number, contentType: string, sourceId?: string): Promise<{ uploadId: string; partSize: number; status?: HostedSubmission["status"]; id?: string }>;
   lookupJob(sourceId: string): Promise<HostedSubmission>;
@@ -302,7 +307,7 @@ export function createHostedAssemblyAiClient(config: {
       return uploadId;
     },
 
-    async createTranscript(uploadId, { speakerLabels, multichannel = false, signal, sourceId }: { speakerLabels: boolean; multichannel?: boolean; signal?: AbortSignal; sourceId?: string }) {
+    async createTranscript(uploadId, { speakerLabels, multichannel = false, signal, sourceId, onDelayed }: { speakerLabels: boolean; multichannel?: boolean; signal?: AbortSignal; sourceId?: string; onDelayed?: (delayed: boolean) => void }) {
       // The backend sends the file on to AssemblyAI in the background: 202 with the submission's state,
       // then its state by upload id until it has the transcript's handle. A replay re-joins it.
       const path = `/hosted/uploads/${encodeURIComponent(uploadId)}`;
@@ -315,12 +320,23 @@ export function createHostedAssemblyAiClient(config: {
         if (!(err instanceof AssemblyAiError) || (err.kind !== "not-found" && err.kind !== "failed")) throw err;
         state = await submission(await request(path, { signal, uploadState: true }));
       }
-      const deadline = Date.now() + SUBMIT_DEADLINE_MS;
-      while (state.status === "submitting" || state.status === "receiving") {
+      // The wait limit follows the phase: a delayed submission may legitimately take hours, and the server
+      // answers `receiving` after a restart (the audio is sent again), which gets the ordinary limit back.
+      let delayed = false;
+      let deadline = Date.now() + SUBMIT_DEADLINE_MS;
+      const track = (current: HostedSubmission) => {
+        if ((current.status === "delayed") === delayed) return;
+        delayed = !delayed;
+        deadline = Date.now() + (delayed ? DELAYED_DEADLINE_MS : SUBMIT_DEADLINE_MS);
+        onDelayed?.(delayed);
+      };
+      track(state);
+      while (state.status === "submitting" || state.status === "receiving" || state.status === "delayed") {
         if (Date.now() > deadline) throw new AssemblyAiError("network", "Exo's server is still sending the file to AssemblyAI. Retry keeps waiting.");
-        await sleep(SUBMIT_POLL_MS);
+        await sleep(delayed ? DELAYED_POLL_MS : SUBMIT_POLL_MS);
         if (signal?.aborted) throw new AssemblyAiError("failed", "The upload was cancelled.");
         state = await submission(await request(path, { signal, uploadState: true }));
+        track(state);
       }
       if (state.status === "submitted" && typeof state.id === "string") return { id: state.id, status: "queued" };
       if (state.status !== "failed") throw new AssemblyAiError("network", "Exo's server returned an unexpected upload state. Retry keeps waiting.");
@@ -357,10 +373,10 @@ export function createHostedAssemblyAiClient(config: {
           await this.deleteTranscript(state.id);
           return;
         }
-        if (state.status !== "receiving" && state.status !== "submitting") {
+        if (state.status !== "receiving" && state.status !== "submitting" && state.status !== "delayed") {
           throw new AssemblyAiError("network", "Exo's server returned an unexpected upload state. Retry deleting keeps waiting.");
         }
-        if (state.status === "submitting") onSubmitting?.();
+        if (state.status === "submitting" || state.status === "delayed") onSubmitting?.();
         // A claim may win between GET and DELETE. A 409 keeps the reference until its handle arrives.
         const deleted = await request(path, { method: "DELETE", signal, allowConflict: true });
         if (deleted.status !== 409) return;
