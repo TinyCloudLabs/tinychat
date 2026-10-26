@@ -1,5 +1,13 @@
 # @tinychat/backend
 
+## 0.5.7-beta.16
+
+### Patch Changes
+
+- 84819aa: Home signs in with the permissions in its manifest, including the requested secret decrypt grant.
+
+  Details: TC-2038
+
 ## 0.5.7-beta.15
 
 ### Patch Changes
