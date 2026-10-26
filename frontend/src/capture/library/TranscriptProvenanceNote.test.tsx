@@ -1,5 +1,5 @@
-// A transcript names its backup-transcriber lines once, above the text: never per line,
-// and never for lines recovered from the recording.
+// A transcript names its filled-in lines (recovered from the recording, or from a backup
+// transcriber) once, above the text: never per line.
 import { expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
@@ -27,16 +27,16 @@ function render(sentences: FirefliesSentence[], item: LibraryItem = MEETING) {
 }
 const noteCount = (html: string) => html.split(TRANSCRIPT_FALLBACK_NOTE).length - 1;
 
-test("a transcript with backup-transcriber lines shows the note once, above the first line", () => {
+test("a transcript with filled-in lines shows the note once, above the first line", () => {
   const html = render([line(0, "recording"), line(1, "fallback"), line(2, "fallback"), line(3, "recording"), line(4)]);
   expect(noteCount(html)).toBe(1);
   expect(html.indexOf(TRANSCRIPT_FALLBACK_NOTE)).toBeLessThan(html.indexOf("Line number 0."));
 });
 
-test("a mixed transcript shows the backup note and nothing about recovered lines", () => {
+test("a mixed transcript shows the one note and nothing per line", () => {
   const html = render([line(0, "recording"), line(1, "fallback")]);
   expect(noteCount(html)).toBe(1);
-  expect(html.toLowerCase()).not.toContain("recovered");
+  expect(html.toLowerCase()).not.toContain("recovered from");
 });
 
 test("no row carries a per-line provenance tag", () => {
@@ -49,9 +49,9 @@ test("no row carries a per-line provenance tag", () => {
   expect(rows).not.toContain("allback");
 });
 
-test("lines recovered from the recording alone show no note", () => {
+test("lines recovered from the recording alone show the same one note", () => {
   const html = render([line(0, "recording"), line(1, "recording"), line(2)]);
-  expect(html).not.toContain('data-testid="transcript-provenance-note"');
+  expect(noteCount(html)).toBe(1);
   expect(html).toContain("Line number 1.");
 });
 
@@ -62,10 +62,11 @@ test("a transcript without provenance, and a voice note, show no note", () => {
 
 test("a combined note applies the same rule to its merged lines", () => {
   expect(noteCount(render([line(0), line(1, "fallback"), line(2, "recording")], MERGED))).toBe(1);
-  expect(render([line(0, "recording"), line(1)], MERGED)).not.toContain('data-testid="transcript-provenance-note"');
+  expect(noteCount(render([line(0, "recording"), line(1)], MERGED))).toBe(1);
+  expect(render([line(0), line(1)], MERGED)).not.toContain('data-testid="transcript-provenance-note"');
 });
 
-test("an untimed transcript with backup lines still names them once", () => {
+test("an untimed transcript with filled-in lines still names them once", () => {
   const untimed = [0, 1].map((index): FirefliesSentence => ({ index, speaker_name: "Ana", text: `Plain ${index}.`, start_time: 0, end_time: 0, source: "fallback" }));
   const html = render(untimed);
   expect(noteCount(html)).toBe(1);
