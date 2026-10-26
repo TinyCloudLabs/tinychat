@@ -33,12 +33,19 @@ describe("TinyCloud button is hidden by default", () => {
   test("fresh sign-in instance", () => {
     lastConfig = null;
     createTinyCloudWeb({} as any);
-    expect(lastConfig.ui).toEqual({ button: false });
+    expect(lastConfig.ui).toEqual({ button: false, platform: "web" });
   });
 
   test("restored-session instance", async () => {
     lastConfig = null;
     await restoreTinyCloudWebSession("0xabc");
-    expect(lastConfig.ui).toEqual({ button: false });
+    expect(lastConfig.ui).toEqual({ button: false, platform: "web" });
+  });
+
+  test("the native apps ask for the native panel layout, button still hidden", async () => {
+    createTinyCloudWeb({} as any, { uiPlatform: "native" });
+    expect(lastConfig.ui).toEqual({ button: false, platform: "native" });
+    await restoreTinyCloudWebSession("0xabc", { uiPlatform: "native" });
+    expect(lastConfig.ui).toEqual({ button: false, platform: "native" });
   });
 });

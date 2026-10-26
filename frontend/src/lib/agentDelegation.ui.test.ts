@@ -5,6 +5,11 @@ import { ephemeralAgentSdkConfig } from "./agentDelegation";
 describe("agent mint TinyCloudWeb config", () => {
   test("hides the TinyCloud button", () => {
     const config = ephemeralAgentSdkConfig({ web3Provider: {} as never, sessionStorage: {} as never });
-    expect(config.ui).toEqual({ button: false });
+    expect(config.ui).toEqual({ button: false, platform: "web" });
+  });
+
+  test("asks for the native panel layout inside the native apps", () => {
+    const config = ephemeralAgentSdkConfig({ web3Provider: {} as never, sessionStorage: {} as never, uiPlatform: "native" });
+    expect(config.ui).toEqual({ button: false, platform: "native" });
   });
 });

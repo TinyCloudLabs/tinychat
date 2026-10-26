@@ -5,7 +5,7 @@
 // default, and the SDK does not persist it: TinyCloudButtonSync (chat/) pushes this value into the
 // SDK on load and on every change through `tcw.ui.setButtonVisible`.
 import { useSyncExternalStore } from "react";
-import type { TinyCloudUI, TinyCloudWeb } from "@tinycloud/web-sdk";
+import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 export const TINYCLOUD_BUTTON_KEY = "tinychat:ui:tinycloud-button-shown";
 const CHANGE_EVENT = "tinychat:tinycloud-button";
@@ -38,11 +38,8 @@ export function useTinyCloudButtonShown(): boolean {
   return useSyncExternalStore(subscribe, readTinyCloudButtonShown, () => false);
 }
 
-// `setButtonVisible` ships in the next web-sdk beta; the installed typings do not have it yet.
-type ButtonControl = { setButtonVisible?: (visible: boolean) => void };
-
-/** Pushes the saved value into the SDK. Safe against a client whose `ui` is missing or older. */
+/** Pushes the saved value into the SDK: true shows the button, false hides it (the SDK stores neither). */
 export function applyTinyCloudButton(tcw: TinyCloudWeb, shown: boolean): void {
-  const ui = tcw.ui as (TinyCloudUI & ButtonControl) | undefined;
-  if (typeof ui?.setButtonVisible === "function") ui.setButtonVisible(shown);
+  // `?.`: the App test fixtures stand in a bare object for the client, which has no `ui`; the real SDK always has one.
+  tcw.ui?.setButtonVisible(shown);
 }

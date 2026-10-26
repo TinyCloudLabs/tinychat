@@ -38,7 +38,7 @@ export function TinyCloudSettings({ tcw }: { tcw: TinyCloudWeb }) {
           <p className="text-sm font-medium">{TINYCLOUD_COPY.rowLabel}</p>
           <p className="text-xs text-muted-foreground">{isReplicationAvailable() ? TINYCLOUD_COPY.rowDescription : TINYCLOUD_COPY.rowDescriptionNoSync}</p>
         </div>
-        <Button type="button" variant="outline" size="sm" onClick={() => tcw.ui?.open()}>{TINYCLOUD_COPY.openButton}</Button>
+        <Button type="button" variant="outline" size="sm" onClick={() => tcw.ui.open()}>{TINYCLOUD_COPY.openButton}</Button>
       </div>
     </SectionCard>
   );

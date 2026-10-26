@@ -35,9 +35,4 @@ describe("TinyCloud button setting", () => {
     applyTinyCloudButton(tcw, false);
     expect(calls).toEqual([true, false]);
   });
-
-  test("apply is a no-op against an SDK without the API", () => {
-    expect(() => applyTinyCloudButton(tcwWith({}), true)).not.toThrow();
-    expect(() => applyTinyCloudButton(tcwWith(undefined), true)).not.toThrow();
-  });
 });

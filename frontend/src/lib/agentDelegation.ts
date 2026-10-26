@@ -20,6 +20,7 @@
 import type { Config as TinyCloudWebSdkConfig, Delegation, Manifest, PermissionEntry, PortableDelegation, TinyCloudWeb } from "@tinycloud/web-sdk";
 import type { ConnectWalletResult } from "@tinyboilerplate/client";
 import { openkeyPasskeysSupported } from "./openkeyPasskeys.js";
+import { sdkUiPlatform } from "./platform";
 import { SESSION_EXPIRATION_MS } from "@tinyboilerplate/core";
 import { localValidationEnabled, prepareLocalSignIn } from "./localValidation";
 
@@ -313,6 +314,8 @@ export function ephemeralAgentSdkConfig(input: {
   web3Provider: ConnectWalletResult["web3Provider"];
   sessionStorage: TinyCloudWebSdkConfig["sessionStorage"];
   tinycloudHosts?: string[];
+  /** Panel layout; defaults to this device's. */
+  uiPlatform?: "native" | "web";
 }): TinyCloudWebSdkConfig {
   return {
     providers: { web3: { driver: input.web3Provider } },
@@ -322,7 +325,7 @@ export function ephemeralAgentSdkConfig(input: {
     manifest: AGENT_CONSENT_MANIFEST,
     sessionStorage: input.sessionStorage,
     sessionExpirationMs: SESSION_EXPIRATION_MS,
-    ui: { button: false },
+    ui: { button: false, platform: input.uiPlatform ?? sdkUiPlatform() },
   };
 }
 

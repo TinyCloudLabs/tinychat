@@ -110,7 +110,7 @@ import {
   redirectsWhenSignedOut,
   screenFor,
 } from "./shell/routes";
-import { PlatformContext } from "./lib/platform";
+import { PlatformContext, sdkUiPlatform } from "./lib/platform";
 import { useSizeClass } from "./lib/sizeClass";
 // W5 — the cohort meetings view. It renders NOTHING unless the backend's read
 // API answers for this address (dark flag / non-cohort = 404 = invisible), and
@@ -610,6 +610,7 @@ export function App() {
             autoCreateSpace: false,
             includeAccountRegistryPermissions: false,
             tinycloudHosts: TINYCLOUD_HOSTS,
+            uiPlatform: sdkUiPlatform(),
             manifest,
             // ON: the replication option plus a read-only account provider (so the restore has a signer
             // to ask); OFF: {} (no provider, exactly as without replication). See replicationRestore.ts.
@@ -972,6 +973,7 @@ export function App() {
         autoCreateSpace: !LOCAL_VALIDATION,
         includeAccountRegistryPermissions: false as const,
         tinycloudHosts: TINYCLOUD_HOSTS,
+        uiPlatform: sdkUiPlatform(),
         manifest: withEncryptionDecryptGrant(manifest, connectedAddress),
         // The dev WebView runs at localhost:5186, whose port the SDK signs into
         // SIWE's domain. Production accepts the fixed Tauri hostname instead.

@@ -1,0 +1,60 @@
+diff --git a/dist/core.cjs b/dist/core.cjs
+index 9fc211740d71803bb84672687876d3282b6445e1..ca8d236f45fdca13ec5c60afe0fb8548ef2ac444 100644
+--- a/dist/core.cjs
++++ b/dist/core.cjs
+@@ -1492,8 +1492,8 @@ var NodeUserAuthorization = class {
+     this.assertSignInCurrent(generation);
+     await this.refreshNamedKeyFeatureForSignIn(address, chainId);
+     this.assertSignInCurrent(generation);
+-    const keyId = `session-${Date.now()}`;
+-    this.sessionManager.renameSessionKeyId(this.activeSessionKeyId, keyId);
++    const keyId = `session-${Date.now()}-${Math.random().toString(36).slice(2)}`;
++    this.sessionManager.createSessionKey(keyId);
+     this.activeSessionKeyId = keyId;
+     const jwkString = this.sessionManager.jwk(keyId);
+     if (!jwkString) {
+diff --git a/dist/core.js b/dist/core.js
+index 331eacf3899aaaa737946196f0a6769452c09243..2072556c5ec2bc2b8d4e8e7a8aaa0e7c7ee49573 100644
+--- a/dist/core.js
++++ b/dist/core.js
+@@ -1423,8 +1423,8 @@ var NodeUserAuthorization = class {
+     this.assertSignInCurrent(generation);
+     await this.refreshNamedKeyFeatureForSignIn(address, chainId);
+     this.assertSignInCurrent(generation);
+-    const keyId = `session-${Date.now()}`;
+-    this.sessionManager.renameSessionKeyId(this.activeSessionKeyId, keyId);
++    const keyId = `session-${Date.now()}-${Math.random().toString(36).slice(2)}`;
++    this.sessionManager.createSessionKey(keyId);
+     this.activeSessionKeyId = keyId;
+     const jwkString = this.sessionManager.jwk(keyId);
+     if (!jwkString) {
+diff --git a/dist/index.cjs b/dist/index.cjs
+index 4961dc28e3001e52a41c3ba308652913ba42881a..d77566b69c39c3611210d9f2086fcfdd86fc2a2c 100644
+--- a/dist/index.cjs
++++ b/dist/index.cjs
+@@ -20006,8 +20006,8 @@ var NodeUserAuthorization = class {
+     this.assertSignInCurrent(generation);
+     await this.refreshNamedKeyFeatureForSignIn(address, chainId);
+     this.assertSignInCurrent(generation);
+-    const keyId = `session-${Date.now()}`;
+-    this.sessionManager.renameSessionKeyId(this.activeSessionKeyId, keyId);
++    const keyId = `session-${Date.now()}-${Math.random().toString(36).slice(2)}`;
++    this.sessionManager.createSessionKey(keyId);
+     this.activeSessionKeyId = keyId;
+     const jwkString = this.sessionManager.jwk(keyId);
+     if (!jwkString) {
+diff --git a/dist/index.js b/dist/index.js
+index 4c247ce9ae36a19970773515cd5eb05377af8a0b..8ea6dcf73c3309f7a6d77d8b802b8d21b623b201 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -20002,8 +20002,8 @@ var NodeUserAuthorization = class {
+     this.assertSignInCurrent(generation);
+     await this.refreshNamedKeyFeatureForSignIn(address, chainId);
+     this.assertSignInCurrent(generation);
+-    const keyId = `session-${Date.now()}`;
+-    this.sessionManager.renameSessionKeyId(this.activeSessionKeyId, keyId);
++    const keyId = `session-${Date.now()}-${Math.random().toString(36).slice(2)}`;
++    this.sessionManager.createSessionKey(keyId);
+     this.activeSessionKeyId = keyId;
+     const jwkString = this.sessionManager.jwk(keyId);
+     if (!jwkString) {

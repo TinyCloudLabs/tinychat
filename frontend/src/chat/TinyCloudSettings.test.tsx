@@ -76,13 +76,6 @@ describe("Settings > TinyCloud", () => {
     act(() => open.click());
     expect(opened).toEqual([undefined]);
   });
-
-  test("renders against a client without the UI API", () => {
-    mount({} as unknown as TinyCloudWeb);
-    const open = [...host.querySelectorAll("button")].find((b) => b.textContent === "Open")!;
-    expect(() => act(() => open.click())).not.toThrow();
-    expect(() => act(() => toggle().click())).not.toThrow();
-  });
 });
 
 describe("TinyCloudButtonSync", () => {
