@@ -4,6 +4,7 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { createTranscriberClient, type TranscriberClient, type TranscriberListRow, type TranscriberMeeting, type TranscriberTranscript } from "@/lib/transcriberApi";
 import { listSavedTranscriberMeetingIds, listSavedTranscriberVersions, refreshTranscriberMeeting, saveTranscriberMeeting, TRANSCRIBER_MEETING_SOURCE } from "@/lib/transcriberSave";
 import { isSecretsUnlocked, onSecretsUnlocked } from "@/lib/connectors/connectorSecrets";
+import { isConnectorKeysReady } from "@/lib/connectors/namedConnectorSecrets";
 import { secretsAvailable } from "@/lib/openkeyNative";
 import { captureEvents } from "@/capture/captureEvents";
 import { enqueueDrainWork } from "./useBackgroundDrain";
@@ -260,7 +261,7 @@ export function useTranscriberLibrarySync(input: {
     setSaved({});
     // This sync writes the user's space but never touches the vault; native
     // OpenKey sessions have no secrets space and can still sync meetings.
-    const unlocked = () => !secretsAvailable() || isSecretsUnlocked(tcw);
+    const unlocked = () => !secretsAvailable() || isConnectorKeysReady(tcw) || isSecretsUnlocked(tcw);
     const accountDid = tcw.did;
     const accountAddress = sessionStore.getAddress();
     const accountCurrent = () => enabled && !cancelled && tcw.did === accountDid
