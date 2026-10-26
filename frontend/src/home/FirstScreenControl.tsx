@@ -1,29 +1,54 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
-import { readFirstScreen, writeFirstScreen, type FirstScreen } from "./firstScreenStore";
+import { readCachedFirstScreen, readFirstScreen, writeFirstScreen, type FirstScreen } from "./firstScreenStore";
 import { FIRST_SCREEN_STRINGS as text } from "./firstScreenStrings";
 
-export function FirstScreenControl({ tcw }: { tcw: TinyCloudWeb }) {
-  const [choice, setChoice] = useState<FirstScreen | null>(null);
+/**
+ * The longest the control stays on "Loading…" with nothing cached. Past it the
+ * control shows Feed, says the setting could not be loaded, and lets the user
+ * choose; a late answer is applied only if they have not chosen meanwhile.
+ */
+export const FIRST_SCREEN_LOAD_DEADLINE_MS = 8000;
+
+export function FirstScreenControl({ tcw, did }: { tcw: TinyCloudWeb; did?: string | null }) {
+  const [choice, setChoice] = useState<FirstScreen | null>(() => readCachedFirstScreen(did));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const chosen = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
-    setChoice(null);
-    void readFirstScreen(tcw).then((screen) => {
-      if (!cancelled) setChoice(screen);
+    chosen.current = false;
+    const cached = readCachedFirstScreen(did);
+    setChoice(cached);
+    setError(null);
+    const timer = cached ? null : setTimeout(() => {
+      if (cancelled || chosen.current) return;
+      setChoice((current) => current ?? "feed");
+      setError((current) => current ?? text.readError);
+    }, FIRST_SCREEN_LOAD_DEADLINE_MS);
+    void readFirstScreen(tcw, did).then((screen) => {
+      if (cancelled || chosen.current) return;
+      setChoice(screen);
+      setError((current) => (current === text.readError ? null : current));
     }).catch(() => {
-      if (!cancelled) { setChoice("feed"); setError(text.readError); }
+      // A cached value keeps showing what Home really opens on.
+      if (cancelled || chosen.current || cached) return;
+      setChoice("feed");
+      setError(text.readError);
     });
-    return () => { cancelled = true; };
-  }, [tcw]);
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [tcw, did]);
 
   async function save(screen: FirstScreen) {
+    chosen.current = true;
     setSaving(true);
     setError(null);
     try {
-      await writeFirstScreen(tcw, screen);
+      await writeFirstScreen(tcw, screen, did);
       setChoice(screen);
     } catch {
       setError(text.error);
