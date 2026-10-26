@@ -1383,7 +1383,7 @@ export function App() {
             screen={screen}
             platform={platform}
             pendingMeetings={0}
-            chat={<BootSurface state={state} error={error} onAction={approveWebSignIn ?? authAction} approvalReady={!!approveWebSignIn} />}
+            chat={<BootSurface state={state} error={error} onAction={authAction} approvalAction={approveWebSignIn ?? undefined} approvalReady={!!approveWebSignIn} />}
             capture={<DeviceCaptureSurface did={did} offline={state === "offline"} error={error}
               onSignIn={authAction} onRetry={() => void restoreSession()} screen={screen} />}
             connectors={null}
@@ -1395,7 +1395,7 @@ export function App() {
             {nativeSignInFlow.screenShown
                 ? <NativeSignIn state={state} error={error} onSignIn={(hints) => void signIn(hints)}
                   onClose={nativeSignInFlow.onClose} />
-                : <BootSurface state={state} error={error} onAction={approveWebSignIn ?? authAction} approvalReady={!!approveWebSignIn} home={platform === "web"} />}
+                : <BootSurface state={state} error={error} onAction={authAction} approvalAction={approveWebSignIn ?? undefined} approvalReady={!!approveWebSignIn} home={platform === "web"} />}
           </main>
         )}
       </div>

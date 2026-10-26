@@ -73,7 +73,7 @@ import {
 } from "@/components/ui/dialog";
 import * as connectorStore from "@/lib/connectors/connectorStore";
 import { deleteConnectorKey, getConnectorKey, isConnectorKeysReady, saveConnectorKey } from "@/lib/connectors/namedConnectorSecrets";
-import { isSecretsUnlocked, unlockSecrets, type SecretsErr } from "@/lib/connectors/connectorSecrets";
+import { getConnectorKey as getLegacyConnectorKey, isSecretsUnlocked, unlockSecrets, type SecretsErr } from "@/lib/connectors/connectorSecrets";
 import {
   defaultFirefliesClientOptions,
   FirefliesClient,
@@ -2421,8 +2421,13 @@ export async function revokeGoogleUpstream(input: {
     if (!unlock.ok) localFailure = { status: "locked", message: unlock.error?.message ?? "unlock was not completed" };
   }
   if (!localFailure) {
-    const stored = await getConnectorKey<SecretsErr>(tcw, descriptor);
-    if (stored.ok && typeof stored.data === "string" && stored.data.length > 0) browserToken = stored.data;
+    const named = isConnectorKeysReady(tcw)
+      ? await getConnectorKey<SecretsErr>(tcw, descriptor)
+      : null;
+    const stored = (named === null || (!named.ok && named.error.code === "CONNECTOR_MIGRATION_REQUIRED")) && isSecretsUnlocked(tcw)
+      ? await getLegacyConnectorKey<SecretsErr>(tcw, descriptor)
+      : named;
+    if (stored?.ok && typeof stored.data === "string" && stored.data.length > 0) browserToken = stored.data;
     else localFailure = { status: "no-token" };
   }
   if (localFailure?.status === "locked") return localFailure;

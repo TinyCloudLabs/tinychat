@@ -25,6 +25,7 @@ export function BootSurface(props: {
   error: string | null;
   /** Sign in, or — in the `offline` state — retry the session restore. */
   onAction: () => void;
+  approvalAction?: () => void;
   approvalReady?: boolean;
   /** The offline voice recorder (TC-515), under the action. */
   voiceNotes?: React.ReactNode;
@@ -63,7 +64,7 @@ export function BootSurface(props: {
           </a>
         )}
         {(props.approvalReady || props.state === "unauthenticated" || props.state === "recoverableError" || props.state === "offline") && (
-          <Button onClick={props.onAction} className="h-11 px-6 fine:h-9 fine:px-4">
+          <Button onClick={props.approvalAction ?? props.onAction} className="h-11 px-6 fine:h-9 fine:px-4">
             {props.approvalReady ? "Continue to OpenKey" : props.state === "offline" ? "Try again" : "Sign in"}
           </Button>
         )}

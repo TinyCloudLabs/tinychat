@@ -59,10 +59,11 @@ let offline = false;
 let served: "full" | "old" | "unreachable" = "full";
 const oldManifest = {
   ...realManifest,
+  keys: [],
   permissions: realManifest.permissions.filter((entry) => !SIGN_IN_BUNDLE_ENTRIES.some((required) => required.service === entry.service && required.path === entry.path)),
 };
 
-function fakeTcw(): TinyCloudWeb {
+function makeTcw(): TinyCloudWeb {
   return {
     did: PRINCIPAL, spaceId: "space-a1", address: () => ADDRESS, sql: {}, kv: {}, secrets: {},
     replication: { sync: () => { events.push("sync"); syncCalls += 1; return Promise.resolve(); } },
@@ -78,10 +79,14 @@ mock.module("@tinyboilerplate/client", () => ({
     if (served === "unreachable") throw new TypeError("Failed to fetch");
     return served === "old" ? oldManifest : realManifest;
   },
-  createAndSignIn: async () => { events.push("signIn"); return { tcw: fakeTcw(), session: { siwe: "message", signature: "signature" } }; },
+  createTinyCloudWeb: () => Object.assign(makeTcw(), {
+    clearPersistedSession: async () => {},
+    prepareSignIn: async () => {},
+    signIn: async () => { events.push("signIn"); return { siwe: "message", signature: "signature" }; },
+  }),
   verifySession: async () => ({ token: "bearer", expiresIn: 3600, address: ADDRESS }),
   clearPersistedSession: (address: string) => { events.push(`clearPersisted:${address}`); realClearPersistedSession(address); },
-  restoreTinyCloudWebSession: async () => { events.push("restore"); return { status: "restored", tcw: fakeTcw() }; },
+  restoreTinyCloudWebSession: async () => { events.push("restore"); return { status: "restored", tcw: makeTcw() }; },
 }));
 const realStartReplicationFill = replicationClientApi.startReplicationFill; // captured before the mock replaces the export
 mock.module("@/lib/replication/replicationClient", () => ({
@@ -184,6 +189,12 @@ async function click(label: string) {
   const button = [...host!.querySelectorAll("button")].find((entry) => entry.textContent?.trim() === label);
   expect(button, `missing ${label}; DOM=${host!.innerHTML}`).toBeTruthy();
   await act(async () => { button!.click(); await tick(); });
+  if (label === "Sign in") {
+    await settle();
+    const approval = [...host!.querySelectorAll("button")].find((entry) => entry.textContent?.trim() === "Continue to OpenKey");
+    if (!approval) throw new Error("Expected OpenKey approval action");
+    await act(async () => { approval.click(); await tick(); });
+  }
 }
 async function unmount() {
   if (root) await act(async () => root!.unmount());
