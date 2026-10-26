@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 320" role="img" aria-label="Abstract paper shapes">
+  <rect width="600" height="320" fill="#e8e6e1"/>
+  <circle cx="149" cy="176" r="102" fill="#b6b1a6"/>
+  <rect x="275" y="65" width="223" height="188" rx="12" fill="#6f756f" transform="rotate(8 386 159)"/>
+  <path d="M88 249c105-78 226-76 392-20" fill="none" stroke="#faf9f6" stroke-width="13" stroke-linecap="round"/>
+</svg>

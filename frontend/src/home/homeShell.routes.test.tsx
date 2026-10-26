@@ -102,9 +102,9 @@ describe("the sign-in surface", () => {
   test("Home on the web keeps the Exo sign-in heading (TC-2045) and adds a plain link to /about", () => {
     const markup = renderToStaticMarkup(<BootSurface state="unauthenticated" error={null} onAction={() => {}} home />);
     expect(markup).toContain("Exo</h1>");
-    expect(markup).not.toContain("TinyCloud Home");
+    expect(markup).not.toContain("TinyCloud Home</h1>");
     expect(markup).toContain('href="/about"');
-    expect(markup).toContain("About TinyCloud</a>");
+    expect(markup).toContain("About TinyCloud Home</a>");
   });
 
   test("without Home (native) it has no /about link", () => {

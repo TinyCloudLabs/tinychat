@@ -1,6 +1,8 @@
-// The three template apps Share lists in its catalog (share repo apps/catalog.json,
-// docs/apps-catalog.md). Home only links to Share's existing runner: nothing here
-// reads user data, calls a network API or grants Home any permission.
+// Share's catalog entries that ship a runnable bundle (share repo apps/catalog.json,
+// docs/apps-catalog.md): Health Log and Recipes carry app.jsx and a release. Notes
+// does not, so Share's runner cannot open it and it is not listed. Home only links
+// to Share's existing runner: nothing here reads user data, calls a network API or
+// grants Home any permission.
 
 export const SHARE_ORIGIN = "https://share.tinycloud.xyz";
 
@@ -12,7 +14,6 @@ export interface ShareApp {
 }
 
 export const SHARE_APPS: readonly ShareApp[] = [
-  { appId: "com.example.notes", name: "Notes", description: "Notes with KV documents and SQLite search metadata." },
   {
     appId: "xyz.tinycloud.sample.healthlog",
     name: "Health Log",
