@@ -1,10 +1,13 @@
 // Back, scroll and navigation memory with Feed and Apps in the model (TC-2040).
 import { beforeEach, describe, expect, test } from "bun:test";
+import { renderToStaticMarkup } from "react-dom/server";
+import { MemoryRouter } from "react-router-dom";
 
 import { decideBack } from "./backDecision";
 import { navItems } from "./navItems";
 import { noteLocation, resetNavigationMemory, tabTarget } from "./navigation";
 import { homeDestination, homePath, PATHS, screenFor } from "./routes";
+import { TabBar } from "./TabBar";
 
 const web = { homeDestination: homeDestination("web"), homePath: homePath("web") };
 const back = (path: string) => decideBack({ overlay: false, screen: screenFor(path), size: "compact", historyIdx: 0, ...web });
@@ -34,4 +37,17 @@ describe("navigation model", () => {
     expect(tabTarget("apps", false)).toBe(PATHS.apps);
   });
   beforeEach(() => resetNavigationMemory());
+});
+
+describe("tab bar labels", () => {
+  test("every label carries the 11 px cap, which keeps five tabs inside 320 px at 200% text", () => {
+    const markup = renderToStaticMarkup(
+      <MemoryRouter initialEntries={[PATHS.chat]}>
+        <TabBar items={navItems(0)} current="chat" replace={false} onReselect={() => {}} />
+      </MemoryRouter>,
+    );
+    const labels = [...markup.matchAll(/<span class="([^"]*text-label[^"]*)"/g)].map((m) => m[1]!);
+    expect(labels).toHaveLength(5);
+    for (const classes of labels) expect(classes.split(" ")).toContain("!text-[11px]");
+  });
 });

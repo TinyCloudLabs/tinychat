@@ -17,7 +17,7 @@ function Home() {
 const HOME = { group: "home", layout: "pane", displayTitle: true, platform: "web" } as const;
 
 export const homeScreens: HarnessScreen[] = [
-  { ...HOME, id: "shell-chat-home-feed", path: "/chat/feed", readyWhen: 'a[href="/chat/feed"][aria-current="page"], [data-surface="feed"]', render: () => <Home /> },
+  { ...HOME, id: "shell-chat-home-feed", displayTitle: false, path: "/chat/feed", readyWhen: 'a[href="/chat/feed"][aria-current="page"], [data-surface="feed"]', render: () => <Home /> },
   { ...HOME, id: "shell-chat-home-apps", path: "/chat/apps", readyWhen: 'a[href^="https://share.tinycloud.xyz/apps/run"]', render: () => <Home /> },
   { ...HOME, id: "shell-chat-home-chat", path: "/chat", readyWhen: 'a[href="/chat/apps"]', render: () => <Home /> },
 ];
