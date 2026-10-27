@@ -20,7 +20,6 @@ import { __resetStorageStatusForTests } from "@/lib/storageStatus";
 // module evaluation. Import it after installDom in this isolated process.
 // No module mocking is used for the dialog, engine, client, store, or secrets.
 const restoreImportDom = installDom();
-window.location.href = "https://tinycloud.chat/chat/capture";
 const { ConnectorConnectDialog } = await import("@/chat/ConnectorDialog");
 const { ConnectorsCard } = await import("@/chat/ConnectorsCard");
 
@@ -376,6 +375,7 @@ async function authorize(fakeClock = false) {
 
 beforeEach(async () => {
   restoreDom = installDom();
+  window.location.href = "https://tinycloud.chat/chat/capture";
   memory = new MemoryBoundaries();
   globalThis.fetch = memory.fetch;
   // No pass-through to browser networking, including during synthetic OAuth.

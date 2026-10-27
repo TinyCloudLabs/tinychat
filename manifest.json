@@ -38,11 +38,6 @@
       "description": "Store transcript content synced from connected sources in your space."
     },
     {
-      "service": "tinycloud.kv",
-      "path": "migrations/",
-      "actions": ["get", "put"]
-    },
-    {
       "service": "tinycloud.sql",
       "path": "details",
       "actions": ["read", "write", "schema"]

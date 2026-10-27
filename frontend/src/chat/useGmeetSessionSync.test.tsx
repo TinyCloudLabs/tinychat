@@ -19,7 +19,7 @@
 // exercised inside a bun test process — the idiom
 // `useBackgroundDrain.test.tsx` / `ConnectorsCard.test.ts` established.
 
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -210,6 +210,15 @@ function harness(
     syncs: () => syncs,
   };
 }
+
+const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+beforeAll(() => {
+  Object.defineProperty(globalThis, "window", { configurable: true, value: { location: { origin: "https://tinycloud.chat" } } });
+});
+afterAll(() => {
+  if (previousWindow) Object.defineProperty(globalThis, "window", previousWindow);
+  else Reflect.deleteProperty(globalThis, "window");
+});
 
 beforeEach(() => {
   resetGmeetSessionSyncForTests();

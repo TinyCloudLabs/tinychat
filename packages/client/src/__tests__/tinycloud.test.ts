@@ -82,6 +82,13 @@ afterEach(() => {
 });
 
 describe("createTinyCloudWeb", () => {
+  test("keeps step-up authorization out of persisted sessions", () => {
+    const provider = { request: async () => null } as any;
+    createTinyCloudWeb(provider, { persistSession: false });
+    expect(lastTinyCloudConfig.persistSession).toBe(false);
+    createTinyCloudWeb(provider);
+    expect("persistSession" in lastTinyCloudConfig).toBe(false);
+  });
   test("OpenKey app-key sessions use authorize-sign with the supplied manifest", async () => {
     const provider = { request: async () => null } as any;
     const openkey = { authorizeSign: async () => null } as any;
