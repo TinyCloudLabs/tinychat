@@ -2,6 +2,7 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { readableError } from "@/lib/readableError";
 import { storageScopeFor, trackStorageWrites } from "@/lib/storageStatus";
 import { deviceName } from "@/lib/platform";
+import { setSetting } from "@/lib/threadStore";
 import { autoMeetingTitle } from "@/lib/meetingTitle";
 import { transcriptionModelLabel } from "@/lib/transcriptionModelLabel";
 import type { FirefliesSentence } from "../connectors/firefliesClient";
@@ -513,4 +514,9 @@ export async function verifyVoiceNoteTranscript(tcw: TinyCloudWeb, sourceId: str
   if (!body.ok) throw errorOf(body);
   checkpoint();
   return committed;
+}
+
+/** Saves one cross-device setting (the `settings` table) on the space write lane, behind any save already waiting on it (TC-2199). */
+export function writeUserSetting(tcw: TinyCloudWeb, key: string, value: string): Promise<void> {
+  return runOnSpaceLane(() => setSetting(tcw, key, value), { operation: `SQL execute: settings ${key}`, timeoutMs: 30_000 });
 }

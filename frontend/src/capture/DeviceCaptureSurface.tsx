@@ -22,6 +22,8 @@ import { LibraryRow } from "./library/LibraryRow";
 import { LibraryListView } from "./library/LibraryListView";
 import type { LibraryFilter } from "./library/libraryKinds";
 import { NoteDetailView } from "./library/NoteDetailView";
+import { applyWordFixesToSentences } from "@/lib/wordFixes/wordFixes";
+import { useWordFixApplier } from "@/lib/wordFixes/wordFixesStore";
 import { transcriptWithTimestamps } from "./library/transcriptSegments";
 import { VoiceNotesTranscriberSettings } from "@/chat/VoiceNotesTranscriberSettings";
 import { AudioCacheSettings } from "./AudioCacheSettings";
@@ -159,6 +161,7 @@ function DeviceNoteDetail({ id, item, onBack, activityView, platform, activity }
     });
     return () => { live = false; void listener.then((handle) => handle.remove()); };
   }, [id]);
+  const applyWordFixes = useWordFixApplier();
   const sentences = transcript?.segments.map((segment, index) => ({
     index, speaker_name: segment.speaker, text: segment.text, start_time: segment.start / 1000, end_time: segment.end / 1000,
   }));
@@ -166,8 +169,8 @@ function DeviceNoteDetail({ id, item, onBack, activityView, platform, activity }
     <NoteDetailView item={item} listStatus="ready" metadata={{ status: "absent" }}
       transcript={transcript === undefined ? undefined : sentences ? { status: "ok", sentences } : { status: "absent" }}
       audio={id ? { localUrl: async () => Capacitor.convertFileSrc((await VoiceNotes.localAudioUrl({ id })).url) } : null}
-      copyState="idle" onCopy={() => { if (sentences) void navigator.clipboard.writeText(sentences.map((part) => part.text).join("\n")); }}
-      onCopyWithTimestamps={() => { if (sentences) void navigator.clipboard.writeText(transcriptWithTimestamps(sentences)); }}
+      copyState="idle" onCopy={() => { if (sentences) void navigator.clipboard.writeText(applyWordFixesToSentences(sentences, applyWordFixes).map((part) => part.text).join("\n")); }}
+      onCopyWithTimestamps={() => { if (sentences) void navigator.clipboard.writeText(transcriptWithTimestamps(applyWordFixesToSentences(sentences, applyWordFixes))); }}
       onRetry={() => { if (id) void VoiceNotes.getTranscript({ id }).then((result) => setTranscript(result.transcript)); }}
       activityView={activityView} platform={platform} activityControl={activity}
       pushed onBack={onBack} />

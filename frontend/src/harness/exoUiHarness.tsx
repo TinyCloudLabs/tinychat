@@ -29,6 +29,7 @@ import { captureHomeDesktopScreens } from "./screens/captureHomeDesktop";
 import { captureSettingsScreens } from "./screens/captureSettings";
 import { legacyScreens } from "./screens/legacy";
 import { libraryScreens } from "./screens/library";
+import { wordFixesScreens } from "./screens/wordFixes";
 import { localScreens } from "./screens/local";
 import { meetingSourcesScreens } from "./screens/meetingSources";
 import { meetingSourcesGmeetScreens } from "./screens/meetingSourcesGmeet";
@@ -79,6 +80,7 @@ const SCREENS: HarnessScreen[] = [
   ...captureHomeDesktopScreens,
   ...captureSettingsScreens,
   ...libraryScreens,
+  ...wordFixesScreens,
   ...combineScreens,
   ...savedNoteScreens,
   ...localScreens,
