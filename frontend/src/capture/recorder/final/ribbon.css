@@ -30,7 +30,10 @@
   display: flex;
   flex: 1;
   min-width: 0;
-  min-height: 36px;
+  /* A 44px touch target inside the 36px slot: it overlaps the bar's own padding, so nothing moves. */
+  min-height: 44px;
+  margin: -3px 0 -5px;
+  padding-bottom: 2px;
   align-items: center;
   gap: 10px;
   border-radius: 16px;
