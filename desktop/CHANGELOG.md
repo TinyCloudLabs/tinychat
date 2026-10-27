@@ -1,5 +1,11 @@
 # exo-desktop
 
+## 0.10.0-beta.61
+
+### Patch Changes
+
+- d401bb6: The minimized recorder bar's open button is a 44px touch target; the bar looks the same. Details: TC-2186
+
 ## 0.10.0-beta.60
 
 No changes in this release.
