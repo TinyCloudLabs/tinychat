@@ -14,6 +14,7 @@ import {
   deviceName,
   percentText,
 } from "./notePipelineCopy";
+import { PRIVATE_TOO_LONG_NOTE } from "@/lib/privateCloud";
 import { storageFullPrecedesChoiceFailure, TRANSCRIPT_STORAGE_FULL_CODE } from "./transcriptionErrors";
 import { STORAGE_FULL_TRANSCRIPT_NOT_SAVED_LINE, STORAGE_FULL_TRANSCRIPT_NOT_SAVED_LOCAL_AUDIO_LINE } from "@/lib/storageStatus";
 
@@ -87,6 +88,7 @@ export type PipelineCloudStatus =
   | { kind: "uploading"; progress?: number }
   | { kind: "queued"; position: number | null }
   | { kind: "processing"; completed: number | null; total: number | null }
+  | { kind: "delayed" }
   | { kind: "saving" };
 
 /** `NoteTranscriptionState` (`blocked` is P2). */
@@ -344,7 +346,10 @@ function cloudBlockedStep(reason: PipelineBlockedReason, provider: NotePipelineI
     case "limits-unknown": return blocked(provider === "private" ? PRIVATE_COPY.limitsUnknown : `${name} isn't available right now`, "check-again");
     case "check-failed": return blocked(provider === "private" ? PRIVATE_COPY.checkFailed : `Couldn't check whether ${name} is available`, "check-again");
     case "no-consent": return blocked(provider === "private" ? PRIVATE_COPY.noConsent : `Waiting for your OK to use ${name}`, "review-consent");
-    case "limits-exceeded": return blocked(provider === "private" ? "Private transcription couldn't accept this recording's length or size." : `${name} couldn't accept this recording's length or size.`, "check-again");
+    case "limits-exceeded":
+      return provider === "private"
+        ? blocked(PRIVATE_TOO_LONG_NOTE)
+        : blocked(`${name} couldn't accept this recording's length or size.`, "check-again");
   }
 }
 
@@ -364,13 +369,14 @@ function cloudStep(cloud: PipelineCloud | null, spaceSaved: boolean, checkingCap
         case "waiting": return { state: "waiting", caption: provider === "powerful" ? "Waiting for Powerful to start" : provider === "unknown" ? "Waiting for transcription to start" : PRIVATE_COPY.waiting(status.position) };
         case "preparing": return { state: "active", caption: PRIVATE_COPY.preparing };
         case "uploading": return status.progress === undefined
-          ? { state: "active", caption: provider === "powerful" ? "Sending to Powerful (AssemblyAI)" : provider === "unknown" ? "Sending audio for transcription" : PRIVATE_COPY.sending }
-          : withProgress("active", `${provider === "powerful" ? "Sending to Powerful (AssemblyAI)" : provider === "unknown" ? "Sending audio for transcription" : PRIVATE_COPY.sending} · ${percentText(status.progress)}`, status.progress);
+          ? { state: "active", caption: provider === "powerful" ? "Sending to Powerful" : provider === "unknown" ? "Sending audio for transcription" : PRIVATE_COPY.sending }
+          : withProgress("active", `${provider === "powerful" ? "Sending to Powerful" : provider === "unknown" ? "Sending audio for transcription" : PRIVATE_COPY.sending} · ${percentText(status.progress)}`, status.progress);
         case "queued": return { state: "waiting", caption: PRIVATE_COPY.inQueue(status.position) };
         case "processing": {
           const progress = status.completed === null || status.total === null ? null : fraction(status.completed, status.total);
           return withProgress("active", PRIVATE_COPY.transcribing(status.completed, status.total), progress);
         }
+        case "delayed": return { state: "active", caption: PRIVATE_COPY.delayed };
         case "saving": return { state: "active", caption: PRIVATE_COPY.saving };
       }
     }

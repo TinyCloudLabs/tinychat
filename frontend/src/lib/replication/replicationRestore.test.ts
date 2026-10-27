@@ -29,8 +29,14 @@ function loader(): ReplicationPluginLoader {
 
 describe("the restore patch", () => {
   let saved = new Map<string, PropertyDescriptor | undefined>();
-  beforeEach(() => { saved = new Map(GLOBAL_NAMES.map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)])); });
+  let savedBuildFlag: string | undefined;
+  beforeEach(() => {
+    saved = new Map(GLOBAL_NAMES.map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]));
+    savedBuildFlag = import.meta.env.VITE_EXO_REPLICATION;
+    import.meta.env.VITE_EXO_REPLICATION = "false"; // the build flag is ON unless "false"; the dev runtime flag below stands in for it
+  });
   afterEach(() => {
+    import.meta.env.VITE_EXO_REPLICATION = savedBuildFlag;
     for (const [name, descriptor] of saved) {
       if (descriptor) Object.defineProperty(globalThis, name, descriptor); else Reflect.deleteProperty(globalThis, name);
     }
@@ -45,8 +51,8 @@ describe("the restore patch", () => {
   });
 
   test("replication OFF for this account: exactly {} (no provider, no signer, config unchanged)", async () => {
-    // Build flag on, platform qualified, but this account never opted in (another account did).
-    install(new Map([[REPLICATION_RUNTIME_FLAG_KEY, "true"], [replicationOptInKey(replicationPrincipalFor(BOB)), "true"]]));
+    // Build flag on, platform qualified, but this account explicitly opted out (another account did not).
+    install(new Map([[REPLICATION_RUNTIME_FLAG_KEY, "true"], [replicationOptInKey(replicationPrincipalFor(ALICE)), "false"]]));
     expect(await replicationRestorePatch(ALICE, loader())).toEqual({});
   });
 

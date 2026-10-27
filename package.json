@@ -14,10 +14,10 @@
   "overrides": {
     "@tinycloud/sdk-core": "3.8.0-beta.9",
     "@tinycloud/sdk-services": "3.8.0-beta.9",
-    "@tinycloud/web-sdk": "3.8.0-beta.11",
+    "@tinycloud/web-sdk": "3.8.0-beta.12",
     "@tinycloud/node-sdk": "3.8.0-beta.11",
-    "@tinycloud/node-sdk-wasm": "1.7.8-beta.0",
-    "@tinycloud/web-sdk-wasm": "1.7.7-beta.1",
+    "@tinycloud/node-sdk-wasm": "1.7.8",
+    "@tinycloud/web-sdk-wasm": "1.7.7",
     "ethers": "6.16.0",
     "react": "19.2.3",
     "react-dom": "19.2.3",

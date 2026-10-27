@@ -19,6 +19,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefO
 import { useLocation } from "react-router-dom";
 
 import { cn } from "@/lib/utils";
+import { useAppsFeedEnabled } from "../lib/appsFeedFeature";
 import type { AppPlatform } from "../lib/platform";
 import { useSizeClass, type SizeClassState } from "../lib/sizeClass";
 import { navItems, navKindFor, type NavKind } from "./navItems";
@@ -86,6 +87,8 @@ const GRID: Record<NavKind | "none", string> = {
 
 export interface AppShellViewProps extends AppShellProps {
   sizeClass: SizeClassState;
+  /** Optional override for pure shell previews and tests. */
+  experimentalAppsFeedEnabled?: boolean;
   /** Capture is mounted after its first visit, or at Mac launch for Activity. */
   captureMounted: boolean;
   mainRef?: RefObject<HTMLElement | null>;
@@ -109,10 +112,13 @@ export function AppShellView({
   sidebarLive = null,
   recorderHost,
   sizeClass,
+  experimentalAppsFeedEnabled,
   captureMounted,
   mainRef,
   onReselect = () => {},
 }: AppShellViewProps) {
+  const appsFeedEnabled = useAppsFeedEnabled();
+  if (!(experimentalAppsFeedEnabled ?? appsFeedEnabled)) { feed = null; apps = null; }
   const nav = shellNavKind(sizeClass, { capture, connectors });
   const shown = shownSurface(screen, { capture, connectors, settings, feed, apps, about });
   // Settings and How it works are global: no navigation item is current.

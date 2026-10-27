@@ -1,4 +1,4 @@
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, type ReactNode } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { PATHS } from "../shell/routes";
 import type { FirstScreen } from "./firstScreenStore";
@@ -38,25 +38,48 @@ function decide(key: string, load: () => Promise<FirstScreen>): Promise<FirstScr
   return decision;
 }
 
+/** Entries whose background refresh is already running (StrictMode double mount). */
+const refreshing = new Set<string>();
+
 /**
  * Only an entry through `/` waits for the account preference, and only up to
  * FIRST_SCREEN_WAIT_MS; explicit links render at once and never read it. An
  * Apps choice that arrives inside the window goes to Apps. A failed read, an
  * unset or unreadable value, or a read still pending at the deadline: Feed.
  *
+ * With a device-local copy of the choice (`cached`, per account), the entry is
+ * decided synchronously from it, with no wait and no blank frame; `load` still
+ * runs in the background to refresh that copy and never moves the user.
+ *
  * The decision ends the entry: the gate replaces the location with one that no
  * longer carries the `homeEntry` marker. A remount after that renders at once,
  * never reads again, and never redirects on a late answer.
  */
-export function HomeEntryGate({ load, children }: { load: () => Promise<FirstScreen>; children: ReactNode }) {
+export function HomeEntryGate({ load, cached, children }: {
+  load: () => Promise<FirstScreen>;
+  cached?: () => FirstScreen | null;
+  children: ReactNode;
+}) {
   const location = useLocation();
   const navigate = useNavigate();
   const entry = location.pathname === PATHS.feed &&
     (location.state as { homeEntry?: boolean } | null)?.homeEntry === true;
   const { key, search, hash } = location;
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!entry) return;
+    const known = cached?.() ?? null;
+    if (!known) return;
+    if (!refreshing.has(key)) {
+      refreshing.add(key);
+      const done = () => { refreshing.delete(key); };
+      try { load().then(done, done); } catch { done(); }
+    }
+    navigate({ pathname: known === "apps" ? PATHS.apps : PATHS.feed, search, hash }, { replace: true, state: null });
+  }, [entry, key, load, cached, search, hash, navigate]);
+
+  useEffect(() => {
+    if (!entry || cached?.()) return;
     let current = true;
     void decide(key, load).then((screen) => {
       if (!current) return;
@@ -64,7 +87,7 @@ export function HomeEntryGate({ load, children }: { load: () => Promise<FirstScr
       navigate({ pathname: screen === "apps" ? PATHS.apps : PATHS.feed, search, hash }, { replace: true, state: null });
     });
     return () => { current = false; };
-  }, [entry, key, load, search, hash, navigate]);
+  }, [entry, key, load, cached, search, hash, navigate]);
 
   return entry ? null : children;
 }

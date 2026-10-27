@@ -6,7 +6,7 @@ import { HowItWorksLink } from "@/components/ui/how-it-works-link";
 import { InfoTip } from "@/components/ui/info-tip";
 import { SectionCard } from "@/components/ui/section-card";
 import { readDefaultUploadEngine, writeDefaultUploadEngine, type UploadEngine } from "@/lib/audioUpload";
-import { TRANSCRIBER_NAME } from "@/capture/recorder/final/finalCopy";
+import { POWERFUL_NOT_PRIVATE_LINE, TRANSCRIBER_NAME } from "@/capture/recorder/final/finalCopy";
 
 const SEGMENT = "min-h-11 rounded px-3 py-1 text-xs fine:min-h-0";
 
@@ -29,7 +29,7 @@ export const TranscriptionSettings: FC<{ tcw: TinyCloudWeb }> = () => {
           ))}
         </div>
       </div>
-      <p className="mt-4 text-xs text-muted-foreground">Powerful sends audio through Exo's server to AssemblyAI. Exo deletes the AssemblyAI copy after the transcript is saved.</p>
+      <p className="mt-4 text-xs text-muted-foreground">{POWERFUL_NOT_PRIVATE_LINE}</p>
       <HowItWorksLink section="transcription" className="mt-2 w-fit" />
     </SectionCard>
   );

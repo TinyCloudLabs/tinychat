@@ -467,7 +467,7 @@ describe("listMeetingsRead", () => {
     const failedPipeline = buildNotePipelineInput(pipelineFacts("failed-note", failed.metadata ?? null));
     expect(failedPipeline.transcript).toMatchObject({ persistedState: "failed", errorCode: "recording_too_large" });
     const html = renderToStaticMarkup(createElement(PipelineTrackSummary, { pipeline: notePipeline(failedPipeline) }));
-    expect(html).toContain("Private cloud couldn&#x27;t accept this recording&#x27;s length or size. Try again.");
+    expect(html).toContain("Your recording is saved, but it&#x27;s too large for private transcription. The audio is kept, so nothing is lost.");
     expect(failed.metadata).not.toHaveProperty("transcript_text");
     sqlite.close();
   });

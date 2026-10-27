@@ -9,9 +9,8 @@ process.env.HOME = testHome;
 if (!process.env.HOME.startsWith("/var/tmp/tc1013.")) throw new Error("HOME is not the throwaway test home");
 afterAll(() => { rmSync(testHome, { recursive: true, force: true }); });
 
-// The app's real manifest.json, resolved by the SDK's real resolveManifest: what the
-// sign-in asks the node for. Revision "2" of the sign-in grants (lib/manifestRevision.ts)
-// is this bundle; each entry added to it is pinned here by its resolved resource.
+// The app's real manifest.json, resolved by the SDK's real resolveManifest:
+// revision "3" of the sign-in grants (lib/manifestRevision.ts).
 function appManifest(): Manifest & { permissions: Array<{ service: string; path: string; actions: string[]; skipPrefix?: boolean }> } {
   return JSON.parse(readFileSync(new URL("../../../manifest.json", import.meta.url), "utf8"));
 }
@@ -54,9 +53,19 @@ describe("manifest bundle, resolved by the real resolveManifest", () => {
     expect([MEETING_DB_DETAILS, MEETING_DB_SUMMARIES, MEETING_DB_TRANSCRIPTS]).toEqual([`${APP}/details`, `${APP}/summaries`, `${APP}/transcripts`]);
   });
 
-  test("the cutover record folder is kv get + put only", () => {
-    const entry = resolved().filter((resource) => resource.path === `${APP}/migrations/`);
-    expect(entry).toEqual([{ service: "tinycloud.kv", space: "applications", path: `${APP}/migrations/`, actions: ["tinycloud.kv/get", "tinycloud.kv/put"] }]);
+  test("the unused migration record grant is absent", () => {
+    expect(resolved().filter((resource) => resource.path === `${APP}/migrations/`)).toEqual([]);
+  });
+
+  test("Home can use every applications KV folder and the two runnable catalog databases", () => {
+    expect(resolved().filter((entry) => entry.service === "tinycloud.kv" && entry.path === "")).toEqual([
+      { service: "tinycloud.kv", space: "applications", path: "", actions: ["tinycloud.kv/get", "tinycloud.kv/put", "tinycloud.kv/del", "tinycloud.kv/list", "tinycloud.kv/metadata"] },
+    ]);
+    const catalog = resolved().filter((entry) => entry.service === "tinycloud.sql" && entry.path.startsWith("xyz.tinycloud.sample."));
+    expect(catalog).toEqual([
+      { service: "tinycloud.sql", space: "applications", path: "xyz.tinycloud.sample.healthlog/healthlog", actions: SQL_ALL },
+      { service: "tinycloud.sql", space: "applications", path: "xyz.tinycloud.sample.recipes/recipes", actions: SQL_ALL },
+    ]);
   });
 
   test("the storage info entry resolves to the bare path \"\" because skipPrefix is set", () => {

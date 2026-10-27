@@ -51,7 +51,7 @@ const connectorSiwe = `Resources:\n- urn:recap:${Buffer.from(JSON.stringify({ at
 const CHROME = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
 const APP_SESSION_KEY = "xyz.tinycloud.tinychat:session";
 const REVISION_KEY = `xyz.tinycloud.tinychat:manifest-revision:${ADDRESS}`;
-const NOTICE = "Sign in again to finish updating Exo. You'll do this once on each device.";
+const NOTICE = "Sign in once more so TinyCloud Home can open your apps and your feed. Your data stays as it is.";
 
 /** Every effect the gate must order, in the order it happened. */
 const events: string[] = [];
@@ -326,7 +326,7 @@ test("once the backend serves the bundle, the deferred session is forced on the 
   expect(host!.textContent).toContain(NOTICE);
 });
 
-test("a signed-out new user sees no notice, signs in under the new manifest with no handoff, and the revision \"2\" is recorded", async () => {
+test("a signed-out new user sees no notice, signs in under the new manifest with no handoff, and the revision \"3\" is recorded", async () => {
   await mount();
   // A signed-out boot may run the capture handoff; it must not clear, fetch the manifest, or restore anything.
   expect(events.filter((event) => event !== "handoff")).toEqual([]);
@@ -336,7 +336,7 @@ test("a signed-out new user sees no notice, signs in under the new manifest with
   await settle();
   expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeTruthy();
   expect(events).not.toContain("handoff");
-  expect(localStorage.getItem(REVISION_KEY)).toBe("2");
+  expect(localStorage.getItem(REVISION_KEY)).toBe("3");
   await unmount();
   events.length = 0;
   seedSession();
@@ -366,7 +366,7 @@ test("after a forced re-sign the first replication sync runs after the new sign-
   expect(host!.textContent).not.toContain(NOTICE);
   // Sign-in, then the sync; the stale session was never restored.
   expect(events).toEqual(["loadManifest", "handoff", `clearPersisted:${ADDRESS}`, "loadManifest", "signIn", "sync"]);
-  expect(localStorage.getItem(REVISION_KEY)).toBe("2");
+  expect(localStorage.getItem(REVISION_KEY)).toBe("3");
 
   await unmount();
   events.length = 0;

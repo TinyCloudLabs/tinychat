@@ -44,6 +44,7 @@ import { CombinedSummary } from "./combine/CombinedSummary";
 import type { CombineDetail } from "./combine/combinedView";
 import { librarySourceLabel } from "./libraryKinds";
 import { TimestampedTranscript, type TranscriptGap } from "./TimestampedTranscript";
+import { TranscriptProvenanceNote } from "./TranscriptProvenanceNote";
 import { hasPrivateCloudTimingProvenance, hasSegmentTimes, transcriptMarkdown } from "./transcriptSegments";
 import type { TranscriptProvenance } from "@/lib/voiceNotes/voiceNoteCommits";
 import type { LibraryItem } from "./LibraryRow";
@@ -172,7 +173,7 @@ export function VoiceNoteTranscriptionStatus(props: {
   }
   if (job?.kind === "active") {
     const status = transcriptionStatusText(job.status);
-    const providerStatus = provider === "powerful" ? status.replaceAll("Private transcription", "Powerful (AssemblyAI)").replaceAll("private cloud", "Powerful")
+    const providerStatus = provider === "powerful" ? status.replaceAll("Private transcription", "Powerful").replaceAll("private cloud", "Powerful")
       : provider === "unknown" ? status.replaceAll("Private transcription", "transcription").replaceAll("private cloud", "the transcription service") : status;
     return (
       <p role="status" data-testid="voice-note-transcription-status" className="flex items-center gap-2 text-callout text-muted-foreground" title={job.status.kind === "processing" && job.status.completed !== null && job.status.total !== null && job.status.total > 0 ? "Recordings are transcribed in parts" : undefined}>
@@ -371,7 +372,6 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
   const gaps = Array.isArray(savedGaps) ? savedGaps.filter((gap): gap is TranscriptGap =>
     gap !== null && typeof gap === "object" && Number.isFinite(gap.start) && Number.isFinite(gap.end)
     && gap.start >= 0 && gap.end > gap.start && (gap.speaker_name === null || typeof gap.speaker_name === "string")) : [];
-  const hasProvenance = sentences.some((sentence) => sentence.source !== undefined);
   const timed = hasSegmentTimes(sentences, isPrivateCloud);
   const exportMarkdown = async () => {
     const markdown = transcriptMarkdown(item.title ?? "Voice note", item.startedAt, sentences, isPrivateCloud);
@@ -436,14 +436,15 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
             <p className="text-callout text-muted-foreground">On this device · Couldn’t check your space.</p>
             <Button type="button" variant="outline" onClick={props.onRetry}>Try again</Button>
           </div>}
-          {timed || gaps.length > 0 || hasProvenance ? <TimestampedTranscript gaps={gaps} sentences={sentences} hasAudio={props.audio !== null} isPrivateCloud={isPrivateCloud} /> : transcriptBlocks(sentences).map((block, index) => (
+          <TranscriptProvenanceNote sentences={sentences} />
+          {timed || gaps.length > 0 ? <TimestampedTranscript gaps={gaps} sentences={sentences} hasAudio={props.audio !== null} isPrivateCloud={isPrivateCloud} /> : transcriptBlocks(sentences).map((block, index) => (
             <div key={index}>
               {block.speaker && <p className="text-meta font-semibold text-muted-foreground">{block.speaker}</p>}
               <p className="whitespace-pre-wrap break-words text-body">{block.text}</p>
             </div>
           ))}
           {perNoteSpeakers && <p className="text-meta text-muted-foreground">
-            AssemblyAI’s speaker labels apply within this note only. The same label in another note may be a different person.
+            Speaker labels apply within this note only. The same label in another note may be a different person.
           </p>}
         </div>
       ) : spaceNoSpeech || local?.outcome === "no_speech" ? (

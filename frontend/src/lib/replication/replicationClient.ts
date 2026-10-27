@@ -29,6 +29,20 @@ import { recordReplicationEvent } from "./replicationStatus";
  */
 export const REPLICATION_MAX_BYTES = 100 * 1024 * 1024;
 
+/** Background sync interval: 5 minutes. */
+export const REPLICATION_SYNC_INTERVAL_MS = 300_000;
+
+/** A local read older than this syncs first: 15 minutes. */
+export const REPLICATION_MAX_STALENESS_MS = 900_000;
+
+/**
+ * The local copy syncs entry NAMES only; a value is not downloaded until something reads it
+ * (a read of a name-only key falls through to the network). The app reads every replicated
+ * prefix from the network today, so nothing fetches values in bulk. `replication.sync`'s
+ * `contentMissing` count is non-zero on a healthy lazy copy: it is not a fault.
+ */
+export const REPLICATION_CONTENT_FETCH = "lazy" as const;
+
 export type ReplicationClientConfig = NonNullable<TinyCloudWebConfig["replication"]>;
 
 /** Test seam: how the plugin and storage factory are obtained. Production uses dynamic imports. */
@@ -59,6 +73,9 @@ export const defaultReplicationLoader: ReplicationPluginLoader = {
   },
 };
 
+/** The SDK sync scope of the production replication config: ONE source of truth (tests import it). */
+export const REPLICATION_SYNC_SCOPE = "prefixes" as const;
+
 /** The `replication` option for sign-in/restore of `principal`, or undefined when replication is OFF for them. */
 export async function buildReplicationConfig(
   principal: string | undefined,
@@ -73,7 +90,11 @@ export async function buildReplicationConfig(
   return {
     enabled: true,
     prefixes: replicationPrefixes(),
+    syncScope: REPLICATION_SYNC_SCOPE,
     maxBytes: REPLICATION_MAX_BYTES,
+    syncIntervalMs: REPLICATION_SYNC_INTERVAL_MS,
+    maxStalenessMs: REPLICATION_MAX_STALENESS_MS,
+    contentFetch: REPLICATION_CONTENT_FETCH,
     storage: await loader.createStorage(),
     onEvent: recordReplicationEvent,
   };

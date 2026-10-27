@@ -82,7 +82,7 @@ const TranscriptRow = memo(function TranscriptRow({ sentence, index, speaker, st
             aria-label={`Play from ${formatClockDuration(Math.floor(start))}`} onClick={() => onSeek(start)}>{formatClockDuration(Math.floor(start))}</button>
         ) : <span title="Audio is not available for this note">{formatClockDuration(Math.floor(start))}</span>)}
       </div>
-      <p className="min-w-0 whitespace-pre-wrap break-words text-body">{sentence.text}{sentence.source && <span className="ml-2 text-meta text-muted-foreground">{sentence.source === "fallback" ? "Fallback transcript" : "Recovered from recording"}</span>}</p>
+      <p className="min-w-0 whitespace-pre-wrap break-words text-body">{sentence.text}</p>
     </div>
   </div>;
 });

@@ -93,7 +93,7 @@ import { ConnectorsPage } from "./chat/ConnectorsPage";
 import { FeedView } from "./feed/FeedView";
 import { AppsPage } from "./home/AppsPage";
 import { HomeEntryGate } from "./home/HomeEntryGate";
-import { readFirstScreen } from "./home/firstScreenStore";
+import { readCachedFirstScreen, readFirstScreen } from "./home/firstScreenStore";
 import { CaptureSurface } from "./capture/CaptureSurface";
 import { HeaderLiveChip } from "./capture/recorder/HeaderLiveChip";
 import { RecordButton } from "./capture/recorder/RecordButton";
@@ -101,6 +101,7 @@ import { RecorderProvider } from "./capture/recorder/RecorderProvider";
 import { MicDeniedRecovery } from "./capture/recorder/MicDeniedRecovery";
 import { RecorderShell } from "./capture/recorder/RecorderShell";
 import { UploadResumer } from "./capture/upload/UploadResumer";
+import { TinyCloudButtonSync } from "./chat/TinyCloudButtonSync";
 import { useOpenSavedNote } from "./capture/library/useOpenSavedNote";
 import { resetNavigationMemory } from "./shell/navigation";
 import {
@@ -109,7 +110,7 @@ import {
   redirectsWhenSignedOut,
   screenFor,
 } from "./shell/routes";
-import { PlatformContext } from "./lib/platform";
+import { PlatformContext, sdkUiPlatform } from "./lib/platform";
 import { useSizeClass } from "./lib/sizeClass";
 // W5 — the cohort meetings view. It renders NOTHING unless the backend's read
 // API answers for this address (dark flag / non-cohort = 404 = invisible), and
@@ -147,6 +148,7 @@ import type {
   SelectionView,
 } from "./chat/modelSelection";
 import { clearAgentSessionCache } from "./lib/agentDelegation";
+import { clearVaultSecretCache } from "./lib/connectors/connectorSecrets";
 import { isSignInCancelled } from "./lib/authErrors";
 import { signOutOpenKeySession } from "./lib/openkeySignOut";
 import { clearSessionAfterHandoff, registerSessionSignedOutHook } from "./lib/sessionSignedOut";
@@ -161,7 +163,7 @@ import { NativeRenewal, guardNativeTinyCloudCalls, NATIVE_SESSION_ENDED_MESSAGE,
 import { isAuthSettledSignedOut } from "./lib/authRouting";
 import { clearSendIntentsForOwner } from "./chat/TranscriberSection";
 import { browserIsOffline, restorePersistedSession } from "./lib/sessionRestore";
-import { applyManifestRevisionGate, browserRevisionStore, MANIFEST_RESIGN_NOTICE, recordManifestRevisionIfSigned } from "./lib/manifestRevision";
+import { applyManifestRevisionGate, browserRevisionStore, createResignPromptGuard, MANIFEST_RESIGN_NOTICE, recordManifestRevisionIfSigned } from "./lib/manifestRevision";
 import { clearTranscriptDelegationSchedule, ensureTranscriptWriterDelegation } from "./lib/transcriptDelegation";
 import { onAgentPaywallError, onAgentModelSelectionError } from "./lib/agentChatApi";
 import type { ThreadDoc, StoredMessageItem } from "./lib/threadStore";
@@ -195,6 +197,8 @@ export function App() {
   const signOutInFlightRef = useRef(false);
   const restoredRef = useRef(false);
   const restoreInFlightRef = useRef(false);
+  // One forced re-sign prompt per page session (App mounts once per page), even if the revision record never sticks.
+  const resignPromptGuardRef = useRef(createResignPromptGuard());
   const restoreRetryAfterRef = useRef(0);
   const restoreRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const nativeRenewalRef = useRef<NativeRenewal | null>(null);
@@ -290,6 +294,7 @@ export function App() {
     setNativeSessionActive(false);
     historyPrefetch.clear();
     clearAgentSessionCache();
+    clearVaultSecretCache();
     clearBackgroundDrainRecord();
     uploadRunner.reset();
     selectionControllerRef.current = null;
@@ -570,6 +575,7 @@ export function App() {
           sessionStoreRef.current.clear();
           endStorageAccountSession();
         },
+        promptGuard: resignPromptGuardRef.current,
       });
       if (revisionGate === "handoff_failed") { setState("recoverableError"); return; }
       if (revisionGate === "cleared") {
@@ -624,6 +630,7 @@ export function App() {
             autoCreateSpace: false,
             includeAccountRegistryPermissions: false,
             tinycloudHosts: TINYCLOUD_HOSTS,
+            uiPlatform: sdkUiPlatform(),
             manifest,
             // ON: the replication option plus a read-only account provider (so the restore has a signer
             // to ask); OFF: {} (no provider, exactly as without replication). See replicationRestore.ts.
@@ -979,8 +986,12 @@ export function App() {
         autoCreateSpace: !LOCAL_VALIDATION,
         includeAccountRegistryPermissions: false as const,
         tinycloudHosts: TINYCLOUD_HOSTS,
+        uiPlatform: sdkUiPlatform(),
         manifest: connectorSignInManifest(manifest, connectedAddress),
         openkey: { client: openkey },
+        // The dev WebView runs at localhost:5186, whose port the SDK signs into
+        // SIWE's domain. Production accepts the fixed Tauri hostname instead.
+        ...(import.meta.env.DEV && "__TAURI_INTERNALS__" in globalThis ? { domain: "localhost" } : {}),
         // Flag OFF: {} (config unchanged). ON: the SDK adds kv/sync beside kv/get for the
         // replica prefixes at this sign-in; see lib/replication/replicationClient.ts.
         ...(LOCAL_VALIDATION ? {} : await replicationConfigPatch(replicationPrincipalFor(connectedAddress))),
@@ -1138,7 +1149,8 @@ export function App() {
   // The recorder's Open: the Library, then the note just saved.
   const openSavedNote = useOpenSavedNote(tcw);
   const platform = useContext(PlatformContext);
-  const loadFirstScreen = useCallback(() => readFirstScreen(tcw!), [tcw]);
+  const loadFirstScreen = useCallback(() => readFirstScreen(tcw!, did), [tcw, did]);
+  const cachedFirstScreen = useCallback(() => readCachedFirstScreen(did), [did]);
   const { size } = useSizeClass();
   // Which screen the address shows (shell/routes.ts). The App stays mounted at
   // /chat/*: the shell toggles surfaces, so the chat runtime, drafts and
@@ -1296,7 +1308,7 @@ export function App() {
                 shown — a visibility toggle (not a <Routes> swap) preserves the
                 assistant runtime, the active thread, and composer state across
                 navigation. */}
-            <HomeEntryGate load={loadFirstScreen}>
+            <HomeEntryGate load={loadFirstScreen} cached={cachedFirstScreen}>
             <RecorderShell
               onOpenNote={openSavedNote}
               screen={screen}
@@ -1386,6 +1398,7 @@ export function App() {
             pendingMeetings={0}
             chat={<BootSurface state={state} error={error} onAction={authAction} approvalAction={approveWebSignIn ?? undefined} approvalReady={!!approveWebSignIn} />}
             capture={<DeviceCaptureSurface did={did} offline={state === "offline"} error={error}
+              resign={state === "unauthenticated" && error === MANIFEST_RESIGN_NOTICE}
               onSignIn={authAction} onRetry={() => void restoreSession()} screen={screen} />}
             connectors={null}
             settings={<DeviceCaptureSettings onBack={onBack} onSignIn={authAction} offline={state === "offline"} />}
@@ -1499,6 +1512,9 @@ export function App() {
           backendUrl={BACKEND_URL}
         />
       )}
+
+      {/* TC-2130: the SDK's floating button is hidden by default; this applies the Settings > TinyCloud choice. Renders nothing. */}
+      {state === "ready" && tcw && <TinyCloudButtonSync tcw={tcw} />}
 
       {billingNotice && (
         <div

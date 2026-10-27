@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 
-import { TRANSCRIBER_NAME } from "@/capture/recorder/final/finalCopy";
+import { POWERFUL_PROVIDER_NAME, TRANSCRIBER_NAME } from "@/capture/recorder/final/finalCopy";
 import { SoftActions } from "@/capture/home/SoftActions";
 import { StaticRecorderProvider } from "@/capture/recorder/RecorderProvider";
 import { AboutPage } from "./AboutPage";
@@ -133,8 +133,8 @@ describe("AudioUploadView", () => {
       expect(html).toContain(">This browser<");
     }
     // TinyCloud's account: the file passes through Exo's server, and the line says so.
-    expect(hosted).toContain("Sent through Exo&#x27;s server to AssemblyAI under TinyCloud&#x27;s account, then deleted there.");
-    expect(hosted).toContain("Powerful · TinyCloud&#x27;s account");
+    expect(hosted).toContain("Not private: Powerful sends your audio through Exo&#x27;s server to an outside transcription service. Exo deletes the service&#x27;s copy once the transcript is saved.");
+    expect(hosted).toContain("Powerful · not private");
     expect(hosted).not.toContain("your key");
     expect(priv).toContain("Transcribed by TinyCloud Private Transcription. A copy of the file stays in your space.");
     // No disclosure paragraphs inline.
@@ -159,11 +159,9 @@ describe("AudioUploadView", () => {
     expect(uploads).toContain('href="/chat/about#transcription"');
     for (const html of [uploads, transcription]) expect(html).not.toMatch(/verified|attested|end-to-end/i);
     // TinyCloud's AssemblyAI account: through Exo's server, under AssemblyAI's terms, deleted there after saving.
-    expect(transcription).toContain("your audio goes to Exo’s server (a confidential VM on Phala Cloud)");
     expect(transcription).toContain("under TinyCloud’s account and AssemblyAI’s terms");
-    expect(transcription).toContain("Exo deletes it at AssemblyAI after saving the transcript to your TinyCloud space");
     expect(transcription).not.toContain("your own API key");
-    expect(transcription).toContain("AssemblyAI is not part of TinyCloud’s private transcription");
+    expect(transcription).toContain(`${POWERFUL_PROVIDER_NAME} isn’t part of TinyCloud’s private transcription`);
     // Private cloud.
     expect(transcription).toContain("TinyCloud Private Transcription, a dedicated confidential virtual machine on Phala Cloud");
     expect(transcription).toContain("It sends short speech segments to Tinfoil for speech-to-text");

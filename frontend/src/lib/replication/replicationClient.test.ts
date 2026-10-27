@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import manifest from "../../../../manifest.json";
 import { composeManifestRequest } from "@tinycloud/sdk-core";
 import { augmentSignInEntriesWithReplication } from "@tinycloud/node-sdk/replication/authority";
-import { buildReplicationConfig, replicationConfigPatch, REPLICATION_MAX_BYTES, type ReplicationPluginLoader } from "./replicationClient";
+import { buildReplicationConfig, replicationConfigPatch, REPLICATION_MAX_BYTES, REPLICATION_SYNC_SCOPE, type ReplicationPluginLoader } from "./replicationClient";
 import { REPLICATION_RUNTIME_FLAG_KEY } from "./replicationFlag";
 import { replicationOptInKey } from "./replicationOptIn";
 import { trackStartupPurge } from "./replicationStartupPurge";
@@ -15,11 +15,12 @@ const CHROME = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like 
 const ALICE = "did:pkh:eip155:1:0xaaaa";
 const BOB = "did:pkh:eip155:1:0xbbbb";
 
-/** `flag`: the dev runtime flag (stands in for the build flag). `optIn`: principals whose own switch is ON. */
-function installBrowser(opts: { flag: boolean; tauri?: boolean; optIn?: string[] }): Map<string, string> {
+/** `flag`: the dev runtime flag (stands in for the build flag). `optIn`: principals with a stored "true". `optOut`: principals with an explicit opt-out ("false"). */
+function installBrowser(opts: { flag: boolean; tauri?: boolean; optIn?: string[]; optOut?: string[] }): Map<string, string> {
   const store = new Map<string, string>();
   if (opts.flag) store.set(REPLICATION_RUNTIME_FLAG_KEY, "true");
   for (const principal of opts.optIn ?? []) store.set(replicationOptInKey(principal), "true");
+  for (const principal of opts.optOut ?? []) store.set(replicationOptInKey(principal), "false");
   const define = (name: string, value: unknown) => Object.defineProperty(globalThis, name, { configurable: true, writable: true, value });
   define("window", {
     localStorage: {
@@ -51,11 +52,15 @@ describe("replicationClient", () => {
   // before each test (not at import time, when another suite may not have installed its globals yet) and
   // put it back right after.
   let saved = new Map<string, PropertyDescriptor | undefined>();
+  let savedBuildFlag: string | undefined;
   beforeEach(() => {
     saved = new Map(GLOBAL_NAMES.map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]));
+    savedBuildFlag = import.meta.env.VITE_EXO_REPLICATION;
+    import.meta.env.VITE_EXO_REPLICATION = "false"; // the build flag is ON unless "false"; the dev runtime flag stands in for it
     installBrowser({ flag: false });
   });
   afterEach(() => {
+    import.meta.env.VITE_EXO_REPLICATION = savedBuildFlag;
     for (const [name, descriptor] of saved) {
       if (descriptor) Object.defineProperty(globalThis, name, descriptor);
       else Reflect.deleteProperty(globalThis, name);
@@ -80,17 +85,17 @@ describe("replicationClient", () => {
   });
 
   describe("the user's switch is OFF: the build flag alone builds nothing", () => {
-    test("a new profile (no stored choice): no config key, no marker, nothing imported", async () => {
-      const store = installBrowser({ flag: true });
+    test("an explicit opt-out wins: no config key, no marker, nothing imported", async () => {
+      const store = installBrowser({ flag: true, optOut: [ALICE] });
       const loader = spyLoader();
       expect(await replicationConfigPatch(ALICE, loader)).toEqual({});
       expect(await replicationConfigPatch(undefined, loader)).toEqual({});
       expect(loader.calls).toEqual([]);
-      expect([...store.keys()]).toEqual([REPLICATION_RUNTIME_FLAG_KEY]);
+      expect([...store.keys()]).toEqual([REPLICATION_RUNTIME_FLAG_KEY, replicationOptInKey(ALICE)]);
     });
 
-    test("two accounts in one browser: only the one that opted in gets a replica", async () => {
-      installBrowser({ flag: true, optIn: [ALICE] });
+    test("two accounts in one browser: only the one that did not opt out gets a replica", async () => {
+      installBrowser({ flag: true, optOut: [BOB] });
       const loader = spyLoader();
       expect(await replicationConfigPatch(BOB, loader)).toEqual({});
       expect(loader.calls).toEqual([]);
@@ -110,6 +115,28 @@ describe("replicationClient", () => {
       expect(config?.maxBytes).toBe(REPLICATION_MAX_BYTES);
       expect(REPLICATION_MAX_BYTES).toBe(100 * 1024 * 1024);
       expect(config?.storage).toBe(loader.storage as never);
+    });
+
+    test("production's replication config carries the sync scope constant (prefixes)", async () => {
+      installBrowser({ flag: true, optIn: [ALICE] });
+      const config = await buildReplicationConfig(ALICE, spyLoader());
+      expect(config?.syncScope).toBe(REPLICATION_SYNC_SCOPE);
+      expect(REPLICATION_SYNC_SCOPE).toBe("prefixes");
+    });
+
+    test("syncs in the background every 5 minutes and serves a local read up to 15 minutes old, with the same prefixes and budget", async () => {
+      installBrowser({ flag: true, optIn: [ALICE] });
+      const config = await buildReplicationConfig(ALICE, spyLoader());
+      expect(config?.syncIntervalMs).toBe(300_000);
+      expect(config?.maxStalenessMs).toBe(900_000);
+      expect(config?.prefixes).toEqual(replicationPrefixes());
+      expect(config?.maxBytes).toBe(100 * 1024 * 1024);
+    });
+
+    test("the local copy syncs names only: content is fetched on demand, not in bulk", async () => {
+      installBrowser({ flag: true, optIn: [ALICE] });
+      const config = await buildReplicationConfig(ALICE, spyLoader());
+      expect(config?.contentFetch).toBe("lazy");
     });
 
     test("waits for a page-load purge that is still deleting the copy before it builds anything", async () => {
@@ -158,7 +185,7 @@ describe("replicationClient", () => {
 
     test("one {kv/get, kv/sync} entry per prefix, nothing else", () => {
       const extra = augmentSignInEntriesWithReplication({
-        entries, primarySpaceId: SPACE, replication: { enabled: true, prefixes: replicationPrefixes() },
+        entries, primarySpaceId: SPACE, replication: { enabled: true, prefixes: replicationPrefixes(), syncScope: REPLICATION_SYNC_SCOPE },
       });
       expect(extra.map((e) => e.path)).toEqual(replicationPrefixes());
       for (const entry of extra) expect([...entry.actions]).toEqual(["tinycloud.kv/get", "tinycloud.kv/sync"]);

@@ -3,7 +3,7 @@
   "app_id": "xyz.tinycloud.tinychat",
   "keys_app_id": "chat.tinycloud.tinychat",
   "keys": [{ "prefix": "apps/chat.tinycloud.tinychat/", "abilities": ["key.create", "decrypt"] }],
-  "name": "TinyCloud Chat",
+  "name": "TinyCloud Home",
   "description": "TinyCloud Chat — a private AI chatbot. Conversations are stored in your TinyCloud space.",
   "defaults": false,
   "permissions": [
@@ -38,6 +38,11 @@
       "description": "Store transcript content synced from connected sources in your space."
     },
     {
+      "service": "tinycloud.kv",
+      "path": "migrations/",
+      "actions": ["get", "put"]
+    },
+    {
       "service": "tinycloud.sql",
       "path": "details",
       "actions": ["read", "write", "schema"]
@@ -54,8 +59,10 @@
     },
     {
       "service": "tinycloud.kv",
-      "path": "migrations/",
-      "actions": ["get", "put"]
+      "space": "applications",
+      "path": "",
+      "actions": ["get", "put", "del", "list", "metadata"],
+      "skipPrefix": true
     },
     {
       "service": "tinycloud.space",
@@ -72,6 +79,20 @@
       "service": "tinycloud.kv",
       "path": "exo/v1/jobs/",
       "actions": ["get", "put", "del"]
+    },
+    {
+      "service": "tinycloud.sql",
+      "space": "applications",
+      "path": "xyz.tinycloud.sample.healthlog/healthlog",
+      "actions": ["read", "write", "schema"],
+      "skipPrefix": true
+    },
+    {
+      "service": "tinycloud.sql",
+      "space": "applications",
+      "path": "xyz.tinycloud.sample.recipes/recipes",
+      "actions": ["read", "write", "schema"],
+      "skipPrefix": true
     }
   ],
   "secrets": {

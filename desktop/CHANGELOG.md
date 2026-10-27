@@ -1,5 +1,91 @@
 # exo-desktop
 
+## 0.10.0-beta.56
+
+No changes in this release.
+
+## 0.10.0-beta.55
+
+No changes in this release.
+
+## 0.10.0-beta.54
+
+No changes in this release.
+
+## 0.10.0-beta.53
+
+No changes in this release.
+
+## 0.10.0-beta.52
+
+No changes in this release.
+
+## 0.10.0-beta.51
+
+No changes in this release.
+
+## 0.10.0-beta.50
+
+No changes in this release.
+
+## 0.10.0-beta.49
+
+### Patch Changes
+
+- 253d9d6: Hide Apps and Feed behind a device-local experimental setting, with Chat as the default web entry until enabled.
+
+## 0.10.0-beta.48
+
+No changes in this release.
+
+## 0.10.0-beta.47
+
+No changes in this release.
+
+## 0.10.0-beta.46
+
+No changes in this release.
+
+## 0.10.0-beta.45
+
+No changes in this release.
+
+## 0.10.0-beta.44
+
+No changes in this release.
+
+## 0.10.0-beta.43
+
+No changes in this release.
+
+## 0.10.0-beta.42
+
+No changes in this release.
+
+## 0.10.0-beta.41
+
+No changes in this release.
+
+## 0.10.0-beta.40
+
+No changes in this release.
+
+## 0.10.0-beta.39
+
+No changes in this release.
+
+## 0.10.0-beta.38
+
+### Patch Changes
+
+- 84819aa: Home signs in with the permissions in its manifest, including the requested secret decrypt grant.
+
+  Details: TC-2038
+
+## 0.10.0-beta.37
+
+No changes in this release.
+
 ## 0.10.0-beta.36
 
 No changes in this release.

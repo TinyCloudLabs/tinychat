@@ -25,11 +25,15 @@ function install(storage: Record<string, string>): void {
 
 const render = (did: string) => renderToStaticMarkup(<ReplicationSettings tcw={{ did } as unknown as TinyCloudWeb} />);
 
+let savedBuildFlag: string | undefined;
 beforeEach(() => {
   saved = new Map(GLOBAL_NAMES.map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]));
+  savedBuildFlag = import.meta.env.VITE_EXO_REPLICATION;
+  import.meta.env.VITE_EXO_REPLICATION = "false"; // the build flag is ON unless "false"; the dev runtime flag stands in for it
   resetReplicationStatus();
 });
 afterEach(() => {
+  import.meta.env.VITE_EXO_REPLICATION = savedBuildFlag;
   for (const [name, descriptor] of saved) {
     if (descriptor) Object.defineProperty(globalThis, name, descriptor);
     else Reflect.deleteProperty(globalThis, name);
@@ -51,8 +55,8 @@ describe("ReplicationSettings", () => {
     expect(html).toContain("Local copy: off");
   });
 
-  test("build flag ON, new profile: the switch is offered, unchecked, with its help, and there is nothing to wipe", () => {
-    install({ [REPLICATION_RUNTIME_FLAG_KEY]: "true" });
+  test("build flag ON, an explicit opt-out: the switch is offered, unchecked, with its help, and there is nothing to wipe", () => {
+    install({ [REPLICATION_RUNTIME_FLAG_KEY]: "true", [replicationOptInKey(ALICE)]: "false" });
     const html = render(ALICE);
     expect(html).toContain(REPLICATION_COPY.switchLabel);
     expect(html).toContain(REPLICATION_COPY.switchHelp);
@@ -63,7 +67,7 @@ describe("ReplicationSettings", () => {
   });
 
   test("the switch shows each account's own choice", () => {
-    install({ [REPLICATION_RUNTIME_FLAG_KEY]: "true", [replicationOptInKey(ALICE)]: "true" });
+    install({ [REPLICATION_RUNTIME_FLAG_KEY]: "true", [replicationOptInKey(ALICE)]: "true", [replicationOptInKey(BOB)]: "false" });
     expect(render(ALICE)).toMatch(/<input type="checkbox"[^>]*checked=""/);
     expect(render(ALICE)).toContain("Local copy: on · starts at your next sign-in");
     expect(render(BOB)).not.toMatch(/<input type="checkbox"[^>]*checked=""/);

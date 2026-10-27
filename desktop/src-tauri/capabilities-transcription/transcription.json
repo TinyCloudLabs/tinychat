@@ -23,6 +23,7 @@
     "allow-delete-audio-file",
     "allow-recorder-start",
     "allow-recorder-pause",
+    "allow-recorder-set-max-duration",
     "allow-recorder-resume",
     "allow-recorder-stop",
     "allow-recorder-stop-durable",

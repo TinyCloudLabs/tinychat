@@ -3,7 +3,7 @@
 //     Capture  /chat/capture → Library /chat/capture/library → a note /chat/capture/library/:id
 //     Chat     /chat
 //     Connectors /chat/connectors
-//     Feed     /chat/feed (TinyCloud Home's default entry from `/`)
+//     Feed     /chat/feed (experimental Home entry from `/`)
 //     Apps     /chat/apps
 //     Settings /chat/settings (global, behind the gear)
 //     How it works /chat/about (global, from Settings and the screens' hints)

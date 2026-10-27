@@ -1,5 +1,147 @@
 # @tinychat/frontend
 
+## 0.10.0-beta.56
+
+### Patch Changes
+
+- a6db78c: Keep keyboard focus inside the Powerful consent dialog and let Escape close only the dialog.
+
+## 0.10.0-beta.55
+
+### Patch Changes
+
+- ae0fbc6: Hide the TinyCloud button by default; add a Settings toggle and an Open row.
+
+  Update TinyCloud SDK to 3.8.0-beta.12 (panel delegation button, iPhone safe areas).
+
+## 0.10.0-beta.54
+
+### Patch Changes
+
+- e85c6fa: Ask before sending an uploaded file to Powerful transcription. Powerful now says "Not private: Powerful sends your audio through Exo's server to an outside transcription service. Exo deletes the service's copy once the transcript is saved." in the recorder, the upload sheet and Settings.
+
+## 0.10.0-beta.53
+
+### Patch Changes
+
+- 8b3b819: Hosted transcription refusals are now classified (rejected key, insufficient balance, rate limit) and reported to operators: one alert when AssemblyAI starts refusing, one when it recovers, one after three failed jobs in a row, a heartbeat every minute, and a read-only status for the monitoring probe. Nothing changes for users yet.
+
+## 0.10.0-beta.52
+
+### Patch Changes
+
+- 0f22d69: Update the TinyCloud SDK packages to 3.8.0-beta.9 (replica 0.4.0-beta.3). The local copy now syncs entry names only and fetches a value when something reads it (`replication.contentFetch: "lazy"`), so signing in no longer downloads every transcript body. The sign-in key patch is regenerated for the new SDK version.
+
+## 0.10.0-beta.51
+
+### Patch Changes
+
+- 11585e8: A transcript no longer tags every line that was recovered from the recording or came from a backup transcriber. When part of a transcript came from a backup transcriber, one short note above the text says so; lines recovered from the recording are not called out.
+
+## 0.10.0-beta.50
+
+### Patch Changes
+
+- a8ccf05: Exo desktop development builds sign in again: the sign-in message is signed for `localhost` (the host the server accepts) instead of `localhost:5186`, and sign-in errors from the server are logged as short codes only. Published builds are unchanged.
+
+## 0.10.0-beta.49
+
+### Patch Changes
+
+- 253d9d6: Hide Apps and Feed behind a device-local experimental setting, with Chat as the default web entry until enabled.
+- 0e9f195: The "Keep recording?" prompt now offers "Stop now" and "Keep going". "Stop now" stops and saves the recording immediately; "Keep going" still adds an hour. Closing the prompt with Escape, or ignoring it, leaves the recording to stop at its limit.
+
+## 0.10.0-beta.48
+
+### Patch Changes
+
+- f3fd701: Sign in once more after a grants change now shows its notice on the desktop recorder screen, with Sign in and the recorder still available, instead of a generic sign-in failure. A browser whose storage cannot save the sign-in record is now asked to sign in again once per page session, not on every restore.
+
+## 0.10.0-beta.47
+
+### Patch Changes
+
+- cffdd3b: Home opens on the saved First screen choice straight away on a device that has already loaded it, even when the account setting is slow to load, and Settings no longer sits on "Loading your setting…" indefinitely: after eight seconds it shows Feed with the load-error note and lets you choose.
+
+  Details: TC-2079
+
+## 0.10.0-beta.46
+
+### Patch Changes
+
+- f0f2d61: Stopping a recording automatically is now a setting, "Stop recordings automatically" (per device). It is off by default at the phone layout, where a recording runs until you stop it (with a silent eight-hour safety cap) and shows no countdown or warning, and on by default on desktop, where Exo asks "Keep recording?" five minutes before the limit and "Keep going" adds an hour. Recordings too long for private transcription are saved with their audio kept, and the note now says so.
+
+## 0.10.0-beta.45
+
+### Patch Changes
+
+- 44a1e4e: The one-time automatic re-submit of provider-failed voice notes now runs strictly one note at a time, and a note whose attempt is refused because the account already has an active transcription is not counted as used: it is tried again on the next load.
+
+  Details: TC-2085
+
+## 0.10.0-beta.44
+
+### Patch Changes
+
+- a9a2e94: A voice note that Private transcription is holding shows "Transcription is delayed, it will finish automatically." instead of an error, and keeps checking until it finishes. A note whose Private transcription stopped on a speech-to-text provider failure is re-submitted once, automatically, the next time the app loads and the recording is still on the device; if it fails again it waits for Retry.
+
+  Details: TC-2085
+
+## 0.10.0-beta.43
+
+### Patch Changes
+
+- f58cf76: An open tab that is idle or hidden makes far fewer background reads of the library: the transcriber library sync no longer runs on its timer while the tab is hidden, and a tab with nothing to retry checks every two minutes instead of every 30 seconds. A recording that failed to save still retries every 30 seconds, and coming back to the tab still starts a check at once.
+
+## 0.10.0-beta.42
+
+### Patch Changes
+
+- 61db7ec: Connector keys read from the vault are cached in memory for the signed-in session, so repeat reads no longer make a network round trip. The cache is cleared on sign-out, account change and vault lock.
+
+  Details: TC-2080
+
+## 0.10.0-beta.41
+
+### Patch Changes
+
+- e228022: Local copy syncs every five minutes and serves a local read without syncing when the copy is under fifteen minutes old.
+
+  Details: TC-2054
+
+## 0.10.0-beta.40
+
+### Patch Changes
+
+- 9fa8a54: The minimized recorder is a smaller bar: timer, pause and stop, with no waveform or status line. It shows "Stops in" with a thin progress line toward the recording limit, and hovering it shows the exact time the recording stops.
+
+## 0.10.0-beta.39
+
+### Patch Changes
+
+- 7e62bc9: Native sign-in requests only the entries OpenKey's native client currently allows, so a new desktop or phone sign-in is no longer refused. Details: TC-2057
+
+## 0.10.0-beta.38
+
+### Patch Changes
+
+- 84819aa: Home signs in with the permissions in its manifest, including the requested secret decrypt grant.
+
+  Details: TC-2038
+
+## 0.10.0-beta.37
+
+### Minor Changes
+
+- 9affbdb: The local copy of transcripts on this device is now on by default in supported browsers. Turning it off in Settings is remembered per account and removes the local copy. Details: TC-2055
+- bca5df5: TinyCloud Home sign-in manifest: adds the applications-space key-value grant and the two catalog databases (Health Log and Recipes), removes the unused migration record folder, renames the app to TinyCloud Home, and asks for one new sign-in per device. Details: TC-2043
+
+### Patch Changes
+
+- 4bbe96a: Update the TinyCloud SDK packages to 3.8.0-beta.1 (replica 0.3.5-beta.0) and request sign-in sync only on the declared replication prefixes (`replication.syncScope: "prefixes"`).
+
+  Details: TC-2043
+
 ## 0.10.0-beta.36
 
 ### Minor Changes

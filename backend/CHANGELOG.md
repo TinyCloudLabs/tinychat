@@ -1,5 +1,56 @@
 # @tinychat/backend
 
+## 0.5.7-beta.21
+
+### Patch Changes
+
+- ae0fbc6: Hide the TinyCloud button by default; add a Settings toggle and an Open row.
+
+  Update TinyCloud SDK to 3.8.0-beta.12 (panel delegation button, iPhone safe areas).
+
+## 0.5.7-beta.20
+
+### Patch Changes
+
+- 3ac6081: The production backend CVM now runs a private log shipper sidecar. It sends startup lines (including `[startup] FATAL` and crash lines), hosted-AssemblyAI events and alerts to a private Better Stack source as typed fields only. It is inert until its source token is set, never gates the backend, and changes nothing for users.
+
+## 0.5.7-beta.19
+
+### Patch Changes
+
+- 8b3b819: Hosted transcription refusals are now classified (rejected key, insufficient balance, rate limit) and reported to operators: one alert when AssemblyAI starts refusing, one when it recovers, one after three failed jobs in a row, a heartbeat every minute, and a read-only status for the monitoring probe. Nothing changes for users yet.
+- d826e26: Turn on TinyCloud-hosted AssemblyAI transcription for the Powerful choice.
+
+## 0.5.7-beta.18
+
+### Patch Changes
+
+- 0f22d69: Update the TinyCloud SDK packages to 3.8.0-beta.9 (replica 0.4.0-beta.3). The local copy now syncs entry names only and fetches a value when something reads it (`replication.contentFetch: "lazy"`), so signing in no longer downloads every transcript body. The sign-in key patch is regenerated for the new SDK version.
+
+## 0.5.7-beta.17
+
+### Patch Changes
+
+- a9a2e94: A voice note that Private transcription is holding shows "Transcription is delayed, it will finish automatically." instead of an error, and keeps checking until it finishes. A note whose Private transcription stopped on a speech-to-text provider failure is re-submitted once, automatically, the next time the app loads and the recording is still on the device; if it fails again it waits for Retry.
+
+  Details: TC-2085
+
+## 0.5.7-beta.16
+
+### Patch Changes
+
+- 84819aa: Home signs in with the permissions in its manifest, including the requested secret decrypt grant.
+
+  Details: TC-2038
+
+## 0.5.7-beta.15
+
+### Patch Changes
+
+- 4bbe96a: Update the TinyCloud SDK packages to 3.8.0-beta.1 (replica 0.3.5-beta.0) and request sign-in sync only on the declared replication prefixes (`replication.syncScope: "prefixes"`).
+
+  Details: TC-2043
+
 ## 0.5.7-beta.14
 
 ### Patch Changes

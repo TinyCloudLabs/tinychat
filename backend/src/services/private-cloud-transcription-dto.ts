@@ -209,6 +209,17 @@ function lastChanged(o: JsonObject): string {
   return latest;
 }
 
+/**
+ * `provider_delayed`: PTX is holding the job until its speech-to-text provider can take it. Relayed
+ * only while the job is still open and only when it is exactly `true`; an absent or malformed field
+ * (a PTX that predates it) means "not delayed" and leaves the response unchanged.
+ */
+function providerDelayed(o: JsonObject, status: TranscriptionStatus): { provider_delayed: true } | Record<string, never> {
+  return o.provider_delayed === true && status !== "completed" && status !== "failed" && status !== "cancelled"
+    ? { provider_delayed: true }
+    : {};
+}
+
 function job(value: unknown, expectedId?: string) {
   const o = obj(value);
   const id = str(o.id, TRANSCRIPTION_ID_RE);
@@ -227,6 +238,7 @@ function job(value: unknown, expectedId?: string) {
     error: statusError(status, o.error),
     created_at: iso(o.created_at),
     updated_at: lastChanged(o),
+    ...providerDelayed(o, status),
   };
 }
 

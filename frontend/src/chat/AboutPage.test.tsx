@@ -9,6 +9,7 @@ import { MemoryRouter } from "react-router-dom";
 import { HowItWorksLink } from "@/components/ui/how-it-works-link";
 import { ABOUT_PATH, ABOUT_SECTIONS, aboutHref } from "@/lib/about";
 import { VOICE_NOTE_MAX_DURATION_MS } from "@/lib/voiceNotes/nativeVoiceNotes";
+import { POWERFUL_PROVIDER_NAME } from "@/capture/recorder/final/finalCopy";
 import { ABOUT_BODY, AboutPage, sectionFromHash } from "./AboutPage";
 
 const render = (path: string) =>
@@ -119,8 +120,7 @@ describe("How it works: the canonical claims", () => {
     expect(where).toContain("It receives an anonymous account identifier, not your wallet address.");
     expect(where).toContain("It never receives your audio.");
     expect(where).toContain("Private cloud transcribes voice notes, uploads and desktop recordings.");
-    expect(where).toContain("Exo deletes it at AssemblyAI after saving the transcript to your TinyCloud space.");
-    expect(where).toContain("AssemblyAI is not part of TinyCloud’s private transcription.");
+    expect(where).toContain(`${POWERFUL_PROVIDER_NAME} isn’t part of TinyCloud’s private transcription.`);
     expect(where).toContain("A local recording stays on this Mac.");
   });
 

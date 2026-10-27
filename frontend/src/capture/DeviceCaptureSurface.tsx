@@ -30,6 +30,7 @@ import { SoftHomeProvider } from "./home/softHome";
 import { SystemAudioStart } from "./home/desktop/SystemAudioStart";
 import { ActivityPanel } from "./activity/ActivityPanel";
 import { openManageStorage } from "@/lib/openManageStorage";
+import { MANIFEST_RESIGN_NOTICE } from "@/lib/manifestRevision";
 
 /** A missing pending-store entry does not prove that a known account is signed out. */
 export function devicePendingForNote(pending: PipelinePending | undefined, ownerUnknown: boolean, did: string | null, offline: boolean, error: string | null): PipelinePending {
@@ -41,8 +42,10 @@ export function devicePendingForNote(pending: PipelinePending | undefined, owner
 }
 
 /** The regular Capture and Library visual language, backed by the phone while no space is available. */
-export function DeviceCaptureSurface({ did, offline, error, onSignIn, onRetry, screen }: {
+export function DeviceCaptureSurface({ did, offline, error, resign = false, onSignIn, onRetry, screen }: {
   did: string | null; offline: boolean; error: string | null;
+  /** Signed out because the sign-in grants changed (the forced re-sign), not because sign-in failed: shows the re-sign notice instead of an error. */
+  resign?: boolean;
   onSignIn: () => void; onRetry: () => void; screen: Screen;
 }) {
   const recorder = useRecorder();
@@ -105,7 +108,8 @@ export function DeviceCaptureSurface({ did, offline, error, onSignIn, onRetry, s
   const activity = <ActivityPanel items={activityItems} views={activityViews} platform={platform} onOpenNote={(id) => navigate(PATHS.library + "/" + id)} />;
   const notice = <div className="rounded-xl border border-border bg-surface-2 px-4 py-3 text-callout">
     <p>{offline ? `You're offline. Recordings stay on ${deviceName(platform)} until Exo reconnects.` : did === null ? `Recordings stay on ${deviceName(platform)} until you sign in.` : `Recordings stay on ${deviceName(platform)} while Exo checks your TinyCloud connection.`}</p>
-    {error && !offline && <p role="alert" className="mt-1 text-destructive">{did === null ? "Couldn't sign in. Try again." : "Couldn't check your TinyCloud connection. Try again."}</p>}
+    {resign && !offline && did === null && <p role="status" className="mt-1">{MANIFEST_RESIGN_NOTICE}</p>}
+    {error && !offline && !(resign && did === null) && <p role="alert" className="mt-1 text-destructive">{did === null ? "Couldn't sign in. Try again." : "Couldn't check your TinyCloud connection. Try again."}</p>}
     <div className="mt-2 flex flex-wrap gap-2">
       {(offline || did !== null) && <Button size="sm" variant="outline" onClick={onRetry}>Try again</Button>}
       {!offline && did === null && <Button size="sm" onClick={onSignIn}>Sign in</Button>}
