@@ -101,28 +101,13 @@ const VIEWPORT_BOX: Box = {
 for (const theme of THEMES) {
   describe.serial(`320x640, ${theme.name}, ${engineName}`, () => {
     for (const state of ["recording", "paused"] as const) {
-      test(`the Ribbon (${state}): the trace stays inside its area and clear of the Pause button`, async () => {
+      test(`the Ribbon (${state}) has no level bars`, async () => {
         const page = await open(
           `recorder-final-minimized-${state}`,
           theme.param,
           "[data-testid=ribbon]",
         );
-        const [area] = await boxes(page, ".ribbon-bars");
-        const [timer] = await boxes(page, "[data-testid=ribbon-timer]");
-        const [pause] = await boxes(page, "[data-testid=ribbon-pause]");
-        const [stop] = await boxes(page, "[data-testid=ribbon-stop]");
-        const bars = await boxes(page, "[data-spectrum-bars] > span");
-        expect(bars.length).toBe(30);
-        for (const bar of bars) {
-          expect(within(bar, area)).toBe(true);
-          expect(apart(bar, pause)).toBe(true);
-          expect(apart(bar, stop)).toBe(true);
-          expect(apart(bar, timer)).toBe(true);
-        }
-        // The button's whole 44 px box and the trace's area do not meet either.
-        expect(apart(area, pause)).toBe(true);
-        // Every bar is still drawn: at least 1 px wide.
-        for (const bar of bars) expect(bar.right - bar.left).toBeGreaterThan(1);
+        expect(await boxes(page, ".ribbon-bars, [data-spectrum-bars]")).toHaveLength(0);
         await page.context().close();
       });
     }
