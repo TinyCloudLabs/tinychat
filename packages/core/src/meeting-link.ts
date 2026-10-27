@@ -46,8 +46,10 @@ function readLink(raw: string, unwrap: boolean): string | null {
       : host.endsWith(".safelinks.protection.outlook.com") ? url.searchParams.get("url") : null;
     if (inner) return readLink(inner, false);
   }
-  // google.com/meet/<code> redirects to meet.google.com/<code>, the only form upstream recognises.
-  const meet = (host === "google.com" || host === "www.google.com") ? GOOGLE_MEET_PATH.exec(url.pathname) : null;
+  // Google Meet's /meet/<code> variants normalize to the direct URL the provider accepts.
+  const meet = (host === "google.com" || host === "www.google.com" || host === "meet.google.com")
+    ? GOOGLE_MEET_PATH.exec(url.pathname)
+    : null;
   if (meet) return `https://meet.google.com/${meet[1]!.toLowerCase()}${url.search}${url.hash}`;
   return text;
 }
