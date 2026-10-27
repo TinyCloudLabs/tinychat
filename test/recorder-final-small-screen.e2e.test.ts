@@ -101,13 +101,31 @@ const VIEWPORT_BOX: Box = {
 for (const theme of THEMES) {
   describe.serial(`320x640, ${theme.name}, ${engineName}`, () => {
     for (const state of ["recording", "paused"] as const) {
-      test(`the Ribbon (${state}) has no level bars`, async () => {
+      test(`the Ribbon (${state}) has no level bars; its timer, Pause and Stop sit inside it, apart, with 44 px buttons`, async () => {
         const page = await open(
           `recorder-final-minimized-${state}`,
           theme.param,
           "[data-testid=ribbon]",
         );
+        // The slim bar draws no level bars (#521); the old bar checks are replaced by this one assertion.
         expect(await boxes(page, ".ribbon-bars, [data-spectrum-bars]")).toHaveLength(0);
+        const [ribbon] = await boxes(page, ".ribbon");
+        const [timer] = await boxes(page, "[data-testid=ribbon-timer]");
+        const [pause] = await boxes(page, "[data-testid=ribbon-pause]");
+        const [stop] = await boxes(page, "[data-testid=ribbon-stop]");
+        const [remaining] = await boxes(page, "[data-testid=ribbon-remaining]");
+        // Where the old checks held the trace clear of the timer, Pause and Stop, the same parts of the slim bar stay
+        // inside it and clear of one another ("Stops in" is shown only while a limit is set).
+        const parts = remaining ? [timer, remaining, pause, stop] : [timer, pause, stop];
+        // The 44 px buttons sit 1 px proud of the 44 px bar's top edge by design (#521); horizontally and for the timer they are inside.
+        const slack = { left: ribbon.left, right: ribbon.right, top: ribbon.top - 1, bottom: ribbon.bottom + 1 };
+        for (const part of parts) expect(within(part, slack)).toBe(true);
+        for (const [i, a] of parts.entries()) for (const b of parts.slice(i + 1)) expect(apart(a, b)).toBe(true);
+        // The buttons' whole boxes are touch-sized.
+        for (const button of [pause, stop]) {
+          expect(button.right - button.left).toBeGreaterThanOrEqual(43.5);
+          expect(button.bottom - button.top).toBeGreaterThanOrEqual(43.5);
+        }
         await page.context().close();
       });
     }
