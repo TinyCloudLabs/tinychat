@@ -86,8 +86,8 @@ describe("NoteDetailView", () => {
   test("another device names the holding device and offers no broken player or Transcribe button", () => {
     const html = render({ audio: null, transcript: { status: "absent" }, transcription: transcription(),
       metadata: { status: "ok", metadata: { capture: { platform: "ios" }, audio: { stored: false, reason: "local_only", device: { platform: "ios" } } } } });
-    expect(html).toContain("Audio is on your iPhone");
-    expect(html).toContain("Transcribe on your iPhone");
+    expect(html).not.toContain("Audio is on your");
+    expect(html).not.toContain("Transcribe on your");
     expect(html).not.toContain('data-testid="transcribe-button"');
     expect(html).not.toContain("meeting-audio-player");
   });
@@ -565,7 +565,7 @@ describe("a voice note with an after-stop Whisper job on the Mac", () => {
     expect(withJob({ state: "queued" })).toContain("Waiting to transcribe on this Mac");
     // The counter sees the enabled path, so its silence outside the desktop app means something.
     expect(__desktopWhisperQueueReadsForTests()).toBeGreaterThan(before);
-    expect(withJob({ state: "transcribing", progress: 33 })).toContain("Transcribing on this Mac · 33%");
+    expect(withJob({ state: "transcribing", progress: 33 })).toContain("0 of 1 min");
     const failed = withJob({ state: "failed", error: "raw detail" });
     expect(failed).toContain('data-testid="whisper-job-retry"');
     expect(failed).not.toContain("raw detail");
