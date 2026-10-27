@@ -716,3 +716,23 @@ test("legacy meeting transcript has no gap or provenance additions", () => {
   expect(html).not.toContain(TRANSCRIPT_FALLBACK_NOTE);
   expect(html).not.toContain('data-testid="transcript-provenance-note"');
 });
+
+test("a failed Mac Whisper job shows its Retry in the Transcript slot, from the real pipeline job", () => {
+  const pipeline = pipelineOf({
+    route: "on-device",
+    space: { saved: true, pending: null, lane: { busy: false, depth: 0 } },
+    transcript: { inSpace: null, cloud: null, onDevice: { stt: { state: "failed", error: "decoder" }, queue: null, model: null, download: "idle", sync: null } },
+  });
+  const view = { pipeline, route: "on-device" as const, onAction: noop, actionError: null };
+  const html = renderToStaticMarkup(
+    <NotePipelineContext.Provider value={view}>
+      <MemoryRouter><NoteDetailView item={VOICE} listStatus="ready"
+        metadata={{ status: "ok", metadata: { audio: { stored: true }, capture: { platform: "tauri" } } }}
+        transcript={{ status: "absent" }} audio={audio} activityView={view} platform="tauri"
+        copyState="idle" onCopy={noop} onRetry={noop} pushed onBack={noop} /></MemoryRouter>
+    </NotePipelineContext.Provider>,
+  );
+  expect(html).toContain('data-testid="transcription-status"');
+  expect(html).toContain("Couldn&#x27;t transcribe on ");
+  expect(html).toMatch(/data-testid="transcription-status-action"[^>]*>Try again</);
+});
