@@ -514,3 +514,20 @@ export async function verifyVoiceNoteTranscript(tcw: TinyCloudWeb, sourceId: str
   checkpoint();
   return committed;
 }
+
+/**
+ * A note's speaker names (TC-2189): `metadata.speaker_names`, original label -> name shown, on any connector_meeting
+ * row (voice note, upload, meeting, combined). Only that key changes, so the transcript, audio and provenance keys
+ * beside it stay as they are; the whole map is written, and an empty map removes the key.
+ */
+export async function patchRowSpeakerNames(tcw: TinyCloudWeb, rowId: string, names: Readonly<Record<string, string>>,
+  checkpoint: () => void = () => undefined): Promise<void> {
+  const base = "CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END";
+  const empty = Object.keys(names).length === 0;
+  const changes = empty
+    ? await execute(tcw, `UPDATE connector_meeting SET metadata = json_remove(${base}, '$.speaker_names'), updated_at = ? WHERE id = ?`,
+      [new Date().toISOString(), rowId], checkpoint)
+    : await execute(tcw, `UPDATE connector_meeting SET metadata = json_set(${base}, '$.speaker_names', json(?)), updated_at = ? WHERE id = ?`,
+      [JSON.stringify(names), new Date().toISOString(), rowId], checkpoint);
+  if (changes === 0) throw new Error("The note's row is missing");
+}

@@ -2,6 +2,7 @@ import { memo, useCallback, useContext, useEffect, useMemo, useRef, useState, us
 import type { FirefliesSentence } from "@/lib/connectors/firefliesClient";
 import { NotePlaybackContext } from "@/lib/audio/notePlayback";
 import { formatClockDuration } from "./formatters";
+import { SpeakerLabel } from "./SpeakerLabel";
 import { sentenceTime } from "./transcriptSegments";
 
 export interface TranscriptGap { start: number; end: number; speaker_name: string | null }
@@ -74,7 +75,7 @@ const TranscriptRow = memo(function TranscriptRow({ sentence, index, speaker, st
   return <div ref={(element) => registerRow(index, element)}
     data-testid="transcript-segment" data-active={selected || undefined} aria-current={selected ? "true" : undefined}
     className={`rounded-md px-2 py-1 ${selected ? "bg-accent/40" : ""}`}>
-    {speaker && <p className="mb-1 text-meta font-semibold text-muted-foreground">{speaker}</p>}
+    {speaker && <SpeakerLabel original={speaker} className="mb-1 text-meta font-semibold text-muted-foreground" />}
     <div className="flex items-start gap-3">
       <div className="tnum w-[7ch] shrink-0 text-meta text-muted-foreground">
         {start !== null && (hasAudio ? (
