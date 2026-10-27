@@ -167,14 +167,6 @@ export async function deleteConnectorCredentials(
   client: TinyCloudWeb,
   descriptor: ConnectorDescriptor,
 ): Promise<Result<void>> {
-  if (!usesNamedConnectorKeys()) {
-    try {
-      const old = await deleteLegacyConnectorKey<ErrorValue>(client, descriptor);
-      if (!old.ok && old.error.code !== "KEY_NOT_FOUND") return old;
-      const named = await deleteNamedConnectorKey(client, descriptor);
-      return !named.ok && named.error.code === "KV_NOT_FOUND" ? { ok: true, data: undefined } : named;
-    } catch (caught) { return failure(caught, descriptor); }
-  }
   try {
     const session = client.session();
     if (!session) return { ok: false, error: { code: "SESSION_MISSING", message: "Your session expired. Sign in again to continue." } };

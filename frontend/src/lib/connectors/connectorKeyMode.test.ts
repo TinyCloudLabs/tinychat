@@ -43,12 +43,19 @@ describe("connector key origin routing", () => {
       const values = new Map<string, string>();
       const calls: string[] = [];
       const client = {
+        session: () => ({ address, chainId: 1 }),
         secrets: {
           isUnlocked: true,
           async put(name: string, value: string) { calls.push("vault-put"); values.set(name, value); return { ok: true as const, data: undefined }; },
           async get(name: string) { calls.push("vault-get"); return { ok: true as const, data: values.get(name) }; },
-          async delete(name: string) { calls.push("vault-delete"); values.delete(name); return { ok: true as const, data: undefined }; },
+          delete: () => { throw new Error("vault delete must not run"); },
         },
+        kvForSpace: () => ({ delete: async (path: string) => {
+          if (path !== "vault/secrets/FIREFLIES_API_KEY") throw new Error(`Wrong legacy path: ${path}`);
+          calls.push("vault-delete");
+          values.delete(descriptor.secretName);
+          return { ok: true as const, data: undefined };
+        } }),
         keys: { ensureKey: () => { throw new Error("named key used on desktop"); } },
         kv: {
           put: () => { throw new Error("named envelope written on desktop"); },
@@ -77,9 +84,8 @@ describe("connector key origin routing", () => {
       const envelopePath = "xyz.tinycloud.tinychat/connectors/credentials/fireflies";
       const records = new Map([[envelopePath, "sealed-envelope"]]);
       const client = {
-        secrets: {
-          delete: async () => ({ ok: false as const, error: { code: "KEY_NOT_FOUND", message: "missing" } }),
-        },
+        session: () => ({ address, chainId: 1 }),
+        kvForSpace: () => ({ delete: async () => ({ ok: false as const, error: { code: "KV_NOT_FOUND", message: "missing" } }) }),
         kv: {
           delete: async (path: string) => {
             records.delete(path);
@@ -89,6 +95,20 @@ describe("connector key origin routing", () => {
       } as unknown as TinyCloudWeb;
       expect(await deleteConnectorCredentials(client, descriptor)).toEqual({ ok: true, data: undefined });
       expect(records.size).toBe(0);
+    });
+  });
+
+  test("desktop disconnect keeps the envelope when the legacy delete is refused", async () => {
+    await withOrigin("http://localhost", async () => {
+      const envelopePath = "xyz.tinycloud.tinychat/connectors/credentials/fireflies";
+      const records = new Map([[envelopePath, "sealed-envelope"]]);
+      const client = {
+        session: () => ({ address, chainId: 1 }),
+        kvForSpace: () => ({ delete: async () => ({ ok: false as const, error: { code: "KV_REFUSED", message: "Authorization refused" } }) }),
+        kv: { delete: () => { throw new Error("envelope delete must not run"); } },
+      } as unknown as TinyCloudWeb;
+      expect(await deleteConnectorCredentials(client, descriptor)).toEqual({ ok: false, error: { code: "KV_REFUSED", message: "Authorization refused" } });
+      expect(records.has(envelopePath)).toBe(true);
     });
   });
 
