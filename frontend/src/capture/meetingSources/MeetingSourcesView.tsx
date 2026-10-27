@@ -199,6 +199,8 @@ export interface SourceRowProps {
   joined?: boolean;
   manageOpen: boolean;
   error?: string | null;
+  /** The one step that answers `error` (the key move for the existing-user prompt); shown only with an error. */
+  errorAction?: { label: string; busy: boolean; onClick: () => void };
   onConnect: () => void;
   onRetryLookup: () => void;
   onSync: () => void;
@@ -254,6 +256,20 @@ export function SourceRow(props: SourceRowProps) {
           </span>
         )}
         {props.error && <InlineError>{props.error}</InlineError>}
+        {props.error && props.errorAction && (
+          <p className="ms-desc">
+            <button
+              type="button"
+              className="ms-btn2"
+              aria-disabled={props.errorAction.busy}
+              onClick={() => {
+                if (!props.errorAction!.busy) props.errorAction!.onClick();
+              }}
+            >
+              {props.errorAction.label}
+            </button>
+          </p>
+        )}
         {props.notices}
       </div>
       <div className="ms-actions">

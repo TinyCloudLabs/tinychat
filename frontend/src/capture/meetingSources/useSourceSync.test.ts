@@ -314,3 +314,27 @@ function depsForSourceSync(
     },
   };
 }
+
+describe("the existing-user key prompt", () => {
+  const prompt = "Approve once to move your saved Fireflies key.";
+  const promptDeps = (calls: string[]) =>
+    deps({
+      getConnectorKey: (async () => ({ ok: false, error: { code: "CONNECTOR_MIGRATION_REQUIRED", message: prompt } })) as SourceSyncDeps["getConnectorKey"],
+      runFirefliesSyncNow: async () => { calls.push("engine"); return { ok: true }; },
+    });
+
+  test("comes back as a migration result, not a plain message, and the engine does not run", async () => {
+    const calls: string[] = [];
+    expect(await runSourceSync(fireflies, input, promptDeps(calls))).toEqual({ migration: prompt });
+    expect(calls).toEqual([]);
+  });
+
+  test("another key read failure stays a plain row message", async () => {
+    const message = await runSourceSync(
+      fireflies,
+      input,
+      deps({ getConnectorKey: (async () => ({ ok: false, error: { code: "KV_REFUSED", message: "Could not read API key" } })) as SourceSyncDeps["getConnectorKey"] }),
+    );
+    expect(message).toBe("Could not read API key");
+  });
+});

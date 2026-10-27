@@ -24,6 +24,7 @@ import {
 import { readBackgroundDrainGeneration } from "@/chat/useBackgroundDrain";
 import type { ConnectorDescriptor, ConnectorId, SyncProgress } from "@/lib/connectors/types";
 import { SECRETS_UNAVAILABLE_IN_APP_MESSAGE, secretsAvailable } from "@/lib/openkeyNative";
+import { moveLegacyConnectorKey, type ConnectorMoveResult } from "@/lib/connectors/connectorMigration";
 
 export const SOURCE_SYNC_FAILED_MESSAGE = "Sync failed. Try again.";
 export type DriveMode = "auto" | "snapshot";
@@ -36,6 +37,18 @@ export type DriveMode = "auto" | "snapshot";
  *    it claimed the slot while the press read the vault), so the press waits behind it without asking.
  */
 export interface SourceSyncBusy { busy: "offer" | "queue" }
+
+/** The saved key is still in the legacy vault: the row shows this prompt together with the key-move action. */
+export interface SourceSyncMigration { migration: string }
+
+export type MoveConnectorKey = (input: {
+  tcw: TinyCloudWeb;
+  descriptor: ConnectorDescriptor;
+  backendUrl: string;
+}) => Promise<ConnectorMoveResult>;
+
+const defaultMoveConnectorKey: MoveConnectorKey = (input) =>
+  moveLegacyConnectorKey({ ...input, openkeyHost: import.meta.env.VITE_OPENKEY_HOST || "https://openkey.so" });
 
 type SyncEngineInput = {
   tcw: TinyCloudWeb;
@@ -68,6 +81,8 @@ export interface SourceSyncDeps {
     },
   ) => Promise<SyncOutcome>;
   runFirefliesSyncNow: (input: SyncEngineInput & { apiKey: string }) => Promise<SyncOutcome>;
+  /** Defaults to the OpenKey key move; a test supplies its own. */
+  moveConnectorKey?: MoveConnectorKey;
 }
 
 const DEFAULT_DEPS: SourceSyncDeps = {
@@ -102,7 +117,7 @@ export async function runSourceSync(
   d: ConnectorDescriptor,
   input: SourceSyncRun,
   deps: SourceSyncDeps = DEFAULT_DEPS,
-): Promise<string | null | SourceSyncBusy> {
+): Promise<string | null | SourceSyncBusy | SourceSyncMigration> {
   const { tcw, backendUrl, sessionStore } = input;
   const driveMode = input.driveMode ?? "auto";
   const signal = input.signal ?? new AbortController().signal;
@@ -124,6 +139,9 @@ export async function runSourceSync(
     if (input.isCurrent?.() === false) return null;
     const key = await deps.getConnectorKey<SecretsErr>(tcw, d);
     if (!key.ok) {
+      if (key.error?.code === "CONNECTOR_MIGRATION_REQUIRED") {
+        return { migration: key.error.message ?? `Approve once to move your saved ${d.name} key.` };
+      }
       return (
         key.error?.message ??
         (d.id === "google-meet"
@@ -177,7 +195,8 @@ export interface SourceSyncController {
   /** The running sync only joined one another lane owns, so Stop would abort nothing. */
   joined: boolean;
   progress: SyncProgress | null;
-  error: { id: ConnectorId; message: string } | null;
+  /** `migration`: the message is the existing-user prompt, and the row must offer the key move with it. */
+  error: { id: ConnectorId; message: string; migration?: true } | null;
   /** A press another Google Meet sync refused: offered to wait, or already waiting to start when that sync ends. */
   busy: { id: ConnectorId; mode: DriveMode; queued: boolean } | null;
   /** Accept the offer: start the refused press as soon as nothing is syncing. */
@@ -186,6 +205,10 @@ export interface SourceSyncController {
   sync: (descriptor: ConnectorDescriptor, driveMode?: DriveMode) => Promise<void>;
   /** Aborts the sync this controller started. It stays `syncingId` until the engine has settled. */
   stop: () => void;
+  /** The connector whose saved key is being moved, if any. */
+  movingId: ConnectorId | null;
+  /** Move a saved key into TinyChat's own key, then sync. Offered with the `migration` prompt. */
+  moveKey: (descriptor: ConnectorDescriptor) => Promise<void>;
 }
 
 export function useSourceSync(input: {
@@ -201,6 +224,8 @@ export function useSourceSync(input: {
   const [joined, setJoined] = useState(false);
   const [progress, setProgress] = useState<SyncProgress | null>(null);
   const [error, setError] = useState<SourceSyncController["error"]>(null);
+  const [movingId, setMovingId] = useState<ConnectorId | null>(null);
+  const moving = useRef(false);
   const [busyPress, setBusyPress] = useState<{ descriptor: ConnectorDescriptor; mode: DriveMode; queued: boolean; did: string | undefined } | null>(null);
   const inFlight = useRef(false);
   const abort = useRef<AbortController | null>(null);
@@ -242,7 +267,9 @@ export function useSourceSync(input: {
           },
           deps,
         );
-        if (typeof message === "object" && message !== null) {
+        if (typeof message === "object" && message !== null && "migration" in message) {
+          setError({ id: d.id, message: message.migration, migration: true });
+        } else if (typeof message === "object" && message !== null) {
           // A press that was already waiting is offered again rather than re-queued: it cannot spin.
           setBusyPress({ descriptor: d, mode: driveMode, queued: message.busy === "queue" && !fromQueue, did: tcw.did });
         } else if (message) setError({ id: d.id, message });
@@ -274,6 +301,32 @@ export function useSourceSync(input: {
   const wait = useCallback(() => setBusyPress((press) => (press === null ? null : { ...press, queued: true })), []);
   const cancelWait = useCallback(() => setBusyPress(null), []);
 
+  /**
+   * The existing-user key move: one press connects OpenKey, shows its review, copies the saved key into
+   * TinyChat's own key, and then runs the sync the prompt interrupted. A decline keeps the prompt and its action.
+   */
+  const moveKey = useCallback(
+    async (d: ConnectorDescriptor) => {
+      if (inFlight.current || moving.current) return;
+      moving.current = true;
+      setMovingId(d.id);
+      setError(null);
+      let moved: ConnectorMoveResult;
+      try {
+        moved = await (deps?.moveConnectorKey ?? defaultMoveConnectorKey)({ tcw, descriptor: d, backendUrl });
+      } finally {
+        moving.current = false;
+        setMovingId(null);
+      }
+      if (!moved.ok) {
+        setError({ id: d.id, message: moved.message, migration: true });
+        return;
+      }
+      await sync(d);
+    },
+    [tcw, backendUrl, deps, sync],
+  );
+
   return {
     syncingId,
     joined,
@@ -286,5 +339,7 @@ export function useSourceSync(input: {
     cancelWait,
     sync,
     stop,
+    movingId,
+    moveKey,
   };
 }
