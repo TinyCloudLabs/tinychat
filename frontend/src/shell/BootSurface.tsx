@@ -25,8 +25,6 @@ export function BootSurface(props: {
   error: string | null;
   /** Sign in, or — in the `offline` state — retry the session restore. */
   onAction: () => void;
-  approvalAction?: () => void;
-  approvalReady?: boolean;
   /** The offline voice recorder (TC-515), under the action. */
   voiceNotes?: React.ReactNode;
   /** TinyCloud Home on the web (TC-2040): a plain link to the landing page at /about. */
@@ -35,7 +33,7 @@ export function BootSurface(props: {
   const message = bootMessage(props.state, props.error);
 
   const errorLink = props.state === "unauthenticated" || props.state === "recoverableError" ? errorLinkFor(props.error) : null;
-  const busy = props.state === "booting" || props.state === "connecting" || (props.state === "signing" && !props.approvalReady);
+  const busy = props.state === "booting" || props.state === "connecting" || props.state === "signing";
 
   return (
     // Content centred while it fits; scrolls (from the top) when it does not,
@@ -49,7 +47,7 @@ export function BootSurface(props: {
         <div className="flex flex-col gap-1.5">
           <h1 className="font-display text-title-2">Exo</h1>
           <p className="flex items-center justify-center text-callout text-muted-foreground">
-            {props.approvalReady ? "Approve your sign-in in OpenKey." : message}
+            {message}
             {/* Where conversations live, as a hint: before sign-in there is no How it works page to link to. */}
             {props.state === "unauthenticated" && (
               <InfoTip label="Where your conversations live" className="-my-3 fine:-my-1">
@@ -63,9 +61,9 @@ export function BootSurface(props: {
             {errorLink.label}
           </a>
         )}
-        {(props.approvalReady || props.state === "unauthenticated" || props.state === "recoverableError" || props.state === "offline") && (
-          <Button onClick={props.approvalAction ?? props.onAction} className="h-11 px-6 fine:h-9 fine:px-4">
-            {props.approvalReady ? "Continue to OpenKey" : props.state === "offline" ? "Try again" : "Sign in"}
+        {(props.state === "unauthenticated" || props.state === "recoverableError" || props.state === "offline") && (
+          <Button onClick={props.onAction} className="h-11 px-6 fine:h-9 fine:px-4">
+            {props.state === "offline" ? "Try again" : "Sign in"}
           </Button>
         )}
         {props.home && (

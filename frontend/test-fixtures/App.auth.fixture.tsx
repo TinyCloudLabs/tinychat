@@ -30,7 +30,7 @@ let verifyCalls = 0;
 let signOutStarted: (() => void) | null = null;
 let releaseSignOut: (() => void) | null = null;
 
-function makeTcw(address: string): TinyCloudWeb {
+function fakeTcw(address: string): TinyCloudWeb {
   return { did: `did:pkh:eip155:1:${address}`, spaceId: `space-${address.slice(-2)}`, address: () => address,
     sql: {}, kv: {}, secrets: {} } as unknown as TinyCloudWeb;
 }
@@ -40,14 +40,10 @@ mock.module("@tinyboilerplate/client", () => ({
   connectWallet: async () => ({ address: loginAddress, openkey: {}, web3Provider: {} }),
   requestNonce: async () => "nonce",
   loadAppManifest: async () => ({}),
-  createTinyCloudWeb: () => Object.assign(makeTcw(loginAddress), {
-    clearPersistedSession: async () => {},
-    prepareSignIn: async () => {},
-    signIn: async () => {
-      signInCalls++;
-      return { siwe: "message", signature: "signature" };
-    },
-  }),
+  createAndSignIn: async () => {
+    signInCalls++;
+    return { tcw: fakeTcw(loginAddress), session: { siwe: "message", signature: "signature" } };
+  },
   verifySession: async () => {
     verifyCalls++;
     return { token: "bearer", expiresIn: 3600, address: loginAddress };
@@ -60,7 +56,7 @@ mock.module("@/lib/openkeyNative", () => ({
   restoreNativeAtBoot: async () => ({ kind: "none" }),
   signInNative: async () => ({
     verified: { address: loginAddress, token: "native-bearer", expiresIn: 3600 },
-    session: {}, openkey: {}, tcw: makeTcw(loginAddress),
+    session: {}, openkey: {}, tcw: fakeTcw(loginAddress),
   }),
   nativeRenewalServices: async () => ({}),
   secretsAvailable: () => false,
@@ -143,12 +139,6 @@ async function click(label: string) {
   const button = [...host!.querySelectorAll("button")].find((entry) => entry.textContent?.trim() === label);
   expect(button, `missing ${label}; DOM=${host!.innerHTML}`).toBeTruthy();
   await act(async () => { button!.click(); await tick(); });
-  if (label === "Sign in") {
-    await settle();
-    const approval = [...host!.querySelectorAll("button")].find((entry) => entry.textContent?.trim() === "Continue to OpenKey");
-    if (!approval) throw new Error("Expected OpenKey approval action");
-    await act(async () => { approval.click(); await tick(); });
-  }
 }
 async function navigate(path: string) {
   await act(async () => {
