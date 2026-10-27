@@ -33,7 +33,8 @@ function Settings(props: { list: WordFixes; editFirst?: boolean }) {
     const timer = setTimeout(() => document.querySelector<HTMLButtonElement>('[data-testid="word-fix"] button')?.click(), 150);
     return () => clearTimeout(timer);
   }, [props.editFirst]);
-  return <div className="mx-auto w-full max-w-2xl p-4"><WordFixesSettings tcw={tcw} /></div>;
+  // The page scrolls inside a pinned pane, as in the app, so the document itself never grows.
+  return <div className="fixed inset-0 overflow-y-auto" data-scroll-root><div className="mx-auto w-full max-w-2xl p-4"><WordFixesSettings tcw={tcw} /></div></div>;
 }
 
 function Transcript(props: { list: WordFixes; children?: ReactNode }) {
