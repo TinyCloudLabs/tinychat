@@ -8,9 +8,10 @@ import {
 import {
   ThreadListItemPrimitive,
   ThreadListPrimitive,
+  useAui,
   useAuiState,
 } from "@assistant-ui/react";
-import { SquarePenIcon, Trash2Icon } from "lucide-react";
+import { PencilIcon, SquarePenIcon, Trash2Icon } from "lucide-react";
 
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -33,6 +34,8 @@ import {
   subscribeThreadListLoadState,
   type ThreadListLoadState,
 } from "../lib/threadStore";
+import { CHAT_RENAME_ACTION } from "../lib/chatRenameStrings";
+import { ChatTitleEditor } from "./ChatTitleEditor";
 import {
   THREAD_LIST_LOAD_FAILED,
   THREAD_LIST_REFRESH_FAILED,
@@ -45,6 +48,25 @@ const ThreadListNavigateContext = createContext<(() => void) | undefined>(
 
 const ThreadListItem: FC = () => {
   const onNavigate = useContext(ThreadListNavigateContext);
+  const aui = useAui();
+  const title = useAuiState((s) => s.threadListItem.title);
+  // An unsaved new chat has no stored row to rename yet.
+  const renamable = useAuiState((s) => s.threadListItem.status === "regular");
+  const [editing, setEditing] = useState(false);
+  if (editing) {
+    return (
+      <ThreadListItemPrimitive.Root className="flex items-center gap-1 rounded-lg px-1">
+        <ChatTitleEditor
+          initial={title ?? ""}
+          onSave={(next) => {
+            setEditing(false);
+            aui.threadListItem().rename(next);
+          }}
+          onCancel={() => setEditing(false)}
+        />
+      </ThreadListItemPrimitive.Root>
+    );
+  }
   return (
     <ThreadListItemPrimitive.Root className="group flex items-center gap-1 rounded-lg pr-1 transition-colors hover:bg-accent data-[active]:bg-accent">
       <ThreadListItemPrimitive.Trigger
@@ -53,6 +75,15 @@ const ThreadListItem: FC = () => {
       >
         <ThreadListItemPrimitive.Title fallback="New chat" />
       </ThreadListItemPrimitive.Trigger>
+      {renamable && (
+        <TooltipIconButton
+          tooltip={CHAT_RENAME_ACTION}
+          onClick={() => setEditing(true)}
+          className="size-11 shrink-0 opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 data-[active]:opacity-100 md:size-7 [@media(hover:none)]:opacity-60"
+        >
+          <PencilIcon className="size-4" />
+        </TooltipIconButton>
+      )}
       <AlertDialog>
         <AlertDialogTrigger asChild>
           <TooltipIconButton
