@@ -16,8 +16,10 @@ import {
   SessionStore,
   clearPersistedSession,
   connectWallet,
+  createAndSignIn,
   createTinyCloudWeb,
   createApiClient,
+  loadAppManifest,
   requestNonce,
   restoreTinyCloudWebSession,
   verifySession,
@@ -27,9 +29,7 @@ import {
   manifestCarriesBundle,
   offeredChatModelContextTokens,
 } from "@tinyboilerplate/core";
-import { applyConnectorKeyRevisionGate, recordConnectorKeyRevision } from "./lib/connectors/namedKeyRevision";
-import { connectorSignInManifest } from "./lib/connectors/connectorKeyMode";
-import { loadWebManifest } from "./lib/appManifest";
+import { withEncryptionDecryptGrant } from "./lib/connectors/encryptionGrant";
 import { replicationConfigPatch, startReplicationFill } from "./lib/replication/replicationClient";
 import { rememberReplicationPrincipal } from "./lib/replication/replicationCopyMarker";
 import { purgeReplicaCopyWhenOffOnce } from "./lib/replication/replicationOffPurge";
@@ -560,14 +560,14 @@ export function App() {
       }
       // Sessions signed under an older manifest revision are cleared once, so the
       // user signs in again under the current grants (see lib/manifestRevision.ts).
-      // The gate first reads the manifest this web build serves (/.well-known/openkey-manifest.json,
-      // shipped in the same deploy as the web app) and clears only if it carries those grants; that
-      // is a same-origin file read, not a storage call, and it runs before any storage call is made.
+      // The gate first reads the manifest the backend serves and clears only if it carries
+      // those grants (web and backend deploy separately); that is a backend call, not a
+      // storage call, and it runs before any storage call is made.
       const revisionGate = await applyManifestRevisionGate({
         store: browserRevisionStore(),
         address: sessionStoreRef.current.getAddress(),
         isOffline: browserIsOffline,
-        servedManifestCarriesBundle: async () => manifestCarriesBundle(await loadWebManifest()),
+        servedManifestCarriesBundle: async () => manifestCarriesBundle(await loadAppManifest(`${BACKEND_URL}/api/manifest`)),
         handoff: captureHandoff,
         clearSession: (address) => {
           clearPersistedSession(address);
@@ -581,25 +581,6 @@ export function App() {
         setError(MANIFEST_RESIGN_NOTICE);
         setState("unauthenticated");
         logSession("restore", "manifest_revision");
-        return;
-      }
-      const namedKeyGate = await applyConnectorKeyRevisionGate({
-        store: browserRevisionStore(),
-        address: sessionStoreRef.current.getAddress(),
-        isOffline: browserIsOffline,
-        loadManifest: () => loadWebManifest(),
-        handoff: captureHandoff,
-        clearSession: (storedAddress) => {
-          clearPersistedSession(storedAddress);
-          sessionStoreRef.current.clear();
-          endStorageAccountSession();
-        },
-      });
-      if (namedKeyGate === "handoff_failed") { setState("recoverableError"); return; }
-      if (namedKeyGate === "cleared") {
-        setError(MANIFEST_RESIGN_NOTICE);
-        setState("unauthenticated");
-        logSession("restore", "named_key_revision");
         return;
       }
       const restored = await restorePersistedSession(sessionStoreRef.current, {
@@ -617,7 +598,7 @@ export function App() {
           // manifest-less client as ready. Offline, the backoff would only hold
           // the user on a spinner for ~15s before saying so: one attempt.
           const manifest = await fetchConfigWithRetry(
-            () => loadWebManifest(),
+            () => loadAppManifest(`${BACKEND_URL}/api/manifest`),
             { maxAttempts: browserIsOffline() ? 1 : 4 },
           );
           if (!manifest)
@@ -963,7 +944,7 @@ export function App() {
         setState("ready");
         return;
       }
-      prefetch = createWebSignInPrefetch(BACKEND_URL, { requestNonce, loadManifest: loadWebManifest });
+      prefetch = createWebSignInPrefetch(BACKEND_URL, { requestNonce, loadManifest: loadAppManifest });
       const { address: connectedAddress, openkey, web3Provider } = await connectWallet({
         appName: APP_NAME,
         host: OPENKEY_HOST,
@@ -979,6 +960,13 @@ export function App() {
       // setupSpaceSession + ensureSpaceExists happen inside the SDK when
       // autoCreateSpace is true; the manifest grants tinycloud.kv on the space.
       //
+      // withEncryptionDecryptGrant is a WORKAROUND that hardcodes an SDK-internal
+      // URN format — see docs/connectors-spec.md §7 "KNOWN BLOCKER" and the header
+      // of lib/connectors/encryptionGrant.ts. Secrets reads are refused without
+      // it, and the grant cannot be declared in the static manifest because its
+      // network id embeds this user's DID. Capabilities are minted from the
+      // manifest passed here, so sign-in is the only moment it can be added.
+      // Delete this call when the SDK carries the capability itself.
       const signInConfig = {
         address: connectedAddress,
         nonce,
@@ -986,8 +974,7 @@ export function App() {
         includeAccountRegistryPermissions: false as const,
         tinycloudHosts: TINYCLOUD_HOSTS,
         uiPlatform: sdkUiPlatform(),
-        manifest: connectorSignInManifest(manifest, connectedAddress),
-        openkey: { client: openkey, mode: "iframe" as const },
+        manifest: withEncryptionDecryptGrant(manifest, connectedAddress),
         // The dev WebView runs at localhost:5186, whose port the SDK signs into
         // SIWE's domain. Production accepts the fixed Tauri hostname instead.
         ...(import.meta.env.DEV && "__TAURI_INTERNALS__" in globalThis ? { domain: "localhost" } : {}),
@@ -995,11 +982,14 @@ export function App() {
         // replica prefixes at this sign-in; see lib/replication/replicationClient.ts.
         ...(LOCAL_VALIDATION ? {} : await replicationConfigPatch(replicationPrincipalFor(connectedAddress))),
       };
-      const signedTcw = createTinyCloudWeb(prefetch.guardSigning(web3Provider), { ...signInConfig, siweConfig: { nonce } });
-      if (LOCAL_VALIDATION) await prepareLocalSignIn(signedTcw);
-      await signedTcw.clearPersistedSession(connectedAddress);
-      await signedTcw.prepareSignIn();
-      const session = await signedTcw.signIn();
+      const { tcw: signedTcw, session } = LOCAL_VALIDATION
+        ? await (async () => {
+            const localTcw = createTinyCloudWeb(prefetch.guardSigning(web3Provider), { ...signInConfig, siweConfig: { nonce } });
+            await prepareLocalSignIn(localTcw);
+            await localTcw.clearPersistedSession(connectedAddress);
+            return { tcw: localTcw, session: await localTcw.signIn({ nonce }) };
+          })()
+        : await createAndSignIn(prefetch.guardSigning(web3Provider), signInConfig);
 
       rememberReplicationPrincipal(signedTcw);
       // Exchange the SIWE message for a backend Bearer token (for /api/chat).
@@ -1007,7 +997,6 @@ export function App() {
       sessionStoreRef.current.setSession(verified.token, verified.expiresIn, connectedAddress);
       // Marked current only if the manifest this sign-in used carries the bundle (an older served manifest does not).
       recordManifestRevisionIfSigned(browserRevisionStore(), connectedAddress, manifest);
-      recordConnectorKeyRevision(browserRevisionStore(), connectedAddress, manifest);
       // The SDK keeps this provider for later user-authorized operations;
       // only the verified login's signatures use the prefetched nonce guard.
       prefetch.complete();

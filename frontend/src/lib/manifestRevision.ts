@@ -48,10 +48,10 @@ export type ManifestRevisionGate = "current" | "deferred" | "cleared" | "handoff
 
 /**
  * Restore-time gate used by App. A stale session for `address` is cleared only after
- * the manifest this web build serves (/.well-known/openkey-manifest.json, shipped in the
- * same deploy as the web app) is known to carry the current grants: clearing under a
- * manifest without them would make the user sign in again for nothing. Then it gets one
- * capture handoff, then is cleared so the user signs in again.
+ * the manifest the backend serves is known to carry the current grants: the web app and
+ * the backend image deploy separately, and clearing under an older served manifest would
+ * make the user sign in again for nothing. Then it gets one capture handoff, then is
+ * cleared so the user signs in again.
  *
  * "deferred" keeps the session untouched, so the next load runs the gate again: offline,
  * the served manifest unreachable, or the served manifest lacking the bundle. A failed
@@ -61,7 +61,7 @@ export async function applyManifestRevisionGate(input: {
   store: RevisionStore | null;
   address: string | null;
   isOffline: () => boolean;
-  /** Fetches the manifest this web build serves and says whether it carries the bundle; a rejection counts as no. */
+  /** Fetches the served manifest and says whether it carries the bundle; a rejection counts as no. */
   servedManifestCarriesBundle: () => Promise<boolean>;
   handoff: () => Promise<boolean>;
   clearSession: (address: string) => void;
@@ -108,7 +108,7 @@ export function recordManifestRevision(store: RevisionStore | null, address: str
 
 /**
  * Record the revision after a sign-in only if the manifest that sign-in used carries the bundle.
- * A sign-in under a manifest without the bundle holds the older grants and must not be marked current.
+ * A sign-in under an older served manifest holds the older grants and must not be marked current.
  */
 export function recordManifestRevisionIfSigned(
   store: RevisionStore | null,

@@ -8,7 +8,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { CONNECTORS } from "@/lib/connectors/registry";
-import { MeetingSourcesFeature, sourceErrorAction } from "./MeetingSourcesDialog";
+import { MeetingSourcesFeature } from "./MeetingSourcesDialog";
 import { meetingSourceStatus, meetingSourcesSummary } from "./meetingSourceState";
 import { CalendarAutojoinRow, DisconnectDataChoice, GmeetNotices, SourceRow, type SourceRowProps } from "./MeetingSourcesView";
 import { DISCONNECT_WHILE_SYNCING, DisconnectRow } from "./ManagePanel";
@@ -240,40 +240,5 @@ describe("the Google Meet row's meeting count", () => {
   test("the Capture entry leaves out a count that has not been read", () => {
     expect(meetingSourcesSummary([{ name: "Google Meet", connected: true, count: null }])).toBe("Google Meet connected");
     expect(meetingSourcesSummary([{ name: "Google Meet", connected: true, count: 26 }])).toBe("Google Meet connected · 26 meetings");
-  });
-});
-
-describe("the existing-user key prompt on a row", () => {
-  const fireflies = CONNECTORS.find((d) => d.id === "fireflies")!;
-  const prompt = "Approve once to move your saved Fireflies key.";
-  const controller = (over: Partial<Parameters<typeof sourceErrorAction>[0]> = {}): Parameters<typeof sourceErrorAction>[0] => ({
-    error: { id: "fireflies", message: prompt, migration: true },
-    movingId: null,
-    moveKey: async () => {},
-    ...over,
-  });
-  const connected = { connected: true, status: meetingSourceStatus("connected", "now", 1) };
-
-  test("the prompt is rendered together with the Review in OpenKey action", () => {
-    const html = render({ ...connected, error: prompt, errorAction: sourceErrorAction(controller(), fireflies) });
-    expect(html).toContain("Approve once to move your saved Fireflies key.");
-    expect(html).toContain(">Review in OpenKey<");
-  });
-
-  test("while the key is moving the action says so and is inert", () => {
-    const html = render({ ...connected, error: prompt, errorAction: sourceErrorAction(controller({ movingId: "fireflies" }), fireflies) });
-    expect(html).toContain("Moving your key…");
-    expect(html).toContain('aria-disabled="true"');
-    expect(html).not.toContain("Review in OpenKey");
-  });
-
-  test("an ordinary sync error has no key-move action", () => {
-    const action = sourceErrorAction(controller({ error: { id: "fireflies", message: "Sync failed. Try again." } }), fireflies);
-    expect(action).toBeUndefined();
-    expect(render({ ...connected, error: "Sync failed. Try again.", errorAction: action })).not.toContain("Review in OpenKey");
-  });
-
-  test("another source's prompt does not put the action on this row", () => {
-    expect(sourceErrorAction(controller({ error: { id: "google-meet", message: prompt, migration: true } }), fireflies)).toBeUndefined();
   });
 });
