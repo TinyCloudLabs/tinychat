@@ -1,5 +1,17 @@
 # @tinychat/frontend
 
+## 0.10.0-beta.62
+
+### Patch Changes
+
+- 0cd762b: Send a notetaker accepts every Google Meet link shape: `/meet/<code>`, `/_meet/<code>`, `g.co/meet/<code>`, `tel.meet/<code>`, links wrapped in `accounts.google.com?continue=` or `meet.app.goo.gl?link=`, and a bare code with or without dashes. All become `https://meet.google.com/<code>` (lowercase, no trailing slash). A wrapper whose target is not a Meet link is refused. `meet.google.com/lookup/<nick>` is sent as pasted.
+
+## 0.10.0-beta.61
+
+### Patch Changes
+
+- d401bb6: The minimized recorder bar's open button is a 44px touch target; the bar looks the same. Details: TC-2186
+
 ## 0.10.0-beta.60
 
 ### Patch Changes
