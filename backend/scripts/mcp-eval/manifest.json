@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "frozenOn": "2026-10-27",
+  "caseCount": 95,
+  "casesSha256": "69eea249d0d24f17c4e191c3983ea5ebb5d7f498b48fc562dc3655bd78005d0d",
+  "sizeLimitCaseIds": [
+    "eliza-size-limit-501-transcript-heavy-rows"
+  ],
+  "derivedFrom": {
+    "tinychat": "backend/scripts/meeting-eval-fixtures.ts (30 scenarios x 3 paraphrases)",
+    "tinycloud-agents": "TinyCloudLabs/tinycloud-agents main ed320bda0fd40ecbf1f0088719d2fd8392ddb919 (TC-2163 #31)"
+  },
+  "notes": [
+    "Synthetic data only; the size-limit case regenerates its 501 rows deterministically at run time.",
+    "Frozen: edit nothing in this directory's cases.json; cut version N+1 instead."
+  ]
+}

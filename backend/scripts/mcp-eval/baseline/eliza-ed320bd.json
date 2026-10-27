@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "backend": "eliza (tinycloud-agents ed320bda0fd40ecbf1f0088719d2fd8392ddb919, TC-2163 #31)",
+  "status": "not_run",
+  "reason": "Frozen-eval pass rates need the Eliza /tasks path answering with a real model: a live Eliza service, a per-user delegation and a paid model provider (RedPill). None can run offline or without spend, and no adapter exists (backends.ts elizaStubBackend is a stub). No per-model numbers were fabricated.",
+  "models": {},
+  "elizaOwnSuite": {
+    "what": "Eliza's own deterministic tests at the pinned commit: bun test --preload ../../test/no-spend-setup.ts in packages/eliza-service (no-spend guard: provider keys/hosts rejected; no model call)",
+    "ranOn": "2026-10-27",
+    "result": "601 pass, 0 fail, 42 files, 2288 expect() calls (second run; the first run of the same suite reported 600 pass, 1 fail, failing test not captured)",
+    "note": "Unit tests of validators/evidence/coverage code with synthetic fixtures. They are not per-model answer scores. Cases derived from them are in cases.json with origin 'tinycloud-agents ... @ ed320bd'.",
+    "answerRelatedFiles": ["src/tasks/answer.test.ts (21 tests)", "src/tasks/orchestration.test.ts (13)", "src/tasks/evidence.test.ts (12)", "src/tasks/evidence-answer-edge.test.ts (9)", "src/meeting-evidence.test.ts (29)", "src/transcript-registry-listing.test.ts (501-row size-limit test)"]
+  },
+  "liveEvalBaseline": {
+    "what": "tinychat backend/scripts/meeting-eval.ts is the live per-model eval (30 scenarios x 3 paraphrases x 4 offered models, real RedPill calls, explicit --min-idle-ms and --max-model-requests). Its recorded reports are separate artifacts and use different scoring; they are not converted into frozen-eval numbers.",
+    "status": "NOT RUN for the frozen eval"
+  }
+}

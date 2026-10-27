@@ -36,6 +36,7 @@
     "build": "bun run build:packages && bun run build:backend && bun run build:frontend",
     "test": "bun run test:backend && bun run test:packages && bun run test:frontend",
     "test:real-auth": "bun run --cwd test real-auth",
+    "eval:mcp": "bun backend/scripts/mcp-eval/run.ts",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "generate-key": "bun run packages/server/scripts/generate-key.ts backend/.env",
