@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import manifest from "../../../../manifest.json";
 import { TINYCHAT_KEY_PREFIX, CONNECTORS_KV_PREFIX } from "@tinyboilerplate/core";
 import { resolveManifest } from "@tinycloud/sdk-core";
@@ -101,6 +101,15 @@ function oldVault(value: string) {
 }
 
 describe("TinyChat connector named keys", () => {
+  let previousWindow: PropertyDescriptor | undefined;
+  beforeAll(() => {
+    previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+    Object.defineProperty(globalThis, "window", { configurable: true, value: { location: { origin: "https://tinycloud.chat" } } });
+  });
+  afterAll(() => {
+    if (previousWindow) Object.defineProperty(globalThis, "window", previousWindow);
+    else Reflect.deleteProperty(globalThis, "window");
+  });
   test("normal sign-in manifest requests the named-key row without bare-network decrypt", () => {
     expect(manifest.keys_app_id).toBe("chat.tinycloud.tinychat");
     expect(manifest.keys).toEqual([{ prefix: TINYCHAT_KEY_PREFIX, abilities: ["key.create", "decrypt"] }]);

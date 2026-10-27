@@ -29,6 +29,7 @@ import {
   offeredChatModelContextTokens,
 } from "@tinyboilerplate/core";
 import { applyConnectorKeyRevisionGate, recordConnectorKeyRevision } from "./lib/connectors/namedKeyRevision";
+import { connectorSignInManifest } from "./lib/connectors/connectorKeyMode";
 import { replicationConfigPatch, startReplicationFill } from "./lib/replication/replicationClient";
 import { rememberReplicationPrincipal } from "./lib/replication/replicationCopyMarker";
 import { purgeReplicaCopyWhenOffOnce } from "./lib/replication/replicationOffPurge";
@@ -978,7 +979,7 @@ export function App() {
         autoCreateSpace: !LOCAL_VALIDATION,
         includeAccountRegistryPermissions: false as const,
         tinycloudHosts: TINYCLOUD_HOSTS,
-        manifest,
+        manifest: connectorSignInManifest(manifest, connectedAddress),
         openkey: { client: openkey },
         // Flag OFF: {} (config unchanged). ON: the SDK adds kv/sync beside kv/get for the
         // replica prefixes at this sign-in; see lib/replication/replicationClient.ts.

@@ -22,6 +22,8 @@ import {
 } from "@/chat/ConnectorDialog";
 import { removeBackgroundDrainConnectorRecord } from "@/chat/useBackgroundDrain";
 import { deleteConnectorCredentials } from "@/lib/connectors/namedConnectorSecrets";
+import { usesNamedConnectorKeys } from "@/lib/connectors/connectorKeyMode";
+import { isSecretsUnlocked, unlockSecrets, type SecretsErr } from "@/lib/connectors/connectorSecrets";
 import {
   type DisconnectMode,
   disconnectRetry,
@@ -100,6 +102,7 @@ export function useConnectorDisconnect(input: {
         return;
       }
     }
+    const namedKeyStorage = usesNamedConnectorKeys();
     const deps: DisconnectDeps = {
       connectorId: descriptor.id,
       source: descriptor.source,
@@ -107,9 +110,8 @@ export function useConnectorDisconnect(input: {
       webhooks: oauth ? NO_DELIVERY_LANE : webhooks,
       featureDark,
       secrets: {
-        // The signed KV delete needs no vault unlock.
-        isUnlocked: () => true,
-        unlock: async () => ({ ok: true }),
+        isUnlocked: () => namedKeyStorage || isSecretsUnlocked(tcw),
+        unlock: () => namedKeyStorage ? Promise.resolve({ ok: true }) : unlockSecrets<SecretsErr>(tcw),
         deleteKey: () => deleteConnectorCredentials(tcw, descriptor),
       },
       store: {

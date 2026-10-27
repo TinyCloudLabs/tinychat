@@ -3,7 +3,8 @@ import { extractRecapAttenuations, makePkhSpaceId, pkhDid } from "@tinycloud/sdk
 import { resolveSecretPath } from "@tinycloud/web-sdk";
 import type { ConnectorDescriptor } from "./types";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
-import { getConnectorKey as getLegacyConnectorKey, isSecretsUnlocked, unlockSecrets } from "./connectorSecrets";
+import { deleteConnectorKey as deleteLegacyConnectorKey, getConnectorKey as getLegacyConnectorKey, isSecretsUnlocked, saveConnectorKey as saveLegacyConnectorKey, unlockSecrets } from "./connectorSecrets";
+import { usesNamedConnectorKeys } from "./connectorKeyMode";
 import { secretsAvailable } from "../openkeyNative";
 
 type ErrorValue = { code: string; message: string };
@@ -166,6 +167,7 @@ export async function deleteConnectorCredentials(
   client: TinyCloudWeb,
   descriptor: ConnectorDescriptor,
 ): Promise<Result<void>> {
+  if (!usesNamedConnectorKeys()) return deleteLegacyConnectorKey<ErrorValue>(client, descriptor);
   try {
     const session = client.session();
     if (!session) return { ok: false, error: { code: "SESSION_MISSING", message: "Your session expired. Sign in again to continue." } };
@@ -185,6 +187,7 @@ export async function saveConnectorKey<E>(
   descriptor: ConnectorDescriptor,
   secret: string,
 ): Promise<{ ok: true; data: void } | { ok: false; error: E }> {
+  if (!usesNamedConnectorKeys()) return saveLegacyConnectorKey<E>(tcw, descriptor, secret);
   return saveNamedConnectorKey(tcw, descriptor, secret) as Promise<{ ok: true; data: void } | { ok: false; error: E }>;
 }
 
@@ -192,6 +195,7 @@ export async function getConnectorKey<E>(
   tcw: TinyCloudWeb,
   descriptor: ConnectorDescriptor,
 ): Promise<{ ok: true; data: string } | { ok: false; error: E }> {
+  if (!usesNamedConnectorKeys()) return getLegacyConnectorKey<E>(tcw, descriptor);
   const result = await readNamedConnectorKey(tcw, descriptor);
   if (!result.ok) return result as { ok: false; error: E };
   if (result.data === null) {
@@ -204,5 +208,6 @@ export async function deleteConnectorKey<E>(
   tcw: TinyCloudWeb,
   descriptor: ConnectorDescriptor,
 ): Promise<{ ok: true; data: void } | { ok: false; error: E }> {
+  if (!usesNamedConnectorKeys()) return deleteLegacyConnectorKey<E>(tcw, descriptor);
   return deleteNamedConnectorKey(tcw, descriptor) as Promise<{ ok: true; data: void } | { ok: false; error: E }>;
 }
