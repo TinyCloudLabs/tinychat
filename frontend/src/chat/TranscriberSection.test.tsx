@@ -452,6 +452,7 @@ describe("pasted meeting links", () => {
     for (const pasted of ["https://google.com/meet/ofj-ahew-paa", "meet.google.com/ofj-ahew-paa", "ofj-ahew-paa", "Join: meet.google.com/ofj-ahew-paa"]) {
       expect(normalizeMeetingUrl(pasted)).toBe(key);
     }
+    expect(normalizeMeetingUrl("https://meet.google.com/meet/ofj-ahew-paa")).toBe(key);
     expect(normalizeMeetingUrl("not a meeting link")).toBeNull();
   });
 });
