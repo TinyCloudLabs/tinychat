@@ -47,11 +47,12 @@ Estimates are S/M/L only. Overall: **M, hours to about 1-2 days**, assuming the 
 | Scheduling / push / email / cron | None exist in Eliza |
 
 ## Questions for Sam (one line each: what the user sees / cost)
-1. **OpenKey OAuth client for Exo.** User sees OpenKey's consent screen, then the delegate page: 2 pages once vs 1 today; OpenKey is frozen so it needs your card; no OpenKey code change.
-2. **Single-approval read-tier bundle** replacing "Connect private agent": user sees one approval page instead of two; costs M-L MCP work. Without it, v1 ships with the two pages above.
-3. **Users already connected:** keep Eliza until they reconnect, force reconnect, or set a cutoff date. Recommendation: keep Eliza until reconnect, then off.
-4. **`xyz.tinycloud.eliza/memory` data and `eliza-delegations` records:** leave unused, or delete? Also count addresses with backend content-store rows (`services/content-store.ts`; dark behind `CONNECTOR_BACKEND_INGEST_ENABLED`, default false) before Eliza is off.
-5. **First approval covers `connectors` (production today) or the 3-DB format** (`details/summaries/transcripts`, `docs/meeting-storage.md`; no writer exists yet)? Recommendation: `connectors`.
+1. **MCP sign-in route: OpenKey OAuth client for Exo, or TinyCloud-native delegation?** OAuth: user sees OpenKey's consent screen then the delegate page (2 pages once vs 1 today); OpenKey is frozen so it needs your card; Exo S, MCP zero. Native: user sees today's single "Connect agent" prompt, no OpenKey change; Exo S, MCP M (about a day); see the native-auth verdict in the TC-2196 Linear comment. Native replaces the OAuth client for our chat; ChatGPT/Claude keep OAuth.
+2. **Single-approval read-tier bundle** replacing "Connect private agent": user sees one approval page instead of two; costs M-L MCP work. Without it, v1 ships with the pages above.
+3. **`xyz.tinycloud.eliza/memory` data and `eliza-delegations` records:** default is leave them unused; delete only if you say so. Also count addresses with backend content-store rows (`services/content-store.ts`; dark behind `CONNECTOR_BACKEND_INGEST_ENABLED`, default false) before Eliza is off.
+4. **First approval covers `connectors` (production today) or the 3-DB format** (`details/summaries/transcripts`, `docs/meeting-storage.md`; no writer exists yet)? Recommendation: `connectors`.
+
+Answered: existing private-agent users switch at the cutoff when the old assistant goes off and approve once (Sam, TC-2196); no keep-Eliza-until-reconnect period.
 
 ## Later, only if a defect appears
 Hint carrier on the manifest and per-tenant instructions composer; `nextCursor` paging on `sql_query`; read-only surface/scope filtering for chat; multi-DB approval; a search helper (FTS5/LIKE); HA/shared state. Not dependencies.
