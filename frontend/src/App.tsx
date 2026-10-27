@@ -560,9 +560,9 @@ export function App() {
       }
       // Sessions signed under an older manifest revision are cleared once, so the
       // user signs in again under the current grants (see lib/manifestRevision.ts).
-      // The gate first reads the manifest the backend serves and clears only if it carries
-      // those grants (web and backend deploy separately); that is a backend call, not a
-      // storage call, and it runs before any storage call is made.
+      // The gate first reads the manifest this web build serves (/.well-known/openkey-manifest.json,
+      // shipped in the same deploy as the web app) and clears only if it carries those grants; that
+      // is a same-origin file read, not a storage call, and it runs before any storage call is made.
       const revisionGate = await applyManifestRevisionGate({
         store: browserRevisionStore(),
         address: sessionStoreRef.current.getAddress(),
@@ -963,7 +963,7 @@ export function App() {
         setState("ready");
         return;
       }
-      prefetch = createWebSignInPrefetch(BACKEND_URL, { requestNonce, loadManifest: () => loadWebManifest() });
+      prefetch = createWebSignInPrefetch(BACKEND_URL, { requestNonce, loadManifest: loadWebManifest });
       const { address: connectedAddress, openkey, web3Provider } = await connectWallet({
         appName: APP_NAME,
         host: OPENKEY_HOST,
