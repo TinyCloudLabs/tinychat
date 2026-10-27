@@ -50,7 +50,10 @@ describe("connector key origin routing", () => {
           async delete(name: string) { calls.push("vault-delete"); values.delete(name); return { ok: true as const, data: undefined }; },
         },
         keys: { ensureKey: () => { throw new Error("named key used on desktop"); } },
-        kv: { put: () => { throw new Error("named envelope written on desktop"); } },
+        kv: {
+          put: () => { throw new Error("named envelope written on desktop"); },
+          delete: async () => ({ ok: false as const, error: { code: "KV_NOT_FOUND", message: "missing" } }),
+        },
       } as unknown as TinyCloudWeb;
       expect(await saveConnectorKey(client, descriptor, "desktop-secret")).toEqual({ ok: true, data: undefined });
       expect(await getConnectorKey(client, descriptor)).toEqual({ ok: true, data: "desktop-secret" });
@@ -66,6 +69,26 @@ describe("connector key origin routing", () => {
         handoff: async () => { throw new Error("sign-in loop"); },
         clearSession: () => { throw new Error("sign-in loop"); },
       })).toBe("current");
+    });
+  });
+
+  test("desktop disconnect removes a named envelope when the legacy vault has no key", async () => {
+    await withOrigin("http://localhost", async () => {
+      const envelopePath = "xyz.tinycloud.tinychat/connectors/credentials/fireflies";
+      const records = new Map([[envelopePath, "sealed-envelope"]]);
+      const client = {
+        secrets: {
+          delete: async () => ({ ok: false as const, error: { code: "KEY_NOT_FOUND", message: "missing" } }),
+        },
+        kv: {
+          delete: async (path: string) => {
+            records.delete(path);
+            return { ok: true as const, data: undefined };
+          },
+        },
+      } as unknown as TinyCloudWeb;
+      expect(await deleteConnectorCredentials(client, descriptor)).toEqual({ ok: true, data: undefined });
+      expect(records.size).toBe(0);
     });
   });
 
