@@ -1,5 +1,15 @@
 # @tinychat/frontend
 
+## 0.10.0-beta.57
+
+### Patch Changes
+
+- b4c2b24: Home signs in with the permissions in its manifest, including the requested secret decrypt grant.
+
+  Details: TC-2038
+
+- b4c2b24: Details: TC-1977 Store connector credentials in app named keys and move existing credentials after a separate approval.
+
 ## 0.10.0-beta.56
 
 ### Patch Changes
