@@ -22,9 +22,17 @@ Exo part: **S-M, hours.** It starts when the MCP side below is ready (Artifacts 
 5. **One short Opus look** at the delegation handoff only (Naomi's ask): who signs what (the user's passkey session signs a delegation to the MCP identity), audience (the MCP identity), capabilities (read on `connectors` only), expiry (30 days), where it lives (the MCP's per-user store, 0600 files), and how it is removed (flag off, or the owner revokes the delegation).
 
 ## What Exo needs from the MCP side (the only dependency)
-1. **The MCP's identity:** its DID, and where it is published (for example a well-known route or the server's discovery metadata). Today no MCP DID is published; per-tenant DIDs are returned only after an authenticated `tinycloud_connect` (`packages/mcp/src/remote-store.ts:191-197,729-737`).
-2. **The accepted delegation shape and capabilities:** a UCAN from `tcw.delegateTo` (as in `agentDelegation.ts:227`), which resources/actions it must contain (SQL read on `xyz.tinycloud.tinychat/connectors`; KV get/list on `xyz.tinycloud.tinychat/connectors/`), and how Exo hands it over (an intake route and the credential Exo's backend uses to call the MCP per user).
-3. **How the MCP reports an expired, revoked or unaccepted delegation** to the caller (an error code in the tool result, like today's `authority_required`), so Exo can show the existing "Reconnect" prompt.
+Artifacts lead's answers, **planned, not live; names final when their PR lands; do not hardcode**:
+1. **MCP identity:** one stable `did:key`, generated once, key sealed in the CVM state volume, published in the server card `https://mcp.tinycloud.xyz/.well-known/mcp/server-card.json` (extension field). Does not exist yet; the DID is sent when published.
+2. **Accepted delegation:** owner DID -> MCP DID, audience = MCP DID, expiry <= 30 days, abilities READ only on SQL db `xyz.tinycloud.tinychat/connectors` and KV prefix `connectors/`; no decrypt, no write; anything else refused. Intake `POST /native/grant` (256 KiB cap). Calls carry Exo's service credential plus the owner DID in a separate header (not `Authorization: Bearer`).
+3. **Failures:** HTTP 401 JSON `{error: "native_grant_required" | "native_grant_expired" | "native_grant_rejected"}`.
+4. **ETA:** M (~1 day, theirs) after the #774 hosted-MCP deploy, plus review/release/deploy; Exo starts when #774 is live and the date is given.
+
+## Intended Exo shape (proposal; for the Opus look)
+- **Service credential:** a new backend secret for the MCP, same outbound pattern as `ELIZA_SERVICE_SECRET` (`backend/src/index.ts:166`; sent as a bearer header in `routes/agent.ts:115-124`), sent in the MCP's separate header [INFERENCE: header name TBD by the MCP PR].
+- **Owner DID:** derived server-side from the authenticated session (`req.user.address`, `routes/agent-chat.ts:1253-1258`; same source as `routes/delegations.ts:36-38`), formatted as the owner's `did:pkh`; never taken from the request body.
+- **Where the delegation lives:** the user signs it in the browser (`tcw.delegateTo`, `agentDelegation.ts:227`), the backend forwards it to `POST /native/grant`, and the MCP stores it. The backend need not keep a copy [INFERENCE]; precedent if it does: `DelegationStore` in the backend's own KV space (`packages/server/src/delegation-store.ts:60-90`; transcript-writer `backend/src/index.ts:470`, exo-sync `:471`).
+- **401 mapping:** `native_grant_required | expired | rejected` -> the backend returns the existing `delegation_error` frame (codes `delegation_required|expired|revoked`, `frontend/src/lib/agentChatApi.ts:71`) and the existing "Connect/Reconnect private agent access" banner (`frontend/src/chat/AgentEnablementBanner.tsx`); wording is Monica's.
 
 ## Eliza
 Nothing from Eliza's `/sessions`, `/tasks`, `/tools`, `/messages`, memory plugin or `RUN_ARTIFACT_SKILL` stays. The backend's transcript-writer grant (`backend/src/routes/delegations.ts:28,129`) targets the backend, not Eliza [INFERENCE: nothing else depends on Eliza]; the exo-sync grant (`routes/exo-grant.ts:40,126`) goes away with Eliza per Sam. Confirm Artifactory is not a live caller of `/tools/RUN_ARTIFACT_SKILL` before shutdown.
