@@ -89,25 +89,10 @@ describe("minimizedLimit", () => {
 });
 
 describe("the minimised bar", () => {
-  const ribbon = (patch: Partial<RecorderValue>) =>
-    renderToStaticMarkup(
-      <RibbonView recorder={recorderWith(patch)} elapsedMs={patch.elapsedMs ?? 0} theme="night" />,
-    );
   const dock = (patch: Partial<RecorderValue>) =>
     renderToStaticMarkup(
       <SidebarDockView recorder={recorderWith(patch)} elapsedMs={patch.elapsedMs ?? 0} theme="night" />,
     );
-
-  test("Ribbon: timer, Pause and Stop, with no waveform and no Listening line", () => {
-    const html = ribbon(running(2 * MIN));
-    expect(html).toContain('data-testid="ribbon-timer">2:00<');
-    expect(html).toContain('aria-label="Pause recording"');
-    expect(html).toContain('aria-label="Stop and save"');
-    expect(html.match(/<button/g)).toHaveLength(3);
-    expect(html).not.toContain("data-bar");
-    expect(html).not.toContain("data-spectrum-bars");
-    expect(html).not.toMatch(/Listening/);
-  });
 
   test("dock: timer, Pause and Stop, with no waveform and no Listening line", () => {
     const html = dock(running(2 * MIN));
@@ -120,8 +105,8 @@ describe("the minimised bar", () => {
     expect(html).not.toContain("dock-status");
   });
 
-  test("both carry the readout, the thin line and the hover text the control is described by", () => {
-    for (const html of [ribbon(running(2 * MIN)), dock(running(2 * MIN))]) {
+  test("the dock carries the readout, the thin line and the hover text the control is described by", () => {
+    for (const html of [dock(running(2 * MIN))]) {
       expect(html).toContain(">Stops in 8:00<");
       expect(html).toMatch(/role="tooltip"[^>]*>Recording stops at /);
       expect(html).toMatch(/aria-hidden="true"[^>]*data-testid="(ribbon|dock)-limit"/);

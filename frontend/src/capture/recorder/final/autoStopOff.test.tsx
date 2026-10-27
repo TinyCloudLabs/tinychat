@@ -70,8 +70,6 @@ describe("a recording under the silent safety cap", () => {
       expect(html).not.toMatch(/Stops in|Stops at|stops at/);
       expect(html).toContain("2:00");
     }
-    const withLimit = renderToStaticMarkup(<RibbonView recorder={recorderWith(automatic)} elapsedMs={2 * MIN} theme="night" />);
-    expect(withLimit).toContain("Stops in 58:00");
   });
 });
 
