@@ -4,6 +4,7 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { __resetStorageStatusForTests } from "@/lib/storageStatus";
 import { CONNECTORS_SQL_DB_NAME, ensureSchema, upsertMeeting, type NormalizedMeeting } from "./connectors/connectorStore";
 import { commitVoiceNoteTranscript, createVoiceNoteRow } from "./voiceNotes/voiceNoteRows";
+import { subscribeSpaceLane } from "./spaceWriteLane";
 import { readUserTitledIds, renameRecording } from "./recordingTitle";
 import { hasUserTitle, keepUserTitle, normalizeRecordingTitle } from "./recordingTitleMeta";
 
@@ -151,6 +152,18 @@ describe("renaming a recording", () => {
     expect([...await readUserTitledIds(a.tcw)]).toEqual([a.rowId]);
     await renameRecording(a.tcw, a.rowId, "");
     expect((await readUserTitledIds(a.tcw)).size).toBe(0);
+  });
+
+  test("the read and the write both run on the space write lane", async () => {
+    const { tcw, rowId } = await voiceNote("rec-lane");
+    let turns = 0;
+    const off = subscribeSpaceLane(() => { turns++; });
+    await renameRecording(tcw, rowId, "On the lane");
+    const renamed = turns;
+    await readUserTitledIds(tcw);
+    off();
+    expect(renamed).toBeGreaterThanOrEqual(4);
+    expect(turns).toBe(renamed);
   });
 
   test("a recording that is not in the space reports it", async () => {

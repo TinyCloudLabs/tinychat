@@ -1,3 +1,6 @@
+import { autoMeetingTitle } from "./meetingTitle";
+import { transcriptionModelLabel } from "./transcriptionModelLabel";
+
 // A recording's title is `connector_meeting.title`. A title the user typed is marked in the row's
 // metadata so no auto-titling, re-transcribe or re-sync replaces it:
 //
@@ -37,4 +40,46 @@ export function keepUserTitle(
     metadata: { ...incoming.metadata, [TITLE_USER_KEY]: true,
       [TITLE_AUTO_VALUE_KEY]: incoming.title ?? existing.metadata[TITLE_AUTO_VALUE_KEY] ?? null },
   };
+}
+
+function parseObject(raw: unknown): Record<string, unknown> {
+  if (typeof raw !== "string") return {};
+  try {
+    const value: unknown = JSON.parse(raw);
+    return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  } catch { return {}; }
+}
+
+/** The automatic title a row returns to when its name is cleared; null when none is known. */
+const VOICE_NOTE = "exo-voice-note";
+function autoTitleOf(row: { source: string; startedAt: unknown; participants: unknown; metadata: Record<string, unknown> }): string | null {
+  const m = row.metadata;
+  if (row.source === VOICE_NOTE && m.transcription_outcome === "transcribed") {
+    let names: unknown = [];
+    try { names = JSON.parse(typeof row.participants === "string" ? row.participants : "[]"); } catch { /* no names */ }
+    const recomputed = autoMeetingTitle({ startedAt: row.startedAt, modelLabel: transcriptionModelLabel(m.model),
+      participantNames: Array.isArray(names) ? names.map((p) => (p as { name?: unknown } | null)?.name) : [] });
+    if (recomputed) return recomputed;
+  }
+  for (const value of [m.title_auto, m[TITLE_AUTO_VALUE_KEY]]) if (typeof value === "string" && value) return value;
+  return null;
+}
+
+export interface TitleRow { title: string | null; metadata: string | null; source: string; startedAt: unknown; participants: unknown }
+
+/**
+ * The title and metadata a rename writes: `name` (already normalized) is the user's title; an empty `name`
+ * returns the row to its automatic title. Null when the row already is what was asked for.
+ */
+export function planRename(name: string, row: TitleRow): { title: string | null; metadata: Record<string, unknown> } | null {
+  const metadata = parseObject(row.metadata);
+  const { [TITLE_USER_KEY]: _user, [TITLE_AUTO_VALUE_KEY]: _auto, ...rest } = metadata;
+  if (name) {
+    const auto = hasUserTitle(metadata) ? metadata[TITLE_AUTO_VALUE_KEY] ?? null : row.title;
+    return { title: name, metadata: { ...rest, [TITLE_USER_KEY]: true, [TITLE_AUTO_VALUE_KEY]: auto } };
+  }
+  if (!hasUserTitle(metadata)) return null;
+  const auto = autoTitleOf({ source: row.source, startedAt: row.startedAt, participants: row.participants, metadata });
+  // `title_auto` stays: an untranscribed note returns to that title, so its commit still names it.
+  return { title: auto ?? row.title, metadata: rest };
 }
