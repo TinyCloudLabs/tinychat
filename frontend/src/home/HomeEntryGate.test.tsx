@@ -5,6 +5,7 @@ import { act, StrictMode, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { RootRoute } from "../landing/RootRoute";
+import { setAppsFeedEnabled } from "../lib/appsFeedFeature";
 import { installDom } from "../test/dom";
 import { FIRST_SCREEN_WAIT_MS, HomeEntryGate } from "./HomeEntryGate";
 import type { FirstScreen } from "./firstScreenStore";
@@ -29,6 +30,7 @@ function Screen({ load }: { load: () => Promise<FirstScreen> }) {
 async function mount(entry: string, load: () => Promise<FirstScreen>) {
   expect(process.env.HOME).toBe(testHome);
   restore = installDom();
+  setAppsFeedEnabled(true);
   const host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
@@ -154,6 +156,7 @@ describe("one decision per entry (remounts, StrictMode, deep links)", () => {
 
   async function mountControlled(entry: string, load: () => Promise<FirstScreen>, strict = false) {
     restore = installDom();
+    setAppsFeedEnabled(true);
     const host = document.createElement("div");
     document.body.append(host);
     root = createRoot(host);

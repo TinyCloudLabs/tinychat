@@ -37,7 +37,7 @@ let syncBehaviour: () => Promise<void> = async () => undefined;
 let restoreAs: "signedOut" | "restored" = "signedOut";
 let optedIn = true;
 
-function fakeTcw(): TinyCloudWeb {
+function makeTcw(): TinyCloudWeb {
   return {
     did: PRINCIPAL, spaceId: "space-a1", address: () => ADDRESS, sql: {}, kv: {}, secrets: {},
     replication: { sync: () => { syncCalls += 1; return syncBehaviour(); } },
@@ -49,7 +49,11 @@ mock.module("@tinyboilerplate/client", () => ({
   connectWallet: async () => ({ address: ADDRESS, openkey: {}, web3Provider: {} }),
   requestNonce: async () => "nonce",
   loadAppManifest: async () => ({}),
-  createAndSignIn: async () => ({ tcw: fakeTcw(), session: { siwe: "message", signature: "signature" } }),
+  createTinyCloudWeb: () => Object.assign(makeTcw(), {
+    clearPersistedSession: async () => {},
+    prepareSignIn: async () => {},
+    signIn: async () => ({ siwe: "message", signature: "signature" }),
+  }),
   verifySession: async () => ({ token: "bearer", expiresIn: 3600, address: ADDRESS }),
 }));
 // The real plugin and storage are not what is under test: the config patch is empty, while the real
@@ -78,7 +82,7 @@ mock.module("@/lib/sessionRestore", () => ({
   ...restoreApi,
   browserIsOffline: () => false,
   restorePersistedSession: async () => (restoreAs === "restored"
-    ? { kind: "restored", tcw: fakeTcw(), address: ADDRESS }
+    ? { kind: "restored", tcw: makeTcw(), address: ADDRESS }
     : { kind: "signedOut" }),
 }));
 mock.module("@/lib/openkeySignOut", () => ({ ...signOutApi, signOutOpenKeySession: async () => ({ status: "cancelled" }) }));
@@ -148,6 +152,12 @@ async function click(label: string) {
   const button = [...host!.querySelectorAll("button")].find((entry) => entry.textContent?.trim() === label);
   expect(button, `missing ${label}; DOM=${host!.innerHTML}`).toBeTruthy();
   await act(async () => { button!.click(); await tick(); });
+  if (label === "Sign in") {
+    await settle();
+    const approval = [...host!.querySelectorAll("button")].find((entry) => entry.textContent?.trim() === "Continue to OpenKey");
+    if (!approval) throw new Error("Expected OpenKey approval action");
+    await act(async () => { approval.click(); await tick(); });
+  }
 }
 async function unmount() {
   if (root) await act(async () => root!.unmount());

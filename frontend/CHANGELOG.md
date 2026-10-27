@@ -1,5 +1,29 @@
 # @tinychat/frontend
 
+## 0.10.0-beta.57
+
+### Patch Changes
+
+- b4c2b24: Home signs in with the permissions in its manifest, including the requested secret decrypt grant.
+
+  Details: TC-2038
+
+- b4c2b24: Details: TC-1977 Store connector credentials in app named keys and move existing credentials after a separate approval.
+
+## 0.10.0-beta.56
+
+### Patch Changes
+
+- a6db78c: Keep keyboard focus inside the Powerful consent dialog and let Escape close only the dialog.
+
+## 0.10.0-beta.55
+
+### Patch Changes
+
+- ae0fbc6: Hide the TinyCloud button by default; add a Settings toggle and an Open row.
+
+  Update TinyCloud SDK to 3.8.0-beta.12 (panel delegation button, iPhone safe areas).
+
 ## 0.10.0-beta.54
 
 ### Patch Changes

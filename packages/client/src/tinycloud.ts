@@ -10,6 +10,7 @@ import type {
 } from "@tinycloud/web-sdk";
 import type { ISessionStorage, PersistedSessionData } from "@tinycloud/web-sdk";
 import type { EIP1193Provider } from "./openkey.js";
+import type OpenKey from "@openkey/sdk";
 
 // ── Configuration ────────────────────────────────────────────────────
 
@@ -18,6 +19,8 @@ export interface TinyCloudWebConfig {
   tinycloudRegistryUrl?: string | null;
   tinycloudFallbackHosts?: string[] | null;
   autoCreateSpace?: boolean;
+  /** Do not persist short-lived authorization sessions. */
+  persistSession?: boolean;
   siweConfig?: SiweConfig;
   /** Explicit SIWE authority when the app is served from a development URL. */
   domain?: string;
@@ -36,6 +39,8 @@ export interface TinyCloudWebConfig {
    * key never touches web storage.
    */
   sessionStorage?: ISessionStorage;
+  /** Panel layout: "native" inside the phone and desktop apps. Default "web". */
+  uiPlatform?: "native" | "web";
   /** SIWE nonce override. If set, `siweConfig.nonce` still wins inside the SDK. */
   nonce?: string;
   /**
@@ -44,6 +49,8 @@ export interface TinyCloudWebConfig {
    * Only the web flag in frontend/src/lib/replication sets it.
    */
   replication?: TinyCloudWebSdkConfig["replication"];
+  /** OpenKey authorize-sign client for app-key sign-in. */
+  openkey?: { client: OpenKey };
 }
 
 export interface RestoreTinyCloudWebSessionResult {
@@ -69,6 +76,7 @@ export function createTinyCloudWeb(
     tinycloudRegistryUrl: config?.tinycloudRegistryUrl,
     tinycloudFallbackHosts: config?.tinycloudFallbackHosts,
     autoCreateSpace: config?.autoCreateSpace ?? true,
+    ...(config?.persistSession === false ? { persistSession: false } : {}),
     sessionStorage: config?.sessionStorage ?? new BrowserSessionStorage(),
     sessionExpirationMs: SESSION_EXPIRATION_MS,
     nonce: config?.nonce,
@@ -77,7 +85,10 @@ export function createTinyCloudWeb(
     manifest,
     capabilityRequest: config?.capabilityRequest,
     includeAccountRegistryPermissions: false,
+    // The app owns the floating button (Settings toggle); the SDK default shows it.
+    ui: { button: false, platform: config?.uiPlatform ?? "web" },
     ...(config?.replication ? { replication: config.replication } : {}),
+    ...(config?.openkey ? { openkey: config.openkey } : {}),
     autoBootstrapAccount: false,
   };
 
@@ -103,7 +114,10 @@ export async function createAndSignIn(
   if (config?.nonce) {
     await tcw.clearPersistedSession(config.address);
   }
-  const session = await tcw.signIn(config?.nonce ? { nonce: config.nonce } : undefined);
+  if (config?.openkey) {
+    await tcw.prepareSignIn();
+  }
+  const session = await tcw.signIn(config?.openkey ? undefined : config?.nonce ? { nonce: config.nonce } : undefined);
   return { tcw, session };
 }
 
@@ -221,6 +235,8 @@ export async function restoreTinyCloudWebSession(
     manifest,
     capabilityRequest: config?.capabilityRequest,
     includeAccountRegistryPermissions: false,
+    // The app owns the floating button (Settings toggle); the SDK default shows it.
+    ui: { button: false, platform: config?.uiPlatform ?? "web" },
     ...(config?.replication ? { replication: config.replication } : {}),
   };
 

@@ -13,7 +13,7 @@
 // `@openkey/sdk-capacitor` is pinned to an exact published beta in
 // frontend/package.json and mobile/package.json.
 
-import { appPlatform, type AppPlatform } from "./platform";
+import { appPlatform, sdkUiPlatform, type AppPlatform } from "./platform";
 import type { EIP1193Provider, TinyCloudWebConfig } from "@tinyboilerplate/client";
 import type { Manifest, SpaceHostResult } from "@tinycloud/sdk-core";
 import type {
@@ -645,6 +645,7 @@ export async function installNativeSession(
     includeAccountRegistryPermissions: false,
     tinycloudHosts: [delegation.tinycloudHost, ...(config.tinycloudHosts ?? [config.tinycloudHost])].filter((host, index, hosts) => hosts.indexOf(host) === index),
     autoCreateSpace: false,
+    uiPlatform: sdkUiPlatform(),
     sessionStorage: storage,
     provider: createNativeReadOnlyProvider(address, chainId),
   });

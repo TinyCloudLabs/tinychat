@@ -6,6 +6,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { RootRoute } from "../landing/RootRoute";
+import { setAppsFeedEnabled } from "../lib/appsFeedFeature";
 import { useLocalThreadStorage } from "../lib/threadStore";
 import { accountStorageKey } from "../lib/voiceNotes/sourcePins";
 import { installDom } from "../test/dom";
@@ -50,6 +51,7 @@ function Screen({ load }: { load: () => Promise<FirstScreen> }) {
 async function mount(load: () => Promise<FirstScreen>) {
   expect(process.env.HOME).toBe(testHome);
   restoreDom = installDom();
+  setAppsFeedEnabled(true);
   const host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);

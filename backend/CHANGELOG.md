@@ -1,5 +1,21 @@
 # @tinychat/backend
 
+## 0.5.7-beta.22
+
+### Patch Changes
+
+- b4c2b24: Home signs in with the permissions in its manifest, including the requested secret decrypt grant.
+
+  Details: TC-2038
+
+## 0.5.7-beta.21
+
+### Patch Changes
+
+- ae0fbc6: Hide the TinyCloud button by default; add a Settings toggle and an Open row.
+
+  Update TinyCloud SDK to 3.8.0-beta.12 (panel delegation button, iPhone safe areas).
+
 ## 0.5.7-beta.20
 
 ### Patch Changes

@@ -1,6 +1,8 @@
 {
   "manifest_version": 1,
   "app_id": "xyz.tinycloud.tinychat",
+  "keys_app_id": "chat.tinycloud.tinychat",
+  "keys": [{ "prefix": "apps/chat.tinycloud.tinychat/", "abilities": ["key.create", "decrypt"] }],
   "name": "TinyCloud Home",
   "description": "TinyCloud Chat — a private AI chatbot. Conversations are stored in your TinyCloud space.",
   "defaults": false,
