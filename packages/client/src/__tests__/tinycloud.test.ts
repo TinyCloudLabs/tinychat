@@ -5,6 +5,7 @@ let lastRestoreAddress: string | undefined;
 let lastCleanupCalled = false;
 let lastClearPersistedSessionAddress: string | undefined;
 let lastSignInOptions: any;
+let prepareSignInCalls = 0;
 let restoreResult: any = { status: "restored", session: { address: "0xabc" } };
 let sdkSpaceId: string | undefined = "space-from-sdk";
 let persistedSession: any = null;
@@ -59,6 +60,10 @@ mock.module("@tinycloud/web-sdk", () => ({
       return signInSession;
     }
 
+    async prepareSignIn() {
+      prepareSignInCalls++;
+    }
+
     cleanup() {
       lastCleanupCalled = true;
     }
@@ -77,6 +82,35 @@ afterEach(() => {
 });
 
 describe("createTinyCloudWeb", () => {
+  test("keeps step-up authorization out of persisted sessions", () => {
+    const provider = { request: async () => null } as any;
+    createTinyCloudWeb(provider, { persistSession: false });
+    expect(lastTinyCloudConfig.persistSession).toBe(false);
+    createTinyCloudWeb(provider);
+    expect("persistSession" in lastTinyCloudConfig).toBe(false);
+  });
+  test("OpenKey app-key sessions use authorize-sign with the supplied manifest", async () => {
+    const provider = { request: async () => null } as any;
+    const openkey = { authorizeSign: async () => null } as any;
+    const manifest = {
+      manifest_version: 1 as const,
+      app_id: "xyz.tinycloud.tinychat",
+      name: "TinyCloud Chat",
+      defaults: false,
+      permissions: [],
+      keys_app_id: "chat.tinycloud.tinychat",
+      keys: [{ prefix: "apps/chat.tinycloud.tinychat/", abilities: ["key.create", "decrypt"] }],
+    };
+    const result = await createAndSignIn(provider, {
+      address: "0xabc", nonce: "nonce-1", manifest,
+      openkey: { client: openkey },
+    });
+    expect(result.session).toBe(signInSession);
+    expect(lastTinyCloudConfig.manifest).toBe(manifest);
+    expect(lastTinyCloudConfig.openkey).toEqual({ client: openkey });
+    expect(prepareSignInCalls).toBe(1);
+    expect(lastSignInOptions).toBeUndefined();
+  });
   test("requests only manifest permissions on fresh sign-in", () => {
     createTinyCloudWeb({ request: async () => null } as any);
     expect(lastTinyCloudConfig.includeAccountRegistryPermissions).toBe(false);

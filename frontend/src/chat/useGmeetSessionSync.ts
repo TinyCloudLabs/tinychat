@@ -60,12 +60,12 @@ import {
   type StoreResult,
 } from "@/lib/connectors/connectorStore";
 import {
-  getConnectorKey,
   isSecretsUnlocked,
   onSecretsUnlocked,
   type SecretsErr,
   type SecretsResult,
 } from "@/lib/connectors/connectorSecrets";
+import { getConnectorKey, isConnectorKeysReady } from "@/lib/connectors/namedConnectorSecrets";
 import { GmeetClient } from "@/lib/connectors/gmeetClient";
 import { googleRefreshGrant } from "@/lib/connectors/googleOAuthDesktop";
 import {
@@ -347,7 +347,7 @@ async function runGmeetSessionSync(
 
   // A property read, never a prompt. A locked vault DEFERS: no error surfaces,
   // no attempt is burned, and the unlock re-arm below (or "Sync now") covers it.
-  const unlocked = (hooks.isUnlocked ?? isSecretsUnlocked)(tcw);
+  const unlocked = (hooks.isUnlocked ?? ((client) => isConnectorKeysReady(client) || isSecretsUnlocked(client)))(tcw);
   if (!unlocked) return "vault-locked";
 
   if (signal?.aborted) return "aborted";
