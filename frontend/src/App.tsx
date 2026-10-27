@@ -1014,7 +1014,7 @@ export function App() {
               return;
             }
             // signIn() consumes the prepared session, so prepare again before the screen: the click then
-            // reaches OpenKey's popup synchronously instead of after the signer and host setup.
+            // reaches OpenKey's popup synchronously, without waiting on the signer and host setup first.
             signedTcw.prepareSignIn().then(() => setApproveWebSignIn(() => approve), reject);
           });
           return;
