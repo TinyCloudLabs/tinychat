@@ -1,4 +1,4 @@
-// The stop time's controls (TC-2182): +15 min, +30 min and No limit change the running recording's limit only.
+// The stop time's controls (TC-2182): +15 min, +30 min and Up to 8 h change the running recording's limit only.
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -37,7 +37,7 @@ describe("AutoStopControls", () => {
   test("each button asks for its own extension: 15 minutes, 30 minutes, none", async () => {
     const asked: Array<LimitExtension | undefined> = [];
     await show({ extendLimit: async (extension) => { asked.push(extension); } }, <AutoStopControls />);
-    for (const label of ["+15 min", "+30 min", "No limit"]) await act(async () => button(label)!.click());
+    for (const label of ["+15 min", "+30 min", "Up to 8 h"]) await act(async () => button(label)!.click());
     expect(asked).toEqual([15 * MIN, 30 * MIN, "none"]);
   });
 

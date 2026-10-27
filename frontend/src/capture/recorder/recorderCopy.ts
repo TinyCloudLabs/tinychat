@@ -39,13 +39,13 @@ export const STOP_AFTER_OPTIONS: readonly { value: "15" | "30" | "60" | "120" | 
   { value: "120", label: "2 h" },
   { value: "off", label: "Off (3-hour limit)" },
 ];
-export const STOP_AFTER_HINT = "New recordings stop by themselves after this long. Recordings never run longer than 3 hours.";
+export const STOP_AFTER_HINT = "New recordings stop by themselves after this long. A recording you extend while it's running can last up to 8 hours.";
 
 /** The time-limit controls under "Stops at …" while recording. */
 export const LIMIT_CONTROLS_LABEL = "Recording time limit";
 export const ADD_15_MIN = "+15 min";
 export const ADD_30_MIN = "+30 min";
-export const NO_LIMIT = "No limit";
+export const NO_LIMIT = "Up to 8 h";
 export const NO_LIMIT_HINT = "Cancels the stop time for this recording. It runs until you stop it.";
 export const LIMIT_CHANGE_FAILED = "The time limit could not be changed. The recording still stops at the time shown.";
 export const AUTO_STOP_OFF_HINT_PHONE = "The recording runs until you stop it.";
