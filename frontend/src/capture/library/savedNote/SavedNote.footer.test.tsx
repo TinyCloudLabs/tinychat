@@ -9,7 +9,7 @@ import { PlatformContext, appPlatform, type AppPlatform } from "@/lib/platform";
 import { registerDesktopWhisperQueue } from "@/lib/voiceNotes/desktop/desktopWhisper";
 import { installDom } from "@/test/dom";
 import { createFakeOnDeviceStt } from "@/lib/voiceNotes/fakeOnDeviceStt";
-import { __setVoiceNotesForTests, nativeVoiceNotesAvailable, VoiceNotes, type VoiceNoteRecording, type VoiceNotesPlugin } from "@/lib/voiceNotes/nativeVoiceNotes";
+import { __setVoiceNotesForTests, VoiceNotes, type VoiceNoteRecording, type VoiceNotesPlugin } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { __setOnDeviceSttForTests, OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
 import { __resetOnDeviceSttStoreForTests } from "@/lib/voiceNotes/onDeviceSttStore";
 import { __resetAutoNoteSyncForTests } from "@/lib/voiceNotes/useNotePipeline";
