@@ -31,7 +31,7 @@ interface RestoreConfig { provider?: { request(args: { method: string }): Promis
 const restoreConfigs: RestoreConfig[] = [];
 let replicationOn = true;
 
-function fakeTcw(): TinyCloudWeb {
+function makeTcw(): TinyCloudWeb {
   return { did: `did:pkh:eip155:1:${ADDRESS}`, spaceId: "space-a1", address: () => ADDRESS, sql: {}, kv: {}, secrets: {} } as unknown as TinyCloudWeb;
 }
 
@@ -40,12 +40,16 @@ mock.module("@tinyboilerplate/client", () => ({
   connectWallet: async () => ({ address: ADDRESS, openkey: {}, web3Provider: {} }),
   requestNonce: async () => "nonce",
   loadAppManifest: async () => ({}),
-  createAndSignIn: async () => ({ tcw: fakeTcw(), session: { siwe: "message", signature: "signature" } }),
+  createTinyCloudWeb: () => Object.assign(makeTcw(), {
+    clearPersistedSession: async () => {},
+    prepareSignIn: async () => {},
+    signIn: async () => ({ siwe: "message", signature: "signature" }),
+  }),
   verifySession: async () => ({ token: "bearer", expiresIn: 3600, address: ADDRESS }),
   // Records what the app's restore call passes; the real SDK is not under test here.
   restoreTinyCloudWebSession: async (_address: string, config: RestoreConfig) => {
     restoreConfigs.push(config);
-    return { status: "restored", tcw: fakeTcw() };
+    return { status: "restored", tcw: makeTcw() };
   },
 }));
 // The real plugin and storage are not what is under test: only whether the replication option is built.
@@ -117,6 +121,12 @@ async function click(label: string) {
   const button = [...host!.querySelectorAll("button")].find((entry) => entry.textContent?.trim() === label);
   expect(button, `missing ${label}; DOM=${host!.innerHTML}`).toBeTruthy();
   await act(async () => { button!.click(); await tick(); });
+  if (label === "Sign in") {
+    await settle();
+    const approval = [...host!.querySelectorAll("button")].find((entry) => entry.textContent?.trim() === "Continue to OpenKey");
+    if (!approval) throw new Error("Expected OpenKey approval action");
+    await act(async () => { approval.click(); await tick(); });
+  }
 }
 async function unmount() {
   if (root) await act(async () => root!.unmount());

@@ -70,7 +70,7 @@ export function activityForNote(view: NotePipelineView | undefined, platform: Ap
   const provider = view.provider ?? (input.route === "on-device" ? "local" : "unknown");
   const local = provider === "local";
   if (transcribe && input.route !== "off" && transcribe.state !== "done" && transcribe.state !== "skipped") {
-    const destination = local ? device : provider === "powerful" ? "Powerful (AssemblyAI)" : provider === "private" ? "Private transcription" : "transcription service";
+    const destination = local ? device : provider === "powerful" ? "Powerful" : provider === "private" ? "Private transcription" : "transcription service";
     const cloud = input.transcript.cloud;
     const phase = cloud?.kind === "active" ? cloud.status.kind : null;
     const od = input.transcript.onDevice;
@@ -146,7 +146,7 @@ export function activityForFileUpload(upload: UploadState | null, paused: Paused
   const title = upload?.fileName ?? paused!.fileName;
   if (!upload) return { title, jobs: [{ kind: "upload-audio", state: "waiting", label: "Upload audio", destination: "your TinyCloud space", detail: "Upload paused · Continue", action: { label: "Continue", run: actions.continue } }] };
   if (upload.stage === "saved" && upload.audio.stage === "stored") return null;
-  const destination = upload.engine === "assemblyai" ? "Powerful (AssemblyAI)" : "Private transcription";
+  const destination = upload.engine === "assemblyai" ? "Powerful" : "Private transcription";
   const failed = upload.stage === "failed";
   const transcribing = upload.stage === "queued" || upload.stage === "transcribing";
   const kind: ActivityKind = transcribing ? "transcribe" : upload.stage === "saving" ? "sync" : "upload-audio";

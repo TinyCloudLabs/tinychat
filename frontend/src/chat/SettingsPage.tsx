@@ -49,6 +49,7 @@ import { PageHeader } from "../shell/PageHeader";
 import { PATHS } from "../shell/routes";
 import { FirstScreenControl } from "../home/FirstScreenControl";
 import { setAppsFeedEnabled, useAppsFeedEnabled } from "../lib/appsFeedFeature";
+import { TinyCloudSettings } from "./TinyCloudSettings";
 
 /** An InfoTip beside a card title: a 44 px target on touch that doesn't push the title row taller. */
 const TITLE_TIP = "-my-3 -ml-2 fine:-my-1 fine:-ml-1";
@@ -286,6 +287,7 @@ export function SettingsPage({
               </div>
             </SectionCard>
           )}
+          <TinyCloudSettings tcw={tcw} />
           <SectionCard icon={SunIcon} title="Appearance">
             <AppearanceControl />
           </SectionCard>

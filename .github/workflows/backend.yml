@@ -22,6 +22,7 @@ on:
       - "bun.lock"
       - "turbo.json"
       - "docker-compose*.yml"
+      - "log-shipper/**"
       - ".github/scripts/**"
       - ".github/deploy-tools/**"
       - ".github/workflows/deploy-backend-phala.yml"
@@ -64,3 +65,14 @@ jobs:
 
       - name: Backend tests
         run: bun run --cwd backend test
+
+      - name: Vector config (log-shipper, pinned image)
+        run: |
+          set -euo pipefail
+          image="$(grep -o 'timberio/vector:[^"[:space:]]*@sha256:[0-9a-f]*' docker-compose.phala.yml | head -n 1)"
+          secrets="$(mktemp -d)"
+          printf 'ci-placeholder' > "$secrets/betterstack_source_token"
+          docker run --rm -v "$PWD/log-shipper:/ls:ro" -v "$secrets:/run/vector-secrets:ro" "$image" \
+            validate --no-environment --skip-healthchecks /ls/vector.yaml
+          docker run --rm -v "$PWD/log-shipper:/ls:ro" -v "$secrets:/run/vector-secrets:ro" "$image" \
+            test /ls/vector.yaml /ls/vector.tests.yaml

@@ -1,5 +1,34 @@
 # @tinychat/backend
 
+## 0.5.7-beta.22
+
+### Patch Changes
+
+- b4c2b24: Home signs in with the permissions in its manifest, including the requested secret decrypt grant.
+
+  Details: TC-2038
+
+## 0.5.7-beta.21
+
+### Patch Changes
+
+- ae0fbc6: Hide the TinyCloud button by default; add a Settings toggle and an Open row.
+
+  Update TinyCloud SDK to 3.8.0-beta.12 (panel delegation button, iPhone safe areas).
+
+## 0.5.7-beta.20
+
+### Patch Changes
+
+- 3ac6081: The production backend CVM now runs a private log shipper sidecar. It sends startup lines (including `[startup] FATAL` and crash lines), hosted-AssemblyAI events and alerts to a private Better Stack source as typed fields only. It is inert until its source token is set, never gates the backend, and changes nothing for users.
+
+## 0.5.7-beta.19
+
+### Patch Changes
+
+- 8b3b819: Hosted transcription refusals are now classified (rejected key, insufficient balance, rate limit) and reported to operators: one alert when AssemblyAI starts refusing, one when it recovers, one after three failed jobs in a row, a heartbeat every minute, and a read-only status for the monitoring probe. Nothing changes for users yet.
+- d826e26: Turn on TinyCloud-hosted AssemblyAI transcription for the Powerful choice.
+
 ## 0.5.7-beta.18
 
 ### Patch Changes

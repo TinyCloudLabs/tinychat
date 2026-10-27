@@ -18,6 +18,7 @@ import { chooseSystemAudio, needsSystemAudioDisclosure, SYSTEM_AUDIO_BODY, SYSTE
 import { SheetDialog } from "./final/SheetDialog";
 import { PRIVATE_CONSENT_ACTION, PRIVATE_CONSENT_TITLE, POWERFUL_CONSENT_ACTION, POWERFUL_CONSENT_BODY, POWERFUL_CONSENT_TITLE, privateConsentBody } from "./final/finalCopy";
 import { privateConsentDevice } from "./final/finalCopy";
+import { PowerfulConsentDescription } from "./final/PowerfulConsentDescription";
 import { markPrivateConsentPrompted, privateConsentWasPrompted } from "./privateConsentPrompt";
 import "@/capture/home/desktop/systemAudioStart.css";
 import { hapticRecordStarted, hapticSaved, hapticWarning } from "@/lib/haptics";
@@ -494,7 +495,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       {disclosure && <div className="dch-system-audio" data-testid={disclosure.kind === "system-audio" ? "system-audio-disclosure" : disclosure.kind === "powerful" ? "powerful-consent-disclosure" : "private-consent-disclosure"}>
         <SheetDialog role="dialog" titleId={disclosureTitleId} descriptionId={disclosureDescriptionId}
           title={disclosure.kind === "system-audio" ? SYSTEM_AUDIO_TITLE : disclosure.kind === "powerful" ? POWERFUL_CONSENT_TITLE : PRIVATE_CONSENT_TITLE}
-          description={disclosure.kind === "system-audio" ? SYSTEM_AUDIO_BODY : disclosure.kind === "powerful" ? POWERFUL_CONSENT_BODY : privateConsentBody(privateConsentDevice(platform))}
+          description={disclosure.kind === "system-audio" ? SYSTEM_AUDIO_BODY : disclosure.kind === "powerful" ? <PowerfulConsentDescription body={POWERFUL_CONSENT_BODY} /> : privateConsentBody(privateConsentDevice(platform))}
           onCancel={() => disclosure.kind === "system-audio" ? setDisclosure(null) : closePrivate(false)} returnFocus={disclosureOpener}>
           {disclosureError && <p role="alert">{disclosureError}</p>}
           <div className="dch-system-audio-actions">

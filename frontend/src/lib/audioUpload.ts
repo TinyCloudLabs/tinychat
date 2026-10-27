@@ -477,7 +477,7 @@ function failureOf(err: unknown): Failure {
     return {
       message:
         err.code === "active_transcription_exists"
-          ? "Another private cloud transcription for your account hasn't finished yet (it expires within 2 hours). Try again later, or use AssemblyAI."
+          ? "Another private cloud transcription for your account hasn't finished yet (it expires within 2 hours). Try again later, or use Powerful."
           : privateCloudMessage(err),
       reference: err.correlationId ?? err.transcriptionId,
       final: FINAL_CODES[err.code] === true,
@@ -757,7 +757,7 @@ export function createUploadRunner(): UploadRunner {
         let uploadRef = job.uploadRef ?? null;
         if (uploadRef === null) {
           const file = r.file;
-          if (file === null) throw new NeedsFileError("The upload didn't reach AssemblyAI before the page closed. Choose the file again.");
+          if (file === null) throw new NeedsFileError("The upload didn't reach the transcription service before the page closed. Choose the file again.");
           runSet(r, { stage: "uploading", uploadPct: 0, detail: null });
           uploadRef = await client.upload(file, {
             signal: r.signal,
@@ -769,7 +769,7 @@ export function createUploadRunner(): UploadRunner {
           // re-joins that submission instead of losing the file.
           job = runPersist(r, deps, { ...job, uploadRef, uploadCreatedAt: (deps.clock ?? REAL_CLOCK).now(), cleanup: undefined });
         }
-        runSet(r, { stage: "queued", uploadPct: null, detail: "Sending the file to AssemblyAI…" });
+        runSet(r, { stage: "queued", uploadPct: null, detail: "Sending the file to the transcription service…" });
         let created: AssemblyAiTranscript;
         // Persist before sending: a lost response or reload cannot prove the POST wasn't accepted.
         if (job.assemblyAiMode === "hosted") job = runPersist(r, deps, { ...job, uploadSubmitting: true });
@@ -790,12 +790,12 @@ export function createUploadRunner(): UploadRunner {
     };
     if (job.assemblyAiMode === "hosted") await withHostedUploadQueue(deps.tcw.did, async () => { stillLive(r); await prepareUpload(); });
     else await prepareUpload();
-    runSet(r, { stage: "queued", uploadPct: null, detail: "Queued at AssemblyAI…" });
+    runSet(r, { stage: "queued", uploadPct: null, detail: "Queued at the transcription service…" });
     const done = await pollAssemblyAiTranscript(client, job.jobId!, {
       clock: deps.clock,
       signal: r.signal,
       onStatus: (s) =>
-        runSet(r, { stage: s === "queued" ? "queued" : "transcribing", detail: s === "queued" ? "Queued at AssemblyAI…" : "Transcribing at AssemblyAI…" }),
+        runSet(r, { stage: s === "queued" ? "queued" : "transcribing", detail: s === "queued" ? "Queued at the transcription service…" : "Transcribing at the transcription service…" }),
     });
     const diarized = job.diarize && (done.utterances?.length ?? 0) > 0;
     return {
@@ -887,7 +887,7 @@ export function createUploadRunner(): UploadRunner {
         stillLive(r);
         forget(deps);
         if (retention) set({ stage: "failed", cleanupPending: false, detail: null, error: {
-          message: "The upload outcome is no longer available; AssemblyAI's retention settings handle any leftover copy.", reference: null, retry: false,
+          message: "The upload outcome is no longer available; the transcription service's retention settings handle any leftover copy.", reference: null, retry: false,
         } });
         else {
           state = null;

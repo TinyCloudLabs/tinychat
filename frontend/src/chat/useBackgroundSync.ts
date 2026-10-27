@@ -13,6 +13,7 @@ import {
   unlockSecrets,
   type SecretsErr,
 } from "@/lib/connectors/connectorSecrets";
+import { isConnectorKeysReady } from "@/lib/connectors/namedConnectorSecrets";
 import { ingestQueuedMeetings } from "@/lib/connectors/targetedSync";
 import {
   subscribeTranscriptConsent, transcriptConsentState, type TranscriptConsentState,
@@ -129,7 +130,7 @@ export function useBackgroundSync({
       publishBackgroundDrainConnectorState(
         descriptor.source,
         next,
-        !isSecretsUnlocked(tcw),
+        !(isConnectorKeysReady(tcw) || isSecretsUnlocked(tcw)),
         publishGeneration,
       );
       if (!alive.current) return;
@@ -143,7 +144,7 @@ export function useBackgroundSync({
       source: descriptor.source,
       webhooks,
       secrets: {
-        isUnlocked: () => isSecretsUnlocked(tcw),
+        isUnlocked: () => isConnectorKeysReady(tcw) || isSecretsUnlocked(tcw),
         // Reachable ONLY from the user-initiated sync action — never on mount.
         unlock: () => unlockSecrets<SecretsErr>(tcw),
       },

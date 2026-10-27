@@ -1,5 +1,29 @@
 # exo-desktop
 
+## 0.10.0-beta.57
+
+### Patch Changes
+
+- b4c2b24: Home signs in with the permissions in its manifest, including the requested secret decrypt grant.
+
+  Details: TC-2038
+
+## 0.10.0-beta.56
+
+No changes in this release.
+
+## 0.10.0-beta.55
+
+No changes in this release.
+
+## 0.10.0-beta.54
+
+No changes in this release.
+
+## 0.10.0-beta.53
+
+No changes in this release.
+
 ## 0.10.0-beta.52
 
 No changes in this release.
