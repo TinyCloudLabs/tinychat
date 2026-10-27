@@ -50,6 +50,7 @@ const NOTICE = "Sign in once more so TinyCloud Home can open your apps and your 
 
 /** Every effect the gate must order, in the order it happened. */
 const events: string[] = [];
+const manifestUrls: string[] = [];
 let handoffResult: { ok: boolean; failClosed: boolean; message: string | null } = { ok: true, failClosed: false, message: null };
 let offline = false;
 /** What the backend serves at /api/manifest: this build's manifest.json, the same without the bundle (an older backend), or nothing. */
@@ -70,7 +71,8 @@ mock.module("@tinyboilerplate/client", () => ({
   ...clientApi,
   connectWallet: async () => ({ address: ADDRESS, openkey: {}, web3Provider: {} }),
   requestNonce: async () => "nonce",
-  loadAppManifest: async () => {
+  loadAppManifest: async (url: string) => {
+    manifestUrls.push(url);
     events.push("loadManifest");
     if (served === "unreachable") throw new TypeError("Failed to fetch");
     return served === "old" ? oldManifest : realManifest;
@@ -230,6 +232,7 @@ function seedSession() {
 const realFetch = globalThis.fetch;
 beforeEach(() => {
   events.length = 0;
+  manifestUrls.length = 0;
   offline = false;
   served = "full";
   handoffResult = { ok: true, failClosed: false, message: null };
@@ -256,6 +259,8 @@ test("desktop: a forced re-sign shows the re-sign notice on the offline recorder
   await settle();
   // The ready shell is the mocked recorder shell here, so sign-in is proven by the sign-in call and the recorded revision.
   expect(events).toEqual(["loadManifest", "handoff", `clearPersisted:${ADDRESS}`, "loadManifest", "signIn", "sync"]);
+  // The restore gate and the sign-in prefetch both load the web's own OpenKey manifest file, not /api/manifest.
+  expect(manifestUrls).toEqual(["/.well-known/openkey-manifest.json", "/.well-known/openkey-manifest.json"]);
   expect(localStorage.getItem(REVISION_KEY)).toBe("3");
 });
 

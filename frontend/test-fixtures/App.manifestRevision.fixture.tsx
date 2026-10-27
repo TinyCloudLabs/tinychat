@@ -55,6 +55,7 @@ const NOTICE = "Sign in once more so TinyCloud Home can open your apps and your 
 
 /** Every effect the gate must order, in the order it happened. */
 const events: string[] = [];
+const manifestUrls: string[] = [];
 let syncCalls = 0;
 let handoffResult: { ok: boolean; failClosed: boolean; message: string | null } = { ok: true, failClosed: false, message: null };
 let offline = false;
@@ -78,7 +79,8 @@ mock.module("@tinyboilerplate/client", () => ({
   ...clientApi,
   connectWallet: async () => ({ address: ADDRESS, openkey: {}, web3Provider: {} }),
   requestNonce: async () => "nonce",
-  loadAppManifest: async () => {
+  loadAppManifest: async (url: string) => {
+    manifestUrls.push(url);
     events.push("loadManifest");
     if (served === "unreachable") throw new TypeError("Failed to fetch");
     return served === "old" ? oldManifest : realManifest;
@@ -222,6 +224,7 @@ function seedSession() {
 const realFetch = globalThis.fetch;
 beforeEach(() => {
   events.length = 0;
+  manifestUrls.length = 0;
   syncCalls = 0;
   offline = false;
   served = "full";
@@ -292,6 +295,9 @@ test("a backend still serving the older manifest: the stale session is kept, not
   expect(events).not.toContain("handoff");
   expect(events.filter((event) => event.startsWith("clearPersisted"))).toEqual([]);
   expect(events).toContain("restore");
+  // The bundle gate, the key gate and the session restore each load the web's own OpenKey manifest file, not /api/manifest.
+  expect(manifestUrls).toHaveLength(3);
+  expect(manifestUrls.every((url) => url === "/.well-known/openkey-manifest.json")).toBe(true);
   expect(host!.textContent).not.toContain(NOTICE);
   expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeTruthy();
 });
