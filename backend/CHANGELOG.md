@@ -1,5 +1,11 @@
 # @tinychat/backend
 
+## 0.5.7-beta.24
+
+### Patch Changes
+
+- 8b6848e: Details: TC-1977 Store connector credentials in app named keys again. Web sign-in runs OpenKey's authorize review inside the embedded OpenKey frame, so it needs no popup or extra approval screen, and the web reads its manifest, with the named-key declaration, from its own /.well-known/openkey-manifest.json, the file OpenKey verifies. The backend's /api/manifest carries no key declaration.
+
 ## 0.5.7-beta.23
 
 ### Patch Changes
