@@ -46,9 +46,9 @@ export const LIMIT_CONTROLS_LABEL = "Recording time limit";
 export const ADD_15_MIN = "+15 min";
 export const ADD_30_MIN = "+30 min";
 export const NO_LIMIT = "Up to 8 h";
-export const NO_LIMIT_HINT = "Cancels the stop time for this recording. It runs until you stop it.";
+export const NO_LIMIT_HINT = "Removes the stop time for this recording. It runs until you stop it, for up to 8 hours.";
 export const LIMIT_CHANGE_FAILED = "The time limit could not be changed. The recording still stops at the time shown.";
-export const AUTO_STOP_OFF_HINT_PHONE = "The recording runs until you stop it.";
+export const AUTO_STOP_OFF_HINT_PHONE = "The recording runs until you stop it, for up to 8 hours.";
 
 export const KEEP_RECORDING_TITLE = "Keep recording?";
 export const keepRecordingBody = (stopAt: string) => `This recording stops at ${stopAt} unless you keep going.`;
