@@ -18,7 +18,6 @@ import {
   connectWallet,
   createTinyCloudWeb,
   createApiClient,
-  loadAppManifest,
   requestNonce,
   restoreTinyCloudWebSession,
   verifySession,
@@ -30,6 +29,7 @@ import {
 } from "@tinyboilerplate/core";
 import { applyConnectorKeyRevisionGate, recordConnectorKeyRevision } from "./lib/connectors/namedKeyRevision";
 import { connectorSignInManifest } from "./lib/connectors/connectorKeyMode";
+import { loadWebManifest } from "./lib/appManifest";
 import { replicationConfigPatch, startReplicationFill } from "./lib/replication/replicationClient";
 import { rememberReplicationPrincipal } from "./lib/replication/replicationCopyMarker";
 import { purgeReplicaCopyWhenOffOnce } from "./lib/replication/replicationOffPurge";
@@ -211,7 +211,6 @@ export function App() {
   const memoryRef = useRef<string | null>(null);
 
   const [state, setState] = useState<AppState>("booting");
-  const [approveWebSignIn, setApproveWebSignIn] = useState<(() => void) | null>(null);
   const [address, setAddress] = useState<string | null>(null);
   const [did, setDid] = useState<string | null>(null);
   const [spaceId, setSpaceId] = useState<string | null>(null);
@@ -568,7 +567,7 @@ export function App() {
         store: browserRevisionStore(),
         address: sessionStoreRef.current.getAddress(),
         isOffline: browserIsOffline,
-        servedManifestCarriesBundle: async () => manifestCarriesBundle(await loadAppManifest(`${BACKEND_URL}/api/manifest`)),
+        servedManifestCarriesBundle: async () => manifestCarriesBundle(await loadWebManifest(`${BACKEND_URL}/api/manifest`)),
         handoff: captureHandoff,
         clearSession: (address) => {
           clearPersistedSession(address);
@@ -588,7 +587,7 @@ export function App() {
         store: browserRevisionStore(),
         address: sessionStoreRef.current.getAddress(),
         isOffline: browserIsOffline,
-        loadManifest: () => loadAppManifest(`${BACKEND_URL}/api/manifest`),
+        loadManifest: () => loadWebManifest(`${BACKEND_URL}/api/manifest`),
         handoff: captureHandoff,
         clearSession: (storedAddress) => {
           clearPersistedSession(storedAddress);
@@ -618,7 +617,7 @@ export function App() {
           // manifest-less client as ready. Offline, the backoff would only hold
           // the user on a spinner for ~15s before saying so: one attempt.
           const manifest = await fetchConfigWithRetry(
-            () => loadAppManifest(`${BACKEND_URL}/api/manifest`),
+            () => loadWebManifest(`${BACKEND_URL}/api/manifest`),
             { maxAttempts: browserIsOffline() ? 1 : 4 },
           );
           if (!manifest)
@@ -964,7 +963,7 @@ export function App() {
         setState("ready");
         return;
       }
-      prefetch = createWebSignInPrefetch(BACKEND_URL, { requestNonce, loadManifest: loadAppManifest });
+      prefetch = createWebSignInPrefetch(BACKEND_URL, { requestNonce, loadManifest: loadWebManifest });
       const { address: connectedAddress, openkey, web3Provider } = await connectWallet({
         appName: APP_NAME,
         host: OPENKEY_HOST,
@@ -988,7 +987,7 @@ export function App() {
         tinycloudHosts: TINYCLOUD_HOSTS,
         uiPlatform: sdkUiPlatform(),
         manifest: connectorSignInManifest(manifest, connectedAddress),
-        openkey: { client: openkey },
+        openkey: { client: openkey, mode: "iframe" as const },
         // The dev WebView runs at localhost:5186, whose port the SDK signs into
         // SIWE's domain. Production accepts the fixed Tauri hostname instead.
         ...(import.meta.env.DEV && "__TAURI_INTERNALS__" in globalThis ? { domain: "localhost" } : {}),
@@ -1000,12 +999,7 @@ export function App() {
       if (LOCAL_VALIDATION) await prepareLocalSignIn(signedTcw);
       await signedTcw.clearPersistedSession(connectedAddress);
       await signedTcw.prepareSignIn();
-      const session = await new Promise<Awaited<ReturnType<TinyCloudWeb["signIn"]>>>((resolve, reject) => {
-        setApproveWebSignIn(() => () => {
-          setApproveWebSignIn(null);
-          void signedTcw.signIn().then(resolve, reject);
-        });
-      });
+      const session = await signedTcw.signIn();
 
       rememberReplicationPrincipal(signedTcw);
       // Exchange the SIWE message for a backend Bearer token (for /api/chat).
@@ -1037,7 +1031,6 @@ export function App() {
       setError(describeAuthFailure(caught));
       setState("recoverableError");
     } finally {
-      setApproveWebSignIn(null);
       if (prefetch) {
         prefetch.cancel();
       }
@@ -1396,7 +1389,7 @@ export function App() {
             screen={screen}
             platform={platform}
             pendingMeetings={0}
-            chat={<BootSurface state={state} error={error} onAction={authAction} approvalAction={approveWebSignIn ?? undefined} approvalReady={!!approveWebSignIn} />}
+            chat={<BootSurface state={state} error={error} onAction={authAction} />}
             capture={<DeviceCaptureSurface did={did} offline={state === "offline"} error={error}
               resign={state === "unauthenticated" && error === MANIFEST_RESIGN_NOTICE}
               onSignIn={authAction} onRetry={() => void restoreSession()} screen={screen} />}
@@ -1409,7 +1402,7 @@ export function App() {
             {nativeSignInFlow.screenShown
                 ? <NativeSignIn state={state} error={error} onSignIn={(hints) => void signIn(hints)}
                   onClose={nativeSignInFlow.onClose} />
-                : <BootSurface state={state} error={error} onAction={authAction} approvalAction={approveWebSignIn ?? undefined} approvalReady={!!approveWebSignIn} home={platform === "web"} />}
+                : <BootSurface state={state} error={error} onAction={authAction} home={platform === "web"} />}
           </main>
         )}
       </div>

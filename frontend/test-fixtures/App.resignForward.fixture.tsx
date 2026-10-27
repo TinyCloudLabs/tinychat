@@ -253,7 +253,6 @@ test("desktop: a forced re-sign shows the re-sign notice on the offline recorder
   expect(surface!.textContent).toContain("Recordings stay on");
   expect([...surface!.querySelectorAll("button")].some((button) => button.textContent?.trim() === "Record")).toBe(true);
   await click("Sign in");
-  await click("Continue to OpenKey");
   await settle();
   // The ready shell is the mocked recorder shell here, so sign-in is proven by the sign-in call and the recorded revision.
   expect(events).toEqual(["loadManifest", "handoff", `clearPersisted:${ADDRESS}`, "loadManifest", "signIn", "sync"]);

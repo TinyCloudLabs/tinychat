@@ -121,12 +121,6 @@ async function click(label: string) {
   const button = [...host!.querySelectorAll("button")].find((entry) => entry.textContent?.trim() === label);
   expect(button, `missing ${label}; DOM=${host!.innerHTML}`).toBeTruthy();
   await act(async () => { button!.click(); await tick(); });
-  if (label === "Sign in") {
-    await settle();
-    const approval = [...host!.querySelectorAll("button")].find((entry) => entry.textContent?.trim() === "Continue to OpenKey");
-    if (!approval) throw new Error("Expected OpenKey approval action");
-    await act(async () => { approval.click(); await tick(); });
-  }
 }
 async function unmount() {
   if (root) await act(async () => root!.unmount());

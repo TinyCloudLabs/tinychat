@@ -103,11 +103,11 @@ describe("createTinyCloudWeb", () => {
     };
     const result = await createAndSignIn(provider, {
       address: "0xabc", nonce: "nonce-1", manifest,
-      openkey: { client: openkey },
+      openkey: { client: openkey, mode: "iframe" },
     });
     expect(result.session).toBe(signInSession);
     expect(lastTinyCloudConfig.manifest).toBe(manifest);
-    expect(lastTinyCloudConfig.openkey).toEqual({ client: openkey });
+    expect(lastTinyCloudConfig.openkey).toEqual({ client: openkey, mode: "iframe" });
     expect(prepareSignInCalls).toBe(1);
     expect(lastSignInOptions).toBeUndefined();
   });

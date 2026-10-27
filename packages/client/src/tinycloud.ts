@@ -49,8 +49,12 @@ export interface TinyCloudWebConfig {
    * Only the web flag in frontend/src/lib/replication sets it.
    */
   replication?: TinyCloudWebSdkConfig["replication"];
-  /** OpenKey authorize-sign client for app-key sign-in. */
-  openkey?: { client: OpenKey };
+  /**
+   * OpenKey authorize-sign client for app-key sign-in. `mode: "iframe"` runs the
+   * authorize review inside the embedded OpenKey frame, which is the only place
+   * the connect session exists; a popup would open openkey.so without it.
+   */
+  openkey?: { client: OpenKey; mode: "iframe" };
 }
 
 export interface RestoreTinyCloudWebSessionResult {

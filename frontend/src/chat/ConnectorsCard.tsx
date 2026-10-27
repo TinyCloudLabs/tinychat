@@ -319,7 +319,6 @@ export function ConnectorsCard({
   const [migrationDescriptor, setMigrationDescriptor] = useState<ConnectorDescriptor | null>(null);
   const [migrationBusy, setMigrationBusy] = useState(false);
   const [migrationError, setMigrationError] = useState<string | null>(null);
-  const [preparedMigration, setPreparedMigration] = useState<{ signIn(): Promise<TinyCloudWeb>; cleanup(): void } | null>(null);
   // What the engine is doing right now, including runs this card did not start (the
   // session-start lane, the connect dialog's background Notes).
   const gmeetStatus = useGmeetRowStatus(tcw, { connected: rows[GMEET_CONNECTOR_ID].connection?.status === "connected" });
@@ -595,36 +594,21 @@ export function ConnectorsCard({
     syncAbortRefs.current[id]?.abort();
   }, []);
 
-  const prepareConnectorMigration = useCallback(async () => {
-    if (!migrationDescriptor || migrationBusy || !tcw.did) return;
-    setMigrationBusy(true);
-    setMigrationError(null);
-    try {
-      const { prepareLegacyConnectorRead } = await import("@/lib/connectors/connectorMigration");
-      setPreparedMigration(await prepareLegacyConnectorRead({
-        ownerDid: tcw.did, connectorName: migrationDescriptor.name, backendUrl, tinycloudHosts: tcw.hosts,
-        openkeyHost: import.meta.env.VITE_OPENKEY_HOST || "https://openkey.so",
-      }));
-    } catch (caught) {
-      setMigrationError(isOpenKeyUserDecline(caught) ? migrationDeclinedMessage(migrationDescriptor)
-        : caught instanceof Error ? caught.message : "Couldn't start the approval. Try again.");
-    } finally {
-      setMigrationBusy(false);
-    }
-  }, [migrationDescriptor, migrationBusy, tcw, backendUrl]);
-
   const migrateConnector = useCallback(async () => {
     const descriptor = migrationDescriptor;
-    if (!descriptor || migrationBusy || !preparedMigration) return;
-    const legacySignIn = preparedMigration.signIn();
+    if (!descriptor || migrationBusy || !tcw.did) return;
     setMigrationBusy(true);
     setMigrationError(null);
+    let prepared: { signIn(): Promise<TinyCloudWeb>; cleanup(): void } | null = null;
     try {
-      const result = await readOrMigrateConnectorKey(
-        tcw,
-        descriptor,
-        () => legacySignIn,
-      );
+      // Lazy chunk: the legacy OpenKey client loads only when a user moves a key.
+      const { prepareLegacyConnectorRead } = await import("@/lib/connectors/connectorMigration");
+      prepared = await prepareLegacyConnectorRead({
+        ownerDid: tcw.did, connectorName: descriptor.name, backendUrl, tinycloudHosts: tcw.hosts,
+        openkeyHost: import.meta.env.VITE_OPENKEY_HOST || "https://openkey.so",
+      });
+      const legacy = prepared;
+      const result = await readOrMigrateConnectorKey(tcw, descriptor, () => legacy.signIn());
       if (!result.ok) {
         setMigrationError(result.error.message);
         return;
@@ -632,13 +616,13 @@ export function ConnectorsCard({
       setMigrationDescriptor(null);
       void handleSyncNow(descriptor);
     } catch (caught) {
-      setMigrationError(caught instanceof Error ? caught.message : "The approval didn't finish. Try again.");
+      setMigrationError(isOpenKeyUserDecline(caught) ? migrationDeclinedMessage(descriptor)
+        : caught instanceof Error ? caught.message : "The approval didn't finish. Try again.");
     } finally {
-      preparedMigration.cleanup();
-      setPreparedMigration(null);
+      prepared?.cleanup();
       setMigrationBusy(false);
     }
-  }, [migrationDescriptor, migrationBusy, preparedMigration, tcw, handleSyncNow]);
+  }, [migrationDescriptor, migrationBusy, tcw, backendUrl, handleSyncNow]);
 
   const gmeetQueued = rows[GMEET_CONNECTOR_ID].queuedSync;
   // The accepted offer to wait: once nothing is running, start the press that was refused.
@@ -759,11 +743,7 @@ export function ConnectorsCard({
         />
       )}
       <AlertDialog open={migrationDescriptor !== null} onOpenChange={(open) => {
-        if (!open && !migrationBusy) {
-          preparedMigration?.cleanup();
-          setPreparedMigration(null);
-          setMigrationDescriptor(null);
-        }
+        if (!open && !migrationBusy) setMigrationDescriptor(null);
       }}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -777,8 +757,8 @@ export function ConnectorsCard({
             <AlertDialogCancel disabled={migrationBusy} onClick={() => {
               if (migrationDescriptor) patchRow(migrationDescriptor.id, { actionError: migrationDeclinedMessage(migrationDescriptor) });
             }}>Later</AlertDialogCancel>
-            <Button type="button" disabled={migrationBusy} onClick={() => void (preparedMigration ? migrateConnector() : prepareConnectorMigration())}>
-              {migrationBusy ? "Moving your key…" : preparedMigration ? "Continue to OpenKey" : "Get ready"}
+            <Button type="button" disabled={migrationBusy} onClick={() => void migrateConnector()}>
+              {migrationBusy ? "Moving your key…" : "Continue"}
             </Button>
           </AlertDialogFooter>
         </AlertDialogContent>
