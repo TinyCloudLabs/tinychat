@@ -23,6 +23,7 @@ import {
   type SavedNoteLayout,
 } from "./SavedNoteView";
 import { useSavedNoteScreen } from "./useSavedNoteScreen";
+import { TitleWithRename, useRecordingTitleEdit } from "../rename/RecordingRename";
 
 export interface SavedNoteProps {
   item: LibraryItem;
@@ -82,6 +83,7 @@ function SavedNoteContent({
   const status = noteStatus(jobs, pipeline?.pipeline, false);
   const actions = jobs.flatMap((job) => job.action ? [job.action] : job.retry ? [{ label: "Try again", run: job.retry }] : []);
   const cloudFailedWithoutRetry = pipeline?.input?.route === "private-cloud" && pipeline.pipeline.steps.some((step) => step.key === "transcript" && step.state === "failed" && !step.blocker?.action);
+  const titleEdit = useRecordingTitleEdit(item, item.title ?? voiceNoteTitle(Date.parse(item.startedAt ?? "") || Date.now()));
   const view = {
     screen,
     layout,
@@ -108,6 +110,7 @@ function SavedNoteContent({
     // metadata read is not a route: the footer's "Try again" is the only way to read it again, so it stays.
     footer: stepperShown && metadata?.status !== "failed" ? null : footer,
     activityControl,
+    renameTitle: (heading: ReactNode) => <TitleWithRename edit={titleEdit} heading={heading} />,
     partialAudio:
       recorder.captureIssues[item.sourceId]?.kind === "partial_audio",
     onBack,

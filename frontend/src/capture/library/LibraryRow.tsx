@@ -14,6 +14,7 @@ import { SoftRow } from "../home/SoftRow";
 import { useSoftHome } from "../home/softHome";
 import { VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
 import { formatClockDuration, rowWhen } from "./formatters";
+import { RecordingTitleEditField, RenameRecordingButton, useRecordingTitleEdit, useUserTitle } from "./rename/RecordingRename";
 import { RowBadge } from "./RowBadge";
 import { KIND_ICON, libraryKind, librarySourceLabel } from "./libraryKinds";
 import type { NotePipeline } from "@/lib/voiceNotes/notePipeline";
@@ -78,13 +79,15 @@ function LibraryRowContent(props: LibraryRowProps & { activityStatus: string | n
   const status = props.activityStatus;
   const badge = status ? null : libraryRowBadge(item);
   const transcriptStatus = props.pipeline ? pipelineTranscriptStatus(props.pipeline) : null;
+  const title = useUserTitle(item) ?? libraryRowTitle(item);
+  const edit = useRecordingTitleEdit(item, title);
   if (soft) {
     const issue = issueForItem(item, soft.issues);
     const lineReplaced = issue !== undefined && !issueIsInformational(issue);
     return (
       <SoftRow
         icon={Icon}
-        title={libraryRowTitle(item)}
+        title={title}
         meta={libraryRowMeta(item, props.now, props.grouped)}
         badge={lineReplaced || (isVoiceNote(item) && item.metadata?.audio_stored !== 0) ? undefined : (badge ?? undefined)}
         pipeline={status ? undefined : isVoiceNote(item) ? props.pipeline : undefined}
@@ -100,14 +103,19 @@ function LibraryRowContent(props: LibraryRowProps & { activityStatus: string | n
         selected={props.selected}
         testId={props.testId ?? (voiceNote ? "voice-note-item" : "library-item")}
         sourceId={voiceNote ? item.sourceId : undefined}
+        {...(edit ? { editor: edit.editing ? <RecordingTitleEditField edit={edit} /> : undefined, trailing: edit.editing ? undefined : <RenameRecordingButton edit={edit} /> } : {})}
       />
     );
   }
+  if (edit?.editing) {
+    return <li className="flex items-center gap-2 px-2 py-1" data-testid={props.testId ?? (voiceNote ? "voice-note-item" : "library-item")} data-source-id={voiceNote ? item.sourceId : undefined}><RecordingTitleEditField edit={edit} /></li>;
+  }
   return (
     <ListRow
+      trailing={edit ? <RenameRecordingButton edit={edit} /> : undefined}
       href={notePath(item.id)}
       leading={<Icon />}
-      title={libraryRowTitle(item)}
+      title={title}
       selected={props.selected}
       meta={
         <>

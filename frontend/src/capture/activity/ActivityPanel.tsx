@@ -8,6 +8,7 @@ import { logPipeline } from "@/lib/debugLog";
 import type { NotePipelineView } from "@/lib/voiceNotes/useNotePipeline";
 import type { LibraryItem } from "../library/LibraryRow";
 import { activityForFileUpload, activityForNote, type ActivityJob, type ActivityState } from "./activitySelector";
+import { useUserTitle } from "../library/rename/RecordingRename";
 
 export interface ActivityNote { item: LibraryItem; jobs: ActivityJob[]; openLabel?: string }
 
@@ -26,10 +27,11 @@ function sameJobs(a: readonly ActivityJob[], b: readonly ActivityJob[]): boolean
 
 export const ActivityNoteSection = memo(function ActivityNoteSection(props: ActivityNote & { onOpenNote: (id: string) => void; onClose: () => void; onRendered?: (id: string) => void }) {
   const { item, jobs } = props;
+  const heading = useUserTitle(item) ?? item.snippet ?? item.title ?? "Voice note";
   const [copyResult, setCopyResult] = useState<"copied" | "failed" | null>(null);
   useEffect(() => { props.onRendered?.(item.sourceId); }, [props.onRendered, item.sourceId, jobs]);
-  return <section className="border-b border-border py-4 first:pt-1" aria-label={item.snippet ?? item.title ?? "Voice note"} data-activity-note={item.sourceId}>
-    <div className="mb-2 flex flex-wrap items-center justify-between gap-2"><h3 className="font-medium">{item.snippet ?? item.title ?? "Voice note"}</h3><button type="button" className="min-h-11 text-callout text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => { props.onClose(); props.onOpenNote(item.id); }}>{props.openLabel ?? "Open note"}</button></div>
+  return <section className="border-b border-border py-4 first:pt-1" aria-label={heading} data-activity-note={item.sourceId}>
+    <div className="mb-2 flex flex-wrap items-center justify-between gap-2"><h3 className="font-medium">{heading}</h3><button type="button" className="min-h-11 text-callout text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => { props.onClose(); props.onOpenNote(item.id); }}>{props.openLabel ?? "Open note"}</button></div>
     <ul className="space-y-3">{jobs.map((job) => <li key={job.kind} className="text-callout" data-state={job.state} data-track={job.kind}>
       <div className="flex flex-wrap items-center justify-between gap-x-2"><span className="font-medium">{job.label} · {job.destination}</span><span className={job.state === "needs-attention" ? "text-amber-700 dark:text-amber-300" : "text-muted-foreground"}>{job.state === "needs-attention" ? "Needs attention" : job.state === "running" ? "In progress" : job.state === "retrying" ? "Retrying" : "Waiting"}</span></div>
       <p className="mt-1 text-muted-foreground">{job.detail}</p>

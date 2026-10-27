@@ -64,6 +64,7 @@ import { ActivityPanel } from "./activity/ActivityPanel";
 import { FailureNotificationHost } from "./activity/FailureNotificationHost";
 import { sidebarActivityStore } from "./activity/sidebarActivityStore";
 import type { NotePipelineSource } from "@/lib/voiceNotes/useNotePipeline";
+import { RecordingRenameProvider } from "./library/rename/RecordingRename";
 
 export interface CaptureSurfaceProps {
   tcw: TinyCloudWeb;
@@ -249,6 +250,7 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
   const openNotificationPath = useCallback((path: string) => navigate(path), [navigate]);
 
   return (
+    <RecordingRenameProvider tcw={tcw}>
     <div
       className={wide && !homeOnly && !notePage ? "grid h-full grid-cols-[minmax(0,22.5rem)_minmax(0,1fr)]" : "relative h-full"}
       data-testid="capture-surface"
@@ -381,5 +383,6 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
         <RecentNotePendingSheet listing={library.listing} failed={library.status === "failed"} onRetry={library.retry} onClose={closeRecentNote} suspended={recorder.sheetOpen} />
       )}
     </div>
+    </RecordingRenameProvider>
   );
 }

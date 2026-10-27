@@ -52,6 +52,7 @@ import type { LibraryStatus } from "./LibraryListView";
 import { LazySavedNote } from "./savedNote/LazySavedNote";
 import { SAVED_NOTE_COPY } from "./savedNote/savedNoteCopy";
 import type { SavedNoteStore } from "./savedNote/savedNoteStore";
+import { NoteHeaderTitle } from "./rename/RecordingRename";
 
 export type AudioLoad = (signal: AbortSignal, onProgress: (loadedBytes: number, totalBytes: number) => void) => Promise<Blob | string | null>;
 
@@ -602,8 +603,7 @@ function NoteDetailViewContent(props: NoteDetailViewProps) {
   return (
     <Frame title={title} pushed={props.pushed} onBack={props.onBack} activityControl={props.activityControl}>
       <header className="flex flex-col gap-1" data-testid="note-detail" data-note-id={item.id}>
-        {!props.pushed && <h2 className="font-display text-title-1 [overflow-wrap:anywhere]">{title}</h2>}
-        <p className="tnum text-meta text-muted-foreground">{noteMeta(item)}</p>
+        <NoteHeaderTitle item={item} title={title} pushed={props.pushed} meta={noteMeta(item)} />
         {activityStatus && <div className="flex flex-wrap items-center gap-3" data-testid="note-detail-status"><p className={activityStatus.startsWith("Needs attention") ? "text-callout text-amber-700 dark:text-amber-300" : "text-callout text-muted-foreground"}>{activityStatus}</p>{activityJobs.flatMap((job) => job.action ? [job.action] : []).map((action, index) => <button key={`${action.label}:${index}`} type="button" className="min-h-11 text-callout text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={action.run}>{action.label}</button>)}{!activityJobs.some((job) => job.action) && activityRetry && <button type="button" className="min-h-11 text-callout text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={activityRetry}>Try again</button>}</div>}
         <CombineActions combine={props.combine} />
       </header>

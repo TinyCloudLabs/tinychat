@@ -51,6 +51,8 @@ export interface SavedNoteViewProps {
   partialAudio: boolean;
   /** The page's ← Capture, and what the sheet does once it may close. */
   onBack: () => void;
+  /** Wraps the heading with the rename control. */
+  renameTitle?: (heading: ReactNode) => ReactNode;
 }
 
 function Notes({
@@ -360,9 +362,11 @@ export function SavedNotePage(props: SavedNoteViewProps) {
         >
           <span aria-hidden="true">←</span> {COPY.back}
         </button>{props.activityControl}</div>
-        <h1 className="soft-title sn-title" data-testid="note-detail">
-          {props.title}
-        </h1>
+        {((heading) => props.renameTitle?.(heading) ?? heading)(
+          <h1 className="soft-title sn-title" data-testid="note-detail">
+            {props.title}
+          </h1>,
+        )}
         <p className="sn-meta">{props.meta}</p>
         {props.stepper}
         <SavedNoteBody {...props} {...refs} toolbarHost={undefined} />
@@ -411,12 +415,14 @@ export function SavedNoteSheet(props: SavedNoteViewProps) {
           <div className="sn-sheet-scroll">
             <div className="sn-sheet-body" inert={confirming}>
               <div className="sn-sheet-head">
-                <Dialog.Title
-                  className="soft-title sn-title"
-                  data-testid="note-detail"
-                >
-                  {props.title}
-                </Dialog.Title>
+                {((heading) => props.renameTitle?.(heading) ?? heading)(
+                  <Dialog.Title
+                    className="soft-title sn-title"
+                    data-testid="note-detail"
+                  >
+                    {props.title}
+                  </Dialog.Title>,
+                )}
                 <Dialog.Close className="sn-x" aria-label={COPY.close}>
                   <span aria-hidden="true">✕</span>
                 </Dialog.Close>
