@@ -1009,8 +1009,13 @@ export function App() {
         // When it has lapsed (or the API is missing), or the browser still refuses the popup, the boot screen asks for one.
         if (navigator.userActivation?.isActive === true) {
           signedTcw.signIn().then(resolve, (caught) => {
-            if (isPopupBlocked(caught)) setApproveWebSignIn(() => approve);
-            else reject(caught);
+            if (!isPopupBlocked(caught)) {
+              reject(caught);
+              return;
+            }
+            // signIn() consumes the prepared session, so prepare again before the screen: the click then
+            // reaches OpenKey's popup synchronously instead of after the signer and host setup.
+            signedTcw.prepareSignIn().then(() => setApproveWebSignIn(() => approve), reject);
           });
           return;
         }

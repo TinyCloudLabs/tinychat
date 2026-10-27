@@ -23,6 +23,14 @@ const APPROVE = "Continue to OpenKey";
 let signInCalls = 0;
 /** Rejections for the next `signIn` calls, consumed in order; an empty list means success. */
 let signInFailures: unknown[] = [];
+/** Makes the Nth `prepareSignIn` call reject. */
+let prepareFailsOnCall: { call: number; error: unknown } | null = null;
+/** Mirrors web-sdk performSignIn: `prepareSignIn` stores a prepared session, `signIn` consumes it before OpenKey is called. */
+let prepared = false;
+let prepareCalls = 0;
+/** For each `signIn` call, whether it found a prepared session (the route that requests OpenKey's popup synchronously). */
+let signInUsedPrepared: boolean[] = [];
+let events: string[] = [];
 
 function makeTcw(): TinyCloudWeb {
   return { did: `did:pkh:eip155:1:${ADDRESS}`, spaceId: "space-a1", address: () => ADDRESS, sql: {}, kv: {}, secrets: {} } as unknown as TinyCloudWeb;
@@ -35,9 +43,17 @@ mock.module("@tinyboilerplate/client", () => ({
   loadAppManifest: async () => ({}),
   createTinyCloudWeb: () => Object.assign(makeTcw(), {
     clearPersistedSession: async () => {},
-    prepareSignIn: async () => {},
+    prepareSignIn: async () => {
+      prepareCalls++;
+      events.push("prepareSignIn");
+      if (prepareFailsOnCall?.call === prepareCalls) throw prepareFailsOnCall.error;
+      prepared = true;
+    },
     signIn: async () => {
       signInCalls++;
+      events.push(`signIn:${prepared ? "prepared" : "fresh"}`);
+      signInUsedPrepared.push(prepared);
+      prepared = false;
       if (signInFailures.length > 0) throw signInFailures.shift();
       return { siwe: "message", signature: "signature" };
     },
@@ -118,6 +134,11 @@ async function mountSignedOut() {
 beforeEach(() => {
   signInCalls = 0;
   signInFailures = [];
+  prepareFailsOnCall = null;
+  prepared = false;
+  prepareCalls = 0;
+  signInUsedPrepared = [];
+  events = [];
 });
 afterEach(async () => {
   if (root) await act(async () => root!.unmount());
@@ -170,6 +191,32 @@ test("popup blocked on the direct path: the approval screen shows without an err
   await press(APPROVE);
   expect(signInCalls).toBe(2);
   expect(workspaceShown()).toBe(true);
+});
+
+test("popup blocked on the direct path: the fallback click signs in on a prepared session", async () => {
+  signInFailures = [{ code: "POPUP_BLOCKED", message: "Popup was blocked. Please allow popups for this site." }];
+  await mountSignedOutActivation(true);
+  await press("Sign in");
+  // The blocked call consumed the first preparation; the screen waits for a second one.
+  expect(prepareCalls).toBe(2);
+  expect(button(APPROVE)).toBeTruthy();
+  events.push("click");
+  await press(APPROVE);
+  expect(events).toEqual(["prepareSignIn", "signIn:prepared", "prepareSignIn", "click", "signIn:prepared"]);
+  expect(signInUsedPrepared).toEqual([true, true]);
+  expect(workspaceShown()).toBe(true);
+});
+
+test("popup blocked, then the second preparation fails: the sign-in error shows and no screen is offered", async () => {
+  signInFailures = [{ code: "POPUP_BLOCKED", message: "Popup was blocked. Please allow popups for this site." }];
+  prepareFailsOnCall = { call: 2, error: new Error("prepare boom") };
+  await mountSignedOutActivation(true);
+  await press("Sign in");
+  expect(signInCalls).toBe(1);
+  expect(prepareCalls).toBe(2);
+  expect(button(APPROVE)).toBeUndefined();
+  expect(host!.textContent).toContain("Couldn't sign in");
+  expect(workspaceShown()).toBe(false);
 });
 
 test("a direct sign-in failure other than a blocked popup is reported, not retried behind a screen", async () => {

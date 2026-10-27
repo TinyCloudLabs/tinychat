@@ -12,6 +12,6 @@ test("mounted App skips the OpenKey approval screen only while the sign-in click
   expect(result.error).toBeUndefined();
   expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
   const output = `${result.stdout}\n${result.stderr}`;
-  expect(output).toContain("5 pass");
+  expect(output).toContain("7 pass");
   expect(output).toContain("0 fail");
 });
