@@ -30,6 +30,24 @@ export function formatLimitDuration(ms: number): string {
 
 export const AUTO_STOP_LABEL = "Stop recordings automatically";
 export const autoStopOnHint = (limitMs: number) => `Recordings stop after ${formatLimitDuration(limitMs)}.`;
+export const STOP_AFTER_LABEL = "Stop recording after";
+/** "Off" keeps only the 3-hour limit every recorder enforces, so it says so. */
+export const STOP_AFTER_OPTIONS: readonly { value: "15" | "30" | "60" | "120" | "off"; label: string }[] = [
+  { value: "15", label: "15 min" },
+  { value: "30", label: "30 min" },
+  { value: "60", label: "1 h" },
+  { value: "120", label: "2 h" },
+  { value: "off", label: "Off (3-hour limit)" },
+];
+export const STOP_AFTER_HINT = "New recordings stop by themselves after this long. Recordings never run longer than 3 hours.";
+
+/** The time-limit controls under "Stops at …" while recording. */
+export const LIMIT_CONTROLS_LABEL = "Recording time limit";
+export const ADD_15_MIN = "+15 min";
+export const ADD_30_MIN = "+30 min";
+export const NO_LIMIT = "No limit";
+export const NO_LIMIT_HINT = "Cancels the stop time for this recording. It runs until you stop it.";
+export const LIMIT_CHANGE_FAILED = "The time limit could not be changed. The recording still stops at the time shown.";
 export const AUTO_STOP_OFF_HINT_PHONE = "The recording runs until you stop it.";
 
 export const KEEP_RECORDING_TITLE = "Keep recording?";

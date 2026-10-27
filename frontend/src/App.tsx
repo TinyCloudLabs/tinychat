@@ -96,7 +96,7 @@ import { HomeEntryGate } from "./home/HomeEntryGate";
 import { readCachedFirstScreen, readFirstScreen } from "./home/firstScreenStore";
 import { CaptureSurface } from "./capture/CaptureSurface";
 import { HeaderLiveChip } from "./capture/recorder/HeaderLiveChip";
-import { RecordButton } from "./capture/recorder/RecordButton";
+import { HeaderRecordButton } from "./capture/recorder/HeaderRecordButton";
 import { RecorderProvider } from "./capture/recorder/RecorderProvider";
 import { MicDeniedRecovery } from "./capture/recorder/MicDeniedRecovery";
 import { RecorderShell } from "./capture/recorder/RecorderShell";
@@ -1330,7 +1330,7 @@ export function App() {
                   headerRecorder={
                     <>
                       <HeaderLiveChip />
-                      <RecordButton variant="icon" />
+                      <HeaderRecordButton />
                     </>
                   }
                   settings={!LOCAL_VALIDATION}

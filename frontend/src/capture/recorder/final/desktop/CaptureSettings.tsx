@@ -1,5 +1,17 @@
 import { readableError } from "@/lib/readableError";
-import { readUploadAudioPreference, setUploadAudioPreference } from "@/lib/voiceNotes/transcriberPreference";
+import {
+  autoStopEnabled,
+  readAutoStopChoice,
+  readStopAfterPreference,
+  readUploadAudioPreference,
+  setAutoStopPreference,
+  setStopAfterPreference,
+  setUploadAudioPreference,
+  stopAfterMs,
+  subscribeTranscriberPreference,
+} from "@/lib/voiceNotes/transcriberPreference";
+import { recorderLayout } from "../shellCapabilities";
+import { AUTO_STOP_LABEL, AUTO_STOP_OFF_HINT_PHONE, STOP_AFTER_HINT, STOP_AFTER_LABEL, STOP_AFTER_OPTIONS, autoStopOnHint } from "../../recorderCopy";
 import { useStorageReadOnly } from "@/lib/useStorageReadOnly";
 import { InfoTip } from "@/components/ui/info-tip";
 import {
@@ -9,6 +21,7 @@ import {
   useReducer,
   useRef,
   useState,
+  useSyncExternalStore,
   type KeyboardEvent,
 } from "react";
 import {
@@ -363,6 +376,45 @@ function Switch({
   );
 }
 
+/** The default for new recordings. A running recording's own stop time is changed in the recorder, not here. */
+function StopSection() {
+  const stopAfter = useSyncExternalStore(subscribeTranscriberPreference, readStopAfterPreference, readStopAfterPreference);
+  const choice = useSyncExternalStore(subscribeTranscriberPreference, readAutoStopChoice, readAutoStopChoice);
+  // A device that never chose gets the layout's default: on at the desktop layouts, off at the phone layout.
+  const on = autoStopEnabled(typeof window !== "undefined" && recorderLayout(window.innerWidth) === "phone", choice);
+  return (
+    <section aria-labelledby="cs-stop-h" data-testid="settings-stop-after">
+      <h3 id="cs-stop-h" className="cs-h">
+        {STOP_AFTER_LABEL}
+      </h3>
+      <Switch
+        label={AUTO_STOP_LABEL}
+        description={on ? autoStopOnHint(stopAfterMs(stopAfter)) : AUTO_STOP_OFF_HINT_PHONE}
+        checked={on}
+        pending={false}
+        error={null}
+        testId="switch-auto-stop"
+        onToggle={setAutoStopPreference}
+      />
+      {on && (
+        <div role="radiogroup" aria-labelledby="cs-stop-h" data-testid="settings-stop-after-options">
+          {STOP_AFTER_OPTIONS.map((option) => (
+            <div className="cs-row" key={option.value}>
+              <button type="button" role="radio" aria-checked={option.value === stopAfter}
+                className="cs-radio" data-testid={`stop-after-${option.value}`}
+                onClick={() => setStopAfterPreference(option.value)}>
+                <span className="cs-rb" data-on={option.value === stopAfter} aria-hidden="true" />
+                <span className="cs-name">{option.label}</span>
+              </button>
+            </div>
+          ))}
+          <p className="cs-note">{STOP_AFTER_HINT}</p>
+        </div>
+      )}
+    </section>
+  );
+}
+
 export function SettingsPanel({
   variant,
   extrasAvailable,
@@ -422,6 +474,7 @@ export function SettingsPanel({
         />
       )}
       <MicrophoneSection microphone={microphone} />
+      <StopSection />
       <AudioCacheSettings />
       {load.status === "ready" && (
         <section aria-labelledby="cs-meet-h">

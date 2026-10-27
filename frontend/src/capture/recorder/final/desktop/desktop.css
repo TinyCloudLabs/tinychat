@@ -22,6 +22,13 @@
 .dr .pr-ibtn {
   left: 0;
 }
+.dr-settings {
+  position: absolute;
+  z-index: 60;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+}
 .dr .pr-time-row {
   margin-top: 16px;
 }

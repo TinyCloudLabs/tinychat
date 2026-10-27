@@ -31,7 +31,7 @@ import type { RecorderCaptureIssue, RecorderMic, RecorderPhase, RecorderState } 
 import type { VoiceNoteTranscriptionProps } from "./transcriptionProps";
 import type { RecorderTranscriberChoice, TranscriberChoiceResult, TranscriberChoiceScope, VoiceNoteRecorderController } from "./voiceNoteRecorderController";
 import type { RecorderNote, RecorderNoteStatus } from "./voiceNoteRecorderController";
-import type { TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
+import type { LimitExtension, TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
 import type { VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
 import { useVoiceNoteRecorder } from "./useVoiceNoteRecorder";
 import { shouldScheduleReceiptDismissal } from "./receiptBehavior";
@@ -122,8 +122,8 @@ export interface RecorderValue {
   discard(): void;
   retryPending(): void | Promise<void>;
   openSettings(): Promise<void>;
-  /** "Keep going": raise the live recording's limit by one hour. Undefined where the engine cannot change a running limit. */
-  extendLimit: (() => Promise<void>) | undefined;
+  /** Raise the live recording's limit (default one hour: "Keep going"), or drop it ("none"). Undefined where the engine cannot change a running limit. */
+  extendLimit: ((extension?: LimitExtension) => Promise<void>) | undefined;
   /** The receipt was read (Done, Open): it goes, and the sheet closes. */
   dismissOutcome(): void;
   openSheet(): void;

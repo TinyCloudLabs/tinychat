@@ -109,6 +109,9 @@ export const VOICE_NOTE_SAFETY_CAP_MS = 8 * 60 * 60 * 1000;
 /** What "Keep going" adds to a running recording's limit. */
 export const VOICE_NOTE_EXTENSION_MS = 60 * 60 * 1000;
 
+/** How a running recording's limit changes: milliseconds added to it, or "none" (no limit: the silent safety cap). */
+export type LimitExtension = number | "none";
+
 /** The shortest limit the recorder accepts (the shells clamp to the same range). */
 export const VOICE_NOTE_MIN_DURATION_LIMIT_MS = 1000;
 

@@ -16,7 +16,7 @@ import type { RecorderState } from "./recorderReducer";
 import { HIDDEN_SNAPSHOT, noSubscription, transcriptionProps, type VoiceNoteTranscriptionProps } from "./transcriptionProps";
 import { createVoiceNoteRecorderController } from "./voiceNoteRecorderController";
 import type { RecorderNote, RecorderNoteStatus, RecorderTranscriberChoice, TranscriberChoiceResult, TranscriberChoiceScope } from "./voiceNoteRecorderController";
-import type { TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
+import type { LimitExtension, TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
 import type { VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
 
 export interface VoiceNoteRecorderOptions {
@@ -52,8 +52,8 @@ export interface VoiceNoteRecorder {
   discard(): void;
   retryPending(): void | Promise<void>;
   openSettings(): Promise<void>;
-  /** "Keep going": raise the live recording's limit by one hour. Undefined where the engine cannot change a running limit. */
-  extendLimit: (() => Promise<void>) | undefined;
+  /** Raise the live recording's limit (default one hour: "Keep going"), or drop it ("none"). Undefined where the engine cannot change a running limit. */
+  extendLimit: ((extension?: LimitExtension) => Promise<void>) | undefined;
   dismissShortcutRecovery(): Promise<void>;
   /** The receipt was read. */
   dismissOutcome(): void;
