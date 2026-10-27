@@ -59,7 +59,7 @@ const oldManifest = {
   permissions: realManifest.permissions.filter((entry) => !SIGN_IN_BUNDLE_ENTRIES.some((required) => required.service === entry.service && required.path === entry.path)),
 };
 
-function stubTcw(): TinyCloudWeb {
+function fakeTcw(): TinyCloudWeb {
   return {
     did: PRINCIPAL, spaceId: "space-a1", address: () => ADDRESS, sql: {}, kv: {}, secrets: {},
     replication: { sync: () => { events.push("sync"); return Promise.resolve(); } },
@@ -75,18 +75,10 @@ mock.module("@tinyboilerplate/client", () => ({
     if (served === "unreachable") throw new TypeError("Failed to fetch");
     return served === "old" ? oldManifest : realManifest;
   },
-  createTinyCloudWeb: () => ({
-    ...stubTcw(),
-    clearPersistedSession: async () => {},
-    prepareSignIn: async () => {},
-    signIn: async () => {
-      events.push("signIn");
-      return { siwe: "message", signature: "signature" };
-    },
-  }),
+  createAndSignIn: async () => { events.push("signIn"); return { tcw: fakeTcw(), session: { siwe: "message", signature: "signature" } }; },
   verifySession: async () => ({ token: "bearer", expiresIn: 3600, address: ADDRESS }),
   clearPersistedSession: (address: string) => { events.push(`clearPersisted:${address}`); realClearPersistedSession(address); },
-  restoreTinyCloudWebSession: async () => { events.push("restore"); return { status: "restored", tcw: stubTcw() }; },
+  restoreTinyCloudWebSession: async () => { events.push("restore"); return { status: "restored", tcw: fakeTcw() }; },
 }));
 const realStartReplicationFill = replicationClientApi.startReplicationFill; // captured before the mock replaces the export
 mock.module("@/lib/replication/replicationClient", () => ({
@@ -253,7 +245,6 @@ test("desktop: a forced re-sign shows the re-sign notice on the offline recorder
   expect(surface!.textContent).toContain("Recordings stay on");
   expect([...surface!.querySelectorAll("button")].some((button) => button.textContent?.trim() === "Record")).toBe(true);
   await click("Sign in");
-  await click("Continue to OpenKey");
   await settle();
   // The ready shell is the mocked recorder shell here, so sign-in is proven by the sign-in call and the recorded revision.
   expect(events).toEqual(["loadManifest", "handoff", `clearPersisted:${ADDRESS}`, "loadManifest", "signIn", "sync"]);

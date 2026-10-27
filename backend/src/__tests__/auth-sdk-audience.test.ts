@@ -4,7 +4,7 @@ import express from "express";
 import { Window } from "happy-dom";
 import { createSiweMessage, parseSiweMessage } from "viem/siwe";
 import { privateKeyToAccount } from "viem/accounts";
-import { makeSpaceId, prepareSession, protocolVersion, TCWSessionManager } from "@tinycloud/node-sdk-wasm";
+import { makeSpaceId, prepareSession, TCWSessionManager } from "@tinycloud/node-sdk-wasm";
 import { createNonceStore } from "@tinyboilerplate/server";
 import type { Manifest } from "@tinycloud/sdk-core";
 import type { TinyCloudWeb as TinyCloudWebClass } from "@tinycloud/web-sdk";
@@ -18,8 +18,6 @@ const globals = ["window", "document", "navigator", "HTMLElement", "customElemen
 const previous = new Map<string, PropertyDescriptor | undefined>();
 let browser: Window;
 let TinyCloudWeb: typeof TinyCloudWebClass;
-let nodeInfoServer: Server;
-let nodeInfoHost: string;
 
 beforeAll(async () => {
   browser = new Window({ url: "https://tinycloud.chat/" });
@@ -32,20 +30,9 @@ beforeAll(async () => {
   }
   // web-sdk defines browser custom elements at import time; install the test DOM first.
   ({ TinyCloudWeb } = await import("@tinycloud/web-sdk"));
-  const nodeInfoApp = express();
-  nodeInfoApp.get("/info", (_request, response) => {
-    response.json({ protocol: protocolVersion(), features: ["encryption-named-keys-v1"] });
-  });
-  nodeInfoServer = await new Promise<Server>((resolve) => {
-    const listener = nodeInfoApp.listen(0, "127.0.0.1", () => resolve(listener));
-  });
-  const address = nodeInfoServer.address();
-  if (!address || typeof address === "string") throw new Error("Expected TCP address");
-  nodeInfoHost = `http://127.0.0.1:${address.port}`;
 });
 
 afterAll(async () => {
-  await new Promise<void>((resolve) => nodeInfoServer.close(() => resolve()));
   for (const name of globals) {
     const descriptor = previous.get(name);
     if (descriptor) Object.defineProperty(globalThis, name, descriptor);
@@ -110,7 +97,7 @@ async function signWithWebSdk(origin: string, nonce: string, claimedDomain?: str
   };
   const tcw = new TinyCloudWeb({
     provider,
-    tinycloudHosts: [nodeInfoHost],
+    tinycloudHosts: ["http://127.0.0.1:9"],
     autoCreateSpace: true,
     autoBootstrapAccount: false,
     persistSession: false,
