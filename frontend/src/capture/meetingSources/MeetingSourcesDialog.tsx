@@ -40,6 +40,7 @@ import {
   MeetingSourcesEntry,
   MeetingSourcesWindow,
   SourceRow,
+  type SourceRowProps,
 } from "./MeetingSourcesView";
 import {
   meetingSourceActionBusy,
@@ -49,7 +50,7 @@ import {
 } from "./meetingSourceState";
 import { autojoinDetail, useCalendarAutojoin } from "./useCalendarAutojoin";
 import { useConnectorDisconnect } from "./useConnectorDisconnect";
-import { syncProgressLabel, useSourceSync } from "./useSourceSync";
+import { syncProgressLabel, useSourceSync, type SourceSyncController } from "./useSourceSync";
 
 export { meetingSourceActionBusy, meetingSourceStatus };
 
@@ -66,6 +67,23 @@ type ConnectionRead =
   | { status: "failed" }
   | { status: "ready"; connection: ConnectorConnection | null };
 type Connections = Partial<Record<ConnectorId, ConnectionRead>>;
+
+/**
+ * The step that answers a row's sync error. The existing-user prompt ("Approve once to move your saved key")
+ * always comes with the key move, so the row never shows the prompt without a way to act on it.
+ */
+export function sourceErrorAction(
+  sync: Pick<SourceSyncController, "error" | "movingId" | "moveKey">,
+  descriptor: ConnectorDescriptor,
+): SourceRowProps["errorAction"] {
+  if (sync.error?.id !== descriptor.id || !sync.error.migration) return undefined;
+  const moving = sync.movingId === descriptor.id;
+  return {
+    label: moving ? "Moving your key…" : "Review in OpenKey",
+    busy: moving,
+    onClick: () => void sync.moveKey(descriptor),
+  };
+}
 
 export interface MeetingSourcesDialogProps {
   open: boolean;
@@ -220,6 +238,7 @@ export function MeetingSourcesDialog({
               joined={syncing && sourceSync.joined}
               manageOpen={manageOpen[d.id] === true}
               error={error}
+              errorAction={sourceErrorAction(sourceSync, d)}
               onConnect={() => setConnectDialog({ descriptor: d, purpose: "browser" })}
               onRetryLookup={() => {
                 setConnections((old) => ({ ...old, [d.id]: { status: "loading" } }));

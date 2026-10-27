@@ -1,4 +1,4 @@
-import type { EIP1193Provider, loadAppManifest, requestNonce } from "@tinyboilerplate/client";
+import type { EIP1193Provider, requestNonce } from "@tinyboilerplate/client";
 import type { Manifest } from "@tinycloud/sdk-core";
 
 // Server nonces expire at five minutes; leave one minute for SDK setup and verification.
@@ -6,7 +6,7 @@ const MAX_NONCE_AGE_MS = 4 * 60_000;
 
 type Services = {
   requestNonce: typeof requestNonce;
-  loadManifest: typeof loadAppManifest;
+  loadManifest: () => Promise<Manifest>;
   now?: () => number;
 };
 
@@ -26,7 +26,7 @@ export function createWebSignInPrefetch(backendUrl: string, services: Services):
     (nonce) => ({ nonce, requestedAt }),
     (error: unknown) => ({ error }),
   );
-  const prefetchedManifest = services.loadManifest(`${backendUrl}/api/manifest`).then(
+  const prefetchedManifest = services.loadManifest().then(
     (value) => ({ value }),
     (error: unknown) => ({ error }),
   );

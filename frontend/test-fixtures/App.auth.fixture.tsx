@@ -26,11 +26,12 @@ const storageDialogApi = await import("../src/chat/StorageFullDialog");
 let nativeMode = false;
 let loginAddress = "0x00000000000000000000000000000000000000a1";
 let signInCalls = 0;
+let signInOpenkey: unknown = null;
 let verifyCalls = 0;
 let signOutStarted: (() => void) | null = null;
 let releaseSignOut: (() => void) | null = null;
 
-function fakeTcw(address: string): TinyCloudWeb {
+function makeTcw(address: string): TinyCloudWeb {
   return { did: `did:pkh:eip155:1:${address}`, spaceId: `space-${address.slice(-2)}`, address: () => address,
     sql: {}, kv: {}, secrets: {} } as unknown as TinyCloudWeb;
 }
@@ -40,10 +41,14 @@ mock.module("@tinyboilerplate/client", () => ({
   connectWallet: async () => ({ address: loginAddress, openkey: {}, web3Provider: {} }),
   requestNonce: async () => "nonce",
   loadAppManifest: async () => ({}),
-  createAndSignIn: async () => {
-    signInCalls++;
-    return { tcw: fakeTcw(loginAddress), session: { siwe: "message", signature: "signature" } };
-  },
+  createTinyCloudWeb: (_provider: unknown, config?: { openkey?: unknown }) => (signInOpenkey = config?.openkey ?? null, Object.assign(makeTcw(loginAddress), {
+    clearPersistedSession: async () => {},
+    prepareSignIn: async () => {},
+    signIn: async () => {
+      signInCalls++;
+      return { siwe: "message", signature: "signature" };
+    },
+  })),
   verifySession: async () => {
     verifyCalls++;
     return { token: "bearer", expiresIn: 3600, address: loginAddress };
@@ -56,7 +61,7 @@ mock.module("@/lib/openkeyNative", () => ({
   restoreNativeAtBoot: async () => ({ kind: "none" }),
   signInNative: async () => ({
     verified: { address: loginAddress, token: "native-bearer", expiresIn: 3600 },
-    session: {}, openkey: {}, tcw: fakeTcw(loginAddress),
+    session: {}, openkey: {}, tcw: makeTcw(loginAddress),
   }),
   nativeRenewalServices: async () => ({}),
   secretsAvailable: () => false,
@@ -173,6 +178,7 @@ test("browser sign-in mounts the workspace; committed A sign-out clears storage 
   await click("Sign in");
   await settle();
   expect(signInCalls).toBe(1);
+  expect(signInOpenkey).toMatchObject({ mode: "iframe" });
   expect(verifyCalls).toBe(1);
   expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeTruthy();
 

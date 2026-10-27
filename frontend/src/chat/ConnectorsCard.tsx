@@ -52,12 +52,8 @@ import {
 } from "./GmeetCardStatus";
 import { awaitGmeetSessionSync } from "./useGmeetSessionSync";
 import { useGmeetRowStatus } from "./useGmeetRowStatus";
-import {
-  getConnectorKey,
-  isSecretsUnlocked,
-  unlockSecrets,
-  type SecretsErr,
-} from "@/lib/connectors/connectorSecrets";
+import { getConnectorKey, isConnectorKeysReady } from "@/lib/connectors/namedConnectorSecrets";
+import { isSecretsUnlocked, unlockSecrets, type SecretsErr } from "@/lib/connectors/connectorSecrets";
 import {
   createConnectorWebhooksClient,
   type ConnectorWebhooksClient,
@@ -463,7 +459,7 @@ export function ConnectorsCard({
         queuedSync: null,
       });
       try {
-      if (!isSecretsUnlocked(tcw)) {
+      if (!isConnectorKeysReady(tcw) && !isSecretsUnlocked(tcw)) {
         const unlock = await unlockSecrets<SecretsErr>(tcw);
         if (!unlock.ok) {
           patchRow(d.id, {
