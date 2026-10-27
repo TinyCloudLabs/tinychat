@@ -107,24 +107,27 @@ for (const theme of THEMES) {
           theme.param,
           "[data-testid=ribbon]",
         );
-        // The slim bar draws no level bars (#521); the old bar checks are replaced by this one assertion.
+        // The slim bar draws no level bars (#521), so the old bar-counting checks become this absence check.
         expect(await boxes(page, ".ribbon-bars, [data-spectrum-bars]")).toHaveLength(0);
         const [ribbon] = await boxes(page, ".ribbon");
         const [timer] = await boxes(page, "[data-testid=ribbon-timer]");
         const [pause] = await boxes(page, "[data-testid=ribbon-pause]");
         const [stop] = await boxes(page, "[data-testid=ribbon-stop]");
+        // Both states run with the default recording limit, so "Stops in" is always on the bar.
         const [remaining] = await boxes(page, "[data-testid=ribbon-remaining]");
-        // Where the old checks held the trace clear of the timer, Pause and Stop, the same parts of the slim bar stay
-        // inside it and clear of one another ("Stops in" is shown only while a limit is set).
-        const parts = remaining ? [timer, remaining, pause, stop] : [timer, pause, stop];
-        // The 44 px buttons sit 1 px proud of the 44 px bar's top edge by design (#521); horizontally and for the timer they are inside.
+        expect(remaining).toBeDefined();
+        // The timer, "Stops in", Pause and Stop stay inside the slim bar and clear of one another.
+        const parts = [timer, remaining, pause, stop];
+        // The 44 px Pause and Stop buttons sit 1 px above the bar's top edge on main (bar top 535, buttons 534), an
+        // offset that predates this check; the slack below only allows that offset.
+        // TODO(TC-2188): remove the slack when the follow-up geometry PR fixes the offset.
         const slack = { left: ribbon.left, right: ribbon.right, top: ribbon.top - 1, bottom: ribbon.bottom + 1 };
         for (const part of parts) expect(within(part, slack)).toBe(true);
         for (const [i, a] of parts.entries()) for (const b of parts.slice(i + 1)) expect(apart(a, b)).toBe(true);
-        // The buttons' whole boxes are touch-sized.
+        // Pause and Stop are 44 px touch targets; 0.5 px is sub-pixel rounding only.
         for (const button of [pause, stop]) {
-          expect(button.right - button.left).toBeGreaterThanOrEqual(43.5);
-          expect(button.bottom - button.top).toBeGreaterThanOrEqual(43.5);
+          expect(button.right - button.left).toBeGreaterThanOrEqual(44 - 0.5);
+          expect(button.bottom - button.top).toBeGreaterThanOrEqual(44 - 0.5);
         }
         await page.context().close();
       });
