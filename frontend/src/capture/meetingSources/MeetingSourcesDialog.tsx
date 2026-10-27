@@ -32,7 +32,7 @@ import type { ConnectorConnection, ConnectorDescriptor, ConnectorId } from "@/li
 import { createConnectorWebhooksClient } from "@/lib/connectors/webhooksApi";
 import type { DisconnectMode } from "@/lib/connectors/connectorLifecycle";
 import { ConfirmDialog } from "./ConfirmDialog";
-import { DISCONNECT_WHILE_SYNCING, DisconnectRow, FirefliesManage } from "./ManagePanel";
+import { DISCONNECT_WHILE_SYNCING, DisconnectRow, FirefliesAgentSync, FirefliesManage } from "./ManagePanel";
 import {
   CalendarAutojoinRow,
   DisconnectDataChoice,
@@ -268,17 +268,20 @@ export function MeetingSourcesDialog({
               }
               manage={
                 d.id === "fireflies" ? (
-                  <FirefliesManagePanel
-                    tcw={tcw}
-                    descriptor={d}
-                    connection={connection ?? null}
-                    webhooks={webhooks}
-                    meetings={meetings}
-                    onIngested={() => void refresh(d.id)}
-                    onFeatureDark={setFeatureDark}
-                    syncing={syncing}
-                    onDisconnect={() => requestDisconnect(d.id)}
-                  />
+                  <>
+                    <FirefliesManagePanel
+                      tcw={tcw}
+                      descriptor={d}
+                      connection={connection ?? null}
+                      webhooks={webhooks}
+                      meetings={meetings}
+                      onIngested={() => void refresh(d.id)}
+                      onFeatureDark={setFeatureDark}
+                      syncing={syncing}
+                      onDisconnect={() => requestDisconnect(d.id)}
+                    />
+                    {connected && <FirefliesAgentSync tcw={tcw} />}
+                  </>
                 ) : (
                   <DisconnectRow name={d.name} syncing={syncing} onDisconnect={() => requestDisconnect(d.id)} />
                 )

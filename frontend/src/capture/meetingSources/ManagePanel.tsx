@@ -4,6 +4,8 @@
 // in `chat/backgroundSyncState.ts` — this file renders the state it reports and
 // hands intent back, exactly as `BackgroundSyncView` does for the flag-off page.
 import { CircleAlertIcon, CopyIcon } from "lucide-react";
+import { useState } from "react";
+import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import {
   BACKEND_INGEST_CONSENT_COPY,
@@ -18,6 +20,7 @@ import {
   type BackgroundSyncState,
 } from "@/chat/backgroundSyncState";
 import type { OffStateConsentVariant } from "@/chat/useBackgroundSync";
+import { pairFirefliesAgent } from "@/lib/firefliesAgentGrant";
 import { InlineError, LinkButton, OptionRow, Switch } from "./MeetingSourcesView";
 
 /** The window's own words for the webhook state; "Enabled in TinyChat" is the old product name. */
@@ -290,5 +293,63 @@ function RevealField({
         <CopyIcon aria-hidden="true" />
       </button>
     </div>
+  );
+}
+export function FirefliesAgentSync({ tcw }: { tcw: TinyCloudWeb }) {
+  const [recipientDid, setRecipientDid] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<{ tone: "error" | "success"; message: string } | null>(null);
+
+  async function pair() {
+    setBusy(true);
+    setStatus(null);
+    try {
+      const artifact = await pairFirefliesAgent(tcw, recipientDid);
+      const url = URL.createObjectURL(new Blob([artifact], { type: "application/json" }));
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = "fireflies-named-grant.json";
+      anchor.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 0);
+      setStatus({
+        tone: "success",
+        message: "Grant downloaded. Move it to ~/.local/state/connector-sync/fireflies-named-grant.json on the agent-sync host.",
+      });
+    } catch (error) {
+      setStatus({
+        tone: "error",
+        message: error instanceof Error ? error.message : "Could not create the Fireflies grant.",
+      });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <OptionRow title="Pair local agent-sync">
+      <p className="ms-opt-text">
+        The active TinyCloud session signs a terminal grant for this agent: Fireflies envelope read and Fireflies
+        named-key decrypt only. It cannot delegate further and lasts 29 days. No wallet prompt is expected; if this
+        session cannot issue the grant, sign out and back in before pairing.
+      </p>
+      <label className="ms-agent-pair-field">
+        <span>Agent session DID</span>
+        <input
+          autoComplete="off"
+          spellCheck={false}
+          value={recipientDid}
+          onChange={(event) => setRecipientDid(event.target.value)}
+          placeholder="did:key:z…"
+          aria-label="Agent session DID"
+        />
+      </label>
+      <div className="ms-subpanel-actions">
+        <button type="button" className="ms-btn2" disabled={busy || !recipientDid.trim()} onClick={() => void pair()}>
+          {busy ? "Creating grant…" : "Create grant file"}
+        </button>
+      </div>
+      {status?.tone === "error" && <InlineError>{status.message}</InlineError>}
+      {status?.tone === "success" && <p role="status" className="ms-opt-text">{status.message}</p>}
+    </OptionRow>
   );
 }
