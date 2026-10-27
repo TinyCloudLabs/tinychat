@@ -101,28 +101,34 @@ const VIEWPORT_BOX: Box = {
 for (const theme of THEMES) {
   describe.serial(`320x640, ${theme.name}, ${engineName}`, () => {
     for (const state of ["recording", "paused"] as const) {
-      test(`the Ribbon (${state}): the trace stays inside its area and clear of the Pause button`, async () => {
+      test(`the Ribbon (${state}) has no level bars; its timer, Pause and Stop sit inside it, apart, with 44 px buttons`, async () => {
         const page = await open(
           `recorder-final-minimized-${state}`,
           theme.param,
           "[data-testid=ribbon]",
         );
-        const [area] = await boxes(page, ".ribbon-bars");
+        // The slim bar draws no level bars (#521), so the old bar-counting checks become this absence check.
+        expect(await boxes(page, ".ribbon-bars, [data-spectrum-bars]")).toHaveLength(0);
+        const [ribbon] = await boxes(page, ".ribbon");
         const [timer] = await boxes(page, "[data-testid=ribbon-timer]");
         const [pause] = await boxes(page, "[data-testid=ribbon-pause]");
         const [stop] = await boxes(page, "[data-testid=ribbon-stop]");
-        const bars = await boxes(page, "[data-spectrum-bars] > span");
-        expect(bars.length).toBe(30);
-        for (const bar of bars) {
-          expect(within(bar, area)).toBe(true);
-          expect(apart(bar, pause)).toBe(true);
-          expect(apart(bar, stop)).toBe(true);
-          expect(apart(bar, timer)).toBe(true);
+        // Both states run with the default recording limit, so "Stops in" is always on the bar.
+        const [remaining] = await boxes(page, "[data-testid=ribbon-remaining]");
+        expect(remaining).toBeDefined();
+        // The timer, "Stops in", Pause and Stop stay inside the slim bar and clear of one another.
+        const parts = [timer, remaining, pause, stop];
+        // The 44 px Pause and Stop buttons sit 1 px above the bar's top edge on main (bar top 535, buttons 534), an
+        // offset that predates this check; the slack below only allows that offset.
+        // TODO(TC-2188): remove the slack when the follow-up geometry PR fixes the offset.
+        const slack = { left: ribbon.left, right: ribbon.right, top: ribbon.top - 1, bottom: ribbon.bottom + 1 };
+        for (const part of parts) expect(within(part, slack)).toBe(true);
+        for (const [i, a] of parts.entries()) for (const b of parts.slice(i + 1)) expect(apart(a, b)).toBe(true);
+        // Pause and Stop are 44 px touch targets; 0.5 px is sub-pixel rounding only.
+        for (const button of [pause, stop]) {
+          expect(button.right - button.left).toBeGreaterThanOrEqual(44 - 0.5);
+          expect(button.bottom - button.top).toBeGreaterThanOrEqual(44 - 0.5);
         }
-        // The button's whole 44 px box and the trace's area do not meet either.
-        expect(apart(area, pause)).toBe(true);
-        // Every bar is still drawn: at least 1 px wide.
-        for (const bar of bars) expect(bar.right - bar.left).toBeGreaterThan(1);
         await page.context().close();
       });
     }
