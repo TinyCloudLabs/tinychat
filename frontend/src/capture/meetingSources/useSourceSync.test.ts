@@ -20,7 +20,6 @@ import {
   useSourceSync,
   type SourceSyncController,
   type SourceSyncDeps,
-  reconnectSourceMessage,
 } from "./useSourceSync";
 
 const fireflies = CONNECTORS.find((d) => d.id === "fireflies") as ConnectorDescriptor;
@@ -95,16 +94,24 @@ describe("runSourceSync", () => {
   });
 });
 
-describe("a saved credential this app cannot read", () => {
+describe("a saved credential this app cannot decrypt", () => {
   test("shows the plain reconnect sentence, never the SDK error", async () => {
     let engineRuns = 0;
     const message = await runSourceSync(fireflies, input, deps({
-      getConnectorKey: (async () => ({ ok: false, error: { code: "DECRYPT_FAILED", message: "key not granted" } })) as SourceSyncDeps["getConnectorKey"],
+      getConnectorKey: (async () => ({ ok: false, error: { code: "DECRYPTION_FAILED", message: "key not granted" } })) as SourceSyncDeps["getConnectorKey"],
       runFirefliesSyncNow: async () => (engineRuns++, { ok: true }),
     }));
     expect(message).toBe("TinyChat can't read your saved Fireflies connection. Disconnect it under Manage, then connect Fireflies again.");
-    expect(message).toBe(reconnectSourceMessage(fireflies.name));
     expect(engineRuns).toBe(0);
+  });
+
+  test("any other failed read keeps its original message", async () => {
+    const read = (error: { code?: string; message?: string }) => deps({
+      getConnectorKey: (async () => ({ ok: false, error })) as SourceSyncDeps["getConnectorKey"],
+    });
+    expect(await runSourceSync(fireflies, input, read({ code: "NETWORK_ERROR", message: "offline" }))).toBe("offline");
+    expect(await runSourceSync(fireflies, input, read({}))).toBe("Could not read API key");
+    expect(await runSourceSync(gmeet, input, read({}))).toBe("Could not read the saved Google connection");
   });
 
   test("reads the default-key vault entry, so a legacy copy keeps syncing", async () => {
