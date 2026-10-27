@@ -8,7 +8,7 @@ import {
   BACKGROUND_SYNC_CONSENT_COPY,
   BACKGROUND_SYNC_TRANSCRIPT_CONSENT_COPY,
 } from "@/lib/connectors/consentCopy";
-import { DisconnectRow, FirefliesAgentSync, FirefliesManage, type FirefliesManageProps } from "./ManagePanel";
+import { DisconnectRow, FirefliesManage, type FirefliesManageProps } from "./ManagePanel";
 
 const noop = () => {};
 function props(state: BackgroundSyncState, patch: Partial<FirefliesManageProps> = {}): FirefliesManageProps {
@@ -116,15 +116,6 @@ describe("Fireflies Manage panel", () => {
     expect(cohort).toContain("Disconnecting Fireflies does not remove the separate Notetaker permission");
   });
 
-  test("connected Fireflies exposes a local agent pairing action bound to its session DID", () => {
-    const html = renderToStaticMarkup(<FirefliesAgentSync tcw={{} as never} />);
-    expect(html).toContain("Pair local agent-sync");
-    expect(html).toContain("Agent session DID");
-    expect(html).toContain("Create grant file");
-    expect(html).toContain("Fireflies named-key decrypt");
-    expect(html).toContain("active TinyCloud session signs a terminal grant");
-    expect(html).toContain("No wallet prompt is expected");
-  });
   test("other sources get Disconnect alone, in red", () => {
     const html = renderToStaticMarkup(<DisconnectRow name="Google Meet" onDisconnect={noop} />);
     expect(html).toContain("Disconnect Google Meet");
