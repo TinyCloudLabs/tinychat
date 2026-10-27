@@ -33,6 +33,11 @@ export function isSignInCancelled(error: unknown): boolean {
   return errorChain(error).some((link) => typeof link === "object" && (link as { code?: unknown }).code === "USER_CANCELLED");
 }
 
+/** OpenKey rejects a popup the browser refused to open with `{ code: "POPUP_BLOCKED" }`, which is not an Error. */
+export function isPopupBlocked(error: unknown): boolean {
+  return errorChain(error).some((link) => typeof link === "object" && link !== null && "code" in link && link.code === "POPUP_BLOCKED");
+}
+
 function messageOf(error: unknown): string {
   if (error instanceof Error) return error.message;
   const message = (error as { message?: unknown } | null)?.message;

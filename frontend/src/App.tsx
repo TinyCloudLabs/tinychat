@@ -149,7 +149,7 @@ import type {
 } from "./chat/modelSelection";
 import { clearAgentSessionCache } from "./lib/agentDelegation";
 import { clearVaultSecretCache } from "./lib/connectors/connectorSecrets";
-import { isSignInCancelled } from "./lib/authErrors";
+import { isPopupBlocked, isSignInCancelled } from "./lib/authErrors";
 import { signOutOpenKeySession } from "./lib/openkeySignOut";
 import { clearSessionAfterHandoff, registerSessionSignedOutHook } from "./lib/sessionSignedOut";
 import {
@@ -1001,10 +1001,20 @@ export function App() {
       await signedTcw.clearPersistedSession(connectedAddress);
       await signedTcw.prepareSignIn();
       const session = await new Promise<Awaited<ReturnType<TinyCloudWeb["signIn"]>>>((resolve, reject) => {
-        setApproveWebSignIn(() => () => {
+        const approve = () => {
           setApproveWebSignIn(null);
           void signedTcw.signIn().then(resolve, reject);
-        });
+        };
+        // The sign-in click's transient activation lets OpenKey's popup open without a second click.
+        // When it has lapsed (or the API is missing), or the browser still refuses the popup, the boot screen asks for one.
+        if (navigator.userActivation?.isActive === true) {
+          signedTcw.signIn().then(resolve, (caught) => {
+            if (isPopupBlocked(caught)) setApproveWebSignIn(() => approve);
+            else reject(caught);
+          });
+          return;
+        }
+        setApproveWebSignIn(() => approve);
       });
 
       rememberReplicationPrincipal(signedTcw);

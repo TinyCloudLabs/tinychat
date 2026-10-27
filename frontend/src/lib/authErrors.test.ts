@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
-  authErrorMessage, BROWSER_UPDATE_MESSAGE, errorLinkFor, isSignInCancelled, SIGN_IN_FAILED_MESSAGE,
+  authErrorMessage, BROWSER_UPDATE_MESSAGE, errorLinkFor, isPopupBlocked, isSignInCancelled, SIGN_IN_FAILED_MESSAGE,
   UserFacingError, WEBVIEW_UPDATE_LINK, WEBVIEW_UPDATE_MESSAGE,
 } from "./authErrors";
 
@@ -46,6 +46,14 @@ test("OpenKey's closed sheet is a cancel, not an error", () => {
   expect(isSignInCancelled({ code: "TIMEOUT", message: "x" })).toBe(false);
   expect(isSignInCancelled(new Error("USER_CANCELLED"))).toBe(false);
   expect(isSignInCancelled(null)).toBe(false);
+});
+
+test("OpenKey's refused popup is recognised by its code, not by message text", () => {
+  expect(isPopupBlocked({ code: "POPUP_BLOCKED", message: "Popup was blocked." })).toBe(true);
+  expect(isPopupBlocked({ code: "POPUP_BLOCKED", reason: "embedded-webview" })).toBe(true);
+  expect(isPopupBlocked({ code: "USER_CANCELLED" })).toBe(false);
+  expect(isPopupBlocked(new Error("Popup was blocked"))).toBe(false);
+  expect(isPopupBlocked(null)).toBe(false);
 });
 
 const app = readFileSync(join(import.meta.dir, "..", "App.tsx"), "utf8");
