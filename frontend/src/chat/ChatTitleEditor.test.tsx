@@ -75,3 +75,12 @@ describe("ChatTitleEditor", () => {
     expect(e.cancelled()).toBe(1);
   });
 });
+
+describe("ChatTitleEditor on open", () => {
+  test("selects the whole title and shows its start", async () => {
+    const e = await mount("A long chat title that does not fit in the field");
+    expect(e.input.selectionStart).toBe(0);
+    expect(e.input.selectionEnd).toBe(e.input.value.length);
+    expect(e.input.scrollLeft).toBe(0);
+  });
+});

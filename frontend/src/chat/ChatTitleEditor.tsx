@@ -31,8 +31,12 @@ export const ChatTitleEditor: FC<ChatTitleEditorProps> = ({ initial, onSave, onC
   const hintId = useId();
 
   useEffect(() => {
-    inputRef.current?.focus();
-    inputRef.current?.select();
+    const input = inputRef.current;
+    if (!input) return;
+    input.focus();
+    input.select();
+    // Selecting scrolls a long title to its end; show the start of it.
+    input.scrollLeft = 0;
   }, []);
 
   const finish = (save: boolean) => {
