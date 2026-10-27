@@ -90,25 +90,25 @@ function describedBy(html: string): string {
 }
 
 describe("RibbonView", () => {
-  test("recording: one labelled control for the timer, Pause, and a Stop that saves", () => {
+  test("recording: one labelled control for the timer and bars, Pause, and a Stop that saves", () => {
     const html = ribbon(LIVE);
     expect(html).toContain('data-state="live"');
     expect(html).toContain(">0:06</span>");
     expect(html).toContain('aria-label="Recording. Open recorder"');
-    expect(describedBy(html)).toMatch(/^0:06 Recording stops at .+/);
+    expect(describedBy(html)).toMatch(/^0:06 Stops at .+/);
     expect(html).toContain('aria-label="Pause recording"');
     expect(html).toContain('aria-label="Stop and save"');
     expect(html).toContain('data-testid="ribbon-open"');
   });
 
-  test("the timer and its limit readout share one button, and no control is nested in it", () => {
+  test("the timer and bars share one button, and no control is nested in it", () => {
     const html = ribbon(LIVE);
     const open = html.slice(
       html.indexOf('data-testid="ribbon-open"'),
       html.indexOf("</button>", html.indexOf('data-testid="ribbon-open"')),
     );
     expect(open).toContain("ribbon-timer");
-    expect(open).toContain("ribbon-remaining");
+    expect(open).toContain("ribbon-bars");
     expect(open).not.toContain("<button");
   });
 
@@ -118,23 +118,21 @@ describe("RibbonView", () => {
     expect(html.match(/<button/g)).toHaveLength(3);
   });
 
-  test("paused: Resume in place of Pause, the timer dims", () => {
+  test("paused: Resume in place of Pause, the timer dims, the bars hold", () => {
     const html = ribbon(PAUSED);
     expect(html).toContain('data-state="paused"');
     expect(html).toContain('data-live="false"');
     expect(html).toContain('aria-label="Resume recording"');
     expect(html).not.toContain('aria-label="Pause recording"');
     expect(html).toContain('aria-label="Paused. Open recorder"');
-    expect(describedBy(html)).toMatch(/^0:15 Recording stops at .+/);
+    expect(describedBy(html)).toMatch(/^0:15 Stops at .+/);
     expect(html).toContain(">0:15</span>");
   });
 
-  test("no waveform, in any state", () => {
-    for (const patch of [LIVE, PAUSED, SILENCED]) {
-      const html = ribbon(patch);
-      expect(bars(html)).toBe(0);
-      expect(html).not.toContain("data-spectrum-bars");
-    }
+  test("30 bars, hidden from assistive technology", () => {
+    expect(bars(ribbon(LIVE))).toBe(30);
+    expect(ribbon(LIVE)).toContain('data-spectrum-bars="" data-paused="false"');
+    expect(ribbon(PAUSED)).toContain('data-paused="true"');
   });
 
   test("interrupted: not live, so no red recording state", () => {
@@ -163,13 +161,18 @@ describe("RibbonView", () => {
   });
 });
 
+
 describe("a silenced mic", () => {
   const SINCE = Date.now() - 60_000;
 
-  test("the Ribbon stays in the live state with no waveform to go flat", () => {
+  test("the Ribbon stays red but its bars are flat: nothing follows the level", () => {
     const html = ribbon(SILENCED);
     expect(html).toContain('data-state="live"');
-    expect(html).not.toContain("data-spectrum-bars");
+    expect(html).toContain('data-spectrum-bars="" data-paused="false"');
+    expect(html).toContain("#ff6b62");
+    expect(html).not.toContain("#8f8993");
+    // Resting height, the same for every bar.
+    expect(html.match(/scaleY\(0\.120\)/g)).toHaveLength(30);
   });
 
   test("the dock has no waveform to rest at a floor", () => {
