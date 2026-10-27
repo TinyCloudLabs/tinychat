@@ -13,7 +13,7 @@ import { PlatformContext, type AppPlatform } from "@/lib/platform";
 import { replicationOptInKey } from "@/lib/replication/replicationOptIn";
 import { REPLICATION_RUNTIME_FLAG_KEY } from "@/lib/replication/replicationFlag";
 import { SIGN_IN_BUNDLE_ENTRIES } from "@tinyboilerplate/core";
-import realManifest from "../../manifest.json";
+import realManifest from "../public/.well-known/openkey-manifest.json";
 
 // The app code under test must never reach a real home: HOME is a throwaway dir under /var/tmp,
 // set at load and asserted before anything runs.

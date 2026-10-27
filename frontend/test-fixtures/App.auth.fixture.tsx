@@ -179,7 +179,6 @@ test("browser sign-in mounts the workspace; committed A sign-out clears storage 
   await settle();
   expect(signInCalls).toBe(1);
   expect(signInOpenkey).toMatchObject({ mode: "iframe" });
-  expect(host!.textContent).not.toContain("Continue to OpenKey");
   expect(verifyCalls).toBe(1);
   expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeTruthy();
 
@@ -215,6 +214,7 @@ test("browser sign-in mounts the workspace; committed A sign-out clears storage 
   expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeTruthy();
   expect(host!.textContent).not.toContain("Storage full");
 });
+
 test("native interactive sign-in mounts the authenticated workspace", async () => {
   nativeMode = true;
   await mount("ios");

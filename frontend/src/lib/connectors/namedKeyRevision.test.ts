@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import manifest from "../../../../manifest.json";
+import manifest from "../../../public/.well-known/openkey-manifest.json";
 import { applyConnectorKeyRevisionGate, manifestCarriesConnectorKey, recordConnectorKeyRevision } from "./namedKeyRevision";
 
 const address = "0x00000000000000000000000000000000000000Aa";

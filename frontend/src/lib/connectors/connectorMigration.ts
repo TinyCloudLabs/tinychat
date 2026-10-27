@@ -1,6 +1,5 @@
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
-import { connectWallet, createTinyCloudWeb } from "@tinyboilerplate/client";
-import { loadWebManifest } from "../appManifest";
+import { connectWallet, createTinyCloudWeb, loadAppManifest } from "@tinyboilerplate/client";
 import { withEncryptionDecryptGrant } from "./encryptionGrant";
 
 /** A short-lived OpenKey authorization for the one legacy vault read. */
@@ -16,7 +15,8 @@ export async function prepareLegacyConnectorRead(input: {
   if (!ownerAddress || wallet.address.toLowerCase() !== ownerAddress.toLowerCase()) {
     throw new Error(`Sign in with the same account you used for ${input.connectorName} to move this key.`);
   }
-  const manifest = await loadWebManifest(`${input.backendUrl}/api/manifest`);
+  // The key move signs only the legacy vault read, so it uses the backend's manifest, which has no key declaration.
+  const manifest = await loadAppManifest(`${input.backendUrl}/api/manifest`);
   const client = createTinyCloudWeb(wallet.web3Provider, {
     manifest: withEncryptionDecryptGrant(manifest, wallet.address),
     openkey: { client: wallet.openkey, mode: "iframe" },

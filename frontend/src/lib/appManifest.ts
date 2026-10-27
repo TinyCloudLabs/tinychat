@@ -2,14 +2,13 @@ import { loadAppManifest } from "@tinyboilerplate/client";
 import type { Manifest } from "@tinycloud/sdk-core";
 
 /**
- * The backend serves the manifest's named-key rows (`keys_app_id`, `keys`) only
- * to a request that carries `keys=1`. The web client signs in through OpenKey's
- * authorize review, which admits app keys, so every web manifest load sends it.
+ * The web client's manifest, with the app's key declaration (`keys_app_id`, `keys`). OpenKey checks
+ * `apps/<id>/` key grants against the file it fetches from the origin at this path, so the client
+ * reads that same file: the digest it sends is the digest of what OpenKey fetches. The backend's
+ * `/api/manifest` never carries the declaration.
  */
-export function manifestUrlWithKeys(url: string): string {
-  return `${url}${url.includes("?") ? "&" : "?"}keys=1`;
-}
+export const OPENKEY_MANIFEST_PATH = "/.well-known/openkey-manifest.json";
 
-export function loadWebManifest(url: string): Promise<Manifest> {
-  return loadAppManifest(manifestUrlWithKeys(url));
+export function loadWebManifest(): Promise<Manifest> {
+  return loadAppManifest(OPENKEY_MANIFEST_PATH);
 }

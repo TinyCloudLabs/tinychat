@@ -567,7 +567,7 @@ export function App() {
         store: browserRevisionStore(),
         address: sessionStoreRef.current.getAddress(),
         isOffline: browserIsOffline,
-        servedManifestCarriesBundle: async () => manifestCarriesBundle(await loadWebManifest(`${BACKEND_URL}/api/manifest`)),
+        servedManifestCarriesBundle: async () => manifestCarriesBundle(await loadWebManifest()),
         handoff: captureHandoff,
         clearSession: (address) => {
           clearPersistedSession(address);
@@ -587,7 +587,7 @@ export function App() {
         store: browserRevisionStore(),
         address: sessionStoreRef.current.getAddress(),
         isOffline: browserIsOffline,
-        loadManifest: () => loadWebManifest(`${BACKEND_URL}/api/manifest`),
+        loadManifest: () => loadWebManifest(),
         handoff: captureHandoff,
         clearSession: (storedAddress) => {
           clearPersistedSession(storedAddress);
@@ -617,7 +617,7 @@ export function App() {
           // manifest-less client as ready. Offline, the backoff would only hold
           // the user on a spinner for ~15s before saying so: one attempt.
           const manifest = await fetchConfigWithRetry(
-            () => loadWebManifest(`${BACKEND_URL}/api/manifest`),
+            () => loadWebManifest(),
             { maxAttempts: browserIsOffline() ? 1 : 4 },
           );
           if (!manifest)
@@ -963,7 +963,7 @@ export function App() {
         setState("ready");
         return;
       }
-      prefetch = createWebSignInPrefetch(BACKEND_URL, { requestNonce, loadManifest: loadWebManifest });
+      prefetch = createWebSignInPrefetch(BACKEND_URL, { requestNonce, loadManifest: () => loadWebManifest() });
       const { address: connectedAddress, openkey, web3Provider } = await connectWallet({
         appName: APP_NAME,
         host: OPENKEY_HOST,

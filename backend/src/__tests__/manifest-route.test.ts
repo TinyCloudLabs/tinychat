@@ -1,7 +1,7 @@
 /**
- * `/api/manifest` serves the named-key rows only to a request that opts in with `keys=1`.
- * A client that does not send it (every build before named keys) always gets the manifest
- * without `keys_app_id` and `keys`. Real router, real manifest.json.
+ * `/api/manifest` is the backend's manifest and never carries the app's key declaration
+ * (`keys_app_id`, `keys`): that declaration lives in the web origin's
+ * /.well-known/openkey-manifest.json, which is what OpenKey reads. Real router, real manifest.json.
  */
 import { describe, expect, test } from "bun:test";
 import type { Server } from "node:http";
@@ -23,27 +23,14 @@ async function withServer<T>(fn: (base: string) => Promise<T>): Promise<T> {
   }
 }
 
-async function served(base: string, query = ""): Promise<Record<string, unknown>> {
-  const response = await fetch(`${base}/api/manifest${query}`);
-  expect(response.status).toBe(200);
-  return await response.json() as Record<string, unknown>;
-}
-
-describe("GET /api/manifest named-key gate", () => {
-  test("serves the key rows with keys=1", async () => {
+describe("GET /api/manifest", () => {
+  test("has neither keys nor keys_app_id, with or without a query", async () => {
     await withServer(async (base) => {
-      const body = await served(base, "?keys=1");
-      expect(body.keys_app_id).toBe("chat.tinycloud.tinychat");
-      expect(body.keys).toEqual([{ prefix: "apps/chat.tinycloud.tinychat/", abilities: ["key.create", "decrypt"] }]);
-      expect(body).toEqual(JSON.parse(JSON.stringify(runtimeManifest())));
-    });
-  });
-
-  test("serves the manifest without key rows when the request does not opt in", async () => {
-    await withServer(async (base) => {
-      const { keys_app_id: _a, keys: _k, ...expected } = JSON.parse(JSON.stringify(runtimeManifest())) as Record<string, unknown>;
-      for (const query of ["", "?keys=0", "?keys=true", "?keys=", "?keys=1&keys=0", "?other=1"]) {
-        const body = await served(base, query);
+      const expected = JSON.parse(JSON.stringify(runtimeManifest())) as Record<string, unknown>;
+      for (const query of ["", "?keys=1", "?keys=1&keys=0", "?keys=true", "?other=1"]) {
+        const response = await fetch(`${base}/api/manifest${query}`);
+        expect(response.status).toBe(200);
+        const body = await response.json() as Record<string, unknown>;
         expect("keys_app_id" in body, query).toBe(false);
         expect("keys" in body, query).toBe(false);
         expect(body, query).toEqual(expected);

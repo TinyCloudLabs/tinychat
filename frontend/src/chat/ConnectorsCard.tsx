@@ -758,7 +758,7 @@ export function ConnectorsCard({
               if (migrationDescriptor) patchRow(migrationDescriptor.id, { actionError: migrationDeclinedMessage(migrationDescriptor) });
             }}>Later</AlertDialogCancel>
             <Button type="button" disabled={migrationBusy} onClick={() => void migrateConnector()}>
-              {migrationBusy ? "Moving your key…" : "Continue"}
+              {migrationBusy ? "Moving your key…" : "Review in OpenKey"}
             </Button>
           </AlertDialogFooter>
         </AlertDialogContent>

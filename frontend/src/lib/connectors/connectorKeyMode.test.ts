@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { TINYCHAT_KEY_PREFIX } from "@tinyboilerplate/core";
 import { composeManifestRequest, type Manifest } from "@tinycloud/sdk-core";
-import manifestJson from "../../../../manifest.json";
+import manifestJson from "../../../public/.well-known/openkey-manifest.json";
 import { connectorSignInManifest, usesNamedConnectorKeys } from "./connectorKeyMode";
 import { deleteConnectorCredentials, getConnectorKey, saveConnectorKey } from "./namedConnectorSecrets";
 import { applyConnectorKeyRevisionGate, recordConnectorKeyRevision } from "./namedKeyRevision";
@@ -31,6 +31,12 @@ describe("connector key origin routing", () => {
       const request = composeManifestRequest([connectorSignInManifest(manifest, address)], { includeAccountRegistryPermissions: false });
       expect(request.manifests[0]?.keys).toEqual([{ prefix: TINYCHAT_KEY_PREFIX, abilities: ["key.create", "decrypt"] }]);
       expect(request.resources.filter((resource) => resource.service === "tinycloud.encryption")).toEqual([]);
+    });
+  });
+
+  test("on tinycloud.chat the sign-in manifest is the served manifest itself, so OpenKey's digest check sees the file it fetches", async () => {
+    await withOrigin("https://tinycloud.chat", async () => {
+      expect(connectorSignInManifest(manifest, address)).toBe(manifest);
     });
   });
 

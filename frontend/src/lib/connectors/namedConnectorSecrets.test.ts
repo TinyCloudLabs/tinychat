@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import manifest from "../../../../manifest.json";
+import manifest from "../../../public/.well-known/openkey-manifest.json";
 import { TINYCHAT_KEY_PREFIX, CONNECTORS_KV_PREFIX } from "@tinyboilerplate/core";
 import { resolveManifest } from "@tinycloud/sdk-core";
 import {
