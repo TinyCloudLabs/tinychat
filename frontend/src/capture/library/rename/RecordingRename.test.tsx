@@ -5,7 +5,7 @@ import { Database } from "bun:sqlite";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { installDom } from "@/test/dom";
 import { __resetStorageStatusForTests } from "@/lib/storageStatus";
-import { CONNECTORS_SQL_DB_NAME, ensureSchema } from "@/lib/connectors/connectorStore";
+import { ensureSchema } from "@/lib/connectors/connectorStore";
 import { createVoiceNoteRow } from "@/lib/voiceNotes/voiceNoteRows";
 import { RecordingRenameProvider, RecordingTitleEditField, RenameRecordingButton, useRecordingTitleEdit } from "./RecordingRename";
 import { RecordingTitleEditor } from "./RecordingTitleEditor";
@@ -96,25 +96,22 @@ describe("renaming from a row", () => {
   // reads and writes behave exactly as they do against the app's own connectors store. Each fake
   // space gets its own did so the voice-note identity cache cannot hand one space another's schema.
   let spaceCount = 0;
-  function spaceSql(sqlite: Database, fail = false) {
-    return { db: (name: string) => {
-      expect(name).toBe(CONNECTORS_SQL_DB_NAME);
-      return {
-        async query(statement: string, params: unknown[] = []) {
-          return { ok: true, data: { rows: sqlite.prepare(statement).all(...(params as never[])).map((r) => Object.values(r as object)) } };
-        },
-        async execute(statement: string, params: unknown[] = []) {
-          if (fail) return { ok: false, error: { code: "SQL_ERROR", message: "x" } };
-          return { ok: true, data: { changes: sqlite.prepare(statement).run(...(params as never[])).changes } };
-        },
-      };
-    } };
+  function spaceSql(sqlite: Database, fail: { current: boolean }) {
+    return { db: () => ({
+      async query(statement: string, params: unknown[] = []) {
+        return { ok: true, data: { rows: sqlite.prepare(statement).all(...(params as never[])).map((r) => Object.values(r as object)) } };
+      },
+      async execute(statement: string, params: unknown[] = []) {
+        if (fail.current) return { ok: false, error: { code: "SQL_ERROR", message: "x" } };
+        return { ok: true, data: { changes: sqlite.prepare(statement).run(...(params as never[])).changes } };
+      },
+    }) };
   }
-  function spaceFor(sqlite: Database, fail = false) {
+  function spaceFor(sqlite: Database, fail = { current: false }) {
     const did = `did:test:ui-${++spaceCount}`;
     return { did, spaceId: did, sql: spaceSql(sqlite, fail), kv: {} } as unknown as TinyCloudWeb;
   }
-  async function seededNote(fail = false) {
+  async function seededNote(fail = { current: false }) {
     const sqlite = new Database(":memory:");
     const tcw = spaceFor(sqlite, fail);
     await ensureSchema(tcw);
@@ -176,16 +173,27 @@ describe("renaming from a row", () => {
     expect(stored.metadata.title_user).toBe(true);
   });
 
-  test("a failed write reopens the editor with the rejected draft and shows an error", async () => {
+  test("a rejected draft that is saved again after the write recovers is what lands", async () => {
     const { sqlite, rowId } = await seededNote();
-    const tcw = spaceFor(sqlite, true);
+    const fail = { current: true };
+    const tcw = spaceFor(sqlite, fail);
     const c = await mountNode(<Space tcw={tcw} title={DEFAULT_TITLE} rowId={rowId} />);
     const input = await open(c);
     expect(c.querySelector("[role=alert]")).toBeNull();
     await typeInto(input, "Q4 planning");
     await press(input, "Enter");
     await settle();
+    // The write failed: the editor reopened with the rejected draft and an error.
     expect(c.querySelector("[role=alert]")).not.toBeNull();
     expect((c.querySelector("input") as HTMLInputElement).value).toBe("Q4 planning");
+    // Storage recovers; saving the unchanged rejected draft is the rename the user asked for, not a no-op.
+    fail.current = false;
+    await press(c.querySelector("input") as HTMLInputElement, "Enter");
+    await settle();
+    expect(c.querySelector("input")).toBeNull();
+    expect(c.querySelector("[role=alert]")).toBeNull();
+    const stored = storedTitle(sqlite, rowId);
+    expect(stored.title).toBe("Q4 planning");
+    expect(stored.metadata.title_user).toBe(true);
   });
 });
