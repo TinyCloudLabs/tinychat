@@ -1,7 +1,7 @@
 /**
  * The only data path chat has to meeting content: the hosted TinyCloud MCP's own `tinycloud_sql_query`
- * and `tinycloud_kv_get`, read-only. Header names, the intake route and the service credential are
- * configuration, not constants: the MCP's native-auth contract is not final.
+ * and `tinycloud_kv_get`, read-only. The endpoint, service credential, both header names and the expired/rejected
+ * 401 values are configuration (the MCP's native-auth contract is defined in js-sdk packages/mcp native-auth).
  */
 
 /** Hosted MCP replaces any read result over 100,000 serialized characters with an error (packages/mcp/src/results.ts). */
