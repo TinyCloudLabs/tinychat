@@ -105,6 +105,13 @@ describe("mcp chat configuration", () => {
       expect(mcpChatFromEnv({ ...env(), [key]: "" })).toEqual({});
     }
   });
+  test("admits every account only for the explicit * entry, so the final switch is one setting and an empty list still admits nobody", () => {
+    const everyone = mcpChatFromEnv({ ...env(), MCP_CHAT_TEST_ACCOUNTS: "*" });
+    expect(everyone.mcpChatAccountAllowed!("0xdef")).toBe(true);
+    expect(everyone.mcpChatAccountAllowed!(ADDRESS)).toBe(true);
+    expect(mcpChatFromEnv({ ...env(), MCP_CHAT_TEST_ACCOUNTS: " , " })).toEqual({});
+    expect(mcpChatFromEnv({ ...env(), MCP_CHAT_TEST_ACCOUNTS: "0xabc,*" }).mcpChatAccountAllowed!("0xdef")).toBe(true);
+  });
   test("admits only listed accounts and derives the owner DID from the session address", () => {
     const wiring = mcpChatFromEnv(env());
     expect(wiring.mcpChatAccountAllowed!(ADDRESS.toUpperCase().replace("0X", "0x"))).toBe(true);

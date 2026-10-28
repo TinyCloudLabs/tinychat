@@ -49,7 +49,8 @@ export function mcpChatFromEnv(env: Record<string, string | undefined>, fetchImp
   return {
     mcpGrants: { serviceDid, accept: delegation => postNativeGrant(config, delegation) },
     mcpMeetings: createMcpMeetingTools(owner => createHttpMcpPort(config, owner), { tavilyApiKey: env.TAVILY_API_KEY, ...(fetchImpl ? { fetchImpl } : {}) }),
-    mcpChatAccountAllowed: address => accounts.has(address.toLowerCase()),
+    // The explicit `*` entry is the final all-accounts switch; an empty list never admits anyone.
+    mcpChatAccountAllowed: address => accounts.has("*") || accounts.has(address.toLowerCase()),
     // The MCP canonicalizes the owner DID with a lowercase address (js-sdk packages/mcp native-auth canonicalOwnerDid).
     mcpOwnerDidFor: address => `did:pkh:eip155:${Number.isInteger(chainId) && chainId > 0 ? chainId : 1}:${address.toLowerCase()}`,
   };
