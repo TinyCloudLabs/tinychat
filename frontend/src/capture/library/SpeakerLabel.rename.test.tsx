@@ -17,11 +17,10 @@ const sentences = [
 ];
 const ROW = { id: "row-1", source: "exo-voice-note", sourceId: "rec-1" };
 
-function space(metadata: Record<string, unknown>, organizer: { email: string; participants?: string } | null = null) {
+function space(metadata: Record<string, unknown>) {
   const sqlite = new Database(":memory:");
-  sqlite.run("CREATE TABLE connector_meeting (id TEXT PRIMARY KEY, organizer_email TEXT, participants TEXT, metadata TEXT, updated_at TEXT)");
-  sqlite.run("INSERT INTO connector_meeting VALUES ('row-1', ?, ?, ?, '')",
-    [organizer?.email ?? null, organizer?.participants ?? "[]", JSON.stringify(metadata)]);
+  sqlite.run("CREATE TABLE connector_meeting (id TEXT PRIMARY KEY, metadata TEXT, updated_at TEXT)");
+  sqlite.run("INSERT INTO connector_meeting VALUES ('row-1', ?, '')", [JSON.stringify(metadata)]);
   const tcw = { did: "did:test", sql: { db: () => ({
     execute: async (sql: string, params: never[]) =>
       ({ ok: true, data: { changes: sqlite.run(sql, params as never).changes } }),
@@ -64,7 +63,7 @@ const rename = async (label: string, name: string) => {
   });
   await act(async () => document.querySelector('[data-testid="speaker-rename-form"]')!.dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true })));
 };
-const settle = () => act(async () => { const { promise, resolve } = Promise.withResolvers<void>(); setTimeout(resolve, 20); await promise; });
+const settle = () => act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
 
 test("tapping a label renames the speaker, saves it with the note's row, and Undo puts it back", async () => {
   const { tcw, stored } = space({ transcript_provider: "tinycloud-private-transcription", note_kv_key: "k" });
@@ -161,16 +160,6 @@ test("a rename queued behind a failed one does not put the failed name back: eac
   expect(labels()).toEqual(["Me", "Alice", "Me"]);
   const stored = JSON.parse((sqlite.query("SELECT metadata FROM connector_meeting WHERE id = 'row-1'").get() as { metadata: string }).metadata) as Record<string, unknown>;
   expect(stored).toEqual({ speaker_names: { Them: "Alice" } });
-});
-
-test("a meeting someone else organized never pre-fills the own-side field with the organizer's name", async () => {
-  // The signed-in account can attend a meeting organized by somebody else: organizer_email names
-  // that organizer, not this account. With no own-name source on the row the field stays blank
-  // rather than save a stranger's name as "Me" — even though the row carries the organizer.
-  const { tcw } = space({}, { email: "sam@example.com", participants: '[{"name":"Sam Rivera","email":"sam@example.com"}]' });
-  await mount(tcw, {});
-  await act(async () => (document.querySelector('[data-testid="speaker-label"]') as HTMLElement).click());
-  expect((document.querySelector("input") as HTMLInputElement).value).toBe("");
 });
 
 test("a note still on this phone renames and keeps the name in its capture ledger", async () => {

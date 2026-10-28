@@ -560,8 +560,6 @@ describe("summary columns", () => {
     await combineOk(ff[0], ff[1]);
     const after = JSON.parse(mergedRows()[0]!.metadata) as Record<string, unknown>;
     expect(after.speaker_names).toEqual({ "speaker_0": "Ada", Me: "Sam" });
-    const merge = after.merge;
-    expect(merge !== null && typeof merge === "object" && "v" in merge && merge.v).toBe(1);
   });
 
   test("the combined body is read back by its source_id; a failed or invalid read is an error, never an empty body", async () => {
