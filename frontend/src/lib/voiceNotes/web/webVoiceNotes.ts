@@ -5,6 +5,7 @@ import { readableError } from "@/lib/readableError";
 // the VoiceNotes seam; nothing in the app imports this file otherwise.
 
 import type { PluginListenerHandle } from "@capacitor/core";
+import { VOICE_NOTE_SAFETY_CAP_MS } from "../nativeVoiceNotes";
 import type {
   AudioInput, CaptureOptions, CaptureStatus, MicState, MicStateReason, MissingAudioSpan, VoiceNoteRecording,
   VoiceNotesPlugin,
@@ -31,9 +32,13 @@ export const WEB_CAPABILITIES = {
 } as const;
 export type WebCapabilities = typeof WEB_CAPABILITIES;
 
-/** The three-hour note limit and the shortest limit the recorder accepts (same bounds as the native shells). */
+/** The three-hour default note limit, the eight-hour safety cap and the shortest limit the recorder accepts (same bounds as the native shells). */
 export const WEB_MAX_DURATION_MS = 3 * 60 * 60 * 1000;
+export const WEB_SAFETY_CAP_MS = VOICE_NOTE_SAFETY_CAP_MS;
 export const WEB_MIN_DURATION_LIMIT_MS = 1000;
+
+const clampLimitMs = (requested: number | undefined): number =>
+  Math.min(WEB_SAFETY_CAP_MS, Math.max(WEB_MIN_DURATION_LIMIT_MS, requested ?? WEB_MAX_DURATION_MS));
 
 /** Methods with no meaning in a browser reject with this code. */
 export const UNSUPPORTED_METHODS = ["dismissShortcutRecovery", "consumeShortcutRecord", "openSettings"] as const;
@@ -195,6 +200,8 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
     queueMicrotask(() => {
       void run(async () => {
         if (live !== l || l.finishing) return;
+        // setMaxDuration may have raised the limit after this stop was scheduled.
+        if (reason === "max_duration" && l.record.audioMs < l.record.maxDurationMs) return;
         await finish(l, reason);
       }).catch((error: unknown) => console.error("[webVoiceNotes] Auto-stop failed", error));
     });
@@ -364,7 +371,7 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
             identifySpeakers: startOptions?.identifySpeakers ?? defaults.identifySpeakers,
             uploadAudio: startOptions?.uploadAudio ?? defaults.uploadAudio ?? false,
           };
-          const maxDurationMs = Math.min(WEB_MAX_DURATION_MS, Math.max(WEB_MIN_DURATION_LIMIT_MS, startOptions?.maxDurationMs ?? WEB_MAX_DURATION_MS));
+          const maxDurationMs = clampLimitMs(startOptions?.maxDurationMs);
           const begun = await store.beginSession({ id, startedAt: now(), source: "in_app", owner: signedIn ? defaults.accountDid : null,
             transitionGen: defaults.transitionGen, options: opts, mimeType: capture.mimeType, input: null, maxDurationMs });
           began = true;
@@ -391,6 +398,20 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
           for (const release of releases) release();
           throw error;
         }
+      });
+    },
+
+    async setMaxDuration({ maxDurationMs }) {
+      return run(async () => {
+        const l = live;
+        if (!l || l.finishing) throw failure("no_recording");
+        await l.queue;
+        const limit = clampLimitMs(maxDurationMs);
+        l.record.maxDurationMs = limit;
+        await journal(l, { maxDurationMs: limit });
+        // A limit at or below what is already recorded stops the note the way the limit always does.
+        if (l.record.audioMs >= limit && !l.finishing) scheduleAutoStop(l, "max_duration");
+        return { maxDurationMs: limit };
       });
     },
 

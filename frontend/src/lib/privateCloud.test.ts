@@ -269,7 +269,8 @@ describe("private-cloud messages", () => {
       const text = privateCloudMessage(new PrivateCloudError(code, "x"));
       expect(text).not.toMatch(/verified|attested|end-to-end/i);
     }
-    expect(privateCloudMessage(new PrivateCloudError("recording_too_long_for_cloud", "x"))).toContain("can't transcribe a recording");
+    expect(privateCloudMessage(new PrivateCloudError("recording_too_long_for_cloud", "x")))
+      .toBe("Your recording is saved, but it's too long for private transcription. The audio is kept, so nothing is lost.");
   });
 });
 test("three independent PTX poll loops fit one 900-second request budget for long jobs", async () => {

@@ -2,101 +2,53 @@ import { describe, expect, test } from "bun:test";
 import { autoMeetingTitle } from "./meetingTitle";
 
 const OCT_9 = new Date(2026, 9, 9, 10, 30).getTime();
+const title = (participantNames: unknown, startedAt: unknown = OCT_9) => autoMeetingTitle({ startedAt, participantNames });
+const titleAt = (startedAt: unknown) => autoMeetingTitle({ startedAt, participantNames: ["Alice"] });
 
 describe("autoMeetingTitle", () => {
-  test("joins date, model label and real participant names", () => {
-    expect(autoMeetingTitle({ startedAt: OCT_9, modelLabel: "AssemblyAI Universal-2", participantNames: ["Alice Chen", "Bob"] }))
-      .toBe("Oct 9 · AssemblyAI Universal-2 · Alice Chen, Bob");
+  test("joins the date and real participant names, never a model or provider", () => {
+    expect(title(["Alice Chen", "Bob"])).toBe("Oct 9 · Alice Chen, Bob");
   });
 
-  test("omits the names part when there are no participants", () => {
-    expect(autoMeetingTitle({ startedAt: OCT_9, modelLabel: "AssemblyAI Universal-2", participantNames: [] }))
-      .toBe("Oct 9 · AssemblyAI Universal-2");
+  test("returns null without a real name so the caller keeps its title", () => {
+    expect(title([])).toBeNull();
+    expect(title(undefined)).toBeNull();
+    expect(title("Alice")).toBeNull();
+    expect(title(["Me", "Them", "Speaker 2", "Speaker A", "Guest", "HOST", "Participant 3", "Unknown speaker", "   "])).toBeNull();
   });
 
-  test("omits the model part when there is no model label", () => {
-    expect(autoMeetingTitle({ startedAt: OCT_9, modelLabel: null, participantNames: ["Alice Chen"] }))
-      .toBe("Oct 9 · Alice Chen");
+  test("returns null without a usable start date", () => {
+    expect(titleAt(undefined)).toBeNull();
+    expect(titleAt("not a date")).toBeNull();
   });
 
-  test("is just the date when there is neither a model nor names", () => {
-    expect(autoMeetingTitle({ startedAt: OCT_9, modelLabel: null, participantNames: undefined })).toBe("Oct 9");
+  test("uses English month abbreviations and local day numbers, and accepts an ISO string", () => {
+    expect(title(["Dana"], new Date(2026, 11, 31, 23).getTime())).toBe("Dec 31 · Dana");
+    expect(title(["Dana"], new Date(2026, 0, 5, 9).toISOString())).toBe("Jan 5 · Dana");
   });
 
-  test("uses English month abbreviations and local day numbers", () => {
-    expect(autoMeetingTitle({ startedAt: new Date(2026, 11, 31, 23).getTime(), modelLabel: null, participantNames: [] }))
-      .toBe("Dec 31");
-  });
-
-  test("returns null without a usable start date so the caller keeps its title", () => {
-    expect(autoMeetingTitle({ startedAt: undefined, modelLabel: "AssemblyAI Universal-2", participantNames: ["Alice"] })).toBeNull();
-    expect(autoMeetingTitle({ startedAt: "not a date", modelLabel: null, participantNames: [] })).toBeNull();
-  });
-
-  test("accepts an ISO start date string from the stored row", () => {
-    const iso = new Date(2026, 0, 5, 9).toISOString();
-    expect(autoMeetingTitle({ startedAt: iso, modelLabel: null, participantNames: [] })).toBe("Jan 5");
-  });
-
-  test("drops generic speaker labels and blanks", () => {
-    expect(autoMeetingTitle({
-      startedAt: OCT_9, modelLabel: null,
-      participantNames: ["Me", "Them", "Speaker 2", "speaker 1", "Unknown", "   ", "Carol"],
-    })).toBe("Oct 9 · Carol");
-  });
-
-  test("dedupes names case-insensitively, keeping the first spelling", () => {
-    expect(autoMeetingTitle({ startedAt: OCT_9, modelLabel: null, participantNames: ["Alice", "alice ", "ALICE", "Bob"] }))
-      .toBe("Oct 9 · Alice, Bob");
+  test("drops generic labels, dedupes case-insensitively and keeps the first spelling", () => {
+    expect(title(["Me", "Speaker 1", "Alice", "alice ", "ALICE", "Bob"])).toBe("Oct 9 · Alice, Bob");
   });
 
   test("shows at most three names and counts the rest", () => {
-    expect(autoMeetingTitle({ startedAt: OCT_9, modelLabel: null, participantNames: ["A", "B", "C", "D", "E"] }))
-      .toBe("Oct 9 · A, B, C +2");
+    expect(title(["A", "B", "C", "D", "E"])).toBe("Oct 9 · A, B, C +2");
   });
 
-  test("truncates a long single name with an ellipsis", () => {
-    expect(autoMeetingTitle({ startedAt: OCT_9, modelLabel: null, participantNames: ["x".repeat(80)] }))
-      .toBe(`Oct 9 · ${"x".repeat(39)}…`);
+  test("truncates a long name and caps the whole title at 120 characters", () => {
+    expect(title(["x".repeat(80)])).toBe(`Oct 9 · ${"x".repeat(39)}…`);
+    const long = title(["a".repeat(40), "b".repeat(40), "c".repeat(40)]);
+    expect(long!.length).toBe(120);
+    expect(long!.endsWith("…")).toBe(true);
   });
 
-  test("caps the whole title at 120 characters", () => {
-    const title = autoMeetingTitle({ startedAt: OCT_9, modelLabel: "M".repeat(100), participantNames: ["N".repeat(40)] });
-    expect(title).not.toBeNull();
-    expect(title!.length).toBe(120);
-    expect(title!.endsWith("…")).toBe(true);
-    expect(title!.startsWith("Oct 9 · MMM")).toBe(true);
-  });
-
-  test("strips control characters and newlines from names", () => {
-    expect(autoMeetingTitle({ startedAt: OCT_9, modelLabel: null, participantNames: ["Ali\nce\u0007"] }))
-      .toBe("Oct 9 · Ali ce");
-  });
-
-  test("ignores non-string entries and non-array participant values", () => {
-    expect(autoMeetingTitle({ startedAt: OCT_9, modelLabel: null, participantNames: [42, null, { name: "x" }, "Dana"] }))
-      .toBe("Oct 9 · Dana");
-    expect(autoMeetingTitle({ startedAt: OCT_9, modelLabel: null, participantNames: "Alice" })).toBe("Oct 9");
-  });
-
-  test("ignores a non-string model label", () => {
-    expect(autoMeetingTitle({ startedAt: OCT_9, modelLabel: 42, participantNames: [] })).toBe("Oct 9");
+  test("strips control characters and angle brackets, ignores non-string entries", () => {
+    expect(title(["Ali\nce\u0007"])).toBe("Oct 9 · Ali ce");
+    expect(title(["Dana <CEO>"])).toBe("Oct 9 · Dana CEO");
+    expect(title([42, null, { name: "x" }, "Dana"])).toBe("Oct 9 · Dana");
   });
 
   test("drops email addresses and phone numbers, keeping the other names", () => {
-    expect(autoMeetingTitle({ startedAt: OCT_9, modelLabel: null,
-      participantNames: ["dana@example.com", "+1 (555) 123-4567", "555-1234", "Carol"] }))
-      .toBe("Oct 9 · Carol");
-  });
-
-  test("strips angle brackets from names", () => {
-    expect(autoMeetingTitle({ startedAt: OCT_9, modelLabel: null, participantNames: ["Dana <CEO>"] }))
-      .toBe("Oct 9 · Dana CEO");
-  });
-
-  test("drops guest, host, participant-numbered and lettered speaker labels", () => {
-    expect(autoMeetingTitle({ startedAt: OCT_9, modelLabel: null,
-      participantNames: ["Speaker A", "speaker b", "Guest", "HOST", "Participant 3", "Participant", "Unknown speaker", "Carol"] }))
-      .toBe("Oct 9 · Carol");
+    expect(title(["dana@example.com", "+1 (555) 123-4567", "555-1234", "Carol"])).toBe("Oct 9 · Carol");
   });
 });

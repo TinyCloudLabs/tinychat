@@ -179,6 +179,15 @@ export const CREDENTIAL_COUNT_SUCCESS_LIMIT = 10;
 export const CREDENTIAL_COUNT_WINDOW_MS = 60 * 60 * 1000;
 export const CREDENTIAL_COUNT_PATHS = ["/api/internal/credential-row-count"] as const;
 
+/**
+ * The hosted AssemblyAI status probe (routes/assemblyai-status.ts) has the same two hard hourly buckets as the
+ * credential count and is kept out of the global bucket the same way. Its success bucket is sized for a probe
+ * every 5 minutes (12/h) with room for manual checks and a faster probe: 60/h. The failure bucket stays 5/h.
+ */
+export const ASSEMBLYAI_STATUS_FAILURE_LIMIT = 5;
+export const ASSEMBLYAI_STATUS_SUCCESS_LIMIT = 60;
+export const ASSEMBLYAI_STATUS_PATHS = ["/api/internal/assemblyai-status"] as const;
+
 /** Liveness probes, matched exactly (`/health` or `/health/`). Exempt from every bucket: the
  *  handler only serializes in-memory state, and a drained bucket must never make monitors report
  *  the backend down. */
@@ -215,6 +224,7 @@ const PREFIX_BUCKETS: ReadonlyArray<readonly [readonly string[], Bucket]> = [
   [CALENDAR_AUTOJOIN_PATHS, "calendarAutojoin"],
   [AUTH_PATHS, "auth"],
   [CREDENTIAL_COUNT_PATHS, "credentialCount"],
+  [ASSEMBLYAI_STATUS_PATHS, "credentialCount"],
 ];
 
 function matchesMountPath(path: string, mount: string): boolean {
@@ -426,11 +436,20 @@ export interface CredentialCountLimiters {
 
 /** The credential count's two buckets (see `CREDENTIAL_COUNT_FAILURE_LIMIT`), fresh stores per call. */
 export function createCredentialCountLimiters(): CredentialCountLimiters {
+  return createAdminProbeLimiters(CREDENTIAL_COUNT_FAILURE_LIMIT, CREDENTIAL_COUNT_SUCCESS_LIMIT, "credential-count");
+}
+
+/** The AssemblyAI status probe's two buckets (see `ASSEMBLYAI_STATUS_SUCCESS_LIMIT`), fresh stores per call. */
+export function createAssemblyAiStatusLimiters(): CredentialCountLimiters {
+  return createAdminProbeLimiters(ASSEMBLYAI_STATUS_FAILURE_LIMIT, ASSEMBLYAI_STATUS_SUCCESS_LIMIT, "assemblyai-status");
+}
+
+function createAdminProbeLimiters(failureLimit: number, successLimit: number, key: string): CredentialCountLimiters {
   const make = (limit: number) => {
     const limiter = rateLimit({
       windowMs: CREDENTIAL_COUNT_WINDOW_MS,
       limit,
-      keyGenerator: () => "credential-count",
+      keyGenerator: () => key,
       standardHeaders: false,
       legacyHeaders: false,
       handler: (_req, res) => {
@@ -450,7 +469,7 @@ export function createCredentialCountLimiters(): CredentialCountLimiters {
       return passed;
     };
   };
-  return { failure: make(CREDENTIAL_COUNT_FAILURE_LIMIT), success: make(CREDENTIAL_COUNT_SUCCESS_LIMIT) };
+  return { failure: make(failureLimit), success: make(successLimit) };
 }
 
 export interface RateLimitOptions {

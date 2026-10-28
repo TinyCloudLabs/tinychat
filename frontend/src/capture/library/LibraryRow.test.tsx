@@ -124,6 +124,6 @@ describe("a note not yet settled in the space", () => {
       expect(render(voice(), { pipeline: pipeline(state) })).toContain(`Transcript ${label}`);
       expect(render(voice(), { pipeline: pipeline(state), soft: false })).toContain(`Transcript ${label}`);
     }
-    expect(render(voice(), { pipeline: pipeline("failed") })).toContain("Private cloud couldn&#x27;t accept this recording&#x27;s length or size. Try again.");
+    expect(render(voice(), { pipeline: pipeline("failed") })).toContain("Your recording is saved, but it&#x27;s too large for private transcription. The audio is kept, so nothing is lost.");
   });
 });

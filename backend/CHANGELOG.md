@@ -1,5 +1,131 @@
 # @tinychat/backend
 
+## 0.5.7
+
+### Patch Changes
+
+- 1c140c0: Calendar autojoin now asks Google for Calendar events, openid and email only, and no longer asks for the Meet, Drive and Docs scopes or for previously granted scopes. Enabling it no longer saves a Google Meet token or runs a Meet sync; Google Meet stays a separate connect. Existing autojoin connections are not changed until the user reconnects.
+- 3ac6081: The production backend CVM now runs a private log shipper sidecar. It sends startup lines (including `[startup] FATAL` and crash lines), hosted-AssemblyAI events and alerts to a private Better Stack source as typed fields only. It is inert until its source token is set, never gates the backend, and changes nothing for users.
+- 813e839: Add an optional authenticated count of stored connector credentials, off unless a key is configured.
+- 648edff: Add an optional one-time row count for stored connector credentials, off by default.
+- 73b3241: Activate exactly scoped Exo sync grants: KV get, list, and del on the `requests/` prefix, and get, put, and del on the `jobs/` prefix. A flag-gated grant route, `GET|POST|DELETE /api/exo/v1/grant`, mounts only when `EXO_CAPABILITIES_ENABLED` is exactly `true`. A typed accessor refuses traversal, encoded, sibling, and lookalike paths, keys over 512 characters, stored values over 4 KiB, and invalid UTF-8 or byte-order-marked values before any KV call. Exo and connector grant records are bound to their own kind and key prefix, and connector records written before this change still load. `EXO_CAPABILITIES_ENABLED` stays off by default.
+- 87993a3: With `EXO_CAPABILITIES_ENABLED` set to `true`, the Exo mailbox now runs on real stores. Cooldown, daily-count, and active-run state is kept in the backend KV with compare-and-set writes. Queued wakes drain on shutdown, expired job mirrors are swept hourly, and owner and source Exo state is cleared on grant revoke, transcript delegation revoke, calendar autojoin disconnect, and connector teardown. The flag remains off by default.
+- eb888dd: Add a backend mailbox for Exo sync requests behind `EXO_CAPABILITIES_ENABLED`, which is off by default. The grant verifier now also accepts one exactly scoped Exo grant shape; connector grants are unchanged.
+- 84819aa: Home signs in with the permissions in its manifest, including the requested secret decrypt grant.
+
+  Details: TC-2038
+
+- 8b3b819: Hosted transcription refusals are now classified (rejected key, insufficient balance, rate limit) and reported to operators: one alert when AssemblyAI starts refusing, one when it recovers, one after three failed jobs in a row, a heartbeat every minute, and a read-only status for the monitoring probe. Nothing changes for users yet.
+- 0cd762b: Send a notetaker accepts every Google Meet link shape: `/meet/<code>`, `/_meet/<code>`, `g.co/meet/<code>`, `tel.meet/<code>`, links wrapped in `accounts.google.com?continue=` or `meet.app.goo.gl?link=`, and a bare code with or without dashes. All become `https://meet.google.com/<code>` (lowercase, no trailing slash). A wrapper whose target is not a Meet link is refused. `meet.google.com/lookup/<nick>` is sent as pasted.
+- 57fb986: Send a notetaker accepts meeting links as people paste them. A link without `https://`, Google's `google.com/meet/<code>` form, a bare Meet code, a Gmail/Calendar or Outlook redirect, or a whole "Join with Google Meet" line now becomes the canonical meeting link before it goes to ptx. These used to fail with "That doesn't look like a meeting link" or "That meeting platform isn't supported yet". Any other link still goes upstream exactly as pasted, so capability links keep their query and fragment. The backend applies the same reading, so links from older clients work too.
+- 333a8f1: Show the notetaker stuck-joining state.
+- 0f22d69: Update the TinyCloud SDK packages to 3.8.0-beta.9 (replica 0.4.0-beta.3). The local copy now syncs entry names only and fetches a value when something reads it (`replication.contentFetch: "lazy"`), so signing in no longer downloads every transcript body. The sign-in key patch is regenerated for the new SDK version.
+- d171ad6: Details: TC-1977 Revert storing connector credentials under app named keys: web sign-in with the named-key manifest could not complete in the OpenKey sign popup. It returns with a fix and a real-browser sign-in check.
+- 4bbe96a: Update the TinyCloud SDK packages to 3.8.0-beta.1 (replica 0.3.5-beta.0) and request sign-in sync only on the declared replication prefixes (`replication.syncScope: "prefixes"`).
+
+  Details: TC-2043
+
+- 38b2c37: Meeting chat tools accept `exo-merged` (combined meetings) as a source filter.
+- 8b6848e: Details: TC-1977 Store connector credentials in app named keys again. Web sign-in runs OpenKey's authorize review inside the embedded OpenKey frame, so it needs no popup or extra approval screen, and the web reads its manifest, with the named-key declaration, from its own /.well-known/openkey-manifest.json, the file OpenKey verifies. The backend's /api/manifest carries no key declaration.
+- 6e64051: Combined-meeting summaries now use a faster model and a per-call output cap. The chat route accepts an optional `max_output_tokens` integer (1 to 4096), forwarded upstream as `max_tokens`. Details: TC-1686
+- fa7f6d8: Agent chat turns now stay within the remaining daily credit budget. A pre-flight check compares remaining credits against the minimum turn cost (log-only by default, `AGENT_CHAT_BUDGET_PREFLIGHT=enforce` returns 402). An in-turn check on Eliza usage frames stops the turn according to `AGENT_CHAT_BUDGET_STOP_MODE`: `finish_answer` (default) finishes the answer in progress, bounded to one extra step; `hard_stop`, `predict_next_round`, and `off` are also available.
+- 6312e16: Add an "Automatic meeting summaries" setting, on by default. When it is off, a combined meeting is saved without a summary and Generate starts one. `GET /api/billing/status` now reports the same usage the chat admission gate uses, and the client refreshes it after a summary run.
+- a9a2e94: A voice note that Private transcription is holding shows "Transcription is delayed, it will finish automatically." instead of an error, and keeps checking until it finishes. A note whose Private transcription stopped on a speech-to-text provider failure is re-submitted once, automatically, the next time the app loads and the recording is still on the device; if it fails again it waits for Retry.
+
+  Details: TC-2085
+
+- d826e26: Turn on TinyCloud-hosted AssemblyAI transcription for the Powerful choice.
+- ae0fbc6: Hide the TinyCloud button by default; add a Settings toggle and an Open row.
+
+  Update TinyCloud SDK to 3.8.0-beta.12 (panel delegation button, iPhone safe areas).
+
+- 7889a90: Add canonical RFC 9562 UUID v1–8 request IDs to backend HTTP responses and explicitly classified first-party ptx-dev/ptx-batch calls, with v4 replacement, a typed replacement flag, redirect isolation and request-scoped console/stream redaction. `REQUEST_ID_FIRST_PARTY_ORIGINS` independently controls request-ID forwarding and defaults to deny. Preserve unscoped stream write callbacks and the independent Private transcription correlation-ID header and error contract. [TC-959](https://linear.app/tinycloud-labs/issue/TC-959).
+
+  Isolate the shared transcript delivery worker from initiating HTTP contexts and restore only each volatile queue item's own request ID. Recovery, retries and sweeps without a retained origin send no request ID; delivery state remains unchanged, with an explicit restart/retry correlation gap. Keep payload-safe diagnostics in both attributed item work and the detached shared lifecycle.
+
+- fde135c: Update the TinyCloud SDK family to the stable 3.3.0 line (web-sdk, node-sdk, sdk-core, sdk-services 3.3.0; node-sdk-wasm 1.7.8; web-sdk-wasm 1.7.7) and regenerate the node-sdk sign-in patch for 3.3.0.
+
+  Details: TC-1152
+
+- 3e173ce: Move the TinyCloud SDK family to the stable 3.3.0 set (web-sdk, node-sdk, sdk-core, sdk-services 3.3.0; `@tinycloud/replica` 0.3.0; web-sdk-wasm 1.7.7; node-sdk-wasm 1.7.8). Add an optional local read-through copy of transcript text for the web app behind a build-time flag that defaults OFF: nothing changes unless the app is built with `VITE_EXO_REPLICATION=true` (the per-browser runtime opt-in exists only outside production builds), and it refuses to turn on in Tauri, Capacitor, iOS browsers, Safari and Firefox. With the flag OFF, a local copy left by an earlier build is removed at the next load. Mirrors only audio-free transcript folders, within a 100 MB budget; reads that confirm a write use the network. Sign-out erases the local copy (a failed erase is shown and blocks reads), and Settings shows a read-only status line. A built-in kill switch forces replication off for every build and browser.
+
+## 0.5.7-beta.25
+
+### Patch Changes
+
+- 0cd762b: Send a notetaker accepts every Google Meet link shape: `/meet/<code>`, `/_meet/<code>`, `g.co/meet/<code>`, `tel.meet/<code>`, links wrapped in `accounts.google.com?continue=` or `meet.app.goo.gl?link=`, and a bare code with or without dashes. All become `https://meet.google.com/<code>` (lowercase, no trailing slash). A wrapper whose target is not a Meet link is refused. `meet.google.com/lookup/<nick>` is sent as pasted.
+
+## 0.5.7-beta.24
+
+### Patch Changes
+
+- 8b6848e: Details: TC-1977 Store connector credentials in app named keys again. Web sign-in runs OpenKey's authorize review inside the embedded OpenKey frame, so it needs no popup or extra approval screen, and the web reads its manifest, with the named-key declaration, from its own /.well-known/openkey-manifest.json, the file OpenKey verifies. The backend's /api/manifest carries no key declaration.
+
+## 0.5.7-beta.23
+
+### Patch Changes
+
+- d171ad6: Details: TC-1977 Revert storing connector credentials under app named keys: web sign-in with the named-key manifest could not complete in the OpenKey sign popup. It returns with a fix and a real-browser sign-in check.
+
+## 0.5.7-beta.22
+
+### Patch Changes
+
+- b4c2b24: Home signs in with the permissions in its manifest, including the requested secret decrypt grant.
+
+  Details: TC-2038
+
+## 0.5.7-beta.21
+
+### Patch Changes
+
+- ae0fbc6: Hide the TinyCloud button by default; add a Settings toggle and an Open row.
+
+  Update TinyCloud SDK to 3.8.0-beta.12 (panel delegation button, iPhone safe areas).
+
+## 0.5.7-beta.20
+
+### Patch Changes
+
+- 3ac6081: The production backend CVM now runs a private log shipper sidecar. It sends startup lines (including `[startup] FATAL` and crash lines), hosted-AssemblyAI events and alerts to a private Better Stack source as typed fields only. It is inert until its source token is set, never gates the backend, and changes nothing for users.
+
+## 0.5.7-beta.19
+
+### Patch Changes
+
+- 8b3b819: Hosted transcription refusals are now classified (rejected key, insufficient balance, rate limit) and reported to operators: one alert when AssemblyAI starts refusing, one when it recovers, one after three failed jobs in a row, a heartbeat every minute, and a read-only status for the monitoring probe. Nothing changes for users yet.
+- d826e26: Turn on TinyCloud-hosted AssemblyAI transcription for the Powerful choice.
+
+## 0.5.7-beta.18
+
+### Patch Changes
+
+- 0f22d69: Update the TinyCloud SDK packages to 3.8.0-beta.9 (replica 0.4.0-beta.3). The local copy now syncs entry names only and fetches a value when something reads it (`replication.contentFetch: "lazy"`), so signing in no longer downloads every transcript body. The sign-in key patch is regenerated for the new SDK version.
+
+## 0.5.7-beta.17
+
+### Patch Changes
+
+- a9a2e94: A voice note that Private transcription is holding shows "Transcription is delayed, it will finish automatically." instead of an error, and keeps checking until it finishes. A note whose Private transcription stopped on a speech-to-text provider failure is re-submitted once, automatically, the next time the app loads and the recording is still on the device; if it fails again it waits for Retry.
+
+  Details: TC-2085
+
+## 0.5.7-beta.16
+
+### Patch Changes
+
+- 84819aa: Home signs in with the permissions in its manifest, including the requested secret decrypt grant.
+
+  Details: TC-2038
+
+## 0.5.7-beta.15
+
+### Patch Changes
+
+- 4bbe96a: Update the TinyCloud SDK packages to 3.8.0-beta.1 (replica 0.3.5-beta.0) and request sign-in sync only on the declared replication prefixes (`replication.syncScope: "prefixes"`).
+
+  Details: TC-2043
+
 ## 0.5.7-beta.14
 
 ### Patch Changes

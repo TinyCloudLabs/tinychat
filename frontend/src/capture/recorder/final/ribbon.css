@@ -4,12 +4,13 @@
 
 /* ---------- the Ribbon: phone above the tab bar, floating on the rail ---------- */
 .ribbon {
+  position: relative;
   box-sizing: border-box;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 6px 6px 6px 16px;
-  border-radius: 22px;
+  gap: 8px;
+  padding: 3px 4px 5px 14px;
+  border-radius: 20px;
   background: var(--solid);
   box-shadow:
     0 0 0 1px var(--gedge),
@@ -25,14 +26,16 @@
 }
 
 .ribbon-open {
+  position: relative;
   display: flex;
   flex: 1;
-  flex-wrap: wrap;
-  align-content: center;
   min-width: 0;
+  /* A 44px touch target inside the 36px slot: it overlaps the bar's own padding, so nothing moves. */
   min-height: 44px;
+  margin: -3px 0 -5px;
+  padding-bottom: 2px;
   align-items: center;
-  gap: 5px 10px;
+  gap: 10px;
   border-radius: 16px;
 }
 
@@ -52,12 +55,13 @@
 }
 
 .ribbon-timer {
-  font-size: 19px;
+  flex: none;
+  font-size: 17px;
 }
 
-/* The stop time takes its own line under the timer and the trace, so the trace keeps its width on a 320 px phone. */
-.ribbon-stops {
-  flex-basis: 100%;
+/* "Stops in 12:34" beside the timer; on a narrow phone it gives way before the buttons do (the hover text has the same news). */
+.ribbon-remaining,
+.dock-remaining {
   min-width: 0;
   overflow: hidden;
   color: var(--dim);
@@ -68,17 +72,55 @@
   white-space: nowrap;
 }
 
-.ribbon-bars {
-  display: block;
-  flex: 1;
-  min-width: 0;
+/* The thin line along the foot of the bar: how much of the recording limit is used. A plain width, no motion. */
+.mini-limit {
+  position: absolute;
+  right: 14px;
+  bottom: 2px;
+  left: 14px;
+  height: 2px;
   overflow: hidden;
+  border-radius: 1px;
+  background: color-mix(in srgb, var(--ink) 14%, transparent);
+  pointer-events: none;
 }
 
-/* A 320 px phone leaves the trace about 100 px: the bars give up some gap and width, never the Pause button. */
-@media (max-width: 359px) {
-  .ribbon-bars .halo-spectrum {
-    --spectrum-gap: 1px;
+.mini-limit-fill {
+  display: block;
+  height: 100%;
+  background: var(--dim);
+}
+
+/* The exact stop time, over the bar on hover, keyboard focus or a held touch. Always in the DOM so it describes the control. */
+.mini-tip {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  left: 0;
+  z-index: 5;
+  padding: 5px 9px;
+  border-radius: 8px;
+  background: var(--solid);
+  box-shadow: 0 0 0 1px var(--gedge), 0 6px 18px rgba(0, 0, 0, 0.28);
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.3;
+  opacity: 0;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.ribbon-open:focus-visible .mini-tip,
+.ribbon-open:active .mini-tip,
+.dock-open:focus-visible ~ .mini-tip,
+.dock-open:active ~ .mini-tip {
+  opacity: 1;
+}
+
+@media (hover: hover) {
+  .ribbon-open:hover .mini-tip,
+  .dock-open:hover ~ .mini-tip {
+    opacity: 1;
   }
 }
 
@@ -123,9 +165,13 @@
   color: var(--ink);
 }
 
+.ribbon .mini-btn {
+  margin-block: -4px;
+}
+
 .ribbon .mini-disc {
-  width: 40px;
-  height: 40px;
+  width: 30px;
+  height: 30px;
 }
 
 .mini-btn--stop .mini-disc {
@@ -143,9 +189,9 @@
 }
 
 .ribbon .mini-stop-glyph {
-  width: 13px;
-  height: 13px;
-  border-radius: 3.5px;
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
 }
 
 /* Beside the tab bar the Ribbon fills the width; floating on the rail it sits centred. */
@@ -175,9 +221,8 @@
   box-sizing: border-box;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 9px;
-  padding: 12px;
-  border-radius: 18px;
+  padding: 8px 8px 10px 12px;
+  border-radius: 14px;
   background: var(--glass);
   box-shadow: inset 0 0 0 1px var(--gedge);
   color: var(--ink);
@@ -190,7 +235,7 @@
 .dock-open {
   position: absolute;
   inset: 0;
-  border-radius: 18px;
+  border-radius: 14px;
 }
 
 .dock-row {
@@ -205,10 +250,23 @@
   pointer-events: auto;
 }
 
-.dock-timer {
+.dock-clock {
+  display: flex;
   flex: 1;
-  font-size: 21px;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
   pointer-events: none;
+}
+
+.dock-timer {
+  font-size: 18px;
+  pointer-events: none;
+}
+
+.dock .mini-limit {
+  right: 12px;
+  left: 12px;
 }
 
 .dock .mini-btn {
@@ -225,38 +283,6 @@
   width: 9px;
   height: 9px;
   border-radius: 2.5px;
-}
-
-.dock-bars,
-.dock-stops,
-.dock-foot {
-  position: relative;
-  pointer-events: none;
-}
-
-.dock-stops,
-.dock-foot {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--dim);
-  font-size: 11px;
-  font-weight: 600;
-}
-
-.dock-status {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.dock-stops {
-  white-space: nowrap;
-}
-
-.dock-foot-gap {
-  flex: 1;
 }
 
 @media (pointer: coarse) {

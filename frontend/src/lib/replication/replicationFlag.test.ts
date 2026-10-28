@@ -14,8 +14,8 @@ const CHROME_DESKTOP: ReplicationEnv = {
 const ON = { killSwitchOpen: true, buildFlag: "true", runtimeFlag: false, userOptIn: true } as const;
 
 describe("replication flag", () => {
-  test("is OFF by default, even in a qualified browser", () => {
-    expect(isReplicationEnabled({ killSwitchOpen: true, buildFlag: undefined, runtimeFlag: false, userOptIn: true, env: CHROME_DESKTOP })).toBe(false);
+  test("is ON by default (build flag unset) in a qualified browser, OFF when the build flag is \"false\"", () => {
+    expect(isReplicationEnabled({ killSwitchOpen: true, buildFlag: undefined, runtimeFlag: false, userOptIn: true, env: CHROME_DESKTOP })).toBe(true);
     expect(isReplicationEnabled({ killSwitchOpen: true, buildFlag: "false", runtimeFlag: false, userOptIn: true, env: CHROME_DESKTOP })).toBe(false);
   });
 
@@ -28,14 +28,14 @@ describe("replication flag", () => {
     expect(isReplicationEnabled({ ...ON, killSwitchOpen: false, runtimeFlag: true, env: CHROME_DESKTOP })).toBe(false);
   });
 
-  test("truth table: ON only when kill switch open AND build flag AND qualified platform AND the user opted in", () => {
+  test("truth table: ON only when kill switch open AND build flag not \"false\" AND qualified platform AND the user did not opt out", () => {
     const tauri: ReplicationEnv = { ...CHROME_DESKTOP, platform: "tauri" };
     for (const killSwitchOpen of [true, false]) {
-      for (const buildFlag of ["true", undefined]) {
+      for (const buildFlag of ["true", "false"]) {
         for (const env of [CHROME_DESKTOP, tauri]) {
           for (const userOptIn of [true, false]) {
             const inputs = { killSwitchOpen, buildFlag, runtimeFlag: false, env, userOptIn };
-            const gates = killSwitchOpen && buildFlag === "true" && env === CHROME_DESKTOP;
+            const gates = killSwitchOpen && buildFlag !== "false" && env === CHROME_DESKTOP;
             expect(isReplicationEnabled(inputs)).toBe(gates && userOptIn);
             // The switch is offered on the gates alone; the user's choice never makes it available.
             expect(isReplicationAvailable(inputs)).toBe(gates);

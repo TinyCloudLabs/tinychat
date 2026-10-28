@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import { InfoTip } from "@/components/ui/info-tip";
 import type { AppState } from "../lib/appState";
 import { errorLinkFor } from "../lib/authErrors";
+import { LANDING_LINK_LABEL } from "../lib/homeStrings";
 
 /** The line under the title for each state; the native sign-in screen shows the same busy and error copy. */
 export function bootMessage(state: AppState, error: string | null): string {
@@ -26,6 +27,8 @@ export function BootSurface(props: {
   onAction: () => void;
   /** The offline voice recorder (TC-515), under the action. */
   voiceNotes?: React.ReactNode;
+  /** TinyCloud Home on the web (TC-2040): a plain link to the landing page at /about. */
+  home?: boolean;
 }) {
   const message = bootMessage(props.state, props.error);
 
@@ -62,6 +65,11 @@ export function BootSurface(props: {
           <Button onClick={props.onAction} className="h-11 px-6 fine:h-9 fine:px-4">
             {props.state === "offline" ? "Try again" : "Sign in"}
           </Button>
+        )}
+        {props.home && (
+          <a href="/about" className="text-callout text-muted-foreground underline underline-offset-4">
+            {LANDING_LINK_LABEL}
+          </a>
         )}
         {busy && (
           <span className="text-xs text-muted-foreground">Working…</span>

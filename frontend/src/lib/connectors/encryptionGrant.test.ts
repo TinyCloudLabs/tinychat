@@ -56,6 +56,22 @@ describe("encryptionDecryptGrant", () => {
 });
 
 describe("withEncryptionDecryptGrant", () => {
+  test("a manifest-scoped request retains the declared decrypt grant without account resources", async () => {
+    const { composeManifestRequest } = await import("@tinycloud/sdk-core");
+    const request = composeManifestRequest([withEncryptionDecryptGrant(baseManifest(), LOWER)], {
+      includeAccountRegistryPermissions: false,
+    });
+    expect(request.resources.filter((resource) => resource.space === "account")).toEqual([]);
+    const encryption = request.resources.filter((resource) => resource.service === "tinycloud.encryption");
+    expect(encryption).toHaveLength(1);
+    expect(encryption[0]).toMatchObject({
+      service: "tinycloud.encryption",
+      space: "encryption",
+      path: encryptionNetworkId(LOWER),
+      actions: ["tinycloud.encryption/decrypt"],
+    });
+  });
+
   test("appends the grant without mutating the fetched manifest", () => {
     const manifest = baseManifest();
     const before = (manifest.permissions ?? []).length;

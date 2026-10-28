@@ -103,6 +103,15 @@ export interface LocalTranscript {
  */
 export const VOICE_NOTE_MAX_DURATION_MS = 3 * 60 * 60 * 1000;
 
+/** The silent safety cap: the longest limit the web and desktop engines accept. The limit when automatic stopping is off. */
+export const VOICE_NOTE_SAFETY_CAP_MS = 8 * 60 * 60 * 1000;
+
+/** What "Keep going" adds to a running recording's limit. */
+export const VOICE_NOTE_EXTENSION_MS = 60 * 60 * 1000;
+
+/** How a running recording's limit changes: milliseconds added to it, or "none" (no limit: the silent safety cap). */
+export type LimitExtension = number | "none";
+
 /** The shortest limit the recorder accepts (the shells clamp to the same range). */
 export const VOICE_NOTE_MIN_DURATION_LIMIT_MS = 1000;
 
@@ -247,8 +256,13 @@ export interface VoiceNoteAudioChunk {
 }
 
 export interface VoiceNotesPlugin {
-  /** `maxDurationMs`: stop by itself after this much recorded time (clamped to [1 s, 3 h]). */
+  /** `maxDurationMs`: stop by itself after this much recorded time (clamped to [1 s, 8 h]; 3 h when omitted). */
   start(options?: { maxDurationMs?: number } & Partial<CaptureOptions>): Promise<{ id: string; startedAt: number; maxDurationMs?: number }>;
+  /**
+   * Change the running recording's limit (clamped to [1 s, 8 h]; resolves with the limit now in force). Absent on engines
+   * that fix the limit at start (native mobile): callers then keep the limit they started with. Rejects `no_recording` when idle.
+   */
+  setMaxDuration?(options: { maxDurationMs: number }): Promise<{ maxDurationMs: number }>;
   stop(): Promise<VoiceNoteRecording>;
   /** Desktop finishing gate; absent on platforms whose stop already produces ready audio. */
   awaitAudioReady?(id: string): Promise<void>;

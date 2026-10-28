@@ -19,6 +19,8 @@ export interface TinyCloudWebConfig {
   tinycloudFallbackHosts?: string[] | null;
   autoCreateSpace?: boolean;
   siweConfig?: SiweConfig;
+  /** Explicit SIWE authority when the app is served from a development URL. */
+  domain?: string;
   /**
    * Manifest driving the SIWE recap at sign-in. If `capabilityRequest`
    * is present, it takes precedence and is signed directly.
@@ -26,14 +28,16 @@ export interface TinyCloudWebConfig {
   manifest?: Manifest;
   /** Pre-composed manifest request that may include app and delegate manifests. */
   capabilityRequest?: ComposedManifestRequest;
-  /** Include implicit account registry permissions when composing `manifest`. Default true in the SDK. */
-  includeAccountRegistryPermissions?: boolean;
+  /** Account registry permissions are disabled for Home sessions. */
+  includeAccountRegistryPermissions?: false;
   /**
    * Session storage backend. Defaults to BrowserSessionStorage (localStorage);
    * the Exo native app passes the OpenKey secure-store adapter so the session
    * key never touches web storage.
    */
   sessionStorage?: ISessionStorage;
+  /** Panel layout: "native" inside the phone and desktop apps. Default "web". */
+  uiPlatform?: "native" | "web";
   /** SIWE nonce override. If set, `siweConfig.nonce` still wins inside the SDK. */
   nonce?: string;
   /**
@@ -71,9 +75,12 @@ export function createTinyCloudWeb(
     sessionExpirationMs: SESSION_EXPIRATION_MS,
     nonce: config?.nonce,
     siweConfig: config?.siweConfig,
+    ...(config?.domain ? { domain: config.domain } : {}),
     manifest,
     capabilityRequest: config?.capabilityRequest,
-    includeAccountRegistryPermissions: config?.includeAccountRegistryPermissions,
+    includeAccountRegistryPermissions: false,
+    // The app owns the floating button (Settings toggle); the SDK default shows it.
+    ui: { button: false, platform: config?.uiPlatform ?? "web" },
     ...(config?.replication ? { replication: config.replication } : {}),
     autoBootstrapAccount: false,
   };
@@ -217,7 +224,9 @@ export async function restoreTinyCloudWebSession(
     siweConfig: config?.siweConfig,
     manifest,
     capabilityRequest: config?.capabilityRequest,
-    includeAccountRegistryPermissions: config?.includeAccountRegistryPermissions,
+    includeAccountRegistryPermissions: false,
+    // The app owns the floating button (Settings toggle); the SDK default shows it.
+    ui: { button: false, platform: config?.uiPlatform ?? "web" },
     ...(config?.replication ? { replication: config.replication } : {}),
   };
 

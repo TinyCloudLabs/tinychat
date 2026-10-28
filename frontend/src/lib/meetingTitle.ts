@@ -1,4 +1,4 @@
-/** Title for a new voice note: `<Mon D> · <model label> · <Name1, Name2>`. Pure: no network, no clock. */
+/** Title for a transcribed voice note: `<Mon D> · <Name1, Name2>`. Pure: no network, no clock. */
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const MAX_TITLE_LENGTH = 120;
@@ -11,20 +11,15 @@ const PARTICIPANT_LABEL = /^participant\s*\d*$/i;
 
 export interface AutoMeetingTitleInput {
   startedAt: unknown;
-  modelLabel: unknown;
   participantNames: unknown;
 }
 
-/** Null when there is no usable start date; the caller then keeps the title it already has. */
+/** Null when there is no usable start date or no real participant name; the caller then keeps the title it already has. */
 export function autoMeetingTitle(input: AutoMeetingTitleInput): string | null {
   const date = monthDay(input.startedAt);
-  if (!date) return null;
-  const parts = [date];
-  const model = cleanText(input.modelLabel);
-  if (model) parts.push(model);
   const names = participantSummary(input.participantNames);
-  if (names) parts.push(names);
-  return truncate(parts.join(" · "), MAX_TITLE_LENGTH);
+  if (!date || !names) return null;
+  return truncate(`${date} · ${names}`, MAX_TITLE_LENGTH);
 }
 
 function monthDay(value: unknown): string | null {

@@ -17,9 +17,10 @@
 // breaks non-DOM consumers (including bun tests); a second node-sdk import
 // also double-defines web-sdk's custom element in the browser. The dynamic import
 // reuses the already-loaded browser copy only when the real courier needs it.
-import type { Delegation, Manifest, PermissionEntry, PortableDelegation, TinyCloudWeb } from "@tinycloud/web-sdk";
+import type { Config as TinyCloudWebSdkConfig, Delegation, Manifest, PermissionEntry, PortableDelegation, TinyCloudWeb } from "@tinycloud/web-sdk";
 import type { ConnectWalletResult } from "@tinyboilerplate/client";
 import { openkeyPasskeysSupported } from "./openkeyPasskeys.js";
+import { sdkUiPlatform } from "./platform";
 import { SESSION_EXPIRATION_MS } from "@tinyboilerplate/core";
 import { localValidationEnabled, prepareLocalSignIn } from "./localValidation";
 
@@ -306,6 +307,29 @@ async function connectSessionOwner(options: FreshSignInMintOptions): Promise<Con
 }
 
 /**
+ * Config for the short-lived TinyCloudWeb of a fresh-sign-in mint. `ui.button: false`: these
+ * throwaway instances must never draw the SDK's floating button (TC-2130).
+ */
+export function ephemeralAgentSdkConfig(input: {
+  web3Provider: ConnectWalletResult["web3Provider"];
+  sessionStorage: TinyCloudWebSdkConfig["sessionStorage"];
+  tinycloudHosts?: string[];
+  /** Panel layout; defaults to this device's. */
+  uiPlatform?: "native" | "web";
+}): TinyCloudWebSdkConfig {
+  return {
+    providers: { web3: { driver: input.web3Provider } },
+    includeAccountRegistryPermissions: false,
+    ...(localValidationEnabled() ? { autoCreateSpace: false } : {}),
+    ...(input.tinycloudHosts ? { tinycloudHosts: input.tinycloudHosts } : {}),
+    manifest: AGENT_CONSENT_MANIFEST,
+    sessionStorage: input.sessionStorage,
+    sessionExpirationMs: SESSION_EXPIRATION_MS,
+    ui: { button: false, platform: input.uiPlatform ?? sdkUiPlatform() },
+  };
+}
+
+/**
  * Mint via a FRESH, isolated sign-in — the live-proven `delegate-ui` flow.
  *
  * WHY: the app's own session signs in with the app manifest (tinycloud.kv on the
@@ -355,14 +379,7 @@ export async function mintAgentDelegationViaFreshSignIn(
   // The isolated session asks for the exact memory + transcript permissions it
   // must sub-delegate. Without this manifest, the SDK's generic default recap
   // does not cover the transcript resources and delegateTo() fails closed.
-  const tcw = new TinyCloudWeb({
-    providers: { web3: { driver: web3Provider } },
-    ...(localValidationEnabled() ? { autoCreateSpace: false } : {}),
-    ...(options.tinycloudHosts ? { tinycloudHosts: options.tinycloudHosts } : {}),
-    manifest: AGENT_CONSENT_MANIFEST,
-    sessionStorage: new BrowserSessionStorage({ storage: ephemeralStorage }),
-    sessionExpirationMs: SESSION_EXPIRATION_MS,
-  });
+  const tcw = new TinyCloudWeb(ephemeralAgentSdkConfig({ web3Provider, sessionStorage: new BrowserSessionStorage({ storage: ephemeralStorage }), tinycloudHosts: options.tinycloudHosts }));
 
   try {
     if (localValidationEnabled()) await prepareLocalSignIn(tcw);
@@ -392,7 +409,7 @@ export async function mintAgentSessionViaFreshSignIn(
   const { TinyCloudWeb, BrowserSessionStorage } = await import("@tinycloud/web-sdk");
   const memory = new Map<string, string>();
   const storage: Storage = { get length() { return memory.size; }, clear: () => memory.clear(), getItem: (k) => memory.get(k) ?? null, key: (i) => Array.from(memory.keys())[i] ?? null, removeItem: (k) => { memory.delete(k); }, setItem: (k, v) => { memory.set(k, String(v)); } };
-  const tcw = new TinyCloudWeb({ providers: { web3: { driver: web3Provider } }, ...(localValidationEnabled() ? { autoCreateSpace: false } : {}), ...(options.tinycloudHosts ? { tinycloudHosts: options.tinycloudHosts } : {}), manifest: AGENT_CONSENT_MANIFEST, sessionStorage: new BrowserSessionStorage({ storage }), sessionExpirationMs: SESSION_EXPIRATION_MS });
+  const tcw = new TinyCloudWeb(ephemeralAgentSdkConfig({ web3Provider, sessionStorage: new BrowserSessionStorage({ storage }), tinycloudHosts: options.tinycloudHosts }));
   try {
     if (localValidationEnabled()) await prepareLocalSignIn(tcw);
     await tcw.signIn();

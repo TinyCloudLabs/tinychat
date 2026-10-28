@@ -4,7 +4,7 @@ import express from "express";
 import { Window } from "happy-dom";
 import { createSiweMessage, parseSiweMessage } from "viem/siwe";
 import { privateKeyToAccount } from "viem/accounts";
-import { makeSpaceId, prepareSession, TCWSessionManager } from "@tinycloud/node-sdk-wasm";
+import { makeSpaceId, prepareSession, protocolVersion, TCWSessionManager } from "@tinycloud/node-sdk-wasm";
 import { createNonceStore } from "@tinyboilerplate/server";
 import type { Manifest } from "@tinycloud/sdk-core";
 import type { TinyCloudWeb as TinyCloudWebClass } from "@tinycloud/web-sdk";
@@ -14,10 +14,12 @@ import { createAuthRouter } from "../routes/auth.js";
 
 const account = privateKeyToAccount(`0x${"01".repeat(32)}`);
 const SESSION_URI = /^did:key:(z6Mk[1-9A-HJ-NP-Za-km-z]{44})#\1$/;
-const globals = ["window", "document", "navigator", "HTMLElement", "customElements", "localStorage"] as const;
+const globals = ["window", "document", "navigator", "HTMLElement", "customElements", "localStorage", "location"] as const;
 const previous = new Map<string, PropertyDescriptor | undefined>();
 let browser: Window;
 let TinyCloudWeb: typeof TinyCloudWebClass;
+let nodeInfoServer: Server;
+let nodeInfoHost: string;
 
 beforeAll(async () => {
   browser = new Window({ url: "https://tinycloud.chat/" });
@@ -30,9 +32,20 @@ beforeAll(async () => {
   }
   // web-sdk defines browser custom elements at import time; install the test DOM first.
   ({ TinyCloudWeb } = await import("@tinycloud/web-sdk"));
+  const nodeInfoApp = express();
+  nodeInfoApp.get("/info", (_request, response) => {
+    response.json({ protocol: protocolVersion(), features: ["encryption-named-keys-v1"] });
+  });
+  nodeInfoServer = await new Promise<Server>((resolve) => {
+    const listener = nodeInfoApp.listen(0, "127.0.0.1", () => resolve(listener));
+  });
+  const address = nodeInfoServer.address();
+  if (!address || typeof address === "string") throw new Error("Expected TCP address");
+  nodeInfoHost = `http://127.0.0.1:${address.port}`;
 });
 
 afterAll(async () => {
+  await new Promise<void>((resolve) => nodeInfoServer.close(() => resolve()));
   for (const name of globals) {
     const descriptor = previous.get(name);
     if (descriptor) Object.defineProperty(globalThis, name, descriptor);
@@ -97,7 +110,7 @@ async function signWithWebSdk(origin: string, nonce: string, claimedDomain?: str
   };
   const tcw = new TinyCloudWeb({
     provider,
-    tinycloudHosts: ["http://127.0.0.1:9"],
+    tinycloudHosts: [nodeInfoHost],
     autoCreateSpace: true,
     autoBootstrapAccount: false,
     persistSession: false,
@@ -143,18 +156,53 @@ function signWithNativeBuilder(nonce: string) {
   return prepared.siwe as string;
 }
 
+/** Same builder as above, with explicit abilities, to prove what the audience gate refuses. */
+function signNativeWithAbilities(nonce: string, abilities: Record<string, Record<string, string[]>>) {
+  const manager = new TCWSessionManager();
+  manager.createSessionKey("native-test-narrow");
+  const jwk = JSON.parse(manager.jwk("native-test-narrow")!);
+  const issuedAt = new Date();
+  const prepared = prepareSession({
+    address: account.address,
+    chainId: 1,
+    domain: "openkey.so",
+    issuedAt: issuedAt.toISOString(),
+    expirationTime: new Date(issuedAt.getTime() + 60_000).toISOString(),
+    spaceId: makeSpaceId(account.address, 1, "applications"),
+    jwk,
+    nonce,
+    abilities,
+  });
+  manager.free();
+  return prepared.siwe as string;
+}
+
 describe("real SDK SIWE audience", () => {
-  for (const [name, origin, domain] of [
+  test("raw Tauri development authority includes the port and is rejected by production", async () => {
+    const server = await startAuthServer();
+    try {
+      const signed = await signWithWebSdk("http://localhost:5186/chat", await server.nonce());
+      const parsed = parseSiweMessage(signed.message);
+      expect(parsed.domain).toBe("localhost:5186");
+      expect(parsed.uri).toMatch(SESSION_URI);
+      expect(await server.verify(signed.message, signed.signature)).toEqual({ status: 400, error: "invalid_origin" });
+    } finally {
+      await server.close();
+    }
+  });
+
+  for (const [name, origin, domain, claimedDomain] of [
     ["production web", "https://tinycloud.chat/chat", "tinycloud.chat"],
     ["Pages preview", "https://feature-12.tinychat-4jq.pages.dev/chat", "feature-12.tinychat-4jq.pages.dev"],
+    ["Tauri development", "http://localhost:5186/chat", "localhost", "localhost"],
     ["macOS Tauri", "tauri://localhost/chat", "localhost"],
     ["Windows Tauri", "http://tauri.localhost/chat", "tauri.localhost"],
-  ]) {
+  ] as const) {
     test(`accepts ${name}'s SDK-generated session DID`, async () => {
       const server = await startAuthServer();
       try {
         const nonce = await server.nonce();
-        const signed = await signWithWebSdk(origin, nonce);
+        const signed = await signWithWebSdk(origin, nonce, claimedDomain);
         const parsed = parseSiweMessage(signed.message);
         expect(parsed.domain).toBe(domain);
         expect(parsed.uri).toMatch(SESSION_URI);
@@ -183,6 +231,23 @@ describe("real SDK SIWE audience", () => {
       expect(await server.verify(wrongUri, await account.signMessage({ message: wrongUri }))).toEqual({
         status: 400, error: "invalid_origin",
       });
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("a native grant that names only the broad Home entries is not proof of a TinyChat sign-in", async () => {
+    const server = await startAuthServer();
+    try {
+      for (const abilities of [
+        { sql: { "xyz.tinycloud.sample.healthlog/healthlog": ["tinycloud.sql/read", "tinycloud.sql/write", "tinycloud.sql/schema"] } },
+        { kv: { "": ["tinycloud.kv/get", "tinycloud.kv/put", "tinycloud.kv/del", "tinycloud.kv/list", "tinycloud.kv/metadata"] } },
+      ]) {
+        const message = signNativeWithAbilities(await server.nonce(false), abilities);
+        expect(await server.verify(message, await account.signMessage({ message }))).toEqual({
+          status: 400, error: "invalid_native_audience",
+        });
+      }
     } finally {
       await server.close();
     }

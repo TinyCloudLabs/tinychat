@@ -1,5 +1,370 @@
 # @tinychat/frontend
 
+## 0.11.0
+
+### Minor Changes
+
+- ec9f26e: Rename a chat from the Chats list or the chat header. The title is saved with the chat in your space, a renamed title is never replaced by the automatic title, and clearing it returns to the automatic title.
+- c69435b: Let users choose Feed or Apps as TinyCloud Home's first screen in Settings. The choice is saved with their account settings across devices; direct links retain their destinations. Details: TC-2040
+- 69102c7: Add a sample Home Feed with five card layouts and visible-only refresh. Details: TC-2040
+- 81211af: TinyCloud Home: the app opens on a feed of sample cards, with Recording, Chat, Apps and Feed in the navigation. Apps open in TinyCloud Share. Details: TC-2040
+- 723c72a: Add transcript paste as an Upload choice. Pasted text is committed as a transcript-only note and appears in the Library and meeting chat.
+- 9affbdb: The local copy of transcripts on this device is now on by default in supported browsers. Turning it off in Settings is remembered per account and removes the local copy. Details: TC-2055
+- bca5df5: TinyCloud Home sign-in manifest: adds the applications-space key-value grant and the two catalog databases (Health Log and Recipes), removes the unused migration record folder, renames the app to TinyCloud Home, and asks for one new sign-in per device. Details: TC-2043
+- 94d19ee: The recording view now shows ⚙︎ Capture settings, with a "Stop recording after" default for new recordings on the Mac app, and +15 min, +30 min and No limit next to "Stops at …" to move or cancel the stop time of the running recording. The chat header's microphone is no longer drawn while recording. Details: TC-2182
+
+### Patch Changes
+
+- 253d9d6: Hide Apps and Feed behind a device-local experimental setting, with Chat as the default web entry until enabled.
+- 1c140c0: Calendar autojoin now asks Google for Calendar events, openid and email only, and no longer asks for the Meet, Drive and Docs scopes or for previously granted scopes. Enabling it no longer saves a Google Meet token or runs a Meet sync; Google Meet stays a separate connect. Existing autojoin connections are not changed until the user reconnects.
+- 49e6c78: A failed or slow chat-list load is retried and, if it still fails, shown as an error with a retry instead of an empty list. Details: TC-2016
+- 1029746: Combined meetings get their own summary, made once per combine from the combined text (TC-1152).
+- b52f4e4: Google Meet connect now keeps the connection when finishing the sync times out: the connection is saved as connected with a sync error, Drive Notes have their own time budget, and Retry finishes without reconnecting. If the connection itself can't be saved, the dialog says so and offers to connect again.
+- 54a136e: Google Meet Notes: one Note's storage write is retried twice with backoff, and a Note that still fails no longer fails the run: the rest are saved, the card reports "N of M Notes saved", and Sync now or Full rescan finishes the rest (a snapshot resumes only the unsaved Notes; an incremental run replays changes since its cursor). The row is recounted after every background run. The session-start sync now reconciles Notes in the background like the connect dialog, so Full rescan and Sync now show the running sync's live progress (including a Notes sync resumed from an earlier page load) and offer to wait instead of failing. "Copy sync log" is on the Connectors card, kept per account across reloads.
+- 0b3e6ac: Google Meet connect now finishes in seconds. The connection is saved as soon as the meetings are checked, and Notes by Gemini reconcile in the background: the Drive listing is limited to Google Docs, existing notes are matched in memory instead of one database scan per Doc, Docs are read up to five at a time with per-call timeouts, and progress is checkpointed so Retry resumes instead of restarting. The dialog shows real progress, per-phase counts and elapsed time, and a "Copy sync log" button (counts, timings and error kinds only). A background failure shows on the Google Meet card.
+- 104c54e: Google Meet in Meeting sources: a Full rescan or Sync now that another Meet sync refuses (including the run its own vault unlock started) shows that sync's progress and starts by itself when it ends, instead of "Another Google Meet sync is already running". The meeting count is the live count of saved meetings, refreshed at every checkpoint and when a sync settles. The connect dialog says how many Meet recordings synced and how many meetings are saved. The sync log is saved when a run starts and at each checkpoint, so a run a reload cuts short leaves one, and "Copy sync log" is on the row. After a reload the row says "A Notes sync was interrupted at x/y. Sync now resumes it."
+- 287a93a: Google Meet in Meeting sources: Sync now and Full rescan return once the Meet records are saved and the Notes finish in the background (own time budget, checkpoints, progress on the row), so a slow storage node no longer hits the 60 s foreground limit and needs several presses. The status line follows the latest run: a finished run clears an earlier "Last sync failed", and "synced" shows when the run ended. The meeting count rises with every saved Note. A request for the Google access token that the network closes is sent once more before the row says it couldn't reach Google.
+- 2561378: Hide the Whisper Large Turbo model from the model picker. Models already selected or downloaded stay available.
+- 84819aa: Home signs in with the permissions in its manifest, including the requested secret decrypt grant.
+
+  Details: TC-2038
+
+- 8b3b819: Hosted transcription refusals are now classified (rejected key, insufficient balance, rate limit) and reported to operators: one alert when AssemblyAI starts refusing, one when it recovers, one after three failed jobs in a row, a heartbeat every minute, and a read-only status for the monitoring probe. Nothing changes for users yet.
+- 0e9f195: The "Keep recording?" prompt now offers "Stop now" and "Keep going". "Stop now" stops and saves the recording immediately; "Keep going" still adds an hour. Closing the prompt with Escape, or ignoring it, leaves the recording to stop at its limit.
+- 90ab342: Adds the meeting databases, the migration record folder, the storage info read and the Exo mailbox folders to the sign-in manifest, and asks for one new sign-in per device when a saved session predates them.
+- 0cd762b: Send a notetaker accepts every Google Meet link shape: `/meet/<code>`, `/_meet/<code>`, `g.co/meet/<code>`, `tel.meet/<code>`, links wrapped in `accounts.google.com?continue=` or `meet.app.goo.gl?link=`, and a bare code with or without dashes. All become `https://meet.google.com/<code>` (lowercase, no trailing slash). A wrapper whose target is not a Meet link is refused. `meet.google.com/lookup/<nick>` is sent as pasted.
+- 1a839fb: Name new voice notes with the date, transcription model and participants.
+- 57fb986: Send a notetaker accepts meeting links as people paste them. A link without `https://`, Google's `google.com/meet/<code>` form, a bare Meet code, a Gmail/Calendar or Outlook redirect, or a whole "Join with Google Meet" line now becomes the canonical meeting link before it goes to ptx. These used to fail with "That doesn't look like a meeting link" or "That meeting platform isn't supported yet". Any other link still goes upstream exactly as pasted, so capability links keep their query and fragment. The backend applies the same reading, so links from older clients work too.
+- 333a8f1: Show the notetaker stuck-joining state.
+- 34720ec: A pasted transcript is shown as saved in the Library.
+- 740150e: Pause chat sharing: the Share chat action is offered only for chats that already have a link, and creating a new chat share link is refused. Opening received share links and managing existing links are unchanged.
+- 8c04781: A voice note whose audio is on this device plays from that file with seeking, and the Audio/Transcribe-on-device lines are gone. Transcription shows one status in Activity and on the note, with minutes done and time left and one working action. A transcribed note's title is no longer renamed with the transcription model.
+- 0f22d69: Update the TinyCloud SDK packages to 3.8.0-beta.9 (replica 0.4.0-beta.3). The local copy now syncs entry names only and fetches a value when something reads it (`replication.contentFetch: "lazy"`), so signing in no longer downloads every transcript body. The sign-in key patch is regenerated for the new SDK version.
+- 4cb941a: The local copy starts after the app's first load and brings its prefixes up two at a time, so sign-in and reload are not slowed by a burst of requests.
+
+  The first-load gate listens for the thread store's completed list read, including a warm-cache background revalidation and failed loads, before starting the fill (or after its 45-second deadline).
+
+- 549dcc1: Add an opt-in switch and a wipe button for local copies.
+- 8feaa2d: Restores the previous sign-in permissions.
+- d171ad6: Details: TC-1977 Revert storing connector credentials under app named keys: web sign-in with the named-key manifest could not complete in the OpenKey sign popup. It returns with a fix and a real-browser sign-in check.
+- d401bb6: The minimized recorder bar's open button is a 44px touch target; the bar looks the same. Details: TC-2186
+- 4bbe96a: Update the TinyCloud SDK packages to 3.8.0-beta.1 (replica 0.3.5-beta.0) and request sign-in sync only on the declared replication prefixes (`replication.syncScope: "prefixes"`).
+
+  Details: TC-2043
+
+- 6fd545d: Share chats as snapshots: a share holds one chat's title and messages at its own link. Owners can list and revoke their shares from the share dialog. Links created before this change still open.
+- abde4ac: Show which transcription model produced a transcript.
+- 9fa8a54: The minimized recorder is a smaller bar: timer, pause and stop, with no waveform or status line. It shows "Stops in" with a thin progress line toward the recording limit, and hovering it shows the exact time the recording stops.
+- c0e2116: Register the `exo-merged` meeting source in the Library (source list, labels and kind).
+- 311fe89: Add the meeting stitcher core (TC-1152 S1); nothing user-visible ships.
+- 833e658: Add the combined-meeting data layer (TC-1152 S2b): write, delete, cascade and read-time sweep for `exo-merged` meetings. Purging a connector now also removes combined meetings that list it. Nothing user-visible ships.
+- 984d884: Add "Combine with another capture…" to a meeting in the Library: pick an overlapping capture, see why the two look like the same meeting (or don't), and tap Combine to save one combined meeting. A combined meeting opens like any meeting, lists the captures it was made from, and can be deleted without touching them.
+- 38b2c37: Combined meetings: in-app meeting chat and the agent retrieval pack (now 0.1.1-onboarding.24) search and cite the combined meeting as one meeting, and no longer return the captures it was combined from. A combined row whose record can't be read hides nothing and is itself left out.
+- b083512: Update the web frontend to `@openkey/sdk` 0.12.1 for OpenKey embedded widget layout negotiation (TC-1183).
+- 2e51461: Settings → Voice notes: Stop recording after is one compact select, the upload checkbox is aligned with its (i), and one help line follows the checkbox (TC-1618).
+- 8a6c29e: Details: TC-1977 Serve TinyChat's key declaration at /.well-known/openkey-manifest.json so OpenKey can verify the app's named keys from the app's own origin.
+- 8b6848e: Details: TC-1977 Store connector credentials in app named keys again. Web sign-in runs OpenKey's authorize review inside the embedded OpenKey frame, so it needs no popup or extra approval screen, and the web reads its manifest, with the named-key declaration, from its own /.well-known/openkey-manifest.json, the file OpenKey verifies. The backend's /api/manifest carries no key declaration.
+- a43ddc8: Web sign-in is one click again, with no key grants, and connector credentials use the default key. Details: TC-1977
+- b4c2b24: Details: TC-1977 Store connector credentials in app named keys and move existing credentials after a separate approval.
+- 1dcda46: Give the cached chat-list retry link a minimum 24 px hit area without changing its label.
+- 05cac77: Library: a combined meeting replaces its source captures in the list; the combined page lists its sources, each opens its own page (TC-1152)
+- 0ccf29d: Combined-meeting summaries use z-ai/glm-5.2 with output caps of 2500 (whole meeting) and 1500 (per chunk), which leave room for the model's reasoning tokens. A reply with no content is reported as a failed summary and nothing is saved (TC-1686).
+- 6e64051: Combined-meeting summaries now use a faster model and a per-call output cap. The chat route accepts an optional `max_output_tokens` integer (1 to 4096), forwarded upstream as `max_tokens`. Details: TC-1686
+- 6312e16: Add an "Automatic meeting summaries" setting, on by default. When it is off, a combined meeting is saved without a summary and Generate starts one. `GET /api/billing/status` now reports the same usage the chat admission gate uses, and the client refreshes it after a summary run.
+- e228022: Local copy syncs every five minutes and serves a local read without syncing when the copy is under fifteen minutes old.
+
+  Details: TC-2054
+
+- f3fd701: Sign in once more after a grants change now shows its notice on the desktop recorder screen, with Sign in and the recorder still available, instead of a generic sign-in failure. A browser whose storage cannot save the sign-in record is now asked to sign in again once per page session, not on every restore.
+- 7e62bc9: Native sign-in requests only the entries OpenKey's native client currently allows, so a new desktop or phone sign-in is no longer refused. Details: TC-2057
+- cffdd3b: Home opens on the saved First screen choice straight away on a device that has already loaded it, even when the account setting is slow to load, and Settings no longer sits on "Loading your setting…" indefinitely: after eight seconds it shows Feed with the load-error note and lets you choose.
+
+  Details: TC-2079
+
+- 61db7ec: Connector keys read from the vault are cached in memory for the signed-in session, so repeat reads no longer make a network round trip. The cache is cleared on sign-out, account change and vault lock.
+
+  Details: TC-2080
+
+- f0f2d61: Stopping a recording automatically is now a setting, "Stop recordings automatically" (per device). It is off by default at the phone layout, where a recording runs until you stop it (with a silent eight-hour safety cap) and shows no countdown or warning, and on by default on desktop, where Exo asks "Keep recording?" five minutes before the limit and "Keep going" adds an hour. Recordings too long for private transcription are saved with their audio kept, and the note now says so.
+- a9a2e94: A voice note that Private transcription is holding shows "Transcription is delayed, it will finish automatically." instead of an error, and keeps checking until it finishes. A note whose Private transcription stopped on a speech-to-text provider failure is re-submitted once, automatically, the next time the app loads and the recording is still on the device; if it fails again it waits for Retry.
+
+  Details: TC-2085
+
+- 44a1e4e: The one-time automatic re-submit of provider-failed voice notes now runs strictly one note at a time, and a note whose attempt is refused because the account already has an active transcription is not counted as used: it is tried again on the next load.
+
+  Details: TC-2085
+
+- f58cf76: An open tab that is idle or hidden makes far fewer background reads of the library: the transcriber library sync no longer runs on its timer while the tab is hidden, and a tab with nothing to retry checks every two minutes instead of every 30 seconds. A recording that failed to save still retries every 30 seconds, and coming back to the tab still starts a check at once.
+- a8ccf05: Exo desktop development builds sign in again: the sign-in message is signed for `localhost` (the host the server accepts) instead of `localhost:5186`, and sign-in errors from the server are logged as short codes only. Published builds are unchanged.
+- ae0fbc6: Hide the TinyCloud button by default; add a Settings toggle and an Open row.
+
+  Update TinyCloud SDK to 3.8.0-beta.12 (panel delegation button, iPhone safe areas).
+
+- a6db78c: Keep keyboard focus inside the Powerful consent dialog and let Escape close only the dialog.
+- fde135c: Update the TinyCloud SDK family to the stable 3.3.0 line (web-sdk, node-sdk, sdk-core, sdk-services 3.3.0; node-sdk-wasm 1.7.8; web-sdk-wasm 1.7.7) and regenerate the node-sdk sign-in patch for 3.3.0.
+
+  Details: TC-1152
+
+- 11585e8: A transcript no longer tags every line that was recovered from the recording or came from a backup transcriber. When part of a transcript came from a backup transcriber, one short note above the text says so; lines recovered from the recording are not called out.
+- 5c1d6d4: Turn the Conversation Canvas back on. It stays off for each user until they turn it on under Settings > Experimental.
+- e85c6fa: Ask before sending an uploaded file to Powerful transcription. Powerful now says "Not private: Powerful sends your audio through Exo's server to an outside transcription service. Exo deletes the service's copy once the transcript is saved." in the recorder, the upload sheet and Settings.
+- 3e173ce: Move the TinyCloud SDK family to the stable 3.3.0 set (web-sdk, node-sdk, sdk-core, sdk-services 3.3.0; `@tinycloud/replica` 0.3.0; web-sdk-wasm 1.7.7; node-sdk-wasm 1.7.8). Add an optional local read-through copy of transcript text for the web app behind a build-time flag that defaults OFF: nothing changes unless the app is built with `VITE_EXO_REPLICATION=true` (the per-browser runtime opt-in exists only outside production builds), and it refuses to turn on in Tauri, Capacitor, iOS browsers, Safari and Firefox. With the flag OFF, a local copy left by an earlier build is removed at the next load. Mirrors only audio-free transcript folders, within a 100 MB budget; reads that confirm a write use the network. Sign-out erases the local copy (a failed erase is shown and blocks reads), and Settings shows a read-only status line. A built-in kill switch forces replication off for every build and browser.
+- 113c561: Local Whisper compares the audio it decoded with the saved recording's length. A transcript that covers less of the recording is shown as failed with the transcribed and recorded lengths, and Retry transcription runs it again.
+
+## 0.10.0-beta.66
+
+### Minor Changes
+
+- 94d19ee: The recording view now shows ⚙︎ Capture settings, with a "Stop recording after" default for new recordings on the Mac app, and +15 min, +30 min and No limit next to "Stops at …" to move or cancel the stop time of the running recording. The chat header's microphone is no longer drawn while recording. Details: TC-2182
+
+## 0.10.0-beta.65
+
+### Patch Changes
+
+- a43ddc8: Web sign-in is one click again, with no key grants, and connector credentials use the default key. Details: TC-1977
+
+## 0.10.0-beta.64
+
+### Minor Changes
+
+- ec9f26e: Rename a chat from the Chats list or the chat header. The title is saved with the chat in your space, a renamed title is never replaced by the automatic title, and clearing it returns to the automatic title.
+
+### Patch Changes
+
+- 113c561: Local Whisper compares the audio it decoded with the saved recording's length. A transcript that covers less of the recording is shown as failed with the transcribed and recorded lengths, and Retry transcription runs it again.
+
+## 0.10.0-beta.63
+
+### Patch Changes
+
+- 8c04781: A voice note whose audio is on this device plays from that file with seeking, and the Audio/Transcribe-on-device lines are gone. Transcription shows one status in Activity and on the note, with minutes done and time left and one working action. A transcribed note's title is no longer renamed with the transcription model.
+
+## 0.10.0-beta.62
+
+### Patch Changes
+
+- 0cd762b: Send a notetaker accepts every Google Meet link shape: `/meet/<code>`, `/_meet/<code>`, `g.co/meet/<code>`, `tel.meet/<code>`, links wrapped in `accounts.google.com?continue=` or `meet.app.goo.gl?link=`, and a bare code with or without dashes. All become `https://meet.google.com/<code>` (lowercase, no trailing slash). A wrapper whose target is not a Meet link is refused. `meet.google.com/lookup/<nick>` is sent as pasted.
+
+## 0.10.0-beta.61
+
+### Patch Changes
+
+- d401bb6: The minimized recorder bar's open button is a 44px touch target; the bar looks the same. Details: TC-2186
+
+## 0.10.0-beta.60
+
+### Patch Changes
+
+- 8b6848e: Details: TC-1977 Store connector credentials in app named keys again. Web sign-in runs OpenKey's authorize review inside the embedded OpenKey frame, so it needs no popup or extra approval screen, and the web reads its manifest, with the named-key declaration, from its own /.well-known/openkey-manifest.json, the file OpenKey verifies. The backend's /api/manifest carries no key declaration.
+
+## 0.10.0-beta.59
+
+### Patch Changes
+
+- 8a6c29e: Details: TC-1977 Serve TinyChat's key declaration at /.well-known/openkey-manifest.json so OpenKey can verify the app's named keys from the app's own origin.
+
+## 0.10.0-beta.58
+
+### Patch Changes
+
+- d171ad6: Details: TC-1977 Revert storing connector credentials under app named keys: web sign-in with the named-key manifest could not complete in the OpenKey sign popup. It returns with a fix and a real-browser sign-in check.
+
+## 0.10.0-beta.57
+
+### Patch Changes
+
+- b4c2b24: Home signs in with the permissions in its manifest, including the requested secret decrypt grant.
+
+  Details: TC-2038
+
+- b4c2b24: Details: TC-1977 Store connector credentials in app named keys and move existing credentials after a separate approval.
+
+## 0.10.0-beta.56
+
+### Patch Changes
+
+- a6db78c: Keep keyboard focus inside the Powerful consent dialog and let Escape close only the dialog.
+
+## 0.10.0-beta.55
+
+### Patch Changes
+
+- ae0fbc6: Hide the TinyCloud button by default; add a Settings toggle and an Open row.
+
+  Update TinyCloud SDK to 3.8.0-beta.12 (panel delegation button, iPhone safe areas).
+
+## 0.10.0-beta.54
+
+### Patch Changes
+
+- e85c6fa: Ask before sending an uploaded file to Powerful transcription. Powerful now says "Not private: Powerful sends your audio through Exo's server to an outside transcription service. Exo deletes the service's copy once the transcript is saved." in the recorder, the upload sheet and Settings.
+
+## 0.10.0-beta.53
+
+### Patch Changes
+
+- 8b3b819: Hosted transcription refusals are now classified (rejected key, insufficient balance, rate limit) and reported to operators: one alert when AssemblyAI starts refusing, one when it recovers, one after three failed jobs in a row, a heartbeat every minute, and a read-only status for the monitoring probe. Nothing changes for users yet.
+
+## 0.10.0-beta.52
+
+### Patch Changes
+
+- 0f22d69: Update the TinyCloud SDK packages to 3.8.0-beta.9 (replica 0.4.0-beta.3). The local copy now syncs entry names only and fetches a value when something reads it (`replication.contentFetch: "lazy"`), so signing in no longer downloads every transcript body. The sign-in key patch is regenerated for the new SDK version.
+
+## 0.10.0-beta.51
+
+### Patch Changes
+
+- 11585e8: A transcript no longer tags every line that was recovered from the recording or came from a backup transcriber. When part of a transcript came from a backup transcriber, one short note above the text says so; lines recovered from the recording are not called out.
+
+## 0.10.0-beta.50
+
+### Patch Changes
+
+- a8ccf05: Exo desktop development builds sign in again: the sign-in message is signed for `localhost` (the host the server accepts) instead of `localhost:5186`, and sign-in errors from the server are logged as short codes only. Published builds are unchanged.
+
+## 0.10.0-beta.49
+
+### Patch Changes
+
+- 253d9d6: Hide Apps and Feed behind a device-local experimental setting, with Chat as the default web entry until enabled.
+- 0e9f195: The "Keep recording?" prompt now offers "Stop now" and "Keep going". "Stop now" stops and saves the recording immediately; "Keep going" still adds an hour. Closing the prompt with Escape, or ignoring it, leaves the recording to stop at its limit.
+
+## 0.10.0-beta.48
+
+### Patch Changes
+
+- f3fd701: Sign in once more after a grants change now shows its notice on the desktop recorder screen, with Sign in and the recorder still available, instead of a generic sign-in failure. A browser whose storage cannot save the sign-in record is now asked to sign in again once per page session, not on every restore.
+
+## 0.10.0-beta.47
+
+### Patch Changes
+
+- cffdd3b: Home opens on the saved First screen choice straight away on a device that has already loaded it, even when the account setting is slow to load, and Settings no longer sits on "Loading your setting…" indefinitely: after eight seconds it shows Feed with the load-error note and lets you choose.
+
+  Details: TC-2079
+
+## 0.10.0-beta.46
+
+### Patch Changes
+
+- f0f2d61: Stopping a recording automatically is now a setting, "Stop recordings automatically" (per device). It is off by default at the phone layout, where a recording runs until you stop it (with a silent eight-hour safety cap) and shows no countdown or warning, and on by default on desktop, where Exo asks "Keep recording?" five minutes before the limit and "Keep going" adds an hour. Recordings too long for private transcription are saved with their audio kept, and the note now says so.
+
+## 0.10.0-beta.45
+
+### Patch Changes
+
+- 44a1e4e: The one-time automatic re-submit of provider-failed voice notes now runs strictly one note at a time, and a note whose attempt is refused because the account already has an active transcription is not counted as used: it is tried again on the next load.
+
+  Details: TC-2085
+
+## 0.10.0-beta.44
+
+### Patch Changes
+
+- a9a2e94: A voice note that Private transcription is holding shows "Transcription is delayed, it will finish automatically." instead of an error, and keeps checking until it finishes. A note whose Private transcription stopped on a speech-to-text provider failure is re-submitted once, automatically, the next time the app loads and the recording is still on the device; if it fails again it waits for Retry.
+
+  Details: TC-2085
+
+## 0.10.0-beta.43
+
+### Patch Changes
+
+- f58cf76: An open tab that is idle or hidden makes far fewer background reads of the library: the transcriber library sync no longer runs on its timer while the tab is hidden, and a tab with nothing to retry checks every two minutes instead of every 30 seconds. A recording that failed to save still retries every 30 seconds, and coming back to the tab still starts a check at once.
+
+## 0.10.0-beta.42
+
+### Patch Changes
+
+- 61db7ec: Connector keys read from the vault are cached in memory for the signed-in session, so repeat reads no longer make a network round trip. The cache is cleared on sign-out, account change and vault lock.
+
+  Details: TC-2080
+
+## 0.10.0-beta.41
+
+### Patch Changes
+
+- e228022: Local copy syncs every five minutes and serves a local read without syncing when the copy is under fifteen minutes old.
+
+  Details: TC-2054
+
+## 0.10.0-beta.40
+
+### Patch Changes
+
+- 9fa8a54: The minimized recorder is a smaller bar: timer, pause and stop, with no waveform or status line. It shows "Stops in" with a thin progress line toward the recording limit, and hovering it shows the exact time the recording stops.
+
+## 0.10.0-beta.39
+
+### Patch Changes
+
+- 7e62bc9: Native sign-in requests only the entries OpenKey's native client currently allows, so a new desktop or phone sign-in is no longer refused. Details: TC-2057
+
+## 0.10.0-beta.38
+
+### Patch Changes
+
+- 84819aa: Home signs in with the permissions in its manifest, including the requested secret decrypt grant.
+
+  Details: TC-2038
+
+## 0.10.0-beta.37
+
+### Minor Changes
+
+- 9affbdb: The local copy of transcripts on this device is now on by default in supported browsers. Turning it off in Settings is remembered per account and removes the local copy. Details: TC-2055
+- bca5df5: TinyCloud Home sign-in manifest: adds the applications-space key-value grant and the two catalog databases (Health Log and Recipes), removes the unused migration record folder, renames the app to TinyCloud Home, and asks for one new sign-in per device. Details: TC-2043
+
+### Patch Changes
+
+- 4bbe96a: Update the TinyCloud SDK packages to 3.8.0-beta.1 (replica 0.3.5-beta.0) and request sign-in sync only on the declared replication prefixes (`replication.syncScope: "prefixes"`).
+
+  Details: TC-2043
+
+## 0.10.0-beta.36
+
+### Minor Changes
+
+- c69435b: Let users choose Feed or Apps as TinyCloud Home's first screen in Settings. The choice is saved with their account settings across devices; direct links retain their destinations. Details: TC-2040
+
+## 0.10.0-beta.35
+
+### Minor Changes
+
+- 81211af: TinyCloud Home: the app opens on a feed of sample cards, with Recording, Chat, Apps and Feed in the navigation. Apps open in TinyCloud Share. Details: TC-2040
+
+## 0.10.0-beta.34
+
+### Minor Changes
+
+- 69102c7: Add a sample Home Feed with five card layouts and visible-only refresh. Details: TC-2040
+
+## 0.10.0-beta.33
+
+### Patch Changes
+
+- 1dcda46: Give the cached chat-list retry link a minimum 24 px hit area without changing its label.
+
+## 0.10.0-beta.32
+
+### Patch Changes
+
+- 4cb941a: The local copy starts after the app's first load and brings its prefixes up two at a time, so sign-in and reload are not slowed by a burst of requests.
+
+  The first-load gate listens for the thread store's completed list read, including a warm-cache background revalidation and failed loads, before starting the fill (or after its 45-second deadline).
+
+## 0.10.0-beta.31
+
+### Patch Changes
+
+- 49e6c78: A failed or slow chat-list load is retried and, if it still fails, shown as an error with a retry instead of an empty list. Details: TC-2016
+
+## 0.10.0-beta.30
+
+### Patch Changes
+
+- 90ab342: Adds the meeting databases, the migration record folder, the storage info read and the Exo mailbox folders to the sign-in manifest, and asks for one new sign-in per device when a saved session predates them.
+
 ## 0.10.0-beta.29
 
 ### Patch Changes

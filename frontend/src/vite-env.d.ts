@@ -31,7 +31,7 @@ interface ImportMetaEnv {
    * private transcription, whatever the backend says; the backend never supplies an upload origin.
    */
   readonly VITE_EXO_PTX_UPLOAD_ORIGIN?: string;
-  /** "true" opts this build into web-only local replication (default OFF; also needs a qualified Chromium web browser and each user's own switch). */
+  /** "false" turns web-only local replication OFF for this build (unset or anything else = ON; it also needs a qualified Chromium web browser and is off for any user who opted out). */
   readonly VITE_EXO_REPLICATION?: string;
   /**
    * Exo mobile health spike (TC-525): "true" shows the development-only Health card in Connectors → Sources

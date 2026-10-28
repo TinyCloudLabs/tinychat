@@ -61,7 +61,7 @@ function stored(sqlite: Database, sourceId: string) {
 }
 
 describe("voice-note titles at commit", () => {
-  test("a new recorded note is named with its date, model and participants once transcribed", async () => {
+  test("a new recorded note is named with its date and participants once transcribed", async () => {
     const { tcw, sqlite } = fakeTcw();
     await ensureSchema(tcw);
     await createVoiceNoteRow(tcw, recording("rec-named"), DEFAULT_TITLE);
@@ -71,18 +71,18 @@ describe("voice-note titles at commit", () => {
       model: "universal-2", participants: ["Alice Chen", "Speaker 2", "Bob"] });
 
     const note = stored(sqlite, "rec-named");
-    expect(note.title).toBe("Oct 9 · AssemblyAI Universal-2 · Alice Chen, Bob");
+    expect(note.title).toBe("Oct 9 · Alice Chen, Bob");
     expect(note.metadata).not.toHaveProperty("title_auto");
     expect(note.metadata.transcription_outcome).toBe("transcribed");
   });
 
-  test("a note with no model and no real names is named by its date only", async () => {
+  test("a note with no real names keeps its default title whatever model transcribed it", async () => {
     const { tcw, sqlite } = fakeTcw();
     await ensureSchema(tcw);
     await createVoiceNoteRow(tcw, recording("rec-date"), DEFAULT_TITLE);
     await commitVoiceNoteTranscript(tcw, "rec-date", { rev: 1, outcome: "transcribed", text: "Hello.", sentences: SENTENCES,
-      participants: ["Me", "Them"] });
-    expect(stored(sqlite, "rec-date").title).toBe("Oct 9");
+      model: "whisper-large-v3-turbo", participants: ["Me", "Them"] });
+    expect(stored(sqlite, "rec-date").title).toBe(DEFAULT_TITLE);
   });
 
   test("a later commit does not retitle a note that was already named", async () => {
@@ -93,7 +93,7 @@ describe("voice-note titles at commit", () => {
       model: "universal-2", participants: ["Alice Chen"] });
     await commitVoiceNoteTranscript(tcw, "rec-once", { rev: 2, outcome: "transcribed", text: "Hello again.",
       sentences: [{ ...SENTENCES[0]!, text: "Hello again." }], model: "universal-3-5-pro", participants: ["Carol"] });
-    expect(stored(sqlite, "rec-once").title).toBe("Oct 9 · AssemblyAI Universal-2 · Alice Chen");
+    expect(stored(sqlite, "rec-once").title).toBe("Oct 9 · Alice Chen");
   });
 
   test("a note created without the marker keeps its title through a commit", async () => {
@@ -134,7 +134,7 @@ describe("voice-note titles at commit", () => {
     const transcript = { rev: 1, outcome: "transcribed" as const, text: "Hello.", sentences: SENTENCES,
       model: "universal-2", participants: ["Alice Chen"] };
     await Promise.all([commitVoiceNoteTranscript(tcw, "rec-race", transcript), commitVoiceNoteTranscript(tcw, "rec-race", transcript)]);
-    expect(stored(sqlite, "rec-race").title).toBe("Oct 9 · AssemblyAI Universal-2 · Alice Chen");
+    expect(stored(sqlite, "rec-race").title).toBe("Oct 9 · Alice Chen");
     expect(sqlite.query("SELECT COUNT(*) AS n FROM title_writes").get()).toEqual({ n: 1 });
   });
 });

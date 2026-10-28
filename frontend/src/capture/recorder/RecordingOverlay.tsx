@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { useLocation } from "react-router-dom";
 import { stopAllPlayback } from "@/lib/audio/playback";
@@ -11,21 +11,11 @@ import {
   LazyPhoneRecorder,
   type PhoneRecorderLoader,
 } from "./final/LazyPhoneRecorder";
-import { recorderLayout, type RecorderLayout } from "./final/shellCapabilities";
 import { ReceiptNoteNotice } from "./final/UnsavedNoteNotice";
 import { overlayMount } from "./overlayMount";
 import { ReceiptView } from "./ReceiptView";
 import { useRecorder } from "./RecorderProvider";
-
-function useRecorderLayout(): RecorderLayout {
-  const [width, setWidth] = useState(() => window.innerWidth);
-  useEffect(() => {
-    const onResize = () => setWidth(window.innerWidth);
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
-  }, []);
-  return recorderLayout(width);
-}
+import { useRecorderLayout } from "./useRecorderLayout";
 
 /** Inner dialogs own their Escape. Only Escape aimed at the recorder itself minimizes it. */
 export function minimizePhoneRecorder(event: { preventDefault: () => void; target?: EventTarget | null }, minimise: () => void | Promise<void>): void {

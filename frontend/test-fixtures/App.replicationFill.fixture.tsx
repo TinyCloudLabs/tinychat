@@ -54,9 +54,12 @@ mock.module("@tinyboilerplate/client", () => ({
 }));
 // The real plugin and storage are not what is under test: the config patch is empty, while the real
 // startReplicationFill (re-exported from the module) decides whether the first sync starts.
+const realStartReplicationFill = replicationClientApi.startReplicationFill; // captured before the mock replaces the export
 mock.module("@/lib/replication/replicationClient", () => ({
   ...replicationClientApi,
   replicationConfigPatch: async () => ({}),
+  startReplicationFill: (tcw: TinyCloudWeb, isEnabled?: () => boolean) =>
+    realStartReplicationFill(tcw, isEnabled, { firstLoadSettled: async () => {}, prefixes: ["p/"] }),
 }));
 mock.module("@/lib/openkeyNative", () => ({
   ...nativeApi,
@@ -121,7 +124,7 @@ async function settle() {
 function qualifyBrowser() {
   const win = window as unknown as { localStorage: Storage };
   win.localStorage.setItem(REPLICATION_RUNTIME_FLAG_KEY, "true");
-  if (optedIn) win.localStorage.setItem(replicationOptInKey(PRINCIPAL), "true");
+  win.localStorage.setItem(replicationOptInKey(PRINCIPAL), optedIn ? "true" : "false");
   Object.defineProperties(navigator, {
     userAgent: { configurable: true, value: CHROME },
     userAgentData: { configurable: true, value: { brands: [{ brand: "Chromium" }] } },

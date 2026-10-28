@@ -11,7 +11,13 @@ import { serverDeliveryActive } from "@/lib/transcriptDeliveryState";
 import { transcriberPendingRows, writePendingReconcileSnapshot } from "@/lib/connectors/pendingReconcileSnapshot";
 
 export type TranscriberSaveState = "saving" | "saved" | "error";
+/** Cadence while a pass left work to retry (a failed recording, a failed read, a row still being delivered). */
 export const TRANSCRIBER_LIBRARY_RETRY_MS = 30_000;
+/**
+ * Cadence of an idle visible tab: the previous pass settled, so a tick only looks for meetings that
+ * finished elsewhere. Each pass is one SQL read and one KV read on the node, per account.
+ */
+export const TRANSCRIBER_LIBRARY_IDLE_MS = 120_000;
 const SERVER_DELIVERY_GRACE_MS = 10 * 60_000;
 /** Web Lock and BroadcastChannel name prefix; the account DID completes it. */
 const SYNC_SCOPE = "tinychat:transcriber-library-sync";
@@ -28,7 +34,7 @@ let passDeadlineMs: number | null = null;
 /** Tests only: shorten the pass deadline; null restores it. */
 export function setTranscriberPassDeadlineForTests(ms: number | null): void { passDeadlineMs = ms; }
 type SyncMessage =
-  | { kind: "pass"; at: number }
+  | { kind: "pass"; at: number; retry?: boolean }
   | { kind: "state"; id: string; state: TranscriberSaveState }
   | { kind: "confirmed"; ids: string[] }
   | { kind: "unconfirmed"; ids: string[] }
@@ -88,6 +94,8 @@ refreshBackoff?: TranscriberRefreshBackoff;
   onUnconfirmed?: (ids: string[]) => void;
   /** Each completed step (API call, space read or write): the pass is making progress. */
   onProgress?: () => void;
+  /** Called when the pass could not finish its reads, or left a row it should retry. */
+  onRetryNeeded?: () => void;
 onPendingSnapshot?: (
     rows: readonly TranscriberListRow[],
     savedIds: readonly string[],
@@ -96,9 +104,16 @@ onPendingSnapshot?: (
   ) => Promise<void>;
   observedAt?: () => string;
 }): Promise<void> {
-  const { tcw, client, saver = defaultSaver, isCurrent = () => true, onState = () => {}, observedSaved,
+  const { tcw, client, saver = defaultSaver, isCurrent = () => true, onState: emitState = () => {}, observedSaved,
     deliveryActive = serverDeliveryActive, now = Date.now, refreshBackoff = new Map(), knownVersions = new Map(),
-    confirmedSaved = new Set<string>(), onConfirmed = () => {}, onUnconfirmed = () => {}, onProgress = () => {} } = input;
+    confirmedSaved = new Set<string>(), onConfirmed = () => {}, onUnconfirmed = () => {}, onProgress = () => {},
+    onRetryNeeded = () => {} } = input;
+  // Rows whose last state is not "saved" (failed, or still being delivered) need the faster retry cadence.
+  const unsettled = new Set<string>();
+  const onState = (id: string, state: TranscriberSaveState) => {
+    if (state === "saved") unsettled.delete(id); else unsettled.add(id);
+    emitState(id, state);
+  };
   const step = <T,>(work: Promise<T>): Promise<T> => work.finally(onProgress);
   // Confirmations go out in batches as the scan runs, so a tab that takes over after this
   // one closes mid-scan starts from the ids already confirmed instead of from zero.
@@ -119,13 +134,13 @@ onPendingSnapshot?: (
   // the user's space and must never occupy the serial space-write lane.
   const observedAt = input.observedAt?.() ?? new Date().toISOString();
   const listed = await step(client.list());
-  if (listed.status !== "ok" || !isCurrent()) return;
+  if (listed.status !== "ok" || !isCurrent()) { if (isCurrent()) onRetryNeeded(); return; }
   // Each SQL/KV completeness read takes its own turn. A library with many
   // saved recordings therefore yields the lane between keys for voice notes.
   const complete = await saver.listSaved(tcw, readOnDrainLane(isCurrent, onProgress), isCurrent, confirmedSaved, confirm);
   // A pass that stalled and lost the lock must not announce late: another tab may have
   // pruned one of these ids since, and a late `confirmed` would undo that prune.
-  if (!complete?.ok || !isCurrent()) return;
+  if (!complete?.ok || !isCurrent()) { if (isCurrent()) onRetryNeeded(); return; }
   flushConfirmed();
   const saved = new Set(complete.data?.saved ?? []);
   for (const id of saved) confirm(id);
@@ -145,6 +160,7 @@ onPendingSnapshot?: (
     : newer.length === 0 ? { ok: true as const }
       : await saver.listVersions(tcw, newer, readOnDrainLane(isCurrent, onProgress));
   if (!isCurrent()) return;
+  if (newer.length > 0 && !versions.ok) onRetryNeeded();
   if (versions.ok && "data" in versions) for (const [id, version] of versions.data) knownVersions.set(id, version);
   let refreshes = 0;
   if (observedSaved && !observedSaved.initialized) {
@@ -159,6 +175,9 @@ onPendingSnapshot?: (
       const completedAt = Date.parse(row.completed_at ?? row.ended_at ?? "");
       const inGrace = row.metadata?.shared !== true && Number.isFinite(completedAt)
         && now() - completedAt < SERVER_DELIVERY_GRACE_MS;
+      // A newer publication this pass could not refresh yet (cap, or still inside delivery grace) is due again soon.
+      if (versions.ok && Number.isInteger(version) && version! > (knownVersions.get(row.id) ?? 1)
+        && (refreshes >= 3 || inGrace)) onRetryNeeded();
       if (versions.ok && Number.isInteger(version) && version! > (knownVersions.get(row.id) ?? 1)
         && refreshes < 3 && !inGrace && (refreshBackoff.get(row.id)?.retryAt ?? 0) <= now()) {
         refreshes++;
@@ -235,6 +254,7 @@ onPendingSnapshot?: (
       if (isCurrent()) onState(row.id, "error");
     }
   }
+  if (unsettled.size > 0) onRetryNeeded();
   if (isCurrent()) await input.onPendingSnapshot?.(listed.value.meetings, [...saved], complete.data?.unknown ?? [], observedAt);
 }
 
@@ -251,6 +271,9 @@ export function useTranscriberLibrarySync(input: {
     let lockWarned = false;
     // Newest finished pass by any of this account's tabs (TC-1274).
     let lastPassAt = 0;
+    // Newest finished pass left work to retry (failed read or recording): keep the faster cadence.
+    let retryNeeded = false;
+    let passRetry = false;
     let relaying = false;
     const refreshBackoff: TranscriberRefreshBackoff = new Map();
     const knownVersions = new Map<string, number>();
@@ -281,7 +304,7 @@ export function useTranscriberLibrarySync(input: {
     if (channel) channel.onmessage = (event: MessageEvent<SyncMessage>) => {
       const message = event.data;
       if (!accountCurrent()) return;
-      if (message.kind === "pass") lastPassAt = Math.max(lastPassAt, message.at);
+      if (message.kind === "pass" && message.at >= lastPassAt) { lastPassAt = message.at; retryNeeded = message.retry === true; }
       else if (message.kind === "state") setState(message.id, message.state);
       else if (message.kind === "confirmed") for (const id of message.ids) confirmedSaved.add(id);
       else if (message.kind === "unconfirmed") for (const id of message.ids) confirmedSaved.delete(id);
@@ -310,7 +333,8 @@ export function useTranscriberLibrarySync(input: {
         // Each save takes the drain lane itself; the pass as a whole does not hold it.
         await syncTranscriberLibrary({
           tcw, client: api, saver, isCurrent: current, observedSaved, refreshBackoff, knownVersions,
-          confirmedSaved, onConfirmed: confirmed, onUnconfirmed: unconfirmed, onProgress: progress, onState: (id, state) => {
+          confirmedSaved, onConfirmed: confirmed, onUnconfirmed: unconfirmed, onProgress: progress,
+          onRetryNeeded: () => { if (current()) passRetry = true; }, onState: (id, state) => {
             setState(id, state);
             if (accountCurrent()) post({ kind: "state", id, state });
           },
@@ -340,21 +364,25 @@ export function useTranscriberLibrarySync(input: {
         timer = setTimeout(() => stalled.abort(), idleMs);
       };
       const current = () => accountCurrent() && !stalled.signal.aborted;
+      passRetry = false;
       const expired = new Promise<void>((resolve) => stalled.signal.addEventListener("abort", () => resolve(), { once: true }));
       try {
-        await Promise.race([pass(current, progress).catch(() => { /* The next wake retries failures outside an individual recording. */ }), expired]);
+        await Promise.race([pass(current, progress).catch(() => { passRetry = true; /* The next wake retries failures outside an individual recording. */ }), expired]);
       } finally { clearTimeout(timer); }
       // A failed pass counts too; a stalled one does not hold other tabs back.
       if (stalled.signal.aborted) return;
       lastPassAt = Date.now();
-      post({ kind: "pass", at: lastPassAt });
+      retryNeeded = passRetry;
+      post({ kind: "pass", at: lastPassAt, retry: passRetry });
     };
     const start = (scheduled: boolean) => {
       if (!sessionCurrent() || running || (!unlocked() && observedSaved.initialized)) return;
       // Offline there is nothing to read or save; the online event starts the next pass.
       if (typeof navigator !== "undefined" && navigator.onLine === false) return;
-      // A pass another tab (or this one) finished recently already covered this tick.
-      if (scheduled && Date.now() - lastPassAt < TRANSCRIBER_LIBRARY_RETRY_MS / 2) return;
+      // A pass another tab (or this one) finished recently already covered this tick: a settled
+      // account is looked at every TRANSCRIBER_LIBRARY_IDLE_MS, one with work left to retry sooner.
+      if (scheduled && Date.now() - lastPassAt
+        < (retryNeeded ? TRANSCRIBER_LIBRARY_RETRY_MS : TRANSCRIBER_LIBRARY_IDLE_MS) - TRANSCRIBER_LIBRARY_RETRY_MS / 2) return;
       running = true;
       const locks = typeof navigator === "undefined" ? undefined : navigator.locks;
       const exclusive = locks?.request
@@ -369,7 +397,8 @@ export function useTranscriberLibrarySync(input: {
       void exclusive.finally(() => { running = false; });
     };
     const run = () => start(false);
-    const tick = () => start(true);
+    // A hidden tab makes no scheduled reads; focus, visibilitychange and online start a pass on return.
+    const tick = () => { if (document.visibilityState !== "hidden") start(true); };
     run();
     const unsubscribe = onSecretsUnlocked(run);
     const timer = window.setInterval(tick, TRANSCRIBER_LIBRARY_RETRY_MS);
