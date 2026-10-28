@@ -21,6 +21,7 @@ import { applySecurityDefaults } from "./security.js";
 import { applyRateLimiters, logGlobalBucketRoutes } from "./rate-limits.js";
 import { createAuthMiddleware } from "./middleware/auth.js";
 import { createAuthRouter } from "./routes/auth.js";
+import { mcpChatFromEnv } from "./mcp-meetings/config.js";
 import { createDelegationRouter } from "./routes/delegations.js";
 import { createExoGrantRouter } from "./routes/exo-grant.js";
 import { createAgentRouter } from "./routes/agent.js";
@@ -1034,6 +1035,7 @@ async function main() {
                   const accounts = (process.env.ELIZA_TASKS_TEST_ACCOUNTS ?? "").split(",").map(value => value.trim().toLowerCase()).filter(Boolean);
                   return accounts.length === 0 || accounts.includes(address.toLowerCase());
                 },
+                ...mcpChatFromEnv(process.env),
                 meetingContentRetrievalEnabled: meetingRollout.enabled,
                 meetingContentAccountAllowed: meetingRollout.accountAllowed,
                 meetingContentModelAllowed: meetingRollout.modelAllowed,
