@@ -82,7 +82,7 @@ export function useSpeakerNames(options: {
     setChange(null);
     setFailure(null);
     setWritable(localId === null);
-  }, [key]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [key]); // Reset only when the note changes; the other inputs are read at that moment.
 
   // A phone note has no row: its names live in the capture ledger. Read them once and learn whether
   // this account may write (the ledger's owner must be the signed-in account).
