@@ -76,7 +76,7 @@ export function UploadSheet({ open, onOpenChange, tcw, backendUrl, sessionStore 
 // 16px text on touch fields: a smaller field makes iOS zoom the page when it
 // takes focus, and the zoom stays after it loses focus (the composer, the
 // notetaker form, the moment field and the note writer follow the same rule).
-const FIELD = "rounded-md border bg-background px-3 py-2 text-body outline-none fine:text-callout";
+const FIELD = "rounded-md border bg-background px-3 py-2 text-body fine:text-callout";
 
 function PasteTranscriptFields(props: {
   title: string;
