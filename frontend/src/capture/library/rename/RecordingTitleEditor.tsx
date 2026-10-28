@@ -73,7 +73,7 @@ export const RecordingTitleEditor: FC<RecordingTitleEditorProps> = ({ initial, o
           if (e.relatedTarget && e.currentTarget.parentElement?.contains(e.relatedTarget as Node)) return;
           finish(true);
         }}
-        className="min-h-11 min-w-0 flex-1 rounded-lg border border-input bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring fine:min-h-9"
+        className="min-h-11 min-w-0 flex-1 rounded-lg border border-input bg-background px-3 text-body text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring fine:min-h-9 fine:text-sm"
       />
       <span id={hintId} className="sr-only">{RECORDING_RENAME_HINT}</span>
       <Button
