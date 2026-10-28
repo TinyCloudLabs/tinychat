@@ -6,7 +6,9 @@
 import { checkContext, isAccessError, MeetingRetrievalError, safeMeetingRef, withinContext } from "./evidence.js";
 import type { MeetingSelection, RetrievalContext } from "./evidence.js";
 import { createReader } from "./reader.js";
+import { McpPortError } from "./port.js";
 import type { McpMeetingPort } from "./port.js";
+import { webSearch } from "./web-search.js";
 import {
   findMeetings, listMeetingActions, parseFindMeetingsArgs, parseListMeetingActionsArgs, parseReadMeetingArgs,
   parseTranscriptSearchArgs, readMeeting, searchTranscripts, ToolError,
@@ -35,13 +37,23 @@ export interface McpToolRequest {
 }
 export interface McpToolResponse { status: number; body: Record<string, unknown> }
 
+/** What the session routes and chat admission see of the owner's grant on the MCP. */
+export interface McpGrantStatus {
+  status: "active" | "none" | "expired" | "stale";
+  transcriptStatus: "active" | "none" | "expired" | "stale";
+  revision: string;
+}
+
 export interface McpMeetingTools {
-  isMeetingTool(name: string): boolean;
+  /** True for the four meeting tools and for web_search, which chat now runs here instead of in eliza-service. */
+  handles(name: string): boolean;
   run(request: McpToolRequest): Promise<McpToolResponse>;
+  /** Liveness of the owner's grant on the MCP, from one cheap read. Throws when the MCP cannot answer. */
+  status(owner: string, signal?: AbortSignal): Promise<McpGrantStatus>;
 }
 
 /** `portFor` builds the read-only port for one owner on every call; nothing about the grant is retained here. */
-export function createMcpMeetingTools(portFor: (owner: string) => McpMeetingPort): McpMeetingTools {
+export function createMcpMeetingTools(portFor: (owner: string) => McpMeetingPort, options: { tavilyApiKey?: string; fetchImpl?: typeof fetch } = {}): McpMeetingTools {
   // Content-free follow-up state (a meeting reference or scope state per owner and room); bounded, never holds text.
   const selections = new Map<string, MeetingSelection>();
   const keyOf = (owner: string, roomId?: string) => `${owner.toLowerCase()}\u0000${roomId ?? ""}`;
@@ -129,8 +141,25 @@ export function createMcpMeetingTools(portFor: (owner: string) => McpMeetingPort
   }
 
   return {
-    isMeetingTool: name => Object.prototype.hasOwnProperty.call(OPERATIONS, name.toLowerCase()),
+    handles: name => name.toLowerCase() === "web_search" || Object.prototype.hasOwnProperty.call(OPERATIONS, name.toLowerCase()),
+    async status(owner, signal) {
+      const revision = "mcp";
+      try {
+        await portFor(owner).sqlQuery("SELECT 1", [], { signal });
+        return { status: "active", transcriptStatus: "active", revision };
+      } catch (error) {
+        if (error instanceof McpPortError) {
+          if (error.code === "GRANT_REQUIRED") return { status: "none", transcriptStatus: "none", revision };
+          if (error.code === "GRANT_EXPIRED") return { status: "expired", transcriptStatus: "expired", revision };
+          if (error.code === "GRANT_REJECTED") return { status: "stale", transcriptStatus: "stale", revision };
+        }
+        throw error;
+      }
+    },
     async run(request) {
+      if (request.name.toLowerCase() === "web_search") {
+        return webSearch(request.args, { apiKey: options.tavilyApiKey, fetchImpl: options.fetchImpl, context: { ...request.context, signal: request.signal } });
+      }
       try {
         return await execute(request);
       } catch (error) {

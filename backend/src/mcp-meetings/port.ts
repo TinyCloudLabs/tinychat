@@ -109,3 +109,31 @@ function parseBody(text: string, contentType: string): Record<string, any> | und
     return undefined;
   }
 }
+
+export interface NativeGrantAccepted { ownerDid: string; serviceDid: string; expiresAt: string }
+
+/**
+ * Hand the user's serialized grant to the MCP (POST /native/grant). Backend only: the MCP refuses any request that
+ * carries an Origin header, and Node's fetch sends none. No owner header is sent; the MCP derives the owner from the
+ * signed grant itself.
+ */
+export async function postNativeGrant(config: McpHttpConfig, delegation: string): Promise<NativeGrantAccepted> {
+  const doFetch = config.fetchImpl ?? fetch;
+  const res = await doFetch(new URL("/native/grant", config.url), {
+    method: "POST",
+    headers: { "content-type": "application/json", [config.serviceCredentialHeader]: config.serviceCredential },
+    body: JSON.stringify({ delegation }),
+    signal: AbortSignal.timeout(config.timeoutMs ?? 10_000),
+  }).catch(() => { throw new McpPortError("MCP_UNREACHABLE"); });
+  const parsed = parseBody(await res.text(), res.headers.get("content-type") ?? "");
+  if (res.status === 401) {
+    const detail = typeof parsed?.error === "string" ? parsed.error : undefined;
+    throw new McpPortError(detail !== undefined && detail === config.grantErrors?.expired ? "GRANT_EXPIRED"
+      : detail !== undefined && detail === config.grantErrors?.rejected ? "GRANT_REJECTED" : "GRANT_REQUIRED", 401);
+  }
+  if (res.status === 403) throw new McpPortError("MCP_SERVICE_UNAUTHORIZED", 403);
+  if (res.status !== 201 || typeof parsed?.ownerDid !== "string" || typeof parsed?.serviceDid !== "string" || typeof parsed?.expiresAt !== "string") {
+    throw new McpPortError("MCP_UNAVAILABLE", res.status);
+  }
+  return { ownerDid: parsed.ownerDid, serviceDid: parsed.serviceDid, expiresAt: parsed.expiresAt };
+}

@@ -456,7 +456,7 @@ async function dispatchTool(
     throw new StreamFailure("upstream_incomplete");
   }
   throwIfAborted(signal);
-  const mcpMeeting = config.mcpMeetings && config.mcpOwner && config.mcpMeetings.isMeetingTool(call.name)
+  const mcpMeeting = config.mcpMeetings && config.mcpOwner && config.mcpMeetings.handles(call.name)
     ? await config.mcpMeetings.run({ name: call.name, args, owner: config.mcpOwner, ...(roomId ? { roomId } : {}), ...(turnContext ? { context: turnContext as unknown as RetrievalContext } : {}), ...(signal ? { signal } : {}) })
     : undefined;
   const res = mcpMeeting ? new Response(JSON.stringify(mcpMeeting.body), { status: mcpMeeting.status, headers: { "content-type": "application/json" } }) : await fetchForTurn(fetchImpl, `${config.elizaServiceUrl}/tools/${encodeURIComponent(call.name)}`, {
@@ -1464,16 +1464,25 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
 
     // Resolve synchronous setup before opening the transport.
     const mcpSelected = config.mcpMeetings !== undefined && config.mcpChatAccountAllowed?.(address) === true && Boolean(config.mcpOwnerDidFor);
+    if (!mcpSelected && !config.elizaServiceUrl) {
+      // eliza-service is not configured and this account is not on the MCP: say so rather than fall back silently.
+      res.status(503).json({ error: "eliza_unavailable" });
+      return;
+    }
     const taskSelected = !mcpSelected && config.elizaTasksEnabled === true &&
       (!config.elizaTasksAccountAllowed || config.elizaTasksAccountAllowed(address));
     owner = new AgentStreamOwner(req, res, policy, config.streamRuntime ?? streamRuntime);
     if (access && !access.isCurrent()) { owner.disconnect(); return; }
     let privateStatus: Awaited<ReturnType<AgentChatAccess["status"]>> | undefined;
-    if (accessControl && !mcpSelected) {
+    if (mcpSelected) {
+      // The owner's grant lives on the MCP, so admission asks the MCP, never eliza-service.
+      try { privateStatus = await config.mcpMeetings!.status(config.mcpOwnerDidFor!(address)); } catch { /* Unknown access admits public tools only and is reported below. */ }
+      if (access && !access.isCurrent()) { owner.disconnect(); return; }
+    } else if (accessControl) {
       try { privateStatus = await accessControl.status(entityId); } catch { /* Unknown access admits public tools only and is reported below. */ }
       if (!access!.isCurrent()) { owner.disconnect(); return; }
     }
-    const accessIssue = accessControl && !mcpSelected ? privateAccessIssue(privateStatus) : undefined;
+    const accessIssue = accessControl || mcpSelected ? privateAccessIssue(privateStatus) : undefined;
     const privateAccessActive = accessIssue === undefined;
     const turnConfig: AgentChatConfig = { ...config, privateAccessActive,
       ...(mcpSelected ? { mcpOwner: config.mcpOwnerDidFor!(address) } : {}),

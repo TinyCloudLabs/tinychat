@@ -1012,8 +1012,10 @@ async function main() {
     );
   }
 
-  if (AGENT_DID && ELIZA_SERVICE_URL && ELIZA_SERVICE_SECRET) {
-    const elizaServiceUrl = ELIZA_SERVICE_URL.replace(/\/$/, "");
+  // MCP chat (MCP_CHAT_ENABLED) serves its listed accounts without eliza-service; every other account keeps the eliza path.
+  const mcpChat = mcpChatFromEnv(process.env);
+  if ((AGENT_DID && ELIZA_SERVICE_URL && ELIZA_SERVICE_SECRET) || mcpChat.mcpMeetings) {
+    const elizaServiceUrl = ELIZA_SERVICE_URL?.replace(/\/$/, "");
     const meetingRollout = meetingRolloutFromEnv(process.env);
     app.use(
       "/api/agent",
@@ -1021,6 +1023,7 @@ async function main() {
         agentDid: AGENT_DID,
         elizaServiceUrl,
         elizaServiceSecret: ELIZA_SERVICE_SECRET,
+        mcp: mcpChat,
         authMiddleware,
         paidLimiter: paidChatLimiter,
         // Mount POST /api/agent/chat (tool-calling orchestration) only when RedPill
@@ -1035,15 +1038,15 @@ async function main() {
                   const accounts = (process.env.ELIZA_TASKS_TEST_ACCOUNTS ?? "").split(",").map(value => value.trim().toLowerCase()).filter(Boolean);
                   return accounts.length === 0 || accounts.includes(address.toLowerCase());
                 },
-                ...mcpChatFromEnv(process.env),
+                ...mcpChat,
                 meetingContentRetrievalEnabled: meetingRollout.enabled,
                 meetingContentAccountAllowed: meetingRollout.accountAllowed,
                 meetingContentModelAllowed: meetingRollout.modelAllowed,
                 backendRevision: process.env.BUILD_REVISION ?? process.env.GIT_SHA ?? "unknown",
                 agentId: TINYCHAT_AGENT_ID,
                 entityIdFor: (address: string) => addressToEntityId(address, TINYCHAT_AGENT_ID),
-                elizaServiceUrl,
-                elizaServiceSecret: ELIZA_SERVICE_SECRET,
+                elizaServiceUrl: elizaServiceUrl ?? "",
+                elizaServiceSecret: ELIZA_SERVICE_SECRET ?? "",
                 redpillApiKey: diagnosticKey ?? redpillApiKey,
                 redpillBaseUrl: diagnosticUrl ?? process.env.REDPILL_BASE_URL ?? "https://api.redpill.ai/v1",
                 defaultModel,

@@ -91,7 +91,7 @@ afterAll(() => server.stop(true));
 
 const env = () => ({
   MCP_CHAT_ENABLED: "true", MCP_CHAT_URL: url, MCP_CHAT_SERVICE_CREDENTIAL: CREDENTIAL, MCP_CHAT_SERVICE_CREDENTIAL_HEADER: CREDENTIAL_HEADER,
-  MCP_CHAT_OWNER_DID_HEADER: OWNER_HEADER, MCP_CHAT_TEST_ACCOUNTS: ADDRESS, MCP_CHAT_GRANT_EXPIRED_ERROR: "grant_expired_test", MCP_CHAT_GRANT_REJECTED_ERROR: "grant_rejected_test",
+  MCP_CHAT_OWNER_DID_HEADER: OWNER_HEADER, MCP_CHAT_SERVICE_DID: "did:key:z6MkServiceDidForTests", MCP_CHAT_TEST_ACCOUNTS: ADDRESS, MCP_CHAT_GRANT_EXPIRED_ERROR: "grant_expired_test", MCP_CHAT_GRANT_REJECTED_ERROR: "grant_rejected_test",
 });
 const tools = () => mcpChatFromEnv(env()).mcpMeetings!;
 const run = (name: string, args: Record<string, unknown>, extra: Record<string, unknown> = {}) =>
@@ -101,7 +101,7 @@ describe("mcp chat configuration", () => {
   test("stays off without the flag, without any header or credential setting, or without a named account", () => {
     expect(mcpChatFromEnv({})).toEqual({});
     expect(mcpChatFromEnv({ ...env(), MCP_CHAT_ENABLED: "1" })).toEqual({});
-    for (const key of ["MCP_CHAT_URL", "MCP_CHAT_SERVICE_CREDENTIAL", "MCP_CHAT_SERVICE_CREDENTIAL_HEADER", "MCP_CHAT_OWNER_DID_HEADER", "MCP_CHAT_TEST_ACCOUNTS"]) {
+    for (const key of ["MCP_CHAT_URL", "MCP_CHAT_SERVICE_CREDENTIAL", "MCP_CHAT_SERVICE_CREDENTIAL_HEADER", "MCP_CHAT_OWNER_DID_HEADER", "MCP_CHAT_SERVICE_DID", "MCP_CHAT_TEST_ACCOUNTS"]) {
       expect(mcpChatFromEnv({ ...env(), [key]: "" })).toEqual({});
     }
   });
@@ -189,7 +189,7 @@ describe("meeting tools over the MCP", () => {
   test("invalid arguments and unknown tools are rejected without an MCP call", async () => {
     sqlCalls = [];
     expect((await run("tinycloud_find_meetings", { bogus: true })).status).toBe(400);
-    expect((await run("web_search", { query: "x" })).status).toBe(404);
+    expect((await run("not_a_tool", { query: "x" })).status).toBe(404);
     expect(sqlCalls).toHaveLength(0);
   });
 });
