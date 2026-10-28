@@ -3,7 +3,6 @@ import { readableError } from "@/lib/readableError";
 import { storageScopeFor, trackStorageWrites } from "@/lib/storageStatus";
 import { deviceName } from "@/lib/platform";
 import { autoMeetingTitle } from "@/lib/meetingTitle";
-import { transcriptionModelLabel } from "@/lib/transcriptionModelLabel";
 import { planRename } from "../recordingTitleMeta";
 import type { FirefliesSentence } from "../connectors/firefliesClient";
 import { CONNECTORS_KV_PREFIX, CONNECTORS_SQL_DB_NAME, ensureSchema, transcriptKvKey } from "../connectors/connectorStore";
