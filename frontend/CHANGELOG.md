@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.10.0-beta.65
+
+### Patch Changes
+
+- a43ddc8: Web sign-in is one click again, with no key grants, and connector credentials use the default key. Details: TC-1977
+
 ## 0.10.0-beta.64
 
 ### Minor Changes

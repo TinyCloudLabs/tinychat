@@ -1,5 +1,9 @@
 # exo-desktop
 
+## 0.10.0-beta.65
+
+No changes in this release.
+
 ## 0.10.0-beta.64
 
 ### Minor Changes
