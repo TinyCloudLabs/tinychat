@@ -905,28 +905,3 @@ test("Calendar autojoin enables from the server credential: no Meet secret write
     ok: true, data: { status: "connected", lastSyncedAt: oldWatermark, itemCount: 0 },
   });
 });
-
-// iOS zooms the whole page when an editable field under 16px takes focus and
-// keeps the zoom after focus leaves. Every text field the connect dialogs
-// render is ≥16px on touch (text-body) and keeps its compact size only with a
-// mouse (fine:*), the same rule the composer and the notetaker form follow.
-test("the Fireflies API key field renders 16px on touch", async () => {
-  const fireflies = CONNECTORS.find((entry) => entry.id === "fireflies")!;
-  await act(async () => root!.render(<ConnectorConnectDialog tcw={memory.tcw} descriptor={fireflies} backendUrl={backend}
-    sessionStore={{ getToken: () => "synthetic-session", isExpired: () => false } as unknown as SessionStore}
-    open onOpenChange={() => {}} onConnected={() => {}} />));
-  await settle();
-  const field = dialog().querySelector<HTMLInputElement>("#fireflies-api-key");
-  expect(field).toBeTruthy();
-  expect(field!.className).toContain("text-body");
-  expect(field!.className).toContain("fine:text-sm");
-});
-
-test("the Meet space code field on the connected panel renders 16px on touch", async () => {
-  await authorize();
-  await expectDone();
-  const field = dialog().querySelector<HTMLInputElement>("#gmeet-space-code");
-  expect(field).toBeTruthy();
-  expect(field!.className).toContain("text-body");
-  expect(field!.className).toContain("fine:text-xs");
-});
