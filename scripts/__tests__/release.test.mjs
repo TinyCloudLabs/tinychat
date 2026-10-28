@@ -491,16 +491,15 @@ test('frontend+desktop stable promotion leaves backend prerelease pending', {
   const root = manifests(t);
   symlinkSync(join(repo, 'node_modules'), join(root, 'node_modules'));
   write(root, '.gitignore', 'node_modules\n');
-  editJson(root, 'frontend/package.json', pkg => { pkg.version = '0.2.0-beta.0'; });
-  editJson(root, 'desktop/package.json', pkg => { pkg.version = '0.2.0-beta.0'; });
-  editJson(root, 'backend/package.json', pkg => { pkg.version = '0.2.0-beta.0'; });
-  write(root, 'desktop/src-tauri/Cargo.toml', setCargoTomlVersion(read(root, 'desktop/src-tauri/Cargo.toml'), '0.2.0-beta.0'));
-  write(root, 'desktop/src-tauri/Cargo.lock', setCargoLockVersion(read(root, 'desktop/src-tauri/Cargo.lock'), '0.2.0-beta.0'));
-  write(root, '.changeset/pre.json', '{\n  "mode": "pre",\n  "tag": "beta",\n  "stableScope": "frontend-desktop"\n}\n');
-  write(root, '.changeset/pre/web-fix.md', changesetFile({ '@tinychat/frontend': 'patch' }, 'Home web fix'));
-  write(root, '.changeset/pre/backend-mcp.md', changesetFile({ '@tinychat/backend': 'minor' }, 'MCP meetings'));
+  editJson(root, 'frontend/package.json', pkg => { pkg.version = '0.11.1'; });
+  editJson(root, 'desktop/package.json', pkg => { pkg.version = '0.11.1'; });
+  editJson(root, 'backend/package.json', pkg => { pkg.version = '0.5.7'; });
+  write(root, 'desktop/src-tauri/Cargo.toml', setCargoTomlVersion(read(root, 'desktop/src-tauri/Cargo.toml'), '0.11.1'));
+  write(root, 'desktop/src-tauri/Cargo.lock', setCargoLockVersion(read(root, 'desktop/src-tauri/Cargo.lock'), '0.11.1'));
+  write(root, '.changeset/home-mobile-zoom.md', changesetFile({ '@tinychat/frontend': 'patch' }, 'Home web fix'));
+  write(root, '.changeset/mcp-chat-meeting-tools.md', changesetFile({ '@tinychat/backend': 'minor' }, 'MCP meetings'));
   initRepo(root);
-  const betaCommit = commitAll(root, 'beta releases pending');
+  commitAll(root, 'stable baseline versions');
   const step = (name, args = []) => {
     const result = run(name, ['--root', root, ...args]);
     assert.equal(result.status, 0, `${name}: ${result.stdout}${result.stderr}`);
@@ -508,23 +507,31 @@ test('frontend+desktop stable promotion leaves backend prerelease pending', {
   };
   const versions = () => ['desktop', 'frontend', 'backend'].map(dir => version(root, dir));
 
-  assert.match(step('tag.mjs'), /^tags=exo-desktop@0\.2\.0-beta\.0 @tinychat\/frontend@0\.2\.0-beta\.0 @tinychat\/backend@0\.2\.0-beta\.0$/m);
-  assert.equal(tagCommit(root, '@tinychat/backend@0.2.0-beta.0'), betaCommit);
-  assert.equal(check(root).status, 0, check(root).stderr);
+  assert.match(step('version.mjs'), /^channel=beta$/m);
+  assert.deepEqual(versions(), ['0.11.2-beta.0', '0.11.2-beta.0', '0.6.0-beta.0']);
+  const betaCommit = git(root, 'rev-parse', 'HEAD');
+  assert.ok(existsSync(join(root, '.changeset/pre/home-mobile-zoom.md')));
+  assert.ok(existsSync(join(root, '.changeset/pre/mcp-chat-meeting-tools.md')));
+  write(root, '.changeset/pre.json', '{\n  "mode": "pre",\n  "tag": "beta",\n  "stableScope": "frontend-desktop"\n}\n');
+  commitAll(root, 'select frontend desktop stable promotion');
+  assert.match(step('tag.mjs'), /^tags=exo-desktop@0\.11\.2-beta\.0 @tinychat\/frontend@0\.11\.2-beta\.0 @tinychat\/backend@0\.6\.0-beta\.0$/m);
+  assert.equal(tagCommit(root, '@tinychat/backend@0.6.0-beta.0'), betaCommit);
+  const initialCheck = check(root);
+  assert.equal(initialCheck.status, 0, initialCheck.stderr);
 
   const body = join(root, '..', 'scoped-stable.md');
   assert.match(step('stable-pr.mjs', ['--body', body]), /^open=true$/m);
   assert.deepEqual(JSON.parse(git(root, 'show', 'release/stable:.changeset/release-stable.json')), {
     scope: 'frontend-desktop',
-    versions: { 'exo-desktop': '0.2.0', '@tinychat/frontend': '0.2.0' },
-    changesets: ['.changeset/pre/web-fix.md'],
+    versions: { 'exo-desktop': '0.11.2', '@tinychat/frontend': '0.11.2' },
+    changesets: ['.changeset/pre/home-mobile-zoom.md'],
     pending: {
-      versions: { '@tinychat/backend': '0.2.0-beta.0' },
-      changesets: ['.changeset/pre/backend-mcp.md'],
+      versions: { '@tinychat/backend': '0.6.0-beta.0' },
+      changesets: ['.changeset/pre/mcp-chat-meeting-tools.md'],
     },
   });
   assert.match(read(root, '../scoped-stable.md'), /Promotes only `@tinychat\/frontend` and `exo-desktop`/);
-  assert.match(read(root, '../scoped-stable.md'), /`@tinychat\/backend` remains `0\.2\.0-beta\.0`/);
+  assert.match(read(root, '../scoped-stable.md'), /`@tinychat\/backend` remains `0\.6\.0-beta\.0`/);
   git(root, 'switch', '-q', 'release/stable');
   const planCheck = check(root, '--since', 'main');
   assert.equal(planCheck.status, 0, planCheck.stderr);
@@ -538,26 +545,26 @@ test('frontend+desktop stable promotion leaves backend prerelease pending', {
   git(root, 'switch', '-q', 'main');
   git(root, 'merge', '-q', '--no-ff', '-m', 'Merge scoped Release stable', 'release/stable');
   assert.match(step('version.mjs'), /^channel=stable$/m);
-  assert.deepEqual(versions(), ['0.2.0', '0.2.0', '0.2.0-beta.0']);
+  assert.deepEqual(versions(), ['0.11.2', '0.11.2', '0.6.0-beta.0']);
   assert.deepEqual(JSON.parse(read(root, '.changeset/pre.json')), { mode: 'pre', tag: 'beta' });
-  assert.ok(existsSync(join(root, '.changeset/pre/backend-mcp.md')));
-  assert.equal(existsSync(join(root, '.changeset/pre/web-fix.md')), false);
+  assert.ok(existsSync(join(root, '.changeset/pre/mcp-chat-meeting-tools.md')));
+  assert.equal(existsSync(join(root, '.changeset/pre/home-mobile-zoom.md')), false);
   assert.equal(check(root).status, 0, check(root).stderr);
 
-  assert.match(step('tag.mjs'), /^tags=exo-desktop@0\.2\.0 @tinychat\/frontend@0\.2\.0$/m);
+  assert.match(step('tag.mjs'), /^tags=exo-desktop@0\.11\.2 @tinychat\/frontend@0\.11\.2$/m);
   const dispatch = step('dispatch.mjs', [
     '--channel', 'stable',
-    '--tags', 'exo-desktop@0.2.0 @tinychat/frontend@0.2.0',
+    '--tags', 'exo-desktop@0.11.2 @tinychat/frontend@0.11.2',
     '--dry-run',
   ]);
-  assert.match(dispatch, /^gh workflow run deploy-production\.yml .* -f tag=@tinychat\/frontend@0\.2\.0 -f backend=false -f web=true$/m);
+  assert.match(dispatch, /^gh workflow run deploy-production\.yml .* -f tag=@tinychat\/frontend@0\.11\.2 -f backend=false -f web=true$/m);
   assert.doesNotMatch(dispatch, /@tinychat\/backend@/);
-  assert.match(dispatch, /^gh workflow run desktop-release\.yml .* -f tag=exo-desktop@0\.2\.0$/m);
+  assert.match(dispatch, /^gh workflow run desktop-release\.yml .* -f tag=exo-desktop@0\.11\.2$/m);
 
   assert.match(step('stable-pr.mjs', ['--body', body]), /^open=true$/m);
   assert.deepEqual(JSON.parse(git(root, 'show', 'release/stable:.changeset/release-stable.json')), {
-    versions: { '@tinychat/backend': '0.2.0' },
-    changesets: ['.changeset/pre/backend-mcp.md'],
+    versions: { '@tinychat/backend': '0.6.0' },
+    changesets: ['.changeset/pre/mcp-chat-meeting-tools.md'],
   });
 });
 
