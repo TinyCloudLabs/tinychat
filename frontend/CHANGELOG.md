@@ -1,5 +1,12 @@
 # @tinychat/frontend
 
+## 0.11.2
+
+### Patch Changes
+
+- 8d080e4: On touch, an editable field smaller than 16px can make iOS zoom the whole page, and the zoom can stay after focus leaves. The paste-a-transcript fields, the Fireflies API key and the Meet space code now render 16px on touch (unchanged size with a mouse), matching the composer and the notetaker form.
+- 2f94b1b: A pasted transcript opens its note: it is a note page, never the saved recording's sheet or page, and it has no audio player.
+
 ## 0.11.2-beta.1
 
 ### Patch Changes

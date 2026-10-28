@@ -1,5 +1,4 @@
 {
-  "mode": "exit",
-  "tag": "beta",
-  "stableScope": "frontend-desktop"
+  "mode": "pre",
+  "tag": "beta"
 }
