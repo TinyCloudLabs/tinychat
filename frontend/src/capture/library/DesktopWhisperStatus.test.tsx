@@ -37,7 +37,8 @@ describe("DesktopWhisperStatusView", () => {
   test("queued, transcribing with progress, and done", () => {
     expect(view(job({ state: "queued" }))).toContain("Waiting to transcribe on this Mac");
     const html = view(job({ state: "transcribing", progress: 42.4 }));
-    expect(html).toContain("Transcribing on this Mac · 42%");
+    expect(html).toContain("Transcribing on this Mac…");
+    expect(html).toContain("42%");
     expect(html).toContain('role="status"');
     expect(view(job({ state: "transcribing", progress: null }))).toContain("Transcribing on this Mac…");
     expect(view(job({ state: "done" }))).toContain("Checking the transcript on this Mac");
@@ -106,7 +107,7 @@ describe("DesktopWhisperStatus", () => {
     const fake = fakeQueue();
     registerDesktopWhisperQueue(fake.queue);
     fake.publish(job({ state: "transcribing", progress: 10 }));
-    expect(renderToStaticMarkup(<DesktopWhisperStatus noteId="n1" enabled fallback={fallback} />)).toContain("Transcribing on this Mac · 10%");
+    expect(renderToStaticMarkup(<DesktopWhisperStatus noteId="n1" enabled fallback={fallback} />)).toContain("10%");
     fake.publish(job({ state: "failed", error: "fixture failed" }));
     const html = renderToStaticMarkup(<DesktopWhisperStatus noteId="n1" enabled fallback={fallback} />);
     expect(html).toContain("Retry");

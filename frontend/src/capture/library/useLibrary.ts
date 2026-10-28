@@ -47,7 +47,7 @@ import { loadNote } from "@/lib/voiceNotes/recordingNotes";
 import { wasDiscarded, type PendingNote } from "@/lib/voiceNotes/recorderSaves";
 import { nativeVoiceNotesAvailable, VoiceNotes } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { loadVoiceNoteAudioBlob, voiceNoteAudioKvKey, VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
-import { cachedSpaceAudio, cachedSpaceAudioOffline, hasVerifiedSpaceCopy, isVerifiedSpaceReceipt, latestSpaceAudioIdentity, localPlaybackUrl,
+import { cachedSpaceAudio, cachedSpaceAudioOffline, hasVerifiedSpaceCopy, isMissingLocalAudio, isVerifiedSpaceReceipt, latestSpaceAudioIdentity, localPlaybackUrl,
   observeSpaceAudioIdentity } from "@/lib/voiceNotes/audioPlaybackCache";
 import { readTranscriptPreviews, voiceNoteTranscriptLocator, type TranscriptProvenance } from "@/lib/voiceNotes/voiceNoteCommits";
 import { captureEvents } from "../captureEvents";
@@ -387,6 +387,23 @@ export function useLibrary(
     });
     return () => { live = false; };
   }, [options.visible, tcw.did, listingRevision, onPhoneNotes]);
+  // The open note's own file on this device, probed by id: the pending list may not carry a saved note,
+  // but a readable file there is the audio whatever the list says.
+  const [deviceFileId, setDeviceFileId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!options.visible || openRecordingId === null || !nativeVoiceNotesAvailable()) {
+      setDeviceFileId(null);
+      return;
+    }
+    let live = true;
+    void Promise.resolve().then(() => VoiceNotes.localAudioSize({ id: openRecordingId })).then(
+      ({ size }) => { if (live) setDeviceFileId(size > 0 ? openRecordingId : null); },
+      (caught: unknown) => {
+        if (live) setDeviceFileId(null);
+        if (!isMissingLocalAudio(caught)) console.error("[Audio] Could not check local audio", openRecordingId, caught);
+      });
+    return () => { live = false; };
+  }, [options.visible, openRecordingId, listingRevision, onPhoneNotes]);
   const lastOpened = useRef<string | null>(null);
   useEffect(() => {
     // A note just closed may have had its moments edited: read them again.
@@ -525,7 +542,10 @@ export function useLibrary(
   const localOnlyAudio = (meta?.audio as { stored?: unknown } | undefined)?.stored === false;
   // A note with no stored space audio plays the phone's copy while it has one. A stored space audio plays
   // from the space at Play time, unless this device's copy is not yet verified (checked in the load below).
-  const phoneFirst = item?.onPhone === true || (onThisPhone && audioBase === null);
+  // Metadata that says the space holds no audio makes this device's file the only audio, whether or not the
+  // pending list still carries the note (it does not once the note is saved and its transcript committed).
+  const phoneFirst = item?.onPhone === true || (onThisPhone && audioBase === null)
+    || (voiceSourceId !== null && localOnlyAudio && deviceFileId === voiceSourceId);
   // The stored file is read only when the player asks, one part per queued
   // call; the player's signal stops it when the note closes.
   const noteAudio = useMemo<NoteAudio | null>(() => {
