@@ -91,6 +91,7 @@ class MemoryBoundaries {
   readonly unexpectedEgress: string[] = [];
   readonly requests: { url: string; method: string }[] = [];
   secretWrites = 0;
+  readonly credentialSaved = deferred();
   secretUnlocks = 0;
   exchangeCalls = 0;
   recordListings = 0;
@@ -169,6 +170,7 @@ class MemoryBoundaries {
       put: async (name: string, value: string, options?: { scope?: string }) => {
         this.secretWrites++;
         this.tokens.set(`${options?.scope ?? ""}:${name}`, value);
+        this.credentialSaved.resolve();
         return ok(undefined);
       },
       get: async (name: string, options?: { scope?: string }) => {
@@ -344,6 +346,8 @@ async function authorize(fakeClock = false) {
     }));
     await tick();
   });
+  await settle();
+  await memory.credentialSaved.promise;
   await settle();
 }
 

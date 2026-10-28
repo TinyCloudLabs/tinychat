@@ -29,7 +29,7 @@ export async function createTinychatBackendIdentity(
     // Chat authentication needs a signing identity, not backend-owned storage.
     // Leave this client unactivated; the local route guard blocks storage users.
     return {
-      node: new TinyCloudNode({ ...tinychatBackendIdentityConfig(config), autoCreateSpace: false }),
+      node: new TinyCloudNode({ ...tinychatBackendIdentityConfig(config), autoCreateSpace: false, includeAccountRegistryPermissions: false }),
       did: `did:pkh:eip155:1:${privateKeyToAccount(config.privateKey as `0x${string}`).address.toLowerCase()}`,
     };
   }

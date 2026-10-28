@@ -94,6 +94,47 @@ export interface MeetingListItem {
   durationSecs: number | null;
   /** Voice-note row metadata needed to derive the list pipeline after a relaunch. */
   metadata?: Record<string, unknown> | null;
+  /**
+   * A combined (`exo-merged`) row's members, from `metadata.merge.members`, read in this same list
+   * query. Present only when EVERY member entry is well formed (the combined store's own strictness);
+   * absent for every other row and for a combined row whose record is unreadable.
+   */
+  mergeMembers?: readonly { source: string; sourceId: string }[];
+}
+
+/** Exact identity of a capture, `(source, source_id)`, never normalised: the key hiding and Feed share. */
+export const memberKey = (source: string, sourceId: string): string => JSON.stringify([source, sourceId]);
+
+/** `metadata.merge.members` as the list query returned it (JSON text), or undefined when not readable as members. */
+function parseMergeMembers(raw: string | null): { source: string; sourceId: string }[] | undefined {
+  if (raw === null) return undefined;
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw); } catch { return undefined; }
+  if (!Array.isArray(parsed) || parsed.length === 0) return undefined;
+  const out: { source: string; sourceId: string }[] = [];
+  for (const m of parsed as unknown[]) {
+    const entry = m as { source?: unknown; source_id?: unknown } | null;
+    if (entry === null || typeof entry !== "object" || typeof entry.source !== "string" || typeof entry.source_id !== "string" || !entry.source || !entry.source_id) return undefined;
+    out.push({ source: entry.source, sourceId: entry.source_id });
+  }
+  return out;
+}
+
+/**
+ * The captures a combined meeting stands in for: every member named by a combined row, so the Library
+ * lists the combined meeting alone. Derived on each read from the combined rows themselves; nothing is
+ * stored, so deleting the combined row brings its members back.
+ *
+ * Fail direction: a combined row whose members are unreadable contributes nothing (its sources stay
+ * listed). A member that is itself combined is never hidden. Exact `(source, source_id)` match.
+ */
+export function hiddenMemberKeys(meetings: readonly MeetingListItem[]): Set<string> {
+  const hidden = new Set<string>();
+  for (const row of meetings) {
+    if (row.source !== EXO_MERGED_SOURCE) continue;
+    for (const m of row.mergeMembers ?? []) if (m.source !== EXO_MERGED_SOURCE) hidden.add(memberKey(m.source, m.sourceId));
+  }
+  return hidden;
 }
 
 /**
@@ -219,7 +260,9 @@ export async function listMeetingsRead(
                 ELSE 'invalid' END
               END AS pipeline_metadata,
               CASE WHEN c.source = 'exo-voice-note' AND json_valid(COALESCE(c.metadata, '{}'))
-                THEN json_extract(c.metadata, '$.capture.duration_ms') END AS capture_duration_ms
+                THEN json_extract(c.metadata, '$.capture.duration_ms') END AS capture_duration_ms,
+              CASE WHEN c.source = '${EXO_MERGED_SOURCE}' AND json_valid(COALESCE(c.metadata, '{}'))
+                THEN json_extract(c.metadata, '$.merge.members') END AS merge_members
        FROM connector_meeting c${listsVoiceNotes ? " LEFT JOIN winner w ON w.source_id = c.source_id" : ""}
        WHERE +c.source IN (${placeholders}) ORDER BY c.started_at DESC`,
       [...sources],
@@ -269,6 +312,10 @@ export async function listMeetingsRead(
           console.warn(`Meeting explorer: voice-note row ${id} has invalid metadata JSON; its pipeline will batch-read metadata`);
         }
       }
+    }
+    if (source === EXO_MERGED_SOURCE) {
+      const members = parseMergeMembers(cellStr(row, 8));
+      if (members) item.mergeMembers = members;
     }
     meetings.push(item);
   }
@@ -399,7 +446,7 @@ export async function readTranscript(
  * sentence. Deliberately unlike `meetingsView.transcriptText`, which drops
  * speakers — a pasted transcript without "who said it" is far less useful.
  */
-export function transcriptCopyText(sentences: FirefliesSentence[]): string {
+export function transcriptCopyText(sentences: readonly FirefliesSentence[]): string {
   return sentences
     .map((s) => (s.speaker_name ? `${s.speaker_name}: ${s.text}` : s.text))
     .join("\n");

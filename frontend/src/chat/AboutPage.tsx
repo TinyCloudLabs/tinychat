@@ -8,7 +8,7 @@ import { useEffect, useRef, type ReactNode } from "react";
 import { useLocation } from "react-router-dom";
 
 import { HowItWorksLink } from "@/components/ui/how-it-works-link";
-import { FINAL_COPY } from "@/capture/recorder/final/finalCopy";
+import { FINAL_COPY, POWERFUL_PROVIDER_NAME } from "@/capture/recorder/final/finalCopy";
 import { ABOUT_SECTIONS, type AboutSectionId } from "@/lib/about";
 import { VOICE_NOTE_MAX_DURATION_MS } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { PAGE_COLUMN, PageHeader } from "@/shell/PageHeader";
@@ -85,14 +85,14 @@ export const ABOUT_BODY: Readonly<Record<AboutSectionId, ReactNode>> = {
         The desktop app can transcribe a local recording on-device with Whisper instead. Nothing leaves the machine until
         the transcript is saved to your space. Whisper runs after you stop, not live.
       </p>
-      <Sub>Powerful · AssemblyAI</Sub>
+      <Sub>Powerful · {POWERFUL_PROVIDER_NAME}</Sub>
       <List>
         <li>
-          For Powerful voice notes and uploads, your audio goes to Exo’s server (a
-          confidential VM on Phala Cloud), which sends it to AssemblyAI under TinyCloud’s account and AssemblyAI’s
-          terms. Exo deletes it at AssemblyAI after saving the transcript to your TinyCloud space.
+          Powerful transcription, for voice notes and uploads, sends your audio through Exo’s server (a confidential VM on
+          Phala Cloud) to {POWERFUL_PROVIDER_NAME}, under TinyCloud’s account and {POWERFUL_PROVIDER_NAME}’s terms.{" "}
+          {POWERFUL_PROVIDER_NAME} isn’t part of TinyCloud’s private transcription. Exo deletes {POWERFUL_PROVIDER_NAME}’s
+          copy once the transcript is saved.
         </li>
-        <li>AssemblyAI is not part of TinyCloud’s private transcription.</li>
       </List>
       <Sub>The original audio</Sub>
       <p>
@@ -121,7 +121,7 @@ export const ABOUT_BODY: Readonly<Record<AboutSectionId, ReactNode>> = {
         TinyCloud space and show up in Library.
       </p>
       <p>
-        Private transcription and TinyCloud’s AssemblyAI account take MP3, WAV, OGG, M4A/MP4, WebM or FLAC audio, up to
+        Private transcription and TinyCloud’s {POWERFUL_PROVIDER_NAME} account take MP3, WAV, OGG, M4A/MP4, WebM or FLAC audio, up to
         2 hours. Where the
         file goes depends on the engine you choose.
       </p>

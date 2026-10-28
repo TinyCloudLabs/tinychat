@@ -11,13 +11,14 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { CaptureSurface, type CaptureSurfaceProps } from "@/capture/CaptureSurface";
 import { HeaderLiveChip } from "@/capture/recorder/HeaderLiveChip";
-import { RecordButton } from "@/capture/recorder/RecordButton";
+import { HeaderRecordButton } from "@/capture/recorder/HeaderRecordButton";
 import { RecorderProvider, StaticRecorderProvider, type RecorderValue } from "@/capture/recorder/RecorderProvider";
 import { RecorderShell } from "@/capture/recorder/RecorderShell";
 import { useOpenSavedNote } from "@/capture/library/useOpenSavedNote";
 import { ChatWorkspace } from "@/chat/ChatWorkspace";
 import { DEFAULT_CONTEXT_TOKENS } from "@/chat/compaction";
 import { ConnectorsPage } from "@/chat/ConnectorsPage";
+import { AppsPage } from "@/home/AppsPage";
 import { MeetingsSection } from "@/chat/MeetingsSection";
 import { ModelPicker, type ModelOption } from "@/chat/ModelPicker";
 import type { ModelSelectionController, SelectionView } from "@/chat/modelSelection";
@@ -129,7 +130,7 @@ export function ShellApp({ platform, shim, state, probe = (_id, node) => node, c
           headerRecorder={
             <>
               <HeaderLiveChip />
-              <RecordButton variant="icon" />
+              <HeaderRecordButton />
             </>
           }
           settings
@@ -152,6 +153,8 @@ export function ShellApp({ platform, shim, state, probe = (_id, node) => node, c
         "connectors",
         <ConnectorsPage tcw={harnessTcw} backendUrl={backendUrl} sessionStore={harnessSessionStore} />,
       )}
+      feed={probe("feed", <div className="grid h-full place-items-center text-body text-muted-foreground">Feed (harness placeholder)</div>)}
+      apps={probe("apps", <AppsPage />)}
       settings={probe(
         "settings",
         <SettingsPage

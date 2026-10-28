@@ -7,6 +7,7 @@ import type { PausedUpload } from "@/capture/upload/pausedUpload";
 import { logPipeline } from "@/lib/debugLog";
 import type { NotePipelineView } from "@/lib/voiceNotes/useNotePipeline";
 import type { LibraryItem } from "../library/LibraryRow";
+import { TranscriptionStatus } from "../TranscriptionStatus";
 import { activityForFileUpload, activityForNote, type ActivityJob, type ActivityState } from "./activitySelector";
 
 export interface ActivityNote { item: LibraryItem; jobs: ActivityJob[]; openLabel?: string }
@@ -30,7 +31,7 @@ export const ActivityNoteSection = memo(function ActivityNoteSection(props: Acti
   useEffect(() => { props.onRendered?.(item.sourceId); }, [props.onRendered, item.sourceId, jobs]);
   return <section className="border-b border-border py-4 first:pt-1" aria-label={item.snippet ?? item.title ?? "Voice note"} data-activity-note={item.sourceId}>
     <div className="mb-2 flex flex-wrap items-center justify-between gap-2"><h3 className="font-medium">{item.snippet ?? item.title ?? "Voice note"}</h3><button type="button" className="min-h-11 text-callout text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => { props.onClose(); props.onOpenNote(item.id); }}>{props.openLabel ?? "Open note"}</button></div>
-    <ul className="space-y-3">{jobs.map((job) => <li key={job.kind} className="text-callout" data-state={job.state} data-track={job.kind}>
+    <ul className="space-y-3">{jobs.map((job) => job.kind === "transcribe" ? <li key={job.kind} className="text-callout" data-state={job.state} data-track={job.kind}><TranscriptionStatus job={job} durationSecs={item.durationSecs} testId="activity-transcription-status" />{job.diagnostics && <button type="button" className="mt-1 min-h-11 min-w-11 text-callout text-muted-foreground underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => { if (!navigator.clipboard) { setCopyResult("failed"); return; } void navigator.clipboard.writeText(`${item.sourceId} · ${job.kind} · ${job.diagnostics}`).then(() => setCopyResult("copied"), () => setCopyResult("failed")); }}>Copy details</button>}</li> : <li key={job.kind} className="text-callout" data-state={job.state} data-track={job.kind}>
       <div className="flex flex-wrap items-center justify-between gap-x-2"><span className="font-medium">{job.label} · {job.destination}</span><span className={job.state === "needs-attention" ? "text-amber-700 dark:text-amber-300" : "text-muted-foreground"}>{job.state === "needs-attention" ? "Needs attention" : job.state === "running" ? "In progress" : job.state === "retrying" ? "Retrying" : "Waiting"}</span></div>
       <p className="mt-1 text-muted-foreground">{job.detail}</p>
       {job.progress !== undefined && <progress className="mt-2 h-1 w-full accent-primary" max={1} value={job.progress} aria-label={`${job.label} progress`} />}

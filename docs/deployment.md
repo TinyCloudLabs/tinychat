@@ -270,6 +270,8 @@ Repository **variables** (all optional — defaults shown):
 | `MEETING_CONTENT_RETRIEVAL_ENABLED` | `false` (optional; only literal `true` enables controller routing for admitted accounts) |
 | `MEETING_CONTENT_TEST_ACCOUNTS` | _(empty — optional comma-separated account allowlist; entries are trimmed and lowercased)_ |
 | `MEETING_CONTENT_MODELS` | _(empty — optional comma-separated evaluated-model allowlist; entries are trimmed and matched exactly)_ |
+| `CREDENTIAL_ROW_COUNT_SOURCES` | _(empty — optional comma-separated source names; when set to a source name, logs a single `credential_row_count source=<name> count=<N>` line at startup; read-only)_ |
+| `CREDENTIAL_COUNT_ADMIN_KEY` | _(empty — optional repo **secret**; off unless set to at least 32 characters; one-time read-only count of stored credential rows at `/api/internal/credential-row-count`, used before a removal. The same key, header (`x-admin-key`) and gating also serve the read-only hosted AssemblyAI probe `GET /api/internal/assemblyai-status` (counts and tokens only: provider state, blocked reason and status, failed jobs in a row, pending and delayed jobs, heartbeat age; 60 successful reads/h, 5 failures/h). With hosted mode on, the backend also writes one JSON line per event to stdout: `assemblyai_provider_blocked` and `assemblyai_jobs_failed_in_a_row` (both `alert:true`), `assemblyai_provider_recovered`, and `assemblyai_worker_heartbeat` every 60 s. AssemblyAI has no balance endpoint, so nothing polls one)_ |
 | `PAYWALL_ENABLED` | `false`. This and every Stripe/credit/ledger row below may live as a repo **secret** or **variable** — secrets win (`docs/stripe-setup.md`). |
 | `STRIPE_PRICE_PLUS_MONTHLY` / `STRIPE_PRICE_PLUS_YEARLY` / `STRIPE_PRICE_PRO_MONTHLY` / `STRIPE_PRICE_PRO_YEARLY` | _(empty — Stripe price ids `price_…`; see `docs/stripe-setup.md`)_ |
 | `CREDIT_BUDGET_FREE` / `CREDIT_BUDGET_PLUS_WEEKLY` / `CREDIT_BUDGET_PRO_WEEKLY` | _(empty — code defaults in `backend/src/billing/tiers.ts`)_ |
@@ -277,7 +279,7 @@ Repository **variables** (all optional — defaults shown):
 | `AGENT_CHAT_BUDGET_PREFLIGHT` | `log` (values: `log`, `enforce`, `off`; `enforce` returns 402 `credit_budget_exceeded` before a turn starts; see `docs/credits.md`) |
 | `EXO_CAPABILITIES_ENABLED` | _(empty — off; only exactly `true` mounts `/api/exo/v1`; see `docs/exo-capabilities.md`)_ |
 | `LEDGER_SERVICE_URL` | _(empty — the ledger client is disabled when unset)_ |
-| `LEDGER_AUTHORITATIVE` | `false` (workflow default — flipping ledger authority is a deliberate cutover action, not part of a routine deploy) |
+| `LEDGER_AUTHORITATIVE` | `false` when neither the repo secret nor the repo variable is set. The deploy passes the configured value through, so check the repo setting rather than assuming the default. Turning it on is a deliberate cutover, not part of a routine deploy. |
 | `LEDGER_OUTAGE_POLICY` | `bounded_k` |
 | `CONNECTOR_BACKEND_INGEST_ENABLED` | `false` (**dark**; `true` only ARMS backend ingestion — addresses come from the cohort allowlist in the backend's own config KV. See §4 and the operator pre-rollout gates before ever setting this.) |
 | `FIREFLIES_OAUTH_REDIRECT_URI` | _(empty — the registered OAuth redirect URI; required with the ingest flag armed)_ |
@@ -352,7 +354,7 @@ written into the encrypted deployment env file, including their off/empty defaul
 forwarded by compose and included by `Sync CVM allowed_envs`. Verify the actual
 existing CVM's allowed names and resolved container settings. Changing a repository
 variable alone does not change a running process: these settings require a backend
-deploy/restart. Never enable a canary with an empty account list.
+deploy/restart. An empty list is not a canary: with tasks enabled it admits all authenticated accounts, so set the list before enabling.
 
 The allowed-name sync retains existing allowed names, but it encrypts the values
 from the complete deployment env file. Keeping an allowed name does not preserve
@@ -566,6 +568,14 @@ nothing below may be reported as done on its behalf.
   documented local origins on port `5186`. Production must still set
   `FRONTEND_URL=https://tinycloud.chat`; unrelated Pages projects, localhost
   ports, and lookalike domains remain blocked.
+- **Home manifest (TC-2043):** deploy the backend that serves revision 3's
+  manifest before the frontend revision gate. Existing web sessions re-sign
+  once per device after the served bundle is available; native (mobile)
+  sessions keep their previous grant until their next explicit sign-in. The broad `applications`
+  KV grant covers app folders; SQL covers Home's six databases and the named
+  Health Log and Recipes databases. Notes has no runnable beta bundle.
+  Adding a catalog database requires a manifest bump and another one-time
+  sign-in. The `secrets` grants and backend delegation policy are unchanged.
 - **SIWE audience (TC-1201):** `/api/auth/verify` checks the signed domain
   and URI before consuming the nonce. The web SDK signs the page hostname
   (without the port) and a canonical `did:key` session verification-method
@@ -579,10 +589,15 @@ nothing below may be reported as done on its behalf.
   `backend/src/cors-origins.ts`. Native OpenKey sign-in (iOS and Android)
   signs its configured issuer domain (`openkey.so` by default) and a canonical
   `did:key` session URI, never a web HTTPS URI. Only this native domain
-  requires a strict signed ReCap with at least one KV/SQL grant under
-  `xyz.tinycloud.tinychat/` in the recovered address's applications space,
-  and no foreign app grants. OpenKey's registered native client confines
-  grants issued through its native consent flow to its `appId`. Set
+  requires a strict signed ReCap confined to Home's explicit
+  `applications` scope and carrying at least one `xyz.tinycloud.tinychat/`
+  app-path grant, which is the proof that the sign-in is for TinyChat. The root
+  KV grant and the two named runnable catalog databases are tolerated next to
+  it but never count as that proof on their own; other grants are rejected.
+  Native sign-in cannot request the broad entries until OpenKey's native
+  client policy and ceiling are changed (TC-1990), and the served revision-3
+  manifest lists them, so native sign-in is expected to fail until then. The
+  web sign-in does not use that client ceiling. Set
   `OPENKEY_SIWE_DOMAIN` on the backend if that client's `siweDomain` changes;
   never use the API host as the signed audience.
   Nonces remain single-use for five minutes, with at most 2048 pending per

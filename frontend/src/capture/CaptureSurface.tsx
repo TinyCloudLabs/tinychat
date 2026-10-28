@@ -41,6 +41,7 @@ import { LazyDesktopCaptureHome } from "./home/desktop/LazyDesktopCaptureHome";
 import { SoftHomeProvider } from "./home/softHome";
 import { useSoftTheme } from "./home/softTheme";
 import { inProgressShown, type InProgressRowsViewProps } from "./InProgressRows";
+import { noteBackTarget } from "./library/combine/combinedView";
 import { LibraryScreen } from "./library/LibraryScreen";
 import { NoteDetail } from "./library/NoteDetail";
 import { RecentNotePendingSheet } from "./library/RecentNotePendingSheet";
@@ -357,7 +358,7 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
             pushed={!wide}
             onBack={() => {
               if (recentNoteId !== null) closeRecentNote();
-              else goUp(navigate, notePage ? PATHS.capture : PATHS.library);
+              else goUp(navigate, noteBackTarget(location.state, notePage));
             }}
             transcription={recorder.transcription}
             activityView={openNote ? activityViews.get(openNote.sourceId) : undefined}

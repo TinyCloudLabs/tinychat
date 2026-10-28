@@ -34,6 +34,8 @@ import { PAGE_COLUMN, PageHeader } from "@/shell/PageHeader";
 import { detailWhen, formatSpokenDuration } from "./formatters";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { DesktopWhisperStatus } from "./DesktopWhisperStatus";
+import { TranscriptionStatus } from "../TranscriptionStatus";
+import { TRANSCRIPTION_STATUS_COPY } from "../transcriptionStatusCopy";
 import { OnDeviceNoteStatus } from "./OnDeviceNoteStatus";
 import { privateRefusalCopy } from "@/capture/recorder/privateInstead";
 import { TranscribeAction } from "./TranscribeAction";
@@ -43,7 +45,9 @@ import { CombineActions } from "./combine/CombineActions";
 import { CombinedSummary } from "./combine/CombinedSummary";
 import type { CombineDetail } from "./combine/combinedView";
 import { librarySourceLabel } from "./libraryKinds";
+import { useWordFixApplier, useWordFixedSentences } from "@/lib/wordFixes/wordFixesStore";
 import { TimestampedTranscript, type TranscriptGap } from "./TimestampedTranscript";
+import { TranscriptProvenanceNote } from "./TranscriptProvenanceNote";
 import { hasPrivateCloudTimingProvenance, hasSegmentTimes, transcriptMarkdown } from "./transcriptSegments";
 import type { TranscriptProvenance } from "@/lib/voiceNotes/voiceNoteCommits";
 import type { LibraryItem } from "./LibraryRow";
@@ -172,7 +176,7 @@ export function VoiceNoteTranscriptionStatus(props: {
   }
   if (job?.kind === "active") {
     const status = transcriptionStatusText(job.status);
-    const providerStatus = provider === "powerful" ? status.replaceAll("Private transcription", "Powerful (AssemblyAI)").replaceAll("private cloud", "Powerful")
+    const providerStatus = provider === "powerful" ? status.replaceAll("Private transcription", "Powerful").replaceAll("private cloud", "Powerful")
       : provider === "unknown" ? status.replaceAll("Private transcription", "transcription").replaceAll("private cloud", "the transcription service") : status;
     return (
       <p role="status" data-testid="voice-note-transcription-status" className="flex items-center gap-2 text-callout text-muted-foreground" title={job.status.kind === "processing" && job.status.completed !== null && job.status.total !== null && job.status.total > 0 ? "Recordings are transcribed in parts" : undefined}>
@@ -346,6 +350,8 @@ function savedText(metadata: MeetingMetadataRead): string | null {
 }
 
 export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
+  const transcribeJob = props.activityView && props.platform
+    ? activityForNote(props.activityView, props.platform).find((job) => job.kind === "transcribe") : undefined;
   const [exportError, setExportError] = useState(false);
   const { item, transcript, metadata } = props;
   const voiceNote = item.source === VOICE_NOTE_SOURCE;
@@ -357,10 +363,13 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
     (transcript?.status === "failed" || metadata?.status === "failed");
   const isPrivateCloud = remoteSentences.length > 0
     && hasPrivateCloudTimingProvenance(metadata?.status === "ok" ? metadata.metadata : null, props.transcriptProvenance);
-  const sentences = localSyncPending && local ? localTranscriptToSave(local).sentences : remoteSentences.length > 0 ? remoteSentences
-    : local?.outcome === "transcribed" ? localTranscriptToSave(local).sentences : [];
-  const pastedText = item.metadata?.capture === "pasted" && metadata?.status === "ok"
+  // The user's word fixes (TC-2199) are shown on the stored sentences; every use below, copy and export included, sees them.
+  const applyWordFixes = useWordFixApplier();
+  const sentences = useWordFixedSentences(localSyncPending && local ? localTranscriptToSave(local).sentences : remoteSentences.length > 0 ? remoteSentences
+    : local?.outcome === "transcribed" ? localTranscriptToSave(local).sentences : []);
+  const pastedStored = item.metadata?.capture === "pasted" && metadata?.status === "ok"
     && typeof metadata.metadata.transcript_text === "string" ? metadata.metadata.transcript_text : null;
+  const pastedText = pastedStored === null ? null : applyWordFixes(pastedStored);
   const shownLocal = localSyncPending || remoteSentences.length === 0 ? local : null;
   const shownProvider = shownLocal ? shownLocal.engine
     : props.transcriptProvenance?.provider ?? (metadata?.status === "ok" ? metadata.metadata.transcript_provider : null);
@@ -371,7 +380,6 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
   const gaps = Array.isArray(savedGaps) ? savedGaps.filter((gap): gap is TranscriptGap =>
     gap !== null && typeof gap === "object" && Number.isFinite(gap.start) && Number.isFinite(gap.end)
     && gap.start >= 0 && gap.end > gap.start && (gap.speaker_name === null || typeof gap.speaker_name === "string")) : [];
-  const hasProvenance = sentences.some((sentence) => sentence.source !== undefined);
   const timed = hasSegmentTimes(sentences, isPrivateCloud);
   const exportMarkdown = async () => {
     const markdown = transcriptMarkdown(item.title ?? "Voice note", item.startedAt, sentences, isPrivateCloud);
@@ -436,14 +444,15 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
             <p className="text-callout text-muted-foreground">On this device · Couldn’t check your space.</p>
             <Button type="button" variant="outline" onClick={props.onRetry}>Try again</Button>
           </div>}
-          {timed || gaps.length > 0 || hasProvenance ? <TimestampedTranscript gaps={gaps} sentences={sentences} hasAudio={props.audio !== null} isPrivateCloud={isPrivateCloud} /> : transcriptBlocks(sentences).map((block, index) => (
+          <TranscriptProvenanceNote sentences={sentences} />
+          {timed || gaps.length > 0 ? <TimestampedTranscript gaps={gaps} sentences={sentences} hasAudio={props.audio !== null} isPrivateCloud={isPrivateCloud} /> : transcriptBlocks(sentences).map((block, index) => (
             <div key={index}>
               {block.speaker && <p className="text-meta font-semibold text-muted-foreground">{block.speaker}</p>}
               <p className="whitespace-pre-wrap break-words text-body">{block.text}</p>
             </div>
           ))}
           {perNoteSpeakers && <p className="text-meta text-muted-foreground">
-            AssemblyAI’s speaker labels apply within this note only. The same label in another note may be a different person.
+            Speaker labels apply within this note only. The same label in another note may be a different person.
           </p>}
         </div>
       ) : spaceNoSpeech || local?.outcome === "no_speech" ? (
@@ -466,6 +475,8 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
             <RefreshCwIcon aria-hidden /> Try again
           </Button>
         </div>
+      ) : voiceNote && transcribeJob ? (
+        <TranscriptionStatus job={transcribeJob} durationSecs={item.durationSecs} />
       ) : voiceNote ? (
         metadata === undefined ? (
           <Skeleton lines={1} className="w-40" />
@@ -477,7 +488,7 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
         ) : savedText(metadata) ? (
           // Marked transcribed, its transcript body missing: the text the row carries.
           <p className="max-w-[68ch] whitespace-pre-wrap break-words text-body" data-testid="voice-note-transcript-text">
-            {savedText(metadata)}
+            {applyWordFixes(savedText(metadata) ?? "")}
           </p>
         ) : metadata.status === "ok" && metadata.metadata.transcription_outcome === "transcribed" ? (
           <div className="flex flex-wrap items-center gap-3" data-testid="voice-note-transcript-missing">
@@ -485,14 +496,13 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
             <Button type="button" variant="outline" onClick={props.onRetry}>Try again</Button>
           </div>
         ) : metadata.status === "ok" && (metadata.metadata.audio as { stored?: unknown } | undefined)?.stored === false && !props.audio ? (
-          <p className="text-callout text-muted-foreground" data-testid="voice-note-transcribe-on-device">
-            Transcribe on your {((metadata.metadata.capture as { platform?: string } | undefined)?.platform === "ios") ? "iPhone"
-              : ((metadata.metadata.capture as { platform?: string } | undefined)?.platform === "tauri") ? "Mac"
-              : ((metadata.metadata.capture as { platform?: string } | undefined)?.platform === "android") ? "phone" : "browser"}
-          </p>
+          <div role="status" className="w-full max-w-[68ch] rounded-xl bg-surface-2 p-3 text-callout text-foreground" data-testid="voice-note-audio-elsewhere">
+            {TRANSCRIPTION_STATUS_COPY.audioNotOnDevice}
+          </div>
         ) : (
           <DesktopWhisperStatus
             noteId={item.sourceId}
+            durationSecs={item.durationSecs}
             enabled={props.desktopWhisper}
             localRead={props.localTranscript === undefined ? "loading" : props.localTranscriptRead ?? "missing"}
             onReadRetry={props.onLocalTranscriptRetry}
@@ -547,8 +557,12 @@ function NoteDetailViewContent(props: NoteDetailViewProps) {
   const { item, metadata } = props;
   const activityJobs = props.activityView && props.platform ? activityForNote(props.activityView, props.platform) : [];
   // The Transcript fallback owns the durable failure's explanation and retry action.
-  const activityStatus = noteStatus(activityJobs, props.activityView?.pipeline, false);
-  const activityRetry = activityJobs.find((job) => job.retry)?.retry;
+  // Where the transcript will appear carries the transcription status; the header keeps the rest.
+  const transcriptShown = (props.transcript?.status === "ok" && props.transcript.sentences.length > 0) || props.localTranscript?.noteId === item?.sourceId;
+  const transcriptStatusBelow = !transcriptShown && activityJobs.some((job) => job.kind === "transcribe");
+  const statusJobs = transcriptStatusBelow ? activityJobs.filter((job) => job.kind !== "transcribe") : activityJobs;
+  const activityStatus = noteStatus(statusJobs, transcriptStatusBelow ? undefined : props.activityView?.pipeline, false);
+  const activityRetry = statusJobs.find((job) => job.retry)?.retry;
   if (item === null) {
     return (
       <Frame title="Note" pushed={props.pushed} onBack={props.onBack}>
@@ -603,7 +617,7 @@ function NoteDetailViewContent(props: NoteDetailViewProps) {
       <header className="flex flex-col gap-1" data-testid="note-detail" data-note-id={item.id}>
         {!props.pushed && <h2 className="font-display text-title-1 [overflow-wrap:anywhere]">{title}</h2>}
         <p className="tnum text-meta text-muted-foreground">{noteMeta(item)}</p>
-        {activityStatus && <div className="flex flex-wrap items-center gap-3" data-testid="note-detail-status"><p className={activityStatus.startsWith("Needs attention") ? "text-callout text-amber-700 dark:text-amber-300" : "text-callout text-muted-foreground"}>{activityStatus}</p>{activityJobs.flatMap((job) => job.action ? [job.action] : []).map((action, index) => <button key={`${action.label}:${index}`} type="button" className="min-h-11 text-callout text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={action.run}>{action.label}</button>)}{!activityJobs.some((job) => job.action) && activityRetry && <button type="button" className="min-h-11 text-callout text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={activityRetry}>Try again</button>}</div>}
+        {activityStatus && <div className="flex flex-wrap items-center gap-3" data-testid="note-detail-status"><p className={activityStatus.startsWith("Needs attention") ? "text-callout text-amber-700 dark:text-amber-300" : "text-callout text-muted-foreground"}>{activityStatus}</p>{statusJobs.flatMap((job) => job.action ? [job.action] : []).map((action, index) => <button key={`${action.label}:${index}`} type="button" className="min-h-11 text-callout text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={action.run}>{action.label}</button>)}{!statusJobs.some((job) => job.action) && activityRetry && <button type="button" className="min-h-11 text-callout text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={activityRetry}>Try again</button>}</div>}
         <CombineActions combine={props.combine} />
       </header>
       {props.audio ? (
@@ -612,12 +626,6 @@ function NoteDetailViewContent(props: NoteDetailViewProps) {
       ) : item.source === VOICE_NOTE_SOURCE && meta && Object.keys(meta).length === 0 ? (
         <p role="status" className="text-callout text-muted-foreground" data-testid="voice-note-saving-from-phone">
           Saving from {deviceName(props.platform)}…
-        </p>
-      ) : item.source === VOICE_NOTE_SOURCE && (meta?.audio as { stored?: unknown } | undefined)?.stored === false ? (
-        <p role="status" className="text-callout text-muted-foreground" data-testid="voice-note-audio-on-device">
-          Audio is on your {((meta?.capture as { platform?: string } | undefined)?.platform === "ios") ? "iPhone"
-            : ((meta?.capture as { platform?: string } | undefined)?.platform === "tauri") ? "Mac"
-            : ((meta?.capture as { platform?: string } | undefined)?.platform === "android") ? "phone" : "browser"}
         </p>
       ) : item.source === UPLOAD_MEETING_SOURCE && metadata?.status === "ok" && !audioKept ? (
         <p className="text-callout text-muted-foreground" data-testid="note-audio-missing">

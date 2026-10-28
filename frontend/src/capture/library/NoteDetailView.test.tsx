@@ -24,6 +24,7 @@ import { allDone, pipelineOf, signedOut, uploading, waitingForModel } from "@/ca
 import type { NotePipeline } from "@/lib/voiceNotes/notePipeline";
 import { SAVED_NOTE_COPY } from "./savedNote/savedNoteCopy";
 import { NoteDetailView, transcriptBlocks, transcriptStepLine, type NoteDetailViewProps } from "./NoteDetailView";
+import { TRANSCRIPT_FALLBACK_NOTE } from "./transcriptProvenanceCopy";
 
 const noop = () => {};
 const VOICE: LibraryItem = { id: "row-1", source: "exo-voice-note", sourceId: "rec-1", title: "Voice note · Oct 6, 9:28 AM", startedAt: "2026-10-06T09:28:00.000Z", durationSecs: 42 };
@@ -85,8 +86,8 @@ describe("NoteDetailView", () => {
   test("another device names the holding device and offers no broken player or Transcribe button", () => {
     const html = render({ audio: null, transcript: { status: "absent" }, transcription: transcription(),
       metadata: { status: "ok", metadata: { capture: { platform: "ios" }, audio: { stored: false, reason: "local_only", device: { platform: "ios" } } } } });
-    expect(html).toContain("Audio is on your iPhone");
-    expect(html).toContain("Transcribe on your iPhone");
+    expect(html).not.toContain("Audio is on your");
+    expect(html).not.toContain("Transcribe on your");
     expect(html).not.toContain('data-testid="transcribe-button"');
     expect(html).not.toContain("meeting-audio-player");
   });
@@ -324,7 +325,9 @@ describe("a voice note's transcription", () => {
         transcription: transcription({ maxSeconds: PRIVATE_CAP }),
       });
       expect(html).toContain('data-testid="voice-note-transcription-failed"');
-      expect(html).toContain("Private cloud couldn&#x27;t accept this recording&#x27;s length or size. Try again.");
+      expect(html).toContain(code === "recording_too_large"
+        ? "Your recording is saved, but it&#x27;s too large for private transcription. The audio is kept, so nothing is lost."
+        : "Your recording is saved, but it&#x27;s too long for private transcription. The audio is kept, so nothing is lost.");
       expect(html).toContain("Try again");
       expect(html).toContain('data-testid="transcribe-button"');
     }
@@ -562,7 +565,7 @@ describe("a voice note with an after-stop Whisper job on the Mac", () => {
     expect(withJob({ state: "queued" })).toContain("Waiting to transcribe on this Mac");
     // The counter sees the enabled path, so its silence outside the desktop app means something.
     expect(__desktopWhisperQueueReadsForTests()).toBeGreaterThan(before);
-    expect(withJob({ state: "transcribing", progress: 33 })).toContain("Transcribing on this Mac · 33%");
+    expect(withJob({ state: "transcribing", progress: 33 })).toContain("0 of 1 min");
     const failed = withJob({ state: "failed", error: "raw detail" });
     expect(failed).toContain('data-testid="whisper-job-retry"');
     expect(failed).not.toContain("raw detail");
@@ -681,7 +684,7 @@ describe("the transcript placeholder while the note's pipeline is not done", () 
 });
 
 const gap = { start: 41, end: 52, speaker_name: "Kenny Tucker" };
-test("meeting gaps appear inline in time order with subtle accessible provenance labels", () => {
+test("meeting gaps appear inline in time order, with one backup-transcriber note above the first line", () => {
   const html = render({ item: MEETING, metadata: { status: "ok", metadata: { partial: true, gaps: [gap] } },
     transcript: { status: "ok", sentences: [
       { index: 0, speaker_name: null, text: "Before gap.", start_time: 30, end_time: 40, source: "fallback" },
@@ -690,8 +693,10 @@ test("meeting gaps appear inline in time order with subtle accessible provenance
   expect(html).toContain("0:41–0:52 could not be transcribed — Kenny Tucker");
   expect(html.indexOf("Before gap.")).toBeLessThan(html.indexOf("0:41–0:52"));
   expect(html.indexOf("0:41–0:52")).toBeLessThan(html.indexOf("After gap."));
-  expect(html).toContain("Fallback transcript");
-  expect(html).toContain("Recovered from recording");
+  expect(html.split(TRANSCRIPT_FALLBACK_NOTE).length - 1).toBe(1);
+  expect(html.indexOf(TRANSCRIPT_FALLBACK_NOTE)).toBeLessThan(html.indexOf("Before gap."));
+  expect(html).not.toContain("Fallback transcript");
+  expect(html).not.toContain("Recovered from recording");
 });
 
 test("completed gaps-only meeting shows gaps instead of the empty state, omitting null speakers", () => {
@@ -708,6 +713,26 @@ test("legacy meeting transcript has no gap or provenance additions", () => {
   ] } });
   expect(html).toContain("Legacy words.");
   expect(html).not.toContain('data-testid="transcript-gap"');
-  expect(html).not.toContain("Fallback transcript");
-  expect(html).not.toContain("Recovered from recording");
+  expect(html).not.toContain(TRANSCRIPT_FALLBACK_NOTE);
+  expect(html).not.toContain('data-testid="transcript-provenance-note"');
+});
+
+test("a failed Mac Whisper job shows its Retry in the Transcript slot, from the real pipeline job", () => {
+  const pipeline = pipelineOf({
+    route: "on-device",
+    space: { saved: true, pending: null, lane: { busy: false, depth: 0 } },
+    transcript: { inSpace: null, cloud: null, onDevice: { stt: { state: "failed", error: "decoder" }, queue: null, model: null, download: "idle", sync: null } },
+  });
+  const view = { pipeline, route: "on-device" as const, onAction: noop, actionError: null };
+  const html = renderToStaticMarkup(
+    <NotePipelineContext.Provider value={view}>
+      <MemoryRouter><NoteDetailView item={VOICE} listStatus="ready"
+        metadata={{ status: "ok", metadata: { audio: { stored: true }, capture: { platform: "tauri" } } }}
+        transcript={{ status: "absent" }} audio={audio} activityView={view} platform="tauri"
+        copyState="idle" onCopy={noop} onRetry={noop} pushed onBack={noop} /></MemoryRouter>
+    </NotePipelineContext.Provider>,
+  );
+  expect(html).toContain('data-testid="transcription-status"');
+  expect(html).toContain("Couldn&#x27;t transcribe on ");
+  expect(html).toMatch(/data-testid="transcription-status-action"[^>]*>Try again</);
 });

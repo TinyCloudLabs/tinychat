@@ -54,6 +54,7 @@ fn main() {
             "delete_audio_file",
             "recorder_start",
             "recorder_pause",
+            "recorder_set_max_duration",
             "recorder_resume",
             "recorder_stop",
             "recorder_stop_durable",

@@ -25,10 +25,12 @@ import { captureScreens, captureSoftScreens } from "./screens/capture";
 import { combineScreens } from "./screens/combine";
 import { capturePipelineScreens } from "./screens/capturePipeline";
 import { activityScreens } from "./screens/activity";
+import { transcriptionStatusScreens } from "./screens/transcriptionStatus";
 import { captureHomeDesktopScreens } from "./screens/captureHomeDesktop";
 import { captureSettingsScreens } from "./screens/captureSettings";
 import { legacyScreens } from "./screens/legacy";
 import { libraryScreens } from "./screens/library";
+import { wordFixesScreens } from "./screens/wordFixes";
 import { localScreens } from "./screens/local";
 import { meetingSourcesScreens } from "./screens/meetingSources";
 import { meetingSourcesGmeetScreens } from "./screens/meetingSourcesGmeet";
@@ -47,6 +49,7 @@ import { recorderFinalPhoneInteractiveScreens } from "./screens/recorderFinalPho
 import { savedNoteScreens } from "./screens/savedNote";
 import { sheetsScreens } from "./screens/sheets";
 import { shellScreens } from "./screens/shell";
+import { homeScreens } from "./screens/home";
 import { waitUntilReady } from "./readiness";
 import { FROZEN_NOW, freezeClock } from "./stubs";
 
@@ -62,6 +65,7 @@ const SCREENS: HarnessScreen[] = [
   ...primitivesScreens,
   ...legacyScreens,
   ...shellScreens,
+  ...homeScreens,
   ...sheetsScreens,
   ...recorderScreens,
   recorderFinalHaloScreen,
@@ -74,9 +78,11 @@ const SCREENS: HarnessScreen[] = [
   ...captureSoftScreens,
   ...capturePipelineScreens,
   ...activityScreens,
+  ...transcriptionStatusScreens,
   ...captureHomeDesktopScreens,
   ...captureSettingsScreens,
   ...libraryScreens,
+  ...wordFixesScreens,
   ...combineScreens,
   ...savedNoteScreens,
   ...localScreens,

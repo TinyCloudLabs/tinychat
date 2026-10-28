@@ -80,10 +80,10 @@ const manifest: Manifest = {
     { service: "tinycloud.encryption", path: `urn:tinycloud:encryption:did:pkh:eip155:1:${ownerAddress}:default`, actions: ["network.create"] },
   ],
 };
-const owner = new TinyCloudNode({ privateKey: ownerKey, host, prefix: "probe.cas.owner", autoCreateSpace: true, manifest });
+const owner = new TinyCloudNode({ privateKey: ownerKey, host, prefix: "probe.cas.owner", autoCreateSpace: true, manifest, includeAccountRegistryPermissions: false });
 const backendKey = generatePrivateKey();
 const backendDid = `did:pkh:eip155:1:${privateKeyToAccount(backendKey).address.toLowerCase()}`;
-const backend = new TinyCloudNode({ privateKey: backendKey, host, prefix: "probe.cas.backend", autoCreateSpace: false });
+const backend = new TinyCloudNode({ privateKey: backendKey, host, prefix: "probe.cas.backend", autoCreateSpace: false, includeAccountRegistryPermissions: false });
 
 // Cleanup closures, so each key is deleted through the same handle that wrote it.
 const written: Array<{ label: string; remove: () => Promise<unknown> }> = [];

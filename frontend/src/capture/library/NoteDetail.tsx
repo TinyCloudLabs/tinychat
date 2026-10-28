@@ -27,6 +27,7 @@ import { useCombineFlow } from "./combine/useCombineFlow";
 import { useCombinedMeeting } from "./combine/useCombinedMeeting";
 import { useCombinedSummary } from "./combine/useCombinedSummary";
 import type { SummaryRunner } from "@/lib/meetingSummary/summaryRunner";
+import { useWordFixApplier, useWordFixedSentences } from "@/lib/wordFixes/wordFixesStore";
 import { hasPrivateCloudTimingProvenance, hasSegmentTimes, transcriptWithTimestamps } from "./transcriptSegments";
 import type { Library } from "./useLibrary";
 import { notePath } from "@/shell/routes";
@@ -78,12 +79,14 @@ export function NoteDetail(props: {
   const combine = useMemo<CombineDetail | undefined>(() => {
     if (item === null) return undefined;
     if (isCombined(item)) {
-      const members = memberLines(displayMembers(reads.metadata?.status === "ok" ? reads.metadata.metadata : null), library.items);
-      const [a, b] = members.map((m) => library.items.find((entry) => entry.source === m.source && entry.sourceId === m.sourceId));
+      // Sources are resolved from EVERY row: the list hides them, but they are still here to open.
+      const members = memberLines(displayMembers(reads.metadata?.status === "ok" ? reads.metadata.metadata : null), library.all);
+      const [a, b] = members.map((m) => library.all.find((entry) => entry.source === m.source && entry.sourceId === m.sourceId));
       return { combined: { members, stale: combined.stale, onRecombine: members.length === 2 && a && b ? () => flow.open(a, b) : undefined, onDelete: combined.remove.request, summary: summary.view, onRetrySummary: summary.retry } };
     }
-    return canCombine(item) ? { onCombine: () => flow.open(item) } : undefined;
-  }, [item, reads.metadata, library.items, combined.stale, combined.remove.request, summary.view, summary.retry, flow.open]);
+    // A source that is already a member of a combined meeting is not combined again.
+    return canCombine(item) && !library.isCombinedMember(item) ? { onCombine: () => flow.open(item) } : undefined;
+  }, [item, reads.metadata, library.all, library.isCombinedMember, combined.stale, combined.remove.request, summary.view, summary.retry, flow.open]);
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [local, setLocal] = useState<{ id: string; transcript: LocalTranscript | null; readError: "timeout" | "failed" | null } | null>(null);
@@ -117,7 +120,7 @@ export function NoteDetail(props: {
 
   const selectedTranscript = reads.transcript;
   const remoteTranscript = selectedTranscript?.transcript;
-  const sentences = useMemo(
+  const storedSentences = useMemo(
     () => {
       if (remoteTranscript?.status === "ok" && remoteTranscript.sentences.length > 0) return remoteTranscript.sentences;
       if (reads.metadata?.status === "ok" && reads.metadata.metadata.transcription_outcome === "no_speech") return null;
@@ -126,6 +129,9 @@ export function NoteDetail(props: {
     },
     [remoteTranscript, reads.metadata, local, localId],
   );
+  // The copy actions carry the user's word fixes (TC-2199), as the page shows them.
+  const sentences = useWordFixedSentences(storedSentences);
+  const applyWordFixes = useWordFixApplier();
   const isPrivateCloud = remoteTranscript?.status === "ok" && remoteTranscript.sentences.length > 0
     && hasPrivateCloudTimingProvenance(
       reads.metadata?.status === "ok" ? reads.metadata.metadata : null,
@@ -134,7 +140,7 @@ export function NoteDetail(props: {
   const onCopy = useCallback(async (withTimestamps = false) => {
     const pasted = item?.metadata?.capture === "pasted" && reads.metadata?.status === "ok"
       ? reads.metadata.metadata.transcript_text : null;
-    const text = typeof pasted === "string" ? pasted : sentences && (withTimestamps && hasSegmentTimes(sentences, isPrivateCloud)
+    const text = typeof pasted === "string" ? applyWordFixes(pasted) : sentences && (withTimestamps && hasSegmentTimes(sentences, isPrivateCloud)
       ? transcriptWithTimestamps(sentences, isPrivateCloud) : transcriptCopyText(sentences));
     if (!text) return;
     const ok = await copyText(text);
@@ -145,7 +151,7 @@ export function NoteDetail(props: {
       timer.current = null;
       setCopyState("idle");
     }, COPIED_DURATION);
-  }, [sentences, isPrivateCloud, item, reads.metadata]);
+  }, [sentences, applyWordFixes, isPrivateCloud, item, reads.metadata]);
 
   return (
     <>
@@ -174,6 +180,7 @@ export function NoteDetail(props: {
         activityControl={props.activityControl}
         combine={combine}
       />
+      {/* The visible list: a capture already inside a combined meeting is never offered for a new combine. */}
       <CombineSheet flow={flow} items={library.items} now={new Date()} />
       {combined.remove.open && <DeleteCombinedSheet remove={combined.remove} title={item?.title ?? "Combined meeting"} />}
     </>

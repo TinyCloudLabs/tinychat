@@ -26,6 +26,7 @@ const storageDialogApi = await import("../src/chat/StorageFullDialog");
 let nativeMode = false;
 let loginAddress = "0x00000000000000000000000000000000000000a1";
 let signInCalls = 0;
+let lastSignInConfig: Record<string, unknown> | null = null;
 let verifyCalls = 0;
 let signOutStarted: (() => void) | null = null;
 let releaseSignOut: (() => void) | null = null;
@@ -39,9 +40,10 @@ mock.module("@tinyboilerplate/client", () => ({
   ...clientApi,
   connectWallet: async () => ({ address: loginAddress, openkey: {}, web3Provider: {} }),
   requestNonce: async () => "nonce",
-  loadAppManifest: async () => ({}),
-  createAndSignIn: async () => {
+  loadAppManifest: async () => ({ manifest_version: 1, app_id: "chat.tinycloud.tinychat" }),
+  createAndSignIn: async (_provider: unknown, config: Record<string, unknown>) => {
     signInCalls++;
+    lastSignInConfig = config;
     return { tcw: fakeTcw(loginAddress), session: { siwe: "message", signature: "signature" } };
   },
   verifySession: async () => {
@@ -175,6 +177,12 @@ test("browser sign-in mounts the workspace; committed A sign-out clears storage 
   expect(signInCalls).toBe(1);
   expect(verifyCalls).toBe(1);
   expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeTruthy();
+  // One-click flow: no OpenKey authorize mode, and no app-key grants in the signed manifest.
+  const config = lastSignInConfig as unknown as { openkey?: { mode?: unknown }; manifest: Record<string, unknown> };
+  expect(config.openkey?.mode).toBeUndefined();
+  expect(JSON.stringify(config)).not.toContain("iframe");
+  expect("keys" in config.manifest).toBe(false);
+  expect("keys_app_id" in config.manifest).toBe(false);
 
   let started!: () => void;
   const startedPromise = new Promise<void>((resolve) => { started = resolve; });

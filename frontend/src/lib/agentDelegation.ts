@@ -17,9 +17,10 @@
 // breaks non-DOM consumers (including bun tests); a second node-sdk import
 // also double-defines web-sdk's custom element in the browser. The dynamic import
 // reuses the already-loaded browser copy only when the real courier needs it.
-import type { Delegation, Manifest, PermissionEntry, PortableDelegation, TinyCloudWeb } from "@tinycloud/web-sdk";
+import type { Config as TinyCloudWebSdkConfig, Delegation, Manifest, PermissionEntry, PortableDelegation, TinyCloudWeb } from "@tinycloud/web-sdk";
 import type { ConnectWalletResult } from "@tinyboilerplate/client";
 import { openkeyPasskeysSupported } from "./openkeyPasskeys.js";
+import { sdkUiPlatform } from "./platform";
 import { SESSION_EXPIRATION_MS } from "@tinyboilerplate/core";
 import { localValidationEnabled, prepareLocalSignIn } from "./localValidation";
 
@@ -81,6 +82,21 @@ export const AGENT_CONSENT_MANIFEST: Manifest = {
     ...TRANSCRIPT_PERMISSIONS,
   ],
 };
+
+/**
+ * Consent session for the MCP grant: transcript access only. It never asks for the memory database, because the MCP
+ * takes exactly SQL read and KV get/list on the connectors data and nothing else.
+ */
+export const MCP_CONSENT_MANIFEST: Manifest = {
+  ...AGENT_CONSENT_MANIFEST,
+  description: "Authorize TinyCloud Chat to read your meeting transcripts.",
+  permissions: [...TRANSCRIPT_PERMISSIONS],
+};
+
+/** The grant handed to the backend for an MCP account: one serialized delegation to the MCP service DID. */
+export interface McpSessionGrant {
+  mcp: { delegation: string };
+}
 
 export interface AgentSessionEnvelope {
   version: 2;
@@ -306,6 +322,31 @@ async function connectSessionOwner(options: FreshSignInMintOptions): Promise<Con
 }
 
 /**
+ * Config for the short-lived TinyCloudWeb of a fresh-sign-in mint. `ui.button: false`: these
+ * throwaway instances must never draw the SDK's floating button (TC-2130).
+ */
+export function ephemeralAgentSdkConfig(input: {
+  web3Provider: ConnectWalletResult["web3Provider"];
+  sessionStorage: TinyCloudWebSdkConfig["sessionStorage"];
+  tinycloudHosts?: string[];
+  /** Consent manifest for the isolated session; defaults to the private-agent manifest. */
+  manifest?: Manifest;
+  /** Panel layout; defaults to this device's. */
+  uiPlatform?: "native" | "web";
+}): TinyCloudWebSdkConfig {
+  return {
+    providers: { web3: { driver: input.web3Provider } },
+    includeAccountRegistryPermissions: false,
+    ...(localValidationEnabled() ? { autoCreateSpace: false } : {}),
+    ...(input.tinycloudHosts ? { tinycloudHosts: input.tinycloudHosts } : {}),
+    manifest: input.manifest ?? AGENT_CONSENT_MANIFEST,
+    sessionStorage: input.sessionStorage,
+    sessionExpirationMs: SESSION_EXPIRATION_MS,
+    ui: { button: false, platform: input.uiPlatform ?? sdkUiPlatform() },
+  };
+}
+
+/**
  * Mint via a FRESH, isolated sign-in — the live-proven `delegate-ui` flow.
  *
  * WHY: the app's own session signs in with the app manifest (tinycloud.kv on the
@@ -355,14 +396,7 @@ export async function mintAgentDelegationViaFreshSignIn(
   // The isolated session asks for the exact memory + transcript permissions it
   // must sub-delegate. Without this manifest, the SDK's generic default recap
   // does not cover the transcript resources and delegateTo() fails closed.
-  const tcw = new TinyCloudWeb({
-    providers: { web3: { driver: web3Provider } },
-    ...(localValidationEnabled() ? { autoCreateSpace: false } : {}),
-    ...(options.tinycloudHosts ? { tinycloudHosts: options.tinycloudHosts } : {}),
-    manifest: AGENT_CONSENT_MANIFEST,
-    sessionStorage: new BrowserSessionStorage({ storage: ephemeralStorage }),
-    sessionExpirationMs: SESSION_EXPIRATION_MS,
-  });
+  const tcw = new TinyCloudWeb(ephemeralAgentSdkConfig({ web3Provider, sessionStorage: new BrowserSessionStorage({ storage: ephemeralStorage }), tinycloudHosts: options.tinycloudHosts }));
 
   try {
     if (localValidationEnabled()) await prepareLocalSignIn(tcw);
@@ -384,20 +418,43 @@ export async function mintAgentDelegationViaFreshSignIn(
   }
 }
 
-/** Fresh sign-in variant that mints both independently scoped grants in one ceremony. */
-export async function mintAgentSessionViaFreshSignIn(
-  options: FreshSignInMintOptions & { roomId?: string },
-): Promise<AgentSessionEnvelope> {
+/** Open an isolated passkey sign-in, run `mint` against it, and always tear it down in memory. */
+async function withFreshSignIn<T>(options: FreshSignInMintOptions, manifest: Manifest, mint: (tcw: TinyCloudWeb) => Promise<T>): Promise<T> {
   const web3Provider = await connectSessionOwner(options);
   const { TinyCloudWeb, BrowserSessionStorage } = await import("@tinycloud/web-sdk");
   const memory = new Map<string, string>();
   const storage: Storage = { get length() { return memory.size; }, clear: () => memory.clear(), getItem: (k) => memory.get(k) ?? null, key: (i) => Array.from(memory.keys())[i] ?? null, removeItem: (k) => { memory.delete(k); }, setItem: (k, v) => { memory.set(k, String(v)); } };
-  const tcw = new TinyCloudWeb({ providers: { web3: { driver: web3Provider } }, ...(localValidationEnabled() ? { autoCreateSpace: false } : {}), ...(options.tinycloudHosts ? { tinycloudHosts: options.tinycloudHosts } : {}), manifest: AGENT_CONSENT_MANIFEST, sessionStorage: new BrowserSessionStorage({ storage }), sessionExpirationMs: SESSION_EXPIRATION_MS });
+  const tcw = new TinyCloudWeb(ephemeralAgentSdkConfig({ web3Provider, sessionStorage: new BrowserSessionStorage({ storage }), tinycloudHosts: options.tinycloudHosts, manifest }));
   try {
     if (localValidationEnabled()) await prepareLocalSignIn(tcw);
     await tcw.signIn();
-    return await mintAgentSessionDelegations(tcw, { delegateDID: options.delegateDID, host: options.tinycloudHosts?.[0], expiryMs: options.expiryMs, roomId: options.roomId });
+    return await mint(tcw);
   } finally { try { tcw.cleanup?.(); } catch { /* best effort */ } }
+}
+
+/** Fresh sign-in variant that mints both independently scoped grants in one ceremony. */
+export async function mintAgentSessionViaFreshSignIn(
+  options: FreshSignInMintOptions & { roomId?: string },
+): Promise<AgentSessionEnvelope> {
+  return withFreshSignIn(options, AGENT_CONSENT_MANIFEST, tcw =>
+    mintAgentSessionDelegations(tcw, { delegateDID: options.delegateDID, host: options.tinycloudHosts?.[0], expiryMs: options.expiryMs, roomId: options.roomId }));
+}
+
+/** Fresh sign-in variant for an MCP account: one transcript-only grant to the MCP service DID. */
+export async function mintMcpSessionViaFreshSignIn(
+  options: FreshSignInMintOptions & { serviceDid: string },
+): Promise<McpSessionGrant> {
+  return withFreshSignIn(options, MCP_CONSENT_MANIFEST, tcw =>
+    mintMcpSessionDelegation(tcw, options.serviceDid, { host: options.tinycloudHosts?.[0], expiryMs: options.expiryMs }));
+}
+
+/** Mint the single grant the MCP accepts: SQL read and KV get/list on the connectors data, delegated to its service DID. */
+export async function mintMcpSessionDelegation(
+  tcw: TinyCloudWeb,
+  serviceDid: string,
+  options: Pick<MintAgentDelegationOptions, "host" | "expiryMs"> = {},
+): Promise<McpSessionGrant> {
+  return { mcp: { delegation: await mintTranscriptDelegation(tcw, { delegateDID: serviceDid, ...options }) } };
 }
 
 export interface EnsureAgentSessionDeps {
@@ -415,7 +472,7 @@ export interface EnsureAgentSessionDeps {
   /** Called only after both mints succeed, immediately before server replacement. */
   beforeReplace?: () => void;
   /** Test-only seam: override the mint step (defaults to mintAgentDelegation). */
-  _mint?: (tcw: TinyCloudWeb) => Promise<string | AgentSessionEnvelope>;
+  _mint?: (tcw: TinyCloudWeb, snapshot?: AgentSessionSnapshot) => Promise<string | AgentSessionEnvelope | McpSessionGrant>;
 }
 
 export type AgentSessionStatus = "active" | "expired" | "stale" | "none";
@@ -438,6 +495,8 @@ export interface AgentSessionSnapshot {
   status?: AgentSessionStatus;
   transcriptStatus?: AgentSessionStatus;
   revision?: string;
+  /** Present for an account served by the MCP: the service DID the grant must be delegated to. */
+  mcp?: { serviceDid: string };
 }
 
 export function isActiveAgentBundle(body: AgentSessionSnapshot): boolean {
@@ -488,8 +547,10 @@ export async function ensureAgentSession(
   const revision = before.revision;
 
   // Mint (interactive passkey) + courier.
-  const mint = deps._mint ?? ((tcw: TinyCloudWeb) => mintAgentSessionDelegations(tcw, { delegateDID: deps.delegateDID, roomId: deps.roomId }));
-  const minted = await mint(deps.tcw);
+  const mint = deps._mint ?? ((tcw: TinyCloudWeb) => before.mcp?.serviceDid
+    ? mintMcpSessionDelegation(tcw, before.mcp.serviceDid)
+    : mintAgentSessionDelegations(tcw, { delegateDID: deps.delegateDID, roomId: deps.roomId }));
+  const minted = await mint(deps.tcw, before);
   assertCurrent();
   deps.beforeReplace?.();
   const res = await fetch(`${base}/api/agent/session`, {
@@ -497,7 +558,9 @@ export async function ensureAgentSession(
     headers: authHeaders(token),
     body: JSON.stringify(typeof minted === "string"
       ? { revision, serialized: minted, ...(deps.roomId ? { roomId: deps.roomId } : {}) }
-      : { revision, session: minted, ...(deps.roomId ? { roomId: deps.roomId } : {}) }),
+      : "mcp" in minted
+        ? { revision, mcp: minted.mcp }
+        : { revision, session: minted, ...(deps.roomId ? { roomId: deps.roomId } : {}) }),
   });
 
   if (!res.ok) {

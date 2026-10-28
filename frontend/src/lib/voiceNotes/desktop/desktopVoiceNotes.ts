@@ -3,7 +3,7 @@ import type { PluginListenerHandle } from "@capacitor/core";
 import type {
   AudioInput, CaptureOptions, CaptureStatus, LevelEvent, MicStateEvent, MissingAudioSpan, VoiceNoteRecording, VoiceNotesPlugin,
 } from "../nativeVoiceNotes";
-import { VOICE_NOTE_MAX_DURATION_MS, VOICE_NOTE_MIN_DURATION_LIMIT_MS } from "../nativeVoiceNotes";
+import { VOICE_NOTE_MAX_DURATION_MS, VOICE_NOTE_MIN_DURATION_LIMIT_MS, VOICE_NOTE_SAFETY_CAP_MS } from "../nativeVoiceNotes";
 import { notifyCaptureCapabilitiesChanged, registerCaptureEngine, type CaptureCapabilities, type CaptureEngine } from "../captureEngine";
 import { refreshEffectiveTranscriber } from "../transcriberPreference";
 import { registerDesktopCaptureExtras } from "../desktopCaptureExtras";
@@ -19,6 +19,8 @@ import { failure, memoryLocks, recordingFromSession, RECORDING_LOCK, sessionLock
 type EventName = "micState" | "level" | "autoStopped" | "committed" | "recovered" | "recoveryFailed" | "audioUploadProgress"
   | "writeFailure" | "inputs" | "captureAlert" | "presentRecorder";
 type Listener = (event: never) => void;
+const clampLimitMs = (requested: number | undefined): number =>
+  Math.min(VOICE_NOTE_SAFETY_CAP_MS, Math.max(VOICE_NOTE_MIN_DURATION_LIMIT_MS, requested ?? VOICE_NOTE_MAX_DURATION_MS));
 type NativeStatus = Omit<CaptureStatus, "spans" | "openSpan" | "transitionGen"> & {
   at: number; elapsedAt: number; spans?: MissingAudioSpan[] };
 type NativeDiscardResult = { result: "retired"; status: NativeStatus } | { result: "not_current" };
@@ -625,8 +627,7 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
           const releaseSession = await store.locks.hold(sessionLock(id));
           if (!releaseSession) throw failure("session_locked");
           releases.push(releaseSession);
-          const maxDurationMs = Math.min(VOICE_NOTE_MAX_DURATION_MS,
-            Math.max(VOICE_NOTE_MIN_DURATION_LIMIT_MS, startOptions?.maxDurationMs ?? VOICE_NOTE_MAX_DURATION_MS));
+          const maxDurationMs = clampLimitMs(startOptions?.maxDurationMs);
           const inputState = await bridge.invoke<{ inputs: AudioInput[]; activeId: string | null }>("recorder_list_inputs");
           const input = inputState.inputs.find((candidate) => candidate.id === inputState.activeId) ?? null;
           const session = await store.beginSession({ id, startedAt: now(), source: "in_app",
@@ -656,6 +657,17 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
             "Could not stop capture after its metadata write failed", { cause: error });
           throw error;
         }
+      });
+    },
+    async setMaxDuration({ maxDurationMs: requested }) {
+      return run(async () => {
+        if (!live) throw failure("no_recording");
+        const maxDurationMs = clampLimitMs(requested);
+        const native = await bridge.invoke<NativeStatus>("recorder_set_max_duration", { maxDurationMs });
+        const limit = native.maxDurationMs ?? maxDurationMs;
+        live.session.maxDurationMs = limit;
+        await store.updateSession(live.session.id, { maxDurationMs: limit });
+        return { maxDurationMs: limit };
       });
     },
     async stop() {

@@ -1104,6 +1104,32 @@ describe("TC-581 shared capture across tenants", () => {
     expect(await f.index.list(B)).toEqual([]);
   });
 
+  // BOT_IN_CALL is the only gate on B's own POST: a live owner status must make B attach, not send.
+  for (const ptxStatus of ["queued", "joining", "waiting_for_admission", "needs_help", "in_progress"] as const) {
+    test(`an owner in ${ptxStatus} holds the call: B makes zero POSTs and waits as shared_capture_pending`, async () => {
+      const f = await twoTenants();
+      await f.worker().tick();
+      expect(f.posts.map(p => p.tenant)).toEqual([A]);
+      f.meeting().status = ptxStatus;
+      await f.connectB();
+      await f.worker().tick();
+      expect(f.posts.map(p => p.tenant)).toEqual([A]);
+      expect(await f.rowB()).toMatchObject({ phase: "pending", errorCode: "shared_capture_pending" });
+      expect((await f.rowB())?.sharedCapture?.ownerTenant).toBe(A);
+      expect(await f.index.list(B)).toEqual([]);
+    });
+  }
+
+  test("a completed owner does not hold the call: B's own POST goes out", async () => {
+    const f = await twoTenants();
+    await f.worker().tick();
+    f.meeting().status = "completed";
+    await f.connectB();
+    await f.worker().tick();
+    expect(f.posts.map(p => p.tenant)).toEqual([A, B]);
+    expect((await f.rowB())?.sharedCapture).toBeUndefined();
+  });
+
   test("A completes with B accepted: B's index gets A's id and provenance, disposition shared, marker written, rescan keeps it", async () => {
     const f = await twoTenants();
     await f.attach();
