@@ -61,15 +61,7 @@ export function UploadSheet({ open, onOpenChange, tcw, backendUrl, sessionStore 
         <ResponsiveSheetBody>
           <div className="flex flex-col gap-4">
             <Button type="button" variant="ghost" onClick={() => setChoice("pick")} className="self-start">Back</Button>
-            <label className="flex flex-col gap-1 text-callout">Title (optional)
-              <input className="rounded-md border bg-background px-3 py-2" value={title} onChange={(event) => setTitle(event.target.value)} maxLength={200} />
-            </label>
-            <label className="flex flex-col gap-1 text-callout">Date (optional)
-              <input type="date" className="rounded-md border bg-background px-3 py-2" value={date} onChange={(event) => setDate(event.target.value)} />
-            </label>
-            <label className="flex flex-col gap-1 text-callout">Transcript
-              <textarea className="min-h-64 resize-y rounded-md border bg-background px-3 py-2" value={text} onChange={(event) => setText(event.target.value)} placeholder="Paste plain text, Speaker: lines, or [mm:ss] timestamps" data-testid="paste-transcript-text" />
-            </label>
+            <PasteTranscriptFields title={title} date={date} text={text} onTitle={setTitle} onDate={setDate} onText={setText} />
             <p className="text-meta text-muted-foreground">Plain text, speaker lines, or timestamps · maximum {PASTED_TRANSCRIPT_MAX_BYTES / 1_000_000} MB</p>
             {problem && text.trim() && <p role="alert" className="text-meta text-destructive">{problem}</p>}
             {error && <p role="alert" className="text-meta text-destructive">{error}</p>}
@@ -79,4 +71,30 @@ export function UploadSheet({ open, onOpenChange, tcw, backendUrl, sessionStore 
       </>}
     </ResponsiveSheet>
   );
+}
+
+// 16px text on touch fields: a smaller field makes iOS zoom the page when it
+// takes focus, and the zoom stays after it loses focus (the composer, the
+// notetaker form, the moment field and the note writer follow the same rule).
+const FIELD = "rounded-md border bg-background px-3 py-2 text-body outline-none fine:text-callout";
+
+function PasteTranscriptFields(props: {
+  title: string;
+  date: string;
+  text: string;
+  onTitle: (value: string) => void;
+  onDate: (value: string) => void;
+  onText: (value: string) => void;
+}) {
+  return <>
+    <label className="flex flex-col gap-1 text-callout">Title (optional)
+      <input className={FIELD} value={props.title} onChange={(event) => props.onTitle(event.target.value)} maxLength={200} />
+    </label>
+    <label className="flex flex-col gap-1 text-callout">Date (optional)
+      <input type="date" className={FIELD} value={props.date} onChange={(event) => props.onDate(event.target.value)} />
+    </label>
+    <label className="flex flex-col gap-1 text-callout">Transcript
+      <textarea className={`min-h-64 resize-y ${FIELD}`} value={props.text} onChange={(event) => props.onText(event.target.value)} placeholder="Paste plain text, Speaker: lines, or [mm:ss] timestamps" data-testid="paste-transcript-text" />
+    </label>
+  </>;
 }
