@@ -2,8 +2,8 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { readableError } from "@/lib/readableError";
 import { storageScopeFor, trackStorageWrites } from "@/lib/storageStatus";
 import { deviceName } from "@/lib/platform";
+import { setSetting } from "@/lib/threadStore";
 import { autoMeetingTitle } from "@/lib/meetingTitle";
-import { transcriptionModelLabel } from "@/lib/transcriptionModelLabel";
 import type { FirefliesSentence } from "../connectors/firefliesClient";
 import { CONNECTORS_KV_PREFIX, CONNECTORS_SQL_DB_NAME, ensureSchema, transcriptKvKey } from "../connectors/connectorStore";
 import { runOnSpaceLane, SpaceLaneQueueWaitTimeout, spaceLaneAbandonedSqlCalls, spaceLaneSnapshot, subscribeSpaceLane } from "../spaceWriteLane";
@@ -500,8 +500,7 @@ export async function commitVoiceNoteTranscript(
         new Date().toISOString(), live.id], checkpoint);
     if (live) {
       const [startedRow] = await query(tcw, "SELECT started_at FROM connector_meeting WHERE id = ?", [live.id], checkpoint);
-      const title = autoMeetingTitle({ startedAt: startedRow?.[0], modelLabel: transcriptionModelLabel(input.model),
-        participantNames: input.participants });
+      const title = autoMeetingTitle({ startedAt: startedRow?.[0], participantNames: input.participants });
       // Rename only while the title is still the one the insert wrote; an edited title is kept.
       if (title) await execute(tcw, "UPDATE connector_meeting SET title = ?, metadata = json_remove(metadata, '$.title_auto') WHERE id = ? AND source = 'exo-voice-note' AND title = json_extract(metadata, '$.title_auto')",
         [title, live.id], checkpoint);
@@ -541,4 +540,9 @@ export async function patchRowSpeakerNames(tcw: TinyCloudWeb, rowId: string, nam
     : await execute(tcw, `UPDATE connector_meeting SET metadata = json_set(${base}, '$.speaker_names', json(?)), updated_at = ? WHERE id = ?`,
       [JSON.stringify(names), new Date().toISOString(), rowId], checkpoint);
   if (changes === 0) throw new Error("The note's row is missing");
+}
+
+/** Saves one cross-device setting (the `settings` table) on the space write lane, behind any save already waiting on it (TC-2199). */
+export function writeUserSetting(tcw: TinyCloudWeb, key: string, value: string): Promise<void> {
+  return runOnSpaceLane(() => setSetting(tcw, key, value), { operation: `SQL execute: settings ${key}`, timeoutMs: 30_000 });
 }

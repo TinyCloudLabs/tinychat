@@ -25,11 +25,13 @@ import { captureScreens, captureSoftScreens } from "./screens/capture";
 import { combineScreens } from "./screens/combine";
 import { capturePipelineScreens } from "./screens/capturePipeline";
 import { activityScreens } from "./screens/activity";
+import { transcriptionStatusScreens } from "./screens/transcriptionStatus";
 import { captureHomeDesktopScreens } from "./screens/captureHomeDesktop";
 import { captureSettingsScreens } from "./screens/captureSettings";
 import { legacyScreens } from "./screens/legacy";
 import { libraryScreens } from "./screens/library";
 import { speakerNameScreens } from "./screens/speakerNames";
+import { wordFixesScreens } from "./screens/wordFixes";
 import { localScreens } from "./screens/local";
 import { meetingSourcesScreens } from "./screens/meetingSources";
 import { meetingSourcesGmeetScreens } from "./screens/meetingSourcesGmeet";
@@ -77,10 +79,12 @@ const SCREENS: HarnessScreen[] = [
   ...captureSoftScreens,
   ...capturePipelineScreens,
   ...activityScreens,
+  ...transcriptionStatusScreens,
   ...captureHomeDesktopScreens,
   ...captureSettingsScreens,
   ...libraryScreens,
   ...speakerNameScreens,
+  ...wordFixesScreens,
   ...combineScreens,
   ...savedNoteScreens,
   ...localScreens,

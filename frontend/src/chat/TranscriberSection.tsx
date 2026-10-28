@@ -10,6 +10,7 @@
 // vault, no key: a session token and the backend URL are the only inputs.
 
 import { useCallback, useEffect, useMemo, useRef, useState, type FC, type FormEvent } from "react";
+import { useWordFixApplier } from "@/lib/wordFixes/wordFixesStore";
 import type { SessionStore } from "@tinyboilerplate/client";
 import { meetingLinkFromInput } from "@tinyboilerplate/core";
 import { Loader2Icon, RefreshCwIcon } from "lucide-react";
@@ -597,6 +598,7 @@ function CaptureDetails({ meeting }: { meeting: TranscriberMeeting }) {
 }
 
 function TranscriptPanel({ open }: { open: OpenTranscriptState }) {
+  const applyWordFixes = useWordFixApplier();
   const segments = open.transcript?.segments ?? [];
   return (
     <div className="mt-2 rounded-md border border-border bg-muted/40 p-3">
@@ -643,13 +645,13 @@ function TranscriptPanel({ open }: { open: OpenTranscriptState }) {
                       <span className="font-medium">{segment.attribution === "overlap" ? "Overlapping speech"
                         : segment.attribution === "unknown" ? "Unknown speaker" : segment.speaker_name}: </span>
                     )}
-                    <span className="whitespace-pre-wrap">{segment.text}</span>
+                    <span className="whitespace-pre-wrap">{applyWordFixes(segment.text)}</span>
                   </span>
                 </li>
               ))}
             </ol>
           ) : open.transcript.text ? (
-            <p className="max-h-80 overflow-y-auto whitespace-pre-wrap text-xs">{open.transcript.text}</p>
+            <p className="max-h-80 overflow-y-auto whitespace-pre-wrap text-xs">{applyWordFixes(open.transcript.text)}</p>
           ) : (
             <p className="text-xs text-muted-foreground">The transcript is empty.</p>
           )}

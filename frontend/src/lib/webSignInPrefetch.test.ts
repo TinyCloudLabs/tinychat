@@ -11,9 +11,9 @@ describe("web sign-in prefetch", () => {
     const calls: string[] = [];
     const attempt = createWebSignInPrefetch(backend, {
       requestNonce: async (_url, owner) => { calls.push(`nonce:${owner ?? "unbound"}`); return "prefetched"; },
-      loadManifest: async () => { calls.push("manifest"); return manifest; },
+      loadManifest: async (url) => { calls.push(`manifest:${url}`); return manifest; },
     });
-    expect(calls).toEqual(["nonce:unbound", "manifest"]);
+    expect(calls).toEqual(["nonce:unbound", `manifest:${backend}/api/manifest`]);
     connect.resolve();
     expect(await connect.promise.then(() => attempt.manifest())).toEqual(manifest);
     // The connection's completion does not cause a second manifest request.

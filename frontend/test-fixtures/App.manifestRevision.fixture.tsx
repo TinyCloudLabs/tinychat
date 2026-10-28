@@ -10,13 +10,12 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
-import { pkhDid } from "@tinycloud/sdk-core";
 import { installDom } from "@/test/dom";
 import { PlatformContext, type AppPlatform } from "@/lib/platform";
 import { replicationOptInKey } from "@/lib/replication/replicationOptIn";
 import { REPLICATION_RUNTIME_FLAG_KEY } from "@/lib/replication/replicationFlag";
-import { SIGN_IN_BUNDLE_ENTRIES, TINYCHAT_KEY_PREFIX } from "@tinyboilerplate/core";
-import realManifest from "../public/.well-known/openkey-manifest.json";
+import { SIGN_IN_BUNDLE_ENTRIES } from "@tinyboilerplate/core";
+import realManifest from "../../manifest.json";
 
 // The app code under test must never reach a real home: HOME is a throwaway dir under /var/tmp,
 // set at load and asserted before anything runs.
@@ -46,8 +45,6 @@ const replicationClientApi = await import("@/lib/replication/replicationClient")
 
 const ADDRESS = "0x00000000000000000000000000000000000000a1";
 const PRINCIPAL = `did:pkh:eip155:1:${ADDRESS}`;
-const connectorResource = `urn:tinycloud:encryption:${pkhDid(ADDRESS, 1)}:default/${TINYCHAT_KEY_PREFIX}`;
-const connectorSiwe = `Resources:\n- urn:recap:${Buffer.from(JSON.stringify({ att: { [connectorResource]: { "tinycloud.encryption/decrypt": [{}] } } })).toString("base64url")}`;
 const CHROME = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
 const APP_SESSION_KEY = "xyz.tinycloud.tinychat:session";
 const REVISION_KEY = `xyz.tinycloud.tinychat:manifest-revision:${ADDRESS}`;
@@ -55,7 +52,6 @@ const NOTICE = "Sign in once more so TinyCloud Home can open your apps and your 
 
 /** Every effect the gate must order, in the order it happened. */
 const events: string[] = [];
-const manifestUrls: string[] = [];
 let syncCalls = 0;
 let handoffResult: { ok: boolean; failClosed: boolean; message: string | null } = { ok: true, failClosed: false, message: null };
 let offline = false;
@@ -63,14 +59,12 @@ let offline = false;
 let served: "full" | "old" | "unreachable" = "full";
 const oldManifest = {
   ...realManifest,
-  keys: [],
   permissions: realManifest.permissions.filter((entry) => !SIGN_IN_BUNDLE_ENTRIES.some((required) => required.service === entry.service && required.path === entry.path)),
 };
 
-function makeTcw(): TinyCloudWeb {
+function fakeTcw(): TinyCloudWeb {
   return {
     did: PRINCIPAL, spaceId: "space-a1", address: () => ADDRESS, sql: {}, kv: {}, secrets: {},
-    session: () => ({ address: ADDRESS, walletAddress: ADDRESS, chainId: 1, siwe: served === "full" ? connectorSiwe : "" }),
     replication: { sync: () => { events.push("sync"); syncCalls += 1; return Promise.resolve(); } },
   } as unknown as TinyCloudWeb;
 }
@@ -79,20 +73,15 @@ mock.module("@tinyboilerplate/client", () => ({
   ...clientApi,
   connectWallet: async () => ({ address: ADDRESS, openkey: {}, web3Provider: {} }),
   requestNonce: async () => "nonce",
-  loadAppManifest: async (url: string) => {
-    manifestUrls.push(url);
+  loadAppManifest: async () => {
     events.push("loadManifest");
     if (served === "unreachable") throw new TypeError("Failed to fetch");
     return served === "old" ? oldManifest : realManifest;
   },
-  createTinyCloudWeb: () => Object.assign(makeTcw(), {
-    clearPersistedSession: async () => {},
-    prepareSignIn: async () => {},
-    signIn: async () => { events.push("signIn"); return { siwe: "message", signature: "signature" }; },
-  }),
+  createAndSignIn: async () => { events.push("signIn"); return { tcw: fakeTcw(), session: { siwe: "message", signature: "signature" } }; },
   verifySession: async () => ({ token: "bearer", expiresIn: 3600, address: ADDRESS }),
   clearPersistedSession: (address: string) => { events.push(`clearPersisted:${address}`); realClearPersistedSession(address); },
-  restoreTinyCloudWebSession: async () => { events.push("restore"); return { status: "restored", tcw: makeTcw() }; },
+  restoreTinyCloudWebSession: async () => { events.push("restore"); return { status: "restored", tcw: fakeTcw() }; },
 }));
 const realStartReplicationFill = replicationClientApi.startReplicationFill; // captured before the mock replaces the export
 mock.module("@/lib/replication/replicationClient", () => ({
@@ -224,7 +213,6 @@ function seedSession() {
 const realFetch = globalThis.fetch;
 beforeEach(() => {
   events.length = 0;
-  manifestUrls.length = 0;
   syncCalls = 0;
   offline = false;
   served = "full";
@@ -295,9 +283,6 @@ test("a backend still serving the older manifest: the stale session is kept, not
   expect(events).not.toContain("handoff");
   expect(events.filter((event) => event.startsWith("clearPersisted"))).toEqual([]);
   expect(events).toContain("restore");
-  // The bundle gate, the key gate and the session restore each load the web's own OpenKey manifest file, not /api/manifest.
-  expect(manifestUrls).toHaveLength(3);
-  expect(manifestUrls.every((url) => url === "/.well-known/openkey-manifest.json")).toBe(true);
   expect(host!.textContent).not.toContain(NOTICE);
   expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeTruthy();
 });

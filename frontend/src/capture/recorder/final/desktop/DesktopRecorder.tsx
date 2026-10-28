@@ -31,6 +31,11 @@ import type { TranscriberApi } from "../useTranscriptionChoice";
 import { ViaMenu } from "../ViaMenu";
 import { FINAL_COPY, PRIVATE_CONSENT_ACTION, PRIVATE_CONSENT_TITLE, POWERFUL_CONSENT_ACTION, POWERFUL_CONSENT_BODY, POWERFUL_CONSENT_TITLE, privateConsentBody } from "../finalCopy";
 import { PowerfulConsentDescription } from "../PowerfulConsentDescription";
+import { desktopHomeCapabilities } from "@/capture/home/desktop/captureHomeKind";
+import { PlatformContext } from "@/lib/platform";
+import { AutoStopControls } from "../AutoStopControls";
+import { shellAudioInputs } from "../useAudioInputs";
+import { CaptureSettings } from "./CaptureSettings";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { openCaptureSettings } from "./openCaptureSettings";
 import { DesktopRing } from "./DesktopRing";
@@ -163,6 +168,9 @@ export function DesktopRecorder({
     notify: showToast,
   });
   const root = useRef<HTMLDivElement>(null);
+  const platform = useContext(PlatformContext);
+  // The same ⚙︎ Capture settings as the Capture page, so the recording's settings are in reach while it runs.
+  const settingsVariant = desktopHomeCapabilities(platform, layout).settings;
   const { ringPx, timerPx } = useSizing(root);
   // The view replaces a dock, a ribbon or the loading surface, which held focus, so focus moves into it.
   useEffect(() => root.current?.focus({ preventScroll: true }), []);
@@ -241,6 +249,14 @@ export function DesktopRecorder({
             />
             <span>{view.pill.label}</span>
           </div>
+          {settingsVariant !== null && (
+            <div className="dr-settings">
+              <CaptureSettings
+                variant={settingsVariant}
+                inputs={shellAudioInputs()}
+              />
+            </div>
+          )}
         </div>
 
         <div className="pr-time-row">
@@ -253,7 +269,10 @@ export function DesktopRecorder({
             <TimerDigits text={view.timer.text} />
           </div>
           {view.timer.countdown && (
-            <div className="pr-countdown">{view.timer.countdown.text}</div>
+            <>
+              <div className="pr-countdown">{view.timer.countdown.text}</div>
+              <AutoStopControls />
+            </>
           )}
         </div>
         <div

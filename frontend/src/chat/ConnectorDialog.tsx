@@ -72,9 +72,14 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import * as connectorStore from "@/lib/connectors/connectorStore";
-import { deleteConnectorCredentials, getConnectorKey, isConnectorKeysReady, saveConnectorKey } from "@/lib/connectors/namedConnectorSecrets";
-import { usesNamedConnectorKeys } from "@/lib/connectors/connectorKeyMode";
-import { getConnectorKey as getLegacyConnectorKey, isSecretsUnlocked, unlockSecrets, type SecretsErr } from "@/lib/connectors/connectorSecrets";
+import {
+  deleteConnectorKey,
+  getConnectorKey,
+  isSecretsUnlocked,
+  saveConnectorKey,
+  unlockSecrets,
+  type SecretsErr,
+} from "@/lib/connectors/connectorSecrets";
 import {
   defaultFirefliesClientOptions,
   FirefliesClient,
@@ -316,7 +321,7 @@ const ApiKeyConnectDialog: FC<ConnectorConnectDialogProps> = ({
     const generation = readBackgroundDrainGeneration();
     setError(null);
     setPhase("saving");
-    if (!isConnectorKeysReady(tcw) && !isSecretsUnlocked(tcw)) {
+    if (!isSecretsUnlocked(tcw)) {
       const unlock = await unlockSecrets<SecretsErr>(tcw);
       if (!unlock.ok) {
         setError({
@@ -474,7 +479,8 @@ const KeyEntryPanel: FC<{
       onChange={(e) => onChange(e.target.value)}
       disabled={validating}
       placeholder="ff-…"
-      className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
+      // 16px on touch (no iOS focus zoom); compact text with a mouse.
+      className="w-full rounded-md border border-border bg-background px-3 py-2 text-body outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60 fine:text-sm"
     />
     <p className="text-xs text-muted-foreground">
       <a
@@ -1043,7 +1049,7 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
   const saveAndSync = useCallback(
     async (accessToken: string, refreshToken: string) => {
       setPhase("save-token");
-      if (!isConnectorKeysReady(tcw) && !isSecretsUnlocked(tcw)) {
+      if (!isSecretsUnlocked(tcw)) {
         const unlock = await unlockSecrets<SecretsErr>(tcw);
         if (!unlock.ok) {
           failWith({
@@ -1881,7 +1887,8 @@ const GmeetDonePanel: FC<{
               disabled={autoTranscription.status === "working"}
               onChange={(e) => onMeetingCodeChange(e.target.value)}
               placeholder="abc-defg-hij"
-              className="w-full rounded-md border border-border bg-background px-3 py-1.5 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
+              // 16px on touch (no iOS focus zoom); compact text with a mouse.
+              className="w-full rounded-md border border-border bg-background px-3 py-1.5 text-body outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60 fine:text-xs"
             />
             <Button
               size="sm"
@@ -2132,7 +2139,6 @@ export const ConnectorDisconnectDialog: FC<ConnectorDisconnectDialogProps> = ({
       }
     }
 
-    const namedKeyStorage = usesNamedConnectorKeys();
     const deps: DisconnectDeps = {
       connectorId: descriptor.id,
       source: descriptor.source,
@@ -2140,9 +2146,9 @@ export const ConnectorDisconnectDialog: FC<ConnectorDisconnectDialogProps> = ({
       webhooks: oauth ? NO_DELIVERY_LANE : webhooks,
       featureDark: featureDark === true,
       secrets: {
-        isUnlocked: () => namedKeyStorage || isSecretsUnlocked(tcw),
-        unlock: () => namedKeyStorage ? Promise.resolve({ ok: true }) : unlockSecrets<SecretsErr>(tcw),
-        deleteKey: () => deleteConnectorCredentials(tcw, descriptor),
+        isUnlocked: () => isSecretsUnlocked(tcw),
+        unlock: () => unlockSecrets<SecretsErr>(tcw),
+        deleteKey: () => deleteConnectorKey<SecretsErr>(tcw, descriptor),
       },
       store: {
         listKnownSourceIds: () =>
@@ -2418,18 +2424,13 @@ export async function revokeGoogleUpstream(input: {
   }
   let browserToken: string | undefined;
   let localFailure: UpstreamRevokeState | undefined;
-  if (!isConnectorKeysReady(tcw) && !isSecretsUnlocked(tcw)) {
+  if (!isSecretsUnlocked(tcw)) {
     const unlock = await unlockSecrets<SecretsErr>(tcw);
     if (!unlock.ok) localFailure = { status: "locked", message: unlock.error?.message ?? "unlock was not completed" };
   }
   if (!localFailure) {
-    const named = isConnectorKeysReady(tcw)
-      ? await getConnectorKey<SecretsErr>(tcw, descriptor)
-      : null;
-    const stored = (named === null || (!named.ok && named.error.code === "CONNECTOR_MIGRATION_REQUIRED")) && isSecretsUnlocked(tcw)
-      ? await getLegacyConnectorKey<SecretsErr>(tcw, descriptor)
-      : named;
-    if (stored?.ok && typeof stored.data === "string" && stored.data.length > 0) browserToken = stored.data;
+    const stored = await getConnectorKey<SecretsErr>(tcw, descriptor);
+    if (stored.ok && typeof stored.data === "string" && stored.data.length > 0) browserToken = stored.data;
     else localFailure = { status: "no-token" };
   }
   if (localFailure?.status === "locked") return localFailure;

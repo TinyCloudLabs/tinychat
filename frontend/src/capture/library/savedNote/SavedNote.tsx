@@ -67,9 +67,6 @@ function SavedNoteContent({
   const privateAudioSource = privateAudioSourceFromMetadata(rowMetadata);
   const localOnly = (rowMetadata?.audio as { stored?: unknown } | undefined)?.stored === false;
   const hasLocalAudio = audio !== null && ("localUrl" in audio || audio.onPhone === true);
-  const capturePlatform = (rowMetadata?.capture as { platform?: string } | undefined)?.platform;
-  const onDevice = capturePlatform === "ios" ? "iPhone" : capturePlatform === "tauri" ? "Mac"
-    : capturePlatform === "android" ? "phone" : "browser";
   const upload = () => {
     setUploading(true);
     setUploadError(null);
@@ -79,8 +76,10 @@ function SavedNoteContent({
   const stepperShown = pipeline !== null && !pipeline.pipeline.done;
   const jobs = activityForNote(pipeline ?? undefined, platform);
   // The Transcript fallback owns the durable failure's explanation and retry action.
-  const status = noteStatus(jobs, pipeline?.pipeline, false);
-  const actions = jobs.flatMap((job) => job.action ? [job.action] : job.retry ? [{ label: "Try again", run: job.retry }] : []);
+  // The Transcript section, where the transcript will appear, carries the transcription status.
+  const statusJobs = jobs.filter((job) => job.kind !== "transcribe");
+  const status = noteStatus(statusJobs, pipeline?.pipeline, false);
+  const actions = statusJobs.flatMap((job) => job.action ? [job.action] : job.retry ? [{ label: "Try again", run: job.retry }] : []);
   const cloudFailedWithoutRetry = pipeline?.input?.route === "private-cloud" && pipeline.pipeline.steps.some((step) => step.key === "transcript" && step.state === "failed" && !step.blocker?.action);
   const view = {
     screen,
@@ -102,7 +101,7 @@ function SavedNoteContent({
         </Button>
         {uploadError && <p role="alert">{uploadError}</p>}
       </div>
-    ) : <div role="status"><p>Audio is on your {onDevice}</p><p>Transcribe on your {onDevice}</p></div>) : null,
+    ) : null) : null,
     transcript,
     // The stepper is the route while the note is still getting here; the legacy route line would say it twice. A failed
     // metadata read is not a route: the footer's "Try again" is the only way to read it again, so it stays.

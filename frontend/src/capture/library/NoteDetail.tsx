@@ -29,6 +29,7 @@ import { useCombinedSummary } from "./combine/useCombinedSummary";
 import type { SummaryRunner } from "@/lib/meetingSummary/summaryRunner";
 import { applySpeakerNames } from "./speakerNames";
 import { useSpeakerNames } from "./useSpeakerNames";
+import { useWordFixApplier, useWordFixedSentences } from "@/lib/wordFixes/wordFixesStore";
 import { hasPrivateCloudTimingProvenance, hasSegmentTimes, transcriptWithTimestamps } from "./transcriptSegments";
 import type { Library } from "./useLibrary";
 import { notePath } from "@/shell/routes";
@@ -121,7 +122,7 @@ export function NoteDetail(props: {
 
   const selectedTranscript = reads.transcript;
   const remoteTranscript = selectedTranscript?.transcript;
-  const sentences = useMemo(
+  const storedSentences = useMemo(
     () => {
       if (remoteTranscript?.status === "ok" && remoteTranscript.sentences.length > 0) return remoteTranscript.sentences;
       if (reads.metadata?.status === "ok" && reads.metadata.metadata.transcription_outcome === "no_speech") return null;
@@ -130,6 +131,9 @@ export function NoteDetail(props: {
     },
     [remoteTranscript, reads.metadata, local, localId],
   );
+  // The copy actions carry the user's word fixes (TC-2199), as the page shows them.
+  const sentences = useWordFixedSentences(storedSentences);
+  const applyWordFixes = useWordFixApplier();
   const isPrivateCloud = remoteTranscript?.status === "ok" && remoteTranscript.sentences.length > 0
     && hasPrivateCloudTimingProvenance(
       reads.metadata?.status === "ok" ? reads.metadata.metadata : null,
@@ -146,7 +150,7 @@ export function NoteDetail(props: {
     const pasted = item?.metadata?.capture === "pasted" && reads.metadata?.status === "ok"
       ? reads.metadata.metadata.transcript_text : null;
     const named = sentences && names ? applySpeakerNames(sentences, names) : sentences;
-    const text = typeof pasted === "string" ? pasted : named && (withTimestamps && hasSegmentTimes(named, isPrivateCloud)
+    const text = typeof pasted === "string" ? applyWordFixes(pasted) : named && (withTimestamps && hasSegmentTimes(named, isPrivateCloud)
       ? transcriptWithTimestamps(named, isPrivateCloud) : transcriptCopyText(named));
     if (!text) return;
     const ok = await copyText(text);
@@ -157,7 +161,7 @@ export function NoteDetail(props: {
       timer.current = null;
       setCopyState("idle");
     }, COPIED_DURATION);
-  }, [sentences, names, isPrivateCloud, item, reads.metadata]);
+  }, [sentences, names, applyWordFixes, isPrivateCloud, item, reads.metadata]);
 
   return (
     <>

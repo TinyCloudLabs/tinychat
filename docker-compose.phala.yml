@@ -26,6 +26,17 @@ services:
       # Task routing defaults off; enabled with an empty list admits all accounts.
       ELIZA_TASKS_ENABLED: ${ELIZA_TASKS_ENABLED:-false}
       ELIZA_TASKS_TEST_ACCOUNTS: ${ELIZA_TASKS_TEST_ACCOUNTS:-}
+      # MCP chat (read-only meeting tools and web_search through the hosted TinyCloud MCP); off unless enabled and the account is listed.
+      MCP_CHAT_ENABLED: ${MCP_CHAT_ENABLED:-false}
+      MCP_CHAT_TEST_ACCOUNTS: ${MCP_CHAT_TEST_ACCOUNTS:-}
+      MCP_CHAT_URL: ${MCP_CHAT_URL:-}
+      MCP_CHAT_SERVICE_DID: ${MCP_CHAT_SERVICE_DID:-}
+      MCP_CHAT_SERVICE_CREDENTIAL: ${MCP_CHAT_SERVICE_CREDENTIAL:-}
+      MCP_CHAT_SERVICE_CREDENTIAL_HEADER: ${MCP_CHAT_SERVICE_CREDENTIAL_HEADER:-}
+      MCP_CHAT_OWNER_DID_HEADER: ${MCP_CHAT_OWNER_DID_HEADER:-}
+      MCP_CHAT_GRANT_EXPIRED_ERROR: ${MCP_CHAT_GRANT_EXPIRED_ERROR:-}
+      MCP_CHAT_GRANT_REJECTED_ERROR: ${MCP_CHAT_GRANT_REJECTED_ERROR:-}
+      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
       # Optional meeting rollout; empty allowlists admit no accounts or models.
       MEETING_CONTENT_RETRIEVAL_ENABLED: ${MEETING_CONTENT_RETRIEVAL_ENABLED:-false}
       MEETING_CONTENT_TEST_ACCOUNTS: ${MEETING_CONTENT_TEST_ACCOUNTS:-}
