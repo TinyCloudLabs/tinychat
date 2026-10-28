@@ -22,6 +22,7 @@ import {
   VoiceNotes,
   voiceNoteMaxDurationMs,
   VOICE_NOTE_EXTENSION_MS,
+  type LimitExtension,
   VOICE_NOTE_SAFETY_CAP_MS,
   type VoiceNoteAutoStopEvent,
   type VoiceNoteRecording,
@@ -144,8 +145,8 @@ export interface VoiceNoteRecorderController {
   discard(): Promise<void>;
   retryPending(): Promise<void>;
   openSettings(): Promise<void>;
-  /** "Keep going": raise the live recording's limit by one hour; absent where the engine fixes the limit at start. */
-  extendLimit?(): Promise<void>;
+  /** Raise the live recording's limit by `extension` (default one hour: "Keep going"), or drop it ("none"); absent where the engine fixes the limit at start. */
+  extendLimit?(extension?: LimitExtension): Promise<void>;
   dismissShortcutRecovery(): Promise<void>;
   /** The receipt was read. */
   dismissOutcome(): void;
@@ -1007,11 +1008,12 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     /** Present only where the engine can change a running recording's limit (web and desktop); native mobile fixes it at start. */
     get extendLimit() {
       if (typeof VoiceNotes.setMaxDuration !== "function") return undefined;
-      return async () => {
+      return async (extension: LimitExtension = VOICE_NOTE_EXTENSION_MS) => {
         if (state.phase !== "recording" || !state.autoStop) return;
-        const target = Math.min(VOICE_NOTE_SAFETY_CAP_MS, state.maxDurationMs + VOICE_NOTE_EXTENSION_MS);
+        const noLimit = extension === "none";
+        const target = noLimit ? VOICE_NOTE_SAFETY_CAP_MS : Math.min(VOICE_NOTE_SAFETY_CAP_MS, state.maxDurationMs + extension);
         const applied = await VoiceNotes.setMaxDuration!({ maxDurationMs: target });
-        send({ type: "LIMIT_EXTENDED", maxDurationMs: applied.maxDurationMs });
+        send({ type: "LIMIT_EXTENDED", maxDurationMs: applied.maxDurationMs, ...(noLimit && applied.maxDurationMs >= VOICE_NOTE_SAFETY_CAP_MS ? { noLimit: true } : {}) });
       };
     },
     async dismissShortcutRecovery() {
