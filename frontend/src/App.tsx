@@ -130,6 +130,7 @@ import {
   subscribeBackgroundDrainRecord,
 } from "./chat/useBackgroundDrain";
 import { TranscriberLibrarySyncProvider } from "./chat/useTranscriberLibrarySync";
+import { WordFixesSync } from "./lib/wordFixes/WordFixesSync";
 import { DeviceCaptureSurface, DeviceCaptureSettings } from "./capture/DeviceCaptureSurface";
 import { useAudioCacheBoot } from "./lib/voiceNotes/audioReceiptUpgrade";
 import { PendingVoiceNotesSaver } from "./chat/PendingVoiceNotesSaver";
@@ -1497,6 +1498,7 @@ export function App() {
 
       {/* TC-2130: the SDK's floating button is hidden by default; this applies the Settings > TinyCloud choice. Renders nothing. */}
       {state === "ready" && tcw && <TinyCloudButtonSync tcw={tcw} />}
+      {!LOCAL_VALIDATION && <WordFixesSync tcw={state === "ready" ? tcw ?? null : null} />}
 
       {billingNotice && (
         <div
