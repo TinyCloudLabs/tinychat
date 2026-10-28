@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.10.0-beta.63
+
+### Patch Changes
+
+- 8c04781: A voice note whose audio is on this device plays from that file with seeking, and the Audio/Transcribe-on-device lines are gone. Transcription shows one status in Activity and on the note, with minutes done and time left and one working action. A transcribed note's title is no longer renamed with the transcription model.
+
 ## 0.10.0-beta.62
 
 ### Patch Changes
