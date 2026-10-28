@@ -1,5 +1,4 @@
 import { Database } from "bun:sqlite";
-import { webcrypto } from "node:crypto";
 import type { SQLQueryBindings } from "bun:sqlite";
 import { afterAll, afterEach, beforeEach, expect, test, vi } from "bun:test";
 import { act } from "react";
@@ -11,7 +10,6 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { installDom } from "@/test/dom";
 import * as store from "@/lib/connectors/connectorStore";
 import { CONNECTORS } from "@/lib/connectors/registry";
-import { connectorEnvelopeKvPath, connectorKeyPath } from "@/lib/connectors/namedConnectorSecrets";
 import { _resetGmeetSyncSingleFlightForTests, isGmeetNotesSyncInFlight, syncGoogleMeet } from "@/lib/connectors/gmeetSync";
 import { GmeetClient } from "@/lib/connectors/gmeetClient";
 import { __resetStorageStatusForTests } from "@/lib/storageStatus";
@@ -93,6 +91,7 @@ class MemoryBoundaries {
   readonly unexpectedEgress: string[] = [];
   readonly requests: { url: string; method: string }[] = [];
   secretWrites = 0;
+  readonly credentialSaved = deferred();
   secretUnlocks = 0;
   exchangeCalls = 0;
   recordListings = 0;
@@ -159,25 +158,12 @@ class MemoryBoundaries {
       },
       put: async (key: string, value: unknown) => {
         if (key === store.driveCursorKvKey("google-meet")) await this.reach("cursor-write");
+        if (key === connectorEnvelopeKvPath(descriptor)) this.credentialSaved.resolve();
         this.kv.set(key, typeof value === "string" ? value : JSON.stringify(value));
         return ok({ data: undefined, headers: {} });
       },
       delete: async (key: string) => { this.kv.delete(key); return ok(undefined); },
       list: async ({ path }: { path: string }) => ok({ keys: [...this.kv.keys()].filter((key) => key.startsWith(path)), truncated: false }),
-    },
-    keys: {
-      ensureKey: async (_path: string) => undefined,
-      encrypt: async (path: string, bytes: Uint8Array) => {
-        const key = await webcrypto.subtle.importKey("raw", new Uint8Array(32).fill(7), "AES-GCM", false, ["encrypt"]);
-        const iv = webcrypto.getRandomValues(new Uint8Array(12));
-        const ciphertext = await webcrypto.subtle.encrypt({ name: "AES-GCM", iv }, key, bytes);
-        return { v: 2, keyPath: path, iv: Buffer.from(iv).toString("base64"), ciphertext: Buffer.from(ciphertext).toString("base64") };
-      },
-      decrypt: async (envelope: { iv: string; ciphertext: string }) => {
-        const key = await webcrypto.subtle.importKey("raw", new Uint8Array(32).fill(7), "AES-GCM", false, ["decrypt"]);
-        const bytes = await webcrypto.subtle.decrypt({ name: "AES-GCM", iv: Buffer.from(envelope.iv, "base64") }, key, Buffer.from(envelope.ciphertext, "base64"));
-        return new Uint8Array(bytes);
-      },
     },
     secrets: {
       isUnlocked: true,
@@ -340,16 +326,6 @@ async function expectDone() {
   expect(dialog().textContent).not.toMatch(/finishing/i);
   expect(button("Retry")).toBeUndefined();
 }
-function expectStoredCredential() {
-  const written = memory.kv.get(connectorEnvelopeKvPath(descriptor));
-  expect(written).toBeString();
-  expect(JSON.parse(written!)).toMatchObject({ v: 2, keyPath: connectorKeyPath(descriptor) });
-  for (const plaintext of ["synthetic-access", "synthetic-refresh", "synthetic-refreshed-access", "synthetic-autojoin-access", "synthetic-autojoin-refresh", "synthetic-first-access", "synthetic-session", "synthetic-authorization-code"]) {
-    for (const value of memory.kv.values()) expect(value).not.toContain(plaintext);
-  }
-  expect(memory.secretWrites).toBe(0);
-  expect(memory.tokens.size).toBe(0);
-}
 async function authorize(fakeClock = false) {
   await click("Continue with Google");
   await until(() => memory.popupUrl.length > 0, "expected synthetic popup start URL");
@@ -371,11 +347,12 @@ async function authorize(fakeClock = false) {
     await tick();
   });
   await settle();
+  await memory.credentialSaved.promise;
+  await settle();
 }
 
 beforeEach(async () => {
   restoreDom = installDom();
-  window.location.href = "https://tinycloud.chat/chat/capture";
   memory = new MemoryBoundaries();
   globalThis.fetch = memory.fetch;
   // No pass-through to browser networking, including during synthetic OAuth.
@@ -482,9 +459,9 @@ for (const point of ["count", "state"] as const) {
       expect(memory.recordListings).toBe(2);
       expect(memory.savedMeeting()).toEqual(saved);
       expect(memory.kv.get(transcriptKey)).toBe(transcript);
-      expectStoredCredential();
+      expect(memory.secretWrites).toBe(1);
       expect(memory.secretUnlocks).toBe(0);
-      expect(memory.tokens.size).toBe(0);
+      expect(memory.tokens.get("google-meet:REFRESH_TOKEN")).toBe("synthetic-refresh");
       expect(memory.popupCalls).toBe(1);
       expect(memory.exchangeCalls).toBe(1);
     });
@@ -512,7 +489,7 @@ for (const point of ["count", "state"] as const) {
     await click("Retry");
     await expectDone();
     expect(memory.recordListings).toBe(2);
-    expectStoredCredential();
+    expect(memory.secretWrites).toBe(1);
     expect(memory.popupCalls).toBe(1);
     expect(memory.exchangeCalls).toBe(1);
   });
@@ -548,7 +525,7 @@ for (const point of ["drive-fetch", "drive-body", "cursor-read", "cursor-write",
       expect(await store.getConnection(memory.tcw, "google-meet")).toMatchObject({
         ok: true, data: { status: "connected", lastSyncStatus: "ok" },
       });
-      expectStoredCredential();
+      expect(memory.secretWrites).toBe(1);
       expect(memory.popupCalls).toBe(1);
     });
   }
@@ -579,7 +556,7 @@ test("a throwing onConnected completion callback becomes visible Error with Retr
   throwOnConnected = false;
   await click("Retry");
   await expectDone();
-  expectStoredCredential();
+  expect(memory.secretWrites).toBe(1);
   expect(memory.popupCalls).toBe(1);
   expect(memory.exchangeCalls).toBe(1);
 });
@@ -631,8 +608,7 @@ for (const outcome of ["done", "error"] as const) {
       const readsBeforeDialog = memory.connectionReads;
       await act(async () => host!.querySelector<HTMLButtonElement>('button[aria-label="Connect Google Meet"]')!.click());
       await authorize();
-      await until(() => memory.kv.has(connectorEnvelopeKvPath(descriptor)), "expected the second dialog to save its connection and join");
-      expectStoredCredential();
+      await until(() => memory.secretWrites === 1, "expected the second dialog to save its connection and join");
       expect(memory.recordListings).toBe(1);
       expect(row.querySelector("[data-row-status]")?.textContent).toBe("Not connected");
       await act(async () => {
@@ -672,8 +648,7 @@ for (const caller of ["owner", "joiner"] as const) {
     try {
       if (first) await until(() => memory.entered.has("drive-fetch"), "expected an existing flight");
       await authorize();
-      await until(() => (first ? memory.entered.has("drive-fetch") : true) && memory.kv.has(connectorEnvelopeKvPath(descriptor)), "expected authorized dialog");
-      expectStoredCredential();
+      await until(() => (first ? memory.entered.has("drive-fetch") : true) && memory.secretWrites === 1, "expected authorized dialog");
       await act(async () => {
         drive.resolve();
         if (first) expect((await first).ok).toBe(true);
@@ -692,7 +667,7 @@ for (const caller of ["owner", "joiner"] as const) {
       await click("Retry");
       await expectDone();
       expect(connectedCalls).toBe(2);
-      expectStoredCredential();
+      expect(memory.secretWrites).toBe(1);
     } finally {
       drive.resolve();
       heldCompletion?.resolve();
@@ -928,7 +903,6 @@ test("Calendar autojoin enables from the server credential: no Meet secret write
   expect(memory.secretWrites).toBe(0);
   expect(memory.secretUnlocks).toBe(0);
   expect(memory.tokens.size).toBe(0);
-  expect(memory.kv.has(connectorEnvelopeKvPath(descriptor))).toBe(false);
   expect(memory.recordListings).toBe(0);
   expect(memory.requests.some((request) => /googleapis\.com/.test(request.url))).toBe(false);
   expect(await store.getConnection(memory.tcw, "google-meet")).toMatchObject({

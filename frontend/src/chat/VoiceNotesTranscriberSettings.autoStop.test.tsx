@@ -3,6 +3,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 
+import { AUTO_STOP_OFF_HINT_PHONE } from "@/capture/recorder/recorderCopy";
 import { StaticRecorderProvider } from "@/capture/recorder/RecorderProvider";
 import { createFakeVoiceNotes } from "@/harness/fakeVoiceNotes";
 import { PlatformContext } from "@/lib/platform";
@@ -82,7 +83,7 @@ test("on a phone it starts off with the run-until-you-stop hint and no duration 
   await setWidth(390);
   await render();
   expect(box().checked).toBe(false);
-  expect(hint()).toBe("The recording runs until you stop it.");
+  expect(hint()).toBe(AUTO_STOP_OFF_HINT_PHONE);
   expect(select()).toBeNull();
 });
 
@@ -102,7 +103,7 @@ test("turning it on at a phone, and off on desktop, is stored on this device and
   await act(async () => { box().click(); });
   expect(values.get("exo.voiceNotes.autoStop")).toBe("0");
   expect(readAutoStopChoice()).toBe(false);
-  expect(hint()).toBe("The recording runs until you stop it.");
+  expect(hint()).toBe(AUTO_STOP_OFF_HINT_PHONE);
 });
 
 test("a stored choice beats the layout default, in both directions", async () => {

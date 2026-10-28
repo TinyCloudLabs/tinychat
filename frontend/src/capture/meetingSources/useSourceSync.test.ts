@@ -94,6 +94,39 @@ describe("runSourceSync", () => {
   });
 });
 
+describe("a saved credential this app cannot decrypt", () => {
+  test("shows the plain reconnect sentence, never the SDK error", async () => {
+    let engineRuns = 0;
+    const message = await runSourceSync(fireflies, input, deps({
+      getConnectorKey: (async () => ({ ok: false, error: { code: "DECRYPTION_FAILED", message: "key not granted" } })) as SourceSyncDeps["getConnectorKey"],
+      runFirefliesSyncNow: async () => (engineRuns++, { ok: true }),
+    }));
+    expect(message).toBe("TinyChat can't read your saved Fireflies connection. Disconnect it under Manage, then connect Fireflies again.");
+    expect(engineRuns).toBe(0);
+  });
+
+  test("any other failed read keeps its original message", async () => {
+    const read = (error: { code?: string; message?: string }) => deps({
+      getConnectorKey: (async () => ({ ok: false, error })) as SourceSyncDeps["getConnectorKey"],
+    });
+    expect(await runSourceSync(fireflies, input, read({ code: "NETWORK_ERROR", message: "offline" }))).toBe("offline");
+    expect(await runSourceSync(fireflies, input, read({}))).toBe("Could not read API key");
+    expect(await runSourceSync(gmeet, input, read({}))).toBe("Could not read the saved Google connection");
+  });
+
+  test("reads the default-key vault entry, so a legacy copy keeps syncing", async () => {
+    const seen: string[] = [];
+    const reads: string[] = [];
+    const message = await runSourceSync(fireflies, input, deps({
+      getConnectorKey: (async (_tcw: unknown, d: { secretName: string }) => (reads.push(d.secretName), { ok: true, data: "legacy-key" })) as SourceSyncDeps["getConnectorKey"],
+      runFirefliesSyncNow: async (i) => (seen.push(i.apiKey), { ok: true }),
+    }));
+    expect(message).toBeNull();
+    expect(seen).toEqual(["legacy-key"]);
+    expect(reads).toEqual([fireflies.secretName]);
+  });
+});
+
 describe("Full rescan and Stop reach the engine", () => {
   test("Sync now asks Google Meet for the incremental listing", async () => {
     const seen: string[] = [];
@@ -314,27 +347,3 @@ function depsForSourceSync(
     },
   };
 }
-
-describe("the existing-user key prompt", () => {
-  const prompt = "Approve once to move your saved Fireflies key.";
-  const promptDeps = (calls: string[]) =>
-    deps({
-      getConnectorKey: (async () => ({ ok: false, error: { code: "CONNECTOR_MIGRATION_REQUIRED", message: prompt } })) as SourceSyncDeps["getConnectorKey"],
-      runFirefliesSyncNow: async () => { calls.push("engine"); return { ok: true }; },
-    });
-
-  test("comes back as a migration result, not a plain message, and the engine does not run", async () => {
-    const calls: string[] = [];
-    expect(await runSourceSync(fireflies, input, promptDeps(calls))).toEqual({ migration: prompt });
-    expect(calls).toEqual([]);
-  });
-
-  test("another key read failure stays a plain row message", async () => {
-    const message = await runSourceSync(
-      fireflies,
-      input,
-      deps({ getConnectorKey: (async () => ({ ok: false, error: { code: "KV_REFUSED", message: "Could not read API key" } })) as SourceSyncDeps["getConnectorKey"] }),
-    );
-    expect(message).toBe("Could not read API key");
-  });
-});

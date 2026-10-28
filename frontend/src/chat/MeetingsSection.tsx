@@ -19,6 +19,7 @@
 // renders NOTHING — a non-cohort user must not learn it exists.
 
 import { useCallback, useEffect, useRef, useState, type FC } from "react";
+import { useWordFixApplier } from "@/lib/wordFixes/wordFixesStore";
 import type { SessionStore } from "@tinyboilerplate/client";
 import { CalendarClockIcon, Loader2Icon, RefreshCwIcon } from "lucide-react";
 
@@ -204,8 +205,9 @@ function OpenMeeting(props: { open: OpenMeetingState; onClose: () => void }) {
   const { open } = props;
   const summary =
     open.content === undefined ? null : summaryText(open.content.content);
-  const transcript =
-    open.content === undefined ? null : transcriptText(open.content.content);
+  const applyWordFixes = useWordFixApplier();
+  const stored = open.content === undefined ? null : transcriptText(open.content.content);
+  const transcript = stored === null ? null : applyWordFixes(stored);
   // An unrecognized provider shape still shows the meeting: a tidy renderer is
   // worth less than the content the user came for.
   const raw =

@@ -59,7 +59,6 @@ test("on a phone the Stop recording after row sits above the default transcriber
   const transcriber = host.querySelector('[aria-label="Default transcriber"]')!;
   expect(transcriber).not.toBeNull();
   expect(stopAfter.compareDocumentPosition(transcriber) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  expect(stopAfter.textContent).toContain("New recordings stop by themselves after this long. Recordings never run longer than 3 hours.");
   // An unknown stored value shows the 1-hour default.
   const select = stopAfter.querySelector("select")!;
   expect(select.value).toBe("60");

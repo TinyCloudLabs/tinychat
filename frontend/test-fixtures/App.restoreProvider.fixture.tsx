@@ -31,7 +31,7 @@ interface RestoreConfig { provider?: { request(args: { method: string }): Promis
 const restoreConfigs: RestoreConfig[] = [];
 let replicationOn = true;
 
-function makeTcw(): TinyCloudWeb {
+function fakeTcw(): TinyCloudWeb {
   return { did: `did:pkh:eip155:1:${ADDRESS}`, spaceId: "space-a1", address: () => ADDRESS, sql: {}, kv: {}, secrets: {} } as unknown as TinyCloudWeb;
 }
 
@@ -40,16 +40,12 @@ mock.module("@tinyboilerplate/client", () => ({
   connectWallet: async () => ({ address: ADDRESS, openkey: {}, web3Provider: {} }),
   requestNonce: async () => "nonce",
   loadAppManifest: async () => ({}),
-  createTinyCloudWeb: () => Object.assign(makeTcw(), {
-    clearPersistedSession: async () => {},
-    prepareSignIn: async () => {},
-    signIn: async () => ({ siwe: "message", signature: "signature" }),
-  }),
+  createAndSignIn: async () => ({ tcw: fakeTcw(), session: { siwe: "message", signature: "signature" } }),
   verifySession: async () => ({ token: "bearer", expiresIn: 3600, address: ADDRESS }),
   // Records what the app's restore call passes; the real SDK is not under test here.
   restoreTinyCloudWebSession: async (_address: string, config: RestoreConfig) => {
     restoreConfigs.push(config);
-    return { status: "restored", tcw: makeTcw() };
+    return { status: "restored", tcw: fakeTcw() };
   },
 }));
 // The real plugin and storage are not what is under test: only whether the replication option is built.

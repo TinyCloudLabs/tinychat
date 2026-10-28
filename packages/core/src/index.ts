@@ -1,7 +1,6 @@
 // ── Delegation ───────────────────────────────────────────────────────
 export {
   APP_ID,
-  TINYCHAT_KEY_PREFIX,
   CONNECTORS_SQL_DB_NAME,
   CONNECTORS_KV_PREFIX,
   CONNECTOR_SCHEMA,

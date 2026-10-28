@@ -1,5 +1,36 @@
 # exo-desktop
 
+## 0.12.0-beta.0
+
+No changes in this release.
+
+## 0.11.0
+
+### Minor Changes
+
+- ec9f26e: Rename a chat from the Chats list or the chat header. The title is saved with the chat in your space, a renamed title is never replaced by the automatic title, and clearing it returns to the automatic title.
+- 723c72a: Add transcript paste as an Upload choice. Pasted text is committed as a transcript-only note and appears in the Library and meeting chat.
+
+### Patch Changes
+
+- 253d9d6: Hide Apps and Feed behind a device-local experimental setting, with Chat as the default web entry until enabled.
+- 84819aa: Home signs in with the permissions in its manifest, including the requested secret decrypt grant.
+
+  Details: TC-2038
+
+- d401bb6: The minimized recorder bar's open button is a 44px touch target; the bar looks the same. Details: TC-2186
+- fde135c: Update the TinyCloud SDK family to the stable 3.3.0 line (web-sdk, node-sdk, sdk-core, sdk-services 3.3.0; node-sdk-wasm 1.7.8; web-sdk-wasm 1.7.7) and regenerate the node-sdk sign-in patch for 3.3.0.
+
+  Details: TC-1152
+
+## 0.10.0-beta.66
+
+No changes in this release.
+
+## 0.10.0-beta.65
+
+No changes in this release.
+
 ## 0.10.0-beta.64
 
 ### Minor Changes
