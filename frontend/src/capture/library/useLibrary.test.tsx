@@ -481,6 +481,23 @@ describe("useLibrary, mounted", () => {
     await scenario(true);
   });
 
+  test("a pasted transcript has no audio loader: it never had a recording", async () => {
+    const space = fakeSpace({ voiceCommit: true });
+    const seen: Library[] = [];
+    await render({ tcw: space.tcw, visible: true, noteId: "row-pasted", now: () => 0, seen });
+    await space.answer("list", { ok: true, data: { rows: [[
+      "row-pasted", "exo-voice-note", "rec-paste-1", "Pasted", "2026-10-06T09:28:00.000Z", null,
+      JSON.stringify({ capture: "pasted", transcription_outcome: "transcribed", has_transcript_text: 1 }), null,
+    ]] } });
+    expect(seen.at(-1)!.note.item?.sourceId).toBe("rec-paste-1");
+    await space.answer("metadata", { ok: true, data: { rows: [[JSON.stringify({
+      capture: "pasted", transcription_outcome: "transcribed", transcript_text: "Hello world",
+    })]] } });
+    await space.answer("transcript", { ok: true, data: { data: JSON.stringify([{ text: "Hello world" }]) } });
+    const note = seen.at(-1)!.note;
+    expect(note.audio).toBeNull();
+    expect(note.reads.transcript?.transcript.status).toBe("ok");
+  });
 
   test("an unrelated or list-only save keeps open audio and transcript mounted", async () => {
     const space = fakeSpace();
