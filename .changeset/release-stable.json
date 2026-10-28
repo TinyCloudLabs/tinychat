@@ -1,9 +1,0 @@
-{
-  "versions": {
-    "exo-desktop": "0.11.1",
-    "@tinychat/frontend": "0.11.1"
-  },
-  "changesets": [
-    ".changeset/pre/word-fixes-for-transcripts.md"
-  ]
-}
