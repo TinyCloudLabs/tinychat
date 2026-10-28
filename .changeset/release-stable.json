@@ -1,9 +1,0 @@
-{
-  "versions": {
-    "exo-desktop": "0.11.3",
-    "@tinychat/frontend": "0.11.3"
-  },
-  "changesets": [
-    ".changeset/pre/recording-rename-title.md"
-  ]
-}
