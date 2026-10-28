@@ -256,6 +256,7 @@ function onDeviceInput(facts: NotePipelineFacts): PipelineOnDevice | null {
     stt: { state: facts.desktopJob.state === "transcribing" ? "running" : facts.desktopJob.state, error: facts.desktopJob.error },
     queue: { position: facts.desktopJob.position ?? (facts.desktopJob.state === "queued" ? 1 : null), inLine: facts.desktopJob.inLine ?? 1, percent: facts.desktopJob.progress },
     model: null, download: "idle", sync: facts.transcriptSync,
+    explicitRerun: facts.desktopJob.explicitRerun,
   } : null;
   const place = onDeviceQueuePlace(status, facts.id);
   // The live queue entry is the newest word on the job; the ledger read is what is left after a restart.
@@ -267,6 +268,7 @@ function onDeviceInput(facts: NotePipelineFacts): PipelineOnDevice | null {
     download: status.download.state,
     ...(isAppleSpeech(status) ? { appleSpeech: status.appleSpeech } : {}),
     sync: facts.transcriptSync,
+    explicitRerun: facts.native?.stt?.rerunRev != null,
   };
 }
 
@@ -548,6 +550,14 @@ function useNativeNotes(ids: readonly string[], rowVersion: number): NativeRead 
       OnDeviceStt.addListener("transcribed", (event) => { if (ids.includes(event.id)) load(); }),
       OnDeviceStt.addListener("failed", (event) => { if (ids.includes(event.id)) load(); }),
     ];
+    let previousQueue = onDeviceSttStore.snapshot().queue;
+    const stopStatus = onDeviceSttStore.subscribe(() => {
+      const next = onDeviceSttStore.snapshot().queue;
+      const changed = ids.some((id) => previousQueue.find((job) => job.id === id)?.state
+        !== next.find((job) => job.id === id)?.state);
+      previousQueue = next;
+      if (changed) load();
+    });
     for (const sub of subs) {
       sub.catch((caught: unknown) => {
         logPipelineError("[NotePipeline] Could not follow on-device transcription", caught);
@@ -556,6 +566,7 @@ function useNativeNotes(ids: readonly string[], rowVersion: number): NativeRead 
     }
     return () => {
       alive = false;
+      stopStatus();
       for (const sub of subs) sub.then((handle) => handle.remove()).catch(() => {});
     };
     // `ids` is keyed by its content.
@@ -780,6 +791,8 @@ export interface NotePipelineView {
   /** Runs the blocker's action; its failure shows as `actionError`. */
   onAction: (kind: PipelineActionKind) => void;
   onRetryStep?: (key: StepKey) => void;
+  onCancelTranscription?: () => Promise<void>;
+  onTranscribeNow?: () => Promise<void>;
   actionError: string | null;
 }
 
@@ -1065,7 +1078,42 @@ function useNotePipelinesWithLedger(entries: readonly { id: string; source: Note
     route: state.input.route,
     onAction: (kind) => run(id, state, kind),
     onRetryStep: (key) => run(id, state, "retry", key),
+    onCancelTranscription: state.input.route === "on-device" || (state.input.transcriptProvider === "private" && recorder.transcription?.onCancel)
+      ? async () => {
+        if (state.input.route === "on-device") {
+          if (state.input.device === "mac") {
+            const queue = getDesktopWhisperQueue();
+            if (!queue) throw new Error("Whisper is unavailable on this Mac.");
+            await queue.cancel(id);
+          } else {
+            await OnDeviceStt.cancel({ id });
+            await onDeviceSttStore.refresh();
+          }
+        } else await recorder.transcription!.onCancel!(id);
+        reread();
+      } : undefined,
+    onTranscribeNow: async () => {
+      if (state.input.transcript.inSpace !== null && recorder.transcription?.onTranscribeAgain) {
+        const engine = state.input.route === "on-device" ? "on-device"
+          : state.input.transcriptProvider === "powerful" ? "assemblyai" : "private-cloud";
+        const error = await recorder.transcription.onTranscribeAgain(id, engine);
+        if (error) throw new Error(error);
+      } else if (state.input.route === "on-device") {
+        if (state.input.device === "mac") {
+          const queue = getDesktopWhisperQueue();
+          if (!queue) throw new Error("Whisper is unavailable on this Mac.");
+          await queue.retry(id);
+        } else {
+          await OnDeviceStt.enqueue({ id });
+          await onDeviceSttStore.refresh();
+        }
+      } else {
+        if (!recorder.transcription) throw new Error("Transcription is unavailable.");
+        recorder.transcription.onTranscribe(id);
+      }
+      reread();
+    },
     actionError: state.pipeline.blocker === undefined ? null : failures.get(id) ?? null,
-  }])), [states, failures, run]);
+  }])), [states, failures, run, recorder.transcription, reread]);
   return { views, natives, nativeReady };
 }

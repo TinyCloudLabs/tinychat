@@ -39,6 +39,7 @@ export interface VoiceNoteTranscriptionProps {
   onTranscribePrivately: (sourceId: string, durationSecs: number | null, sizeBytes?: number | null) => PrivateStartRefusal | null | void;
   /** Starts one user-confirmed rerun. */
   onTranscribeAgain?: (sourceId: string, engine: VoiceNoteRerunEngine) => Promise<string | null> | string | null;
+  onCancel?: (sourceId: string) => Promise<void>;
   onConsent: () => void;
   onTurnOff: () => void;
   /** Asks again; resolves once the check has answered. */
@@ -75,6 +76,7 @@ export function transcriptionProps(
     onTranscribe: (sourceId) => transcriber.transcribe(sourceId),
     onTranscribePrivately: (sourceId, durationSecs, sizeBytes) => transcriber.transcribePrivately(sourceId, durationSecs, sizeBytes),
     onTranscribeAgain: (sourceId, engine) => transcriber.transcribeAgain?.(sourceId, engine) ?? "Transcription isn’t available here.",
+    onCancel: transcriber.cancel ? (sourceId) => transcriber.cancel!(sourceId) : undefined,
     onConsent: () => transcriber.consent(),
     onTurnOff: () => void transcriber.turnOff(),
     onRecheck: () => transcriber.check(),

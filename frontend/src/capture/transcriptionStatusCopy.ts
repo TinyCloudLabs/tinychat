@@ -10,6 +10,9 @@ export const TRANSCRIPTION_STATUS_COPY = {
   timeLeft: (seconds: number) => seconds < 60 ? "less than a minute left" : `about ${Math.round(seconds / 60)} min left`,
   progressLabel: "Transcription progress",
   audioNotOnDevice: "The audio for this note isn’t on this device.",
+  cancelled: "Transcription cancelled.",
+  cancelling: "Cancelling transcription…",
+  actionFailed: "Couldn’t complete that action. Try again.",
 } as const;
 
 export interface TranscriptionStatusModel {
@@ -20,7 +23,7 @@ export interface TranscriptionStatusModel {
   progress: number | null;
   /** "12 of 56 min" while the job transcribes a recording of known length; "40%" for other phases. */
   amount: string | null;
-  action: { label: string; run: () => void } | null;
+  action: { label: string; run: () => void | Promise<void> } | null;
 }
 
 /** The job's own words without the trailing percentage the progress line carries instead. */

@@ -43,7 +43,7 @@ export async function loadDesktopWhisperBridge(): Promise<DesktopWhisperBridge> 
   };
 }
 
-export type DesktopWhisperJob = { id: string; state: "queued" | "transcribing" | "done" | "failed";
+export type DesktopWhisperJob = { id: string; state: "queued" | "transcribing" | "done" | "failed" | "cancelled";
   error: string | null; progress: number | null; explicitRerun?: boolean; position?: number | null; inLine?: number };
 
 export interface DesktopWhisperRerun { id: string; rev: number; baseRev: number; baseHash: string }
@@ -57,6 +57,7 @@ export interface DesktopWhisperQueue {
   noteCommitted(recording: VoiceNoteRecording): Promise<void>;
   rerun(request: DesktopWhisperRerun): Promise<void>;
   retry(id: string): Promise<void>;
+  cancel(id: string): Promise<void>;
   modelAvailable(): Promise<void>;
   resume(): Promise<void>;
   beforeCapture(): Promise<void>;
@@ -147,6 +148,10 @@ export function createDesktopWhisperQueue(args: {
   let serverLease: WhisperServerLease | null = null;
   let disposed = false;
   let stopping = false;
+  const cancelled = new Set<string>();
+  let interrupt: (() => void) | null = null;
+  let starting: Promise<void> | null = null;
+  let committing = false;
 
   const publish = (id: string, state: DesktopWhisperJob["state"], error: string | null = null,
     progress: number | null = null) => {
@@ -163,9 +168,10 @@ export function createDesktopWhisperQueue(args: {
   };
   const mark = async (id: string, state: NoteSttState["state"], error: string | null = null, progress = 0,
     rerun: DesktopWhisperRerun | null = reruns.get(id) ?? failedReruns.get(id) ?? null) => {
+    if (cancelled.has(id) && state !== "cancelled") return;
     await store.updateStt(id, stt(state, error, rerun));
-    publish(id, state === "running" ? "transcribing" : state === "waiting_for_model" ? "failed"
-      : state === "cancelled" ? "queued" : state, error,
+    if (cancelled.has(id) && state !== "cancelled") return;
+    publish(id, state === "running" ? "transcribing" : state === "waiting_for_model" ? "failed" : state, error,
       state === "running" ? progress : null);
   };
   const selectedModel = async (): Promise<WhisperModel> => {
@@ -183,30 +189,42 @@ export function createDesktopWhisperQueue(args: {
     const id = note.id;
     const rerun = reruns.get(id) ?? null;
     let stagedId: string | null = null;
+    const checkpoint = () => {
+      if (cancelled.has(id)) throw new Error("transcription_cancelled");
+    };
     let yieldedForCapture = false;
     try {
       const existing = (await store.getTranscript({ id })).transcript;
+      checkpoint();
       if (!rerun && existing?.noteId === id && (existing.outcome === "no_speech" || existing.segments.some((segment) => segment.text.trim()))) {
         await mark(id, "done", null, 0, null);
         emitDone(id);
         return;
       }
       const model = await selectedModel();
+      checkpoint();
       logPipeline("transcription", id, "start", { engine: "whisper" });
       await mark(id, "running");
       stagedId = await stageId(id);
       await stageAudio(id, stagedId);
+      checkpoint();
       if (disposed || stopping || captureLive()) throw new Error("capture_has_priority");
       const lease = leaseWhisperServer(model, () => whisper.startServer(model), () => whisper.stopServer(),
         whisper.serverScope ?? whisper);
       serverLease = lease;
       await lease.ready;
+      checkpoint();
       if (disposed || stopping || captureLive()) throw new Error("capture_has_priority");
       const chunks: Extract<import("@/lib/anarlog/transcription.gen").StreamResponse, { type: "Results" }>[] = [];
       const response = await new Promise<BatchResponse>((resolve, reject) => {
         let settled = false;
         let stop = () => {};
         let progressUpdates = Promise.resolve();
+        interrupt = () => {
+          if (settled) return;
+          settled = true; clearTimeout(timer); stop();
+          reject(new Error("transcription_cancelled"));
+        };
         const timeoutMs = Math.max(30 * 60_000, Math.ceil(note.durationMs * 6));
         const timer = setTimeout(() => {
           if (!settled) {
@@ -227,6 +245,7 @@ export function createDesktopWhisperQueue(args: {
         }, timeoutMs);
         const finish = (event: WhisperEvent) => {
           if (event.session_id !== id || settled) return;
+          if (cancelled.has(id)) return;
           if (event.type === "progress") {
             if (event.event.type === "segment" && event.event.response.type === "Results")
               chunks.push(event.event.response);
@@ -248,11 +267,14 @@ export function createDesktopWhisperQueue(args: {
           try {
             stop = await whisper.onTranscription(finish);
             if (settled) { stop(); return; }
+            checkpoint();
             transcribing = true;
-            await whisper.startTranscription({ id, stageId: stagedId!, model });
+            starting = whisper.startTranscription({ id, stageId: stagedId!, model });
+            await starting;
           } catch (error) { if (!settled) { settled = true; clearTimeout(timer); stop(); reject(error); } }
         })();
       });
+      checkpoint();
       if (disposed || stopping || captureLive()) throw new Error("capture_has_priority");
       const shortfall = decodedShortfall(note.durationMs, response);
       if (shortfall) throw new Error(shortfall);
@@ -261,6 +283,7 @@ export function createDesktopWhisperQueue(args: {
         ...(rerun ? { rerunBase: { rev: rerun.baseRev, hash: rerun.baseHash } } : {}),
         chunks,
       });
+      committing = true;
       await store.putTranscript({ id, transcript });
       const persisted = (await store.getTranscript({ id })).transcript;
       if (!persisted || persisted.noteId !== id || persisted.outcome !== transcript.outcome
@@ -271,6 +294,7 @@ export function createDesktopWhisperQueue(args: {
       await mark(id, "done", null, 0, null);
       emitDone(id);
     } catch (error) {
+      if (cancelled.has(id)) return;
       logPipelineError("transcription", error, id);
       if (disposed) return;
       const message = whisperFailure(error);
@@ -284,6 +308,9 @@ export function createDesktopWhisperQueue(args: {
       }
     } finally {
       transcribing = false;
+      interrupt = null;
+      starting = null;
+      committing = false;
       serverLease?.release();
       serverLease = null;
       if (stagedId) {
@@ -316,6 +343,7 @@ export function createDesktopWhisperQueue(args: {
     if (!note)
       throw new Error("unavailable: this note's recording is unavailable on this Mac");
     if (active === request.id || reruns.has(request.id)) throw new Error("This note is already being transcribed");
+    cancelled.delete(request.id);
     failedReruns.delete(request.id);
     reruns.set(request.id, request);
     try {
@@ -368,15 +396,24 @@ export function createDesktopWhisperQueue(args: {
           publish(note.id, "failed", "The interrupted rerun was cancelled. Start it again from this note.");
           continue;
         }
-        if (note.stt?.state === "failed" && note.stt.rerunRev != null
+        if (note.stt && (note.stt.state === "failed" || note.stt.state === "cancelled") && note.stt.rerunRev != null
           && note.stt.rerunBaseRev != null && note.stt.rerunBaseHash) {
           failedReruns.set(note.id, { id: note.id, rev: note.stt.rerunRev,
             baseRev: note.stt.rerunBaseRev, baseHash: note.stt.rerunBaseHash });
-          publish(note.id, "failed", note.stt.error ?? "The rerun failed. Try again.");
+          if (note.stt.state === "cancelled") {
+            if (note.stt.error === "cancel_pending") await whisper.stopTranscription(note.id);
+            await mark(note.id, "cancelled", null);
+          } else publish(note.id, "failed", note.stt.error ?? "The rerun failed. Try again.");
           continue;
         }
         if (note.options?.transcriber !== "on-device") continue;
         if (note.ledger?.localAudio && note.ledger.localAudio.state !== "ready") continue;
+        if (note.stt?.state === "cancelled" && note.stt.error === "cancel_pending") {
+          cancelled.add(note.id);
+          await whisper.stopTranscription(note.id);
+          await mark(note.id, "cancelled", null, 0, null);
+          continue;
+        }
         if (note.stt?.state === "running") {
           // The Rust task can outlive a WebView reload. Stop that instance before
           // replacing its staged path and starting the durable queued attempt.
@@ -396,7 +433,7 @@ export function createDesktopWhisperQueue(args: {
             publish(note.id, "done");
           else await mark(note.id, "failed", "The local transcript is missing. Retry transcription.");
         }
-        else publish(note.id, note.stt?.state === "failed" ? "failed" : "queued",
+        else publish(note.id, note.stt?.state === "cancelled" ? "cancelled" : note.stt?.state === "failed" ? "failed" : "queued",
           note.stt?.error ?? null);
       }
       // Native tasks from the previous renderer are stopped above. Sweep any
@@ -405,22 +442,41 @@ export function createDesktopWhisperQueue(args: {
       await drain();
     },
     async noteCommitted(note) {
+      if (jobs.get(note.id)?.state === "cancelled" || note.stt?.state === "cancelled") return;
       if (note.options?.transcriber !== "on-device") return;
       await mark(note.id, "queued");
       await drain();
     },
     rerun,
+    async cancel(id) {
+      if (active === id && committing) throw new Error("The transcript is already being saved");
+      cancelled.add(id);
+      const rerun = reruns.get(id) ?? failedReruns.get(id) ?? null;
+      if (rerun) failedReruns.set(id, rerun);
+      reruns.delete(id);
+      // Persist before stopping: a renderer reload must not restart this attempt.
+      await mark(id, "cancelled", "cancel_pending", 0, rerun);
+      if (active === id && transcribing) {
+        await starting?.catch(() => {});
+        await whisper.stopTranscription(id);
+        interrupt?.();
+        await activeRun;
+      }
+      await mark(id, "cancelled", null, 0, rerun);
+    },
     async retry(id) {
       const note = (await store.listPending()).recordings.find((item) => item.id === id);
       if (!note) throw new Error("unavailable: this note's recording is missing");
+      if (active === id && cancelled.has(id)) await activeRun;
       if (active === id || note.stt?.state === "running") throw new Error("This note is already being transcribed");
       if (note.stt?.rerunRev != null && note.stt.rerunBaseRev != null && note.stt.rerunBaseHash) {
         failedReruns.delete(id);
         return rerun({ id, rev: note.stt.rerunRev, baseRev: note.stt.rerunBaseRev, baseHash: note.stt.rerunBaseHash });
       }
       if (note.options?.transcriber !== "on-device") throw new Error("unavailable: this note is not a local transcription");
-      if (note.stt?.state !== "failed" && note.stt?.state !== "waiting_for_model")
-        throw new Error("Only failed local transcriptions can be retried");
+      if (!["failed", "waiting_for_model", "cancelled"].includes(note.stt?.state ?? ""))
+        throw new Error("Only stopped local transcriptions can be retried");
+      cancelled.delete(id);
       await mark(id, "queued");
       await drain();
     },

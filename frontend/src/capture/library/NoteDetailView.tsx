@@ -437,6 +437,7 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
       <span className="sr-only" aria-live="polite" aria-atomic="true">
         {props.copyState === "copied" ? "Transcript copied to clipboard" : ""}
       </span>
+      {voiceNote && transcribeJob && <TranscriptionStatus job={transcribeJob} durationSecs={item.durationSecs} />}
       {pastedText !== null ? <p className="max-w-[68ch] whitespace-pre-wrap break-words text-body select-text">{pastedText}</p>
       : sentences.length > 0 || gaps.length > 0 ? (
         <div className="flex max-w-[68ch] flex-col gap-4 [-webkit-touch-callout:default] select-text">
@@ -476,9 +477,8 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
             <RefreshCwIcon aria-hidden /> Try again
           </Button>
         </div>
-      ) : voiceNote && transcribeJob ? (
-        <TranscriptionStatus job={transcribeJob} durationSecs={item.durationSecs} />
-      ) : voiceNote ? (
+      ) : voiceNote && transcribeJob ? null
+      : voiceNote ? (
         metadata === undefined ? (
           <Skeleton lines={1} className="w-40" />
         ) : metadata.status === "failed" ? (
@@ -517,20 +517,20 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
       )}
       {committedOutcome && (
         <div className="flex flex-col gap-2" data-testid="voice-note-transcription-rerun">
-          {rerunJob?.kind === "active" && (
+          {!transcribeJob && rerunJob?.kind === "active" && (
             <p role="status" className="flex items-center gap-2 text-callout text-muted-foreground">
               <Loader2Icon className="size-4 shrink-0 motion-safe:animate-spin" aria-hidden /> {transcriptionStatusText(rerunJob.status)}
             </p>
           )}
-          {rerunJob?.kind === "failed" && (
+          {!transcribeJob && rerunJob?.kind === "failed" && (
             <p role="alert" className="text-callout text-destructive" data-testid="voice-note-rerun-failed">
               {rerunJob.message}{rerunJob.reference && <span className="text-muted-foreground"> Reference: {rerunJob.reference}</span>}
             </p>
           )}
-          <OnDeviceNoteStatus noteId={item.sourceId} fallback={null} transcription={props.transcription}
+          {!transcribeJob && <><OnDeviceNoteStatus noteId={item.sourceId} fallback={null} transcription={props.transcription}
             durationSecs={item.durationSecs} rerunOnly />
-          <DesktopWhisperStatus noteId={item.sourceId} fallback={null} enabled={props.desktopWhisper} rerunOnly />
-          {rerunJob?.kind !== "active" && (
+          <DesktopWhisperStatus noteId={item.sourceId} fallback={null} enabled={props.desktopWhisper} rerunOnly /></>}
+          {!transcribeJob && rerunJob?.kind !== "active" && (
             <TranscribeAction noteId={item.sourceId} transcription={props.transcription} durationSecs={item.durationSecs}
               rerun label={rerunJob?.kind === "failed" ? "Try again" : "Transcribe again…"} />
           )}
@@ -559,8 +559,7 @@ function NoteDetailViewContent(props: NoteDetailViewProps) {
   const activityJobs = props.activityView && props.platform ? activityForNote(props.activityView, props.platform) : [];
   // The Transcript fallback owns the durable failure's explanation and retry action.
   // Where the transcript will appear carries the transcription status; the header keeps the rest.
-  const transcriptShown = (props.transcript?.status === "ok" && props.transcript.sentences.length > 0) || props.localTranscript?.noteId === item?.sourceId;
-  const transcriptStatusBelow = !transcriptShown && activityJobs.some((job) => job.kind === "transcribe");
+  const transcriptStatusBelow = activityJobs.some((job) => job.kind === "transcribe");
   const statusJobs = transcriptStatusBelow ? activityJobs.filter((job) => job.kind !== "transcribe") : activityJobs;
   const activityStatus = noteStatus(statusJobs, transcriptStatusBelow ? undefined : props.activityView?.pipeline, false);
   const activityRetry = statusJobs.find((job) => job.retry)?.retry;

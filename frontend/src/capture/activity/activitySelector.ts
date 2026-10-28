@@ -7,6 +7,7 @@ import type { UploadState } from "@/lib/audioUpload";
 import type { PausedUpload } from "@/capture/upload/pausedUpload";
 import { STORAGE_FULL_SAVE_MESSAGE, isStorageFullError, storageSaveMessage } from "@/lib/storageStatus";
 import { LOCAL_COPY, PROVIDER_DELAYED_COPY } from "@/lib/voiceNotes/notePipelineCopy";
+import { TRANSCRIPTION_STATUS_COPY } from "../transcriptionStatusCopy";
 
 export type ActivityKind = "finish" | "transcribe" | "sync" | "upload-audio";
 export type ActivityState = "running" | "retrying" | "waiting" | "needs-attention";
@@ -18,7 +19,7 @@ export interface ActivityJob {
   detail: string;
   progress?: number;
   retry?: () => void;
-  action?: { label: string; run: () => void };
+  action?: { label: string; run: () => void | Promise<void> };
   diagnostics?: string;
   /** Failure code for classification by notifications; never persist this raw provider value. */
   failureCode?: string;
@@ -69,17 +70,26 @@ export function activityForNote(view: NotePipelineView | undefined, platform: Ap
   const transcribe = steps.get("transcript");
   const provider = view.provider ?? (input.route === "on-device" ? "local" : "unknown");
   const local = provider === "local";
-  if (transcribe && input.route !== "off" && transcribe.state !== "done" && transcribe.state !== "skipped") {
+  const cloud = input.transcript.cloud;
+  const od = input.transcript.onDevice;
+  const cancelled = cloud?.kind === "cancelled" || od?.stt?.state === "cancelled";
+  const cancellingLocal = od?.stt?.state === "cancelled" && od.stt.error === "cancel_pending";
+  const liveLocal = local && (input.transcript.inSpace === null || od?.explicitRerun === true)
+    && ["queued", "running", "waiting_for_model"].includes(od?.stt?.state ?? "");
+  const liveCloud = cloud?.kind === "active";
+  if (transcribe && input.route !== "off" && ((transcribe.state !== "done" && transcribe.state !== "skipped") || liveLocal || liveCloud || cancelled)) {
     const destination = local ? device : provider === "powerful" ? "Powerful" : provider === "private" ? "Private transcription" : "transcription service";
-    const cloud = input.transcript.cloud;
     const phase = cloud?.kind === "active" ? cloud.status.kind : null;
-    const od = input.transcript.onDevice;
-    const syncOnly = local && (od?.stt?.state === "done" || od?.sync?.state === "syncing" || od?.sync?.state === "failed" || od?.sync?.state === "held");
+    const syncOnly = local && !liveLocal && !cancelled && (od?.stt?.state === "done" || od?.sync?.state === "syncing" || od?.sync?.state === "failed" || od?.sync?.state === "held");
     if (!syncOnly) {
       let detail: string;
-      if (transcribe.state === "failed") detail = transcribe.blocker?.cause ?? (local ? `Couldn't transcribe on ${device}.` : `${provider === "powerful" ? "Powerful" : provider === "private" ? "Private" : "Cloud"} transcription didn't finish.`);
-      else if (transcribe.state === "blocked") detail = transcribe.blocker?.cause ?? "Waiting to start";
-      else if (transcribe.state === "waiting") {
+      const state = cancelled ? "waiting" : liveCloud ? phase === "waiting" || phase === "queued" ? "waiting" : "running"
+        : liveLocal ? od?.stt?.state === "running" ? "running" : "waiting" : stateOf(transcribe);
+      if (cancelled) detail = cancellingLocal ? TRANSCRIPTION_STATUS_COPY.cancelling : cloud?.kind === "cancelled" && cloud.pending
+        ? cloud.error ?? TRANSCRIPTION_STATUS_COPY.cancelling : TRANSCRIPTION_STATUS_COPY.cancelled;
+      else if (state === "needs-attention") detail = transcribe.blocker?.cause ?? (local ? `Couldn't transcribe on ${device}.` : `${provider === "powerful" ? "Powerful" : provider === "private" ? "Private" : "Cloud"} transcription didn't finish.`);
+      else if (transcribe.state === "blocked" && !liveCloud && (!liveLocal || od?.stt?.state === "waiting_for_model")) detail = transcribe.blocker?.cause ?? "Waiting to start";
+      else if (state === "waiting") {
         if (od?.stt?.state === "waiting_for_model") detail = od.download === "waiting_for_network" ? "Waiting for Wi-Fi to get the speech model" : "Waiting for the speech model";
         else if (od?.stt?.state === "queued") { const ahead = od.queue?.position == null ? null : Math.max(0, od.queue.position - 1); detail = ahead === null ? "Waiting to transcribe" : ahead === 0 ? "Next to transcribe" : `Waiting to transcribe · ${ahead} note${ahead === 1 ? "" : "s"} ahead`; }
         else if (phase === "waiting") detail = provider === "powerful" ? "Waiting for Powerful to start" : provider === "private" ? "Waiting for your other Private transcription to finish" : "Waiting for transcription to start";
@@ -92,8 +102,15 @@ export function activityForNote(view: NotePipelineView | undefined, platform: Ap
       else if (phase === "saving") detail = "Saving the transcript to your TinyCloud space…";
       else detail = provider === "powerful" ? "Transcribing with Powerful…" : provider === "private" ? "Transcribing privately…" : "Transcribing…";
       const diagnostics = cloud?.kind === "failed" ? `${storageSaveMessage(cloud) ?? `${cloud.code}: ${cloud.message}`}${cloud.reference ? ` · ${cloud.reference}` : ""}` : od?.stt?.error ?? undefined;
-      jobs.push({ kind: "transcribe", state: stateOf(transcribe), label: "Transcribe", destination, detail,
-        progress: transcribe.progress, retry: retryFor(view, transcribe), action: actionFor(view, transcribe), diagnostics,
+      const action = cancelled ? cancellingLocal
+        ? view.onCancelTranscription ? { label: "Retry", run: view.onCancelTranscription } : undefined
+        : cloud?.kind === "cancelled" && cloud.pending
+        ? cloud.error && view.onCancelTranscription ? { label: "Retry", run: view.onCancelTranscription } : undefined
+        : view.onTranscribeNow ? { label: "Transcribe now", run: view.onTranscribeNow } : undefined
+        : view.onCancelTranscription && (liveLocal || liveCloud && phase !== "saving")
+          ? { label: "Cancel", run: view.onCancelTranscription } : actionFor(view, transcribe);
+      jobs.push({ kind: "transcribe", state, label: "Transcribe", destination, detail,
+        progress: transcribe.progress, retry: retryFor(view, transcribe), action, diagnostics,
         failureCode: cloud?.kind === "failed" ? cloud.code : od?.stt?.state === "failed" ? "on-device-stt" : undefined });
     }
   }

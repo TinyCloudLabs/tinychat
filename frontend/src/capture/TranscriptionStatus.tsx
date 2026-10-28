@@ -1,6 +1,6 @@
 // The one transcription status: a plain sentence, real progress and the one action that works for the state.
 // Activity and the note render it from the same job.
-import { useRef } from "react";
+import { useState, useRef } from "react";
 import { AlertCircleIcon, Loader2Icon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -23,6 +23,16 @@ export function TranscriptionStatus(props: { job: ActivityJob; durationSecs?: nu
   const left = useTimeLeft(status.state === "running" ? status.progress : null, props.now ?? Date.now());
   const attention = status.state === "needs-attention";
   const details = [status.amount, left === null ? null : TRANSCRIPTION_STATUS_COPY.timeLeft(left)].filter(Boolean).join(" · ");
+  const [pending, setPending] = useState(false);
+  const [actionError, setActionError] = useState(false);
+  const runAction = async () => {
+    if (pending || !status.action) return;
+    setPending(true);
+    setActionError(false);
+    try { await status.action.run(); }
+    catch { setActionError(true); }
+    finally { setPending(false); }
+  };
   return (
     <div role={attention ? "alert" : "status"} data-testid={props.testId ?? "transcription-status"} data-state={status.state}
       className="flex w-full max-w-[68ch] flex-col gap-2 rounded-xl bg-surface-2 p-3">
@@ -32,13 +42,14 @@ export function TranscriptionStatus(props: { job: ActivityJob; durationSecs?: nu
             : status.state === "running" ? <Loader2Icon className="size-4 shrink-0 motion-safe:animate-spin" aria-hidden /> : null}
           <span className="min-w-0 [overflow-wrap:anywhere]">{status.sentence}</span>
         </p>
-        {status.action && <Button type="button" variant={attention ? "default" : "outline"} onClick={status.action.run}
-          data-testid={props.actionTestId ?? "transcription-status-action"}>{status.action.label}</Button>}
+        {status.action && <Button type="button" variant={attention ? "default" : "outline"} onClick={() => void runAction()}
+          disabled={pending} aria-busy={pending} data-testid={props.actionTestId ?? "transcription-status-action"}>{pending && status.action.label === "Cancel" ? TRANSCRIPTION_STATUS_COPY.cancelling : status.action.label}</Button>}
       </div>
       {status.progress !== null && status.state === "running" && (
         <progress className="h-1 w-full accent-primary" max={1} value={status.progress} aria-label={TRANSCRIPTION_STATUS_COPY.progressLabel} />
       )}
       {details && <p className="tnum text-meta text-muted-foreground" data-testid="transcription-status-progress">{details}</p>}
+      {actionError && <p role="alert" className="text-callout text-destructive">{TRANSCRIPTION_STATUS_COPY.actionFailed}</p>}
     </div>
   );
 }

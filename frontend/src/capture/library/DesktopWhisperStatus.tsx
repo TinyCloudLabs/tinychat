@@ -26,6 +26,7 @@ export function whisperJobMeta(job: DesktopWhisperJob): string | null {
     case "queued": return "Waiting to transcribe on this Mac";
     case "transcribing": return WHISPER_JOB_COPY.transcribing(job.progress);
     case "failed": return WHISPER_JOB_COPY.recentFailed;
+    case "cancelled": return "Transcription cancelled";
     case "done": return null;
   }
 }
@@ -36,6 +37,7 @@ export function DesktopWhisperStatusView(props: {
   onRetry: () => void;
   localRead: "loading" | "missing" | "timeout" | "failed";
   onReadRetry?: () => void;
+  onCancel?: () => Promise<void>;
   durationSecs?: number | null;
 }) {
   const { job } = props;
@@ -48,6 +50,14 @@ export function DesktopWhisperStatusView(props: {
         </div>;
   }
   const retry = props.onRetry;
+  if (job.state === "cancelled") {
+    const pending = job.error === "cancel_pending";
+    return <TranscriptionStatus durationSecs={props.durationSecs} job={{
+      kind: "transcribe", state: "waiting", label: "Transcribe", destination: "this Mac",
+      detail: pending ? "Cancelling transcription…" : "Transcription cancelled.",
+      action: pending && props.onCancel ? { label: "Retry", run: props.onCancel } : { label: "Transcribe now", run: retry },
+    }} />;
+  }
   if (job.state === "failed") {
     return <TranscriptionStatus testId="whisper-job-failed" actionTestId="whisper-job-retry" durationSecs={props.durationSecs} job={{
       kind: "transcribe", state: "needs-attention", label: "Transcribe", destination: "this Mac",
@@ -56,6 +66,7 @@ export function DesktopWhisperStatusView(props: {
   return <TranscriptionStatus testId="whisper-job-status" durationSecs={props.durationSecs} job={{
     kind: "transcribe", state: job.state === "queued" ? "waiting" : "running", label: "Transcribe", destination: "this Mac",
     detail: job.state === "queued" ? WHISPER_JOB_COPY.queued : "Transcribing on this Mac…",
+    action: props.onCancel ? { label: "Cancel", run: props.onCancel } : undefined,
     ...(job.state === "transcribing" && job.progress !== null ? { progress: job.progress / 100 } : {}) }} />;
 }
 
@@ -96,7 +107,9 @@ function DesktopWhisperJobStatus(props: { noteId: string; fallback: ReactNode; l
     setRetryError(false);
     retryWhisperJob(props.noteId, () => setRetryError(true));
   };
-  return <DesktopWhisperStatusView job={job} retryError={retryError} onRetry={onRetry} localRead={props.localRead} onReadRetry={props.onReadRetry} durationSecs={props.durationSecs} />;
+  return <DesktopWhisperStatusView job={job} retryError={retryError} onRetry={onRetry}
+    onCancel={async () => { const queue = getDesktopWhisperQueue(); if (!queue) throw new Error("Whisper is unavailable"); await queue.cancel(props.noteId); }}
+    localRead={props.localRead} onReadRetry={props.onReadRetry} durationSecs={props.durationSecs} />;
 }
 
 

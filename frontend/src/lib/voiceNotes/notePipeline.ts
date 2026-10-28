@@ -76,6 +76,7 @@ export interface PipelineOnDevice {
   /** iOS's built-in speech (`OnDeviceSttStatus["appleSpeech"]`): there is no model to fetch, only assets the OS installs. Absent where a model is. */
   appleSpeech?: "unsupported" | "locale_unsupported" | "asset_missing" | "ready";
   sync: PipelineTranscriptSync | null;
+  explicitRerun?: boolean;
 }
 
 /** `TranscriptionBlockedReason` (P2). */
@@ -97,7 +98,8 @@ export type PipelineCloud =
   | { kind: "done"; outcome: "transcribed" | "no_speech" }
   | { kind: "failed"; code: string; message: string; retryable: boolean; reference: string | null }
   | { kind: "held"; message: string }
-  | { kind: "blocked"; reason: PipelineBlockedReason };
+  | { kind: "blocked"; reason: PipelineBlockedReason }
+  | { kind: "cancelled"; pending?: boolean; error?: string };
 
 /** Note sync (`syncRecordingNote`, `recordingNoteSyncError/Syncing/Skip`). `idle`: not synced and no sync running; nothing has started one. */
 export type PipelineNotesSync =
@@ -358,6 +360,7 @@ function cloudStep(cloud: PipelineCloud | null, spaceSaved: boolean, checkingCap
   if (cloud === null) return { state: "waiting", caption: checkingCaption ?? (provider === "powerful" ? "Waiting for Powerful" : provider === "unknown" ? "Waiting for transcription" : PRIVATE_COPY.notStarted) };
   switch (cloud.kind) {
     case "done": return { state: "done", sublabel: cloud.outcome === "no_speech" ? TRANSCRIPT_COPY.noSpeechInSpace : TRANSCRIPT_COPY.savedInSpace };
+    case "cancelled": return blocked(cloud.error ?? (cloud.pending ? "Cancelling transcription…" : "Transcription cancelled."), cloud.error ? "retry" : undefined);
     case "held": return blocked(cloud.message.trim() || PRIVATE_COPY.notStarted);
     case "failed":
       if (cloud.code === TRANSCRIPT_STORAGE_FULL_CODE) return { state: "blocked", blocker: storageFullBlocker(localAudioReady) };
@@ -386,6 +389,11 @@ function cloudStep(cloud: PipelineCloud | null, spaceSaved: boolean, checkingCap
 function transcriptStep(input: NotePipelineInput): Result {
   const { inSpace, onDevice, cloud } = input.transcript;
   if (input.route === "private-cloud" && !input.space.saved) return { state: "waiting", caption: PRIVATE_COPY.afterUpload };
+  if (input.route === "private-cloud" && (cloud?.kind === "active" || cloud?.kind === "cancelled"))
+    return cloudStep(cloud, input.space.saved, null, input.transcriptProvider, input.transcript.localAudioReady === true);
+  if (input.route === "on-device" && onDevice && (inSpace === null || onDevice.explicitRerun)
+    && ["queued", "running", "cancelled"].includes(onDevice.stt?.state ?? ""))
+    return onDeviceStep(input, { ...onDevice, sync: null });
   if (inSpace !== null) return { state: "done", sublabel: inSpace === "no_speech" ? TRANSCRIPT_COPY.noSpeechInSpace : TRANSCRIPT_COPY.savedInSpace };
   if (input.route === "private-cloud" && cloud === null && input.transcript.cloudIdle === true) return { state: "skipped" };
   if (input.route === "private-cloud" && cloud?.kind === "failed"
