@@ -1,5 +1,11 @@
 # @tinychat/backend
 
+## 0.6.0
+
+### Minor Changes
+
+- 1714a70: Chat can read meetings through the hosted TinyCloud MCP for accounts listed in MCP_CHAT_TEST_ACCOUNTS (read-only, behind MCP_CHAT_ENABLED). Details: TC-2196
+
 ## 0.6.0-beta.0
 
 ### Minor Changes

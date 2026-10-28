@@ -37,6 +37,7 @@ import {
 
 import { readTranscriptCommit } from "../voiceNotes/voiceNoteCommits";
 import type { StoreError, StoreResult } from "./connectorStore";
+import { keepUserTitle } from "../recordingTitleMeta";
 
 // ═══ 1. Guards and low-level I/O ═════════════════════════════════════════════════════════════
 
@@ -344,9 +345,16 @@ export async function writeCombined(
   // Re-combine, or a collapse onto another writer's row: replace the keeper's content in place.
   // Summary columns are untouched (section 3b owns them); created_at is preserved.
   if (!created || keeper !== row.id) {
+    // A title the user typed on the combined meeting survives a re-combine.
+    const current = await sql(tcw, "query", "SELECT title, metadata FROM connector_meeting WHERE id = ? AND source = 'exo-merged'", [keeper]);
+    if (!current.ok) return current;
+    let currentMetadata: Record<string, unknown> = {};
+    try { currentMetadata = JSON.parse(String(current.rows[0]?.[1] ?? "{}")) as Record<string, unknown>; } catch { /* no marker */ }
+    const kept = keepUserTitle({ title: asString(current.rows[0]?.[0]), metadata: currentMetadata },
+      { title: row.title, metadata: JSON.parse(metadata) as Record<string, unknown> });
     const upd = await sql(tcw, "execute",
       "UPDATE connector_meeting SET title = ?, started_at = ?, duration_secs = ?, participants = ?, metadata = ?, updated_at = ? WHERE id = ? AND source = 'exo-merged'",
-      [row.title, row.started_at, row.duration_secs, participants, metadata, now, keeper]);
+      [kept.title, row.started_at, row.duration_secs, participants, JSON.stringify(kept.metadata), now, keeper]);
     if (!upd.ok) return upd;
   }
   return { ok: true, data: { status: "written", id: keeper, sourceId, created: created && keeper === row.id, passed: row.metadata.merge.detection.passed } };
