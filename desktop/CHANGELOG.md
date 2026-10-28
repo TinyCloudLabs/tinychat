@@ -1,5 +1,11 @@
 # exo-desktop
 
+## 0.10.0-beta.64
+
+### Minor Changes
+
+- ec9f26e: Rename a chat from the Chats list or the chat header. The title is saved with the chat in your space, a renamed title is never replaced by the automatic title, and clearing it returns to the automatic title.
+
 ## 0.10.0-beta.63
 
 No changes in this release.

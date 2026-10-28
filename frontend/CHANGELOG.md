@@ -1,5 +1,15 @@
 # @tinychat/frontend
 
+## 0.10.0-beta.64
+
+### Minor Changes
+
+- ec9f26e: Rename a chat from the Chats list or the chat header. The title is saved with the chat in your space, a renamed title is never replaced by the automatic title, and clearing it returns to the automatic title.
+
+### Patch Changes
+
+- 113c561: Local Whisper compares the audio it decoded with the saved recording's length. A transcript that covers less of the recording is shown as failed with the transcribed and recorded lengths, and Retry transcription runs it again.
+
 ## 0.10.0-beta.63
 
 ### Patch Changes
