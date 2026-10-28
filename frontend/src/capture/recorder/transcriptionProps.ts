@@ -34,6 +34,7 @@ export interface VoiceNoteTranscriptionProps {
   diarization?: boolean;
   /** Notes being transcribed, waiting their turn, or whose last attempt failed. */
   jobs: ReadonlyMap<string, NoteTranscriptionState>;
+  providerFor?: (sourceId: string) => "private" | "powerful" | null;
   onTranscribe: (sourceId: string) => void;
   /** Private cloud for a note committed to another mode (Local); see `VoiceNoteTranscriber.transcribePrivately`. */
   onTranscribePrivately: (sourceId: string, durationSecs: number | null, sizeBytes?: number | null) => PrivateStartRefusal | null | void;
@@ -73,6 +74,7 @@ export function transcriptionProps(
     ...(limits === null || limits.maxBytes === null ? {} : { maxBytes: limits.maxBytes }),
     diarization: snapshot.capabilities?.diarization === true,
     jobs: snapshot.jobs,
+    providerFor: transcriber.providerFor,
     onTranscribe: (sourceId) => transcriber.transcribe(sourceId),
     onTranscribePrivately: (sourceId, durationSecs, sizeBytes) => transcriber.transcribePrivately(sourceId, durationSecs, sizeBytes),
     onTranscribeAgain: (sourceId, engine) => transcriber.transcribeAgain?.(sourceId, engine) ?? "Transcription isn’t available here.",

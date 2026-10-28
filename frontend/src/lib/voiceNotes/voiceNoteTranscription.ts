@@ -1527,6 +1527,9 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
       const id = created?.id ?? current.transcriptionId;
       if (id !== null && id !== undefined) await deps.api.cancel(id);
       if (currentAccountGeneration() !== generation) throw accountChangedError();
+      // A second control may still be awaiting OLD after the first cancellation allowed NEW to start.
+      const owner = pending.read(sourceId);
+      if (owner?.attemptId !== current.attemptId || owner.failure !== "cancelled") return;
       pending.write(sourceId, { attemptId: current.attemptId, transcriptionId: null, failure: "cancelled", failedAt: clock.now() });
     },
     cancellationPending(sourceId) {
@@ -2022,6 +2025,8 @@ export type VoiceNoteRerunEngine = "on-device" | "private-cloud" | "assemblyai";
 
 export interface VoiceNoteTranscriber {
   snapshot(): VoiceNoteTranscriberSnapshot;
+  /** The actual owner of this note's cloud job, including a completed cancellation. */
+  providerFor?(sourceId: string): "private" | "powerful" | null;
   subscribe(listener: (event: VoiceNoteTranscriberEvent) => void): () => void;
   /**
    * Whether private cloud can be offered (bounded retries when the check itself fails).
@@ -2838,6 +2843,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
 
   const transcriber: VoiceNoteTranscriber = {
     snapshot: () => snapshot,
+    providerFor: (sourceId) => jobs.has(sourceId) ? "private" : null,
     subscribe(listener) {
       listeners.add(listener);
       return () => {
@@ -2983,6 +2989,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
       if (current?.kind === "active" && current.status.kind === "saving")
         throw new Error("The transcript is already being saved.");
       if (!cloud?.cancel) throw new Error("This transcription provider cannot cancel jobs.");
+      const attempt = attempts.get(sourceId);
       holdStates.set(sourceId, "held");
       deps.holds.write(Object.fromEntries(holdStates));
       attempts.get(sourceId)?.abort();
@@ -2993,10 +3000,13 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
       try {
         await cloud.cancel(sourceId);
       } catch (error) {
+        const current = jobs.get(sourceId);
+        if (attempts.get(sourceId) !== attempt || current?.kind !== "cancelled" || !current.pending) return;
         jobs.set(sourceId, { kind: "cancelled", pending: true, error: "Couldn’t stop transcription. Try again." });
         emit();
         throw error;
       }
+      if (attempts.get(sourceId) !== attempt || jobs.get(sourceId)?.kind !== "cancelled") return;
       jobs.set(sourceId, { kind: "cancelled" });
       releaseSourceFor(sourceId);
       emit();
@@ -3169,10 +3179,14 @@ export function voiceNoteTranscriberFor(
   const hosted = createHostedVoiceNoteTrack(() => ref.current, backendUrl, sessionStore, did);
   let powerfulAvailable = false;
   const listeners = new Set<(event: VoiceNoteTranscriberEvent) => void>();
-  const makeSnapshot = (): VoiceNoteTranscriberSnapshot => ({
-    ...privateTranscriber.snapshot(), heldDurability, powerfulAvailable, powerfulConsented: hosted.consented(),
-    jobs: new Map([...privateTranscriber.snapshot().jobs, ...hosted.jobs]),
-  });
+  const makeSnapshot = (): VoiceNoteTranscriberSnapshot => {
+    const jobs = new Map(hosted.jobs);
+    for (const [id, job] of privateTranscriber.snapshot().jobs) {
+      if (hosted.jobs.get(id)?.kind !== "active" || job.kind === "active") jobs.set(id, job);
+    }
+    return { ...privateTranscriber.snapshot(), heldDurability, powerfulAvailable,
+      powerfulConsented: hosted.consented(), jobs };
+  };
   let combinedSnapshot = makeSnapshot();
   const emit = (event: VoiceNoteTranscriberEvent = { kind: "changed" }) => {
     combinedSnapshot = makeSnapshot();
@@ -3184,6 +3198,11 @@ export function voiceNoteTranscriberFor(
   const transcriber: VoiceNoteTranscriber = {
     ...privateTranscriber,
     snapshot: () => combinedSnapshot,
+    providerFor(sourceId) {
+      const job = combinedSnapshot.jobs.get(sourceId);
+      if (!job) return null;
+      return job === privateTranscriber.snapshot().jobs.get(sourceId) ? "private" : "powerful";
+    },
     subscribe(listener) { listeners.add(listener); return () => { listeners.delete(listener); }; },
     async check(options) {
       await Promise.all([privateTranscriber.check(options), hosted.check().then((available) => {

@@ -127,6 +127,7 @@ export interface NotePipelineFacts {
   spaceAfterUploads?: boolean;
   /** This note's private-cloud job (`transcriber.snapshot().jobs`). */
   cloudJob: NoteTranscriptionState | null;
+  cloudProvider?: "private" | "powerful" | null;
   /** The account's private-cloud check has not answered: a saved note gets its job (or its blocked or held one) once it does. */
   cloudChecking?: boolean;
   /**
@@ -286,7 +287,10 @@ function projectedTranscriptState(metadata: Record<string, unknown>): VoiceNoteT
 export function buildNotePipelineInput(facts: NotePipelineFacts): NotePipelineInput {
   const desktopLocal = facts.device === "mac" && (facts.desktopJob != null || desktopCommittedLocal(facts.rowMetadata));
   const queue = facts.onDeviceStatus === null ? null : onDeviceQueuePlace(facts.onDeviceStatus, facts.id);
-  const route = desktopLocal ? "on-device" : pipelineRoute(facts.native, facts.cloudJob !== null, queue);
+  const localLive = facts.desktopJob?.state === "queued" || facts.desktopJob?.state === "transcribing"
+    || (queue !== null && queue.position !== null) || facts.native?.stt?.state === "queued" || facts.native?.stt?.state === "running";
+  const cloudOwns = facts.cloudJob !== null && (facts.cloudJob.kind === "active" || facts.cloudProvider != null && !localLive);
+  const route = cloudOwns ? "private-cloud" : desktopLocal ? "on-device" : pipelineRoute(facts.native, facts.cloudJob !== null, queue);
   const liveTranscriptWork = facts.cloudJob?.kind === "active"
     || (queue !== null && queue.position !== null)
     || facts.native?.stt?.state === "queued"
@@ -305,7 +309,8 @@ export function buildNotePipelineInput(facts: NotePipelineFacts): NotePipelineIn
   const outcome = rowOutcome !== "none" ? rowOutcome : ledgerOutcome;
   const localNoteError = facts.localNoteError ?? null;
   const hasNotesOrMoments = localNoteError !== null || facts.localNote?.hasContent === true || typeof facts.rowMetadata?.note_kv_key === "string";
-  const transcriptProvider = facts.native?.transcriber === "assemblyai" ? "powerful" : facts.native?.transcriber === "private-cloud" ? "private" : providerFromMetadata(facts.rowMetadata);
+  const transcriptProvider = cloudOwns && facts.cloudProvider != null ? facts.cloudProvider
+    : facts.native?.transcriber === "assemblyai" ? "powerful" : facts.native?.transcriber === "private-cloud" ? "private" : providerFromMetadata(facts.rowMetadata);
   return {
     device: facts.device,
     route,
@@ -935,6 +940,7 @@ function usePipelineStates(entries: readonly { id: string; source: NotePipelineS
         spaceReading,
         spaceAfterUploads: spaceReading && textLaneDepth > 0,
         cloudJob: recorder.transcription?.jobs.get(id) ?? null,
+        cloudProvider: recorder.transcription?.providerFor?.(id) ?? null,
         cloudChecking: recorder.transcription?.availability === "checking",
       };
       // A saved note with text and no sync of this revision gets its automatic attempt (`useAutoNoteSync`); until it settles it is "syncing".
@@ -1080,8 +1086,10 @@ function useNotePipelinesWithLedger(entries: readonly { id: string; source: Note
     onRetryStep: (key) => run(id, state, "retry", key),
     onCancelTranscription: state.input.route === "on-device" || (state.input.transcriptProvider === "private" && recorder.transcription?.onCancel)
       ? async () => {
-        if (state.input.route === "on-device") {
-          if (state.input.device === "mac") {
+        const current = latest.current.states.get(id) ?? state;
+        const transcription = latest.current.recorder.transcription;
+        if (current.input.route === "on-device") {
+          if (current.input.device === "mac") {
             const queue = getDesktopWhisperQueue();
             if (!queue) throw new Error("Whisper is unavailable on this Mac.");
             await queue.cancel(id);
@@ -1089,17 +1097,22 @@ function useNotePipelinesWithLedger(entries: readonly { id: string; source: Note
             await OnDeviceStt.cancel({ id });
             await onDeviceSttStore.refresh();
           }
-        } else await recorder.transcription!.onCancel!(id);
+        } else {
+          if (!transcription?.onCancel) throw new Error("This transcription provider cannot cancel jobs.");
+          await transcription.onCancel(id);
+        }
         reread();
       } : undefined,
     onTranscribeNow: async () => {
-      if (state.input.transcript.inSpace !== null && recorder.transcription?.onTranscribeAgain) {
-        const engine = state.input.route === "on-device" ? "on-device"
-          : state.input.transcriptProvider === "powerful" ? "assemblyai" : "private-cloud";
-        const error = await recorder.transcription.onTranscribeAgain(id, engine);
+      const current = latest.current.states.get(id) ?? state;
+      const transcription = latest.current.recorder.transcription;
+      if (current.input.transcript.inSpace !== null && transcription?.onTranscribeAgain) {
+        const engine = current.input.route === "on-device" ? "on-device"
+          : current.input.transcriptProvider === "powerful" ? "assemblyai" : "private-cloud";
+        const error = await transcription.onTranscribeAgain(id, engine);
         if (error) throw new Error(error);
-      } else if (state.input.route === "on-device") {
-        if (state.input.device === "mac") {
+      } else if (current.input.route === "on-device") {
+        if (current.input.device === "mac") {
           const queue = getDesktopWhisperQueue();
           if (!queue) throw new Error("Whisper is unavailable on this Mac.");
           await queue.retry(id);
@@ -1108,8 +1121,15 @@ function useNotePipelinesWithLedger(entries: readonly { id: string; source: Note
           await onDeviceSttStore.refresh();
         }
       } else {
-        if (!recorder.transcription) throw new Error("Transcription is unavailable.");
-        recorder.transcription.onTranscribe(id);
+        if (!transcription) throw new Error("Transcription is unavailable.");
+        if (current.input.transcriptProvider === "private") {
+          const source = latest.current.entries.find((entry) => entry.id === id)?.source;
+          const recording = current.native?.recording;
+          const audio = privateAudioSourceFromMetadata(source?.metadata ?? current.rowMetadata);
+          const refusal = transcription.onTranscribePrivately(id,
+            source?.durationSecs ?? (recording ? recording.durationMs / 1000 : null), audio.sizeBytes ?? recording?.sizeBytes ?? null);
+          if (refusal) throw new Error(privateRefusalCopy(refusal));
+        } else transcription.onTranscribe(id);
       }
       reread();
     },

@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
 import type { BatchResponse, TranscriptionEvent } from "@/lib/anarlog/transcription.gen";
 import type { LocalTranscript } from "../nativeVoiceNotes";
 import { newIdbEnv } from "../web/testing/idb";
@@ -12,6 +12,15 @@ const oldTranscript: LocalTranscript = { version: 2, noteId: "rerun", rev: 1, tr
   createdAt: "2026-01-01T00:00:00.000Z", segments: [{ start: 0, end: 1000, text: "Saved transcript", speaker: null }] };
 const response = { metadata: { duration: 2 }, results: { channels: [{ alternatives: [{ transcript: "Late result", confidence: 1,
   words: [{ word: "Late", punctuated_word: "Late result", start: 0, end: 1, confidence: 1, speaker: null, channel: 0 }] }] }] } } as unknown as BatchResponse;
+
+const queues = new Set<DesktopWhisperQueue>();
+const subscriptions = new Set<() => void>();
+afterEach(() => {
+  for (const stop of subscriptions) stop();
+  subscriptions.clear();
+  for (const queue of queues) queue.dispose();
+  queues.clear();
+});
 
 async function setup(ids: string[]) {
   const env = newIdbEnv();
@@ -39,7 +48,11 @@ async function setup(ids: string[]) {
     stopTranscription: async (id) => { stops.push(id); },
     onTranscription: async (listener) => { listeners.add(listener); return () => { listeners.delete(listener); retired.push(listener); }; },
   };
-  const makeQueue = () => createDesktopWhisperQueue({ store, files, whisper, captureLive: () => capture });
+  const makeQueue = () => {
+    const queue = createDesktopWhisperQueue({ store, files, whisper, captureLive: () => capture });
+    queues.add(queue);
+    return queue;
+  };
   const queue = makeQueue();
   const notes = (await store.listPending()).recordings;
   for (const note of notes) await queue.noteCommitted(note);
@@ -53,10 +66,13 @@ async function setup(ids: string[]) {
 function jobState(queue: DesktopWhisperQueue, id: string, state: string): Promise<void> {
   if (queue.snapshot().get(id)?.state === state) return Promise.resolve();
   const { promise, resolve } = Promise.withResolvers<void>();
-  const stop = queue.subscribe(() => {
-    if (queue.snapshot().get(id)?.state === state) { stop(); resolve(); }
-  });
-  return promise;
+  const changed = () => {
+    if (queue.snapshot().get(id)?.state === state) resolve();
+  };
+  const stop = queue.subscribe(changed);
+  subscriptions.add(stop);
+  changed();
+  return promise.then(() => { stop(); subscriptions.delete(stop); });
 }
 
 test("queued cancellation survives reopening the store without deleting saved audio or starting another note", async () => {
