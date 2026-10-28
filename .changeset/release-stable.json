@@ -1,0 +1,8 @@
+{
+  "versions": {
+    "@tinychat/backend": "0.6.0"
+  },
+  "changesets": [
+    ".changeset/pre/mcp-chat-meeting-tools.md"
+  ]
+}
