@@ -158,7 +158,6 @@ class MemoryBoundaries {
       },
       put: async (key: string, value: unknown) => {
         if (key === store.driveCursorKvKey("google-meet")) await this.reach("cursor-write");
-        if (key === connectorEnvelopeKvPath(descriptor)) this.credentialSaved.resolve();
         this.kv.set(key, typeof value === "string" ? value : JSON.stringify(value));
         return ok({ data: undefined, headers: {} });
       },
@@ -171,6 +170,7 @@ class MemoryBoundaries {
       put: async (name: string, value: string, options?: { scope?: string }) => {
         this.secretWrites++;
         this.tokens.set(`${options?.scope ?? ""}:${name}`, value);
+        this.credentialSaved.resolve();
         return ok(undefined);
       },
       get: async (name: string, options?: { scope?: string }) => {
