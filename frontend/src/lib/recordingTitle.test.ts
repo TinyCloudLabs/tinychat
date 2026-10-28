@@ -13,7 +13,7 @@ afterEach(() => { __resetStorageStatusForTests(); });
 const STARTED = new Date(2026, 9, 9, 10, 30).getTime();
 const DEFAULT_TITLE = "Voice note · Oct 9";
 const SENTENCES = [{ index: 0, speaker_name: "You", text: "Hello.", start_time: 0, end_time: 5 }];
-const AUTO = "Oct 9 · AssemblyAI Universal-2 · Alice Chen";
+const AUTO = "Oct 9 · Alice Chen";
 
 let count = 0;
 function fakeTcw() {

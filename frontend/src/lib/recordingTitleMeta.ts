@@ -1,5 +1,4 @@
 import { autoMeetingTitle } from "./meetingTitle";
-import { transcriptionModelLabel } from "./transcriptionModelLabel";
 
 // A recording's title is `connector_meeting.title`. A title the user typed is marked in the row's
 // metadata so no auto-titling, re-transcribe or re-sync replaces it:
@@ -57,7 +56,7 @@ function autoTitleOf(row: { source: string; startedAt: unknown; participants: un
   if (row.source === VOICE_NOTE && m.transcription_outcome === "transcribed") {
     let names: unknown = [];
     try { names = JSON.parse(typeof row.participants === "string" ? row.participants : "[]"); } catch { /* no names */ }
-    const recomputed = autoMeetingTitle({ startedAt: row.startedAt, modelLabel: transcriptionModelLabel(m.model),
+    const recomputed = autoMeetingTitle({ startedAt: row.startedAt,
       participantNames: Array.isArray(names) ? names.map((p) => (p as { name?: unknown } | null)?.name) : [] });
     if (recomputed) return recomputed;
   }
