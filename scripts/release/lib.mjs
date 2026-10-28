@@ -1,6 +1,6 @@
 /** Shared release definitions. Every workspace package other than the release units is private and ignored by Changesets. */
 import { spawnSync } from 'node:child_process';
-import { appendFileSync, existsSync, readFileSync, readdirSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -34,6 +34,7 @@ export const BRANCH_STABLE = 'release/stable';
 export const BRANCH_PRODUCTION = 'production';
 export const PRODUCTION_WORKFLOW = 'deploy-production.yml';
 export const DESKTOP_RELEASE_WORKFLOW = 'desktop-release.yml';
+export const STABLE_SCOPE_FRONTEND_DESKTOP = 'frontend-desktop';
 
 /** Split a `<name>@<version>` tag; names may be scoped (`@tinychat/backend@0.1.1`). */
 export function parseTag(tag) {
@@ -148,20 +149,83 @@ export function readChangesets(root) {
 // The Release stable PR records the plan it was reviewed with here; the stable release deletes it.
 export const STABLE_PLAN = '.changeset/release-stable.json';
 
+/** Temporarily add packages to Changesets' ignore list for one synchronous CLI operation. */
+export function withIgnoredPackages(root, packages, operation) {
+  const configPath = join(root, '.changeset/config.json');
+  const original = readFileSync(configPath, 'utf8');
+  const config = JSON.parse(original);
+  const ignore = config.ignore ?? [];
+  const additions = packages.filter(name => !ignore.includes(name));
+  if (additions.length === 0) return operation();
+
+  writeFileSync(configPath, `${JSON.stringify({ ...config, ignore: [...ignore, ...additions] }, null, 2)}\n`);
+  try {
+    return operation();
+  } finally {
+    writeFileSync(configPath, original);
+  }
+}
+
 /**
  * What a stable release ships right now: every unit on a beta graduates to its X.Y.Z, carrying the changesets that
  * betas already released (.changeset/pre/). Fresh changesets never go straight to stable (check.mjs refuses them).
  */
-export function stablePlan(root) {
-  const versions = {};
+export function stablePlan(root, scope) {
+  const betaVersions = {};
+  const prereleaseVersions = {};
   for (const unit of UNITS) {
-    const beta = /^(\d+\.\d+\.\d+)-beta\.\d+$/.exec(readJson(root, `${unit.dir}/package.json`).version ?? '');
-    if (beta) versions[unit.name] = beta[1];
+    const version = readJson(root, `${unit.dir}/package.json`).version ?? '';
+    const beta = /^(\d+\.\d+\.\d+)-beta\.\d+$/.exec(version);
+    if (beta) {
+      betaVersions[unit.name] = beta[1];
+      prereleaseVersions[unit.name] = version;
+    }
   }
-  return { versions, changesets: readChangesets(root).filter(changeset => changeset.admitted).map(changeset => changeset.file) };
+
+  if (scope === undefined) {
+    return { versions: betaVersions, changesets: readChangesets(root).filter(changeset => changeset.admitted).map(changeset => changeset.file) };
+  }
+  if (scope !== STABLE_SCOPE_FRONTEND_DESKTOP) throw new Error(`Unknown stable release scope ${JSON.stringify(scope)}`);
+
+  const selectedUnits = new Set(FIXED);
+  const versions = Object.fromEntries(Object.entries(betaVersions).filter(([name]) => selectedUnits.has(name)));
+  if (FIXED.some(name => !Object.hasOwn(versions, name))) {
+    throw new Error(`Stable scope ${scope} requires beta versions for ${FIXED.join(' and ')}`);
+  }
+  const pendingVersions = Object.fromEntries(Object.entries(prereleaseVersions).filter(([name]) => !selectedUnits.has(name)));
+  const changesets = readChangesets(root).filter(changeset => changeset.admitted);
+  const selectedChangesets = [];
+  const pendingChangesets = [];
+  for (const changeset of changesets) {
+    const releasedUnits = (changeset.releases ?? []).filter(({ type }) => type !== 'none').map(({ name }) => name);
+    const selected = releasedUnits.some(name => selectedUnits.has(name));
+    const pending = releasedUnits.some(name => !selectedUnits.has(name));
+    if (selected && pending) throw new Error(`Stable scope ${scope} cannot split admitted changeset ${changeset.file}`);
+    if (selected) selectedChangesets.push(changeset.file);
+    else if (pending) pendingChangesets.push(changeset.file);
+  }
+  return {
+    scope,
+    versions,
+    changesets: selectedChangesets,
+    pending: { versions: pendingVersions, changesets: pendingChangesets },
+  };
 }
 
-const canonicalPlan = plan => JSON.stringify({ versions: Object.entries(plan.versions).sort(), changesets: [...plan.changesets].sort() });
+const canonicalPlan = plan => {
+  const result = {
+    versions: Object.entries(plan.versions).sort(),
+    changesets: [...plan.changesets].sort(),
+  };
+  if (plan.scope !== undefined) {
+    result.scope = plan.scope;
+    result.pending = {
+      versions: Object.entries(plan.pending.versions).sort(),
+      changesets: [...plan.pending.changesets].sort(),
+    };
+  }
+  return JSON.stringify(result);
+};
 export const samePlan = (a, b) => canonicalPlan(a) === canonicalPlan(b);
 
 // `version = "..."` inside the [package] table of Cargo.toml.
