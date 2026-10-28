@@ -196,4 +196,29 @@ describe("renaming from a row", () => {
     expect(stored.title).toBe("Q4 planning");
     expect(stored.metadata.title_user).toBe(true);
   });
+
+  test("editing the rejected draft back to the title it opened with writes nothing and clears the error", async () => {
+    const { sqlite, rowId } = await seededNote();
+    const fail = { current: true };
+    const tcw = spaceFor(sqlite, fail);
+    const c = await mountNode(<Space tcw={tcw} title={DEFAULT_TITLE} rowId={rowId} />);
+    const input = await open(c);
+    await typeInto(input, "Q4 planning");
+    await press(input, "Enter");
+    await settle();
+    expect(c.querySelector("[role=alert]")).not.toBeNull();
+    expect((c.querySelector("input") as HTMLInputElement).value).toBe("Q4 planning");
+    // The write recovers and the user types the opening title back: it is still "unchanged", so nothing
+    // is written and no name of their own is stored.
+    fail.current = false;
+    const reopened = c.querySelector("input") as HTMLInputElement;
+    await typeInto(reopened, DEFAULT_TITLE);
+    await press(reopened, "Enter");
+    await settle();
+    expect(c.querySelector("input")).toBeNull();
+    expect(c.querySelector("[role=alert]")).toBeNull();
+    const stored = storedTitle(sqlite, rowId);
+    expect(stored.title).toBe(DEFAULT_TITLE);
+    expect(stored.metadata).not.toHaveProperty("title_user");
+  });
 });

@@ -89,15 +89,15 @@ export function useRecordingTitleEdit(recording: RenamableRecording | null, curr
       start: () => { setFailed(false); setRejected(null); setBaseline(current); setEditing(true); },
       cancel: () => { setFailed(false); setRejected(null); setBaseline(null); setEditing(false); },
       save: (value) => {
-        // An unchanged title is not a rename: it would pin an automatic title as the user's.
-        if (rejected === null && normalizeRecordingTitle(value) === normalizeRecordingTitle(baseline ?? current)) {
-          setEditing(false); setBaseline(null); return;
+        // An unchanged title is not a rename: it would pin an automatic title as the user's. The baseline
+        // stands for the whole session — a failed attempt does not move it, so coming back to the opening
+        // title is still "unchanged" and writes nothing, while the rejected draft stays different from it.
+        if (normalizeRecordingTitle(value) === normalizeRecordingTitle(baseline ?? current)) {
+          setEditing(false); setBaseline(null); setRejected(null); setFailed(false); return;
         }
         setEditing(false);
-        setRejected(null);
-        setBaseline(null);
         void rename(recording, value).then((ok) => {
-          if (ok) return;
+          if (ok) { setBaseline(null); setRejected(null); setFailed(false); return; }
           setRejected(value);
           setFailed(true);
           setEditing(true);
