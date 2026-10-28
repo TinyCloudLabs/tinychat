@@ -55,6 +55,12 @@ export interface RecordingTitleEdit {
   /** What the editor opens with: the title as shown. */
   current: string;
   failed: boolean;
+  /**
+   * The editor's identity for this editing session: the recording plus the failed save that reopened it, if any.
+   * A background refresh of the title changes `current` while a draft sits inside the editor; keying on it would
+   * remount and lose what was typed, so only the recording and the reopen change the key.
+   */
+  fieldKey: string;
   start: () => void;
   save: (title: string) => void;
   cancel: () => void;
@@ -73,6 +79,7 @@ export function useRecordingTitleEdit(recording: RenamableRecording | null, curr
       editing,
       current: draft ?? current,
       failed,
+      fieldKey: `${id}:${draft === null ? "new" : `reopen:${JSON.stringify(draft)}`}`,
       start: () => { setFailed(false); setDraft(null); setEditing(true); },
       cancel: () => { setFailed(false); setDraft(null); setEditing(false); },
       save: (value) => {
@@ -97,7 +104,7 @@ export function useRecordingTitleEdit(recording: RenamableRecording | null, curr
 export function RecordingTitleEditField({ edit, className }: { edit: RecordingTitleEdit; className?: string }) {
   return (
     <div className={cn("flex min-w-0 flex-1 flex-col", className)} data-testid="recording-title-edit">
-      <RecordingTitleEditor key={edit.current} initial={edit.current} onSave={edit.save} onCancel={edit.cancel} />
+      <RecordingTitleEditor key={edit.fieldKey} initial={edit.current} onSave={edit.save} onCancel={edit.cancel} />
       {edit.failed && <p role="alert" className="px-1 text-meta text-destructive">{RECORDING_RENAME_FAILED}</p>}
     </div>
   );

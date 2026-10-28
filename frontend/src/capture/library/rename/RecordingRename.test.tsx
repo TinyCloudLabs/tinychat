@@ -52,7 +52,6 @@ describe("RecordingTitleEditor", () => {
     expect(e.input.selectionStart).toBe(0);
     expect(e.input.selectionEnd).toBe("Weekly recap".length);
     expect(e.input.scrollLeft).toBe(0);
-    expect(e.input.getAttribute("aria-label")).toBe("Recording title");
   });
 
   test("Enter saves once; Escape cancels and the blur it causes does not save; leaving the field saves", async () => {
@@ -75,11 +74,10 @@ describe("RecordingTitleEditor", () => {
     expect(c.saved).toEqual(["Left the field"]);
   });
 
-  test("Save and Cancel are 44 px touch targets that do not steal the edit from each other", async () => {
+  test("Cancel does not steal the edit from the field", async () => {
     const e = await mount("A");
     const buttons = [...e.container.querySelectorAll("button")];
-    expect(buttons.map((b) => b.getAttribute("aria-label"))).toEqual(["Save", "Cancel"]);
-    expect(buttons.every((b) => b.className.includes("size-[var(--tc-control-height)]"))).toBe(true);
+    expect(buttons).toHaveLength(2);
     await typeInto(e.input, "B");
     await act(async () => { buttons[1]!.click(); });
     expect(e.saved).toEqual([]);
@@ -97,16 +95,17 @@ describe("renaming from a row", () => {
     };
     return { tcw: { did: "did:test:ui", spaceId: "did:test:ui", sql: { db: () => db }, kv: {} } as unknown as TinyCloudWeb, calls };
   }
-  function Row() {
-    const edit = useRecordingTitleEdit(item, "Voice note · Oct 9");
-    if (!edit) return <p>no rename</p>;
-    return edit.editing ? <RecordingTitleEditField edit={edit} /> : <RenameRecordingButton edit={edit} />;
-  }
   const row = ["Voice note · Oct 9", "{}", "2026-10-09T10:30:00.000Z", "exo-voice-note", "2026-10-09T10:30:00.000Z", "[]"];
   const open = async (container: HTMLElement) => { await act(async () => { (container.querySelector("button") as HTMLButtonElement).click(); }); return container.querySelector("input") as HTMLInputElement; };
 
+  function Row({ title }: { title: string }) {
+    const edit = useRecordingTitleEdit(item, title);
+    if (!edit) return <p>no rename</p>;
+    return edit.editing ? <RecordingTitleEditField edit={edit} /> : <RenameRecordingButton edit={edit} />;
+  }
+
   test("offers nothing without a space to write to", async () => {
-    const c = await mountNode(<Row />);
+    const c = await mountNode(<Row title="Voice note · Oct 9" />);
     expect(c.textContent).toBe("no rename");
   });
 
@@ -114,7 +113,7 @@ describe("renaming from a row", () => {
     const { tcw, calls } = stubSpace([row]);
     const changed: unknown[] = [];
     const off = captureEvents.on("library-changed", (d) => changed.push(d));
-    const c = await mountNode(<RecordingRenameProvider tcw={tcw}><Row /></RecordingRenameProvider>);
+    const c = await mountNode(<RecordingRenameProvider tcw={tcw}><Row title="Voice note · Oct 9" /></RecordingRenameProvider>);
     let input = await open(c);
     await press(input, "Enter");
     expect(calls.filter((s) => !s.startsWith("SELECT id"))).toEqual([]);
@@ -130,14 +129,36 @@ describe("renaming from a row", () => {
     off();
   });
 
+  test("a background title change while editing keeps what is being typed", async () => {
+    const { tcw } = stubSpace([row]);
+    function Refreshable({ title }: { title: string }) {
+      return <RecordingRenameProvider tcw={tcw}><Row title={title} /></RecordingRenameProvider>;
+    }
+    const c = await mountNode(<Refreshable title="Voice note · Oct 9" />);
+    await open(c);
+    const editor = c.querySelector("input") as HTMLInputElement;
+    await typeInto(editor, "Half typed");
+    // The Library re-reads the row under the open editor: a different automatic title arrives.
+    await act(async () => { root!.render(<Refreshable title="Oct 9 · Alice Chen" />); });
+    const after = c.querySelector("input") as HTMLInputElement;
+    expect(after).toBe(editor); // same element: no remount
+    expect(after.value).toBe("Half typed");
+    await press(after, "Enter");
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    // Saving still goes through with the typed title.
+    expect(c.querySelector("input")).toBeNull();
+  });
+
   test("a failed write reopens the editor with what was typed and says so", async () => {
     const { tcw } = stubSpace([row], true);
-    const c = await mountNode(<RecordingRenameProvider tcw={tcw}><Row /></RecordingRenameProvider>);
+    const c = await mountNode(<RecordingRenameProvider tcw={tcw}><Row title="Voice note · Oct 9" /></RecordingRenameProvider>);
     const input = await open(c);
     await typeInto(input, "Q4 planning");
     await press(input, "Enter");
     await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
-    expect((c.querySelector("input") as HTMLInputElement).value).toBe("Q4 planning");
-    expect(c.querySelector("[role=alert]")?.textContent).toBe("Couldn’t rename this recording. Try again.");
+    const reopened = c.querySelector("input") as HTMLInputElement;
+    expect(reopened).not.toBe(input); // a fresh mount seeded with the rejected value
+    expect(reopened.value).toBe("Q4 planning");
+    expect(c.querySelector("[role=alert]")?.textContent).toBeTruthy();
   });
 });

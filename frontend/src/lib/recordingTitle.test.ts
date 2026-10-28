@@ -145,6 +145,20 @@ describe("renaming a recording", () => {
     expect(note.metadata.title_auto_value).toBe(DEFAULT_TITLE);
   });
 
+  test("clearing a name on a row whose title was always empty returns to empty, not the typed name", async () => {
+    const f = fakeTcw();
+    await ensureSchema(f.tcw);
+    // A provider row that never had an automatic title: title NULL, plain metadata.
+    f.sqlite.run("INSERT INTO connector_meeting (id, source, source_id, title, started_at, duration_secs, organizer_email, participants, summary_overview, summary_action_items, keywords, meeting_type, metadata, created_at, updated_at) VALUES ('vn-null', 'exo-voice-note', 'rec-null', NULL, ?, NULL, NULL, '[]', NULL, NULL, NULL, NULL, '{}', ?, ?)", [new Date().toISOString(), new Date().toISOString(), new Date().toISOString()]);
+    expect(await renameRecording(f.tcw, "vn-null", "Given name")).toEqual({ ok: true, title: "Given name" });
+    expect(stored(f.sqlite, "rec-null").metadata.title_auto_value).toBeNull();
+    expect(await renameRecording(f.tcw, "vn-null", "  ")).toEqual({ ok: true, title: null });
+    const note = stored(f.sqlite, "rec-null");
+    expect(note.title).toBeNull();
+    expect(note.metadata).not.toHaveProperty("title_user");
+    expect(note.metadata).not.toHaveProperty("title_auto_value");
+  });
+
   test("the rows with a name of their own can be listed, and clearing removes one", async () => {
     const a = await voiceNote("rec-i");
     await createVoiceNoteRow(a.tcw, recording("rec-j"), DEFAULT_TITLE);

@@ -78,6 +78,9 @@ export function planRename(name: string, row: TitleRow): { title: string | null;
     return { title: name, metadata: { ...rest, [TITLE_USER_KEY]: true, [TITLE_AUTO_VALUE_KEY]: auto } };
   }
   if (!hasUserTitle(metadata)) return null;
+  // A recorded `title_auto_value` is the captured answer, even when it is null: an originally-untitled row's
+  // rename stored null there, so clearing returns the row to null rather than keeping the user's title.
+  if (TITLE_AUTO_VALUE_KEY in metadata) return { title: (metadata[TITLE_AUTO_VALUE_KEY] as string | null) ?? null, metadata: rest };
   const auto = autoTitleOf({ source: row.source, startedAt: row.startedAt, participants: row.participants, metadata });
   // `title_auto` stays: an untranscribed note returns to that title, so its commit still names it.
   return { title: auto ?? row.title, metadata: rest };
