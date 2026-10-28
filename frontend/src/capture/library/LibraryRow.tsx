@@ -94,7 +94,7 @@ function LibraryRowContent(props: LibraryRowProps & { activityStatus: string | n
         onDetails={issue && issueIsInformational(issue) ? (opener: HTMLElement) => soft.openIssue(item.sourceId, opener) : undefined}
         {...(issue && issueHasSheet(issue)
           ? { onActivate: (row: HTMLElement) => soft.openIssue(item.sourceId, row) }
-          : props.onRecentOpen && isVoiceNote(item)
+          : props.onRecentOpen && isVoiceNote(item) && !isPasted(item)
             ? { onActivate: () => props.onRecentOpen?.(item.id) }
             : { href: notePath(item.id) })}
         selected={props.selected}

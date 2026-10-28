@@ -196,9 +196,13 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
   const model = combinedModel(modelStatus);
   const modelProgress = model === null ? null : { bytes: model.bytes, totalBytes: model.totalBytes };
   // A saved voice note is the note itself: a full page (desktop) or a sheet over the Library (phone).
+  // A pasted transcript is not a recording: it opens as a plain note page; treating it as the saved
+  // note left the detail pane hidden on a phone while the sheet it was routed to never rendered.
   const openNote = (noteScreen || recentNoteId !== null) && library.note.item?.source === VOICE_NOTE_SOURCE ? library.note.item : null;
-  const notePage = desktopHome && noteScreen && openNote !== null;
-  const noteSheet = soft && openNote !== null;
+  const pastedOpenNote = openNote?.metadata?.capture === "pasted" ? openNote : null;
+  const savedOpenNote = openNote !== null && pastedOpenNote === null ? openNote : null;
+  const notePage = desktopHome && noteScreen && savedOpenNote !== null;
+  const noteSheet = soft && savedOpenNote !== null;
   const now = new Date();
 
   // Wide: the Library link and entering the Library bring its half of the list pane into view.
@@ -267,7 +271,7 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
         data-scroll-root={wide ? "" : undefined}
       >
         <div
-          className={homeOnly ? "h-full" : desktopHome ? "hidden" : wide ? "flex flex-col" : libraryScreen || noteScreen ? "hidden" : `${SCROLLER} flex flex-col`}
+          className={homeOnly ? "h-full" : desktopHome ? "hidden" : wide ? "flex flex-col" : libraryScreen || noteScreen || pastedOpenNote !== null ? "hidden" : `${SCROLLER} flex flex-col`}
           data-scroll-root={wide || desktopHome ? undefined : ""}
           data-testid="capture-home"
         >
@@ -346,7 +350,7 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
         </div>
       </div>
       <div
-        className={homeOnly || noteSheet || (soft && recentNoteId !== null) ? "hidden" : notePage ? "h-full overflow-hidden" : wide || noteScreen ? SCROLLER : "hidden"}
+        className={homeOnly || noteSheet || (soft && recentNoteId !== null && pastedOpenNote === null) ? "hidden" : notePage ? "h-full overflow-hidden" : wide || noteScreen || pastedOpenNote !== null ? SCROLLER : "hidden"}
         data-scroll-root=""
         data-testid="capture-detail"
       >
