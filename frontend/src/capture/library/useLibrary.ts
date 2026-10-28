@@ -610,10 +610,12 @@ export function useLibrary(
     // The space loader is always built: a verified receipt that lands after the cached metadata still plays it.
     if (voiceSourceId !== null && phoneFirst) return phoneFirstAudio(voiceSourceId,
       phoneChannels, space.did, spaceLoad(voiceSourceId), localOnlyAudio);
-    if (voiceSourceId !== null && metadataLoaded && !pendingAudioRow && !localOnlyAudio) return { load: spaceLoad(voiceSourceId) };
+    // A pasted transcript never had audio: it is the only voice note with no space load.
+    const pastedRow = voiceSourceId !== null && item?.metadata?.capture === "pasted";
+    if (voiceSourceId !== null && !pastedRow && metadataLoaded && !pendingAudioRow && !localOnlyAudio) return { load: spaceLoad(voiceSourceId) };
     if (audioBase !== null && !localOnlyAudio) return { load: (signal, onProgress) => getAudio(space.kv, audioBase, { signal, onProgress }) };
     return null;
-  }, [audioBase, item?.saving, phoneFirst, phoneChannels, localOnlyAudio, metadataLoaded, pendingAudioRow, space, voiceSourceId]);
+  }, [audioBase, item?.saving, item?.metadata, phoneFirst, phoneChannels, localOnlyAudio, metadataLoaded, pendingAudioRow, space, voiceSourceId]);
 
   const retry = useCallback(() => {
     if (list.status === "failed") refresh();
