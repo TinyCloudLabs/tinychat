@@ -45,6 +45,7 @@ import { CombineActions } from "./combine/CombineActions";
 import { CombinedSummary } from "./combine/CombinedSummary";
 import type { CombineDetail } from "./combine/combinedView";
 import { librarySourceLabel } from "./libraryKinds";
+import { useWordFixApplier, useWordFixedSentences } from "@/lib/wordFixes/wordFixesStore";
 import { TimestampedTranscript, type TranscriptGap } from "./TimestampedTranscript";
 import { TranscriptProvenanceNote } from "./TranscriptProvenanceNote";
 import { hasPrivateCloudTimingProvenance, hasSegmentTimes, transcriptMarkdown } from "./transcriptSegments";
@@ -362,10 +363,13 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
     (transcript?.status === "failed" || metadata?.status === "failed");
   const isPrivateCloud = remoteSentences.length > 0
     && hasPrivateCloudTimingProvenance(metadata?.status === "ok" ? metadata.metadata : null, props.transcriptProvenance);
-  const sentences = localSyncPending && local ? localTranscriptToSave(local).sentences : remoteSentences.length > 0 ? remoteSentences
-    : local?.outcome === "transcribed" ? localTranscriptToSave(local).sentences : [];
-  const pastedText = item.metadata?.capture === "pasted" && metadata?.status === "ok"
+  // The user's word fixes (TC-2199) are shown on the stored sentences; every use below, copy and export included, sees them.
+  const applyWordFixes = useWordFixApplier();
+  const sentences = useWordFixedSentences(localSyncPending && local ? localTranscriptToSave(local).sentences : remoteSentences.length > 0 ? remoteSentences
+    : local?.outcome === "transcribed" ? localTranscriptToSave(local).sentences : []);
+  const pastedStored = item.metadata?.capture === "pasted" && metadata?.status === "ok"
     && typeof metadata.metadata.transcript_text === "string" ? metadata.metadata.transcript_text : null;
+  const pastedText = pastedStored === null ? null : applyWordFixes(pastedStored);
   const shownLocal = localSyncPending || remoteSentences.length === 0 ? local : null;
   const shownProvider = shownLocal ? shownLocal.engine
     : props.transcriptProvenance?.provider ?? (metadata?.status === "ok" ? metadata.metadata.transcript_provider : null);
@@ -484,7 +488,7 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
         ) : savedText(metadata) ? (
           // Marked transcribed, its transcript body missing: the text the row carries.
           <p className="max-w-[68ch] whitespace-pre-wrap break-words text-body" data-testid="voice-note-transcript-text">
-            {savedText(metadata)}
+            {applyWordFixes(savedText(metadata) ?? "")}
           </p>
         ) : metadata.status === "ok" && metadata.metadata.transcription_outcome === "transcribed" ? (
           <div className="flex flex-wrap items-center gap-3" data-testid="voice-note-transcript-missing">

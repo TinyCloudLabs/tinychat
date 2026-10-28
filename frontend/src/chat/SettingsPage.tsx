@@ -39,6 +39,7 @@ import { useConversationCanvasFeature } from "./useExperimentalFeatures";
 import { TranscriptionSettings } from "./TranscriptionSettings";
 import { VoiceNotesTranscriberSettings } from "./VoiceNotesTranscriberSettings";
 import { AutomaticSummariesSettings } from "./AutomaticSummariesSettings";
+import { WordFixesSettings } from "./WordFixesSettings";
 import { DebugLogRow } from "./DebugLogRow";
 import { AudioCacheSettings } from "@/capture/AudioCacheSettings";
 import { ReplicationSettings } from "../lib/replication/ReplicationSettings";
@@ -208,6 +209,7 @@ export function SettingsPage({
             />
           </SectionCard>
           <TranscriptionSettings tcw={tcw} />
+          <WordFixesSettings tcw={tcw} />
           <SectionCard icon={BookOpenIcon} title="Meeting summaries">
             <AutomaticSummariesSettings tcw={tcw} />
           </SectionCard>

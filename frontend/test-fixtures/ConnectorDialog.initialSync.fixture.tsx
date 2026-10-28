@@ -91,6 +91,7 @@ class MemoryBoundaries {
   readonly unexpectedEgress: string[] = [];
   readonly requests: { url: string; method: string }[] = [];
   secretWrites = 0;
+  readonly credentialSaved = deferred();
   secretUnlocks = 0;
   exchangeCalls = 0;
   recordListings = 0;
@@ -157,6 +158,7 @@ class MemoryBoundaries {
       },
       put: async (key: string, value: unknown) => {
         if (key === store.driveCursorKvKey("google-meet")) await this.reach("cursor-write");
+        if (key === connectorEnvelopeKvPath(descriptor)) this.credentialSaved.resolve();
         this.kv.set(key, typeof value === "string" ? value : JSON.stringify(value));
         return ok({ data: undefined, headers: {} });
       },
@@ -344,6 +346,8 @@ async function authorize(fakeClock = false) {
     }));
     await tick();
   });
+  await settle();
+  await memory.credentialSaved.promise;
   await settle();
 }
 
