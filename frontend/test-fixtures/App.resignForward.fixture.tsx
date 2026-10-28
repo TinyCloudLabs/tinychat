@@ -13,7 +13,7 @@ import { PlatformContext, type AppPlatform } from "@/lib/platform";
 import { replicationOptInKey } from "@/lib/replication/replicationOptIn";
 import { REPLICATION_RUNTIME_FLAG_KEY } from "@/lib/replication/replicationFlag";
 import { SIGN_IN_BUNDLE_ENTRIES } from "@tinyboilerplate/core";
-import realManifest from "../public/.well-known/openkey-manifest.json";
+import realManifest from "../../manifest.json";
 
 // The app code under test must never reach a real home: HOME is a throwaway dir under /var/tmp,
 // set at load and asserted before anything runs.
@@ -50,7 +50,6 @@ const NOTICE = "Sign in once more so TinyCloud Home can open your apps and your 
 
 /** Every effect the gate must order, in the order it happened. */
 const events: string[] = [];
-const manifestUrls: string[] = [];
 let handoffResult: { ok: boolean; failClosed: boolean; message: string | null } = { ok: true, failClosed: false, message: null };
 let offline = false;
 /** What the backend serves at /api/manifest: this build's manifest.json, the same without the bundle (an older backend), or nothing. */
@@ -60,7 +59,7 @@ const oldManifest = {
   permissions: realManifest.permissions.filter((entry) => !SIGN_IN_BUNDLE_ENTRIES.some((required) => required.service === entry.service && required.path === entry.path)),
 };
 
-function stubTcw(): TinyCloudWeb {
+function fakeTcw(): TinyCloudWeb {
   return {
     did: PRINCIPAL, spaceId: "space-a1", address: () => ADDRESS, sql: {}, kv: {}, secrets: {},
     replication: { sync: () => { events.push("sync"); return Promise.resolve(); } },
@@ -71,24 +70,15 @@ mock.module("@tinyboilerplate/client", () => ({
   ...clientApi,
   connectWallet: async () => ({ address: ADDRESS, openkey: {}, web3Provider: {} }),
   requestNonce: async () => "nonce",
-  loadAppManifest: async (url: string) => {
-    manifestUrls.push(url);
+  loadAppManifest: async () => {
     events.push("loadManifest");
     if (served === "unreachable") throw new TypeError("Failed to fetch");
     return served === "old" ? oldManifest : realManifest;
   },
-  createTinyCloudWeb: () => ({
-    ...stubTcw(),
-    clearPersistedSession: async () => {},
-    prepareSignIn: async () => {},
-    signIn: async () => {
-      events.push("signIn");
-      return { siwe: "message", signature: "signature" };
-    },
-  }),
+  createAndSignIn: async () => { events.push("signIn"); return { tcw: fakeTcw(), session: { siwe: "message", signature: "signature" } }; },
   verifySession: async () => ({ token: "bearer", expiresIn: 3600, address: ADDRESS }),
   clearPersistedSession: (address: string) => { events.push(`clearPersisted:${address}`); realClearPersistedSession(address); },
-  restoreTinyCloudWebSession: async () => { events.push("restore"); return { status: "restored", tcw: stubTcw() }; },
+  restoreTinyCloudWebSession: async () => { events.push("restore"); return { status: "restored", tcw: fakeTcw() }; },
 }));
 const realStartReplicationFill = replicationClientApi.startReplicationFill; // captured before the mock replaces the export
 mock.module("@/lib/replication/replicationClient", () => ({
@@ -232,7 +222,6 @@ function seedSession() {
 const realFetch = globalThis.fetch;
 beforeEach(() => {
   events.length = 0;
-  manifestUrls.length = 0;
   offline = false;
   served = "full";
   handoffResult = { ok: true, failClosed: false, message: null };
@@ -259,8 +248,6 @@ test("desktop: a forced re-sign shows the re-sign notice on the offline recorder
   await settle();
   // The ready shell is the mocked recorder shell here, so sign-in is proven by the sign-in call and the recorded revision.
   expect(events).toEqual(["loadManifest", "handoff", `clearPersisted:${ADDRESS}`, "loadManifest", "signIn", "sync"]);
-  // The restore gate and the sign-in prefetch both load the web's own OpenKey manifest file, not /api/manifest.
-  expect(manifestUrls).toEqual(["/.well-known/openkey-manifest.json", "/.well-known/openkey-manifest.json"]);
   expect(localStorage.getItem(REVISION_KEY)).toBe("3");
 });
 

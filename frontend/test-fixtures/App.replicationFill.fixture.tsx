@@ -37,7 +37,7 @@ let syncBehaviour: () => Promise<void> = async () => undefined;
 let restoreAs: "signedOut" | "restored" = "signedOut";
 let optedIn = true;
 
-function makeTcw(): TinyCloudWeb {
+function fakeTcw(): TinyCloudWeb {
   return {
     did: PRINCIPAL, spaceId: "space-a1", address: () => ADDRESS, sql: {}, kv: {}, secrets: {},
     replication: { sync: () => { syncCalls += 1; return syncBehaviour(); } },
@@ -49,11 +49,7 @@ mock.module("@tinyboilerplate/client", () => ({
   connectWallet: async () => ({ address: ADDRESS, openkey: {}, web3Provider: {} }),
   requestNonce: async () => "nonce",
   loadAppManifest: async () => ({}),
-  createTinyCloudWeb: () => Object.assign(makeTcw(), {
-    clearPersistedSession: async () => {},
-    prepareSignIn: async () => {},
-    signIn: async () => ({ siwe: "message", signature: "signature" }),
-  }),
+  createAndSignIn: async () => ({ tcw: fakeTcw(), session: { siwe: "message", signature: "signature" } }),
   verifySession: async () => ({ token: "bearer", expiresIn: 3600, address: ADDRESS }),
 }));
 // The real plugin and storage are not what is under test: the config patch is empty, while the real
@@ -82,7 +78,7 @@ mock.module("@/lib/sessionRestore", () => ({
   ...restoreApi,
   browserIsOffline: () => false,
   restorePersistedSession: async () => (restoreAs === "restored"
-    ? { kind: "restored", tcw: makeTcw(), address: ADDRESS }
+    ? { kind: "restored", tcw: fakeTcw(), address: ADDRESS }
     : { kind: "signedOut" }),
 }));
 mock.module("@/lib/openkeySignOut", () => ({ ...signOutApi, signOutOpenKeySession: async () => ({ status: "cancelled" }) }));

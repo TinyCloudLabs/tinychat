@@ -51,8 +51,7 @@ import {
   type UpsertMeetingOutcome,
 } from "./connectorStore";
 import { fromFireflies, isTerminal, type SyncError } from "./firefliesSync";
-import { isSecretsUnlocked } from "./connectorSecrets";
-import { getConnectorKey, isConnectorKeysReady } from "./namedConnectorSecrets";
+import { getConnectorKey, isSecretsUnlocked } from "./connectorSecrets";
 import type {
   ConnectorAckItem,
   ConnectorAckRequest,
@@ -175,7 +174,7 @@ const defaultStore: TargetedIngestStore = {
 };
 
 const defaultSecrets: TargetedIngestSecrets = {
-  isUnlocked: (tcw) => isConnectorKeysReady(tcw) || isSecretsUnlocked(tcw),
+  isUnlocked: isSecretsUnlocked,
   getKey: (tcw, descriptor) => getConnectorKey<unknown>(tcw, descriptor),
 };
 
