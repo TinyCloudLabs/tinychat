@@ -508,7 +508,7 @@ export function useLibrary(
   }, [item, readNote, invalidationRevision]);
 
   const noteReads: NoteReads = item?.onPhone
-    ? { metadata: { status: "ok", metadata: {}, organizerEmail: null, participants: [] }, transcript: { transcript: { status: "absent" }, provenance: null } }
+    ? { metadata: { status: "ok", metadata: {} }, transcript: { transcript: { status: "absent" }, provenance: null } }
     : item ? (reads.current.get(item.id) ?? {}) : {};
   const meta = noteReads.metadata?.status === "ok" ? noteReads.metadata.metadata : null;
   const audio = item ? meetingAudioFrom(meta) : null;

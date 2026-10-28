@@ -20,8 +20,6 @@ export interface SpaceRow {
   participants?: string;
   /** The stored `metadata` column, verbatim (a test may make it garbage). */
   metadata?: string;
-  /** The stored `organizer_email` column. */
-  organizerEmail?: string | null;
   /** The stored transcript body, verbatim (JSON text). */
   body?: string;
   /** The stored `summary_overview` / `summary_action_items` columns of a combined meeting. */
@@ -76,9 +74,9 @@ export function combineSpace(seed: readonly SpaceRow[], options: { did?: string 
       };
       return ok({ rows: listed.map((r) => [r.id, r.source, r.sourceId, r.title, r.startedAt, r.durationSecs, null, null, members(r)]) });
     }
-    if (s === "SELECT metadata, organizer_email, participants FROM connector_meeting WHERE id = ?") {
+    if (s === "SELECT metadata FROM connector_meeting WHERE id = ?") {
       const r = rows.get(String(params[0]));
-      return ok({ rows: r ? [[r.metadata ?? "{}", r.organizerEmail ?? null, r.participants ?? null]] : [] });
+      return ok({ rows: r ? [[r.metadata ?? "{}"]] : [] });
     }
     if (s.startsWith("SELECT title, started_at, duration_secs, participants, metadata FROM connector_meeting WHERE source = ? AND source_id = ?")) {
       const r = [...rows.values()].find((x) => x.source === params[0] && x.sourceId === params[1]);

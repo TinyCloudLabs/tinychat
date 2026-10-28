@@ -17,10 +17,11 @@ const sentences = [
 ];
 const ROW = { id: "row-1", source: "exo-voice-note", sourceId: "rec-1" };
 
-function space(metadata: Record<string, unknown>) {
+function space(metadata: Record<string, unknown>, organizer: { email: string; participants?: string } | null = null) {
   const sqlite = new Database(":memory:");
-  sqlite.run("CREATE TABLE connector_meeting (id TEXT PRIMARY KEY, metadata TEXT, updated_at TEXT)");
-  sqlite.run("INSERT INTO connector_meeting VALUES ('row-1', ?, '')", [JSON.stringify(metadata)]);
+  sqlite.run("CREATE TABLE connector_meeting (id TEXT PRIMARY KEY, organizer_email TEXT, participants TEXT, metadata TEXT, updated_at TEXT)");
+  sqlite.run("INSERT INTO connector_meeting VALUES ('row-1', ?, ?, ?, '')",
+    [organizer?.email ?? null, organizer?.participants ?? "[]", JSON.stringify(metadata)]);
   const tcw = { did: "did:test", sql: { db: () => ({
     execute: async (sql: string, params: never[]) =>
       ({ ok: true, data: { changes: sqlite.run(sql, params as never).changes } }),
@@ -34,16 +35,16 @@ let cleanup: (() => void) | null = null;
 afterEach(async () => { await act(async () => root?.unmount()); cleanup?.(); root = null; cleanup = null; });
 
 function Probe(props: { tcw: TinyCloudWeb; metadata: Record<string, unknown>;
-  row?: { id: string; source: string; sourceId: string } | null; localId?: string | null; me?: string }) {
+  row?: { id: string; source: string; sourceId: string } | null; localId?: string | null }) {
   const speakers = useSpeakerNames({ tcw: props.tcw, row: props.row === undefined ? ROW : props.row,
-    metadata: props.metadata, localId: props.localId ?? null, me: props.me });
+    metadata: props.metadata, localId: props.localId ?? null });
   return <SpeakerNamesContext.Provider value={speakers}>
     <SpeakerNamesStatus />
     <TimestampedTranscript sentences={sentences} hasAudio={false} />
   </SpeakerNamesContext.Provider>;
 }
 
-const mount = async (tcw: TinyCloudWeb, metadata: Record<string, unknown>, options: { row?: { id: string; source: string; sourceId: string } | null; localId?: string | null; me?: string } = {}) => {
+const mount = async (tcw: TinyCloudWeb, metadata: Record<string, unknown>, options: { row?: { id: string; source: string; sourceId: string } | null; localId?: string | null } = {}) => {
   cleanup = installDom();
   const host = document.createElement("div");
   document.body.append(host);
@@ -162,18 +163,13 @@ test("a rename queued behind a failed one does not put the failed name back: eac
   expect(stored).toEqual({ speaker_names: { Them: "Alice" } });
 });
 
-test("the own-side field is pre-filled with the note's organizer name", async () => {
-  const { tcw } = space({});
-  await mount(tcw, {}, { me: "Sam Rivera" });
+test("a meeting someone else organized never pre-fills the own-side field with the organizer's name", async () => {
+  // The signed-in account can attend a meeting organized by somebody else: organizer_email names
+  // that organizer, not this account. With no own-name source on the row the field stays blank
+  // rather than save a stranger's name as "Me" — even though the row carries the organizer.
+  const { tcw } = space({}, { email: "sam@example.com", participants: '[{"name":"Sam Rivera","email":"sam@example.com"}]' });
+  await mount(tcw, {});
   await act(async () => (document.querySelector('[data-testid="speaker-label"]') as HTMLElement).click());
-  expect((document.querySelector("input") as HTMLInputElement).value).toBe("Sam Rivera");
-});
-
-test("another side's field is still empty when the organizer is known", async () => {
-  const { tcw } = space({});
-  await mount(tcw, {}, { me: "Sam Rivera" });
-  const target = [...document.querySelectorAll<HTMLElement>('[data-testid="speaker-label"]')].find((el) => el.textContent === "Them");
-  await act(async () => target!.click());
   expect((document.querySelector("input") as HTMLInputElement).value).toBe("");
 });
 

@@ -179,7 +179,7 @@ export function libraryTcw(options: { rows?: readonly FixtureRow[]; hang?: boole
       });
       return { ok: true, data: { rows: row ? [[row.id, JSON.stringify(row.metadata)]] : [] } };
     }
-    if (sql.includes("metadata") && sql.includes("FROM connector_meeting WHERE id = ?")) {
+    if (sql.includes("SELECT metadata FROM connector_meeting WHERE id = ?")) {
       const row = rows.find((r) => r.id === params[0]);
       return { ok: true, data: { rows: row ? [[JSON.stringify(row.metadata)]] : [] } };
     }

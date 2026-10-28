@@ -697,17 +697,9 @@ describe("findMeetingId", () => {
 describe("readMeetingMetadata", () => {
   it("reads the row's metadata object; no row or a non-object is absent; a rejected query is failed", async () => {
     const meta = { capture: "upload", transcript_provider: "assemblyai", assemblyai_account: "own" };
-    expect(await readMeetingMetadata(fakeTcw({ sql: { ok: true, data: { rows: [[JSON.stringify(meta), "organizer@x.dev", "[{\"name\":\"Ada\",\"email\":\"a@x.dev\"}]"]] } } }).tcw, "m-1")).toEqual({
-      status: "ok",
-      metadata: meta,
-      organizerEmail: "organizer@x.dev",
-      participants: [{ name: "Ada", email: "a@x.dev" }],
-    });
     expect(await readMeetingMetadata(fakeTcw({ sql: { ok: true, data: { rows: [[JSON.stringify(meta)]] } } }).tcw, "m-1")).toEqual({
       status: "ok",
       metadata: meta,
-      organizerEmail: null,
-      participants: [],
     });
     expect(await readMeetingMetadata(fakeTcw({ sql: { ok: true, data: { rows: [] } } }).tcw, "m-1")).toEqual({ status: "absent" });
     expect(await readMeetingMetadata(fakeTcw({ sql: { ok: true, data: { rows: [["[1,2]"]] } } }).tcw, "m-1")).toEqual({

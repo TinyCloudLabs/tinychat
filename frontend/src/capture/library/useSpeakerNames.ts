@@ -21,8 +21,6 @@ export interface SpeakerNamesController {
   undo: (() => void) | null;
   change: SpeakerNameChange | null;
   failed: boolean;
-  /** The signed-in person's name where the note says it (the meeting's organizer), for the own-side field. */
-  me?: string;
 }
 
 /** One queued name change: `original` will be shown as `to` once the write lands. */
@@ -48,10 +46,8 @@ export function useSpeakerNames(options: {
   metadata: unknown;
   /** The recording id of a note still on this phone; its ledger carries the names until it lands. */
   localId?: string | null;
-  /** The signed-in person's name where known; pre-fills the own-side ("Me"/"You") field. */
-  me?: string;
 }): SpeakerNamesController | undefined {
-  const { tcw, row, metadata, localId = null, me } = options;
+  const { tcw, row, metadata, localId = null } = options;
   const key = row?.id ?? localId;
   const [local, setLocal] = useState<{ key: string; names: SpeakerNames } | null>(null);
   const [change, setChange] = useState<{ key: string; value: SpeakerNameChange } | null>(null);
@@ -106,15 +102,19 @@ export function useSpeakerNames(options: {
     return () => { active = false; };
   }, [tcw, localId, row]);
 
-  const writeNames = useCallback(async (map: SpeakerNames) => {
+  const writeNames = useCallback(async (intent: Intent) => {
     if (row !== null) {
-      await patchRowSpeakerNames(tcw, row.id, map);
+      const target = applyIntent(landed.current, intent);
+      await patchRowSpeakerNames(tcw, row.id, target);
       captureEvents.emit("library-changed", { source: row.source, sourceId: row.sourceId });
-      return;
+      return target;
     }
     if (localId === null) throw new Error("The note has no place for speaker names");
-    await saveLedgerSpeakerNames(tcw, localId, map);
+    // The ledger may move between our read and our write (another device, the
+    // recorder): the rename applies to the map just read, never overwrites it.
+    const target = await saveLedgerSpeakerNames(tcw, localId, (stored) => applyIntent(stored, intent));
     captureEvents.emit("library-changed", { source: VOICE_NOTE_SOURCE, sourceId: localId });
+    return target;
   }, [tcw, row, localId]);
 
   const commit = useCallback((intent: Intent) => {
@@ -124,9 +124,7 @@ export function useSpeakerNames(options: {
     setFailure(null);
     chain.current = chain.current.then(async () => {
       try {
-        const target = applyIntent(landed.current, intent);
-        await writeNames(target);
-        landed.current = target;
+        landed.current = await writeNames(intent);
         intents.current = intents.current.filter((queued) => queued.id !== intent.id);
       } catch {
         // Drop the failed change and replay what is still queued over what landed, so a queued
@@ -160,5 +158,5 @@ export function useSpeakerNames(options: {
   if (key === null || writable !== true) return undefined;
   const status = change?.key === key ? change : null;
   return { names: shown, rename, undo: status !== null && !status.value.undone ? undo : null,
-    change: status?.value ?? null, failed: failure === key, me };
+    change: status?.value ?? null, failed: failure === key };
 }

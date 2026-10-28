@@ -31,16 +31,19 @@ export async function readLedgerSpeakerNames(
 }
 
 /**
- * Write the whole `speakerNames` map. The note's rev is read fresh just before the write; a
- * `rev_conflict` means the ledger moved under us, so it is read once more and retried once —
- * the same contract `recordTranscriptSaved` (onDeviceTranscriber.ts) follows. Any other failure
- * or a second conflict propagates and shows as the failed save.
+ * Write the names `change` produces over the map stored right now. The note is re-read for its
+ * owner and rev before every `updateLedger` (the same contract `recordTranscriptSaved` in
+ * onDeviceTranscriber.ts follows), so the call composes over the freshest map — a name set by
+ * another device between our first read and our write is preserved, never overwritten by the
+ * stale snapshot the UI last showed. A `rev_conflict` means the ledger moved under us: read once
+ * more and retry once; any other failure or a second conflict propagates and shows as the
+ * failed save. Returns the map that was accepted.
  */
 export async function saveLedgerSpeakerNames(
   tcw: TinyCloudWeb,
   id: string,
-  names: Record<string, string>,
-): Promise<void> {
+  change: (stored: Record<string, string>) => Record<string, string>,
+): Promise<Record<string, string>> {
   for (let attempt = 0; ; attempt++) {
     const { recordings } = await withVoiceNoteSaveDeadline(`native listPending id=${id}`,
       () => VoiceNotes.listPending());
@@ -49,10 +52,11 @@ export async function saveLedgerSpeakerNames(
     if (note.owner !== tcw.did) throw new Error("This note belongs to another account on this device");
     const rev = note.rev;
     if (rev === undefined) throw new Error("The note has no ledger entry on this device");
+    const names = change(note.ledger?.speakerNames ?? {});
     try {
       await withVoiceNoteSaveDeadline(`native updateLedger id=${id}`,
         () => VoiceNotes.updateLedger({ id, did: tcw.did, rev, patch: { speakerNames: names } }));
-      return;
+      return names;
     } catch (error) {
       if ((error as { code?: string }).code !== "rev_conflict" || attempt > 0) throw error;
     }
