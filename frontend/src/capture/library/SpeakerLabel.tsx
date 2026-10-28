@@ -36,7 +36,8 @@ export function SpeakerLabel(props: { original: string; className?: string }) {
   }
   return <form onSubmit={save} data-testid="speaker-rename-form" className="flex flex-wrap items-center gap-2 py-1"
     onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); setEditing(false); } }}>
-    <input ref={field} type="text" autoFocus autoComplete="off" enterKeyHint="done" defaultValue={renamed ? shown : ""} maxLength={MAX_SPEAKER_NAME_LENGTH}
+    <input ref={field} type="text" autoFocus autoComplete="off" enterKeyHint="done"
+      defaultValue={renamed ? shown : OWN_SIDE_LABELS.has(props.original) ? speakers.me ?? "" : ""} maxLength={MAX_SPEAKER_NAME_LENGTH}
       placeholder={placeholderFor(props.original)} aria-label={COPY.fieldLabel(props.original)}
       className="h-[var(--tc-control-height)] min-w-0 flex-1 rounded-md border bg-background px-3 text-body" />
     <Button type="submit" size="sm">{COPY.save}</Button>

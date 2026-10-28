@@ -159,10 +159,11 @@ export class FakeSqlDb {
         const r = ids[0];
         return ok(r ? [[r.title, r.started_at, r.duration_secs, r.participants, r.metadata]] : []);
       }
-      if (/^SELECT\s+id\s+FROM\s+connector_meeting\s+WHERE\s+source\s*=\s*'exo-merged'\s+AND\s+source_id\s*=\s*\?\s+ORDER\s+BY\s+id/i.test(t)) {
+      if (/^SELECT\s+id,\s*metadata\s+FROM\s+connector_meeting\s+WHERE\s+source\s*=\s*'exo-merged'\s+AND\s+source_id\s*=\s*\?\s+ORDER\s+BY\s+id/i.test(t)) {
         return ok([...this.meetings.values()]
           .filter((r) => r.source === "exo-merged" && r.source_id === String(params[0]))
-          .map((r) => r.id).sort().map((id) => [id]));
+          .sort((a, b) => (a.id < b.id ? -1 : 1))
+          .map((r) => [r.id, r.metadata]));
       }
       if (/^SELECT\s+id,\s*source_id,\s*metadata\s+FROM\s+connector_meeting\s+WHERE\s+source\s*=\s*'exo-merged'/i.test(t)) {
         return ok([...this.meetings.values()].filter((r) => r.source === "exo-merged").map((r) => [r.id, r.source_id, r.metadata]));

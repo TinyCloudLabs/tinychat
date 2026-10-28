@@ -20,6 +20,8 @@ export interface SpaceRow {
   participants?: string;
   /** The stored `metadata` column, verbatim (a test may make it garbage). */
   metadata?: string;
+  /** The stored `organizer_email` column. */
+  organizerEmail?: string | null;
   /** The stored transcript body, verbatim (JSON text). */
   body?: string;
   /** The stored `summary_overview` / `summary_action_items` columns of a combined meeting. */
@@ -74,16 +76,16 @@ export function combineSpace(seed: readonly SpaceRow[], options: { did?: string 
       };
       return ok({ rows: listed.map((r) => [r.id, r.source, r.sourceId, r.title, r.startedAt, r.durationSecs, null, null, members(r)]) });
     }
-    if (s === "SELECT metadata FROM connector_meeting WHERE id = ?") {
+    if (s === "SELECT metadata, organizer_email, participants FROM connector_meeting WHERE id = ?") {
       const r = rows.get(String(params[0]));
-      return ok({ rows: r ? [[r.metadata ?? "{}"]] : [] });
+      return ok({ rows: r ? [[r.metadata ?? "{}", r.organizerEmail ?? null, r.participants ?? null]] : [] });
     }
     if (s.startsWith("SELECT title, started_at, duration_secs, participants, metadata FROM connector_meeting WHERE source = ? AND source_id = ?")) {
       const r = [...rows.values()].find((x) => x.source === params[0] && x.sourceId === params[1]);
       return ok({ rows: r ? [[r.title, r.startedAt, r.durationSecs, r.participants ?? "[]", r.metadata ?? "{}"]] : [] });
     }
-    if (s.startsWith("SELECT id FROM connector_meeting WHERE source = 'exo-merged' AND source_id = ?")) {
-      return ok({ rows: [...rows.values()].filter((r) => r.source === "exo-merged" && r.sourceId === params[0]).map((r) => [r.id]).sort() });
+    if (s.startsWith("SELECT id, metadata FROM connector_meeting WHERE source = 'exo-merged' AND source_id = ?")) {
+      return ok({ rows: [...rows.values()].filter((r) => r.source === "exo-merged" && r.sourceId === params[0]).map((r) => [r.id, r.metadata ?? null]).sort() });
     }
     if (s === "SELECT source_id FROM connector_meeting WHERE id = ? AND source = 'exo-merged'") {
       const r = rows.get(String(params[0]));

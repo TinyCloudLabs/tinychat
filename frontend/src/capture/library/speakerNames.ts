@@ -44,6 +44,18 @@ export function speakerDisplayName(names: SpeakerNames, original: string | null)
   return Object.hasOwn(names, original) ? names[original]! : original;
 }
 
+/**
+ * The signed-in person's name where the note's own record says it: the participant whose email is
+ * the row's `organizer_email` (the meeting's owner). Null when there is no organizer or no matching
+ * attendee — the own-side field then stays empty rather than guess.
+ */
+export function meetingOrganizerName(organizerEmail: string | null,
+  participants: readonly { name: string; email: string | null }[]): string | undefined {
+  if (organizerEmail === null) return undefined;
+  const match = participants.find((participant) => participant.email === organizerEmail);
+  return match && match.name !== organizerEmail ? match.name : undefined;
+}
+
 /** Sentences (or gaps) with their speakers shown by name, for copy and export. */
 export function applySpeakerNames<T extends { speaker_name: string | null }>(items: readonly T[], names: SpeakerNames): T[] {
   if (Object.keys(names).length === 0) return [...items];

@@ -551,6 +551,19 @@ describe("summary columns", () => {
     expect(mergedRows()[0]!.summary_overview).toBe("Kept.");
   });
 
+  test("re-combining keeps the row's speaker names: user data beside the record is not dropped by a rebuild", async () => {
+    await combineOk(ff[0], ff[1]);
+    mergedRows()[0]!.metadata = JSON.stringify({
+      ...JSON.parse(mergedRows()[0]!.metadata),
+      speaker_names: { "speaker_0": "Ada", Me: "Sam" },
+    });
+    await combineOk(ff[0], ff[1]);
+    const after = JSON.parse(mergedRows()[0]!.metadata) as Record<string, unknown>;
+    expect(after.speaker_names).toEqual({ "speaker_0": "Ada", Me: "Sam" });
+    const merge = after.merge;
+    expect(merge !== null && typeof merge === "object" && "v" in merge && merge.v).toBe(1);
+  });
+
   test("the combined body is read back by its source_id; a failed or invalid read is an error, never an empty body", async () => {
     const w = await combineOk(ff[0], ff[1]);
     const body = await readCombinedBody(f.tcw, w.sourceId);

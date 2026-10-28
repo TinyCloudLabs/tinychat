@@ -78,7 +78,7 @@ function fakeSpace(options: {
     sql: { db: () => ({ query: (sql: string) => {
       if (sql.includes("sqlite_schema")) return Promise.resolve({ ok: true, data: { rows: options.voiceCommit || previews.length > 0 ? [[1]] : [] } });
       if (sql.includes("WHERE source IN")) return call("list");
-      if (sql.includes("SELECT metadata FROM connector_meeting WHERE id = ?")) return call("metadata");
+      if (sql.includes("metadata") && sql.includes("FROM connector_meeting WHERE id = ?")) return call("metadata");
       if (sql.includes("SELECT source_id, preview FROM voice_note_transcript")) return Promise.resolve({ ok: true, data: { rows: previews } });
       if (sql.includes("FROM voice_note_transcript")) {
         const selected = options.commitReads?.[Math.min(commitReadCount++, options.commitReads.length - 1)];
@@ -671,7 +671,7 @@ describe("useLibrary, notes still on this browser", () => {
     expect(library.items[0]).toMatchObject({ onPhone: true, sourceId: "rec-p1", durationSecs: 14 });
     expect(library.note.item?.id).toBe("on-phone:rec-p1");
     expect(library.note.reads).toEqual({
-      metadata: { status: "ok", metadata: {} },
+      metadata: { status: "ok", metadata: {}, organizerEmail: null, participants: [] },
       transcript: { transcript: { status: "absent" }, provenance: null },
     });
     expect(library.note.audio).toMatchObject({ onPhone: true });

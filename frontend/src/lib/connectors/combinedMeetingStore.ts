@@ -249,7 +249,7 @@ export type CombineOutcome =
   | { status: "written"; id: string; sourceId: string; created: boolean; passed: boolean }
   | { status: "refused"; result: StitchResult };
 
-const ID_SELECT = "SELECT id FROM connector_meeting WHERE source = 'exo-merged' AND source_id = ? ORDER BY id";
+const ID_SELECT = "SELECT id, metadata FROM connector_meeting WHERE source = 'exo-merged' AND source_id = ? ORDER BY id";
 
 /**
  * Read both members, read-only (I1). The UI reads, stitches off the UI thread to show the evidence,
@@ -331,22 +331,29 @@ export async function writeCombined(
       if (!retry.ok || retry.rows.length === 0) return ins;
     }
   }
-
   const after = await sql(tcw, "query", ID_SELECT, [sourceId]);
   if (!after.ok) return after;
   const ids = after.rows.map((r) => String(r[0]));
   const keeper = ids[0];
   if (keeper === undefined) return failure("COMBINE_ROW_MISSING", "combined row not found after write");
+  // A re-combine (or a collapse onto another writer's row) replaces the keeper's content in place,
+  // but the user data beside the record — renamed speakers — belongs to the row, not to this merge.
+  let keeperMeta: unknown = after.rows[0]?.[1];
+  if (typeof keeperMeta === "string") {
+    try { keeperMeta = JSON.parse(keeperMeta); } catch { keeperMeta = null; }
+  }
+  const keptNames = isRecord(keeperMeta) ? keeperMeta.speaker_names : undefined;
+  const updateMetadata = keptNames === undefined ? metadata
+    : JSON.stringify({ ...row.metadata, speaker_names: keptNames, merge: { ...row.metadata.merge, decided_at: now } });
   for (const extra of ids.slice(1)) {
     const del = await sql(tcw, "execute", "DELETE FROM connector_meeting WHERE id = ? AND source = 'exo-merged'", [extra]);
     if (!del.ok) return del;
   }
-  // Re-combine, or a collapse onto another writer's row: replace the keeper's content in place.
   // Summary columns are untouched (section 3b owns them); created_at is preserved.
   if (!created || keeper !== row.id) {
     const upd = await sql(tcw, "execute",
       "UPDATE connector_meeting SET title = ?, started_at = ?, duration_secs = ?, participants = ?, metadata = ?, updated_at = ? WHERE id = ? AND source = 'exo-merged'",
-      [row.title, row.started_at, row.duration_secs, participants, metadata, now, keeper]);
+      [row.title, row.started_at, row.duration_secs, participants, updateMetadata, now, keeper]);
     if (!upd.ok) return upd;
   }
   return { ok: true, data: { status: "written", id: keeper, sourceId, created: created && keeper === row.id, passed: row.metadata.merge.detection.passed } };

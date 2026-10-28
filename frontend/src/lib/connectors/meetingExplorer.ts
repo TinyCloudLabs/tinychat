@@ -460,7 +460,11 @@ export function transcriptCopyText(sentences: FirefliesSentence[]): string {
  * is not a JSON object, is `absent`.
  */
 export type MeetingMetadataRead =
-  | { status: "ok"; metadata: Record<string, unknown> }
+  | { status: "ok"; metadata: Record<string, unknown>;
+      /** `connector_meeting.organizer_email`; read alongside metadata, absent in older fixture rows. */
+      organizerEmail?: string | null;
+      /** `connector_meeting.participants` parsed: attendees' display names and emails. */
+      participants?: { name: string; email: string | null }[] }
   | { status: "absent" }
   | { status: "failed" };
 
@@ -470,13 +474,14 @@ export async function readMeetingMetadata(
 ): Promise<MeetingMetadataRead> {
   const res = await tolerate(() =>
     tcw.sql.db(CONNECTORS_SQL_DB_NAME).query(
-      "SELECT metadata FROM connector_meeting WHERE id = ?",
+      "SELECT metadata, organizer_email, participants FROM connector_meeting WHERE id = ?",
       [id],
     ),
   );
   if (!res || !res.ok) return { status: "failed" };
   const row: unknown = res.data?.rows?.[0];
-  const raw = Array.isArray(row) ? cellStr(row, 0) : null;
+  if (!Array.isArray(row)) return { status: "absent" };
+  const raw = cellStr(row, 0);
   if (raw === null) return { status: "absent" };
   let metadata: unknown;
   try {
@@ -484,9 +489,31 @@ export async function readMeetingMetadata(
   } catch {
     return { status: "absent" };
   }
-  return metadata !== null && typeof metadata === "object" && !Array.isArray(metadata)
-    ? { status: "ok", metadata: metadata as Record<string, unknown> }
-    : { status: "absent" };
+  if (metadata === null || typeof metadata !== "object" || Array.isArray(metadata)) return { status: "absent" };
+  return { status: "ok", metadata: metadata as Record<string, unknown>,
+    organizerEmail: cellStr(row, 1),
+    participants: parseStoredParticipants(cellStr(row, 2)) };
+}
+
+/** The stored `participants` column (JSON text of names or {name, email}); [] when unreadable. */
+export function parseStoredParticipants(raw: string | null): { name: string; email: string | null }[] {
+  if (raw === null) return [];
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(decoded)) return [];
+  const out: { name: string; email: string | null }[] = [];
+  for (const entry of decoded) {
+    if (typeof entry === "string" && entry.length > 0) { out.push({ name: entry, email: null }); continue; }
+    if (typeof entry !== "object" || entry === null || !("name" in entry)) continue;
+    const { name, email } = entry;
+    if (typeof name !== "string" || name.length === 0) continue;
+    out.push({ name, email: typeof email === "string" && email.length > 0 ? email : null });
+  }
+  return out;
 }
 
 /**

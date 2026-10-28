@@ -255,15 +255,26 @@ export async function createVoiceNoteRow(tcw: TinyCloudWeb, recording: VoiceNote
   if (identity.status !== "established") throw Object.assign(new Error(identity.reason ?? identity.status), { code: identity.status, cause: identity.cause });
   const now = new Date().toISOString();
   const outcome = recording.options?.transcriber === "off" ? "skipped" : "pending";
+  const speakerNames = recording.ledger?.speakerNames;
   const changes = await execute(tcw, `INSERT INTO connector_meeting
     (id, source, source_id, title, started_at, duration_secs, organizer_email, participants, summary_overview,
      summary_action_items, keywords, meeting_type, metadata, created_at, updated_at)
     VALUES (?, 'exo-voice-note', ?, ?, ?, ?, NULL, '[]', NULL, NULL, NULL, NULL, ?, ?, ?)
     ON CONFLICT DO NOTHING`, [`vn-${recording.id}`, recording.id, title, new Date(recording.startedAt).toISOString(),
     recording.durationMs / 1000, JSON.stringify({ transcription_outcome: outcome, title_auto: title,
-      capture: captureMetadata(recording, platform) }), now, now], checkpoint);
+      capture: captureMetadata(recording, platform),
+      ...(speakerNames !== null && typeof speakerNames === "object" && !Array.isArray(speakerNames) ? { speaker_names: speakerNames } : {}) }), now, now], checkpoint);
   const row = await resolveVoiceNoteRow(tcw, recording.id, checkpoint);
   if (!row) throw new Error("The voice-note identity index was established but its row is missing");
+  // Names renamed on the phone while the note was local land with it; a row already carrying
+  // names keeps them (it may have been renamed since).
+  if (speakerNames !== null && typeof speakerNames === "object" && !Array.isArray(speakerNames)
+    && row.metadata.speaker_names === undefined) {
+    await patchRowSpeakerNames(tcw, row.id, speakerNames, checkpoint);
+    const named = await resolveVoiceNoteRow(tcw, recording.id, checkpoint);
+    if (!named) throw new Error("The voice-note identity index was established but its row is missing");
+    return { ...named, inserted: false };
+  }
   if (changes === 0) {
     await execute(tcw, `UPDATE connector_meeting SET metadata = json_set(COALESCE(metadata,'{}'), '$.transcription_outcome', ?),
       updated_at = ?

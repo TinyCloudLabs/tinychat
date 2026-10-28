@@ -27,7 +27,7 @@ import { useCombineFlow } from "./combine/useCombineFlow";
 import { useCombinedMeeting } from "./combine/useCombinedMeeting";
 import { useCombinedSummary } from "./combine/useCombinedSummary";
 import type { SummaryRunner } from "@/lib/meetingSummary/summaryRunner";
-import { applySpeakerNames } from "./speakerNames";
+import { applySpeakerNames, meetingOrganizerName } from "./speakerNames";
 import { useSpeakerNames } from "./useSpeakerNames";
 import { hasPrivateCloudTimingProvenance, hasSegmentTimes, transcriptWithTimestamps } from "./transcriptSegments";
 import type { Library } from "./useLibrary";
@@ -135,10 +135,13 @@ export function NoteDetail(props: {
       reads.metadata?.status === "ok" ? reads.metadata.metadata : null,
       selectedTranscript?.provenance,
     );
+  const metadataRead = reads.metadata?.status === "ok" ? reads.metadata : null;
   const speakerNames = useSpeakerNames({
     tcw: props.tcw,
-    row: item !== null && !item.onPhone && reads.metadata?.status === "ok" ? item : null,
-    metadata: reads.metadata?.status === "ok" ? reads.metadata.metadata : null,
+    row: item !== null && !item.onPhone && metadataRead !== null ? item : null,
+    metadata: metadataRead?.metadata ?? null,
+    localId: item?.onPhone === true && item.source === VOICE_NOTE_SOURCE ? item.sourceId : null,
+    me: metadataRead === null ? undefined : meetingOrganizerName(metadataRead.organizerEmail ?? null, metadataRead.participants ?? []),
   });
   const names = speakerNames?.names;
   const onCopy = useCallback(async (withTimestamps = false) => {
