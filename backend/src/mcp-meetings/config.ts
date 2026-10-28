@@ -40,6 +40,7 @@ export function mcpChatFromEnv(env: Record<string, string | undefined>, fetchImp
   return {
     mcpMeetings: createMcpMeetingTools(owner => createHttpMcpPort(config, owner)),
     mcpChatAccountAllowed: address => accounts.has(address.toLowerCase()),
-    mcpOwnerDidFor: address => `did:pkh:eip155:${Number.isInteger(chainId) && chainId > 0 ? chainId : 1}:${address}`,
+    // The MCP canonicalizes the owner DID with a lowercase address (js-sdk packages/mcp native-auth canonicalOwnerDid).
+    mcpOwnerDidFor: address => `did:pkh:eip155:${Number.isInteger(chainId) && chainId > 0 ? chainId : 1}:${address.toLowerCase()}`,
   };
 }

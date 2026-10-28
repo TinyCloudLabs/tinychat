@@ -91,7 +91,8 @@ export function classifyBodyFailure(error: unknown): BodyResult {
     if (error.code === "ABORTED") return { state: "cancelled", reasonCode: error.code };
     if (error.code === "GRANT_REQUIRED") return { state: "access_denied", reasonCode: "AUTH_REQUIRED" };
     if (error.code === "GRANT_EXPIRED") return { state: "access_denied", reasonCode: "DELEGATION_EXPIRED" };
-    if (error.code === "GRANT_REJECTED") return { state: "access_denied", reasonCode: "ACCESS_DENIED" };
+    // A rejected grant needs the same user action as a revoked one: approve access again.
+    if (error.code === "GRANT_REJECTED") return { state: "access_denied", reasonCode: "DELEGATION_REVOKED" };
     return { state: "unavailable", reasonCode: error.code };
   }
   return { state: "unavailable", reasonCode: "UNKNOWN" };

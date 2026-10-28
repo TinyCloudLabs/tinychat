@@ -18,7 +18,7 @@ const db = new Database(":memory:");
 for (const { sql } of CONNECTOR_SCHEMA) db.run(sql);
 db.run("CREATE TABLE voice_note_transcript (source_id TEXT PRIMARY KEY, rev INTEGER, hash TEXT, body_key TEXT, outcome TEXT, preview TEXT)");
 const kv = new Map<string, string>();
-let grantMode: "ok" | "none" | "expired" = "ok";
+let grantMode: "ok" | "none" | "expired" | "rejected" = "ok";
 let sqlCalls: string[] = [];
 let server: ReturnType<typeof Bun.serve>;
 let url = "";
@@ -55,6 +55,7 @@ beforeAll(() => {
       seenOwners.add(request.headers.get(OWNER_HEADER)!);
       if (grantMode === "none") return Response.json({ error: "grant_missing_test" }, { status: 401 });
       if (grantMode === "expired") return Response.json({ error: "grant_expired_test" }, { status: 401 });
+      if (grantMode === "rejected") return Response.json({ error: "grant_rejected_test" }, { status: 401 });
       const { id, params } = await request.json() as { id: number; params: { name: string; arguments: Record<string, any> } };
       const respond = (structured: object) => Response.json({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: "" }], structuredContent: structured } });
       const limited = (structured: { status: string; output?: unknown }, sqlResult: boolean) => {
@@ -90,7 +91,7 @@ afterAll(() => server.stop(true));
 
 const env = () => ({
   MCP_CHAT_ENABLED: "true", MCP_CHAT_URL: url, MCP_CHAT_SERVICE_CREDENTIAL: CREDENTIAL, MCP_CHAT_SERVICE_CREDENTIAL_HEADER: CREDENTIAL_HEADER,
-  MCP_CHAT_OWNER_DID_HEADER: OWNER_HEADER, MCP_CHAT_TEST_ACCOUNTS: ADDRESS, MCP_CHAT_GRANT_EXPIRED_ERROR: "grant_expired_test",
+  MCP_CHAT_OWNER_DID_HEADER: OWNER_HEADER, MCP_CHAT_TEST_ACCOUNTS: ADDRESS, MCP_CHAT_GRANT_EXPIRED_ERROR: "grant_expired_test", MCP_CHAT_GRANT_REJECTED_ERROR: "grant_rejected_test",
 });
 const tools = () => mcpChatFromEnv(env()).mcpMeetings!;
 const run = (name: string, args: Record<string, unknown>, extra: Record<string, unknown> = {}) =>
@@ -109,6 +110,8 @@ describe("mcp chat configuration", () => {
     expect(wiring.mcpChatAccountAllowed!(ADDRESS.toUpperCase().replace("0X", "0x"))).toBe(true);
     expect(wiring.mcpChatAccountAllowed!("0xdef")).toBe(false);
     expect(wiring.mcpOwnerDidFor!(ADDRESS)).toBe(OWNER);
+    // The MCP canonicalizes the address to lowercase; a checksummed session address must produce the same DID.
+    expect(wiring.mcpOwnerDidFor!("0xABC0000000000000000000000000000000000001")).toBe(OWNER);
   });
 });
 
@@ -163,14 +166,17 @@ describe("meeting tools over the MCP", () => {
     expect(none.status === 404 || (none.body as any).result?.data?.outcomes?.[0]?.state !== "read").toBe(true);
   });
 
-  test("a missing grant maps to delegation_required (409); a configured expired value maps to delegation_expired", async () => {
+  test("a missing grant maps to delegation_required, expired to delegation_expired and rejected to delegation_revoked (409)", async () => {
     grantMode = "none";
     const missing = await run("tinycloud_find_meetings", {});
     grantMode = "expired";
     const expired = await run("tinycloud_find_meetings", {});
+    grantMode = "rejected";
+    const rejected = await run("tinycloud_find_meetings", {});
     grantMode = "ok";
     expect(missing).toEqual({ status: 409, body: { error: "delegation_required" } });
     expect(expired).toEqual({ status: 409, body: { error: "delegation_expired" } });
+    expect(rejected).toEqual({ status: 409, body: { error: "delegation_revoked" } });
   });
 
   test("a wrong service credential never yields meeting data", async () => {
