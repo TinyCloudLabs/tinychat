@@ -71,32 +71,36 @@ export function useRecordingTitleEdit(recording: RenamableRecording | null, curr
   const rename = useContext(RenameContext)?.rename ?? null;
   const [editing, setEditing] = useState(false);
   const [failed, setFailed] = useState(false);
-  const [draft, setDraft] = useState<string | null>(null);
+  // This editing session's baseline: the title the editor opened with — the live title at start, or the
+  // rejected draft a failed save reopens with. What the row's title does in the background meanwhile must
+  // not change what "unchanged" means: an untouched field writes nothing, so a stale open value can never
+  // be pinned as the user's title, and the draft inside the editor survives the refresh with it.
+  const [baseline, setBaseline] = useState<string | null>(null);
   const id = recording?.id;
   const state = useMemo<RecordingTitleEdit | null>(() => {
     if (!rename || !recording || recording.onPhone) return null;
     return {
       editing,
-      current: draft ?? current,
+      current: baseline ?? current,
       failed,
-      fieldKey: `${id}:${draft === null ? "new" : `reopen:${JSON.stringify(draft)}`}`,
-      start: () => { setFailed(false); setDraft(null); setEditing(true); },
-      cancel: () => { setFailed(false); setDraft(null); setEditing(false); },
+      fieldKey: `${id}:${baseline === null ? `new:${JSON.stringify(current)}` : `reopen:${JSON.stringify(baseline)}`}`,
+      start: () => { setFailed(false); setBaseline(current); setEditing(true); },
+      cancel: () => { setFailed(false); setBaseline(null); setEditing(false); },
       save: (value) => {
         // An unchanged title is not a rename: it would pin an automatic title as the user's.
-        if (normalizeRecordingTitle(value) === normalizeRecordingTitle(current)) { setEditing(false); setDraft(null); return; }
+        if (normalizeRecordingTitle(value) === normalizeRecordingTitle(baseline ?? current)) { setEditing(false); setBaseline(null); return; }
         setEditing(false);
-        setDraft(null);
+        setBaseline(null);
         void rename(recording, value).then((ok) => {
           if (ok) return;
-          setDraft(value);
+          setBaseline(value);
           setFailed(true);
           setEditing(true);
         });
       },
     };
     // `id` stands for the recording: a row's item object changes with every list read.
-  }, [rename, id, recording?.onPhone, editing, failed, draft, current]);
+  }, [rename, id, recording?.onPhone, editing, failed, baseline, current]);
   return state;
 }
 
