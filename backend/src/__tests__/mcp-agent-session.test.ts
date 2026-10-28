@@ -128,12 +128,37 @@ describe("MCP account session courier", () => {
     expect(mcpCalls).toHaveLength(0);
   });
 
-  it("accepts the SDK's read-only capabilities entry because the MCP decides on effective permissions", async () => {
-    const { app } = setup();
-    const withCapabilities = grant({
-      [sqlUri()]: ["tinycloud.sql/read"], [kvUri()]: ["tinycloud.kv/get", "tinycloud.kv/list"], [`${spaceOf(ADDRESS)}/capabilities/all`]: ["tinycloud.capabilities/read"],
-    });
-    expect((await post(app, withCapabilities)).status).toBe(200);
+  it("rejects the same address on another chain before anything is forwarded", async () => {
+    const { app, mcpCalls } = setup();
+    const otherChainSpace = `tinycloud:pkh:eip155:137:${ADDRESS}:applications`;
+    const sameAddressOtherChain = grant(
+      { [`${otherChainSpace}/sql/${SQL_PATH}`]: ["tinycloud.sql/read"], [`${otherChainSpace}/kv/${SQL_PATH}/`]: ["tinycloud.kv/get", "tinycloud.kv/list"] },
+      { chainId: 137, primaryDid: `did:pkh:eip155:137:${ADDRESS}` },
+    );
+    const mixedChains = grant({ [sqlUri()]: ["tinycloud.sql/read"], [`${otherChainSpace}/kv/${SQL_PATH}/`]: ["tinycloud.kv/get", "tinycloud.kv/list"] });
+    const metadataChain = exactGrant({ chainId: 137 });
+    for (const [name, delegation] of [["signed chain", sameAddressOtherChain], ["mixed chains", mixedChains], ["metadata chain", metadataChain]] as const) {
+      const res = await post(app, delegation);
+      expect([name, res.status, (await res.json() as { error: string }).error]).toEqual([name, 400, "wrong_delegator"]);
+    }
+    expect(mcpCalls).toHaveLength(0);
+  });
+
+  it("rejects every capabilities entry, however it is shaped, before anything is forwarded", async () => {
+    const { app, mcpCalls } = setup();
+    const base = { [sqlUri()]: ["tinycloud.sql/read"], [kvUri()]: ["tinycloud.kv/get", "tinycloud.kv/list"] };
+    const cases: Array<[string, string]> = [
+      ["canonical entry", grant({ ...base, [`${spaceOf(ADDRESS)}/capabilities/all`]: ["tinycloud.capabilities/read"] })],
+      ["duplicate entries", grant({ ...base, [`${spaceOf(ADDRESS)}/capabilities/all`]: ["tinycloud.capabilities/read"], [`${spaceOf(ADDRESS)}/capabilities/other`]: ["tinycloud.capabilities/read"] })],
+      ["another owner", grant({ ...base, [`${spaceOf(OTHER_ADDRESS)}/capabilities/all`]: ["tinycloud.capabilities/read"] })],
+      ["extra action", grant({ ...base, [`${spaceOf(ADDRESS)}/capabilities/all`]: ["tinycloud.capabilities/read", "tinycloud.capabilities/write"] })],
+      ["other space", grant({ ...base, [`tinycloud:pkh:eip155:1:${ADDRESS}:default/capabilities/all`]: ["tinycloud.capabilities/read"] })],
+    ];
+    for (const [name, delegation] of cases) {
+      const res = await post(app, delegation);
+      expect([name, res.status, (await res.json() as { error: string }).error]).toEqual([name, 400, "mcp_grant_policy_exceeded"]);
+    }
+    expect(mcpCalls).toHaveLength(0);
   });
 
   it("keeps expired, rejected and unavailable MCP answers distinct, and refuses an unexpected owner or service in the reply", async () => {

@@ -178,7 +178,7 @@ export function createAgentRouter(config: AgentRoutesConfig) {
       }
       if (!mcpIdentity) { res.status(400).json({ error: "invalid_delegation_identity" }); return; }
       if (normalizeAddress(mcpIdentity.ownerAddress) !== normalizeAddress(user.address)) { res.status(400).json({ error: "wrong_delegator" }); return; }
-      const checked = validateSignedMcpGrant(delegation, user.address, mcp.mcpGrants.serviceDid);
+      const checked = validateSignedMcpGrant(delegation, mcp.mcpOwnerDidFor(user.address), mcp.mcpGrants.serviceDid);
       if (!checked.ok) { res.status(400).json({ error: checked.error }); return; }
       try {
         const accepted = await mcp.mcpGrants.accept(delegation);
@@ -552,16 +552,19 @@ const MCP_GRANT_CEILING: Array<{ service: string; path: string; actions: Set<str
   { service: "sql", path: TRANSCRIPT_SQL, actions: new Set(["tinycloud.sql/read"]) },
   { service: "kv", path: TRANSCRIPT_KV, actions: new Set(["tinycloud.kv/get", "tinycloud.kv/list"]) },
 ];
-const MCP_GRANT_SPACE = /^tinycloud:pkh:eip155:[1-9][0-9]*:(0x[0-9a-fA-F]{40}):applications$/;
+const MCP_OWNER_DID = /^did:pkh:eip155:([1-9][0-9]*):(0x[0-9a-fA-F]{40})$/;
 
-export function validateSignedMcpGrant(serialized: string, owner: string, serviceDid: string): { ok: true } | { ok: false; error: string } {
-  let parsed: { delegateDID?: unknown; expiry?: unknown };
+export function validateSignedMcpGrant(serialized: string, ownerDid: string, serviceDid: string): { ok: true } | { ok: false; error: string } {
+  let parsed: { delegateDID?: unknown; expiry?: unknown; chainId?: unknown };
   try {
-    parsed = JSON.parse(serialized) as { delegateDID?: unknown; expiry?: unknown };
+    parsed = JSON.parse(serialized) as { delegateDID?: unknown; expiry?: unknown; chainId?: unknown };
   } catch {
     return { ok: false, error: "malformed" };
   }
   if (typeof parsed.delegateDID !== "string" || parsed.delegateDID !== serviceDid) return { ok: false, error: "wrong_delegatee" };
+  // The complete owner DID, chain included, is the authenticated session's; the grant's signed spaces and its chain must match it.
+  const expectedOwner = MCP_OWNER_DID.exec(ownerDid);
+  if (!expectedOwner || parsed.chainId !== Number(expectedOwner[1])) return { ok: false, error: "wrong_delegator" };
   const summaryExpiry = new Date(parsed.expiry as string);
   if (!Number.isFinite(summaryExpiry.getTime()) || summaryExpiry <= new Date()) return { ok: false, error: "delegation_expired" };
   const payload = signedPayload(serialized);
@@ -570,15 +573,14 @@ export function validateSignedMcpGrant(serialized: string, owner: string, servic
   const effectiveExpiryMs = signedExpiryMs === null ? summaryExpiry.getTime() : Math.max(summaryExpiry.getTime(), signedExpiryMs);
   if (effectiveExpiryMs - Date.now() > MAX_TRANSCRIPT_EXPIRY_MS) return { ok: false, error: "delegation_expiry_too_long" };
 
-  const all = payload ? attGrants(payload.att) : cidBackedGrants(serialized);
-  // The SDK may add a read-only `capabilities` entry to its own chain; it conveys no user data and the MCP decides on the
-  // effective permissions. Every user-data resource must match the ceiling exactly.
-  const grants = all?.filter((grant) => !(grant.service === "capabilities" && grant.actions.every((action) => action === "tinycloud.capabilities/read")));
+  // Exactly the two connector entries. Any other entry, including a capabilities entry, is refused: the MCP accepts exactly
+  // these two effective permissions, and a real SDK delegation for them carries nothing else.
+  const grants = payload ? attGrants(payload.att) : cidBackedGrants(serialized);
   if (!grants || grants.length !== MCP_GRANT_CEILING.length) return { ok: false, error: "mcp_grant_policy_exceeded" };
   const seen = new Set<string>();
   for (const grant of grants) {
-    const space = MCP_GRANT_SPACE.exec(grant.space);
-    if (!space || normalizeAddress(space[1]!) !== normalizeAddress(owner)) return { ok: false, error: "wrong_delegator" };
+    const expectedSpace = `tinycloud:pkh:eip155:${expectedOwner[1]}:${expectedOwner[2]}:applications`;
+    if (grant.space.toLowerCase() !== expectedSpace.toLowerCase()) return { ok: false, error: "wrong_delegator" };
     const allowed = MCP_GRANT_CEILING.find((entry) => entry.service === grant.service && entry.path === grant.path);
     if (!allowed || seen.has(allowed.service)) return { ok: false, error: "mcp_grant_policy_exceeded" };
     if (grant.actions.length !== allowed.actions.size || grant.actions.some((action) => !allowed.actions.has(action))) {
