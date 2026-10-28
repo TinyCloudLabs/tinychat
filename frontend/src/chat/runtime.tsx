@@ -33,6 +33,7 @@ import {
   listThreads,
   memoryWriteGen,
   readMemoryCache,
+  normalizeUserTitle,
   renameThread,
   setMemory,
   setThreadModel,
@@ -561,6 +562,7 @@ export function createHistoryAdapter(
 function useThreadListAdapter(
   deps: ChatRuntimeDeps,
   selection: ModelSelectionCoordinator,
+  reloadList: () => void,
 ): RemoteThreadListAdapter {
   const { tcw } = deps;
   const depsRef = useRef(deps);
@@ -750,6 +752,10 @@ function useThreadListAdapter(
       },
       async rename(remoteId: string, newTitle: string) {
         await renameThread(tcw, remoteId, newTitle);
+        // A cleared title returns to the auto title, which the list only knows
+        // from the store. The optimistic row carries the text typed (empty)
+        // until this call settles, so reload once it has.
+        if (!normalizeUserTitle(newTitle)) setTimeout(reloadList, 0);
       },
       async archive() {
         // Archiving is not surfaced in the UI; no-op.
@@ -785,7 +791,7 @@ function useThreadListAdapter(
       },
       unstable_Provider: Provider,
     }),
-    [tcw, Provider, selection],
+    [tcw, Provider, selection, reloadList],
   );
 }
 
@@ -811,7 +817,9 @@ export function useChatRuntime(deps: ChatRuntimeDeps): AssistantRuntime {
   }
   const selection = selectionRef.current;
   deps.selectionControllerRef.current = selection;
-  const adapter = useThreadListAdapter(deps, selection);
+  const reloadListRef = useRef<() => void>(() => {});
+  const reloadList = useCallback(() => reloadListRef.current(), []);
+  const adapter = useThreadListAdapter(deps, selection, reloadList);
 
   const mountGeneration = useRef(0);
   useEffect(() => {
@@ -845,6 +853,11 @@ export function useChatRuntime(deps: ChatRuntimeDeps): AssistantRuntime {
     },
     adapter,
   });
+
+  // Never reload the list under a running stream (see the sidebar refresh below).
+  reloadListRef.current = () => {
+    if (!runtime.thread.getState().isRunning) void runtime.threads.reload();
+  };
 
   // assistant-ui retains inactive providers. Only the committed main thread
   // owns activation; this subscription establishes the barrier synchronously

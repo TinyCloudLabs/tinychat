@@ -490,8 +490,7 @@ export async function commitVoiceNoteTranscript(
         new Date().toISOString(), live.id], checkpoint);
     if (live) {
       const [startedRow] = await query(tcw, "SELECT started_at FROM connector_meeting WHERE id = ?", [live.id], checkpoint);
-      const title = autoMeetingTitle({ startedAt: startedRow?.[0], modelLabel: transcriptionModelLabel(input.model),
-        participantNames: input.participants });
+      const title = autoMeetingTitle({ startedAt: startedRow?.[0], participantNames: input.participants });
       // Rename only while the title is still the one the insert wrote; an edited title is kept.
       if (title) await execute(tcw, "UPDATE connector_meeting SET title = ?, metadata = json_remove(metadata, '$.title_auto') WHERE id = ? AND source = 'exo-voice-note' AND title = json_extract(metadata, '$.title_auto') AND json_extract(metadata, '$.title_user') IS NULL",
         [title, live.id], checkpoint);

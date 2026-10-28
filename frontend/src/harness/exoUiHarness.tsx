@@ -25,6 +25,7 @@ import { captureScreens, captureSoftScreens } from "./screens/capture";
 import { combineScreens } from "./screens/combine";
 import { capturePipelineScreens } from "./screens/capturePipeline";
 import { activityScreens } from "./screens/activity";
+import { transcriptionStatusScreens } from "./screens/transcriptionStatus";
 import { captureHomeDesktopScreens } from "./screens/captureHomeDesktop";
 import { captureSettingsScreens } from "./screens/captureSettings";
 import { legacyScreens } from "./screens/legacy";
@@ -77,6 +78,7 @@ const SCREENS: HarnessScreen[] = [
   ...captureSoftScreens,
   ...capturePipelineScreens,
   ...activityScreens,
+  ...transcriptionStatusScreens,
   ...captureHomeDesktopScreens,
   ...captureSettingsScreens,
   ...libraryScreens,

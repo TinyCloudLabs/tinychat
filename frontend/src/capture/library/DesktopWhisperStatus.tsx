@@ -1,8 +1,8 @@
 // A voice note's after-stop Whisper job on this Mac (TC-888's queue): where it stands, and Retry on a failure.
 import { useEffect, useState, type ReactNode } from "react";
-import { Loader2Icon, RefreshCwIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { TranscriptionStatus } from "../TranscriptionStatus";
 import { appPlatform } from "@/lib/platform";
 import { getDesktopWhisperQueue, type DesktopWhisperJob } from "@/lib/voiceNotes/desktop/desktopWhisper";
 import { useDesktopWhisperJob } from "@/lib/voiceNotes/desktop/useDesktopWhisperJob";
@@ -36,6 +36,7 @@ export function DesktopWhisperStatusView(props: {
   onRetry: () => void;
   localRead: "loading" | "missing" | "timeout" | "failed";
   onReadRetry?: () => void;
+  durationSecs?: number | null;
 }) {
   const { job } = props;
   if (job.state === "done") {
@@ -46,24 +47,16 @@ export function DesktopWhisperStatusView(props: {
           {props.onReadRetry && <Button type="button" variant="outline" onClick={props.onReadRetry}>Try again</Button>}
         </div>;
   }
+  const retry = props.onRetry;
   if (job.state === "failed") {
-    return (
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-2" data-testid="whisper-job-failed">
-        <p role="alert" className="min-w-0 flex-1 text-callout text-destructive">
-          {props.retryError ? WHISPER_JOB_COPY.retryFailed : WHISPER_JOB_COPY.failed}
-        </p>
-        <Button type="button" variant="outline" onClick={props.onRetry} data-testid="whisper-job-retry">
-          <RefreshCwIcon aria-hidden /> Retry
-        </Button>
-      </div>
-    );
+    return <TranscriptionStatus testId="whisper-job-failed" actionTestId="whisper-job-retry" durationSecs={props.durationSecs} job={{
+      kind: "transcribe", state: "needs-attention", label: "Transcribe", destination: "this Mac",
+      detail: props.retryError ? WHISPER_JOB_COPY.retryFailed : WHISPER_JOB_COPY.failed, action: { label: "Retry", run: retry } }} />;
   }
-  return (
-    <p role="status" data-testid="whisper-job-status" className="flex items-center gap-2 text-callout text-muted-foreground">
-      <Loader2Icon className="size-4 shrink-0 motion-safe:animate-spin" aria-hidden />
-      {job.state === "queued" ? WHISPER_JOB_COPY.queued : WHISPER_JOB_COPY.transcribing(job.progress)}
-    </p>
-  );
+  return <TranscriptionStatus testId="whisper-job-status" durationSecs={props.durationSecs} job={{
+    kind: "transcribe", state: job.state === "queued" ? "waiting" : "running", label: "Transcribe", destination: "this Mac",
+    detail: job.state === "queued" ? WHISPER_JOB_COPY.queued : "Transcribing on this Mac…",
+    ...(job.state === "transcribing" && job.progress !== null ? { progress: job.progress / 100 } : {}) }} />;
 }
 
 /** Logs a failed job's raw error once; the UI shows generic copy only. */
@@ -93,7 +86,7 @@ export function desktopWhisperEnabled(): boolean {
   return appPlatform() === "tauri";
 }
 
-function DesktopWhisperJobStatus(props: { noteId: string; fallback: ReactNode; localRead: "loading" | "missing" | "timeout" | "failed"; onReadRetry?: () => void; rerunOnly?: boolean }) {
+function DesktopWhisperJobStatus(props: { noteId: string; fallback: ReactNode; localRead: "loading" | "missing" | "timeout" | "failed"; onReadRetry?: () => void; rerunOnly?: boolean; durationSecs?: number | null }) {
   const job = useDesktopWhisperJob(props.noteId);
   const [retryError, setRetryError] = useState(false);
   useLogWhisperFailure(props.noteId, job);
@@ -103,13 +96,13 @@ function DesktopWhisperJobStatus(props: { noteId: string; fallback: ReactNode; l
     setRetryError(false);
     retryWhisperJob(props.noteId, () => setRetryError(true));
   };
-  return <DesktopWhisperStatusView job={job} retryError={retryError} onRetry={onRetry} localRead={props.localRead} onReadRetry={props.onReadRetry} />;
+  return <DesktopWhisperStatusView job={job} retryError={retryError} onRetry={onRetry} localRead={props.localRead} onReadRetry={props.onReadRetry} durationSecs={props.durationSecs} />;
 }
 
 
 /** Shows the note's Whisper job when it has one; otherwise `fallback`. Disabled, it is `fallback` and never touches the queue. */
-export function DesktopWhisperStatus(props: { noteId: string; fallback: ReactNode; enabled?: boolean; localRead?: "loading" | "missing" | "timeout" | "failed"; onReadRetry?: () => void; rerunOnly?: boolean }) {
+export function DesktopWhisperStatus(props: { noteId: string; fallback: ReactNode; enabled?: boolean; localRead?: "loading" | "missing" | "timeout" | "failed"; onReadRetry?: () => void; rerunOnly?: boolean; durationSecs?: number | null }) {
   const enabled = props.enabled ?? desktopWhisperEnabled();
   if (!enabled) return <>{props.fallback}</>;
-  return <DesktopWhisperJobStatus noteId={props.noteId} fallback={props.fallback} localRead={props.localRead ?? "loading"} onReadRetry={props.onReadRetry} rerunOnly={props.rerunOnly} />;
+  return <DesktopWhisperJobStatus noteId={props.noteId} fallback={props.fallback} localRead={props.localRead ?? "loading"} onReadRetry={props.onReadRetry} rerunOnly={props.rerunOnly} durationSecs={props.durationSecs} />;
 }

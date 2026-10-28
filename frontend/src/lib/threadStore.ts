@@ -17,6 +17,7 @@ import { THREAD_LIST_LOAD_FAILED } from "./threadListStrings";
 // tables hold the data:
 //
 //   threads(id, title, model, created_at, updated_at)
+//   settings(key, value)  -- 'thread-title-user:<id>' = '1' marks a user-set title
 //   messages(thread_id, position, payload, created_at)   -- payload = JSON item
 //
 // DB HANDLE CONVENTION (critical): the SQL service sends the db name VERBATIM
@@ -1224,6 +1225,32 @@ export async function createThread(
   };
 }
 
+/** Longest title a user may set; the auto title is capped lower (60). */
+export const MAX_USER_TITLE_LENGTH = 120;
+
+/**
+ * A user-set title is stored in `threads.title` like any title; this `settings`
+ * row (same space database, so it syncs with the chat) marks it as the user's.
+ * Auto-titling never writes a thread that has the marker.
+ */
+function titleUserKey(id: string): string {
+  return `thread-title-user:${id}`;
+}
+
+/** Trim and collapse whitespace; "" means "return to the auto title". */
+export function normalizeUserTitle(raw: string): string {
+  return raw.replace(/\s+/g, " ").trim().slice(0, MAX_USER_TITLE_LENGTH).trim();
+}
+
+function autoTitleOf(items: StoredMessageItem[]): string {
+  for (const item of items) {
+    if (item.message?.role !== "user") continue;
+    const text = firstTextOf(item);
+    if (text) return text.slice(0, 60);
+  }
+  return DEFAULT_TITLE;
+}
+
 function firstTextOf(item: StoredMessageItem): string {
   const parts = item.message?.content ?? [];
   for (const part of parts) {
@@ -1253,7 +1280,7 @@ export async function appendMessage(
     const doc = local.threads.get(id) ?? { id, title: DEFAULT_TITLE, model: selectedModel, createdAt: now, updatedAt: now, messages: [] };
     if (!doc.messages.some((prior) => prior.message.id === item.message.id)) {
       doc.messages.push(structuredClone(item));
-      if (doc.title === DEFAULT_TITLE && item.message.role === "user") doc.title = firstTextOf(item).slice(0, 60) || DEFAULT_TITLE;
+      if (doc.title === DEFAULT_TITLE && !local.settings.has(titleUserKey(id)) && item.message.role === "user") doc.title = firstTextOf(item).slice(0, 60) || DEFAULT_TITLE;
       doc.updatedAt = now;
       local.threads.set(id, doc);
       notifyLocalThreads(tcw, id);
@@ -1300,8 +1327,8 @@ export async function appendMessage(
 
     // Read the current title (to know whether to derive one) and existing model.
     const head = await store(tcw, scope).query(
-      "SELECT title, model FROM threads WHERE id = ?",
-      [id],
+      "SELECT title, model, (SELECT 1 FROM settings WHERE key = ?) FROM threads WHERE id = ?",
+      [titleUserKey(id), id],
     );
     if (!head.ok) throw new SqlOpError(head.error, "appendMessage(head)", scope);
     const exists = head.data.rows.length > 0;
@@ -1310,7 +1337,8 @@ export async function appendMessage(
 
   // Derive a title from the first user message while still default.
     let title = currentTitle;
-    if (title === DEFAULT_TITLE && item.message?.role === "user") {
+    const userSet = exists && head.data.rows[0][2] != null;
+    if (title === DEFAULT_TITLE && !userSet && item.message?.role === "user") {
       const text = firstTextOf(item);
       if (text) title = text.slice(0, 60);
     }
@@ -1325,9 +1353,10 @@ export async function appendMessage(
       sql: `INSERT INTO threads (id, title, model, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
-              title = excluded.title,
+              title = CASE WHEN EXISTS (SELECT 1 FROM settings WHERE key = ?)
+                           THEN threads.title ELSE excluded.title END,
               updated_at = excluded.updated_at`,
-      params: [id, title, currentModel, now, now],
+      params: [id, title, currentModel, now, now, titleUserKey(id)],
     },
     {
       sql: `INSERT INTO messages (thread_id, position, payload, created_at)
@@ -1351,7 +1380,14 @@ export async function appendMessage(
       throw new SqlOpError(res.error, "appendMessage(batch)", scope);
     }
 
-    patchCacheEntry(tcw, { id, title, updatedAt: now, model: currentModel });
+    // A derived title can lose to a rename that landed after the head read
+    // (the upsert keeps the user's title); show what was actually stored.
+    let storedTitle = title;
+    if (title !== currentTitle) {
+      const after = await store(tcw, scope).query("SELECT title FROM threads WHERE id = ?", [id]);
+      if (after.ok && after.data.rows.length > 0) storedTitle = cellStr(after.data.rows[0], 0, title);
+    }
+    patchCacheEntry(tcw, { id, title: storedTitle, updatedAt: now, model: currentModel });
   // The thread's stored messages changed — drop any prefetched doc so a later
   // open re-reads. And the list ordering/title may have changed: converge the
   // sidebar (the runtime gates this behind "no stream running").
@@ -1531,35 +1567,72 @@ export async function importThread(
   notifyThreadIndex(readCache(tcw) ?? []);
 }
 
-/** Set/rename a thread title. No-op effect if the row doesn't exist (fine). */
+/**
+ * Set a thread's title as the user's own. The marker row and the title are
+ * written in one batch, so auto-titling (which checks the marker inside its own
+ * upsert) cannot overwrite it. An empty/whitespace title removes the marker and
+ * returns the thread to its auto title. No-op effect if the row doesn't exist.
+ */
 export async function setThreadTitle(
   tcw: TinyCloudWeb,
   id: string,
-  title: string,
+  rawTitle: string,
 ): Promise<void> {
   const scope = storageScopeFor(tcw);
+  const userTitle = normalizeUserTitle(rawTitle);
   const local = localStores.get(tcw);
   if (local) {
     const doc = local.threads.get(id);
-    if (doc) { doc.title = title; doc.updatedAt = new Date().toISOString(); notifyLocalThreads(tcw, id); }
+    if (!doc) return;
+    if (userTitle) {
+      doc.title = userTitle;
+      local.settings.set(titleUserKey(id), "1");
+    } else {
+      doc.title = autoTitleOf(doc.messages);
+      local.settings.delete(titleUserKey(id));
+    }
+    doc.updatedAt = new Date().toISOString();
+    notifyLocalThreads(tcw, id);
     return;
   }
-  mutationGen++;
-  await ensureSchema(tcw, { forWrite: true }, scope);
-  const now = new Date().toISOString();
-  const res = await store(tcw, scope).execute(
-    "UPDATE threads SET title = ?, updated_at = ? WHERE id = ?",
-    [title, now, id],
-  );
-  if (!res.ok) throw new SqlOpError(res.error, "setThreadTitle", scope);
-  const cached = readCache(tcw);
-  if (cached) {
-    const prior = cached.find((s) => s.id === id);
-    patchCacheEntry(tcw, { id, title, updatedAt: now, model: prior?.model ?? DEFAULT_MODEL });
-  }
-  // The prefetched doc carries the old title — evict it. Converge the sidebar.
-  historyPrefetch.invalidate(id);
-  notifyThreadIndex(readCache(tcw) ?? []);
+  return enqueueThreadWrite(tcw, id, async () => {
+    mutationGen++;
+    await ensureSchema(tcw, { forWrite: true }, scope);
+    let title = userTitle;
+    if (!title) {
+      const rows = await store(tcw, scope).query(
+        "SELECT payload FROM messages WHERE thread_id = ? ORDER BY position",
+        [id],
+      );
+      if (!rows.ok) throw new SqlOpError(rows.error, "setThreadTitle(auto)", scope);
+      const items: StoredMessageItem[] = [];
+      for (const row of rows.data.rows) {
+        if (typeof row[0] !== "string") continue;
+        try { items.push(JSON.parse(row[0])); } catch { /* skip unreadable row */ }
+      }
+      title = autoTitleOf(items);
+    }
+    const now = new Date().toISOString();
+    const res = await store(tcw, scope).batch([
+      userTitle
+        ? {
+            sql: `INSERT OR REPLACE INTO settings (key, value)
+                  SELECT ?, '1' WHERE EXISTS (SELECT 1 FROM threads WHERE id = ?)`,
+            params: [titleUserKey(id), id],
+          }
+        : { sql: "DELETE FROM settings WHERE key = ?", params: [titleUserKey(id)] },
+      { sql: "UPDATE threads SET title = ?, updated_at = ? WHERE id = ?", params: [title, now, id] },
+    ]);
+    if (!res.ok) throw new SqlOpError(res.error, "setThreadTitle", scope);
+    const cached = readCache(tcw);
+    if (cached) {
+      const prior = cached.find((s) => s.id === id);
+      patchCacheEntry(tcw, { id, title, updatedAt: now, model: prior?.model ?? DEFAULT_MODEL });
+    }
+    // The prefetched doc carries the old title — evict it. Converge the sidebar.
+    historyPrefetch.invalidate(id);
+    notifyThreadIndex(readCache(tcw) ?? []);
+  });
 }
 
 export const renameThread = setThreadTitle;
@@ -1623,6 +1696,7 @@ export async function deleteThread(tcw: TinyCloudWeb, id: string): Promise<void>
   const local = localStores.get(tcw);
   if (local) {
     local.threads.delete(id);
+    local.settings.delete(titleUserKey(id));
     local.compactions.delete(id);
     notifyLocalThreads(tcw, id);
     return;
@@ -1634,6 +1708,7 @@ export async function deleteThread(tcw: TinyCloudWeb, id: string): Promise<void>
   const res = await store(tcw, scope).batch([
     { sql: "DELETE FROM messages WHERE thread_id = ?", params: [id] },
     { sql: "DELETE FROM threads WHERE id = ?", params: [id] },
+    { sql: "DELETE FROM settings WHERE key = ?", params: [titleUserKey(id)] },
   ]);
   if (!res.ok) throw new SqlOpError(res.error, "deleteThread", scope);
   // Share records exist only once sharing is enabled; while paused, a delete makes no share call.
