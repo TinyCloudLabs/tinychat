@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.11.2-beta.0
+
+### Patch Changes
+
+- 2f94b1b: A pasted transcript opens its note: it is a note page, never the saved recording's sheet or page, and it has no audio player.
+
 ## 0.11.1
 
 ### Patch Changes
