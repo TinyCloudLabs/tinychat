@@ -169,7 +169,17 @@ export async function publishHomeMirror(ctx: HomeMirrorContext, value: unknown):
     const binding: HomeMirrorBinding = { version: 1, source, identity, cardUuid: identity.cardId, legacy: { spaceId: ctx.legacySpaceId, fullKey: input.legacy.fullKey, kind: record.kind, id: record.id, publicationSha256, publishedETag: head.etag } };
     const json = JSON.stringify(binding);
     try {
-      take(await owner.execute("INSERT INTO feed_sitrep_mirrors(source_id,card_id,revision,issuance_id,binding_json) VALUES(?,?,?,?,?) ON CONFLICT(source_id,card_id,revision,issuance_id) DO NOTHING", [source.sourceId, identity.cardId, identity.revision, identity.issuanceId, json]));
+      // Ownership is checked by the same SQLite write that claims the binding.
+      // Multiple issuances remain legal only for the same source and shared UUID.
+      take(await owner.execute(`INSERT INTO feed_sitrep_mirrors(source_id,card_id,revision,issuance_id,binding_json)
+        SELECT ?,?,?,?,? WHERE NOT EXISTS (
+          SELECT 1 FROM feed_sitrep_mirrors AS bound
+          WHERE json_extract(bound.binding_json,'$.legacy.spaceId')=?
+            AND json_extract(bound.binding_json,'$.legacy.fullKey')=?
+            AND (bound.source_id<>? OR bound.card_id<>?)
+        ) ON CONFLICT(source_id,card_id,revision,issuance_id) DO NOTHING`,
+      [source.sourceId, identity.cardId, identity.revision, identity.issuanceId, json,
+        ctx.legacySpaceId, input.legacy.fullKey, source.sourceId, identity.cardId]));
     } catch (error) {
       const replay = await load(ctx, { sourceId: source.sourceId, ...identity });
       if (!replay || !isDeepStrictEqual(replay.binding, binding)) throw error;
@@ -447,7 +457,7 @@ export async function watchHomeMirrors(context: HomeMirrorContext, options: Home
     // Renew the hook ticket, not a SQL heartbeat. Every authorized ready reconciles from start.
     const renewal = setTimeout(stop, renewalSeconds * 1000); renewal.unref?.();
     try {
-      for await (const _event of options.hooks.subscribe([{ service: "sql", pathPrefix: source.responses.database }], {
+      for await (const _event of options.hooks.subscribe([{ space: source.responses.spaceId, service: "sql", pathPrefix: source.responses.database }], {
         signal: connection.signal, ttlSeconds: renewalSeconds,
         onReady: () => {
           if (current !== connection || connection.signal.aborted || signal.aborted) return;
