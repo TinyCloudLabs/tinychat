@@ -1,5 +1,36 @@
 # @tinychat/frontend
 
+## 0.11.4
+
+### Patch Changes
+
+- 8e39260: Simplify chat by removing the header title editor, persistent Agent access status row, View/Chat/Canvas switcher, and promotional Early Access Demo label. Keep conversation titles and history, credit usage, live-recording status, and existing agent recovery and Settings controls. Canvas and artifact data remain stored; the visual Canvas surface is no longer reachable from the removed switcher.
+
+## 0.11.4-beta.0
+
+### Patch Changes
+
+- 8e39260: Simplify chat by removing the header title editor, persistent Agent access status row, View/Chat/Canvas switcher, and promotional Early Access Demo label. Keep conversation titles and history, credit usage, live-recording status, and existing agent recovery and Settings controls. Canvas and artifact data remain stored; the visual Canvas surface is no longer reachable from the removed switcher.
+
+## 0.11.3
+
+### Patch Changes
+
+- 9577d88: Rename a recording from the Home and Library lists and from the note header. The name is stored with the note in your space; auto-titling, re-transcribe, and re-sync keep it, and clearing it returns to the automatic title.
+
+## 0.11.3-beta.0
+
+### Patch Changes
+
+- 9577d88: Rename a recording from the Home and Library lists and from the note header. The name is stored with the note in your space; auto-titling, re-transcribe, and re-sync keep it, and clearing it returns to the automatic title.
+
+## 0.11.2
+
+### Patch Changes
+
+- 8d080e4: On touch, an editable field smaller than 16px can make iOS zoom the whole page, and the zoom can stay after focus leaves. The paste-a-transcript fields, the Fireflies API key and the Meet space code now render 16px on touch (unchanged size with a mouse), matching the composer and the notetaker form.
+- 2f94b1b: A pasted transcript opens its note: it is a note page, never the saved recording's sheet or page, and it has no audio player.
+
 ## 0.11.2-beta.1
 
 ### Patch Changes

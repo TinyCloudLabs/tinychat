@@ -6,6 +6,7 @@
 // never in colour alone.
 // T22 adds pipeline status to this row.
 import { ChevronRightIcon, type LucideIcon } from "lucide-react";
+import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
 import {
@@ -43,6 +44,10 @@ export interface SoftRowProps {
   sourceId?: string;
   pipeline?: NotePipeline;
   activityStatus?: string | null;
+  /** Beside the row, never inside its link: the rename pencil. */
+  trailing?: ReactNode;
+  /** The inline title editor; replaces the row while it is open. */
+  editor?: ReactNode;
 }
 
 /** What sits under the title: the issue's line, except for an informational one, which has a line of its own below. */
@@ -136,9 +141,13 @@ export function SoftRow(props: SoftRowProps) {
     "aria-label": label,
     "data-selected": props.selected ? "true" : undefined,
   };
+  if (props.editor) {
+    return <li className="soft-row-item" data-testid={props.testId} data-source-id={props.sourceId}>{props.editor}</li>;
+  }
   return (
     <li
       className="soft-row-item"
+      data-renamable={props.trailing ? "true" : undefined}
       data-testid={props.testId}
       data-source-id={props.sourceId}
       data-issue={issue?.kind}
@@ -165,6 +174,7 @@ export function SoftRow(props: SoftRowProps) {
           {body}
         </div>
       )}
+      {props.trailing}
       {notice !== null && props.onDetails && (
         <button
           type="button"

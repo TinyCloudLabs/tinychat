@@ -37,6 +37,7 @@ import {
 
 import { readTranscriptCommit } from "../voiceNotes/voiceNoteCommits";
 import type { StoreError, StoreResult } from "./connectorStore";
+import { keepUserTitle } from "../recordingTitleMeta";
 
 // ═══ 1. Guards and low-level I/O ═════════════════════════════════════════════════════════════
 
@@ -343,17 +344,22 @@ export async function writeCombined(
     try { keeperMeta = JSON.parse(keeperMeta); } catch { keeperMeta = null; }
   }
   const keptNames = isRecord(keeperMeta) ? keeperMeta.speaker_names : undefined;
-  const updateMetadata = keptNames === undefined ? metadata
-    : JSON.stringify({ ...row.metadata, speaker_names: keptNames, merge: { ...row.metadata.merge, decided_at: now } });
   for (const extra of ids.slice(1)) {
     const del = await sql(tcw, "execute", "DELETE FROM connector_meeting WHERE id = ? AND source = 'exo-merged'", [extra]);
     if (!del.ok) return del;
   }
   // Summary columns are untouched (section 3b owns them); created_at is preserved.
   if (!created || keeper !== row.id) {
+    // A title the user typed on the combined meeting survives a re-combine.
+    const current = await sql(tcw, "query", "SELECT title, metadata FROM connector_meeting WHERE id = ? AND source = 'exo-merged'", [keeper]);
+    if (!current.ok) return current;
+    let currentMetadata: Record<string, unknown> = {};
+    try { currentMetadata = JSON.parse(String(current.rows[0]?.[1] ?? "{}")) as Record<string, unknown>; } catch { /* no marker */ }
+    const kept = keepUserTitle({ title: asString(current.rows[0]?.[0]), metadata: currentMetadata },
+      { title: row.title, metadata: JSON.parse(metadata) as Record<string, unknown> });
     const upd = await sql(tcw, "execute",
       "UPDATE connector_meeting SET title = ?, started_at = ?, duration_secs = ?, participants = ?, metadata = ?, updated_at = ? WHERE id = ? AND source = 'exo-merged'",
-      [row.title, row.started_at, row.duration_secs, participants, updateMetadata, now, keeper]);
+      [kept.title, row.started_at, row.duration_secs, participants, JSON.stringify(keptNames === undefined ? kept.metadata : { ...kept.metadata, speaker_names: keptNames }), now, keeper]);
     if (!upd.ok) return upd;
   }
   return { ok: true, data: { status: "written", id: keeper, sourceId, created: created && keeper === row.id, passed: row.metadata.merge.detection.passed } };

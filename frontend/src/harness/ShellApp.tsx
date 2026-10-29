@@ -11,7 +11,6 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { CaptureSurface, type CaptureSurfaceProps } from "@/capture/CaptureSurface";
 import { HeaderLiveChip } from "@/capture/recorder/HeaderLiveChip";
-import { HeaderRecordButton } from "@/capture/recorder/HeaderRecordButton";
 import { RecorderProvider, StaticRecorderProvider, type RecorderValue } from "@/capture/recorder/RecorderProvider";
 import { RecorderShell } from "@/capture/recorder/RecorderShell";
 import { useOpenSavedNote } from "@/capture/library/useOpenSavedNote";
@@ -130,7 +129,6 @@ export function ShellApp({ platform, shim, state, probe = (_id, node) => node, c
           headerRecorder={
             <>
               <HeaderLiveChip />
-              <HeaderRecordButton />
             </>
           }
           settings

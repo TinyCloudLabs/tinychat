@@ -4,6 +4,7 @@ import { storageScopeFor, trackStorageWrites } from "@/lib/storageStatus";
 import { deviceName } from "@/lib/platform";
 import { setSetting } from "@/lib/threadStore";
 import { autoMeetingTitle } from "@/lib/meetingTitle";
+import { planRename } from "../recordingTitleMeta";
 import type { FirefliesSentence } from "../connectors/firefliesClient";
 import { CONNECTORS_KV_PREFIX, CONNECTORS_SQL_DB_NAME, ensureSchema, transcriptKvKey } from "../connectors/connectorStore";
 import { runOnSpaceLane, SpaceLaneQueueWaitTimeout, spaceLaneAbandonedSqlCalls, spaceLaneSnapshot, subscribeSpaceLane } from "../spaceWriteLane";
@@ -502,7 +503,7 @@ export async function commitVoiceNoteTranscript(
       const [startedRow] = await query(tcw, "SELECT started_at FROM connector_meeting WHERE id = ?", [live.id], checkpoint);
       const title = autoMeetingTitle({ startedAt: startedRow?.[0], participantNames: input.participants });
       // Rename only while the title is still the one the insert wrote; an edited title is kept.
-      if (title) await execute(tcw, "UPDATE connector_meeting SET title = ?, metadata = json_remove(metadata, '$.title_auto') WHERE id = ? AND source = 'exo-voice-note' AND title = json_extract(metadata, '$.title_auto')",
+      if (title) await execute(tcw, "UPDATE connector_meeting SET title = ?, metadata = json_remove(metadata, '$.title_auto') WHERE id = ? AND source = 'exo-voice-note' AND title = json_extract(metadata, '$.title_auto') AND json_extract(metadata, '$.title_user') IS NULL",
         [title, live.id], checkpoint);
     }
     const key = transcriptKvKey("exo-voice-note", sourceId);
@@ -540,6 +541,26 @@ export async function patchRowSpeakerNames(tcw: TinyCloudWeb, rowId: string, nam
     : await execute(tcw, `UPDATE connector_meeting SET metadata = json_set(${base}, '$.speaker_names', json(?)), updated_at = ? WHERE id = ?`,
       [JSON.stringify(names), new Date().toISOString(), rowId], checkpoint);
   if (changes === 0) throw new Error("The note's row is missing");
+}
+
+/**
+ * Names a recording's row, or (an empty `name`) returns it to its automatic title. The read and the write each run
+ * on the space write lane, and the write applies only if the row is unchanged since the read, so a transcript
+ * commit landing in between is never overwritten.
+ */
+export async function writeRecordingTitle(tcw: TinyCloudWeb, rowId: string, name: string, checkpoint: () => void = () => undefined):
+  Promise<{ status: "missing" | "conflict" } | { status: "unchanged" | "written"; title: string | null }> {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const [row] = await query(tcw, "SELECT title, metadata, updated_at, source, started_at, participants FROM connector_meeting WHERE id = ?", [rowId], checkpoint);
+    if (!row) return { status: "missing" };
+    const title = typeof row[0] === "string" ? row[0] : null;
+    const plan = planRename(name, { title, metadata: typeof row[1] === "string" ? row[1] : null, source: String(row[3]), startedAt: row[4], participants: row[5] });
+    if (!plan) return { status: "unchanged", title };
+    const changes = await execute(tcw, "UPDATE connector_meeting SET title = ?, metadata = ?, updated_at = ? WHERE id = ? AND updated_at = ?",
+      [plan.title, JSON.stringify(plan.metadata), new Date().toISOString(), rowId, row[2]], checkpoint);
+    if (changes > 0) return { status: "written", title: plan.title };
+  }
+  return { status: "conflict" };
 }
 
 /** Saves one cross-device setting (the `settings` table) on the space write lane, behind any save already waiting on it (TC-2199). */
