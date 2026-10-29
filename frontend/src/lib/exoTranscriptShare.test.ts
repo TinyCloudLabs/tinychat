@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { canonicalHashHex } from "@tinycloud/sdk-core";
 import { sha256 } from "@noble/hashes/sha256";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
-import type { AddressedSharePublishOptions, PublishedShare } from "@tinycloud/share-sdk";
+import { canonicalShareFilename, type AddressedSharePublishOptions, type PublishedShare } from "@tinycloud/share-sdk";
 import {
   rawWrappedKeyDigest, transcriptShareSnapshot, prepareTranscriptShare, publishTranscriptShare,
   transcriptShareUnavailable, validateTranscriptShareOrigins,
@@ -39,7 +39,7 @@ const METADATA = { status: "ok" as const, metadata: {} };
 const TRANSCRIPT = { status: "ok" as const, sentences: [{ index: 0, text: "Synthetic text <not HTML>.", speaker_name: "Speaker", start_time: 0, end_time: 0 }] };
 const ORIGINS = { apiOrigin: "http://127.0.0.1:3001", shareOrigin: "http://127.0.0.1:3002", localOnly: true };
 
-function fixture() {
+function fixture(title = NOTE.title) {
   const effects: string[] = [];
   const stored = new Map<string, Uint8Array>();
   const encryptedInputs: string[] = [];
@@ -80,7 +80,7 @@ function fixture() {
     registerPolicy: async () => { effects.push("register"); throw new Error("No Node call belongs in this offline fixture"); },
   };
   const tcw = client as unknown as TinyCloudWeb;
-  const snapshot = transcriptShareSnapshot(NOTE, METADATA, TRANSCRIPT)!;
+  const snapshot = transcriptShareSnapshot({ ...NOTE, title }, METADATA, TRANSCRIPT)!;
   const review = prepareTranscriptShare(tcw, snapshot, "alice@example.test", NOW, SHARE_ID);
   let publishedInput: AddressedSharePublishOptions | undefined;
   const operations = {
@@ -276,3 +276,24 @@ test("a session restored during consent cannot create the share key or publish",
   expect(f.effects).toEqual(["public-key"]);
   expect(f.stored.size).toBe(0);
 });
+
+for (const [kind, title, filename] of [
+  ["slash", "  Q4 / Roadmap  ", "Q4 - Roadmap"],
+  ["backslash", "Standup\\Review", "Standup-Review"],
+  ["empty", "", "Transcript"],
+  ["over-long", "Q".repeat(2048), "Q".repeat(128)],
+  ["dot", " .. ", "Transcript"],
+  ["control/invisible", "Plan\u0000\u202e/Now", "Plan---Now"],
+  ["multibyte over-long", "\u{10437}".repeat(100), "\u{10437}".repeat(32)],
+] as const) {
+  test(`a ${kind} title gets one valid bounded filename for review and publication`, async () => {
+    const f = fixture(title);
+    expect(f.review.filename).toBe(filename);
+    expect(canonicalShareFilename(f.review.filename)).toBe(filename);
+    expect(new TextEncoder().encode(f.review.filename).byteLength).toBeLessThanOrEqual(128);
+    expect(f.review.snapshot.title).toBe(title);
+    expect(f.effects).toEqual([]);
+    expect((await publishTranscriptShare(f.input, f.operations)).status).toBe("published");
+    expect(f.publishedInput()?.filename).toBe(filename);
+  });
+}

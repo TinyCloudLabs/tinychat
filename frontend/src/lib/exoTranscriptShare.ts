@@ -2,8 +2,8 @@ import { createContext } from "react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import type { NamedKeyClient } from "@tinycloud/node-sdk/encryption-keys";
 import {
-  DEFAULT_SHARE_LIFETIME_MS, assertAddressedShareFits, canonicalize, historyRecordForPublishedShare,
-  prepareAddressedShare, publishAddressedShare,
+  DEFAULT_SHARE_LIFETIME_MS, assertAddressedShareFits, canonicalShareFilename, canonicalize,
+  hasUnsafeFilenameCodePoint, historyRecordForPublishedShare, prepareAddressedShare, publishAddressedShare,
 } from "@tinycloud/share-sdk";
 import type { AddressedPublishAuthority, PublishedShare, PublishedShareDeliveryMaterial } from "@tinycloud/share-sdk";
 import { encryptionBase64Decode, encryptionBase64Encode } from "@tinycloud/sdk-core";
@@ -58,6 +58,7 @@ export interface TranscriptShareReview {
   readonly shareId: string;
   readonly recipient: string;
   readonly expiresAt: number;
+  readonly filename: string;
   readonly account: ShareAccount;
   readonly snapshot: TranscriptShareSnapshot;
 }
@@ -70,6 +71,7 @@ export interface TranscriptShareOrigins {
 const SNAPSHOTS_PREFIX = `${CONNECTORS_KV_PREFIX}/share-snapshots`;
 const MEDIA_TYPE = "text/plain;charset=utf-8";
 const FILENAME = "transcript.txt";
+const MAX_DISPLAY_FILENAME_BYTES = 128;
 const loopback = (hostname: string) => hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]";
 
 /** No local/device fallback or unsupported connector can become a Share source. */
@@ -126,6 +128,21 @@ export function transcriptShareNeedsSignIn(tcw: TinyCloudWeb): boolean {
   return tcw.sessionRestoreStatus === "restored" || tcw.isSessionOnly || !tcw.isWalletConnected;
 }
 
+function transcriptShareFilename(title: string): string {
+  let filename = "";
+  let byteLength = 0;
+  for (const character of title.normalize("NFC").trim()) {
+    const safe = character === "/" || character === "\\" || hasUnsafeFilenameCodePoint(character) ? "-" : character;
+    const point = safe.codePointAt(0)!;
+    const bytes = point <= 0x7f ? 1 : point <= 0x7ff ? 2 : point <= 0xffff ? 3 : 4;
+    if (byteLength + bytes > MAX_DISPLAY_FILENAME_BYTES) break;
+    filename += safe;
+    byteLength += bytes;
+  }
+  filename = filename.trim();
+  return canonicalShareFilename(!filename || filename === "." || filename === ".." ? "Transcript" : filename);
+}
+
 /** Pure recipient normalization/validation, before consent, key creation or writes. */
 export function prepareTranscriptShare(
   tcw: TinyCloudWeb, snapshot: TranscriptShareSnapshot, recipient: string,
@@ -133,10 +150,11 @@ export function prepareTranscriptShare(
 ): TranscriptShareReview {
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(shareId)) throw new TranscriptShareError("Invalid share identifier.");
   if (!snapshot.text.trim()) throw new TranscriptShareError("The persisted transcript is empty.");
+  const filename = transcriptShareFilename(snapshot.title);
   const prepared = prepareAddressedShare({ target: { kind: "email", address: recipient }, actions: ["read"],
-    policyActions: ["tinycloud.kv/get"], filename: snapshot.title });
+    policyActions: ["tinycloud.kv/get"], filename });
   if (prepared.target.kind !== "email") throw new TranscriptShareError("An exact recipient email is required.");
-  return Object.freeze({ shareId, recipient: prepared.target.address, expiresAt: now + DEFAULT_SHARE_LIFETIME_MS,
+  return Object.freeze({ shareId, recipient: prepared.target.address, expiresAt: now + DEFAULT_SHARE_LIFETIME_MS, filename,
     account: shareAccount(tcw), snapshot: Object.freeze({ ...snapshot }) });
 }
 
@@ -225,7 +243,7 @@ export async function publishTranscriptShare(
     await keys.getPublicKey(keyPath, { networkId });
     check();
     const request = { target: { kind: "email" as const, address: review.recipient }, actions: ["read" as const],
-      policyActions: ["tinycloud.kv/get" as const], filename: snapshot.title };
+      policyActions: ["tinycloud.kv/get" as const], filename: review.filename };
     const prepared = prepareAddressedShare(request);
     const byteLength = new TextEncoder().encode(snapshot.text).byteLength;
     await operations.assertFits({ ...request, shareId: review.shareId, ownerDid: review.account.holderDid,
