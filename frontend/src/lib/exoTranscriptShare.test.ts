@@ -5,6 +5,7 @@ import { sha256 } from "@noble/hashes/sha256";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { canonicalShareFilename, type AddressedSharePublishOptions, type PublishedShare } from "@tinycloud/share-sdk";
 import type { OpenKeyError } from "@openkey/sdk";
+import { debugErrorChain } from "./debugLog";
 import {
   rawWrappedKeyDigest, transcriptShareSnapshot, prepareTranscriptShare, publishTranscriptShare,
   transcriptShareUnavailable, validateTranscriptShareOrigins,
@@ -282,6 +283,21 @@ test("closed or expired review cannot start effects; raw SDK error bodies never 
     expect(String(error)).toContain("creating the exact named-key");
     expect(String(error)).not.toContain("PRIVATE_SIGNED_URL_OR_BODY");
   }
+});
+
+test("SDK failures discard raw causes before diagnostic chaining", async () => {
+  const f = fixture();
+  const privateMessage = "Private transcript words: amber koala beneath cedar.";
+  const privateBody = "Private request body: meeting notes for tomorrow.";
+  const sdkError = new Error(privateMessage, { cause: new Error(privateBody) });
+  f.client.keys.createKey = async () => { throw sdkError; };
+  const failure = await publishTranscriptShare(f.input, f.operations).catch((error: unknown) => error);
+  expect(failure).toBeInstanceOf(Error);
+  expect(failure).not.toHaveProperty("cause");
+  const messages = debugErrorChain(failure).map((entry) => entry.message);
+  expect(messages).toEqual([(failure as Error).message]);
+  expect(messages.join("\n")).not.toContain(privateMessage);
+  expect(messages.join("\n")).not.toContain(privateBody);
 });
 
 test("restored, session-only and disconnected owner sessions require sign-in before any share effect", async () => {

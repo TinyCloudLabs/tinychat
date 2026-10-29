@@ -327,6 +327,7 @@ export async function publishTranscriptShare(
     const suffix = typeof code === "string" && /^[A-Z][A-Z0-9_]{0,60}$/.test(code) ? ` (${code})` : "";
     // Do not render an SDK/transport Error.message: it can contain a signed URL or secret body.
     if (error instanceof TranscriptShareError) throw error;
-    throw new Error(`Transcript sharing stopped while ${stage}${suffix}. No link was returned.`, { cause: error });
+    // eslint-disable-next-line preserve-caught-error -- the SDK error can carry signed URLs and bodies; deliberately not retained (TC-2192)
+    throw new Error(`Transcript sharing stopped while ${stage}${suffix}. No link was returned.`);
   }
 }

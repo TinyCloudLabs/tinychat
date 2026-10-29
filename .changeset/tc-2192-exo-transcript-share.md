@@ -10,4 +10,6 @@ Adopt the published TinyCloud Web, Node and Core SDKs at 3.8.0-beta.21 for exact
 
 Keep transcript-share dialogs open through same-owner, same-session runtime-grant refreshes. Reject stale account/content completions and surface interrupted shares without exposing the prior recipient or link. Treat an OpenKey cancellation of exact-key consent as a cancelled share.
 
+Discard underlying SDK errors at the transcript-share boundary so diagnostic cause chains contain only the sanitized failure message.
+
 Details: TC-2192
