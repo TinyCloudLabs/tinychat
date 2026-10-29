@@ -29,8 +29,10 @@ const BARE_HOST = /^[a-z0-9-]+(?:\.[a-z0-9-]+)+(?:[/?#:]|$)/i;
 
 function readLink(raw: string, unwrap: boolean): string | null {
   let text = raw.trim();
-  // A pasted invite line: use its first link.
-  if (/\s/.test(text)) text = text.split(/\s+/).map(stripWrapping).find(token => LINK_LIKE.test(token) || MEET_CODE.test(token)) ?? "";
+  // A pasted invite line: use its first Meet link, else its first link.
+  const meet = firstMeetTarget(text);
+  if (meet !== null) text = meet;
+  else if (/\s/.test(text)) text = text.split(/\s+/).map(stripWrapping).find(token => LINK_LIKE.test(token) || MEET_CODE.test(token)) ?? "";
   else text = stripWrapping(text);
   if (!text) return null;
   if (MEET_CODE.test(text)) return `https://meet.google.com/${text.toLowerCase()}`;
@@ -62,6 +64,48 @@ function readLink(raw: string, unwrap: boolean): string | null {
   if (!canonical) return text;
   // A link already in canonical form is returned exactly as pasted.
   return url.href.replace(/^http:/, "https:") === canonical ? text : canonical;
+}
+
+const MEET_LOOKUP_PATH = /^\/lookup\/[^/?#&=\s]+\/?$/;
+/** An exact-host `meet.google.com/…` URL that starts where a link starts: not after a letter, digit or host/path character, so lookalike hosts, userinfo and another site's query don't match. */
+const MEET_HOST_URL = /(?<![\p{L}\p{N}_.@/=&?%#:+-])(?:https?:\/\/)?meet\.google\.com\/[^\s<>"'`\]]*/giu;
+
+/** Trailing sentence punctuation is not part of a link; a closing bracket is only when the link has no opening one for it. */
+function trimTrailingPunctuation(link: string): string {
+  let balance = 0;
+  for (const char of link) balance += char === "(" ? -1 : char === ")" ? 1 : 0;
+  let end = link.length;
+  for (;;) {
+    const last = link[end - 1];
+    if (last !== undefined && /[.,;:!?"'\]>]/.test(last)) end--;
+    else if (last === ")" && balance > 0) { end--; balance--; }
+    else return link.slice(0, end);
+  }
+}
+
+/** The first Meet code or lookup link in free text, in the order pasted; null when there is none. */
+function firstMeetTarget(text: string): string | null {
+  // Whether the pasted word holding each match already has a URL-shaped character before it, tracked as the matches advance.
+  let scanned = 0;
+  let urlShaped = false;
+  for (const match of text.matchAll(MEET_HOST_URL)) {
+    for (; scanned < match.index; scanned++) {
+      const char = text[scanned]!;
+      if (/\s/.test(char)) urlShaped = false;
+      else if (/[/?=&#@:%]/.test(char)) urlShaped = true;
+    }
+    // Only a label or bracket may sit between the start of the pasted word and the link: anything URL-shaped before it
+    // means this Meet link is part of another link (its query, say), not a link of its own.
+    if (urlShaped) continue;
+    // Inside explicit <…> the link is exactly what is between them.
+    const delimited = text[match.index - 1] === "<" && text[match.index + match[0].length] === ">";
+    const candidate = delimited ? match[0] : trimTrailingPunctuation(match[0]);
+    try {
+      const url = new URL(HAS_SCHEME.test(candidate) ? candidate : `https://${candidate}`);
+      if (meetCanonical(url) !== null || MEET_LOOKUP_PATH.test(url.pathname)) return candidate;
+    } catch { /* not a link */ }
+  }
+  return null;
 }
 
 /** The canonical Meet link for a URL in one of the Meet shapes, else null. */

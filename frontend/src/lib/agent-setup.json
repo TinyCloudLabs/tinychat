@@ -1,8 +1,7 @@
 {
   "setupUrl": "https://tinycloud.chat/agents/",
-  "instructionsUrl": "https://raw.githubusercontent.com/TinyCloudLabs/prompts/refs/heads/docs/initial-setup-split/apps/tinychat/setup.md",
+  "instructionsUrl": "https://agents.tinycloud.xyz/chat",
   "dataHost": "https://tee.node.tinycloud.xyz",
-  "cliVersion": "1.3.0",
   "installerVersion": "1.7.0",
-  "packVersion": "0.1.1-onboarding.24"
+  "packVersion": "0.1.1-onboarding.25"
 }

@@ -24,7 +24,6 @@ async function fixture(t) {
   await writeFile(join(source, 'lib/evidence.mjs'), 'export const evidence = true;');
   await writeFile(join(source, 'references/session-handoff.md'), 'Local diagnostic handoff.');
   await writeFile(join(source, 'lib/login.mjs'), 'export const login = true;');
-  await writeFile(join(source, 'lib/approval.mjs'), 'export const approval = true;');
   await writeFile(join(source, 'lib/opencode-plugin.mjs'), 'export default async () => ({});');
   await writeFile(join(source, 'lib/opencode-activation.mjs'), 'export const prepareActivation = true;');
   await writeFile(join(source, 'lib/opencode-continuation.mjs'), 'export const resumeActivation = true;');
@@ -111,13 +110,7 @@ test('rejects an app pack missing the login transport runtime', async t => {
   assert.notEqual(build(source, output).status, 0);
 });
 
-test('rejects an app pack missing the approval delivery runtime', async t => {
-  const { source, output } = await fixture(t);
-  await rm(join(source, 'lib/approval.mjs'));
-  assert.notEqual(build(source, output).status, 0);
-});
-
-for (const file of ['lib/opencode-plugin.mjs', 'scripts/install-opencode.mjs', 'lib/opencode-activation.mjs', 'lib/opencode-continuation.mjs']) test(`rejects a pack missing required chat capture integration: ${file}`, async t => {
+for (const file of ['lib/opencode-plugin.mjs', 'scripts/install-opencode.mjs', 'lib/opencode-activation.mjs', 'lib/opencode-continuation.mjs']) test(`rejects a pack missing the OpenCode adapter: ${file}`, async t => {
   const { source, output } = await fixture(t);
   await rm(join(source, file));
   assert.notEqual(build(source, output).status, 0);

@@ -256,15 +256,28 @@ export async function createVoiceNoteRow(tcw: TinyCloudWeb, recording: VoiceNote
   if (identity.status !== "established") throw Object.assign(new Error(identity.reason ?? identity.status), { code: identity.status, cause: identity.cause });
   const now = new Date().toISOString();
   const outcome = recording.options?.transcriber === "off" ? "skipped" : "pending";
+  const speakerNames = recording.ledger?.speakerNames;
   const changes = await execute(tcw, `INSERT INTO connector_meeting
     (id, source, source_id, title, started_at, duration_secs, organizer_email, participants, summary_overview,
      summary_action_items, keywords, meeting_type, metadata, created_at, updated_at)
     VALUES (?, 'exo-voice-note', ?, ?, ?, ?, NULL, '[]', NULL, NULL, NULL, NULL, ?, ?, ?)
     ON CONFLICT DO NOTHING`, [`vn-${recording.id}`, recording.id, title, new Date(recording.startedAt).toISOString(),
     recording.durationMs / 1000, JSON.stringify({ transcription_outcome: outcome, title_auto: title,
-      capture: captureMetadata(recording, platform) }), now, now], checkpoint);
+      capture: captureMetadata(recording, platform),
+      ...(speakerNames !== null && typeof speakerNames === "object" && !Array.isArray(speakerNames) ? { speaker_names: speakerNames } : {}) }), now, now], checkpoint);
   const row = await resolveVoiceNoteRow(tcw, recording.id, checkpoint);
   if (!row) throw new Error("The voice-note identity index was established but its row is missing");
+  // Names renamed on the phone while the note was local land with it; a row already carrying
+  // names keeps them (it may have been renamed since).
+  if (speakerNames !== null && typeof speakerNames === "object" && !Array.isArray(speakerNames)
+    && row.metadata.speaker_names === undefined) {
+    for (const [label, shown] of Object.entries(speakerNames)) {
+      if (typeof shown === "string") await patchRowSpeakerName(tcw, row.id, label, shown, checkpoint);
+    }
+    const named = await resolveVoiceNoteRow(tcw, recording.id, checkpoint);
+    if (!named) throw new Error("The voice-note identity index was established but its row is missing");
+    return { ...named, inserted: false };
+  }
   if (changes === 0) {
     await execute(tcw, `UPDATE connector_meeting SET metadata = json_set(COALESCE(metadata,'{}'), '$.transcription_outcome', ?),
       updated_at = ?
@@ -513,6 +526,23 @@ export async function verifyVoiceNoteTranscript(tcw: TinyCloudWeb, sourceId: str
   if (!body.ok) throw errorOf(body);
   checkpoint();
   return committed;
+}
+
+/**
+ * One speaker's name on a note (TC-2189): `metadata.speaker_names[original]`, on any connector_meeting row (voice note,
+ * upload, meeting, combined). Only that one label changes, applied by the database to the metadata as it is when the
+ * write runs, so a name another writer saved meanwhile stays. A null `shown` clears the label, and the map when it
+ * was the last.
+ */
+export async function patchRowSpeakerName(tcw: TinyCloudWeb, rowId: string, original: string, shown: string | null,
+  checkpoint: () => void = () => undefined): Promise<void> {
+  const base = "CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END";
+  const changes = await execute(tcw,
+    `UPDATE connector_meeting SET metadata = json_patch(${base}, json_object('speaker_names', json_object(?, ?))), updated_at = ? WHERE id = ?`,
+    [original, shown, new Date().toISOString(), rowId], checkpoint);
+  if (changes === 0) throw new Error("The note's row is missing");
+  await execute(tcw, `UPDATE connector_meeting SET metadata = json_remove(metadata, '$.speaker_names')
+    WHERE id = ? AND json_valid(metadata) AND json_extract(metadata, '$.speaker_names') = '{}'`, [rowId], checkpoint);
 }
 
 /**

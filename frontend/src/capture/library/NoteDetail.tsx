@@ -27,6 +27,8 @@ import { useCombineFlow } from "./combine/useCombineFlow";
 import { useCombinedMeeting } from "./combine/useCombinedMeeting";
 import { useCombinedSummary } from "./combine/useCombinedSummary";
 import type { SummaryRunner } from "@/lib/meetingSummary/summaryRunner";
+import { applySpeakerNames } from "./speakerNames";
+import { useSpeakerNames } from "./useSpeakerNames";
 import { useWordFixApplier, useWordFixedSentences } from "@/lib/wordFixes/wordFixesStore";
 import { hasPrivateCloudTimingProvenance, hasSegmentTimes, transcriptWithTimestamps } from "./transcriptSegments";
 import type { Library } from "./useLibrary";
@@ -150,11 +152,19 @@ export function NoteDetail(props: {
       reads.metadata?.status === "ok" ? reads.metadata.metadata : null,
       selectedTranscript?.provenance,
     );
+  const speakerNames = useSpeakerNames({
+    tcw: props.tcw,
+    row: item !== null && !item.onPhone && reads.metadata?.status === "ok" ? item : null,
+    metadata: reads.metadata?.status === "ok" ? reads.metadata.metadata : null,
+    localId: item?.onPhone === true && item.source === VOICE_NOTE_SOURCE ? item.sourceId : null,
+  });
+  const names = speakerNames?.names;
   const onCopy = useCallback(async (withTimestamps = false) => {
     const pasted = item?.metadata?.capture === "pasted" && reads.metadata?.status === "ok"
       ? reads.metadata.metadata.transcript_text : null;
-    const text = typeof pasted === "string" ? applyWordFixes(pasted) : sentences && (withTimestamps && hasSegmentTimes(sentences, isPrivateCloud)
-      ? transcriptWithTimestamps(sentences, isPrivateCloud) : transcriptCopyText(sentences));
+    const named = sentences && names ? applySpeakerNames(sentences, names) : sentences;
+    const text = typeof pasted === "string" ? applyWordFixes(pasted) : named && (withTimestamps && hasSegmentTimes(named, isPrivateCloud)
+      ? transcriptWithTimestamps(named, isPrivateCloud) : transcriptCopyText(named));
     if (!text) return;
     const ok = await copyText(text);
     if (!mounted.current) return;
@@ -164,7 +174,7 @@ export function NoteDetail(props: {
       timer.current = null;
       setCopyState("idle");
     }, COPIED_DURATION);
-  }, [sentences, applyWordFixes, isPrivateCloud, item, reads.metadata]);
+  }, [sentences, names, applyWordFixes, isPrivateCloud, item, reads.metadata]);
 
   const shareEmailId = useId();
   const [shareOpen, setShareOpen] = useState(false);
@@ -320,6 +330,7 @@ export function NoteDetail(props: {
         savedNote={props.savedNote}
         activityControl={props.activityControl}
         combine={combine}
+        speakerNames={speakerNames}
       />
       </ExoTranscriptShareContext.Provider>
       {/* The visible list: a capture already inside a combined meeting is never offered for a new combine. */}
