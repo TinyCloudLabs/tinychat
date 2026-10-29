@@ -12,6 +12,9 @@ import {
   HANDLE_TTL_SECONDS,
   MAX_HOSTED_BYTES,
   SPEECH_MODELS,
+  SUBMIT_DEADLINE_MS,
+  SUBMIT_RETRY_MAX_MS,
+  SUBMIT_RETRY_SCHEDULE_MS,
   isNotFound400,
   issueHandle,
   openHandle,
@@ -38,6 +41,7 @@ import { HostedProviderMonitor, classifyProviderRefusal, type ProviderBlockReaso
  *   POST   /hosted/uploads                              { byte_size, content_type } → 201 { upload_id, part_size, expires_at }
  *   PUT    /hosted/uploads/:upload_id/parts/:index      raw ≤1 MiB part → 204
  *   GET    /hosted/uploads/:upload_id                   { status: receiving | submitting } |
+ *                                                       { status: "delayed", retry_after_seconds } |
  *                                                       { status: "submitted", id: <handle> } |
  *                                                       { status: "failed", error: { code, message } }
  *   DELETE /hosted/uploads/:upload_id                   abandon an unsent upload (refunded) → 204
@@ -48,10 +52,16 @@ import { HostedProviderMonitor, classifyProviderRefusal, type ProviderBlockReaso
  *
  * Submitting is asynchronous: streaming a 121 MB spool to AssemblyAI can outlast any ingress read
  * timeout, so `POST /hosted/transcripts` only checks the upload is complete, starts the submit in
- * the background (its own 15-minute deadline; aborted by the sweep past it and at shutdown) and
- * answers 202. The client polls `GET /hosted/uploads/:id` for the handle; the outcome stays
+ * the background (each attempt has its own 15-minute deadline; the sweep aborts one past it, and a shutdown
+ * aborts the job) and answers 202. The client polls `GET /hosted/uploads/:id` for the handle; the outcome stays
  * readable for a day until the owner uses the handle, then at most one further hour. The spool
  * is deleted and the slot freed when the submit settles.
+ *
+ * A request AssemblyAI REFUSES without doing work (401/403/429, insufficient balance, a 5xx on the upload)
+ * does not fail the job: it is `delayed` (spool kept, no spool TTL, the poll says so) and the same request is
+ * sent again after 1, 2, 5, 10 minutes, then every 10, for up to 24 hours from the first refusal, then it
+ * fails. A job whose outcome is AMBIGUOUS (sent, no definite answer; a 5xx or a transport error on the
+ * create) is never retried: that is the existing needs_reconciliation rule, a second paid POST can never follow.
  *
  * The server key never leaves this process; the client only ever holds the HMAC handle, which
  * binds the AssemblyAI transcript to the session address (anything else about it → 404). Every
@@ -104,6 +114,8 @@ export interface AssemblyAiHostedRouterOptions {
   log?: (line: string, alert: boolean) => void;
   /** Events and status for operators; the app shares one with the status route and the heartbeat. */
   monitor?: HostedProviderMonitor;
+  /** Injectable for tests: how a job waits out a refusal. Ends early when the signal aborts. */
+  sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
 }
 
 /** Provider lookup never authorizes a second paid POST. Missing or ambiguous results stay blocked. */
@@ -165,6 +177,8 @@ interface Failure {
   alert?: boolean;
   /** Set when AssemblyAI refused the request before any work (billing, key, rate limit): feeds the monitor. */
   block?: ProviderBlockReason;
+  /** AssemblyAI refused or failed before any paid work, so the same request can be sent again (the job waits instead of failing). */
+  retry?: true;
 }
 
 /** The request never produced an HTTP response, or its body ran over the cap. */
@@ -189,6 +203,7 @@ export function createAssemblyAiHostedRouter(options: AssemblyAiHostedRouterOpti
   const now = options.now ?? Date.now;
   const log = options.log ?? ((line: string, alert: boolean) => (alert ? console.error(line) : console.log(line)));
   const monitor = options.monitor ?? new HostedProviderMonitor(undefined, now);
+  const sleep = options.sleep ?? ((ms: number, signal: AbortSignal) => delay(ms, undefined, { signal }));
   if (config.hosted && !store) throw new Error("assemblyai hosted router: store is required when hosted");
   const router = Router();
 
@@ -257,21 +272,24 @@ export function createAssemblyAiHostedRouter(options: AssemblyAiHostedRouterOpti
 
   /**
    * An AssemblyAI non-2xx answer to the upload or the transcript create (the paid POST). Refusals are classified
-   * (see `classifyProviderRefusal`), any other 400 is our request being wrong: alerted, never blocked.
+   * (see `classifyProviderRefusal`) and carry `retry`: nothing was created or billed. A 5xx on the upload is also
+   * retryable (no paid work yet); a 5xx on the create is not (the transcript may exist: never a second paid POST).
+   * Any other 400 is our request being wrong: alerted, never blocked, never retried.
    */
   function submitFailure(response: globalThis.Response, body: Uint8Array | null, stage: "upload" | "create"): Failure {
     const block = classifyProviderRefusal(response.status, body);
     if (block === "key_rejected" || block === "billing_blocked") {
-      return { code: "assemblyai_unavailable", upstreamStatus: response.status, reason: block, alert: true, block };
+      return { code: "assemblyai_unavailable", upstreamStatus: response.status, reason: block, alert: true, block, retry: true };
     }
     if (block === "rate_limited") {
       const failure = upstreamFailure(response, body, false);
-      return response.status === 429 ? { ...failure, block } : { code: "assemblyai_rate_limited", upstreamStatus: response.status, reason: block, block };
+      return response.status === 429 ? { ...failure, block, retry: true } : { code: "assemblyai_rate_limited", upstreamStatus: response.status, reason: block, block, retry: true };
     }
     if (response.status === 400) {
       return { code: "assemblyai_unavailable", upstreamStatus: 400, reason: stage === "create" ? "create_rejected" : "request_rejected", alert: true };
     }
-    return upstreamFailure(response, body, false);
+    const failure = upstreamFailure(response, body, false);
+    return stage === "upload" && response.status >= 500 ? { ...failure, retry: true } : failure;
   }
 
   /** One AssemblyAI call with the server key; the body read under `maxBytes`. */
@@ -436,6 +454,9 @@ export function createAssemblyAiHostedRouter(options: AssemblyAiHostedRouterOpti
 
   /** What the client polls: where its upload is, and the handle once it is submitted. */
   function uploadView(found: LookupResult) {
+    if (found.kind === "active" && found.upload.state === "delayed") {
+      return { status: "delayed", retry_after_seconds: Math.max(1, Math.ceil(((found.upload.retryAt ?? now()) - now()) / 1000)) };
+    }
     if (found.kind === "active") return { status: found.upload.state };
     if (found.kind === "settled" && found.outcome.status === "submitted") return { status: "submitted", id: found.outcome.handle };
     if (found.kind === "settled" && found.outcome.status === "failed") {
@@ -444,8 +465,14 @@ export function createAssemblyAiHostedRouter(options: AssemblyAiHostedRouterOpti
     return null;
   }
 
-  /** The background submit: stream the spool, create the transcript, mint the handle. */
-  async function submit(upload: HostedUpload, speakerLabels: boolean, multichannel: boolean, cid: string, signal: AbortSignal): Promise<SubmitOutcome> {
+  /**
+   * The background submit: stream the spool, create the transcript, mint the handle. A refusal that did no work
+   * (billing, key, rate limit, an upload 5xx) does not fail the job: it waits (`delayed`, the spool kept) and sends
+   * the SAME request again on the backoff schedule, up to `SUBMIT_RETRY_MAX_MS` from the first refusal, without
+   * uploading the audio to AssemblyAI again once that upload succeeded. An outcome that could hide a created
+   * transcript (timeout, reset, a 5xx on the create, anything unparseable) is never retried.
+   */
+  async function submit(upload: HostedUpload, speakerLabels: boolean, multichannel: boolean, cid: string, _signal: AbortSignal, control: AbortSignal): Promise<SubmitOutcome> {
     const settle = (failure: Failure | null, outcome: SubmitOutcome): SubmitOutcome => {
       const status = failure ? ASSEMBLYAI_HOSTED_ERRORS[failure.code].status : 201;
       log(
@@ -457,56 +484,80 @@ export function createAssemblyAiHostedRouter(options: AssemblyAiHostedRouterOpti
           (failure?.alert ? " alert=true" : ""),
         failure?.alert === true,
       );
-      if (!failure) monitor.succeeded();
-      else {
+      if (!failure) {
+        // The provider works again: the jobs waiting on it try now instead of finishing their wait.
+        if (monitor.succeeded()) store!.wakeDelayed();
+      } else {
         if (failure.block) monitor.blocked(failure.block, failure.upstreamStatus!);
         monitor.failed(failure.reason === "aborted");
       }
       return outcome;
     };
     const failed = (failure: Failure) =>
-      settle(failure, { status: "failed", code: failure.code === "assemblyai_rate_limited" ? "assemblyai_rate_limited" : "assemblyai_unavailable" });
-    try {
-      // Streamed from disk: the file body is never held in memory.
-      const sent = await call("POST", "/v2/upload", SMALL_BODY, {
-        body: await openAsBlob(upload.path),
-        contentType: "application/octet-stream",
-        signal,
-      });
-      if (sent.response.status !== 200) return failed(submitFailure(sent.response, sent.bytes, "upload"));
-      const uploaded = parseJson(sent.bytes) as { upload_url?: unknown } | undefined;
-      if (typeof uploaded?.upload_url !== "string" || !uploaded.upload_url.startsWith("https://")) {
-        return failed({ code: "assemblyai_unavailable", upstreamStatus: 200, reason: "off_contract" });
+      settle(failure, { status: "failed", code: failure.code === "assemblyai_rate_limited" ? "assemblyai_rate_limited" : "assemblyai_unavailable", ...(failure.retry ? { definite: true as const } : {}) });
+    let uploadUrl: string | undefined;
+    /** One attempt: the outcome, or the failure that ended it. Nothing here settles. */
+    const attempt = async (signal: AbortSignal): Promise<{ outcome: SubmitOutcome } | { failure: Failure }> => {
+      try {
+        if (uploadUrl === undefined) {
+          // Streamed from disk: the file body is never held in memory.
+          const sent = await call("POST", "/v2/upload", SMALL_BODY, {
+            body: await openAsBlob(upload.path),
+            contentType: "application/octet-stream",
+            signal,
+          });
+          if (sent.response.status !== 200) return { failure: submitFailure(sent.response, sent.bytes, "upload") };
+          const uploaded = parseJson(sent.bytes) as { upload_url?: unknown } | undefined;
+          if (typeof uploaded?.upload_url !== "string" || !uploaded.upload_url.startsWith("https://")) {
+            return { failure: { code: "assemblyai_unavailable", upstreamStatus: 200, reason: "off_contract" } };
+          }
+          await store!.noteProviderReference(upload, { uploadUrl: uploaded.upload_url });
+          uploadUrl = uploaded.upload_url;
+        }
+        const created = await call("POST", "/v2/transcript", SMALL_BODY, {
+          body: JSON.stringify({ audio_url: uploadUrl, speaker_labels: speakerLabels && !multichannel,
+            multichannel, language_detection: true, speech_models: SPEECH_MODELS }),
+          contentType: "application/json",
+          signal,
+        });
+        if (created.response.status !== 200 && created.response.status !== 201) return { failure: submitFailure(created.response, created.bytes, "create") };
+        const parsed = parseJson(created.bytes) as { id?: unknown; status?: unknown } | undefined;
+        if (
+          typeof parsed?.id !== "string" ||
+          !ASSEMBLYAI_TRANSCRIPT_ID_RE.test(parsed.id) ||
+          typeof parsed.status !== "string" ||
+          !TRANSCRIPT_STATUSES.includes(parsed.status)
+        ) {
+          return { failure: { code: "assemblyai_unavailable", upstreamStatus: created.response.status, reason: "off_contract" } };
+        }
+        await store!.noteProviderReference(upload, { transcriptId: parsed.id });
+        const issuedAt = now();
+        return { outcome: {
+          status: "submitted", handle: issueHandle(hosted!.handleKey, parsed.id, upload.owner, issuedAt),
+          expiresAt: (Math.floor(issuedAt / 1000) + HANDLE_TTL_SECONDS) * 1000,
+        } };
+      } catch (error) {
+        if (error instanceof UpstreamFailure) return { failure: error.failure };
+        return { failure: { code: "assemblyai_unavailable", reason: "internal" } };
       }
-      await store!.noteProviderReference(upload, { uploadUrl: uploaded.upload_url });
-      const created = await call("POST", "/v2/transcript", SMALL_BODY, {
-        body: JSON.stringify({ audio_url: uploaded.upload_url, speaker_labels: speakerLabels && !multichannel,
-          multichannel, language_detection: true, speech_models: SPEECH_MODELS }),
-        contentType: "application/json",
-        signal,
+    };
+    const since = now();
+    for (let attempts = 0; ; attempts++) {
+      // Each attempt has its own deadline; the sweep and a shutdown abort `control` for the whole job.
+      const result = await attempt(AbortSignal.any([control, AbortSignal.timeout(SUBMIT_DEADLINE_MS)]));
+      if ("outcome" in result) return settle(null, result.outcome);
+      const { failure } = result;
+      if (!failure.retry || control.aborted) return failed(failure);
+      if (now() - since >= SUBMIT_RETRY_MAX_MS) return failed({ ...failure, alert: true });
+      const scheduled = SUBMIT_RETRY_SCHEDULE_MS[Math.min(attempts, SUBMIT_RETRY_SCHEDULE_MS.length - 1)]!;
+      const waitMs = failure.retryAfterSeconds === undefined ? scheduled
+        : Math.min(Math.max(scheduled, failure.retryAfterSeconds * 1000), SUBMIT_RETRY_SCHEDULE_MS.at(-1)!);
+      log(`[assemblyai-hosted] route=submit delayed=true upstream_status=${failure.upstreamStatus} reason=${failure.block ?? "provider_unavailable"} attempt=${attempts + 1} bytes=${upload.byteSize} cid=${cid}`, false);
+      const resumed = await store!.waitDelayed(upload, waitMs, now, control, sleep, () => {
+        if (failure.block) monitor.blocked(failure.block, failure.upstreamStatus!);
       });
-      if (created.response.status !== 200 && created.response.status !== 201) {
-        const failure = submitFailure(created.response, created.bytes, "create");
-        return failed(failure);
-      }
-      const parsed = parseJson(created.bytes) as { id?: unknown; status?: unknown } | undefined;
-      if (
-        typeof parsed?.id !== "string" ||
-        !ASSEMBLYAI_TRANSCRIPT_ID_RE.test(parsed.id) ||
-        typeof parsed.status !== "string" ||
-        !TRANSCRIPT_STATUSES.includes(parsed.status)
-      ) {
-        return failed({ code: "assemblyai_unavailable", upstreamStatus: created.response.status, reason: "off_contract" });
-      }
-      await store!.noteProviderReference(upload, { transcriptId: parsed.id });
-      const issuedAt = now();
-      return settle(null, {
-        status: "submitted", handle: issueHandle(hosted!.handleKey, parsed.id, upload.owner, issuedAt),
-        expiresAt: (Math.floor(issuedAt / 1000) + HANDLE_TTL_SECONDS) * 1000,
-      });
-    } catch (error) {
-      if (error instanceof UpstreamFailure) return failed(error.failure);
-      return failed({ code: "assemblyai_unavailable", reason: "internal" });
+      // Aborted while waiting (a shutdown): nothing was sent, so nothing is left to reconcile.
+      if (!resumed) return failed({ code: failure.code, reason: "aborted", retry: true });
     }
   }
 
@@ -592,7 +643,7 @@ export function createAssemblyAiHostedRouter(options: AssemblyAiHostedRouterOpti
         const upload = found.upload;
         const speakerLabels = body.speaker_labels;
         const cid = locals(res).cid;
-        if (!(await store!.submitIfComplete(upload, now, (signal) => submit(upload, speakerLabels, body.multichannel === true, cid, signal)))) {
+        if (!(await store!.submitIfComplete(upload, now, (signal, control) => submit(upload, speakerLabels, body.multichannel === true, cid, signal, control)))) {
           return fail(res, { code: "assemblyai_upload_incomplete" });
         }
       }

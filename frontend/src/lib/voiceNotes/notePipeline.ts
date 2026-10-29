@@ -7,6 +7,7 @@ import {
   LOCAL_COPY,
   NOTES_COPY,
   PHONE_COPY,
+  HOSTED_DELAYED_ROW,
   PRIVATE_COPY,
   SPACE_COPY,
   TRANSCRIPT_COPY,
@@ -376,7 +377,7 @@ function cloudStep(cloud: PipelineCloud | null, spaceSaved: boolean, checkingCap
           const progress = status.completed === null || status.total === null ? null : fraction(status.completed, status.total);
           return withProgress("active", PRIVATE_COPY.transcribing(status.completed, status.total), progress);
         }
-        case "delayed": return { state: "active", caption: PRIVATE_COPY.delayed };
+        case "delayed": return { state: "active", caption: provider === "powerful" ? HOSTED_DELAYED_ROW : PRIVATE_COPY.delayed };
         case "saving": return { state: "active", caption: PRIVATE_COPY.saving };
       }
     }

@@ -101,12 +101,13 @@ export class HostedProviderMonitor {
     if (changed) this.sink({ event: "assemblyai_provider_blocked", reason, http_status: httpStatus, delayed_jobs: this.status().delayed_jobs, alert: true });
   }
 
-  /** A submission succeeded; ends a blocked spell. */
-  succeeded(): void {
+  /** A submission succeeded; ends a blocked spell. True when it did (the caller then wakes the jobs waiting on the provider). */
+  succeeded(): boolean {
     this.failedInARow = 0;
-    if (this.spell === null) return;
+    if (this.spell === null) return false;
     this.spell = null;
     this.sink({ event: "assemblyai_provider_recovered", delayed_jobs: this.status().delayed_jobs });
+    return true;
   }
 
   /**

@@ -28,6 +28,7 @@ import type { AppPlatform } from "@/lib/platform";
 import { activityForNote, deviceName, noteStatus } from "../activity/activitySelector";
 import type { LocalTranscript } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { transcriptionStatusText } from "@/lib/voiceNotes/voiceNoteTranscription";
+import { HOSTED_DELAYED_ROW } from "@/lib/voiceNotes/notePipelineCopy";
 import { storageFullPrecedesChoiceFailure, storageFullTranscriptCopy, TRANSCRIPT_STORAGE_FULL_CODE, transcriptionErrorCopy, voiceNoteTranscriptionFailureForCode } from "@/lib/voiceNotes/transcriptionErrors";
 import { localTranscriptToSave, voiceNoteTitle, voiceNoteTranscriptState, VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
 import { PAGE_COLUMN, PageHeader } from "@/shell/PageHeader";
@@ -176,8 +177,8 @@ export function VoiceNoteTranscriptionStatus(props: {
     );
   }
   if (job?.kind === "active") {
-    const status = transcriptionStatusText(job.status);
-    const providerStatus = provider === "powerful" ? status.replaceAll("Private transcription", "Powerful").replaceAll("private cloud", "Powerful")
+    const status = job.status.kind === "delayed" && provider === "powerful" ? HOSTED_DELAYED_ROW : transcriptionStatusText(job.status);
+    const providerStatus = provider === "powerful" ? status.replaceAll("Private transcription", "Powerful (AssemblyAI)").replaceAll("private cloud", "Powerful")
       : provider === "unknown" ? status.replaceAll("Private transcription", "transcription").replaceAll("private cloud", "the transcription service") : status;
     return (
       <p role="status" data-testid="voice-note-transcription-status" className="flex items-center gap-2 text-callout text-muted-foreground" title={job.status.kind === "processing" && job.status.completed !== null && job.status.total !== null && job.status.total > 0 ? "Recordings are transcribed in parts" : undefined}>
@@ -453,7 +454,7 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
             </div>
           ))}
           {perNoteSpeakers && <p className="text-meta text-muted-foreground">
-            Speaker labels apply within this note only. The same label in another note may be a different person.
+            AssemblyAI’s speaker labels apply within this note only. The same label in another note may be a different person.
           </p>}
         </div>
       ) : spaceNoSpeech || local?.outcome === "no_speech" ? (
