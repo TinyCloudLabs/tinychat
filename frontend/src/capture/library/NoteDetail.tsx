@@ -42,9 +42,11 @@ import {
 import type { TranscriptShareOrigins, TranscriptShareReview } from "@/lib/exoTranscriptShare";
 import { scheduledSpace } from "@/lib/spaceQueue";
 import { voiceNoteTranscriptLocator } from "@/lib/voiceNotes/voiceNoteCommits";
+import { isStorageAccountScopeCurrent, storageScopeFor } from "@/lib/storageStatus";
 
 /** Matches markdown-text's copy button: the tick reverts on its own. */
 const COPIED_DURATION = 1500;
+const SHARE_ABORTED = "The note or account changed. Review the transcript again.";
 
 export async function readLocalTranscript(id: string, read: (id: string) => Promise<{ transcript: LocalTranscript | null }> =
   (noteId) => VoiceNotes.getTranscript({ id: noteId })):
@@ -183,22 +185,38 @@ export function NoteDetail(props: {
   const shareSessionDid = shareSession ? props.tcw.sessionDid : null;
   const shareHolderDid = shareSession ? props.tcw.credentialHolderDid : null;
   const shareSignInRequired = shareSnapshot !== null && transcriptShareNeedsSignIn(props.tcw);
-  const shareIdentity = useMemo(() => ({ snapshot: shareSnapshot, spaceId: shareSpaceId, sessionDid: shareSessionDid, holderDid: shareHolderDid,
-    signInRequired: shareSignInRequired }), [shareSnapshot, shareSpaceId, shareSessionDid, shareHolderDid, shareSignInRequired]);
-  const latestShare = useRef({ tcw: props.tcw, identity: shareIdentity });
-  latestShare.current = { tcw: props.tcw, identity: shareIdentity };
-  const shareOpenedFor = useRef<{ tcw: TinyCloudWeb; identity: typeof shareIdentity } | null>(null);
-  const closeShare = useCallback(() => {
+  const shareScope = storageScopeFor(props.tcw);
+  const shareScopeCurrent = !shareScope || isStorageAccountScopeCurrent(shareScope);
+  const shareWalletAddress = shareSession?.walletAddress?.toLowerCase();
+  // Rehydrated reads and SDK wrappers are not identities. A grant keeps the owner,
+  // session key and storage epoch; changed content or a retired account still aborts.
+  const shareIdentity = useMemo(() => ({
+    id: shareSnapshot?.id, source: shareSnapshot?.source, sourceId: shareSnapshot?.sourceId,
+    title: shareSnapshot?.title, rawText: shareSnapshot?.rawText, text: shareSnapshot?.text,
+    spaceId: shareSpaceId, sessionDid: shareSessionDid, holderDid: shareHolderDid,
+    walletAddress: shareWalletAddress, chainId: shareSession?.chainId,
+    nodeOrigin: props.tcw.hosts?.[0], scope: shareScope, scopeCurrent: shareScopeCurrent, signInRequired: shareSignInRequired,
+  }), [shareSnapshot?.id, shareSnapshot?.source, shareSnapshot?.sourceId, shareSnapshot?.title,
+    shareSnapshot?.rawText, shareSnapshot?.text, shareSpaceId, shareSessionDid, shareHolderDid,
+    shareWalletAddress, shareSession?.chainId, props.tcw.hosts?.[0], shareScope, shareScopeCurrent, shareSignInRequired]);
+  const latestShare = useRef(shareIdentity);
+  latestShare.current = shareIdentity;
+  const shareOpenedFor = useRef<typeof shareIdentity | null>(null);
+  const closeShare = useCallback((error: string | null = null) => {
     shareGeneration.current += 1;
     shareOpenedFor.current = null;
     setShareOpen(false); setShareReview(null); setShareResult(null); setShareRecipient("");
-    setShareError(null); setShareCopied(false);
+    setShareError(error); setShareCopied(false);
   }, []);
-  useEffect(() => { closeShare(); }, [props.tcw, shareIdentity, closeShare]);
+  useEffect(() => {
+    if (shareOpenedFor.current && shareOpenedFor.current !== shareIdentity) {
+      closeShare(shareInFlight.current ? SHARE_ABORTED : null);
+    }
+  }, [shareIdentity, closeShare]);
   const openShare = useCallback(() => {
     if (!shareSnapshot || shareInFlight.current) return;
     shareGeneration.current += 1;
-    shareOpenedFor.current = { tcw: props.tcw, identity: shareIdentity };
+    shareOpenedFor.current = shareIdentity;
     setShareRecipient(""); setShareReview(null); setShareResult(null); setShareCopied(false);
     setShareError(transcriptShareUnavailable(props.tcw));
     setShareOpen(true);
@@ -225,7 +243,7 @@ export function NoteDetail(props: {
     const identity = shareIdentity;
     const generation = ++shareGeneration.current;
     const isCurrent = () => mounted.current && generation === shareGeneration.current
-      && latestShare.current.tcw === tcw && latestShare.current.identity === identity;
+      && latestShare.current === identity && (!shareScope || isStorageAccountScopeCurrent(shareScope));
     shareInFlight.current = true;
     setShareBusy(true); setShareError(null);
     try {
@@ -251,18 +269,27 @@ export function NoteDetail(props: {
           return transcriptShareSnapshot(item, metadata, transcript, applyWordFixes);
         },
       });
-      if (!isCurrent()) return;
+      if (!isCurrent()) throw new Error(SHARE_ABORTED);
       if (result.status === "declined") { setShareReview(null); setShareError("Sharing was cancelled."); }
       else setShareResult({ url: result.published.url, recipient: reviewed.recipient, expiresAt: result.published.metadata.expiresAt });
     } catch (error) {
-      if (isCurrent()) { setShareReview(null); setShareError(error instanceof Error ? error.message : "Transcript sharing stopped. No link was returned."); }
+      if (mounted.current) {
+        if (isCurrent()) {
+          setShareReview(null); setShareError(error instanceof Error ? error.message : "Transcript sharing stopped. No link was returned.");
+        } else if (generation === shareGeneration.current) {
+          closeShare(SHARE_ABORTED);
+        } else {
+          // A scope change or explicit cancellation may already have hidden private material.
+          setShareError((current) => current ?? SHARE_ABORTED);
+        }
+      }
     } finally {
       shareInFlight.current = false;
       if (mounted.current) setShareBusy(false);
     }
   };
   // Hide old-account recipient/link material in this render, not one passive effect later.
-  const shareVisible = shareOpen && shareOpenedFor.current?.tcw === props.tcw && shareOpenedFor.current.identity === shareIdentity;
+  const shareVisible = shareOpen && shareScopeCurrent && shareOpenedFor.current === shareIdentity;
   const shareUnavailable = shareVisible ? transcriptShareUnavailable(props.tcw) : null;
   const shareExpiry = shareResult?.expiresAt ?? shareReview?.expiresAt;
 
@@ -298,7 +325,12 @@ export function NoteDetail(props: {
       {/* The visible list: a capture already inside a combined meeting is never offered for a new combine. */}
       <CombineSheet flow={flow} items={library.items} now={new Date()} />
       {combined.remove.open && <DeleteCombinedSheet remove={combined.remove} title={item?.title ?? "Combined meeting"} />}
-      <Dialog open={shareVisible} onOpenChange={(open) => { if (!open) closeShare(); }}>
+      {!shareVisible && shareError && <p role="alert" className="text-callout text-destructive">{shareError}</p>}
+      <Dialog open={shareVisible} onOpenChange={(open) => {
+        // The SDK's consent sheet is outside this dialog. It must not dismiss the
+        // in-flight share; the explicit Cancel button remains available.
+        if (!open && !shareInFlight.current) closeShare();
+      }}>
         {shareVisible && <DialogContent className="max-w-lg" aria-describedby={`${shareEmailId}-description`}>
           <DialogHeader>
             <DialogTitle>Share transcript</DialogTitle>
@@ -345,7 +377,7 @@ export function NoteDetail(props: {
             </form>
           )}
           {(shareUnavailable || shareError) && <p role="alert" className="text-callout text-destructive">{shareUnavailable ?? shareError}</p>}
-          <Button type="button" variant="outline" onClick={closeShare}>{shareResult ? "Done" : "Cancel"}</Button>
+          <Button type="button" variant="outline" onClick={() => closeShare(shareInFlight.current ? "Sharing was cancelled." : null)}>{shareResult ? "Done" : "Cancel"}</Button>
         </DialogContent>}
       </Dialog>
     </>
