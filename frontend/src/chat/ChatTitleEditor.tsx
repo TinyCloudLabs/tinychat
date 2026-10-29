@@ -1,4 +1,4 @@
-// Inline chat-title editor shared by the Chats list and the chat header.
+// Inline chat-title editor for the Chats list.
 // Enter saves, Escape cancels, leaving the field saves. An empty title is
 // valid: it returns the chat to its automatic title (threadStore.setThreadTitle).
 import { useEffect, useId, useRef, useState, type FC } from "react";

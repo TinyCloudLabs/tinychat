@@ -40,6 +40,7 @@ import { pipelineScreens } from "./screens/pipeline";
 import { pipelineWireScreens } from "./screens/pipelineWire";
 import { primitivesScreens } from "./screens/primitives";
 import { recorderScreens } from "./screens/recorder";
+import { recordingRenameScreens } from "./screens/recordingRename";
 import { recorderFinalDesktopScreens } from "./screens/recorderFinalDesktop";
 import { recorderFinalHaloScreen } from "./screens/recorderFinalHalo";
 import { recorderFinalWebScreens } from "./screens/recorderFinalWeb";
@@ -92,6 +93,7 @@ const SCREENS: HarnessScreen[] = [
   ...nativeSignInScreens,
   ...pipelineScreens,
   ...pipelineWireScreens,
+  ...recordingRenameScreens,
 ];
 const PLATFORMS: readonly AppPlatform[] = ["ios", "android", "tauri", "web"];
 

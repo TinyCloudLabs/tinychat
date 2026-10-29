@@ -625,3 +625,18 @@ button.soft-row:focus-visible {
     animation: soft-fade 0.15s ease-out;
   }
 }
+
+/* A row with a rename pencil beside it (TC-2195). */
+.soft-row-item[data-renamable] {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.soft-row-item[data-renamable] > .soft-row {
+  flex: 1 1 0;
+  min-width: 0;
+  width: auto;
+}
+.soft-row-item[data-renamable] > .soft-row-notice {
+  flex: 0 0 100%;
+}

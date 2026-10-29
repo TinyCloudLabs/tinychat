@@ -117,7 +117,7 @@ function Harness() {
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
-      <Thread tcw={tcw} selection={view} onRetrySelection={() => controllerRef.current?.retry()} onReload={() => {}} canvasEnabled={params.get("canvas") === "1"} />
+      <Thread tcw={tcw} selection={view} onRetrySelection={() => controllerRef.current?.retry()} onReload={() => {}} />
       <div id="phase">{view.phase}</div>
       <div id="model">{view.model ?? "none"}</div>
       <div id="message">{view.message ?? ""}</div>
