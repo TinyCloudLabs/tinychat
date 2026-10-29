@@ -19,6 +19,42 @@
     },
     {
       "service": "tinycloud.sql",
+      "path": "home_feed",
+      "actions": ["read", "write", "schema"],
+      "description": "Store your feed's connected agents and attention state."
+    },
+    {
+      "service": "tinycloud.sql",
+      "path": "feed/",
+      "actions": ["read", "write", "schema"],
+      "description": "Read agent cards and save your responses in separate feed databases."
+    },
+    {
+      "service": "tinycloud.hooks",
+      "space": "applications",
+      "path": "sql/xyz.tinycloud.tinychat/feed/",
+      "actions": ["subscribe"],
+      "skipPrefix": true,
+      "description": "Refresh your feed when its databases change."
+    },
+    {
+      "service": "tinycloud.hooks",
+      "space": "applications",
+      "path": "sql/xyz.tinycloud.tinychat/home_feed",
+      "actions": ["subscribe"],
+      "skipPrefix": true,
+      "description": "Refresh the feed when you connect an agent or change attention state."
+    },
+    {
+      "service": "tinycloud.hooks",
+      "space": "applications",
+      "path": "sql/xyz.tinycloud.tinychat/threads",
+      "actions": ["subscribe"],
+      "skipPrefix": true,
+      "description": "Keep your saved feed view in sync across devices."
+    },
+    {
+      "service": "tinycloud.sql",
       "path": "canvas",
       "actions": ["read", "write", "schema"],
       "description": "Store browser-owned Conversation Canvas branches and document versions separately from shared chat history."
