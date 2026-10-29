@@ -76,6 +76,8 @@ jobs:
       - name: Version betas, or stable after the Release stable PR merged
         id: version
         env:
+          # Read-only lookups of GitHub Releases, to tell an unpublished beta tag from a released one (version.mjs).
+          GH_TOKEN: ${{ github.token }}
           ALLOW_MAJOR_BETA: ${{ github.event_name == 'workflow_dispatch' && inputs.confirm == 'major-beta' }}
         run: node scripts/release/version.mjs
 

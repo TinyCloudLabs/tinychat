@@ -4,6 +4,8 @@ import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { spawn } from 'node:child_process';
+import { createServer } from 'node:http';
 import { dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { changelogSection, classifyPagesCheckRuns, desktopBundleVersions, planDispatches, setCargoLockVersion, setCargoTomlVersion, stablePlan } from '../release/lib.mjs';
@@ -1967,4 +1969,153 @@ test('every recorder invoke is registered, manifested, and granted to recorder c
   for (const command of invoked) {
     assert.ok(registered.has(command), `frontend invoke ${command} is in a Tauri handler`);
   }
+});
+
+// A beta tag left on another commit that no GitHub Release ever published (TC-2189): the next beta number is used.
+// The real version.mjs runs against a local HTTP stand-in for the GitHub Releases API.
+const changesetsInstalled = existsSync(join(repo, 'node_modules/@changesets/cli'));
+
+function runAsync(name, args, env = {}) {
+  return new Promise(resolveRun => {
+    const child = spawn(process.execPath, [join(repo, 'scripts/release', name), ...args], {
+      env: { ...process.env, GITHUB_ACTIONS: '', GITHUB_OUTPUT: '', ALLOW_MAJOR_BETA: '', ...env },
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', chunk => { stdout += chunk; });
+    child.stderr.on('data', chunk => { stderr += chunk; });
+    child.on('close', status => resolveRun({ status, stdout, stderr }));
+  });
+}
+
+/** `releases`: tag -> HTTP status the Releases API answers for it (404 when unlisted). */
+async function githubReleases(t, releases = {}) {
+  const requests = [];
+  const server = createServer((request, response) => {
+    requests.push({ url: request.url, authorization: request.headers.authorization });
+    const tagName = decodeURIComponent(/^\/repos\/TinyCloudLabs\/tinychat\/releases\/tags\/(.+)$/.exec(request.url)?.[1] ?? '');
+    const status = request.url.startsWith('/repos/TinyCloudLabs/tinychat/releases/tags/') ? releases[tagName] ?? 404 : 400;
+    response.writeHead(status, { 'content-type': 'application/json' });
+    response.end(JSON.stringify(status === 200 ? { tag_name: tagName } : { message: status === 404 ? 'Not Found' : 'error' }));
+  });
+  await new Promise(resolveListen => server.listen(0, '127.0.0.1', resolveListen));
+  t.after(() => new Promise(resolveClose => server.close(resolveClose)));
+  return {
+    requests,
+    env: { GITHUB_API_URL: `http://127.0.0.1:${server.address().port}`, GITHUB_REPOSITORY: 'TinyCloudLabs/tinychat', GH_TOKEN: 'test-token' },
+  };
+}
+
+// 0.1.0 baselines with `tags` already on that baseline commit, then a merged web + API change ready to be versioned.
+function collisionRepo(t, { tags = [], changeset = { '@tinychat/frontend': 'minor', '@tinychat/backend': 'patch' } } = {}) {
+  const root = manifests(t);
+  symlinkSync(join(repo, 'node_modules'), join(root, 'node_modules'));
+  write(root, '.gitignore', 'node_modules\n');
+  initRepo(root);
+  const baseline = commitAll(root, 'baseline');
+  for (const name of tags) git(root, 'tag', '-a', name, '-m', name, baseline);
+  write(root, '.changeset/change.md', changesetFile(changeset, 'A change'));
+  const head = commitAll(root, 'feat: change (#1)');
+  return { root, baseline, head };
+}
+
+const versionsOf = root => ['desktop', 'frontend', 'backend'].map(dir => version(root, dir));
+
+test('a beta version with no existing tag keeps its number and never asks GitHub', { skip: !changesetsInstalled && 'bun install first' }, async t => {
+  const { root } = collisionRepo(t);
+  const github = await githubReleases(t);
+  const result = await runAsync('version.mjs', ['--root', root], github.env);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(versionsOf(root), ['0.2.0-beta.0', '0.2.0-beta.0', '0.1.1-beta.0']);
+  assert.deepEqual(github.requests, []);
+});
+
+test('a beta tag left on another commit with no GitHub Release moves web and desktop to the next beta together', { skip: !changesetsInstalled && 'bun install first' }, async t => {
+  const { root } = collisionRepo(t, { tags: ['exo-desktop@0.2.0-beta.0', '@tinychat/frontend@0.2.0-beta.0'] });
+  const github = await githubReleases(t);
+  const result = await runAsync('version.mjs', ['--root', root], github.env);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^channel=beta$/m);
+  assert.deepEqual(versionsOf(root), ['0.2.0-beta.1', '0.2.0-beta.1', '0.1.1-beta.0']);
+  assert.match(read(root, 'desktop/src-tauri/Cargo.toml'), /^version = "0\.2\.0-beta\.1"$/m);
+  assert.match(read(root, 'desktop/src-tauri/Cargo.lock'), /name = "exo-desktop"\nversion = "0\.2\.0-beta\.1"/);
+  for (const dir of ['desktop', 'frontend']) {
+    assert.match(read(root, `${dir}/CHANGELOG.md`), /^## 0\.2\.0-beta\.1$/m);
+    assert.doesNotMatch(read(root, `${dir}/CHANGELOG.md`), /0\.2\.0-beta\.0/);
+  }
+  assert.match(read(root, 'backend/CHANGELOG.md'), /^## 0\.1\.1-beta\.0$/m);
+  assert.equal(check(root).status, 0);
+  assert.deepEqual(github.requests.map(request => request.authorization), ['Bearer test-token', 'Bearer test-token']);
+  assert.deepEqual(github.requests.map(request => decodeURIComponent(request.url.split('/tags/')[1])).sort(), ['@tinychat/frontend@0.2.0-beta.0', 'exo-desktop@0.2.0-beta.0']);
+});
+
+test('one colliding web/desktop tag still moves the whole fixed group, and skips every taken beta number', { skip: !changesetsInstalled && 'bun install first' }, async t => {
+  const { root } = collisionRepo(t, { tags: ['@tinychat/frontend@0.2.0-beta.0', 'exo-desktop@0.2.0-beta.1'] });
+  const github = await githubReleases(t);
+  const result = await runAsync('version.mjs', ['--root', root], github.env);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(versionsOf(root), ['0.2.0-beta.2', '0.2.0-beta.2', '0.1.1-beta.0']);
+  assert.equal(check(root).status, 0);
+});
+
+test('a colliding backend tag moves only the backend', { skip: !changesetsInstalled && 'bun install first' }, async t => {
+  const { root } = collisionRepo(t, { tags: ['@tinychat/backend@0.1.1-beta.0'] });
+  const github = await githubReleases(t);
+  const result = await runAsync('version.mjs', ['--root', root], github.env);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(versionsOf(root), ['0.2.0-beta.0', '0.2.0-beta.0', '0.1.1-beta.1']);
+  assert.equal(check(root).status, 0);
+});
+
+test('a beta tag on another commit that has a GitHub Release fails and versions nothing', { skip: !changesetsInstalled && 'bun install first' }, async t => {
+  const { root, head } = collisionRepo(t, { tags: ['@tinychat/frontend@0.2.0-beta.0'] });
+  const github = await githubReleases(t, { '@tinychat/frontend@0.2.0-beta.0': 200 });
+  const result = await runAsync('version.mjs', ['--root', root], github.env);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /@tinychat\/frontend@0\.2\.0-beta\.0 .*GitHub Release/);
+  assert.equal(git(root, 'rev-parse', 'HEAD'), head);
+});
+
+test('a GitHub lookup that is not a confirmed 404 fails closed', { skip: !changesetsInstalled && 'bun install first' }, async t => {
+  const { root, head } = collisionRepo(t, { tags: ['@tinychat/frontend@0.2.0-beta.0'] });
+  const github = await githubReleases(t, { '@tinychat/frontend@0.2.0-beta.0': 500 });
+  const failed = await runAsync('version.mjs', ['--root', root], github.env);
+  assert.equal(failed.status, 1);
+  assert.match(failed.stderr, /Could not confirm/);
+  assert.equal(git(root, 'rev-parse', 'HEAD'), head);
+  const discard = () => { git(root, 'reset', '-q', '--hard', 'HEAD'); git(root, 'clean', '-fdq'); };
+  discard();
+  const unreachable = await runAsync('version.mjs', ['--root', root], { ...github.env, GITHUB_API_URL: 'http://127.0.0.1:1' });
+  assert.equal(unreachable.status, 1);
+  assert.match(unreachable.stderr, /Could not confirm/);
+  discard();
+  const noToken = await runAsync('version.mjs', ['--root', root], { ...github.env, GH_TOKEN: '' });
+  assert.equal(noToken.status, 1);
+  assert.match(noToken.stderr, /Could not confirm/);
+  assert.equal(git(root, 'rev-parse', 'HEAD'), head);
+});
+
+test('a stable version whose tag is on another commit fails, whatever GitHub says', { skip: !changesetsInstalled && 'bun install first' }, async t => {
+  const { root } = collisionRepo(t);
+  const github = await githubReleases(t);
+  assert.equal((await runAsync('version.mjs', ['--root', root], github.env)).status, 0);
+  const body = join(root, '..', 'stable-collision.md');
+  assert.equal(run('stable-pr.mjs', ['--root', root, '--body', body]).status, 0);
+  git(root, 'merge', '-q', '--no-ff', '-m', 'Merge release stable', 'release/stable');
+  git(root, 'tag', '-a', 'exo-desktop@0.2.0', '-m', 'stale', git(root, 'rev-list', '--max-parents=0', 'HEAD'));
+  const before = git(root, 'rev-parse', 'HEAD');
+  const result = await runAsync('version.mjs', ['--root', root], github.env);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /exo-desktop@0\.2\.0/);
+  assert.equal(git(root, 'rev-parse', 'HEAD'), before);
+});
+
+test('the Release workflow gives only its version step the token for Release lookups, and persists none', () => {
+  const workflow = read(repo, '.github/workflows/release.yml');
+  const versionStep = /- name: Version betas[\s\S]*?(?=\n      - name: )/.exec(workflow)[0];
+  assert.match(versionStep, /GH_TOKEN: \$\{\{ github\.token \}\}/);
+  assert.match(versionStep, /run: node scripts\/release\/version\.mjs$/m);
+  assert.match(workflow, /persist-credentials: false/);
+  assert.doesNotMatch(workflow.slice(0, workflow.indexOf('- name: Version betas')), /GH_TOKEN/);
+  assert.match(workflow, /\n    permissions:\n      contents: write[^\n]*\n      pull-requests: write[^\n]*\n      actions: write[^\n]*\n    env:/);
 });
