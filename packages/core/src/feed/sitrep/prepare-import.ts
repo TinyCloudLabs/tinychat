@@ -97,6 +97,10 @@ export async function prepareSitrepImport(input: PrepareSitrepImportInput): Prom
     if (incomingKeys.has(row.sourceKey)) throw new Error("Duplicate full source key");
     incomingKeys.add(row.sourceKey);
     await verifySourceBytes(row, source.namespace);
+    const prior = archive.get(row.sourceKey);
+    const key = parseKey(row.sourceKey);
+    const immutable = key?.area === "answer" || key?.area === "claim-decision" || parseThreadKey(row.sourceKey) !== null;
+    if (prior && immutable && (prior.sourceArea !== row.sourceArea || prior.encoding !== row.encoding || prior.sha256 !== row.sha256 || prior.rawBase64 !== row.rawBase64)) throw new Error("An immutable owner event source key cannot identify different bytes");
     const value: PreparedSourceRow = { ...row, classification: "quarantine" };
     archive.set(row.sourceKey, value); active.set(row.sourceKey, value);
   }
@@ -209,6 +213,22 @@ export async function prepareSitrepImport(input: PrepareSitrepImportInput): Prom
       if (matches.length !== 1) { result.quarantine.push({ sourceKey: row.sourceKey, reason: "orphan-reference", detail: "Hold notice cannot be bound to its original hold and recipient" }); continue; }
       eventSpecs.push({ row, eventKey, cardKey: matches[0]![0], kind: "hold-notice", type: "sitrep.hold-notice", data: { noticeKey: eventKey, to: notice.to, line: notice.line, at: notice.at }, at: notice.at });
     }
+  }
+  // Source tombstones cannot retract an append-only decision. Restore its owner
+  // meaning, but never add it back to eventSpecs/rawAnswers or dispatch policy.
+  for (const row of archive.values()) {
+    if (active.has(row.sourceKey)) continue;
+    const key = parseKey(row.sourceKey);
+    if (key?.area !== "answer") continue;
+    let value: unknown;
+    try { value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Uint8Array.from(atob(row.rawBase64), (char) => char.charCodeAt(0)))); }
+    catch { if (row.classification === "answer") throw new Error("Invalid archived domain answer"); continue; }
+    const parsed = validateAnswer(value);
+    if (!parsed.ok) { if (row.classification === "answer") throw new Error("Invalid archived domain answer"); continue; }
+    if (parsed.value.askId !== key.askId || Date.parse(parsed.value.at) !== Date.parse(key.at)) throw new Error("Archived answer does not match its source identity");
+    const matches = cardForAnswer(key.askId);
+    const item = matches.length === 1 ? matches[0]?.[1] : undefined;
+    if (item) owner.answers.push({ sourceKey: row.sourceKey, card: { kind: item.record.kind, id: item.record.id }, value: parsed.value });
   }
   const identities = new Set<string>();
   for (const [sourceKey, { record, row }] of records) {
@@ -365,7 +385,6 @@ export function ownerDataFromPreparedBundle(input: unknown): SitrepOwnerData {
   // Preserve all valid original answers, including an issuance with no canonical
   // response binding. Transport sequence and restoration admission are unrelated.
   for (const [sourceKey, row] of rawRows) {
-    if (deleted.has(sourceKey)) continue;
     const key = parseKey(sourceKey);
     if (key?.area !== "answer") continue;
     const parsed = validateAnswer(sourceValue(sourceKey));

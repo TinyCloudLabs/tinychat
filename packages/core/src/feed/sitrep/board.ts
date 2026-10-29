@@ -37,13 +37,16 @@ export const byKind = <K extends Kind>(records: readonly BoardRecord[], kind: K)
 
 const time = (iso: string | undefined): number => (iso ? Date.parse(iso) : Number.POSITIVE_INFINITY);
 
+/** Tagged Home histories must not share the legacy askId-only answer namespace. */
+type AnswerLookup = (kind: "ask" | "approval", id: string) => readonly Answer[];
+
 /** Sam's latest answer that still counts: given after the ask was last (re)asked. */
 export function currentAnswer(ask: Ask, answers: readonly Answer[]): Answer | undefined {
   const since = time(ask.lastAskedAt ?? ask.askedAt);
   let latest: Answer | undefined;
   for (const answer of answers) {
     if (answer.askId !== ask.id || Date.parse(answer.at) < since) continue;
-    if (!latest || answer.at > latest.at) latest = answer;
+    if (!latest || Date.parse(answer.at) > Date.parse(latest.at)) latest = answer;
   }
   return latest;
 }
@@ -226,11 +229,11 @@ export interface ApprovalView {
 function approvalView(approval: Approval, answers: readonly Answer[], now: number, grant?: ApprovalView): ApprovalView {
   let answer: Answer | undefined;
   for (const candidate of answers) {
-    if (candidate.askId !== approval.id || (candidate.action !== "code" && candidate.action !== "done") || candidate.at < approval.issuedAt) continue;
+    if (candidate.askId !== approval.id || (candidate.action !== "code" && candidate.action !== "done") || Date.parse(candidate.at) < Date.parse(approval.issuedAt)) continue;
     // A go counts only for the issuance Sam saw, and only before its window closed (the watcher refuses both too).
     if (candidate.issuedAt && candidate.issuedAt !== approval.issuedAt) continue;
-    if (approval.approvalType === "go" && approval.expiresAt && candidate.at >= approval.expiresAt) continue;
-    if (!answer || candidate.at > answer.at) answer = candidate;
+    if (approval.approvalType === "go" && approval.expiresAt && Date.parse(candidate.at) >= Date.parse(approval.expiresAt)) continue;
+    if (!answer || Date.parse(candidate.at) > Date.parse(answer.at)) answer = candidate;
   }
   const own = approval.status === "answered" || Boolean(answer);
   return {
@@ -246,15 +249,15 @@ function approvalView(approval: Approval, answers: readonly Answer[], now: numbe
  * Open approvals for Sam, with any read-grant step folded into its secret card; live links before
  * expired ones. A part folded into an ask (askParts) is not here: it shows inside that ask's card.
  */
-export function openApprovals(records: readonly BoardRecord[], answers: readonly Answer[], now: number): ApprovalView[] {
-  const { folded } = askParts(records, answers, now);
+export function openApprovals(records: readonly BoardRecord[], answers: readonly Answer[], now: number, lookup?: AnswerLookup): ApprovalView[] {
+  const { folded } = askParts(records, answers, now, lookup);
   const open = byKind(records, "approval").filter((approval) => !isClosed(approval) && !folded.has(approval.id));
   const ids = new Set(open.map((approval) => approval.id));
   return open
     .filter((approval) => !approval.partOf || !ids.has(approval.partOf))
     .map((approval) => {
       const step = open.find((candidate) => candidate.partOf === approval.id);
-      return approvalView(approval, answers, now, step ? approvalView(step, answers, now) : undefined);
+      return approvalView(approval, lookup ? lookup("approval", approval.id) : answers, now, step ? approvalView(step, lookup ? lookup("approval", step.id) : answers, now) : undefined);
     })
     .sort((a, b) => Number(a.expired) - Number(b.expired) || compareMatrix(a.approval, b.approval));
 }
@@ -320,7 +323,7 @@ function notNeededBy(part: Approval, ask: Ask, answer: Answer | undefined): stri
  * `waiting`, the watcher and card expiry all decide through this one function. A part whose id is an
  * ask id stays standalone: the watcher would read its code as an answer to that ask.
  */
-export function askParts(records: readonly BoardRecord[], answers: readonly Answer[], now: number): { byAsk: Map<string, AskPartView[]>; folded: Set<string> } {
+export function askParts(records: readonly BoardRecord[], answers: readonly Answer[], now: number, lookup?: AnswerLookup): { byAsk: Map<string, AskPartView[]>; folded: Set<string> } {
   const asks = byKind(records, "ask");
   const askIds = new Set(asks.map((ask) => ask.id));
   // Closed parts stay in the list so the card can show them as closed; they are never in `folded` (a closed record is off every list anyway).
@@ -331,7 +334,7 @@ export function askParts(records: readonly BoardRecord[], answers: readonly Answ
   for (const ask of asks) {
     const mine = all.filter((approval) => foldsInto(approval, ask));
     if (!mine.length) continue;
-    const answer = currentAnswer(ask, answers);
+    const answer = currentAnswer(ask, lookup ? lookup("ask", ask.id) : answers);
     const ids = new Set(mine.map((approval) => approval.id));
     const roots = mine.filter((approval) => !approval.partOf || !ids.has(approval.partOf)).sort((a, b) => a.createdAt.localeCompare(b.createdAt) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
     // A secret card carries one read grant; a second one is not hidden: it stays out of the fold and shows as a card of its own.
@@ -339,7 +342,7 @@ export function askParts(records: readonly BoardRecord[], answers: readonly Answ
     byAsk.set(ask.id, roots.map((root) => {
       const step = mine.find((candidate) => candidate.partOf === root.id);
       if (step) attached.add(step.id);
-      return { view: approvalView(root, answers, now, step ? approvalView(step, answers, now) : undefined), notNeeded: notNeededBy(root, ask, answer) };
+      return { view: approvalView(root, lookup ? lookup("approval", root.id) : answers, now, step ? approvalView(step, lookup ? lookup("approval", step.id) : answers, now) : undefined), notNeeded: notNeededBy(root, ask, answer) };
     }));
     for (const approval of mine) if (!isClosed(approval) && (roots.includes(approval) || attached.has(approval.id))) folded.add(approval.id);
   }
@@ -439,12 +442,12 @@ export function waitingOnSamKeys(report: { waiting: readonly WaitingItem[]; notL
  * expired links and snoozed cards are left out, each with its reason. A record with status
  * "expired" (card expiry) is neither listed nor reported: it no longer waits on anyone.
  */
-export function waitingReport(data: Pick<BoardData, "records" | "answers" | "states">, now: number): { waiting: WaitingItem[]; notListed: NotWaiting[] } {
+export function waitingReport(data: Pick<BoardData, "records" | "answers" | "states">, now: number, lookup?: AnswerLookup): { waiting: WaitingItem[]; notListed: NotWaiting[] } {
   const { answers, states } = data;
   const records = data.records.filter((record) => record.status !== "expired");
   const candidates: WaitingItem[] = [];
   const notListed: NotWaiting[] = [];
-  const { byAsk, folded } = askParts(records, answers, now);
+  const { byAsk, folded } = askParts(records, answers, now, lookup);
   const stepOpen = (step: ApprovalView) => !approvalDone(step) && !step.expired && !approvalClosedEarly(step);
   const add = (kind: WaitingKind, record: WaitingRecord, since: string, why: string | undefined, parts: readonly AskPartView[] = [], everyPart: readonly AskPartView[] = parts, grant?: ApprovalView) => {
     const { urgency, importance } = effectivePriority(record);
@@ -462,13 +465,14 @@ export function waitingReport(data: Pick<BoardData, "records" | "answers" | "sta
 
   for (const ask of byKind(records, "ask")) {
     if (ask.status !== "open") continue;
-    const answer = currentAnswer(ask, answers);
+    const ownedAnswers = lookup ? lookup("ask", ask.id) : answers;
+    const answer = currentAnswer(ask, ownedAnswers);
     const parts = byAsk.get(ask.id) ?? [];
     const pending = parts.filter(partPending);
     if (answer && !pending.length) notListed.push({ kind: "ask", record: ask, reason: `You answered at ${answer.at}; waiting for ${ask.from} to close it.` });
     else if (answer) add("ask", ask, ask.lastAskedAt ?? ask.askedAt, `You answered; ${pending.length} ${pending.length === 1 ? "step" : "steps"} left`, pending, parts);
     else if (isSteer(ask)) {
-      const state = steerState(ask, now, answers);
+      const state = steerState(ask, now, ownedAnswers);
       const choice = steerDefault(ask)?.label ?? ask.default;
       const when = state === "done" ? `went ahead with "${choice}"` : state === "closed-proceeding" ? `is going ahead with "${choice}" (window closed ${ask.decideBy})` : `goes ahead with "${choice}" at ${ask.decideBy}`;
       notListed.push({ kind: "ask", record: ask, reason: `Steer question: ${ask.from} ${when} unless you change it; it is in the Steer lane and blocks no one.` });
@@ -504,7 +508,7 @@ export function waitingReport(data: Pick<BoardData, "records" | "answers" | "sta
   for (const step of open) {
     if (step.partOf && openIds.has(step.partOf)) notListed.push({ kind: "approval", record: step, reason: `A step of ${step.partOf}; that row covers it.` });
   }
-  for (const view of openApprovals(records, answers, now)) {
+  for (const view of openApprovals(records, answers, now, lookup)) {
     const { approval } = view;
     if (view.expired) notListed.push({ kind: "approval", record: approval, reason: `The link expired at ${approval.expiresAt}; ${approval.from} has to send a fresh one.` });
     else if (view.handled) notListed.push({ kind: "approval", record: approval, reason: `You did your part at ${view.grant?.answer?.at ?? view.answer?.at ?? approval.updatedAt}; waiting for ${approval.from} to finish and close it.` });

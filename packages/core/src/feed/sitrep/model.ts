@@ -26,6 +26,21 @@ export function emptySitrepOwnerData(): SitrepOwnerData {
   return { answers: [], states: [], claimDecisions: [], threads: [], deliveries: [] };
 }
 
+const NO_OWNER_ANSWERS: Answer[] = [];
+Object.freeze(NO_OWNER_ANSWERS);
+
+/** Keep the explicit owner tag through primary, folded and waiting lookups. */
+export function ownerAnswerLookup(owner: Pick<SitrepOwnerData, "answers">): (kind: "ask" | "approval", id: string) => readonly Answer[] {
+  const answers = new Map<string, Answer[]>();
+  for (const entry of owner.answers) {
+    if ((entry.card.kind !== "ask" && entry.card.kind !== "approval") || entry.card.id !== entry.value.askId) continue;
+    const key = `${entry.card.kind}:${entry.card.id}`;
+    const values = answers.get(key);
+    if (values) values.push(entry.value); else answers.set(key, [entry.value]);
+  }
+  return (kind, id) => answers.get(`${kind}:${id}`) ?? NO_OWNER_ANSWERS;
+}
+
 /** src/lib/store.ts ClaimsSync: compare instants, then the full immutable source key. */
 export function claimDecisionHistory(owner: SitrepOwnerData, id: string): SitrepOwnerData["claimDecisions"] {
   const history = new Map<string, SitrepOwnerData["claimDecisions"][number]>();
@@ -56,7 +71,7 @@ export function parseSitrepCardPayload(value: unknown): SitrepCardPayload | null
 /** State payloads may be deltas. Append-only histories survive concurrent notes/ticks. */
 export function mergeSitrepStates(events: readonly SamState[], order: "timestamp" | "provided" = "timestamp"): SamState[] {
   const states = new Map<string, SamState>();
-  const ordered = order === "provided" ? events : [...events].sort((a, b) => a.updatedAt.localeCompare(b.updatedAt) || JSON.stringify(a).localeCompare(JSON.stringify(b)));
+  const ordered = order === "provided" ? events : [...events].sort((a, b) => Date.parse(a.updatedAt) - Date.parse(b.updatedAt) || JSON.stringify(a).localeCompare(JSON.stringify(b)));
   for (const event of ordered) {
     const key = `${event.kind}:${event.id}`;
     const previous = states.get(key);
@@ -83,15 +98,16 @@ export function isSitrepRequest(record: BoardRecord): boolean {
 
 /** Original answer timestamps and issuance, never transport sequence, decide attention. */
 export function projectSitrepCard(record: BoardRecord, records: readonly BoardRecord[], owner: SitrepOwnerData, now: number): SitrepProjection {
-  const answers = owner.answers.map((entry) => entry.value);
+  const answers = NO_OWNER_ANSWERS;
+  const lookup = ownerAnswerLookup(owner);
   const state = stateFor(owner.states, record.kind, record.id);
-  const folds = askParts(records, answers, now);
+  const folds = askParts(records, answers, now, lookup);
   const parts = record.kind === "ask" ? folds.byAsk.get(record.id) ?? [] : [];
   const base: SitrepProjection = { record, request: isSitrepRequest(record), needsAction: false, attention: "information", state, parts };
   if (record.kind === "ask" || record.kind === "task") base.expiryAt = expiryOf(record, state);
-  if (record.kind === "ask") base.answer = currentAnswer(record, answers);
+  if (record.kind === "ask") base.answer = currentAnswer(record, lookup("ask", record.id));
   if (record.kind === "approval") {
-    base.approval = openApprovals(records, answers, now).find((view) => view.approval.id === record.id);
+    base.approval = openApprovals(records, answers, now, lookup).find((view) => view.approval.id === record.id);
     for (const [askId, foldedParts] of folds.byAsk) {
       for (const part of foldedParts) {
         const step = partSteps(part).find((view) => view.approval.id === record.id);
@@ -112,7 +128,7 @@ export function projectSitrepCard(record: BoardRecord, records: readonly BoardRe
     case "approval": base.needsAction = !base.approval?.handled; break;
     case "claim": base.needsAction = !owner.claimDecisions.some((decision) => decision.card.kind === "claim" && decision.card.id === record.id); break;
     case "hold": base.needsAction = record.status === "active" && record.releasedBy === "sam" && !state?.lift; break;
-    case "work": base.needsAction = waitingReport({ records: [...records], answers, states: owner.states }, now).waiting.some((item) => item.kind === "work" && item.record.id === record.id); break;
+    case "work": base.needsAction = waitingReport({ records: [...records], answers, states: owner.states }, now, lookup).waiting.some((item) => item.kind === "work" && item.record.id === record.id); break;
   }
   base.attention = base.needsAction ? "needs-action" : base.request ? "handled" : "information";
   return base;
