@@ -16,6 +16,12 @@ const identity = z.object({ sourceId: z.string().min(1), cardId: z.string().uuid
 const watchInput = z.object({ sourceId: z.string().min(1), recipient: z.string().min(1).refine((value) => value !== "*"), runner: z.array(z.string().min(1)).nonempty(), renewalSeconds: z.number().int().min(60).max(300).optional() }).strict();
 const usage = "bun scripts/home-feed/run.ts post|close|watch --tc-home DIR --profile NAME --owner-space FULL_URI --legacy-space FULL_URI --file JSON [--host URL] [--handoff SQLITE_FILE for watch]\nWatch JSON: {sourceId,recipient,runner:[executable,...argv],renewalSeconds?}. Runner exit zero must mean durable acceptance of the full response ID; execution must recheck dispatchBefore.\n";
 
+export function normalizeHomeMirrorHost(value: string): string {
+  const host = new URL(value);
+  if (!["http:", "https:"].includes(host.protocol) || host.username || host.password || host.search || host.hash) throw new Error("Invalid node host");
+  return host.href.replace(/\/+$/, "");
+}
+
 // Existing owner session only: no sign-in, delegation activation, key generation,
 // schema initialization, legacy CLI invocation, or profile/host mutation.
 export async function runHomeMirror(argv: string[]): Promise<void> {
@@ -30,15 +36,14 @@ export async function runHomeMirror(argv: string[]): Promise<void> {
   const ownerSpaceId = space.parse(values["owner-space"]), legacySpaceId = space.parse(values["legacy-space"]);
   const profile = loadProfile(values["tc-home"], values.profile);
   if (profile.spaceId !== ownerSpaceId || (profile.expiresAt !== null && (!Number.isFinite(Date.parse(profile.expiresAt)) || Date.parse(profile.expiresAt) <= Date.now()))) throw new Error("Existing owner session is unavailable");
-  const host = new URL(values.host ?? profile.host);
-  if (!["http:", "https:"].includes(host.protocol) || host.username || host.password || host.search || host.hash) throw new Error("Invalid node host");
+  const host = normalizeHomeMirrorHost(values.host ?? profile.host);
   const input: unknown = JSON.parse(await readFile(values.file, "utf8"));
   const signal = new AbortController();
   const abort = () => signal.abort();
   process.once("SIGINT", abort); process.once("SIGTERM", abort);
   try {
-    const node = new TinyCloudNode({ host: host.href, includeAccountRegistryPermissions: false });
-    await node.restoreSession({ ...profile.session, tinycloudHosts: [host.href] });
+    const node = new TinyCloudNode({ host, includeAccountRegistryPermissions: false });
+    await node.restoreSession({ ...profile.session, tinycloudHosts: [host] });
     if (signal.signal.aborted) return;
     const ctx: HomeMirrorContext = { ownerSpaceId, sql: node.sqlForSpace(ownerSpaceId), legacySpaceId, legacy: node.kvForSpace(legacySpaceId), now: () => new Date().toISOString(), signal: signal.signal };
     let result: unknown;
