@@ -73,7 +73,9 @@ const MEET_HOST_URL = /(?<![\w.@/=&?%#:+-])(?:https?:\/\/)?meet\.google\.com\/[^
 /** The first Meet code or lookup link in free text, in the order pasted; null when there is none. */
 function firstMeetTarget(text: string): string | null {
   for (const match of text.matchAll(MEET_HOST_URL)) {
-    const candidate = stripWrapping(match[0]);
+    // Inside explicit <…> the link is exactly what is between them; outside, trailing sentence punctuation is not part of it.
+    const delimited = text[match.index - 1] === "<" && text[match.index + match[0].length] === ">";
+    const candidate = delimited ? match[0] : stripWrapping(match[0]);
     try {
       const url = new URL(HAS_SCHEME.test(candidate) ? candidate : `https://${candidate}`);
       if (meetCanonical(url) !== null || MEET_LOOKUP_PATH.test(url.pathname)) return candidate;

@@ -52,4 +52,18 @@ describe("meetingLinkFromInput on a pasted calendar invite", () => {
     expect(meetingLinkFromInput("Or dial +49 30 300195060 More numbers https://tel.meet/yas-buib-ppd?pin=9338941996748"))
       .toBe("https://meet.google.com/yas-buib-ppd");
   });
+
+  test("punctuation inside explicit angle brackets is part of the link, outside it is not", () => {
+    expect(meetingLinkFromInput("Join <https://meet.google.com/lookup/Team!> Backup https://meet.google.com/yas-buib-ppd"))
+      .toBe("https://meet.google.com/lookup/Team!");
+    expect(meetingLinkFromInput("Join <meet.google.com/lookup/Team.> or https://meet.google.com/yas-buib-ppd"))
+      .toBe("https://meet.google.com/lookup/Team.");
+    expect(meetingLinkFromInput("Join https://meet.google.com/yas-buib-ppd. Backup <https://meet.google.com/lookup/Other!>"))
+      .toBe("https://meet.google.com/yas-buib-ppd");
+  });
+
+  test("the first Meet target in the text wins whatever its protocol", () => {
+    expect(meetingLinkFromInput("Join http://meet.google.com/abc-defg-hij Backup https://meet.google.com/yas-buib-ppd"))
+      .toBe("http://meet.google.com/abc-defg-hij");
+  });
 });
