@@ -1,0 +1,9 @@
+{
+  "versions": {
+    "exo-desktop": "0.11.5",
+    "@tinychat/frontend": "0.11.5"
+  },
+  "changesets": [
+    ".changeset/pre/tc-2237-tinychat-onboarding-profile.md"
+  ]
+}
