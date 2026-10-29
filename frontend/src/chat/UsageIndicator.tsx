@@ -1,9 +1,9 @@
 import { useState } from "react";
 import { formatCredits, type BillingStatus } from "../lib/billingApi";
 
-// Compact, clickable usage chip in the composer's toolbar. Shows the current
-// tier and a thin progress bar of credit-budget consumption. Opens the pricing
-// dialog on click. On hover/focus, an expanded popover above the chip surfaces
+// Compact, clickable usage chip in the composer's toolbar. Shows credit-budget
+// consumption and the tier, except the promotional Early Access Demo label.
+// Opens the pricing dialog on click. On hover/focus, an expanded popover surfaces
 // exact numbers + reset date + a "How credits work" link to the rates table
 // (spec §5.5). Renders even before status loads (shows "Plans") so the entry
 // point is always present once the paywall is on.
@@ -20,7 +20,7 @@ export function UsageIndicator(props: {
     usage && usage.limit > 0
       ? Math.min(100, Math.round((usage.used / usage.limit) * 100))
       : 0;
-  const tierLabel = tierName ?? "Plans";
+  const tierLabel = tierName === "Early Access Demo" ? null : tierName ?? "Plans";
   const near = pct >= 90;
   const resetsLabel = usage?.resetsAt ? formatResetsAt(usage.resetsAt) : null;
   // Compact "12K / 50K" rendered in the visible chip so touch users (who can't
@@ -53,9 +53,9 @@ export function UsageIndicator(props: {
         aria-label="View plans and usage"
         className="tap-transparent flex h-11 items-center gap-1.5 rounded-full border border-input px-3 text-meta text-foreground transition-colors hover:bg-surface-2 active:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring fine:h-8 sm:gap-2"
       >
-        <span className="font-medium">{tierLabel}</span>
+        {(tierLabel || !compactUsage) && <span className="font-medium">{tierLabel ?? "Plans"}</span>}
         {compactUsage && (
-          <span className="hidden tabular-nums text-muted-foreground sm:inline">{compactUsage}</span>
+          <span className={`${tierLabel ? "hidden sm:inline " : ""}tabular-nums text-muted-foreground`}>{compactUsage}</span>
         )}
         {usage && usage.limit > 0 && (
           <span
