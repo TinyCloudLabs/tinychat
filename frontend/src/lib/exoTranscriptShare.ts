@@ -320,9 +320,13 @@ export async function publishTranscriptShare(
     return { status: "published", published, receiptPath };
   } catch (error) {
     const code = (error as { code?: unknown } | null)?.code;
+    if (stage === "requesting exact-key consent" && code === "USER_CANCELLED") {
+      check();
+      return { status: "declined" };
+    }
     const suffix = typeof code === "string" && /^[A-Z][A-Z0-9_]{0,60}$/.test(code) ? ` (${code})` : "";
     // Do not render an SDK/transport Error.message: it can contain a signed URL or secret body.
     if (error instanceof TranscriptShareError) throw error;
-    throw new Error(`Transcript sharing stopped while ${stage}${suffix}. No link was returned.`);
+    throw new Error(`Transcript sharing stopped while ${stage}${suffix}. No link was returned.`, { cause: error });
   }
 }

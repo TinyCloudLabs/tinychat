@@ -4,6 +4,7 @@ import { canonicalHashHex } from "@tinycloud/sdk-core";
 import { sha256 } from "@noble/hashes/sha256";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { canonicalShareFilename, type AddressedSharePublishOptions, type PublishedShare } from "@tinycloud/share-sdk";
+import type { OpenKeyError } from "@openkey/sdk";
 import {
   rawWrappedKeyDigest, transcriptShareSnapshot, prepareTranscriptShare, publishTranscriptShare,
   transcriptShareUnavailable, validateTranscriptShareOrigins,
@@ -139,6 +140,38 @@ test("denial and unsupported named keys produce no mutation or publication", asy
   unsupported.client.keys.getPublicKey = async () => { throw Object.assign(new Error("unsupported"), { code: "NAMED_KEYS_UNSUPPORTED" }); };
   await expect(publishTranscriptShare(unsupported.input, unsupported.operations)).rejects.toThrow("NAMED_KEYS_UNSUPPORTED");
   expect(unsupported.effects).toEqual([]);
+});
+
+test("consent cancellation cannot hide an account change or retired source", async () => {
+  for (const transition of ["account", "source"] as const) {
+    const f = fixture();
+    let current = true;
+    f.client.requestPermissions = async () => {
+      f.effects.push("consent");
+      if (transition === "account") f.changeAccount();
+      else current = false;
+      throw { code: "USER_CANCELLED", message: "User cancelled the request" } satisfies OpenKeyError;
+    };
+    await expect(publishTranscriptShare({ ...f.input, isCurrent: () => current }, f.operations)).rejects.toThrow("changed");
+    expect(f.effects).toEqual(["public-key", "consent"]);
+    expect(f.stored.size).toBe(0);
+  }
+});
+
+test("only USER_CANCELLED at exact-key consent is a clean decline", async () => {
+  const cancellation: OpenKeyError = { code: "USER_CANCELLED", message: "User cancelled the request" };
+  const key = fixture();
+  key.client.keys.createKey = async () => { throw cancellation; };
+  await expect(publishTranscriptShare(key.input, key.operations)).rejects.toThrow("creating the exact named-key (USER_CANCELLED)");
+  expect(key.stored.size).toBe(0);
+  const policy = fixture();
+  policy.operations.publish = async () => { throw cancellation; };
+  await expect(publishTranscriptShare(policy.input, policy.operations)).rejects.toThrow("publishing the exact-recipient policy (USER_CANCELLED)");
+  const timeout = fixture();
+  timeout.client.requestPermissions = async () => { throw { code: "TIMEOUT", message: "Request timed out" } satisfies OpenKeyError; };
+  await expect(publishTranscriptShare(timeout.input, timeout.operations)).rejects.toThrow("requesting exact-key consent (TIMEOUT)");
+  expect(timeout.effects).toEqual(["public-key"]);
+  expect(timeout.stored.size).toBe(0);
 });
 
 test("consent contains only this owner's exact share key and a bounded expiry", async () => {

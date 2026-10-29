@@ -8,6 +8,6 @@ Add an explicit exact-email transcript share action to note detail, with read-on
 
 Adopt the published TinyCloud Web, Node and Core SDKs at 3.8.0-beta.21 for exact Share-key runtime consent, and remove the obsolete local NodeSDK sign-in patch now included upstream. Restored or disconnected sessions show "Sign in again to share" and cannot start sharing.
 
-Keep transcript-share dialogs open through same-owner, same-session runtime-grant refreshes. Reject stale account/content completions and surface interrupted shares without exposing the prior recipient or link.
+Keep transcript-share dialogs open through same-owner, same-session runtime-grant refreshes. Reject stale account/content completions and surface interrupted shares without exposing the prior recipient or link. Treat an OpenKey cancellation of exact-key consent as a cancelled share.
 
 Details: TC-2192

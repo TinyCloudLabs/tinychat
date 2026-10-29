@@ -5,6 +5,7 @@ import { MemoryRouter } from "react-router-dom";
 import { PrivateKeySigner } from "@tinycloud/node-sdk";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import type { AddressedSharePublishOptions, PublishedShare } from "@tinycloud/share-sdk";
+import type { OpenKeyError } from "@openkey/sdk";
 import { canonicalHashHex } from "@tinycloud/sdk-core";
 import { sha256 } from "@noble/hashes/sha256";
 import { CONNECTORS_SQL_DB_NAME } from "@tinyboilerplate/core";
@@ -107,6 +108,7 @@ function library(text = SENTENCES[0]!.text): Library {
 async function fixture() {
   const requests: string[] = [];
   let signatures = 0;
+  let cancelSigning = false;
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
     if (url.origin !== HOST) throw new Error("Non-fixture SDK request refused");
@@ -124,7 +126,12 @@ async function fixture() {
     request: async ({ method, params }: { method: string; params?: string[] }) => {
       if (method === "eth_accounts" || method === "eth_requestAccounts") return [await signer.getAddress()];
       if (method === "eth_chainId") return "0x1";
-      if (method === "personal_sign") { signatures++; return signer.signMessage(new TextDecoder().decode(Buffer.from(params![0]!.slice(2), "hex"))); }
+      if (method === "personal_sign") {
+        signatures++;
+        // @openkey/sdk 0.12.2 rejects with a plain OpenKeyError, not an Error instance.
+        if (cancelSigning) throw { code: "USER_CANCELLED", message: "User cancelled the request" } satisfies OpenKeyError;
+        return signer.signMessage(new TextDecoder().decode(Buffer.from(params![0]!.slice(2), "hex")));
+      }
       throw new Error(`Unexpected fixture wallet method: ${method}`);
     },
   }, autoCreateSpace: false, autoBootstrapAccount: false, includeAccountRegistryPermissions: false, ui: { button: false },
@@ -193,6 +200,7 @@ async function fixture() {
   await render();
   return { live, first, scope, render, completed: completed.promise,
     afterGrant: (callback: () => Promise<void>) => { afterGrant = callback; },
+    cancelSigning: () => { cancelSigning = true; },
     beforeResult: (callback: () => void) => { beforeResult = callback; },
     refresh: async () => { const next = client(); associateStorageAccountClient(next, scope); await render(next); },
     grantCount: () => grantCount, createdKeys: () => createdKeys, published: () => published,
@@ -298,4 +306,19 @@ grantTest("a retired account at completion reports an abort instead of silently 
   expect(document.querySelector('[role="dialog"]')).toBeNull();
   expect(document.querySelector('input[readonly]')).toBeNull();
   expect(document.body.textContent).not.toContain("qa@example.test");
+});
+
+grantTest("OpenKey USER_CANCELLED during real SDK exact-key consent takes the clean cancellation path", async () => {
+  const f = await fixture();
+  f.cancelSigning();
+  await startShare();
+  await approveGrant(f.completed);
+  expect(f.signatures()).toBe(1); // One signing request, rejected without producing a signature.
+  expect(f.grantCount()).toBe(0);
+  expect(f.requests.filter((path) => path === "/delegate")).toHaveLength(0);
+  expect(f.createdKeys()).toBe(0);
+  expect(f.published()).toBeUndefined();
+  expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+  expect(document.querySelector('[role="alert"]')?.textContent).toBe("Sharing was cancelled.");
+  expect(document.querySelector('input[readonly]')).toBeNull();
 });
