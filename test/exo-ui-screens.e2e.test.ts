@@ -656,7 +656,7 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
                 } else {
                   await page.getByRole("button", { name: "Back", exact: true }).click();
                 }
-                await page.getByRole("textbox").waitFor();
+                await page.locator('[data-surface="chat"]').getByRole("textbox").waitFor();
               }
 
               // The native Capture home must finish recorder setup; generic layout checks missed a missing Record button.
