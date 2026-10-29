@@ -29,8 +29,10 @@ const BARE_HOST = /^[a-z0-9-]+(?:\.[a-z0-9-]+)+(?:[/?#:]|$)/i;
 
 function readLink(raw: string, unwrap: boolean): string | null {
   let text = raw.trim();
-  // A pasted invite line: use its first link.
-  if (/\s/.test(text)) text = text.split(/\s+/).map(stripWrapping).find(token => LINK_LIKE.test(token) || MEET_CODE.test(token)) ?? "";
+  // A pasted invite line: use its first Meet link, else its first link.
+  const meet = firstMeetTarget(text);
+  if (meet !== null) text = meet;
+  else if (/\s/.test(text)) text = text.split(/\s+/).map(stripWrapping).find(token => LINK_LIKE.test(token) || MEET_CODE.test(token)) ?? "";
   else text = stripWrapping(text);
   if (!text) return null;
   if (MEET_CODE.test(text)) return `https://meet.google.com/${text.toLowerCase()}`;
@@ -62,6 +64,22 @@ function readLink(raw: string, unwrap: boolean): string | null {
   if (!canonical) return text;
   // A link already in canonical form is returned exactly as pasted.
   return url.href.replace(/^http:/, "https:") === canonical ? text : canonical;
+}
+
+const MEET_LOOKUP_PATH = /^\/lookup\/[^/?#&=\s]+\/?$/;
+/** An exact-host `meet.google.com/…` URL that starts where a link starts: not after a host or path character, so lookalike hosts, userinfo and another site's query don't match. */
+const MEET_HOST_URL = /(?<![\w.@/=&?%#:+-])(?:https?:\/\/)?meet\.google\.com\/[^\s<>"'`)\]]*/gi;
+
+/** The first Meet code or lookup link in free text, in the order pasted; null when there is none. */
+function firstMeetTarget(text: string): string | null {
+  for (const match of text.matchAll(MEET_HOST_URL)) {
+    const candidate = stripWrapping(match[0]);
+    try {
+      const url = new URL(HAS_SCHEME.test(candidate) ? candidate : `https://${candidate}`);
+      if (meetCanonical(url) !== null || MEET_LOOKUP_PATH.test(url.pathname)) return candidate;
+    } catch { /* not a link */ }
+  }
+  return null;
 }
 
 /** The canonical Meet link for a URL in one of the Meet shapes, else null. */

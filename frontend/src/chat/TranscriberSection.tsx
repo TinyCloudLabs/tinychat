@@ -304,7 +304,8 @@ export const TranscriberView: FC<TranscriberViewProps> = ({
             </label>
             <input
               id="transcriber-meeting-url"
-              type="url"
+              // Text, not url: a pasted calendar invite is a whole paragraph that native URL validation would refuse; submit reads the link from it.
+              type="text"
               inputMode="url"
               autoComplete="off"
               spellCheck={false}
