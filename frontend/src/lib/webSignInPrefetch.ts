@@ -1,12 +1,15 @@
-import type { EIP1193Provider, loadAppManifest, requestNonce } from "@tinyboilerplate/client";
-import type { Manifest } from "@tinycloud/sdk-core";
+import type { EIP1193Provider, requestNonce } from "@tinyboilerplate/client";
+import { validateManifest, type Manifest } from "@tinycloud/sdk-core";
+import appManifest from "../../../manifest.json";
+
+// Web and backend deploy independently. Sign the grants shipped with this client.
+export const WEB_APP_MANIFEST = validateManifest(appManifest);
 
 // Server nonces expire at five minutes; leave one minute for SDK setup and verification.
 const MAX_NONCE_AGE_MS = 4 * 60_000;
 
 type Services = {
   requestNonce: typeof requestNonce;
-  loadManifest: typeof loadAppManifest;
   now?: () => number;
 };
 
@@ -17,17 +20,13 @@ export interface WebSignInPrefetch {
   nonceForSigning(address: string): Promise<string>;
   guardSigning(provider: EIP1193Provider): EIP1193Provider;
 }
-/** Each call belongs to exactly one web sign-in attempt; nothing is cached across attempts. */
+/** Each call owns one nonce/signing attempt; the manifest belongs to the deployed client build. */
 export function createWebSignInPrefetch(backendUrl: string, services: Services): WebSignInPrefetch {
   const now = services.now ?? Date.now;
   const requestedAt = now();
   // Catch immediately: wallet cancellation must never leave background failures unhandled.
   const prefetchedNonce = services.requestNonce(backendUrl).then(
     (nonce) => ({ nonce, requestedAt }),
-    (error: unknown) => ({ error }),
-  );
-  const prefetchedManifest = services.loadManifest(`${backendUrl}/api/manifest`).then(
-    (value) => ({ value }),
     (error: unknown) => ({ error }),
   );
   let cancelled = false;
@@ -44,10 +43,7 @@ export function createWebSignInPrefetch(backendUrl: string, services: Services):
     complete() { assertActive(); completed = true; },
     async manifest() {
       assertActive();
-      const result = await prefetchedManifest;
-      assertActive();
-      if ("error" in result) throw result.error;
-      return result.value;
+      return WEB_APP_MANIFEST;
     },
     async nonceForSigning(address: string) {
       assertActive();
