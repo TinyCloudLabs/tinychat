@@ -1,9 +1,0 @@
-{
-  "versions": {
-    "exo-desktop": "0.11.4",
-    "@tinychat/frontend": "0.11.4"
-  },
-  "changesets": [
-    ".changeset/pre/tc-2213-chat-clutter-cleanup.md"
-  ]
-}
