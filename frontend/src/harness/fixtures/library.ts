@@ -185,14 +185,24 @@ export function libraryTcw(options: { rows?: readonly FixtureRow[]; hang?: boole
     }
     return { ok: true, data: { rows: [] } };
   };
-  // The speaker-name write (TC-2189): the row's `speaker_names`, as the SQL sets or removes it.
+  // The speaker-name writes (TC-2189), as the SQL applies them: one label merged into the row's `speaker_names`
+  // (a null name clears it), then the map dropped once it is empty.
   const execute = async (sql: string, params: unknown[] = []) => {
     if (!sql.includes("speaker_names")) return { ok: true, data: { changes: 0 } };
-    const row = rows.find((r) => r.id === params[params.length - 1]);
-    if (!row) return { ok: true, data: { changes: 0 } };
-    if (sql.includes("json_remove")) delete row.metadata.speaker_names;
-    else row.metadata.speaker_names = JSON.parse(String(params[0]));
-    return { ok: true, data: { changes: 1 } };
+    if (sql.includes("json_patch")) {
+      const [label, shown, , rowId] = params as [string, string | null, string, string];
+      const row = rows.find((r) => r.id === rowId);
+      if (!row) return { ok: true, data: { changes: 0 } };
+      const names = { ...((row.metadata.speaker_names as Record<string, string> | undefined) ?? {}) };
+      if (shown === null) delete names[label];
+      else names[label] = shown;
+      row.metadata.speaker_names = names;
+      return { ok: true, data: { changes: 1 } };
+    }
+    const row = rows.find((r) => r.id === params[0]);
+    const names = row?.metadata.speaker_names as Record<string, string> | undefined;
+    if (row && names && Object.keys(names).length === 0) delete row.metadata.speaker_names;
+    return { ok: true, data: { changes: row ? 1 : 0 } };
   };
   const get = async (key: string) => {
     const row = rows.find((r) => transcriptKvKey(r.source, r.sourceId) === key);
