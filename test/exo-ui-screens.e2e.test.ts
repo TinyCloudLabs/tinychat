@@ -613,35 +613,50 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
                 }
               }
               if (screen.id === "shell-chat" && ["phone", "phone-small", "desktop"].includes(viewport.id)) {
-                const statusLayout = await page.evaluate(() => {
-                  const row = [...document.querySelectorAll<HTMLElement>('[aria-live="polite"]')]
-                    .find((element) => element.querySelector('[role="status"]')?.textContent?.includes("Agent access:"));
-                  const status = row?.querySelector<HTMLElement>('[role="status"]');
-                  const label = status?.querySelector<HTMLElement>(".break-words");
-                  const action = row?.querySelector<HTMLButtonElement>("button");
-                  const composer = document.querySelector<HTMLElement>('textarea[placeholder="Message TinyCloud Chat…"]');
-                  const rowRect = row?.getBoundingClientRect();
-                  const composerRect = composer?.getBoundingClientRect();
-                  const bannerRect = document.querySelector<HTMLElement>('[aria-label="Agent tools"]')?.getBoundingClientRect();
+                const chatLayout = await page.evaluate(() => {
+                  const composer = document.querySelector('[data-surface="chat"] textarea')?.getBoundingClientRect();
+                  const banner = document.querySelector('[aria-label="Agent tools"]')?.getBoundingClientRect();
                   return {
-                    label: status?.textContent?.trim() ?? "",
-                    action: action?.innerText.trim() ?? "",
-                    labelFound: Boolean(label),
-                    textClipped: Boolean(label && label.scrollWidth > label.clientWidth + 1),
-                    rowInViewport: Boolean(rowRect && rowRect.left >= 0 && rowRect.right <= window.innerWidth),
-                    composerVisible: Boolean(composerRect && composerRect.height > 0),
-                    separatedFromComposer: Boolean(rowRect && composerRect && rowRect.bottom <= composerRect.top),
-                    overlapsBanner: Boolean(rowRect && bannerRect && rowRect.left < bannerRect.right &&
-                      rowRect.right > bannerRect.left && rowRect.top < bannerRect.bottom && rowRect.bottom > bannerRect.top),
+                    composerVisible: Boolean(composer && composer.width > 0 && composer.height > 0 &&
+                      composer.left >= 0 && composer.right <= window.innerWidth && composer.top >= 0 && composer.bottom <= window.innerHeight),
+                    separatedFromBanner: Boolean(composer && (!banner || banner.bottom <= composer.top)),
                   };
                 });
-                if (statusLayout.label !== "Agent access: Disconnected" || statusLayout.action !== "Connect agent") {
-                  findings.push({ check: "agent-status-accessibility", detail: `status "${statusLayout.label}"; action "${statusLayout.action}"` });
+                const action = await page.getByRole("button", { name: /^(Send|Stop)$/ }).boundingBox();
+                if (!chatLayout.composerVisible || !chatLayout.separatedFromBanner ||
+                  !action || action.width <= 0 || action.height <= 0 || action.x < 0 || action.y < 0 ||
+                  action.x + action.width > viewport.width || action.y + action.height > viewport.height) {
+                  findings.push({ check: "chat-controls-layout", detail: `${JSON.stringify(chatLayout)}; send/stop ${JSON.stringify(action)}` });
                 }
-                if (!statusLayout.labelFound || statusLayout.textClipped || !statusLayout.rowInViewport ||
-                  !statusLayout.composerVisible || !statusLayout.separatedFromComposer || statusLayout.overlapsBanner) {
-                  findings.push({ check: "agent-status-layout", detail: `label found ${statusLayout.labelFound}; clipped ${statusLayout.textClipped}; row in viewport ${statusLayout.rowInViewport}; composer visible ${statusLayout.composerVisible}; separated ${statusLayout.separatedFromComposer}; overlaps banner ${statusLayout.overlapsBanner}` });
+
+                // Agent access remains reachable through the normal Settings path, without invoking Connect.
+                if (viewport.id === "desktop") {
+                  await page.getByRole("link", { name: "Settings", exact: true }).click();
+                } else {
+                  await page.getByRole("button", { name: "Chats", exact: true }).click();
+                  await page.getByRole("dialog", { name: "Chats", exact: true }).getByRole("link", { name: "Settings", exact: true }).click();
                 }
+                const connect = page.locator("#agent-access").getByRole("button", { name: "Connect agent", exact: true });
+                await connect.waitFor();
+                await connect.focus();
+                const access = await connect.evaluate((button: HTMLButtonElement) => {
+                  const rect = button.getBoundingClientRect();
+                  return {
+                    focused: document.activeElement === button,
+                    enabled: !button.disabled,
+                    clipped: button.scrollWidth > button.clientWidth + 1,
+                    inViewport: rect.left >= 0 && rect.right <= window.innerWidth && rect.top >= 0 && rect.bottom <= window.innerHeight,
+                  };
+                });
+                if (!access.focused || !access.enabled || access.clipped || !access.inViewport) {
+                  findings.push({ check: "agent-settings-accessibility", detail: JSON.stringify(access) });
+                }
+                if (viewport.id === "desktop") {
+                  await page.getByRole("link", { name: "Chat", exact: true }).click();
+                } else {
+                  await page.getByRole("button", { name: "Back", exact: true }).click();
+                }
+                await page.getByRole("textbox").waitFor();
               }
 
               // The native Capture home must finish recorder setup; generic layout checks missed a missing Record button.
