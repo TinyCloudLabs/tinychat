@@ -151,6 +151,7 @@ test("replacing the native hook service restores consumer notifications from the
     async *subscribe(_subscriptions, options) {
       options?.onReady?.();
       await Promise.race([oldEnded.promise, stopped(options?.signal)]);
+      yield* [];
     },
   };
   const fixture = await agentFixture(oldHooks);
