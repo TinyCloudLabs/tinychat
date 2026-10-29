@@ -9,7 +9,7 @@ import { manifestCarriesBundle } from "@tinyboilerplate/core";
  * Bump this when the grants change. "1" was used by an earlier, withdrawn gate
  * whose records may still sit in browsers, so the current value is never "1".
  */
-export const EXO_MANIFEST_REVISION = "3";
+export const EXO_MANIFEST_REVISION = "4";
 
 /** Shown above the sign-in action only after the gate clears a stale session (final wording). */
 export const MANIFEST_RESIGN_NOTICE =

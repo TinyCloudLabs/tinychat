@@ -534,12 +534,12 @@ export function App() {
           setState("recoverableError");
           return;
         }
-        // "none" or "terminal": no native session to restore. Clear any
-        // persisted widget session once; the user signs in again natively.
+        // A missing, ended or superseded native grant re-signs only after
+        // capture handoff. The upgrade outcome leaves secure storage intact until here.
         if (!await captureHandoff()) { setState("recoverableError"); return; }
         const storedAddress = sessionStoreRef.current.getAddress();
         if (storedAddress) clearPersistedSession(storedAddress);
-        if (boot.kind === "terminal") {
+        if (boot.kind === "terminal" || boot.kind === "upgrade") {
           try {
             await boot.revoke();
           } catch (caught) {
@@ -555,6 +555,7 @@ export function App() {
         endStorageAccountSession();
         setNativeSessionActive(false);
         if (boot.kind === "terminal") setError(NATIVE_SESSION_ENDED_MESSAGE);
+        if (boot.kind === "upgrade") setError(MANIFEST_RESIGN_NOTICE);
         setState("unauthenticated");
         return;
       }
@@ -1340,7 +1341,7 @@ export function App() {
                 backendUrl={BACKEND_URL}
                 sessionStore={sessionStoreRef.current}
               />}
-              feed={LOCAL_VALIDATION ? null : <FeedView />}
+              feed={LOCAL_VALIDATION ? null : <FeedView tcw={tcw} />}
               apps={LOCAL_VALIDATION ? null : <AppsPage />}
               settings={LOCAL_VALIDATION ? null : <SettingsPage
                 address={address}
