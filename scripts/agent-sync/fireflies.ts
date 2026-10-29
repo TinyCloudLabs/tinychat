@@ -2,8 +2,8 @@
 //
 // Runs the unchanged browser engine (`syncFireflies`, `FirefliesClient`, `connectorStore`) with:
 //   - a TinyCloud session restored in-process from a `tc` CLI profile (writes; one space);
-//   - the Fireflies key read from a second, secrets-only profile through `tc secrets get --raw`,
-//     held in memory only;
+//   - the Fireflies key read through an installed named grant when present, or through the
+//     secrets-only profile otherwise; the key stays in memory;
 //   - a counting `fetch` that caps upstream HTTP requests per run and per UTC day;
 //   - a store wrapper that remembers the rows this runner inserted, so it can delete its own
 //     duplicate when a browser inserted the same meeting concurrently.
@@ -25,6 +25,7 @@ import * as connectorStore from "../../frontend/src/lib/connectors/connectorStor
 import { CONNECTORS_SQL_DB_NAME, type StoreResult } from "../../frontend/src/lib/connectors/connectorStore";
 import { syncFireflies, type SyncStore } from "../../frontend/src/lib/connectors/firefliesSync";
 import { isStorageFullError } from "../../frontend/src/lib/storageStatus";
+import { hasNamedGrantFile, NAMED_GRANT_FILE, NamedGrantError, prepareFirefliesKeySource } from "./named-grant";
 
 export const SOURCE = "fireflies";
 export const MAX_REQUESTS_PER_RUN = 100;
@@ -54,6 +55,9 @@ export type RunResult =
 
 export interface RunReport {
   v: 1;
+  key_source: "named" | "legacy";
+  named_grant_cid: string | null;
+  named_grant_expires_at: string | null;
   at: string;
   mode: "auto" | "now";
   result: RunResult;
@@ -99,6 +103,8 @@ export interface RunnerState {
 export interface RunDeps {
   tcw: TinyCloudWeb;
   readApiKey: () => Promise<string>;
+  keySource?: "named" | "legacy";
+  namedGrant?: { cid: string; expiresAt: string };
   audit: AuditPort;
   stateDir: string;
   mode: "auto" | "now";
@@ -115,9 +121,10 @@ class RunnerError extends Error {
   }
 }
 
-function emptyReport(mode: RunDeps["mode"], at: Date): RunReport {
+function emptyReport(mode: RunDeps["mode"], at: Date, keySource: "named" | "legacy" = "legacy", namedGrant?: RunDeps["namedGrant"]): RunReport {
   return {
-    v: 1, at: at.toISOString(), mode, result: "error", status: null, added: 0, skipped: 0, errors: 0,
+    v: 1, key_source: keySource, named_grant_cid: namedGrant?.cid ?? null, named_grant_expires_at: namedGrant?.expiresAt ?? null,
+    at: at.toISOString(), mode, result: "error", status: null, added: 0, skipped: 0, errors: 0,
     httpRequests: 0, requestsToday: 0, runsToday: 0, duplicateRowsRemoved: 0, gapIds: 0, requeued: 0, gapAuditComplete: null,
     tableDeltas: {}, schemaChanged: false, lastSyncedAt: null, lastRunAt: null, durationMs: 0,
   };
@@ -214,7 +221,7 @@ export function countingFetch(
 export async function runFirefliesAgentSync(deps: RunDeps): Promise<RunReport> {
   const clock = deps.now ?? (() => new Date());
   const started = clock();
-  const report = emptyReport(deps.mode, started);
+  const report = emptyReport(deps.mode, started, deps.keySource ?? "legacy", deps.namedGrant);
   const day = started.toISOString().slice(0, 10);
   mkdirSync(deps.stateDir, { recursive: true, mode: 0o700 });
   const stateFile = join(deps.stateDir, "fireflies-runner.json");
@@ -227,8 +234,8 @@ export async function runFirefliesAgentSync(deps: RunDeps): Promise<RunReport> {
     await runLocked(deps, report, state, clock, stateFile);
   } catch (error) {
     // Only fixed result codes reach the report.
-    report.result = error instanceof RunnerError ? error.result : "error";
-    report.detail = error instanceof RunnerError ? error.result : "unexpected_error";
+    report.result = error instanceof RunnerError || error instanceof NamedGrantError ? error.result : "error";
+    report.detail = error instanceof RunnerError || error instanceof NamedGrantError ? error.result : "unexpected_error";
   } finally {
     release();
     report.durationMs = clock().getTime() - started.getTime();
@@ -619,6 +626,8 @@ async function main(): Promise<number> {
   }
   const at = new Date();
   let report: RunReport;
+  const artifactFile = join(args.stateDir, NAMED_GRANT_FILE);
+  const keySource = hasNamedGrantFile(artifactFile) ? "named" : "legacy";
   try {
     const home = process.env.TC_HOME ?? join(homedir(), ".tinycloud");
     const profile = loadProfile(home, args.writeProfile);
@@ -634,9 +643,16 @@ async function main(): Promise<number> {
     await node.restoreSession(profile.session);
     // node-sdk's TinyCloudNode exposes the kv/sql/did/spaceId surface the connector store uses.
     const tcw: TinyCloudWeb = node as unknown as TinyCloudWeb;
+    const key = await prepareFirefliesKeySource({
+      file: artifactFile, node, ownerDid: profile.ownerDid,
+      recipientDid: profile.session.verificationMethod!, host: profile.host,
+      readLegacyKey: () => readKeyWithCli(args.tc, args.keyProfile), now: at.getTime(),
+    });
     report = await runFirefliesAgentSync({
       tcw,
-      readApiKey: () => readKeyWithCli(args.tc, args.keyProfile),
+      readApiKey: key.readApiKey,
+      keySource: key.keySource,
+      namedGrant: key.namedGrant,
       audit: sqlAuditPort(tcw),
       stateDir: args.stateDir,
       mode: args.mode,
@@ -644,9 +660,9 @@ async function main(): Promise<number> {
     });
   } catch (error) {
     report = {
-      ...emptyReport(args.mode, at),
-      result: error instanceof RunnerError ? error.result : "error",
-      detail: error instanceof RunnerError ? error.result : "unexpected_error",
+      ...emptyReport(args.mode, at, keySource),
+      result: error instanceof RunnerError || error instanceof NamedGrantError ? error.result : "error",
+      detail: error instanceof RunnerError || error instanceof NamedGrantError ? error.result : "unexpected_error",
     };
   }
   const line = JSON.stringify(report);

@@ -503,6 +503,25 @@
   display: flex;
   gap: 8px;
 }
+.ms-agent-pair-field {
+  display: grid;
+  gap: 5px;
+  margin: 10px 0;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 700;
+}
+.ms-agent-pair-field input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--glass);
+  box-shadow: inset 0 0 0 1px var(--gedge);
+  color: var(--ink);
+  font: inherit;
+}
 .ms-reveal {
   display: grid;
   grid-template-columns: 96px minmax(0, 1fr) auto;
