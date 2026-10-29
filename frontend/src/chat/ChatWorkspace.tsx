@@ -7,7 +7,6 @@ import { ReplicationFirstLoadSignal } from "../lib/replication/ReplicationFirstL
 import { Thread } from "./Thread";
 import { ThreadList } from "./ThreadList";
 import { useAgentAccess } from "./useAgentEnablement";
-import { ChatViewAgentStatusIndicator } from "./ChatAgentStatusIndicator";
 import { ChatViewAgentEnablementBanner } from "./AgentEnablementBanner";
 import { appendCompaction, getLatestCompaction } from "../lib/threadStore";
 import { completeChat, emitReceipt, type ChatMessage } from "../lib/chatApi";
@@ -26,7 +25,6 @@ import type { ModelSelectionController, SelectionView } from "./modelSelection";
 import { ChatHeader } from "./ChatHeader";
 import { ChatsPaneHeader, ChatsSheet } from "./ChatsSheet";
 import { ModelVerificationIndicator } from "./ModelVerificationIndicator";
-import { useConversationCanvasFeature } from "./useExperimentalFeatures";
 import { promotedCanvasForTurn } from "../lib/conversationCanvasStore";
 
 export function ChatWorkspace(props: {
@@ -42,7 +40,7 @@ export function ChatWorkspace(props: {
   contextTokensFor: (modelId: string) => number;
   /** The composer's toolbar: the model chip and the usage chip (App owns both). */
   composerToolbar?: ReactNode;
-  /** The header's Record button and live chip (the phone app's recorder). */
+  /** The phone app's live-recording chip. */
   headerRecorder?: ReactNode;
   /** Settings is reachable from the Chats sheet (it is not in local validation). */
   settings: boolean;
@@ -52,7 +50,6 @@ export function ChatWorkspace(props: {
     agentEnabledRef, activeThreadIdRef, privateAccessRef, onDelegationError,
   } = useAgentAccess();
   const meetingMessageRegistry = useMemo(() => createMeetingMessageRegistry(), [props.tcw]);
-  const conversationCanvas = useConversationCanvasFeature(props.tcw, props.billingStatus);
   // One instance per mounted workspace: its thread selection state is
   // intentionally in-memory only, survives render churn, and vanishes on a
   // workspace reload. It receives only browser-local handles and the existing
@@ -173,14 +170,12 @@ export function ChatWorkspace(props: {
             newChat={size !== "expanded"}
             verification={wide && model ? <ModelVerificationIndicator model={model} /> : undefined}
           />
-          <ChatViewAgentStatusIndicator />
           <div className="min-h-0 flex-1">
             <Thread
               tcw={props.tcw}
               selection={props.selectionView}
               onRetrySelection={() => props.selectionControllerRef.current?.retry()}
               onReload={() => props.selectionControllerRef.current?.reload()}
-              canvasEnabled={conversationCanvas.enabled}
               composerToolbar={props.composerToolbar}
             />
           </div>
