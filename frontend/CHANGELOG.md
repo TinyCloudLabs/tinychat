@@ -13,6 +13,16 @@
 - TC-2208: The portable Home model rejects owner-private fields in output wrappers and same-key immutable history rewrites, retains deleted-source answers without restoring dispatch authority, and scopes answers by kind and ID. Accepted ISO offsets now compare as instants. Original timestamp fields and exact issuance identity are retained, along with first-answer ties, deterministic state ties, inclusive issuance/exclusive expiry, and provided-order state deltas.
 - TC-2208: Keep focused approval controls, including code-less confirmations, and consent-link interactions bound to their original issuance until explicit navigation; retain archive-only answers, threads, claims, and commands in History; isolate group priority by registered source or validated archive origin.
 
+## 0.12.0-beta.1
+
+### Minor Changes
+
+- 228a804: Rename the speakers on any transcript. Tap a speaker label in a note's transcript to give that speaker a name, for example "Me" becomes your name and "Them" becomes "Alice, Bob". The name shows on every line of that speaker, is saved with the note so it follows it across devices, and can be undone. Copy, copy with timestamps and Markdown export use the names. The stored transcript keeps its original labels. Details: TC-2189
+
+### Patch Changes
+
+- 944bbf4: Paste a whole Google Calendar invite into the notetaker's meeting-link field. The first Google Meet link in the text is used, ahead of dial-in numbers and unrelated links, and a lookup link stays as pasted. The field now accepts the full pasted text, and a single link reads as before. Details: TC-2181
+
 ## 0.11.5
 
 ### Patch Changes
