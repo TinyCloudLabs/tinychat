@@ -32,7 +32,7 @@ async function build() {
   if (pack.name !== 'tinychat-retrieval' || !/^\d+\.\d+\.\d+(?:-[a-z0-9.-]+)?$/.test(pack.version)) {
     throw new Error('Invalid pack name or version');
   }
-  const required = ['SKILL.md', 'pack.json', 'scripts/retrieve.mjs', 'scripts/setup.mjs', 'lib/setup.mjs', 'lib/consumer.mjs', 'scripts/consume.mjs', 'lib/session-handoff.mjs', 'lib/evidence.mjs', 'references/session-handoff.md', 'lib/login.mjs', 'lib/approval.mjs', 'lib/opencode-plugin.mjs', 'lib/opencode-activation.mjs', 'lib/opencode-continuation.mjs', 'scripts/install-opencode.mjs', 'references/setup.md', 'references/meetings.md', 'assets/permissions.json'];
+  const required = ['SKILL.md', 'pack.json', 'scripts/retrieve.mjs', 'scripts/setup.mjs', 'lib/setup.mjs', 'lib/consumer.mjs', 'scripts/consume.mjs', 'lib/session-handoff.mjs', 'lib/evidence.mjs', 'references/session-handoff.md', 'lib/login.mjs', 'lib/opencode-plugin.mjs', 'lib/opencode-activation.mjs', 'lib/opencode-continuation.mjs', 'scripts/install-opencode.mjs', 'references/setup.md', 'references/meetings.md', 'assets/permissions.json'];
   for (const file of required) await readFile(join(source, file));
   const stage = await mkdtemp(join(tmpdir(), 'tinychat-skill-build-'));
   try {
@@ -49,7 +49,7 @@ async function build() {
     await writeFile(join(pkg, 'package.json'), JSON.stringify({
       name: '@tinycloud/tinychat-retrieval', version: pack.version, private: true,
       type: 'module', description: 'TinyChat retrieval skill and portable read helpers',
-      engines: { node: '>=20' }, files: allowed,
+      engines: { node: '>=22.20' }, files: allowed,
     }, null, 2) + '\n');
     const packed = spawnSync('npm', ['pack', '--ignore-scripts', '--json', '--pack-destination', stage], {
       cwd: pkg, encoding: 'utf8', env: { ...process.env, npm_config_update_notifier: 'false' },
