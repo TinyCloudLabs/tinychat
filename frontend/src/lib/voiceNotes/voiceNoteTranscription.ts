@@ -2089,6 +2089,8 @@ export interface VoiceNoteTranscriberDeps {
   heldAfterCommit?: (row: HeldResult) => Promise<void>;
   /** The current session's space client. */
   tcw: () => TinyCloudWeb;
+  /** A new explicit choice or admitted recovery owns the shared provider status through settlement. */
+  onSelected?: (sourceId: string) => void;
   /** Injected in tests. */
   runNote?: typeof transcribeVoiceNote;
   sleep?: (ms: number) => Promise<void>;
@@ -2279,6 +2281,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
       if (rows === null) return;
       for (const summary of rows) {
         if (summary.engine !== "private-cloud" || !state.consented || !identityCurrent()) continue;
+        deps.onSelected?.(summary.sourceId);
         jobs.set(summary.sourceId, { kind: "active", status: { kind: "saving" } });
         emit();
         try {
@@ -2454,6 +2457,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
   /** Every job, new or resumed, starts here. Only `explicit` (the user's Transcribe on this note) may pass a held note. */
   const enqueue = (sourceId: string, audio: VoiceNoteAudio | undefined, explicit: boolean,
     explicitRerun = false): TranscriptionAdmissionRefusal | null => {
+    if (explicit) deps.onSelected?.(sourceId);
     if (!on() || cloud === null) {
       const reason = identityCurrent() ? blockedReason() : "account-changed";
       if (explicit || !isHeld(sourceId)) block(sourceId);
@@ -2479,6 +2483,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
     if (current?.kind === "active" || (current?.kind === "done" && !explicitRerun)) return null;
     if (!explicit && current?.kind === "failed" && !isAutomaticRetryableCode(current.code)
       && !hasHeldHint(sourceId) && !(cloud.hasRemoteJob?.(sourceId) ?? false)) return null;
+    if (!explicit) deps.onSelected?.(sourceId);
     const attempt = new AbortController();
     attempts.set(sourceId, attempt);
     const account = { generation: currentAccountGeneration(), did: deps.tcw().did };
@@ -3032,6 +3037,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
       cloud?.clearTerminalFailure?.(sourceId);
       const limit = privateCloudRefusal(durationSecs, sizeBytes, privateCloudLimits(state.capabilities));
       if (on() && limit !== null && limit.kind !== "unknown") {
+        deps.onSelected?.(sourceId);
         setLimitBlockedChoice(deps.tcw().did, sourceId, true);
         chosenPrivate.add(sourceId);
         jobs.set(sourceId, { kind: "blocked", reason: "limits-exceeded" });
@@ -3160,6 +3166,7 @@ export function voiceNoteTranscriberFor(
     };
     window.addEventListener("storage", onStorage);
   }
+  const selectedProviders = new Map<string, "private" | "powerful">();
   const privateTranscriber = createVoiceNoteTranscriber({
     cloud: createVoiceNoteCloudForBuild(backendUrl, sessionStore, did),
     consent: localStorageVoiceNoteConsentStore(did),
@@ -3175,16 +3182,24 @@ export function voiceNoteTranscriberFor(
       await legacyPending.stripLegacyHeld?.(row.sourceId, row.transcript.rev, row.hash);
     },
     tcw: () => ref.current,
+    onSelected: (sourceId) => { selectedProviders.set(sourceId, "private"); },
   });
-  const hosted = createHostedVoiceNoteTrack(() => ref.current, backendUrl, sessionStore, did);
+  const hosted = createHostedVoiceNoteTrack(() => ref.current, backendUrl, sessionStore, did, {
+    onSelected: (sourceId) => { selectedProviders.set(sourceId, "powerful"); },
+  });
   let powerfulAvailable = false;
   const listeners = new Set<(event: VoiceNoteTranscriberEvent) => void>();
   const makeSnapshot = (): VoiceNoteTranscriberSnapshot => {
-    const jobs = new Map(hosted.jobs);
-    for (const [id, job] of privateTranscriber.snapshot().jobs) {
-      if (hosted.jobs.get(id)?.kind !== "active" || job.kind === "active") jobs.set(id, job);
+    const privateSnapshot = privateTranscriber.snapshot();
+    const jobs = new Map<string, NoteTranscriptionState>();
+    for (const [id, job] of privateSnapshot.jobs) {
+      if (selectedProviders.get(id) !== "powerful") jobs.set(id, job);
     }
-    return { ...privateTranscriber.snapshot(), heldDurability, powerfulAvailable,
+    for (const [id, job] of hosted.jobs) {
+      const selected = selectedProviders.get(id);
+      if (selected === "powerful" || selected === undefined && !privateSnapshot.jobs.has(id)) jobs.set(id, job);
+    }
+    return { ...privateSnapshot, heldDurability, powerfulAvailable,
       powerfulConsented: hosted.consented(), jobs };
   };
   let combinedSnapshot = makeSnapshot();
@@ -3235,7 +3250,7 @@ export function voiceNoteTranscriberFor(
       if (engine !== "assemblyai" && hosted.jobs.get(sourceId)?.kind === "active")
         return "Wait for Powerful transcription to stop before choosing another engine.";
       if (engine === "private-cloud")
-        return await privateTranscriber.transcribeAgain?.(sourceId, engine) ?? "unavailable";
+        return privateTranscriber.transcribeAgain?.(sourceId, engine) ?? "unavailable";
       if (engine === "assemblyai") {
         if (!powerfulAvailable) return "unavailable";
         if (!hosted.consented()) return "no-consent";

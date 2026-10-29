@@ -76,6 +76,7 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
   services: { client?: ReturnType<typeof createHostedAssemblyAiClient>; native?: VoiceNotesPlugin; clock?: CloudClock;
     readCommit?: typeof readTranscriptCommit; createRow?: typeof createVoiceNoteRow;
     save?: typeof saveVoiceNoteTranscript; readNote?: typeof readVoiceNoteForTranscription;
+    onSelected?: (sourceId: string) => void;
     loadAudio?: typeof loadVoiceNoteAudio; preserveHistory?: typeof preserveVoiceNoteTranscriptHistory; reconciliationDelayMs?: number } = {}) {
   const client = services.client ?? createHostedAssemblyAiClient({ backendUrl, sessionStore });
   const native = services.native ?? VoiceNotes;
@@ -199,6 +200,8 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
         await markHostedRemoteDone(id);
         jobs.set(id, { kind: "done", outcome: prior.outcome }); notify(); return;
       }
+      guard();
+      services.onSelected?.(id);
       if (!prior) await createRow(account, recording as VoiceNoteRecording, voiceNoteTitle(recording.startedAt));
       // The committed row's layout wins for space-only audio; a local recording knows its own.
       const noteRow = await readNote(account, id);
