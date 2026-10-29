@@ -85,14 +85,18 @@ function trimTrailingPunctuation(link: string): string {
 
 /** The first Meet code or lookup link in free text, in the order pasted; null when there is none. */
 function firstMeetTarget(text: string): string | null {
-  // Where the pasted word holding each match starts, tracked as the matches advance through the text.
+  // Whether the pasted word holding each match already has a URL-shaped character before it, tracked as the matches advance.
   let scanned = 0;
-  let wordStart = 0;
+  let urlShaped = false;
   for (const match of text.matchAll(MEET_HOST_URL)) {
-    for (; scanned < match.index; scanned++) if (/\s/.test(text[scanned]!)) wordStart = scanned + 1;
+    for (; scanned < match.index; scanned++) {
+      const char = text[scanned]!;
+      if (/\s/.test(char)) urlShaped = false;
+      else if (/[/?=&#@:%]/.test(char)) urlShaped = true;
+    }
     // Only a label or bracket may sit between the start of the pasted word and the link: anything URL-shaped before it
     // means this Meet link is part of another link (its query, say), not a link of its own.
-    if (/[/?=&#@:%]/.test(text.slice(wordStart, match.index))) continue;
+    if (urlShaped) continue;
     // Inside explicit <…> the link is exactly what is between them.
     const delimited = text[match.index - 1] === "<" && text[match.index + match[0].length] === ">";
     const candidate = delimited ? match[0] : trimTrailingPunctuation(match[0]);
