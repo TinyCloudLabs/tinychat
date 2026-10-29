@@ -1,6 +1,6 @@
 # Retrieval contract v1
 
-Invoke the helper relative to this installed skill. Each command requires the same four context flags: `--profile NAME --host URL --space NAME_OR_URI --owner did:pkh:eip155:CHAIN:ADDRESS`. `--tc PATH` selects a literal executable; otherwise the helper resolves `tc` through PATH. The helper canonicalizes a short space name to the explicitly selected owner's full space URI and validates CLI status before remote reads. Operation-local historical continuation validates saved evidence and binding instead; it is not a current remote access check. There is no default profile, host or owner fallback.
+Invoke the helper relative to this installed skill. Each command requires the same four context flags: `--profile NAME --host URL --space NAME_OR_URI --owner did:pkh:eip155:CHAIN:ADDRESS`. `--tc PATH` selects a literal executable; otherwise the helper runs `TC_BIN` if set, else the `tinycloud` that https://agents.tinycloud.xyz/onboarding installs in `~/.local/share/tinycloud/cli`, else `tinycloud` on the PATH, and never `tc`. With none of them it stops with `CLI_UNAVAILABLE`. The helper canonicalizes a short space name to the explicitly selected owner's full space URI and validates CLI status before remote reads. Operation-local historical continuation validates saved evidence and binding instead; it is not a current remote access check. There is no default profile, host or owner fallback.
 
 ## Commands
 
@@ -78,8 +78,8 @@ The normal recap has one selected-body acquisition and no diagnostics probe. Exp
 
 | Code | Response |
 | --- | --- |
-| `AUTH_REQUIRED`, `AUTH_EXPIRED` | Complete or renew terminal consent for this existing identity. |
-| `PERMISSION_DENIED` | Inspect the selected grant's actual authority. |
+| `AUTH_REQUIRED`, `AUTH_EXPIRED` | Run onboarding again (https://agents.tinycloud.xyz/onboarding), then retry. |
+| `PERMISSION_DENIED` | Ask once for the missing access: run `setup.mjs authorize` and send the owner its OpenKey link. |
 | `AUTH_OR_PERMISSION` | Older CLI did not distinguish auth failure from denial; inspect both without assuming relogin. |
 | `OWNER_MISMATCH`, `CONTEXT_MISMATCH` | Stop and select the intended account/context; do not switch corpus silently. |
 | `SPACE_NOT_HOSTED` | Verify the explicit host and intended space. |
