@@ -1,74 +1,54 @@
 # Use TinyChat with your agent
 
-Use your existing TinyChat account and synced meetings from OpenCode, Codex or Claude Code. You do not need to reconnect sources, copy meetings, clone a repository or run an MCP server.
+Use your existing TinyChat account and synced meetings from any agent that can run shell commands, such as Claude Code, Codex or OpenCode. Meetings use the TinyCloud CLI; the hosted TinyCloud MCP doesn't have meeting tools yet. You don't need to reconnect sources, copy meetings or clone a repository.
 
 ## Install once
 
-Use Node.js **22.20 or later** and npm for this setup. The CLI and retrieval helper themselves support Node 20 or later; the pinned skills installer and automatic OpenCode activation need 22.20. Automatic activation is supported only on local macOS with stock OpenCode 1.18.31.
+Use Node.js **22.20 or later**.
 
-For **OpenCode 1.18.31**, start the direct terminal UI with `opencode` or `opencode /absolute/project/path`, then paste the setup prompt into its empty chat. Use one active chat and no background agents. Automatic activation does not support `--prompt`, `--mini`, `serve`, `run`, `attach`, wrappers or remote clients. If activation reports an unsupported environment, stop with its classified activation error; do not substitute another sign-in path.
+First set up TinyCloud with https://agents.tinycloud.xyz/onboarding. It installs the CLI and signs you in; TinyChat uses that sign-in. Skip it if this computer is already set up.
 
-Install the CLI and both skills in this order. Run sequentially, with no background or parallel commands. Inspect any existing same-named skill before replacing it.
+Then install the TinyChat skill. Set `CLIENT` to your agent's installer name, for example `claude-code`, `codex` or `opencode`. Run it in the foreground. Inspect any existing same-named skill before replacing it.
 
 ```sh
-npm install --global @tinycloud/cli@{{CLI_VERSION}}
-npx --yes skills@{{INSTALLER_VERSION}} add https://registry.npmjs.org/@tinycloud/cli/-/cli-{{CLI_VERSION}}.tgz --skill tc-cli --global --copy --agent opencode --yes
-npx --yes skills@{{INSTALLER_VERSION}} add {{SETUP_URL}}tinychat-retrieval/{{PACK_VERSION}}/tinychat-retrieval-{{PACK_VERSION}}.tgz --skill tinychat-retrieval --global --copy --agent opencode --yes
+npx --yes skills@{{INSTALLER_VERSION}} add {{SETUP_URL}}tinychat-retrieval/{{PACK_VERSION}}/tinychat-retrieval-{{PACK_VERSION}}.tgz --skill tinychat-retrieval --global --copy --agent CLIENT --yes
 ```
 
-Then run this as the **last, separate native bash tool call**, with no additional command before or after it:
+The installer places the pack at `$HOME/.agents/skills/tinychat-retrieval` for most agents, including Codex and OpenCode, and at `$HOME/.claude/skills/tinychat-retrieval` for Claude Code. Resolve paths from the current terminal's HOME. Set PACK to that directory on a preceding line of the same shell invocation. Load SKILL.md at that known path once if it is not already loaded; installation directories do not need searching.
+
+**Optional, OpenCode 1.18.31 on local macOS:** the skill's adapter adds `tinychat_*` tools. Start the direct terminal UI with `opencode` or `opencode /absolute/project/path`, use one active chat and no background agents, then run this as the **last, separate native bash tool call**, with no background or parallel commands and nothing before or after it:
 
 ```sh
 node "$HOME/.agents/skills/tinychat-retrieval/scripts/install-opencode.mjs" --activate
 ```
 
-The activation tool interruption is expected while the adapter loads. The same conversation resumes automatically; the user does not restart OpenCode or send an extra “continue.” Continue only when `tinychat_setup` and `tinychat_authorize` are actually available as tools. An installed loader alone does not establish loaded capture. On a classified activation error, stop and report it. Until the tools are loaded, do not open authorization or request a code. Never use standalone `setup.mjs authorize`, `setup.mjs login` or `tc auth login` as an OpenCode fallback.
+The activation tool interruption is expected while the adapter loads. The same conversation resumes automatically; the user does not restart OpenCode or send an extra “continue.” Automatic activation does not support `--prompt`, `--mini`, `serve`, `run`, `attach`, wrappers or remote clients. Use the tools only when `tinychat_setup` and `tinychat_authorize` are actually available. On a classified activation error, or if the tools don't load, use `setup.mjs` below like any other agent.
 
 The adapter adds a local plugin loader without changing model/provider settings. At startup, it raises the client's in-memory `tool_output` limits to at least 96 KiB and 2,000 lines for the session so compact meeting evidence fits the pinned client. Larger user limits and configuration files are preserved. A valid loaded setup does not need reinstalling.
-
-For **Codex or Claude Code**, replace `CLIENT` below with `codex` or `claude-code`. These clients use the private-file sign-in path in the installed setup reference; they do not use OpenCode's chat-paste adapter.
-
-```sh
-npm install --global @tinycloud/cli@{{CLI_VERSION}}
-npx --yes skills@{{INSTALLER_VERSION}} add https://registry.npmjs.org/@tinycloud/cli/-/cli-{{CLI_VERSION}}.tgz --skill tc-cli --global --copy --agent CLIENT --yes
-npx --yes skills@{{INSTALLER_VERSION}} add {{SETUP_URL}}tinychat-retrieval/{{PACK_VERSION}}/tinychat-retrieval-{{PACK_VERSION}}.tgz --skill tinychat-retrieval --global --copy --agent CLIENT --yes
-```
-
-The installer places the OpenCode/Codex pack at `$HOME/.agents/skills/tinychat-retrieval` and Claude Code's at `$HOME/.claude/skills/tinychat-retrieval`. Resolve paths from the current terminal's HOME. Set PACK to that directory on a preceding line of the same shell invocation. Load SKILL.md at that known path once if it is not already loaded. Use the available TinyChat tools directly; installation directories do not need searching. Consult the core CLI skill only when a CLI command needs explanation.
 
 The release includes [skill instructions](tinychat-retrieval/{{PACK_VERSION}}/SKILL.md), [setup recovery](tinychat-retrieval/{{PACK_VERSION}}/references/setup.md), [meeting commands](tinychat-retrieval/{{PACK_VERSION}}/references/meetings.md), [local session handoff](tinychat-retrieval/{{PACK_VERSION}}/references/session-handoff.md), [permissions](tinychat-retrieval/{{PACK_VERSION}}/assets/permissions.json), [runtime metadata](tinychat-retrieval/{{PACK_VERSION}}/pack.json) and [release hashes](tinychat-retrieval/{{PACK_VERSION}}/release.json).
 
 ## Sign in and approve access
 
-The app configuration for this setup page is:
+TinyChat uses your TinyCloud onboarding sign-in. The app configuration for this setup page is:
 
 ```json
 {{SETUP_CONTEXT}}
 ```
 
-Use the app configuration above. If separate app context was explicitly supplied, preserve its `expectedOwner`. Otherwise select the existing signing identity in OpenKey. One account may contain several keys. No DID, host or space question is required. The setup page's origin is an artifact server, not the data host.
-
-In OpenCode, write this non-secret configuration to a private temporary JSON file and call `tinychat_setup` with `configPath` set to its absolute path. To reuse saved configuration, call `tinychat_setup` without arguments. Other clients can run:
+Write it to a temporary JSON file. Then run (in OpenCode, `tinychat_setup` with `configPath` does the same):
 
 ```sh
 node PACK/scripts/setup.mjs prepare --config APP_CONTEXT_FILE
 ```
 
-For `login-required` in OpenCode, call **tinychat_authorize** with no arguments. It opens the exact approval URL on the helper machine, binds the pending approval to this conversation and selected profile, and returns promptly. After a successful launch say: **“Complete sign-in in the browser, then paste the code here.”**
+- `ready`: continue.
+- `onboarding-required`: follow https://agents.tinycloud.xyz/onboarding, then run `prepare` again.
+- `access-required`: run `node PACK/scripts/setup.mjs authorize` (in OpenCode, `tinychat_authorize` with no arguments). Send the owner `approvalUrl` with one line: “Open this link and approve TinyChat access, then send me the short code OpenKey shows (like ABCD-EFGH).” When they send the code, pass it exactly as sent: `node PACK/scripts/setup.mjs login --code '<the code>'` (in OpenCode, `tinychat_authorize` with `code`).
 
-The plugin captures the original accepted paste, sends it through the setup helper and private CLI stdin, and replaces it with a small receipt before the model sees it. The model must never transcribe the code into any tool call, command or file. Signature, session key, owner, scope and expiry checks remain in the official CLI. `tinychat_signin_status` reports pending or completed status without receiving a code. A ready receipt is verified context; it does not yet prove meeting access.
+Sign in with the account you use for TinyChat. The owner can open the link on any device, including a phone. Each code works once and expires after 5 minutes; if it's refused, run `authorize` again and send the new link. TinyChat only reads your meeting list and transcripts.
 
-If the user requested setup or login only, stop at the ready receipt. Retrieve meetings only when requested. For a last-meeting request, call `tinychat_meetings` with `action: "latest"` and a new short operation ID, such as `last-meeting`. It selects the latest supported dated meeting, verifies actual SQL/body access and returns evidence immediately. It preserves profile, host, space and primary owner. Do not renew valid access or switch accounts to work around a retrieval failure. Standalone diagnostics remains available for explicit checks or failure investigation.
-
-### Recovery when needed
-
-A noninteractive local shell does not imply a remote host. On a local launch failure, or if no page appeared, open `delivery.artifactPath` locally. Keep the file while sign-in is pending. Do not restart approval when a response is already being verified. The plugin removes only its own approval artifact after success; rejected input leaves it intact.
-
-For a non-OpenCode client on a known remote host, `node PACK/scripts/setup.mjs authorize --delivery file` retains the explicit artifact transport: transfer the complete private HTML through a trusted client file transfer and open the local copy. A remote filesystem path is not a download link. This standalone helper route does not arm the OpenCode conversation capture; use an existing client-owned private response file for `setup.mjs login --code-file`, as detailed in the setup reference. The local OpenCode flow above requires neither file transfer nor an attachment.
-
-The adapter uses accepted OpenCode text; the terminal client normalizes paste line endings and surrounding whitespace before its server hook. OpenCode's local TUI input history still retains pasted text. The adapter keeps it out of subsequent model input, native conversation messages and its own logs. Restarting OpenCode loses pending in-memory approvals; no historical message is silently selected or replayed. Complete pending sign-in in the same running conversation.
-
-The manifest requests read actions for the meeting SQL catalog and connector KV bodies plus capability metadata. Do not weaken it to fit a grant. Saved context alone never proves real access; the selected acquisition performs the real SQL and KV reads.
+If the user requested setup or login only, stop at the ready result. Retrieve meetings only when requested. For a last-meeting request, call `tinychat_meetings` with `action: "latest"` and a new short operation ID, such as `last-meeting`. It selects the latest supported dated meeting, verifies actual SQL/body access and returns evidence immediately. It preserves profile, host, space and primary owner. Do not renew valid access or switch accounts to work around a retrieval failure. Standalone diagnostics remains available for explicit checks or failure investigation.
 
 ## Get a grounded answer
 
@@ -104,14 +84,14 @@ Follow the installed [session handoff workflow](tinychat-retrieval/{{PACK_VERSIO
 
 ## Return, update and remove
 
-In a new OpenCode conversation call `tinychat_setup` without arguments; other clients run `node PACK/scripts/setup.mjs prepare` without a config to reuse the saved app selection. Use a ready result for saved discovery and retrieval; do not renew valid authority unnecessarily. For an intentional account or deployment change only, run `prepare --new-profile --config NEW_APP_CONTEXT_FILE` from a human-operated terminal outside OpenCode, then return to `tinychat_setup`. The old profile remains intact. Use fresh evidence for the newly selected identity; never switch accounts to work around a read failure.
+In a new conversation run `node PACK/scripts/setup.mjs prepare` (in OpenCode, `tinychat_setup` without arguments) to reuse the saved app selection. Use a ready result for saved discovery and retrieval; do not renew valid authority unnecessarily. To use another account, run onboarding again with that account. Use fresh evidence for the newly selected identity; never switch accounts to work around a read failure.
 
 Versioned archives do not support automatic `skills update` tracking in installer {{INSTALLER_VERSION}}. To update, follow this page's new identified release instructions and run `skills add` with the new exact archive URL. Repeating the same version is idempotent; an explicit newer install replaces that named skill and its obsolete files while preserving unrelated settings. Do not modify installed helpers by hand.
 
 ```sh
-npx --yes skills@{{INSTALLER_VERSION}} remove tinychat-retrieval tc-cli --global --agent CLIENT --yes
+npx --yes skills@{{INSTALLER_VERSION}} remove tinychat-retrieval --global --agent CLIENT --yes
 ```
 
 For OpenCode, remove the generated `tinychat-signin.js` loader from `$XDG_CONFIG_HOME/opencode/plugins` (or `$HOME/.config/opencode/plugins`) and restart the client when removing this integration.
 
-This removes the two skills for the chosen client installation. Codex and OpenCode share `~/.agents/skills` under this installer, so removing there affects both clients' discovery. Other skills and model/provider settings remain intact. Profile logout and grant revocation are separate actions; use the core skill for their supported lifecycle.
+This removes the TinyChat skill for the chosen client installation. Codex and OpenCode share `~/.agents/skills` under this installer, so removing there affects both clients' discovery. Other skills and model/provider settings remain intact. To end access sooner, revoke it at https://account.tinycloud.xyz/delegations.
