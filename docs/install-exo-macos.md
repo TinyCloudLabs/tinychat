@@ -45,6 +45,14 @@ The first time you start a **Local recording**, macOS asks for access to the **m
 
 Download the new `.dmg` and drag Exo into Applications again, replacing the old one. macOS may ask you to repeat step 3 once for the new version.
 
+Or update from Terminal in one step. This also works for a first install:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/TinyCloudLabs/tinychat/main/desktop/scripts/exo-update.sh | bash
+```
+
+It downloads the latest stable release from GitHub, checks it against the release's `SHA256SUMS.txt`, quits Exo, replaces `/Applications/Exo.app` and opens it. A download made this way isn't marked by macOS, so step 3 isn't needed. For the newest beta, end the command with `| bash -s -- beta` instead. You can read the script first: [`desktop/scripts/exo-update.sh`](../desktop/scripts/exo-update.sh).
+
 ## Alternative: Terminal
 
 If you'd rather skip System Settings, run this once after step 2, then open Exo normally:

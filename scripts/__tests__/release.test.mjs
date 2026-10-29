@@ -1968,3 +1968,19 @@ test('every recorder invoke is registered, manifested, and granted to recorder c
     assert.ok(registered.has(command), `frontend invoke ${command} is in a Tauri handler`);
   }
 });
+
+test('exo-update.sh downloads exactly the assets a desktop release publishes', () => {
+  const scriptPath = join(repo, 'desktop/scripts/exo-update.sh');
+  const script = readFileSync(scriptPath, 'utf8');
+  const plan = readFileSync(join(repo, 'scripts/release/desktop-release-plan.mjs'), 'utf8');
+  const workflow = readFileSync(join(repo, '.github/workflows/desktop-release.yml'), 'utf8');
+  // The release names its files Exo_<version>_aarch64.* and checksums them in SHA256SUMS.txt.
+  assert.match(plan, /setOutput\('asset-prefix', `Exo_\$\{version\}_aarch64`\)/);
+  assert.match(workflow, /"assets\/\$PREFIX\.dmg"/);
+  assert.match(workflow, /> SHA256SUMS\.txt/);
+  // The script fetches those names from the exo-desktop@<version> tag.
+  assert.match(script, /DMG="Exo_\$\{V\}_aarch64\.dmg"/);
+  assert.match(script, /\$BASE\/SHA256SUMS\.txt"/);
+  assert.match(script, /BASE="https:\/\/github\.com\/\$REPO\/releases\/download\/exo-desktop%40\$V"/);
+  assert.equal(spawnSync('bash', ['-n', scriptPath]).status, 0, 'exo-update.sh parses');
+});
