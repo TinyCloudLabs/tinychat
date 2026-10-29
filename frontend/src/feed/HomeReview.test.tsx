@@ -219,6 +219,39 @@ for (const engagement of ["empty field focus", "consent link activation"] as con
   });
 }
 
+test("focused code-less folded confirmation keeps its original issuance until explicit navigation", async () => {
+  const owner = await ownerFixture(); const agent = await owner.agent("confirmation-focus");
+  const ask = typedCard(syntheticRecord("ask"), "confirmation-parent");
+  const grant: Record<string, unknown> = { ...syntheticRecord("approval"), approvalType: "secret", codeExpected: false, name: "SYNTHETIC_KEY", url: "https://secrets.tinycloud.xyz/request?fixture=confirmation-focus", forAsk: { id: "ask-synthetic" } };
+  delete grant.approvalKind;
+  const original = typedCard(grant, "folded-confirmation");
+  value(await publishFeedCard(agent.output, ask)); value(await publishFeedCard(agent.output, original));
+  const transport = owner.fresh(); const view = await mount(transport);
+  await openCard(transport, view.host, ask.title);
+  const confirmation = button(view.host, "I completed this step");
+  await act(async () => confirmation.focus());
+  expect(document.activeElement === confirmation).toBe(true);
+  const replacement: FeedCard = { ...original, revision: 2, issuanceId: "replacement-confirmation-issuance", payload: { sitrep: { version: 1, record: { ...grant, issuedAt: SITREP_NOW } } } };
+  value(await publishFeedCard(agent.output, replacement)); await transport.notify();
+  const afterReissue = button(view.host, "I completed this step");
+  if (!afterReissue.disabled) await click(transport, afterReissue);
+  expect(value(await listFeedResponses(agent.responses))).toEqual([]);
+  expect(afterReissue === confirmation).toBe(true);
+  expect(afterReissue.disabled).toBe(true);
+  expect(view.host.querySelector('[aria-label="Folded approval step"] code')?.textContent).toBe(`${original.cardId}/${original.revision}/${original.issuanceId}`);
+  await click(transport, button(view.host, "Open current approval"));
+  const current = button(view.host, "I completed this step");
+  expect(current === confirmation).toBe(false);
+  expect(current.disabled).toBe(false);
+  await click(transport, current);
+  const headers = value(await listFeedResponses(agent.responses));
+  expect(headers).toHaveLength(1);
+  const response = headers[0]; if (!response) throw new Error("Explicit replacement confirmation did not persist");
+  expect(response).toMatchObject({ ...identity(replacement), kind: "answer" });
+  expect(value(await readFeedResponsePayload(agent.responses, response))).toMatchObject({ type: "sitrep.answer", version: 1, data: { askId: grant.id, action: "done", text: "", issuedAt: SITREP_NOW } });
+  expect(value(await getFeedCardState(agent.output, agent.responses, identity(original))).response).toBeNull();
+});
+
 function rawRow(sourceKey: string, record: unknown) {
   const bytes = Buffer.from(JSON.stringify(record), "utf8");
   return { sourceKey, sourceArea: "kv" as const, encoding: "base64" as const, rawBase64: bytes.toString("base64"), sha256: createHash("sha256").update(bytes).digest("hex") };
