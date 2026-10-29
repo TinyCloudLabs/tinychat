@@ -3167,10 +3167,16 @@ export function voiceNoteTranscriberFor(
     window.addEventListener("storage", onStorage);
   }
   const selectedProviders = new Map<string, "private" | "powerful">();
+  const privateChoices = localStorageVoiceNotePrivateChoiceStore(did);
+  for (const sourceId of privateChoices.ids()) selectedProviders.set(sourceId, "private");
+  const canResumePowerful = (sourceId: string) => {
+    const selected = selectedProviders.get(sourceId);
+    return selected === undefined ? !privateChoices.has(sourceId) : selected === "powerful";
+  };
   const privateTranscriber = createVoiceNoteTranscriber({
     cloud: createVoiceNoteCloudForBuild(backendUrl, sessionStore, did),
     consent: localStorageVoiceNoteConsentStore(did),
-    choices: localStorageVoiceNotePrivateChoiceStore(did),
+    choices: privateChoices,
     holds: localStorageVoiceNoteHoldStore(did),
     autoResubmit: {
       marked: localStorageAutoResubmitStore(did),
@@ -3222,12 +3228,12 @@ export function voiceNoteTranscriberFor(
     async check(options) {
       await Promise.all([privateTranscriber.check(options), hosted.check().then((available) => {
         powerfulAvailable = available; emit();
-        if (available && hosted.consented()) void hosted.resume();
+        if (available && hosted.consented()) void hosted.resume(canResumePowerful);
       }, () => { powerfulAvailable = false; emit(); })]);
     },
     consentPowerful() {
       hosted.consent();
-      void hosted.resume();
+      void hosted.resume(canResumePowerful);
     },
     async cancel(sourceId) {
       if (hosted.jobs.get(sourceId)?.kind === "active")
@@ -3302,7 +3308,7 @@ export function voiceNoteTranscriberFor(
       if (recording.options?.transcriber === "assemblyai") {
         if (hosted.consented()) void VoiceNotes.listPending().then(({ recordings }) => {
           const full = recordings.find((item) => item.id === recording.id);
-          if (full) void hosted.run(full);
+          if (full) void hosted.run(full, false, canResumePowerful);
         });
       } else privateTranscriber.noteSaved(recording, audio);
     },

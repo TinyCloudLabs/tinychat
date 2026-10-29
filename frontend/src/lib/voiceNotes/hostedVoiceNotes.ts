@@ -160,7 +160,7 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
     }
   };
   const run = async (recording: Pick<VoiceNoteRecording, "id" | "owner" | "source" | "options" | "startedAt" | "sizeBytes" | "mimeType" | "durationMs" | "channels">
-    & { ledger?: VoiceNoteRecording["ledger"] }, explicitRerun = false) => {
+    & { ledger?: VoiceNoteRecording["ledger"] }, explicitRerun = false, canResume?: (sourceId: string) => boolean) => {
     rejectPowerfulRerun(explicitRerun);
     const id = recording.id;
     if (active.has(id) || (!explicitRerun && jobs.get(id)?.kind === "done") || !consented()
@@ -201,6 +201,8 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
         jobs.set(id, { kind: "done", outcome: prior.outcome }); notify(); return;
       }
       guard();
+      // Obsolete automatic recovery may retire a committed receipt above, but must not reclaim a newer provider choice.
+      if (canResume && !canResume(id)) return;
       services.onSelected?.(id);
       if (!prior) await createRow(account, recording as VoiceNoteRecording, voiceNoteTitle(recording.startedAt));
       // The committed row's layout wins for space-only audio; a local recording knows its own.
@@ -467,7 +469,7 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
     check, run, jobs, consented,
     consent() { storage()?.setItem(`${CONSENT}:${did}`, "1"); notify(); },
     subscribe(listener: () => void) { listeners.add(listener); return () => { listeners.delete(listener); }; },
-    async resume() {
+    async resume(canResume?: (sourceId: string) => boolean) {
       for (const [id, stored] of Object.entries(readJobs(did))) {
         if (stored.explicitRerun) {
           if (stored.handle) {
@@ -487,7 +489,7 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
           continue;
         }
         const recording = (await native.listPending()).recordings.find((r) => r.id === id);
-        if (recording ?? stored.recording) void run(recording ?? stored.recording!);
+        if (recording ?? stored.recording) void run(recording ?? stored.recording!, false, canResume);
       }
     },
     async runSpaceOnly(id: string, explicitRerun = false) {

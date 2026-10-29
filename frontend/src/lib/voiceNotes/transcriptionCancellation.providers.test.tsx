@@ -204,7 +204,7 @@ test("combined Private rerun reports acceptance and cancellation preserves the c
   const producer = new AbortController();
   const subscriptions = new Set<() => void>();
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    expect(request.headers.get("Authorization")).toBe("Bearer synthetic-session");
+    if (request.headers.get("Authorization") !== "Bearer synthetic-session") return new Response(null, { status: 401 });
     const path = new URL(request.url).pathname;
     if (path.endsWith("/capabilities")) return Response.json(path.includes("assemblyai")
       ? { hosted: true, max_bytes: 1000000, content_types: ["audio/wav"], part_size: 1024 }
