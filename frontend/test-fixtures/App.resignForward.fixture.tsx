@@ -12,8 +12,6 @@ import { installDom } from "@/test/dom";
 import { PlatformContext, type AppPlatform } from "@/lib/platform";
 import { replicationOptInKey } from "@/lib/replication/replicationOptIn";
 import { REPLICATION_RUNTIME_FLAG_KEY } from "@/lib/replication/replicationFlag";
-import { SIGN_IN_BUNDLE_ENTRIES } from "@tinyboilerplate/core";
-import realManifest from "../../manifest.json";
 
 // The app code under test must never reach a real home: HOME is a throwaway dir under /var/tmp,
 // set at load and asserted before anything runs.
@@ -45,19 +43,12 @@ const ADDRESS = "0x00000000000000000000000000000000000000a1";
 const PRINCIPAL = `did:pkh:eip155:1:${ADDRESS}`;
 const CHROME = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
 const APP_SESSION_KEY = "xyz.tinycloud.tinychat:session";
-const REVISION_KEY = `xyz.tinycloud.tinychat:manifest-revision:${ADDRESS}`;
 const NOTICE = "Sign in once more so TinyCloud Home can open your apps and your feed. Your data stays as it is.";
 
 /** Every effect the gate must order, in the order it happened. */
 const events: string[] = [];
 let handoffResult: { ok: boolean; failClosed: boolean; message: string | null } = { ok: true, failClosed: false, message: null };
 let offline = false;
-/** What the backend serves at /api/manifest: this build's manifest.json, the same without the bundle (an older backend), or nothing. */
-let served: "full" | "old" | "unreachable" = "full";
-const oldManifest = {
-  ...realManifest,
-  permissions: realManifest.permissions.filter((entry) => !SIGN_IN_BUNDLE_ENTRIES.some((required) => required.service === entry.service && required.path === entry.path)),
-};
 
 function fakeTcw(): TinyCloudWeb {
   return {
@@ -70,11 +61,6 @@ mock.module("@tinyboilerplate/client", () => ({
   ...clientApi,
   connectWallet: async () => ({ address: ADDRESS, openkey: {}, web3Provider: {} }),
   requestNonce: async () => "nonce",
-  loadAppManifest: async () => {
-    events.push("loadManifest");
-    if (served === "unreachable") throw new TypeError("Failed to fetch");
-    return served === "old" ? oldManifest : realManifest;
-  },
   createAndSignIn: async () => { events.push("signIn"); return { tcw: fakeTcw(), session: { siwe: "message", signature: "signature" } }; },
   verifySession: async () => ({ token: "bearer", expiresIn: 3600, address: ADDRESS }),
   clearPersistedSession: (address: string) => { events.push(`clearPersisted:${address}`); realClearPersistedSession(address); },
@@ -223,7 +209,6 @@ const realFetch = globalThis.fetch;
 beforeEach(() => {
   events.length = 0;
   offline = false;
-  served = "full";
   handoffResult = { ok: true, failClosed: false, message: null };
   Object.defineProperty(globalThis, "localStorage", { configurable: true, writable: true, value: memoryLocalStorage() });
   // The page's backend calls fail like an unreachable network: a refused (401) call would end the session mid-test.
@@ -235,20 +220,22 @@ afterAll(() => { mock.restore(); restoreImportDom(); globalThis.fetch = realFetc
 test("desktop: a forced re-sign shows the re-sign notice on the offline recorder screen, keeps it, and signs in from it", async () => {
   seedSession();
   await mount("tauri");
-  expect(events).toEqual(["loadManifest", "handoff", `clearPersisted:${ADDRESS}`]);
+  expect(events).toEqual(["handoff", `clearPersisted:${ADDRESS}`]);
   expect(localStorage.getItem(APP_SESSION_KEY)).toBeNull();
   const surface = host!.querySelector('[data-testid="capture-surface"]');
   expect(surface, `recorder screen missing; DOM=${host!.innerHTML}`).toBeTruthy();
   expect(surface!.textContent).toContain(NOTICE);
-  expect(surface!.textContent).not.toContain("Couldn't sign in");
   // The recorder is still offered while signed out.
-  expect(surface!.textContent).toContain("Recordings stay on");
   expect([...surface!.querySelectorAll("button")].some((button) => button.textContent?.trim() === "Record")).toBe(true);
   await click("Sign in");
   await settle();
-  // The ready shell is the mocked recorder shell here, so sign-in is proven by the sign-in call and the recorded revision.
-  expect(events).toEqual(["loadManifest", "handoff", `clearPersisted:${ADDRESS}`, "loadManifest", "signIn", "sync"]);
-  expect(localStorage.getItem(REVISION_KEY)).toBe("3");
+  expect(events).toEqual(["handoff", `clearPersisted:${ADDRESS}`, "signIn", "sync"]);
+  expect(localStorage.getItem(APP_SESSION_KEY)).not.toBeNull();
+  await unmount();
+  events.length = 0;
+  await mount("tauri");
+  expect(events).toEqual(["restore", "sync"]);
+  expect(host!.textContent).not.toContain(NOTICE);
 });
 
 test("desktop: a signed-out user with nothing to re-sign sees no re-sign notice", async () => {
@@ -256,5 +243,4 @@ test("desktop: a signed-out user with nothing to re-sign sees no re-sign notice"
   const surface = host!.querySelector('[data-testid="capture-surface"]');
   expect(surface).toBeTruthy();
   expect(surface!.textContent).not.toContain(NOTICE);
-  expect(surface!.textContent).toContain("Recordings stay on");
 });

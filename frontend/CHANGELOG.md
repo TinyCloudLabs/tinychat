@@ -13,6 +13,7 @@
 - TC-2208: The portable Home model rejects owner-private fields in output wrappers and same-key immutable history rewrites, retains deleted-source answers without restoring dispatch authority, and scopes answers by kind and ID. Accepted ISO offsets now compare as instants. Original timestamp fields and exact issuance identity are retained, along with first-answer ties, deterministic state ties, inclusive issuance/exclusive expiry, and provided-order state deltas.
 - TC-2208: Keep focused approval controls, including code-less confirmations, and consent-link interactions bound to their original issuance until explicit navigation; retain archive-only answers, threads, claims, and commands in History; isolate group priority by registered source or validated archive origin.
 - TC-2204: Web sign-in and restoration use the manifest shipped with the frontend, so web-only updates request Home SQL and feed subscriptions in the existing approval. Owners with older grants are asked to sign in again with explicit consent before Home storage opens.
+- TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 
 ## 0.12.0-beta.1
 
