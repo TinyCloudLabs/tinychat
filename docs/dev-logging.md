@@ -178,6 +178,9 @@ provider refusal can be read without public Phala logs. Same pattern as tinyclou
   `backend_alert` (`alert=true` lines) and `backend_log_error` (any other stderr line; `component`, `route`, `status`,
   `upstream_status`, `code`, `reason`, `cid` only when they match a strict pattern), and the four hosted-AssemblyAI
   JSON events (`assemblyai_provider_blocked`, `_provider_recovered`, `_jobs_failed_in_a_row`, `_worker_heartbeat`).
+  `backend_storage_lane_wait` (warn) carries `op` (`slow-wait` | `wait-timeout`), `priority` (`foreground` |
+  `background`) and `waited_ms` from the exact `[storage-lane] op=… priority=… waitedMs=…` stderr line; any deviation
+  ships as `backend_log_error` instead.
   Everything else is dropped, not redacted: stdout request lines, free text, stack frames, lines over 2048 characters.
   A redaction transform (DIDs, `0x` addresses, JWTs, bearer tokens, URLs, emails, long base64) runs first as a second
   barrier.
