@@ -67,15 +67,30 @@ function readLink(raw: string, unwrap: boolean): string | null {
 }
 
 const MEET_LOOKUP_PATH = /^\/lookup\/[^/?#&=\s]+\/?$/;
-/** An exact-host `meet.google.com/…` URL that starts where a link starts: not after a host or path character, so lookalike hosts, userinfo and another site's query don't match. */
-const MEET_HOST_URL = /(?<![\w.@/=&?%#:+-])(?:https?:\/\/)?meet\.google\.com\/[^\s<>"'`)\]]*/gi;
+/** An exact-host `meet.google.com/…` URL that starts where a link starts: not after a letter, digit or host/path character, so lookalike hosts, userinfo and another site's query don't match. */
+const MEET_HOST_URL = /(?<![\p{L}\p{N}_.@/=&?%#:+-])(?:https?:\/\/)?meet\.google\.com\/[^\s<>"'`\]]*/giu;
+
+/** Trailing sentence punctuation is not part of a link; a closing bracket is only when the link has no opening one for it. */
+function trimTrailingPunctuation(link: string): string {
+  let end = link.length;
+  for (;;) {
+    const last = link[end - 1];
+    if (last !== undefined && /[.,;:!?"'\]>]/.test(last)) end--;
+    else if (last === ")" && link.slice(0, end).split(")").length > link.slice(0, end).split("(").length) end--;
+    else return link.slice(0, end);
+  }
+}
 
 /** The first Meet code or lookup link in free text, in the order pasted; null when there is none. */
 function firstMeetTarget(text: string): string | null {
   for (const match of text.matchAll(MEET_HOST_URL)) {
-    // Inside explicit <…> the link is exactly what is between them; outside, trailing sentence punctuation is not part of it.
+    // Only a label or bracket may sit between the start of the pasted word and the link: anything URL-shaped before it
+    // means this Meet link is part of another link (its query, say), not a link of its own.
+    const wordStart = text.slice(0, match.index).search(/\S*$/);
+    if (/[/?=&#@:%]/.test(text.slice(wordStart, match.index))) continue;
+    // Inside explicit <…> the link is exactly what is between them.
     const delimited = text[match.index - 1] === "<" && text[match.index + match[0].length] === ">";
-    const candidate = delimited ? match[0] : stripWrapping(match[0]);
+    const candidate = delimited ? match[0] : trimTrailingPunctuation(match[0]);
     try {
       const url = new URL(HAS_SCHEME.test(candidate) ? candidate : `https://${candidate}`);
       if (meetCanonical(url) !== null || MEET_LOOKUP_PATH.test(url.pathname)) return candidate;

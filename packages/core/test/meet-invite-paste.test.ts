@@ -66,4 +66,20 @@ describe("meetingLinkFromInput on a pasted calendar invite", () => {
     expect(meetingLinkFromInput("Join http://meet.google.com/abc-defg-hij Backup https://meet.google.com/yas-buib-ppd"))
       .toBe("http://meet.google.com/abc-defg-hij");
   });
+
+  test("a Meet URL inside another link's query or on a non-ASCII lookalike host is not the link", () => {
+    expect(meetingLinkFromInput("Notes https://example.com/?next=(https://meet.google.com/abc-defg-hij) Backup https://meet.google.com/yas-buib-ppd"))
+      .toBe("https://meet.google.com/yas-buib-ppd");
+    expect(meetingLinkFromInput("https://émeet.google.com/abc-defg-hij")).toBe("https://émeet.google.com/abc-defg-hij");
+    expect(meetingLinkFromInput("Join https://émeet.google.com/abc-defg-hij Backup https://meet.google.com/yas-buib-ppd"))
+      .toBe("https://meet.google.com/yas-buib-ppd");
+  });
+
+  test("brackets inside a lookup link stay part of it, delimited or not", () => {
+    expect(meetingLinkFromInput("Join <https://meet.google.com/lookup/Team(Blue)2026> Backup https://meet.google.com/yas-buib-ppd"))
+      .toBe("https://meet.google.com/lookup/Team(Blue)2026");
+    expect(meetingLinkFromInput("https://meet.google.com/lookup/Team(Blue)2026")).toBe("https://meet.google.com/lookup/Team(Blue)2026");
+    expect(meetingLinkFromInput("Join https://meet.google.com/lookup/Team(Blue)2026 Backup https://meet.google.com/yas-buib-ppd"))
+      .toBe("https://meet.google.com/lookup/Team(Blue)2026");
+  });
 });
