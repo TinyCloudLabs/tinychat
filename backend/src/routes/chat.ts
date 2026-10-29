@@ -24,12 +24,14 @@ import {
   logCreditGateDeny,
 } from "../billing/ledger-gate.js";
 import {
+  backgroundReasoningControlFor,
   CatalogFetchError,
   contextLengthFor,
   getCatalog,
   isBlocklistedModel,
   isOfferedModel,
   PICKER_MODELS,
+  type BackgroundReasoningPreference,
   type CatalogModel,
 } from "../billing/catalog.js";
 import {
@@ -191,6 +193,27 @@ function gateAnnotation(
   };
 }
 
+function withQwenNoThink(messages: unknown[]): unknown[] {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (
+      message &&
+      typeof message === "object" &&
+      "role" in message &&
+      message.role === "user" &&
+      "content" in message &&
+      typeof message.content === "string"
+    ) {
+      return messages.map((entry, entryIndex) =>
+        entryIndex === index
+          ? { ...message, content: `/no_think\n${message.content}` }
+          : entry,
+      );
+    }
+  }
+  return messages;
+}
+
 // ── Router factory ───────────────────────────────────────────────────────────
 
 export interface ChatRouterOptions {
@@ -230,10 +253,11 @@ export function createChatRouter(options?: ChatRouterOptions) {
       return;
     }
 
-    const { model, messages, max_output_tokens } = req.body as {
+    const { model, messages, max_output_tokens, reasoning } = req.body as {
       model?: unknown;
       messages?: unknown;
       max_output_tokens?: unknown;
+      reasoning?: unknown;
     };
 
     // Validate messages
@@ -257,6 +281,19 @@ export function createChatRouter(options?: ChatRouterOptions) {
       res.status(400).json({
         error: "invalid_body",
         message: "max_output_tokens must be an integer from 1 to 4096.",
+      });
+      return;
+    }
+
+    const reasoningPreference = reasoning ?? undefined;
+    if (
+      reasoningPreference !== undefined &&
+      reasoningPreference !== "off" &&
+      reasoningPreference !== "minimal"
+    ) {
+      res.status(400).json({
+        error: "invalid_body",
+        message: 'reasoning must be "off" or "minimal".',
       });
       return;
     }
@@ -289,6 +326,16 @@ export function createChatRouter(options?: ChatRouterOptions) {
       });
       return;
     }
+
+    const reasoningControl =
+      reasoningPreference === undefined
+        ? undefined
+        : backgroundReasoningControlFor(
+            resolvedModel,
+            reasoningPreference as BackgroundReasoningPreference,
+          );
+    const upstreamMessages =
+      reasoningControl?.kind === "qwen_no_think" ? withQwenNoThink(messages) : messages;
 
     // ── Gating (only when the paywall is enabled) ─────────────────────────────
     const address = req.user?.address ?? "";
@@ -437,10 +484,13 @@ export function createChatRouter(options?: ChatRouterOptions) {
         },
         body: JSON.stringify({
           model: resolvedModel,
-          messages,
+          messages: upstreamMessages,
           stream: true,
           stream_options: { include_usage: true },
           ...(maxOutputTokens === undefined ? {} : { max_tokens: maxOutputTokens }),
+          ...(reasoningControl?.kind === "parameter"
+            ? { reasoning: { effort: reasoningControl.effort } }
+            : {}),
         }),
         signal: controller.signal,
       });

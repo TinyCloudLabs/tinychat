@@ -37,6 +37,7 @@ export function ChatWorkspace(props: {
   onSelectionView: (view: SelectionView) => void;
   onSelectionAuthFailure: () => void;
   onMemoryUpdated: (doc: string | null) => void;
+  onBackgroundUsageSettled?: () => void | Promise<void>;
   contextTokensFor: (modelId: string) => number;
   /** The composer's toolbar: the model chip and the usage chip (App owns both). */
   composerToolbar?: ReactNode;
@@ -74,6 +75,7 @@ export function ChatWorkspace(props: {
       onSelectionAuthFailure: props.onSelectionAuthFailure,
       memoryRef: props.memoryRef,
       onMemoryUpdated: props.onMemoryUpdated,
+      onBackgroundUsageSettled: props.onBackgroundUsageSettled,
       activeThreadIdRef,
       agentEnabledRef,
       privateAccessRef,
@@ -137,6 +139,7 @@ export function ChatWorkspace(props: {
       props.onSelectionAuthFailure,
       props.memoryRef,
       props.onMemoryUpdated,
+      props.onBackgroundUsageSettled,
       props.contextTokensFor,
       onDelegationError,
       meetingRetriever,
