@@ -129,7 +129,7 @@ export function prepareTranscriptShare(
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(shareId)) throw new TranscriptShareError("Invalid share identifier.");
   if (!snapshot.text.trim()) throw new TranscriptShareError("The persisted transcript is empty.");
   const prepared = prepareAddressedShare({ target: { kind: "email", address: recipient }, actions: ["read"],
-    policyActions: ["tinycloud.kv/get"], filename: FILENAME });
+    policyActions: ["tinycloud.kv/get"], filename: snapshot.title });
   if (prepared.target.kind !== "email") throw new TranscriptShareError("An exact recipient email is required.");
   return Object.freeze({ shareId, recipient: prepared.target.address, expiresAt: now + DEFAULT_SHARE_LIFETIME_MS,
     account: shareAccount(tcw), snapshot: Object.freeze({ ...snapshot }) });
@@ -219,7 +219,7 @@ export async function publishTranscriptShare(
     await keys.getPublicKey(keyPath, { networkId });
     check();
     const request = { target: { kind: "email" as const, address: review.recipient }, actions: ["read" as const],
-      policyActions: ["tinycloud.kv/get" as const], filename: FILENAME };
+      policyActions: ["tinycloud.kv/get" as const], filename: snapshot.title };
     const prepared = prepareAddressedShare(request);
     const byteLength = new TextEncoder().encode(snapshot.text).byteLength;
     await operations.assertFits({ ...request, shareId: review.shareId, ownerDid: review.account.holderDid,
