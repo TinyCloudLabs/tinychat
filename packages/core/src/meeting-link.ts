@@ -72,21 +72,26 @@ const MEET_HOST_URL = /(?<![\p{L}\p{N}_.@/=&?%#:+-])(?:https?:\/\/)?meet\.google
 
 /** Trailing sentence punctuation is not part of a link; a closing bracket is only when the link has no opening one for it. */
 function trimTrailingPunctuation(link: string): string {
+  let balance = 0;
+  for (const char of link) balance += char === "(" ? -1 : char === ")" ? 1 : 0;
   let end = link.length;
   for (;;) {
     const last = link[end - 1];
     if (last !== undefined && /[.,;:!?"'\]>]/.test(last)) end--;
-    else if (last === ")" && link.slice(0, end).split(")").length > link.slice(0, end).split("(").length) end--;
+    else if (last === ")" && balance > 0) { end--; balance--; }
     else return link.slice(0, end);
   }
 }
 
 /** The first Meet code or lookup link in free text, in the order pasted; null when there is none. */
 function firstMeetTarget(text: string): string | null {
+  // Where the pasted word holding each match starts, tracked as the matches advance through the text.
+  let scanned = 0;
+  let wordStart = 0;
   for (const match of text.matchAll(MEET_HOST_URL)) {
+    for (; scanned < match.index; scanned++) if (/\s/.test(text[scanned]!)) wordStart = scanned + 1;
     // Only a label or bracket may sit between the start of the pasted word and the link: anything URL-shaped before it
     // means this Meet link is part of another link (its query, say), not a link of its own.
-    const wordStart = text.slice(0, match.index).search(/\S*$/);
     if (/[/?=&#@:%]/.test(text.slice(wordStart, match.index))) continue;
     // Inside explicit <…> the link is exactly what is between them.
     const delimited = text[match.index - 1] === "<" && text[match.index + match[0].length] === ">";
