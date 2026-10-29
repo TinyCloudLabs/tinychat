@@ -1,7 +1,7 @@
 import { readFeedResponseHandling, readFeedResponsePayload, type FeedDatabase, type FeedResponse, type FeedResponsePayload } from "@tinycloud/sdk-services/feed";
-import { cardGroup, emptySitrepOwnerData, ownerThreadResponseKey, parseSitrepCardPayload, mergeSitrepStates, validateState, type SitrepOwnerData } from "@tinyboilerplate/core/feed/sitrep";
+import { cardGroup, emptySitrepOwnerData, ownerThreadResponseKey, parseSitrepCardPayload, mergeSitrepStates, validateState, type GroupPriority, type SitrepOwnerData } from "@tinyboilerplate/core/feed/sitrep";
 import { addCanonicalOwnerEvent, combineOwnerData } from "./sitrepOwnerStore";
-import { ownerCardKey } from "./feedIdentity";
+import { homeGroupScope, ownerCardKey } from "./feedIdentity";
 import type { HomeFeedEntry } from "./feedStoreTypes";
 import type { OwnerArchiveProjection } from "./sitrepArchiveStore";
 
@@ -11,13 +11,14 @@ function unwrap<T>(result: { ok: boolean; data?: T; error?: { message?: string }
 export class TypedFeedHistory {
   private readonly payloads = new Map<string, Promise<FeedResponsePayload | undefined>>();
 
-  async enrich(entry: HomeFeedEntry, output: FeedDatabase, responses: FeedDatabase, history: readonly FeedResponse[], privateOwners: Record<string, SitrepOwnerData>, archives: OwnerArchiveProjection): Promise<HomeFeedEntry> {
+  async enrich(entry: HomeFeedEntry, output: FeedDatabase, responses: FeedDatabase, history: readonly FeedResponse[], privateOwners: Record<string, SitrepOwnerData>, archives: OwnerArchiveProjection, groupPriorities: ReadonlyMap<string, GroupPriority>): Promise<HomeFeedEntry> {
     const typed = parseSitrepCardPayload(entry.state.card.payload?.sitrep);
     if (!typed || typed.record.kind !== entry.state.card.kind) return entry;
     const key = ownerCardKey(entry.source.sourceId, entry.state.card);
     const privateOwner = privateOwners[key];
     if (privateOwner?.states.some((state) => state.kind !== typed.record.kind || state.id !== typed.record.id) || (privateOwner?.groupPriority && Object.keys(privateOwner.groupPriority.groups).some((group) => group !== cardGroup(typed.record)))) throw new Error("Private owner state does not address its canonical typed card");
-    const owner = combineOwnerData([archives.owners.get(key) ?? emptySitrepOwnerData(), privateOwner ?? emptySitrepOwnerData()]);
+    const archivedOwner = archives.owners.get(key);
+    const owner = combineOwnerData([archivedOwner ?? emptySitrepOwnerData(), privateOwner ?? emptySitrepOwnerData()]);
     const relevant = history.filter((response) => response.cardId === entry.state.card.cardId && response.revision === entry.state.card.revision && response.issuanceId === entry.state.card.issuanceId);
     const handling: NonNullable<HomeFeedEntry["responseHandling"]> = {};
     const threadRoutes: NonNullable<HomeFeedEntry["threadRoutes"]> = { ...archives.threadRoutes.get(key) };
@@ -60,6 +61,9 @@ export class TypedFeedHistory {
       owner.states = [...owner.states.filter((old) => old.kind !== typed.record.kind || old.id !== typed.record.id), state.value];
     }
     const completeOwner = combineOwnerData([owner]);
+    const privateGroupPriority = groupPriorities.get(homeGroupScope(entry.source.sourceId, archives.scopes.get(key)));
+    const groupPriority = privateGroupPriority ?? archivedOwner?.groupPriority;
+    if (groupPriority) completeOwner.groupPriority = { groups: { ...archivedOwner?.groupPriority?.groups, ...privateGroupPriority?.groups }, updatedAt: groupPriority.updatedAt };
     return { ...entry, responses: [...relevant], owner: completeOwner, responseHandling: handling, threadRoutes, historicalCommands: archives.historicalCommands.get(key) ?? [], ...(archives.scopes.has(key) ? { modelScope: archives.scopes.get(key) } : {}), ...(archives.routes.has(key) ? { recipientRoute: archives.routes.get(key) } : {}) };
   }
 }

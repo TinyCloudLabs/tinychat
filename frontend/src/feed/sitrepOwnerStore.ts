@@ -1,7 +1,7 @@
 import type { FeedDatabase, FeedResponse, FeedResponsePayload } from "@tinycloud/sdk-services/feed";
 import { cardGroup, emptySitrepOwnerData, mergeSitrepStates, ownerThreadResponseKey, parseSitrepCardPayload, validateAnswer, validateClaimDecision, validateGroupPriority, validateSitrepAction, validateState, decodeOwnerThreadMessage, type GroupPriority, type SamState, type SitrepOwnerData, type SitrepHeldNote } from "@tinyboilerplate/core/feed/sitrep";
 import type { HomeFeedEntry, HomeFeedOwnerEvent } from "./feedStoreTypes";
-import { ownerCardKey } from "./feedIdentity";
+import { homeGroupScope, ownerCardKey } from "./feedIdentity";
 import { privateFeedDatabase, parseOwnerJSON } from "./privateFeedDatabase";
 
 function unwrap<T>(result: { ok: boolean; data?: T; error?: { message?: string } }): T {
@@ -75,11 +75,11 @@ export async function savePrivateGroupPriority(database: FeedDatabase, entry: Ho
   await appendPrivateEvent(database, entry, crypto.randomUUID(), "group-priority", parsed.value, at);
 }
 
-export async function readPrivateOwnerState(database: FeedDatabase): Promise<{ byCard: Record<string, SitrepOwnerData>; groupPriority?: GroupPriority }> {
+export async function readPrivateOwnerState(database: FeedDatabase, archiveScopes?: ReadonlyMap<string, string>): Promise<{ byCard: Record<string, SitrepOwnerData>; groupPriorities: Map<string, GroupPriority> }> {
   database = privateFeedDatabase(database);
   const rows = unwrap(await database.query("SELECT event_id,agent_id,card_id,revision,issuance_id,event_type,payload_json,created_at FROM feed_owner_events ORDER BY rowid", [])).rows;
   const bySource: Record<string, SitrepOwnerData> = {};
-  let groupPriority: GroupPriority | undefined;
+  const groupPriorities = new Map<string, GroupPriority>();
   for (const row of rows) {
     const [eventId, sourceId, cardId, revision, issuanceId, type, json, createdAt] = row as unknown[];
     if (typeof eventId !== "string" || typeof sourceId !== "string" || typeof cardId !== "string" || !Number.isSafeInteger(revision) || typeof issuanceId !== "string" || typeof json !== "string" || typeof createdAt !== "string") throw new Error("Invalid persisted private Home event identity");
@@ -100,14 +100,15 @@ export async function readPrivateOwnerState(database: FeedDatabase): Promise<{ b
     } else if (type === "group-priority") {
       const parsed = validateGroupPriority(data);
       if (!parsed.ok || parsed.value.updatedAt !== createdAt) throw new Error("Invalid persisted private group decision");
-      const combined = validateGroupPriority({ groups: { ...groupPriority?.groups, ...parsed.value.groups }, updatedAt: createdAt });
+      const scope = homeGroupScope(sourceId, archiveScopes?.get(key));
+      const combined = validateGroupPriority({ groups: { ...groupPriorities.get(scope)?.groups, ...parsed.value.groups }, updatedAt: createdAt });
       if (!combined.ok) throw new Error("Private group history exceeds its supported limit");
-      groupPriority = combined.value;
+      groupPriorities.set(scope, combined.value);
       owner.groupPriority = { groups: { ...owner.groupPriority?.groups, ...parsed.value.groups }, updatedAt: createdAt };
     } else throw new Error("Unsupported persisted private Home event");
   }
   for (const owner of Object.values(bySource)) owner.states = mergeSitrepStates(owner.states, "provided");
-  return { byCard: bySource, ...(groupPriority ? { groupPriority } : {}) };
+  return { byCard: bySource, groupPriorities };
 }
 
 /** Only explicit payload reads reach this owner-only projection. */
@@ -157,6 +158,7 @@ export function addCanonicalOwnerEvent(owner: SitrepOwnerData, entry: HomeFeedEn
   }
 }
 
+/** Group preferences are resolved separately by validated scope, not combined across histories. */
 export function combineOwnerData(owners: readonly SitrepOwnerData[]): SitrepOwnerData {
   const result = emptySitrepOwnerData();
   for (const owner of owners) {
@@ -169,7 +171,6 @@ export function combineOwnerData(owners: readonly SitrepOwnerData[]): SitrepOwne
     if (owner.responseOrigins) Object.assign(result.responseOrigins ??= Object.create(null), owner.responseOrigins);
     if (owner.outboundNotes) (result.outboundNotes ??= []).push(...owner.outboundNotes);
     if (owner.unsupportedResponses) (result.unsupportedResponses ??= []).push(...owner.unsupportedResponses);
-    if (owner.groupPriority) result.groupPriority = { groups: { ...result.groupPriority?.groups, ...owner.groupPriority.groups }, updatedAt: owner.groupPriority.updatedAt };
   }
   result.states = mergeSitrepStates(result.states, "provided");
   const immutableMessages = new Map<string, typeof result.threads[number]>();

@@ -5,7 +5,7 @@ import { safeUrl, type FeedCard } from "./feedData";
 import type { HomeFeedEntry, HomeFeedSnapshot, HomeFeedSource } from "./feedStoreTypes";
 import { SitrepCard } from "./SitrepCard";
 import { typedContexts } from "./sitrepProjection";
-import { humanFeedReference, homeFeedKey } from "./feedIdentity";
+import { humanFeedReference, homeFeedKey, homeGroupScope } from "./feedIdentity";
 import { cardGroup, cardPriority, compareWaiting, DUE_WINDOW_MS, groupCards, groupPriorityFlag, isClosed, orderPriority, type SitrepProjection } from "@tinyboilerplate/core/feed/sitrep";
 
 function keyOf(entry: HomeFeedEntry): string {
@@ -244,7 +244,7 @@ export function HomeFeedEntries({ source }: { source: HomeFeedSource }) {
   const matching = entries.filter((entry) => {
     const card = entry.state.card;
     if (!matchesFilters(entry)) return false;
-    if (history) return entry.state.card.payload?.sitrepThread !== undefined || !!entry.responses?.length || !!entry.state.response || !!entry.viewEvents?.some((event) => event.kind === "snoozed") || !!entry.owner?.answers.length || !!entry.owner?.claimDecisions.length || !!entry.owner?.threads.length || !!entry.owner?.outboundNotes?.length || !!entry.owner?.heldNotes?.length || !!entry.owner?.states.some((state) => state.notes?.length || state.snoozes?.length || state.doneAt || state.dismissedAt || Object.keys(state.steps).length) || Date.parse(entry.view.snoozedUntil ?? "") > clock;
+    if (history) return entry.state.card.payload?.sitrepThread !== undefined || !!entry.responses?.length || !!entry.state.response || !!entry.viewEvents?.some((event) => event.kind === "snoozed") || !!entry.owner?.answers.length || !!entry.owner?.claimDecisions.length || !!entry.owner?.threads.length || !!entry.owner?.outboundNotes?.length || !!entry.owner?.heldNotes?.length || !!entry.historicalCommands?.length || !!entry.owner?.states.some((state) => state.notes?.length || state.snoozes?.length || state.doneAt || state.dismissedAt || Object.keys(state.steps).length) || Date.parse(entry.view.snoozedUntil ?? "") > clock;
     const typed = contextFor(entry);
     const unsupported = card.payload?.sitrep !== undefined || card.payload?.sitrepThread !== undefined;
     if (selector === "needs-action" && typed?.projection.foldedInto) {
@@ -256,13 +256,13 @@ export function HomeFeedEntries({ source }: { source: HomeFeedSource }) {
   const grouped = groupCards(matching, (entry) => {
     const record = contextFor(entry)?.record;
     const group = record && cardGroup(record);
-    return group ? JSON.stringify([entry.modelScope ?? entry.source.sourceId, group]) : undefined;
+    return group ? JSON.stringify([homeGroupScope(entry.source.sourceId, entry.modelScope), group]) : undefined;
   }, (entry) => { const record = contextFor(entry)?.record; return !!record && !isClosed(record); });
   const priority = orderPriority(grouped.map((row) => {
     const members = row.kind === "card" ? [row.item] : row.items;
     const pinned = members.map((entry) => { const context = contextFor(entry); return !!context && !!cardPriority(context.record, context.projection.state?.priority); });
     const first = members[0]; const firstRecord = first && contextFor(first)?.record; const group = firstRecord && cardGroup(firstRecord);
-    const flagged = row.kind === "group" && group ? groupPriorityFlag(snapshot?.sitrep?.groupPriority?.groups[group], pinned) : pinned.some(Boolean);
+    const flagged = row.kind === "group" && group && first ? groupPriorityFlag(contextFor(first)?.owner.groupPriority?.groups[group], pinned) : pinned.some(Boolean);
     return { value: row, flagged, blocker: members.some((entry) => { const context = contextFor(entry); return !!context && (!!context.record.blocks || !!context.waiting?.unblockWeight); }) };
   }));
   const navigation = [...priority.priority, ...priority.rest];
@@ -373,7 +373,7 @@ export function HomeFeedEntries({ source }: { source: HomeFeedSource }) {
           const first = row.items[0]; const record = first && contextFor(first)?.record; const name = record && cardGroup(record);
           if (!first || !name) throw new Error("Invalid grouped Home card");
           const open = expandedGroups.has(row.name);
-          const pinned = groupPriorityFlag(snapshot?.sitrep?.groupPriority?.groups[name], row.items.map((entry) => { const context = contextFor(entry); return !!context && !!cardPriority(context.record, context.projection.state?.priority); }));
+          const pinned = groupPriorityFlag(contextFor(first)?.owner.groupPriority?.groups[name], row.items.map((entry) => { const context = contextFor(entry); return !!context && !!cardPriority(context.record, context.projection.state?.priority); }));
           return <section key={row.name} aria-label={`Card group ${name}`} className="space-y-2 rounded-xl border border-border p-2">
             <div className="flex flex-wrap items-center gap-2"><button type="button" className="min-h-10 grow px-2 text-left text-sm font-medium" aria-expanded={open} onClick={() => setExpandedGroups((previous) => { const next = new Set(previous); if (next.has(row.name)) next.delete(row.name); else next.add(row.name); return next; })}>{name} · {row.items.length} cards</button><button type="button" disabled={viewBusy} aria-pressed={pinned} className="min-h-10 rounded-lg border border-border px-2 text-xs disabled:opacity-50" onClick={() => void saveGroup(first, name, !pinned)}>{pinned ? "Clear private group priority" : "Mark private group priority"}</button></div>
             {open && <div className="grid gap-2 pl-2">{row.items.map(navigationCard)}</div>}

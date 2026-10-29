@@ -39,7 +39,7 @@ export function typedContexts(entries: readonly HomeFeedEntry[], fallback: Sitre
         ...base,
         answers: [...base.answers, ...scopeOwner.answers.filter((answer) => (answer.card.kind !== record.kind || answer.card.id !== record.id) && refs.get(`${answer.card.kind}:${answer.card.id}`) === 1)],
         states: mergeSitrepStates([...base.states, ...scopeOwner.states.filter((state) => (state.kind !== record.kind || state.id !== record.id) && refs.get(`${state.kind}:${state.id}`) === 1)], "provided"),
-        groupPriority: fallback?.groupPriority ?? base.groupPriority ?? scopeOwner.groupPriority,
+        groupPriority: entry.owner?.groupPriority,
       };
       const projection = projectSitrepCard(record, relationRecords, owner, now);
       if (!entry.state.card.needsResponse) { projection.request = false; projection.needsAction = false; if (projection.attention === "needs-action") projection.attention = "information"; }

@@ -11,6 +11,7 @@
 
 - TC-2206: Keep the focused question issuance and draft when a newer issuance replaces it in the feed; refresh the original answer and outcome from storage until the user navigates away. Next card advances through the full list. Feed subscriptions reconnect using the current hook service after native session restoration.
 - TC-2208: The portable Home model rejects owner-private fields in output wrappers and same-key immutable history rewrites, retains deleted-source answers without restoring dispatch authority, and scopes answers by kind and ID. Accepted ISO offsets now compare as instants. Original timestamp fields and exact issuance identity are retained, along with first-answer ties, deterministic state ties, inclusive issuance/exclusive expiry, and provided-order state deltas.
+- TC-2208: Keep approval focus and consent-link interactions bound to their original issuance until explicit navigation; retain archive-only answers, threads, claims, and commands in History; isolate group priority by registered source or validated archive origin.
 
 ## 0.11.3
 

@@ -258,7 +258,7 @@ test("group priority persists privately without rewriting another group's decisi
   await fixture.source.setGroupPriority(first, "Synthetic rollout", true);
   await fixture.source.setGroupPriority(second, "Other rollout", true);
   await fixture.source.setGroupPriority(first, "Synthetic rollout", false);
-  const groups = (await fixture.source.load()).sitrep?.groupPriority?.groups;
+  const groups = (await fixture.source.load()).entries.find((entry) => entry.source.sourceId === first.source.sourceId && entry.state.card.cardId === first.state.card.cardId && entry.state.card.revision === first.state.card.revision && entry.state.card.issuanceId === first.state.card.issuanceId)?.owner?.groupPriority?.groups;
   expect(groups?.["Synthetic rollout"]?.on).toBe(false);
   expect(groups?.["Other rollout"]?.on).toBe(true);
   expect(value(await fixture.responses.query("SELECT response_id FROM feed_responses")).rows).toEqual([]);

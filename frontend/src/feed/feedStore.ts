@@ -145,11 +145,10 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
     async load(focused) {
       assertAccount();
       await ensureSchema();
-      const [agentResult, eventResult, savedDefault, privateState] = await Promise.all([
+      const [agentResult, eventResult, savedDefault] = await Promise.all([
         registry.query("SELECT agent_id,agent_did,label,output_resource,response_resource,authorization_json FROM feed_agents ORDER BY agent_id", []),
         registry.query("SELECT agent_id,card_id,revision,issuance_id,kind,created_at,snoozed_until,seq FROM feed_view_events ORDER BY seq", []),
         getSetting(tcw, HOME_FEED_DEFAULT_KEY),
-        readPrivateOwnerState(registry),
       ]);
       // The node authorizes the full resource but stores by basename. Reject
       // aliases here instead of accidentally merging two agents' databases.
@@ -177,6 +176,7 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
       });
       connect();
       const imported = await archives.load(sources);
+      const privateState = await readPrivateOwnerState(registry, imported.scopes);
       const views = new Map<string, FeedOwnerView>();
       const events = new Map<string, HomeFeedViewEvent[]>();
       for (const row of unwrap(eventResult).rows) {
@@ -228,12 +228,14 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
             responses: histories.get(key) ?? [],
             viewEvents: events.get(key) ?? [],
           };
-          return typedHistory.enrich(entry, output, responses, histories.get(key) ?? [], privateState.byCard, imported);
+          return typedHistory.enrich(entry, output, responses, histories.get(key) ?? [], privateState.byCard, imported, privateState.groupPriorities);
         };
         const loadedEntries = await Promise.all(cards.map((card) => loadCard(card)));
         loadedEntries.push(...await Promise.all(storedCards.filter((card) => {
           const key = ownerCardKey(source.sourceId, card);
-          return !latestKeys.has(key) && (card.payload?.sitrepThread !== undefined || histories.has(key) || privateState.byCard[key] !== undefined || events.get(key)?.some((event) => event.kind === "snoozed"));
+          const owner = imported.owners.get(key);
+          const archivedHistory = !!(owner && (owner.answers.length || owner.claimDecisions.length || owner.threads.length || owner.states.length || owner.outboundNotes?.length || owner.heldNotes?.length || owner.deliveries.length)) || !!imported.historicalCommands.get(key)?.length;
+          return !latestKeys.has(key) && (archivedHistory || card.payload?.sitrepThread !== undefined || histories.has(key) || privateState.byCard[key] !== undefined || events.get(key)?.some((event) => event.kind === "snoozed"));
         }).map((card) => loadCard(card))));
         const entries: HomeFeedEntry[] = [];
         const historicalEntries: HomeFeedEntry[] = [];
@@ -307,7 +309,6 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
       const all = new Map(perAgent.flatMap((group) => group.entries).map((entry) => [ownerCardKey(entry.source.sourceId, entry.state.card), entry]));
       if (focusedEntry) all.set(ownerCardKey(focusedEntry.source.sourceId, focusedEntry.state.card), focusedEntry);
       const sitrep = combineOwnerData([...all.values()].flatMap((entry) => entry.owner ? [entry.owner] : []));
-      if (privateState.groupPriority) sitrep.groupPriority = { groups: { ...sitrep.groupPriority?.groups, ...privateState.groupPriority.groups }, updatedAt: privateState.groupPriority.updatedAt };
       const defaultSelector: FeedSelector = savedDefault === "information" || savedDefault === "both" ? savedDefault : "needs-action";
       return { entries: perAgent.flatMap((group) => group.entries), historicalEntries: perAgent.flatMap((group) => group.historicalEntries), settings: { defaultSelector }, sitrep, relatedEntries: [...related.values()], ...(focusedEntry ? { focusedEntry } : {}), ...(streamError ? { connectionError: `Live updates unavailable: ${streamError.message}` } : {}) };
     },
