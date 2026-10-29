@@ -1993,8 +1993,10 @@ async function githubReleases(t, releases = {}) {
   const requests = [];
   const server = createServer((request, response) => {
     requests.push({ url: request.url, authorization: request.headers.authorization });
-    const tagName = decodeURIComponent(/^\/repos\/TinyCloudLabs\/tinychat\/releases\/tags\/(.+)$/.exec(request.url)?.[1] ?? '');
-    const status = request.url.startsWith('/repos/TinyCloudLabs/tinychat/releases/tags/') ? releases[tagName] ?? 404 : 400;
+    // The whole tag is ONE route parameter: a literal slash in it is a different route and GitHub answers 404 there.
+    const encoded = /^\/repos\/TinyCloudLabs\/tinychat\/releases\/tags\/([^/]+)$/.exec(request.url)?.[1];
+    const tagName = encoded === undefined ? '' : decodeURIComponent(encoded);
+    const status = encoded === undefined ? 404 : releases[tagName] ?? 404;
     response.writeHead(status, { 'content-type': 'application/json' });
     response.end(JSON.stringify(status === 200 ? { tag_name: tagName } : { message: status === 404 ? 'Not Found' : 'error' }));
   });
@@ -2073,6 +2075,7 @@ test('a beta tag on another commit that has a GitHub Release fails and versions 
   const result = await runAsync('version.mjs', ['--root', root], github.env);
   assert.equal(result.status, 1);
   assert.match(result.stderr, /@tinychat\/frontend@0\.2\.0-beta\.0 .*GitHub Release/);
+  assert.deepEqual(github.requests.map(request => request.url), ['/repos/TinyCloudLabs/tinychat/releases/tags/%40tinychat%2Ffrontend%400.2.0-beta.0']);
   assert.equal(git(root, 'rev-parse', 'HEAD'), head);
 });
 

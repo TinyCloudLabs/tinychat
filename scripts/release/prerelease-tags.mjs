@@ -23,7 +23,8 @@ export async function githubReleaseExists(tag, env = process.env) {
   const cannot = reason => new Error(`Could not confirm whether GitHub has a Release for ${tag}: ${reason}`);
   if (!token || !repository) throw cannot('GH_TOKEN and GITHUB_REPOSITORY are required');
   const api = (env.GITHUB_API_URL || 'https://api.github.com').replace(/\/+$/, '');
-  const path = tag.split('/').map(encodeURIComponent).join('/');
+  // The whole tag is one route parameter, so a scoped tag's slash is sent as %2F.
+  const path = encodeURIComponent(tag);
   let response;
   try {
     response = await fetch(`${api}/repos/${repository}/releases/tags/${path}`, {
