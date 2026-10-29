@@ -12,8 +12,6 @@ import {
   CALENDAR_AUTOJOIN_MUTATION_LIMIT,
   CALENDAR_AUTOJOIN_PATHS,
   CONNECTOR_COMPANION_LIMIT,
-  CONNECTOR_MEETINGS_LIMIT,
-  CONNECTOR_MEETINGS_PATHS,
   DELEGATION_LIMIT,
   GLOBAL_LIMIT,
   GlobalBucketRouteCounter,
@@ -244,7 +242,6 @@ describe("shared-key interim headroom", () => {
     expect(GLOBAL_LIMIT).toBe(120 * SHARED_KEY_HEADROOM);
     expect(VERIFICATION_LIMIT).toBe(600 * SHARED_KEY_HEADROOM);
     expect(CONNECTOR_COMPANION_LIMIT).toBe(600 * SHARED_KEY_HEADROOM);
-    expect(CONNECTOR_MEETINGS_LIMIT).toBe(600 * SHARED_KEY_HEADROOM);
     expect(TRANSCRIBER_LIMIT).toBe(600 * SHARED_KEY_HEADROOM);
     expect(PRIVATE_CLOUD_TRANSCRIPTION_LIMIT).toBe(600 * SHARED_KEY_HEADROOM);
     expect(ASSEMBLYAI_HOSTED_UPLOAD_LIMIT).toBe(480 * SHARED_KEY_HEADROOM);
@@ -311,7 +308,6 @@ describe("shared-key interim headroom", () => {
       ["GET", "/api/connectors/google/oauth/start", "googleOAuth"],
       ["GET", "/API/Connectors/Google/OAuth/callback", "googleOAuth"],
       ["GET", "/api/connectors/google/oauth-anything", "global"],
-      ["GET", "/api/connectors/meetings", "connectorMeetings"],
       ["GET", "/api/connectors/webhooks/pending", "connectorCompanion"],
       ["GET", "/API/DELEGATIONS/status", "delegation"],
       ["GET", "/API/SIGNATURE/x", "verification"],
@@ -458,26 +454,6 @@ describe("shared-key interim headroom", () => {
       expect(rateLimitHeader(status)).toEqual({ limit: CALENDAR_AUTOJOIN_LIMIT, remaining: CALENDAR_AUTOJOIN_LIMIT - 1 });
     });
   });
-
-  it("connector meetings list polls stay in their own bucket, off the global one", async () => {
-    expect(CONNECTOR_MEETINGS_PATHS).toEqual(["/api/connectors/meetings"]);
-    const app = buildApp();
-    app.get("/api/connectors/meetings", (_req, res) => res.json({ ok: true }));
-    await withServer(app, async (port) => {
-      const base = `http://localhost:${port}`;
-      let last: Response | undefined;
-      for (let i = 0; i < 200; i++) {
-        last = await realFetch(`${base}/api/connectors/meetings`);
-        expect(last.status).toBe(200);
-      }
-      expect(rateLimitHeader(last!)).toEqual({
-        limit: CONNECTOR_MEETINGS_LIMIT,
-        remaining: CONNECTOR_MEETINGS_LIMIT - 200,
-      });
-      const manifest = await realFetch(`${base}/api/manifest`);
-      expect(rateLimitHeader(manifest)).toEqual({ limit: GLOBAL_LIMIT, remaining: GLOBAL_LIMIT - 1 });
-    });
-  });
 });
 
 describe("global bucket route counter", () => {
@@ -551,7 +527,6 @@ describe("per-session keying", () => {
       global: 120,
       verification: 600,
       connectorCompanion: 600,
-      connectorMeetings: 600,
       transcriber: 600,
       privateCloudTranscription: 600,
       hostedUpload: 480,

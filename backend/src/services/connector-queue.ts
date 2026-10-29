@@ -113,7 +113,10 @@ export const SCHEMA_MISSING = "schema_missing";
 export const SPACE_NOT_HOSTED = "space_not_hosted";
 export const AWAITING_TRANSCRIPT = "awaiting_transcript";
 export const LEDGER_UNAVAILABLE = "ledger_unavailable";
-/** The server-side content sink was unreachable — infrastructure-state, not item-state. */
+/**
+ * Error class left on items by the retired server-side content sink. Kept non-burning so a
+ * leftover item carrying it never burns an attempt (infrastructure-state, not item-state).
+ */
 export const CONTENT_STORE_UNAVAILABLE = "content_store_failed";
 
 /** User-state, ordering-state and infrastructure-state — none of them is item-state. */
@@ -483,7 +486,7 @@ export class ConnectorQueue {
         // Deliberately NOT unref'd: the ack waits on this flush.
         setTimeout(() => {
           // The batch is retired when its flush ACQUIRES THE LOCK, not when this timer fires —
-          // see `flushBatch`. That is W1's burst-ack amendment.
+          // see `flushBatch`. That is the burst-ack amendment.
           this.withLock(key, () => this.flushBatch(source, address, batch!)).then(
             resolve,
             reject,
@@ -866,8 +869,8 @@ export class ConnectorQueue {
   /**
    * F005: the accepted batch flushes only if `clear()` has not superseded it in the meantime.
    *
-   * W1 BURST-ACK AMENDMENT (backend-ingest plan §5.3 — the one named exception to "reuse the
-   * shipped enqueue path verbatim"; findings §2.5 is the number to beat).
+   * BURST-ACK AMENDMENT (the one named exception to "reuse the shipped enqueue path verbatim";
+   * findings §2.5 is the number to beat).
    *
    * The batch is retired from `batches` HERE — synchronously, at the moment its flush wins the
    * per-address lock — rather than when its 250 ms timer fired. Retiring at timer-fire is what
@@ -900,7 +903,7 @@ export class ConnectorQueue {
 
     if (batch.superseded) {
       // No silent drops: the count is logged, and the caller's result says `dropped` — which
-      // the ingest route already answers with the same 202 a queued delivery gets (§4.6).
+      // the webhook delivery route already answers with the same 202 a queued delivery gets (§4.6).
       logQueueWarn(
         `op=flush-superseded source=${source} dropped=${batch.entries.length} ` +
           `aid=${hashed(normalizeWebhookAddress(address))}`,

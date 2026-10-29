@@ -25,6 +25,8 @@ import {
   pendingQueueKey,
 } from "../services/connector-queue.js";
 import { _resetWebhookTokenState } from "../services/webhook-tokens.js";
+import { BackendStorageLane } from "../services/backend-storage-lane.js";
+import { KvCredentialRowStore } from "../services/credential-store.js";
 
 const ORIGINAL_ENV = { ...process.env };
 const SALT = Buffer.from("queue-salt-queue-salt-queue-1234").toString("base64");
@@ -288,6 +290,44 @@ describe("enqueue under concurrency", () => {
     );
 
     expect(node.maxConcurrent).toBe(1);
+  });
+
+  test("an injected storageLane serializes the queue against another backend writer on ONE lane", async () => {
+    // Carried over from the removed fetch-worker suite, which proved this against the (removed)
+    // content store: a queue settle for one user and another component's write for a second user
+    // must not hit the shared backend space concurrently — TinyCloud drops the second response.
+    const node = new FakeNode();
+    const shared = new BackendStorageLane();
+    const asNode = node as unknown as TinyCloudNode;
+    const queue = new ConnectorQueue(asNode, { jitter: () => 0, flushWindowMs: 1, storageLane: shared });
+    const rows = new KvCredentialRowStore(asNode, shared);
+    const stamp = new Date(T0).toISOString();
+    const row = (address: string) => ({
+      source: SOURCE, address, kind: "oauth" as const, ciphertext: "ct", wrappedDEK: "dek",
+      createdAt: stamp, rotatedAt: stamp, lastUsedAt: stamp,
+    });
+    const other = "0xb1b1b10000000000000000000000000000001111";
+
+    await Promise.all([
+      queue.enqueue(SOURCE, LOWER, { meetingId: "mA1", kind: "transcript" }),
+      rows.write(row(LOWER)),
+      queue.enqueue(SOURCE, other, { meetingId: "mB1", kind: "transcript" }),
+      rows.write(row(other)),
+    ]);
+
+    expect(node.maxConcurrent).toBe(1);
+
+    // Control: the same interleaving on two private lanes does overlap, so the assertion above
+    // is about the shared lane and not about the fake node.
+    const split = new FakeNode();
+    const splitNode = split as unknown as TinyCloudNode;
+    const q2 = new ConnectorQueue(splitNode, { jitter: () => 0, flushWindowMs: 1, storageLane: new BackendStorageLane() });
+    const r2 = new KvCredentialRowStore(splitNode, new BackendStorageLane());
+    await Promise.all([
+      q2.enqueue(SOURCE, LOWER, { meetingId: "mA1", kind: "transcript" }),
+      r2.write(row(LOWER)),
+    ]);
+    expect(split.maxConcurrent).toBeGreaterThan(1);
   });
 
   test("an invalid meeting id or kind never reaches KV", async () => {
@@ -588,6 +628,31 @@ describe("error classes", () => {
     expect((await queue.dead(SOURCE, ADDRESS))[0]!.lastError).toBe(
       "meeting_not_found",
     );
+  });
+
+  test("a failure code is sanitized before it is stored: only [A-Za-z0-9_-], so no space, newline or punctuation, at most 64 characters", async () => {
+    // Carried over from the removed fetch-worker suite ('a dead-lettered item's error code never
+    // carries payload or credential text'). `lastError` is also interpolated into public logs, so
+    // a newline in it would forge a log line.
+    const { queue } = createQueue();
+    for (const id of ["M-SECRET", "M-LONG"]) {
+      await queue.enqueue(SOURCE, ADDRESS, { meetingId: id, kind: "transcript" });
+    }
+
+    await queue.fail(SOURCE, ADDRESS, "M-SECRET", "transcript", "boom: token ff-access-token-AAAA\nforged");
+    await queue.fail(SOURCE, ADDRESS, "M-LONG", "transcript", "x".repeat(200));
+
+    const items = await queue.list(SOURCE, ADDRESS);
+    const secret = items.find((item) => item.meetingId === "M-SECRET")!;
+    const long = items.find((item) => item.meetingId === "M-LONG")!;
+    expect(secret.lastError).toBe("boomtokenff-access-token-AAAAforged".slice(0, 64));
+    expect(secret.lastError).toMatch(/^[A-Za-z0-9_-]+$/);
+    expect(long.lastError).toBe("x".repeat(64));
+    // A code with nothing usable left collapses to a fixed code rather than an empty string.
+    await queue.enqueue(SOURCE, ADDRESS, { meetingId: "M-EMPTY", kind: "transcript" });
+    await queue.fail(SOURCE, ADDRESS, "M-EMPTY", "transcript", " \n:: ");
+    const empty = (await queue.list(SOURCE, ADDRESS)).find((item) => item.meetingId === "M-EMPTY")!;
+    expect(empty.lastError).toBe("unknown_error");
   });
 
   test("a second-write failure during settle preserves pending and dead, emits no success log, and retries without duplication", async () => {

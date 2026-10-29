@@ -1,7 +1,6 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import express from "express";
 
 import {
   CREDENTIAL_MASTER_ENV,
@@ -12,15 +11,6 @@ import {
   type CredentialRowStore,
   type CredentialSecret,
 } from "../services/credential-store.js";
-import {
-  createPkcePair,
-  refreshOAuthCredentialIfExpiring,
-} from "../services/fireflies-oauth.js";
-import {
-  createConnectorCredentialRouter,
-  type ConnectorOAuthPort,
-} from "../routes/connector-credentials.js";
-import type { IngestMode } from "../services/ingest-mode.js";
 
 /**
  * W2 — credential store + custody flows (backend-ingest plan §6, §8.1 W2; §8.2 delta item 3;
@@ -78,109 +68,6 @@ function captureLogs(): { lines: string[]; restore: () => void } {
       console.error = originalError;
     },
   };
-}
-
-class FakeOAuth implements ConnectorOAuthPort {
-  readonly calls: string[] = [];
-  revokeFails = false;
-  exchangeFails = false;
-
-  authorizeUrl(input: { state: string; challenge: string; source: string }): string {
-    return (
-      `https://api.fireflies.ai/authorize?client_id=cid&response_type=code` +
-      `&state=${input.state}&code_challenge=${input.challenge}&code_challenge_method=S256`
-    );
-  }
-
-  async exchangeCode(input: {
-    code: string;
-    verifier: string;
-    source: string;
-  }): Promise<CredentialSecret> {
-    this.calls.push(`exchange:${input.code}:${input.verifier}`);
-    if (this.exchangeFails) throw new Error("upstream token endpoint 500");
-    return oauthSecret(SECRET_A, REFRESH_A);
-  }
-
-  async revoke(_secret: CredentialSecret): Promise<void> {
-    this.calls.push("revoke");
-    if (this.revokeFails) throw new Error("upstream revoke 500");
-  }
-}
-
-interface RouteHarness {
-  app: express.Express;
-  rows: InMemoryCredentialRowStore;
-  credentials: CredentialStore;
-  oauth: FakeOAuth;
-  cohort: Set<string>;
-}
-
-function routeHarness(options: { address?: string } = {}): RouteHarness {
-  const rows = new InMemoryCredentialRowStore();
-  const oauth = new FakeOAuth();
-  const credentials = new CredentialStore(rows, {
-    upstreamRevoker: (secret) => oauth.revoke(secret),
-  });
-  const cohort = new Set<string>([ADDRESS_A]);
-
-  const app = express();
-  app.use(express.json({ limit: "1mb" }));
-  app.use((req, _res, next) => {
-    req.user = { address: options.address ?? ADDRESS_A };
-    next();
-  });
-  app.use(
-    "/api/connectors/credentials",
-    createConnectorCredentialRouter({
-      credentials,
-      oauth,
-      modes: {
-        mode: async (address: string): Promise<IngestMode> =>
-          cohort.has(address.toLowerCase()) ? "backend" : "browser",
-      },
-    }),
-  );
-
-  return { app, rows, credentials, oauth, cohort };
-}
-
-async function withServer<T>(
-  app: express.Express,
-  fn: (base: string) => Promise<T>,
-): Promise<T> {
-  const server = await new Promise<import("http").Server>((resolve_) => {
-    const instance = app.listen(0, () => resolve_(instance));
-  });
-  const { port } = server.address() as { port: number };
-  try {
-    return await fn(`http://localhost:${port}`);
-  } finally {
-    await new Promise<void>((resolve_, reject) =>
-      server.close((error) => (error ? reject(error) : resolve_())),
-    );
-  }
-}
-
-async function call(
-  base: string,
-  path: string,
-  method: string,
-  body?: unknown,
-): Promise<{ status: number; body: any; text: string }> {
-  const response = await fetch(`${base}${path}`, {
-    method,
-    headers: body === undefined ? {} : { "content-type": "application/json" },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-  });
-  const text = await response.text();
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    parsed = null;
-  }
-  return { status: response.status, body: parsed as any, text };
 }
 
 beforeEach(() => {
@@ -550,6 +437,8 @@ describe("CredentialStore", () => {
     expect(joined).toContain("op=credential-store");
     expect(joined).toContain("op=credential-rotate");
     expect(joined).toContain("op=credential-revoke");
+    // The address is still THERE — hashed, so an operator can correlate without holding it.
+    expect(joined).toMatch(/aid=[0-9a-f]{16}/);
   });
 
   test("[delta-03] there is no list-all-credentials API, and no route module retrieves a credential", () => {
@@ -573,11 +462,7 @@ describe("CredentialStore", () => {
   });
 
   test("[delta-03] custody stays out-of-band: the credential modules mint no delegation (AP 3)", () => {
-    for (const relative of [
-      "../services/credential-store.ts",
-      "../services/fireflies-oauth.ts",
-      "../routes/connector-credentials.ts",
-    ]) {
+    for (const relative of ["../services/credential-store.ts"]) {
       const contents = readFileSync(resolve(import.meta.dir, relative), "utf8");
       for (const forbidden of ["createDelegation", "attenuate", "delegationStore", "issueDelegation"]) {
         expect({ relative, forbidden, present: contents.includes(forbidden) }).toEqual({
@@ -590,242 +475,41 @@ describe("CredentialStore", () => {
   });
 });
 
-// ── The obtain flow (§6.2, branch b1 — OAuth) ────────────────────────
-
-describe("connector credential routes", () => {
-  test("[delta-03] the OAuth connect flow puts the credential straight into the backend store and never returns it", async () => {
-    const harness = routeHarness();
-
-    await withServer(harness.app, async (base) => {
-      const started = await call(base, `/api/connectors/credentials/${SOURCE}/oauth/start`, "POST");
-      expect(started.status).toBe(200);
-      expect(started.body.authorizeUrl).toContain("code_challenge_method=S256");
-      expect(typeof started.body.state).toBe("string");
-      // The PKCE verifier is the backend's half of the exchange — it never rides the response.
-      expect(started.text).not.toContain("verifier");
-
-      const done = await call(
-        base,
-        `/api/connectors/credentials/${SOURCE}/oauth/callback`,
-        "POST",
-        { code: "auth-code-1", state: started.body.state },
-      );
-      expect(done.status).toBe(200);
-      expect(done.body.connected).toBe(true);
-      expect(done.text.includes(SECRET_A)).toBe(false);
-      expect(done.text.includes(REFRESH_A)).toBe(false);
-
-      const status = await call(base, `/api/connectors/credentials/${SOURCE}`, "GET");
-      expect(status.status).toBe(200);
-      expect(status.body.connected).toBe(true);
-      expect(status.body.kind).toBe("oauth");
-      expect(status.text.includes(SECRET_A)).toBe(false);
-      expect(status.text.includes("ciphertext")).toBe(false);
-    });
-
-    // It landed in the BACKEND store — not in any browser vault, and as ciphertext only.
-    expect(
-      await harness.credentials.getCredential(SOURCE, ADDRESS_A, "fetch-worker"),
-    ).toEqual(oauthSecret(SECRET_A, REFRESH_A));
-    expect(harness.rows.dump().includes(SECRET_A)).toBe(false);
-  });
-
-  test("[delta-03] a callback state minted for another address is refused", async () => {
-    const first = routeHarness({ address: ADDRESS_A });
-    let state = "";
-    await withServer(first.app, async (base) => {
-      const started = await call(base, `/api/connectors/credentials/${SOURCE}/oauth/start`, "POST");
-      state = started.body.state;
-    });
-
-    // Same process, a DIFFERENT session address replaying A's state.
-    const second = routeHarness({ address: ADDRESS_B });
-    second.cohort.add(ADDRESS_B);
-    await withServer(second.app, async (base) => {
-      const done = await call(
-        base,
-        `/api/connectors/credentials/${SOURCE}/oauth/callback`,
-        "POST",
-        { code: "auth-code-2", state },
-      );
-      expect(done.status).toBe(400);
-      expect(done.body.error).toBe("invalid_state");
-    });
-    expect(await second.credentials.getCredential(SOURCE, ADDRESS_B, "fetch-worker")).toBeNull();
-  });
-
-  test("[delta-03] a non-cohort address gets no credential surface at all", async () => {
-    const harness = routeHarness({ address: ADDRESS_B });
-
-    await withServer(harness.app, async (base) => {
-      for (const [path, method] of [
-        [`/api/connectors/credentials/${SOURCE}/oauth/start`, "POST"],
-        [`/api/connectors/credentials/${SOURCE}`, "GET"],
-        [`/api/connectors/credentials/${SOURCE}`, "DELETE"],
-      ] as const) {
-        const response = await call(base, path, method);
-        expect({ path, method, status: response.status }).toEqual({
-          path,
-          method,
-          status: 404,
-        });
-      }
-    });
-  });
-
-  test("[delta-03] disconnect revokes upstream and deletes; an upstream failure answers explicitly", async () => {
-    const harness = routeHarness();
-    await harness.credentials.store({
-      source: SOURCE,
-      address: ADDRESS_A,
-      secret: oauthSecret(SECRET_A),
-    });
-
-    harness.oauth.revokeFails = true;
-    await withServer(harness.app, async (base) => {
-      const failed = await call(base, `/api/connectors/credentials/${SOURCE}`, "DELETE");
-      expect(failed.status).toBe(502);
-      expect(failed.body.error).toBe("upstream_revoke_failed");
-      expect(failed.body.deleted).toBe(true);
-      expect(failed.text.includes(SECRET_A)).toBe(false);
-    });
-    expect(await harness.rows.read(SOURCE, ADDRESS_A)).toBeNull();
-
-    // The clean path.
-    await harness.credentials.store({
-      source: SOURCE,
-      address: ADDRESS_A,
-      secret: oauthSecret(SECRET_A),
-    });
-    harness.oauth.revokeFails = false;
-    await withServer(harness.app, async (base) => {
-      const ok = await call(base, `/api/connectors/credentials/${SOURCE}`, "DELETE");
-      expect(ok.status).toBe(200);
-      expect(ok.body.deleted).toBe(true);
-      expect(ok.body.upstreamRevoked).toBe(true);
-    });
-    expect(harness.oauth.calls.filter((c) => c === "revoke")).toHaveLength(2);
-  });
-});
-
-// ── Wiring: the surface exists only where it is supposed to ──────────
+// ── Boot wiring: the custody master is validated at boot, not at first use ──────────────────
+//
+// Carried over from the removed "index wiring" test, which pinned this line together with the
+// credential-router mount that no longer exists. Calendar autojoin still depends on it.
 
 describe("index wiring", () => {
-  test("[delta-03] the credential mount is flag-gated and session-authenticated", () => {
+  test("[delta-03] the custody master is validated at boot, under the Google Meet OAuth gate", () => {
     const index = readFileSync(resolve(import.meta.dir, "../index.ts"), "utf8");
-    const mount = index.indexOf('"/api/connectors/credentials"');
-    expect(mount).toBeGreaterThan(0);
-
-    // Dark by default: the mount lives inside a `backendIngestEnabled()` guard...
-    const guard = index.lastIndexOf("if (backendIngestEnabled())", mount);
-    expect(guard).toBeGreaterThan(0);
-    // ...and the very next thing after the path is the session auth middleware.
-    expect(index.slice(mount, mount + 200)).toContain("authMiddleware");
-    // The custody master is validated at boot, not at first use.
-    expect(index).toContain("validateCredentialCustodyConfig(process.env)");
-  });
-
-  test("[delta-03] the fetch worker reads credentials through the REFRESHING lookup, not the bare store", () => {
-    const index = readFileSync(resolve(import.meta.dir, "../index.ts"), "utf8");
-    // §6.2 "rotate": under branch b1 the access token expires as a matter of routine, so the
-    // worker must rotate before use. Handing it `credentials: credentialStore` stalls a cohort
-    // user's ingest permanently at the first expiry.
-    const worker = index.slice(
-      index.indexOf("new ConnectorFetchWorker({"),
-      index.indexOf("retention: contentStore"),
-    );
-    expect(worker).toMatch(
-      /credentials: createRefreshingCredentialLookup\(\{[\s\S]{0,200}store: credentialStore/,
-    );
-    // The bare store is still the ROUTER's collaborator (obtain/status/teardown) — but never the
-    // worker's, which is the one path that must not present an expired token.
-    expect(worker).not.toMatch(/credentials: credentialStore,/);
+    const gate = index.indexOf("if (googleMeetOAuthEnabled()) {");
+    const call = index.indexOf("validateCredentialCustodyConfig(process.env)");
+    expect(gate).toBeGreaterThan(0);
+    expect(call).toBeGreaterThan(gate);
+    expect(index.slice(gate, call)).toContain("process.env.CONNECTOR_CREDENTIAL_MASTER");
   });
 });
 
-// ── Rotation: OAuth refresh is automatic (§6.2 "rotate") ─────────────
+// ── Revoke is idempotent: carried over from the removed teardown suite's second-call test ────
 
-describe("automatic refresh-token rotation", () => {
-  test("[delta-03] an expiring OAuth credential is refreshed and re-stored before use; a fresh one is left alone", async () => {
-    let clock = Date.parse("2026-08-10T12:00:00.000Z");
+describe("CredentialStore revoke idempotence", () => {
+  test("[delta-12] a second revoke is clean: nothing left, no upstream call, never an error", async () => {
     const rows = new InMemoryCredentialRowStore();
-    const store = new CredentialStore(rows, { now: () => clock });
-    const refreshes: CredentialSecret[] = [];
-    const client = {
-      refresh: async (secret: CredentialSecret) => {
-        refreshes.push(secret);
-        return {
-          kind: "oauth" as const,
-          accessToken: "ff-access-token-AAAA-refreshed",
-          refreshToken: REFRESH_A,
-          expiresAt: new Date(clock + 3_600_000).toISOString(),
-        };
-      },
-    };
-
-    // Fresh: nothing is called, nothing is written.
-    await store.store({
-      source: SOURCE,
-      address: ADDRESS_A,
-      secret: {
-        kind: "oauth",
-        accessToken: SECRET_A,
-        refreshToken: REFRESH_A,
-        expiresAt: new Date(clock + 3_600_000).toISOString(),
+    let upstreamCalls = 0;
+    const store = new CredentialStore(rows, {
+      upstreamRevoker: async () => {
+        upstreamCalls += 1;
       },
     });
-    const untouched = await refreshOAuthCredentialIfExpiring({
-      store,
-      client,
-      source: SOURCE,
-      address: ADDRESS_A,
-      now: () => clock,
-    });
-    expect(refreshes).toHaveLength(0);
-    expect((untouched as any).accessToken).toBe(SECRET_A);
+    await store.store({ source: SOURCE, address: ADDRESS_A, secret: oauthSecret(SECRET_A) });
 
-    // Inside the skew window: refreshed, re-stored, and the OLD token is gone from the substrate.
-    clock += 3_500_000;
-    const rotated = await refreshOAuthCredentialIfExpiring({
-      store,
-      client,
-      source: SOURCE,
-      address: ADDRESS_A,
-      now: () => clock,
-    });
-    expect(refreshes).toHaveLength(1);
-    expect((rotated as any).accessToken).toBe("ff-access-token-AAAA-refreshed");
-    expect(await store.getCredential(SOURCE, ADDRESS_A, "fetch-worker")).toEqual(
-      (rotated as CredentialSecret),
-    );
-    expect(rows.dump().includes(SECRET_A)).toBe(false);
+    const first = await store.revoke(SOURCE, ADDRESS_A);
+    expect(first).toMatchObject({ deleted: true, upstreamRevoked: "ok" });
+    const again = await store.revoke(SOURCE, ADDRESS_A);
 
-    // Not connected is null, never a throw and never someone else's.
-    expect(
-      await refreshOAuthCredentialIfExpiring({
-        store,
-        client,
-        source: SOURCE,
-        address: ADDRESS_B,
-        now: () => clock,
-      }),
-    ).toBeNull();
-  });
-});
-
-// ── PKCE (branch b1 pre-req) ─────────────────────────────────────────
-
-describe("PKCE", () => {
-  test("[delta-03] the connect flow is auth-code + PKCE S256 with a fresh verifier per attempt", () => {
-    const first = createPkcePair();
-    const second = createPkcePair();
-
-    expect(first.method).toBe("S256");
-    expect(first.verifier).not.toBe(second.verifier);
-    expect(first.challenge).not.toBe(first.verifier);
-    // RFC 7636: 43-128 chars, unreserved alphabet.
-    expect(first.verifier.length).toBeGreaterThanOrEqual(43);
-    expect(first.verifier).toMatch(/^[A-Za-z0-9._~-]+$/);
-    expect(first.challenge).toMatch(/^[A-Za-z0-9_-]+$/);
+    expect(again).toEqual({ deleted: true, upstreamRevoked: "not_applicable", reason: "no_credential" });
+    expect(upstreamCalls).toBe(1);
+    expect(await rows.read(SOURCE, ADDRESS_A)).toBeNull();
   });
 });

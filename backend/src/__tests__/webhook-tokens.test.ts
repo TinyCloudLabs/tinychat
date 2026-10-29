@@ -1434,3 +1434,50 @@ describe("redactedErrorMessage (§6.3 public log discipline)", () => {
     expect(redactedErrorMessage(new Error(message))).toBe(message);
   });
 });
+
+// ── Moved from the removed connector-observability suite: the OPAQUE_LIKE default-deny pass ──
+// (byte-identical block below; only the three constants it uses are added here)
+
+const ADDRESS_A = "0x7d033300000000000000000000000000000073f2";
+
+/** Never a log line, never a response body, never a counter. */
+const SECRET_A = "ff-access-token-AAAA-1111";
+const MEETING_ID = "01JQZMEETINGIDAAAA0001";
+
+describe("W8 — the shared error redactor (anti-pattern 7)", () => {
+  test("[delta-09] an error message carrying a credential or a bare meeting id is redacted by shape, not by provenance", () => {
+    const redacted = redactedErrorMessage(
+      new Error(
+        `kv write failed for ${ADDRESS_A}/${MEETING_ID} using ${SECRET_A}`,
+      ),
+    );
+    expect(redacted).not.toContain(SECRET_A);
+    expect(redacted).not.toContain(MEETING_ID);
+    expect(redacted).not.toContain(ADDRESS_A);
+    expect(redacted).toContain("<address>");
+    expect(redacted).toContain("kv write failed");
+  });
+
+  test("[delta-09] a refresh token, an API key and a bare provider id are all redacted", () => {
+    for (const secretish of [
+      "ff-refresh-token-BBBB-2222",
+      "sk_live_51NxAbCdEfGhIjKlMnOpQr",
+      "01JQZMEETINGIDAAAA0001",
+      "8f14e45fceea167a5a36dedd4bea2543",
+    ]) {
+      expect(redactedErrorMessage(new Error(`upstream said ${secretish}`))).not.toContain(
+        secretish,
+      );
+    }
+  });
+
+  test("[delta-09] ordinary triage text still survives — a redactor nobody can read is a redactor nobody keeps", () => {
+    for (const message of [
+      "connection timeout waiting for node",
+      "ECONNREFUSED",
+      "rate limited, retry after 60",
+    ]) {
+      expect(redactedErrorMessage(new Error(message))).toBe(message);
+    }
+  });
+});

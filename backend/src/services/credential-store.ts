@@ -21,7 +21,6 @@ import {
   CREDENTIAL_ROW_COUNT_MAX_PAGES,
   CredentialRowCountError,
 } from "./credential-row-count.js";
-import { recordCredentialAudit } from "./ingest-observability.js";
 
 const { assertKvResult, withSessionRefresh } = serverPackage;
 const { isKvMissingKeyResult } = serverPackage as typeof serverPackage & {
@@ -29,12 +28,12 @@ const { isKvMissingKeyResult } = serverPackage as typeof serverPackage & {
 };
 
 /**
- * W2 — the per-user provider credential store (backend-ingest plan §6.2, §8.1 W2; §8.2 delta 3).
+ * The per-user provider credential store (§6.2, §8.2 delta 3). Its only consumer is the
+ * Calendar autojoin connection service (Google Calendar custody).
  *
- * THIS FILE IS ONE HALF OF A CONSCIOUS, OPERATOR-AUTHORIZED REVERSAL (plan §11): under the
- * shipped Option C the backend never holds a Fireflies credential at all. For cohort addresses
- * behind the dark `CONNECTOR_BACKEND_INGEST_ENABLED` flag it now does, so every property that
- * made the old invariant unnecessary has to be re-established explicitly here:
+ * THE BACKEND HOLDS A PROVIDER CREDENTIAL PER USER HERE, so every property that
+ * made the old Option-C invariant ("the backend holds no credential") unnecessary has to be
+ * established explicitly:
  *
  *  - **Isolated.** One row per `(source, address)`. There is no list/scan/enumerate surface, in
  *    the class or in the row-store port beneath it: retrieval is tenant-scoped *by construction*,
@@ -66,7 +65,7 @@ export const CREDENTIAL_MASTER_ENV = "CONNECTOR_CREDENTIAL_MASTER";
  * The rotation grace env, mirroring `WEBHOOK_HMAC_MASTER_PREV` (webhook-tokens.ts:199). Without
  * it, rotating `CONNECTOR_CREDENTIAL_MASTER` immediately makes every previously-sealed envelope
  * unreadable — `getCredential` and `revoke` both throw "envelope is unreadable", so a disconnect
- * cannot revoke upstream and the fetch worker cannot open its credential. Present-and-weak throws
+ * cannot revoke upstream and the Calendar autojoin connection cannot open its credential. Present-and-weak throws
  * for the same reason `_PREV` does on the HMAC side: the grace window must not be the weak-key
  * window.
  */
@@ -138,10 +137,10 @@ export interface CredentialRowStore {
 }
 
 /**
- * Why the retrieve path names its caller: §6.2 restricts `getCredential` to the fetch
- * worker / teardown paths, with an address that came from the signed token->address lookup. The
+ * Why the retrieve path names its caller: §6.2 restricts `getCredential` to named
+ * paths (Calendar autojoin), with an address that came from the signed token->address lookup. The
  * purpose is required, so every call site says out loud which path it is — and
- * `connector-credentials.test.ts` asserts no route module calls it at all.
+ * `credential-store.test.ts` asserts no route module calls it at all.
  */
 export type CredentialAccessPurpose =
   | "fetch-worker"
@@ -339,19 +338,16 @@ function hashed(value: string): string {
 }
 
 /**
- * Every credential op logs through here or through {@link warnCredential}, so W8's audit taps the
- * loggers rather than the call sites (plan §8.1 W8: *credential-op audit*). A later op that logs
- * like its peers is audited for free; one that does not log at all is already breaking §6.2.
+ * Every credential op logs through here or through {@link warnCredential}. A later op that logs
+ * like its peers is covered for free; one that does not log at all is already breaking §6.2.
  * The field string is this module's own structured format and the address in it is ALREADY
- * hashed — the audit stores a count, never the line.
+ * hashed.
  */
 function logCredential(fields: string): void {
-  recordCredentialAudit(fields);
   console.log(`[connector-credential] ${fields} t=${new Date().toISOString()}`);
 }
 
 function warnCredential(fields: string): void {
-  recordCredentialAudit(fields);
   console.warn(`[connector-credential] ${fields} t=${new Date().toISOString()}`);
 }
 
@@ -388,7 +384,7 @@ export class CredentialStore {
   /**
    * OBTAIN (§6.2). The credential arrives from the connect flow and goes straight in here — it is
    * never written to the user's browser vault for this purpose, and the existing Option-C vault
-   * key is never migrated (cohort seeding runs the obtain flow first).
+   * key is never migrated.
    */
   store(input: {
     source: string;
@@ -414,7 +410,7 @@ export class CredentialStore {
 
   /**
    * RETRIEVE (§6.2) — the ONE function that returns a decrypted credential, callable from the
-   * fetch worker / refresh / teardown paths with an address that came from the signed
+   * Calendar autojoin connection service with an address that came from the signed
    * token->address lookup. Returns null when there is no credential (or it is marked revoked);
    * THROWS when a row exists but cannot be opened as this tenant's — an unreadable credential is
    * a failure, never a quiet "not connected".
@@ -693,7 +689,7 @@ export class InMemoryCredentialRowStore implements CredentialRowStore {
  * responses on a single space — and every call is result-checked inside `withSessionRefresh`,
  * because a `{ok:false}` read cast to `undefined` would read as "this user has no credential".
  *
- * The `storageLane` param wires this store to the SAME lane the queue and content store use, so
+ * The `storageLane` param wires this store to the SAME lane the queue uses, so
  * cross-component writes to the shared backend space are serialised as one lane. Absent = a
  * private per-instance lane (the standalone default). index.ts wires the shared lane in prod.
  */

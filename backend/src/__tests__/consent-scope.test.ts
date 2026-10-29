@@ -14,7 +14,7 @@ import { verifyTranscriptWriterGrant } from "../delegation-verify.js";
 import { activateVerifiedDelegation } from "../portable-delegation.js";
 import { createDelegationRouter } from "../routes/delegations.js";
 import { transcriptDeliveryConfigFromEnv } from "../services/transcription-api.js";
-import { RETENTION_WINDOW_DAYS } from "../services/content-store.js";
+const RETENTION_WINDOW_DAYS = 90;
 import { GOOGLE_AUTOJOIN_SCOPES, GOOGLE_MEET_SCOPES } from "../services/google-oauth.js";
 import { makeSignedTranscriptGrant, type SignedTranscriptGrant } from "./helpers/transcript-grant.js";
 import * as consentCopyModule from "../../../frontend/src/lib/connectors/consentCopy";

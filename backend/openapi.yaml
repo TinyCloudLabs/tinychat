@@ -491,22 +491,13 @@ paths:
         Every rejection — unknown source, malformed token, unknown token, bad
         signature — returns the identical 401 body, so the route is never an oracle.
         A 202 means the delivery was durably queued and nothing more — the
-        provider learns the same thing either way, and the two paragraphs below are
-        invisible to it. OUTSIDE the backend-ingest cohort (ingest shape C, the
-        default and the only shape while the flag is dark) queueing the id IS the
-        whole server-side job: nothing is fetched, nothing is drained after the
-        response, and nothing is written to the user's space. For those addresses
-        this server never receives the user's connector API key — the browser does
-        the fetching and the writing on the user's next authenticated visit (POST
-        /drain, then POST /ack). FOR A COHORT ADDRESS (CONNECTOR_BACKEND_INGEST_ENABLED
-        plus the per-address allowlist) the same 202 additionally nudges the backend
-        fetch worker: the server holds a per-user Fireflies OAuth credential for that
-        address, fetches the meeting itself, and keeps an encrypted server-side copy
-        for 90 days, which the user reads back over GET /api/connectors/meetings. The
-        browser's /drain surfaces nothing for it and /ack is an idempotent no-op. What
-        does NOT change either way is the delegation: this server holds no connector
-        delegation for any address — cohort custody is out of band, so nothing is
-        minted inside a user's space.
+        provider learns the same thing either way. Queueing the id IS the whole
+        server-side job (ingest shape C): nothing is fetched, nothing is drained
+        after the response, and nothing is written to the user's space. The
+        server never receives the user's connector API key — the browser does the
+        fetching and the writing on the user's next authenticated visit (POST
+        /drain, then POST /ack). This server holds no connector
+        delegation for any address, so nothing is minted inside a user's space.
       security: []
       parameters:
         - name: source
@@ -720,10 +711,6 @@ paths:
         A disabled address surfaces nothing either; a drain must never resurrect
         one. Forced kicks are floored per address — a repeat inside the floor
         returns the previous pass's result rather than re-reading the shared node.
-        For an address enrolled in the dark backend-ingest cohort no drain pass runs
-        at all: the backend fetch worker is the sole consumer of that queue, so the
-        response surfaces nothing and reports `surfaceBlocked: backend_ingest`. Two
-        consumers settling the same items is the double-drain race this excludes.
       responses:
         "200":
           description: Queue snapshot after the drain attempt.
@@ -761,10 +748,7 @@ paths:
         tombstoned id is never counted as ingested. SUCCESSES ONLY in this version —
         `status` is accepted solely as the literal `done`, and no browser-supplied
         error string is read, logged or stored; a failed item stays queued until the
-        retry schedule or the 14-day TTL deals with it. For an address enrolled in the
-        dark backend-ingest cohort this route is an IDEMPOTENT NO-OP: the fetch worker
-        owns that queue's removals, so nothing is settled and the counts come back
-        zero rather than deleting an item the worker has not fetched yet.
+        retry schedule or the 14-day TTL deals with it.
       requestBody:
         required: true
         content:
@@ -1386,199 +1370,6 @@ paths:
                 $ref: "#/components/schemas/CalendarAutojoinDisconnect"
         "503":
           description: Durable disable or local credential deletion failed; retry.
-
-  /api/connectors/meetings:
-    get:
-      operationId: listConnectorMeetings
-      summary: List the signed-in address's backend-ingested meetings (cohort only)
-      description: >-
-        The cohort's read API. Mounted only when the dark backend-ingest flag is
-        armed, and 404 for every address that is not enrolled — a signed-in user
-        outside the cohort cannot tell the surface exists. The tenant is ALWAYS the
-        session address: no route here accepts an address, an account id or a token.
-        STRICTLY SIDE-EFFECT-FREE — this GET writes nothing, stamps nothing and
-        sweeps nothing. Fails closed: an unreadable archive answers 503, never an
-        empty list that would render as "you have no meetings".
-      parameters:
-        - name: source
-          in: query
-          required: false
-          schema:
-            type: string
-            enum: [fireflies]
-        - name: limit
-          in: query
-          required: false
-          description: >-
-            1–200, default 50. Out of range is a 400 (`invalid_limit`), never a
-            silent clamp.
-          schema:
-            type: integer
-            minimum: 1
-            maximum: 200
-        - name: cursor
-          in: query
-          required: false
-          description: >-
-            The `nextCursor` of the previous page. A cursor whose row is gone
-            (retention swept it between pages) is a 400 (`invalid_cursor`), never a
-            silent restart at page 1.
-          schema:
-            type: string
-            pattern: "^[A-Za-z0-9_-]{1,64}$"
-        - name: reconciled
-          in: query
-          required: false
-          description: >-
-            The browser reconcile queue. `false` returns only the rows this space
-            has not copied into the user's own storage yet, `true` only the rows it
-            has; omitted returns both. Any other value is a 400
-            (`invalid_reconciled`) — a silently ignored filter would hand the
-            browser the whole archive to re-copy on every run. Filtering happens
-            before paging, so `cursor` addresses the filtered set.
-          schema:
-            type: string
-            enum: ["true", "false"]
-      responses:
-        "200":
-          description: The caller's own meetings, newest first.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ConnectorMeetingList"
-        "400":
-          description: "`invalid_limit`, `invalid_cursor` or `invalid_reconciled`."
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ConnectorError"
-        "401":
-          $ref: "#/components/responses/Unauthenticated"
-        "404":
-          description: >-
-            The flag is dark or the address is not in the cohort. Deliberately
-            indistinguishable.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ConnectorError"
-        "503":
-          $ref: "#/components/responses/ConnectorUnavailable"
-
-  /api/connectors/meetings/{source}/{sourceId}:
-    get:
-      operationId: readConnectorMeeting
-      summary: Read one backend-ingested meeting's content (cohort only)
-      description: >-
-        Decrypted inside the TEE and returned to its owner. Also strictly
-        side-effect-free. A meeting id that belongs to another address is simply
-        `not_found`; the id is never echoed back on the 404, and no internal error
-        text ever reaches the caller.
-      parameters:
-        - name: source
-          in: path
-          required: true
-          schema:
-            type: string
-            enum: [fireflies]
-        - name: sourceId
-          in: path
-          required: true
-          schema:
-            type: string
-            pattern: "^[A-Za-z0-9_-]{1,64}$"
-      responses:
-        "200":
-          description: >-
-            The meeting. Either half may be absent — a summary stored without a
-            transcript is a complete row, not an error.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ConnectorMeetingContent"
-        "400":
-          description: "`invalid_meeting_id` — refused before any store call."
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ConnectorError"
-        "401":
-          $ref: "#/components/responses/Unauthenticated"
-        "404":
-          description: >-
-            No such meeting for THIS address, an unknown source, a dark flag, or a
-            non-cohort address.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ConnectorError"
-        "503":
-          $ref: "#/components/responses/ConnectorUnavailable"
-
-  /api/connectors/meetings/{source}/{sourceId}/reconciled:
-    post:
-      operationId: markConnectorMeetingReconciled
-      summary: Stamp a meeting as copied into the user's own space (cohort only)
-      description: >-
-        The reconcile-ack, and the ONE mutating route of the meetings surface. The
-        browser calls it AFTER the user-space write succeeded (storage-before-ack),
-        so a stamp always trails a durable write and never leads it. Idempotent — a
-        lost response is retried and the retry is a success. The server copy is
-        RETAINED: reconciling does not shorten retention, because a second device
-        that has not reconciled still has to be able to read the meeting.
-      parameters:
-        - name: source
-          in: path
-          required: true
-          schema:
-            type: string
-            enum: [fireflies]
-        - name: sourceId
-          in: path
-          required: true
-          schema:
-            type: string
-            pattern: "^[A-Za-z0-9_-]{1,64}$"
-      responses:
-        "200":
-          description: Stamped (or already stamped).
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [reconciled, source, sourceId]
-                properties:
-                  reconciled:
-                    type: boolean
-                    const: true
-                  source:
-                    type: string
-                  sourceId:
-                    type: string
-        "400":
-          description: "`invalid_meeting_id`."
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ConnectorError"
-        "401":
-          $ref: "#/components/responses/Unauthenticated"
-        "404":
-          description: >-
-            No such meeting for this address, a dark flag, or a non-cohort address.
-            Nothing is stamped.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ConnectorError"
-        "503":
-          description: >-
-            The stamp did not land. Reported as a failure rather than a
-            `reconciled: true` the store never made.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ConnectorError"
 
   /api/transcriber/webhooks/ptx:
     post:
@@ -3641,7 +3432,6 @@ components:
               delegation_unusable,
               drain_aborted,
               drain_unreported,
-              backend_ingest,
             ]
           description: >-
             Present ONLY when the surfacing gate refused to hand back ids, in which case
@@ -3651,10 +3441,6 @@ components:
             purge ledger, and an aborted drain all surface nothing. `delegation_unusable` is
             retained in the enum as an unwired Option-A seam and is not emitted by the shipped
             gateless drain; clients must still handle it rather than assume the set shrank.
-            `backend_ingest` means this address's queue is consumed by the backend fetch worker
-            rather than by the browser (the dark backend-ingest flag plus a per-address cohort
-            allowlist): the browser has nothing to drain or settle, and its meetings come from
-            the authenticated read API instead. It is not an error state.
             Absent on the ordinary path.
             The client renders this as a card state; treating it as "nothing pending" is the
             silence §4.4 forbids.
@@ -3742,107 +3528,6 @@ components:
           description: >-
             Watermark to advance to; defaults to now. Rejected when unparseable or
             more than 24 h in the future, and never moved backwards.
-
-    # ── Backend-ingest read API (cohort only) ───────────────────────────
-    ConnectorMeetingMeta:
-      type: object
-      description: >-
-        One stored meeting's METADATA. The transcript and the summary never ride
-        this shape — they are read one meeting at a time from the content route.
-        A partial row is legal and complete: `hasTranscript` / `hasSummary` say
-        which half has arrived, because a summary can arrive before, or entirely
-        without, its transcript.
-      required: [sourceId, sizeBytes, storedAt, updatedAt, hasTranscript, hasSummary]
-      properties:
-        sourceId:
-          type: string
-          pattern: "^[A-Za-z0-9_-]{1,64}$"
-        title:
-          type: string
-        ts:
-          type: string
-          description: The provider's own meeting timestamp, when it gave one.
-        participantNames:
-          type: array
-          maxItems: 100
-          items:
-            type: string
-            maxLength: 256
-        participantEmails:
-          type: array
-          maxItems: 100
-          items:
-            type: string
-            maxLength: 256
-        organizerEmail:
-          type: string
-          maxLength: 256
-        transcriptStoredAt:
-          type: string
-          format: date-time
-        summaryStoredAt:
-          type: string
-          format: date-time
-        reconciledAt:
-          type: string
-          format: date-time
-          description: >-
-            Stamped by the reconcile-ack after the browser wrote the meeting into
-            the user's OWN space. The server copy is retained regardless — a
-            second device still has to be able to read it.
-        sizeBytes:
-          type: integer
-        storedAt:
-          type: string
-          format: date-time
-        updatedAt:
-          type: string
-          format: date-time
-        hasTranscript:
-          type: boolean
-        hasSummary:
-          type: boolean
-
-    ConnectorMeetingList:
-      type: object
-      required: [source, meetings, nextCursor, hasMore]
-      properties:
-        source:
-          type: string
-          enum: [fireflies]
-        meetings:
-          type: array
-          items:
-            $ref: "#/components/schemas/ConnectorMeetingMeta"
-        nextCursor:
-          type: [string, "null"]
-          description: >-
-            The last `sourceId` on this page, or null when there is no next page.
-            A truncated page always says so — there is no silent truncation.
-        hasMore:
-          type: boolean
-
-    ConnectorMeetingContent:
-      type: object
-      required: [source, sourceId, meta, content]
-      properties:
-        source:
-          type: string
-          enum: [fireflies]
-        sourceId:
-          type: string
-          pattern: "^[A-Za-z0-9_-]{1,64}$"
-        meta:
-          $ref: "#/components/schemas/ConnectorMeetingMeta"
-        content:
-          type: object
-          description: >-
-            The provider halves, decrypted inside the TEE for their owner. Either
-            may be absent. Only these two keys are projected — a stored value never
-            becomes an arbitrary response body.
-          properties:
-            transcript: {}
-            summary: {}
 
     # ── Google Meet OAuth proxy (WP-A) ─────────────────────────────────
     GoogleOAuthExchangeRequest:

@@ -240,10 +240,7 @@ Repository **secrets**:
 | `STRIPE_WEBHOOK_SECRET` | Signing secret (`whsec_…`) of the Stripe webhook endpoint pointing at `/api/billing/webhook`. |
 | `LEDGER_SERVICE_SECRET` | Shared secret for the Universal Ledger credits sidecar. Optional — unset disables the ledger client. |
 | `ELIZA_SERVICE_SECRET` | Shared secret for the Eliza agent service. **Required** — the workflow's config check fails fast without it (agent triad with `AGENT_DID` / `ELIZA_SERVICE_URL`; unmounted `/api/agent` kills web search, cf. 2026-07-07). |
-| `CONNECTOR_CREDENTIAL_MASTER` | W2 credential-custody master (backend ingest). Its own `openssl rand -base64 32` value; reusing `WEBHOOK_HMAC_MASTER` is a hard boot error. Must SURVIVE redeploys — stripping it orphans every stored credential. Required the moment `CONNECTOR_BACKEND_INGEST_ENABLED=true`. |
-| `CONNECTOR_CONTENT_MASTER` | W4 content-custody master (backend ingest). Same rules — its own value, survives redeploys; wraps every stored meeting. |
-| `FIREFLIES_OAUTH_CLIENT_ID` | Registered Fireflies OAuth app (custody branch b1). Required with the ingest flag armed. |
-| `FIREFLIES_OAUTH_CLIENT_SECRET` | Fireflies OAuth app secret. Required with the ingest flag armed. |
+| `CONNECTOR_CREDENTIAL_MASTER` | Calendar autojoin credential-custody master. Its own `openssl rand -base64 32` value; reusing `WEBHOOK_HMAC_MASTER` is a hard boot error. Must SURVIVE redeploys — stripping it orphans every stored credential. |
 
 Repository **variables** (all optional — defaults shown):
 
@@ -258,8 +255,6 @@ Repository **variables** (all optional — defaults shown):
 | `REDPILL_DEFAULT_MODEL` | `z-ai/glm-5.2` (must stay an offered model — a non-offered value warns and falls back at runtime; `backend/src/routes/chat.ts` ST11) |
 | `CONNECTOR_WEBHOOKS_ENABLED` | `false` (ships dark: route unmounted, maintenance timer off, section hidden) |
 | `CONNECTOR_WEBHOOK_PUBLIC_ORIGIN` | _(empty — the minted callback host falls back to the request's `Host` header, with the scheme forced to `https`)_. Set it to `https://api.tinycloud.chat` before enabling the flag: this is the origin of the URL users paste into their provider dashboard, and a wrong host mints a webhook that silently never delivers. Origin only — `https`, no path, no trailing slash — or the companion router refuses to build. |
-| `CONNECTOR_WEBHOOK_HOST_ALLOWLIST` | _(empty — DERIVED from `CONNECTOR_WEBHOOK_PUBLIC_ORIGIN`, so the host the public delivery route answers on cannot drift from the URL users paste into their dashboard)_. A delivery arriving at any other host is refused with the same generic `401` as any other pre-verify failure, before its body is read. Set a comma-separated list only when the ingress rewrites `Host`/`X-Forwarded-Host` to something internal; the single value `*` disables the check (logged). A present value with no usable host is a hard startup error, never a silent disable. Not an authentication boundary — the HMAC is (`docs/connector-webhooks-trust-proxy.md`). |
-| `CONNECTOR_INGEST_INSTANCE_ID` | _(empty — a random id per process)_. **D4 = single-instance:** exactly one backend instance may consume the cohort's delivery queues, enforced by a lease in the backend's own KV; a second instance refuses the seat and ingests nothing. Pin this only when the same logical instance redeploys and should reclaim its own lease instead of waiting out the 90 s TTL. Read `docs/connector-webhooks-single-instance.md` **before** scaling to two replicas — that is a design change, not a replica count. |
 | `CONNECTOR_DRAIN_INTERVAL_MS` | `300000` (paces the queue-maintenance TTL/dead-letter sweep — under Option C nothing drains in the background) |
 | `CONNECTOR_A_FETCH_CEILING_PER_HOUR` | `20` (per address, rolling hour) |
 | `CONNECTOR_A_SECRET_READ_CEILING_PER_HOUR` | `20` (per address, rolling hour) |
@@ -281,8 +276,6 @@ Repository **variables** (all optional — defaults shown):
 | `LEDGER_SERVICE_URL` | _(empty — the ledger client is disabled when unset)_ |
 | `LEDGER_AUTHORITATIVE` | `false` when neither the repo secret nor the repo variable is set. The deploy passes the configured value through, so check the repo setting rather than assuming the default. Turning it on is a deliberate cutover, not part of a routine deploy. |
 | `LEDGER_OUTAGE_POLICY` | `bounded_k` |
-| `CONNECTOR_BACKEND_INGEST_ENABLED` | `false` (**dark**; `true` only ARMS backend ingestion — addresses come from the cohort allowlist in the backend's own config KV. See §4 and the operator pre-rollout gates before ever setting this.) |
-| `FIREFLIES_OAUTH_REDIRECT_URI` | _(empty — the registered OAuth redirect URI; required with the ingest flag armed)_ |
 | `TRANSCRIPTION_API_URL` | _(empty — repo **variable**; the TinyCloud Private Transcription API base URL. With `TRANSCRIPTION_API_KEY` set, `/api/transcriber/meetings` mounts and Settings → Transcriber lights up; either empty ⇒ 404 and the card says it is not configured)_ |
 | `TRANSCRIPTION_API_KEY` | _(empty — repo **secret**; the `tc_live_…` project key minted with the transcription service's `create-key` CLI. Never reaches the browser)_ |
 | `TRANSCRIPTION_BOT_NAME` | `TinyCloud Private Notetaker` (repo variable; the bot's display name in the meeting) |
