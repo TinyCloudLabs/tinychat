@@ -209,6 +209,8 @@ test("combined Private rerun reports acceptance and cancellation preserves the c
     if (path.endsWith("/capabilities")) return Response.json(path.includes("assemblyai")
       ? { hosted: true, max_bytes: 1000000, content_types: ["audio/wav"], part_size: 1024 }
       : { max_bytes: 1000000, max_duration_seconds: 100, content_types: ["audio/wav"], admission: "open" });
+    if (path.endsWith("/hosted/transcripts/synthetic-handle"))
+      return Response.json({ id: "synthetic-handle", status: "error", error: "Older Powerful failure" });
     if (request.method === "POST" && path.endsWith("/private-cloud/transcriptions")) {
       return Response.json({ id, status: "completed", upload: null }, { status: 201 });
     }
@@ -229,14 +231,23 @@ test("combined Private rerun reports acceptance and cancellation preserves the c
     native.controls.commitLegacy(recording);
     __setVoiceNotesForTests({ ...native.plugin, listPending: async () => ({ recordings: [recording] }) }, { available: false });
     expect((await saveVoiceNote(space.tcw, recording, voiceNoteAudioSourceFromBase64(AUDIO), "web")).ok).toBe(true);
-    const previous = prepareVoiceNoteTranscript({ text: "Previous synthetic transcript", segments: [{ channel: 0, start: 0, end: 1, text: "Previous synthetic transcript" }] }, "2026-01-01T00:00:00Z", 1);
-    expect((await saveVoiceNoteTranscript(space.tcw, "note", previous)).ok).toBe(true);
-    const committed = await readTranscriptCommit(space.tcw, "note");
     localStorageVoiceNoteConsentStore(space.tcw.did, local).set(true);
     const pending = localStorageVoiceNotePendingStore(space.tcw.did, local);
     pending.write("note", { attemptId: "old-cancelled-private", transcriptionId: null, failure: "cancelled" });
+    local.setItem(`exo.voiceNotes.powerfulConsent:${space.tcw.did}`, "1");
+    await space.tcw.kv.put("exo/voiceNotes/hostedJobs/note", JSON.stringify({
+      version: 1, status: "submitted", token: "older-powerful", handle: "synthetic-handle" }));
     const transcriber = voiceNoteTranscriberFor(space.tcw, server.url.origin, { getToken: () => "synthetic-session", isExpired: () => false })!;
     await transcriber.check();
+    const olderFailed = nextFailure(transcriber, subscriptions);
+    transcriber.transcribe("note");
+    await olderFailed;
+    expect(transcriber.providerFor!("note")).toBe("powerful");
+    expect(transcriber.snapshot().jobs.get("note")?.kind).toBe("failed");
+    // A committed revision arrives from space before the explicit replacement.
+    const previous = prepareVoiceNoteTranscript({ text: "Previous synthetic transcript", segments: [{ channel: 0, start: 0, end: 1, text: "Previous synthetic transcript" }] }, "2026-01-01T00:00:00Z", 1);
+    expect((await saveVoiceNoteTranscript(space.tcw, "note", previous)).ok).toBe(true);
+    const committed = await readTranscriptCommit(space.tcw, "note");
     const premature = Promise.withResolvers<never>();
     const stop = transcriber.subscribe(() => {
       const job = transcriber.snapshot().jobs.get("note");
