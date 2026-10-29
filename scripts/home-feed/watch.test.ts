@@ -11,7 +11,7 @@ import { z } from "zod";
 import { HooksService, KVService, SQLService, ServiceContext } from "@tinycloud/sdk-services";
 import type { FetchFunction, Result } from "@tinycloud/sdk-services";
 import { appendFeedResponse, feedResourceNames, initializeFeedDatabases, initializeFeedHandoff } from "@tinycloud/sdk-services/feed";
-import type { FeedCardIdentity, FeedResponse } from "@tinycloud/sdk-services/feed";
+import type { FeedCardIdentity, FeedDatabase, FeedResponse } from "@tinycloud/sdk-services/feed";
 import { validateRecord } from "@tinyboilerplate/core/feed/sitrep";
 import { publishHomeMirror, watchHomeMirrors } from "./bridge";
 import type { HomeMirrorContext, HomeMirrorPublishInput } from "./bridge-types";
@@ -104,9 +104,9 @@ async function fixture(options: { holdFirstHeaders?: boolean; ignoreStreamAbort?
             return Response.json({ columns: query.columnNames, rows, rowCount: rows.length });
           } finally { if (responseRead) activeReads--; }
         }
-        if (body.action === "execute") { const result = execute(body); if (observing && path === HANDOFF) noteCommitted(); return Response.json(result); }
+        if (body.action === "execute") return Response.json(execute(body));
         database.exec("BEGIN IMMEDIATE");
-        try { const results = body.statements.map(execute); database.exec("COMMIT"); if (observing && path === HANDOFF) noteCommitted(); return Response.json({ results }); }
+        try { const results = body.statements.map(execute); database.exec("COMMIT"); return Response.json({ results }); }
         catch (error) { database.exec("ROLLBACK"); throw error; }
       }
       if (service !== "kv") return new Response(null, { status: 400 });
@@ -149,14 +149,27 @@ async function fixture(options: { holdFirstHeaders?: boolean; ignoreStreamAbort?
     await stream.returnHeaders.promise;
     return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
   };
-  const context = new ServiceContext({ hosts: [server.url.href], fetch: transport, retryPolicy: { maxAttempts: 1 },
+  const context = new ServiceContext({ hosts: [server.url.origin], fetch: transport, retryPolicy: { maxAttempts: 1 },
     invoke: (_session, service, path, action) => ({ Authorization: "synthetic-watch", "X-Fixture-Service": service, "X-Fixture-Path": path, "X-Fixture-Action": action ?? "" }),
     session: { delegationHeader: { Authorization: "synthetic-watch" }, delegationCid: "synthetic-cid", spaceId: SPACE, verificationMethod: "did:key:synthetic-owner", jwk: {} },
   });
   const sql = new SQLService(); sql.initialize(context);
   const legacy = new KVService(); legacy.initialize(context);
   const hooks = new HooksService(); hooks.initialize(context);
-  const owner = sql.db(OWNER), output = sql.db(resources.outputResource), responses = sql.db(resources.responseResource), handoff = sql.db(HANDOFF);
+  const owner = sql.db(OWNER), output = sql.db(resources.outputResource), responses = sql.db(resources.responseResource), rawHandoff = sql.db(HANDOFF);
+  const handoff: FeedDatabase = {
+    query: <T>(...args: Parameters<FeedDatabase["query"]>) => rawHandoff.query<T>(...args),
+    execute: async (...args) => {
+      const result = await rawHandoff.execute(...args);
+      if (result.ok && observing) noteCommitted();
+      return result;
+    },
+    batch: async (...args) => {
+      const result = await rawHandoff.batch(...args);
+      if (result.ok && observing) noteCommitted();
+      return result;
+    },
+  };
   take(await owner.execute("CREATE TABLE feed_agents (agent_id TEXT PRIMARY KEY,agent_did TEXT NOT NULL,label TEXT NOT NULL,output_resource TEXT NOT NULL UNIQUE,response_resource TEXT NOT NULL UNIQUE,authorization_json TEXT NOT NULL)"));
   take(await owner.execute("INSERT INTO feed_agents VALUES (?,?,?,?,?,?)", ["watch_fixture", "did:key:synthetic-publisher", "Presentation only", resources.outputResource, resources.responseResource, "{}"]));
   // Test-owned provisioning only; no production schema or authorization operation.
