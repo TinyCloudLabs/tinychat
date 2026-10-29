@@ -18,6 +18,7 @@ function ownerClient(overrides: Partial<TinyCloudWeb> = {}): TinyCloudWeb {
     spaceId: "tinycloud:pkh:eip155:1:0x0000000000000000000000000000000000000001:applications",
     sessionDid: "did:example:synthetic-session", credentialHolderDid: "did:example:synthetic-session",
     credentialSpaceOwnerDid: () => "did:pkh:eip155:1:0x0000000000000000000000000000000000000001",
+    sessionRestoreStatus: "idle", isSessionOnly: false, isWalletConnected: true,
     hasPermissions: () => true,
     ...overrides,
   } as unknown as TinyCloudWeb;
@@ -69,3 +70,18 @@ test("a caller missing the existing KV put grant is not offered Share", () => {
   });
   expect(render(ITEM, reads, missingKv)).not.toContain('data-testid="note-share-transcript"');
 });
+
+for (const [route, state] of [
+  ["restored", { sessionRestoreStatus: "restored" as const }],
+  ["session-only", { isSessionOnly: true }],
+  ["disconnected wallet", { isWalletConnected: false }],
+] as const) {
+  test(`an otherwise eligible ${route} owner sees a non-executable sign-in prompt`, () => {
+    const html = render(ITEM, reads, ownerClient(state));
+    const action = html.match(/<button\b[^>]*data-testid="note-share-transcript"[^>]*>[\s\S]*?<\/button>/)?.[0];
+    expect(action).toBeDefined();
+    expect(action).toMatch(/\bdisabled(?:=|[\s>])/);
+    expect(action).toContain("Sign in again to share");
+    expect(html).not.toContain('role="dialog"');
+  });
+}

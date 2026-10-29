@@ -57,6 +57,7 @@ function fixture() {
     get sessionDid() { return holder; },
     get credentialHolderDid() { return holder; },
     credentialSpaceOwnerDid: () => "did:pkh:eip155:1:0x0000000000000000000000000000000000000001",
+    sessionRestoreStatus: "idle", isSessionOnly: false, isWalletConnected: true,
     hasPermissions: () => true,
     getEncryptionNetwork: async () => ({ networkId: NETWORK, ownerDid: NETWORK.slice(25, -8), state: "active" }),
     activeNodeIdentity: async () => ({ origin: "http://127.0.0.1:3003", nodeDid: "did:key:z6MktestNode" }),
@@ -248,4 +249,30 @@ test("closed or expired review cannot start effects; raw SDK error bodies never 
     expect(String(error)).toContain("creating the exact named-key");
     expect(String(error)).not.toContain("PRIVATE_SIGNED_URL_OR_BODY");
   }
+});
+
+test("restored, session-only and disconnected owner sessions require sign-in before any share effect", async () => {
+  for (const state of [
+    { sessionRestoreStatus: "restored" },
+    { isSessionOnly: true },
+    { isWalletConnected: false },
+  ]) {
+    const f = fixture();
+    Object.assign(f.client, state);
+    expect(transcriptShareUnavailable(f.tcw)).toBeNull();
+    await expect(publishTranscriptShare(f.input, f.operations)).rejects.toThrow("Sign in again to share");
+    expect(f.effects).toEqual([]);
+    expect(f.stored.size).toBe(0);
+  }
+});
+
+test("a session restored during consent cannot create the share key or publish", async () => {
+  const f = fixture();
+  f.client.requestPermissions = async () => {
+    f.client.sessionRestoreStatus = "restored";
+    return { approved: true };
+  };
+  await expect(publishTranscriptShare(f.input, f.operations)).rejects.toThrow("Sign in again to share");
+  expect(f.effects).toEqual(["public-key"]);
+  expect(f.stored.size).toBe(0);
 });

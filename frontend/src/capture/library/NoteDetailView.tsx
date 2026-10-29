@@ -420,8 +420,8 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
               {props.copyState === "copied" ? "Copied" : "Copy"}
             </Button>
             {shareTranscript && (
-              <Button type="button" variant="ghost" onClick={shareTranscript.open} disabled={shareTranscript.busy} data-testid="note-share-transcript">
-                <Share2Icon aria-hidden /> Share
+              <Button type="button" variant="ghost" onClick={shareTranscript.open} disabled={shareTranscript.busy || shareTranscript.signInRequired} data-testid="note-share-transcript">
+                <Share2Icon aria-hidden /> {shareTranscript.signInRequired ? "Sign in again to share" : "Share"}
               </Button>
             )}
             {timed && <details className="relative">

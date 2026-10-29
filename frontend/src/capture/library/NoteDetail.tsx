@@ -37,7 +37,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
   ExoTranscriptShareContext, prepareTranscriptShare, publishTranscriptShare,
-  transcriptShareOrigins, transcriptShareSnapshot, transcriptShareUnavailable,
+  transcriptShareNeedsSignIn, transcriptShareOrigins, transcriptShareSnapshot, transcriptShareUnavailable,
 } from "@/lib/exoTranscriptShare";
 import type { TranscriptShareOrigins, TranscriptShareReview } from "@/lib/exoTranscriptShare";
 import { scheduledSpace } from "@/lib/spaceQueue";
@@ -182,8 +182,9 @@ export function NoteDetail(props: {
   const shareSpaceId = props.tcw.spaceId;
   const shareSessionDid = shareSession ? props.tcw.sessionDid : null;
   const shareHolderDid = shareSession ? props.tcw.credentialHolderDid : null;
-  const shareIdentity = useMemo(() => ({ snapshot: shareSnapshot, spaceId: shareSpaceId, sessionDid: shareSessionDid, holderDid: shareHolderDid }),
-    [shareSnapshot, shareSpaceId, shareSessionDid, shareHolderDid]);
+  const shareSignInRequired = shareSnapshot !== null && transcriptShareNeedsSignIn(props.tcw);
+  const shareIdentity = useMemo(() => ({ snapshot: shareSnapshot, spaceId: shareSpaceId, sessionDid: shareSessionDid, holderDid: shareHolderDid,
+    signInRequired: shareSignInRequired }), [shareSnapshot, shareSpaceId, shareSessionDid, shareHolderDid, shareSignInRequired]);
   const latestShare = useRef({ tcw: props.tcw, identity: shareIdentity });
   latestShare.current = { tcw: props.tcw, identity: shareIdentity };
   const shareOpenedFor = useRef<{ tcw: TinyCloudWeb; identity: typeof shareIdentity } | null>(null);
@@ -203,8 +204,9 @@ export function NoteDetail(props: {
     setShareOpen(true);
   }, [shareSnapshot, props.tcw, shareIdentity]);
   const callerShareUnavailable = shareSnapshot ? transcriptShareUnavailable(props.tcw) : null;
-  const shareAction = useMemo(() => shareSnapshot && callerShareUnavailable === null ? { open: openShare, busy: shareBusy } : null,
-    [shareSnapshot, callerShareUnavailable, openShare, shareBusy]);
+  const shareAction = useMemo(() => shareSnapshot && callerShareUnavailable === null
+    ? { open: openShare, busy: shareBusy, signInRequired: shareSignInRequired } : null,
+    [shareSnapshot, callerShareUnavailable, openShare, shareBusy, shareSignInRequired]);
   const reviewShare = () => {
     if (!shareSnapshot || shareInFlight.current) return;
     try {

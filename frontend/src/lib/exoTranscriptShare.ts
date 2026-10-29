@@ -35,7 +35,7 @@ export function rawWrappedKeyDigest(wrappedKey: string): string {
 }
 
 /** The view owns only the conditional action beside Copy; NoteDetail owns review and execution. */
-export const ExoTranscriptShareContext = createContext<{ open: () => void; busy: boolean } | null>(null);
+export const ExoTranscriptShareContext = createContext<{ open: () => void; busy: boolean; signInRequired: boolean } | null>(null);
 
 type ShareItem = MeetingListItem & { onPhone?: true; saving?: true };
 export interface TranscriptShareSnapshot {
@@ -121,6 +121,11 @@ export function transcriptShareUnavailable(tcw: TinyCloudWeb): string | null {
   }
 }
 
+/** beta.21 cannot request an owner-signed Share-key grant from a restored or disconnected session. */
+export function transcriptShareNeedsSignIn(tcw: TinyCloudWeb): boolean {
+  return tcw.sessionRestoreStatus === "restored" || tcw.isSessionOnly || !tcw.isWalletConnected;
+}
+
 /** Pure recipient normalization/validation, before consent, key creation or writes. */
 export function prepareTranscriptShare(
   tcw: TinyCloudWeb, snapshot: TranscriptShareSnapshot, recipient: string,
@@ -181,6 +186,7 @@ export async function publishTranscriptShare(
   let expectedHost: string | undefined;
   const check = () => {
     if (!input.isCurrent()) throw new TranscriptShareError("The note or account changed. Review the transcript again.");
+    if (transcriptShareNeedsSignIn(tcw)) throw new TranscriptShareError("Sign in again to share");
     const account = shareAccount(tcw);
     if (Object.keys(review.account).some((key) => account[key as keyof ShareAccount] !== review.account[key as keyof ShareAccount])) {
       throw new TranscriptShareError("The account changed. Review the transcript again.");
