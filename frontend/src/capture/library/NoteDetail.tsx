@@ -202,8 +202,9 @@ export function NoteDetail(props: {
     setShareError(transcriptShareUnavailable(props.tcw));
     setShareOpen(true);
   }, [shareSnapshot, props.tcw, shareIdentity]);
-  const shareAction = useMemo(() => shareSnapshot ? { open: openShare, busy: shareBusy } : null,
-    [shareSnapshot, openShare, shareBusy]);
+  const callerShareUnavailable = shareSnapshot ? transcriptShareUnavailable(props.tcw) : null;
+  const shareAction = useMemo(() => shareSnapshot && callerShareUnavailable === null ? { open: openShare, busy: shareBusy } : null,
+    [shareSnapshot, callerShareUnavailable, openShare, shareBusy]);
   const reviewShare = () => {
     if (!shareSnapshot || shareInFlight.current) return;
     try {
@@ -249,7 +250,7 @@ export function NoteDetail(props: {
         },
       });
       if (!isCurrent()) return;
-      if (result.status === "declined") { setShareReview(null); setShareError("Permission declined. No key or share was created."); }
+      if (result.status === "declined") { setShareReview(null); setShareError("Sharing was cancelled."); }
       else setShareResult({ url: result.published.url, recipient: reviewed.recipient, expiresAt: result.published.metadata.expiresAt });
     } catch (error) {
       if (isCurrent()) { setShareReview(null); setShareError(error instanceof Error ? error.message : "Transcript sharing stopped. No link was returned."); }
@@ -261,6 +262,7 @@ export function NoteDetail(props: {
   // Hide old-account recipient/link material in this render, not one passive effect later.
   const shareVisible = shareOpen && shareOpenedFor.current?.tcw === props.tcw && shareOpenedFor.current.identity === shareIdentity;
   const shareUnavailable = shareVisible ? transcriptShareUnavailable(props.tcw) : null;
+  const shareExpiry = shareResult?.expiresAt ?? shareReview?.expiresAt;
 
   return (
     <>
@@ -299,14 +301,13 @@ export function NoteDetail(props: {
           <DialogHeader>
             <DialogTitle>Share transcript</DialogTitle>
             <DialogDescription id={`${shareEmailId}-description`}>
-              An encrypted, read-only snapshot of this transcript only. No audio or attachments.
-              Only the exact recipient can read it after proving their email. No invitation is sent.
+              {shareExpiry === undefined ? "Choose who can read this transcript."
+                : `Recipients can read this transcript until ${new Date(shareExpiry).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}.`}
             </DialogDescription>
           </DialogHeader>
           {shareResult ? (
             <div className="flex flex-col gap-3">
               <p className="text-callout">Recipient: <strong>{shareResult.recipient}</strong></p>
-              <p className="text-meta text-muted-foreground">Expires {new Date(shareResult.expiresAt).toLocaleString()}.</p>
               <label className="text-meta" htmlFor={`${shareEmailId}-link`}>Recipient-only link</label>
               <input id={`${shareEmailId}-link`} readOnly value={shareResult.url} className="w-full rounded-md border bg-background px-3 py-2 text-meta" />
               <Button type="button" onClick={() => {
@@ -321,17 +322,14 @@ export function NoteDetail(props: {
           ) : shareReview ? (
             <div className="flex flex-col gap-3">
               <p className="text-callout">Recipient: <strong>{shareReview.recipient}</strong></p>
-              <p className="text-callout">Scope: this transcript only · read-only · immutable snapshot.</p>
-              <p className="text-meta text-muted-foreground">Expires {new Date(shareReview.expiresAt).toLocaleString()}.</p>
               <details className="rounded-md border p-3">
-                <summary className="cursor-pointer text-meta">Review transcript snapshot</summary>
+                <summary className="cursor-pointer text-meta">Review transcript</summary>
                 <pre className="mt-3 max-h-64 overflow-auto whitespace-pre-wrap break-words font-sans text-callout">{shareReview.snapshot.text}</pre>
               </details>
-              <p className="text-meta text-muted-foreground">Next, approve creation of this share’s exact encryption key in the normal permission dialog.</p>
               <div className="flex justify-end gap-2">
                 <Button type="button" variant="outline" disabled={shareBusy} onClick={() => setShareReview(null)}>Back</Button>
                 <Button type="button" disabled={shareBusy || shareUnavailable !== null} onClick={() => void confirmShare()}>
-                  {shareBusy ? "Creating share…" : "Create recipient-only share"}
+                  {shareBusy ? "Sharing…" : "Share transcript"}
                 </Button>
               </div>
             </div>
@@ -341,7 +339,7 @@ export function NoteDetail(props: {
               <input id={shareEmailId} type="email" autoComplete="email" required value={shareRecipient}
                 onChange={(event) => setShareRecipient(event.target.value)} disabled={shareBusy}
                 className="w-full rounded-md border bg-background px-3 py-2 text-callout" />
-              <Button type="submit" disabled={shareBusy || shareUnavailable !== null}>Review recipient and scope</Button>
+              <Button type="submit" disabled={shareBusy || shareUnavailable !== null}>Review recipient</Button>
             </form>
           )}
           {(shareUnavailable || shareError) && <p role="alert" className="text-callout text-destructive">{shareUnavailable ?? shareError}</p>}
