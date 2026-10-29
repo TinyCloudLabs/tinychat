@@ -2,7 +2,7 @@ import { memo, useCallback, useContext, useEffect, useMemo, useRef, useState, us
 import type { FirefliesSentence } from "@/lib/connectors/firefliesClient";
 import { NotePlaybackContext } from "@/lib/audio/notePlayback";
 import { formatClockDuration } from "./formatters";
-import { SpeakerLabel } from "./SpeakerLabel";
+import { SpeakerLabel, SpeakerNamesContext } from "./SpeakerLabel";
 import { sentenceTime } from "./transcriptSegments";
 
 export interface TranscriptGap { start: number; end: number; speaker_name: string | null }
@@ -103,10 +103,13 @@ export function TimestampedTranscript({ sentences, gaps = NO_GAPS, hasAudio, isP
   const { active, followRow } = playback?.playing ? activeRowsAt(index, playback.elapsed) : { active: new Set<number>(), followRow: -1 };
   const onSeek = useCallback((seconds: number) => { setFollowing(true); playFrom.current?.(seconds); }, []);
   const registerRow = useCallback((rowIndex: number, element: HTMLDivElement | null) => { rows.current[rowIndex] = element; }, []);
+  const renamable = useContext(SpeakerNamesContext) !== undefined;
   const rowElements = useMemo(() => {
     const speakers = new Set(sentences.map((sentence) => sentence.speaker_name).filter(Boolean));
     const sentenceRows = sentences.map((sentence, rowIndex) => {
-      const speaker = speakers.size > 1 && sentence.speaker_name !== sentences[rowIndex - 1]?.speaker_name ? sentence.speaker_name : null;
+      // A lone speaker is labelled only where the label can be tapped to rename them, on their first line.
+      const onlySpeaker = renamable && speakers.size === 1 && sentence.speaker_name !== null && sentences.findIndex((other) => other.speaker_name !== null) === rowIndex;
+      const speaker = onlySpeaker || (speakers.size > 1 && sentence.speaker_name !== sentences[rowIndex - 1]?.speaker_name) ? sentence.speaker_name : null;
       return <TranscriptRow key={`${sentence.index}-${rowIndex}`} sentence={sentence} index={rowIndex} speaker={speaker}
         start={sentenceTime(sentence, isPrivateCloud)} hasAudio={hasAudio} store={store} onSeek={onSeek} registerRow={registerRow} onRowRender={onRowRender} />;
     });
@@ -117,7 +120,7 @@ export function TimestampedTranscript({ sentences, gaps = NO_GAPS, hasAudio, isP
         {formatClockDuration(Math.floor(gap.start))}–{formatClockDuration(Math.floor(gap.end))} could not be transcribed{gap.speaker_name ? ` — ${gap.speaker_name}` : ""}
       </p> })),
     ].sort((a, b) => a.start - b.start).map(({ element }) => element);
-  }, [sentences, gaps, hasAudio, isPrivateCloud, store, onSeek, registerRow, onRowRender]);
+  }, [sentences, gaps, hasAudio, isPrivateCloud, renamable, store, onSeek, registerRow, onRowRender]);
 
   useEffect(() => { store.setActive(active); }, [store, active]);
 

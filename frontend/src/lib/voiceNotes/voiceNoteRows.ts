@@ -271,7 +271,9 @@ export async function createVoiceNoteRow(tcw: TinyCloudWeb, recording: VoiceNote
   // names keeps them (it may have been renamed since).
   if (speakerNames !== null && typeof speakerNames === "object" && !Array.isArray(speakerNames)
     && row.metadata.speaker_names === undefined) {
-    await patchRowSpeakerNames(tcw, row.id, speakerNames, checkpoint);
+    for (const [label, shown] of Object.entries(speakerNames)) {
+      if (typeof shown === "string") await patchRowSpeakerName(tcw, row.id, label, shown, checkpoint);
+    }
     const named = await resolveVoiceNoteRow(tcw, recording.id, checkpoint);
     if (!named) throw new Error("The voice-note identity index was established but its row is missing");
     return { ...named, inserted: false };
@@ -527,20 +529,20 @@ export async function verifyVoiceNoteTranscript(tcw: TinyCloudWeb, sourceId: str
 }
 
 /**
- * A note's speaker names (TC-2189): `metadata.speaker_names`, original label -> name shown, on any connector_meeting
- * row (voice note, upload, meeting, combined). Only that key changes, so the transcript, audio and provenance keys
- * beside it stay as they are; the whole map is written, and an empty map removes the key.
+ * One speaker's name on a note (TC-2189): `metadata.speaker_names[original]`, on any connector_meeting row (voice note,
+ * upload, meeting, combined). Only that one label changes, applied by the database to the metadata as it is when the
+ * write runs, so a name another writer saved meanwhile stays. A null `shown` clears the label, and the map when it
+ * was the last.
  */
-export async function patchRowSpeakerNames(tcw: TinyCloudWeb, rowId: string, names: Readonly<Record<string, string>>,
+export async function patchRowSpeakerName(tcw: TinyCloudWeb, rowId: string, original: string, shown: string | null,
   checkpoint: () => void = () => undefined): Promise<void> {
   const base = "CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END";
-  const empty = Object.keys(names).length === 0;
-  const changes = empty
-    ? await execute(tcw, `UPDATE connector_meeting SET metadata = json_remove(${base}, '$.speaker_names'), updated_at = ? WHERE id = ?`,
-      [new Date().toISOString(), rowId], checkpoint)
-    : await execute(tcw, `UPDATE connector_meeting SET metadata = json_set(${base}, '$.speaker_names', json(?)), updated_at = ? WHERE id = ?`,
-      [JSON.stringify(names), new Date().toISOString(), rowId], checkpoint);
+  const changes = await execute(tcw,
+    `UPDATE connector_meeting SET metadata = json_patch(${base}, json_object('speaker_names', json_object(?, ?))), updated_at = ? WHERE id = ?`,
+    [original, shown, new Date().toISOString(), rowId], checkpoint);
   if (changes === 0) throw new Error("The note's row is missing");
+  await execute(tcw, `UPDATE connector_meeting SET metadata = json_remove(metadata, '$.speaker_names')
+    WHERE id = ? AND json_valid(metadata) AND json_extract(metadata, '$.speaker_names') = '{}'`, [rowId], checkpoint);
 }
 
 /**

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { captureEvents } from "../captureEvents";
 import { NO_SPEAKER_NAMES, readSpeakerNames, speakerDisplayName, withSpeakerName, type SpeakerNames } from "./speakerNames";
-import { patchRowSpeakerNames } from "@/lib/voiceNotes/voiceNoteRows";
+import { patchRowSpeakerName } from "@/lib/voiceNotes/voiceNoteRows";
 import { readLedgerSpeakerNames, saveLedgerSpeakerNames } from "@/lib/voiceNotes/ledgerSpeakerNames";
 import { VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
 
@@ -105,7 +105,7 @@ export function useSpeakerNames(options: {
   const writeNames = useCallback(async (intent: Intent) => {
     if (row !== null) {
       const target = applyIntent(landed.current, intent);
-      await patchRowSpeakerNames(tcw, row.id, target);
+      await patchRowSpeakerName(tcw, row.id, intent.original, Object.hasOwn(target, intent.original) ? target[intent.original]! : null);
       captureEvents.emit("library-changed", { source: row.source, sourceId: row.sourceId });
       return target;
     }

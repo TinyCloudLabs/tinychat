@@ -89,6 +89,10 @@ export function combineSpace(seed: readonly SpaceRow[], options: { did?: string 
       const r = rows.get(String(params[0]));
       return ok({ rows: r && r.source === "exo-merged" ? [[r.sourceId]] : [] });
     }
+    if (s === "SELECT title, metadata FROM connector_meeting WHERE id = ? AND source = 'exo-merged'") {
+      const r = rows.get(String(params[0]));
+      return ok({ rows: r && r.source === "exo-merged" ? [[r.title, r.metadata ?? null]] : [] });
+    }
     if (s === "SELECT source_id, metadata FROM connector_meeting WHERE id = ? AND source = 'exo-merged'") {
       const r = rows.get(String(params[0]));
       return ok({ rows: r && r.source === "exo-merged" ? [[r.sourceId, r.metadata ?? null]] : [] });
@@ -112,10 +116,10 @@ export function combineSpace(seed: readonly SpaceRow[], options: { did?: string 
       rows.set(String(id), { id: String(id), source: String(source), sourceId: String(sourceId), title: title as string | null, startedAt: startedAt as string | null, durationSecs: durationSecs as number | null, participants: String(participants), metadata: String(metadata) });
       return ok({ rows: [] });
     }
-    if (s.startsWith("UPDATE connector_meeting SET title = ?") && s.endsWith("WHERE id = ? AND source = 'exo-merged'")) {
-      const [title, startedAt, durationSecs, participants, metadata, , id] = params as (string | number | null)[];
+    if (s.startsWith("UPDATE connector_meeting SET title = ?") && (s.endsWith("WHERE id = ? AND source = 'exo-merged'") || s.endsWith("AND COALESCE(metadata, '') = ?"))) {
+      const [title, startedAt, durationSecs, participants, metadata, , id, onlyIfMetadata] = params as (string | number | null)[];
       const r = rows.get(String(id));
-      if (r && r.source === "exo-merged") rows.set(r.id, { ...r, title: title as string | null, startedAt: startedAt as string | null, durationSecs: durationSecs as number | null, participants: String(participants), metadata: String(metadata) });
+      if (r && r.source === "exo-merged" && (onlyIfMetadata === undefined || (r.metadata ?? "") === onlyIfMetadata)) rows.set(r.id, { ...r, title: title as string | null, startedAt: startedAt as string | null, durationSecs: durationSecs as number | null, participants: String(participants), metadata: String(metadata) });
       return ok({ rows: [] });
     }
     if (s === "DELETE FROM connector_meeting WHERE id = ? AND source = 'exo-merged'") {

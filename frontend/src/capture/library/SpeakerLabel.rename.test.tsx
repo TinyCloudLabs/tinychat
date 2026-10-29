@@ -7,7 +7,7 @@ import { installDom } from "@/test/dom";
 import { SpeakerNamesContext, SpeakerNamesStatus } from "./SpeakerLabel";
 import { TimestampedTranscript } from "./TimestampedTranscript";
 import { useSpeakerNames } from "./useSpeakerNames";
-import { patchRowSpeakerNames } from "@/lib/voiceNotes/voiceNoteRows";
+import { patchRowSpeakerName } from "@/lib/voiceNotes/voiceNoteRows";
 import { __setVoiceNotesForTests } from "@/lib/voiceNotes/nativeVoiceNotes";
 
 const sentences = [
@@ -113,16 +113,18 @@ test("a failed save puts the label back and says so", async () => {
 
 test("the stored names round-trip through the row and clearing the last one removes the key", async () => {
   const { tcw, stored } = space({ capture: { platform: "ios" } });
-  await patchRowSpeakerNames(tcw, "row-1", { Me: "Sam", Them: "Alice, Bob" });
+  await patchRowSpeakerName(tcw, "row-1", "Me", "Sam");
+  await patchRowSpeakerName(tcw, "row-1", "Them", "Alice, Bob");
   expect(stored()).toEqual({ capture: { platform: "ios" }, speaker_names: { Me: "Sam", Them: "Alice, Bob" } });
-  await patchRowSpeakerNames(tcw, "row-1", {});
+  await patchRowSpeakerName(tcw, "row-1", "Me", null);
+  await patchRowSpeakerName(tcw, "row-1", "Them", null);
   expect(stored()).toEqual({ capture: { platform: "ios" } });
-  await expect(patchRowSpeakerNames(tcw, "missing", { Me: "Sam" })).rejects.toThrow("missing");
+  await expect(patchRowSpeakerName(tcw, "missing", "Me", "Sam")).rejects.toThrow("missing");
 });
 
 test("a new transcript commit patches the row's metadata and leaves the names in place", async () => {
   const { tcw, stored, sqlite } = space({ transcript_provider: "assemblyai" });
-  await patchRowSpeakerNames(tcw, "row-1", { Me: "Sam" });
+  await patchRowSpeakerName(tcw, "row-1", "Me", "Sam");
   // The commit's own write (voiceNoteRows.ts: json_patch of the transcript keys).
   sqlite.run("UPDATE connector_meeting SET metadata = json_patch(COALESCE(metadata,'{}'), ?) WHERE id = 'row-1'",
     [JSON.stringify({ transcript_provider: "tinycloud-private-transcription", transcription_outcome: "transcribed" })]);
@@ -218,4 +220,47 @@ test("a phone note owned by another account is read-only: the labels stay plain"
   } finally {
     __setVoiceNotesForTests(saved, { available: null });
   }
+});
+
+test("a rename and its Undo keep a name another writer saved before the write ran", async () => {
+  const { tcw, stored, sqlite } = space({});
+  const lane = tcw.sql.db as unknown as () => { execute: (sql: string, params: never[]) => Promise<unknown> };
+  const direct = lane();
+  let injected = false;
+  (tcw.sql as { db: unknown }).db = () => ({
+    execute: async (sql: string, params: never[]) => {
+      if (!injected) {
+        injected = true;
+        // Another device saves Them -> Alice after this rename was queued and before its write runs.
+        sqlite.run("UPDATE connector_meeting SET metadata = json_patch(metadata, '{\"speaker_names\":{\"Them\":\"Alice\"}}') WHERE id = 'row-1'");
+      }
+      return direct.execute(sql, params);
+    },
+  });
+  await mount(tcw, {});
+  await rename("Me", "Sam");
+  await settle();
+  expect(stored().speaker_names).toEqual({ Me: "Sam", Them: "Alice" });
+
+  await act(async () => (document.querySelector('[data-testid="speaker-rename-undo"]') as HTMLElement).click());
+  await settle();
+  expect(stored().speaker_names).toEqual({ Them: "Alice" });
+});
+
+test("a timed transcript with one speaker still offers the rename control, on that speaker's first line", async () => {
+  const { tcw } = space({});
+  const lone = [
+    { index: 0, speaker_name: "Me", text: "One.", start_time: 0, end_time: 2 },
+    { index: 1, speaker_name: "Me", text: "Two.", start_time: 5, end_time: 7 },
+  ];
+  cleanup = installDom();
+  const host = document.createElement("div");
+  document.body.append(host);
+  root = createRoot(host);
+  function Lone() {
+    const speakers = useSpeakerNames({ tcw, row: ROW, metadata: {}, localId: null });
+    return <SpeakerNamesContext.Provider value={speakers}><TimestampedTranscript sentences={lone} hasAudio={false} /></SpeakerNamesContext.Provider>;
+  }
+  await act(async () => root!.render(<Lone />));
+  expect(labels()).toEqual(["Me"]);
 });
