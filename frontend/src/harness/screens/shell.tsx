@@ -207,6 +207,7 @@ export const shellScreens: HarnessScreen[] = [
     ...SHELL,
     id: "shell-chat-ribbon-from-capture",
     path: "/chat/capture",
+    platform: "ios",
     readyWhen: 'html[data-harness-chat-opened-from-capture="true"]',
     render: () => <Shell act={openChatTab} recorder={{
       phase: "recording",
