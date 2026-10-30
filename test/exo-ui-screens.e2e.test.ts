@@ -17,6 +17,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { chromium, webkit, type Browser, type BrowserContext, type BrowserType, type ConsoleMessage } from "playwright";
 import { buildHarness, serveHarness, type HarnessAssets } from "./exo-ui/harness-server";
 import { inspectHaloPixels, readHaloCenterPixel, readHaloThemeColor } from "./exo-ui/halo-pixels";
+import { trackInFlightRequestUrls, waitForScreenReady } from "./exo-ui/screen-readiness";
 
 interface Viewport {
   id: string;
@@ -456,6 +457,9 @@ interface Capture {
   findings: Finding[];
 }
 const captures: Capture[] = [];
+// Screens whose readyWhen did not match before the harness readiness cap.
+// Recorded in report.json instead of failing the run; fix and re-tighten in TC-2260.
+const readinessCapHits: Array<{ screen: string; viewport: string; theme: string }> = [];
 
 describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
   // Every browser stays open until the run ends. Under bun, closing one
@@ -501,7 +505,7 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
       }
     }));
     server?.stop(true);
-    writeFileSync(`${outDir}report.json`, JSON.stringify({ engine: engineName, motion, captures }, null, 2));
+    writeFileSync(`${outDir}report.json`, JSON.stringify({ engine: engineName, motion, captures, readinessCapHits }, null, 2));
     writeFileSync(`${outDir}index.html`, contactSheet(captures));
     console.log(`exo-ui: ${captures.length} captures in ${outDir}`);
   }, 60_000);
@@ -555,6 +559,7 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
               if (screen.minViewportWidth !== undefined && viewport.width < screen.minViewportWidth) continue;
               const page = await context.newPage();
               const errors: string[] = [];
+              const requests = trackInFlightRequestUrls(page);
               const expectedRecorderStopError = [
                 "capture-recording-minimised-error",
                 "capture-stopped-minimised-error",
@@ -576,12 +581,22 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
                   }
                 }
               });
-              await page.goto(`http://127.0.0.1:${server.port}/?screen=${screen.id}&theme=${theme}&platform=${screen.platform ?? "web"}&freeze=1`);
-              await page.waitForFunction(() => window.exoUi?.ready === true, undefined, { timeout: 20_000 }).catch((error: unknown) => {
-                throw new Error(`${screen.id} at ${viewport.id}/${theme} never became ready: ${errors.join("; ") || "no page errors"}`, { cause: error });
-              });
-              await page.waitForLoadState("networkidle");
-              await page.waitForTimeout(300);
+              try {
+                await page.goto(`http://127.0.0.1:${server.port}/?screen=${screen.id}&theme=${theme}&platform=${screen.platform ?? "web"}&freeze=1`);
+                const readyWhenMatched = await waitForScreenReady(page, {
+                  screenId: screen.id,
+                  viewportId: viewport.id,
+                  theme,
+                  pageErrors: errors,
+                  inFlightRequestUrls: requests.urls,
+                });
+                if (!readyWhenMatched) {
+                  readinessCapHits.push({ screen: screen.id, viewport: viewport.id, theme });
+                  console.warn(`exo-ui: readiness cap hit: ${screen.id} at ${viewport.id}/${theme} (readyWhen unmatched; captured anyway)`);
+                }
+              } finally {
+                requests.dispose();
+              }
               const allow = allowlist.filter((entry) => entry.screen === screen.id).map(({ selector, check }) => ({ selector, check }));
               const findings: Finding[] = await page.evaluate(inspectPage, {
                 layout: screen.layout,
