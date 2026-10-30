@@ -59,7 +59,7 @@ type ScreenInfo = Omit<HarnessScreen, "render">;
 
 declare global {
   interface Window {
-    exoUi?: { screens: ScreenInfo[]; ready: boolean };
+    exoUi?: { screens: ScreenInfo[]; ready: boolean; readyWhenMatched?: boolean };
   }
 }
 
@@ -170,12 +170,15 @@ function Ready(props: { scrollTo?: string; readyWhen?: string }) {
     const arrived = () =>
       waitUntilReady(() => !props.readyWhen || document.querySelector(props.readyWhen) !== null, {
         isCancelled: () => cancelled,
-      });
-    void Promise.all([document.fonts.ready, arrived()]).then(() => {
+      }).then(() => !props.readyWhen || document.querySelector(props.readyWhen) !== null);
+    void Promise.all([document.fonts.ready, arrived()]).then(([, readyWhenMatched]) => {
       if (props.scrollTo) document.querySelector(props.scrollTo)?.scrollIntoView({ block: "center" });
       requestAnimationFrame(() =>
         requestAnimationFrame(() => {
-          if (!cancelled && window.exoUi) window.exoUi.ready = true;
+          if (!cancelled && window.exoUi) {
+            window.exoUi.readyWhenMatched = readyWhenMatched;
+            window.exoUi.ready = true;
+          }
         }),
       );
     });

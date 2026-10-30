@@ -26,18 +26,33 @@ export function trackInFlightRequestUrls(page: Page) {
   };
 }
 
+function screenReadinessError(context: ScreenReadyContext, reason: string, cause: unknown): Error {
+  const pageErrors = context.pageErrors.join("; ") || "no page errors";
+  const requestUrls = context.inFlightRequestUrls();
+  const inFlight = requestUrls.length ? requestUrls.join(", ") : "none";
+  return new Error(
+    `${context.screenId} at ${context.viewportId}/${context.theme} ${reason}: ${pageErrors}; in-flight requests: ${inFlight}`,
+    { cause },
+  );
+}
+
 export async function waitForScreenReady(page: Page, context: ScreenReadyContext, timeoutMs = 20_000): Promise<void> {
+  let state: string;
   try {
-    await page.waitForFunction(() => (window as Window & { exoUi?: { ready: boolean } }).exoUi?.ready === true, undefined, {
-      timeout: timeoutMs,
-    });
+    const ready = await page.waitForFunction(() => {
+      const exoUi = (window as Window & { exoUi?: { ready: boolean; readyWhenMatched?: boolean } }).exoUi;
+      if (!exoUi?.ready) return false;
+      return exoUi.readyWhenMatched === true ? "ready" : "readyWhen-unmatched";
+    }, undefined, { timeout: timeoutMs });
+    state = await ready.jsonValue();
   } catch (error) {
-    const pageErrors = context.pageErrors.join("; ") || "no page errors";
-    const requestUrls = context.inFlightRequestUrls();
-    const inFlight = requestUrls.length ? requestUrls.join(", ") : "none";
-    throw new Error(
-      `${context.screenId} at ${context.viewportId}/${context.theme} never became ready: ${pageErrors}; in-flight requests: ${inFlight}`,
-      { cause: error },
+    throw screenReadinessError(context, "never became ready", error);
+  }
+  if (state !== "ready") {
+    throw screenReadinessError(
+      context,
+      "readyWhen did not match before the harness readiness cap",
+      new Error("The harness marked the screen ready after its readyWhen cap."),
     );
   }
 }
