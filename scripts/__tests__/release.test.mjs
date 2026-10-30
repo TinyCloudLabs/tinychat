@@ -1988,7 +1988,8 @@ while [ $# -gt 0 ]; do
 done
 emit() { if [ -n "$out" ]; then cat > "$out"; else cat; fi; }
 case "$url" in
-  https://api.github.com/repos/TinyCloudLabs/tinychat/releases/latest) printf '{"tag_name": "%s"}\\n' "$STUB_TAG" | emit ;;
+  https://api.github.com/repos/TinyCloudLabs/tinychat/releases/latest)
+    if [ -n "\${STUB_API_REDIRECT:-}" ]; then : | emit; printf '%s' "$STUB_API_REDIRECT"; else printf '{"tag_name": "%s"}\\n' "$STUB_TAG" | emit; fi ;;
   "https://api.github.com/repos/TinyCloudLabs/tinychat/releases?per_page=20") printf '[{"tag_name": "%s"}]\\n' "$STUB_TAG" | emit ;;
   https://github.com/TinyCloudLabs/tinychat/releases/download/*) : | emit; printf '%s/%s' "$STUB_REDIRECT_BASE" "\${url##*/}" ;;
   https://release-assets.githubusercontent.com/fixture/*) f="$STUB_RELEASE/\${url##*/}"; [ -f "$f" ] || exit 22; emit < "$f" ;;
@@ -2000,6 +2001,7 @@ printf 'hdiutil %s\\n' "$1" >> "$STUB_LOG/calls.log"
 if [ "$1" = attach ]; then
   mnt=; while [ $# -gt 0 ]; do case "$1" in -mountpoint) mnt=$2; shift 2 ;; *) shift ;; esac; done
   cp -R "$STUB_RELEASE/content/." "$mnt/"
+  if [ "\${STUB_KILL_AT:-}" = attach ]; then kill -TERM "$PPID"; fi
 fi
 `,
   ditto: `#!/bin/bash
@@ -2017,7 +2019,7 @@ if command -v sha256sum >/dev/null; then exec sha256sum "$@"; else exec /usr/bin
   open: `#!/bin/bash\nprintf 'open %s\\n' "$1" >> "$STUB_LOG/calls.log"\n`,
 };
 
-function runExoUpdate(t, shell, { sums = 'good', redirectBase, killAt, installed = true, args = [] } = {}) {
+function runExoUpdate(t, shell, { sums = 'good', redirectBase, apiRedirect, killAt, installed = true, args = [] } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'exo-update-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const dirs = Object.fromEntries(['bin', 'home', 'apps', 'release', 'log', 'tmp'].map((name) => [name, join(root, name)]));
@@ -2046,6 +2048,7 @@ function runExoUpdate(t, shell, { sums = 'good', redirectBase, killAt, installed
       EXO_UPDATE_APPLICATIONS: dirs.apps, EXO_UPDATE_PLISTBUDDY: join(dirs.bin, 'PlistBuddy'),
       STUB_LOG: dirs.log, STUB_RELEASE: dirs.release, STUB_TAG: `exo-desktop@${version}`,
       STUB_REDIRECT_BASE: redirectBase ?? 'https://release-assets.githubusercontent.com/fixture', STUB_KILL_AT: killAt ?? '',
+      STUB_API_REDIRECT: apiRedirect ?? '',
     },
   });
   const read = (path) => (existsSync(path) ? readFileSync(path, 'utf8') : '');
@@ -2095,16 +2098,22 @@ for (const shell of ['bash', 'sh']) {
     const elsewhere = runExoUpdate(t, shell, { redirectBase: 'https://example.com/fixture' });
     assertUntouched(elsewhere);
     assert.match(elsewhere.stderr, /isn't GitHub/);
+    const lookup = runExoUpdate(t, shell, { apiRedirect: 'https://example.com/releases/latest' });
+    assertUntouched(lookup);
+    assert.match(lookup.stderr, /Refusing a download from example\.com/);
+    assert.doesNotMatch(lookup.curl, /releases\/download/, 'no asset is fetched after a refused lookup');
   });
 
-  test(`exo-update.sh (${shell}) cleans up and keeps the old app when killed mid-install`, (t) => {
-    const run = runExoUpdate(t, shell, { killAt: 'ditto' });
-    assert.equal(run.status, 143, run.stderr);
-    assert.equal(run.build, 'old-build');
-    assert.match(run.calls, /hdiutil detach/, 'the mounted DMG is detached');
-    assert.doesNotMatch(run.calls, /open /);
-    assert.deepEqual(run.leftovers, []);
-  });
+  for (const killAt of ['attach', 'ditto']) {
+    test(`exo-update.sh (${shell}) detaches, cleans up and keeps the old app when killed after ${killAt}`, (t) => {
+      const run = runExoUpdate(t, shell, { killAt });
+      assert.equal(run.status, 143, run.stderr);
+      assert.equal(run.build, 'old-build');
+      assert.match(run.calls, /hdiutil attach[\s\S]*hdiutil detach/, 'the mounted DMG is detached');
+      assert.doesNotMatch(run.calls, /open /);
+      assert.deepEqual(run.leftovers, []);
+    });
+  }
 }
 
 // A beta tag left on another commit that no GitHub Release ever published (TC-2189): the next beta number is used.

@@ -7,7 +7,7 @@
 #   curl -fsSL https://raw.githubusercontent.com/TinyCloudLabs/tinychat/main/desktop/scripts/exo-update.sh | bash
 #   curl -fsSL https://raw.githubusercontent.com/TinyCloudLabs/tinychat/main/desktop/scripts/exo-update.sh | bash -s -- beta
 #
-# It downloads the release DMG over HTTPS from GitHub only, checks it against the release's
+# It looks up the release and downloads its DMG over HTTPS from GitHub only, checks it against the release's
 # SHA256SUMS.txt, quits Exo, replaces /Applications/Exo.app and opens it. A first install works the
 # same way. There is no downgrade guard: switching from beta to stable installs the latest stable
 # even when it is older than the build you have. A file downloaded with curl is not quarantined, so
@@ -25,11 +25,11 @@ OLD="$APPS/Exo.exo-update-old.app"
 STATE="$HOME/.exo-update"
 CURL="curl --proto =https --proto-redir =https"
 
-# Release downloads redirect from github.com to GitHub's asset CDN. Follow each redirect by hand
-# and refuse any hop that is not HTTPS on one of these hosts.
+# Every request, the release lookup included, follows redirects one hop at a time and refuses any
+# hop that is not HTTPS on one of these hosts (release downloads redirect to GitHub's asset CDN).
 allowed_host() {
   case "$1" in
-    github.com|release-assets.githubusercontent.com|objects.githubusercontent.com) return 0 ;;
+    api.github.com|github.com|release-assets.githubusercontent.com|objects.githubusercontent.com) return 0 ;;
   esac
   return 1
 }
@@ -54,24 +54,6 @@ fetch() { # fetch <url> <file> [progress]
   done
 }
 
-if [ "${1:-}" = "beta" ]; then
-  URL="https://api.github.com/repos/$REPO/releases?per_page=20"
-else
-  URL="https://api.github.com/repos/$REPO/releases/latest"
-fi
-JSON=$($CURL -fsSL "$URL") || { echo "Couldn't reach GitHub." >&2; exit 1; }
-TAG=$(printf '%s\n' "$JSON" | grep -o '"tag_name": *"exo-desktop@[^"]*"' | sed -n '1s/.*"\(exo-desktop@[^"]*\)"$/\1/p')
-[ -n "$TAG" ] || { echo "Couldn't find an Exo release." >&2; exit 1; }
-V="${TAG#exo-desktop@}"
-
-installed_build() { "$PLISTBUDDY" -c 'Print :CFBundleVersion' "$APP/Contents/Info.plist" 2>/dev/null || true; }
-if [ -f "$STATE" ] && [ "$(cat "$STATE")" = "$TAG $(installed_build)" ]; then
-  echo "Exo $V is already installed."
-  exit 0
-fi
-
-DMG="Exo_${V}_aarch64.dmg"
-BASE="https://github.com/$REPO/releases/download/exo-desktop%40$V"
 TMP=$(mktemp -d)
 MNT="$TMP/mnt"
 MOUNTED=
@@ -86,6 +68,26 @@ trap cleanup EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
+
+if [ "${1:-}" = "beta" ]; then
+  URL="https://api.github.com/repos/$REPO/releases?per_page=20"
+else
+  URL="https://api.github.com/repos/$REPO/releases/latest"
+fi
+fetch "$URL" "$TMP/release.json"
+JSON=$(cat "$TMP/release.json")
+TAG=$(printf '%s\n' "$JSON" | grep -o '"tag_name": *"exo-desktop@[^"]*"' | sed -n '1s/.*"\(exo-desktop@[^"]*\)"$/\1/p')
+[ -n "$TAG" ] || { echo "Couldn't find an Exo release." >&2; exit 1; }
+V="${TAG#exo-desktop@}"
+
+installed_build() { "$PLISTBUDDY" -c 'Print :CFBundleVersion' "$APP/Contents/Info.plist" 2>/dev/null || true; }
+if [ -f "$STATE" ] && [ "$(cat "$STATE")" = "$TAG $(installed_build)" ]; then
+  echo "Exo $V is already installed."
+  exit 0
+fi
+
+DMG="Exo_${V}_aarch64.dmg"
+BASE="https://github.com/$REPO/releases/download/exo-desktop%40$V"
 
 echo "Downloading Exo $V..."
 fetch "$BASE/$DMG" "$TMP/$DMG" progress
@@ -113,8 +115,9 @@ if running; then
 fi
 
 mkdir "$MNT"
-hdiutil attach -nobrowse -readonly -quiet -mountpoint "$MNT" "$TMP/$DMG"
+# Marked before attaching, so a signal during or right after attach still detaches.
 MOUNTED=1
+hdiutil attach -nobrowse -readonly -quiet -mountpoint "$MNT" "$TMP/$DMG"
 # Copy the new app in full, then swap; cleanup puts the old app back if the swap is cut short.
 rm -rf "$NEW" "$OLD"
 ditto "$MNT/Exo.app" "$NEW"
