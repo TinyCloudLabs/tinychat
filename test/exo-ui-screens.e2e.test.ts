@@ -17,6 +17,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { chromium, webkit, type Browser, type BrowserContext, type BrowserType, type ConsoleMessage } from "playwright";
 import { buildHarness, serveHarness, type HarnessAssets } from "./exo-ui/harness-server";
 import { inspectHaloPixels, readHaloCenterPixel, readHaloThemeColor } from "./exo-ui/halo-pixels";
+import { trackInFlightRequestUrls, waitForScreenReady } from "./exo-ui/screen-readiness";
 
 interface Viewport {
   id: string;
@@ -555,6 +556,7 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
               if (screen.minViewportWidth !== undefined && viewport.width < screen.minViewportWidth) continue;
               const page = await context.newPage();
               const errors: string[] = [];
+              const requests = trackInFlightRequestUrls(page);
               const expectedRecorderStopError = [
                 "capture-recording-minimised-error",
                 "capture-stopped-minimised-error",
@@ -576,12 +578,18 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
                   }
                 }
               });
-              await page.goto(`http://127.0.0.1:${server.port}/?screen=${screen.id}&theme=${theme}&platform=${screen.platform ?? "web"}&freeze=1`);
-              await page.waitForFunction(() => window.exoUi?.ready === true, undefined, { timeout: 20_000 }).catch((error: unknown) => {
-                throw new Error(`${screen.id} at ${viewport.id}/${theme} never became ready: ${errors.join("; ") || "no page errors"}`, { cause: error });
-              });
-              await page.waitForLoadState("networkidle");
-              await page.waitForTimeout(300);
+              try {
+                await page.goto(`http://127.0.0.1:${server.port}/?screen=${screen.id}&theme=${theme}&platform=${screen.platform ?? "web"}&freeze=1`);
+                await waitForScreenReady(page, {
+                  screenId: screen.id,
+                  viewportId: viewport.id,
+                  theme,
+                  pageErrors: errors,
+                  inFlightRequestUrls: requests.urls,
+                });
+              } finally {
+                requests.dispose();
+              }
               const allow = allowlist.filter((entry) => entry.screen === screen.id).map(({ selector, check }) => ({ selector, check }));
               const findings: Finding[] = await page.evaluate(inspectPage, {
                 layout: screen.layout,
