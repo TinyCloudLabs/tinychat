@@ -7,12 +7,13 @@
 // Pushed (a phone): the page header with Back. Beside the list (wide): the
 // title as the pane's heading.
 import { useContext, useState, type ReactNode } from "react";
-import { CheckIcon, CopyIcon, Loader2Icon, RefreshCwIcon } from "lucide-react";
+import { CheckIcon, CopyIcon, Loader2Icon, RefreshCwIcon, Share2Icon } from "lucide-react";
 
 import { MeetingAudioPlayer } from "@/chat/MeetingAudioPlayer";
 import { NotePlaybackContext } from "@/lib/audio/notePlayback";
 import { appPlatform } from "@/lib/platform";
 import { Button } from "@/components/ui/button";
+import { ExoTranscriptShareContext } from "@/lib/exoTranscriptShare";
 import { openManageStorage } from "@/lib/openManageStorage";
 import { Empty } from "@/components/ui/empty";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -356,6 +357,7 @@ function savedText(metadata: MeetingMetadataRead): string | null {
 }
 
 export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
+  const shareTranscript = useContext(ExoTranscriptShareContext);
   const transcribeJob = props.activityView && props.platform
     ? activityForNote(props.activityView, props.platform).find((job) => job.kind === "transcribe") : undefined;
   const [exportError, setExportError] = useState(false);
@@ -425,6 +427,11 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
               {props.copyState === "copied" ? <CheckIcon aria-hidden /> : <CopyIcon aria-hidden />}
               {props.copyState === "copied" ? "Copied" : "Copy"}
             </Button>
+            {shareTranscript && (
+              <Button type="button" variant="ghost" onClick={shareTranscript.open} disabled={shareTranscript.busy || shareTranscript.signInRequired} data-testid="note-share-transcript">
+                <Share2Icon aria-hidden /> {shareTranscript.signInRequired ? "Sign in again to share" : "Share"}
+              </Button>
+            )}
             {timed && <details className="relative">
               <summary className="flex min-h-11 cursor-pointer items-center rounded-md px-2 text-meta hover:bg-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring" aria-label="Transcript copy and export options">▾</summary>
               <div className="absolute right-0 z-10 min-w-48 rounded-md border bg-popover p-1 shadow-sm">

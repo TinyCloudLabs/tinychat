@@ -1,13 +1,13 @@
 // The open note (TC-761): NoteDetailView over the Library's reads, with the
 // transcript's Copy. Remounted per note (keyed by its id), so a copy's tick
 // never carries over to the next note.
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import type { VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
 import { copyText } from "@/lib/copyText";
-import { transcriptCopyText } from "@/lib/connectors/meetingExplorer";
+import { findMeetingId, readMeetingMetadata, readTranscript, transcriptCopyText } from "@/lib/connectors/meetingExplorer";
 import { captureCapabilities, captureEngineAvailable } from "@/lib/voiceNotes/captureEngine";
 import { getDesktopWhisperQueue } from "@/lib/voiceNotes/desktop/desktopWhisper";
 import { VoiceNotes, type LocalTranscript } from "@/lib/voiceNotes/nativeVoiceNotes";
@@ -35,9 +35,20 @@ import type { Library } from "./useLibrary";
 import { notePath } from "@/shell/routes";
 import { EXO_MERGED_SOURCE } from "@tinyboilerplate/core";
 import { captureEvents } from "../captureEvents";
+import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import {
+  ExoTranscriptShareContext, prepareTranscriptShare, publishTranscriptShare,
+  transcriptShareNeedsSignIn, transcriptShareOrigins, transcriptShareSnapshot, transcriptShareUnavailable,
+} from "@/lib/exoTranscriptShare";
+import type { TranscriptShareOrigins, TranscriptShareReview } from "@/lib/exoTranscriptShare";
+import { scheduledSpace } from "@/lib/spaceQueue";
+import { voiceNoteTranscriptLocator } from "@/lib/voiceNotes/voiceNoteCommits";
+import { isStorageAccountScopeCurrent, storageScopeFor } from "@/lib/storageStatus";
 
 /** Matches markdown-text's copy button: the tick reverts on its own. */
 const COPIED_DURATION = 1500;
+const SHARE_ABORTED = "The note or account changed. Review the transcript again.";
 
 export async function readLocalTranscript(id: string, read: (id: string) => Promise<{ transcript: LocalTranscript | null }> =
   (noteId) => VoiceNotes.getTranscript({ id: noteId })):
@@ -63,6 +74,8 @@ export function NoteDetail(props: {
   activityControl?: ReactNode;
   /** Makes a combined meeting's summary (CaptureSurface owns it); without one no summary is shown. */
   summaries?: SummaryRunner;
+  /** Local integration can inject loopback endpoints without changing the SDK transport. */
+  transcriptShareOrigins?: TranscriptShareOrigins;
 }) {
   const { library } = props;
   const { item, reads, audio } = library.note;
@@ -163,8 +176,137 @@ export function NoteDetail(props: {
     }, COPIED_DURATION);
   }, [sentences, names, applyWordFixes, isPrivateCloud, item, reads.metadata]);
 
+  const shareEmailId = useId();
+  const [shareOpen, setShareOpen] = useState(false);
+  const [shareRecipient, setShareRecipient] = useState("");
+  const [shareReview, setShareReview] = useState<TranscriptShareReview | null>(null);
+  const [shareBusy, setShareBusy] = useState(false);
+  const [shareError, setShareError] = useState<string | null>(null);
+  const [shareResult, setShareResult] = useState<{ url: string; recipient: string; expiresAt: string } | null>(null);
+  const [shareCopied, setShareCopied] = useState(false);
+  const shareGeneration = useRef(0);
+  const shareInFlight = useRef(false);
+  const localTranscriptSyncing = props.activityView?.input?.transcript.onDevice?.sync?.state === "syncing";
+  const shareSnapshot = useMemo(() => localTranscriptSyncing ? null
+    : transcriptShareSnapshot(item, reads.metadata, remoteTranscript, applyWordFixes, names),
+  [item, reads.metadata, remoteTranscript, applyWordFixes, names, localTranscriptSyncing]);
+  const shareSession = typeof props.tcw.session === "function" ? props.tcw.session() : undefined;
+  const shareSpaceId = props.tcw.spaceId;
+  const shareSessionDid = shareSession ? props.tcw.sessionDid : null;
+  const shareHolderDid = shareSession ? props.tcw.credentialHolderDid : null;
+  const shareSignInRequired = shareSnapshot !== null && transcriptShareNeedsSignIn(props.tcw);
+  const shareScope = storageScopeFor(props.tcw);
+  const shareScopeCurrent = !shareScope || isStorageAccountScopeCurrent(shareScope);
+  const shareWalletAddress = shareSession?.walletAddress?.toLowerCase();
+  // Rehydrated reads and SDK wrappers are not identities. A grant keeps the owner,
+  // session key and storage epoch; changed content or a retired account still aborts.
+  const shareIdentity = useMemo(() => ({
+    id: shareSnapshot?.id, source: shareSnapshot?.source, sourceId: shareSnapshot?.sourceId,
+    title: shareSnapshot?.title, rawText: shareSnapshot?.rawText, text: shareSnapshot?.text,
+    speakerNamesKey: shareSnapshot?.speakerNamesKey,
+    spaceId: shareSpaceId, sessionDid: shareSessionDid, holderDid: shareHolderDid,
+    walletAddress: shareWalletAddress, chainId: shareSession?.chainId,
+    nodeOrigin: props.tcw.hosts?.[0], scope: shareScope, scopeCurrent: shareScopeCurrent, signInRequired: shareSignInRequired,
+  }), [shareSnapshot?.id, shareSnapshot?.source, shareSnapshot?.sourceId, shareSnapshot?.title,
+    shareSnapshot?.rawText, shareSnapshot?.text, shareSnapshot?.speakerNamesKey, shareSpaceId, shareSessionDid, shareHolderDid,
+    shareWalletAddress, shareSession?.chainId, props.tcw.hosts?.[0], shareScope, shareScopeCurrent, shareSignInRequired]);
+  const latestShare = useRef(shareIdentity);
+  latestShare.current = shareIdentity;
+  const shareOpenedFor = useRef<typeof shareIdentity | null>(null);
+  const closeShare = useCallback((error: string | null = null) => {
+    shareGeneration.current += 1;
+    shareOpenedFor.current = null;
+    setShareOpen(false); setShareReview(null); setShareResult(null); setShareRecipient("");
+    setShareError(error); setShareCopied(false);
+  }, []);
+  useEffect(() => {
+    if (shareOpenedFor.current && shareOpenedFor.current !== shareIdentity) {
+      closeShare(shareInFlight.current ? SHARE_ABORTED : null);
+    }
+  }, [shareIdentity, closeShare]);
+  const openShare = useCallback(() => {
+    if (!shareSnapshot || shareInFlight.current) return;
+    shareGeneration.current += 1;
+    shareOpenedFor.current = shareIdentity;
+    setShareRecipient(""); setShareReview(null); setShareResult(null); setShareCopied(false);
+    setShareError(transcriptShareUnavailable(props.tcw));
+    setShareOpen(true);
+  }, [shareSnapshot, props.tcw, shareIdentity]);
+  const callerShareUnavailable = shareSnapshot ? transcriptShareUnavailable(props.tcw) : null;
+  const shareAction = useMemo(() => shareSnapshot && callerShareUnavailable === null
+    ? { open: openShare, busy: shareBusy, signInRequired: shareSignInRequired } : null,
+    [shareSnapshot, callerShareUnavailable, openShare, shareBusy, shareSignInRequired]);
+  const reviewShare = () => {
+    if (!shareSnapshot || shareInFlight.current) return;
+    try {
+      const unavailable = transcriptShareUnavailable(props.tcw);
+      if (unavailable) { setShareError(unavailable); return; }
+      setShareReview(prepareTranscriptShare(props.tcw, shareSnapshot, shareRecipient));
+      setShareError(null);
+    } catch (error) {
+      setShareError(error instanceof Error ? error.message : "Enter one exact recipient email.");
+    }
+  };
+  const confirmShare = async () => {
+    if (!item || !shareReview || shareInFlight.current) return;
+    const tcw = props.tcw;
+    const reviewed = shareReview;
+    const identity = shareIdentity;
+    const generation = ++shareGeneration.current;
+    const isCurrent = () => mounted.current && generation === shareGeneration.current
+      && latestShare.current === identity && (!shareScope || isStorageAccountScopeCurrent(shareScope));
+    shareInFlight.current = true;
+    setShareBusy(true); setShareError(null);
+    try {
+      const space = scheduledSpace(tcw);
+      const result = await publishTranscriptShare({
+        tcw, review: reviewed, origins: transcriptShareOrigins(props.transcriptShareOrigins), isCurrent,
+        // Reuse the Library's committed-body selection, not a local fallback or a plaintext KV pointer.
+        readPersisted: async () => {
+          const row = await findMeetingId(space, reviewed.snapshot.source, reviewed.snapshot.sourceId);
+          if (!isCurrent() || row.status !== "ok" || row.id !== reviewed.snapshot.id) return null;
+          const locator = reviewed.snapshot.source === VOICE_NOTE_SOURCE
+            ? await voiceNoteTranscriptLocator(space, reviewed.snapshot.sourceId) : null;
+          if (!isCurrent() || (locator && !locator.bodyKey)) return null;
+          let metadata = await readMeetingMetadata(space, row.id);
+          if (!isCurrent() || metadata.status !== "ok") return null;
+          if (locator) metadata = { status: "ok", metadata: { ...metadata.metadata,
+            transcription_outcome: locator.outcome === "none" ? metadata.metadata.transcription_outcome : locator.outcome,
+            transcript_text: locator.committed ? null : locator.expectedText } };
+          const transcript = locator?.bodyKey
+            ? await readTranscript(space, reviewed.snapshot.source, reviewed.snapshot.sourceId, locator.bodyKey, locator.expectedText)
+            : await readTranscript(space, reviewed.snapshot.source, reviewed.snapshot.sourceId);
+          if (!isCurrent()) return null;
+          return transcriptShareSnapshot(item, metadata, transcript, applyWordFixes);
+        },
+      });
+      if (!isCurrent()) throw new Error(SHARE_ABORTED);
+      if (result.status === "declined") { setShareReview(null); setShareError("Sharing was cancelled."); }
+      else setShareResult({ url: result.published.url, recipient: reviewed.recipient, expiresAt: result.published.metadata.expiresAt });
+    } catch (error) {
+      if (mounted.current) {
+        if (isCurrent()) {
+          setShareReview(null); setShareError(error instanceof Error ? error.message : "Transcript sharing stopped. No link was returned.");
+        } else if (generation === shareGeneration.current) {
+          closeShare(SHARE_ABORTED);
+        } else {
+          // A scope change or explicit cancellation may already have hidden private material.
+          setShareError((current) => current ?? SHARE_ABORTED);
+        }
+      }
+    } finally {
+      shareInFlight.current = false;
+      if (mounted.current) setShareBusy(false);
+    }
+  };
+  // Hide old-account recipient/link material in this render, not one passive effect later.
+  const shareVisible = shareOpen && shareScopeCurrent && shareOpenedFor.current === shareIdentity;
+  const shareUnavailable = shareVisible ? transcriptShareUnavailable(props.tcw) : null;
+  const shareExpiry = shareResult?.expiresAt ?? shareReview?.expiresAt;
+
   return (
     <>
+      <ExoTranscriptShareContext.Provider value={shareAction}>
       <NoteDetailView
         item={item}
         // Not listed yet while a list read is out (a note saved a moment ago): it waits for that read.
@@ -191,9 +333,65 @@ export function NoteDetail(props: {
         combine={combine}
         speakerNames={speakerNames}
       />
+      </ExoTranscriptShareContext.Provider>
       {/* The visible list: a capture already inside a combined meeting is never offered for a new combine. */}
       <CombineSheet flow={flow} items={library.items} now={new Date()} />
       {combined.remove.open && <DeleteCombinedSheet remove={combined.remove} title={item?.title ?? "Combined meeting"} />}
+      {!shareVisible && shareError && <p role="alert" className="text-callout text-destructive">{shareError}</p>}
+      <Dialog open={shareVisible} onOpenChange={(open) => {
+        // The SDK's consent sheet is outside this dialog. It must not dismiss the
+        // in-flight share; the explicit Cancel button remains available.
+        if (!open && !shareInFlight.current) closeShare();
+      }}>
+        {shareVisible && <DialogContent className="max-w-lg" aria-describedby={`${shareEmailId}-description`}>
+          <DialogHeader>
+            <DialogTitle>Share transcript</DialogTitle>
+            <DialogDescription id={`${shareEmailId}-description`}>
+              {shareExpiry === undefined ? "Choose who can read this transcript."
+                : `Recipients can read this transcript until ${new Date(shareExpiry).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}.`}
+            </DialogDescription>
+          </DialogHeader>
+          {shareResult ? (
+            <div className="flex flex-col gap-3">
+              <p className="text-callout">Recipient: <strong>{shareResult.recipient}</strong></p>
+              <label className="text-meta" htmlFor={`${shareEmailId}-link`}>Recipient-only link</label>
+              <input id={`${shareEmailId}-link`} readOnly value={shareResult.url} className="w-full rounded-md border bg-background px-3 py-2 text-meta" />
+              <Button type="button" onClick={() => {
+                const generation = shareGeneration.current;
+                void copyText(shareResult.url).then((ok) => {
+                  if (mounted.current && generation === shareGeneration.current) {
+                    setShareCopied(ok); if (!ok) setShareError("Couldn’t copy. Select the recipient-only link and copy it instead.");
+                  }
+                });
+              }}>{shareCopied ? "Copied" : "Copy recipient-only link"}</Button>
+            </div>
+          ) : shareReview ? (
+            <div className="flex flex-col gap-3">
+              <p className="text-callout">Recipient: <strong>{shareReview.recipient}</strong></p>
+              <details className="rounded-md border p-3">
+                <summary className="cursor-pointer text-meta">Review transcript</summary>
+                <pre className="mt-3 max-h-64 overflow-auto whitespace-pre-wrap break-words font-sans text-callout">{shareReview.snapshot.text}</pre>
+              </details>
+              <div className="flex justify-end gap-2">
+                <Button type="button" variant="outline" disabled={shareBusy} onClick={() => setShareReview(null)}>Back</Button>
+                <Button type="button" disabled={shareBusy || shareUnavailable !== null} onClick={() => void confirmShare()}>
+                  {shareBusy ? "Sharing…" : "Share transcript"}
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <form className="flex flex-col gap-3" onSubmit={(event) => { event.preventDefault(); reviewShare(); }}>
+              <label htmlFor={shareEmailId} className="text-callout">Exact recipient email</label>
+              <input id={shareEmailId} type="email" autoComplete="email" required value={shareRecipient}
+                onChange={(event) => setShareRecipient(event.target.value)} disabled={shareBusy}
+                className="w-full rounded-md border bg-background px-3 py-2 text-callout" />
+              <Button type="submit" disabled={shareBusy || shareUnavailable !== null}>Review recipient</Button>
+            </form>
+          )}
+          {(shareUnavailable || shareError) && <p role="alert" className="text-callout text-destructive">{shareUnavailable ?? shareError}</p>}
+          <Button type="button" variant="outline" onClick={() => closeShare(shareInFlight.current ? "Sharing was cancelled." : null)}>{shareResult ? "Done" : "Cancel"}</Button>
+        </DialogContent>}
+      </Dialog>
     </>
   );
 }
