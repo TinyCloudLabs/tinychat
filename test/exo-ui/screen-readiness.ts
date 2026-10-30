@@ -37,18 +37,20 @@ function screenReadinessError(context: ScreenReadyContext, reason: string, cause
 }
 
 export async function waitForScreenReady(page: Page, context: ScreenReadyContext, timeoutMs = 20_000): Promise<void> {
-  let state: string;
+  let readyWhenMatched: boolean;
   try {
-    const ready = await page.waitForFunction(() => {
-      const exoUi = (window as Window & { exoUi?: { ready: boolean; readyWhenMatched?: boolean } }).exoUi;
-      if (!exoUi?.ready) return false;
-      return exoUi.readyWhenMatched === true ? "ready" : "readyWhen-unmatched";
-    }, undefined, { timeout: timeoutMs });
-    state = await ready.jsonValue();
+    await page.waitForFunction(
+      () => (window as Window & { exoUi?: { ready: boolean } }).exoUi?.ready === true,
+      undefined,
+      { timeout: timeoutMs },
+    );
+    readyWhenMatched = await page.evaluate(
+      () => (window as Window & { exoUi?: { readyWhenMatched?: boolean } }).exoUi?.readyWhenMatched === true,
+    );
   } catch (error) {
     throw screenReadinessError(context, "never became ready", error);
   }
-  if (state !== "ready") {
+  if (!readyWhenMatched) {
     throw screenReadinessError(
       context,
       "readyWhen did not match before the harness readiness cap",

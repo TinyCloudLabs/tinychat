@@ -170,7 +170,7 @@ function Ready(props: { scrollTo?: string; readyWhen?: string }) {
     const arrived = () =>
       waitUntilReady(() => !props.readyWhen || document.querySelector(props.readyWhen) !== null, {
         isCancelled: () => cancelled,
-      }).then(() => !props.readyWhen || document.querySelector(props.readyWhen) !== null);
+      });
     void Promise.all([document.fonts.ready, arrived()]).then(([, readyWhenMatched]) => {
       if (props.scrollTo) document.querySelector(props.scrollTo)?.scrollIntoView({ block: "center" });
       requestAnimationFrame(() =>
