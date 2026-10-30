@@ -1,0 +1,11 @@
+{
+  "versions": {
+    "exo-desktop": "0.12.0",
+    "@tinychat/frontend": "0.12.0"
+  },
+  "changesets": [
+    ".changeset/pre/meet-invite-paste.md",
+    ".changeset/pre/release-prerelease-tag-collision.md",
+    ".changeset/pre/rename-speakers-on-any-transcript.md"
+  ]
+}
