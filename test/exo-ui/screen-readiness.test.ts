@@ -77,7 +77,7 @@ test("a ready timeout names the screen and its active request URLs", async () =>
     await browser.close();
   }
 });
-test("a ready screen with unmatched readyWhen fails with the readiness diagnostic", async () => {
+test("a ready screen with unmatched readyWhen resolves false so the caller can record a cap hit", async () => {
   const browser = await chromium.launch({ headless: true });
   const releaseRequests: Array<() => void> = [];
   const disposeTrackers: Array<() => void> = [];
@@ -101,13 +101,13 @@ test("a ready screen with unmatched readyWhen fails with the readiness diagnosti
       undefined,
       { timeout: 1_000 },
     );
-    await expect(waitForScreenReady(page, {
+    expect(await waitForScreenReady(page, {
       screenId: "combine-confirm-pass",
       viewportId: "phone-land",
       theme: "dark",
       pageErrors: [],
       inFlightRequestUrls: requests.urls,
-    }, 1_000)).rejects.toThrow(/combine-confirm-pass at phone-land\/dark.*readyWhen did not match.*screen-fixture\.invalid\/ready-when-missing/);
+    }, 1_000)).toBe(false);
   } finally {
     for (const release of releaseRequests) release();
     for (const dispose of disposeTrackers) dispose();

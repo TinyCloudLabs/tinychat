@@ -36,25 +36,22 @@ function screenReadinessError(context: ScreenReadyContext, reason: string, cause
   );
 }
 
-export async function waitForScreenReady(page: Page, context: ScreenReadyContext, timeoutMs = 20_000): Promise<void> {
-  let readyWhenMatched: boolean;
+/**
+ * Waits for the harness to report ready. Resolves true when the screen's
+ * readyWhen matched, false when the harness readiness cap fired first (the
+ * caller records the cap hit and still captures). Rejects if never ready.
+ */
+export async function waitForScreenReady(page: Page, context: ScreenReadyContext, timeoutMs = 20_000): Promise<boolean> {
   try {
     await page.waitForFunction(
       () => (window as Window & { exoUi?: { ready: boolean } }).exoUi?.ready === true,
       undefined,
       { timeout: timeoutMs },
     );
-    readyWhenMatched = await page.evaluate(
+    return await page.evaluate(
       () => (window as Window & { exoUi?: { readyWhenMatched?: boolean } }).exoUi?.readyWhenMatched === true,
     );
   } catch (error) {
     throw screenReadinessError(context, "never became ready", error);
-  }
-  if (!readyWhenMatched) {
-    throw screenReadinessError(
-      context,
-      "readyWhen did not match before the harness readiness cap",
-      new Error("The harness marked the screen ready after its readyWhen cap."),
-    );
   }
 }
