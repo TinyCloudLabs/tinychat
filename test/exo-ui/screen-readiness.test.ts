@@ -17,12 +17,14 @@ async function holdRequest(page: Page, url: string) {
 test("a ready screen can be captured while an unrelated request remains in flight", async () => {
   const browser = await chromium.launch({ headless: true });
   const releaseRequests: Array<() => void> = [];
+  const disposeTrackers: Array<() => void> = [];
   const pendingUrl = "https://screen-fixture.invalid/poll";
   try {
     const page = await browser.newPage();
     const held = await holdRequest(page, pendingUrl);
     releaseRequests.push(held.release);
     const requests = trackInFlightRequestUrls(page);
+    disposeTrackers.push(requests.dispose);
     await page.setContent(`<script>
       window.exoUi = { ready: true };
       fetch(${JSON.stringify(pendingUrl)}).catch(() => {});
@@ -37,9 +39,9 @@ test("a ready screen can be captured while an unrelated request remains in fligh
       inFlightRequestUrls: requests.urls,
     });
     expect(requests.urls()).toEqual([pendingUrl]);
-    requests.dispose();
   } finally {
     for (const release of releaseRequests) release();
+    for (const dispose of disposeTrackers) dispose();
     await browser.close();
   }
 });
@@ -47,12 +49,14 @@ test("a ready screen can be captured while an unrelated request remains in fligh
 test("a ready timeout names the screen and its active request URLs", async () => {
   const browser = await chromium.launch({ headless: true });
   const releaseRequests: Array<() => void> = [];
+  const disposeTrackers: Array<() => void> = [];
   const pendingUrl = "https://screen-fixture.invalid/stalled";
   try {
     const page = await browser.newPage();
     const held = await holdRequest(page, pendingUrl);
     releaseRequests.push(held.release);
     const requests = trackInFlightRequestUrls(page);
+    disposeTrackers.push(requests.dispose);
     await page.setContent(`<script>
       window.exoUi = { ready: false };
       fetch(${JSON.stringify(pendingUrl)}).catch(() => {});
@@ -67,9 +71,9 @@ test("a ready timeout names the screen and its active request URLs", async () =>
       pageErrors: [],
       inFlightRequestUrls: requests.urls,
     }, 1)).rejects.toThrow(/combine-confirm-pass-web at phone-land\/light.*screen-fixture\.invalid\/stalled/);
-    requests.dispose();
   } finally {
     for (const release of releaseRequests) release();
+    for (const dispose of disposeTrackers) dispose();
     await browser.close();
   }
 });
