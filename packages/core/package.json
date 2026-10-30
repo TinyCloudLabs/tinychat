@@ -10,6 +10,11 @@
       "bun": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./feed/sitrep": {
+      "bun": "./src/feed/sitrep/index.ts",
+      "types": "./dist/feed/sitrep/index.d.ts",
+      "import": "./dist/feed/sitrep/index.js"
     }
   },
   "scripts": {
@@ -17,6 +22,9 @@
     "dev": "tsc --watch",
     "test": "bun run test:type && bun test",
     "test:type": "tsc -p tsconfig.type-tests.json --noEmit"
+  },
+  "dependencies": {
+    "zod": "3.25.76"
   },
   "devDependencies": {
     "typescript": "^5.7.0"

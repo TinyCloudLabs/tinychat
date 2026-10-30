@@ -9,7 +9,7 @@ import { manifestCarriesBundle } from "@tinyboilerplate/core";
  * Bump this when the grants change. "1" was used by an earlier, withdrawn gate
  * whose records may still sit in browsers, so the current value is never "1".
  */
-export const EXO_MANIFEST_REVISION = "3";
+export const EXO_MANIFEST_REVISION = "4";
 
 /** Shown above the sign-in action only after the gate clears a stale session (final wording). */
 export const MANIFEST_RESIGN_NOTICE =
@@ -48,20 +48,18 @@ export type ManifestRevisionGate = "current" | "deferred" | "cleared" | "handoff
 
 /**
  * Restore-time gate used by App. A stale session for `address` is cleared only after
- * the manifest the backend serves is known to carry the current grants: the web app and
- * the backend image deploy separately, and clearing under an older served manifest would
- * make the user sign in again for nothing. Then it gets one capture handoff, then is
- * cleared so the user signs in again.
+ * the current client's sign-in manifest is known to carry the grants. Then capture
+ * is handed off before clearing, so the owner can consent once to that same bundle.
  *
  * "deferred" keeps the session untouched, so the next load runs the gate again: offline,
- * the served manifest unreachable, or the served manifest lacking the bundle. A failed
+ * the current manifest unavailable, or the current manifest lacking the bundle. A failed
  * handoff keeps the session and reports "handoff_failed"; the caller stops without clearing.
  */
 export async function applyManifestRevisionGate(input: {
   store: RevisionStore | null;
   address: string | null;
   isOffline: () => boolean;
-  /** Fetches the served manifest and says whether it carries the bundle; a rejection counts as no. */
+  /** Reports whether the current sign-in manifest carries the bundle; a rejection counts as no. */
   servedManifestCarriesBundle: () => Promise<boolean>;
   handoff: () => Promise<boolean>;
   clearSession: (address: string) => void;

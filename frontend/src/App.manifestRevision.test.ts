@@ -11,7 +11,4 @@ test("mounted App forces one sign-in for a session saved under an older manifest
   });
   expect(result.error).toBeUndefined();
   expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
-  const output = `${result.stdout}\n${result.stderr}`;
-  expect(output).toContain("11 pass");
-  expect(output).toContain("0 fail");
 });

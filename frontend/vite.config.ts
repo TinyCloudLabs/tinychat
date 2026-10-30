@@ -1,5 +1,6 @@
 import fs from "fs";
 import { execFileSync } from "node:child_process";
+import { createRequire } from "node:module";
 import path from "path";
 import { fileURLToPath } from "url";
 import { defineConfig, loadEnv } from "vite";
@@ -9,6 +10,7 @@ import { VitePWA } from "vite-plugin-pwa";
 import { firstNonEmpty } from "./src/lib/buildEnv";
 
 const rootDir = path.dirname(fileURLToPath(import.meta.url));
+const requireFromApp = createRequire(import.meta.url);
 
 // The build line's baseline (TC-840): the shared web/desktop/mobile version
 // frontend/package.json owns, the commit being built, and the channel
@@ -160,6 +162,10 @@ export default defineConfig(({ command, mode }) => {
   ],
   resolve: {
     alias: {
+      // Linked SDK modules still need the app's installed browser-global polyfills.
+      "vite-plugin-node-polyfills/shims/buffer": requireFromApp.resolve("vite-plugin-node-polyfills/shims/buffer"),
+      "vite-plugin-node-polyfills/shims/global": requireFromApp.resolve("vite-plugin-node-polyfills/shims/global"),
+      "vite-plugin-node-polyfills/shims/process": requireFromApp.resolve("vite-plugin-node-polyfills/shims/process"),
       // @tinycloud/replica/profile-gate (pulled in by web-sdk/replica) imports Node's fs/promises at
       // top level; the polyfill plugin only shims `fs`, which breaks the build. See the stub.
       "fs/promises": path.resolve(rootDir, "./src/lib/replication/nodeFsPromisesStub.ts"),

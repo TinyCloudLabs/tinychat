@@ -1,5 +1,20 @@
 # @tinychat/frontend
 
+## Unreleased
+
+### Minor Changes
+
+- TC-2206: Home reads agent cards from SQLite and saves inline choices, text answers, and explicit follow-ups in owner response databases. Answer saved, Agent received, and Completed or Failed are separate states. Information / Both / Needs action views include agent, type, and project filters, snooze history, and an account-synced configurable default.
+- TC-2208: Add typed ask, task, approval, incident, work, ship, order, claim, hold, and progress cards with their own actions and histories. Approval codes use private payloads; task ticks, private notes, and priority stay in owner storage. Explicit messages and resends retain approved destinations, while publisher outcomes and per-recipient receipts remain separate.
+
+### Patch Changes
+
+- TC-2206: Keep the focused question issuance and draft when a newer issuance replaces it in the feed; refresh the original answer and outcome from storage until the user navigates away. Next card advances through the full list. Feed subscriptions reconnect using the current hook service after native session restoration.
+- TC-2208: The portable Home model rejects owner-private fields in output wrappers and same-key immutable history rewrites, retains deleted-source answers without restoring dispatch authority, and scopes answers by kind and ID. Accepted ISO offsets now compare as instants. Original timestamp fields and exact issuance identity are retained, along with first-answer ties, deterministic state ties, inclusive issuance/exclusive expiry, and provided-order state deltas.
+- TC-2208: Keep focused approval controls, including code-less confirmations, and consent-link interactions bound to their original issuance until explicit navigation; retain archive-only answers, threads, claims, and commands in History; isolate group priority by registered source or validated archive origin.
+- TC-2204: Web sign-in and restoration use the manifest shipped with the frontend, so web-only updates request Home SQL and feed subscriptions in the existing approval. Owners with older grants are asked to sign in again with explicit consent before Home storage opens.
+- TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
+
 ## 0.12.0-beta.1
 
 ### Minor Changes
