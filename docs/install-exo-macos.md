@@ -47,11 +47,19 @@ Download the new `.dmg` and drag Exo into Applications again, replacing the old 
 
 Or update from Terminal in one step. This also works for a first install:
 
-```sh
+```bash
 curl -fsSL https://raw.githubusercontent.com/TinyCloudLabs/tinychat/main/desktop/scripts/exo-update.sh | bash
 ```
 
-It downloads the latest stable release from GitHub, checks it against the release's `SHA256SUMS.txt`, quits Exo, replaces `/Applications/Exo.app` and opens it. A download made this way isn't marked by macOS, so step 3 isn't needed. For the newest beta, end the command with `| bash -s -- beta` instead. You can read the script first: [`desktop/scripts/exo-update.sh`](../desktop/scripts/exo-update.sh).
+It downloads the latest stable release over HTTPS from GitHub only, checks it against the release's `SHA256SUMS.txt`, quits Exo, replaces `/Applications/Exo.app` and opens it. A download made this way isn't marked by macOS, so step 3 isn't needed. You can read the script first: [`desktop/scripts/exo-update.sh`](../desktop/scripts/exo-update.sh).
+
+For the newest build, including betas:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/TinyCloudLabs/tinychat/main/desktop/scripts/exo-update.sh | bash -s -- beta
+```
+
+There's no downgrade check: switching from betas back to stable installs the latest stable release even when it's older than the build you have.
 
 ## Alternative: Terminal
 

@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -1969,18 +1970,137 @@ test('every recorder invoke is registered, manifested, and granted to recorder c
   }
 });
 
-test('exo-update.sh downloads exactly the assets a desktop release publishes', () => {
-  const scriptPath = join(repo, 'desktop/scripts/exo-update.sh');
-  const script = readFileSync(scriptPath, 'utf8');
+// exo-update.sh against stub tools: a fake release named the way desktop-release-plan.mjs names
+// assets, fake curl/hdiutil/shasum/ditto first on PATH, and a temp HOME, /Applications and TMPDIR.
+const EXO_UPDATE_STUBS = {
+  curl: `#!/bin/bash
+printf '%s\\n' "$*" >> "$STUB_LOG/curl.log"
+out=; url=
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) out=$2; shift 2 ;;
+    -w|--proto|--proto-redir|--max-redirs) shift 2 ;;
+    -*) shift ;;
+    *) url=$1; shift ;;
+  esac
+done
+emit() { if [ -n "$out" ]; then cat > "$out"; else cat; fi; }
+case "$url" in
+  https://api.github.com/repos/TinyCloudLabs/tinychat/releases/latest) printf '{"tag_name": "%s"}\\n' "$STUB_TAG" | emit ;;
+  "https://api.github.com/repos/TinyCloudLabs/tinychat/releases?per_page=20") printf '[{"tag_name": "%s"}]\\n' "$STUB_TAG" | emit ;;
+  https://github.com/TinyCloudLabs/tinychat/releases/download/*) : | emit; printf '%s/%s' "$STUB_REDIRECT_BASE" "\${url##*/}" ;;
+  https://release-assets.githubusercontent.com/fixture/*) f="$STUB_RELEASE/\${url##*/}"; [ -f "$f" ] || exit 22; emit < "$f" ;;
+  *) exit 22 ;;
+esac
+`,
+  hdiutil: `#!/bin/bash
+printf 'hdiutil %s\\n' "$1" >> "$STUB_LOG/calls.log"
+if [ "$1" = attach ]; then
+  mnt=; while [ $# -gt 0 ]; do case "$1" in -mountpoint) mnt=$2; shift 2 ;; *) shift ;; esac; done
+  cp -R "$STUB_RELEASE/content/." "$mnt/"
+fi
+`,
+  ditto: `#!/bin/bash
+printf 'ditto\\n' >> "$STUB_LOG/calls.log"
+cp -R "$1" "$2"
+if [ "\${STUB_KILL_AT:-}" = ditto ]; then kill -TERM "$PPID"; fi
+`,
+  shasum: `#!/bin/bash
+[ "$1" = -a ] && shift 2
+if command -v sha256sum >/dev/null; then exec sha256sum "$@"; else exec /usr/bin/shasum -a 256 "$@"; fi
+`,
+  PlistBuddy: '#!/bin/bash\ncat "$3"\n',
+  pgrep: '#!/bin/bash\nexit 1\n',
+  osascript: '#!/bin/bash\nexit 0\n',
+  open: `#!/bin/bash\nprintf 'open %s\\n' "$1" >> "$STUB_LOG/calls.log"\n`,
+};
+
+function runExoUpdate(t, shell, { sums = 'good', redirectBase, killAt, installed = true, args = [] } = {}) {
+  const root = mkdtempSync(join(tmpdir(), 'exo-update-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const dirs = Object.fromEntries(['bin', 'home', 'apps', 'release', 'log', 'tmp'].map((name) => [name, join(root, name)]));
+  for (const dir of Object.values(dirs)) mkdirSync(dir, { recursive: true });
   const plan = readFileSync(join(repo, 'scripts/release/desktop-release-plan.mjs'), 'utf8');
-  const workflow = readFileSync(join(repo, '.github/workflows/desktop-release.yml'), 'utf8');
-  // The release names its files Exo_<version>_aarch64.* and checksums them in SHA256SUMS.txt.
-  assert.match(plan, /setOutput\('asset-prefix', `Exo_\$\{version\}_aarch64`\)/);
-  assert.match(workflow, /"assets\/\$PREFIX\.dmg"/);
-  assert.match(workflow, /> SHA256SUMS\.txt/);
-  // The script fetches those names from the exo-desktop@<version> tag.
-  assert.match(script, /DMG="Exo_\$\{V\}_aarch64\.dmg"/);
-  assert.match(script, /\$BASE\/SHA256SUMS\.txt"/);
-  assert.match(script, /BASE="https:\/\/github\.com\/\$REPO\/releases\/download\/exo-desktop%40\$V"/);
-  assert.equal(spawnSync('bash', ['-n', scriptPath]).status, 0, 'exo-update.sh parses');
-});
+  const prefix = plan.match(/setOutput\('asset-prefix', `([^`]+)`\)/)[1];
+  const version = '9.9.9';
+  const dmg = `${prefix.replace('${version}', version)}.dmg`;
+  const app = (dir, build) => {
+    mkdirSync(join(dir, 'Exo.app/Contents'), { recursive: true });
+    writeFileSync(join(dir, 'Exo.app/Contents/Info.plist'), `${build}\n`);
+  };
+  if (installed) app(dirs.apps, 'old-build');
+  app(join(dirs.release, 'content'), 'new-build');
+  writeFileSync(join(dirs.release, dmg), 'fake dmg bytes');
+  const digest = createHash('sha256').update(sums === 'bad' ? 'other bytes' : 'fake dmg bytes').digest('hex');
+  writeFileSync(join(dirs.release, 'SHA256SUMS.txt'), `${digest}  ${sums === 'missing' ? 'Exo_other_aarch64.dmg' : dmg}\n`);
+  for (const [name, body] of Object.entries(EXO_UPDATE_STUBS)) {
+    writeFileSync(join(dirs.bin, name), body);
+    chmodSync(join(dirs.bin, name), 0o755);
+  }
+  const result = spawnSync(shell, [join(repo, 'desktop/scripts/exo-update.sh'), ...args], {
+    encoding: 'utf8',
+    env: {
+      PATH: `${dirs.bin}:${process.env.PATH}`, HOME: dirs.home, TMPDIR: dirs.tmp,
+      EXO_UPDATE_APPLICATIONS: dirs.apps, EXO_UPDATE_PLISTBUDDY: join(dirs.bin, 'PlistBuddy'),
+      STUB_LOG: dirs.log, STUB_RELEASE: dirs.release, STUB_TAG: `exo-desktop@${version}`,
+      STUB_REDIRECT_BASE: redirectBase ?? 'https://release-assets.githubusercontent.com/fixture', STUB_KILL_AT: killAt ?? '',
+    },
+  });
+  const read = (path) => (existsSync(path) ? readFileSync(path, 'utf8') : '');
+  return {
+    status: result.status, stderr: result.stderr,
+    calls: read(join(dirs.log, 'calls.log')), curl: read(join(dirs.log, 'curl.log')),
+    build: read(join(dirs.apps, 'Exo.app/Contents/Info.plist')).trim(),
+    state: read(join(dirs.home, '.exo-update')).trim(),
+    leftovers: [...readdirSync(dirs.apps).filter((name) => name !== 'Exo.app'), ...readdirSync(dirs.tmp)],
+  };
+}
+
+function assertUntouched(run) {
+  assert.notEqual(run.status, 0, run.stderr);
+  assert.equal(run.build, 'old-build', 'the installed app is unchanged');
+  assert.doesNotMatch(run.calls, /hdiutil attach|ditto|open /, 'nothing is mounted, copied or opened');
+  assert.deepEqual(run.leftovers, [], 'no temp files or half-copied apps are left');
+}
+
+for (const shell of ['bash', 'sh']) {
+  test(`exo-update.sh (${shell}) installs a verified release over HTTPS only`, (t) => {
+    const run = runExoUpdate(t, shell);
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(run.build, 'new-build');
+    assert.equal(run.state, 'exo-desktop@9.9.9 new-build');
+    assert.match(run.calls, /hdiutil attach[\s\S]*ditto[\s\S]*hdiutil detach/);
+    assert.match(run.calls, /open /);
+    assert.deepEqual(run.leftovers, []);
+    for (const call of run.curl.trim().split('\n')) assert.match(call, /--proto =https --proto-redir =https/);
+    assert.equal(runExoUpdate(t, shell, { installed: false }).build, 'new-build', 'first install');
+    assert.equal(runExoUpdate(t, shell, { args: ['beta'] }).build, 'new-build', 'beta channel');
+  });
+
+  test(`exo-update.sh (${shell}) keeps the installed app on a mismatched or missing checksum`, (t) => {
+    const bad = runExoUpdate(t, shell, { sums: 'bad' });
+    assertUntouched(bad);
+    assert.match(bad.stderr, /didn't match its checksum/);
+    const missing = runExoUpdate(t, shell, { sums: 'missing' });
+    assertUntouched(missing);
+    assert.match(missing.stderr, /has no entry for/);
+  });
+
+  test(`exo-update.sh (${shell}) refuses redirects off HTTPS or off GitHub's hosts`, (t) => {
+    const http = runExoUpdate(t, shell, { redirectBase: 'http://release-assets.githubusercontent.com/fixture' });
+    assertUntouched(http);
+    assert.match(http.stderr, /isn't HTTPS/);
+    const elsewhere = runExoUpdate(t, shell, { redirectBase: 'https://example.com/fixture' });
+    assertUntouched(elsewhere);
+    assert.match(elsewhere.stderr, /isn't GitHub/);
+  });
+
+  test(`exo-update.sh (${shell}) cleans up and keeps the old app when killed mid-install`, (t) => {
+    const run = runExoUpdate(t, shell, { killAt: 'ditto' });
+    assert.equal(run.status, 143, run.stderr);
+    assert.equal(run.build, 'old-build');
+    assert.match(run.calls, /hdiutil detach/, 'the mounted DMG is detached');
+    assert.doesNotMatch(run.calls, /open /);
+    assert.deepEqual(run.leftovers, []);
+  });
+}
