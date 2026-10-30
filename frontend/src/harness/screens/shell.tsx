@@ -222,7 +222,7 @@ export const shellScreens: HarnessScreen[] = [
     path: "/chat",
     platform: "ios",
     readyWhen: 'html[data-harness-new-chat-from-saved="true"]',
-    viewports: ["phone", "phone-land", "phone-small", "phone-360", "text200-phone", "text200-phone-small", "text200-phone-360"],
+    viewports: ["phone", "phone-land", "phone-small", "text200-phone", "text80-phone", "text250-phone", "text330-phone"],
     render: () => <Shell scenario="reopen" act={newChatAfterOpeningSavedThread()} recorder={{
       phase: "recording",
       mic: { state: "recording", reason: null },
