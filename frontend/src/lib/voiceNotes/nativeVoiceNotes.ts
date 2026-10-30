@@ -73,6 +73,8 @@ export interface NoteLedger {
     stage: "create_unknown" | "uploading" | "uploaded" | "submit_unknown" | "submitted" | "done";
     uploadId: string | null; uploadUrl: string | null; jobId: string | null; handleExpiresAt?: number | null;
     cleanup: "none" | "pending" | "done" }[];
+  /** Speaker renames made while the note is still on this device (TC-2189); the row takes them at save. */
+  speakerNames?: Record<string, string> | null;
 }
 export interface NoteSttState {
   state: "waiting_for_model" | "queued" | "running" | "done" | "failed" | "cancelled";

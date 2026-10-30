@@ -30,6 +30,7 @@ import { captureHomeDesktopScreens } from "./screens/captureHomeDesktop";
 import { captureSettingsScreens } from "./screens/captureSettings";
 import { legacyScreens } from "./screens/legacy";
 import { libraryScreens } from "./screens/library";
+import { speakerNameScreens } from "./screens/speakerNames";
 import { wordFixesScreens } from "./screens/wordFixes";
 import { localScreens } from "./screens/local";
 import { meetingSourcesScreens } from "./screens/meetingSources";
@@ -58,7 +59,7 @@ type ScreenInfo = Omit<HarnessScreen, "render">;
 
 declare global {
   interface Window {
-    exoUi?: { screens: ScreenInfo[]; ready: boolean };
+    exoUi?: { screens: ScreenInfo[]; ready: boolean; readyWhenMatched?: boolean };
   }
 }
 
@@ -83,6 +84,7 @@ const SCREENS: HarnessScreen[] = [
   ...captureHomeDesktopScreens,
   ...captureSettingsScreens,
   ...libraryScreens,
+  ...speakerNameScreens,
   ...wordFixesScreens,
   ...combineScreens,
   ...savedNoteScreens,
@@ -169,11 +171,14 @@ function Ready(props: { scrollTo?: string; readyWhen?: string }) {
       waitUntilReady(() => !props.readyWhen || document.querySelector(props.readyWhen) !== null, {
         isCancelled: () => cancelled,
       });
-    void Promise.all([document.fonts.ready, arrived()]).then(() => {
+    void Promise.all([document.fonts.ready, arrived()]).then(([, readyWhenMatched]) => {
       if (props.scrollTo) document.querySelector(props.scrollTo)?.scrollIntoView({ block: "center" });
       requestAnimationFrame(() =>
         requestAnimationFrame(() => {
-          if (!cancelled && window.exoUi) window.exoUi.ready = true;
+          if (!cancelled && window.exoUi) {
+            window.exoUi.readyWhenMatched = readyWhenMatched;
+            window.exoUi.ready = true;
+          }
         }),
       );
     });

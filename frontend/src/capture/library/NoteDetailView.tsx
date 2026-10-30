@@ -47,6 +47,9 @@ import type { CombineDetail } from "./combine/combinedView";
 import { librarySourceLabel } from "./libraryKinds";
 import { useWordFixApplier, useWordFixedSentences } from "@/lib/wordFixes/wordFixesStore";
 import { TimestampedTranscript, type TranscriptGap } from "./TimestampedTranscript";
+import { SpeakerLabel, SpeakerNamesContext, SpeakerNamesStatus } from "./SpeakerLabel";
+import { applySpeakerNames, NO_SPEAKER_NAMES } from "./speakerNames";
+import type { SpeakerNamesController } from "./useSpeakerNames";
 import { TranscriptProvenanceNote } from "./TranscriptProvenanceNote";
 import { hasPrivateCloudTimingProvenance, hasSegmentTimes, transcriptMarkdown } from "./transcriptSegments";
 import type { TranscriptProvenance } from "@/lib/voiceNotes/voiceNoteCommits";
@@ -100,6 +103,8 @@ export interface NoteDetailViewProps {
   activityControl?: ReactNode;
   /** Combine two captures of one meeting (TC-1152): the entry on a meeting, the actions on a combined one. */
   combine?: CombineDetail;
+  /** The note's speaker names (TC-2189); without them the labels stay as stored. */
+  speakerNames?: SpeakerNamesController;
 }
 
 /** Consecutive sentences of one speaker as one block. */
@@ -383,7 +388,7 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
     && gap.start >= 0 && gap.end > gap.start && (gap.speaker_name === null || typeof gap.speaker_name === "string")) : [];
   const timed = hasSegmentTimes(sentences, isPrivateCloud);
   const exportMarkdown = async () => {
-    const markdown = transcriptMarkdown(item.title ?? "Voice note", item.startedAt, sentences, isPrivateCloud);
+    const markdown = transcriptMarkdown(item.title ?? "Voice note", item.startedAt, applySpeakerNames(sentences, props.speakerNames?.names ?? NO_SPEAKER_NAMES), isPrivateCloud);
     const filename = `${(item.title ?? "Voice note").replaceAll(/[^\w -]/g, "").trim() || "voice-note"}.md`;
     setExportError(false);
     try {
@@ -405,7 +410,10 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
     && metadata?.status === "ok"
     && (metadata.metadata.transcription_outcome === "transcribed" || metadata.metadata.transcription_outcome === "no_speech");
   const rerunJob = props.transcription?.jobs.get(item.sourceId);
+  const speakerNames = props.speakerNames?.names ?? NO_SPEAKER_NAMES;
+  const namedGaps = applySpeakerNames(gaps, speakerNames);
   return (
+    <SpeakerNamesContext.Provider value={props.speakerNames}>
     <section aria-labelledby="note-transcript" data-testid="note-transcript" className="flex flex-col gap-3">
       <div className="flex min-h-11 flex-wrap items-center gap-x-3">
         <h2 id="note-transcript" className="flex-1 text-headline">
@@ -445,10 +453,11 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
             <p className="text-callout text-muted-foreground">On this device · Couldn’t check your space.</p>
             <Button type="button" variant="outline" onClick={props.onRetry}>Try again</Button>
           </div>}
+          <SpeakerNamesStatus />
           <TranscriptProvenanceNote sentences={sentences} />
-          {timed || gaps.length > 0 ? <TimestampedTranscript gaps={gaps} sentences={sentences} hasAudio={props.audio !== null} isPrivateCloud={isPrivateCloud} /> : transcriptBlocks(sentences).map((block, index) => (
+          {timed || gaps.length > 0 ? <TimestampedTranscript gaps={namedGaps} sentences={sentences} hasAudio={props.audio !== null} isPrivateCloud={isPrivateCloud} /> : transcriptBlocks(sentences).map((block, index) => (
             <div key={index}>
-              {block.speaker && <p className="text-meta font-semibold text-muted-foreground">{block.speaker}</p>}
+              {block.speaker && <SpeakerLabel original={block.speaker} />}
               <p className="whitespace-pre-wrap break-words text-body">{block.text}</p>
             </div>
           ))}
@@ -537,6 +546,7 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
         </div>
       )}
     </section>
+    </SpeakerNamesContext.Provider>
   );
 }
 

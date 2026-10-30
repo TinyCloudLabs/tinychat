@@ -22,7 +22,7 @@ const context = createSetupContext([values.host ?? process.env.VITE_TINYCLOUD_HO
 const prompt = buildSetupPrompt({ instructionsUrl });
 const contextJson = JSON.stringify(context, null, 2);
 const replacements = {
-  CLI_VERSION: config.cliVersion, PACK_VERSION: config.packVersion,
+  PACK_VERSION: config.packVersion,
   INSTALLER_VERSION: config.installerVersion, PROMPT: prompt,
   SETUP_URL: setupUrl.href, SETUP_BASE_URL: setupUrl.href,
   INSTRUCTIONS_URL: instructionsUrl, DATA_HOST: context.host, SETUP_CONTEXT: contextJson,
