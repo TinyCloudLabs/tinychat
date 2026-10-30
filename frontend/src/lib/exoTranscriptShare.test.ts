@@ -204,6 +204,18 @@ test("account change during consent, stale source, missing existing capability a
   expect(collision.stored.size).toBe(0);
 });
 
+test("a persisted alias-map change is rejected even when transcript text and raw body are unchanged", async () => {
+  const f = fixture();
+  const before = transcriptShareSnapshot(NOTE, { status: "ok", metadata: { speaker_names: { Unused: "Before" } } }, TRANSCRIPT)!;
+  const after = transcriptShareSnapshot(NOTE, { status: "ok", metadata: { speaker_names: { Unused: "After" } } }, TRANSCRIPT)!;
+  expect(before.text).toBe(after.text);
+  expect(before.rawText).toBe(after.rawText);
+  const review = prepareTranscriptShare(f.tcw, before, "alice@example.test", NOW, SHARE_ID);
+  await expect(publishTranscriptShare({ ...f.input, review, readPersisted: async () => after }, f.operations))
+    .rejects.toThrow("The persisted transcript changed. Review it again.");
+  expect(f.effects).toEqual([]);
+});
+
 test("offline controller binds the entire immutable v2 byte object and saves explicit non-enumerable owner receipts", async () => {
   const f = fixture();
   const outcome = await publishTranscriptShare(f.input, f.operations);
@@ -252,6 +264,15 @@ test("shared word fixes match the transcript surface without rewriting speaker n
   const snapshot = transcriptShareSnapshot(NOTE, METADATA, TRANSCRIPT, (text) => text.replaceAll("Speaker", "Changed speaker").replaceAll("Synthetic", "Corrected"));
   expect(snapshot?.rawText).toBe("Speaker: Synthetic text <not HTML>.");
   expect(snapshot?.text).toBe("Speaker: Corrected text <not HTML>.");
+});
+
+test("shared aliases match Copy projection and word fixes without rewriting stored sentences", () => {
+  const metadata = { status: "ok" as const, metadata: { speaker_names: { Speaker: " Alice " } } };
+  const snapshot = transcriptShareSnapshot(NOTE, metadata, TRANSCRIPT,
+    (text) => text.replaceAll("Alice", "Wrong label").replaceAll("Synthetic", "Corrected"))!;
+  expect(snapshot.text).toBe("Alice: Corrected text <not HTML>.");
+  expect(snapshot.rawText).toBe("Speaker: Synthetic text <not HTML>.");
+  expect(TRANSCRIPT.sentences[0]!.speaker_name).toBe("Speaker");
 });
 
 test("missing existing network, unsupported consent and snapshot write failure never publish", async () => {

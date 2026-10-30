@@ -188,8 +188,8 @@ export function NoteDetail(props: {
   const shareInFlight = useRef(false);
   const localTranscriptSyncing = props.activityView?.input?.transcript.onDevice?.sync?.state === "syncing";
   const shareSnapshot = useMemo(() => localTranscriptSyncing ? null
-    : transcriptShareSnapshot(item, reads.metadata, remoteTranscript, applyWordFixes),
-  [item, reads.metadata, remoteTranscript, applyWordFixes, localTranscriptSyncing]);
+    : transcriptShareSnapshot(item, reads.metadata, remoteTranscript, applyWordFixes, names),
+  [item, reads.metadata, remoteTranscript, applyWordFixes, names, localTranscriptSyncing]);
   const shareSession = typeof props.tcw.session === "function" ? props.tcw.session() : undefined;
   const shareSpaceId = props.tcw.spaceId;
   const shareSessionDid = shareSession ? props.tcw.sessionDid : null;
@@ -203,11 +203,12 @@ export function NoteDetail(props: {
   const shareIdentity = useMemo(() => ({
     id: shareSnapshot?.id, source: shareSnapshot?.source, sourceId: shareSnapshot?.sourceId,
     title: shareSnapshot?.title, rawText: shareSnapshot?.rawText, text: shareSnapshot?.text,
+    speakerNamesKey: shareSnapshot?.speakerNamesKey,
     spaceId: shareSpaceId, sessionDid: shareSessionDid, holderDid: shareHolderDid,
     walletAddress: shareWalletAddress, chainId: shareSession?.chainId,
     nodeOrigin: props.tcw.hosts?.[0], scope: shareScope, scopeCurrent: shareScopeCurrent, signInRequired: shareSignInRequired,
   }), [shareSnapshot?.id, shareSnapshot?.source, shareSnapshot?.sourceId, shareSnapshot?.title,
-    shareSnapshot?.rawText, shareSnapshot?.text, shareSpaceId, shareSessionDid, shareHolderDid,
+    shareSnapshot?.rawText, shareSnapshot?.text, shareSnapshot?.speakerNamesKey, shareSpaceId, shareSessionDid, shareHolderDid,
     shareWalletAddress, shareSession?.chainId, props.tcw.hosts?.[0], shareScope, shareScopeCurrent, shareSignInRequired]);
   const latestShare = useRef(shareIdentity);
   latestShare.current = shareIdentity;

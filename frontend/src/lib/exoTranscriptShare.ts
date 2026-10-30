@@ -18,6 +18,7 @@ import { encryptionNetworkId } from "@/lib/connectors/encryptionGrant";
 import { runOnSpace } from "@/lib/spaceQueue";
 import { SHARE_ORIGIN } from "@/home/shareApps";
 import { applyWordFixesToSentences } from "@/lib/wordFixes/wordFixes";
+import { applySpeakerNames, readSpeakerNames, type SpeakerNames } from "@/capture/library/speakerNames";
 
 class TranscriptShareError extends Error {}
 
@@ -45,6 +46,8 @@ export interface TranscriptShareSnapshot {
   readonly title: string;
   readonly rawText: string;
   readonly text: string;
+  /** Includes overrides for labels absent from this transcript, not just rendered text. */
+  readonly speakerNamesKey: string;
 }
 interface ShareAccount {
   readonly spaceId: string;
@@ -77,7 +80,7 @@ const loopback = (hostname: string) => hostname === "localhost" || hostname === 
 /** No local/device fallback or unsupported connector can become a Share source. */
 export function transcriptShareSnapshot(
   item: ShareItem | null, metadata: MeetingMetadataRead | undefined, transcript: TranscriptRead | undefined,
-  applyWordFixes: (text: string) => string = (text) => text,
+  applyWordFixes: (text: string) => string = (text) => text, speakerNames?: SpeakerNames,
 ): TranscriptShareSnapshot | null {
   if (!item || item.onPhone || item.saving || !EXPLORER_MEETING_SOURCES.includes(item.source)
     || metadata?.status !== "ok" || metadata.metadata.transcription_outcome === "no_speech"
@@ -85,10 +88,12 @@ export function transcriptShareSnapshot(
   const pasted = item.metadata?.capture === "pasted" ? metadata.metadata.transcript_text : undefined;
   const rawText = typeof pasted === "string" ? pasted : transcriptCopyText(transcript.sentences);
   if (!rawText.trim()) return null;
+  const names = speakerNames ?? readSpeakerNames(metadata.metadata);
   const text = typeof pasted === "string" ? applyWordFixes(pasted)
-    : transcriptCopyText(applyWordFixesToSentences(transcript.sentences, applyWordFixes));
+    : transcriptCopyText(applySpeakerNames(applyWordFixesToSentences(transcript.sentences, applyWordFixes), names));
   return Object.freeze({ id: item.id, source: item.source, sourceId: item.sourceId,
-    title: item.title ?? "Transcript", rawText, text });
+    title: item.title ?? "Transcript", rawText, text,
+    speakerNamesKey: canonicalize(names) });
 }
 
 function shareAccount(tcw: TinyCloudWeb): ShareAccount {

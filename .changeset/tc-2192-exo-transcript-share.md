@@ -12,4 +12,6 @@ Keep transcript-share dialogs open through same-owner, same-session runtime-gran
 
 Discard underlying SDK errors at the transcript-share boundary so diagnostic cause chains contain only the sanitized failure message.
 
+Freeze speaker aliases in the shared copy using the transcript's existing display, Copy and export mapping. Reject semantic alias changes during sharing, including unused labels, and validate the same projection against persisted metadata without rewriting stored sentences.
+
 Details: TC-2192

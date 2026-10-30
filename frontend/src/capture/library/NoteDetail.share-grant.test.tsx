@@ -33,6 +33,7 @@ let createRoot: typeof import("react-dom/client").createRoot;
 let flushSync: typeof import("react-dom").flushSync;
 let NoteDetail: typeof import("./NoteDetail").NoteDetail;
 let stopPublish: Mock<typeof share.publishTranscriptShare> | undefined;
+let releaseNameWrite = noop;
 
 if (ISOLATED) {
 beforeAll(async () => {
@@ -44,6 +45,8 @@ beforeAll(async () => {
   ({ NoteDetail } = await import("./NoteDetail"));
 });
 afterEach(async () => {
+  releaseNameWrite();
+  releaseNameWrite = noop;
   if (root) await act(async () => root!.unmount());
   root = null;
   sdk?.cleanup(); sdk = undefined;
@@ -95,12 +98,12 @@ async function click(node: HTMLElement) {
     node.click();
   });
 }
-function library(text = SENTENCES[0]!.text): Library {
+function library(text = SENTENCES[0]!.text, speakerNames: Readonly<Record<string, string>> = {}): Library {
   // Rehydrated objects deliberately retain identical persisted content and source identity.
   const item = { ...ITEM };
   return { status: "ready", listing: false, items: [item], all: [item], isCombinedMember: () => false,
     filter: "all", setFilter: noop, refresh: noop, retry: noop,
-    note: { item, audio: null, reads: { metadata: { status: "ok", metadata: {} },
+    note: { item, audio: null, reads: { metadata: { status: "ok", metadata: { speaker_names: speakerNames } },
       transcript: { transcript: { status: "ok", sentences: SENTENCES.map((sentence) => ({ ...sentence, text })) }, provenance: null } } },
   } as Library;
 }
@@ -146,12 +149,19 @@ async function fixture() {
   const sessionDid = live.sessionDid;
   signatures = 0; requests.length = 0;
   let afterGrant: () => Promise<void> = async () => {};
-  let beforeResult: () => void = noop;
+  let beforeResult: () => void | Promise<void> = noop;
   let grantCount = 0;
   let createdKeys = 0;
   let published: AddressedSharePublishOptions | undefined;
   const completed = Promise.withResolvers<void>();
-  const db = { query: async (sql: string) => ({ ok: true, data: { rows: sql.startsWith("SELECT id FROM") ? [[ITEM.id]] : sql.startsWith("SELECT metadata FROM") ? [["{}"]] : [] } }) };
+  let storedSpeakerNames: Readonly<Record<string, string>> = {};
+  const nameWrite = Promise.withResolvers<void>();
+  releaseNameWrite = () => nameWrite.resolve();
+  const db = {
+    query: async (sql: string) => ({ ok: true, data: { rows: sql.startsWith("SELECT id FROM") ? [[ITEM.id]]
+      : sql.startsWith("SELECT metadata FROM") ? [[JSON.stringify({ speaker_names: storedSpeakerNames })]] : [] } }),
+    execute: async () => { await nameWrite.promise; return { ok: true, data: { changes: 1 } }; },
+  };
   const keys = {
     getPublicKey: async () => ({}),
     createKey: async (path: string) => { createdKeys++; return { networkId: network, keyPath: path, keyVersion: 3, state: "active" }; },
@@ -193,22 +203,25 @@ async function fixture() {
       Object.defineProperty(result, "url", { value: `${ORIGINS.shareOrigin}/s/full#fixture-recipient-link` });
       return result as PublishedShare;
     },
-  }).then((result) => { beforeResult(); return result; }).finally(completed.resolve));
+  }).then(async (result) => { await beforeResult(); return result; }).finally(completed.resolve));
   const host = document.createElement("div"); document.body.append(host);
   root = createRoot(host);
-  async function render(tcw = first, text = SENTENCES[0]!.text) { await act(async () => { flushSync(() => { root!.render(<MemoryRouter><NoteDetail library={library(text)} tcw={tcw} pushed={false} onBack={noop} transcription={undefined} transcriptShareOrigins={ORIGINS} /></MemoryRouter>); }); }); }
+  async function render(tcw = first, text = SENTENCES[0]!.text, names = storedSpeakerNames) {
+    storedSpeakerNames = names;
+    await act(async () => { flushSync(() => { root!.render(<MemoryRouter><NoteDetail library={library(text, names)} tcw={tcw} pushed={false} onBack={noop} transcription={undefined} transcriptShareOrigins={ORIGINS} /></MemoryRouter>); }); });
+  }
   await render();
   return { live, first, scope, render, completed: completed.promise,
     afterGrant: (callback: () => Promise<void>) => { afterGrant = callback; },
     cancelSigning: () => { cancelSigning = true; },
-    beforeResult: (callback: () => void) => { beforeResult = callback; },
+    beforeResult: (callback: () => void | Promise<void>) => { beforeResult = callback; },
     refresh: async () => { const next = client(); associateStorageAccountClient(next, scope); await render(next); },
     grantCount: () => grantCount, createdKeys: () => createdKeys, published: () => published,
     signatures: () => signatures, requests, sessionDid,
   };
 }
 
-async function startShare() {
+async function reviewShare() {
   await click(button("Share"));
   const input = document.querySelector<HTMLInputElement>('input[type="email"]')!;
   await act(async () => {
@@ -217,6 +230,9 @@ async function startShare() {
     input.dispatchEvent(new window.Event("change", { bubbles: true }));
   });
   await act(async () => { input.closest("form")!.dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true })); });
+}
+async function startShare() {
+  await reviewShare();
   await click(button("Share transcript"));
   await until(() => sdkApprove() !== undefined, "real SDK permission modal");
 }
@@ -246,6 +262,86 @@ grantTest("real beta.21 key.create activation survives a same-owner SDK and sour
   expect(document.querySelector<HTMLInputElement>('input[readonly]')?.value).toBe(`${ORIGINS.shareOrigin}/s/full#fixture-recipient-link`);
   expect(f.createdKeys()).toBe(1);
   expect(f.published()?.target).toEqual({ kind: "email", address: "qa@example.test" });
+});
+
+grantTest("a new Share review carries saved aliases without changing the stored transcript", async () => {
+  const f = await fixture();
+  await f.render(f.first, SENTENCES[0]!.text, { Speaker: "Alice" });
+  await reviewShare();
+  expect(document.querySelector('pre')?.textContent).toBe("Alice: Synthetic persisted transcript.");
+  expect(SENTENCES[0]!.speaker_name).toBe("Speaker");
+  expect(f.grantCount()).toBe(0);
+  expect(f.createdKeys()).toBe(0);
+  expect(f.published()).toBeUndefined();
+});
+
+grantTest("alias-only map changes with identical snapshot text abort an in-flight share", async () => {
+  const f = await fixture();
+  const before = { Unused: "Before" };
+  const after = { Unused: "After" };
+  const snapshot = (names: Readonly<Record<string, string>>) => share.transcriptShareSnapshot(ITEM,
+    { status: "ok", metadata: { speaker_names: names } }, { status: "ok", sentences: SENTENCES })!;
+  expect(snapshot(before).rawText).toBe(snapshot(after).rawText);
+  expect(snapshot(before).text).toBe(snapshot(after).text);
+  await f.render(f.first, SENTENCES[0]!.text, before);
+  f.afterGrant(() => f.render(f.first, SENTENCES[0]!.text, after));
+  await startShare();
+  await approveGrant(f.completed);
+  expect(f.grantCount()).toBe(1);
+  expect(f.createdKeys()).toBe(0);
+  expect(f.published()).toBeUndefined();
+  expect(document.querySelector('[role="alert"]')?.textContent).toBe("The note or account changed. Review the transcript again.");
+  expect(document.querySelector('[role="dialog"]')).toBeNull();
+  expect(document.querySelector('input[readonly]')).toBeNull();
+  expect(document.body.textContent).not.toContain("qa@example.test");
+});
+
+grantTest("an optimistic speaker rename aborts sharing before its metadata write lands", async () => {
+  const f = await fixture();
+  f.afterGrant(async () => {
+    await click(document.querySelector<HTMLElement>('[data-testid="speaker-label"]')!);
+    const form = document.querySelector<HTMLFormElement>('[data-testid="speaker-rename-form"]')!;
+    const input = form.querySelector<HTMLInputElement>("input")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!.call(input, "Alice");
+      form.dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
+    });
+    expect(document.querySelector('[data-testid="speaker-label"]')?.textContent).toBe("Alice");
+  });
+  await startShare();
+  await approveGrant(f.completed);
+  expect(f.createdKeys()).toBe(0);
+  expect(f.published()).toBeUndefined();
+  expect(document.querySelector('[role="alert"]')?.textContent).toBe("The note or account changed. Review the transcript again.");
+  expect(document.querySelector('[role="dialog"]')).toBeNull();
+  expect(document.querySelector('input[readonly]')).toBeNull();
+  expect(document.body.textContent).not.toContain("qa@example.test");
+});
+
+grantTest("equivalent speaker maps survive a same-owner grant refresh regardless of object or entry order", async () => {
+  const f = await fixture();
+  await f.render(f.first, SENTENCES[0]!.text, { Speaker: "Alice", Unused: "Other" });
+  f.afterGrant(() => f.render(f.first, SENTENCES[0]!.text, { Unused: "Other", Speaker: "Alice" }));
+  await startShare();
+  await approveGrant(f.completed);
+  expect(f.grantCount()).toBe(1);
+  expect(f.createdKeys()).toBe(1);
+  expect(f.published()?.target).toEqual({ kind: "email", address: "qa@example.test" });
+  expect(document.querySelector('[role="alert"]')).toBeNull();
+  expect(document.querySelector<HTMLInputElement>('input[readonly]')?.value).toBe(`${ORIGINS.shareOrigin}/s/full#fixture-recipient-link`);
+});
+
+grantTest("a speaker alias changed at completion hides the stale recipient and link and reports the abort", async () => {
+  const f = await fixture();
+  f.beforeResult(() => f.render(f.first, SENTENCES[0]!.text, { Speaker: "Alice" }));
+  await startShare();
+  await approveGrant(f.completed);
+  expect(f.grantCount()).toBe(1);
+  expect(f.published()).toBeDefined();
+  expect(document.querySelector('[role="alert"]')?.textContent).toBe("The note or account changed. Review the transcript again.");
+  expect(document.querySelector('[role="dialog"]')).toBeNull();
+  expect(document.querySelector('input[readonly]')).toBeNull();
+  expect(document.body.textContent).not.toContain("qa@example.test");
 });
 
 for (const transition of ["account switch", "sign-out", "retired storage scope", "changed transcript", "explicit cancellation"] as const) {
