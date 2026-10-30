@@ -250,7 +250,7 @@ export type CombineOutcome =
   | { status: "written"; id: string; sourceId: string; created: boolean; passed: boolean }
   | { status: "refused"; result: StitchResult };
 
-const ID_SELECT = "SELECT id FROM connector_meeting WHERE source = 'exo-merged' AND source_id = ? ORDER BY id";
+const ID_SELECT = "SELECT id, metadata FROM connector_meeting WHERE source = 'exo-merged' AND source_id = ? ORDER BY id";
 
 /**
  * Read both members, read-only (I1). The UI reads, stitches off the UI thread to show the evidence,
@@ -332,7 +332,6 @@ export async function writeCombined(
       if (!retry.ok || retry.rows.length === 0) return ins;
     }
   }
-
   const after = await sql(tcw, "query", ID_SELECT, [sourceId]);
   if (!after.ok) return after;
   const ids = after.rows.map((r) => String(r[0]));
@@ -342,20 +341,30 @@ export async function writeCombined(
     const del = await sql(tcw, "execute", "DELETE FROM connector_meeting WHERE id = ? AND source = 'exo-merged'", [extra]);
     if (!del.ok) return del;
   }
-  // Re-combine, or a collapse onto another writer's row: replace the keeper's content in place.
   // Summary columns are untouched (section 3b owns them); created_at is preserved.
   if (!created || keeper !== row.id) {
-    // A title the user typed on the combined meeting survives a re-combine.
-    const current = await sql(tcw, "query", "SELECT title, metadata FROM connector_meeting WHERE id = ? AND source = 'exo-merged'", [keeper]);
-    if (!current.ok) return current;
-    let currentMetadata: Record<string, unknown> = {};
-    try { currentMetadata = JSON.parse(String(current.rows[0]?.[1] ?? "{}")) as Record<string, unknown>; } catch { /* no marker */ }
-    const kept = keepUserTitle({ title: asString(current.rows[0]?.[0]), metadata: currentMetadata },
-      { title: row.title, metadata: JSON.parse(metadata) as Record<string, unknown> });
-    const upd = await sql(tcw, "execute",
-      "UPDATE connector_meeting SET title = ?, started_at = ?, duration_secs = ?, participants = ?, metadata = ?, updated_at = ? WHERE id = ? AND source = 'exo-merged'",
-      [kept.title, row.started_at, row.duration_secs, participants, JSON.stringify(kept.metadata), now, keeper]);
-    if (!upd.ok) return upd;
+    // A title the user typed on the combined meeting, and the speaker names beside it, survive a re-combine.
+    // The write applies only to the metadata it was built from; a rename landing in between makes it re-read and rebuild.
+    let settled = false;
+    for (let attempt = 0; attempt < 3 && !settled; attempt++) {
+      const current = await sql(tcw, "query", "SELECT title, metadata FROM connector_meeting WHERE id = ? AND source = 'exo-merged'", [keeper]);
+      if (!current.ok) return current;
+      const currentRaw = String(current.rows[0]?.[1] ?? "");
+      let currentMetadata: Record<string, unknown> = {};
+      try { currentMetadata = JSON.parse(currentRaw || "{}") as Record<string, unknown>; } catch { /* no marker */ }
+      const kept = keepUserTitle({ title: asString(current.rows[0]?.[0]), metadata: currentMetadata },
+        { title: row.title, metadata: JSON.parse(metadata) as Record<string, unknown> });
+      const names = currentMetadata.speaker_names;
+      const written = JSON.stringify(names === undefined ? kept.metadata : { ...kept.metadata, speaker_names: names });
+      const upd = await sql(tcw, "execute",
+        "UPDATE connector_meeting SET title = ?, started_at = ?, duration_secs = ?, participants = ?, metadata = ?, updated_at = ? WHERE id = ? AND source = 'exo-merged' AND COALESCE(metadata, '') = ?",
+        [kept.title, row.started_at, row.duration_secs, participants, written, now, keeper, currentRaw]);
+      if (!upd.ok) return upd;
+      const check = await sql(tcw, "query", "SELECT title, metadata FROM connector_meeting WHERE id = ? AND source = 'exo-merged'", [keeper]);
+      if (!check.ok) return check;
+      settled = String(check.rows[0]?.[1] ?? "") === written;
+    }
+    if (!settled) return failure("COMBINE_WRITE_CONFLICT", "the combined row kept changing while it was rewritten");
   }
   return { ok: true, data: { status: "written", id: keeper, sourceId, created: created && keeper === row.id, passed: row.metadata.merge.detection.passed } };
 }

@@ -220,7 +220,7 @@ test('missing Node is preserved as a runtime failure with a setup recovery actio
     tool('prt_runtime', 'tinychat_meetings', { ok: false, operation: 'op-runtime', stage: 'diagnostics', error: { code: 'NODE_UNAVAILABLE', message: 'PRIVATE_PROCESS_DETAILS' }, exitCode: 1, progress: { pagesFetched: 0, visibleComplete: false } }),
   ])] });
   assert.match(result, /prt_runtime: diagnostics failed[^\n]*exit 1[^\n]*NODE_UNAVAILABLE/);
-  assert.match(result, /Next action: Restore Node.js 20 or later on the client PATH/);
+  assert.match(result, /Next action: Restore Node.js 22.20 or later on the client PATH/);
   assert.ok(!result.includes('PRIVATE_PROCESS_DETAILS'));
 });
 
