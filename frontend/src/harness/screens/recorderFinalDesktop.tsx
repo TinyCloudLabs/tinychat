@@ -346,7 +346,7 @@ export const recorderFinalDesktopScreens: HarnessScreen[] = [
   {
     ...screen("note-preview", NOTED, {}, "tauri", { open: true, view: "preview" }),
     viewports: NOTE_VIEWPORTS,
-    readyWhen: ".nv .fmd",
+    readyWhen: ".nv textarea",
   },
   {
     ...screen("note-save-failed", NOTED, {}, "tauri", {
