@@ -73,10 +73,17 @@ const typeWithKeyboard = () => {
 };
 
 const openChatTab = () => {
+  const modelButton = document.querySelector<HTMLButtonElement>('button[aria-label="Model"]:not([disabled])');
+  if (modelButton?.getClientRects().length) {
+    document.documentElement.dataset.harnessChatOpenedFromCapture = "true";
+    return true;
+  }
+  if (document.documentElement.dataset.harnessChatTabClicked === "true") return false;
   const tab = document.querySelector<HTMLAnchorElement>('a[href="/chat"]');
   if (!tab) return false;
   tab.click();
-  return true;
+  document.documentElement.dataset.harnessChatTabClicked = "true";
+  return false;
 };
 
 const minimiseRecorder = () => {
@@ -88,27 +95,37 @@ const minimiseRecorder = () => {
 
 function newChatAfterOpeningSavedThread() {
   let selectedSavedThread = false;
+  let startedNewChat = false;
   return () => {
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"][data-state="open"]');
     const oldQuestion = [...document.querySelectorAll<HTMLParagraphElement>("p")].find(
       (paragraph) => paragraph.textContent?.trim() === "old question" && paragraph.getClientRects().length > 0,
     );
-    if (oldQuestion && document.documentElement.hasAttribute("data-island")) {
-      const newChat = document.querySelector<HTMLButtonElement>('button[aria-label="New chat"]');
-      if (!newChat) return false;
-      newChat.click();
+    if (startedNewChat) {
+      const modelButton = document.querySelector<HTMLButtonElement>('button[aria-label="Model"]:not([disabled])');
+      if (dialog || oldQuestion || !modelButton?.getClientRects().length) return false;
       document.documentElement.dataset.harnessNewChatFromSaved = "true";
       return true;
     }
 
-    const dialog = document.querySelector<HTMLElement>('[role="dialog"][data-state="open"]');
     if (dialog) {
-      const savedThread = [...dialog.querySelectorAll<HTMLButtonElement>("button")].find(
-        (button) => button.textContent?.trim() === "Saved",
-      );
-      if (savedThread) {
-        savedThread.click();
-        selectedSavedThread = true;
+      if (!selectedSavedThread) {
+        const savedThread = [...dialog.querySelectorAll<HTMLButtonElement>("button")].find(
+          (button) => button.textContent?.trim() === "Saved",
+        );
+        if (savedThread) {
+          savedThread.click();
+          selectedSavedThread = true;
+        }
       }
+      return false;
+    }
+
+    if (oldQuestion && document.documentElement.hasAttribute("data-island")) {
+      const newChat = document.querySelector<HTMLButtonElement>('button[aria-label="New chat"]');
+      if (!newChat) return false;
+      newChat.click();
+      startedNewChat = true;
       return false;
     }
 
@@ -190,8 +207,7 @@ export const shellScreens: HarnessScreen[] = [
     ...SHELL,
     id: "shell-chat-ribbon-from-capture",
     path: "/chat/capture",
-    platform: "ios",
-    readyWhen: 'a[href="/chat"]',
+    readyWhen: 'html[data-harness-chat-opened-from-capture="true"]',
     render: () => <Shell act={openChatTab} recorder={{
       phase: "recording",
       mic: { state: "recording", reason: null },
