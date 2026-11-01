@@ -153,3 +153,37 @@ Regression checks (synthetic localhost HTTP and subprocess output only):
 bun test backend/src/__tests__/request-id.test.ts backend/src/__tests__/index-wiring.test.ts backend/src/__tests__/request-log-boundary.test.ts backend/src/__tests__/transcript-delivery.test.ts
 ```
 
+
+## Backend private log shipper (TC-2136)
+
+The production backend's stdout/stderr go to a private Better Stack source (`tinychat-backend`) so a failed boot or a
+provider refusal can be read without public Phala logs. Same pattern as tinycloud-node and ptx-batch.
+
+- **Capture.** dockerd's GELF log driver (UDP, host loopback `127.0.0.1:12201`, `mode: non-blocking`) copies the
+  `tinychat-backend` container's stdout/stderr to the `log-shipper` Vector sidecar in `docker-compose.phala.yml`. No
+  docker socket, no shared volume. The local json-file copy stays, so `docker logs` is unchanged.
+- **Independence.** The backend has no `depends_on` on the shipper. GELF is non-blocking with a bounded buffer and the
+  sink buffer drops when full, so a stopped shipper loses log copies and nothing else. The sidecar starts on its own; a
+  backend that exits at boot is restarted by Compose into an already-listening socket, so its startup lines ship.
+- **Token.** `BETTERSTACK_SOURCE_TOKEN` (GitHub secret in `production-api`) reaches the sidecar like the other
+  secrets: step `env:`, env-file `printf`, Compose `${BETTERSTACK_SOURCE_TOKEN:-}`. The sidecar writes it to a tmpfs file
+  and unsets it. Unset = the sidecar idles (no crash loop, nothing shipped). The ingest host is fixed in
+  `log-shipper/vector.yaml`.
+- **Config.** `log-shipper/vector.yaml` is canonical; the Compose `VECTOR_CONFIG_YAML` is that file with every `$`
+  doubled (a test fails if they differ). `log-shipper/fields.json` is a verbatim copy of the whole
+  `ops/logging/fields.json` in `tinycloud-dev` (its `check-drift` compares bytes); change the schema there first.
+- **What ships.** Only these events, typed fields only, no message text: `backend_startup` (info/warn),
+  `backend_startup_failed` (`phase`: `startup_fatal` | `main_rejected`; closed `failure` class),
+  `backend_uncaught_exception` (class name only; Bun prints an unhandled rejection the same way),
+  `backend_alert` (`alert=true` lines) and `backend_log_error` (any other stderr line; `component`, `route`, `status`,
+  `upstream_status`, `code`, `reason`, `cid` only when they match a strict pattern), and the four hosted-AssemblyAI
+  JSON events (`assemblyai_provider_blocked`, `_provider_recovered`, `_jobs_failed_in_a_row`, `_worker_heartbeat`).
+  Everything else is dropped, not redacted: stdout request lines, free text, stack frames, lines over 2048 characters.
+  A redaction transform (DIDs, `0x` addresses, JWTs, bearer tokens, URLs, emails, long base64) runs first as a second
+  barrier.
+- **Add an event or field.** (1) Add it to `tinychat-backend` in `ops/logging/fields.json` in `tinycloud-dev` and merge;
+  (2) copy that file byte-for-byte to `log-shipper/fields.json`; (3) emit it in the `allowlist` transform in
+  `log-shipper/vector.yaml` with a type/range check; (4) mirror the YAML into `docker-compose.phala.yml` (`$` → `$$`);
+  (5) add a case to `log-shipper/vector.tests.yaml`. `backend/src/__tests__/log-shipper.test.ts` checks the emitted
+  events/fields against `fields.json`; CI runs `vector validate` and `vector test` on the pinned image.
+- **Delivery is best effort.** UDP and the sink buffer can drop lines under load or while the shipper restarts.

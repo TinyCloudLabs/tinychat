@@ -11,6 +11,8 @@
 // consumer (lib/chatApi.ts streamChat) works unchanged; tool activity is surfaced on
 // extra `tool_activity` frames the consumer safely ignores.
 
+import type { McpMeetingTools } from "../mcp-meetings/dispatch.js";
+import type { RetrievalContext } from "../mcp-meetings/evidence.js";
 import type { Request, RequestHandler, Response } from "express";
 import { createAgentTaskClient } from "../agent-task-client.js";
 import { validateAgentStreamPolicy, type AgentStreamPolicy } from "../agent-stream-policy.js";
@@ -137,6 +139,14 @@ export interface AgentChatConfig {
   flusher?: LedgerFlusher;
   /** §E.7 — lazy rehydrator (disabled when absent). */
   rehydrator?: LedgerRehydrator;
+  /** Read-only meeting tools over the hosted MCP (MCP_CHAT_ENABLED); absent keeps eliza-service as the data path. */
+  mcpMeetings?: McpMeetingTools;
+  /** Must name an account for the MCP path to apply to it; an empty or absent gate admits nobody. */
+  mcpChatAccountAllowed?: (address: string) => boolean;
+  /** Owner DID for an authenticated session address (derived server-side, never from the request). */
+  mcpOwnerDidFor?: (address: string) => string;
+  /** Set per turn: the owner the MCP tools act for. */
+  mcpOwner?: string;
 }
 
 export interface AgentTurnContext {
@@ -446,7 +456,10 @@ async function dispatchTool(
     throw new StreamFailure("upstream_incomplete");
   }
   throwIfAborted(signal);
-  const res = await fetchForTurn(fetchImpl, `${config.elizaServiceUrl}/tools/${encodeURIComponent(call.name)}`, {
+  const mcpMeeting = config.mcpMeetings && config.mcpOwner && config.mcpMeetings.handles(call.name)
+    ? await config.mcpMeetings.run({ name: call.name, args, owner: config.mcpOwner, ...(roomId ? { roomId } : {}), ...(turnContext ? { context: turnContext as unknown as RetrievalContext } : {}), ...(signal ? { signal } : {}) })
+    : undefined;
+  const res = mcpMeeting ? new Response(JSON.stringify(mcpMeeting.body), { status: mcpMeeting.status, headers: { "content-type": "application/json" } }) : await fetchForTurn(fetchImpl, `${config.elizaServiceUrl}/tools/${encodeURIComponent(call.name)}`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -1450,18 +1463,29 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
     }
 
     // Resolve synchronous setup before opening the transport.
-    const taskSelected = config.elizaTasksEnabled === true &&
+    const mcpSelected = config.mcpMeetings !== undefined && config.mcpChatAccountAllowed?.(address) === true && Boolean(config.mcpOwnerDidFor);
+    if (!mcpSelected && !config.elizaServiceUrl) {
+      // eliza-service is not configured and this account is not on the MCP: say so rather than fall back silently.
+      res.status(503).json({ error: "eliza_unavailable" });
+      return;
+    }
+    const taskSelected = !mcpSelected && config.elizaTasksEnabled === true &&
       (!config.elizaTasksAccountAllowed || config.elizaTasksAccountAllowed(address));
     owner = new AgentStreamOwner(req, res, policy, config.streamRuntime ?? streamRuntime);
     if (access && !access.isCurrent()) { owner.disconnect(); return; }
     let privateStatus: Awaited<ReturnType<AgentChatAccess["status"]>> | undefined;
-    if (accessControl) {
+    if (mcpSelected) {
+      // The owner's grant lives on the MCP, so admission asks the MCP, never eliza-service.
+      try { privateStatus = await config.mcpMeetings!.status(config.mcpOwnerDidFor!(address)); } catch { /* Unknown access admits public tools only and is reported below. */ }
+      if (access && !access.isCurrent()) { owner.disconnect(); return; }
+    } else if (accessControl) {
       try { privateStatus = await accessControl.status(entityId); } catch { /* Unknown access admits public tools only and is reported below. */ }
       if (!access!.isCurrent()) { owner.disconnect(); return; }
     }
-    const accessIssue = accessControl ? privateAccessIssue(privateStatus) : undefined;
+    const accessIssue = accessControl || mcpSelected ? privateAccessIssue(privateStatus) : undefined;
     const privateAccessActive = accessIssue === undefined;
     const turnConfig: AgentChatConfig = { ...config, privateAccessActive,
+      ...(mcpSelected ? { mcpOwner: config.mcpOwnerDidFor!(address) } : {}),
       ...(accessIssue ? { privateAccessIssue: accessIssue } : {}),
       privateAccessRevision: privateAccessActive && typeof privateStatus?.revision === "string" ? privateStatus.revision : undefined };
     // A public-only turn still answers; it also tells the browser to offer

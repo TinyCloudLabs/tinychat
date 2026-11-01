@@ -7,7 +7,7 @@
 import { EXO_MERGED_SOURCE } from "@tinyboilerplate/core";
 
 import type { SummaryView } from "@/lib/meetingSummary/summaryRunner";
-import { notePath } from "@/shell/routes";
+import { notePath, PATHS } from "@/shell/routes";
 import { librarySourceLabel } from "../libraryKinds";
 import type { LibraryItem } from "../LibraryRow";
 
@@ -43,6 +43,16 @@ export function memberLines(members: readonly CombinedMemberRef[], items: readon
     const found = items.find((item) => item.source === m.source && item.sourceId === m.sourceId);
     return { ...m, sourceLabel: librarySourceLabel(m.source), title: found ? (found.title ?? "Untitled") : null, href: found ? notePath(found.id) : null };
   });
+}
+
+/**
+ * Where a note's Back goes. A source opened from its combined meeting's page (`state.backTo`, set by that page's
+ * link) goes back to that page; anything else goes up to the Library (Capture, on the desktop note page).
+ */
+export function noteBackTarget(state: unknown, notePage: boolean): string {
+  const backTo = (state as { backTo?: unknown } | null)?.backTo;
+  if (typeof backTo === "string" && backTo.startsWith(`${PATHS.library}/`)) return backTo;
+  return notePage ? PATHS.capture : PATHS.library;
 }
 
 /** What NoteDetailView needs for Combine; absent where there is no space to combine in (the on-device screen). */

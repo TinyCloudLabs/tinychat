@@ -16,7 +16,7 @@ async function build(t, args = [], env = {}) {
 }
 const decodeHtml = value => value.replaceAll('&quot;', '"').replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&amp;', '&');
 const pageContext = instructions => JSON.parse(instructions.match(/```json\n([\s\S]*?)\n```/)?.[1] ?? '{}');
-const expectedPrompt = 'How did my last meeting go? Check TinyCloud: https://raw.githubusercontent.com/TinyCloudLabs/prompts/refs/heads/docs/initial-setup-split/apps/tinychat/setup.md';
+const expectedPrompt = 'How did my last meeting go? Check TinyCloud: https://agents.tinycloud.xyz/chat';
 
 test('public instructions, HTML and saved app context agree on pinned versions and production configuration', async t => {
   const { output, result } = await build(t);
@@ -29,7 +29,8 @@ test('public instructions, HTML and saved app context agree on pinned versions a
   assert.deepEqual(JSON.parse(await readFile(join(output, 'context.json'), 'utf8')), { schemaVersion: 1, host: productionHost, space: 'applications' });
   const md = await readFile(join(output, 'setup.md'), 'utf8');
   assert.deepEqual(pageContext(md), JSON.parse(await readFile(join(output, 'context.json'), 'utf8')));
-  assert.ok(md.includes(`@tinycloud/cli@${config.cliVersion}`));
+  assert.ok(md.includes('https://agents.tinycloud.xyz/onboarding'));
+  assert.ok(!md.includes('npm install --global @tinycloud/cli'), 'the CLI comes from onboarding, not a second install');
   assert.ok(md.includes(`tinychat-retrieval/${config.packVersion}/tinychat-retrieval-${config.packVersion}.tgz`));
   assert.ok(!md.includes('{{'));
   const html = await readFile(join(output, 'index.html'), 'utf8');
@@ -81,12 +82,14 @@ test('copy surfaces use one sentence while linked instructions retain setup and 
   for (const term of ['tinychat_setup', 'configPath', 'tinychat_authorize', 'tinychat_meetings', 'nextAction', 'tinychat_handoff', '96 KiB', 'tool_output']) {
     assert.ok(instructions.includes(term), term);
   }
-  assert.match(instructions, /Complete sign-in in the browser, then paste the code here/);
+  assert.match(instructions, /Open this link and approve TinyChat access, then send me the short code OpenKey shows \(like ABCD-EFGH\)\./);
+  assert.match(instructions, /login --code '<the code>'/);
   assert.match(instructions, /last, separate native bash tool call/);
   assert.match(instructions, /scripts\/consume\.mjs/);
   assert.match(instructions, /references\/session-handoff\.md/);
-  assert.match(instructions, /private.*stdin|stdin.*private/i);
-  assert.doesNotMatch(instructions, /quoted heredoc|save.*verbatim/i);
+  assert.match(instructions, /hosted TinyCloud MCP doesn't have meeting tools yet/);
+  assert.doesNotMatch(instructions, /never transcribe|private file|private-file|code-file|Node(?:\.js)? 20|run an MCP server|tc auth login|tinychat-agent/i);
+  assert.doesNotMatch(html, /<li>OpenCode<\/li><li>Codex<\/li><li>Claude Code<\/li>/);
 });
 
 test('first-install activation is a separate final native call with explicit supported scope', async t => {
@@ -94,7 +97,7 @@ test('first-install activation is a separate final native call with explicit sup
   assert.equal(result.status, 0, result.stderr);
   const instructions = await readFile(join(output, 'setup.md'), 'utf8');
   const commands = [...instructions.matchAll(/```sh\n([\s\S]*?)\n```/g)].map(match => match[1]);
-  assert.match(commands[0], /npm install --global @tinycloud\/cli/);
+  assert.match(commands[0], /skills@1\.7\.0 add .*tinychat-retrieval/);
   assert.doesNotMatch(commands[0], /install-opencode/);
   assert.equal(commands[1], 'node "$HOME/.agents/skills/tinychat-retrieval/scripts/install-opencode.mjs" --activate');
   assert.match(instructions, /last, separate native bash tool call/);
@@ -108,7 +111,7 @@ test('first-install activation is a separate final native call with explicit sup
   assert.match(instructions, /resumes automatically/);
   assert.match(instructions, /classified activation error/);
   assert.match(instructions, /only when `tinychat_setup` and `tinychat_authorize` are actually available/);
-  assert.match(instructions, /setup or login only, stop at the ready receipt/);
+  assert.match(instructions, /setup or login only, stop at the ready result/);
   const html = await readFile(join(output, 'index.html'), 'utf8');
   assert.match(html, /without a restart/);
   assert.doesNotMatch(html, /and one restart/);
@@ -117,17 +120,18 @@ test('first-install activation is a separate final native call with explicit sup
 test('pack and installed reference describe activation while preserving the plain installer distinction', async () => {
   const pack = JSON.parse(await readFile(new URL('agent-skills/tinychat-retrieval/pack.json', root), 'utf8'));
   const config = JSON.parse(await readFile(new URL('frontend/src/lib/agent-setup.json', root), 'utf8'));
-  assert.equal(pack.version, '0.1.1-onboarding.24');
+  assert.equal(pack.version, '0.1.1-onboarding.25');
   assert.equal(config.packVersion, pack.version);
-  assert.equal(pack.runtime.node, '>=20.0.0');
+  assert.equal(pack.runtime.node, '>=22.20.0');
   assert.equal(pack.opencode.activation, 'automatic-first-install');
   assert.equal(pack.opencode.activationNode, '>=22.20.0');
   assert.deepEqual(pack.opencode.supportedActivationPlatforms, ['macos']);
   assert.equal(pack.opencode.restartRequired, false);
   const skill = await readFile(new URL('agent-skills/tinychat-retrieval/SKILL.md', root), 'utf8');
-  assert.match(skill, /version: "0\.1\.1-onboarding\.24"/);
+  assert.match(skill, /version: "0\.1\.1-onboarding\.25"/);
   assert.match(skill, /--activate/);
-  assert.match(skill, /setup or login only, stop at the ready receipt/);
+  assert.match(skill, /setup or login only, stop at the ready result/);
+  assert.match(skill, /exactly as sent/);
   const reference = await readFile(new URL('agent-skills/tinychat-retrieval/references/setup.md', root), 'utf8');
   assert.match(reference, /without `--activate`/);
   assert.match(reference, /does not load it into a running client/);

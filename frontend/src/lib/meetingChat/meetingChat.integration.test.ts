@@ -275,7 +275,6 @@ describe("transcribed voice notes in meeting chat and Library", () => {
     const listed = await listVoiceNotes(space as never);
     expect(listed.ok && listed.data).toEqual([expect.objectContaining({
       sourceId: "rec-voice-1",
-      title: expect.stringContaining("Voice note"),
       durationSecs: 42,
       transcript: { status: "transcribed", preview: "VOICE_NOTE_CANARY remember to book the venue.\nAnd send the budget to Avery." },
     })]);

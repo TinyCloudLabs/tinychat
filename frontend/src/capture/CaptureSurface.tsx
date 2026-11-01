@@ -41,6 +41,7 @@ import { LazyDesktopCaptureHome } from "./home/desktop/LazyDesktopCaptureHome";
 import { SoftHomeProvider } from "./home/softHome";
 import { useSoftTheme } from "./home/softTheme";
 import { inProgressShown, type InProgressRowsViewProps } from "./InProgressRows";
+import { noteBackTarget } from "./library/combine/combinedView";
 import { LibraryScreen } from "./library/LibraryScreen";
 import { NoteDetail } from "./library/NoteDetail";
 import { RecentNotePendingSheet } from "./library/RecentNotePendingSheet";
@@ -63,6 +64,7 @@ import { ActivityPanel } from "./activity/ActivityPanel";
 import { FailureNotificationHost } from "./activity/FailureNotificationHost";
 import { sidebarActivityStore } from "./activity/sidebarActivityStore";
 import type { NotePipelineSource } from "@/lib/voiceNotes/useNotePipeline";
+import { RecordingRenameProvider } from "./library/rename/RecordingRename";
 
 export interface CaptureSurfaceProps {
   tcw: TinyCloudWeb;
@@ -195,9 +197,13 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
   const model = combinedModel(modelStatus);
   const modelProgress = model === null ? null : { bytes: model.bytes, totalBytes: model.totalBytes };
   // A saved voice note is the note itself: a full page (desktop) or a sheet over the Library (phone).
+  // A pasted transcript is not a recording: it opens as a plain note page; treating it as the saved
+  // note left the detail pane hidden on a phone while the sheet it was routed to never rendered.
   const openNote = (noteScreen || recentNoteId !== null) && library.note.item?.source === VOICE_NOTE_SOURCE ? library.note.item : null;
-  const notePage = desktopHome && noteScreen && openNote !== null;
-  const noteSheet = soft && openNote !== null;
+  const pastedOpenNote = openNote?.metadata?.capture === "pasted" ? openNote : null;
+  const savedOpenNote = openNote !== null && pastedOpenNote === null ? openNote : null;
+  const notePage = desktopHome && noteScreen && savedOpenNote !== null;
+  const noteSheet = soft && savedOpenNote !== null;
   const now = new Date();
 
   // Wide: the Library link and entering the Library bring its half of the list pane into view.
@@ -248,6 +254,7 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
   const openNotificationPath = useCallback((path: string) => navigate(path), [navigate]);
 
   return (
+    <RecordingRenameProvider tcw={tcw}>
     <div
       className={wide && !homeOnly && !notePage ? "grid h-full grid-cols-[minmax(0,22.5rem)_minmax(0,1fr)]" : "relative h-full"}
       data-testid="capture-surface"
@@ -266,7 +273,7 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
         data-scroll-root={wide ? "" : undefined}
       >
         <div
-          className={homeOnly ? "h-full" : desktopHome ? "hidden" : wide ? "flex flex-col" : libraryScreen || noteScreen ? "hidden" : `${SCROLLER} flex flex-col`}
+          className={homeOnly ? "h-full" : desktopHome ? "hidden" : wide ? "flex flex-col" : libraryScreen || noteScreen || pastedOpenNote !== null ? "hidden" : `${SCROLLER} flex flex-col`}
           data-scroll-root={wide || desktopHome ? undefined : ""}
           data-testid="capture-home"
         >
@@ -345,7 +352,7 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
         </div>
       </div>
       <div
-        className={homeOnly || noteSheet || (soft && recentNoteId !== null) ? "hidden" : notePage ? "h-full overflow-hidden" : wide || noteScreen ? SCROLLER : "hidden"}
+        className={homeOnly || noteSheet || (soft && recentNoteId !== null && pastedOpenNote === null) ? "hidden" : notePage ? "h-full overflow-hidden" : wide || noteScreen || pastedOpenNote !== null ? SCROLLER : "hidden"}
         data-scroll-root=""
         data-testid="capture-detail"
       >
@@ -357,7 +364,7 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
             pushed={!wide}
             onBack={() => {
               if (recentNoteId !== null) closeRecentNote();
-              else goUp(navigate, notePage ? PATHS.capture : PATHS.library);
+              else goUp(navigate, noteBackTarget(location.state, notePage));
             }}
             transcription={recorder.transcription}
             activityView={openNote ? activityViews.get(openNote.sourceId) : undefined}
@@ -380,5 +387,6 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
         <RecentNotePendingSheet listing={library.listing} failed={library.status === "failed"} onRetry={library.retry} onClose={closeRecentNote} suspended={recorder.sheetOpen} />
       )}
     </div>
+    </RecordingRenameProvider>
   );
 }

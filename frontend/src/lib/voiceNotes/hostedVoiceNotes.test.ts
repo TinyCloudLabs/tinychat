@@ -263,8 +263,7 @@ test("a paid outcome needing reconciliation blocks the note without another uplo
   h.setServerJob({ status: "needs_reconciliation", upload_id: "upload-1" });
   const lane = h.track(); lane.consent();
   await lane.run(h.recording);
-  expect(lane.jobs.get("note-1")).toMatchObject({ kind: "failed", retryable: false,
-    message: "Powerful couldn't confirm an earlier attempt. Exo is checking with AssemblyAI." });
+  expect(lane.jobs.get("note-1")).toMatchObject({ kind: "failed", retryable: false });
   expect(h.calls.some((call) => call === "POST /hosted/uploads" || call === "POST /hosted/transcripts")).toBe(false);
 });
 

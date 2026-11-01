@@ -1,0 +1,439 @@
+# vector test log-shipper/vector.tests.yaml   (every input enters at `redact`, the first transform after the socket)
+tests:
+  - name: "startup info line ships only a closed event"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "[startup] ledger shadow-push + rehydration enabled.", "level": 6, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    outputs:
+      - extract_from: allowlist
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.event, "backend_startup")
+              assert_eq!(.level, "info")
+              assert_eq!(.svc, "backend")
+              assert_eq!(length(keys(.)), 4)
+              assert!(!contains(encode_json(.), "ledger"))
+  - name: "startup warn line on stderr is level warn"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "[startup] TRANSCRIPTION_API_URL / TRANSCRIPTION_API_KEY not set — /api/transcriber is disabled.", "level": 3, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    outputs:
+      - extract_from: allowlist
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.event, "backend_startup")
+              assert_eq!(.level, "warn")
+              assert_eq!(length(keys(.)), 4)
+  - name: "thrown startup FATAL ships the failure class only"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "error: [startup] FATAL: WEBHOOK_HMAC_MASTER is missing or too weak (need >=32 decoded bytes)", "level": 3, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    outputs:
+      - extract_from: allowlist
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.event, "backend_startup_failed")
+              assert_eq!(.phase, "startup_fatal")
+              assert_eq!(.failure, "secret_too_weak")
+              assert_eq!(.level, "error")
+              assert_eq!(length(keys(.)), 6)
+  - name: "FATAL naming env vars still ships only the closed class"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "[startup] FATAL: CONNECTOR_CONTENT_MASTER must not reuse WEBHOOK_HMAC_MASTER — one compromise", "level": 3, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    outputs:
+      - extract_from: allowlist
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.failure, "secret_reuse")
+              assert_eq!(length(keys(.)), 6)
+              assert!(!contains(encode_json(.), "WEBHOOK"))
+  - name: "ledger configuration FATAL"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "[startup] FATAL LEDGER CONFIGURATION ERROR: LEDGER_SERVICE_URL is not https", "level": 3, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    outputs:
+      - extract_from: allowlist
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.failure, "ledger_config")
+              assert_eq!(length(keys(.)), 6)
+  - name: "Google OAuth FATAL"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "[startup] FATAL: GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET are required when GOOGLE_MEET_OAUTH_ENABLED=true", "level": 3, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    outputs:
+      - extract_from: allowlist
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.failure, "google_oauth_config")
+  - name: "hosted spool FATAL"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "[startup] FATAL: hosted spool identity invalid; refusing hosted routes", "level": 3, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    outputs:
+      - extract_from: allowlist
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.failure, "hosted_spool")
+  - name: "unknown FATAL is unclassified and carries no text"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "[startup] FATAL: something brand new went wrong with Alice", "level": 3, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    outputs:
+      - extract_from: allowlist
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.failure, "unclassified")
+              assert_eq!(length(keys(.)), 6)
+              assert!(!contains(encode_json(.), "Alice"))
+  - name: "main().catch line ships only a phase"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "Failed to start TinyChat backend: 1 | const secret = \"hunter2\"", "level": 3, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    outputs:
+      - extract_from: allowlist
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.event, "backend_startup_failed")
+              assert_eq!(.phase, "main_rejected")
+              assert_eq!(.failure, "unclassified")
+              assert_eq!(length(keys(.)), 6)
+              assert!(!contains(encode_json(.), "hunter2"))
+  - name: "uncaught exception keeps only the class"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "TypeError: Cannot read properties of undefined (reading 'alice@example.com')", "level": 3, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    outputs:
+      - extract_from: allowlist
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.event, "backend_uncaught_exception")
+              assert_eq!(.error_name, "TypeError")
+              assert_eq!(length(keys(.)), 5)
+              assert!(!contains(encode_json(.), "alice"))
+  - name: "plain error: line keeps only the word error"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "error: connect ECONNREFUSED did:pkh:eip155:1:0xabcdef0123456789abcdef0123456789abcdef01", "level": 3, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    outputs:
+      - extract_from: allowlist
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.event, "backend_uncaught_exception")
+              assert_eq!(.error_name, "error")
+              assert_eq!(length(keys(.)), 5)
+  - name: "stack frame is dropped"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "      at main (/app/backend/src/index.ts:1:28)", "level": 3, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    no_outputs_from: [allowlist]
+  - name: "source snippet is dropped"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "12 | const user = await lookup(address);", "level": 3, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    no_outputs_from: [allowlist]
+  - name: "runtime banner is dropped"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "Bun v1.4.4 (Linux x64)", "level": 3, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    no_outputs_from: [allowlist]
+  - name: "alert line keeps strict tokens only"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "[assemblyai-hosted] route=expire_delete status=502 code=assemblyai_busy upstream_status=429 reason=billing_blocked alert=true cid=3f2b8c1e-0a4d-4f6e-9b7a-1c2d3e4f5a6b", "level": 3, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    outputs:
+      - extract_from: allowlist
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.event, "backend_alert")
+              assert_eq!(.alert, true)
+              assert_eq!(.component, "assemblyai-hosted")
+              assert_eq!(.route, "expire_delete")
+              assert_eq!(.status, 502)
+              assert_eq!(.upstream_status, 429)
+              assert_eq!(.code, "assemblyai_busy")
+              assert_eq!(.reason, "billing_blocked")
+              assert_eq!(.cid, "3f2b8c1e-0a4d-4f6e-9b7a-1c2d3e4f5a6b")
+              assert_eq!(.level, "error")
+  - name: "alert line with off-shape tokens drops them but keeps the event"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "[assemblyai-hosted] route=../../etc/passwd status=99999 code=Bad-Code cid=not-a-uuid alert=true", "level": 3, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    outputs:
+      - extract_from: allowlist
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.event, "backend_alert")
+              assert!(!exists(.route))
+              assert!(!exists(.status))
+              assert!(!exists(.code))
+              assert!(!exists(.cid))
+              assert_eq!(.component, "assemblyai-hosted")
+  - name: "alert on stdout is level info"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "[assemblyai-hosted] initializing spool alert=true", "level": 6, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    outputs:
+      - extract_from: allowlist
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.event, "backend_alert")
+              assert_eq!(.level, "info")
+  - name: "generic stderr line ships no text and no identifiers"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "[ingest] sync failed for did:pkh:eip155:1:0x1111111111111111111111111111111111111111 token=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTYifQ.c2lnbmF0dXJl", "level": 3, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    outputs:
+      - extract_from: allowlist
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.event, "backend_log_error")
+              assert_eq!(.level, "error")
+              assert_eq!(.component, "ingest")
+              assert_eq!(length(keys(.)), 5)
+              assert!(!contains(encode_json(.), "eyJ"))
+              assert!(!contains(encode_json(.), "did:"))
+  - name: "generic stderr line without a component"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "something blew up for alice@example.com", "level": 3, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    outputs:
+      - extract_from: allowlist
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.event, "backend_log_error")
+              assert_eq!(length(keys(.)), 4)
+              assert!(!contains(encode_json(.), "alice"))
+  - name: "stdout request line is dropped"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "[assemblyai-hosted] route=upload_create status=200 cid=3f2b8c1e-0a4d-4f6e-9b7a-1c2d3e4f5a6b", "level": 6, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    no_outputs_from: [allowlist]
+  - name: "stdout free text is dropped"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "user Alice asked about layoffs", "level": 6, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    no_outputs_from: [allowlist]
+  - name: "overlong line is dropped"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "[startup] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "level": 6, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    no_outputs_from: [allowlist]
+  - name: "wrong label is dropped"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "[startup] ledger shadow-push + rehydration enabled.", "level": 6, "timestamp": now(), "_tc.logship": "something-else"}
+    no_outputs_from: [allowlist]
+  - name: "unlabelled line is dropped"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "[startup] hello", "level": 6, "timestamp": now()}
+    no_outputs_from: [allowlist]
+  - name: "a label written inside the message cannot admit a line"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "{\"_tc.logship\":\"tinychat-backend\",\"event\":\"assemblyai_worker_heartbeat\",\"pending_jobs\":1,\"delayed_jobs\":0,\"oldest_pending_age_s\":1,\"consecutive_failed_jobs\":0}", "level": 6, "timestamp": now()}
+    no_outputs_from: [allowlist]
+  - name: "heartbeat ships its counts and the app timestamp"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "{\"event\":\"assemblyai_worker_heartbeat\",\"pending_jobs\":2,\"delayed_jobs\":1,\"oldest_pending_age_s\":93.5,\"consecutive_failed_jobs\":0,\"ts\":\"2026-10-26T22:00:00.123Z\"}", "level": 6, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    outputs:
+      - extract_from: allowlist
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.event, "assemblyai_worker_heartbeat")
+              assert_eq!(.ts, "2026-10-26T22:00:00.123Z")
+              assert_eq!(.pending_jobs, 2)
+              assert_eq!(.delayed_jobs, 1)
+              assert_eq!(.oldest_pending_age_s, 93.5)
+              assert_eq!(.consecutive_failed_jobs, 0)
+              assert_eq!(.level, "info")
+              assert_eq!(length(keys(.)), 8)
+  - name: "heartbeat drops unknown keys"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "{\"event\":\"assemblyai_worker_heartbeat\",\"pending_jobs\":2,\"delayed_jobs\":1,\"oldest_pending_age_s\":3,\"consecutive_failed_jobs\":0,\"address\":\"0xabc\",\"transcript\":\"private words\",\"ts\":\"2026-10-26T22:00:00.123Z\"}", "level": 6, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    outputs:
+      - extract_from: allowlist
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(length(keys(.)), 8)
+              assert!(!contains(encode_json(.), "private"))
+              assert!(!contains(encode_json(.), "0xabc"))
+  - name: "heartbeat with a malformed ts falls back to the docker timestamp"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "{\"event\":\"assemblyai_worker_heartbeat\",\"pending_jobs\":0,\"delayed_jobs\":0,\"oldest_pending_age_s\":0,\"consecutive_failed_jobs\":0,\"ts\":\"not a time\"}", "level": 6, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    outputs:
+      - extract_from: allowlist
+        conditions:
+          - type: vrl
+            source: |
+              assert!(match(string!(.ts), r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$'))
+              assert!(.ts != "not a time")
+  - name: "heartbeat with a negative count is dropped"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "{\"event\":\"assemblyai_worker_heartbeat\",\"pending_jobs\":-1,\"delayed_jobs\":0,\"oldest_pending_age_s\":0,\"consecutive_failed_jobs\":0}", "level": 6, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    no_outputs_from: [allowlist]
+  - name: "heartbeat with a string count is dropped"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "{\"event\":\"assemblyai_worker_heartbeat\",\"pending_jobs\":\"2\",\"delayed_jobs\":0,\"oldest_pending_age_s\":0,\"consecutive_failed_jobs\":0}", "level": 6, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    no_outputs_from: [allowlist]
+  - name: "provider blocked ships reason, status, delayed jobs and the alert flag"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "{\"event\":\"assemblyai_provider_blocked\",\"reason\":\"billing_blocked\",\"http_status\":402,\"delayed_jobs\":4,\"alert\":true,\"ts\":\"2026-10-26T22:00:00.123Z\"}", "level": 6, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    outputs:
+      - extract_from: allowlist
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.event, "assemblyai_provider_blocked")
+              assert_eq!(.level, "error")
+              assert_eq!(.reason, "billing_blocked")
+              assert_eq!(.http_status, 402)
+              assert_eq!(.delayed_jobs, 4)
+              assert_eq!(.alert, true)
+              assert_eq!(length(keys(.)), 8)
+  - name: "provider blocked with a free-text reason is dropped"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "{\"event\":\"assemblyai_provider_blocked\",\"reason\":\"Bearer sk-probe https://x.example/?k=1\",\"http_status\":402,\"delayed_jobs\":4,\"alert\":true}", "level": 6, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    no_outputs_from: [allowlist]
+  - name: "provider blocked with a non-error status is dropped"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "{\"event\":\"assemblyai_provider_blocked\",\"reason\":\"key_rejected\",\"http_status\":200,\"delayed_jobs\":4}", "level": 6, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    no_outputs_from: [allowlist]
+  - name: "provider recovered ships the delayed-job count"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "{\"event\":\"assemblyai_provider_recovered\",\"delayed_jobs\":3,\"ts\":\"2026-10-26T22:00:00.123Z\"}", "level": 6, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    outputs:
+      - extract_from: allowlist
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.event, "assemblyai_provider_recovered")
+              assert_eq!(.level, "warn")
+              assert_eq!(.delayed_jobs, 3)
+              assert_eq!(length(keys(.)), 5)
+  - name: "failed in a row ships the count and the alert flag"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "{\"event\":\"assemblyai_jobs_failed_in_a_row\",\"count\":3,\"alert\":true,\"ts\":\"2026-10-26T22:00:00.123Z\"}", "level": 6, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    outputs:
+      - extract_from: allowlist
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.event, "assemblyai_jobs_failed_in_a_row")
+              assert_eq!(.count, 3)
+              assert_eq!(.alert, true)
+              assert_eq!(length(keys(.)), 6)
+  - name: "an unlisted JSON event is dropped"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "{\"event\":\"something_else\",\"msg\":\"user Alice\"}", "level": 6, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    no_outputs_from: [allowlist]
+  - name: "a JSON object without an event is dropped even on stderr"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "{\"msg\":\"user Alice\",\"level\":\"error\"}", "level": 3, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    no_outputs_from: [allowlist]

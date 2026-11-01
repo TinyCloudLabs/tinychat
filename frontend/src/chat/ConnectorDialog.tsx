@@ -479,7 +479,8 @@ const KeyEntryPanel: FC<{
       onChange={(e) => onChange(e.target.value)}
       disabled={validating}
       placeholder="ff-…"
-      className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
+      // 16px on touch (no iOS focus zoom); compact text with a mouse.
+      className="w-full rounded-md border border-border bg-background px-3 py-2 text-body outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60 fine:text-sm"
     />
     <p className="text-xs text-muted-foreground">
       <a
@@ -1886,7 +1887,8 @@ const GmeetDonePanel: FC<{
               disabled={autoTranscription.status === "working"}
               onChange={(e) => onMeetingCodeChange(e.target.value)}
               placeholder="abc-defg-hij"
-              className="w-full rounded-md border border-border bg-background px-3 py-1.5 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
+              // 16px on touch (no iOS focus zoom); compact text with a mouse.
+              className="w-full rounded-md border border-border bg-background px-3 py-1.5 text-body outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60 fine:text-xs"
             />
             <Button
               size="sm"

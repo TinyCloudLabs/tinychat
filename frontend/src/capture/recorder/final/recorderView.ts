@@ -608,7 +608,7 @@ export function selectRecorderView(
       ? state.elapsedAt + Math.max(0, state.maxDurationMs - state.elapsedMs)
       : input.nowMs + remainingMs;
   const countdown =
-    state.phase === "recording"
+    state.phase === "recording" && state.autoStop !== false
       ? {
           text: FINAL_COPY.stopAt(clockTime(stopAtMs)),
           remainingMs,

@@ -25,10 +25,13 @@ import { captureScreens, captureSoftScreens } from "./screens/capture";
 import { combineScreens } from "./screens/combine";
 import { capturePipelineScreens } from "./screens/capturePipeline";
 import { activityScreens } from "./screens/activity";
+import { transcriptionStatusScreens } from "./screens/transcriptionStatus";
 import { captureHomeDesktopScreens } from "./screens/captureHomeDesktop";
 import { captureSettingsScreens } from "./screens/captureSettings";
 import { legacyScreens } from "./screens/legacy";
 import { libraryScreens } from "./screens/library";
+import { speakerNameScreens } from "./screens/speakerNames";
+import { wordFixesScreens } from "./screens/wordFixes";
 import { localScreens } from "./screens/local";
 import { meetingSourcesScreens } from "./screens/meetingSources";
 import { meetingSourcesGmeetScreens } from "./screens/meetingSourcesGmeet";
@@ -38,6 +41,7 @@ import { pipelineScreens } from "./screens/pipeline";
 import { pipelineWireScreens } from "./screens/pipelineWire";
 import { primitivesScreens } from "./screens/primitives";
 import { recorderScreens } from "./screens/recorder";
+import { recordingRenameScreens } from "./screens/recordingRename";
 import { recorderFinalDesktopScreens } from "./screens/recorderFinalDesktop";
 import { recorderFinalHaloScreen } from "./screens/recorderFinalHalo";
 import { recorderFinalWebScreens } from "./screens/recorderFinalWeb";
@@ -47,6 +51,7 @@ import { recorderFinalPhoneInteractiveScreens } from "./screens/recorderFinalPho
 import { savedNoteScreens } from "./screens/savedNote";
 import { sheetsScreens } from "./screens/sheets";
 import { shellScreens } from "./screens/shell";
+import { homeScreens } from "./screens/home";
 import { waitUntilReady } from "./readiness";
 import { FROZEN_NOW, freezeClock } from "./stubs";
 
@@ -54,7 +59,7 @@ type ScreenInfo = Omit<HarnessScreen, "render">;
 
 declare global {
   interface Window {
-    exoUi?: { screens: ScreenInfo[]; ready: boolean };
+    exoUi?: { screens: ScreenInfo[]; ready: boolean; readyWhenMatched?: boolean };
   }
 }
 
@@ -62,6 +67,7 @@ const SCREENS: HarnessScreen[] = [
   ...primitivesScreens,
   ...legacyScreens,
   ...shellScreens,
+  ...homeScreens,
   ...sheetsScreens,
   ...recorderScreens,
   recorderFinalHaloScreen,
@@ -74,9 +80,12 @@ const SCREENS: HarnessScreen[] = [
   ...captureSoftScreens,
   ...capturePipelineScreens,
   ...activityScreens,
+  ...transcriptionStatusScreens,
   ...captureHomeDesktopScreens,
   ...captureSettingsScreens,
   ...libraryScreens,
+  ...speakerNameScreens,
+  ...wordFixesScreens,
   ...combineScreens,
   ...savedNoteScreens,
   ...localScreens,
@@ -86,6 +95,7 @@ const SCREENS: HarnessScreen[] = [
   ...nativeSignInScreens,
   ...pipelineScreens,
   ...pipelineWireScreens,
+  ...recordingRenameScreens,
 ];
 const PLATFORMS: readonly AppPlatform[] = ["ios", "android", "tauri", "web"];
 
@@ -161,11 +171,14 @@ function Ready(props: { scrollTo?: string; readyWhen?: string }) {
       waitUntilReady(() => !props.readyWhen || document.querySelector(props.readyWhen) !== null, {
         isCancelled: () => cancelled,
       });
-    void Promise.all([document.fonts.ready, arrived()]).then(() => {
+    void Promise.all([document.fonts.ready, arrived()]).then(([, readyWhenMatched]) => {
       if (props.scrollTo) document.querySelector(props.scrollTo)?.scrollIntoView({ block: "center" });
       requestAnimationFrame(() =>
         requestAnimationFrame(() => {
-          if (!cancelled && window.exoUi) window.exoUi.ready = true;
+          if (!cancelled && window.exoUi) {
+            window.exoUi.readyWhenMatched = readyWhenMatched;
+            window.exoUi.ready = true;
+          }
         }),
       );
     });

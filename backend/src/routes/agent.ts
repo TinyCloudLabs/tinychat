@@ -21,6 +21,8 @@ import { Router } from "express";
 import type { Request, RequestHandler, Response } from "express";
 import { addressToEntityId, TINYCHAT_AGENT_ID } from "../entity-id.js";
 import { createAgentChatHandler, type AgentChatConfig } from "./agent-chat.js";
+import { McpPortError } from "../mcp-meetings/port.js";
+import type { McpChatWiring } from "../mcp-meetings/config.js";
 import {
   deserializePortableDelegationSet,
   extractPortableDelegationIdentity,
@@ -40,12 +42,14 @@ const MAX_TRANSCRIPT_EXPIRY_MS = SESSION_EXPIRATION_MS;
 const SESSION_STATUS_TIMEOUT_MS = 3_000;
 
 export interface AgentRoutesConfig {
-  /** The agent did:pkh all users delegate to (eliza-service's stable identity). */
-  agentDid: string;
-  /** Base URL of eliza-service (no trailing slash), e.g. https://eliza.internal. */
-  elizaServiceUrl: string;
+  /** The agent did:pkh all users delegate to (eliza-service's stable identity). Absent when eliza-service is not configured. */
+  agentDid?: string;
+  /** Base URL of eliza-service (no trailing slash), e.g. https://eliza.internal. Absent when eliza-service is not configured. */
+  elizaServiceUrl?: string;
   /** Shared service credential for the Layer-1 gate. NEVER logged or echoed. */
-  elizaServiceSecret: string;
+  elizaServiceSecret?: string;
+  /** MCP chat wiring (MCP_CHAT_ENABLED). Accounts it admits never touch eliza-service; everyone else keeps the eliza path. */
+  mcp?: McpChatWiring;
   authMiddleware: RequestHandler;
   /** The paid-chat rate limiter (`applyRateLimiters`), run before the chat handler. */
   paidLimiter?: RequestHandler;
@@ -118,6 +122,7 @@ export function createAgentRouter(config: AgentRoutesConfig) {
     payload?: unknown,
     timeoutMs?: number,
   ): Promise<ElizaResponse> {
+    if (!config.elizaServiceUrl || !config.elizaServiceSecret) return { status: 503, body: { error: "eliza_unavailable" } };
     const signal = timeoutMs === undefined ? undefined : AbortSignal.timeout(timeoutMs);
     const exchange = (async (): Promise<ElizaResponse> => {
       const res = await fetchImpl(`${config.elizaServiceUrl}${path}`, {
@@ -147,9 +152,50 @@ export function createAgentRouter(config: AgentRoutesConfig) {
     });
   }
 
+  /** The MCP serves an account only when the operator's flag and account list say so; a failure never changes that. */
+  const mcpWiring = (address: string) => {
+    const mcp = config.mcp;
+    return mcp?.mcpGrants && mcp.mcpMeetings && mcp.mcpOwnerDidFor && mcp.mcpChatAccountAllowed?.(address) === true
+      ? { mcpGrants: mcp.mcpGrants, mcpMeetings: mcp.mcpMeetings, mcpOwnerDidFor: mcp.mcpOwnerDidFor } : null;
+  };
+
   router.post("/session", async (req: Request, res: Response) => {
     const user = requireUser(req, res);
     if (!user) return;
+    const mcp = mcpWiring(user.address);
+    if (mcp) {
+      const delegation = (req.body as { mcp?: { delegation?: unknown } } | undefined)?.mcp?.delegation;
+      if (typeof delegation !== "string" || delegation.length === 0) {
+        res.status(400).json({ error: "invalid_body", message: "Request body must include mcp.delegation" });
+        return;
+      }
+      let mcpIdentity;
+      try {
+        mcpIdentity = extractPortableDelegationIdentity(deserialize(delegation));
+      } catch {
+        res.status(400).json({ error: "malformed", message: "Failed to parse delegation" });
+        return;
+      }
+      if (!mcpIdentity) { res.status(400).json({ error: "invalid_delegation_identity" }); return; }
+      if (normalizeAddress(mcpIdentity.ownerAddress) !== normalizeAddress(user.address)) { res.status(400).json({ error: "wrong_delegator" }); return; }
+      const checked = validateSignedMcpGrant(delegation, mcp.mcpOwnerDidFor(user.address), mcp.mcpGrants.serviceDid);
+      if (!checked.ok) { res.status(400).json({ error: checked.error }); return; }
+      try {
+        const accepted = await mcp.mcpGrants.accept(delegation);
+        // The MCP derives the owner from the signed grant: it must be this session's owner and our service DID.
+        if (accepted.ownerDid !== mcp.mcpOwnerDidFor(user.address) || accepted.serviceDid !== mcp.mcpGrants.serviceDid) {
+          res.status(502).json({ error: "mcp_grant_mismatch" });
+          return;
+        }
+        res.status(200).json({ status: "active", transcriptStatus: "active", revision: "mcp", expiresAt: accepted.expiresAt });
+      } catch (error) {
+        const code = error instanceof McpPortError ? error.code : "";
+        if (code === "GRANT_EXPIRED") res.status(400).json({ error: "delegation_expired" });
+        else if (code === "GRANT_REJECTED" || code === "GRANT_REQUIRED") res.status(400).json({ error: "delegation_rejected" });
+        else res.status(502).json({ error: "mcp_unavailable" });
+      }
+      return;
+    }
 
     const { serialized: legacySerialized, roomId, session } = req.body ?? {};
     const isV2 = isSessionEnvelope(session);
@@ -194,11 +240,11 @@ export function createAgentRouter(config: AgentRoutesConfig) {
     }
 
     // Direct-to-agent: the delegatee MUST be the agent DID, not the backend.
-    if (normalizeDid(identity.delegateDID) !== normalizeDid(config.agentDid)) {
+    if (!config.agentDid || normalizeDid(identity.delegateDID) !== normalizeDid(config.agentDid)) {
       res.status(400).json({
         error: "wrong_delegatee",
         message: "Delegation delegatee must be the agent DID",
-        expected: config.agentDid,
+        expected: config.agentDid ?? null,
         actual: identity.delegateDID,
       });
       return;
@@ -209,7 +255,7 @@ export function createAgentRouter(config: AgentRoutesConfig) {
         res.status(400).json({ error: "wrong_delegator" });
         return;
       }
-      const transcript = validateSignedTranscript(session.delegations.transcripts, user.address, config.agentDid);
+      const transcript = validateSignedTranscript(session.delegations.transcripts, user.address, config.agentDid!);
       if (!transcript.ok) {
         res.status(400).json({ error: transcript.error });
         return;
@@ -250,6 +296,11 @@ export function createAgentRouter(config: AgentRoutesConfig) {
   router.delete("/session", async (req: Request, res: Response) => {
     const user = requireUser(req, res);
     if (!user) return;
+    if (mcpWiring(user.address)) {
+      // The MCP has no revoke route: its grant ends at expiry, or when the owner revokes it on the node.
+      res.status(409).json({ error: "disconnect_unsupported" });
+      return;
+    }
     const entityId = addressToEntityId(user.address, agentId);
     invalidate(entityId);
     try {
@@ -267,6 +318,16 @@ export function createAgentRouter(config: AgentRoutesConfig) {
   router.get("/session", async (req: Request, res: Response) => {
     const user = requireUser(req, res);
     if (!user) return;
+    const mcp = mcpWiring(user.address);
+    if (mcp) {
+      try {
+        const status = await mcp.mcpMeetings.status(mcp.mcpOwnerDidFor(user.address), AbortSignal.timeout(statusTimeoutMs));
+        res.status(200).json({ ...status, mcp: { serviceDid: mcp.mcpGrants.serviceDid } });
+      } catch {
+        res.status(502).json({ error: "mcp_unavailable" });
+      }
+      return;
+    }
 
     const entityId = addressToEntityId(user.address, agentId);
     try {
@@ -335,17 +396,17 @@ function signedPayload(serialized: string): { att: Record<string, unknown>; exp:
  * the colon-form space id (`tinycloud:pkh:eip155:1:0x...:default`). A path may
  * itself contain slashes, so only the first two segments are positional.
  */
-function parseAttUri(uri: string): { owner: string; service: string; path: string } | null {
+function parseAttUri(uri: string): { owner: string; space: string; service: string; path: string } | null {
   const segments = uri.split("/");
   const space = segments[0] ?? "";
   const service = segments[1] ?? "";
   const owner = space.split(":")[4] ?? "";
   if (!service || !owner) return null;
-  return { owner, service, path: segments.slice(2).join("/") };
+  return { owner, space, service, path: segments.slice(2).join("/") };
 }
 
-function attGrants(att: Record<string, unknown>): Array<{ owner: string; service: string; path: string; actions: string[] }> | null {
-  const grants: Array<{ owner: string; service: string; path: string; actions: string[] }> = [];
+function attGrants(att: Record<string, unknown>): Array<{ owner: string; space: string; service: string; path: string; actions: string[] }> | null {
+  const grants: Array<{ owner: string; space: string; service: string; path: string; actions: string[] }> = [];
   for (const [uri, abilities] of Object.entries(att)) {
     if (!abilities || typeof abilities !== "object" || Array.isArray(abilities)) return null;
     const actions = Object.keys(abilities as Record<string, unknown>);
@@ -363,7 +424,7 @@ function attGrants(att: Record<string, unknown>): Array<{ owner: string; service
  * when the agent activates it; a wider forgery cannot activate, while a
  * narrower one only reduces the resulting child session.
  */
-function cidBackedGrants(serialized: string): Array<{ owner: string; service: string; path: string; actions: string[] }> | null {
+function cidBackedGrants(serialized: string): Array<{ owner: string; space: string; service: string; path: string; actions: string[] }> | null {
   try {
     const parsed = JSON.parse(serialized) as {
       cid?: unknown;
@@ -375,7 +436,7 @@ function cidBackedGrants(serialized: string): Array<{ owner: string; service: st
     const bearer = auth.replace(/^Bearer\s+/i, "");
     if (bearer.includes(".") || bearer !== parsed.cid || !Array.isArray(parsed.resources)) return null;
 
-    const grants: Array<{ owner: string; service: string; path: string; actions: string[] }> = [];
+    const grants: Array<{ owner: string; space: string; service: string; path: string; actions: string[] }> = [];
     for (const resource of parsed.resources) {
       if (!resource || typeof resource !== "object") return null;
       const entry = resource as { service?: unknown; space?: unknown; path?: unknown; actions?: unknown };
@@ -390,6 +451,7 @@ function cidBackedGrants(serialized: string): Array<{ owner: string; service: st
       if (!owner) return null;
       grants.push({
         owner,
+        space: entry.space,
         service: entry.service.replace(/^tinycloud\./, ""),
         path: entry.path,
         actions: [...entry.actions],
@@ -476,6 +538,55 @@ function validateSignedTranscript(serialized: string, owner: string, agentDid: s
   }
   if (TRANSCRIPT_CEILING.some((entry) => entry.required && !seen.has(entry.service))) {
     return { ok: false, error: "transcript_policy_exceeded" };
+  }
+  return { ok: true };
+}
+
+/**
+ * The exact grant the MCP accepts (js-sdk packages/mcp native-auth): SQL read on the connectors db and KV get/list on its
+ * prefix, both in the owner's `applications` space, delegated to the MCP service DID, at most 30 days. The MCP re-verifies
+ * the signature and the node enforces it on use; this courier gate stops a wrong audience, owner, space or scope before
+ * anything is forwarded.
+ */
+const MCP_GRANT_CEILING: Array<{ service: string; path: string; actions: Set<string> }> = [
+  { service: "sql", path: TRANSCRIPT_SQL, actions: new Set(["tinycloud.sql/read"]) },
+  { service: "kv", path: TRANSCRIPT_KV, actions: new Set(["tinycloud.kv/get", "tinycloud.kv/list"]) },
+];
+const MCP_OWNER_DID = /^did:pkh:eip155:([1-9][0-9]*):(0x[0-9a-fA-F]{40})$/;
+
+export function validateSignedMcpGrant(serialized: string, ownerDid: string, serviceDid: string): { ok: true } | { ok: false; error: string } {
+  let parsed: { delegateDID?: unknown; expiry?: unknown; chainId?: unknown };
+  try {
+    parsed = JSON.parse(serialized) as { delegateDID?: unknown; expiry?: unknown; chainId?: unknown };
+  } catch {
+    return { ok: false, error: "malformed" };
+  }
+  if (typeof parsed.delegateDID !== "string" || parsed.delegateDID !== serviceDid) return { ok: false, error: "wrong_delegatee" };
+  // The complete owner DID, chain included, is the authenticated session's; the grant's signed spaces and its chain must match it.
+  const expectedOwner = MCP_OWNER_DID.exec(ownerDid);
+  if (!expectedOwner || parsed.chainId !== Number(expectedOwner[1])) return { ok: false, error: "wrong_delegator" };
+  const summaryExpiry = new Date(parsed.expiry as string);
+  if (!Number.isFinite(summaryExpiry.getTime()) || summaryExpiry <= new Date()) return { ok: false, error: "delegation_expired" };
+  const payload = signedPayload(serialized);
+  const signedExpiryMs = payload?.exp === null || payload === null ? null : payload.exp * 1_000;
+  if (signedExpiryMs !== null && signedExpiryMs <= Date.now()) return { ok: false, error: "delegation_expired" };
+  const effectiveExpiryMs = signedExpiryMs === null ? summaryExpiry.getTime() : Math.max(summaryExpiry.getTime(), signedExpiryMs);
+  if (effectiveExpiryMs - Date.now() > MAX_TRANSCRIPT_EXPIRY_MS) return { ok: false, error: "delegation_expiry_too_long" };
+
+  // Exactly the two connector entries. Any other entry, including a capabilities entry, is refused: the MCP accepts exactly
+  // these two effective permissions, and a real SDK delegation for them carries nothing else.
+  const grants = payload ? attGrants(payload.att) : cidBackedGrants(serialized);
+  if (!grants || grants.length !== MCP_GRANT_CEILING.length) return { ok: false, error: "mcp_grant_policy_exceeded" };
+  const seen = new Set<string>();
+  for (const grant of grants) {
+    const expectedSpace = `tinycloud:pkh:eip155:${expectedOwner[1]}:${expectedOwner[2]}:applications`;
+    if (grant.space.toLowerCase() !== expectedSpace.toLowerCase()) return { ok: false, error: "wrong_delegator" };
+    const allowed = MCP_GRANT_CEILING.find((entry) => entry.service === grant.service && entry.path === grant.path);
+    if (!allowed || seen.has(allowed.service)) return { ok: false, error: "mcp_grant_policy_exceeded" };
+    if (grant.actions.length !== allowed.actions.size || grant.actions.some((action) => !allowed.actions.has(action))) {
+      return { ok: false, error: "mcp_grant_policy_exceeded" };
+    }
+    seen.add(allowed.service);
   }
   return { ok: true };
 }

@@ -13,7 +13,7 @@
 // `@openkey/sdk-capacitor` is pinned to an exact published beta in
 // frontend/package.json and mobile/package.json.
 
-import { appPlatform, type AppPlatform } from "./platform";
+import { appPlatform, sdkUiPlatform, type AppPlatform } from "./platform";
 import type { EIP1193Provider, TinyCloudWebConfig } from "@tinyboilerplate/client";
 import type { Manifest, SpaceHostResult } from "@tinycloud/sdk-core";
 import type {
@@ -25,6 +25,8 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { authErrorMessage, UserFacingError } from "./authErrors";
 import { nativeRenewAt, renewalLeadMs, terminalRenewalError, nativeCode } from "./openkeyNativeRenewal";
 import { withAbortTimeout } from "./abortTimeout";
+import { manifestCarriesBundle } from "@tinyboilerplate/core";
+import APP_MANIFEST from "../../../manifest.json";
 
 // ── Gate ──────────────────────────────────────────────────────────────
 
@@ -95,28 +97,85 @@ const CAPABILITIES_READ: NativeDelegationPermission = {
 const NATIVE_SERVICES = new Set(["tinycloud.kv", "tinycloud.sql"]);
 
 /**
- * The delegation's permission list: every applications-space KV/SQL entry of
- * the app manifest, paths prefixed with the app id and actions expanded to
- * full URNs, plus the mandatory capabilities/read. Nothing else — the OpenKey
- * ceiling refuses secrets, vault and other spaces, so native sessions simply
- * cannot hold them.
+ * Owner-app paths admitted by native sign-in. Feed authority belongs to Home;
+ * agents receive separate exact database grants without response-write access.
+ */
+const NATIVE_CEILING = new Set([
+  "tinycloud.kv:threads/",
+  "tinycloud.kv:connectors/",
+  "tinycloud.sql:threads",
+  "tinycloud.sql:canvas",
+  "tinycloud.sql:connectors",
+  "tinycloud.sql:home_feed",
+  "tinycloud.sql:feed/",
+]);
+
+const NATIVE_FEED_SQL_ACTIONS: Record<string, true> = {
+  "tinycloud.sql/read": true,
+  "tinycloud.sql/write": true,
+  "tinycloud.sql/schema": true,
+};
+
+/**
+ * The owner's applications-space manifest entries within Home's native scope,
+ * plus capabilities/read. Non-feed broad app entries remain web-only. Hook
+ * authority is limited separately to subscriptions for Home's own feed and
+ * synced settings; adding another hook action or another app path admits nothing.
  */
 export function nativePermissions(manifest: Manifest): NativeDelegationPermission[] {
   const permissions: NativeDelegationPermission[] = [CAPABILITIES_READ];
   const prefix = manifest.prefix === undefined ? manifest.app_id : manifest.prefix;
   for (const entry of manifest.permissions ?? []) {
     const space = entry.space ?? "applications";
-    if (space !== "applications" || !NATIVE_SERVICES.has(entry.service)) continue;
+    if (space !== "applications") continue;
+    const path = entry.skipPrefix || prefix === "" ? entry.path : `${prefix}/${entry.path}`;
+    const actions = entry.actions.map((action) =>
+      action.includes("/") ? action : `${entry.service}/${action}`,
+    );
+    if (entry.service === "tinycloud.hooks") {
+      const ownFeedScope = prefix !== "" && (
+        path === `sql/${prefix}/feed/` ||
+        path === `sql/${prefix}/home_feed` ||
+        path === `sql/${prefix}/threads`
+      );
+      if (!ownFeedScope || actions.length === 0 || !actions.every((action) => action === "tinycloud.hooks/subscribe")) continue;
+    } else {
+      if (!NATIVE_SERVICES.has(entry.service)) continue;
+      if (prefix !== "" && !NATIVE_CEILING.has(`${entry.service}:${path.slice(prefix.length + 1)}`)) continue;
+      if (prefix !== "" && !path.startsWith(`${prefix}/`)) continue;
+      const feedSql = entry.service === "tinycloud.sql" && (
+        path === `${prefix}/home_feed` || path === `${prefix}/feed/`
+      );
+      if (feedSql && (actions.length === 0 || !actions.every((action) => NATIVE_FEED_SQL_ACTIONS[action] === true))) continue;
+    }
     permissions.push({
       service: entry.service,
       space: "applications",
-      path: entry.skipPrefix || prefix === "" ? entry.path : `${prefix}/${entry.path}`,
-      actions: entry.actions.map((action) =>
-        action.includes("/") ? action : `${entry.service}/${action}`,
-      ),
+      path,
+      actions,
     });
   }
   return permissions;
+}
+
+// Bundled, app-owned manifest JSON; TypeScript widens its version literal to number.
+const CURRENT_NATIVE_MANIFEST = APP_MANIFEST as Manifest;
+const CURRENT_NATIVE_PERMISSIONS = nativePermissions(CURRENT_NATIVE_MANIFEST);
+
+/** A short space name is owner-relative; a full space must match this verified session. */
+function nativeGrantCoversCurrentManifest(session: NativeSession): boolean {
+  const { permissions, spaceId } = session.delegation;
+  return CURRENT_NATIVE_PERMISSIONS.every((required) => permissions.some((granted) => {
+    if (granted.service !== required.service) return false;
+    const sameSpace = granted.space === required.space ||
+      (required.space === "applications" && granted.space === spaceId &&
+        (spaceId.endsWith(":applications") || spaceId.endsWith("/applications")));
+    if (!sameSpace || !required.actions.every((action) => granted.actions.includes(action))) return false;
+    const scope = granted.path ?? "";
+    const path = required.path ?? "";
+    return scope === "" || scope === path ||
+      ((granted.service === "tinycloud.kv" || scope.endsWith("/")) && path.startsWith(scope));
+  }));
 }
 
 // ── Read-only provider ────────────────────────────────────────────────
@@ -461,7 +520,7 @@ export type NativeBootOutcome =
   | { kind: "failed" }
   | { kind: "storage" }
   | { kind: "configuration" }
-  | { kind: "terminal"; revoke: () => Promise<void> };
+  | { kind: "terminal" | "upgrade"; revoke: () => Promise<void> };
 
 /** Restore before the backend JWT gate: a live native grant can mint a new JWT. */
 export async function restoreNativeAtBoot(
@@ -475,6 +534,15 @@ export async function restoreNativeAtBoot(
     openkey = nativeClient(nativeClientOptions(config.env ?? import.meta.env, config.tinycloudHost), d.createOpenKeyNative);
     let session = await openkey.current();
     if (!session) return { kind: "none" };
+    if (!nativeGrantCoversCurrentManifest(session)) {
+      // As on web, never discard a usable grant for a manifest the backend has
+      // not deployed, or while its manifest is unreachable. Retry next boot.
+      const served = await d.loadManifest(`${config.backendUrl}/api/manifest`).catch(() => null);
+      if (manifestCarriesBundle(served)) {
+        const client = openkey;
+        return { kind: "upgrade", revoke: () => withNativeDeadline(client.signOut()) };
+      }
+    }
     let renewed = false;
     let renewAt: number | undefined;
     const expiresAt = new Date(session.delegation.expiresAt).getTime();
@@ -623,8 +691,10 @@ export async function installNativeSession(
     return { address, tcw: liveTcw };
   }
   const restored = await d.restoreSession(address, {
+    includeAccountRegistryPermissions: false,
     tinycloudHosts: [delegation.tinycloudHost, ...(config.tinycloudHosts ?? [config.tinycloudHost])].filter((host, index, hosts) => hosts.indexOf(host) === index),
     autoCreateSpace: false,
+    uiPlatform: sdkUiPlatform(),
     sessionStorage: storage,
     provider: createNativeReadOnlyProvider(address, chainId),
   });

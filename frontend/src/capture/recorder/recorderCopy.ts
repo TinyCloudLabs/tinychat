@@ -21,6 +21,41 @@ export function formatLimit(ms: number): string {
   return ms >= 60_000 && ms % 60_000 === 0 ? `${ms / 60_000}-minute` : `${Math.round(ms / 1000)}-second`;
 }
 
+/** "3 hours", "1 hour", "15 minutes": a limit as a duration in a sentence ("Recordings stop after 3 hours."). */
+export function formatLimitDuration(ms: number): string {
+  const plural = (count: number, unit: string) => `${count} ${unit}${count === 1 ? "" : "s"}`;
+  if (ms >= 3_600_000 && ms % 3_600_000 === 0) return plural(ms / 3_600_000, "hour");
+  return ms >= 60_000 && ms % 60_000 === 0 ? plural(ms / 60_000, "minute") : plural(Math.round(ms / 1000), "second");
+}
+
+export const AUTO_STOP_LABEL = "Stop recordings automatically";
+export const autoStopOnHint = (limitMs: number) => `Recordings stop after ${formatLimitDuration(limitMs)}.`;
+export const STOP_AFTER_LABEL = "Stop recording after";
+/** "Off" keeps only the 3-hour limit every recorder enforces, so it says so. */
+export const STOP_AFTER_OPTIONS: readonly { value: "15" | "30" | "60" | "120" | "off"; label: string }[] = [
+  { value: "15", label: "15 min" },
+  { value: "30", label: "30 min" },
+  { value: "60", label: "1 h" },
+  { value: "120", label: "2 h" },
+  { value: "off", label: "Off (3-hour limit)" },
+];
+export const STOP_AFTER_HINT = "New recordings stop by themselves after this long. A recording you extend while it's running can last up to 8 hours.";
+
+/** The time-limit controls under "Stops at …" while recording. */
+export const LIMIT_CONTROLS_LABEL = "Recording time limit";
+export const ADD_15_MIN = "+15 min";
+export const ADD_30_MIN = "+30 min";
+export const NO_LIMIT = "Up to 8 h";
+export const NO_LIMIT_HINT = "Removes the stop time for this recording. It runs until you stop it, for up to 8 hours.";
+export const LIMIT_CHANGE_FAILED = "The time limit could not be changed. The recording still stops at the time shown.";
+export const AUTO_STOP_OFF_HINT_PHONE = "The recording runs until you stop it, for up to 8 hours.";
+
+export const KEEP_RECORDING_TITLE = "Keep recording?";
+export const keepRecordingBody = (stopAt: string) => `This recording stops at ${stopAt} unless you keep going.`;
+export const KEEP_GOING = "Keep going";
+export const STOP_NOW = "Stop now";
+export const recordingContinuesUntil = (stopAt: string) => `Recording continues until ${stopAt}.`;
+
 export function limitNoticeText(maxDurationMs: number): string {
   return `Stopped at the ${formatLimit(maxDurationMs)} limit.`;
 }

@@ -3,8 +3,7 @@ import { PlatformContext } from "@/lib/platform";
 import { useResolvedTheme } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 import type { RecorderValue } from "../RecorderProvider";
-import { MinimizedBars } from "./MinimizedBars";
-import { ExpandGlyph, PauseGlyph, PlayGlyph } from "./minimizedIcons";
+import { PauseGlyph, PlayGlyph } from "./minimizedIcons";
 import {
   useEntrance,
   useMinimizedAnnouncement,
@@ -12,7 +11,7 @@ import {
   useMinimizedRecorder,
   useMinimizedSilencedSince,
 } from "./MinimizedProvider";
-import { minimizedView } from "./minimizedView";
+import { minimizedLimit, minimizedView } from "./minimizedView";
 import "./soft.css";
 import "./ribbon.css";
 
@@ -39,6 +38,7 @@ export function SidebarDockView({
   const device = useContext(PlatformContext) === "tauri" ? "mac" : "phone";
   const view = minimizedView(recorder, elapsedMs, silencedSinceMs, device);
   const live = view.ring === "live";
+  const limit = minimizedLimit(view, recorder.maxDurationMs);
   const canToggle = view.controls.resume || view.controls.pause;
   const stopsId = useId();
   return (
@@ -59,12 +59,19 @@ export function SidebarDockView({
           className="dock-open"
           onClick={recorder.openSheet}
           aria-label={`${view.status}. Open recorder`}
-          aria-describedby={view.timer.countdown ? stopsId : undefined}
+          aria-describedby={limit ? stopsId : undefined}
           data-testid="dock-open"
         />
         <div className="dock-row">
-          <span className="soft-timer dock-timer" data-testid="dock-timer">
-            {view.timer.text}
+          <span className="dock-clock">
+            <span className="soft-timer dock-timer" data-testid="dock-timer">
+              {view.timer.text}
+            </span>
+            {limit && (
+              <span className="dock-remaining" data-testid="dock-remaining">
+                {limit.stopsIn}
+              </span>
+            )}
           </span>
           <button
             type="button"
@@ -97,26 +104,19 @@ export function SidebarDockView({
             </span>
           </button>
         </div>
-        {view.timer.countdown && (
-          <div id={stopsId} className="dock-stops" aria-hidden="true" data-testid="dock-stops">
-            {view.timer.countdown.text}
-          </div>
+        {limit && (
+          <>
+            <span id={stopsId} className="mini-tip" role="tooltip" data-testid="dock-stops">
+              {limit.stopsAt}
+            </span>
+            <span className="mini-limit" aria-hidden="true" data-testid="dock-limit">
+              <span
+                className="mini-limit-fill"
+                style={{ width: `${(limit.fraction * 100).toFixed(1)}%` }}
+              />
+            </span>
+          </>
         )}
-        <div className="dock-bars">
-          <MinimizedBars
-            recorder={recorder}
-            view={view}
-            bars={22}
-            theme={theme}
-          />
-        </div>
-        <div className="dock-foot" aria-hidden="true">
-          <span className="dock-status" data-testid="dock-status">
-            {view.statusLine ?? view.pill.label}
-          </span>
-          <span className="dock-foot-gap" />
-          <ExpandGlyph size={14} />
-        </div>
       </div>
       <span
         role="status"

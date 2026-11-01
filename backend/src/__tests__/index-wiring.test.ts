@@ -89,6 +89,8 @@ async function runIsolatedStartup(env: Record<string, string | undefined>) {
       transcriptionApiConfigFromEnv: () => transcription.transcriptionApiConfigFromEnv(env),
       createTranscriptionApiClient: () => ({}),
     },
+    // MCP chat is off in these startups; the stub is the disabled result of the real parser.
+    "./mcp-meetings/config.js": { mcpChatFromEnv: () => ({}) },
     "./routes/agent.js": {
       createAgentRouter: (config: unknown) => {
         agentConfig = config;
@@ -873,6 +875,7 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
     "./services/connector-teardown.js": load("./services/connector-teardown.ts"),
     "./routes/chat.js": { createChatRouter: router, defaultModel: "test-model" },
     "./agent-stream-policy.js": load("./agent-stream-policy.ts"),
+    "./mcp-meetings/config.js": { mcpChatFromEnv: () => ({}) },
     "./transcripts/meeting-rollout.js": load("./transcripts/meeting-rollout.ts"),
     "./local-validation.js": { localValidationFromEnv: () => false, localValidationGuard: noop },
     "./cors-origins.js": { appCorsOptions: () => ({ origin: [], exposedHeaders: ["Retry-After", "RateLimit", "RateLimit-Policy"] }) },

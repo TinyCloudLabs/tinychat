@@ -26,7 +26,7 @@ describe("durable voice-note transcription failure copy", () => {
     expect(voiceNoteTranscriptionFailureForCode("transcription_error").message).toBe("Transcription failed. Try again.");
     expect(voiceNoteTranscriptionFailureForCode("not_a_known_code").message).toBe("Transcription failed. Try again.");
     expect(voiceNoteTranscriptionFailureForCode("recording_too_large").message)
-      .toBe("Private cloud couldn't accept this recording's length or size. Try again.");
+      .toBe("Your recording is saved, but it's too large for private transcription. The audio is kept, so nothing is lost.");
   });
 
   test("matches live private-cloud copy for every known PTX code, honoring voice-note overrides", () => {
@@ -64,5 +64,16 @@ describe("durable voice-note transcription failure copy", () => {
     expect(voiceNoteTranscriptionFailureForCode("storage_full")).toMatchObject({
       retryable: false, message: expect.stringContaining("Your TinyCloud storage is full"),
     });
+  });
+});
+
+describe("TC-2081 too-long recordings say the audio is kept", () => {
+  const SENTENCE = "Your recording is saved, but it's too long for private transcription. The audio is kept, so nothing is lost.";
+  test("recording_too_long_for_cloud and recording_too_long_for_phone show the new sentence with no retry wording", () => {
+    for (const code of ["recording_too_long_for_cloud", "recording_too_long_for_phone"]) {
+      const failure = voiceNoteTranscriptionFailureForCode(code);
+      expect(failure.message, code).toBe(SENTENCE);
+      expect(failure.message, code).not.toMatch(/\b(?:Retry|Retrying|try again)\b/i);
+    }
   });
 });

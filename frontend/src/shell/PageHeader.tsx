@@ -87,7 +87,8 @@ export function PageHeader({ title, largeTitle = true, back, leading, trailing, 
             {pushed ? (
               <span
                 className={cn(
-                  "block truncate text-headline transition-opacity duration-150",
+                  // A note's title is the user's own words: wrap to two lines (one on its side) instead of cutting at one.
+                  "block line-clamp-2 text-headline transition-opacity duration-150 [overflow-wrap:anywhere] land:line-clamp-1",
                   "land:font-display land:text-title-2 land:opacity-100",
                   compact ? "opacity-100" : "opacity-0",
                 )}

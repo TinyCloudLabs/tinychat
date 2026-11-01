@@ -21,6 +21,7 @@ import { applySecurityDefaults } from "./security.js";
 import { applyRateLimiters, logGlobalBucketRoutes } from "./rate-limits.js";
 import { createAuthMiddleware } from "./middleware/auth.js";
 import { createAuthRouter } from "./routes/auth.js";
+import { mcpChatFromEnv } from "./mcp-meetings/config.js";
 import { createDelegationRouter } from "./routes/delegations.js";
 import { createExoGrantRouter } from "./routes/exo-grant.js";
 import { createAgentRouter } from "./routes/agent.js";
@@ -65,6 +66,8 @@ import { exoCapabilitiesEnabled } from "./exo/mailbox.js";
 import { ASSEMBLYAI_HOSTED_MOUNT, createAssemblyAiHostedRouter, reconcileHostedJobs } from "./routes/assemblyai-hosted.js";
 import {
   DEFAULT_MAX_CONCURRENT_UPLOADS,
+  HEARTBEAT_INTERVAL_MS,
+  HostedProviderMonitor,
   HostedUploadStore,
   assemblyAiHostedConfigFromEnv,
   type AssemblyAiHostedConfig,
@@ -102,6 +105,9 @@ import {
   KvCredentialRowStore,
   validateCredentialCustodyConfig,
 } from "./services/credential-store.js";
+import { CREDENTIAL_COUNT_ADMIN_KEY_ENV, mountCredentialCountRoute } from "./routes/credential-count.js";
+import { createAssemblyAiStatusRouter } from "./routes/assemblyai-status.js";
+import { CREDENTIAL_ROW_COUNT_ENV, logCredentialRowCounts } from "./services/credential-row-count.js";
 import {
   createRefreshingCredentialLookup,
   FirefliesOAuthClient,
@@ -706,6 +712,19 @@ async function main() {
   });
   app.use("/api/manifest", createManifestRouter());
   app.use("/api/server-info", createServerInfoRouter(did, readBackendBuildInfo()));
+  // Operator view of hosted AssemblyAI: the events, the heartbeat and the status route read this one monitor.
+  const assemblyAiMonitor = new HostedProviderMonitor();
+  // TC-1964: optional authenticated count of stored credential rows. Not registered (404) unless
+  // CREDENTIAL_COUNT_ADMIN_KEY is set; no session, the admin key is the only credential.
+  if (process.env[CREDENTIAL_COUNT_ADMIN_KEY_ENV]?.trim()) {
+    mountCredentialCountRoute(
+      app,
+      process.env,
+      () => new KvCredentialRowStore(node, transcriberStorageLane, { priority: "background" }),
+    );
+  }
+  // Its read-only status for the operator probe: the same key and gating, so no routes (404) unless that key is set.
+  app.use(createAssemblyAiStatusRouter(process.env, assemblyAiMonitor));
   app.use(
     "/api/auth",
     createAuthRouter({
@@ -993,8 +1012,10 @@ async function main() {
     );
   }
 
-  if (AGENT_DID && ELIZA_SERVICE_URL && ELIZA_SERVICE_SECRET) {
-    const elizaServiceUrl = ELIZA_SERVICE_URL.replace(/\/$/, "");
+  // MCP chat (MCP_CHAT_ENABLED) serves its listed accounts without eliza-service; every other account keeps the eliza path.
+  const mcpChat = mcpChatFromEnv(process.env);
+  if ((AGENT_DID && ELIZA_SERVICE_URL && ELIZA_SERVICE_SECRET) || mcpChat.mcpMeetings) {
+    const elizaServiceUrl = ELIZA_SERVICE_URL?.replace(/\/$/, "");
     const meetingRollout = meetingRolloutFromEnv(process.env);
     app.use(
       "/api/agent",
@@ -1002,6 +1023,7 @@ async function main() {
         agentDid: AGENT_DID,
         elizaServiceUrl,
         elizaServiceSecret: ELIZA_SERVICE_SECRET,
+        mcp: mcpChat,
         authMiddleware,
         paidLimiter: paidChatLimiter,
         // Mount POST /api/agent/chat (tool-calling orchestration) only when RedPill
@@ -1016,14 +1038,15 @@ async function main() {
                   const accounts = (process.env.ELIZA_TASKS_TEST_ACCOUNTS ?? "").split(",").map(value => value.trim().toLowerCase()).filter(Boolean);
                   return accounts.length === 0 || accounts.includes(address.toLowerCase());
                 },
+                ...mcpChat,
                 meetingContentRetrievalEnabled: meetingRollout.enabled,
                 meetingContentAccountAllowed: meetingRollout.accountAllowed,
                 meetingContentModelAllowed: meetingRollout.modelAllowed,
                 backendRevision: process.env.BUILD_REVISION ?? process.env.GIT_SHA ?? "unknown",
                 agentId: TINYCHAT_AGENT_ID,
                 entityIdFor: (address: string) => addressToEntityId(address, TINYCHAT_AGENT_ID),
-                elizaServiceUrl,
-                elizaServiceSecret: ELIZA_SERVICE_SECRET,
+                elizaServiceUrl: elizaServiceUrl ?? "",
+                elizaServiceSecret: ELIZA_SERVICE_SECRET ?? "",
                 redpillApiKey: diagnosticKey ?? redpillApiKey,
                 redpillBaseUrl: diagnosticUrl ?? process.env.REDPILL_BASE_URL ?? "https://api.redpill.ai/v1",
                 defaultModel,
@@ -1096,13 +1119,15 @@ async function main() {
       undefined, undefined, undefined, new KvJsonKv(node));
     await hostedUploads.init();
     await reconcileHostedJobs(assemblyAiHosted, hostedUploads);
+    assemblyAiMonitor.attach(hostedUploads);
     const sweeper = hostedUploads;
     setInterval(() => {
       sweeper.sweep(Date.now()).catch(() => console.error("[assemblyai-hosted] sweep failed alert=true"));
     }, 60_000).unref();
+    setInterval(() => assemblyAiMonitor.heartbeat(), HEARTBEAT_INTERVAL_MS).unref();
     console.log("[startup] hosted AssemblyAI enabled.");
   }
-  app.use(ASSEMBLYAI_HOSTED_MOUNT, authMiddleware, createAssemblyAiHostedRouter({ config: assemblyAiHosted, store: hostedUploads }));
+  app.use(ASSEMBLYAI_HOSTED_MOUNT, authMiddleware, createAssemblyAiHostedRouter({ config: assemblyAiHosted, store: hostedUploads, monitor: assemblyAiMonitor }));
 
   // Exo private cloud transcription (routes/private-cloud-transcription.ts). A different PTX
   // deployment (`ptx-batch`) and key from the meeting transcriber above.
@@ -1171,6 +1196,14 @@ async function main() {
 
   calendarAutojoinWorker?.start();
   transcriptWorker?.start();
+  // TC-1964: optional one-time, log-only count of stored credential rows. Unset = nothing runs.
+  // Fired after boot, never awaited, and it cannot throw; it lists through the shared KV lane.
+  if (process.env[CREDENTIAL_ROW_COUNT_ENV]?.trim()) {
+    void logCredentialRowCounts(
+      process.env[CREDENTIAL_ROW_COUNT_ENV],
+      () => new KvCredentialRowStore(node, transcriberStorageLane, { priority: "background" }),
+    );
+  }
   let shuttingDown = false;
   const shutdown = (signal: string) => {
     if (shuttingDown) return;

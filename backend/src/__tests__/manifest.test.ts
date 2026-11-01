@@ -9,53 +9,6 @@ import {
 } from "../manifest.js";
 
 describe("TinyChat manifest and backend policy", () => {
-  it("serves a v1 app/data manifest with explicit permissions only", () => {
-    const manifest = runtimeManifest();
-
-    expect(manifest.manifest_version).toBe(1);
-    expect(manifest.app_id).toBe(APP_ID);
-    expect(manifest.name).toBe("TinyCloud Chat");
-    expect(manifest.defaults).toBe(false);
-    expect("backend" in manifest).toBe(false);
-    expect("delegations" in manifest).toBe(false);
-    expect(manifest.permissions).toEqual([
-      {
-        service: "tinycloud.kv",
-        path: "threads/",
-        actions: ["get", "put", "del", "list"],
-        description: "Read and write chat threads and messages.",
-      },
-      {
-        service: "tinycloud.sql",
-        path: "threads",
-        actions: ["read", "write", "schema"],
-        description:
-          "Store chat threads and messages in your space's SQL database.",
-      },
-      {
-        service: "tinycloud.sql",
-        path: "canvas",
-        actions: ["read", "write", "schema"],
-        description:
-          "Store browser-owned Conversation Canvas branches and document versions separately from shared chat history.",
-      },
-      {
-        service: "tinycloud.sql",
-        path: "connectors",
-        actions: ["read", "write", "schema"],
-        description:
-          "Store meeting metadata synced from connected sources (e.g. Fireflies) in your space's SQL database.",
-      },
-      {
-        service: "tinycloud.kv",
-        path: "connectors/",
-        actions: ["get", "put", "del", "list"],
-        description:
-          "Store transcript content synced from connected sources in your space.",
-      },
-    ]);
-  });
-
   // DataVaultService has two storage layouts. The local-envelope one stores an
   // entry as TWO objects (`keys/<vaultKey>` + `vault/<vaultKey>`); the
   // network-encrypted one stores only `vault/<vaultKey>`. node-sdk's

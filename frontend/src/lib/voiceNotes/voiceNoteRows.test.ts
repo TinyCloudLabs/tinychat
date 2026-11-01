@@ -505,6 +505,29 @@ describe("voice-note identity and transcript authority", () => {
     });
   });
 
+  test("speaker names renamed while the note was on the phone land in its row; names already on the row win", async () => {
+    const { tcw, sqlite } = space();
+    await ensureSchema(tcw);
+    const fresh = await createVoiceNoteRow(tcw, { id: "named", startedAt: 0, durationMs: 1000,
+      mimeType: "audio/mp4", sizeBytes: 1, silencedMs: 0, silencedEvents: 0, noSignalMs: 0,
+      ledger: { speakerNames: { Me: "Sam" } } }, "Named note");
+    expect(fresh.metadata.speaker_names).toEqual({ Me: "Sam" });
+
+    // The row exists without names (an older save): a re-save backfills them from the ledger.
+    insert(sqlite, "older", "older", { transcription_outcome: "pending" });
+    const older = await createVoiceNoteRow(tcw, { id: "older", startedAt: 0, durationMs: 1000,
+      mimeType: "audio/mp4", sizeBytes: 1, silencedMs: 0, silencedEvents: 0, noSignalMs: 0,
+      ledger: { speakerNames: { Me: "Rin" } } }, "Older note");
+    expect(older.metadata.speaker_names).toEqual({ Me: "Rin" });
+
+    // The row already has names (renamed since): a later save must not clobber them.
+    insert(sqlite, "renamed", "renamed", { speaker_names: { Me: "Sam" }, transcription_outcome: "pending" });
+    const kept = await createVoiceNoteRow(tcw, { id: "renamed", startedAt: 0, durationMs: 1000,
+      mimeType: "audio/mp4", sizeBytes: 1, silencedMs: 0, silencedEvents: 0, noSignalMs: 0,
+      ledger: { speakerNames: { Me: "Stale" } } }, "Renamed note");
+    expect(kept.metadata.speaker_names).toEqual({ Me: "Sam" });
+  });
+
   test("late failure preserves legacy transcript evidence", async () => {
     const { tcw, sqlite } = space();
     await ensureSchema(tcw);
@@ -604,6 +627,18 @@ test("a full space leaves the note local with a specific identity state", async 
     expect(sqlite.query("SELECT id FROM connector_meeting WHERE source = 'exo-voice-note'").all()).toEqual([{ id: "a" }]);
     expect(sqlite.query("SELECT id FROM connector_meeting WHERE source = 'exo-voice-note-dup'").all()).toEqual([{ id: "b" }]);
     expect(() => insert(sqlite, "late", "rec")).toThrow();
+  });
+  test("merging an archived duplicate does not copy its title marker onto the keeper", async () => {
+    const { tcw, sqlite } = space();
+    expect((await ensureSchema(tcw)).ok).toBe(true);
+    insert(sqlite, "b", "rec", { title_auto: "Voice note · Oct 9" }); insert(sqlite, "a", "rec");
+    expect((await ensureVoiceNoteIdentity(tcw)).status).toBe("established");
+    expect(row(sqlite, "a").metadata.title_auto).toBeUndefined();
+    sqlite.run("UPDATE connector_meeting SET title = ? WHERE id = 'a'", ["Voice note · Oct 9"]);
+    await commitVoiceNoteTranscript(tcw, "rec", { rev: 1, outcome: "transcribed", text: "Hello.",
+      sentences: [{ index: 0, speaker_name: "You", text: "Hello.", start_time: 0, end_time: 5 }],
+      model: "universal-2", participants: ["Alice Chen"] });
+    expect(sqlite.query("SELECT title FROM connector_meeting WHERE id = 'a'").get()).toEqual({ title: "Voice note · Oct 9" });
   });
   test("two reconcilers leave a live keeper and preserve every archived sibling", async () => {
     const { tcw, sqlite } = space();

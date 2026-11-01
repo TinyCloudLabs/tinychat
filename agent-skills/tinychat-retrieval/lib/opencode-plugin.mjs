@@ -1,137 +1,30 @@
-import { createHash, randomUUID } from 'node:crypto';
-import { rm, rmdir, readFile, mkdir } from 'node:fs/promises';
-import { dirname, join, isAbsolute } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { readFile, mkdir } from 'node:fs/promises';
+import { join, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createSetup } from './setup.mjs';
 import { DISPLAY_BYTES } from './consumer.mjs';
 import { resumeActivation } from './opencode-continuation.mjs';
 
-const prompt = 'Complete sign-in in the browser, then paste the code here.';
-const knownErrors = new Set(['INVALID_AUTH_RESPONSE', 'AUTH_RESPONSE_REJECTED', 'OPENKEY_PROOF_INVALID', 'OWNER_MISMATCH', 'OPENKEY_SCOPE_MISMATCH', 'OPENKEY_GRANT_BROADENED', 'AUTH_EXPIRED', 'AUTH_TRANSPORT_TIMEOUT', 'CLI_UNAVAILABLE', 'SETUP_CONFIG_REQUIRED', 'SETUP_CONFIG_INVALID', 'CONTEXT_MISMATCH', 'INVALID_RESPONSE', 'CLI_VERSION', 'APPROVAL_CONTEXT_CHANGED']);
-const failure = code => ({ ok: false, status: 'login-failed', error: { code, message: 'Sign-in was not completed. Keep the selected profile; use this error code to resolve the failure.' } });
-const safeError = error => failure(knownErrors.has(error?.code) ? error.code : 'SIGNIN_FAILED');
-const binding = value => JSON.stringify([value.profile, value.host, value.sessionDid, value.loginArgs]);
-const digest = text => createHash('sha256').update(text).digest('hex');
-const responseLike = (text, awaiting) => {
-  const trimmed = text.trimStart();
-  if (awaiting) return trimmed.startsWith('{') || /^eyJ|^[A-Za-z0-9+/_=-]{32}/.test(trimmed);
-  return /^eyJ[A-Za-z0-9+/_=-]{125}/.test(trimmed) || (trimmed.startsWith('{') && /\"(?:delegationHeader|authorization|signature|siwe)\"\s*:/.test(trimmed));
-};
+const knownErrors = new Set(['INVALID_AUTH_RESPONSE', 'AUTH_RESPONSE_REJECTED', 'OPENKEY_PROOF_INVALID', 'OWNER_MISMATCH', 'OPENKEY_SCOPE_MISMATCH', 'OPENKEY_GRANT_BROADENED', 'AUTH_EXPIRED', 'AUTH_TRANSPORT_TIMEOUT', 'CLI_UNAVAILABLE', 'SETUP_CONFIG_REQUIRED', 'SETUP_CONFIG_INVALID', 'CONTEXT_MISMATCH', 'INVALID_RESPONSE', 'CLI_VERSION']);
+const failure = (code, message) => ({ ok: false, status: 'login-failed', error: { code, message: message ?? 'Sign-in was not completed. Keep the selected profile; use this error code to resolve the failure.' } });
+const safeError = error => knownErrors.has(error?.code) ? failure(error.code, error.message) : failure('SIGNIN_FAILED');
 const stringify = value => JSON.stringify(value);
 
-/** OpenCode 1.18.31 chat.message runs before persistence and before the model loop.
- * The accepted text goes directly to setup.login -> responseInput -> CLI stdin.
- * Neither model arguments nor a generated shell command ever carry the response.
- */
+/** The same paste path as setup.mjs: the agent passes the owner's code as sent. */
 export function createSigninHooks({ setup }) {
-  const pending = new Map();
-  const receipts = new Map();
-  const messages = new Map();
-  const completed = new Map();
-  const opening = new Set();
-  const pendingReceipt = record => ({ ok: true, status: 'awaiting-approval', approvalId: record.id, profile: record.expectedContext.profile, delivery: record.delivery, instructions: prompt });
-  function redact(parts, receipt) {
-    const text = 'TinyChat sign-in receipt: ' + stringify(receipt);
-    let first = true;
-    for (const part of parts) if (part.type === 'text' && !part.synthetic) {
-      part.text = first ? text : '[Additional authorization input withheld.]';
-      first = false;
-    }
-  }
   return {
     tool: {
       tinychat_authorize: {
-        description: 'Open TinyChat sign-in and bind the next pasted authorization response to this conversation and selected profile. Prepare app setup first. Never pass a code as an argument.',
+        description: 'Ask once for TinyChat access when tinychat_setup reports access-required. Without code: returns approvalUrl and a one-line message; send both to the owner. When the owner sends back the code OpenKey shows, call again with code set to it exactly as sent.',
         args: {},
-        async execute(_args, { sessionID }) {
-          if (!sessionID) return stringify(failure('CONVERSATION_REQUIRED'));
-          if (pending.has(sessionID)) return stringify(pendingReceipt(pending.get(sessionID)));
-          if (opening.size) return stringify(failure('AUTHORIZATION_IN_PROGRESS'));
-          opening.add(sessionID);
+        async execute(args = {}) {
+          if (Object.keys(args).some(key => key !== 'code') || (args.code !== undefined && typeof args.code !== 'string')) return stringify(failure('INVALID_INPUT'));
           try {
-            const expectedContext = await setup.context();
-            if (expectedContext.status === 'ready') return stringify({ ok: true, ...expectedContext });
-            if ([...pending.values()].some(record => record.expectedContext.profile === expectedContext.profile)) return stringify(failure('APPROVAL_IN_ANOTHER_SESSION'));
-            const record = { id: randomUUID(), expectedContext, busy: false };
-            try {
-              const result = await setup.authorize();
-              if (result.status === 'ready') return stringify({ ok: true, ...result });
-              if (binding(result) !== binding(expectedContext)) return stringify(failure('APPROVAL_CONTEXT_CHANGED'));
-              record.delivery = result.delivery;
-            } catch (error) {
-              if (error.code !== 'BROWSER_OPEN_FAILED' || !error.delivery) throw error;
-              record.delivery = error.delivery;
-              receipts.delete(sessionID);
-              pending.set(sessionID, record);
-              return stringify({ ...failure('BROWSER_OPEN_FAILED'), approvalId: record.id, delivery: record.delivery });
-            }
-            receipts.delete(sessionID);
-            pending.set(sessionID, record);
-            return stringify(pendingReceipt(record));
+            return stringify({ ok: true, ...(args.code === undefined ? await setup.authorize() : await setup.login(args.code)) });
           } catch (error) { return stringify(safeError(error)); }
-          finally { opening.delete(sessionID); }
         },
       },
-      tinychat_signin_status: {
-        description: 'Read this conversation’s TinyChat sign-in receipt. No credential arguments. The selected meeting acquisition will test actual SQL/body access.',
-        args: {},
-        async execute(_args, { sessionID }) {
-          return stringify(receipts.get(sessionID) ?? (pending.has(sessionID) ? pendingReceipt(pending.get(sessionID)) : failure('NO_PENDING_APPROVAL')));
-        },
-      },
-    },
-    async 'chat.message'(input, output) {
-      const captureStarted = performance.now();
-      const capturedAt = new Date().toISOString();
-      const parts = output.parts;
-      const texts = parts.filter(part => part.type === 'text' && !part.synthetic && part.text.trim().length);
-      const sessionID = input.sessionID;
-      if (!texts.some(part => responseLike(part.text, pending.has(sessionID)))) return;
-      const messageID = output.message.id;
-      // Capture a reference to the original accepted string before changing the mutable part in place.
-      const raw = texts.length === 1 ? texts[0].text : undefined;
-      const hash = raw === undefined ? undefined : digest(raw);
-      const key = `${sessionID}:${messageID}`;
-      const record = pending.get(sessionID);
-      let result;
-      if (messages.has(key) || (hash && completed.get(sessionID)?.has(hash))) result = failure('DUPLICATE_AUTH_RESPONSE');
-      else if (!messageID || output.message.sessionID !== sessionID) result = failure('CONVERSATION_MISMATCH');
-      else if (!record) result = failure('NO_PENDING_APPROVAL');
-      else if (texts.length !== 1 || parts.some(part => part.type !== 'text')) result = failure('AMBIGUOUS_AUTH_RESPONSE');
-      else if (record.busy) result = failure('AUTH_CAPTURE_IN_PROGRESS');
-      redact(parts, result ?? { ok: true, status: 'verifying', approvalId: record?.id });
-      messages.set(key, true);
-      const captureMs = Number((performance.now() - captureStarted).toFixed(3));
-      if (!result) {
-        record.busy = true;
-        const started = performance.now();
-        try {
-          if (binding(await setup.context()) !== binding(record.expectedContext)) {
-            result = failure('APPROVAL_CONTEXT_CHANGED');
-          } else {
-            const verified = await setup.login(raw, { expectedContext: record.expectedContext });
-            if (verified.status !== 'ready') throw new Error('No verified context');
-            result = { ok: true, ...verified, approvalId: record.id, inputBytes: Buffer.byteLength(raw), loginMs: Math.round(performance.now() - started) };
-            pending.delete(sessionID);
-            if (!completed.has(sessionID)) completed.set(sessionID, new Set());
-            completed.get(sessionID).add(hash);
-            // Only the artifact returned by this operation is eligible for cleanup. Never recursive.
-            if (record.delivery?.artifactPath) {
-              try {
-                await rm(record.delivery.artifactPath);
-                await rmdir(dirname(record.delivery.artifactPath));
-              } catch { result.cleanup = 'approval-artifact-retained'; }
-            }
-          }
-        } catch (error) {
-          result = { ...safeError(error), approvalId: record.id, loginMs: Math.round(performance.now() - started) };
-          if (error.code === 'AUTH_EXPIRED') pending.delete(sessionID);
-        }
-        finally { record.busy = false; }
-      }
-      result = { ...result, capturedAt, captureMs };
-      receipts.set(sessionID, result);
-      redact(parts, result);
     },
   };
 }
@@ -158,7 +51,7 @@ export function createExperienceHooks({ setup, consumer, client, outputDirectory
     },
     tool: {
     tinychat_setup: {
-      description: 'Prepare or reuse the installed TinyChat setup. Optional configPath is the app JSON file, never an authorization response. If login-required, use tinychat_authorize.',
+      description: 'Check the TinyCloud onboarding profile for TinyChat. Optional configPath is the app JSON file. ready: continue. onboarding-required: set up TinyCloud with https://agents.tinycloud.xyz/onboarding, then call again. access-required: use tinychat_authorize.',
       args: {},
       async execute(args, { sessionID }) {
         try {
@@ -205,7 +98,6 @@ export default async function TinyChatSignin({ client, directory } = {}, { schem
   if (!schema) throw new Error('Re-run the installed OpenCode adapter installer and restart OpenCode.');
   const setup = createSetup({
     statePath: join(process.env.XDG_CONFIG_HOME || join(process.env.HOME, '.config'), 'tinychat-retrieval/setup.json'),
-    manifestPath: fileURLToPath(new URL('../assets/permissions.json', import.meta.url)),
   });
   const packRoot = fileURLToPath(new URL('../', import.meta.url));
   const pack = JSON.parse(await readFile(join(packRoot, 'pack.json'), 'utf8'));
@@ -215,20 +107,21 @@ export default async function TinyChatSignin({ client, directory } = {}, { schem
     outputDirectory: join(root, 'handoffs'), versions: { candidate: pack.version, opencode: '1.18.31' } });
   experience.tool.tinychat_handoff.args = { goal: schema.string().max(600).optional(), nextAction: schema.string().max(600).optional() };
   experience.tool.tinychat_setup.args = { configPath: schema.string().optional() };
+  const signin = createSigninHooks({ setup });
+  signin.tool.tinychat_authorize.args = { code: schema.string().optional() };
   experience.tool.tinychat_meetings.args = {
     action: schema.enum(['latest', 'discover', 'read', 'next', 'status', 'restart']), operation: schema.string(),
     meeting: schema.number().int().positive().optional(), page: schema.number().int().positive().optional(), chunk: schema.number().int().positive().optional(),
     retry: schema.boolean().optional(), newOperation: schema.string().optional(),
     term: schema.string().optional(), source: schema.string().optional(), from: schema.string().optional(), to: schema.string().optional(), limit: schema.number().int().positive().max(10).optional(),
   };
-  const signin = createSigninHooks({ setup });
   // Return hooks before using the SDK: its tool registry waits for this initializer.
   setTimeout(() => {
     void resumeActivation({ client, directory, version: pack.version }).then(async result => {
       if (result.status === 'failed') await client.tui.showToast({ body: { title: 'TinyCloud setup paused', message: `Automatic continuation failed (${result.code}). Sign-in has not started.`, variant: 'error', duration: 15000 } });
     }).catch(() => { console.error('TinyCloud automatic continuation failed (CONTINUATION_FAILED).'); });
   }, 0);
-  return { ...signin, ...experience, tool: { ...signin.tool, ...experience.tool },
+  return { ...experience, tool: { ...signin.tool, ...experience.tool },
     'shell.env': async (_input, output) => { output.env.TINYCHAT_OPENCODE_PLUGIN = pack.version; },
   };
 }

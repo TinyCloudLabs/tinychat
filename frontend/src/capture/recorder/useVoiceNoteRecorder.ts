@@ -16,7 +16,7 @@ import type { RecorderState } from "./recorderReducer";
 import { HIDDEN_SNAPSHOT, noSubscription, transcriptionProps, type VoiceNoteTranscriptionProps } from "./transcriptionProps";
 import { createVoiceNoteRecorderController } from "./voiceNoteRecorderController";
 import type { RecorderNote, RecorderNoteStatus, RecorderTranscriberChoice, TranscriberChoiceResult, TranscriberChoiceScope } from "./voiceNoteRecorderController";
-import type { TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
+import type { LimitExtension, TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
 import type { VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
 
 export interface VoiceNoteRecorderOptions {
@@ -52,6 +52,8 @@ export interface VoiceNoteRecorder {
   discard(): void;
   retryPending(): void | Promise<void>;
   openSettings(): Promise<void>;
+  /** Raise the live recording's limit (default one hour: "Keep going"), or drop it ("none"). Undefined where the engine cannot change a running limit. */
+  extendLimit: ((extension?: LimitExtension) => Promise<void>) | undefined;
   dismissShortcutRecovery(): Promise<void>;
   /** The receipt was read. */
   dismissOutcome(): void;
@@ -135,6 +137,7 @@ export function useVoiceNoteRecorder({ tcw, enabled = true, backendUrl, sessionS
       discard: () => void controller.discard(),
       retryPending: () => controller.retryPending(),
       openSettings: () => controller.openSettings(),
+      extendLimit: controller.extendLimit,
       dismissShortcutRecovery: () => controller.dismissShortcutRecovery(),
       dismissOutcome: controller.dismissOutcome,
       dismissCaptureIssue: controller.dismissCaptureIssue,

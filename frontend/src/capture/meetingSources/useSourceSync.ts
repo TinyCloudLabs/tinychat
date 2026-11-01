@@ -26,6 +26,11 @@ import type { ConnectorDescriptor, ConnectorId, SyncProgress } from "@/lib/conne
 import { SECRETS_UNAVAILABLE_IN_APP_MESSAGE, secretsAvailable } from "@/lib/openkeyNative";
 
 export const SOURCE_SYNC_FAILED_MESSAGE = "Sync failed. Try again.";
+/** The vault's code for a credential this account's key cannot decrypt; locked, missing-entry and network failures use other codes. */
+const DECRYPTION_FAILED = "DECRYPTION_FAILED";
+/** The saved credential cannot be decrypted for this account: one plain sentence, no SDK text. */
+const reconnectSourceMessage = (name: string) =>
+  `TinyChat can't read your saved ${name} connection. Disconnect it under Manage, then connect ${name} again.`;
 export type DriveMode = "auto" | "snapshot";
 
 /**
@@ -124,6 +129,7 @@ export async function runSourceSync(
     if (input.isCurrent?.() === false) return null;
     const key = await deps.getConnectorKey<SecretsErr>(tcw, d);
     if (!key.ok) {
+      if (key.error?.code === DECRYPTION_FAILED) return reconnectSourceMessage(d.name);
       return (
         key.error?.message ??
         (d.id === "google-meet"

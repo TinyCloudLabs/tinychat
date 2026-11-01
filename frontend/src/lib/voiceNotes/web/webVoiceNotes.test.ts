@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test as bunTest } from "bun:test";
+import { afterEach, describe, expect, spyOn, test as bunTest } from "bun:test";
 import { base64ToBytes } from "../voiceNoteAudio";
 import { VOICE_NOTE_MAX_DURATION_MS, VOICE_NOTE_MIN_DURATION_LIMIT_MS, type VoiceNoteRecording } from "../nativeVoiceNotes";
 import { FakeMediaRecorder, createRig, memoryAudioBlobs, slowTest, type Rig, type RigOptions } from "./webTestKit";
@@ -174,14 +174,14 @@ describe("recording", () => {
     await plugin.discard();
   });
 
-  test("the requested limit is clamped to [1 s, 3 h] and defaults to 3 h", async () => {
+  test("the requested limit is clamped to [1 s, 8 h] and defaults to 3 h", async () => {
     const rig = await createRig();
     const { plugin } = rig.engine;
     expect((await plugin.start()).maxDurationMs).toBe(3 * HOUR);
     await plugin.discard();
     expect((await plugin.start({ maxDurationMs: 5 })).maxDurationMs).toBe(1000);
     await plugin.discard();
-    expect((await plugin.start({ maxDurationMs: 99 * HOUR })).maxDurationMs).toBe(3 * HOUR);
+    expect((await plugin.start({ maxDurationMs: 99 * HOUR })).maxDurationMs).toBe(8 * HOUR);
   });
 
   test("a stop with no audio rejects with no_audio_captured and leaves nothing behind", async () => {
@@ -680,20 +680,33 @@ describe("inputs and levels", () => {
 });
 
 describe("pending notes: playback and deletion", () => {
-  test("localAudioUrl serves the stored bytes and deleteAudio revokes it", async () => {
-    const rig = await createRig();
-    const { plugin } = rig.engine;
-    const { id } = await plugin.start();
-    await rig.chunk([7, 8, 9]);
-    await plugin.stop();
-    const { url } = await plugin.localAudioUrl({ id });
-    expect(url.startsWith("blob:")).toBe(true);
-    expect((await plugin.localAudioUrl({ id })).url).toBe(url);
-    const blob = await (await fetch(url)).blob();
-    expect(blob.type).toBe("audio/webm;codecs=opus");
-    expect(Array.from(new Uint8Array(await blob.arrayBuffer()))).toEqual([7, 8, 9]);
-    await plugin.deleteAudio({ id });
-    await expect(plugin.localAudioUrl({ id })).rejects.toEqual(code("tombstoned"));
+  test("localAudioUrl caches a Blob URL for stored bytes and deleteAudio revokes it", async () => {
+    const createdBlobs: Blob[] = [];
+    const created = spyOn(URL, "createObjectURL").mockImplementation((blob) => {
+      createdBlobs.push(blob as Blob);
+      return "blob:export";
+    });
+    const revoked = spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+    try {
+      const rig = await createRig();
+      const { plugin } = rig.engine;
+      const { id } = await plugin.start();
+      await rig.chunk([7, 8, 9]);
+      await plugin.stop();
+      const { url } = await plugin.localAudioUrl({ id });
+      expect(url).toBe("blob:export");
+      expect((await plugin.localAudioUrl({ id })).url).toBe(url);
+      expect(createdBlobs).toHaveLength(1);
+      const blob = createdBlobs[0]!;
+      expect(blob.type).toBe("audio/webm;codecs=opus");
+      expect(Array.from(new Uint8Array(await blob.arrayBuffer()))).toEqual([7, 8, 9]);
+      await plugin.deleteAudio({ id });
+      expect(revoked).toHaveBeenCalledWith(url);
+      await expect(plugin.localAudioUrl({ id })).rejects.toEqual(code("tombstoned"));
+    } finally {
+      created.mockRestore();
+      revoked.mockRestore();
+    }
   });
 
   test("the live recording cannot be deleted, retried or discarded as a failed recording", async () => {

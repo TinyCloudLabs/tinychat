@@ -19,8 +19,17 @@ const MIC_EVENT: &str = "exo://recorder-mic-state";
 const INPUTS_EVENT: &str = "exo://recorder-inputs";
 const LEVEL_EVENT: &str = "exo://recorder-level";
 const AUTO_STOP_EVENT: &str = "exo://recorder-auto-stopped";
+/// The default limit when the caller names none.
 const MAX_DURATION_MS: u64 = 3 * 60 * 60 * 1000;
+/// The longest limit a caller can ask for (the silent safety cap).
+const SAFETY_CAP_MS: u64 = 8 * 60 * 60 * 1000;
 const MIN_DURATION_MS: u64 = 1_000;
+
+fn clamp_limit_ms(requested: Option<u64>) -> u64 {
+    requested
+        .unwrap_or(MAX_DURATION_MS)
+        .clamp(MIN_DURATION_MS, SAFETY_CAP_MS)
+}
 
 #[derive(Default)]
 pub struct Engine(pub Mutex<EngineState>);
@@ -739,9 +748,7 @@ pub async fn recorder_start(
             segment_id: Some(segment_id.clone()),
             recorded_ms: 0,
             paused_ms: 0,
-            max_duration_ms: max_duration_ms
-                .unwrap_or(MAX_DURATION_MS)
-                .clamp(MIN_DURATION_MS, MAX_DURATION_MS),
+            max_duration_ms: clamp_limit_ms(max_duration_ms),
             system_audio,
             layout,
             spans: Vec::new(),
@@ -793,9 +800,7 @@ pub async fn recorder_start(
         state.active_input_mapping_pending = true;
         state.active_input_devices = input_devices;
         state.spans.clear();
-        state.limit_ms = max_duration_ms
-            .unwrap_or(MAX_DURATION_MS)
-            .clamp(MIN_DURATION_MS, MAX_DURATION_MS);
+        state.limit_ms = clamp_limit_ms(max_duration_ms);
         state.auto_stop_requested = false;
         state.snapshot_issue = None;
         state.last_stop_reason = None;
@@ -1389,6 +1394,46 @@ pub async fn recorder_stop(app: tauri::AppHandle) -> Result<CaptureStatus, Strin
         state.spans.clear();
         state.last_stop_reason = status.reason;
         status
+    };
+    emit_status(&app);
+    Ok(status)
+}
+
+/// Changes the running recording's limit (clamped to [1 s, 8 h]) and persists it
+/// in the live journal so crash recovery keeps it. The busy flag keeps pause,
+/// stop and resume from rewriting the journal while it is updated.
+#[tauri::command]
+pub async fn recorder_set_max_duration(
+    app: tauri::AppHandle,
+    max_duration_ms: u64,
+) -> Result<CaptureStatus, String> {
+    super::ensure(&app);
+    let limit_ms = clamp_limit_ms(Some(max_duration_ms));
+    {
+        let engine = app.state::<Engine>();
+        let mut state = engine.0.lock();
+        if state.busy {
+            return Err("recorder_busy".into());
+        }
+        if state.id.is_none() {
+            return Err("no_recording".into());
+        }
+        state.busy = true;
+    }
+    let handle = app.clone();
+    let saved = run_segment_import(move || {
+        let mut current = journal::load(&handle)?.ok_or("capture_journal_missing")?;
+        current.max_duration_ms = limit_ms;
+        journal::save(&handle, &current)
+    })
+    .await;
+    let status = {
+        let engine = app.state::<Engine>();
+        let mut state = engine.0.lock();
+        state.busy = false;
+        saved?;
+        state.limit_ms = limit_ms;
+        state.status()
     };
     emit_status(&app);
     Ok(status)
@@ -2339,6 +2384,13 @@ pub async fn recorder_select_input(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn limit_defaults_to_three_hours_and_clamps_to_the_eight_hour_cap() {
+        assert_eq!(clamp_limit_ms(None), 3 * 60 * 60 * 1000);
+        assert_eq!(clamp_limit_ms(Some(8 * 60 * 60 * 1000)), 8 * 60 * 60 * 1000);
+        assert_eq!(clamp_limit_ms(Some(9 * 60 * 60 * 1000)), 8 * 60 * 60 * 1000);
+        assert_eq!(clamp_limit_ms(Some(5)), 1_000);
+    }
     #[test]
     fn layout_stays_fixed_across_both_system_audio_toggle_directions() {
         assert!(!segment_system_audio(journal::Layout::Stereo, false));

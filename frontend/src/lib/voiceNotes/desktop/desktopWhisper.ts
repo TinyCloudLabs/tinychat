@@ -105,6 +105,25 @@ async function stageId(id: string): Promise<string> {
   return `whisper-${Array.from(digest.subarray(0, 16), (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }
 
+const clock = (ms: number): string => {
+  const seconds = Math.round(ms / 1000);
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+};
+
+/**
+ * The batch response reports how much audio the engine decoded (`metadata.duration`, seconds). A transcript of
+ * less than the saved recording is incomplete, whatever its text says, so it is reported instead of saved.
+ * Encoder padding and rounding get max(3 s, 3%); a response without a duration is not judged.
+ */
+function decodedShortfall(recordingMs: number, response: BatchResponse): string | null {
+  const metadata = response.metadata;
+  const seconds = metadata && typeof metadata === "object" && !Array.isArray(metadata) ? metadata.duration : null;
+  if (typeof seconds !== "number" || !Number.isFinite(seconds) || !(recordingMs > 0)) return null;
+  const decodedMs = seconds * 1000;
+  if (recordingMs - decodedMs <= Math.max(3_000, recordingMs * 0.03)) return null;
+  return `Whisper transcribed only ${clock(decodedMs)} of this ${clock(recordingMs)} recording. Retry transcription.`;
+}
+
 export function createDesktopWhisperQueue(args: {
   store: WebStore; files: DesktopBridge; whisper: DesktopWhisperBridge;
   captureLive: () => boolean;
@@ -235,6 +254,8 @@ export function createDesktopWhisperQueue(args: {
         })();
       });
       if (disposed || stopping || captureLive()) throw new Error("capture_has_priority");
+      const shortfall = decodedShortfall(note.durationMs, response);
+      if (shortfall) throw new Error(shortfall);
       const transcript = whisperLocalTranscript(note, model, response, {
         rev: rerun?.rev ?? 1,
         ...(rerun ? { rerunBase: { rev: rerun.baseRev, hash: rerun.baseHash } } : {}),

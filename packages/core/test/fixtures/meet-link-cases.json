@@ -1,0 +1,192 @@
+{
+ "_doc": "Shared by tinychat packages/core and the ptx service. canonical: resolves to `canonical`. passthrough: accepted and kept as pasted (lookup/<nick> cannot be resolved offline). reject: never rewritten to a Meet link; ptx throws, tinychat returns null or the input unchanged.",
+ "cases": [
+  {
+   "input": "meet.google.com/meet/abc-defg-hij",
+   "outcome": "canonical",
+   "canonical": "https://meet.google.com/abc-defg-hij"
+  },
+  {
+   "input": "https://meet.google.com/_meet/abc-defg-hij",
+   "outcome": "canonical",
+   "canonical": "https://meet.google.com/abc-defg-hij"
+  },
+  {
+   "input": "https://meet.google.com/meet/ABC-DEFG-HIJ/",
+   "outcome": "canonical",
+   "canonical": "https://meet.google.com/abc-defg-hij"
+  },
+  {
+   "input": "https://g.co/meet/abc-defg-hij",
+   "outcome": "canonical",
+   "canonical": "https://meet.google.com/abc-defg-hij"
+  },
+  {
+   "input": "https://tel.meet/abc-defg-hij?pin=1234567890",
+   "outcome": "canonical",
+   "canonical": "https://meet.google.com/abc-defg-hij"
+  },
+  {
+   "input": "tel.meet/abc-defg-hij?pin=1234567890",
+   "outcome": "canonical",
+   "canonical": "https://meet.google.com/abc-defg-hij"
+  },
+  {
+   "input": "https://accounts.google.com/AccountChooser?continue=https%3A%2F%2Fmeet.google.com%2Fabc-defg-hij&service=cl",
+   "outcome": "canonical",
+   "canonical": "https://meet.google.com/abc-defg-hij"
+  },
+  {
+   "input": "https://accounts.google.com/ServiceLogin?continue=https://meet.google.com/meet/abc-defg-hij",
+   "outcome": "canonical",
+   "canonical": "https://meet.google.com/abc-defg-hij"
+  },
+  {
+   "input": "https://meet.app.goo.gl/?link=https://meet.google.com/abc-defg-hij&apn=1",
+   "outcome": "canonical",
+   "canonical": "https://meet.google.com/abc-defg-hij"
+  },
+  {
+   "input": "https://meet.app.goo.gl/?link=https%3A%2F%2Fmeet.google.com%2Fabc-defg-hij",
+   "outcome": "canonical",
+   "canonical": "https://meet.google.com/abc-defg-hij"
+  },
+  {
+   "input": "abcdefghij",
+   "outcome": "canonical",
+   "canonical": "https://meet.google.com/abc-defg-hij"
+  },
+  {
+   "input": "ABCDEFGHIJ",
+   "outcome": "canonical",
+   "canonical": "https://meet.google.com/abc-defg-hij"
+  },
+  {
+   "input": "abc-defg-hij",
+   "outcome": "canonical",
+   "canonical": "https://meet.google.com/abc-defg-hij"
+  },
+  {
+   "input": "ABC-DEFG-HIJ",
+   "outcome": "canonical",
+   "canonical": "https://meet.google.com/abc-defg-hij"
+  },
+  {
+   "input": "https://meet.google.com/abc-defg-hij/",
+   "outcome": "canonical",
+   "canonical": "https://meet.google.com/abc-defg-hij"
+  },
+  {
+   "input": "https://meet.google.com/ABC-DEFG-HIJ",
+   "outcome": "canonical",
+   "canonical": "https://meet.google.com/abc-defg-hij"
+  },
+  {
+   "input": "meet.google.com/abc-defg-hij",
+   "outcome": "canonical",
+   "canonical": "https://meet.google.com/abc-defg-hij"
+  },
+  {
+   "input": "https://google.com/meet/abc-defg-hij",
+   "outcome": "canonical",
+   "canonical": "https://meet.google.com/abc-defg-hij"
+  },
+  {
+   "input": "https://www.google.com/meet/ABC-DEFG-HIJ/",
+   "outcome": "canonical",
+   "canonical": "https://meet.google.com/abc-defg-hij"
+  },
+  {
+   "input": "google.com/meet/abc-defg-hij?authuser=1",
+   "outcome": "canonical",
+   "canonical": "https://meet.google.com/abc-defg-hij?authuser=1"
+  },
+  {
+   "input": "https://meet.google.com/abc-defg-hij/?authuser=1",
+   "outcome": "canonical",
+   "canonical": "https://meet.google.com/abc-defg-hij?authuser=1"
+  },
+  {
+   "input": "https://www.google.com/url?q=https://meet.google.com/abc-defg-hij&sa=D&source=calendar",
+   "outcome": "canonical",
+   "canonical": "https://meet.google.com/abc-defg-hij"
+  },
+  {
+   "input": "https://www.google.com/url?q=https%3A%2F%2Fgoogle.com%2Fmeet%2Fabc-defg-hij",
+   "outcome": "canonical",
+   "canonical": "https://meet.google.com/abc-defg-hij"
+  },
+  {
+   "input": "https://meet.google.com/abc-defg-hij",
+   "outcome": "passthrough"
+  },
+  {
+   "input": "https://meet.google.com/abc-defg-hij?authuser=1",
+   "outcome": "passthrough"
+  },
+  {
+   "input": "https://meet.google.com/abc-defg-hij?pli=1&hs=122",
+   "outcome": "passthrough"
+  },
+  {
+   "input": "http://meet.google.com/abc-defg-hij",
+   "outcome": "passthrough"
+  },
+  {
+   "input": "https://meet.google.com/lookup/abc123def",
+   "outcome": "passthrough"
+  },
+  {
+   "input": "https://meet.google.com.evil.com/abc-defg-hij",
+   "outcome": "reject"
+  },
+  {
+   "input": "https://evilmeet.google.com/abc-defg-hij",
+   "outcome": "reject"
+  },
+  {
+   "input": "https://meet.google.com@evil.com/abc-defg-hij",
+   "outcome": "reject"
+  },
+  {
+   "input": "https://google.com.evil.com/meet/abc-defg-hij",
+   "outcome": "reject"
+  },
+  {
+   "input": "https://g.co.evil.com/meet/abc-defg-hij",
+   "outcome": "reject"
+  },
+  {
+   "input": "https://tel.meet.evil.com/abc-defg-hij",
+   "outcome": "reject"
+  },
+  {
+   "input": "https://evil.com/meet/abc-defg-hij",
+   "outcome": "reject"
+  },
+  {
+   "input": "https://evil.com/?continue=https://meet.google.com/abc-defg-hij",
+   "outcome": "reject"
+  },
+  {
+   "input": "https://accounts.google.com/AccountChooser?continue=https://evil.com/abc-defg-hij",
+   "outcome": "reject"
+  },
+  {
+   "input": "https://accounts.google.com/AccountChooser?continue=https://meet.google.com.evil.com/abc-defg-hij",
+   "outcome": "reject"
+  },
+  {
+   "input": "https://accounts.google.com/AccountChooser?continue=https://evil.com/?next=https://meet.google.com/abc-defg-hij",
+   "outcome": "reject"
+  },
+  {
+   "input": "https://meet.app.goo.gl/?link=https://evil.com/abc-defg-hij",
+   "outcome": "reject"
+  },
+  {
+   "input": "https://meet.app.goo.gl/?link=https://evilmeet.google.com/abc-defg-hij",
+   "outcome": "reject"
+  }
+ ]
+}

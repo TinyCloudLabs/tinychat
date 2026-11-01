@@ -26,10 +26,25 @@ services:
       # Task routing defaults off; enabled with an empty list admits all accounts.
       ELIZA_TASKS_ENABLED: ${ELIZA_TASKS_ENABLED:-false}
       ELIZA_TASKS_TEST_ACCOUNTS: ${ELIZA_TASKS_TEST_ACCOUNTS:-}
+      # MCP chat (read-only meeting tools and web_search through the hosted TinyCloud MCP); off unless enabled and the account is listed.
+      MCP_CHAT_ENABLED: ${MCP_CHAT_ENABLED:-false}
+      MCP_CHAT_TEST_ACCOUNTS: ${MCP_CHAT_TEST_ACCOUNTS:-}
+      MCP_CHAT_URL: ${MCP_CHAT_URL:-}
+      MCP_CHAT_SERVICE_DID: ${MCP_CHAT_SERVICE_DID:-}
+      MCP_CHAT_SERVICE_CREDENTIAL: ${MCP_CHAT_SERVICE_CREDENTIAL:-}
+      MCP_CHAT_SERVICE_CREDENTIAL_HEADER: ${MCP_CHAT_SERVICE_CREDENTIAL_HEADER:-}
+      MCP_CHAT_OWNER_DID_HEADER: ${MCP_CHAT_OWNER_DID_HEADER:-}
+      MCP_CHAT_GRANT_EXPIRED_ERROR: ${MCP_CHAT_GRANT_EXPIRED_ERROR:-}
+      MCP_CHAT_GRANT_REJECTED_ERROR: ${MCP_CHAT_GRANT_REJECTED_ERROR:-}
+      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
       # Optional meeting rollout; empty allowlists admit no accounts or models.
       MEETING_CONTENT_RETRIEVAL_ENABLED: ${MEETING_CONTENT_RETRIEVAL_ENABLED:-false}
       MEETING_CONTENT_TEST_ACCOUNTS: ${MEETING_CONTENT_TEST_ACCOUNTS:-}
       MEETING_CONTENT_MODELS: ${MEETING_CONTENT_MODELS:-}
+      # Optional one-time, log-only count of stored connector credential rows. Empty = off.
+      CREDENTIAL_ROW_COUNT_SOURCES: ${CREDENTIAL_ROW_COUNT_SOURCES:-}
+      # Optional one-time authenticated read-only count of stored credential rows. Empty = route off.
+      CREDENTIAL_COUNT_ADMIN_KEY: ${CREDENTIAL_COUNT_ADMIN_KEY:-}
       # Explicit stream policy is required when agent chat is enabled. Startup validates
       # these settings; empty values keep agent-disabled deployments possible, with no defaults.
       AGENT_STREAM_HEARTBEAT_MS: ${AGENT_STREAM_HEARTBEAT_MS:-}
@@ -131,9 +146,10 @@ services:
       PRIVATE_CLOUD_TRANSCRIPTION_API_URL: ${PRIVATE_CLOUD_TRANSCRIPTION_API_URL:-}
       PRIVATE_CLOUD_TRANSCRIPTION_API_KEY: ${PRIVATE_CLOUD_TRANSCRIPTION_API_KEY:-}
       PRIVATE_CLOUD_TRANSCRIPTION_TENANT_KEY: ${PRIVATE_CLOUD_TRANSCRIPTION_TENANT_KEY:-}
-      # Keep the existing AssemblyAI API key path. Hosted uploads remain off until a separate
-      # approval restores ASSEMBLYAI_HOSTED_HANDLE_KEY to the container environment.
+      # Hosted AssemblyAI (TinyCloud's key) is ON: API key and handle key both set = on; either
+      # empty = off. Never leaves this process.
       ASSEMBLYAI_API_KEY: ${ASSEMBLYAI_API_KEY:-}
+      ASSEMBLYAI_HOSTED_HANDLE_KEY: ${ASSEMBLYAI_HOSTED_HANDLE_KEY:-}
       ASSEMBLYAI_HOSTED_SPOOL_DIR: /var/lib/tinychat/assemblyai
       ASSEMBLYAI_HOSTED_FRESH_INSTALL: ${ASSEMBLYAI_HOSTED_FRESH_INSTALL:-}
       ASSEMBLYAI_HOSTED_ADMIN_KEY: ${ASSEMBLYAI_HOSTED_ADMIN_KEY:-}
@@ -141,6 +157,18 @@ services:
       - /var/run/dstack.sock:/var/run/dstack.sock:ro
       - assemblyai-data:/var/lib/tinychat/assemblyai
     restart: unless-stopped
+    # TC-2136: stdout/stderr also go to the log-shipper below over dockerd's GELF driver (UDP to host loopback).
+    # Non-blocking with a bounded buffer: an absent or stopped shipper drops log copies and never slows or fails the
+    # backend. The local json-file copy is kept (no `cache-disabled`), so `docker logs` and the dstack log view stay.
+    labels:
+      tc.logship: tinychat-backend
+    logging:
+      driver: gelf
+      options:
+        gelf-address: "udp://127.0.0.1:12201"
+        labels: tc.logship
+        mode: non-blocking
+        max-buffer-size: 4m
 
   dstack-ingress:
     image: ${TINYCHAT_INGRESS_IMAGE:-ghcr.io/tinycloudlabs/tinychat-backend:ingress-latest}
@@ -161,6 +189,238 @@ services:
       - cert-data:/etc/letsencrypt
     restart: unless-stopped
 
+  # TC-2136: private log shipper. Vector reads the backend's stdout/stderr from dockerd's GELF driver (the node and
+  # ptx-batch pattern; no docker.sock, no shared volume), keeps only the allowlist in log-shipper/fields.json and posts it
+  # to the private Better Stack source. The backend does not depend on it and never waits for it: no `depends_on`, GELF
+  # runs non-blocking and the sink buffer drops when full, so a stopped or crashed shipper cannot change the backend.
+  # It starts independently, so a backend that exits at boot is retried by `restart` into an already-listening socket.
+  # log-shipper/vector.yaml is canonical; this block is that file with every `$` doubled (a test checks they match).
+  # BETTERSTACK_SOURCE_TOKEN unset = inert: the container idles and ships nothing.
+  log-shipper:
+    image: timberio/vector:0.59.0-alpine@sha256:0e36bc2a290039e9b6a5e92f04bd2f133223506f72d09682c1df16c015172b7a
+    restart: unless-stopped
+    init: true
+    user: "65532:65532"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 64m
+    memswap_limit: 64m
+    cpus: 0.5
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    ports:
+      - target: 12201
+        published: "12201"
+        host_ip: 127.0.0.1
+        protocol: udp
+    networks:
+      - logship
+    tmpfs:
+      - /var/lib/vector:uid=65532,gid=65532,mode=0700,size=8m
+      - /run/vector-secrets:uid=65532,gid=65532,mode=0700,size=1m
+    environment:
+      BETTERSTACK_SOURCE_TOKEN: ${BETTERSTACK_SOURCE_TOKEN:-}
+      VECTOR_CONFIG_YAML: |
+        data_dir: /var/lib/vector
+        secret:
+          local_directory:
+            type: directory
+            path: /run/vector-secrets
+            remove_trailing_whitespace: true
+        sources:
+          gelf_in:
+            type: socket
+            mode: udp
+            address: 0.0.0.0:12201
+            max_length: 262144
+            host_key: peer_addr
+            framing: { method: chunked_gelf, chunked_gelf: { decompression: Auto } }
+            decoding: { codec: gelf }
+        transforms:
+          redact:
+            type: remap
+            inputs: [gelf_in]
+            drop_on_abort: true
+            drop_on_error: true
+            source: |
+              # Gate + belt-and-braces redaction. Only this fresh object reaches `allowlist`: no GELF/dockerd field survives.
+              lbl = string(get(., ["_tc.logship"]) ?? null) ?? ""
+              if lbl != "tinychat-backend" { abort }
+              msg = string(.message) ?? ""
+              if length(msg) == 0 || length(msg) > 2048 { abort }
+              msg = replace(msg, r'\x1b\[[0-9;]*[A-Za-z]', "")
+              # Stack frames, source snippets and the runtime banner that follow an error line carry no class or event of their own.
+              if match(msg, r'^(?:\s|[0-9]+ \| |Bun v)') { abort }
+              msg = replace(msg, r'(?i)did:[a-z0-9]+:[A-Za-z0-9._:%-]+', "[did]")
+              msg = replace(msg, r'(?i)\b0x[0-9a-f]{8,}\b', "[hex]")
+              msg = replace(msg, r'eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]*', "[jwt]")
+              msg = replace(msg, r'(?i)bearer\s+\S+', "bearer [redacted]")
+              msg = replace(msg, r'(?i)\b(?:sk|pk|tc|tcu|key|ghp|xox[a-z])[_-][A-Za-z0-9_-]{12,}', "[key]")
+              msg = replace(msg, r'[A-Za-z][A-Za-z0-9+.-]*://\S+', "[url]")
+              msg = replace(msg, r'[\w.+-]+@[\w-]+\.[\w.-]+', "[email]")
+              msg = replace(msg, r'[A-Za-z0-9+/=_]{32,}', "[long]")
+              msg = replace(msg, r'[A-Za-z0-9_-]{43,}', "[long]")
+              level_num = to_int(get(., ["level"]) ?? 6) ?? 6
+              at = now()
+              raw_at = get(., ["timestamp"]) ?? null
+              if is_timestamp(raw_at) { at = raw_at }
+              gelf_ts = format_timestamp(at, "%Y-%m-%dT%H:%M:%S%.3fZ") ?? ""
+              . = {"line": msg, "level_num": level_num, "gelf_ts": gelf_ts}
+          allowlist:
+            type: remap
+            inputs: [redact]
+            drop_on_abort: true
+            drop_on_error: true
+            source: |
+              # Only a fresh object built below can leave this transform. No raw line and no unknown key is copied.
+              # Anything that is not classified below is aborted (= dropped).
+              msg = string(.line) ?? ""
+              from_stderr = (int(.level_num) ?? 6) <= 4
+              gelf_ts = string(.gelf_ts) ?? ""
+              if !match(gelf_ts, r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$$') { abort }
+              out = {}
+              # A Bun uncaught-error line is `error: <message>` or `<Name>Error: <message>`; peel it so a thrown
+              # `[startup] FATAL: ...` is recognised as the startup failure it is.
+              peeled = replace(msg, r'^(?:error|[A-Za-z0-9_.]{0,48}Error): \[startup\] ', "[startup] ")
+              parsed, parse_err = parse_json(msg)
+              if parse_err == null && is_object(parsed) {
+                # Structured events: the four hosted-AssemblyAI monitor events (backend/src/services/assemblyai-hosted-monitor.ts).
+                j = object!(parsed)
+                name = string(j.event) ?? ""
+                ts = gelf_ts
+                app_ts = string(j.ts) ?? ""
+                if length(app_ts) <= 24 && match(app_ts, r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$$') { ts = app_ts }
+                if name == "assemblyai_provider_blocked" {
+                  reason = string(j.reason) ?? ""
+                  if !includes(["billing_blocked", "key_rejected", "rate_limited"], reason) { abort }
+                  if !is_integer(j.http_status) { abort }
+                  http_status = int(j.http_status) ?? 0
+                  if http_status < 400 || http_status > 599 { abort }
+                  if !is_integer(j.delayed_jobs) { abort }
+                  delayed_jobs = int(j.delayed_jobs) ?? -1
+                  if delayed_jobs < 0 || delayed_jobs > 100000 { abort }
+                  out = {"svc": "backend", "event": name, "level": "error", "ts": ts, "reason": reason, "http_status": http_status, "delayed_jobs": delayed_jobs}
+                  if j.alert == true { out.alert = true }
+                } else if name == "assemblyai_provider_recovered" {
+                  if !is_integer(j.delayed_jobs) { abort }
+                  delayed_jobs = int(j.delayed_jobs) ?? -1
+                  if delayed_jobs < 0 || delayed_jobs > 100000 { abort }
+                  out = {"svc": "backend", "event": name, "level": "warn", "ts": ts, "delayed_jobs": delayed_jobs}
+                } else if name == "assemblyai_jobs_failed_in_a_row" {
+                  if !is_integer(j.count) { abort }
+                  count = int(j.count) ?? -1
+                  if count < 0 || count > 1000 { abort }
+                  out = {"svc": "backend", "event": name, "level": "error", "ts": ts, "count": count}
+                  if j.alert == true { out.alert = true }
+                } else if name == "assemblyai_worker_heartbeat" {
+                  if !is_integer(j.pending_jobs) || !is_integer(j.delayed_jobs) || !is_integer(j.consecutive_failed_jobs) { abort }
+                  if !(is_integer(j.oldest_pending_age_s) || is_float(j.oldest_pending_age_s)) { abort }
+                  pending_jobs = int(j.pending_jobs) ?? -1
+                  delayed_jobs = int(j.delayed_jobs) ?? -1
+                  failed_jobs = int(j.consecutive_failed_jobs) ?? -1
+                  age = float(j.oldest_pending_age_s) ?? to_float(j.oldest_pending_age_s) ?? -1.0
+                  if pending_jobs < 0 || pending_jobs > 100000 || delayed_jobs < 0 || delayed_jobs > 100000 || failed_jobs < 0 || failed_jobs > 100000 { abort }
+                  if age < 0.0 || age > 31536000.0 { abort }
+                  out = {"svc": "backend", "event": name, "level": "info", "ts": ts, "pending_jobs": pending_jobs, "delayed_jobs": delayed_jobs, "oldest_pending_age_s": age, "consecutive_failed_jobs": failed_jobs}
+                } else {
+                  abort
+                }
+              } else if starts_with(peeled, "[startup] ") {
+                # Startup lines are developer-authored sentences. No text is shipped: only the level and a closed class.
+                if starts_with(peeled, "[startup] FATAL") {
+                  failure = "unclassified"
+                  if contains(peeled, "LEDGER CONFIGURATION") { failure = "ledger_config" }
+                  else if contains(peeled, "must not reuse") { failure = "secret_reuse" }
+                  else if contains(peeled, "missing or too weak") { failure = "secret_too_weak" }
+                  else if contains(peeled, "FIREFLIES_OAUTH") { failure = "fireflies_oauth_config" }
+                  else if contains(peeled, "GOOGLE_") { failure = "google_oauth_config" }
+                  else if contains(peeled, "hosted") && contains(peeled, "spool") { failure = "hosted_spool" }
+                  else if contains(peeled, "PRIVATE_CLOUD_") { failure = "private_cloud_config" }
+                  out = {"svc": "backend", "event": "backend_startup_failed", "level": "error", "ts": gelf_ts, "phase": "startup_fatal", "failure": failure}
+                } else {
+                  startup_level = "info"
+                  if from_stderr { startup_level = "warn" }
+                  out = {"svc": "backend", "event": "backend_startup", "level": startup_level, "ts": gelf_ts}
+                }
+              } else if starts_with(msg, "Failed to start TinyChat backend:") {
+                # index.ts main().catch(): the rejected error follows on the next lines (and may carry source text), so none of it is copied.
+                out = {"svc": "backend", "event": "backend_startup_failed", "level": "error", "ts": gelf_ts, "phase": "main_rejected", "failure": "unclassified"}
+              } else if from_stderr && match(msg, r'^(?:error|[A-Za-z0-9_.]{0,48}Error): ') {
+                # Bun prints an uncaught exception and an unhandled rejection the same way; only the class name is kept.
+                m = parse_regex(msg, r'^(?P<name>error|[A-Za-z0-9_.]{0,48}Error): ') ?? {}
+                name = string(m.name) ?? ""
+                if !match(name, r'^[A-Za-z0-9_.]{1,64}$$') { abort }
+                out = {"svc": "backend", "event": "backend_uncaught_exception", "level": "error", "ts": gelf_ts, "error_name": name}
+              } else if from_stderr || contains(msg, " alert=true") {
+                # Plain `[component] key=value ...` lines (e.g. `[assemblyai-hosted] route=... status=... code=... alert=true`):
+                # keep only strictly-shaped tokens. Free text is never copied.
+                alert = ends_with(msg, " alert=true") || contains(msg, " alert=true ")
+                if !from_stderr && !alert { abort }
+                line_event = "backend_log_error"
+                if alert { line_event = "backend_alert" }
+                line_level = "info"
+                if from_stderr { line_level = "error" }
+                out = {"svc": "backend", "event": line_event, "level": line_level, "ts": gelf_ts}
+                if alert { out.alert = true }
+                comp = parse_regex(msg, r'^\[(?P<c>[a-z0-9][a-z0-9_.-]{0,39})\] ') ?? {}
+                c = string(comp.c) ?? ""
+                if c != "" { out.component = c }
+                r = parse_regex(msg, r'(?:^|\s)route=(?P<v>[a-z_]{1,40})(?:\s|$$)') ?? {}
+                rv = string(r.v) ?? ""
+                if rv != "" { out.route = rv }
+                s = parse_regex(msg, r'(?:^|\s)status=(?P<v>[1-5][0-9]{2})(?:\s|$$)') ?? {}
+                sv = to_int(s.v) ?? 0
+                if sv >= 100 && sv <= 599 { out.status = sv }
+                u = parse_regex(msg, r'(?:^|\s)upstream_status=(?P<v>[1-5][0-9]{2})(?:\s|$$)') ?? {}
+                uv = to_int(u.v) ?? 0
+                if uv >= 100 && uv <= 599 { out.upstream_status = uv }
+                k = parse_regex(msg, r'(?:^|\s)code=(?P<v>[a-z][a-z0-9_]{0,59})(?:\s|$$)') ?? {}
+                kv = string(k.v) ?? ""
+                if kv != "" { out.code = kv }
+                w = parse_regex(msg, r'(?:^|\s)reason=(?P<v>[A-Za-z0-9_]{1,40})(?:\s|$$)') ?? {}
+                wv = string(w.v) ?? ""
+                if wv != "" { out.reason = wv }
+                i = parse_regex(msg, r'(?:^|\s)cid=(?P<v>[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})(?:\s|$$)') ?? {}
+                iv = string(i.v) ?? ""
+                if iv != "" { out.cid = iv }
+              } else {
+                abort
+              }
+              . = out
+        sinks:
+          betterstack:
+            type: http
+            inputs: [allowlist]
+            method: post
+            uri: "https://s2795438.us-west-2a.betterstackdata.com/"
+            encoding: { codec: json }
+            compression: gzip
+            auth: { strategy: bearer, token: "SECRET[local_directory.betterstack_source_token]" }
+            batch: { max_bytes: 1000000, timeout_secs: 5 }
+            buffer: { type: memory, max_events: 1000, when_full: drop_newest }
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        umask 077
+        if [ -z "$${BETTERSTACK_SOURCE_TOKEN:-}" ]; then
+          echo "log shipper inert: BETTERSTACK_SOURCE_TOKEN is not set"
+          trap 'exit 0' TERM INT
+          while :; do sleep 3600 & wait $$!; done
+        fi
+        printf "%s" "$${BETTERSTACK_SOURCE_TOKEN}" > /run/vector-secrets/betterstack_source_token
+        unset BETTERSTACK_SOURCE_TOKEN
+        printf "%s\n" "$${VECTOR_CONFIG_YAML}" > /var/lib/vector/vector.yaml
+        unset VECTOR_CONFIG_YAML
+        exec vector --config /var/lib/vector/vector.yaml
+
 volumes:
   cert-data:
   assemblyai-data:
+
+networks:
+  logship:
+    driver: bridge

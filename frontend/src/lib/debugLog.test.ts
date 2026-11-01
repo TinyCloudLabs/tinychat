@@ -1,5 +1,13 @@
 import { expect, test } from "bun:test";
-import { debugErrorChain, redactDebugText } from "./debugLog";
+import { authFailureCode, debugErrorChain, redactDebugText } from "./debugLog";
+
+test("auth diagnostics retain only a bounded error code", async () => {
+  const response = new Response(JSON.stringify({ error: "invalid_origin", message: "private SIWE material" }), { status: 400 });
+  expect(await authFailureCode(response, "backend/api/auth/verify")).toBe("invalid_origin");
+  expect(await response.json()).toEqual({ error: "invalid_origin", message: "private SIWE material" });
+  expect(await authFailureCode(new Response(JSON.stringify({ error: "secret=private" }), { status: 400 }), "backend/api/auth/nonce")).toBeUndefined();
+  expect(await authFailureCode(response, "tinycloud/api/auth/verify")).toBeUndefined();
+});
 
 test("debug error chains retain each cause but redact URLs and credentials", () => {
   const cause = Object.assign(new TypeError("Fetch API cannot load https://tee.node.tinycloud.xyz/kv?token=private due to access control checks."),

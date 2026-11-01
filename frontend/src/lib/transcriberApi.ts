@@ -24,6 +24,7 @@ export type TranscriberMeetingStatus =
   | "queued"
   | "joining"
   | "waiting_for_admission"
+  | "needs_help"
   | "in_progress"
   | "processing"
   | "completed"

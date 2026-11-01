@@ -53,6 +53,7 @@ export async function createBackendIdentity(
     host: config.host ?? "https://node.tinycloud.xyz",
     prefix,
     autoCreateSpace: config.autoCreateSpace ?? true,
+    includeAccountRegistryPermissions: false,
     sessionExpirationMs: SESSION_EXPIRATION_MS,
   });
 

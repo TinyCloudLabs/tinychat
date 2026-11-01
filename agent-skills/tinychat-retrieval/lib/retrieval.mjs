@@ -1,12 +1,13 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, chmod, writeFile, readFile, stat, lstat, open, rm } from 'node:fs/promises';
-import { constants, readFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { accessSync, constants, readFileSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { join, dirname, isAbsolute, normalize } from 'node:path';
 
 const PACK = JSON.parse(readFileSync(new URL('../pack.json', import.meta.url), 'utf8'));
 export const PACK_VERSION = PACK.version;
+export const SETUP_CLI_VERSION = PACK.cli.setupMinimumVersion;
 
 const parseSemver = version => {
   const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.exec(version);
@@ -60,10 +61,10 @@ const MESSAGES = {
   INVALID_INPUT: 'Invalid arguments. Use --help for supported filters and limits.',
   INVALID_RESPONSE: 'The CLI response did not match the supported data contract.',
   INVALID_METADATA: 'The catalog contains unsupported or unsafe source metadata.',
-  AUTH_REQUIRED: 'The selected CLI profile has no usable session. Complete terminal authentication.',
-  AUTH_EXPIRED: 'The selected authorization has expired. Renew it through terminal consent.',
-  AUTH_OR_PERMISSION: 'The server rejected authorization without distinguishing authentication from permission. Inspect the selected profile and requested grant; do not assume a new login is needed.',
-  PERMISSION_DENIED: 'The selected session lacks permission for this read. Inspect its grant.',
+  AUTH_REQUIRED: 'The TinyCloud profile has no usable session. Run onboarding again (https://agents.tinycloud.xyz/onboarding), then retry.',
+  AUTH_EXPIRED: 'The TinyCloud sign-in has expired. Run onboarding again (https://agents.tinycloud.xyz/onboarding), then retry.',
+  AUTH_OR_PERMISSION: 'The server rejected authorization without distinguishing authentication from permission. Run setup.mjs prepare to check the profile; do not assume a new login is needed.',
+  PERMISSION_DENIED: 'The profile lacks permission for this read. Run setup.mjs authorize to ask once for TinyChat access with one OpenKey link.',
   OWNER_MISMATCH: 'The profile owner differs from --owner. Select the same identity as TinyChat.',
   CONTEXT_MISMATCH: 'This reference or continuation belongs to a different profile, host, or space.',
   SOURCE_CHANGED: 'The catalog identity changed. Discover and select the record again.',
@@ -79,8 +80,8 @@ const MESSAGES = {
   OUTPUT_LIMIT: 'This result exceeds the supported byte budget. Narrow the scope or reduce the page size.',
   TIMEOUT: 'The read exceeded its execution deadline.',
   CANCELLED: 'The read was cancelled.',
-  CLI_UNAVAILABLE: 'TinyCloud CLI was not found. Install the supported release or supply --tc.',
-  CLI_VERSION: 'TinyCloud CLI 0.9.0 or later is required. Setup requires 0.10.0 or later.',
+  CLI_UNAVAILABLE: 'TinyCloud CLI not found: run https://agents.tinycloud.xyz/onboarding or set TC_BIN.',
+  CLI_VERSION: `TinyCloud CLI ${PACK.cli.minimumVersion} or later is required; setup needs ${PACK.cli.setupMinimumVersion} or later. https://agents.tinycloud.xyz/onboarding installs it.`,
   CLI_ERROR: 'The CLI read failed. Inspect local diagnostics; raw CLI errors are not returned.',
 };
 export class RetrievalError extends Error {
@@ -117,8 +118,17 @@ function classified(error) {
   return new RetrievalError(code);
 }
 
+/** The TinyCloud CLI to run: TC_BIN if set, else the `tinycloud` that agents.tinycloud.xyz/onboarding installs, else `tinycloud` on PATH. Never `tc`. */
+export function defaultTc() {
+  if (process.env.TC_BIN) return process.env.TC_BIN;
+  const installed = join(homedir(), '.local/share/tinycloud/cli/node_modules/.bin/tinycloud');
+  const onPath = (process.env.PATH || '').split(':').filter(isAbsolute).map(dir => join(dir, 'tinycloud'));
+  for (const candidate of [installed, ...onPath]) { try { accessSync(candidate, constants.X_OK); return candidate; } catch { /* next */ } }
+  return installed; // Missing: running it fails with ENOENT, reported as CLI_UNAVAILABLE.
+}
+
 /** Only a literal executable and argument vector; never a shell or transcript-provided command. */
-export function createTcRunner({ executable = 'tc', timeoutMs = 30000, maxBuffer = 4 * 1024 * 1024 } = {}) {
+export function createTcRunner({ executable = defaultTc(), timeoutMs = 30000, maxBuffer = 4 * 1024 * 1024 } = {}) {
   return (args, { signal, outputFile, maxOutputBytes } = {}) => new Promise((resolve, reject) => {
     let tooLarge = false;
     const child = execFile(executable, args, { encoding: 'utf8', timeout: timeoutMs, maxBuffer, signal, windowsHide: true }, (error, stdout, stderr) => {

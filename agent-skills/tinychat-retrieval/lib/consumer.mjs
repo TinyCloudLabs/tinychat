@@ -38,7 +38,7 @@ const messages = {
   CONSUMER_ERROR: 'The consumer failed. Saved progress remains private and intact.',
   SETUP_CONFIG_REQUIRED: 'Prepare the installed TinyChat setup before starting retrieval.',
   SETUP_CONFIG_INVALID: 'The selected TinyChat setup is invalid. Preserve it and inspect the app configuration.',
-  NODE_UNAVAILABLE: 'Node.js 20 or later must be available as node on the installed client PATH. Restore that runtime; keep the selected TinyCloud profile and authorization.',
+  NODE_UNAVAILABLE: 'Node.js 22.20 or later must be available as node on the installed client PATH. Restore that runtime; keep the selected TinyCloud profile and authorization.',
 };
 function safeError(code) {
   if (Object.hasOwn(messages, code)) return { code, message: messages[code] };

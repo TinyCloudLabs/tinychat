@@ -68,6 +68,8 @@ export interface PrivateCloudJob {
     regions_total?: number | null;
   } | null;
   error?: { type?: string; code: string; message?: string } | null;
+  /** True while PTX holds the job until its speech-to-text provider can take it. Absent (an older PTX) means not delayed. */
+  provider_delayed?: boolean;
 }
 
 export interface PrivateCloudSegment {
@@ -150,13 +152,19 @@ export function isTransientCloudError(err: unknown): boolean {
   return err instanceof PrivateCloudError && TRANSIENT_CODES.has(err.code);
 }
 
+/** Shown when a recording is too long for Private transcription: it is kept, never lost, and there is nothing to retry. */
+export const PRIVATE_TOO_LONG_NOTE = "Your recording is saved, but it's too long for private transcription. The audio is kept, so nothing is lost.";
+/** The same for a recording too large for it. */
+export const PRIVATE_TOO_LARGE_NOTE = "Your recording is saved, but it's too large for private transcription. The audio is kept, so nothing is lost.";
+
 /** User-facing sentence for a known private-cloud code, without the generic fallback. */
 export function privateCloudCodeMessage(code: string): string | undefined {
   switch (code) {
     case "recording_too_long_for_cloud":
     case "recording_too_long":
+      return PRIVATE_TOO_LONG_NOTE;
     case "recording_too_large":
-      return "Private cloud can't transcribe a recording this long or large.";
+      return PRIVATE_TOO_LARGE_NOTE;
     case "no_speech":
       return "No speech was found in the recording.";
     case "invalid_audio":

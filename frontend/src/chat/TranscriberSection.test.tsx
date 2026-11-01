@@ -17,10 +17,12 @@ import { MemoryRouter } from "react-router-dom";
 
 import {
   TranscriberView,
+  activeMeetingForUrl,
   clearSendIntentKey,
   clearSendIntentsForOwner,
   describeFailure,
   getOrCreateSendIntent,
+  isActiveStatus,
   meetingTitle,
   normalizeMeetingUrl,
   statusLabel,
@@ -246,6 +248,38 @@ describe("TranscriberView", () => {
     expect(failed).toContain(">Remove<");
   });
 
+  test("a stuck-joining notetaker is still active, labelled, and ends the same way as a joining one", () => {
+    const stuck = render({ meetings: [meeting({ status: "needs_help" })] });
+    expect(stuck).toContain("Stuck joining");
+    expect(stuck).toContain('aria-label="End meeting and transcribe now"');
+    expect(stuck).not.toContain(">Remove<");
+    expect(stuck).not.toContain(">Transcript<");
+  });
+
+  test("an unrecognised status is labelled Working and stays active, so it can still be ended", () => {
+    const unknownStatus = "some_future_state" as string as TranscriberMeetingStatus;
+    const future = meeting({ status: unknownStatus });
+    expect(statusLabel(unknownStatus)).toBe("Working");
+    expect(isActiveStatus(unknownStatus)).toBe(true);
+    const html = render({ meetings: [future] });
+    expect(html).toContain("Working");
+    expect(html).toContain('aria-label="End meeting and transcribe now"');
+    expect(activeMeetingForUrl([future], normalizeMeetingUrl(future.meeting_url)!)).toBe(future);
+  });
+
+  test("only completed, failed and cancelled end a meeting", () => {
+    expect(["completed", "failed", "cancelled"].map(status => isActiveStatus(status))).toEqual([false, false, false]);
+    expect(["queued", "joining", "waiting_for_admission", "needs_help", "in_progress", "processing"]
+      .every(status => isActiveStatus(status))).toBe(true);
+  });
+
+  test("a stuck-joining meeting blocks a repeat send to its link like a joining one", () => {
+    for (const status of ["joining", "needs_help"] as const) {
+      const row = meeting({ status });
+      expect(activeMeetingForUrl([row], normalizeMeetingUrl(row.meeting_url)!)).toBe(row);
+    }
+  });
+
   test("TC-581: a recording shared from another account says so and only removes it from this list", () => {
     const shared = render({ meetings: [meeting({ status: "completed", metadata: { source: "google-calendar-autojoin",
       calendar_title: "Team sync", scheduled_start: "2026-09-25T12:00:00.000Z", shared: true } })] });
@@ -382,6 +416,7 @@ describe("TranscriberView", () => {
       "queued",
       "joining",
       "waiting_for_admission",
+      "needs_help",
       "in_progress",
       "processing",
       "completed",
@@ -391,17 +426,32 @@ describe("TranscriberView", () => {
     for (const s of all) expect(statusLabel(s).length).toBeGreaterThan(0);
   });
 
-  test("failures map to plain copy", () => {
-    expect(describeFailure({ status: "rejected", httpStatus: 400, code: "invalid_meeting_url", message: null })).toContain(
-      "meeting link",
+  test("invalid meeting URL errors use fixed lookup guidance only for Meet lookup paths", () => {
+    const result = {
+      status: "rejected" as const,
+      httpStatus: 400,
+      code: "invalid_meeting_url",
+      message: "server text must not be shown",
+    };
+    expect(describeFailure(result, "https://meet.google.com/lookup/c2dhdn5hqs")).toBe(
+      "Paste the meet.google.com/abc-defg-hij link for this meeting",
     );
-    expect(describeFailure({ status: "rejected", httpStatus: 400, code: "unsupported_platform", message: null })).toContain(
-      "platform",
+    for (const url of [
+      "https://meet.google.com/abc-defg-hij",
+      "https://meet.google.com.evil.example/lookup/c2dhdn5hqs",
+    ]) {
+      expect(describeFailure(result, url)).toBe("That doesn't look like a meeting link.");
+    }
+  });
+
+  test("other failure codes keep their current messages", () => {
+    expect(describeFailure({ status: "rejected", httpStatus: 400, code: "unsupported_platform", message: null })).toBe(
+      "That meeting platform isn't supported yet.",
     );
-    expect(describeFailure({ status: "retryable", httpStatus: 503, code: "transcriber_unavailable" })).toContain(
-      "temporarily unavailable",
+    expect(describeFailure({ status: "retryable", httpStatus: 503, code: "transcriber_unavailable" })).toBe(
+      "The transcriber is temporarily unavailable. Try again in a moment.",
     );
-    expect(describeFailure({ status: "feature-dark" })).toContain("configured");
+    expect(describeFailure({ status: "feature-dark" })).toBe("Transcription isn't configured on this backend.");
   });
 
   test("TC-907: a capacity refusal shows ptx's busy message, not the generic outage copy", () => {

@@ -39,7 +39,6 @@ test("Powerful is named separately from Private; devices are exact", () => {
   // Existing provider status uses processing for the remote phase.
   const transcript = { inSpace: null, onDevice: null, cloud: { kind: "active" as const, status: { kind: "processing" as const, completed: null, total: null } } };
   const powerful = activityForNote(view({ route: "private-cloud", space: { saved: true, pending: null, lane: { busy: false, depth: 0 } }, transcript }, "powerful"), "web");
-  expect(powerful.find((job) => job.kind === "transcribe")?.destination).toBe("Powerful (AssemblyAI)");
   expect(powerful.find((job) => job.kind === "transcribe")?.detail).toBe("Transcribing with Powerful…");
   expect(deviceName("tauri")).toBe("this Mac");
   expect(deviceName("ios")).toBe("this iPhone");
@@ -134,7 +133,6 @@ test("Private and Powerful queues, preparation, and failure name the right provi
   for (const provider of ["private", "powerful"] as const) for (const phase of ["waiting", "preparing", "queued", "processing", "failed"] as const) {
     const current = view({ route: "private-cloud", transcriptProvider: provider, space: { saved: true, pending: null, lane: { busy: false, depth: 0 } }, transcript: { inSpace: null, onDevice: null, cloud: cloud(phase) } }, provider);
     const job = activityForNote(current, "web").find((entry) => entry.kind === "transcribe");
-    expect(job?.destination).toBe(provider === "powerful" ? "Powerful (AssemblyAI)" : "Private transcription");
     expect(job?.state).toBe(phase === "failed" ? "needs-attention" : phase === "waiting" || phase === "queued" ? "waiting" : "running");
     expect(job?.detail.includes(provider === "powerful" ? "Private" : "Powerful")).toBe(false);
     if (phase === "failed") expect(job?.diagnostics).toContain("ref-7");

@@ -57,7 +57,7 @@ through to the ptx backstop below. Dedupe and the states below ship unconditiona
 
 **Liveness.** Another account's overlapping claim holds this account off only while that
 account's bot is actually in, or about to be in, the call: its ptx meeting is `queued`, `joining`,
-`waiting_for_admission` or `in_progress`. From `processing` on, the bot has left. An owner that
+`waiting_for_admission`, `needs_help` or `in_progress`. From `processing` on, the bot has left. An owner that
 never got a meeting id counts only until its dispatch cutoff plus one minute. The owner's ptx
 status is read before any lock is taken. If the other bot leaves (finished, failed, stopped,
 deleted) while this account is still inside its own dispatch window (one minute before start to

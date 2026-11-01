@@ -21,6 +21,9 @@ import { Capacitor } from "@capacitor/core";
 import {
   VoiceNotes,
   voiceNoteMaxDurationMs,
+  VOICE_NOTE_EXTENSION_MS,
+  type LimitExtension,
+  VOICE_NOTE_SAFETY_CAP_MS,
   type VoiceNoteAutoStopEvent,
   type VoiceNoteRecording,
   type CaptureStatus,
@@ -35,9 +38,10 @@ import { isOnDeviceReady } from "@/lib/voiceNotes/onDeviceStt";
 import { isLegacyNote } from "@/lib/voiceNotes/legacyMigration";
 import { setQuarantineAccount } from "@/lib/voiceNotes/quarantine";
 import { ensureAppleSpeechAssets, ensureOnDeviceModel, onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
-import { effectiveCaptureOptions, readStopAfterPreference, readTranscriberPreference, readUploadAudioPreference,
-  setDefaultIdentifySpeakers, setDefaultTranscriber, settleDefaults, stopAfterMs, subscribeTranscriberPreference, writeAccountDefaults,
+import { autoStopEnabled, effectiveCaptureOptions, readTranscriberPreference, readUploadAudioPreference, recordingLimitMs,
+  setDefaultIdentifySpeakers, setDefaultTranscriber, settleDefaults, subscribeTranscriberPreference, writeAccountDefaults,
   } from "@/lib/voiceNotes/transcriberPreference";
+import { recorderLayout } from "./final/shellCapabilities";
 import {
   clearDiscarded,
   unmarkDiscarded,
@@ -141,6 +145,8 @@ export interface VoiceNoteRecorderController {
   discard(): Promise<void>;
   retryPending(): Promise<void>;
   openSettings(): Promise<void>;
+  /** Raise the live recording's limit by `extension` (default one hour: "Keep going"), or drop it ("none"); absent where the engine fixes the limit at start. */
+  extendLimit?(extension?: LimitExtension): Promise<void>;
   dismissShortcutRecovery(): Promise<void>;
   /** The receipt was read. */
   dismissOutcome(): void;
@@ -355,11 +361,14 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     send(status.elapsedMs === undefined ? event : { ...event, elapsedMs: status.elapsedMs, elapsedAt: Date.now() });
   };
 
-  const activePickup = (status: Awaited<ReturnType<typeof VoiceNotes.status>>): Extract<RecorderEvent, { type: "PICKED_UP" }> => {
+  /** Whether this device stops recordings by itself now: its choice, else the layout's default (off at the phone layout). */
+  const autoStopNow = () => autoStopEnabled(typeof window !== "undefined" && Number.isFinite(window.innerWidth) && recorderLayout(window.innerWidth) === "phone");
+
+  const activePickup = (status: CaptureStatus): Extract<RecorderEvent, { type: "PICKED_UP" }> => {
     if (!status.id || status.startedAt === null) throw new Error("Native recording status has no active id or start time");
     return { type: "PICKED_UP", id: status.id, startedAt: status.startedAt,
       maxDurationMs: status.maxDurationMs, audioMs: status.audioMs, elapsedMs: status.elapsedMs, elapsedAt: Date.now(),
-      mic: micFromStatus(status) };
+      mic: micFromStatus(status), autoStop: autoStopNow() && status.maxDurationMs < VOICE_NOTE_SAFETY_CAP_MS };
   };
 
   const reconcileFailedStop = async (error: string | null, id?: string | null) => {
@@ -957,8 +966,9 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       stopAllPlayback();
       send({ type: "START_REQUESTED" });
       if (choice.id === "on-device") ensureLocalModel(true);
-      // Settings' Stop recording after, never above the test override or the 3-hour limit (voiceNoteMaxDurationMs caps both).
-      const requested = Math.min(stopAfterMs(readStopAfterPreference()), voiceNoteMaxDurationMs());
+      // Settings' Stop recordings automatically: on, Stop recording after (never above the test override or the 3-hour limit); off, the silent 8-hour cap.
+      const autoStop = autoStopNow();
+      const requested = recordingLimitMs(autoStop, voiceNoteMaxDurationMs());
       try {
         // The recording starts from the engine's default: wait for any default write in flight, and refuse to start on one that could not be put right.
         await settleDefaults();
@@ -981,6 +991,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
           startedAt: started.startedAt,
           elapsedAt,
           maxDurationMs: typeof started.maxDurationMs === "number" ? started.maxDurationMs : requested,
+          autoStop,
         });
       } catch (caught) {
         send({ type: "START_FAILED", error: messageOf(caught) });
@@ -993,6 +1004,17 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     async openSettings() {
       if (!captureCapabilities().openSettings) throw Object.assign(new Error("This shell cannot open settings"), { code: "unsupported" });
       await VoiceNotes.openSettings();
+    },
+    /** Present only where the engine can change a running recording's limit (web and desktop); native mobile fixes it at start. */
+    get extendLimit() {
+      if (typeof VoiceNotes.setMaxDuration !== "function") return undefined;
+      return async (extension: LimitExtension = VOICE_NOTE_EXTENSION_MS) => {
+        if (state.phase !== "recording" || !state.autoStop) return;
+        const noLimit = extension === "none";
+        const target = noLimit ? VOICE_NOTE_SAFETY_CAP_MS : Math.min(VOICE_NOTE_SAFETY_CAP_MS, state.maxDurationMs + extension);
+        const applied = await VoiceNotes.setMaxDuration!({ maxDurationMs: target });
+        send({ type: "LIMIT_EXTENDED", maxDurationMs: applied.maxDurationMs, ...(noLimit && applied.maxDurationMs >= VOICE_NOTE_SAFETY_CAP_MS ? { noLimit: true } : {}) });
+      };
     },
     async dismissShortcutRecovery() {
       if (captureCapabilities().nativeShortcuts) {

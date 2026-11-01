@@ -239,7 +239,7 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
         const reconcile = async () => {
           const job = await client.lookupJob(id);
           if (job.status === "needs_reconciliation" || job.status === "unresolved")
-            throw new AssemblyAiError("needs-reconciliation", "Powerful couldn't confirm an earlier attempt. Exo is checking with AssemblyAI.");
+            throw new AssemblyAiError("needs-reconciliation", "Powerful couldn't confirm an earlier attempt. Exo is checking with the transcription service.");
           if (job.status === "deleted")
             throw new AssemblyAiError("rejected", "This note's earlier transcript was deleted. Contact support before retrying.");
           reconciled = job;

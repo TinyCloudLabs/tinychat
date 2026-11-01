@@ -57,6 +57,20 @@ function surface(markup: string, name: string): { classes: string[]; body: strin
 }
 
 describe("the fixed tree", () => {
+  test("Apps and Feed are absent from the tab bar, rail, sidebar and surfaces by default", () => {
+    for (const [, sizeClass] of SIZES) {
+      const markup = wrap(<AppShellView
+        screen={screenFor(PATHS.chat)} platform="web" pendingMeetings={0}
+        {...SLOTS} feed={<p>feed-work</p>} apps={<p>apps-work</p>}
+        sizeClass={sizeClass} captureMounted={false}
+      />, PATHS.chat);
+      expect(markup).not.toContain(`href="${PATHS.feed}"`);
+      expect(markup).not.toContain(`href="${PATHS.apps}"`);
+      expect(markup).not.toContain("feed-work");
+      expect(markup).not.toContain("apps-work");
+    }
+  });
+
   test("every size class renders the same surfaces, in the same order, inside one <main>", () => {
     for (const [, sizeClass] of SIZES) {
       const markup = view(PATHS.chat, sizeClass, true);

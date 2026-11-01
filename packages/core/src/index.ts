@@ -26,6 +26,14 @@ export {
   type WrittenTranscriberMeeting,
 } from "./connector-meeting.js";
 
+// ── Sign-in manifest bundle (revision "2") ───────────────────────────
+
+export {
+  SIGN_IN_BUNDLE_ENTRIES,
+  manifestCarriesBundle,
+  type RequiredManifestEntry,
+} from "./manifest-bundle.js";
+
 // ── Meeting Storage ──────────────────────────────────────────────────
 
 export {

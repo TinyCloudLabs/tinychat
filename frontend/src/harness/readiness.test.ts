@@ -23,6 +23,14 @@ describe("waitUntilReady", () => {
     expect(Date.now()).toBe(FROZEN_NOW);
   });
 
+  test("resolves false when the readiness cap expires before the screen is ready", async () => {
+    expect(await waitUntilReady(() => false, { capMs: 30, pollMs: 5 })).toBe(false);
+  });
+
+  test("resolves true when the screen becomes ready", async () => {
+    expect(await waitUntilReady(() => true, { capMs: 100 })).toBe(true);
+  });
+
   test("resolves as soon as the screen is ready, before the cap", async () => {
     let ready = false;
     setTimeout(() => {

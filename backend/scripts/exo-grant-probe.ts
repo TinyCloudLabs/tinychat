@@ -100,10 +100,10 @@ function traceDecryptRoutes(): () => void {
 async function main(): Promise<void> {
   const ownerKey = generatePrivateKey();
   const ownerNetworkId = `urn:tinycloud:encryption:did:pkh:eip155:1:${privateKeyToAccount(ownerKey).address}:default`;
-  const owner = new TinyCloudNode({ privateKey: ownerKey, host, prefix: "probe.owner", autoCreateSpace: true, manifest: ownerManifest(ownerNetworkId) });
+  const owner = new TinyCloudNode({ privateKey: ownerKey, host, prefix: "probe.owner", autoCreateSpace: true, manifest: ownerManifest(ownerNetworkId), includeAccountRegistryPermissions: false });
   const backendKey = generatePrivateKey();
   const backendDid = `did:pkh:eip155:1:${privateKeyToAccount(backendKey).address.toLowerCase()}`;
-  const backend = new TinyCloudNode({ privateKey: backendKey, host, prefix: "probe.backend", autoCreateSpace: false });
+  const backend = new TinyCloudNode({ privateKey: backendKey, host, prefix: "probe.backend", autoCreateSpace: false, includeAccountRegistryPermissions: false });
 
   let spaceId = "";
   const written = new Set<string>();

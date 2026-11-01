@@ -47,7 +47,7 @@ describe("main.tsx routes / through RootRoute", () => {
 
   test("the native flag is Capacitor's, and / renders RootRoute with it", () => {
     expect(main).toContain("const nativeShell = Capacitor.isNativePlatform();");
-    expect(main).toContain('<Route path="/" element={<RootRoute nativeShell={nativeShell} />} />');
+    expect(main).toContain('<Route path="/" element={<RootRoute nativeShell={nativeShell} homeShell={platform === "web"} />} />');
     expect(main).not.toContain("<LandingPage");
   });
 });

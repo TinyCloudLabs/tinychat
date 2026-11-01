@@ -9,7 +9,7 @@ import { useContext } from "react";
 import { PlatformContext, deviceName } from "@/lib/platform";
 
 import { uploadStatusText } from "@/chat/AudioUploadPanel";
-import { ACTIVE_STATUSES, meetingTitle, statusLabel } from "@/chat/TranscriberSection";
+import { isActiveStatus, meetingTitle, statusLabel } from "@/chat/TranscriberSection";
 import type { UploadState } from "@/lib/audioUpload";
 import type { PendingListing } from "@/lib/voiceNotes/recorderSaves";
 import type { TranscriberMeeting } from "@/lib/transcriberApi";
@@ -162,7 +162,7 @@ export function InProgressRowsView(props: InProgressRowsViewProps) {
           </li>
         )}
         {meetings.map((meeting) => {
-          const stoppable = ACTIVE_STATUSES.has(meeting.status) && meeting.status !== "processing";
+          const stoppable = isActiveStatus(meeting.status) && meeting.status !== "processing";
           const busy = props.busyId === meeting.id;
           const title =
             meeting.metadata?.source === "google-calendar-autojoin" ? transcriberMeetingTitle(meeting) : meetingTitle(meeting.meeting_url);

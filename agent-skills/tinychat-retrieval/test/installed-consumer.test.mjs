@@ -10,7 +10,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const exec = promisify(execFile);
 const source = fileURLToPath(new URL('../', import.meta.url));
 const owner = 'did:pkh:eip155:1:0x1111111111111111111111111111111111111111';
-const context = { schemaVersion: 1, status: 'ready', profile: 'tinychat-agent', host: 'https://node.example.test', owner, space: `tinycloud:${owner.slice(4)}:applications`, sessionDid: 'did:key:fixture' };
+const context = { schemaVersion: 1, status: 'ready', profile: 'default', host: 'https://node.example.test', owner, space: `tinycloud:${owner.slice(4)}:applications`, sessionDid: 'did:key:fixture' };
 context.retrievalArgs = ['--profile', context.profile, '--host', context.host, '--space', context.space, '--owner', context.owner];
 const records = [{ id: 'proposal', text: 'Proposal 🙂 '.repeat(12000), speaker: 'A', timestamp: '00:01' }, { id: 'question', text: 'Is that agreed?', speaker: 'B', timestamp: '00:20' }, { id: 'decision', text: 'Still unresolved.', speaker: 'A', timestamp: '00:30' }];
 
@@ -20,7 +20,7 @@ async function fixture(t) {
   const pack = join(directory, 'installed pack $ literal');
   await mkdir(join(pack, 'scripts'), { recursive: true });
   await mkdir(join(pack, 'lib'));
-  for (const name of ['pack.json', 'lib/retrieval.mjs', 'lib/consumer.mjs', 'lib/evidence.mjs', 'lib/setup.mjs', 'lib/login.mjs', 'lib/approval.mjs', 'scripts/retrieve.mjs', 'scripts/consume.mjs']) {
+  for (const name of ['pack.json', 'lib/retrieval.mjs', 'lib/consumer.mjs', 'lib/evidence.mjs', 'lib/setup.mjs', 'lib/login.mjs', 'scripts/retrieve.mjs', 'scripts/consume.mjs']) {
     await copyFile(join(source, name), join(pack, name));
   }
   const body = join(directory, 'fixture-body.json');
@@ -37,9 +37,9 @@ const owner = ${JSON.stringify(owner)};
 const id = 'intended-meeting';
 const sourceId = 'long-source-' + 'x'.repeat(180);
 if (args.includes('--version')) process.stdout.write('0.10.0');
-else if (args.includes('profile') && args.includes('list')) process.stdout.write(JSON.stringify({profiles:[{name:'tinychat-agent',host:'https://node.example.test'}]}));
-else if (args.includes('context')) process.stdout.write(JSON.stringify({schemaVersion:1,profile:'tinychat-agent',host:'https://node.example.test',ownerDid:owner,spaceId:${JSON.stringify(context.space)},sessionDid:'did:key:fixture',session:{state:'present',expiresAt:'2099-01-01T00:00:00Z'}}));
-else if (args.includes('status')) process.stdout.write(JSON.stringify({authenticated:true,ownerDid:owner,profile:'tinychat-agent',host:'https://node.example.test'}));
+else if (args.includes('profile') && args.includes('list')) process.stdout.write(JSON.stringify({profiles:[{name:'default',host:'https://node.example.test'}]}));
+else if (args.includes('context')) process.stdout.write(JSON.stringify({schemaVersion:1,profile:'default',host:'https://node.example.test',ownerDid:owner,spaceId:${JSON.stringify(context.space)},sessionDid:'did:key:fixture',session:{state:'present',expiresAt:'2099-01-01T00:00:00Z'}}));
+else if (args.includes('status')) process.stdout.write(JSON.stringify({authenticated:true,ownerDid:owner,profile:'default',host:'https://node.example.test'}));
 else if (args.includes('query')) {
  if (args.some(a => a.includes('sqlite_schema'))) process.stdout.write(JSON.stringify({columns:['name'],rows:[['voice_note_transcript']],rowCount:1}));
  else {
@@ -273,10 +273,10 @@ test('portable installed CLI returns complete cited evidence with no completion 
   const f=await fixture(t);
   const home=join(f.directory,'home'),bin=join(f.directory,'bin');
   await mkdir(join(home,'.config','tinychat-retrieval'),{recursive:true,mode:0o700});await mkdir(bin);
-  await copyFile(f.stub,join(bin,'tc'));
+  await copyFile(f.stub,join(bin,'tinycloud'));
   await writeFile(join(home,'.config','tinychat-retrieval','setup.json'),JSON.stringify({schemaVersion:1,profile:context.profile,owner,config:{schemaVersion:1,host:context.host,space:'applications'}}));
   await writeFile(f.body,JSON.stringify([{text:'Try this.',speaker:'A'}]));await writeFile(f.mode,'many-dated');
-  const env={...process.env,HOME:home,XDG_CONFIG_HOME:join(home,'.config'),XDG_STATE_HOME:join(home,'.local/state'),PATH:bin+':'+process.env.PATH};
+  const env={...process.env,TC_BIN:'',TC_PROFILE:'',HOME:home,XDG_CONFIG_HOME:join(home,'.config'),XDG_STATE_HOME:join(home,'.local/state'),PATH:bin+':'+process.env.PATH};
   const script=join(f.pack,'scripts/consume.mjs');
   const first=JSON.parse((await exec('node',[script,'latest','--operation','portable','--session','cli-session','--root',f.options.root],{env,cwd:f.options.projectDirectory})).stdout);
   assert.equal(first.spans[0].text,'Try this.');

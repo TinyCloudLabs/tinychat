@@ -159,13 +159,18 @@ export class FakeSqlDb {
         const r = ids[0];
         return ok(r ? [[r.title, r.started_at, r.duration_secs, r.participants, r.metadata]] : []);
       }
-      if (/^SELECT\s+id\s+FROM\s+connector_meeting\s+WHERE\s+source\s*=\s*'exo-merged'\s+AND\s+source_id\s*=\s*\?\s+ORDER\s+BY\s+id/i.test(t)) {
+      if (/^SELECT\s+id,\s*metadata\s+FROM\s+connector_meeting\s+WHERE\s+source\s*=\s*'exo-merged'\s+AND\s+source_id\s*=\s*\?\s+ORDER\s+BY\s+id/i.test(t)) {
         return ok([...this.meetings.values()]
           .filter((r) => r.source === "exo-merged" && r.source_id === String(params[0]))
-          .map((r) => r.id).sort().map((id) => [id]));
+          .sort((a, b) => (a.id < b.id ? -1 : 1))
+          .map((r) => [r.id, r.metadata]));
       }
       if (/^SELECT\s+id,\s*source_id,\s*metadata\s+FROM\s+connector_meeting\s+WHERE\s+source\s*=\s*'exo-merged'/i.test(t)) {
         return ok([...this.meetings.values()].filter((r) => r.source === "exo-merged").map((r) => [r.id, r.source_id, r.metadata]));
+      }
+      if (/^SELECT\s+title,\s*metadata\s+FROM\s+connector_meeting\s+WHERE\s+id\s*=\s*\?\s+AND\s+source\s*=\s*'exo-merged'/i.test(t)) {
+        const r = this.meetings.get(String(params[0]));
+        return ok(r && r.source === "exo-merged" ? [[r.title, r.metadata]] : []);
       }
       if (/^SELECT\s+source_id,\s*metadata\s+FROM\s+connector_meeting\s+WHERE\s+id\s*=\s*\?\s+AND\s+source\s*=\s*'exo-merged'/i.test(t)) {
         const r = this.meetings.get(String(params[0]));
@@ -296,9 +301,10 @@ export class FakeSqlDb {
     if (/^UPDATE\s+connector_meeting\s+SET\s+title\s*=\s*\?,\s*started_at\s*=\s*\?,\s*duration_secs\s*=\s*\?,\s*participants\s*=\s*\?,\s*metadata\s*=\s*\?,\s*updated_at\s*=\s*\?\s+WHERE\s+id\s*=\s*\?\s+AND\s+source\s*=\s*'exo-merged'/i.test(s)) {
       const injected = this.takeMeetingWriteError();
       if (injected) return injected;
-      const [title, started_at, duration_secs, participants, metadata, updated_at, id] = params as [string | null, string | null, number | null, string, string, string, string];
+      const [title, started_at, duration_secs, participants, metadata, updated_at, id, onlyIfMetadata] = params as [string | null, string | null, number | null, string, string, string, string, string | undefined];
       const existing = this.meetings.get(id);
-      if (existing && existing.source === "exo-merged") {
+      // `AND COALESCE(metadata, '') = ?`: the write applies only to the metadata it was built from.
+      if (existing && existing.source === "exo-merged" && (onlyIfMetadata === undefined || (existing.metadata ?? "") === onlyIfMetadata)) {
         this.meetings.set(id, { ...existing, title, started_at, duration_secs, participants, metadata, updated_at });
       }
       return ok([]);

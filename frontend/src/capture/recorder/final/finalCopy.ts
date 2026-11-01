@@ -13,7 +13,17 @@ export const PRIVATE_CONSENT_TITLE = "Use Private transcription?";
 export const PRIVATE_CONSENT_ACTION = "Use Private transcription";
 export const POWERFUL_CONSENT_TITLE = "Use Powerful transcription?";
 export const POWERFUL_CONSENT_ACTION = "Use Powerful transcription";
-export const POWERFUL_CONSENT_BODY = "Powerful sends this note's audio through Exo's server to AssemblyAI, a third-party service, for the most accurate transcript with speaker labels. Exo deletes it from AssemblyAI as soon as the transcript is saved.";
+/** The Powerful provider's name. The ONE place it is written: it appears only in the consent small print and About; change a provider here. */
+export const POWERFUL_PROVIDER_NAME = "AssemblyAI";
+/** The one "not private" line every Powerful explanation uses: recorder mode scale, upload route text, Settings. */
+export const POWERFUL_NOT_PRIVATE_LINE = "Not private: Powerful sends your audio through Exo's server to an outside transcription service. Exo deletes the service's copy once the transcript is saved.";
+function powerfulConsentBody(audio: string): string {
+  return `Powerful sends ${audio} through Exo's server to an outside transcription service, for the most accurate transcript with speaker labels. It isn't private. Exo deletes the service's copy as soon as the transcript is saved.`;
+}
+export const POWERFUL_CONSENT_BODY = powerfulConsentBody("this note's audio");
+export const POWERFUL_CONSENT_UPLOAD_BODY = powerfulConsentBody("this audio");
+/** Small print under the Powerful consent body. */
+export const POWERFUL_CONSENT_SMALL_PRINT = `Provided by ${POWERFUL_PROVIDER_NAME}.`;
 export function privateConsentDevice(platform: AppPlatform): string {
   return deviceName(platform).slice("this ".length);
 }
@@ -93,6 +103,8 @@ export const FINAL_COPY = {
     "This recording session already exists. Discard this attempt and start a new recording.",
   stopAndSaveRecorded: "Stop and save what's recorded.",
   stopAt: (text: string) => `Stops at ${text}`,
+  stopsIn: (text: string) => `Stops in ${text}`,
+  recordingStopsAt: (clock: string) => `Recording stops at ${clock}`,
   needsApp: "needs the app",
   get onThisPhone() { return `on ${captureDeviceName()}`; },
   onThisMac: "on this Mac",
@@ -133,6 +145,6 @@ export const FINAL_COPY = {
     privateExplanation:
       "Sent to a sealed hardware enclave, transcribed, then deleted. Exo never sees it.",
     powerfulCaption: "Most accurate, with speaker labels.",
-    powerfulExplanation: "Sent through Exo's server to AssemblyAI, then deleted after the transcript is saved.",
+    powerfulExplanation: POWERFUL_NOT_PRIVATE_LINE,
   },
 } as const;

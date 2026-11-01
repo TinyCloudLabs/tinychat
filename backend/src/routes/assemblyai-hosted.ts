@@ -27,6 +27,7 @@ import {
   type LookupResult,
   type SubmitOutcome,
 } from "../services/assemblyai-hosted.js";
+import { HostedProviderMonitor, classifyProviderRefusal, type ProviderBlockReason } from "../services/assemblyai-hosted-monitor.js";
 
 /**
  * AssemblyAI under TinyCloud's account ("hosted" mode, contract C10). Mounted always at
@@ -101,6 +102,8 @@ export interface AssemblyAiHostedRouterOptions {
   now?: () => number;
   /** `alert` = operator fault. */
   log?: (line: string, alert: boolean) => void;
+  /** Events and status for operators; the app shares one with the status route and the heartbeat. */
+  monitor?: HostedProviderMonitor;
 }
 
 /** Provider lookup never authorizes a second paid POST. Missing or ambiguous results stay blocked. */
@@ -160,6 +163,8 @@ interface Failure {
   upstreamStatus?: number;
   reason?: string;
   alert?: boolean;
+  /** Set when AssemblyAI refused the request before any work (billing, key, rate limit): feeds the monitor. */
+  block?: ProviderBlockReason;
 }
 
 /** The request never produced an HTTP response, or its body ran over the cap. */
@@ -183,6 +188,7 @@ export function createAssemblyAiHostedRouter(options: AssemblyAiHostedRouterOpti
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const now = options.now ?? Date.now;
   const log = options.log ?? ((line: string, alert: boolean) => (alert ? console.error(line) : console.log(line)));
+  const monitor = options.monitor ?? new HostedProviderMonitor(undefined, now);
   if (config.hosted && !store) throw new Error("assemblyai hosted router: store is required when hosted");
   const router = Router();
 
@@ -247,6 +253,25 @@ export function createAssemblyAiHostedRouter(options: AssemblyAiHostedRouterOpti
       };
     }
     return { code: "assemblyai_unavailable", upstreamStatus: status };
+  }
+
+  /**
+   * An AssemblyAI non-2xx answer to the upload or the transcript create (the paid POST). Refusals are classified
+   * (see `classifyProviderRefusal`), any other 400 is our request being wrong: alerted, never blocked.
+   */
+  function submitFailure(response: globalThis.Response, body: Uint8Array | null, stage: "upload" | "create"): Failure {
+    const block = classifyProviderRefusal(response.status, body);
+    if (block === "key_rejected" || block === "billing_blocked") {
+      return { code: "assemblyai_unavailable", upstreamStatus: response.status, reason: block, alert: true, block };
+    }
+    if (block === "rate_limited") {
+      const failure = upstreamFailure(response, body, false);
+      return response.status === 429 ? { ...failure, block } : { code: "assemblyai_rate_limited", upstreamStatus: response.status, reason: block, block };
+    }
+    if (response.status === 400) {
+      return { code: "assemblyai_unavailable", upstreamStatus: 400, reason: stage === "create" ? "create_rejected" : "request_rejected", alert: true };
+    }
+    return upstreamFailure(response, body, false);
   }
 
   /** One AssemblyAI call with the server key; the body read under `maxBytes`. */
@@ -432,6 +457,11 @@ export function createAssemblyAiHostedRouter(options: AssemblyAiHostedRouterOpti
           (failure?.alert ? " alert=true" : ""),
         failure?.alert === true,
       );
+      if (!failure) monitor.succeeded();
+      else {
+        if (failure.block) monitor.blocked(failure.block, failure.upstreamStatus!);
+        monitor.failed(failure.reason === "aborted");
+      }
       return outcome;
     };
     const failed = (failure: Failure) =>
@@ -443,7 +473,7 @@ export function createAssemblyAiHostedRouter(options: AssemblyAiHostedRouterOpti
         contentType: "application/octet-stream",
         signal,
       });
-      if (sent.response.status !== 200) return failed(upstreamFailure(sent.response, sent.bytes, false));
+      if (sent.response.status !== 200) return failed(submitFailure(sent.response, sent.bytes, "upload"));
       const uploaded = parseJson(sent.bytes) as { upload_url?: unknown } | undefined;
       if (typeof uploaded?.upload_url !== "string" || !uploaded.upload_url.startsWith("https://")) {
         return failed({ code: "assemblyai_unavailable", upstreamStatus: 200, reason: "off_contract" });
@@ -456,9 +486,8 @@ export function createAssemblyAiHostedRouter(options: AssemblyAiHostedRouterOpti
         signal,
       });
       if (created.response.status !== 200 && created.response.status !== 201) {
-        const failure = upstreamFailure(created.response, created.bytes, false);
-        // A refused create body is a contract drift on our side: alert, like a refused key.
-        return failed(created.response.status === 400 ? { ...failure, alert: true, reason: "create_rejected" } : failure);
+        const failure = submitFailure(created.response, created.bytes, "create");
+        return failed(failure);
       }
       const parsed = parseJson(created.bytes) as { id?: unknown; status?: unknown } | undefined;
       if (

@@ -29,8 +29,3 @@ export const PlayGlyph = ({ size }: { size: number }) => (
     <path d="M8 5.5l11 6.5-11 6.5z" />
   </Glyph>
 );
-export const ExpandGlyph = ({ size }: { size: number }) => (
-  <Glyph size={size}>
-    <path d="M15 4h5v5M9 20H4v-5M20 4l-7 7M4 20l7-7" />
-  </Glyph>
-);

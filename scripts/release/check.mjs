@@ -4,7 +4,7 @@
  *  - any workspace package is not private (nothing in this repo may ever reach npm);
  *  - a release unit has no X.Y.Z / X.Y.Z-beta.N version (Changesets silently skips unversioned packages);
  *  - web and desktop versions differ (one fixed group), or the backend leaves 0.x;
- *  - .changeset/pre.json is missing or not exactly {"mode": "pre" | "exit", "tag": "beta"} (main stays in beta pre mode);
+ *  - .changeset/pre.json is {"mode": "pre" | "exit", "tag": "beta"}, optionally with the reviewed frontend-desktop stable scope;
  *  - in "exit" mode (the merged Release stable PR): a changeset no beta has released yet exists, or the plan recorded in
  *    .changeset/release-stable.json is not what a stable release would ship now (the PR went stale);
  *  - a changeset names anything other than the release units, or bumps the backend `major`;
@@ -16,7 +16,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import {
-  BACKEND, DESKTOP, FIXED, PRE_TAG, STABLE_PLAN, UNITS, VERSION, git, readCargoLockVersion, readCargoTomlVersion,
+  BACKEND, DESKTOP, FIXED, PRE_TAG, STABLE_PLAN, STABLE_SCOPE_FRONTEND_DESKTOP, UNITS, VERSION, git, readCargoLockVersion, readCargoTomlVersion,
   readChangesets, readJson, readPreState, repoRoot, samePlan, stablePlan,
 } from './lib.mjs';
 
@@ -67,9 +67,11 @@ function checkRelease(root, { since } = {}) {
   } else {
     try {
       pre = readPreState(root);
-      if (pre === null || typeof pre !== 'object' || Array.isArray(pre) || Object.keys(pre).sort().join() !== 'mode,tag'
-        || pre.tag !== PRE_TAG || !['pre', 'exit'].includes(pre.mode)) {
-        errors.push(`.changeset/pre.json must be exactly {"mode": "pre" | "exit", "tag": "${PRE_TAG}"}, found ${JSON.stringify(pre)}; ${restoreBeta}`);
+      const expectedKeys = pre?.stableScope === undefined ? 'mode,tag' : 'mode,stableScope,tag';
+      if (pre === null || typeof pre !== 'object' || Array.isArray(pre) || Object.keys(pre).sort().join() !== expectedKeys
+        || pre.tag !== PRE_TAG || !['pre', 'exit'].includes(pre.mode)
+        || (pre.stableScope !== undefined && pre.stableScope !== STABLE_SCOPE_FRONTEND_DESKTOP)) {
+        errors.push(`.changeset/pre.json must be {"mode": "pre" | "exit", "tag": "${PRE_TAG}"}, optionally with "stableScope": "${STABLE_SCOPE_FRONTEND_DESKTOP}", found ${JSON.stringify(pre)}; ${restoreBeta}`);
       }
     } catch (error) {
       errors.push(`.changeset/pre.json is not valid JSON (${error.message}); ${restoreBeta}`);
@@ -98,8 +100,8 @@ function checkRelease(root, { since } = {}) {
     }
     if (!hasPlan) {
       errors.push(`.changeset/pre.json is in "exit" mode without ${STABLE_PLAN}: only merge the Release stable PR that the Release workflow maintains.`);
-    } else if (recorded && !samePlan(recorded, stablePlan(root))) {
-      errors.push(`The Release stable PR is stale: it was reviewed as ${JSON.stringify(recorded)}, but a stable release would now ship ${JSON.stringify(stablePlan(root))}. ${recover}`);
+    } else if (recorded && (recorded.scope !== pre?.stableScope || !samePlan(recorded, stablePlan(root, recorded.scope)))) {
+      errors.push(`The Release stable PR is stale: it was reviewed as ${JSON.stringify(recorded)}, but a stable release would now ship ${JSON.stringify(stablePlan(root, recorded.scope))}. ${recover}`);
     }
   } else if (hasPlan) {
     errors.push(`${STABLE_PLAN} only belongs to the Release stable PR ("exit" mode); delete it.`);
@@ -147,12 +149,22 @@ function readRecordedPlan(root, errors) {
     return undefined;
   }
   const units = new Set(UNITS.map(unit => unit.name));
-  const valid = plan !== null && typeof plan === 'object' && Object.keys(plan).sort().join() === 'changesets,versions'
+  const keys = Object.keys(plan ?? {}).sort().join();
+  const scoped = keys === 'changesets,pending,scope,versions';
+  const pendingValid = !scoped || (plan.scope === STABLE_SCOPE_FRONTEND_DESKTOP
+    && plan.pending !== null && typeof plan.pending === 'object' && !Array.isArray(plan.pending)
+    && Object.keys(plan.pending).sort().join() === 'changesets,versions'
+    && plan.pending.versions !== null && typeof plan.pending.versions === 'object' && !Array.isArray(plan.pending.versions)
+    && Object.entries(plan.pending.versions).every(([name, version]) => units.has(name) && VERSION.test(version))
+    && Array.isArray(plan.pending.changesets) && plan.pending.changesets.every(file => typeof file === 'string'));
+  const valid = plan !== null && typeof plan === 'object' && !Array.isArray(plan)
+    && (keys === 'changesets,versions' || scoped)
     && plan.versions !== null && typeof plan.versions === 'object' && !Array.isArray(plan.versions)
     && Object.entries(plan.versions).every(([name, version]) => units.has(name) && /^\d+\.\d+\.\d+$/.test(version))
-    && Array.isArray(plan.changesets) && plan.changesets.every(file => typeof file === 'string');
+    && Array.isArray(plan.changesets) && plan.changesets.every(file => typeof file === 'string')
+    && pendingValid;
   if (!valid) {
-    errors.push(`${STABLE_PLAN} must be {"versions": {"<unit>": "X.Y.Z"}, "changesets": ["<file>"]}, found ${JSON.stringify(plan)}`);
+    errors.push(`${STABLE_PLAN} must be a full stable plan {"versions": {"<unit>": "X.Y.Z"}, "changesets": ["<file>"]} or a scoped plan with "scope", "pending", "versions", and "changesets"; found ${JSON.stringify(plan)}`);
     return undefined;
   }
   return plan;

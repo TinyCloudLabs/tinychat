@@ -16,7 +16,7 @@ import { GoogleOAuthError } from "./google-oauth.js";
 import type { TranscriberIndexStore } from "./transcriber-index.js";
 
 /** ptx statuses in which the owner's bot is in, or about to be in, the call. From `processing` on, it has left. */
-const BOT_IN_CALL: ReadonlySet<TranscriptionMeetingStatus> = new Set(["queued", "joining", "waiting_for_admission", "in_progress"]);
+const BOT_IN_CALL: ReadonlySet<TranscriptionMeetingStatus> = new Set(["queued", "joining", "waiting_for_admission", "needs_help", "in_progress"]);
 /** TC-581: the one liveness rule, for attaching and for an attached recipient. `meeting` is the owner's
  *  ptx meeting when it was read (null = 404), undefined when it was not read. */
 function ownerCapturing(owner: CalendarOccurrence | null, meeting: TranscriptionMeeting | null | undefined, now: number): boolean {

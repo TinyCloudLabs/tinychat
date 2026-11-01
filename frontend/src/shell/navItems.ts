@@ -1,8 +1,9 @@
 // The navigation model shared by the tab bar, the rail and the sidebar
-// (TC-761): the same three destinations, in the same order, at every size.
-import { AudioLinesIcon, MessageCircleIcon, PlugIcon, type LucideIcon } from "lucide-react";
+// (TC-761, TC-2040): the same destinations, in the same order, at every size.
+import { AppWindowIcon, AudioLinesIcon, MessageCircleIcon, NewspaperIcon, PlugIcon, type LucideIcon } from "lucide-react";
 
 import { connectorsAriaLabel } from "../chat/useBackgroundDrain";
+import { NAV_LABEL_APPS, NAV_LABEL_CHAT, NAV_LABEL_FEED, NAV_LABEL_RECORDING } from "../lib/homeStrings";
 import { useSizeClass, type SizeClassState } from "../lib/sizeClass";
 import { PATHS, type Destination } from "./routes";
 
@@ -35,8 +36,10 @@ export interface NavItem {
 /** `pendingMeetings`: meetings waiting in Connectors (0 while Connectors is open). */
 export function navItems(pendingMeetings: number): NavItem[] {
   return [
-    { id: "capture", label: "Capture", icon: AudioLinesIcon, href: PATHS.capture },
-    { id: "chat", label: "Chat", icon: MessageCircleIcon, href: PATHS.chat },
+    { id: "capture", label: NAV_LABEL_RECORDING, icon: AudioLinesIcon, href: PATHS.capture },
+    { id: "chat", label: NAV_LABEL_CHAT, icon: MessageCircleIcon, href: PATHS.chat },
+    { id: "apps", label: NAV_LABEL_APPS, icon: AppWindowIcon, href: PATHS.apps },
+    { id: "feed", label: NAV_LABEL_FEED, icon: NewspaperIcon, href: PATHS.feed },
     {
       id: "connectors",
       label: "Connectors",

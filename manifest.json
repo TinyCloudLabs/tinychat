@@ -1,7 +1,7 @@
 {
   "manifest_version": 1,
   "app_id": "xyz.tinycloud.tinychat",
-  "name": "TinyCloud Chat",
+  "name": "TinyCloud Home",
   "description": "TinyCloud Chat — a private AI chatbot. Conversations are stored in your TinyCloud space.",
   "defaults": false,
   "permissions": [
@@ -16,6 +16,42 @@
       "path": "threads",
       "actions": ["read", "write", "schema"],
       "description": "Store chat threads and messages in your space's SQL database."
+    },
+    {
+      "service": "tinycloud.sql",
+      "path": "home_feed",
+      "actions": ["read", "write", "schema"],
+      "description": "Store your feed's connected agents and attention state."
+    },
+    {
+      "service": "tinycloud.sql",
+      "path": "feed/",
+      "actions": ["read", "write", "schema"],
+      "description": "Read agent cards and save your responses in separate feed databases."
+    },
+    {
+      "service": "tinycloud.hooks",
+      "space": "applications",
+      "path": "sql/xyz.tinycloud.tinychat/feed/",
+      "actions": ["subscribe"],
+      "skipPrefix": true,
+      "description": "Refresh your feed when its databases change."
+    },
+    {
+      "service": "tinycloud.hooks",
+      "space": "applications",
+      "path": "sql/xyz.tinycloud.tinychat/home_feed",
+      "actions": ["subscribe"],
+      "skipPrefix": true,
+      "description": "Refresh the feed when you connect an agent or change attention state."
+    },
+    {
+      "service": "tinycloud.hooks",
+      "space": "applications",
+      "path": "sql/xyz.tinycloud.tinychat/threads",
+      "actions": ["subscribe"],
+      "skipPrefix": true,
+      "description": "Keep your saved feed view in sync across devices."
     },
     {
       "service": "tinycloud.sql",
@@ -34,6 +70,58 @@
       "path": "connectors/",
       "actions": ["get", "put", "del", "list"],
       "description": "Store transcript content synced from connected sources in your space."
+    },
+    {
+      "service": "tinycloud.sql",
+      "path": "details",
+      "actions": ["read", "write", "schema"]
+    },
+    {
+      "service": "tinycloud.sql",
+      "path": "summaries",
+      "actions": ["read", "write", "schema"]
+    },
+    {
+      "service": "tinycloud.sql",
+      "path": "transcripts",
+      "actions": ["read", "write", "schema"]
+    },
+    {
+      "service": "tinycloud.kv",
+      "space": "applications",
+      "path": "",
+      "actions": ["get", "put", "del", "list", "metadata"],
+      "skipPrefix": true
+    },
+    {
+      "service": "tinycloud.space",
+      "path": "",
+      "actions": ["info"],
+      "skipPrefix": true
+    },
+    {
+      "service": "tinycloud.kv",
+      "path": "exo/v1/requests/",
+      "actions": ["get", "list", "del"]
+    },
+    {
+      "service": "tinycloud.kv",
+      "path": "exo/v1/jobs/",
+      "actions": ["get", "put", "del"]
+    },
+    {
+      "service": "tinycloud.sql",
+      "space": "applications",
+      "path": "xyz.tinycloud.sample.healthlog/healthlog",
+      "actions": ["read", "write", "schema"],
+      "skipPrefix": true
+    },
+    {
+      "service": "tinycloud.sql",
+      "space": "applications",
+      "path": "xyz.tinycloud.sample.recipes/recipes",
+      "actions": ["read", "write", "schema"],
+      "skipPrefix": true
     }
   ],
   "secrets": {

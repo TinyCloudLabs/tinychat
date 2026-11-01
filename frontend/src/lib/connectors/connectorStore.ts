@@ -42,6 +42,7 @@ import type {
 } from "./firefliesClient";
 import { deleteCombinedReferencing } from "./combinedMeetingStore";
 import type { ConnectorConnection, ConnectorId } from "./types";
+import { keepUserTitle } from "../recordingTitleMeta";
 
 
 /** Fireflies attempt metadata; SQL `last_synced_at` remains the success clock. */
@@ -798,8 +799,10 @@ export async function upsertMeeting(
     }
   }
 
+  // A title the user typed is not replaced by the provider's.
+  const keptTitle = keepUserTitle({ title: cellStr(row, 2, null), metadata: existingMetadata }, { title: meeting.title, metadata: mergedMetadata });
   const updateValues = [
-    options.preserveExistingTitle ? cellStr(row, 2, meeting.title) : keepStr(meeting.title, 2),
+    options.preserveExistingTitle ? cellStr(row, 2, meeting.title) : keptTitle.title ?? keepStr(meeting.title, 2),
     acceptsIncomingDatetime ? meeting.startedAt : existingStartedAt,
     meeting.durationSecs !== null ? meeting.durationSecs : cellNum(row, 4, null),
     keepStr(meeting.organizerEmail, 5),
@@ -814,7 +817,7 @@ export async function upsertMeeting(
       : keepStr(meeting.summaryActionItems, 8),
     meeting.keywords !== null ? JSON.stringify(meeting.keywords) : cellStr(row, 9, null),
     keepStr(meeting.meetingType, 10),
-    JSON.stringify(mergedMetadata),
+    JSON.stringify(keptTitle.metadata),
   ];
   const currentValues = [
     cellStr(row, 2, null),

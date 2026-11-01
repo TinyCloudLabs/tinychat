@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import type { BillingStatus } from "@/lib/billingApi";
 import { __resetStorageStatusForTests, reportStorageError, reportStoragePlanTier, STORAGE_FULL_DETAIL, STORAGE_READ_ONLY_NOTICE } from "@/lib/storageStatus";
 
 import { StaticRecorderProvider } from "@/capture/recorder/RecorderProvider";
@@ -158,6 +159,45 @@ test("mounted Settings keeps the agent-access block and one detailed storage not
     host.remove();
     __resetStorageStatusForTests();
   }
+});
+
+test("Conversation Canvas toggle is off by default under Experimental Features for an eligible account", async () => {
+  __setVoiceNotesForTests(null, { available: false });
+  // Loaded after beforeAll installs the DOM, as the tests above do.
+  const { SettingsPage } = await import("./SettingsPage");
+  const tcw = {
+    did: "did:example:account",
+    spaceId: "space-1",
+    address: () => "0x00000000000000000000000000000000000000a1",
+  } as unknown as TinyCloudWeb;
+  const sessionStore = { getToken: () => "signed-in-token" } as unknown as SessionStore;
+  const billingStatus: BillingStatus = { tier: "free", usage: { used: 0, limit: 0, resetsAt: "" }, subscription: null };
+  const noop = () => {};
+  const markup = renderToStaticMarkup(
+    <MemoryRouter>
+      <PlatformContext.Provider value="web">
+        <StaticRecorderProvider value={{ signedIn: true, available: false }}>
+          <AgentAccessProvider backendUrl="http://localhost" sessionStore={sessionStore} tcw={tcw} appName="Exo" openkeyHost="http://localhost">
+            <SettingsPage
+              address={tcw.address()} did={tcw.did} spaceId={tcw.spaceId} state="ready" error={null}
+              onSignOut={noop} signingOut={false} paywallEnabled={false} onBack={noop}
+              tcw={tcw} memoryRef={createRef<string | null>()} onMemoryUpdated={noop} onImported={noop}
+              billingStatus={billingStatus} billingTierName={null} onManagePlan={noop} onOpenRates={noop}
+              backendUrl="http://localhost" sessionStore={sessionStore}
+            />
+          </AgentAccessProvider>
+        </StaticRecorderProvider>
+      </PlatformContext.Provider>
+    </MemoryRouter>,
+  );
+
+  const page = document.createElement("div");
+  page.innerHTML = markup;
+  expect(page.textContent).toContain("Experimental Features");
+  const toggle = page.querySelector('button[aria-label="Enable Conversation Canvas"]');
+  expect(toggle).not.toBeNull();
+  expect(toggle?.getAttribute("role")).toBe("switch");
+  expect(toggle?.getAttribute("aria-checked")).toBe("false");
 });
 
 afterEach(() => __resetStorageStatusForTests());

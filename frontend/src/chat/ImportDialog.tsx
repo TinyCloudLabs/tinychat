@@ -114,8 +114,8 @@ export const ImportDialog: FC<ImportDialogProps> = ({ tcw, onImported }) => {
       setError(null);
       try {
         const bytes = new Uint8Array(await file.arrayBuffer());
-        // listThreads is contracted not to throw — any cold-path failure logs
-        // and returns the cached value (or []). We rely on that here.
+        // A failed cold load throws ThreadListLoadError (caught below): the
+        // duplicate check needs the real list, never an assumed-empty one.
         const existing = await listThreads(tcw);
         const convs = await parseClaudeExport(bytes);
         if (convs.length === 0) {

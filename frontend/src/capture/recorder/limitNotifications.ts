@@ -22,7 +22,7 @@ export function limitStoppedText(limitMs: number): string {
 }
 
 export function useLimitNotifications(
-  state: Pick<RecorderState, "phase" | "mic" | "recordingId" | "maxDurationMs" | "elapsedMs" | "elapsedAt" | "limitStopMs">,
+  state: Pick<RecorderState, "phase" | "mic" | "recordingId" | "maxDurationMs" | "autoStop" | "elapsedMs" | "elapsedAt" | "limitStopMs">,
   openRecorder: () => void,
 ): void {
   const { recordingId, maxDurationMs, elapsedMs, elapsedAt, limitStopMs } = state;
@@ -30,16 +30,20 @@ export function useLimitNotifications(
   const running = state.phase === "recording" && state.mic.state !== "paused";
   const warned = useRef<string | null>(null);
   useEffect(() => {
-    if (!running || recordingId === null || warned.current === recordingId || maxDurationMs <= LIMIT_WARNING_LEAD_MS) return;
+    // One warning per limit: "Keep going" raises the limit, and the new one is warned about again.
+    const warnKey = `${recordingId}@${maxDurationMs}`;
+    if (!running || recordingId === null || warned.current === warnKey || maxDurationMs <= LIMIT_WARNING_LEAD_MS) return;
+    // A recording under the silent safety cap shows no warning. A state without the field counts as automatic.
+    if (state.autoStop === false) return;
     const recorded = elapsedMs + (elapsedAt === null ? 0 : Math.max(0, Date.now() - elapsedAt));
     const untilWarning = maxDurationMs - LIMIT_WARNING_LEAD_MS - recorded;
     if (untilWarning < -LATE_WARNING_MS) return;
     const timer = setTimeout(() => {
-      warned.current = recordingId;
+      warned.current = warnKey;
       showSystemNotification(NOTIFICATION_TITLE, { body: LIMIT_WARNING_TEXT, tag: NOTIFICATION_TAG }, openRecorder);
     }, Math.max(0, untilWarning));
     return () => clearTimeout(timer);
-  }, [running, recordingId, maxDurationMs, elapsedMs, elapsedAt, openRecorder]);
+  }, [running, recordingId, maxDurationMs, state.autoStop, elapsedMs, elapsedAt, openRecorder]);
 
   const stoppedAt = useRef(limitStopMs);
   useEffect(() => {

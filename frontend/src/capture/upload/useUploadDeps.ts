@@ -34,7 +34,7 @@ export function buildUploadDeps({ tcw, backendUrl, sessionStore, origin, api, ho
       origin !== null ? { api, origin, create: (request) => createPrivateCloudJob(backendUrl, { sessionStore }, request) } : null,
     assemblyAiClient: async (mode) => {
       if (mode === "hosted") return hosted;
-      throw new AssemblyAiError("rejected", "This older upload used an AssemblyAI key. Choose the file again to use Powerful through Exo's server.");
+      throw new AssemblyAiError("rejected", "This older upload used a separate transcription key. Choose the file again to use Powerful through Exo's server.");
     },
     save: createLocalTranscriptSaver(space),
   };

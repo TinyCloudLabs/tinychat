@@ -1,3 +1,4 @@
+import { AutoStopControls } from "./AutoStopControls";
 import { readableError } from "@/lib/readableError";
 import {
   useCallback,
@@ -55,6 +56,7 @@ import {
   type ModeId,
 } from "./transcriptionModes";
 import { FINAL_COPY, PRIVATE_CONSENT_ACTION, PRIVATE_CONSENT_TITLE, POWERFUL_CONSENT_ACTION, POWERFUL_CONSENT_BODY, POWERFUL_CONSENT_TITLE, privateConsentBody, privateConsentDevice } from "./finalCopy";
+import { PowerfulConsentDescription } from "./PowerfulConsentDescription";
 import { useAudioInputs, type AudioInputsSource } from "./useAudioInputs";
 import { useSilencedSince } from "./useSilencedSince";
 import { MicDeniedAction } from "./shell/MicDeniedAction";
@@ -84,6 +86,7 @@ function recorderState(recorder: RecorderValue): RecorderState {
     elapsedMs: recorder.elapsedMs,
     elapsedAt: recorder.elapsedAt,
     maxDurationMs: recorder.maxDurationMs,
+    autoStop: recorder.autoStop,
     captureSourceUnconfirmed: recorder.captureSourceUnconfirmed,
     mic: recorder.mic,
     controlPending: recorder.controlPending,
@@ -717,7 +720,10 @@ export function PhoneRecorder({
             </button>
           </div>
           {view.timer.countdown ? (
-            <div className="pr-countdown">{view.timer.countdown.text}</div>
+            <>
+              <div className="pr-countdown">{view.timer.countdown.text}</div>
+              <AutoStopControls />
+            </>
           ) : idleDenied ? (
             // Mic denied keeps the recording layout's positions, so it holds the stop time's line.
             <div className="pr-countdown" data-placeholder="true" aria-hidden="true">{FINAL_COPY.stopAt("0:00")}</div>
@@ -1098,7 +1104,7 @@ export function PhoneRecorder({
           titleId={`${ids}-ct`}
           descriptionId={`${ids}-cd`}
           title={choice.askingMode === "powerful" ? POWERFUL_CONSENT_TITLE : PRIVATE_CONSENT_TITLE}
-          description={choice.askingMode === "powerful" ? POWERFUL_CONSENT_BODY : privateConsentBody(privateConsentDevice(platform))}
+          description={choice.askingMode === "powerful" ? <PowerfulConsentDescription body={POWERFUL_CONSENT_BODY} /> : privateConsentBody(privateConsentDevice(platform))}
           onCancel={choice.dismissConsent}
           returnFocus={consentOpener}
           fallbackFocus={scale}

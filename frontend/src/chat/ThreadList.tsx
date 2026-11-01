@@ -1,15 +1,17 @@
 import {
   createContext,
   useContext,
+  useState,
   useSyncExternalStore,
   type FC,
 } from "react";
 import {
   ThreadListItemPrimitive,
   ThreadListPrimitive,
+  useAui,
   useAuiState,
 } from "@assistant-ui/react";
-import { SquarePenIcon, Trash2Icon } from "lucide-react";
+import { PencilIcon, SquarePenIcon, Trash2Icon } from "lucide-react";
 
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -24,7 +26,21 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
-import { isIndexSyncing, subscribeIndexSyncing } from "../lib/threadStore";
+import {
+  getThreadListLoadState,
+  isIndexSyncing,
+  retryThreadListLoad,
+  subscribeIndexSyncing,
+  subscribeThreadListLoadState,
+  type ThreadListLoadState,
+} from "../lib/threadStore";
+import { CHAT_RENAME_ACTION } from "../lib/chatRenameStrings";
+import { ChatTitleEditor } from "./ChatTitleEditor";
+import {
+  THREAD_LIST_LOAD_FAILED,
+  THREAD_LIST_REFRESH_FAILED,
+  THREAD_LIST_TRY_AGAIN,
+} from "../lib/threadListStrings";
 
 const ThreadListNavigateContext = createContext<(() => void) | undefined>(
   undefined,
@@ -32,6 +48,25 @@ const ThreadListNavigateContext = createContext<(() => void) | undefined>(
 
 const ThreadListItem: FC = () => {
   const onNavigate = useContext(ThreadListNavigateContext);
+  const aui = useAui();
+  const title = useAuiState((s) => s.threadListItem.title);
+  // An unsaved new chat has no stored row to rename yet.
+  const renamable = useAuiState((s) => s.threadListItem.status === "regular");
+  const [editing, setEditing] = useState(false);
+  if (editing) {
+    return (
+      <ThreadListItemPrimitive.Root className="flex items-center gap-1 rounded-lg px-1">
+        <ChatTitleEditor
+          initial={title ?? ""}
+          onSave={(next) => {
+            setEditing(false);
+            aui.threadListItem().rename(next);
+          }}
+          onCancel={() => setEditing(false)}
+        />
+      </ThreadListItemPrimitive.Root>
+    );
+  }
   return (
     <ThreadListItemPrimitive.Root className="group flex items-center gap-1 rounded-lg pr-1 transition-colors hover:bg-accent data-[active]:bg-accent">
       <ThreadListItemPrimitive.Trigger
@@ -40,6 +75,15 @@ const ThreadListItem: FC = () => {
       >
         <ThreadListItemPrimitive.Title fallback="New chat" />
       </ThreadListItemPrimitive.Trigger>
+      {renamable && (
+        <TooltipIconButton
+          tooltip={CHAT_RENAME_ACTION}
+          onClick={() => setEditing(true)}
+          className="size-11 shrink-0 opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 data-[active]:opacity-100 md:size-7 [@media(hover:none)]:opacity-60"
+        >
+          <PencilIcon className="size-4" />
+        </TooltipIconButton>
+      )}
       <AlertDialog>
         <AlertDialogTrigger asChild>
           <TooltipIconButton
@@ -110,6 +154,42 @@ export const NewChatButton: FC<{ onNavigate?: () => void }> = ({ onNavigate }) =
 // The sidebar list is read sequentially from KV on sign-in, so it can be empty
 // for a moment. Show skeleton rows during the initial load instead of a blank
 // gap, and a quiet hint once we know there are genuinely no chats yet.
+/**
+ * A failed chat-list load. With nothing to show it replaces the list (never
+ * the "No chats yet" empty state); with a cached list it is a small notice
+ * above that list.
+ */
+export const ThreadListLoadNotice: FC<{
+  state: ThreadListLoadState;
+  onRetry: () => void;
+  retrying?: boolean;
+}> = ({ state, onRetry, retrying = false }) => {
+  if (state.status !== "error") return null;
+  if (state.hasCache) {
+    return (
+      <p role="status" className="px-3 py-1 text-xs text-muted-foreground">
+        {THREAD_LIST_REFRESH_FAILED}{" "}
+        <button type="button" onClick={onRetry} disabled={retrying} className="inline-flex min-h-6 items-center underline underline-offset-2">
+          {THREAD_LIST_TRY_AGAIN}
+        </button>
+      </p>
+    );
+  }
+  return (
+    <div role="alert" className="flex flex-col items-start gap-2 px-3 py-2 text-sm text-foreground">
+      <p>{THREAD_LIST_LOAD_FAILED}</p>
+      <button
+        type="button"
+        onClick={onRetry}
+        disabled={retrying}
+        className="rounded-md border px-3 py-1 text-sm hover:bg-accent disabled:opacity-60"
+      >
+        {THREAD_LIST_TRY_AGAIN}
+      </button>
+    </div>
+  );
+};
+
 const ThreadListContents: FC = () => {
   const isLoading = useAuiState((s) => s.threads.isLoading);
   const count = useAuiState((s) => s.threads.threadIds.length);
@@ -117,8 +197,18 @@ const ThreadListContents: FC = () => {
   // call — the real network work is the background SQL revalidate, which only
   // threadStore knows about. Track it so the shimmer shows while it runs.
   const syncing = useSyncExternalStore(subscribeIndexSyncing, isIndexSyncing);
+  const loadState = useSyncExternalStore(subscribeThreadListLoadState, getThreadListLoadState);
+  const [retrying, setRetrying] = useState(false);
+  const onRetry = () => {
+    setRetrying(true);
+    void retryThreadListLoad().finally(() => setRetrying(false));
+  };
+  const notice = <ThreadListLoadNotice state={loadState} onRetry={onRetry} retrying={retrying} />;
 
   if (isLoading && count === 0) return <ThreadListSkeleton />;
+
+  // A failed load is an error, never an empty list.
+  if (count === 0 && loadState.status === "error") return notice;
 
   if (!isLoading && count === 0) {
     return (
@@ -130,6 +220,7 @@ const ThreadListContents: FC = () => {
 
   return (
     <>
+      {notice}
       <ThreadListPrimitive.Items components={{ ThreadListItem }} />
       {/* The list is still syncing (the boot revalidate or a late list() is
           in flight) — show the loading state HERE, on the list that is

@@ -11,12 +11,15 @@
 // (streams, drafts and the open thread survive). Capture mounts at launch on
 // Mac so the sidebar can report resumed jobs; elsewhere it mounts on its first
 // visit. It is then kept, hidden (its scroll, the Library and a desktop local
-// recording survive). Connectors, Settings and How it works mount only while
-// shown.
+// recording survive). Connectors, Feed, Apps, Settings and How it works mount
+// only while shown. Feed MUST unmount when another surface shows (and when the
+// shell goes on sign-out): its polling and abort live in effects, so unlike Chat
+// it is never kept hidden.
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { useLocation } from "react-router-dom";
 
 import { cn } from "@/lib/utils";
+import { useAppsFeedEnabled } from "../lib/appsFeedFeature";
 import type { AppPlatform } from "../lib/platform";
 import { useSizeClass, type SizeClassState } from "../lib/sizeClass";
 import { navItems, navKindFor, type NavKind } from "./navItems";
@@ -38,6 +41,10 @@ export interface AppShellProps {
   capture: ReactNode | null;
   connectors: ReactNode | null;
   settings: ReactNode | null;
+  /** Feed (/chat/feed); mounted only while shown. Absent where the surface does not exist. */
+  feed?: ReactNode | null;
+  /** Apps (/chat/apps); mounted only while shown. Absent where the surface does not exist. */
+  apps?: ReactNode | null;
   /** How it works (/chat/about); it exists wherever Chat does. */
   about?: ReactNode | null;
   /** The minimised recorder, in its own row above the tab bar (PR4). */
@@ -55,12 +62,14 @@ type Shown = Destination | "settings" | "about";
 /** What fills <main>: the screen's surface, or Chat when that surface does not exist. */
 export function shownSurface(
   screen: Screen,
-  slots: Pick<AppShellProps, "capture" | "connectors" | "settings" | "about">,
+  slots: Pick<AppShellProps, "capture" | "connectors" | "settings" | "about"> & Partial<Pick<AppShellProps, "feed" | "apps">>,
 ): Shown {
   if (screen.id === "settings") return slots.settings ? "settings" : "chat";
   if (screen.id === "about") return slots.about ? "about" : "chat";
   if (screen.destination === "capture") return slots.capture ? "capture" : "chat";
   if (screen.destination === "connectors") return slots.connectors ? "connectors" : "chat";
+  if (screen.destination === "feed") return slots.feed ? "feed" : "chat";
+  if (screen.destination === "apps") return slots.apps ? "apps" : "chat";
   return "chat";
 }
 
@@ -78,6 +87,8 @@ const GRID: Record<NavKind | "none", string> = {
 
 export interface AppShellViewProps extends AppShellProps {
   sizeClass: SizeClassState;
+  /** Optional override for pure shell previews and tests. */
+  experimentalAppsFeedEnabled?: boolean;
   /** Capture is mounted after its first visit, or at Mac launch for Activity. */
   captureMounted: boolean;
   mainRef?: RefObject<HTMLElement | null>;
@@ -93,23 +104,32 @@ export function AppShellView({
   capture,
   connectors,
   settings,
+  feed = null,
+  apps = null,
   about = null,
   island = null,
   railLive = null,
   sidebarLive = null,
   recorderHost,
   sizeClass,
+  experimentalAppsFeedEnabled,
   captureMounted,
   mainRef,
   onReselect = () => {},
 }: AppShellViewProps) {
+  const appsFeedEnabled = useAppsFeedEnabled();
+  if (!(experimentalAppsFeedEnabled ?? appsFeedEnabled)) { feed = null; apps = null; }
   const nav = shellNavKind(sizeClass, { capture, connectors });
-  const shown = shownSurface(screen, { capture, connectors, settings, about });
+  const shown = shownSurface(screen, { capture, connectors, settings, feed, apps, about });
   // Settings and How it works are global: no navigation item is current.
   const globalScreen = shown === "settings" || shown === "about";
   const current: Destination | null = globalScreen ? null : shown;
   const items = navItems(pendingMeetings).filter(
-    (item) => (item.id !== "capture" || capture !== null) && (item.id !== "connectors" || connectors !== null),
+    (item) =>
+      (item.id !== "capture" || capture !== null) &&
+      (item.id !== "connectors" || connectors !== null) &&
+      (item.id !== "feed" || feed !== null) &&
+      (item.id !== "apps" || apps !== null),
   );
   const navProps = { items, current, replace: platform === "ios" || platform === "android", onReselect };
   const beside = nav === "rail" || nav === "sidebar";
@@ -149,6 +169,17 @@ export function AppShellView({
         <div data-surface="about" className={surface("about")}>
           {shown === "about" ? about : null}
         </div>
+        {/* Feed and Apps exist only while shown: Feed's polling lives in effects and must stop when it is not the current surface. */}
+        {shown === "feed" ? (
+          <div data-surface="feed" className="h-full">
+            {feed}
+          </div>
+        ) : null}
+        {shown === "apps" ? (
+          <div data-surface="apps" className="h-full">
+            {apps}
+          </div>
+        ) : null}
         {recorderHost ? <div ref={recorderHost} data-recorder-host="" className="absolute inset-0 z-20 empty:hidden" /> : null}
       </main>
       {island ? (

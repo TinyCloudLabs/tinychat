@@ -4,7 +4,7 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import type { SessionStore } from "@tinyboilerplate/client";
 import {
   AgentOwnerMismatchError, AgentSessionError, clearAgentSessionCache, disconnectAgentSession, ensureAgentSession,
-  isActiveAgentBundle, mintAgentSessionViaFreshSignIn,
+  isActiveAgentBundle, mintAgentSessionViaFreshSignIn, mintMcpSessionViaFreshSignIn,
   type AgentSessionStatus, type AgentSessionEnvelope, type AgentSessionSnapshot,
 } from "../lib/agentDelegation";
 import type { AgentDelegationErrorCode } from "../lib/agentChatApi";
@@ -181,9 +181,12 @@ export function createAgentAccessController(opts: UseAgentEnablementOptions) {
             update({ capability: "available", status: null, revision: null, probeFailed: false });
             signalChange();
           },
-          _mint: opts._mint ?? (() => mintAgentSessionViaFreshSignIn({ appName: opts.appName,
-            openkeyHost: opts.openkeyHost, tinycloudHosts: opts.tinycloudHosts, sessionAddress: opts.tcw.address(),
-            roomId: activeThreadIdRef.current ?? undefined })),
+          _mint: opts._mint ?? ((_tcw, snapshot) => snapshot?.mcp?.serviceDid
+            ? mintMcpSessionViaFreshSignIn({ appName: opts.appName, openkeyHost: opts.openkeyHost, tinycloudHosts: opts.tinycloudHosts,
+              sessionAddress: opts.tcw.address(), serviceDid: snapshot.mcp.serviceDid })
+            : mintAgentSessionViaFreshSignIn({ appName: opts.appName,
+              openkeyHost: opts.openkeyHost, tinycloudHosts: opts.tinycloudHosts, sessionAddress: opts.tcw.address(),
+              roomId: activeThreadIdRef.current ?? undefined })),
         });
         replacementPending = false;
         if (isCurrent()) { signalChange(); await refresh(); }

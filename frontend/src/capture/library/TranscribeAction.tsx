@@ -12,6 +12,7 @@ import {
 } from "@/capture/recorder/final/finalCopy";
 import { privateRefusalCopy } from "@/capture/recorder/privateInstead";
 import { privateRefusal, type PrivateAudioSource, type VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
+import { PowerfulConsentDescription } from "@/capture/recorder/final/PowerfulConsentDescription";
 import { captureCapabilities } from "@/lib/voiceNotes/captureEngine";
 import { VoiceNotes } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { cn } from "@/lib/utils";
@@ -195,7 +196,7 @@ export function TranscribeActionFor(props: TranscribeActionProps & { read: Phone
       <div className={cn("flex min-w-0 flex-col gap-3", props.className)} data-testid="transcribe-consent">
         <p className="text-callout text-muted-foreground">
           <strong>{provider === "assemblyai" ? POWERFUL_CONSENT_TITLE : PRIVATE_CONSENT_TITLE}</strong>{" "}
-          {provider === "assemblyai" ? POWERFUL_CONSENT_BODY : privateConsentBody(privateConsentDevice(platform))}
+          {provider === "assemblyai" ? <PowerfulConsentDescription body={POWERFUL_CONSENT_BODY} /> : privateConsentBody(privateConsentDevice(platform))}
         </p>
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
           <button

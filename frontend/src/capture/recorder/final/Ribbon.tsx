@@ -3,7 +3,6 @@ import { PlatformContext } from "@/lib/platform";
 import { useResolvedTheme } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 import type { RecorderValue } from "../RecorderProvider";
-import { MinimizedBars } from "./MinimizedBars";
 import { PauseGlyph, PlayGlyph } from "./minimizedIcons";
 import { MinimizedAlert, MinimizedLimitNotice } from "./MinimizedAlert";
 import {
@@ -13,7 +12,7 @@ import {
   useMinimizedRecorder,
   useMinimizedSilencedSince,
 } from "./MinimizedProvider";
-import { minimizedView } from "./minimizedView";
+import { minimizedLimit, minimizedView } from "./minimizedView";
 import "./soft.css";
 import "./ribbon.css";
 
@@ -43,6 +42,7 @@ export function RibbonView({
   const device = useContext(PlatformContext) === "tauri" ? "mac" : "phone";
   const view = minimizedView(recorder, elapsedMs, silencedSinceMs, device);
   const live = view.ring === "live";
+  const limit = minimizedLimit(view, recorder.maxDurationMs);
   const timerId = useId();
   const stopsId = useId();
   const canToggle = view.controls.resume || view.controls.pause;
@@ -64,7 +64,7 @@ export function RibbonView({
           className="ribbon-open"
           onClick={recorder.openSheet}
           aria-label={`${view.status}. Open recorder`}
-          aria-describedby={view.timer.countdown ? `${timerId} ${stopsId}` : timerId}
+          aria-describedby={limit ? `${timerId} ${stopsId}` : timerId}
           data-testid="ribbon-open"
         >
           <span
@@ -74,18 +74,20 @@ export function RibbonView({
           >
             {view.timer.text}
           </span>
-          <span className="ribbon-bars">
-            <MinimizedBars
-              recorder={recorder}
-              view={view}
-              bars={30}
-              theme={theme}
-            />
-          </span>
-          {view.timer.countdown && (
-            <span id={stopsId} className="ribbon-stops" data-testid="ribbon-stops">
-              {view.timer.countdown.text}
-            </span>
+          {limit && (
+            <>
+              <span className="ribbon-remaining" data-testid="ribbon-remaining">
+                {limit.stopsIn}
+              </span>
+              <span
+                id={stopsId}
+                className="mini-tip"
+                role="tooltip"
+                data-testid="ribbon-stops"
+              >
+                {limit.stopsAt}
+              </span>
+            </>
           )}
         </button>
         <button
@@ -118,6 +120,14 @@ export function RibbonView({
             <i className="mini-stop-glyph" aria-hidden="true" />
           </span>
         </button>
+        {limit && (
+          <span className="mini-limit" aria-hidden="true" data-testid="ribbon-limit">
+            <span
+              className="mini-limit-fill"
+              style={{ width: `${(limit.fraction * 100).toFixed(1)}%` }}
+            />
+          </span>
+        )}
       </div>
       <span
         role="status"

@@ -33,10 +33,12 @@ import {
   listThreads,
   memoryWriteGen,
   readMemoryCache,
+  normalizeUserTitle,
   renameThread,
   setMemory,
   setThreadModel,
   subscribeThreadIndex,
+  ThreadListLoadError,
   DEFAULT_MODEL,
   DEFAULT_TITLE,
   type ThreadDoc,
@@ -560,6 +562,7 @@ export function createHistoryAdapter(
 function useThreadListAdapter(
   deps: ChatRuntimeDeps,
   selection: ModelSelectionCoordinator,
+  reloadList: () => void,
 ): RemoteThreadListAdapter {
   const { tcw } = deps;
   const depsRef = useRef(deps);
@@ -720,7 +723,16 @@ function useThreadListAdapter(
       async list() {
         // The account's Canvas state is read once with the thread list, so a
         // failure surfaces here rather than in a send.
-        const [summaries] = await Promise.all([listThreads(tcw), loadCanvasState(tcw)]);
+        let summaries;
+        try {
+          [summaries] = await Promise.all([listThreads(tcw), loadCanvasState(tcw)]);
+        } catch (err) {
+          // A failed load is shown by the sidebar as an error with a retry
+          // (threadStore's load state), never as "No chats yet". Hand the
+          // adapter nothing, and do not reset the known-thread set.
+          if (err instanceof ThreadListLoadError) return { threads: [] };
+          throw err;
+        }
         selection.setKnownThreadIds(summaries.map((thread) => thread.id));
         return {
           threads: summaries.map((t) => ({
@@ -740,6 +752,10 @@ function useThreadListAdapter(
       },
       async rename(remoteId: string, newTitle: string) {
         await renameThread(tcw, remoteId, newTitle);
+        // A cleared title returns to the auto title, which the list only knows
+        // from the store. The optimistic row carries the text typed (empty)
+        // until this call settles, so reload once it has.
+        if (!normalizeUserTitle(newTitle)) setTimeout(reloadList, 0);
       },
       async archive() {
         // Archiving is not surfaced in the UI; no-op.
@@ -775,7 +791,7 @@ function useThreadListAdapter(
       },
       unstable_Provider: Provider,
     }),
-    [tcw, Provider, selection],
+    [tcw, Provider, selection, reloadList],
   );
 }
 
@@ -801,7 +817,9 @@ export function useChatRuntime(deps: ChatRuntimeDeps): AssistantRuntime {
   }
   const selection = selectionRef.current;
   deps.selectionControllerRef.current = selection;
-  const adapter = useThreadListAdapter(deps, selection);
+  const reloadListRef = useRef<() => void>(() => {});
+  const reloadList = useCallback(() => reloadListRef.current(), []);
+  const adapter = useThreadListAdapter(deps, selection, reloadList);
 
   const mountGeneration = useRef(0);
   useEffect(() => {
@@ -835,6 +853,11 @@ export function useChatRuntime(deps: ChatRuntimeDeps): AssistantRuntime {
     },
     adapter,
   });
+
+  // Never reload the list under a running stream (see the sidebar refresh below).
+  reloadListRef.current = () => {
+    if (!runtime.thread.getState().isRunning) void runtime.threads.reload();
+  };
 
   // assistant-ui retains inactive providers. Only the committed main thread
   // owns activation; this subscription establishes the barrier synchronously

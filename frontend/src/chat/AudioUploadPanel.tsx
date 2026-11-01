@@ -39,7 +39,8 @@ import {
 } from "@/lib/audioUpload";
 import type { PrivateCloudCapabilities } from "@/lib/privateCloud";
 import { PATHS } from "@/shell/routes";
-import { TRANSCRIBER_NAME } from "@/capture/recorder/final/finalCopy";
+import { POWERFUL_NOT_PRIVATE_LINE, TRANSCRIBER_NAME } from "@/capture/recorder/final/finalCopy";
+import { usePowerfulUploadConsent } from "./PowerfulUploadConsent";
 import { privateConsentBody, privateConsentDevice } from "@/capture/recorder/final/finalCopy";
 import { useRecorder } from "@/capture/recorder/RecorderProvider";
 import { localStorageVoiceNoteConsentStore } from "@/lib/voiceNotes/voiceNoteTranscription";
@@ -84,7 +85,7 @@ export function fileProblem(
   assemblyAiMode: AssemblyAiKeyMode = "hosted",
 ): string | null {
   if (file === null || !c1Only(engine, assemblyAiMode)) return null;
-  const who = engine === "private-cloud" ? "Private transcription" : "TinyCloud's AssemblyAI account";
+  const who = engine === "private-cloud" ? "Private transcription" : "Powerful";
   if (privateCloudContentType(file) === null) {
     return engine === "private-cloud"
       ? "Private transcription takes MP3, WAV, OGG, M4A/MP4, WebM or FLAC audio. Choose Powerful, or convert the file."
@@ -98,7 +99,7 @@ export function fileProblem(
 export function routeText(engine: UploadEngine, assemblyAiMode: AssemblyAiKeyMode): string {
   if (engine === "private-cloud") return "Transcribed by TinyCloud Private Transcription. A copy of the file stays in your space.";
   return assemblyAiMode === "hosted"
-    ? "Sent through Exo's server to AssemblyAI under TinyCloud's account, then deleted there."
+    ? POWERFUL_NOT_PRIVATE_LINE
     : "This older upload needs to be chosen again for Powerful.";
 }
 
@@ -235,7 +236,7 @@ export const AudioUploadView: FC<AudioUploadViewProps> = ({
           {paused.fileName}
         </p>
         <p className="text-callout text-muted-foreground" role="status">
-          Upload paused. This upload uses your own AssemblyAI key. Continue to unlock it and finish.
+          Upload paused. This upload uses a separate transcription key. Continue to unlock it and finish.
         </p>
         <Button type="button" size="lg" onClick={onContinue} className="w-full">
           Continue
@@ -288,7 +289,7 @@ export const AudioUploadView: FC<AudioUploadViewProps> = ({
         {saved && job.cleanupPending && (
           <p className="text-meta text-muted-foreground">
             {job.engine === "assemblyai"
-              ? "AssemblyAI still has a copy of this transcript and file: deleting it didn't work yet."
+              ? "The outside transcription service still has a copy of this transcript and file: deleting it didn't work yet."
               : "Private transcription still has a copy of this transcript: deleting it didn't work yet."}
           </p>
         )}
@@ -363,7 +364,7 @@ export const AudioUploadView: FC<AudioUploadViewProps> = ({
           {status.state === "checking" && (
             <p className="flex items-center gap-2 text-callout text-muted-foreground">
               <Loader2Icon className="size-3.5 animate-spin" />
-              {engine === "private-cloud" ? "Checking private transcription…" : "Checking TinyCloud's AssemblyAI account…"}
+              {engine === "private-cloud" ? "Checking private transcription…" : "Checking Powerful transcription…"}
             </p>
           )}
           {status.state === "unavailable" && (
@@ -436,7 +437,7 @@ export function assemblyAiStatus(
 ): EngineStatus {
   if (mode === "own") return { state: "unavailable", reason: "Choose this file again to use Powerful through Exo's server." };
   if (hostedCaps.state === "checking") return { state: "checking" };
-  if (hostedCaps.state === "failed") return { state: "unavailable", reason: "Couldn't reach TinyCloud's AssemblyAI account.", action: "recheck" };
+  if (hostedCaps.state === "failed") return { state: "unavailable", reason: "Couldn't reach the Powerful transcription service.", action: "recheck" };
   return hostedCaps.caps.hosted
     ? { state: "available" }
     : {
@@ -531,45 +532,57 @@ export const AudioUploadPanel: FC<AudioUploadPanelProps> = ({ tcw, backendUrl, s
         ? hostedCaps.caps.max_bytes
         : PRIVATE_CLOUD_MAX_BYTES;
 
+  const powerfulConsent = usePowerfulUploadConsent({
+    consented: recorder.transcription?.powerfulConsented === true,
+    onConsent: () => recorder.transcription?.onPowerfulConsent?.(),
+  });
+  const requestPowerful = powerfulConsent.request;
   const onTranscribe = useCallback(() => {
     if (file === null) return;
+    const start = () => {
+      uploadRunner.start(deps, { file, engine, diarize: diarize && diarizeUnavailable === null, assemblyAiMode });
+      setFile(null);
+    };
     // The upload and recorder share one account-scoped, versioned Private consent.
     if (engine === "private-cloud" && !privateConsent) {
       consentStore.set(true);
       recorder.transcription?.onConsent();
       setPrivateConsent(true);
     }
-    uploadRunner.start(deps, { file, engine, diarize: diarize && diarizeUnavailable === null, assemblyAiMode });
-    setFile(null);
-  }, [deps, file, engine, diarize, diarizeUnavailable, assemblyAiMode, privateConsent, consentStore, recorder.transcription]);
+    // Powerful sends the file to a third party: ask first (the recorder's consent), whatever the key mode.
+    requestPowerful(engine, start);
+  }, [deps, file, engine, diarize, diarizeUnavailable, assemblyAiMode, privateConsent, consentStore, recorder.transcription, requestPowerful]);
 
   return (
-    <AudioUploadView
-      job={job}
-      paused={paused}
-      onContinue={onContinue}
-      file={file}
-      engine={engine}
-      engines={{ "private-cloud": privateStatus, assemblyai: assemblyStatus }}
-      assemblyAiMode={assemblyAiMode}
-      privateConsent={privateConsent || recorder.transcription?.consented === true}
-      privateConsentText={privateConsentBody(privateConsentDevice(platform))}
-      diarize={diarize}
-      diarizeUnavailable={diarizeUnavailable}
-      fileProblem={fileProblem(file, engine, maxBytes, assemblyAiMode)}
-      onEngineChange={setEngine}
-      onDiarizeChange={setDiarize}
-      onFile={setFile}
-      onTranscribe={onTranscribe}
-      onRetry={() => uploadRunner.retry(deps)}
-      onDismiss={() => void uploadRunner.dismiss(deps)}
-      onOpenSettings={() => navigate("/chat/settings")}
-      onRecheck={() => setCapsRound((n) => n + 1)}
-      onOpenLibrary={() => {
-        onDone?.();
-        navigate(PATHS.library);
-      }}
-      layout={layout}
-    />
+    <>
+      <AudioUploadView
+        job={job}
+        paused={paused}
+        onContinue={onContinue}
+        file={file}
+        engine={engine}
+        engines={{ "private-cloud": privateStatus, assemblyai: assemblyStatus }}
+        assemblyAiMode={assemblyAiMode}
+        privateConsent={privateConsent || recorder.transcription?.consented === true}
+        privateConsentText={privateConsentBody(privateConsentDevice(platform))}
+        diarize={diarize}
+        diarizeUnavailable={diarizeUnavailable}
+        fileProblem={fileProblem(file, engine, maxBytes, assemblyAiMode)}
+        onEngineChange={setEngine}
+        onDiarizeChange={setDiarize}
+        onFile={setFile}
+        onTranscribe={onTranscribe}
+        onRetry={() => uploadRunner.retry(deps)}
+        onDismiss={() => void uploadRunner.dismiss(deps)}
+        onOpenSettings={() => navigate("/chat/settings")}
+        onRecheck={() => setCapsRound((n) => n + 1)}
+        onOpenLibrary={() => {
+          onDone?.();
+          navigate(PATHS.library);
+        }}
+        layout={layout}
+      />
+      {powerfulConsent.dialog}
+    </>
   );
 };

@@ -3357,3 +3357,101 @@ describe("Settings → Stop recording after reaches VoiceNotes.start", () => {
     detach();
   });
 });
+
+describe("Stop recordings automatically reaches VoiceNotes.start (TC-2081)", () => {
+  const HOUR = 60 * 60_000;
+  const SAFETY_CAP = 8 * HOUR;
+  const savedStorage = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  const savedWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+  let values: Map<string, string>;
+  let requested: (number | undefined)[];
+
+  const widthIs = (innerWidth: number) => Object.defineProperty(globalThis, "window", { configurable: true, writable: true,
+    value: { innerWidth, addEventListener() {}, removeEventListener() {} } });
+
+  beforeEach(() => {
+    values = new Map();
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, value); },
+      removeItem: (key: string) => { values.delete(key); },
+    } });
+    requested = [];
+    const base = plugin;
+    __setVoiceNotesForTests({ ...base, async start(options) { requested.push(options?.maxDurationMs); return base.start(options); } }, { available: true });
+  });
+  afterEach(() => {
+    for (const [name, descriptor] of [["localStorage", savedStorage], ["window", savedWindow]] as const) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else Reflect.deleteProperty(globalThis, name);
+    }
+  });
+
+  async function recordOnce() {
+    const { recorder, detach } = await attached();
+    await recorder.record();
+    const state = recorder.getState();
+    await recorder.stop();
+    await settled(() => recorder.getState().phase === "idle", "the stop");
+    detach();
+    return state;
+  }
+
+  test("the phone layout defaults to off: the silent 8-hour cap, and the recording is not an automatic-stop recording", async () => {
+    widthIs(390);
+    const state = await recordOnce();
+    expect(requested).toEqual([SAFETY_CAP]);
+    expect(state).toMatchObject({ maxDurationMs: SAFETY_CAP, autoStop: false });
+  });
+
+  test("the desktop layout defaults to on: Stop recording after, as before", async () => {
+    widthIs(1280);
+    const state = await recordOnce();
+    expect(requested).toEqual([HOUR]);
+    expect(state).toMatchObject({ maxDurationMs: HOUR, autoStop: true });
+  });
+
+  test("turning it on at the phone layout restores today's limit; turning it off on desktop gives the cap", async () => {
+    widthIs(390);
+    values.set("exo.voiceNotes.autoStop", "1");
+    expect(await recordOnce()).toMatchObject({ maxDurationMs: HOUR, autoStop: true });
+    widthIs(1280);
+    values.set("exo.voiceNotes.autoStop", "0");
+    expect(await recordOnce()).toMatchObject({ maxDurationMs: SAFETY_CAP, autoStop: false });
+    expect(requested).toEqual([HOUR, SAFETY_CAP]);
+  });
+
+  test("Keep going raises the running limit by one hour through the plugin and the state follows", async () => {
+    widthIs(1280);
+    const { recorder, detach } = await attached();
+    await recorder.record();
+    expect(typeof recorder.extendLimit).toBe("function");
+    await recorder.extendLimit!();
+    expect(fake.stats().maxDurationChanges).toEqual([2 * HOUR]);
+    expect(recorder.getState().maxDurationMs).toBe(2 * HOUR);
+    await recorder.extendLimit!();
+    expect(recorder.getState().maxDurationMs).toBe(3 * HOUR);
+    await recorder.stop();
+    await settled(() => recorder.getState().phase === "idle", "the stop");
+    detach();
+  });
+
+  test("no extension under the silent cap, and none where the plugin cannot change a running limit", async () => {
+    widthIs(390);
+    const capped = await attached();
+    await capped.recorder.record();
+    await capped.recorder.extendLimit!();
+    expect(fake.stats().maxDurationChanges).toEqual([]);
+    expect(capped.recorder.getState().maxDurationMs).toBe(SAFETY_CAP);
+    await capped.recorder.stop();
+    await settled(() => capped.recorder.getState().phase === "idle", "the stop");
+    capped.detach();
+
+    const base = plugin;
+    __setVoiceNotesForTests({ ...base, setMaxDuration: undefined }, { available: true });
+    widthIs(1280);
+    const fixed = await attached();
+    expect(fixed.recorder.extendLimit).toBeUndefined();
+    fixed.detach();
+  });
+});

@@ -10,6 +10,7 @@
 // vault, no key: a session token and the backend URL are the only inputs.
 
 import { useCallback, useEffect, useMemo, useRef, useState, type FC, type FormEvent } from "react";
+import { useWordFixApplier } from "@/lib/wordFixes/wordFixesStore";
 import type { SessionStore } from "@tinyboilerplate/client";
 import { meetingLinkFromInput } from "@tinyboilerplate/core";
 import { Loader2Icon, RefreshCwIcon } from "lucide-react";
@@ -40,13 +41,12 @@ import { useTranscriberSavedState } from "./useTranscriberLibrarySync";
 import { createCalendarAutojoinClient, calendarOutcomeLabel, type CalendarAutojoinOutcome } from "@/lib/connectors/calendarAutojoinApi";
 import { transcriberMeetingTitle } from "@/lib/transcriberSave";
 
-export const ACTIVE_STATUSES: ReadonlySet<TranscriberMeetingStatus> = new Set([
-  "queued",
-  "joining",
-  "waiting_for_admission",
-  "in_progress",
-  "processing",
-]);
+/** Only these end a meeting. Any other status, including one this build does not know yet, is still moving. */
+const TERMINAL_STATUSES: ReadonlySet<string> = new Set(["completed", "failed", "cancelled"]);
+
+export function isActiveStatus(status: string): boolean {
+  return !TERMINAL_STATUSES.has(status);
+}
 
 /** How often the list is re-read while at least one meeting is still moving. */
 export const POLL_INTERVAL_MS = 5000;
@@ -197,7 +197,7 @@ export function SendNotetakerButton(props: { form: TranscriberViewProps["form"];
   );
 }
 
-export function statusLabel(status: TranscriberMeetingStatus): string {
+export function statusLabel(status: string): string {
   switch (status) {
     case "queued":
       return "Queued";
@@ -205,6 +205,8 @@ export function statusLabel(status: TranscriberMeetingStatus): string {
       return "Joining";
     case "waiting_for_admission":
       return "Waiting to be admitted";
+    case "needs_help":
+      return "Stuck joining";
     case "in_progress":
       return "In meeting";
     case "processing":
@@ -215,6 +217,8 @@ export function statusLabel(status: TranscriberMeetingStatus): string {
       return "Failed";
     case "cancelled":
       return "Cancelled";
+    default:
+      return "Working";
   }
 }
 
@@ -314,7 +318,8 @@ export const TranscriberView: FC<TranscriberViewProps> = ({
             </label>
             <input
               id="transcriber-meeting-url"
-              type="url"
+              // Text, not url: a pasted calendar invite is a whole paragraph that native URL validation would refuse; submit reads the link from it.
+              type="text"
               inputMode="url"
               autoComplete="off"
               spellCheck={false}
@@ -524,7 +529,7 @@ function MeetingRow(props: {
   onRemove: (id: string) => void;
 }) {
   const { meeting, busy, open } = props;
-  const active = ACTIVE_STATUSES.has(meeting.status);
+  const active = isActiveStatus(meeting.status);
   const stoppable = active && meeting.status !== "processing";
   const when = formatWhen(meeting.metadata?.scheduled_start ?? meeting.created_at);
   const shared = meeting.metadata?.shared === true;
@@ -662,6 +667,7 @@ function CaptureDetails({ meeting }: { meeting: TranscriberMeeting }) {
 }
 
 function TranscriptPanel({ open }: { open: OpenTranscriptState }) {
+  const applyWordFixes = useWordFixApplier();
   const segments = open.transcript?.segments ?? [];
   return (
     <div className="mt-2 rounded-md border border-border bg-muted/40 p-3">
@@ -708,13 +714,13 @@ function TranscriptPanel({ open }: { open: OpenTranscriptState }) {
                       <span className="font-medium">{segment.attribution === "overlap" ? "Overlapping speech"
                         : segment.attribution === "unknown" ? "Unknown speaker" : segment.speaker_name}: </span>
                     )}
-                    <span className="whitespace-pre-wrap">{segment.text}</span>
+                    <span className="whitespace-pre-wrap">{applyWordFixes(segment.text)}</span>
                   </span>
                 </li>
               ))}
             </ol>
           ) : open.transcript.text ? (
-            <p className="max-h-80 overflow-y-auto whitespace-pre-wrap text-xs">{open.transcript.text}</p>
+            <p className="max-h-80 overflow-y-auto whitespace-pre-wrap text-xs">{applyWordFixes(open.transcript.text)}</p>
           ) : (
             <p className="text-xs text-muted-foreground">The transcript is empty.</p>
           )}
@@ -738,7 +744,7 @@ function listStatusOf<T>(result: TranscriberResult<T>): ListStatus {
   }
 }
 
-export function describeFailure<T>(result: TranscriberResult<T>): string {
+export function describeFailure<T>(result: TranscriberResult<T>, meetingUrl?: string): string {
   switch (result.status) {
     case "unauthenticated":
       return "Your session expired. Sign in again.";
@@ -756,8 +762,21 @@ export function describeFailure<T>(result: TranscriberResult<T>): string {
       return "The transcriber is temporarily unavailable. Try again in a moment.";
     case "rejected":
       switch (result.code) {
-        case "invalid_meeting_url":
+        case "invalid_meeting_url": {
+          try {
+            const url = new URL(meetingUrl ?? "");
+            if (
+              (url.protocol === "http:" || url.protocol === "https:") &&
+              url.hostname === "meet.google.com" &&
+              /^\/lookup\/[^/]+\/?$/.test(url.pathname)
+            ) {
+              return "Paste the meet.google.com/abc-defg-hij link for this meeting";
+            }
+          } catch {
+            // Keep the existing generic copy when the pasted value cannot be parsed as a URL.
+          }
           return "That doesn't look like a meeting link.";
+        }
         case "unsupported_platform":
           return "That meeting platform isn't supported yet.";
         case "idempotency_conflict":
@@ -818,7 +837,7 @@ export function meetingBotTimers(input: { active: boolean; anyActive: boolean; l
 
 /** The meetings that are still moving (the In progress rows). */
 export function activeMeetings(meetings: readonly TranscriberListRow[]): TranscriberMeeting[] {
-  return meetings.filter((m): m is TranscriberMeeting => !("unavailable" in m) && ACTIVE_STATUSES.has(m.status));
+  return meetings.filter((m): m is TranscriberMeeting => !("unavailable" in m) && isActiveStatus(m.status));
 }
 
 export function activeMeetingForUrl(meetings: readonly TranscriberListRow[], normalizedUrl: string): TranscriberMeeting | null {
@@ -827,7 +846,7 @@ export function activeMeetingForUrl(meetings: readonly TranscriberListRow[], nor
 
 function terminalMeetingForUrl(meetings: readonly TranscriberListRow[], normalizedUrl: string): TranscriberMeeting | null {
   return meetings.find((meeting): meeting is TranscriberMeeting => !("unavailable" in meeting)
-    && !ACTIVE_STATUSES.has(meeting.status) && normalizeMeetingUrl(meeting.meeting_url) === normalizedUrl) ?? null;
+    && !isActiveStatus(meeting.status) && normalizeMeetingUrl(meeting.meeting_url) === normalizedUrl) ?? null;
 }
 
 function terminalMeetingForIntent(
@@ -837,7 +856,7 @@ function terminalMeetingForIntent(
 ): TranscriberMeeting | null {
   return meetings.find((meeting): meeting is TranscriberMeeting => !(
     "unavailable" in meeting
-  ) && !ACTIVE_STATUSES.has(meeting.status)
+  ) && !isActiveStatus(meeting.status)
     && meeting.id !== intent.afterMeetingId
     && normalizeMeetingUrl(meeting.meeting_url) === normalizedUrl
     && intent.createdAt > 0
@@ -1058,14 +1077,14 @@ export function useMeetingBot({ backendUrl, sessionStore, client, calendar: cale
         const result = await api.create(intent.input, { idempotencyKey: intent.key });
         if (result.status !== "ok") {
           if (isAmbiguousCreateFailure(result)) {
-            setCheckingIntent({ ...intent, normalizedUrl: normalized, owner, error: describeFailure(result) });
+            setCheckingIntent({ ...intent, normalizedUrl: normalized, owner, error: describeFailure(result, intent.input.meeting_url) });
             return;
           }
           if (result.status === "rejected" && result.code === "idempotency_conflict") clearIntent(normalized);
-          setFormError(describeFailure(result));
+          setFormError(describeFailure(result, intent.input.meeting_url));
           return;
         }
-        if (!ACTIVE_STATUSES.has(result.value.status)) clearIntent(normalized);
+        if (!isActiveStatus(result.value.status)) clearIntent(normalized);
         setUrl("");
         setMeetings((current) => [result.value, ...current.filter((m) => m.id !== result.value.id)]);
         setListStatus("ready");

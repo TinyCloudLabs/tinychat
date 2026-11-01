@@ -1,3 +1,4 @@
+import { VOICE_NOTE_SAFETY_CAP_MS } from "./nativeVoiceNotes";
 import { readableError } from "@/lib/readableError";
 // JS owns the user's default. Native owns a live session's journaled options.
 import { captureEngineAvailable, captureEngineKind, onDeviceTranscriptionAvailable } from "./captureEngine";
@@ -9,6 +10,7 @@ const TRANSCRIBER_KEY = "exo.voiceNotes.transcriber";
 const SPEAKERS_KEY = "exo.voiceNotes.identifySpeakers";
 const UPLOAD_AUDIO_KEY = "exo.voiceNotes.uploadAudio";
 const STOP_AFTER_KEY = "exo.voiceNotes.stopAfter";
+const AUTO_STOP_KEY = "exo.voiceNotes.autoStop";
 const listeners = new Set<() => void>();
 let memoryPreference: CaptureOptions = { transcriber: "on-device", identifySpeakers: true };
 
@@ -90,6 +92,41 @@ export function setStopAfterPreference(value: StopAfter): void {
 /** The limit a choice asks for; "off" is the 3-hour limit every recorder enforces. */
 export function stopAfterMs(value: StopAfter): number {
   return value === "off" ? VOICE_NOTE_MAX_DURATION_MS : Number(value) * 60_000;
+}
+
+/** Whether this device chose Stop recordings automatically: null while it never did (the layout then decides). */
+let memoryAutoStop: boolean | null = null;
+
+export function readAutoStopChoice(): boolean | null {
+  const store = storage();
+  if (!store) return memoryAutoStop;
+  try {
+    const saved = store.getItem(AUTO_STOP_KEY);
+    return saved === "1" ? true : saved === "0" ? false : null;
+  } catch { return memoryAutoStop; }
+}
+
+/** `null` forgets the choice: the layout decides again. */
+export function setAutoStopPreference(enabled: boolean | null): void {
+  memoryAutoStop = enabled;
+  try {
+    if (enabled === null) storage()?.removeItem(AUTO_STOP_KEY);
+    else storage()?.setItem(AUTO_STOP_KEY, enabled ? "1" : "0");
+  } catch { /* This session only. */ }
+  for (const listener of listeners) listener();
+}
+
+/** On at the desktop layouts, off at the phone layout, until the user chooses. */
+export function autoStopEnabled(phoneLayout: boolean, choice: boolean | null = readAutoStopChoice()): boolean {
+  return choice ?? !phoneLayout;
+}
+
+/**
+ * The limit a new recording asks for. Automatic stopping on: Settings' Stop recording after, never above `override` (the
+ * test override or the 3-hour limit). Off: the silent safety cap.
+ */
+export function recordingLimitMs(autoStop: boolean, override: number): number {
+  return autoStop ? Math.min(stopAfterMs(readStopAfterPreference()), override) : VOICE_NOTE_SAFETY_CAP_MS;
 }
 
 /** What the engine will start the next recording with: the one truth the default mode is shown from. */
