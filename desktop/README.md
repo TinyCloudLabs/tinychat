@@ -273,5 +273,3 @@ Then add the 7 secrets (root README, "Signing", one-time setup) and set
 - **Licensing:** only anarlog's MIT layer is used (`plugins/**`, `crates/**`).
   Nothing under anarlog's `enterprise/` (commercially licensed) is vendored or
   depended on.
-
-CI proof (docs-only): throwaway.
