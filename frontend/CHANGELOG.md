@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.12.0-beta.2
+
+### Patch Changes
+
+- adddc69: Show fixed meeting-code guidance for Meet lookup links rejected by the transcriber.
+
 ## 0.12.0-beta.1
 
 ### Minor Changes
