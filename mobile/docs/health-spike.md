@@ -46,7 +46,7 @@ enrollment lands. Leave background sync for a second step. Details in
 | JS contract | `frontend/src/lib/health/nativeHealth.ts` |
 | Storage | `frontend/src/lib/health/healthStore.ts` |
 | Dev-only UI | `frontend/src/chat/HealthSpikeSection.tsx`, lazy-loaded by `ConnectorsPage` only when `VITE_EXO_HEALTH_SPIKE=true` (a normal build has `HealthSpikeSection=null` and no chunk) |
-| CI | `.github/workflows/mobile.yml`: non-gating HealthKit steps after the iOS smoke test; `mobile/scripts/ios-health-probe.sh`. `ios-build.yml`: the Release archive check fails if the binary links HealthKit |
+| CI | `.github/workflows/mobile.yml`: non-gating HealthKit steps after the iOS smoke test (pushes to main and manual runs only, not PRs); `mobile/scripts/ios-health-probe.sh`. `ios-build.yml`: the Release archive check fails if the binary links HealthKit |
 
 ### The plugin contract
 
