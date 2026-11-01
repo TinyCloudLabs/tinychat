@@ -1708,7 +1708,8 @@ paths:
                   minimum: 1
                   maximum: 14400
                   description: >-
-                    Seconds from creation. Omitted keeps ptx's default; `null` is No limit (capped at 4 hours).
+                    PTX validates this field; TinyCloud forwards it unchanged. Omitted keeps PTX's default; `null`
+                    requests No limit (PTX still caps at four hours).
       responses:
         "200":
           description: An existing active meeting for this address and normalized URL
@@ -1787,6 +1788,9 @@ paths:
       security:
         - bearerAuth: []
       requestBody:
+        description: >-
+          PTX #137 request schema. TinyCloud forwards the body unchanged; PTX alone validates it and applies the
+          four-hour cap.
         required: true
         content:
           application/json:
@@ -1816,7 +1820,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/TranscriberMeeting"
         "400":
-          description: "`invalid_duration`, refused before upstream is called, or an upstream refusal (the meeting is no longer live)."
+          description: PTX refusal; its validation error code and message are returned.
           content:
             application/json:
               schema:
