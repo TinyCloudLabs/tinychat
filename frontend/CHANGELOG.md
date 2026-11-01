@@ -15,6 +15,23 @@
 - TC-2204: Web sign-in and restoration use the manifest shipped with the frontend, so web-only updates request Home SQL and feed subscriptions in the existing approval. Owners with older grants are asked to sign in again with explicit consent before Home storage opens.
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 
+## 0.12.0
+
+### Minor Changes
+
+- 228a804: Rename the speakers on any transcript. Tap a speaker label in a note's transcript to give that speaker a name, for example "Me" becomes your name and "Them" becomes "Alice, Bob". The name shows on every line of that speaker, is saved with the note so it follows it across devices, and can be undone. Copy, copy with timestamps and Markdown export use the names. The stored transcript keeps its original labels. Details: TC-2189
+
+### Patch Changes
+
+- 944bbf4: Paste a whole Google Calendar invite into the notetaker's meeting-link field. The first Google Meet link in the text is used, ahead of dial-in numbers and unrelated links, and a lookup link stays as pasted. The field now accepts the full pasted text, and a single link reads as before. Details: TC-2181
+- adddc69: Show fixed meeting-code guidance for Meet lookup links rejected by the transcriber.
+
+## 0.12.0-beta.2
+
+### Patch Changes
+
+- adddc69: Show fixed meeting-code guidance for Meet lookup links rejected by the transcriber.
+
 ## 0.12.0-beta.1
 
 ### Minor Changes
