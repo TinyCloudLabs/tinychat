@@ -484,7 +484,7 @@ function UnavailableRow(props: { id: string; busy: boolean; onRemove: (id: strin
  * The time controls of a live notetaker (TC-2243): the server-provided stop time, and the
  * extensions the 4-hour cap still leaves room for.
  */
-function MeetingTimeControls(props: {
+export function MeetingTimeControls(props: {
   meeting: TranscriberMeeting;
   live: boolean;
   busy: boolean;

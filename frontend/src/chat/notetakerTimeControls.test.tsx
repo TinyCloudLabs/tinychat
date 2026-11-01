@@ -8,13 +8,13 @@
 // Markup is asserted through react-dom/server (no DOM harness here); the hook is mounted on a stub
 // container like useMeetingBot.test.tsx.
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
-import { act } from "react";
+import { act, isValidElement, type ReactElement, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 import type { SessionStore } from "@tinyboilerplate/client";
 
-import { TranscriberView, useMeetingBot, type MeetingBot, type TranscriberViewProps } from "./TranscriberSection";
+import { TranscriberView, MeetingTimeControls, useMeetingBot, type MeetingBot, type TranscriberViewProps } from "./TranscriberSection";
 import {
   DEFAULT_NOTETAKER_DURATION_SECONDS,
   NOTETAKER_DURATION_OPTIONS,
@@ -30,6 +30,15 @@ import {
 
 const HOUR = 3600;
 const noop = () => {};
+
+interface ControlProps { "data-extension"?: string; children?: ReactNode; disabled?: boolean; onClick?: () => void }
+
+/** The extension controls inside a rendered element tree: the elements a user clicks. */
+function buttonsOf(node: ReactNode): ReactElement<ControlProps>[] {
+  if (Array.isArray(node)) return node.flatMap(buttonsOf);
+  if (!isValidElement<ControlProps>(node)) return [];
+  return node.props["data-extension"] !== undefined ? [node] : buttonsOf(node.props.children);
+}
 
 function meeting(patch: Partial<TranscriberMeeting> = {}): TranscriberMeeting {
   return {
@@ -117,31 +126,40 @@ describe("extension options and cap", () => {
     expect(extensionsFor(meeting({ status: "joining" })).length).toBe(3);
   });
 
-  test("the buttons call onExtend with the chosen extension", () => {
+  test("each control calls onExtend with its own extension for this meeting", () => {
     const picked: Array<[string, string]> = [];
-    const html = render({ meetings: [meeting()], onExtend: (id, ext) => picked.push([id, ext]) });
-    // Static markup carries no handlers; the option ids are what the view passes through.
-    expect(html).toContain('data-extension="plus15"');
-    expect(html).toContain('data-extension="plus30"');
-    expect(html).toContain('data-extension="no-limit"');
-    expect(picked).toEqual([]);
+    const view = MeetingTimeControls({ meeting: meeting(), live: true, busy: false, onExtend: (id, ext) => picked.push([id, ext]) });
+    const controls = buttonsOf(view);
+    expect(controls.map((c) => [c.props.children, c.props["data-extension"]])).toEqual([
+      ["+15 min", "plus15"],
+      ["+30 min", "plus30"],
+      ["No limit", "no-limit"],
+    ]);
+    for (const control of controls) control.props.onClick?.();
+    expect(picked).toEqual([["mtg_live", "plus15"], ["mtg_live", "plus30"], ["mtg_live", "no-limit"]]);
+  });
+
+  test("while an action is in flight the controls are disabled", () => {
+    const view = MeetingTimeControls({ meeting: meeting(), live: true, busy: true, onExtend: noop });
+    expect(buttonsOf(view).every((c) => c.props.disabled === true)).toBe(true);
   });
 });
 
 describe("stop time display", () => {
+  // Fixed zone so the clock reads the same everywhere; the default locale is what a user of this build sees.
+  const savedTz = process.env.TZ;
+  beforeAll(() => { process.env.TZ = "UTC"; });
+  afterAll(() => { if (savedTz === undefined) delete process.env.TZ; else process.env.TZ = savedTz; });
   const now = new Date("2026-10-06T09:45:00.000Z");
 
-  test("same-day stop shows the clock time", () => {
+  test("a stop later today reads as the clock time only", () => {
     const text = formatStopsAt("2026-10-06T10:30:00.000Z", now);
-    expect(text).toBe(
-      `Stops at ${new Date("2026-10-06T10:30:00.000Z").toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}`,
-    );
+    expect(text).toMatch(/^Stops at 10:30\b/);
+    expect(text).not.toMatch(/Oct|\b6\b/);
   });
 
-  test("a stop on another day names the day", () => {
-    const text = formatStopsAt("2026-10-08T10:30:00.000Z", now);
-    expect(text).toMatch(/^Stops at .+/);
-    expect(text).toContain(new Date("2026-10-08T10:30:00.000Z").toLocaleDateString(undefined, { month: "short", day: "numeric" }));
+  test("a stop on another day names the day as well", () => {
+    expect(formatStopsAt("2026-10-08T10:30:00.000Z", now)).toMatch(/^Stops at \D*\b8\b\D+10:30\b/);
   });
 
   test("missing or unparseable stop time shows nothing", () => {

@@ -7,6 +7,7 @@
 //   5. upstream text never reaches the caller — only our own error codes;
 //   6. the api client speaks the SPEC.md contract (paths, bearer, 202 handling).
 
+import { createHash } from "node:crypto";
 import { describe, expect, test } from "bun:test";
 import { request as httpRequest, type Server } from "node:http";
 import type { TinyCloudNode } from "@tinycloud/node-sdk";
@@ -84,10 +85,6 @@ function fakeApi() {
       calls.push({ method: "updateMeetingDuration", args: [id, update] });
       const m = store.get(id);
       if (!m) throw new TranscriptionApiError(404, "meeting_not_found", "no such meeting");
-      const current = m.max_duration_seconds ?? 3600;
-      m.max_duration_seconds = "extend_by_seconds" in update
-        ? Math.min(14400, current + update.extend_by_seconds)
-        : update.max_duration_seconds ?? 14400;
       return m;
     },
     async getTranscript(id) {
@@ -661,41 +658,41 @@ describe("per-meeting routes", () => {
     });
   });
 
-  test("create forwards a valid max_duration_seconds and refuses an out-of-range one before upstream", async () => {
+  test("create forwards max_duration_seconds exactly as sent; absent stays absent; ptx alone judges it", async () => {
     const h = harness();
     await withServer(h.app, async (base) => {
-      await call(base, "/api/transcriber/meetings", "POST", { meeting_url: "https://meet.jit.si/a", max_duration_seconds: 7200 });
-      for (const bad of [99999, 0, 1.5, "1h"]) {
-        const r = await call(base, "/api/transcriber/meetings", "POST", { meeting_url: "https://meet.jit.si/b", max_duration_seconds: bad });
-        expect([r.status, r.body]).toEqual([400, { error: "invalid_duration" }]);
+      const sends: unknown[] = [7200, null, 99999, undefined];
+      for (const [i, value] of sends.entries()) {
+        await call(base, "/api/transcriber/meetings", "POST", {
+          meeting_url: `https://meet.jit.si/room-${i}`,
+          ...(value === undefined ? {} : { max_duration_seconds: value }),
+        });
       }
-      await call(base, "/api/transcriber/meetings", "POST", { meeting_url: "https://meet.jit.si/c", max_duration_seconds: null });
     });
     const sent = h.calls.filter((c) => c.method === "createMeeting").map((c) => c.args[0] as Record<string, unknown>);
-    expect(sent.map((s) => s.max_duration_seconds)).toEqual([7200, null]);
+    expect(sent.map((s) => ("max_duration_seconds" in s ? s.max_duration_seconds : "absent"))).toEqual([7200, null, 99999, "absent"]);
   });
 
-  test("PATCH extends a live meeting for its owner: +15, +30, and No limit capped by upstream", async () => {
+  test("PATCH forwards the body to ptx unchanged for the owner, and returns ptx's meeting", async () => {
     const h = harness();
     await withServer(h.app, async (base) => {
       await call(base, "/api/transcriber/meetings", "POST", { meeting_url: "https://meet.jit.si/one" });
-      const a = await call(base, "/api/transcriber/meetings/mtg_1", "PATCH", { extend_by_seconds: 900 });
-      expect([a.status, a.body.max_duration_seconds]).toEqual([200, 4500]);
-      const b = await call(base, "/api/transcriber/meetings/mtg_1", "PATCH", { extend_by_seconds: 1800 });
-      expect(b.body.max_duration_seconds).toBe(6300);
-      const c = await call(base, "/api/transcriber/meetings/mtg_1", "PATCH", { max_duration_seconds: null });
-      expect(c.body.max_duration_seconds).toBe(14400);
+      // Valid and invalid alike: this proxy does not judge them.
+      const bodies = [{ extend_by_seconds: 900 }, { extend_by_seconds: 1800 }, { max_duration_seconds: null }, { extend_by_seconds: 60 }, {}];
+      for (const body of bodies) {
+        const r = await call(base, "/api/transcriber/meetings/mtg_1", "PATCH", body);
+        expect([r.status, r.body.id]).toEqual([200, "mtg_1"]);
+      }
+      expect(h.calls.filter((c) => c.method === "updateMeetingDuration").map((c) => c.args)).toEqual(
+        bodies.map((body) => ["mtg_1", body]),
+      );
     });
   });
 
-  test("PATCH refuses other bodies before upstream and hides other addresses' meetings", async () => {
+  test("PATCH on another address's meeting is not_found and sends nothing to ptx", async () => {
     const h = harness();
     await withServer(h.app, async (base) => {
       await call(base, "/api/transcriber/meetings", "POST", { meeting_url: "https://meet.jit.si/one" });
-      for (const body of [{}, { extend_by_seconds: 60 }, { extend_by_seconds: 900, max_duration_seconds: 60 }, { max_duration_seconds: "4h" }]) {
-        const r = await call(base, "/api/transcriber/meetings/mtg_1", "PATCH", body);
-        expect([r.status, r.body]).toEqual([400, { error: "invalid_duration" }]);
-      }
       h.session.address = ADDRESS_B;
       expect((await call(base, "/api/transcriber/meetings/mtg_1", "PATCH", { extend_by_seconds: 900 })).status).toBe(404);
     });
@@ -1386,5 +1383,46 @@ describe("TC-907 capacity refusals and TC-641 manual-create intents", () => {
     expect(await f.index.listPending(owner)).toEqual([]);
     expect(await f.index.list(owner)).toEqual([]);
     expect(f.posts).toHaveLength(2);
+  });
+});
+
+describe("create request hash carries max_duration_seconds (PTX #137)", () => {
+  // PTX hashes the sha256 of its canonical JSON (sorted keys, undefined dropped, null kept) of the
+  // parsed create body. The expected strings below are written out by hand, not built by the code
+  // under test, so a drift in either direction fails here.
+  const sha = (text: string) => createHash("sha256").update(text).digest("hex");
+  const base = { meeting_url: "https://meet.jit.si/x", bot_name: "B", metadata: { tinychat_address: "0xa" } };
+
+  test("an integer duration is part of the hash", () => {
+    expect(computeCreateRequestHash({ ...base, max_duration_seconds: 7200 })).toBe(sha(
+      '{"bot_name":"B","max_duration_seconds":7200,"meeting_url":"https://meet.jit.si/x","metadata":{"tinychat_address":"0xa"}}',
+    ));
+  });
+
+  test("null (No limit) is part of the hash, distinct from absent", () => {
+    expect(computeCreateRequestHash({ ...base, max_duration_seconds: null })).toBe(sha(
+      '{"bot_name":"B","max_duration_seconds":null,"meeting_url":"https://meet.jit.si/x","metadata":{"tinychat_address":"0xa"}}',
+    ));
+  });
+
+  test("absent keeps the legacy hash", () => {
+    expect(computeCreateRequestHash(base)).toBe(sha(
+      '{"bot_name":"B","meeting_url":"https://meet.jit.si/x","metadata":{"tinychat_address":"0xa"}}',
+    ));
+  });
+});
+
+describe("duration routes use the same authentication as the other transcriber routes", () => {
+  test("create with a duration and PATCH are 401 without a session, before any validation or upstream call", async () => {
+    const h = harness(null);
+    await withServer(h.app, async (base) => {
+      const create = await call(base, "/api/transcriber/meetings", "POST", { meeting_url: "https://meet.jit.si/x", max_duration_seconds: 7200 });
+      expect([create.status, create.body]).toEqual([401, { error: "unauthorized" }]);
+      for (const body of [{ extend_by_seconds: 900 }, { max_duration_seconds: null }, {}]) {
+        const r = await call(base, "/api/transcriber/meetings/mtg_1", "PATCH", body);
+        expect([r.status, r.body]).toEqual([401, { error: "unauthorized" }]);
+      }
+    });
+    expect(h.calls).toEqual([]);
   });
 });

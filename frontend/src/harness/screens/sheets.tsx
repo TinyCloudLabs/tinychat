@@ -12,6 +12,7 @@ import { PlatformContext } from "@/lib/platform";
 import { DEFAULT_NOTETAKER_DURATION_SECONDS } from "@/lib/notetakerDuration";
 import type { TranscriberMeeting } from "@/lib/transcriberApi";
 import { createRuntimeShim } from "../runtimeShim";
+import { FROZEN_NOW } from "../stubs";
 import type { HarnessScreen } from "../screen";
 import { ShellApp } from "../ShellApp";
 
@@ -75,10 +76,11 @@ const MEETINGS: TranscriberMeeting[] = [
     platform: "google_meet",
     meeting_url: "https://meet.google.com/abc-defg-hij",
     bot: { name: "TinyCloud Private Notetaker" },
-    created_at: "2026-10-06T09:30:00.000Z",
-    // Synthetic: one hour in, 45 minutes left, so the row reads "Stops at <clock>" at any time of day.
+    // Synthetic, relative to the harness's frozen clock (?freeze=1): joined 11 minutes ago, one hour
+    // allowed, so the row reads "Stops at 10:30 AM" on the same day.
+    created_at: new Date(FROZEN_NOW - 11 * 60_000).toISOString(),
     max_duration_seconds: 3600,
-    scheduled_stop_at: new Date(Date.now() + 45 * 60_000).toISOString(),
+    scheduled_stop_at: new Date(FROZEN_NOW - 11 * 60_000 + 3600 * 1000).toISOString(),
   },
   {
     id: "mtg_done",

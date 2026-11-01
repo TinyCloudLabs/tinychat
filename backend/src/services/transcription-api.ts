@@ -92,15 +92,10 @@ export interface CreateMeetingInput {
   language?: string;
   webhook_url?: string;
   platform?: string;
-  /** Seconds from creation, 1..14400; `null` = No limit (capped at 4 hours upstream). */
-  max_duration_seconds?: number | null;
+  /** Forwarded as the caller sent it; ptx validates it (1..14400, or null = No limit) and applies the cap. */
+  max_duration_seconds?: unknown;
   metadata?: Record<string, unknown>;
 }
-
-/** Exactly one of: +15 min, +30 min, or a replacement total (`null` = No limit, capped upstream). */
-export type MeetingDurationUpdate =
-  | { extend_by_seconds: 900 | 1800 }
-  | { max_duration_seconds: number | null };
 
 /** Upstream answered with a non-2xx. `code` is the upstream error taxonomy code, when readable. */
 export class TranscriptionApiError extends Error {
@@ -120,8 +115,8 @@ export interface TranscriptionApiClient {
   lookupMeetingByIdempotencyKey(key: string): Promise<IdempotencyLookup | null>;
   getMeeting(id: string): Promise<TranscriptionMeeting>;
   stopMeeting(id: string): Promise<{ id: string; status: TranscriptionMeetingStatus }>;
-  /** PTX #137. Live meetings only; upstream caps the total at 4 hours from creation. */
-  updateMeetingDuration(id: string, update: MeetingDurationUpdate): Promise<TranscriptionMeeting>;
+  /** PTX #137: the request body is forwarded unchanged; ptx validates it and applies the 4-hour cap. */
+  updateMeetingDuration(id: string, update: unknown): Promise<TranscriptionMeeting>;
   /** `pending: true` mirrors upstream's 202 — the transcript is not ready yet. */
   getTranscript(
     id: string,
@@ -171,6 +166,8 @@ export function computeCreateRequestHash(input: CreateMeetingInput): string {
     language: wire.language ?? undefined,
     webhook_url: wire.webhook_url ?? undefined,
     platform: wire.platform ?? undefined,
+    // Part of ptx's parsed-input hash when present (null included); absent keeps the legacy hash.
+    max_duration_seconds: wire.max_duration_seconds,
     metadata: wire.metadata,
   };
   const canonical = (value: unknown): string => {
