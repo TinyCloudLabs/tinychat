@@ -236,6 +236,34 @@ describe("real SDK SIWE audience", () => {
     }
   });
 
+  test("native hooks neither broaden the app scope nor establish an audience alone", async () => {
+    const server = await startAuthServer();
+    try {
+      const invalidHooks: Record<string, string[]>[] = [
+        { "sql/xyz.other.application/home_feed": ["tinycloud.hooks/subscribe"] },
+        { "sql/xyz.tinycloud.tinychat/": ["tinycloud.hooks/subscribe"] },
+        { "sql/xyz.tinycloud.tinychat/home_feed": ["tinycloud.sql/read"] },
+      ];
+      for (const hooks of invalidHooks) {
+        const message = signNativeWithAbilities(await server.nonce(false), {
+          kv: { "xyz.tinycloud.tinychat/threads/": ["tinycloud.kv/get"] },
+          hooks,
+        });
+        expect(await server.verify(message, await account.signMessage({ message }))).toEqual({
+          status: 400, error: "invalid_native_audience",
+        });
+      }
+      const message = signNativeWithAbilities(await server.nonce(false), {
+        hooks: { "sql/xyz.tinycloud.tinychat/home_feed": ["tinycloud.hooks/subscribe"] },
+      });
+      expect(await server.verify(message, await account.signMessage({ message }))).toEqual({
+        status: 400, error: "invalid_native_audience",
+      });
+    } finally {
+      await server.close();
+    }
+  });
+
   test("a native grant that names only the broad Home entries is not proof of a TinyChat sign-in", async () => {
     const server = await startAuthServer();
     try {

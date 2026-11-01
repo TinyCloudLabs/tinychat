@@ -676,7 +676,7 @@ function listStatusOf<T>(result: TranscriberResult<T>): ListStatus {
   }
 }
 
-export function describeFailure<T>(result: TranscriberResult<T>): string {
+export function describeFailure<T>(result: TranscriberResult<T>, meetingUrl?: string): string {
   switch (result.status) {
     case "unauthenticated":
       return "Your session expired. Sign in again.";
@@ -694,8 +694,21 @@ export function describeFailure<T>(result: TranscriberResult<T>): string {
       return "The transcriber is temporarily unavailable. Try again in a moment.";
     case "rejected":
       switch (result.code) {
-        case "invalid_meeting_url":
+        case "invalid_meeting_url": {
+          try {
+            const url = new URL(meetingUrl ?? "");
+            if (
+              (url.protocol === "http:" || url.protocol === "https:") &&
+              url.hostname === "meet.google.com" &&
+              /^\/lookup\/[^/]+\/?$/.test(url.pathname)
+            ) {
+              return "Paste the meet.google.com/abc-defg-hij link for this meeting";
+            }
+          } catch {
+            // Keep the existing generic copy when the pasted value cannot be parsed as a URL.
+          }
           return "That doesn't look like a meeting link.";
+        }
         case "unsupported_platform":
           return "That meeting platform isn't supported yet.";
         case "idempotency_conflict":
@@ -990,11 +1003,11 @@ export function useMeetingBot({ backendUrl, sessionStore, client, calendar: cale
         const result = await api.create(intent.input, { idempotencyKey: intent.key });
         if (result.status !== "ok") {
           if (isAmbiguousCreateFailure(result)) {
-            setCheckingIntent({ ...intent, normalizedUrl: normalized, owner, error: describeFailure(result) });
+            setCheckingIntent({ ...intent, normalizedUrl: normalized, owner, error: describeFailure(result, intent.input.meeting_url) });
             return;
           }
           if (result.status === "rejected" && result.code === "idempotency_conflict") clearIntent(normalized);
-          setFormError(describeFailure(result));
+          setFormError(describeFailure(result, intent.input.meeting_url));
           return;
         }
         if (!isActiveStatus(result.value.status)) clearIntent(normalized);
