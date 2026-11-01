@@ -14,6 +14,7 @@ import { currentRequestId } from "../request-context.js";
  *   GET    /v1/meetings/by-idempotency-key lookupMeetingByIdempotencyKey
  *   GET    /v1/meetings/{id}             getMeeting
  *   POST   /v1/meetings/{id}/stop        stopMeeting
+ *   PATCH  /v1/meetings/{id}             updateMeetingDuration (PTX #137: +15/+30 min or capped No limit)
  *   GET    /v1/meetings/{id}/transcript  getTranscript (202 while pending)
  *   DELETE /v1/meetings/{id}             deleteMeeting
  */
@@ -55,6 +56,9 @@ export interface TranscriptionMeeting {
   capture?: Record<string, unknown> | null;
   ended_at?: string | null;
   metadata?: Record<string, unknown>;
+  /** PTX #137: effective total duration and the server-computed stop time. */
+  max_duration_seconds?: number;
+  scheduled_stop_at?: string | null;
   error?: TranscriptionMeetingError | null;
 }
 
@@ -88,8 +92,15 @@ export interface CreateMeetingInput {
   language?: string;
   webhook_url?: string;
   platform?: string;
+  /** Seconds from creation, 1..14400; `null` = No limit (capped at 4 hours upstream). */
+  max_duration_seconds?: number | null;
   metadata?: Record<string, unknown>;
 }
+
+/** Exactly one of: +15 min, +30 min, or a replacement total (`null` = No limit, capped upstream). */
+export type MeetingDurationUpdate =
+  | { extend_by_seconds: 900 | 1800 }
+  | { max_duration_seconds: number | null };
 
 /** Upstream answered with a non-2xx. `code` is the upstream error taxonomy code, when readable. */
 export class TranscriptionApiError extends Error {
@@ -109,6 +120,8 @@ export interface TranscriptionApiClient {
   lookupMeetingByIdempotencyKey(key: string): Promise<IdempotencyLookup | null>;
   getMeeting(id: string): Promise<TranscriptionMeeting>;
   stopMeeting(id: string): Promise<{ id: string; status: TranscriptionMeetingStatus }>;
+  /** PTX #137. Live meetings only; upstream caps the total at 4 hours from creation. */
+  updateMeetingDuration(id: string, update: MeetingDurationUpdate): Promise<TranscriptionMeeting>;
   /** `pending: true` mirrors upstream's 202 — the transcript is not ready yet. */
   getTranscript(
     id: string,
@@ -264,7 +277,7 @@ export function createTranscriptionApiClient(config: TranscriptionApiConfig): Tr
   }
 
   async function request(
-    method: "GET" | "POST" | "DELETE",
+    method: "GET" | "POST" | "PATCH" | "DELETE",
     path: string,
     body?: unknown,
     extraHeaders: Record<string, string> = {},
@@ -375,6 +388,11 @@ export function createTranscriptionApiClient(config: TranscriptionApiConfig): Tr
     async stopMeeting(id) {
       const { json } = await request("POST", `/v1/meetings/${encode(id)}/stop`);
       return json as { id: string; status: TranscriptionMeetingStatus };
+    },
+    async updateMeetingDuration(id, update) {
+      // No transport retry: a retried `extend_by_seconds` whose first attempt landed would extend twice.
+      const { json } = await request("PATCH", `/v1/meetings/${encode(id)}`, update, {}, false);
+      return json as TranscriptionMeeting;
     },
     async getTranscript(id) {
       const { status, json } = await request("GET", `/v1/meetings/${encode(id)}/transcript`);

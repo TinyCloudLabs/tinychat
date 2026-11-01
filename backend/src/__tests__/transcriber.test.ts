@@ -80,6 +80,16 @@ function fakeApi() {
       m.status = "processing";
       return { id, status: m.status };
     },
+    async updateMeetingDuration(id, update) {
+      calls.push({ method: "updateMeetingDuration", args: [id, update] });
+      const m = store.get(id);
+      if (!m) throw new TranscriptionApiError(404, "meeting_not_found", "no such meeting");
+      const current = m.max_duration_seconds ?? 3600;
+      m.max_duration_seconds = "extend_by_seconds" in update
+        ? Math.min(14400, current + update.extend_by_seconds)
+        : update.max_duration_seconds ?? 14400;
+      return m;
+    },
     async getTranscript(id) {
       calls.push({ method: "getTranscript", args: [id] });
       const m = store.get(id);
@@ -651,6 +661,47 @@ describe("per-meeting routes", () => {
     });
   });
 
+  test("create forwards a valid max_duration_seconds and refuses an out-of-range one before upstream", async () => {
+    const h = harness();
+    await withServer(h.app, async (base) => {
+      await call(base, "/api/transcriber/meetings", "POST", { meeting_url: "https://meet.jit.si/a", max_duration_seconds: 7200 });
+      for (const bad of [99999, 0, 1.5, "1h"]) {
+        const r = await call(base, "/api/transcriber/meetings", "POST", { meeting_url: "https://meet.jit.si/b", max_duration_seconds: bad });
+        expect([r.status, r.body]).toEqual([400, { error: "invalid_duration" }]);
+      }
+      await call(base, "/api/transcriber/meetings", "POST", { meeting_url: "https://meet.jit.si/c", max_duration_seconds: null });
+    });
+    const sent = h.calls.filter((c) => c.method === "createMeeting").map((c) => c.args[0] as Record<string, unknown>);
+    expect(sent.map((s) => s.max_duration_seconds)).toEqual([7200, null]);
+  });
+
+  test("PATCH extends a live meeting for its owner: +15, +30, and No limit capped by upstream", async () => {
+    const h = harness();
+    await withServer(h.app, async (base) => {
+      await call(base, "/api/transcriber/meetings", "POST", { meeting_url: "https://meet.jit.si/one" });
+      const a = await call(base, "/api/transcriber/meetings/mtg_1", "PATCH", { extend_by_seconds: 900 });
+      expect([a.status, a.body.max_duration_seconds]).toEqual([200, 4500]);
+      const b = await call(base, "/api/transcriber/meetings/mtg_1", "PATCH", { extend_by_seconds: 1800 });
+      expect(b.body.max_duration_seconds).toBe(6300);
+      const c = await call(base, "/api/transcriber/meetings/mtg_1", "PATCH", { max_duration_seconds: null });
+      expect(c.body.max_duration_seconds).toBe(14400);
+    });
+  });
+
+  test("PATCH refuses other bodies before upstream and hides other addresses' meetings", async () => {
+    const h = harness();
+    await withServer(h.app, async (base) => {
+      await call(base, "/api/transcriber/meetings", "POST", { meeting_url: "https://meet.jit.si/one" });
+      for (const body of [{}, { extend_by_seconds: 60 }, { extend_by_seconds: 900, max_duration_seconds: 60 }, { max_duration_seconds: "4h" }]) {
+        const r = await call(base, "/api/transcriber/meetings/mtg_1", "PATCH", body);
+        expect([r.status, r.body]).toEqual([400, { error: "invalid_duration" }]);
+      }
+      h.session.address = ADDRESS_B;
+      expect((await call(base, "/api/transcriber/meetings/mtg_1", "PATCH", { extend_by_seconds: 900 })).status).toBe(404);
+    });
+    expect(h.calls.filter((c) => c.method === "updateMeetingDuration")).toEqual([]);
+  });
+
   test("delete removes upstream and from the index; a second delete is not_found", async () => {
     const h = harness();
     await withServer(h.app, async (base) => {
@@ -972,6 +1023,16 @@ describe("TC-581 shared meetings in the router", () => {
       expect(r.body).toEqual({ error: "shared_meeting" });
     });
     expect(h.calls.filter(c => c.method === "stopMeeting")).toEqual([]);
+  });
+
+  test("PATCH on a shared meeting is 403 shared_meeting and never reaches upstream", async () => {
+    const h = await sharedHarness();
+    await withServer(h.app, async (base) => {
+      const r = await call(base, "/api/transcriber/meetings/mtg_shared", "PATCH", { extend_by_seconds: 900 });
+      expect(r.status).toBe(403);
+      expect(r.body).toEqual({ error: "shared_meeting" });
+    });
+    expect(h.calls.filter(c => c.method === "updateMeetingDuration")).toEqual([]);
   });
 
   test("delete on a shared meeting is 204, only removes it from this list, and leaves A's index and the recording alone", async () => {

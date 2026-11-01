@@ -1,5 +1,6 @@
 import { clearSessionAfterHandoff } from "./sessionSignedOut";
 import type { SessionStore } from "@tinyboilerplate/client";
+import type { NotetakerExtensionUpdate } from "./notetakerDuration";
 
 /**
  * Typed client for the TRANSCRIBER surface (`backend/src/routes/transcriber.ts`): send a bot
@@ -11,6 +12,7 @@ import type { SessionStore } from "@tinyboilerplate/client";
  *   create()        POST   /api/transcriber/meetings
  *   get()           GET    /api/transcriber/meetings/:id
  *   stop()          POST   /api/transcriber/meetings/:id/stop
+ *   extend()        PATCH  /api/transcriber/meetings/:id                (PTX #137 duration update)
  *   transcript()    GET    /api/transcriber/meetings/:id/transcript   (202 = pending)
  *   remove()        DELETE /api/transcriber/meetings/:id
  *
@@ -52,6 +54,9 @@ export interface TranscriberMeeting {
   bot?: { name?: string; joined_at?: string | null };
   transcript?: { status?: string; version?: number };
   created_at: string;
+  /** PTX #137: effective total duration and the server-computed stop time. */
+  max_duration_seconds?: number;
+  scheduled_stop_at?: string | null;
   started_at?: string | null;
   ended_at?: string | null;
   completed_at?: string | null;
@@ -130,9 +135,13 @@ export interface TranscriberClient {
     meeting_url: string;
     bot_name?: string;
     language?: string;
+    /** Seconds from creation; `null` = No limit (capped at 4 hours). */
+    max_duration_seconds?: number | null;
   }, options?: { idempotencyKey?: string }): Promise<TranscriberResult<TranscriberMeeting>>;
   get(id: string): Promise<TranscriberResult<TranscriberMeeting>>;
   stop(id: string): Promise<TranscriberResult<{ id: string; status: TranscriberMeetingStatus }>>;
+  /** PTX #137, live meetings only: +15/+30 min, or `{ max_duration_seconds: null }` = No limit (capped at 4 hours). */
+  extend(id: string, update: NotetakerExtensionUpdate): Promise<TranscriberResult<TranscriberMeeting>>;
   transcript(id: string): Promise<TranscriberResult<TranscriptResult>>;
   remove(id: string): Promise<TranscriberResult<null>>;
 }
@@ -147,7 +156,7 @@ export function createTranscriberClient(
   async function request<T>(
     path: string,
     init: {
-      method: "GET" | "POST" | "DELETE";
+      method: "GET" | "POST" | "PATCH" | "DELETE";
       body?: unknown;
       headers?: Record<string, string>;
       missing: "feature-dark" | "not-found";
@@ -230,6 +239,8 @@ export function createTranscriberClient(
     }),
     get: (value) => request(`/${id(value)}`, { method: "GET", missing: "not-found" }),
     stop: (value) => request(`/${id(value)}/stop`, { method: "POST", missing: "not-found" }),
+    extend: (value, update) =>
+      request(`/${id(value)}`, { method: "PATCH", body: update, missing: "not-found" }),
     transcript: (value) =>
       request<TranscriptResult>(`/${id(value)}/transcript`, {
         method: "GET",

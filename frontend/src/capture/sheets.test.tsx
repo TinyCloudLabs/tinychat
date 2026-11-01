@@ -200,14 +200,16 @@ describe("Meeting sheet", () => {
   const base = {
     listStatus: "ready" as const,
     saved: {},
-    form: { url: "", botName: "", submitting: false, error: null },
+    form: { url: "", botName: "", durationSeconds: 3600, submitting: false, error: null },
     busyId: null,
     open: null,
     onUrlChange: noop,
     onBotNameChange: noop,
+    onDurationChange: noop,
     onSubmit: noop,
     onRefresh: noop,
     onStop: noop,
+    onExtend: noop,
     onToggleTranscript: noop,
     onRemove: noop,
   };

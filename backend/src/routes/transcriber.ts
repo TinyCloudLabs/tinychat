@@ -8,6 +8,7 @@ import {
   TranscriptionApiError,
   computeCreateRequestHash,
   type TranscriptionApiClient,
+  type MeetingDurationUpdate,
   type TranscriptionMeeting,
 } from "../services/transcription-api.js";
 import {
@@ -54,6 +55,27 @@ export const MEETING_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 export const IDEMPOTENCY_KEY_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const MAX_URL_LENGTH = 2048;
 const MAX_BOT_NAME_LENGTH = 64;
+const MAX_MEETING_DURATION_SECONDS = 14_400;
+
+/** An integer 1..4h, or null (No limit, capped upstream at 4h). `undefined` = not acceptable. */
+function parseMaxDuration(value: unknown): number | null | undefined {
+  if (value === null) return null;
+  if (typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= MAX_MEETING_DURATION_SECONDS) return value;
+  return undefined;
+}
+
+/** Exactly one of `extend_by_seconds` (900 | 1800) or `max_duration_seconds`; anything else is null. */
+function parseDurationUpdate(raw: unknown): MeetingDurationUpdate | null {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
+  if ("extend_by_seconds" in raw) {
+    if ("max_duration_seconds" in raw) return null;
+    const by = raw.extend_by_seconds;
+    return by === 900 || by === 1800 ? { extend_by_seconds: by } : null;
+  }
+  if (!("max_duration_seconds" in raw)) return null;
+  const max = parseMaxDuration(raw.max_duration_seconds);
+  return max === undefined ? null : { max_duration_seconds: max };
+}
 const LIST_CONCURRENCY = 8;
 const CREATE_DEDUP_CANDIDATES = 32;
 
@@ -277,12 +299,19 @@ export function createTranscriberRouter(options: TranscriberRouterOptions): Rout
       typeof body.language === "string" && /^[a-z]{2}(-[A-Za-z]{2})?$/.test(body.language)
         ? body.language
         : undefined;
+    // Optional. Absent keeps ptx's default; anything else out of range is refused rather than guessed.
+    const maxDuration = body.max_duration_seconds === undefined ? undefined : parseMaxDuration(body.max_duration_seconds);
+    if (maxDuration === undefined && body.max_duration_seconds !== undefined) {
+      res.status(400).json({ error: "invalid_duration" });
+      return;
+    }
     const createBody = {
       // Fragments and the exact query remain intact: Signal and signed meeting links may carry
       // capabilities there. Canonicalization is only an identity used by TinyChat dedupe.
       meeting_url: link,
       bot_name: botName,
       ...(language ? { language } : {}),
+      ...(maxDuration !== undefined ? { max_duration_seconds: maxDuration } : {}),
       ...(options.webhookUrl ? { webhook_url: options.webhookUrl } : {}),
       metadata: { tinychat_address: address },
     };
@@ -403,6 +432,27 @@ export function createTranscriberRouter(options: TranscriberRouterOptions): Rout
       res.json(await api.stopMeeting(own.id));
     } catch (error) {
       upstreamFailure(res, error, "stop");
+    }
+  });
+
+  // PTX #137: +15/+30 min or the capped No limit (`max_duration_seconds: null`), live meetings only.
+  // Same ownership rule as stop: a meeting captured by someone else's bot is not this address's to extend.
+  router.patch("/:id", async (req, res) => {
+    const update = parseDurationUpdate(req.body);
+    if (update === null) {
+      res.status(400).json({ error: "invalid_duration" });
+      return;
+    }
+    const own = await owned(req, res);
+    if (own === null) return;
+    try {
+      if (own.shared || !(await createdBy(own.address, own.id))) {
+        res.status(403).json({ error: "shared_meeting" });
+        return;
+      }
+      res.json(await api.updateMeetingDuration(own.id, update));
+    } catch (error) {
+      upstreamFailure(res, error, "extend");
     }
   });
 

@@ -1703,6 +1703,12 @@ paths:
                 language:
                   type: string
                   description: BCP-47-ish, e.g. `en` or `en-US`.
+                max_duration_seconds:
+                  type: [integer, "null"]
+                  minimum: 1
+                  maximum: 14400
+                  description: >-
+                    Seconds from creation. Omitted keeps ptx's default; `null` is No limit (capped at 4 hours).
       responses:
         "200":
           description: An existing active meeting for this address and normalized URL
@@ -1771,6 +1777,58 @@ paths:
           description: Gone
         "401":
           $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/TranscriberNotFound"
+        "503":
+          $ref: "#/components/responses/TranscriberUnavailable"
+    patch:
+      operationId: updateTranscriberMeetingDuration
+      summary: Extend a live notetaker (+15 min, +30 min, or No limit capped at 4 hours; owner only)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - type: object
+                  required: [extend_by_seconds]
+                  additionalProperties: false
+                  properties:
+                    extend_by_seconds:
+                      type: integer
+                      enum: [900, 1800]
+                - type: object
+                  required: [max_duration_seconds]
+                  additionalProperties: false
+                  properties:
+                    max_duration_seconds:
+                      type: [integer, "null"]
+                      minimum: 1
+                      maximum: 14400
+                      description: A replacement total from creation; `null` is No limit, capped at 4 hours.
+      responses:
+        "200":
+          description: The updated meeting
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TranscriberMeeting"
+        "400":
+          description: "`invalid_duration`, refused before upstream is called, or an upstream refusal (the meeting is no longer live)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TranscriberError"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          description: "`shared_meeting`: another account's calendar bot captured this; only its owner can extend it."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TranscriberError"
         "404":
           $ref: "#/components/responses/TranscriberNotFound"
         "503":
@@ -2591,6 +2649,13 @@ components:
               type: [string, "null"]
         created_at:
           type: string
+        max_duration_seconds:
+          type: integer
+          description: Effective total duration from creation, in seconds (at most 14400). Absent before PTX #137.
+        scheduled_stop_at:
+          type: [string, "null"]
+          format: date-time
+          description: When the notetaker will leave on its own. Moves with every extension.
         started_at:
           type: [string, "null"]
         ended_at:

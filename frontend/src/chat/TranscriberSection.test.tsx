@@ -51,14 +51,16 @@ function render(patch: Partial<TranscriberViewProps> = {}): string {
     listStatus: "ready",
     meetings: [],
     saved: {},
-    form: { url: "", botName: "", submitting: false, error: null },
+    form: { url: "", botName: "", durationSeconds: 3600, submitting: false, error: null },
     busyId: null,
     open: null,
     onUrlChange: noop,
     onBotNameChange: noop,
+    onDurationChange: noop,
     onSubmit: noop,
     onRefresh: noop,
     onStop: noop,
+    onExtend: noop,
     onToggleTranscript: noop,
     onRemove: noop,
     ...patch,
@@ -72,12 +74,12 @@ function render(patch: Partial<TranscriberViewProps> = {}): string {
 
 describe("TranscriberView", () => {
   test("an ambiguous send stays disabled while checking and while the normalized URL has an active bot", () => {
-    const checking = render({ form: { url: "https://meet.jit.si/room", botName: "", submitting: false,
+    const checking = render({ form: { url: "https://meet.jit.si/room", botName: "", durationSeconds: 3600, submitting: false,
       checking: true, error: null } });
     expect(checking).toContain("Checking whether the notetaker joined…");
     expect(checking).toMatch(/<button[^>]*disabled=""[^>]*aria-label="Send notetaker to meeting"/);
     expect(checking).not.toMatch(/id="transcriber-meeting-url"[^>]*disabled=""/);
-    const active = render({ form: { url: "https://meet.jit.si/room", botName: "", submitting: false,
+    const active = render({ form: { url: "https://meet.jit.si/room", botName: "", durationSeconds: 3600, submitting: false,
       active: true, error: null } });
     expect(active).toContain("already joining this meeting");
     expect(active).toMatch(/<button[^>]*disabled=""[^>]*aria-label="Send notetaker to meeting"/);
@@ -209,7 +211,7 @@ describe("TranscriberView", () => {
   });
 
   test("a form error is announced", () => {
-    const html = render({ form: { url: "x", botName: "", submitting: false, error: "That doesn't look like a meeting link." } });
+    const html = render({ form: { url: "x", botName: "", durationSeconds: 3600, submitting: false, error: "That doesn't look like a meeting link." } });
     expect(html).toContain('role="alert"');
     expect(html).toContain("meeting link");
   });

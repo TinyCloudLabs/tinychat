@@ -28,6 +28,14 @@ import {
   type TranscriberResult,
   type TranscriberTranscript,
 } from "@/lib/transcriberApi";
+import {
+  DEFAULT_NOTETAKER_DURATION_SECONDS,
+  NOTETAKER_DURATION_OPTIONS,
+  NOTETAKER_EXTENSIONS,
+  extensionsFor,
+  formatStopsAt,
+  type NotetakerExtensionId,
+} from "@/lib/notetakerDuration";
 import { useTranscriberSavedState } from "./useTranscriberLibrarySync";
 import { createCalendarAutojoinClient, calendarOutcomeLabel, type CalendarAutojoinOutcome } from "@/lib/connectors/calendarAutojoinApi";
 import { transcriberMeetingTitle } from "@/lib/transcriberSave";
@@ -68,7 +76,7 @@ export function normalizeMeetingUrl(raw: string): string | null {
 type SendIntentStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 export interface SendIntent {
   key: string;
-  input: { meeting_url: string; bot_name?: string };
+  input: { meeting_url: string; bot_name?: string; max_duration_seconds?: number | null };
   createdAt: number;
   /** The terminal meeting whose explicit resend started this intent. */
   afterMeetingId?: string;
@@ -89,6 +97,8 @@ function validStoredIntent(raw: string | null): SendIntent | null {
     if (!SEND_KEY_RE.test(value.key ?? "") || typeof value.input?.meeting_url !== "string"
       || value.input.meeting_url.length === 0
       || (value.input.bot_name !== undefined && typeof value.input.bot_name !== "string")
+      || (value.input.max_duration_seconds !== undefined && value.input.max_duration_seconds !== null
+        && typeof value.input.max_duration_seconds !== "number")
       || (value.createdAt !== undefined && (!Number.isFinite(value.createdAt) || value.createdAt! < 0))
       || (value.afterMeetingId !== undefined && typeof value.afterMeetingId !== "string")) return null;
     return { ...value, createdAt: value.createdAt ?? 0 } as SendIntent;
@@ -150,14 +160,16 @@ export interface TranscriberViewProps {
   meetings: TranscriberListRow[];
   /** Per meeting id: whether its transcript has been copied into the user's space. */
   saved: Readonly<Record<string, SaveState>>;
-  form: { url: string; botName: string; submitting: boolean; checking?: boolean; active?: boolean; error: string | null };
+  form: { url: string; botName: string; durationSeconds: number; submitting: boolean; checking?: boolean; active?: boolean; error: string | null };
   busyId: string | null;
   open: OpenTranscriptState | null;
   onUrlChange: (value: string) => void;
   onBotNameChange: (value: string) => void;
   onSubmit: () => void;
+  onDurationChange: (seconds: number) => void;
   onRefresh: () => void;
   onStop: (id: string) => void;
+  onExtend: (id: string, extension: NotetakerExtensionId) => void;
   onToggleTranscript: (id: string) => void;
   onRemove: (id: string) => void;
   /** Send notetaker inside the form (default), or not: the Meeting sheet pins it in its footer. */
@@ -271,6 +283,8 @@ export const TranscriberView: FC<TranscriberViewProps> = ({
   onSubmit,
   onRefresh,
   onStop,
+  onDurationChange,
+  onExtend,
   onToggleTranscript,
   onRemove,
   sendInline = true,
@@ -325,6 +339,24 @@ export const TranscriberView: FC<TranscriberViewProps> = ({
               placeholder="TinyCloud Private Notetaker"
               className={inputClass}
             />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <label htmlFor="transcriber-duration" className="text-meta font-semibold">
+              Stop after
+            </label>
+            <select
+              id="transcriber-duration"
+              value={form.durationSeconds}
+              disabled={form.submitting}
+              onChange={(e) => onDurationChange(Number(e.target.value))}
+              className={inputClass}
+            >
+              {NOTETAKER_DURATION_OPTIONS.map((option) => (
+                <option key={option.seconds} value={option.seconds}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
           </div>
           <div className="flex flex-col gap-2">
             <RouteLine nodes={NOTETAKER_ROUTE} />
@@ -411,6 +443,7 @@ export const TranscriberView: FC<TranscriberViewProps> = ({
                       busy={busyId === row.id}
                       open={open !== null && open.id === row.id ? open : null}
                       onStop={onStop}
+                      onExtend={onExtend}
                       onToggleTranscript={onToggleTranscript}
                       onRemove={onRemove}
                     />
@@ -447,12 +480,46 @@ function UnavailableRow(props: { id: string; busy: boolean; onRemove: (id: strin
   );
 }
 
+/**
+ * The time controls of a live notetaker (TC-2243): the server-provided stop time, and the
+ * extensions the 4-hour cap still leaves room for.
+ */
+function MeetingTimeControls(props: {
+  meeting: TranscriberMeeting;
+  live: boolean;
+  busy: boolean;
+  onExtend: (id: string, extension: NotetakerExtensionId) => void;
+}) {
+  const stopsAt = props.live ? formatStopsAt(props.meeting.scheduled_stop_at) : null;
+  const extensions = props.live ? extensionsFor(props.meeting) : [];
+  if (stopsAt === null && extensions.length === 0) return null;
+  return (
+    <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1.5">
+      {stopsAt !== null && <span data-testid="meeting-stops-at" className="basis-full text-meta text-muted-foreground">{stopsAt}</span>}
+      {extensions.map((extension) => (
+        <Button
+          key={extension.id}
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={props.busy}
+          data-extension={extension.id}
+          onClick={() => props.onExtend(props.meeting.id, extension.id)}
+        >
+          {extension.label}
+        </Button>
+      ))}
+    </div>
+  );
+}
+
 function MeetingRow(props: {
   meeting: TranscriberMeeting;
   saveState: SaveState | undefined;
   busy: boolean;
   open: OpenTranscriptState | null;
   onStop: (id: string) => void;
+  onExtend: (id: string, extension: NotetakerExtensionId) => void;
   onToggleTranscript: (id: string) => void;
   onRemove: (id: string) => void;
 }) {
@@ -498,6 +565,7 @@ function MeetingRow(props: {
             <span className="mt-0.5 block text-xs text-[var(--red-text)]">{meeting.error.message}</span>
           )}
           <CaptureDetails meeting={meeting} />
+          <MeetingTimeControls meeting={meeting} live={stoppable} busy={busy} onExtend={props.onExtend} />
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
           {stoppable && (
@@ -729,9 +797,11 @@ export interface MeetingBot {
   actions: {
     setUrl: (value: string) => void;
     setBotName: (value: string) => void;
+    setDuration: (seconds: number) => void;
     submit: () => void;
     refresh: () => void;
     stop: (id: string) => void;
+    extend: (id: string, extension: NotetakerExtensionId) => void;
     toggleTranscript: (id: string) => void;
     remove: (id: string) => void;
   };
@@ -789,9 +859,11 @@ export function meetingBotViewProps(bot: MeetingBot): TranscriberViewProps {
     open: bot.open,
     onUrlChange: bot.actions.setUrl,
     onBotNameChange: bot.actions.setBotName,
+    onDurationChange: bot.actions.setDuration,
     onSubmit: bot.actions.submit,
     onRefresh: bot.actions.refresh,
     onStop: bot.actions.stop,
+    onExtend: bot.actions.extend,
     onToggleTranscript: bot.actions.toggleTranscript,
     onRemove: bot.actions.remove,
   };
@@ -835,6 +907,7 @@ export function useMeetingBot({ backendUrl, sessionStore, client, calendar: cale
   const urlRef = useRef(url);
   urlRef.current = url;
   const [botName, setBotName] = useState("");
+  const [durationSeconds, setDurationSeconds] = useState(DEFAULT_NOTETAKER_DURATION_SECONDS);
   const [submitting, setSubmitting] = useState(false);
   const [checkingIntent, setCheckingIntent] = useState<(SendIntent & { normalizedUrl: string; owner: string; error: string }) | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
@@ -973,6 +1046,7 @@ export function useMeetingBot({ backendUrl, sessionStore, client, calendar: cale
     const input = {
       meeting_url: link,
       ...(botName.trim() ? { bot_name: botName.trim() } : {}),
+      max_duration_seconds: durationSeconds,
     };
     const intent = intentFor(normalized, input, terminalMeetingForUrl(meetings, normalized) ?? undefined);
     submitLatch.current = true;
@@ -1003,7 +1077,7 @@ export function useMeetingBot({ backendUrl, sessionStore, client, calendar: cale
         setSubmitting(false);
       }
     })();
-  }, [activeForForm, api, botName, checkingIntent, clearIntent, intentFor, meetings, owner, submitting, url]);
+  }, [activeForForm, api, botName, checkingIntent, clearIntent, durationSeconds, intentFor, meetings, owner, submitting, url]);
 
   const stop = useCallback(
     (id: string) => {
@@ -1015,6 +1089,25 @@ export function useMeetingBot({ backendUrl, sessionStore, client, calendar: cale
           setMeetings((current) =>
             current.map((m) => (m.id === id && !("unavailable" in m) ? { ...m, status: result.value.status } : m)),
           );
+        }
+        void load();
+      })();
+    },
+    [api, load],
+  );
+
+  const extend = useCallback(
+    (id: string, extension: NotetakerExtensionId) => {
+      const chosen = NOTETAKER_EXTENSIONS.find((e) => e.id === extension);
+      if (!chosen) return;
+      setBusyId(id);
+      void (async () => {
+        const result = await api.extend(id, chosen.update);
+        setBusyId(null);
+        // Show the server's answer (new duration and stop time) right away; a refusal (the meeting
+        // ended meanwhile) is settled by the re-read below.
+        if (result.status === "ok") {
+          setMeetings((current) => current.map((m) => (m.id === id && !("unavailable" in m) ? { ...m, ...result.value } : m)));
         }
         void load();
       })();
@@ -1062,8 +1155,8 @@ export function useMeetingBot({ backendUrl, sessionStore, client, calendar: cale
 
   const refresh = useCallback(() => void load(), [load]);
   const actions = useMemo(
-    () => ({ setUrl, setBotName, submit, refresh, stop, toggleTranscript, remove }),
-    [submit, refresh, stop, toggleTranscript, remove],
+    () => ({ setUrl, setBotName, setDuration: setDurationSeconds, submit, refresh, stop, extend, toggleTranscript, remove }),
+    [submit, refresh, stop, extend, toggleTranscript, remove],
   );
 
   return {
@@ -1073,6 +1166,7 @@ export function useMeetingBot({ backendUrl, sessionStore, client, calendar: cale
     form: {
       url,
       botName,
+      durationSeconds,
       submitting,
       checking: checkingIntent?.normalizedUrl === normalizedFormUrl,
       active: activeForForm !== null,

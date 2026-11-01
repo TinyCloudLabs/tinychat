@@ -9,6 +9,7 @@ import { SendNotetakerButton, TranscriberView, type TranscriberViewProps } from 
 import { ResponsiveSheet, ResponsiveSheetBody } from "@/components/ui/responsive-sheet";
 import type { UploadState } from "@/lib/audioUpload";
 import { PlatformContext } from "@/lib/platform";
+import { DEFAULT_NOTETAKER_DURATION_SECONDS } from "@/lib/notetakerDuration";
 import type { TranscriberMeeting } from "@/lib/transcriberApi";
 import { createRuntimeShim } from "../runtimeShim";
 import type { HarnessScreen } from "../screen";
@@ -75,6 +76,9 @@ const MEETINGS: TranscriberMeeting[] = [
     meeting_url: "https://meet.google.com/abc-defg-hij",
     bot: { name: "TinyCloud Private Notetaker" },
     created_at: "2026-10-06T09:30:00.000Z",
+    // Synthetic: one hour in, 45 minutes left, so the row reads "Stops at <clock>" at any time of day.
+    max_duration_seconds: 3600,
+    scheduled_stop_at: new Date(Date.now() + 45 * 60_000).toISOString(),
   },
   {
     id: "mtg_done",
@@ -92,14 +96,16 @@ function MeetingSheetScreen(props: Partial<TranscriberViewProps>) {
     listStatus: "ready",
     meetings: MEETINGS,
     saved: { mtg_done: "saved" },
-    form: { url: "https://meet.google.com/xyz-abcd-efg", botName: "", submitting: false, error: null },
+    form: { url: "https://meet.google.com/xyz-abcd-efg", botName: "", durationSeconds: DEFAULT_NOTETAKER_DURATION_SECONDS, submitting: false, error: null },
     busyId: null,
     open: null,
     onUrlChange: noop,
     onBotNameChange: noop,
+    onDurationChange: noop,
     onSubmit: noop,
     onRefresh: noop,
     onStop: noop,
+    onExtend: noop,
     onToggleTranscript: noop,
     onRemove: noop,
     ...props,
@@ -152,6 +158,6 @@ export const sheetsScreens: HarnessScreen[] = [
   {
     ...MEETING,
     id: "sheets-meeting-form",
-    render: () => <MeetingSheetScreen meetings={[]} form={{ url: "", botName: "", submitting: false, error: null }} />,
+    render: () => <MeetingSheetScreen meetings={[]} form={{ url: "", botName: "", durationSeconds: DEFAULT_NOTETAKER_DURATION_SECONDS, submitting: false, error: null }} />,
   },
 ];
