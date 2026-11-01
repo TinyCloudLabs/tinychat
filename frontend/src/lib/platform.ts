@@ -28,3 +28,5 @@ export function deviceName(platform: AppPlatform = appPlatform()): string {
 
 /** The platform screens render for: appPlatform() unless a provider says otherwise (the screenshot harness does, per capture). */
 export const PlatformContext = createContext<AppPlatform>(appPlatform());
+
+// CI proof (app code): throwaway comment to exercise the macOS jobs.
