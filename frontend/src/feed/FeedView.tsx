@@ -1,4 +1,8 @@
-import { useEffect, useState, type JSX } from "react";
+import { useEffect, useMemo, useState, type JSX } from "react";
+import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import { createHomeFeedSource } from "./feedStore";
+import { HomeFeedEntries } from "./HomeFeedEntries";
+import type { HomeFeedSource } from "./feedStoreTypes";
 import { safeUrl, selectFeed, type FeedCard } from "./feedData";
 import { FEED_SKILL_URL, FEED_STRINGS } from "./strings";
 
@@ -47,12 +51,12 @@ function CardImage({ image, alt }: { image?: string; alt: string }) {
   return <img className="mt-4 max-h-80 w-full rounded-xl border border-border bg-muted object-cover" src={src} alt={alt} onError={() => setFailed(true)} />;
 }
 
-export function FeedCardView({ card, sample = true, readBody = readArticleBody }: {
+export function FeedCardView({ card, sample = true, readBody }: {
   card: FeedCard;
   sample?: boolean;
   readBody?: (key: string, signal: AbortSignal) => Promise<string>;
 }): JSX.Element {
-  const avatar = card.author.avatar ? sampleAssets[card.author.avatar] : undefined;
+  const avatar = sample && card.author.avatar ? sampleAssets[card.author.avatar] : undefined;
   return (
     <article className="min-w-0 overflow-hidden rounded-2xl border border-border bg-card p-4 text-card-foreground shadow-sm sm:p-5" aria-label={`${card.render} by ${card.author.name}`}>
       <div className="flex min-w-0 flex-wrap items-center gap-3 text-sm">
@@ -63,8 +67,9 @@ export function FeedCardView({ card, sample = true, readBody = readArticleBody }
         </div>
         {sample && <span className="shrink-0 rounded-full border border-border bg-muted px-2 py-1 text-[11px] font-medium text-muted-foreground">{FEED_STRINGS.provenance}</span>}
       </div>
+      {card.title && card.render !== "article" && <h2 className="mt-4 break-words font-display text-xl font-semibold leading-tight">{card.title}</h2>}
       <p className="mt-4 whitespace-pre-wrap break-words text-sm leading-relaxed">{card.lead.text}</p>
-      {(card.render === "post" || card.render === "image") && <CardImage image={card.lead.image} alt={card.lead.text} />}
+      {sample && (card.render === "post" || card.render === "image") && <CardImage image={card.lead.image} alt={card.lead.text} />}
       {card.render === "thread" && card.replies?.map((reply, index) => (
         <div key={index} className="mt-3 min-w-0 border-l-2 border-border pl-4 text-sm">
           <p className="whitespace-pre-wrap break-words">{reply.text}</p>
@@ -72,7 +77,7 @@ export function FeedCardView({ card, sample = true, readBody = readArticleBody }
       ))}
       {card.render === "article" && <div className="mt-4 min-w-0 border-t border-border pt-4">
         {card.title && <h2 className="font-display text-xl font-semibold leading-tight break-words">{card.title}</h2>}
-        {card.body && <ArticleBody body={card.body} readBody={readBody} />}
+        {card.body && (sample || readBody) && <ArticleBody body={card.body} readBody={readBody ?? readArticleBody} />}
       </div>}
       {card.render === "link" && card.url && <div className="mt-3 min-w-0">
         {safeUrl(card.url)
@@ -86,7 +91,7 @@ export function FeedCardView({ card, sample = true, readBody = readArticleBody }
   );
 }
 
-export function FeedViewEntries({ realEntries }: { realEntries: unknown }): JSX.Element {
+function SampleFeedEntries({ realEntries }: { realEntries: unknown }): JSX.Element {
   const [sampleEntries, setSampleEntries] = useState<unknown | null>(null);
   const [error, setError] = useState(false);
   const [retry, setRetry] = useState(0);
@@ -155,6 +160,13 @@ export function FeedViewEntries({ realEntries }: { realEntries: unknown }): JSX.
   </main>;
 }
 
-export function FeedView(): JSX.Element {
-  return <FeedViewEntries realEntries={[]} />;
+export function FeedViewEntries({ realEntries, source }: { realEntries: unknown; source?: HomeFeedSource }): JSX.Element {
+  return source ? <HomeFeedEntries source={source} /> : <SampleFeedEntries realEntries={realEntries} />;
+}
+
+export function FeedView({ tcw }: { tcw: TinyCloudWeb | null }): JSX.Element {
+  const source = useMemo(() => tcw ? createHomeFeedSource(tcw) : null, [tcw]);
+  return source
+    ? <FeedViewEntries key={`${tcw?.did}:${tcw?.spaceId}`} realEntries={[]} source={source} />
+    : <main aria-label="Feed" className="p-6 text-sm text-muted-foreground">Sign in to load your feed.</main>;
 }
