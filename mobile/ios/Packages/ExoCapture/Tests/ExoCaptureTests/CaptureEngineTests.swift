@@ -234,24 +234,22 @@ import XCTest
                                              "transcriber": "on-device", "identifySpeakers": false])
         let resumed = try CaptureEngine(testRoot: root, clock: clock)
         resumed.debugForeground = true
-        resumed.recoverOnce()
         let adopted = expectation(description: "parked session adopted")
-        var timer: Timer?
-        timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { _ in
-            guard
-                resumed.status()["id"] as? String == id,
-                resumed.status()["state"] as? String == "paused"
-            else {
-                return
-            }
-            timer?.invalidate()
-            XCTAssertEqual(resumed.status()["id"] as? String, id)
-            XCTAssertEqual(resumed.status()["state"] as? String, "paused")
-            XCTAssertEqual(resumed.status()["pausedMs"] as? Int64, 5_000)
+        let observer = resumed.observe { name, data, _ in
+            guard name == "presentRecorder", data["id"] as? String == id else { return }
             adopted.fulfill()
         }
-        defer { timer?.invalidate() }
-        wait(for: [adopted], timeout: 10)
+        defer { resumed.removeObserver(observer) }
+        resumed.recoverOnce()
+        let recoveryCompleted = expectation(description: "launch recovery completed")
+        DispatchQueue.global(qos: .utility).async {
+            try? resumed.awaitRecovery()
+            recoveryCompleted.fulfill()
+        }
+        wait(for: [adopted, recoveryCompleted], timeout: 10)
+        XCTAssertEqual(resumed.status()["id"] as? String, id)
+        XCTAssertEqual(resumed.status()["state"] as? String, "paused")
+        XCTAssertEqual(resumed.status()["pausedMs"] as? Int64, 5_000)
         clock.advance(by: 3_600_001)
         let expired = try CaptureEngine(testRoot: root, clock: clock)
         expired.recoverOnce()
