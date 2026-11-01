@@ -505,6 +505,29 @@ describe("voice-note identity and transcript authority", () => {
     });
   });
 
+  test("speaker names renamed while the note was on the phone land in its row; names already on the row win", async () => {
+    const { tcw, sqlite } = space();
+    await ensureSchema(tcw);
+    const fresh = await createVoiceNoteRow(tcw, { id: "named", startedAt: 0, durationMs: 1000,
+      mimeType: "audio/mp4", sizeBytes: 1, silencedMs: 0, silencedEvents: 0, noSignalMs: 0,
+      ledger: { speakerNames: { Me: "Sam" } } }, "Named note");
+    expect(fresh.metadata.speaker_names).toEqual({ Me: "Sam" });
+
+    // The row exists without names (an older save): a re-save backfills them from the ledger.
+    insert(sqlite, "older", "older", { transcription_outcome: "pending" });
+    const older = await createVoiceNoteRow(tcw, { id: "older", startedAt: 0, durationMs: 1000,
+      mimeType: "audio/mp4", sizeBytes: 1, silencedMs: 0, silencedEvents: 0, noSignalMs: 0,
+      ledger: { speakerNames: { Me: "Rin" } } }, "Older note");
+    expect(older.metadata.speaker_names).toEqual({ Me: "Rin" });
+
+    // The row already has names (renamed since): a later save must not clobber them.
+    insert(sqlite, "renamed", "renamed", { speaker_names: { Me: "Sam" }, transcription_outcome: "pending" });
+    const kept = await createVoiceNoteRow(tcw, { id: "renamed", startedAt: 0, durationMs: 1000,
+      mimeType: "audio/mp4", sizeBytes: 1, silencedMs: 0, silencedEvents: 0, noSignalMs: 0,
+      ledger: { speakerNames: { Me: "Stale" } } }, "Renamed note");
+    expect(kept.metadata.speaker_names).toEqual({ Me: "Sam" });
+  });
+
   test("late failure preserves legacy transcript evidence", async () => {
     const { tcw, sqlite } = space();
     await ensureSchema(tcw);

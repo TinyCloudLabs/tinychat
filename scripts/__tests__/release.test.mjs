@@ -1,9 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { spawn } from 'node:child_process';
+import { createServer } from 'node:http';
 import { dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { changelogSection, classifyPagesCheckRuns, desktopBundleVersions, planDispatches, setCargoLockVersion, setCargoTomlVersion, stablePlan } from '../release/lib.mjs';
@@ -1966,5 +1969,349 @@ test('every recorder invoke is registered, manifested, and granted to recorder c
   }));
   for (const command of invoked) {
     assert.ok(registered.has(command), `frontend invoke ${command} is in a Tauri handler`);
+  }
+});
+
+// exo-update.sh against stub tools: a fake release named the way desktop-release-plan.mjs names
+// assets, fake curl/hdiutil/shasum/ditto first on PATH, and a temp HOME, /Applications and TMPDIR.
+const EXO_UPDATE_STUBS = {
+  curl: `#!/bin/bash
+printf '%s\\n' "$*" >> "$STUB_LOG/curl.log"
+out=; url=
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) out=$2; shift 2 ;;
+    -w|--proto|--proto-redir|--max-redirs) shift 2 ;;
+    -*) shift ;;
+    *) url=$1; shift ;;
+  esac
+done
+emit() { if [ -n "$out" ]; then cat > "$out"; else cat; fi; }
+case "$url" in
+  https://api.github.com/repos/TinyCloudLabs/tinychat/releases/latest)
+    if [ -n "\${STUB_API_REDIRECT:-}" ]; then : | emit; printf '%s' "$STUB_API_REDIRECT"; else printf '{"tag_name": "%s"}\\n' "$STUB_TAG" | emit; fi ;;
+  "https://api.github.com/repos/TinyCloudLabs/tinychat/releases?per_page=20") printf '[{"tag_name": "%s"}]\\n' "$STUB_TAG" | emit ;;
+  https://github.com/TinyCloudLabs/tinychat/releases/download/*) : | emit; printf '%s/%s' "$STUB_REDIRECT_BASE" "\${url##*/}" ;;
+  https://release-assets.githubusercontent.com/fixture/*) f="$STUB_RELEASE/\${url##*/}"; [ -f "$f" ] || exit 22; emit < "$f" ;;
+  *) exit 22 ;;
+esac
+`,
+  hdiutil: `#!/bin/bash
+printf 'hdiutil %s\\n' "$1" >> "$STUB_LOG/calls.log"
+if [ "$1" = attach ]; then
+  mnt=; while [ $# -gt 0 ]; do case "$1" in -mountpoint) mnt=$2; shift 2 ;; *) shift ;; esac; done
+  cp -R "$STUB_RELEASE/content/." "$mnt/"
+  if [ "\${STUB_KILL_AT:-}" = attach ]; then kill -TERM "$PPID"; fi
+fi
+`,
+  ditto: `#!/bin/bash
+printf 'ditto\\n' >> "$STUB_LOG/calls.log"
+cp -R "$1" "$2"
+if [ "\${STUB_KILL_AT:-}" = ditto ]; then kill -TERM "$PPID"; fi
+`,
+  shasum: `#!/bin/bash
+[ "$1" = -a ] && shift 2
+if command -v sha256sum >/dev/null; then exec sha256sum "$@"; else exec /usr/bin/shasum -a 256 "$@"; fi
+`,
+  PlistBuddy: '#!/bin/bash\ncat "$3"\n',
+  pgrep: '#!/bin/bash\nexit 1\n',
+  osascript: '#!/bin/bash\nexit 0\n',
+  open: `#!/bin/bash\nprintf 'open %s\\n' "$1" >> "$STUB_LOG/calls.log"\n`,
+};
+
+function runExoUpdate(t, shell, { sums = 'good', redirectBase, apiRedirect, killAt, installed = true, args = [] } = {}) {
+  const root = mkdtempSync(join(tmpdir(), 'exo-update-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const dirs = Object.fromEntries(['bin', 'home', 'apps', 'release', 'log', 'tmp'].map((name) => [name, join(root, name)]));
+  for (const dir of Object.values(dirs)) mkdirSync(dir, { recursive: true });
+  const plan = readFileSync(join(repo, 'scripts/release/desktop-release-plan.mjs'), 'utf8');
+  const prefix = plan.match(/setOutput\('asset-prefix', `([^`]+)`\)/)[1];
+  const version = '9.9.9';
+  const dmg = `${prefix.replace('${version}', version)}.dmg`;
+  const app = (dir, build) => {
+    mkdirSync(join(dir, 'Exo.app/Contents'), { recursive: true });
+    writeFileSync(join(dir, 'Exo.app/Contents/Info.plist'), `${build}\n`);
+  };
+  if (installed) app(dirs.apps, 'old-build');
+  app(join(dirs.release, 'content'), 'new-build');
+  writeFileSync(join(dirs.release, dmg), 'fake dmg bytes');
+  const digest = createHash('sha256').update(sums === 'bad' ? 'other bytes' : 'fake dmg bytes').digest('hex');
+  writeFileSync(join(dirs.release, 'SHA256SUMS.txt'), `${digest}  ${sums === 'missing' ? 'Exo_other_aarch64.dmg' : dmg}\n`);
+  for (const [name, body] of Object.entries(EXO_UPDATE_STUBS)) {
+    writeFileSync(join(dirs.bin, name), body);
+    chmodSync(join(dirs.bin, name), 0o755);
+  }
+  const result = spawnSync(shell, [join(repo, 'desktop/scripts/exo-update.sh'), ...args], {
+    encoding: 'utf8',
+    env: {
+      PATH: `${dirs.bin}:${process.env.PATH}`, HOME: dirs.home, TMPDIR: dirs.tmp,
+      EXO_UPDATE_APPLICATIONS: dirs.apps, EXO_UPDATE_PLISTBUDDY: join(dirs.bin, 'PlistBuddy'),
+      STUB_LOG: dirs.log, STUB_RELEASE: dirs.release, STUB_TAG: `exo-desktop@${version}`,
+      STUB_REDIRECT_BASE: redirectBase ?? 'https://release-assets.githubusercontent.com/fixture', STUB_KILL_AT: killAt ?? '',
+      STUB_API_REDIRECT: apiRedirect ?? '',
+    },
+  });
+  const read = (path) => (existsSync(path) ? readFileSync(path, 'utf8') : '');
+  return {
+    status: result.status, stderr: result.stderr,
+    calls: read(join(dirs.log, 'calls.log')), curl: read(join(dirs.log, 'curl.log')),
+    build: read(join(dirs.apps, 'Exo.app/Contents/Info.plist')).trim(),
+    state: read(join(dirs.home, '.exo-update')).trim(),
+    leftovers: [...readdirSync(dirs.apps).filter((name) => name !== 'Exo.app'), ...readdirSync(dirs.tmp)],
+  };
+}
+
+function assertUntouched(run) {
+  assert.notEqual(run.status, 0, run.stderr);
+  assert.equal(run.build, 'old-build', 'the installed app is unchanged');
+  assert.doesNotMatch(run.calls, /hdiutil attach|ditto|open /, 'nothing is mounted, copied or opened');
+  assert.deepEqual(run.leftovers, [], 'no temp files or half-copied apps are left');
+}
+
+for (const shell of ['bash', 'sh']) {
+  test(`exo-update.sh (${shell}) installs a verified release over HTTPS only`, (t) => {
+    const run = runExoUpdate(t, shell);
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(run.build, 'new-build');
+    assert.equal(run.state, 'exo-desktop@9.9.9 new-build');
+    assert.match(run.calls, /hdiutil attach[\s\S]*ditto[\s\S]*hdiutil detach/);
+    assert.match(run.calls, /open /);
+    assert.deepEqual(run.leftovers, []);
+    for (const call of run.curl.trim().split('\n')) assert.match(call, /--proto =https --proto-redir =https/);
+    assert.equal(runExoUpdate(t, shell, { installed: false }).build, 'new-build', 'first install');
+    assert.equal(runExoUpdate(t, shell, { args: ['beta'] }).build, 'new-build', 'beta channel');
+  });
+
+  test(`exo-update.sh (${shell}) keeps the installed app on a mismatched or missing checksum`, (t) => {
+    const bad = runExoUpdate(t, shell, { sums: 'bad' });
+    assertUntouched(bad);
+    assert.match(bad.stderr, /didn't match its checksum/);
+    const missing = runExoUpdate(t, shell, { sums: 'missing' });
+    assertUntouched(missing);
+    assert.match(missing.stderr, /has no entry for/);
+  });
+
+  test(`exo-update.sh (${shell}) refuses redirects off HTTPS or off GitHub's hosts`, (t) => {
+    const http = runExoUpdate(t, shell, { redirectBase: 'http://release-assets.githubusercontent.com/fixture' });
+    assertUntouched(http);
+    assert.match(http.stderr, /isn't HTTPS/);
+    const elsewhere = runExoUpdate(t, shell, { redirectBase: 'https://example.com/fixture' });
+    assertUntouched(elsewhere);
+    assert.match(elsewhere.stderr, /isn't GitHub/);
+    const lookup = runExoUpdate(t, shell, { apiRedirect: 'https://example.com/releases/latest' });
+    assertUntouched(lookup);
+    assert.match(lookup.stderr, /Refusing a download from example\.com/);
+    assert.doesNotMatch(lookup.curl, /releases\/download/, 'no asset is fetched after a refused lookup');
+  });
+
+  for (const killAt of ['attach', 'ditto']) {
+    test(`exo-update.sh (${shell}) detaches, cleans up and keeps the old app when killed after ${killAt}`, (t) => {
+      const run = runExoUpdate(t, shell, { killAt });
+      assert.equal(run.status, 143, run.stderr);
+      assert.equal(run.build, 'old-build');
+      assert.match(run.calls, /hdiutil attach[\s\S]*hdiutil detach/, 'the mounted DMG is detached');
+      assert.doesNotMatch(run.calls, /open /);
+      assert.deepEqual(run.leftovers, []);
+    });
+  }
+}
+
+// A beta tag left on another commit that no GitHub Release ever published (TC-2189): the next beta number is used.
+// The real version.mjs runs against a local HTTP stand-in for the GitHub Releases API.
+const changesetsInstalled = existsSync(join(repo, 'node_modules/@changesets/cli'));
+
+function runAsync(name, args, env = {}) {
+  return new Promise(resolveRun => {
+    const child = spawn(process.execPath, [join(repo, 'scripts/release', name), ...args], {
+      env: { ...process.env, GITHUB_ACTIONS: '', GITHUB_OUTPUT: '', ALLOW_MAJOR_BETA: '', ...env },
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', chunk => { stdout += chunk; });
+    child.stderr.on('data', chunk => { stderr += chunk; });
+    child.on('close', status => resolveRun({ status, stdout, stderr }));
+  });
+}
+
+/**
+ * `releases`: tag -> HTTP status the by-tag endpoint answers for it (404 when unlisted: that endpoint never shows drafts).
+ * `listed`: tag names the paginated releases list holds (drafts included), `pageSize` per page, linked by a `Link: rel="next"` header.
+ */
+async function githubReleases(t, releases = {}, { listed = [], pageSize = 2, listStatus = 200, listBody } = {}) {
+  const requests = [];
+  const server = createServer((request, response) => {
+    requests.push({ url: request.url, authorization: request.headers.authorization });
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const list = /^\/repos\/TinyCloudLabs\/tinychat\/releases\?(.*)$/.exec(request.url);
+    if (list !== null) {
+      const page = Number(new URLSearchParams(list[1]).get('page') ?? '1');
+      const slice = listed.slice((page - 1) * pageSize, page * pageSize);
+      const headers = { 'content-type': 'application/json' };
+      if (page * pageSize < listed.length) headers.link = `<${base}/repos/TinyCloudLabs/tinychat/releases?per_page=100&page=${page + 1}>; rel="next"`;
+      response.writeHead(listStatus, headers);
+      response.end(listBody ?? JSON.stringify(slice.map(tag_name => ({ tag_name, draft: true }))));
+      return;
+    }
+    // The whole tag is ONE route parameter: a literal slash in it is a different route and GitHub answers 404 there.
+    const encoded = /^\/repos\/TinyCloudLabs\/tinychat\/releases\/tags\/([^/]+)$/.exec(request.url)?.[1];
+    const tagName = encoded === undefined ? '' : decodeURIComponent(encoded);
+    const status = encoded === undefined ? 404 : releases[tagName] ?? 404;
+    response.writeHead(status, { 'content-type': 'application/json' });
+    response.end(JSON.stringify(status === 200 ? { tag_name: tagName } : { message: status === 404 ? 'Not Found' : 'error' }));
+  });
+  await new Promise(resolveListen => server.listen(0, '127.0.0.1', resolveListen));
+  t.after(() => new Promise(resolveClose => server.close(resolveClose)));
+  return {
+    requests,
+    byTag: () => requests.filter(request => request.url.includes('/releases/tags/')),
+    env: { GITHUB_API_URL: `http://127.0.0.1:${server.address().port}`, GITHUB_REPOSITORY: 'TinyCloudLabs/tinychat', GH_TOKEN: 'test-token' },
+  };
+}
+
+// 0.1.0 baselines with `tags` already on that baseline commit, then a merged web + API change ready to be versioned.
+function collisionRepo(t, { tags = [], changeset = { '@tinychat/frontend': 'minor', '@tinychat/backend': 'patch' } } = {}) {
+  const root = manifests(t);
+  symlinkSync(join(repo, 'node_modules'), join(root, 'node_modules'));
+  write(root, '.gitignore', 'node_modules\n');
+  initRepo(root);
+  const baseline = commitAll(root, 'baseline');
+  for (const name of tags) git(root, 'tag', '-a', name, '-m', name, baseline);
+  write(root, '.changeset/change.md', changesetFile(changeset, 'A change'));
+  const head = commitAll(root, 'feat: change (#1)');
+  return { root, baseline, head };
+}
+
+const versionsOf = root => ['desktop', 'frontend', 'backend'].map(dir => version(root, dir));
+
+test('a beta version with no existing tag keeps its number and never asks GitHub', { skip: !changesetsInstalled && 'bun install first' }, async t => {
+  const { root } = collisionRepo(t);
+  const github = await githubReleases(t);
+  const result = await runAsync('version.mjs', ['--root', root], github.env);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(versionsOf(root), ['0.2.0-beta.0', '0.2.0-beta.0', '0.1.1-beta.0']);
+  assert.deepEqual(github.requests, []);
+});
+
+test('a beta tag left on another commit with no GitHub Release moves web and desktop to the next beta together', { skip: !changesetsInstalled && 'bun install first' }, async t => {
+  const { root } = collisionRepo(t, { tags: ['exo-desktop@0.2.0-beta.0', '@tinychat/frontend@0.2.0-beta.0'] });
+  const github = await githubReleases(t);
+  const result = await runAsync('version.mjs', ['--root', root], github.env);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^channel=beta$/m);
+  assert.deepEqual(versionsOf(root), ['0.2.0-beta.1', '0.2.0-beta.1', '0.1.1-beta.0']);
+  assert.match(read(root, 'desktop/src-tauri/Cargo.toml'), /^version = "0\.2\.0-beta\.1"$/m);
+  assert.match(read(root, 'desktop/src-tauri/Cargo.lock'), /name = "exo-desktop"\nversion = "0\.2\.0-beta\.1"/);
+  for (const dir of ['desktop', 'frontend']) {
+    assert.match(read(root, `${dir}/CHANGELOG.md`), /^## 0\.2\.0-beta\.1$/m);
+    assert.doesNotMatch(read(root, `${dir}/CHANGELOG.md`), /0\.2\.0-beta\.0/);
+  }
+  assert.match(read(root, 'backend/CHANGELOG.md'), /^## 0\.1\.1-beta\.0$/m);
+  assert.equal(check(root).status, 0);
+  assert.ok(github.requests.every(request => request.authorization === 'Bearer test-token'));
+  assert.deepEqual(github.byTag().map(request => decodeURIComponent(request.url.split('/tags/')[1])).sort(), ['@tinychat/frontend@0.2.0-beta.0', 'exo-desktop@0.2.0-beta.0']);
+});
+
+test('one colliding web/desktop tag still moves the whole fixed group, and skips every taken beta number', { skip: !changesetsInstalled && 'bun install first' }, async t => {
+  const { root } = collisionRepo(t, { tags: ['@tinychat/frontend@0.2.0-beta.0', 'exo-desktop@0.2.0-beta.1'] });
+  const github = await githubReleases(t);
+  const result = await runAsync('version.mjs', ['--root', root], github.env);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(versionsOf(root), ['0.2.0-beta.2', '0.2.0-beta.2', '0.1.1-beta.0']);
+  assert.equal(check(root).status, 0);
+});
+
+test('a colliding backend tag moves only the backend', { skip: !changesetsInstalled && 'bun install first' }, async t => {
+  const { root } = collisionRepo(t, { tags: ['@tinychat/backend@0.1.1-beta.0'] });
+  const github = await githubReleases(t);
+  const result = await runAsync('version.mjs', ['--root', root], github.env);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(versionsOf(root), ['0.2.0-beta.0', '0.2.0-beta.0', '0.1.1-beta.1']);
+  assert.equal(check(root).status, 0);
+});
+
+test('a beta tag on another commit that has a GitHub Release fails and versions nothing', { skip: !changesetsInstalled && 'bun install first' }, async t => {
+  const { root, head } = collisionRepo(t, { tags: ['@tinychat/frontend@0.2.0-beta.0'] });
+  const github = await githubReleases(t, { '@tinychat/frontend@0.2.0-beta.0': 200 });
+  const result = await runAsync('version.mjs', ['--root', root], github.env);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /@tinychat\/frontend@0\.2\.0-beta\.0 .*GitHub Release/);
+  assert.deepEqual(github.byTag().map(request => request.url), ['/repos/TinyCloudLabs/tinychat/releases/tags/%40tinychat%2Ffrontend%400.2.0-beta.0']);
+  assert.equal(git(root, 'rev-parse', 'HEAD'), head);
+});
+
+test('a GitHub lookup that is not a confirmed 404 fails closed', { skip: !changesetsInstalled && 'bun install first' }, async t => {
+  const { root, head } = collisionRepo(t, { tags: ['@tinychat/frontend@0.2.0-beta.0'] });
+  const github = await githubReleases(t, { '@tinychat/frontend@0.2.0-beta.0': 500 });
+  const failed = await runAsync('version.mjs', ['--root', root], github.env);
+  assert.equal(failed.status, 1);
+  assert.match(failed.stderr, /Could not confirm/);
+  assert.equal(git(root, 'rev-parse', 'HEAD'), head);
+  const discard = () => { git(root, 'reset', '-q', '--hard', 'HEAD'); git(root, 'clean', '-fdq'); };
+  discard();
+  const unreachable = await runAsync('version.mjs', ['--root', root], { ...github.env, GITHUB_API_URL: 'http://127.0.0.1:1' });
+  assert.equal(unreachable.status, 1);
+  assert.match(unreachable.stderr, /Could not confirm/);
+  discard();
+  const noToken = await runAsync('version.mjs', ['--root', root], { ...github.env, GH_TOKEN: '' });
+  assert.equal(noToken.status, 1);
+  assert.match(noToken.stderr, /Could not confirm/);
+  assert.equal(git(root, 'rev-parse', 'HEAD'), head);
+});
+
+test('a stable version whose tag is on another commit fails, whatever GitHub says', { skip: !changesetsInstalled && 'bun install first' }, async t => {
+  const { root } = collisionRepo(t);
+  const github = await githubReleases(t);
+  assert.equal((await runAsync('version.mjs', ['--root', root], github.env)).status, 0);
+  const body = join(root, '..', 'stable-collision.md');
+  assert.equal(run('stable-pr.mjs', ['--root', root, '--body', body]).status, 0);
+  git(root, 'merge', '-q', '--no-ff', '-m', 'Merge release stable', 'release/stable');
+  git(root, 'tag', '-a', 'exo-desktop@0.2.0', '-m', 'stale', git(root, 'rev-list', '--max-parents=0', 'HEAD'));
+  const before = git(root, 'rev-parse', 'HEAD');
+  const result = await runAsync('version.mjs', ['--root', root], github.env);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /exo-desktop@0\.2\.0/);
+  assert.equal(git(root, 'rev-parse', 'HEAD'), before);
+});
+
+test('the Release workflow gives only its version step the token for Release lookups, and persists none', () => {
+  const workflow = read(repo, '.github/workflows/release.yml');
+  const versionStep = /- name: Version betas[\s\S]*?(?=\n      - name: )/.exec(workflow)[0];
+  assert.match(versionStep, /GH_TOKEN: \$\{\{ github\.token \}\}/);
+  assert.match(versionStep, /run: node scripts\/release\/version\.mjs$/m);
+  assert.match(workflow, /persist-credentials: false/);
+  assert.doesNotMatch(workflow.slice(0, workflow.indexOf('- name: Version betas')), /GH_TOKEN/);
+  assert.match(workflow, /\n    permissions:\n      contents: write[^\n]*\n      pull-requests: write[^\n]*\n      actions: write[^\n]*\n    env:/);
+});
+
+test('a draft Release the by-tag endpoint cannot see still counts as a Release, on any page of the list', { skip: !changesetsInstalled && 'bun install first' }, async t => {
+  const { root, head } = collisionRepo(t, { tags: ['@tinychat/frontend@0.2.0-beta.0'] });
+  const github = await githubReleases(t, {}, { listed: ['exo-desktop@0.1.0', 'exo-desktop@0.1.1', '@tinychat/frontend@0.2.0-beta.0'] });
+  const result = await runAsync('version.mjs', ['--root', root], github.env);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /@tinychat\/frontend@0\.2\.0-beta\.0 .*GitHub Release/);
+  assert.equal(github.byTag().length, 1);
+  assert.equal(github.requests.length - 1, 2); // the list was read to its second page, where the draft is
+  assert.ok(github.requests.every(request => request.authorization === 'Bearer test-token'));
+  assert.equal(git(root, 'rev-parse', 'HEAD'), head);
+});
+
+test('a tag absent from every page of the Releases list is unpublished and the beta moves on', { skip: !changesetsInstalled && 'bun install first' }, async t => {
+  const { root } = collisionRepo(t, { tags: ['@tinychat/frontend@0.2.0-beta.0'] });
+  const github = await githubReleases(t, {}, { listed: ['exo-desktop@0.1.0', 'exo-desktop@0.1.1', '@tinychat/frontend@0.2.0-beta.00', 'exo-desktop@0.2.0-beta.1'] });
+  const result = await runAsync('version.mjs', ['--root', root], github.env);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(versionsOf(root), ['0.2.0-beta.1', '0.2.0-beta.1', '0.1.1-beta.0']);
+});
+
+test('a Releases list that cannot be read in full fails closed', { skip: !changesetsInstalled && 'bun install first' }, async t => {
+  const { root, head } = collisionRepo(t, { tags: ['@tinychat/frontend@0.2.0-beta.0'] });
+  for (const options of [{ listStatus: 500 }, { listStatus: 403 }, { listBody: '{"message":"not a list"}' }, { listBody: 'not json' }]) {
+    const github = await githubReleases(t, {}, options);
+    const result = await runAsync('version.mjs', ['--root', root], github.env);
+    assert.equal(result.status, 1, JSON.stringify(options));
+    assert.match(result.stderr, /Could not confirm/);
+    assert.equal(git(root, 'rev-parse', 'HEAD'), head);
+    git(root, 'reset', '-q', '--hard', 'HEAD');
+    git(root, 'clean', '-fdq');
   }
 });

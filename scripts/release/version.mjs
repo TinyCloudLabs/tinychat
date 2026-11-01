@@ -6,6 +6,7 @@
  *    when a changeset no beta released yet exists or the PR's recorded plan is stale;
  *  - otherwise nothing (empty-only changesets wait for the next real one).
  * Refuses unconfirmed majors, syncs the desktop version, re-checks invariants and commits with [skip ci].
+ * A beta number whose tag is already taken by an unpublished release moves on to the next one (prerelease-tags.mjs).
  * Writes channel=beta|stable|none to $GITHUB_OUTPUT.
  */
 import { rmSync, writeFileSync } from 'node:fs';
@@ -13,9 +14,10 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import {
-  BACKEND, PRE_TAG, STABLE_PLAN, STABLE_SCOPE_FRONTEND_DESKTOP, changeset, git, readChangesets, readJson, readPreState,
+  BACKEND, PRE_TAG, STABLE_PLAN, STABLE_SCOPE_FRONTEND_DESKTOP, UNITS, changeset, git, readChangesets, readJson, readPreState,
   repoRoot, run, setOutput, withIgnoredPackages,
 } from './lib.mjs';
+import { resolvePrereleaseTags } from './prerelease-tags.mjs';
 
 const { values } = parseArgs({ options: { root: { type: 'string' } } });
 const root = resolve(values.root ?? repoRoot);
@@ -42,6 +44,7 @@ if (channel === 'none') {
   if (scoped) {
     writeFileSync(join(root, '.changeset/pre.json'), `${JSON.stringify({ mode: pre.mode, tag: pre.tag }, null, 2)}\n`);
   }
+  const versionsBefore = Object.fromEntries(UNITS.map(unit => [unit.name, readJson(root, `${unit.dir}/package.json`).version]));
   const versionPackages = () => changeset(root, ['version']);
   console.log(scoped ? withIgnoredPackages(root, [BACKEND], versionPackages) : versionPackages());
   if (scoped) {
@@ -55,6 +58,7 @@ if (channel === 'none') {
     if (missing.length) throw new Error(`Scoped stable promotion consumed pending backend changesets: ${missing.join(', ')}`);
   }
   if (channel === 'stable') rmSync(join(root, STABLE_PLAN));
+  await resolvePrereleaseTags(root, versionsBefore);
   script('sync-desktop-version.mjs');
   if (channel === 'stable') console.log(changeset(root, ['pre', 'enter', PRE_TAG]));
   script('check.mjs');

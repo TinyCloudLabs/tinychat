@@ -1,5 +1,21 @@
 # exo-desktop
 
+## 0.12.0
+
+### Patch Changes
+
+- adddc69: Show fixed meeting-code guidance for Meet lookup links rejected by the transcriber.
+
+## 0.12.0-beta.2
+
+### Patch Changes
+
+- adddc69: Show fixed meeting-code guidance for Meet lookup links rejected by the transcriber.
+
+## 0.12.0-beta.1
+
+No changes in this release.
+
 ## 0.11.5
 
 No changes in this release.

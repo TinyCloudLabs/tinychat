@@ -308,7 +308,7 @@ const NOTE_VIEWPORTS = ["tablet", "tablet-land", "desktop-min", "desktop", "text
 export const recorderFinalDesktopScreens: HarnessScreen[] = [
   interactiveScreen,
   screen("recording", {}),
-  { ...whisperScreen("recording-system-audio", "ready", {}, {}, true), readyWhen: '[data-testid="desktop-system-audio-label"]' },
+  { ...whisperScreen("recording-system-audio", "ready", {}, {}, true), readyWhen: '[data-testid="desktop-system-audio-label"]', viewports: ["phone-land", "tablet", "tablet-land", "desktop-min", "desktop", "text200-desktop"] },
   screen("recording-web", {}, {}, "web"),
   screen("recording-notes", {
     note: { md: "Ask Dana about the launch date.", moments: [] },
@@ -346,7 +346,7 @@ export const recorderFinalDesktopScreens: HarnessScreen[] = [
   {
     ...screen("note-preview", NOTED, {}, "tauri", { open: true, view: "preview" }),
     viewports: NOTE_VIEWPORTS,
-    readyWhen: ".nv .fmd",
+    readyWhen: ".nv textarea",
   },
   {
     ...screen("note-save-failed", NOTED, {}, "tauri", {

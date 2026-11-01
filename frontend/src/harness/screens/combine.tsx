@@ -56,7 +56,7 @@ const candidate = (id: string) => `[data-testid="combine-candidate"][data-item-i
 const OPEN_PICKER = [ENTRY];
 const TO_CONFIRM = [ENTRY, candidate(NOTETAKER_WEEKLY.id)];
 const TO_REFUSED = [ENTRY, candidate(FIREFLIES_DESIGN.id)];
-const RETRY = '[data-testid="combined-summary-retry"]';
+const GENERATE = '[data-testid="combined-summary-generate"]';
 
 export const combineScreens: HarnessScreen[] = [
   { ...SCREEN, id: "combine-entry", path: note(FIREFLIES_WEEKLY.id), readyWhen: `${ENTRY}`, render: () => <CombineShell /> },
@@ -66,9 +66,9 @@ export const combineScreens: HarnessScreen[] = [
   { ...SCREEN, id: "combine-confirm-fail", path: note(FIREFLIES_WEEKLY.id), readyWhen: '[data-testid="combine-confirm"][data-passed="false"]', render: () => <CombineShell taps={TO_REFUSED} /> },
   { ...SCREEN, id: "combine-library-row", path: "/chat/capture/library", readyWhen: '[data-testid="library-list"][data-state="ready"]:has([data-testid="library-item"])', render: () => <CombineShell combined /> },
   { ...SCREEN, id: "combine-detail", path: note(COMBINED_ROW_ID), readyWhen: `${READ}:not(:empty)`, render: () => <CombineShell combined /> },
-  { ...SCREEN, id: "combine-summary-generating", path: note(COMBINED_ROW_ID), readyWhen: '[data-testid="combined-summary"][data-state="generating"]', render: () => <CombineShell combined model="hang" taps={[RETRY]} /> },
+  { ...SCREEN, id: "combine-summary-generating", path: note(COMBINED_ROW_ID), readyWhen: '[data-testid="combined-summary"][data-state="generating"]', render: () => <CombineShell combined model="hang" taps={[GENERATE]} /> },
   { ...SCREEN, id: "combine-summary-shown", path: note(COMBINED_ROW_ID), readyWhen: '[data-testid="combined-summary"][data-state="ready"]', render: () => <CombineShell combined summary /> },
-  { ...SCREEN, id: "combine-summary-unavailable", path: note(COMBINED_ROW_ID), readyWhen: '[data-testid="combined-summary"][data-state="unavailable"]', render: () => <CombineShell combined model="fail" /> },
+  { ...SCREEN, id: "combine-summary-unavailable", path: note(COMBINED_ROW_ID), readyWhen: '[data-testid="combined-summary"][data-state="unavailable"]', render: () => <CombineShell combined model="fail" taps={[GENERATE]} /> },
   { ...SCREEN, id: "combine-delete-confirm", path: note(COMBINED_ROW_ID), readyWhen: '[data-testid="delete-combined-sheet"]', render: () => <CombineShell combined taps={['[data-testid="combined-delete"]']} /> },
   // TC-1152 v1b-a: the Library shows the combined meeting alone; the page lists its tappable sources; a source opens
   // from it; and after Delete combined the sources are back in the list.

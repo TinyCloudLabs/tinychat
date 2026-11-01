@@ -209,7 +209,7 @@ const PHONE_VIEWPORTS = ["phone"];
 const TRANSCRIBE_PHONE = ["phone", "phone-small", "text200-phone", "text200-phone-small"];
 const TRANSCRIBE_DESKTOP = [...DESKTOP_VIEWPORTS, "zoom200", "text200-desktop"];
 const RENDERED = '[data-testid="saved-note-rendered"]';
-const TRANSCRIBE = '[data-testid="transcribe-action"]';
+const TRANSCRIBE = '[data-testid="transcribe-action"], [data-testid="voice-note-transcription-limits-unknown"]';
 const EDITOR = '[data-testid="saved-note-notes"][data-editing="true"] textarea';
 
 const screen = (
