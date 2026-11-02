@@ -611,7 +611,8 @@ export async function orchestrateToolCalling(params: OrchestrateParams): Promise
     streamErrorCode: error => error instanceof StreamFailure ? error.code : undefined,
     modelCall: request => bufferedMeetingModelCall({ ...params, onUsage: checkpoint() }, request),
     dispatch: (name, args, context, signal, id) => dispatchTool(params.config, fetchImpl, { name, args: JSON.stringify(args), id }, params.entityId, params.roomId, context, signal),
-    capability: async signal => {
+    // MCP turns read through the in-process wrapper, which emits contract v2 by construction; there is no remote reader to probe.
+    capability: params.config.mcpOwner ? async () => ({ meetingRetrieval: { contractVersion: 2 }, buildRevision: params.config.backendRevision ?? "unknown" }) : async signal => {
       const response = await fetchForTurn(fetchImpl, `${params.config.elizaServiceUrl}/capabilities`, { headers: { authorization: `Bearer ${params.config.elizaServiceSecret}` } }, signal);
       if (!response.ok) { if (response.body) ignoreCleanup(() => response.body!.cancel()); return null; }
       // This content-free response has a small independent transport bound.
