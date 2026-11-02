@@ -456,6 +456,10 @@ async function dispatchTool(
     throw new StreamFailure("upstream_incomplete");
   }
   throwIfAborted(signal);
+  // An MCP turn never falls back to eliza-service: a name the wrapper does not serve (invented or injected) is refused here.
+  if (config.mcpOwner && !config.mcpMeetings?.handles(call.name)) {
+    return { status: "error", code: "tool_not_found", text: `(tool ${JSON.stringify(call.name.slice(0, 64))} is not available)` };
+  }
   const mcpMeeting = config.mcpMeetings && config.mcpOwner && config.mcpMeetings.handles(call.name)
     ? await config.mcpMeetings.run({ name: call.name, args, owner: config.mcpOwner, ...(roomId ? { roomId } : {}), ...(turnContext ? { context: turnContext as unknown as RetrievalContext } : {}), ...(signal ? { signal } : {}) })
     : undefined;

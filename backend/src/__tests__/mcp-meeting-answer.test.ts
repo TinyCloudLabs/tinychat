@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { orchestrateToolCalling, type AgentChatConfig } from "../routes/agent-chat.js";
-import type { McpMeetingTools } from "../mcp-meetings/dispatch.js";
+import { Database } from "bun:sqlite";
+import { CONNECTOR_SCHEMA } from "../../../packages/core/src/connector-meeting.js";
+import { createMcpMeetingTools, type McpMeetingTools } from "../mcp-meetings/dispatch.js";
 
 /**
  * Answer validation for chat turns whose meeting tools run over the MCP (no eliza-service anywhere).
@@ -28,13 +30,13 @@ const citedBody = { result: { text: "1 meeting", data: { meeting: { citation: "[
 
 function mcpTools(body: unknown, calls: string[]): McpMeetingTools {
   return {
-    handles: name => name.startsWith("tinycloud_"),
+    handles: name => ["tinycloud_find_meetings", "tinycloud_read_meeting", "tinycloud_search_transcripts", "tinycloud_list_meeting_actions", "web_search"].includes(name),
     run: async request => { calls.push(request.name); return { status: 200, body: body as Record<string, unknown> }; },
     status: async () => ({ status: "active", transcriptStatus: "active", revision: "r1" }),
   };
 }
 
-async function run(options: { replies: Array<() => Response>; body: unknown; rollout?: boolean; backendRevision?: string; modelAllowed?: boolean; question?: string }) {
+async function run(options: { elizaUrl?: string; replies: Array<() => Response>; body: unknown; rollout?: boolean; backendRevision?: string; modelAllowed?: boolean; question?: string }) {
   const modelRequests: Array<{ messages: Array<{ role: string; content: string }>; tools?: unknown[] }> = [];
   const otherHosts: string[] = [];
   const toolCalls: string[] = [];
@@ -50,7 +52,7 @@ async function run(options: { replies: Array<() => Response>; body: unknown; rol
     return reply();
   }) as typeof fetch;
   const config: AgentChatConfig = {
-    agentId: "agent", entityIdFor: () => "entity", elizaServiceUrl: "", elizaServiceSecret: "", redpillApiKey: "test", redpillBaseUrl: "https://model.test",
+    agentId: "agent", entityIdFor: () => "entity", elizaServiceUrl: options.elizaUrl ?? "", elizaServiceSecret: options.elizaUrl ? "eliza-secret" : "", redpillApiKey: "test", redpillBaseUrl: "https://model.test",
     defaultModel: () => "test-model", isModelOffered: () => true, fetchImpl, meetingTrace: trace => { traces.push(trace); },
     streamPolicy: { heartbeatMs: 100, turnTimeoutMs: 30000, drainGraceMs: 100 }, maxRounds: 3,
     mcpMeetings: mcpTools(options.body, toolCalls), mcpOwner: OWNER,
@@ -71,6 +73,15 @@ describe("MCP chat turn with the plain tool loop (meeting rollout flags off)", (
     expect(r.toolCalls).toEqual(["tinycloud_read_meeting"]);
     expect(r.answer).toBe("The team approved it. [M1:E1, Avery, 00:00:05]");
     expect(r.otherHosts).toEqual([]);
+  });
+
+  test("a tool the model invents is refused on the spot; it is never forwarded to eliza-service, even when eliza-service is configured", async () => {
+    const r = await run({ elizaUrl: "https://eliza.test", body: citedBody, replies: [() => toolCall("tinycloud_made_up_tool", { q: "x" }), () => text("I could not look that up.")] });
+    expect(r.otherHosts).toEqual([]);
+    expect(r.toolCalls).toEqual([]);
+    const toolMessage = r.modelRequests[1]!.messages.find(message => message.role === "tool")!.content;
+    expect(toolMessage).toContain("tinycloud_made_up_tool");
+    expect(toolMessage).toContain("not available");
   });
 
   test("repairs once, then withholds an answer whose citation was never supplied by a tool", async () => {
@@ -104,6 +115,9 @@ describe("MCP chat turn through the validated meeting pipeline (meeting rollout 
 
   test("admission is the rollout's own: a model that is not allowed for meeting content gets no private tools", async () => {
     const r = await run({ rollout: true, modelAllowed: false, backendRevision: "rev-1", body: typedBody, replies: [() => text("I cannot read your meetings with this model.")] });
+    const offered = (r.modelRequests[0]!.tools as Array<{ function: { name: string } }> | undefined)?.map(tool => tool.function.name) ?? [];
+    expect(offered).not.toContain("prepare_meeting_turn");
+    expect(offered.filter(name => name.startsWith("tinycloud_"))).toEqual([]);
     expect(r.toolCalls).toEqual([]);
     expect(r.otherHosts).toEqual([]);
   });
@@ -111,7 +125,48 @@ describe("MCP chat turn through the validated meeting pipeline (meeting rollout 
   test("an unknown backend revision fails closed instead of answering", async () => {
     const r = await run({ rollout: true, body: typedBody, replies: [plan] });
     expect(r.toolCalls).toEqual([]);
+    expect(r.otherHosts).toEqual([]);
+    expect(r.modelRequests).toHaveLength(1);
     expect(r.answer).toContain("temporarily unavailable");
     expect(r.result.errorCode).toBe("meeting_feature_unavailable");
+  });
+});
+
+describe("validated pipeline over the real MCP wrapper (SQLite stand-in for the hosted MCP's reads)", () => {
+  test("a date-range question is interpreted, discovered, read and answered with citations the validator accepts", async () => {
+    const db = new Database(":memory:");
+    for (const { sql } of CONNECTOR_SCHEMA) db.run(sql);
+    db.run(
+      "INSERT INTO connector_meeting (id, source, source_id, title, started_at, participants, summary_overview, summary_action_items, metadata, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+      ["m-planning", "fireflies", "ff-1", "Planning sync", "2026-10-20T15:00:00Z", JSON.stringify([{ name: "Ana" }, { name: "Ben" }]), "The team agreed to launch on Friday.", "Ana to draft the plan", "{}", "2026-10-20T15:00:00Z", "2026-10-20T15:00:00Z"],
+    );
+    const port = {
+      sqlQuery: async (sql: string, params: Array<string | number | null>) => db.query(sql).values(...params) as unknown[][],
+      kvGetText: async () => { throw new Error("kv_not_found"); },
+    };
+    const requests: Array<{ messages: Array<{ role: string; content: string }> }> = [];
+    const hosts: string[] = [];
+    const fetchImpl = (async (input, init) => {
+      if (!String(input).startsWith("https://model.test")) { hosts.push(String(input)); throw new Error("unexpected host"); }
+      const body = JSON.parse(String(init?.body));
+      requests.push(body);
+      if (requests.length === 1) return toolCall("prepare_meeting_turn", { kind: "meeting_content", scope: "single", purpose: "summary", evidenceRequirement: "overview", title: "Planning", selectFirst: true });
+      const { evidence } = JSON.parse(body.messages.at(-1).content) as { evidence: { citations: Record<string, { kind: string }> } };
+      const id = Object.keys(evidence.citations).find(key => evidence.citations[key]!.kind === "summary")!;
+      return text(JSON.stringify({ claims: [{ text: "The team agreed to launch on Friday.", meetingIds: ["M1"], evidenceIds: [id] }] }));
+    }) as typeof fetch;
+    const frames: string[] = [];
+    const config: AgentChatConfig = {
+      agentId: "agent", entityIdFor: () => "entity", elizaServiceUrl: "", elizaServiceSecret: "", redpillApiKey: "test", redpillBaseUrl: "https://model.test",
+      defaultModel: () => "test-model", isModelOffered: () => true, fetchImpl, meetingTrace: () => {}, meetingContentRetrievalEnabled: true, meetingContentModelAllowed: () => true, backendRevision: "rev-1",
+      streamPolicy: { heartbeatMs: 100, turnTimeoutMs: 30000, drainGraceMs: 100 }, mcpMeetings: createMcpMeetingTools(() => port), mcpOwner: OWNER,
+    };
+    await orchestrateToolCalling({ config, model: "test-model", messages: [{ role: "user", content: "Summarize my planning meeting." }], entityId: "entity", roomId: "room", write: frame => { frames.push(frame); } });
+    const answer = frames.flatMap(frame => { try { return JSON.parse(frame.slice(6)).choices?.[0]?.delta?.content ?? ""; } catch { return ""; } }).join("");
+    expect(hosts).toEqual([]);
+    expect(requests).toHaveLength(2);
+    expect(answer).toContain("The team agreed to launch on Friday.");
+    expect(answer).toMatch(/\[M1:[A-Z0-9]+\]/);
+    expect(answer).not.toContain("Available meeting evidence:");
   });
 });
