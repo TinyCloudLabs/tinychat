@@ -84,7 +84,7 @@ const clock = (secs: number) => [Math.floor(secs / 3600), Math.floor(secs % 3600
 function citationText(ids: string[], evidenceById?: Map<string, MeetingEvidence>): string {
   return ids.map((id) => {
     const evidence = evidenceById?.get(id);
-    const attribution = [evidence?.speaker?.replace(/[[\]\r\n]/g, " ").trim(), evidence?.startSecs === undefined ? undefined : clock(evidence.startSecs)].filter(Boolean);
+    const attribution = [evidence?.speaker?.replace(/[[\]]/g, "").replace(/\s+/g, " ").trim(), evidence?.startSecs === undefined ? undefined : clock(evidence.startSecs)].filter(Boolean);
     return `[${id}${attribution.length ? `, ${attribution.join(", ")}` : ""}]`;
   }).join(" ");
 }
