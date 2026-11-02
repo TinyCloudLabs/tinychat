@@ -1042,6 +1042,8 @@ async function main() {
                 meetingContentRetrievalEnabled: meetingRollout.enabled,
                 meetingContentAccountAllowed: meetingRollout.accountAllowed,
                 meetingContentModelAllowed: meetingRollout.modelAllowed,
+                meetingContentMcpAccountAllowed: meetingRollout.mcpAccountAllowed,
+                meetingContentMcpModelAllowed: meetingRollout.mcpModelAllowed,
                 backendRevision: process.env.BUILD_REVISION ?? process.env.GIT_SHA ?? "unknown",
                 agentId: TINYCHAT_AGENT_ID,
                 entityIdFor: (address: string) => addressToEntityId(address, TINYCHAT_AGENT_ID),
