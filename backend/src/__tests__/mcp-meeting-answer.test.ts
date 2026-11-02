@@ -126,6 +126,12 @@ describe("MCP chat turn through the validated meeting pipeline (meeting rollout 
     expect(r.answer).not.toContain("[M9");
   });
 
+  test("markup in a speaker name is escaped like the claim text", async () => {
+    const speakerPlan = () => toolCall("prepare_meeting_turn", { kind: "meeting_content", scope: "selected", purpose: "speaker", speaker: "Avery", evidenceRequirement: "body" });
+    const r = await run({ rollout: true, backendRevision: "rev-1", body: typed({ kind: "transcript_excerpt", speaker: "**Avery** <b>", startSecs: 5 }, "speaker"), replies: [speakerPlan, draft(["M1:E1"])] });
+    expect(r.answer).toContain("[M1:E1, \\*\\*Avery\\*\\* &lt;b&gt;, 00:00:05]");
+  });
+
   test("a passage with no recorded speaker or time keeps the bare citation", async () => {
     const r = await run({ rollout: true, backendRevision: "rev-1", body: typedBody, replies: [plan, draft(["M1:E1"])] });
     expect(r.answer).toContain("The team approved the cobalt rollout. [M1:E1]");

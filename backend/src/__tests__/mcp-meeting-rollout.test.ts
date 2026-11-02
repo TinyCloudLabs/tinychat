@@ -83,7 +83,7 @@ const typedBody = { result: { data: { contractVersion: 2, outcomes: [{
 }] } } };
 
 /** The chat config exactly as index.ts builds it from the environment, with the MCP wrapper stubbed in-process. */
-function setup(env: Record<string, string>) {
+function setup(env: Record<string, string>, mcpSelected = true) {
   const rollout = meetingRolloutFromEnv(env);
   const modelBodies: Array<{ tools?: Array<{ function: { name: string } }> }> = [];
   const replies = [
@@ -91,7 +91,8 @@ function setup(env: Record<string, string>) {
     { content: JSON.stringify({ claims: [{ text: "The team approved the cobalt rollout.", meetingIds: ["M1"], evidenceIds: ["M1:E1"] }] }) },
   ];
   let round = 0;
-  const fetchImpl = (async (_input: string | URL, init?: RequestInit) => {
+  const fetchImpl = (async (input: string | URL, init?: RequestInit) => {
+    if (String(input).startsWith("https://eliza.test")) return Response.json({ error: "not_found" }, { status: 404 });
     modelBodies.push(JSON.parse(init!.body as string));
     const delta = replies[Math.min(round++, replies.length - 1)]!;
     return { ok: true, status: 200, body: sse([{ choices: [{ delta, finish_reason: "tool_calls" in delta ? "tool_calls" : "stop" }] }, { choices: [], usage: { prompt_tokens: 5, completion_tokens: 2 } }]) } as unknown as Response;
@@ -103,17 +104,17 @@ function setup(env: Record<string, string>) {
   };
   const config: AgentChatConfig = {
     agentId: "agent", streamPolicy: { heartbeatMs: 1000, turnTimeoutMs: 10000, drainGraceMs: 100 }, entityIdFor: () => "entity-1",
-    elizaServiceUrl: "", elizaServiceSecret: "", redpillApiKey: "rp", redpillBaseUrl: "https://redpill.test/v1",
+    elizaServiceUrl: mcpSelected ? "" : "https://eliza.test", elizaServiceSecret: mcpSelected ? "" : "s", redpillApiKey: "rp", redpillBaseUrl: "https://redpill.test/v1",
     defaultModel: () => "phala/some-model", isModelOffered: () => true, fetchImpl, maxRounds: 3, backendRevision: "rev-1", meetingTrace: () => {},
-    mcpMeetings, mcpChatAccountAllowed: () => true, mcpOwnerDidFor: address => `did:pkh:eip155:1:${address.toLowerCase()}`,
+    mcpMeetings, mcpChatAccountAllowed: () => mcpSelected, mcpOwnerDidFor: address => `did:pkh:eip155:1:${address.toLowerCase()}`,
     meetingContentRetrievalEnabled: rollout.enabled, meetingContentAccountAllowed: rollout.accountAllowed, meetingContentModelAllowed: rollout.modelAllowed,
     meetingContentMcpAccountAllowed: rollout.mcpAccountAllowed, meetingContentMcpModelAllowed: rollout.mcpModelAllowed,
   };
   return { config, modelBodies };
 }
 
-async function ask(env: Record<string, string>) {
-  const { config, modelBodies } = setup(env);
+async function ask(env: Record<string, string>, mcpSelected = true) {
+  const { config, modelBodies } = setup(env, mcpSelected);
   const { req, res } = makeReqRes(ADDRESS);
   await createAgentChatHandler(config, undefined)(req, res);
   const text = res.chunks.join("");
@@ -129,6 +130,13 @@ describe("MCP chat turn admitted to the validated pipeline by the rollout flags"
     expect(modelBodies[0]!.tools?.map(tool => tool.function.name)).toEqual(["prepare_meeting_turn"]);
     expect(text).toContain("The team approved the cobalt rollout.");
     expect(text).toContain("Coverage");
+  });
+
+  it("leaves an account served by eliza-service on the plain tool loop even with * and an empty model list", async () => {
+    const { modelBodies } = await ask({ MEETING_CONTENT_RETRIEVAL_ENABLED: "true", MEETING_CONTENT_TEST_ACCOUNTS: "*", MEETING_CONTENT_MODELS: "" }, false);
+    const offered = modelBodies[0]!.tools?.map(tool => tool.function.name) ?? [];
+    expect(offered).not.toContain("prepare_meeting_turn");
+    expect(offered).toContain("tinycloud_find_meetings");
   });
 
   it("keeps the plain tool loop for an MCP account the list does not name", async () => {
