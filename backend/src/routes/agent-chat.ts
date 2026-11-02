@@ -133,6 +133,9 @@ export interface AgentChatConfig {
   meetingContentRetrievalEnabled?: boolean;
   meetingContentAccountAllowed?: (address: string) => boolean;
   meetingContentModelAllowed?: (model: string) => boolean;
+  /** The same gates for MCP-served turns only (`*` account entry, empty model list = all offered models); they replace the two above on those turns. */
+  meetingContentMcpAccountAllowed?: (address: string) => boolean;
+  meetingContentMcpModelAllowed?: (model: string) => boolean;
   backendRevision?: string;
   meetingTrace?: (trace: Record<string, unknown>) => void;
   /** §E.6 — shadow-push outbox (disabled when absent). */
@@ -1490,7 +1493,11 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
     const accessIssue = accessControl || mcpSelected ? privateAccessIssue(privateStatus) : undefined;
     const privateAccessActive = accessIssue === undefined;
     const turnConfig: AgentChatConfig = { ...config, privateAccessActive,
-      ...(mcpSelected ? { mcpOwner: config.mcpOwnerDidFor!(address) } : {}),
+      ...(mcpSelected ? {
+        mcpOwner: config.mcpOwnerDidFor!(address),
+        ...(config.meetingContentMcpAccountAllowed ? { meetingContentAccountAllowed: config.meetingContentMcpAccountAllowed } : {}),
+        ...(config.meetingContentMcpModelAllowed ? { meetingContentModelAllowed: config.meetingContentMcpModelAllowed } : {}),
+      } : {}),
       ...(accessIssue ? { privateAccessIssue: accessIssue } : {}),
       privateAccessRevision: privateAccessActive && typeof privateStatus?.revision === "string" ? privateStatus.revision : undefined };
     // A public-only turn still answers; it also tells the browser to offer
@@ -1594,7 +1601,7 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
       try {
         if (accessFrame) await streamOwner.write(accessFrame);
         orchestrateResult = await orchestrateToolCalling({
-          config: { ...turnConfig, meetingContentRetrievalEnabled: config.meetingContentRetrievalEnabled === true && (!config.meetingContentAccountAllowed || config.meetingContentAccountAllowed(req.user.address)) }, model: resolvedModel, messages: messages as ChatMsg[], entityId,
+          config: { ...turnConfig, meetingContentRetrievalEnabled: turnConfig.meetingContentRetrievalEnabled === true && (!turnConfig.meetingContentAccountAllowed || turnConfig.meetingContentAccountAllowed(req.user.address)) }, model: resolvedModel, messages: messages as ChatMsg[], entityId,
           roomId: typeof roomId === "string" ? roomId : undefined, turnContext,
           onUsage: usage => { observedUsage = usage; },
           write: streamOwner.write, signal: streamOwner.signal, onPhase: streamOwner.setPhase, remainingMs: streamOwner.remainingMs,
