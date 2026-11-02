@@ -13,8 +13,8 @@ enum ProbePhase: String, AppEnum {
 }
 
 struct ProbeIntent: LiveActivityIntent {
-    static var title: LocalizedStringResource = "Run Exo widget probe"
-    static var description = IntentDescription("Checks that an Exo control reaches the app and updates a Live Activity.")
+    static var title: LocalizedStringResource = "Run TinyCloud Home widget probe"
+    static var description = IntentDescription("Checks that a TinyCloud Home control reaches the app and updates a Live Activity.")
     static var openAppWhenRun = false
 
     @Parameter(title: "Action") var phase: ProbePhase
@@ -35,7 +35,7 @@ struct ProbeIntent: LiveActivityIntent {
         case .start:
             for activity in activities { await activity.end(nil, dismissalPolicy: .immediate) }
             let content = ActivityContent(state: RecordingActivityAttributes.ContentState(phase: "started", count: 1), staleDate: nil)
-            _ = try Activity.request(attributes: RecordingActivityAttributes(label: "Exo signing probe"), content: content, pushType: nil)
+            _ = try Activity.request(attributes: RecordingActivityAttributes(label: "TinyCloud Home signing probe"), content: content, pushType: nil)
         case .update:
             guard let activity = activities.first else { throw ProbeError.noActivity }
             let count = activity.content.state.count + 1
@@ -54,7 +54,7 @@ private enum ProbeError: Error { case noActivity }
 #if !EXO_WIDGET_EXTENSION
 struct ExoProbeShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
-        AppShortcut(intent: ProbeIntent(), phrases: ["Run widget probe in \(.applicationName)"], shortTitle: "Exo probe", systemImageName: "waveform")
+        AppShortcut(intent: ProbeIntent(), phrases: ["Run widget probe in \(.applicationName)"], shortTitle: "TinyCloud Home probe", systemImageName: "waveform")
     }
 }
 #endif

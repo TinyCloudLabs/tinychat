@@ -4,8 +4,8 @@ set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 UDID=${UDID:-00008140-0006645414D2801C}
-TEAM=${TEAM:-UDTLDX736A}
-BUNDLE=${BUNDLE:-xyz.tinycloud.exo.dev}
+TEAM=${TEAM:-R4QVKA785H}
+BUNDLE=${BUNDLE:-xyz.tinycloud.home.dev}
 derived_data=${EXO_IOS_DERIVED_DATA:-/tmp/exo-ios-dd}
 
 cd "$repo_root"

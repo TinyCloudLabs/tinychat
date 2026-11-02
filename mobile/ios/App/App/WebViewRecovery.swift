@@ -68,11 +68,11 @@ final class WebViewRecovery: NSObject, WKNavigationDelegate {
         overlay.backgroundColor = .systemBackground
 
         let title = UILabel()
-        title.text = "Exo needs to reload"
+        title.text = "TinyCloud Home needs to reload"
         title.font = .preferredFont(forTextStyle: .title2)
         title.textColor = .label
         let message = UILabel()
-        message.text = "Something interrupted Exo while it was in the background. Reload to pick up where you left off."
+        message.text = "Something interrupted TinyCloud Home while it was in the background. Reload to pick up where you left off."
         message.font = .preferredFont(forTextStyle: .callout)
         message.textColor = .secondaryLabel
         for label in [title, message] {
