@@ -133,7 +133,7 @@ __setOnDeviceSttForTests({
 // fake App.getInfo() makes the build line resolve with the real native
 // segments (build number and bundle id), not just the web baseline (TC-840).
 if (platform === "ios" || platform === "android") {
-  __setBuildInfoForTests({ version: "", build: "160", id: "xyz.tinycloud.exo.dev" });
+  __setBuildInfoForTests({ version: "", build: "160", id: "xyz.tinycloud.home.dev" });
   const fake = createCaptureFakeVoiceNotes();
   if (params.get("screen")?.startsWith("recorder-") || params.get("screen")?.startsWith("pipeline-wire-")) {
     fake.controls.commitLegacy({

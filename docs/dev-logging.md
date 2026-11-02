@@ -20,7 +20,7 @@ Native recorder, Whisper, and uploader tracing also goes to Tauri's stdout
 and this file at info level. The file rotates at about 5 MiB to
 `exo-dev.log.1`.
 
-## iOS device build (`xyz.tinycloud.exo.dev`)
+## iOS device build (`xyz.tinycloud.home.dev`)
 
 The debug app writes to `Library/Logs/exo-dev.log` in its app data container
 and mirrors each line to unified logging with subsystem
@@ -30,7 +30,7 @@ from a paired device:
 ```sh
 xcrun devicectl list devices
 xcrun devicectl device copy from --device DEVICE_ID \
-  --domain-type appDataContainer --domain-identifier xyz.tinycloud.exo.dev \
+  --domain-type appDataContainer --domain-identifier xyz.tinycloud.home.dev \
   --source Library/Logs/exo-dev.log --destination ./exo-ios-dev.log
 tail -f ./exo-ios-dev.log
 ```

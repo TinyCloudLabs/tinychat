@@ -19,16 +19,16 @@ EXO_SMOKE_RUNTIME=com.apple.CoreSimulator.SimRuntime.iOS-26-0 \
 xcodebuild -project mobile/ios/App/App.xcodeproj -target ExoWidgets -configuration Release \
   -showBuildSettings | rg 'PRODUCT_BUNDLE_IDENTIFIER|IPHONEOS_DEPLOYMENT_TARGET|CODE_SIGN_ENTITLEMENTS'
 xcodebuild -project mobile/ios/App/App.xcodeproj -target ExoWidgets -configuration Release \
-  EXO_BUNDLE_ID=xyz.tinycloud.exo.dev -showBuildSettings | rg PRODUCT_BUNDLE_IDENTIFIER
+  EXO_BUNDLE_ID=xyz.tinycloud.home.dev -showBuildSettings | rg PRODUCT_BUNDLE_IDENTIFIER
 ```
 
-For a signed device build, activate Node 22 or newer and use T2's `mobile/scripts/ios-device-install.sh` with `UDID=00008140-0006645414D2801C`, `TEAM=UDTLDX736A`, and `BUNDLE=xyz.tinycloud.exo.dev`. Check `pgrep -fl 'devicectl device install|adb .*install'` before installing; never uninstall Exo. Inspect both `App.app` and `App.app/PlugIns/ExoWidgets.appex` with `codesign -dvv` and `security cms -D -i …/embedded.mobileprovision`, checking team, bundle IDs, and expiry.
+For a signed device build, activate Node 22 or newer and use T2's `mobile/scripts/ios-device-install.sh` with `UDID=00008140-0006645414D2801C`, `TEAM=R4QVKA785H`, and `BUNDLE=xyz.tinycloud.home.dev`. Check `pgrep -fl 'devicectl device install|adb .*install'` before installing; never uninstall TinyCloud Home. Inspect both `App.app` and `App.app/PlugIns/ExoWidgets.appex` with `codesign -dvv` and `security cms -D -i …/embedded.mobileprovision`, checking team, bundle IDs, and expiry.
 
 ## On-device probe
 
-1. Add **Exo probe** from the Controls gallery to Control Center and the Lock Screen. Lock Vonnegut, tap each control, and capture a screenshot. Filter device logs for `EXO_WIDGET_PROBE`; `process=App` proves the app process handled the intent, while `process=ExoWidgets` is a routing failure.
-2. The first tap starts **Exo signing probe** as a Live Activity. Capture its Lock Screen / Dynamic Island display. Tap its update button and verify `phase=update`, `process=App`, and a higher count. Tap stop and verify `phase=end` and dismissal.
-3. In Shortcuts, run **Run widget probe in Exo**, then assign it to the Action button and run it there. Capture the corresponding logs and screenshots.
+1. Add **TinyCloud Home probe** from the Controls gallery to Control Center and the Lock Screen. Lock Vonnegut, tap each control, and capture a screenshot. Filter device logs for `EXO_WIDGET_PROBE`; `process=App` proves the app process handled the intent, while `process=ExoWidgets` is a routing failure.
+2. The first tap starts **TinyCloud Home signing probe** as a Live Activity. Capture its Lock Screen / Dynamic Island display. Tap its update button and verify `phase=update`, `process=App`, and a higher count. Tap stop and verify `phase=end` and dismissal.
+3. In Shortcuts, run **Run widget probe in TinyCloud Home**, then assign it to the Action button and run it there. Capture the corresponding logs and screenshots.
 
 Record each observation, including the iOS version, as pass, fail, or pending in `/tmp/exo-capture/evidence/T9/`. This is an extension and intent-routing proof; the locked microphone start belongs to T12.
 
