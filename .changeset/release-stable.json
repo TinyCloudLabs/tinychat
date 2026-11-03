@@ -1,0 +1,14 @@
+{
+  "versions": {
+    "exo-desktop": "0.13.0",
+    "@tinychat/frontend": "0.13.0",
+    "@tinychat/backend": "0.7.0"
+  },
+  "changesets": [
+    ".changeset/pre/home-site-frontend.md",
+    ".changeset/pre/home-site-origins.md",
+    ".changeset/pre/ios-pause-adoption-test.md",
+    ".changeset/pre/mcp-chat-validated-answers.md",
+    ".changeset/pre/tc2204-home-actionable-feed.md"
+  ]
+}
