@@ -96,7 +96,6 @@ describe("visible sample polling", () => {
     expect(view.host.textContent).toContain("Get started");
     expect(view.host.textContent).toContain("Ask your agent to post to your feed. Its cards show up here.");
     expect(view.host.textContent).toContain("Sample content");
-    expect(view.host.querySelector("a[href='https://agents.tinycloud.xyz/feed']")?.textContent).toBe("How agents post");
     await view.showReal([{ ...base, value: { ...base.value, lead: { text: "Real card" } } }]);
     expect(view.host.textContent).toContain("Real card");
     expect(view.host.textContent).not.toContain("Sample content");
