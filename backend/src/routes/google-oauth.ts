@@ -1,6 +1,7 @@
 import { browserTokenPayload, type CalendarAutojoinConnection } from "../services/calendar-autojoin-connection.js";
 import { randomBytes } from "node:crypto";
 import { Router } from "express";
+import { HOME_WEB_ORIGIN } from "../cors-origins.js";
 import type { NextFunction, Request, Response } from "express";
 
 import {
@@ -85,6 +86,10 @@ function firstQueryValue(value: unknown): unknown {
 //                        byte-for-byte what it has always been.
 //   `native.<nonce>`   — the Exo native app: a 302 to NATIVE_OAUTH_RETURN_URL.
 //   `tab.<path>.<nonce>` — web popup fallback: a 302 to the pinned app origin and path.
+//   `home.<nonce>`     — the TinyCloud Home site (HOME_WEB_ORIGIN): the postMessage page, pinned to
+//                        that fixed origin instead of FRONTEND_URL.
+//   `hometab.<path>.<nonce>` — the Home site's same-tab fallback: a 302 to HOME_WEB_ORIGIN and the
+//                        path, validated exactly as `tab.` paths are.
 //   `<anything>.<…>`   — an unknown tag: refused at /start and at /callback. Never defaulted.
 //
 // The deep-link TARGET is a constant: nothing in the request chooses where the browser goes, only
@@ -110,10 +115,13 @@ export const NATIVE_OAUTH_RETURN_URL = "xyz.tinycloud.exo://oauth/google";
 /** The only `error` value a native return carries. Google's own error text is never forwarded. */
 export const NATIVE_OAUTH_NOT_COMPLETED = "not_completed";
 
+/** The `state` tag of the TinyCloud Home site's popup flow. */
+export const HOME_OAUTH_CLIENT = "home";
+
 /** The nonce after the tag: base64url, the alphabet the app mints it in. */
 const NATIVE_STATE_NONCE_PATTERN = /^[A-Za-z0-9_-]{16,}$/;
 
-export type OAuthReturnClient = "web" | "native" | "tab";
+export type OAuthReturnClient = "web" | "native" | "tab" | "home" | "hometab";
 
 /**
  * The client a (shape-valid) `state` selects, or `null` for a tag no client mints. Callers check
@@ -123,12 +131,16 @@ export function oauthReturnClient(state: string): OAuthReturnClient | null {
   const separator = state.indexOf(".");
   if (separator === -1) return "web";
   if (state.startsWith("tab.")) return tabReturnPath(state) ? "tab" : null;
+  if (state.startsWith("hometab.")) return tabReturnPath(state) ? "hometab" : null;
+  if (state.slice(0, separator) === HOME_OAUTH_CLIENT) {
+    return NATIVE_STATE_NONCE_PATTERN.test(state.slice(separator + 1)) ? "home" : null;
+  }
   if (state.slice(0, separator) !== NATIVE_OAUTH_CLIENT) return null;
   return NATIVE_STATE_NONCE_PATTERN.test(state.slice(separator + 1)) ? "native" : null;
 }
 
 function tabReturnPath(state: string): string | null {
-  const match = /^tab\.([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]{16,})$/.exec(state);
+  const match = /^(?:home)?tab\.([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]{16,})$/.exec(state);
   if (!match) return null;
   const path = Buffer.from(match[1], "base64url").toString("utf8");
   return path.startsWith("/") && !path.startsWith("//") && !/[\\#\p{Cc}]/u.test(path) &&
@@ -212,7 +224,8 @@ function renderCancelledPage(): string {
  * The web member of the CORS allowlist comes from this same `FRONTEND_URL`, with a localhost
  * fallback that depends on whether local TLS files are present. Exo's fixed Tauri and Capacitor
  * origins are also allowed to call the API, but the callback page postMessages only to this pinned
- * web origin. The Exo apps return through the fixed native deep link instead (`native.` states).
+ * web origin, or to the fixed `HOME_WEB_ORIGIN` for a `home.` state. The Exo apps return through
+ * the fixed native deep link instead (`native.` states).
  */
 export const APP_ORIGIN_ENV = "FRONTEND_URL";
 
@@ -344,7 +357,8 @@ export function createGoogleOAuthRouter(
    * `GET /callback?code=…&state=…` — the popup's landing page. Unauthenticated by necessity
    * (a top-level navigation from Google carries no Bearer) and harmless: it holds no session,
    * reads no store, and hands the code to exactly one fixed destination: the pinned app origin,
-   * or, for a `native.` state, the constant app deep link.
+   * `HOME_WEB_ORIGIN` for a `home.`/`hometab.` state, or, for a `native.` state, the constant app
+   * deep link.
    */
   router.get("/callback", (req: Request, res: Response) => {
     const code = firstQueryValue(req.query.code);
@@ -374,13 +388,15 @@ export function createGoogleOAuthRouter(
       return;
     }
 
-    if (isValidOAuthState(state) && oauthReturnClient(state) === "tab") {
-      const path = tabReturnPath(state)!;
-      const params = new URLSearchParams({ state });
+    const validState = isValidOAuthState(state) ? state : null;
+    const returnClient = validState === null ? null : oauthReturnClient(validState);
+    if (validState !== null && (returnClient === "tab" || returnClient === "hometab")) {
+      const path = tabReturnPath(validState)!;
+      const params = new URLSearchParams({ state: validState });
       if (isBoundedString(code, MAX_CODE_LENGTH)) params.set("google_oauth_code", code);
       else params.set("google_oauth_error", "not_completed");
       res.setHeader("Content-Security-Policy", "default-src 'none'; sandbox");
-      res.redirect(302, `${appOrigin}${path}?${params}`);
+      res.redirect(302, `${returnClient === "hometab" ? HOME_WEB_ORIGIN : appOrigin}${path}?${params}`);
       return;
     }
 
@@ -388,7 +404,7 @@ export function createGoogleOAuthRouter(
       !isBoundedString(code, MAX_CODE_LENGTH) ||
       !isValidOAuthState(state) ||
       // A tag no client mints is not "the web": it gets the no-code page, never a postMessage.
-      oauthReturnClient(state) !== "web"
+      (returnClient !== "web" && returnClient !== "home")
     ) {
       // A denial (`?error=access_denied`) or a malformed return. NOTHING is postMessaged: the
       // SPA reads a popup that closed without a message as "cancelled", which is what happened.
@@ -405,7 +421,7 @@ export function createGoogleOAuthRouter(
     );
     logGoogleOAuth("op=callback result=posted");
     res.status(200).send(
-      renderCallbackPage({ code, state, appOrigin, nonce }),
+      renderCallbackPage({ code, state, appOrigin: returnClient === "home" ? HOME_WEB_ORIGIN : appOrigin, nonce }),
     );
   });
 
