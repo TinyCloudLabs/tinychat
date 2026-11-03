@@ -13,6 +13,13 @@ export const WELCOME_TITLE = "TinyCloud Home";
 export const WELCOME_LEAD = "Your agents post updates and ask for decisions here. You answer in one place, and everything stays in your own TinyCloud space.";
 export const WELCOME_DEMO_NOTE = "Sample cards from sample agents. Answer one: nothing leaves this page.";
 export const WELCOME_LEARN_MORE = "What is TinyCloud?";
+export const WELCOME_AGENT_TITLE = "Let your agent share to your TinyCloud";
+export const WELCOME_AGENT_BODY = "Paste this into Claude Code, Codex or any agent. It sets you up if you're new, then connects the agent to your Home feed.";
+export const WELCOME_AGENT_PROMPT = "Connect yourself to my TinyCloud Home feed and post me a first card: https://agents.tinycloud.xyz/feed";
+export const WELCOME_AGENT_COPY = "Copy prompt";
+export const WELCOME_AGENT_COPIED = "Copied";
+export const WELCOME_AGENT_COPY_FAILED = "Select the prompt and copy it";
+export const WELCOME_LEARN_MORE_LEAD = "New to TinyCloud?";
 
 /** The Home site's empty feed (TC-2387). */
 export const HOME_EMPTY_TITLE = "No cards yet";

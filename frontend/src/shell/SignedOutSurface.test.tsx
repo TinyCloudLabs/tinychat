@@ -20,6 +20,16 @@ test("the signed-out Home page has exactly one main landmark and one h1", () => 
   expect(count(markup, /<h1[\s>]/g)).toBe(1);
 });
 
+test("the front page offers the agent prompt in the hero and moves What is TinyCloud? below the sample cards", () => {
+  const markup = renderToStaticMarkup(<SignedOutSurface {...base} homeSite />);
+  const agent = markup.indexOf("Let your agent share to your TinyCloud");
+  const demo = markup.indexOf('aria-label="Demo feed"');
+  const learn = markup.indexOf("What is TinyCloud?");
+  expect(agent).toBeGreaterThan(markup.indexOf("Sign in to your Home"));
+  expect(agent).toBeLessThan(demo);
+  expect(learn).toBeGreaterThan(demo);
+});
+
 test("the plain build keeps the Exo sign-in screen, with one main landmark", () => {
   const markup = renderToStaticMarkup(<SignedOutSurface {...base} homeSite={false} />);
   expect(markup).toContain("Sign in to continue.");
