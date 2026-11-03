@@ -193,6 +193,7 @@ describe("real SDK SIWE audience", () => {
 
   for (const [name, origin, domain, claimedDomain] of [
     ["production web", "https://tinycloud.chat/chat", "tinycloud.chat"],
+    ["Home site", "https://home.tinycloud.xyz/", "home.tinycloud.xyz"],
     ["Pages preview", "https://feature-12.tinychat-4jq.pages.dev/chat", "feature-12.tinychat-4jq.pages.dev"],
     ["Tauri development", "http://localhost:5186/chat", "localhost", "localhost"],
     ["macOS Tauri", "tauri://localhost/chat", "localhost"],

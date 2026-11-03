@@ -9,6 +9,7 @@ import {
   EXO_DESKTOP_ORIGIN,
   EXO_DESKTOP_WINDOWS_ORIGIN,
   EXO_IOS_ORIGIN,
+  HOME_WEB_ORIGIN,
   LOCAL_WEB_ORIGINS,
 } from "../cors-origins.js";
 
@@ -35,7 +36,7 @@ afterAll(async () => {
 });
 
 describe("app CORS origins", () => {
-  test.each([WEB_ORIGIN, EXO_DESKTOP_ORIGIN, EXO_DESKTOP_WINDOWS_ORIGIN, EXO_ANDROID_ORIGIN, EXO_IOS_ORIGIN])(
+  test.each([WEB_ORIGIN, HOME_WEB_ORIGIN, EXO_DESKTOP_ORIGIN, EXO_DESKTOP_WINDOWS_ORIGIN, EXO_ANDROID_ORIGIN, EXO_IOS_ORIGIN])(
     "allows %s",
     async (origin) => {
       const response = await fetch(`${baseUrl}/health`, {
@@ -67,6 +68,11 @@ describe("app CORS origins", () => {
     "http://localhost:5173",
     "https://localhost:8443",
     "capacitor://attacker.example",
+    "https://home.tinycloud.xyz.evil.example",
+    "https://evilhome.tinycloud.xyz",
+    "http://home.tinycloud.xyz",
+    "https://home.tinycloud.xyz:8443",
+    "https://home.tinycloud.xyz.",
   ])("does not allow unrelated origin %s", async (origin) => {
     const response = await fetch(`${baseUrl}/health`, {
       headers: { Origin: origin },
@@ -95,7 +101,7 @@ describe("app CORS origins", () => {
     );
   });
 
-  test.each([WEB_ORIGIN, EXO_DESKTOP_ORIGIN, EXO_DESKTOP_WINDOWS_ORIGIN])(
+  test.each([WEB_ORIGIN, HOME_WEB_ORIGIN, EXO_DESKTOP_ORIGIN, EXO_DESKTOP_WINDOWS_ORIGIN])(
     "allows the hosted AssemblyAI part preflight from %s",
     async (origin) => {
       const response = await fetch(`${baseUrl}/health`, {

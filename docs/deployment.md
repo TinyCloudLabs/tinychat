@@ -603,7 +603,9 @@ nothing below may be reported as done on its behalf.
   ports removal cherry-picked onto it first. After the new build is live it also
   requires `https://<app_id>-3001.<gateway>/health` to be closed (TLS accepted,
   no HTTP response) and fails on any HTTP status.
-- **CORS:** the backend allows `FRONTEND_URL`, Exo's fixed Tauri origins, the
+- **CORS:** the backend allows `FRONTEND_URL`, the TinyCloud Home site
+  (`https://home.tinycloud.xyz`, the constant `HOME_WEB_ORIGIN` in
+  `backend/src/cors-origins.ts`), Exo's fixed Tauri origins, the
   TinyChat Cloudflare Pages project (`*.tinychat-4jq.pages.dev`), and the exact
   documented local origins on port `5186`. Production must still set
   `FRONTEND_URL=https://tinycloud.chat`; unrelated Pages projects, localhost
@@ -625,7 +627,8 @@ nothing below may be reported as done on its behalf.
   signs `tauri.localhost`. Older clients signing the paired
   `https://<hostname>` URI remain accepted for those web domains. The
   production web domain comes from `FRONTEND_URL` in
-  `docker-compose.phala.yml`; local and Pages hosts come from
+  `docker-compose.phala.yml`; the Home site (`home.tinycloud.xyz`, signing
+  the same way as the production web domain), local and Pages hosts come from
   `backend/src/cors-origins.ts`. Native OpenKey sign-in (iOS and Android)
   signs its configured issuer domain (`openkey.so` by default) and a canonical
   `did:key` session URI, never a web HTTPS URI. Only this native domain
@@ -644,6 +647,15 @@ nothing below may be reported as done on its behalf.
   backend process; a full store evicts its oldest nonce rather than blocking
   new sign-ins. The shared `/api/auth` limit is 1200 requests per 15 minutes
   for all unauthenticated clients, not a per-IP limit.
+- **Google OAuth return:** the client tags the `state` it sends, and the tag
+  picks where `/callback` returns. An untagged state and `tab.<path>.<nonce>`
+  return to `FRONTEND_URL` (the popup `postMessage` target, or a redirect to
+  the path). `home.<nonce>` and `hometab.<path>.<nonce>` do the same for the
+  TinyCloud Home site, but to the fixed `HOME_WEB_ORIGIN`; the nonce is
+  base64url of at least 16 characters, and the path rules are the `tab.` ones.
+  `native.<nonce>` still returns to the app deep link, and `/desktop/start`
+  accepts untagged states only. An unknown or malformed tag is refused at
+  `/start` and `/callback`.
 - **TLS:** Phala's `dstack-ingress` terminates TLS for the API. The backend's
   local-only `HTTPS_CERT_FILE`/`HTTPS_KEY_FILE` path is unused in production.
 - **What's not included yet:** CI (`ci.yml`) and PR-preview deployments. Port

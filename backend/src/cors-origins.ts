@@ -10,6 +10,10 @@ export const EXO_ANDROID_ORIGIN = "https://localhost";
 /** The fixed origin Capacitor assigns to Exo's bundled frontend on iOS. */
 export const EXO_IOS_ORIGIN = "capacitor://localhost";
 
+/** The fixed origin of the TinyCloud Home site, a second web deployment of the same frontend. */
+export const HOME_WEB_ORIGIN = "https://home.tinycloud.xyz";
+const HOME_WEB_DOMAIN = new URL(HOME_WEB_ORIGIN).hostname;
+
 /** TinyChat's Cloudflare Pages project, including branch and commit previews. */
 export const TINYCHAT_PAGES_ORIGIN = /^https:\/\/[a-z0-9-]+\.tinychat-4jq\.pages\.dev$/;
 
@@ -31,6 +35,7 @@ export function isExpectedSiweOrigin(
 ): boolean {
   if (domain === nativeDomain) return SESSION_KEY_URI.test(uri);
   if (domain !== webDomain &&
+    domain !== HOME_WEB_DOMAIN &&
     domain !== "localhost" &&
     domain !== "tauri.localhost" &&
     !TINYCHAT_PAGES_ORIGIN.test(`https://${domain}`)) return false;
@@ -41,6 +46,7 @@ export function isExpectedSiweOrigin(
 export function appCorsOrigins(frontendOrigin: string): Array<string | RegExp> {
   return [
     frontendOrigin,
+    HOME_WEB_ORIGIN,
     EXO_DESKTOP_ORIGIN,
     EXO_DESKTOP_WINDOWS_ORIGIN,
     EXO_ANDROID_ORIGIN,
