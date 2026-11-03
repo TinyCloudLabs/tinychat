@@ -151,6 +151,46 @@ rulesets stop direct pushes, hand-made release tags, branch or tag-controlled
 workflows, accidents and out-of-band deploys; they do not stop a malicious
 writer. Treat write access to this repo as production access.
 
+### Home site (home.tinycloud.xyz)
+
+The same frontend, built with `VITE_HOME_SITE=true`, is also served as the
+TinyCloud Home site at `https://home.tinycloud.xyz`.
+
+- **Pages project:** a separate Cloudflare Pages **Direct Upload** project. Its
+  name is the `TINYCHAT_HOME_PAGES_PROJECT` variable; its production branch is
+  `production`.
+- **Deploy job:** `web-home` in `deploy-production.yml`. It runs after the `web`
+  job succeeds, when the `web` input is true and `TINYCHAT_HOME_PAGES_PROJECT`
+  is set; otherwise it is skipped, which does not fail the workflow. It checks
+  out the SHA the run deployed, runs `bun run build:packages`, builds the
+  frontend with `VITE_HOME_SITE=true` (other `VITE_*` values come from
+  `frontend/.env.production`), uploads `frontend/dist` with
+  `wrangler pages deploy --branch production`, and checks that the Home URL
+  serves the same `index.html` as the deployment URL wrangler reported (read
+  from `WRANGLER_OUTPUT_FILE_PATH`).
+- **Configuration:** `TINYCHAT_HOME_PAGES_PROJECT` must be a **repository**
+  variable, not one on the `release-push` environment: it gates the job with a
+  job-level `if`, which cannot read environment-scoped variables, so an
+  environment-level value would skip `web-home` silently on every release.
+  `TINYCHAT_HOME_URL` (optional, defaults to `https://home.tinycloud.xyz`) can
+  be either. The secrets `CLOUDFLARE_PAGES_API_TOKEN` (Pages edit permission)
+  and `CLOUDFLARE_ACCOUNT_ID` stay on the `release-push` environment.
+- **Rollbacks:** before the upload, the job fails unless the built
+  `manifest.webmanifest` is named "TinyCloud Home". Redeploying a tag older
+  than the Home build therefore stops there instead of putting the plain site
+  on the Home project. After the upload it also fails unless wrangler reports
+  the `production` environment.
+- **Custom domain:** `home.tinycloud.xyz`, a `CNAME` to the project's
+  `<project>.pages.dev` host.
+- **Not Git-integrated on purpose:** `scripts/release/lib.mjs`
+  (`classifyPagesCheckRuns`) takes the newest check run named "Cloudflare Pages"
+  from the Pages app on the production commit and reads its deployment URL.
+  A second Git-connected Pages project would add another check run with that
+  name, and the release verifier could pick it up instead of the one for
+  `tinycloud.chat`.
+- **Backend:** the `HOME_WEB_ORIGIN` constant in `backend/src/cors-origins.ts`
+  must ship before or together with the Home site so the API accepts its origin.
+
 ---
 
 ## 2. Backend → Phala Cloud (`api.tinycloud.chat`)
@@ -268,8 +308,8 @@ Repository **variables** (all optional — defaults shown):
 | `ELIZA_TASKS_ENABLED` | `false` (repo variable; only literal `true` routes admitted agent turns through Eliza `/tasks`) |
 | `ELIZA_TASKS_TEST_ACCOUNTS` | _(empty — repo variable; comma-separated account addresses, trimmed and lowercased)_. **When tasks are enabled, an empty list admits all authenticated accounts.** Set an explicit canary list before enabling. |
 | `MEETING_CONTENT_RETRIEVAL_ENABLED` | `false` (optional; only literal `true` enables controller routing for admitted accounts) |
-| `MEETING_CONTENT_TEST_ACCOUNTS` | _(empty — optional comma-separated account allowlist; entries are trimmed and lowercased)_ |
-| `MEETING_CONTENT_MODELS` | _(empty — optional comma-separated evaluated-model allowlist; entries are trimmed and matched exactly)_ |
+| `MEETING_CONTENT_TEST_ACCOUNTS` | _(empty — optional comma-separated account allowlist; entries are trimmed and lowercased)_. For turns served by MCP chat (`MCP_CHAT_ENABLED`), a `*` entry admits every MCP account; the eliza-service path never honors `*`, and an empty list admits nobody on either path. |
+| `MEETING_CONTENT_MODELS` | _(empty — optional comma-separated evaluated-model allowlist; entries are trimmed and matched exactly)_. On the eliza-service path an empty list admits no model; for turns served by MCP chat an empty list admits every offered model. |
 | `CREDENTIAL_ROW_COUNT_SOURCES` | _(empty — optional comma-separated source names; when set to a source name, logs a single `credential_row_count source=<name> count=<N>` line at startup; read-only)_ |
 | `CREDENTIAL_COUNT_ADMIN_KEY` | _(empty — optional repo **secret**; off unless set to at least 32 characters; one-time read-only count of stored credential rows at `/api/internal/credential-row-count`, used before a removal. The same key, header (`x-admin-key`) and gating also serve the read-only hosted AssemblyAI probe `GET /api/internal/assemblyai-status` (counts and tokens only: provider state, blocked reason and status, failed jobs in a row, pending and delayed jobs, heartbeat age; 60 successful reads/h, 5 failures/h). With hosted mode on, the backend also writes one JSON line per event to stdout: `assemblyai_provider_blocked` and `assemblyai_jobs_failed_in_a_row` (both `alert:true`), `assemblyai_provider_recovered`, and `assemblyai_worker_heartbeat` every 60 s. AssemblyAI has no balance endpoint, so nothing polls one)_ |
 | `PAYWALL_ENABLED` | `false`. This and every Stripe/credit/ledger row below may live as a repo **secret** or **variable** — secrets win (`docs/stripe-setup.md`). |
@@ -563,7 +603,9 @@ nothing below may be reported as done on its behalf.
   ports removal cherry-picked onto it first. After the new build is live it also
   requires `https://<app_id>-3001.<gateway>/health` to be closed (TLS accepted,
   no HTTP response) and fails on any HTTP status.
-- **CORS:** the backend allows `FRONTEND_URL`, Exo's fixed Tauri origins, the
+- **CORS:** the backend allows `FRONTEND_URL`, the TinyCloud Home site
+  (`https://home.tinycloud.xyz`, the constant `HOME_WEB_ORIGIN` in
+  `backend/src/cors-origins.ts`), Exo's fixed Tauri origins, the
   TinyChat Cloudflare Pages project (`*.tinychat-4jq.pages.dev`), and the exact
   documented local origins on port `5186`. Production must still set
   `FRONTEND_URL=https://tinycloud.chat`; unrelated Pages projects, localhost
@@ -585,7 +627,8 @@ nothing below may be reported as done on its behalf.
   signs `tauri.localhost`. Older clients signing the paired
   `https://<hostname>` URI remain accepted for those web domains. The
   production web domain comes from `FRONTEND_URL` in
-  `docker-compose.phala.yml`; local and Pages hosts come from
+  `docker-compose.phala.yml`; the Home site (`home.tinycloud.xyz`, signing
+  the same way as the production web domain), local and Pages hosts come from
   `backend/src/cors-origins.ts`. Native OpenKey sign-in (iOS and Android)
   signs its configured issuer domain (`openkey.so` by default) and a canonical
   `did:key` session URI, never a web HTTPS URI. Only this native domain
@@ -604,6 +647,15 @@ nothing below may be reported as done on its behalf.
   backend process; a full store evicts its oldest nonce rather than blocking
   new sign-ins. The shared `/api/auth` limit is 1200 requests per 15 minutes
   for all unauthenticated clients, not a per-IP limit.
+- **Google OAuth return:** the client tags the `state` it sends, and the tag
+  picks where `/callback` returns. An untagged state and `tab.<path>.<nonce>`
+  return to `FRONTEND_URL` (the popup `postMessage` target, or a redirect to
+  the path). `home.<nonce>` and `hometab.<path>.<nonce>` do the same for the
+  TinyCloud Home site, but to the fixed `HOME_WEB_ORIGIN`; the nonce is
+  base64url of at least 16 characters, and the path rules are the `tab.` ones.
+  `native.<nonce>` still returns to the app deep link, and `/desktop/start`
+  accepts untagged states only. An unknown or malformed tag is refused at
+  `/start` and `/callback`.
 - **TLS:** Phala's `dstack-ingress` terminates TLS for the API. The backend's
   local-only `HTTPS_CERT_FILE`/`HTTPS_KEY_FILE` path is unused in production.
 - **What's not included yet:** CI (`ci.yml`) and PR-preview deployments. Port

@@ -1,5 +1,4 @@
-// Placeholder until the feed skill page is published.
-export const FEED_SKILL_URL = "https://agents.tinycloud.xyz/";
+export const FEED_SKILL_URL = "https://agents.tinycloud.xyz/feed";
 
 export const FEED_STRINGS = {
   heading: "Feed",

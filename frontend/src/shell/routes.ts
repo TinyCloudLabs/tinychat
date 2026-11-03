@@ -14,6 +14,7 @@
 // storage, which is what makes the whole map directly testable.
 
 import { ABOUT_PATH } from "../lib/about";
+import { HOME_SITE } from "../lib/homeSite";
 import type { AppPlatform } from "../lib/platform";
 import type { SizeClass } from "../lib/sizeClass";
 
@@ -135,13 +136,14 @@ export function parentPath(screen: Screen): string | null {
   return screen.destination ? DESTINATION_ROOTS[screen.destination] : null;
 }
 
-/** The phone app opens on Capture; the desktop app, the web and the PWA on Chat. */
-export function homeDestination(platform: AppPlatform): Destination {
-  return platform === "ios" || platform === "android" ? "capture" : "chat";
+/** The phone app opens on Capture; the Home site (TC-2387) on Home; the desktop app, the web and the PWA on Chat. */
+export function homeDestination(platform: AppPlatform, homeSite: boolean = HOME_SITE): Destination {
+  if (platform === "ios" || platform === "android") return "capture";
+  return homeSite && platform === "web" ? "feed" : "chat";
 }
 
-export function homePath(platform: AppPlatform): string {
-  return DESTINATION_ROOTS[homeDestination(platform)];
+export function homePath(platform: AppPlatform, homeSite: boolean = HOME_SITE): string {
+  return DESTINATION_ROOTS[homeDestination(platform, homeSite)];
 }
 
 /**

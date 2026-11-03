@@ -1006,7 +1006,8 @@ async function main() {
         // Explicit, and deliberately NOT the router's `googleAppOriginFromEnv()` default: this
         // process already resolved the web app origin once, with the localhost/TLS fallback a bare
         // env read does not have. CORS also accepts Exo's fixed app origins, but the callback page
-        // stays pinned to this web origin; the Exo apps return through the fixed native deep link.
+        // stays pinned to this web origin (or the fixed Home origin for `home.`/`hometab.` states);
+        // the Exo apps return through the fixed native deep link.
         appOrigin: FRONTEND_URL,
       }),
     );
@@ -1042,6 +1043,8 @@ async function main() {
                 meetingContentRetrievalEnabled: meetingRollout.enabled,
                 meetingContentAccountAllowed: meetingRollout.accountAllowed,
                 meetingContentModelAllowed: meetingRollout.modelAllowed,
+                meetingContentMcpAccountAllowed: meetingRollout.mcpAccountAllowed,
+                meetingContentMcpModelAllowed: meetingRollout.mcpModelAllowed,
                 backendRevision: process.env.BUILD_REVISION ?? process.env.GIT_SHA ?? "unknown",
                 agentId: TINYCHAT_AGENT_ID,
                 entityIdFor: (address: string) => addressToEntityId(address, TINYCHAT_AGENT_ID),

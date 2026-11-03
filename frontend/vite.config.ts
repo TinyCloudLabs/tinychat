@@ -1,5 +1,6 @@
 import fs from "fs";
 import { execFileSync } from "node:child_process";
+import { createRequire } from "node:module";
 import path from "path";
 import { fileURLToPath } from "url";
 import { defineConfig, loadEnv } from "vite";
@@ -7,8 +8,10 @@ import react from "@vitejs/plugin-react";
 import { nodePolyfills } from "vite-plugin-node-polyfills";
 import { VitePWA } from "vite-plugin-pwa";
 import { firstNonEmpty } from "./src/lib/buildEnv";
+import { homeSiteIndexHtml } from "./src/lib/homeSiteHtml";
 
 const rootDir = path.dirname(fileURLToPath(import.meta.url));
+const requireFromApp = createRequire(import.meta.url);
 
 // The build line's baseline (TC-840): the shared web/desktop/mobile version
 // frontend/package.json owns, the commit being built, and the channel
@@ -49,6 +52,8 @@ export default defineConfig(({ command, mode }) => {
     if (!valid)
       throw new Error("VITE_EXO_PTX_UPLOAD_ORIGIN must be a bare HTTPS origin for production builds");
   }
+  // The home.tinycloud.xyz build (TC-2387) installs as TinyCloud Home and opens on Home.
+  const homeSite = loadEnv(mode, rootDir, "VITE_").VITE_HOME_SITE === "true";
   return ({
   define: {
     __EXO_BUILD_INFO__: JSON.stringify({ ...exoBuildInfo, channel: exoBuildInfo.channel ?? (command === "serve" ? "dev" : undefined) }),
@@ -58,6 +63,10 @@ export default defineConfig(({ command, mode }) => {
   // Vite externalizes Node builtins in the browser, which silently broke the
   // GPU cert-chain check and an on-chain quote encoding. Polyfill the globals.
   plugins: [
+    ...(homeSite ? [{
+      name: "tinychat-home-site-html",
+      transformIndexHtml: (html: string) => homeSiteIndexHtml(html),
+    }] : []),
     {
       name: "tinychat-agent-artifacts",
       apply: "build",
@@ -79,12 +88,12 @@ export default defineConfig(({ command, mode }) => {
       // `vite dev` serves no worker unless VITE_PWA_DEV=true (src/lib/pwa.ts checks the same flag).
       devOptions: { enabled: process.env.VITE_PWA_DEV === "true" },
       manifest: {
-        id: "/chat",
+        id: homeSite ? "/chat/feed" : "/chat",
         // The product is Exo; the in-app UI still says "TinyCloud Chat" until the rename (TC-526).
-        name: "Exo",
-        short_name: "Exo",
-        description: "Private chat and meeting memory on TinyCloud.",
-        start_url: "/chat",
+        name: homeSite ? "TinyCloud Home" : "Exo",
+        short_name: homeSite ? "Home" : "Exo",
+        description: homeSite ? "Updates and decisions from your agents, in your TinyCloud space." : "Private chat and meeting memory on TinyCloud.",
+        start_url: homeSite ? "/chat/feed" : "/chat",
         scope: "/",
         display: "standalone",
         // A manifest takes one color: Day's --background (lib/theme.ts THEME_COLOR). index.html's
@@ -160,6 +169,10 @@ export default defineConfig(({ command, mode }) => {
   ],
   resolve: {
     alias: {
+      // Linked SDK modules still need the app's installed browser-global polyfills.
+      "vite-plugin-node-polyfills/shims/buffer": requireFromApp.resolve("vite-plugin-node-polyfills/shims/buffer"),
+      "vite-plugin-node-polyfills/shims/global": requireFromApp.resolve("vite-plugin-node-polyfills/shims/global"),
+      "vite-plugin-node-polyfills/shims/process": requireFromApp.resolve("vite-plugin-node-polyfills/shims/process"),
       // @tinycloud/replica/profile-gate (pulled in by web-sdk/replica) imports Node's fs/promises at
       // top level; the polyfill plugin only shims `fs`, which breaks the build. See the stub.
       "fs/promises": path.resolve(rootDir, "./src/lib/replication/nodeFsPromisesStub.ts"),

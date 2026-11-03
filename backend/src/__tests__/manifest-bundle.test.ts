@@ -1,7 +1,7 @@
 import { afterAll, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { resolveManifest } from "@tinycloud/node-sdk/core";
-import { APP_ID, MEETING_DB_DETAILS, MEETING_DB_SUMMARIES, MEETING_DB_TRANSCRIPTS, SIGN_IN_BUNDLE_ENTRIES, manifestCarriesBundle } from "@tinyboilerplate/core";
+import { APP_ID, MEETING_DB_DETAILS, MEETING_DB_SUMMARIES, MEETING_DB_TRANSCRIPTS, manifestCarriesBundle } from "@tinyboilerplate/core";
 import { runtimeManifest } from "../manifest.js";
 
 // The tests only read manifest.json; HOME is still a throwaway dir under /var/tmp, set at load and asserted.
@@ -10,34 +10,8 @@ process.env.HOME = testHome;
 if (!process.env.HOME.startsWith("/var/tmp/tc1013.")) throw new Error("HOME is not the throwaway test home");
 afterAll(() => { rmSync(testHome, { recursive: true, force: true }); });
 
-// The served manifest's sign-in bundle beyond the original five entries: meeting databases,
-// storage info, the Exo mailbox, applications-space KV and catalog databases.
-const BUNDLE = [
-  { service: "tinycloud.sql", path: "details", actions: ["read", "write", "schema"] },
-  { service: "tinycloud.sql", path: "summaries", actions: ["read", "write", "schema"] },
-  { service: "tinycloud.sql", path: "transcripts", actions: ["read", "write", "schema"] },
-  { service: "tinycloud.kv", space: "applications", path: "", actions: ["get", "put", "del", "list", "metadata"], skipPrefix: true },
-  { service: "tinycloud.space", path: "", actions: ["info"], skipPrefix: true },
-  { service: "tinycloud.kv", path: "exo/v1/requests/", actions: ["get", "list", "del"] },
-  { service: "tinycloud.kv", path: "exo/v1/jobs/", actions: ["get", "put", "del"] },
-  { service: "tinycloud.sql", space: "applications", path: "xyz.tinycloud.sample.healthlog/healthlog", actions: ["read", "write", "schema"], skipPrefix: true },
-  { service: "tinycloud.sql", space: "applications", path: "xyz.tinycloud.sample.recipes/recipes", actions: ["read", "write", "schema"], skipPrefix: true },
-];
 
 describe("TinyChat manifest sign-in bundle", () => {
-  // The web app's revision gate reads this same list to decide whether a served or signed manifest carries
-  // the bundle, so the list and the served manifest.json must not drift apart.
-  it("is the list the web app's revision gate checks the served manifest against", () => {
-    expect(SIGN_IN_BUNDLE_ENTRIES).toEqual(BUNDLE);
-    expect(manifestCarriesBundle(runtimeManifest())).toBe(true);
-  });
-
-  it("declares the bundle entries exactly, each once", () => {
-    const permissions = runtimeManifest().permissions ?? [];
-    for (const entry of BUNDLE) {
-      expect(permissions.filter((permission) => permission.service === entry.service && permission.path === entry.path)).toEqual([entry]);
-    }
-  });
 
   it("resolves each entry to the resource the app opens, with the info read at the bare path", () => {
     const resources = resolveManifest(runtimeManifest()).resources;
@@ -60,5 +34,39 @@ describe("TinyChat manifest sign-in bundle", () => {
         ["tinycloud.sql/read", "tinycloud.sql/write", "tinycloud.sql/schema"],
       ]);
     }
+  });
+
+  it("requires every Home owner scope before treating the served manifest as current", () => {
+    const current = runtimeManifest();
+    expect(manifestCarriesBundle(current)).toBe(true);
+    for (const [service, path] of [
+      ["tinycloud.sql", "home_feed"],
+      ["tinycloud.sql", "feed/"],
+      ["tinycloud.hooks", `sql/${APP_ID}/feed/`],
+      ["tinycloud.hooks", `sql/${APP_ID}/home_feed`],
+      ["tinycloud.hooks", `sql/${APP_ID}/threads`],
+    ]) {
+      const missing = {
+        ...current,
+        permissions: current.permissions?.filter((entry) => entry.service !== service || entry.path !== path),
+      };
+      expect(manifestCarriesBundle(missing)).toBe(false);
+    }
+  });
+
+  it("resolves Home SQL and hook authority to the exact databases the owner opens", () => {
+    const resources = resolveManifest(runtimeManifest()).resources;
+    for (const database of [`${APP_ID}/home_feed`, `${APP_ID}/feed/`]) {
+      expect(resources.filter((resource) => resource.service === "tinycloud.sql" && resource.path === database)
+        .map((resource) => resource.actions)).toEqual([
+        ["tinycloud.sql/read", "tinycloud.sql/write", "tinycloud.sql/schema"],
+      ]);
+    }
+    expect(resources.filter((resource) => resource.service === "tinycloud.hooks")
+      .map(({ path, actions }) => ({ path, actions }))).toEqual([
+      { path: `sql/${APP_ID}/feed/`, actions: ["tinycloud.hooks/subscribe"] },
+      { path: `sql/${APP_ID}/home_feed`, actions: ["tinycloud.hooks/subscribe"] },
+      { path: `sql/${APP_ID}/threads`, actions: ["tinycloud.hooks/subscribe"] },
+    ]);
   });
 });

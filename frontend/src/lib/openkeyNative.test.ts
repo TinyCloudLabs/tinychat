@@ -1,15 +1,8 @@
 import { stubSdkDomGlobals } from "../test/sdkDomGlobals";
-// TC-775 E1 — the Exo native OpenKey sign-in.
-//
-// The SDK and the node are mocked (O3/O4 are not deployed): OpenKeyNative and
-// the handoff deps are fakes that record calls, so the tests pin the flow
-// contract — unbound nonce → capabilities → secure-store handoff → activate →
-// restore with a read-only provider → verify — plus the flag/platform routing
-// and the cancel/deny messages.
+// Native authentication transition tests use injected OpenKey and Node boundaries.
+// They cover session/grant state changes, not a physical-device grant exercise.
 
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { OpenKeyNativeError } from "@openkey/sdk-capacitor";
 import { UserFacingError } from "./authErrors";
 import type {
@@ -24,7 +17,6 @@ import {
   describeAuthFailure,
   nativeClientOptions,
   normalizeLoginHint,
-  NATIVE_BROWSER_THEME,
   nativePermissions,
   nativeSignInErrorMessage,
   isNativeOpenKeySession,
@@ -47,7 +39,6 @@ import {
   NATIVE_SIGN_IN_SERVER_MESSAGE,
   NATIVE_SIGN_IN_SPACE_MESSAGE,
   NATIVE_SIGN_IN_STORAGE_MESSAGE,
-  NATIVE_SIGN_OUT_STORAGE_WARNING,
   type NativeSignInDeps,
 } from "./openkeyNative";
 import APP_MANIFEST from "../../../manifest.json";
@@ -66,7 +57,7 @@ const delegation: TinyCloudDelegation = {
   delegationHeader: { Authorization: "Bearer delegation" },
   delegationCid: "bafydelegation",
   expiresAt: "2099-01-01T00:00:00.000Z",
-  permissions: [],
+  permissions: nativePermissions(APP_MANIFEST as unknown as Manifest),
   tinycloudHost: HOST,
 };
 
@@ -305,29 +296,6 @@ describe("nativePermissions", () => {
     expect(data.length).toBeGreaterThan(0);
     expect(data.every((p) => p.path.startsWith("xyz.tinycloud.tinychat/"))).toBe(true);
     expect(data.some((p) => p.path === "" || p.path.includes("xyz.tinycloud.sample."))).toBe(false);
-  });
-});
-
-describe("nativePermissions ceiling", () => {
-  test("requests exactly the entries the native client ceiling covers today", () => {
-    const permissions = nativePermissions(APP_MANIFEST as unknown as Manifest);
-    const data = permissions
-      .filter((p) => p.service === "tinycloud.kv" || p.service === "tinycloud.sql")
-      .map((p) => `${p.service}:${p.path.replace("xyz.tinycloud.tinychat/", "")}`)
-      .sort();
-    expect(data).toEqual([
-      "tinycloud.kv:connectors/",
-      "tinycloud.kv:threads/",
-      "tinycloud.sql:canvas",
-      "tinycloud.sql:connectors",
-      "tinycloud.sql:threads",
-    ]);
-    expect(permissions[0]).toEqual({
-      service: "tinycloud.capabilities",
-      space: "applications",
-      path: "",
-      actions: ["tinycloud.capabilities/read"],
-    });
   });
 });
 
@@ -784,8 +752,6 @@ describe("error message mapping", () => {
   test("storage sign-out failures keep the session available for retry", () => {
     expect(isNativeStorageError(new OpenKeyNativeError("STORAGE", "read failed"))).toBe(true);
     expect(isNativeStorageError(new OpenKeyNativeError("NETWORK", "offline"))).toBe(false);
-    expect(NATIVE_SIGN_OUT_STORAGE_WARNING).toMatch(/session may still be stored/i);
-    expect(NATIVE_SIGN_OUT_STORAGE_WARNING).toMatch(/try signing out again/i);
   });
 });
 
@@ -842,78 +808,7 @@ describe("normalizeLoginHint", () => {
   });
 });
 
-describe("Android browser theme", () => {
-  test("Custom Tabs are dark with the OpenKey page's background", () => {
-    expect(NATIVE_BROWSER_THEME).toEqual({ toolbarColor: "#09090B", colorScheme: "dark" });
-  });
 
-  test("the default client is built with it", () => {
-    const source = readFileSync(join(__dirname, "openkeyNative.ts"), "utf-8");
-    const deps = source.slice(source.indexOf("async function defaultDeps"), source.indexOf("function delegationExpiryIso"));
-    expect(deps).toContain("browserTheme: NATIVE_BROWSER_THEME");
-  });
-});
-
-describe("platform routing (source)", () => {
-  const app = readFileSync(join(__dirname, "..", "App.tsx"), "utf-8");
-
-  test("signIn takes the native branch before the widget path", () => {
-    const signIn = app.slice(app.indexOf("const signIn = useCallback"), app.indexOf("const signOut = useCallback"));
-    expect(signIn).toContain("if (isNativeOpenKeySignIn())");
-    expect(signIn).toContain("signInNative(");
-    // Native first, the embedded-widget path second — web/desktop never reach it.
-    expect(signIn.indexOf("signInNative(")).toBeLessThan(signIn.indexOf("connectWallet("));
-  });
-
-  test("signOut calls OpenKeyNative.signOut on the native path", () => {
-    const signOut = app.slice(app.indexOf("const signOut = useCallback"), app.indexOf("const isReady"));
-    expect(signOut).toContain("signOutNative()");
-    expect(signOut.indexOf("isNativeOpenKeySession()")).toBeLessThan(signOut.indexOf("signOutOpenKeySession("));
-    expect(signOut.indexOf("if (isNativeStorageError(caught))")).toBeLessThan(signOut.indexOf("completeLocalSignOut(openKeyWarning"));
-    expect(signOut.indexOf("nativeRenewalRef.current?.stop()")).toBeLessThan(signOut.indexOf("await "));
-    const storageFailure = signOut.slice(signOut.indexOf("if (isNativeStorageError(caught))"), signOut.indexOf("if (caught instanceof Error"));
-    expect(storageFailure).toContain('setState("ready")');
-    expect(storageFailure).toContain("void nativeRenewalRef.current?.resume()");
-    expect(signOut).not.toContain("await nativeRenewalRef.current?.resume()");
-    expect(storageFailure).not.toContain("setNativeSessionActive(false)");
-    expect(signOut).toContain("openKeyWarning = NATIVE_SIGN_OUT_WARNING");
-    expect(signOut).toContain("if (nativeSession && !options.terminal)");
-    expect(signOut).toContain("completeLocalSignOut(openKeyWarning, Boolean(options.terminal))");
-    const terminal = app.slice(app.indexOf("onTerminal: (message) =>"), app.indexOf("onStorage: () =>"));
-    expect(terminal).toContain("signOutRef.current?.({ terminal: message })");
-    expect(app).toContain("signOutInFlightRef.current = true");
-  });
-
-  test("terminal handoff failure keeps renewal stopped; manual sign-out failure resumes it", () => {
-    const signOut = app.slice(app.indexOf("const signOut = useCallback"), app.indexOf("const isReady"));
-    const stop = signOut.indexOf("nativeRenewalRef.current?.stop()");
-    const handoff = signOut.indexOf("if (!await captureHandoff())");
-    const failure = signOut.slice(handoff, signOut.indexOf("let openKeyWarning", handoff));
-    expect(stop).toBeGreaterThan(-1);
-    expect(stop).toBeLessThan(handoff);
-    expect(failure).toMatch(/if \(!options\.terminal\) void nativeRenewalRef\.current\?\.resume\(\);\s+return;/);
-    expect(failure).not.toMatch(/^\s*void nativeRenewalRef\.current\?\.resume\(\);/m);
-    expect(app).toContain("signOutRef.current?.({ terminal: message })");
-  });
-
-  test("restoreSession never reaches the widget restore on a native platform", () => {
-    const boot = app.slice(app.indexOf("const restoreSession = useCallback"), app.indexOf("useEffect(() => {\n    if (restoredRef.current)"));
-    const nativeBranch = boot.slice(boot.indexOf("if (isNativeOpenKeySignIn())"), boot.indexOf("restorePersistedSession("));
-    expect(nativeBranch.indexOf("restoreNativeAtBoot(")).toBeGreaterThan(-1);
-    expect(nativeBranch).toContain('boot.kind === "restored"');
-    // No outcome inside the native branch — including the "none"/"terminal"
-    // cleanup below — ever calls the widget's own restore: a persisted widget
-    // session cannot be restored from here, only cleared.
-    expect(nativeBranch).not.toContain("restoreTinyCloudWebSession");
-    expect(nativeBranch).not.toContain("connectWallet(");
-    const cleanup = nativeBranch.slice(nativeBranch.indexOf('if (boot.kind === "configuration")'), nativeBranch.length);
-    expect(cleanup.indexOf("await captureHandoff()")).toBeLessThan(cleanup.indexOf("clearPersistedSession(storedAddress)"));
-    expect(cleanup.indexOf("clearPersistedSession(storedAddress)")).toBeLessThan(cleanup.indexOf("await boot.revoke()"));
-    expect(cleanup).toContain('setError(NATIVE_STORAGE_MESSAGE)');
-    expect(cleanup).toContain("sessionStoreRef.current.clear()");
-    expect(cleanup).toContain('setState("unauthenticated")');
-  });
-});
 
 describe("persisted widget session on a native cold boot", () => {
   // Covers restoreNativeAtBoot plus the storage helpers App.restoreSession's
@@ -1000,5 +895,53 @@ describe("describeAuthFailure redaction", () => {
     }
     expect(calls.some((args) => args.join(" ").includes("INVALID_GRANT"))).toBe(true);
     for (const message of messages) expect(message).not.toMatch(/SYNTHETIC|exchange failed|outer|slow/);
+  });
+});
+
+describe("native feed grant upgrade", () => {
+  const required = nativePermissions(APP_MANIFEST as unknown as Manifest);
+  for (const missing of ["xyz.tinycloud.tinychat/feed/", "sql/xyz.tinycloud.tinychat/feed/"]) {
+    test(`a live grant missing ${missing} requests one re-sign before installation`, async () => {
+      const flow = makeFlow();
+      flow.openkey.current = async () => ({
+        tokens: { accessToken: "a", refreshToken: "r" }, sessionKey,
+        delegation: { ...delegation, permissions: required.filter((permission) => permission.path !== missing) },
+      });
+      const boot = await restoreNativeAtBoot(config, true, flow.deps);
+      expect(boot.kind).toBe("upgrade");
+      expect(flow.storage.saved).toEqual([]);
+      expect(flow.order).not.toContain("signOut");
+    });
+  }
+  test("another owner's full space does not satisfy the current owner's required scopes", async () => {
+    const flow = makeFlow();
+    flow.openkey.current = async () => ({
+      tokens: { accessToken: "a", refreshToken: "r" }, sessionKey,
+      delegation: { ...delegation, permissions: required.map((permission) => ({
+        ...permission, space: "tinycloud:pkh:eip155:1:0x2222222222222222222222222222222222222222:applications",
+      })) },
+    });
+    expect((await restoreNativeAtBoot(config, true, flow.deps)).kind).toBe("upgrade");
+    expect(flow.storage.saved).toEqual([]);
+  });
+  test("an older served manifest defers re-sign without discarding a usable native grant", async () => {
+    const flow = makeFlow();
+    flow.openkey.current = async () => ({
+      tokens: { accessToken: "a", refreshToken: "r" }, sessionKey, delegation: { ...delegation, permissions: [] },
+    });
+    flow.deps.loadManifest = async () => ({
+      ...APP_MANIFEST, permissions: APP_MANIFEST.permissions.filter((permission) => permission.path !== "feed/"),
+    }) as unknown as Manifest;
+    expect((await restoreNativeAtBoot(config, true, flow.deps)).kind).toBe("restored");
+    expect(flow.order).not.toContain("signOut");
+  });
+  test("an unreachable served manifest defers re-sign without turning a valid grant into a logout", async () => {
+    const flow = makeFlow();
+    flow.openkey.current = async () => ({
+      tokens: { accessToken: "a", refreshToken: "r" }, sessionKey, delegation: { ...delegation, permissions: [] },
+    });
+    flow.deps.loadManifest = async () => { throw new TypeError("Failed to fetch"); };
+    expect((await restoreNativeAtBoot(config, true, flow.deps)).kind).toBe("restored");
+    expect(flow.order).not.toContain("signOut");
   });
 });

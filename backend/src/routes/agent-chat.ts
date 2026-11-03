@@ -133,6 +133,9 @@ export interface AgentChatConfig {
   meetingContentRetrievalEnabled?: boolean;
   meetingContentAccountAllowed?: (address: string) => boolean;
   meetingContentModelAllowed?: (model: string) => boolean;
+  /** The same gates for MCP-served turns only (`*` account entry, empty model list = all offered models); they replace the two above on those turns. */
+  meetingContentMcpAccountAllowed?: (address: string) => boolean;
+  meetingContentMcpModelAllowed?: (model: string) => boolean;
   backendRevision?: string;
   meetingTrace?: (trace: Record<string, unknown>) => void;
   /** §E.6 — shadow-push outbox (disabled when absent). */
@@ -456,6 +459,10 @@ async function dispatchTool(
     throw new StreamFailure("upstream_incomplete");
   }
   throwIfAborted(signal);
+  // An MCP turn never falls back to eliza-service: a name the wrapper does not serve (invented or injected) is refused here.
+  if (config.mcpOwner && !config.mcpMeetings?.handles(call.name)) {
+    return { status: "error", code: "tool_not_found", text: `(tool ${JSON.stringify(call.name.slice(0, 64))} is not available)` };
+  }
   const mcpMeeting = config.mcpMeetings && config.mcpOwner && config.mcpMeetings.handles(call.name)
     ? await config.mcpMeetings.run({ name: call.name, args, owner: config.mcpOwner, ...(roomId ? { roomId } : {}), ...(turnContext ? { context: turnContext as unknown as RetrievalContext } : {}), ...(signal ? { signal } : {}) })
     : undefined;
@@ -611,7 +618,8 @@ export async function orchestrateToolCalling(params: OrchestrateParams): Promise
     streamErrorCode: error => error instanceof StreamFailure ? error.code : undefined,
     modelCall: request => bufferedMeetingModelCall({ ...params, onUsage: checkpoint() }, request),
     dispatch: (name, args, context, signal, id) => dispatchTool(params.config, fetchImpl, { name, args: JSON.stringify(args), id }, params.entityId, params.roomId, context, signal),
-    capability: async signal => {
+    // MCP turns read through the in-process wrapper, which emits contract v2 by construction; there is no remote reader to probe.
+    capability: params.config.mcpOwner ? async () => ({ meetingRetrieval: { contractVersion: 2 }, buildRevision: params.config.backendRevision ?? "unknown" }) : async signal => {
       const response = await fetchForTurn(fetchImpl, `${params.config.elizaServiceUrl}/capabilities`, { headers: { authorization: `Bearer ${params.config.elizaServiceSecret}` } }, signal);
       if (!response.ok) { if (response.body) ignoreCleanup(() => response.body!.cancel()); return null; }
       // This content-free response has a small independent transport bound.
@@ -1485,7 +1493,11 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
     const accessIssue = accessControl || mcpSelected ? privateAccessIssue(privateStatus) : undefined;
     const privateAccessActive = accessIssue === undefined;
     const turnConfig: AgentChatConfig = { ...config, privateAccessActive,
-      ...(mcpSelected ? { mcpOwner: config.mcpOwnerDidFor!(address) } : {}),
+      ...(mcpSelected ? {
+        mcpOwner: config.mcpOwnerDidFor!(address),
+        ...(config.meetingContentMcpAccountAllowed ? { meetingContentAccountAllowed: config.meetingContentMcpAccountAllowed } : {}),
+        ...(config.meetingContentMcpModelAllowed ? { meetingContentModelAllowed: config.meetingContentMcpModelAllowed } : {}),
+      } : {}),
       ...(accessIssue ? { privateAccessIssue: accessIssue } : {}),
       privateAccessRevision: privateAccessActive && typeof privateStatus?.revision === "string" ? privateStatus.revision : undefined };
     // A public-only turn still answers; it also tells the browser to offer
@@ -1589,7 +1601,7 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
       try {
         if (accessFrame) await streamOwner.write(accessFrame);
         orchestrateResult = await orchestrateToolCalling({
-          config: { ...turnConfig, meetingContentRetrievalEnabled: config.meetingContentRetrievalEnabled === true && (!config.meetingContentAccountAllowed || config.meetingContentAccountAllowed(req.user.address)) }, model: resolvedModel, messages: messages as ChatMsg[], entityId,
+          config: { ...turnConfig, meetingContentRetrievalEnabled: turnConfig.meetingContentRetrievalEnabled === true && (!turnConfig.meetingContentAccountAllowed || turnConfig.meetingContentAccountAllowed(req.user.address)) }, model: resolvedModel, messages: messages as ChatMsg[], entityId,
           roomId: typeof roomId === "string" ? roomId : undefined, turnContext,
           onUsage: usage => { observedUsage = usage; },
           write: streamOwner.write, signal: streamOwner.signal, onPhase: streamOwner.setPhase, remainingMs: streamOwner.remainingMs,

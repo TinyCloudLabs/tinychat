@@ -1,4 +1,4 @@
-// The sign-in manifest entries that manifest revision "3" stands for. One list, read by the backend test
+// The sign-in manifest entries that manifest revision "4" stands for. One list, read by the backend test
 // that pins the served manifest.json and by the frontend gate that decides whether a served or signed
 // manifest really carries them (the web app and the backend image deploy separately).
 //
@@ -16,6 +16,11 @@ export const SIGN_IN_BUNDLE_ENTRIES: readonly RequiredManifestEntry[] = [
   { service: "tinycloud.sql", path: "details", actions: ["read", "write", "schema"] },
   { service: "tinycloud.sql", path: "summaries", actions: ["read", "write", "schema"] },
   { service: "tinycloud.sql", path: "transcripts", actions: ["read", "write", "schema"] },
+  { service: "tinycloud.sql", path: "home_feed", actions: ["read", "write", "schema"] },
+  { service: "tinycloud.sql", path: "feed/", actions: ["read", "write", "schema"] },
+  { service: "tinycloud.hooks", space: "applications", path: "sql/xyz.tinycloud.tinychat/feed/", actions: ["subscribe"], skipPrefix: true },
+  { service: "tinycloud.hooks", space: "applications", path: "sql/xyz.tinycloud.tinychat/home_feed", actions: ["subscribe"], skipPrefix: true },
+  { service: "tinycloud.hooks", space: "applications", path: "sql/xyz.tinycloud.tinychat/threads", actions: ["subscribe"], skipPrefix: true },
   { service: "tinycloud.kv", space: "applications", path: "", actions: ["get", "put", "del", "list", "metadata"], skipPrefix: true },
   { service: "tinycloud.space", path: "", actions: ["info"], skipPrefix: true },
   { service: "tinycloud.kv", path: "exo/v1/requests/", actions: ["get", "list", "del"] },
