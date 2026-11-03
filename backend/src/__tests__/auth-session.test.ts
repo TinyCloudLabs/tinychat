@@ -254,7 +254,7 @@ describe("HTTP SIWE sessions", () => {
     const nonce = await requestNonce(base, account.address);
     const home = await signMessage(nonce, { domain: "home.tinycloud.xyz", uri: "https://home.tinycloud.xyz" });
     expect((await postVerify(base, home)).status).toBe(200);
-    for (const domain of ["tinycloud.xyz", "evilhome.tinycloud.xyz", "home.tinycloud.xyz.evil.example", "other.tinycloud.xyz"]) {
+    for (const domain of ["tinycloud.xyz", "evilhome.tinycloud.xyz", "home.tinycloud.xyz.evil.example", "other.tinycloud.xyz", "home.tinycloud.xyz:443"]) {
       const lookalikeNonce = await requestNonce(base, account.address);
       const lookalike = await signMessage(lookalikeNonce, { domain, uri: `https://${domain}` });
       const response = await postVerify(base, lookalike);

@@ -842,6 +842,8 @@ describe("Home site return", () => {
     ["a path with a fragment", homeTabState("/chat#x")],
     ["a path with a backslash", homeTabState("/\\evil.example")],
     ["an over-long path", homeTabState(`/${"a".repeat(256)}`)],
+    ["a path with a header-injection newline", homeTabState("/chat\r\nSet-Cookie:x")],
+    ["a path with a trailing newline", homeTabState("/chat\n")],
     ["a short nonce", `hometab.${Buffer.from("/chat").toString("base64url")}.abc`],
     ["a short home nonce", "home.abc"],
     ["a home nonce outside base64url", `home.${NONCE}~`],

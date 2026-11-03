@@ -224,7 +224,8 @@ function renderCancelledPage(): string {
  * The web member of the CORS allowlist comes from this same `FRONTEND_URL`, with a localhost
  * fallback that depends on whether local TLS files are present. Exo's fixed Tauri and Capacitor
  * origins are also allowed to call the API, but the callback page postMessages only to this pinned
- * web origin. The Exo apps return through the fixed native deep link instead (`native.` states).
+ * web origin, or to the fixed `HOME_WEB_ORIGIN` for a `home.` state. The Exo apps return through
+ * the fixed native deep link instead (`native.` states).
  */
 export const APP_ORIGIN_ENV = "FRONTEND_URL";
 
@@ -356,7 +357,8 @@ export function createGoogleOAuthRouter(
    * `GET /callback?code=…&state=…` — the popup's landing page. Unauthenticated by necessity
    * (a top-level navigation from Google carries no Bearer) and harmless: it holds no session,
    * reads no store, and hands the code to exactly one fixed destination: the pinned app origin,
-   * or, for a `native.` state, the constant app deep link.
+   * `HOME_WEB_ORIGIN` for a `home.`/`hometab.` state, or, for a `native.` state, the constant app
+   * deep link.
    */
   router.get("/callback", (req: Request, res: Response) => {
     const code = firstQueryValue(req.query.code);

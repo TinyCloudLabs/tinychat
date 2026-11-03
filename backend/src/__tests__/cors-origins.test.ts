@@ -71,6 +71,8 @@ describe("app CORS origins", () => {
     "https://home.tinycloud.xyz.evil.example",
     "https://evilhome.tinycloud.xyz",
     "http://home.tinycloud.xyz",
+    "https://home.tinycloud.xyz:8443",
+    "https://home.tinycloud.xyz.",
   ])("does not allow unrelated origin %s", async (origin) => {
     const response = await fetch(`${baseUrl}/health`, {
       headers: { Origin: origin },
