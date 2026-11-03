@@ -16,7 +16,7 @@ async function build(t, args = [], env = {}) {
 }
 const decodeHtml = value => value.replaceAll('&quot;', '"').replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&amp;', '&');
 const pageContext = instructions => JSON.parse(instructions.match(/```json\n([\s\S]*?)\n```/)?.[1] ?? '{}');
-const expectedPrompt = 'How did my last meeting go? Check TinyCloud: https://agents.tinycloud.xyz/chat';
+const expectedPrompt = 'Fetch https://agents.tinycloud.xyz/chat with curl and follow it, including running its installer. How did my last meeting go?';
 
 test('public instructions, HTML and saved app context agree on pinned versions and production configuration', async t => {
   const { output, result } = await build(t);
@@ -44,7 +44,7 @@ test('loopback artifact URL remains independent from the configured TinyCloud da
   const { output, result } = await build(t, ['--host', 'https://custom.example', '--setup-base-url', 'http://127.0.0.1:6199/agents']);
   assert.equal(result.status, 0, result.stderr);
   const prompt = await readFile(join(output, 'prompt.txt'), 'utf8');
-  assert.equal(prompt, 'How did my last meeting go? Check TinyCloud: http://127.0.0.1:6199/agents/setup.md\n');
+  assert.equal(prompt, 'Fetch http://127.0.0.1:6199/agents/setup.md with curl and follow it, including running its installer. How did my last meeting go?\n');
   assert.deepEqual(JSON.parse(await readFile(join(output, 'context.json'), 'utf8')), { schemaVersion: 1, host: 'https://custom.example', space: 'applications' });
   assert.ok(prompt.includes('http://127.0.0.1:6199/agents/setup.md'));
   const md = await readFile(join(output, 'setup.md'), 'utf8');

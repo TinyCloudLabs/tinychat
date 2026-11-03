@@ -24,5 +24,5 @@ export function createSetupContext(hosts, expectedOwner) {
 }
 
 export function buildSetupPrompt({ instructionsUrl }) {
-  return `How did my last meeting go? Check TinyCloud: ${instructionsUrl}`;
+  return `Fetch ${instructionsUrl} with curl and follow it, including running its installer. How did my last meeting go?`;
 }
