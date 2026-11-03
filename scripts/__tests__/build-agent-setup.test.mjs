@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { buildSetupPrompt } from '../../frontend/src/lib/agent-setup-prompt.mjs';
 const root = new URL('../../', import.meta.url);
 
 async function build(t, args = [], env = {}) {
@@ -16,7 +17,21 @@ async function build(t, args = [], env = {}) {
 }
 const decodeHtml = value => value.replaceAll('&quot;', '"').replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&amp;', '&');
 const pageContext = instructions => JSON.parse(instructions.match(/```json\n([\s\S]*?)\n```/)?.[1] ?? '{}');
-const expectedPrompt = 'Fetch https://agents.tinycloud.xyz/chat with curl and follow it, including running its installer. How did my last meeting go?';
+// The app's Use with your agent card and the generated public files share one prompt builder.
+const setupConfig = JSON.parse(await readFile(new URL('frontend/src/lib/agent-setup.json', root), 'utf8'));
+const expectedPrompt = buildSetupPrompt(setupConfig);
+
+test('the prompt sends the agent to the guide with its installer, and no old wording is left in the public files', async t => {
+  assert.ok(expectedPrompt.includes('https://agents.tinycloud.xyz/chat'));
+  assert.ok(expectedPrompt.includes('including running its installer'));
+  const { output, result } = await build(t);
+  assert.equal(result.status, 0, result.stderr);
+  const committed = [new URL('frontend/public/agents/prompt.txt', root), new URL('frontend/public/agents/index.html', root)];
+  for (const file of [join(output, 'prompt.txt'), join(output, 'index.html'), ...committed]) {
+    assert.ok(!(await readFile(file, 'utf8')).includes('Check TinyCloud:'), String(file));
+  }
+  assert.equal(await readFile(committed[0], 'utf8'), expectedPrompt + '\n', 'the committed prompt.txt is regenerated');
+});
 
 test('public instructions, HTML and saved app context agree on pinned versions and production configuration', async t => {
   const { output, result } = await build(t);
@@ -44,7 +59,8 @@ test('loopback artifact URL remains independent from the configured TinyCloud da
   const { output, result } = await build(t, ['--host', 'https://custom.example', '--setup-base-url', 'http://127.0.0.1:6199/agents']);
   assert.equal(result.status, 0, result.stderr);
   const prompt = await readFile(join(output, 'prompt.txt'), 'utf8');
-  assert.equal(prompt, 'Fetch http://127.0.0.1:6199/agents/setup.md with curl and follow it, including running its installer. How did my last meeting go?\n');
+  assert.equal(prompt, buildSetupPrompt({ instructionsUrl: 'http://127.0.0.1:6199/agents/setup.md' }) + '\n');
+  assert.ok(prompt.includes('including running its installer'));
   assert.deepEqual(JSON.parse(await readFile(join(output, 'context.json'), 'utf8')), { schemaVersion: 1, host: 'https://custom.example', space: 'applications' });
   assert.ok(prompt.includes('http://127.0.0.1:6199/agents/setup.md'));
   const md = await readFile(join(output, 'setup.md'), 'utf8');
