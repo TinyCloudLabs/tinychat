@@ -151,6 +151,39 @@ rulesets stop direct pushes, hand-made release tags, branch or tag-controlled
 workflows, accidents and out-of-band deploys; they do not stop a malicious
 writer. Treat write access to this repo as production access.
 
+### Home site (home.tinycloud.xyz)
+
+The same frontend, built with `VITE_HOME_SITE=true`, is also served as the
+TinyCloud Home site at `https://home.tinycloud.xyz`.
+
+- **Pages project:** a separate Cloudflare Pages **Direct Upload** project. Its
+  name is the `TINYCHAT_HOME_PAGES_PROJECT` variable; its production branch is
+  `production`.
+- **Deploy job:** `web-home` in `deploy-production.yml`. It runs after the `web`
+  job succeeds, when the `web` input is true and `TINYCHAT_HOME_PAGES_PROJECT`
+  is set; otherwise it is skipped, which does not fail the workflow. It checks
+  out the SHA the run deployed, runs `bun run build:packages`, builds the
+  frontend with `VITE_HOME_SITE=true` (other `VITE_*` values come from
+  `frontend/.env.production`), uploads `frontend/dist` with
+  `wrangler pages deploy --branch production`, and checks that the Home URL
+  serves the same `index.html` as the deployment URL wrangler reported (read
+  from `WRANGLER_OUTPUT_FILE_PATH`).
+- **Configuration** (`release-push` environment): variable
+  `TINYCHAT_HOME_PAGES_PROJECT`; optional variable `TINYCHAT_HOME_URL`
+  (defaults to `https://home.tinycloud.xyz`); secrets
+  `CLOUDFLARE_PAGES_API_TOKEN` (Pages edit permission) and
+  `CLOUDFLARE_ACCOUNT_ID`.
+- **Custom domain:** `home.tinycloud.xyz`, a `CNAME` to the project's
+  `<project>.pages.dev` host.
+- **Not Git-integrated on purpose:** `scripts/release/lib.mjs`
+  (`classifyPagesCheckRuns`) takes the newest check run named "Cloudflare Pages"
+  from the Pages app on the production commit and reads its deployment URL.
+  A second Git-connected Pages project would add another check run with that
+  name, and the release verifier could pick it up instead of the one for
+  `tinycloud.chat`.
+- **Backend:** the `HOME_WEB_ORIGIN` constant in `backend/src/cors-origins.ts`
+  must ship before or together with the Home site so the API accepts its origin.
+
 ---
 
 ## 2. Backend → Phala Cloud (`api.tinycloud.chat`)

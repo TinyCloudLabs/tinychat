@@ -6,6 +6,19 @@ export const NAV_LABEL_RECORDING = "Recording";
 export const NAV_LABEL_CHAT = "Chat";
 export const NAV_LABEL_APPS = "Apps";
 export const NAV_LABEL_FEED = "Feed";
+export const NAV_LABEL_HOME = "Home";
+
+/** The Home site's signed-out page (TC-2387). */
+export const WELCOME_TITLE = "TinyCloud Home";
+export const WELCOME_LEAD = "Your agents post updates and ask for decisions here. You answer in one place, and everything stays in your own TinyCloud space.";
+export const WELCOME_DEMO_NOTE = "Sample cards from sample agents. Answer one: nothing leaves this page.";
+export const WELCOME_LEARN_MORE = "What is TinyCloud?";
+
+/** The Home site's empty feed (TC-2387). */
+export const HOME_EMPTY_TITLE = "No cards yet";
+export const HOME_EMPTY_BODY = "Ask your agent to post to your Home. Its updates and questions show up here.";
+export const HOME_EMPTY_HOW = "How agents post";
+export const HOME_EMPTY_CHAT = "Open Chat";
 
 /** The Apps page. */
 export const APPS_PAGE_TITLE = "Apps";

@@ -100,6 +100,7 @@ import {
 import { secretsAvailable, SECRETS_UNAVAILABLE_IN_APP_MESSAGE } from "@/lib/openkeyNative";
 import { appPlatform } from "@/lib/platform";
 import { cancelDesktopGoogleOAuth, encodeDesktopRefreshToken, googleRefreshGrant, startDesktopGoogleOAuth } from "@/lib/connectors/googleOAuthDesktop";
+import { popupOAuthState } from "@/lib/connectors/googleOAuthState";
 import { clearSameTabReturn, pendingSameTabReturn, sameTabState, saveSameTabVerifier } from "@/lib/connectors/googleOAuthSameTab";
 import {
   isGmeetNotesSyncInFlight,
@@ -1353,7 +1354,7 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
       let verifier: string;
       let challenge: string;
       try {
-        state = randomUrlSafeToken(24);
+        state = popupOAuthState(randomUrlSafeToken(24));
         verifier = randomUrlSafeToken(32);
         challenge = await pkceChallengeS256(verifier);
       } catch {

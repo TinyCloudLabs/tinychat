@@ -51,6 +51,8 @@ export default defineConfig(({ command, mode }) => {
     if (!valid)
       throw new Error("VITE_EXO_PTX_UPLOAD_ORIGIN must be a bare HTTPS origin for production builds");
   }
+  // The home.tinycloud.xyz build (TC-2387) installs as TinyCloud Home and opens on Home.
+  const homeSite = loadEnv(mode, rootDir, "VITE_").VITE_HOME_SITE === "true";
   return ({
   define: {
     __EXO_BUILD_INFO__: JSON.stringify({ ...exoBuildInfo, channel: exoBuildInfo.channel ?? (command === "serve" ? "dev" : undefined) }),
@@ -81,12 +83,12 @@ export default defineConfig(({ command, mode }) => {
       // `vite dev` serves no worker unless VITE_PWA_DEV=true (src/lib/pwa.ts checks the same flag).
       devOptions: { enabled: process.env.VITE_PWA_DEV === "true" },
       manifest: {
-        id: "/chat",
+        id: homeSite ? "/chat/feed" : "/chat",
         // The product is Exo; the in-app UI still says "TinyCloud Chat" until the rename (TC-526).
-        name: "Exo",
-        short_name: "Exo",
-        description: "Private chat and meeting memory on TinyCloud.",
-        start_url: "/chat",
+        name: homeSite ? "TinyCloud Home" : "Exo",
+        short_name: homeSite ? "Home" : "Exo",
+        description: homeSite ? "Updates and decisions from your agents, in your TinyCloud space." : "Private chat and meeting memory on TinyCloud.",
+        start_url: homeSite ? "/chat/feed" : "/chat",
         scope: "/",
         display: "standalone",
         // A manifest takes one color: Day's --background (lib/theme.ts THEME_COLOR). index.html's

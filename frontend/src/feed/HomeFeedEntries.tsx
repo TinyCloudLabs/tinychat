@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import type { FeedResponse, FeedSelector, NewFeedResponse } from "@tinycloud/sdk-services/feed";
 import { FeedCardView } from "./FeedView";
 import { safeUrl, type FeedCard } from "./feedData";
@@ -7,6 +8,10 @@ import { SitrepCard } from "./SitrepCard";
 import { typedContexts } from "./sitrepProjection";
 import { humanFeedReference, homeFeedKey, homeGroupScope } from "./feedIdentity";
 import { cardGroup, cardPriority, compareWaiting, DUE_WINDOW_MS, groupCards, groupPriorityFlag, isClosed, orderPriority, type SitrepProjection } from "@tinyboilerplate/core/feed/sitrep";
+import { HOME_SITE } from "@/lib/homeSite";
+import { HOME_EMPTY_BODY, HOME_EMPTY_CHAT, HOME_EMPTY_HOW, HOME_EMPTY_TITLE, NAV_LABEL_HOME } from "@/lib/homeStrings";
+import { PATHS } from "@/shell/routes";
+import { FEED_SKILL_URL } from "./strings";
 
 function keyOf(entry: HomeFeedEntry): string {
   const card = entry.state.card;
@@ -141,7 +146,7 @@ function updateSnapshotEntry(snapshot: HomeFeedSnapshot | null, key: string, upd
   };
 }
 
-export function HomeFeedEntries({ source }: { source: HomeFeedSource }) {
+export function HomeFeedEntries({ source, homeSite = HOME_SITE }: { source: HomeFeedSource; homeSite?: boolean }) {
   const [snapshot, setSnapshot] = useState<HomeFeedSnapshot | null>(null);
   const [selector, setSelector] = useState<FeedSelector>("needs-action");
   const [active, setActive] = useState<HomeFeedEntry | null>(null);
@@ -337,11 +342,13 @@ export function HomeFeedEntries({ source }: { source: HomeFeedSource }) {
     finally { setViewBusy(false); }
   }
 
+  // The Home site shows only the heading and its empty state until the first card arrives.
+  const bare = homeSite && !snapshot?.entries.length && !snapshot?.historicalEntries?.length;
   const selectClass = "min-h-10 w-36 max-w-full rounded-lg border border-border bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
   return <main className="h-full min-w-0 overflow-x-hidden overflow-y-auto bg-background text-foreground" aria-label="Feed">
     <div className="mx-auto w-full max-w-2xl min-w-0 px-3 pb-[calc(var(--tc-bottom-chrome)+2rem)] pt-6 sm:px-5">
-      <header className="mb-6"><h1 className="font-display text-3xl font-semibold tracking-tight">Feed</h1><p className="mt-1 text-sm text-muted-foreground">Updates and decisions from your agents.</p></header>
-      <div className="mb-4 flex flex-wrap items-center gap-2">
+      <header className="mb-6"><h1 className="font-display text-3xl font-semibold tracking-tight">{homeSite ? NAV_LABEL_HOME : "Feed"}</h1><p className="mt-1 text-sm text-muted-foreground">Updates and decisions from your agents.</p></header>
+      {!bare && <><div className="mb-4 flex flex-wrap items-center gap-2">
         <label className="sr-only" htmlFor="home-feed-view">Feed view</label>
         <select id="home-feed-view" aria-label="Feed view" value={selector} className={selectClass} onChange={(event) => changeSelector(event.target.value as FeedSelector)}>
           <option value="information">Information</option><option value="both">Both</option><option value="needs-action">Needs action</option>
@@ -353,10 +360,19 @@ export function HomeFeedEntries({ source }: { source: HomeFeedSource }) {
         <select aria-label="Filter by agent" className={selectClass} value={agent} onChange={(event) => { setAgent(event.target.value); setActive(null); }}><option value="">All agents</option>{[...new Map(entries.map((entry) => [entry.source.sourceId, entry.source.label])).entries()].map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select>
         <select aria-label="Filter by type" className={selectClass} value={kind} onChange={(event) => { setKind(event.target.value); setActive(null); }}><option value="">All types</option>{[...new Set(entries.map((entry) => entry.state.card.kind))].sort().map((value) => <option key={value} value={value}>{value}</option>)}</select>
         <select aria-label="Filter by project" className={selectClass} value={project} onChange={(event) => { setProject(event.target.value); setActive(null); }}><option value="">All projects</option>{[...new Set(entries.map(projectOf).filter(Boolean))].sort().map((value) => <option key={value} value={value}>{value}</option>)}</select>
-      </div>
+      </div></>}
       {error && <div role="alert" className="mb-4 rounded-lg border border-destructive/30 p-3 text-sm"><p>{error}</p><button type="button" onClick={() => refreshRef.current()} className="mt-2 min-h-9 underline">Try again</button></div>}
       {!snapshot && !error && <p className="text-sm text-muted-foreground">Loading your feed…</p>}
-      {snapshot && !filtered.length && !focused && <p className="rounded-xl border border-border bg-card p-6 text-sm text-muted-foreground">{history ? "No answered or snoozed cards." : selector === "needs-action" ? "Nothing needs your action." : "No cards in this view."}</p>}
+      {snapshot && !filtered.length && !focused && (bare
+        ? <section aria-label={HOME_EMPTY_TITLE} className="rounded-xl border border-border bg-card p-6 text-sm">
+          <h2 className="font-display text-lg font-semibold">{HOME_EMPTY_TITLE}</h2>
+          <p className="mt-2 text-muted-foreground">{HOME_EMPTY_BODY}</p>
+          <div className="mt-4 flex flex-wrap items-center gap-4">
+            <Link to={PATHS.chat} className="inline-flex min-h-10 items-center rounded-lg bg-primary px-4 font-medium text-primary-foreground">{HOME_EMPTY_CHAT}</Link>
+            <a href={FEED_SKILL_URL} target="_blank" rel="noopener noreferrer" className="underline underline-offset-2">{HOME_EMPTY_HOW}</a>
+          </div>
+        </section>
+        : <p className="rounded-xl border border-border bg-card p-6 text-sm text-muted-foreground">{history ? "No answered or snoozed cards." : selector === "needs-action" ? "Nothing needs your action." : "No cards in this view."}</p>)}
       {focused && <section aria-label="Focused card" className="mb-5 min-w-0">
         <FeedCardView card={cardView(focused)} sample={false} readBody={source.readBody} />
         <ReportLink entry={focused} />

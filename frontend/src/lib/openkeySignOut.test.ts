@@ -159,10 +159,9 @@ describe("signOutOpenKeySession", () => {
   test("App shows one calm, fixed note whenever revocation is not proved, and nothing when it is", () => {
     const app = readFileSync(join(import.meta.dir, "..", "App.tsx"), "utf8");
     const warnings = appWarnings();
-    expect(app).toContain('const OPENKEY_SIGN_OUT_UNPROVEN_NOTE = "Signed out of Exo. To use a different account, also sign out at openkey.so.";');
     expect(warnings).toMatch(/status === "unverified" \|\| openKeyOutcome\.status === "remote-unavailable"\)[^}]*openKeyWarning = OPENKEY_SIGN_OUT_UNPROVEN_NOTE;/);
     expect(warnings).not.toContain('"revoked"');
-    expect(warnings).not.toMatch(/could not be verified|may still be signed in|\$\{|openKeyOutcome\.reason|\.message/);
+    expect(warnings).not.toMatch(/could not be verified|may still be signed in|\$\{(?!APP_NAME\})|openKeyOutcome\.reason|\.message/);
     expect(warnings.match(/openKeyWarning =/g)?.length).toBe(2);
     expect(app).not.toMatch(/appPlatform\(\) === "ios"/);
   });

@@ -1,9 +1,10 @@
 // The navigation model shared by the tab bar, the rail and the sidebar
 // (TC-761, TC-2040): the same destinations, in the same order, at every size.
-import { AppWindowIcon, AudioLinesIcon, MessageCircleIcon, NewspaperIcon, PlugIcon, type LucideIcon } from "lucide-react";
+import { AppWindowIcon, AudioLinesIcon, HouseIcon, MessageCircleIcon, NewspaperIcon, PlugIcon, type LucideIcon } from "lucide-react";
 
 import { connectorsAriaLabel } from "../chat/useBackgroundDrain";
-import { NAV_LABEL_APPS, NAV_LABEL_CHAT, NAV_LABEL_FEED, NAV_LABEL_RECORDING } from "../lib/homeStrings";
+import { HOME_SITE } from "../lib/homeSite";
+import { NAV_LABEL_APPS, NAV_LABEL_CHAT, NAV_LABEL_FEED, NAV_LABEL_HOME, NAV_LABEL_RECORDING } from "../lib/homeStrings";
 import { useSizeClass, type SizeClassState } from "../lib/sizeClass";
 import { PATHS, type Destination } from "./routes";
 
@@ -34,19 +35,20 @@ export interface NavItem {
 }
 
 /** `pendingMeetings`: meetings waiting in Connectors (0 while Connectors is open). */
-export function navItems(pendingMeetings: number): NavItem[] {
-  return [
-    { id: "capture", label: NAV_LABEL_RECORDING, icon: AudioLinesIcon, href: PATHS.capture },
-    { id: "chat", label: NAV_LABEL_CHAT, icon: MessageCircleIcon, href: PATHS.chat },
-    { id: "apps", label: NAV_LABEL_APPS, icon: AppWindowIcon, href: PATHS.apps },
-    { id: "feed", label: NAV_LABEL_FEED, icon: NewspaperIcon, href: PATHS.feed },
-    {
-      id: "connectors",
-      label: "Connectors",
-      icon: PlugIcon,
-      href: PATHS.connectors,
-      badge: pendingMeetings,
-      ariaLabel: connectorsAriaLabel(pendingMeetings),
-    },
-  ];
+export function navItems(pendingMeetings: number, homeSite: boolean = HOME_SITE): NavItem[] {
+  const capture: NavItem = { id: "capture", label: NAV_LABEL_RECORDING, icon: AudioLinesIcon, href: PATHS.capture };
+  const chat: NavItem = { id: "chat", label: NAV_LABEL_CHAT, icon: MessageCircleIcon, href: PATHS.chat };
+  const apps: NavItem = { id: "apps", label: NAV_LABEL_APPS, icon: AppWindowIcon, href: PATHS.apps };
+  const connectors: NavItem = {
+    id: "connectors",
+    label: "Connectors",
+    icon: PlugIcon,
+    href: PATHS.connectors,
+    badge: pendingMeetings,
+    ariaLabel: connectorsAriaLabel(pendingMeetings),
+  };
+  // The Home site (TC-2387) leads with the feed, named Home, then Chat and Apps.
+  return homeSite
+    ? [{ id: "feed", label: NAV_LABEL_HOME, icon: HouseIcon, href: PATHS.feed }, chat, apps, capture, connectors]
+    : [capture, chat, apps, { id: "feed", label: NAV_LABEL_FEED, icon: NewspaperIcon, href: PATHS.feed }, connectors];
 }

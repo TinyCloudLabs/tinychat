@@ -713,6 +713,30 @@ test('pushes to main no longer deploy production; only the gated Deploy producti
     'the Release job dispatches only after the tags are pushed');
 });
 
+// The Home site: the same frontend built with VITE_HOME_SITE and uploaded to its own Pages project after the web job.
+test('web-home deploys the Home build after web, only when requested and configured, from the gated SHA', () => {
+  const production = read(repo, '.github/workflows/deploy-production.yml');
+  const job = /^ {2}web-home:\n([\s\S]*?)(?=^ {2}\S)/m.exec(production)?.[1];
+  assert.ok(job, 'deploy-production.yml has a web-home job');
+  assert.match(job, /^ {4}needs: \[target, web\]$/m);
+  const condition = /^ {4}if: >-\n((?: {6}.*\n)+)/m.exec(job)?.[1].replace(/\s+/g, ' ');
+  assert.match(condition, /inputs\.web/);
+  assert.match(condition, /needs\.web\.result == 'success'/);
+  assert.match(condition, /vars\.TINYCHAT_HOME_PAGES_PROJECT != ''/);
+  assert.match(job, /^ {4}environment: release-push$/m);
+  assert.match(job, /actions\/checkout@\S+.*\n\s+with:\n\s+ref: \$\{\{ needs\.target\.outputs\.sha \}\}/);
+  // The Home flag is set on the frontend build step only.
+  const build = /- name: Build the Home site\n((?: {8,}.*\n)+)/.exec(job)?.[1];
+  assert.match(build, /VITE_HOME_SITE: "true"/);
+  assert.match(build, /bun run build:frontend/);
+  // Direct upload to the production branch of the configured project, with the Pages token.
+  assert.match(job, /wrangler(@\S+)? pages deploy frontend\/dist --project-name "\$TINYCHAT_HOME_PAGES_PROJECT" --branch production/);
+  assert.match(job, /CLOUDFLARE_API_TOKEN: \$\{\{ secrets\.CLOUDFLARE_PAGES_API_TOKEN \}\}/);
+  assert.match(job, /CLOUDFLARE_ACCOUNT_ID: \$\{\{ secrets\.CLOUDFLARE_ACCOUNT_ID \}\}/);
+  // It does not feed the release verifier's Pages check, and nothing downstream hard-requires it.
+  assert.doesNotMatch(production, /needs: .*web-home/);
+});
+
 // Manual deploys: a stable release tag per selected unit on a main commit, or an explicitly confirmed hotfix.
 function deployRepo(t) {
   const root = tagRepo(t);

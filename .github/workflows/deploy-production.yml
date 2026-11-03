@@ -195,6 +195,75 @@ jobs:
             echo "$detail"
           } >> "$GITHUB_STEP_SUMMARY"
 
+  # The Home site (home.tinycloud.xyz) is the same frontend built with VITE_HOME_SITE=true and uploaded to a separate
+  # Pages Direct Upload project. It is not Git-integrated, so it adds no second "Cloudflare Pages" check run to the
+  # production commit. Skipped (not failed) until TINYCHAT_HOME_PAGES_PROJECT is set.
+  web-home:
+    name: Web Home (Cloudflare Pages)
+    needs: [target, web]
+    if: >-
+      ${{ !cancelled() && inputs.web && needs.web.result == 'success' && vars.TINYCHAT_HOME_PAGES_PROJECT != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: release-push
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.target.outputs.sha }}
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: package.json
+      - name: Install JS deps
+        run: bun install --frozen-lockfile
+
+      - name: Build workspace packages
+        run: bun run build:packages
+
+      - name: Build the Home site
+        env:
+          VITE_HOME_SITE: "true"
+        run: bun run build:frontend
+
+      - name: Upload to the Home Pages project
+        id: deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_PAGES_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          TINYCHAT_HOME_PAGES_PROJECT: ${{ vars.TINYCHAT_HOME_PAGES_PROJECT }}
+          WRANGLER_OUTPUT_FILE_PATH: ${{ runner.temp }}/wrangler-output.json
+        run: |
+          bunx wrangler@4 pages deploy frontend/dist --project-name "$TINYCHAT_HOME_PAGES_PROJECT" --branch production
+          # Wrangler appends one JSON object per line; the pages-deploy-detailed entry has the deployment's unique URL.
+          url=$(node -e 'const fs=require("fs");const e=fs.readFileSync(process.env.WRANGLER_OUTPUT_FILE_PATH,"utf8").split("\n").filter(Boolean).map(l=>JSON.parse(l)).find(e=>e.type==="pages-deploy-detailed");if(!e||!e.url){process.exit(1)}console.log(e.url)') || {
+            echo "::error::wrangler did not report the deployment URL"
+            exit 1
+          }
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
+      - name: Verify home.tinycloud.xyz serves the deployment
+        env:
+          DEPLOYMENT_URL: ${{ steps.deploy.outputs.url }}
+          HOME_URL: ${{ vars.TINYCHAT_HOME_URL || 'https://home.tinycloud.xyz' }}
+          SHA: ${{ needs.target.outputs.sha }}
+        run: |
+          fetch() { curl -fsS -H 'cache-control: no-cache' "$1?deploy=$SHA"; }
+          expected=$(fetch "$DEPLOYMENT_URL")
+          for attempt in $(seq 1 20); do
+            if [ "$(fetch "$HOME_URL" || true)" = "$expected" ]; then
+              echo "$HOME_URL serves $DEPLOYMENT_URL"
+              echo "- Web Home: $HOME_URL serves Cloudflare Pages deployment $DEPLOYMENT_URL from \`$SHA\`" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            echo "$HOME_URL does not serve $DEPLOYMENT_URL yet (attempt $attempt)"
+            sleep 15
+          done
+          echo "::error::$HOME_URL does not serve deployment $DEPLOYMENT_URL after 5 minutes"
+          exit 1
+
   report:
     name: Production state
     needs: [target, backend, web]
