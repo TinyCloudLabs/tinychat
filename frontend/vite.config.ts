@@ -8,6 +8,7 @@ import react from "@vitejs/plugin-react";
 import { nodePolyfills } from "vite-plugin-node-polyfills";
 import { VitePWA } from "vite-plugin-pwa";
 import { firstNonEmpty } from "./src/lib/buildEnv";
+import { homeSiteIndexHtml } from "./src/lib/homeSiteHtml";
 
 const rootDir = path.dirname(fileURLToPath(import.meta.url));
 const requireFromApp = createRequire(import.meta.url);
@@ -62,6 +63,10 @@ export default defineConfig(({ command, mode }) => {
   // Vite externalizes Node builtins in the browser, which silently broke the
   // GPU cert-chain check and an on-chain quote encoding. Polyfill the globals.
   plugins: [
+    ...(homeSite ? [{
+      name: "tinychat-home-site-html",
+      transformIndexHtml: (html: string) => homeSiteIndexHtml(html),
+    }] : []),
     {
       name: "tinychat-agent-artifacts",
       apply: "build",

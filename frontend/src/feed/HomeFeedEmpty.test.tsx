@@ -55,6 +55,7 @@ function card(): HomeFeedEntry {
 test("a new account on the Home site sees the heading and No cards yet, with no view controls", async () => {
   const host = await mount(empty, true);
   expect(host.querySelector("h1")?.textContent).toBe("Home");
+  expect(host.querySelector("main")?.getAttribute("aria-label")).toBe("Home");
   expect(host.textContent).toContain("No cards yet");
   expect(controls(host)).toEqual({ selects: 0, buttons: [] });
 });
@@ -83,6 +84,7 @@ test("a feed with only past cards keeps History reachable", async () => {
 test("the plain build keeps its feed heading, controls and empty message", async () => {
   const host = await mount(empty, false);
   expect(host.querySelector("h1")?.textContent).toBe("Feed");
+  expect(host.querySelector("main")?.getAttribute("aria-label")).toBe("Feed");
   expect(host.textContent).toContain("Nothing needs your action.");
   expect(host.textContent).not.toContain("No cards yet");
   expect(host.querySelector('select[aria-label="Feed view"]')).not.toBeNull();

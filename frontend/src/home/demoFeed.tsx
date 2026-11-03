@@ -1,7 +1,7 @@
 // The Home site's signed-out demo (TC-2387): three sample cards a visitor can
 // answer. Plain component state: nothing is read from or written to any space
 // or server, and reloading resets it.
-import { useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { CheckIcon } from "lucide-react";
 
 type DemoCard =
@@ -22,6 +22,13 @@ const CARDS: DemoCard[] = [
 
 const chip = "shrink-0 whitespace-nowrap rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground";
 
+/** The answered line; it takes focus when it appears, so the answer is announced where the options were. */
+function AnsweredStatus({ children }: { children: ReactNode }) {
+  const ref = useRef<HTMLParagraphElement>(null);
+  useEffect(() => { ref.current?.focus(); }, []);
+  return <p ref={ref} role="status" tabIndex={-1} className="mt-4 flex items-start gap-2 rounded-lg bg-muted px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">{children}</p>;
+}
+
 export function HomeDemoFeed() {
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [checked, setChecked] = useState<Record<string, boolean>>({});
@@ -40,10 +47,10 @@ export function HomeDemoFeed() {
               <h3 className="mt-3 font-display text-lg font-semibold leading-snug">{card.title}</h3>
               <p className="mt-1 text-sm text-muted-foreground">{card.body}</p>
               {card.kind === "ask" && (answer
-                ? <p role="status" className="mt-4 flex items-start gap-2 rounded-lg bg-muted px-3 py-2 text-sm">
+                ? <AnsweredStatus>
                     <CheckIcon aria-hidden className="mt-0.5 size-4 shrink-0" />
                     <span>You chose {card.options.find((option) => option.id === answer)?.label}. {card.done}</span>
-                  </p>
+                  </AnsweredStatus>
                 : <div className="mt-4 grid gap-2 sm:grid-cols-2">
                     {card.options.map((option) => (
                       <button key={option.id} type="button" onClick={() => setAnswers((previous) => ({ ...previous, [card.id]: option.id }))}

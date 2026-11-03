@@ -168,11 +168,18 @@ TinyCloud Home site at `https://home.tinycloud.xyz`.
   `wrangler pages deploy --branch production`, and checks that the Home URL
   serves the same `index.html` as the deployment URL wrangler reported (read
   from `WRANGLER_OUTPUT_FILE_PATH`).
-- **Configuration** (`release-push` environment): variable
-  `TINYCHAT_HOME_PAGES_PROJECT`; optional variable `TINYCHAT_HOME_URL`
-  (defaults to `https://home.tinycloud.xyz`); secrets
-  `CLOUDFLARE_PAGES_API_TOKEN` (Pages edit permission) and
-  `CLOUDFLARE_ACCOUNT_ID`.
+- **Configuration:** `TINYCHAT_HOME_PAGES_PROJECT` must be a **repository**
+  variable, not one on the `release-push` environment: it gates the job with a
+  job-level `if`, which cannot read environment-scoped variables, so an
+  environment-level value would skip `web-home` silently on every release.
+  `TINYCHAT_HOME_URL` (optional, defaults to `https://home.tinycloud.xyz`) can
+  be either. The secrets `CLOUDFLARE_PAGES_API_TOKEN` (Pages edit permission)
+  and `CLOUDFLARE_ACCOUNT_ID` stay on the `release-push` environment.
+- **Rollbacks:** before the upload, the job fails unless the built
+  `manifest.webmanifest` is named "TinyCloud Home". Redeploying a tag older
+  than the Home build therefore stops there instead of putting the plain site
+  on the Home project. After the upload it also fails unless wrangler reports
+  the `production` environment.
 - **Custom domain:** `home.tinycloud.xyz`, a `CNAME` to the project's
   `<project>.pages.dev` host.
 - **Not Git-integrated on purpose:** `scripts/release/lib.mjs`

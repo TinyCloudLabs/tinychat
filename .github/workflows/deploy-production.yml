@@ -197,7 +197,8 @@ jobs:
 
   # The Home site (home.tinycloud.xyz) is the same frontend built with VITE_HOME_SITE=true and uploaded to a separate
   # Pages Direct Upload project. It is not Git-integrated, so it adds no second "Cloudflare Pages" check run to the
-  # production commit. Skipped (not failed) until TINYCHAT_HOME_PAGES_PROJECT is set.
+  # production commit. Skipped (not failed) until TINYCHAT_HOME_PAGES_PROJECT is set; that must be a repository variable,
+  # because a job-level `if` cannot read environment-scoped variables.
   web-home:
     name: Web Home (Cloudflare Pages)
     needs: [target, web]
@@ -228,6 +229,15 @@ jobs:
           VITE_HOME_SITE: "true"
         run: bun run build:frontend
 
+      - name: Refuse a build that is not the Home site
+        run: |
+          # A redeploy of a tag older than the Home build would otherwise publish the plain site to the Home project.
+          name=$(node -e 'console.log(JSON.parse(require("fs").readFileSync("frontend/dist/manifest.webmanifest","utf8")).name)')
+          if [ "$name" != "TinyCloud Home" ]; then
+            echo "::error::frontend/dist/manifest.webmanifest names the app '$name', not 'TinyCloud Home'; this ref does not build the Home site (VITE_HOME_SITE), so nothing was uploaded"
+            exit 1
+          fi
+
       - name: Upload to the Home Pages project
         id: deploy
         env:
@@ -237,11 +247,18 @@ jobs:
           WRANGLER_OUTPUT_FILE_PATH: ${{ runner.temp }}/wrangler-output.json
         run: |
           bunx wrangler@4.156.2 pages deploy frontend/dist --project-name "$TINYCHAT_HOME_PAGES_PROJECT" --branch production
-          # Wrangler appends one JSON object per line; the pages-deploy-detailed entry has the deployment's unique URL.
-          url=$(node -e 'const fs=require("fs");const e=fs.readFileSync(process.env.WRANGLER_OUTPUT_FILE_PATH,"utf8").split("\n").filter(Boolean).map(l=>JSON.parse(l)).find(e=>e.type==="pages-deploy-detailed");if(!e||!e.url){process.exit(1)}console.log(e.url)') || {
+          # Wrangler appends one JSON object per line; the pages-deploy-detailed entry has the deployment's unique URL
+          # and the environment it landed in.
+          detail=$(node -e 'const fs=require("fs");const e=fs.readFileSync(process.env.WRANGLER_OUTPUT_FILE_PATH,"utf8").split("\n").filter(Boolean).map(l=>JSON.parse(l)).find(e=>e.type==="pages-deploy-detailed");if(!e||!e.url){process.exit(1)}console.log(e.url,e.environment)') || {
             echo "::error::wrangler did not report the deployment URL"
             exit 1
           }
+          url=${detail%% *}
+          environment=${detail#* }
+          if [ "$environment" != "production" ]; then
+            echo "::error::the upload landed in the '$environment' environment, not production, so home.tinycloud.xyz will not serve it"
+            exit 1
+          fi
           echo "url=$url" >> "$GITHUB_OUTPUT"
 
       - name: Verify home.tinycloud.xyz serves the deployment
@@ -251,9 +268,9 @@ jobs:
           SHA: ${{ needs.target.outputs.sha }}
         run: |
           fetch() { curl -fsS -H 'cache-control: no-cache' "$1?deploy=$SHA"; }
-          expected=$(fetch "$DEPLOYMENT_URL")
           for attempt in $(seq 1 20); do
-            if [ "$(fetch "$HOME_URL" || true)" = "$expected" ]; then
+            expected=$(fetch "$DEPLOYMENT_URL" || true)
+            if [ -n "$expected" ] && [ "$(fetch "$HOME_URL" || true)" = "$expected" ]; then
               echo "$HOME_URL serves $DEPLOYMENT_URL"
               echo "- Web Home: $HOME_URL serves Cloudflare Pages deployment $DEPLOYMENT_URL from \`$SHA\`" >> "$GITHUB_STEP_SUMMARY"
               exit 0
@@ -266,7 +283,7 @@ jobs:
 
   report:
     name: Production state
-    needs: [target, backend, web]
+    needs: [target, backend, web, web-home]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -280,6 +297,8 @@ jobs:
           WEB_REQUESTED: ${{ inputs.web }}
           WEB_RESULT: ${{ needs.web.result }}
           WEB_STATE: ${{ needs.web.outputs.state }}
+          WEB_HOME_REQUESTED: ${{ inputs.web }}
+          WEB_HOME_RESULT: ${{ needs.web-home.result }}
         run: |
           # A requested side that never reported a state ran into an error before it could; never call that unchanged.
           describe() {
@@ -291,6 +310,12 @@ jobs:
           }
           backend=$(describe "$BACKEND_REQUESTED" "$BACKEND_RESULT" "$BACKEND_STATE")
           web=$(describe "$WEB_REQUESTED" "$WEB_RESULT" "$WEB_STATE")
+          # web-home reports no state output: success is "deployed", skipped is "not deployed" (not configured or web failed).
+          case "$WEB_HOME_RESULT" in
+            success) web_home="deployed and verified (job $WEB_HOME_RESULT)" ;;
+            skipped) if [ "$WEB_HOME_REQUESTED" = true ]; then web_home="not deployed (job skipped: TINYCHAT_HOME_PAGES_PROJECT unset or web did not succeed)"; else web_home="not requested"; fi ;;
+            *) web_home="NOT VERIFIED, check the job log (job $WEB_HOME_RESULT)" ;;
+          esac
           {
             echo "## Production after this run (${LABEL:-no target})"
             echo
@@ -298,4 +323,5 @@ jobs:
             echo "|---|---|"
             echo "| Backend (api.tinycloud.chat) | $backend |"
             echo "| Web (tinycloud.chat) | $web |"
+            echo "| Web Home (home.tinycloud.xyz) | $web_home |"
           } | tee -a "$GITHUB_STEP_SUMMARY"

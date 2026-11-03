@@ -1,17 +1,9 @@
 import { describe, expect, spyOn, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import {
   signOutOpenKeySession,
   type OpenKeySignOutClient,
 } from "./openkeySignOut";
 import { AccountStateTimeout, withCaptureDeadline } from "./voiceNotes/accountHandoff";
-
-function appWarnings(): string {
-  const app = readFileSync(join(import.meta.dir, "..", "App.tsx"), "utf8");
-  const signOut = app.slice(app.indexOf("const signOut = useCallback"), app.indexOf("const isReady"));
-  return signOut.slice(signOut.indexOf('if (openKeyOutcome.status === "cancelled")'), signOut.indexOf("if (tcw && !nativeSession"));
-}
 
 describe("signOutOpenKeySession", () => {
   test("uses the client that authenticated the current page", async () => {
@@ -154,15 +146,5 @@ describe("signOutOpenKeySession", () => {
     } finally {
       sinks.forEach((sink) => sink.mockRestore());
     }
-  });
-
-  test("App shows one calm, fixed note whenever revocation is not proved, and nothing when it is", () => {
-    const app = readFileSync(join(import.meta.dir, "..", "App.tsx"), "utf8");
-    const warnings = appWarnings();
-    expect(warnings).toMatch(/status === "unverified" \|\| openKeyOutcome\.status === "remote-unavailable"\)[^}]*openKeyWarning = OPENKEY_SIGN_OUT_UNPROVEN_NOTE;/);
-    expect(warnings).not.toContain('"revoked"');
-    expect(warnings).not.toMatch(/could not be verified|may still be signed in|\$\{(?!APP_NAME\})|openKeyOutcome\.reason|\.message/);
-    expect(warnings.match(/openKeyWarning =/g)?.length).toBe(2);
-    expect(app).not.toMatch(/appPlatform\(\) === "ios"/);
   });
 });

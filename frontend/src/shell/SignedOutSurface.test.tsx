@@ -41,3 +41,14 @@ test("the native sign-in screen replaces the page when it is shown", () => {
   expect(markup).not.toContain("Sign in to your Home");
   expect(count(markup, /<main[\s>]/g)).toBe(1);
 });
+
+test("a returning visitor on the Home site never gets the front page while offline or after an error", () => {
+  for (const state of ["offline", "recoverableError"] as const) {
+    const markup = renderToStaticMarkup(<SignedOutSurface {...base} state={state} error={state === "offline" ? "You're offline." : "Something went wrong."} homeSite />);
+    expect(markup).not.toContain('aria-label="Demo feed"');
+    expect(markup).not.toContain("Sign in to your Home");
+    expect(markup).toContain(">TinyCloud Home</h1>");
+    expect(markup).toContain(state === "offline" ? "Try again</button>" : "Sign in</button>");
+    expect(count(markup, /<main[\s>]/g)).toBe(1);
+  }
+});

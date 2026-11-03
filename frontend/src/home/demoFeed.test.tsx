@@ -55,9 +55,21 @@ test("ticking a step strikes it, and unticking restores it", async () => {
   expect(label(first!).className).not.toContain("line-through");
 });
 
-test("answering and ticking send nothing over the network", async () => {
+test("answering and ticking send nothing over the network and store nothing in the browser", async () => {
   const { host, calls } = await mount();
+  const snapshot = () => JSON.stringify([{ ...window.localStorage }, { ...window.sessionStorage }]);
+  const before = snapshot();
   await click(host.querySelector("article button")!);
   await click(host.querySelector('input[type="checkbox"]')!);
   expect(calls).toEqual([]);
+  expect(snapshot()).toBe(before);
+  expect(window.localStorage.length + window.sessionStorage.length).toBe(0);
+});
+
+test("after answering, focus moves to the answered status so a screen reader hears it", async () => {
+  const { host } = await mount();
+  await click(host.querySelector("article button")!);
+  const status = host.querySelector('[role="status"]');
+  expect(status).not.toBeNull();
+  expect(document.activeElement).toBe(status);
 });
