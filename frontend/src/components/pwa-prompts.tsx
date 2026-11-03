@@ -2,6 +2,8 @@ import { useState, useSyncExternalStore, type ReactNode } from "react";
 import { DownloadIcon, RefreshCwIcon, XIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { APP_NAME, HOME_SITE } from "@/lib/homeSite";
+import { useSignedIn } from "@/lib/signedIn";
 import { applyUpdate, getPwaState, promptInstall, subscribePwa } from "@/lib/pwa";
 
 const INSTALL_DISMISSED_KEY = "xyz.tinycloud.tinychat:pwa-install-dismissed";
@@ -17,6 +19,11 @@ function installSnoozed(): boolean {
   }
 }
 
+/** The Home site makes no install offer until the visitor has signed in. */
+export function installOffered(input: { canInstall: boolean; installDismissed: boolean; homeSite: boolean; signedIn: boolean }): boolean {
+  return input.canInstall && !input.installDismissed && (!input.homeSite || input.signedIn);
+}
+
 /**
  * The PWA's two prompts, one at a time: "New version available — Reload"
  * (always wins) and, on Chromium only, "Install Exo". Renders nothing in the
@@ -26,6 +33,7 @@ export function PwaPrompts() {
   const { updateReady, canInstall } = useSyncExternalStore(subscribePwa, getPwaState, getPwaState);
   const [updateDismissed, setUpdateDismissed] = useState(false);
   const [installDismissed, setInstallDismissed] = useState(installSnoozed);
+  const signedIn = useSignedIn();
 
   if (updateReady && !updateDismissed) {
     return (
@@ -40,10 +48,10 @@ export function PwaPrompts() {
     );
   }
 
-  if (canInstall && !installDismissed) {
+  if (installOffered({ canInstall, installDismissed, homeSite: HOME_SITE, signedIn })) {
     return (
       <PwaToast>
-        <span className="min-w-0 flex-1">Install Exo as an app.</span>
+        <span className="min-w-0 flex-1">Install {APP_NAME} as an app.</span>
         <Button size="sm" onClick={() => void promptInstall()}>
           <DownloadIcon />
           Install

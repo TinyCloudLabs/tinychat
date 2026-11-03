@@ -169,16 +169,18 @@ import type { ThreadDoc, StoredMessageItem } from "./lib/threadStore";
 import { useLocalCanvasStorage } from "./lib/conversationCanvasStore";
 import type { AppState } from "./lib/appState";
 import { BootSurface } from "./shell/BootSurface";
+import { SignedOutSurface } from "./shell/SignedOutSurface";
+import { APP_NAME, HOME_SITE } from "./lib/homeSite";
+import { setSignedIn } from "./lib/signedIn";
 import { NativeSignIn } from "./shell/NativeSignIn";
 import { useNativeSignIn } from "./shell/useNativeSignIn";
 
 // AppState and stateLabel live in lib/appState; re-exported for imports from App.
 export { stateLabel, type AppState } from "./lib/appState";
 
-const OPENKEY_SIGN_OUT_UNPROVEN_NOTE = "Signed out of Exo. To use a different account, also sign out at openkey.so.";
+const OPENKEY_SIGN_OUT_UNPROVEN_NOTE = `Signed out of ${APP_NAME}. To use a different account, also sign out at openkey.so.`;
 const OPENKEY_HOST = import.meta.env.VITE_OPENKEY_HOST || "https://openkey.so";
 const LOCAL_VALIDATION = resolveLocalValidation(import.meta.env, globalThis.location?.hostname);
-const APP_NAME = "Exo";
 const BACKEND_URL =
   import.meta.env.VITE_BACKEND_URL ||
   `${globalThis.location?.protocol ?? "http:"}//localhost:3014`;
@@ -1061,7 +1063,7 @@ export function App() {
 
         if (openKeyOutcome.status === "cancelled") {
           openKeyWarning =
-            "OpenKey stayed signed in on this device. Exo is signed out locally. " +
+            `OpenKey stayed signed in on this device. ${APP_NAME} is signed out locally. ` +
             "Sign out at openkey.so before choosing another account.";
         } else if (openKeyOutcome.status === "unverified" || openKeyOutcome.status === "remote-unavailable") {
           // Revocation could not be proved (no verified answer, no sheet, or an error): a calm note, not an alarm.
@@ -1096,6 +1098,7 @@ export function App() {
   useEffect(() => { signOutRef.current = signOut; }, [signOut]);
 
   const isReady = state === "ready" && tcw !== null;
+  useEffect(() => { setSignedIn(isReady); }, [isReady]);
   // The offline state still HOLDS a session, so its "Try again" re-runs the
   // restore. Only a settled signed-out state (no restorable session) starts the
   // full OpenKey sign-in.
@@ -1363,12 +1366,11 @@ export function App() {
             about={null}
           />
         ) : (
-          <main className="h-full overflow-y-auto pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)]">
-            {nativeSignInFlow.screenShown
-                ? <NativeSignIn state={state} error={error} onSignIn={(hints) => void signIn(hints)}
-                  onClose={nativeSignInFlow.onClose} />
-                : <BootSurface state={state} error={error} onAction={authAction} home={platform === "web"} />}
-          </main>
+          <SignedOutSurface homeSite={HOME_SITE} platform={platform} state={state} error={error} onAction={authAction}
+            native={nativeSignInFlow.screenShown
+              ? <NativeSignIn state={state} error={error} onSignIn={(hints) => void signIn(hints)}
+                onClose={nativeSignInFlow.onClose} />
+              : undefined} />
         )}
       </div>
       {shouldMountRecordingOverlay({ voiceNotesInApp, isReady, deviceCapture,

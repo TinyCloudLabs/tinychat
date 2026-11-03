@@ -1,11 +1,17 @@
 import { useSyncExternalStore } from "react";
+import { HOME_SITE } from "./homeSite";
 
 export const APPS_FEED_FEATURE_KEY = "exo:experimental:apps-feed";
 const FEATURE_EVENT = "tinychat:experimental-feature";
 
+/** On when the visitor turned it on; on the Home site also when they never chose. */
+export function appsFeedStoredFlag(stored: string | null, homeSite: boolean): boolean {
+  return stored === null ? homeSite : stored === "true";
+}
+
 export function appsFeedEnabled(): boolean {
-  try { return window.localStorage.getItem(APPS_FEED_FEATURE_KEY) === "true"; }
-  catch { return false; }
+  try { return appsFeedStoredFlag(window.localStorage.getItem(APPS_FEED_FEATURE_KEY), HOME_SITE); }
+  catch { return HOME_SITE; }
 }
 
 export function setAppsFeedEnabled(enabled: boolean): void {
@@ -30,5 +36,5 @@ function subscribe(listener: () => void): () => void {
 }
 
 export function useAppsFeedEnabled(): boolean {
-  return useSyncExternalStore(subscribe, appsFeedEnabled, () => false);
+  return useSyncExternalStore(subscribe, appsFeedEnabled, () => HOME_SITE);
 }

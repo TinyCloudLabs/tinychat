@@ -6,6 +6,8 @@ interface ImportMetaEnv {
   readonly VITE_OPENKEY_HOST?: string;
   readonly VITE_BACKEND_URL?: string;
   readonly VITE_TINYCLOUD_HOST?: string;
+  /** "true" builds the home.tinycloud.xyz variant (lib/homeSite.ts). */
+  readonly VITE_HOME_SITE?: string;
   /** Agent DID override for a local joint-stack smoke; production uses the frozen default. */
   readonly VITE_AGENT_DID?: string;
   /** Browser-e2e lane only — retargets the Fireflies client at the mock upstream. */

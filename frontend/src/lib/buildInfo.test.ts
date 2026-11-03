@@ -88,3 +88,7 @@ describe("targetLabel", () => {
     expect(targetLabel("web")).toBe("web");
   });
 });
+
+test("the build line leads with the product name it is given", () => {
+  expect(formatBuildInfo({ version: "0.13.0", target: "web", product: "TinyCloud Home" })).toBe("TinyCloud Home 0.13.0 · web · stable");
+});
