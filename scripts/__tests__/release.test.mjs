@@ -729,8 +729,8 @@ test('web-home deploys the Home build after web, only when requested and configu
   const build = /- name: Build the Home site\n((?: {8,}.*\n)+)/.exec(job)?.[1];
   assert.match(build, /VITE_HOME_SITE: "true"/);
   assert.match(build, /bun run build:frontend/);
-  // Direct upload to the production branch of the configured project, with the Pages token.
-  assert.match(job, /wrangler(@\S+)? pages deploy frontend\/dist --project-name "\$TINYCHAT_HOME_PAGES_PROJECT" --branch production/);
+  // Direct upload to the production branch of the configured project, with the Pages token and an exact wrangler version.
+  assert.match(job, /wrangler@\d+\.\d+\.\d+ pages deploy frontend\/dist --project-name "\$TINYCHAT_HOME_PAGES_PROJECT" --branch production/);
   assert.match(job, /CLOUDFLARE_API_TOKEN: \$\{\{ secrets\.CLOUDFLARE_PAGES_API_TOKEN \}\}/);
   assert.match(job, /CLOUDFLARE_ACCOUNT_ID: \$\{\{ secrets\.CLOUDFLARE_ACCOUNT_ID \}\}/);
   // It does not feed the release verifier's Pages check, and nothing downstream hard-requires it.

@@ -236,7 +236,7 @@ jobs:
           TINYCHAT_HOME_PAGES_PROJECT: ${{ vars.TINYCHAT_HOME_PAGES_PROJECT }}
           WRANGLER_OUTPUT_FILE_PATH: ${{ runner.temp }}/wrangler-output.json
         run: |
-          bunx wrangler@4 pages deploy frontend/dist --project-name "$TINYCHAT_HOME_PAGES_PROJECT" --branch production
+          bunx wrangler@4.156.2 pages deploy frontend/dist --project-name "$TINYCHAT_HOME_PAGES_PROJECT" --branch production
           # Wrangler appends one JSON object per line; the pages-deploy-detailed entry has the deployment's unique URL.
           url=$(node -e 'const fs=require("fs");const e=fs.readFileSync(process.env.WRANGLER_OUTPUT_FILE_PATH,"utf8").split("\n").filter(Boolean).map(l=>JSON.parse(l)).find(e=>e.type==="pages-deploy-detailed");if(!e||!e.url){process.exit(1)}console.log(e.url)') || {
             echo "::error::wrangler did not report the deployment URL"
