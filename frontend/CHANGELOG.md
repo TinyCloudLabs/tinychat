@@ -15,6 +15,12 @@
 - TC-2204: Web sign-in and restoration use the manifest shipped with the frontend, so web-only updates request Home SQL and feed subscriptions in the existing approval. Owners with older grants are asked to sign in again with explicit consent before Home storage opens.
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 
+## 0.13.0-beta.1
+
+### Minor Changes
+
+- af1916e: Adds the TinyCloud Home site build (`VITE_HOME_SITE=true`) and a production deploy job that uploads it to its own Cloudflare Pages project. Details: TC-2387
+
 ## 0.13.0-beta.0
 
 ### Minor Changes
