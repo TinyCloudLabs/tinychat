@@ -248,6 +248,24 @@ describe("HTTP SIWE sessions", () => {
     expect((await postVerify(base, mismatchedUri)).status).toBe(400);
   });
 
+  test("accepts the Home site domain with its own HTTPS URI, but not lookalikes", async () => {
+    setSystemTime(NOW);
+    const base = await startAuthServer("https://tinycloud.chat");
+    const nonce = await requestNonce(base, account.address);
+    const home = await signMessage(nonce, { domain: "home.tinycloud.xyz", uri: "https://home.tinycloud.xyz" });
+    expect((await postVerify(base, home)).status).toBe(200);
+    for (const domain of ["tinycloud.xyz", "evilhome.tinycloud.xyz", "home.tinycloud.xyz.evil.example", "other.tinycloud.xyz"]) {
+      const lookalikeNonce = await requestNonce(base, account.address);
+      const lookalike = await signMessage(lookalikeNonce, { domain, uri: `https://${domain}` });
+      const response = await postVerify(base, lookalike);
+      expect(response.status).toBe(400);
+      expect(response.body).toMatchObject({ error: "invalid_origin" });
+    }
+    const mismatchedNonce = await requestNonce(base, account.address);
+    const mismatched = await signMessage(mismatchedNonce, { domain: "home.tinycloud.xyz", uri: "https://tinycloud.chat" });
+    expect((await postVerify(base, mismatched)).status).toBe(400);
+  });
+
   test("accepts native OpenKey DID sessions but rejects a web URI on the native domain", async () => {
     setSystemTime(NOW);
     const base = await startAuthServer("https://tinycloud.chat");
