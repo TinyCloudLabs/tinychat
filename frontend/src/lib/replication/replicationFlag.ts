@@ -10,7 +10,9 @@
 // "Enabled" (a replica is built) additionally requires
 //   4. the user's own opt-in for the signed-in principal (replicationOptIn.ts; ON unless the user explicitly opted out).
 // The build flag stays the master: an OFF build can never replicate, whatever the user setting says.
+// The Home site never replicates: the replica mirrors meeting transcripts, which its sign-in does not grant.
 // Pattern: chat/useExperimentalFeatures.ts (hard-coded kill switch + opt-in cache).
+import { HOME_SITE } from "../homeSite";
 import { appPlatform, type AppPlatform } from "../platform";
 import { readReplicationOptIn } from "./replicationOptIn";
 
@@ -83,10 +85,13 @@ export interface ReplicationFlagInputs {
   principal?: string | undefined;
   /** Overrides the stored opt-in (tests). */
   userOptIn?: boolean;
+  /** The Home site never replicates; defaults to this build. */
+  homeSite?: boolean;
 }
 
 /** Kill switch AND (build flag or dev runtime flag) AND qualified platform. The user setting is NOT consulted. */
 export function isReplicationAvailable(inputs: ReplicationFlagInputs = {}): boolean {
+  if (inputs.homeSite ?? HOME_SITE) return false;
   if (!(inputs.killSwitchOpen ?? REPLICATION_AVAILABLE)) return false;
   // ON unless the build flag is exactly "false" (unset, empty or anything else is ON). The dev runtime
   // flag can still switch a "false" dev/test build ON; production never reads it.

@@ -49,6 +49,6 @@ export function navItems(pendingMeetings: number, homeSite: boolean = HOME_SITE)
   };
   // The Home site (TC-2387) leads with the feed, named Home, then Chat and Apps.
   return homeSite
-    ? [{ id: "feed", label: NAV_LABEL_HOME, icon: HouseIcon, href: PATHS.feed }, chat, apps, capture, connectors]
+    ? [{ id: "feed", label: NAV_LABEL_HOME, icon: HouseIcon, href: PATHS.feed }, chat, apps]
     : [capture, chat, apps, { id: "feed", label: NAV_LABEL_FEED, icon: NewspaperIcon, href: PATHS.feed }, connectors];
 }
