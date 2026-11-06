@@ -100,7 +100,7 @@ export function OptionButtons({ options: given, suggested: recommended, saving, 
   return <div role="group" aria-label="Answers" className="mt-3.5 grid gap-2 min-[480px]:grid-cols-2">
     {options.map((option) => <button key={option.id} type="button" disabled={disabled} onClick={() => onChoose(option.id)}
       className={`grid min-h-14 min-w-0 content-center gap-px rounded-xl px-3.5 py-[9px] text-left ${controlEdge} hover:bg-muted disabled:cursor-default disabled:hover:bg-transparent ${saving === option.id ? "bg-muted" : ""} ${focusRing}`}>
-      <span className="flex flex-wrap items-center gap-x-2 text-[15px] font-semibold text-foreground">{saving === option.id ? "Saving…" : option.label}{option.id === suggested && saving !== option.id && <span className="inline-flex h-5 items-center rounded-full bg-muted px-2 text-xs font-semibold">{tag}</span>}</span>
+      <span className="text-[15px] font-semibold text-foreground">{saving === option.id ? "Saving…" : option.label}{option.id === suggested && saving !== option.id && <> <span className="ml-1 inline-flex h-5 items-center whitespace-nowrap rounded-full bg-muted px-2 align-[1px] text-xs font-semibold">{tag}</span></>}</span>
       {option.detail && <span className={`break-words text-[13px] text-muted-foreground ${full ? "" : "line-clamp-2"}`}>{option.detail}</span>}
     </button>)}
   </div>;

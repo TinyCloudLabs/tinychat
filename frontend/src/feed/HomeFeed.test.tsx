@@ -401,11 +401,32 @@ test("a (Recommended) label shows without the marker and with the Suggested tag,
   const store = persistence([entry]);
   const view = await mount(store.source());
   const proceed = option(view.host, "Proceed");
-  expect(proceed.textContent).toBe("ProceedSuggested");
+  expect(proceed.textContent).toBe("Proceed Suggested");
   expect(option(view.host, "Hold").textContent).toBe("Hold");
   await act(async () => proceed.click());
   expect(store.responses).toHaveLength(1);
   expect(store.responses[0]).toMatchObject({ kind: "answer", choiceId: "proceed" });
   expect(store.durable.entries[0]!.state.card.choices?.[0]?.label).toBe("Proceed (Recommended)");
   expect(status(view.host)).toContain("You chose Proceed.");
+});
+
+test("a replaced issuance refuses new answers: no write ever carries the old identity", async () => {
+  const store = persistence([decision()]);
+  const view = await mount(store.source());
+  await openNote(view.host);
+  await typeAnswer(view.host, "Drafted against revision one");
+  store.durable.entries = [decision("decision-one", 2)];
+  await act(async () => store.notify());
+  // The old issuance stays on screen with its draft, but every way to answer it is refused.
+  expect(answer(view.host).value).toBe("Drafted against revision one");
+  expect(option(view.host, "Hold").disabled).toBe(true);
+  expect(button(view.host, "Save answer").disabled).toBe(true);
+  await act(async () => option(view.host, "Hold").click());
+  await act(async () => { answer(view.host).form!.requestSubmit(); });
+  expect(store.responses).toEqual([]);
+  await act(async () => button(view.host, "Show the newer version").click());
+  await act(async () => option(view.host, "Hold").click());
+  expect(store.responses).toHaveLength(1);
+  expect(store.responses[0]).toMatchObject({ cardId: "decision-one", revision: 2, issuanceId: "issuance-2", choiceId: "hold" });
+  expect(store.responses.some((response) => response.revision === 1)).toBe(false);
 });
