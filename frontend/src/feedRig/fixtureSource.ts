@@ -12,7 +12,7 @@ import type { HomeFeedEntry, HomeFeedSnapshot, HomeFeedSource } from "@/feed/fee
  * (open the Done view, or pick a filter that matches nothing).
  */
 export type RigState =
-  | { label: string; kind: "feed"; snapshot: HomeFeedSnapshot; failSaves?: boolean; act?: "done" | "filter-empty" }
+  | { label: string; kind: "feed"; snapshot: HomeFeedSnapshot; failSaves?: boolean; act?: "done" | "filter-empty" | "signin-toast" }
   | { label: string; kind: "loading" }
   | { label: string; kind: "error"; message: string }
   | { label: string; kind: "signed-out" };

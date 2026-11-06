@@ -966,7 +966,8 @@
                         "ifNoAnswer": "It plans without your calendar.",
                         "known": [],
                         "related": []
-                      }
+                      },
+                      "permissions": "read-only access to your calendar, for 30 days"
                     }
                   }
                 }
@@ -1041,7 +1042,8 @@
                         "ifNoAnswer": "Nothing is published.",
                         "known": [],
                         "related": []
-                      }
+                      },
+                      "permissions": "one post of this week's summary to the two people you share it with"
                     }
                   }
                 }
@@ -1747,7 +1749,8 @@
                         "ifNoAnswer": "It plans without your calendar.",
                         "known": [],
                         "related": []
-                      }
+                      },
+                      "permissions": "read-only access to your calendar, for 30 days"
                     }
                   }
                 }
@@ -1822,7 +1825,8 @@
                         "ifNoAnswer": "Nothing is published.",
                         "known": [],
                         "related": []
-                      }
+                      },
+                      "permissions": "one post of this week's summary to the two people you share it with"
                     }
                   }
                 }
@@ -2692,7 +2696,8 @@
                         "ifNoAnswer": "Nothing is published.",
                         "known": [],
                         "related": []
-                      }
+                      },
+                      "permissions": "one post of this week's summary to the two people you share it with"
                     }
                   }
                 }
@@ -2785,7 +2790,8 @@
                         "ifNoAnswer": "Nothing is published.",
                         "known": [],
                         "related": []
-                      }
+                      },
+                      "permissions": "one post of this week's summary to the two people you share it with"
                     }
                   }
                 }
@@ -2861,7 +2867,8 @@
                         "ifNoAnswer": "Nothing is published.",
                         "known": [],
                         "related": []
-                      }
+                      },
+                      "permissions": "one post of this week's summary to the two people you share it with"
                     }
                   }
                 }
@@ -3682,6 +3689,164 @@
               "cardId": "ship-ship-photo-backup",
               "revision": 1,
               "issuanceId": "ship-ship-photo-backup-i1"
+            },
+            "responses": [],
+            "viewEvents": []
+          }
+        ],
+        "settings": {
+          "defaultSelector": "both"
+        },
+        "sitrep": {
+          "answers": [],
+          "states": [],
+          "claimDecisions": [],
+          "threads": [],
+          "deliveries": []
+        }
+      }
+    },
+    "signin-toast": {
+      "label": "Just signed in (toast over the tab bar)",
+      "kind": "feed",
+      "act": "signin-toast",
+      "snapshot": {
+        "entries": [
+          {
+            "source": {
+              "sourceId": "helper",
+              "agentDid": "did:key:z6MkAGENTPLACEHOLDER",
+              "label": "Helper agent",
+              "output": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_output_helper"
+              },
+              "responses": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_responses_helper"
+              }
+            },
+            "state": {
+              "card": {
+                "cardId": "ask-ask-backup-window",
+                "revision": 1,
+                "issuanceId": "ask-ask-backup-window-i1",
+                "kind": "ask",
+                "needsResponse": true,
+                "title": "Which night should the backup run?",
+                "body": "Both nights avoid your calendar. The backup takes about 40 minutes.",
+                "urgency": 2,
+                "createdAt": "2026-11-06T09:00:00.000Z",
+                "choices": [
+                  {
+                    "id": "tue",
+                    "label": "Tuesday 02:00"
+                  },
+                  {
+                    "id": "thu",
+                    "label": "Thursday 02:00"
+                  }
+                ],
+                "payload": {
+                  "sitrep": {
+                    "version": 1,
+                    "record": {
+                      "kind": "ask",
+                      "id": "ask-backup-window",
+                      "title": "Which night should the backup run?",
+                      "body": "Both nights avoid your calendar. The backup takes about 40 minutes.",
+                      "from": "Helper agent",
+                      "owner": "You",
+                      "urgency": 2,
+                      "importance": 2,
+                      "links": [],
+                      "createdAt": "2026-11-06T09:00:00.000Z",
+                      "updatedAt": "2026-11-06T09:00:00.000Z",
+                      "askedAt": "2026-11-06T09:00:00.000Z",
+                      "status": "open",
+                      "expiresAt": "never",
+                      "context": {
+                        "background": "You asked for a weekly backup of your notes. This card is part of the feed design rig's sample data.",
+                        "whyNow": "The first run needs a night this week.",
+                        "ifNoAnswer": "Nothing runs until you pick one.",
+                        "known": [],
+                        "related": []
+                      },
+                      "options": [
+                        {
+                          "id": "tue",
+                          "label": "Tuesday 02:00",
+                          "detail": "Quietest night."
+                        },
+                        {
+                          "id": "thu",
+                          "label": "Thursday 02:00",
+                          "detail": "Right after your Wednesday edits."
+                        }
+                      ],
+                      "recommend": "tue"
+                    }
+                  }
+                }
+              },
+              "response": null,
+              "acknowledgement": null,
+              "outcome": null
+            },
+            "view": {
+              "sourceId": "helper",
+              "cardId": "ask-ask-backup-window",
+              "revision": 1,
+              "issuanceId": "ask-ask-backup-window-i1"
+            },
+            "responses": [],
+            "viewEvents": []
+          },
+          {
+            "source": {
+              "sourceId": "travel",
+              "agentDid": "did:key:z6MkAGENTPLACEHOLDER",
+              "label": "Travel agent",
+              "output": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_output_travel"
+              },
+              "responses": {
+                "spaceId": "tinycloud:pkh:eip155:1:0xOWNER0000000000000000000000000000000000:applications",
+                "database": "xyz.tinycloud.tinychat/feed/feed_responses_travel"
+              }
+            },
+            "state": {
+              "card": {
+                "cardId": "generic-flight",
+                "revision": 1,
+                "issuanceId": "generic-flight-i1",
+                "kind": "question",
+                "needsResponse": true,
+                "title": "Which flight should I hold for Thursday?",
+                "body": "Two flights fit your calendar. Holding one is free for 24 hours.",
+                "urgency": 2,
+                "createdAt": "2026-11-06T09:30:00.000Z",
+                "choices": [
+                  {
+                    "id": "early",
+                    "label": "07:10 direct"
+                  },
+                  {
+                    "id": "later",
+                    "label": "09:40, one stop"
+                  }
+                ]
+              },
+              "response": null,
+              "acknowledgement": null,
+              "outcome": null
+            },
+            "view": {
+              "sourceId": "travel",
+              "cardId": "generic-flight",
+              "revision": 1,
+              "issuanceId": "generic-flight-i1"
             },
             "responses": [],
             "viewEvents": []

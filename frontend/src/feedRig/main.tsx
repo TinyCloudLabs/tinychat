@@ -5,6 +5,7 @@ import "@/index.css";
 import { StrictMode, useEffect, useMemo } from "react";
 import { createRoot } from "react-dom/client";
 import { MemoryRouter, useLocation } from "react-router-dom";
+import { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { FeedViewEntries } from "@/feed/FeedView";
 import { AppsPage } from "@/home/AppsPage";
@@ -12,6 +13,7 @@ import { AppShell } from "@/shell/AppShell";
 import { screenFor } from "@/shell/routes";
 import { SignedOutSurface } from "@/shell/SignedOutSurface";
 import fixtureJson from "feed-rig-fixture";
+import { closeSignedInToastAfter } from "@/lib/signInToast";
 import { failingSource, fixtureSource, loadingSource, type RigFixture, type RigState } from "./fixtureSource";
 
 const fixture = fixtureJson as unknown as RigFixture;
@@ -28,7 +30,12 @@ function ShellFrame({ state }: { state: RigState }) {
       : state.kind === "loading" ? loadingSource()
         : failingSource(state.kind === "error" ? state.message : ""),
   [state]);
-  useEffect(() => { if (state.kind === "feed" && state.act) void act(state.act); }, [state]);
+  useEffect(() => {
+    if (state.kind !== "feed") return;
+    if (state.act === "signin-toast") signInToast();
+    else if (state.act) void act(state.act);
+  }, [state]);
+  const withNav = state.kind === "feed" && state.act === "signin-toast";
   return (
     <div className="h-dvh">
       <AppShell
@@ -36,7 +43,7 @@ function ShellFrame({ state }: { state: RigState }) {
         platform="web"
         pendingMeetings={0}
         chat={<p className="grid h-full place-items-center p-6 text-sm text-muted-foreground">Chat is not part of the feed rig.</p>}
-        capture={null}
+        capture={withNav ? <p className="grid h-full place-items-center p-6 text-sm text-muted-foreground">Recording is not part of the feed rig.</p> : null}
         connectors={null}
         settings={null}
         feed={<FeedViewEntries realEntries={[]} source={source} />}
@@ -44,6 +51,18 @@ function ShellFrame({ state }: { state: RigState }) {
       />
     </div>
   );
+}
+
+/**
+ * Rig-only: shows the real TinyCloud SDK toast host with "Successfully signed in", as the
+ * SDK does at the end of signIn(), then the app's 4 s close. No session, no network.
+ */
+function signInToast() {
+  const tcw = new TinyCloudWeb({ ui: { button: false, platform: "web" } });
+  // The SDK raises this toast from its private notification handler at the end of signIn().
+  const handler: unknown = Reflect.get(tcw, "notificationHandler");
+  if (handler && typeof handler === "object" && "success" in handler && typeof handler.success === "function") handler.success.call(handler, "Successfully signed in");
+  closeSignedInToastAfter();
 }
 
 const nextFrame = () => new Promise((resolve) => requestAnimationFrame(resolve));

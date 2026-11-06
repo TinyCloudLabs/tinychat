@@ -439,10 +439,10 @@ function ApprovalActions({ entry: incomingEntry, approval: incomingApproval, sou
   const codeShown = visibleForm && approval.codeExpected && (codeOpen || code.length > 0 || busy);
   const action = visibleForm && !approval.codeExpected;
   return <div className="mt-3.5 space-y-3" onFocusCapture={() => { engagedOnce.current = true; }}>
-    {superseded && <div role="status" className="space-y-2 rounded-xl bg-muted px-3 py-2.5 text-sm"><p>This request was replaced. Anything you typed stays with this one; codes don't move to the new request.</p><button type="button" className={`${buttonClass} bg-background`} disabled={busy} onClick={() => void openCurrent()}>Open the new request</button></div>}
+    {superseded && <div role="status" className="space-y-2 rounded-xl bg-muted px-3 py-2.5 text-sm"><p>This request was replaced. Use the new one below; a code for this one won't work there.</p><button type="button" className={`${buttonClass} bg-background`} disabled={busy} onClick={() => void openCurrent()}>Open the new request</button></div>}
     {showStatus && <TypedAnswerStatus entry={entry} owner={own} answer={answer} record={approval} />}
     {approval.warning && <p className="text-sm font-medium text-warning">{approval.warning}</p>}
-    {!expanded && approval.permissions && <p className="line-clamp-1 text-sm">Allows {approval.permissions}</p>}
+    {!expanded && approval.permissions && <p className="line-clamp-2 text-sm">Allows {approval.permissions}</p>}
     <div className="flex flex-wrap items-center gap-x-3.5 gap-y-1">
       {link && <a href={approval.url} target="_blank" rel="noopener noreferrer" onClick={() => { engagedOnce.current = true; }} className={action ? buttonClass : primaryClass}>{/openkey/i.test(link.hostname) ? "Review in OpenKey" : `Review on ${link.hostname}`}<ExternalLinkIcon aria-hidden className="size-4" /></a>}
       {action && <button type="button" disabled={disabled} className={approval.approvalType === "go" ? primaryClass : buttonClass} onClick={() => void submit()}>{busy ? "Saving…" : approval.approvalType === "go" ? "Give the go" : "I've done this step"}</button>}
