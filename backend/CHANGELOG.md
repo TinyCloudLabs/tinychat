@@ -1,5 +1,11 @@
 # @tinychat/backend
 
+## 0.7.1-beta.0
+
+### Patch Changes
+
+- 9bf796f: Record legacy agent-turn credit usage before ending either successful or failed responses so immediate follow-up chat requests enforce the updated budget. Preserve the existing soft-cap policy and streamed answer.
+
 ## 0.7.0
 
 ### Minor Changes
